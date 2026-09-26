@@ -183,6 +183,54 @@ static void test_call_retry_uses_same_peer_decision_as_initial_call(void) {
     EXPECT_EQ_U32(client.peers[0].ip, test_mock_send_to_last_ip);
 }
 
+// A call with known Servers goes unicast even when a batched announce is pending in tx_buffer: the announce
+// goes out first, as its own broadcast, and the request then unicasts (2026-09-26). It used to join the
+// announce's broadcast.
+static void test_call_flushes_a_pending_broadcast_then_unicasts(void) {
+    test_mock_reset();
+    test_mock_now = 500;
+
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Client client;
+    init_node_and_client(&node, &service, &client);
+    client.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+
+    node_update(&node, 0, NULL); // batches an announce into tx_buffer
+    EXPECT_TRUE(node.tx_tail > sizeof(struct tt_Header));
+
+    struct tt_Request request;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Client_call(&client, &request));
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_call_count);    // the announce, then the request
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // ...the request to its Server
+    EXPECT_EQ_U32(client.peers[0].ip, test_mock_send_to_last_ip);
+}
+
+// The same for a retry that finds an announce pending.
+static void test_call_retry_flushes_a_pending_broadcast_then_unicasts(void) {
+    test_mock_reset();
+    test_mock_now = 500;
+
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Client client;
+    init_node_and_client(&node, &service, &client);
+    service.call_retry_count = 3;
+    client.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+
+    struct tt_Request request;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Client_call(&client, &request));
+
+    node_update(&node, 0, NULL);
+    test_mock_send_call_count = 0;
+    test_mock_send_to_call_count = 0;
+    call_retry(&node, tt_get_ns(), &client);
+
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_call_count);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(client.peers[0].ip, test_mock_send_to_last_ip);
+}
+
 // NULL / missing-callback arguments must be rejected with tt_RET_INVALID_ARGUMENT, not
 // dereferenced.
 static void test_call_rejects_invalid_arguments(void) {
@@ -286,6 +334,8 @@ int main(void) {
     test_call_unicasts_to_known_servers_at_or_under_threshold();
     test_call_broadcasts_when_server_count_exceeds_threshold();
     test_call_retry_uses_same_peer_decision_as_initial_call();
+    test_call_flushes_a_pending_broadcast_then_unicasts();
+    test_call_retry_flushes_a_pending_broadcast_then_unicasts();
     test_call_rejects_invalid_arguments();
     test_call_rejects_bad_encode_size();
     test_call_retry_exhausted_reports_timeout();

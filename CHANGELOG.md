@@ -252,9 +252,9 @@ number, `tt_VERSION`, which moves independently.
   endpoint creations sends one announce once it has been quiet for `tt_NODE_TX_INTERVAL`, and a changed
   announce that arrived by broadcast is answered with one unicast announce; a unicast announce - a reply - is
   never answered, so two nodes cannot trade them. The periodic announce, its interval and the liveliness
-  arithmetic are unchanged. And an immediate publish with known peers flushes anything pending in
-  `tx_buffer` (a batched announce, typically) as its own broadcast first and then unicasts the DATA, instead
-  of joining that broadcast. On a veth rmw ping-pong: broadcast data samples 3/0/0 per run before, 0/0/0
+  arithmetic are unchanged. And an immediate publish, or a call request or its retry, with known peers
+  flushes anything pending in `tx_buffer` (a batched announce, typically) as its own broadcast first and then
+  unicasts, instead of joining that broadcast. On a veth rmw ping-pong: broadcast data samples 3/0/0 per run before, 0/0/0
   after, announces per node +0-7%.
 - **Linux HAL reads with `recvmmsg()`** (`tt_RX_BATCH`, hal_linux.h): the drain after a wake-up takes up to
   32 queued datagrams a call, the first straight into the caller's buffer and the rest held in the node

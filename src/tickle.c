@@ -2359,10 +2359,28 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     return result;
 }
 
+// A send that will go unicast - an immediate publish or a call request with 1..tt_UNICAST_PEER_THRESHOLD known
+// peers - is sent from an empty tx_buffer: whatever is batched there, a batched announce typically, goes out
+// first, as the broadcast it was going to be. It used to decide the other way: anything pending made the
+// submessage join it and go by broadcast, so a sample published within ~1 ms of an announce was broadcast
+// although its peers were known - about one sample a run in a 10 ms ping-pong, and more once endpoints
+// announce as soon as they are created (2026-09-26). The pending datagram only leaves up to one
+// tt_NODE_TX_INTERVAL early. peers is the sender's own peer table (tt_Publisher.peers, tt_Client.peers).
+static void flush_pending_before_unicast(struct tt_Node* node, const struct tt_Peer* peers) {
+    if (node->tx_tail == sizeof(struct tt_Header)) {
+        return;
+    }
+    uint8_t count = count_peers(peers);
+    if (count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD) {
+        (void)flush_tx(node, node->tx_tail, NULL, 0); // a failure logs; the send then broadcasts as before
+    }
+}
+
 // Re-sends the still-outstanding call request verbatim. Failing to encode/flush isn't fatal here
 // - the retry timer armed by the caller will just try again.
 static void resend_call_request(struct tt_Node* node, struct tt_Client* client,
                                 struct tt_SubmessageHeader* submessage_header) {
+    flush_pending_before_unicast(node, client->peers);
     uint32_t old_tx_tail = node->tx_tail;
     void* buf = encode(node, submessage_header->length);
     if (buf == NULL) {
@@ -2444,6 +2462,7 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
 
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
     struct tt_Node* node = client->node;
+    flush_pending_before_unicast(node, client->peers);
     uint32_t old_tx_tail = node->tx_tail;
 
     // Header and SubmessageHeader
@@ -3441,22 +3460,6 @@ static bool end_encode_sample(struct tt_Node* node, struct tt_SubmessageHeader* 
     return true;
 }
 
-// A publish that will go unicast (immediate, 1..tt_UNICAST_PEER_THRESHOLD known peers) is sent from an empty
-// tx_buffer: whatever is batched there - an announce waiting for node_flush()'s tick, typically - goes out
-// first, as the broadcast it was going to be. It used to decide the other way: anything pending made the DATA
-// join it and go by broadcast, so a sample published within ~1 ms of an announce was broadcast although its
-// peers were known - about one sample a run in a 10 ms ping-pong, and more once endpoints announce as soon as
-// they are created (2026-09-26). The pending datagram only leaves up to one tt_NODE_TX_INTERVAL early.
-static void flush_pending_before_unicast(struct tt_Node* node, const struct tt_Publisher* pub) {
-    if (pub->batch || node->tx_tail == sizeof(struct tt_Header)) {
-        return;
-    }
-    uint8_t count = count_peers(pub->peers);
-    if (count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD) {
-        (void)flush_tx(node, node->tx_tail, NULL, 0); // a failure logs; the DATA then broadcasts as before
-    }
-}
-
 static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Data* data) {
     if (pub == NULL || data == NULL || pub->node == NULL || pub->topic == NULL ||
         pub->topic->data_encode_size == NULL || pub->topic->data_encode == NULL) {
@@ -3465,7 +3468,9 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     struct tt_Node* node = pub->node;
-    flush_pending_before_unicast(node, pub);
+    if (!pub->batch) {
+        flush_pending_before_unicast(node, pub->peers);
+    }
     uint32_t old_tx_tail = node->tx_tail;
 
     // Phase 3 (rmw_tickle/PLAN.md) - KEEP_ALL flow control: refuse rather than evict a sample
