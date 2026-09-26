@@ -198,6 +198,13 @@ static int32_t take_next(struct tt_Node* node, void* buf, size_t len, uint32_t* 
     return -1;
 }
 
+// All the captured datagrams stand in for a batch already read (an upper bound: some are the node's own,
+// which take_next() skips). Defined for every build; only those with OPTIMIZATION_PLAN.md 11.4's D4 call it.
+uint32_t tt_rx_buffered(const struct tt_Node* node) {
+    uint8_t self = (uint8_t)(node - nodes);
+    return cursor[self] < wire_count ? wire_count - cursor[self] : 0U;
+}
+
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     (void)timeout;
     return take_next(node, buf, len, ip, port);

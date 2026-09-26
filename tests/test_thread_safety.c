@@ -231,6 +231,16 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
     return result;
 }
 
+// What the queue holds counts as already read, so a drain here takes OPTIMIZATION_PLAN.md 11.4's locked chunks
+// - under ThreadSanitizer, with the publishing threads running.
+uint32_t tt_rx_buffered(const struct tt_Node* node) {
+    struct queue* q = &queues[node->id];
+    pthread_mutex_lock(&q->lock);
+    uint32_t count = q->count;
+    pthread_mutex_unlock(&q->lock);
+    return count;
+}
+
 tt_ret_t tt_wake_signal(struct tt_Node* node) {
     struct queue* q = &queues[node->id];
     pthread_mutex_lock(&q->lock);

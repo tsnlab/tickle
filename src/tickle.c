@@ -9021,16 +9021,36 @@ static tt_ret_t drain_rx(struct tt_Node* node, tt_ret_t first_result) {
     while (true) {
         uint32_t ip = 0;
         uint16_t port = 0;
-        int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
-        if (len < 0) {
-            break; // -1 nothing waiting, -2 I/O error - either way, done draining
+        tt_ret_t result = tt_RET_OK;
+        if (tt_rx_buffered(node) == 0) {
+            // The next receive may read the socket: outside the lock, one datagram, as before D4.
+            int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+            if (len < 0) {
+                break; // -1 nothing waiting, -2 I/O error - either way, done draining
+            }
+            if (++since_clock > tt_RX_CLOCK_REFRESH) {
+                node->rx_clock_ns = tt_get_ns(); // a long drain keeps its stamps within microseconds (D1)
+                since_clock = 1;
+            }
+            result = process_datagram(node, len, ip, port);
+        } else {
+            // D4: datagrams the HAL already holds are processed under one lock, up to tt_RX_LOCK_CHUNK of them -
+            // a publishing thread waits at most one chunk (OPTIMIZATION_PLAN.md 11.4).
+            state_lock(node);
+            for (uint32_t taken = 0; taken < tt_RX_LOCK_CHUNK && result == tt_RET_OK && tt_rx_buffered(node) > 0;
+                 taken++) {
+                int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+                if (len < 0) {
+                    break;
+                }
+                if (++since_clock > tt_RX_CLOCK_REFRESH) {
+                    node->rx_clock_ns = tt_get_ns();
+                    since_clock = 1;
+                }
+                result = process_datagram_locked(node, len, ip, port);
+            }
+            state_unlock(node);
         }
-        if (++since_clock > tt_RX_CLOCK_REFRESH) {
-            node->rx_clock_ns = tt_get_ns(); // a long drain keeps its stamps within microseconds (D1)
-            since_clock = 1;
-        }
-
-        tt_ret_t result = process_datagram(node, len, ip, port);
         if (result != tt_RET_OK) {
             return result;
         }
