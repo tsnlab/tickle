@@ -1465,6 +1465,24 @@ at p1 and 128 at p4**, against the vendors' 4,000. So the asymmetry was larger t
 it cut both ways for TickLE too. TickLE buffered much less, which lowers its memory figures, and it
 kept much less in flight, which costs its throughput under loss.
 
+**The rmw rows' application: node options, and what an ordinary node needs (added 2026-09-27).**
+- **The same node options for all three rmws.** `ping_node` and `pong_node` (the `V`, `P` and `J` rows) create
+  their node with `start_parameter_services(false)`, `start_parameter_event_publisher(false)`,
+  `enable_rosout(false)` and `start_type_description_service=false`. It is one binary, set unconditionally,
+  so the rows are fair among the rmws. They are not a default-options ROS 2 node, which would also publish
+  /rosout and /parameter_events and serve eight parameter and type-description services.
+- **A default-options node on rmw_tickle needs the standard interfaces built with TickLE typesupport.** That is
+  `rmw_tickle/scripts/build_ros2_interfaces.sh` (the user's decision of 2026-09-24: patches plus a user-run script).
+  Without it, node creation fails on `rcl_interfaces/msg/Log`. With it, a default talker/listener pair starts,
+  publishes, receives and serves /rosout (Dev, PC, 2026-09-27). The vendors need nothing extra.
+- **Two defects that the table cannot show, found in that check and being fixed:**
+  - `ros2 node list` is empty under rmw_tickle, so `ros2 param` cannot find a node;
+  - service responses corrupt strings longer than 12 characters (`list_parameters`). Topics carry the same
+    strings intact.
+- **One asymmetry in the secondary suite:** `buildfarm_perf_tests`' `test_performance.py.in` turned the type-description
+  service off only for rmw_tickle. It is being made identical for all three. The headline table does not use that
+  suite.
+
 **Conclusion of the audit: no setting was found that decides a verdict in TickLE's favour.** One
 difference (item 1, memory against FastDDS at p2-p4) makes a TickLE margin look larger than it is,
 and items 1-3 are departures from "identical QoS" whichever way they cut. The planned correction
