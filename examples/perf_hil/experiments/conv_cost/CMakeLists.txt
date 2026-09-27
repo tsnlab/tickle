@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.8)
 project(conv_cost)
 
-if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 17)
-  set(CMAKE_CXX_STANDARD_REQUIRED ON)
-endif()
+# C++20 on every distro: jazzy's rclcpp leaves the standard at 17, where std::ranges does not exist, while lyrical's
+# raises it to 20 - so a local build passed and CI's failed (61b007d7).
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
