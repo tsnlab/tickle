@@ -1013,3 +1013,39 @@ Raw files:
   - the encoder would then read the ROS message itself.
   - Whether that layout identity holds generally, and at what cost to the generator, is unmeasured. It would be
     (3)'s cheaper form, if (3) is pursued.
+
+## 12. What a large primitive sequence costs to convert, and how the interface packages are built (pre-registered 2026-09-27, before any number)
+
+**Why.** 11.1 found that the generated C++ converters copy primitive sequences element by element
+(`tickle->data[i] = ros.data[i]`); the C ones use `memcpy`. A camera topic would pay that on every frame. Two
+facts bound the question, both found before measuring:
+- **The capacity.** rmw_tickle's shipped capacity for `sensor_msgs/Image.data` is 64,000 B
+  (`capacities/profile_65507.tsv`). One sample is capped at 65,507 B. So 640x480 and 1080p frames cannot be
+  published at all; Plan is taking that to the user as a design question. Only the sizes that fit are measured
+  here.
+- **The build type.** `scripts/build_ros2_interfaces.sh` ran colcon without `CMAKE_BUILD_TYPE`, so users' interface
+  packages, converters and codecs included, were compiled with no `-O`. CI builds them Release.
+  - It is fixed to Release, with an override, whatever this measures (Plan, same day).
+  - The measurement stays as the record of what users paid.
+
+**The measurement (PC first, then the client Pi under the rig lock).**
+- **Types, at the most rmw_tickle carries:**
+  - `sensor_msgs/Image` with 64,000 B of `data`;
+  - `std_msgs/ByteMultiArray` with 16,384 B.
+- **Arms:**
+  1. The generated C++ `to_tickle` + `from_tickle`, as a call pair, built -O0 (the script as it was) and -O2
+     (Release). Each is timed on its own, median over 20 rounds x 2000 calls.
+  2. A plain `memcpy` of the same number of bytes, twice (one per direction). This is the floor.
+  3. The rmw-level reference, where cheap: `rmw_serialize()` + `rmw_deserialize()` of the same Image through
+     `rmw_tickle` (-O0 and -O2 interface builds), `rmw_fastrtps_cpp` and `rmw_cyclonedds_cpp`. This is the vendors'
+     serialisation next to ours, on the same message.
+- **The code:** `objdump` of the -O2 converter, to see whether the element loop is vectorised or turned into a
+  `memcpy` call.
+
+**How it reads, written before any number:**
+- **The generator** switches primitive-element arrays and sequences (bool, char, fixed-width ints and floats, where
+  the element layout is identical) to a single `memcpy` if the -O2 converter pair is at least 2 x arm 2 at 64,000 B.
+  - Its tests: every primitive type round-tripped in its array, bounded-sequence and sequence forms.
+  - Endianness is not the converter's job: it copies host to host, and the codec swaps.
+- **The script** goes to Release regardless. The -O0 / -O2 ratio is recorded as what users were paying.
+- **The vendor numbers** are a reference, not a pass or fail.
