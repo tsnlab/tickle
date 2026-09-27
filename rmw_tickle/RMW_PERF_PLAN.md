@@ -1090,3 +1090,45 @@ The same Image, through `rmw_serialize` + `rmw_deserialize` (-O2 interfaces), fo
     DDS's.
 - **The Pi run** (12's second machine) is not done yet. The PC's margin, 40x against a 2x bar, does not hang on it.
   It is kept as the record before and after the generator change.
+
+### 12.2 The generator copies primitive arrays and sequences with std::copy / assign(): -98% on a 64-KB Image (2026-09-27)
+
+**The change.** `ros2_cpp_adapter.py` now emits `std::copy(ros.x.begin(), ros.x.end(), tickle->x)` and
+`ros.x.assign(tickle->x, tickle->x + tickle->x_count)` for primitive-element arrays and sequences, in place of
+element loops.
+- Over contiguous trivially copyable elements, libstdc++ makes those a single `memmove`.
+- `std::vector<bool>` still gets a correct element-wise copy, and `std::array` and `BoundedVector` work alike.
+- `assign()` also drops the zeroing that `resize()` did before the copy.
+- Strings and nested elements keep their per-element code.
+- **Why the loop was slow at -O2:** its `uint8_t` stores may alias anything, the vector's own data pointer
+  included, so the compiler reloaded that pointer every element and could not vectorise.
+
+**Tests.**
+- `rosidl_typesupport_tickle_c_tests`' new `Primitives.msg` holds all 13 primitive types as a fixed array, a bounded
+  sequence and an unbounded sequence. There is no `bool[<=3]`: this build's `rosidl_typesupport_fastrtps_cpp` fails
+  to compile one.
+- `test_primitives_cpp` round-trips them full and empty, compared with `operator==`. CI runs it beside the dispatch
+  tests.
+- **The mutant control,** `assign(..., count / 2)`, fails it ("round trip differs"); the change passes.
+- **The first mutant run was void, for two reasons, both fixed:**
+  - The generated converters are not regenerated when only the generator changes. CMake does not track the
+    generator's Python, so the run tested stale code. It was re-run from a clean build, and the generated file was
+    checked for the mutant.
+  - The test's missing-handle check was an `assert()`, compiled out in Release. It is now an explicit check.
+- The typesupport pytest: 33 passed. The adapter tests pin the `std::copy`/`assign()` output and that a bool
+  sequence never `memcpy`s.
+
+**Measured** (the same `conv_cost` run as 12.1, on a fresh Release overlay built with the new generator;
+`results/conv_cost_pc_after_2026-09-27.txt`), per call, us:
+
+| | before (12.1, -O2) | after | memcpy |
+|---|---:|---:|---:|
+| Image 64,000 B: `to_tickle` | 86 | **1.60** | 1.60 |
+| Image: `from_tickle` | 43 | **1.60** | 1.60 |
+| ByteMultiArray 16,384 B: `to_tickle` / `from_tickle` | 8.2 / 8.1 | **0.20 / 0.11** | 0.10 |
+| Image through `rmw_serialize` / `rmw_deserialize`, rmw_tickle | 88.0 / 45.7 | **3.6 / 4.8** | |
+| the same, Fast DDS | 2.7 / 2.7 | 2.6 / 2.7 | |
+| the same, CycloneDDS | 19.4 / 16.0 | 21.2 / 17.8 | |
+
+The converters now cost what a `memcpy` costs. rmw_tickle's serialisation of this Image went from 30x Fast DDS's to
+1.4x, and is 6x faster than CycloneDDS's.

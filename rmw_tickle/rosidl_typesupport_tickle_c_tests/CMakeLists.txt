@@ -42,7 +42,10 @@ find_package(rosidl_typesupport_tickle_cpp REQUIRED)
 # include-dir/link-library wiring this whole package exists to exercise) see it at all.
 find_package(rosidl_typesupport_tickle_c_tests_dep REQUIRED)
 
+# Primitives.msg's unbounded sequences get their capacities from this package's own capacity file.
+set(ENV{TICKLE_CAPACITIES_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/capacities:$ENV{TICKLE_CAPACITIES_PATH}")
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/Primitives.msg"
   "msg/Simple.msg"
   "msg/Branch.msg"
   "srv/SimpleService.srv"
@@ -88,6 +91,17 @@ if(BUILD_TESTING)
 
   # See test/test_dispatch_srv_cpp.cpp's own doc comment - the .srv counterpart to test_dispatch_
   # cpp.cpp above, one dispatch level up from test_dispatch_srv.c's own C-level entry point.
+  add_executable(test_primitives_cpp test/test_primitives_cpp.cpp)
+  target_link_libraries(test_primitives_cpp
+    "${PROJECT_NAME}__rosidl_generator_c"
+    "${PROJECT_NAME}__rosidl_generator_cpp"
+    "${PROJECT_NAME}__rosidl_typesupport_cpp"
+    rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
+    rosidl_typesupport_tickle_cpp::rosidl_typesupport_tickle_cpp
+    rosidl_runtime_c::rosidl_runtime_c
+  )
+  set_target_properties(test_primitives_cpp PROPERTIES CXX_STANDARD 17)
+
   add_executable(test_dispatch_srv_cpp test/test_dispatch_srv_cpp.cpp)
   target_link_libraries(test_dispatch_srv_cpp
     "${PROJECT_NAME}__rosidl_generator_c"

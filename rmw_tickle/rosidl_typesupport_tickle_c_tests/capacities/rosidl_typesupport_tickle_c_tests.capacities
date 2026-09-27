@@ -1,0 +1,14 @@
+# Capacities for Primitives.msg's unbounded sequences (see its header).
+rosidl_typesupport_tickle_c_tests/msg/Primitives	bool_sequence	5
+rosidl_typesupport_tickle_c_tests/msg/Primitives	byte_sequence	5
+rosidl_typesupport_tickle_c_tests/msg/Primitives	char_sequence	5
+rosidl_typesupport_tickle_c_tests/msg/Primitives	float32_sequence	5
+rosidl_typesupport_tickle_c_tests/msg/Primitives	float64_sequence	5
+rosidl_typesupport_tickle_c_tests/msg/Primitives	int8_sequence	5
+rosidl_typesupport_tickle_c_tests/msg/Primitives	uint8_sequence	5
+rosidl_typesupport_tickle_c_tests/msg/Primitives	int16_sequence	5
+rosidl_typesupport_tickle_c_tests/msg/Primitives	uint16_sequence	5
+rosidl_typesupport_tickle_c_tests/msg/Primitives	int32_sequence	5
+rosidl_typesupport_tickle_c_tests/msg/Primitives	uint32_sequence	5
+rosidl_typesupport_tickle_c_tests/msg/Primitives	int64_sequence	5
+rosidl_typesupport_tickle_c_tests/msg/Primitives	uint64_sequence	5

@@ -259,6 +259,11 @@ number, `tt_VERSION`, which moves independently.
 
 ### Changed
 
+- **The generated C++ converters copy primitive arrays and sequences as a block** (2026-09-27): `std::copy` /
+  `assign()` over the container instead of an element loop, which the compiler could not vectorise. A 64-KB
+  `sensor_msgs/Image` converts in 1.6 us each way instead of 86 / 43 us at -O2 (`rmw_tickle/RMW_PERF_PLAN.md`
+  12.2). Interface packages must be rebuilt to get it: the converters are generated code.
+
 - **`tt_Server_send_response()` encodes and sends before it returns** (2026-09-27), on the caller's thread under
   the node's state lock, as `tt_Publisher_publish()` does; the caller may free the response and everything it
   points at as soon as it returns. It used to hand the struct to the poll thread. `flush_pending_responses()` and

@@ -26,8 +26,15 @@ another - is converted by calling `to_tickle`/`from_tickle` on it, in its own ty
 
 The TickLE side is passed as `void*` / `const void*`: the struct's C name is generator-internal,
 and the type support wrapper (rosidl_typesupport_tickle_cpp's msg__type_support.cpp.in) only knows
-the ROS names. Element-wise loops rather than memcpy() for sequences: std::vector<bool> has no
-data(), and rosidl_runtime_cpp::BoundedVector is not guaranteed to have it either.
+the ROS names.
+
+Primitive-element arrays and sequences go through std::copy / assign() over the container's own iterators
+(2026-09-27, rmw_tickle/RMW_PERF_PLAN.md 12.1), never a hand-written element loop. For contiguous trivially
+copyable elements of one type, libstdc++ makes that a single memmove. std::vector<bool>, which has no data(),
+still gets a correct element-wise copy, and std::array and BoundedVector work alike. The element loop this
+replaces could not be vectorised: its uint8_t stores may alias anything, the vector's own data pointer included, so
+the compiler reloaded it on every element. It cost 86 us for a 64-KB Image at -O2, against 1.6 us for a memcpy.
+Strings and nested elements keep their per-element code, since each needs a conversion.
 """
 
 from .ros2_adapter import ros2_header_path
@@ -78,19 +85,18 @@ def _to_tickle_field_lines(f):
         elif f.array_element_kind == "nested":
             body = "    " + _nested_call(f, "to", f"{ros}[i]", f"&{tickle}[i]")
         else:
-            body = f"    {tickle}[i] = {ros}[i];"
+            return [f"std::copy({ros}.begin(), {ros}.end(), {tickle});"]
         return loop + [body, "}"]
     if f.kind == "array":
-        lines = [
-            f"if ({ros}.size() > {f.capacity}) {{ return false; }}",
-            f"for (size_t i = 0; i < {ros}.size(); i++) {{",
-        ]
+        lines = [f"if ({ros}.size() > {f.capacity}) {{ return false; }}"]
+        if f.array_element_kind not in ("string", "nested"):
+            lines.append(f"std::copy({ros}.begin(), {ros}.end(), {tickle});")
+            return lines + [f"{tickle}_count = static_cast<uint16_t>({ros}.size());"]
+        lines.append(f"for (size_t i = 0; i < {ros}.size(); i++) {{")
         if f.array_element_kind == "string":
             lines.append(f"    {tickle}[i] = {_mutable(f'{ros}[i]')};")
-        elif f.array_element_kind == "nested":
-            lines.append("    " + _nested_call(f, "to", f"{ros}[i]", f"&{tickle}[i]"))
         else:
-            lines.append(f"    {tickle}[i] = {ros}[i];")
+            lines.append("    " + _nested_call(f, "to", f"{ros}[i]", f"&{tickle}[i]"))
         return lines + ["}", f"{tickle}_count = static_cast<uint16_t>({ros}.size());"]
     if f.kind == "nested":
         return [_nested_call(f, "to", ros, f"&{tickle}")]
@@ -116,16 +122,17 @@ def _from_tickle_field_lines(f):
         elif f.array_element_kind == "nested":
             body = "    " + _nested_call(f, "from", f"{ros}[i]", f"&{tickle}[i]")
         else:
-            body = f"    {ros}[i] = {tickle}[i];"
+            return [f"std::copy({tickle}, {tickle} + {f.array_size}, {ros}.begin());"]
         return loop + [body, "}"]
     if f.kind == "array":
+        if f.array_element_kind not in ("string", "nested"):
+            # assign(): one copy, where resize() then a copy would first zero every element.
+            return [f"{ros}.assign({tickle}, {tickle} + {tickle}_count);"]
         lines = [f"{ros}.resize({tickle}_count);", f"for (size_t i = 0; i < {tickle}_count; i++) {{"]
         if f.array_element_kind == "string":
             lines.append(f"    {ros}[i] = {_string_from(f'{tickle}[i]')};")
-        elif f.array_element_kind == "nested":
-            lines.append("    " + _nested_call(f, "from", f"{ros}[i]", f"&{tickle}[i]"))
         else:
-            lines.append(f"    {ros}[i] = {tickle}[i];")
+            lines.append("    " + _nested_call(f, "from", f"{ros}[i]", f"&{tickle}[i]"))
         return lines + ["}"]
     if f.kind == "nested":
         return [_nested_call(f, "from", ros, f"&{tickle}")]
@@ -161,6 +168,7 @@ def render_cpp_adapter(struct, ros_name, tickle_header):
     ]
     has_ros_fields = bool(struct.fields)
     source_lines = [
+        "#include <algorithm>",
         "#include <cstddef>",
         "#include <cstdint>",
         "#include <cstring>",
