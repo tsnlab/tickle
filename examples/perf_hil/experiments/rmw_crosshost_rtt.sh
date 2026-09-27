@@ -64,6 +64,14 @@ BPF_ARMS=${BPF_ARMS:-off}
 # the ping's own shutdown line "rmw_tickle: executor_poll=<0|1>" matches its arm; the vendors run in the off arm
 # only. RMW_LIST replaces the three rmws, e.g. RMW_LIST=rmw_tickle for an rmw_tickle-only A/B.
 EXEC_POLL_ARMS=${EXEC_POLL_ARMS:--}
+# PHASE / RTT_AT (2026-09-27, RMW_PERF_PLAN.md 10.2, the user's decision): the ping's --phase and --rtt-at in poll
+# mode. PHASE=jitter puts a random pause of up to one poll cycle between each publish and its first check, so the reply
+# lands at a random phase of the cycle instead of the same phase every time; RTT_AT=callback ends the round trip at
+# the reply's callback, as block mode does, instead of after that poll cycle's sleep. Unset, the ping runs as before
+# (locked, loop). Set, every poll row asserts the ping's PHASE: line shows them, and a jitter row is VOID unless its
+# placement chi2 against uniform over 10 bins is below 21.67 (9 degrees of freedom, p = 0.01).
+PHASE=${PHASE:-}
+RTT_AT=${RTT_AT:-}
 RMW_LIST=${RMW_LIST:-rmw_tickle rmw_fastrtps_cpp rmw_cyclonedds_cpp}
 # IDLE_S=10 (2026-09-27, RMW_PERF_PLAN 8.6's idle-CPU criterion): the pong idles IDLE_S s before the ping starts
 # instead of 4, and the row gains pong_idle_cpu_ns / pong_idle_ms - the summed schedstat run time of every pong
@@ -100,7 +108,7 @@ test -f \$HOME/rmw_variants/$v/install/rmw_tickle/lib/librmw_tickle.so"
 done
 TRACE=${TRACE:-0}
 if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
-say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS, executor-poll arms: $EXEC_POLL_ARMS, idle: ${IDLE_S:-4} s, rmws: $RMW_LIST ==="
+say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS, executor-poll arms: $EXEC_POLL_ARMS, phase: ${PHASE:-locked}, rtt at: ${RTT_AT:-loop}, idle: ${IDLE_S:-4} s, rmws: $RMW_LIST ==="
 
 CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
 FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
@@ -334,6 +342,10 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     local waitflag=""
     [ "$WAITS" != poll ] && waitflag="--wait $WAIT"
     [ -n "$PSLEEP" ] && waitflag="$waitflag --poll-sleep-us $PSLEEP"
+    if [ "$WAIT" = poll ]; then
+        [ -n "$PHASE" ] && waitflag="$waitflag --phase $PHASE"
+        [ -n "$RTT_AT" ] && waitflag="$waitflag --rtt-at $RTT_AT"
+    fi
     # How many ping/pong processes are alive on both Pis as the ping starts (2026-09-26), found by /proc/PID/exe,
     # never by name. More than one of either means a leftover from an earlier row is answering or announcing
     # too: every rmw would see extra peers, and rmw_tickle would broadcast above tt_UNICAST_PEER_THRESHOLD.
@@ -346,7 +358,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     # PINGMAPS (2026-09-27): the rmw library the ping actually loaded, read from its /proc/PID/maps 2 s into the run by
     # a reader pinned to core 0 (the ping runs on 1-3). Its PID is found by parentage from the launch's own $! (timeout
     # -> time -> ping_node, taskset having exec'd) and verified by /proc/PID/exe - never by name.
-    res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log >/tmp/rmwx_ping.out & tp=\$!; pp=; for i in \$(seq 1 50); do for c in \$(cat /proc/\$tp/task/\$tp/children 2>/dev/null); do for g in \$c \$(cat /proc/\$c/task/\$c/children 2>/dev/null); do [ \"\$(readlink /proc/\$g/exe 2>/dev/null)\" = $BIN/ping_node ] && pp=\$g; done; done; [ -n \"\$pp\" ] && break; sleep 0.1; done; sleep 2; echo PINGMAPS: \$(taskset -c 0 grep -o '/[^ ]*librmw_[a-z_]*\\.so' /proc/\$pp/maps 2>/dev/null | sort -u | tr '\\n' ' ') >/tmp/rmwx_ping_maps.txt; wait \$tp; cat /tmp/rmwx_ping.out /tmp/rmwx_ping_time.txt /tmp/rmwx_ping_maps.txt" | grep -E '^RESULT:|^LOOP:|^ping_utime_s|^PINGMAPS:' | tr '\n' ' ' || true)
+    res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log >/tmp/rmwx_ping.out & tp=\$!; pp=; for i in \$(seq 1 50); do for c in \$(cat /proc/\$tp/task/\$tp/children 2>/dev/null); do for g in \$c \$(cat /proc/\$c/task/\$c/children 2>/dev/null); do [ \"\$(readlink /proc/\$g/exe 2>/dev/null)\" = $BIN/ping_node ] && pp=\$g; done; done; [ -n \"\$pp\" ] && break; sleep 0.1; done; sleep 2; echo PINGMAPS: \$(taskset -c 0 grep -o '/[^ ]*librmw_[a-z_]*\\.so' /proc/\$pp/maps 2>/dev/null | sort -u | tr '\\n' ' ') >/tmp/rmwx_ping_maps.txt; wait \$tp; cat /tmp/rmwx_ping.out /tmp/rmwx_ping_time.txt /tmp/rmwx_ping_maps.txt" | grep -E '^RESULT:|^LOOP:|^PHASE:|^ping_utime_s|^PINGMAPS:' | tr '\n' ' ' || true)
     res="$res $procs${idle:+ $idle}"
     if [ "$BPF" = on ]; then
         sh_ "$SERVER" "[ \"\$(readlink /proc/$bpfpid/exe)\" = /usr/bin/timeout ] && kill -TERM $bpfpid; for i in \$(seq 1 20); do [ -d /proc/$bpfpid ] || break; sleep 0.5; done" || true
@@ -414,6 +426,16 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     fi
     if [ -n "$PSLEEP" ]; then
         case "$res" in *"LOOP: poll_sleep_us=$PSLEEP "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(ping did not sleep $PSLEEP us)" ;; esac
+    fi
+    if [ "$WAIT" = poll ] && { [ -n "$PHASE" ] || [ -n "$RTT_AT" ]; }; then
+        case "$res" in *"PHASE: phase=${PHASE:-locked} rtt_at=${RTT_AT:-loop} "*) ;;
+            *) [ "$verdict" = ok ] && verdict="VOID(ping did not run phase=${PHASE:-locked} rtt_at=${RTT_AT:-loop})" ;; esac
+        if [ "$PHASE" = jitter ]; then
+            local chi2
+            chi2=$(echo "$res" | grep -oE 'PHASE: [^|]* chi2=[0-9.]+' | grep -oE '[0-9.]+$')
+            awk -v c="${chi2:-999}" 'BEGIN { exit !(c < 21.67) }' \
+                || { [ "$verdict" = ok ] && verdict="VOID(jitter phase not uniform, chi2=${chi2:-none})"; }
+        fi
     fi
     case "${ARM_TAG:-}" in *VOID-freq*) [ "$verdict" = ok ] && verdict="VOID(spinner did not lift the clock)" ;; esac
     case "$EP:$rmw" in

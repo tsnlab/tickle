@@ -807,3 +807,39 @@ with `rmw_pcap_split.py` into
     sleep value.
   - **(b) Report "seen at".** It is `reply_ns`, as block mode does, rather than the after-loop time. That removes the
     ~158 us every rmw carries today and changes no ranking.
+
+### 10.2 Poll mode with a random phase, the round trip ending at the callback (pre-registered 2026-09-27, before the run)
+
+**The user's decision (2026-09-27, "너의 추천대로 진행하자"):** the poll-mode rows of COMPARISON.md are measured with the
+ping's `--phase jitter --rtt-at callback`. The sleep sweep stays. The earlier phase-locked rows (P, section 8.3)
+stay in the document as reference, labelled as such.
+- **jitter:** a random pause of up to one measured poll cycle between each publish and its first check. The reply then
+  lands at a random phase of the cycle, as in an application whose poll loop is not synchronised with its peer, and
+  the ping stays one thread.
+- **callback:** the round trip ends when the reply's callback runs, as in block mode, not after that cycle's sleep.
+
+**Run:** `rmw_crosshost_rtt.sh` on `main` with the ping change merged. All three rmws, interleaved per repetition.
+WAITS=poll, POLL_SLEEPS="0 50 100 200", bench and array1k, BEST_EFFORT and RELIABLE, 3 repetitions, PHASE=jitter,
+RTT_AT=callback. That is 144 rows. Each row is VOID if:
+- its PHASE line does not show `phase=jitter rtt_at=callback`;
+- its placement chi2 is 21.67 or above (10 bins, 9 degrees of freedom, p = 0.01);
+- either side's /proc maps shows the wrong or a second rmw implementation;
+- any ping is lost.
+
+**Expected, from section 10.1's stages (a prediction, not a criterion):**
+- The time a reply is seen is roughly its arrival at the ping, plus the rmw's delivery, plus on average half a poll
+  cycle.
+- At 100 us that is roughly 320 us for rmw_tickle (arrival ~222, cycle ~163), ~360 for CycloneDDS (~240, ~212) and
+  ~410 for FastDDS (~285, ~222).
+- So rmw_tickle should be lowest in every cell. The margin grows with the sleep, which lengthens every cycle alike,
+  and shrinks toward busy polling.
+
+**How to read it:**
+- A cell is rmw_tickle's win only if its mean is lowest and outside the next rmw's mean by more than 2 x SE combined;
+  otherwise it is a draw. A vendor lower beyond 2 x SE is a loss, and is investigated as 10.1 was, before anything
+  else.
+- **Control:** at a sleep of 0 (busy polling) the cycle is only the `spin_some()`. The callback-ended round trip must
+  then agree with the old P rows 52-55 within a few us for every rmw. If it does not, the ping change itself moved
+  the measurement, and the other rows are not read.
+- **Also checked:** callback_p10/p90 on the PHASE line. With a random phase, their spread should be about one cycle
+  for every rmw. A narrow spread means the phase is still locked, whatever chi2 says.
