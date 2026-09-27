@@ -1049,3 +1049,44 @@ facts bound the question, both found before measuring:
   - Endianness is not the converter's job: it copies host to host, and the codec swaps.
 - **The script** goes to Release regardless. The -O0 / -O2 ratio is recorded as what users were paying.
 - **The vendor numbers** are a reference, not a pass or fail.
+
+### 12.1 Result on the PC: the converters are 40x a memcpy even at -O2, and users' -O0 build was 24x slower again (2026-09-27)
+
+**How it was run.**
+- `experiments/conv_cost/conv_cost.cpp` calls `to_tickle`/`from_tickle` through the `rosidl_typesupport_tickle_cpp`
+  handle, as rmw_tickle does, next to a `memcpy` of the same bytes and `rclcpp::Serialization` under each rmw.
+- Medians over 20 rounds x 2000 calls, pinned to one CPU.
+- Raw file: `results/conv_cost_pc_2026-09-27.txt`.
+- **Identity:**
+  - each row names the converter library it loaded (`dladdr`);
+  - the -O0 overlay was built by `build_ros2_interfaces.sh -t ''` (the old behaviour) and the -O2 one by
+    `-t Release`.
+  - The first run was void: its -O0 rows loaded the -O2 library, because the program's `setup.bash` re-sourced
+    the overlay it was built against. It was re-run with `local_setup.bash`, which chains nothing.
+
+| per call, us | -O0 (users' build) | -O2 (Release) | memcpy of the same bytes |
+|---|---:|---:|---:|
+| Image, 64,000 B: `to_tickle` | 2,157 | 86 | 1.6 |
+| Image: `from_tickle` | 936 | 43 | 1.6 |
+| ByteMultiArray, 16,384 B: `to_tickle` | 151 | 8.2 | 0.11 |
+| ByteMultiArray: `from_tickle` | 117 | 8.1 | 0.11 |
+
+The same Image, through `rmw_serialize` + `rmw_deserialize` (-O2 interfaces), for reference:
+
+| rmw | serialize | deserialize |
+|---|---:|---:|
+| rmw_tickle | 88.0 | 45.7 |
+| rmw_fastrtps_cpp | 2.7 | 2.7 |
+| rmw_cyclonedds_cpp | 19.4 | 16.0 |
+
+**How it reads, by 12's rules.**
+- **The script:**
+  - -O0 costs about 24x -O2 on these converters: 3.1 ms per 64-KB frame each way, against 0.13 ms.
+  - It now builds Release by default (`-t` overrides it), which was decided before the number.
+- **The generator:**
+  - At -O2 the converter pair is about 40x two `memcpy`s at 64,000 B, far past the 2x bar.
+  - Primitive-element arrays and sequences go to a single `memcpy` where the element layout is identical.
+  - `rmw_tickle`'s serialisation of this Image is almost all conversion: 88 of 88 us in `to_tickle`. It is 30x Fast
+    DDS's.
+- **The Pi run** (12's second machine) is not done yet. The PC's margin, 40x against a 2x bar, does not hang on it.
+  It is kept as the record before and after the generator change.

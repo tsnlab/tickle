@@ -299,7 +299,10 @@ source ~/tickle_ifaces_ws/install/setup.bash
 ```
 
 `-a` builds all 23 jazzy interface packages that TickLE ships capacities for (about 7 minutes on a
-CI runner). To build only some, name them instead, and the packages they depend on are added. After
+CI runner). They are built Release (`-t` chooses another CMake build type). Until 2026-09-27 the script set
+none, which compiled the converters that run on every sample with no optimisation: a 64-KB Image took 3.1 ms
+each way instead of 0.13 ms (`rmw_tickle/RMW_PERF_PLAN.md` 12.1). A workspace built before then is worth
+rebuilding. To build only some, name them instead, and the packages they depend on are added. After
 that, a default `rclcpp::Node` starts and runs with no extra parameters, and actions work through
 `rclcpp_action` (`example_interfaces/action/Fibonacci` is checked in CI). The one type that is
 declined is `example_interfaces/msg/WString`, since TickLE has no `wstring` (below). Your own interface

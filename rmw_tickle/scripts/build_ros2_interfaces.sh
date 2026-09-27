@@ -21,8 +21,12 @@
 # Usage:
 #   source /opt/ros/$ROS_DISTRO/setup.bash
 #   source <rmw_tickle install>/setup.bash      # rosidl_typesupport_tickle_c must be found
-#   build_ros2_interfaces.sh [-w WORKSPACE] [-a | PACKAGE...]
+#   build_ros2_interfaces.sh [-w WORKSPACE] [-t BUILD_TYPE] [-a | PACKAGE...]
 #   source WORKSPACE/install/setup.bash          # before running anything that uses them
+#
+# -t is CMake's build type, Release unless given (2026-09-27). Until then this script passed none, so the
+# packages - their converters and codecs, which run on every sample - were compiled with no -O at all, while CI
+# builds them Release. rmw_tickle/RMW_PERF_PLAN.md 12 records what that cost. `-t ''` reproduces the old build.
 #
 # PACKAGE defaults to builtin_interfaces and std_msgs. -a builds every package TickLE ships
 # capacities for (INVENTORY below) - what a default rclcpp::Node needs is among them
@@ -57,10 +61,12 @@ INVENTORY=(
 )
 
 WORKSPACE="${HOME}/tickle_ros2_interfaces"
+BUILD_TYPE=Release
 ALL=0
-while getopts "w:ah" opt; do
+while getopts "w:t:ah" opt; do
     case "$opt" in
     w) WORKSPACE="$OPTARG" ;;
+    t) BUILD_TYPE="$OPTARG" ;;
     a) ALL=1 ;;
     h) usage 0 ;;
     *) usage 1 ;;
@@ -246,7 +252,7 @@ if colcon build --help 2>/dev/null | grep -q -- --allow-overriding; then
 fi
 build() {
     colcon build --base-paths "$SRC" --build-base "$WORKSPACE/build" --install-base "$WORKSPACE/install" \
-        "${override[@]}" --packages-select "$@" --cmake-args -DBUILD_SHARED_LIBS=ON
+        "${override[@]}" --packages-select "$@" --cmake-args -DBUILD_SHARED_LIBS=ON "-DCMAKE_BUILD_TYPE=$BUILD_TYPE"
 }
 use_workspace() {
     if [ -f "$WORKSPACE/install/setup.bash" ]; then
