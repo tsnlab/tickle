@@ -376,6 +376,64 @@ static uint32_t to_single_form(uint8_t* framing, uint32_t framing_len, uint32_t 
     return sizeof(struct tt_Header);
 }
 
+// W1 (rmw_tickle/WIRE_PLAN.md 9.1, branch prototype): the short form, made in place from a datagram that
+// to_single_form() just made single (skip = sizeof(struct tt_Header)) and whose one submessage is the user DATA a
+// publish armed (tt_Node.tx_short_armed, its writer's entity). The 16 bytes before the payload - the single header
+// and the DataHeader's endpoint_id, seq_no and timestamp - become a single header and a tt_ShortDataHeader, 8
+// bytes further in; the DataHeader's entity_id is overwritten last. Returns how much further in the datagram now
+// starts: 8, or 0 when the datagram is not the armed one. Cached copies were taken before: they stay long.
+static uint32_t to_short_form(struct tt_Node* node, uint8_t* datagram, uint32_t skip, uint32_t len) {
+    const uint32_t single_at = sizeof(struct tt_Header);
+    const uint32_t data_at = single_at + sizeof(struct tt_SingleHeader);
+    if (!node->tx_short_armed || skip != single_at || len < data_at + sizeof(struct tt_DataHeader)) {
+        return 0;
+    }
+    struct tt_SingleHeader single;
+    struct tt_DataHeader data;
+    _tt_memcpy(&single, datagram + single_at, sizeof(single));
+    _tt_memcpy(&data, datagram + data_at, sizeof(data));
+    if (single.type != tt_SUBMESSAGE_TYPE_DATA || data.entity_id != node->tx_short_entity ||
+        data.endpoint_id == tt_DISCOVERY_ENDPOINT_ID) {
+        return 0;
+    }
+    const uint32_t shift = sizeof(struct tt_DataHeader) - sizeof(struct tt_ShortDataHeader); // 4
+    single.type = tt_SUBMESSAGE_TYPE_DATA_SHORT;
+    struct tt_ShortDataHeader short_header = {node->tx_short_handle, 0, data.seq_no, data.timestamp};
+    uint8_t* start = datagram + single_at + shift;
+    _tt_memcpy(start, &single, sizeof(single));
+    _tt_memcpy(start + sizeof(single), &short_header, sizeof(short_header));
+    node->short_sent++;
+    return shift;
+}
+
+// W1: whether this sample may go short. RELIABLE: once every matched reader has ACKNACKed (it has the mapping,
+// and a retransmission is long anyway). BEST_EFFORT: not for tt_W1_LONG_EVERY samples after a new peer match, and
+// not on every tt_W1_LONG_EVERY-th after that - a reader that missed the announce maps on those or on its list
+// request.
+static bool w1_choose_short(struct tt_Publisher* pub) {
+    if (pub->reliable) {
+        bool any = false;
+        for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+            if (pub->peer_acks[i].node_id != tt_NODE_ID_INVALID) {
+                if (!pub->peer_acks[i].w1_acked) {
+                    return false;
+                }
+                any = true;
+            }
+        }
+        return any;
+    }
+    if (pub->w1_since_match < tt_W1_LONG_EVERY) {
+        pub->w1_since_match++;
+        return false;
+    }
+    if (++pub->w1_since_long >= tt_W1_LONG_EVERY) {
+        pub->w1_since_long = 0;
+        return false;
+    }
+    return true;
+}
+
 struct tx_datagram {
     const uint8_t* head;
     uint32_t head_len;
@@ -578,6 +636,7 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
 #endif
 
     uint32_t skip = to_single_form(node->tx_buffer, len, 0);
+    skip += to_short_form(node, node->tx_buffer, skip, len);
     struct tx_datagram dgram = {node->tx_buffer + skip, len - skip, NULL, 0};
     if (node->summary_skip_armed) {
         if (len != node->tx_summary_alone_len) {
@@ -1086,6 +1145,7 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
             pub->peer_acks[i].entity_id = entity_id;
             pub->peer_acks[i].ack_seq_no = 0;
             pub->peer_acks[i].tracking_words = 0; // set by the caller from the announce
+            pub->peer_acks[i].w1_acked = false;   // W1: long forms until it ACKNACKs
             return &pub->peer_acks[i];
         }
     }
@@ -1124,6 +1184,7 @@ static void record_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t 
     if (ack == NULL) {
         return;
     }
+    ack->w1_acked = true; // W1 (WIRE_PLAN.md 9.1): it has this writer's mapping
     if (seq_no > ack->ack_seq_no) {
         ack->ack_seq_no = seq_no;
     }
@@ -1261,6 +1322,12 @@ static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint
         return;
     }
 
+    // W1: a new entity, or one whose QoS changed, can change an RxO verdict a route entry holds.
+    if (slot->node_id != node_id || slot->endpoint_id != endpoint_id || slot->kind != kind || slot->qos != qos ||
+        slot->deadline_duration_ns != deadline_duration_ns ||
+        slot->liveliness_lease_duration_ns != liveliness_lease_duration_ns || !slot->alive) {
+        node->route_generation++;
+    }
     slot->node_id = node_id;
     slot->endpoint_id = endpoint_id;
     slot->kind = kind;
@@ -1295,7 +1362,10 @@ static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint
 // roadmap #3, RMW_EVENT_LIVELINESS_CHANGED.not_alive_count) explicitly excludes normal deletion
 // from "not alive" - see tombstone_discovered_entities_from_source() below for the liveliness-
 // timeout counterpart that keeps the entity instead. No-op if no discovery cache is attached.
+static void handle_directory_forget_source(struct tt_Node* node, uint8_t source);
+
 static void forget_discovered_entities_from_source(struct tt_Node* node, uint8_t node_id) {
+    handle_directory_forget_source(node, node_id); // W1: its list is about to be re-read, handles and all
     if (node->discovery == NULL) {
         return;
     }
@@ -1308,6 +1378,7 @@ static void forget_discovered_entities_from_source(struct tt_Node* node, uint8_t
         uint32_t endpoint_id = entities[i].endpoint_id;
         uint8_t kind = entities[i].kind;
         entities[i].node_id = tt_NODE_ID_INVALID;
+        node->route_generation++; // W1
         if (node->discovery_callback != NULL) {
             node->discovery_callback(node, node_id, endpoint_id, kind, /*departed=*/true,
                                      node->discovery_callback_param);
@@ -1325,6 +1396,7 @@ static void forget_discovered_entities_from_source(struct tt_Node* node, uint8_t
 // tombstone distinction, only rmw_tickle_c's own count_not_alive_matching_locked() (rmw_graph.c)
 // needs to see the .alive flag directly. No-op if no discovery cache is attached.
 static void tombstone_discovered_entities_from_source(struct tt_Node* node, uint8_t node_id) {
+    handle_directory_forget_source(node, node_id); // W1: a departed node's writers route nowhere
     if (node->discovery == NULL) {
         return;
     }
@@ -1335,6 +1407,7 @@ static void tombstone_discovered_entities_from_source(struct tt_Node* node, uint
             continue; // not from this source, or already tombstoned - nothing new to report
         }
         entities[i].alive = false;
+        node->route_generation++; // W1
         if (node->discovery_callback != NULL) {
             node->discovery_callback(node, node_id, entities[i].endpoint_id, entities[i].kind, /*departed=*/true,
                                      node->discovery_callback_param);
@@ -1411,6 +1484,7 @@ static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* e
 
     node->endpoints[node->endpoint_count++] = endpoint;
     node->endpoint_index_valid = false;
+    node->route_generation++; // W1: an endpoint came or went
     arm_announce_soon(node);
 
     return tt_RET_OK;
@@ -1426,6 +1500,7 @@ static bool remove_endpoint_from_node(struct tt_Node* node, struct tt_Endpoint* 
             }
             node->endpoints[node->endpoint_count] = NULL;
             node->endpoint_index_valid = false;
+            node->route_generation++; // W1: an endpoint came or went
             return true;
         }
     }
@@ -1916,7 +1991,7 @@ static void advance_ack_seq_no(struct tt_WriterProxy* proxy);
 static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy* proxy);
 static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
-                                uint16_t sender_port);
+                                uint16_t sender_port, struct tt_WriterProxy* hint);
 static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no);
 // RELIABLE in-order delivery - release any samples this Subscriber is holding for a writer that
 // has gone away, so its slots do not stay occupied for a stream that will never resume.
@@ -1970,6 +2045,7 @@ static void reset_node_state(struct tt_Node* node) {
     node->id = tt_NODE_ID_INVALID;
     node->endpoint_count = 0;
     node->endpoint_index_valid = false;
+    node->route_generation++; // W1: an endpoint came or went
 
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
         node->endpoints[i] = NULL;
@@ -2046,6 +2122,17 @@ static void reset_node_state(struct tt_Node* node) {
 
     memset(node->scheduler, 0, sizeof(struct tt_TCB) * tt_MAX_SCHEDULER_LENGTH);
     node->scheduler_tail = 0;
+
+    // W1 (rmw_tickle/WIRE_PLAN.md 9.1): generation 0 is never current, so a zeroed route entry never routes.
+    node->route_generation = 1;
+    node->next_writer_handle = 0;
+    node->tx_short_armed = false;
+    node->short_sent = 0;
+    node->short_routed = 0;
+    node->short_slow = 0;
+    node->short_unrouted = 0;
+    memset(node->rx_routes, 0, sizeof(node->rx_routes));
+    memset(node->handle_directory, 0, sizeof(node->handle_directory));
 }
 
 // Arms node_update()'s and check_liveliness()'s first run, aligned to the next tt_NODE_CYCLE boundary.
@@ -2338,6 +2425,9 @@ static tt_ret_t node_create_publisher_locked(struct tt_Node* node, struct tt_Pub
     pub->node = node;
     pub->topic = topic;
     pub->seq_no = 0;
+    pub->handle = node->next_writer_handle++; // W1 (WIRE_PLAN.md 9.1)
+    pub->w1_since_match = 0;
+    pub->w1_since_long = 0;
     pub->batch = false;                 // see tickle.h's own doc comment on this field for why this is the default
     pub->reliable_cache = NULL;         // no retained-sample storage by default - see its own doc comment
     pub->reliable = false;              // best-effort by default - see tt_Publisher.reliable's own doc comment
@@ -3733,7 +3823,14 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // Heartbeat buried in a batch arrives no sooner than the batch does.
     bool piggyback = piggyback_due(pub, is_flush);
 
-    if (!end_encode_sample(node, submessage_header, is_flush && !piggyback, peers, peer_count, old_tx_tail)) {
+    // W1: this DATA goes short if its writer says so and it leaves alone, now, as a single datagram.
+    bool w1_short = w1_choose_short(pub);
+    node->tx_short_armed = w1_short && is_flush && !piggyback && old_tx_tail == sizeof(struct tt_Header);
+    node->tx_short_handle = pub->handle;
+    node->tx_short_entity = endpoint->entity_id;
+    bool encoded = end_encode_sample(node, submessage_header, is_flush && !piggyback, peers, peer_count, old_tx_tail);
+    node->tx_short_armed = false;
+    if (!encoded) {
         return tt_RET_IO_ERROR;
     }
 
@@ -4542,6 +4639,9 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->reorder_cursor = 1;
             proxy->highest_delivered = 0;
             proxy->sub = sub; // before anything that reads the window width through the proxy
+            if (sub->node != NULL) {
+                sub->node->route_generation++; // W1: a new proxy - a route entry may now point at it
+            }
             // Phase 3 - whether this writer promises KEEP_ALL, from whatever its last announce
             // said (a later announce refreshes it via update_writer_proxies_keep_all()). Unknown
             // writer, or no discovery table attached, reads as UNKNOWN, which never gives up -
@@ -5112,13 +5212,15 @@ static void rstat_on_arrival(const struct tt_WriterProxy* proxy, uint32_t seq_no
 // the safer direction after the wider version's own real-CI-confirmed failure.
 static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
-                                uint16_t sender_port) {
+                                uint16_t sender_port, struct tt_WriterProxy* hint) {
     if (!sub->reliable) {
         return true;
     }
 
+    // W1: a routed short form already knows its proxy - an existing one, so never first contact.
     bool first_contact = false;
-    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(sub, sender_node_id, sender_entity_id, &first_contact);
+    struct tt_WriterProxy* proxy =
+        hint != NULL ? hint : find_or_create_writer_proxy(sub, sender_node_id, sender_entity_id, &first_contact);
     if (proxy == NULL) {
         return true; // WriterProxy table full - see find_or_create_writer_proxy()'s own doc comment,
                      // nothing to track against, deliver as-is same as always
@@ -5284,6 +5386,9 @@ static int encode_update_entities(struct tt_Node* node, struct tt_Endpoint* cons
         // announces 0 ("the default"), see tt_UpdateEntity.tracking_words' own doc comment.
         update_entity->tracking_words = endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER
                                             ? subscriber_tracking_words((const struct tt_Subscriber*)endpoint)
+                                        // W1 (WIRE_PLAN.md 9.1): a Publisher's own 16 bits carry its handle
+                                        : endpoint->kind == tt_KIND_TOPIC_PUBLISHER
+                                            ? ((const struct tt_Publisher*)endpoint)->handle
                                             : 0;
         update_entity->deadline_duration_ns = endpoint_deadline_duration_ns(endpoint);
         update_entity->liveliness_lease_duration_ns = endpoint_liveliness_lease_duration_ns(endpoint);
@@ -5725,6 +5830,7 @@ static void forget_writer_proxies_for_endpoint(struct tt_Node* node, uint32_t en
                 proxy->acknack_scheduled = false;
             }
             proxy->node_id = tt_NODE_ID_INVALID; // frees the slot; a restart re-runs first contact
+            node->route_generation++;            // W1: a route entry may still point at this slot
             proxy->entity_id = 0;
             proxy->ack_seq_no = 1;
             proxy->reorder_cursor = 1;
@@ -6218,6 +6324,7 @@ static void register_subscriber_peer_on_publisher(struct tt_Node* node, struct t
     }
 
     if (upsert_peer(pub->peers, ctx->header->source, ctx->sender_ip, ctx->sender_port)) {
+        pub->w1_since_match = 0; // W1: a new reader - long forms for a while
         struct tt_Peer target = {ctx->header->source, ctx->sender_ip, ctx->sender_port};
         // The Publisher's half of the same question the writer-proxy log above answers from the
         // Subscriber's side: did the two ever actually find each other? Once per newly-claimed
@@ -6255,6 +6362,52 @@ static void register_server_peer_on_client(struct tt_Node* node, struct tt_Endpo
     upsert_peer(client->peers, ctx->header->source, ctx->sender_ip, ctx->sender_port);
 }
 
+// W1 (rmw_tickle/WIRE_PLAN.md 9.1): the handle directory - (source, handle) -> the writer's ids, as its announce
+// said. The route table is a cache in front of it; this is the record a miss falls back to.
+static void handle_directory_put(struct tt_Node* node, uint8_t source, uint16_t handle, uint32_t endpoint_id,
+                                 uint32_t entity_id) {
+    struct tt_HandleEntry* free_entry = NULL;
+    for (int i = 0; i < tt_RX_HANDLE_DIRECTORY; i++) {
+        struct tt_HandleEntry* entry = &node->handle_directory[i];
+        if (entry->source == source && entry->handle == handle) {
+            if (entry->endpoint_id != endpoint_id || entry->entity_id != entity_id) {
+                entry->endpoint_id = endpoint_id; // a restarted writer, reusing its handle
+                entry->entity_id = entity_id;
+                node->route_generation++;
+            }
+            return;
+        }
+        if (free_entry == NULL && entry->source == tt_NODE_ID_INVALID) {
+            free_entry = entry;
+        }
+    }
+    if (free_entry == NULL) {
+        TT_LOG_WARNING("Handle directory full (%d) - node %u's writer %u stays long-form only", tt_RX_HANDLE_DIRECTORY,
+                       source, handle);
+        return;
+    }
+    *free_entry = (struct tt_HandleEntry) {handle, source, endpoint_id, entity_id};
+}
+
+static const struct tt_HandleEntry* handle_directory_find(const struct tt_Node* node, uint8_t source, uint16_t handle) {
+    for (int i = 0; i < tt_RX_HANDLE_DIRECTORY; i++) {
+        const struct tt_HandleEntry* entry = &node->handle_directory[i];
+        if (entry->source == source && entry->handle == handle) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+static void handle_directory_forget_source(struct tt_Node* node, uint8_t source) {
+    for (int i = 0; i < tt_RX_HANDLE_DIRECTORY; i++) {
+        if (node->handle_directory[i].source == source) {
+            node->handle_directory[i].source = tt_NODE_ID_INVALID;
+            node->route_generation++;
+        }
+    }
+}
+
 static bool decode_update_entities(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t* head,
                                    uint32_t tail, int entity_count, uint32_t sender_ip, uint16_t sender_port,
                                    uint32_t generation) {
@@ -6288,6 +6441,8 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
                                           .announce_generation = generation};
             for_each_endpoint(node, tt_KIND_TOPIC_PUBLISHER, endpoint_id, register_subscriber_peer_on_publisher, &ctx);
         } else if (update_entity->kind == tt_KIND_TOPIC_PUBLISHER) {
+            // W1 (WIRE_PLAN.md 9.1): what this writer's handle stands for, for its short forms.
+            handle_directory_put(node, header->source, remote_tracking_words, endpoint_id, remote_entity_id);
             // Phase 3 - remember whether this writer promises KEEP_ALL, so acknack_retry() knows
             // not to give up on its gaps. Cached on the proxy (if one exists yet; otherwise first
             // contact picks it up from the discovery table the same way RxO matching does).
@@ -6540,6 +6695,15 @@ struct data_delivery_ctx {
     // A sample the node's reassembly pool put together, for best-effort Subscribers only: a reliable one
     // took its fragments one by one, each under its own seq_no.
     bool best_effort_only;
+    // W1 (WIRE_PLAN.md 9.1). In: a short form routed by the route table - its RxO verdict was checked when the
+    // entry was filled, and its writer proxy is known. Out, when fill is set: which Subscribers took the sample
+    // past RxO and with which proxy, so process_data_short() can fill the entry when exactly one did.
+    bool rxo_checked;
+    struct tt_WriterProxy* proxy_hint;
+    bool fill;
+    uint8_t fill_count;
+    struct tt_Subscriber* fill_sub;
+    struct tt_WriterProxy* fill_proxy;
 };
 
 // Milestone 35 - the actual per-Subscriber body process_data() used to run once (against find_
@@ -6996,8 +7160,13 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
     // before any reliable-tracking side effects too (update_reliable_ack() below), not just before
     // delivery - no point generating ACKNACKs a Publisher that could never honor them will never
     // answer (see this file's own pre-Milestone-31 history of exactly that silent-degradation bug).
-    if (subscriber_incompatible_with_publisher(node, sub, ctx->header->source, ctx->endpoint_id)) {
+    if (!ctx->rxo_checked && subscriber_incompatible_with_publisher(node, sub, ctx->header->source, ctx->endpoint_id)) {
         return;
+    }
+    if (ctx->fill) {
+        ctx->fill_count++;
+        ctx->fill_sub = sub;
+        ctx->fill_proxy = NULL;
     }
 
     bool is_native = tt_is_native_endian(ctx->header);
@@ -7022,7 +7191,12 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
     // against a high watermark. It is not, because a restarted Publisher carries a new entity_id
     // (Milestone 47) and therefore claims a different proxy.
     if (!sub->reliable && !TT_ORDERING_DISABLED) {
-        struct tt_WriterProxy* proxy = find_or_create_writer_proxy(sub, ctx->header->source, ctx->entity_id, NULL);
+        struct tt_WriterProxy* proxy =
+            ctx->proxy_hint != NULL ? ctx->proxy_hint
+                                    : find_or_create_writer_proxy(sub, ctx->header->source, ctx->entity_id, NULL);
+        if (ctx->fill) {
+            ctx->fill_proxy = proxy;
+        }
         // No proxy slot free: deliver rather than drop. Losing a sample because a *diagnostic-
         // sized* table is full would be a worse failure than delivering one out of order, and the
         // table is sized for the peers a node can talk to anyway.
@@ -7041,7 +7215,7 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
     // here instead of re-invoking the application callback a second time for it, matching real DDS
     // readers' own per-writer sequence-number de-duplication.
     if (!update_reliable_ack(node, sub, ctx->seq_no, ctx->header->source, ctx->entity_id, ctx->sender_ip,
-                             ctx->sender_port)) {
+                             ctx->sender_port, ctx->proxy_hint)) {
         return;
     }
 
@@ -7066,7 +7240,11 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
     // update_reliable_ack() advances ack_seq_no past this sample if and only if it was the next
     // one expected, so ack_seq_no > seq_no means in-order and anything else means ahead of a gap.
     if (sub->reliable && !TT_ORDERING_DISABLED) {
-        struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);
+        struct tt_WriterProxy* proxy =
+            ctx->proxy_hint != NULL ? ctx->proxy_hint : find_writer_proxy(sub, ctx->header->source, ctx->entity_id);
+        if (ctx->fill) {
+            ctx->fill_proxy = proxy;
+        }
         if (proxy != NULL && proxy->ack_seq_no <= ctx->seq_no) {
             hold_for_reorder(node, sub, proxy, ctx, is_native);
             return;
@@ -7134,6 +7312,62 @@ static bool process_data_for(struct tt_Node* node, struct tt_Header* header, uin
 static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head, uint32_t tail,
                          uint32_t sender_ip, uint16_t sender_port) {
     return process_data_for(node, header, buffer, head, tail, sender_ip, sender_port, false);
+}
+
+static void request_discovery_list(struct tt_Node* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
+                                   uint16_t sender_port);
+
+// W1 (rmw_tickle/WIRE_PLAN.md 9.1, branch prototype): a DATA routed by its writer's handle.
+//   hit  - the route entry for (source, handle) is current: one Subscriber, its proxy and RxO verdict known.
+//   miss - the handle directory knows the writer: today's full route (endpoint probe, RxO, proxy search), and the
+//          entry is refilled if exactly one Subscriber took the sample.
+//   unknown - no announce has named this writer: dropped and counted, and its list asked for.
+static bool process_data_short(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                               uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
+    struct tt_ShortDataHeader* short_header = decode(node, buffer, &head, tail, sizeof(struct tt_ShortDataHeader));
+    if (short_header == NULL) {
+        TT_LOG_ERROR("Illegal ShortDataHeader");
+        return false;
+    }
+    uint16_t handle = rd16(header, short_header->handle);
+    struct data_delivery_ctx ctx = {
+        .header = header,
+        .seq_no = rd32(header, short_header->seq_no),
+        .timestamp = timestamp_from_wire(node, rd32(header, short_header->timestamp)),
+        .buffer = buffer,
+        .head = head,
+        .tail = tail,
+        .sender_ip = sender_ip,
+        .sender_port = sender_port,
+    };
+    struct tt_RxRoute* route = &node->rx_routes[(header->source ^ ((uint32_t)handle << 3U)) & (tt_RX_ROUTE_SIZE - 1)];
+    if (route->generation == node->route_generation && route->source == header->source && route->handle == handle) {
+        node->short_routed++;
+        ctx.endpoint_id = route->endpoint_id;
+        ctx.entity_id = route->entity_id;
+        ctx.rxo_checked = true;
+        ctx.proxy_hint = route->proxy;
+        note_manual_assertion(node, header->source, ctx.endpoint_id);
+        deliver_data_to_subscriber(node, (struct tt_Endpoint*)route->sub, &ctx);
+        return !ctx.decode_failed;
+    }
+    const struct tt_HandleEntry* known = handle_directory_find(node, header->source, handle);
+    if (known == NULL) {
+        node->short_unrouted++;
+        request_discovery_list(node, header->source, node->update_generation[header->source], sender_ip, sender_port);
+        return true;
+    }
+    node->short_slow++;
+    ctx.endpoint_id = known->endpoint_id;
+    ctx.entity_id = known->entity_id;
+    ctx.fill = true;
+    note_manual_assertion(node, header->source, ctx.endpoint_id);
+    for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, ctx.endpoint_id, deliver_data_to_subscriber, &ctx);
+    if (ctx.fill_count == 1 && ctx.fill_proxy != NULL) {
+        *route = (struct tt_RxRoute) {node->route_generation, handle,       header->source, ctx.endpoint_id,
+                                      ctx.entity_id,          ctx.fill_sub, ctx.fill_proxy};
+    }
+    return !ctx.decode_failed;
 }
 
 static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
@@ -8551,7 +8785,7 @@ static void accept_reliable_fragment(struct tt_Node* node, struct tt_Subscriber*
     }
     struct tt_ReorderSlot* slot = reorder_writer_slot(sub, ctx->header->source, ctx->entity_id, ctx->seq_no);
     bool recorded = update_reliable_ack(node, sub, ctx->seq_no, ctx->header->source, ctx->entity_id, ctx->sender_ip,
-                                        ctx->sender_port);
+                                        ctx->sender_port, NULL);
     proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);
     if (!recorded || proxy == NULL) {
         reorder_release(sub, slot); // a duplicate after all, or no tracking to order it by
@@ -8720,6 +8954,11 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
     case tt_SUBMESSAGE_TYPE_DATA:
         if (!self_sent) {
             process_data(node, header, buffer, head, body_tail, sender_ip, sender_port);
+        }
+        return true;
+    case tt_SUBMESSAGE_TYPE_DATA_SHORT: // W1 (WIRE_PLAN.md 9.1)
+        if (!self_sent) {
+            process_data_short(node, header, buffer, head, body_tail, sender_ip, sender_port);
         }
         return true;
     case tt_SUBMESSAGE_TYPE_ACKNACK:

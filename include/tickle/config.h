@@ -538,6 +538,20 @@
 // introspection is a best-effort aid, not something correctness depends on. Each entry costs
 // roughly 2 * (tt_MAX_NAME_LENGTH + 1) bytes for its type/name strings alone, so this is
 // deliberately much smaller than tt_MAX_ENDPOINT_COUNT.
+// W1 (rmw_tickle/WIRE_PLAN.md 9.1, branch prototype): the receive route table, direct-mapped on (source,
+// handle) - a cache, never the only record: a miss falls back to the handle directory, which knows every writer
+// an announce has named. And how often a writer sends the long form (today's DATA): for this many samples after
+// each new peer match, then every this-many-th.
+#ifndef tt_RX_ROUTE_SIZE
+#define tt_RX_ROUTE_SIZE 64
+#endif
+#ifndef tt_RX_HANDLE_DIRECTORY
+#define tt_RX_HANDLE_DIRECTORY 64
+#endif
+#ifndef tt_W1_LONG_EVERY
+#define tt_W1_LONG_EVERY 16
+#endif
+
 #ifndef tt_MAX_DISCOVERED_ENTITIES
 #define tt_MAX_DISCOVERED_ENTITIES 16
 #endif
@@ -661,6 +675,7 @@ static_assert(tt_MAX_SAMPLE_LENGTH >= tt_MAX_BUFFER_LENGTH,
 static_assert(!tt_FRAG_ENABLED || tt_MAX_SAMPLE_LENGTH + tt_FRAG_SUBMESSAGE_OVERHEAD <= UINT16_MAX,
               "a fragmented sample is encoded as one submessage first, whose length is a uint16");
 static_assert(tt_FRAG_REASSEMBLY_SLOTS >= 1, "fragmentation needs at least one reassembly slot");
+static_assert((tt_RX_ROUTE_SIZE & (tt_RX_ROUTE_SIZE - 1)) == 0, "tt_RX_ROUTE_SIZE must be a power of two");
 static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
               "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");
 static_assert(tt_MAX_ENDPOINT_COUNT <= (UINT8_MAX + 1), "node ids and endpoint slots are indexed by uint8_t");

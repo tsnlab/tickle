@@ -144,6 +144,28 @@ struct tt_DiscoveryRequest {
     uint64_t sent_ns;
 };
 
+// W1 (rmw_tickle/WIRE_PLAN.md 9.1, branch prototype): one route-table entry. Valid while generation equals
+// tt_Node.route_generation, which moves on anything that could change what (source, handle) routes to.
+struct tt_Subscriber;
+struct tt_WriterProxy;
+struct tt_RxRoute {
+    uint32_t generation;
+    uint16_t handle;
+    uint8_t source;
+    uint32_t endpoint_id;
+    uint32_t entity_id;
+    struct tt_Subscriber* sub;
+    struct tt_WriterProxy* proxy;
+};
+
+// W1: what a writer's handle stands for, as its announce said.
+struct tt_HandleEntry {
+    uint16_t handle;
+    uint8_t source; // tt_NODE_ID_INVALID (0) = unused
+    uint32_t endpoint_id;
+    uint32_t entity_id;
+};
+
 struct tt_Node {
     uint8_t id;
     uint32_t endpoint_count;
@@ -415,6 +437,21 @@ struct tt_Node {
     // that another fragment already completed. Not a loss; counted so it is not mistaken for one.
     uint64_t frag_duplicate;
 #endif
+    // W1 (rmw_tickle/WIRE_PLAN.md 9.1, branch prototype). Receive: the route table - a cache of (source, handle)
+    // -> Subscriber and writer proxy, valid only at the route_generation it was filled at - and the handle
+    // directory behind it, filled from announces. Send: the short form flush_tx() applies to the one DATA
+    // about to go out, armed by the publish that encoded it.
+    uint32_t route_generation;
+    uint16_t next_writer_handle;
+    bool tx_short_armed;
+    uint16_t tx_short_handle;
+    uint32_t tx_short_entity;
+    uint64_t short_sent;
+    uint64_t short_routed;
+    uint64_t short_slow;
+    uint64_t short_unrouted;
+    struct tt_RxRoute rx_routes[tt_RX_ROUTE_SIZE];
+    struct tt_HandleEntry handle_directory[tt_RX_HANDLE_DIRECTORY];
 };
 
 struct tt_Endpoint {
@@ -925,6 +962,8 @@ struct tt_PeerAck {
     // (tt_UpdateEntity.tracking_words), in 64-bit words; 0 = the protocol default.
     // tt_Publisher_unacked_bound() takes the minimum across matched Subscribers.
     uint16_t tracking_words;
+    // W1 (WIRE_PLAN.md 9.1): this reader has ACKNACKed, so it has this writer's mapping - short forms may go.
+    bool w1_acked;
 };
 
 struct tt_Publisher { // extends endpoint
@@ -1174,6 +1213,13 @@ struct tt_Publisher { // extends endpoint
     // liveliness() sending a HEARTBEAT with tt_HEARTBEAT_FLAG_LIVELINESS. That function sends nothing more
     // within a tt_LIVELINESS_LEASE_DIVISOR-th of the lease of this. 0: never.
     uint64_t liveliness_asserted_ns;
+    // W1 (rmw_tickle/WIRE_PLAN.md 9.1, branch prototype): this writer's handle, unique on its node and carried in
+    // its announce entry (tt_UpdateEntity.tracking_words), and when it next sends the long form (today's DATA):
+    // tt_W1_LONG_EVERY samples after each new peer match, then every tt_W1_LONG_EVERY-th. Both count up from 0,
+    // so a zeroed Publisher starts long - the safe side.
+    uint16_t handle;
+    uint8_t w1_since_match;
+    uint8_t w1_since_long;
 };
 
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic Heartbeat announce - see
@@ -1971,6 +2017,8 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node);
 // became a DATA sample of a built-in endpoint (tt_DISCOVERY_ENDPOINT_ID), and UPDATE/UPDATE_PART were
 // retired.
 #define tt_VERSION 10
+// The W1 prototype (rmw_tickle/WIRE_PLAN.md 9.1) - branch only; the bench prints its counters when this is set.
+#define tt_W1_PROTOTYPE 1
 
 struct tt_Header {
     union {
@@ -2014,6 +2062,9 @@ struct tt_SingleHeader {
 // uses the same two types, split differently - see tt_DISCOVERY_ENDPOINT_ID.
 #define tt_SUBMESSAGE_TYPE_FRAG_FIRST 8
 #define tt_SUBMESSAGE_TYPE_FRAG_CONT 9
+// W1 (rmw_tickle/WIRE_PLAN.md 9.1, branch prototype): a DATA routed by its writer's handle - struct
+// tt_ShortDataHeader in place of struct tt_DataHeader. Made at send time from a DATA going alone.
+#define tt_SUBMESSAGE_TYPE_DATA_SHORT 10
 
 struct tt_SubmessageHeader {
     uint8_t type;     // tt_SUBMESSAGE_TYPE_* above
@@ -2135,6 +2186,13 @@ struct tt_UpdateEntity {
     uint16_t name_len;
     char name[];
     */
+} __attribute__((packed));
+
+struct tt_ShortDataHeader {
+    uint16_t handle; // the writer's own (tt_Publisher.handle), unique on its node
+    uint16_t flags;  // 0
+    uint32_t seq_no;
+    uint32_t timestamp;
 } __attribute__((packed));
 
 struct tt_DataHeader {
