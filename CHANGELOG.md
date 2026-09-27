@@ -259,6 +259,11 @@ number, `tt_VERSION`, which moves independently.
 
 ### Changed
 
+- **`tt_Server_send_response()` encodes and sends before it returns** (2026-09-27), on the caller's thread under
+  the node's state lock, as `tt_Publisher_publish()` does; the caller may free the response and everything it
+  points at as soon as it returns. It used to hand the struct to the poll thread. `flush_pending_responses()` and
+  D3's `tt_Node.responses_ready` gate (OPTIMIZATION_PLAN.md 11), which served that handoff, are removed.
+
 - **A node announces a new endpoint at once, and answers a changed announce** (2026-09-26). Creating an
   endpoint used to wait for the next periodic announce, up to `tt_NODE_UPDATE_INTERVAL` (1 s), before any
   remote node heard of it, and a changed announce was answered only on first contact, so a Publisher created
@@ -429,6 +434,15 @@ number, `tt_VERSION`, which moves independently.
   coalescing the same flood into far fewer, larger packets.
 
 ### Fixed
+
+- **A deferred service response no longer carries freed memory** (2026-09-27): `tt_Server_send_response()` copied
+  the response struct shallowly and the poll thread encoded it later. rmw_tickle's response structs alias the ROS
+  response, which rclcpp frees as soon as `rmw_send_response()` returns, so every string longer than
+  `std::string`'s inline 15 bytes arrived as garbage - `ros2 service call .../list_parameters` on any default node.
+  The response is now encoded and sent before the call returns.
+- **An rmw_tickle service no longer dies after ~121 calls in 5 s** (2026-09-27): answering a deferred request left
+  its 5 s slot timeout armed, the scheduler filled, the next request could not be deferred, and rclcpp terminated
+  the server ("Cannot schedule pending_response_timeout"). The answered slot's timeout is disarmed.
 
 - A Publisher or Client created after a matching remote endpoint had been announced never learned it,
   and a Publisher without peers broadcasts every sample: `process_announce()` skips the periodic resend of
