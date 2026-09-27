@@ -933,3 +933,47 @@ W1 minus base, ns per sample, mean +- SE:
   startup-race delivery loss that needs a fallback on the send path (9.1 finding).
 - A new form of W1 would be a new proposal, pre-registered on its own. It would have to explain the handler cost
   first.
+
+### 9.3 W5's ceiling, estimated before any code (2026-09-27): about 3% of join bytes on a real ROS 2 graph - recommended dropped
+
+**What W5 would save.** A type name already written earlier in the same list would be replaced by a 2-byte
+reference. Per repeat, that saves the string's own `2 + len + 1` bytes, less the 2 of the reference. An entity
+entry is `28 + (2 + type + 1) + (2 + name + 1)` bytes with no padding (`tt_encode_string()`). A list datagram
+carries ~24 B of preamble (single header, DataHeader, announce header).
+
+**Where the formats come from.** A real list was captured from `pong_node` in a private netns. It is 156 B: the
+preamble plus two entities with `type = "rmw_perf_pingpong/msg/Bench"`, `name = "/pong"` and `"/ping"`.
+
+**The default ROS 2 node was computed, not captured.** `ros2 topic pub` could not start under rmw_tickle in this
+install: "no rmw_tickle typesupport" for rosout's `rcl_interfaces/msg/Log`. Its entities are rclcpp's defaults:
+- `/rosout`;
+- `/parameter_events`, published and subscribed;
+- the six parameter services and `get_type_description`;
+- one application topic.
+
+| list | entities | list bytes | repeated types | saving | of the list |
+|---|---:|---:|---:|---:|---:|
+| native campaign, throughput client | 1 | 73 | 0 | 0 B | 0% |
+| native campaign, latency node (ping + pong) | 2 | 120 | 1 | 11 B | 9.2% |
+| rmw pingpong node (captured) | 2 | 156 | 1 | 28 B | 17.9% |
+| default rclcpp node + 1 app topic | 11 | 998 | 1 (`ParameterEvent`) | 34 B | 3.4% |
+| default rclcpp node + 4 app topics of one type | 14 | 1,241 | 4 | 118 B | 9.5% |
+| synthetic M1/M3 tool, E = 4 | 4 | 300 | 3 | 33 B | 11.0% |
+| synthetic M1/M3 tool, E = 32 | 32 | 2,232 | 31 | 341 B | 15.3% |
+
+**How it reads.**
+- **Join bytes are more than the list.** A join is a summary (~75 B on the wire), a request, and the list plus its
+  42 B of Ethernet/IP/UDP headers. That puts the default ROS 2 node at about **2.9% of join bytes** (34 of
+  ~1,185), and the rmw pingpong node at ~8% of ~345 B.
+- **In absolute terms, W5 saves tens of bytes once per join or change.** Since v8 no list is sent in steady state,
+  so M2 cannot move.
+- **M3 join time cannot move measurably.** Even 341 B at link speed is under 3 us, against M3's 1.8 ms median.
+- **No list changes its datagram count.** The 2,232-B list needs two parts before and after (1,891 B).
+- **The 15% is the synthetic tool's own shape.** It gives every endpoint the same 10-character type, so a type
+  repeats E - 1 times. Real graphs repeat a type rarely: `ParameterEvent` for its publisher and subscription, and
+  application topics that share a message type.
+
+**Recommendation: drop W5.** Its ceiling on real graphs is about 3% of join bytes, tens of bytes per join, with no
+effect on packet count or join time. Building it would add a second string form to the discovery decoder, which
+every node runs, to save that. This follows the rule Plan set for it: a ceiling under a few % is dropped, not
+built.
