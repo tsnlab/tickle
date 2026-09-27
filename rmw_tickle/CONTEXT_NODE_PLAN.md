@@ -251,13 +251,16 @@ standard deployment.
   - Receivers key writer proxies, durable records and tombstones on them, and rmw builds GIDs from them.
   - Taking 8 bits would cut the launch randomness to 24 bits and change the identity of every entity. Too wide a
     change for a 0-byte gain the spare bits already give.
-- **The test at the limit.** Two contexts in two private netns:
-  - one hosting 256 nodes (`tt_MAX_NODES` 256), each owning one endpoint, publishers and subscribers alternating.
-    256 endpoints is `tt_MAX_ENDPOINT_COUNT`'s own ceiling (an endpoint slot is a `uint8_t`), so one each is the
-    most a context can hold. The announce, 512 entries, goes out fragmented.
-  - the other, built with `tt_MAX_DISCOVERED_ENTITIES` of at least 512, must list all 256 nodes by name and
-    namespace, each with its own endpoint and no other's.
-  - A mutant that drops the `kind` half (indices mod 16) must fail it.
+- **The tests at the limit** (amended 2026-09-27, after 4a lifted the endpoint ceiling, which a `uint8_t` never set).
+  Two contexts, the second built with rmw_tickle's capacities:
+  - **realistic:** 20 nodes x 12 endpoints (240, a composed bringup's shape). The second context lists all 20 nodes,
+    by name and namespace, each with its own 12 endpoints and no other's.
+  - **index width:** 256 nodes (`tt_MAX_NODES` 256) of 2 endpoints each, which is 512 endpoints plus 256 node entries
+    in the announce. Every node is listed, and every endpoint is attributed to its own node.
+  - A mutant that drops the `kind` half (indices mod 16) must fail the second; it cannot fail the first, which
+    stays under 16 nodes.
+  - Acceptance: Plan's `rmw_gap_acceptance.sh` graph test (`ros2 node list/info`, `ros2 param` across processes),
+    which fails on rmw_tickle today and must pass.
 
 **Stage 3 PASS, in the user's rule's terms:**
 - **Function, two processes in two private netns (`ros2 node list`, `ros2 node info /talker`, `ros2 param list
