@@ -893,6 +893,11 @@ what they return `RMW_RET_UNSUPPORTED` on).
   - Data delivery with compatible QoS and the choice of unicast peers do not read it.
   - 4a sets rmw's capacity to 2048. Core keeps 16 for FreeRTOS memory (552 B per entry), with the overflow now
     counted and warned about.
+  - **4a's fix costs time per sample in large graphs until 4b.** Every received DATA looks its publisher up in the
+    table by a linear scan (RxO check). In a full 2048-entry table that costs up to 1.2 us per sample when the
+    publisher's entry sits late, against 8.9 ns at 16 (`experiments/discovery_lookup_cost.c`). The graphs
+    benchmarked here are small, so their entries sit at the front and none of the measured rows show it. 4b, a
+    (context id, endpoint id) hash index, makes the lookup independent of the table's size.
 
 **Where TickLE matches a vendor's "not supported" (➖):** pre-allocation (all three), `rmw_get_serialized_message_size`
 (all three), and content filters, network flow endpoints and dynamic messages (as CycloneDDS; FastDDS supports them).
