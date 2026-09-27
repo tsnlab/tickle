@@ -656,3 +656,98 @@ Server CPU is held in both cells.
   2. the BEST_EFFORT join cases are measured with the Nth-sample long form against today, on the M-type join tests
      at 0 and 5% loss.
 - Order if approved: the bench prototype of the lookup first (PC, an hour). Pre-register it here before code.
+
+### 9.1 W1 pre-registered (2026-09-27, before code)
+
+**Why now.** The user's decision 2 held W1 until v10's reliable-sender question was closed. 8.8 closed it: the
+client's +40 ns is not on the send path, and the core alone shows no rise. Plan asked for W1 in the order of the
+recommendation above: the bench first, then the join cases, then the rig.
+
+**The prototype, on a branch (`w1-writer-handle`). No main, and no `tt_VERSION` bump until Plan has read the
+bench.**
+- **Writer handle.** Each local Publisher gets a 16-bit handle when it is created, unique on its node.
+- **Long form:** today's DATA header (`endpoint_id`, `seq_no`, `timestamp`, `entity_id`) plus the handle and 2 B of
+  padding, 20 B, as a new submessage type. It routes as today.
+- **Short form:** the handle, 2 B of flags (zero), `seq_no` and `timestamp`, 12 B. It saves 4 B per DATA against
+  today's 16. FRAG_FIRST is out of the prototype: p1 does not fragment, and the bench runs p1.
+- **Receiver route table.**
+  - One per node: `tt_RX_ROUTE_SIZE` (64) entries, direct-mapped on (source, handle).
+  - Each entry keeps a tag, the Subscriber, the writer proxy, `endpoint_id`, `entity_id`, and the node's
+    `route_generation` when the entry was filled.
+  - A long form routes as today and fills the entry, but only when exactly one local Subscriber takes it and it
+    passed RxO.
+  - A short form is one lookup, one tag compare and one generation compare, then the same delivery code as today
+    (ordering, reliable tracking, reorder), handed the cached proxy.
+- **What moves the generation:** an endpoint created or destroyed, a discovered entity added, changed or removed,
+  and a writer proxy claimed or reclaimed. Those are the only events that can change which Subscriber, proxy or
+  RxO verdict a (source, handle) means. An announce that changes nothing does not move it.
+- **A short form that misses** (no entry, wrong tag, stale generation, or several local Subscribers) is dropped
+  and counted (`short_unrouted`), and the node asks the source for its writer list. That request exists since v8.
+- **When the writer sends which form:**
+  - **RELIABLE:** long to a reader until that reader's first ACKNACK (`tt_PeerAck` has the state). A
+    retransmission always goes long.
+  - **BEST_EFFORT:** long for 16 samples after each new peer match, and every 16th sample after that. That
+    averages 0.25 B per sample back.
+
+**Step 1 - the bench (PC, `core_cost_bench.c`, `core_cost_ab.sh` paired rounds, 20 rounds x 300000 samples).**
+- **Arms:** `main` at the branch point against the branch.
+- **Cases**, ns per received sample, plus send per sample:
+
+  | case | bench flags |
+  |---|---|
+  | 1 writer | `-w 1` |
+  | 1 writer, discovery on | `-w 1 -D` |
+  | 8 writers | `-w 8` |
+  | 8 writers, discovery on | `-w 8 -D` |
+  | 32 writers | `-w 32` (build below) |
+  | 32 writers, discovery on | `-w 32 -D` (build below) |
+  | RELIABLE, 1 writer | `-R` |
+  | RELIABLE client loop | `-c -R` |
+
+- **The 32-writer cases.** Both arms are built with `-Dtt_MAX_PEER_COUNT=32 -Dtt_MAX_DISCOVERED_ENTITIES=64
+  -DBENCH_MAX_WRITERS=32`, because today's defaults (8 proxies, 16 discovered entities) cannot hold 32 writers.
+  `core_cost_ab.sh` gains `BENCH_CFLAGS` for this, applied to both arms alike.
+- **PASS** needs all three:
+  1. **Recv not WORSE at 1 writer, with or without discovery.** That is the case D2 lost (+2.35 +- 0.19 ns,
+     OPTIMIZATION_PLAN 11.3). WORSE means beyond 2 x SE.
+  2. No other case WORSE, recv or send. The writer's long/short choice is send-side work.
+  3. The short form's bytes: each DATA 4 B smaller in the capture.
+- **What each outcome means:**
+  - Better at 8 and 32 writers, or with discovery on, and not WORSE at 1: the hypothesis holds. On to step 2.
+  - Nothing better, nothing WORSE: W1 is bytes only, as section 5 predicts. Plan decides whether -2.7% of p1 bytes
+    is worth the second form and the table.
+  - WORSE anywhere: FAIL. Reverted, and recorded like D2.
+- **Unit tests on the branch, before the bench is read.** Each is shown to fail against a mutant that skips the
+  check it pins:
+  - a stale generation never routes;
+  - a tag mismatch never routes;
+  - a short form with no route is dropped and counted, never delivered to the wrong Subscriber;
+  - two local Subscribers of one topic both still receive every sample;
+  - a RELIABLE reader that missed the mapping NACKs, and gets the sample back in the long form.
+
+**Step 2 - the BEST_EFFORT join cases (only after step 1 passes).**
+- **A late joiner:**
+  - a BE reader created while a writer is already publishing, at 10 Hz and at maximum rate, at 0% and 5% loss;
+  - the metric is the time from the reader's creation to its first delivered sample, W1 against the branch point.
+- **The unknown reader:**
+  - the same, with the reader's first announce dropped, so the writer does not know it;
+  - the reader lives on the every-16th long form or on its list request, whichever comes first;
+  - this is the case section 9 names as W1's hard one.
+- **PASS:** the first-sample time is not WORSE beyond 2 x SE in either case, at either loss.
+  - If the unknown-reader case is WORSE by the list round trip, that is W1's price, and it is stated, not waved
+    away.
+  - Plan decides with the number in hand.
+- PC first, in a private netns with `tc netem` loss. Then the M-type rig cells.
+
+**Step 3 - bytes (deterministic).**
+- p1's `wire_bytes_per_sample` falls by 4 B per DATA, less the long forms' share. For BE after the first 16
+  samples, that is 4 x 15/16 = 3.75 B.
+- It must show in the rig rows exactly as computed; an SE of 0 makes any other value a finding.
+
+**The rig run (only after steps 1-2 pass, and with Plan's reading of the bench).**
+- The campaign cells A B B A, W1 against its parent, read by 8.3:
+  - a pooled WORSE is a candidate;
+  - it is confirmed only by the same sign in every cell of its kind;
+  - a confirmed WORSE on any row fails W1.
+- The rows W1 is for: bytes at p1-p4, and receive CPU at the 8-writer cells if step 1 shows it.
+- Every other row must be held or better.
