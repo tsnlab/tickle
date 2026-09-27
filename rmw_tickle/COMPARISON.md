@@ -885,6 +885,23 @@ what they return `RMW_RET_UNSUPPORTED` on).
 **Where TickLE matches a vendor's "not supported" (➖):** pre-allocation (all three), `rmw_get_serialized_message_size`
 (all three), and content filters, network flow endpoints and dynamic messages (as CycloneDDS; FastDDS supports them).
 
+**Behaviour behind the API, checked 2026-09-27 (Plan):**
+
+| Feature | TickLE | FastDDS | CycloneDDS | How it was checked |
+|---|:-:|:-:|:-:|---|
+| Actions (rclcpp_action: goal, feedback, result, cancel) | ✅ | ✅ | ✅ | `check_ros2_interfaces.sh -A` in CI on every push: example_interfaces Fibonacci server and client in two processes, with a control that must fail without TickLE typesupport |
+| `ROS_DOMAIN_ID` isolation | ✅ | ✅ | ✅ | well-known port 8282 + domain (`rmw_init.c`) |
+| `ROS_AUTOMATIC_DISCOVERY_RANGE` (LOCALHOST / OFF / SUBNET) | ❌ | ✅ | ✅ | `rmw_tickle` never reads `rmw_init_options_t.discovery_options`; the vendors map it to their transports |
+| `ROS_STATIC_PEERS` | ❌ | ✅ | ✅ | same: `discovery_options.static_peers` is ignored |
+| SROS2 security (`ROS_SECURITY_ENABLE`, `ROS_SECURITY_ENFORCEMENT`) | ❌ | ✅ | ✅ | `rmw_tickle` never reads `security_options`. **With `ROS_SECURITY_ENFORCEMENT=Enforce` it starts anyway, unsecured and without a word.** A vendor refuses to start without its keystore |
+
+- The two discovery options are planned as (g6). LOCALHOST keeps discovery and data on loopback, OFF sends no
+  discovery, and static peers get the discovery summary by unicast.
+- **Security:** the immediate fix is to refuse to start when enforcement is requested, since TickLE cannot honour it
+  yet. Silently running unsecured where the user demanded security is the one outcome worse than failing. Real
+  SROS2 support (authentication, encryption, access control) has no counterpart in TickLE today and is a design
+  decision for the user.
+
 <details><summary>All 94 functions</summary>
 
 | Function | TickLE | FastDDS | CycloneDDS | Note |
