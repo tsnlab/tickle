@@ -905,7 +905,7 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | `ROS_DOMAIN_ID` isolation | ✅ | ✅ | ✅ | well-known port 8282 + domain (`rmw_init.c`) |
 | `ROS_AUTOMATIC_DISCOVERY_RANGE` (LOCALHOST / OFF / SUBNET) | ❌ | ✅ | ✅ | `rmw_tickle` never reads `rmw_init_options_t.discovery_options`; the vendors map it to their transports |
 | `ROS_STATIC_PEERS` | ❌ | ✅ | ✅ | same: `discovery_options.static_peers` is ignored |
-| SROS2 security (`ROS_SECURITY_ENABLE`, `ROS_SECURITY_ENFORCEMENT`) | ❌ | ✅ | ✅ | `rmw_tickle` never reads `security_options`. **With `ROS_SECURITY_ENFORCEMENT=Enforce` it starts anyway, unsecured and without a word.** A vendor refuses to start without its keystore |
+| SROS2 security (`ROS_SECURITY_ENABLE`, `ROS_SECURITY_ENFORCEMENT`) | ❌ | ✅ | ✅ | Not implemented, but no longer silent (g7, 2026-09-27). With `ROS_SECURITY_ENFORCEMENT=Enforce`, `rmw_init` refuses to start; with security enabled but permissive, it starts and warns once that security is not applied (`test_security_options`). It used to start unsecured without a word. Real SROS2 support is parked (SECURITY_PLAN.md) |
 
 - The two discovery options are planned as (g6). LOCALHOST keeps discovery and data on loopback, OFF sends no
   discovery, and static peers get the discovery summary by unicast.

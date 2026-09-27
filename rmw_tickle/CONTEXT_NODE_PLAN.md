@@ -435,7 +435,9 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
      `ROS_AUTOMATIC_DISCOVERY_RANGE` (LOCALHOST / OFF / SUBNET) and `ROS_STATIC_PEERS` have no effect. Planned
      behaviour: LOCALHOST keeps discovery and data on loopback; OFF sends no discovery; static peers get the summary
      by unicast. Pre-registered with CycloneDDS's behaviour per setting as the control.
-   - **(g7) Refuse enforced security** (Plan: small, ahead of stage 3 if it fits): rmw_tickle never reads
+   - **(g7) Refuse enforced security** - **done 2026-09-27**: `rmw_init` refuses Enforce and warns once when security
+     is enabled but permissive; `test_security_options` checks the default, both Enforce cases and the one-time
+     notice, and a mutant ignoring Enforce fails it. (Plan: small, ahead of stage 3 if it fits): rmw_tickle never reads
      `security_options`, so with `ROS_SECURITY_ENFORCEMENT=Enforce` it starts unsecured, silently.
      - With `enforce_security == RMW_SECURITY_ENFORCEMENT_ENFORCE`, it must fail with a clear error, where the vendors
        refuse.

@@ -180,6 +180,25 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
         RMW_SET_ERROR_MSG("context has already been initialized");
         return RMW_RET_INVALID_ARGUMENT;
     }
+    // (g7, CONTEXT_NODE_PLAN.md roadmap, 2026-09-27) rmw_tickle implements no ROS 2 security: nothing is
+    // authenticated, access-controlled or encrypted. It used to ignore security_options, so with
+    // ROS_SECURITY_ENFORCEMENT=Enforce it started unsecured without a word. Enforce now refuses to start, as the
+    // DDS vendors refuse when they cannot apply security; security enabled but permissive starts, and says once
+    // that it is not applied.
+    if (RMW_SECURITY_ENFORCEMENT_ENFORCE == options->security_options.enforce_security) {
+        RMW_SET_ERROR_MSG("rmw_tickle does not implement ROS 2 security (SROS2), and ROS_SECURITY_ENFORCEMENT=Enforce "
+                          "requires it - refusing to start unsecured");
+        return RMW_RET_ERROR;
+    }
+    if (NULL != options->security_options.security_root_path) {
+        static atomic_bool security_notice_logged = false;
+        if (!atomic_exchange(&security_notice_logged, true)) {
+            RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                                   "ROS 2 security is enabled (keystore %s) but rmw_tickle does not implement it: "
+                                   "this process runs unauthenticated and unencrypted",
+                                   options->security_options.security_root_path);
+        }
+    }
     // ROS_DOMAIN_ID (2026-09-27, DDS parity): each domain listens on its own well-known port, _tt_CONTEXT_PORT +
     // the domain id, so two domains on one network never discover each other - as DDS keeps domains apart
     // by port. Until then every rmw_tickle on a network was in one domain, and a PC's unit tests (domain 0)
