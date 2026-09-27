@@ -474,6 +474,17 @@ number, `tt_VERSION`, which moves independently.
     budget back at once.
   An explicit `call_retry_interval` is used as given, as before. `test_call_retry_adaptive` checks each rule with a
   simulated server; the old code fails 7 of its checks.
+- **Submessage padding carried stale bytes onto the wire - a confidentiality fix** (2026-09-27). `end_encode()` pads
+  every submessage to 4 bytes and counts the padding in its length, so it is sent; it was never written, and held
+  whatever an earlier datagram had left in `tx_buffer` at that offset - up to 3 bytes per submessage, possibly of a
+  datagram addressed to a different peer, sent to a receiver it was not meant for. It is now zeroed.
+  - It also made a payload end in arbitrary bytes. Generated TickLE codecs (core's and rmw_tickle's, both from
+    `tools/typesupport`) read strings through their length prefix and never read the tail, so they, and rmw
+    services and topics, were not affected (`test_encode_padding` decodes a generated message with stale and with
+    zeroed padding). A hand-written codec that expects its payload to end where its data does - as
+    `test_thread_safety`'s did, a string with its terminator last - failed on every retry of a call whose padding
+    held a non-zero byte: the cached response is resent unchanged, so the client never completed the call. That
+    was the 1-2% of `test_thread_safety` runs that failed or hung.
 
 - **A deferred service response no longer carries freed memory** (2026-09-27): `tt_Server_send_response()` copied
   the response struct shallowly and the poll thread encoded it later. rmw_tickle's response structs alias the ROS

@@ -818,6 +818,14 @@ static bool end_encode(struct tt_Context* node, struct tt_SubmessageHeader* subm
         limit = tt_MAX_BUFFER_LENGTH;
     }
 
+    // The padding goes on the wire, counted in the submessage's length, so it is zeroed: it used to carry whatever an
+    // earlier datagram had left in tx_buffer there (2026-09-27). A receiver then saw a payload ending in stale bytes -
+    // test_thread_safety's response codec, which requires its string's terminator last, failed every retry of a call
+    // whose padding held one, and the client never completed it - and the bytes of an earlier datagram left the host.
+    for (size_t i = 0; i < roundup; i++) {
+        node->tx_buffer[node->tx_tail + i] = 0;
+    }
+
     if (node->tx_tail + roundup <= limit) { // tail in below the buffer
         submessage_header->length = length + roundup;
         node->tx_tail += roundup;
