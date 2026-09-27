@@ -202,9 +202,8 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     // Same tt_Context_interrupt()-then-lock pattern rmw_create_publisher()/_subscription() already
     // established - see rmw_tickle.h's own rmw_tickle_context_impl_t doc comment.
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret_t ret =
-        tt_Context_create_client(&node_impl->context_impl->tickle_context, &client_impl->tickle_client,
-                                 &client_impl->service, client_impl->rmw_client.service_name, client_callback);
+    tt_ret_t ret = tt_Node_create_client(node_impl->core_node, &client_impl->tickle_client, &client_impl->service,
+                                         client_impl->rmw_client.service_name, client_callback);
     if (ret == tt_RET_OK) {
         // After create, under the same lock - see the matching block in rmw_service.c.
         ret = tt_Client_set_storage(&client_impl->tickle_client, client_impl->request_cache, request_cache_bytes);

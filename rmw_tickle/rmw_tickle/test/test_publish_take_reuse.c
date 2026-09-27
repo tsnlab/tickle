@@ -186,6 +186,13 @@ int main(void) {
     rmw_subscription_t* sub = rmw_create_subscription(node, type_support, "reuse_topic", &sub_qos, &sub_opts);
     assert(NULL != sub);
     rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)sub->data;
+    // Both are created on this node's core node, and the context has no default node (CONTEXT_NODE_PLAN.md stage 2).
+    rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
+    assert(tt_Endpoint_node(&node_impl->context_impl->tickle_context,
+                            &((rmw_tickle_publisher_t*)pub->data)->tickle_publisher.endpoint) == node_impl->core_node);
+    assert(tt_Endpoint_node(&node_impl->context_impl->tickle_context, &sub_impl->tickle_subscriber.endpoint) ==
+           node_impl->core_node);
+    assert(NULL == node_impl->context_impl->tickle_context.default_node.context);
 
     char* previous = NULL;
     for (int i = 0; i < 5; i++) {

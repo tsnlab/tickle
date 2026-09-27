@@ -246,8 +246,8 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
     }
 
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret_t ret = tt_Context_create_server(&node_impl->context_impl->tickle_context, &svc->tickle_server,
-                                            &svc->service, svc->rmw_service.service_name, server_callback);
+    tt_ret_t ret = tt_Node_create_server(node_impl->core_node, &svc->tickle_server, &svc->service,
+                                         svc->rmw_service.service_name, server_callback);
     if (ret == tt_RET_OK) {
         // After create, which resets the server to its inline storage, and under the same lock, so
         // the poll thread cannot hand it a request in between.

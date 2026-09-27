@@ -540,9 +540,8 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     }
 
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret_t ret =
-        tt_Context_create_subscriber(&node_impl->context_impl->tickle_context, &sub_impl->tickle_subscriber,
-                                     &sub_impl->topic, sub_impl->rmw_subscription.topic_name, subscriber_callback);
+    tt_ret_t ret = tt_Node_create_subscriber(node_impl->core_node, &sub_impl->tickle_subscriber, &sub_impl->topic,
+                                             sub_impl->rmw_subscription.topic_name, subscriber_callback);
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
     if (ret != tt_RET_OK) {
         RMW_SET_ERROR_MSG("tt_Context_create_subscriber() failed");

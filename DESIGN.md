@@ -837,6 +837,37 @@ scheduler work, drain whatever RX is already waiting, return) rather than a no-o
 what it's for (cutting broadcast traffic when a topic has one or two subscribers) but is not a
 full-MTU throughput optimization - at line rate broadcast is still the faster choice.
 
+## Contexts and nodes (CONTEXT_NODE_PLAN.md stage 2)
+
+The core's pieces are named after rmw's:
+
+- **A context** (`struct tt_Context`) owns the transport: its sockets, scheduler, poll loop, liveliness and discovery.
+  Its id is the wire's `source`.
+- **A node** (`struct tt_Node`) is a name, a namespace and an index within its context, and owns endpoints. Every
+  endpoint belongs to exactly one node, whose index it records (`tt_Endpoint.node_index`, in the padding after
+  `kind`, so no endpoint struct changes layout; `tt_Endpoint_node()` finds the node).
+- A context hosts up to `tt_MAX_NODES` (16) nodes. Stage 3 carries a node's index in 4 bits of an announce entry,
+  which is what bounds it.
+
+**The default node.**
+- Index 0 is kept for the context's default node. The `tt_Context_create_*()` shorthands create their endpoints on
+  it, so code written for one node per context keeps its shape.
+- It comes into being on the first shorthand call, or on `tt_Context_default_node()`, and is named
+  `tickle_<context id>` in `/`. The name is unique per context: a shared one would appear once per process in
+  `ros2 node list`.
+- A context that creates every endpoint on its own nodes, as rmw_tickle's does, never has a default node. Stage 3
+  therefore has no empty phantom to leave out of the graph.
+
+**Lifetime.**
+- `tt_Node_create()` keeps the caller's name and namespace pointers, as endpoints keep theirs.
+- `tt_Node_destroy()` refuses while an endpoint still lives on the node. The endpoint would otherwise point at a
+  node that is gone.
+- rmw_tickle allocates each node's `tt_Node` apart from the rest of the node. If rcl destroys a node before its
+  entities, the core node is kept rather than freed under them.
+
+**On the wire.** Nothing about nodes is on the wire yet: the announce is byte-identical to stage 1's for the same
+endpoints (`experiments/announce_bytes.c`). Stage 3 adds node entries.
+
 ## The library never allocates; the caller owns every buffer
 
 `src/` contains no `malloc()`, `calloc()`, `realloc()` or `free()` on any path, and that is a

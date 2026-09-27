@@ -350,6 +350,12 @@ struct rmw_tickle_node_t {
     rmw_node_t rmw_node; // RMW node structure (must be first)
     rmw_tickle_context_impl_t* context_impl;
     rcutils_allocator_t allocator;
+    // This node as a core node (CONTEXT_NODE_PLAN.md stage 2): created with tt_Node_create() on the shared
+    // tickle_context, named and namespaced by rmw_node's own strings, and every endpoint of this node is created on
+    // it - so the context never has a default node. Allocated apart from this struct: if rmw_destroy_node() is
+    // called while an endpoint still lives on it, core refuses to destroy it, and it is left allocated (with the
+    // name strings it points at) rather than freed under that endpoint.
+    struct tt_Node* core_node;
 };
 
 // rmw_graph.c's own count_matching()'s core scan, without taking the node lock, for QoS roadmap #3

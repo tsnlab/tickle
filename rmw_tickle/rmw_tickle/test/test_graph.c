@@ -202,9 +202,12 @@ int main(void) {
     // tickle_context is otherwise only ever touched by this node's own background poll thread.
     struct tt_Publisher pub;
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret_t tt_ret = tt_Context_create_publisher(&node_impl->context_impl->tickle_context, &pub, &topic, topic_name);
+    tt_ret_t tt_ret = tt_Node_create_publisher(node_impl->core_node, &pub, &topic, topic_name);
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
     assert(tt_RET_OK == tt_ret);
+    // Created on this rmw node's core node, not on a default node (CONTEXT_NODE_PLAN.md stage 2).
+    assert(tt_Endpoint_node(&node_impl->context_impl->tickle_context, &pub.endpoint) == node_impl->core_node);
+    assert(NULL == node_impl->context_impl->tickle_context.default_node.context);
 
     assert(RMW_RET_OK == rmw_count_publishers(node, topic_name, &count));
     assert(1U == count);
@@ -213,8 +216,7 @@ int main(void) {
 
     struct tt_Subscriber sub;
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret = tt_Context_create_subscriber(&node_impl->context_impl->tickle_context, &sub, &topic, topic_name,
-                                          fake_subscriber_callback);
+    tt_ret = tt_Node_create_subscriber(node_impl->core_node, &sub, &topic, topic_name, fake_subscriber_callback);
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
     assert(tt_RET_OK == tt_ret);
 
@@ -251,8 +253,7 @@ int main(void) {
 
     struct tt_Client client;
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret = tt_Context_create_client(&node_impl->context_impl->tickle_context, &client, &service, service_name,
-                                      fake_client_callback);
+    tt_ret = tt_Node_create_client(node_impl->core_node, &client, &service, service_name, fake_client_callback);
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
     assert(tt_RET_OK == tt_ret);
 
@@ -263,8 +264,7 @@ int main(void) {
 
     struct tt_Server server;
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret = tt_Context_create_server(&node_impl->context_impl->tickle_context, &server, &service, service_name,
-                                      fake_server_callback);
+    tt_ret = tt_Node_create_server(node_impl->core_node, &server, &service, service_name, fake_server_callback);
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
     assert(tt_RET_OK == tt_ret);
 

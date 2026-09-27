@@ -36,6 +36,7 @@
 
 #include "rcutils/allocator.h" // rcutils_allocator_t
 #include "rcutils/error_handling.h"
+#include "rcutils/logging_macros.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
 #include "rmw/init.h"      // rmw_context_t
@@ -508,6 +509,36 @@ static void unregister_node(rmw_tickle_context_impl_t* context_impl, rmw_tickle_
     }
 }
 
+// Starts the shared context if this is its first node, creates the node's core node on it, and registers the node -
+// under registry_mutex, undoing whichever of those already happened when a later one fails. False with the rmw error
+// set on failure.
+static bool join_shared_context(rmw_tickle_context_impl_t* context_impl, rmw_tickle_node_t* node_impl) {
+    pthread_mutex_lock(&context_impl->registry_mutex);
+    bool first = atomic_load(&context_impl->node_count) == 0;
+    if (first && start_shared_tickle_node(context_impl) != RMW_RET_OK) {
+        pthread_mutex_unlock(&context_impl->registry_mutex);
+        return false;
+    }
+    // The core node, on the shared context (CONTEXT_NODE_PLAN.md stage 2). tt_RET_OUT_OF_BUFFER when the context
+    // already hosts tt_MAX_NODES - 1 nodes (index 0 is the default node's, which rmw never uses).
+    bool joined = false;
+    if (tt_Node_create(&context_impl->tickle_context, node_impl->core_node, node_impl->rmw_node.name,
+                       node_impl->rmw_node.namespace_) != tt_RET_OK) {
+        RMW_SET_ERROR_MSG("tt_Node_create() failed - more than tt_MAX_NODES - 1 nodes in one context?");
+    } else if (!register_node(context_impl, node_impl)) {
+        // Only reachable failure here is the allocator failing to grow nodes[].
+        (void)tt_Node_destroy(node_impl->core_node);
+    } else {
+        joined = true;
+    }
+    // A first node that did not join leaves no fully-started shared context with zero registered owners.
+    if (!joined && first) {
+        stop_shared_tickle_node(context_impl);
+    }
+    pthread_mutex_unlock(&context_impl->registry_mutex);
+    return joined;
+}
+
 rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char* node_namespace) {
     if (NULL == context) {
         RMW_SET_ERROR_MSG("context is null");
@@ -574,9 +605,14 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char
         RMW_SET_ERROR_MSG("failed to allocate node name/namespace");
         goto fail;
     }
+    node_impl->core_node = (struct tt_Node*)allocator->zero_allocate(1, sizeof(struct tt_Node), allocator->state);
+    if (NULL == node_impl->core_node) {
+        RMW_SET_ERROR_MSG("failed to allocate the core node");
+        goto fail;
+    }
 
     // Milestone 34 - registry_mutex guards node_count/nodes[] (and gates the real tt_Context_create()
-    // et al. below) for however many rmw_create_node() calls race against each other or against
+    // et al., in join_shared_context()) for however many rmw_create_node() calls race against each other or against
     // rmw_destroy_node() on a sibling node.
     //
     // Deliberately no (name, namespace) duplicate check here, despite this package's own general
@@ -589,29 +625,16 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char
     // its second node with the exact same name/namespace as the first, and every one of that
     // fixture's 15 TEST_F()s failed once that got rejected, not just the one Milestone 34 set out
     // to unblock).
-    pthread_mutex_lock(&context_impl->registry_mutex);
-    if (atomic_load(&context_impl->node_count) == 0) {
-        rmw_ret_t ret = start_shared_tickle_node(context_impl);
-        if (ret != RMW_RET_OK) {
-            pthread_mutex_unlock(&context_impl->registry_mutex);
-            goto fail;
-        }
-    }
-    if (!register_node(context_impl, node_impl)) {
-        // Only reachable failure here is the allocator failing to grow nodes[] - if this was also
-        // the very first node, undo the tt_Context_create() et al. just done above rather than
-        // leaving a fully-started shared node with zero registered owners.
-        if (atomic_load(&context_impl->node_count) == 0) {
-            stop_shared_tickle_node(context_impl);
-        }
-        pthread_mutex_unlock(&context_impl->registry_mutex);
+    if (!join_shared_context(context_impl, node_impl)) {
         goto fail;
     }
-    pthread_mutex_unlock(&context_impl->registry_mutex);
 
     return &node_impl->rmw_node;
 
 fail:
+    if (node_impl->core_node != NULL) {
+        allocator->deallocate(node_impl->core_node, allocator->state);
+    }
     if (node_impl->rmw_node.name != NULL) {
         allocator->deallocate((char*)node_impl->rmw_node.name, allocator->state);
     }
@@ -637,14 +660,25 @@ rmw_ret_t rmw_destroy_node(rmw_node_t* node) {
     // sharing it is gone (node_count back to 0), not unconditionally the way a single, always-
     // exactly-one node's own rmw_destroy_node() used to.
     pthread_mutex_lock(&context_impl->registry_mutex);
+    // Core refuses while an endpoint still lives on the node (CONTEXT_NODE_PLAN.md stage 2): one destroyed after
+    // its node, or never. The core node and the name strings it points at are then left allocated, not freed
+    // under that endpoint; the rest of the node goes as usual.
+    bool core_node_destroyed = tt_Node_destroy(node_impl->core_node) == tt_RET_OK;
+    if (!core_node_destroyed) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle", "node '%s' destroyed while it still has entities; its core node is kept",
+                               node_impl->rmw_node.name);
+    }
     unregister_node(context_impl, node_impl);
     if (atomic_load(&context_impl->node_count) == 0) {
         stop_shared_tickle_node(context_impl);
     }
     pthread_mutex_unlock(&context_impl->registry_mutex);
 
-    allocator.deallocate((char*)node_impl->rmw_node.name, allocator.state);
-    allocator.deallocate((char*)node_impl->rmw_node.namespace_, allocator.state);
+    if (core_node_destroyed) {
+        allocator.deallocate(node_impl->core_node, allocator.state);
+        allocator.deallocate((char*)node_impl->rmw_node.name, allocator.state);
+        allocator.deallocate((char*)node_impl->rmw_node.namespace_, allocator.state);
+    }
     allocator.deallocate(node_impl, allocator.state);
 
     return RMW_RET_OK;

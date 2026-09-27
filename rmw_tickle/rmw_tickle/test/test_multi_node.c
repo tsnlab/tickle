@@ -69,6 +69,19 @@ int main(void) {
     assert(2 == atomic_load(&context_impl->node_count));
     assert(context_impl->poll_thread_running);
 
+    // Each is a core node (CONTEXT_NODE_PLAN.md stage 2): created on the shared context, with rmw's own name and
+    // namespace, at its own index - and the context has no default node, since rmw creates every node itself.
+    struct tt_Node* core_a = node_a_impl->core_node;
+    struct tt_Node* core_b = node_b_impl->core_node;
+    assert(NULL != core_a && NULL != core_b);
+    assert(core_a->context == &context_impl->tickle_context && core_b->context == &context_impl->tickle_context);
+    assert(0 == strcmp(core_a->name, "test_multi_node_a") && 0 == strcmp(core_a->namespace_name, "/"));
+    assert(0 == strcmp(core_b->name, "test_multi_node_b"));
+    assert(core_a->index != 0 && core_b->index != 0 && core_a->index != core_b->index);
+    assert(context_impl->tickle_context.nodes[core_a->index] == core_a);
+    assert(context_impl->tickle_context.nodes[core_b->index] == core_b);
+    assert(NULL == context_impl->tickle_context.default_node.context && NULL == context_impl->tickle_context.nodes[0]);
+
     // rmw_get_node_names() now reports every logical node sharing this context (Milestone 6's own
     // "only ever the local node" gap, partly closed as a side effect) - order isn't part of the
     // contract, so this checks set membership, not position.

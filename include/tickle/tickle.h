@@ -55,6 +55,7 @@ const char* tt_version(void);
 
 struct tt_Endpoint;
 struct tt_Context;
+struct tt_Node;
 struct tt_Discovery;
 
 // Task Control Block
@@ -142,6 +143,19 @@ struct tt_DiscoveryRequest {
     uint8_t source;
     uint8_t attempts; // requests sent so far, tt_DISCOVERY_REQUEST_ATTEMPTS at most
     uint64_t sent_ns;
+};
+
+// A node, as rmw means one: a name and a namespace within a context, owning endpoints (CONTEXT_NODE_PLAN.md stage 2,
+// 2026-09-27). The context owns the transport - sockets, scheduler, liveliness, discovery - and hosts up to
+// tt_MAX_NODES nodes, each with its index in the context. Index 0 is the context's default node, which the
+// tt_Context_create_* shorthands create endpoints on; it comes into being the first time one is used (or
+// tt_Context_default_node() is called), so a context that only ever creates nodes itself - rmw_tickle's - has none.
+// Every endpoint records its node's index (tt_Endpoint.node_index). Nothing about nodes is on the wire yet (stage 3).
+struct tt_Node {
+    struct tt_Context* context; // NULL until tt_Node_create(), and again after tt_Node_destroy()
+    const char* name;           // not copied - the caller's, as an endpoint's name is
+    const char* namespace_name; // likewise
+    uint8_t index;              // 0 = the context's default node; < tt_MAX_NODES
 };
 
 struct tt_Context {
@@ -411,10 +425,22 @@ struct tt_Context {
     // that another fragment already completed. Not a loss; counted so it is not mistaken for one.
     uint64_t frag_duplicate;
 #endif
+    // Stage 2 (CONTEXT_NODE_PLAN.md), kept last - cold data, and every hot field keeps its offset: the nodes hosted
+    // here, by index; NULL where none. [0] is default_node once it is in use. default_node_name holds its
+    // "tickle_<context id>", unique per context: a shared "/tickle" would appear once per process in `ros2 node list`.
+    struct tt_Node* nodes[tt_MAX_NODES];
+    struct tt_Node default_node;
+    char default_node_name[16];
 };
 
 struct tt_Endpoint {
     uint8_t kind;
+    // The index, in its context, of the node that owns this endpoint (CONTEXT_NODE_PLAN.md stage 2): the one it was
+    // created on with tt_Node_create_*(), or 0 - the context's default node - for the tt_Context_create_*()
+    // shorthands. An index, not a pointer: it sits in the padding after `kind`, so every endpoint struct keeps its
+    // layout and size (a pointer here cost -R's receive 1 ns a sample), and it is what stage 3 puts on the wire.
+    // tt_Endpoint_node() finds the node.
+    uint8_t node_index;
     // hash(topic/service name + endpoint name) - a pure function of the name alone, deliberately:
     // this is how a Publisher and Subscriber (or Client and Server) on two different, otherwise-
     // unacquainted nodes agree on "the same" topic/service with zero negotiation, each computing
@@ -1791,6 +1817,32 @@ tt_ret_t tt_Context_create_publisher(struct tt_Context* node, struct tt_Publishe
                                      const char* endpoint_name);
 tt_ret_t tt_Context_create_subscriber(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
                                       const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
+
+// Nodes (CONTEXT_NODE_PLAN.md stage 2) - see struct tt_Node. The tt_Context_create_*() shorthands above create
+// their endpoint on the context's default node; these create it on `node`, which must have been created on a
+// context with tt_Node_create(). Same arguments and results otherwise, and tt_RET_INVALID_ARGUMENT for a node
+// that is not (or no longer) created.
+//
+// tt_Node_create(): `name` and `namespace_name` are kept, not copied, and must outlive the node. tt_RET_OUT_OF_BUFFER
+// when the context already hosts tt_MAX_NODES nodes (the default node's index included, whether or not it is in
+// use), tt_RET_ILLEGAL_STATUS if `node` is already created.
+// tt_Node_destroy(): tt_RET_ILLEGAL_STATUS while any endpoint is still created on the node - destroy those first.
+// Frees the node's index for a later tt_Node_create().
+// tt_Context_default_node(): the context's default node, brought into use if it is not yet: named
+// "tickle_<context id>" in "/", index 0. NULL for a NULL context.
+tt_ret_t tt_Node_create(struct tt_Context* context, struct tt_Node* node, const char* name, const char* namespace_name);
+tt_ret_t tt_Node_destroy(struct tt_Node* node);
+struct tt_Node* tt_Context_default_node(struct tt_Context* context);
+// The node that owns `endpoint`, created on `context`: context->nodes[endpoint->node_index]. NULL for NULL arguments.
+struct tt_Node* tt_Endpoint_node(const struct tt_Context* context, const struct tt_Endpoint* endpoint);
+tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
+                                  const char* endpoint_name);
+tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
+                                   const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
+tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
+                               const char* endpoint_name, tt_CLIENT_CALLBACK callback);
+tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
+                               const char* endpoint_name, tt_SERVER_CALLBACK callback);
 // Runs `function` at `time` from inside tt_Context_poll(). Callable from any thread. When a poll is blocked
 // waiting for something later than `time`, this wakes it (that poll returns tt_RET_INTERRUPTED and the
 // caller's next poll runs the entry on time); no tt_Context_interrupt() is needed.

@@ -925,8 +925,8 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // Same tt_Context_interrupt()-then-lock pattern rmw_destroy_node() already established - see
     // rmw_tickle.h's own rmw_tickle_context_impl_t doc comment for the full contract.
     tt_Context_lock(&node_impl->context_impl->tickle_context);
-    tt_ret_t ret = tt_Context_create_publisher(&node_impl->context_impl->tickle_context, &pub_impl->tickle_publisher,
-                                               &pub_impl->topic, pub_impl->rmw_publisher.topic_name);
+    tt_ret_t ret = tt_Node_create_publisher(node_impl->core_node, &pub_impl->tickle_publisher, &pub_impl->topic,
+                                            pub_impl->rmw_publisher.topic_name);
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
     if (ret != tt_RET_OK) {
         RMW_SET_ERROR_MSG("tt_Context_create_publisher() failed");

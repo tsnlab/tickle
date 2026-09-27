@@ -10,6 +10,16 @@ number, `tt_VERSION`, which moves independently.
 
 ### Added
 
+- **Nodes within a context** (rmw_tickle/CONTEXT_NODE_PLAN.md stage 2, DESIGN.md "Contexts and nodes").
+  - A `struct tt_Node` is a name, a namespace and an index within its context, and owns endpoints:
+    `tt_Node_create()`, `tt_Node_destroy()` (refused while the node owns an endpoint), and
+    `tt_Node_create_{publisher,subscriber,client,server}()`. Every endpoint records its node's index (`tt_Endpoint.node_index`, in existing padding; `tt_Endpoint_node()`).
+  - The `tt_Context_create_*()` shorthands create on the context's default node: index 0, named `tickle_<context
+    id>` in `/`, and brought into use by the first shorthand call.
+  - A context hosts up to `tt_MAX_NODES` (16).
+  - rmw_tickle's nodes are core nodes and create every endpoint on them, so its contexts have no default node.
+  - No wire change: the announce bytes are identical to before for the same endpoints.
+
 - **A poll with no response pending takes no lock for it** (OPTIMIZATION_PLAN.md 11, D3):
   `tt_Server_send_response()` counts what it makes READY (`tt_Node.responses_ready`), and `tt_Node_poll()`
   flushes responses only when that count is non-zero - -13 ns per poll on the PC.

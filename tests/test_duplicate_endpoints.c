@@ -245,7 +245,7 @@ static void test_registering_same_pointer_twice_still_fails(void) {
     init_topic(&topic, "/test_topic");
 
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub, &topic, "/test_topic"));
-    EXPECT_EQ_INT(tt_RET_IILEGAL_ENDPOINT_ID, add_endpoint_to_node(&node, &pub.endpoint));
+    EXPECT_EQ_INT(tt_RET_IILEGAL_ENDPOINT_ID, add_endpoint_to_node(&node, &pub.endpoint, NULL));
     EXPECT_EQ_U32(1, node.endpoint_count); // the rejected re-registration didn't leak a slot
 }
 

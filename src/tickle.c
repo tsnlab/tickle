@@ -1384,7 +1384,11 @@ static void arm_announce_soon(struct tt_Context* node) {
     }
 }
 
-static tt_ret_t add_endpoint_to_node(struct tt_Context* node, struct tt_Endpoint* endpoint) {
+static struct tt_Node* default_node_locked(struct tt_Context* context);
+
+// `owner`: the node the endpoint is created on; NULL for the context's default node, which is brought into use here,
+// once the endpoint is known to be registered - a shorthand call that fails leaves it as it was.
+static tt_ret_t add_endpoint_to_node(struct tt_Context* node, struct tt_Endpoint* endpoint, struct tt_Node* owner) {
     if (node->endpoint_count >= tt_MAX_ENDPOINT_COUNT) {
         uint32_t endpoint_count = node->endpoint_count;
         TT_LOG_ERROR("Too many endpoints: %u", endpoint_count);
@@ -1409,6 +1413,7 @@ static tt_ret_t add_endpoint_to_node(struct tt_Context* node, struct tt_Endpoint
         endpoint->entity_id = node->entity_id_base + node->next_entity_id++;
     }
 
+    endpoint->node_index = (owner != NULL ? owner : default_node_locked(node))->index;
     node->endpoints[node->endpoint_count++] = endpoint;
     node->endpoint_index_valid = false;
     arm_announce_soon(node);
@@ -1973,6 +1978,11 @@ static void reset_node_state(struct tt_Context* node) {
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
         node->endpoints[i] = NULL;
     }
+    // No nodes hosted, and the default node not in use (CONTEXT_NODE_PLAN.md stage 2).
+    for (int i = 0; i < tt_MAX_NODES; i++) {
+        node->nodes[i] = NULL;
+    }
+    memset(&node->default_node, 0, sizeof(node->default_node));
 
     node->last_modified = 0;
     node->entity_id_base = 0; // real value assigned by tt_Context_create() itself, after this call
@@ -2149,7 +2159,8 @@ static void reprocess_known_announces(struct tt_Context* node) {
 }
 
 static tt_ret_t node_create_client_locked(struct tt_Context* node, struct tt_Client* client, struct tt_Service* service,
-                                          const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
+                                          const char* endpoint_name, tt_CLIENT_CALLBACK callback,
+                                          struct tt_Node* owner) {
     if (node == NULL || client == NULL || service == NULL || endpoint_name == NULL || callback == NULL ||
         service->name == NULL || !valid_msg_size(service->request_size) || !valid_msg_size(service->response_size) ||
         service->request_encode_size == NULL || service->request_encode == NULL || service->response_decode == NULL ||
@@ -2175,7 +2186,7 @@ static tt_ret_t node_create_client_locked(struct tt_Context* node, struct tt_Cli
         client->peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
 
-    tt_ret_t result = add_endpoint_to_node(node, endpoint);
+    tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
     if (result != tt_RET_OK) {
         return result;
     }
@@ -2192,7 +2203,7 @@ tt_ret_t tt_Context_create_client(struct tt_Context* node, struct tt_Client* cli
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
-    tt_ret_t result = node_create_client_locked(node, client, service, endpoint_name, callback);
+    tt_ret_t result = node_create_client_locked(node, client, service, endpoint_name, callback, NULL);
     if (locked_node != NULL) {
         state_unlock(locked_node);
     }
@@ -2200,7 +2211,8 @@ tt_ret_t tt_Context_create_client(struct tt_Context* node, struct tt_Client* cli
 }
 
 static tt_ret_t node_create_server_locked(struct tt_Context* node, struct tt_Server* server, struct tt_Service* service,
-                                          const char* endpoint_name, tt_SERVER_CALLBACK callback) {
+                                          const char* endpoint_name, tt_SERVER_CALLBACK callback,
+                                          struct tt_Node* owner) {
     if (node == NULL || server == NULL || service == NULL || endpoint_name == NULL || callback == NULL ||
         service->name == NULL || !valid_msg_size(service->request_size) || !valid_msg_size(service->response_size) ||
         service->request_decode == NULL || service->request_free == NULL || service->response_encode_size == NULL ||
@@ -2225,7 +2237,7 @@ static tt_ret_t node_create_server_locked(struct tt_Context* node, struct tt_Ser
     server->cache_storage = NULL; // inline - see server_cache_entry()
     server->cache_entry_length = 0;
 
-    tt_ret_t result = add_endpoint_to_node(node, endpoint);
+    tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
     if (result != tt_RET_OK) {
         return result;
     }
@@ -2241,7 +2253,7 @@ tt_ret_t tt_Context_create_server(struct tt_Context* node, struct tt_Server* ser
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
-    tt_ret_t result = node_create_server_locked(node, server, service, endpoint_name, callback);
+    tt_ret_t result = node_create_server_locked(node, server, service, endpoint_name, callback, NULL);
     if (locked_node != NULL) {
         state_unlock(locked_node);
     }
@@ -2314,7 +2326,7 @@ tt_ret_t tt_Client_set_storage(struct tt_Client* client, uint8_t* cache_storage,
 }
 
 static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Topic* topic,
-                                             const char* endpoint_name) {
+                                             const char* endpoint_name, struct tt_Node* owner) {
     if (node == NULL || pub == NULL || topic == NULL || endpoint_name == NULL || topic->name == NULL ||
         !valid_sample_size(topic->data_size) || topic->data_encode_size == NULL || topic->data_encode == NULL) {
         return tt_RET_INVALID_ARGUMENT;
@@ -2363,7 +2375,7 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
         pub->peer_acks[i].tracking_words = 0;
     }
 
-    tt_ret_t result = add_endpoint_to_node(node, endpoint);
+    tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
     if (result != tt_RET_OK) {
         return result;
     }
@@ -2380,7 +2392,7 @@ tt_ret_t tt_Context_create_publisher(struct tt_Context* node, struct tt_Publishe
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
-    tt_ret_t result = node_create_publisher_locked(node, pub, topic, endpoint_name);
+    tt_ret_t result = node_create_publisher_locked(node, pub, topic, endpoint_name, NULL);
     if (locked_node != NULL) {
         state_unlock(locked_node);
     }
@@ -2389,7 +2401,7 @@ tt_ret_t tt_Context_create_publisher(struct tt_Context* node, struct tt_Publishe
 
 static tt_ret_t node_create_subscriber_locked(struct tt_Context* node, struct tt_Subscriber* sub,
                                               struct tt_Topic* topic, const char* endpoint_name,
-                                              tt_SUBSCRIBER_CALLBACK callback) {
+                                              tt_SUBSCRIBER_CALLBACK callback, struct tt_Node* owner) {
     if (node == NULL || sub == NULL || topic == NULL || endpoint_name == NULL || callback == NULL ||
         topic->name == NULL || !valid_sample_size(topic->data_size) || topic->data_decode == NULL ||
         topic->data_free == NULL) {
@@ -2441,7 +2453,7 @@ static tt_ret_t node_create_subscriber_locked(struct tt_Context* node, struct tt
         sub->writers[i].context_id = tt_CONTEXT_ID_INVALID; // all empty - see struct tt_WriterProxy
     }
 
-    tt_ret_t result = add_endpoint_to_node(node, endpoint);
+    tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
     if (result != tt_RET_OK) {
         return result;
     }
@@ -2457,10 +2469,140 @@ tt_ret_t tt_Context_create_subscriber(struct tt_Context* node, struct tt_Subscri
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
-    tt_ret_t result = node_create_subscriber_locked(node, sub, topic, endpoint_name, callback);
+    tt_ret_t result = node_create_subscriber_locked(node, sub, topic, endpoint_name, callback, NULL);
     if (locked_node != NULL) {
         state_unlock(locked_node);
     }
+    return result;
+}
+
+// ---- Nodes (CONTEXT_NODE_PLAN.md stage 2) - see struct tt_Node (tickle.h).
+
+static struct tt_Node* default_node_locked(struct tt_Context* context) {
+    if (context == NULL) {
+        return NULL;
+    }
+    struct tt_Node* node = &context->default_node;
+    if (node->context == NULL) {
+        (void)snprintf(context->default_node_name, sizeof(context->default_node_name), "tickle_%u",
+                       (unsigned)context->id);
+        node->name = context->default_node_name;
+        node->namespace_name = "/";
+        node->index = 0;
+        node->context = context;
+        context->nodes[0] = node;
+    }
+    return node;
+}
+
+struct tt_Node* tt_Context_default_node(struct tt_Context* context) {
+    if (context == NULL) {
+        return NULL;
+    }
+    state_lock(context);
+    struct tt_Node* node = default_node_locked(context);
+    state_unlock(context);
+    return node;
+}
+
+static tt_ret_t node_register_locked(struct tt_Context* context, struct tt_Node* node, const char* name,
+                                     const char* namespace_name) {
+    if (node->context != NULL) {
+        return tt_RET_ILLEGAL_STATUS;
+    }
+    for (uint8_t i = 1; i < tt_MAX_NODES; i++) { // 0 is the default node's, in use or not
+        if (context->nodes[i] == NULL) {
+            node->context = context;
+            node->name = name;
+            node->namespace_name = namespace_name;
+            node->index = i;
+            context->nodes[i] = node;
+            return tt_RET_OK;
+        }
+    }
+    return tt_RET_OUT_OF_BUFFER;
+}
+
+struct tt_Node* tt_Endpoint_node(const struct tt_Context* context, const struct tt_Endpoint* endpoint) {
+    if (context == NULL || endpoint == NULL || endpoint->node_index >= tt_MAX_NODES) {
+        return NULL;
+    }
+    return context->nodes[endpoint->node_index];
+}
+
+tt_ret_t tt_Node_create(struct tt_Context* context, struct tt_Node* node, const char* name,
+                        const char* namespace_name) {
+    if (context == NULL || node == NULL || name == NULL || namespace_name == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(context);
+    tt_ret_t result = node_register_locked(context, node, name, namespace_name);
+    state_unlock(context);
+    return result;
+}
+
+tt_ret_t tt_Node_destroy(struct tt_Node* node) {
+    if (node == NULL || node->context == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    struct tt_Context* context = node->context;
+    state_lock(context);
+    tt_ret_t result = tt_RET_OK;
+    for (uint32_t i = 0; i < context->endpoint_count; i++) {
+        if (context->endpoints[i]->node_index == node->index) {
+            result = tt_RET_ILLEGAL_STATUS; // it still owns an endpoint, which would be left pointing at it
+            break;
+        }
+    }
+    if (result == tt_RET_OK) {
+        context->nodes[node->index] = NULL;
+        node->context = NULL;
+    }
+    state_unlock(context);
+    return result;
+}
+
+tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
+                                  const char* endpoint_name) {
+    if (node == NULL || node->context == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(node->context);
+    tt_ret_t result = node_create_publisher_locked(node->context, pub, topic, endpoint_name, node);
+    state_unlock(node->context);
+    return result;
+}
+
+tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
+                                   const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
+    if (node == NULL || node->context == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(node->context);
+    tt_ret_t result = node_create_subscriber_locked(node->context, sub, topic, endpoint_name, callback, node);
+    state_unlock(node->context);
+    return result;
+}
+
+tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
+                               const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
+    if (node == NULL || node->context == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(node->context);
+    tt_ret_t result = node_create_client_locked(node->context, client, service, endpoint_name, callback, node);
+    state_unlock(node->context);
+    return result;
+}
+
+tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
+                               const char* endpoint_name, tt_SERVER_CALLBACK callback) {
+    if (node == NULL || node->context == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(node->context);
+    tt_ret_t result = node_create_server_locked(node->context, server, service, endpoint_name, callback, node);
+    state_unlock(node->context);
     return result;
 }
 

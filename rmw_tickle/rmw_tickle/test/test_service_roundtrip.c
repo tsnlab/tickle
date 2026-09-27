@@ -138,6 +138,13 @@ int main(void) {
     assert(svc->tickle_server.cache_entry_length < (uint32_t)tt_MAX_BUFFER_LENGTH);
     rmw_tickle_client_t* cli = (rmw_tickle_client_t*)client->data;
     assert(cli->tickle_client.cache_storage == cli->request_cache && NULL != cli->request_cache);
+    // Both are created on this node's core node, and the context has no default node (CONTEXT_NODE_PLAN.md stage 2).
+    rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
+    assert(tt_Endpoint_node(&node_impl->context_impl->tickle_context, &svc->tickle_server.endpoint) ==
+           node_impl->core_node);
+    assert(tt_Endpoint_node(&node_impl->context_impl->tickle_context, &cli->tickle_client.endpoint) ==
+           node_impl->core_node);
+    assert(NULL == node_impl->context_impl->tickle_context.default_node.context);
 
     // Discovery has to match the client to the server before a request can go anywhere.
     struct pair request = {.first = FIRST, .second = SECOND};
