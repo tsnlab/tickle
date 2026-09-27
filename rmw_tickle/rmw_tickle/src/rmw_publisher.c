@@ -45,11 +45,11 @@
 // QoS roadmap #2 (DEADLINE) - runs once per pub_impl->deadline_period_ns (rescheduled
 // unconditionally every time, a steady period, matching DDS's own "one miss per elapsed period
 // with no write" semantics), checking whether rmw_publish() updated last_activity_time since the
-// last check. Fires from inside tt_Node_poll() - poll_thread already holds context_impl->
+// last check. Fires from inside tt_Context_poll() - poll_thread already holds context_impl->
 // the node lock around that whole call (rmw_tickle_context_impl_t's own doc comment) - so last_
 // activity_time is safe to read here without a separate lock, same as rmw_publish() writing it
 // under that same lock.
-static void check_publisher_deadline(struct tt_Node* node, uint64_t time, void* param) {
+static void check_publisher_deadline(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)param;
     if (time - pub_impl->last_activity_time >= pub_impl->deadline_period_ns) {
@@ -68,16 +68,16 @@ static void check_publisher_deadline(struct tt_Node* node, uint64_t time, void* 
     // Deadline monitoring simply stops here on a reschedule failure (tt_MAX_SCHEDULER_LENGTH
     // exhausted) - no logging facility in this package to report it through, and no return path
     // out of a scheduled void callback anyway.
-    (void)tt_Node_schedule(&pub_impl->node->context_impl->tickle_node, time + pub_impl->deadline_period_ns,
-                           check_publisher_deadline, pub_impl);
+    (void)tt_Context_schedule(&pub_impl->node->context_impl->tickle_context, time + pub_impl->deadline_period_ns,
+                              check_publisher_deadline, pub_impl);
 }
 
 // Milestone 31/28(a) observability follow-on - how often check_publisher_qos_incompatible() below
 // re-scans the discovery table. No QoS-provided duration applies here (unlike DEADLINE/LIVELINESS,
-// this isn't itself a QoS policy with its own configurable period) - tt_NODE_UPDATE_INTERVAL is
+// this isn't itself a QoS policy with its own configurable period) - tt_CONTEXT_UPDATE_INTERVAL is
 // the natural choice, the same cadence a newly (in)compatible remote Subscriber's own discovery
 // announce would actually refresh at, so checking faster could never see a genuinely newer answer.
-#define RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS tt_NODE_UPDATE_INTERVAL
+#define RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS tt_CONTEXT_UPDATE_INTERVAL
 
 // Milestone 31/28(a) observability follow-on - RMW_EVENT_OFFERED_QOS_INCOMPATIBLE's own periodic
 // check: no wire-level trigger exists for this (Milestone 31's own Publisher-side gate just
@@ -90,7 +90,7 @@ static void check_publisher_deadline(struct tt_Node* node, uint64_t time, void* 
 // own doc comment) - so this calls the *_locked() variant directly, never the public rmw_tickle_
 // count_incompatible_subscribers_locked() name's own "_locked" caller-already-holds-it contract
 // implies otherwise.
-static void check_publisher_qos_incompatible(struct tt_Node* node, uint64_t time, void* param) {
+static void check_publisher_qos_incompatible(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)param;
     rmw_qos_policy_kind_t last_kind = RMW_QOS_POLICY_INVALID;
@@ -122,9 +122,9 @@ static void check_publisher_qos_incompatible(struct tt_Node* node, uint64_t time
 
     // Monitoring simply stops here on a reschedule failure - same reasoning as check_publisher_
     // deadline()'s own identical pattern above.
-    (void)tt_Node_schedule(&pub_impl->node->context_impl->tickle_node,
-                           time + RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS, check_publisher_qos_incompatible,
-                           pub_impl);
+    (void)tt_Context_schedule(&pub_impl->node->context_impl->tickle_context,
+                              time + RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS, check_publisher_qos_incompatible,
+                              pub_impl);
 }
 
 // DDS QoS policy coverage inventory (rmw_tickle/PLAN.md, 2026-09-21) gap 2 - KEEP_ALL conceptually
@@ -156,7 +156,7 @@ static void check_publisher_qos_incompatible(struct tt_Node* node, uint64_t time
 #define RMW_TICKLE_KEEP_ALL_DEPTH_DURABLE 8192
 #define RMW_TICKLE_KEEP_ALL_DEPTH_VOLATILE (2 * RMW_TICKLE_TRACKING_WORDS * tt_RELIABLE_BITMAP_WORD_BITS)
 
-// Phase 3 step 3 - core calls this from inside tt_Node_poll() (so the node lock is
+// Phase 3 step 3 - core calls this from inside tt_Context_poll() (so the node lock is
 // already held, same as check_publisher_deadline() above) the moment a KEEP_ALL Publisher that had
 // refused a write becomes writable again. tt_Publisher.writable_callback's own doc comment limits a
 // callback to "signal and return" - it must not re-enter TickLE - which is exactly all this does:
@@ -596,7 +596,7 @@ static uint32_t resolve_heartbeat_piggyback_every(void) {
 }
 
 // Split out of rmw_create_publisher() to keep its cognitive complexity under clang-tidy's
-// threshold. A plain field, schedules nothing - but set after tt_Node_create_publisher(), which
+// threshold. A plain field, schedules nothing - but set after tt_Context_create_publisher(), which
 // initialises it, and after setup_reliable_cache(), whose cache it checks.
 //
 // Only a publisher with a reliable_cache can piggyback (the Heartbeat names its oldest cached
@@ -676,7 +676,7 @@ static uint16_t resolve_ring_slots(const rmw_tickle_publisher_t* pub_impl, size_
 // comment for the full "why" this exists at all. Returns false (with RMW_SET_ERROR_MSG already
 // called) only on a real failure; true covers both "successfully set up" and "neither RELIABLE
 // nor TRANSIENT_LOCAL was requested, nothing to do" - the caller doesn't need to tell those two
-// apart, only whether to bail out and run its own (unrelated - tt_Node_create_publisher() et al.)
+// apart, only whether to bail out and run its own (unrelated - tt_Context_create_publisher() et al.)
 // cleanup.
 static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos_profile_t* qos_profile,
                                  rcutils_allocator_t* allocator) {
@@ -851,10 +851,10 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // full algorithm). Reassigning the qos_profile parameter itself (not shadowing with a new name)
     // keeps every downstream reference below already correct with no further edits needed - a
     // profile that requested nothing as BEST_AVAILABLE gets its own values back unchanged.
-    tt_Node_lock(&node_impl->context_impl->tickle_node);
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
     rmw_qos_profile_t resolved_qos = rmw_tickle_resolve_best_available(qos_profile, &node_impl->context_impl->discovery,
                                                                        topic_name, RMW_TICKLE_ENTITY_PUBLISHER);
-    tt_Node_unlock(&node_impl->context_impl->tickle_node);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
     qos_profile = &resolved_qos;
 
     rmw_tickle_publisher_t* pub_impl =
@@ -922,14 +922,14 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         return NULL;
     }
 
-    // Same tt_Node_interrupt()-then-lock pattern rmw_destroy_node() already established - see
+    // Same tt_Context_interrupt()-then-lock pattern rmw_destroy_node() already established - see
     // rmw_tickle.h's own rmw_tickle_context_impl_t doc comment for the full contract.
-    tt_Node_lock(&node_impl->context_impl->tickle_node);
-    tt_ret_t ret = tt_Node_create_publisher(&node_impl->context_impl->tickle_node, &pub_impl->tickle_publisher,
-                                            &pub_impl->topic, pub_impl->rmw_publisher.topic_name);
-    tt_Node_unlock(&node_impl->context_impl->tickle_node);
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
+    tt_ret_t ret = tt_Context_create_publisher(&node_impl->context_impl->tickle_context, &pub_impl->tickle_publisher,
+                                               &pub_impl->topic, pub_impl->rmw_publisher.topic_name);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
     if (ret != tt_RET_OK) {
-        RMW_SET_ERROR_MSG("tt_Node_create_publisher() failed");
+        RMW_SET_ERROR_MSG("tt_Context_create_publisher() failed");
         allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
         allocator->deallocate(pub_impl, allocator->state);
         return NULL;
@@ -959,9 +959,9 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // genuinely out-of-range requests. setup_reliable_cache() (above) does the actual work, split
     // out purely to keep this function's own cognitive complexity under clang-tidy's threshold.
     if (!setup_reliable_cache(pub_impl, qos_profile, allocator)) {
-        tt_Node_lock(&node_impl->context_impl->tickle_node);
+        tt_Context_lock(&node_impl->context_impl->tickle_context);
         tt_Publisher_destroy(&pub_impl->tickle_publisher);
-        tt_Node_unlock(&node_impl->context_impl->tickle_node);
+        tt_Context_unlock(&node_impl->context_impl->tickle_context);
         allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
         allocator->deallocate(pub_impl, allocator->state);
         return NULL;
@@ -974,12 +974,12 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     if (deadline_ns > 0) {
         pub_impl->deadline_period_ns = (uint64_t)deadline_ns;
         pub_impl->last_activity_time = tt_get_ns();
-        tt_Node_lock(&node_impl->context_impl->tickle_node);
+        tt_Context_lock(&node_impl->context_impl->tickle_context);
         // A failure here (tt_MAX_SCHEDULER_LENGTH exhausted) just leaves deadline monitoring
         // inactive for this Publisher - no logging facility in this package to report it through.
-        (void)tt_Node_schedule(&node_impl->context_impl->tickle_node, tt_get_ns() + pub_impl->deadline_period_ns,
-                               check_publisher_deadline, pub_impl);
-        tt_Node_unlock(&node_impl->context_impl->tickle_node);
+        (void)tt_Context_schedule(&node_impl->context_impl->tickle_context, tt_get_ns() + pub_impl->deadline_period_ns,
+                                  check_publisher_deadline, pub_impl);
+        tt_Context_unlock(&node_impl->context_impl->tickle_context);
     }
 
     // QoS roadmap #6 (LIFESPAN) - see tt_Publisher.lifespan_duration_ns's own doc comment
@@ -1003,7 +1003,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     if (RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == qos_profile->liveliness) {
         rmw_duration_t lease_ns = rmw_time_total_nsec(qos_profile->liveliness_lease_duration);
         pub_impl->liveliness_lease_ns =
-            lease_ns > 0 ? (uint64_t)lease_ns : (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL;
+            lease_ns > 0 ? (uint64_t)lease_ns : (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL;
         atomic_store(&pub_impl->last_asserted_ns, tt_get_ns());
     }
 
@@ -1027,15 +1027,15 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
 
     // Armed last, and under the node mutex: tt_Publisher_set_heartbeat_period() schedules on the
     // node and refuses a publisher with no reliable_cache, so it has to follow both
-    // tt_Node_create_publisher() and setup_reliable_cache(). Configuration set before the object it
+    // tt_Context_create_publisher() and setup_reliable_cache(). Configuration set before the object it
     // configures is fully built is exactly how the reorder buffer shipped disconnected (9747c1ea).
     arm_heartbeat_piggyback(pub_impl);
 
     uint64_t heartbeat_ns = resolve_heartbeat_period_ns();
     if (heartbeat_ns != 0 && pub_impl->tickle_publisher.reliable_cache != NULL) {
-        tt_Node_lock(&node_impl->context_impl->tickle_node);
+        tt_Context_lock(&node_impl->context_impl->tickle_context);
         tt_ret_t armed = tt_Publisher_set_heartbeat_period(&pub_impl->tickle_publisher, heartbeat_ns);
-        tt_Node_unlock(&node_impl->context_impl->tickle_node);
+        tt_Context_unlock(&node_impl->context_impl->tickle_context);
         if (armed != tt_RET_OK) {
             // Not fatal - the publisher works without it, exactly as it always has - but said, so a
             // run that asked for heartbeats and did not get them cannot be read as if it had.
@@ -1061,19 +1061,20 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
 
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
 
-    tt_Node_lock(&pub_impl->node->context_impl->tickle_node);
+    tt_Context_lock(&pub_impl->node->context_impl->tickle_context);
     // QoS roadmap #2 (DEADLINE) - cancel a still-armed check before the publisher it closes over
-    // is freed below; a no-op if deadline_period_ns was never set (tt_Node_unschedule() just finds
+    // is freed below; a no-op if deadline_period_ns was never set (tt_Context_unschedule() just finds
     // nothing matching).
     if (pub_impl->deadline_period_ns != 0) {
-        tt_Node_unschedule(&pub_impl->node->context_impl->tickle_node, check_publisher_deadline, pub_impl);
+        tt_Context_unschedule(&pub_impl->node->context_impl->tickle_context, check_publisher_deadline, pub_impl);
     }
     // As rmw_destroy_subscription(): the self-rescheduling QoS-incompatible check, once armed, goes too.
     if (pub_impl->offered_qos_incompatible_monitoring_started) {
-        tt_Node_unschedule(&pub_impl->node->context_impl->tickle_node, check_publisher_qos_incompatible, pub_impl);
+        tt_Context_unschedule(&pub_impl->node->context_impl->tickle_context, check_publisher_qos_incompatible,
+                              pub_impl);
     }
     tt_Publisher_destroy(&pub_impl->tickle_publisher);
-    tt_Node_unlock(&pub_impl->node->context_impl->tickle_node);
+    tt_Context_unlock(&pub_impl->node->context_impl->tickle_context);
 
     pthread_mutex_destroy(&pub_impl->publish_mutex); // Milestone 45 - see its own doc comment
 
@@ -1136,7 +1137,7 @@ static rmw_ret_t publish_timed_out(const rmw_tickle_publisher_t* pub_impl, uint6
 static tt_ret_t publish_attempt(rmw_tickle_publisher_t* pub_impl, void* tickle_buf, uint64_t* generation) {
     rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
 
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     tt_ret_t ret = tt_Publisher_publish(&pub_impl->tickle_publisher, (struct tt_Data*)tickle_buf);
     // QoS roadmap #2 (DEADLINE) - see rmw_tickle_publisher_t.last_activity_time's own doc comment.
     // Under the same lock check_publisher_deadline() reads it under, harmless to set even when
@@ -1148,7 +1149,7 @@ static tt_ret_t publish_attempt(rmw_tickle_publisher_t* pub_impl, void* tickle_b
         pthread_mutex_lock(&context_impl->wait_mutex);
         *generation = pub_impl->writable_generation;
     }
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
     return ret;
 }
 
@@ -1220,9 +1221,9 @@ static rmw_ret_t publish_blocking(rmw_tickle_publisher_t* pub_impl, void* tickle
         // have been given. Retry immediately if it grew: the wait below is for an acknowledgement,
         // which is not what was missing.
         pthread_mutex_unlock(&pub_impl->node->context_impl->wait_mutex);
-        tt_Node_lock(&pub_impl->node->context_impl->tickle_node);
+        tt_Context_lock(&pub_impl->node->context_impl->tickle_context);
         bool grew = grow_reliable_cache(pub_impl);
-        tt_Node_unlock(&pub_impl->node->context_impl->tickle_node);
+        tt_Context_unlock(&pub_impl->node->context_impl->tickle_context);
         if (grew) {
             continue;
         }
@@ -1288,9 +1289,9 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     // fallen short, which for a given publisher can happen at most a handful of times - the arena
     // doubles and the limit does not move.
     if (RMW_RET_OK == ret && keep_last_wants_more_arena(pub_impl)) {
-        tt_Node_lock(&pub_impl->node->context_impl->tickle_node);
+        tt_Context_lock(&pub_impl->node->context_impl->tickle_context);
         (void)grow_reliable_cache(pub_impl);
-        tt_Node_unlock(&pub_impl->node->context_impl->tickle_node);
+        tt_Context_unlock(&pub_impl->node->context_impl->tickle_context);
     }
     pthread_mutex_unlock(&pub_impl->publish_mutex);
     return ret;
@@ -1339,7 +1340,7 @@ rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t*
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
     memset(gid, 0, sizeof(*gid));
     gid->implementation_identifier = RMW_TICKLE_IDENTIFIER;
-    uint8_t node_id = pub_impl->node->context_impl->tickle_node.id;
+    uint8_t node_id = pub_impl->node->context_impl->tickle_context.id;
     uint32_t entity_id = pub_impl->tickle_publisher.endpoint.entity_id;
     gid->data[0] = node_id;
     memcpy(&gid->data[1], &entity_id, sizeof(entity_id));
@@ -1399,13 +1400,13 @@ rmw_ret_t rmw_publisher_event_init(rmw_event_t* rmw_event, const rmw_publisher_t
         rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
         if (!pub_impl->offered_qos_incompatible_monitoring_started) {
             pub_impl->offered_qos_incompatible_monitoring_started = true;
-            tt_Node_lock(&pub_impl->node->context_impl->tickle_node);
+            tt_Context_lock(&pub_impl->node->context_impl->tickle_context);
             // A failure here just leaves this monitoring inactive for this Publisher - same
             // reasoning as check_publisher_deadline()'s own scheduling failure handling.
-            (void)tt_Node_schedule(&pub_impl->node->context_impl->tickle_node,
-                                   tt_get_ns() + RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS,
-                                   check_publisher_qos_incompatible, pub_impl);
-            tt_Node_unlock(&pub_impl->node->context_impl->tickle_node);
+            (void)tt_Context_schedule(&pub_impl->node->context_impl->tickle_context,
+                                      tt_get_ns() + RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS,
+                                      check_publisher_qos_incompatible, pub_impl);
+            tt_Context_unlock(&pub_impl->node->context_impl->tickle_context);
         }
         return RMW_RET_OK;
     }
@@ -1441,7 +1442,7 @@ rmw_ret_t rmw_publisher_assert_liveliness(const rmw_publisher_t* publisher) {
     return RMW_RET_OK;
 }
 
-// Loaned (zero-copy) messages: rmw_publisher_t.can_loan_messages is always false (tt_Node_create_
+// Loaned (zero-copy) messages: rmw_publisher_t.can_loan_messages is always false (tt_Context_create_
 // publisher() never sets it true - no shared-memory/zero-copy transport exists), and unlike most
 // other not-yet-implemented rmw_*() extras, these three symbols still have to actually exist -
 // same reasoning as rmw_publisher_event_init() just above (an unresolved dlsym is fatal to
@@ -1500,7 +1501,7 @@ rmw_ret_t rmw_publish_loaned_message(const rmw_publisher_t* publisher, void* ros
 // pub->peers[] to a table keyed by node_id (struct tt_PeerAck, tickle.h), so this asks core rather
 // than pairing the two arrays by index - which would now read the wrong peer's ack. Caller must
 // already hold the node lock: tt_Publisher_is_acked_by_all_peers() reads the same
-// fields process_acknack() (tickle.c) updates from inside tt_Node_poll(), under that same lock.
+// fields process_acknack() (tickle.c) updates from inside tt_Context_poll(), under that same lock.
 static bool all_peers_acked_locked(const struct tt_Publisher* pub, uint32_t target_seq_no) {
     return tt_Publisher_is_acked_by_all_peers(pub, target_seq_no);
 }
@@ -1555,7 +1556,7 @@ rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher, rmw
     }
 
     while (true) {
-        tt_Node_lock(&context_impl->tickle_node);
+        tt_Context_lock(&context_impl->tickle_context);
         // pub_impl->tickle_publisher.seq_no - the most recently published sample as of *this*
         // check, not re-read on every loop iteration below: a concurrent rmw_publish() growing it
         // mid-wait must not move this call's own target (matches real DDS - this only ever waits
@@ -1565,7 +1566,7 @@ rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher, rmw
         if (!acked) {
             tt_Publisher_request_ack(&pub_impl->tickle_publisher);
         }
-        tt_Node_unlock(&context_impl->tickle_node);
+        tt_Context_unlock(&context_impl->tickle_context);
 
         if (acked) {
             return RMW_RET_OK;

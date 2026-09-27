@@ -20,10 +20,10 @@
 #include <stdio.h>  // snprintf() - rmw_qos_profile_check_compatible()'s own `reason` buffer
 #include <string.h> // strcmp() - rmw_tickle_resolve_best_available()'s own topic-name matching
 
-#include <tickle/config.h> // tt_NODE_TX_INTERVAL - see Milestone
+#include <tickle/config.h> // tt_CONTEXT_TX_INTERVAL - see Milestone
                            // 18's own note on why this needs a direct include, not just tickle.h
 #include <tickle/tickle.h> // tt_Discovery/tt_DiscoveredEntity, tt_KIND_TOPIC_*, tt_UPDATE_QOS_*,
-                           // tt_NODE_ID_INVALID, tt_MAX_DISCOVERED_ENTITIES - rmw_tickle_resolve_
+                           // tt_CONTEXT_ID_INVALID, tt_MAX_DISCOVERED_ENTITIES - rmw_tickle_resolve_
                            // best_available()'s own discovery-table scan below
 
 #include "rcutils/error_handling.h" // RCUTILS_CHECK_ARGUMENT_FOR_NULL
@@ -111,10 +111,10 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
                           "rmw_tickle/PLAN.md's QoS roadmap #3 (LIVELINESS)");
         return RMW_RET_UNSUPPORTED;
     }
-    // A custom lease_duration is accepted down to three tt_NODE_TX_INTERVALs. The core honours any lease
+    // A custom lease_duration is accepted down to three tt_CONTEXT_TX_INTERVALs. The core honours any lease
     // above that (LIVELINESS_PLAN.md, 2026-09-26): it runs from the last sign of life, is checked by a
     // timer at the expiry, and a node sends its summary tt_LIVELINESS_LEASE_DIVISOR times a lease, which cannot
-    // go below one tx tick. The floor used to be tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL
+    // go below one tx tick. The floor used to be tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL
     // (3 s), when the core checked once a second and cut every lease at its node-level limit. Rejected
     // below the floor rather than silently rounded up - same "reject, don't silently downgrade"
     // philosophy as RELIABLE's/DURABLE's own depth-cap rejection. DEFAULT (unspecified, {0,0}) and
@@ -126,16 +126,16 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
                         (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT) &&
         !rmw_time_equal(qos_profile->liveliness_lease_duration, (rmw_time_t)RMW_DURATION_INFINITE) &&
         rmw_time_total_nsec(qos_profile->liveliness_lease_duration) <
-            (rmw_duration_t)(tt_LIVELINESS_LEASE_DIVISOR * (uint64_t)tt_NODE_TX_INTERVAL)) {
+            (rmw_duration_t)(tt_LIVELINESS_LEASE_DIVISOR * (uint64_t)tt_CONTEXT_TX_INTERVAL)) {
         RMW_SET_ERROR_MSG("rmw_tickle's own liveliness_lease_duration floor is "
-                          "tt_LIVELINESS_LEASE_DIVISOR * tt_NODE_TX_INTERVAL (a node's summary goes out "
+                          "tt_LIVELINESS_LEASE_DIVISOR * tt_CONTEXT_TX_INTERVAL (a node's summary goes out "
                           "tt_LIVELINESS_LEASE_DIVISOR times its "
                           "shortest lease) - see rmw_tickle/LIVELINESS_PLAN.md");
         return RMW_RET_UNSUPPORTED;
     }
 
     // QoS roadmap #2 (DEADLINE) - done. Any finite value is accepted: a purely local rmw_tickle-
-    // side timer (tt_Node_schedule(), no TickLE wire/network cadence to be bounded by) - see
+    // side timer (tt_Context_schedule(), no TickLE wire/network cadence to be bounded by) - see
     // rmw_publisher.c/rmw_subscription.c's own RMW_EVENT_OFFERED_DEADLINE_MISSED/REQUESTED_
     // DEADLINE_MISSED handling.
 
@@ -173,7 +173,7 @@ static bool all_matching_entities_offer(const struct tt_Discovery* discovery, co
                                         uint8_t opposite_kind, uint8_t qos_bit) {
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
         const struct tt_DiscoveredEntity* entity = &discovery->entities[i];
-        if (tt_NODE_ID_INVALID == entity->node_id || !entity->alive || entity->kind != opposite_kind ||
+        if (tt_CONTEXT_ID_INVALID == entity->context_id || !entity->alive || entity->kind != opposite_kind ||
             0 != strcmp(entity->name, topic_name)) {
             continue;
         }
@@ -210,7 +210,7 @@ static uint64_t resolve_best_available_duration(const struct tt_Discovery* disco
     bool any_matched = false;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
         const struct tt_DiscoveredEntity* entity = &discovery->entities[i];
-        if (tt_NODE_ID_INVALID == entity->node_id || !entity->alive || entity->kind != opposite_kind ||
+        if (tt_CONTEXT_ID_INVALID == entity->context_id || !entity->alive || entity->kind != opposite_kind ||
             0 != strcmp(entity->name, topic_name)) {
             continue;
         }

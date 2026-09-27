@@ -84,7 +84,7 @@ static void print_result(void) {
     }
 }
 
-static void call(struct tt_Node* node, uint64_t time, void* param) {
+static void call(struct tt_Context* node, uint64_t time, void* param) {
     struct tt_Client* client = param;
 
     struct SetBoolRequest request = {.data = next_data};
@@ -100,7 +100,7 @@ static void call(struct tt_Node* node, uint64_t time, void* param) {
     }
 
     if (target_count == 0 || transmitted < target_count) {
-        tt_Node_schedule(node, time + call_interval_ns, call, client);
+        tt_Context_schedule(node, time + call_interval_ns, call, client);
     }
 }
 
@@ -110,8 +110,8 @@ static void print_usage(const char* prog) {
             "          [-i interval_seconds] [-n endpoint_name] [-l log_level]\n",
             prog);
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
-    fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
-    fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
+    fprintf(stderr, "  -p  UDP port (default: compiled-in tt_CONTEXT_PORT)\n");
+    fprintf(stderr, "  -a  bind address (default: compiled-in tt_CONTEXT_ADDRESS)\n");
     fprintf(stderr, "  -I  explicit node ID 1-254 (default: auto-detect from -a/-b's subnet)\n");
     fprintf(stderr, "  -c  stop after this many calls (default 0 = run until Ctrl+C)\n");
     fprintf(stderr, "  -i  seconds between calls (default 1)\n");
@@ -123,7 +123,7 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->broadcast = "192.168.10.255";
     opts->port = 0;
     opts->bind_addr = NULL;
-    opts->node_id = 0;
+    opts->context_id = 0;
     opts->interval_s = 1.0;
     opts->name = "set_bool_server";
     opts->log_level = TT_LOG_INFO;
@@ -150,8 +150,8 @@ int main(int argc, char** argv) {
     if (opts.bind_addr != NULL) {
         _tt_CONFIG.addr = opts.bind_addr;
     }
-    if (opts.node_id != 0) {
-        _tt_CONFIG.node_id = opts.node_id;
+    if (opts.context_id != 0) {
+        _tt_CONFIG.context_id = opts.context_id;
     }
     if (opts.log_level_set) {
         tt_log_set_level(opts.log_level);
@@ -163,8 +163,8 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
@@ -174,22 +174,22 @@ int main(int argc, char** argv) {
 
     struct tt_Client client;
 
-    ret = tt_Node_create_client(&node, &client, &SetBoolService, opts.name, (tt_CLIENT_CALLBACK)set_bool_callback);
+    ret = tt_Context_create_client(&node, &client, &SetBoolService, opts.name, (tt_CLIENT_CALLBACK)set_bool_callback);
     if (ret != 0) {
         printf("Cannot create server: %d\n", ret);
         return ret;
     }
 
-    tt_Node_schedule(&node, tt_get_ns(), call, &client);
+    tt_Context_schedule(&node, tt_get_ns(), call, &client);
 
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, -1);
+        ret = tt_Context_poll(&node, -1);
     }
 
     print_result();
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     printf("Node destroyed(#%d): %d\n", node.id, ret);
 
     return 0;

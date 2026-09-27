@@ -28,7 +28,7 @@
 #define REMOTE_NODE_ID 2
 #define ENDPOINT_ID 0xaabbccdd
 
-static void init_node(struct tt_Node* node) {
+static void init_node(struct tt_Context* node) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -36,7 +36,7 @@ static void init_node(struct tt_Node* node) {
 
 // rmw_tickle/PLAN.md's Milestone 17: proves process_packet()'s own self-sent handling is scoped
 // per-submessage-type, not per-packet - a co-located client and service on the exact same
-// tt_Node (this test's own LOCAL_NODE_ID for both sides at once) must still be able to talk to
+// tt_Context (this test's own LOCAL_NODE_ID for both sides at once) must still be able to talk to
 // each other, unlike a node hearing its own topic pub/sub broadcast back.
 
 static int self_sent_callback_count = 0;
@@ -76,7 +76,7 @@ static void stub_response_free(struct tt_Response* response) {
     (void)response;
 }
 
-static void init_node_service_server(struct tt_Node* node, struct tt_Service* service, struct tt_Server* server) {
+static void init_node_service_server(struct tt_Context* node, struct tt_Service* service, struct tt_Server* server) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -141,7 +141,7 @@ static void stub_topic_data_free(struct tt_Data* data) {
     (void)data;
 }
 
-static void init_node_topic_subscriber(struct tt_Node* node, struct tt_Topic* topic, struct tt_Subscriber* sub) {
+static void init_node_topic_subscriber(struct tt_Context* node, struct tt_Topic* topic, struct tt_Subscriber* sub) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -191,7 +191,7 @@ static uint32_t append_data_header(uint8_t* buf, uint32_t offset, uint32_t endpo
 
 // A packet shorter than tt_Header itself must be rejected, not read past the buffer.
 static void test_rejects_truncated_header(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     uint8_t buf[sizeof(struct tt_Header) - 1];
@@ -203,7 +203,7 @@ static void test_rejects_truncated_header(void) {
 // Neither the native nor byte-swapped magic value - not this protocol at all (random noise, or
 // some other application broadcasting on the same port/address).
 static void test_rejects_bad_magic(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     uint8_t buf[sizeof(struct tt_Header)];
@@ -215,7 +215,7 @@ static void test_rejects_bad_magic(void) {
 // A peer speaking an older wire version than we understand must be rejected, not misparsed as
 // if it were current-version.
 static void test_rejects_old_version(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     uint8_t buf[sizeof(struct tt_Header)];
@@ -229,7 +229,7 @@ static void test_rejects_old_version(void) {
 // misreading fields. tt_VERSION 6 added a field to tt_AckNackHeader and made its bitmap variable
 // length, so "accept and hope" is exactly the wrong answer.
 static void test_rejects_newer_version(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     uint8_t buf[sizeof(struct tt_Header)];
@@ -253,7 +253,7 @@ static void test_rejects_newer_version(void) {
 // A node hears its own broadcast back (normal on a shared broadcast domain) and must ignore it
 // cleanly rather than treating it as an error or trying to process it as if from a peer.
 static void test_ignores_self_sent_packet(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     uint8_t buf[sizeof(struct tt_Header)];
@@ -265,7 +265,7 @@ static void test_ignores_self_sent_packet(void) {
 // A submessage claiming a length shorter than its own header can't be real - reject before the
 // later `length - sizeof(header)` arithmetic can underflow.
 static void test_rejects_submessage_length_too_small(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     uint8_t buf[64];
@@ -280,7 +280,7 @@ static void test_rejects_submessage_length_too_small(void) {
 // A submessage claiming to be far longer than the bytes actually available must be rejected,
 // not trusted into reading (or letting a codec read) past the end of the real buffer.
 static void test_rejects_submessage_length_exceeds_buffer(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     uint8_t buf[64];
@@ -297,7 +297,7 @@ static void test_rejects_submessage_length_exceeds_buffer(void) {
 // deliberately accepts higher versions) must be skipped by its validated length, not treated as
 // fatal: a valid DATA submessage right after it in the same datagram still has to parse.
 static void test_skips_unknown_submessage_type_and_continues(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     uint8_t buf[128];
@@ -315,7 +315,7 @@ static void test_skips_unknown_submessage_type_and_continues(void) {
 
 // ACKNACK is a known-but-unimplemented type in this release. Same contract: skip it, keep going.
 static void test_skips_acknack_and_continues(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     uint8_t buf[128];
@@ -336,7 +336,7 @@ static void test_skips_acknack_and_continues(void) {
 // terminate cleanly at the real end of the buffer - malformed-input rejection elsewhere in this
 // file shouldn't come at the cost of also rejecting valid, non-trivial input.
 static void test_accepts_two_valid_data_submessages(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     // No subscriber is registered for either endpoint_id: process_data() treats that as
     // "not for me", not an error, so this only needs the parse itself to succeed.
@@ -355,13 +355,13 @@ static void test_accepts_two_valid_data_submessages(void) {
     EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0));
 }
 
-// Milestone 17: a self-sent CALLREQUEST (client and service co-located on the same tt_Node)
+// Milestone 17: a self-sent CALLREQUEST (client and service co-located on the same tt_Context)
 // must still reach the registered server - process_packet()'s own self-sent suppression is
 // scoped to UPDATE/DATA only, not RPC.
 static void test_self_sent_callrequest_reaches_server(void) {
     self_sent_callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
     init_node_service_server(&node, &service, &server);
@@ -384,7 +384,7 @@ static void test_self_sent_callrequest_reaches_server(void) {
 static void test_self_sent_data_is_still_ignored(void) {
     self_sent_subscriber_callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_topic_subscriber(&node, &topic, &sub);

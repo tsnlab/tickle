@@ -41,7 +41,7 @@ static uint64_t stop_time = 0; // when stopping began - print_summary()'s own "e
                                // so shutdown_grace_s's drain doesn't dilute the reported avg Mbps
 
 // RELIABLE's own retransmission (QoS roadmap #5) needs this Publisher to still be around to
-// respond to a Subscriber's ACKNACK for one of the last few messages sent - tt_Node_destroy()
+// respond to a Subscriber's ACKNACK for one of the last few messages sent - tt_Context_destroy()
 // right when sending stops used to tear it down immediately, silently dropping any
 // then-still-recovering loss near the end of *every* run regardless of tc's own configured loss
 // rate. Found via run_perf.sh's real loss-injection scenarios: reliable's own loss_pct plateaued
@@ -54,7 +54,7 @@ static uint64_t stop_time = 0; // when stopping began - print_summary()'s own "e
 #define RELIABLE_SHUTDOWN_GRACE_SEC 1.0
 static double shutdown_grace_s = 0.0;
 
-static void finish_grace_period(struct tt_Node* node, uint64_t time, void* param) {
+static void finish_grace_period(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
@@ -66,7 +66,7 @@ static void finish_grace_period(struct tt_Node* node, uint64_t time, void* param
 // it). Idempotent, and safe to call from either a scheduled callback (handle_duration_elapsed,
 // which has `node`/`time` on hand) or the main loop noticing g_interrupted after a signal handler
 // set it (which doesn't - signal handlers may only touch a volatile sig_atomic_t, not call this).
-static void begin_stopping(struct tt_Node* node, uint64_t time) {
+static void begin_stopping(struct tt_Context* node, uint64_t time) {
     if (stopping) {
         return;
     }
@@ -77,7 +77,7 @@ static void begin_stopping(struct tt_Node* node, uint64_t time) {
         g_exit_now = 1;
         return;
     }
-    tt_Node_schedule(node, time + (uint64_t)(shutdown_grace_s * (double)tt_SECOND), finish_grace_period, NULL);
+    tt_Context_schedule(node, time + (uint64_t)(shutdown_grace_s * (double)tt_SECOND), finish_grace_period, NULL);
 }
 
 static void handle_sigint(int sig) {
@@ -85,7 +85,7 @@ static void handle_sigint(int sig) {
     g_interrupted = 1; // begin_stopping() itself needs `node` - the main loop calls it instead
 }
 
-static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* param) {
+static void handle_duration_elapsed(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     begin_stopping(node, time);
 }
@@ -118,7 +118,7 @@ static uint64_t total_buffer_full = 0;
 static uint64_t interval_sent_msgs = 0;
 static uint64_t interval_sent_bytes = 0;
 
-static void report(struct tt_Node* node, uint64_t time, void* param) {
+static void report(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
 
     char sent_buf[TT_GROUPED_BUF_LEN];
@@ -135,7 +135,7 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
     interval_sent_msgs = 0;
     interval_sent_bytes = 0;
 
-    tt_Node_schedule(node, time + tt_SECOND, report, NULL);
+    tt_Context_schedule(node, time + tt_SECOND, report, NULL);
 }
 
 // Throughput is what this pair measures, so - like ping.c's print_statistics() - RESULT reports
@@ -168,8 +168,8 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "                [-s message_size_bytes] [-i interval_seconds] [-d duration_seconds]\n");
     fprintf(stderr, "                [-n topic_name] [-l log_level] [-B] [-R] [-K reliable_cache_depth]\n");
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
-    fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
-    fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
+    fprintf(stderr, "  -p  UDP port (default: compiled-in tt_CONTEXT_PORT)\n");
+    fprintf(stderr, "  -a  bind address (default: compiled-in tt_CONTEXT_ADDRESS)\n");
     fprintf(stderr, "  -I  explicit node ID 1-254 (default: auto-detect from -a/-b's subnet)\n");
     fprintf(stderr, "  -s  payload bytes per message (default/max %d: fills one Ethernet frame)\n",
             DEFAULT_MESSAGE_SIZE);
@@ -195,7 +195,7 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->broadcast = "192.168.10.255";
     opts->port = 0;
     opts->bind_addr = NULL;
-    opts->node_id = 0;
+    opts->context_id = 0;
     opts->message_size = DEFAULT_MESSAGE_SIZE;
     opts->interval_s = DEFAULT_INTERVAL_SECONDS;
     opts->duration_s = 0.0;
@@ -214,7 +214,7 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
 // Split out of main() purely to keep that function's own cognitive complexity under clang-tidy's
 // threshold - adding !stopping/g_interrupted handling for shutdown_grace_s (see its own doc
 // comment) tipped main() over once combined with its already-substantial setup sequence.
-static void run_send_loop(struct tt_Node* node, struct tt_Publisher* pub, uint64_t next_send_time,
+static void run_send_loop(struct tt_Context* node, struct tt_Publisher* pub, uint64_t next_send_time,
                           uint64_t send_interval_ns, int64_t poll_timeout) {
     tt_ret_t ret = tt_RET_OK;
     while (!g_exit_now && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
@@ -238,7 +238,7 @@ static void run_send_loop(struct tt_Node* node, struct tt_Publisher* pub, uint64
             next_send_time += send_interval_ns;
         }
 
-        ret = tt_Node_poll(node, poll_timeout);
+        ret = tt_Context_poll(node, poll_timeout);
 
         // Checked here (right after poll() returns), not waited on elsewhere: this runs every
         // iteration regardless of how long until the next scheduled report()/finish_grace_period,
@@ -273,8 +273,8 @@ int main(int argc, char** argv) {
     if (opts.bind_addr != NULL) {
         _tt_CONFIG.addr = opts.bind_addr;
     }
-    if (opts.node_id != 0) {
-        _tt_CONFIG.node_id = opts.node_id;
+    if (opts.context_id != 0) {
+        _tt_CONFIG.context_id = opts.context_id;
     }
     if (opts.log_level_set) {
         tt_log_set_level(opts.log_level);
@@ -286,8 +286,8 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
@@ -296,14 +296,14 @@ int main(int argc, char** argv) {
     printf("Node created(#%d)\n", node.id);
 
     struct tt_Publisher pub;
-    ret = tt_Node_create_publisher(&node, &pub, &BulkTopic, opts.name);
+    ret = tt_Context_create_publisher(&node, &pub, &BulkTopic, opts.name);
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
     }
     pub.batch = opts.batch; // -B - see tt_Publisher.batch's own doc comment (tickle.h)
     if (opts.batch) {
-        printf("Batching sends (node_flush()'s own tt_NODE_TX_INTERVAL cadence), not flushing "
+        printf("Batching sends (node_flush()'s own tt_CONTEXT_TX_INTERVAL cadence), not flushing "
                "each one immediately\n");
     }
     if (opts.reliable) {
@@ -341,10 +341,10 @@ int main(int argc, char** argv) {
 
     uint64_t start_time = tt_get_ns();
     uint64_t next_send_time = start_time;
-    tt_Node_schedule(&node, start_time + tt_SECOND, report, NULL);
+    tt_Context_schedule(&node, start_time + tt_SECOND, report, NULL);
     if (opts.duration_s > 0.0) {
-        tt_Node_schedule(&node, start_time + (uint64_t)(opts.duration_s * (double)tt_SECOND), handle_duration_elapsed,
-                         NULL);
+        tt_Context_schedule(&node, start_time + (uint64_t)(opts.duration_s * (double)tt_SECOND),
+                            handle_duration_elapsed, NULL);
     }
 
     // In "as fast as poll() allows" mode (-i 0), pass 0 for a non-blocking poll pass between
@@ -359,7 +359,7 @@ int main(int argc, char** argv) {
 
     print_summary(start_time);
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     free(reliable_cache_arena); // NULL unless -R was passed; free(NULL) is a no-op
 
     return 0;

@@ -19,16 +19,16 @@
 #define TEST_MOCK_DEFINE_STORAGE
 #include "test_mock.h"
 
-// Whitebox: handle_receive_result() is static - these pin the one subtle rule tt_Node_poll()'s
+// Whitebox: handle_receive_result() is static - these pin the one subtle rule tt_Context_poll()'s
 // loop depends on (an interrupt must end the poll even when a scheduler entry was also about to
 // fire "soon" - the same short-wait window that legitimately swallows a plain timeout). The
-// full-tt_Node_poll() tests below cover the same behavior end to end via the mock HAL; see
+// full-tt_Context_poll() tests below cover the same behavior end to end via the mock HAL; see
 // src/hal_linux.c's/hal_freertos.c's own real, socket-based implementation (not exercised here -
 // this only proves TickLE's own dispatch logic, not the actual cross-thread wakeup).
 #include "../src/tickle.c" // NOLINT(bugprone-suspicious-include)
 
 static void test_interrupt_ends_poll_even_with_scheduler_wakeup_pending(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
 
@@ -40,7 +40,7 @@ static void test_interrupt_ends_poll_even_with_scheduler_wakeup_pending(void) {
 }
 
 static void test_interrupt_ends_poll_with_no_scheduler_wakeup_pending(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
 
@@ -54,7 +54,7 @@ static void test_interrupt_ends_poll_with_no_scheduler_wakeup_pending(void) {
 // was due must still be swallowed (the poll loop keeps going) - confirms the -3 branch above is
 // actually a distinct code path, not a side effect of some other change to this function.
 static void test_plain_timeout_still_swallowed_on_scheduler_wakeup(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
 
@@ -64,7 +64,7 @@ static void test_plain_timeout_still_swallowed_on_scheduler_wakeup(void) {
 }
 
 static void test_plain_timeout_ends_poll_without_scheduler_wakeup(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
 
@@ -75,7 +75,7 @@ static void test_plain_timeout_ends_poll_without_scheduler_wakeup(void) {
 }
 
 static void test_io_error_unaffected(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
 
@@ -85,32 +85,32 @@ static void test_io_error_unaffected(void) {
     EXPECT_EQ_INT(tt_RET_IO_ERROR, result);
 }
 
-// End to end through tt_Node_poll() itself (still via the mock HAL - see this file's own top
+// End to end through tt_Context_poll() itself (still via the mock HAL - see this file's own top
 // comment on what that does and doesn't prove).
 static void test_node_poll_returns_interrupted(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
     test_mock_reset();
     test_mock_receive_return = -3;
 
-    tt_ret_t ret = tt_Node_poll(&node, 1000000000); // 1s - the mock never really waits regardless
+    tt_ret_t ret = tt_Context_poll(&node, 1000000000); // 1s - the mock never really waits regardless
     EXPECT_EQ_INT(tt_RET_INTERRUPTED, ret);
 }
 
 static void test_node_interrupt_calls_hal_wake_signal(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
     test_mock_reset();
 
-    tt_ret_t ret = tt_Node_interrupt(&node);
+    tt_ret_t ret = tt_Context_interrupt(&node);
     EXPECT_EQ_INT(tt_RET_OK, ret);
     EXPECT_EQ_INT(1, test_mock_wake_signal_call_count);
 }
 
 static void test_node_interrupt_rejects_null(void) {
-    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Node_interrupt(NULL));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Context_interrupt(NULL));
 }
 
 int main(void) {

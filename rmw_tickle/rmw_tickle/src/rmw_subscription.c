@@ -21,7 +21,7 @@
 #include <stdlib.h> // getenv()/strtoull() - resolve_reorder_slots()
 #include <string.h>
 
-#include <tickle/config.h> // tt_NODE_UPDATE_INTERVAL
+#include <tickle/config.h> // tt_CONTEXT_UPDATE_INTERVAL
 #include <tickle/hal.h>    // tt_ret_t/tt_RET_OK/tt_get_ns
 #include <tickle/tickle.h>
 #include <tickle/trace.h>
@@ -41,7 +41,7 @@
 #include "rosidl_runtime_c/message_type_support_struct.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
 
-// Runs on the poll thread, inside tt_Node_poll() (see rmw_node.c) - the node lock is already
+// Runs on the poll thread, inside tt_Context_poll() (see rmw_node.c) - the node lock is already
 // held by the caller. `data` (topic->data_size bytes, decoded by TickLE) may have string/array
 // fields aliasing node->rx_buffer (DESIGN.md's "Strings" rule: TickLE's own decode() never
 // copies), valid only until this function returns - topic->data_free() runs right after. So the
@@ -207,7 +207,7 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
 
 // QoS roadmap #2 (DEADLINE) - see rmw_publisher.c's own check_publisher_deadline() doc comment,
 // same reasoning/threading, for a Subscription's REQUESTED_DEADLINE_MISSED instead.
-static void check_subscription_deadline(struct tt_Node* node, uint64_t time, void* param) {
+static void check_subscription_deadline(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)param;
     if (time - sub_impl->last_activity_time >= sub_impl->deadline_period_ns) {
@@ -217,8 +217,8 @@ static void check_subscription_deadline(struct tt_Node* node, uint64_t time, voi
     }
     // Deadline monitoring simply stops here on a reschedule failure - see rmw_publisher.c's own
     // check_publisher_deadline() doc comment on this same pattern.
-    (void)tt_Node_schedule(&sub_impl->node->context_impl->tickle_node, time + sub_impl->deadline_period_ns,
-                           check_subscription_deadline, sub_impl);
+    (void)tt_Context_schedule(&sub_impl->node->context_impl->tickle_context, time + sub_impl->deadline_period_ns,
+                              check_subscription_deadline, sub_impl);
 }
 
 // QoS roadmap #3 (LIVELINESS) - RMW_EVENT_LIVELINESS_CHANGED: "how many Publishers on my topic are
@@ -259,7 +259,7 @@ void rmw_tickle_update_subscription_liveliness_locked(rmw_tickle_subscriber_t* s
 // below re-scans the discovery table. See rmw_publisher.c's own identically-named/valued macro
 // for the full reasoning (shared cadence, not a shared symbol - each file defines its own, the
 // same convention RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS already uses).
-#define RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS tt_NODE_UPDATE_INTERVAL
+#define RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS tt_CONTEXT_UPDATE_INTERVAL
 
 // Bytes one reorder slot needs, for a subscription on this type.
 //
@@ -351,7 +351,7 @@ static uint16_t resolve_reorder_slots(uint16_t slot_bytes) {
 // incompatible() - see its own doc comment for the full reasoning (no wire-level trigger exists,
 // so this periodically re-derives a live count from the existing discovery table instead, the
 // same pattern check_subscription_liveliness() above already established).
-static void check_subscription_qos_incompatible(struct tt_Node* node, uint64_t time, void* param) {
+static void check_subscription_qos_incompatible(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)param;
     rmw_qos_policy_kind_t last_kind = RMW_QOS_POLICY_INVALID;
@@ -375,9 +375,9 @@ static void check_subscription_qos_incompatible(struct tt_Node* node, uint64_t t
 
     // Monitoring simply stops here on a reschedule failure - same reasoning as check_subscription_
     // deadline()'s own identical pattern above.
-    (void)tt_Node_schedule(&sub_impl->node->context_impl->tickle_node,
-                           time + RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS, check_subscription_qos_incompatible,
-                           sub_impl);
+    (void)tt_Context_schedule(&sub_impl->node->context_impl->tickle_context,
+                              time + RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS, check_subscription_qos_incompatible,
+                              sub_impl);
 }
 
 rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl_message_type_support_t* type_support,
@@ -420,10 +420,10 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     // reasoning (rmw_tickle_resolve_best_available()'s own doc comment, rmw_tickle.h, has the
     // algorithm). Reassigning the qos_profile parameter itself keeps every downstream reference
     // below already correct with no further edits needed.
-    tt_Node_lock(&node_impl->context_impl->tickle_node);
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
     rmw_qos_profile_t resolved_qos = rmw_tickle_resolve_best_available(qos_profile, &node_impl->context_impl->discovery,
                                                                        topic_name, RMW_TICKLE_ENTITY_SUBSCRIPTION);
-    tt_Node_unlock(&node_impl->context_impl->tickle_node);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
     qos_profile = &resolved_qos;
 
     rmw_tickle_subscriber_t* sub_impl =
@@ -539,13 +539,13 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         return NULL;
     }
 
-    tt_Node_lock(&node_impl->context_impl->tickle_node);
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
     tt_ret_t ret =
-        tt_Node_create_subscriber(&node_impl->context_impl->tickle_node, &sub_impl->tickle_subscriber, &sub_impl->topic,
-                                  sub_impl->rmw_subscription.topic_name, subscriber_callback);
-    tt_Node_unlock(&node_impl->context_impl->tickle_node);
+        tt_Context_create_subscriber(&node_impl->context_impl->tickle_context, &sub_impl->tickle_subscriber,
+                                     &sub_impl->topic, sub_impl->rmw_subscription.topic_name, subscriber_callback);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
     if (ret != tt_RET_OK) {
-        RMW_SET_ERROR_MSG("tt_Node_create_subscriber() failed");
+        RMW_SET_ERROR_MSG("tt_Context_create_subscriber() failed");
         pthread_mutex_destroy(&sub_impl->queue_mutex);
         allocator->deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator->state);
         allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
@@ -557,7 +557,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         return NULL;
     }
 
-    // Caller-owned storage is attached AFTER tt_Node_create_subscriber(), never before.
+    // Caller-owned storage is attached AFTER tt_Context_create_subscriber(), never before.
     //
     // That function initialises the fields it owns, which includes setting reorder_storage back to
     // NULL - so a buffer attached beforehand is silently discarded, and the Subscriber runs the
@@ -567,7 +567,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     // by a buffer that never held one - and receive throughput collapsed to a quarter.
     //
     // tracking_bitmaps moved with it. It happened to work where it was, because
-    // tt_Node_create_subscriber() did not zero that pair - a property of core's init list rather
+    // tt_Context_create_subscriber() did not zero that pair - a property of core's init list rather
     // than a contract, and the warning here said so. Since 2026-09-24 it does zero it (NULL/0 is
     // the documented default, and leaving it unset handed non-zeroed callers a garbage pointer), so
     // attaching it before create would now be discarded exactly like reorder_storage was.
@@ -604,12 +604,12 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     if (deadline_ns > 0) {
         sub_impl->deadline_period_ns = (uint64_t)deadline_ns;
         sub_impl->last_activity_time = tt_get_ns();
-        tt_Node_lock(&node_impl->context_impl->tickle_node);
+        tt_Context_lock(&node_impl->context_impl->tickle_context);
         // A failure here just leaves deadline monitoring inactive for this Subscription - see
         // rmw_publisher.c's own check_publisher_deadline() doc comment on this same pattern.
-        (void)tt_Node_schedule(&node_impl->context_impl->tickle_node, tt_get_ns() + sub_impl->deadline_period_ns,
-                               check_subscription_deadline, sub_impl);
-        tt_Node_unlock(&node_impl->context_impl->tickle_node);
+        (void)tt_Context_schedule(&node_impl->context_impl->tickle_context, tt_get_ns() + sub_impl->deadline_period_ns,
+                                  check_subscription_deadline, sub_impl);
+        tt_Context_unlock(&node_impl->context_impl->tickle_context);
     }
 
     // QoS roadmap #6 (LIFESPAN) - see rmw_tickle_subscriber_t.lifespan_ns's own doc comment.
@@ -651,20 +651,21 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
 
     rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)subscription->data;
 
-    tt_Node_lock(&sub_impl->node->context_impl->tickle_node);
+    tt_Context_lock(&sub_impl->node->context_impl->tickle_context);
     // QoS roadmap #2/#3 (DEADLINE/LIVELINESS) - cancel any still-armed check before the
-    // subscriber it closes over is freed below; both are no-ops if never started (tt_Node_
+    // subscriber it closes over is freed below; both are no-ops if never started (tt_Context_
     // unschedule() just finds nothing matching).
     if (sub_impl->deadline_period_ns != 0) {
-        tt_Node_unschedule(&sub_impl->node->context_impl->tickle_node, check_subscription_deadline, sub_impl);
+        tt_Context_unschedule(&sub_impl->node->context_impl->tickle_context, check_subscription_deadline, sub_impl);
     }
     // The QoS-incompatible check reschedules itself every period once its event is initialised; left armed,
     // it ran on this freed subscription - a SIGSEGV in test_events one run in twenty (test_event_teardown.c).
     if (sub_impl->requested_qos_incompatible_monitoring_started) {
-        tt_Node_unschedule(&sub_impl->node->context_impl->tickle_node, check_subscription_qos_incompatible, sub_impl);
+        tt_Context_unschedule(&sub_impl->node->context_impl->tickle_context, check_subscription_qos_incompatible,
+                              sub_impl);
     }
     tt_Subscriber_destroy(&sub_impl->tickle_subscriber);
-    tt_Node_unlock(&sub_impl->node->context_impl->tickle_node);
+    tt_Context_unlock(&sub_impl->node->context_impl->tickle_context);
 
     // Drain anything still queued - rmw_take() never got to these. Freed directly, not pushed
     // through shell_pool_push() - the pool itself is about to be freed too, right below.
@@ -815,10 +816,10 @@ rmw_ret_t rmw_subscription_event_init(rmw_event_t* rmw_event, const rmw_subscrip
         // the first call takes the current counts; from then on the core's discovery callback keeps
         // them. A later call just rewires the same rmw_event_t.
         if (!sub_impl->liveliness_monitoring) {
-            tt_Node_lock(&sub_impl->node->context_impl->tickle_node);
+            tt_Context_lock(&sub_impl->node->context_impl->tickle_context);
             sub_impl->liveliness_monitoring = true;
             rmw_tickle_update_subscription_liveliness_locked(sub_impl);
-            tt_Node_unlock(&sub_impl->node->context_impl->tickle_node);
+            tt_Context_unlock(&sub_impl->node->context_impl->tickle_context);
         }
         return RMW_RET_OK;
     case RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE:
@@ -830,13 +831,13 @@ rmw_ret_t rmw_subscription_event_init(rmw_event_t* rmw_event, const rmw_subscrip
         // just above.
         if (!sub_impl->requested_qos_incompatible_monitoring_started) {
             sub_impl->requested_qos_incompatible_monitoring_started = true;
-            tt_Node_lock(&sub_impl->node->context_impl->tickle_node);
+            tt_Context_lock(&sub_impl->node->context_impl->tickle_context);
             // A failure here just leaves this monitoring inactive for this Subscription - same
             // reasoning as the deadline/liveliness scheduling above.
-            (void)tt_Node_schedule(&sub_impl->node->context_impl->tickle_node,
-                                   tt_get_ns() + RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS,
-                                   check_subscription_qos_incompatible, sub_impl);
-            tt_Node_unlock(&sub_impl->node->context_impl->tickle_node);
+            (void)tt_Context_schedule(&sub_impl->node->context_impl->tickle_context,
+                                      tt_get_ns() + RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS,
+                                      check_subscription_qos_incompatible, sub_impl);
+            tt_Context_unlock(&sub_impl->node->context_impl->tickle_context);
         }
         return RMW_RET_OK;
     default:

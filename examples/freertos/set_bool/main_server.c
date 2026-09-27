@@ -24,7 +24,7 @@
 #define SERVER_TASK_STACK_WORDS 1024
 
 // Too large for a task's own stack - static instead, same reasoning as main.c's ROLE=selftest.
-static struct tt_Node node;
+static struct tt_Context node;
 static struct tt_Server server;
 
 static int8_t set_bool_callback(struct tt_Server* server_endpoint, struct SetBoolRequest* request,
@@ -52,19 +52,19 @@ static void server_task(void* param) {
 
     net_init();
 
-    tt_ret_t ret = tt_Node_create(&node);
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != tt_RET_OK) {
-        printf("server: tt_Node_create failed: %d\n", ret);
+        printf("server: tt_Context_create failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
     printf("server: node created, id=%u\n", node.id);
 
-    ret = tt_Node_create_server(&node, &server, &SetBoolService, "set_bool_server",
-                                (tt_SERVER_CALLBACK)set_bool_callback);
+    ret = tt_Context_create_server(&node, &server, &SetBoolService, "set_bool_server",
+                                   (tt_SERVER_CALLBACK)set_bool_callback);
     if (ret != tt_RET_OK) {
-        printf("server: tt_Node_create_server failed: %d\n", ret);
+        printf("server: tt_Context_create_server failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
@@ -72,7 +72,7 @@ static void server_task(void* param) {
     printf("server: ready\n");
 
     for (;;) {
-        tt_Node_poll(&node, -1);
+        tt_Context_poll(&node, -1);
     }
 }
 

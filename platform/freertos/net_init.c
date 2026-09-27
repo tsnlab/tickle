@@ -23,7 +23,7 @@
 #include "virtio_net.h"
 
 // Matches TickLE's own netns.mk dev/test convention (192.168.10.0/24) rather than the real
-// _tt_NODE_ADDRESS/_tt_NODE_BROADCAST defaults (0.0.0.0/255.255.255.255) - a static address is
+// _tt_CONTEXT_ADDRESS/_tt_CONTEXT_BROADCAST defaults (0.0.0.0/255.255.255.255) - a static address is
 // required since there's no DHCP server (see lwipopts.h). The last octet is this specific
 // instance's node ID - the Makefile's NODE_ID variable sets it (-DNET_NODE_ID=$(NODE_ID)) so two
 // separately-built images can each take a different address on the same segment (see
@@ -93,7 +93,7 @@ static err_t virtio_netif_init(struct netif* netif) {
 // virtio_net_recv() is polling/non-blocking (this driver has no interrupt to wait on - see
 // virtio_net.c), so this task exists purely to keep polling it and feed whatever arrives into
 // lwIP's tcpip thread via tcpip_input(). The 1ms idle delay matches tickle.c's own
-// tt_NODE_TX_INTERVAL polling cadence rather than being load-bearing on its own.
+// tt_CONTEXT_TX_INTERVAL polling cadence rather than being load-bearing on its own.
 static void net_poll_task(void* param) {
     struct netif* netif = param;
     static uint8_t rx_frame[VIRTIO_NET_MAX_FRAME_SIZE];

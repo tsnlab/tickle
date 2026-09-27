@@ -6,7 +6,7 @@
 // response time would fire while half the responses are still in flight.
 //
 // What is measured: ppoll() with a computed relative timeout and no fds, which is exactly what
-// tt_Node_poll() does when it waits for the next scheduler entry. Lateness = actual elapsed -
+// tt_Context_poll() does when it waits for the next scheduler entry. Lateness = actual elapsed -
 // requested. CLOCK_MONOTONIC throughout. Built with -D_GNU_SOURCE by wake_granularity.sh (ppoll
 // needs it on glibc), and declared here too so clang-tidy sees the declaration - same
 // NOLINTNEXTLINE precedent as src/hal_linux.c:19.

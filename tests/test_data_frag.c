@@ -151,14 +151,14 @@ static void on_data(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, s
 
 // --- nodes ----------------------------------------------------------------------------------------
 
-static struct tt_Node sender;
-static struct tt_Node receiver;
+static struct tt_Context sender;
+static struct tt_Context receiver;
 static struct tt_Topic sender_topic;
 static struct tt_Topic receiver_topic;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
 
-static void init_bare_node(struct tt_Node* node, uint8_t id) {
+static void init_bare_node(struct tt_Context* node, uint8_t id) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = id;
@@ -181,7 +181,7 @@ static void init_pair(uint32_t len) {
     sender_topic.data_size = 8;
     sender_topic.data_encode_size = sized_encode_size;
     sender_topic.data_encode = sized_encode;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
 
     init_bare_node(&receiver, RECEIVER_ID);
     memset(&receiver_topic, 0, sizeof(receiver_topic));
@@ -189,7 +189,7 @@ static void init_pair(uint32_t len) {
     receiver_topic.data_size = 8;
     receiver_topic.data_decode = checking_decode;
     receiver_topic.data_free = free_nothing;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&receiver, &sub, &receiver_topic, ENDPOINT_NAME, on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub, &receiver_topic, ENDPOINT_NAME, on_data));
 }
 
 static void deliver(int d) {
@@ -222,15 +222,15 @@ static void test_topics_up_to_the_sample_limit_can_be_created(void) {
     big_topic.data_decode = checking_decode;
     big_topic.data_free = free_nothing;
     big_topic.data_size = tt_MAX_SAMPLE_LENGTH;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&sender, &big_pub, &big_topic, ENDPOINT_NAME));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&receiver, &big_sub, &big_topic, ENDPOINT_NAME, on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &big_pub, &big_topic, ENDPOINT_NAME));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &big_sub, &big_topic, ENDPOINT_NAME, on_data));
     // Control: one byte more is still refused.
     struct tt_Publisher too_big_pub;
     struct tt_Subscriber too_big_sub;
     big_topic.data_size = tt_MAX_SAMPLE_LENGTH + 1;
-    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Node_create_publisher(&sender, &too_big_pub, &big_topic, "other"));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Context_create_publisher(&sender, &too_big_pub, &big_topic, "other"));
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT,
-                  tt_Node_create_subscriber(&receiver, &too_big_sub, &big_topic, "other", on_data));
+                  tt_Context_create_subscriber(&receiver, &too_big_sub, &big_topic, "other", on_data));
 }
 
 static void test_largest_data_is_not_fragmented(void) {
@@ -494,7 +494,7 @@ static void test_zero_copy_publish_fragments_too(void) {
 
 static void set_peers(uint8_t n) {
     for (uint8_t i = 0; i < n; i++) {
-        pub.peers[i] = (struct tt_Peer) {.ip = RECEIVER_IP + i, .port = PORT, .node_id = (uint8_t)(RECEIVER_ID + i)};
+        pub.peers[i] = (struct tt_Peer) {.ip = RECEIVER_IP + i, .port = PORT, .context_id = (uint8_t)(RECEIVER_ID + i)};
     }
 }
 
@@ -620,7 +620,7 @@ static void make_reliable(void) {
     pub.reliable_cache = &frag_cache;
 }
 
-static const struct tt_Peer receiver_peer = {.ip = RECEIVER_IP, .port = PORT, .node_id = RECEIVER_ID};
+static const struct tt_Peer receiver_peer = {.ip = RECEIVER_IP, .port = PORT, .context_id = RECEIVER_ID};
 
 static void test_sample_datagrams_matches_what_is_sent(void) {
     // tt_sample_datagrams() is what a caller sizes a cache in seq_no with (rmw_tickle does); it has to
@@ -799,13 +799,13 @@ static void sim_drain(void) {
             sim_dropped[d->from]++;
             continue;
         }
-        struct tt_Node* to = d->from == SENDER_ID ? &receiver : &sender;
+        struct tt_Context* to = d->from == SENDER_ID ? &receiver : &sender;
         sim_acting = to->id;
         process_packet(to, d->bytes, 0, d->len, d->from == SENDER_ID ? SENDER_IP : RECEIVER_IP, PORT);
     }
 }
 
-static void sim_run_due(struct tt_Node* node) {
+static void sim_run_due(struct tt_Context* node) {
     bool has_next = false;
     uint64_t next = 0;
     sim_acting = node->id;
@@ -1102,10 +1102,10 @@ static void test_reliable_two_writers_interleaved(void) {
     // slot offset is what keeps their datagrams from colliding.
     init_pair(2800);
     make_receiver_reliable(true);
-    static struct tt_Node second;
+    static struct tt_Context second;
     static struct tt_Publisher second_pub;
     init_bare_node(&second, 3);
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&second, &second_pub, &sender_topic, ENDPOINT_NAME));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&second, &second_pub, &sender_topic, ENDPOINT_NAME));
     publish_captured();
     uint8_t first_writer[2][tt_MAX_BUFFER_LENGTH];
     uint32_t first_len[2];
@@ -1183,7 +1183,7 @@ static void test_keep_all_counts_every_datagram(void) {
     make_reliable();
     frag_cache.depth = 4;
     pub.keep_all = true;
-    pub.peer_acks[0].node_id = RECEIVER_ID;
+    pub.peer_acks[0].context_id = RECEIVER_ID;
     pub.peer_acks[0].ack_seq_no = 1; // nothing acknowledged yet
     publish_captured();              // 3 unacknowledged: fits 4
     EXPECT_EQ_U32(3, pub.seq_no);

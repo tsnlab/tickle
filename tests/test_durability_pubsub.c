@@ -67,7 +67,7 @@ static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t 
     (void)data;
 }
 
-static void init_node_and_topic(struct tt_Node* node, struct tt_Topic* topic) {
+static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -87,7 +87,8 @@ static void init_node_and_topic(struct tt_Node* node, struct tt_Topic* topic) {
 // needs this to match an incoming UpdateEntity back to it, unlike test_reliable_pubsub.c's own
 // init_publisher() (which most of its own tests reach through tt_Publisher_publish() directly,
 // never through incoming-packet dispatch).
-static void init_publisher_registered_on_node(struct tt_Publisher* pub, struct tt_Node* node, struct tt_Topic* topic) {
+static void init_publisher_registered_on_node(struct tt_Publisher* pub, struct tt_Context* node,
+                                              struct tt_Topic* topic) {
     memset(pub, 0, sizeof(*pub));
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
     pub->endpoint.id = ENDPOINT_ID;
@@ -95,7 +96,7 @@ static void init_publisher_registered_on_node(struct tt_Publisher* pub, struct t
     pub->node = node;
     pub->topic = topic;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        pub->peers[i].node_id = tt_NODE_ID_INVALID;
+        pub->peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
 
     node->endpoint_count = 1;
@@ -113,7 +114,7 @@ static void init_header(struct tt_Header* header) {
 // returning the tail offset (matching what process_packet() would have handed process_data()) -
 // same shape as tests/test_peer_discovery.c's own write_update_one_entity(), narrowed to the one
 // entity kind these tests need.
-static uint32_t write_update_one_subscriber(struct tt_Node* node, uint64_t last_modified, uint32_t endpoint_id) {
+static uint32_t write_update_one_subscriber(struct tt_Context* node, uint64_t last_modified, uint32_t endpoint_id) {
     struct test_announce* update_header = test_announce_at(node->rx_buffer);
     test_announce_set_last_modified(update_header, last_modified);
     update_header->announce.entity_count = 1;
@@ -137,7 +138,7 @@ static uint32_t write_update_one_subscriber(struct tt_Node* node, uint64_t last_
 // tests/test_reliable_pubsub.c's own write_data(), needed here too for this file's own combined
 // RELIABILITY+DURABILITY regression test (each tests/test_*.c is its own standalone binary, no
 // helpers shared across files).
-static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t timestamp, uint32_t value) {
+static uint32_t write_data(struct tt_Context* node, uint32_t seq_no, uint64_t timestamp, uint32_t value) {
     struct tt_DataHeader* data_header = (struct tt_DataHeader*)node->rx_buffer;
     data_header->endpoint_id = ENDPOINT_ID;
     data_header->seq_no = seq_no;
@@ -152,7 +153,7 @@ static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t times
 // `bitmap` fills word 0 only (every call site in this file fits well within 64 bits) - the rest of
 // acknack_header->bitmap[] relies on node->rx_buffer starting zeroed (see this file's own note on
 // that), same as every other multi-byte field this helper leaves at its default.
-static uint32_t write_acknack(struct tt_Node* node, uint32_t endpoint_id, uint32_t seq_no, uint64_t bitmap) {
+static uint32_t write_acknack(struct tt_Context* node, uint32_t endpoint_id, uint32_t seq_no, uint64_t bitmap) {
     struct tt_AckNackHeader* acknack_header = (struct tt_AckNackHeader*)node->rx_buffer;
     memset(acknack_header, 0, sizeof(*acknack_header));
     acknack_header->endpoint_id = endpoint_id;
@@ -186,7 +187,7 @@ static bool bitmap_equals_u64(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], u
 static void test_durability_publish_caches_and_evicts(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -224,7 +225,7 @@ static void test_durability_publish_caches_and_evicts(void) {
 static void test_durability_delivers_backlog_to_newly_discovered_subscriber(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -270,7 +271,7 @@ static void test_durability_delivers_backlog_to_newly_discovered_subscriber(void
 static void test_durability_skips_expired_backlog_entries(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -310,7 +311,7 @@ static void test_durability_skips_expired_backlog_entries(void) {
 static void test_upsert_peer_true_only_for_new_slot(void) {
     struct tt_Peer peers[tt_MAX_PEER_COUNT];
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        peers[i].node_id = tt_NODE_ID_INVALID;
+        peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
 
     EXPECT_TRUE(upsert_peer(peers, REMOTE_NODE_ID, TEST_SENDER_IP, TEST_SENDER_PORT));
@@ -325,7 +326,7 @@ static void test_upsert_peer_true_only_for_new_slot(void) {
 static void test_durability_no_redelivery_on_unchanged_update(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -367,7 +368,7 @@ static void test_durability_no_redelivery_on_unchanged_update(void) {
 static void test_durability_no_redelivery_after_liveliness_false_positive(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -423,7 +424,7 @@ static void test_durability_no_redelivery_after_liveliness_false_positive(void) 
 static void test_durability_redelivers_after_genuine_restart(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -467,7 +468,7 @@ static void test_durability_redelivers_after_genuine_restart(void) {
 static void test_durability_ignored_for_volatile_publisher(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -509,7 +510,7 @@ static void test_durability_ignored_for_volatile_publisher(void) {
 static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -555,11 +556,11 @@ static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void
     sub.reorder_slots = 4;
     sub.reorder_slot_bytes = sizeof(struct tt_ReorderSlot) + 64;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        sub.writers[i].node_id = tt_NODE_ID_INVALID; // all empty - never heard from this Publisher
-                                                     // before, exactly the "first contact" case
-                                                     // this milestone's own sequencing question was
-                                                     // about (Milestone 47 - now a WriterProxy table
-                                                     // entry, created lazily on first contact).
+        sub.writers[i].context_id = tt_CONTEXT_ID_INVALID; // all empty - never heard from this Publisher
+                                                           // before, exactly the "first contact" case
+                                                           // this milestone's own sequencing question was
+                                                           // about (Milestone 47 - now a WriterProxy table
+                                                           // entry, created lazily on first contact).
     }
     node.endpoints[1] = (struct tt_Endpoint*)&sub;
     node.endpoint_count = 2;

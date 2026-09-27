@@ -48,7 +48,7 @@ intentional tradeoff for its target (10Base-T1S, typically a physically isolated
 single-purpose automotive/industrial segment) - don't run it on a shared or untrusted network
 without your own isolation (a dedicated VLAN/physical segment).
 
-A `struct tt_Node` and its endpoints are not thread-safe: create, poll, and destroy a given
+A `struct tt_Context` and its endpoints are not thread-safe: create, poll, and destroy a given
 node from a single thread. Sharing one node across threads needs external locking of your
 own - none is provided internally.
 
@@ -87,7 +87,7 @@ copy `libtickle.a` + `include/tickle/` into your project directly, if you'd rath
 - **The public headers need C11** (`-std=c11` or newer - they use an anonymous union in
   `tt_Header`). They are otherwise `-pedantic`-clean.
 - **The library never allocates or copies on your behalf**, on any path - there is no
-  `malloc()`/`free()` anywhere in `src/`. Every struct you hand a `tt_Node_create*` call (the node,
+  `malloc()`/`free()` anywhere in `src/`. Every struct you hand a `tt_Context_create*` call (the node,
   the client/server/publisher/subscriber, its service/topic) and every string (`endpoint_name`,
   `service->name`, `topic->name`) must outlive the endpoint - string literals are fine, a freed
   buffer is not.
@@ -100,7 +100,7 @@ copy `libtickle.a` + `include/tickle/` into your project directly, if you'd rath
   pointer. **The sizes are yours too**: a cache's sample count and byte size are that publisher's
   own DDS `RESOURCE_LIMITS`, which TickLE enforces and never chooses. See
   [DESIGN.md](DESIGN.md)'s "The library never allocates; the caller owns every buffer".
-- **One `tt_Node` is single-threaded**: drive all of its calls from one thread (see
+- **One `tt_Context` is single-threaded**: drive all of its calls from one thread (see
   [DESIGN.md](DESIGN.md), "Concurrency").
 - Delivery is BEST_EFFORT unless a publisher is given a reliable cache. What each mode promises
   is under "Delivery guarantees" below.
@@ -203,10 +203,10 @@ Every example binary accepts the same interface-configuration flags, on top of t
 compiled-in defaults `make run*` relies on:
 
 - `-b` broadcast address (default `192.168.10.255`)
-- `-p` UDP port (default: compiled-in `tt_NODE_PORT`)
-- `-a` bind address (default: compiled-in `tt_NODE_ADDRESS`)
-- `-I` explicit node ID `1`-`254`, overriding auto-detection from `-a`/`-b`'s subnet (see
-  `_tt_CONFIG.node_id`'s own comment in `config.h`). Auto-detection needs each side to have its
+- `-p` UDP port (default: compiled-in `tt_CONTEXT_PORT`)
+- `-a` bind address (default: compiled-in `tt_CONTEXT_ADDRESS`)
+- `-I` explicit context ID (formerly node ID) `1`-`254`, overriding auto-detection from `-a`/`-b`'s subnet (see
+  `_tt_CONFIG.context_id`'s own comment in `config.h`). Auto-detection needs each side to have its
   own distinct address in that subnet - real separate hosts/namespaces give that for free (which
   is why `test-linux`'s veth namespace pair doesn't need `-I`), but two processes sharing one
   network namespace/interface can't be told apart that way, so `-I` fills in for it there.
@@ -225,7 +225,7 @@ a machine with more than one interface, and the three defaults in play are not t
 | | broadcast default | scoped by the routing table? |
 |---|---|---|
 | These example binaries | `192.168.10.255` (each example sets it) | yes |
-| The library itself (`_tt_NODE_BROADCAST`, `config.h`) | `255.255.255.255` | **no** |
+| The library itself (`_tt_CONTEXT_BROADCAST`, `config.h`) | `255.255.255.255` | **no** |
 | `rmw_tickle` under ROS 2 | the library's, unless `TICKLE_BROADCAST_ADDR` is set | **no** |
 
 That difference is not academic: it is why these examples have never left their link and why a
@@ -409,7 +409,7 @@ $ ./perf_client [-s message_size_bytes] [-i interval_seconds] [-B] [-R]
 ```
 
 - `-s` payload bytes per message (default/max: see "Message size: filling an Ethernet frame" below)
-- `-i` seconds to wait between sends (default: see below; `0` sends as fast as `tt_Node_poll()` allows instead of on a fixed schedule)
+- `-i` seconds to wait between sends (default: see below; `0` sends as fast as `tt_Context_poll()` allows instead of on a fixed schedule)
 - `-B` batch sends instead of flushing each one immediately (default: flush immediately, same as a
   real `tt_Publisher` - `pub->batch` in `include/tickle/tickle.h`). Worth passing for an uncapped
   (`-i 0`), small (`-s`) flood specifically: measured on real hardware, that combination without
@@ -454,7 +454,7 @@ can't drift apart. See "Interface serialization (TickLE CDR-4)" in DESIGN.md and
 `perf_client` defaults `-s` to exactly `BULKDATA__PAYLOAD_CAPACITY` (1442) - the biggest packet
 this protocol can put on the wire without fragmenting - so every send makes the most of one
 frame. `-i` defaults to `0`, meaning no fixed schedule at all: publish as fast as
-`tt_Node_poll()` allows, which is the right default for a throughput benchmark. On real
+`tt_Context_poll()` allows, which is the right default for a throughput benchmark. On real
 10Base-T1S hardware the 10 Mbit/s link itself becomes the bottleneck well before max-size,
 unpaced sending would.
 
@@ -470,13 +470,13 @@ interval_seconds = (message_size + 30) * 8 / line_rate_bps
 $ ./perf_client -i 0.0011776
 ```
 
-`tt_Node_poll()`'s own call overhead sets a ceiling on how many times per second `perf_client`'s
+`tt_Context_poll()`'s own call overhead sets a ceiling on how many times per second `perf_client`'s
 loop can even check whether a send is due, independent of `-i`. `tt_receive()` waits for
 readability with `poll()` rather than blocking on `recvfrom()` with `SO_RCVTIMEO`, so an idle
-wait is capped at a real 1ms (`tt_NODE_TX_INTERVAL`) rather than the ~2ms an older,
+wait is capped at a real 1ms (`tt_CONTEXT_TX_INTERVAL`) rather than the ~2ms an older,
 `SO_RCVTIMEO`-based implementation measured on this hardware regardless of the requested
 timeout. In practice it's usually faster than that worst case: `perf_client` also receives its
-own broadcast echo, so most `tt_Node_poll()` calls return as soon as that arrives instead of
+own broadcast echo, so most `tt_Context_poll()` calls return as soon as that arrives instead of
 waiting out the full 1ms - measured at roughly 1,860 calls/sec (~0.54ms/call) with small
 messages on this network. A requested `-i` much smaller than that won't be hit exactly (it'll
 just behave like `-i 0`). `perf_client`'s interval reports and final summary always show the

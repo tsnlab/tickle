@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// How long tt_Node_poll() decides to wait (2026-09-25, the user's decisions: the scheduler already knows
+// How long tt_Context_poll() decides to wait (2026-09-25, the user's decisions: the scheduler already knows
 // when the next thing is due, so wait exactly until then, and indefinitely when nothing is - new work from
 // another thread arrives by interrupt). A negative timeout used to be a fixed 100us slice - ~10,000 wakes
 // a second on an idle node, measured on the rig as 99.7% of the latency client's system time. It now
@@ -34,14 +34,14 @@
 static int entry_runs = 0;
 static uint64_t entry_ran_at = 0;
 
-static void count_entry(struct tt_Node* node, uint64_t time, void* param) {
+static void count_entry(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     (void)param;
     entry_runs++;
     entry_ran_at = time;
 }
 
-static void setup(struct tt_Node* node) {
+static void setup(struct tt_Context* node) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     test_mock_reset();
@@ -54,12 +54,12 @@ static void setup(struct tt_Node* node) {
 // thirty 100us slices - runs the entry, and returns. Under the old contract the one wait would have been
 // 100us and the poll would have returned with the entry still pending.
 static void test_negative_poll_waits_until_the_next_entry(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     setup(&node);
     test_mock_now = 10 * tt_MILLISECOND;
-    EXPECT_TRUE(tt_Node_schedule(&node, test_mock_now + (3 * tt_MILLISECOND), count_entry, NULL));
+    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (3 * tt_MILLISECOND), count_entry, NULL));
 
-    tt_ret_t ret = tt_Node_poll(&node, -1);
+    tt_ret_t ret = tt_Context_poll(&node, -1);
 
     EXPECT_EQ_INT(tt_RET_TIMEOUT, ret);
     EXPECT_EQ_INT(1, test_mock_receive_call_count);                              // one wait
@@ -71,10 +71,10 @@ static void test_negative_poll_waits_until_the_next_entry(void) {
 // Nothing scheduled: nothing to wake up for, so no deadline at all - 0, which tt_receive() takes as "no
 // timeout". The mock answers at once; a real HAL would block until a datagram, a signal or an interrupt.
 static void test_negative_poll_with_nothing_scheduled_blocks_indefinitely(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     setup(&node);
 
-    tt_ret_t ret = tt_Node_poll(&node, -1);
+    tt_ret_t ret = tt_Context_poll(&node, -1);
 
     EXPECT_EQ_INT(tt_RET_TIMEOUT, ret);
     EXPECT_EQ_INT(1, test_mock_receive_call_count);
@@ -84,11 +84,11 @@ static void test_negative_poll_with_nothing_scheduled_blocks_indefinitely(void) 
 // However far off the next entry is, the wait is exactly that - there is no ceiling to cut it into
 // pieces, which is where the ~10,000 idle wakes a second came from.
 static void test_negative_poll_waits_exactly_for_a_distant_entry(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     setup(&node);
-    EXPECT_TRUE(tt_Node_schedule(&node, 5 * tt_SECOND, count_entry, NULL));
+    EXPECT_TRUE(tt_Context_schedule(&node, 5 * tt_SECOND, count_entry, NULL));
 
-    tt_ret_t ret = tt_Node_poll(&node, -1);
+    tt_ret_t ret = tt_Context_poll(&node, -1);
 
     EXPECT_EQ_INT(tt_RET_TIMEOUT, ret);
     EXPECT_EQ_INT(1, test_mock_receive_call_count); // one wait, not fifty thousand 100us slices
@@ -102,13 +102,13 @@ static void test_negative_poll_waits_exactly_for_a_distant_entry(void) {
 // the wait returned, and no time passed. The call limit turns the regression - waiting again, forever -
 // into a failed assertion instead of a hung test.
 static void test_negative_poll_returns_when_a_wait_is_cut_short(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     setup(&node);
     test_mock_receive_advances_clock = false; // the wait ends without the time passing: a signal
     test_mock_receive_limit = 3;
-    EXPECT_TRUE(tt_Node_schedule(&node, 50 * tt_MILLISECOND, count_entry, NULL));
+    EXPECT_TRUE(tt_Context_schedule(&node, 50 * tt_MILLISECOND, count_entry, NULL));
 
-    tt_ret_t ret = tt_Node_poll(&node, -1);
+    tt_ret_t ret = tt_Context_poll(&node, -1);
 
     EXPECT_EQ_INT(tt_RET_TIMEOUT, ret);             // handed back, not interrupted by the backstop
     EXPECT_EQ_INT(1, test_mock_receive_call_count); // after the one wait that was cut short
@@ -118,14 +118,14 @@ static void test_negative_poll_returns_when_a_wait_is_cut_short(void) {
 // Everything already due runs before the poll returns - a burst of simultaneous timers costs one return,
 // not one per timer - and nothing waits at all. An entry that is not due yet is left alone.
 static void test_negative_poll_runs_every_due_entry_then_returns(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     setup(&node);
     test_mock_now = 5 * tt_MILLISECOND;
-    EXPECT_TRUE(tt_Node_schedule(&node, test_mock_now, count_entry, NULL));
-    EXPECT_TRUE(tt_Node_schedule(&node, test_mock_now - 1, count_entry, NULL));
-    EXPECT_TRUE(tt_Node_schedule(&node, test_mock_now + (2 * tt_MILLISECOND), count_entry, NULL));
+    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now, count_entry, NULL));
+    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now - 1, count_entry, NULL));
+    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (2 * tt_MILLISECOND), count_entry, NULL));
 
-    tt_ret_t ret = tt_Node_poll(&node, -1);
+    tt_ret_t ret = tt_Context_poll(&node, -1);
 
     EXPECT_EQ_INT(tt_RET_TIMEOUT, ret);
     EXPECT_EQ_INT(2, entry_runs);                   // both due entries
@@ -140,20 +140,20 @@ static void test_negative_poll_runs_every_due_entry_then_returns(void) {
 // Stops rescheduling after this many runs, so that losing the cap - the regression this test is for -
 // fails as "ran 1000 times" instead of hanging the test binary on a loop that never ends.
 #define BUSY_RUN_LIMIT 1000
-static void busy_entry(struct tt_Node* node, uint64_t time, void* param) {
+static void busy_entry(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     entry_runs++;
     test_mock_now += BUSY_RUN_NS;
     if (entry_runs < BUSY_RUN_LIMIT) {
-        EXPECT_TRUE(tt_Node_schedule(node, time, busy_entry, NULL)); // due again at once
+        EXPECT_TRUE(tt_Context_schedule(node, time, busy_entry, NULL)); // due again at once
     }
 }
 static void test_negative_poll_on_a_busy_node_keeps_the_old_slice(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     setup(&node);
-    EXPECT_TRUE(tt_Node_schedule(&node, 0, busy_entry, NULL));
+    EXPECT_TRUE(tt_Context_schedule(&node, 0, busy_entry, NULL));
 
-    tt_ret_t ret = tt_Node_poll(&node, -1);
+    tt_ret_t ret = tt_Context_poll(&node, -1);
 
     EXPECT_EQ_INT(tt_RET_TIMEOUT, ret);
     EXPECT_EQ_INT(4, entry_runs);                         // 4 x 30us: the first run past 100us
@@ -163,12 +163,12 @@ static void test_negative_poll_on_a_busy_node_keeps_the_old_slice(void) {
 
 // An interrupt still ends a negative-timeout poll at once.
 static void test_negative_poll_is_still_interruptible(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     setup(&node);
     test_mock_receive_return = -3;
-    EXPECT_TRUE(tt_Node_schedule(&node, 50 * tt_MILLISECOND, count_entry, NULL));
+    EXPECT_TRUE(tt_Context_schedule(&node, 50 * tt_MILLISECOND, count_entry, NULL));
 
-    EXPECT_EQ_INT(tt_RET_INTERRUPTED, tt_Node_poll(&node, -1));
+    EXPECT_EQ_INT(tt_RET_INTERRUPTED, tt_Context_poll(&node, -1));
     EXPECT_EQ_INT(0, entry_runs);
 }
 
@@ -176,11 +176,11 @@ static void test_negative_poll_is_still_interruptible(void) {
 // the poll runs the entry and then keeps waiting out the rest of its budget rather than returning early -
 // which is also what distinguishes it from the negative case above.
 static void test_positive_poll_is_unchanged(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     setup(&node);
-    EXPECT_TRUE(tt_Node_schedule(&node, 3 * tt_MILLISECOND, count_entry, NULL));
+    EXPECT_TRUE(tt_Context_schedule(&node, 3 * tt_MILLISECOND, count_entry, NULL));
 
-    tt_ret_t ret = tt_Node_poll(&node, (int64_t)tt_SECOND);
+    tt_ret_t ret = tt_Context_poll(&node, (int64_t)tt_SECOND);
 
     EXPECT_EQ_INT(tt_RET_TIMEOUT, ret);
     EXPECT_EQ_INT(1, entry_runs);
@@ -188,13 +188,13 @@ static void test_positive_poll_is_unchanged(void) {
     EXPECT_EQ_U64(tt_SECOND - (3 * tt_MILLISECOND), (uint64_t)test_mock_receive_last_timeout);
 }
 
-// node_flush() is armed on demand (2026-09-25). It used to reschedule itself every tt_NODE_TX_INTERVAL
+// node_flush() is armed on demand (2026-09-25). It used to reschedule itself every tt_CONTEXT_TX_INTERVAL
 // whether or not anything was waiting, so a node was never idle: an exact wait for the next scheduler
 // entry still woke a thousand times a second. Measured with strace on the uint64 example subscriber, idle
 // for 3s on real sockets: 15,652 ppoll calls before, 9 after.
 
 // Stages one small batched submessage the way a publisher that is not flushing immediately does.
-static void stage_one_batched_submessage(struct tt_Node* node) {
+static void stage_one_batched_submessage(struct tt_Context* node) {
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
     struct tt_SubmessageHeader* header = start_encode(node, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL);
@@ -209,7 +209,7 @@ static void stage_one_batched_submessage(struct tt_Node* node) {
 // arming "now + one interval" instead would have made it a full interval every time: +0.5ms on average for
 // every batching publisher, hidden inside an efficiency change. So the flush lands on the grid boundary.
 static void test_flush_is_armed_on_the_old_grid(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     setup(&node);
     test_mock_now = (12 * tt_MILLISECOND) + (300 * tt_MICROSECOND); // 12.3ms: mid-interval
     EXPECT_EQ_INT(0, node.scheduler_tail);                          // nothing armed while nothing waits
@@ -224,7 +224,7 @@ static void test_flush_is_armed_on_the_old_grid(void) {
 // A second batched submessage in the same interval rides the flush already armed; and once the flush has
 // sent everything, nothing is left ticking - the node is idle until something is sent again.
 static void test_flush_arms_once_and_does_not_tick_when_idle(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     setup(&node);
     test_mock_now = 20 * tt_MILLISECOND;
 
@@ -234,8 +234,8 @@ static void test_flush_arms_once_and_does_not_tick_when_idle(void) {
     EXPECT_TRUE(end_encode(&node, header, false, NULL, 0));
     EXPECT_EQ_INT(1, node.scheduler_tail); // still one flush, not two
 
-    EXPECT_EQ_INT(tt_RET_TIMEOUT, tt_Node_poll(&node, -1)); // waits to the boundary and flushes
-    EXPECT_EQ_INT(1, test_mock_send_call_count);            // both submessages, one datagram
+    EXPECT_EQ_INT(tt_RET_TIMEOUT, tt_Context_poll(&node, -1)); // waits to the boundary and flushes
+    EXPECT_EQ_INT(1, test_mock_send_call_count);               // both submessages, one datagram
     EXPECT_TRUE(!node.flush_scheduled);
     EXPECT_EQ_INT(0, node.scheduler_tail); // and nothing re-armed with the buffer empty
 }
@@ -260,21 +260,21 @@ static int32_t write_datagram_from(uint8_t* buffer, uint8_t source) {
 }
 
 static void test_a_datagram_after_a_long_wait_is_stamped_when_it_arrived(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     setup(&node);
     node.id = 1;
     test_mock_now = tt_SECOND;
     test_mock_receive_return = write_datagram_from(node.rx_buffer, STAMP_SOURCE);
     test_mock_receive_data_advance_ns = 500 * tt_MILLISECOND; // it arrives half a second into the wait
 
-    (void)tt_Node_poll(&node, -1);
+    (void)tt_Context_poll(&node, -1);
 
     EXPECT_EQ_U64(tt_SECOND + (500 * tt_MILLISECOND), node.traffic_last_seen[STAMP_SOURCE]);
     EXPECT_EQ_U64(0, node.rx_clock_ns); // and outside a poll the clock is read again
 }
 
 static void test_a_long_drain_keeps_its_stamps_fresh(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     setup(&node);
     node.id = 1;
     test_mock_now = tt_SECOND;
@@ -285,7 +285,7 @@ static void test_a_long_drain_keeps_its_stamps_fresh(void) {
     test_mock_try_receive_advance_ns = tt_MICROSECOND;
 
     uint64_t locks_before = node.state_lock_stats.acquisitions;
-    (void)tt_Node_poll(&node, -1);
+    (void)tt_Context_poll(&node, -1);
 
     EXPECT_EQ_INT(0, test_mock_try_receive_remaining);
     // D4 (OPTIMIZATION_PLAN.md 11.4): the backlog is processed tt_RX_LOCK_CHUNK datagrams to a taking of the lock,

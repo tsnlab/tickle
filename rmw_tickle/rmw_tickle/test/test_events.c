@@ -11,7 +11,7 @@
 // QoS roadmap #2 (DEADLINE) + #3 (LIVELINESS): the first rmw_tickle test to exercise real rmw_
 // create_publisher()/rmw_create_subscription()/rmw_publish() end to end (every earlier Milestone
 // 10 test either stayed one level below that - test_graph.c builds a raw tt_Publisher/tt_
-// Subscriber directly on tickle_node, bypassing rosidl entirely - or never touched a publisher/
+// Subscriber directly on tickle_context, bypassing rosidl entirely - or never touched a publisher/
 // subscriber at all). rmw_tickle_get_message_callbacks() (rmw_typesupport.c) needs a real
 // rosidl_message_type_support_t resolvable to a rosidl_typesupport_tickle_c_message_callbacks_t,
 // which normally only tools/typesupport's own generated <name>__type_support.c produces from a
@@ -30,7 +30,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include <tickle/config.h> // tt_MAX_DISCOVERED_ENTITIES, tt_NODE_ID_INVALID, tt_MILLISECOND
+#include <tickle/config.h> // tt_MAX_DISCOVERED_ENTITIES, tt_CONTEXT_ID_INVALID, tt_MILLISECOND
 #include <tickle/hal.h>    // tt_get_ns()
 #include <tickle/tickle.h> // tt_DATA_ENCODE/_ENCODE_SIZE/_DECODE/_FREE
 
@@ -128,7 +128,7 @@ static const rosidl_message_type_support_t* fake_type_support(void) {
 // margin matters on a possibly-loaded CI machine, not just this test's own idle one.
 #define DEADLINE_MS 60
 #define WAIT_MS 500
-// Arbitrary, != tt_NODE_ID_INVALID - see the injected struct tt_DiscoveredEntity.node_id's own
+// Arbitrary, != tt_CONTEXT_ID_INVALID - see the injected struct tt_DiscoveredEntity.context_id's own
 // comment below for why the exact value is otherwise inconsequential.
 #define FAKE_REMOTE_NODE_ID 99
 
@@ -146,19 +146,19 @@ static rmw_ret_t wait_or_explain(rmw_events_t* events, rmw_wait_set_t* wait_set,
     if (RMW_RET_OK == ret) {
         return ret;
     }
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     (void)fprintf(stderr,
                   "%s: rmw_wait returned %d after %llu ms; injected slot node=%u alive=%d kind=%u qos=%u name=%s\n",
-                  label, (int)ret, (unsigned long long)((tt_get_ns() - start) / tt_MILLISECOND), slot->node_id,
+                  label, (int)ret, (unsigned long long)((tt_get_ns() - start) / tt_MILLISECOND), slot->context_id,
                   slot->alive ? 1 : 0, slot->kind, slot->qos, slot->name);
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
         const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->node_id != tt_NODE_ID_INVALID) {
-            (void)fprintf(stderr, "  slot %u: node=%u alive=%d kind=%u name=%s\n", i, entity->node_id,
+        if (entity->context_id != tt_CONTEXT_ID_INVALID) {
+            (void)fprintf(stderr, "  slot %u: node=%u alive=%d kind=%u name=%s\n", i, entity->context_id,
                           entity->alive ? 1 : 0, entity->kind, entity->name);
         }
     }
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
     return ret;
 }
 
@@ -304,7 +304,7 @@ int main(void) {
 
     rmw_tickle_publisher_t* offered_pub_impl = (rmw_tickle_publisher_t*)offered_pub->data;
     rmw_tickle_context_impl_t* context_impl = offered_pub_impl->node->context_impl;
-    // >= RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS (tt_NODE_UPDATE_INTERVAL, 1s) so the
+    // >= RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS (tt_CONTEXT_UPDATE_INTERVAL, 1s) so the
     // periodic check's own first firing after event_init() below has time to actually run.
     rmw_time_t qos_wait_timeout = {2, 0};
 
@@ -313,19 +313,19 @@ int main(void) {
     rmw_event_t offered_qos_event = rmw_get_zero_initialized_event();
     assert(RMW_RET_OK == rmw_publisher_event_init(&offered_qos_event, offered_pub, RMW_EVENT_OFFERED_QOS_INCOMPATIBLE));
 
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     struct tt_DiscoveredEntity* sub_slot = &context_impl->discovery.entities[0];
-    sub_slot->node_id = FAKE_REMOTE_NODE_ID; // any value other than tt_NODE_ID_INVALID - discovery never records
-                                             // this process's own local entities, so which remote id it names is
-                                             // inconsequential to the comparison itself (rmw_graph.c's own qos_
-                                             // incompatible(), matched purely by kind + topic name + qos bits)
-    sub_slot->endpoint_id = 0;               // unused by the comparison - see rmw_graph.c
+    sub_slot->context_id = FAKE_REMOTE_NODE_ID; // any value other than tt_CONTEXT_ID_INVALID - discovery never records
+                                                // this process's own local entities, so which remote id it names is
+                                                // inconsequential to the comparison itself (rmw_graph.c's own qos_
+                                                // incompatible(), matched purely by kind + topic name + qos bits)
+    sub_slot->endpoint_id = 0;                  // unused by the comparison - see rmw_graph.c
     sub_slot->kind = tt_KIND_TOPIC_SUBSCRIBER;
     sub_slot->qos = tt_UPDATE_QOS_RELIABLE;
     sub_slot->alive = true;
     snprintf(sub_slot->type, sizeof(sub_slot->type), "test_events/msg/FakeMsg");
     snprintf(sub_slot->name, sizeof(sub_slot->name), "offered_qos_pub_topic");
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
 
     events_storage[0] = &offered_qos_event;
     events.event_count = 1;
@@ -356,16 +356,16 @@ int main(void) {
     assert(RMW_RET_OK ==
            rmw_publisher_event_init(&liveliness_offered_event, liveliness_pub, RMW_EVENT_OFFERED_QOS_INCOMPATIBLE));
 
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     struct tt_DiscoveredEntity* manual_sub_slot = &context_impl->discovery.entities[2];
-    manual_sub_slot->node_id = FAKE_REMOTE_NODE_ID;
+    manual_sub_slot->context_id = FAKE_REMOTE_NODE_ID;
     manual_sub_slot->endpoint_id = 0;
     manual_sub_slot->kind = tt_KIND_TOPIC_SUBSCRIBER;
     manual_sub_slot->qos = tt_UPDATE_QOS_LIVELINESS_MANUAL; // requests MANUAL_BY_TOPIC - RELIABLE/DURABLE not requested
     manual_sub_slot->alive = true;
     snprintf(manual_sub_slot->type, sizeof(manual_sub_slot->type), "test_events/msg/FakeMsg");
     snprintf(manual_sub_slot->name, sizeof(manual_sub_slot->name), "offered_liveliness_pub_topic");
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
 
     events_storage[0] = &liveliness_offered_event;
     events.event_count = 1;
@@ -394,16 +394,16 @@ int main(void) {
     assert(RMW_RET_OK ==
            rmw_subscription_event_init(&requested_qos_event, requested_sub, RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE));
 
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     struct tt_DiscoveredEntity* pub_slot = &context_impl->discovery.entities[1];
-    pub_slot->node_id = FAKE_REMOTE_NODE_ID;
+    pub_slot->context_id = FAKE_REMOTE_NODE_ID;
     pub_slot->endpoint_id = 0;
     pub_slot->kind = tt_KIND_TOPIC_PUBLISHER;
     pub_slot->qos = 0; // offers neither bit
     pub_slot->alive = true;
     snprintf(pub_slot->type, sizeof(pub_slot->type), "test_events/msg/FakeMsg");
     snprintf(pub_slot->name, sizeof(pub_slot->name), "requested_qos_sub_topic");
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
 
     events_storage[0] = &requested_qos_event;
     events.event_count = 1;
@@ -430,32 +430,32 @@ int main(void) {
         rmw_create_publisher(node, type_support, "matched_count_topic", &matched_qos, &pub_opts);
     assert(NULL != matched_pub);
     rmw_tickle_publisher_t* matched_impl = (rmw_tickle_publisher_t*)matched_pub->data;
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     struct tt_DiscoveredEntity* remote_sub = &context_impl->discovery.entities[tt_MAX_DISCOVERED_ENTITIES - 1];
-    assert(tt_NODE_ID_INVALID == remote_sub->node_id);
-    remote_sub->node_id = FAKE_REMOTE_NODE_ID;
+    assert(tt_CONTEXT_ID_INVALID == remote_sub->context_id);
+    remote_sub->context_id = FAKE_REMOTE_NODE_ID;
     remote_sub->kind = tt_KIND_TOPIC_SUBSCRIBER;
     remote_sub->qos = 0; // compatible with base_qos()
     remote_sub->alive = true;
     snprintf(remote_sub->type, sizeof(remote_sub->type), "test_events/msg/FakeMsg");
     snprintf(remote_sub->name, sizeof(remote_sub->name), "matched_count_topic");
-    tt_Node_unlock(&context_impl->tickle_node);
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
+    tt_Context_lock(&context_impl->tickle_context);
     size_t in_graph = rmw_tickle_count_matching_locked(context_impl, "matched_count_topic", tt_KIND_TOPIC_SUBSCRIBER);
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
     assert(1 == in_graph);     // control: the graph count, what matched used to be
     size_t matched = SIZE_MAX; // overwritten by every call below
     assert(RMW_RET_OK == rmw_publisher_count_matched_subscriptions(matched_pub, &matched));
     assert(0 == matched); // discovered, not yet a peer
-    tt_Node_lock(&context_impl->tickle_node);
-    matched_impl->tickle_publisher.peers[0].node_id = FAKE_REMOTE_NODE_ID; // what peer registration does
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
+    matched_impl->tickle_publisher.peers[0].context_id = FAKE_REMOTE_NODE_ID; // what peer registration does
+    tt_Context_unlock(&context_impl->tickle_context);
     assert(RMW_RET_OK == rmw_publisher_count_matched_subscriptions(matched_pub, &matched));
     assert(1 == matched);
-    tt_Node_lock(&context_impl->tickle_node);
-    matched_impl->tickle_publisher.peers[0].node_id = tt_NODE_ID_INVALID;
-    remote_sub->node_id = tt_NODE_ID_INVALID;
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
+    matched_impl->tickle_publisher.peers[0].context_id = tt_CONTEXT_ID_INVALID;
+    remote_sub->context_id = tt_CONTEXT_ID_INVALID;
+    tt_Context_unlock(&context_impl->tickle_context);
     assert(RMW_RET_OK == rmw_destroy_publisher(node, matched_pub));
 
     assert(RMW_RET_OK == rmw_destroy_wait_set(wait_set));

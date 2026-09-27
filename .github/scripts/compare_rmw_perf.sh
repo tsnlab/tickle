@@ -37,7 +37,7 @@ RUNTIME="${1:-10}"
 : "${ROS_DISTRO_NAME:?Set ROS_DISTRO_NAME to the real ROS 2 distro installed on this box (not necessarily jazzy - see rmw-perf.yml for why)}"
 
 # Keep TickLE's discovery traffic on this box (2026-09-23, a real incident, not a precaution):
-# hal_linux.c's compiled-in default is _tt_NODE_BROADCAST 255.255.255.255 (config.h), which on this
+# hal_linux.c's compiled-in default is _tt_CONTEXT_BROADCAST 255.255.255.255 (config.h), which on this
 # machine routes out ens18 onto the lab network - the same L2 segment the rig Pis sit on via wlan0.
 # That flooded a shared network with discovery traffic (a UDP broadcast is delivered to every port
 # on the segment and, on Wi-Fi, goes out at the lowest basic rate), and it cross-contaminated

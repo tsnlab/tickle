@@ -14,9 +14,9 @@
 // /home/semih/.claude/plans/lively-sauteeing-rainbow.md.
 //
 // This brings up lwIP over the real virtio-net link (net_init.c), then runs a real
-// tt_Node_create()/tt_Node_poll() loop. Run solo (no peer), every poll legitimately timing out
+// tt_Context_create()/tt_Context_poll() loop. Run solo (no peer), every poll legitimately timing out
 // (tt_RET_TIMEOUT) is the *expected* result, not a regression - what this actually checks is
-// that virtio_net_init() succeeds and tt_Node_create()/tt_Node_poll() run to completion without
+// that virtio_net_init() succeeds and tt_Context_create()/tt_Context_poll() run to completion without
 // hanging or crashing while real packets are actually going out (see platform/freertos/
 // Makefile's `run` target).
 
@@ -34,16 +34,16 @@
 #define SELFTEST_TASK_STACK_WORDS 1024
 
 // Too large for a task's own stack (tx_buffer/rx_buffer alone are ~5.75KB) - static instead.
-static struct tt_Node node;
+static struct tt_Context node;
 
 static void tickle_selftest_task(void* param) {
     (void)param;
 
     net_init();
 
-    tt_ret_t ret = tt_Node_create(&node);
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != tt_RET_OK) {
-        printf("tickle/freertos: tt_Node_create failed: %d\n", ret);
+        printf("tickle/freertos: tt_Context_create failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
@@ -51,7 +51,7 @@ static void tickle_selftest_task(void* param) {
     printf("tickle/freertos: node created, id=%u\n", node.id);
 
     for (int i = 0; i < SELFTEST_POLL_COUNT; i++) {
-        tt_ret_t poll_ret = tt_Node_poll(&node, SELFTEST_POLL_TIMEOUT_NS);
+        tt_ret_t poll_ret = tt_Context_poll(&node, SELFTEST_POLL_TIMEOUT_NS);
         printf("tickle/freertos: poll[%d] -> %d\n", i, poll_ret);
     }
 

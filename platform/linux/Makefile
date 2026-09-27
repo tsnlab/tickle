@@ -125,7 +125,7 @@ TEST_DIR = $(ROOT)/tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/test_*.c)
 TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/tests/%,$(TEST_SRCS))
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp lint lint-shell clean fuzz fuzz-corpus sanitize tsan
+.PHONY: all library examples set_bool uint64 ping_pong perf test config-renames test-samehost headers-cpp lint lint-shell clean fuzz fuzz-corpus sanitize tsan
 
 all:
 	$(MAKE) library
@@ -186,11 +186,32 @@ ALL_OBJS = $(OBJS) $(ALL_EXAMPLE_OBJS)
 test-samehost: examples
 	./test_samehost.sh
 
-test: $(TEST_BINS)
+test: config-renames $(TEST_BINS)
 	@for bin in $(TEST_BINS); do \
 	    echo "-- $$bin --"; \
 	    ./$$bin || exit 1; \
 	done
+
+# Each tt_NODE_* setting renamed to tt_CONTEXT_* (CONTEXT_NODE_PLAN.md stage 1) must stop the build when its old name is
+# still set with -D, rather than be ignored behind config.h's #ifndef defaults. A control compile with no old name
+# defined must pass, so a header that fails for another reason cannot pass this check for the wrong one.
+CONFIG_RENAMED = tt_NODE_CYCLE tt_NODE_UPDATE_INTERVAL tt_NODE_TX_INTERVAL tt_NODE_MAX_LEASE_NS tt_NODE_ID_INVALID \
+                 tt_NODE_ID_BROADCAST _tt_NODE_ADDRESS _tt_NODE_PORT _tt_NODE_BROADCAST
+config-renames:
+	@printf '#include <tickle/config.h>\nint main(void){return 0;}\n' > /tmp/tt_cfg_$$$$.c; \
+	 fail=0; \
+	 $(CC) -I$(INCLUDE) -fsyntax-only /tmp/tt_cfg_$$$$.c || { echo "config-renames: config.h fails with no old name set" >&2; fail=1; }; \
+	 for name in $(CONFIG_RENAMED); do \
+	     new=$$(echo $$name | sed 's/NODE/CONTEXT/'); \
+	     if $(CC) -I$(INCLUDE) -D$$name=1 -fsyntax-only /tmp/tt_cfg_$$$$.c 2>/tmp/tt_cfg_$$$$.err; then \
+	         echo "config-renames: -D$$name=1 still compiles - it would be silently ignored" >&2; fail=1; \
+	     elif ! grep -q "$$name is now $$new" /tmp/tt_cfg_$$$$.err; then \
+	         echo "config-renames: -D$$name=1 fails, but not with the rename's #error" >&2; fail=1; \
+	     fi; \
+	 done; \
+	 rm -f /tmp/tt_cfg_$$$$.c /tmp/tt_cfg_$$$$.err; \
+	 [ $$fail = 0 ] && echo "config-renames: every old tt_NODE_* name stops the build"; \
+	 exit $$fail
 
 # $@.d: the headers the test's own translation unit uses (it #includes tickle.c), so changing one -
 # config.h's constants, a struct in tickle.h - rebuilds it. Written by a -MM pass of its own: -MMD on the

@@ -36,7 +36,7 @@
 #define TOTAL_DURATION_S 70.0
 
 // Too large for a task's own stack - static instead, same reasoning as main.c's ROLE=selftest.
-static struct tt_Node node;
+static struct tt_Context node;
 static struct tt_Subscriber sub;
 
 static bool have_first = false;
@@ -82,7 +82,7 @@ static void bulk_callback(struct tt_Subscriber* subscriber, uint64_t time, uint1
 // Field set and wording mirror examples/linux/perf/perf_server.c's own report(): MB/Mbps computed
 // from this interval's bytes, only the cumulative drop count carried across intervals - this is
 // the receive side, so (unlike the client) it's the one that can actually see loss.
-static void report(struct tt_Node* node, uint64_t time, void* param) {
+static void report(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
 
     char recv_buf[TT_GROUPED_BUF_LEN];
@@ -111,7 +111,7 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
     interval_received_msgs = 0;
     interval_received_bytes = 0;
 
-    tt_Node_schedule(node, time + tt_SECOND, report, NULL);
+    tt_Context_schedule(node, time + tt_SECOND, report, NULL);
 }
 
 static void perf_server_task(void* param) {
@@ -119,18 +119,18 @@ static void perf_server_task(void* param) {
 
     net_init();
 
-    tt_ret_t ret = tt_Node_create(&node);
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != tt_RET_OK) {
-        printf("perf_server: tt_Node_create failed: %d\n", ret);
+        printf("perf_server: tt_Context_create failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
     printf("perf_server: node created, id=%u\n", node.id);
 
-    ret = tt_Node_create_subscriber(&node, &sub, &BulkTopic, "bulk_topic", (tt_SUBSCRIBER_CALLBACK)bulk_callback);
+    ret = tt_Context_create_subscriber(&node, &sub, &BulkTopic, "bulk_topic", (tt_SUBSCRIBER_CALLBACK)bulk_callback);
     if (ret != tt_RET_OK) {
-        printf("perf_server: tt_Node_create_subscriber failed: %d\n", ret);
+        printf("perf_server: tt_Context_create_subscriber failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
@@ -138,10 +138,10 @@ static void perf_server_task(void* param) {
     printf("perf_server: ready\n");
 
     g_start_time = tt_get_ns();
-    tt_Node_schedule(&node, g_start_time + tt_SECOND, report, NULL);
+    tt_Context_schedule(&node, g_start_time + tt_SECOND, report, NULL);
 
     for (;;) {
-        tt_Node_poll(&node, -1);
+        tt_Context_poll(&node, -1);
     }
 }
 

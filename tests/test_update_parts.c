@@ -14,7 +14,7 @@
 // semantics UPDATE_PART had from 2026-09-24 (the user's choice then), on the wire user data shares.
 //
 // Before this, a node whose endpoint list outgrew the datagram could not be discovered at all -
-// and, until the fix just before it, went silent altogether. rmw_tickle runs one tt_Node per
+// and, until the fix just before it, went silent altogether. rmw_tickle runs one tt_Context per
 // process, so two default rclcpp nodes in one process were already past that point.
 //
 // Sender and receiver are both real: every datagram the sender emits is captured and fed to a
@@ -68,7 +68,7 @@ static const struct tt_SubmessageHeader* first_submessage(int d) {
 
 // --- the sender: subscribers named the way rmw_tickle names endpoints --------------------------
 
-static struct tt_Node sender;
+static struct tt_Context sender;
 static struct tt_Topic sender_topics[MAX_ENDPOINTS];
 static struct tt_Subscriber sender_subs[MAX_ENDPOINTS];
 static char topic_names[MAX_ENDPOINTS][48];
@@ -92,7 +92,7 @@ static void on_data(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, s
     (void)data;
 }
 
-static void init_bare_node(struct tt_Node* node, uint8_t id) {
+static void init_bare_node(struct tt_Context* node, uint8_t id) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = id;
@@ -114,15 +114,15 @@ static void init_sender(int count, uint64_t last_modified) {
         sender_topics[i].data_size = 8;
         sender_topics[i].data_decode = decode_nothing;
         sender_topics[i].data_free = free_nothing;
-        EXPECT_EQ_INT(tt_RET_OK,
-                      tt_Node_create_subscriber(&sender, &sender_subs[i], &sender_topics[i], ENDPOINT_NAME, on_data));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&sender, &sender_subs[i], &sender_topics[i],
+                                                              ENDPOINT_NAME, on_data));
     }
     sender.last_modified = last_modified;
 }
 
 // --- the receiver: publishers for a chosen few of the sender's topics --------------------------
 
-static struct tt_Node receiver;
+static struct tt_Context receiver;
 static struct tt_Topic receiver_topics[4];
 static struct tt_Publisher receiver_pubs[4];
 static char receiver_names[4][48];
@@ -152,14 +152,14 @@ static void init_receiver(const int* topic_indices, int n) {
         receiver_topics[k].data_encode_size = encode_size_one;
         receiver_topics[k].data_encode = encode_one;
         EXPECT_EQ_INT(tt_RET_OK,
-                      tt_Node_create_publisher(&receiver, &receiver_pubs[k], &receiver_topics[k], ENDPOINT_NAME));
+                      tt_Context_create_publisher(&receiver, &receiver_pubs[k], &receiver_topics[k], ENDPOINT_NAME));
     }
 }
 
 // Whether receiver publisher k has matched the sender's Subscriber on the same topic.
 static bool matched(int k) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (receiver_pubs[k].peers[i].node_id == SENDER_ID) {
+        if (receiver_pubs[k].peers[i].context_id == SENDER_ID) {
             return true;
         }
     }
@@ -346,7 +346,7 @@ static void test_node_heard_only_through_parts_still_expires(void) {
     init_receiver(topics, 1);
     deliver(0);
     EXPECT_TRUE(matched(0));
-    uint64_t later = (uint64_t)(tt_LIVELINESS_MISS_THRESHOLD + 2) * tt_NODE_UPDATE_INTERVAL;
+    uint64_t later = (uint64_t)(tt_LIVELINESS_MISS_THRESHOLD + 2) * tt_CONTEXT_UPDATE_INTERVAL;
     test_mock_now = later;
     check_liveliness(&receiver, later, NULL);
     EXPECT_EQ_U32(0, receiver.update_part_received[SENDER_ID]);
@@ -380,7 +380,7 @@ static void test_malformed_part_headers_are_rejected(void) {
 
 // --- liveliness versus deduplication (DATAFRAG_PLAN.md 6.4) --------------------------------------
 //
-// A node whose endpoint list never changes resends the same generation every tt_NODE_UPDATE_INTERVAL,
+// A node whose endpoint list never changes resends the same generation every tt_CONTEXT_UPDATE_INTERVAL,
 // so every announce after the first is a duplicate by seq_no. Those duplicates are what keep it alive:
 // liveliness has to be refreshed before the generation is compared, or a quiet node is declared dead
 // while announcing on schedule.
@@ -405,7 +405,7 @@ static void deliver_announce_only(int d) {
 static int run_intervals(bool resend) {
     int dead = 0;
     for (int k = 1; k <= tt_LIVELINESS_MISS_THRESHOLD + 2; k++) {
-        test_mock_now = (uint64_t)k * tt_NODE_UPDATE_INTERVAL;
+        test_mock_now = (uint64_t)k * tt_CONTEXT_UPDATE_INTERVAL;
         if (resend) {
             EXPECT_EQ_INT(1, announce());
             deliver_announce_only(0);
@@ -461,7 +461,7 @@ static void test_same_generation_does_not_reapply_but_a_new_one_does(void) {
     EXPECT_TRUE(matched(0));
 
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        receiver_pubs[0].peers[i].node_id = tt_NODE_ID_INVALID;
+        receiver_pubs[0].peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
     EXPECT_EQ_INT(1, announce());
     deliver_announce_only(0);

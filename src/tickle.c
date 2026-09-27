@@ -33,8 +33,8 @@ _Static_assert(sizeof(struct tt_CallRequestHeader) == 8, "tt_CallRequestHeader m
 _Static_assert((TT_FRAMING_HDR + sizeof(struct tt_DataHeader)) % 4 == 0, "DATA payload not 4-aligned");
 _Static_assert((TT_FRAMING_HDR + sizeof(struct tt_CallRequestHeader)) % 4 == 0, "CALLREQUEST payload not 4-aligned");
 _Static_assert((TT_FRAMING_HDR + sizeof(struct tt_CallResponseHeader)) % 4 == 0, "CALLRESPONSE payload not 4-aligned");
-_Static_assert(offsetof(struct tt_Node, tx_buffer) % 4 == 0, "tx_buffer not 4-aligned in tt_Node");
-_Static_assert(offsetof(struct tt_Node, rx_buffer) % 4 == 0, "rx_buffer not 4-aligned in tt_Node");
+_Static_assert(offsetof(struct tt_Context, tx_buffer) % 4 == 0, "tx_buffer not 4-aligned in tt_Context");
+_Static_assert(offsetof(struct tt_Context, rx_buffer) % 4 == 0, "rx_buffer not 4-aligned in tt_Context");
 #undef TT_FRAMING_HDR
 #if tt_FRAG_ENABLED
 _Static_assert(sizeof(struct tt_DataHeader) == tt_FRAG_DATA_HEADER_LENGTH, "tt_FRAG_DATA_HEADER_LENGTH is stale");
@@ -163,7 +163,7 @@ static uint32_t calculate_latency(uint64_t start, uint64_t end) {
     return end > start ? (uint32_t)(end - start) : 0;
 }
 
-static struct tt_SubmessageHeader* start_encode(struct tt_Node* node, uint8_t type, uint8_t receiver) {
+static struct tt_SubmessageHeader* start_encode(struct tt_Context* node, uint8_t type, uint8_t receiver) {
     if (node->tx_tail + sizeof(struct tt_SubmessageHeader) >= node->tx_size) {
         TT_LOG_WARNING("Lack of tx buffer");
         return NULL;
@@ -179,7 +179,7 @@ static struct tt_SubmessageHeader* start_encode(struct tt_Node* node, uint8_t ty
     return submessage_header;
 }
 
-static void* encode(struct tt_Node* node, uint32_t len) {
+static void* encode(struct tt_Context* node, uint32_t len) {
     if (node->tx_tail + len >= node->tx_size) {
         TT_LOG_WARNING("Lack of tx buffer");
         return NULL;
@@ -188,7 +188,7 @@ static void* encode(struct tt_Node* node, uint32_t len) {
     return tt_encode_buffer(node->tx_buffer, &node->tx_tail, len);
 }
 
-static bool encode_string(struct tt_Node* node, const char* str) {
+static bool encode_string(struct tt_Context* node, const char* str) {
     if (!tt_encode_string(node->tx_buffer, &node->tx_tail, node->tx_size, str)) {
         TT_LOG_WARNING("Lack of tx buffer");
         return false;
@@ -196,7 +196,7 @@ static bool encode_string(struct tt_Node* node, const char* str) {
     return true;
 }
 
-static void rollback(struct tt_Node* node, uint32_t old_tx_tail) {
+static void rollback(struct tt_Context* node, uint32_t old_tx_tail) {
     node->tx_tail = old_tx_tail;
 }
 
@@ -226,13 +226,13 @@ static uint8_t* server_cache_entry(struct tt_Server* server, int slot) {
 // tt_Publisher_publish()/tt_Client_call()/resend_call_request() (a short list of known peers, see
 // tt_UNICAST_PEER_THRESHOLD) once discovery has learned a handful of them.
 // How many links this node talks on. Reads 1 when nothing has been configured *and* nothing has
-// resolved the table yet - a whitebox test constructs a tt_Node directly without going through
-// tt_Node_create(), so this cannot assume resolve_links() has run, and a zero here would make
+// resolved the table yet - a whitebox test constructs a tt_Context directly without going through
+// tt_Context_create(), so this cannot assume resolve_links() has run, and a zero here would make
 // every send loop iterate zero times and silently send nothing.
 static uint8_t link_count(void) {
     if (_tt_CONFIG.link_count == 0) {
         // Populate the default link here rather than only in resolve_links(), because a whitebox
-        // test constructs a tt_Node directly and never calls tt_Node_create(). Leaving the table
+        // test constructs a tt_Context directly and never calls tt_Context_create(). Leaving the table
         // empty was not merely "unconfigured": unicast_threshold read 0, so a single known peer
         // failed the `on_link <= threshold` test and every call fell through to broadcast. A
         // default that is never written is indistinguishable from a configured zero.
@@ -377,10 +377,10 @@ struct tx_datagram {
 // Records who a datagram sent now reaches, for node_update()'s summary skip: every peer when it is
 // broadcast (no peers), otherwise the peers it is addressed to. A link's broadcast of an addressed datagram
 // also reaches that link's other peers; they are not counted, which only means a summary goes out anyway.
-static void send_summary_ahead(struct tt_Node* node);
+static void send_summary_ahead(struct tt_Context* node);
 
 // The record itself, out of line: only a node whose summaries run at the short-lease cadence gets here.
-static void note_reached_armed(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count) {
+static void note_reached_armed(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count) {
     if (node->summary_rides != 0) {
         node->summary_rides = 0;
         send_summary_ahead(node); // its own datagram, just ahead of this one
@@ -390,21 +390,21 @@ static void note_reached_armed(struct tt_Node* node, const struct tt_Peer* peers
         return;
     }
     for (uint8_t i = 0; i < peer_count; i++) {
-        uint8_t id = peers[i].node_id;
+        uint8_t id = peers[i].context_id;
         node->reached_nodes[id / 32U] |= 1U << (id % 32U);
     }
 }
 
 // The gate, inline at every send (OPTIMIZATION_PLAN.md 11.5, D5): unarmed - every node without short leases - a send
 // pays one load and a branch, where an out-of-line call cost the Pi 4-6 ns a sample.
-static inline void note_reached(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count) {
+static inline void note_reached(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count) {
     if (node->summary_skip_armed) {
         note_reached_armed(node, peers, peer_count);
     }
 }
 
 // One datagram to one address; ip 0 is the HAL's own broadcast address, as for tt_send_iov().
-static bool send_datagram_to(struct tt_Node* node, const struct tx_datagram* dgram, uint32_t ip, uint16_t port) {
+static bool send_datagram_to(struct tt_Context* node, const struct tx_datagram* dgram, uint32_t ip, uint16_t port) {
     node->tx_datagrams++;
     if (dgram->body_len != 0) {
         return tt_send_iov(node, dgram->head, dgram->head_len, dgram->body, dgram->body_len, ip, port) >= 0;
@@ -495,7 +495,7 @@ static uint8_t tx_destinations(const struct tt_Peer* peers, uint8_t peer_count, 
 // One datagram to the destinations a flush would send it to. To one destination it goes exactly as it always
 // has, through send_datagram_to(); to several - peers on one link, or one broadcast per link - it goes as one
 // tt_send_batch(), so that sending the same bytes to more peers stops costing a system call per peer.
-static bool send_datagram(struct tt_Node* node, const struct tx_datagram* dgram, const struct tt_Peer* peers,
+static bool send_datagram(struct tt_Context* node, const struct tx_datagram* dgram, const struct tt_Peer* peers,
                           uint8_t peer_count) {
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
     uint8_t count = tx_destinations(peers, peer_count, destinations);
@@ -514,7 +514,7 @@ static bool send_datagram(struct tt_Node* node, const struct tx_datagram* dgram,
     return tt_send_batch(node, batch, count) >= 0;
 }
 
-static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* peers, uint8_t peer_count) {
+static bool flush_tx(struct tt_Context* node, uint32_t len, const struct tt_Peer* peers, uint8_t peer_count) {
     // Check at least 1 submessage is contained
     if (len < sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader)) {
         return true; // Nothing to flush
@@ -668,7 +668,7 @@ static uint32_t frag_write_header(uint8_t* out, const struct tt_DataHeader* data
 // which is what returns a fragmented sample to the single send system call it cost before it had to be
 // fragmented (DATAFRAG_PLAN.md 6.5, step 3). Destination by destination, so each receiver gets a sample's
 // fragments back to back.
-static bool send_fragments(struct tt_Node* node, const struct tt_DataHeader* data_header, const uint8_t* cdr,
+static bool send_fragments(struct tt_Context* node, const struct tt_DataHeader* data_header, const uint8_t* cdr,
                            uint32_t cdr_len, const struct tt_Peer* peers, uint8_t peer_count) {
     if (cdr_len <= FRAG_FIRST_PAYLOAD || cdr_len > FRAG_MAX_CDR) {
         TT_LOG_ERROR("Sample of %u bytes cannot be sent as fragments", cdr_len);
@@ -712,7 +712,7 @@ static bool send_fragments(struct tt_Node* node, const struct tt_DataHeader* dat
 }
 
 // Bytes of CDR a DATA submessage at submessage_header, padded as it is sent, carries.
-static uint32_t sample_cdr_length(const struct tt_Node* node, const struct tt_SubmessageHeader* submessage_header) {
+static uint32_t sample_cdr_length(const struct tt_Context* node, const struct tt_SubmessageHeader* submessage_header) {
     uint32_t length = (uint32_t)((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
     return ROUNDUP(length) - (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader));
 }
@@ -725,7 +725,7 @@ static uint32_t sample_cdr_length(const struct tt_Node* node, const struct tt_Su
 // Padded as end_encode() would pad it, so that the fragments of the original and of a retransmission
 // cut from the cached record (which is padded) always agree on the sample's length, and so on how many
 // fragments it has.
-static bool send_tail_as_fragments(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header,
+static bool send_tail_as_fragments(struct tt_Context* node, struct tt_SubmessageHeader* submessage_header,
                                    const struct tt_Peer* peers, uint8_t peer_count) {
     uint32_t base = (uint32_t)((uint8_t*)submessage_header - node->tx_buffer);
     uint32_t length = node->tx_tail - base;
@@ -755,7 +755,7 @@ static bool send_tail_as_fragments(struct tt_Node* node, struct tt_SubmessageHea
 // could fit one datagram on its own. False means it never can, however the buffer around it is
 // flushed: the protocol does not fragment. Counts and logs the refusal, so each caller only has to
 // roll back.
-static bool submessage_fits_datagram(struct tt_Node* node, const struct tt_SubmessageHeader* submessage_header) {
+static bool submessage_fits_datagram(struct tt_Context* node, const struct tt_SubmessageHeader* submessage_header) {
     size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
     if (sizeof(struct tt_Header) + ROUNDUP(length) <= tt_MAX_BUFFER_LENGTH) {
         return true;
@@ -767,26 +767,26 @@ static bool submessage_fits_datagram(struct tt_Node* node, const struct tt_Subme
 }
 
 // Arms node_flush() if anything is waiting in tx_buffer and no flush is armed yet (2026-09-25). It used to
-// tick every tt_NODE_TX_INTERVAL unconditionally, which kept an idle node waking a thousand times a second
-// for an empty buffer. The flush is armed on the grid that tick ran on - the next tt_NODE_TX_INTERVAL
+// tick every tt_CONTEXT_TX_INTERVAL unconditionally, which kept an idle node waking a thousand times a second
+// for an empty buffer. The flush is armed on the grid that tick ran on - the next tt_CONTEXT_TX_INTERVAL
 // boundary of the clock, as the old tick started cycle-aligned and rescheduled from its own due time - so
 // a batched submessage waits exactly as long as it did before: 0 to one interval, not a full interval.
-static void node_flush(struct tt_Node* node, uint64_t time, void* param);
+static void node_flush(struct tt_Context* node, uint64_t time, void* param);
 
-static void ensure_flush_scheduled(struct tt_Node* node) {
+static void ensure_flush_scheduled(struct tt_Context* node) {
     if (node->flush_scheduled || node->tx_tail <= sizeof(struct tt_Header)) {
         return;
     }
     uint64_t now = tt_get_ns();
-    uint64_t due = now - (now % tt_NODE_TX_INTERVAL) + tt_NODE_TX_INTERVAL;
-    if (tt_Node_schedule(node, due, node_flush, NULL)) {
+    uint64_t due = now - (now % tt_CONTEXT_TX_INTERVAL) + tt_CONTEXT_TX_INTERVAL;
+    if (tt_Context_schedule(node, due, node_flush, NULL)) {
         node->flush_scheduled = true;
     } else {
         TT_LOG_ERROR("Cannot schedule node_flush");
     }
 }
 
-static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header, bool is_flush,
+static bool end_encode(struct tt_Context* node, struct tt_SubmessageHeader* submessage_header, bool is_flush,
                        const struct tt_Peer* peers, uint8_t peer_count) {
     // Set submessage header length
     size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
@@ -851,12 +851,12 @@ static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submess
     return true;
 }
 
-static void* decode(struct tt_Node* node, uint8_t* buffer, uint32_t* head, uint32_t tail, uint32_t length) {
+static void* decode(struct tt_Context* node, uint8_t* buffer, uint32_t* head, uint32_t tail, uint32_t length) {
     UNUSED(node);
     return tt_decode_buffer(buffer, head, tail, length);
 }
 
-static bool decode_string(struct tt_Node* node, uint8_t* buffer, uint32_t* head, uint32_t tail, uint16_t* str_len,
+static bool decode_string(struct tt_Context* node, uint8_t* buffer, uint32_t* head, uint32_t tail, uint16_t* str_len,
                           char** str, bool reverse) {
     UNUSED(node);
 
@@ -882,7 +882,7 @@ static uint64_t rd64(struct tt_Header* header, uint64_t value) {
     return tt_is_reverse_endian(header) ? _tt_bswap_64(value) : value;
 }
 
-static void rebuild_endpoint_index(struct tt_Node* node) {
+static void rebuild_endpoint_index(struct tt_Context* node) {
     for (uint32_t i = 0; i < tt_ENDPOINT_INDEX_SIZE; i++) {
         node->endpoint_index[i] = NULL;
     }
@@ -915,7 +915,7 @@ static void rebuild_endpoint_index(struct tt_Node* node) {
 // depends on reaching *every* local match instead - most importantly process_data()'s own
 // Subscriber delivery, so N local Subscriptions on one topic each get every sample - use
 // for_each_endpoint() below instead.
-static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uint32_t endpoint_id) {
+static struct tt_Endpoint* find_endpoint(struct tt_Context* node, uint8_t kind, uint32_t endpoint_id) {
     if (!node->endpoint_index_valid) {
         rebuild_endpoint_index(node);
     }
@@ -947,7 +947,7 @@ static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uin
 // acknack()) - DATA/HEARTBEAT identify their own *sender* instead (struct tt_Endpoint.entity_id's
 // own doc comment) and fan out to every local match via for_each_endpoint(), so they don't need
 // this narrowing at all.
-static struct tt_Endpoint* find_endpoint_by_entity(struct tt_Node* node, uint8_t kind, uint32_t endpoint_id,
+static struct tt_Endpoint* find_endpoint_by_entity(struct tt_Context* node, uint8_t kind, uint32_t endpoint_id,
                                                    uint32_t entity_id) {
     if (!node->endpoint_index_valid) {
         rebuild_endpoint_index(node);
@@ -980,8 +980,9 @@ static struct tt_Endpoint* find_endpoint_by_entity(struct tt_Node* node, uint8_t
 // a gap that could hide a later match sharing the same home slot. Used by callers where reaching
 // every local instance is the actual correctness requirement, not an implementation convenience -
 // see find_endpoint()'s own doc comment for which callers use which, and why.
-static void for_each_endpoint(struct tt_Node* node, uint8_t kind, uint32_t endpoint_id,
-                              void (*visit)(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx), void* ctx) {
+static void for_each_endpoint(struct tt_Context* node, uint8_t kind, uint32_t endpoint_id,
+                              void (*visit)(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx),
+                              void* ctx) {
     if (!node->endpoint_index_valid) {
         rebuild_endpoint_index(node);
     }
@@ -1012,7 +1013,7 @@ static void for_each_endpoint(struct tt_Node* node, uint8_t kind, uint32_t endpo
 // direction) still just ignore the return value, which is fine in C.
 static bool upsert_peer(struct tt_Peer* peers, uint8_t node_id, uint32_t ip, uint16_t port) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (peers[i].node_id == node_id) {
+        if (peers[i].context_id == node_id) {
             peers[i].ip = ip;
             peers[i].port = port;
             return false;
@@ -1020,8 +1021,8 @@ static bool upsert_peer(struct tt_Peer* peers, uint8_t node_id, uint32_t ip, uin
     }
 
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (peers[i].node_id == tt_NODE_ID_INVALID) {
-            peers[i].node_id = node_id;
+        if (peers[i].context_id == tt_CONTEXT_ID_INVALID) {
+            peers[i].context_id = node_id;
             peers[i].ip = ip;
             peers[i].port = port;
             return true;
@@ -1035,7 +1036,7 @@ static bool upsert_peer(struct tt_Peer* peers, uint8_t node_id, uint32_t ip, uin
 static uint8_t count_peers(const struct tt_Peer* peers) {
     uint8_t count = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (peers[i].node_id != tt_NODE_ID_INVALID) {
+        if (peers[i].context_id != tt_CONTEXT_ID_INVALID) {
             count++;
         }
     }
@@ -1044,8 +1045,8 @@ static uint8_t count_peers(const struct tt_Peer* peers) {
 
 static void forget_peer(struct tt_Peer* peers, uint8_t node_id) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (peers[i].node_id == node_id) {
-            peers[i].node_id = tt_NODE_ID_INVALID;
+        if (peers[i].context_id == node_id) {
+            peers[i].context_id = tt_CONTEXT_ID_INVALID;
         }
     }
 }
@@ -1054,7 +1055,7 @@ static void forget_peer(struct tt_Peer* peers, uint8_t node_id) {
 // see that field's own doc comment, tickle.h), or NULL if this Publisher isn't tracking it.
 static struct tt_PeerAck* find_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id) {
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
-        if (pub->peer_acks[i].node_id == node_id && pub->peer_acks[i].entity_id == entity_id) {
+        if (pub->peer_acks[i].context_id == node_id && pub->peer_acks[i].entity_id == entity_id) {
             return &pub->peer_acks[i];
         }
     }
@@ -1072,8 +1073,8 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
         return ack;
     }
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
-        if (pub->peer_acks[i].node_id == tt_NODE_ID_INVALID) {
-            pub->peer_acks[i].node_id = node_id;
+        if (pub->peer_acks[i].context_id == tt_CONTEXT_ID_INVALID) {
+            pub->peer_acks[i].context_id = node_id;
             pub->peer_acks[i].entity_id = entity_id;
             pub->peer_acks[i].ack_seq_no = 0;
             pub->peer_acks[i].tracking_words = 0; // set by the caller from the announce
@@ -1090,13 +1091,13 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
 // one named entity (a single Subscriber's own lease expiring while its node stays up).
 static void forget_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id, bool match_any_entity) {
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
-        if (pub->peer_acks[i].node_id != node_id) {
+        if (pub->peer_acks[i].context_id != node_id) {
             continue;
         }
         if (!match_any_entity && pub->peer_acks[i].entity_id != entity_id) {
             continue;
         }
-        pub->peer_acks[i].node_id = tt_NODE_ID_INVALID;
+        pub->peer_acks[i].context_id = tt_CONTEXT_ID_INVALID;
         pub->peer_acks[i].entity_id = 0;
         pub->peer_acks[i].ack_seq_no = 0;
     }
@@ -1131,8 +1132,8 @@ static void record_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t 
 // unrelated endpoint re-announces. A genuine departure passes false and clears it.
 static void forget_publisher_peer(struct tt_Publisher* pub, uint8_t node_id, bool preserve_ack) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (pub->peers[i].node_id == node_id) {
-            pub->peers[i].node_id = tt_NODE_ID_INVALID;
+        if (pub->peers[i].context_id == node_id) {
+            pub->peers[i].context_id = tt_CONTEXT_ID_INVALID;
         }
     }
     if (!preserve_ack) {
@@ -1144,7 +1145,7 @@ static void forget_publisher_peer(struct tt_Publisher* pub, uint8_t node_id, boo
 // per-entity counterpart to forget_peers_from_source(), used when one remote Subscriber is
 // presumed dead by its own liveliness lease while its node is otherwise still alive and
 // announcing (Phase 3 prerequisite (a), rmw_tickle/PLAN.md).
-static void forget_publisher_peers_for_endpoint(struct tt_Node* node, uint32_t endpoint_id, uint8_t node_id) {
+static void forget_publisher_peers_for_endpoint(struct tt_Context* node, uint32_t endpoint_id, uint8_t node_id) {
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
         if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_PUBLISHER || endpoint->id != endpoint_id) {
@@ -1159,7 +1160,7 @@ static void forget_publisher_peers_for_endpoint(struct tt_Node* node, uint32_t e
 // decode_update_entities() has re-added whatever the fresh announce still lists (Phase 3
 // prerequisite (c), rmw_tickle/PLAN.md). A Publisher this node is still matched to keeps its ack
 // watermark untouched across the announce.
-static void drop_ack_state_for_unmatched_source(struct tt_Node* node, uint8_t node_id) {
+static void drop_ack_state_for_unmatched_source(struct tt_Context* node, uint8_t node_id) {
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
         if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_PUBLISHER) {
@@ -1168,7 +1169,7 @@ static void drop_ack_state_for_unmatched_source(struct tt_Node* node, uint8_t no
         struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
         bool still_matched = false;
         for (int j = 0; j < tt_MAX_PEER_COUNT; j++) {
-            if (pub->peers[j].node_id == node_id) {
+            if (pub->peers[j].context_id == node_id) {
                 still_matched = true;
                 break;
             }
@@ -1182,9 +1183,9 @@ static void drop_ack_state_for_unmatched_source(struct tt_Node* node, uint8_t no
 // Drops every peer-table entry pointing at `node_id`, across every Publisher and Client on this
 // node. Called when a fresh announce from that source arrives (process_announce): its new announce is
 // authoritative for what it still hosts, and decode_update_entities() re-adds whatever's still
-// listed. Also does the right thing for a node that has left - tt_Node_destroy() broadcasts a
+// listed. Also does the right thing for a node that has left - tt_Context_destroy() broadcasts a
 // final entity-less announce, so this forgets it and nothing gets re-added.
-static void forget_peers_from_source(struct tt_Node* node, uint8_t node_id, bool preserve_ack) {
+static void forget_peers_from_source(struct tt_Context* node, uint8_t node_id, bool preserve_ack) {
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
         if (endpoint == NULL) {
@@ -1198,21 +1199,21 @@ static void forget_peers_from_source(struct tt_Node* node, uint8_t node_id, bool
     }
 }
 
-// tt_Node.liveliness_flags bits - see its comment (tickle.h) and refresh_liveliness_flags().
+// tt_Context.liveliness_flags bits - see its comment (tickle.h) and refresh_liveliness_flags().
 enum {
     tt_LIVELINESS_SOURCE_MANUAL = 1U << 0, // announced a leased MANUAL_BY_TOPIC Publisher
     tt_LIVELINESS_SOURCE_LAPSED = 1U << 1, // has a leased entity tombstoned while the node is still heard
 };
-static void refresh_liveliness_flags(struct tt_Node* node, uint8_t source);
-static void arm_liveliness_check(struct tt_Node* node, uint64_t due_ns);
-static void reschedule_summary_for_leases(struct tt_Node* node, uint64_t now);
+static void refresh_liveliness_flags(struct tt_Context* node, uint8_t source);
+static void arm_liveliness_check(struct tt_Context* node, uint64_t due_ns);
+static void reschedule_summary_for_leases(struct tt_Context* node, uint64_t now);
 
-// Records one remote entity into node->discovery (tt_Node_set_discovery(), rmw_tickle/PLAN.md's
+// Records one remote entity into node->discovery (tt_Context_set_discovery(), rmw_tickle/PLAN.md's
 // Milestone 0(c)), refreshing its existing slot or claiming the first empty one, then fires the
 // appear/refresh callback. No-op (not even the callback) if no discovery cache is attached -
 // every caller below calls this unconditionally rather than checking node->discovery first, the
 // same way logging macros check their own level instead of every call site checking it.
-static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
+static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
                                      uint8_t qos, uint64_t deadline_duration_ns, uint64_t liveliness_lease_duration_ns,
                                      const char* type, const char* name) {
     if (node->discovery == NULL) {
@@ -1222,7 +1223,7 @@ static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint
     struct tt_DiscoveredEntity* entities = node->discovery->entities;
     struct tt_DiscoveredEntity* slot = NULL;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        if (entities[i].node_id == node_id && entities[i].endpoint_id == endpoint_id) {
+        if (entities[i].context_id == node_id && entities[i].endpoint_id == endpoint_id) {
             slot = &entities[i];
             break;
         }
@@ -1234,7 +1235,7 @@ static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint
         // never-used slot - tombstones are remembered on a best-effort basis, not guaranteed.
         struct tt_DiscoveredEntity* tombstone_slot = NULL;
         for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-            if (entities[i].node_id == tt_NODE_ID_INVALID) {
+            if (entities[i].context_id == tt_CONTEXT_ID_INVALID) {
                 slot = &entities[i];
                 break;
             }
@@ -1252,7 +1253,7 @@ static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint
         return;
     }
 
-    slot->node_id = node_id;
+    slot->context_id = node_id;
     slot->endpoint_id = endpoint_id;
     slot->kind = kind;
     slot->qos = qos;
@@ -1286,19 +1287,19 @@ static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint
 // roadmap #3, RMW_EVENT_LIVELINESS_CHANGED.not_alive_count) explicitly excludes normal deletion
 // from "not alive" - see tombstone_discovered_entities_from_source() below for the liveliness-
 // timeout counterpart that keeps the entity instead. No-op if no discovery cache is attached.
-static void forget_discovered_entities_from_source(struct tt_Node* node, uint8_t node_id) {
+static void forget_discovered_entities_from_source(struct tt_Context* node, uint8_t node_id) {
     if (node->discovery == NULL) {
         return;
     }
 
     struct tt_DiscoveredEntity* entities = node->discovery->entities;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        if (entities[i].node_id != node_id) {
+        if (entities[i].context_id != node_id) {
             continue;
         }
         uint32_t endpoint_id = entities[i].endpoint_id;
         uint8_t kind = entities[i].kind;
-        entities[i].node_id = tt_NODE_ID_INVALID;
+        entities[i].context_id = tt_CONTEXT_ID_INVALID;
         if (node->discovery_callback != NULL) {
             node->discovery_callback(node, node_id, endpoint_id, kind, /*departed=*/true,
                                      node->discovery_callback_param);
@@ -1315,14 +1316,14 @@ static void forget_discovered_entities_from_source(struct tt_Node* node, uint8_t
 // departed=true - an existing plain appear/depart consumer doesn't need to know about the
 // tombstone distinction, only rmw_tickle_c's own count_not_alive_matching_locked() (rmw_graph.c)
 // needs to see the .alive flag directly. No-op if no discovery cache is attached.
-static void tombstone_discovered_entities_from_source(struct tt_Node* node, uint8_t node_id) {
+static void tombstone_discovered_entities_from_source(struct tt_Context* node, uint8_t node_id) {
     if (node->discovery == NULL) {
         return;
     }
 
     struct tt_DiscoveredEntity* entities = node->discovery->entities;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        if (entities[i].node_id != node_id || !entities[i].alive) {
+        if (entities[i].context_id != node_id || !entities[i].alive) {
             continue; // not from this source, or already tombstoned - nothing new to report
         }
         entities[i].alive = false;
@@ -1336,7 +1337,7 @@ static void tombstone_discovered_entities_from_source(struct tt_Node* node, uint
 // Milestone 35 (rmw_tickle/PLAN.md) - deliberately does NOT reject a second endpoint sharing an
 // already-registered (kind, id): real DDS lets multiple independent entities (Publishers,
 // Subscribers, Clients, or Servers) share one topic/service name, and rmw_tickle/PLAN.md's own
-// Milestone 34 (multiple ROS 2 nodes per process, sharing one tt_Node) made this reachable within
+// Milestone 34 (multiple ROS 2 nodes per process, sharing one tt_Context) made this reachable within
 // a single process for the first time - two rmw nodes in one process each creating a Publisher
 // for the same topic, or a Server for the same service, is a normal pattern this used to reject
 // outright as "Duplicate endpoint", which was never really a wire-protocol requirement, only a
@@ -1344,18 +1345,18 @@ static void tombstone_discovered_entities_from_source(struct tt_Node* node, uint
 // for_each_endpoint()'s own doc comments for how lookups now handle more than one match). Still
 // guards against the one thing that IS always a real bug: registering the exact same struct
 // pointer twice (a double-create without an intervening destroy).
-static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count);
+static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count);
 
-// struct tt_Node.announce_soon_scheduled: the announce a new endpoint is owed, sent once the burst it came
-// in has gone quiet for tt_NODE_TX_INTERVAL. Rescheduling itself rather than unscheduling on every creation
+// struct tt_Context.announce_soon_scheduled: the announce a new endpoint is owed, sent once the burst it came
+// in has gone quiet for tt_CONTEXT_TX_INTERVAL. Rescheduling itself rather than unscheduling on every creation
 // keeps creation to a clock read and a store. The periodic node_update() is untouched - this is one extra
 // announce per burst of changes, not a faster cadence. Since tt_VERSION 8 this broadcast is how a change
 // is pushed; a peer that misses it pulls the list when the next summary shows the new generation.
-static void announce_soon(struct tt_Node* node, uint64_t time, void* param) {
+static void announce_soon(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
-    uint64_t quiet_at = node->endpoints_changed_ns + tt_NODE_TX_INTERVAL;
+    uint64_t quiet_at = node->endpoints_changed_ns + tt_CONTEXT_TX_INTERVAL;
     if (time < quiet_at) {
-        if (tt_Node_schedule(node, quiet_at, announce_soon, NULL)) {
+        if (tt_Context_schedule(node, quiet_at, announce_soon, NULL)) {
             return;
         }
         TT_LOG_ERROR("Cannot reschedule announce_soon"); // peers still pull it on the next summary
@@ -1365,17 +1366,17 @@ static void announce_soon(struct tt_Node* node, uint64_t time, void* param) {
     reschedule_summary_for_leases(node, time);
 }
 
-static void arm_announce_soon(struct tt_Node* node) {
+static void arm_announce_soon(struct tt_Context* node) {
     node->endpoints_changed_ns = tt_get_ns();
     if (node->announce_soon_scheduled) {
         return;
     }
-    if (tt_Node_schedule(node, node->endpoints_changed_ns + tt_NODE_TX_INTERVAL, announce_soon, NULL)) {
+    if (tt_Context_schedule(node, node->endpoints_changed_ns + tt_CONTEXT_TX_INTERVAL, announce_soon, NULL)) {
         node->announce_soon_scheduled = true;
     }
 }
 
-static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
+static tt_ret_t add_endpoint_to_node(struct tt_Context* node, struct tt_Endpoint* endpoint) {
     if (node->endpoint_count >= tt_MAX_ENDPOINT_COUNT) {
         uint32_t endpoint_count = node->endpoint_count;
         TT_LOG_ERROR("Too many endpoints: %u", endpoint_count);
@@ -1391,7 +1392,7 @@ static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* e
 
     // Milestone 47 - every entity kind gets its own entity_id here, the single shared
     // registration point for all four (Publisher/Subscriber/Client/Server) - see struct tt_
-    // Endpoint.entity_id's own doc comment (tickle.h) for what this is and struct tt_Node.
+    // Endpoint.entity_id's own doc comment (tickle.h) for what this is and struct tt_Context.
     // entity_id_base/next_entity_id's own doc comment for the generation scheme.
     endpoint->entity_id = node->entity_id_base + node->next_entity_id++;
     if (endpoint->entity_id == tt_DISCOVERY_ENTITY_ID) {
@@ -1407,7 +1408,7 @@ static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* e
     return tt_RET_OK;
 }
 
-static bool remove_endpoint_from_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
+static bool remove_endpoint_from_node(struct tt_Context* node, struct tt_Endpoint* endpoint) {
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         if (node->endpoints[i] == endpoint) {
             node->endpoint_count--;
@@ -1519,7 +1520,7 @@ static bool deadline_liveliness_incompatible(uint64_t requested_deadline_ns, uin
     return requested_lease_ns != 0 && (offered_lease_ns == 0 || offered_lease_ns > requested_lease_ns);
 }
 
-// Threading (tt_THREAD_SAFE, config.h) - see "Threading" at tt_Node_lock() in tickle.h for the contract.
+// Threading (tt_THREAD_SAFE, config.h) - see "Threading" at tt_Context_lock() in tickle.h for the contract.
 //
 // One lock per node, the state lock, and it tracks its own owner: a plain mutex plus the owning thread and a
 // depth, rather than a recursive mutex. Callbacks run with it held and routinely call back into core, and
@@ -1531,20 +1532,20 @@ static bool deadline_liveliness_incompatible(uint64_t requested_deadline_ns, uin
 // Taken with a try first so the uncontended case costs one atomic and the contended one is counted, with
 // how long it waited: whether the lock is worth splitting is a measurement, not something to decide here.
 // tt_lock_*/tt_thread_self: from the platform header hal.h selects (hal_linux.h, hal_freertos.h), which
-// include-cleaner cannot see through - the same reason struct tt_Node.hal carries a NOLINT.
-static bool state_lock_owned(struct tt_Node* node) {
+// include-cleaner cannot see through - the same reason struct tt_Context.hal carries a NOLINT.
+static bool state_lock_owned(struct tt_Context* node) {
     return __atomic_load_n(&node->state_owner, __ATOMIC_RELAXED) == tt_thread_self(); // NOLINT(misc-include-cleaner)
 }
 
 // Called with the mutex just taken.
-static void state_lock_taken(struct tt_Node* node) {
+static void state_lock_taken(struct tt_Context* node) {
     __atomic_store_n(&node->state_owner, tt_thread_self(), __ATOMIC_RELAXED); // NOLINT(misc-include-cleaner)
     node->state_depth = 1;
     node->state_lock_stats.acquisitions++;
 }
 
 // Counts a wait for the state lock that began at start and has just ended with the lock held.
-static void state_lock_waited(struct tt_Node* node, uint64_t start) {
+static void state_lock_waited(struct tt_Context* node, uint64_t start) {
     uint64_t waited = tt_get_ns() - start;
     node->state_lock_stats.contended++;
     node->state_lock_stats.wait_ns += waited;
@@ -1554,7 +1555,7 @@ static void state_lock_waited(struct tt_Node* node, uint64_t start) {
     }
 }
 
-static void state_lock(struct tt_Node* node) {
+static void state_lock(struct tt_Context* node) {
     if (state_lock_owned(node)) {
         node->state_depth++; // re-entry from a callback, or a public call made inside another
         return;
@@ -1568,7 +1569,7 @@ static void state_lock(struct tt_Node* node) {
 }
 
 // state_lock() without waiting: true if it is now held (by this thread, possibly re-entered).
-static bool state_try_lock(struct tt_Node* node) {
+static bool state_try_lock(struct tt_Context* node) {
     if (state_lock_owned(node)) {
         node->state_depth++;
         return true;
@@ -1580,20 +1581,20 @@ static bool state_try_lock(struct tt_Node* node) {
     return true;
 }
 
-static void state_unlock(struct tt_Node* node) {
+static void state_unlock(struct tt_Context* node) {
     if (--node->state_depth == 0) {
         __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
         tt_lock_release(&node->state_lock); // NOLINT(misc-include-cleaner)
     }
 }
 
-void tt_Node_lock(struct tt_Node* node) {
+void tt_Context_lock(struct tt_Context* node) {
     if (node != NULL) {
         state_lock(node);
     }
 }
 
-bool tt_Node_lock_timed(struct tt_Node* node, uint64_t timeout_ns) {
+bool tt_Context_lock_timed(struct tt_Context* node, uint64_t timeout_ns) {
     if (node == NULL) {
         return false;
     }
@@ -1612,7 +1613,7 @@ bool tt_Node_lock_timed(struct tt_Node* node, uint64_t timeout_ns) {
     return true;
 }
 
-void tt_Node_unlock(struct tt_Node* node) {
+void tt_Context_unlock(struct tt_Context* node) {
     if (node != NULL) {
         state_unlock(node);
     }
@@ -1622,7 +1623,7 @@ void tt_Node_unlock(struct tt_Node* node) {
 // scheduler_tail. schedule/pop/unschedule are all O(log N) sift operations with no array
 // memmove. Equal-time entries no longer keep strict FIFO order (heaps don't) - nothing in this
 // codebase's scheduling depends on that.
-static void sched_sift_up(struct tt_Node* node, int32_t index) {
+static void sched_sift_up(struct tt_Context* node, int32_t index) {
     struct tt_TCB moving = node->scheduler[index];
     while (index > 0) {
         int32_t parent = (index - 1) / 2;
@@ -1635,7 +1636,7 @@ static void sched_sift_up(struct tt_Node* node, int32_t index) {
     node->scheduler[index] = moving;
 }
 
-static void sched_sift_down(struct tt_Node* node, int32_t index) {
+static void sched_sift_down(struct tt_Context* node, int32_t index) {
     struct tt_TCB moving = node->scheduler[index];
     int32_t count = node->scheduler_tail;
     while (true) {
@@ -1659,8 +1660,8 @@ static void sched_sift_down(struct tt_Node* node, int32_t index) {
     node->scheduler[index] = moving;
 }
 
-static void sched_heap_insert(struct tt_Node* node, uint64_t time,
-                              void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
+static void sched_heap_insert(struct tt_Context* node, uint64_t time,
+                              void (*function)(struct tt_Context* node, uint64_t time, void* param), void* param) {
     int32_t index = node->scheduler_tail;
     node->scheduler[index].time = time;
     node->scheduler[index].function = function;
@@ -1669,12 +1670,12 @@ static void sched_heap_insert(struct tt_Node* node, uint64_t time,
     sched_sift_up(node, index);
 }
 
-// struct tt_Node.wait_until, as a seqlock over two 32-bit halves. A 64-bit atomic would be simpler, but a
+// struct tt_Context.wait_until, as a seqlock over two 32-bit halves. A 64-bit atomic would be simpler, but a
 // 32-bit target has none in hardware - rv32 builds of this file failed to link on __atomic_store_8, and
 // picolibc brings no libatomic - so the value is written under a sequence counter instead. Only the poller
 // writes it. The final store of the counter is sequentially consistent, and it is that store, paired with
 // the reader's first load, that carries the ordering poll_wait_io() and wake_if_waiting_past() rely on.
-static void wait_until_store(struct tt_Node* node, uint64_t value) {
+static void wait_until_store(struct tt_Context* node, uint64_t value) {
     uint32_t seq = __atomic_load_n(&node->wait_seq, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_seq, seq + 1, __ATOMIC_RELAXED); // odd: a write is in progress
     __atomic_thread_fence(__ATOMIC_RELEASE);
@@ -1683,7 +1684,7 @@ static void wait_until_store(struct tt_Node* node, uint64_t value) {
     __atomic_store_n(&node->wait_seq, seq + 2, __ATOMIC_SEQ_CST);
 }
 
-static uint64_t wait_until_load(struct tt_Node* node) {
+static uint64_t wait_until_load(struct tt_Context* node) {
     uint32_t before = 0;
     uint32_t after = 0;
     uint32_t high = 0;
@@ -1701,7 +1702,7 @@ static uint64_t wait_until_load(struct tt_Node* node) {
 // Whether a poll blocked in tt_receive() is waiting for something later than `time`, and must be woken.
 // Paired with poll_wait_io()'s store of wait_until and its re-check of the inbox: both sides write, then
 // read the other's variable, all sequentially consistent, so at least one of them sees the other.
-static void wake_if_waiting_past(struct tt_Node* node, uint64_t time) {
+static void wake_if_waiting_past(struct tt_Context* node, uint64_t time) {
     uint64_t until = wait_until_load(node);
     if (until != 0 && time < until) {
         tt_wake_signal(node);
@@ -1713,8 +1714,8 @@ static void wake_if_waiting_past(struct tt_Node* node, uint64_t time) {
 // claimed by compare-and-swap, the same way tt_Server_send_response() hands a response to the poll thread
 // (struct tt_Server.slot_state). The heap itself belongs to whoever holds the state lock; the poll thread
 // moves inbox entries into it (sched_drain_inbox()) each time it looks at the heap.
-static bool sched_inbox_push(struct tt_Node* node, uint64_t time,
-                             void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
+static bool sched_inbox_push(struct tt_Context* node, uint64_t time,
+                             void (*function)(struct tt_Context* node, uint64_t time, void* param), void* param) {
     for (int i = 0; i < tt_SCHED_INBOX_LENGTH; i++) {
         uint8_t expected = tt_SCHED_SLOT_EMPTY;
         if (!__atomic_compare_exchange_n(&node->sched_inbox_state[i], &expected, tt_SCHED_SLOT_WRITING, false,
@@ -1732,7 +1733,7 @@ static bool sched_inbox_push(struct tt_Node* node, uint64_t time,
 }
 
 // Called with the state lock held. Costs one atomic load when the inbox is empty, which is almost always.
-static void sched_drain_inbox(struct tt_Node* node) {
+static void sched_drain_inbox(struct tt_Context* node) {
     if (__atomic_load_n(&node->sched_inbox_pending, __ATOMIC_ACQUIRE) == 0) {
         return;
     }
@@ -1752,12 +1753,12 @@ static void sched_drain_inbox(struct tt_Node* node) {
 
 // Straight into the heap whenever the state lock can be had without waiting - held already (the poll
 // thread inside a callback, which for a self-rescheduling publisher is every sample, or any thread inside
-// a core call or tt_Node_lock()), or free. Only when another thread holds it does the entry go through the
+// a core call or tt_Context_lock()), or free. Only when another thread holds it does the entry go through the
 // inbox, without a lock and without waiting behind whatever that thread is doing; a full inbox, rare, then
 // waits for the lock after all. Either way a poll waiting for something later than `time` is woken
-// (wake_if_waiting_past()), so no caller has to remember tt_Node_interrupt().
-bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
-                      void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
+// (wake_if_waiting_past()), so no caller has to remember tt_Context_interrupt().
+bool tt_Context_schedule(struct tt_Context* node, uint64_t time,
+                         void (*function)(struct tt_Context* node, uint64_t time, void* param), void* param) {
     if (!state_try_lock(node)) {
         if (sched_inbox_push(node, time, function, param)) {
             wake_if_waiting_past(node, time);
@@ -1776,15 +1777,15 @@ bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
     return room;
 }
 
-static bool unschedule_locked(struct tt_Node* node, void (*function)(struct tt_Node* node, uint64_t time, void* param),
-                              void* param);
+static bool unschedule_locked(struct tt_Context* node,
+                              void (*function)(struct tt_Context* node, uint64_t time, void* param), void* param);
 
 // Under the state lock, which entries run inside: an entry already taken out of the heap to run is waited
 // out, so after this returns `function` is neither pending nor running for `param` and it may be freed.
 // Entries still in the inbox are cancelled too. One being written into the inbox by another thread at this
 // very moment is not - that insert and this cancel are concurrent, and neither is ordered before the other.
-bool tt_Node_unschedule(struct tt_Node* node, void (*function)(struct tt_Node* node, uint64_t time, void* param),
-                        void* param) {
+bool tt_Context_unschedule(struct tt_Context* node,
+                           void (*function)(struct tt_Context* node, uint64_t time, void* param), void* param) {
     state_lock(node);
     sched_drain_inbox(node);
     bool removed = unschedule_locked(node, function, param);
@@ -1810,8 +1811,8 @@ bool tt_Node_unschedule(struct tt_Node* node, void (*function)(struct tt_Node* n
     return removed;
 }
 
-static bool unschedule_locked(struct tt_Node* node, void (*function)(struct tt_Node* node, uint64_t time, void* param),
-                              void* param) {
+static bool unschedule_locked(struct tt_Context* node,
+                              void (*function)(struct tt_Context* node, uint64_t time, void* param), void* param) {
     bool removed = false;
 
     for (int32_t i = 0; i < node->scheduler_tail; i++) {
@@ -1833,7 +1834,7 @@ static bool unschedule_locked(struct tt_Node* node, void (*function)(struct tt_N
 }
 
 // Callers hold the state lock: the heap belongs to it.
-static struct tt_TCB* peek_scheduler(struct tt_Node* node) {
+static struct tt_TCB* peek_scheduler(struct tt_Context* node) {
     if (node->scheduler_tail > 0) {
         return &node->scheduler[0];
     }
@@ -1841,7 +1842,7 @@ static struct tt_TCB* peek_scheduler(struct tt_Node* node) {
     return NULL;
 }
 
-static void pop_scheduler(struct tt_Node* node) {
+static void pop_scheduler(struct tt_Context* node) {
     node->scheduler_tail--;
     if (node->scheduler_tail > 0) {
         node->scheduler[0] = node->scheduler[node->scheduler_tail];
@@ -1850,7 +1851,7 @@ static void pop_scheduler(struct tt_Node* node) {
 }
 
 // When the earliest entry is due, or false when nothing is scheduled. A copy, taken under the lock.
-static bool sched_next_time(struct tt_Node* node, uint64_t* time) {
+static bool sched_next_time(struct tt_Context* node, uint64_t* time) {
     state_lock(node);
     sched_drain_inbox(node);
     const struct tt_TCB* tcb = peek_scheduler(node);
@@ -1868,9 +1869,9 @@ static bool sched_next_time(struct tt_Node* node, uint64_t* time) {
 //
 // The entry is copied out and popped before it runs. It used to run in place at scheduler[0] and be popped
 // afterwards, which was safe only while nothing else could reorder the heap during the call; with other
-// threads scheduling it no longer is. The state lock is held across the run, so tt_Node_unschedule() on
+// threads scheduling it no longer is. The state lock is held across the run, so tt_Context_unschedule() on
 // another thread either removes the entry before it is taken or waits until it has finished.
-static bool run_due_entry(struct tt_Node* node, uint64_t now, bool* has_next, uint64_t* next) {
+static bool run_due_entry(struct tt_Context* node, uint64_t now, bool* has_next, uint64_t* next) {
     state_lock(node);
     sched_drain_inbox(node);
     const struct tt_TCB* head = peek_scheduler(node);
@@ -1888,24 +1889,24 @@ static bool run_due_entry(struct tt_Node* node, uint64_t now, bool* has_next, ui
     return due;
 }
 
-static void node_update(struct tt_Node* node, uint64_t time, void* param);
+static void node_update(struct tt_Context* node, uint64_t time, void* param);
 // Milestone 47 "goodbye" - see its own definition's doc comment.
-static void broadcast_goodbye(struct tt_Node* node);
-static void check_liveliness(struct tt_Node* node, uint64_t time, void* param);
-static void server_cache_clean(struct tt_Node* node, uint64_t time, void* param);
+static void broadcast_goodbye(struct tt_Context* node);
+static void check_liveliness(struct tt_Context* node, uint64_t time, void* param);
+static void server_cache_clean(struct tt_Context* node, uint64_t time, void* param);
 static void clear_server_cache_slot(struct tt_Server* server, int slot);
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - see each definition's own comment.
-static void acknack_retry(struct tt_Node* node, uint64_t time, void* param);
+static void acknack_retry(struct tt_Context* node, uint64_t time, void* param);
 static uint16_t reliable_cache_depth(const struct tt_ReliableCache* cache);
 static uint64_t reliable_retry_interval(const struct tt_WriterProxy* proxy);
 static uint64_t reliable_retry_configured(void);
 static uint64_t reliable_retry_interval_publisher(void);
 static void note_watermark_requested(struct tt_WriterProxy* proxy, uint64_t now);
 static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_ns);
-static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy);
+static void send_acknack(struct tt_Context* node, struct tt_WriterProxy* proxy);
 static void advance_ack_seq_no(struct tt_WriterProxy* proxy);
-static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy* proxy);
-static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
+static void maybe_arm_acknack_retry(struct tt_Context* node, struct tt_WriterProxy* proxy);
+static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
                                 uint16_t sender_port);
 static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no);
@@ -1915,7 +1916,7 @@ static void release_reorder_slots_for_writer(struct tt_Subscriber* sub, uint8_t 
                                              bool match_any_entity);
 // Releases held samples the watermark has passed. Declared up here because acknack_retry()'s
 // give-up moves the watermark too, and it is defined long before the delivery code.
-static void drain_reorder(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy);
+static void drain_reorder(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy);
 static int highest_relevant_bit(const struct tt_WriterProxy* proxy);
 // Milestone 47 - WriterProxy table lookup/creation - see struct tt_WriterProxy's own doc comment
 // (tickle.h) and each definition. find_endpoint_by_entity() (the entity_id-aware ACKNACK routing
@@ -1926,20 +1927,20 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
                                                           uint32_t entity_id, bool* out_created);
 // QoS roadmap #5 (RELIABILITY) follow-up - Heartbeat, see struct tt_HeartbeatHeader's own doc
 // comment (tickle.h).
-static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param);
-static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target);
+static void send_heartbeat(struct tt_Context* node, uint64_t time, void* param);
+static void send_initial_heartbeat(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Peer* target);
 // QoS roadmap #5 (RELIABILITY) follow-up - periodic ACK solicitation, see struct tt_Publisher.
 // ack_solicit_period_ns's own doc comment (tickle.h).
-static void send_ack_solicit(struct tt_Node* node, uint64_t time, void* param);
-static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+static void send_ack_solicit(struct tt_Context* node, uint64_t time, void* param);
+static bool process_heartbeat(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                               uint32_t tail, uint32_t sender_ip, uint16_t sender_port);
 // QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md) - see its own definition's comment.
-static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target);
+static void deliver_durability_backlog(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Peer* target);
 
-// The node's lock and scheduler inbox, ready and empty. tt_Node_create() calls it; so does every unit test
+// The node's lock and scheduler inbox, ready and empty. tt_Context_create() calls it; so does every unit test
 // that builds a node by hand on the mock HAL instead - a zeroed node is not ready for FreeRTOS, and a
 // zeroed inbox state array only happens to mean "empty".
-static void node_init_locks(struct tt_Node* node) {
+static void node_init_locks(struct tt_Context* node) {
     tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
     node->state_depth = 0;
@@ -1956,8 +1957,8 @@ static void node_init_locks(struct tt_Node* node) {
     __atomic_store_n(&node->wait_until_lo, 0, __ATOMIC_RELAXED);
 }
 
-static void reset_node_state(struct tt_Node* node) {
-    node->id = tt_NODE_ID_INVALID;
+static void reset_node_state(struct tt_Context* node) {
+    node->id = tt_CONTEXT_ID_INVALID;
     node->endpoint_count = 0;
     node->endpoint_index_valid = false;
 
@@ -1966,7 +1967,7 @@ static void reset_node_state(struct tt_Node* node) {
     }
 
     node->last_modified = 0;
-    node->entity_id_base = 0; // real value assigned by tt_Node_create() itself, after this call
+    node->entity_id_base = 0; // real value assigned by tt_Context_create() itself, after this call
     node->next_entity_id = 0;
 
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
@@ -2038,13 +2039,13 @@ static void reset_node_state(struct tt_Node* node) {
     node->scheduler_tail = 0;
 }
 
-// Arms node_update()'s and check_liveliness()'s first run, aligned to the next tt_NODE_CYCLE boundary.
-static tt_ret_t schedule_periodic_tasks(struct tt_Node* node) {
+// Arms node_update()'s and check_liveliness()'s first run, aligned to the next tt_CONTEXT_CYCLE boundary.
+static tt_ret_t schedule_periodic_tasks(struct tt_Context* node) {
     uint64_t basetime = tt_get_ns();
-    uint64_t rem = basetime % tt_NODE_CYCLE;
-    basetime = basetime - rem + tt_NODE_CYCLE;
+    uint64_t rem = basetime % tt_CONTEXT_CYCLE;
+    basetime = basetime - rem + tt_CONTEXT_CYCLE;
 
-    if (!tt_Node_schedule(node, basetime, node_update, NULL)) {
+    if (!tt_Context_schedule(node, basetime, node_update, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_update");
         tt_close(node);
         return tt_RET_OUT_OF_SCHEDULE;
@@ -2055,7 +2056,7 @@ static tt_ret_t schedule_periodic_tasks(struct tt_Node* node) {
     // moment something is (ensure_flush_scheduled()).
 
     node->liveliness_check_scheduled = false;
-    arm_liveliness_check(node, basetime + tt_NODE_UPDATE_INTERVAL);
+    arm_liveliness_check(node, basetime + tt_CONTEXT_UPDATE_INTERVAL);
     if (!node->liveliness_check_scheduled) {
         tt_close(node);
         return tt_RET_OUT_OF_SCHEDULE;
@@ -2064,7 +2065,7 @@ static tt_ret_t schedule_periodic_tasks(struct tt_Node* node) {
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Node_create(struct tt_Node* node) {
+tt_ret_t tt_Context_create(struct tt_Context* node) {
     if (node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -2073,7 +2074,7 @@ tt_ret_t tt_Node_create(struct tt_Node* node) {
     // other thread may hold a node that is being created.
     node_init_locks(node);
 
-    // Milestone 47 - this launch's own random entity_id base (struct tt_Node.entity_id_base's own
+    // Milestone 47 - this launch's own random entity_id base (struct tt_Context.entity_id_base's own
     // doc comment, tickle.h): tt_get_ns()'s low 32 bits, no separate RNG primitive needed - this
     // node's own launch instant already is one, and this is exactly the kind of "coarse, no
     // cryptographic requirement" randomness every other sentinel/hash choice in this file already
@@ -2087,9 +2088,9 @@ tt_ret_t tt_Node_create(struct tt_Node* node) {
 
     node->entity_id_base = (uint32_t)tt_get_ns();
 
-    // _tt_CONFIG.node_id (see its own comment) skips auto-detection when set explicitly.
-    node->id = (uint8_t)(_tt_CONFIG.node_id != tt_NODE_ID_INVALID ? _tt_CONFIG.node_id : tt_get_node_id());
-    if (node->id == tt_NODE_ID_INVALID || node->id == tt_NODE_ID_BROADCAST) {
+    // _tt_CONFIG.context_id (see its own comment) skips auto-detection when set explicitly.
+    node->id = (uint8_t)(_tt_CONFIG.context_id != tt_CONTEXT_ID_INVALID ? _tt_CONFIG.context_id : tt_get_node_id());
+    if (node->id == tt_CONTEXT_ID_INVALID || node->id == tt_CONTEXT_ID_BROADCAST) {
         TT_LOG_ERROR("Invalid node id: %u", node->id);
         return tt_RET_IILEGAL_NODE_ID;
     }
@@ -2128,10 +2129,10 @@ static bool valid_sample_size(uint32_t size) {
 // runs registered no peer in 10 s and broadcast all 100 pings, the other 3 unicast from the first second.
 //
 // Marks every remote node's last acted-on announce as not acted on - the stored generation inverted,
-// which can never equal the real one - so its next periodic resend, within tt_NODE_UPDATE_INTERVAL, is
+// which can never equal the real one - so its next periodic resend, within tt_CONTEXT_UPDATE_INTERVAL, is
 // decoded in full and matched against the new endpoint. update_seen[] is left alone: this is not a first
 // contact, and nothing is replied. A partial announce in progress is unaffected.
-static void reprocess_known_announces(struct tt_Node* node) {
+static void reprocess_known_announces(struct tt_Context* node) {
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
         if (node->update_seen[i]) {
             node->update_generation[i] = ~node->update_generation[i];
@@ -2139,7 +2140,7 @@ static void reprocess_known_announces(struct tt_Node* node) {
     }
 }
 
-static tt_ret_t node_create_client_locked(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
+static tt_ret_t node_create_client_locked(struct tt_Context* node, struct tt_Client* client, struct tt_Service* service,
                                           const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
     if (node == NULL || client == NULL || service == NULL || endpoint_name == NULL || callback == NULL ||
         service->name == NULL || !valid_msg_size(service->request_size) || !valid_msg_size(service->response_size) ||
@@ -2162,7 +2163,7 @@ static tt_ret_t node_create_client_locked(struct tt_Node* node, struct tt_Client
     client->cache_time = 0;
     client->latency = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        client->peers[i].node_id = tt_NODE_ID_INVALID;
+        client->peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint);
@@ -2176,9 +2177,9 @@ static tt_ret_t node_create_client_locked(struct tt_Node* node, struct tt_Client
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
-                               const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
-    struct tt_Node* locked_node = node;
+tt_ret_t tt_Context_create_client(struct tt_Context* node, struct tt_Client* client, struct tt_Service* service,
+                                  const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
+    struct tt_Context* locked_node = node;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -2189,7 +2190,7 @@ tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, s
     return result;
 }
 
-static tt_ret_t node_create_server_locked(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
+static tt_ret_t node_create_server_locked(struct tt_Context* node, struct tt_Server* server, struct tt_Service* service,
                                           const char* endpoint_name, tt_SERVER_CALLBACK callback) {
     if (node == NULL || server == NULL || service == NULL || endpoint_name == NULL || callback == NULL ||
         service->name == NULL || !valid_msg_size(service->request_size) || !valid_msg_size(service->response_size) ||
@@ -2227,9 +2228,9 @@ static tt_ret_t node_create_server_locked(struct tt_Node* node, struct tt_Server
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
-                               const char* endpoint_name, tt_SERVER_CALLBACK callback) {
-    struct tt_Node* locked_node = node;
+tt_ret_t tt_Context_create_server(struct tt_Context* node, struct tt_Server* server, struct tt_Service* service,
+                                  const char* endpoint_name, tt_SERVER_CALLBACK callback) {
+    struct tt_Context* locked_node = node;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -2275,7 +2276,7 @@ static tt_ret_t server_set_storage_locked(struct tt_Server* server, uint8_t* cac
 
 tt_ret_t tt_Server_set_storage(struct tt_Server* server, uint8_t* cache_storage, uint32_t cache_entry_length,
                                uint8_t* pending_storage, uint32_t pending_entry_length) {
-    struct tt_Node* locked_node = server != NULL ? server->node : NULL;
+    struct tt_Context* locked_node = server != NULL ? server->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -2303,7 +2304,7 @@ static tt_ret_t client_set_storage_locked(struct tt_Client* client, uint8_t* cac
 }
 
 tt_ret_t tt_Client_set_storage(struct tt_Client* client, uint8_t* cache_storage, uint32_t cache_length) {
-    struct tt_Node* locked_node = client != NULL ? client->node : NULL;
+    struct tt_Context* locked_node = client != NULL ? client->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -2314,7 +2315,7 @@ tt_ret_t tt_Client_set_storage(struct tt_Client* client, uint8_t* cache_storage,
     return result;
 }
 
-static tt_ret_t node_create_publisher_locked(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
+static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Topic* topic,
                                              const char* endpoint_name) {
     if (node == NULL || pub == NULL || topic == NULL || endpoint_name == NULL || topic->name == NULL ||
         !valid_sample_size(topic->data_size) || topic->data_encode_size == NULL || topic->data_encode == NULL) {
@@ -2355,10 +2356,10 @@ static tt_ret_t node_create_publisher_locked(struct tt_Node* node, struct tt_Pub
     pub->blocked_record_bytes = 0;
     pub->blocked_datagrams = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        pub->peers[i].node_id = tt_NODE_ID_INVALID;
+        pub->peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
-        pub->peer_acks[i].node_id = tt_NODE_ID_INVALID; // empty - see claim_peer_ack()
+        pub->peer_acks[i].context_id = tt_CONTEXT_ID_INVALID; // empty - see claim_peer_ack()
         pub->peer_acks[i].entity_id = 0;
         pub->peer_acks[i].ack_seq_no = 0;
         pub->peer_acks[i].tracking_words = 0;
@@ -2375,9 +2376,9 @@ static tt_ret_t node_create_publisher_locked(struct tt_Node* node, struct tt_Pub
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
-                                  const char* endpoint_name) {
-    struct tt_Node* locked_node = node;
+tt_ret_t tt_Context_create_publisher(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Topic* topic,
+                                     const char* endpoint_name) {
+    struct tt_Context* locked_node = node;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -2388,8 +2389,9 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     return result;
 }
 
-static tt_ret_t node_create_subscriber_locked(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
-                                              const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
+static tt_ret_t node_create_subscriber_locked(struct tt_Context* node, struct tt_Subscriber* sub,
+                                              struct tt_Topic* topic, const char* endpoint_name,
+                                              tt_SUBSCRIBER_CALLBACK callback) {
     if (node == NULL || sub == NULL || topic == NULL || endpoint_name == NULL || callback == NULL ||
         topic->name == NULL || !valid_sample_size(topic->data_size) || topic->data_decode == NULL ||
         topic->data_free == NULL) {
@@ -2404,7 +2406,7 @@ static tt_ret_t node_create_subscriber_locked(struct tt_Node* node, struct tt_Su
     sub->topic = topic;
     sub->callback = callback;
     sub->reliable = false; // best-effort by default - see tickle.h's own doc comment
-    // As for tt_Node_create_publisher(): everything an announce or the receive path reads. The
+    // As for tt_Context_create_publisher(): everything an announce or the receive path reads. The
     // tracking pair matters most - tickle.h documents NULL/0 as this function's default, meaning
     // "use builtin_tracking[]", and a caller that did not zero its struct otherwise handed the
     // reliable path a garbage pointer to write through.
@@ -2438,7 +2440,7 @@ static tt_ret_t node_create_subscriber_locked(struct tt_Node* node, struct tt_Su
     sub->last_timestamp = 0;
     sub->last_via_data_port = false;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        sub->writers[i].node_id = tt_NODE_ID_INVALID; // all empty - see struct tt_WriterProxy
+        sub->writers[i].context_id = tt_CONTEXT_ID_INVALID; // all empty - see struct tt_WriterProxy
     }
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint);
@@ -2451,9 +2453,9 @@ static tt_ret_t node_create_subscriber_locked(struct tt_Node* node, struct tt_Su
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
-                                   const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
-    struct tt_Node* locked_node = node;
+tt_ret_t tt_Context_create_subscriber(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
+                                      const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
+    struct tt_Context* locked_node = node;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -2470,8 +2472,8 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
 // submessage join it and go by broadcast, so a sample published within ~1 ms of an announce was broadcast
 // although its peers were known - about one sample a run in a 10 ms ping-pong, and more once endpoints
 // announce as soon as they are created (2026-09-26). The pending datagram only leaves up to one
-// tt_NODE_TX_INTERVAL early. peers is the sender's own peer table (tt_Publisher.peers, tt_Client.peers).
-static void flush_pending_before_unicast(struct tt_Node* node, const struct tt_Peer* peers) {
+// tt_CONTEXT_TX_INTERVAL early. peers is the sender's own peer table (tt_Publisher.peers, tt_Client.peers).
+static void flush_pending_before_unicast(struct tt_Context* node, const struct tt_Peer* peers) {
     if (node->tx_tail == sizeof(struct tt_Header)) {
         return;
     }
@@ -2483,7 +2485,7 @@ static void flush_pending_before_unicast(struct tt_Node* node, const struct tt_P
 
 // Re-sends the still-outstanding call request verbatim. Failing to encode/flush isn't fatal here
 // - the retry timer armed by the caller will just try again.
-static void resend_call_request(struct tt_Node* node, struct tt_Client* client,
+static void resend_call_request(struct tt_Context* node, struct tt_Client* client,
                                 struct tt_SubmessageHeader* submessage_header) {
     flush_pending_before_unicast(node, client->peers);
     uint32_t old_tx_tail = node->tx_tail;
@@ -2516,7 +2518,7 @@ static uint32_t compute_retry_interval(struct tt_Client* client) {
     return retry_interval + (retry_interval >> 1); // latency * 1.5
 }
 
-static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
+static void call_retry(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(time);
 
     struct tt_Client* client = param;
@@ -2547,7 +2549,7 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
 
     resend_call_request(node, client, submessage_header);
 
-    if (!tt_Node_schedule(node, tt_get_ns() + compute_retry_interval(client), call_retry, client)) {
+    if (!tt_Context_schedule(node, tt_get_ns() + compute_retry_interval(client), call_retry, client)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
         client->callback(client, tt_CALL_TIMEOUT, NULL); // can't arm another retry - treat as no answer
 
@@ -2566,7 +2568,7 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
     }
 
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
-    struct tt_Node* node = client->node;
+    struct tt_Context* node = client->node;
     flush_pending_before_unicast(node, client->peers);
     uint32_t old_tx_tail = node->tx_tail;
 
@@ -2654,7 +2656,7 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
         retry_interval = client->service->call_retry_interval;
     }
 
-    if (!tt_Node_schedule(node, tt_get_ns() + retry_interval, call_retry, client)) {
+    if (!tt_Context_schedule(node, tt_get_ns() + retry_interval, call_retry, client)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
         client->cache = NULL;
         return tt_RET_OUT_OF_SCHEDULE;
@@ -2664,7 +2666,7 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
 }
 
 tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
-    struct tt_Node* locked_node = client != NULL ? client->node : NULL;
+    struct tt_Context* locked_node = client != NULL ? client->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -2688,7 +2690,7 @@ static tt_ret_t client_destroy_locked(struct tt_Client* client) {
     if (client->cache != NULL) {
         // Cancel the pending call_retry before clearing the cache it references, otherwise
         // that retry later fires on this (possibly freed/reused) client.
-        tt_Node_unschedule(client->node, call_retry, client);
+        tt_Context_unschedule(client->node, call_retry, client);
         client->cache = NULL;
     }
 
@@ -2699,7 +2701,7 @@ static tt_ret_t client_destroy_locked(struct tt_Client* client) {
 }
 
 tt_ret_t tt_Client_destroy(struct tt_Client* client) {
-    struct tt_Node* locked_node = client != NULL ? client->node : NULL;
+    struct tt_Context* locked_node = client != NULL ? client->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -2735,7 +2737,7 @@ static tt_ret_t server_destroy_locked(struct tt_Server* server) {
 }
 
 tt_ret_t tt_Server_destroy(struct tt_Server* server) {
-    struct tt_Node* locked_node = server != NULL ? server->node : NULL;
+    struct tt_Context* locked_node = server != NULL ? server->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -2754,15 +2756,15 @@ static uint32_t timestamp_to_wire(uint64_t time_ns) {
 
 // ... and back, in nanoseconds: the sender's microseconds taken as the ones nearest the receiver's clock,
 // within half the 32-bit range (+-35.8 min) of it either way. 0 if that would fall before the clock's epoch.
-// The receiver's clock is the one the running poll already read (tt_Node.rx_clock_ns): a clock read per
+// The receiver's clock is the one the running poll already read (tt_Context.rx_clock_ns): a clock read per
 // received sample cost the v10 campaign 19-70 ns of user time per sample on the Pi (WIRE_PLAN.md 8).
-// The receive path's "now": the running poll's reading (tt_Node.rx_clock_ns), which the poll refreshes when
+// The receive path's "now": the running poll's reading (tt_Context.rx_clock_ns), which the poll refreshes when
 // a wait returns and every tt_RX_CLOCK_REFRESH datagrams of a drain, or the clock itself outside a poll.
-static uint64_t rx_now(const struct tt_Node* node) {
+static uint64_t rx_now(const struct tt_Context* node) {
     return node->rx_clock_ns != 0 ? node->rx_clock_ns : tt_get_ns();
 }
 
-static uint64_t timestamp_from_wire(const struct tt_Node* node, uint32_t sent_us) {
+static uint64_t timestamp_from_wire(const struct tt_Context* node, uint32_t sent_us) {
     int64_t now_us = (int64_t)(rx_now(node) / tt_MICROSECOND);
     int64_t rebuilt_us = now_us + (int32_t)(sent_us - (uint32_t)now_us);
     return rebuilt_us < 0 ? 0 : (uint64_t)rebuilt_us * tt_MICROSECOND;
@@ -2775,7 +2777,7 @@ static uint64_t timestamp_from_wire(const struct tt_Node* node, uint32_t sent_us
 // flush. body_len must be 4-aligned (the caller checks) so the single submessage needs no pad.
 static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, uint32_t body_len) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
-    struct tt_Node* node = pub->node;
+    struct tt_Context* node = pub->node;
 
     uint8_t framing[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)];
     struct tt_Header* header = (struct tt_Header*)framing;
@@ -2841,7 +2843,7 @@ static uint32_t min_peer_ack_seq_no(const struct tt_Publisher* pub) {
     // Phase 2 - one entry per matched Subscriber *entity* (claimed at match time, dropped on
     // departure), so iterating the table is iterating exactly the set that has to agree.
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
-        if (pub->peer_acks[i].node_id == tt_NODE_ID_INVALID) {
+        if (pub->peer_acks[i].context_id == tt_CONTEXT_ID_INVALID) {
             continue;
         }
         // Read straight from the entry: the table is the matched set now, so no lookup is needed,
@@ -2886,7 +2888,7 @@ static bool reliable_cache_admits(const struct tt_ReliableCache* cache, uint16_t
 // case is what made a Publisher writable - one definition so the two can't drift apart.
 static bool any_peer_ack_matched(const struct tt_Publisher* pub) {
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
-        if (pub->peer_acks[i].node_id != tt_NODE_ID_INVALID) {
+        if (pub->peer_acks[i].context_id != tt_CONTEXT_ID_INVALID) {
             return true;
         }
     }
@@ -3139,7 +3141,7 @@ static void reliable_cache_drop_leading_tombstones(struct tt_ReliableCache* cach
 // How many bytes of arena the submessage now sitting at submessage_header will need. Shared with
 // tt_Publisher_publish()'s KEEP_ALL admission check, so the two cannot disagree about the size of
 // the record one of them is deciding about and the other is writing.
-static uint32_t reliable_record_length(const struct tt_Node* node,
+static uint32_t reliable_record_length(const struct tt_Context* node,
                                        const struct tt_SubmessageHeader* submessage_header) {
     return (uint32_t)ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
 }
@@ -3311,7 +3313,7 @@ static void reliable_cache_count_sample(struct tt_ReliableCache* cache, const ui
     }
 }
 
-static void cache_reliable_sample(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header,
+static void cache_reliable_sample(struct tt_Context* node, struct tt_SubmessageHeader* submessage_header,
                                   struct tt_ReliableCache* cache, uint32_t seq_no) {
     uint32_t length = reliable_record_length(node, submessage_header);
     reliable_cache_admit_sample(cache);
@@ -3335,7 +3337,7 @@ static bool reliable_cache_entry_expired(const struct tt_ReliableCacheIndex* ent
 // own doc comment (tickle.h) for why the generation, not node_id alone, is the right key.
 static bool durable_delivered_get(const struct tt_ReliableCache* cache, uint8_t node_id, uint32_t generation) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (cache->durable_delivered[i].node_id == node_id) {
+        if (cache->durable_delivered[i].context_id == node_id) {
             return cache->durable_delivered[i].generation == generation;
         }
     }
@@ -3349,14 +3351,14 @@ static bool durable_delivered_get(const struct tt_ReliableCache* cache, uint8_t 
 // own doc comment).
 static void durable_delivered_upsert(struct tt_ReliableCache* cache, uint8_t node_id, uint32_t generation) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (cache->durable_delivered[i].node_id == node_id) {
+        if (cache->durable_delivered[i].context_id == node_id) {
             cache->durable_delivered[i].generation = generation;
             return;
         }
     }
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (cache->durable_delivered[i].node_id == tt_NODE_ID_INVALID) {
-            cache->durable_delivered[i].node_id = node_id;
+        if (cache->durable_delivered[i].context_id == tt_CONTEXT_ID_INVALID) {
+            cache->durable_delivered[i].context_id = node_id;
             cache->durable_delivered[i].generation = generation;
             return;
         }
@@ -3364,7 +3366,7 @@ static void durable_delivered_upsert(struct tt_ReliableCache* cache, uint8_t nod
 }
 
 static uint32_t reliable_cache_oldest_seq_no(struct tt_ReliableCache* cache);
-static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, uint32_t first_seq_no,
+static void encode_and_send_heartbeat(struct tt_Context* node, struct tt_Publisher* pub, uint32_t first_seq_no,
                                       const struct tt_Peer* peers, uint8_t peer_count, uint8_t flags);
 
 // Whether this publish should carry a piggybacked Heartbeat (tt_Publisher.heartbeat_piggyback_every).
@@ -3400,7 +3402,8 @@ static bool try_publish_zerocopy(struct tt_Publisher* pub, struct tt_Data* data,
 
 // How many seq_no - and datagrams - the encoded DATA submessage at submessage_header takes: 1, or one
 // per fragment when no datagram can carry it (DATAFRAG_PLAN.md section 13).
-static uint32_t sample_datagram_count(const struct tt_Node* node, const struct tt_SubmessageHeader* submessage_header) {
+static uint32_t sample_datagram_count(const struct tt_Context* node,
+                                      const struct tt_SubmessageHeader* submessage_header) {
 #if tt_FRAG_ENABLED
     size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
     if (sizeof(struct tt_Header) + ROUNDUP(length) > FRAG_WHOLE_DATA_LIMIT) {
@@ -3421,7 +3424,7 @@ static uint32_t frag_header_length(uint32_t index) {
 #endif
 
 // Bytes of arena the encoded sample at submessage_header takes: its one record, or one per fragment.
-static uint32_t sample_cache_footprint(const struct tt_Node* node,
+static uint32_t sample_cache_footprint(const struct tt_Context* node,
                                        const struct tt_SubmessageHeader* submessage_header) {
     uint32_t count = sample_datagram_count(node, submessage_header);
     if (count == 1) {
@@ -3444,7 +3447,7 @@ static uint32_t sample_cache_footprint(const struct tt_Node* node,
 // Returning the size rather than setting it keeps this a question; the caller decides. Split out of
 // tt_Publisher_publish() to keep its cognitive complexity under clang-tidy's threshold, the same
 // reasoning check_and_cache_sample() below was split out for.
-static uint32_t keep_all_refused_record_bytes(const struct tt_Publisher* pub, const struct tt_Node* node,
+static uint32_t keep_all_refused_record_bytes(const struct tt_Publisher* pub, const struct tt_Context* node,
                                               const struct tt_SubmessageHeader* submessage_header) {
     if (!pub->keep_all || pub->reliable_cache == NULL || !any_peer_ack_matched(pub)) {
         return 0; // KEEP_LAST may evict, an unretained Publisher has nothing to evict, and with no
@@ -3464,7 +3467,7 @@ static uint32_t keep_all_refused_record_bytes(const struct tt_Publisher* pub, co
 // that goes as several datagrams, each taking a seq_no - the unacknowledged count, which the check before
 // encoding could only make for one. Records what was refused, so tt_Publisher_writable() and the writable
 // callback answer about the sample the caller will retry.
-static bool keep_all_refuses_encoded(struct tt_Publisher* pub, const struct tt_Node* node,
+static bool keep_all_refuses_encoded(struct tt_Publisher* pub, const struct tt_Context* node,
                                      const struct tt_SubmessageHeader* submessage_header) {
     uint32_t datagrams = sample_datagram_count(node, submessage_header);
     if (datagrams > 1 && pub->keep_all && reliable_cache_depth(pub->reliable_cache) != 0 && any_peer_ack_matched(pub)) {
@@ -3490,7 +3493,7 @@ static bool keep_all_refuses_encoded(struct tt_Publisher* pub, const struct tt_N
 // section 13). A sample with more fragments than the cache has index slots, or more bytes than its
 // arena, is sent and not retained: its seq_no are left as tombstones, which an ACKNACK is answered for
 // with the eviction Heartbeat. Keeping part of a sample would advertise datagrams no reader could use.
-static void cache_sample_fragments(struct tt_Node* node, struct tt_ReliableCache* cache,
+static void cache_sample_fragments(struct tt_Context* node, struct tt_ReliableCache* cache,
                                    struct tt_SubmessageHeader* submessage_header, uint32_t first_seq_no,
                                    uint32_t count) {
     uint16_t depth = reliable_cache_depth(cache);
@@ -3531,7 +3534,7 @@ static void cache_sample_fragments(struct tt_Node* node, struct tt_ReliableCache
 // or the cache would hold, and later offer to retransmit, a sample no reader was ever sent, under a
 // sequence number the next publish then reuses. Split out of tt_Publisher_publish() to keep its
 // cognitive complexity under clang-tidy's threshold.
-static bool check_and_cache_sample(struct tt_Node* node, struct tt_Publisher* pub,
+static bool check_and_cache_sample(struct tt_Context* node, struct tt_Publisher* pub,
                                    struct tt_SubmessageHeader* submessage_header) {
     // With fragmentation every sample within tt_MAX_SAMPLE_LENGTH can be sent, and the caller has
     // already refused anything larger.
@@ -3567,7 +3570,7 @@ static bool piggyback_due(struct tt_Publisher* pub, bool is_flush) {
 // If the Heartbeat cannot be appended - no room behind this DATA, or an encode failure it rolled
 // back - the DATA is still sitting unsent, and goes on its own. A piggyback is an optimisation; it
 // must never be the reason a sample is not published. Returns false only if that send fails.
-static bool append_piggybacked_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, const struct tt_Peer* peers,
+static bool append_piggybacked_heartbeat(struct tt_Context* node, struct tt_Publisher* pub, const struct tt_Peer* peers,
                                          uint8_t peer_count) {
     pub->heartbeat_piggyback_count = 0;
     pub->retransmitted = 0;
@@ -3582,7 +3585,7 @@ static bool append_piggybacked_heartbeat(struct tt_Node* node, struct tt_Publish
 // end_encode() for the DATA submessage at submessage_header, or - when no datagram can carry it and
 // fragmentation is compiled in - its fragments, sent at once whatever is_flush says, since a fragment
 // never shares a datagram. Rolls back to old_tx_tail on failure where that is still meaningful.
-static bool end_encode_sample(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header, bool is_flush,
+static bool end_encode_sample(struct tt_Context* node, struct tt_SubmessageHeader* submessage_header, bool is_flush,
                               const struct tt_Peer* peers, uint8_t peer_count, uint32_t old_tx_tail) {
 #if tt_FRAG_ENABLED
     size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
@@ -3604,7 +3607,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     }
 
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
-    struct tt_Node* node = pub->node;
+    struct tt_Context* node = pub->node;
     if (!pub->batch) {
         flush_pending_before_unicast(node, pub->peers);
     }
@@ -3697,14 +3700,14 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     pub->blocked_record_bytes = 0; // this one was admitted; nothing outstanding to re-ask about
     pub->blocked_datagrams = 0;
 
-    // pub->batch (default false, tt_Node_create_publisher() - see tickle.h's own doc comment on
+    // pub->batch (default false, tt_Context_create_publisher() - see tickle.h's own doc comment on
     // it for why immediate is the default now): mirrors tt_Client_call()'s own peer decision and
     // shared-tx_buffer guard exactly - unicast to pub->peers when there's a small enough known
     // count (tt_UNICAST_PEER_THRESHOLD) *and* nothing else (e.g. a still-batched announce
     // from node_update()) was already sitting unflushed ahead of this DATA submessage, since
     // unicasting would only reach these peers, not whatever else needs the whole segment.
     // pub->batch == true keeps today's behavior unconditionally: never flush here, let
-    // node_flush()'s own tt_NODE_TX_INTERVAL tick decide broadcast vs. unicast for the whole
+    // node_flush()'s own tt_CONTEXT_TX_INTERVAL tick decide broadcast vs. unicast for the whole
     // accumulated buffer at once.
     bool is_flush = !pub->batch;
     const struct tt_Peer* peers = NULL;
@@ -3742,7 +3745,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 }
 
 tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
-    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    struct tt_Context* locked_node = pub != NULL ? pub->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -3762,7 +3765,7 @@ tt_ret_t tt_Publisher_assert_liveliness(struct tt_Publisher* pub) {
     if (pub == NULL || pub->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
-    struct tt_Node* node = pub->node;
+    struct tt_Context* node = pub->node;
     state_lock(node);
     uint64_t now = tt_get_ns();
     uint64_t lease = pub->liveliness_lease_duration_ns;
@@ -3796,7 +3799,7 @@ static uint32_t reliable_cache_oldest_seq_no(struct tt_ReliableCache* cache) {
 // Publisher_publish() for. peers/peer_count follow end_encode()'s own convention directly (NULL/0
 // broadcasts). flags is tt_HEARTBEAT_FLAG_FINAL or 0 - see its own doc comment (tickle.h); every
 // caller before tt_Publisher_request_ack() existed always passed tt_HEARTBEAT_FLAG_FINAL.
-static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, uint32_t first_seq_no,
+static void encode_and_send_heartbeat(struct tt_Context* node, struct tt_Publisher* pub, uint32_t first_seq_no,
                                       const struct tt_Peer* peers, uint8_t peer_count, uint8_t flags) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     uint32_t old_tx_tail = node->tx_tail;
@@ -3832,7 +3835,7 @@ static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher*
 // purely-reactive gap detection RELIABILITY already had on its own. Skips sending (but still
 // reschedules) when nothing has been published yet - entries[] is still entirely empty, nothing
 // to announce, same "nothing retained yet" short-circuit deliver_durability_backlog() already has.
-static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param) {
+static void send_heartbeat(struct tt_Context* node, uint64_t time, void* param) {
     struct tt_Publisher* pub = param;
     uint32_t first_seq_no = reliable_cache_oldest_seq_no(pub->reliable_cache);
     if (first_seq_no != 0) {
@@ -3847,7 +3850,7 @@ static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param) {
         encode_and_send_heartbeat(node, pub, first_seq_no, peers, peer_count, tt_HEARTBEAT_FLAG_FINAL);
     }
 
-    if (!tt_Node_schedule(node, time + pub->heartbeat_period_ns, send_heartbeat, pub)) {
+    if (!tt_Context_schedule(node, time + pub->heartbeat_period_ns, send_heartbeat, pub)) {
         TT_LOG_ERROR("Cannot schedule send_heartbeat");
     }
 }
@@ -3862,12 +3865,12 @@ static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param) {
 // period()'s own doc comment gives - "nothing to solicit yet" (no peers matched, or nothing
 // published) is a normal transient state during periodic operation, not an error worth logging on
 // every tick, mirroring send_heartbeat()'s own silent-skip for its analogous case above.
-static void send_ack_solicit(struct tt_Node* node, uint64_t time, void* param) {
+static void send_ack_solicit(struct tt_Context* node, uint64_t time, void* param) {
     struct tt_Publisher* pub = param;
     pub->last_ack_solicit_ns = tt_get_ns(); // shared throttle - see ack_solicit_watermark_pct (tickle.h)
     (void)tt_Publisher_request_ack(pub);
 
-    if (!tt_Node_schedule(node, time + pub->ack_solicit_period_ns, send_ack_solicit, pub)) {
+    if (!tt_Context_schedule(node, time + pub->ack_solicit_period_ns, send_ack_solicit, pub)) {
         TT_LOG_ERROR("Cannot schedule send_ack_solicit");
     }
 }
@@ -3884,7 +3887,7 @@ static void send_ack_solicit(struct tt_Node* node, uint64_t time, void* param) {
 // to gate, so a durable-only Publisher doesn't also start emitting Heartbeats nobody asked for)
 // and pub->reliable_cache is non-NULL and non-empty (nothing published yet) - fires regardless of
 // whether periodic Heartbeat (tt_Publisher_set_heartbeat_period()) was ever separately enabled.
-static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target) {
+static void send_initial_heartbeat(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Peer* target) {
     if (!pub->reliable || pub->reliable_cache == NULL) {
         return;
     }
@@ -3910,7 +3913,7 @@ static uint32_t publisher_unacked_bound_locked(const struct tt_Publisher* pub) {
     uint32_t bound = 0;
     bool announced = false;
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
-        if (pub->peer_acks[i].node_id == tt_NODE_ID_INVALID) {
+        if (pub->peer_acks[i].context_id == tt_CONTEXT_ID_INVALID) {
             continue;
         }
         uint32_t window = (uint32_t)pub->peer_acks[i].tracking_words * tt_RELIABLE_BITMAP_WORD_BITS;
@@ -3926,7 +3929,7 @@ static uint32_t publisher_unacked_bound_locked(const struct tt_Publisher* pub) {
 }
 
 uint32_t tt_Publisher_unacked_bound(const struct tt_Publisher* pub) {
-    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    struct tt_Context* locked_node = pub != NULL ? pub->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -3946,7 +3949,7 @@ static uint32_t publisher_min_acked_seq_no_locked(const struct tt_Publisher* pub
 }
 
 uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub) {
-    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    struct tt_Context* locked_node = pub != NULL ? pub->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -3965,7 +3968,7 @@ static bool publisher_writable_locked(const struct tt_Publisher* pub) {
 }
 
 bool tt_Publisher_writable(const struct tt_Publisher* pub) {
-    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    struct tt_Context* locked_node = pub != NULL ? pub->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -3980,7 +3983,7 @@ static bool publisher_is_acked_by_all_peers_locked(const struct tt_Publisher* pu
     // Phase 2 - every matched Subscriber entity must have got this far, not merely every matched
     // node: two Subscriptions of one topic in one remote process each have their own entry.
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
-        if (pub->peer_acks[i].node_id == tt_NODE_ID_INVALID) {
+        if (pub->peer_acks[i].context_id == tt_CONTEXT_ID_INVALID) {
             continue;
         }
         if (pub->peer_acks[i].ack_seq_no <= seq_no) {
@@ -3991,7 +3994,7 @@ static bool publisher_is_acked_by_all_peers_locked(const struct tt_Publisher* pu
 }
 
 bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t seq_no) {
-    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    struct tt_Context* locked_node = pub != NULL ? pub->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -4075,14 +4078,14 @@ static tt_ret_t publisher_set_heartbeat_period_locked(struct tt_Publisher* pub, 
     }
 
     if (pub->heartbeat_period_ns != 0) {
-        tt_Node_unschedule(pub->node, send_heartbeat, pub); // re-arming or disabling either way
+        tt_Context_unschedule(pub->node, send_heartbeat, pub); // re-arming or disabling either way
     }
     pub->heartbeat_period_ns = period_ns;
     if (period_ns == 0) {
         return tt_RET_OK; // disabled
     }
 
-    if (!tt_Node_schedule(pub->node, tt_get_ns() + period_ns, send_heartbeat, pub)) {
+    if (!tt_Context_schedule(pub->node, tt_get_ns() + period_ns, send_heartbeat, pub)) {
         pub->heartbeat_period_ns = 0;  // failed to arm - stay disabled rather than claim it's on
         return tt_RET_OUT_OF_SCHEDULE; // tt_MAX_SCHEDULER_LENGTH exhausted
     }
@@ -4090,7 +4093,7 @@ static tt_ret_t publisher_set_heartbeat_period_locked(struct tt_Publisher* pub, 
 }
 
 tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t period_ns) {
-    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    struct tt_Context* locked_node = pub != NULL ? pub->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -4113,14 +4116,14 @@ static tt_ret_t publisher_set_ack_solicit_period_locked(struct tt_Publisher* pub
     }
 
     if (pub->ack_solicit_period_ns != 0) {
-        tt_Node_unschedule(pub->node, send_ack_solicit, pub); // re-arming or disabling either way
+        tt_Context_unschedule(pub->node, send_ack_solicit, pub); // re-arming or disabling either way
     }
     pub->ack_solicit_period_ns = period_ns;
     if (period_ns == 0) {
         return tt_RET_OK; // disabled
     }
 
-    if (!tt_Node_schedule(pub->node, tt_get_ns() + period_ns, send_ack_solicit, pub)) {
+    if (!tt_Context_schedule(pub->node, tt_get_ns() + period_ns, send_ack_solicit, pub)) {
         pub->ack_solicit_period_ns = 0; // failed to arm - stay disabled rather than claim it's on
         return tt_RET_OUT_OF_SCHEDULE;  // tt_MAX_SCHEDULER_LENGTH exhausted
     }
@@ -4128,7 +4131,7 @@ static tt_ret_t publisher_set_ack_solicit_period_locked(struct tt_Publisher* pub
 }
 
 tt_ret_t tt_Publisher_set_ack_solicit_period(struct tt_Publisher* pub, uint64_t period_ns) {
-    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    struct tt_Context* locked_node = pub != NULL ? pub->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -4159,7 +4162,7 @@ static tt_ret_t publisher_request_ack_locked(struct tt_Publisher* pub) {
     struct tt_Peer live_peers[tt_MAX_PEER_COUNT];
     uint8_t live_count = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (pub->peers[i].node_id != tt_NODE_ID_INVALID) {
+        if (pub->peers[i].context_id != tt_CONTEXT_ID_INVALID) {
             live_peers[live_count++] = pub->peers[i];
         }
     }
@@ -4177,7 +4180,7 @@ static tt_ret_t publisher_request_ack_locked(struct tt_Publisher* pub) {
 }
 
 tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub) {
-    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    struct tt_Context* locked_node = pub != NULL ? pub->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -4189,7 +4192,7 @@ tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub) {
 }
 
 // Milestone 47 "goodbye" - broadcasts the node's own now-reduced entity list right away, instead
-// of waiting for node_update()'s own next periodic tick (up to tt_NODE_UPDATE_INTERVAL later).
+// of waiting for node_update()'s own next periodic tick (up to tt_CONTEXT_UPDATE_INTERVAL later).
 // Shared by every per-entity destroy function below (tt_Publisher_destroy()/tt_Subscriber_
 // destroy()/tt_Client_destroy()/tt_Server_destroy()) - call only *after* remove_endpoint_from_
 // node() has already removed the departing entity, so encode_update_entities() doesn't announce
@@ -4200,10 +4203,10 @@ tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub) {
 // newly-arrived one under (real DDS's own lease-expiry-based cleanup has the identical residual
 // gap for an ungraceful shutdown - see rmw_tickle/PLAN.md's own Milestone 47 for the full
 // writeup). Calls build_and_send_update() directly, not node_update() (which would also re-arm
-// its own periodic reschedule on top of the one already pending - safe inside tt_Node_destroy()
+// its own periodic reschedule on top of the one already pending - safe inside tt_Context_destroy()
 // only because that function wipes the whole scheduler right after, not true for a per-entity
 // destroy that leaves the node running).
-static void broadcast_goodbye(struct tt_Node* node) {
+static void broadcast_goodbye(struct tt_Context* node) {
     build_and_send_update(node, NULL, 0);
     if (!flush_tx(node, node->tx_tail, NULL, 0)) {
         TT_LOG_WARNING("Could not send farewell announce on entity destroy");
@@ -4215,16 +4218,16 @@ static tt_ret_t publisher_destroy_locked(struct tt_Publisher* pub) {
         return tt_RET_INVALID_ARGUMENT;
     }
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
-    struct tt_Node* node = pub->node;
+    struct tt_Context* node = pub->node;
 
     // Cancel a still-armed Heartbeat before this Publisher (its own schedule param) goes away -
     // same reasoning as tt_Subscriber_destroy()'s own acknack_retry cancellation just below.
     if (pub->heartbeat_period_ns != 0) {
-        tt_Node_unschedule(node, send_heartbeat, pub);
+        tt_Context_unschedule(node, send_heartbeat, pub);
     }
     // Same reasoning, for a still-armed periodic ACK solicitation.
     if (pub->ack_solicit_period_ns != 0) {
-        tt_Node_unschedule(node, send_ack_solicit, pub);
+        tt_Context_unschedule(node, send_ack_solicit, pub);
     }
 
     if (!remove_endpoint_from_node(node, endpoint)) {
@@ -4236,7 +4239,7 @@ static tt_ret_t publisher_destroy_locked(struct tt_Publisher* pub) {
 }
 
 tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub) {
-    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    struct tt_Context* locked_node = pub != NULL ? pub->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -4251,7 +4254,7 @@ tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub) {
 // goes away.
 //
 // Why it is called from two places (2026-09-24): this used to be emitted only from the loop in
-// tt_Node_destroy() that walks node->endpoints, and under rmw_tickle it therefore never fired at
+// tt_Context_destroy() that walks node->endpoints, and under rmw_tickle it therefore never fired at
 // all. rmw_destroy_subscription() calls tt_Subscriber_destroy() before the node is destroyed, so
 // by the time that loop runs the Subscriber has already been removed from the table and its
 // counters go with it. The counters were being computed correctly for an entire benchmark and
@@ -4289,7 +4292,7 @@ static tt_ret_t subscriber_destroy_locked(struct tt_Subscriber* sub) {
         return tt_RET_INVALID_ARGUMENT;
     }
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
-    struct tt_Node* node = sub->node;
+    struct tt_Context* node = sub->node;
 
     // Cancel every outstanding per-writer acknack_retry before this Subscriber's own writers[]
     // table (each entry's own schedule param) goes away - same reasoning as tt_Client_destroy()'s
@@ -4298,7 +4301,7 @@ static tt_ret_t subscriber_destroy_locked(struct tt_Subscriber* sub) {
     // not per Subscriber, see its own doc comment).
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         if (sub->writers[i].acknack_scheduled) {
-            tt_Node_unschedule(node, acknack_retry, &sub->writers[i]);
+            tt_Context_unschedule(node, acknack_retry, &sub->writers[i]);
             sub->writers[i].acknack_scheduled = false;
         }
     }
@@ -4314,7 +4317,7 @@ static tt_ret_t subscriber_destroy_locked(struct tt_Subscriber* sub) {
 }
 
 tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
-    struct tt_Node* locked_node = sub != NULL ? sub->node : NULL;
+    struct tt_Context* locked_node = sub != NULL ? sub->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -4475,7 +4478,7 @@ static void bitmap_low_mask(uint64_t* mask, uint16_t words, int highest) {
 // Phase 3 step 4 - returns UNKNOWN, not NO, when there is nothing to read: no discovery table
 // attached (it's opt-in) or nothing heard from that writer yet. The distinction is the whole point;
 // see tt_WriterProxy.keep_all's own doc comment for what assuming NO here cost.
-static enum tt_WriterKeepAll writer_announced_keep_all(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id) {
+static enum tt_WriterKeepAll writer_announced_keep_all(struct tt_Context* node, uint8_t node_id, uint32_t endpoint_id) {
     if (node == NULL || node->discovery == NULL) {
         return tt_WRITER_KEEP_ALL_UNKNOWN;
     }
@@ -4493,7 +4496,7 @@ static enum tt_WriterKeepAll writer_announced_keep_all(struct tt_Node* node, uin
 // (inform_subscriber_of_heartbeat()'s own "is this really first contact" check).
 static struct tt_WriterProxy* find_writer_proxy(struct tt_Subscriber* sub, uint8_t node_id, uint32_t entity_id) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (sub->writers[i].node_id == node_id && sub->writers[i].entity_id == entity_id) {
+        if (sub->writers[i].context_id == node_id && sub->writers[i].entity_id == entity_id) {
             return &sub->writers[i];
         }
     }
@@ -4503,7 +4506,7 @@ static struct tt_WriterProxy* find_writer_proxy(struct tt_Subscriber* sub, uint8
 // Milestone 47 - find_writer_proxy() above, but claims and initializes the first empty slot on a
 // miss instead of returning NULL (every DATA/HEARTBEAT-driven call site below wants this). A new
 // entry starts at ack_seq_no 1 (a Publisher's first sample is always seq_no 1, never 0), matching
-// tt_Node_create_subscriber()'s own former up-front default - now applied lazily, per writer, the
+// tt_Context_create_subscriber()'s own former up-front default - now applied lazily, per writer, the
 // first time each one is actually heard from instead of once for the whole Subscriber. *out_
 // created (may be NULL) reports whether this call just claimed a fresh slot, for a caller that
 // needs to tell "already tracking this writer" apart from "first contact" (inform_subscriber_of_
@@ -4522,9 +4525,9 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
     }
 
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (sub->writers[i].node_id == tt_NODE_ID_INVALID) {
+        if (sub->writers[i].context_id == tt_CONTEXT_ID_INVALID) {
             proxy = &sub->writers[i];
-            proxy->node_id = node_id;
+            proxy->context_id = node_id;
             proxy->entity_id = entity_id;
             proxy->sender_ip = 0;
             proxy->sender_port = 0;
@@ -4601,13 +4604,13 @@ static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
 // Requests (ACKNACK "please resend" bits) only positions low_bit..high_bit relative to ack_seq_no,
 // further masked to what's still missing in received_bitmap. send_acknack() below is the usual
 // full-range form; update_reliable_ack() uses a narrow range for Phase 1-a's per-new-gap NACK.
-static void send_acknack_range(struct tt_Node* node, struct tt_WriterProxy* proxy, int low_bit, int high_bit) {
+static void send_acknack_range(struct tt_Context* node, struct tt_WriterProxy* proxy, int low_bit, int high_bit) {
     struct tt_Subscriber* sub = proxy->sub;
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
-    struct tt_Peer target = {proxy->node_id, proxy->sender_ip, proxy->sender_port};
+    struct tt_Peer target = {proxy->context_id, proxy->sender_ip, proxy->sender_port};
     uint32_t old_tx_tail = node->tx_tail;
 
-    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_ACKNACK, target.node_id);
+    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_ACKNACK, target.context_id);
     if (submessage_header == NULL) {
         rollback(node, old_tx_tail);
         return;
@@ -4661,7 +4664,7 @@ static void send_acknack_range(struct tt_Node* node, struct tt_WriterProxy* prox
 
     // Unicast straight back to whoever's DATA this acks - same "nothing else queued" guard as
     // process_callrequest()'s own CallResponse. Falling back to broadcast when something else is
-    // already staged is still correct here: the submessage's own receiver field (target.node_id,
+    // already staged is still correct here: the submessage's own receiver field (target.context_id,
     // not tt_SUBMESSAGE_ID_ALL) confines actual processing to that one node regardless of how the
     // packet physically went out.
 #ifdef tt_RELIABLE_STATS
@@ -4701,7 +4704,7 @@ static void send_acknack_range(struct tt_Node* node, struct tt_WriterProxy* prox
 #endif
 }
 
-static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy) {
+static void send_acknack(struct tt_Context* node, struct tt_WriterProxy* proxy) {
     send_acknack_range(node, proxy, 0, highest_relevant_bit(proxy));
 }
 
@@ -4799,13 +4802,13 @@ static void note_watermark_requested(struct tt_WriterProxy* proxy, uint64_t now)
     proxy->probe_ns = now != 0 ? now : 1U;
 }
 
-// Scheduled (tt_Node_schedule()) while proxy has an outstanding gap (proxy->received_bitmap !=
+// Scheduled (tt_Context_schedule()) while proxy has an outstanding gap (proxy->received_bitmap !=
 // 0), re-sending the ACKNACK on a timer for the case where no further DATA ever arrives to
 // re-trigger update_reliable_ack() itself. Mirrors call_retry()'s own schedule/reschedule/give-up
 // shape. Scheduled against proxy's own stable address (not the owning Subscriber) so several
 // writers' independent retry timers on the same Subscriber never collide - see struct tt_
 // WriterProxy.sub's own doc comment for why this can still reach node/endpoint from just `proxy`.
-static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
+static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(time);
 
     struct tt_WriterProxy* proxy = param;
@@ -4873,11 +4876,11 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
     if (proxy->keep_all != tt_WRITER_KEEP_ALL_NO && now - proxy->stuck_warned_ns >= tt_RELIABLE_STUCK_WARN_INTERVAL) {
         proxy->stuck_warned_ns = now;
         TT_LOG_WARNING("Still waiting on reliable seq_no %u from node %d after %u retries (%s: no give-up)",
-                       proxy->ack_seq_no, proxy->node_id, proxy->retry,
+                       proxy->ack_seq_no, proxy->context_id, proxy->retry,
                        proxy->keep_all == tt_WRITER_KEEP_ALL_YES ? "KEEP_ALL" : "policy not yet known");
     }
 
-    if (!tt_Node_schedule(node, tt_get_ns() + reliable_retry_interval(proxy), acknack_retry, proxy)) {
+    if (!tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(proxy), acknack_retry, proxy)) {
         TT_LOG_ERROR("Cannot schedule acknack_retry");
         proxy->acknack_scheduled = false;
     }
@@ -4919,12 +4922,12 @@ static void advance_ack_seq_no(struct tt_WriterProxy* proxy) {
 // left to ask for, or sends an ACKNACK for whatever's still missing and (re-)arms the retry timer
 // if one isn't already running. Splitting this out means a give-up no longer leaves a remaining,
 // different gap waiting on the next DATA arrival before anything asks for it again.
-static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy* proxy) {
+static void maybe_arm_acknack_retry(struct tt_Context* node, struct tt_WriterProxy* proxy) {
     if (highest_relevant_bit(proxy) < 0) {
         // No outstanding gap by either signal (received_bitmap or the last Heartbeat) - a healthy
         // stream needs no ACKNACK at all.
         if (proxy->acknack_scheduled) {
-            tt_Node_unschedule(node, acknack_retry, proxy);
+            tt_Context_unschedule(node, acknack_retry, proxy);
             proxy->acknack_scheduled = false;
         }
         proxy->retry = 0;
@@ -4948,7 +4951,7 @@ static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy*
         RSTAT_INC(acknack_immediate);
         send_acknack(node, proxy);
         proxy->retry = 0;
-        if (tt_Node_schedule(node, tt_get_ns() + reliable_retry_interval(proxy), acknack_retry, proxy)) {
+        if (tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(proxy), acknack_retry, proxy)) {
             proxy->acknack_scheduled = true;
         } else {
             TT_LOG_ERROR("Cannot schedule acknack_retry");
@@ -5100,7 +5103,7 @@ static void rstat_on_arrival(const struct tt_WriterProxy* proxy, uint32_t seq_no
 // duplicate (an accepted, narrow miss, same category as this file's other honest residuals) but
 // carries no risk of misclassifying a genuinely new sample - the trade-off deliberately made in
 // the safer direction after the wider version's own real-CI-confirmed failure.
-static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
+static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
                                 uint16_t sender_port) {
     if (!sub->reliable) {
@@ -5247,7 +5250,8 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
 // encoded, or -1 on an encode failure (the caller must roll back the whole submessage in that
 // case). encode()/encode_string() already log their own reason when they fail, so this doesn't
 // log again on top of that - except "illegal endpoint kind", which is this function's own check.
-static int encode_update_entities(struct tt_Node* node, struct tt_Endpoint* const* endpoints, uint32_t endpoint_count) {
+static int encode_update_entities(struct tt_Context* node, struct tt_Endpoint* const* endpoints,
+                                  uint32_t endpoint_count) {
     uint8_t entity_count = 0;
     for (uint32_t i = 0; i < endpoint_count; i++) {
         struct tt_Endpoint* endpoint = endpoints[i];
@@ -5337,7 +5341,7 @@ static bool update_fits_single(struct tt_Endpoint* const* endpoints, uint32_t en
 // logged) rather than holding everything else back. Returns the fragment count, or 0 when more than
 // tt_UPDATE_MAX_PARTS would be needed. Every fragment is planned with FRAG_FIRST's larger header, so
 // the plan holds wherever a fragment lands.
-static uint8_t plan_update_parts(struct tt_Node* node, struct tt_Endpoint** endpoints, uint32_t endpoint_count,
+static uint8_t plan_update_parts(struct tt_Context* node, struct tt_Endpoint** endpoints, uint32_t endpoint_count,
                                  uint32_t part_start[tt_UPDATE_MAX_PARTS + 1]) {
     const uint32_t part_overhead =
         sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragFirstHeader) + sizeof(struct tt_AnnounceHeader);
@@ -5374,7 +5378,7 @@ static uint8_t plan_update_parts(struct tt_Node* node, struct tt_Endpoint** endp
 
 // This node's announce DataHeader (tt_DISCOVERY_ENDPOINT_ID, tickle.h): the built-in endpoint, and the
 // generation that names this version of the endpoint list.
-static void fill_announce_header(const struct tt_Node* node, struct tt_DataHeader* data_header) {
+static void fill_announce_header(const struct tt_Context* node, struct tt_DataHeader* data_header) {
     data_header->endpoint_id = tt_DISCOVERY_ENDPOINT_ID;
     data_header->seq_no = (uint32_t)node->last_modified;
     data_header->timestamp = timestamp_to_wire(node->last_modified); // not read: the generation is seq_no
@@ -5386,7 +5390,7 @@ static void fill_announce_header(const struct tt_Node* node, struct tt_DataHeade
 // entity boundaries rather than by bytes: every fragment is FRAG_FIRST/FRAG_CONT framing, its own
 // tt_AnnounceHeader and whole entities, so a receiver processes each one on arrival with no reassembly
 // memory (tt_DISCOVERY_ENDPOINT_ID, tickle.h).
-static bool send_update_parts(struct tt_Node* node, struct tt_Endpoint* const* endpoints,
+static bool send_update_parts(struct tt_Context* node, struct tt_Endpoint* const* endpoints,
                               const uint32_t part_start[tt_UPDATE_MAX_PARTS + 1], uint8_t part_count,
                               const struct tt_Peer* peers, uint8_t peer_count) {
     for (uint8_t part_no = 0; part_no < part_count; part_no++) {
@@ -5445,7 +5449,7 @@ static bool send_update_parts(struct tt_Node* node, struct tt_Endpoint* const* e
 // is fine); peer_count >= 1 unicasts it to that one peer, flushed immediately (a first-contact reply from
 // process_announce(), or a request answered by answer_discovery_request() - the whole point is the other
 // side learning us as fast as possible).
-static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count) {
+static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count) {
     uint32_t old_tx_tail = node->tx_tail;
 
     // start_encode()/encode() below already log their own reason when they fail (e.g. "Lack of
@@ -5521,7 +5525,7 @@ static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* pe
 // receiver that has applied this generation takes it as liveliness only; one that has not asks for the list
 // (process_discovery_summary()). The full list is still broadcast at once on every change (announce_soon(),
 // broadcast_goodbye()). Batched, as the announce was: it is broadcast-only content.
-static void fill_summary(const struct tt_Node* node, struct tt_HeartbeatHeader* summary) {
+static void fill_summary(const struct tt_Context* node, struct tt_HeartbeatHeader* summary) {
     uint32_t generation = (uint32_t)node->last_modified;
     summary->endpoint_id = tt_DISCOVERY_ENDPOINT_ID;
     summary->first_available_seq_no = generation;
@@ -5532,8 +5536,8 @@ static void fill_summary(const struct tt_Node* node, struct tt_HeartbeatHeader* 
 }
 
 // The summary as a datagram of its own, built apart from tx_buffer, which may hold the very send it goes
-// ahead of (note_reached(), tt_Node.summary_rides). Broadcast, as the batched one is.
-static void send_summary_ahead(struct tt_Node* node) {
+// ahead of (note_reached(), tt_Context.summary_rides). Broadcast, as the batched one is.
+static void send_summary_ahead(struct tt_Context* node) {
     tt_ALIGNAS(4) uint8_t
         datagram[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_HeartbeatHeader)];
     struct tt_Header* header = (struct tt_Header*)datagram;
@@ -5552,7 +5556,7 @@ static void send_summary_ahead(struct tt_Node* node) {
     node->summaries_ridden++;
 }
 
-static void send_discovery_summary(struct tt_Node* node) {
+static void send_discovery_summary(struct tt_Context* node) {
     uint32_t old_tx_tail = node->tx_tail;
     struct tt_SubmessageHeader* submessage_header =
         start_encode(node, tt_SUBMESSAGE_TYPE_HEARTBEAT, tt_SUBMESSAGE_ID_ALL);
@@ -5572,26 +5576,26 @@ static void send_discovery_summary(struct tt_Node* node) {
     node->tx_summary_alone_len = alone && node->summary_skip_armed ? node->tx_tail : 0;
 }
 
-// How often this node's summary goes out: every tt_NODE_UPDATE_INTERVAL, or a tt_LIVELINESS_LEASE_DIVISOR-th of
+// How often this node's summary goes out: every tt_CONTEXT_UPDATE_INTERVAL, or a tt_LIVELINESS_LEASE_DIVISOR-th of
 // the shortest lease any
 // of its own endpoints announces if that is sooner (LIVELINESS_PLAN.md amendment 1) - an idle node's summary
-// is its only sign of life, so it must outpace the leases peers hold it to. At least tt_NODE_TX_INTERVAL.
-static uint64_t summary_interval(const struct tt_Node* node) {
-    uint64_t interval = tt_NODE_UPDATE_INTERVAL;
+// is its only sign of life, so it must outpace the leases peers hold it to. At least tt_CONTEXT_TX_INTERVAL.
+static uint64_t summary_interval(const struct tt_Context* node) {
+    uint64_t interval = tt_CONTEXT_UPDATE_INTERVAL;
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         uint64_t lease = endpoint_liveliness_lease_duration_ns(node->endpoints[i]);
         if (lease != 0 && lease / tt_LIVELINESS_LEASE_DIVISOR < interval) {
             interval = lease / tt_LIVELINESS_LEASE_DIVISOR;
         }
     }
-    return interval < tt_NODE_TX_INTERVAL ? tt_NODE_TX_INTERVAL : interval;
+    return interval < tt_CONTEXT_TX_INTERVAL ? tt_CONTEXT_TX_INTERVAL : interval;
 }
 
 // Whether every peer this node knows of has had a datagram from it since the last summary tick, and clears
 // the record for the next one. Each such datagram asserted this node's AUTOMATIC liveliness at its receiver
 // (source_last_heard()), as the summary would have; MANUAL writers assert with their own DATA and HEARTBEAT.
 // False with no peer known, so a node alone keeps announcing itself.
-static bool every_peer_reached(struct tt_Node* node) {
+static bool every_peer_reached(struct tt_Context* node) {
     bool everyone = node->reached_everyone != 0;
     node->reached_everyone = 0;
     uint32_t reached[tt_MAX_ENDPOINT_COUNT / 32];
@@ -5612,27 +5616,27 @@ static bool every_peer_reached(struct tt_Node* node) {
     return any_peer;
 }
 
-static void node_update(struct tt_Node* node, uint64_t time, void* param) {
+static void node_update(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
 
     // At the short-lease cadence (LIVELINESS_PLAN.md 10) a summary is skipped when the node's own traffic
     // has already reached every peer since the last one: under traffic the last sign of life is then the
-    // data, as with DDS, rather than a summary tens of ms after it. The tt_NODE_UPDATE_INTERVAL summary, which
+    // data, as with DDS, rather than a summary tens of ms after it. The tt_CONTEXT_UPDATE_INTERVAL summary, which
     // also carries the discovery generation, always goes.
     // That summary, when the traffic reaches every peer, rides just ahead of the next send rather than going
     // on its own, so it is not the last datagram before a node that stops.
     uint64_t interval = summary_interval(node);
     bool reached = every_peer_reached(node) && node->summary_skip_armed; // always cleared; unarmed, it recorded nothing
-    node->summary_skip_armed = interval < tt_NODE_UPDATE_INTERVAL;
+    node->summary_skip_armed = interval < tt_CONTEXT_UPDATE_INTERVAL;
     // A rider still waiting found no send since the last tick, so `reached` is false and it goes below.
     node->summary_rides = 0;
-    bool keeps_the_second = interval >= tt_NODE_UPDATE_INTERVAL || node->summary_sent_ns == 0 ||
-                            time - node->summary_sent_ns + interval > tt_NODE_UPDATE_INTERVAL;
+    bool keeps_the_second = interval >= tt_CONTEXT_UPDATE_INTERVAL || node->summary_sent_ns == 0 ||
+                            time - node->summary_sent_ns + interval > tt_CONTEXT_UPDATE_INTERVAL;
     if (!reached) {
         send_discovery_summary(node);
         node->summary_sent_ns = time;
     } else if (keeps_the_second) {
-        if (interval < tt_NODE_UPDATE_INTERVAL) {
+        if (interval < tt_CONTEXT_UPDATE_INTERVAL) {
             node->summary_rides = 1;
         } else {
             send_discovery_summary(node);
@@ -5643,20 +5647,20 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     }
 
     node->next_summary_ns = time + interval;
-    if (!tt_Node_schedule(node, node->next_summary_ns, node_update, NULL)) {
+    if (!tt_Context_schedule(node, node->next_summary_ns, node_update, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_update");
     }
 }
 
 // Brings the next summary forward when an endpoint with a short lease has just appeared, so the first gap is
-// not a whole tt_NODE_UPDATE_INTERVAL.
-static void reschedule_summary_for_leases(struct tt_Node* node, uint64_t now) {
+// not a whole tt_CONTEXT_UPDATE_INTERVAL.
+static void reschedule_summary_for_leases(struct tt_Context* node, uint64_t now) {
     uint64_t due = now + summary_interval(node);
     if (node->next_summary_ns == 0 || due >= node->next_summary_ns) {
         return; // not running (a unit test's bare node), or already soon enough
     }
-    (void)tt_Node_unschedule(node, node_update, NULL);
-    if (tt_Node_schedule(node, due, node_update, NULL)) {
+    (void)tt_Context_unschedule(node, node_update, NULL);
+    if (tt_Context_schedule(node, due, node_update, NULL)) {
         node->next_summary_ns = due;
     } else {
         TT_LOG_ERROR("Cannot schedule node_update");
@@ -5667,7 +5671,7 @@ static void reschedule_summary_for_leases(struct tt_Node* node, uint64_t now) {
 // Subscriber already tracking it, from that writer's own announce (tt_UPDATE_QOS_KEEP_ALL). A
 // proxy claimed later reads the same thing from the discovery table at first contact, so both
 // orderings converge.
-static void update_writer_proxies_keep_all(struct tt_Node* node, uint32_t endpoint_id, uint8_t node_id,
+static void update_writer_proxies_keep_all(struct tt_Context* node, uint32_t endpoint_id, uint8_t node_id,
                                            uint32_t entity_id, enum tt_WriterKeepAll keep_all) {
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
@@ -5676,7 +5680,7 @@ static void update_writer_proxies_keep_all(struct tt_Node* node, uint32_t endpoi
         }
         struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
         for (int j = 0; j < tt_MAX_PEER_COUNT; j++) {
-            if (sub->writers[j].node_id == node_id && sub->writers[j].entity_id == entity_id) {
+            if (sub->writers[j].context_id == node_id && sub->writers[j].entity_id == entity_id) {
                 sub->writers[j].keep_all = keep_all;
             }
         }
@@ -5694,7 +5698,7 @@ static void update_writer_proxies_keep_all(struct tt_Node* node, uint32_t endpoi
 // same samples every retry interval forever, unicast at an address nobody answers - and the slot
 // would never free for a restarted Publisher. A KEEP_LAST writer only leaked a bounded number of
 // retries, which is why this was survivable before.
-static void forget_writer_proxies_for_endpoint(struct tt_Node* node, uint32_t endpoint_id, uint8_t node_id,
+static void forget_writer_proxies_for_endpoint(struct tt_Context* node, uint32_t endpoint_id, uint8_t node_id,
                                                uint32_t entity_id, bool match_any_entity) {
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
@@ -5704,17 +5708,17 @@ static void forget_writer_proxies_for_endpoint(struct tt_Node* node, uint32_t en
         struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
         for (int j = 0; j < tt_MAX_PEER_COUNT; j++) {
             struct tt_WriterProxy* proxy = &sub->writers[j];
-            if (proxy->node_id != node_id) {
+            if (proxy->context_id != node_id) {
                 continue;
             }
             if (!match_any_entity && proxy->entity_id != entity_id) {
                 continue;
             }
             if (proxy->acknack_scheduled) {
-                tt_Node_unschedule(node, acknack_retry, proxy);
+                tt_Context_unschedule(node, acknack_retry, proxy);
                 proxy->acknack_scheduled = false;
             }
-            proxy->node_id = tt_NODE_ID_INVALID; // frees the slot; a restart re-runs first contact
+            proxy->context_id = tt_CONTEXT_ID_INVALID; // frees the slot; a restart re-runs first contact
             proxy->entity_id = 0;
             proxy->ack_seq_no = 1;
             proxy->reorder_cursor = 1;
@@ -5743,38 +5747,38 @@ static void forget_writer_proxies_for_endpoint(struct tt_Node* node, uint32_t en
 // Rule 2, one timer at the earliest expiry, not a once-a-second sweep: check_liveliness() below.
 // Rule 3, a node is presumed dead only once it has been silent for tt_LIVELINESS_SILENCE_NS and for the
 // longest lease any of its entities announced - a lease longer than the node-level limit is not cut short -
-// but never longer than tt_NODE_MAX_LEASE_NS, as a DDS participant lease bounds its writers'.
+// but never longer than tt_CONTEXT_MAX_LEASE_NS, as a DDS participant lease bounds its writers'.
 
 static bool entity_asserts_manually(const struct tt_DiscoveredEntity* entity) {
     return entity->kind == tt_KIND_TOPIC_PUBLISHER && (entity->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;
 }
 
 // The last datagram of any kind from `source`: its summaries and announces, and all its other traffic.
-static uint64_t source_last_heard(const struct tt_Node* node, uint8_t source) {
+static uint64_t source_last_heard(const struct tt_Context* node, uint8_t source) {
     uint64_t update = node->update_last_seen[source];
     uint64_t traffic = node->traffic_last_seen[source];
     return update > traffic ? update : traffic;
 }
 
-static uint64_t entity_lease_anchor(const struct tt_Node* node, const struct tt_DiscoveredEntity* entity) {
-    return entity_asserts_manually(entity) ? entity->last_asserted_ns : source_last_heard(node, entity->node_id);
+static uint64_t entity_lease_anchor(const struct tt_Context* node, const struct tt_DiscoveredEntity* entity) {
+    return entity_asserts_manually(entity) ? entity->last_asserted_ns : source_last_heard(node, entity->context_id);
 }
 
 // Whether a leased entity's lease still holds at `now`.
-static bool entity_within_lease(const struct tt_Node* node, const struct tt_DiscoveredEntity* entity, uint64_t now) {
+static bool entity_within_lease(const struct tt_Context* node, const struct tt_DiscoveredEntity* entity, uint64_t now) {
     uint64_t anchor = entity_lease_anchor(node, entity);
     return now <= anchor || now - anchor <= entity->liveliness_lease_duration_ns;
 }
 
-// Recomputes tt_Node.liveliness_flags[source] from the discovery table. Called whenever an entity of
+// Recomputes tt_Context.liveliness_flags[source] from the discovery table. Called whenever an entity of
 // `source` is added, removed, lapses or revives - rare events - so the per-datagram checks are one byte.
-static void refresh_liveliness_flags(struct tt_Node* node, uint8_t source) {
+static void refresh_liveliness_flags(struct tt_Context* node, uint8_t source) {
     uint8_t flags = 0;
     if (node->discovery != NULL) {
         const struct tt_DiscoveredEntity* entities = node->discovery->entities;
         for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
             const struct tt_DiscoveredEntity* entity = &entities[i];
-            if (entity->node_id != source || entity->liveliness_lease_duration_ns == 0) {
+            if (entity->context_id != source || entity->liveliness_lease_duration_ns == 0) {
                 continue;
             }
             if (entity_asserts_manually(entity)) {
@@ -5789,15 +5793,15 @@ static void refresh_liveliness_flags(struct tt_Node* node, uint8_t source) {
 }
 
 // Makes sure check_liveliness() runs by `due_ns`: moves the one scheduled entry earlier if needed.
-static void arm_liveliness_check(struct tt_Node* node, uint64_t due_ns) {
+static void arm_liveliness_check(struct tt_Context* node, uint64_t due_ns) {
     if (node->liveliness_check_scheduled) {
         if (due_ns >= node->liveliness_check_ns) {
             return;
         }
-        (void)tt_Node_unschedule(node, check_liveliness, NULL);
+        (void)tt_Context_unschedule(node, check_liveliness, NULL);
         node->liveliness_check_scheduled = false;
     }
-    if (tt_Node_schedule(node, due_ns, check_liveliness, NULL)) {
+    if (tt_Context_schedule(node, due_ns, check_liveliness, NULL)) {
         node->liveliness_check_scheduled = true;
         node->liveliness_check_ns = due_ns;
     } else {
@@ -5807,32 +5811,32 @@ static void arm_liveliness_check(struct tt_Node* node, uint64_t due_ns) {
 
 // A leased entity whose lease ran out while its node is still heard: tombstoned, and whatever this node
 // kept for it goes.
-static void lapse_entity(struct tt_Node* node, struct tt_DiscoveredEntity* entity) {
+static void lapse_entity(struct tt_Context* node, struct tt_DiscoveredEntity* entity) {
     entity->alive = false;
     // Phase 3 prerequisite (a), rmw_tickle/PLAN.md - a remote Subscriber presumed dead by its
     // own announced lease must also leave the matching local Publishers' peer/ack sets right
     // here, or under KEEP_ALL blocking a writer waiting on exactly that ack would stall. Narrow on
     // purpose: only the Publishers whose own endpoint id this entity matched, and only this node_id.
     if (entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
-        forget_publisher_peers_for_endpoint(node, entity->endpoint_id, entity->node_id);
+        forget_publisher_peers_for_endpoint(node, entity->endpoint_id, entity->context_id);
     } else if (entity->kind == tt_KIND_TOPIC_PUBLISHER) {
         // Phase 3 - the mirror case: a remote *Publisher* past its own lease stops being
         // something our Subscribers can still recover from, so its WriterProxy goes too.
-        forget_writer_proxies_for_endpoint(node, entity->endpoint_id, entity->node_id, /*entity_id=*/0,
+        forget_writer_proxies_for_endpoint(node, entity->endpoint_id, entity->context_id, /*entity_id=*/0,
                                            /*match_any_entity=*/true);
     }
     if (node->discovery_callback != NULL) {
-        node->discovery_callback(node, entity->node_id, entity->endpoint_id, entity->kind, /*departed=*/true,
+        node->discovery_callback(node, entity->context_id, entity->endpoint_id, entity->kind, /*departed=*/true,
                                  node->discovery_callback_param);
     }
 }
 
 // A lapsed entity showing a sign of life again - liveliness regained, as DDS reports it. Its peers come
 // back with the next announce or data, as for any new match.
-static void revive_entity(struct tt_Node* node, struct tt_DiscoveredEntity* entity, uint64_t now) {
+static void revive_entity(struct tt_Context* node, struct tt_DiscoveredEntity* entity, uint64_t now) {
     entity->alive = true;
     if (node->discovery_callback != NULL) {
-        node->discovery_callback(node, entity->node_id, entity->endpoint_id, entity->kind, /*departed=*/false,
+        node->discovery_callback(node, entity->context_id, entity->endpoint_id, entity->kind, /*departed=*/false,
                                  node->discovery_callback_param);
     }
     arm_liveliness_check(node, now + entity->liveliness_lease_duration_ns + 1);
@@ -5840,14 +5844,14 @@ static void revive_entity(struct tt_Node* node, struct tt_DiscoveredEntity* enti
 
 // Traffic from `source` revives its AUTOMATIC entities that lapsed (tt_LIVELINESS_SOURCE_LAPSED). Only
 // called when that flag is set, so ordinary traffic pays one byte test.
-static void revive_lapsed_entities(struct tt_Node* node, uint8_t source, uint64_t now) {
+static void revive_lapsed_entities(struct tt_Context* node, uint8_t source, uint64_t now) {
     if (node->discovery == NULL || !node->update_seen[source]) {
         return;
     }
     struct tt_DiscoveredEntity* entities = node->discovery->entities;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
         struct tt_DiscoveredEntity* entity = &entities[i];
-        if (entity->node_id == source && !entity->alive && entity->liveliness_lease_duration_ns != 0 &&
+        if (entity->context_id == source && !entity->alive && entity->liveliness_lease_duration_ns != 0 &&
             !entity_asserts_manually(entity)) {
             revive_entity(node, entity, now);
         }
@@ -5858,7 +5862,7 @@ static void revive_lapsed_entities(struct tt_Node* node, uint8_t source, uint64_
 // A MANUAL_BY_TOPIC Publisher's sign of life: its DATA, or its HEARTBEAT with tt_HEARTBEAT_FLAG_LIVELINESS.
 // Found by (source, endpoint_id) - the discovery table has no entity_id. Only looked up when `source` has
 // such a Publisher (tt_LIVELINESS_SOURCE_MANUAL).
-static void note_manual_assertion(struct tt_Node* node, uint8_t source, uint32_t endpoint_id) {
+static void note_manual_assertion(struct tt_Context* node, uint8_t source, uint32_t endpoint_id) {
     if ((node->liveliness_flags[source] & tt_LIVELINESS_SOURCE_MANUAL) == 0 || node->discovery == NULL) {
         return;
     }
@@ -5867,7 +5871,7 @@ static void note_manual_assertion(struct tt_Node* node, uint8_t source, uint32_t
     bool revived = false;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
         struct tt_DiscoveredEntity* entity = &entities[i];
-        if (entity->node_id != source || entity->endpoint_id != endpoint_id || !entity_asserts_manually(entity)) {
+        if (entity->context_id != source || entity->endpoint_id != endpoint_id || !entity_asserts_manually(entity)) {
             continue;
         }
         entity->last_asserted_ns = now;
@@ -5882,14 +5886,14 @@ static void note_manual_assertion(struct tt_Node* node, uint8_t source, uint32_t
 }
 
 // Longest lease among the entities `source` announced, 0 if none or no discovery table.
-static uint64_t longest_lease_from(const struct tt_Node* node, uint8_t source) {
+static uint64_t longest_lease_from(const struct tt_Context* node, uint8_t source) {
     uint64_t longest = 0;
     if (node->discovery == NULL) {
         return 0;
     }
     const struct tt_DiscoveredEntity* entities = node->discovery->entities;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        if (entities[i].node_id == source && entities[i].liveliness_lease_duration_ns > longest) {
+        if (entities[i].context_id == source && entities[i].liveliness_lease_duration_ns > longest) {
             longest = entities[i].liveliness_lease_duration_ns;
         }
     }
@@ -5903,7 +5907,7 @@ static uint64_t longest_lease_from(const struct tt_Node* node, uint8_t source) {
 // not the normal deletion RMW_EVENT_LIVELINESS_CHANGED.not_alive_count must exclude. Doesn't distinguish
 // "crashed" from "partitioned" from "just slow" - none of those are observable from here, and DDS-style
 // liveliness has the same limitation.
-static void presume_node_dead(struct tt_Node* node, uint8_t source, uint64_t silent_ns) {
+static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t silent_ns) {
     TT_LOG_WARNING("Node %d presumed dead (silent for %lu ms)", source, (unsigned long)(silent_ns / tt_MILLISECOND));
     forget_peers_from_source(node, source, /*preserve_ack=*/false);
     tombstone_discovered_entities_from_source(node, source);
@@ -5917,7 +5921,7 @@ static void presume_node_dead(struct tt_Node* node, uint8_t source, uint64_t sil
 
 // The node-level half of check_liveliness(): presumes dead each remote node silent past its limit, and
 // lowers *next to the earliest limit still ahead.
-static void check_node_silence(struct tt_Node* node, uint64_t time, uint64_t* next) {
+static void check_node_silence(struct tt_Context* node, uint64_t time, uint64_t* next) {
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
         if (!node->update_seen[i] && node->update_part_received[i] == 0) {
             continue; // never heard from this node id at all - nothing to expire
@@ -5928,9 +5932,9 @@ static void check_node_silence(struct tt_Node* node, uint64_t time, uint64_t* ne
         uint64_t limit = tt_LIVELINESS_SILENCE_NS;
         if (time > last && time - last > limit) {
             // Only for a node already that quiet. Capped as a DDS participant lease caps its writers': an
-            // entity's lease cannot keep a silent node alive past tt_NODE_MAX_LEASE_NS.
+            // entity's lease cannot keep a silent node alive past tt_CONTEXT_MAX_LEASE_NS.
             uint64_t longest = longest_lease_from(node, (uint8_t)i);
-            longest = longest < tt_NODE_MAX_LEASE_NS ? longest : tt_NODE_MAX_LEASE_NS;
+            longest = longest < tt_CONTEXT_MAX_LEASE_NS ? longest : tt_CONTEXT_MAX_LEASE_NS;
             limit = longest > limit ? longest : limit;
         }
         if (time > last && time - last > limit) {
@@ -5942,19 +5946,20 @@ static void check_node_silence(struct tt_Node* node, uint64_t time, uint64_t* ne
 }
 
 // The entity half: lapses each leased entity past its lease, and lowers *next to the earliest expiry ahead.
-static void check_entity_leases(struct tt_Node* node, uint64_t time, uint64_t* next) {
+static void check_entity_leases(struct tt_Context* node, uint64_t time, uint64_t* next) {
     if (node->discovery == NULL) {
         return;
     }
     struct tt_DiscoveredEntity* entities = node->discovery->entities;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
         struct tt_DiscoveredEntity* entity = &entities[i];
-        if (entity->node_id == tt_NODE_ID_INVALID || !entity->alive || entity->liveliness_lease_duration_ns == 0) {
+        if (entity->context_id == tt_CONTEXT_ID_INVALID || !entity->alive ||
+            entity->liveliness_lease_duration_ns == 0) {
             continue;
         }
         if (!entity_within_lease(node, entity, time)) {
             lapse_entity(node, entity);
-            refresh_liveliness_flags(node, entity->node_id);
+            refresh_liveliness_flags(node, entity->context_id);
             continue;
         }
         uint64_t expiry = entity_lease_anchor(node, entity) + entity->liveliness_lease_duration_ns + 1;
@@ -5965,17 +5970,17 @@ static void check_entity_leases(struct tt_Node* node, uint64_t time, uint64_t* n
 // The liveliness timer (rule 2): runs at the earliest expiry among the remote nodes and leased entities this
 // node tracks, acts on whatever has expired, and re-arms at the next one. A refresh only moves an expiry
 // later, so nothing on the receive path re-arms it; when it fires early for that reason it finds nothing
-// expired and re-arms. It also runs at least every tt_NODE_UPDATE_INTERVAL, which picks up nodes heard for
+// expired and re-arms. It also runs at least every tt_CONTEXT_UPDATE_INTERVAL, which picks up nodes heard for
 // the first time.
-static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
+static void check_liveliness(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
     if (node->liveliness_check_scheduled) {
         // Run early, by a test or by a re-arm that lost a race with the entry itself: take the entry out,
         // this run re-arms.
-        (void)tt_Node_unschedule(node, check_liveliness, NULL);
+        (void)tt_Context_unschedule(node, check_liveliness, NULL);
         node->liveliness_check_scheduled = false;
     }
-    uint64_t next = time + tt_NODE_UPDATE_INTERVAL;
+    uint64_t next = time + tt_CONTEXT_UPDATE_INTERVAL;
     check_node_silence(node, time, &next);
     check_entity_leases(node, time, &next);
     arm_liveliness_check(node, next);
@@ -5992,7 +5997,7 @@ static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
 // conditions hold for every one of this codebase's own examples (one Publisher per node); a node
 // with 0 or 2+ Publishers, or one with an announce still pending, simply keeps broadcasting exactly
 // as before this feature existed.
-static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
+static void node_flush(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
     UNUSED(time);
     node->flush_scheduled = false;
@@ -6040,7 +6045,7 @@ static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
 // target's id into the submessage header in place of the cached tt_SUBMESSAGE_ID_ALL - see
 // retransmit_one_sample() for why a retransmission is addressed. The one path by which the reliable
 // cache is ever sent, for a retransmission and for a durability backlog alike.
-static bool send_cached_record(struct tt_Node* node, const uint8_t* record, uint16_t len, bool addressed,
+static bool send_cached_record(struct tt_Context* node, const uint8_t* record, uint16_t len, bool addressed,
                                const struct tt_Peer* target) {
 #if tt_FRAG_ENABLED
     uint8_t type = ((const struct tt_SubmessageHeader*)record)->type;
@@ -6058,7 +6063,7 @@ static bool send_cached_record(struct tt_Node* node, const uint8_t* record, uint
         header->source = node->id;
         _tt_memcpy(head + sizeof(struct tt_Header), record, header_length);
         if (addressed) {
-            ((struct tt_SubmessageHeader*)(head + sizeof(struct tt_Header)))->receiver = target->node_id;
+            ((struct tt_SubmessageHeader*)(head + sizeof(struct tt_Header)))->receiver = target->context_id;
         }
         uint32_t framing_length = (uint32_t)sizeof(struct tt_Header) + header_length;
         uint32_t skip = to_single_form(head, framing_length, len - header_length);
@@ -6074,7 +6079,7 @@ static bool send_cached_record(struct tt_Node* node, const uint8_t* record, uint
     }
     _tt_memcpy(buf, record, len);
     if (addressed) {
-        ((struct tt_SubmessageHeader*)buf)->receiver = target->node_id;
+        ((struct tt_SubmessageHeader*)buf)->receiver = target->context_id;
     }
     if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
         rollback(node, old_tx_tail);
@@ -6083,7 +6088,7 @@ static bool send_cached_record(struct tt_Node* node, const uint8_t* record, uint
     return true;
 }
 
-static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target) {
+static void deliver_durability_backlog(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Peer* target) {
     if (!pub->durable || pub->reliable_cache == NULL) {
         return;
     }
@@ -6149,7 +6154,8 @@ struct update_peer_ctx {
     uint32_t announce_generation;
 };
 
-static void register_subscriber_peer_on_publisher(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+static void register_subscriber_peer_on_publisher(struct tt_Context* node, struct tt_Endpoint* endpoint,
+                                                  void* ctx_ptr) {
     struct update_peer_ctx* ctx = (struct update_peer_ctx*)ctx_ptr;
     struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
 
@@ -6238,14 +6244,14 @@ static void register_subscriber_peer_on_publisher(struct tt_Node* node, struct t
 // every local Client sharing the announced service name learns this remote Server as a peer, not
 // just the first. No QoS compatibility gate here (Clients/Servers have no RELIABLE/DURABLE
 // policy to negotiate the way topics do), matching the original inline code this was lifted from.
-static void register_server_peer_on_client(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+static void register_server_peer_on_client(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
     UNUSED(node);
     struct update_peer_ctx* ctx = (struct update_peer_ctx*)ctx_ptr;
     struct tt_Client* client = (struct tt_Client*)endpoint;
     upsert_peer(client->peers, ctx->header->source, ctx->sender_ip, ctx->sender_port);
 }
 
-static bool decode_update_entities(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t* head,
+static bool decode_update_entities(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t* head,
                                    uint32_t tail, int entity_count, uint32_t sender_ip, uint16_t sender_port,
                                    uint32_t generation) {
     bool reverse = tt_is_reverse_endian(header);
@@ -6306,7 +6312,7 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
         TT_LOG_DEBUG("  name: (%d)\"%s\"", name_len, name);
 
         // Recorded regardless of kind or whether a local endpoint matched above - discovery
-        // (tt_Node_set_discovery()) lists every remote entity a node has heard of, not just ones
+        // (tt_Context_set_discovery()) lists every remote entity a node has heard of, not just ones
         // this node itself can talk to.
         upsert_discovered_entity(node, header->source, endpoint_id, update_entity->kind, update_entity->qos,
                                  deadline_duration_ns, liveliness_lease_duration_ns, type, name);
@@ -6325,7 +6331,7 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
 // this one time - the peer pulls our list when our next summary reaches it) whenever tx_buffer
 // already has something else pending: redirecting that to a single peer here could be wrong for
 // whatever else it's for (same shared-tx_buffer reasoning as process_callrequest()'s own unicast).
-static void reply_with_own_announce(struct tt_Node* node, uint8_t sender_node_id, uint32_t sender_ip,
+static void reply_with_own_announce(struct tt_Context* node, uint8_t sender_node_id, uint32_t sender_ip,
                                     uint16_t sender_port) {
     if (node->tx_tail != sizeof(struct tt_Header)) {
         return;
@@ -6340,7 +6346,7 @@ static uint32_t update_all_parts_mask(uint8_t part_count) {
     return part_count >= 32 ? UINT32_MAX : ((uint32_t)1 << part_count) - 1;
 }
 
-_Static_assert(tt_UPDATE_MAX_PARTS <= 32, "tt_Node.update_part_received is a 32-bit mask, one bit per fragment");
+_Static_assert(tt_UPDATE_MAX_PARTS <= 32, "tt_Context.update_part_received is a 32-bit mask, one bit per fragment");
 
 // A discovery announce (tt_DISCOVERY_ENDPOINT_ID, tickle.h), whole or one fragment of it: buffer[head..tail)
 // is its tt_AnnounceHeader and entities. generation is its DataHeader/FragContHeader seq_no; frag_index
@@ -6358,7 +6364,7 @@ _Static_assert(tt_UPDATE_MAX_PARTS <= 32, "tt_Node.update_part_received is a 32-
 // A lost fragment leaves the announce incomplete - its generation not applied - so the source's next
 // summary draws a request, and the reply resends every fragment under the same generation, which fills the
 // gap without starting over; until then the source is known by the fragments that did arrive.
-static bool process_announce(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+static bool process_announce(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                              uint32_t tail, uint32_t sender_ip, uint16_t sender_port, uint32_t generation,
                              uint8_t frag_index, uint8_t frag_count) {
     uint8_t source = header->source;
@@ -6387,7 +6393,7 @@ static bool process_announce(struct tt_Node* node, struct tt_Header* header, uin
     if (whole || node->update_part_received[source] == 0 || node->update_part_generation[source] != generation ||
         node->update_part_count[source] != frag_count) {
         // A new announce from this source: it supersedes what it announced before (it may have dropped
-        // an endpoint, or left entirely - see tt_Node_destroy()'s farewell announce). Forget its old
+        // an endpoint, or left entirely - see tt_Context_destroy()'s farewell announce). Forget its old
         // peer-table entries; decode_update_entities() below re-adds whatever it still lists.
         forget_peers_from_source(node, source, /*preserve_ack=*/true);
         forget_discovered_entities_from_source(node, source);
@@ -6421,7 +6427,7 @@ static bool process_announce(struct tt_Node* node, struct tt_Header* header, uin
     node->update_seen[source] = true;
     // A changed announce that came by broadcast is answered too (2026-09-26): the node that changed may
     // have just created an endpoint that matches one of ours, and until it hears our announce it cannot
-    // match it - a Publisher of its would broadcast every sample for up to tt_NODE_UPDATE_INTERVAL. Only a
+    // match it - a Publisher of its would broadcast every sample for up to tt_CONTEXT_UPDATE_INTERVAL. Only a
     // broadcast is answered: a reply arrives unicast, on the data socket, so replies are never answered
     // and two nodes cannot trade announces back and forth. At most one reply per peer per change.
     if (is_first_contact_from_sender || !node->rx_via_data_port) {
@@ -6460,11 +6466,11 @@ static bool is_power_of_ten(uint32_t count) {
 //
 // Fails OPEN (returns false, "compatible enough to deliver") whenever there's nothing to check
 // against yet: no discovery cache attached at all (a raw TickLE-core caller that never called
-// tt_Node_set_discovery() sees no behavior change from this milestone), or this Publisher hasn't
+// tt_Context_set_discovery() sees no behavior change from this milestone), or this Publisher hasn't
 // been discovered yet (DATA arriving before its own first announce - a narrow startup
 // race, not a genuine incompatibility; giving the benefit of the doubt here is strictly better
 // than dropping a legitimately compatible pair's very first samples).
-static bool subscriber_incompatible_with_publisher(struct tt_Node* node, struct tt_Subscriber* sub,
+static bool subscriber_incompatible_with_publisher(struct tt_Context* node, struct tt_Subscriber* sub,
                                                    uint8_t publisher_node_id, uint32_t publisher_endpoint_id) {
     if (node->discovery == NULL) {
         return false;
@@ -6546,8 +6552,8 @@ struct data_delivery_ctx {
 // is the previous *delivered* sample and not merely the previous received one - a sample dropped
 // by RxO matching or by de-duplication was never seen by the application and cannot be what it
 // compared against.
-static void record_delivery_order(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no, uint64_t timestamp,
-                                  uint8_t source, uint32_t entity_id, bool via_data_port) {
+static void record_delivery_order(struct tt_Context* node, struct tt_Subscriber* sub, uint32_t seq_no,
+                                  uint64_t timestamp, uint8_t source, uint32_t entity_id, bool via_data_port) {
     (void)node; // the arrival socket is passed in, not read off the node - see tt_ReorderSlot.via_data_port
     bool first = (sub->delivered == 0);
     bool same_writer = !first && sub->last_source == source && sub->last_entity_id == entity_id;
@@ -6607,7 +6613,7 @@ static void record_delivery_order(struct tt_Node* node, struct tt_Subscriber* su
 // Split out of deliver_data_to_subscriber() so a sample released from the reorder buffer takes
 // exactly the same path as one delivered straight off the wire - including the zero-copy decode,
 // which a held sample is still eligible for because its bytes were copied verbatim.
-static void deliver_payload(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no, uint64_t timestamp,
+static void deliver_payload(struct tt_Context* node, struct tt_Subscriber* sub, uint32_t seq_no, uint64_t timestamp,
                             uint8_t source, uint32_t entity_id, const uint8_t* payload, uint32_t length, bool is_native,
                             bool via_data_port, bool* out_decode_failed) {
     struct tt_Topic* topic = sub->topic;
@@ -6704,7 +6710,7 @@ static uint32_t reorder_payload_capacity(const struct tt_Subscriber* sub) {
 // true from the application's point of view, since it was never delivered and nothing is keeping
 // it. Leaving the bit set and dropping the payload would silently lose the sample forever, which
 // is the one outcome a RELIABLE reader must never produce.
-static void hold_for_reorder(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
+static void hold_for_reorder(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                              struct data_delivery_ctx* ctx, bool is_native) {
     uint32_t length = ctx->tail - ctx->head;
     uint32_t capacity = reorder_payload_capacity(sub);
@@ -6724,7 +6730,7 @@ static void hold_for_reorder(struct tt_Node* node, struct tt_Subscriber* sub, st
         if (slot->occupied) {
             // Already holding this exact sample: a retransmit racing the original. Keep the copy
             // already held - same bytes, and a second copy would be delivered twice.
-            if (slot->seq_no == ctx->seq_no && slot->node_id == ctx->header->source &&
+            if (slot->seq_no == ctx->seq_no && slot->context_id == ctx->header->source &&
                 slot->entity_id == ctx->entity_id) {
                 return;
             }
@@ -6732,7 +6738,7 @@ static void hold_for_reorder(struct tt_Node* node, struct tt_Subscriber* sub, st
             slot->seq_no = ctx->seq_no;
             slot->timestamp = ctx->timestamp;
             slot->entity_id = ctx->entity_id;
-            slot->node_id = ctx->header->source;
+            slot->context_id = ctx->header->source;
             slot->length = (uint16_t)length;
             slot->is_native = is_native;
             slot->via_data_port = node->rx_via_data_port;
@@ -6786,7 +6792,7 @@ static void release_reorder_slots_for_writer(struct tt_Subscriber* sub, uint8_t 
     }
     for (uint16_t i = 0; i < sub->reorder_slots; i++) {
         struct tt_ReorderSlot* slot = reorder_slot_at(sub, i);
-        if (!slot->occupied || slot->node_id != node_id) {
+        if (!slot->occupied || slot->context_id != node_id) {
             continue;
         }
         if (!match_any_entity && slot->entity_id != entity_id) {
@@ -6807,7 +6813,7 @@ static void release_reorder_slots_for_writer(struct tt_Subscriber* sub, uint8_t 
 // Hand one sample to the application if - and only if - it keeps this writer's delivery strictly
 // ordered. The single place RELIABLE ordering is enforced for delivery, so the rule cannot differ
 // between a sample that arrived in order and one released from the buffer.
-static void deliver_in_order(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
+static void deliver_in_order(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                              uint32_t seq_no, uint64_t timestamp, const uint8_t* payload, uint32_t length,
                              bool is_native, bool via_data_port, bool* out_decode_failed) {
     if (proxy->highest_delivered != 0 && seq_no <= proxy->highest_delivered) {
@@ -6817,7 +6823,7 @@ static void deliver_in_order(struct tt_Node* node, struct tt_Subscriber* sub, st
         return;
     }
     proxy->highest_delivered = seq_no;
-    deliver_payload(node, sub, seq_no, timestamp, proxy->node_id, proxy->entity_id, payload, length, is_native,
+    deliver_payload(node, sub, seq_no, timestamp, proxy->context_id, proxy->entity_id, payload, length, is_native,
                     via_data_port, out_decode_failed);
 }
 
@@ -6840,7 +6846,7 @@ static void deliver_in_order(struct tt_Node* node, struct tt_Subscriber* sub, st
 // Walks [cursor, ack) once, capped at one window (nothing held lies beyond it); a new sample past
 // the cap is larger than everything walked, so it goes after. O(1) when nothing is held.
 static bool reorder_slot_holds(const struct tt_ReorderSlot* slot, const struct tt_WriterProxy* proxy, uint32_t seq_no) {
-    return slot->occupied && slot->seq_no == seq_no && slot->node_id == proxy->node_id &&
+    return slot->occupied && slot->seq_no == seq_no && slot->context_id == proxy->context_id &&
            slot->entity_id == proxy->entity_id;
 }
 
@@ -6859,9 +6865,9 @@ static void reorder_release(struct tt_Subscriber* sub, struct tt_ReorderSlot* sl
 // its datagrams lies below the watermark without having arrived (a gap given up on), or the datagram
 // in order is a continuation whose first datagram is behind the cursor (given up on, or tracking began
 // mid-sample). Delivering part of a sample is not an option; a torn sample would decode as garbage.
-static bool drain_fragmented_sample(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
+static bool drain_fragmented_sample(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                                     uint32_t seq_no, uint32_t ack, uint32_t* consumed) {
-    struct tt_ReorderSlot* first = reorder_writer_slot(sub, proxy->node_id, proxy->entity_id, seq_no);
+    struct tt_ReorderSlot* first = reorder_writer_slot(sub, proxy->context_id, proxy->entity_id, seq_no);
     *consumed = 1;
     if (first->frag_index != 0) {
         reorder_release(sub, first);
@@ -6871,7 +6877,7 @@ static bool drain_fragmented_sample(struct tt_Node* node, struct tt_Subscriber* 
     uint32_t count = first->frag_count;
     uint32_t total = 0;
     for (uint32_t index = 0; index < count; index++) {
-        struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy->node_id, proxy->entity_id, seq_no + index);
+        struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy->context_id, proxy->entity_id, seq_no + index);
         if (reorder_slot_holds(slot, proxy, seq_no + index) && slot->frag_index == index && slot->frag_count == count) {
             total += slot->length;
             continue;
@@ -6882,7 +6888,7 @@ static bool drain_fragmented_sample(struct tt_Node* node, struct tt_Subscriber* 
         // Given up on below the watermark: this sample can never be whole.
         uint32_t below = ack - seq_no < count ? ack - seq_no : count;
         for (uint32_t drop = 0; drop < below; drop++) {
-            struct tt_ReorderSlot* held = reorder_writer_slot(sub, proxy->node_id, proxy->entity_id, seq_no + drop);
+            struct tt_ReorderSlot* held = reorder_writer_slot(sub, proxy->context_id, proxy->entity_id, seq_no + drop);
             if (reorder_slot_holds(held, proxy, seq_no + drop)) {
                 reorder_release(sub, held);
                 sub->reorder_abandoned++;
@@ -6900,7 +6906,7 @@ static bool drain_fragmented_sample(struct tt_Node* node, struct tt_Subscriber* 
     bool via_data_port = first->via_data_port;
     uint32_t offset = 0;
     for (uint32_t index = 0; index < count; index++) {
-        struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy->node_id, proxy->entity_id, seq_no + index);
+        struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy->context_id, proxy->entity_id, seq_no + index);
         if (fits) {
             _tt_memcpy(out + offset, reorder_slot_payload(slot), slot->length);
             offset += slot->length;
@@ -6918,7 +6924,7 @@ static bool drain_fragmented_sample(struct tt_Node* node, struct tt_Subscriber* 
 }
 #endif
 
-static void drain_reorder_with(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
+static void drain_reorder_with(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                                struct data_delivery_ctx* arriving, bool is_native) {
     uint32_t ack = proxy->ack_seq_no;
     uint32_t stop = ack; // where the next drain starts: ack, unless a sample in order is not whole yet
@@ -6937,7 +6943,7 @@ static void drain_reorder_with(struct tt_Node* node, struct tt_Subscriber* sub, 
                 arriving_done = true;
                 continue;
             }
-            struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy->node_id, proxy->entity_id, seq);
+            struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy->context_id, proxy->entity_id, seq);
             if (!reorder_slot_holds(slot, proxy, seq)) {
                 continue;
             }
@@ -6971,11 +6977,11 @@ static void drain_reorder_with(struct tt_Node* node, struct tt_Subscriber* sub, 
     proxy->reorder_cursor = stop;
 }
 
-static void drain_reorder(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy) {
+static void drain_reorder(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy) {
     drain_reorder_with(node, sub, proxy, NULL, false);
 }
 
-static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+static void deliver_data_to_subscriber(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
     struct data_delivery_ctx* ctx = (struct data_delivery_ctx*)ctx_ptr;
     struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
     if (ctx->best_effort_only && sub->reliable && !TT_ORDERING_DISABLED) {
@@ -7078,7 +7084,7 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
                     &ctx->decode_failed);
 }
 
-static bool process_data_for(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+static bool process_data_for(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                              uint32_t tail, uint32_t sender_ip, uint16_t sender_port, bool best_effort_only) {
     struct tt_DataHeader* data_header = decode(node, buffer, &head, tail, sizeof(struct tt_DataHeader));
     if (data_header == NULL) {
@@ -7121,8 +7127,8 @@ static bool process_data_for(struct tt_Node* node, struct tt_Header* header, uin
     return !ctx.decode_failed;
 }
 
-static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head, uint32_t tail,
-                         uint32_t sender_ip, uint16_t sender_port) {
+static bool process_data(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                         uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
     return process_data_for(node, header, buffer, head, tail, sender_ip, sender_port, false);
 }
 
@@ -7147,13 +7153,13 @@ static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, ui
 // unrelated entry ends up occupying the slot by then.
 static void clear_server_cache_slot(struct tt_Server* server, int slot) {
     if (server->clean_scheduled[slot]) {
-        tt_Node_unschedule(server->node, server_cache_clean, &server->clean_config[slot]);
+        tt_Context_unschedule(server->node, server_cache_clean, &server->clean_config[slot]);
         server->clean_scheduled[slot] = false;
     }
     server->cache[slot] = NULL;
 }
 
-static void server_cache_clean(struct tt_Node* node, uint64_t time, void* param) {
+static void server_cache_clean(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(node);
     UNUSED(time);
 
@@ -7202,8 +7208,8 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
 
     // Only publish `cache` into the slot once its cleanup timer is guaranteed to run;
     // otherwise the slot would hold an entry that never gets cleared.
-    if (!tt_Node_schedule(server->node, tt_get_ns() + tt_SERVER_CACHE_TIMEOUT, server_cache_clean,
-                          &server->clean_config[free_slot])) {
+    if (!tt_Context_schedule(server->node, tt_get_ns() + tt_SERVER_CACHE_TIMEOUT, server_cache_clean,
+                             &server->clean_config[free_slot])) {
         TT_LOG_ERROR("Cannot schedule server_cache_clean");
         return false;
     }
@@ -7217,7 +7223,7 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
 // Cache hit: re-encode the previously cached response verbatim (bumping its retry count) instead
 // of re-running the service callback - the client is asking again because it hasn't seen the
 // first response yet, not because it wants a fresh answer.
-static struct tt_SubmessageHeader* resend_cached_response(struct tt_Node* node,
+static struct tt_SubmessageHeader* resend_cached_response(struct tt_Context* node,
                                                           struct tt_SubmessageHeader* submessage_header) {
     struct tt_CallResponseHeader* callresponse_header = (void*)submessage_header + sizeof(struct tt_SubmessageHeader);
     callresponse_header->retry++;
@@ -7242,7 +7248,7 @@ static struct tt_SubmessageHeader* resend_cached_response(struct tt_Node* node,
 // the synchronous case, or from a pending slot's own stored fields in the deferred case, but this
 // function itself doesn't need to know which. `old_tx_tail` is this submessage's start, for
 // rolling back on a failure here.
-static struct tt_SubmessageHeader* encode_call_response(struct tt_Node* node, uint8_t receiver,
+static struct tt_SubmessageHeader* encode_call_response(struct tt_Context* node, uint8_t receiver,
                                                         struct tt_Server* server, uint16_t request_seq_no,
                                                         int8_t return_code, struct tt_Response* response,
                                                         uint32_t old_tx_tail) {
@@ -7318,12 +7324,12 @@ static int find_pending_slot(struct tt_Server* server, uint8_t receiver, uint16_
     return -1;
 }
 
-// Timer callback (tt_Node_schedule(), Milestone 17): if a deferred request still hasn't been
+// Timer callback (tt_Context_schedule(), Milestone 17): if a deferred request still hasn't been
 // answered by the time it fires, reclaim its slot rather than let it leak forever.
 // tt_Server_send_response()'s own compare-exchange against tt_SERVER_SLOT_PENDING loses cleanly
 // if it races against this, exactly like server_cache_clean() already reclaims an *answered*
 // slot's own retry-cache lifetime.
-static void pending_response_timeout(struct tt_Node* node, uint64_t time, void* param) {
+static void pending_response_timeout(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(node);
     UNUSED(time);
 
@@ -7368,8 +7374,8 @@ static bool defer_call_response(struct tt_Server* server, tt_RequestId request_i
 
     // Only publish once the timeout is guaranteed to run - same "don't publish an entry with no
     // way to reclaim it" reasoning set_server_cache() already follows for its own timer.
-    if (!tt_Node_schedule(server->node, tt_get_ns() + tt_SERVER_DEFERRED_RESPONSE_TIMEOUT, pending_response_timeout,
-                          &server->pending_timeout_config[slot])) {
+    if (!tt_Context_schedule(server->node, tt_get_ns() + tt_SERVER_DEFERRED_RESPONSE_TIMEOUT, pending_response_timeout,
+                             &server->pending_timeout_config[slot])) {
         TT_LOG_ERROR("Cannot schedule pending_response_timeout");
         return false;
     }
@@ -7382,7 +7388,7 @@ static bool defer_call_response(struct tt_Server* server, tt_RequestId request_i
     return true;
 }
 
-static void send_ready_slot(struct tt_Node* node, struct tt_Server* server, int slot, struct tt_Response* response);
+static void send_ready_slot(struct tt_Context* node, struct tt_Server* server, int slot, struct tt_Response* response);
 
 tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_id, int8_t return_code,
                                  struct tt_Response* response) {
@@ -7397,7 +7403,7 @@ tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_
     // service responses, which alias the ROS response rclcpp destroys as soon as rmw_send_response() returns,
     // arrived with every string past std::string's inline 15 bytes as garbage. The caller may free or reuse the
     // response and everything it points at as soon as this returns.
-    struct tt_Node* node = server->node;
+    struct tt_Context* node = server->node;
     state_lock(node);
     tt_ret_t result = tt_RET_NOT_FOUND;
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
@@ -7413,7 +7419,7 @@ tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_
         // response's, and its timer goes with it, so it cannot reclaim the slot's next request early.
         __atomic_store_n(&server->slot_state[i], tt_SERVER_SLOT_READY, __ATOMIC_RELEASE);
         if (server->pending_timeout_scheduled[i]) {
-            tt_Node_unschedule(node, pending_response_timeout, &server->pending_timeout_config[i]);
+            tt_Context_unschedule(node, pending_response_timeout, &server->pending_timeout_config[i]);
             server->pending_timeout_scheduled[i] = false;
         }
         send_ready_slot(node, server, i, response);
@@ -7426,7 +7432,7 @@ tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_
 
 // Encodes `response` - the caller's own, not a copy - as the answer to the request READY in `slot`, sends it, and
 // empties the slot. Under the state lock, from tt_Server_send_response().
-static void send_ready_slot(struct tt_Node* node, struct tt_Server* server, int slot, struct tt_Response* response) {
+static void send_ready_slot(struct tt_Context* node, struct tt_Server* server, int slot, struct tt_Response* response) {
     tt_RequestId request_id = server->pending_request_id[slot];
     uint32_t sender_ip = server->pending_sender_ip[slot];
     uint16_t sender_port = server->pending_sender_port[slot];
@@ -7464,7 +7470,7 @@ static void send_ready_slot(struct tt_Node* node, struct tt_Server* server, int 
 // close. Picking find_endpoint()'s own deterministic "oldest still-registered match" (its own doc
 // comment) is a reasonable, documented choice, matching real DDS's own undefined-which-one
 // semantics for redundant same-name Servers - not attempted to be made "correct" beyond that here.
-static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+static bool process_callrequest(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                 uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
     struct tt_CallRequestHeader* callrequest_header =
         decode(node, buffer, &head, tail, sizeof(struct tt_CallRequestHeader));
@@ -7573,7 +7579,7 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
 // == NULL check just below already guards against corrupting an unrelated Client's own state if
 // this ever does pick the "wrong" one of several - the response is simply dropped as unexpected,
 // not misapplied.
-static bool process_callresponse(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+static bool process_callresponse(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                  uint32_t tail) {
     struct tt_CallResponseHeader* callresponse_header =
         decode(node, buffer, &head, tail, sizeof(struct tt_CallResponseHeader));
@@ -7636,7 +7642,7 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     client->cache = NULL;
     // The call is done; drop its still-pending retry timer so it doesn't occupy a scheduler slot
     // until it fires and no-ops (call_retry() already guards on cache == NULL).
-    tt_Node_unschedule(node, call_retry, client);
+    tt_Context_unschedule(node, call_retry, client);
 
     if (client->latency == 0) {
         client->latency = latency;
@@ -7732,7 +7738,7 @@ static uint32_t reliable_cache_first_resendable_seq_no(const struct tt_Publisher
 
 // retransmit_reliable_samples()'s per-bit body: resends missing_seq_no straight back to target if
 // it's still resendable. Returns true if it's gone for good (see find_resendable_cache_entry()).
-static bool retransmit_one_sample(struct tt_Node* node, struct tt_Publisher* pub, struct tt_ReliableCache* cache,
+static bool retransmit_one_sample(struct tt_Context* node, struct tt_Publisher* pub, struct tt_ReliableCache* cache,
                                   uint16_t depth, uint32_t missing_seq_no, const struct tt_Peer* target) {
     bool gone = false;
     struct tt_ReliableCacheIndex* cache_entry =
@@ -7744,7 +7750,7 @@ static bool retransmit_one_sample(struct tt_Node* node, struct tt_Publisher* pub
     // Addressed to the node that asked, where the cached original is addressed to everyone. It goes to
     // that node alone anyway (unicast), so nothing else changes - but it is what lets that node tell
     // this copy from the original that was only late, which its retry-interval estimate depends on
-    // (tt_Node.rx_targeted). No wire change: a node of an older build sees a submessage addressed to
+    // (tt_Context.rx_targeted). No wire change: a node of an older build sees a submessage addressed to
     // itself and processes it exactly as before.
     if (!send_cached_record(node, cache->arena + cache_entry->offset, cache_entry->len, true, target)) {
         TT_LOG_WARNING("Cannot retransmit seq_no %u now", missing_seq_no);
@@ -7767,9 +7773,9 @@ static bool retransmit_one_sample(struct tt_Node* node, struct tt_Publisher* pub
 // without touching find_resendable_cache_entry() at all, keeping this O(word-count + set-bit-
 // count) rather than a flat O(tt_RELIABLE_BITMAP_BITS) scan - the same "stay O(word-count)" care
 // tt_RELIABLE_BITMAP_WORDS's own doc comment calls for.
-static void retransmit_reliable_samples(struct tt_Node* node, struct tt_Publisher* pub, struct tt_ReliableCache* cache,
-                                        uint16_t depth, uint32_t seq_no, const uint64_t* bitmap, uint16_t words,
-                                        const struct tt_Peer* target) {
+static void retransmit_reliable_samples(struct tt_Context* node, struct tt_Publisher* pub,
+                                        struct tt_ReliableCache* cache, uint16_t depth, uint32_t seq_no,
+                                        const uint64_t* bitmap, uint16_t words, const struct tt_Peer* target) {
 #ifdef tt_RELIABLE_STATS
     g_rstats.acknack_received++;
     g_rstats.bits_requested += rstat_popcount_bitmap(bitmap, words);
@@ -7812,7 +7818,7 @@ static void retransmit_reliable_samples(struct tt_Node* node, struct tt_Publishe
 // or worse. Not attempted to be made "correct" beyond find_endpoint()'s own deterministic pick.
 // A send addressed to one peer goes from an empty tx_buffer: anything batched there, broadcast-only, leaves
 // first as the broadcast it was going to be (flush_pending_before_unicast()'s reasoning).
-static void flush_pending_broadcast(struct tt_Node* node) {
+static void flush_pending_broadcast(struct tt_Context* node) {
     if (node->tx_tail != sizeof(struct tt_Header)) {
         (void)flush_tx(node, node->tx_tail, NULL, 0);
     }
@@ -7821,7 +7827,7 @@ static void flush_pending_broadcast(struct tt_Node* node) {
 // Asks `source` for its endpoint list (rmw_tickle/DISCOVERY_PLAN.md rule 3): an ACKNACK of the built-in
 // discovery endpoint naming the generation its summary showed, unicast. request_discovery_list() decides
 // when: on a summary showing a generation not yet applied, and again on a timer while the list is missing.
-static void send_discovery_request(struct tt_Node* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
+static void send_discovery_request(struct tt_Context* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
                                    uint16_t sender_port) {
     flush_pending_broadcast(node);
     uint32_t old_tx_tail = node->tx_tail;
@@ -7843,17 +7849,17 @@ static void send_discovery_request(struct tt_Node* node, uint8_t source, uint32_
     }
 }
 
-static bool discovery_generation_applied(const struct tt_Node* node, uint8_t source, uint32_t generation) {
+static bool discovery_generation_applied(const struct tt_Context* node, uint8_t source, uint32_t generation) {
     return node->update_seen[source] && node->update_generation[source] == generation;
 }
 
-static void discovery_request_retry(struct tt_Node* node, uint64_t time, void* param);
+static void discovery_request_retry(struct tt_Context* node, uint64_t time, void* param);
 
-static void arm_discovery_request_retry(struct tt_Node* node, uint64_t due_ns) {
+static void arm_discovery_request_retry(struct tt_Context* node, uint64_t due_ns) {
     if (node->discovery_retry_scheduled) {
         return;
     }
-    if (tt_Node_schedule(node, due_ns, discovery_request_retry, NULL)) {
+    if (tt_Context_schedule(node, due_ns, discovery_request_retry, NULL)) {
         node->discovery_retry_scheduled = true;
     } else {
         TT_LOG_ERROR("Cannot schedule discovery_request_retry"); // the next summary asks again
@@ -7863,7 +7869,7 @@ static void arm_discovery_request_retry(struct tt_Node* node, uint64_t due_ns) {
 // Re-sends each open request whose list has not arrived within tt_DISCOVERY_REQUEST_RETRY, and closes the
 // ones answered or out of attempts - the peer's next summary asks again after that. Runs only while some
 // request is open.
-static void discovery_request_retry(struct tt_Node* node, uint64_t time, void* param) {
+static void discovery_request_retry(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
     node->discovery_retry_scheduled = false;
     uint64_t next = UINT64_MAX;
@@ -7895,7 +7901,7 @@ static void discovery_request_retry(struct tt_Node* node, uint64_t time, void* p
 
 // Asks `source` for its list, and keeps the request open so discovery_request_retry() can ask again. A
 // request already open for this source and generation is left to the retry: another summary adds nothing.
-static void request_discovery_list(struct tt_Node* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
+static void request_discovery_list(struct tt_Context* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
                                    uint16_t sender_port) {
     struct tt_DiscoveryRequest* slot = NULL;
     for (int i = 0; i < tt_DISCOVERY_PENDING_REQUESTS; i++) {
@@ -7924,7 +7930,7 @@ static void request_discovery_list(struct tt_Node* node, uint8_t source, uint32_
 // exactly what an announce refreshes (rule 1). A generation already applied needs nothing more (rule 2); any
 // other - a change missed, a node never heard in full - is asked for (rule 3), and asked again within
 // tt_DISCOVERY_REQUEST_RETRY if the list does not come.
-static bool process_discovery_summary(struct tt_Node* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
+static bool process_discovery_summary(struct tt_Context* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
                                       uint16_t sender_port) {
     node->update_last_seen[source] = tt_get_ns();
     if (discovery_generation_applied(node, source, generation)) {
@@ -7935,10 +7941,11 @@ static bool process_discovery_summary(struct tt_Node* node, uint8_t source, uint
 }
 
 // A peer asked for this node's endpoint list (rule 4): the whole announce, unicast to it. When more than
-// tt_UNICAST_PEER_THRESHOLD ask within one tt_NODE_TX_INTERVAL tick - a burst of new nodes, say - the next
+// tt_UNICAST_PEER_THRESHOLD ask within one tt_CONTEXT_TX_INTERVAL tick - a burst of new nodes, say - the next
 // becomes one broadcast instead, and later requests in that tick are covered by it.
-static void answer_discovery_request(struct tt_Node* node, uint8_t source, uint32_t sender_ip, uint16_t sender_port) {
-    uint64_t tick = tt_get_ns() / tt_NODE_TX_INTERVAL;
+static void answer_discovery_request(struct tt_Context* node, uint8_t source, uint32_t sender_ip,
+                                     uint16_t sender_port) {
+    uint64_t tick = tt_get_ns() / tt_CONTEXT_TX_INTERVAL;
     if (tick != node->discovery_reply_tick) {
         node->discovery_reply_tick = tick;
         node->discovery_reply_count = 0;
@@ -7956,7 +7963,7 @@ static void answer_discovery_request(struct tt_Node* node, uint8_t source, uint3
     build_and_send_update(node, &requester, 1);
 }
 
-static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+static bool process_acknack(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                             uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
     struct tt_AckNackHeader* acknack_header = decode(node, buffer, &head, tail, sizeof(struct tt_AckNackHeader));
     if (acknack_header == NULL) {
@@ -8031,7 +8038,7 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
     // is RELIABILITY's own exclusive contract.
     record_peer_ack(pub, header->source, sender_entity_id, seq_no);
     // Phase 3 - this ACKNACK may have freed room a refused publish was waiting on. Fired here, from
-    // inside tt_Node_poll()'s own packet handling, so the callback runs on the node's thread like
+    // inside tt_Context_poll()'s own packet handling, so the callback runs on the node's thread like
     // every other callback (see tt_Publisher.writable_callback's doc comment on what it may do).
     notify_writable_if_pending(pub);
 
@@ -8124,7 +8131,7 @@ static void advance_past_unavailable(struct tt_WriterProxy* proxy, uint32_t firs
 // deliver_data_to_subscriber()'s own fan-out for DATA. Milestone 47 - operates on this specific
 // sender's own struct tt_WriterProxy (keyed by (header->source, entity_id)), not a single flat
 // watermark - see that struct's own doc comment.
-static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+static void inform_subscriber_of_heartbeat(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
     struct heartbeat_ctx* ctx = (struct heartbeat_ctx*)ctx_ptr;
     struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
     if (!sub->reliable) {
@@ -8231,7 +8238,7 @@ static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpo
 // matches" convention. Returns false only on a genuine decode failure (illegal header) - a
 // Heartbeat with no local match, or for a non-reliable Subscriber, is a normal no-op, not an
 // error, same as those two functions' own equivalent cases.
-static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+static bool process_heartbeat(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                               uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
     struct tt_HeartbeatHeader* heartbeat_header = decode(node, buffer, &head, tail, sizeof(struct tt_HeartbeatHeader));
     if (heartbeat_header == NULL) {
@@ -8294,7 +8301,7 @@ static bool frag_claimed_before(const struct tt_FragSlot* slot, const struct tt_
 // the fragment as a duplicate) - or a newly claimed one: a slot never used, else the one whose completed
 // sample is oldest, else the incomplete reassembly claimed longest ago, which is abandoned and counted.
 // A claimed slot stays free (received == 0) until a fragment has actually been placed in it.
-static struct tt_FragSlot* frag_slot_for(struct tt_Node* node, uint8_t source, uint32_t entity_id, uint32_t seq_no,
+static struct tt_FragSlot* frag_slot_for(struct tt_Context* node, uint8_t source, uint32_t entity_id, uint32_t seq_no,
                                          uint8_t frag_count) {
     struct tt_FragSlot* unused = NULL;
     struct tt_FragSlot* oldest_done = NULL;
@@ -8399,9 +8406,10 @@ static bool frag_place(struct tt_FragSlot* slot, uint32_t index, const uint8_t* 
 // would allow it: a gap from reordering is not a loss, and a sample whose last datagram was merely
 // overtaken would be lost for nothing. The pool's own rule - the reassembly claimed longest ago goes
 // first - clears what really was lost.
-static bool reassemble_fragment(struct tt_Node* node, struct tt_Header* header, const uint8_t* payload, uint32_t length,
-                                const struct tt_DataHeader* data_header, uint32_t entity_id, uint32_t seq_no,
-                                uint32_t index, uint32_t count, uint32_t sender_ip, uint16_t sender_port) {
+static bool reassemble_fragment(struct tt_Context* node, struct tt_Header* header, const uint8_t* payload,
+                                uint32_t length, const struct tt_DataHeader* data_header, uint32_t entity_id,
+                                uint32_t seq_no, uint32_t index, uint32_t count, uint32_t sender_ip,
+                                uint16_t sender_port) {
     if (count < 2 || count > tt_FRAG_MAX_COUNT || index >= count || length == 0) {
         node->frag_dropped++;
         if (frag_log_due(node->frag_dropped)) {
@@ -8441,7 +8449,7 @@ static bool reassemble_fragment(struct tt_Node* node, struct tt_Header* header, 
 }
 
 // Whether the reassembly pool is already collecting this sample.
-static bool frag_pool_has(const struct tt_Node* node, uint8_t source, uint32_t entity_id, uint32_t sample_seq_no) {
+static bool frag_pool_has(const struct tt_Context* node, uint8_t source, uint32_t entity_id, uint32_t sample_seq_no) {
     for (int i = 0; i < tt_FRAG_REASSEMBLY_SLOTS; i++) {
         const struct tt_FragSlot* slot = &node->frag_slots[i];
         if (slot->received != 0 && frag_slot_is(slot, source, entity_id, sample_seq_no)) {
@@ -8454,8 +8462,8 @@ static bool frag_pool_has(const struct tt_Node* node, uint8_t source, uint32_t e
 // Stores a fragment for a RELIABLE Subscriber in its reorder slot (seq_no % slots), where it waits until
 // its whole sample is in order. False when there is no room - no buffer, a slot too small, or the slot
 // taken by another writer's datagram; the caller then leaves it unrecorded, so it is asked for again.
-static bool reorder_store_fragment(struct tt_Node* node, struct tt_Subscriber* sub, const struct data_delivery_ctx* ctx,
-                                   bool is_native) {
+static bool reorder_store_fragment(struct tt_Context* node, struct tt_Subscriber* sub,
+                                   const struct data_delivery_ctx* ctx, bool is_native) {
     uint32_t length = ctx->tail - ctx->head;
     if (reorder_payload_capacity(sub) < length) {
         return false;
@@ -8467,7 +8475,7 @@ static bool reorder_store_fragment(struct tt_Node* node, struct tt_Subscriber* s
     slot->seq_no = ctx->seq_no;
     slot->timestamp = ctx->timestamp;
     slot->entity_id = ctx->entity_id;
-    slot->node_id = ctx->header->source;
+    slot->context_id = ctx->header->source;
     slot->length = (uint16_t)length;
     slot->is_native = is_native;
     slot->via_data_port = node->rx_via_data_port;
@@ -8490,7 +8498,7 @@ static bool reorder_store_fragment(struct tt_Node* node, struct tt_Subscriber* s
 // fragment must already be somewhere that keeps it by then - an acknowledged fragment discarded is a
 // sample lost for good. One that cannot be stored is left unrecorded instead, which is the reorder
 // buffer's own overflow rule: asked for again, never lost.
-static void accept_reliable_fragment(struct tt_Node* node, struct tt_Subscriber* sub, struct data_delivery_ctx* ctx,
+static void accept_reliable_fragment(struct tt_Context* node, struct tt_Subscriber* sub, struct data_delivery_ctx* ctx,
                                      bool is_native) {
     // A continuation only reaches a Subscriber already tracking its writer (deliver_user_fragment()), so
     // first contact is always a FRAG_FIRST or a DATA, and the baseline update_reliable_ack() pins to it is
@@ -8533,7 +8541,7 @@ struct frag_route_ctx {
     bool best_effort_seen;
 };
 
-static void route_fragment_to_subscriber(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+static void route_fragment_to_subscriber(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
     struct frag_route_ctx* route = (struct frag_route_ctx*)ctx_ptr;
     struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
     struct data_delivery_ctx* ctx = route->data;
@@ -8552,7 +8560,7 @@ static void route_fragment_to_subscriber(struct tt_Node* node, struct tt_Endpoin
 // tracking it yet (a writer's first sample, its continuation overtaking its first fragment), to the pool
 // if the node has any best-effort Subscriber at all. seq_no is this datagram's own; its sample is
 // seq_no - index. Best-effort Subscribers get the sample whole from the node's reassembly pool.
-static bool deliver_user_fragment(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+static bool deliver_user_fragment(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                   uint32_t tail, const struct tt_DataHeader* data_header, uint32_t entity_id,
                                   uint32_t seq_no, uint32_t index, uint32_t count, uint32_t sender_ip,
                                   uint16_t sender_port) {
@@ -8613,8 +8621,8 @@ static bool deliver_user_fragment(struct tt_Node* node, struct tt_Header* header
 // every build; anything else is user data for the reassembly pool, which exists only when fragmentation
 // is compiled in - without it, a sample over this node's limit could not be delivered anyway, and its
 // fragments are passed over.
-static bool process_frag(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head, uint32_t tail,
-                         uint8_t type, uint32_t sender_ip, uint16_t sender_port) {
+static bool process_frag(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                         uint32_t tail, uint8_t type, uint32_t sender_ip, uint16_t sender_port) {
     const struct tt_DataHeader* data_header = NULL;
     uint32_t entity_id;
     uint32_t seq_no;
@@ -8663,7 +8671,7 @@ static bool process_frag(struct tt_Node* node, struct tt_Header* header, uint8_t
 #endif
 }
 
-static bool process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+static bool process_submessage(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header,
                                uint32_t sender_ip, uint16_t sender_port, bool self_sent) {
     // Each process_X() below already logs its own specific reason on failure, so this switch
@@ -8677,7 +8685,7 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
     //
     // self_sent (this whole packet's own header->source == node->id) only suppresses the two
     // topic-shaped types below, not CALLREQUEST/CALLRESPONSE - rmw_tickle/PLAN.md's own Milestone
-    // 17 finding: a client and its service can end up on the exact same tt_Node (the only
+    // 17 finding: a client and its service can end up on the exact same tt_Context (the only
     // topology rmw_tickle's one-node-per-process model allows), and RPC has no separate in-
     // process delivery path the way "a node already has its own published data locally" is true
     // for pub/sub - the request/response datagrams *are* the only path, so suppressing them here
@@ -8726,7 +8734,7 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
 
 // Rejects anything this node can't parse: a foreign magic value, or a different protocol version
 // (exact match since Phase 2 - see the version check's own comment below).
-static bool validate_packet_header(struct tt_Node* node, struct tt_Header* header) {
+static bool validate_packet_header(struct tt_Context* node, struct tt_Header* header) {
     if (!tt_is_native_endian(header) && !tt_is_reverse_endian(header)) {
         TT_LOG_ERROR("Illegal magic: 0x%04x", header->magic_value);
         return false;
@@ -8770,7 +8778,7 @@ static bool data_is_announce(struct tt_Header* header, const uint8_t* buffer, ui
 
 // Hands one submessage, its body buffer[head..body_tail), to its handler if it is addressed to this node - from
 // the classic walk below or from a single-submessage datagram (process_packet()).
-static bool dispatch_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+static bool dispatch_submessage(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                 uint32_t body_tail, struct tt_SubmessageHeader* submessage_header, uint32_t sender_ip,
                                 uint16_t sender_port, bool self_sent) {
     // Counted before the receiver filter below, deliberately: a node's own DATA is addressed to
@@ -8793,7 +8801,7 @@ static bool dispatch_submessage(struct tt_Node* node, struct tt_Header* header, 
 }
 
 // Decodes and dispatches one submessage starting at *head, advancing *head past it.
-static enum submessage_walk_result process_one_submessage(struct tt_Node* node, struct tt_Header* header,
+static enum submessage_walk_result process_one_submessage(struct tt_Context* node, struct tt_Header* header,
                                                           uint8_t* buffer, uint32_t* head, uint32_t tail,
                                                           uint32_t sender_ip, uint16_t sender_port, bool self_sent) {
     struct tt_SubmessageHeader* submessage_header =
@@ -8843,7 +8851,7 @@ static bool read_single_header(const struct tt_SingleHeader* single, uint32_t bo
     return true;
 }
 
-static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head, uint32_t tail, uint32_t sender_ip,
+static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t head, uint32_t tail, uint32_t sender_ip,
                            uint16_t sender_port) {
     struct tt_Header single_header;
     struct tt_SubmessageHeader single_submessage;
@@ -8895,7 +8903,7 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
     // Placed here rather than in each process_X(): this is one site that cannot drift, it runs
     // after validate_packet_header() so a malformed or wrong-version packet extends nobody's
     // lease, and it covers every submessage type including ones added later. Both consumers of
-    // this timestamp - check_liveliness()'s node-level sweep and tt_Node_entity_alive()'s
+    // this timestamp - check_liveliness()'s node-level sweep and tt_Context_entity_alive()'s
     // per-entity lease - therefore see the same evidence, rather than one of them still believing
     // only announces count.
     //
@@ -8909,7 +8917,7 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
     // packet, and validate_packet_header() does not range-check the field.
     //
     // This is evidence only - it never shortens or lengthens a timeout on its own. It acts as a
-    // veto: check_liveliness() and tt_Node_entity_alive() each still fire on their own announce-
+    // veto: check_liveliness() and tt_Context_entity_alive() each still fire on their own announce-
     // based schedule and consult this to refuse to declare dead a node that is plainly still
     // transmitting. Keeping the schedule on the announce clock is what stops detection sliding
     // later, which using traffic as the single clock did measure at about +290ms.
@@ -8943,18 +8951,18 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
 // *result and returns true; on a timeout that was just a short wait for a due scheduler entry
 // (not the caller's real timeout), returns false so the caller keeps polling.
 // Decodes and dispatches one just-received datagram of `len` bytes now sitting in node->rx_buffer.
-static tt_ret_t process_datagram_locked(struct tt_Node* node, int32_t len, uint32_t ip, uint16_t port);
+static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port);
 
-// rx_buffer itself needs no lock - only the one poller touches it (struct tt_Node.poller_active) - but
+// rx_buffer itself needs no lock - only the one poller touches it (struct tt_Context.poller_active) - but
 // everything a datagram updates does, so each one is processed under the state lock.
-static tt_ret_t process_datagram(struct tt_Node* node, int32_t len, uint32_t ip, uint16_t port) {
+static tt_ret_t process_datagram(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port) {
     state_lock(node);
     tt_ret_t result = process_datagram_locked(node, len, ip, port);
     state_unlock(node);
     return result;
 }
 
-static tt_ret_t process_datagram_locked(struct tt_Node* node, int32_t len, uint32_t ip, uint16_t port) {
+static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port) {
     node->rx_tail = (uint32_t)len;
     node->rx_datagrams++;
     if (node->rx_via_data_port) {
@@ -8974,11 +8982,11 @@ static tt_ret_t process_datagram_locked(struct tt_Node* node, int32_t len, uint3
     return tt_RET_OK;
 }
 
-// After tt_receive() hands tt_Node_poll() the first datagram, pull whatever else the kernel
+// After tt_receive() hands tt_Context_poll() the first datagram, pull whatever else the kernel
 // already has buffered without another poll() per packet - a saturated receiver otherwise pays
 // poll()+recvfrom() per packet instead of one poll() per drain. Best-effort: stops on the first
 // "nothing waiting", a protocol error, or an I/O error (the outer poll picks that back up).
-static tt_ret_t drain_rx(struct tt_Node* node, tt_ret_t first_result) {
+static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
     if (first_result != tt_RET_OK) {
         return first_result;
     }
@@ -9026,12 +9034,12 @@ static tt_ret_t drain_rx(struct tt_Node* node, tt_ret_t first_result) {
 }
 
 // Whether a scheduler entry is due at `now`.
-static bool scheduler_entry_due(struct tt_Node* node, uint64_t now) {
+static bool scheduler_entry_due(struct tt_Context* node, uint64_t now) {
     uint64_t next = 0;
     return sched_next_time(node, &next) && next <= now;
 }
 
-static bool handle_receive_result(struct tt_Node* node, int32_t len, uint32_t ip, uint16_t port,
+static bool handle_receive_result(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
                                   bool woke_for_scheduler, tt_ret_t* result) {
     if (len == -1) { // Timeout
         if (woke_for_scheduler) {
@@ -9041,10 +9049,10 @@ static bool handle_receive_result(struct tt_Node* node, int32_t len, uint32_t ip
         return true;
     }
 
-    if (len == -3) { // tt_Node_interrupt() - always ends the poll, even if woke_for_scheduler:
+    if (len == -3) { // tt_Context_interrupt() - always ends the poll, even if woke_for_scheduler:
                      // an explicit interrupt request must never be swallowed the way a plain
                      // short wait for a due scheduler entry is, or the caller that asked to be
-                     // woken (tt_Node_interrupt()'s own caller, on another thread) could end up
+                     // woken (tt_Context_interrupt()'s own caller, on another thread) could end up
                      // waiting for however much longer the scheduler-driven work takes instead.
         *result = tt_RET_INTERRUPTED;
         return true;
@@ -9060,8 +9068,8 @@ static bool handle_receive_result(struct tt_Node* node, int32_t len, uint32_t ip
 }
 
 // One non-blocking pass: run everything due now, take whatever is already received, return. See
-// tt_Node_poll()'s timeout == 0.
-static tt_ret_t poll_once_nonblocking(struct tt_Node* node, uint64_t time) {
+// tt_Context_poll()'s timeout == 0.
+static tt_ret_t poll_once_nonblocking(struct tt_Context* node, uint64_t time) {
     bool has_next = false;
     uint64_t next = 0;
     while (run_due_entry(node, time, &has_next, &next)) {
@@ -9089,7 +9097,7 @@ static tt_ret_t poll_once_nonblocking(struct tt_Node* node, uint64_t time) {
 // first version peeked and read the clock again after every entry, and that alone cost -1.5% of max-rate
 // throughput on the rig and ~24% of the loop's own entries per second in a microbenchmark.
 
-// How long the I/O wait in tt_Node_poll() may last, and whether it ends for a scheduler entry. A
+// How long the I/O wait in tt_Context_poll() may last, and whether it ends for a scheduler entry. A
 // negative-timeout poll waits exactly until the next entry, or - with none - passes 0, which
 // tt_receive() takes as "no timeout" (hal.h): block until a datagram, a signal or tt_wake_signal(). A
 // positive one waits the rest of its budget, shortened to the next entry if that comes first.
@@ -9107,9 +9115,9 @@ static int64_t poll_wait_length(bool has_next, uint64_t next, uint64_t time, int
     return timeout;
 }
 
-// tt_Node_poll()'s I/O step, when nothing is due: wait for a datagram, the next entry or an interrupt.
+// tt_Context_poll()'s I/O step, when nothing is due: wait for a datagram, the next entry or an interrupt.
 // Returns true with *result set when the poll should end.
-static bool poll_wait_io(struct tt_Node* node, bool has_next, uint64_t next, uint64_t time, int64_t timeout,
+static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, uint64_t time, int64_t timeout,
                          bool until_next_event, bool did_work, tt_ret_t* result) {
     // A negative-timeout poll that has already run what fell due returns here instead of starting
     // another wait.
@@ -9168,9 +9176,9 @@ static bool poll_wait_io(struct tt_Node* node, bool has_next, uint64_t next, uin
     return false;
 }
 
-static tt_ret_t node_poll(struct tt_Node* node, int64_t timeout);
+static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout);
 
-tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
+tt_ret_t tt_Context_poll(struct tt_Context* node, int64_t timeout) {
     if (node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -9187,9 +9195,9 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
     return result;
 }
 
-static tt_ret_t node_poll(struct tt_Node* node, int64_t timeout) {
+static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
     // Negative: wait exactly until the next scheduler entry is due, or indefinitely when there is none
-    // (see tt_Node_poll() in tickle.h). The loop below always bounded a wait by the next due entry, but
+    // (see tt_Context_poll() in tickle.h). The loop below always bounded a wait by the next due entry, but
     // that could only SHORTEN a fixed 100us slice, so an idle node woke ~10,000 times a second for
     // nothing. Now the scheduler sets the wait, and returning once the due work has run keeps the
     // caller's loop exactly as responsive: it regains control after every event, and only then.
@@ -9265,14 +9273,14 @@ static tt_ret_t node_poll(struct tt_Node* node, int64_t timeout) {
     return tt_RET_TIMEOUT;
 }
 
-tt_ret_t tt_Node_interrupt(struct tt_Node* node) {
+tt_ret_t tt_Context_interrupt(struct tt_Context* node) {
     if (node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
     return tt_wake_signal(node);
 }
 
-static tt_ret_t node_set_discovery_locked(struct tt_Node* node, struct tt_Discovery* discovery,
+static tt_ret_t node_set_discovery_locked(struct tt_Context* node, struct tt_Discovery* discovery,
                                           tt_DISCOVERY_CALLBACK callback, void* param) {
     if (node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
@@ -9283,9 +9291,9 @@ static tt_ret_t node_set_discovery_locked(struct tt_Node* node, struct tt_Discov
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Node_set_discovery(struct tt_Node* node, struct tt_Discovery* discovery, tt_DISCOVERY_CALLBACK callback,
-                               void* param) {
-    struct tt_Node* locked_node = node;
+tt_ret_t tt_Context_set_discovery(struct tt_Context* node, struct tt_Discovery* discovery,
+                                  tt_DISCOVERY_CALLBACK callback, void* param) {
+    struct tt_Context* locked_node = node;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -9302,20 +9310,20 @@ uint32_t tt_Discovery_count(const struct tt_Discovery* discovery) {
     }
     uint32_t count = 0;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        if (discovery->entities[i].node_id != tt_NODE_ID_INVALID && discovery->entities[i].alive) {
+        if (discovery->entities[i].context_id != tt_CONTEXT_ID_INVALID && discovery->entities[i].alive) {
             count++;
         }
     }
     return count;
 }
 
-const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* discovery, uint8_t node_id,
+const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* discovery, uint8_t context_id,
                                                     uint32_t endpoint_id) {
     if (discovery == NULL) {
         return NULL;
     }
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        if (discovery->entities[i].node_id == node_id && discovery->entities[i].endpoint_id == endpoint_id) {
+        if (discovery->entities[i].context_id == context_id && discovery->entities[i].endpoint_id == endpoint_id) {
             return &discovery->entities[i];
         }
     }
@@ -9323,15 +9331,15 @@ const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* d
 }
 
 // See this function's own doc comment (tickle.h).
-static bool node_entity_alive_locked(const struct tt_Node* node, const struct tt_DiscoveredEntity* entity,
+static bool node_entity_alive_locked(const struct tt_Context* node, const struct tt_DiscoveredEntity* entity,
                                      uint64_t now) {
-    if (node == NULL || entity == NULL || entity->node_id == tt_NODE_ID_INVALID) {
+    if (node == NULL || entity == NULL || entity->context_id == tt_CONTEXT_ID_INVALID) {
         return false;
     }
     if (entity->liveliness_lease_duration_ns == 0) {
         return entity->alive; // no specific lease requested - defer to the node-level sweep
     }
-    if (!node->update_seen[entity->node_id]) {
+    if (!node->update_seen[entity->context_id]) {
         return false; // never heard from this node id at all
     }
     // The lease runs from the entity's last sign of life (LIVELINESS_PLAN.md rule 1) - see
@@ -9339,8 +9347,8 @@ static bool node_entity_alive_locked(const struct tt_Node* node, const struct tt
     return entity_within_lease(node, entity, now);
 }
 
-bool tt_Node_entity_alive(const struct tt_Node* node, const struct tt_DiscoveredEntity* entity, uint64_t now) {
-    struct tt_Node* locked_node = (struct tt_Node*)node;
+bool tt_Context_entity_alive(const struct tt_Context* node, const struct tt_DiscoveredEntity* entity, uint64_t now) {
+    struct tt_Context* locked_node = (struct tt_Context*)node;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
@@ -9351,23 +9359,23 @@ bool tt_Node_entity_alive(const struct tt_Node* node, const struct tt_Discovered
     return result;
 }
 
-static tt_ret_t node_destroy_locked(struct tt_Node* node);
+static tt_ret_t node_destroy_locked(struct tt_Context* node);
 
-tt_ret_t tt_Node_destroy(struct tt_Node* node) {
+tt_ret_t tt_Context_destroy(struct tt_Context* node) {
     if (node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
     // Held across the teardown so a call already inside the node on another thread finishes first.
     // Not released into a destroyed lock afterwards: the locks are left initialised, because a late
-    // tt_Node_interrupt() or a poll still unwinding must never touch a destroyed mutex, and on both
-    // platforms an idle one costs nothing to keep. tt_Node_create() initialises them again.
+    // tt_Context_interrupt() or a poll still unwinding must never touch a destroyed mutex, and on both
+    // platforms an idle one costs nothing to keep. tt_Context_create() initialises them again.
     state_lock(node);
     tt_ret_t result = node_destroy_locked(node);
     state_unlock(node);
     return result;
 }
 
-static tt_ret_t node_destroy_locked(struct tt_Node* node) {
+static tt_ret_t node_destroy_locked(struct tt_Context* node) {
     // One line, at the one moment the whole run's traffic is known. Cheap enough to be
     // unconditional, and the question it answers - did anything arrive at all - is the first one
     // asked whenever a node delivered nothing.
@@ -9441,7 +9449,7 @@ static tt_ret_t node_destroy_locked(struct tt_Node* node) {
     // The node is fully torn down at this point; drop every pending scheduler entry
     // (including the node_update/node_flush ones just re-armed above) so nothing later
     // fires a callback into this now-destroyed node.
-    node->scheduler_tail = 0; // the state lock is held (tt_Node_destroy())
+    node->scheduler_tail = 0; // the state lock is held (tt_Context_destroy())
     for (int i = 0; i < tt_SCHED_INBOX_LENGTH; i++) {
         __atomic_store_n(&node->sched_inbox_state[i], tt_SCHED_SLOT_EMPTY, __ATOMIC_RELAXED);
     }

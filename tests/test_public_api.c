@@ -46,19 +46,19 @@
 // only thing being checked is that each symbol resolves.
 static void* const public_api[] = {
     // Node lifecycle and the poll loop
-    (void*)tt_Node_create,
-    (void*)tt_Node_destroy,
-    (void*)tt_Node_poll,
-    (void*)tt_Node_interrupt,
-    (void*)tt_Node_schedule,
-    (void*)tt_Node_unschedule,
-    (void*)tt_Node_set_discovery,
-    (void*)tt_Node_entity_alive,
+    (void*)tt_Context_create,
+    (void*)tt_Context_destroy,
+    (void*)tt_Context_poll,
+    (void*)tt_Context_interrupt,
+    (void*)tt_Context_schedule,
+    (void*)tt_Context_unschedule,
+    (void*)tt_Context_set_discovery,
+    (void*)tt_Context_entity_alive,
     // Endpoint creation
-    (void*)tt_Node_create_publisher,
-    (void*)tt_Node_create_subscriber,
-    (void*)tt_Node_create_client,
-    (void*)tt_Node_create_server,
+    (void*)tt_Context_create_publisher,
+    (void*)tt_Context_create_subscriber,
+    (void*)tt_Context_create_client,
+    (void*)tt_Context_create_server,
     // Publisher
     (void*)tt_Publisher_publish,
     (void*)tt_Publisher_destroy,

@@ -179,7 +179,7 @@ int main(void) {
 
     // RMW_QOS_POLICY_RELIABILITY_RELIABLE - two cases this single process can actually exercise:
     // nothing published yet (vacuously "all acked" - nothing to wait on), and something published
-    // but no wire-level peer to wait on either. A co-located Subscription on the same tt_Node
+    // but no wire-level peer to wait on either. A co-located Subscription on the same tt_Context
     // deliberately never becomes a wire-level peer at all here - a reliable Subscriber never even
     // sees its own co-located Publisher's DATA in the first place (self_sent-suppressed in process_
     // submessage(), tickle.c: "a reliable Subscriber never sees its own co-located Publisher's DATA

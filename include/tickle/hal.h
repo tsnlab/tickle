@@ -61,8 +61,8 @@ typedef enum tt_ret_t {
     tt_RET_IILEGAL_ENDPOINT_ID = -8,
     tt_RET_ILLEGAL_STATUS = -9,
     tt_RET_INVALID_ARGUMENT = -10, // NULL pointer, or an out-of-range size in a tt_Service/tt_Topic
-    tt_RET_INTERRUPTED = -11,      // tt_Node_poll() was woken by tt_Node_interrupt() rather than by
-                                   // data, a due scheduler entry, or its own timeout - see tt_Node_
+    tt_RET_INTERRUPTED = -11,      // tt_Context_poll() was woken by tt_Context_interrupt() rather than by
+                                   // data, a due scheduler entry, or its own timeout - see tt_Context_
                                    // interrupt()'s own comment in tickle.h.
     tt_RET_NOT_FOUND = -12,        // tt_Server_send_response()'s own request_id doesn't match any
                                    // request still waiting on a response - already answered, timed
@@ -91,14 +91,14 @@ typedef enum tt_ret_t {
                                    // generic error: it is the normal, expected outcome of flow
                                    // control, not a failure. See tt_Publisher.keep_all and
                                    // tt_Publisher_writable() (tickle.h).
-    tt_RET_BUSY = -15,             // tt_Node_poll() called while another thread is already polling
+    tt_RET_BUSY = -15,             // tt_Context_poll() called while another thread is already polling
                                    // the same node. One poller at a time is part of the threading
                                    // contract ("Threading", tickle.h): the two would share rx_buffer.
                                    // Nothing was done; the call is a caller bug, reported rather than
                                    // allowed to corrupt a datagram mid-decode.
 } tt_ret_t;
 
-struct tt_Node;
+struct tt_Context;
 struct tt_Header;
 
 // Platform-specific HAL structure inclusion
@@ -112,16 +112,16 @@ struct tt_Header;
 // src/hal_freertos.c, .../tests/test_mock.h's mock) against this same contract.
 uint64_t tt_get_ns(void);
 int32_t tt_get_node_id(void);
-tt_ret_t tt_bind(struct tt_Node* node);
-void tt_close(struct tt_Node* node);
-int32_t tt_send(struct tt_Node* node, const void* buf, size_t len);
+tt_ret_t tt_bind(struct tt_Context* node);
+void tt_close(struct tt_Context* node);
+int32_t tt_send(struct tt_Context* node, const void* buf, size_t len);
 // Sends buf to a specific unicast destination instead of the node's usual broadcast address -
 // used only where the destination is already known precisely (a server's CallResponse, unicast
 // straight back to the CallRequest's own source - see process_callrequest() in tickle.c) rather
 // than needing the broadcast that discovery/pub-sub still relies on. ip/port are host byte order,
 // matching tt_receive()'s own ip/port out-params (the two are meant to be used together: the ip/
 // port a packet arrived with are exactly what a reply back to it should be sent with).
-int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t ip, uint16_t port);
+int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port);
 
 // Scatter-gather send: one datagram made of `hdr` (framing this node built) followed by `body`
 // (payload the publisher handed over, still in its own memory) - no staging copy into one
@@ -129,7 +129,7 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
 // destination (same convention as flush_tx()'s peer list). Returns total bytes sent, negative on
 // error. Used by tt_Publisher_publish()'s standalone-packet path when the topic offers
 // data_encode_inplace.
-int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
+int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port);
 
 // One datagram for tt_send_batch(): `head`, followed by `body` unless body_len is 0, to ip/port - or, with ip
@@ -148,13 +148,13 @@ struct tt_OutDatagram {
 // that datagram and every one after it may be unsent. Used where core has several datagrams ready at once
 // - a sample's fragments, or one datagram to several peers - so that the number of system calls stops
 // following the number of datagrams.
-int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagrams, uint32_t count);
+int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count);
 /**
  * @timeout I/O timeout in nanoseconds, -1 for use default timeout value, 0 for no timeout
  * @return received bytes, -1 for timeout, -3 if woken by tt_wake_signal() rather than data,
  *         other negative values for I/O error
  */
-int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout);
+int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout);
 
 // Resolves a configured broadcast address to the local interface that owns it, filling *addr and
 // *netmask (host byte order) from that interface. Returns false when no local interface has that
@@ -176,16 +176,16 @@ bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, u
 int32_t tt_link_mtu(uint32_t addr);
 
 // Non-blocking single receive: pulls one datagram if one is already waiting, without any poll()
-// wait. tt_Node_poll() uses this to drain whatever else the kernel has buffered after tt_receive()
+// wait. tt_Context_poll() uses this to drain whatever else the kernel has buffered after tt_receive()
 // hands it the first packet, so a saturated receiver pays one poll() per drain rather than one
 // per packet. Returns received bytes, -1 if nothing is waiting, other negatives for I/O error.
-int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port);
+int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port);
 
 // How many datagrams the HAL already holds, read from the socket and not yet handed out, that the next
 // tt_try_receive() calls return without a system call (hal_linux.c's recvmmsg() batch; 0 on a HAL with
 // none). Core keeps its state lock across such datagrams and never across a read from the socket
 // (OPTIMIZATION_PLAN.md 11.4, D4).
-uint32_t tt_rx_buffered(const struct tt_Node* node);
+uint32_t tt_rx_buffered(const struct tt_Context* node);
 
 // Wakes a concurrent tt_receive() blocked on this node (from any thread, including this one - a
 // self-signal), making it return -3 immediately instead of waiting out the rest of its timeout.
@@ -193,5 +193,5 @@ uint32_t tt_rx_buffered(const struct tt_Node* node);
 // waiting for the next one (see each platform's own tt_bind()/tt_receive() for how - a
 // self-connected loopback UDP socket multiplexed alongside the real one, so both platforms share
 // the same poll()/select() call and neither needs a platform-specific wake primitive like
-// eventfd). tt_Node_interrupt() (tickle.h) is the public entry point that calls this.
-tt_ret_t tt_wake_signal(struct tt_Node* node);
+// eventfd). tt_Context_interrupt() (tickle.h) is the public entry point that calls this.
+tt_ret_t tt_wake_signal(struct tt_Context* node);

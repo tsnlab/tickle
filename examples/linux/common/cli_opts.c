@@ -48,7 +48,7 @@ static enum tt_flag_match parse_general_flag(int argc, char** argv, int* i, stru
     } else if (strcmp(argv[*i], "-a") == 0 && *i + 1 < argc) {
         opts->bind_addr = argv[++*i];
     } else if (strcmp(argv[*i], "-I") == 0 && *i + 1 < argc) {
-        opts->node_id = atoi(argv[++*i]);
+        opts->context_id = atoi(argv[++*i]);
     } else if (strcmp(argv[*i], "-n") == 0 && *i + 1 < argc) {
         opts->name = argv[++*i];
     } else if (strcmp(argv[*i], "-l") == 0 && *i + 1 < argc) {

@@ -58,7 +58,7 @@ static void pong_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
     rtt_sum_ms += rtt_ms;
 }
 
-static void ping(struct tt_Node* node, uint64_t time, void* param) {
+static void ping(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     if (g_interrupted) {
         return;
@@ -68,10 +68,10 @@ static void ping(struct tt_Node* node, uint64_t time, void* param) {
     if (ret == tt_RET_OK) {
         transmitted++;
     }
-    tt_Node_schedule(node, time + (uint64_t)(interval_s * (double)tt_SECOND), ping, NULL);
+    tt_Context_schedule(node, time + (uint64_t)(interval_s * (double)tt_SECOND), ping, NULL);
 }
 
-static void stop(struct tt_Node* node, uint64_t time, void* param) {
+static void stop(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
@@ -97,15 +97,15 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
     }
 
     struct tt_Publisher pub;
-    ret = tt_Node_create_publisher(&node, &pub, &BenchTopic, "ping");
+    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "ping");
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
@@ -113,19 +113,19 @@ int main(int argc, char** argv) {
     g_pub = &pub;
 
     struct tt_Subscriber sub;
-    ret = tt_Node_create_subscriber(&node, &sub, &BenchTopic, "pong", (tt_SUBSCRIBER_CALLBACK)pong_callback);
+    ret = tt_Context_create_subscriber(&node, &sub, &BenchTopic, "pong", (tt_SUBSCRIBER_CALLBACK)pong_callback);
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
         return ret;
     }
 
     uint64_t start = tt_get_ns();
-    tt_Node_schedule(&node, start + (uint64_t)(discovery_margin_s * (double)tt_SECOND), ping, NULL);
-    tt_Node_schedule(&node, start + (uint64_t)((discovery_margin_s + duration_s) * (double)tt_SECOND), stop, NULL);
+    tt_Context_schedule(&node, start + (uint64_t)(discovery_margin_s * (double)tt_SECOND), ping, NULL);
+    tt_Context_schedule(&node, start + (uint64_t)((discovery_margin_s + duration_s) * (double)tt_SECOND), stop, NULL);
 
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, -1);
+        ret = tt_Context_poll(&node, -1);
     }
 
     uint64_t lost = transmitted - received;
@@ -141,6 +141,6 @@ int main(int argc, char** argv) {
            "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f\n",
            (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms);
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

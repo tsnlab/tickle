@@ -9,7 +9,7 @@
  */
 
 // ROS_DOMAIN_ID (2026-09-27, DDS parity): rmw_init() puts each domain on its own well-known port,
-// _tt_NODE_PORT + the domain id, so two domains on one network never discover each other. A PC's unit
+// _tt_CONTEXT_PORT + the domain id, so two domains on one network never discover each other. A PC's unit
 // tests (domain 0) were heard by the rig's nodes (domain 73) over a shared LAN before this.
 
 #include <assert.h>
@@ -17,7 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <tickle/config.h> // _tt_CONFIG, _tt_NODE_PORT
+#include <tickle/config.h> // _tt_CONFIG, _tt_CONTEXT_PORT
 
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"
@@ -52,12 +52,12 @@ static rmw_ret_t init_with_domain(size_t domain_id, int* port) {
 int main(void) {
     int port = 0;
     assert(RMW_RET_OK == init_with_domain(0, &port));
-    assert(_tt_NODE_PORT == port); // domain 0 keeps the port every TickLE node has always used
+    assert(_tt_CONTEXT_PORT == port); // domain 0 keeps the port every TickLE node has always used
     assert(RMW_RET_OK == init_with_domain(DOMAIN_SEVEN, &port));
-    assert(_tt_NODE_PORT + (int)DOMAIN_SEVEN == port);
+    assert(_tt_CONTEXT_PORT + (int)DOMAIN_SEVEN == port);
     assert(0 == setenv("ROS_DOMAIN_ID", DOMAIN_FROM_ENV, 1));
     assert(RMW_RET_OK == init_with_domain(RMW_DEFAULT_DOMAIN_ID, &port));
-    assert(_tt_NODE_PORT + DOMAIN_FROM_ENV_VALUE == port);
+    assert(_tt_CONTEXT_PORT + DOMAIN_FROM_ENV_VALUE == port);
     assert(RMW_RET_INVALID_ARGUMENT == init_with_domain(RMW_TICKLE_MAX_DOMAIN_ID + 1U, &port));
     printf("ROS_DOMAIN_ID as a port offset: PASS\n");
     return 0;

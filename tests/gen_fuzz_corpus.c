@@ -72,7 +72,7 @@ static void on_data(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, s
     (void)data;
 }
 
-static struct tt_Node sender;
+static struct tt_Context sender;
 static struct tt_Topic topics[MAX_ENDPOINTS];
 static struct tt_Subscriber subs[MAX_ENDPOINTS];
 static char names[MAX_ENDPOINTS][48];
@@ -97,7 +97,7 @@ static int announce(int count) {
         topics[i].data_size = 4;
         topics[i].data_decode = decode_nothing;
         topics[i].data_free = free_nothing;
-        if (tt_Node_create_subscriber(&sender, &subs[i], &topics[i], "fuzz_sub", on_data) != tt_RET_OK) {
+        if (tt_Context_create_subscriber(&sender, &subs[i], &topics[i], "fuzz_sub", on_data) != tt_RET_OK) {
             return -1;
         }
     }

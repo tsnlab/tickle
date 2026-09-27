@@ -22,7 +22,7 @@
 
 // Whitebox: tt_Publisher_publish()'s buffering behavior and process_data() (static) are both
 // exercised only by the RPC-shaped examples/tests before this file - the topic/pub-sub half of
-// the API (tt_Publisher_publish/tt_Node_create_publisher/tt_Node_create_subscriber/process_data)
+// the API (tt_Publisher_publish/tt_Context_create_publisher/tt_Context_create_subscriber/process_data)
 // had no dedicated unit coverage at all.
 #include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
 
@@ -77,7 +77,7 @@ static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t 
     last_value = *(uint32_t*)data;
 }
 
-static void init_node_and_topic(struct tt_Node* node, struct tt_Topic* topic) {
+static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -93,7 +93,7 @@ static void init_node_and_topic(struct tt_Node* node, struct tt_Topic* topic) {
     topic->data_free = stub_data_free;
 }
 
-static void init_publisher(struct tt_Publisher* pub, struct tt_Node* node, struct tt_Topic* topic) {
+static void init_publisher(struct tt_Publisher* pub, struct tt_Context* node, struct tt_Topic* topic) {
     memset(pub, 0, sizeof(*pub));
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
     pub->endpoint.id = ENDPOINT_ID;
@@ -102,7 +102,7 @@ static void init_publisher(struct tt_Publisher* pub, struct tt_Node* node, struc
     pub->topic = topic;
 }
 
-static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Node* node,
+static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Context* node,
                                                struct tt_Topic* topic) {
     memset(sub, 0, sizeof(*sub));
     sub->endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
@@ -115,7 +115,7 @@ static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct
     node->endpoints[0] = (struct tt_Endpoint*)sub;
 }
 
-// pub->batch defaults to false (tt_Node_create_publisher() - here, init_publisher()'s own
+// pub->batch defaults to false (tt_Context_create_publisher() - here, init_publisher()'s own
 // memset() to 0 has the same effect), the same default RPC (tt_Client_call(), see
 // test_client_call.c) already had: tt_Publisher_publish() must flush immediately, not just
 // append to node->tx_buffer and wait for node_flush()'s next tick (DESIGN.md's "RPC and Publish
@@ -125,7 +125,7 @@ static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct
 static void test_publish_flushes_immediately_by_default(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -143,14 +143,14 @@ static void test_publish_flushes_immediately_by_default(void) {
 
 // pub->batch == true opts a specific Publisher back into the pre-existing behavior: append to
 // node->tx_buffer and bump pub->seq_no, never call tt_send() itself, leaving node_flush()'s own
-// tt_NODE_TX_INTERVAL tick (see the test_node_flush_* cases below, which all set this too) to
+// tt_CONTEXT_TX_INTERVAL tick (see the test_node_flush_* cases below, which all set this too) to
 // decide broadcast vs. unicast for the whole accumulated buffer at once - the escape hatch for a
 // Publisher that really does call tt_Publisher_publish() several times in a row and would rather
 // coalesce those into fewer packets than minimize any one message's own latency.
 static void test_publish_batches_when_opted_in(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -173,14 +173,14 @@ static void test_publish_batches_when_opted_in(void) {
 static void test_publish_unicasts_to_known_peers_at_or_under_threshold(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
 
-    pub.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
-    pub.peers[1] = (struct tt_Peer) {.node_id = 3, .ip = 0xc0a80a03, .port = 8283};
+    pub.peers[0] = (struct tt_Peer) {.context_id = 2, .ip = 0xc0a80a02, .port = 8282};
+    pub.peers[1] = (struct tt_Peer) {.context_id = 3, .ip = 0xc0a80a03, .port = 8283};
 
     uint32_t value = 0x1234abcd;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
@@ -194,7 +194,7 @@ static void test_publish_unicasts_to_known_peers_at_or_under_threshold(void) {
 static void test_publish_broadcasts_when_peer_count_exceeds_threshold(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -202,7 +202,7 @@ static void test_publish_broadcasts_when_peer_count_exceeds_threshold(void) {
 
     for (int i = 0; i < tt_UNICAST_PEER_THRESHOLD + 1; i++) {
         pub.peers[i] =
-            (struct tt_Peer) {.node_id = (uint8_t)(2 + i), .ip = 0xc0a80a00 + (uint8_t)(2 + i), .port = 8282};
+            (struct tt_Peer) {.context_id = (uint8_t)(2 + i), .ip = 0xc0a80a00 + (uint8_t)(2 + i), .port = 8282};
     }
 
     uint32_t value = 0x1234abcd;
@@ -219,7 +219,7 @@ static void test_publish_broadcasts_when_peer_count_exceeds_threshold(void) {
 static void test_publish_flushes_a_pending_broadcast_then_unicasts(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -227,7 +227,7 @@ static void test_publish_flushes_a_pending_broadcast_then_unicasts(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
-    pub.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+    pub.peers[0] = (struct tt_Peer) {.context_id = 2, .ip = 0xc0a80a02, .port = 8282};
 
     node_update(&node, 0, NULL); // really batches an UPDATE into tx_buffer, advancing tx_tail
     EXPECT_TRUE(node.tx_tail > sizeof(struct tt_Header));
@@ -247,7 +247,7 @@ static void test_publish_flushes_a_pending_broadcast_then_unicasts(void) {
 static void test_publish_rolls_back_on_out_of_buffer(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -272,7 +272,7 @@ static void test_publish_rolls_back_on_out_of_buffer(void) {
 static void test_node_flush_broadcasts_with_no_known_peers(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -298,7 +298,7 @@ static void test_node_flush_broadcasts_with_no_known_peers(void) {
 static void test_node_flush_unicasts_to_known_publisher_peers_at_or_under_threshold(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -307,8 +307,8 @@ static void test_node_flush_unicasts_to_known_publisher_peers_at_or_under_thresh
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
-    pub.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
-    pub.peers[1] = (struct tt_Peer) {.node_id = 3, .ip = 0xc0a80a03, .port = 8283};
+    pub.peers[0] = (struct tt_Peer) {.context_id = 2, .ip = 0xc0a80a02, .port = 8282};
+    pub.peers[1] = (struct tt_Peer) {.context_id = 3, .ip = 0xc0a80a03, .port = 8283};
 
     uint32_t value = 0x1234abcd;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
@@ -325,7 +325,7 @@ static void test_node_flush_unicasts_to_known_publisher_peers_at_or_under_thresh
 static void test_node_flush_broadcasts_when_peer_count_exceeds_threshold(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -336,7 +336,7 @@ static void test_node_flush_broadcasts_when_peer_count_exceeds_threshold(void) {
 
     for (int i = 0; i < tt_UNICAST_PEER_THRESHOLD + 1; i++) {
         pub.peers[i] =
-            (struct tt_Peer) {.node_id = (uint8_t)(2 + i), .ip = 0xc0a80a00 + (uint8_t)(2 + i), .port = 8282};
+            (struct tt_Peer) {.context_id = (uint8_t)(2 + i), .ip = 0xc0a80a00 + (uint8_t)(2 + i), .port = 8282};
     }
 
     uint32_t value = 0x1234abcd;
@@ -355,7 +355,7 @@ static void test_node_flush_broadcasts_when_peer_count_exceeds_threshold(void) {
 static void test_node_flush_broadcasts_when_update_is_pending(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -364,7 +364,7 @@ static void test_node_flush_broadcasts_when_update_is_pending(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
-    pub.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+    pub.peers[0] = (struct tt_Peer) {.context_id = 2, .ip = 0xc0a80a02, .port = 8282};
     node.tx_has_pending_update = true; // simulates node_update() having just batched an UPDATE
 
     uint32_t value = 0x1234abcd;
@@ -386,7 +386,7 @@ static void test_node_flush_broadcasts_when_update_is_pending(void) {
 static void test_node_flush_broadcasts_when_multiple_publishers_on_node(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub1;
     struct tt_Publisher pub2;
@@ -399,7 +399,7 @@ static void test_node_flush_broadcasts_when_multiple_publishers_on_node(void) {
     node.endpoints[0] = (struct tt_Endpoint*)&pub1;
     node.endpoints[1] = (struct tt_Endpoint*)&pub2;
 
-    pub1.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+    pub1.peers[0] = (struct tt_Peer) {.context_id = 2, .ip = 0xc0a80a02, .port = 8282};
 
     uint32_t value = 0x1234abcd;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub1, (struct tt_Data*)&value));
@@ -415,7 +415,7 @@ static void test_node_flush_broadcasts_when_multiple_publishers_on_node(void) {
 static void test_node_update_sets_pending_update_flag(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -430,13 +430,13 @@ static void test_node_update_sets_pending_update_flag(void) {
     EXPECT_TRUE(node.tx_has_pending_update);
 }
 
-// tt_Node_destroy() must actually put its final entity-less UPDATE on the wire (broadcast), not
+// tt_Context_destroy() must actually put its final entity-less UPDATE on the wire (broadcast), not
 // just batch it into tx_buffer and then close the socket - otherwise peers never learn the node
 // left. Regression test for that: the farewell has to be a real tt_send(), before tt_close().
 static void test_node_destroy_broadcasts_farewell(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -444,7 +444,7 @@ static void test_node_destroy_broadcasts_farewell(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
-    EXPECT_EQ_INT(tt_RET_OK, (int)tt_Node_destroy(&node));
+    EXPECT_EQ_INT(tt_RET_OK, (int)tt_Context_destroy(&node));
 
     EXPECT_TRUE(test_mock_send_call_count >= 1);              // farewell went out
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // as a broadcast, not a unicast
@@ -452,15 +452,15 @@ static void test_node_destroy_broadcasts_farewell(void) {
 }
 
 // Milestone 47 "goodbye" - destroying one entity (while the node itself keeps running, unlike
-// tt_Node_destroy() above) must also broadcast the now-reduced entity list right away, not just
-// batch it for node_update()'s own next periodic tick (up to tt_NODE_UPDATE_INTERVAL later) -
+// tt_Context_destroy() above) must also broadcast the now-reduced entity list right away, not just
+// batch it for node_update()'s own next periodic tick (up to tt_CONTEXT_UPDATE_INTERVAL later) -
 // this is what actually narrows the window a departed Publisher could still be confused with a
 // newly-arrived one under (rmw_tickle/PLAN.md's own Milestone 47 writeup). A second, surviving
 // Publisher on the same node must remain correctly registered afterwards.
 static void test_publisher_destroy_broadcasts_goodbye_immediately(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub1;
     struct tt_Publisher pub2;
@@ -483,7 +483,7 @@ static void test_publisher_destroy_broadcasts_goodbye_immediately(void) {
 
 // Builds a DataHeader + 4-byte payload at the start of node->rx_buffer, returning the tail
 // offset (matching what process_packet() would have handed process_data()).
-static uint32_t write_data_from(struct tt_Node* node, uint32_t seq_no, uint64_t timestamp, uint32_t value,
+static uint32_t write_data_from(struct tt_Context* node, uint32_t seq_no, uint64_t timestamp, uint32_t value,
                                 uint32_t entity_id) {
     struct tt_DataHeader* data_header = (struct tt_DataHeader*)node->rx_buffer;
     data_header->endpoint_id = ENDPOINT_ID;
@@ -496,7 +496,7 @@ static uint32_t write_data_from(struct tt_Node* node, uint32_t seq_no, uint64_t 
     return tail + sizeof(value);
 }
 
-static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t timestamp, uint32_t value) {
+static uint32_t write_data(struct tt_Context* node, uint32_t seq_no, uint64_t timestamp, uint32_t value) {
     return write_data_from(node, seq_no, timestamp, value, 0);
 }
 
@@ -509,7 +509,7 @@ static void test_process_data_dispatches_to_subscriber(void) {
     data_free_call_count = 0;
     decode_should_fail = false;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -539,7 +539,7 @@ static void test_process_data_unknown_endpoint_is_ignored(void) {
     subscriber_callback_count = 0;
     decode_should_fail = false;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -570,7 +570,7 @@ static void test_process_data_decode_failure_is_reported(void) {
     data_free_call_count = 0;
     decode_should_fail = true;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -592,7 +592,7 @@ static void test_process_data_decode_failure_is_reported(void) {
 // Milestone 35 (rmw_tickle/PLAN.md) - add_endpoint_to_node() no longer rejects a second local
 // Subscriber sharing an already-registered (kind, id): two independent Subscriptions to the same
 // topic, in the same process, is now legal (previously this whole scenario could never even be
-// set up - the second tt_Node_create_subscriber() call would have failed outright). process_data()
+// set up - the second tt_Context_create_subscriber() call would have failed outright). process_data()
 // must deliver the arriving sample to *both*, each with its own independent decode/callback/free,
 // not just whichever one find_endpoint()'s own single-match lookup would have picked.
 static void test_process_data_fans_out_to_every_matching_subscriber(void) {
@@ -601,7 +601,7 @@ static void test_process_data_fans_out_to_every_matching_subscriber(void) {
     data_free_call_count = 0;
     decode_should_fail = false;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub_a;
     struct tt_Subscriber sub_b;
@@ -658,7 +658,7 @@ static void test_process_data_fans_out_to_every_matching_subscriber(void) {
 static void test_delivery_order_diagnostic_counts_disorder(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -724,7 +724,7 @@ static void expect_delivery_line(bool destroy_subscriber_first) {
     subscriber_callback_count = 0;
     decode_should_fail = false;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -748,9 +748,9 @@ static void expect_delivery_line(bool destroy_subscriber_first) {
 
     if (destroy_subscriber_first) {
         tt_Subscriber_destroy(&sub); // the rmw order
-        tt_Node_destroy(&node);
+        tt_Context_destroy(&node);
     } else {
-        tt_Node_destroy(&node); // the plain two-node-example order
+        tt_Context_destroy(&node); // the plain two-node-example order
     }
 
     fflush(captured);
@@ -786,7 +786,7 @@ static void test_best_effort_discards_out_of_order(void) {
     subscriber_callback_count = 0;
     decode_should_fail = false;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -836,7 +836,7 @@ static void test_best_effort_discards_out_of_order(void) {
 // receiver rebuilds the rest from its own clock - exactly, as long as the two clocks are within half the
 // 32-bit range (+-35.8 min) of each other, across the 32-bit wrap in either direction.
 static void test_wire_timestamp_rebuilds_across_skew_and_wrap(void) {
-    static struct tt_Node clock_node; // rx_clock_ns 0: outside a poll, the receiver reads its own clock
+    static struct tt_Context clock_node; // rx_clock_ns 0: outside a poll, the receiver reads its own clock
     memset(&clock_node, 0, sizeof(clock_node));
     const uint64_t thirty_minutes = 30ULL * 60ULL * tt_SECOND;
     // An arbitrary clock far from any wrap, and one 5 us before the 32-bit microsecond wrap.
@@ -862,7 +862,7 @@ static void test_wire_timestamp_rebuilds_across_skew_and_wrap(void) {
     EXPECT_TRUE(timestamp_from_wire(&clock_node, timestamp_to_wire(just_before_wrap)) == just_before_wrap);
     // Thirty minutes of skew across the wrap still rebuilds.
     EXPECT_TRUE(timestamp_from_wire(&clock_node, timestamp_to_wire(sent + thirty_minutes)) == sent + thirty_minutes);
-    // Inside a poll the rebuild takes the poll's own reading (tt_Node.rx_clock_ns) and reads no clock: the
+    // Inside a poll the rebuild takes the poll's own reading (tt_Context.rx_clock_ns) and reads no clock: the
     // same answer with the clock itself hours off.
     clock_node.rx_clock_ns = far_from_wrap;
     test_mock_now = far_from_wrap + (5ULL * 3600ULL * tt_SECOND);
@@ -883,7 +883,7 @@ static void keep_raw(const void* buf, size_t len) {
 }
 
 // A sender (node 2) with one Publisher, sends captured as they went on the wire.
-static void init_single_form_sender(struct tt_Node* sender, struct tt_Topic* topic, struct tt_Publisher* pub) {
+static void init_single_form_sender(struct tt_Context* sender, struct tt_Topic* topic, struct tt_Publisher* pub) {
     test_mock_reset();
     test_mock_send_hook = keep_raw;
     sent_raw_len = 0;
@@ -893,7 +893,7 @@ static void init_single_form_sender(struct tt_Node* sender, struct tt_Topic* top
 }
 
 // What a receiver (node 1) with a matching Subscriber makes of the captured datagram.
-static bool deliver_raw(struct tt_Node* receiver, struct tt_Topic* topic, struct tt_Subscriber* sub) {
+static bool deliver_raw(struct tt_Context* receiver, struct tt_Topic* topic, struct tt_Subscriber* sub) {
     init_node_and_topic(receiver, topic);
     init_subscriber_registered_on_node(sub, receiver, topic);
     subscriber_callback_count = 0;
@@ -902,8 +902,8 @@ static bool deliver_raw(struct tt_Node* receiver, struct tt_Topic* topic, struct
 }
 
 static void test_a_lone_broadcast_sample_goes_in_the_single_form(void) {
-    static struct tt_Node sender;
-    static struct tt_Node receiver;
+    static struct tt_Context sender;
+    static struct tt_Context receiver;
     struct tt_Topic topic;
     struct tt_Topic receiver_topic;
     struct tt_Publisher pub;
@@ -928,8 +928,8 @@ static void test_a_lone_broadcast_sample_goes_in_the_single_form(void) {
 
 // Two submessages in one datagram keep the classic headers: the second needs the first's length to be found.
 static void test_a_batch_of_two_stays_classic(void) {
-    static struct tt_Node sender;
-    static struct tt_Node receiver;
+    static struct tt_Context sender;
+    static struct tt_Context receiver;
     struct tt_Topic topic;
     struct tt_Topic receiver_topic;
     struct tt_Publisher pub;
@@ -951,7 +951,7 @@ static void test_a_batch_of_two_stays_classic(void) {
 
 // A submessage addressed to one node keeps the classic headers: the single form has no receiver field.
 static void test_an_addressed_submessage_stays_classic(void) {
-    static struct tt_Node sender;
+    static struct tt_Context sender;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_single_form_sender(&sender, &topic, &pub);
@@ -970,7 +970,7 @@ static void test_an_addressed_submessage_stays_classic(void) {
 // A single-form datagram from a sender of the other byte order: the marker says so, and every field behind
 // it is read swapped, as behind a reversed tt_Header magic.
 static void test_a_single_form_datagram_from_the_other_byte_order_is_read(void) {
-    static struct tt_Node receiver;
+    static struct tt_Context receiver;
     struct tt_Topic receiver_topic;
     struct tt_Subscriber sub;
     uint16_t magic = NATIVE_MAGIC_VALUE;
@@ -992,7 +992,7 @@ static void test_a_single_form_datagram_from_the_other_byte_order_is_read(void) 
 
 // A single-form header with nothing behind it, or another version, is refused without a delivery.
 static void test_a_short_or_foreign_single_form_datagram_is_refused(void) {
-    static struct tt_Node receiver;
+    static struct tt_Context receiver;
     struct tt_Topic receiver_topic;
     struct tt_Subscriber sub;
     uint16_t magic = NATIVE_MAGIC_VALUE;

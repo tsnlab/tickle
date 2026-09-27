@@ -9,7 +9,7 @@
  */
 
 // The two things that end an indefinite wait, on the REAL Linux HAL rather than the mock (2026-09-25).
-// A negative-timeout tt_Node_poll() with nothing scheduled now asks tt_receive() for no deadline at all,
+// A negative-timeout tt_Context_poll() with nothing scheduled now asks tt_receive() for no deadline at all,
 // so the only ways out are a datagram, tt_wake_signal() - the route the user named for new work arriving
 // mid-wait - and a signal, which is how Ctrl-C reaches a caller's loop. test_poll_wait.c proves what
 // TickLE does with each answer; this proves the HAL gives those answers, with real file descriptors, a
@@ -60,7 +60,7 @@ static void on_signal(int signo) {
     (void)signo; // the point is only that it interrupts ppoll()
 }
 
-static struct tt_Node node;
+static struct tt_Context node;
 
 static void open_node(void) {
     memset(&node, 0, sizeof(node));
@@ -117,8 +117,8 @@ static void test_timed_wait_times_out(void) {
     close_node();
 }
 
-// New work from another thread: tt_wake_signal() - what tt_Node_interrupt() calls - ends an indefinite
-// wait, reported as -3 so tt_Node_poll() returns tt_RET_INTERRUPTED.
+// New work from another thread: tt_wake_signal() - what tt_Context_interrupt() calls - ends an indefinite
+// wait, reported as -3 so tt_Context_poll() returns tt_RET_INTERRUPTED.
 static void test_wake_signal_ends_an_indefinite_wait(void) {
     open_node();
     struct blocked blocked = {.result = 0, .returned_at = 0, .done = 0};
@@ -138,7 +138,7 @@ static void test_wake_signal_ends_an_indefinite_wait(void) {
 }
 
 // Ctrl-C: a signal ends an indefinite wait, reported as a timeout (-1) - which, before its entry was due,
-// tt_Node_poll() hands straight back to the caller's loop.
+// tt_Context_poll() hands straight back to the caller's loop.
 static void test_signal_ends_an_indefinite_wait(void) {
     open_node();
     struct sigaction action;

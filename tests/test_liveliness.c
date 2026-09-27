@@ -31,7 +31,7 @@
 
 static struct tt_Topic test_topic = {.name = "test_topic"};
 
-static void init_node(struct tt_Node* node) {
+static void init_node(struct tt_Context* node) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -39,7 +39,7 @@ static void init_node(struct tt_Node* node) {
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
 }
 
-static void init_publisher(struct tt_Publisher* pub, struct tt_Node* node) {
+static void init_publisher(struct tt_Publisher* pub, struct tt_Context* node) {
     memset(pub, 0, sizeof(*pub));
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
     pub->endpoint.id = PUB_ENDPOINT_ID;
@@ -47,7 +47,7 @@ static void init_publisher(struct tt_Publisher* pub, struct tt_Node* node) {
     pub->topic = &test_topic;
     pub->node = node;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        pub->peers[i].node_id = tt_NODE_ID_INVALID;
+        pub->peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
     node->endpoints[node->endpoint_count++] = (struct tt_Endpoint*)pub;
 }
@@ -78,7 +78,7 @@ static uint32_t write_update_one_entity(uint8_t* buf, uint64_t last_modified, ui
     return tail;
 }
 
-static void receive_update(struct tt_Node* node, uint64_t at_time, uint64_t last_modified) {
+static void receive_update(struct tt_Context* node, uint64_t at_time, uint64_t last_modified) {
     test_mock_now = at_time;
     struct tt_Header header;
     init_header(&header, REMOTE_NODE_ID);
@@ -116,7 +116,7 @@ static uint32_t liveliness_write_packet(uint8_t* buf, uint8_t source, uint8_t su
 // DATA from a node is proof it is alive. A Publisher streaming at full rate whose announces are
 // the ones being dropped must not be declared dead.
 static void test_data_refreshes_node_liveliness(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
@@ -140,7 +140,7 @@ static void test_data_refreshes_node_liveliness(void) {
 // ACKNACK counts for the same reason, and matters for the opposite direction: a Subscriber that
 // is acknowledging every gap is demonstrably alive even if its own announces are being lost.
 static void test_acknack_refreshes_node_liveliness(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
@@ -165,14 +165,14 @@ static void test_acknack_refreshes_node_liveliness(void) {
 // data sample the way DDS's is. Here the node goes quiet after one DATA packet an interval after its
 // announce, and the limit runs from that packet.
 static void test_node_limit_runs_from_the_last_packet(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
 
     receive_update(&node, 0, 100); // announce clock starts at 0
 
-    uint64_t last_packet_at = tt_NODE_UPDATE_INTERVAL; // one DATA a full interval later
+    uint64_t last_packet_at = tt_CONTEXT_UPDATE_INTERVAL; // one DATA a full interval later
     test_mock_now = last_packet_at;
     uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)];
     uint32_t len =
@@ -195,7 +195,7 @@ static void test_node_limit_runs_from_the_last_packet(void) {
 // itself (the co-located client/service topology rmw_tickle allows) can't keep a stale entry for
 // its own id alive.
 static void test_self_sent_packet_does_not_refresh(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     node.update_seen[LOCAL_NODE_ID] = true;
@@ -215,7 +215,7 @@ static void test_self_sent_packet_does_not_refresh(void) {
 // announce at all, it must be forgotten - peer-table entries dropped and update_
 // seen[] cleared so a later announce from the same id is treated as first contact again.
 static void test_expires_peer_after_missed_intervals(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
@@ -234,7 +234,7 @@ static void test_expires_peer_after_missed_intervals(void) {
 
 // Before the threshold is reached, the peer must still be considered live.
 static void test_does_not_expire_before_threshold(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
@@ -254,12 +254,12 @@ static void test_does_not_expire_before_threshold(void) {
 // get falsely expired the first time check_liveliness() ran after tt_LIVELINESS_MISS_THRESHOLD
 // intervals, even though it kept announcing the whole time.
 static void test_repeated_unchanged_update_resets_liveliness_timer(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
 
-    uint64_t interval = tt_NODE_UPDATE_INTERVAL;
+    uint64_t interval = tt_CONTEXT_UPDATE_INTERVAL;
     receive_update(&node, 0, 100);
 
     // Re-announce the *same* content (last_modified unchanged) just before the threshold would
@@ -279,10 +279,10 @@ static void test_repeated_unchanged_update_resets_liveliness_timer(void) {
 // A node id never heard from at all must not be touched (no false log/expire on an all-zero
 // update_last_seen[] entry that was simply never populated).
 static void test_never_seen_node_id_is_not_flagged(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
-    check_liveliness(&node, tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL * 100, NULL);
+    check_liveliness(&node, tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL * 100, NULL);
 
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
         EXPECT_TRUE(!node.update_seen[i]);
@@ -292,7 +292,7 @@ static void test_never_seen_node_id_is_not_flagged(void) {
 // check_liveliness() must re-arm itself, the same self-rescheduling pattern node_update() uses -
 // otherwise liveliness checking would silently run exactly once per node lifetime.
 static void test_reschedules_itself(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     check_liveliness(&node, 1000, NULL);
@@ -300,44 +300,44 @@ static void test_reschedules_itself(void) {
     struct tt_TCB* tcb = peek_scheduler(&node);
     EXPECT_TRUE(tcb != NULL);
     EXPECT_TRUE(tcb->function == check_liveliness);
-    EXPECT_EQ_U32((uint32_t)(1000 + tt_NODE_UPDATE_INTERVAL), (uint32_t)tcb->time);
+    EXPECT_EQ_U32((uint32_t)(1000 + tt_CONTEXT_UPDATE_INTERVAL), (uint32_t)tcb->time);
 }
 
-// Milestone 62 (rmw_tickle/PLAN.md) - tt_Node_entity_alive()'s own zero-lease branch: an entity
+// Milestone 62 (rmw_tickle/PLAN.md) - tt_Context_entity_alive()'s own zero-lease branch: an entity
 // that never requested a specific liveliness_lease_duration_ns must defer entirely to its own
 // .alive field (whatever the coarser, node-level check_liveliness() sweep last set it to) -
 // verbatim, in both directions, regardless of what update_last_seen[] says.
 static void test_entity_alive_with_zero_lease_defers_to_alive_flag(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     struct tt_DiscoveredEntity entity = {0};
-    entity.node_id = REMOTE_NODE_ID;
+    entity.context_id = REMOTE_NODE_ID;
     entity.liveliness_lease_duration_ns = 0;
     entity.alive = true;
-    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1000));
+    EXPECT_TRUE(tt_Context_entity_alive(&node, &entity, 1000));
 
     entity.alive = false;
-    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1000));
+    EXPECT_TRUE(!tt_Context_entity_alive(&node, &entity, 1000));
 }
 
 // An entity that *did* request a specific lease gets a freshly-computed answer instead, checked
 // right at the boundary in both directions - within the lease is alive, one nanosecond past it
 // is not, independent of the coarser sweep's own ~3s cadence.
 static void test_entity_alive_with_lease_computed_fresh_at_boundary(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     node.update_seen[REMOTE_NODE_ID] = true;
     node.update_last_seen[REMOTE_NODE_ID] = 1000;
 
     struct tt_DiscoveredEntity entity = {0};
-    entity.node_id = REMOTE_NODE_ID;
+    entity.context_id = REMOTE_NODE_ID;
     entity.liveliness_lease_duration_ns = 500;
     entity.alive = true; // deliberately irrelevant here - a non-zero lease ignores this field
 
-    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1000));  // exactly at last_seen
-    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1500));  // exactly at the lease boundary
-    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1501)); // one ns past it
+    EXPECT_TRUE(tt_Context_entity_alive(&node, &entity, 1000));  // exactly at last_seen
+    EXPECT_TRUE(tt_Context_entity_alive(&node, &entity, 1500));  // exactly at the lease boundary
+    EXPECT_TRUE(!tt_Context_entity_alive(&node, &entity, 1501)); // one ns past it
 }
 
 // An AUTOMATIC entity's lease runs from the last datagram of its node, whatever it was (LIVELINESS_PLAN.md
@@ -346,38 +346,38 @@ static void test_entity_alive_with_lease_computed_fresh_at_boundary(void) {
 // announce and traffic only held off the verdict for half a lease, so detection landed at either of two
 // points (the HIL's bimodal ~500 ms) and could not be compared with DDS, whose lease runs from the data.
 static void test_entity_lease_runs_from_the_last_packet(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     node.update_seen[REMOTE_NODE_ID] = true;
     node.update_last_seen[REMOTE_NODE_ID] = 1000;  // announces stopped long ago
     node.traffic_last_seen[REMOTE_NODE_ID] = 9000; // ...but DATA is still arriving
 
     struct tt_DiscoveredEntity entity = {0};
-    entity.node_id = REMOTE_NODE_ID;
+    entity.context_id = REMOTE_NODE_ID;
     entity.liveliness_lease_duration_ns = 500;
     entity.alive = true;
 
-    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 9000));  // far past the announce lease
-    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 9500));  // one lease after the last packet
-    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 9501)); // and not a nanosecond more
+    EXPECT_TRUE(tt_Context_entity_alive(&node, &entity, 9000));  // far past the announce lease
+    EXPECT_TRUE(tt_Context_entity_alive(&node, &entity, 9500));  // one lease after the last packet
+    EXPECT_TRUE(!tt_Context_entity_alive(&node, &entity, 9501)); // and not a nanosecond more
 }
 
 // With every clock stopping together - what a killed process does - detection lands exactly one lease
 // after that moment.
 static void test_entity_alive_traffic_does_not_delay_expiry(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     node.update_seen[REMOTE_NODE_ID] = true;
     node.update_last_seen[REMOTE_NODE_ID] = 1000;
     node.traffic_last_seen[REMOTE_NODE_ID] = 1000; // both stopped at the same instant
 
     struct tt_DiscoveredEntity entity = {0};
-    entity.node_id = REMOTE_NODE_ID;
+    entity.context_id = REMOTE_NODE_ID;
     entity.liveliness_lease_duration_ns = 500;
     entity.alive = true;
 
-    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1500));  // at the lease boundary
-    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1501)); // one ns past it - not one ns later
+    EXPECT_TRUE(tt_Context_entity_alive(&node, &entity, 1500));  // at the lease boundary
+    EXPECT_TRUE(!tt_Context_entity_alive(&node, &entity, 1501)); // one ns past it - not one ns later
 }
 
 // The real point of this milestone: a short-lease entity whose lease has genuinely expired must
@@ -385,41 +385,41 @@ static void test_entity_alive_traffic_does_not_delay_expiry(void) {
 // point of view) says true, because the slower ~3s node-level sweep hasn't caught up yet - this
 // function is authoritative for a leased entity, not the periodic sweep's own timing.
 static void test_entity_alive_with_lease_ignores_stale_true_alive_flag(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     node.update_seen[REMOTE_NODE_ID] = true;
     node.update_last_seen[REMOTE_NODE_ID] = 0;
 
     struct tt_DiscoveredEntity entity = {0};
-    entity.node_id = REMOTE_NODE_ID;
+    entity.context_id = REMOTE_NODE_ID;
     entity.liveliness_lease_duration_ns = 100;
     entity.alive = true; // the coarse sweep (fixed ~3s window) hasn't run yet
 
-    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1000)); // far past its own 100ns lease
+    EXPECT_TRUE(!tt_Context_entity_alive(&node, &entity, 1000)); // far past its own 100ns lease
 }
 
 // A node id never heard from at all (update_seen[] still false) must report not-alive for a
 // leased entity, not crash or fall through to some stale default.
 static void test_entity_alive_never_seen_node_returns_false(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     struct tt_DiscoveredEntity entity = {0};
-    entity.node_id = REMOTE_NODE_ID;
+    entity.context_id = REMOTE_NODE_ID;
     entity.liveliness_lease_duration_ns = 500;
     entity.alive = true;
 
-    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1000));
+    EXPECT_TRUE(!tt_Context_entity_alive(&node, &entity, 1000));
 }
 
-// An empty/never-populated discovery slot (node_id == tt_NODE_ID_INVALID, this struct's own
+// An empty/never-populated discovery slot (node_id == tt_CONTEXT_ID_INVALID, this struct's own
 // zero-init default) must report not-alive - a safe, harmless no-op, not a crash.
 static void test_entity_alive_invalid_node_id_returns_false(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
-    struct tt_DiscoveredEntity entity = {0}; // node_id stays tt_NODE_ID_INVALID
-    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1000));
+    struct tt_DiscoveredEntity entity = {0}; // node_id stays tt_CONTEXT_ID_INVALID
+    EXPECT_TRUE(!tt_Context_entity_alive(&node, &entity, 1000));
 }
 
 // Phase 3 prerequisite (a), rmw_tickle/PLAN.md - when a remote Subscriber's own announced
@@ -429,7 +429,7 @@ static void test_entity_alive_invalid_node_id_returns_false(void) {
 // and only if the whole node went quiet) - long enough to stall a Phase 3 KEEP_ALL writer waiting
 // on that exact ack.
 static void test_lease_expiry_drops_subscriber_from_publisher_ack_set(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Publisher pub;
     init_node(&node);
     init_publisher(&pub, &node);
@@ -442,7 +442,7 @@ static void test_lease_expiry_drops_subscriber_from_publisher_ack_set(void) {
     node.discovery = &discovery;
 
     // The remote Subscriber: matched as a peer, has acked up to 7, and announced a 100ns lease.
-    pub.peers[0].node_id = REMOTE_NODE_ID;
+    pub.peers[0].context_id = REMOTE_NODE_ID;
     pub.peers[0].ip = 0x0A000001;
     pub.peers[0].port = 7447;
     claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
@@ -450,7 +450,7 @@ static void test_lease_expiry_drops_subscriber_from_publisher_ack_set(void) {
     node.update_seen[REMOTE_NODE_ID] = true;
     node.update_last_seen[REMOTE_NODE_ID] = 0;
 
-    entities[0].node_id = REMOTE_NODE_ID;
+    entities[0].context_id = REMOTE_NODE_ID;
     entities[0].endpoint_id = PUB_ENDPOINT_ID; // the Subscriber matching this Publisher's own id
     entities[0].kind = tt_KIND_TOPIC_SUBSCRIBER;
     entities[0].liveliness_lease_duration_ns = 100;
@@ -459,20 +459,20 @@ static void test_lease_expiry_drops_subscriber_from_publisher_ack_set(void) {
     // Well within the lease: nothing changes.
     check_liveliness(&node, 50, NULL);
     EXPECT_TRUE(entities[0].alive);
-    EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id);
+    EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].context_id);
     EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) != NULL);
 
     // Past its own lease: departed, and out of both the peer set and the ack set.
     check_liveliness(&node, 1000, NULL);
     EXPECT_TRUE(!entities[0].alive);
-    EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)pub.peers[0].node_id);
+    EXPECT_EQ_INT((int)tt_CONTEXT_ID_INVALID, (int)pub.peers[0].context_id);
     EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) == NULL);
 }
 
 // ...but only for the Publisher it actually matched: a lease-expired Subscriber of some *other*
 // topic must leave this Publisher's own peer/ack state alone.
 static void test_lease_expiry_leaves_unrelated_publisher_alone(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Publisher pub;
     init_node(&node);
     init_publisher(&pub, &node);
@@ -484,21 +484,21 @@ static void test_lease_expiry_leaves_unrelated_publisher_alone(void) {
     struct tt_DiscoveredEntity* entities = discovery.entities;
     node.discovery = &discovery;
 
-    pub.peers[0].node_id = REMOTE_NODE_ID;
+    pub.peers[0].context_id = REMOTE_NODE_ID;
     claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
     record_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID, 7);
     node.update_seen[REMOTE_NODE_ID] = true;
     node.update_last_seen[REMOTE_NODE_ID] = 0;
 
-    entities[0].node_id = REMOTE_NODE_ID;
+    entities[0].context_id = REMOTE_NODE_ID;
     entities[0].endpoint_id = PUB_ENDPOINT_ID + 1; // a different topic's Subscriber
     entities[0].kind = tt_KIND_TOPIC_SUBSCRIBER;
     entities[0].liveliness_lease_duration_ns = 100;
     entities[0].alive = true;
 
     check_liveliness(&node, 1000, NULL);
-    EXPECT_TRUE(!entities[0].alive);                               // still tombstoned
-    EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id); // but this Publisher is untouched
+    EXPECT_TRUE(!entities[0].alive);                                  // still tombstoned
+    EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].context_id); // but this Publisher is untouched
     const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
     EXPECT_TRUE(ack != NULL);
     EXPECT_EQ_U32(7, ack->ack_seq_no);
@@ -510,7 +510,7 @@ static void test_lease_expiry_leaves_unrelated_publisher_alone(void) {
 // Subscriber's ACKNACK give-up) that vanished mid-gap would have its Subscriber re-requesting the
 // same samples every retry interval forever, at an address nobody answers.
 static void test_lease_expiry_drops_writer_proxy_on_subscriber(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node(&node);
@@ -523,7 +523,7 @@ static void test_lease_expiry_drops_writer_proxy_on_subscriber(void) {
     sub.topic = &topic;
     sub.reliable = true;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        sub.writers[i].node_id = tt_NODE_ID_INVALID;
+        sub.writers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&sub;
@@ -539,22 +539,22 @@ static void test_lease_expiry_drops_writer_proxy_on_subscriber(void) {
     proxy->ack_seq_no = 7;
     bitmap_set_bit(proxy->received_bitmap, 3); // a gap it is still chasing
     proxy->acknack_scheduled = true;
-    EXPECT_TRUE(tt_Node_schedule(&node, 1000, acknack_retry, proxy));
+    EXPECT_TRUE(tt_Context_schedule(&node, 1000, acknack_retry, proxy));
 
     node.update_seen[REMOTE_NODE_ID] = true;
     node.update_last_seen[REMOTE_NODE_ID] = 0;
-    entities[0].node_id = REMOTE_NODE_ID;
+    entities[0].context_id = REMOTE_NODE_ID;
     entities[0].endpoint_id = PUB_ENDPOINT_ID;
     entities[0].kind = tt_KIND_TOPIC_PUBLISHER;
     entities[0].liveliness_lease_duration_ns = 100;
     entities[0].alive = true;
 
     check_liveliness(&node, 50, NULL); // still inside its lease
-    EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)proxy->node_id);
+    EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)proxy->context_id);
 
-    check_liveliness(&node, 1000, NULL);                         // past it
-    EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)proxy->node_id); // slot freed
-    EXPECT_TRUE(!proxy->acknack_scheduled);                      // and its retry cancelled
+    check_liveliness(&node, 1000, NULL);                               // past it
+    EXPECT_EQ_INT((int)tt_CONTEXT_ID_INVALID, (int)proxy->context_id); // slot freed
+    EXPECT_TRUE(!proxy->acknack_scheduled);                            // and its retry cancelled
     EXPECT_TRUE(find_writer_proxy(&sub, REMOTE_NODE_ID, 0) == NULL);
 
     // Plan's addition 2: a restarted Publisher reusing the slot must go through first contact

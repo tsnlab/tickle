@@ -110,10 +110,10 @@ static bool tt_rx_should_drop(void) {
 #define SEC_NS 1000000000LL
 
 struct _tt_Config _tt_CONFIG = {
-    .addr = _tt_NODE_ADDRESS,
-    .port = _tt_NODE_PORT,
-    .broadcast = _tt_NODE_BROADCAST,
-    .node_id = tt_NODE_ID_INVALID, // auto-detect by default; see its own comment in config.h
+    .addr = _tt_CONTEXT_ADDRESS,
+    .port = _tt_CONTEXT_PORT,
+    .broadcast = _tt_CONTEXT_BROADCAST,
+    .context_id = tt_CONTEXT_ID_INVALID, // auto-detect by default; see its own comment in config.h
 };
 
 uint64_t tt_get_ns(void) {
@@ -250,7 +250,7 @@ static void report_receive_buffer(int sock, const char* which) {
     }
 }
 
-tt_ret_t tt_bind(struct tt_Node* node) {
+tt_ret_t tt_bind(struct tt_Context* node) {
     // Set before anything below can fail into tt_close(): -1 says "nothing to close here yet",
     // the same convention node->hal.sock itself relies on implicitly (every failure that reaches
     // tt_close() below happens after sock was already created successfully).
@@ -384,7 +384,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     return tt_RET_OK;
 }
 
-void tt_close(struct tt_Node* node) {
+void tt_close(struct tt_Context* node) {
     node->hal.rx_count = 0; // anything a batch still held belonged to the sockets closed below
     node->hal.rx_next = 0;
     if (node->hal.data_sock >= 0 && close(node->hal.data_sock) < 0) {
@@ -400,7 +400,7 @@ void tt_close(struct tt_Node* node) {
     }
 }
 
-int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
+int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     TT_TRACE(tt_TRACE_TX_START);
     int32_t sent = (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
                                    sizeof(struct sockaddr_in));
@@ -408,7 +408,7 @@ int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
     return sent;
 }
 
-int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
+int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(ip);
@@ -421,7 +421,7 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
     return sent;
 }
 
-int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
+int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
     // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
     struct iovec iov[2] = {
@@ -452,7 +452,7 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
 // longer batch takes several, in order.
 #define TT_SEND_BATCH_CHUNK 64
 
-int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
     uint32_t sent = 0;
     while (sent < count) {
         uint32_t chunk = count - sent < TT_SEND_BATCH_CHUNK ? count - sent : TT_SEND_BATCH_CHUNK;
@@ -497,7 +497,7 @@ int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagra
 #define TT_RX_IDLE_DATA 2U
 
 // Hands out the next datagram the last recvmmsg() read and held back, or -1 when none is waiting.
-static int32_t rx_take_pending(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+static int32_t rx_take_pending(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct tt_hal* hal = &node->hal;
     if (hal->rx_next >= hal->rx_count) {
         return -1;
@@ -538,7 +538,8 @@ static void rx_headers_setup(struct tt_hal* hal) {
 #endif
 
 // One datagram with recvfrom(), without waiting: its length, -1 when nothing is waiting, -2 on an I/O error.
-static int32_t rx_read_one(struct tt_Node* node, int socket_fd, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+static int32_t rx_read_one(struct tt_Context* node, int socket_fd, void* buf, size_t len, uint32_t* ip,
+                           uint16_t* port) {
     node->rx_via_data_port = (socket_fd == node->hal.data_sock);
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
@@ -552,7 +553,7 @@ static int32_t rx_read_one(struct tt_Node* node, int socket_fd, void* buf, size_
     return ret;
 }
 
-static int32_t rx_fill(struct tt_Node* node, int socket_fd, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+static int32_t rx_fill(struct tt_Context* node, int socket_fd, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct tt_hal* hal = &node->hal;
 #if tt_RX_BATCH == 1
     // No batching: recvfrom(), which the control arm measured slightly cheaper than a one-slot recvmmsg().
@@ -599,7 +600,7 @@ static int32_t rx_fill(struct tt_Node* node, int socket_fd, void* buf, size_t le
 #endif
 }
 
-int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
+int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     // What the last batch read comes first, and without a wait: holding it behind ppoll() would delay
     // datagrams that have already arrived.
     int32_t pending = rx_take_pending(node, buf, len, ip, port);
@@ -618,7 +619,7 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
     // struct timespec, so nothing shorter than a millisecond gets rounded at all.
     // Always poll, including for a negative timeout. Negative used to skip the poll and go
     // straight to a blocking recvfrom() on the well-known socket, which blocks exactly as
-    // timeout == 0 does but sees neither the data socket nor the wake fd. tt_Node_poll() never
+    // timeout == 0 does but sees neither the data socket nor the wake fd. tt_Context_poll() never
     // takes that path (it turns a negative timeout into a positive wait first), so nothing
     // relied on it, and leaving a path that reads only one of the two sockets would be a trap for
     // the next direct caller.
@@ -730,11 +731,11 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 // socket in the meantime is not lost or delayed past the next poll: readiness is level-triggered, so the
 // very next ppoll() reports it. When every socket is idle this answers without a syscall, and clears the
 // bits so the next drain - one not preceded by a wait, like a non-blocking poll - asks both again.
-uint32_t tt_rx_buffered(const struct tt_Node* node) {
+uint32_t tt_rx_buffered(const struct tt_Context* node) {
     return node->hal.rx_next < node->hal.rx_count ? (uint32_t)(node->hal.rx_count - node->hal.rx_next) : 0U;
 }
 
-int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     int32_t pending = rx_take_pending(node, buf, len, ip, port);
     if (pending >= 0) {
         return pending;
@@ -773,7 +774,7 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
     return ret;
 }
 
-tt_ret_t tt_wake_signal(struct tt_Node* node) {
+tt_ret_t tt_wake_signal(struct tt_Context* node) {
     uint64_t one = 1;
     // eventfd's write() only ever blocks if the counter would overflow (~2^64 unconsumed
     // signals) - never a real concern here, so this is safe to call from any thread, or from

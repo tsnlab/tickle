@@ -81,15 +81,15 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
     }
 
     struct tt_Subscriber sub;
-    ret = tt_Node_create_subscriber(&node, &sub, &BenchTopic, "stream", (tt_SUBSCRIBER_CALLBACK)stream_callback);
+    ret = tt_Context_create_subscriber(&node, &sub, &BenchTopic, "stream", (tt_SUBSCRIBER_CALLBACK)stream_callback);
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
         return ret;
@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
     const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
     ret = tt_RET_OK;
     while (!g_interrupted && tt_get_ns() < deadline && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, poll_timeout_ns);
+        ret = tt_Context_poll(&node, poll_timeout_ns);
     }
 
     uint64_t total = received + lost;
@@ -113,6 +113,6 @@ int main(int argc, char** argv) {
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

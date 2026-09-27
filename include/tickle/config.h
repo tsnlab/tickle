@@ -21,7 +21,7 @@
 //
 // Four kinds of name here are deliberately NOT overridable, because they are not settings:
 //   - tt_SECOND / tt_MILLISECOND / tt_MICROSECOND are unit definitions.
-//   - tt_NODE_ID_INVALID / tt_NODE_ID_BROADCAST are wire sentinels; changing one on a single node
+//   - tt_CONTEXT_ID_INVALID / tt_CONTEXT_ID_BROADCAST are wire sentinels; changing one on a single node
 //     breaks interoperability with every other node rather than tuning anything.
 //   - tt_RELIABLE_BITMAP_WORDS / _MAX_WORDS are derived from the bit counts above them, and must
 //     stay derived.
@@ -36,24 +36,55 @@
 #include <stdbool.h> // struct _tt_Link.resolved
 #include <stdint.h>  // UINT8_MAX, for those same asserts
 
+// The tt_NODE_* settings became tt_CONTEXT_* on 2026-09-27 (rmw_tickle/CONTEXT_NODE_PLAN.md stage 1): they belong to
+// the context, which owns the sockets, the scheduler and discovery. An old name set with -D would otherwise be ignored
+// without a word behind the #ifndef defaults below, so each one stops the build instead.
+#ifdef tt_NODE_CYCLE
+#error "tt_NODE_CYCLE is now tt_CONTEXT_CYCLE (CONTEXT_NODE_PLAN.md stage 1)"
+#endif
+#ifdef tt_NODE_UPDATE_INTERVAL
+#error "tt_NODE_UPDATE_INTERVAL is now tt_CONTEXT_UPDATE_INTERVAL (CONTEXT_NODE_PLAN.md stage 1)"
+#endif
+#ifdef tt_NODE_TX_INTERVAL
+#error "tt_NODE_TX_INTERVAL is now tt_CONTEXT_TX_INTERVAL (CONTEXT_NODE_PLAN.md stage 1)"
+#endif
+#ifdef tt_NODE_MAX_LEASE_NS
+#error "tt_NODE_MAX_LEASE_NS is now tt_CONTEXT_MAX_LEASE_NS (CONTEXT_NODE_PLAN.md stage 1)"
+#endif
+#ifdef tt_NODE_ID_INVALID
+#error "tt_NODE_ID_INVALID is now tt_CONTEXT_ID_INVALID (CONTEXT_NODE_PLAN.md stage 1)"
+#endif
+#ifdef tt_NODE_ID_BROADCAST
+#error "tt_NODE_ID_BROADCAST is now tt_CONTEXT_ID_BROADCAST (CONTEXT_NODE_PLAN.md stage 1)"
+#endif
+#ifdef _tt_NODE_ADDRESS
+#error "_tt_NODE_ADDRESS is now _tt_CONTEXT_ADDRESS (CONTEXT_NODE_PLAN.md stage 1)"
+#endif
+#ifdef _tt_NODE_PORT
+#error "_tt_NODE_PORT is now _tt_CONTEXT_PORT (CONTEXT_NODE_PLAN.md stage 1)"
+#endif
+#ifdef _tt_NODE_BROADCAST
+#error "_tt_NODE_BROADCAST is now _tt_CONTEXT_BROADCAST (CONTEXT_NODE_PLAN.md stage 1)"
+#endif
+
 #define tt_SECOND 1000000000ULL
 #define tt_MILLISECOND 1000000ULL
 #define tt_MICROSECOND 1000ULL
 
-#ifndef tt_NODE_CYCLE
-#define tt_NODE_CYCLE tt_MILLISECOND // nanosecond
+#ifndef tt_CONTEXT_CYCLE
+#define tt_CONTEXT_CYCLE tt_MILLISECOND // nanosecond
 #endif
 // How often a node re-broadcasts its endpoint list (discovery announce). The first announce goes
-// out ~tt_NODE_CYCLE after tt_Node_create(), and a node that hears a peer's announce for the
+// out ~tt_CONTEXT_CYCLE after tt_Context_create(), and a node that hears a peer's announce for the
 // first time replies with its own straight away (see reply_with_own_announce() in tickle.c), so
 // mutual discovery is effectively immediate on a healthy link - this interval is the recovery
 // cadence for an announce lost to packet loss, or for a node that was already up when this one
 // started. 1s keeps that recovery quick while costing one small packet per node per second.
-#ifndef tt_NODE_UPDATE_INTERVAL
-#define tt_NODE_UPDATE_INTERVAL (1 * tt_SECOND) // nanosecond
+#ifndef tt_CONTEXT_UPDATE_INTERVAL
+#define tt_CONTEXT_UPDATE_INTERVAL (1 * tt_SECOND) // nanosecond
 #endif
-#ifndef tt_NODE_TX_INTERVAL
-#define tt_NODE_TX_INTERVAL tt_MILLISECOND // nanosecond
+#ifndef tt_CONTEXT_TX_INTERVAL
+#define tt_CONTEXT_TX_INTERVAL tt_MILLISECOND // nanosecond
 #endif
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - a reliable Subscriber's ACKNACK
 // re-send interval override (0 = auto, i.e. tt_RELIABLE_RETRY_INTERVAL below; same convention as
@@ -237,7 +268,7 @@
 // (PLAN.md's Project Goal 1), and 4096 bits is 512 bytes per tracked writer that a microcontroller
 // nowhere near 190K msg/s would never use. A Linux-class caller (rmw_tickle, Goal 5, and the
 // perf_hil examples via their own flag) opts into a wider one per Subscriber by handing
-// tt_Node_create_subscriber()'s own caller-owned tracking buffer - see struct tt_Subscriber's own
+// tt_Context_create_subscriber()'s own caller-owned tracking buffer - see struct tt_Subscriber's own
 // window doc comment (tickle.h).
 #ifndef tt_RELIABLE_BITMAP_MAX_BITS
 #define tt_RELIABLE_BITMAP_MAX_BITS 4096
@@ -277,14 +308,14 @@
 #define tt_RX_LOCK_CHUNK 8
 #endif
 // A positive poll slice some callers pass explicitly (rmw_tickle's poll thread), and the most back-to-
-// back scheduler work a negative-timeout tt_Node_poll() runs before handing control back. It used to be
+// back scheduler work a negative-timeout tt_Context_poll() runs before handing control back. It used to be
 // what a negative timeout waited, too; since 2026-09-25 that waits for the scheduler instead - see
-// tt_Node_poll() in tickle.h.
+// tt_Context_poll() in tickle.h.
 #ifndef tt_RECEIVE_TIMEOUT
 #define tt_RECEIVE_TIMEOUT (100 * tt_MICROSECOND) // nanosecond
 #endif
 // EXPERIMENTAL (branch experiment/poll-loop-io-interleave, rmw_tickle/PLAN.md's own "Further
-// latency research" section) - tt_Node_poll()'s own inner loop favors an already-due scheduler
+// latency research" section) - tt_Context_poll()'s own inner loop favors an already-due scheduler
 // entry over ever calling tt_receive(), with no cap on how many may run consecutively before an
 // I/O check happens. A continuously-rescheduling task (e.g. a max-rate Publisher's own send loop,
 // interval_s=0) can then starve tt_receive() for a whole call's own tt_RECEIVE_TIMEOUT budget,
@@ -296,14 +327,14 @@
 #define tt_SCHEDULER_IO_INTERLEAVE 8
 #endif
 // Whether TickLE core may be called from more than one thread (2026-09-25). 1: every public tt_*
-// function is safe to call from any thread, concurrently with tt_Node_poll() on another - see
+// function is safe to call from any thread, concurrently with tt_Context_poll() on another - see
 // "Threading" in tickle.h. 0: the original single-thread contract, and the locks compile to nothing,
 // for a microcontroller build that only ever has one task touching the stack.
 #ifndef tt_THREAD_SAFE
 #define tt_THREAD_SAFE 1
 #endif
-// How many timers other threads may have in flight to a node at once before tt_Node_schedule() falls back
-// from the lock-free inbox to taking the node's lock (struct tt_Node.sched_inbox). The poll thread empties
+// How many timers other threads may have in flight to a node at once before tt_Context_schedule() falls back
+// from the lock-free inbox to taking the node's lock (struct tt_Context.sched_inbox). The poll thread empties
 // it every time it looks at the scheduler, so it only has to cover a burst between two looks.
 #ifndef tt_SCHED_INBOX_LENGTH
 #define tt_SCHED_INBOX_LENGTH 32
@@ -319,7 +350,7 @@
 #ifndef tt_MAX_ENDPOINT_COUNT
 #define tt_MAX_ENDPOINT_COUNT 256 // Maximum number of endpoints (data or services)
 #endif
-// Size of tt_Node.endpoint_index (power of two, >= 2 * tt_MAX_ENDPOINT_COUNT so load stays
+// Size of tt_Context.endpoint_index (power of two, >= 2 * tt_MAX_ENDPOINT_COUNT so load stays
 // <= 0.5 for linear-probe lookups).
 #ifndef tt_ENDPOINT_INDEX_SIZE
 #define tt_ENDPOINT_INDEX_SIZE 512
@@ -389,7 +420,7 @@
 #endif
 // Samples a node can be reassembling at once, from any mix of senders. When all are busy and a fragment
 // of another sample arrives, the reassembly started longest ago is abandoned and counted
-// (tt_Node.frag_abandoned) - never dropped silently, since a silent drop here looks exactly like loss.
+// (tt_Context.frag_abandoned) - never dropped silently, since a silent drop here looks exactly like loss.
 // Each slot holds one whole sample (tt_MAX_SAMPLE_LENGTH plus a DataHeader); nothing is allocated.
 #ifndef tt_FRAG_REASSEMBLY_SLOTS
 #define tt_FRAG_REASSEMBLY_SLOTS 8
@@ -408,8 +439,8 @@
 // Node ID values are the last byte of the IPv4 address on the local network.
 // Valid node IDs are 1..254, because 0 is reserved for invalid/unassigned and
 // 255 is reserved for the broadcast address.
-#define tt_NODE_ID_INVALID 0x00
-#define tt_NODE_ID_BROADCAST 0xff
+#define tt_CONTEXT_ID_INVALID 0x00
+#define tt_CONTEXT_ID_BROADCAST 0xff
 #ifndef tt_MAX_SCHEDULER_LENGTH
 #define tt_MAX_SCHEDULER_LENGTH 128 // Scheduling queue
 #endif
@@ -472,16 +503,16 @@
 #define tt_MAX_ACK_ENTRIES 16
 #endif
 
-// Liveliness: a remote node is considered gone once this many *consecutive* tt_NODE_UPDATE_
+// Liveliness: a remote node is considered gone once this many *consecutive* tt_CONTEXT_UPDATE_
 // INTERVAL windows pass with no UPDATE announce heard from it at all - not merely no *change*
-// (see tt_Node's own update_last_seen[], tracked separately from update_last_modified[]/
+// (see tt_Context's own update_last_seen[], tracked separately from update_last_modified[]/
 // update_seen[], which only move when the announced content itself changes). A single announce
 // lost to UDP packet loss is common and shouldn't immediately declare an otherwise-healthy node
 // dead; too high a value delays noticing a real departure (a crash, a pulled cable - anything
-// that skips tt_Node_destroy()'s own farewell UPDATE). 3 matches the conventional heartbeat-miss
+// that skips tt_Context_destroy()'s own farewell UPDATE). 3 matches the conventional heartbeat-miss
 // default other discovery protocols use for the same reason.
 // How many summaries a node sends per lifetime of the shortest liveliness lease its own endpoints announce,
-// when that makes them more frequent than tt_NODE_UPDATE_INTERVAL (LIVELINESS_PLAN.md amendment 1) - an
+// when that makes them more frequent than tt_CONTEXT_UPDATE_INTERVAL (LIVELINESS_PLAN.md amendment 1) - an
 // idle node's summary is its only sign of life. With n summaries lost in a row the peer hears nothing for
 // (n + 1) / tt_LIVELINESS_LEASE_DIVISOR of a lease, so at six, four losses leave a sixth of the lease to
 // spare and the fifth lands exactly on it - where two nodes' drifting schedulers decide it by a coin toss,
@@ -495,8 +526,8 @@
 // The longest a silent node is kept alive for the sake of a long liveliness lease one of its entities
 // announced (LIVELINESS_PLAN.md rule 3). DDS bounds a writer's lease by its participant's the same way:
 // CycloneDDS's participant lease is 10 s, Fast DDS's 20 s. Below tt_LIVELINESS_SILENCE_NS it has no effect.
-#ifndef tt_NODE_MAX_LEASE_NS
-#define tt_NODE_MAX_LEASE_NS (10 * tt_SECOND)
+#ifndef tt_CONTEXT_MAX_LEASE_NS
+#define tt_CONTEXT_MAX_LEASE_NS (10 * tt_SECOND)
 #endif
 
 // A request for a peer's endpoint list (DISCOVERY_PLAN.md rule 3) that has not brought the list within
@@ -527,9 +558,9 @@
 // coin toss, and 5% loss on eight nodes produced false deaths within 40 s. Reproduced in
 // test_peer_discovery.c (two lost summaries, schedulers 100/170 us late: 12 false deaths in 40 trials).
 #define tt_LIVELINESS_SILENCE_NS \
-    ((((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * 2U) + 1U) * (uint64_t)tt_NODE_UPDATE_INTERVAL / 2U)
+    ((((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * 2U) + 1U) * (uint64_t)tt_CONTEXT_UPDATE_INTERVAL / 2U)
 
-// Fixed capacity of an opt-in struct tt_Discovery (tickle.h, tt_Node_set_discovery()) - the
+// Fixed capacity of an opt-in struct tt_Discovery (tickle.h, tt_Context_set_discovery()) - the
 // number of distinct remote entities (across every node it's ever heard an UPDATE from) it can
 // track at once for graph introspection. Unrelated to tt_MAX_PEER_COUNT (that's a *local*
 // endpoint's own known-unicast-destinations table; this is one shared cache of *every* remote
@@ -542,13 +573,13 @@
 #define tt_MAX_DISCOVERED_ENTITIES 16
 #endif
 
-#ifndef _tt_NODE_ADDRESS
-#define _tt_NODE_ADDRESS "0.0.0.0"
+#ifndef _tt_CONTEXT_ADDRESS
+#define _tt_CONTEXT_ADDRESS "0.0.0.0"
 #endif
-#ifndef _tt_NODE_PORT
-#define _tt_NODE_PORT 8282
+#ifndef _tt_CONTEXT_PORT
+#define _tt_CONTEXT_PORT 8282
 #endif
-#ifndef _tt_NODE_BROADCAST
+#ifndef _tt_CONTEXT_BROADCAST
 // The destination every announce and every broadcast-mode send is addressed to.
 //
 // This default reaches further than it looks, and on 2026-09-23 that put benchmark traffic onto a
@@ -562,7 +593,7 @@
 // So: set this to the directed broadcast of the link you mean. Leaving it at the default does not
 // mean "this machine's network", it means "wherever this machine's default route goes", and those
 // are the same thing only by accident.
-#define _tt_NODE_BROADCAST "255.255.255.255"
+#define _tt_CONTEXT_BROADCAST "255.255.255.255"
 #endif
 
 struct _tt_Config {
@@ -579,7 +610,7 @@ struct _tt_Config {
     char* addr;
     int port;
     char* broadcast;
-    // tt_NODE_ID_INVALID (0, the default) = auto-detect via tt_get_node_id() (the last byte of
+    // tt_CONTEXT_ID_INVALID (0, the default) = auto-detect via tt_get_node_id() (the last byte of
     // the local address matching broadcast's subnet, per the comment above); any other value
     // overrides it. Auto-detection needs each node to have its own distinct address in that
     // subnet, which real separate hosts (or namespaces) give for free but a single shared network
@@ -588,7 +619,7 @@ struct _tt_Config {
     // process_packet() in tickle.c). An explicit override sidesteps that: e.g.
     // platform/linux/test.sh runs both sides of a pair in one namespace over loopback, each
     // started with a different id, without needing root for network namespaces at all.
-    int32_t node_id;
+    int32_t context_id;
 
     // One link this node talks on: where its broadcasts go, which local address it sends them
     // from, and how many peers on *this* link it will unicast to before switching to one

@@ -40,7 +40,7 @@
 #define TOTAL_DURATION_S 70.0
 
 // Too large for a task's own stack - static instead, same reasoning as main.c's ROLE=selftest.
-static struct tt_Node node;
+static struct tt_Context node;
 static struct tt_Client client;
 static uint32_t next_seq = 0;
 static uint64_t g_start_time = 0; // set once in ping_task() - anchors warm-up/cool-down tagging
@@ -71,7 +71,7 @@ static void ping_callback(struct tt_Client* client, int8_t return_code, struct P
     printf("ping: seq=%lu time=%.3f ms%s\n", (unsigned long)response->seq, rtt_ms, tag);
 }
 
-static void send_ping(struct tt_Node* node, uint64_t time, void* param) {
+static void send_ping(struct tt_Context* node, uint64_t time, void* param) {
     struct tt_Client* client = param;
 
     struct PingPongRequest request = {.seq = next_seq, .timestamp = tt_get_ns()};
@@ -84,7 +84,7 @@ static void send_ping(struct tt_Node* node, uint64_t time, void* param) {
         printf("ping: cannot send: %d\n", ret);
     }
 
-    tt_Node_schedule(node, time + PING_INTERVAL_NS, send_ping, client);
+    tt_Context_schedule(node, time + PING_INTERVAL_NS, send_ping, client);
 }
 
 static void ping_task(void* param) {
@@ -92,29 +92,29 @@ static void ping_task(void* param) {
 
     net_init();
 
-    tt_ret_t ret = tt_Node_create(&node);
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != tt_RET_OK) {
-        printf("ping: tt_Node_create failed: %d\n", ret);
+        printf("ping: tt_Context_create failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
     printf("ping: node created, id=%u\n", node.id);
 
-    ret =
-        tt_Node_create_client(&node, &client, &PingPongService, "ping_pong_server", (tt_CLIENT_CALLBACK)ping_callback);
+    ret = tt_Context_create_client(&node, &client, &PingPongService, "ping_pong_server",
+                                   (tt_CLIENT_CALLBACK)ping_callback);
     if (ret != tt_RET_OK) {
-        printf("ping: tt_Node_create_client failed: %d\n", ret);
+        printf("ping: tt_Context_create_client failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
 
     g_start_time = tt_get_ns();
-    tt_Node_schedule(&node, g_start_time, send_ping, &client);
+    tt_Context_schedule(&node, g_start_time, send_ping, &client);
 
     for (;;) {
-        tt_Node_poll(&node, -1);
+        tt_Context_poll(&node, -1);
     }
 }
 

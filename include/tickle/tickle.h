@@ -54,42 +54,42 @@ const char* tt_version(void);
 #define tt_KIND_SERVICE_SERVER (tt_KIND_SENDER | tt_KIND_SERVICE)
 
 struct tt_Endpoint;
-struct tt_Node;
+struct tt_Context;
 struct tt_Discovery;
 
 // Task Control Block
 struct tt_TCB {
     uint64_t time;
-    void (*function)(struct tt_Node* node, uint64_t time, void* param);
+    void (*function)(struct tt_Context* node, uint64_t time, void* param);
     void* param;
 };
 
-// Fired by a registered struct tt_Discovery (tt_Node_set_discovery()) whenever a remote entity
+// Fired by a registered struct tt_Discovery (tt_Context_set_discovery()) whenever a remote entity
 // appears, is refreshed (a repeat announce - harmless to ignore if a caller only cares about
 // appear/depart), or departs (`departed` true - either an explicit farewell UPDATE or
 // check_liveliness()'s own timeout). Deliberately minimal (DESIGN.md's "Concurrency" neighbor,
 // rmw_tickle/PLAN.md's Milestone 0(c)): `type`/`name` aren't passed here at all - look them up
-// via tt_Discovery_find(discovery, node_id, endpoint_id) if/when actually needed, rather than
+// via tt_Discovery_find(discovery, context_id, endpoint_id) if/when actually needed, rather than
 // paying to decode/copy them for every caller whether they want them or not.
-typedef void (*tt_DISCOVERY_CALLBACK)(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
+typedef void (*tt_DISCOVERY_CALLBACK)(struct tt_Context* node, uint8_t context_id, uint32_t endpoint_id, uint8_t kind,
                                       bool departed, void* param);
 
 // How often a node's lock was taken, how often a caller found it already held, and for how long those
 // callers waited in total (2026-09-25). Kept per lock so the rig can say where contention actually is
-// before any lock is split further - see "Threading" at tt_Node_lock(). Updated by whoever holds the
+// before any lock is split further - see "Threading" at tt_Context_lock(). Updated by whoever holds the
 // lock, so a reader on another thread may see a value one update stale, never a torn one.
 struct tt_LockStats {
     uint64_t acquisitions;
     uint64_t contended;
     uint64_t wait_ns;
-    // The part of contended/wait_ns the polling thread did - the one running tt_Node_poll() - so a wait
+    // The part of contended/wait_ns the polling thread did - the one running tt_Context_poll() - so a wait
     // can be told apart by who waited: the poll thread for an application thread, or the other way round
     // (2026-09-26, rmw_tickle/RMW_PERF_PLAN.md H1). The rest was other threads.
     uint64_t poller_contended;
     uint64_t poller_wait_ns;
 };
 
-// struct tt_Node.sched_inbox_state[] values.
+// struct tt_Context.sched_inbox_state[] values.
 #define tt_SCHED_SLOT_EMPTY 0
 #define tt_SCHED_SLOT_WRITING 1
 #define tt_SCHED_SLOT_READY 2
@@ -117,7 +117,7 @@ struct tt_FragSlot {
     uint64_t received;  // bit i: fragment i has landed. 0: the slot is free
     uint32_t entity_id; // with source and seq_no, which sample this is
     uint32_t seq_no;
-    uint32_t claimed;     // tt_Node.frag_clock when claimed; the lowest is abandoned first
+    uint32_t claimed;     // tt_Context.frag_clock when claimed; the lowest is abandoned first
     uint16_t cont_length; // payload bytes in each non-last FRAG_CONT, 0 until known
     uint16_t last_length; // payload bytes in the last fragment, 0 until it lands
     uint8_t source;
@@ -133,7 +133,7 @@ struct tt_FragSlot {
 };
 #endif
 
-// A request for a peer's endpoint list not yet answered (struct tt_Node.discovery_requests); attempts == 0
+// A request for a peer's endpoint list not yet answered (struct tt_Context.discovery_requests); attempts == 0
 // marks a free slot.
 struct tt_DiscoveryRequest {
     uint32_t generation; // the one the peer's summary showed
@@ -144,7 +144,7 @@ struct tt_DiscoveryRequest {
     uint64_t sent_ns;
 };
 
-struct tt_Node {
+struct tt_Context {
     uint8_t id;
     uint32_t endpoint_count;
     struct tt_Endpoint* endpoints[tt_MAX_ENDPOINT_COUNT];
@@ -158,7 +158,7 @@ struct tt_Node {
 
     // Milestone 47 - together, this node's own launch-scoped identity source for every locally-
     // created entity's own struct tt_Endpoint.entity_id (see its own doc comment for the full
-    // rationale): entity_id_base is drawn once, at tt_Node_create() time, from tt_get_ns()'s own
+    // rationale): entity_id_base is drawn once, at tt_Context_create() time, from tt_get_ns()'s own
     // low 32 bits (no separate RNG primitive needed - this node's own launch instant already is
     // one); next_entity_id starts at 0 and increments once per add_endpoint_to_node() call, one
     // shared counter across every entity kind (Publisher/Subscriber/Client/Server) on this node -
@@ -205,7 +205,7 @@ struct tt_Node {
     // first later, because detection fires at last_seen + threshold and traffic is always at least
     // as recent as an announce; measured at about +290ms on the HIL rig. So the two are kept apart
     // and a node is presumed dead only when BOTH have gone quiet - see check_liveliness() and
-    // tt_Node_entity_alive() for each one's own guard.
+    // tt_Context_entity_alive() for each one's own guard.
     //
     // A retransmit or a duplicate counts, deliberately: it carries no new data, but it is proof
     // the peer's stack is running and transmitting, which is the only question being asked - and
@@ -214,7 +214,7 @@ struct tt_Node {
 
     // 4-byte aligned so a decoded/encoded message payload (which sits at a fixed 4-multiple
     // offset past the framing headers) is itself 4-aligned - see "Interface serialization
-    // (TickLE CDR-4)" in DESIGN.md. tt_Node already has >= 8-byte alignment (it holds uint64_t
+    // (TickLE CDR-4)" in DESIGN.md. tt_Context already has >= 8-byte alignment (it holds uint64_t
     // members); _Alignas keeps that true for these buffers regardless of member reordering.
     tt_ALIGNAS(4) uint8_t tx_buffer[tt_TX_BUFFER_LENGTH];
     uint32_t tx_tail;
@@ -225,18 +225,18 @@ struct tt_Node {
     // UPDATE has to reach the whole segment, not just a couple of known peers. See node_flush().
     bool tx_has_pending_update;
     // Core-owned: whether node_flush() is armed (2026-09-25). It used to reschedule itself every
-    // tt_NODE_TX_INTERVAL whether or not anything was waiting, so a node was never idle - a poll
+    // tt_CONTEXT_TX_INTERVAL whether or not anything was waiting, so a node was never idle - a poll
     // waiting for the next scheduler entry still woke a thousand times a second for it. It is now
     // armed only when a submessage is left batched in tx_buffer, and on the same grid it always ran
     // on, so a batched datagram leaves at exactly the instant it would have before.
     bool flush_scheduled;
     // An announce owed for endpoints created since the last one (2026-09-26): armed by the first creation,
-    // sent once no endpoint has been created for tt_NODE_TX_INTERVAL, so a burst - rclcpp creates several
+    // sent once no endpoint has been created for tt_CONTEXT_TX_INTERVAL, so a burst - rclcpp creates several
     // at node start - costs one announce. Without it a new endpoint waited for node_update()'s next
-    // periodic tick, up to tt_NODE_UPDATE_INTERVAL, before any remote node heard of it.
+    // periodic tick, up to tt_CONTEXT_UPDATE_INTERVAL, before any remote node heard of it.
     bool announce_soon_scheduled;
     uint64_t endpoints_changed_ns;
-    // Requests for this node's endpoint list answered in the current tt_NODE_TX_INTERVAL tick (rmw_tickle/
+    // Requests for this node's endpoint list answered in the current tt_CONTEXT_TX_INTERVAL tick (rmw_tickle/
     // DISCOVERY_PLAN.md rule 4): up to tt_UNICAST_PEER_THRESHOLD are answered unicast, one more turns them
     // into a single broadcast, and the rest wait for it.
     uint64_t discovery_reply_tick;
@@ -260,7 +260,7 @@ struct tt_Node {
     uint64_t next_summary_ns;
     // When a summary last went out. A summary at the short-lease cadence is skipped when every known peer has
     // had a datagram from this node since the last tick (LIVELINESS_PLAN.md 10), but never so that two are
-    // more than tt_NODE_UPDATE_INTERVAL apart.
+    // more than tt_CONTEXT_UPDATE_INTERVAL apart.
     uint64_t summary_sent_ns;
     // Who has had a datagram from this node since the last summary tick: a broadcast reaches everyone, an
     // addressed send its peers (a bit per node id). Every send and node_update() run under the state lock, so
@@ -272,7 +272,7 @@ struct tt_Node {
     // tx_tail when tx_buffer holds a summary and nothing else, 0 otherwise: a flush of exactly that is not
     // traffic for the skip, or each summary would cancel the next and an idle node's cadence would halve.
     uint32_t tx_summary_alone_len;
-    // Set when the tt_NODE_UPDATE_INTERVAL summary falls due while the node's traffic reaches every peer: it
+    // Set when the tt_CONTEXT_UPDATE_INTERVAL summary falls due while the node's traffic reaches every peer: it
     // then goes just ahead of the next send instead of on its own, so a node that stops under traffic stops
     // on its data (LIVELINESS_PLAN.md 10). node_update() sends it on its own if no send came by the next tick.
     // Under the state lock, as every send is.
@@ -289,14 +289,14 @@ struct tt_Node {
     // tt_hal is defined indirectly via <tickle/hal.h>, which includes the
     // platform-specific HAL header (<tickle/hal_linux.h> or <tickle/hal_freertos.h>).
     struct tt_hal hal; // NOLINT(misc-include-cleaner)
-    // Threading (tt_THREAD_SAFE, config.h) - see "Threading" at tt_Node_lock(). One lock, guarding the
+    // Threading (tt_THREAD_SAFE, config.h) - see "Threading" at tt_Context_lock(). One lock, guarding the
     // node, its entities and the scheduler heap. User callbacks run with it held and may call back into
     // core, so it is re-entrant - not through a recursive mutex but by recording its owner: re-entry by the
     // owning thread is then a compare, not an atomic, which matters on the per-sample publish path.
     tt_lock_t state_lock;    // NOLINT(misc-include-cleaner) - from the platform header hal.h selects, like hal
     uintptr_t state_owner;   // tt_thread_self() of the holder, 0 when free; accessed through __atomic builtins
-    uintptr_t poller_thread; // tt_thread_self() of the thread inside tt_Node_poll(), 0 when none; __atomic
-    // The time the running tt_Node_poll() last read (tt_get_ns()), 0 outside one: the receive path's "now" - a
+    uintptr_t poller_thread; // tt_thread_self() of the thread inside tt_Context_poll(), 0 when none; __atomic
+    // The time the running tt_Context_poll() last read (tt_get_ns()), 0 outside one: the receive path's "now" - a
     // received DATA's 32-bit timestamp is rebuilt against it (timestamp_from_wire()), a peer's last sign of
     // life is stamped with it (traffic_last_seen) - so receiving a datagram reads no clock of its own. Read
     // again when a wait returns with data and every tt_RX_CLOCK_REFRESH datagrams of a drain
@@ -305,13 +305,13 @@ struct tt_Node {
     uint64_t rx_clock_ns;
     uint32_t state_depth; // how many times the owner has taken it; only the owner reads or writes it
     struct tt_LockStats state_lock_stats;
-    // The scheduler inbox: tt_Node_schedule() from a thread that does not hold the state lock puts its entry
+    // The scheduler inbox: tt_Context_schedule() from a thread that does not hold the state lock puts its entry
     // here, without a lock, and the next look at the heap moves it in - see sched_inbox_push() (tickle.c).
     // Each slot is claimed by compare-and-swap, as struct tt_Server.slot_state is.
     struct tt_TCB sched_inbox[tt_SCHED_INBOX_LENGTH];
     uint8_t sched_inbox_state[tt_SCHED_INBOX_LENGTH]; // tt_SCHED_SLOT_*, through __atomic builtins
     uint32_t sched_inbox_pending;                     // READY slots, so an empty inbox costs one load
-    // Set while a tt_Node_poll() is running, so a second concurrent one fails with tt_RET_BUSY instead
+    // Set while a tt_Context_poll() is running, so a second concurrent one fails with tt_RET_BUSY instead
     // of sharing rx_buffer with the first. Accessed only through __atomic builtins.
     uint8_t poller_active;
     // What a poll blocked in tt_receive() is waiting until (UINT64_MAX: indefinitely), or 0 when no poll
@@ -322,11 +322,11 @@ struct tt_Node {
     uint32_t wait_until_hi;
     uint32_t wait_until_lo;
 
-    // Opt-in graph introspection (tt_Node_set_discovery(), rmw_tickle/PLAN.md's Milestone 0(c)) -
+    // Opt-in graph introspection (tt_Context_set_discovery(), rmw_tickle/PLAN.md's Milestone 0(c)) -
     // NULL (the default - see reset_node_state()) unless a caller attaches its own, externally-
     // owned struct tt_Discovery. Deliberately *not* an embedded struct tt_Discovery the way
     // update_seen[]/peers[] etc. are: that table can hold real name/type strings for
-    // tt_MAX_DISCOVERED_ENTITIES entities, easily several KB, and every tt_Node pays for its own
+    // tt_MAX_DISCOVERED_ENTITIES entities, easily several KB, and every tt_Context pays for its own
     // fields whether or not anything ever uses them - a FreeRTOS target with no rmw layer (today,
     // or a future micro-ROS-style thin client whose *agent* - not the constrained device itself -
     // would be the one wanting this) shouldn't carry that weight. Unset, this costs 3 pointers.
@@ -334,7 +334,7 @@ struct tt_Node {
     tt_DISCOVERY_CALLBACK discovery_callback;
     void* discovery_callback_param;
 
-    // Diagnostic counters, not protocol state, printed once by tt_Node_destroy(). They exist to
+    // Diagnostic counters, not protocol state, printed once by tt_Context_destroy(). They exist to
     // split one specific question that nothing else can answer from outside: when a Subscriber
     // delivers nothing, did its socket receive the datagrams at all? If tx_datagrams on the
     // sending node is large while rx_datagrams on the receiving one is ~0, the datagrams never
@@ -418,7 +418,7 @@ struct tt_Endpoint {
     // hash(topic/service name + endpoint name) - a pure function of the name alone, deliberately:
     // this is how a Publisher and Subscriber (or Client and Server) on two different, otherwise-
     // unacquainted nodes agree on "the same" topic/service with zero negotiation, each computing
-    // this independently from the shared name. NOT necessarily unique within one tt_Node any more
+    // this independently from the shared name. NOT necessarily unique within one tt_Context any more
     // (Milestone 35, rmw_tickle/PLAN.md) - two local endpoints of the same kind can legitimately
     // share an id if they share a name, see add_endpoint_to_node()'s own doc comment (tickle.c).
     uint32_t id;
@@ -427,7 +427,7 @@ struct tt_Endpoint {
     // Milestone 47 - this specific entity *instance*'s own identity, distinct from id above (a
     // pure name hash, shared by every entity - local or remote - with the same kind+topic/
     // service+endpoint name, by design). Assigned once, in add_endpoint_to_node() (tickle.c), as
-    // node->entity_id_base + node->next_entity_id++ - see struct tt_Node's own entity_id_base/
+    // node->entity_id_base + node->next_entity_id++ - see struct tt_Context's own entity_id_base/
     // next_entity_id doc comment for why that specific combination (a per-launch random base plus
     // a per-node counter, not pure-random or pure-linear alone). Carried on the wire as the
     // *sender's* own identity in struct tt_DataHeader/tt_HeartbeatHeader (both always
@@ -436,26 +436,26 @@ struct tt_Endpoint {
     // doc comment. This is the real, root-caused fix for a confirmed cross-instance data-mixing
     // gap: before this field existed, a Subscriber's only way to tell two Publishers apart was
     // `id` above, which is identical for any two Publishers sharing a name - two different
-    // tt_Node launches, or even two local Publishers on one tt_Node sharing a name (Milestone 35) -
+    // tt_Context launches, or even two local Publishers on one tt_Context sharing a name (Milestone 35) -
     // see rmw_tickle/PLAN.md's own Milestone 47 for the full incident/design writeup.
     uint32_t entity_id;
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s
-// peer-matching, upsert_peer() in tickle.c). node_id doubles as the "slot occupied" flag -
-// tt_NODE_ID_INVALID (0) means empty, the same sentinel struct tt_Node's own id already uses
+// peer-matching, upsert_peer() in tickle.c). context_id doubles as the "slot occupied" flag -
+// tt_CONTEXT_ID_INVALID (0) means empty, the same sentinel struct tt_Context's own id already uses
 // (valid node ids are 1..254).
 struct tt_Peer {
-    uint8_t node_id;
+    uint8_t context_id;
     uint32_t ip;   // host byte order, matching tt_receive()'s own sender_ip out-param
     uint16_t port; // host byte order, matching tt_receive()'s own sender_port out-param
 };
 
 // One remote entity (a Publisher/Subscriber/Client/Server hosted by some *other* node) this
-// node's discovery has recorded - see struct tt_Discovery. node_id doubles as the "slot
+// node's discovery has recorded - see struct tt_Discovery. context_id doubles as the "slot
 // occupied" flag, the same convention struct tt_Peer above uses.
 struct tt_DiscoveredEntity {
-    uint8_t node_id;
+    uint8_t context_id;
     uint32_t endpoint_id;
     uint8_t kind; // tt_KIND_TOPIC_PUBLISHER / _SUBSCRIBER / SERVICE_CLIENT / _SERVER
     char type[tt_MAX_NAME_LENGTH + 1];
@@ -472,11 +472,11 @@ struct tt_DiscoveredEntity {
     // tt_Discovery_count() only counts alive entities (matching its own "topic list"-style
     // introspection use); tt_Discovery_find() returns a tombstoned entity too, unlike NULL for one
     // never seen at all - callers that care check .alive themselves. Reasserted (a later UPDATE
-    // from the same node_id/endpoint_id) flips this back to true, same slot, no separate "was a
+    // from the same context_id/endpoint_id) flips this back to true, same slot, no separate "was a
     // tombstone" signal - the discovery callback's own existing "appeared, refreshed, or departed"
     // framing (tickle.h's own tt_DISCOVERY_CALLBACK doc comment) already covers a reassert as a
     // refresh, nothing new for a caller to handle. A slot search that finds no truly-empty slot
-    // (node_id == tt_NODE_ID_INVALID) falls back to reclaiming the first tombstoned one rather than
+    // (context_id == tt_CONTEXT_ID_INVALID) falls back to reclaiming the first tombstoned one rather than
     // dropping a genuinely new entity on the floor - tombstones are remembered on a best-effort
     // basis, not guaranteed to survive table pressure.
     bool alive;
@@ -500,17 +500,17 @@ struct tt_DiscoveredEntity {
     uint64_t liveliness_lease_duration_ns;
 
     // The last sign of life of a MANUAL_BY_TOPIC Publisher (qos has tt_UPDATE_QOS_LIVELINESS_MANUAL): its own
-    // DATA, or a HEARTBEAT with tt_HEARTBEAT_FLAG_LIVELINESS, found by (node_id, endpoint_id) - so two
+    // DATA, or a HEARTBEAT with tt_HEARTBEAT_FLAG_LIVELINESS, found by (context_id, endpoint_id) - so two
     // writers of one endpoint on one node share it. Set when the entity is (re)announced. Unused for any
-    // other entity, whose lease runs from the last datagram of its node (tt_Node.traffic_last_seen).
+    // other entity, whose lease runs from the last datagram of its node (tt_Context.traffic_last_seen).
     uint64_t last_asserted_ns;
 };
 
-// Fixed-capacity graph cache a caller opts a struct tt_Node into via tt_Node_set_discovery() -
+// Fixed-capacity graph cache a caller opts a struct tt_Context into via tt_Context_set_discovery() -
 // every remote entity any attached node has announced (not just ones matching a local endpoint
 // the way struct tt_Peer's unicast-address tracking is scoped to), for `ros2 topic list`-style
 // introspection. Owned by the caller (e.g. embedded in an rmw wrapper's own node struct), not by
-// TickLE - see struct tt_Node's own "discovery" field comment on why.
+// TickLE - see struct tt_Context's own "discovery" field comment on why.
 struct tt_Discovery {
     struct tt_DiscoveredEntity entities[tt_MAX_DISCOVERED_ENTITIES];
 };
@@ -529,7 +529,7 @@ typedef void (*tt_CLIENT_CALLBACK)(struct tt_Client* client, int8_t return_code,
 
 struct tt_Client { // extends endpoint
     struct tt_Endpoint endpoint;
-    struct tt_Node* node;
+    struct tt_Context* node;
     struct tt_Service* service;
     tt_CLIENT_CALLBACK callback;
 
@@ -585,7 +585,7 @@ struct server_cache_clean_config {
 
 struct tt_Server { // extends endpoint
     struct tt_Endpoint endpoint;
-    struct tt_Node* node;
+    struct tt_Context* node;
     struct tt_Service* service;
     tt_SERVER_CALLBACK callback;
 
@@ -608,7 +608,7 @@ struct tt_Server { // extends endpoint
     // it needs its own (receiver, seq_no) key instead of one recovered from encoded bytes.
     //
     // slot_state[] is the only field here tt_Server_send_response() (callable from *any* thread,
-    // not just the one driving this node's own tt_Node_poll() loop - see that function's own doc
+    // not just the one driving this node's own tt_Context_poll() loop - see that function's own doc
     // comment) ever touches, and only through __atomic_* builtins, never a plain read/write - it
     // is deliberately declared as plain uint8_t, not C11 _Atomic, because this header must stay
     // includable from C++ (rosidl_typesupport_tickle_c/_cpp both do - see tt_ALIGNAS's own
@@ -640,7 +640,7 @@ struct tt_Server { // extends endpoint
 
 // Answers a request whose tt_SERVER_CALLBACK previously returned tt_CALL_DEFERRED for the given
 // request_id - typically called later, from a different thread than the one driving this node's
-// own tt_Node_poll() loop (e.g. whatever thread a ROS 2 executor happens to run a service handler
+// own tt_Context_poll() loop (e.g. whatever thread a ROS 2 executor happens to run a service handler
 // on), which is the entire reason this function exists rather than just answering synchronously
 // like a non-deferred tt_SERVER_CALLBACK already can. See rmw_tickle/PLAN.md's Milestone 17 for
 // the full design rationale (why TickLE core, not just rmw_tickle, needs this primitive).
@@ -714,12 +714,12 @@ struct tt_Data {
 // Opt-in per-Publisher retained-sample cache, shared by two independent QoS policies - QoS
 // roadmap #5 (RELIABILITY/RELIABLE: retransmission on ACKNACK) and QoS roadmap #4 (DURABILITY/
 // TRANSIENT_LOCAL: backlog delivery to a newly-discovered Subscriber, tt_Publisher.durable below).
-// Caller-owned, the same convention as struct tt_Discovery (tt_Node_set_discovery()): a
+// Caller-owned, the same convention as struct tt_Discovery (tt_Context_set_discovery()): a
 // best-effort Publisher (today's only default) leaves tt_Publisher.reliable_cache NULL and pays
 // nothing for this; one that wants either policy provides a zeroed struct tt_ReliableCache of its
 // own (stack/static/wherever, must stay valid and unmoved until tt_Publisher_destroy() - same
 // lifetime rule as every other tt_* struct) and points reliable_cache at it - set directly any
-// time after tt_Node_create_publisher() returns, same "caller-owned, plain field access"
+// time after tt_Context_create_publisher() returns, same "caller-owned, plain field access"
 // convention as pub->batch. tt_Publisher_publish() appends the raw encoded DATA submessage bytes
 // here after every successful send (KEEP_LAST eviction once `depth` slots are full); an incoming
 // ACKNACK (process_submessage()) looks samples up here by seq_no to retransmit, and a newly-
@@ -799,25 +799,25 @@ struct tt_ReliableCacheIndex {
 };
 
 // Milestone 58 (rmw_tickle/PLAN.md) - remembers which remote node_ids have already received this
-// Publisher's own DURABLE backlog, keyed by node_id *and* the generation of the announcing node's
+// Publisher's own DURABLE backlog, keyed by context_id *and* the generation of the announcing node's
 // endpoint list as of that delivery (tt_VERSION 7: the low 32 bits of its last_modified, see
 // tt_DISCOVERY_ENDPOINT_ID) - not just by tt_Publisher.peers[]'s own array position, which check_
 // liveliness()'s own presumed-dead cleanup (a load-induced false positive, not necessarily a real
-// departure) wipes and lets a later upsert_peer() call reuse for an unrelated node_id. Without
+// departure) wipes and lets a later upsert_peer() call reuse for an unrelated context_id. Without
 // this, the exact same still-alive peer's very next (entirely unchanged) announce looks like a
 // brand-new match to register_subscriber_peer_on_publisher() - re-triggering a full backlog
 // re-delivery of data that peer already has (observed for real: durability_late_join delivering a
 // 20-sample backlog 7 times over, 140 total, correlated with "presumed dead" warnings under load).
-// last_modified, not node_id alone, is what tells a genuinely-restarted instance of the same
-// node_id (a real new match - its own local subscription state was wiped too, it needs the
+// last_modified, not context_id alone, is what tells a genuinely-restarted instance of the same
+// context_id (a real new match - its own local subscription state was wiped too, it needs the
 // backlog again) apart from the same continuous instance recovering from a transient gap
 // (last_modified unchanged, since nothing about its own Publisher/Subscriber set actually
-// changed) - tt_Node.last_modified is a tt_get_ns() (monotonic-clock) reading, refreshed every
+// changed) - tt_Context.last_modified is a tt_get_ns() (monotonic-clock) reading, refreshed every
 // time a Publisher/Subscriber/Client/Server is created or destroyed on that node (tickle.c), so a
 // genuine process restart reliably lands on a different value than whatever this table last saw,
 // while an unchanged, still-running instance keeps announcing the exact same one.
 struct tt_DurableDeliveryRecord {
-    uint8_t node_id;     // tt_NODE_ID_INVALID (0, matching zero-init) = empty slot
+    uint8_t context_id;  // tt_CONTEXT_ID_INVALID (0, matching zero-init) = empty slot
     uint32_t generation; // the announcing node's announce generation as of the delivery below
 };
 struct tt_ReliableCache {
@@ -901,7 +901,7 @@ enum tt_WriterKeepAll {
 
 // One matched remote node's acknowledgement state on a Publisher - see tt_Publisher.peer_acks.
 struct tt_PeerAck {
-    uint8_t node_id; // tt_NODE_ID_INVALID (0, matching zero-init) = unused entry
+    uint8_t context_id; // tt_CONTEXT_ID_INVALID (0, matching zero-init) = unused entry
     // Phase 2 (rmw_tickle/PLAN.md) - which Subscriber *entity* on that node, learned from its own
     // announce (tt_UpdateEntity.entity_id) and matched against each ACKNACK's own
     // sender_entity_id. Keyed per entity, not per node, because two Subscribers of one topic in
@@ -917,7 +917,7 @@ struct tt_PeerAck {
 
 struct tt_Publisher { // extends endpoint
     struct tt_Endpoint endpoint;
-    struct tt_Node* node;
+    struct tt_Context* node;
     struct tt_Topic* topic;
 
     // This Publisher's own send-side sample counter (transcation) - wire seq_no is this + 1
@@ -932,7 +932,7 @@ struct tt_Publisher { // extends endpoint
     // backlog indexing for the rest of that run. At uint32_t width the same wraparound is still
     // structurally possible, just past ~6.3 continuous hours at that same real max rate - not
     // specially handled here, the same "an edge case far enough out not to need explicit handling
-    // yet" pragmatism this file already applies elsewhere (e.g. struct tt_Node.entity_id_base's
+    // yet" pragmatism this file already applies elsewhere (e.g. struct tt_Context.entity_id_base's
     // own doc comment). Distinct from struct tt_Client.seq_no/struct tt_Subscriber.seq_no below -
     // those pair with their own genuinely-16-bit wire counterparts (tt_CallRequestHeader.seq_no)
     // or are unused, not affected by this same bug.
@@ -943,7 +943,7 @@ struct tt_Publisher { // extends endpoint
     struct tt_Peer peers[tt_MAX_PEER_COUNT];
 
     // QoS roadmap #5 (RELIABILITY) follow-up, tt_Publisher_wait_for_all_acked() - what each
-    // matched remote node has acknowledged, keyed by node_id rather than index-aligned with
+    // matched remote node has acknowledged, keyed by context_id rather than index-aligned with
     // peers[] above (Phase 3 prerequisite (c), rmw_tickle/PLAN.md). Index alignment used to mean
     // process_announce()'s own forget-then-re-add cycle (a remote node changing *any* endpoint
     // re-announces, and forget_peers_from_source() cleared the slot) threw away ack state for
@@ -954,7 +954,7 @@ struct tt_Publisher { // extends endpoint
     // ack_seq_no is that node's own most recently seen struct tt_AckNackHeader.seq_no - "every
     // seq_no below this has been received" (that struct's own doc comment) - only ever advanced,
     // never regressed by a stale/reordered ACKNACK. 0 means "no ACKNACK seen yet", which seq_no
-    // never is on the wire (tt_Publisher_publish() starts at 1). node_id == tt_NODE_ID_INVALID (0)
+    // never is on the wire (tt_Publisher_publish() starts at 1). context_id == tt_CONTEXT_ID_INVALID (0)
     // marks an unused entry.
     //
     // Still one entry per remote *node*, not per remote Subscriber: an ACKNACK carries no
@@ -965,15 +965,15 @@ struct tt_Publisher { // extends endpoint
     // identity on the wire - see rmw_tickle/PLAN.md's Phase 3 prerequisite (b).
     struct tt_PeerAck peer_acks[tt_MAX_ACK_ENTRIES];
 
-    // false (tt_Node_create_publisher()'s own default): tt_Publisher_publish() flushes every call
+    // false (tt_Context_create_publisher()'s own default): tt_Publisher_publish() flushes every call
     // immediately, same as RPC already does (DESIGN.md's "RPC and Publish flush immediately by
     // default; batching is opt-in") - lowest latency, and the right default for the common case of
     // one message per publish() call, not several back-to-back to the same destination. true:
-    // batch instead, deferring to node_flush()'s own tt_NODE_TX_INTERVAL tick, exactly how every
+    // batch instead, deferring to node_flush()'s own tt_CONTEXT_TX_INTERVAL tick, exactly how every
     // Publisher behaved before this field existed - set this on a specific Publisher that really
     // does call tt_Publisher_publish() several times in a row (a real but unusual pattern) and
     // would rather coalesce those into fewer, larger packets than minimize any one message's own
-    // latency. Set directly on the struct any time after tt_Node_create_publisher() returns it -
+    // latency. Set directly on the struct any time after tt_Context_create_publisher() returns it -
     // same "caller-owned, plain field access" convention as peers[]/seq_no above.
     bool batch;
 
@@ -1006,7 +1006,7 @@ struct tt_Publisher { // extends endpoint
     // i.e. when an incoming ACKNACK advances the slowest matched Subscriber far enough. NULL (the
     // default) means "poll tt_Publisher_writable() instead"; both are offered deliberately.
     //
-    // Runs on the node's own thread, from inside tt_Node_poll(), so TickLE's single-threaded-per-node
+    // Runs on the node's own thread, from inside tt_Context_poll(), so TickLE's single-threaded-per-node
     // discipline holds. It must not publish, create or destroy endpoints, or otherwise re-enter
     // TickLE - signal and return (rmw_tickle wakes a condvar and lets its blocked rmw_publish() do
     // the work). Fired once per refusal-to-writable transition, not once per ACKNACK.
@@ -1025,13 +1025,13 @@ struct tt_Publisher { // extends endpoint
     uint16_t blocked_datagrams;
     bool writable_pending;
 
-    // NULL (tt_Node_create_publisher()'s own default): no retained-sample storage at all - both
+    // NULL (tt_Context_create_publisher()'s own default): no retained-sample storage at all - both
     // reliable/durable below must stay false, nothing for either policy to work from. Non-NULL:
     // storage for whichever of the two policies below is set - see struct tt_ReliableCache's own
     // doc comment above for why one cache backs both.
     struct tt_ReliableCache* reliable_cache;
 
-    // false (tt_Node_create_publisher()'s own default): BEST_EFFORT, today's only default. true:
+    // false (tt_Context_create_publisher()'s own default): BEST_EFFORT, today's only default. true:
     // RELIABLE - requires reliable_cache to already be non-NULL too (nothing to retransmit from
     // otherwise). process_acknack()'s own retransmit loop doesn't actually consult this flag (it
     // answers any ACKNACK it can, straight off reliable_cache, regardless - matched Subscribers
@@ -1045,7 +1045,7 @@ struct tt_Publisher { // extends endpoint
     // - calling it at all is already the caller's own explicit opt-in for *that* Heartbeat.
     bool reliable;
 
-    // false (tt_Node_create_publisher()'s own default): VOLATILE, today's only default. true:
+    // false (tt_Context_create_publisher()'s own default): VOLATILE, today's only default. true:
     // DURABLE/TRANSIENT_LOCAL - a newly-discovered Subscriber gets every currently-retained entry
     // in reliable_cache above unicast to it (deliver_durability_backlog(), tickle.c); requires
     // reliable_cache to already be non-NULL too (nothing to deliver from otherwise). Independent
@@ -1054,7 +1054,7 @@ struct tt_Publisher { // extends endpoint
     // one cache underneath instead of two.
     bool durable;
 
-    // 0 (tt_Node_create_publisher()'s own default): no periodic Heartbeat, today's only behavior.
+    // 0 (tt_Context_create_publisher()'s own default): no periodic Heartbeat, today's only behavior.
     // Non-zero: a struct tt_HeartbeatHeader announce goes out every this-many nanoseconds - see
     // its own doc comment (tickle.h) and tt_Publisher_set_heartbeat_period()'s own doc comment
     // (below) for why this needs that explicit call, not just setting this field directly the way
@@ -1062,7 +1062,7 @@ struct tt_Publisher { // extends endpoint
     // announce for a best-effort Publisher).
     uint64_t heartbeat_period_ns;
 
-    // 0 (tt_Node_create_publisher()'s own default): off. Non-zero N: every Nth published sample
+    // 0 (tt_Context_create_publisher()'s own default): off. Non-zero N: every Nth published sample
     // carries a Heartbeat in the same datagram - "everything below first_available_seq_no is gone",
     // for a reader that is waiting on a gap the publisher can no longer fill (2026-09-24).
     //
@@ -1088,7 +1088,7 @@ struct tt_Publisher { // extends endpoint
     // fragmented datagrams, and every failure came back as another request.
     uint32_t retransmitted;
 
-    // 0 (tt_Node_create_publisher()'s own default): no periodic ACK solicitation, today's only
+    // 0 (tt_Context_create_publisher()'s own default): no periodic ACK solicitation, today's only
     // behavior. Non-zero: tt_Publisher_request_ack() (below) fires automatically every this-many
     // nanoseconds, instead of only when a caller happens to invoke it directly - see tt_Publisher_
     // set_ack_solicit_period()'s own doc comment (below) for why this needs that explicit call,
@@ -1123,7 +1123,7 @@ struct tt_Publisher { // extends endpoint
     // timer), or 0 if none yet. Core-private bookkeeping, not a caller-set field.
     uint64_t last_ack_solicit_ns;
 
-    // QoS roadmap #6 (LIFESPAN, rmw_tickle/PLAN.md). 0 (tt_Node_create_publisher()'s own default):
+    // QoS roadmap #6 (LIFESPAN, rmw_tickle/PLAN.md). 0 (tt_Context_create_publisher()'s own default):
     // disabled, today's only behavior - reliable_cache entries never expire on their own (only
     // KEEP_LAST eviction removes them). Non-zero: the maximum age, in nanoseconds since tt_
     // ReliableCacheEntry.timestamp, that a cached sample may still be retransmitted (process_
@@ -1139,7 +1139,7 @@ struct tt_Publisher { // extends endpoint
     // the two.
     uint64_t lifespan_duration_ns;
 
-    // QoS roadmap #2 (DEADLINE) RxO, Milestone 49. 0 (tt_Node_create_publisher()'s own default):
+    // QoS roadmap #2 (DEADLINE) RxO, Milestone 49. 0 (tt_Context_create_publisher()'s own default):
     // no DEADLINE offered. Non-zero: what this Publisher announces on the wire (tt_UpdateEntity.
     // deadline_duration_ns) as its own maximum inter-publish gap - purely a wire-announcement
     // field, TickLE core itself never enforces or checks this on its own (the rmw layer already
@@ -1153,7 +1153,7 @@ struct tt_Publisher { // extends endpoint
     // liveliness_manual below - see tt_UpdateEntity.liveliness_lease_duration_ns's own doc comment
     // (tickle.h) for why kind and lease duration are two separate pieces of information, not one.
     uint64_t liveliness_lease_duration_ns;
-    // QoS roadmap #3 (LIVELINESS) RxO, Milestone 49. false (tt_Node_create_publisher()'s own
+    // QoS roadmap #3 (LIVELINESS) RxO, Milestone 49. false (tt_Context_create_publisher()'s own
     // default): AUTOMATIC. true: MANUAL_BY_TOPIC (the only manual kind this package's own rmw
     // layer still supports, Milestone 32's own finding) - see tt_UPDATE_QOS_LIVELINESS_MANUAL's
     // own doc comment (tickle.h) for the wire bit this becomes.
@@ -1167,8 +1167,8 @@ struct tt_Publisher { // extends endpoint
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic Heartbeat announce - see
 // struct tt_HeartbeatHeader's own doc comment (tickle.h) for what it's for. Unlike reliable_cache/
 // durable (plain caller-owned fields, no function call needed to "activate" them), arming a
-// periodic tt_Node_schedule() entry is an active operation with no passive-field equivalent - call
-// this any time after tt_Node_create_publisher() returns, once pub->reliable_cache is already set.
+// periodic tt_Context_schedule() entry is an active operation with no passive-field equivalent - call
+// this any time after tt_Context_create_publisher() returns, once pub->reliable_cache is already set.
 // B1 (rmw_tickle/PLAN.md) - fills in a struct tt_ReliableCache from the caller's own two pieces of
 // storage: an index array (capacity slots) and a byte arena. Optional - a caller may still set the
 // five public fields itself - but it validates what a hand-written setup can silently get wrong,
@@ -1236,7 +1236,7 @@ tt_ret_t tt_Publisher_assert_liveliness(struct tt_Publisher* pub);
 // ACKNACK counts as not having acknowledged anything.
 //
 // The supported way to read peer_acks[] from outside core (rmw_tickle's own
-// rmw_publisher_wait_for_all_acked() is built on this): the table is keyed by node_id, not
+// rmw_publisher_wait_for_all_acked() is built on this): the table is keyed by context_id, not
 // index-aligned with peers[], so a caller must not pair the two arrays by index.
 bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t seq_no);
 
@@ -1268,7 +1268,7 @@ bool tt_Publisher_writable(const struct tt_Publisher* pub);
 // how far ahead it has run must treat 0 as "nothing confirmed yet", not "confirmed up to 0".
 //
 // The supported way to read peer_acks[] from outside core, alongside
-// tt_Publisher_is_acked_by_all_peers() above: that table is keyed by node_id, not index-aligned
+// tt_Publisher_is_acked_by_all_peers() above: that table is keyed by context_id, not index-aligned
 // with peers[], so a caller must not pair the two arrays by index.
 uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub);
 
@@ -1282,7 +1282,7 @@ uint64_t tt_reliable_retry_interval_configured(void);
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic ACK solicitation - see
 // struct tt_Publisher.ack_solicit_period_ns's own doc comment (tickle.h) for what it's for and how
 // it differs from tt_Publisher_set_heartbeat_period() above. Same "active scheduler operation, no
-// passive-field equivalent" reasoning as that function - call this any time after tt_Node_create_
+// passive-field equivalent" reasoning as that function - call this any time after tt_Context_create_
 // publisher() returns, once pub->reliable_cache is already set. Once armed, each tick simply calls
 // tt_Publisher_request_ack() on this Publisher's own behalf (its own return value is not
 // surfaced - a transient "nothing to solicit yet" is expected during normal periodic operation,
@@ -1296,11 +1296,11 @@ struct tt_Subscriber;
 // equivalent this package was missing (real RTPS keeps exactly this, per matched Writer GUID).
 // Before this milestone, struct tt_Subscriber held these as single flat fields instead of a
 // table, an explicitly documented limitation ("one Publisher per reliable Subscriber") - two
-// Publishers on one topic (two different tt_Node launches, or even two local Publishers sharing a
+// Publishers on one topic (two different tt_Context launches, or even two local Publishers sharing a
 // name, Milestone 35) would silently interleave their independent seq_no streams through one
-// shared watermark. Keyed by (node_id, entity_id) - see struct tt_Endpoint.entity_id's own doc
-// comment - not just node_id, so two Publisher *instances* on the very same remote node are also
-// tracked independently. node_id doubles as the "slot occupied" flag, the same convention struct
+// shared watermark. Keyed by (context_id, entity_id) - see struct tt_Endpoint.entity_id's own doc
+// comment - not just context_id, so two Publisher *instances* on the very same remote node are also
+// tracked independently. context_id doubles as the "slot occupied" flag, the same convention struct
 // tt_Peer already uses. Fixed capacity (tt_MAX_PEER_COUNT, embedded in struct tt_Subscriber below,
 // no malloc) - a table this full already means more matched reliable Publishers than this build
 // is sized for; find_or_create_writer_proxy() (tickle.c) silently drops a writer past that count,
@@ -1331,7 +1331,7 @@ struct tt_Subscriber;
 // (2026-09-23): closing it means establishing the baseline at match time via discovery rather than
 // from the first packet, which reopens Milestone 60's VOLATILE semantics for a handful of samples.
 struct tt_WriterProxy {
-    uint8_t node_id;
+    uint8_t context_id;
     uint32_t entity_id;
     // Address an outstanding-gap ACKNACK retry (acknack_retry(), tickle.c) resends to - the most
     // recent reliable DATA/Heartbeat sender for this specific writer, since a scheduled retry
@@ -1374,7 +1374,7 @@ struct tt_WriterProxy {
     // call_retry()'s own client->service->call_retry_count check) before this Subscriber gives up
     // on that sample.
     uint8_t retry;
-    // Whether acknack_retry() (tickle.c) currently has a tt_Node_schedule() entry pending for
+    // Whether acknack_retry() (tickle.c) currently has a tt_Context_schedule() entry pending for
     // this specific writer proxy (scheduled with `this` entry's own address as its param, so
     // several writers' independent retry timers never collide - see acknack_retry()'s own doc
     // comment) - mirrors struct tt_Client.cache's own "is a retry timer armed right now" role,
@@ -1449,7 +1449,7 @@ struct tt_WriterProxy {
     uint64_t probe_ns;
     // Back-pointer to the owning Subscriber - this entry's own stable address (never moves once
     // claimed; embedded in struct tt_Subscriber.writers[], which lives as long as the Subscriber
-    // itself) is what acknack_retry() is scheduled against (tt_Node_schedule(..., acknack_retry,
+    // itself) is what acknack_retry() is scheduled against (tt_Context_schedule(..., acknack_retry,
     // proxy)), so the callback needs a way back to sub->node/sub->endpoint - same {owner, self}
     // pattern struct server_cache_clean_config already uses for an identical reason.
     struct tt_Subscriber* sub;
@@ -1477,7 +1477,7 @@ struct tt_ReorderSlot {
     uint32_t seq_no;
     uint32_t entity_id;
     uint16_t length;
-    uint8_t node_id;
+    uint8_t context_id;
     bool occupied;
     bool is_native;
     // Which socket the sample arrived on. Recorded here because by the time it is released the
@@ -1504,7 +1504,7 @@ struct tt_ReorderSlot {
 
 struct tt_Subscriber { // extends endpoint
     struct tt_Endpoint endpoint;
-    struct tt_Node* node;
+    struct tt_Context* node;
     struct tt_Topic* topic;
     tt_SUBSCRIBER_CALLBACK callback;
 
@@ -1525,7 +1525,7 @@ struct tt_Subscriber { // extends endpoint
     // run, and the loss equalled the Publisher's own evicted-request count exactly. A Publisher
     // logs a warning when a matching Subscriber announces a window deeper than it retains.
     //
-    // NULL/0 (tt_Node_create_subscriber()'s own default) uses builtin_tracking[] below,
+    // NULL/0 (tt_Context_create_subscriber()'s own default) uses builtin_tracking[] below,
     // tt_RELIABLE_BITMAP_BITS wide - the embedded-first default (PLAN.md's Project Goal 1): a
     // microcontroller nowhere near that rate shouldn't pay for a window it can't use. A Linux-class
     // caller (rmw_tickle, Goal 5; the perf_hil examples via their own flag) hands a wider
@@ -1539,10 +1539,10 @@ struct tt_Subscriber { // extends endpoint
     // transcation
     uint16_t seq_no;
 
-    // QoS roadmap #5 (RELIABILITY/RELIABLE) - false (tt_Node_create_subscriber()'s own default):
+    // QoS roadmap #5 (RELIABILITY/RELIABLE) - false (tt_Context_create_subscriber()'s own default):
     // best-effort, today's only behavior, process_data() doesn't touch writers[] at all. true:
     // process_data() tracks delivery per matched Publisher and sends ACKNACK back to the sending
-    // Publisher on a gap - set directly any time after tt_Node_create_subscriber() returns, same
+    // Publisher on a gap - set directly any time after tt_Context_create_subscriber() returns, same
     // convention as tt_Publisher.batch/.reliable_cache.
     bool reliable;
 
@@ -1550,16 +1550,16 @@ struct tt_Subscriber { // extends endpoint
     // own doc comment for the full rationale/history) - replaces this struct's own single flat
     // ack_seq_no/received_bitmap/reliable_sender_*/reliable_retry/reliable_acknack_scheduled/
     // reliable_heartbeat_last_seq_no fields it used to carry directly. All-empty (every slot's
-    // node_id == tt_NODE_ID_INVALID) by default - tt_Node_create_subscriber() zeroes this the same
+    // context_id == tt_CONTEXT_ID_INVALID) by default - tt_Context_create_subscriber() zeroes this the same
     // way it zeroes/invalidates every other fixed table in this file - entries are claimed lazily,
-    // one per distinct (node_id, entity_id) actually heard from, via find_or_create_writer_proxy()
+    // one per distinct (context_id, entity_id) actually heard from, via find_or_create_writer_proxy()
     // (tickle.c).
     struct tt_WriterProxy writers[tt_MAX_PEER_COUNT];
     // The default per-writer tracking windows, used unless tracking_bitmaps above points somewhere
     // wider - exactly the storage each writers[] entry used to embed directly.
     uint64_t builtin_tracking[tt_MAX_PEER_COUNT * tt_RELIABLE_BITMAP_WORDS];
 
-    // QoS roadmap #1 (RxO matching, Milestone 31, rmw_tickle/PLAN.md) - false (tt_Node_create_
+    // QoS roadmap #1 (RxO matching, Milestone 31, rmw_tickle/PLAN.md) - false (tt_Context_create_
     // subscriber()'s own default): this Subscriber accepts a VOLATILE Publisher, today's only
     // behavior. true: requires TRANSIENT_LOCAL - a discovered remote Publisher on this topic whose
     // own announced tt_UpdateEntity.qos doesn't offer tt_UPDATE_QOS_DURABLE is treated as
@@ -1574,13 +1574,13 @@ struct tt_Subscriber { // extends endpoint
 
     // QoS roadmap #2 (DEADLINE) RxO, Milestone 49 - see tt_Publisher.deadline_duration_ns's own
     // doc comment (tickle.h) for the full reasoning, mirrored here as the "requested" half: 0
-    // (tt_Node_create_subscriber()'s own default) means no DEADLINE required.
+    // (tt_Context_create_subscriber()'s own default) means no DEADLINE required.
     uint64_t deadline_duration_ns;
     // QoS roadmap #3 (LIVELINESS) RxO, Milestone 49 - see tt_Publisher.liveliness_lease_duration_ns's
     // own doc comment, mirrored here as the "requested" half: 0 means no specific lease requirement.
     uint64_t liveliness_lease_duration_ns;
     // QoS roadmap #3 (LIVELINESS) RxO, Milestone 49 - see tt_Publisher.liveliness_manual's own doc
-    // comment, mirrored here as the "requested" half: false (tt_Node_create_subscriber()'s own
+    // comment, mirrored here as the "requested" half: false (tt_Context_create_subscriber()'s own
     // default) means this Subscriber accepts AUTOMATIC liveliness; true means it requires
     // MANUAL_BY_TOPIC specifically.
     bool liveliness_manual;
@@ -1755,31 +1755,31 @@ struct tt_Header;
 bool tt_is_native_endian(struct tt_Header* header);
 bool tt_is_reverse_endian(struct tt_Header* header);
 
-// Lifetime / ownership (applies to every tt_Node_create* below):
-//   - The library never allocates or copies. Every struct you pass - the tt_Node, the
+// Lifetime / ownership (applies to every tt_Context_create* below):
+//   - The library never allocates or copies. Every struct you pass - the tt_Context, the
 //     tt_Client/tt_Server/tt_Publisher/tt_Subscriber, its tt_Service or tt_Topic - and every
 //     string (endpoint_name, service->name, topic->name) must stay valid and unmoved until the
-//     matching tt_*_destroy() (and tt_Node_destroy() for the node). String literals are fine;
+//     matching tt_*_destroy() (and tt_Context_destroy() for the node). String literals are fine;
 //     a stack buffer or one you free() is not.
-//   - One tt_Node is single-threaded: all its calls (create/destroy/publish/call/poll) must come
+//   - One tt_Context is single-threaded: all its calls (create/destroy/publish/call/poll) must come
 //     from one thread. See DESIGN.md, "Concurrency".
 //
-// Returns tt_RET_OK on success. tt_Node_create() can also return tt_RET_IILEGAL_NODE_ID (address
+// Returns tt_RET_OK on success. tt_Context_create() can also return tt_RET_IILEGAL_NODE_ID (address
 // auto-detection found no usable id and none was set in _tt_CONFIG), tt_RET_IO_ERROR (socket
 // bind), tt_RET_NO_SUCH_LINK (a configured link's broadcast address is owned by no local
 // interface - worth retrying, since an interface brought up by DHCP or a network manager may
 // simply not exist yet when a service starts; see that code's own comment in hal.h), or
 // tt_RET_OUT_OF_SCHEDULE. The create_* helpers return tt_RET_OUT_OF_BUFFER /
 // tt_RET_OUT_OF_SCHEDULE when the node's fixed endpoint table or scheduler is full.
-tt_ret_t tt_Node_create(struct tt_Node* node);
-tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
-                               const char* endpoint_name, tt_CLIENT_CALLBACK callback);
-tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
-                               const char* endpoint_name, tt_SERVER_CALLBACK callback);
+tt_ret_t tt_Context_create(struct tt_Context* node);
+tt_ret_t tt_Context_create_client(struct tt_Context* node, struct tt_Client* client, struct tt_Service* service,
+                                  const char* endpoint_name, tt_CLIENT_CALLBACK callback);
+tt_ret_t tt_Context_create_server(struct tt_Context* node, struct tt_Server* server, struct tt_Service* service,
+                                  const char* endpoint_name, tt_SERVER_CALLBACK callback);
 
 // Storage sized for this server's own service, in place of the inline default (config.h's
 // tt_SERVER_CACHE_ENTRY_LENGTH / tt_SERVER_PENDING_ENTRY_LENGTH, sized for any message). Call after
-// tt_Node_create_server() - which resets the server to its inline storage - and before it has
+// tt_Context_create_server() - which resets the server to its inline storage - and before it has
 // handled a request. Each area holds tt_MAX_SERVER_CACHE_COUNT entries of the given length:
 //   - cache: one already-encoded response per entry, kept for a retrying client. A response larger
 //     than an entry is still sent, just not cached, so a retry re-runs the callback - as it does
@@ -1794,20 +1794,20 @@ tt_ret_t tt_Server_set_storage(struct tt_Server* server, uint8_t* cache_storage,
 // tt_RET_OUT_OF_BUFFER). Same rules: after creation, not during a call, 8-byte aligned, NULL for
 // the inline default.
 tt_ret_t tt_Client_set_storage(struct tt_Client* client, uint8_t* cache_storage, uint32_t cache_length);
-tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
-                                  const char* endpoint_name);
-tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
-                                   const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
-// Runs `function` at `time` from inside tt_Node_poll(). Callable from any thread. When a poll is blocked
+tt_ret_t tt_Context_create_publisher(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Topic* topic,
+                                     const char* endpoint_name);
+tt_ret_t tt_Context_create_subscriber(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
+                                      const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
+// Runs `function` at `time` from inside tt_Context_poll(). Callable from any thread. When a poll is blocked
 // waiting for something later than `time`, this wakes it (that poll returns tt_RET_INTERRUPTED and the
-// caller's next poll runs the entry on time); no tt_Node_interrupt() is needed.
-bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
-                      void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param);
+// caller's next poll runs the entry on time); no tt_Context_interrupt() is needed.
+bool tt_Context_schedule(struct tt_Context* node, uint64_t time,
+                         void (*function)(struct tt_Context* node, uint64_t time, void* param), void* param);
 // Cancels every pending schedule entry matching (function, param) exactly. Returns true if any were removed.
 // Callable from any thread. On return, `function` is neither pending nor running for `param`: an entry
 // the poll thread is running at that moment finishes first, so `param` may be freed afterwards.
-bool tt_Node_unschedule(struct tt_Node* node, void (*function)(struct tt_Node* node, uint64_t time, void* param),
-                        void* param);
+bool tt_Context_unschedule(struct tt_Context* node,
+                           void (*function)(struct tt_Context* node, uint64_t time, void* param), void* param);
 
 tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request);
 tt_ret_t tt_Client_destroy(struct tt_Client* client);
@@ -1824,67 +1824,67 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
  * @timeout nanoseconds to wait, with two special values:
  *            0 - one non-blocking pass: run whatever is due, take whatever is already received.
  *            negative - wait exactly until the next scheduler entry is due and run it, or until a
- *                       datagram arrives, or until tt_Node_interrupt() - and return after the first of
+ *                       datagram arrives, or until tt_Context_interrupt() - and return after the first of
  *                       those. With nothing scheduled, wait indefinitely (2026-09-25, the user's
  *                       decision: the scheduler already knows when the next thing is due, so there is
  *                       nothing to wake up for in between; this used to be a fixed 100us slice, about
  *                       10,000 wakes a second on an idle node). A signal also ends the wait, so Ctrl-C
  *                       still reaches a caller's loop at once.
  *
- * One thread polls a node at a time; a second concurrent tt_Node_poll() returns tt_RET_BUSY. Work
- * raised from another thread wakes a waiting poll by itself: tt_Node_schedule() - and so every core
+ * One thread polls a node at a time; a second concurrent tt_Context_poll() returns tt_RET_BUSY. Work
+ * raised from another thread wakes a waiting poll by itself: tt_Context_schedule() - and so every core
  * call that arms a timer, a client call's retry, a batching publisher's flush - wakes it when the new
  * entry is earlier than what it is waiting for, and tt_Server_send_response() always does. A wake
  * ends that poll with tt_RET_INTERRUPTED. Inserts made on the poll thread itself never wake anything.
  *
  * No lock is held while the poll waits. The node's state lock is taken per datagram and per due
- * scheduler entry, and user callbacks run inside it - see "Threading" at tt_Node_lock().
+ * scheduler entry, and user callbacks run inside it - see "Threading" at tt_Context_lock().
  * @return tt_RET_OK after processing a datagram, tt_RET_TIMEOUT when the wait ended without one
  *         (including after running a due scheduler entry), tt_RET_INTERRUPTED, tt_RET_BUSY, or an
  *         error.
  */
-tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout);
+tt_ret_t tt_Context_poll(struct tt_Context* node, int64_t timeout);
 
-// The one exception to every other tt_Node_*/tt_Publisher_*/... call needing to come from the
+// The one exception to every other tt_Context_*/tt_Publisher_*/... call needing to come from the
 // same single thread (see this file's own "Concurrency" note, and DESIGN.md's) - this one is
 // specifically meant to be called from a *different* thread than whichever one is currently
-// blocked in tt_Node_poll(), to make that call return tt_RET_INTERRUPTED right away instead of
-// waiting out the rest of its timeout. Meant for a caller that drives tt_Node_poll() from a
+// blocked in tt_Context_poll(), to make that call return tt_RET_INTERRUPTED right away instead of
+// waiting out the rest of its timeout. Meant for a caller that drives tt_Context_poll() from a
 // dedicated thread with a long timeout, but sometimes needs that thread to come back and yield to
 // other work (e.g. a lock the poll thread also needs) sooner than the timeout would otherwise
 // allow. "At least once, at or after this call" - not "only if currently blocked": if nothing is
-// blocked in tt_Node_poll() right now, the signal is queued and delivered to whichever
-// tt_Node_poll() call comes *next* instead (even one that starts well after this call returns),
-// not silently dropped. A caller driving tt_Node_poll() in a continuous loop (the intended usage)
-// sees no difference either way; one that calls tt_Node_poll() only occasionally should account
-// for an earlier tt_Node_interrupt() still being able to cut its next, unrelated wait short.
-tt_ret_t tt_Node_interrupt(struct tt_Node* node);
+// blocked in tt_Context_poll() right now, the signal is queued and delivered to whichever
+// tt_Context_poll() call comes *next* instead (even one that starts well after this call returns),
+// not silently dropped. A caller driving tt_Context_poll() in a continuous loop (the intended usage)
+// sees no difference either way; one that calls tt_Context_poll() only occasionally should account
+// for an earlier tt_Context_interrupt() still being able to cut its next, unrelated wait short.
+tt_ret_t tt_Context_interrupt(struct tt_Context* node);
 
 // Threading (2026-09-25, the user's decision: core is thread-safe, lock-free where it can be and with
 // fine-grained locks where it cannot). With tt_THREAD_SAFE (config.h, default 1):
 //
-// - Every public tt_* function may be called from any thread, concurrently with tt_Node_poll() on
-//   another. tt_Server_send_response() and tt_Node_interrupt() take no lock at all; tt_Node_schedule()
+// - Every public tt_* function may be called from any thread, concurrently with tt_Context_poll() on
+//   another. tt_Server_send_response() and tt_Context_interrupt() take no lock at all; tt_Context_schedule()
 //   takes the node's lock only if it is free (or already held by the caller), and otherwise hands its
 //   entry to the poll thread through a lock-free inbox; everything else takes the node's lock for the
-//   length of the call. tt_Node_poll() holds nothing while it waits.
+//   length of the call. tt_Context_poll() holds nothing while it waits.
 // - User callbacks (subscriber, client, server, discovery, writable, scheduled functions) run on the
 //   polling thread with the state lock held, as they always ran inside the one thread that drove the
 //   node. They may call back into core. A slow callback delays every other thread's call on this node
 //   by as long as it takes, so keep them short.
 // - Creating and destroying the node itself is not concurrent-safe: no other thread may be using a node
-//   while tt_Node_create() or tt_Node_destroy() runs.
+//   while tt_Context_create() or tt_Context_destroy() runs.
 // - Reading several node-owned fields that must agree with each other - the tt_Discovery table the
 //   node fills in, a Publisher's counters - needs the state lock held across the reads:
-//   tt_Node_lock()/tt_Node_unlock(). They nest, and any tt_* call may be made while holding them.
+//   tt_Context_lock()/tt_Context_unlock(). They nest, and any tt_* call may be made while holding them.
 //   tt_ReliableCache_grow() and tt_Discovery_count() take a cache or table rather than a node, so the
-//   caller holds tt_Node_lock() around them when the cache or table belongs to a live node.
-void tt_Node_lock(struct tt_Node* node);
-// tt_Node_lock() giving up after timeout_ns; true if the lock was taken (and must be released with
-// tt_Node_unlock()). For an observer that must never block behind a wedged callback on the poll
+//   caller holds tt_Context_lock() around them when the cache or table belongs to a live node.
+void tt_Context_lock(struct tt_Context* node);
+// tt_Context_lock() giving up after timeout_ns; true if the lock was taken (and must be released with
+// tt_Context_unlock()). For an observer that must never block behind a wedged callback on the poll
 // thread - rmw_tickle's liveliness watchdog is one.
-bool tt_Node_lock_timed(struct tt_Node* node, uint64_t timeout_ns);
-void tt_Node_unlock(struct tt_Node* node);
+bool tt_Context_lock_timed(struct tt_Context* node, uint64_t timeout_ns);
+void tt_Context_unlock(struct tt_Context* node);
 
 // Opts `node` into graph introspection: every UPDATE it processes from here on also records the
 // announcing entity into `*discovery` (an otherwise-inert struct the caller owns - see its own
@@ -1893,8 +1893,8 @@ void tt_Node_unlock(struct tt_Node* node);
 // (`memset` or `= {0}`) - this does not initialize its contents itself, only points `node` at it.
 // `callback`/`param` may be NULL to record without being notified (poll tt_Discovery_find()
 // yourself instead). Pass `discovery == NULL` to detach again.
-tt_ret_t tt_Node_set_discovery(struct tt_Node* node, struct tt_Discovery* discovery, tt_DISCOVERY_CALLBACK callback,
-                               void* param);
+tt_ret_t tt_Context_set_discovery(struct tt_Context* node, struct tt_Discovery* discovery,
+                                  tt_DISCOVERY_CALLBACK callback, void* param);
 
 // Number of currently-alive occupied slots in `discovery` - for iterating/sizing a snapshot
 // without walking the full tt_MAX_DISCOVERED_ENTITIES capacity by hand. Excludes tombstoned
@@ -1903,20 +1903,20 @@ tt_ret_t tt_Node_set_discovery(struct tt_Node* node, struct tt_Discovery* discov
 // "topic list"-style use (you wouldn't want a dead node's own topic still listed).
 uint32_t tt_Discovery_count(const struct tt_Discovery* discovery);
 
-// Looks up one specific remote entity by (node_id, endpoint_id), or NULL if it's not currently
+// Looks up one specific remote entity by (context_id, endpoint_id), or NULL if it's not currently
 // known - never announced, or *normally* departed (an explicit farewell, or dropped from a fresh
 // announce). A presumed-dead entity (struct tt_DiscoveredEntity.alive's own doc comment) is still
 // returned, with .alive == false, not NULL - check that field to tell the two "not currently
 // alive" shapes apart. The returned pointer is only valid until the next UPDATE this node
 // processes - copy out anything needed past that point.
-const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* discovery, uint8_t node_id,
+const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* discovery, uint8_t context_id,
                                                     uint32_t endpoint_id);
 
 // QoS roadmap #3 (LIVELINESS) RxO, Milestone 62 (rmw_tickle/PLAN.md's own "DDS semantic-parity
 // backlog" row 3) - computes whether `entity` is alive right now, freshly, independent of its own
 // `.alive` field's own periodic background sweep (check_liveliness(), tickle.c). check_liveliness()
 // watches per-*node* UPDATE traffic on one fixed window (tt_LIVELINESS_MISS_THRESHOLD *
-// tt_NODE_UPDATE_INTERVAL, ~3s) - correct for a "did this whole node disappear" participant-level
+// tt_CONTEXT_UPDATE_INTERVAL, ~3s) - correct for a "did this whole node disappear" participant-level
 // signal, but too coarse for an entity that requested its own, different `liveliness_lease_
 // duration_ns` (a Publisher/Subscriber field, carried on the wire since Milestone 49 and already
 // stored per discovery entry, but never actually consulted for detection before this milestone -
@@ -1925,7 +1925,7 @@ const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* d
 //     case): unchanged from before this function existed - returns `entity->alive` verbatim,
 //     deferring entirely to check_liveliness()'s own coarser, node-level sweep, since an entity
 //     that never asked for a specific lease has no individual timeout of its own to compute.
-//   - non-zero: computed fresh from `node->update_last_seen[entity->node_id]` against that lease
+//   - non-zero: computed fresh from `node->update_last_seen[entity->context_id]` against that lease
 //     directly, bypassing `.alive`/the periodic sweep's own timing entirely - accurate to whatever
 //     cadence the caller itself polls at (e.g. rmw_tickle's own check_subscription_liveliness(),
 //     which already reschedules itself at each Subscription's own liveliness_lease_ns - it previously
@@ -1936,10 +1936,10 @@ const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* d
 //     own stricter real-DDS semantic (an entity must itself specifically publish/assert within its
 //     lease, not merely share a node with other traffic); doing that would need a genuinely new,
 //     per-entity activity signal TickLE's wire protocol doesn't carry today, out of this milestone's
-//     own scope. `node` must be the same tt_Node `entity`'s own discovery table is attached to.
-bool tt_Node_entity_alive(const struct tt_Node* node, const struct tt_DiscoveredEntity* entity, uint64_t now);
+//     own scope. `node` must be the same tt_Context `entity`'s own discovery table is attached to.
+bool tt_Context_entity_alive(const struct tt_Context* node, const struct tt_DiscoveredEntity* entity, uint64_t now);
 
-tt_ret_t tt_Node_destroy(struct tt_Node* node);
+tt_ret_t tt_Context_destroy(struct tt_Context* node);
 
 // Bumped 1 -> 2 for QoS roadmap #1 (RxO matching, Milestone 31, rmw_tickle/PLAN.md) - struct tt_
 // UpdateEntity below grew a `qos` byte, a real on-the-wire layout change. Safe without any
@@ -2035,7 +2035,7 @@ struct tt_SubmessageHeader {
 // carries an already-seen seq_no by design.
 //
 // Since tt_VERSION 8 the list is not resent periodically (rmw_tickle/DISCOVERY_PLAN.md). Every
-// tt_NODE_UPDATE_INTERVAL a node broadcasts a summary instead: a HEARTBEAT of this endpoint whose
+// tt_CONTEXT_UPDATE_INTERVAL a node broadcasts a summary instead: a HEARTBEAT of this endpoint whose
 // first_available_seq_no and last_seq_no are its current generation, ~28 bytes whatever its endpoint count.
 // It refreshes liveliness as an announce does. A receiver that has not applied that generation - it missed
 // the change's broadcast, joined later, or never heard the node in full - asks for the list with an ACKNACK
@@ -2051,7 +2051,7 @@ struct tt_AnnounceHeader {
     */
 } __attribute__((packed));
 
-// Fragments one announce may be split into - the width of tt_Node.update_part_received. At the default
+// Fragments one announce may be split into - the width of tt_Context.update_part_received. At the default
 // tt_MAX_BUFFER_LENGTH that is ~480 ROS-sized endpoints, beyond tt_MAX_ENDPOINT_COUNT.
 #define tt_UPDATE_MAX_PARTS 32
 

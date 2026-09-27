@@ -9,7 +9,7 @@
  */
 
 // Core called from several threads at once, through the public API only (2026-09-25, the user's
-// decision that core be thread-safe - see "Threading" at tt_Node_lock() in tickle.h).
+// decision that core be thread-safe - see "Threading" at tt_Context_lock() in tickle.h).
 //
 // Two nodes in one process, joined by an in-memory datagram queue per node (the HAL below). Node A has
 // PUBLISHER_THREADS application threads publishing and one thread scheduling and cancelling timers,
@@ -45,10 +45,10 @@
 // these; they become no-ops there so the same threads run against it unchanged.
 #ifndef tt_THREAD_SAFE
 #define CONTROL_BUILD 1
-static void tt_Node_lock(struct tt_Node* node) {
+static void tt_Context_lock(struct tt_Context* node) {
     (void)node;
 }
-static void tt_Node_unlock(struct tt_Node* node) {
+static void tt_Context_unlock(struct tt_Context* node) {
     (void)node;
 }
 #define tt_RET_BUSY (-15)
@@ -63,10 +63,10 @@ static void tt_Node_unlock(struct tt_Node* node) {
 #define DELIVERY_GIVE_UP_NS (20ULL * 1000ULL * 1000ULL * 1000ULL)
 
 struct _tt_Config _tt_CONFIG = {
-    .addr = _tt_NODE_ADDRESS,
-    .port = _tt_NODE_PORT,
-    .broadcast = _tt_NODE_BROADCAST,
-    .node_id = tt_NODE_ID_INVALID,
+    .addr = _tt_CONTEXT_ADDRESS,
+    .port = _tt_CONTEXT_PORT,
+    .broadcast = _tt_CONTEXT_BROADCAST,
+    .context_id = tt_CONTEXT_ID_INVALID,
 };
 
 // ---- An in-memory, thread-safe HAL: one bounded FIFO of datagrams per node. A full queue makes the
@@ -114,12 +114,12 @@ int32_t tt_link_mtu(uint32_t addr) {
     return -1;
 }
 
-tt_ret_t tt_bind(struct tt_Node* node) {
+tt_ret_t tt_bind(struct tt_Context* node) {
     (void)node;
     return tt_RET_OK;
 }
 
-void tt_close(struct tt_Node* node) {
+void tt_close(struct tt_Context* node) {
     (void)node;
 }
 
@@ -143,7 +143,7 @@ static void push(uint8_t to_id, uint8_t from_id, const void* hdr, size_t hdr_len
 
 // Every datagram goes to every other node, broadcast or unicast alike: with two nodes, "the peer" is
 // the only possible destination.
-static int32_t send_all(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len) {
+static int32_t send_all(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len) {
     if (hdr_len + body_len > DATAGRAM_MAX) {
         return -1;
     }
@@ -155,24 +155,24 @@ static int32_t send_all(struct tt_Node* node, const void* hdr, size_t hdr_len, c
     return (int32_t)(hdr_len + body_len);
 }
 
-int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
+int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     return send_all(node, buf, len, NULL, 0);
 }
 
-int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
+int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
     (void)ip;
     (void)port;
     return send_all(node, buf, len, NULL, 0);
 }
 
-int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
+int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
     (void)ip;
     (void)port;
     return send_all(node, hdr, hdr_len, body, body_len);
 }
 
-int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
     for (uint32_t i = 0; i < count; i++) {
         if (send_all(node, datagrams[i].head, datagrams[i].head_len, datagrams[i].body, datagrams[i].body_len) < 0) {
             return -1;
@@ -194,7 +194,7 @@ static int32_t pop_locked(struct queue* q, void* buf, size_t len, uint32_t* ip, 
     return (int32_t)n;
 }
 
-int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
+int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     struct queue* q = &queues[node->id];
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
@@ -224,7 +224,7 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
     return result;
 }
 
-int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct queue* q = &queues[node->id];
     pthread_mutex_lock(&q->lock);
     int32_t result = q->count > 0 ? pop_locked(q, buf, len, ip, port) : -1;
@@ -234,7 +234,7 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
 
 // What the queue holds counts as already read, so a drain here takes OPTIMIZATION_PLAN.md 11.4's locked chunks
 // - under ThreadSanitizer, with the publishing threads running.
-uint32_t tt_rx_buffered(const struct tt_Node* node) {
+uint32_t tt_rx_buffered(const struct tt_Context* node) {
     struct queue* q = &queues[node->id];
     pthread_mutex_lock(&q->lock);
     uint32_t count = q->count;
@@ -242,7 +242,7 @@ uint32_t tt_rx_buffered(const struct tt_Node* node) {
     return count;
 }
 
-tt_ret_t tt_wake_signal(struct tt_Node* node) {
+tt_ret_t tt_wake_signal(struct tt_Context* node) {
     struct queue* q = &queues[node->id];
     pthread_mutex_lock(&q->lock);
     q->wake = true;
@@ -287,8 +287,8 @@ static void sample_free(struct tt_Data* data) {
 // ---- State. Everything a callback writes is written on B's poll thread only, and read by the main
 // thread only after that thread has been joined.
 
-static struct tt_Node node_a;
-static struct tt_Node node_b;
+static struct tt_Context node_a;
+static struct tt_Context node_b;
 static struct tt_Topic topics[PUBLISHER_THREADS];
 static struct tt_Publisher publishers[PUBLISHER_THREADS];
 static struct tt_Subscriber subscribers[PUBLISHER_THREADS];
@@ -321,21 +321,21 @@ static void on_sample(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no,
     received[t] = s->seq;
 }
 
-static void on_timer(struct tt_Node* node, uint64_t time, void* param) {
+static void on_timer(struct tt_Context* node, uint64_t time, void* param) {
     (void)time;
     uint32_t i = *(const uint32_t*)param;
     timer_runs[i]++;
     // A second poller, from inside the first: the one case that can be made deterministic. Asked once.
     if (!busy_checked) {
         busy_checked = true;
-        busy_seen = tt_Node_poll(node, 0) == tt_RET_BUSY;
+        busy_seen = tt_Context_poll(node, 0) == tt_RET_BUSY;
     }
 }
 
 static void* poll_thread(void* param) {
-    struct tt_Node* node = (struct tt_Node*)param;
+    struct tt_Context* node = (struct tt_Context*)param;
     while (!__atomic_load_n(&stop_polling, __ATOMIC_ACQUIRE)) {
-        tt_Node_poll(node, -1);
+        tt_Context_poll(node, -1);
     }
     return NULL;
 }
@@ -360,14 +360,14 @@ static void* timer_thread(void* param) {
     for (uint32_t i = 0; i < TIMERS; i++) {
         timer_ids[i] = i;
         uint64_t at = tt_get_ns() + ((i % 5 == 0) ? 1000000000ULL : 100000ULL); // cancelled ones: 1 s out
-        while (!tt_Node_schedule(&node_a, at, on_timer, &timer_ids[i])) {
+        while (!tt_Context_schedule(&node_a, at, on_timer, &timer_ids[i])) {
             struct timespec pause = {0, 100000};
             nanosleep(&pause, NULL); // heap full for a moment - the poll thread is draining it
         }
-        // No tt_Node_interrupt(): tt_Node_schedule() wakes a waiting poll by itself when it must.
+        // No tt_Context_interrupt(): tt_Context_schedule() wakes a waiting poll by itself when it must.
         if (i % 5 == 0) {
             timer_cancelled[i] = 1;
-            EXPECT_TRUE(tt_Node_unschedule(&node_a, on_timer, &timer_ids[i]));
+            EXPECT_TRUE(tt_Context_unschedule(&node_a, on_timer, &timer_ids[i]));
         }
     }
     return NULL;
@@ -382,7 +382,7 @@ static void* timer_thread(void* param) {
 
 static uint64_t wake_ran_at; // atomic: when on_wake_timer ran, 0 until then
 
-static void on_wake_timer(struct tt_Node* node, uint64_t time, void* param) {
+static void on_wake_timer(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
@@ -397,7 +397,7 @@ static void test_schedule_wakes_an_idle_poll(void) {
     for (int round = 0; round < WAKE_ROUNDS; round++) {
         __atomic_store_n(&wake_ran_at, 0, __ATOMIC_RELEASE);
         uint64_t due = tt_get_ns() + WAKE_DELAY_NS;
-        EXPECT_TRUE(tt_Node_schedule(&node_b, due, on_wake_timer, NULL));
+        EXPECT_TRUE(tt_Context_schedule(&node_b, due, on_wake_timer, NULL));
         uint64_t give_up = due + WAKE_GIVE_UP_NS;
         uint64_t ran = 0;
         while ((ran = __atomic_load_n(&wake_ran_at, __ATOMIC_ACQUIRE)) == 0 && tt_get_ns() < give_up) {
@@ -422,8 +422,9 @@ static void create_endpoints(void) {
         topics[t].data_encode = sample_encode;
         topics[t].data_decode = sample_decode;
         topics[t].data_free = sample_free;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node_a, &publishers[t], &topics[t], names[t]));
-        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&node_b, &subscribers[t], &topics[t], names[t], on_sample));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node_a, &publishers[t], &topics[t], names[t]));
+        EXPECT_EQ_INT(tt_RET_OK,
+                      tt_Context_create_subscriber(&node_b, &subscribers[t], &topics[t], names[t], on_sample));
     }
 }
 
@@ -641,17 +642,17 @@ static void create_call_endpoints(void) {
     call_service.response_encode = call_response_encode;
     call_service.response_decode = call_response_decode;
     call_service.response_free = call_response_free;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_server(&node_b, &call_server, &call_service, "call_stress", on_call));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_client(&node_a, &call_client, &call_service, "call_stress", on_answer));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_server(&node_b, &call_server, &call_service, "call_stress", on_call));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_client(&node_a, &call_client, &call_service, "call_stress", on_answer));
 }
 
 static bool all_delivered(void) {
-    tt_Node_lock(&node_b); // received[] is written by B's poll thread, inside B's state lock
+    tt_Context_lock(&node_b); // received[] is written by B's poll thread, inside B's state lock
     bool done = true;
     for (int t = 0; t < PUBLISHER_THREADS; t++) {
         done = done && received[t] == SAMPLES_PER_THREAD;
     }
-    tt_Node_unlock(&node_b);
+    tt_Context_unlock(&node_b);
     return done;
 }
 
@@ -666,8 +667,8 @@ int main(void) {
         pthread_mutex_init(&queues[i].lock, NULL);
         pthread_cond_init(&queues[i].changed, NULL);
     }
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create(&node_a));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create(&node_b));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create(&node_a));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create(&node_b));
     create_endpoints();
     create_call_endpoints();
 
@@ -709,8 +710,8 @@ int main(void) {
 #endif
 
     __atomic_store_n(&stop_polling, 1, __ATOMIC_RELEASE);
-    tt_Node_interrupt(&node_a);
-    tt_Node_interrupt(&node_b);
+    tt_Context_interrupt(&node_a);
+    tt_Context_interrupt(&node_b);
     pthread_join(poll_a, NULL);
     pthread_join(poll_b, NULL);
 

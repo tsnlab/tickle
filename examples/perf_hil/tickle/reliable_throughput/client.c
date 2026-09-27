@@ -152,7 +152,7 @@ static uint64_t pending_since_ns = 0;
 
 // How long to wait before retrying a refused write. Matches throttle_retry_s below - the governing
 // constraint is the same one: this client is single-threaded and driven entirely by the scheduler
-// inside tt_Node_poll(), so a retry must go back through tt_Node_schedule() rather than loop in
+// inside tt_Context_poll(), so a retry must go back through tt_Context_schedule() rather than loop in
 // place. Spinning here would starve the poll that receives the very ACKNACKs the retry is waiting
 // for, and the write would then never be accepted no matter how large -B is.
 static const double keep_all_retry_s = 0.00005; // 50us
@@ -207,7 +207,7 @@ static uint64_t max_blocking_ns_value(void) {
     return (uint64_t)(max_blocking_ms * (double)tt_MILLISECOND);
 }
 
-static void send_one(struct tt_Node* node, uint64_t time, void* param) {
+static void send_one(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     if (g_interrupted || tt_get_ns() >= g_deadline_ns) {
         g_sending_done = true;
@@ -218,7 +218,7 @@ static void send_one(struct tt_Node* node, uint64_t time, void* param) {
         // publish another sample on top of an already-open gap, so this Publisher doesn't keep
         // burying that gap deeper (PLAN.md's own "Follow-up v2/v3" scheduler research - the
         // mechanism this throttle protects against is real, not hypothetical).
-        tt_Node_schedule(node, time + (uint64_t)(throttle_retry_s * (double)tt_SECOND), send_one, NULL);
+        tt_Context_schedule(node, time + (uint64_t)(throttle_retry_s * (double)tt_SECOND), send_one, NULL);
         return;
     }
     // A refused write (-Q only) leaves the sample pending and comes back to this same one; a fresh
@@ -242,9 +242,9 @@ static void send_one(struct tt_Node* node, uint64_t time, void* param) {
         have_pending = false;
     } else if (ret == tt_RET_WOULD_BLOCK && tt_get_ns() - pending_since_ns < max_blocking_ns_value()) {
         // Still inside the budget: come back to this same sample through the scheduler, which is
-        // what lets tt_Node_poll() run (and ACKNACKs arrive) between attempts. See
+        // what lets tt_Context_poll() run (and ACKNACKs arrive) between attempts. See
         // keep_all_retry_s' own comment for why this can't be a loop.
-        tt_Node_schedule(node, time + (uint64_t)(keep_all_retry_s * (double)tt_SECOND), send_one, NULL);
+        tt_Context_schedule(node, time + (uint64_t)(keep_all_retry_s * (double)tt_SECOND), send_one, NULL);
         return;
     } else if (ret == tt_RET_WOULD_BLOCK) {
         // Budget expired. Drop the sample and move on, counting it - the Subscriber will see this
@@ -257,7 +257,7 @@ static void send_one(struct tt_Node* node, uint64_t time, void* param) {
     }
 
     uint64_t next = interval_s > 0.0 ? time + (uint64_t)(interval_s * (double)tt_SECOND) : time;
-    tt_Node_schedule(node, next, send_one, NULL);
+    tt_Context_schedule(node, next, send_one, NULL);
 }
 
 // Phase 3 step 4 - the drain is what decides whether a sample counts as delivered, so a blind
@@ -283,7 +283,7 @@ static void send_one(struct tt_Node* node, uint64_t time, void* param) {
 static uint32_t count_peer_acks(const struct tt_Publisher* pub) {
     uint32_t live = 0;
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
-        if (pub->peer_acks[i].node_id != tt_NODE_ID_INVALID) {
+        if (pub->peer_acks[i].context_id != tt_CONTEXT_ID_INVALID) {
             live++;
         }
     }
@@ -297,7 +297,7 @@ static void sample_peer_acks(void) {
     }
 }
 
-static void drain_tick(struct tt_Node* node, uint64_t time, void* param) {
+static void drain_tick(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     sample_peer_acks();
     if (g_pub->seq_no > 0 && tt_Publisher_is_acked_by_all_peers(g_pub, g_pub->seq_no)) {
@@ -312,10 +312,10 @@ static void drain_tick(struct tt_Node* node, uint64_t time, void* param) {
     // Nothing else solicits here: publishing has stopped, so neither the KEEP_ALL watermark nor a
     // refusal can fire, and a healthy Subscriber sends no ACKNACK unprompted.
     (void)tt_Publisher_request_ack(g_pub);
-    tt_Node_schedule(node, time + (uint64_t)(drain_poll_s * (double)tt_SECOND), drain_tick, NULL);
+    tt_Context_schedule(node, time + (uint64_t)(drain_poll_s * (double)tt_SECOND), drain_tick, NULL);
 }
 
-static void stop_draining(struct tt_Node* node, uint64_t time, void* param) {
+static void stop_draining(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
@@ -328,19 +328,19 @@ static void stop_draining(struct tt_Node* node, uint64_t time, void* param) {
 // via wait_for_writer_match(): better no numbers at all than numbers from a run that was publishing
 // into the void.
 //
-// Polls through tt_Node_poll() rather than sleeping, since matching happens by processing the
+// Polls through tt_Context_poll() rather than sleeping, since matching happens by processing the
 // Subscriber's own announce, which only arrives while the node is being polled. Note this narrows
 // the pre-match window but cannot close it: a peer_acks entry proves only that *we* heard the
 // Subscriber, not that it is tracking us - see the server's own first_seq_seen comment for what
 // that costs and how it is now reported.
 //
 // Split out of main() to keep its cognitive complexity under the project's clang-tidy threshold.
-static bool wait_for_matched_subscriber(struct tt_Node* node, struct tt_Publisher* pub) {
+static bool wait_for_matched_subscriber(struct tt_Context* node, struct tt_Publisher* pub) {
     uint64_t match_deadline = tt_get_ns() + (uint64_t)(match_wait_cap_s * (double)tt_SECOND);
     tt_ret_t ret = tt_RET_OK;
     while (count_peer_acks(pub) == 0 && tt_get_ns() < match_deadline && !g_interrupted &&
            (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(node, (int64_t)(match_poll_s * (double)tt_SECOND));
+        ret = tt_Context_poll(node, (int64_t)(match_poll_s * (double)tt_SECOND));
     }
     if (count_peer_acks(pub) == 0) {
         fprintf(stderr, "timed out waiting for a matched subscriber after %.1fs\n", match_wait_cap_s);
@@ -484,15 +484,15 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
     }
 
     struct tt_Publisher pub;
-    ret = tt_Node_create_publisher(&node, &pub, &BenchTopic, "stream");
+    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "stream");
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
@@ -559,7 +559,7 @@ int main(int argc, char** argv) {
     }
 
     if (!wait_for_matched_subscriber(&node, &pub)) {
-        tt_Node_destroy(&node);
+        tt_Context_destroy(&node);
         return 1;
     }
 
@@ -567,19 +567,19 @@ int main(int argc, char** argv) {
     BenchCpuPlace_init(&g_cpu_place);
     uint64_t send_start = tt_get_ns();
     g_deadline_ns = send_start + (uint64_t)(duration_s * (double)tt_SECOND);
-    tt_Node_schedule(&node, send_start, send_one, NULL);
+    tt_Context_schedule(&node, send_start, send_one, NULL);
 
     ret = tt_RET_OK;
     while (!g_interrupted && !g_sending_done && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, -1);
+        ret = tt_Context_poll(&node, -1);
     }
     // Drain until every matched peer has confirmed the last accepted sample, or drain_s elapses -
     // see drain_tick()'s own comment for why a fixed-duration drain measured the wrong thing.
     g_drain_deadline_ns = tt_get_ns() + (uint64_t)(drain_s * (double)tt_SECOND);
-    tt_Node_schedule(&node, tt_get_ns(), drain_tick, NULL);
+    tt_Context_schedule(&node, tt_get_ns(), drain_tick, NULL);
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, -1);
+        ret = tt_Context_poll(&node, -1);
     }
 
     double mbps = duration_s > 0.0
@@ -608,6 +608,6 @@ int main(int argc, char** argv) {
                               sizeof g_bench_fields));
     print_reliable_stats("client");
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

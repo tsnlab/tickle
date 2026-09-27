@@ -53,7 +53,7 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     last_received_ns = tt_get_ns();
 }
 
-static void check_deadline(struct tt_Node* node, uint64_t time, void* param) {
+static void check_deadline(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     if (g_interrupted) {
         return;
@@ -72,7 +72,7 @@ static void check_deadline(struct tt_Node* node, uint64_t time, void* param) {
         time - last_received_ns > (uint64_t)(miss_tolerance_multiplier * deadline_s * (double)tt_SECOND)) {
         misses++;
     }
-    tt_Node_schedule(node, time + (uint64_t)(deadline_s * (double)tt_SECOND), check_deadline, NULL);
+    tt_Context_schedule(node, time + (uint64_t)(deadline_s * (double)tt_SECOND), check_deadline, NULL);
 }
 
 int main(int argc, char** argv) {
@@ -103,34 +103,34 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
     }
 
     struct tt_Subscriber sub;
-    ret = tt_Node_create_subscriber(&node, &sub, &BenchTopic, "stream", (tt_SUBSCRIBER_CALLBACK)stream_callback);
+    ret = tt_Context_create_subscriber(&node, &sub, &BenchTopic, "stream", (tt_SUBSCRIBER_CALLBACK)stream_callback);
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
         return ret;
     }
     sub.deadline_duration_ns = (uint64_t)(deadline_s * (double)tt_SECOND);
 
-    tt_Node_schedule(&node, tt_get_ns() + (uint64_t)(discovery_margin_s * (double)tt_SECOND), check_deadline, NULL);
+    tt_Context_schedule(&node, tt_get_ns() + (uint64_t)(discovery_margin_s * (double)tt_SECOND), check_deadline, NULL);
 
     uint64_t deadline = tt_get_ns() + (uint64_t)(safety_cap_s * (double)tt_SECOND);
     // 500ms (nanoseconds), so the deadline/g_interrupted check re-runs.
     const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
     ret = tt_RET_OK;
     while (!g_interrupted && tt_get_ns() < deadline && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, poll_timeout_ns);
+        ret = tt_Context_poll(&node, poll_timeout_ns);
     }
 
     printf("RESULT: framework=tickle scenario=deadline_miss_detection role=server recv=%lu reader_misses=%u\n",
            (unsigned long)received, misses);
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

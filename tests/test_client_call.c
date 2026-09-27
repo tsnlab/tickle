@@ -45,7 +45,7 @@ static void test_callback(struct tt_Client* client, int8_t return_code, struct t
     callback_calls++;
 }
 
-static void init_node_and_client(struct tt_Node* node, struct tt_Service* service, struct tt_Client* client) {
+static void init_node_and_client(struct tt_Context* node, struct tt_Service* service, struct tt_Client* client) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = 1;
@@ -70,7 +70,7 @@ static void init_node_and_client(struct tt_Node* node, struct tt_Service* servic
 static void test_call_rejected_while_one_outstanding(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     init_node_and_client(&node, &service, &client);
@@ -94,7 +94,7 @@ static void test_call_flushes_immediately_and_fills_cache(void) {
     test_mock_reset();
     test_mock_now = 500;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     init_node_and_client(&node, &service, &client);
@@ -116,12 +116,12 @@ static void test_call_unicasts_to_known_servers_at_or_under_threshold(void) {
     test_mock_reset();
     test_mock_now = 500;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     init_node_and_client(&node, &service, &client);
 
-    client.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+    client.peers[0] = (struct tt_Peer) {.context_id = 2, .ip = 0xc0a80a02, .port = 8282};
 
     struct tt_Request request;
     tt_ret_t ret = tt_Client_call(&client, &request);
@@ -138,14 +138,14 @@ static void test_call_broadcasts_when_server_count_exceeds_threshold(void) {
     test_mock_reset();
     test_mock_now = 500;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     init_node_and_client(&node, &service, &client);
 
     for (int i = 0; i < tt_UNICAST_PEER_THRESHOLD + 1; i++) {
         client.peers[i] =
-            (struct tt_Peer) {.node_id = (uint8_t)(2 + i), .ip = 0xc0a80a00 + (uint8_t)(2 + i), .port = 8282};
+            (struct tt_Peer) {.context_id = (uint8_t)(2 + i), .ip = 0xc0a80a00 + (uint8_t)(2 + i), .port = 8282};
     }
 
     struct tt_Request request;
@@ -162,7 +162,7 @@ static void test_call_retry_uses_same_peer_decision_as_initial_call(void) {
     test_mock_reset();
     test_mock_now = 500;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     init_node_and_client(&node, &service, &client);
@@ -172,7 +172,7 @@ static void test_call_retry_uses_same_peer_decision_as_initial_call(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Client_call(&client, &request));
 
     // Discovery learns a Server only after the initial (broadcast) call already went out.
-    client.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+    client.peers[0] = (struct tt_Peer) {.context_id = 2, .ip = 0xc0a80a02, .port = 8282};
 
     test_mock_send_call_count = 0;
     test_mock_send_to_call_count = 0;
@@ -190,11 +190,11 @@ static void test_call_flushes_a_pending_broadcast_then_unicasts(void) {
     test_mock_reset();
     test_mock_now = 500;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     init_node_and_client(&node, &service, &client);
-    client.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+    client.peers[0] = (struct tt_Peer) {.context_id = 2, .ip = 0xc0a80a02, .port = 8282};
 
     node_update(&node, 0, NULL); // batches an announce into tx_buffer
     EXPECT_TRUE(node.tx_tail > sizeof(struct tt_Header));
@@ -211,12 +211,12 @@ static void test_call_retry_flushes_a_pending_broadcast_then_unicasts(void) {
     test_mock_reset();
     test_mock_now = 500;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     init_node_and_client(&node, &service, &client);
     service.call_retry_count = 3;
-    client.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+    client.peers[0] = (struct tt_Peer) {.context_id = 2, .ip = 0xc0a80a02, .port = 8282};
 
     struct tt_Request request;
     EXPECT_EQ_INT(tt_RET_OK, tt_Client_call(&client, &request));
@@ -235,7 +235,7 @@ static void test_call_retry_flushes_a_pending_broadcast_then_unicasts(void) {
 // dereferenced.
 static void test_call_rejects_invalid_arguments(void) {
     test_mock_reset();
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     init_node_and_client(&node, &service, &client);
@@ -263,7 +263,7 @@ static int32_t stub_request_encode_size_negative(struct tt_Request* request) {
 }
 static void test_call_rejects_bad_encode_size(void) {
     test_mock_reset();
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     init_node_and_client(&node, &service, &client);
@@ -278,7 +278,7 @@ static void test_call_rejects_bad_encode_size(void) {
 // server can legitimately return) with a NULL response, exactly once.
 static void test_call_retry_exhausted_reports_timeout(void) {
     test_mock_reset();
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     init_node_and_client(&node, &service, &client);
@@ -303,7 +303,7 @@ static void test_call_retry_exhausted_reports_timeout(void) {
 // first, which is what every caller passing 0 got.
 static void test_call_retry_count_zero_means_the_default(void) {
     test_mock_reset();
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     init_node_and_client(&node, &service, &client);

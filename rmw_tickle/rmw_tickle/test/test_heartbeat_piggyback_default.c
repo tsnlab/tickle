@@ -11,7 +11,7 @@
 // The piggybacked Heartbeat ships on by default (rmw_publisher.c,
 // RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY_DEFAULT; the user's decision of 2026-09-24). This pins that
 // the default really reaches the core publisher rather than only the comment that describes it -
-// the field is set after tt_Node_create_publisher(), which zeroes it, and a setting applied before
+// the field is set after tt_Context_create_publisher(), which zeroes it, and a setting applied before
 // creation is exactly how the reorder buffer once shipped disconnected (9747c1ea). It also pins
 // the three ways the variable is read: 0 turns it off, a number replaces the default, and a value
 // that does not parse keeps the default rather than silently turning loss recovery off.

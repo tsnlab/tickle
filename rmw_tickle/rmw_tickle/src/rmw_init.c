@@ -180,7 +180,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
         RMW_SET_ERROR_MSG("context has already been initialized");
         return RMW_RET_INVALID_ARGUMENT;
     }
-    // ROS_DOMAIN_ID (2026-09-27, DDS parity): each domain listens on its own well-known port, _tt_NODE_PORT +
+    // ROS_DOMAIN_ID (2026-09-27, DDS parity): each domain listens on its own well-known port, _tt_CONTEXT_PORT +
     // the domain id, so two domains on one network never discover each other - as DDS keeps domains apart
     // by port. Until then every rmw_tickle on a network was in one domain, and a PC's unit tests (domain 0)
     // were heard by the rig's nodes (domain 73) over a shared management LAN. rcl passes the domain it
@@ -264,14 +264,14 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
     // HAL's own compiled-in default (see src/hal_linux.c / src/hal_freertos.c) the same way
     // examples/linux's drivers let `-b` do it for a CLI-driven process; unset, this leaves that
     // default untouched instead of guessing.
-    _tt_CONFIG.port = _tt_NODE_PORT + (int)domain_id; // see the domain check at the top
+    _tt_CONFIG.port = _tt_CONTEXT_PORT + (int)domain_id; // see the domain check at the top
 
     char* broadcast_addr = getenv("TICKLE_BROADCAST_ADDR");
     if (broadcast_addr != NULL) {
         _tt_CONFIG.broadcast = broadcast_addr;
     }
 
-    // Same reasoning as TICKLE_BROADCAST_ADDR just above, for _tt_CONFIG.node_id (config.h's own
+    // Same reasoning as TICKLE_BROADCAST_ADDR just above, for _tt_CONFIG.context_id (config.h's own
     // doc comment on that field spells out exactly this scenario): tt_get_node_id()'s auto-detect
     // derives a node's id from the last octet of its own address on the broadcast subnet, which
     // silently collides whenever two rmw_tickle processes share one host/interface (e.g.
@@ -283,7 +283,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
     // rmw_tickle nodes on one host (e.g. rmw-perf.yml's own launch template).
     char* node_id = getenv("TICKLE_NODE_ID");
     if (node_id != NULL) {
-        _tt_CONFIG.node_id = atoi(node_id);
+        _tt_CONFIG.context_id = atoi(node_id);
     }
 
     return RMW_RET_OK;
@@ -308,7 +308,7 @@ static void dump_measurements(rmw_tickle_context_impl_t* impl) {
     if (NULL == out) {
         return;
     }
-    const struct tt_LockStats* lock = &impl->tickle_node.state_lock_stats;
+    const struct tt_LockStats* lock = &impl->tickle_context.state_lock_stats;
     fprintf(out, "lock acquisitions=%llu contended=%llu wait_ns=%llu poller_contended=%llu poller_wait_ns=%llu\n",
             (unsigned long long)lock->acquisitions, (unsigned long long)lock->contended,
             (unsigned long long)lock->wait_ns, (unsigned long long)lock->poller_contended,

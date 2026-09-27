@@ -30,7 +30,7 @@
 
 // DATA_FRAG's reassembly pool, reported so that c6 can be read as a number rather than inferred: how
 // many slots this build has, how many samples were put back together, how many partial reassemblies
-// were given up to make room (tt_Node.frag_abandoned), how many fragments were refused, and how many
+// were given up to make room (tt_Context.frag_abandoned), how many fragments were refused, and how many
 // arrived for a sample already whole (frag_duplicate). All zero, and
 // frag_slots=0, in a build without fragmentation - sample_path= on the same line says which it was.
 #if tt_FRAG_ENABLED
@@ -205,7 +205,7 @@ static const double safety_cap_buffer_s = 15.0;
 // falls back to slot 0, whose zeroed estimate then reads as "no sample", if none was ever matched.
 static const struct tt_WriterProxy* first_live_writer(const struct tt_Subscriber* sub) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (sub->writers[i].node_id != tt_NODE_ID_INVALID) {
+        if (sub->writers[i].context_id != tt_CONTEXT_ID_INVALID) {
             return &sub->writers[i];
         }
     }
@@ -261,15 +261,15 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
     }
 
     struct tt_Subscriber sub;
-    ret = tt_Node_create_subscriber(&node, &sub, &BenchTopic, "stream", (tt_SUBSCRIBER_CALLBACK)stream_callback);
+    ret = tt_Context_create_subscriber(&node, &sub, &BenchTopic, "stream", (tt_SUBSCRIBER_CALLBACK)stream_callback);
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
         return ret;
@@ -343,7 +343,7 @@ int main(int argc, char** argv) {
     ret = tt_RET_OK;
     while (!g_interrupted && !lifetime_over(tt_get_ns(), deadline, idle_cap_ns) &&
            (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, poll_timeout_ns);
+        ret = tt_Context_poll(&node, poll_timeout_ns);
     }
 
     // Both numbers, always, never one silently standing in for the other (rmw_tickle/PLAN.md Phase
@@ -405,6 +405,6 @@ int main(int argc, char** argv) {
                               sizeof g_bench_fields));
     print_reliable_stats("server");
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

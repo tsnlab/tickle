@@ -72,7 +72,7 @@ static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t 
     subscriber_callback_count++;
 }
 
-static void init_node_and_topic(struct tt_Node* node, struct tt_Topic* topic) {
+static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -88,7 +88,8 @@ static void init_node_and_topic(struct tt_Node* node, struct tt_Topic* topic) {
     topic->data_free = stub_data_free;
 }
 
-static void init_publisher_registered_on_node(struct tt_Publisher* pub, struct tt_Node* node, struct tt_Topic* topic) {
+static void init_publisher_registered_on_node(struct tt_Publisher* pub, struct tt_Context* node,
+                                              struct tt_Topic* topic) {
     memset(pub, 0, sizeof(*pub));
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
     pub->endpoint.id = ENDPOINT_ID;
@@ -96,14 +97,14 @@ static void init_publisher_registered_on_node(struct tt_Publisher* pub, struct t
     pub->node = node;
     pub->topic = topic;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        pub->peers[i].node_id = tt_NODE_ID_INVALID;
+        pub->peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
 
     node->endpoint_count = 1;
     node->endpoints[0] = (struct tt_Endpoint*)pub;
 }
 
-static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Node* node,
+static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Context* node,
                                                struct tt_Topic* topic) {
     memset(sub, 0, sizeof(*sub));
     sub->endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
@@ -112,8 +113,8 @@ static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct
     sub->topic = topic;
     sub->callback = stub_subscriber_callback;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        sub->writers[i].node_id = tt_NODE_ID_INVALID; // all empty - matches tt_Node_create_
-                                                      // subscriber()'s own init (Milestone 47)
+        sub->writers[i].context_id = tt_CONTEXT_ID_INVALID; // all empty - matches tt_Context_create_
+                                                            // subscriber()'s own init (Milestone 47)
     }
 
     node->endpoint_count = 1;
@@ -130,7 +131,7 @@ static void init_header(struct tt_Header* header) {
 // Builds a DataHeader + 4-byte payload at the start of node->rx_buffer, returning the tail
 // offset (matching what process_packet() would have handed process_data()) - same helper as
 // tests/test_reliable_pubsub.c's own write_data().
-static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t timestamp, uint32_t value) {
+static uint32_t write_data(struct tt_Context* node, uint32_t seq_no, uint64_t timestamp, uint32_t value) {
     struct tt_DataHeader* data_header = (struct tt_DataHeader*)node->rx_buffer;
     data_header->endpoint_id = ENDPOINT_ID;
     data_header->seq_no = seq_no;
@@ -145,7 +146,7 @@ static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t times
 // `deadline_duration_ns`/`liveliness_lease_duration_ns` in node->rx_buffer, returning the tail
 // offset - same shape as tests/test_durability_pubsub.c's own write_update_one_subscriber(),
 // extended with the fields Milestone 31/49 added to the wire.
-static uint32_t write_update_one_subscriber_full(struct tt_Node* node, uint64_t last_modified, uint32_t endpoint_id,
+static uint32_t write_update_one_subscriber_full(struct tt_Context* node, uint64_t last_modified, uint32_t endpoint_id,
                                                  uint8_t qos, uint64_t deadline_duration_ns,
                                                  uint64_t liveliness_lease_duration_ns) {
     struct test_announce* update_header = test_announce_at(node->rx_buffer);
@@ -170,8 +171,8 @@ static uint32_t write_update_one_subscriber_full(struct tt_Node* node, uint64_t 
 
 // Milestone 31's own original helper, kept for its existing call sites - RELIABILITY/DURABILITY-
 // only tests don't need to spell out the two Milestone 49 duration params every time.
-static uint32_t write_update_one_subscriber_with_qos(struct tt_Node* node, uint64_t last_modified, uint32_t endpoint_id,
-                                                     uint8_t qos) {
+static uint32_t write_update_one_subscriber_with_qos(struct tt_Context* node, uint64_t last_modified,
+                                                     uint32_t endpoint_id, uint8_t qos) {
     return write_update_one_subscriber_full(node, last_modified, endpoint_id, qos, 0, 0);
 }
 
@@ -184,7 +185,7 @@ static void test_reliable_subscriber_drops_data_from_besteffort_publisher(void) 
     test_mock_reset();
     subscriber_callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -193,7 +194,7 @@ static void test_reliable_subscriber_drops_data_from_besteffort_publisher(void) 
 
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
     // Discovered Publisher offers neither RELIABLE nor DURABLE (qos = 0) - incompatible with this
     // Subscriber's own sub.reliable request.
     upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, "test_topic",
@@ -213,7 +214,7 @@ static void test_reliable_subscriber_receives_data_from_reliable_publisher(void)
     test_mock_reset();
     subscriber_callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -222,7 +223,7 @@ static void test_reliable_subscriber_receives_data_from_reliable_publisher(void)
 
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
     upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, tt_UPDATE_QOS_RELIABLE, 0, 0,
                              "test_topic", "test_publisher");
 
@@ -240,7 +241,7 @@ static void test_durable_subscriber_drops_data_from_volatile_publisher(void) {
     test_mock_reset();
     subscriber_callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -249,7 +250,7 @@ static void test_durable_subscriber_drops_data_from_volatile_publisher(void) {
 
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
     upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, "test_topic",
                              "test_publisher");
 
@@ -262,19 +263,19 @@ static void test_durable_subscriber_drops_data_from_volatile_publisher(void) {
 }
 
 // Fails open when no discovery cache is attached at all - a raw TickLE-core caller that never
-// called tt_Node_set_discovery() must see no behavior change from this milestone, even for a
+// called tt_Context_set_discovery() must see no behavior change from this milestone, even for a
 // Subscriber that requested RELIABLE.
 static void test_no_discovery_attached_delivers_regardless(void) {
     test_mock_reset();
     subscriber_callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
     sub.reliable = true;
-    // node.discovery left NULL - tt_Node_set_discovery() never called.
+    // node.discovery left NULL - tt_Context_set_discovery() never called.
 
     struct tt_Header header;
     init_header(&header);
@@ -292,7 +293,7 @@ static void test_publisher_not_yet_discovered_delivers(void) {
     test_mock_reset();
     subscriber_callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -301,7 +302,7 @@ static void test_publisher_not_yet_discovered_delivers(void) {
 
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
     // Nothing recorded for REMOTE_NODE_ID/ENDPOINT_ID - discovery is empty.
 
     struct tt_Header header;
@@ -319,7 +320,7 @@ static void test_publisher_not_yet_discovered_delivers(void) {
 static void test_publisher_side_gate_skips_incompatible_subscriber(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -340,7 +341,7 @@ static void test_publisher_side_gate_skips_incompatible_subscriber(void) {
 static void test_publisher_side_gate_accepts_compatible_subscriber(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -363,7 +364,7 @@ static void test_deadline_subscriber_drops_data_from_looser_publisher(void) {
     test_mock_reset();
     subscriber_callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -372,7 +373,7 @@ static void test_deadline_subscriber_drops_data_from_looser_publisher(void) {
 
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
     // Discovered Publisher only promises 200ms - too loose for this Subscriber's 100ms request.
     upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 200000000, 0, "test_topic",
                              "test_publisher");
@@ -391,7 +392,7 @@ static void test_deadline_subscriber_receives_data_from_tighter_publisher(void) 
     test_mock_reset();
     subscriber_callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -400,7 +401,7 @@ static void test_deadline_subscriber_receives_data_from_tighter_publisher(void) 
 
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
     upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 100000000, 0, "test_topic",
                              "test_publisher");
 
@@ -420,7 +421,7 @@ static void test_liveliness_manual_subscriber_drops_data_from_automatic_publishe
     test_mock_reset();
     subscriber_callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -429,7 +430,7 @@ static void test_liveliness_manual_subscriber_drops_data_from_automatic_publishe
 
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
     // Discovered Publisher offers AUTOMATIC (qos = 0, no tt_UPDATE_QOS_LIVELINESS_MANUAL bit).
     upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, "test_topic",
                              "test_publisher");
@@ -448,7 +449,7 @@ static void test_liveliness_manual_subscriber_receives_data_from_manual_publishe
     test_mock_reset();
     subscriber_callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -457,7 +458,7 @@ static void test_liveliness_manual_subscriber_receives_data_from_manual_publishe
 
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
     upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER,
                              tt_UPDATE_QOS_LIVELINESS_MANUAL, 0, 0, "test_topic", "test_publisher");
 
@@ -476,7 +477,7 @@ static void test_liveliness_lease_subscriber_drops_data_from_looser_publisher(vo
     test_mock_reset();
     subscriber_callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -485,7 +486,7 @@ static void test_liveliness_lease_subscriber_drops_data_from_looser_publisher(vo
 
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
     // Discovered Publisher's own lease is 2s - too loose for this Subscriber's 1s requirement.
     upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 2000000000,
                              "test_topic", "test_publisher");
@@ -505,7 +506,7 @@ static void test_liveliness_lease_subscriber_drops_data_from_looser_publisher(vo
 static void test_publisher_side_gate_skips_subscriber_requesting_tighter_deadline(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
@@ -525,7 +526,7 @@ static void test_publisher_side_gate_skips_subscriber_requesting_tighter_deadlin
 static void test_publisher_side_gate_skips_subscriber_requesting_manual_liveliness(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);

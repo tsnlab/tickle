@@ -108,7 +108,7 @@ so a hand-edited generated file or a `.msg`/`.srv` edited without regenerating b
   colcon) and the CycloneDDS/FastDDS comparison harnesses under `examples/perf_hil/` (vendor-API
   code that needs each vendor's headers). `clang-format` still covers both, which is the half CI
   gates on any changed file.
-- Naming: `tt_`-prefixed `CamelCase` for public struct/type names (`tt_Node`, `tt_Client`),
+- Naming: `tt_`-prefixed `CamelCase` for public struct/type names (`tt_Context`, `tt_Client`),
   `lower_case` for functions/variables/struct field names, `UPPER_CASE` for macros and enum
   constants - see `.clang-tidy`'s `readability-identifier-naming.*` options for the exact rules.
   Generated codecs (see "Generated codecs" above) are exempt - they keep ROS 2's own
@@ -142,7 +142,7 @@ From `v1.0.0` on, TickLE follows [SemVer](https://semver.org/) for its **public 
 to any of those needs a major-version bump and a `CHANGELOG.md` entry.
 
 Not covered, and free to change in any release: anything prefixed `_tt_` / `_TT_`, everything
-under `src/`, the `tt_Node` / `tt_Client` / … struct *layouts* (treat them as opaque - allocate
+under `src/`, the `tt_Context` / `tt_Client` / … struct *layouts* (treat them as opaque - allocate
 them, don't inspect or copy their fields), and the on-the-wire protocol details (`tt_VERSION`
 gates those separately). Bump `TICKLE_VERSION_*` in the same PR as the change.
 

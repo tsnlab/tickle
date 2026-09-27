@@ -18,7 +18,7 @@
 // (Milestone 0(c)) never learns a remote node's display name either, only its endpoints' own
 // kind/name/type - so rmw_get_node_names() can only ever truthfully report this *process's own*
 // logical nodes, never any other process's. Milestone 34 closed part of this gap as a side effect
-// of promoting the shared tt_Node/discovery up to rmw_tickle_context_impl_t: every logical node
+// of promoting the shared tt_Context/discovery up to rmw_tickle_context_impl_t: every logical node
 // sharing this context is now enumerable (context_impl->nodes[]), not just the one specific
 // rmw_node_t handle a caller happened to pass in - a real, documented gap versus full ROS 2 graph
 // introspection remains regardless (e.g. `ros2 node list` against a live rmw_tickle graph would
@@ -27,7 +27,7 @@
 // rmw_count_publishers()/_subscribers() need to count matches in *two* places: TickLE's own
 // discovery table (tt_Discovery, Milestone 0(c), now context-scoped) only ever records *remote*
 // entities - other nodes' own announces - never this process's own locally-created ones (see
-// struct tt_Discovery itself), so count_matching() below also scans tickle_node.endpoints[]
+// struct tt_Discovery itself), so count_matching() below also scans tickle_context.endpoints[]
 // directly for local matches, rather than needing a separate local bookkeeping list of its own.
 
 #include <pthread.h> // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own <pthread.h> comment
@@ -37,8 +37,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#include <tickle/config.h> // tt_NODE_ID_INVALID, tt_MAX_DISCOVERED_ENTITIES
-#include <tickle/hal.h>    // tt_get_ns() - tt_Node_entity_alive()'s own "now" argument
+#include <tickle/config.h> // tt_CONTEXT_ID_INVALID, tt_MAX_DISCOVERED_ENTITIES
+#include <tickle/hal.h>    // tt_get_ns() - tt_Context_entity_alive()'s own "now" argument
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h" // rcutils_allocator_is_valid()
@@ -194,18 +194,18 @@ rmw_ret_t rmw_get_node_names_with_enclaves(const rmw_node_t* node, rcutils_strin
 // the node lock is already held by the caller - see rmw_tickle_count_matching_locked()'s
 // own doc comment for why that one can't take it itself. Only ever counts *alive* discovery
 // entries - Milestone 62 (rmw_tickle/PLAN.md's own "DDS semantic-parity backlog" row 3) switched
-// this from reading struct tt_DiscoveredEntity.alive directly to tt_Node_entity_alive() (tickle.h),
+// this from reading struct tt_DiscoveredEntity.alive directly to tt_Context_entity_alive() (tickle.h),
 // computed fresh against each entity's own liveliness_lease_duration_ns when it requested one,
 // instead of only ever reflecting check_liveliness()'s own coarser ~3s node-level sweep - see that
 // function's own doc comment for the full "why". A tombstoned/expired one shouldn't count as
 // "currently offered/requested" for rmw_count_publishers()/_subscribers() or RMW_EVENT_LIVELINESS_
 // CHANGED's own alive_count either; see count_not_alive_matching_locked() below for its own
 // counterpart. Local endpoints have no tombstone concept at all - they're either present in
-// tickle_node.endpoints[] or destroyed outright, so no matching check is needed for them.
+// tickle_context.endpoints[] or destroyed outright, so no matching check is needed for them.
 static size_t count_matching_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name, uint8_t kind) {
     size_t matched = 0;
-    for (uint32_t i = 0; i < context_impl->tickle_node.endpoint_count; ++i) {
-        const struct tt_Endpoint* endpoint = context_impl->tickle_node.endpoints[i];
+    for (uint32_t i = 0; i < context_impl->tickle_context.endpoint_count; ++i) {
+        const struct tt_Endpoint* endpoint = context_impl->tickle_context.endpoints[i];
         if (endpoint->kind == kind && strcmp(endpoint->name, topic_name) == 0) {
             matched++;
         }
@@ -213,8 +213,9 @@ static size_t count_matching_locked(rmw_tickle_context_impl_t* context_impl, con
     uint64_t now = tt_get_ns();
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
         const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->node_id != tt_NODE_ID_INVALID && tt_Node_entity_alive(&context_impl->tickle_node, entity, now) &&
-            entity->kind == kind && strcmp(entity->name, topic_name) == 0) {
+        if (entity->context_id != tt_CONTEXT_ID_INVALID &&
+            tt_Context_entity_alive(&context_impl->tickle_context, entity, now) && entity->kind == kind &&
+            strcmp(entity->name, topic_name) == 0) {
             matched++;
         }
     }
@@ -223,7 +224,7 @@ static size_t count_matching_locked(rmw_tickle_context_impl_t* context_impl, con
 
 // count_matching_locked()'s own tombstone counterpart - QoS roadmap #3 (LIVELINESS)'s own
 // RMW_EVENT_LIVELINESS_CHANGED.not_alive_count (a live snapshot, rmw_subscription.c/rmw_event.c),
-// now backed by real data (tt_Node_entity_alive(), see count_matching_locked()'s own doc comment
+// now backed by real data (tt_Context_entity_alive(), see count_matching_locked()'s own doc comment
 // for why this reads that instead of struct tt_DiscoveredEntity.alive directly since Milestone 62)
 // instead of always 0. Local endpoints are never counted here for the same reason count_matching_
 // locked() never checks them for aliveness - no tombstone concept applies to them.
@@ -233,8 +234,9 @@ static size_t count_not_alive_matching_locked(rmw_tickle_context_impl_t* context
     uint64_t now = tt_get_ns();
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
         const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->node_id != tt_NODE_ID_INVALID && !tt_Node_entity_alive(&context_impl->tickle_node, entity, now) &&
-            entity->kind == kind && strcmp(entity->name, topic_name) == 0) {
+        if (entity->context_id != tt_CONTEXT_ID_INVALID &&
+            !tt_Context_entity_alive(&context_impl->tickle_context, entity, now) && entity->kind == kind &&
+            strcmp(entity->name, topic_name) == 0) {
             matched++;
         }
     }
@@ -243,7 +245,7 @@ static size_t count_not_alive_matching_locked(rmw_tickle_context_impl_t* context
 
 // rmw_tickle.h's own declaration - see this file's own module doc comment for why both the local
 // endpoint table and the remote discovery table need scanning. Callable from any thread except
-// the poll thread itself mid-tt_Node_poll() (see count_matching_locked()'s own doc comment).
+// the poll thread itself mid-tt_Context_poll() (see count_matching_locked()'s own doc comment).
 size_t rmw_tickle_count_matching_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name, uint8_t kind) {
     return count_matching_locked(context_impl, topic_name, kind);
 }
@@ -298,7 +300,7 @@ static bool qos_incompatible(bool requested_reliable, bool requested_durable, bo
 // currently-alive discovered remote Subscribers on `topic_name` request something this Publisher
 // (offering `offered_*`) doesn't. Same "poll-thread-only, no locking of its own" rule as count_
 // matching_locked() - called only from check_publisher_qos_incompatible() (rmw_publisher.c),
-// which already holds the node lock via the same tt_Node_schedule()-callback contract
+// which already holds the node lock via the same tt_Context_schedule()-callback contract
 // that function's own doc comment explains.
 size_t rmw_tickle_count_incompatible_subscribers_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
                                                         bool offered_reliable, bool offered_durable,
@@ -308,7 +310,7 @@ size_t rmw_tickle_count_incompatible_subscribers_locked(rmw_tickle_context_impl_
     size_t matched = 0;
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
         const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->node_id == tt_NODE_ID_INVALID || !entity->alive || entity->kind != tt_KIND_TOPIC_SUBSCRIBER ||
+        if (entity->context_id == tt_CONTEXT_ID_INVALID || !entity->alive || entity->kind != tt_KIND_TOPIC_SUBSCRIBER ||
             strcmp(entity->name, topic_name) != 0) {
             continue;
         }
@@ -338,7 +340,7 @@ size_t rmw_tickle_count_incompatible_publishers_locked(rmw_tickle_context_impl_t
     size_t matched = 0;
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
         const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->node_id == tt_NODE_ID_INVALID || !entity->alive || entity->kind != tt_KIND_TOPIC_PUBLISHER ||
+        if (entity->context_id == tt_CONTEXT_ID_INVALID || !entity->alive || entity->kind != tt_KIND_TOPIC_PUBLISHER ||
             strcmp(entity->name, topic_name) != 0) {
             continue;
         }
@@ -356,7 +358,7 @@ size_t rmw_tickle_count_incompatible_publishers_locked(rmw_tickle_context_impl_t
     return matched;
 }
 
-// The tt_Node_interrupt()-then-lock-then-scan-then-unlock sequence every count_matching_locked()
+// The tt_Context_interrupt()-then-lock-then-scan-then-unlock sequence every count_matching_locked()
 // caller in this file needs - split out once both rmw_count_publishers()/_subscribers() (below)
 // and rmw_publisher_count_matched_subscriptions()/rmw_subscription_count_matched_publishers()
 // (rmw_tickle/PLAN.md's remaining-rmw-API-surface backlog) needed the identical sequence, just
@@ -364,9 +366,9 @@ size_t rmw_tickle_count_incompatible_publishers_locked(rmw_tickle_context_impl_t
 // 34), never a specific rmw_tickle_node_t.
 static size_t count_matching_via_context_impl(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
                                               uint8_t kind) {
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     size_t matched = count_matching_locked(context_impl, topic_name, kind);
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
     return matched;
 }
 
@@ -443,26 +445,27 @@ static size_t count_matched_subscriptions_locked(rmw_tickle_publisher_t* pub_imp
     rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
     const struct tt_Publisher* pub = &pub_impl->tickle_publisher;
     size_t matched = 0;
-    for (uint32_t i = 0; i < context_impl->tickle_node.endpoint_count; ++i) {
-        const struct tt_Endpoint* endpoint = context_impl->tickle_node.endpoints[i];
+    for (uint32_t i = 0; i < context_impl->tickle_context.endpoint_count; ++i) {
+        const struct tt_Endpoint* endpoint = context_impl->tickle_context.endpoints[i];
         if (endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER && strcmp(endpoint->name, topic_name) == 0) {
             matched++;
         }
     }
     size_t peers = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; ++i) {
-        peers += pub->peers[i].node_id != tt_NODE_ID_INVALID;
+        peers += pub->peers[i].context_id != tt_CONTEXT_ID_INVALID;
     }
     uint64_t now = tt_get_ns();
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
         const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->node_id == tt_NODE_ID_INVALID || entity->kind != tt_KIND_TOPIC_SUBSCRIBER ||
-            strcmp(entity->name, topic_name) != 0 || !tt_Node_entity_alive(&context_impl->tickle_node, entity, now)) {
+        if (entity->context_id == tt_CONTEXT_ID_INVALID || entity->kind != tt_KIND_TOPIC_SUBSCRIBER ||
+            strcmp(entity->name, topic_name) != 0 ||
+            !tt_Context_entity_alive(&context_impl->tickle_context, entity, now)) {
             continue;
         }
         bool is_peer = peers >= tt_MAX_PEER_COUNT;
         for (int peer = 0; peer < tt_MAX_PEER_COUNT && !is_peer; ++peer) {
-            is_peer = pub->peers[peer].node_id == entity->node_id;
+            is_peer = pub->peers[peer].context_id == entity->context_id;
         }
         matched += is_peer;
     }
@@ -478,9 +481,9 @@ rmw_ret_t rmw_publisher_count_matched_subscriptions(const rmw_publisher_t* publi
     }
 
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
-    tt_Node_lock(&pub_impl->node->context_impl->tickle_node);
+    tt_Context_lock(&pub_impl->node->context_impl->tickle_context);
     *subscription_count = count_matched_subscriptions_locked(pub_impl, publisher->topic_name);
-    tt_Node_unlock(&pub_impl->node->context_impl->tickle_node);
+    tt_Context_unlock(&pub_impl->node->context_impl->tickle_context);
     return RMW_RET_OK;
 }
 
@@ -580,8 +583,8 @@ static size_t add_name_type_entry(struct name_type_entry* entries, size_t count,
 static size_t collect_graph_wide_name_types(rmw_tickle_context_impl_t* context_impl, uint8_t kind_a, uint8_t kind_b,
                                             struct name_type_entry* entries) {
     size_t count = 0;
-    for (uint32_t i = 0; i < context_impl->tickle_node.endpoint_count; ++i) {
-        struct tt_Endpoint* endpoint = context_impl->tickle_node.endpoints[i];
+    for (uint32_t i = 0; i < context_impl->tickle_context.endpoint_count; ++i) {
+        struct tt_Endpoint* endpoint = context_impl->tickle_context.endpoints[i];
         if (endpoint->kind != kind_a && endpoint->kind != kind_b) {
             continue;
         }
@@ -590,7 +593,7 @@ static size_t collect_graph_wide_name_types(rmw_tickle_context_impl_t* context_i
     }
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
         const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->node_id == tt_NODE_ID_INVALID || !entity->alive) {
+        if (entity->context_id == tt_CONTEXT_ID_INVALID || !entity->alive) {
             continue;
         }
         if (entity->kind != kind_a && entity->kind != kind_b) {
@@ -611,8 +614,8 @@ static size_t collect_by_node_name_types(rmw_tickle_context_impl_t* context_impl
                                          const char* owning_node_name, const char* owning_node_namespace,
                                          struct name_type_entry* entries) {
     size_t count = 0;
-    for (uint32_t i = 0; i < context_impl->tickle_node.endpoint_count; ++i) {
-        struct tt_Endpoint* endpoint = context_impl->tickle_node.endpoints[i];
+    for (uint32_t i = 0; i < context_impl->tickle_context.endpoint_count; ++i) {
+        struct tt_Endpoint* endpoint = context_impl->tickle_context.endpoints[i];
         if (endpoint->kind != kind) {
             continue;
         }
@@ -745,11 +748,11 @@ rmw_ret_t rmw_get_topic_names_and_types(const rmw_node_t* node, rcutils_allocato
     rmw_tickle_context_impl_t* context_impl = node_impl->context_impl;
     struct name_type_entry entries[tt_MAX_NAME_TYPE_ENTRIES];
 
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     size_t entry_count =
         collect_graph_wide_name_types(context_impl, tt_KIND_TOPIC_PUBLISHER, tt_KIND_TOPIC_SUBSCRIBER, entries);
     ret = build_names_and_types(entries, entry_count, allocator, topic_names_and_types);
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
     return ret;
 }
 
@@ -764,11 +767,11 @@ rmw_ret_t rmw_get_service_names_and_types(const rmw_node_t* node, rcutils_alloca
     rmw_tickle_context_impl_t* context_impl = node_impl->context_impl;
     struct name_type_entry entries[tt_MAX_NAME_TYPE_ENTRIES];
 
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     size_t entry_count =
         collect_graph_wide_name_types(context_impl, tt_KIND_SERVICE_SERVER, tt_KIND_SERVICE_CLIENT, entries);
     ret = build_names_and_types(entries, entry_count, allocator, service_names_and_types);
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
     return ret;
 }
 
@@ -848,11 +851,11 @@ rmw_ret_t rmw_get_subscriber_names_and_types_by_node(const rmw_node_t* node, rcu
     }
 
     struct name_type_entry entries[tt_MAX_NAME_TYPE_ENTRIES];
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     size_t entry_count =
         collect_by_node_name_types(context_impl, tt_KIND_TOPIC_SUBSCRIBER, node_name, node_namespace, entries);
     ret = build_names_and_types(entries, entry_count, allocator, topic_names_and_types);
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
     return ret;
 }
 
@@ -873,11 +876,11 @@ rmw_ret_t rmw_get_publisher_names_and_types_by_node(const rmw_node_t* node, rcut
     }
 
     struct name_type_entry entries[tt_MAX_NAME_TYPE_ENTRIES];
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     size_t entry_count =
         collect_by_node_name_types(context_impl, tt_KIND_TOPIC_PUBLISHER, node_name, node_namespace, entries);
     ret = build_names_and_types(entries, entry_count, allocator, topic_names_and_types);
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
     return ret;
 }
 
@@ -897,11 +900,11 @@ rmw_ret_t rmw_get_service_names_and_types_by_node(const rmw_node_t* node, rcutil
     }
 
     struct name_type_entry entries[tt_MAX_NAME_TYPE_ENTRIES];
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     size_t entry_count =
         collect_by_node_name_types(context_impl, tt_KIND_SERVICE_SERVER, node_name, node_namespace, entries);
     ret = build_names_and_types(entries, entry_count, allocator, service_names_and_types);
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
     return ret;
 }
 
@@ -921,11 +924,11 @@ rmw_ret_t rmw_get_client_names_and_types_by_node(const rmw_node_t* node, rcutils
     }
 
     struct name_type_entry entries[tt_MAX_NAME_TYPE_ENTRIES];
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     size_t entry_count =
         collect_by_node_name_types(context_impl, tt_KIND_SERVICE_CLIENT, node_name, node_namespace, entries);
     ret = build_names_and_types(entries, entry_count, allocator, service_names_and_types);
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
     return ret;
 }
 
@@ -975,27 +978,27 @@ static rmw_ret_t get_topic_endpoint_info_by_topic(rmw_tickle_context_impl_t* con
                                                   uint8_t kind, rmw_endpoint_type_t endpoint_type,
                                                   rcutils_allocator_t* allocator,
                                                   rmw_topic_endpoint_info_array_t* info_array) {
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
 
     size_t match_count = count_matching_locked(context_impl, topic_name, kind);
     rmw_ret_t ret = rmw_topic_endpoint_info_array_init_with_size(info_array, match_count, allocator);
     if (ret != RMW_RET_OK) {
-        tt_Node_unlock(&context_impl->tickle_node);
+        tt_Context_unlock(&context_impl->tickle_context);
         return ret; // already set its own error message
     }
 
     size_t index = 0;
-    for (uint32_t i = 0; i < context_impl->tickle_node.endpoint_count && index < match_count; ++i) {
-        struct tt_Endpoint* endpoint = context_impl->tickle_node.endpoints[i];
+    for (uint32_t i = 0; i < context_impl->tickle_context.endpoint_count && index < match_count; ++i) {
+        struct tt_Endpoint* endpoint = context_impl->tickle_context.endpoints[i];
         if (endpoint->kind != kind || strcmp(endpoint->name, topic_name) != 0) {
             continue;
         }
         struct local_endpoint_details details = get_local_endpoint_details(endpoint);
         ret = populate_topic_endpoint_info(allocator, details.owning_node_name, details.owning_node_namespace,
-                                           details.type_name, endpoint_type, context_impl->tickle_node.id, endpoint->id,
-                                           details.qos, &info_array->info_array[index]);
+                                           details.type_name, endpoint_type, context_impl->tickle_context.id,
+                                           endpoint->id, details.qos, &info_array->info_array[index]);
         if (ret != RMW_RET_OK) {
-            tt_Node_unlock(&context_impl->tickle_node);
+            tt_Context_unlock(&context_impl->tickle_context);
             fini_topic_endpoint_info_array_ignore_result(info_array, allocator);
             return ret;
         }
@@ -1003,7 +1006,7 @@ static rmw_ret_t get_topic_endpoint_info_by_topic(rmw_tickle_context_impl_t* con
     }
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES && index < match_count; ++i) {
         const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->node_id == tt_NODE_ID_INVALID || !entity->alive || entity->kind != kind ||
+        if (entity->context_id == tt_CONTEXT_ID_INVALID || !entity->alive || entity->kind != kind ||
             strcmp(entity->name, topic_name) != 0) {
             continue;
         }
@@ -1012,17 +1015,17 @@ static rmw_ret_t get_topic_endpoint_info_by_topic(rmw_tickle_context_impl_t* con
                                                                       : RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
         qos.durability = (entity->qos & tt_UPDATE_QOS_DURABLE) != 0 ? RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL
                                                                     : RMW_QOS_POLICY_DURABILITY_VOLATILE;
-        ret = populate_topic_endpoint_info(allocator, "", "", entity->type, endpoint_type, entity->node_id,
+        ret = populate_topic_endpoint_info(allocator, "", "", entity->type, endpoint_type, entity->context_id,
                                            entity->endpoint_id, &qos, &info_array->info_array[index]);
         if (ret != RMW_RET_OK) {
-            tt_Node_unlock(&context_impl->tickle_node);
+            tt_Context_unlock(&context_impl->tickle_context);
             fini_topic_endpoint_info_array_ignore_result(info_array, allocator);
             return ret;
         }
         index++;
     }
 
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
     return RMW_RET_OK;
 }
 
@@ -1093,14 +1096,14 @@ rmw_ret_t rmw_service_server_is_available(const rmw_node_t* node, const rmw_clie
     const char* type_name = client_impl->service.name;
     const char* service_name = client->service_name;
 
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
 
     bool found = false;
-    for (uint32_t i = 0; i < context_impl->tickle_node.endpoint_count && !found; ++i) {
-        const struct tt_Endpoint* endpoint = context_impl->tickle_node.endpoints[i];
+    for (uint32_t i = 0; i < context_impl->tickle_context.endpoint_count && !found; ++i) {
+        const struct tt_Endpoint* endpoint = context_impl->tickle_context.endpoints[i];
         // A local endpoint has no separate "type name" of its own to compare here (tt_Endpoint
         // only carries the service/topic *name*, not its type - see struct tt_Endpoint) - a local
-        // server matches on name+kind alone, mirroring how tt_Node_create_server() itself only
+        // server matches on name+kind alone, mirroring how tt_Context_create_server() itself only
         // ever registers one server per (name), never per (name, type) pair on this side.
         if (endpoint->kind == tt_KIND_SERVICE_SERVER && strcmp(endpoint->name, service_name) == 0) {
             found = true;
@@ -1108,13 +1111,13 @@ rmw_ret_t rmw_service_server_is_available(const rmw_node_t* node, const rmw_clie
     }
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES && !found; ++i) {
         const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->node_id != tt_NODE_ID_INVALID && entity->kind == tt_KIND_SERVICE_SERVER &&
+        if (entity->context_id != tt_CONTEXT_ID_INVALID && entity->kind == tt_KIND_SERVICE_SERVER &&
             strcmp(entity->name, service_name) == 0 && strcmp(entity->type, type_name) == 0) {
             found = true;
         }
     }
 
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
     *is_available = found;
     return RMW_RET_OK;
 }

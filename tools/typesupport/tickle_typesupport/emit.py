@@ -13,7 +13,7 @@ themselves.
 
 Two things every function here leans on:
   - the payload pointer a generated *_encode/*_decode is ever called with is always at least
-    4-byte aligned (tt_Node's tx_buffer/rx_buffer are _Alignas(4), and every framing header ends
+    4-byte aligned (tt_Context's tx_buffer/rx_buffer are _Alignas(4), and every framing header ends
     on a 4-byte boundary - see the _Static_assert()s in src/tickle.c) - so once a field's own
     offset is aligned to its own requirement, direct pointer casts (`*(uint32_t*)(payload+off)`)
     are well-defined, not just "happens to work". That's what buys the "no memcpy" scalar

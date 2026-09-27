@@ -66,7 +66,7 @@ static int32_t sized_encode(struct tt_Data* data, uint8_t* payload, uint32_t len
 }
 
 #define ENDPOINTS 30
-static struct tt_Node node;
+static struct tt_Context node;
 static struct tt_Topic topics[ENDPOINTS];
 static struct tt_Publisher pubs[ENDPOINTS];
 static char names[ENDPOINTS][48];
@@ -86,7 +86,7 @@ static void init(int endpoints) {
         topics[i].data_size = sizeof(sample);
         topics[i].data_encode_size = sized_encode_size;
         topics[i].data_encode = sized_encode;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pubs[i], &topics[i], "my_robot_node_endpoint"));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pubs[i], &topics[i], "my_robot_node_endpoint"));
     }
     datagram_count = 0;
     test_mock_send_hook = capture;
@@ -178,7 +178,7 @@ static void test_a_large_request_keeps_the_large_datagram(void) {
     service.request_encode = sized_request_encode;
     service.response_decode = ignore_response;
     service.response_free = free_response;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_client(&node, &client, &service, "big_client", on_response));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_client(&node, &client, &service, "big_client", on_response));
     request_size = 5000;
     EXPECT_EQ_INT(tt_RET_OK, tt_Client_call(&client, (struct tt_Request*)sample));
     node_flush(&node, 0, NULL);

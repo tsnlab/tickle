@@ -5,7 +5,7 @@
 # default wait (--wait poll) is spin_some() plus a 100 us sleep, and it reads the round trip after the
 # loop: every row includes the sleep after the spin that took the reply, and a reply is only noticed on
 # the loop's ~150 us cadence (sleep plus timer slack). --wait block waits in spin_once() and reads the
-# round trip in the callback, as the native client waits in tt_Node_poll().
+# round trip in the callback, as the native client waits in tt_Context_poll().
 #
 # ARMS: rmw_tickle, rmw_cyclonedds_cpp, rmw_fastrtps_cpp x --wait poll | block, best effort, the same pong,
 # a veth pair between two private netns on this PC, interleaved, 3 reps.

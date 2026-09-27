@@ -11,7 +11,7 @@
 // rmw_tickle_check_callbacks_usable() (rmw_typesupport.c) at every entity creation: a type generated
 // for a different tt_MAX_BUFFER_LENGTH, or whose TickLE struct outgrows one datagram, is refused
 // with an error naming the type and both numbers - not accepted, and not left to core's generic
-// "tt_Node_create_publisher() failed".
+// "tt_Context_create_publisher() failed".
 //
 // Why both matter (2026-09-24): rmw_tickle is raising tt_MAX_BUFFER_LENGTH to 65507, set once in
 // rosidl_typesupport_tickle_c and compiled into rmw_tickle and every generated interface library.

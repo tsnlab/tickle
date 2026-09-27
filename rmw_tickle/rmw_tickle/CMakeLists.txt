@@ -46,7 +46,7 @@ add_library(rmw_tickle
   src/rmw_event.c
   src/rmw_features.c
   src/rmw_unsupported.c
-  # TickLE's own core (rmw_node.c's tt_Node_create()/_poll()/_interrupt()/_destroy() calls,
+  # TickLE's own core (rmw_node.c's tt_Context_create()/_poll()/_interrupt()/_destroy() calls,
   # Milestone 2, are the first real use of it in this package - rmw_init.c only touched the
   # _tt_CONFIG global struct before this) - compiled straight in, same reason rosidl_typesupport_
   # tickle_c/cmake/rosidl_typesupport_tickle_c_generate_interfaces.cmake does the same for src/
@@ -61,7 +61,7 @@ add_library(rmw_tickle
 
 # tt_MAX_BUFFER_LENGTH: the one value every interface package's typesupport was generated for,
 # exported by rosidl_typesupport_tickle_c (its TICKLE_MAX_BUFFER_LENGTH). PUBLIC, because anything
-# compiled against rmw_tickle's headers sees struct tt_Node and the rest of tickle.h, whose layout
+# compiled against rmw_tickle's headers sees struct tt_Context and the rest of tickle.h, whose layout
 # depends on it - two translation units in one process disagreeing on it would disagree on those
 # structs' sizes.
 if(NOT rosidl_typesupport_tickle_c_MAX_BUFFER_LENGTH)
@@ -147,7 +147,7 @@ install(
 # roadmap actually cover, not full upstream rmw_implementation/test_rmw_implementation conformance
 # (no live two-process publish/subscribe/service round trip test infra exists yet for rmw_tickle -
 # every prior milestone's own verification depth stopped at "compile+link", and this milestone's
-# own new tests stay within that same boundary: a real struct tt_Node is created in-process, but
+# own new tests stay within that same boundary: a real struct tt_Context is created in-process, but
 # nothing here talks to a second node/peer - see PLAN.md's own note on this gap).
 if(BUILD_TESTING)
   find_package(ament_cmake_test REQUIRED)

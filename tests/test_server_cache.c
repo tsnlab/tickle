@@ -23,7 +23,7 @@
 // cache_buf[][]/clean_config[]/clean_scheduled[] slots directly.
 #include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
 
-static void init_node_and_server(struct tt_Node* node, struct tt_Server* server) {
+static void init_node_and_server(struct tt_Context* node, struct tt_Server* server) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     memset(server, 0, sizeof(*server));
@@ -33,7 +33,7 @@ static void init_node_and_server(struct tt_Node* node, struct tt_Server* server)
 // Writes a fake, already-encoded CallResponse submessage straight into node->tx_buffer, the
 // way end_encode() would have left it right before a response is cached (set_server_cache()
 // derives the cached length from node->tx_buffer + node->tx_tail).
-static struct tt_SubmessageHeader* write_fake_response(struct tt_Node* node, uint8_t receiver, uint32_t endpoint_id,
+static struct tt_SubmessageHeader* write_fake_response(struct tt_Context* node, uint8_t receiver, uint32_t endpoint_id,
                                                        uint16_t seq_no) {
     struct tt_SubmessageHeader* submessage_header = (struct tt_SubmessageHeader*)node->tx_buffer;
     submessage_header->type = tt_SUBMESSAGE_TYPE_CALLRESPONSE;
@@ -58,7 +58,7 @@ static struct tt_SubmessageHeader* write_fake_response(struct tt_Node* node, uin
 static void test_cache_round_trip(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Server server;
     init_node_and_server(&node, &server);
 
@@ -84,7 +84,7 @@ static void test_cache_round_trip(void) {
 static void test_cache_evicts_old_entry_for_same_receiver(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Server server;
     init_node_and_server(&node, &server);
 
@@ -99,7 +99,7 @@ static void test_cache_evicts_old_entry_for_same_receiver(void) {
 static void test_cache_keeps_entries_for_different_receivers_independent(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Server server;
     init_node_and_server(&node, &server);
 

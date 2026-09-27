@@ -56,7 +56,7 @@ static void ack_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t
     g_acked = true;
 }
 
-static void stop(struct tt_Node* node, uint64_t time, void* param) {
+static void stop(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
@@ -86,15 +86,15 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
     }
 
     struct tt_Publisher pub;
-    ret = tt_Node_create_publisher(&node, &pub, &BenchTopic, "ping");
+    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "ping");
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
@@ -117,7 +117,7 @@ int main(int argc, char** argv) {
     pub.durable = durable;
 
     struct tt_Subscriber ack_sub;
-    ret = tt_Node_create_subscriber(&node, &ack_sub, &BenchTopic, "pong", (tt_SUBSCRIBER_CALLBACK)ack_callback);
+    ret = tt_Context_create_subscriber(&node, &ack_sub, &BenchTopic, "pong", (tt_SUBSCRIBER_CALLBACK)ack_callback);
     if (ret != 0) {
         printf("Cannot create ack subscriber: %d\n", ret);
         return ret;
@@ -134,19 +134,19 @@ int main(int argc, char** argv) {
     }
 
     printf("Waiting up to %.0fs for the late subscriber's own ack...\n", wait_s);
-    tt_Node_schedule(&node, tt_get_ns() + (uint64_t)(wait_s * (double)tt_SECOND), stop, NULL);
+    tt_Context_schedule(&node, tt_get_ns() + (uint64_t)(wait_s * (double)tt_SECOND), stop, NULL);
 
     // 500ms (nanoseconds), so the g_acked check re-runs.
     const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
     ret = tt_RET_OK;
     while (!g_interrupted && !g_acked && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, poll_timeout_ns);
+        ret = tt_Context_poll(&node, poll_timeout_ns);
     }
 
     printf("RESULT: framework=tickle scenario=durability_late_join role=server durable=%d "
            "backlog_sent=%u acked=%d\n",
            durable, backlog_count, g_acked);
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

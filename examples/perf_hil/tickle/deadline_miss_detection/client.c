@@ -64,7 +64,7 @@ static struct tt_Publisher* g_pub;
 static uint64_t last_publish_ns;
 static uint64_t g_deadline_ns;
 
-static void send_one(struct tt_Node* node, uint64_t time, void* param) {
+static void send_one(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     if (g_interrupted || tt_get_ns() >= g_deadline_ns) {
         return;
@@ -78,10 +78,10 @@ static void send_one(struct tt_Node* node, uint64_t time, void* param) {
     uint64_t next_interval_ns = (seq == skip_at_seq)
                                     ? (uint64_t)(skip_interval_multiplier * deadline_s * (double)tt_SECOND)
                                     : (uint64_t)(deadline_s * (double)tt_SECOND);
-    tt_Node_schedule(node, time + next_interval_ns, send_one, NULL);
+    tt_Context_schedule(node, time + next_interval_ns, send_one, NULL);
 }
 
-static void check_deadline(struct tt_Node* node, uint64_t time, void* param) {
+static void check_deadline(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     if (g_interrupted) {
         return;
@@ -90,11 +90,11 @@ static void check_deadline(struct tt_Node* node, uint64_t time, void* param) {
         misses++;
     }
     if (time < g_deadline_ns) {
-        tt_Node_schedule(node, time + (uint64_t)(deadline_s * (double)tt_SECOND), check_deadline, NULL);
+        tt_Context_schedule(node, time + (uint64_t)(deadline_s * (double)tt_SECOND), check_deadline, NULL);
     }
 }
 
-static void stop(struct tt_Node* node, uint64_t time, void* param) {
+static void stop(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
@@ -118,15 +118,15 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
     }
 
     struct tt_Publisher pub;
-    ret = tt_Node_create_publisher(&node, &pub, &BenchTopic, "stream");
+    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "stream");
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
@@ -137,7 +137,7 @@ int main(int argc, char** argv) {
     uint64_t start = tt_get_ns();
     uint64_t send_start = start + (uint64_t)(discovery_margin_s * (double)tt_SECOND);
     g_deadline_ns = send_start + (uint64_t)(duration_s * (double)tt_SECOND);
-    tt_Node_schedule(&node, send_start, send_one, NULL);
+    tt_Context_schedule(&node, send_start, send_one, NULL);
     // Half-period phase offset from send_one's own schedule (2026-09-21, real bug found the hard
     // way): two independently-scheduled periodic timers on the exact same nominal period, with no
     // offset, are vulnerable to ordinary scheduling jitter flipping their relative firing order
@@ -146,18 +146,18 @@ int main(int argc, char** argv) {
     // `> deadline_s` on nearly every healthy cycle (writer_misses=31 over a 10s run for what should
     // have been one ~3-miss deliberate gap, the real symptom this fixes). A half-period offset
     // gives a robust safety margin against that jitter either direction.
-    tt_Node_schedule(&node, send_start + (uint64_t)(check_deadline_start_periods * deadline_s * (double)tt_SECOND),
-                     check_deadline, NULL);
-    tt_Node_schedule(&node, g_deadline_ns + (uint64_t)(1.0 * (double)tt_SECOND), stop, NULL);
+    tt_Context_schedule(&node, send_start + (uint64_t)(check_deadline_start_periods * deadline_s * (double)tt_SECOND),
+                        check_deadline, NULL);
+    tt_Context_schedule(&node, g_deadline_ns + (uint64_t)(1.0 * (double)tt_SECOND), stop, NULL);
 
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, -1);
+        ret = tt_Context_poll(&node, -1);
     }
 
     printf("RESULT: framework=tickle scenario=deadline_miss_detection role=client sent=%lu writer_misses=%u\n",
            (unsigned long)sent, misses);
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

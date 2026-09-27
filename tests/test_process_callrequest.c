@@ -73,7 +73,7 @@ static void stub_response_free(struct tt_Response* response) {
     (void)response;
 }
 
-static void init_node_service_server(struct tt_Node* node, struct tt_Service* service, struct tt_Server* server) {
+static void init_node_service_server(struct tt_Context* node, struct tt_Service* service, struct tt_Server* server) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -103,7 +103,7 @@ static void init_node_service_server(struct tt_Node* node, struct tt_Service* se
 
 // Builds a CallRequestHeader + 1-byte body at the start of node->rx_buffer, returning the tail
 // offset (matching what process_packet() would have handed process_callrequest()).
-static uint32_t write_callrequest(struct tt_Node* node, uint16_t seq_no, uint8_t retry) {
+static uint32_t write_callrequest(struct tt_Context* node, uint16_t seq_no, uint8_t retry) {
     struct tt_CallRequestHeader* callrequest_header = (struct tt_CallRequestHeader*)node->rx_buffer;
     callrequest_header->endpoint_id = ENDPOINT_ID;
     callrequest_header->seq_no = seq_no;
@@ -121,7 +121,7 @@ static void test_fresh_request_invokes_callback_and_sends(void) {
     callback_count = 0;
     stub_return_code = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
     init_node_service_server(&node, &service, &server);
@@ -148,7 +148,7 @@ static void test_retry_hits_cache_without_recalling_callback(void) {
     callback_count = 0;
     stub_return_code = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
     init_node_service_server(&node, &service, &server);
@@ -180,7 +180,7 @@ static void test_fresh_request_response_is_unicast_to_sender(void) {
     callback_count = 0;
     stub_return_code = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
     init_node_service_server(&node, &service, &server);
@@ -209,7 +209,7 @@ static void test_unknown_endpoint_is_ignored(void) {
     test_mock_reset();
     callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
     init_node_service_server(&node, &service, &server);
@@ -234,14 +234,14 @@ static void test_unknown_endpoint_is_ignored(void) {
 // Milestone 17 (rmw_tickle/PLAN.md): a callback returning tt_CALL_DEFERRED must not send anything
 // immediately. Since 2026-09-27 the later tt_Server_send_response() sends the answer itself, before it returns
 // (it used to leave it READY for the poll thread's own flush_pending_
-// responses() (called directly here, whitebox, standing in for tt_Node_poll()) must still get the
+// responses() (called directly here, whitebox, standing in for tt_Context_poll()) must still get the
 // real answer out - proving the deferred-then-answered path end to end.
 static void test_deferred_request_answered_later_is_sent(void) {
     test_mock_reset();
     callback_count = 0;
     stub_return_code = tt_CALL_DEFERRED;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
     init_node_service_server(&node, &service, &server);
@@ -266,11 +266,11 @@ static void test_deferred_request_answered_later_is_sent(void) {
     EXPECT_EQ_U32((uint32_t)tt_SERVER_SLOT_EMPTY, (uint32_t)server.slot_state[0]); // and the slot reclaimed
     EXPECT_TRUE(!server.pending_timeout_scheduled[0]);                             // with its timeout
 
-    (void)tt_Node_poll(&node, 0);
+    (void)tt_Context_poll(&node, 0);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count); // nothing left for a poll to send
 }
 
-// The same path with tt_Node_poll() around it: the response goes out from tt_Server_send_response() itself, so no
+// The same path with tt_Context_poll() around it: the response goes out from tt_Server_send_response() itself, so no
 // poll is needed for it and none sends it twice; nothing is left READY for a poll, which before the 2026-09-27
 // change was the poll's job (flush_pending_responses(), gated by D3's counter, both gone with it).
 static void test_deferred_response_is_sent_by_send_response_itself(void) {
@@ -278,7 +278,7 @@ static void test_deferred_response_is_sent_by_send_response_itself(void) {
     callback_count = 0;
     stub_return_code = tt_CALL_DEFERRED;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
     init_node_service_server(&node, &service, &server);
@@ -291,7 +291,7 @@ static void test_deferred_response_is_sent_by_send_response_itself(void) {
     uint32_t tail = write_callrequest(&node, 42, 0);
     EXPECT_TRUE(process_callrequest(&node, &header, node.rx_buffer, 0, tail, 0, 0));
 
-    (void)tt_Node_poll(&node, 0);
+    (void)tt_Context_poll(&node, 0);
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_call_count); // nothing ready, nothing sent
 
     uint8_t response_byte = 0;
@@ -299,13 +299,13 @@ static void test_deferred_response_is_sent_by_send_response_itself(void) {
     EXPECT_TRUE(tt_RET_OK == tt_Server_send_response(&server, request_id, 0, (struct tt_Response*)&response_byte));
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
 
-    (void)tt_Node_poll(&node, 0);
+    (void)tt_Context_poll(&node, 0);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
     EXPECT_EQ_U32((uint32_t)tt_SERVER_SLOT_EMPTY, (uint32_t)server.slot_state[0]);
 }
 
 // The flip side: nobody ever calls tt_Server_send_response() for a deferred request -
-// pending_response_timeout() (the tt_Node_schedule() callback, invoked directly here rather than
+// pending_response_timeout() (the tt_Context_schedule() callback, invoked directly here rather than
 // via a real elapsed wait - test_liveliness.c's own check_liveliness() tests already establish
 // this same "call the timer callback directly" whitebox pattern) must reclaim the slot instead of
 // leaking it forever, and a tt_Server_send_response() that arrives after that must cleanly report
@@ -315,7 +315,7 @@ static void test_deferred_request_timeout_reclaims_slot(void) {
     callback_count = 0;
     stub_return_code = tt_CALL_DEFERRED;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
     init_node_service_server(&node, &service, &server);
@@ -349,7 +349,7 @@ static void test_retry_while_deferred_does_not_recall_callback(void) {
     callback_count = 0;
     stub_return_code = tt_CALL_DEFERRED;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
     init_node_service_server(&node, &service, &server);
@@ -420,7 +420,7 @@ static void test_deferred_response_is_sent_as_it_was_at_send_response(void) {
     callback_count = 0;
     stub_return_code = tt_CALL_DEFERRED;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
     init_node_service_server(&node, &service, &server);
@@ -443,7 +443,7 @@ static void test_deferred_response_is_sent_as_it_was_at_send_response(void) {
     EXPECT_TRUE(tt_RET_OK == tt_Server_send_response(&server, request_id, 0, (struct tt_Response*)&response));
     memset(text, 'X', sizeof(text) - 1);
 
-    (void)tt_Node_poll(&node, 0);
+    (void)tt_Context_poll(&node, 0);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
     EXPECT_TRUE(captured_contains("qos_overrides./parameter_events.publisher.depth"));
     EXPECT_TRUE(!captured_contains("XXXXXXXX"));
@@ -461,7 +461,7 @@ static void test_many_answered_calls_do_not_fill_the_scheduler(void) {
     callback_count = 0;
     stub_return_code = tt_CALL_DEFERRED;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
     init_node_service_server(&node, &service, &server);

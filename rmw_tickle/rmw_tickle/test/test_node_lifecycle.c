@@ -12,7 +12,7 @@
 // node()/rmw_destroy_node()/rmw_shutdown()/rmw_context_fini() together - every prior milestone
 // proved its own piece compiles and links against real rmw/rosidl headers (check-all.yml), but
 // none actually *ran* rmw_init() until this test (which is what surfaced rmw_get_zero_initialized_
-// context() missing entirely - see rmw_init.c). A real struct tt_Node is created and destroyed
+// context() missing entirely - see rmw_init.c). A real struct tt_Context is created and destroyed
 // here (binding a real UDP socket, starting and stopping a real poll thread) - no second node/peer
 // is needed for this, unlike a publish/subscribe/service round trip (out of scope - see this
 // milestone's own "not solved here" note in PLAN.md).

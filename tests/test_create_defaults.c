@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// tt_Node_create_publisher()/_subscriber() must set every field an announce or the receive path
+// tt_Context_create_publisher()/_subscriber() must set every field an announce or the receive path
 // reads, whatever the struct held before - a caller need not zero it first.
 //
 // Found 2026-09-24 by UBSan while auditing the core at a larger buffer size: "load of value 69,
@@ -70,7 +70,7 @@ static void on_data(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, s
     (void)data;
 }
 
-static struct tt_Node node;
+static struct tt_Context node;
 static struct tt_Topic topic;
 
 static void init(void) {
@@ -93,7 +93,7 @@ static void test_publisher_defaults_override_garbage(void) {
     init();
     static struct tt_Publisher pub;
     memset(&pub, GARBAGE, sizeof(pub));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pub, &topic, "ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub, &topic, "ep"));
 
     EXPECT_EQ_U32(0, endpoint_qos_bits((struct tt_Endpoint*)&pub)); // what the announce carries
     EXPECT_TRUE(!pub.reliable && !pub.durable && !pub.keep_all && !pub.liveliness_manual);
@@ -102,10 +102,10 @@ static void test_publisher_defaults_override_garbage(void) {
     EXPECT_TRUE(pub.writable_callback == NULL && pub.writable_callback_param == NULL && !pub.writable_pending);
     EXPECT_TRUE(pub.reliable_cache == NULL);
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
-        EXPECT_EQ_INT(tt_NODE_ID_INVALID, pub.peer_acks[i].node_id); // no ack slot looks occupied
+        EXPECT_EQ_INT(tt_CONTEXT_ID_INVALID, pub.peer_acks[i].context_id); // no ack slot looks occupied
     }
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        EXPECT_EQ_INT(tt_NODE_ID_INVALID, pub.peers[i].node_id);
+        EXPECT_EQ_INT(tt_CONTEXT_ID_INVALID, pub.peers[i].context_id);
     }
 }
 
@@ -113,7 +113,7 @@ static void test_subscriber_defaults_override_garbage(void) {
     init();
     static struct tt_Subscriber sub;
     memset(&sub, GARBAGE, sizeof(sub));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&node, &sub, &topic, "ep", on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&node, &sub, &topic, "ep", on_data));
 
     EXPECT_EQ_U32(0, endpoint_qos_bits((struct tt_Endpoint*)&sub));
     EXPECT_TRUE(!sub.reliable && !sub.durable && !sub.liveliness_manual);

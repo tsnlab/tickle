@@ -2,7 +2,7 @@
 ## Runtime Class Diagram
 ```mermaid
 classDiagram
-    class tt_Node {
+    class tt_Context {
         +uint8_t id
         +uint32_t endpoint_count
         +tt_Endpoint* endpoints[256]
@@ -17,10 +17,10 @@ classDiagram
         +tt_TCB scheduler[128]
         +int32_t scheduler_tail
         +tt_hal hal
-        +tt_Node_create() int32_t
-        +tt_Node_poll() int32_t
-        +tt_Node_destroy() int32_t
-        +tt_Node_schedule(time, fn, param) bool
+        +tt_Context_create() int32_t
+        +tt_Context_poll() int32_t
+        +tt_Context_destroy() int32_t
+        +tt_Context_schedule(time, fn, param) bool
     }
 
     class tt_Endpoint {
@@ -32,7 +32,7 @@ classDiagram
 
     class tt_Client {
         +tt_Endpoint endpoint
-        +tt_Node* node
+        +tt_Context* node
         +tt_Service* service
         +tt_CLIENT_CALLBACK callback
         +uint16_t seq_no
@@ -47,7 +47,7 @@ classDiagram
 
     class tt_Server {
         +tt_Endpoint endpoint
-        +tt_Node* node
+        +tt_Context* node
         +tt_Service* service
         +tt_SERVER_CALLBACK callback
         +uint8_t cache_buf[64][2944]
@@ -60,7 +60,7 @@ classDiagram
 
     class tt_Publisher {
         +tt_Endpoint endpoint
-        +tt_Node* node
+        +tt_Context* node
         +tt_Topic* topic
         +uint16_t seq_no
         +tt_Publisher_publish(data) int32_t
@@ -69,7 +69,7 @@ classDiagram
 
     class tt_Subscriber {
         +tt_Endpoint endpoint
-        +tt_Node* node
+        +tt_Context* node
         +tt_Topic* topic
         +tt_SUBSCRIBER_CALLBACK callback
         +uint16_t seq_no
@@ -116,16 +116,16 @@ classDiagram
     tt_Endpoint <|-- tt_Publisher : embed+cast
     tt_Endpoint <|-- tt_Subscriber : embed+cast
 
-    tt_Node "1" o-- "0..256" tt_Endpoint : endpoints[]
-    tt_Node "1" *-- "0..128" tt_TCB : scheduler[]
+    tt_Context "1" o-- "0..256" tt_Endpoint : endpoints[]
+    tt_Context "1" *-- "0..128" tt_TCB : scheduler[]
     tt_Client "0..*" --> "1" tt_Service : service
     tt_Server "0..*" --> "1" tt_Service : service
     tt_Publisher "0..*" --> "1" tt_Topic : topic
     tt_Subscriber "0..*" --> "1" tt_Topic : topic
-    tt_Client "*" --> "1" tt_Node : node
-    tt_Server "*" --> "1" tt_Node : node
-    tt_Publisher "*" --> "1" tt_Node : node
-    tt_Subscriber "*" --> "1" tt_Node : node
+    tt_Client "*" --> "1" tt_Context : node
+    tt_Server "*" --> "1" tt_Context : node
+    tt_Publisher "*" --> "1" tt_Context : node
+    tt_Subscriber "*" --> "1" tt_Context : node
 ```
 
 ## Protocol Class Diagram
@@ -220,10 +220,10 @@ sequenceDiagram
     PubTickle->>PubTickle: encode(DataHeader: endpoint_id, seq_no, timestamp)
     PubTickle->>PubTickle: topic->data_encode(data → CDR)
     PubTickle->>PubTickle: end_encode(is_flush=false) (4 bytes padding, flush only if needed)
-    Note over PubTickle: Publish batches opportunistically: flushed now only if this<br/>submessage doesn't fit tt_MAX_BUFFER_LENGTH, otherwise it<br/>waits for node_flush()'s next tt_NODE_TX_INTERVAL (1ms) tick.<br/>Unlike Call/Response, there's no synchronous waiter to serve.
+    Note over PubTickle: Publish batches opportunistically: flushed now only if this<br/>submessage doesn't fit tt_MAX_BUFFER_LENGTH, otherwise it<br/>waits for node_flush()'s next tt_CONTEXT_TX_INTERVAL (1ms) tick.<br/>Unlike Call/Response, there's no synchronous waiter to serve.
     PubTickle->>Net: flush_tx() → tt_send() (UDP broadcast)
 
-    Net->>SubTickle: tt_Node_poll() → tt_receive()
+    Net->>SubTickle: tt_Context_poll() → tt_receive()
     SubTickle->>SubTickle: process_packet() → decode tt_Header
     SubTickle->>SubTickle: process_submessage() → process_data()
     SubTickle->>SubTickle: find_endpoint(TOPIC_SUBSCRIBER, endpoint_id)
@@ -252,12 +252,12 @@ sequenceDiagram
         ClientTickle->>ClientTickle: start_encode(CALLREQUEST) + CallRequestHeader + service->request_encode
         ClientTickle->>ClientTickle: copy encoded request into cache_buf (for a future retry)
         ClientTickle->>ClientTickle: end_encode(is_flush=true) → immediate flush
-        ClientTickle->>ClientTickle: tt_Node_schedule(call_retry, retry_interval)
+        ClientTickle->>ClientTickle: tt_Context_schedule(call_retry, retry_interval)
         ClientTickle->>Net: UDP send (CallRequest)
     end
     Note over ClientTickle,ServerTickle: CallRequest/CallResponse always flush immediately -<br/>the caller is synchronously waiting, so neither leg<br/>waits on node_flush()'s 1ms tick like Publish can.
 
-    Net->>ServerTickle: tt_Node_poll() → process_packet() → process_callrequest()
+    Net->>ServerTickle: tt_Context_poll() → process_packet() → process_callrequest()
     ServerTickle->>ServerTickle: find_endpoint(SERVICE_SERVER, endpoint_id)
     alt there is cache (retransmission request)
         ServerTickle->>Net: retransmission (retry++)
@@ -297,7 +297,7 @@ and the code ever disagree.
 ## Transport and addressing
 
 - **UDP over IPv4.** Every node has two sockets:
-  - the **well-known socket**, bound to the wildcard address on the well-known port (`_tt_NODE_PORT`,
+  - the **well-known socket**, bound to the wildcard address on the well-known port (`_tt_CONTEXT_PORT`,
     8282 by default), which receives broadcasts. `rmw_tickle` adds the ROS domain id to it, so each
     domain is its own port and two domains on one network never discover each other, as DDS keeps them
     apart (2026-09-27);
@@ -346,7 +346,7 @@ single-submessage form:
 - `magic` gives the sender's byte order. Senders write native order; receivers swap ("Byte order" below).
 - `version` is `tt_VERSION`. A datagram of another version is dropped, and the mismatch is logged once
   per remote node.
-- `source` is the sending node's ID (1-254; 0 is `tt_NODE_ID_INVALID`).
+- `source` is the sending context's ID - the context id, formerly node id (1-254; 0 is `tt_CONTEXT_ID_INVALID`).
 - `receiver` is the destination node ID, or `tt_SUBMESSAGE_ID_ALL` (0xff) for every node.
 - `length` is the whole submessage in **bytes**, header included, normally padded to a multiple of 4. It
   is the offset to the next submessage. It is not a count of 4-byte words.
@@ -395,7 +395,7 @@ in the RTPS arrangement, rather than message types of its own:
   and whole entities, so it is applied as it arrives, with no reassembly memory.
 - Every datagram refreshes the sender's liveliness. A node is presumed gone after
   `tt_LIVELINESS_SILENCE_NS` (3.5 intervals) of silence - longer if one of its entities announced a
-  longer lease, up to `tt_NODE_MAX_LEASE_NS` (10 s) - or on its goodbye (its list broadcast at destroy).
+  longer lease, up to `tt_CONTEXT_MAX_LEASE_NS` (10 s) - or on its goodbye (its list broadcast at destroy).
   See "Liveliness" below.
 - The detail and the reasons are in "Discovery announce: a DATA of a built-in endpoint" below and in
   `rmw_tickle/DISCOVERY_PLAN.md`.
@@ -451,7 +451,7 @@ Noted here since the reasoning isn't obvious from reading any single function in
 
 `tt_receive()` waits for socket readability with `poll()` instead of blocking on `recvfrom()`
 with a per-call `SO_RCVTIMEO`. The wait timeout tracks whatever scheduled event
-(`tt_Node_schedule()`) is due next, so it changes on nearly every call; re-arming
+(`tt_Context_schedule()`) is due next, so it changes on nearly every call; re-arming
 `SO_RCVTIMEO` via `setsockopt()` that often was pure overhead - measured at ~1255
 `setsockopt()` calls for just 30 RPC round trips - for no benefit, since `poll()` takes the
 timeout as a plain argument instead. This also sidesteps a real correctness bug the old
@@ -465,11 +465,11 @@ peer disappeared mid-run.
 `tt_Client_call()`, `call_retry()`, and the server's response send all pass `is_flush=true` to
 `end_encode()` unconditionally: the caller (or the peer waiting on a reply) is synchronously
 blocked, so neither leg of an RPC round trip can be left sitting in `tx_buffer` until
-`node_flush()`'s next `tt_NODE_TX_INTERVAL` (1ms) tick. This one change dropped measured RPC
+`node_flush()`'s next `tt_CONTEXT_TX_INTERVAL` (1ms) tick. This one change dropped measured RPC
 round-trip latency by ~6.7x (rtt avg 1.451ms → 0.217ms on the `ping`/`pong` example).
 
 `tt_Publisher_publish()` mirrors this as its own *default* now (`tt_Publisher.batch == false`,
-set by `tt_Node_create_publisher()`) - measured on a real `rmw_tickle` round trip (`rmw_tickle/
+set by `tt_Context_create_publisher()`) - measured on a real `rmw_tickle` round trip (`rmw_tickle/
 PLAN.md`'s `rmw-perf.yml` benchmark, a realistic ~1000 msg/s ROS 2 publish rate), dropping average
 two-process latency ~9x (0.44ms → 0.048ms), bringing it within ~1.5x of `rmw_fastrtps_cpp`/
 `rmw_cyclonedds_cpp` on the same rig (was ~13x slower before), with zero measured message loss.
@@ -487,7 +487,7 @@ rate limit) switching from broadcast to per-message unicast once discovery compl
 receiver's own UDP socket buffer once self-receive no longer throttles the sender (measured on
 real hardware: ~95% receive collapse). Confirmed this session that a realistic, *rate-limited*
 publish loop (`rmw_tickle`'s own ~1000 msg/s above) doesn't reproduce it - the risk is specific to
-letting a Publisher run genuinely as fast as `tt_Node_poll()` allows, which was already true of
+letting a Publisher run genuinely as fast as `tt_Context_poll()` allows, which was already true of
 `node_flush()`'s own existing unicast decision before this change, not new here.
 
 Setting `pub->batch = true` on a specific `tt_Publisher` opts it back into the pre-existing
@@ -543,7 +543,7 @@ while the wire is one mechanism. A continuation is recognised as discovery by it
   destination. Fragments are planned with `FRAG_FIRST`'s larger header, so the plan holds wherever a
   fragment lands.
 - An endpoint whose record alone could not fit a datagram is left out, logged and counted in
-  `tt_Node.tx_dropped_oversize`. If what remains fits one datagram, it goes as a single `DATA`: a
+  `tt_Context.tx_dropped_oversize`. If what remains fits one datagram, it goes as a single `DATA`: a
   one-fragment announce is never sent.
 - An announce needing more than 32 fragments is not sent at all, and is logged and counted.
 
@@ -576,7 +576,7 @@ misread the other.
 
 ### The periodic summary, and the list pulled on demand (`tt_VERSION` 8)
 
-Until `tt_VERSION` 8 the whole announce was broadcast every `tt_NODE_UPDATE_INTERVAL` (1 s), changed
+Until `tt_VERSION` 8 the whole announce was broadcast every `tt_CONTEXT_UPDATE_INTERVAL` (1 s), changed
 or not: about 100-130 bytes per ROS endpoint, so a node's steady-state discovery traffic grew with
 every endpoint on the network. Since 8 (2026-09-26, `rmw_tickle/DISCOVERY_PLAN.md`, the user's
 decision) the list travels only when someone needs it, over the reliable protocol's own submessages
@@ -590,7 +590,7 @@ on the discovery endpoint:
 | a change | the announce above | broadcast, at once | the new generation |
 
 - **A summary is ~28 bytes whatever the endpoint count.** It refreshes the sender's liveliness exactly
-  as an announce does, so leases and `tt_NODE_UPDATE_INTERVAL` are unchanged.
+  as an announce does, so leases and `tt_CONTEXT_UPDATE_INTERVAL` are unchanged.
 - **A generation already applied** makes a summary liveliness only; nothing is sent back.
 - **Any other generation** - a change whose broadcast was lost, a node that joined later, one that
   restarted, an announce left incomplete - draws one request. While the list has not arrived, the
@@ -601,7 +601,7 @@ on the discovery endpoint:
   `tt_DISCOVERY_PENDING_REQUESTS` (8) slots served by one scheduler entry; a request that finds the
   table full is still sent, only not retried. Added after M5 (5% loss) saw a node wait 2 s for a list
   across two losses, where the first version re-asked only on the next summary.
-- **A request is answered unicast**, up to `tt_UNICAST_PEER_THRESHOLD` in one `tt_NODE_TX_INTERVAL`
+- **A request is answered unicast**, up to `tt_UNICAST_PEER_THRESHOLD` in one `tt_CONTEXT_TX_INTERVAL`
   tick. One more is answered by a single broadcast of the list, and the rest of that tick's requests
   by nothing further - so a burst of new nodes costs one broadcast, not one unicast each.
 - **A change is still pushed** by broadcast the moment an endpoint is created or destroyed, and a
@@ -626,31 +626,31 @@ Since 2026-09-26 (`rmw_tickle/LIVELINESS_PLAN.md`, the user's decision) liveline
 runs from the entity's last sign of life, and the verdict is taken when it runs out.
 
 - **What refreshes a lease.** For an AUTOMATIC entity, any datagram from its node: summary, announce,
-  DATA, HEARTBEAT, ACKNACK (`tt_Node.traffic_last_seen`). For a MANUAL_BY_TOPIC Publisher, only its own
+  DATA, HEARTBEAT, ACKNACK (`tt_Context.traffic_last_seen`). For a MANUAL_BY_TOPIC Publisher, only its own
   DATA or a HEARTBEAT carrying `tt_HEARTBEAT_FLAG_LIVELINESS`, which `tt_Publisher_assert_liveliness()`
   sends. The discovery table has no entity_id, so a manual writer is found by (node, endpoint_id), and two
   writers of one endpoint on one node share that clock. The lookup runs only for a node that announced a
-  leased manual Publisher (`tt_Node.liveliness_flags`), so other traffic pays a one-byte test.
+  leased manual Publisher (`tt_Context.liveliness_flags`), so other traffic pays a one-byte test.
 - **When the verdict is taken.** One scheduler entry per node, `check_liveliness()`, runs at the earliest
   expiry among the nodes and leased entities it tracks, acts on what has expired, and re-arms at the next
   expiry. A refresh only moves an expiry later, so the receive path never touches the timer. It also runs
-  at least once per `tt_NODE_UPDATE_INTERVAL`, to pick up newly heard nodes.
+  at least once per `tt_CONTEXT_UPDATE_INTERVAL`, to pick up newly heard nodes.
 - **A lapsed entity** is tombstoned (`alive = false`, discovery callback with `departed`), and its peer, ack
   and writer-proxy state goes. It revives - callback without `departed` - on its next sign of life.
 - **A node** is presumed dead once it has been silent for `tt_LIVELINESS_SILENCE_NS` (3.5 intervals) and for
   the longest lease any of its entities announced, so a lease longer than the node-level limit is honoured
-  in full - up to `tt_NODE_MAX_LEASE_NS` (10 s, CycloneDDS's participant lease), as a DDS participant
+  in full - up to `tt_CONTEXT_MAX_LEASE_NS` (10 s, CycloneDDS's participant lease), as a DDS participant
   lease bounds its writers'. Then its peers are forgotten and its entities tombstoned; it is re-learned from its next summary.
-- **An idle node's summary is its only sign of life**, so it goes out every `tt_NODE_UPDATE_INTERVAL` or
+- **An idle node's summary is its only sign of life**, so it goes out every `tt_CONTEXT_UPDATE_INTERVAL` or
   every sixth of the shortest lease its own endpoints announce, whichever is sooner (at least one
-  `tt_NODE_TX_INTERVAL`).
+  `tt_CONTEXT_TX_INTERVAL`).
 - **A busy node's traffic stands in for those extra summaries.** A summary at the short-lease cadence is
   skipped when, since the last tick, every peer the node knows has had a datagram from it - a broadcast,
-  or one addressed to that peer (a summary alone does not count). The `tt_NODE_UPDATE_INTERVAL` summary,
+  or one addressed to that peer (a summary alone does not count). The `tt_CONTEXT_UPDATE_INTERVAL` summary,
   which carries the discovery generation, always goes - under traffic just ahead of the next send, in a
   datagram of its own, rather than at its tick. Under traffic the last sign of life before a node
   stops is then its data, as with DDS; MANUAL writers are untouched, since only their own DATA and
-  HEARTBEAT assert them. Counted in `tt_Node.summaries_skipped`.
+  HEARTBEAT assert them. Counted in `tt_Context.summaries_skipped`.
 
 Before this the lease ran from the last announce and traffic only held off the verdict for half a lease,
 and a sweep once a second took it. On the rig that gave a bimodal detection time (the two clocks' phase,
@@ -823,7 +823,7 @@ assert the exact destination `ip`/`port` a send was made with (`test_process_cal
 cases) still cover the decision logic directly.
 
 The real-hardware (two Raspberry Pis) run then surfaced a third thing, this one about send-loop
-shape rather than correctness: a Publisher that publishes in a tight `publish(); tt_Node_poll();`
+shape rather than correctness: a Publisher that publishes in a tight `publish(); tt_Context_poll();`
 loop with no rate limit (`perf_client.c`'s `-i 0` default, and the natural idiom generally) was
 implicitly getting its speed from *self-receive*. Broadcasting, the node loops its own packets
 straight back, so the `poll()` between sends returns immediately every time; unicasting to a lone
@@ -831,7 +831,7 @@ discovered Subscriber, nothing comes back, so that `poll()` sits on its wait and
 collapses (measured on the Pis: ~1,800 msg/s for 100-byte messages vs ~460,000 after the fix;
 full-MTU delivery stayed lossless either way - purely a send-rate effect). This isn't a library
 bug and RPC/`tt_Client_call()` isn't affected, but it means **a high-rate Publisher must not block
-in `poll()` between sends** - `tt_Node_poll(node, 0)` is now a genuine non-blocking pass (run due
+in `poll()` between sends** - `tt_Context_poll(node, 0)` is now a genuine non-blocking pass (run due
 scheduler work, drain whatever RX is already waiting, return) rather than a no-op, and
 `perf_client.c`'s `-i 0` path passes `0`. The Publisher-side unicast decision is worth keeping for
 what it's for (cutting broadcast traffic when a topic has one or two subscribers) but is not a
@@ -857,7 +857,7 @@ Storage comes from one of two places, and both are the caller's:
   Client's response storage via `tt_Server_set_storage()` / `tt_Client_set_storage()`. The caller
   allocates it however it likes, and **the caller frees it.** Core only ever holds the pointer.
 
-Discovery state per remote node stays in two plain arrays on `tt_Node`,
+Discovery state per remote node stays in two plain arrays on `tt_Context`,
 `update_generation[tt_MAX_ENDPOINT_COUNT]` and `update_seen[...]`. The announce handler once
 `malloc()`ed a copy of each incoming announce, but only its version and seen/not-seen were ever
 read back, so a `uint32_t` generation plus a `bool` per source is all it keeps.
@@ -1019,8 +1019,8 @@ value is unaffected.
 ## Concurrency: thread-safe core, one lock per node and two lock-free paths
 
 Since 2026-09-25 every public `tt_*` function may be called from any thread, concurrently with
-`tt_Node_poll()` on another (`tt_THREAD_SAFE`, `config.h`, default 1; the contract is "Threading"
-at `tt_Node_lock()` in `tickle.h`). The decision was the user's: core should be at least
+`tt_Context_poll()` on another (`tt_THREAD_SAFE`, `config.h`, default 1; the contract is "Threading"
+at `tt_Context_lock()` in `tickle.h`). The decision was the user's: core should be at least
 thread-safe, lock-free where it can be, and where locks are needed they should be fine-grained,
 because integrating with `rmw_tickle` is the point. Until then this section said the opposite -
 single-threaded per node, with a lock once added (PR #11) and deliberately reverted (PR #13) rather
@@ -1031,7 +1031,7 @@ design decision or not at all. This is that decision.
   endpoints own, the scheduler heap included. Callbacks run inside it and routinely call back into
   core, so it is re-entrant - not as a recursive mutex but by recording its owner: re-entry by the
   owning thread is a thread-id compare (`tt_thread_self()`, HAL), not an atomic.
-- **Timers from other threads go through a lock-free inbox.** `tt_Node_schedule()` inserts into the
+- **Timers from other threads go through a lock-free inbox.** `tt_Context_schedule()` inserts into the
   heap directly when the lock is free or already its caller's; when another thread holds it, the
   entry goes into a fixed ring of slots claimed by compare-and-swap, and the poll thread moves it into
   the heap the next time it looks - the user's own example of the shape they wanted ("put it in the
@@ -1045,7 +1045,7 @@ design decision or not at all. This is that decision.
   at +215 ns a sample on the Raspberry Pi (M1, `examples/perf_hil/results/`). This version takes one
   real acquisition per sample on that path; locally the lock overhead fell from +37 ns to about
   +12 ns, with the scheduler restructuring itself measured at zero.
-- **Nothing is held while the poll waits.** `tt_Node_poll()` takes the state lock per received
+- **Nothing is held while the poll waits.** `tt_Context_poll()` takes the state lock per received
   datagram and per due scheduler entry, never across `tt_receive()`. `rmw_tickle` used to hold its
   own node mutex across a whole poll call (up to 100 us); the locks here are held for one unit of
   work.
@@ -1056,15 +1056,15 @@ design decision or not at all. This is that decision.
   threads' calls on that node for as long as it runs.
 - **A running scheduler entry is out of the heap.** Entries used to run in place at `scheduler[0]`
   and be popped afterwards, which was only safe while nothing could reorder the heap during the call.
-  They are now copied and popped first, then run with the state lock held, so `tt_Node_unschedule()`
+  They are now copied and popped first, then run with the state lock held, so `tt_Context_unschedule()`
   from another thread either removes an entry before it is taken or waits until it has finished -
   after it returns, the callback's `param` may be freed.
-- **One poller at a time,** enforced: a second concurrent `tt_Node_poll()` returns `tt_RET_BUSY`
+- **One poller at a time,** enforced: a second concurrent `tt_Context_poll()` returns `tt_RET_BUSY`
   instead of sharing `rx_buffer` with the first.
-- **Compound reads use `tt_Node_lock()`/`tt_Node_unlock()`** - the state lock itself, nestable,
+- **Compound reads use `tt_Context_lock()`/`tt_Context_unlock()`** - the state lock itself, nestable,
   for a caller that reads several node-owned fields that must agree (the `tt_Discovery` table,
   counters) or calls one of the two functions that take a cache or table rather than a node.
-  `tt_Node_lock_timed()` gives up after a timeout, for an observer that must never block behind a
+  `tt_Context_lock_timed()` gives up after a timeout, for an observer that must never block behind a
   wedged callback.
 - **Per platform, in the HAL.** `tt_lock_t` is a pthread mutex on Linux and a statically allocated
   FreeRTOS mutex on FreeRTOS, defined next to `struct tt_hal`; with `tt_THREAD_SAFE=0` it compiles to
@@ -1080,9 +1080,9 @@ every timer runs exactly once unless cancelled, and a second poller is refused. 
 against the core as it was before this change produced 14 ThreadSanitizer race reports, a
 segmentation fault and a hang.
 
-`tt_Node_interrupt()` takes no lock at all. It predates the locks, and was added as the one narrow
+`tt_Context_interrupt()` takes no lock at all. It predates the locks, and was added as the one narrow
 exception to the old single-thread rule: it doesn't touch node-owned state, it only lets a second
-thread make a blocking `tt_Node_poll()` call return `tt_RET_INTERRUPTED` promptly instead of waiting
+thread make a blocking `tt_Context_poll()` call return `tt_RET_INTERRUPTED` promptly instead of waiting
 out its timeout. Added for `rmw_tickle` (`rmw_tickle/PLAN.md`'s Milestone 0), which then kept the old
 rule with a mutex of its own around every call, interrupting the poll thread so a call arriving on
 another thread (e.g. `rmw_publish()`) wasn't stuck behind the poll's timeout before it could take
@@ -1095,28 +1095,28 @@ test.sh` runs each side in its own network namespace with only the veth pair bro
 `netns.mk`) - binding anything to `127.0.0.1` there fails, since that namespace's own `lo` is
 never brought up, and `eventfd` needs no address or interface at all. See `src/hal_linux.c`'s/
 `src/hal_freertos.c`'s own comments for each. The signal is "at least once, at or after the call
-to `tt_Node_interrupt()`," not "only if a call is currently blocked" - one sent while nothing is
+to `tt_Context_interrupt()`," not "only if a call is currently blocked" - one sent while nothing is
 blocked is queued and delivered
-to whichever `tt_Node_poll()` call comes next instead of being dropped.
+to whichever `tt_Context_poll()` call comes next instead of being dropped.
 
 ## Deferred service responses: the lock-free path
 
 `tt_Server_send_response()` (`tickle.h`/`tickle.c`, `rmw_tickle/PLAN.md`'s Milestone 17) is
-deliberately callable from a thread other than the one driving a node's own `tt_Node_poll()`
+deliberately callable from a thread other than the one driving a node's own `tt_Context_poll()`
 loop - a real, if narrow, second exception to the "Concurrency" section above, added for the same
-class of reason `tt_Node_interrupt()` already is one: a real requirement (here, `rmw_tickle`'s own
+class of reason `tt_Context_interrupt()` already is one: a real requirement (here, `rmw_tickle`'s own
 `rmw_send_response()` - a real ROS 2 service handler can run on whatever thread its executor
 uses, not necessarily the one polling TickLE) that genuinely can't be satisfied by keeping every
 call on the poll thread, without reintroducing the internal locking this design deliberately
 rejected once already (PR #11/#13, see above).
 
 **The problem this closes**: a `tt_SERVER_CALLBACK` used to have to answer synchronously, inside
-the very `tt_Node_poll()` call that received the request - `build_call_response()`'s own `response`
+the very `tt_Context_poll()` call that received the request - `build_call_response()`'s own `response`
 buffer was a plain stack array, gone the instant the callback returned, and nothing in TickLE core
 could suspend and later resume a call already in progress. `rmw_tickle`'s own `rmw_service.c`
 papered over the mismatch between that and `rmw`'s own two-call `rmw_take_request()`/
 `rmw_send_response()` contract by blocking inside the callback itself
-(`pthread_cond_timedwait()`) until the ROS handler answered - which meant `tt_Node_poll()` itself
+(`pthread_cond_timedwait()`) until the ROS handler answered - which meant `tt_Context_poll()` itself
 couldn't return, and *nothing else that node owned* (other subscriptions, other services, due
 scheduler entries) could make progress meanwhile, for up to that bridge's own timeout.
 
@@ -1126,7 +1126,7 @@ instead of a real return code, meaning "I'll answer this later, maybe from anoth
 COUNT` slots (Milestone 17 gave that array a second, parallel purpose: tracking a request that's
 been *received* but not yet *answered*, distinct from the pre-existing `cache[]`/`cache_buf[]`
 pair, which only ever holds an *already-answered* response kept for retry resends) and arms a
-`tt_Node_schedule()` timeout on it, so a deferred request that's never answered doesn't leak a
+`tt_Context_schedule()` timeout on it, so a deferred request that's never answered doesn't leak a
 slot forever - the same reclaim pattern `server_cache_clean()` already established for the
 retry-cache's own lifetime, just with a much longer default (`tt_SERVER_DEFERRED_RESPONSE_
 TIMEOUT`, 5s - waiting on an *application* to compute an answer, not on a network round trip).
@@ -1140,7 +1140,7 @@ re-entrant (a depth count), so a callback may answer this way too.
 **Changed 2026-09-27, and why.** Until then the call did only two things to server-owned state: a plain `memcpy`
 of the caller's response struct into the slot, and a release-store-guarded `tt_SERVER_SLOT_PENDING` ->
 `tt_SERVER_SLOT_READY` transition. The encode and the `sendto()` happened later on the poll thread, in a
-`flush_pending_responses()` at the top of every `tt_Node_poll()`, woken by `tt_Node_interrupt()`.
+`flush_pending_responses()` at the top of every `tt_Context_poll()`, woken by `tt_Context_interrupt()`.
 - That `memcpy` was shallow. A response pointing at data it does not own was encoded later from whatever that
   data had become, and every generated TickLE struct holds its strings as pointers.
 - `rmw_tickle`'s `rmw_send_response()` converts the ROS response into such a struct, whose strings alias the

@@ -42,7 +42,7 @@
 // asks to flush more than it has written is not a state the real code can reach.
 #define FLUSH_LEN (sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader))
 
-static void init_node(struct tt_Node* node) {
+static void init_node(struct tt_Context* node) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = 1;
@@ -108,15 +108,15 @@ static void test_each_link_decides_on_its_own_count_and_threshold(void) {
     test_mock_reset();
     configure_two_links(/*threshold_a=*/1, /*threshold_b=*/4);
 
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     // Link A: two peers against a threshold of one -> one broadcast, not two unicasts.
     // Link B: three peers against a threshold of four -> three unicasts, not a broadcast.
     struct tt_Peer peers[] = {
-        {.node_id = 2, .ip = 0xc0a80a07, .port = 8282}, {.node_id = 3, .ip = 0xc0a80a08, .port = 8282},
-        {.node_id = 4, .ip = 0x0a010207, .port = 8282}, {.node_id = 5, .ip = 0x0a010208, .port = 8282},
-        {.node_id = 6, .ip = 0x0a010209, .port = 8282},
+        {.context_id = 2, .ip = 0xc0a80a07, .port = 8282}, {.context_id = 3, .ip = 0xc0a80a08, .port = 8282},
+        {.context_id = 4, .ip = 0x0a010207, .port = 8282}, {.context_id = 5, .ip = 0x0a010208, .port = 8282},
+        {.context_id = 6, .ip = 0x0a010209, .port = 8282},
     };
 
     EXPECT_TRUE(flush_tx(&node, FLUSH_LEN, peers, 5));
@@ -138,10 +138,10 @@ static void test_link_with_no_peers_is_not_broadcast_to(void) {
     test_mock_reset();
     configure_two_links(2, 2);
 
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
-    struct tt_Peer peers[] = {{.node_id = 2, .ip = 0xc0a80a07, .port = 8282}};
+    struct tt_Peer peers[] = {{.context_id = 2, .ip = 0xc0a80a07, .port = 8282}};
 
     EXPECT_TRUE(flush_tx(&node, FLUSH_LEN, peers, 1));
 
@@ -156,7 +156,7 @@ static void test_unaddressed_buffer_broadcasts_on_every_link(void) {
     test_mock_reset();
     configure_two_links(2, 2);
 
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     EXPECT_TRUE(flush_tx(&node, FLUSH_LEN, NULL, 0));
@@ -174,7 +174,7 @@ static void test_single_link_node_still_uses_plain_broadcast(void) {
     test_mock_reset();
     configure_no_links();
 
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     EXPECT_TRUE(flush_tx(&node, FLUSH_LEN, NULL, 0));

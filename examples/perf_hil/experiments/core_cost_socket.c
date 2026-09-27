@@ -11,14 +11,14 @@
 // core_cost_socket - core_cost_bench's "-c -R" loop through the real HAL (WIRE_PLAN.md 8.8, 2026-09-27): two nodes
 // in one thread, on real UDP sockets (hal_linux.c), linked as any application links TickLE - no whitebox. Node 1
 // has a RELIABLE KEEP_LAST 64 Publisher of the p1 Bench sample and publishes it from an entry that reschedules
-// itself under tt_Node_poll(-1), as the campaign's throughput clients do; node 2 has the RELIABLE Subscriber.
+// itself under tt_Context_poll(-1), as the campaign's throughput clients do; node 2 has the RELIABLE Subscriber.
 //
 // In rounds: node 1 sends ROUND samples (and takes whatever ACKNACKs have come back), then node 2 takes them off
 // its socket. Per phase: wall time, and the thread's user and system time (getrusage(RUSAGE_THREAD)) - the
 // campaign's metric - per sample.
 //
 // Needs an interface whose broadcast address is BENCH_BROADCAST (the Pi: 192.168.10.255; the PC: a private netns
-// with one), because tt_Node_create() refuses a broadcast no interface has. Data goes node to node over the
+// with one), because tt_Context_create() refuses a broadcast no interface has. Data goes node to node over the
 // host's own address; discovery broadcasts leave on that interface.
 //
 // Usage: BENCH_BROADCAST=<addr> core_cost_socket [samples [round]] (default 400000, 512)
@@ -52,8 +52,8 @@
 #define ROUND_GIVE_UP_S 2U
 #define ARG_BASE 10
 
-static struct tt_Node writer;
-static struct tt_Node reader;
+static struct tt_Context writer;
+static struct tt_Context reader;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
 static uint64_t received;
@@ -82,7 +82,7 @@ static void on_sample(struct tt_Subscriber* subscriber, uint64_t time, uint16_t 
 }
 
 // The campaign clients' send_one(): publish, then run again at once.
-static void send_one(struct tt_Node* node, uint64_t time, void* param) {
+static void send_one(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     if (left_to_send == 0) {
         return;
@@ -91,7 +91,7 @@ static void send_one(struct tt_Node* node, uint64_t time, void* param) {
     sample.seq++;
     sample.send_ns = tt_get_ns();
     (void)tt_Publisher_publish(&pub, (struct tt_Data*)&sample);
-    (void)tt_Node_schedule(node, time, send_one, NULL);
+    (void)tt_Context_schedule(node, time, send_one, NULL);
 }
 
 static bool set_up(void) {
@@ -99,16 +99,16 @@ static bool set_up(void) {
     static uint8_t
         cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(DEPTH, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))];
     static struct tt_ReliableCache cache;
-    _tt_CONFIG.node_id = 1;
-    if (tt_Node_create(&writer) != tt_RET_OK) {
+    _tt_CONFIG.context_id = 1;
+    if (tt_Context_create(&writer) != tt_RET_OK) {
         return false;
     }
-    _tt_CONFIG.node_id = 2;
-    if (tt_Node_create(&reader) != tt_RET_OK) {
+    _tt_CONFIG.context_id = 2;
+    if (tt_Context_create(&reader) != tt_RET_OK) {
         return false;
     }
-    if (tt_Node_create_publisher(&writer, &pub, &BenchTopic, "bench") != tt_RET_OK ||
-        tt_Node_create_subscriber(&reader, &sub, &BenchTopic, "bench", on_sample) != tt_RET_OK) {
+    if (tt_Context_create_publisher(&writer, &pub, &BenchTopic, "bench") != tt_RET_OK ||
+        tt_Context_create_subscriber(&reader, &sub, &BenchTopic, "bench", on_sample) != tt_RET_OK) {
         return false;
     }
     cache.index = cache_index;
@@ -120,11 +120,11 @@ static bool set_up(void) {
     pub.reliable = true;
     sub.reliable = true;
     uint64_t give_up = now_ns() + (DISCOVERY_GIVE_UP_S * NS_PER_S);
-    while (pub.peers[0].node_id != 2 && now_ns() < give_up) {
-        (void)tt_Node_poll(&writer, POLL_NS);
-        (void)tt_Node_poll(&reader, POLL_NS);
+    while (pub.peers[0].context_id != 2 && now_ns() < give_up) {
+        (void)tt_Context_poll(&writer, POLL_NS);
+        (void)tt_Context_poll(&reader, POLL_NS);
     }
-    return pub.peers[0].node_id == 2;
+    return pub.peers[0].context_id == 2;
 }
 
 struct totals {
@@ -163,11 +163,11 @@ int main(int argc, char** argv) {
         thread_cpu_ns(&user0, &sys0);
         uint64_t start = now_ns();
         left_to_send = round;
-        (void)tt_Node_schedule(&writer, tt_get_ns(), send_one, NULL);
+        (void)tt_Context_schedule(&writer, tt_get_ns(), send_one, NULL);
         while (left_to_send > 0) {
-            (void)tt_Node_poll(&writer, -1);
+            (void)tt_Context_poll(&writer, -1);
         }
-        (void)tt_Node_poll(&writer, 0); // ACKNACKs back since the last round
+        (void)tt_Context_poll(&writer, 0); // ACKNACKs back since the last round
         send.wall += now_ns() - start;
         thread_cpu_ns(&user1, &sys1);
         send.user += user1 - user0;
@@ -177,7 +177,7 @@ int main(int argc, char** argv) {
         start = now_ns();
         uint64_t give_up = start + (ROUND_GIVE_UP_S * NS_PER_S);
         while (received < sent && now_ns() < give_up) {
-            (void)tt_Node_poll(&reader, POLL_NS);
+            (void)tt_Context_poll(&reader, POLL_NS);
         }
         stalled = received < sent;
         recv.wall += now_ns() - start;

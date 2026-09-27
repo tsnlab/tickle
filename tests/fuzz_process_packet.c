@@ -76,7 +76,7 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                                     .data_decode = stub_dec,
                                     .data_free = stub_free};
     static struct tt_Subscriber sub;
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
     node.id = 1;

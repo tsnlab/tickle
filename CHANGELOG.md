@@ -259,6 +259,20 @@ number, `tt_VERSION`, which moves independently.
 
 ### Changed
 
+- **`tt_Node` is now `tt_Context`** (rmw_tickle/CONTEXT_NODE_PLAN.md stage 1). The object that owns the
+  sockets, the scheduler, liveliness and discovery is what rmw calls a context, and the name `tt_Node` is freed
+  for the node rmw means (stage 2). No behaviour change: the -O2 `tickle.o`, `hal_linux.o`, `encoding.o` and
+  `log.o` disassemble identically once names are normalised. A breaking API change, with no alias, so that code
+  written against the old `tt_Node` fails to compile rather than meet stage 2's:
+  - `struct tt_Node` -> `struct tt_Context`, and every `tt_Node_*` function -> `tt_Context_*`.
+  - The settings `tt_NODE_CYCLE`, `tt_NODE_UPDATE_INTERVAL`, `tt_NODE_TX_INTERVAL`, `tt_NODE_MAX_LEASE_NS`,
+    `_tt_NODE_ADDRESS`, `_tt_NODE_PORT`, `_tt_NODE_BROADCAST` and the sentinels `tt_NODE_ID_INVALID`/`_BROADCAST`
+    -> `tt_CONTEXT_*`. An old name still set with `-D` stops the build with an `#error` naming the new one
+    (`make -C platform/linux config-renames` checks each).
+  - Public struct fields `node_id` -> `context_id` (`_tt_CONFIG`, `tt_Peer`, `tt_DiscoveredEntity`,
+    `tt_DurableDeliveryRecord`, `tt_PeerAck`, `tt_WriterProxy`, `tt_ReorderSlot`). The wire is unchanged.
+  - rmw_tickle's `tickle_node` field -> `tickle_context`.
+
 - **The generated C++ converters copy primitive arrays and sequences as a block** (2026-09-27): `std::copy` /
   `assign()` over the container instead of an element loop, which the compiler could not vectorise. A 64-KB
   `sensor_msgs/Image` converts in 1.6 us each way instead of 86 / 43 us at -O2 (`rmw_tickle/RMW_PERF_PLAN.md`

@@ -249,9 +249,9 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
         return NULL;
     }
 
-    tt_Node_lock(&node_impl->context_impl->tickle_node);
-    tt_ret_t ret = tt_Node_create_server(&node_impl->context_impl->tickle_node, &svc->tickle_server, &svc->service,
-                                         svc->rmw_service.service_name, server_callback);
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
+    tt_ret_t ret = tt_Context_create_server(&node_impl->context_impl->tickle_context, &svc->tickle_server,
+                                            &svc->service, svc->rmw_service.service_name, server_callback);
     if (ret == tt_RET_OK) {
         // After create, which resets the server to its inline storage, and under the same lock, so
         // the poll thread cannot hand it a request in between.
@@ -261,9 +261,9 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
             tt_Server_destroy(&svc->tickle_server);
         }
     }
-    tt_Node_unlock(&node_impl->context_impl->tickle_node);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
     if (ret != tt_RET_OK) {
-        RMW_SET_ERROR_MSG("tt_Node_create_server()/tt_Server_set_storage() failed");
+        RMW_SET_ERROR_MSG("tt_Context_create_server()/tt_Server_set_storage() failed");
         allocator->deallocate(svc->response_cache, allocator->state);
         allocator->deallocate(svc->pending_responses, allocator->state);
         allocator->deallocate((char*)svc->rmw_service.service_name, allocator->state);
@@ -288,9 +288,9 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
 
     rmw_tickle_service_t* svc = (rmw_tickle_service_t*)service->data;
 
-    tt_Node_lock(&svc->node->context_impl->tickle_node);
+    tt_Context_lock(&svc->node->context_impl->tickle_context);
     tt_Server_destroy(&svc->tickle_server);
-    tt_Node_unlock(&svc->node->context_impl->tickle_node);
+    tt_Context_unlock(&svc->node->context_impl->tickle_context);
 
     pthread_mutex_destroy(&svc->request_mutex);
 

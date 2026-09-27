@@ -15,7 +15,7 @@
 // Two nodes, a BEST_EFFORT Publisher of the p1 Bench sample on node 1 and its Subscriber on node 2,
 // discovered through the captured datagrams. Then two timed phases, each one clock read pair around N
 // samples:
-//   send - node 1 publishes N samples, polling itself (tt_Node_poll(node, 0)) after each, as a throughput
+//   send - node 1 publishes N samples, polling itself (tt_Context_poll(node, 0)) after each, as a throughput
 //          client does; every datagram it sends is kept.
 //   recv - node 2 is handed those datagrams one by one, as the poll loop hands it a received one.
 // Prints ns per sample and tt_get_ns() calls per sample for each phase. The capture's copy is in the send
@@ -56,10 +56,10 @@
 #define DISCOVERY_GIVE_UP_S 2U
 
 struct _tt_Config _tt_CONFIG = {
-    .addr = _tt_NODE_ADDRESS,
-    .port = _tt_NODE_PORT,
-    .broadcast = _tt_NODE_BROADCAST,
-    .node_id = tt_NODE_ID_INVALID,
+    .addr = _tt_CONTEXT_ADDRESS,
+    .port = _tt_CONTEXT_PORT,
+    .broadcast = _tt_CONTEXT_BROADCAST,
+    .context_id = tt_CONTEXT_ID_INVALID,
 };
 
 // --- the HAL ---------------------------------------------------------------------------------------------
@@ -94,7 +94,7 @@ int32_t tt_get_node_id(void) {
     return next_node_id;
 }
 
-// One link, 10.0.0.0/24, each node at 10.0.0.<id>: tt_Node_create() refuses a broadcast no interface has.
+// One link, 10.0.0.0/24, each node at 10.0.0.<id>: tt_Context_create() refuses a broadcast no interface has.
 bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, uint32_t* bcast) {
     (void)broadcast;
     *addr = LINK_NET | (uint32_t)next_node_id;
@@ -108,16 +108,16 @@ int32_t tt_link_mtu(uint32_t addr) {
     return -1;
 }
 
-tt_ret_t tt_bind(struct tt_Node* node) {
+tt_ret_t tt_bind(struct tt_Context* node) {
     (void)node;
     return tt_RET_OK;
 }
 
-void tt_close(struct tt_Node* node) {
+void tt_close(struct tt_Context* node) {
     (void)node;
 }
 
-tt_ret_t tt_wake_signal(struct tt_Node* node) {
+tt_ret_t tt_wake_signal(struct tt_Context* node) {
     (void)node;
     return tt_RET_OK;
 }
@@ -149,25 +149,25 @@ static int32_t capture(uint32_t ip, const void* head, size_t head_len, const voi
     return (int32_t)len;
 }
 
-int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
+int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     (void)node;
     return capture(0, buf, len, NULL, 0);
 }
 
-int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
+int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
     (void)node;
     (void)port;
     return capture(ip, buf, len, NULL, 0);
 }
 
-int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
+int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
     (void)node;
     (void)port;
     return capture(ip, hdr, hdr_len, body, body_len);
 }
 
-int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
     (void)node;
     for (uint32_t i = 0; i < count; i++) {
         (void)capture(datagrams[i].ip, datagrams[i].head, datagrams[i].head_len, datagrams[i].body,
@@ -177,17 +177,17 @@ int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagra
 }
 
 // Receiving is taking the next captured datagram from the other node, as the kernel would hand it over:
-// through tt_Node_poll() and its drain, so a received sample costs what it costs inside a real poll.
+// through tt_Context_poll() and its drain, so a received sample costs what it costs inside a real poll.
 // Writer nodes 1..W, the reader node W+1. BENCH_MAX_WRITERS raises it (WIRE_PLAN.md 9.1's 32-writer cases), with
 // tt_MAX_PEER_COUNT and tt_MAX_DISCOVERED_ENTITIES raised to match in every arm alike (core_cost_ab.sh BENCH_CFLAGS).
 #ifndef BENCH_MAX_WRITERS
 #define BENCH_MAX_WRITERS 8
 #endif
 #define MAX_WRITERS BENCH_MAX_WRITERS
-static struct tt_Node nodes[MAX_WRITERS + 2];
+static struct tt_Context nodes[MAX_WRITERS + 2];
 static uint32_t cursor[MAX_WRITERS + 2]; // the next captured datagram each node has not looked at
 
-static int32_t take_next(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+static int32_t take_next(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     uint8_t self = (uint8_t)(node - nodes);
     while (cursor[self] < wire_count) {
         const struct wire_datagram* datagram = &wire[cursor[self]++];
@@ -207,17 +207,17 @@ static int32_t take_next(struct tt_Node* node, void* buf, size_t len, uint32_t* 
 
 // All the captured datagrams stand in for a batch already read (an upper bound: some are the node's own,
 // which take_next() skips). Defined for every build; only those with OPTIMIZATION_PLAN.md 11.4's D4 call it.
-uint32_t tt_rx_buffered(const struct tt_Node* node) {
+uint32_t tt_rx_buffered(const struct tt_Context* node) {
     uint8_t self = (uint8_t)(node - nodes);
     return cursor[self] < wire_count ? wire_count - cursor[self] : 0U;
 }
 
-int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
+int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     (void)timeout;
     return take_next(node, buf, len, ip, port);
 }
 
-int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     return take_next(node, buf, len, ip, port);
 }
 
@@ -245,7 +245,7 @@ static void on_sample(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no,
 static void deliver(uint8_t receiver) {
     while (cursor[receiver] < wire_count) {
         acting = receiver;
-        (void)tt_Node_poll(&nodes[receiver], 0);
+        (void)tt_Context_poll(&nodes[receiver], 0);
     }
 }
 
@@ -255,7 +255,7 @@ static uint64_t now_ns(void) {
     return ((uint64_t)ts.tv_sec * NS_PER_S) + (uint64_t)ts.tv_nsec;
 }
 
-static void count_visit(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx) {
+static void count_visit(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx) {
     (void)node;
     (void)endpoint;
     (*(uint64_t*)ctx)++;
@@ -265,7 +265,7 @@ static void count_visit(struct tt_Node* node, struct tt_Endpoint* endpoint, void
 static struct tt_Publisher* client_pub;
 static uint32_t client_left;
 static struct BenchData client_sample;
-static void client_send(struct tt_Node* node, uint64_t time, void* param) {
+static void client_send(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     if (client_left == 0) {
         return;
@@ -274,7 +274,7 @@ static void client_send(struct tt_Node* node, uint64_t time, void* param) {
     client_sample.seq++;
     client_sample.send_ns = tt_get_ns(); // as the harness stamps it
     (void)tt_Publisher_publish(client_pub, (struct tt_Data*)&client_sample);
-    (void)tt_Node_schedule(node, time, client_send, NULL);
+    (void)tt_Context_schedule(node, time, client_send, NULL);
 }
 
 struct options {
@@ -283,10 +283,10 @@ struct options {
     uint32_t extra;
     bool discovery;
     bool micro;
-    bool client; // publish from a self-rescheduling entry under tt_Node_poll(-1), as the throughput clients do
+    bool client; // publish from a self-rescheduling entry under tt_Context_poll(-1), as the throughput clients do
     bool concurrent_publisher; // -p: another thread publishes on the reader node through the receive phase
     bool reliable; // -R: RELIABLE KEEP_LAST 64, as the Q2 cell (c9); send and receive alternate in rounds - or, with
-                   // -c, the clients' own loop (send_one rescheduling itself under tt_Node_poll(-1)) on that writer
+                   // -c, the clients' own loop (send_one rescheduling itself under tt_Context_poll(-1)) on that writer
 };
 
 static bool parse(int argc, char** argv, struct options* opt) {
@@ -322,7 +322,7 @@ static bool parse(int argc, char** argv, struct options* opt) {
 // caches and a trained predictor - so it ranks the stages and bounds them from below.
 static void micro(uint8_t reader, struct tt_Subscriber* sub, const struct tt_Publisher* last_writer,
                   uint8_t writer_node) {
-    struct tt_Node* node = &nodes[reader];
+    struct tt_Context* node = &nodes[reader];
     uint32_t endpoint_id = ((struct tt_Endpoint*)sub)->id;
     uint32_t entity_id = ((const struct tt_Endpoint*)last_writer)->entity_id;
     uint64_t hits = 0;
@@ -365,7 +365,7 @@ static void micro(uint8_t reader, struct tt_Subscriber* sub, const struct tt_Pub
     start = now_ns();
     for (uint32_t i = 0; i < MICRO_ITERATIONS; i++) {
         acting = reader;
-        (void)tt_Node_poll(node, 0); // nothing to take: the poll's own fixed cost
+        (void)tt_Context_poll(node, 0); // nothing to take: the poll's own fixed cost
     }
     double poll = (double)(now_ns() - start) / MICRO_ITERATIONS;
 
@@ -397,18 +397,18 @@ static bool set_up(const struct options* opt, uint8_t reader) {
     for (uint8_t id = 1; id <= reader; id++) {
         next_node_id = id;
         acting = id;
-        if (tt_Node_create(&nodes[id]) != tt_RET_OK) {
-            fprintf(stderr, "tt_Node_create(%d) failed\n", id);
+        if (tt_Context_create(&nodes[id]) != tt_RET_OK) {
+            fprintf(stderr, "tt_Context_create(%d) failed\n", id);
             return false;
         }
     }
     static struct tt_Discovery discovery;
-    if (opt->discovery && tt_Node_set_discovery(&nodes[reader], &discovery, NULL, NULL) != tt_RET_OK) {
+    if (opt->discovery && tt_Context_set_discovery(&nodes[reader], &discovery, NULL, NULL) != tt_RET_OK) {
         return false;
     }
     for (uint8_t id = 1; id < reader; id++) {
         acting = id;
-        if (tt_Node_create_publisher(&nodes[id], &pubs[id], &BenchTopic, "bench") != tt_RET_OK) {
+        if (tt_Context_create_publisher(&nodes[id], &pubs[id], &BenchTopic, "bench") != tt_RET_OK) {
             return false;
         }
     }
@@ -417,12 +417,12 @@ static bool set_up(const struct options* opt, uint8_t reader) {
     for (uint32_t i = 0; i < opt->extra; i++) {
         acting = 1;
         (void)snprintf(extra_names[i], sizeof(extra_names[i]), "x%u", i % MAX_EXTRA);
-        if (tt_Node_create_publisher(&nodes[1], &extra[i], &BenchTopic, extra_names[i]) != tt_RET_OK) {
+        if (tt_Context_create_publisher(&nodes[1], &extra[i], &BenchTopic, extra_names[i]) != tt_RET_OK) {
             return false;
         }
     }
     acting = reader;
-    if (tt_Node_create_subscriber(&nodes[reader], &sub, &BenchTopic, "bench", on_sample) != tt_RET_OK) {
+    if (tt_Context_create_subscriber(&nodes[reader], &sub, &BenchTopic, "bench", on_sample) != tt_RET_OK) {
         return false;
     }
     if (opt->reliable) {
@@ -452,7 +452,7 @@ static bool discover(uint8_t reader) {
     while (now_ns() < give_up) {
         for (uint8_t id = 1; id <= reader; id++) {
             acting = id;
-            (void)tt_Node_poll(&nodes[id], 0);
+            (void)tt_Context_poll(&nodes[id], 0);
         }
         bool pending = true;
         while (pending) {
@@ -464,7 +464,7 @@ static bool discover(uint8_t reader) {
         }
         bool matched = true;
         for (uint8_t id = 1; id < reader; id++) {
-            matched = matched && pubs[id].peers[0].node_id == reader;
+            matched = matched && pubs[id].peers[0].context_id == reader;
         }
         if (matched) {
             return true;
@@ -475,15 +475,15 @@ static bool discover(uint8_t reader) {
 }
 
 // The send phase: the writers take turns, one sample each, polling after it - or, with -c, writer 1's
-// self-rescheduling entry under tt_Node_poll(-1).
+// self-rescheduling entry under tt_Context_poll(-1).
 static void send_all(const struct options* opt) {
     if (opt->client) {
         client_pub = &pubs[1];
         client_left = opt->samples;
         acting = 1;
-        (void)tt_Node_schedule(&nodes[1], tt_get_ns(), client_send, NULL);
+        (void)tt_Context_schedule(&nodes[1], tt_get_ns(), client_send, NULL);
         while (client_left > 0) {
-            (void)tt_Node_poll(&nodes[1], -1);
+            (void)tt_Context_poll(&nodes[1], -1);
         }
         return;
     }
@@ -494,7 +494,7 @@ static void send_all(const struct options* opt) {
         acting = id;
         sample.seq = (i / opt->writers) + 1;
         (void)tt_Publisher_publish(&pubs[id], (struct tt_Data*)&sample);
-        (void)tt_Node_poll(&nodes[id], 0);
+        (void)tt_Context_poll(&nodes[id], 0);
     }
 }
 
@@ -519,7 +519,7 @@ static void run_reliable(const struct options* opt, uint8_t reader, struct phase
             acting = 1;
             sample.seq = done + i + 1;
             totals->publish_errors += tt_Publisher_publish(&pubs[1], (struct tt_Data*)&sample) != tt_RET_OK;
-            (void)tt_Node_poll(&nodes[1], 0);
+            (void)tt_Context_poll(&nodes[1], 0);
         }
         deliver(1); // the reader's ACKNACKs
         totals->send_ns += now_ns() - start;
@@ -675,7 +675,7 @@ int main(int argc, char** argv) {
         acting = reader;
         publish_ns = calloc(PUBLISH_SAMPLES_MAX, sizeof(*publish_ns));
         if (publish_ns == NULL || pin_to(false) < 0 ||
-            tt_Node_create_publisher(&nodes[reader], &back_pub, &BenchTopic, "back") != tt_RET_OK ||
+            tt_Context_create_publisher(&nodes[reader], &back_pub, &BenchTopic, "back") != tt_RET_OK ||
             pthread_create(&publisher, NULL, publish_loop, NULL) != 0) {
             return 1;
         }

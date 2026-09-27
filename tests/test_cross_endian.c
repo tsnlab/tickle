@@ -150,7 +150,7 @@ static void test_reverse_endian_data_routes_and_unswaps(void) {
     sub.topic = &topic;
     sub.callback = sub_cb;
 
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
     node.id = LOCAL_NODE_ID;
@@ -202,10 +202,10 @@ static void test_reverse_endian_update_matches_and_learns_peer(void) {
     pub.endpoint.name = "p";
     pub.topic = &topic;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        pub.peers[i].node_id = tt_NODE_ID_INVALID;
+        pub.peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
 
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
     node.id = LOCAL_NODE_ID;
@@ -255,7 +255,7 @@ static void test_reverse_endian_update_matches_and_learns_peer(void) {
     EXPECT_TRUE(process_packet(&node, buf, 0, off, sender_ip, sender_port));
 
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
-    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].node_id);
+    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].context_id);
     EXPECT_EQ_U32(sender_ip, pub.peers[0].ip);
     EXPECT_EQ_U32((uint32_t)sender_port, (uint32_t)pub.peers[0].port);
 }
@@ -315,7 +315,7 @@ static void test_reverse_endian_callrequest_reaches_server(void) {
     server.service = &service;
     server.callback = srv_cb;
 
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
     node.id = LOCAL_NODE_ID;

@@ -69,7 +69,7 @@ static void data_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
     }
 }
 
-static void send_ack(struct tt_Node* node, uint64_t time, void* param) {
+static void send_ack(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
@@ -78,7 +78,7 @@ static void send_ack(struct tt_Node* node, uint64_t time, void* param) {
     tt_Publisher_publish(g_ack_pub, (struct tt_Data*)&ack);
 }
 
-static void stop(struct tt_Node* node, uint64_t time, void* param) {
+static void stop(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
@@ -102,8 +102,8 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
@@ -112,7 +112,7 @@ int main(int argc, char** argv) {
     uint64_t start = tt_get_ns();
 
     struct tt_Subscriber sub;
-    ret = tt_Node_create_subscriber(&node, &sub, &BenchTopic, "ping", (tt_SUBSCRIBER_CALLBACK)data_callback);
+    ret = tt_Context_create_subscriber(&node, &sub, &BenchTopic, "ping", (tt_SUBSCRIBER_CALLBACK)data_callback);
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
         return ret;
@@ -135,19 +135,19 @@ int main(int argc, char** argv) {
     sub.reorder_slot_bytes = BENCH_REORDER_SLOT_BYTES;
 
     struct tt_Publisher ack_pub;
-    ret = tt_Node_create_publisher(&node, &ack_pub, &BenchTopic, "pong");
+    ret = tt_Context_create_publisher(&node, &ack_pub, &BenchTopic, "pong");
     if (ret != 0) {
         printf("Cannot create ack publisher: %d\n", ret);
         return ret;
     }
     g_ack_pub = &ack_pub;
 
-    tt_Node_schedule(&node, start + (uint64_t)(collect_s * (double)tt_SECOND), send_ack, NULL);
-    tt_Node_schedule(&node, start + (uint64_t)((collect_s + 1.0) * (double)tt_SECOND), stop, NULL);
+    tt_Context_schedule(&node, start + (uint64_t)(collect_s * (double)tt_SECOND), send_ack, NULL);
+    tt_Context_schedule(&node, start + (uint64_t)((collect_s + 1.0) * (double)tt_SECOND), stop, NULL);
 
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, -1);
+        ret = tt_Context_poll(&node, -1);
     }
 
     double backlog_delivery_ms = received > 0 ? (double)(tt_get_ns() - start) / ns_per_ms : -1.0;
@@ -156,6 +156,6 @@ int main(int argc, char** argv) {
            "received=%u backlog_delivery_ms=%.3f\n",
            durable, received, backlog_delivery_ms);
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

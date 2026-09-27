@@ -150,7 +150,7 @@ namespace {
     // reply is only seen at the loop's own ~150 us cadence (the sleep plus the kernel's timer slack).
     // Measured on a veth pair, that is 230-255 us of every round trip, for all three rmw implementations
     // alike (examples/perf_hil/experiments/rmw_ping_wait_mode.sh). block waits in spin_once() until the
-    // reply wakes the executor, as the native client waits in tt_Node_poll(); the caller then reads the
+    // reply wakes the executor, as the native client waits in tt_Context_poll(); the caller then reads the
     // round trip at the callback.
     auto wait_for_reply(rclcpp::executors::SingleThreadedExecutor& executor, const std::atomic<bool>& got_reply,
                         uint64_t wait_deadline, const wait_mode& wait, loop_stats& loop, phase_probe& probe) -> void {

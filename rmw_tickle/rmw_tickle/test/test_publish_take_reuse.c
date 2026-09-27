@@ -26,13 +26,13 @@
 // neither would have caught a missing memset() here.
 //
 // Deliberately does NOT rely on a real rmw_publish() -> wire -> rmw_take() round trip to exercise
-// the *receive* side: a co-located Publisher/Subscriber on the very same tt_Node never actually
+// the *receive* side: a co-located Publisher/Subscriber on the very same tt_Context never actually
 // see each other's DATA over the wire at all (process_submessage()'s own self_sent filter drops
 // it unconditionally, tickle.c) - a real, pre-existing, already-documented gap (rmw_tickle/PLAN.md
 // Milestone 10's own "a full publish/subscribe round trip... no live multi-process test infra
 // exists yet for rmw_tickle" note, still open), not something this milestone touches or needs to
 // solve. Instead this invokes tt_Subscriber.callback directly (a genuinely public tickle.h field -
-// literally the same function pointer tt_Node_create_subscriber() was given, and precisely what a
+// literally the same function pointer tt_Context_create_subscriber() was given, and precisely what a
 // real wire delivery would have called had one arrived) - the same "reach through an already-
 // public field/header, not a private implementation detail" precedent test_multi_node.c already
 // set. rmw_publish() itself is still called for real each cycle too, exercising publish_scratch_
@@ -198,7 +198,7 @@ int main(void) {
         assert(RMW_RET_OK == rmw_publish(pub, &outgoing, NULL));
 
         // Simulates the delivery a real remote peer's DATA would have triggered - direct call
-        // through the exact same tt_SUBSCRIBER_CALLBACK function pointer tt_Node_create_
+        // through the exact same tt_SUBSCRIBER_CALLBACK function pointer tt_Context_create_
         // subscriber() was given (tt_Subscriber.callback, a plain public tickle.h field), not a
         // private implementation detail - see this file's own module comment for why a real wire
         // round trip can't reach this Subscription from this same process's own Publisher.

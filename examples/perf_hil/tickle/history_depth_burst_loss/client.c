@@ -52,7 +52,7 @@ static uint32_t seq = 0;
 static struct tt_Publisher* g_pub;
 static bool g_sending_done = false;
 
-static void send_one(struct tt_Node* node, uint64_t time, void* param) {
+static void send_one(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     if (g_interrupted || seq >= count) {
         g_sending_done = true;
@@ -63,10 +63,10 @@ static void send_one(struct tt_Node* node, uint64_t time, void* param) {
     if (ret == tt_RET_OK) {
         sent++;
     }
-    tt_Node_schedule(node, time + (uint64_t)(interval_s * (double)tt_SECOND), send_one, NULL);
+    tt_Context_schedule(node, time + (uint64_t)(interval_s * (double)tt_SECOND), send_one, NULL);
 }
 
-static void stop_draining(struct tt_Node* node, uint64_t time, void* param) {
+static void stop_draining(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
@@ -90,15 +90,15 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
     }
 
     struct tt_Publisher pub;
-    ret = tt_Node_create_publisher(&node, &pub, &BenchTopic, "stream");
+    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "stream");
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
@@ -123,23 +123,23 @@ int main(int argc, char** argv) {
     g_pub = &pub;
 
     uint64_t send_start = tt_get_ns() + (uint64_t)(discovery_margin_s * (double)tt_SECOND);
-    tt_Node_schedule(&node, send_start, send_one, NULL);
+    tt_Context_schedule(&node, send_start, send_one, NULL);
 
     ret = tt_RET_OK;
     while (!g_interrupted && !g_sending_done && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, -1);
+        ret = tt_Context_poll(&node, -1);
     }
     // drain period - no blocking "wait for acks" API exists (this file's own doc comment above),
     // just keep polling so the deliberately-late server.c has a chance to catch up (and any
     // in-flight retransmit can still land) before this side tears down.
-    tt_Node_schedule(&node, tt_get_ns() + (uint64_t)(drain_s * (double)tt_SECOND), stop_draining, NULL);
+    tt_Context_schedule(&node, tt_get_ns() + (uint64_t)(drain_s * (double)tt_SECOND), stop_draining, NULL);
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, -1);
+        ret = tt_Context_poll(&node, -1);
     }
 
     printf("RESULT: framework=tickle scenario=history_depth_burst_loss role=client sent=%lu\n", (unsigned long)sent);
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

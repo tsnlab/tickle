@@ -75,7 +75,7 @@ static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t 
     subscriber_callback_count++;
 }
 
-static void init_node_and_topic(struct tt_Node* node, struct tt_Topic* topic) {
+static void init_node_and_topic(struct tt_Context* node, struct tt_Topic* topic) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -91,7 +91,7 @@ static void init_node_and_topic(struct tt_Node* node, struct tt_Topic* topic) {
     topic->data_free = stub_data_free;
 }
 
-static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Node* node,
+static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Context* node,
                                                struct tt_Topic* topic) {
     memset(sub, 0, sizeof(*sub));
     sub->endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
@@ -101,7 +101,7 @@ static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct
     sub->callback = stub_subscriber_callback;
     sub->reliable = true;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        sub->writers[i].node_id = tt_NODE_ID_INVALID; // all empty - see struct tt_WriterProxy
+        sub->writers[i].context_id = tt_CONTEXT_ID_INVALID; // all empty - see struct tt_WriterProxy
     }
 
     node->endpoint_count = 1;
@@ -119,7 +119,7 @@ static void init_header(struct tt_Header* header, uint8_t source_node_id) {
 // (matching what process_packet() would have handed process_data()) - unlike test_reliable_
 // pubsub.c's own identically-shaped helper, this one also stamps entity_id, since these tests are
 // specifically about disambiguating senders that would otherwise share tracking state.
-static uint32_t write_data(struct tt_Node* node, uint32_t entity_id, uint32_t seq_no, uint64_t timestamp,
+static uint32_t write_data(struct tt_Context* node, uint32_t entity_id, uint32_t seq_no, uint64_t timestamp,
                            uint32_t value) {
     struct tt_DataHeader* data_header = (struct tt_DataHeader*)node->rx_buffer;
     data_header->endpoint_id = ENDPOINT_ID;
@@ -143,7 +143,7 @@ static void test_two_different_nodes_same_endpoint_track_independently(void) {
     test_mock_reset();
     subscriber_callback_count = 0;
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -183,12 +183,12 @@ static void test_two_different_nodes_same_endpoint_track_independently(void) {
 }
 
 // The narrower, same-remote-node variant: two Publisher instances that happen to share a node_id
-// (e.g. two local Publishers on one remote tt_Node with the same topic+endpoint name, Milestone
+// (e.g. two local Publishers on one remote tt_Context with the same topic+endpoint name, Milestone
 // 35) must still be disambiguated purely by entity_id.
 static void test_two_entity_ids_on_same_node_track_independently(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
@@ -221,7 +221,7 @@ static void test_two_entity_ids_on_same_node_track_independently(void) {
 static void test_gap_on_one_writer_does_not_affect_another(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);

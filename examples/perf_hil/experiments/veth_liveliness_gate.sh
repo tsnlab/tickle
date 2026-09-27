@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # What the LIVELINESS change costs ordinary traffic (2026-09-26, rmw_tickle/LIVELINESS_PLAN.md amendment 4):
-# every datagram now tests tt_Node.liveliness_flags[source] (a lapsed entity to revive), and every DATA tests
+# every datagram now tests tt_Context.liveliness_flags[source] (a lapsed entity to revive), and every DATA tests
 # it again for a MANUAL_BY_TOPIC writer to look up. Both are one byte for a node with no such entity, which
 # is every node in these scenarios (no discovery table, AUTOMATIC only). Plan asked for it measured on the
 # PC before it is claimed.

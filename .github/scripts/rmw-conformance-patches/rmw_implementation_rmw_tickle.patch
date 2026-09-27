@@ -106,7 +106,7 @@ index 093bb3c..f3ec9a6 100644
 +  // Local, rmw_tickle-specific patch (not upstream): DEADLINE/LIFESPAN are genuinely accepted now
 +  // (QoS roadmap #2/#6, both done), but this test's own liveliness_lease_duration (1ns/1s, "duration"
 +  // above) is below rmw_tickle's own real, still-current floor - tt_LIVELINESS_MISS_THRESHOLD *
-+  // tt_NODE_UPDATE_INTERVAL (3s, TickLE core's own fastest possible peer-death detection latency,
++  // tt_CONTEXT_UPDATE_INTERVAL (3s, TickLE core's own fastest possible peer-death detection latency,
 +  // rmw_qos.c's own QoS roadmap #3) - legitimately rejected, not a gap. Milestone 51's own removal
 +  // of this fixture's *other*, now-stale RELIABLE-based skip found this for real, via real CI.
 +  if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") == 0) {

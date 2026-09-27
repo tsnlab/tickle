@@ -24,7 +24,7 @@
 #define PONG_TASK_STACK_WORDS 1024
 
 // Too large for a task's own stack - static instead, same reasoning as main.c's ROLE=selftest.
-static struct tt_Node node;
+static struct tt_Context node;
 static struct tt_Server server;
 
 static int8_t pong_callback(struct tt_Server* server_endpoint, struct PingPongRequest* request,
@@ -42,19 +42,19 @@ static void pong_task(void* param) {
 
     net_init();
 
-    tt_ret_t ret = tt_Node_create(&node);
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != tt_RET_OK) {
-        printf("pong: tt_Node_create failed: %d\n", ret);
+        printf("pong: tt_Context_create failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
     printf("pong: node created, id=%u\n", node.id);
 
-    ret =
-        tt_Node_create_server(&node, &server, &PingPongService, "ping_pong_server", (tt_SERVER_CALLBACK)pong_callback);
+    ret = tt_Context_create_server(&node, &server, &PingPongService, "ping_pong_server",
+                                   (tt_SERVER_CALLBACK)pong_callback);
     if (ret != tt_RET_OK) {
-        printf("pong: tt_Node_create_server failed: %d\n", ret);
+        printf("pong: tt_Context_create_server failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
@@ -62,7 +62,7 @@ static void pong_task(void* param) {
     printf("pong: server ready\n");
 
     for (;;) {
-        tt_Node_poll(&node, -1);
+        tt_Context_poll(&node, -1);
     }
 }
 

@@ -52,7 +52,7 @@ static struct tt_Publisher* g_pub;
 static uint64_t g_start_ns;
 static uint64_t g_deadline_ns;
 
-static void send_one(struct tt_Node* node, uint64_t time, void* param) {
+static void send_one(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     if (g_interrupted || tt_get_ns() >= g_deadline_ns) {
         g_interrupted = 1;
@@ -64,7 +64,7 @@ static void send_one(struct tt_Node* node, uint64_t time, void* param) {
         sent++;
     }
     uint64_t next = interval_s > 0.0 ? time + (uint64_t)(interval_s * (double)tt_SECOND) : time;
-    tt_Node_schedule(node, next, send_one, NULL);
+    tt_Context_schedule(node, next, send_one, NULL);
 }
 
 int main(int argc, char** argv) {
@@ -87,15 +87,15 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
     }
 
     struct tt_Publisher pub;
-    ret = tt_Node_create_publisher(&node, &pub, &BenchTopic, "stream");
+    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "stream");
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
@@ -105,11 +105,11 @@ int main(int argc, char** argv) {
     g_start_ns = tt_get_ns();
     uint64_t send_start = g_start_ns + (uint64_t)(discovery_margin_s * (double)tt_SECOND);
     g_deadline_ns = send_start + (uint64_t)(duration_s * (double)tt_SECOND);
-    tt_Node_schedule(&node, send_start, send_one, NULL);
+    tt_Context_schedule(&node, send_start, send_one, NULL);
 
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, -1);
+        ret = tt_Context_poll(&node, -1);
     }
 
     double elapsed_s = duration_s;
@@ -123,6 +123,6 @@ int main(int argc, char** argv) {
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

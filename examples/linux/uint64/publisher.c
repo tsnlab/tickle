@@ -33,7 +33,7 @@ static uint32_t target_count = 0; // 0 = unlimited
 static uint32_t transmitted = 0;
 static uint64_t publish_interval_ns = 0;
 
-static void publish(struct tt_Node* node, uint64_t time, void* param) {
+static void publish(struct tt_Context* node, uint64_t time, void* param) {
     struct tt_Publisher* pub = param;
 
     const uint64_t example_data = 0xdeadbeef;
@@ -46,7 +46,7 @@ static void publish(struct tt_Node* node, uint64_t time, void* param) {
     }
 
     if (target_count == 0 || transmitted < target_count) {
-        tt_Node_schedule(node, time + publish_interval_ns, publish, pub);
+        tt_Context_schedule(node, time + publish_interval_ns, publish, pub);
     } else {
         g_interrupted = 1;
     }
@@ -58,8 +58,8 @@ static void print_usage(const char* prog) {
             "          [-i interval_seconds] [-n topic_name] [-l log_level]\n",
             prog);
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
-    fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
-    fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
+    fprintf(stderr, "  -p  UDP port (default: compiled-in tt_CONTEXT_PORT)\n");
+    fprintf(stderr, "  -a  bind address (default: compiled-in tt_CONTEXT_ADDRESS)\n");
     fprintf(stderr, "  -I  explicit node ID 1-254 (default: auto-detect from -a/-b's subnet)\n");
     fprintf(stderr, "  -c  stop after publishing this many messages (default 0 = run until Ctrl+C)\n");
     fprintf(stderr, "  -i  seconds between publishes (default 1)\n");
@@ -71,7 +71,7 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->broadcast = "192.168.10.255";
     opts->port = 0;
     opts->bind_addr = NULL;
-    opts->node_id = 0;
+    opts->context_id = 0;
     opts->interval_s = 1.0;
     opts->name = "uint64_topic";
     opts->log_level = TT_LOG_INFO;
@@ -98,8 +98,8 @@ int main(int argc, char** argv) {
     if (opts.bind_addr != NULL) {
         _tt_CONFIG.addr = opts.bind_addr;
     }
-    if (opts.node_id != 0) {
-        _tt_CONFIG.node_id = opts.node_id;
+    if (opts.context_id != 0) {
+        _tt_CONFIG.context_id = opts.context_id;
     }
     if (opts.log_level_set) {
         tt_log_set_level(opts.log_level);
@@ -111,8 +111,8 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
@@ -122,17 +122,17 @@ int main(int argc, char** argv) {
 
     struct tt_Publisher pub;
 
-    ret = tt_Node_create_publisher(&node, &pub, &UInt64Topic, opts.name);
+    ret = tt_Context_create_publisher(&node, &pub, &UInt64Topic, opts.name);
     if (ret != 0) {
         printf("Cannot create server: %d\n", ret);
         return ret;
     }
 
-    tt_Node_schedule(&node, tt_get_ns(), publish, &pub);
+    tt_Context_schedule(&node, tt_get_ns(), publish, &pub);
 
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, -1);
+        ret = tt_Context_poll(&node, -1);
     }
 
     // Informational only - this side has no pass/fail verdict of its own; the subscriber's own
@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
     char transmitted_buf[TT_GROUPED_BUF_LEN];
     printf("\nuint64 publisher: sent %s message(s)\n", tt_format_grouped(transmitted, transmitted_buf));
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     printf("Node destroyed(#%d): %d\n", node.id, ret);
 
     return 0;

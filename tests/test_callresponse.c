@@ -53,7 +53,7 @@ static void test_callresponse_updates_latency_and_clears_cache(void) {
     test_mock_reset();
     test_mock_now = 1250;
 
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
     node.id = 1;
@@ -103,7 +103,7 @@ static void test_callresponse_updates_latency_and_clears_cache(void) {
 
 // Shared setup for the "must be ignored" cases below: a client registered on a node, one
 // outstanding call at seq_no 7, and a response header the test then tweaks.
-static void setup_client(struct tt_Node* node, struct tt_Service* service, struct tt_Client* client) {
+static void setup_client(struct tt_Context* node, struct tt_Service* service, struct tt_Client* client) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = 1;
@@ -133,7 +133,7 @@ static struct tt_CallResponseHeader make_response(uint32_t endpoint_id, uint16_t
 // answered, or an unsolicited/stray response) must be dropped without invoking the callback.
 static void test_callresponse_ignored_when_no_call_outstanding(void) {
     test_mock_reset();
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     setup_client(&node, &service, &client);
@@ -151,7 +151,7 @@ static void test_callresponse_ignored_when_no_call_outstanding(void) {
 // be dropped, leaving the current call still outstanding.
 static void test_callresponse_ignored_on_seq_no_mismatch(void) {
     test_mock_reset();
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     setup_client(&node, &service, &client);
@@ -171,7 +171,7 @@ static void test_callresponse_ignored_on_seq_no_mismatch(void) {
 // callback a second time.
 static void test_duplicate_callresponse_does_not_double_invoke_callback(void) {
     test_mock_reset();
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client;
     setup_client(&node, &service, &client);
@@ -195,7 +195,7 @@ static void test_duplicate_callresponse_does_not_double_invoke_callback(void) {
 static void test_callresponse_ignores_unknown_endpoint(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
     node.id = 1;

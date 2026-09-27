@@ -24,7 +24,7 @@
 #define SUBSCRIBER_TASK_STACK_WORDS 1024
 
 // Too large for a task's own stack - static instead, same reasoning as main.c's ROLE=selftest.
-static struct tt_Node node;
+static struct tt_Context node;
 static struct tt_Subscriber sub;
 
 static void subscriber_callback(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
@@ -40,19 +40,19 @@ static void subscriber_task(void* param) {
 
     net_init();
 
-    tt_ret_t ret = tt_Node_create(&node);
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != tt_RET_OK) {
-        printf("subscriber: tt_Node_create failed: %d\n", ret);
+        printf("subscriber: tt_Context_create failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
     printf("subscriber: node created, id=%u\n", node.id);
 
-    ret = tt_Node_create_subscriber(&node, &sub, &UInt64Topic, "uint64_topic",
-                                    (tt_SUBSCRIBER_CALLBACK)subscriber_callback);
+    ret = tt_Context_create_subscriber(&node, &sub, &UInt64Topic, "uint64_topic",
+                                       (tt_SUBSCRIBER_CALLBACK)subscriber_callback);
     if (ret != tt_RET_OK) {
-        printf("subscriber: tt_Node_create_subscriber failed: %d\n", ret);
+        printf("subscriber: tt_Context_create_subscriber failed: %d\n", ret);
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
@@ -60,7 +60,7 @@ static void subscriber_task(void* param) {
     printf("subscriber: ready\n");
 
     for (;;) {
-        tt_Node_poll(&node, -1);
+        tt_Context_poll(&node, -1);
     }
 }
 

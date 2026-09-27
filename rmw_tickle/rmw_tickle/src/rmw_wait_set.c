@@ -42,7 +42,7 @@
 #include <sys/timerfd.h>   // timerfd_settime() - executor-driven receive
 #include <tickle/config.h> // tt_SECOND, tt_MILLISECOND
 #include <tickle/hal.h>    // tt_get_ns()
-#include <tickle/tickle.h> // tt_Node_poll(), tt_Node_interrupt()
+#include <tickle/tickle.h> // tt_Context_poll(), tt_Context_interrupt()
 #include <tickle/trace.h>  // TT_TRACE
 
 #include "rcutils/allocator.h"
@@ -310,12 +310,12 @@ static bool wait_by_polling(rmw_tickle_context_impl_t* context_impl, rmw_subscri
             break;
         }
         int64_t rest = UINT64_MAX == deadline_ns ? -1 : (int64_t)(deadline_ns - now);
-        tt_ret_t polled = tt_Node_poll(&context_impl->tickle_node, rest);
+        tt_ret_t polled = tt_Context_poll(&context_impl->tickle_context, rest);
         if (tt_RET_BUSY == polled) {
             // The poll thread is still inside its own poll: end it once, and wait for it to park
             // (rmw_node.c's park_for_polling_executor() announces that on handover_cond).
             if (!interrupted) {
-                (void)tt_Node_interrupt(&context_impl->tickle_node);
+                (void)tt_Context_interrupt(&context_impl->tickle_context);
                 interrupted = true;
                 atomic_fetch_add(&context_impl->executor_handovers, 1);
             }

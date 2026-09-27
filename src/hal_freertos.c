@@ -24,10 +24,10 @@
 #include "log.h"
 
 struct _tt_Config _tt_CONFIG = {
-    .addr = _tt_NODE_ADDRESS,
-    .port = _tt_NODE_PORT,
-    .broadcast = _tt_NODE_BROADCAST,
-    .node_id = tt_NODE_ID_INVALID, // auto-detect by default; see its own comment in config.h
+    .addr = _tt_CONTEXT_ADDRESS,
+    .port = _tt_CONTEXT_PORT,
+    .broadcast = _tt_CONTEXT_BROADCAST,
+    .context_id = tt_CONTEXT_ID_INVALID, // auto-detect by default; see its own comment in config.h
 };
 
 // QEMU's `-machine virt` CLINT counts at a fixed 10MHz (RISCV_ACLINT_DEFAULT_TIMEBASE_FREQ) -
@@ -48,9 +48,9 @@ uint64_t tt_get_ns(void) {
 int32_t tt_get_node_id(void) {
     // Unlike hal_linux.c (which enumerates every interface with getifaddrs() to find the one on
     // the broadcast network), this target has exactly one netif, brought up statically by
-    // net_init.c before tt_Node_create() ever runs - so there's nothing to search.
+    // net_init.c before tt_Context_create() ever runs - so there's nothing to search.
     if (netif_default == NULL) {
-        TT_LOG_ERROR("No default netif - net_init() must run before tt_Node_create()");
+        TT_LOG_ERROR("No default netif - net_init() must run before tt_Context_create()");
         return -1;
     }
 
@@ -90,7 +90,7 @@ int32_t tt_link_mtu(uint32_t addr) {
     return (int32_t)netif_default->mtu;
 }
 
-tt_ret_t tt_bind(struct tt_Node* node) {
+tt_ret_t tt_bind(struct tt_Context* node) {
     // See hal_linux.c's own tt_bind() comment on this same line - node->hal.sock relies on the
     // identical "only touched after it's known-good" convention.
     node->hal.wake_sock = -1;
@@ -211,7 +211,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     return tt_RET_OK;
 }
 
-void tt_close(struct tt_Node* node) {
+void tt_close(struct tt_Context* node) {
     if (node->hal.data_sock >= 0 && close(node->hal.data_sock) < 0) {
         TT_LOG_WARNING("Cannot close data socket: %d", errno);
     }
@@ -225,12 +225,12 @@ void tt_close(struct tt_Node* node) {
     }
 }
 
-int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
+int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     return (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
                            sizeof(struct sockaddr_in));
 }
 
-int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
+int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
@@ -241,7 +241,7 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
     return (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
 }
 
-int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
+int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
     // iovec.iov_base is non-const by POSIX, but sendmsg() only reads it - casting away const here
     // is the standard idiom, not a real int-to-pointer round trip.
@@ -274,7 +274,7 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
 }
 
 // lwIP has no sendmmsg(), so a batch is one send each - the same number of calls core made before batching.
-int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
     for (uint32_t i = 0; i < count; i++) {
         const struct tt_OutDatagram* datagram = &datagrams[i];
         int32_t result;
@@ -297,7 +297,7 @@ int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagra
 // timeout), and pick which socket the read that follows should use. Returns 0 when a datagram is ready
 // (with *read_fd set), otherwise the value tt_receive() returns: -1 timeout, -2 I/O error, -3 woken by
 // tt_wake_signal(). Split out of tt_receive() for its size, not its behaviour.
-static int32_t wait_readable(struct tt_Node* node, int64_t timeout, int* read_fd) {
+static int32_t wait_readable(struct tt_Context* node, int64_t timeout, int* read_fd) {
     struct timeval wait_time;
     struct timeval* wait_time_ptr;
     if (timeout == 0) {
@@ -352,7 +352,7 @@ static int32_t wait_readable(struct tt_Node* node, int64_t timeout, int* read_fd
     return 0;
 }
 
-int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
+int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     // Which socket this call will read from - see wait_readable(). Defaults to the well-known one so
     // the non-polling path behaves exactly as it did before data_sock existed.
     int read_fd = node->hal.sock;
@@ -385,12 +385,12 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
     return ret;
 }
 
-uint32_t tt_rx_buffered(const struct tt_Node* node) {
+uint32_t tt_rx_buffered(const struct tt_Context* node) {
     (void)node;
     return 0; // every receive here asks the stack; nothing is held back
 }
 
-int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     // lwIP does NOT honor MSG_DONTWAIT per recvfrom() call the way Linux does - without O_NONBLOCK
     // on the socket it can still block on an empty socket, which hangs drain_rx()'s "keep calling
     // until nothing's left" loop forever. So gate the read on a zero-timeout select() (the same
@@ -445,7 +445,7 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
     return ret;
 }
 
-tt_ret_t tt_wake_signal(struct tt_Node* node) {
+tt_ret_t tt_wake_signal(struct tt_Context* node) {
     uint8_t one = 1;
     // See hal_linux.c's tt_wake_signal() - identical reasoning (a send to our own loopback
     // address never blocks, so this is safe from any task).

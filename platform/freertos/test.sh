@@ -26,7 +26,7 @@
 #     main_ping.c's own WARMUP_S/COOLDOWN_S/TOTAL_DURATION_S comment) than the other two functional
 #     pairs' $DURATION_S (default 10s), the same split platform/linux/test.sh's own ping pair uses.
 #   - perf (perf_client/perf_server): pub/sub, throughput-flavored - fills a full Ethernet frame
-#     and republishes as fast as tt_Node_poll() allows (see main_perf_client.c's own comment),
+#     and republishes as fast as tt_Context_poll() allows (see main_perf_client.c's own comment),
 #     same as examples/linux/perf/perf_client.c's own defaults now - real max throughput, not a
 #     fixed rate. Same 70s ($PERF_DURATION_S) 5+60+5 split as ping_pong above, for the same reason
 #     (a short burst is a noisier throughput sample than a longer one) platform/linux/test.sh's own

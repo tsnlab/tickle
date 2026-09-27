@@ -52,7 +52,7 @@
 static _Atomic uint64_t fired_at_ns;
 static _Atomic uintptr_t fired_on_thread;
 
-static void record_firing(struct tt_Node* node, uint64_t time, void* param) {
+static void record_firing(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
@@ -104,7 +104,7 @@ int main(void) {
     assert(NULL != node);
     rmw_tickle_context_impl_t* impl = (rmw_tickle_context_impl_t*)context.impl;
     assert(impl->executor_poll_enabled);
-    struct tt_Node* tickle_node = &impl->tickle_node;
+    struct tt_Context* tickle_context = &impl->tickle_context;
 
     rmw_guard_condition_t* guard = rmw_create_guard_condition(&context);
     rmw_wait_set_t* wait_set = rmw_create_wait_set(&context, 0);
@@ -114,7 +114,7 @@ int main(void) {
 
     // 1. A timer due 50 ms into a 300 ms wait fires then, on this thread: the executor holds the role.
     uint64_t due = tt_get_ns() + (TIMER_DUE_MS * MS);
-    assert(tt_Node_schedule(tickle_node, due, record_firing, NULL));
+    assert(tt_Context_schedule(tickle_context, due, record_firing, NULL));
     rmw_time_t timeout = {0, WAIT_MS * MS};
     assert(RMW_RET_TIMEOUT == rmw_wait(NULL, &guards, NULL, NULL, NULL, wait_set, &timeout));
     assert(atomic_load(&fired_at_ns) >= due && atomic_load(&fired_at_ns) <= due + (2 * MS));
@@ -125,7 +125,7 @@ int main(void) {
     //    poll thread, on time.
     atomic_store(&fired_at_ns, 0);
     due = tt_get_ns() + (AWAY_TIMER_DUE_MS * MS); // after the 10 ms lease: the poll thread has it by then
-    assert(tt_Node_schedule(tickle_node, due, record_firing, NULL));
+    assert(tt_Context_schedule(tickle_context, due, record_firing, NULL));
     sleep_ms(AWAY_MS);
     assert(atomic_load(&fired_at_ns) >= due && atomic_load(&fired_at_ns) <= due + (2 * MS));
     assert(atomic_load(&fired_on_thread) != main_thread);

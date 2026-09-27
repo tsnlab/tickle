@@ -16,7 +16,7 @@
 #
 # HOW TO READ IT, written before running:
 #   THE HEADLINE QUESTION is CPU in the latency cells. The campaign's only CPU losses were there -
-#   TickLE 6,516 cpu_s_per_Msample against CycloneDDS's 200, a 32x loss caused by tt_Node_poll()
+#   TickLE 6,516 cpu_s_per_Msample against CycloneDDS's 200, a 32x loss caused by tt_Context_poll()
 #   waking every 100 us. The poll change (69e63a34, 6f01de6f) cut idle wakes 1013x. So:
 #     TickLE's latency cpu_s_per_Msample drops by roughly that order and lands near the vendors'
 #       -> the poll change fixed the campaign's CPU loss and there is nothing left to optimise there.

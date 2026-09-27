@@ -48,7 +48,7 @@ static tt_ALIGNAS(8) uint8_t cache_area[tt_MAX_SERVER_CACHE_COUNT * ENTRY];
 static tt_ALIGNAS(8) uint8_t pending_area[tt_MAX_SERVER_CACHE_COUNT * sizeof(struct fake_response)];
 static tt_ALIGNAS(8) uint8_t client_area[ENTRY];
 
-static struct tt_Node node;
+static struct tt_Context node;
 static struct tt_Service service;
 static struct tt_Server server;
 

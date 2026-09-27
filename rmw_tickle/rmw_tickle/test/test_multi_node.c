@@ -12,13 +12,13 @@
 // 3): multiple ROS 2 nodes per process. Root finding behind the design this exercises: DDS itself
 // has no "Node" concept at all - rclcpp::Node is a pure rcl/rmw-layer name/namespace grouping with
 // no independent DDS entity - so this needed no new transport identity, socket, or discovery
-// instance per logical node, just multiple name labels sharing the one tt_Node/poll_thread/
+// instance per logical node, just multiple name labels sharing the one tt_Context/poll_thread/
 // discovery a context already has (promoted from rmw_tickle_node_t up to rmw_tickle_context_impl_t
 // - see that struct's own doc comment, rmw_tickle_c/rmw_tickle.h). Reaches into that header
 // directly (a legitimate public header of this package, not a private implementation detail,
 // matching test_graph.c's/test_liveliness_lost_watchdog.c's own identical precedent) to observe
 // the shared state directly, since the public rmw API alone can't distinguish "two nodes sharing
-// one tt_Node" from "two nodes each with their own" from the outside.
+// one tt_Context" from "two nodes each with their own" from the outside.
 
 #include <assert.h>
 #include <stdatomic.h>
@@ -27,7 +27,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <tickle/tickle.h> // struct tt_Node - NOLINT(misc-include-cleaner), see rmw_tickle.h's own <pthread.h> comment for the identical "used only via a field access, never spelled by name" reasoning
+#include <tickle/tickle.h> // struct tt_Context - NOLINT(misc-include-cleaner), see rmw_tickle.h's own <pthread.h> comment for the identical "used only via a field access, never spelled by name" reasoning
 
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"
@@ -58,14 +58,14 @@ int main(void) {
     rmw_node_t* node_b = rmw_create_node(&context, "test_multi_node_b", "/");
     assert(NULL != node_b);
 
-    // They really do share one tt_Node - not just a coincidentally-equal context_impl pointer, but
+    // They really do share one tt_Context - not just a coincidentally-equal context_impl pointer, but
     // the exact same underlying node id and endpoint table address, proving there's only one real
     // transport participant serving both.
     rmw_tickle_node_t* node_a_impl = (rmw_tickle_node_t*)node_a->data;
     rmw_tickle_node_t* node_b_impl = (rmw_tickle_node_t*)node_b->data;
     assert(node_a_impl->context_impl == node_b_impl->context_impl);
     rmw_tickle_context_impl_t* context_impl = node_a_impl->context_impl;
-    assert(&context_impl->tickle_node == &node_b_impl->context_impl->tickle_node);
+    assert(&context_impl->tickle_context == &node_b_impl->context_impl->tickle_context);
     assert(2 == atomic_load(&context_impl->node_count));
     assert(context_impl->poll_thread_running);
 
@@ -102,7 +102,7 @@ int main(void) {
     assert(NULL != node_a_again);
     assert(3 == atomic_load(&context_impl->node_count));
 
-    // Destroying one sibling must not tear down the shared tt_Node/poll_thread while others are
+    // Destroying one sibling must not tear down the shared tt_Context/poll_thread while others are
     // still alive - the whole point of reference-counting instead of the old unconditional
     // teardown.
     assert(RMW_RET_OK == rmw_destroy_node(node_a));

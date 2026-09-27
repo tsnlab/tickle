@@ -42,7 +42,7 @@
 #include "rosidl_typesupport_tickle_c/identifier.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
 
-#define FAKE_REMOTE_NODE_ID 7 // any value other than tt_NODE_ID_INVALID - see test_events.c's own identical note
+#define FAKE_REMOTE_NODE_ID 7 // any value other than tt_CONTEXT_ID_INVALID - see test_events.c's own identical note
 
 #define NS_PER_MS (1000LL * 1000LL)
 #define NS_PER_SEC (1000LL * NS_PER_MS)
@@ -138,9 +138,9 @@ static int next_discovery_slot = 0;
 static void inject_discovered_entity(rmw_tickle_context_impl_t* context_impl, uint8_t kind, const char* topic_name,
                                      uint8_t qos_bits, uint64_t deadline_duration_ns,
                                      uint64_t liveliness_lease_duration_ns) {
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[next_discovery_slot++];
-    entity->node_id = FAKE_REMOTE_NODE_ID;
+    entity->context_id = FAKE_REMOTE_NODE_ID;
     entity->endpoint_id = 0;
     entity->kind = kind;
     entity->qos = qos_bits;
@@ -149,7 +149,7 @@ static void inject_discovered_entity(rmw_tickle_context_impl_t* context_impl, ui
     entity->alive = true;
     snprintf(entity->type, sizeof(entity->type), "test_best_available/msg/FakeMsg");
     snprintf(entity->name, sizeof(entity->name), "%s", topic_name);
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
 }
 
 int main(void) {

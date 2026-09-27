@@ -45,14 +45,14 @@ static double interval_s = default_interval_s;
 static uint32_t seq = 0;
 static struct tt_Publisher* g_pub;
 
-static void send_one(struct tt_Node* node, uint64_t time, void* param) {
+static void send_one(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     if (g_interrupted) {
         return;
     }
     struct BenchData msg = {.seq = ++seq, .send_ns = tt_get_ns()};
     tt_Publisher_publish(g_pub, (struct tt_Data*)&msg);
-    tt_Node_schedule(node, time + (uint64_t)(interval_s * (double)tt_SECOND), send_one, NULL);
+    tt_Context_schedule(node, time + (uint64_t)(interval_s * (double)tt_SECOND), send_one, NULL);
 }
 
 int main(int argc, char** argv) {
@@ -90,15 +90,15 @@ int main(int argc, char** argv) {
     // three frameworks fail it the same way, since the DDS twins raise no liveliness event under
     // -INT either.
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
     }
 
     struct tt_Publisher pub;
-    ret = tt_Node_create_publisher(&node, &pub, &BenchTopic, "stream");
+    ret = tt_Context_create_publisher(&node, &pub, &BenchTopic, "stream");
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
@@ -110,13 +110,13 @@ int main(int argc, char** argv) {
            interval_s);
     fflush(stdout);
 
-    tt_Node_schedule(&node, tt_get_ns() + (uint64_t)(discovery_margin_s * (double)tt_SECOND), send_one, NULL);
+    tt_Context_schedule(&node, tt_get_ns() + (uint64_t)(discovery_margin_s * (double)tt_SECOND), send_one, NULL);
 
     tt_ret_t poll_ret = tt_RET_OK;
     while (!g_interrupted && (poll_ret == tt_RET_OK || poll_ret == tt_RET_TIMEOUT)) {
-        poll_ret = tt_Node_poll(&node, -1);
+        poll_ret = tt_Context_poll(&node, -1);
     }
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

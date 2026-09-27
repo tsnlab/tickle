@@ -32,7 +32,7 @@
 #include <time.h>
 
 #include <tickle/config.h> // tt_MILLISECOND, tt_RELIABLE_BITMAP_WORD_BITS
-#include <tickle/tickle.h> // tt_DATA_ENCODE/_ENCODE_SIZE/_DECODE/_FREE, tt_NODE_ID_INVALID
+#include <tickle/tickle.h> // tt_DATA_ENCODE/_ENCODE_SIZE/_DECODE/_FREE, tt_CONTEXT_ID_INVALID
 
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"
@@ -168,7 +168,7 @@ static uint64_t monotonic_ms(void) {
 // reads as "in use"; tracking_words is what the real thing announces (rmw_create_subscription()
 // sets RMW_TICKLE_TRACKING_WORDS), and is what sets the blocking bound.
 static void attach_stalled_peer(rmw_tickle_publisher_t* pub_impl) {
-    pub_impl->tickle_publisher.peer_acks[0].node_id = FAKE_PEER_NODE_ID;
+    pub_impl->tickle_publisher.peer_acks[0].context_id = FAKE_PEER_NODE_ID;
     pub_impl->tickle_publisher.peer_acks[0].entity_id = FAKE_PEER_ENTITY_ID;
     pub_impl->tickle_publisher.peer_acks[0].ack_seq_no = 0;
     pub_impl->tickle_publisher.peer_acks[0].tracking_words = RMW_TICKLE_TRACKING_WORDS;
@@ -210,13 +210,13 @@ static void* unblocker_main(void* param) {
     nanosleep(&nap, NULL);
 
     rmw_tickle_context_impl_t* context_impl = args->pub_impl->node->context_impl;
-    tt_Node_lock(&context_impl->tickle_node);
+    tt_Context_lock(&context_impl->tickle_context);
     args->took_node_lock = true;
     // Far enough that the blocked write, and plenty after it, fit under the bound again.
     args->pub_impl->tickle_publisher.peer_acks[0].ack_seq_no = args->pub_impl->tickle_publisher.seq_no;
     args->pub_impl->tickle_publisher.writable_callback(&args->pub_impl->tickle_publisher,
                                                        args->pub_impl->tickle_publisher.writable_callback_param);
-    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Context_unlock(&context_impl->tickle_context);
     return NULL;
 }
 

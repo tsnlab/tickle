@@ -200,7 +200,7 @@ run_scenario() {
 # meant to be invoked by hand with a custom kill -9 step, never through run_scenario.sh.
 #
 # Detection is TickLE's own fixed node-level window (tt_LIVELINESS_MISS_THRESHOLD *
-# tt_NODE_UPDATE_INTERVAL = 3 * 1s = 3s, config.h), independent of the announced lease (-T) - the
+# tt_CONTEXT_UPDATE_INTERVAL = 3 * 1s = 3s, config.h), independent of the announced lease (-T) - the
 # server's own main loop exits as soon as it detects the departure (or its own safety-cap deadline
 # elapses), printing its RESULT line either way. Bounded, polled wait below (max ~10s) rather than
 # a blind sleep, so a detection failure fails this one scenario fast instead of hanging the job

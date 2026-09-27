@@ -39,7 +39,7 @@ struct tt_example_cli_options {
     char* broadcast;
     int port;        // 0 = keep the compiled-in default
     char* bind_addr; // NULL = keep the compiled-in default
-    int node_id;     // 0 = keep the default (auto-detect via tt_get_node_id())
+    int context_id;  // 0 = keep the default (auto-detect via tt_get_node_id())
     char* name;      // topic/service name to rendezvous on
     tt_LogLevel log_level;
     bool log_level_set;
@@ -59,9 +59,9 @@ struct tt_example_cli_options {
     double cooldown;
 
     // -B: perf_client only. Mirrors tt_Publisher.batch (tickle.h) one-to-one - false (this
-    // struct's own zero-init default, matching tt_Node_create_publisher()'s own default) sends
+    // struct's own zero-init default, matching tt_Context_create_publisher()'s own default) sends
     // every tt_Publisher_publish() call immediately, same as a real Publisher would by default;
-    // pass -B to instead batch, deferring to node_flush()'s own tt_NODE_TX_INTERVAL tick - the
+    // pass -B to instead batch, deferring to node_flush()'s own tt_CONTEXT_TX_INTERVAL tick - the
     // right choice for exactly the case DESIGN.md's own "RPC and Publish flush immediately by
     // default; batching is opt-in" describes: sending many small messages back-to-back as fast as
     // possible, where per-message flush overhead dominates over coalescing them into fewer, larger

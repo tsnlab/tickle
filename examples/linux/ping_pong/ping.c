@@ -44,7 +44,7 @@ static void handle_sigint(int sig) {
     g_interrupted = 1;
 }
 
-static void finish_cooldown(struct tt_Node* node, uint64_t time, void* param) {
+static void finish_cooldown(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
@@ -57,7 +57,7 @@ static void finish_cooldown(struct tt_Node* node, uint64_t time, void* param) {
 // not (stopped with Ctrl+C), since either way this only ever needs "cooldown_s seconds from now",
 // never advance knowledge of when the run will end. Idempotent - only the first trigger takes
 // effect. Exactly mirrors perf_server.c's own begin_stopping().
-static void begin_stopping(struct tt_Node* node, uint64_t time) {
+static void begin_stopping(struct tt_Context* node, uint64_t time) {
     if (stopping) {
         return;
     }
@@ -67,10 +67,10 @@ static void begin_stopping(struct tt_Node* node, uint64_t time) {
         g_exit_now = true;
         return;
     }
-    tt_Node_schedule(node, time + (uint64_t)(cooldown_s * (double)tt_SECOND), finish_cooldown, NULL);
+    tt_Context_schedule(node, time + (uint64_t)(cooldown_s * (double)tt_SECOND), finish_cooldown, NULL);
 }
 
-static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* param) {
+static void handle_duration_elapsed(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     begin_stopping(node, time);
 }
@@ -124,7 +124,7 @@ static void ping_callback(struct tt_Client* client, int8_t return_code, struct P
     }
 }
 
-static void ping(struct tt_Node* node, uint64_t time, void* param) {
+static void ping(struct tt_Context* node, uint64_t time, void* param) {
     struct tt_Client* client = param;
 
     uint32_t this_seq = seq;
@@ -157,7 +157,7 @@ static void ping(struct tt_Node* node, uint64_t time, void* param) {
     // sends - cooldown_s's own timer (finish_cooldown(), scheduled from begin_stopping()) is what
     // eventually sets g_exit_now and ends this loop instead.
     if (!g_exit_now && (stopping || target_count == 0 || seq < target_count)) {
-        tt_Node_schedule(node, time + send_interval_ns, ping, client);
+        tt_Context_schedule(node, time + send_interval_ns, ping, client);
     }
 }
 
@@ -207,8 +207,8 @@ static void print_usage(const char* prog) {
             "          [-W cooldown_seconds] [-n endpoint_name] [-l log_level]\n",
             prog);
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
-    fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
-    fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
+    fprintf(stderr, "  -p  UDP port (default: compiled-in tt_CONTEXT_PORT)\n");
+    fprintf(stderr, "  -a  bind address (default: compiled-in tt_CONTEXT_ADDRESS)\n");
     fprintf(stderr, "  -I  explicit node ID 1-254 (default: auto-detect from -a/-b's subnet)\n");
     fprintf(stderr, "  -c  stop after this many pings (default 0 = unlimited - use -d/Ctrl+C)\n");
     fprintf(stderr, "  -i  seconds between pings (default 1)\n");
@@ -224,7 +224,7 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->broadcast = "192.168.10.255";
     opts->port = 0;
     opts->bind_addr = NULL;
-    opts->node_id = 0;
+    opts->context_id = 0;
     opts->interval_s = 1.0;
     opts->duration_s = 0.0;
     opts->warmup = 0.0;
@@ -258,8 +258,8 @@ int main(int argc, char** argv) {
     if (opts.bind_addr != NULL) {
         _tt_CONFIG.addr = opts.bind_addr;
     }
-    if (opts.node_id != 0) {
-        _tt_CONFIG.node_id = opts.node_id;
+    if (opts.context_id != 0) {
+        _tt_CONFIG.context_id = opts.context_id;
     }
     if (opts.log_level_set) {
         tt_log_set_level(opts.log_level);
@@ -271,8 +271,8 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
@@ -281,7 +281,7 @@ int main(int argc, char** argv) {
     printf("Node created(#%d)\n", node.id);
 
     struct tt_Client client;
-    ret = tt_Node_create_client(&node, &client, &PingPongService, opts.name, (tt_CLIENT_CALLBACK)ping_callback);
+    ret = tt_Context_create_client(&node, &client, &PingPongService, opts.name, (tt_CLIENT_CALLBACK)ping_callback);
     if (ret != 0) {
         printf("Cannot create client: %d\n", ret);
         return ret;
@@ -289,19 +289,19 @@ int main(int argc, char** argv) {
 
     uint64_t start_time = tt_get_ns();
     g_start_time = start_time;
-    tt_Node_schedule(&node, start_time, ping, &client);
+    tt_Context_schedule(&node, start_time, ping, &client);
     if (opts.duration_s > 0.0) {
         // -d measures the real (post-warm-up) data window, not time since start_time - a plain
         // start_time + duration_s trigger would let warmup_s eat into it, e.g. -d 60 -w 5 actually
         // only measuring 55s. + warmup_s here instead keeps -d's own meaning exactly "seconds of
         // counted data" regardless of what -w is.
         uint64_t stop_at = start_time + (uint64_t)((warmup_s + opts.duration_s) * (double)tt_SECOND);
-        tt_Node_schedule(&node, stop_at, handle_duration_elapsed, NULL);
+        tt_Context_schedule(&node, stop_at, handle_duration_elapsed, NULL);
     }
 
     ret = tt_RET_OK;
     while (!g_exit_now && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, -1);
+        ret = tt_Context_poll(&node, -1);
         // Checked here (right after poll() returns), not inside ping()'s own schedule: this runs
         // every iteration regardless of how long until the next scheduled ping, so Ctrl+C is
         // caught right away instead of up to one send_interval_ns late.
@@ -312,7 +312,7 @@ int main(int argc, char** argv) {
 
     print_statistics(start_time);
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
 
     return 0;
 }

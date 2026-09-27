@@ -17,7 +17,7 @@
 // header of this package, not a private implementation detail) to hold node_impl->context_impl->
 // the node lock from this test's own thread for longer than the watchdog's own stale threshold, the
 // same mutex poll_thread's own loop (rmw_node.c's poll_thread_main()) needs to reacquire before it
-// can call tt_Node_poll() again - a real, if externally-induced, stall of poll_thread's own
+// can call tt_Context_poll() again - a real, if externally-induced, stall of poll_thread's own
 // progress, not a forged timestamp standing in for one.
 
 #include <assert.h>
@@ -26,7 +26,7 @@
 #include <stdio.h>
 #include <time.h> // struct timespec/nanosleep/time_t - the mutex-hold hang simulation below
 
-#include <tickle/config.h> // tt_LIVELINESS_MISS_THRESHOLD, tt_NODE_UPDATE_INTERVAL, tt_SECOND
+#include <tickle/config.h> // tt_LIVELINESS_MISS_THRESHOLD, tt_CONTEXT_UPDATE_INTERVAL, tt_SECOND
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
@@ -162,24 +162,24 @@ int main(void) {
 
     // Induce a real stall: hold the node lock (rmw_tickle_c/rmw_tickle.h) from this thread for
     // longer than the watchdog's own stale threshold - poll_thread_main() (rmw_node.c) needs this
-    // exact mutex before it can call tt_Node_poll() again, so holding it externally genuinely
+    // exact mutex before it can call tt_Context_poll() again, so holding it externally genuinely
     // blocks poll_thread's own progress, the same way an unrelated bug wedging *anything* that
-    // holds this mutex too long would. tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL (3
+    // holds this mutex too long would. tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL (3
     // real seconds today) is the exact floor rmw_node.c's own RMW_TICKLE_WATCHDOG_STALE_
     // THRESHOLD_NS uses (not exported as its own symbol - it's a translation-unit-local #define -
     // so this recomputes it from the same two public tickle/config.h constants that back it,
     // rather than hardcoding "3 seconds" and silently drifting from it if either ever changes).
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
-    uint64_t stale_threshold_ns = (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL;
+    uint64_t stale_threshold_ns = (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL;
     uint64_t hang_duration_ns = stale_threshold_ns + tt_SECOND; // +1s margin over the bare floor
 
-    tt_Node_lock(&node_impl->context_impl->tickle_node);
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
     struct timespec hang_duration = {
         .tv_sec = (time_t)(hang_duration_ns / tt_SECOND),
         .tv_nsec = (long)(hang_duration_ns % tt_SECOND),
     };
     nanosleep(&hang_duration, NULL);
-    tt_Node_unlock(&node_impl->context_impl->tickle_node);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
 
     // The watchdog may have been blocked on this same mutex (inside mark_automatic_publishers_
     // lost(), rmw_node.c) waiting for the unlock() just above - rmw_wait() with a real timeout (rather
@@ -208,7 +208,7 @@ int main(void) {
     manual_qos.liveliness = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC;
     // rmw_qos.c's own floor - the shortest lease this rmw accepts, same reasoning as the AUTOMATIC
     // threshold above (recomputed, not hardcoded, for the same "don't silently drift" reason).
-    uint64_t manual_lease_ns = (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL;
+    uint64_t manual_lease_ns = (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL;
     manual_qos.liveliness_lease_duration.sec = manual_lease_ns / tt_SECOND;
     manual_qos.liveliness_lease_duration.nsec = manual_lease_ns % tt_SECOND;
 

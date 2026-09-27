@@ -64,7 +64,7 @@ jobs:
       PERF_TEST_TOPICS: "Array1k;Struct16"
       # Keep TickLE's discovery traffic on the runner box (2026-09-23, a real incident): this job
       # runs BOTH processes locally on the self-hosted tickle-perf runner, but hal_linux.c's
-      # compiled-in default broadcast is 255.255.255.255 (config.h's _tt_NODE_BROADCAST), which
+      # compiled-in default broadcast is 255.255.255.255 (config.h's _tt_CONTEXT_BROADCAST), which
       # routes out that box's LAN interface onto the shared lab network - the same L2 segment the
       # rig Pis reach via wlan0. Every push therefore flooded that network with discovery traffic
       # and cross-contaminated HIL measurements in both directions. Loopback broadcast is the

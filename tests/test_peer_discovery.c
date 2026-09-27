@@ -36,11 +36,11 @@
 static struct tt_Topic test_topic = {.name = "test_topic"};
 static struct tt_Service test_service = {.name = "test_service"};
 
-static void init_node(struct tt_Node* node) {
+static void init_node(struct tt_Context* node) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
-    // Real baseline every other caller of encode()/start_encode() assumes (see tt_Node_create()'s
+    // Real baseline every other caller of encode()/start_encode() assumes (see tt_Context_create()'s
     // own reset_node_state()) - needed now that reply_with_own_announce()'s tests below exercise
     // that encode path, not just process_data()'s incoming-side decode path the earlier tests
     // in this file only needed.
@@ -48,7 +48,7 @@ static void init_node(struct tt_Node* node) {
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
 }
 
-static void init_publisher(struct tt_Publisher* pub, struct tt_Node* node) {
+static void init_publisher(struct tt_Publisher* pub, struct tt_Context* node) {
     memset(pub, 0, sizeof(*pub));
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
     pub->endpoint.id = PUB_ENDPOINT_ID;
@@ -56,12 +56,12 @@ static void init_publisher(struct tt_Publisher* pub, struct tt_Node* node) {
     pub->topic = &test_topic;
     pub->node = node;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        pub->peers[i].node_id = tt_NODE_ID_INVALID;
+        pub->peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
     node->endpoints[node->endpoint_count++] = (struct tt_Endpoint*)pub;
 }
 
-static void init_client(struct tt_Client* client, struct tt_Node* node) {
+static void init_client(struct tt_Client* client, struct tt_Context* node) {
     memset(client, 0, sizeof(*client));
     client->endpoint.kind = tt_KIND_SERVICE_CLIENT;
     client->endpoint.id = CLIENT_ENDPOINT_ID;
@@ -69,7 +69,7 @@ static void init_client(struct tt_Client* client, struct tt_Node* node) {
     client->service = &test_service;
     client->node = node;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        client->peers[i].node_id = tt_NODE_ID_INVALID;
+        client->peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
     node->endpoints[node->endpoint_count++] = (struct tt_Endpoint*)client;
 }
@@ -101,7 +101,7 @@ static void init_header(struct tt_Header* header, uint8_t source) {
     header->source = source;
 }
 
-// An UpdateHeader that announces no endpoints at all - what tt_Node_destroy() broadcasts on the
+// An UpdateHeader that announces no endpoints at all - what tt_Context_destroy() broadcasts on the
 // way out.
 static uint32_t write_update_no_entities(uint8_t* buf, uint64_t last_modified) {
     struct test_announce* update_header = test_announce_at(buf);
@@ -113,7 +113,7 @@ static uint32_t write_update_no_entities(uint8_t* buf, uint64_t last_modified) {
 // A remote TOPIC_SUBSCRIBER announcing the same endpoint_id as our local Publisher must be
 // learned as that Publisher's peer, with the address the packet actually arrived from.
 static void test_publisher_learns_subscriber_peer_from_update(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
@@ -129,7 +129,7 @@ static void test_publisher_learns_subscriber_peer_from_update(void) {
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, sender_ip, sender_port));
 
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
-    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].node_id);
+    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].context_id);
     EXPECT_EQ_U32(sender_ip, pub.peers[0].ip);
     EXPECT_EQ_U32((uint32_t)sender_port, (uint32_t)pub.peers[0].port);
 }
@@ -137,7 +137,7 @@ static void test_publisher_learns_subscriber_peer_from_update(void) {
 // Same as above, mirrored for the Client/Server direction: a remote SERVICE_SERVER announcing a
 // matching endpoint_id must be learned as our local Client's peer.
 static void test_client_learns_server_peer_from_update(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Client client;
     init_client(&client, &node);
@@ -153,7 +153,7 @@ static void test_client_learns_server_peer_from_update(void) {
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, sender_ip, sender_port));
 
     EXPECT_EQ_U32(1, (uint32_t)count_peers(client.peers));
-    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)client.peers[0].node_id);
+    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)client.peers[0].context_id);
     EXPECT_EQ_U32(sender_ip, client.peers[0].ip);
     EXPECT_EQ_U32((uint32_t)sender_port, (uint32_t)client.peers[0].port);
 }
@@ -162,7 +162,7 @@ static void test_client_learns_server_peer_from_update(void) {
 // Publisher announcing itself) must not be recorded as a peer, even if its endpoint_id happens
 // to match - only TOPIC_SUBSCRIBER/SERVICE_SERVER announcements are ever matched.
 static void test_unrelated_entity_kind_is_not_tracked_as_peer(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
@@ -181,7 +181,7 @@ static void test_unrelated_entity_kind_is_not_tracked_as_peer(void) {
 // doesn't short-circuit the second one) and a changed address, must refresh the existing slot -
 // not add a second entry.
 static void test_repeated_announce_from_same_node_refreshes_peer_not_duplicates(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
@@ -207,7 +207,7 @@ static void test_repeated_announce_from_same_node_refreshes_peer_not_duplicates(
 // early-return, which skips decode_update_entities() (and thus peer matching) entirely - a
 // changed sender address on that duplicate must NOT overwrite the peer already learned.
 static void test_update_skipped_when_last_modified_unchanged_does_not_rerun_matching(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
@@ -231,7 +231,7 @@ static void test_update_skipped_when_last_modified_unchanged_does_not_rerun_matc
 // Once peers[] is full, a newly seen peer is silently dropped without disturbing the existing
 // entries or failing the UPDATE processing itself.
 static void test_peer_table_full_drops_new_peer_silently(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
@@ -255,7 +255,7 @@ static void test_peer_table_full_drops_new_peer_silently(void) {
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80aff, 9999)); // still returns true
 
     EXPECT_EQ_U32(tt_MAX_PEER_COUNT, (uint32_t)count_peers(pub.peers)); // unchanged, not grown
-    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].node_id);      // first entry untouched
+    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].context_id);   // first entry untouched
 }
 
 // Hearing from a node for the very first time must trigger an immediate unicast reply with our
@@ -266,7 +266,7 @@ static void test_peer_table_full_drops_new_peer_silently(void) {
 static void test_first_contact_triggers_unicast_reply_with_own_announce(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     struct tt_Header header;
@@ -292,7 +292,7 @@ static void test_first_contact_triggers_unicast_reply_with_own_announce(void) {
 static void test_repeat_contact_is_answered_only_when_broadcast(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
 
     struct tt_Header header;
@@ -325,7 +325,7 @@ static void test_repeat_contact_is_answered_only_when_broadcast(void) {
 static void test_reply_skipped_when_tx_buffer_has_pending_content(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     node.tx_tail += 4; // pretend something else is already batched/pending
 
@@ -340,13 +340,13 @@ static void test_reply_skipped_when_tx_buffer_has_pending_content(void) {
 }
 
 // A later announce from the same source that no longer lists the endpoint (it dropped that
-// Subscriber, or - entity_count 0 - it's a tt_Node_destroy() farewell) must drop the peer entry
+// Subscriber, or - entity_count 0 - it's a tt_Context_destroy() farewell) must drop the peer entry
 // its earlier announce created. Without this, a peer that leaves lingers forever (there's no
 // other expiry).
 static void test_source_dropping_endpoint_forgets_its_peer(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
@@ -369,7 +369,7 @@ static void test_source_dropping_endpoint_forgets_its_peer(void) {
 static void test_farewell_from_one_source_leaves_other_peers_intact(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
@@ -392,10 +392,10 @@ static void test_farewell_from_one_source_leaves_other_peers_intact(void) {
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
     bool found_node3 = false;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (pub.peers[i].node_id == 3) {
+        if (pub.peers[i].context_id == 3) {
             found_node3 = true;
         }
-        EXPECT_TRUE(pub.peers[i].node_id != 2); // source 2 fully gone
+        EXPECT_TRUE(pub.peers[i].context_id != 2); // source 2 fully gone
     }
     EXPECT_TRUE(found_node3);
 }
@@ -417,7 +417,7 @@ static int32_t fake_encode(struct tt_Data* data, uint8_t* payload, const uint32_
 // resend of that same announce - which the dedup would otherwise skip forever, since the remote's endpoints
 // never change. On the rig this left 4 of 7 rmw_tickle pings broadcasting every sample (2026-09-26).
 static void test_publisher_created_after_the_announce_learns_the_peer_from_its_resend(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Topic topic = {.name = "late_topic",
                              .data_size = 4,
@@ -431,13 +431,13 @@ static void test_publisher_created_after_the_announce_learns_the_peer_from_its_r
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282)); // no Publisher yet
 
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pub, &topic, "late_pub"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub, &topic, "late_pub"));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers)); // control: nothing is learned at creation itself
 
     tail = write_update_one_entity(node.rx_buffer, 100, endpoint_id, tt_KIND_TOPIC_SUBSCRIBER, "t", "sub");
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282)); // the same resend
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
-    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].node_id);
+    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].context_id);
 
     // ...and the resend after that is a plain duplicate again: the stored generation is the real one.
     EXPECT_EQ_U32(100, node.update_generation[REMOTE_NODE_ID]);
@@ -477,7 +477,7 @@ static void fake_client_callback(struct tt_Client* client, int8_t return_code, s
 // The Client mirror of the test above: a Server announced before the Client existed is learned from the
 // resend.
 static void test_client_created_after_the_announce_learns_the_peer_from_its_resend(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Service service = {.name = "late_service",
                                  .request_size = 4,
@@ -494,7 +494,7 @@ static void test_client_created_after_the_announce_learns_the_peer_from_its_rese
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282)); // no Client yet
 
     struct tt_Client client;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_client(&node, &client, &service, "late_client", fake_client_callback));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_client(&node, &client, &service, "late_client", fake_client_callback));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(client.peers));
 
     tail = write_update_one_entity(node.rx_buffer, 100, endpoint_id, tt_KIND_SERVICE_SERVER, "s", "srv");
@@ -580,7 +580,7 @@ static void duo_capture(const void* buf, size_t len) {
 // from the time it actually ran, so a node's lateness accumulates into a drift of its own.
 static uint64_t duo_late[3];
 
-static void duo_run_due(struct tt_Node* node) {
+static void duo_run_due(struct tt_Context* node) {
     bool has_next = false;
     uint64_t next = 0;
     duo_acting = node->id;
@@ -593,13 +593,13 @@ static void duo_run_due(struct tt_Node* node) {
     }
 }
 
-static void duo_deliver(struct tt_Node* one, struct tt_Node* two) {
+static void duo_deliver(struct tt_Context* one, struct tt_Context* two) {
     for (int i = 0; i < duo_count; i++) { // grows while delivering: a reply is delivered in the same pass
         struct duo_datagram* datagram = &duo_queue[i];
         if (duo_drop != NULL && duo_drop(datagram)) {
             continue;
         }
-        struct tt_Node* to = datagram->from == one->id ? two : one;
+        struct tt_Context* to = datagram->from == one->id ? two : one;
         duo_acting = to->id;
         duo_last_delivered[datagram->from] = test_mock_now;
         memcpy(to->rx_buffer, datagram->bytes, datagram->len);
@@ -610,7 +610,7 @@ static void duo_deliver(struct tt_Node* one, struct tt_Node* two) {
 }
 
 // Runs both nodes until `until`, a scheduler entry at a time.
-static void duo_run_until(struct tt_Node* one, struct tt_Node* two, uint64_t until) {
+static void duo_run_until(struct tt_Context* one, struct tt_Context* two, uint64_t until) {
     while (true) {
         uint64_t next_one = UINT64_MAX;
         uint64_t next_two = UINT64_MAX;
@@ -654,7 +654,7 @@ static void duo_free(struct tt_Data* data) {
 
 // A Publisher created on a node that already knows the matching Subscriber's node learns it within a few
 // milliseconds: its node announces the change at once, and the other node answers a changed broadcast.
-// Until 2026-09-26 it waited for the peer's next periodic announce, up to tt_NODE_UPDATE_INTERVAL, sending by
+// Until 2026-09-26 it waited for the peer's next periodic announce, up to tt_CONTEXT_UPDATE_INTERVAL, sending by
 // broadcast meanwhile. And the exchange ends there: over the following seconds the two nodes send exactly two
 // announces more than their periodic ones - the early announce and one reply - so they cannot trade replies.
 static void test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_ends(void) {
@@ -665,8 +665,8 @@ static void test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_en
     duo_seen_send_to = 0;
     memset(duo_sent, 0, sizeof(duo_sent));
 
-    static struct tt_Node one;
-    static struct tt_Node two;
+    static struct tt_Context one;
+    static struct tt_Context two;
     init_node(&one);
     init_node(&two);
     one.id = 1;
@@ -676,7 +676,7 @@ static void test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_en
 
     struct tt_Topic sub_topic = {.name = "duo", .data_size = 4, .data_decode = duo_decode, .data_free = duo_free};
     struct tt_Subscriber sub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&two, &sub, &sub_topic, "duo_ep", duo_on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&two, &sub, &sub_topic, "duo_ep", duo_on_data));
     duo_run_until(&one, &two, tt_SECOND + (uint64_t)(3.5 * tt_SECOND)); // both know each other, steady state
 
     int periodic_one = duo_sent[1];
@@ -694,7 +694,7 @@ static void test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_en
                                  .data_encode = fake_encode};
     struct tt_Publisher pub;
     uint64_t created = test_mock_now;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &pub_topic, "duo_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &pub_topic, "duo_ep"));
     duo_run_until(&one, &two, created + (5 * tt_MILLISECOND));
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers)); // within 5 ms, where it used to take up to a second
 
@@ -714,7 +714,7 @@ static void duo_reset_counts(void) {
 }
 
 // Two nodes, 1 and 2, on the mock clock at 1 s, their periodic tasks scheduled and nothing lost.
-static void duo_start(struct tt_Node* one, struct tt_Node* two) {
+static void duo_start(struct tt_Context* one, struct tt_Context* two) {
     test_mock_reset();
     test_mock_now = tt_SECOND;
     test_mock_send_hook = duo_capture;
@@ -765,27 +765,27 @@ static bool drop_node_one_broadcast_lists(const struct duo_datagram* datagram) {
 // lease is where a summary that did not refresh liveliness shows. Control: with the summaries lost the same
 // entity expires, so the check can fail.
 static void test_steady_state_is_summaries_that_keep_the_peer_alive(void) {
-    static struct tt_Node one;
-    static struct tt_Node two;
+    static struct tt_Context one;
+    static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Subscriber sub;
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&two, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &duo_pub_topic, "duo_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&two, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &duo_pub_topic, "duo_ep"));
     duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + (tt_SECOND / 2));
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
 
     duo_reset_counts();
     struct tt_DiscoveredEntity entity;
     memset(&entity, 0, sizeof(entity));
-    entity.node_id = 2;
+    entity.context_id = 2;
     entity.alive = true;
     entity.liveliness_lease_duration_ns = tt_SECOND + (tt_SECOND / 2);
     int dead_samples = 0;
     uint64_t end = test_mock_now + (3 * tt_SECOND);
     while (test_mock_now < end) {
         duo_run_until(&one, &two, test_mock_now + (50 * tt_MILLISECOND));
-        dead_samples += !tt_Node_entity_alive(&one, &entity, test_mock_now);
+        dead_samples += !tt_Context_entity_alive(&one, &entity, test_mock_now);
     }
     EXPECT_EQ_INT(0, dead_samples);
     EXPECT_TRUE(duo_summaries[1] >= 2 && duo_summaries[1] <= 4);
@@ -799,7 +799,7 @@ static void test_steady_state_is_summaries_that_keep_the_peer_alive(void) {
     dead_samples = 0;
     while (test_mock_now < end) {
         duo_run_until(&one, &two, test_mock_now + (50 * tt_MILLISECOND));
-        dead_samples += !tt_Node_entity_alive(&one, &entity, test_mock_now);
+        dead_samples += !tt_Context_entity_alive(&one, &entity, test_mock_now);
     }
     EXPECT_TRUE(dead_samples > 0);
     duo_stop();
@@ -809,11 +809,11 @@ static void test_steady_state_is_summaries_that_keep_the_peer_alive(void) {
 // summary shows it a generation it has not applied, and gets the list unicast - within one interval and a
 // round trip. Control: 5 ms after the change, with its broadcast lost, the peer is not yet known.
 static void test_a_missed_change_is_pulled_on_the_next_summary(void) {
-    static struct tt_Node one;
-    static struct tt_Node two;
+    static struct tt_Context one;
+    static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&two, &pub, &duo_pub_topic, "duo_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&two, &pub, &duo_pub_topic, "duo_ep"));
     duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + (tt_SECOND / 2));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
 
@@ -821,12 +821,12 @@ static void test_a_missed_change_is_pulled_on_the_next_summary(void) {
     duo_drop = drop_node_one_broadcast_lists;
     struct tt_Subscriber sub;
     uint64_t created = test_mock_now;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&one, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&one, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
     duo_run_until(&one, &two, created + (5 * tt_MILLISECOND));
     EXPECT_EQ_INT(1, duo_lists_broadcast[1]); // the push happened, and was lost
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
 
-    duo_run_until(&one, &two, created + tt_NODE_UPDATE_INTERVAL + (5 * tt_MILLISECOND));
+    duo_run_until(&one, &two, created + tt_CONTEXT_UPDATE_INTERVAL + (5 * tt_MILLISECOND));
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
     EXPECT_EQ_INT(1, duo_requests[2]);
     EXPECT_EQ_INT(1, duo_lists_unicast[1]);
@@ -842,17 +842,17 @@ static void test_a_missed_change_is_pulled_on_the_next_summary(void) {
 // tt_DISCOVERY_REQUEST_ATTEMPTS times per summary - the request and its retries, never more - and the asking
 // stops as soon as a list gets through.
 static void test_requests_are_bounded_per_summary_until_a_list_arrives(void) {
-    static struct tt_Node one;
-    static struct tt_Node two;
+    static struct tt_Context one;
+    static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&two, &pub, &duo_pub_topic, "duo_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&two, &pub, &duo_pub_topic, "duo_ep"));
     duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + (tt_SECOND / 2));
 
     duo_reset_counts();
     duo_drop = drop_node_one_lists;
     struct tt_Subscriber sub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&one, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&one, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
     duo_run_until(&one, &two, test_mock_now + (5 * tt_SECOND));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
     EXPECT_TRUE(duo_summaries[1] >= 4);
@@ -860,7 +860,7 @@ static void test_requests_are_bounded_per_summary_until_a_list_arrives(void) {
     EXPECT_EQ_INT(duo_requests[2], duo_lists_unicast[1]); // each answered, and each answer lost
 
     duo_drop = NULL;
-    duo_run_until(&one, &two, test_mock_now + tt_NODE_UPDATE_INTERVAL + (5 * tt_MILLISECOND));
+    duo_run_until(&one, &two, test_mock_now + tt_CONTEXT_UPDATE_INTERVAL + (5 * tt_MILLISECOND));
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
     int requests = duo_requests[2];
     duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND));
@@ -904,7 +904,7 @@ static uint32_t write_request(uint8_t* buf, uint8_t source, uint32_t generation)
     return (uint32_t)(sizeof(header) + sizeof(sub) + sizeof(request));
 }
 
-// Rule 4: requests are answered unicast, up to tt_UNICAST_PEER_THRESHOLD in one tt_NODE_TX_INTERVAL tick;
+// Rule 4: requests are answered unicast, up to tt_UNICAST_PEER_THRESHOLD in one tt_CONTEXT_TX_INTERVAL tick;
 // the next is answered by one broadcast, and later ones in the tick by nothing more. A new tick starts over.
 static void test_requests_beyond_the_threshold_are_answered_by_one_broadcast(void) {
     test_mock_reset();
@@ -913,7 +913,7 @@ static void test_requests_beyond_the_threshold_are_answered_by_one_broadcast(voi
     duo_seen_send_to = 0;
     answers_unicast = 0;
     answers_broadcast = 0;
-    static struct tt_Node node;
+    static struct tt_Context node;
     init_node(&node);
     struct tt_Publisher pub;
     init_publisher(&pub, &node);
@@ -930,7 +930,7 @@ static void test_requests_beyond_the_threshold_are_answered_by_one_broadcast(voi
     EXPECT_EQ_INT(tt_UNICAST_PEER_THRESHOLD, answers_unicast);
     EXPECT_EQ_INT(1, answers_broadcast);
 
-    test_mock_now += tt_NODE_TX_INTERVAL;
+    test_mock_now += tt_CONTEXT_TX_INTERVAL;
     uint32_t len = write_request(node.rx_buffer, REMOTE_NODE_ID, (uint32_t)node.last_modified);
     EXPECT_TRUE(process_packet(&node, node.rx_buffer, 0, len, 0xc0a80a02U, 8282));
     EXPECT_EQ_INT(tt_UNICAST_PEER_THRESHOLD + 1, answers_unicast);
@@ -961,17 +961,17 @@ static bool drop_first_unicast_list_from_one(const struct duo_datagram* datagram
 // its first unicast answer are both lost; node 2 still knows the new list within the retry delay of its
 // first request. Control: 5 ms after that request, it does not yet.
 static void test_a_lost_answer_is_asked_for_again_at_once(void) {
-    static struct tt_Node one;
-    static struct tt_Node two;
+    static struct tt_Context one;
+    static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&two, &pub, &duo_pub_topic, "duo_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&two, &pub, &duo_pub_topic, "duo_ep"));
     duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + (tt_SECOND / 2));
 
     duo_reset_counts();
     duo_drop = drop_node_one_broadcast_lists;
     struct tt_Subscriber sub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&one, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&one, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
     duo_run_until(&one, &two, test_mock_now + (5 * tt_MILLISECOND));
     duo_drop = drop_first_unicast_list_from_one;
     datagrams_to_drop = 1;
@@ -1007,7 +1007,7 @@ static void test_a_summary_while_a_request_is_open_sends_nothing_more(void) {
     test_mock_now = tt_SECOND;
     test_mock_send_hook = count_requests;
     requests_sent = 0;
-    static struct tt_Node node;
+    static struct tt_Context node;
     init_node(&node);
 
     EXPECT_TRUE(process_discovery_summary(&node, REMOTE_NODE_ID, 7, 0xc0a80a02U, 8282));
@@ -1026,13 +1026,13 @@ static void test_a_summary_while_a_request_is_open_sends_nothing_more(void) {
 static int false_death_trials(int lost, uint64_t late_one, uint64_t late_two) {
     int deaths = 0;
     for (int trial = 0; trial < 20; trial++) {
-        static struct tt_Node one;
-        static struct tt_Node two;
+        static struct tt_Context one;
+        static struct tt_Context two;
         duo_start(&one, &two);
         duo_late[1] = late_one;
         duo_late[2] = late_two;
         struct tt_Publisher pub;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &duo_pub_topic, "duo_ep"));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &duo_pub_topic, "duo_ep"));
         duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + ((uint64_t)trial * tt_SECOND / 2));
         datagrams_to_drop = lost;
         duo_drop = drop_node_one_summaries_counted;
@@ -1071,7 +1071,7 @@ static uint64_t watched_departed_at[2];
 static uint64_t watched_arrived_at[2];
 static struct tt_Data duo_sample;
 
-static void liveliness_observer(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
+static void liveliness_observer(struct tt_Context* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
                                 bool departed, void* param) {
     (void)node;
     (void)kind;
@@ -1092,13 +1092,13 @@ static void liveliness_observer(struct tt_Node* node, uint8_t node_id, uint32_t 
 
 // Two nodes as duo_start() makes them, node 2 watching node 1's `first` (and `second`, if not NULL), which
 // must already be created on node 1 with their leases set; runs until both are known.
-static void liveliness_duo_start(struct tt_Node* one, struct tt_Node* two, struct tt_Publisher* first,
+static void liveliness_duo_start(struct tt_Context* one, struct tt_Context* two, struct tt_Publisher* first,
                                  struct tt_Publisher* second) {
     memset(&duo_discovery, 0, sizeof(duo_discovery));
     memset(watched_departures, 0, sizeof(watched_departures));
     memset(watched_arrivals, 0, sizeof(watched_arrivals));
     memset(duo_last_delivered, 0, sizeof(duo_last_delivered));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(two, &duo_discovery, liveliness_observer, NULL));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(two, &duo_discovery, liveliness_observer, NULL));
     watched_ids[0] = first->endpoint.id;
     watched_ids[1] = second != NULL ? second->endpoint.id : 0;
     duo_run_until(one, two, test_mock_now + (50 * tt_MILLISECOND));
@@ -1116,8 +1116,8 @@ static struct tt_Topic live_topic_b = {.name = "live_b",
 
 // Runs both nodes until `until`, node 1 publishing `pub` every `period` from now on. Returns when it
 // published last.
-static uint64_t duo_run_publishing(struct tt_Node* one, struct tt_Node* two, uint64_t until, struct tt_Publisher* pub,
-                                   uint64_t period) {
+static uint64_t duo_run_publishing(struct tt_Context* one, struct tt_Context* two, uint64_t until,
+                                   struct tt_Publisher* pub, uint64_t period) {
     uint64_t next = test_mock_now;
     uint64_t last = 0;
     while (next <= until) {
@@ -1140,11 +1140,11 @@ static bool drop_everything_from_one(const struct duo_datagram* datagram) {
 // lost - its lease runs from the data - and once the data stops too, it lapses one lease after the last
 // packet, to within a flush tick: the verdict is a timer at the expiry, not a once-a-second sweep.
 static void test_an_automatic_lease_runs_from_the_data_and_lapses_on_time(void) {
-    static struct tt_Node one;
-    static struct tt_Node two;
+    static struct tt_Context one;
+    static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
     pub.liveliness_lease_duration_ns = tt_SECOND + (tt_SECOND / 2);
     liveliness_duo_start(&one, &two, &pub, NULL);
 
@@ -1165,13 +1165,13 @@ static void test_an_automatic_lease_runs_from_the_data_and_lapses_on_time(void) 
 // streams; tt_Publisher_assert_liveliness() revives it at once, and a second call within a sixth of the
 // lease sends nothing.
 static void test_a_manual_lease_is_not_kept_by_other_topics_data(void) {
-    static struct tt_Node one;
-    static struct tt_Node two;
+    static struct tt_Context one;
+    static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher manual;
     struct tt_Publisher automatic;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &manual, &live_topic_a, "live_ep"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &automatic, &live_topic_b, "live_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &manual, &live_topic_a, "live_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &automatic, &live_topic_b, "live_ep"));
     manual.liveliness_manual = true;
     manual.liveliness_lease_duration_ns = tt_SECOND;
     liveliness_duo_start(&one, &two, &manual, &automatic);
@@ -1198,11 +1198,11 @@ static void test_a_manual_lease_is_not_kept_by_other_topics_data(void) {
 // Rule 3: a node silent past tt_LIVELINESS_SILENCE_NS is not presumed dead while one of its entities holds
 // a longer lease - a 4 s lease lapses at 4 s, not 3.5 s, and the node goes with it.
 static void test_a_lease_longer_than_the_node_limit_is_not_cut_short(void) {
-    static struct tt_Node one;
-    static struct tt_Node two;
+    static struct tt_Context one;
+    static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
     pub.liveliness_lease_duration_ns = 4 * tt_SECOND;
     liveliness_duo_start(&one, &two, &pub, NULL);
     duo_run_until(&one, &two, test_mock_now + (2 * tt_SECOND));
@@ -1223,13 +1223,13 @@ static void test_a_lease_longer_than_the_node_limit_is_not_cut_short(void) {
 static int lease_lapse_trials(int lost, uint64_t late_one, uint64_t late_two) {
     int lapses = 0;
     for (int trial = 0; trial < 20; trial++) {
-        static struct tt_Node one;
-        static struct tt_Node two;
+        static struct tt_Context one;
+        static struct tt_Context two;
         duo_start(&one, &two);
         duo_late[1] = late_one;
         duo_late[2] = late_two;
         struct tt_Publisher pub;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
         pub.liveliness_lease_duration_ns = tt_SECOND;
         liveliness_duo_start(&one, &two, &pub, NULL);
         duo_run_until(&one, &two, test_mock_now + tt_SECOND + ((uint64_t)trial * tt_SECOND / 20));
@@ -1247,24 +1247,24 @@ static void test_four_lost_summaries_never_lapse_an_idle_lease(void) {
     EXPECT_EQ_INT(20, lease_lapse_trials(7, 0, 0)); // control
 }
 
-// Rule 3's cap: a silent node is kept alive for its entities' leases, but no longer than tt_NODE_MAX_LEASE_NS,
+// Rule 3's cap: a silent node is kept alive for its entities' leases, but no longer than tt_CONTEXT_MAX_LEASE_NS,
 // as a DDS participant lease bounds its writers'. A 30 s lease on a node that goes silent: the node, and
 // the entity with it, is gone one cap after its last datagram.
 static void test_a_node_is_not_kept_alive_past_the_lease_cap(void) {
-    static struct tt_Node one;
-    static struct tt_Node two;
+    static struct tt_Context one;
+    static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
     pub.liveliness_lease_duration_ns = 30 * tt_SECOND;
     liveliness_duo_start(&one, &two, &pub, NULL);
     duo_run_until(&one, &two, test_mock_now + tt_SECOND);
 
     duo_drop = drop_everything_from_one;
-    duo_run_until(&one, &two, test_mock_now + tt_NODE_MAX_LEASE_NS + (2 * tt_SECOND));
+    duo_run_until(&one, &two, test_mock_now + tt_CONTEXT_MAX_LEASE_NS + (2 * tt_SECOND));
     EXPECT_TRUE(!two.update_seen[1]);
     EXPECT_EQ_INT(1, watched_departures[0]);
-    uint64_t cap = duo_last_delivered[1] + tt_NODE_MAX_LEASE_NS;
+    uint64_t cap = duo_last_delivered[1] + tt_CONTEXT_MAX_LEASE_NS;
     EXPECT_TRUE(watched_departed_at[0] > cap && watched_departed_at[0] <= cap + tt_MILLISECOND);
     duo_stop();
 }
@@ -1274,13 +1274,13 @@ static void test_a_node_is_not_kept_alive_past_the_lease_cap(void) {
 // schedulers running late as real ones do: no false lapse in 20 s. With the summary at a fixed second the
 // lease would lapse on the first late one.
 static void test_an_idle_short_lease_is_kept_by_faster_summaries(void) {
-    static struct tt_Node one;
-    static struct tt_Node two;
+    static struct tt_Context one;
+    static struct tt_Context two;
     duo_start(&one, &two);
     duo_late[1] = 100 * tt_MICROSECOND;
     duo_late[2] = 170 * tt_MICROSECOND;
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
     pub.liveliness_lease_duration_ns = tt_SECOND;
     liveliness_duo_start(&one, &two, &pub, NULL);
 
@@ -1298,11 +1298,11 @@ static void test_an_idle_short_lease_is_kept_by_faster_summaries(void) {
 // every 100 ms with a 1 s lease sends only its once-a-second summary - not one every lease/6 - and its lease
 // holds; once it falls idle the lease/6 summaries resume at once and the lease still holds.
 static void test_short_lease_summaries_give_way_to_traffic(void) {
-    static struct tt_Node one;
-    static struct tt_Node two;
+    static struct tt_Context one;
+    static struct tt_Context two;
     duo_start(&one, &two);
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
     pub.liveliness_lease_duration_ns = tt_SECOND;
     liveliness_duo_start(&one, &two, &pub, NULL);
 
@@ -1327,11 +1327,11 @@ static void test_short_lease_summaries_give_way_to_traffic(void) {
 static int late_lapses_after_a_kill(void) {
     int late = 0;
     for (int phase = 0; phase < 10; phase++) {
-        static struct tt_Node one;
-        static struct tt_Node two;
+        static struct tt_Context one;
+        static struct tt_Context two;
         duo_start(&one, &two);
         struct tt_Publisher pub;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
         pub.liveliness_lease_duration_ns = tt_SECOND;
         liveliness_duo_start(&one, &two, &pub, NULL);
         uint64_t last =
@@ -1350,7 +1350,7 @@ static int late_lapses_after_a_kill(void) {
 // LIVELINESS_PLAN.md 11.1, three nodes (whitebox): node 1's data goes to node 2 only. Node 3, which no data
 // reaches, still gets every summary: none is skipped and none waits to ride - both need every known peer
 // reached. The contrast: once node 3 is reached too, summaries are skipped and the 1 s one rides.
-static void run_summary_ticks(struct tt_Node* node, const struct tt_Peer* reached, uint8_t reached_count,
+static void run_summary_ticks(struct tt_Context* node, const struct tt_Peer* reached, uint8_t reached_count,
                               uint64_t* time) {
     uint64_t interval = summary_interval(node);
     for (int tick = 0; tick < 12; tick++) {
@@ -1363,16 +1363,16 @@ static void run_summary_ticks(struct tt_Node* node, const struct tt_Peer* reache
 }
 
 static void test_a_peer_no_data_reaches_keeps_every_summary(void) {
-    static struct tt_Node node;
+    static struct tt_Context node;
     init_node(&node);
     node.id = 1;
     test_mock_reset();
     struct tt_Publisher pub;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pub, &live_topic_a, "live_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub, &live_topic_a, "live_ep"));
     pub.liveliness_lease_duration_ns = tt_SECOND; // summaries every lease/6: the skip is armed
     node.update_seen[2] = true;
     node.update_seen[3] = true;
-    struct tt_Peer peers[2] = {{.node_id = 2, .ip = 2, .port = 1}, {.node_id = 3, .ip = 3, .port = 1}};
+    struct tt_Peer peers[2] = {{.context_id = 2, .ip = 2, .port = 1}, {.context_id = 3, .ip = 3, .port = 1}};
     uint64_t time = tt_SECOND;
     node_update(&node, time, NULL); // arms the skip at the short cadence
     time += summary_interval(&node);
@@ -1395,15 +1395,15 @@ static void test_a_killed_node_lapses_one_lease_after_its_data(void) {
 // which still needs its summary. A broadcast reaches both; each tick starts a fresh record; a node that knows
 // no peer never skips.
 static void test_a_summary_is_skipped_only_when_every_peer_was_reached(void) {
-    static struct tt_Node node;
+    static struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node.id = 1;
     node.summary_skip_armed = 1;             // a short-lease cadence: sends are recorded
     EXPECT_TRUE(!every_peer_reached(&node)); // no peer known
     node.update_seen[2] = true;
     node.update_seen[3] = true;
-    struct tt_Peer two = {.node_id = 2, .ip = 2, .port = 1};
-    struct tt_Peer both[2] = {{.node_id = 2, .ip = 2, .port = 1}, {.node_id = 3, .ip = 3, .port = 1}};
+    struct tt_Peer two = {.context_id = 2, .ip = 2, .port = 1};
+    struct tt_Peer both[2] = {{.context_id = 2, .ip = 2, .port = 1}, {.context_id = 3, .ip = 3, .port = 1}};
 
     note_reached(&node, &two, 1);
     EXPECT_TRUE(!every_peer_reached(&node)); // node 3 has heard nothing

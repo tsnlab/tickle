@@ -12,7 +12,7 @@
 // - TickLE core native subscriber role. Deliberately stalls for `pause_s` seconds (`-p`, default
 // 3.0) *before creating the Subscriber at all* - TickLE has no DDS-style "matched reader that
 // simply hasn't taken anything yet" state to stall in instead (a Subscriber's own callback fires
-// straight out of tt_Node_poll(), there's no separate waitset/take split to defer) - so this side
+// straight out of tt_Context_poll(), there's no separate waitset/take split to defer) - so this side
 // simply doesn't exist on the network yet during the stall, closest TickLE equivalent to the DDS
 // twins' own design intent (client.c keeps publishing on a fixed schedule the whole time
 // regardless, so this window alone determines how many samples pile up in the ring before this
@@ -112,15 +112,15 @@ int main(int argc, char** argv) {
     };
     nanosleep(&pause_ts, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
     }
 
     struct tt_Subscriber sub;
-    ret = tt_Node_create_subscriber(&node, &sub, &BenchTopic, "stream", (tt_SUBSCRIBER_CALLBACK)stream_callback);
+    ret = tt_Context_create_subscriber(&node, &sub, &BenchTopic, "stream", (tt_SUBSCRIBER_CALLBACK)stream_callback);
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
         return ret;
@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
     const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
     ret = tt_RET_OK;
     while (!g_interrupted && tt_get_ns() < deadline && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, poll_timeout_ns);
+        ret = tt_Context_poll(&node, poll_timeout_ns);
     }
 
     uint64_t total = received + lost;
@@ -157,6 +157,6 @@ int main(int argc, char** argv) {
            "recv=%lu lost=%lu loss_pct=%.1f\n",
            pause_s, (unsigned long)received, (unsigned long)lost, loss_pct);
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

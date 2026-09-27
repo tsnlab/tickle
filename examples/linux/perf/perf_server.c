@@ -42,7 +42,7 @@ static void handle_sigint(int sig) {
     g_interrupted = 1;
 }
 
-static void finish_cooldown(struct tt_Node* node, uint64_t time, void* param) {
+static void finish_cooldown(struct tt_Context* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
@@ -55,7 +55,7 @@ static void finish_cooldown(struct tt_Node* node, uint64_t time, void* param) {
 // bounded (-d) or not (stopped with Ctrl+C), since either way this only ever needs "cooldown_s
 // seconds from now", never advance knowledge of when the run will end. Idempotent - only the
 // first trigger takes effect.
-static void begin_stopping(struct tt_Node* node, uint64_t time) {
+static void begin_stopping(struct tt_Context* node, uint64_t time) {
     if (stopping) {
         return;
     }
@@ -65,10 +65,10 @@ static void begin_stopping(struct tt_Node* node, uint64_t time) {
         g_exit_now = true;
         return;
     }
-    tt_Node_schedule(node, time + (uint64_t)(cooldown_s * (double)tt_SECOND), finish_cooldown, NULL);
+    tt_Context_schedule(node, time + (uint64_t)(cooldown_s * (double)tt_SECOND), finish_cooldown, NULL);
 }
 
-static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* param) {
+static void handle_duration_elapsed(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     begin_stopping(node, time);
 }
@@ -169,7 +169,7 @@ static uint64_t first_recv_time = 0; // ns timestamp of the first real message -
 // have_first is still false when it fires - otherwise a no-op, since real traffic already
 // scheduled the accurate trigger by then. Deliberately well past duration_s (see main()'s own
 // scheduling of this) so it can never preempt the accurate one once real traffic does show up.
-static void handle_no_traffic_timeout(struct tt_Node* node, uint64_t time, void* param) {
+static void handle_no_traffic_timeout(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     if (!have_first) {
         begin_stopping(node, time);
@@ -315,7 +315,7 @@ static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq
             // top of the pre-existing "-d intentionally runs longer than perf_client's" gap.
             // + warmup_s here instead keeps -d's own meaning exactly "seconds of counted data".
             uint64_t stop_at = first_recv_time + (uint64_t)((warmup_s + duration_s) * (double)tt_SECOND);
-            tt_Node_schedule(sub->node, stop_at, handle_duration_elapsed, NULL);
+            tt_Context_schedule(sub->node, stop_at, handle_duration_elapsed, NULL);
         }
     }
 
@@ -357,7 +357,7 @@ static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq
     }
 }
 
-static void report(struct tt_Node* node, uint64_t time, void* param) {
+static void report(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
 
     char recv_buf[TT_GROUPED_BUF_LEN];
@@ -384,7 +384,7 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
     interval_received_msgs = 0;
     interval_received_bytes = 0;
 
-    tt_Node_schedule(node, time + tt_SECOND, report, NULL);
+    tt_Context_schedule(node, time + tt_SECOND, report, NULL);
 }
 
 // The verifying side of the perf round trip: it can see drops (perf_client.c can't - it never
@@ -460,8 +460,8 @@ static void print_usage(const char* prog) {
             "          [-n topic_name] [-l log_level] [-R]\n",
             prog);
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
-    fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
-    fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
+    fprintf(stderr, "  -p  UDP port (default: compiled-in tt_CONTEXT_PORT)\n");
+    fprintf(stderr, "  -a  bind address (default: compiled-in tt_CONTEXT_ADDRESS)\n");
     fprintf(stderr, "  -I  explicit node ID 1-254 (default: auto-detect from -a/-b's subnet)\n");
     fprintf(stderr, "  -d  exit automatically after this many seconds (default 0 = run until Ctrl+C)\n");
     fprintf(stderr, "  -w  seconds after the first real message to start counting (default 0)\n");
@@ -477,7 +477,7 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->broadcast = "192.168.10.255";
     opts->port = 0;
     opts->bind_addr = NULL;
-    opts->node_id = 0;
+    opts->context_id = 0;
     opts->duration_s = 0.0;
     opts->warmup = 0.0;
     opts->cooldown = 0.0;
@@ -507,8 +507,8 @@ int main(int argc, char** argv) {
     if (opts.bind_addr != NULL) {
         _tt_CONFIG.addr = opts.bind_addr;
     }
-    if (opts.node_id != 0) {
-        _tt_CONFIG.node_id = opts.node_id;
+    if (opts.context_id != 0) {
+        _tt_CONFIG.context_id = opts.context_id;
     }
     if (opts.log_level_set) {
         tt_log_set_level(opts.log_level);
@@ -520,8 +520,8 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
@@ -530,7 +530,7 @@ int main(int argc, char** argv) {
     printf("Node created(#%d)\n", node.id);
 
     struct tt_Subscriber sub;
-    ret = tt_Node_create_subscriber(&node, &sub, &BulkTopic, opts.name, (tt_SUBSCRIBER_CALLBACK)bulk_callback);
+    ret = tt_Context_create_subscriber(&node, &sub, &BulkTopic, opts.name, (tt_SUBSCRIBER_CALLBACK)bulk_callback);
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
         return ret;
@@ -541,20 +541,20 @@ int main(int argc, char** argv) {
     }
 
     uint64_t start_time = tt_get_ns();
-    tt_Node_schedule(&node, start_time + tt_SECOND, report, NULL);
+    tt_Context_schedule(&node, start_time + tt_SECOND, report, NULL);
     // handle_duration_elapsed isn't scheduled here - see bulk_callback()'s own comment on why it
     // has to wait for the first real message instead. This safety net (see its own comment) is,
     // so a real -d still eventually bounds a completely dead run - +30s is arbitrary but generous:
     // real traffic normally arrives within a second or two of this process starting.
     if (opts.duration_s > 0.0) {
         const double no_traffic_margin_s = 30.0;
-        tt_Node_schedule(&node, start_time + (uint64_t)((opts.duration_s + no_traffic_margin_s) * (double)tt_SECOND),
-                         handle_no_traffic_timeout, NULL);
+        tt_Context_schedule(&node, start_time + (uint64_t)((opts.duration_s + no_traffic_margin_s) * (double)tt_SECOND),
+                            handle_no_traffic_timeout, NULL);
     }
 
     ret = tt_RET_OK;
     while (!g_exit_now && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, -1);
+        ret = tt_Context_poll(&node, -1);
         // Checked here (right after poll() returns), not waited on elsewhere: this runs every
         // iteration regardless of how long until the next scheduled report()/finish_cooldown, so
         // Ctrl+C is caught right away rather than up to a second late.
@@ -565,7 +565,7 @@ int main(int argc, char** argv) {
 
     print_summary(start_time);
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
 
     return 0;
 }

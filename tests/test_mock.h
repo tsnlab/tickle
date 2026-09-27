@@ -35,10 +35,10 @@ extern int32_t test_mock_link_mtu;
 #endif
 #ifdef TEST_MOCK_DEFINE_STORAGE
 struct _tt_Config _tt_CONFIG = {
-    .addr = _tt_NODE_ADDRESS,
-    .port = _tt_NODE_PORT,
-    .broadcast = _tt_NODE_BROADCAST,
-    .node_id = tt_NODE_ID_INVALID, // unused by the mock HAL (test_mock_node_id drives it instead)
+    .addr = _tt_CONTEXT_ADDRESS,
+    .port = _tt_CONTEXT_PORT,
+    .broadcast = _tt_CONTEXT_BROADCAST,
+    .context_id = tt_CONTEXT_ID_INVALID, // unused by the mock HAL (test_mock_node_id drives it instead)
 };
 
 // Defaults: a quiet node - no incoming packets, sends "succeed", clock starts at 0.
@@ -77,7 +77,7 @@ size_t test_mock_send_last_wire_len = 0;
 void (*test_mock_send_hook)(const void* buf, size_t len) = NULL;
 int test_mock_wake_signal_call_count = 0;
 // What tt_receive() was last asked to wait, and how often it was asked - for a test about how long
-// tt_Node_poll() decides to wait. And whether a timed-out wait moves the clock by that much: off by
+// tt_Context_poll() decides to wait. And whether a timed-out wait moves the clock by that much: off by
 // default, because most tests rely on the clock standing still, and without it a positive-timeout
 // poll that times out never sees time pass.
 int64_t test_mock_receive_last_timeout = 0;
@@ -225,25 +225,25 @@ int32_t tt_link_mtu(uint32_t addr) {
     return test_mock_link_mtu;
 }
 
-tt_ret_t tt_bind(struct tt_Node* node) {
+tt_ret_t tt_bind(struct tt_Context* node) {
     (void)node;
     return test_mock_bind_return;
 }
 
-void tt_close(struct tt_Node* node) {
+void tt_close(struct tt_Context* node) {
     (void)node;
 }
 
-tt_ret_t tt_wake_signal(struct tt_Node* node) {
+tt_ret_t tt_wake_signal(struct tt_Context* node) {
     (void)node;
     test_mock_wake_signal_call_count++;
     // Nothing actually blocks in this mock's tt_receive() (it's a canned return value, not a
-    // real wait) - a test exercising tt_Node_interrupt()'s effect on tt_Node_poll() drives that
+    // real wait) - a test exercising tt_Context_interrupt()'s effect on tt_Context_poll() drives that
     // directly by setting test_mock_receive_return = -3 instead.
     return tt_RET_OK;
 }
 
-int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
+int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     (void)node;
 
     test_mock_send_call_count++;
@@ -256,7 +256,7 @@ int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
     return (int32_t)len;
 }
 
-int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
+int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
     (void)node;
     (void)buf;
 
@@ -276,7 +276,7 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
     return (int32_t)len;
 }
 
-int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
+int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     (void)node;
     (void)buf;
     (void)len;
@@ -298,7 +298,7 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
     return test_mock_receive_return;
 }
 
-int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
+int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
     (void)node;
 
@@ -329,7 +329,7 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
 
 // One call, dispatched to the per-datagram mocks above so that every counter and capture sees each datagram
 // exactly as it would have seen it sent alone - a test that counts tt_send() against tt_send_to() still can.
-int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
     test_mock_send_batch_call_count++;
     for (uint32_t i = 0; i < count; i++) {
         const struct tt_OutDatagram* datagram = &datagrams[i];
@@ -350,12 +350,12 @@ int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagra
 }
 
 // The mock's backlog counts as held: tt_try_receive() hands it out with nothing to wait for.
-uint32_t tt_rx_buffered(const struct tt_Node* node) {
+uint32_t tt_rx_buffered(const struct tt_Context* node) {
     (void)node;
     return test_mock_try_receive_remaining > 0 ? (uint32_t)test_mock_try_receive_remaining : 0U;
 }
 
-int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     (void)node;
     (void)buf;
     (void)len;
@@ -364,7 +364,7 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
     *port = 0;
 
     // By default the mock feeds at most the one datagram test_mock_receive_return describes, via tt_receive()
-    // above - tt_Node_poll()'s drain loop then immediately sees "nothing more waiting" here and stops. A test
+    // above - tt_Context_poll()'s drain loop then immediately sees "nothing more waiting" here and stops. A test
     // that needs a backlog sets test_mock_try_receive_remaining: that many more, the buffer left as it is.
     if (test_mock_try_receive_remaining > 0) {
         test_mock_try_receive_remaining--;

@@ -13,7 +13,7 @@
 // Found 2026-09-24: a node whose discovery announce outgrew one datagram (16 endpoints with ROS-sized
 // names, at the default tt_MAX_BUFFER_LENGTH of 1472) logged "Flush length 1476 exceeds" and kept
 // the bytes. Every later send appends behind them and flushes them first, so from then on every
-// publish failed too: the node went silent for good. rmw_tickle runs one tt_Node per process, so
+// publish failed too: the node went silent for good. rmw_tickle runs one tt_Context per process, so
 // two default rclcpp nodes in one process are already past that line.
 //
 // These tests check the node stays usable and that the loss is visible (tx_dropped_oversize),
@@ -50,7 +50,7 @@ static int32_t sized_encode(struct tt_Data* data, uint8_t* payload, uint32_t len
     return (int32_t)len;
 }
 
-static struct tt_Node node;
+static struct tt_Context node;
 static struct tt_Topic topics[MAX_ENDPOINTS];
 static struct tt_Publisher pubs[MAX_ENDPOINTS];
 static char names[MAX_ENDPOINTS][48];
@@ -72,7 +72,7 @@ static void init_node_with_endpoints(int count) {
         topics[i].data_size = sizeof(sample);
         topics[i].data_encode_size = sized_encode_size;
         topics[i].data_encode = sized_encode;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pubs[i], &topics[i], "my_robot_node_endpoint"));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pubs[i], &topics[i], "my_robot_node_endpoint"));
     }
 }
 
@@ -130,7 +130,7 @@ static void test_endpoint_too_large_to_announce_is_dropped_alone(void) {
     huge_topic.data_size = sizeof(sample);
     huge_topic.data_encode_size = sized_encode_size;
     huge_topic.data_encode = sized_encode;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &huge_pub, &huge_topic, "my_robot_node_endpoint"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &huge_pub, &huge_topic, "my_robot_node_endpoint"));
 
     EXPECT_TRUE(build_and_send_update(&node, NULL, 0));
     node_flush(&node, 0, NULL);

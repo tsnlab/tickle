@@ -33,7 +33,7 @@
 #define SETTLE_NS (2 * NS_PER_SEC)
 #define DECIMAL 10
 
-static struct tt_Node node;
+static struct tt_Context node;
 static struct tt_Publisher pubs[MAX_ENDPOINTS];
 static char names[MAX_ENDPOINTS][NAME_BYTES];
 static struct tt_Discovery discovery;
@@ -55,7 +55,7 @@ static int64_t now_ns(void) {
     return ((int64_t)now.tv_sec * NS_PER_SEC) + now.tv_nsec;
 }
 
-static void on_discovery(struct tt_Node* discovering, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
+static void on_discovery(struct tt_Context* discovering, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
                          bool departed, void* param) {
     (void)discovering;
     (void)node_id;
@@ -92,17 +92,17 @@ int main(int argc, char** argv) {
     tt_log_set_level(
         TT_LOG_ERROR); // receivers' discovery tables are core-default sized; their warnings are not the measurement
     _tt_CONFIG.broadcast = argv[4];
-    _tt_CONFIG.node_id = (uint8_t)node_id;
+    _tt_CONFIG.context_id = (uint8_t)node_id;
 
     join.start_ns = now_ns();
-    tt_ret_t ret = tt_Node_create(&node);
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         (void)fprintf(stderr, "cannot create node: %d\n", ret);
         return 1;
     }
     if (argc == ARG_COUNT_JOIN) {
         join.expected = (uint32_t)strtoul(argv[5], NULL, DECIMAL);
-        ret = tt_Node_set_discovery(&node, &discovery, on_discovery, &join);
+        ret = tt_Context_set_discovery(&node, &discovery, on_discovery, &join);
         if (ret != 0) {
             (void)fprintf(stderr, "cannot attach discovery: %d\n", ret);
             return 1;
@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
     }
     for (long i = 0; i < endpoints; i++) {
         (void)snprintf(names[i], NAME_BYTES, "robot_%02ld/sensor_%02ld/points", node_id, i);
-        ret = tt_Node_create_publisher(&node, &pubs[i], &BenchTopic, names[i]);
+        ret = tt_Context_create_publisher(&node, &pubs[i], &BenchTopic, names[i]);
         if (ret != 0) {
             (void)fprintf(stderr, "cannot create publisher %ld: %d\n", i, ret);
             return 1;
@@ -119,17 +119,17 @@ int main(int argc, char** argv) {
     int64_t end = now_ns() + (seconds * NS_PER_SEC);
     int sampled = 0;
     while (now_ns() < end) {
-        (void)tt_Node_poll(&node, POLL_NS);
+        (void)tt_Context_poll(&node, POLL_NS);
         if (!sampled && now_ns() >= end - SETTLE_NS) {
-            tt_Node_lock(&node); // the callback updates join.complete under the node's lock
+            tt_Context_lock(&node); // the callback updates join.complete under the node's lock
             join.complete_before_exit = join.complete;
-            tt_Node_unlock(&node);
+            tt_Context_unlock(&node);
             sampled = 1;
         }
     }
     (void)printf("RESULT: node=%ld endpoints=%ld seconds=%ld", node_id, endpoints, seconds);
     if (argc == ARG_COUNT_JOIN) {
-        // -1: never reached. Times are ms after this process started, before tt_Node_create().
+        // -1: never reached. Times are ms after this process started, before tt_Context_create().
         (void)printf(
             " expected=%u reached_ms=%.1f dips=%u last_change_ms=%.1f complete_at_exit=%d complete_2s_before_exit=%d",
             join.expected, join.reached_ns ? (double)(join.reached_ns - join.start_ns) / MS_PER_NS : -1.0, join.dips,
@@ -137,6 +137,6 @@ int main(int argc, char** argv) {
             join.complete_before_exit);
     }
     (void)printf("\n");
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

@@ -13,13 +13,13 @@
 // a matching endpoint exists, and rmw_get_node_names()/rmw_get_node_names_with_enclaves() (this
 // file's own single-node case - see test_multi_node.c for the real multiple-logical-nodes-sharing-
 // one-context exercise Milestone 34 made possible). This test creates a raw TickLE tt_Publisher/
-// tt_Subscriber/tt_Client/tt_Server directly on the node's own shared tt_Node (bypassing rosidl/
+// tt_Subscriber/tt_Client/tt_Server directly on the node's own shared tt_Context (bypassing rosidl/
 // typesupport entirely, which rmw_create_publisher()/rmw_create_subscription()/etc. would
-// otherwise require a real generated interface package for) to populate tickle_node.endpoints[],
+// otherwise require a real generated interface package for) to populate tickle_context.endpoints[],
 // the exact table count_matching() (rmw_graph.c) scans - proving that scan against a real
 // endpoint, not just a mock.
 //
-// Directly touches rmw_tickle_context_impl_t's own private tickle_node field (rmw_tickle_c/
+// Directly touches rmw_tickle_context_impl_t's own private tickle_context field (rmw_tickle_c/
 // rmw_tickle.h, promoted up from rmw_tickle_node_t in Milestone 34), so it follows the same tt_
 // Node_interrupt()-then-lock contract every other entry point touching it must (see that header's
 // own rmw_tickle_context_impl_t doc comment) - the background poll thread this node's own rmw_
@@ -79,7 +79,7 @@ static void fake_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t 
 }
 
 // Never actually invoked - rmw_count_clients()/rmw_count_services() only need the client/server
-// pair to exist in tickle_node.endpoints[], same "no real call happens" reasoning as the topic
+// pair to exist in tickle_context.endpoints[], same "no real call happens" reasoning as the topic
 // stubs above.
 static int32_t fake_request_encode_size(struct tt_Request* request) {
     (void)request;
@@ -199,11 +199,11 @@ int main(void) {
     };
 
     // See this file's own top comment on why the interrupt-then-lock pattern is needed here -
-    // tickle_node is otherwise only ever touched by this node's own background poll thread.
+    // tickle_context is otherwise only ever touched by this node's own background poll thread.
     struct tt_Publisher pub;
-    tt_Node_lock(&node_impl->context_impl->tickle_node);
-    tt_ret_t tt_ret = tt_Node_create_publisher(&node_impl->context_impl->tickle_node, &pub, &topic, topic_name);
-    tt_Node_unlock(&node_impl->context_impl->tickle_node);
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
+    tt_ret_t tt_ret = tt_Context_create_publisher(&node_impl->context_impl->tickle_context, &pub, &topic, topic_name);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
     assert(tt_RET_OK == tt_ret);
 
     assert(RMW_RET_OK == rmw_count_publishers(node, topic_name, &count));
@@ -212,10 +212,10 @@ int main(void) {
     assert(0U == count); // a publisher isn't a subscriber
 
     struct tt_Subscriber sub;
-    tt_Node_lock(&node_impl->context_impl->tickle_node);
-    tt_ret = tt_Node_create_subscriber(&node_impl->context_impl->tickle_node, &sub, &topic, topic_name,
-                                       fake_subscriber_callback);
-    tt_Node_unlock(&node_impl->context_impl->tickle_node);
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
+    tt_ret = tt_Context_create_subscriber(&node_impl->context_impl->tickle_context, &sub, &topic, topic_name,
+                                          fake_subscriber_callback);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
     assert(tt_RET_OK == tt_ret);
 
     assert(RMW_RET_OK == rmw_count_publishers(node, topic_name, &count));
@@ -250,10 +250,10 @@ int main(void) {
     };
 
     struct tt_Client client;
-    tt_Node_lock(&node_impl->context_impl->tickle_node);
-    tt_ret = tt_Node_create_client(&node_impl->context_impl->tickle_node, &client, &service, service_name,
-                                   fake_client_callback);
-    tt_Node_unlock(&node_impl->context_impl->tickle_node);
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
+    tt_ret = tt_Context_create_client(&node_impl->context_impl->tickle_context, &client, &service, service_name,
+                                      fake_client_callback);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
     assert(tt_RET_OK == tt_ret);
 
     assert(RMW_RET_OK == rmw_count_clients(node, service_name, &count));
@@ -262,10 +262,10 @@ int main(void) {
     assert(0U == count); // a client isn't a server
 
     struct tt_Server server;
-    tt_Node_lock(&node_impl->context_impl->tickle_node);
-    tt_ret = tt_Node_create_server(&node_impl->context_impl->tickle_node, &server, &service, service_name,
-                                   fake_server_callback);
-    tt_Node_unlock(&node_impl->context_impl->tickle_node);
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
+    tt_ret = tt_Context_create_server(&node_impl->context_impl->tickle_context, &server, &service, service_name,
+                                      fake_server_callback);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
     assert(tt_RET_OK == tt_ret);
 
     assert(RMW_RET_OK == rmw_count_clients(node, service_name, &count));
@@ -273,12 +273,12 @@ int main(void) {
     assert(RMW_RET_OK == rmw_count_services(node, service_name, &count));
     assert(1U == count);
 
-    tt_Node_lock(&node_impl->context_impl->tickle_node);
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
     assert(tt_RET_OK == tt_Client_destroy(&client));
     assert(tt_RET_OK == tt_Server_destroy(&server));
     assert(tt_RET_OK == tt_Subscriber_destroy(&sub));
     assert(tt_RET_OK == tt_Publisher_destroy(&pub));
-    tt_Node_unlock(&node_impl->context_impl->tickle_node);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
 
     assert(RMW_RET_OK == rmw_destroy_node(node));
     assert(RMW_RET_OK == rmw_shutdown(&context));

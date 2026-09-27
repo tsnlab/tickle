@@ -4,7 +4,7 @@
 # Everything about RELIABLE ordering on 2026-09-24 - the O(1) reorder buffer, strict order, the
 # buffer-overrun fix - was verified on the native perf_hil harness. rmw_tickle has its own reorder
 # buffer wiring, which was broken once that day (storage attached, then reset by
-# tt_Node_create_subscriber()), and the CI job that exercised the live two-process rmw path became
+# tt_Context_create_subscriber()), and the CI job that exercised the live two-process rmw path became
 # dispatch-only the same day. So nothing currently checks what users actually run.
 #
 # Three parts:

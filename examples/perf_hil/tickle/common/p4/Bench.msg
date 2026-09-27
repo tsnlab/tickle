@@ -15,7 +15,7 @@
 # Note that "fits one datagram" here means TickLE will emit it as one UDP datagram; the IP layer
 # still fragments it across two frames, which is the point of this size.
 #
-# One consequence, recorded so the memory figure is not over-read: tt_Node's tx/rx buffers are 2N
+# One consequence, recorded so the memory figure is not over-read: tt_Context's tx/rx buffers are 2N
 # each, so this build carries about 10 KB more node buffer than its siblings. Immaterial against a
 # peak RSS in the megabytes, but the P4 memory figure is not strictly comparable to P1-P3's for
 # TickLE.

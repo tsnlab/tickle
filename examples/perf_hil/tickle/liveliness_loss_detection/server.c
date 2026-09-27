@@ -9,7 +9,7 @@
  */
 
 // HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/COMPARISON.md)
-// - TickLE core native subscriber role. `tt_Node_set_discovery()` + `tt_DISCOVERY_CALLBACK` fires
+// - TickLE core native subscriber role. `tt_Context_set_discovery()` + `tt_DISCOVERY_CALLBACK` fires
 // `departed=true` when the Publisher's announced lease (`-T`, client.c) runs out.
 //
 // Since tt_VERSION 9 (rmw_tickle/LIVELINESS_PLAN.md, 2026-09-26) that lease runs from the Publisher
@@ -89,7 +89,7 @@ static uint8_t foreign_node_count = 0;
 static uint8_t departed_node_id = 0;
 static bool departed_node_seen_before = false;
 static uint64_t update_last_seen_at_detect_ns = 0;
-// 256 entries because node_id is a uint8_t and tt_Node indexes its own per-node arrays the same
+// 256 entries because node_id is a uint8_t and tt_Context indexes its own per-node arrays the same
 // way (tt_MAX_ENDPOINT_COUNT), so this is sized by the type rather than by a guess.
 #define NODE_ID_COUNT 256
 static bool node_seen[NODE_ID_COUNT];
@@ -103,7 +103,7 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     last_received_ns = tt_get_ns();
 }
 
-static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
+static void discovery_callback(struct tt_Context* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
                                bool is_departed, void* param) {
     (void)endpoint_id;
     (void)kind;
@@ -189,18 +189,18 @@ int main(int argc, char** argv) {
     sigint_action.sa_handler = handle_sigint;
     sigaction(SIGINT, &sigint_action, NULL);
 
-    struct tt_Node node;
-    tt_ret_t ret = tt_Node_create(&node);
+    struct tt_Context node;
+    tt_ret_t ret = tt_Context_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
     }
 
     static struct tt_Discovery discovery = {0};
-    tt_Node_set_discovery(&node, &discovery, discovery_callback, NULL);
+    tt_Context_set_discovery(&node, &discovery, discovery_callback, NULL);
 
     struct tt_Subscriber sub;
-    ret = tt_Node_create_subscriber(&node, &sub, &BenchTopic, "stream", (tt_SUBSCRIBER_CALLBACK)stream_callback);
+    ret = tt_Context_create_subscriber(&node, &sub, &BenchTopic, "stream", (tt_SUBSCRIBER_CALLBACK)stream_callback);
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
         return ret;
@@ -212,7 +212,7 @@ int main(int argc, char** argv) {
     const int64_t poll_timeout_ns = 200LL * 1000 * 1000;
     ret = tt_RET_OK;
     while (!g_interrupted && !departed && tt_get_ns() < deadline && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, poll_timeout_ns);
+        ret = tt_Context_poll(&node, poll_timeout_ns);
     }
 
     // Measured from the last received *data* sample, so its reference point is stale by however
@@ -244,6 +244,6 @@ int main(int argc, char** argv) {
            (unsigned)departed_node_id, departed_node_seen_before ? 1 : 0, (unsigned long)update_last_seen_at_detect_ns,
            (unsigned long)departed_detected_ns, watch_node_id, (unsigned long)foreign_departures, foreign_list);
 
-    tt_Node_destroy(&node);
+    tt_Context_destroy(&node);
     return 0;
 }

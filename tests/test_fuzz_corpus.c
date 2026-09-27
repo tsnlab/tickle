@@ -40,7 +40,7 @@ int main(void) {
     if (dir == NULL) {
         return 1;
     }
-    struct tt_Node node;
+    struct tt_Context node;
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
     node.id = 1; // the fuzz harness's own node id

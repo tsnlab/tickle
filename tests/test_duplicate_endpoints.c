@@ -20,7 +20,7 @@
 #include "test_mock.h"
 
 // Whitebox: reaches add_endpoint_to_node()'s own duplicate-vs-not-duplicate decision directly
-// through the real public tt_Node_create_publisher()/_subscriber()/_client()/_server() entry
+// through the real public tt_Context_create_publisher()/_subscriber()/_client()/_server() entry
 // points - no other test file in this directory calls those four for real (they all construct
 // their struct fields by hand, bypassing add_endpoint_to_node() entirely), so this is the only
 // coverage of that function's own actual behavior via its real callers.
@@ -128,7 +128,7 @@ static int8_t stub_server_callback(struct tt_Server* server, struct tt_Request* 
     return 0;
 }
 
-static void init_node(struct tt_Node* node) {
+static void init_node(struct tt_Context* node) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = 1;
@@ -164,20 +164,20 @@ static void init_service(struct tt_Service* service, const char* name) {
 // Milestone 35 (rmw_tickle/PLAN.md) - two independent local Publishers for the exact same topic
 // name must both succeed now, not just the first: real DDS lets multiple independent Publishers
 // (or Subscribers, Clients, Servers) share a topic/service name, and this rmw_tickle's own
-// Milestone 34 (multiple ROS 2 nodes sharing one tt_Node) made that reachable within a single
+// Milestone 34 (multiple ROS 2 nodes sharing one tt_Context) made that reachable within a single
 // process for the first time - a scenario add_endpoint_to_node() used to reject outright as
 // "Duplicate endpoint", found the hard way when it broke test_rmw_implementation's own
 // TestGraphAPI.count_clients_and_services in real CI.
 static void test_two_publishers_same_topic_both_succeed(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub_a;
     struct tt_Publisher pub_b;
     init_node(&node);
     init_topic(&topic, "/test_topic");
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pub_a, &topic, "/test_topic"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pub_b, &topic, "/test_topic"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub_a, &topic, "/test_topic"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub_b, &topic, "/test_topic"));
     EXPECT_EQ_U32(2, node.endpoint_count);
     EXPECT_EQ_U32(pub_a.endpoint.id, pub_b.endpoint.id); // same name -> same wire id, by design
 }
@@ -187,44 +187,50 @@ static void test_two_publishers_same_topic_both_succeed(void) {
 // subscribing to the same topic), not just the Publisher/Server-side cases that happened to be
 // what real CI found first.
 static void test_two_subscribers_same_topic_both_succeed(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Subscriber sub_a;
     struct tt_Subscriber sub_b;
     init_node(&node);
     init_topic(&topic, "/test_topic");
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&node, &sub_a, &topic, "/test_topic", stub_subscriber_callback));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&node, &sub_b, &topic, "/test_topic", stub_subscriber_callback));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Context_create_subscriber(&node, &sub_a, &topic, "/test_topic", stub_subscriber_callback));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Context_create_subscriber(&node, &sub_b, &topic, "/test_topic", stub_subscriber_callback));
     EXPECT_EQ_U32(2, node.endpoint_count);
 }
 
 // The Client-side case.
 static void test_two_clients_same_service_both_succeed(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Client client_a;
     struct tt_Client client_b;
     init_node(&node);
     init_service(&service, "/test_service");
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_client(&node, &client_a, &service, "/test_service", stub_client_callback));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_client(&node, &client_b, &service, "/test_service", stub_client_callback));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Context_create_client(&node, &client_a, &service, "/test_service", stub_client_callback));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Context_create_client(&node, &client_b, &service, "/test_service", stub_client_callback));
     EXPECT_EQ_U32(2, node.endpoint_count);
 }
 
 // The Server-side case - the exact scenario test_rmw_implementation's own TestGraphAPI.count_
 // clients_and_services needs (two independent Servers for one service name, in one process).
 static void test_two_servers_same_service_both_succeed(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server_a;
     struct tt_Server server_b;
     init_node(&node);
     init_service(&service, "/test_service");
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_server(&node, &server_a, &service, "/test_service", stub_server_callback));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_server(&node, &server_b, &service, "/test_service", stub_server_callback));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Context_create_server(&node, &server_a, &service, "/test_service", stub_server_callback));
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Context_create_server(&node, &server_b, &service, "/test_service", stub_server_callback));
     EXPECT_EQ_U32(2, node.endpoint_count);
 }
 
@@ -232,13 +238,13 @@ static void test_two_servers_same_service_both_succeed(void) {
 // (a real bug: a double-create without an intervening destroy) is still rejected, unlike a
 // genuinely distinct second instance sharing a name.
 static void test_registering_same_pointer_twice_still_fails(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node(&node);
     init_topic(&topic, "/test_topic");
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pub, &topic, "/test_topic"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub, &topic, "/test_topic"));
     EXPECT_EQ_INT(tt_RET_IILEGAL_ENDPOINT_ID, add_endpoint_to_node(&node, &pub.endpoint));
     EXPECT_EQ_U32(1, node.endpoint_count); // the rejected re-registration didn't leak a slot
 }
@@ -247,15 +253,15 @@ static void test_registering_same_pointer_twice_still_fails(void) {
 // from_node() finds by pointer identity, not by (kind, id), so this was never actually at risk,
 // but it's the one invariant this whole milestone's design depends on staying true.
 static void test_destroying_one_duplicate_leaves_its_sibling_registered(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub_a;
     struct tt_Publisher pub_b;
     init_node(&node);
     init_topic(&topic, "/test_topic");
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pub_a, &topic, "/test_topic"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pub_b, &topic, "/test_topic"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub_a, &topic, "/test_topic"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub_b, &topic, "/test_topic"));
     EXPECT_EQ_U32(2, node.endpoint_count);
 
     EXPECT_TRUE(remove_endpoint_from_node(&node, &pub_a.endpoint));
@@ -267,7 +273,7 @@ static void test_destroying_one_duplicate_leaves_its_sibling_registered(void) {
 // returning the tail offset - same shape as test_durability_pubsub.c's own write_update_one_
 // subscriber(), needed here too (each tests/test_*.c is its own standalone binary, no helpers
 // shared across files).
-static uint32_t write_update_one_subscriber(struct tt_Node* node, uint64_t last_modified, uint32_t endpoint_id) {
+static uint32_t write_update_one_subscriber(struct tt_Context* node, uint64_t last_modified, uint32_t endpoint_id) {
     struct test_announce* update_header = test_announce_at(node->rx_buffer);
     test_announce_set_last_modified(update_header, last_modified);
     update_header->announce.entity_count = 1;
@@ -295,15 +301,15 @@ static uint32_t write_update_one_subscriber(struct tt_Node* node, uint64_t last_
 static void test_update_registers_peer_on_every_matching_publisher(void) {
     test_mock_reset();
 
-    struct tt_Node node;
+    struct tt_Context node;
     struct tt_Topic topic;
     struct tt_Publisher pub_a;
     struct tt_Publisher pub_b;
     init_node(&node);
     init_topic(&topic, "/test_topic");
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pub_a, &topic, "/test_topic"));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pub_b, &topic, "/test_topic"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub_a, &topic, "/test_topic"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub_b, &topic, "/test_topic"));
     EXPECT_EQ_U32(2, node.endpoint_count);
 
     struct tt_Header header;
@@ -315,8 +321,8 @@ static void test_update_registers_peer_on_every_matching_publisher(void) {
     uint32_t tail = write_update_one_subscriber(&node, 100, pub_a.endpoint.id);
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub_a.peers[0].node_id);
-    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub_b.peers[0].node_id);
+    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub_a.peers[0].context_id);
+    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub_b.peers[0].context_id);
 }
 
 int main(void) {

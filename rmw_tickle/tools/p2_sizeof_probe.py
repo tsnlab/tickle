@@ -4,7 +4,7 @@ rmw_tickle can create a publisher, subscription, client or service for a type at
 
 Why a compiled probe and not the generator's own numbers (2026-09-24): rmw hands the core
 callbacks->tickle_struct_size, i.e. sizeof(the TickLE C struct with every buffer at capacity),
-and tt_Node_create_*() rejects anything above tt_MAX_BUFFER_LENGTH (valid_msg_size(), tickle.c),
+and tt_Context_create_*() rejects anything above tt_MAX_BUFFER_LENGTH (valid_msg_size(), tickle.c),
 because the receive path decodes into a stack buffer of that size. layout.max_wire_size() is the
 *wire* bound and differs from sizeof both ways - a plain string is 2 B on the wire but a char*
 (8 B on LP64) in the struct, plus C padding - and nothing in the generator models the C layout of

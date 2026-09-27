@@ -29,7 +29,7 @@
 #define REMOTE_NODE_ID 2
 #define ENTITY_ID 0x11111111
 
-static void init_node(struct tt_Node* node) {
+static void init_node(struct tt_Context* node) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     node->id = LOCAL_NODE_ID;
@@ -101,8 +101,8 @@ static void reset_callback_observations(void) {
     last_departed = false;
 }
 
-static void observe_discovery(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind, bool departed,
-                              void* param) {
+static void observe_discovery(struct tt_Context* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
+                              bool departed, void* param) {
     (void)node;
     (void)param;
     callback_calls++;
@@ -116,7 +116,7 @@ static void observe_discovery(struct tt_Node* node, uint8_t node_id, uint32_t en
 // no callback, and (implicitly, since node->discovery stays NULL) no attempt to write into any
 // caller-owned struct.
 static void test_no_discovery_attached_is_a_no_op(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     reset_callback_observations();
 
@@ -134,12 +134,12 @@ static void test_no_discovery_attached_is_a_no_op(void) {
 // The primary path: attaching a struct tt_Discovery records the announced entity (queryable via
 // tt_Discovery_find()/tt_Discovery_count()) and fires the callback with departed=false.
 static void test_attached_discovery_records_entity_and_fires_callback(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
     reset_callback_observations();
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(&node, &discovery, observe_discovery, NULL));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&node, &discovery, observe_discovery, NULL));
 
     struct tt_Header header;
     init_header(&header, REMOTE_NODE_ID);
@@ -165,11 +165,11 @@ static void test_attached_discovery_records_entity_and_fires_callback(void) {
 // callback with departed=true and drop it from the table - the same forget-then-readd cycle
 // test_peer_discovery.c's own peer table already relies on, now extended to discovery.
 static void test_entity_dropped_from_new_announce_fires_departed(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(&node, &discovery, observe_discovery, NULL));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&node, &discovery, observe_discovery, NULL));
 
     struct tt_Header header;
     init_header(&header, REMOTE_NODE_ID);
@@ -203,11 +203,11 @@ static void test_entity_dropped_from_new_announce_fires_departed(void) {
 // alive-only count) still goes to 0, but tt_Discovery_find() still finds it, now with alive ==
 // false, not NULL.
 static void test_liveliness_timeout_tombstones_not_frees(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(&node, &discovery, observe_discovery, NULL));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&node, &discovery, observe_discovery, NULL));
 
     test_mock_now = 0;
     struct tt_Header header;
@@ -254,11 +254,11 @@ static void test_liveliness_timeout_tombstones_not_frees(void) {
 // case specifically, but the same "table full" log line covers both - this test's own point is
 // that a tombstone-only-full table is different: there's still real room for a new entity here).
 static void test_new_entity_reclaims_a_tombstoned_slot_when_table_is_full(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(&node, &discovery, observe_discovery, NULL));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&node, &discovery, observe_discovery, NULL));
 
     // Fill the whole table with one entity each from tt_MAX_DISCOVERED_ENTITIES distinct *source
     // nodes* (not one source announcing many entities - process_data()'s own forget-then-readd
@@ -294,14 +294,14 @@ static void test_new_entity_reclaims_a_tombstoned_slot_when_table_is_full(void) 
     EXPECT_TRUE(strcmp(found->name, "brand_new_topic") == 0);
 }
 
-// tt_Node_set_discovery(node, NULL, ...) detaches - subsequent announces stop being recorded and
+// tt_Context_set_discovery(node, NULL, ...) detaches - subsequent announces stop being recorded and
 // stop firing the callback, without disturbing whatever was already recorded up to that point.
 static void test_detaching_stops_recording(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(&node, &discovery, observe_discovery, NULL));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&node, &discovery, observe_discovery, NULL));
 
     struct tt_Header header;
     init_header(&header, REMOTE_NODE_ID);
@@ -309,7 +309,7 @@ static void test_detaching_stops_recording(void) {
                                             "std_msgs/msg/String", "my_topic");
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
 
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(&node, NULL, NULL, NULL));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&node, NULL, NULL, NULL));
     reset_callback_observations();
 
     uint32_t second_tail = write_update_one_entity(node.rx_buffer, 999, ENTITY_ID + 1, tt_KIND_TOPIC_SUBSCRIBER,
@@ -330,11 +330,11 @@ static void test_detaching_stops_recording(void) {
 // seen[] are set by process_data() and never reset) - only this one entity's own shorter lease
 // is what's being tested.
 static void test_short_lease_entity_tombstoned_before_node_level_sweep(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(&node, &discovery, observe_discovery, NULL));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&node, &discovery, observe_discovery, NULL));
 
     test_mock_now = 0;
     struct tt_Header header;
@@ -363,11 +363,11 @@ static void test_short_lease_entity_tombstoned_before_node_level_sweep(void) {
 // expire_before_threshold()): an entity still within its own lease when check_liveliness() runs
 // must stay untouched, exactly at the boundary.
 static void test_short_lease_entity_not_tombstoned_before_its_own_lease(void) {
-    struct tt_Node node;
+    struct tt_Context node;
     init_node(&node);
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(&node, &discovery, observe_discovery, NULL));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&node, &discovery, observe_discovery, NULL));
 
     test_mock_now = 0;
     struct tt_Header header;
@@ -386,7 +386,7 @@ static void test_short_lease_entity_not_tombstoned_before_its_own_lease(void) {
 static void test_null_discovery_helpers_are_safe(void) {
     EXPECT_EQ_U32(0, tt_Discovery_count(NULL));
     EXPECT_TRUE(tt_Discovery_find(NULL, REMOTE_NODE_ID, ENTITY_ID) == NULL);
-    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Node_set_discovery(NULL, NULL, NULL, NULL));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Context_set_discovery(NULL, NULL, NULL, NULL));
 }
 
 int main(void) {
