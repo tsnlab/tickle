@@ -18,6 +18,8 @@ A role prints one line "RESULT: key=value ..." when it ends; the script reads on
   matched_sub   a subscription on /accept_matched that counts its SUBSCRIPTION_MATCHED events
   itype_pub     a std_msgs/String publisher on /accept_itype, counting PUBLISHER_INCOMPATIBLE_TYPE events
   itype_sub     a std_msgs/Int32 subscription on /accept_itype, counting SUBSCRIPTION_INCOMPATIBLE_TYPE events
+  durable_pub   TRANSIENT_LOCAL KEEP_LAST 4, publishes 6 sensor_msgs/Image samples of 60,000 bytes, then keeps running
+  durable_sub   created later with the same QoS: reports how many backlog samples arrived, which, and whether in order
   inprocess     a talker node and a listener node in ONE process and executor, then a std_srvs/Trigger call between them
 """
 import sys
@@ -115,6 +117,37 @@ def main():
               flush=True)
         listener.destroy_node()
         node = talker
+    elif role in ('durable_pub', 'durable_sub'):
+        # TRANSIENT_LOCAL KEEP_LAST 4 with 60,000-byte sensor_msgs/Image samples, fragmented on the wire (g10): the
+        # publisher sends 6 and keeps running; a subscriber created afterwards must get exactly the last 4, in order.
+        # 60,000 and not smaller: at 16,000 bytes rmw_tickle's first arena already held 4, so the first version of this
+        # test passed on the unfixed build (2026-09-28) - it could not fail.
+        from rclpy.qos import DurabilityPolicy
+        from rclpy.qos import HistoryPolicy
+        from rclpy.qos import QoSProfile
+        from rclpy.qos import ReliabilityPolicy
+        from sensor_msgs.msg import Image
+        qos = QoSProfile(depth=4, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.RELIABLE,
+                         durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        node = Node('accept_' + role)
+        if role == 'durable_pub':
+            pub = node.create_publisher(Image, '/accept_durable', qos)
+            for i in range(1, 7):
+                pub.publish(Image(height=1, width=60000, encoding='mono8', step=60000, data=bytes([i]) * 60000))
+            spin_for(node, seconds)
+            print('RESULT: role=durable_pub sent=6', flush=True)
+        else:
+            got = []
+
+            def on_msg(msg):
+                data = bytes(msg.data)
+                if len(data) == 60000 and data == data[:1] * 60000:
+                    got.append(data[0])
+            node.create_subscription(Image, '/accept_durable', on_msg, qos)
+            spin_for(node, seconds)
+            print('RESULT: role=durable_sub received=%d first=%d last=%d in_order=%d' % (
+                len(got), got[0] if got else 0, got[-1] if got else 0,
+                int(got == sorted(got) and len(set(got)) == len(got))), flush=True)
     elif role in ('matched_pub', 'matched_sub'):
         node = Node('accept_' + role)
 

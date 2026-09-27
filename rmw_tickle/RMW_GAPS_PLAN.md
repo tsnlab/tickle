@@ -533,3 +533,19 @@ library's md5 `e282cf1b5f53`; its symbols confirm g2, g5 and g8.
   - CPU: a publish with no local subscriber costs at most a branch.
 - The acceptance overlay now also builds `std_srvs` with TickLE typesupport. Without it the service half fails for a
   reason unrelated to g9.
+
+## g10 - TRANSIENT_LOCAL / KEEP_LAST keeps fewer than depth for large types (found by Dev 2026-09-28; after g9; acceptance test `durable`)
+
+- **Gap:** a durable KEEP_LAST publisher of a large type starts with an arena for one sample and grows only after
+  `depth` messages have gone out (`keep_last_wants_more_arena`, rmw_publisher.c). A late joiner, local or remote,
+  gets fewer than `depth` samples, where DDS gives `depth`. The durability contract is broken.
+- **Baseline** (`durable`: TRANSIENT_LOCAL KEEP_LAST 4, 6 sensor_msgs/Image samples of 60,000 B, a subscriber on the
+  other host created afterwards): CycloneDDS PASS (the last 4, in order); **rmw_tickle FAIL, it received 3 (4, 5, 6)**.
+  - The first version of the test used 16,000-byte samples and passed on the unfixed build, because the first arena
+    already held 4. It could not fail, so it now uses 60,000 bytes, and the reason is in its comment.
+- **Pass** (Dev pre-registers the details): `durable` passes.
+  - The arena grows on need: a publish never evicts while fewer than `depth` are retained, up to the budget.
+  - A budget that cannot hold `depth` x the sample warns once at the point it binds, and counts it. It never retains
+    fewer silently.
+  - The same check applies to the RELIABLE KEEP_LAST retransmit cache.
+  - Mutant: the current growth rule.
