@@ -472,6 +472,25 @@ number, `tt_VERSION`, which moves independently.
 
 ### Fixed
 
+- **A discovery table too small for the graph let RxO-incompatible DATA through, and rmw_tickle's held 16**
+  (CONTEXT_NODE_PLAN.md 4a, 2026-09-27).
+  - `tt_Discovery` does more than introspection. A subscriber's RxO check reads it, and fails open for a publisher it
+    has no room for: that publisher's DATA is delivered.
+  - A reliable subscriber's KEEP_ALL classification, per-entity liveliness leases and rmw_tickle's BEST_AVAILABLE
+    resolution read it too.
+  - rmw_tickle never raised core's default of 16, so every ROS 2 graph of more than 16 remote entities was affected
+    (every rclcpp node has 9 by default). `test_discovery_capacity` shows it: at 16, the 20th of 20 best-effort
+    publishers is dropped and its DATA reaches a reliable subscriber. rmw_tickle builds now hold 2048.
+  - A full table now counts what it drops (`tt_Discovery.entities_dropped`, printed in rmw_tickle's shutdown line) and
+    warns once, naming the setting. It used to log one line per dropped entity.
+  - Fail-open on a missing entry is unchanged; whether it should fail closed is a separate decision.
+- **An rmw_tickle context of more than ~416 endpoints announced nothing** (4a). An announce was limited to 32
+  1472-byte fragments of about 13 ROS-length endpoints each.
+  - `tt_UPDATE_MAX_PARTS` is now a setting, at most 255 (the wire's `uint8_t` count); rmw_tickle builds set 255.
+  - `tt_MAX_ENDPOINT_COUNT` is no longer capped at 256. It never indexed anything 8-bit: the per-peer tables it sized
+    are indexed by a remote context's id, and are now sized by a fixed `tt_MAX_CONTEXT_IDS`.
+  - rmw_tickle builds hold 2048 endpoints; a composed Nav2 bringup holds about 600.
+
 - **A client on the auto retry interval could time out every call, forever** (CONTEXT_NODE_PLAN.md "Client retry
   fix", 2026-09-27). With `call_retry_interval` 0 - what core's examples and generated services pass - the interval
   was 1.5 x an EMA of accepted answers' latency, with no floor, and a timeout taught it nothing: one fast answer

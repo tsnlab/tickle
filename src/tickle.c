@@ -1256,8 +1256,16 @@ static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, u
         }
     }
     if (slot == NULL) {
-        TT_LOG_WARNING("Discovery table full (%d), dropping newly seen entity node %u endpoint %08x",
-                       tt_MAX_DISCOVERED_ENTITIES, node_id, endpoint_id);
+        // Counted every time and said once: a full table is not only an introspection gap (see struct tt_Discovery),
+        // so it must never pass for a quiet one, and a log line per entity per announce would bury everything else.
+        node->discovery->entities_dropped++;
+        if (!node->discovery->full_warned) {
+            node->discovery->full_warned = true;
+            TT_LOG_WARNING("Discovery table full (%d entities): dropping node %u endpoint %08x and every later new one "
+                           "- raise tt_MAX_DISCOVERED_ENTITIES. RxO, KEEP_ALL and liveliness are not checked for "
+                           "entities not in it",
+                           tt_MAX_DISCOVERED_ENTITIES, node_id, endpoint_id);
+        }
         return;
     }
 
@@ -1979,6 +1987,20 @@ static void node_init_locks(struct tt_Context* node) {
     __atomic_store_n(&node->wait_until_lo, 0, __ATOMIC_RELAXED);
 }
 
+// Whether any fragment of an announce from `source` is in progress, and forgetting them (see update_parts_complete()).
+static bool update_parts_any(const struct tt_Context* node, uint8_t source) {
+    for (uint32_t word = 0; word < tt_UPDATE_PART_WORDS; word++) {
+        if (node->update_part_received[source][word] != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void update_parts_clear(struct tt_Context* node, uint8_t source) {
+    memset(node->update_part_received[source], 0, sizeof(node->update_part_received[source]));
+}
+
 static void reset_node_state(struct tt_Context* node) {
     node->id = tt_CONTEXT_ID_INVALID;
     node->endpoint_count = 0;
@@ -1997,12 +2019,12 @@ static void reset_node_state(struct tt_Context* node) {
     node->entity_id_base = 0; // real value assigned by tt_Context_create() itself, after this call
     node->next_entity_id = 0;
 
-    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
+    for (int i = 0; i < tt_MAX_CONTEXT_IDS; i++) {
         node->update_generation[i] = 0;
         node->update_seen[i] = false;
         node->update_last_seen[i] = 0;
         node->update_part_generation[i] = 0;
-        node->update_part_received[i] = 0;
+        memset(node->update_part_received[i], 0, sizeof(node->update_part_received[i]));
         node->update_part_count[i] = 0;
         node->traffic_last_seen[i] = 0;
     }
@@ -2054,7 +2076,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->reached_everyone = 0;
     node->summary_skip_armed = 0;
     node->summary_rides = 0;
-    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT / 32; i++) {
+    for (int i = 0; i < tt_MAX_CONTEXT_IDS / 32; i++) {
         node->reached_nodes[i] = 0;
     }
 
@@ -2160,7 +2182,7 @@ static bool valid_sample_size(uint32_t size) {
 // decoded in full and matched against the new endpoint. update_seen[] is left alone: this is not a first
 // contact, and nothing is replied. A partial announce in progress is unaffected.
 static void reprocess_known_announces(struct tt_Context* node) {
-    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
+    for (int i = 0; i < tt_MAX_CONTEXT_IDS; i++) {
         if (node->update_seen[i]) {
             node->update_generation[i] = ~node->update_generation[i];
         }
@@ -5776,14 +5798,14 @@ static uint64_t summary_interval(const struct tt_Context* node) {
 static bool every_peer_reached(struct tt_Context* node) {
     bool everyone = node->reached_everyone != 0;
     node->reached_everyone = 0;
-    uint32_t reached[tt_MAX_ENDPOINT_COUNT / 32];
-    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT / 32; i++) {
+    uint32_t reached[tt_MAX_CONTEXT_IDS / 32];
+    for (int i = 0; i < tt_MAX_CONTEXT_IDS / 32; i++) {
         reached[i] = node->reached_nodes[i];
         node->reached_nodes[i] = 0;
     }
     bool any_peer = false;
-    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
-        if (i == node->id || (!node->update_seen[i] && node->update_part_received[i] == 0)) {
+    for (int i = 0; i < tt_MAX_CONTEXT_IDS; i++) {
+        if (i == node->id || (!node->update_seen[i] && !update_parts_any(node, (uint8_t)i))) {
             continue;
         }
         any_peer = true;
@@ -6093,15 +6115,15 @@ static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t 
     node->update_generation[source] = 0;
     node->update_last_seen[source] = 0;
     node->traffic_last_seen[source] = 0;
-    node->update_part_received[source] = 0;
+    update_parts_clear(node, source);
     node->liveliness_flags[source] = 0;
 }
 
 // The node-level half of check_liveliness(): presumes dead each remote node silent past its limit, and
 // lowers *next to the earliest limit still ahead.
 static void check_node_silence(struct tt_Context* node, uint64_t time, uint64_t* next) {
-    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
-        if (!node->update_seen[i] && node->update_part_received[i] == 0) {
+    for (int i = 0; i < tt_MAX_CONTEXT_IDS; i++) {
+        if (!node->update_seen[i] && !update_parts_any(node, (uint8_t)i)) {
             continue; // never heard from this node id at all - nothing to expire
         }
         // A node heard only through fragments of an announce it never finished (update_seen still false)
@@ -6519,12 +6541,29 @@ static void reply_with_own_announce(struct tt_Context* node, uint8_t sender_node
     build_and_send_update(node, &reply_to, 1);
 }
 
-// Bit mask with one bit per fragment of an announce split into part_count fragments.
-static uint32_t update_all_parts_mask(uint8_t part_count) {
-    return part_count >= 32 ? UINT32_MAX : ((uint32_t)1 << part_count) - 1;
+// More fragments than this build tracks. A function, not an inline comparison: at tt_UPDATE_MAX_PARTS 255 a uint8_t
+// count can never exceed it, and the comparison written against the uint8_t would draw -Wtype-limits.
+static bool update_parts_too_many(uint32_t part_count) {
+    return part_count > tt_UPDATE_MAX_PARTS;
 }
 
-_Static_assert(tt_UPDATE_MAX_PARTS <= 32, "tt_Context.update_part_received is a 32-bit mask, one bit per fragment");
+// Which fragments of a source's announce in progress have arrived: a bitmap of tt_UPDATE_PART_WORDS words, one bit
+// per fragment (CONTEXT_NODE_PLAN.md 4a - it was one 32-bit word, which capped an announce at 32 fragments).
+static bool update_parts_complete(const struct tt_Context* node, uint8_t source, uint8_t part_count) {
+    for (uint32_t word = 0; word < tt_UPDATE_PART_WORDS; word++) {
+        uint32_t first = word * 32U;
+        uint32_t want = UINT32_MAX;
+        if (part_count <= first) {
+            want = 0U;
+        } else if (part_count < first + 32U) {
+            want = ((uint32_t)1 << (part_count - first)) - 1U;
+        }
+        if (node->update_part_received[source][word] != want) {
+            return false;
+        }
+    }
+    return true;
+}
 
 // A discovery announce (tt_DISCOVERY_ENDPOINT_ID, tickle.h), whole or one fragment of it: buffer[head..tail)
 // is its tt_AnnounceHeader and entities. generation is its DataHeader/FragContHeader seq_no; frag_index
@@ -6553,7 +6592,7 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
         TT_LOG_ERROR("Illegal AnnounceHeader");
         return false;
     }
-    if (frag_count < 1 || frag_count > tt_UPDATE_MAX_PARTS || frag_index >= frag_count) {
+    if (frag_count < 1 || update_parts_too_many(frag_count) || frag_index >= frag_count) {
         TT_LOG_ERROR("Illegal announce fragment %u of %u", frag_index, frag_count);
         return false;
     }
@@ -6568,7 +6607,7 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
     }
 
     bool whole = frag_count == 1;
-    if (whole || node->update_part_received[source] == 0 || node->update_part_generation[source] != generation ||
+    if (whole || !update_parts_any(node, source) || node->update_part_generation[source] != generation ||
         node->update_part_count[source] != frag_count) {
         // A new announce from this source: it supersedes what it announced before (it may have dropped
         // an endpoint, or left entirely - see tt_Context_destroy()'s farewell announce). Forget its old
@@ -6577,7 +6616,7 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
         forget_discovered_entities_from_source(node, source);
         node->update_part_generation[source] = generation;
         node->update_part_count[source] = frag_count;
-        node->update_part_received[source] = 0;
+        update_parts_clear(node, source);
     }
 
     if (!decode_update_entities(node, header, buffer, &head, tail, announce->entity_count, sender_ip, sender_port,
@@ -6585,11 +6624,11 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
         return false;
     }
 
-    node->update_part_received[source] |= (uint32_t)1 << frag_index;
-    if (node->update_part_received[source] != update_all_parts_mask(frag_count)) {
+    node->update_part_received[source][frag_index / 32U] |= (uint32_t)1 << (frag_index % 32U);
+    if (!update_parts_complete(node, source, frag_count)) {
         return true; // more fragments to come
     }
-    node->update_part_received[source] = 0;
+    update_parts_clear(node, source);
 
     // Phase 3 prerequisite (c) - the forget above preserved this source's ack state so a re-added
     // Subscriber keeps it; now drop it wherever this announce genuinely dropped the match (an
@@ -9090,7 +9129,7 @@ static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t he
     // but it is proof the peer's stack is alive and transmitting, which is the only question being
     // asked here - and under loss, retransmits may be most of what arrives.
     //
-    // header->source indexes traffic_last_seen[tt_MAX_ENDPOINT_COUNT] unchecked, which is safe by
+    // header->source indexes traffic_last_seen[tt_MAX_CONTEXT_IDS] unchecked, which is safe by
     // construction rather than by luck: source is a uint8_t and that array has exactly 256 entries.
     // Worth stating because a narrower array would make this an out-of-bounds write on a hostile
     // packet, and validate_packet_header() does not range-check the field.

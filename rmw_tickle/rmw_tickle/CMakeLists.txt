@@ -77,6 +77,14 @@ target_compile_definitions(rmw_tickle PUBLIC tt_SERVER_CACHE_ENTRY_LENGTH=8 tt_C
 # composed ROS 2 bringup (Nav2's, one container) holds 15-20 of them - core's default, 16, would refuse the rest.
 # 256 is the most a node's uint8_t index allows; the table costs 8 bytes per entry.
 target_compile_definitions(rmw_tickle PUBLIC tt_MAX_NODES=256)
+# Endpoints per context, and the remote entities rmw's graph API can see (CONTEXT_NODE_PLAN.md 4a). A composed Nav2
+# bringup holds ~20 nodes of ~30 endpoints each (9 per rclcpp node by default, more for lifecycle nodes and action
+# servers, plus the application's), ~600 - core's 256 would refuse the rest. 2048 is over 3x that; the endpoint index
+# stays at twice the count. core's 16 discovered entities meant `ros2 topic list` against such a process saw 16 of
+# its endpoints: 2048 too, ~1.1 MB of tt_DiscoveredEntity per context. And an announce goes in 1472-byte fragments of
+# ~15 ROS-sized endpoints, 32 of them by default (~480 endpoints): 255, the wire's most, announces ~3800.
+target_compile_definitions(rmw_tickle PUBLIC tt_MAX_ENDPOINT_COUNT=2048 tt_ENDPOINT_INDEX_SIZE=4096
+                                             tt_MAX_DISCOVERED_ENTITIES=2048 tt_UPDATE_MAX_PARTS=255)
 # The socket receive buffer requested (SO_RCVBUF), the 4 MiB the user approved on 2026-09-24: at
 # 65507-byte datagrams core's 1 MiB default holds sixteen. The kernel clamps it to
 # net.core.rmem_max, and hal_linux.c logs a warning naming that sysctl when what is granted holds

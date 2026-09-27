@@ -258,7 +258,7 @@ static void test_receiver_matches_endpoints_from_every_part(void) {
     EXPECT_TRUE(matched(2));
     EXPECT_TRUE(receiver.update_seen[SENDER_ID]);
     EXPECT_EQ_U32(100, receiver.update_generation[SENDER_ID]);
-    EXPECT_EQ_U32(0, receiver.update_part_received[SENDER_ID]);
+    EXPECT_TRUE(!update_parts_any(&receiver, SENDER_ID));
 }
 
 static void test_lost_part_is_filled_by_the_next_announce(void) {
@@ -313,7 +313,7 @@ static void test_repeated_complete_announce_is_a_no_op(void) {
     announce();
     deliver(0); // one part of the unchanged resend must not start a new, incomplete announce
     EXPECT_TRUE(receiver.update_seen[SENDER_ID]);
-    EXPECT_EQ_U32(0, receiver.update_part_received[SENDER_ID]);
+    EXPECT_TRUE(!update_parts_any(&receiver, SENDER_ID));
     EXPECT_TRUE(matched(0));
 }
 
@@ -325,12 +325,12 @@ static void test_single_update_supersedes_parts_in_progress(void) {
     const int topics[] = {0};
     init_receiver(topics, 1);
     deliver(0);
-    EXPECT_TRUE(receiver.update_part_received[SENDER_ID] != 0);
+    EXPECT_TRUE(update_parts_any(&receiver, SENDER_ID));
 
     init_sender(4, 200);
     EXPECT_EQ_INT(1, announce());
     deliver(0);
-    EXPECT_EQ_U32(0, receiver.update_part_received[SENDER_ID]);
+    EXPECT_TRUE(!update_parts_any(&receiver, SENDER_ID));
     EXPECT_TRUE(receiver.update_seen[SENDER_ID]);
     EXPECT_EQ_U32(200, receiver.update_generation[SENDER_ID]);
     EXPECT_TRUE(matched(0));
@@ -349,7 +349,7 @@ static void test_node_heard_only_through_parts_still_expires(void) {
     uint64_t later = (uint64_t)(tt_LIVELINESS_MISS_THRESHOLD + 2) * tt_CONTEXT_UPDATE_INTERVAL;
     test_mock_now = later;
     check_liveliness(&receiver, later, NULL);
-    EXPECT_EQ_U32(0, receiver.update_part_received[SENDER_ID]);
+    EXPECT_TRUE(!update_parts_any(&receiver, SENDER_ID));
     EXPECT_TRUE(!matched(0));
 }
 
@@ -370,12 +370,12 @@ static void test_malformed_part_headers_are_rejected(void) {
         (struct tt_FragContHeader*)((struct tt_SubmessageHeader*)(datagrams[1] + sizeof(struct tt_Header)) + 1);
     cont->frag_index = cont->frag_count; // index past the count
     deliver(1);
-    EXPECT_EQ_U32(0, receiver.update_part_received[SENDER_ID]);
+    EXPECT_TRUE(!update_parts_any(&receiver, SENDER_ID));
     EXPECT_TRUE(!matched(0));
     // Control: the same fragment with a sane header is taken, so the refusals above were the headers'.
     cont->frag_index = 1;
     deliver(1);
-    EXPECT_TRUE(receiver.update_part_received[SENDER_ID] != 0);
+    EXPECT_TRUE(update_parts_any(&receiver, SENDER_ID));
 }
 
 // --- liveliness versus deduplication (DATAFRAG_PLAN.md 6.4) --------------------------------------

@@ -284,7 +284,7 @@ static void test_never_seen_node_id_is_not_flagged(void) {
 
     check_liveliness(&node, tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL * 100, NULL);
 
-    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
+    for (int i = 0; i < tt_MAX_CONTEXT_IDS; i++) {
         EXPECT_TRUE(!node.update_seen[i]);
     }
 }

@@ -360,6 +360,17 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
    - **Order for Dev:** stage 3, then (g2), then (g3), then large messages stage 1 together with (g1) (both are ROS
      message to TickLE wire bytes, and a serialized message is exactly that output), then large messages stage 2
      with lending.
+   - **(g6) Discovery options** (Plan, 2026-09-27): rmw_tickle never reads `rmw_init_options_t.discovery_options`, so
+     `ROS_AUTOMATIC_DISCOVERY_RANGE` (LOCALHOST / OFF / SUBNET) and `ROS_STATIC_PEERS` have no effect. Planned
+     behaviour: LOCALHOST keeps discovery and data on loopback; OFF sends no discovery; static peers get the summary
+     by unicast. Pre-registered with CycloneDDS's behaviour per setting as the control.
+   - **(g7) Refuse enforced security** (Plan: small, ahead of stage 3 if it fits): rmw_tickle never reads
+     `security_options`, so with `ROS_SECURITY_ENFORCEMENT=Enforce` it starts unsecured, silently.
+     - With `enforce_security == RMW_SECURITY_ENFORCEMENT_ENFORCE`, it must fail with a clear error, where the vendors
+       refuse.
+     - With security enabled but permissive, it starts and logs once that security is not applied.
+     - Tests: both cases and the default, with a mutant that ignores enforce.
+     - Real SROS2 support is a user decision, not on this list.
    - **(g5) `rmw_take_sequence`** is not defined in `librmw_tickle.so` at all (`nm -D`), though rmw_implementation
      dispatches it on jazzy (Plan, 2026-09-27). COMPARISON 2.7a's row is updated in the commit that closes it.
 6. **Large messages, stage 1** (user item 1, "B"): rmw_tickle's direct typesupport, ROS C++ to the TickLE wire with

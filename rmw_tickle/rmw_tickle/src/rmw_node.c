@@ -429,13 +429,17 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
         close(context_impl->park_wake_fd);
         context_impl->park_wake_fd = -1;
     }
-    // One line, so a measurement can confirm which library ran and whether the path was taken.
+    // One line, so a measurement can confirm which library ran and whether the path was taken - and whether the
+    // discovery table ever ran out of room (discovery_dropped, CONTEXT_NODE_PLAN.md 4a): RxO and liveliness go
+    // unchecked for the entities it dropped, which core warned about once when it happened.
     (void)fprintf(stderr,
-                  "rmw_tickle: executor_poll=%d executor_poll_waits=%llu executor_handovers=%llu park_wakes=%llu\n",
+                  "rmw_tickle: executor_poll=%d executor_poll_waits=%llu executor_handovers=%llu park_wakes=%llu "
+                  "discovery_dropped=%u\n",
                   context_impl->executor_poll_enabled ? 1 : 0,
                   (unsigned long long)atomic_load(&context_impl->executor_poll_waits),
                   (unsigned long long)atomic_load(&context_impl->executor_handovers),
-                  (unsigned long long)atomic_load(&context_impl->park_wakes));
+                  (unsigned long long)atomic_load(&context_impl->park_wakes),
+                  (unsigned)context_impl->discovery.entities_dropped);
 
     // watchdog_thread_running is only ever true here if start_shared_tickle_node() actually
     // managed to start it (see its own doc comment there) - nothing to join otherwise. No tt_Context_

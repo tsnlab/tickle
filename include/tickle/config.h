@@ -354,7 +354,7 @@
 #endif
 
 #ifndef tt_MAX_ENDPOINT_COUNT
-#define tt_MAX_ENDPOINT_COUNT 256 // Maximum number of endpoints (data or services)
+#define tt_MAX_ENDPOINT_COUNT 256 // Local endpoints (data or services) one context holds; rmw_tickle builds set 2048
 #endif
 // Size of tt_Context.endpoint_index (power of two, >= 2 * tt_MAX_ENDPOINT_COUNT so load stays
 // <= 0.5 for linear-probe lookups).
@@ -447,6 +447,10 @@
 // 255 is reserved for the broadcast address.
 #define tt_CONTEXT_ID_INVALID 0x00
 #define tt_CONTEXT_ID_BROADCAST 0xff
+// Every context id the wire can name (a uint8_t): the size of struct tt_Context's per-peer tables, which are indexed
+// by a remote context's id. Not a setting. They were sized by tt_MAX_ENDPOINT_COUNT, which was 256 only by
+// coincidence and so could not grow (CONTEXT_NODE_PLAN.md 4a, 2026-09-27).
+#define tt_MAX_CONTEXT_IDS (UINT8_MAX + 1)
 #ifndef tt_MAX_SCHEDULER_LENGTH
 #define tt_MAX_SCHEDULER_LENGTH 128 // Scheduling queue
 #endif
@@ -579,10 +583,22 @@
 // track at once for graph introspection. Unrelated to tt_MAX_PEER_COUNT (that's a *local*
 // endpoint's own known-unicast-destinations table; this is one shared cache of *every* remote
 // entity a node has opted into recording, regardless of whether it matches anything local).
-// Silently drops a new entity past this limit (see upsert_discovered_entity() in tickle.c) -
-// introspection is a best-effort aid, not something correctness depends on. Each entry costs
-// roughly 2 * (tt_MAX_NAME_LENGTH + 1) bytes for its type/name strings alone, so this is
-// deliberately much smaller than tt_MAX_ENDPOINT_COUNT.
+// A new entity past this limit is dropped, counted (tt_Discovery.entities_dropped) and warned about once
+// (upsert_discovered_entity() in tickle.c). Correctness depends on it, not only introspection (CONTEXT_NODE_PLAN.md
+// 4a): RxO checks on received DATA, a reliable subscriber's KEEP_ALL classification of a writer and per-entity
+// liveliness leases read it, and for an entity not in it RxO fails open. Delivery between compatible endpoints and
+// unicast peer selection do not. Size it to the remote entities a context will see. Each entry costs roughly 2 *
+// (tt_MAX_NAME_LENGTH + 1) bytes (552 in all), so the default is small for FreeRTOS; rmw_tickle builds set 2048.
+// Fragments one discovery announce may be split into, and so how many endpoints a context can announce: each fragment
+// is one datagram of at most tt_CONTROL_MAX_LENGTH (1472 bytes on Ethernet), which holds ~15 ROS-sized endpoints, so 32
+// announce ~480 (CONTEXT_NODE_PLAN.md 4a, 2026-09-27). At most 255: a fragment's index and count are uint8_t on the
+// wire. rmw_tickle builds set 255, ~3800 endpoints, past its tt_MAX_ENDPOINT_COUNT of 2048. Each context tracks the
+// fragments received from every peer in tt_UPDATE_PART_WORDS 32-bit words.
+#ifndef tt_UPDATE_MAX_PARTS
+#define tt_UPDATE_MAX_PARTS 32
+#endif
+#define tt_UPDATE_PART_WORDS ((tt_UPDATE_MAX_PARTS + 31) / 32)
+
 #ifndef tt_MAX_DISCOVERED_ENTITIES
 #define tt_MAX_DISCOVERED_ENTITIES 16
 #endif
@@ -708,8 +724,10 @@ static_assert(!tt_FRAG_ENABLED || tt_MAX_SAMPLE_LENGTH + tt_FRAG_SUBMESSAGE_OVER
 static_assert(tt_FRAG_REASSEMBLY_SLOTS >= 1, "fragmentation needs at least one reassembly slot");
 static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
               "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");
-static_assert(tt_MAX_ENDPOINT_COUNT <= (UINT8_MAX + 1), "node ids and endpoint slots are indexed by uint8_t");
+static_assert(tt_MAX_CONTEXT_IDS % 32 == 0, "reached_nodes[] packs the per-peer bits 32 to a word");
 static_assert(tt_CALL_RETRY_INTERVAL_MAX >= tt_CALL_RETRY_INTERVAL && tt_CALL_RETRY_INTERVAL_MAX <= UINT32_MAX,
               "the auto retry interval is held between tt_CALL_RETRY_INTERVAL and a uint32_t ceiling");
 static_assert(tt_MAX_NODES >= 1 && tt_MAX_NODES <= (UINT8_MAX + 1),
               "a node's index is a uint8_t, 8 bits on the wire (stage 3)");
+static_assert(tt_UPDATE_MAX_PARTS >= 1 && tt_UPDATE_MAX_PARTS <= UINT8_MAX,
+              "an announce fragment's count is a uint8_t");

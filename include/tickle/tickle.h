@@ -185,27 +185,27 @@ struct tt_Context {
     // generation (tt_DataHeader.seq_no of the announce, see tt_DISCOVERY_ENDPOINT_ID), and whether we've
     // seen it at all. Only these two facts are ever read back (dedup + first-contact detection - see
     // process_announce()), so there's no need to keep a copy of the whole variable-length announce.
-    uint32_t update_generation[tt_MAX_ENDPOINT_COUNT];
-    bool update_seen[tt_MAX_ENDPOINT_COUNT];
+    uint32_t update_generation[tt_MAX_CONTEXT_IDS];
+    bool update_seen[tt_MAX_CONTEXT_IDS];
     // Per remote node, an announce arriving in fragments that is not complete yet: its generation, how
     // many fragments it has, and which have arrived (bit i = fragment i; 0 = none in progress). Once
     // every bit is set the announce is complete and moves into update_generation[]/update_seen[] above,
     // exactly as an announce in one datagram would.
-    uint32_t update_part_generation[tt_MAX_ENDPOINT_COUNT];
-    uint32_t update_part_received[tt_MAX_ENDPOINT_COUNT];
-    uint8_t update_part_count[tt_MAX_ENDPOINT_COUNT];
+    uint32_t update_part_generation[tt_MAX_CONTEXT_IDS];
+    uint32_t update_part_received[tt_MAX_CONTEXT_IDS][tt_UPDATE_PART_WORDS];
+    uint8_t update_part_count[tt_MAX_CONTEXT_IDS];
     // Phase 2 (rmw_tickle/PLAN.md) - the tt_VERSION last logged as mismatched for each remote node
     // (0 = nothing logged yet), so a peer speaking a different protocol version is reported once
     // rather than once per packet. At max rate an unfiltered log line per rejected packet would be
     // its own denial of service.
-    uint8_t version_mismatch_logged[tt_MAX_ENDPOINT_COUNT];
+    uint8_t version_mismatch_logged[tt_MAX_CONTEXT_IDS];
     // Per remote node (indexed the same way), the wall-clock time (tt_get_ns()) its most recent
     // UPDATE announce was received - unlike update_last_modified[] above, this moves on *every*
     // announce, including one whose content is unchanged from the last one acted on. Liveliness
     // (check_liveliness() in tickle.c) is judged from this, not update_last_modified[]: a node
     // whose endpoints never change still has to be heard from periodically, or it's presumed
     // gone once tt_LIVELINESS_MISS_THRESHOLD announce intervals pass with nothing heard.
-    uint64_t update_last_seen[tt_MAX_ENDPOINT_COUNT];
+    uint64_t update_last_seen[tt_MAX_CONTEXT_IDS];
 
     // The same index, but the most recent time ANY validated packet was received from that node -
     // DATA, ACKNACK, Heartbeat, UPDATE, anything whose header passed validate_packet_header().
@@ -224,7 +224,7 @@ struct tt_Context {
     // A retransmit or a duplicate counts, deliberately: it carries no new data, but it is proof
     // the peer's stack is running and transmitting, which is the only question being asked - and
     // under loss, retransmits may be most of what arrives.
-    uint64_t traffic_last_seen[tt_MAX_ENDPOINT_COUNT];
+    uint64_t traffic_last_seen[tt_MAX_CONTEXT_IDS];
 
     // 4-byte aligned so a decoded/encoded message payload (which sits at a fixed 4-multiple
     // offset past the framing headers) is itself 4-aligned - see "Interface serialization
@@ -267,7 +267,7 @@ struct tt_Context {
     // Per source node: what its traffic must be looked at for (tt_LIVELINESS_SOURCE_* in tickle.c) - a
     // MANUAL_BY_TOPIC Publisher whose DATA asserts it, or an entity lapsed on its lease that traffic revives.
     // Zero for every node with neither, so their traffic costs nothing extra.
-    uint8_t liveliness_flags[tt_MAX_ENDPOINT_COUNT];
+    uint8_t liveliness_flags[tt_MAX_CONTEXT_IDS];
     // When node_update() next sends the summary; the interval shrinks to a tt_LIVELINESS_LEASE_DIVISOR-th of the
     // shortest lease any
     // of this node's own endpoints announce (summary_interval()).
@@ -291,7 +291,7 @@ struct tt_Context {
     // on its data (LIVELINESS_PLAN.md 10). node_update() sends it on its own if no send came by the next tick.
     // Under the state lock, as every send is.
     uint8_t summary_rides;
-    uint32_t reached_nodes[tt_MAX_ENDPOINT_COUNT / 32];
+    uint32_t reached_nodes[tt_MAX_CONTEXT_IDS / 32];
 
     tt_ALIGNAS(4) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t rx_tail;
@@ -532,13 +532,20 @@ struct tt_DiscoveredEntity {
     uint64_t last_asserted_ns;
 };
 
-// Fixed-capacity graph cache a caller opts a struct tt_Context into via tt_Context_set_discovery() -
-// every remote entity any attached node has announced (not just ones matching a local endpoint
-// the way struct tt_Peer's unicast-address tracking is scoped to), for `ros2 topic list`-style
-// introspection. Owned by the caller (e.g. embedded in an rmw wrapper's own node struct), not by
-// TickLE - see struct tt_Context's own "discovery" field comment on why.
+// Fixed-capacity table a caller opts a struct tt_Context into via tt_Context_set_discovery() - every remote entity any
+// attached node has announced (not just ones matching a local endpoint the way struct tt_Peer's unicast-address
+// tracking is scoped to). Owned by the caller (e.g. embedded in an rmw wrapper's own node struct), not by TickLE - see
+// struct tt_Context's own "discovery" field comment on why.
+//
+// Not only introspection (CONTEXT_NODE_PLAN.md 4a, 2026-09-27). What reads it, and so goes unchecked for a remote
+// entity the table has no room for: a subscriber's RxO check on a publisher's DATA (it fails open: the DATA is
+// delivered), a reliable subscriber's KEEP_ALL classification of a writer (UNKNOWN), per-entity liveliness leases,
+// rmw_tickle's BEST_AVAILABLE resolution, and every graph query. What does not: delivery between compatible endpoints,
+// and unicast peer selection. Size it to the remote entities a context will see - tt_MAX_DISCOVERED_ENTITIES.
 struct tt_Discovery {
     struct tt_DiscoveredEntity entities[tt_MAX_DISCOVERED_ENTITIES];
+    uint32_t entities_dropped; // new remote entities there was no room for, counted since the table was attached
+    bool full_warned;          // the one warning a full table draws has been logged
 };
 
 struct tt_Service;
@@ -2097,9 +2104,7 @@ struct tt_AnnounceHeader {
     */
 } __attribute__((packed));
 
-// Fragments one announce may be split into - the width of tt_Context.update_part_received. At the default
-// tt_MAX_BUFFER_LENGTH that is ~480 ROS-sized endpoints, beyond tt_MAX_ENDPOINT_COUNT.
-#define tt_UPDATE_MAX_PARTS 32
+// tt_UPDATE_MAX_PARTS, the fragments one announce may be split into, is a setting in config.h.
 
 // QoS roadmap #1 (RxO matching, Milestone 31) - the bits struct tt_UpdateEntity.qos below
 // carries, one per policy this package implements a wire-visible mechanism for (services/

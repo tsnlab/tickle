@@ -870,6 +870,36 @@ The core's pieces are named after rmw's:
 **On the wire.** Nothing about nodes is on the wire yet: the announce is byte-identical to stage 1's for the same
 endpoints (`experiments/announce_bytes.c`). Stage 3 adds node entries.
 
+## Capacities, and what depends on them (CONTEXT_NODE_PLAN.md 4a)
+
+**One context's own tables.**
+
+| setting | core default | rmw_tickle build | limit |
+|---|---:|---:|---|
+| `tt_MAX_ENDPOINT_COUNT`: local endpoints | 256 | 2048 | none on the wire |
+| `tt_MAX_NODES`: nodes | 16 | 256 | 256, a `uint8_t` index |
+| `tt_UPDATE_MAX_PARTS`: fragments of one announce | 32 | 255 | 255, a `uint8_t` count |
+
+- About 13 ROS-length endpoints fit one 1472-byte announce fragment (measured). So the default 32 fragments announce
+  about 416 endpoints, and 255 announce about 3300.
+- A context with more endpoints than its fragments can carry sends no announce at all, and is invisible to every
+  peer.
+- The per-peer tables are indexed by a remote context's id, so they are sized by `tt_MAX_CONTEXT_IDS` (256, the
+  wire's id space), not by any setting.
+
+**The discovery table (`tt_MAX_DISCOVERED_ENTITIES`, `struct tt_Discovery`)** holds every remote entity announced to
+the context: 16 by default, 2048 in rmw_tickle builds, at 552 B an entry.
+
+- **It decides more than introspection.** For a remote entity it has no room for, the following go unchecked:
+  - a subscriber's RxO check on that publisher's DATA, which fails open, so the DATA is delivered;
+  - a reliable subscriber's KEEP_ALL classification of the writer, which is UNKNOWN;
+  - the entity's liveliness lease;
+  - rmw_tickle's BEST_AVAILABLE resolution, and every graph query.
+- **It does not affect** delivery between compatible endpoints, or unicast peer selection.
+- Size it to the remote entities a context will see.
+- A full table counts what it drops (`entities_dropped`, which rmw_tickle prints at shutdown) and warns once, naming
+  the setting.
+
 ## The library never allocates; the caller owns every buffer
 
 `src/` contains no `malloc()`, `calloc()`, `realloc()` or `free()` on any path, and that is a
