@@ -258,6 +258,44 @@ touches a per-sample path.
   - a pcap control in the LOCALHOST arm: no datagram on the veth;
   - mutants: LOCALHOST still broadcasting on the subnet; static peers only on one side's send.
 - **CPU:** none on the sample path.
+- **Contract details, Dev before code (2026-09-28), Plan-approved design, checked against the vendor:**
+  - **What CycloneDDS does** (rmw_cyclonedds `check_create_domain()`, rolling, and a probe on lyrical):
+    - NOT_SET makes node creation fail with "automatic discovery range must be set". `rmw_init` itself succeeds.
+    - SUBNET: multicast plus the static peers.
+    - SYSTEM_DEFAULT: the vendor's own defaults, with static peers ignored and a warning.
+    - LOCALHOST: localhost plus the static peers, no multicast.
+    - OFF: nothing - a domain tag carrying the PID, and static peers ignored with a warning. Probed: 0 messages on
+      one host and across hosts, where LOCALHOST gives 121 on one host and 0 across.
+    - Also: `rmw_init_options_init()` sets LOCALHOST, and rcl sets SUBNET when `ROS_AUTOMATIC_DISCOVERY_RANGE` is
+      unset.
+  - **rmw_tickle** follows that, per range:
+    - NOT_SET: `rmw_create_node` fails with the same message.
+    - SUBNET: today's behaviour plus the static peers.
+    - SYSTEM_DEFAULT: today's behaviour; static peers ignored with a WARNING.
+    - LOCALHOST: broadcasts go to 127.255.255.255 only. The data socket is bound to 127.0.0.1, or to any address
+      when static peers are given. A receive filter drops a datagram from any sender that is neither loopback, this
+      host's own link address, nor a static peer. `TICKLE_BROADCAST_ADDR` is overridden, with a WARNING.
+    - OFF: nothing is sent to the link and nothing received is processed; sends succeed, since the user chose this,
+      with one INFO line. In-process delivery (g9) still works. Static peers are ignored with a WARNING.
+  - **Static peers reuse core's link table** (`_tt_CONFIG.links`, Plan's preference):
+    - a peer is a link of its own, with a flag: `peer`, one remote address, a /32;
+    - its "broadcast" is the peer's address on the domain's well-known port, so announces, summaries and every
+      broadcast-class datagram also go to it by unicast;
+    - a datagram from it matches that link.
+    - Forms accepted: an IPv4 address, a hostname (resolved at init, IPv4), or a CIDR subnet (its directed broadcast).
+      IPv6 is skipped with a WARNING. There is room for tt_MAX_LINK_COUNT - 1 of them, and one beyond that is a
+      WARNING, never silent.
+  - **All of it behind a compile flag set by rmw_tickle's build** (`tt_DISCOVERY_OPTIONS`), so core's default build
+    stays byte-identical. The wire is unchanged.
+- **Unit tests (pre-registered):**
+  - LOCALHOST: the bind address and broadcast destination; the filter drops a foreign sender and passes loopback and
+    a peer.
+  - OFF: nothing sent, nothing processed.
+  - Static peers: they are among the destinations of a broadcast-class datagram; a CIDR peer gives its directed
+    broadcast; IPv6 and overflow warn.
+  - NOT_SET: node creation refused with the message.
+  - Mutants: LOCALHOST still broadcasting on the subnet; the filter off; peers not added to the destinations.
+  - Acceptance: `range` and `peers`, plus Plan's OFF arm once it is added.
 
 ## Stage 3 and g1 (acceptance tests `graph`, `bag`)
 
