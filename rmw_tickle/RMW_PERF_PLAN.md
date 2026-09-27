@@ -867,3 +867,54 @@ in us, rmw_tickle / FastDDS / CycloneDDS:
   same call, so CycloneDDS's effective wait is shorter than half its cycle.
 - **No vendor is lower beyond 2 x SE in any cell.** COMPARISON.md rows 52-67 now hold these figures (`J`), and the
   phase-locked ones are kept as reference.
+
+## 11. Where the copies are, and what removing them could save (pre-registered 2026-09-27, before any code)
+
+**Why.** The user approved Plan's copy-reduction design in steps ("설계한 대로 진행하자"). Step 1 is done
+(`0e71efc0`): a deferred service response is encoded from the caller's struct, with no slot copy. Steps (2) and (3)
+are measured first, and built only if the measurements leave room:
+- (2) scatter-gather `sendmsg()` for large string and sequence fields;
+- (3) ROS 2 loaned messages (`rmw_borrow_loaned_message` / `rmw_take_loaned_message`) for fixed-size types.
+
+**M-a, the copy map (PC, private netns).**
+- **Scope.** Every copy a sample's bytes go through, for `bench` (64 B), `array1k` and `struct16`, on four paths:
+  - `rmw_publish`, and `rmw_take` on the other side;
+  - a service's request and response.
+- **Method, two independent measurements that must agree:**
+  1. **Code.** Each copy is named with its code reference:
+     - ROS message -> TickLE struct (`to_tickle`);
+     - TickLE struct -> CDR in `tx_buffer` (encode);
+     - `tx_buffer` -> kernel (`sendmsg`), kernel -> `rx_buffer` (`recvmmsg`);
+     - `rx_buffer` -> TickLE struct (decode; strings alias);
+     - TickLE struct -> ROS message (`from_tickle`);
+     - the reliable cache and the reorder hold.
+     Its bytes per sample are computed from the message layout.
+  2. **A counting shim.** An `LD_PRELOAD` wrapper around `memcpy`/`memmove` records bytes per call site
+     (`__builtin_return_address`, resolved to a symbol) over N samples of a ping-pong.
+     - It cannot see copies the compiler inlined, which are only small fixed-size ones. So the check is on
+       copies of 64 B and up: every such copy in the code map appears in the shim, and nothing of that size
+       appears in the shim that is not in the map.
+     - A disagreement is a finding, not a rounding.
+- **Time per copy-bearing stage.** Taken from the existing trace split (`rmw_trace_split.sh`, section 9), run for
+  each message type: `to_tickle`, encode, decode and `from_tickle`, as a median over ~1000 round trips.
+
+**M-b, memcpy vs iovec on the Pi.** CPU 3 of the client Pi, under the rig lock, `hil` scope.
+- **Sizes:** 64 B, 256 B, 1 KB, 4 KB, 16 KB and 60 KB field payloads.
+- **Two arms, alternated, 20 rounds x 100000 ops:**
+  - (i) the field copied into a contiguous buffer behind a 24-B header, sent as one iovec;
+  - (ii) `sendmsg()` with two iovecs, header plus the field in place.
+- **Transport:** UDP over `lo` to a socket of the same process, drained between batches. Both arms pay the same
+  receive.
+- **Reported:** user+sys per op (`getrusage(RUSAGE_THREAD)`), paired by round.
+
+**How it reads, written before any number:**
+- **(2)'s threshold:** the smallest field size at which (ii) is cheaper than (i) beyond 2 x SE. Below it, a copy is
+  the cheaper send and (2) would stay out for such fields.
+- **(2)'s ceiling:** for each message type, per sample, the saving (i) - (ii) at its large fields' sizes, set against
+  the rmw per-sample send CPU on the Pi.
+- **(3)'s ceiling:** the `to_tickle` + `from_tickle` time M-a measures for the fixed-size types, set against the
+  responder's user-space time (section 9: ~6 us of 17 for `bench`) and the RTT.
+- **Drop rule, the same for both:** a ceiling under 2% of the per-sample rmw CPU, or under 0.3 us, drops that step.
+  The report says so and nothing is built. Above it, the step gets its own design and pre-registration.
+- **Control:** the shim is checked on a program of known copies, a 4096-B memcpy loop: it must report exactly 4096 B
+  per iteration at the right call site, or its other counts mean nothing.
