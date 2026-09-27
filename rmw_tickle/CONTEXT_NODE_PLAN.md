@@ -280,6 +280,52 @@ about `4 x 1.5 x latency`. `latency` is an EMA updated only when an answer is ac
 - `make check-gates`, the rmw suite in a netns, and a CHANGELOG entry saying native users on the default interval
   were affected and rmw was not.
 
+### Client retry fix: result (2026-09-27, 803db9d1 and a51b8d2f)
+
+**The retry fix (803db9d1): PASS on its own tests, but it was not the thread test's cause.**
+- `test_call_retry_adaptive` passes. The old code fails 7 of its checks, and each mutant fails at least one:
+  - no backoff: 5;
+  - no cap: 3;
+  - no floor: 3;
+  - no reset: 2.
+- **Amended:** the backoff doubles from max(estimate, floor), not from the estimate. Doubling a 100 us estimate
+  would stay under the floor for about 6 timeouts.
+- With it alone, `test_thread_safety` still failed 3/200, and 11/600 in a longer count.
+
+**The actual cause, defect F (a51b8d2f): padding on the wire was never written.**
+- `end_encode()` pads each submessage to 4 bytes and counts the padding in its length. The padding was never
+  written, so it held stale `tx_buffer` bytes.
+- The thread test's response codec requires its string terminator last. A call whose padding held a non-zero byte
+  failed to decode on every retry, because the cached encoding is resent unchanged, and the call was never
+  completed.
+- An instrumented hang showed it: the backoff grew to the cap as designed, the answers reached the client, and each
+  was rejected with "Cannot decode response".
+- My first reading, that the retry defect caused the flake, was inferred from one run without a control. It was
+  wrong.
+- **Confidentiality:** up to 3 bytes per submessage of an earlier datagram, possibly addressed to another peer, were
+  sent.
+- **Generated codecs are not affected:** core's and rmw_tickle's decoders read strings by their length prefix and
+  never read the tail. `test_encode_padding` decodes a generated message, ending in a bool with 3 bytes of padding
+  and ending in a string, with the padding stale and zeroed.
+- `test_encode_padding` fails 12 checks with the zeroing removed.
+
+**`test_thread_safety` on the default auto interval** (raw: `examples/perf_hil/results/thread_safety_flakes_2026-09-27.txt`):
+
+| build | plain | tsan |
+|---|---|---|
+| 0f877d54 (before) | 3/200 | 0/40 |
+| + retry fix | 3/200, 11/600 | 0/40 |
+| + zeroed padding | 0/200, 0/600 | 0/40 |
+
+**Cost of the padding zeroing:** `core_cost_ab.sh -r 20`, 803db9d1 against a51b8d2f, held within 2 x SE:
+
+| run | send (ns) | recv (ns) |
+|---|---|---|
+| default | +1.4 (2 x SE 2.6) | +0.1 (0.8) |
+| `-R` | +2.4 (3.2) | +0.4 (0.9) |
+
+Raw: `examples/perf_hil/results/core_cost_ab_padding_zero{,_R}_2026-09-27.txt`.
+
 ## Order and ownership
 
 - Dev writes each stage in its own worktree and pushes only after telling Plan.
