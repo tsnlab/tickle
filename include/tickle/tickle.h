@@ -545,7 +545,8 @@ struct tt_Client { // extends endpoint
     uint32_t cache_length;
     struct tt_SubmessageHeader* cache; // NULL when idle, else points into cache_buf
     uint64_t cache_time;               // Cache time
-    uint32_t latency;                  // Call latency
+    uint32_t latency;                  // Call latency estimate, ns: an EMA of accepted answers, doubled on a timeout
+    bool latency_backed_off;           // The last call timed out; the next accepted answer replaces the estimate
 
     // Known Servers matching this Client's service, learned via UPDATE announces - see
     // tt_UNICAST_PEER_THRESHOLD.

@@ -461,6 +461,20 @@ number, `tt_VERSION`, which moves independently.
 
 ### Fixed
 
+- **A client on the auto retry interval could time out every call, forever** (CONTEXT_NODE_PLAN.md "Client retry
+  fix", 2026-09-27). With `call_retry_interval` 0 - what core's examples and generated services pass - the interval
+  was 1.5 x an EMA of accepted answers' latency, with no floor, and a timeout taught it nothing: one fast answer
+  (85 us, measured) shrank every later call's budget to about 0.5 ms, and once an answer took longer every call timed
+  out and the estimate never moved again. Native users on the default interval were affected; rmw_tickle was not
+  (it sets its own interval). Now, on the auto path only:
+  - the interval never goes below `tt_CALL_RETRY_INTERVAL` (5 ms);
+  - a timeout doubles the estimate (from the floor at least), up to a new `tt_CALL_RETRY_INTERVAL_MAX` (250 ms), so
+    a call ends within `(tt_CALL_RETRY_COUNT + 1) x tt_CALL_RETRY_INTERVAL_MAX` (1 s) even against a dead server;
+  - the first answer accepted after a backoff replaces the estimate, so a server that is fast again gets its short
+    budget back at once.
+  An explicit `call_retry_interval` is used as given, as before. `test_call_retry_adaptive` checks each rule with a
+  simulated server; the old code fails 7 of its checks.
+
 - **A deferred service response no longer carries freed memory** (2026-09-27): `tt_Server_send_response()` copied
   the response struct shallowly and the poll thread encoded it later. rmw_tickle's response structs alias the ROS
   response, which rclcpp frees as soon as `rmw_send_response()` returns, so every string longer than

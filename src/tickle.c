@@ -2162,6 +2162,7 @@ static tt_ret_t node_create_client_locked(struct tt_Context* node, struct tt_Cli
     client->cache_length = 0;
     client->cache_time = 0;
     client->latency = 0;
+    client->latency_backed_off = false;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         client->peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
@@ -2498,13 +2499,43 @@ static void resend_call_request(struct tt_Context* node, struct tt_Client* clien
     }
 }
 
-static uint32_t compute_retry_interval(struct tt_Client* client) {
+// The interval between a call's retries. An explicit call_retry_interval is used as given. The auto path (0) is 1.5 x
+// the client's latency estimate, held between tt_CALL_RETRY_INTERVAL and tt_CALL_RETRY_INTERVAL_MAX
+// (CONTEXT_NODE_PLAN.md "Client retry fix", 2026-09-27). Without the floor one fast answer shrank the whole budget of
+// every later call to match it - 85 us measured gave 0.5 ms - and a slower answer then timed each call out.
+static uint32_t compute_retry_interval(const struct tt_Client* client) {
     if (client->service->call_retry_interval != 0) {
         return client->service->call_retry_interval;
     }
 
-    uint32_t retry_interval = client->latency == 0 ? tt_CALL_RETRY_INTERVAL : client->latency;
-    return retry_interval + (retry_interval >> 1); // latency * 1.5
+    uint64_t retry_interval = client->latency == 0 ? tt_CALL_RETRY_INTERVAL : client->latency;
+    retry_interval += retry_interval >> 1; // latency * 1.5
+    if (retry_interval < tt_CALL_RETRY_INTERVAL) {
+        retry_interval = tt_CALL_RETRY_INTERVAL;
+    }
+    if (retry_interval > tt_CALL_RETRY_INTERVAL_MAX) {
+        retry_interval = tt_CALL_RETRY_INTERVAL_MAX;
+    }
+    return (uint32_t)retry_interval;
+}
+
+// A call on the auto path timed out: double the latency estimate, up to tt_CALL_RETRY_INTERVAL_MAX, so the next call
+// waits longer (Karn's / TCP's RTO backoff). The estimate is otherwise learnt only from accepted answers, so without
+// this a server that became slower than the budget timed out every call from then on. The next accepted answer
+// replaces the estimate outright (latency_backed_off), so a server that is fast again gets its budget back at once.
+static void back_off_retry_interval(struct tt_Client* client) {
+    if (client->service->call_retry_interval != 0) {
+        return;
+    }
+    // From the floor at least: an estimate below it (one fast answer) doubled would stay under the floor, and the
+    // interval with it, for several timeouts in a row.
+    uint64_t latency = client->latency < tt_CALL_RETRY_INTERVAL ? tt_CALL_RETRY_INTERVAL : client->latency;
+    latency *= 2;
+    if (latency > tt_CALL_RETRY_INTERVAL_MAX) {
+        latency = tt_CALL_RETRY_INTERVAL_MAX;
+    }
+    client->latency = (uint32_t)latency;
+    client->latency_backed_off = true;
 }
 
 static void call_retry(struct tt_Context* node, uint64_t time, void* param) {
@@ -2530,6 +2561,7 @@ static void call_retry(struct tt_Context* node, uint64_t time, void* param) {
     uint32_t retry_count =
         client->service->call_retry_count != 0 ? client->service->call_retry_count : (uint32_t)tt_CALL_RETRY_COUNT;
     if (++callrequest_header->retry > retry_count) {
+        back_off_retry_interval(client);
         client->callback(client, tt_CALL_TIMEOUT, NULL); // every retry went unanswered
 
         client->cache = NULL;
@@ -2637,15 +2669,7 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
     client->cache_time = tt_get_ns();
     client->seq_no++;
 
-    uint32_t retry_interval;
-    if (client->service->call_retry_interval == 0) {
-        retry_interval = client->latency == 0 ? tt_CALL_RETRY_INTERVAL : client->latency;
-        retry_interval = retry_interval + (retry_interval >> 1); // latency * 1.5
-    } else {
-        retry_interval = client->service->call_retry_interval;
-    }
-
-    if (!tt_Context_schedule(node, tt_get_ns() + retry_interval, call_retry, client)) {
+    if (!tt_Context_schedule(node, tt_get_ns() + compute_retry_interval(client), call_retry, client)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
         client->cache = NULL;
         return tt_RET_OUT_OF_SCHEDULE;
@@ -7633,8 +7657,9 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
     // until it fires and no-ops (call_retry() already guards on cache == NULL).
     tt_Context_unschedule(node, call_retry, client);
 
-    if (client->latency == 0) {
-        client->latency = latency;
+    if (client->latency == 0 || client->latency_backed_off) {
+        client->latency = latency; // the first answer, or the first since a backoff: see back_off_retry_interval()
+        client->latency_backed_off = false;
     } else {
         // Latency moving average
         // client->latency * 0.875 + latency * 0.125

@@ -280,6 +280,12 @@
 #ifndef tt_CALL_RETRY_COUNT
 #define tt_CALL_RETRY_COUNT 3 // count
 #endif
+// The auto retry interval's ceiling (call_retry_interval 0): it grows by backoff after a timeout and never past this,
+// so a call on the auto path ends within (tt_CALL_RETRY_COUNT + 1) x this - 1 s by default - even against a dead
+// server. A server that needs longer to answer needs an explicit call_retry_interval.
+#ifndef tt_CALL_RETRY_INTERVAL_MAX
+#define tt_CALL_RETRY_INTERVAL_MAX (250 * tt_MILLISECOND)
+#endif
 #ifndef tt_SERVER_CACHE_TIMEOUT
 #define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)
 #endif
@@ -697,3 +703,5 @@ static_assert(tt_FRAG_REASSEMBLY_SLOTS >= 1, "fragmentation needs at least one r
 static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
               "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");
 static_assert(tt_MAX_ENDPOINT_COUNT <= (UINT8_MAX + 1), "node ids and endpoint slots are indexed by uint8_t");
+static_assert(tt_CALL_RETRY_INTERVAL_MAX >= tt_CALL_RETRY_INTERVAL && tt_CALL_RETRY_INTERVAL_MAX <= UINT32_MAX,
+              "the auto retry interval is held between tt_CALL_RETRY_INTERVAL and a uint32_t ceiling");
