@@ -478,9 +478,11 @@ number, `tt_VERSION`, which moves independently.
     empty slot, the source's liveliness flags).
   - At the 2048 entries rmw_tickle has held since 4a, that was up to 1.2 us per received sample in a large graph,
     and 8.5 ms per 2000-entity announce, repeated on each changed announce.
-  - Now `tt_Discovery` has an index over (context id, endpoint id) and a free-slot cursor, and the liveliness flags
-    are refreshed once per announce fragment: 8 ns per sample wherever the entry sits, and 0.24 ms per 2000
-    entities.
+  - Now, in builds whose table is larger than 64 (`tt_DISCOVERY_INDEXED`, rmw_tickle's), `tt_Discovery` has an
+    index over (context id, endpoint id) and a free-slot cursor, and the liveliness flags are refreshed once per
+    announce fragment: 8 ns per sample wherever the entry sits, and 0.24 ms per 2000 entities.
+  - A smaller table keeps the scan, which at 16 costs no more than a hash; core's default build is byte-identical to
+    before.
   - A caller that writes an entry's key directly calls the new `tt_Discovery_reindex()`.
 
 - **A discovery table too small for the graph let RxO-incompatible DATA through, and rmw_tickle's held 16**

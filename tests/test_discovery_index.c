@@ -12,10 +12,15 @@
 // addressing. Keys that collide are all found; a source's entries forgotten leave the index and the others stay
 // found; a tombstone reclaimed for a new key takes its old key out; and forgetting and re-adding a source many times
 // over never grows the index past the live entries.
+//
+// The index is compiled only for a large table (tt_DISCOVERY_INDEXED, config.h): built here at 128, it is; the same
+// behavioural cases run on the scan at 16 in test_discovery_index_linear.c, which includes this file.
 #ifndef tt_MAX_DISCOVERED_ENTITIES
-#define tt_MAX_DISCOVERED_ENTITIES 64
+#define tt_MAX_DISCOVERED_ENTITIES 128
+#define EXPECT_INDEXED 1
 #endif
 
+#include <assert.h> // static_assert
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,10 +35,16 @@
 // Whitebox: discovery_hash() picks the colliding keys, and the forget/tombstone paths are static.
 #include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
 
+#ifdef EXPECT_INDEXED
+static_assert(tt_DISCOVERY_INDEXED, "a 128-entry table is built with the index");
+#else
+static_assert(!tt_DISCOVERY_INDEXED, "a 16-entry table keeps the scan");
+#endif
+
 #define SOURCE_A 2
 #define SOURCE_B 3
-#define COLLIDING 20
-#define CYCLES (4 * tt_DISCOVERY_INDEX_SIZE)
+#define COLLIDING (tt_MAX_DISCOVERED_ENTITIES < 20 ? tt_MAX_DISCOVERED_ENTITIES : 20)
+#define CYCLES 1024 // more than four times any index this test builds
 
 static struct tt_Context context;
 static struct tt_Discovery discovery;
@@ -56,6 +67,7 @@ static bool known(uint8_t source, uint32_t endpoint_id) {
     return entity != NULL && entity->context_id == source && entity->endpoint_id == endpoint_id;
 }
 
+#if tt_DISCOVERY_INDEXED
 static uint32_t index_entries(void) {
     uint32_t count = 0;
     for (uint32_t i = 0; i < tt_DISCOVERY_INDEX_SIZE; i++) {
@@ -63,19 +75,26 @@ static uint32_t index_entries(void) {
     }
     return count;
 }
+#endif
 
 // COLLIDING keys of two sources that all hash to one bucket: every one is found; forgetting source A's leaves B's
 // found and A's gone.
 static void test_colliding_keys_are_found_and_forgotten(void) {
     setup();
-    uint32_t bucket = discovery_hash(SOURCE_A, 1);
     uint32_t keys[COLLIDING];
+#if tt_DISCOVERY_INDEXED
+    uint32_t bucket = discovery_hash(SOURCE_A, 1);
     int found_keys = 0;
     for (uint32_t candidate = 1; found_keys < COLLIDING; candidate++) {
         if (discovery_hash(SOURCE_A, candidate) == bucket) {
             keys[found_keys++] = candidate;
         }
     }
+#else
+    for (int i = 0; i < COLLIDING; i++) {
+        keys[i] = (uint32_t)i + 1U; // the scan has no buckets; the same cases, any keys
+    }
+#endif
     for (int i = 0; i < COLLIDING; i++) {
         add(i % 2 == 0 ? SOURCE_A : SOURCE_B, keys[i]);
     }
@@ -97,7 +116,9 @@ static void test_one_endpoint_id_from_many_sources(void) {
     for (uint32_t source = 2; source < 2 + (tt_MAX_DISCOVERED_ENTITIES / 2); source++) {
         EXPECT_TRUE(known((uint8_t)source, 0xfeedU));
     }
+#if tt_DISCOVERY_INDEXED
     EXPECT_EQ_U32(tt_MAX_DISCOVERED_ENTITIES / 2, index_entries());
+#endif
 }
 
 // A full table of tombstones: a new key reclaims one, and is found; the key it replaced is not.
@@ -114,7 +135,9 @@ static void test_a_reclaimed_tombstone_changes_its_key_in_the_index(void) {
         still_known += known(SOURCE_A, i + 1U) ? 1 : 0;
     }
     EXPECT_EQ_INT(tt_MAX_DISCOVERED_ENTITIES - 1, still_known);
+#if tt_DISCOVERY_INDEXED
     EXPECT_EQ_U32(tt_MAX_DISCOVERED_ENTITIES, index_entries());
+#endif
 }
 
 // Forget and re-add a source's entries many times more than the index has entries: it holds exactly the live ones.
@@ -124,7 +147,9 @@ static void test_forget_and_readd_never_grows_the_index(void) {
         forget_discovered_entities_from_source(&context, SOURCE_A);
         add(SOURCE_A, (uint32_t)cycle + 1U);
     }
+#if tt_DISCOVERY_INDEXED
     EXPECT_EQ_U32(1, index_entries());
+#endif
     EXPECT_TRUE(known(SOURCE_A, (uint32_t)CYCLES));
 }
 
