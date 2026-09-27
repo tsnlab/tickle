@@ -417,6 +417,48 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
      campaign at the end of the restructure decides whether it is real on the Pi.
    - The reading rule this led to is WIRE_PLAN 8.3's amendment of the same date.
 
+4b. **An index for the discovery table** (Plan, 2026-09-27: before stage 3, which adds node entries to the same table;
+   pre-registered here before code).
+   - **What scans it, found by reading every loop over `tt_MAX_DISCOVERED_ENTITIES`.** At 4a's 2048 entries of 552 B,
+     each full scan touches about 1.1 MB.
+     - Per announced entity (`upsert_discovered_entity`), up to three full scans: the lookup of (context id,
+       endpoint id), the search for an empty slot, and `refresh_liveliness_flags()`, which rescans the table for the
+       source on every upsert. That is 1.8 ms per 600-entity announce and 8.5 ms per 2000, on every changed announce.
+     - **Per received DATA**, for each matching subscriber: `subscriber_incompatible_with_publisher()` calls
+       `tt_Discovery_find()`, a linear scan to the publisher's entry. It is cheap in a small graph (the entry sits
+       near the front) and scales with the graph at 2048.
+     - Per DATA from a source with a MANUAL_BY_TOPIC publisher: `note_manual_assertion()` scans the whole table,
+       without stopping at the match.
+   - **The change.**
+     - An open-addressing index in `struct tt_Discovery` maps (context id, endpoint id) to a slot. It has
+       `tt_DISCOVERY_INDEX_SIZE` entries: a power of two at least twice `tt_MAX_DISCOVERED_ENTITIES`, so 32 at
+       core's 16 and 4096 at rmw's 2048, 2 B each.
+     - Lookups (upsert, `tt_Discovery_find`, `note_manual_assertion`) go through it.
+     - It is rebuilt lazily after any removal (the source's entries forgotten or tombstoned), as `endpoint_index`
+       is, and a zeroed `tt_Discovery` starts with it invalid.
+     - The empty-slot search starts from a cursor.
+     - `refresh_liveliness_flags()` runs once per announce fragment instead of once per entity.
+     - No behaviour changes: one entry per (context id, endpoint id) as today, the same slot reuse and tombstones.
+   - **PASS.**
+     - **Upsert:** `experiments/discovery_upsert_cost.c` at 16, 600 and 2000 entities, before and after. The 600 and
+       2000 cases must fall well below 4a's 1.8 and 8.5 ms. Target: under 1 ms at 2000, with the curve linear, not
+       rising with the table.
+     - **Per-sample lookup:** a new measurement of the receive path with the publisher's entry at slot ~2000 of a
+       full 2048 table, before and after, and at 16. After must be independent of the slot.
+     - **Behaviour:**
+       - all existing tests, including test_discovery_capacity, test_endpoint_capacity and the RxO, liveliness and
+         durability tests;
+       - a collision test: many keys hashing to the same index bucket (same endpoint id from different contexts, and
+         endpoint ids equal modulo the index size), all found, and still found after one of them is forgotten and
+         the index is rebuilt;
+       - mutants: the index not rebuilt after a removal (a forgotten entry still found, or a live one lost), and a
+         probe that stops at the first collision.
+     - **Core default build (16):**
+       - the announce path, measured with `discovery_upsert_cost.c` at 16, is not WORSE;
+       - the `core_cost_ab` pair (default and `-R`), read by 8.3 as amended today (a placement control and a repeat);
+       - the announce bytes are identical.
+     - **Memory:** `sizeof(struct tt_Discovery)` at 16 and 2048.
+     - Gates 10/10, and the rmw suite in a netns.
 5. **rmw gaps**. The user's words, relayed by Plan: "1, 2, 3, 4번 진행하자." Each item is pre-registered before code,
    with behaviour tests and mutants, and uses CycloneDDS's or Fast DDS's behaviour as the control where one exists:
    - **(g1) Serialized messages** (`rmw_publish_serialized_message`, `rmw_take_serialized_message*`,
