@@ -41,6 +41,13 @@
 #include "rmw/get_service_names_and_types.h"
 #include "rmw/get_topic_endpoint_info.h" // rmw_get_publishers/subscriptions_info_by_topic()
 #include "rmw/get_topic_names_and_types.h"
+#if defined(__has_include)
+#if __has_include("rmw/get_service_endpoint_info.h")
+#include "rmw/get_service_endpoint_info.h" // lyrical only - rmw_get_clients/servers_info_by_service()
+#include "rmw/service_endpoint_info.h"
+#include "rmw/service_endpoint_info_array.h"
+#endif
+#endif
 #include "rmw/init.h" // rmw_context_t
 #include "rmw/names_and_types.h"
 #include "rmw/qos_policy_kind.h" // rmw_qos_policy_kind_t - qos_incompatible()'s own out-param
@@ -462,51 +469,177 @@ rmw_ret_t rmw_count_services(const rmw_node_t* node, const char* service_name, s
     return count_matching(node, service_name, tt_KIND_SERVICE_SERVER, count);
 }
 
-// rmw_tickle/PLAN.md's remaining-rmw-API-surface backlog - previously missing symbols entirely.
-// Deliberately the *same* same-topic-name-and-kind computation rmw_count_publishers()/
-// _subscribers() above already use, just scoped to "the topic this one Publisher/Subscription
-// itself is on" instead of an arbitrary caller-given topic_name - not QoS-compatibility-filtered
-// (would need re-deriving each remote match's own offered/requested bits from struct tt_
-// DiscoveredEntity.qos and comparing, QoS roadmap #1's own RxO matching machinery, Milestone 31),
-// matching rmw_count_publishers()/_subscribers()'s own pre-existing, unfiltered scope exactly
-// rather than introducing an inconsistency between two otherwise-identical counting functions.
-// The Subscriptions this Publisher is actually matched with: local ones on its topic, and remote ones whose
-// node the core has registered as this Publisher's peer - which is when its samples start going there by
-// unicast. Counting the whole graph instead (as until 2026-09-26) reported a remote Subscription as matched
-// as soon as it was discovered, before the peer was registered (the node's list is re-read on the peer's
-// next announce, reprocess_known_announces() in tickle.c), so a caller waiting for a match - the ping-pong's
-// ping - sent its first sample by broadcast (Plan's M6 capture: 5 of 24 pings). An incompatible Subscription
-// is never a peer, so it is not counted either, as DDS does not match it. With the peer table full the
-// core broadcasts to everyone, so every discovered Subscription counts.
-static size_t count_matched_subscriptions_locked(rmw_tickle_publisher_t* pub_impl, const char* topic_name) {
-    rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
-    const struct tt_Publisher* pub = &pub_impl->tickle_publisher;
-    size_t matched = 0;
-    for (uint32_t i = 0; i < context_impl->tickle_context.endpoint_count; ++i) {
-        const struct tt_Endpoint* endpoint = context_impl->tickle_context.endpoints[i];
-        if (endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER && strcmp(endpoint->name, topic_name) == 0) {
-            matched++;
-        }
+// (g3, RMW_GAPS_PLAN.md) What "matched" means, for rmw_*_count_matched_*() and the MATCHED events alike: an
+// endpoint of the other kind on the same topic, with the same type, whose QoS is compatible (the RxO rule behind
+// QOS_INCOMPATIBLE, qos_incompatible() above), and - a remote one - alive. Until g3 these counts went by topic name
+// alone, so a type-mismatched or incompatible endpoint counted as matched; the vendors match neither.
+//
+// One side of a pairing, as qos_incompatible() compares them.
+struct pairing_qos {
+    bool reliable;
+    bool durable;
+    bool manual;
+    uint64_t deadline_ns;
+    uint64_t lease_ns;
+};
+
+static struct pairing_qos entity_qos(const struct tt_DiscoveredEntity* entity) {
+    return (struct pairing_qos) {(entity->qos & tt_UPDATE_QOS_RELIABLE) != 0,
+                                 (entity->qos & tt_UPDATE_QOS_DURABLE) != 0,
+                                 (entity->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0, entity->deadline_duration_ns,
+                                 entity->liveliness_lease_duration_ns};
+}
+static struct pairing_qos publisher_qos(const struct tt_Publisher* pub) {
+    return (struct pairing_qos) {pub->reliable, pub->durable, pub->liveliness_manual, pub->deadline_duration_ns,
+                                 pub->liveliness_lease_duration_ns};
+}
+static struct pairing_qos subscriber_qos(const struct tt_Subscriber* sub) {
+    return (struct pairing_qos) {sub->reliable, sub->durable, sub->liveliness_manual, sub->deadline_duration_ns,
+                                 sub->liveliness_lease_duration_ns};
+}
+static bool compatible(const struct pairing_qos* requested, const struct pairing_qos* offered) {
+    rmw_qos_policy_kind_t kind;
+    return !qos_incompatible(requested->reliable, requested->durable, requested->manual, requested->deadline_ns,
+                             requested->lease_ns, offered->reliable, offered->durable, offered->manual,
+                             offered->deadline_ns, offered->lease_ns, &kind);
+}
+
+// A local topic endpoint's type name and QoS, recovered from its rmw wrapper (get_local_endpoint_details() below
+// does the same for the graph queries).
+static const char* local_type_and_qos(const struct tt_Endpoint* endpoint, struct pairing_qos* qos) {
+    if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
+        const rmw_tickle_publisher_t* pub_impl =
+            (const rmw_tickle_publisher_t*)((const char*)endpoint - offsetof(rmw_tickle_publisher_t, tickle_publisher));
+        *qos = publisher_qos(&pub_impl->tickle_publisher);
+        return pub_impl->topic.name;
     }
+    const rmw_tickle_subscriber_t* sub_impl =
+        (const rmw_tickle_subscriber_t*)((const char*)endpoint - offsetof(rmw_tickle_subscriber_t, tickle_subscriber));
+    *qos = subscriber_qos(&sub_impl->tickle_subscriber);
+    return sub_impl->topic.name;
+}
+
+// For one local topic endpoint: the endpoints of the other kind it is matched with, and those on its topic with
+// another type. A remote Subscription counts for a Publisher only once the core has registered its node as that
+// Publisher's peer - when its samples start going there by unicast; counting it on discovery alone (as until
+// 2026-09-26) reported a match before the peer was registered, so a caller waiting for one - the ping-pong's ping -
+// sent its first sample by broadcast (Plan's M6 capture: 5 of 24 pings). With the peer table full the core
+// broadcasts to everyone, so every discovered Subscription counts.
+struct match_counts {
+    size_t matched;
+    size_t other_type;
+};
+
+static bool publisher_has_peer(const struct tt_Publisher* pub, uint8_t context_id) {
     size_t peers = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; ++i) {
+        if (pub->peers[i].context_id == context_id) {
+            return true;
+        }
         peers += pub->peers[i].context_id != tt_CONTEXT_ID_INVALID;
+    }
+    return peers >= tt_MAX_PEER_COUNT;
+}
+
+static struct match_counts count_matches_locked(rmw_tickle_context_impl_t* context_impl,
+                                                const struct tt_Endpoint* self) {
+    struct match_counts counts = {0, 0};
+    struct pairing_qos own;
+    const char* own_type = local_type_and_qos(self, &own);
+    bool self_publishes = self->kind == tt_KIND_TOPIC_PUBLISHER;
+    uint8_t other_kind = self_publishes ? tt_KIND_TOPIC_SUBSCRIBER : tt_KIND_TOPIC_PUBLISHER;
+    for (uint32_t i = 0; i < context_impl->tickle_context.endpoint_count; ++i) {
+        const struct tt_Endpoint* endpoint = context_impl->tickle_context.endpoints[i];
+        if (endpoint->kind != other_kind || strcmp(endpoint->name, self->name) != 0) {
+            continue;
+        }
+        struct pairing_qos other;
+        const char* other_type = local_type_and_qos(endpoint, &other);
+        if (strcmp(other_type, own_type) != 0) {
+            counts.other_type++;
+        } else if (self_publishes ? compatible(&other, &own) : compatible(&own, &other)) {
+            counts.matched++;
+        }
     }
     uint64_t now = tt_get_ns();
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
         const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->context_id == tt_CONTEXT_ID_INVALID || entity->kind != tt_KIND_TOPIC_SUBSCRIBER ||
-            strcmp(entity->name, topic_name) != 0 ||
+        if (entity->context_id == tt_CONTEXT_ID_INVALID || entity->kind != other_kind ||
+            strcmp(entity->name, self->name) != 0 ||
             !tt_Context_entity_alive(&context_impl->tickle_context, entity, now)) {
             continue;
         }
-        bool is_peer = peers >= tt_MAX_PEER_COUNT;
-        for (int peer = 0; peer < tt_MAX_PEER_COUNT && !is_peer; ++peer) {
-            is_peer = pub->peers[peer].context_id == entity->context_id;
+        if (strcmp(entity->type, own_type) != 0) {
+            counts.other_type++;
+            continue;
         }
-        matched += is_peer;
+        struct pairing_qos other = entity_qos(entity);
+        bool matched = self_publishes ? compatible(&other, &own) &&
+                                            publisher_has_peer((const struct tt_Publisher*)self, entity->context_id)
+                                      : compatible(&own, &other);
+        counts.matched += matched ? 1U : 0U;
     }
-    return matched;
+    return counts;
+}
+
+size_t rmw_tickle_count_matched_subscriptions_locked(rmw_tickle_publisher_t* pub_impl) {
+    return count_matches_locked(pub_impl->node->context_impl, &pub_impl->tickle_publisher.endpoint).matched;
+}
+
+size_t rmw_tickle_count_matched_publishers_locked(rmw_tickle_subscriber_t* sub_impl) {
+    return count_matches_locked(sub_impl->node->context_impl, &sub_impl->tickle_subscriber.endpoint).matched;
+}
+
+static void raise_event(rmw_tickle_context_impl_t* context_impl, rmw_tickle_event_status_t* status, int count) {
+    atomic_fetch_add(&status->unread_count, count);
+    pthread_mutex_lock(&context_impl->wait_mutex);
+    pthread_cond_broadcast(&context_impl->wait_cond);
+    pthread_mutex_unlock(&context_impl->wait_mutex);
+    rmw_tickle_poke_polling_executor(context_impl);
+    rmw_tickle_callback_slot_notify(&status->callback, (size_t)count); // (g2)
+}
+
+// A new count for one endpoint's MATCHED and INCOMPATIBLE_TYPE: every increase adds to total_count, and every change
+// of the matched count is one unread change.
+static void apply_counts(rmw_tickle_context_impl_t* context_impl, rmw_tickle_matched_status_t* matched,
+                         rmw_tickle_incompatible_type_status_t* other_type, struct match_counts counts) {
+    int previous = atomic_load(&matched->current_count);
+    int current = (int)counts.matched;
+    if (current != previous) {
+        atomic_store(&matched->current_count, current);
+        if (current > previous) {
+            atomic_fetch_add(&matched->base.total_count, current - previous);
+        }
+        raise_event(context_impl, &matched->base, current > previous ? current - previous : previous - current);
+    }
+    int incompatible = (int)counts.other_type;
+    if (incompatible > other_type->last_count) {
+        atomic_fetch_add(&other_type->base.total_count, incompatible - other_type->last_count);
+        raise_event(context_impl, &other_type->base, incompatible - other_type->last_count);
+    }
+    other_type->last_count = incompatible;
+}
+
+void rmw_tickle_update_matches_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
+                                      uint8_t local_kind) {
+    for (uint32_t i = 0; i < context_impl->tickle_context.endpoint_count; ++i) {
+        struct tt_Endpoint* endpoint = context_impl->tickle_context.endpoints[i];
+        if ((endpoint->kind != tt_KIND_TOPIC_PUBLISHER && endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER) ||
+            (local_kind != 0 && endpoint->kind != local_kind) ||
+            (topic_name != NULL && strcmp(endpoint->name, topic_name) != 0)) {
+            continue;
+        }
+        struct match_counts counts = count_matches_locked(context_impl, endpoint);
+        if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
+            rmw_tickle_publisher_t* pub_impl =
+                (rmw_tickle_publisher_t*)((char*)endpoint - offsetof(rmw_tickle_publisher_t, tickle_publisher));
+            apply_counts(context_impl, &pub_impl->matched, &pub_impl->incompatible_type, counts);
+        } else {
+            rmw_tickle_subscriber_t* sub_impl =
+                (rmw_tickle_subscriber_t*)((char*)endpoint - offsetof(rmw_tickle_subscriber_t, tickle_subscriber));
+            apply_counts(context_impl, &sub_impl->matched, &sub_impl->incompatible_type, counts);
+        }
+    }
 }
 
 rmw_ret_t rmw_publisher_count_matched_subscriptions(const rmw_publisher_t* publisher, size_t* subscription_count) {
@@ -519,7 +652,7 @@ rmw_ret_t rmw_publisher_count_matched_subscriptions(const rmw_publisher_t* publi
 
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
     tt_Context_lock(&pub_impl->node->context_impl->tickle_context);
-    *subscription_count = count_matched_subscriptions_locked(pub_impl, publisher->topic_name);
+    *subscription_count = rmw_tickle_count_matched_subscriptions_locked(pub_impl);
     tt_Context_unlock(&pub_impl->node->context_impl->tickle_context);
     return RMW_RET_OK;
 }
@@ -533,8 +666,9 @@ rmw_ret_t rmw_subscription_count_matched_publishers(const rmw_subscription_t* su
     }
 
     rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)subscription->data;
-    *publisher_count = count_matching_via_context_impl(sub_impl->node->context_impl, subscription->topic_name,
-                                                       tt_KIND_TOPIC_PUBLISHER);
+    tt_Context_lock(&sub_impl->node->context_impl->tickle_context);
+    *publisher_count = rmw_tickle_count_matched_publishers_locked(sub_impl);
+    tt_Context_unlock(&sub_impl->node->context_impl->tickle_context);
     return RMW_RET_OK;
 }
 
@@ -1126,6 +1260,130 @@ rmw_ret_t rmw_get_subscriptions_info_by_topic(const rmw_node_t* node, rcutils_al
     return get_topic_endpoint_info_by_topic(node_impl->context_impl, topic_name, tt_KIND_TOPIC_SUBSCRIBER,
                                             RMW_ENDPOINT_SUBSCRIPTION, allocator, subscriptions_info);
 }
+
+// (g3, RMW_GAPS_PLAN.md) Lyrical's service-side counterparts of the two topic queries above: every client or server of
+// a service, local and remote, one row each, with its node as stage 3 names it. A TickLE client or server is one
+// endpoint, so each row has endpoint_count 1 (a DDS vendor lists two, its request and reply readers/writers). QoS: a
+// local one's is the services default rmw_tickle serves them with; a remote one's is unknown, as its announce does
+// not carry it. Jazzy's rmw has neither function nor header.
+#if defined(__has_include)
+#if __has_include("rmw/get_service_endpoint_info.h")
+static rmw_ret_t populate_service_endpoint_info(rcutils_allocator_t* allocator, const char* node_name,
+                                                const char* node_namespace, const char* service_type,
+                                                rmw_endpoint_type_t endpoint_type, uint8_t node_id,
+                                                uint32_t endpoint_id, const rmw_qos_profile_t* qos,
+                                                rmw_service_endpoint_info_t* info) {
+    *info = rmw_get_zero_initialized_service_endpoint_info();
+    uint8_t gid[RMW_GID_STORAGE_SIZE];
+    encode_gid(node_id, endpoint_id, gid);
+    if (RMW_RET_OK != rmw_service_endpoint_info_set_node_name(info, node_name, allocator) ||
+        RMW_RET_OK != rmw_service_endpoint_info_set_node_namespace(info, node_namespace, allocator) ||
+        RMW_RET_OK != rmw_service_endpoint_info_set_service_type(info, service_type, allocator) ||
+        RMW_RET_OK != rmw_service_endpoint_info_set_endpoint_type(info, endpoint_type) ||
+        RMW_RET_OK != rmw_service_endpoint_info_set_endpoint_count(info, 1) ||
+        RMW_RET_OK != rmw_service_endpoint_info_set_gids(info, gid, 1, RMW_GID_STORAGE_SIZE, allocator) ||
+        RMW_RET_OK != rmw_service_endpoint_info_set_qos_profiles(info, qos, 1, allocator)) {
+        return RMW_RET_BAD_ALLOC; // each setter already set its own error message
+    }
+    return RMW_RET_OK;
+}
+
+static void fini_service_endpoint_info_array_ignore_result(rmw_service_endpoint_info_array_t* info_array,
+                                                           rcutils_allocator_t* allocator) {
+    rmw_ret_t ret = rmw_service_endpoint_info_array_fini(info_array, allocator);
+    (void)ret;
+}
+
+static bool is_remote_service_endpoint(rmw_tickle_context_impl_t* context_impl,
+                                       const struct tt_DiscoveredEntity* entity, uint8_t kind, const char* service_name,
+                                       uint64_t now) {
+    return entity->context_id != tt_CONTEXT_ID_INVALID && entity->kind == kind &&
+           strcmp(entity->name, service_name) == 0 &&
+           tt_Context_entity_alive(&context_impl->tickle_context, entity, now);
+}
+
+static rmw_ret_t fill_service_endpoint_info_locked(rmw_tickle_context_impl_t* context_impl, const char* service_name,
+                                                   uint8_t kind, rmw_endpoint_type_t endpoint_type,
+                                                   rcutils_allocator_t* allocator,
+                                                   rmw_service_endpoint_info_array_t* info_array) {
+    size_t index = 0;
+    for (uint32_t i = 0; i < context_impl->tickle_context.endpoint_count && index < info_array->size; ++i) {
+        struct tt_Endpoint* endpoint = context_impl->tickle_context.endpoints[i];
+        if (endpoint->kind != kind || strcmp(endpoint->name, service_name) != 0) {
+            continue;
+        }
+        struct local_endpoint_details details = get_local_endpoint_details(endpoint);
+        rmw_ret_t ret = populate_service_endpoint_info(
+            allocator, details.owning_node_name, details.owning_node_namespace, details.type_name, endpoint_type,
+            context_impl->tickle_context.id, endpoint->id, &rmw_qos_profile_services_default,
+            &info_array->info_array[index++]);
+        if (ret != RMW_RET_OK) {
+            return ret;
+        }
+    }
+    uint64_t now = tt_get_ns();
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES && index < info_array->size; ++i) {
+        const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
+        if (!is_remote_service_endpoint(context_impl, entity, kind, service_name, now)) {
+            continue;
+        }
+        const struct tt_DiscoveredEntity* owner = remote_node_of(context_impl, entity); // stage 3
+        rmw_ret_t ret = populate_service_endpoint_info(
+            allocator, owner != NULL ? owner->name : "", owner != NULL ? owner->type : "", entity->type, endpoint_type,
+            entity->context_id, entity->endpoint_id, &rmw_qos_profile_unknown, &info_array->info_array[index++]);
+        if (ret != RMW_RET_OK) {
+            return ret;
+        }
+    }
+    return RMW_RET_OK;
+}
+
+static rmw_ret_t get_service_endpoint_info(const rmw_node_t* node, rcutils_allocator_t* allocator,
+                                           const char* service_name, uint8_t kind, rmw_endpoint_type_t endpoint_type,
+                                           rmw_service_endpoint_info_array_t* info_array) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(allocator, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(service_name, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(info_array, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(node->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    RCUTILS_CHECK_ALLOCATOR_WITH_MSG(allocator, "allocator argument is invalid", return RMW_RET_INVALID_ARGUMENT);
+    if (RMW_RET_OK != rmw_service_endpoint_info_array_check_zero(info_array)) {
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+    rmw_tickle_context_impl_t* context_impl = ((rmw_tickle_node_t*)node->data)->context_impl;
+    tt_Context_lock(&context_impl->tickle_context);
+    size_t count = count_matching_locked(context_impl, service_name, kind);
+    rmw_ret_t ret = rmw_service_endpoint_info_array_init_with_size(info_array, count, allocator);
+    if (ret == RMW_RET_OK) {
+        ret = fill_service_endpoint_info_locked(context_impl, service_name, kind, endpoint_type, allocator, info_array);
+        if (ret != RMW_RET_OK) {
+            fini_service_endpoint_info_array_ignore_result(info_array, allocator);
+        }
+    }
+    tt_Context_unlock(&context_impl->tickle_context);
+    return ret;
+}
+
+rmw_ret_t rmw_get_clients_info_by_service(const rmw_node_t* node, rcutils_allocator_t* allocator,
+                                          const char* service_name, bool no_mangle,
+                                          rmw_service_endpoint_info_array_t* clients_info) {
+    (void)no_mangle; // see rmw_get_topic_names_and_types()'s own doc comment
+    return get_service_endpoint_info(node, allocator, service_name, tt_KIND_SERVICE_CLIENT, RMW_ENDPOINT_CLIENT,
+                                     clients_info);
+}
+
+rmw_ret_t rmw_get_servers_info_by_service(const rmw_node_t* node, rcutils_allocator_t* allocator,
+                                          const char* service_name, bool no_mangle,
+                                          rmw_service_endpoint_info_array_t* servers_info) {
+    (void)no_mangle;
+    return get_service_endpoint_info(node, allocator, service_name, tt_KIND_SERVICE_SERVER, RMW_ENDPOINT_SERVER,
+                                     servers_info);
+}
+#endif
+#endif
 
 rmw_ret_t rmw_service_server_is_available(const rmw_node_t* node, const rmw_client_t* client, bool* is_available) {
     // RMW_RET_ERROR, not RMW_RET_INVALID_ARGUMENT - see rmw_destroy_wait_set()'s own comment

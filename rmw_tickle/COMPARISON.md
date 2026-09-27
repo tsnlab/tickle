@@ -855,7 +855,7 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | Pre-allocation | 4 | 0 / 0 / 0 / 4 | 0 / 0 / 4 | 0 / 0 / 4 |
 | Publishers | 11 | 11 / 0 / 0 / 0 | 11 / 0 / 0 | 11 / 0 / 0 |
 | Loaned messages | 6 | 0 / 0 / 6 / 0 | 0 / 6 / 0 | 0 / 6 / 0 |
-| Events | 8 | 5 / 3 / 0 / 0 | 8 / 0 / 0 | 8 / 0 / 0 |
+| Events | 8 | 8 / 0 / 0 / 0 | 8 / 0 / 0 | 8 / 0 / 0 |
 | Subscriptions | 7 | 6 / 0 / 1 / 0 | 7 / 0 / 0 | 7 / 0 / 0 |
 | Content filter | 2 | 0 / 0 / 0 / 2 | 2 / 0 / 0 | 0 / 0 / 2 |
 | Services and clients | 17 | 17 / 0 / 0 / 0 | 17 / 0 / 0 | 17 / 0 / 0 |
@@ -863,7 +863,7 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | QoS | 1 | 1 / 0 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
 | Network flow endpoints | 2 | 0 / 0 / 0 / 2 | 2 / 0 / 0 | 0 / 0 / 2 |
 | Dynamic messages | 3 | 0 / 0 / 0 / 3 | 3 / 0 / 0 | 0 / 0 / 3 |
-| **All** | **94** | **69 / 3 / 10 / 12** | **83 / 6 / 5** | **76 / 6 / 12** |
+| **All** | **94** | **72 / 0 / 10 / 12** | **83 / 6 / 5** | **76 / 6 / 12** |
 
 **TickLE's gaps (❌ and ⚠️), and where each is planned:**
 - **Serialized messages** (`rmw_publish_serialized_message`, `rmw_take_serialized_message*`). rosbag2 and
@@ -872,8 +872,13 @@ what they return `RMW_RET_UNSUPPORTED` on).
 - ~~**On-new-data callbacks** (`rmw_*_set_on_new_*_callback`, `rmw_event_set_callback`). rclcpp's EventsExecutor
   cannot run on rmw_tickle.~~ Closed by g2 (2026-09-28): rclpy's EventsExecutor receives on rmw_tickle, as on
   CycloneDDS (`rmw_gap_acceptance.sh events`; it received nothing before).
-- **Event types:** 6 of 11 are supported. `MESSAGE_LOST`, `PUBLICATION_MATCHED`, `SUBSCRIPTION_MATCHED` and both
-  `*_INCOMPATIBLE_TYPE` are missing; both vendors serve all 11. Planned.
+- ~~**Event types:** 6 of 11 are supported. `MESSAGE_LOST`, `PUBLICATION_MATCHED`, `SUBSCRIPTION_MATCHED` and both
+  `*_INCOMPATIBLE_TYPE` are missing; both vendors serve all 11.~~ Closed by g3 (2026-09-28): all 11.
+  - `matched` passes (it failed before).
+  - `itype` passes on rmw_tickle but stays VOID, since neither vendor raises INCOMPATIBLE_TYPE across the two
+    hosts.
+  - "Matched" now also requires the same type and compatible QoS, for the event and for
+    `rmw_*_count_matched_*` alike, as in DDS.
 - **`rmw_take_sequence`** is not defined at all. `rmw_implementation` logs a failed symbol lookup for it, and
   `rcl_take_sequence()` fails. Planned (added to the gap list on 2026-09-27).
 - ~~Remote nodes in the graph~~: **closed 2026-09-27** by CONTEXT_NODE_PLAN stage 3 (wire v11). `ros2 node list/info`
@@ -881,8 +886,12 @@ what they return `RMW_RET_UNSUPPORTED` on).
   +40 B per node in each discovery list; join time (M3) is within 0.3 ms (DISCOVERY_PLAN 10).
 - **Loaned messages:** planned with receive-buffer lending (the user's decision of 2026-09-27). The vendors support
   them only with shared memory and for plain types.
-- **On lyrical only** (not in jazzy's list above), `rmw_get_clients_info_by_service` /
-  `rmw_get_servers_info_by_service`. Planned.
+- ~~**On lyrical only** (not in jazzy's list above), `rmw_get_clients_info_by_service` /
+  `rmw_get_servers_info_by_service`.~~ Closed by g3 (2026-09-28). `ros2 service info --verbose` lists the same
+  clients and servers as on CycloneDDS: same nodes, namespaces and type.
+  - Each row has endpoint count 1 where a vendor shows 2 (its request and reply readers/writers).
+  - The type hash is INVALID.
+  - A remote row's QoS is unknown, because the announce does not carry it.
 
 - **A correctness defect behind the graph rows (found 2026-09-27, fixed by CONTEXT_NODE_PLAN 4a):** rmw_tickle
   never set `tt_MAX_DISCOVERED_ENTITIES`, so it used core's default of 16 remote entities. Every ROS 2 node has 9
@@ -981,9 +990,9 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | `rmw_take_loaned_message_with_info` | ❌ | ⚠️ | ⚠️ | loans: TickLE planned (user decision 2026-09-27); FastDDS with data-sharing, CycloneDDS with iceoryx shared memory, plain types only |
 | `rmw_return_loaned_message_from_subscription` | ❌ | ⚠️ | ⚠️ | loans: TickLE planned (user decision 2026-09-27); FastDDS with data-sharing, CycloneDDS with iceoryx shared memory, plain types only |
 | **Events** | | | | |
-| `rmw_publisher_event_init` | ⚠️ | ✅ | ✅ | TickLE 6 of 11 event types (no MESSAGE_LOST, PUBLICATION/SUBSCRIPTION_MATCHED, PUBLISHER/SUBSCRIPTION_INCOMPATIBLE_TYPE); both vendors all 11 |
-| `rmw_subscription_event_init` | ⚠️ | ✅ | ✅ | TickLE 6 of 11 event types (no MESSAGE_LOST, PUBLICATION/SUBSCRIPTION_MATCHED, PUBLISHER/SUBSCRIPTION_INCOMPATIBLE_TYPE); both vendors all 11 |
-| `rmw_take_event` | ⚠️ | ✅ | ✅ | TickLE 6 of 11 event types (no MESSAGE_LOST, PUBLICATION/SUBSCRIPTION_MATCHED, PUBLISHER/SUBSCRIPTION_INCOMPATIBLE_TYPE); both vendors all 11 |
+| `rmw_publisher_event_init` | ✅ | ✅ | ✅ | all 11 event types since g3 (2026-09-28): MATCHED on match and unmatch, INCOMPATIBLE_TYPE, MESSAGE_LOST counted from the psn per writer (`test_g3_events`; `rmw_gap_acceptance.sh matched`) |
+| `rmw_subscription_event_init` | ✅ | ✅ | ✅ | all 11 event types since g3 (2026-09-28): MATCHED on match and unmatch, INCOMPATIBLE_TYPE, MESSAGE_LOST counted from the psn per writer (`test_g3_events`; `rmw_gap_acceptance.sh matched`) |
+| `rmw_take_event` | ✅ | ✅ | ✅ | all 11 event types since g3 (2026-09-28): MATCHED on match and unmatch, INCOMPATIBLE_TYPE, MESSAGE_LOST counted from the psn per writer (`test_g3_events`; `rmw_gap_acceptance.sh matched`) |
 | `rmw_subscription_set_on_new_message_callback` | ✅ | ✅ | ✅ | g2 (2026-09-28): a call per item, what already waits reported at set time, NULL stops it (`test_event_callbacks`); an rclpy EventsExecutor listener receives (`rmw_gap_acceptance.sh events`) |
 | `rmw_service_set_on_new_request_callback` | ✅ | ✅ | ✅ | g2 (2026-09-28): a call per item, what already waits reported at set time, NULL stops it (`test_event_callbacks`); an rclpy EventsExecutor listener receives (`rmw_gap_acceptance.sh events`) |
 | `rmw_client_set_on_new_response_callback` | ✅ | ✅ | ✅ | g2 (2026-09-28): a call per item, what already waits reported at set time, NULL stops it (`test_event_callbacks`); an rclpy EventsExecutor listener receives (`rmw_gap_acceptance.sh events`) |

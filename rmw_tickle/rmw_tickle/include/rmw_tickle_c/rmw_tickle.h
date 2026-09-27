@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <string.h> // strcmp() - rmw_tickle_identifier_matches(); memcpy() - the psn codec, below
 
+#include <tickle/config.h> // tt_MAX_PEER_COUNT - rmw_tickle_subscriber_t.lost_writers (g3)
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
@@ -485,6 +486,37 @@ typedef struct rmw_tickle_qos_incompatible_status_t {
     int last_incompatible_count;
 } rmw_tickle_qos_incompatible_status_t;
 
+// (g3, RMW_GAPS_PLAN.md) PUBLICATION_MATCHED / SUBSCRIPTION_MATCHED. Recounted under the context lock whenever the
+// discovery callback reports an endpoint of the other kind on this topic, and when a local one is created or
+// destroyed (rmw_tickle_update_matches_locked()). base.total_count counts every match - a rematch again, as in DDS;
+// base.unread_count counts the changes not yet taken, so an unmatch makes the event ready too. current_count is the
+// matched count now. The *_at_take fields are rmw_take_event()'s previous readings, for the two *_change fields.
+typedef struct rmw_tickle_matched_status_t {
+    rmw_tickle_event_status_t base;
+    atomic_int current_count;
+    int total_at_take;
+    int current_at_take;
+} rmw_tickle_matched_status_t;
+
+// (g3) PUBLISHER_INCOMPATIBLE_TYPE / SUBSCRIPTION_INCOMPATIBLE_TYPE, on the same triggers as matched: endpoints of the
+// other kind on this topic with another type. base.total_count grows by every increase of the count; last_count is
+// the previous count (context lock).
+typedef struct rmw_tickle_incompatible_type_status_t {
+    rmw_tickle_event_status_t base;
+    int last_count;
+} rmw_tickle_incompatible_type_status_t;
+
+// (g3) MESSAGE_LOST: the last publication sequence number seen from one writer, identified as core names the
+// delivering one (tt_Subscriber.last_source / last_entity_id). last_psn 0: an unused entry (psns start at 1).
+typedef struct rmw_tickle_writer_psn_t {
+    uint32_t source;
+    uint32_t entity_id;
+    uint64_t last_psn;
+    uint64_t last_seen; // rmw_tickle_subscriber_t.lost_clock when last delivered - the least recent is evicted
+} rmw_tickle_writer_psn_t;
+// A psn this far below the next expected one, or closer, is a late arrival - ignored; further back is a restart.
+#define RMW_TICKLE_LATE_ARRIVAL_WINDOW 64U
+
 // TickLE specific publisher data
 // rmw_tickle's per-message header: the publisher's publication sequence number, ahead of the type's CDR in
 // every message rmw_tickle sends (DATAFRAG_PLAN.md section 13.2), in the sender's byte order. Since
@@ -646,6 +678,8 @@ typedef struct rmw_tickle_publisher_t {
     // QOS_INCOMPATIBLE_CHECK_PERIOD_NS, rmw_publisher.c - nothing for the application to tune).
     bool offered_qos_incompatible_monitoring_started;
     rmw_tickle_qos_incompatible_status_t offered_qos_incompatible;
+    rmw_tickle_matched_status_t matched;                     // (g3) RMW_EVENT_PUBLICATION_MATCHED
+    rmw_tickle_incompatible_type_status_t incompatible_type; // (g3) RMW_EVENT_PUBLISHER_INCOMPATIBLE_TYPE
 
     // QoS roadmap follow-up (Milestone 45's own latency investigation, rmw_tickle/PLAN.md) - the
     // scratch TickLE-struct buffer rmw_publish() converts into before tt_Publisher_publish(),
@@ -879,6 +913,14 @@ typedef struct rmw_tickle_subscriber_t {
     // lazy-start pattern, subscriber side.
     bool requested_qos_incompatible_monitoring_started;
     rmw_tickle_qos_incompatible_status_t requested_qos_incompatible;
+    rmw_tickle_matched_status_t matched;                     // (g3) RMW_EVENT_SUBSCRIPTION_MATCHED
+    rmw_tickle_incompatible_type_status_t incompatible_type; // (g3) RMW_EVENT_SUBSCRIPTION_INCOMPATIBLE_TYPE
+    // (g3) RMW_EVENT_MESSAGE_LOST: messages known lost, counted from psn jumps per writer (subscriber_callback(),
+    // poll thread, context lock). See RMW_GAPS_PLAN.md g3 for what is and is not a loss.
+    rmw_tickle_event_status_t message_lost;
+    rmw_tickle_writer_psn_t lost_writers[tt_MAX_PEER_COUNT];
+    uint32_t lost_last_writer; // the entry the previous delivery used - the fast path
+    uint64_t lost_clock;
 
     // QoS roadmap #6 (LIFESPAN) - 0 (zero_allocate() default): disabled, today's only behavior for
     // a Subscription that didn't request one. Non-zero: rmw_take_with_info() (rmw_subscription.c)
@@ -903,6 +945,15 @@ void rmw_tickle_poke_polling_executor(rmw_tickle_context_impl_t* context_impl);
 // Recomputes a Subscription's RMW_EVENT_LIVELINESS_CHANGED counts, and wakes rmw_wait() if they changed.
 // Node lock held (rmw_subscription.c).
 void rmw_tickle_update_subscription_liveliness_locked(rmw_tickle_subscriber_t* sub_impl);
+
+// (g3) Recounts MATCHED and INCOMPATIBLE_TYPE for this context's local topic endpoints of `local_kind` on `topic_name`
+// (either NULL / 0: all), raising the events whose counts changed. Context lock held (rmw_graph.c).
+void rmw_tickle_update_matches_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
+                                      uint8_t local_kind);
+// (g3) The Subscriptions this Publisher is matched with, and the Publishers this Subscription is matched with:
+// same topic, same type, RxO-compatible, alive - what rmw_*_count_matched_*() report and MATCHED counts.
+size_t rmw_tickle_count_matched_subscriptions_locked(rmw_tickle_publisher_t* pub_impl);
+size_t rmw_tickle_count_matched_publishers_locked(rmw_tickle_subscriber_t* sub_impl);
 
 // TickLE specific client data
 typedef struct rmw_tickle_client_t {

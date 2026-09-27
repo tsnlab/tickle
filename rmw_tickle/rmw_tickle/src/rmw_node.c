@@ -75,14 +75,25 @@ static void update_liveliness_of_subscriptions(struct tt_Context* node) {
     }
 }
 
+// (g3) A remote topic endpoint appeared, changed, lapsed, revived or left: the local endpoints of the other kind on
+// its topic recount MATCHED and INCOMPATIBLE_TYPE. An entity already removed from the table (a departure) has no
+// topic left to read, so every local endpoint of the other kind recounts - departures are rare.
+static void update_matches_for(rmw_tickle_context_impl_t* context_impl, uint8_t node_id, uint32_t endpoint_id,
+                               uint8_t kind) {
+    uint8_t local_kind = kind == tt_KIND_TOPIC_PUBLISHER ? tt_KIND_TOPIC_SUBSCRIBER : tt_KIND_TOPIC_PUBLISHER;
+    const struct tt_DiscoveredEntity* entity = tt_Discovery_find(&context_impl->discovery, node_id, endpoint_id);
+    rmw_tickle_update_matches_locked(context_impl, entity != NULL ? entity->name : NULL, local_kind);
+}
+
 static void discovery_callback(struct tt_Context* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
                                bool departed, void* param) {
-    (void)node_id;
-    (void)endpoint_id;
     (void)departed;
     rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)param;
     if (kind == tt_KIND_TOPIC_PUBLISHER) {
         update_liveliness_of_subscriptions(node);
+    }
+    if (kind == tt_KIND_TOPIC_PUBLISHER || kind == tt_KIND_TOPIC_SUBSCRIBER) {
+        update_matches_for(context_impl, node_id, endpoint_id, kind);
     }
 
     atomic_store(&context_impl->graph_guard_condition.has_triggered, true);

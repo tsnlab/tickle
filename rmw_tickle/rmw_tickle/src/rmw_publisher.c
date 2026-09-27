@@ -920,6 +920,8 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     rmw_tickle_callback_slot_init(&pub_impl->deadline_missed.callback);
     rmw_tickle_callback_slot_init(&pub_impl->liveliness_lost.callback);
     rmw_tickle_callback_slot_init(&pub_impl->offered_qos_incompatible.base.callback);
+    rmw_tickle_callback_slot_init(&pub_impl->matched.base.callback);           // (g3)
+    rmw_tickle_callback_slot_init(&pub_impl->incompatible_type.base.callback); // (g3)
     if (pthread_mutex_init(&pub_impl->publish_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize publisher publish_mutex");
         allocator->deallocate(pub_impl->publish_scratch_buf, allocator->state);
@@ -967,6 +969,9 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     if (!setup_reliable_cache(pub_impl, qos_profile, allocator)) {
         tt_Context_lock(&node_impl->context_impl->tickle_context);
         tt_Publisher_destroy(&pub_impl->tickle_publisher);
+        // (g3) A discovery callback may have counted it already; the Subscriptions recount without it.
+        rmw_tickle_update_matches_locked(node_impl->context_impl, pub_impl->rmw_publisher.topic_name,
+                                         tt_KIND_TOPIC_SUBSCRIBER);
         tt_Context_unlock(&node_impl->context_impl->tickle_context);
         allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
         allocator->deallocate(pub_impl, allocator->state);
@@ -1053,6 +1058,10 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         }
     }
 
+    // (g3) Its QoS is complete only now: it, and the local Subscriptions on its topic, count their matches.
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
+    rmw_tickle_update_matches_locked(node_impl->context_impl, pub_impl->rmw_publisher.topic_name, 0);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
     return &pub_impl->rmw_publisher;
 }
 
@@ -1080,12 +1089,17 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
                               pub_impl);
     }
     tt_Publisher_destroy(&pub_impl->tickle_publisher);
+    // (g3) The Subscriptions it was matched with, and those it had another type from, recount without it.
+    rmw_tickle_update_matches_locked(pub_impl->node->context_impl, pub_impl->rmw_publisher.topic_name,
+                                     tt_KIND_TOPIC_SUBSCRIBER);
     tt_Context_unlock(&pub_impl->node->context_impl->tickle_context);
 
     pthread_mutex_destroy(&pub_impl->publish_mutex); // Milestone 45 - see its own doc comment
     rmw_tickle_callback_slot_fini(&pub_impl->deadline_missed.callback);
     rmw_tickle_callback_slot_fini(&pub_impl->liveliness_lost.callback);
     rmw_tickle_callback_slot_fini(&pub_impl->offered_qos_incompatible.base.callback);
+    rmw_tickle_callback_slot_fini(&pub_impl->matched.base.callback);
+    rmw_tickle_callback_slot_fini(&pub_impl->incompatible_type.base.callback);
 
     rcutils_allocator_t allocator = pub_impl->allocator;
     allocator.deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator.state);
@@ -1419,6 +1433,12 @@ rmw_ret_t rmw_publisher_event_init(rmw_event_t* rmw_event, const rmw_publisher_t
         }
         return RMW_RET_OK;
     }
+    case RMW_EVENT_PUBLICATION_MATCHED:         // (g3) counted from creation, whether asked for or not
+    case RMW_EVENT_PUBLISHER_INCOMPATIBLE_TYPE: // (g3)
+        rmw_event->implementation_identifier = RMW_TICKLE_IDENTIFIER;
+        rmw_event->data = publisher->data;
+        rmw_event->event_type = event_type;
+        return RMW_RET_OK;
     default:
         RMW_SET_ERROR_MSG("rmw_tickle does not support this publisher QoS event yet");
         return RMW_RET_UNSUPPORTED;

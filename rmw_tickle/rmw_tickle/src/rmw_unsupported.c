@@ -222,32 +222,4 @@ rmw_ret_t rmw_take_serialized_message_with_info(const rmw_subscription_t* subscr
 // (g2) The set_on_new_*_callback() setters and rmw_event_set_callback() are implemented since 2026-09-28:
 // rmw_subscription.c, rmw_service.c, rmw_client.c and rmw_event.c.
 
-// Lyrical's rmw added these (and the header); jazzy's has neither, so they exist only where it does.
-#if defined(__has_include)
-#if __has_include("rmw/get_service_endpoint_info.h")
-#include "rmw/get_service_endpoint_info.h"
-#include "rmw/service_endpoint_info_array.h"
-
-rmw_ret_t rmw_get_clients_info_by_service(const rmw_node_t* node, rcutils_allocator_t* allocator,
-                                          const char* service_name, bool no_mangle,
-                                          rmw_service_endpoint_info_array_t* clients_info) {
-    (void)node;
-    (void)allocator;
-    (void)service_name;
-    (void)no_mangle;
-    (void)clients_info;
-    NOT_YET("rmw_get_clients_info_by_service");
-}
-
-rmw_ret_t rmw_get_servers_info_by_service(const rmw_node_t* node, rcutils_allocator_t* allocator,
-                                          const char* service_name, bool no_mangle,
-                                          rmw_service_endpoint_info_array_t* servers_info) {
-    (void)node;
-    (void)allocator;
-    (void)service_name;
-    (void)no_mangle;
-    (void)servers_info;
-    NOT_YET("rmw_get_servers_info_by_service");
-}
-#endif
-#endif
+// rmw_get_clients_info_by_service() / rmw_get_servers_info_by_service() (lyrical only) live in rmw_graph.c (g3).

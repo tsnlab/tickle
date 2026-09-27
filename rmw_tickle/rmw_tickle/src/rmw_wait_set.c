@@ -209,6 +209,16 @@ static rmw_tickle_event_status_t* event_status_for(const rmw_event_t* event) {
         return &((rmw_tickle_publisher_t*)event->data)->offered_qos_incompatible.base;
     case RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE:
         return &((rmw_tickle_subscriber_t*)event->data)->requested_qos_incompatible.base;
+    case RMW_EVENT_PUBLICATION_MATCHED: // (g3)
+        return &((rmw_tickle_publisher_t*)event->data)->matched.base;
+    case RMW_EVENT_SUBSCRIPTION_MATCHED:
+        return &((rmw_tickle_subscriber_t*)event->data)->matched.base;
+    case RMW_EVENT_PUBLISHER_INCOMPATIBLE_TYPE:
+        return &((rmw_tickle_publisher_t*)event->data)->incompatible_type.base;
+    case RMW_EVENT_SUBSCRIPTION_INCOMPATIBLE_TYPE:
+        return &((rmw_tickle_subscriber_t*)event->data)->incompatible_type.base;
+    case RMW_EVENT_MESSAGE_LOST:
+        return &((rmw_tickle_subscriber_t*)event->data)->message_lost;
     default:
         return NULL;
     }

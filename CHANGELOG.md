@@ -10,6 +10,20 @@ number, `tt_VERSION`, which moves independently.
 
 ### Added
 
+- **rmw_tickle: the five event types it lacked, and lyrical's service endpoint queries** (rmw_tickle/RMW_GAPS_PLAN.md
+  g3).
+  - `PUBLICATION_MATCHED` / `SUBSCRIPTION_MATCHED` are raised on every match and unmatch, whether it comes from a
+    remote endpoint appearing, lapsing, reviving or leaving, or from a local endpoint being created or destroyed.
+  - `PUBLISHER_INCOMPATIBLE_TYPE` / `SUBSCRIPTION_INCOMPATIBLE_TYPE` are raised by endpoints on the topic with
+    another type.
+  - `MESSAGE_LOST` counts messages from the publication sequence number (psn) per writer, whatever the reliability.
+    A late join, a durable replay and a late arrival are not losses.
+  - `rmw_get_clients_info_by_service` / `rmw_get_servers_info_by_service` (lyrical) list local and remote clients
+    and servers, one row each.
+- **rmw_tickle: on-new-data and event callbacks** (rmw_tickle/RMW_GAPS_PLAN.md g2). The four setters rclcpp's and
+  rclpy's EventsExecutor use: `rmw_subscription_set_on_new_message_callback`,
+  `rmw_service_set_on_new_request_callback`, `rmw_client_set_on_new_response_callback`, `rmw_event_set_callback`.
+
 - **Nodes in discovery, wire `tt_VERSION` 11** (rmw_tickle/CONTEXT_NODE_PLAN.md stage 3, DESIGN.md "Contexts and
   nodes").
   - An announce lists the context's nodes (`tt_KIND_NODE` entries: namespace, name, own index), and every entry
@@ -280,6 +294,12 @@ number, `tt_VERSION`, which moves independently.
   `rmw_cyclonedds_cpp` via `ros2/buildfarm_perf_tests`, `workflow_dispatch`-only for now.
 
 ### Changed
+
+- **rmw_tickle: "matched" now means what it means in DDS** (RMW_GAPS_PLAN.md g3). An endpoint of the other kind is
+  matched when all of these hold: same topic, same type, compatible QoS, and alive if remote.
+  `rmw_publisher_count_matched_subscriptions` / `rmw_subscription_count_matched_publishers` use this predicate, so
+  rclcpp's `get_subscription_count()` / `get_publisher_count()` no longer count type-mismatched or QoS-incompatible
+  endpoints. Until now they counted by topic name.
 
 - **`tt_Node` is now `tt_Context`** (rmw_tickle/CONTEXT_NODE_PLAN.md stage 1). The object that owns the
   sockets, the scheduler, liveliness and discovery is what rmw calls a context, and the name `tt_Node` is freed

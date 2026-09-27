@@ -179,6 +179,46 @@ touches a per-sample path.
     - the first message from a writer counted as a loss from psn 0;
     - a reset on any backward psn (Plan's);
     - the matched predicate ignoring the type.
+- **Result (Dev, 2026-09-28): PASS.**
+  - Acceptance:
+    - `matched`: CycloneDDS PASS (control), rmw_tickle PASS (baseline: FAIL, UnsupportedEventTypeError).
+    - `itype`: rmw_tickle PASS across the two hosts, but CycloneDDS FAIL (itype_pub=0 itype_sub=0), so it stays VOID
+      as pre-registered.
+  - `test_g3_events`:
+    - MATCHED: match, unmatch (observed through the event's callback: the event is raised), rematch.
+    - Another type is INCOMPATIBLE_TYPE on both sides and never matched; a RELIABLE request against a BEST_EFFORT
+      offer does not match; `rmw_*_count_matched_*` agree with the event.
+    - MESSAGE_LOST over four writers: gaps, a RELIABLE gap core gave up on counted once, a late join, the late
+      arrival 1, 2, 4, 3, 5, 6 counting 1, and a far backward jump resetting.
+    - Lyrical's service queries: one client row and one server row, with their node.
+  - Mutants, each failing at the predicted assert:
+    - MATCHED not raised on unmatch. It first survived, because the test only took the event; it now watches the
+      event's callback.
+    - Core's gap counter added to the psn count.
+    - The first message counted from psn 0.
+    - A reset on any backward psn.
+    - The predicate ignoring the type.
+  - The rmw suite passes in a private netns, 52/52.
+  - `ros2 service info --verbose` (`scripts/rmw_service_info_check.sh`) lists the same client and server on both
+    rmws: svc_client_node, svc_server_node, the same type.
+    - Differences: endpoint count 1 (CycloneDDS 2, its request and reply readers/writers), type hash INVALID, and
+      a remote row's QoS unknown.
+    - The query needs `TICKLE_NODE_ID` when it shares an address with another rmw_tickle process (rmw_init.c).
+  - Found on the way: MESSAGE_LOST keys writers by core's per-instance entity id (Milestone 47). A publisher
+    re-created under the same endpoint id is therefore a new writer, with a new baseline. The far-backward reset
+    only covers the same instance jumping back.
+  - **CPU**, `rmw_lib_ab.sh`, parent vs g3, 10 reps interleaved, with an A/A as 8.3's placement control. The reading
+    was written down before the run: WORSE only if B-A exceeds |A/A B-A| plus 2 SE. All four rows are inside:
+
+    | gap | metric | B-A median (2 SE) | A/A B-A (2 SE) | verdict |
+    |---|---|---:|---:|---|
+    | 5 ms | RTT | -1.9 us (2.8) | -0.1 us (8.8) | inside |
+    | 5 ms | pong CPU | -0.6 ms (2.1) | -0.9 ms (5.2) | inside |
+    | 100 ms | RTT | +8.9 us (22.2) | +5.9 us (21.3) | inside |
+    | 100 ms | pong CPU | -0.5 ms (0.8) | +0.0 ms (0.7) | inside |
+
+    As for g2, the 100 ms RTT row resolves only to about 28 us.
+  - The core_cost bench was not run: g3 changes no core source.
 
 ## g6 - discovery options (acceptance tests `range`, `peers`)
 

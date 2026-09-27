@@ -136,6 +136,65 @@ static bool decode_with_psn(rmw_tickle_subscriber_t* sub_impl, const struct payl
                                               view->length - header, view->is_native) >= 0;
 }
 
+// (g3, RMW_GAPS_PLAN.md) The entry for the writer core is delivering from now, claimed if it is new: a free entry,
+// or else the least recently seen writer's - whose loss is then under-counted if it returns, never over-counted.
+static rmw_tickle_writer_psn_t* writer_entry(rmw_tickle_subscriber_t* sub_impl, uint32_t source, uint32_t entity_id) {
+    uint32_t victim = 0;
+    for (uint32_t i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        rmw_tickle_writer_psn_t* entry = &sub_impl->lost_writers[i];
+        if (entry->last_psn != 0 && entry->source == source && entry->entity_id == entity_id) {
+            sub_impl->lost_last_writer = i;
+            return entry;
+        }
+        // A free entry beats a used one; among used ones, the least recently seen.
+        const rmw_tickle_writer_psn_t* best = &sub_impl->lost_writers[victim];
+        bool better = (entry->last_psn == 0 && best->last_psn != 0) ||
+                      (entry->last_psn != 0 && best->last_psn != 0 && entry->last_seen < best->last_seen);
+        victim = better ? i : victim;
+    }
+    rmw_tickle_writer_psn_t* entry = &sub_impl->lost_writers[victim];
+    entry->source = source;
+    entry->entity_id = entity_id;
+    entry->last_psn = 0; // no baseline yet
+    sub_impl->lost_last_writer = victim;
+    return entry;
+}
+
+// (g3) How many messages this delivery shows lost: the psns its writer skipped since the last one seen from it. The
+// first from a writer only sets its baseline; a psn at most RMW_TICKLE_LATE_ARRIVAL_WINDOW behind the next expected
+// is a late arrival and changes nothing; one further back is the writer starting again.
+static uint64_t messages_lost_before(rmw_tickle_subscriber_t* sub_impl, uint64_t psn) {
+    uint32_t source = sub_impl->tickle_subscriber.last_source;
+    uint32_t entity_id = sub_impl->tickle_subscriber.last_entity_id;
+    rmw_tickle_writer_psn_t* entry = &sub_impl->lost_writers[sub_impl->lost_last_writer];
+    if (entry->last_psn == 0 || entry->source != source || entry->entity_id != entity_id) {
+        entry = writer_entry(sub_impl, source, entity_id);
+    }
+    entry->last_seen = ++sub_impl->lost_clock;
+    uint64_t last = entry->last_psn;
+    if (0 == last || (psn <= last && last - psn >= RMW_TICKLE_LATE_ARRIVAL_WINDOW)) {
+        entry->last_psn = psn; // a new writer, or one that started again
+        return 0;
+    }
+    if (psn <= last) {
+        return 0; // late, or a duplicate
+    }
+    entry->last_psn = psn;
+    return psn - last - 1;
+}
+
+static void count_messages_lost(rmw_tickle_subscriber_t* sub_impl, uint64_t psn) {
+    uint64_t lost = messages_lost_before(sub_impl, psn);
+    if (0 == lost) {
+        return;
+    }
+    int count = lost > (uint64_t)INT32_MAX ? INT32_MAX : (int)lost;
+    atomic_fetch_add(&sub_impl->message_lost.total_count, count);
+    atomic_fetch_add(&sub_impl->message_lost.unread_count, count);
+    wake_wait_cond(sub_impl->node->context_impl);
+    rmw_tickle_callback_slot_notify(&sub_impl->message_lost.callback, (size_t)count); // (g2)
+}
+
 static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
     (void)seq_no; // core's: counts datagrams once messages fragment - the psn comes from rmw_tickle's own header
     TT_TRACE(tt_TRACE_DELIVER);
@@ -146,6 +205,7 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     if (!decode_with_psn(sub_impl, (const struct payload_view*)data, &publication_sequence_number)) {
         return; // not an rmw_tickle message, or its CDR does not decode: nothing to hand up
     }
+    count_messages_lost(sub_impl, publication_sequence_number); // (g3) MESSAGE_LOST
     TT_TRACE(tt_TRACE_DECODED);
     struct tt_Data* tickle = (struct tt_Data*)sub_impl->decode_scratch;
 
@@ -522,6 +582,9 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     rmw_tickle_callback_slot_init(&sub_impl->deadline_missed.callback);
     rmw_tickle_callback_slot_init(&sub_impl->liveliness_changed.alive.callback);
     rmw_tickle_callback_slot_init(&sub_impl->requested_qos_incompatible.base.callback);
+    rmw_tickle_callback_slot_init(&sub_impl->matched.base.callback);           // (g3)
+    rmw_tickle_callback_slot_init(&sub_impl->incompatible_type.base.callback); // (g3)
+    rmw_tickle_callback_slot_init(&sub_impl->message_lost.callback);           // (g3)
     if (pthread_mutex_init(&sub_impl->queue_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize subscriber queue mutex");
         allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
@@ -648,6 +711,10 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     sub_impl->tickle_subscriber.liveliness_lease_duration_ns =
         rmw_tickle_wire_lease_ns(qos_profile->liveliness_lease_duration);
 
+    // (g3) Its QoS is complete only now: it, and the local Publishers on its topic, count their matches.
+    tt_Context_lock(&node_impl->context_impl->tickle_context);
+    rmw_tickle_update_matches_locked(node_impl->context_impl, sub_impl->rmw_subscription.topic_name, 0);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context);
     return &sub_impl->rmw_subscription;
 }
 
@@ -676,6 +743,9 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
                               sub_impl);
     }
     tt_Subscriber_destroy(&sub_impl->tickle_subscriber);
+    // (g3) The Publishers it was matched with, and those it had another type from, recount without it.
+    rmw_tickle_update_matches_locked(sub_impl->node->context_impl, sub_impl->rmw_subscription.topic_name,
+                                     tt_KIND_TOPIC_PUBLISHER);
     tt_Context_unlock(&sub_impl->node->context_impl->tickle_context);
 
     // Drain anything still queued - rmw_take() never got to these. Freed directly, not pushed
@@ -700,6 +770,9 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     rmw_tickle_callback_slot_fini(&sub_impl->deadline_missed.callback);
     rmw_tickle_callback_slot_fini(&sub_impl->liveliness_changed.alive.callback);
     rmw_tickle_callback_slot_fini(&sub_impl->requested_qos_incompatible.base.callback);
+    rmw_tickle_callback_slot_fini(&sub_impl->matched.base.callback);
+    rmw_tickle_callback_slot_fini(&sub_impl->incompatible_type.base.callback);
+    rmw_tickle_callback_slot_fini(&sub_impl->message_lost.callback);
 
     rcutils_allocator_t allocator = sub_impl->allocator;
     allocator.deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator.state);
@@ -854,6 +927,13 @@ rmw_ret_t rmw_subscription_event_init(rmw_event_t* rmw_event, const rmw_subscrip
                                       check_subscription_qos_incompatible, sub_impl);
             tt_Context_unlock(&sub_impl->node->context_impl->tickle_context);
         }
+        return RMW_RET_OK;
+    case RMW_EVENT_SUBSCRIPTION_MATCHED:           // (g3) counted from creation, whether asked for or not
+    case RMW_EVENT_SUBSCRIPTION_INCOMPATIBLE_TYPE: // (g3)
+    case RMW_EVENT_MESSAGE_LOST:                   // (g3)
+        rmw_event->implementation_identifier = RMW_TICKLE_IDENTIFIER;
+        rmw_event->data = sub_impl;
+        rmw_event->event_type = event_type;
         return RMW_RET_OK;
     default:
         RMW_SET_ERROR_MSG("rmw_tickle does not support this subscription QoS event yet");

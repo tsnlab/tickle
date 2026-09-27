@@ -25,8 +25,11 @@
 #include "rmw/event.h"
 #include "rmw/event_callback_type.h"
 #include "rmw/events_statuses/incompatible_qos.h"
+#include "rmw/events_statuses/incompatible_type.h"
 #include "rmw/events_statuses/liveliness_changed.h"
 #include "rmw/events_statuses/liveliness_lost.h"
+#include "rmw/events_statuses/matched.h"
+#include "rmw/events_statuses/message_lost.h"
 #include "rmw/events_statuses/offered_deadline_missed.h"
 #include "rmw/events_statuses/requested_deadline_missed.h"
 #include "rmw/ret_types.h"
@@ -46,6 +49,11 @@ bool rmw_event_type_is_supported(rmw_event_type_t event_type) {
     case RMW_EVENT_LIVELINESS_CHANGED:
     case RMW_EVENT_OFFERED_QOS_INCOMPATIBLE:
     case RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE:
+    case RMW_EVENT_PUBLICATION_MATCHED:            // (g3)
+    case RMW_EVENT_SUBSCRIPTION_MATCHED:           // (g3)
+    case RMW_EVENT_PUBLISHER_INCOMPATIBLE_TYPE:    // (g3)
+    case RMW_EVENT_SUBSCRIPTION_INCOMPATIBLE_TYPE: // (g3)
+    case RMW_EVENT_MESSAGE_LOST:                   // (g3)
         return true;
     default:
         return false;
@@ -57,6 +65,19 @@ bool rmw_event_type_is_supported(rmw_event_type_t event_type) {
 static void take_simple_status(rmw_tickle_event_status_t* status, int32_t* total_count, int32_t* total_count_change) {
     *total_count = atomic_load(&status->total_count);
     *total_count_change = atomic_exchange(&status->unread_count, 0);
+}
+
+// (g3) MATCHED: the counts now, and their changes since the previous take.
+static void take_matched_status(rmw_tickle_matched_status_t* matched, rmw_matched_status_t* status) {
+    int total = atomic_load(&matched->base.total_count);
+    int current = atomic_load(&matched->current_count);
+    (void)atomic_exchange(&matched->base.unread_count, 0);
+    status->total_count = (size_t)total;
+    status->total_count_change = (size_t)(total - matched->total_at_take);
+    status->current_count = (size_t)current;
+    status->current_count_change = current - matched->current_at_take;
+    matched->total_at_take = total;
+    matched->current_at_take = current;
 }
 
 rmw_ret_t rmw_take_event(const rmw_event_t* event_handle, void* event_info, bool* taken) {
@@ -115,6 +136,32 @@ rmw_ret_t rmw_take_event(const rmw_event_t* event_handle, void* event_info, bool
             (rmw_requested_qos_incompatible_event_status_t*)event_info;
         take_simple_status(&tickle_status->base, &status->total_count, &status->total_count_change);
         status->last_policy_kind = tickle_status->last_policy_kind;
+        break;
+    }
+    case RMW_EVENT_PUBLICATION_MATCHED:
+        take_matched_status(&((rmw_tickle_publisher_t*)event_handle->data)->matched, (rmw_matched_status_t*)event_info);
+        break;
+    case RMW_EVENT_SUBSCRIPTION_MATCHED:
+        take_matched_status(&((rmw_tickle_subscriber_t*)event_handle->data)->matched,
+                            (rmw_matched_status_t*)event_info);
+        break;
+    case RMW_EVENT_PUBLISHER_INCOMPATIBLE_TYPE: {
+        rmw_incompatible_type_status_t* status = (rmw_incompatible_type_status_t*)event_info;
+        take_simple_status(&((rmw_tickle_publisher_t*)event_handle->data)->incompatible_type.base, &status->total_count,
+                           &status->total_count_change);
+        break;
+    }
+    case RMW_EVENT_SUBSCRIPTION_INCOMPATIBLE_TYPE: {
+        rmw_incompatible_type_status_t* status = (rmw_incompatible_type_status_t*)event_info;
+        take_simple_status(&((rmw_tickle_subscriber_t*)event_handle->data)->incompatible_type.base,
+                           &status->total_count, &status->total_count_change);
+        break;
+    }
+    case RMW_EVENT_MESSAGE_LOST: {
+        rmw_tickle_event_status_t* lost = &((rmw_tickle_subscriber_t*)event_handle->data)->message_lost;
+        rmw_message_lost_status_t* status = (rmw_message_lost_status_t*)event_info;
+        status->total_count = (size_t)atomic_load(&lost->total_count);
+        status->total_count_change = (size_t)atomic_exchange(&lost->unread_count, 0);
         break;
     }
     default:
@@ -214,6 +261,21 @@ static rmw_tickle_callback_slot_t* event_slot(const rmw_event_t* event, rmw_tick
         break;
     case RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE:
         status = &sub_impl->requested_qos_incompatible.base;
+        break;
+    case RMW_EVENT_PUBLICATION_MATCHED: // (g3) the set-time count is the unread change, as for the others
+        status = &pub_impl->matched.base;
+        break;
+    case RMW_EVENT_SUBSCRIPTION_MATCHED:
+        status = &sub_impl->matched.base;
+        break;
+    case RMW_EVENT_PUBLISHER_INCOMPATIBLE_TYPE:
+        status = &pub_impl->incompatible_type.base;
+        break;
+    case RMW_EVENT_SUBSCRIPTION_INCOMPATIBLE_TYPE:
+        status = &sub_impl->incompatible_type.base;
+        break;
+    case RMW_EVENT_MESSAGE_LOST:
+        status = &sub_impl->message_lost;
         break;
     case RMW_EVENT_LIVELINESS_CHANGED:
         *waiting = liveliness_changed_waiting;
