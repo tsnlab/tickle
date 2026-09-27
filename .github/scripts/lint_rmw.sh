@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# clang-tidy over rmw_tickle's C sources and rmw_perf_pingpong's C++ ones, the way CI's cpp-linter checks them.
+# clang-tidy over rmw_tickle's C sources and every tracked ROS C++ file, the way CI's cpp-linter checks them.
 #
 # Why (2026-09-24): `make lint` excludes rmw_tickle/ from clang-tidy entirely
 # (LINT_TIDY_EXCLUDE_PATHS in platform/linux/Makefile), while CI's cpp-linter runs clang-tidy on
@@ -14,7 +14,13 @@
 # pointed at the installed g++'s GCC directory - and a run that cannot parse its file is no run at all. The parse
 # error is a finding here, on the file's own line, so it fails the gate rather than passing for silence.
 #
-# It needs a compile database for rmw_tickle and rmw_perf_pingpong, which needs ROS, so it builds both. A configure
+# Every other tracked ROS C++ file too (2026-09-27), found by `git ls-files`, each against its own package's compile
+# database: conv_cost.cpp, built by hand with no package, turned af54d45e's Check all red on "'rclcpp/rclcpp.hpp'
+# file not found", and the typesupport tests and rmw_tickle_interfaces_check had never been linted here at all. A
+# tracked C++ file with no package.xml above it fails the gate instead of being skipped. Only the Fast DDS harnesses
+# are left out: they build against Fast DDS, not ROS (reference: lint them against Fast DDS 2.14.7's headers).
+#
+# It needs a compile database for rmw_tickle and each ROS C++ package, which needs ROS, so it builds both. A configure
 # alone would not do for the ping: its sources include headers rosidl generates at build time. It refuses rather
 # than passes when it cannot - a check that quietly does nothing reports success, which is the
 # failure it exists to prevent.
@@ -49,18 +55,17 @@ if ! (
     . "$ROS_SETUP"
     # shellcheck disable=SC1091
     [ -f "$HOME/rmw_perf_ws/install/setup.bash" ] && . "$HOME/rmw_perf_ws/install/setup.bash"
-    colcon build --packages-select rmw_tickle rmw_perf_pingpong \
-        --cmake-args -DBUILD_SHARED_LIBS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null 2>&1
+    colcon build --packages-up-to rmw_tickle rmw_perf_pingpong rmw_tickle_interfaces_check \
+        rosidl_typesupport_tickle_c_tests conv_cost \
+        --cmake-args -DBUILD_SHARED_LIBS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_BUILD_TYPE= >/dev/null 2>&1
 ); then
-    echo "lint-rmw: rmw_tickle or rmw_perf_pingpong did not build - refusing to report a pass" >&2
+    echo "lint-rmw: rmw_tickle or a ROS C++ package did not build - refusing to report a pass" >&2
     exit 1
 fi
-for db in build/rmw_tickle/compile_commands.json build/rmw_perf_pingpong/compile_commands.json; do
-    if [ ! -f "$db" ]; then
-        echo "lint-rmw: no compile database at $db - refusing to report a pass" >&2
-        exit 1
-    fi
-done
+if [ ! -f build/rmw_tickle/compile_commands.json ]; then
+    echo "lint-rmw: no compile database at build/rmw_tickle/compile_commands.json - refusing to report a pass" >&2
+    exit 1
+fi
 GCC_DIR="$(dirname "$(g++ -print-libgcc-file-name 2>/dev/null)")"
 if [ ! -d "$GCC_DIR" ]; then
     echo "lint-rmw: no g++ to give clang-tidy its C++ headers - refusing to report a pass" >&2
@@ -83,9 +88,38 @@ for f in rmw_tickle/rmw_tickle/src/*.c rmw_tickle/rmw_tickle/test/*.c rmw_tickle
         fail=1
     fi
 done
-for f in rmw_tickle/rmw_perf_pingpong/src/*.cpp rmw_tickle/rmw_perf_pingpong/src/*.hpp; do
+cpp_files=$(git ls-files '*.cpp' '*.hpp' '*.cc' | grep -Ev '^(third_party|examples/perf_hil/fastdds)/')
+for f in $cpp_files; do
     checked=$((checked + 1))
-    out=$("$TIDY" -p build/rmw_perf_pingpong --extra-arg=--gcc-install-dir="$GCC_DIR" "$f" 2>&1 |
+    package_dir=$(dirname "$f")
+    while [ "$package_dir" != "." ] && [ ! -f "$package_dir/package.xml" ]; do
+        package_dir=$(dirname "$package_dir")
+    done
+    if [ "$package_dir" = "." ]; then
+        echo "$f: no package.xml above it, so no compile database - clang-tidy cannot parse it" >&2
+        fail=1
+        continue
+    fi
+    package=$(sed -n 's:.*<name>\(.*\)</name>.*:\1:p' "$package_dir/package.xml" | head -1)
+    if [ ! -f "build/$package/compile_commands.json" ]; then
+        echo "$f: no compile database at build/$package - is $package in the colcon build above?" >&2
+        fail=1
+        continue
+    fi
+    # A header is never in the database itself; clang-tidy borrows a neighbouring source's flags for it.
+    if [ "${f%.hpp}" = "$f" ] && ! grep -q "\"file\": \"$REPO/$f\"" "build/$package/compile_commands.json"; then
+        # action_check.cpp is built only where rclcpp_action, example_interfaces and action_msgs are installed (its
+        # CMakeLists finds them QUIET). Anything else missing from its database is a failure, not a skip.
+        if [ "$f" = rmw_tickle/rmw_tickle_interfaces_check/src/action_check.cpp ]; then
+            echo "lint-rmw: SKIPPED $f - not built on this machine (no rclcpp_action/action_msgs); CI lints it" >&2
+            checked=$((checked - 1))
+            continue
+        fi
+        echo "$f: not in build/$package/compile_commands.json - clang-tidy would not parse it as built" >&2
+        fail=1
+        continue
+    fi
+    out=$("$TIDY" -p "build/$package" --extra-arg=--gcc-install-dir="$GCC_DIR" "$f" 2>&1 |
         grep -E "$(basename "$f"):[0-9]+:[0-9]+: (warning|error)")
     if [ -n "$out" ]; then
         echo "$out" >&2
@@ -93,8 +127,8 @@ for f in rmw_tickle/rmw_perf_pingpong/src/*.cpp rmw_tickle/rmw_perf_pingpong/src
     fi
 done
 if [ "$checked" -eq 0 ]; then
-    echo "lint-rmw: found no rmw_tickle sources - this check is not reading what it thinks it is" >&2
+    echo "lint-rmw: found no rmw_tickle or ROS C++ sources - this check is not reading what it thinks it is" >&2
     exit 1
 fi
-[ "$fail" = 0 ] && echo "lint-rmw: $checked rmw_tickle and rmw_perf_pingpong source(s), no clang-tidy findings ($("$TIDY" --version | grep -i 'LLVM version' | tr -s ' '))"
+[ "$fail" = 0 ] && echo "lint-rmw: $checked rmw_tickle and ROS C++ source(s), no clang-tidy findings ($("$TIDY" --version | grep -i 'LLVM version' | tr -s ' '))"
 exit "$fail"
