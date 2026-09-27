@@ -55,6 +55,26 @@ static int64_t now_ns(void) {
     return ((int64_t)now.tv_sec * NS_PER_SEC) + now.tv_nsec;
 }
 
+// Alive remote ENDPOINTS only (2026-09-27): since wire v11 (CONTEXT_NODE_PLAN stage 3) the table also holds one
+// tt_KIND_NODE entry per remote node, which tt_Discovery_count() includes. Expected stays (N-1) x E endpoints in
+// every build, so a v10 parent and a v11 build are timed to the same event.
+static uint32_t count_endpoints(void) {
+    uint32_t count = 0;
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        const struct tt_DiscoveredEntity* entity = &discovery.entities[i];
+        if (entity->context_id == tt_CONTEXT_ID_INVALID || !entity->alive) {
+            continue;
+        }
+#ifdef tt_KIND_NODE
+        if (entity->kind == tt_KIND_NODE) {
+            continue;
+        }
+#endif
+        count++;
+    }
+    return count;
+}
+
 static void on_discovery(struct tt_Context* discovering, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
                          bool departed, void* param) {
     (void)discovering;
@@ -63,7 +83,7 @@ static void on_discovery(struct tt_Context* discovering, uint8_t node_id, uint32
     (void)kind;
     (void)departed;
     struct join_state* state = param;
-    int complete = tt_Discovery_count(&discovery) >= state->expected;
+    int complete = count_endpoints() >= state->expected;
     if (complete != state->complete) {
         int64_t now = now_ns();
         state->last_change_ns = now;

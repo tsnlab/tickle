@@ -226,3 +226,21 @@ broadcast by the rmw_tickle nodes in the BEST_EFFORT run: one sample on the ping
 Bench-sized (112 B). So a real first sample can still be published before its peer is registered. It is not
 rclcpp's own `/parameter_events` or `/rosout`, which was the hypothesis. It matches the `rx_self_sent_data=1`
 seen in 5 of 24 ping logs. Handed to Dev.
+
+## 10. M3 for wire v11's node entries (CONTEXT_NODE_PLAN stage 3, 2026-09-27, Plan)
+
+- **The tool:** `discovery_join.sh join 8 E 10` on the PC's netns, as in section 5. The parent is `5e8799cd`,
+  stage 3 is `3d3ed747`.
+- **The tool first had to change.** Since v11 the discovery table also holds a node entry per remote node, which
+  `tt_Discovery_count()` includes. `discovery_node.c` now counts alive endpoints only, so both builds are timed to the
+  same event, (N-1) x E endpoints. The node-entry check compiles only where `tt_KIND_NODE` exists.
+- **Result:** raw rows are `results/discovery_M3_stage3_*_2026-09-27.txt`; 10 + 10 ok joins per cell, 0 VOID. Median
+  reached_ms:
+
+| cell | parent | stage 3 | change |
+|---|---:|---:|---:|
+| N=8, E=4 | 1.7 | 2.0 | +0.3 |
+| N=8, E=32 | 1.8 | 1.8 | 0.0 |
+
+- **PASS:** section 5's bar is +5 ms at most, and both cells are within 0.3 ms. M1's +40 B per node (stage 3's own
+  result) is the only discovery cost v11 adds.

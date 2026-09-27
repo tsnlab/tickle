@@ -851,7 +851,7 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | Init and context | 8 | 8 / 0 / 0 / 0 | 8 / 0 / 0 | 8 / 0 / 0 |
 | Serialization | 7 | 3 / 0 / 3 / 1 | 6 / 0 / 1 | 6 / 0 / 1 |
 | Nodes | 2 | 2 / 0 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
-| Graph | 10 | 4 / 6 / 0 / 0 | 10 / 0 / 0 | 10 / 0 / 0 |
+| Graph | 10 | 10 / 0 / 0 / 0 | 10 / 0 / 0 | 10 / 0 / 0 |
 | Pre-allocation | 4 | 0 / 0 / 0 / 4 | 0 / 0 / 4 | 0 / 0 / 4 |
 | Publishers | 11 | 11 / 0 / 0 / 0 | 11 / 0 / 0 | 11 / 0 / 0 |
 | Loaned messages | 6 | 0 / 0 / 6 / 0 | 0 / 6 / 0 | 0 / 6 / 0 |
@@ -863,7 +863,7 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | QoS | 1 | 1 / 0 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
 | Network flow endpoints | 2 | 0 / 0 / 0 / 2 | 2 / 0 / 0 | 0 / 0 / 2 |
 | Dynamic messages | 3 | 0 / 0 / 0 / 3 | 3 / 0 / 0 | 0 / 0 / 3 |
-| **All** | **94** | **59 / 9 / 14 / 12** | **83 / 6 / 5** | **76 / 6 / 12** |
+| **All** | **94** | **65 / 3 / 14 / 12** | **83 / 6 / 5** | **76 / 6 / 12** |
 
 **TickLE's gaps (❌ and ⚠️), and where each is planned:**
 - **Serialized messages** (`rmw_publish_serialized_message`, `rmw_take_serialized_message*`). rosbag2 and
@@ -875,8 +875,9 @@ what they return `RMW_RET_UNSUPPORTED` on).
   `*_INCOMPATIBLE_TYPE` are missing; both vendors serve all 11. Planned.
 - **`rmw_take_sequence`** is not defined at all. `rmw_implementation` logs a failed symbol lookup for it, and
   `rcl_take_sequence()` fails. Planned (added to the gap list on 2026-09-27).
-- **Remote nodes in the graph** (`rmw_get_node_names*`, `*_by_node`) show only this process's nodes, so
-  `ros2 node list/info` and `ros2 param` cannot see other processes. CONTEXT_NODE_PLAN stage 3.
+- ~~Remote nodes in the graph~~: **closed 2026-09-27** by CONTEXT_NODE_PLAN stage 3 (wire v11). `ros2 node list/info`
+  and `ros2 param` see other processes, and the acceptance test `graph` passes with the CycloneDDS control. The cost is
+  +40 B per node in each discovery list; join time (M3) is within 0.3 ms (DISCOVERY_PLAN 10).
 - **Loaned messages:** planned with receive-buffer lending (the user's decision of 2026-09-27). The vendors support
   them only with shared memory and for plain types.
 - **On lyrical only** (not in jazzy's list above), `rmw_get_clients_info_by_service` /
@@ -945,13 +946,13 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | `rmw_destroy_node` | ✅ | ✅ | ✅ |  |
 | **Graph** | | | | |
 | `rmw_node_get_graph_guard_condition` | ✅ | ✅ | ✅ |  |
-| `rmw_get_publisher_names_and_types_by_node` | ⚠️ | ✅ | ✅ | TickLE: this process's own nodes only, until CONTEXT_NODE_PLAN stage 3 (remote nodes are not on the wire yet) |
-| `rmw_get_subscriber_names_and_types_by_node` | ⚠️ | ✅ | ✅ | TickLE: this process's own nodes only, until CONTEXT_NODE_PLAN stage 3 (remote nodes are not on the wire yet) |
-| `rmw_get_service_names_and_types_by_node` | ⚠️ | ✅ | ✅ | TickLE: this process's own nodes only, until CONTEXT_NODE_PLAN stage 3 (remote nodes are not on the wire yet) |
-| `rmw_get_client_names_and_types_by_node` | ⚠️ | ✅ | ✅ | TickLE: this process's own nodes only, until CONTEXT_NODE_PLAN stage 3 (remote nodes are not on the wire yet) |
+| `rmw_get_publisher_names_and_types_by_node` | ✅ | ✅ | ✅ | remote nodes since wire v11 (CONTEXT_NODE_PLAN stage 3, 2026-09-27); acceptance `graph` passes |
+| `rmw_get_subscriber_names_and_types_by_node` | ✅ | ✅ | ✅ | remote nodes since wire v11 (CONTEXT_NODE_PLAN stage 3, 2026-09-27); acceptance `graph` passes |
+| `rmw_get_service_names_and_types_by_node` | ✅ | ✅ | ✅ | remote nodes since wire v11 (CONTEXT_NODE_PLAN stage 3, 2026-09-27); acceptance `graph` passes |
+| `rmw_get_client_names_and_types_by_node` | ✅ | ✅ | ✅ | remote nodes since wire v11 (CONTEXT_NODE_PLAN stage 3, 2026-09-27); acceptance `graph` passes |
 | `rmw_get_topic_names_and_types` | ✅ | ✅ | ✅ |  |
-| `rmw_get_node_names` | ⚠️ | ✅ | ✅ | TickLE: this process's own nodes only, until CONTEXT_NODE_PLAN stage 3 (remote nodes are not on the wire yet) |
-| `rmw_get_node_names_with_enclaves` | ⚠️ | ✅ | ✅ | TickLE: this process's own nodes only, until CONTEXT_NODE_PLAN stage 3 (remote nodes are not on the wire yet) |
+| `rmw_get_node_names` | ✅ | ✅ | ✅ | remote nodes since wire v11 (CONTEXT_NODE_PLAN stage 3, 2026-09-27); acceptance `graph` passes |
+| `rmw_get_node_names_with_enclaves` | ✅ | ✅ | ✅ | remote nodes since wire v11 (CONTEXT_NODE_PLAN stage 3, 2026-09-27); acceptance `graph` passes |
 | `rmw_count_subscribers` | ✅ | ✅ | ✅ |  |
 | `rmw_compare_gids_equal` | ✅ | ✅ | ✅ |  |
 | **Pre-allocation** | | | | |
