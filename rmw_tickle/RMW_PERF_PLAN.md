@@ -1,5 +1,8 @@
 # rmw_tickle performance: where the ~0.08 ms deficit to CycloneDDS lives
 
+> **Names (2026-09-27):** `tt_Node` is now `tt_Context`, `tt_NODE_*` is `tt_CONTEXT_*` and a public `node_id` field is `context_id`
+> (rmw_tickle/CONTEXT_NODE_PLAN.md stage 1, 25ac7fe0). This document keeps the names of its time.
+
 2026-09-26. The user's instruction: make TickLE core win p1-p4 with DATA_FRAG (done, COMPARISON.md
 section 1), look for further core optimisation, then optimise `rmw_tickle`. This file is the `rmw_tickle`
 step. It is Plan's, as research and measurement; the code it points at is Dev's.

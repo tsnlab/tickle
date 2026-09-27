@@ -1,5 +1,8 @@
 # Wire protocol optimisation
 
+> **Names (2026-09-27):** `tt_Node` is now `tt_Context`, `tt_NODE_*` is `tt_CONTEXT_*` and a public `node_id` field is `context_id`
+> (rmw_tickle/CONTEXT_NODE_PLAN.md stage 1, 25ac7fe0). This document keeps the names of its time.
+
 **User instruction (2026-09-26):** "지금 이대로 가면 rmw_tickle이 다른 DDS rmw를 이길 수 있을 것 같아. 그 다음엔
 wire protocol 최적화를 시작하자. 예를 들어 announce 단계에서 요약본을 하나의 패킷 안에 announce 하고 필요한
 정보를 별도로 요청해서 받게 되면 대역폭과 discovery 시간 모두 개선돼. 이와 같이 wire protocol을 변경해서 개선할

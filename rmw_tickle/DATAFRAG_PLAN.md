@@ -1,5 +1,8 @@
 # DATA_FRAG in TickLE core: design, acceptance bar, and the two constraints that bind it
 
+> **Names (2026-09-27):** `tt_Node` is now `tt_Context`, `tt_NODE_*` is `tt_CONTEXT_*` and a public `node_id` field is `context_id`
+> (rmw_tickle/CONTEXT_NODE_PLAN.md stage 1, 25ac7fe0). This document keeps the names of its time.
+
 2026-09-26. The user's instruction: implement DATA_FRAG in TickLE core so that TickLE beats both
 FastDDS and CycloneDDS at **all four payload shapes p1, p2, p3 and p4**, then look for further
 optimisation, and only then move to `rmw_tickle`. This supersedes the 2026-09-25 decision to leave

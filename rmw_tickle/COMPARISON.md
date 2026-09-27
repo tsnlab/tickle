@@ -1,5 +1,8 @@
 # TickLE vs. FastDDS vs. CycloneDDS: performance comparison
 
+> **Names (2026-09-27):** `tt_Node` is now `tt_Context`, `tt_NODE_*` is `tt_CONTEXT_*` and a public `node_id` field is `context_id`
+> (rmw_tickle/CONTEXT_NODE_PLAN.md stage 1, 25ac7fe0). This document keeps the names of its time.
+
 **Read section 1 first.** It is one table holding every experiment in this document, with the best
 value in each row marked ✅ and the worst ❌. Section 2 explains each row: what was measured, what
 the number means, and where it is weaker than it looks. Section 3 is the standing to-do list.

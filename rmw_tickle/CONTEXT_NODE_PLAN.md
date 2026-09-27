@@ -86,6 +86,31 @@ against the old one must fail to compile, not silently compile against the new.
 - **Coordination.** The work is done in Dev's own worktree, and Plan is told before the push: Plan's harnesses and
   results reference `tt_Node` in comments.
 
+### Stage 1 result: PASS (2026-09-27, 25ac7fe0)
+
+- **Identical code.** The -O2 `tickle.o`, `hal_linux.o`, `encoding.o` and `log.o`, built before and after, give the
+  same `objdump -dr` once `tt_Node`/`tt_Context` and `tt_NODE_`/`tt_CONTEXT_` are mapped to one name
+  (15,406 / 1,522 / 254 / 337 lines). Control: unnormalised, `tickle.o` differs in 404 lines, all names.
+- **The same tests:** `make check-gates` 10/10; the rmw suite in a private netns, 46/46; the typesupport pytest and
+  the FreeRTOS HAL lint (both gates); `headers-cpp`; the Linux examples; all nine perf_hil TickLE scenarios build.
+- **No old token left:** no `tt_Node`, `tickle_node` or `tt_NODE_` outside the dated records, except the nine
+  `#error` guards in `config.h` and the `config-renames` check that names them.
+- **Old `-D` names stop the build.** `make -C platform/linux config-renames` (run by `make test`) compiles
+  `config.h` with each of the nine old names set and requires the rename's `#error`; a control compile with none
+  set must pass. A mutant with the `tt_NODE_TX_INTERVAL` guard removed fails it.
+- **The bench pair**, `core_cost_ab.sh -r 20`, 47ddcb75 against 25ac7fe0, mean difference against 2 x SE:
+
+  | run | send (ns) | recv (ns) |
+  |---|---|---|
+  | default | 185.6 -> 184.7, -0.9 (2 x SE 3.1) | 52.7 -> 52.7, +0.0 (1.0) |
+  | `-R` | 240.6 -> 239.7, -0.9 (3.8) | 78.6 -> 78.1, -0.6 (0.8) |
+
+  All four held. The bench itself had to be renamed, so each arm compiled its own tree's copy
+  (`BENCH_FROM_REF=1`, new); the two copies are identical once the renamed names are mapped to one.
+  Raw: `examples/perf_hil/results/core_cost_ab_context_rename{,_R}_2026-09-27.txt`.
+- **As scoped:** local variables named `node`, internal helpers and `tt_get_node_id()` keep their names (Plan's
+  answer); `rmw_tickle_node_t` is rmw's node and keeps its name. `.git-blame-ignore-revs` lists the rename.
+
 ## Stage 2 - a lightweight core `tt_Node` (no wire change)
 
 **The model:**
@@ -179,6 +204,31 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     means the same sign in every cell of its kind.
 - The user's wire rule ("every test better") is met by Plan's reading: the targeted metric is function, and
   none regresses except the recorded M1 cost, which the user approved as the feature's price.
+
+## Roadmap after stage 1 (user decisions relayed by Plan, 2026-09-27)
+
+The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지: B 단계적 지원으로 가자 / 2. Native API에
+수신 버퍼 대여 추가: rmw가 수신 버퍼를 지원하는 것이 맞으면 TickLE도 그대로 가자 / 3. 쓰지 않게 된 서비스 응답 대기
+버퍼: 제거하자". The order, each step pre-registered before code:
+
+1. **Stage 1** (above, done).
+2. **Remove the unused pending-response storage** (user item 3): `tt_Server.pending_response_buf`,
+   `set_storage()`'s pending half and rmw_service's allocation of it. A separate commit right after stage 1, so both
+   API breaks ship together.
+3. **Release-built tests that test nothing** (Plan, same day): `rosidl_typesupport_tickle_c_tests`' dispatch tests
+   check with `assert()`, which a Release build compiles out. Fix with `-UNDEBUG` on the test targets or explicit
+   checks, with a mutant showing the test fails in the Release build.
+4. **Stage 2**, then **stage 3** (wire v11).
+5. **Large messages, stage 1** (user item 1, "B"): rmw_tickle's direct typesupport, ROS C++ to the TickLE wire with
+   no fixed-capacity intermediate struct.
+6. **Large messages, stage 2, with receive-buffer lending** (user items 1 and 2):
+   - samples over 64 KB: a wider fragment index and count behind a flag, so existing cells do not grow; a 32-bit
+     record length; reassembly buffers sized from `FRAG_FIRST`'s total length; dynamic allocation in rmw builds
+     only (the core stays static).
+   - lending: retain/release in the native API (OPTIMIZATION_PLAN 12.3), designed so that
+     `rmw_take_loaned_message` / `rmw_return_loaned_message_from_subscription` (gated by `can_loan_messages`) sit
+     directly on it, and covering reassembled large samples, where it pays.
+   - If its wire change is ready close to stage 3, one version bump may carry both; otherwise v11 and v12.
 
 ## Order and ownership
 

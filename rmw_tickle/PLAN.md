@@ -1,5 +1,8 @@
 # rmw_tickle — implementation plan
 
+> **Names (2026-09-27):** `tt_Node` is now `tt_Context`, `tt_NODE_*` is `tt_CONTEXT_*` and a public `node_id` field is `context_id`
+> (rmw_tickle/CONTEXT_NODE_PLAN.md stage 1, 25ac7fe0). This document keeps the names of its time.
+
 An `rmw` implementation backed by TickLE, so ROS 2 (`rclcpp`/`rclpy`) can run directly over
 TickLE's own CDR-4 wire format instead of DDS. Lives at `rmw_tickle/rmw_tickle/` (a normal
 `ament_cmake` package) inside the TickLE monorepo, next to the library it wraps.

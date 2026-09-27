@@ -1,5 +1,8 @@
 # Discovery: a small periodic summary, with the full list pulled on demand
 
+> **Names (2026-09-27):** `tt_Node` is now `tt_Context`, `tt_NODE_*` is `tt_CONTEXT_*` and a public `node_id` field is `context_id`
+> (rmw_tickle/CONTEXT_NODE_PLAN.md stage 1, 25ac7fe0). This document keeps the names of its time.
+
 **User decision (2026-09-26):** "너의 제안대로 announce를 노드 ID와 세대 번호만 담은 작은 요약으로 줄이고,
 받는 쪽이 모르는 세대 번호를 보면 그 때 목록을 요청하도록 하면 효율적일 것 같아. 이 것도 계획에 넣고
 진행시키자." Translation: shrink the periodic announce to a small summary of node ID and generation

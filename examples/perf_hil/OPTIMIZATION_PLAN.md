@@ -1,5 +1,8 @@
 # Rig performance campaign: five metrics against both DDS vendors
 
+> **Names (2026-09-27):** `tt_Node` is now `tt_Context`, `tt_NODE_*` is `tt_CONTEXT_*` and a public `node_id` field is `context_id`
+> (rmw_tickle/CONTEXT_NODE_PLAN.md stage 1, 25ac7fe0). This document keeps the names of its time.
+
 **Status: DRAFT rev 2, awaiting the user's approval (step 2 of their own plan).** TickLE Plan,
 2026-09-25. Rev 2 applies the user's four constraints (one hour, the existing network shaped only by
 `tc`, four payload sizes, no QoS cross) and two findings from TickLE Dev's review.

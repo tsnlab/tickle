@@ -1,5 +1,8 @@
 # LIVELINESS detection: the lease runs from the last sign of life, on a timer of its own
 
+> **Names (2026-09-27):** `tt_Node` is now `tt_Context`, `tt_NODE_*` is `tt_CONTEXT_*` and a public `node_id` field is `context_id`
+> (rmw_tickle/CONTEXT_NODE_PLAN.md stage 1, 25ac7fe0). This document keeps the names of its time.
+
 **User decision (2026-09-26):** "liveliness detection도 계획에 집어넣자." ("Put liveliness detection in
 the plan too.") It follows the user's question of the same day: "TickLE의 liveness 기준을 announce 또는
 data (어차피 announce도 data의 일종이니까) 로 잡으면 문제가 해결 되지 않나?" - would basing TickLE's

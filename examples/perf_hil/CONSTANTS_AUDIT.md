@@ -1,5 +1,8 @@
 # Absolute constants: which can become relative, which must not
 
+> **Names (2026-09-27):** `tt_Node` is now `tt_Context`, `tt_NODE_*` is `tt_CONTEXT_*` and a public `node_id` field is `context_id`
+> (rmw_tickle/CONTEXT_NODE_PLAN.md stage 1, 25ac7fe0). This document keeps the names of its time.
+
 2026-09-26. Prompted by the question "can `tt_RELIABLE_RETRY_MAX` and numbers like it be
 expressed relatively, the way RFC 6298 writes `srtt + 4*rttvar`?" This audits every numeric
 constant in `include/tickle/config.h` (39 of them) and the six in `rmw_tickle.h`, and sorts
