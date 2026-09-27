@@ -812,6 +812,26 @@ announce.**
     taken before this, so they stay long.
   - The route table, the directory's miss path, the generation, and when the writer chooses short are as
     amended above.
+- **The handle costs the announce no bytes (checked 2026-09-27, the struct as it stands).**
+  - The layout of `tt_UpdateEntity` (packed):
+
+    | field | bytes |
+    |---|---|
+    | `endpoint_id` | 4 |
+    | `entity_id` | 4 |
+    | `kind` | 1 |
+    | `qos` | 1 |
+    | `tracking_words` | 2 |
+    | `deadline_duration_ns` | 8 |
+    | `liveliness_lease_duration_ns` | 8 |
+
+    Then come the type and name strings.
+  - `tracking_words` is a Subscriber's field: its RELIABLE window. A Publisher entry always announces 0 there, and
+    `decode_update_entities()` reads it only for `tt_KIND_TOPIC_SUBSCRIBER`.
+  - A Publisher entry carries its handle in those same 16 bits, so no entry, announce or list answer grows.
+  - DISCOVERY_PLAN M1 (join bytes) and M2 (steady state) therefore cannot move from this. Step 3 records them
+    anyway, as a control: equal to the branch point, byte for byte.
+
 - **Bytes improve.** A long sample costs 16 B instead of 20. BEST_EFFORT after its first 16 samples then saves
   4 x 15/16 = 3.75 B per sample, against 3.5 as first designed.
 - **What it costs.** A reader that has not processed the writer's announce cannot map a short form until the
