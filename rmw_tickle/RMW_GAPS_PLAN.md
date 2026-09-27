@@ -309,3 +309,73 @@ built Release from a worktree, with the standard interfaces from `build_ros2_int
   - more contexts than the wire's id space in one domain is detected and refused with a clear error, never silent.
   - If the fix changes what the context id means on the wire, it goes under WIRE_PLAN's rule before code.
 - **Baseline:** `samehost`: CycloneDDS PASS, rmw_tickle FAIL (listener 0, echo 0).
+- **Characterisation (Dev, 2026-09-28):**
+  - **The id.** `tt_get_node_id()` (hal_linux.c) takes the last octet of the local address on the broadcast subnet.
+    Every process on one address therefore gets the same id; `TICKLE_NODE_ID` overrides it (rmw_init.c).
+  - **The drop.** `self_sent = header->source == node->id` (tickle.c, `process_packet`). With it set, DATA and its
+    fragments are suppressed, and those carry the announces, so neither discovery nor data arrives.
+  - **Why the filter alone is not the fix.** Everything downstream is keyed by the 8-bit source: peer tables,
+    discovery, writer proxies, announce generations. Two processes sharing an id would be merged into one peer. So
+    each process needs its own id on the link.
+  - **CI** passes only because `check_ros2_interfaces.sh` gives every process a `TICKLE_NODE_ID` (121-125), as every
+    perf and HIL script does.
+  - Every send leaves from the context's data socket, bound to its address with a port the kernel assigns, one per
+    process. So (sender address, sender port) says exactly which process sent a packet.
+- **Design, approved by Plan 2026-09-28, no wire-format change:**
+  - **Scope.** Compile-time `tt_CONTEXT_ID_CLAIM`, default 0 in core and set to 1 by rmw_tickle's build. With it 0,
+    core's default build is byte-identical to its parent, so the embedded targets and the benchmarks keep today's
+    behaviour.
+  - **Preferred id** is unchanged: the address's last octet. A single process per host keeps today's id, and its
+    announce bytes are identical.
+  - **Host registry** (hal_linux.c), one file per (port, address) in /dev/shm, updated under `flock`.
+    - It records the pid holding each id. The first process takes the preferred id; a later one takes the highest
+      free id counting down from 254.
+    - A holder whose pid is dead (`kill(pid, 0)` gives ESRCH) is free.
+    - A pid that cannot be verified (EPERM, or another pid namespace) counts as live, since the link net below
+      resolves any mistake.
+    - No usable /dev/shm: the context takes the preferred id and relies on the link net.
+    - The id is released when the context closes.
+  - **Self** is a packet whose source is this context's id and whose sender is this context's own data socket. Any
+    other packet carrying this context's id is a **collision**; it is not processed.
+  - **Who moves.**
+    - A context within 2 announce intervals of its creation (its startup window) yields on a collision, and an
+      established one keeps its id.
+    - When the collision persists for 2 announce intervals, so both sides are established (a partition healed, or an
+      id set explicitly), the higher (address, port) moves.
+    - An established context that sees a collision announces again at once, so its peers correct any merged state
+      from its authoritative announce.
+  - **Moving.**
+    - The mover sends no farewell under the old id, because peers would then drop the other holder.
+    - It takes a free id: not seen on the link, not in the registry. With several free ids, one is picked from its
+      own port, so that two movers seeing the same link do not both pick the same one.
+    - It updates the registry and announces under the new id at once. Its entries left under the old id at peers are
+      replaced by the keeper's next announce, which is authoritative for that source.
+  - **An explicit id** (`TICKLE_NODE_ID`, `_tt_CONFIG.context_id`) never moves. A collision on it is logged at ERROR,
+    once per foreign sender.
+  - **No free id:**
+    - at creation, `tt_Context_create` fails with an error saying so, and `rmw_init` fails;
+    - found later, the context logs ERROR and stops sending. Never silent.
+- **Pass (pre-registered before code):**
+  - **One process, today's behaviour:**
+    - the core default build (`tt_CONTEXT_ID_CLAIM` 0) has objdump-identical `tickle.o` and `hal_linux.o` to its
+      parent;
+    - a one-process rmw_tickle context takes the same id and sends announce bytes identical to its parent's (pcap
+      diff);
+    - the rmw CPU A/B, with an A/A, stays inside the swing.
+  - `samehost` passes, and every acceptance test that passed before still passes.
+  - 8 rmw_tickle processes in one netns, with no `TICKLE_NODE_ID`, all see each other: every node lists the 7 others
+    (`ros2 node list` from a ninth).
+  - A forced collision, two processes with the registry disabled (`TICKLE_ID_REGISTRY=off`), resolves to two ids;
+    the talker then reaches the listener.
+  - **Unit tests (core, mock HAL):**
+    - a packet with this context's id from another address is not taken as self;
+    - a newcomer yields and the established context keeps its id;
+    - both established: the higher (address, port) moves after 2 intervals;
+    - three contexts: when the newcomer moves away from the keeper's id, the third context keeps the keeper's
+      endpoints and matches;
+    - an explicit id never moves;
+    - with no free id, the context refuses and stops sending.
+  - **Unit tests (registry, a temporary file):** a first claim gets the preferred id and a second a different one; a
+    dead pid's id is reclaimed; an EPERM pid (pid 1) counts as live; a release frees the id.
+  - **Mutants:** the self filter by id only; the established side yielding; no move on collision; the registry
+    treating dead pids as live; a farewell sent under the old id (the three-context test fails).
