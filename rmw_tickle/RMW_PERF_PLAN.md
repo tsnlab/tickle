@@ -918,3 +918,24 @@ are measured first, and built only if the measurements leave room:
   The report says so and nothing is built. Above it, the step gets its own design and pre-registration.
 - **Control:** the shim is checked on a program of known copies, a 4096-B memcpy loop: it must report exactly 4096 B
   per iteration at the right call site, or its other counts mean nothing.
+
+**M-c (added at Plan's request, same day, before any number): the held-back datagram's extra copy in the HAL.**
+- **The copy.** `hal_linux.c`'s `rx_take_pending()` `memcpy`s every datagram a `recvmmsg()` batch held back (slots 2..N)
+  from `hal->rx_batch[slot]` into `node->rx_buffer` before it is processed. A throughput server with full batches of
+  32 copies 31 of every 32 datagrams once more.
+  This is the first step of Plan's receive-buffer lending design (OPTIMIZATION_PLAN 12), and a pure copy cut.
+- **Measured on the Pi, with M-b's tool:** a copy-only arm, the per-datagram `memcpy` at the p1 datagram size (96 B in
+  the bench capture) and at p4's full datagram (1472 B), 20 rounds x 1000000 copies, in ns per copy.
+- **What processing in place would need, from the code, before anyone builds it:**
+  - core passes `node->rx_buffer` only as the buffer handed to `tt_receive()`/`tt_try_receive()` and then to
+    `process_packet()` (`drain_rx()` and the poll loop). No other reader or writer.
+  - A HAL call that hands out a pointer to the held slot instead of copying it: a HAL API addition.
+    `hal_freertos.c` holds nothing back (`tt_rx_buffered()` is 0), so it would take its copy path as today.
+  - The same alignment as `rx_buffer`: 4-aligned, `_Static_assert`ed for the codec. `rx_batch` rows are 1472 B
+    apart, a multiple of 8, so the rows need only the array's own start aligned. Add `tt_ALIGNAS` and an assert.
+  - The same lifetime: a slot stays valid until the next `recvmmsg()`, as `rx_buffer` stays valid until the next
+    receive. Decode aliases its input either way, and only the one poller touches either.
+- **How it reads:**
+  - The ceiling per sample is the copy's cost x 31/32, set against the campaign server's per-sample CPU on the Pi
+    (~2.49 us at c1, WIRE_PLAN 8.9 follow-up).
+  - The drop rule is 11's: under 2% or under 0.3 us, it is dropped.
