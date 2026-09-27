@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -28,7 +29,10 @@
 #include <ctime>
 #include <exception>
 #include <memory>
+#include <mutex>
+#include <random>
 #include <thread>
+#include <vector>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -41,6 +45,7 @@ namespace {
 
     using pingpong::BenchTraits;
     using pingpong::now_ns;
+    using pingpong::phase_probe;
 
     // Same conversion hal_linux.c's own now_ns() uses (its SEC_NS) - kept as two named constants
     // here (seconds and milliseconds) rather than one, since this file needs both.
@@ -94,9 +99,19 @@ namespace {
     // How the ping waits for each reply (--wait, --poll-sleep-us): blocking in spin_once(), or polling with
     // spin_some() and a sleep of poll_sleep_us between spins. The user's decision (2026-09-26): both modes
     // are test cases, and poll is swept over its sleep rather than measured at one arbitrary grid.
+    //
+    // Two poll-mode options (RMW_PERF_PLAN 10.1's proposals (a) and (b), branch only, pending the user's decision);
+    // both default to today's behaviour, so every earlier row stays reproducible:
+    //   --phase locked|random  locked: publish, then poll until the reply (today). random: the poll loop runs on its
+    //                          own and a second thread publishes on its own clock, so the reply lands at a random
+    //                          phase of the poll cycle (pingpong::phase_probe checks that it does).
+    //   --rtt-at loop|callback loop: the round trip ends after the poll cycle that took the reply, its sleep
+    //                          included (today). callback: it ends at the reply's callback, as block mode's does.
     struct wait_mode {
         bool blocking = false;
         int poll_sleep_us = default_poll_sleep_us;
+        bool random_phase = false;
+        bool rtt_at_callback = false;
     };
 
     struct loop_stats {
@@ -126,13 +141,14 @@ namespace {
     // reply wakes the executor, as the native client waits in tt_Node_poll(); the caller then reads the
     // round trip at the callback.
     auto wait_for_reply(rclcpp::executors::SingleThreadedExecutor& executor, const std::atomic<bool>& got_reply,
-                        uint64_t wait_deadline, const wait_mode& wait, loop_stats& loop) -> void {
+                        uint64_t wait_deadline, const wait_mode& wait, loop_stats& loop, phase_probe& probe) -> void {
         while (rclcpp::ok() && !got_reply && now_ns() < wait_deadline) {
             loop.iterations++;
             if (wait.blocking) {
                 executor.spin_once(std::chrono::nanoseconds(wait_deadline - now_ns()));
             } else {
                 const uint64_t spin_start = now_ns();
+                probe.on_check(spin_start);
                 executor.spin_some();
                 const uint64_t sleep_start = now_ns();
                 std::this_thread::sleep_for(std::chrono::microseconds(wait.poll_sleep_us));
@@ -140,6 +156,189 @@ namespace {
                 loop.sleep_ns += now_ns() - sleep_start;
             }
         }
+    }
+
+    // The PHASE: line (poll mode): the options in force, where the pings fell in the poll cycle, and how long after
+    // each publish its reply reached the callback - spread over about one cycle when the phase is random, and
+    // narrow when it is locked.
+    auto print_phase(const phase_probe& probe, std::vector<uint64_t>& callback_after_send, const wait_mode& wait)
+        -> void {
+        uint64_t placed = 0;
+        const double chi2 = pingpong::phase_chi2(probe, placed);
+        std::printf("PHASE: phase=%s rtt_at=%s placed=%lu unplaced=%lu bins=", wait.random_phase ? "random" : "locked",
+                    wait.rtt_at_callback ? "callback" : "loop", static_cast<unsigned long>(placed),
+                    static_cast<unsigned long>(probe.unplaced));
+        for (size_t i = 0; i < probe.counts.size(); i++) {
+            std::printf("%s%lu", i == 0 ? "" : "/", static_cast<unsigned long>(probe.counts[i]));
+        }
+        std::printf(" chi2=%.2f", chi2);
+        std::sort(callback_after_send.begin(), callback_after_send.end());
+        const size_t count = callback_after_send.size();
+        if (count > 0) {
+            constexpr size_t p10 = 10;
+            constexpr size_t p50 = 50;
+            constexpr size_t p90 = 90;
+            constexpr size_t hundred = 100;
+            std::printf(" callback_p10_us=%.1f callback_p50_us=%.1f callback_p90_us=%.1f",
+                        static_cast<double>(callback_after_send[count * p10 / hundred]) / ns_per_us,
+                        static_cast<double>(callback_after_send[count * p50 / hundred]) / ns_per_us,
+                        static_cast<double>(callback_after_send[count * p90 / hundred]) / ns_per_us);
+        }
+        std::printf("\n");
+    }
+
+    auto print_summary(const rtt_stats& rtt, uint64_t transmitted, bool reliable, const wait_mode& wait) -> void {
+        const uint64_t received = rtt.received;
+        const uint64_t lost = transmitted - received;
+        const double loss_pct =
+            transmitted > 0 ? (100.0 * static_cast<double>(lost) / static_cast<double>(transmitted)) : 0.0;
+        const double avg = received > 0 ? rtt.sum_ms / static_cast<double>(received) : 0.0;
+
+        const char* rmw_impl = std::getenv("RMW_IMPLEMENTATION");
+        if (rmw_impl == nullptr) {
+            rmw_impl = "rmw_fastrtps_cpp"; // ROS 2's own real default when unset
+        }
+
+        std::printf("\n--- %s pingpong statistics (%s) ---\n", rmw_impl, reliable ? "reliable" : "best_effort");
+        std::printf("%lu sent, %lu received, %.0f%% loss\n", static_cast<unsigned long>(transmitted),
+                    static_cast<unsigned long>(received), loss_pct);
+        if (received > 0) {
+            std::printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", rtt.min_ms, avg, rtt.max_ms);
+        }
+        std::printf("RESULT: framework=%s scenario=pingpong qos=%s wait=%s sent=%lu recv=%lu loss_pct=%.0f "
+                    "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f\n",
+                    rmw_impl, reliable ? "reliable" : "best_effort", wait.blocking ? "block" : "poll",
+                    static_cast<unsigned long>(transmitted), static_cast<unsigned long>(received), loss_pct, rtt.min_ms,
+                    avg, rtt.max_ms);
+    }
+
+    // Waits until both sides have matched. Give discovery a moment - a send before both sides have matched would
+    // just be lost, undercounting "sent" for no real reason (same reasoning as the native client's own
+    // wait_for_writer_match()/wait_for_reader_match()).
+    template <typename Pub, typename Sub>
+    auto wait_for_match(rclcpp::executors::SingleThreadedExecutor& executor, const Pub& pub, const Sub& sub) -> bool {
+        const uint64_t match_deadline = now_ns() + (10ULL * ns_per_s);
+        while (rclcpp::ok() && now_ns() < match_deadline &&
+               (pub->get_subscription_count() == 0 || sub->get_publisher_count() == 0)) {
+            executor.spin_some();
+            std::this_thread::sleep_for(std::chrono::milliseconds(discovery_poll_ms));
+        }
+        if (pub->get_subscription_count() == 0 || sub->get_publisher_count() == 0) {
+            std::fprintf(stderr, "timed out waiting for a match\n");
+            return false;
+        }
+        return true;
+    }
+
+    // --phase random: the reply as the sender thread sees it. The callback fills it on the poll thread; the poll
+    // thread stamps seen_ns when the cycle that took it has ended, and wakes the sender.
+    struct reply_slot {
+        std::mutex mutex;
+        std::condition_variable ready;
+        uint64_t seq = 0;
+        uint64_t send_ns = 0;  // the reply's own copy of its request's send time
+        uint64_t reply_ns = 0; // at the callback
+        uint64_t seen_ns = 0;  // at the end of the poll cycle that took it, 0 until then
+    };
+
+    // --phase random (poll only): this thread polls without pause - spin_some() and the sleep, as a real
+    // application's loop would - while a sender thread publishes on its own clock: the k-th ping at start + k * -i
+    // plus a random offset of up to phase_jitter_max_ns (at most half of -i), so the rate is -i's on average.
+    //
+    // The offset is what makes the phase random. Without it (the first sketch, 2026-09-27), the sender slept -i
+    // after the poll thread woke it at the end of a cycle; 20 ms later the publish fell at the same place in the
+    // loop's ~157 us cycle each time, and rmw_phase_check.sh measured chi2 287 against uniform. An offset spread
+    // over ~30 cycles leaves each phase bin within a few percent of the others.
+    constexpr uint64_t phase_jitter_max_ns = 5000000ULL; // 5 ms
+    template <typename T>
+    auto run_ping_random(const rclcpp::Node::SharedPtr& node, rclcpp::executors::SingleThreadedExecutor& executor,
+                         const rclcpp::QoS& qos, double interval_s, double duration_s, bool reliable,
+                         const wait_mode& wait, pingpong::stamp_log& stamps) -> int {
+        using Traits = BenchTraits<T>;
+        auto pub = node->create_publisher<T>("ping", qos);
+        reply_slot slot;
+        bool took_reply = false; // the poll thread's own: a reply came in this cycle's spin_some()
+        auto sub = node->create_subscription<T>("pong", qos, [&](const typename T::ConstSharedPtr& msg) -> void {
+            const uint64_t callback_ns = now_ns();
+            const std::lock_guard<std::mutex> lock(slot.mutex);
+            slot.seq = Traits::seq(*msg);
+            slot.send_ns = Traits::send_ns(*msg);
+            slot.reply_ns = callback_ns;
+            slot.seen_ns = 0;
+            took_reply = true;
+        });
+        if (!wait_for_match(executor, pub, sub)) {
+            return 1;
+        }
+
+        uint64_t transmitted = 0;
+        rtt_stats rtt;
+        loop_stats loop;
+        phase_probe probe;
+        std::vector<uint64_t> callback_after_send;
+        std::atomic<bool> done {false};
+        const uint64_t start = now_ns();
+        const uint64_t deadline = start + static_cast<uint64_t>(duration_s * static_cast<double>(ns_per_s));
+        const auto interval_ns = static_cast<uint64_t>(interval_s * static_cast<double>(ns_per_s));
+        const uint64_t jitter_ns = std::min(phase_jitter_max_ns, interval_ns / 2);
+
+        std::thread sender([&]() -> void {
+            std::mt19937_64 random(start);
+            std::uniform_int_distribution<uint64_t> offset(0, jitter_ns);
+            uint64_t seq = 0;
+            while (rclcpp::ok() && now_ns() < deadline) {
+                // The k-th ping's own time, whatever the last round trip took; one already past goes at once.
+                const uint64_t due = start + (seq * interval_ns) + offset(random);
+                const struct timespec due_ts = {.tv_sec = static_cast<time_t>(due / ns_per_s),
+                                                .tv_nsec = static_cast<long>(due % ns_per_s)};
+                // NOLINTNEXTLINE(misc-include-cleaner) - <ctime>; now_ns() is CLOCK_MONOTONIC too
+                clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &due_ts, nullptr);
+                T req;
+                Traits::set_seq(req, ++seq);
+                const uint64_t prev_check = probe.last_check_ns.load(std::memory_order_relaxed);
+                const uint64_t sent_at = now_ns();
+                Traits::set_send_ns(req, sent_at);
+                probe.on_send(prev_check, sent_at);
+                pub->publish(req);
+                transmitted++;
+                {
+                    std::unique_lock<std::mutex> lock(slot.mutex);
+                    const bool got = slot.ready.wait_for(lock, std::chrono::milliseconds(reply_wait_ms), [&]() -> bool {
+                        return slot.seq == seq && slot.seen_ns != 0;
+                    });
+                    if (got) {
+                        pingpong::stamp_log_add(stamps, seq, sent_at, slot.reply_ns);
+                        callback_after_send.push_back(slot.reply_ns - sent_at);
+                        const uint64_t end_ns = wait.rtt_at_callback ? slot.reply_ns : slot.seen_ns;
+                        add_rtt(rtt, static_cast<double>(end_ns - slot.send_ns) / static_cast<double>(ns_per_ms));
+                    }
+                }
+            }
+            done = true;
+        });
+
+        while (!done) {
+            loop.iterations++;
+            const uint64_t spin_start = now_ns();
+            probe.on_check(spin_start);
+            executor.spin_some();
+            const uint64_t sleep_start = now_ns();
+            std::this_thread::sleep_for(std::chrono::microseconds(wait.poll_sleep_us));
+            loop.spin_ns += sleep_start - spin_start;
+            loop.sleep_ns += now_ns() - sleep_start;
+            if (took_reply) {
+                took_reply = false;
+                const std::lock_guard<std::mutex> lock(slot.mutex);
+                slot.seen_ns = now_ns();
+                slot.ready.notify_all();
+            }
+        }
+        sender.join();
+
+        print_summary(rtt, transmitted, reliable, wait);
+        print_loop_stats(loop, transmitted, wait);
+        print_phase(probe, callback_after_send, wait);
+        return 0;
     }
 
     template <typename T>
@@ -156,6 +355,9 @@ namespace {
         } else {
             qos.best_effort();
         }
+        if (wait.random_phase && !wait.blocking) {
+            return run_ping_random<T>(node, executor, qos, interval_s, duration_s, reliable, wait, stamps);
+        }
 
         auto pub = node->create_publisher<T>("ping", qos);
 
@@ -168,25 +370,15 @@ namespace {
             got_reply = true;
         });
 
-        // Give discovery a moment - a send before both sides have matched would just be lost,
-        // undercounting "sent" for no real reason (same reasoning as the native client's own
-        // wait_for_writer_match()/wait_for_reader_match()).
-        {
-            const uint64_t match_deadline = now_ns() + (10ULL * ns_per_s);
-            while (rclcpp::ok() && now_ns() < match_deadline &&
-                   (pub->get_subscription_count() == 0 || sub->get_publisher_count() == 0)) {
-                executor.spin_some();
-                std::this_thread::sleep_for(std::chrono::milliseconds(discovery_poll_ms));
-            }
-            if (pub->get_subscription_count() == 0 || sub->get_publisher_count() == 0) {
-                std::fprintf(stderr, "timed out waiting for a match\n");
-                return 1;
-            }
+        if (!wait_for_match(executor, pub, sub)) {
+            return 1;
         }
 
         uint64_t transmitted = 0;
         rtt_stats rtt;
         loop_stats loop;
+        phase_probe probe;
+        std::vector<uint64_t> callback_after_send;
 
         uint64_t seq = 0;
         const uint64_t start = now_ns();
@@ -196,17 +388,20 @@ namespace {
         while (rclcpp::ok() && now_ns() < deadline) {
             T req;
             Traits::set_seq(req, ++seq);
+            const uint64_t prev_check = probe.last_check_ns.load(std::memory_order_relaxed);
             const uint64_t sent_at = now_ns();
             Traits::set_send_ns(req, sent_at);
+            probe.on_send(prev_check, sent_at);
             got_reply = false;
             pub->publish(req);
             transmitted++;
 
             const uint64_t wait_deadline = now_ns() + (reply_wait_ms * ns_per_ms); // 500ms, matching the native client
-            wait_for_reply(executor, got_reply, wait_deadline, wait, loop);
+            wait_for_reply(executor, got_reply, wait_deadline, wait, loop, probe);
             if (got_reply && Traits::seq(reply_msg) == seq) {
                 pingpong::stamp_log_add(stamps, seq, sent_at, reply_ns); // --stamps, whichever the wait mode
-                const uint64_t end_ns = wait.blocking ? reply_ns : now_ns();
+                callback_after_send.push_back(reply_ns - sent_at);
+                const uint64_t end_ns = wait.blocking || wait.rtt_at_callback ? reply_ns : now_ns();
                 add_rtt(rtt, static_cast<double>(end_ns - Traits::send_ns(reply_msg)) / static_cast<double>(ns_per_ms));
             }
 
@@ -215,31 +410,11 @@ namespace {
             nanosleep(&sleep_ts, nullptr); // NOLINT(misc-include-cleaner) - see now_ns()'s own <ctime> comment
         }
 
-        const uint64_t received = rtt.received;
-        const double rtt_min_ms = rtt.min_ms;
-        const double rtt_max_ms = rtt.max_ms;
-        const uint64_t lost = transmitted - received;
-        const double loss_pct =
-            transmitted > 0 ? (100.0 * static_cast<double>(lost) / static_cast<double>(transmitted)) : 0.0;
-        const double avg = received > 0 ? rtt.sum_ms / static_cast<double>(received) : 0.0;
-
-        const char* rmw_impl = std::getenv("RMW_IMPLEMENTATION");
-        if (rmw_impl == nullptr) {
-            rmw_impl = "rmw_fastrtps_cpp"; // ROS 2's own real default when unset
-        }
-
-        std::printf("\n--- %s pingpong statistics (%s) ---\n", rmw_impl, reliable ? "reliable" : "best_effort");
-        std::printf("%lu sent, %lu received, %.0f%% loss\n", static_cast<unsigned long>(transmitted),
-                    static_cast<unsigned long>(received), loss_pct);
-        if (received > 0) {
-            std::printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", rtt_min_ms, avg, rtt_max_ms);
-        }
-        std::printf("RESULT: framework=%s scenario=pingpong qos=%s wait=%s sent=%lu recv=%lu loss_pct=%.0f "
-                    "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f\n",
-                    rmw_impl, reliable ? "reliable" : "best_effort", wait.blocking ? "block" : "poll",
-                    static_cast<unsigned long>(transmitted), static_cast<unsigned long>(received), loss_pct, rtt_min_ms,
-                    avg, rtt_max_ms);
+        print_summary(rtt, transmitted, reliable, wait);
         print_loop_stats(loop, transmitted, wait);
+        if (!wait.blocking) {
+            print_phase(probe, callback_after_send, wait);
+        }
 
         return 0;
     }
@@ -256,6 +431,10 @@ auto main(int argc, char** argv) -> int {
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--wait") == 0 && i + 1 < argc) {
             wait.blocking = std::strcmp(argv[++i], "block") == 0;
+        } else if (std::strcmp(argv[i], "--phase") == 0 && i + 1 < argc) {
+            wait.random_phase = std::strcmp(argv[++i], "random") == 0;
+        } else if (std::strcmp(argv[i], "--rtt-at") == 0 && i + 1 < argc) {
+            wait.rtt_at_callback = std::strcmp(argv[++i], "callback") == 0;
         } else if (std::strcmp(argv[i], "--poll-sleep-us") == 0 && i + 1 < argc) {
             wait.poll_sleep_us = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--stamps") == 0 && i + 1 < argc) {
