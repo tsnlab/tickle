@@ -225,10 +225,12 @@ t_range_arm() { # rmw range_value peers1 peers2 -> received count
     echo "${got:-0}"
 }
 t_range() {
-    local iso sub
-    iso=$(t_range_arm "$1" LOCALHOST "" ""); sub=$(t_range_arm "$1" SUBNET "" "")
-    [ "$iso" = -1 ] || [ "$sub" = -1 ] && { echo "ERROR(talker did not run)"; return; }
-    if [ "$iso" = 0 ] && [ "$sub" -ge 20 ]; then echo PASS; else echo "FAIL(localhost=$iso subnet=$sub)"; fi
+    # OFF (added 2026-09-28, after g6): nothing between processes at all, CycloneDDS's observed behaviour; in-process
+    # delivery is the inprocess test's business.
+    local iso sub off
+    iso=$(t_range_arm "$1" LOCALHOST "" ""); sub=$(t_range_arm "$1" SUBNET "" ""); off=$(t_range_arm "$1" OFF "" "")
+    { [ "$iso" = -1 ] || [ "$sub" = -1 ] || [ "$off" = -1 ]; } && { echo "ERROR(talker did not run)"; return; }
+    if [ "$iso" = 0 ] && [ "$sub" -ge 20 ] && [ "$off" = 0 ]; then echo PASS; else echo "FAIL(localhost=$iso subnet=$sub off=$off)"; fi
 }
 t_peers() {
     # Its own control first: LOCALHOST without peers must isolate, or static peers would pass without doing anything

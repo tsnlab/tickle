@@ -736,3 +736,25 @@ library's md5 `e282cf1b5f53`; its symbols confirm g2, g5 and g8.
     | 100 ms | pong CPU | -0.4 ms (0.8) | -0.1 ms (1.4) | inside |
 
     (`rmw_lib_ab.sh` gained `PINGPONG_ARGS` for this; its default is unchanged.)
+
+## Checkpoint run 2 (2026-09-28, Plan): main at `e14d4439`, after g2, g3, g5, g6, g8, g9 and g10
+
+`rmw_gap_acceptance.sh -w /tmp/plan_accept`, rmw_tickle rebuilt Release at `e14d4439`. `range` now also has the OFF arm:
+nothing between processes, CycloneDDS's observed behaviour.
+
+| test | control | rmw_tickle | baseline (2026-09-27/28) |
+|---|---|---|---|
+| graph | CycloneDDS PASS | **PASS** | FAIL |
+| bag | CycloneDDS PASS | FAIL | FAIL (g1 is still open) |
+| events | CycloneDDS PASS | **PASS** | FAIL |
+| matched | CycloneDDS PASS | **PASS** | FAIL |
+| itype | CycloneDDS FAIL (VOID) | PASS | FAIL |
+| takeseq | CycloneDDS PASS | **PASS** | FAIL |
+| samehost | CycloneDDS PASS | **PASS** | FAIL |
+| inprocess | CycloneDDS PASS | **PASS** | FAIL |
+| durable | CycloneDDS PASS | **PASS** | FAIL |
+| range (LOCALHOST, SUBNET, OFF) | CycloneDDS PASS | **PASS** | FAIL |
+| peers | CycloneDDS PASS | **PASS** | FAIL |
+
+**Every gap on the list is closed except g1** (serialized messages, with large-message stage 1), each confirmed by its
+own acceptance test against the control. SECURITY_PLAN stays parked, at the user's word.
