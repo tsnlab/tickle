@@ -1304,8 +1304,8 @@ static struct tt_DiscoveredEntity* discovery_free_slot(struct tt_Discovery* disc
 // every caller below calls this unconditionally rather than checking node->discovery first, the
 // same way logging macros check their own level instead of every call site checking it.
 static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
-                                     uint8_t qos, uint64_t deadline_duration_ns, uint64_t liveliness_lease_duration_ns,
-                                     const char* type, const char* name) {
+                                     uint8_t node_index, uint8_t qos, uint64_t deadline_duration_ns,
+                                     uint64_t liveliness_lease_duration_ns, const char* type, const char* name) {
     if (node->discovery == NULL) {
         return;
     }
@@ -1367,6 +1367,7 @@ static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, u
     slot->context_id = node_id;
     slot->endpoint_id = endpoint_id;
     slot->kind = kind;
+    slot->node_index = node_index;
     slot->qos = qos;
     slot->deadline_duration_ns = deadline_duration_ns;
     slot->liveliness_lease_duration_ns = liveliness_lease_duration_ns;
@@ -1458,6 +1459,29 @@ static void tombstone_discovered_entities_from_source(struct tt_Context* node, u
                                      node->discovery_callback_param);
         }
     }
+}
+
+// The context's nodes as announce entries (stage 3), after its endpoints: every node created explicitly, and the
+// default node only while it owns an endpoint - an empty implicit node would be a phantom in every peer's graph.
+static uint32_t announced_nodes(struct tt_Context* context, struct tt_Endpoint** out) {
+    uint32_t count = 0;
+    for (uint32_t index = 0; index < tt_MAX_NODES; index++) {
+        struct tt_Node* node = context->nodes[index];
+        if (node == NULL) {
+            continue;
+        }
+        if (node == &context->default_node) {
+            bool owns_one = false;
+            for (uint32_t i = 0; i < context->endpoint_count && !owns_one; i++) {
+                owns_one = context->endpoints[i]->node_index == index;
+            }
+            if (!owns_one) {
+                continue;
+            }
+        }
+        out[count++] = &node->entry;
+    }
+    return count;
 }
 
 // Milestone 35 (rmw_tickle/PLAN.md) - deliberately does NOT reject a second endpoint sharing an
@@ -1575,6 +1599,8 @@ static const char* endpoint_type_name(struct tt_Endpoint* endpoint) {
         return ((struct tt_Client*)endpoint)->service->name;
     case tt_KIND_SERVICE_SERVER:
         return ((struct tt_Server*)endpoint)->service->name;
+    case tt_KIND_NODE: // a node's announce entry (stage 3), which is a struct tt_Node's first member
+        return ((struct tt_Node*)endpoint)->namespace_name;
     default:
         return NULL;
     }
@@ -2619,6 +2645,21 @@ tt_ret_t tt_Context_create_subscriber(struct tt_Context* node, struct tt_Subscri
 
 // ---- Nodes (CONTEXT_NODE_PLAN.md stage 2) - see struct tt_Node (tickle.h).
 
+// A node's announce entry (struct tt_Node.entry, stage 3): its identity on the wire, set as it comes into use - its
+// own entity id from the context's sequence, as an endpoint's is - and the announce armed, as for an endpoint.
+static void node_entry_init(struct tt_Context* context, struct tt_Node* node) {
+    node->entry.kind = tt_KIND_NODE;
+    node->entry.node_index = node->index;
+    node->entry.id = tt_hash_id(node->namespace_name, node->name);
+    node->entry.name = node->name;
+    node->entry.entity_id = context->entity_id_base + context->next_entity_id++;
+    if (node->entry.entity_id == tt_DISCOVERY_ENTITY_ID) {
+        node->entry.entity_id = context->entity_id_base + context->next_entity_id++;
+    }
+    context->last_modified = tt_get_ns();
+    arm_announce_soon(context);
+}
+
 static struct tt_Node* default_node_locked(struct tt_Context* context) {
     if (context == NULL) {
         return NULL;
@@ -2635,6 +2676,7 @@ static struct tt_Node* default_node_locked(struct tt_Context* context) {
         node->index = 0;
         node->context = context;
         context->nodes[0] = node;
+        node_entry_init(context, node);
     }
     return node;
 }
@@ -2664,14 +2706,21 @@ static tt_ret_t node_register_locked(struct tt_Context* context, struct tt_Node*
             node->namespace_name = namespace_name;
             node->index = (uint8_t)index;
             context->nodes[index] = node;
+            node_entry_init(context, node);
             return tt_RET_OK;
         }
     }
     return tt_RET_OUT_OF_BUFFER;
 }
 
+// A function, not an inline comparison: at tt_MAX_NODES 256 a uint8_t index is always in range, and the comparison
+// written against the uint8_t would draw -Wtype-limits.
+static bool node_index_in_range(uint32_t index) {
+    return index < tt_MAX_NODES;
+}
+
 struct tt_Node* tt_Endpoint_node(const struct tt_Context* context, const struct tt_Endpoint* endpoint) {
-    if (context == NULL || endpoint == NULL || endpoint->node_index >= tt_MAX_NODES) {
+    if (context == NULL || endpoint == NULL || !node_index_in_range(endpoint->node_index)) {
         return NULL;
     }
     return context->nodes[endpoint->node_index];
@@ -2704,6 +2753,8 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
     if (result == tt_RET_OK) {
         context->nodes[node->index] = NULL;
         node->context = NULL;
+        context->last_modified = tt_get_ns(); // it leaves the announce (stage 3)
+        arm_announce_soon(context);
     }
     state_unlock(context);
     return result;
@@ -5560,6 +5611,31 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
 // encoded, or -1 on an encode failure (the caller must roll back the whole submessage in that
 // case). encode()/encode_string() already log their own reason when they fail, so this doesn't
 // log again on top of that - except "illegal endpoint kind", which is this function's own check.
+// An announce entry's node index in bits kind and qos do not use (stage 3, wire v11; tt_UPDATE_NODE_INDEX, tickle.h):
+// index bits 0-3 are qos bits 4-7, index bits 4-7 are kind bits 2, 3, 6 and 7.
+#define NODE_INDEX_QOS_SHIFT 4U
+#define NODE_INDEX_HIGH_SHIFT 4U
+#define KIND_INDEX_BIT_4 0x04U
+#define KIND_INDEX_BIT_5 0x08U
+#define KIND_INDEX_BIT_6 0x40U
+#define KIND_INDEX_BIT_7 0x80U
+
+static uint8_t node_index_kind_bits(uint8_t index) {
+    uint8_t high = (uint8_t)(index >> NODE_INDEX_HIGH_SHIFT);
+    return (uint8_t)(((high & 1U) != 0 ? KIND_INDEX_BIT_4 : 0U) | ((high & 2U) != 0 ? KIND_INDEX_BIT_5 : 0U) |
+                     ((high & 4U) != 0 ? KIND_INDEX_BIT_6 : 0U) | ((high & 8U) != 0 ? KIND_INDEX_BIT_7 : 0U));
+}
+
+static uint8_t node_index_qos_bits(uint8_t index) {
+    return (uint8_t)((index & tt_UPDATE_QOS_MASK) << NODE_INDEX_QOS_SHIFT);
+}
+
+static uint8_t node_index_of_entry(uint8_t kind, uint8_t qos) {
+    uint8_t high = (uint8_t)(((kind & KIND_INDEX_BIT_4) != 0 ? 1U : 0U) | ((kind & KIND_INDEX_BIT_5) != 0 ? 2U : 0U) |
+                             ((kind & KIND_INDEX_BIT_6) != 0 ? 4U : 0U) | ((kind & KIND_INDEX_BIT_7) != 0 ? 8U : 0U));
+    return (uint8_t)((high << NODE_INDEX_HIGH_SHIFT) | (qos >> NODE_INDEX_QOS_SHIFT));
+}
+
 static int encode_update_entities(struct tt_Context* node, struct tt_Endpoint* const* endpoints,
                                   uint32_t endpoint_count) {
     uint8_t entity_count = 0;
@@ -5582,8 +5658,9 @@ static int encode_update_entities(struct tt_Context* node, struct tt_Endpoint* c
 
         update_entity->endpoint_id = endpoint->id;
         update_entity->entity_id = endpoint->entity_id; // Phase 2 - which instance, not just which topic
-        update_entity->kind = endpoint->kind;
-        update_entity->qos = endpoint_qos_bits(endpoint);
+        // The node's index in spare bits (stage 3): no bytes added.
+        update_entity->kind = (uint8_t)(endpoint->kind | node_index_kind_bits(endpoint->node_index));
+        update_entity->qos = (uint8_t)(endpoint_qos_bits(endpoint) | node_index_qos_bits(endpoint->node_index));
         // Phase 2 - a Subscriber announces the window it can actually track; everything else
         // announces 0 ("the default"), see tt_UpdateEntity.tracking_words' own doc comment.
         update_entity->tracking_words = endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER
@@ -5780,11 +5857,12 @@ static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer*
     fill_announce_header(node, data_header);
     announce->entity_count = 0;
 
-    struct tt_Endpoint* endpoints[tt_MAX_ENDPOINT_COUNT];
+    struct tt_Endpoint* endpoints[tt_MAX_ENDPOINT_COUNT + tt_MAX_NODES];
     uint32_t endpoint_count = node->endpoint_count;
     for (uint32_t i = 0; i < endpoint_count; i++) {
         endpoints[i] = node->endpoints[i];
     }
+    endpoint_count += announced_nodes(node, endpoints + endpoint_count);
 
     // An announce too large for one datagram goes in fragments; anything that fits is one DATA.
     if (!update_fits_single(endpoints, endpoint_count)) {
@@ -6591,9 +6669,16 @@ static bool decode_update_entities(struct tt_Context* node, struct tt_Header* he
         uint64_t deadline_duration_ns = rd64(header, update_entity->deadline_duration_ns);
         uint64_t liveliness_lease_duration_ns = rd64(header, update_entity->liveliness_lease_duration_ns);
 
+        // The node's index, out of the spare bits it rides in, which are then cleared: everything below reads kind
+        // and qos as they were before stage 3.
+        uint8_t node_index = node_index_of_entry(update_entity->kind, update_entity->qos);
+        update_entity->kind &= tt_UPDATE_KIND_MASK;
+        update_entity->qos &= tt_UPDATE_QOS_MASK;
+
         TT_LOG_DEBUG("UpdateEntity");
         TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
         TT_LOG_DEBUG("  kind: %d", update_entity->kind);
+        TT_LOG_DEBUG("  node_index: %u", node_index);
 
         if (update_entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
             // Designated initializers on purpose: this struct gained fields in the middle (Phase
@@ -6641,7 +6726,7 @@ static bool decode_update_entities(struct tt_Context* node, struct tt_Header* he
         // Recorded regardless of kind or whether a local endpoint matched above - discovery
         // (tt_Context_set_discovery()) lists every remote entity a node has heard of, not just ones
         // this node itself can talk to.
-        upsert_discovered_entity(node, header->source, endpoint_id, update_entity->kind, update_entity->qos,
+        upsert_discovered_entity(node, header->source, endpoint_id, update_entity->kind, node_index, update_entity->qos,
                                  deadline_duration_ns, liveliness_lease_duration_ns, type, name);
     }
 

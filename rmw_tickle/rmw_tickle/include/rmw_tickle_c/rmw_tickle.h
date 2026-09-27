@@ -334,8 +334,8 @@ struct rmw_tickle_context_impl_t {
     // create_node() call to bring node_count from 0 to 1; teardown only once node_count returns to
     // 0 - every rmw_get_node_names() call (rmw_graph.c) also takes this to enumerate every
     // currently-live logical node, closing that function's own long-documented "only ever reports
-    // the local node" gap as a side effect (still never a *remote* node - TickLE's wire protocol
-    // still has no node-name concept at all, only this process's own logical nodes are knowable).
+    // the local node" gap as a side effect. Remote nodes come from discovery since CONTEXT_NODE_PLAN.md stage 3
+    // (wire v11), which carries every context's nodes.
     pthread_mutex_t registry_mutex;
     atomic_int node_count;
     rmw_tickle_node_t** nodes; // allocator-owned array of nodes_capacity pointers, first node_count valid

@@ -175,7 +175,8 @@ static void test_a_full_table_counts_what_it_drops_and_warns_once(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&local, &discovery, NULL, NULL));
     // Fill every slot with entities of a third context, so the remote's publishers find none free.
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        upsert_discovered_entity(&local, REMOTE_ID + 1, (uint32_t)i + 1U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, "t", "e");
+        upsert_discovered_entity(&local, REMOTE_ID + 1, (uint32_t)i + 1U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t",
+                                 "e");
     }
     EXPECT_EQ_U32(0, discovery.entities_dropped);
     for (int i = 0; i < PUBLISHERS; i++) {
@@ -201,7 +202,8 @@ static void test_a_full_table_counts_what_it_drops_and_warns_once(void) {
     carry();
     (void)fclose(log);
     tt_log_set_output(stderr);
-    EXPECT_EQ_U32(2 * PUBLISHERS, discovery.entities_dropped);
+    // Each announce lists the publishers and, since stage 3, the node they are on (the remote's default node).
+    EXPECT_EQ_U32(2 * (PUBLISHERS + 1), discovery.entities_dropped);
     EXPECT_EQ_INT(1, count_occurrences(log_text != NULL ? log_text : "", "Discovery table full"));
     free(log_text);
     test_mock_send_hook = NULL;

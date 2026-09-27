@@ -13,22 +13,12 @@
 // changed guard condition itself is wired up in rmw_node.c's own discovery_callback() (Milestone
 // 0(c)'s tt_DISCOVERY_CALLBACK), not here - this file only answers graph *queries*.
 //
-// TickLE's own wire protocol has no node-name concept at all (rmw_node.c's own rmw_create_node()
-// doc comment - a node is identified purely by its numeric id) and struct tt_DiscoveredEntity
-// (Milestone 0(c)) never learns a remote node's display name either, only its endpoints' own
-// kind/name/type - so rmw_get_node_names() can only ever truthfully report this *process's own*
-// logical nodes, never any other process's. Milestone 34 closed part of this gap as a side effect
-// of promoting the shared tt_Context/discovery up to rmw_tickle_context_impl_t: every logical node
-// sharing this context is now enumerable (context_impl->nodes[]), not just the one specific
-// rmw_node_t handle a caller happened to pass in - a real, documented gap versus full ROS 2 graph
-// introspection remains regardless (e.g. `ros2 node list` against a live rmw_tickle graph would
-// only ever show this one process's own nodes, never a remote process's).
-//
-// rmw_count_publishers()/_subscribers() need to count matches in *two* places: TickLE's own
-// discovery table (tt_Discovery, Milestone 0(c), now context-scoped) only ever records *remote*
-// entities - other nodes' own announces - never this process's own locally-created ones (see
-// struct tt_Discovery itself), so count_matching() below also scans tickle_context.endpoints[]
-// directly for local matches, rather than needing a separate local bookkeeping list of its own.
+// Nodes (CONTEXT_NODE_PLAN.md stage 3, wire v11, 2026-09-27): a context's announce lists its nodes, each an entry
+// of kind tt_KIND_NODE with its namespace, name and index, and every endpoint entry carries its node's index. So a
+// remote node's name is known, and so is each remote endpoint's node: the live node entry with the same context id
+// and node index (remote_node_of() below). rmw_get_node_names() and the *_by_node() queries answer for this process's
+// nodes (context_impl->nodes[], Milestone 34) and for every live remote node alike. Before stage 3 the wire had no
+// node concept and they answered for this process only.
 
 #include <pthread.h> // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own <pthread.h> comment
 #include <stdatomic.h>
@@ -92,6 +82,34 @@ static void fini_topic_endpoint_info_array_ignore_result(rmw_topic_endpoint_info
 // context (context_impl->nodes[]), not just the one handle the caller happened to pass in - see
 // this file's own module doc comment for why that's now knowable, and still not any *other*
 // process's own nodes.
+// Remote nodes (CONTEXT_NODE_PLAN.md stage 3, wire v11): a peer's announce lists its nodes as tt_KIND_NODE entries -
+// namespace in `type`, name in `name`, and the node's index in its context - and every remote endpoint records the
+// index of the node it belongs to. A remote endpoint's node is the live node entry with its context_id and node_index.
+// Called with the context lock held.
+static bool is_remote_node(const struct tt_DiscoveredEntity* entity) {
+    return entity->context_id != tt_CONTEXT_ID_INVALID && entity->alive && entity->kind == tt_KIND_NODE;
+}
+
+static const struct tt_DiscoveredEntity* remote_node_of(rmw_tickle_context_impl_t* context_impl,
+                                                        const struct tt_DiscoveredEntity* endpoint) {
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
+        const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
+        if (is_remote_node(entity) && entity->context_id == endpoint->context_id &&
+            entity->node_index == endpoint->node_index) {
+            return entity;
+        }
+    }
+    return NULL;
+}
+
+static size_t count_remote_nodes(rmw_tickle_context_impl_t* context_impl) {
+    size_t count = 0;
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
+        count += is_remote_node(&context_impl->discovery.entities[i]) ? 1U : 0U;
+    }
+    return count;
+}
+
 rmw_ret_t rmw_get_node_names(const rmw_node_t* node, rcutils_string_array_t* node_names,
                              rcutils_string_array_t* node_namespaces) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
@@ -116,25 +134,44 @@ rmw_ret_t rmw_get_node_names(const rmw_node_t* node, rcutils_string_array_t* nod
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
     rmw_tickle_context_impl_t* context_impl = node_impl->context_impl;
 
+    // This context's nodes, then every live remote node (stage 3). The registry lock before the context lock, the
+    // order rmw_create_node()/rmw_destroy_node() take them in.
     pthread_mutex_lock(&context_impl->registry_mutex);
+    tt_Context_lock(&context_impl->tickle_context);
     int count = atomic_load(&context_impl->node_count);
-    if (rcutils_string_array_init(node_names, (size_t)count, &node_impl->allocator) != RCUTILS_RET_OK) {
+    size_t total = (size_t)count + count_remote_nodes(context_impl);
+    if (rcutils_string_array_init(node_names, total, &node_impl->allocator) != RCUTILS_RET_OK) {
+        tt_Context_unlock(&context_impl->tickle_context);
         pthread_mutex_unlock(&context_impl->registry_mutex);
         RMW_SET_ERROR_MSG("failed to allocate node_names");
         return RMW_RET_BAD_ALLOC;
     }
-    if (rcutils_string_array_init(node_namespaces, (size_t)count, &node_impl->allocator) != RCUTILS_RET_OK) {
+    if (rcutils_string_array_init(node_namespaces, total, &node_impl->allocator) != RCUTILS_RET_OK) {
+        tt_Context_unlock(&context_impl->tickle_context);
         pthread_mutex_unlock(&context_impl->registry_mutex);
         RMW_SET_ERROR_MSG("failed to allocate node_namespaces");
         fini_string_array_ignore_result(node_names);
         return RMW_RET_BAD_ALLOC;
     }
     bool alloc_failed = false;
-    for (int i = 0; i < count && !alloc_failed; i++) {
-        node_names->data[i] = rcutils_strdup(context_impl->nodes[i]->rmw_node.name, node_impl->allocator);
-        node_namespaces->data[i] = rcutils_strdup(context_impl->nodes[i]->rmw_node.namespace_, node_impl->allocator);
-        alloc_failed = NULL == node_names->data[i] || NULL == node_namespaces->data[i];
+    size_t filled = 0;
+    for (int i = 0; i < count && !alloc_failed; i++, filled++) {
+        node_names->data[filled] = rcutils_strdup(context_impl->nodes[i]->rmw_node.name, node_impl->allocator);
+        node_namespaces->data[filled] =
+            rcutils_strdup(context_impl->nodes[i]->rmw_node.namespace_, node_impl->allocator);
+        alloc_failed = NULL == node_names->data[filled] || NULL == node_namespaces->data[filled];
     }
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES && filled < total && !alloc_failed; ++i) {
+        const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
+        if (!is_remote_node(entity)) {
+            continue;
+        }
+        node_names->data[filled] = rcutils_strdup(entity->name, node_impl->allocator);
+        node_namespaces->data[filled] = rcutils_strdup(entity->type, node_impl->allocator);
+        alloc_failed = NULL == node_names->data[filled] || NULL == node_namespaces->data[filled];
+        filled++;
+    }
+    tt_Context_unlock(&context_impl->tickle_context);
     pthread_mutex_unlock(&context_impl->registry_mutex);
     if (alloc_failed) {
         RMW_SET_ERROR_MSG("failed to allocate node name/namespace string");
@@ -604,12 +641,9 @@ static size_t collect_graph_wide_name_types(rmw_tickle_context_impl_t* context_i
     return count;
 }
 
-// The actual scan behind the four *_by_node() queries below: every distinct (name, type) pair for
-// ONE kind, owned by the given LOCAL node specifically. Remote (discovered) entities are never
-// included here - TickLE's wire protocol has no node-name concept at all (this file's own module
-// doc comment), so there is no way to know which remote node a discovered entity belongs to, only
-// that it exists - an honest, documented gap, not something this function tries to paper over.
-// Same locking contract as collect_graph_wide_name_types() above.
+// The actual scan behind the four *_by_node() queries below: every distinct (name, type) pair for ONE kind owned by
+// the named node - a local one, or a live remote one (stage 3: its endpoints are those with its context id and node
+// index). Same locking contract as collect_graph_wide_name_types() above.
 static size_t collect_by_node_name_types(rmw_tickle_context_impl_t* context_impl, uint8_t kind,
                                          const char* owning_node_name, const char* owning_node_namespace,
                                          struct name_type_entry* entries) {
@@ -625,6 +659,22 @@ static size_t collect_by_node_name_types(rmw_tickle_context_impl_t* context_impl
             continue;
         }
         count = add_name_type_entry(entries, count, endpoint->name, details.type_name);
+    }
+    // A remote node's endpoints (stage 3): every live endpoint of `kind` whose (context id, node index) is that of a
+    // live remote node entry with this name and namespace - more than one context may host a node so named.
+    for (uint32_t slot = 0; slot < tt_MAX_DISCOVERED_ENTITIES; ++slot) {
+        const struct tt_DiscoveredEntity* owner = &context_impl->discovery.entities[slot];
+        if (!is_remote_node(owner) || strcmp(owner->name, owning_node_name) != 0 ||
+            strcmp(owner->type, owning_node_namespace) != 0) {
+            continue;
+        }
+        for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
+            const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
+            if (entity->context_id == owner->context_id && entity->alive && entity->kind == kind &&
+                entity->node_index == owner->node_index) {
+                count = add_name_type_entry(entries, count, entity->name, entity->type);
+            }
+        }
     }
     return count;
 }
@@ -775,12 +825,8 @@ rmw_ret_t rmw_get_service_names_and_types(const rmw_node_t* node, rcutils_alloca
     return ret;
 }
 
-// Milestone 34's own node registry - context_impl->nodes[] - is the only "which nodes exist" list
-// TickLE has (this file's own module doc comment: the wire protocol has no node-name concept at
-// all, so a *remote* node's own name can never be known, only that some remote entity exists).
-// The four *_by_node() queries below can therefore only ever truthfully answer for a node in
-// *this* process; anything else genuinely is RMW_RET_NODE_NAME_NON_EXISTENT, not a gap to paper
-// over with a guess.
+// Whether a node of this name and namespace exists: one of this process's (context_impl->nodes[], Milestone 34) or a
+// live remote one (stage 3). Anything else is RMW_RET_NODE_NAME_NON_EXISTENT for the four *_by_node() queries below.
 static bool node_name_is_registered(rmw_tickle_context_impl_t* context_impl, const char* node_name,
                                     const char* node_namespace) {
     pthread_mutex_lock(&context_impl->registry_mutex);
@@ -790,6 +836,14 @@ static bool node_name_is_registered(rmw_tickle_context_impl_t* context_impl, con
         found = strcmp(context_impl->nodes[i]->rmw_node.name, node_name) == 0 &&
                 strcmp(context_impl->nodes[i]->rmw_node.namespace_, node_namespace) == 0;
     }
+    // Or a live remote node (stage 3).
+    tt_Context_lock(&context_impl->tickle_context);
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES && !found; ++i) {
+        const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
+        found =
+            is_remote_node(entity) && strcmp(entity->name, node_name) == 0 && strcmp(entity->type, node_namespace) == 0;
+    }
+    tt_Context_unlock(&context_impl->tickle_context);
     pthread_mutex_unlock(&context_impl->registry_mutex);
     return found;
 }
@@ -966,10 +1020,9 @@ static rmw_ret_t populate_topic_endpoint_info(rcutils_allocator_t* allocator, co
 
 // The actual scan+build behind rmw_get_publishers_info_by_topic()/_subscriptions_info_by_topic()
 // below - unlike the names_and_types family above, every individual matching endpoint instance
-// (local or remote) gets its own row here, none deduplicated by name. A remote entity's own
-// node_name/node_namespace are always "" (empty, not NULL - the setters require a real C string) -
-// TickLE's wire protocol has no node-name concept at all, so this is the honest answer, not a
-// guess (see this file's own module doc comment). A remote entity's own qos_profile only ever
+// (local or remote) gets its own row here, none deduplicated by name. A remote entity's node_name/node_namespace are
+// its node's (stage 3, remote_node_of()), or "" if that node's entry is not known (empty, not NULL - the setters
+// require a real C string). A remote entity's own qos_profile only ever
 // has RELIABILITY/DURABILITY populated for real (struct tt_DiscoveredEntity.qos's own doc comment)
 // - starting from rmw_qos_profile_unknown and overriding just those two matches this API's own
 // documented allowance ("the only QoS policies guaranteed to be shared during discovery are the
@@ -1015,8 +1068,10 @@ static rmw_ret_t get_topic_endpoint_info_by_topic(rmw_tickle_context_impl_t* con
                                                                       : RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
         qos.durability = (entity->qos & tt_UPDATE_QOS_DURABLE) != 0 ? RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL
                                                                     : RMW_QOS_POLICY_DURABILITY_VOLATILE;
-        ret = populate_topic_endpoint_info(allocator, "", "", entity->type, endpoint_type, entity->context_id,
-                                           entity->endpoint_id, &qos, &info_array->info_array[index]);
+        const struct tt_DiscoveredEntity* owner = remote_node_of(context_impl, entity); // stage 3
+        ret = populate_topic_endpoint_info(
+            allocator, owner != NULL ? owner->name : "", owner != NULL ? owner->type : "", entity->type, endpoint_type,
+            entity->context_id, entity->endpoint_id, &qos, &info_array->info_array[index]);
         if (ret != RMW_RET_OK) {
             tt_Context_unlock(&context_impl->tickle_context);
             fini_topic_endpoint_info_array_ignore_result(info_array, allocator);

@@ -198,7 +198,8 @@ static void test_announce_that_fits_stays_a_single_update(void) {
     EXPECT_EQ_U32(tt_DISCOVERY_ENTITY_ID, data_header->entity_id);
     EXPECT_EQ_U32(100, data_header->seq_no);
     EXPECT_EQ_U32(timestamp_to_wire(100), data_header->timestamp); // last_modified, in wire microseconds
-    EXPECT_EQ_INT(8, ((const struct tt_AnnounceHeader*)(data_header + 1))->entity_count);
+    // The 8 endpoints and, since stage 3 (wire v11), the default node they are on.
+    EXPECT_EQ_INT(8 + 1, ((const struct tt_AnnounceHeader*)(data_header + 1))->entity_count);
 }
 
 static void test_large_announce_goes_in_datagram_sized_parts(void) {
@@ -233,7 +234,7 @@ static void test_large_announce_goes_in_datagram_sized_parts(void) {
         EXPECT_EQ_U32(sizeof(struct tt_Header) + sub->length, datagram_len[d]); // one submessage per datagram
         entities += part->entity_count;                                         // whole entities in every fragment
     }
-    EXPECT_EQ_U32(MAX_ENDPOINTS, entities);
+    EXPECT_EQ_U32(MAX_ENDPOINTS + 1, entities); // and the default node's entry (stage 3)
     EXPECT_EQ_U32(0, (uint32_t)sender.tx_dropped_oversize);
 }
 

@@ -59,7 +59,7 @@ static void setup(void) {
 }
 
 static void add(uint8_t source, uint32_t endpoint_id) {
-    upsert_discovered_entity(&context, source, endpoint_id, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, "t", "e");
+    upsert_discovered_entity(&context, source, endpoint_id, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
 }
 
 static bool known(uint8_t source, uint32_t endpoint_id) {

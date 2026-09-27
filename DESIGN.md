@@ -867,8 +867,24 @@ The core's pieces are named after rmw's:
 - rmw_tickle allocates each node's `tt_Node` apart from the rest of the node. If rcl destroys a node before its
   entities, the core node is kept rather than freed under them.
 
-**On the wire.** Nothing about nodes is on the wire yet: the announce is byte-identical to stage 1's for the same
-endpoints (`experiments/announce_bytes.c`). Stage 3 adds node entries.
+**On the wire (stage 3, `tt_VERSION` 11).**
+- A context's announce lists its nodes after its endpoints, one `tt_UpdateEntity` each:
+  - `kind` is `tt_KIND_NODE` (0x03, TOPIC and SERVICE together, which no endpoint is);
+  - `entity_id` is the node's own id from the context's sequence;
+  - `endpoint_id` is hash(namespace, name);
+  - the type string is the namespace, and the name string is the node's name.
+- An empty default node is not listed. An explicitly created node is, with or without endpoints.
+- **Every entry carries its node's index at no byte cost,** in 8 bits that `kind` and `qos` did not use: index bits
+  0-3 are `qos` bits 4-7, and index bits 4-7 are `kind` bits 2, 3, 6 and 7. A receiver takes the index out, then
+  masks `kind` (`tt_UPDATE_KIND_MASK`) and `qos` (`tt_UPDATE_QOS_MASK`) before any other use, so everything else
+  reads them as before.
+- The receiver records node entries in its discovery table (`tt_DiscoveredEntity.node_index`), and never matches
+  them as endpoints: every matching path compares `kind` with an endpoint kind.
+- A remote endpoint's node is the live node entry with its context id and node index. rmw_tickle's
+  `rmw_get_node_names()` and `*_by_node()` queries list remote nodes from it, so `ros2 node list`, `ros2 node info`
+  and `ros2 param` reach a node in another process.
+- **The cost:** 40 B per node per announce list (measured for "talker" in "/"; `experiments/announce_bytes.c`). The
+  discovery summary is unchanged but for its version byte.
 
 ## Capacities, and what depends on them (CONTEXT_NODE_PLAN.md 4a)
 

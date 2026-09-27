@@ -52,6 +52,8 @@ const char* tt_version(void);
 #define tt_KIND_TOPIC_PUBLISHER (tt_KIND_SENDER | tt_KIND_TOPIC)
 #define tt_KIND_SERVICE_CLIENT (tt_KIND_RECEIVER | tt_KIND_SERVICE)
 #define tt_KIND_SERVICE_SERVER (tt_KIND_SENDER | tt_KIND_SERVICE)
+// A node's entry in an announce (CONTEXT_NODE_PLAN.md stage 3): TOPIC and SERVICE together, which no endpoint is.
+#define tt_KIND_NODE (tt_KIND_TOPIC | tt_KIND_SERVICE)
 
 struct tt_Endpoint;
 struct tt_Context;
@@ -145,6 +147,40 @@ struct tt_DiscoveryRequest {
     uint64_t sent_ns;
 };
 
+struct tt_Endpoint {
+    uint8_t kind;
+    // The index, in its context, of the node that owns this endpoint (CONTEXT_NODE_PLAN.md stage 2): the one it was
+    // created on with tt_Node_create_*(), or 0 - the context's default node - for the tt_Context_create_*()
+    // shorthands. An index, not a pointer: it sits in the padding after `kind`, so every endpoint struct keeps its
+    // layout and size (a pointer here cost -R's receive 1 ns a sample), and it is what stage 3 puts on the wire.
+    // tt_Endpoint_node() finds the node.
+    uint8_t node_index;
+    // hash(topic/service name + endpoint name) - a pure function of the name alone, deliberately:
+    // this is how a Publisher and Subscriber (or Client and Server) on two different, otherwise-
+    // unacquainted nodes agree on "the same" topic/service with zero negotiation, each computing
+    // this independently from the shared name. NOT necessarily unique within one tt_Context any more
+    // (Milestone 35, rmw_tickle/PLAN.md) - two local endpoints of the same kind can legitimately
+    // share an id if they share a name, see add_endpoint_to_node()'s own doc comment (tickle.c).
+    uint32_t id;
+    const char* name;
+
+    // Milestone 47 - this specific entity *instance*'s own identity, distinct from id above (a
+    // pure name hash, shared by every entity - local or remote - with the same kind+topic/
+    // service+endpoint name, by design). Assigned once, in add_endpoint_to_node() (tickle.c), as
+    // node->entity_id_base + node->next_entity_id++ - see struct tt_Context's own entity_id_base/
+    // next_entity_id doc comment for why that specific combination (a per-launch random base plus
+    // a per-node counter, not pure-random or pure-linear alone). Carried on the wire as the
+    // *sender's* own identity in struct tt_DataHeader/tt_HeartbeatHeader (both always
+    // Publisher-emitted) and as the *target's* own identity in struct tt_AckNackHeader (mirroring
+    // that header's own existing endpoint_id "target Publisher" convention) - see each field's own
+    // doc comment. This is the real, root-caused fix for a confirmed cross-instance data-mixing
+    // gap: before this field existed, a Subscriber's only way to tell two Publishers apart was
+    // `id` above, which is identical for any two Publishers sharing a name - two different
+    // tt_Context launches, or even two local Publishers on one tt_Context sharing a name (Milestone 35) -
+    // see rmw_tickle/PLAN.md's own Milestone 47 for the full incident/design writeup.
+    uint32_t entity_id;
+};
+
 // A node, as rmw means one: a name and a namespace within a context, owning endpoints (CONTEXT_NODE_PLAN.md stage 2,
 // 2026-09-27). The context owns the transport - sockets, scheduler, liveliness, discovery - and hosts up to
 // tt_MAX_NODES nodes, each with its index in the context. Index 0 is the context's default node, which the
@@ -152,6 +188,11 @@ struct tt_DiscoveryRequest {
 // tt_Context_default_node() is called), so a context that only ever creates nodes itself - rmw_tickle's - has none.
 // Every endpoint records its node's index (tt_Endpoint.node_index). Nothing about nodes is on the wire yet (stage 3).
 struct tt_Node {
+    // Stage 3 (wire v11): the node as an entry of its context's announce - kind tt_KIND_NODE, id hash(namespace,
+    // name), name the node's, entity_id its own random id, node_index its index; type string, the namespace (tickle.c's
+    // endpoint_type_name()). Never registered as an endpoint: only listed in the announce. First, so a node can be
+    // reached from its entry.
+    struct tt_Endpoint entry;
     struct tt_Context* context; // NULL until tt_Node_create(), and again after tt_Node_destroy()
     const char* name;           // not copied - the caller's, as an endpoint's name is
     const char* namespace_name; // likewise
@@ -433,40 +474,6 @@ struct tt_Context {
     char default_node_name[16];
 };
 
-struct tt_Endpoint {
-    uint8_t kind;
-    // The index, in its context, of the node that owns this endpoint (CONTEXT_NODE_PLAN.md stage 2): the one it was
-    // created on with tt_Node_create_*(), or 0 - the context's default node - for the tt_Context_create_*()
-    // shorthands. An index, not a pointer: it sits in the padding after `kind`, so every endpoint struct keeps its
-    // layout and size (a pointer here cost -R's receive 1 ns a sample), and it is what stage 3 puts on the wire.
-    // tt_Endpoint_node() finds the node.
-    uint8_t node_index;
-    // hash(topic/service name + endpoint name) - a pure function of the name alone, deliberately:
-    // this is how a Publisher and Subscriber (or Client and Server) on two different, otherwise-
-    // unacquainted nodes agree on "the same" topic/service with zero negotiation, each computing
-    // this independently from the shared name. NOT necessarily unique within one tt_Context any more
-    // (Milestone 35, rmw_tickle/PLAN.md) - two local endpoints of the same kind can legitimately
-    // share an id if they share a name, see add_endpoint_to_node()'s own doc comment (tickle.c).
-    uint32_t id;
-    const char* name;
-
-    // Milestone 47 - this specific entity *instance*'s own identity, distinct from id above (a
-    // pure name hash, shared by every entity - local or remote - with the same kind+topic/
-    // service+endpoint name, by design). Assigned once, in add_endpoint_to_node() (tickle.c), as
-    // node->entity_id_base + node->next_entity_id++ - see struct tt_Context's own entity_id_base/
-    // next_entity_id doc comment for why that specific combination (a per-launch random base plus
-    // a per-node counter, not pure-random or pure-linear alone). Carried on the wire as the
-    // *sender's* own identity in struct tt_DataHeader/tt_HeartbeatHeader (both always
-    // Publisher-emitted) and as the *target's* own identity in struct tt_AckNackHeader (mirroring
-    // that header's own existing endpoint_id "target Publisher" convention) - see each field's own
-    // doc comment. This is the real, root-caused fix for a confirmed cross-instance data-mixing
-    // gap: before this field existed, a Subscriber's only way to tell two Publishers apart was
-    // `id` above, which is identical for any two Publishers sharing a name - two different
-    // tt_Context launches, or even two local Publishers on one tt_Context sharing a name (Milestone 35) -
-    // see rmw_tickle/PLAN.md's own Milestone 47 for the full incident/design writeup.
-    uint32_t entity_id;
-};
-
 // A destination this node has learned it can reach directly (see decode_update_entities()'s
 // peer-matching, upsert_peer() in tickle.c). context_id doubles as the "slot occupied" flag -
 // tt_CONTEXT_ID_INVALID (0) means empty, the same sentinel struct tt_Context's own id already uses
@@ -483,7 +490,11 @@ struct tt_Peer {
 struct tt_DiscoveredEntity {
     uint8_t context_id;
     uint32_t endpoint_id;
-    uint8_t kind; // tt_KIND_TOPIC_PUBLISHER / _SUBSCRIBER / SERVICE_CLIENT / _SERVER
+    uint8_t kind; // tt_KIND_TOPIC_PUBLISHER / _SUBSCRIBER / SERVICE_CLIENT / _SERVER, or tt_KIND_NODE (stage 3)
+    // Stage 3: the index, in its context, of the node the entity belongs to - for a tt_KIND_NODE entry, its own. A
+    // remote endpoint's node is the tt_KIND_NODE entry with the same context_id and node_index. For a node entry,
+    // `type` holds its namespace and `name` its name.
+    uint8_t node_index;
     char type[tt_MAX_NAME_LENGTH + 1];
     char name[tt_MAX_NAME_LENGTH + 1];
 
@@ -2028,7 +2039,9 @@ tt_ret_t tt_Context_destroy(struct tt_Context* node);
 // Bumped 6 -> 7 for DATA_FRAG step 2 (rmw_tickle/DATAFRAG_PLAN.md section 6): the discovery announce
 // became a DATA sample of a built-in endpoint (tt_DISCOVERY_ENDPOINT_ID), and UPDATE/UPDATE_PART were
 // retired.
-#define tt_VERSION 10
+// Bumped 10 -> 11 for CONTEXT_NODE_PLAN.md stage 3: an announce lists the context's nodes (tt_KIND_NODE entries), and
+// every entry carries its node's index in spare bits of kind and qos (tt_UPDATE_NODE_INDEX_* below).
+#define tt_VERSION 11
 
 struct tt_Header {
     union {
@@ -2155,6 +2168,11 @@ struct tt_AnnounceHeader {
 // still advances past it) and liveliness (a writer declared not alive loses its WriterProxy, a
 // Subscriber declared not alive leaves the Publisher's ack set).
 #define tt_UPDATE_QOS_KEEP_ALL (1U << 3)
+// Stage 3 (wire v11): an announce entry's node index, 8 bits in bits kind and qos do not use - no bytes added. Index
+// bits 0-3 are qos bits 4-7; index bits 4-7 are kind bits 2, 3, 6 and 7. A receiver masks kind and qos with the
+// _MASK values before any other use of them.
+#define tt_UPDATE_QOS_MASK 0x0FU
+#define tt_UPDATE_KIND_MASK (tt_KIND_TOPIC | tt_KIND_SERVICE | tt_KIND_SENDER | tt_KIND_RECEIVER)
 
 struct tt_UpdateEntity {
     uint32_t endpoint_id; // hash(topic/service name + endpoint name)

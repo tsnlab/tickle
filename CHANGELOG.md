@@ -10,6 +10,17 @@ number, `tt_VERSION`, which moves independently.
 
 ### Added
 
+- **Nodes in discovery, wire `tt_VERSION` 11** (rmw_tickle/CONTEXT_NODE_PLAN.md stage 3, DESIGN.md "Contexts and
+  nodes").
+  - An announce lists the context's nodes (`tt_KIND_NODE` entries: namespace, name, own index), and every entry
+    carries its node's index in 8 bits `kind` and `qos` did not use.
+  - Receivers record the nodes and each remote endpoint's node (`tt_DiscoveredEntity.node_index`).
+  - rmw_tickle's `ros2 node list`, `ros2 node info` and `ros2 param` now reach nodes in other processes; they saw
+    only their own process's before.
+  - An empty default node is not announced.
+  - 40 B per node per announce list; the summary is unchanged.
+  - Not compatible with v10 peers, which drop v11 datagrams, as on every version bump.
+
 - **Nodes within a context** (rmw_tickle/CONTEXT_NODE_PLAN.md stage 2, DESIGN.md "Contexts and nodes").
   - A `struct tt_Node` is a name, a namespace and an index within its context, and owns endpoints:
     `tt_Node_create()`, `tt_Node_destroy()` (refused while the node owns an endpoint), and
