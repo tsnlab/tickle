@@ -25,6 +25,15 @@ touches a per-sample path.
     `taken` below `count`, with the empty queue case returning `taken = 0` and `RMW_RET_OK`;
   - a mutant that takes only one per call fails it.
 - **CPU:** none on the sample path; the existing rmw_take is untouched.
+- **Contract details, added by Dev before code (2026-09-28), from rmw.h:**
+  - `RMW_RET_INVALID_ARGUMENT` for a NULL argument, `count` 0, or either sequence's capacity below `count`. Both
+    sequences are left unchanged.
+  - Up to `count` messages are taken in queue order, each exactly as `rmw_take_with_info` takes one, so a message
+    past its lifespan is dropped the same way. It stops at the first empty take.
+  - `*taken` and both sequences' `size` become the number taken. With none taken, the sequences are left unchanged
+    and the call returns `RMW_RET_OK`, as rmw.h requires.
+  - A message delivered while the call runs may be included; there is no snapshot, as in the vendors.
+  - Mutants: one message per call; the sizes not set; `count` 0 accepted.
 
 ## g2 - on-new-data callbacks (acceptance test `events`)
 
