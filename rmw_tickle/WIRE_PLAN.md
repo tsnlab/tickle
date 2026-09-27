@@ -497,6 +497,52 @@ How to read it (send wall; an adjacent step's SE was 5-6 ns at 10 rounds, so ~4-
 - **Recv wall steps** are recorded as seen. They are the D-series' own reading (OPTIMIZATION_PLAN 11), not this
   question.
 
+**Bisect result (2026-09-27 10:02-10:12, the Pi, 16 rounds, alternating order; raw:
+`results/core_cost_pi_bisect_2026-09-27.txt`; 8.8's own run is `results/core_cost_pi_socket_2026-09-27.txt`).**
+All 208 rows delivered 400000 of 400000.
+
+Send wall, in ns per sample. The first column is paired against `fd57b01d`; the step is paired against the arm
+before it. Send user+sys is against `fd57b01d`.
+
+| arm | send wall | step | send user+sys |
+|---|---|---|---|
+| `fd57b01d^0` (control) | +4.5 +- 3.3 | +4.5 +- 3.3 | +9.0 +- 6.4 |
+| `22a8f2cb` 8.6 | +7.1 +- 3.8 | +2.6 +- 2.4 | +16.2 +- 6.0 |
+| `397d927c` LIVELINESS 10 | +18.4 +- 4.3 | +11.3 +- 3.5 | +12.7 +- 8.4 |
+| `4dc7ad49` 8.1a | -1.2 +- 5.9 | **-19.6 +- 6.3** | -8.7 +- 20.8 |
+| `5f460ad2` D1 | +21.2 +- 5.6 | +22.4 +- 9.0 | +33.4 +- 23.2 |
+| `45cc3299` D3 | +17.1 +- 6.4 | -4.1 +- 6.6 | -3.4 +- 13.9 |
+| `3015e15d` LIVELINESS 11.1 | +60.0 +- 4.7 | **+42.9 +- 7.6** | +58.2 +- 6.9 |
+| `c51ac8c2` trace points | +55.7 +- 5.9 | -4.3 +- 5.8 | +54.1 +- 10.4 |
+| `eef6f089` 8.6 reverted | +25.4 +- 5.4 | **-30.4 +- 5.1** | +19.1 +- 15.0 |
+| `6f019b1d` D5 | +0.5 +- 4.9 | **-24.9 +- 4.8** | -19.3 +- 13.0 |
+| `10999967` D4 | +18.6 +- 5.8 | **+18.2 +- 5.9** | -2.0 +- 13.7 |
+| `86492b99` (control, same tree) | +20.2 +- 5.9 | +1.5 +- 5.6 | -0.4 +- 18.2 |
+
+Steps in bold are real by the rule: at least 3 x SE and at least 12 ns.
+
+How it reads, by the rules above:
+- **Not void.** Both send-wall controls are within 2 x SE: +4.5 +- 3.3 and +1.5 +- 5.6. (The first control's recv
+  wall is -4.9 +- 1.7, which is 2.9 x SE. So recv steps under ~5 ns are not to be read, and none is.)
+- **Reproduced, only just.** `10999967` is +18.6 +- 5.8 against `fd57b01d`: at least 12 ns, and 3.2 x SE.
+- **Five real steps, in both directions, so no single commit is named.**
+  - The real steps: `4dc7ad49` -19.6, `3015e15d` +42.9, `eef6f089` -30.4, `6f019b1d` -24.9, `10999967` +18.2.
+  - Their sum is -13.8, against a total of +18.6. The rest of the total sits in steps below the bar: `397d927c`
+    +11.3 (3.2 x SE, but under 12 ns) and `5f460ad2` +22.4 (2.5 x SE).
+- **The 8.6 pair clause does not apply.** `22a8f2cb` adds +2.6 and `eef6f089` takes away 30.4, so the revert is not
+  undoing 8.6's own step.
+- **Recorded as seen, with no mechanism claimed:**
+  - `3015e15d`'s rise is also real CPU: its send user+sys is +58.2 +- 6.9 at that commit. `6f019b1d` (D5, the send
+    gate written against the summary skip's send cost) brings the user+sys back to -19.3 +- 13.0.
+  - Main's send user+sys against `fd57b01d` is flat: -2.0 +- 13.7.
+  - `eef6f089` removes fields from `tt_Node` and its step is -30.4 with no matching rise at `22a8f2cb`. This is the
+    same kind of layout-shaped move the 8.9 layout test found: +1.7% client CPU from reordering fields alone.
+  - Receive: main is -82.5 +- 2.8 against `fd57b01d`. The real steps are `4dc7ad49` -34.7, `5f460ad2` -25.9 and
+    `10999967` -33.3; `6f019b1d` is +9.7.
+- **What it leaves:** main's +18.6 of send wall in this loop, with its CPU flat. It is spread over several steps of
+  both signs, some of them layout-shaped, and the 8.9 campaign A B B A has no CPU or rate row WORSE at main. By
+  8.3 it stays a bench-loop observation, not a regression.
+
 ### 8.9 The pre-v10 parent against `main`, A B B A: no CPU, rate, byte or latency row WORSE (2026-09-27)
 
 `campaign_ab_chain.sh`, `8f3811f4` / `173268a6` / `173268a6` / `8f3811f4`. `main` at `173268a6` carries v10 with its
@@ -541,6 +587,31 @@ Raw rows are `results/wire_final_abba_{A_8f3811f4,B_173268a6}_2026-09-27.txt`. R
     worth more rig time at +0.3-0.5%.
   - **Guard:** CPU and rate rows must not differ between A and B beyond 2 x SE, since the arms differ only in layout.
     A CPU difference is recorded, not explained away.
+
+**Result (Plan's run, 2026-09-27 09:41-10:03).** Campaign cells c1 and c9, 6 reps per arm, A B B A. Arm A
+`173268a6`, arm B `48329585`. Raw files: `results/layout_abba_{A_173268a6,B_48329585}_2026-09-27.txt`.
+`ab_compare.py campaign`: 2 better, 12 held, 6 WORSE.
+
+| cell | row | A | B | change | t |
+|---|---|---|---|---|---|
+| c1 | client peak RSS KB | 1912.7 | 1912.7 | 0.0% | 0.0 |
+| c9 | client peak RSS KB | 1682.0 | 1674.0 | -0.5% | -2.2 (better) |
+| c1 | server peak RSS KB | 1823.3 | 1818.7 | -0.3% | -1.5 |
+| c9 | server peak RSS KB | 1828.7 | 1822.7 | -0.3% | -2.6 (better) |
+| c1 | client CPU s/Msample | 5.323 | 5.415 | +1.7% | +5.9 (WORSE) |
+| c1 | client send Mbps | 114.36 | 111.87 | -2.2% | -3.2 (WORSE) |
+| c9 | client CPU s/Msample | 5.195 | 5.222 | +0.5% | +3.9 (WORSE) |
+| c9 | client send Mbps | 117.18 | 116.58 | -0.5% | -4.1 (WORSE) |
+
+Server CPU is held in both cells.
+
+**How it reads, by the rule above:**
+- **The guard fails.** With the new fields moved to the end, the client's CPU rises, in both cells, beyond
+  2 x SE. The arms differ only in layout, so the comparison is confounded, and arm B is not a candidate change.
+- **Today's order is the better one for CPU.**
+- **The RSS lean moves only at c9, by 6-8 KB, and not at c1.** Layout does not cleanly explain it.
+- **The lean stays open:** at most ~8 KB (+0.5%), layout-sensitive, and not worth CPU to remove.
+- **`48329585` stays a never-merge branch.**
 
 ## 9. W1 on paper (Dev, 2026-09-27; no code until the user's ruling on section 1)
 
