@@ -300,37 +300,41 @@ static uint8_t pick_context_id(const bool held[tt_MAX_CONTEXT_IDS], const uint8_
     return tt_CONTEXT_ID_INVALID;
 }
 
+// Every user's contexts share the registry, so it is readable and writable by all: it decides nothing but which free
+// id a context prefers, and the link settles any misuse.
+#define REGISTRY_MODE 0666
+
 // The registry file, open and locked, or -1 (no path, or it cannot be used).
 static int lock_registry(const char* path) {
     if (path == NULL) {
         return -1;
     }
-    int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
-    if (fd < 0) {
+    int registry_fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, REGISTRY_MODE);
+    if (registry_fd < 0) {
         return -1;
     }
-    (void)fchmod(fd, 0666); // every user's contexts share it; the umask would narrow it
-    if (flock(fd, LOCK_EX) != 0) {
-        (void)close(fd);
+    (void)fchmod(registry_fd, REGISTRY_MODE); // every user's contexts share it; the umask would narrow it
+    if (flock(registry_fd, LOCK_EX) != 0) {
+        (void)close(registry_fd);
         return -1;
     }
-    return fd;
+    return registry_fd;
 }
 
-static void unlock_registry(int fd) {
-    (void)flock(fd, LOCK_UN);
-    (void)close(fd);
+static void unlock_registry(int registry_fd) {
+    (void)flock(registry_fd, LOCK_UN);
+    (void)close(registry_fd);
 }
 
 uint8_t tt_id_registry_claim(const char* path, uint8_t preferred, const uint8_t* avoid, uint32_t salt, int32_t pid) {
     bool held[tt_MAX_CONTEXT_IDS] = {false};
     int32_t pids[tt_MAX_CONTEXT_IDS] = {0};
-    int fd = lock_registry(path);
-    if (fd < 0) {
+    int registry_fd = lock_registry(path);
+    if (registry_fd < 0) {
         return pick_context_id(held, avoid, preferred, salt);
     }
     // A short file reads as zeros past its end: those ids are free.
-    if (pread(fd, pids, sizeof(pids), 0) < 0) {
+    if (pread(registry_fd, pids, sizeof(pids), 0) < 0) {
         memset(pids, 0, sizeof(pids));
     }
     for (uint32_t id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
@@ -338,27 +342,27 @@ uint8_t tt_id_registry_claim(const char* path, uint8_t preferred, const uint8_t*
     }
     uint8_t id = pick_context_id(held, avoid, preferred, salt);
     if (id != tt_CONTEXT_ID_INVALID &&
-        pwrite(fd, &pid, sizeof(pid), (off_t)id * (off_t)sizeof(int32_t)) != (ssize_t)sizeof(pid)) {
+        pwrite(registry_fd, &pid, sizeof(pid), (off_t)id * (off_t)sizeof(int32_t)) != (ssize_t)sizeof(pid)) {
         TT_LOG_WARNING("Cannot record context id %u in %s: %s", id, path, strerror(errno));
     }
-    unlock_registry(fd);
+    unlock_registry(registry_fd);
     return id;
 }
 
 void tt_id_registry_release(const char* path, uint8_t id, int32_t pid) {
-    int fd = lock_registry(path);
-    if (fd < 0) {
+    int registry_fd = lock_registry(path);
+    if (registry_fd < 0) {
         return;
     }
     int32_t holder = 0;
-    if (pread(fd, &holder, sizeof(holder), (off_t)id * (off_t)sizeof(int32_t)) == (ssize_t)sizeof(holder) &&
+    if (pread(registry_fd, &holder, sizeof(holder), (off_t)id * (off_t)sizeof(int32_t)) == (ssize_t)sizeof(holder) &&
         holder == pid) {
         int32_t none = 0;
-        if (pwrite(fd, &none, sizeof(none), (off_t)id * (off_t)sizeof(int32_t)) != (ssize_t)sizeof(none)) {
+        if (pwrite(registry_fd, &none, sizeof(none), (off_t)id * (off_t)sizeof(int32_t)) != (ssize_t)sizeof(none)) {
             TT_LOG_WARNING("Cannot release context id %u in %s: %s", id, path, strerror(errno));
         }
     }
-    unlock_registry(fd);
+    unlock_registry(registry_fd);
 }
 
 // One registry per well-known port and link, in /dev/shm: two network namespaces with different addresses share
