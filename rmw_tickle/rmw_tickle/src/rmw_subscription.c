@@ -716,6 +716,9 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     tt_Context_lock(&node_impl->context_impl->tickle_context);
     rmw_tickle_update_matches_locked(node_impl->context_impl, sub_impl->rmw_subscription.topic_name, 0);
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
+    // (g9) A durable subscription joining late gets the durable backlog of this process's own publishers on its
+    // topic, as it would a remote one's - only now, with its durability set.
+    tt_Subscriber_deliver_local_backlog(&sub_impl->tickle_subscriber);
     return &sub_impl->rmw_subscription;
 }
 

@@ -492,6 +492,48 @@ built Release from a worktree, with the standard interfaces from `build_ros2_int
     - the in-process path's own cost is recorded: `conv_cost`-style, a publish with one local Subscriber against one
       without, reported and not judged.
   - Core's default build (`tt_LOCAL_DELIVERY` 0) is objdump-identical to its parent.
+- **Result (Dev, 2026-09-28): PASS.**
+  - **Acceptance.** `inprocess` PASS (the baseline received 0; the service half passed before and still does).
+    Every test that passed before still passes: graph, events, matched, takeseq, samehost; itype VOID; bag, range and
+    peers are g1 and g6.
+  - **`test_local_delivery`** (core, mock HAL, fragmentation compiled in):
+    - a local pair gets all 10 samples in order, once, including a 5000 B one sent as fragments;
+    - a local and a remote Subscriber get each sample once, and the context's own datagrams handed back to it add
+      nothing;
+    - a RELIABLE Subscriber with a BEST_EFFORT Publisher gets nothing;
+    - a late durable Subscriber gets the backlog of 3 in order, the fragmented one whole, then the live samples;
+    - a local Subscriber changes nothing sent: the same datagrams byte for byte.
+  - **`test_inprocess`** (rmw, two nodes, one context):
+    - 10 messages of 60 KB published before any take, at depth 3: the newest 3, intact;
+    - a TRANSIENT_LOCAL subscription (depth 2) created after 4 publishes gets the last 2, in order and whole (each
+      about 42 fragments, reassembled).
+  - **Mutants**, each failing at the predicted assert: delivery removed; delivered twice; the durable backlog not
+    delivered locally; the local RxO check removed.
+  - **Plan's review before push: no stack buffer the size of a sample.** Local delivery reads from a scratch buffer
+    of tt_MAX_SAMPLE_LENGTH that the context owns, since sending reuses tx_buffer. The zero-copy path reads the
+    caller's own bytes in place. The one exception is a sample published from inside a local delivery, which takes a
+    stack copy of its own, because the scratch still holds the outer sample. The durable backlog reassembles
+    fragments in the same scratch.
+  - **Found on the way, not g9's:** a durable publisher of a type this large starts with an arena of one sample and
+    grows it only once `depth` messages have gone out. At depth 4, after 4 publishes, it retained one sample, so a
+    late joiner - local here, remote the same, since both read one cache - got one of 4. Reported to Plan; the rmw
+    test uses depth 2, which the growth reaches.
+  - Core's default build (`tt_LOCAL_DELIVERY` 0): `tickle.o` and `hal_linux.o` are md5-identical to the parent's
+    (control: the flag on differs). clang-tidy over rmw_tickle's compile database (the flags on) is clean.
+  - The rmw suite passes in a private netns, 58/58.
+  - **In-process cost** (`experiments/g9_local_delivery_cost.c`, mock HAL, -O2, medians of 5 x 200000, 3 repeats):
+    - no local Subscriber: 71-75 ns a publish with the flag on or off, so the branch is not measurable;
+    - a 64 B sample to one local Subscriber: about +19 ns (91-93 ns);
+    - a 60 KB sample: about +1.6 us (10.1-10.6 us against 8.4-9.0 us), mostly the copy.
+  - **CPU**, `rmw_lib_ab.sh`, parent against g9, 10 reps interleaved, with an A/A, read as pre-registered (the
+    benchmark has no local Subscriber, so it measures the branch). All four rows are inside:
+
+    | gap | metric | B-A median (2 SE) | A/A B-A (2 SE) | verdict |
+    |---|---|---:|---:|---|
+    | 5 ms | RTT | -7.3 us (6.0) | +3.9 us (9.3) | inside |
+    | 5 ms | pong CPU | -2.7 ms (3.8) | +3.4 ms (5.0) | inside |
+    | 100 ms | RTT | +2.4 us (9.2) | +0.6 us (16.3) | inside |
+    | 100 ms | pong CPU | -1.0 ms (1.4) | -0.5 ms (0.8) | inside |
 ## Checkpoint run (2026-09-28, Plan): main at `958e909e`, after stage 3, g2, g3, g5 and g8
 
 `rmw_gap_acceptance.sh -w /tmp/plan_accept`, rmw_tickle rebuilt Release at `958e909e`. The script printed the

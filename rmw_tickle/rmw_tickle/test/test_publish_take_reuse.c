@@ -25,13 +25,11 @@
 // c's own fake message is a bare uint8_t with nothing to double-free in the first place, so
 // neither would have caught a missing memset() here.
 //
-// Deliberately does NOT rely on a real rmw_publish() -> wire -> rmw_take() round trip to exercise
-// the *receive* side: a co-located Publisher/Subscriber on the very same tt_Context never actually
-// see each other's DATA over the wire at all (process_submessage()'s own self_sent filter drops
-// it unconditionally, tickle.c) - a real, pre-existing, already-documented gap (rmw_tickle/PLAN.md
-// Milestone 10's own "a full publish/subscribe round trip... no live multi-process test infra
-// exists yet for rmw_tickle" note, still open), not something this milestone touches or needs to
-// solve. Instead this invokes tt_Subscriber.callback directly (a genuinely public tickle.h field -
+// Deliberately does NOT rely on a real rmw_publish() -> rmw_take() round trip to exercise the *receive* side. When
+// this was written a co-located Publisher/Subscriber on one tt_Context never saw each other's DATA at all (the
+// self_sent filter, tickle.c). Since g9 (RMW_GAPS_PLAN.md, 2026-09-28) rmw_publish() does deliver to it in-process -
+// and at this subscription's depth of 1 that message is then replaced by the injected one below, which is what each
+// take reads. Instead this invokes tt_Subscriber.callback directly (a genuinely public tickle.h field -
 // literally the same function pointer tt_Context_create_subscriber() was given, and precisely what a
 // real wire delivery would have called had one arrived) - the same "reach through an already-
 // public field/header, not a private implementation detail" precedent test_multi_node.c already

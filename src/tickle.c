@@ -1530,6 +1530,33 @@ static struct tt_Node* default_node_locked(struct tt_Context* context);
 
 // `owner`: the node the endpoint is created on; NULL for the context's default node, which is brought into use here,
 // once the endpoint is known to be registered - a shorthand call that fails leaves it as it was.
+#if tt_LOCAL_DELIVERY
+// (g9) A Subscriber joining (delta 1) or leaving (-1) changes the local Subscriber count of every Publisher of this
+// context on its endpoint id; a Publisher joining counts the Subscribers already there. Linear over the endpoints, on
+// creation and destruction only.
+static void count_local_pairs(struct tt_Context* node, struct tt_Endpoint* endpoint, int delta) {
+    if (endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER && endpoint->kind != tt_KIND_TOPIC_PUBLISHER) {
+        return;
+    }
+    uint16_t subscribers = 0;
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* other = node->endpoints[i];
+        if (other == endpoint || other->id != endpoint->id) {
+            continue;
+        }
+        if (endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER && other->kind == tt_KIND_TOPIC_PUBLISHER) {
+            struct tt_Publisher* pub = (struct tt_Publisher*)other;
+            pub->local_subscriber_count = (uint16_t)(pub->local_subscriber_count + delta);
+        } else if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER && other->kind == tt_KIND_TOPIC_SUBSCRIBER) {
+            subscribers++;
+        }
+    }
+    if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
+        ((struct tt_Publisher*)endpoint)->local_subscriber_count = delta > 0 ? subscribers : 0;
+    }
+}
+#endif
+
 static tt_ret_t add_endpoint_to_node(struct tt_Context* node, struct tt_Endpoint* endpoint, struct tt_Node* owner) {
     if (node->endpoint_count >= tt_MAX_ENDPOINT_COUNT) {
         uint32_t endpoint_count = node->endpoint_count;
@@ -1568,6 +1595,9 @@ static tt_ret_t add_endpoint_to_node(struct tt_Context* node, struct tt_Endpoint
     node->endpoints[node->endpoint_count++] = endpoint;
     node->endpoint_index_valid = false;
     arm_announce_soon(node);
+#if tt_LOCAL_DELIVERY
+    count_local_pairs(node, endpoint, 1);
+#endif
 
     return tt_RET_OK;
 }
@@ -1575,6 +1605,9 @@ static tt_ret_t add_endpoint_to_node(struct tt_Context* node, struct tt_Endpoint
 static bool remove_endpoint_from_node(struct tt_Context* node, struct tt_Endpoint* endpoint) {
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         if (node->endpoints[i] == endpoint) {
+#if tt_LOCAL_DELIVERY
+            count_local_pairs(node, endpoint, -1);
+#endif
             node->endpoint_count--;
             if (i < node->endpoint_count) {
                 _tt_memmove((void*)&node->endpoints[i], (const void*)&node->endpoints[i + 1],
@@ -2058,6 +2091,10 @@ static bool run_due_entry(struct tt_Context* node, uint64_t now, bool* has_next,
 static void node_update(struct tt_Context* node, uint64_t time, void* param);
 // Milestone 47 "goodbye" - see its own definition's doc comment.
 static void broadcast_goodbye(struct tt_Context* node);
+#if tt_LOCAL_DELIVERY
+static void deliver_locally(struct tt_Context* node, struct tt_Publisher* pub, const uint8_t* payload, uint32_t length,
+                            uint32_t seq_no, uint64_t timestamp);
+#endif
 static void check_liveliness(struct tt_Context* node, uint64_t time, void* param);
 static void server_cache_clean(struct tt_Context* node, uint64_t time, void* param);
 static void clear_server_cache_slot(struct tt_Server* server, int slot);
@@ -2139,6 +2176,9 @@ static void update_parts_clear(struct tt_Context* node, uint8_t source) {
 
 static void reset_node_state(struct tt_Context* node) {
     node->id = tt_CONTEXT_ID_INVALID;
+#if tt_LOCAL_DELIVERY
+    node->local_delivery_depth = 0;
+#endif
     node->endpoint_count = 0;
     node->endpoint_index_valid = false;
 
@@ -3896,7 +3936,17 @@ static bool try_publish_zerocopy(struct tt_Publisher* pub, struct tt_Data* data,
         standalone_len + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) > tt_MAX_BUFFER_LENGTH;
     if (body_len >= 0 && (body_len % 4) == 0 && fills_packet &&
         (!tt_FRAG_ENABLED || body_len <= tt_MAX_SAMPLE_LENGTH)) {
+#if tt_LOCAL_DELIVERY
+        uint32_t local_seq_no = pub->seq_no + 1;
+        uint64_t local_timestamp = tt_get_ns();
+#endif
         *result = publish_zerocopy(pub, body, (uint32_t)body_len);
+#if tt_LOCAL_DELIVERY
+        // (g9) The caller's own bytes, still valid: the zero-copy path sends from them.
+        if (*result == tt_RET_OK && pub->local_subscriber_count != 0) {
+            deliver_locally(pub->node, pub, body, (uint32_t)body_len, local_seq_no, local_timestamp);
+        }
+#endif
         return true;
     }
     return false; // declined, unaligned, or small enough to want batching
@@ -4183,6 +4233,20 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
         rollback(node, old_tx_tail);
         return tt_RET_PROTOCOL_ERROR;
     }
+#if tt_LOCAL_DELIVERY
+    // (g9) This context's own Subscribers get the sample once it has gone out, from a copy: sending reuses tx_buffer.
+    // The context's scratch, or - for a sample published from inside a local delivery, whose bytes the scratch still
+    // holds - a stack copy of its own. A publish with no local Subscriber pays the branch.
+    bool local = pub->local_subscriber_count != 0;
+    bool nested = local && node->local_delivery_depth != 0;
+    uint8_t nested_copy[nested ? (uint32_t)encoded_len : 1U];
+    uint8_t* local_copy = nested ? nested_copy : node->local_scratch;
+    uint32_t local_seq_no = pub->seq_no + 1;
+    uint64_t local_timestamp = tt_get_ns();
+    if (local) {
+        _tt_memcpy(local_copy, cdr, (size_t)encoded_len);
+    }
+#endif
 
     // The halves of KEEP_ALL's promise that need the encoded sample (2026-09-25, 2026-09-26).
     if (keep_all_refuses_encoded(pub, node, submessage_header)) {
@@ -4243,6 +4307,11 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // is now watermark-full of unacknowledged samples. No-op unless a caller opted in.
     maybe_solicit_ack_at_watermark(pub);
 
+#if tt_LOCAL_DELIVERY
+    if (local) {
+        deliver_locally(node, pub, local_copy, (uint32_t)encoded_len, local_seq_no, local_timestamp);
+    }
+#endif
     return tt_RET_OK;
 }
 
@@ -7230,6 +7299,146 @@ static void deliver_payload(struct tt_Context* node, struct tt_Subscriber* sub, 
     sub->callback(sub, timestamp, (uint16_t)seq_no, (struct tt_Data*)data);
     topic->data_free((struct tt_Data*)data);
 }
+
+#if tt_LOCAL_DELIVERY
+// ---- (g9, config.h's tt_LOCAL_DELIVERY) samples between endpoints of one context.
+
+// Whether a local pair can never match: what the Subscriber requests and the Publisher does not offer, by the rule a
+// remote pair is held to (subscriber_incompatible_with_publisher()).
+static bool local_pair_incompatible(const struct tt_Subscriber* sub, const struct tt_Publisher* pub) {
+    return (sub->reliable && !pub->reliable) || (sub->durable && !pub->durable) ||
+           deadline_liveliness_incompatible(sub->deadline_duration_ns, pub->deadline_duration_ns,
+                                            sub->liveliness_manual, pub->liveliness_manual,
+                                            sub->liveliness_lease_duration_ns, pub->liveliness_lease_duration_ns);
+}
+
+struct local_delivery {
+    struct tt_Publisher* pub;
+    const uint8_t* payload;
+    uint32_t length;
+    uint32_t seq_no;
+    uint64_t timestamp;
+    struct tt_Subscriber* only; // the one Subscriber to deliver to (the backlog), or NULL for every one
+};
+
+static void deliver_locally_to(struct tt_Context* node, struct tt_Endpoint* endpoint, void* param) {
+    struct local_delivery* delivery = (struct local_delivery*)param;
+    struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+    if ((delivery->only != NULL && delivery->only != sub) || local_pair_incompatible(sub, delivery->pub)) {
+        return;
+    }
+    bool decode_failed = false;
+    deliver_payload(node, sub, delivery->seq_no, delivery->timestamp, node->id, delivery->pub->endpoint.entity_id,
+                    delivery->payload, delivery->length, true, false, &decode_failed);
+}
+
+// A sample this context just published, handed to its own Subscribers on the topic - after it has gone to the link,
+// from a copy the caller owns, so a callback may publish again. In publish order and once: the context's own
+// datagrams are dropped as self when they come back, so this is the only way a local Subscriber gets it.
+static void deliver_locally(struct tt_Context* node, struct tt_Publisher* pub, const uint8_t* payload, uint32_t length,
+                            uint32_t seq_no, uint64_t timestamp) {
+    struct local_delivery delivery = {pub, payload, length, seq_no, timestamp, NULL};
+    node->local_delivery_depth++;
+    for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, pub->endpoint.id, deliver_locally_to, &delivery);
+    node->local_delivery_depth--;
+}
+
+// One cached sample of a durable Publisher, whole: a DATA record as it is, or a fragmented one gathered from its
+// FRAG_FIRST and FRAG_CONT records into `out` (tt_MAX_SAMPLE_LENGTH). Returns the number of seq_nos it took (0: none
+// here), and its payload through *payload / *length (NULL when a fragment is missing or expired).
+static uint32_t cached_sample(struct tt_ReliableCache* cache, uint16_t depth, uint32_t seq_no, uint64_t lifespan_ns,
+                              uint8_t* out, const uint8_t** payload, uint32_t* length, uint64_t* sent_us) {
+    *payload = NULL;
+    struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
+    if (entry->len == 0 || entry->seq_no != seq_no || reliable_cache_entry_expired(entry, lifespan_ns)) {
+        return 1;
+    }
+    const uint8_t* record = cache->arena + entry->offset;
+    const struct tt_SubmessageHeader* submessage = (const struct tt_SubmessageHeader*)record;
+    if (submessage->type == tt_SUBMESSAGE_TYPE_DATA) {
+        const struct tt_DataHeader* data_header = (const struct tt_DataHeader*)(submessage + 1);
+        uint32_t headers = (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader));
+        *payload = record + headers;
+        *length = submessage->length > headers ? submessage->length - headers : 0;
+        *sent_us = data_header->timestamp;
+        return 1;
+    }
+#if tt_FRAG_ENABLED
+    if (submessage->type != tt_SUBMESSAGE_TYPE_FRAG_FIRST) {
+        return 1; // a continuation whose first fragment is gone
+    }
+    const struct tt_FragFirstHeader* first = (const struct tt_FragFirstHeader*)(submessage + 1);
+    uint32_t count = first->frag_count;
+    uint32_t total = 0;
+    for (uint32_t index = 0; index < count; index++) {
+        struct tt_ReliableCacheIndex* part = reliable_cache_slot(cache, depth, seq_no + index);
+        if (part->len == 0 || part->seq_no != seq_no + index) {
+            return count; // a fragment is missing: the sample is not whole
+        }
+        const struct tt_SubmessageHeader* part_header =
+            (const struct tt_SubmessageHeader*)(cache->arena + part->offset);
+        uint32_t header_length = frag_header_length(index);
+        uint32_t part_length = part_header->length - header_length;
+        if (total + part_length > tt_MAX_SAMPLE_LENGTH) {
+            return count;
+        }
+        _tt_memcpy(out + total, cache->arena + part->offset + header_length, part_length);
+        total += part_length;
+    }
+    *payload = out;
+    *length = total;
+    *sent_us = first->data.timestamp;
+    return count;
+#else
+    UNUSED(out);
+    return 1;
+#endif
+}
+
+static void deliver_backlog_from(struct tt_Context* node, struct tt_Endpoint* endpoint, void* param) {
+    struct tt_Subscriber* sub = (struct tt_Subscriber*)param;
+    struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
+    if (!pub->durable || pub->reliable_cache == NULL || local_pair_incompatible(sub, pub)) {
+        return;
+    }
+    struct tt_ReliableCache* cache = pub->reliable_cache;
+    uint16_t depth = reliable_cache_depth(cache);
+    if (depth == 0) {
+        return;
+    }
+    uint8_t* whole = node->local_scratch; // a fragmented sample gathered, under the context's lock
+    for (uint32_t seq_no = cache->oldest_seq_no; seq_no != 0 && seq_no <= cache->newest_seq_no;) {
+        const uint8_t* payload = NULL;
+        uint32_t length = 0;
+        uint64_t sent_us = 0;
+        uint32_t taken =
+            cached_sample(cache, depth, seq_no, pub->lifespan_duration_ns, whole, &payload, &length, &sent_us);
+        if (payload != NULL) {
+            // The wire's 32-bit microseconds, placed as a receiver places them (timestamp_from_wire()), against now.
+            int64_t now_us = (int64_t)(tt_get_ns() / tt_MICROSECOND);
+            int64_t sent_at_us = now_us + (int32_t)((uint32_t)sent_us - (uint32_t)now_us);
+            uint64_t sent_ns = sent_at_us < 0 ? 0 : (uint64_t)sent_at_us * tt_MICROSECOND;
+            struct local_delivery delivery = {pub, payload, length, seq_no, sent_ns, sub};
+            deliver_locally_to(node, &sub->endpoint, &delivery);
+        }
+        seq_no += taken;
+    }
+}
+
+void tt_Subscriber_deliver_local_backlog(struct tt_Subscriber* sub) {
+    if (sub == NULL || sub->node == NULL) {
+        return;
+    }
+    struct tt_Context* node = sub->node;
+    state_lock(node);
+    if (sub->durable) {
+        node->local_delivery_depth++; // a callback publishing now must not take the scratch a fragment is gathered in
+        for_each_endpoint(node, tt_KIND_TOPIC_PUBLISHER, sub->endpoint.id, deliver_backlog_from, sub);
+        node->local_delivery_depth--;
+    }
+    state_unlock(node);
+}
+#endif
 
 // The stride is the caller's slot size rounded DOWN to 8, and it must round down.
 //

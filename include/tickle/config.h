@@ -460,6 +460,14 @@
 #ifndef tt_CONTEXT_ID_CLAIM
 #define tt_CONTEXT_ID_CLAIM 0
 #endif
+// (g9, rmw_tickle/RMW_GAPS_PLAN.md, 2026-09-28) Delivery between endpoints of one context. 0, the default: a context
+// drops its own DATA as self-sent, so its own Subscribers never receive its own Publishers' samples. 1, rmw_tickle's
+// build, whose every node in a process shares one context: a publish also hands the sample to the context's own
+// matching Subscribers, in-process (tickle.c, deliver_locally()), with the QoS rules a remote pair has, and a late
+// durable Subscriber can take the local durable backlog (tt_Subscriber_deliver_local_backlog()).
+#ifndef tt_LOCAL_DELIVERY
+#define tt_LOCAL_DELIVERY 0
+#endif
 // Every context id the wire can name (a uint8_t): the size of struct tt_Context's per-peer tables, which are indexed
 // by a remote context's id. Not a setting. They were sized by tt_MAX_ENDPOINT_COUNT, which was 256 only by
 // coincidence and so could not grow (CONTEXT_NODE_PLAN.md 4a, 2026-09-27).

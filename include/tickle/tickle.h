@@ -361,6 +361,14 @@ struct tt_Context {
     uint32_t collision_logged_ip;
     uint16_t collision_logged_port;
 #endif
+#if tt_LOCAL_DELIVERY
+    // (g9, config.h's tt_LOCAL_DELIVERY) Where a published sample's bytes wait while this context's own Subscribers
+    // take it: sending reuses tx_buffer. Owned here rather than on the publishing thread's stack, which a sample of
+    // tt_MAX_SAMPLE_LENGTH would strain. local_delivery_depth > 0: a callback is publishing from inside a local
+    // delivery, whose bytes still sit in local_scratch - such a nested sample takes a copy of its own on the stack.
+    uint8_t local_scratch[tt_MAX_SAMPLE_LENGTH];
+    uint8_t local_delivery_depth;
+#endif
     // Threading (tt_THREAD_SAFE, config.h) - see "Threading" at tt_Context_lock(). One lock, guarding the
     // node, its entities and the scheduler heap. User callbacks run with it held and may call back into
     // core, so it is re-entrant - not through a recursive mutex but by recording its owner: re-entry by the
@@ -983,6 +991,11 @@ struct tt_Publisher { // extends endpoint
     struct tt_Endpoint endpoint;
     struct tt_Context* node;
     struct tt_Topic* topic;
+#if tt_LOCAL_DELIVERY
+    // (g9, config.h's tt_LOCAL_DELIVERY) This context's own Subscribers on this endpoint id - the ones a publish also
+    // delivers to in-process. Kept by add_endpoint_to_node() / remove_endpoint_from_node(); 0: a publish pays a branch.
+    uint16_t local_subscriber_count;
+#endif
 
     // This Publisher's own send-side sample counter (transcation) - wire seq_no is this + 1
     // (tt_Publisher_publish()'s own data_header->seq_no = pub->seq_no + 1), starting from 1.
@@ -1907,6 +1920,13 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data);
 tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub);
 
 tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
+#if tt_LOCAL_DELIVERY
+// (g9) Hands a durable Subscriber the durable backlog of this context's own durable Publishers on its topic, oldest
+// first, as a late-joining remote Subscriber gets it over the link. For a caller that sets the Subscriber's QoS after
+// creating it (rmw_tickle), so it is a call of its own rather than part of creation. A no-op for a Subscriber that is
+// not durable.
+void tt_Subscriber_deliver_local_backlog(struct tt_Subscriber* sub);
+#endif
 
 /**
  * @node node to poll

@@ -20,6 +20,13 @@ number, `tt_VERSION`, which moves independently.
     A late join, a durable replay and a late arrival are not losses.
   - `rmw_get_clients_info_by_service` / `rmw_get_servers_info_by_service` (lyrical) list local and remote clients
     and servers, one row each.
+- **rmw_tickle: nodes in one process exchange topics** (rmw_tickle/RMW_GAPS_PLAN.md g9, `tt_LOCAL_DELIVERY` in
+  config.h). All of a process's nodes share one context, and a context dropped its own DATA as self-sent, so
+  composition and every multi-node process got nothing on their in-process topics.
+  - A publish now also delivers the sample to the context's own matching Subscribers, after it has gone to the link,
+    by the same RxO rule as remote pairs.
+  - `tt_Subscriber_deliver_local_backlog()` hands a late durable Subscriber the local durable backlog.
+  - The flag is set only in rmw_tickle's build; core's default build is byte-identical.
 - **rmw_tickle: several processes on one host each get a context id of their own** (rmw_tickle/RMW_GAPS_PLAN.md g8,
   `tt_CONTEXT_ID_CLAIM` in config.h). Until now every process on one address took the same id (the address's last
   octet) and dropped the others' packets as its own, so a talker and a listener in two terminals exchanged nothing
