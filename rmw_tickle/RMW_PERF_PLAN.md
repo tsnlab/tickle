@@ -843,3 +843,27 @@ RTT_AT=callback. That is 144 rows. Each row is VOID if:
   the measurement, and the other rows are not read.
 - **Also checked:** callback_p10/p90 on the PHASE line. With a random phase, their spread should be about one cycle
   for every rmw. A narrow spread means the phase is still locked, whatever chi2 says.
+
+### 10.3 Result: rmw_tickle lowest in 15 of 16 poll cells, 9 beyond 2 x SE, no loss (2026-09-27)
+
+`results/rmw_polljitter_2026-09-27.txt`, build `499763db` (`ca48a906` is the same behaviour, lint only). 141 ok
+rows, 3 VOID: 2 jitter placements at chi2 21.8 and 22.6, the expected chance rate at p = 0.01, and 1 loss. Means
+in us, rmw_tickle / FastDDS / CycloneDDS:
+
+| cell | 0 (busy) | 50 us | 100 us | 200 us |
+|---|---|---|---|---|
+| Bench BE | **240** / 320 / 273 | **293** / 357 / 308 | 316 / 372 / 322 (draw) | 365 / 419 / 367 (draw) |
+| Bench REL | **242** / 330 / 270 | 297 / 359 / 340 (draw) | **320** / 387 / 329 | 366 / 424 / 375 (draw) |
+| Array1k BE | **261** / 336 / 289 | **311** / 369 / 324 | **338** / 394 / 349 | 388 / 433 / 395 (draw) |
+| Array1k REL | **263** / 350 / 281 | 315 / 377 / 354 (draw) | 338 / 400 / 346 (draw) | 392 / 442 / **384** (draw, CycloneDDS lower) |
+
+- **The control passes.** At busy polling every rmw's callback-ended round trip agrees with the old rows 52-55 within
+  3-8 us. The callback now closes the round trip a few us before the loop did, the same for all three.
+- **The phase is random in every row:** the reply-callback spread p90-p10 is about one poll cycle for every rmw (18-37
+  us busy, 84-106 at 50, 131-152 at 100, 205-241 at 200).
+- **The prediction was right in direction and wrong in size.** rmw_tickle is lowest in 15 of 16 cells, but its margin
+  over CycloneDDS at 100 us is 6-11 us, not the ~40 predicted. The prediction added half of each rmw's own cycle
+  on top of its arrival. In fact a reply that arrives during CycloneDDS's long `spin_some()` is taken within that
+  same call, so CycloneDDS's effective wait is shorter than half its cycle.
+- **No vendor is lower beyond 2 x SE in any cell.** COMPARISON.md rows 52-67 now hold these figures (`J`), and the
+  phase-locked ones are kept as reference.

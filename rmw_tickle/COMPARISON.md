@@ -50,8 +50,34 @@ same session, so a row is always comparable. Across rows of different letters it
     the library actually loaded from the ping's and the pong's `/proc/PID/maps`. It voids the row unless that is the
     expected implementation, and exactly one implementation is loaded across the two. Before 2026-09-27 only the
     pong was checked, and the ping's `framework=` was the environment variable it printed.
-  - **`P` rows:** the poll-wait sweep, build `099374d2`, `results/rmw_pollsweep_2026-09-26.txt`, 144 rows,
-    0 void. Every row's `LOOP:` line confirms its sleep.
+  - **`J` rows (rows 52-67 since 2026-09-27):** the poll-wait sweep with the ping's `--phase jitter --rtt-at callback`
+    (the user's decision, RMW_PERF_PLAN.md 10.2). Build `499763db`, `results/rmw_polljitter_2026-09-27.txt`,
+    141 ok rows, 3 VOID: 2 jitter placements at chi2 21.8 and 22.6, which is the expected chance rate at p = 0.01,
+    and 1 loss. A random pause of up to one poll cycle after each publish puts the reply at a random phase of the
+    ping's loop, as in an application not synchronised with its peer. The round trip ends at the reply's callback, as
+    in block mode. ✅/❌ mark a lead beyond 2 x SE over the next rmw; ⚪ marks the first two when they are within it.
+    Each row's PHASE line confirms the mode and a uniform placement, and each row checks both sides' /proc maps.
+  - **Superseded `P` rows (reference only):** the same sweep with the ping's publish locked to its poll loop. Build
+    `099374d2`, `results/rmw_pollsweep_2026-09-26.txt`, 144 rows, 0 void. Locked, the reply lands at the same
+    phase of the loop every time, so a row measured which rmw's check happened to straddle its own arrival, not the
+    rmw (RMW_PERF_PLAN.md 10.1). Each round trip also carried one extra loop sleep (~158 us). The locked means for
+    rows 52-67 were, rmw_tickle / FastDDS / CycloneDDS in ms:
+    row 52: 0.242 / 0.317 / 0.270
+    row 53: 0.245 / 0.328 / 0.270
+    row 54: 0.269 / 0.339 / 0.292
+    row 55: 0.268 / 0.355 / 0.286
+    row 56: 0.367 / 0.445 / 0.399
+    row 57: 0.382 / 0.507 / 0.390
+    row 58: 0.462 / 0.535 / 0.486
+    row 59: 0.463 / 0.538 / 0.416
+    row 60: 0.505 / 0.471 / 0.431
+    row 61: 0.507 / 0.490 / 0.436
+    row 62: 0.516 / 0.503 / 0.450
+    row 63: 0.510 / 0.528 / 0.442
+    row 64: 0.546 / 0.651 / 0.617
+    row 65: 0.548 / 0.668 / 0.633
+    row 66: 0.552 / 0.657 / 0.621
+    row 67: 0.550 / 0.668 / 0.634
   - **Both ways an application can wait are test cases** (the user's decision of 2026-09-26). In *block*
     the ping waits in `spin_once()` and the rmw wakes it when the reply arrives: the `spin()` pattern of
     most ROS 2 applications, and the native harness's way. In *poll* it loops on `spin_some()` with a
@@ -131,22 +157,22 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 49 | RTT mean, block wait, RELIABLE | Bench (64 B) | ✅ **0.250** | ❌ 0.329 | 0.268 | V |
 | 50 | RTT mean, block wait, BEST_EFFORT | Array1k | ✅ **0.272** | ❌ 0.341 | 0.287 | V |
 | 51 | RTT mean, block wait, RELIABLE | Array1k | ✅ **0.272** | ❌ 0.355 | 0.281 | V |
-| 52 | RTT mean, busy poll (no sleep), BEST_EFFORT | Bench (64 B) | ✅ **0.242** | ❌ 0.317 | 0.270 | P |
-| 53 | RTT mean, busy poll (no sleep), RELIABLE | Bench (64 B) | ✅ **0.245** | ❌ 0.328 | 0.270 | P |
-| 54 | RTT mean, busy poll (no sleep), BEST_EFFORT | Array1k | ✅ **0.269** | ❌ 0.339 | 0.292 | P |
-| 55 | RTT mean, busy poll (no sleep), RELIABLE | Array1k | ✅ **0.268** | ❌ 0.355 | 0.286 | P |
-| 56 | RTT mean, poll wait, 50 us sleep, BEST_EFFORT | Bench (64 B) | ✅ **0.367** | ❌ 0.445 | 0.399 | P |
-| 57 | RTT mean, poll wait, 50 us sleep, RELIABLE | Bench (64 B) | ✅ **0.382** | ❌ 0.507 | 0.390 | P |
-| 58 | RTT mean, poll wait, 50 us sleep, BEST_EFFORT | Array1k | ✅ **0.462** | ❌ 0.535 | 0.486 | P |
-| 59 | RTT mean, poll wait, 50 us sleep, RELIABLE | Array1k | 0.463 | ❌ 0.538 | ✅ **0.416** | P |
-| 60 | RTT mean, poll wait, 100 us sleep, BEST_EFFORT | Bench (64 B) | ❌ 0.505 | 0.471 | ✅ **0.431** | P |
-| 61 | RTT mean, poll wait, 100 us sleep, RELIABLE | Bench (64 B) | ❌ 0.507 | 0.490 | ✅ **0.436** | P |
-| 62 | RTT mean, poll wait, 100 us sleep, BEST_EFFORT | Array1k | ❌ 0.516 | 0.503 | ✅ **0.450** | P |
-| 63 | RTT mean, poll wait, 100 us sleep, RELIABLE | Array1k | 0.510 | ❌ 0.528 | ✅ **0.442** | P |
-| 64 | RTT mean, poll wait, 200 us sleep, BEST_EFFORT | Bench (64 B) | ✅ **0.546** | ❌ 0.651 | 0.617 | P |
-| 65 | RTT mean, poll wait, 200 us sleep, RELIABLE | Bench (64 B) | ✅ **0.548** | ❌ 0.668 | 0.633 | P |
-| 66 | RTT mean, poll wait, 200 us sleep, BEST_EFFORT | Array1k | ✅ **0.552** | ❌ 0.657 | 0.621 | P |
-| 67 | RTT mean, poll wait, 200 us sleep, RELIABLE | Array1k | ✅ **0.550** | ❌ 0.668 | 0.634 | P |
+| 52 | RTT mean, busy poll (no sleep), BEST_EFFORT | Bench (64 B) | ✅ **0.240** | ❌ 0.320 | 0.273 | J |
+| 53 | RTT mean, busy poll (no sleep), RELIABLE | Bench (64 B) | ✅ **0.242** | ❌ 0.330 | 0.270 | J |
+| 54 | RTT mean, busy poll (no sleep), BEST_EFFORT | Array1k | ✅ **0.261** | ❌ 0.336 | 0.289 | J |
+| 55 | RTT mean, busy poll (no sleep), RELIABLE | Array1k | ✅ **0.263** | ❌ 0.350 | 0.281 | J |
+| 56 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ✅ **0.293** | ❌ 0.357 | 0.308 | J |
+| 57 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.297 | 0.359 | ⚪ 0.340 | J |
+| 58 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.311** | ❌ 0.369 | 0.324 | J |
+| 59 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.315 | 0.377 | ⚪ 0.354 | J |
+| 60 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.316 | 0.372 | ⚪ 0.322 | J |
+| 61 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Bench (64 B) | ✅ **0.320** | ❌ 0.387 | 0.329 | J |
+| 62 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.338** | ❌ 0.394 | 0.349 | J |
+| 63 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.338 | 0.400 | ⚪ 0.346 | J |
+| 64 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.365 | 0.419 | ⚪ 0.367 | J |
+| 65 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.366 | 0.424 | ⚪ 0.375 | J |
+| 66 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Array1k | ⚪ 0.388 | 0.433 | ⚪ 0.395 | J |
+| 67 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.392 | 0.442 | ⚪ 0.384 | J |
 | 68 | peak RSS, ping process (KB) | Bench, block, BEST_EFFORT | ✅ **11,264** | ❌ 23,796 | 14,720 | V |
 | 69 | peak RSS, pong process (KB) | Bench, block, BEST_EFFORT | ✅ **11,760** | ❌ 23,612 | 14,532 | V |
 | 70 | pong CPU, whole run (ms) | Bench, block, BEST_EFFORT | ✅ **35.2** | ❌ 56.3 | 43.0 | V |
@@ -165,12 +191,15 @@ loss. Both are shown so neither configuration's weakness is hidden.
 
 ### Where TickLE does not come first, stated up front
 
-- **Rows 59-63, the `rmw` round trip with a polling wait at 100 us (and Array1k RELIABLE at 50 us): CycloneDDS
-  is fastest.** TickLE is fastest in the other 19 `rmw` RTT rows: every block row, busy polling, 200 us, and
-  three of four 50 us rows. The 100 us result is a grid effect, measured and not argued (`RMW_PERF_PLAN.md`
-  8.1 and 8.3). `rmw_tickle`'s `spin_some()` costs 6.4 us against CycloneDDS's 46.5, so its loop cycles
-  faster, and against a 100 us sleep its reply is caught on the third iteration instead of the second (3.02
-  against 2.01 per round trip).
+- **Poll-wait rows 52-67 (since 2026-09-27, random phase): no loss, but not all wins.**
+  - rmw_tickle has the lowest mean in 15 of 16 rows. It wins 9 beyond 2 x SE; the other 6 are draws with
+    CycloneDDS.
+  - In row 67 (Array1k RELIABLE, 200 us) CycloneDDS's mean is lower, 0.384 against 0.392 ms, also within 2 x SE:
+    a draw.
+  - The margin over CycloneDDS is 5-15 us at 100 and 200 us, where half a poll cycle of waiting, the same for
+    every rmw, dominates.
+  - The earlier phase-locked sweep, where CycloneDDS won at 100 us, measured the loop's grid, not the rmw
+    (RMW_PERF_PLAN.md 10.1); its figures are kept under the `P` note.
 - **One segment behind, inside a lead.** At the kernel boundary, rmw_tickle is fastest in every user-space
   segment of the round trip and in the whole pong receive side. Its kernel wake alone (ppoll, then
   recvfrom) is ~6 us slower than the vendors' blocking recvmsg. The bpftrace split and an executor-driven
@@ -721,10 +750,11 @@ Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_c
 
 Table rows 48-71. `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`.
 
-**Current status (2026-09-26):**
+**Current status (2026-09-27):**
 - With a block wait, TickLE is first on every `rmw` row: RTT, memory and CPU.
-- With a poll wait, it is first at busy polling, 200 us and three of four 50 us rows, and not at 100 us
-  (rows 59-63). Why is measured: the loop's grid.
+- With a poll wait at a random phase (rows 52-67, 2026-09-27), it has the lowest mean in 15 of 16 rows,
+  9 of them beyond 2 x SE. The other 7 are draws with CycloneDDS, including row 67, where CycloneDDS's mean is
+  8 us lower. The earlier phase-locked sweep lost at 100 us to the loop's grid (RMW_PERF_PLAN.md 10.1).
 - The earlier ~0.08 ms "deficit" was the ping's polling loop, found when the round trip was split with
   packet captures, a syscall timestamp layer and application stamps on both hosts.
 
