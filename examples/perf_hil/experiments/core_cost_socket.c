@@ -21,7 +21,11 @@
 // with one), because tt_Node_create() refuses a broadcast no interface has. Data goes node to node over the
 // host's own address; discovery broadcasts leave on that interface.
 //
-// Usage: BENCH_BROADCAST=<addr> core_cost_socket [samples] (default 400000)
+// Usage: BENCH_BROADCAST=<addr> core_cost_socket [samples [round]] (default 400000, 512)
+//
+// A round must fit the reader's socket buffer: nothing polls the writer while the reader drains, so a datagram the
+// kernel drops is never resent and the run stalls (stalled=1, exit 2). The Pi caps SO_RCVBUF at net.core.rmem_max
+// 212992, which held ~443 of these datagrams - every 512 round stalled there on 2026-09-27; use 256 on the Pi.
 // NOLINTNEXTLINE(bugprone-reserved-identifier, readability-identifier-naming)
 #define _GNU_SOURCE
 #include <stdbool.h>
@@ -41,9 +45,9 @@
 #define NS_PER_S 1000000000ULL
 #define NS_PER_US 1000ULL
 #define DEFAULT_SAMPLES 400000U
-#define ROUND 512U        // samples sent before the reader takes them: well inside the socket's receive buffer
-#define DEPTH 64U         // the Q2 cell's -K 64
-#define POLL_NS 1000000LL // the reader's wait for a datagram, 1 ms
+#define DEFAULT_ROUND 512U // samples sent before the reader takes them: inside the PC socket's receive buffer
+#define DEPTH 64U          // the Q2 cell's -K 64
+#define POLL_NS 1000000LL  // the reader's wait for a datagram, 1 ms
 #define DISCOVERY_GIVE_UP_S 5U
 #define ROUND_GIVE_UP_S 2U
 #define ARG_BASE 10
@@ -131,6 +135,10 @@ struct totals {
 
 int main(int argc, char** argv) {
     uint32_t samples = argc > 1 ? (uint32_t)strtoul(argv[1], NULL, ARG_BASE) : DEFAULT_SAMPLES;
+    uint32_t round_size = argc > 2 ? (uint32_t)strtoul(argv[2], NULL, ARG_BASE) : DEFAULT_ROUND;
+    if (round_size == 0) {
+        round_size = DEFAULT_ROUND;
+    }
     const char* broadcast = getenv("BENCH_BROADCAST");
     if (broadcast == NULL) {
         fprintf(stderr, "BENCH_BROADCAST must name the broadcast address of an interface on this host\n");
@@ -147,7 +155,7 @@ int main(int argc, char** argv) {
     uint32_t sent = 0;
     bool stalled = false;
     while (sent < samples && !stalled) {
-        uint32_t round = samples - sent < ROUND ? samples - sent : ROUND;
+        uint32_t round = samples - sent < round_size ? samples - sent : round_size;
         uint64_t user0 = 0;
         uint64_t sys0 = 0;
         uint64_t user1 = 0;
@@ -180,9 +188,9 @@ int main(int argc, char** argv) {
 
     printf("RESULT: samples=%u received=%llu stalled=%d send_ns_per_sample=%.2f recv_ns_per_sample=%.2f "
            "send_utime_ns_per_sample=%.2f send_stime_ns_per_sample=%.2f recv_utime_ns_per_sample=%.2f "
-           "recv_stime_ns_per_sample=%.2f tx_datagrams=%llu tt_version=%d\n",
+           "recv_stime_ns_per_sample=%.2f tx_datagrams=%llu round=%u tt_version=%d\n",
            sent, (unsigned long long)received, stalled ? 1 : 0, (double)send.wall / sent, (double)recv.wall / sent,
            (double)send.user / sent, (double)send.sys / sent, (double)recv.user / sent, (double)recv.sys / sent,
-           (unsigned long long)writer.tx_datagrams, tt_VERSION);
+           (unsigned long long)writer.tx_datagrams, round_size, tt_VERSION);
     return stalled ? 2 : 0;
 }

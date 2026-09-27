@@ -54,7 +54,8 @@ trap 'rm -rf "$LOCAL"' EXIT
 "${SSH[@]}" "rm -rf $REMOTE && mkdir -p $REMOTE/harness"
 # BENCH=socket: experiments/core_cost_socket.c instead - the same scheduler-driven RELIABLE loop through the real HAL
 # (hal_linux.c, real UDP sockets on the Pi's own interface, WIRE_PLAN.md 8.8). BENCH_BROADCAST is that interface's
-# broadcast address (default the rig link's); BENCH_ARGS does not apply.
+# broadcast address (default the rig link's); BENCH_ARGS is the round size (core_cost_socket.c: 256 on the Pi, whose
+# socket buffer drops a 512 round).
 BENCH="${BENCH:-core}"
 BENCH_BROADCAST="${BENCH_BROADCAST:-192.168.10.255}"
 tar -C "$REPO/examples/perf_hil" -cf - experiments/core_cost_bench.c experiments/core_cost_socket.c tickle/common/p1 |
@@ -89,6 +90,8 @@ for round in $(seq "$ROUNDS"); do
         line="$("${SSH[@]}" "BENCH_BROADCAST=$BENCH_BROADCAST taskset -c $CPU $REMOTE/bench_$sha $SAMPLES ${BENCH_ARGS:-} 2>/dev/null" </dev/null |
             grep -E '^(RESULT|PUBLISH):' | tr '\n' ' ' || true)"
         [ -n "$line" ] || line="RESULT: failed"
+        # A stalled run lost datagrams it never got back and measured only its first round: not a sample.
+        case "$line" in *stalled=1*) line="RESULT: failed stalled ${line#RESULT: }" ;; esac
         echo "ref=$ref round=$round $line" >>"$OUT"
     done <"$LOCAL/refs"
 done

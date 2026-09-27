@@ -422,6 +422,48 @@ different `tt_Node` layout around `node->hal`.
 - **Control:** `8f3811f4` against itself as a second arm pinned the same way. Its difference must be within 2 x SE,
   or the run is void.
 
+**Result (2026-09-27, the Pi `10.1.1.214`, CPU 3, 10 rounds x 400000 samples; `/tmp/core_cost_pi_socket_2026-09-27.txt`).**
+
+How it was run, where it departs from the plan above:
+- The bench is its own file, `experiments/core_cost_socket.c`, rather than `core_cost_bench -DBENCH_REAL_HAL`. It
+  links TickLE as an application does, with no whitebox include. `core_cost_pi.sh BENCH=socket` runs it.
+- A round is 256 samples, not 512. The first run, at 512, is void: every row of all four arms stalled after its
+  first round, 443 or 444 of 512 received. The Pi caps `SO_RCVBUF` at `net.core.rmem_max` = 212992, which holds
+  ~443 of these datagrams, and nothing polls the writer while the reader drains, so a drop is never resent. The
+  PC's cap is 4 MiB, which is why the PC run did not show it. The bench now takes the round as its second argument.
+  `core_cost_pi.sh` also marks a stalled row as failed, so a run like that can no longer be summarised as data.
+- The control arm is `8f3811f4^0`: the same tree archived and built a second time, and run as a separate arm.
+- The same bench on the PC, in a private netns at 512, gave `fd57b01d` send user+sys +8.3 +- 5.4 ns.
+
+Paired against `8f3811f4`, per sample, in ns (mean of the 10 round differences, +- SE):
+
+| arm | send wall | send utime | send stime | send user+sys | recv wall | recv utime |
+|---|---|---|---|---|---|---|
+| `8f3811f4^0` (control) | -7.3 +- 5.1 | -8.3 +- 22.1 | -11.0 +- 22.2 | -19.3 +- 12.4 | -0.8 +- 3.6 | -10.1 +- 8.4 |
+| `fd57b01d` (v10 alone) | -0.5 +- 2.1 | -20.7 +- 8.9 | +24.1 +- 14.8 | +3.4 +- 14.3 | +14.3 +- 3.6 | +20.4 +- 9.2 |
+| `86492b99` (main) | +24.5 +- 5.2 | -10.6 +- 15.3 | +8.7 +- 18.5 | -2.0 +- 17.9 | -65.2 +- 3.5 | -56.4 +- 6.5 |
+
+Base medians: send 5387 ns, recv 874 ns. Every run delivered 400000 of 400000, with the same datagram count in
+every arm (400006 or 400007).
+
+How it reads:
+- **The control passes.** Each of its columns is within 2 x SE.
+- **Send utime is flat at `fd57b01d`, by the pre-registered branch.** There is no rise, and the +40 ns is not on
+  the real send path. The alignment arm is therefore not run.
+  - The utime -20.7 and stime +24.1 split is the tick moving between the two. Their sum, +3.4 +- 14.3, is flat.
+  - Send wall at `fd57b01d` is -0.5 +- 2.1.
+  - What is left between this loop and the campaign client is the peer: a second Pi's ACKNACK timing, and the NIC.
+    That is a campaign-level question, not a core one.
+- **Recorded as seen, with no mechanism claimed:**
+  - `fd57b01d` receives +14 ns wall (4 x SE). This is v10's receive cost, which the D-series (OPTIMIZATION_PLAN 11)
+    was written against.
+  - Main receives -65 ns wall and -56 ns utime against the pre-v10 parent (-7.5%).
+  - Main's send wall is +24.5 +- 5.2 (+0.45%, 9 of 10 rounds above the base median), while its send user+sys is
+    flat (-2.0 +- 17.9). The wall time outside the thread's CPU grew from 244 to 279 ns (medians).
+    - It is not the wire change: `fd57b01d` is flat.
+    - It comes from a post-v10 change.
+    - By 8.3 it is only a candidate. The 8.9 campaign A B B A has no CPU or rate row WORSE at main.
+
 ### 8.9 The pre-v10 parent against `main`, A B B A: no CPU, rate, byte or latency row WORSE (2026-09-27)
 
 `campaign_ab_chain.sh`, `8f3811f4` / `173268a6` / `173268a6` / `8f3811f4`. `main` at `173268a6` carries v10 with its
