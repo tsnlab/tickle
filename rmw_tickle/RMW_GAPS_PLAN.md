@@ -273,3 +273,20 @@ built Release from a worktree, with the standard interfaces from `build_ros2_int
     control failed. It was fixed and re-run: the control passes.
   - `matched`: rclpy's UnsupportedEventTypeError is what a user's node gets on rmw_tickle, so it counts as FAIL, not
     ERROR.
+
+## g8 - processes on one host (found 2026-09-28; top priority; acceptance test `samehost`)
+
+- **Gap:** two rmw_tickle processes on one host do not communicate by default. A talker and a listener as two
+  default-options rclpy processes in one netns: CycloneDDS received 80 messages, **rmw_tickle 0**, and `ros2 topic echo`
+  next to a talker printed nothing.
+  - So the most basic ROS 2 use, several terminals or a launch file with several processes on one machine, fails.
+  - Dev found it while writing g3's service check. `TICKLE_NODE_ID` is the known workaround (rmw_init.c).
+  - Every benchmark ran one process per Pi, and the acceptance tests ran two hosts, so none of them could see it.
+- **Pass, with the criteria to be completed by Dev's characterisation, before code:**
+  - `samehost` passes: the listener gets at least 50 of about 140, and `ros2 topic echo --once` prints a message, with
+    the CycloneDDS control passing;
+  - every acceptance test that passed before still passes;
+  - N processes on one host (N = 8) all discover each other, with no TICKLE_NODE_ID set;
+  - more contexts than the wire's id space in one domain is detected and refused with a clear error, never silent.
+  - If the fix changes what the context id means on the wire, it goes under WIRE_PLAN's rule before code.
+- **Baseline:** `samehost`: CycloneDDS PASS, rmw_tickle FAIL (listener 0, echo 0).
