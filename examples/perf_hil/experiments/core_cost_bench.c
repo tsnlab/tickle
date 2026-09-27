@@ -76,6 +76,7 @@ static struct wire_datagram* wire;
 static uint8_t* arena;
 static size_t arena_used;
 static uint32_t wire_count;
+static uint64_t wire_bytes;   // what those datagrams weigh on the wire, headers included (WIRE_PLAN.md 9.1 step 3)
 static uint32_t wire_dropped; // no room left: reported, and a run that drops is not to be read
 static uint8_t acting = 1;    // whose sends are being captured
 static int32_t next_node_id = 1;
@@ -135,6 +136,7 @@ static int32_t capture(uint32_t ip, const void* head, size_t head_len, const voi
         return (int32_t)len;
     }
     struct wire_datagram* datagram = &wire[wire_count++];
+    wire_bytes += len;
     datagram->from = acting;
     datagram->to = destination(ip);
     datagram->len = (uint16_t)len;
@@ -618,6 +620,23 @@ static void print_publish_latency(void) {
            publish_ns[(uint64_t)publish_count * P99 / PERCENT], publish_ns[publish_count - 1]);
 }
 
+// WIRE_PLAN.md 9.1: how the reader routed the writers' short forms, when built against the W1 prototype. A run
+// counts only with short_unrouted=0.
+static void print_w1(const struct options* opt, uint8_t reader) {
+#ifdef tt_W1_PROTOTYPE
+    uint64_t short_sent = 0;
+    for (uint32_t w = 1; w <= opt->writers; w++) {
+        short_sent += nodes[w].short_sent;
+    }
+    printf("W1: short_sent=%llu short_routed=%llu short_slow=%llu short_unrouted=%llu\n",
+           (unsigned long long)short_sent, (unsigned long long)nodes[reader].short_routed,
+           (unsigned long long)nodes[reader].short_slow, (unsigned long long)nodes[reader].short_unrouted);
+#else
+    (void)opt;
+    (void)reader;
+#endif
+}
+
 int main(int argc, char** argv) {
     struct options opt;
     if (!parse(argc, argv, &opt) || ((opt.client || opt.reliable) && opt.writers != 1)) {
@@ -635,6 +654,7 @@ int main(int argc, char** argv) {
     }
 
     wire_count = 0;
+    wire_bytes = 0;
     arena_used = 0;
     cursor[reader] = 0;
     if (opt.reliable && !opt.client) { // with -c: the clients' scheduler-driven send, on the reliable writer
@@ -643,10 +663,12 @@ int main(int argc, char** argv) {
         run_reliable(&opt, reader, &totals);
         printf("RESULT: samples=%u reliable=1 datagrams=%u received=%llu dropped=%u publish_errors=%u "
                "send_ns_per_sample=%.2f recv_ns_per_sample=%.2f send_clock_per_sample=%.3f "
-               "recv_clock_per_sample=%.3f tt_version=%d\n",
+               "recv_clock_per_sample=%.3f wire_bytes_per_sample=%.2f tt_version=%d\n",
                opt.samples, wire_count, (unsigned long long)received, wire_dropped, totals.publish_errors,
                (double)totals.send_ns / opt.samples, (double)totals.recv_ns / opt.samples,
-               (double)totals.send_clock / opt.samples, (double)totals.recv_clock / opt.samples, tt_VERSION);
+               (double)totals.send_clock / opt.samples, (double)totals.recv_clock / opt.samples,
+               (double)wire_bytes / opt.samples, tt_VERSION);
+        print_w1(&opt, reader);
         return received == opt.samples && totals.publish_errors == 0 ? 0 : 2;
     }
     uint64_t clock_before = clock_calls;
@@ -655,6 +677,7 @@ int main(int argc, char** argv) {
     uint64_t send_ns = now_ns() - start;
     uint64_t send_clock = clock_calls - clock_before;
     uint32_t sent = wire_count;
+    uint64_t sent_bytes = wire_bytes;
 
     pthread_t publisher; // NOLINT(misc-include-cleaner) - <pthread.h> above
     if (opt.concurrent_publisher) {
@@ -679,23 +702,15 @@ int main(int argc, char** argv) {
 
     printf("RESULT: samples=%u client=%d writers=%u extra=%u discovery=%d datagrams=%u received=%llu dropped=%u "
            "send_ns_per_sample=%.2f recv_ns_per_sample=%.2f send_clock_per_sample=%.3f "
-           "recv_clock_per_sample=%.3f tt_version=%d\n",
+           "recv_clock_per_sample=%.3f wire_bytes_per_sample=%.2f tt_version=%d\n",
            opt.samples, opt.client ? 1 : 0, opt.writers, opt.extra, opt.discovery ? 1 : 0, sent,
            (unsigned long long)received, wire_dropped, (double)send_ns / opt.samples, (double)recv_ns / opt.samples,
-           (double)send_clock / opt.samples, (double)recv_clock / opt.samples, tt_VERSION);
+           (double)send_clock / opt.samples, (double)recv_clock / opt.samples, (double)sent_bytes / opt.samples,
+           tt_VERSION);
 #ifdef BENCH_CP_ENABLED
     print_brackets(opt.samples);
 #endif
-#ifdef tt_W1_PROTOTYPE
-    // WIRE_PLAN.md 9.1: how the reader routed the writers' short forms. unrouted must be 0 for a run to count.
-    uint64_t short_sent = 0;
-    for (uint32_t w = 1; w <= opt.writers; w++) {
-        short_sent += nodes[w].short_sent;
-    }
-    printf("W1: short_sent=%llu short_routed=%llu short_slow=%llu short_unrouted=%llu\n",
-           (unsigned long long)short_sent, (unsigned long long)reader->short_routed,
-           (unsigned long long)reader->short_slow, (unsigned long long)reader->short_unrouted);
-#endif
+    print_w1(&opt, reader);
     if (opt.concurrent_publisher) {
         print_publish_latency();
     }
