@@ -96,70 +96,72 @@ namespace pingpong {
     }
 
     // Where each ping falls in the ping's own poll cycle (poll mode, RMW_PERF_PLAN 10.1's proposal (a), branch only,
-    // pending the user's decision). The poll loop marks the start of every spin_some() (on_check); the sender marks
-    // each publish (on_send). A publish's phase is (send - the check before it) / (the check after it - the check
-    // before it), in [0, 1), counted in `phase_bins` equal bins. The reply lands one network round trip later, which
-    // varies by far less than a cycle, so a uniform publish phase is a uniform arrival phase: each rmw then pays its
-    // average catch delay, not the one a fixed phase happens to give it.
+    // pending the user's decision). The poll loop marks the start of every spin_some() (phase_on_check); the sender
+    // marks each publish (phase_on_send). A publish's phase is (send - the check before it) / (the check after it - the
+    // check before it), in [0, 1), counted in `phase_bins` equal bins. The reply lands one network round trip later,
+    // which varies by far less than a cycle, so a uniform publish phase is a uniform arrival phase: each rmw then pays
+    // its average catch delay, not the one a fixed phase happens to give it.
     //
     // --phase locked (today's loop) publishes just before its first check, so every ping falls in the last bin;
     // --phase random publishes from its own thread and should fill the bins evenly. PHASE: reports the counts and
     // their chi-square against uniform (9 degrees of freedom: 21.67 at p = 0.01).
     //
     // --phase jitter has no loop running across the publish: the loop starts after it, so there is no check before
-    // it. There each ping's lead - its first check minus its publish - is kept (add_lead), and binned at the end
-    // against the loop's mean cycle (bin_leads): the phase is 1 - (lead mod cycle) / cycle, the same orientation as
-    // on_check's, since there (next - send) / (next - prev) = 1 - phase.
+    // it. There each ping's lead - its first check minus its publish - is kept (phase_add_lead), and binned at the end
+    // against the loop's mean cycle (phase_bin_leads): the phase is 1 - (lead mod cycle) / cycle, the same orientation
+    // as phase_on_check's, since there (next - send) / (next - prev) = 1 - phase.
     //
-    // on_send may run on another thread than on_check. prev is read before the send is stamped, so it is never
-    // after it; the send is published last (release) and read first (acquire).
+    // phase_on_send may run on another thread than phase_on_check. prev is read before the send is stamped, so it is
+    // never after it; the send is published last (release) and read first (acquire).
     constexpr int phase_bins = 10;
 
+    // A plain struct with free functions, as stamp_log is (clang-tidy's misc-non-private-member-variables-in-classes
+    // holds a struct with member functions to private data).
     struct phase_probe {
         std::atomic<uint64_t> last_check_ns {0};
         std::atomic<uint64_t> pending_prev_ns {0};
         std::atomic<uint64_t> pending_send_ns {0};
-        std::array<uint64_t, phase_bins> counts {}; // on_check's thread only
+        std::array<uint64_t, phase_bins> counts {}; // phase_on_check's thread only
         uint64_t unplaced = 0;                      // sends with no check before them yet
         std::vector<uint64_t> leads;                // --phase jitter: first check - publish, per ping
-
-        auto on_send(uint64_t prev_ns, uint64_t send_ns) -> void {
-            pending_prev_ns.store(prev_ns, std::memory_order_relaxed);
-            pending_send_ns.store(send_ns, std::memory_order_release);
-        }
-
-        auto on_check(uint64_t check_ns) -> void {
-            last_check_ns.store(check_ns, std::memory_order_relaxed);
-            const uint64_t send_ns = pending_send_ns.load(std::memory_order_acquire);
-            if (send_ns == 0 || check_ns <= send_ns) {
-                return;
-            }
-            const uint64_t prev_ns = pending_prev_ns.load(std::memory_order_relaxed);
-            pending_send_ns.store(0, std::memory_order_relaxed);
-            if (prev_ns == 0 || prev_ns > send_ns) {
-                unplaced++;
-                return;
-            }
-            const auto bin = static_cast<size_t>((send_ns - prev_ns) * phase_bins / (check_ns - prev_ns));
-            counts[std::min(bin, counts.size() - 1)]++;
-        }
-
-        auto add_lead(uint64_t lead_ns) -> void {
-            leads.push_back(lead_ns);
-        }
-
-        auto bin_leads(uint64_t cycle_ns) -> void {
-            if (cycle_ns == 0) {
-                unplaced += leads.size();
-                return;
-            }
-            for (const uint64_t lead: leads) {
-                const uint64_t before_check = cycle_ns - (lead % cycle_ns); // in (0, cycle]
-                const auto bin = static_cast<size_t>(before_check * phase_bins / cycle_ns);
-                counts[std::min(bin, counts.size() - 1)]++;
-            }
-        }
     };
+
+    inline auto phase_on_send(phase_probe& probe, uint64_t prev_ns, uint64_t send_ns) -> void {
+        probe.pending_prev_ns.store(prev_ns, std::memory_order_relaxed);
+        probe.pending_send_ns.store(send_ns, std::memory_order_release);
+    }
+
+    inline auto phase_on_check(phase_probe& probe, uint64_t check_ns) -> void {
+        probe.last_check_ns.store(check_ns, std::memory_order_relaxed);
+        const uint64_t send_ns = probe.pending_send_ns.load(std::memory_order_acquire);
+        if (send_ns == 0 || check_ns <= send_ns) {
+            return;
+        }
+        const uint64_t prev_ns = probe.pending_prev_ns.load(std::memory_order_relaxed);
+        probe.pending_send_ns.store(0, std::memory_order_relaxed);
+        if (prev_ns == 0 || prev_ns > send_ns) {
+            probe.unplaced++;
+            return;
+        }
+        const auto bin = static_cast<size_t>((send_ns - prev_ns) * phase_bins / (check_ns - prev_ns));
+        probe.counts[std::min(bin, probe.counts.size() - 1)]++;
+    }
+
+    inline auto phase_add_lead(phase_probe& probe, uint64_t lead_ns) -> void {
+        probe.leads.push_back(lead_ns);
+    }
+
+    inline auto phase_bin_leads(phase_probe& probe, uint64_t cycle_ns) -> void {
+        if (cycle_ns == 0) {
+            probe.unplaced += probe.leads.size();
+            return;
+        }
+        for (const uint64_t lead: probe.leads) {
+            const uint64_t before_check = cycle_ns - (lead % cycle_ns); // in (0, cycle]
+            const auto bin = static_cast<size_t>(before_check * phase_bins / cycle_ns);
+            probe.counts[std::min(bin, probe.counts.size() - 1)]++;
+        }
+    }
 
     inline auto phase_chi2(const phase_probe& probe, uint64_t& placed) -> double {
         placed = 0;

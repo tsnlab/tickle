@@ -163,7 +163,7 @@ namespace {
                 if (loop.first_check_ns == 0) {
                     loop.first_check_ns = spin_start;
                 }
-                probe.on_check(spin_start);
+                pingpong::phase_on_check(probe, spin_start);
                 executor.spin_some();
                 const uint64_t sleep_start = now_ns();
                 std::this_thread::sleep_for(std::chrono::microseconds(wait.poll_sleep_us));
@@ -180,7 +180,12 @@ namespace {
         -> void {
         uint64_t placed = 0;
         const double chi2 = pingpong::phase_chi2(probe, placed);
-        const char* phase = wait.random_phase ? "random" : (wait.jitter_phase ? "jitter" : "locked");
+        const char* phase = "locked";
+        if (wait.random_phase) {
+            phase = "random";
+        } else if (wait.jitter_phase) {
+            phase = "jitter";
+        }
         std::printf("PHASE: phase=%s rtt_at=%s placed=%lu unplaced=%lu bins=", phase,
                     wait.rtt_at_callback ? "callback" : "loop", static_cast<unsigned long>(placed),
                     static_cast<unsigned long>(probe.unplaced));
@@ -314,7 +319,7 @@ namespace {
                 const uint64_t prev_check = probe.last_check_ns.load(std::memory_order_relaxed);
                 const uint64_t sent_at = now_ns();
                 Traits::set_send_ns(req, sent_at);
-                probe.on_send(prev_check, sent_at);
+                pingpong::phase_on_send(probe, prev_check, sent_at);
                 pub->publish(req);
                 transmitted++;
                 {
@@ -336,7 +341,7 @@ namespace {
         while (!done) {
             loop.iterations++;
             const uint64_t spin_start = now_ns();
-            probe.on_check(spin_start);
+            pingpong::phase_on_check(probe, spin_start);
             executor.spin_some();
             const uint64_t sleep_start = now_ns();
             std::this_thread::sleep_for(std::chrono::microseconds(wait.poll_sleep_us));
@@ -355,6 +360,15 @@ namespace {
         print_loop_stats(loop, transmitted, wait);
         print_phase(probe, callback_after_send, wait);
         return 0;
+    }
+
+    // --phase jitter: after the publish, a uniform part of one poll cycle as measured so far (the requested sleep
+    // until the first wait has run).
+    auto jitter_pause(const loop_stats& loop, const wait_mode& wait, std::mt19937_64& random) -> void {
+        const uint64_t cycle =
+            loop.iterations > 0 ? mean_cycle_ns(loop) : static_cast<uint64_t>(wait.poll_sleep_us) * ns_per_us_whole;
+        std::this_thread::sleep_for(
+            std::chrono::nanoseconds(std::uniform_int_distribution<uint64_t>(0, cycle)(random)));
     }
 
     template <typename T>
@@ -410,25 +424,20 @@ namespace {
             const uint64_t sent_at = now_ns();
             Traits::set_send_ns(req, sent_at);
             if (!jitter) {
-                probe.on_send(prev_check, sent_at);
+                pingpong::phase_on_send(probe, prev_check, sent_at);
             }
             got_reply = false;
             pub->publish(req);
             transmitted++;
             if (jitter) {
-                // A uniform part of one cycle, measured so far (the requested sleep until the first wait has run).
-                const uint64_t cycle = loop.iterations > 0
-                                           ? mean_cycle_ns(loop)
-                                           : static_cast<uint64_t>(wait.poll_sleep_us) * ns_per_us_whole;
-                std::this_thread::sleep_for(
-                    std::chrono::nanoseconds(std::uniform_int_distribution<uint64_t>(0, cycle)(random)));
+                jitter_pause(loop, wait, random);
             }
             loop.first_check_ns = 0;
 
             const uint64_t wait_deadline = now_ns() + (reply_wait_ms * ns_per_ms); // 500ms, matching the native client
             wait_for_reply(executor, got_reply, wait_deadline, wait, loop, probe);
             if (jitter && loop.first_check_ns > sent_at) {
-                probe.add_lead(loop.first_check_ns - sent_at);
+                pingpong::phase_add_lead(probe, loop.first_check_ns - sent_at);
             }
             if (got_reply && Traits::seq(reply_msg) == seq) {
                 pingpong::stamp_log_add(stamps, seq, sent_at, reply_ns); // --stamps, whichever the wait mode
@@ -446,7 +455,7 @@ namespace {
         print_loop_stats(loop, transmitted, wait);
         if (!wait.blocking) {
             if (jitter) {
-                probe.bin_leads(mean_cycle_ns(loop));
+                pingpong::phase_bin_leads(probe, mean_cycle_ns(loop));
             }
             print_phase(probe, callback_after_send, wait);
         }
