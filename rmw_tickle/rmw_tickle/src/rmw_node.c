@@ -434,12 +434,13 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
     // unchecked for the entities it dropped, which core warned about once when it happened.
     (void)fprintf(stderr,
                   "rmw_tickle: executor_poll=%d executor_poll_waits=%llu executor_handovers=%llu park_wakes=%llu "
-                  "discovery_dropped=%u\n",
+                  "discovery_dropped=%u nodes_kept_at_destroy=%llu\n",
                   context_impl->executor_poll_enabled ? 1 : 0,
                   (unsigned long long)atomic_load(&context_impl->executor_poll_waits),
                   (unsigned long long)atomic_load(&context_impl->executor_handovers),
                   (unsigned long long)atomic_load(&context_impl->park_wakes),
-                  (unsigned)context_impl->discovery.entities_dropped);
+                  (unsigned)context_impl->discovery.entities_dropped,
+                  (unsigned long long)atomic_load(&context_impl->nodes_kept_at_destroy));
 
     // watchdog_thread_running is only ever true here if start_shared_tickle_node() actually
     // managed to start it (see its own doc comment there) - nothing to join otherwise. No tt_Context_
@@ -670,8 +671,11 @@ rmw_ret_t rmw_destroy_node(rmw_node_t* node) {
     // under that endpoint; the rest of the node goes as usual.
     bool core_node_destroyed = tt_Node_destroy(node_impl->core_node) == tt_RET_OK;
     if (!core_node_destroyed) {
-        RCUTILS_LOG_WARN_NAMED("rmw_tickle", "node '%s' destroyed while it still has entities; its core node is kept",
-                               node_impl->rmw_node.name);
+        // Expected when rclpy exits (its handles are finalised in any order), so DEBUG, and counted for the shutdown
+        // line: a long-running process whose count grows is leaking.
+        atomic_fetch_add(&context_impl->nodes_kept_at_destroy, 1);
+        RCUTILS_LOG_DEBUG_NAMED("rmw_tickle", "node '%s' destroyed while it still has entities; its core node is kept",
+                                node_impl->rmw_node.name);
     }
     unregister_node(context_impl, node_impl);
     if (atomic_load(&context_impl->node_count) == 0) {

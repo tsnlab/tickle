@@ -26,6 +26,7 @@
 // create_node() already started is running concurrently.
 
 #include <assert.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -277,10 +278,20 @@ int main(void) {
     assert(tt_RET_OK == tt_Client_destroy(&client));
     assert(tt_RET_OK == tt_Server_destroy(&server));
     assert(tt_RET_OK == tt_Subscriber_destroy(&sub));
-    assert(tt_RET_OK == tt_Publisher_destroy(&pub));
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
 
-    assert(RMW_RET_OK == rmw_destroy_node(node));
+    // A node destroyed while an entity still lives on it - rclpy's exit order - keeps its core node and is counted
+    // (nodes_kept_at_destroy, on the shutdown line). A second node keeps the shared context up meanwhile.
+    rmw_tickle_context_impl_t* context_impl = node_impl->context_impl;
+    rmw_node_t* keeper = rmw_create_node(&context, "test_graph_keeper", "/");
+    assert(NULL != keeper);
+    assert(0U == atomic_load(&context_impl->nodes_kept_at_destroy));
+    assert(RMW_RET_OK == rmw_destroy_node(node)); // the publisher still lives on its core node
+    assert(1U == atomic_load(&context_impl->nodes_kept_at_destroy));
+    tt_Context_lock(&context_impl->tickle_context);
+    assert(tt_RET_OK == tt_Publisher_destroy(&pub));
+    tt_Context_unlock(&context_impl->tickle_context);
+    assert(RMW_RET_OK == rmw_destroy_node(keeper));
     assert(RMW_RET_OK == rmw_shutdown(&context));
     assert(RMW_RET_OK == rmw_context_fini(&context));
     assert(RMW_RET_OK == rmw_init_options_fini(&options));

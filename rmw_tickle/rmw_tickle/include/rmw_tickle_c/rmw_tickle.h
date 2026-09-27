@@ -285,6 +285,10 @@ struct rmw_tickle_context_impl_t {
     // Each is counted once per event, not per sample.
     _Atomic uint64_t executor_handovers;
     _Atomic uint64_t park_wakes;
+    // Nodes destroyed while an entity still lived on them, whose core node was therefore kept (rmw_destroy_node()):
+    // expected at an rclpy exit, where handles are finalised in any order; a long-running process whose count grows
+    // is leaking. Printed on the shutdown diagnostics line.
+    _Atomic uint64_t nodes_kept_at_destroy;
     atomic_bool poll_thread_parked; // the poll thread is parked (announced on handover_cond)
     pthread_cond_t handover_cond;   // NOLINT(misc-include-cleaner) - under wait_mutex
     int park_timer_fd;              // CLOCK_MONOTONIC timerfd: the lease, armed on release
