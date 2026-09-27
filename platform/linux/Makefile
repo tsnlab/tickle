@@ -197,6 +197,8 @@ test: config-renames $(TEST_BINS)
 # defined must pass, so a header that fails for another reason cannot pass this check for the wrong one.
 CONFIG_RENAMED = tt_NODE_CYCLE tt_NODE_UPDATE_INTERVAL tt_NODE_TX_INTERVAL tt_NODE_MAX_LEASE_NS tt_NODE_ID_INVALID \
                  tt_NODE_ID_BROADCAST _tt_NODE_ADDRESS _tt_NODE_PORT _tt_NODE_BROADCAST
+# Settings removed outright, the same way: tt_SERVER_PENDING_ENTRY_LENGTH sized a copy no longer kept.
+CONFIG_REMOVED = tt_SERVER_PENDING_ENTRY_LENGTH
 config-renames:
 	@printf '#include <tickle/config.h>\nint main(void){return 0;}\n' > /tmp/tt_cfg_$$$$.c; \
 	 fail=0; \
@@ -209,8 +211,15 @@ config-renames:
 	         echo "config-renames: -D$$name=1 fails, but not with the rename's #error" >&2; fail=1; \
 	     fi; \
 	 done; \
+	 for name in $(CONFIG_REMOVED); do \
+	     if $(CC) -I$(INCLUDE) -D$$name=8 -fsyntax-only /tmp/tt_cfg_$$$$.c 2>/tmp/tt_cfg_$$$$.err; then \
+	         echo "config-renames: -D$$name=8 still compiles - it would be silently ignored" >&2; fail=1; \
+	     elif ! grep -q "$$name was removed" /tmp/tt_cfg_$$$$.err; then \
+	         echo "config-renames: -D$$name=8 fails, but not with the removal's #error" >&2; fail=1; \
+	     fi; \
+	 done; \
 	 rm -f /tmp/tt_cfg_$$$$.c /tmp/tt_cfg_$$$$.err; \
-	 [ $$fail = 0 ] && echo "config-renames: every old tt_NODE_* name stops the build"; \
+	 [ $$fail = 0 ] && echo "config-renames: every old tt_NODE_* name, and every removed setting, stops the build"; \
 	 exit $$fail
 
 # $@.d: the headers the test's own translation unit uses (it #includes tickle.c), so changing one -

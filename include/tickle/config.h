@@ -457,8 +457,10 @@
 #ifndef tt_SERVER_CACHE_ENTRY_LENGTH
 #define tt_SERVER_CACHE_ENTRY_LENGTH (tt_MAX_BUFFER_LENGTH * 2) // one cached, already-encoded response
 #endif
-#ifndef tt_SERVER_PENDING_ENTRY_LENGTH
-#define tt_SERVER_PENDING_ENTRY_LENGTH tt_MAX_BUFFER_LENGTH // one deferred response, as its C struct
+// tt_SERVER_PENDING_ENTRY_LENGTH sized a deferred-response copy that is no longer kept (2026-09-27); setting it
+// would do nothing, so it stops the build instead.
+#ifdef tt_SERVER_PENDING_ENTRY_LENGTH
+#error "tt_SERVER_PENDING_ENTRY_LENGTH was removed: deferred responses are no longer copied (CONTEXT_NODE_PLAN.md)"
 #endif
 #ifndef tt_CLIENT_CACHE_LENGTH
 #define tt_CLIENT_CACHE_LENGTH (tt_MAX_BUFFER_LENGTH * 2) // the outstanding request, encoded

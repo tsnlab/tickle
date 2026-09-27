@@ -272,6 +272,13 @@ number, `tt_VERSION`, which moves independently.
   - Public struct fields `node_id` -> `context_id` (`_tt_CONFIG`, `tt_Peer`, `tt_DiscoveredEntity`,
     `tt_DurableDeliveryRecord`, `tt_PeerAck`, `tt_WriterProxy`, `tt_ReorderSlot`). The wire is unchanged.
   - rmw_tickle's `tickle_node` field -> `tickle_context`.
+- **The deferred-response storage is gone** (CONTEXT_NODE_PLAN.md roadmap, the user's item 3). A deferred response is
+  encoded from the caller's struct when `tt_Server_send_response()` is called, so nothing was ever kept in it:
+  `tt_Server.pending_response_buf` (64 x `tt_MAX_BUFFER_LENGTH` bytes per server by default), `pending_storage`
+  and `pending_entry_length` are removed, and `tt_Server_set_storage()` takes only the cache area:
+  `tt_Server_set_storage(server, cache_storage, cache_entry_length)`. `tt_SERVER_PENDING_ENTRY_LENGTH` is removed and
+  stops the build if still set. rmw_tickle no longer allocates a pending area per service. Storage may now be
+  attached while a request is deferred, since the deferred request keeps nothing in it.
 
 - **The generated C++ converters copy primitive arrays and sequences as a block** (2026-09-27): `std::copy` /
   `assign()` over the container instead of an element loop, which the compiler could not vectorise. A 64-KB

@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// tt_Server_set_storage()/tt_Client_set_storage(): a server's cached and deferred responses, and a
+// tt_Server_set_storage()/tt_Client_set_storage(): a server's cached responses, and a
 // client's outstanding request, kept in storage sized for the endpoint's own service instead of
 // the inline default sized for any message - stage (iv) of the storage design the user approved on
 // 2026-09-24. At tt_MAX_BUFFER_LENGTH 65507 the inline default makes every tt_Server 12.6 MB, so
@@ -45,7 +45,6 @@ struct fake_response {
 };
 
 static tt_ALIGNAS(8) uint8_t cache_area[tt_MAX_SERVER_CACHE_COUNT * ENTRY];
-static tt_ALIGNAS(8) uint8_t pending_area[tt_MAX_SERVER_CACHE_COUNT * sizeof(struct fake_response)];
 static tt_ALIGNAS(8) uint8_t client_area[ENTRY];
 
 static struct tt_Context node;
@@ -118,8 +117,7 @@ static void test_zeroed_server_uses_inline_storage(void) {
 
 static void test_attached_cache_holds_what_fits_and_sends_what_does_not(void) {
     init_server();
-    EXPECT_EQ_INT(tt_RET_OK,
-                  tt_Server_set_storage(&server, cache_area, ENTRY, pending_area, sizeof(struct fake_response)));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Server_set_storage(&server, cache_area, ENTRY));
 
     // Fits: cached, in the caller's storage.
     EXPECT_TRUE(set_server_cache(&server, write_response(5, 1, 16), 5));
@@ -144,8 +142,7 @@ static void test_deferred_response_is_encoded_from_the_callers_struct(void) {
     init_server();
     test_mock_send_hook = keep_sent;
     sent_len = 0;
-    EXPECT_EQ_INT(tt_RET_OK,
-                  tt_Server_set_storage(&server, cache_area, ENTRY, pending_area, sizeof(struct fake_response)));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Server_set_storage(&server, cache_area, ENTRY));
     // A request deferred by the callback occupies slot 0 (what defer_call_response() records).
     server.pending_request_id[0].receiver = 7;
     server.pending_request_id[0].seq_no = 3;
@@ -165,25 +162,45 @@ static void test_deferred_response_is_encoded_from_the_callers_struct(void) {
     test_mock_send_hook = NULL;
 }
 
+// A deferred request keeps nothing in the server's storage - its response is encoded from the caller's struct when
+// it is sent - so storage may be attached while one is pending (2026-09-27, when the pending area was removed; before
+// that, a pending slot made tt_Server_set_storage() refuse).
+static void test_attach_while_a_request_is_deferred(void) {
+    init_server();
+    test_mock_send_hook = keep_sent;
+    sent_len = 0;
+    server.pending_request_id[0].receiver = 7;
+    server.pending_request_id[0].seq_no = 4;
+    server.slot_state[0] = tt_SERVER_SLOT_PENDING;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Server_set_storage(&server, cache_area, ENTRY));
+    struct fake_response response = {.value = 0xBEEF01, .pad = 0};
+    tt_RequestId id = {.receiver = 7, .seq_no = 4};
+    EXPECT_EQ_INT(tt_RET_OK, tt_Server_send_response(&server, id, 0, (struct tt_Response*)&response));
+    uint32_t value = 0xBEEF01;
+    bool found = false;
+    for (size_t i = 0; i + sizeof(value) <= sent_len && !found; i++) {
+        found = memcmp(sent + i, &value, sizeof(value)) == 0;
+    }
+    EXPECT_TRUE(found);
+    test_mock_send_hook = NULL;
+}
+
 static void test_server_attach_refuses_what_cannot_work(void) {
     init_server();
-    // A pending entry smaller than the response struct could not hold a deferred response.
-    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT,
-                  tt_Server_set_storage(&server, cache_area, ENTRY, pending_area, sizeof(struct fake_response) - 8));
     // A cache entry that could not hold even an empty response.
-    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Server_set_storage(&server, cache_area, 8, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Server_set_storage(&server, cache_area, 8));
     // Misaligned storage, or a length that is not a multiple of 8.
-    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Server_set_storage(&server, cache_area + 4, ENTRY, NULL, 0));
-    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Server_set_storage(&server, cache_area, ENTRY + 4, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Server_set_storage(&server, cache_area + 4, ENTRY));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Server_set_storage(&server, cache_area, ENTRY + 4));
     // None of those changed anything.
-    EXPECT_TRUE(server.cache_storage == NULL && server.pending_storage == NULL);
+    EXPECT_TRUE(server.cache_storage == NULL);
 
     // Swapping storage out from under a cached entry would leave it pointing at the old storage.
     EXPECT_TRUE(set_server_cache(&server, write_response(5, 1, 16), 5));
-    EXPECT_EQ_INT(tt_RET_ILLEGAL_STATUS, tt_Server_set_storage(&server, cache_area, ENTRY, NULL, 0));
+    EXPECT_EQ_INT(tt_RET_ILLEGAL_STATUS, tt_Server_set_storage(&server, cache_area, ENTRY));
     clear_server_cache_slot(&server, 0);
-    EXPECT_EQ_INT(tt_RET_OK, tt_Server_set_storage(&server, cache_area, ENTRY, NULL, 0));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Server_set_storage(&server, NULL, 0, NULL, 0)); // back to inline
+    EXPECT_EQ_INT(tt_RET_OK, tt_Server_set_storage(&server, cache_area, ENTRY));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Server_set_storage(&server, NULL, 0)); // back to inline
     EXPECT_TRUE(server.cache_storage == NULL);
 }
 
@@ -242,6 +259,7 @@ int main(void) {
     test_zeroed_server_uses_inline_storage();
     test_attached_cache_holds_what_fits_and_sends_what_does_not();
     test_deferred_response_is_encoded_from_the_callers_struct();
+    test_attach_while_a_request_is_deferred();
     test_server_attach_refuses_what_cannot_work();
     test_client_storage();
 

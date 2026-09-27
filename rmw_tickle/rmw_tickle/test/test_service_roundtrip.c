@@ -135,8 +135,6 @@ int main(void) {
     // inline arrays (8 bytes in this build) and not a datagram.
     rmw_tickle_service_t* svc = (rmw_tickle_service_t*)service->data;
     assert(svc->tickle_server.cache_storage == svc->response_cache && NULL != svc->response_cache);
-    assert(svc->tickle_server.pending_storage == svc->pending_responses && NULL != svc->pending_responses);
-    assert(svc->tickle_server.pending_entry_length == sizeof(struct pair));
     assert(svc->tickle_server.cache_entry_length < (uint32_t)tt_MAX_BUFFER_LENGTH);
     rmw_tickle_client_t* cli = (rmw_tickle_client_t*)client->data;
     assert(cli->tickle_client.cache_storage == cli->request_cache && NULL != cli->request_cache);

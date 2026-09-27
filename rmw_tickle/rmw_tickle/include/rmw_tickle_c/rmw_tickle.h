@@ -952,16 +952,14 @@ typedef struct rmw_tickle_service_t {
     // TickLE-shaped (response_callbacks->tickle_struct_size bytes, not ros_struct_size - the
     // opposite direction from request_storage above) - rmw_send_response() converts the
     // application's ROS response into this scratch buffer, then hands it straight to tt_Server_
-    // send_response(), which copies it into TickLE core's own pending-response slot immediately
-    // (see that function's own doc comment) - this doesn't need to outlive that one call the way
-    // it used to when server_callback() copied it back out itself, still waiting.
+    // send_response(), which encodes and sends it before returning (see that function's own doc comment) -
+    // so this doesn't need to outlive that one call.
     void* response_storage;
     int64_t next_sequence_id;
-    // Core's cached and deferred responses for this server, sized for this service's own response
-    // and attached with tt_Server_set_storage() (rmw_tickle defines core's inline storage tiny -
-    // CMakeLists.txt): tt_MAX_SERVER_CACHE_COUNT entries of each.
+    // Core's cached responses for this server, sized for this service's own response and attached with
+    // tt_Server_set_storage() (rmw_tickle defines core's inline storage tiny - CMakeLists.txt):
+    // tt_MAX_SERVER_CACHE_COUNT entries.
     uint8_t* response_cache;
-    uint8_t* pending_responses;
 } rmw_tickle_service_t;
 
 // TickLE specific wait set data. Unlike a typical DDS-backed rmw, this doesn't need its own

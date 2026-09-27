@@ -620,14 +620,8 @@ struct tt_Server { // extends endpoint
     uint32_t pending_sender_ip[tt_MAX_SERVER_CACHE_COUNT];   // for the same unicast-the-response
     uint16_t pending_sender_port[tt_MAX_SERVER_CACHE_COUNT]; // optimization process_callrequest() uses
     int8_t pending_return_code[tt_MAX_SERVER_CACHE_COUNT];   // tt_Server_send_response()'s own return_code arg
-    tt_ALIGNAS(8) uint8_t
-        pending_response_buf[tt_MAX_SERVER_CACHE_COUNT][tt_SERVER_PENDING_ENTRY_LENGTH]; // raw tt_Response
-    // As cache_storage, for pending_response_buf: tt_MAX_SERVER_CACHE_COUNT entries of
-    // pending_entry_length, each holding one deferred response's C struct (service->response_size).
-    // UNUSED since 2026-09-27, with pending_response_buf: tt_Server_send_response() encodes from the caller's
-    // struct and keeps no copy. Both stay until tt_Server_set_storage()'s pending half is retired as an API change.
-    uint8_t* pending_storage;
-    uint32_t pending_entry_length;
+    // No copy of a deferred response is kept: tt_Server_send_response() encodes from the caller's struct
+    // before it returns (2026-09-27), so the pending_response_buf / pending_storage that held one are gone.
     struct server_cache_clean_config pending_timeout_config[tt_MAX_SERVER_CACHE_COUNT];
     bool pending_timeout_scheduled[tt_MAX_SERVER_CACHE_COUNT];
 };
@@ -1777,18 +1771,16 @@ tt_ret_t tt_Context_create_client(struct tt_Context* node, struct tt_Client* cli
 tt_ret_t tt_Context_create_server(struct tt_Context* node, struct tt_Server* server, struct tt_Service* service,
                                   const char* endpoint_name, tt_SERVER_CALLBACK callback);
 
-// Storage sized for this server's own service, in place of the inline default (config.h's
-// tt_SERVER_CACHE_ENTRY_LENGTH / tt_SERVER_PENDING_ENTRY_LENGTH, sized for any message). Call after
-// tt_Context_create_server() - which resets the server to its inline storage - and before it has
-// handled a request. Each area holds tt_MAX_SERVER_CACHE_COUNT entries of the given length:
-//   - cache: one already-encoded response per entry, kept for a retrying client. A response larger
-//     than an entry is still sent, just not cached, so a retry re-runs the callback - as it does
-//     once a cached response has timed out (tt_SERVER_CACHE_TIMEOUT).
-//   - pending: one deferred response per entry, as its C struct; at least service->response_size.
-// Lengths must be multiples of 8 and each area 8-byte aligned. A NULL area goes back to the inline
-// one. tt_RET_INVALID_ARGUMENT for a misfit, tt_RET_ILLEGAL_STATUS if a slot is already in use.
-tt_ret_t tt_Server_set_storage(struct tt_Server* server, uint8_t* cache_storage, uint32_t cache_entry_length,
-                               uint8_t* pending_storage, uint32_t pending_entry_length);
+// Cache storage sized for this server's own service, in place of the inline default (config.h's
+// tt_SERVER_CACHE_ENTRY_LENGTH, sized for any message). Call after tt_Context_create_server() - which resets
+// the server to its inline storage - and before it has cached a response. The area holds
+// tt_MAX_SERVER_CACHE_COUNT entries of cache_entry_length, each one already-encoded response kept for a
+// retrying client. A response larger than an entry is still sent, just not cached, so a retry re-runs the
+// callback - as it does once a cached response has timed out (tt_SERVER_CACHE_TIMEOUT).
+// The length must be a multiple of 8 and the area 8-byte aligned. A NULL area goes back to the inline one.
+// tt_RET_INVALID_ARGUMENT for a misfit, tt_RET_ILLEGAL_STATUS if an entry is already cached.
+// (It also took a deferred-response area until 2026-09-27; deferred responses are no longer copied.)
+tt_ret_t tt_Server_set_storage(struct tt_Server* server, uint8_t* cache_storage, uint32_t cache_entry_length);
 // The client's counterpart: where its one outstanding request is kept for retries, at least as
 // large as the largest request it will send (a larger one is refused by tt_Client_call() with
 // tt_RET_OUT_OF_BUFFER). Same rules: after creation, not during a call, 8-byte aligned, NULL for

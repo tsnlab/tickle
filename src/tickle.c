@@ -2215,8 +2215,6 @@ static tt_ret_t node_create_server_locked(struct tt_Context* node, struct tt_Ser
     }
     server->cache_storage = NULL; // inline - see server_cache_entry()
     server->cache_entry_length = 0;
-    server->pending_storage = NULL;
-    server->pending_entry_length = 0;
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint);
     if (result != tt_RET_OK) {
@@ -2241,47 +2239,38 @@ tt_ret_t tt_Context_create_server(struct tt_Context* node, struct tt_Server* ser
     return result;
 }
 
-// Caller storage must hold aligned structs: a tt_SubmessageHeader in a cache entry, the service's
-// response struct in a pending entry.
+// Caller storage must hold aligned structs: a tt_SubmessageHeader in a cache entry.
 static bool storage_aligned(const uint8_t* storage, uint32_t entry_length) {
     return ((uintptr_t)storage % 8U) == 0 && (entry_length % 8U) == 0;
 }
 
-static tt_ret_t server_set_storage_locked(struct tt_Server* server, uint8_t* cache_storage, uint32_t cache_entry_length,
-                                          uint8_t* pending_storage, uint32_t pending_entry_length) {
+static tt_ret_t server_set_storage_locked(struct tt_Server* server, uint8_t* cache_storage,
+                                          uint32_t cache_entry_length) {
     if (server == NULL || server->service == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
-    // A cache entry must at least hold the smallest response (headers, empty body); a pending
-    // entry must hold the response struct itself.
+    // A cache entry must at least hold the smallest response (headers, empty body).
     const uint32_t smallest_response = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_CallResponseHeader);
-    if ((cache_storage != NULL &&
-         (cache_entry_length < smallest_response || !storage_aligned(cache_storage, cache_entry_length))) ||
-        (pending_storage != NULL && (pending_entry_length < server->service->response_size ||
-                                     !storage_aligned(pending_storage, pending_entry_length)))) {
+    if (cache_storage != NULL &&
+        (cache_entry_length < smallest_response || !storage_aligned(cache_storage, cache_entry_length))) {
         return tt_RET_INVALID_ARGUMENT;
     }
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-        if (server->cache[i] != NULL ||
-            __atomic_load_n(&server->slot_state[i], __ATOMIC_ACQUIRE) != tt_SERVER_SLOT_EMPTY) {
+        if (server->cache[i] != NULL) {
             return tt_RET_ILLEGAL_STATUS; // an entry already lives in the storage being replaced
         }
     }
     server->cache_storage = cache_storage; // NULL = inline, see server_cache_entry()
     server->cache_entry_length = cache_storage != NULL ? cache_entry_length : 0;
-    server->pending_storage = pending_storage;
-    server->pending_entry_length = pending_storage != NULL ? pending_entry_length : 0;
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Server_set_storage(struct tt_Server* server, uint8_t* cache_storage, uint32_t cache_entry_length,
-                               uint8_t* pending_storage, uint32_t pending_entry_length) {
+tt_ret_t tt_Server_set_storage(struct tt_Server* server, uint8_t* cache_storage, uint32_t cache_entry_length) {
     struct tt_Context* locked_node = server != NULL ? server->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
-    tt_ret_t result =
-        server_set_storage_locked(server, cache_storage, cache_entry_length, pending_storage, pending_entry_length);
+    tt_ret_t result = server_set_storage_locked(server, cache_storage, cache_entry_length);
     if (locked_node != NULL) {
         state_unlock(locked_node);
     }

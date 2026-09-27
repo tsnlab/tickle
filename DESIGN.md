@@ -846,11 +846,11 @@ with no heap at all and inside a ROS 2 process that has one.
 Storage comes from one of two places, and both are the caller's:
 
 - **Embedded in the struct**, sized by a compile-time macro. This is the default and needs no
-  caller effort: `tt_Server.cache_buf[][]` / `pending_response_buf[][]` (up to
-  `tt_MAX_SERVER_CACHE_COUNT` cached responses, for retry-dedup) and `tt_Client.cache_buf`
-  (the one outstanding call). Both are naturally bounded, so going static adds no
-  unbounded-growth risk - just a larger `sizeof()`, set by `tt_SERVER_CACHE_ENTRY_LENGTH`,
-  `tt_SERVER_PENDING_ENTRY_LENGTH` and `tt_CLIENT_CACHE_LENGTH`.
+  caller effort: `tt_Server.cache_buf[][]` (up to `tt_MAX_SERVER_CACHE_COUNT` cached responses, for
+  retry-dedup) and `tt_Client.cache_buf` (the one outstanding call). Both are naturally bounded, so going
+  static adds no unbounded-growth risk - just a larger `sizeof()`, set by `tt_SERVER_CACHE_ENTRY_LENGTH` and
+  `tt_CLIENT_CACHE_LENGTH`. A deferred response needs none: it is encoded from the caller's struct when it is
+  sent.
 - **Attached by the caller after create**, when the embedded size is the wrong shape: a
   Publisher's retained-sample cache (`tt_Publisher.reliable_cache`, whose `index[]`/`capacity` and
   `arena`/`arena_size` are both caller-supplied), a Subscriber's reorder buffer, and a Server's or
@@ -1151,7 +1151,8 @@ of the caller's response struct into the slot, and a release-store-guarded `tt_S
   every caller, native ones included, with no change to the per-slot storage.
 - It also removes a wake-up handoff from every deferred reply.
 - `flush_pending_responses()`, the poll's wake-up for it, and OPTIMIZATION_PLAN 11's D3 counter that gated it
-  went with the change.
+  went with the change. The per-slot copy it read from (`pending_response_buf`, and `tt_Server_set_storage()`'s
+  pending area) followed as an API change after CONTEXT_NODE_PLAN.md stage 1.
 
 A retry for a request that's already deferred (the client hasn't seen an answer yet, so it asks
 again) must not re-invoke the callback a second time - `find_pending_slot()` checks for one before

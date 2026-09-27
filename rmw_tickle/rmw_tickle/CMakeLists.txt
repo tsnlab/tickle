@@ -72,8 +72,7 @@ target_compile_definitions(rmw_tickle PUBLIC "tt_MAX_BUFFER_LENGTH=${rosidl_type
 # tt_MAX_BUFFER_LENGTH per tt_Server. rmw_tickle attaches storage sized for each service instead
 # (tt_Server_set_storage()/tt_Client_set_storage(), rmw_service.c/rmw_client.c), so the inline
 # arrays are made as small as allowed - 8 bytes, the alignment unit.
-target_compile_definitions(rmw_tickle PUBLIC tt_SERVER_CACHE_ENTRY_LENGTH=8 tt_SERVER_PENDING_ENTRY_LENGTH=8
-                                             tt_CLIENT_CACHE_LENGTH=8)
+target_compile_definitions(rmw_tickle PUBLIC tt_SERVER_CACHE_ENTRY_LENGTH=8 tt_CLIENT_CACHE_LENGTH=8)
 # The socket receive buffer requested (SO_RCVBUF), the 4 MiB the user approved on 2026-09-24: at
 # 65507-byte datagrams core's 1 MiB default holds sixteen. The kernel clamps it to
 # net.core.rmem_max, and hal_linux.c logs a warning naming that sysctl when what is granted holds
