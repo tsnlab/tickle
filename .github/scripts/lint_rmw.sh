@@ -80,7 +80,13 @@ checked=0
 # test_storage_budget.c turned Check all red this way. And headers (2026-09-26): cpp-linter lints a
 # changed header on its own, and an include-cleaner finding in rmw_tickle.h turned af87e150 red while
 # this gate - linting only .c files, where the header's own includes are never judged - said clean.
-for f in rmw_tickle/rmw_tickle/src/*.c rmw_tickle/rmw_tickle/test/*.c rmw_tickle/rmw_tickle/include/rmw_tickle_c/*.h; do
+#
+# And core's own sources as rmw_tickle compiles them (2026-09-28): `make lint` checks src/*.c with core's defines, but
+# code behind a flag only rmw_tickle's build sets (tt_CONTEXT_ID_CLAIM, tt_LOCAL_DELIVERY) is compiled out there, while
+# CI's cpp-linter lints the same files with rmw_tickle's database. The g8 host registry in hal_linux.c turned
+# 958e909e's Check all red on six findings this way (a short `fd`, a magic 0666) while check-gates said clean.
+for f in rmw_tickle/rmw_tickle/src/*.c rmw_tickle/rmw_tickle/test/*.c rmw_tickle/rmw_tickle/include/rmw_tickle_c/*.h \
+    src/tickle.c src/hal_linux.c src/encoding.c src/log.c; do
     checked=$((checked + 1))
     out=$("$TIDY" -p build/rmw_tickle "$f" 2>&1 | grep -E "$(basename "$f"):[0-9]+:[0-9]+: (warning|error)")
     if [ -n "$out" ]; then
@@ -130,5 +136,5 @@ if [ "$checked" -eq 0 ]; then
     echo "lint-rmw: found no rmw_tickle or ROS C++ sources - this check is not reading what it thinks it is" >&2
     exit 1
 fi
-[ "$fail" = 0 ] && echo "lint-rmw: $checked rmw_tickle and ROS C++ source(s), no clang-tidy findings ($("$TIDY" --version | grep -i 'LLVM version' | tr -s ' '))"
+[ "$fail" = 0 ] && echo "lint-rmw: $checked rmw_tickle, core-as-rmw and ROS C++ source(s), no clang-tidy findings ($("$TIDY" --version | grep -i 'LLVM version' | tr -s ' '))"
 exit "$fail"
