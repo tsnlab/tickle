@@ -455,6 +455,7 @@ static void test_lease_expiry_drops_subscriber_from_publisher_ack_set(void) {
     entities[0].kind = tt_KIND_TOPIC_SUBSCRIBER;
     entities[0].liveliness_lease_duration_ns = 100;
     entities[0].alive = true;
+    tt_Discovery_reindex(&discovery); // the key was written directly (struct tt_Discovery.index)
 
     // Well within the lease: nothing changes.
     check_liveliness(&node, 50, NULL);
@@ -495,6 +496,7 @@ static void test_lease_expiry_leaves_unrelated_publisher_alone(void) {
     entities[0].kind = tt_KIND_TOPIC_SUBSCRIBER;
     entities[0].liveliness_lease_duration_ns = 100;
     entities[0].alive = true;
+    tt_Discovery_reindex(&discovery); // the key was written directly (struct tt_Discovery.index)
 
     check_liveliness(&node, 1000, NULL);
     EXPECT_TRUE(!entities[0].alive);                                  // still tombstoned
@@ -548,6 +550,7 @@ static void test_lease_expiry_drops_writer_proxy_on_subscriber(void) {
     entities[0].kind = tt_KIND_TOPIC_PUBLISHER;
     entities[0].liveliness_lease_duration_ns = 100;
     entities[0].alive = true;
+    tt_Discovery_reindex(&discovery); // the key was written directly (struct tt_Discovery.index)
 
     check_liveliness(&node, 50, NULL); // still inside its lease
     EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)proxy->context_id);

@@ -1216,6 +1216,86 @@ static void refresh_liveliness_flags(struct tt_Context* node, uint8_t source);
 static void arm_liveliness_check(struct tt_Context* node, uint64_t due_ns);
 static void reschedule_summary_for_leases(struct tt_Context* node, uint64_t now);
 
+// The discovery table's index (struct tt_Discovery.index, CONTEXT_NODE_PLAN.md 4b): open addressing, linear probing.
+// The context id spread by the golden-ratio constant, then murmur3's 32-bit finaliser steps (multiplier, shifts).
+#define DISCOVERY_HASH_GOLDEN 0x9E3779B1U
+#define DISCOVERY_HASH_MIX 0x85EBCA6BU
+#define DISCOVERY_HASH_SHIFT_HIGH 16U
+#define DISCOVERY_HASH_SHIFT_LOW 13U
+
+static uint32_t discovery_hash(uint8_t context_id, uint32_t endpoint_id) {
+    uint32_t hash = endpoint_id ^ ((uint32_t)context_id * DISCOVERY_HASH_GOLDEN);
+    hash ^= hash >> DISCOVERY_HASH_SHIFT_HIGH;
+    hash *= DISCOVERY_HASH_MIX;
+    hash ^= hash >> DISCOVERY_HASH_SHIFT_LOW;
+    return hash & (tt_DISCOVERY_INDEX_SIZE - 1U);
+}
+
+// The slot holding (context_id, endpoint_id), or -1.
+static int32_t discovery_slot_of(const struct tt_Discovery* discovery, uint8_t context_id, uint32_t endpoint_id) {
+    uint32_t position = discovery_hash(context_id, endpoint_id);
+    for (uint32_t probe = 0; probe < tt_DISCOVERY_INDEX_SIZE; probe++) {
+        uint16_t entry = discovery->index[position];
+        if (entry == 0) {
+            return -1;
+        }
+        const struct tt_DiscoveredEntity* entity = &discovery->entities[entry - 1U];
+        if (entity->context_id == context_id && entity->endpoint_id == endpoint_id) {
+            return (int32_t)(entry - 1U);
+        }
+        position = (position + 1U) & (tt_DISCOVERY_INDEX_SIZE - 1U);
+    }
+    return -1;
+}
+
+// Bounded, although at twice the table's size the index cannot fill while it holds only live keys: a probe that
+// never ends would hang the poll thread, where a missing index entry costs one lookup.
+static void discovery_index_add(struct tt_Discovery* discovery, uint32_t slot) {
+    const struct tt_DiscoveredEntity* entity = &discovery->entities[slot];
+    uint32_t position = discovery_hash(entity->context_id, entity->endpoint_id);
+    for (uint32_t probe = 0; probe < tt_DISCOVERY_INDEX_SIZE; probe++) {
+        if (discovery->index[position] == 0) {
+            discovery->index[position] = (uint16_t)(slot + 1U);
+            return;
+        }
+        position = (position + 1U) & (tt_DISCOVERY_INDEX_SIZE - 1U);
+    }
+    TT_LOG_ERROR("Discovery index full - node %u endpoint %08x not indexed", entity->context_id, entity->endpoint_id);
+}
+
+void tt_Discovery_reindex(struct tt_Discovery* discovery) {
+    if (discovery == NULL) {
+        return;
+    }
+    memset(discovery->index, 0, sizeof(discovery->index));
+    for (uint32_t slot = 0; slot < tt_MAX_DISCOVERED_ENTITIES; slot++) {
+        if (discovery->entities[slot].context_id != tt_CONTEXT_ID_INVALID) {
+            discovery_index_add(discovery, slot);
+        }
+    }
+    discovery->free_cursor = 0;
+}
+
+// An empty slot, searched from the cursor, or else the first tombstoned one (reclaimed, so its old key leaves the
+// index); NULL when there is neither.
+static struct tt_DiscoveredEntity* discovery_free_slot(struct tt_Discovery* discovery, bool* reclaimed) {
+    *reclaimed = false;
+    for (uint32_t step = 0; step < tt_MAX_DISCOVERED_ENTITIES; step++) {
+        uint32_t slot = (discovery->free_cursor + step) % tt_MAX_DISCOVERED_ENTITIES;
+        if (discovery->entities[slot].context_id == tt_CONTEXT_ID_INVALID) {
+            discovery->free_cursor = (uint16_t)((slot + 1U) % tt_MAX_DISCOVERED_ENTITIES);
+            return &discovery->entities[slot];
+        }
+    }
+    for (uint32_t slot = 0; slot < tt_MAX_DISCOVERED_ENTITIES; slot++) {
+        if (!discovery->entities[slot].alive) {
+            *reclaimed = true;
+            return &discovery->entities[slot];
+        }
+    }
+    return NULL;
+}
+
 // Records one remote entity into node->discovery (tt_Context_set_discovery(), rmw_tickle/PLAN.md's
 // Milestone 0(c)), refreshing its existing slot or claiming the first empty one, then fires the
 // appear/refresh callback. No-op (not even the callback) if no discovery cache is attached -
@@ -1228,32 +1308,17 @@ static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, u
         return;
     }
 
-    struct tt_DiscoveredEntity* entities = node->discovery->entities;
-    struct tt_DiscoveredEntity* slot = NULL;
-    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        if (entities[i].context_id == node_id && entities[i].endpoint_id == endpoint_id) {
-            slot = &entities[i];
-            break;
-        }
-    }
-    if (slot == NULL) {
+    struct tt_Discovery* discovery = node->discovery;
+    int32_t found = discovery_slot_of(discovery, node_id, endpoint_id);
+    struct tt_DiscoveredEntity* slot = found >= 0 ? &discovery->entities[found] : NULL;
+    bool is_new = slot == NULL;
+    bool reclaimed = false;
+    if (is_new) {
         // Prefer a truly-empty slot; fall back to reclaiming the first tombstoned one (struct
         // tt_DiscoveredEntity.alive's own doc comment, tickle.h) rather than dropping a genuinely
         // new entity on the floor while the table still has room for it in spirit, just not in a
         // never-used slot - tombstones are remembered on a best-effort basis, not guaranteed.
-        struct tt_DiscoveredEntity* tombstone_slot = NULL;
-        for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-            if (entities[i].context_id == tt_CONTEXT_ID_INVALID) {
-                slot = &entities[i];
-                break;
-            }
-            if (tombstone_slot == NULL && !entities[i].alive) {
-                tombstone_slot = &entities[i];
-            }
-        }
-        if (slot == NULL) {
-            slot = tombstone_slot;
-        }
+        slot = discovery_free_slot(discovery, &reclaimed);
     }
     if (slot == NULL) {
         // Counted every time and said once: a full table is not only an introspection gap (see struct tt_Discovery),
@@ -1276,9 +1341,15 @@ static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, u
     slot->deadline_duration_ns = deadline_duration_ns;
     slot->liveliness_lease_duration_ns = liveliness_lease_duration_ns;
     slot->alive = true;
+    if (reclaimed) {
+        tt_Discovery_reindex(discovery); // the tombstone's old key leaves the index with it
+    } else if (is_new) {
+        discovery_index_add(discovery, (uint32_t)(slot - discovery->entities));
+    }
     uint64_t now = tt_get_ns();
     slot->last_asserted_ns = now; // being announced is a sign of life
-    refresh_liveliness_flags(node, node_id);
+    // The source's liveliness flags are refreshed once per announce, after its entities (decode_update_entities()),
+    // not per entity: each refresh scans the table.
     if (liveliness_lease_duration_ns != 0) {
         arm_liveliness_check(node, now + liveliness_lease_duration_ns + 1);
     }
@@ -1321,6 +1392,7 @@ static void forget_discovered_entities_from_source(struct tt_Context* node, uint
                                      node->discovery_callback_param);
         }
     }
+    tt_Discovery_reindex(node->discovery); // the forgotten keys leave the index
     refresh_liveliness_flags(node, node_id);
 }
 
@@ -6066,21 +6138,19 @@ static void note_manual_assertion(struct tt_Context* node, uint8_t source, uint3
     if ((node->liveliness_flags[source] & tt_LIVELINESS_SOURCE_MANUAL) == 0 || node->discovery == NULL) {
         return;
     }
-    uint64_t now = rx_now(node);
-    struct tt_DiscoveredEntity* entities = node->discovery->entities;
-    bool revived = false;
-    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        struct tt_DiscoveredEntity* entity = &entities[i];
-        if (entity->context_id != source || entity->endpoint_id != endpoint_id || !entity_asserts_manually(entity)) {
-            continue;
-        }
-        entity->last_asserted_ns = now;
-        if (!entity->alive && entity->liveliness_lease_duration_ns != 0 && node->update_seen[source]) {
-            revive_entity(node, entity, now);
-            revived = true;
-        }
+    // One entry per (source, endpoint_id), found through the index (CONTEXT_NODE_PLAN.md 4b) - this runs per DATA.
+    int32_t slot = discovery_slot_of(node->discovery, source, endpoint_id);
+    if (slot < 0) {
+        return;
     }
-    if (revived) {
+    struct tt_DiscoveredEntity* entity = &node->discovery->entities[slot];
+    if (!entity_asserts_manually(entity)) {
+        return;
+    }
+    uint64_t now = rx_now(node);
+    entity->last_asserted_ns = now;
+    if (!entity->alive && entity->liveliness_lease_duration_ns != 0 && node->update_seen[source]) {
+        revive_entity(node, entity, now);
         refresh_liveliness_flags(node, source);
     }
 }
@@ -6517,7 +6587,6 @@ static bool decode_update_entities(struct tt_Context* node, struct tt_Header* he
         upsert_discovered_entity(node, header->source, endpoint_id, update_entity->kind, update_entity->qos,
                                  deadline_duration_ns, liveliness_lease_duration_ns, type, name);
     }
-
     return true;
 }
 
@@ -6619,8 +6688,11 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
         update_parts_clear(node, source);
     }
 
-    if (!decode_update_entities(node, header, buffer, &head, tail, announce->entity_count, sender_ip, sender_port,
-                                generation)) {
+    bool decoded = decode_update_entities(node, header, buffer, &head, tail, announce->entity_count, sender_ip,
+                                          sender_port, generation);
+    // Once for this fragment's entities, whether or not all of them decoded (upsert_discovered_entity()).
+    refresh_liveliness_flags(node, source);
+    if (!decoded) {
         return false;
     }
 
@@ -9540,12 +9612,8 @@ const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* d
     if (discovery == NULL) {
         return NULL;
     }
-    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        if (discovery->entities[i].context_id == context_id && discovery->entities[i].endpoint_id == endpoint_id) {
-            return &discovery->entities[i];
-        }
-    }
-    return NULL;
+    int32_t slot = discovery_slot_of(discovery, context_id, endpoint_id); // the index (4b), not a scan
+    return slot >= 0 ? &discovery->entities[slot] : NULL;
 }
 
 // See this function's own doc comment (tickle.h).

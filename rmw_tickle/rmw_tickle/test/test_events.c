@@ -325,6 +325,7 @@ int main(void) {
     sub_slot->alive = true;
     snprintf(sub_slot->type, sizeof(sub_slot->type), "test_events/msg/FakeMsg");
     snprintf(sub_slot->name, sizeof(sub_slot->name), "offered_qos_pub_topic");
+    tt_Discovery_reindex(&context_impl->discovery); // keys written directly (struct tt_Discovery.index)
     tt_Context_unlock(&context_impl->tickle_context);
 
     events_storage[0] = &offered_qos_event;
@@ -365,6 +366,7 @@ int main(void) {
     manual_sub_slot->alive = true;
     snprintf(manual_sub_slot->type, sizeof(manual_sub_slot->type), "test_events/msg/FakeMsg");
     snprintf(manual_sub_slot->name, sizeof(manual_sub_slot->name), "offered_liveliness_pub_topic");
+    tt_Discovery_reindex(&context_impl->discovery); // keys written directly (struct tt_Discovery.index)
     tt_Context_unlock(&context_impl->tickle_context);
 
     events_storage[0] = &liveliness_offered_event;
@@ -403,6 +405,7 @@ int main(void) {
     pub_slot->alive = true;
     snprintf(pub_slot->type, sizeof(pub_slot->type), "test_events/msg/FakeMsg");
     snprintf(pub_slot->name, sizeof(pub_slot->name), "requested_qos_sub_topic");
+    tt_Discovery_reindex(&context_impl->discovery); // keys written directly (struct tt_Discovery.index)
     tt_Context_unlock(&context_impl->tickle_context);
 
     events_storage[0] = &requested_qos_event;
@@ -439,6 +442,7 @@ int main(void) {
     remote_sub->alive = true;
     snprintf(remote_sub->type, sizeof(remote_sub->type), "test_events/msg/FakeMsg");
     snprintf(remote_sub->name, sizeof(remote_sub->name), "matched_count_topic");
+    tt_Discovery_reindex(&context_impl->discovery); // keys written directly (struct tt_Discovery.index)
     tt_Context_unlock(&context_impl->tickle_context);
     tt_Context_lock(&context_impl->tickle_context);
     size_t in_graph = rmw_tickle_count_matching_locked(context_impl, "matched_count_topic", tt_KIND_TOPIC_SUBSCRIBER);
@@ -455,6 +459,7 @@ int main(void) {
     tt_Context_lock(&context_impl->tickle_context);
     matched_impl->tickle_publisher.peers[0].context_id = tt_CONTEXT_ID_INVALID;
     remote_sub->context_id = tt_CONTEXT_ID_INVALID;
+    tt_Discovery_reindex(&context_impl->discovery); // keys written directly (struct tt_Discovery.index)
     tt_Context_unlock(&context_impl->tickle_context);
     assert(RMW_RET_OK == rmw_destroy_publisher(node, matched_pub));
 

@@ -147,6 +147,7 @@ static void inject_discovered_entity(rmw_tickle_context_impl_t* context_impl, ui
     entity->deadline_duration_ns = deadline_duration_ns;
     entity->liveliness_lease_duration_ns = liveliness_lease_duration_ns;
     entity->alive = true;
+    tt_Discovery_reindex(&context_impl->discovery); // the key was written directly (struct tt_Discovery.index)
     snprintf(entity->type, sizeof(entity->type), "test_best_available/msg/FakeMsg");
     snprintf(entity->name, sizeof(entity->name), "%s", topic_name);
     tt_Context_unlock(&context_impl->tickle_context);

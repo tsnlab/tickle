@@ -899,6 +899,12 @@ the context: 16 by default, 2048 in rmw_tickle builds, at 552 B an entry.
 - Size it to the remote entities a context will see.
 - A full table counts what it drops (`entities_dropped`, which rmw_tickle prints at shutdown) and warns once, naming
   the setting.
+- **Lookups go through an index** (4b): open addressing over (context id, endpoint id), `tt_DISCOVERY_INDEX_SIZE`
+  2-byte entries (at least twice the table).
+  - A received DATA's RxO check, a MANUAL publisher's assertion and every announced entity find their entry through
+    it. Before, each scanned the table. At 2048 entries that cost up to 1.2 us per received sample, and 8.5 ms per
+    2000-entity announce; now 8 ns and 0.24 ms.
+  - Core keeps the index current. A caller that changes an entry's key directly calls `tt_Discovery_reindex()`.
 
 ## The library never allocates; the caller owns every buffer
 

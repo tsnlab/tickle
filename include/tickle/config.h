@@ -603,6 +603,26 @@
 #define tt_MAX_DISCOVERED_ENTITIES 16
 #endif
 
+// The discovery table's index (CONTEXT_NODE_PLAN.md 4b): open addressing over (context id, endpoint id), a power of
+// two at least twice tt_MAX_DISCOVERED_ENTITIES so probes stay short, 2 bytes an entry.
+#ifndef tt_DISCOVERY_INDEX_SIZE
+#if tt_MAX_DISCOVERED_ENTITIES <= 16
+#define tt_DISCOVERY_INDEX_SIZE 32
+#elif tt_MAX_DISCOVERED_ENTITIES <= 64
+#define tt_DISCOVERY_INDEX_SIZE 128
+#elif tt_MAX_DISCOVERED_ENTITIES <= 256
+#define tt_DISCOVERY_INDEX_SIZE 512
+#elif tt_MAX_DISCOVERED_ENTITIES <= 1024
+#define tt_DISCOVERY_INDEX_SIZE 2048
+#elif tt_MAX_DISCOVERED_ENTITIES <= 2048
+#define tt_DISCOVERY_INDEX_SIZE 4096
+#elif tt_MAX_DISCOVERED_ENTITIES <= 8192
+#define tt_DISCOVERY_INDEX_SIZE 16384
+#else
+#define tt_DISCOVERY_INDEX_SIZE 65536
+#endif
+#endif
+
 #ifndef _tt_CONTEXT_ADDRESS
 #define _tt_CONTEXT_ADDRESS "0.0.0.0"
 #endif
@@ -731,3 +751,6 @@ static_assert(tt_MAX_NODES >= 1 && tt_MAX_NODES <= (UINT8_MAX + 1),
               "a node's index is a uint8_t, 8 bits on the wire (stage 3)");
 static_assert(tt_UPDATE_MAX_PARTS >= 1 && tt_UPDATE_MAX_PARTS <= UINT8_MAX,
               "an announce fragment's count is a uint8_t");
+static_assert((tt_DISCOVERY_INDEX_SIZE & (tt_DISCOVERY_INDEX_SIZE - 1)) == 0 &&
+                  tt_DISCOVERY_INDEX_SIZE >= 2 * tt_MAX_DISCOVERED_ENTITIES && tt_MAX_DISCOVERED_ENTITIES < UINT16_MAX,
+              "the discovery index is a power of two, at least twice the table, of uint16_t slot numbers");

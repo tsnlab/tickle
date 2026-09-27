@@ -472,6 +472,17 @@ number, `tt_VERSION`, which moves independently.
 
 ### Fixed
 
+- **Discovery lookups no longer scan the table** (CONTEXT_NODE_PLAN.md 4b, 2026-09-27).
+  - Every received DATA's RxO check found its publisher with a linear scan, as did a MANUAL_BY_TOPIC publisher's
+    liveliness assertion, which scanned all of it. So did every announced entity, up to three times (the lookup, an
+    empty slot, the source's liveliness flags).
+  - At the 2048 entries rmw_tickle has held since 4a, that was up to 1.2 us per received sample in a large graph,
+    and 8.5 ms per 2000-entity announce, repeated on each changed announce.
+  - Now `tt_Discovery` has an index over (context id, endpoint id) and a free-slot cursor, and the liveliness flags
+    are refreshed once per announce fragment: 8 ns per sample wherever the entry sits, and 0.24 ms per 2000
+    entities.
+  - A caller that writes an entry's key directly calls the new `tt_Discovery_reindex()`.
+
 - **A discovery table too small for the graph let RxO-incompatible DATA through, and rmw_tickle's held 16**
   (CONTEXT_NODE_PLAN.md 4a, 2026-09-27).
   - `tt_Discovery` does more than introspection. A subscriber's RxO check reads it, and fails open for a publisher it

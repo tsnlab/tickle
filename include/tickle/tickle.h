@@ -546,6 +546,12 @@ struct tt_Discovery {
     struct tt_DiscoveredEntity entities[tt_MAX_DISCOVERED_ENTITIES];
     uint32_t entities_dropped; // new remote entities there was no room for, counted since the table was attached
     bool full_warned;          // the one warning a full table draws has been logged
+    // (context id, endpoint id) -> slot + 1 (0: empty), open addressing (CONTEXT_NODE_PLAN.md 4b): every lookup -
+    // an announced entity's, and each received DATA's RxO check - goes through it, not a scan of the table. Kept
+    // by core; a caller that changes an entry's context_id or endpoint_id directly must call tt_Discovery_reindex().
+    // A zeroed struct is an empty table with a valid index.
+    uint16_t index[tt_DISCOVERY_INDEX_SIZE];
+    uint16_t free_cursor; // where the search for an empty slot starts
 };
 
 struct tt_Service;
@@ -1962,6 +1968,9 @@ uint32_t tt_Discovery_count(const struct tt_Discovery* discovery);
 // returned, with .alive == false, not NULL - check that field to tell the two "not currently
 // alive" shapes apart. The returned pointer is only valid until the next UPDATE this node
 // processes - copy out anything needed past that point.
+// Rebuilds the table's index (struct tt_Discovery.index) from its entries - needed only after changing an entry's
+// context_id or endpoint_id directly; core keeps it current itself.
+void tt_Discovery_reindex(struct tt_Discovery* discovery);
 const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* discovery, uint8_t context_id,
                                                     uint32_t endpoint_id);
 
