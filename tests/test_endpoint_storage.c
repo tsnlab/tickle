@@ -52,6 +52,24 @@ static struct tt_Node node;
 static struct tt_Service service;
 static struct tt_Server server;
 
+// tt_Server_send_response() encodes and sends at once (2026-09-27), so the service needs a real response codec.
+static int32_t fake_response_encode_size(struct tt_Response* response) {
+    (void)response;
+    return (int32_t)sizeof(uint32_t);
+}
+
+static int32_t fake_response_encode(struct tt_Response* response, uint8_t* payload, const uint32_t len) {
+    if (len < sizeof(uint32_t)) {
+        return -1;
+    }
+    memcpy(payload, &((struct fake_response*)response)->value, sizeof(uint32_t));
+    return (int32_t)sizeof(uint32_t);
+}
+
+static void fake_response_free(struct tt_Response* response) {
+    (void)response;
+}
+
 static void init_server(void) {
     test_mock_reset();
     memset(&node, 0, sizeof(node));
@@ -62,6 +80,9 @@ static void init_server(void) {
     memset(&service, 0, sizeof(service));
     service.name = "storage_service";
     service.response_size = sizeof(struct fake_response);
+    service.response_encode_size = fake_response_encode_size;
+    service.response_encode = fake_response_encode;
+    service.response_free = fake_response_free;
     memset(&server, 0, sizeof(server));
     server.node = &node;
     server.service = &service;
@@ -124,6 +145,7 @@ static void test_deferred_response_lands_in_attached_pending_storage(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Server_send_response(&server, id, 0, (struct tt_Response*)&response));
     EXPECT_EQ_U32(0xC0FFEE, ((struct fake_response*)server_pending_entry(&server, 0))->value);
     EXPECT_TRUE(inside(server_pending_entry(&server, 0), pending_area, sizeof(pending_area)));
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count); // encoded from there and sent by the call itself
 }
 
 static void test_server_attach_refuses_what_cannot_work(void) {

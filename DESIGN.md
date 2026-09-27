@@ -1133,24 +1133,25 @@ TIMEOUT`, 5s - waiting on an *application* to compute an answer, not on a networ
 
 `tt_Server_send_response()`, called later from any thread, finds that slot by `tt_RequestId`
 (just `(receiver, seq_no)` - the same pair `get_server_cache()` already keys an answered response
-by, reused rather than inventing a second handle concept) and does exactly two things to
-server-owned state: a plain `memcpy` of the caller's response bytes into that slot's own fixed
-buffer (never malloc'd, matching every other RPC path in this library), and a
-release-store-guarded state transition (`tt_SERVER_SLOT_PENDING` -> `tt_SERVER_SLOT_READY`) via
-GCC/Clang's `__atomic_*` builtins - deliberately *not* a `<stdatomic.h>` `_Atomic`-qualified
-field, since `tickle.h` has to stay includable from C++ (`rosidl_typesupport_tickle_c`/`_cpp`
-both do) and `<stdatomic.h>` isn't a C++ header at all; the builtins need no special header or
-type qualifier on either side to work correctly. It never touches `node->tx_buffer`/`tx_tail` or
-any other node-owned encode state - the real CDR encode and the actual `sendto()` still happen
-only on the poll thread, in `flush_pending_responses()`, called once at the very top of every
-`tt_Node_poll()` (the same "drain everything already ready before doing anything else" spirit
-`drain_rx()` already has for received datagrams) - so the single-thread-owns-`tx_buffer`
-invariant this whole design relies on stays exactly as true as it was before this primitive
-existed. `tt_Server_send_response()` finishes by calling the existing `tt_Node_interrupt()`, so a
-poll thread that's currently blocked in `tt_receive()` notices and flushes the real answer
-promptly instead of waiting out its own timeout - reusing that primitive's own already-established
-"wake the poll thread from another thread, without adding a lock" contract rather than inventing a
-second one.
+by, reused rather than inventing a second handle concept), and **encodes and sends the answer before it
+returns**, under the node's state lock, exactly as `tt_Publisher_publish()` does from any thread. The lock is
+re-entrant (a depth count), so a callback may answer this way too.
+
+**Changed 2026-09-27, and why.** Until then the call did only two things to server-owned state: a plain `memcpy`
+of the caller's response struct into the slot, and a release-store-guarded `tt_SERVER_SLOT_PENDING` ->
+`tt_SERVER_SLOT_READY` transition. The encode and the `sendto()` happened later on the poll thread, in a
+`flush_pending_responses()` at the top of every `tt_Node_poll()`, woken by `tt_Node_interrupt()`.
+- That `memcpy` was shallow. A response pointing at data it does not own was encoded later from whatever that
+  data had become, and every generated TickLE struct holds its strings as pointers.
+- `rmw_tickle`'s `rmw_send_response()` converts the ROS response into such a struct, whose strings alias the
+  ROS object, and rclcpp destroys that object as soon as the call returns.
+- So every string longer than the 15 bytes `std::string` keeps inline arrived as garbage, and a C++ client that
+  read one crashed. `ros2 service call .../list_parameters` on a default node showed it.
+- Encoding at the call, while the caller's data is alive, makes the answer independent of it for every type and
+  every caller, native ones included, with no change to the per-slot storage.
+- It also removes a wake-up handoff from every deferred reply.
+- `flush_pending_responses()`, the poll's wake-up for it, and OPTIMIZATION_PLAN 11's D3 counter that gated it
+  went with the change.
 
 A retry for a request that's already deferred (the client hasn't seen an answer yet, so it asks
 again) must not re-invoke the callback a second time - `find_pending_slot()` checks for one before

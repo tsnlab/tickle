@@ -31,6 +31,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -426,6 +427,213 @@ static void create_endpoints(void) {
     }
 }
 
+// ---- Deferred service responses answered from a thread of their own, while both poll threads run (2026-09-27).
+// Node A's caller thread calls; B's poll thread defers each request to a responder thread, which answers with a
+// string it allocates, and frees and overwrites the moment tt_Server_send_response() returns - as rclcpp frees a
+// service response the moment rmw_send_response() returns. Every answer must arrive, and carry the right text:
+// before tt_Server_send_response() encoded at the call, it was encoded later from freed memory.
+//
+// A retry the client sent before its answer arrived can reach B after the next call has been answered, when B's
+// cache holds only that newer answer: the callback runs again and the old call is answered twice. That is the
+// protocol's at-least-once retry, not this test's subject, so the deferred queue has room for it and an answer
+// carrying another call's (correct) text is counted as stale, not wrong.
+
+#define CALLS 300
+#define DEFERRED_MAX (8 * CALLS) // every call, and the stale retries answered again
+#define CALL_GIVE_UP_NS (2ULL * 1000ULL * 1000ULL * 1000ULL)
+#define ANSWER_BYTES 64
+
+struct call_request {
+    uint32_t n;
+};
+
+struct call_response {
+    char* text;
+};
+
+static int32_t call_request_encode_size(struct tt_Request* request) {
+    (void)request;
+    return (int32_t)sizeof(uint32_t);
+}
+
+static int32_t call_request_encode(struct tt_Request* request, uint8_t* payload, const uint32_t len) {
+    if (len < sizeof(uint32_t)) {
+        return -1;
+    }
+    memcpy(payload, &((struct call_request*)request)->n, sizeof(uint32_t));
+    return (int32_t)sizeof(uint32_t);
+}
+
+static int32_t call_request_decode(struct tt_Request* request, const uint8_t* payload, const uint32_t len,
+                                   bool native) {
+    (void)native;
+    if (len < sizeof(uint32_t)) {
+        return -1;
+    }
+    memcpy(&((struct call_request*)request)->n, payload, sizeof(uint32_t));
+    return (int32_t)sizeof(uint32_t);
+}
+
+static void call_request_free(struct tt_Request* request) {
+    (void)request;
+}
+
+static int32_t call_response_encode_size(struct tt_Response* response) {
+    return (int32_t)strlen(((struct call_response*)response)->text) + 1;
+}
+
+static int32_t call_response_encode(struct tt_Response* response, uint8_t* payload, const uint32_t len) {
+    const char* text = ((struct call_response*)response)->text;
+    uint32_t bytes = (uint32_t)strlen(text) + 1;
+    if (len < bytes) {
+        return -1;
+    }
+    memcpy(payload, text, bytes);
+    return (int32_t)bytes;
+}
+
+static int32_t call_response_decode(struct tt_Response* response, const uint8_t* payload, const uint32_t len,
+                                    bool native) {
+    (void)native;
+    if (len == 0 || payload[len - 1] != '\0') {
+        return -1;
+    }
+    ((struct call_response*)response)->text = (char*)payload;
+    return (int32_t)len;
+}
+
+static void call_response_free(struct tt_Response* response) {
+    (void)response;
+}
+
+static void answer_text(char* buf, size_t size, uint32_t n) {
+    snprintf(buf, size, "the answer to call %u, well past fifteen bytes", n);
+}
+
+static struct tt_Service call_service;
+static struct tt_Server call_server; // on B
+static struct tt_Client call_client; // on A
+
+static pthread_mutex_t deferred_lock = PTHREAD_MUTEX_INITIALIZER;
+static tt_RequestId deferred_ids[DEFERRED_MAX]; // written by B's poll thread, read by the responder
+static uint32_t deferred_n[DEFERRED_MAX];
+static uint32_t deferred_count;
+static uint32_t deferred_taken;
+
+static uint32_t current_call;   // atomic: the call the caller thread is waiting on
+static uint32_t call_answered;  // atomic: set by A's poll thread when its answer arrives
+static uint32_t answers_right;  // atomic
+static uint32_t answers_wrong;  // atomic: a timeout, or a text no call was answered with
+static uint32_t answers_stale;  // atomic: another call's correct answer, from a retry answered twice
+static uint32_t calls_done;     // atomic: set by the caller thread when it has finished
+static uint32_t respond_errors; // atomic
+static uint32_t calls_unanswered;
+
+static int8_t on_call(struct tt_Server* server, struct tt_Request* request, struct tt_Response* response,
+                      tt_RequestId request_id) {
+    (void)server;
+    (void)response;
+    pthread_mutex_lock(&deferred_lock);
+    if (deferred_count < DEFERRED_MAX) {
+        deferred_ids[deferred_count] = request_id;
+        deferred_n[deferred_count] = ((struct call_request*)request)->n;
+        deferred_count++;
+    }
+    pthread_mutex_unlock(&deferred_lock);
+    return tt_CALL_DEFERRED;
+}
+
+static void on_answer(struct tt_Client* client, int8_t return_code, struct tt_Response* response) {
+    (void)client;
+    uint32_t current = __atomic_load_n(&current_call, __ATOMIC_ACQUIRE);
+    unsigned int n = 0;
+    char expected[ANSWER_BYTES];
+    const char* text = return_code == 0 && response != NULL ? ((struct call_response*)response)->text : NULL;
+    bool parsed = text != NULL && sscanf(text, "the answer to call %u", &n) == 1;
+    if (parsed) {
+        answer_text(expected, sizeof(expected), n);
+    }
+    if (!parsed || strcmp(text, expected) != 0) {
+        __atomic_fetch_add(&answers_wrong, 1, __ATOMIC_RELAXED);
+    } else if (n != current) {
+        __atomic_fetch_add(&answers_stale, 1, __ATOMIC_RELAXED);
+        return; // not the answer the caller is waiting on
+    } else {
+        __atomic_fetch_add(&answers_right, 1, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(&call_answered, 1, __ATOMIC_RELEASE);
+}
+
+static void* responder_thread(void* param) {
+    (void)param;
+    while (!__atomic_load_n(&calls_done, __ATOMIC_ACQUIRE)) {
+        bool have = false;
+        tt_RequestId id = {0, 0};
+        uint32_t n = 0;
+        pthread_mutex_lock(&deferred_lock);
+        if (deferred_taken < deferred_count) {
+            id = deferred_ids[deferred_taken];
+            n = deferred_n[deferred_taken];
+            deferred_taken++;
+            have = true;
+        }
+        pthread_mutex_unlock(&deferred_lock);
+        if (!have) {
+            struct timespec pause = {0, 50000};
+            nanosleep(&pause, NULL);
+            continue;
+        }
+        char* text = malloc(ANSWER_BYTES);
+        answer_text(text, ANSWER_BYTES, n);
+        struct call_response response = {text};
+        if (tt_Server_send_response(&call_server, id, 0, (struct tt_Response*)&response) != tt_RET_OK) {
+            __atomic_fetch_add(&respond_errors, 1, __ATOMIC_RELAXED);
+        }
+        memset(text, 'X', strlen(text)); // gone, as rclcpp's response is once rmw_send_response() returns
+        free(text);
+    }
+    return NULL;
+}
+
+static void* caller_thread(void* param) {
+    (void)param;
+    for (uint32_t n = 1; n <= CALLS; n++) {
+        __atomic_store_n(&current_call, n, __ATOMIC_RELEASE);
+        __atomic_store_n(&call_answered, 0, __ATOMIC_RELEASE);
+        struct call_request request = {n};
+        uint64_t give_up = tt_get_ns() + CALL_GIVE_UP_NS;
+        while (tt_Client_call(&call_client, (struct tt_Request*)&request) != tt_RET_OK && tt_get_ns() < give_up) {
+            struct timespec pause = {0, 50000};
+            nanosleep(&pause, NULL); // the previous call's retry state is still being released
+        }
+        while (!__atomic_load_n(&call_answered, __ATOMIC_ACQUIRE) && tt_get_ns() < give_up) {
+            struct timespec pause = {0, 50000};
+            nanosleep(&pause, NULL);
+        }
+        if (!__atomic_load_n(&call_answered, __ATOMIC_ACQUIRE)) {
+            calls_unanswered++;
+        }
+    }
+    __atomic_store_n(&calls_done, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+static void create_call_endpoints(void) {
+    call_service.name = "call_stress";
+    call_service.request_size = sizeof(struct call_request);
+    call_service.response_size = sizeof(struct call_response);
+    call_service.request_encode_size = call_request_encode_size;
+    call_service.request_encode = call_request_encode;
+    call_service.request_decode = call_request_decode;
+    call_service.request_free = call_request_free;
+    call_service.response_encode_size = call_response_encode_size;
+    call_service.response_encode = call_response_encode;
+    call_service.response_decode = call_response_decode;
+    call_service.response_free = call_response_free;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_server(&node_b, &call_server, &call_service, "call_stress", on_call));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_client(&node_a, &call_client, &call_service, "call_stress", on_answer));
+}
+
 static bool all_delivered(void) {
     tt_Node_lock(&node_b); // received[] is written by B's poll thread, inside B's state lock
     bool done = true;
@@ -450,6 +658,7 @@ int main(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Node_create(&node_a));
     EXPECT_EQ_INT(tt_RET_OK, tt_Node_create(&node_b));
     create_endpoints();
+    create_call_endpoints();
 
     pthread_t poll_a;
     pthread_t poll_b;
@@ -463,11 +672,17 @@ int main(void) {
     }
     pthread_t timers;
     pthread_create(&timers, NULL, timer_thread, NULL);
+    pthread_t caller;
+    pthread_t responder;
+    pthread_create(&responder, NULL, responder_thread, NULL);
+    pthread_create(&caller, NULL, caller_thread, NULL);
 
     for (int t = 0; t < PUBLISHER_THREADS; t++) {
         pthread_join(pubs[t], NULL);
     }
     pthread_join(timers, NULL);
+    pthread_join(caller, NULL);
+    pthread_join(responder, NULL);
 
     uint64_t give_up = tt_get_ns() + DELIVERY_GIVE_UP_NS;
     while (!all_delivered() && tt_get_ns() < give_up) {
@@ -489,6 +704,10 @@ int main(void) {
     pthread_join(poll_b, NULL);
 
     EXPECT_EQ_U32(0, publish_errors);
+    EXPECT_EQ_U32(0, calls_unanswered);
+    EXPECT_EQ_U32(0, respond_errors);
+    EXPECT_EQ_U32(CALLS, answers_right);
+    EXPECT_EQ_U32(0, answers_wrong);
     for (int t = 0; t < PUBLISHER_THREADS; t++) {
         EXPECT_EQ_U32(SAMPLES_PER_THREAD, received[t]);
         EXPECT_EQ_U32(0, out_of_order[t]);

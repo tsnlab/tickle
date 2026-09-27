@@ -21,7 +21,7 @@
 
 // Whitebox: process_callrequest() (and the resend_cached_response()/encode_call_response() split
 // it dispatches to, plus Milestone 17's own defer_call_response()/tt_Server_send_response()/
-// flush_pending_responses() deferred-response path) are static. This is the RPC server-side hot
+// tt_Server_send_response() deferred-response path) are static. This is the RPC server-side hot
 // path exercised on real hardware by the SetBool example, but not by the HIL CI (which only runs
 // pub/sub examples) or any other test file, so it needs its own direct coverage.
 #include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
@@ -232,7 +232,8 @@ static void test_unknown_endpoint_is_ignored(void) {
 }
 
 // Milestone 17 (rmw_tickle/PLAN.md): a callback returning tt_CALL_DEFERRED must not send anything
-// immediately, but a later tt_Server_send_response() + the poll thread's own flush_pending_
+// immediately. Since 2026-09-27 the later tt_Server_send_response() sends the answer itself, before it returns
+// (it used to leave it READY for the poll thread's own flush_pending_
 // responses() (called directly here, whitebox, standing in for tt_Node_poll()) must still get the
 // real answer out - proving the deferred-then-answered path end to end.
 static void test_deferred_request_answered_later_is_sent(void) {
@@ -261,18 +262,18 @@ static void test_deferred_request_answered_later_is_sent(void) {
     uint8_t response_byte = 0;
     tt_RequestId request_id = {REMOTE_NODE_ID, 42};
     EXPECT_TRUE(tt_RET_OK == tt_Server_send_response(&server, request_id, 0, (struct tt_Response*)&response_byte));
-    EXPECT_EQ_U32((uint32_t)tt_SERVER_SLOT_READY, (uint32_t)server.slot_state[0]);
-    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_call_count); // still not sent - that's flush's job
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);                         // sent by the call itself
+    EXPECT_EQ_U32((uint32_t)tt_SERVER_SLOT_EMPTY, (uint32_t)server.slot_state[0]); // and the slot reclaimed
+    EXPECT_TRUE(!server.pending_timeout_scheduled[0]);                             // with its timeout
 
-    flush_pending_responses(&node);
-    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
-    EXPECT_EQ_U32((uint32_t)tt_SERVER_SLOT_EMPTY, (uint32_t)server.slot_state[0]); // slot reclaimed after flush
+    (void)tt_Node_poll(&node, 0);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count); // nothing left for a poll to send
 }
 
-// The same path through tt_Node_poll() itself: the poll flushes a READY response only when
-// tt_Server_send_response() has counted it (tt_Node.responses_ready, OPTIMIZATION_PLAN.md 11, D3) - and
-// a poll with nothing counted takes no lock for it.
-static void test_deferred_response_is_sent_by_the_next_poll(void) {
+// The same path with tt_Node_poll() around it: the response goes out from tt_Server_send_response() itself, so no
+// poll is needed for it and none sends it twice; nothing is left READY for a poll, which before the 2026-09-27
+// change was the poll's job (flush_pending_responses(), gated by D3's counter, both gone with it).
+static void test_deferred_response_is_sent_by_send_response_itself(void) {
     test_mock_reset();
     callback_count = 0;
     stub_return_code = tt_CALL_DEFERRED;
@@ -296,12 +297,11 @@ static void test_deferred_response_is_sent_by_the_next_poll(void) {
     uint8_t response_byte = 0;
     tt_RequestId request_id = {REMOTE_NODE_ID, 42};
     EXPECT_TRUE(tt_RET_OK == tt_Server_send_response(&server, request_id, 0, (struct tt_Response*)&response_byte));
-    EXPECT_EQ_U32(1, __atomic_load_n(&node.responses_ready, __ATOMIC_RELAXED));
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
 
     (void)tt_Node_poll(&node, 0);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
     EXPECT_EQ_U32((uint32_t)tt_SERVER_SLOT_EMPTY, (uint32_t)server.slot_state[0]);
-    EXPECT_EQ_U32(0, __atomic_load_n(&node.responses_ready, __ATOMIC_RELAXED));
 }
 
 // The flip side: nobody ever calls tt_Server_send_response() for a deferred request -
@@ -372,15 +372,94 @@ static void test_retry_while_deferred_does_not_recall_callback(void) {
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_call_count); // still nothing to send
 }
 
+// A response that points at data it does not own (a string, as every generated TickLE struct holds one) must go
+// out as it was when tt_Server_send_response() was called, whatever becomes of that data afterwards. rmw_tickle's
+// service responses alias the ROS response object's strings, which rclcpp destroys as soon as rmw_send_response()
+// returns; the deferred path encoded them at the next poll, from freed memory, and every string past the 15 bytes
+// std::string keeps inline arrived as garbage (2026-09-27, `ros2 service call .../list_parameters`).
+struct aliasing_response {
+    const char* text;
+};
+
+static int32_t aliasing_response_encode_size(struct tt_Response* response) {
+    return (int32_t)strlen(((struct aliasing_response*)response)->text) + 1;
+}
+
+static int32_t aliasing_response_encode(struct tt_Response* response, uint8_t* payload, const uint32_t len) {
+    const char* text = ((struct aliasing_response*)response)->text;
+    uint32_t bytes = (uint32_t)strlen(text) + 1;
+    if (len < bytes) {
+        return -1;
+    }
+    memcpy(payload, text, bytes);
+    return (int32_t)bytes;
+}
+
+static uint8_t captured[tt_MAX_BUFFER_LENGTH];
+static size_t captured_len;
+
+static void capture_sent(const void* buf, size_t len) {
+    captured_len = len < sizeof(captured) ? len : sizeof(captured);
+    memcpy(captured, buf, captured_len);
+}
+
+static bool captured_contains(const char* text) {
+    size_t n = strlen(text);
+    for (size_t i = 0; i + n <= captured_len; i++) {
+        if (memcmp(captured + i, text, n) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void test_deferred_response_is_sent_as_it_was_at_send_response(void) {
+    test_mock_reset();
+    test_mock_send_hook = capture_sent;
+    captured_len = 0;
+    callback_count = 0;
+    stub_return_code = tt_CALL_DEFERRED;
+
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Server server;
+    init_node_service_server(&node, &service, &server);
+    service.response_size = sizeof(struct aliasing_response);
+    service.response_encode_size = aliasing_response_encode_size;
+    service.response_encode = aliasing_response_encode;
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = REMOTE_NODE_ID;
+    uint32_t tail = write_callrequest(&node, 42, 0);
+    EXPECT_TRUE(process_callrequest(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+
+    // The caller's own string, gone - overwritten, as a freed heap block is - as soon as the call returns.
+    char text[] = "qos_overrides./parameter_events.publisher.depth";
+    struct aliasing_response response = {text};
+    tt_RequestId request_id = {REMOTE_NODE_ID, 42};
+    EXPECT_TRUE(tt_RET_OK == tt_Server_send_response(&server, request_id, 0, (struct tt_Response*)&response));
+    memset(text, 'X', sizeof(text) - 1);
+
+    (void)tt_Node_poll(&node, 0);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
+    EXPECT_TRUE(captured_contains("qos_overrides./parameter_events.publisher.depth"));
+    EXPECT_TRUE(!captured_contains("XXXXXXXX"));
+    test_mock_send_hook = NULL;
+}
+
 int main(void) {
     test_fresh_request_invokes_callback_and_sends();
     test_retry_hits_cache_without_recalling_callback();
     test_fresh_request_response_is_unicast_to_sender();
     test_unknown_endpoint_is_ignored();
     test_deferred_request_answered_later_is_sent();
-    test_deferred_response_is_sent_by_the_next_poll();
+    test_deferred_response_is_sent_by_send_response_itself();
     test_deferred_request_timeout_reclaims_slot();
     test_retry_while_deferred_does_not_recall_callback();
+    test_deferred_response_is_sent_as_it_was_at_send_response();
 
     if (test_result() != 0) {
         return 1;

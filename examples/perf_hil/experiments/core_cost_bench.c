@@ -382,19 +382,10 @@ static void micro(uint8_t reader, struct tt_Subscriber* sub, const struct tt_Pub
     }
     double clock = (double)(now_ns() - start) / MICRO_ITERATIONS;
 
-    start = now_ns();
-    for (uint32_t i = 0; i < MICRO_ITERATIONS; i++) {
-        state_lock(node);
-        flush_pending_responses(node);
-        state_unlock(node);
-    }
-    double responses = (double)(now_ns() - start) / MICRO_ITERATIONS;
-
     sink = hits;
     printf("MICRO: endpoint_lookup_ns=%.2f writer_proxy_ns=%.2f rxo_check_ns=%.2f decode_ns=%.2f "
-           "delivery_order_ns=%.2f empty_poll_ns=%.2f lock_pair_ns=%.2f clock_ns=%.2f "
-           "locked_response_flush_ns=%.2f\n",
-           lookup, proxy, rxo, decode, order, poll, lock, clock, responses);
+           "delivery_order_ns=%.2f empty_poll_ns=%.2f lock_pair_ns=%.2f clock_ns=%.2f\n",
+           lookup, proxy, rxo, decode, order, poll, lock, clock);
 }
 
 static struct tt_Publisher pubs[MAX_WRITERS + 1];

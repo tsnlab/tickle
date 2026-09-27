@@ -303,10 +303,6 @@ struct tt_Node {
     // (OPTIMIZATION_PLAN.md 11, D1). Raw nanoseconds, beside poller_thread: the poll writes that line anyway, and a
     // division per poll cost a sender polling once a sample ~3 ns (WIRE_PLAN.md 8). Only the poller touches it.
     uint64_t rx_clock_ns;
-    // Responses tt_Server_send_response() has made READY since the poll last looked, from any thread: a poll
-    // takes the state lock for flush_pending_responses() only when this is non-zero (OPTIMIZATION_PLAN.md 11,
-    // D3). Accessed only through __atomic builtins.
-    uint32_t responses_ready;
     uint32_t state_depth; // how many times the owner has taken it; only the owner reads or writes it
     struct tt_LockStats state_lock_stats;
     // The scheduler inbox: tt_Node_schedule() from a thread that does not hold the state lock puts its entry
@@ -638,40 +634,30 @@ struct tt_Server { // extends endpoint
 // uint8_t via __atomic builtins instead of a C11 _Atomic-qualified type.
 #define tt_SERVER_SLOT_EMPTY 0   // unused, available for a new deferred request
 #define tt_SERVER_SLOT_PENDING 1 // received, callback returned tt_CALL_DEFERRED, no response yet
-#define tt_SERVER_SLOT_READY 2   // tt_Server_send_response() filled pending_response_buf[i]
+#define tt_SERVER_SLOT_READY 2   // tt_Server_send_response() filled it and is sending it (under the state lock)
 
 // Answers a request whose tt_SERVER_CALLBACK previously returned tt_CALL_DEFERRED for the given
 // request_id - typically called later, from a different thread than the one driving this node's
 // own tt_Node_poll() loop (e.g. whatever thread a ROS 2 executor happens to run a service handler
 // on), which is the entire reason this function exists rather than just answering synchronously
 // like a non-deferred tt_SERVER_CALLBACK already can. See rmw_tickle/PLAN.md's Milestone 17 for
-// the full design rationale (why TickLE core, not just rmw_tickle, needs this primitive) and
-// DESIGN.md's "Concurrency" section for why this can still be called from another thread without
-// adding a lock to struct tt_Node/tt_Server anywhere else: this function, and *only* this
-// function among every other tt_Server_*/tt_Node_* entry point, is allowed to touch server-owned
-// state from a thread other than the one driving tt_Node_poll() - and even then, only slot_state[]
-// itself (via __atomic builtins) and the one slot's own pending_response_buf[i]/pending_request_id[i]
-// (safe to write racily-with-respect-to-the-poll-thread because that thread never reads them
-// until it has *itself* observed slot_state[i] == tt_SERVER_SLOT_READY via an acquire load, which
-// synchronizes-with this function's own release store of that same value - the standard C11
-// release/acquire handoff pattern). It never touches node->tx_buffer/tx_tail or any other
-// node-owned encode state directly - the actual CDR encode-and-send happens later, from the poll
-// thread itself, the next time tt_Node_poll() runs (interrupted early via tt_Node_interrupt(),
-// the same primitive Phase 0 already added for the analogous "wake the poll thread promptly from
-// another thread" need).
+// the full design rationale (why TickLE core, not just rmw_tickle, needs this primitive).
+//
+// **The response is encoded and sent before this returns** (2026-09-27), on the caller's thread and under the
+// node's state lock, as tt_Publisher_publish() does - re-entrant, so a callback may call it too. **The caller may
+// free or reuse response, and everything it points at, as soon as this returns.** Until 2026-09-27 the struct was
+// copied shallowly into a per-slot buffer and encoded later by the poll thread: a response pointing at data it did
+// not own (a string - every generated TickLE struct holds strings as pointers) was then encoded from whatever
+// that data had become, and rmw_tickle's service responses, which alias the ROS response rclcpp frees as soon as
+// rmw_send_response() returns, arrived with every string past std::string's inline 15 bytes as garbage.
 //
 // return_code is whatever a synchronous tt_SERVER_CALLBACK would otherwise have returned itself
 // (it couldn't - it returned tt_CALL_DEFERRED instead, precisely so the real answer could be
-// computed later, possibly on another thread, which is what this call now provides). response is
-// only ever *copied* here (a plain byte copy, sized server->service->response_size, into a fixed
-// per-slot buffer - never malloc'd) - the real CDR encode into node->tx_buffer happens later, on
-// the poll thread, so the caller does not need to keep response alive past this call returning,
-// matching every other *_encode-style callback argument in this library.
+// computed later, possibly on another thread, which is what this call now provides).
 //
-// Returns tt_RET_OK once the response is queued for the poll thread to send (not once it has
-// actually gone out - matching tt_Publisher_publish()'s own "queued, not yet necessarily
-// flushed" contract), or tt_RET_NOT_FOUND if request_id doesn't match any request still waiting
-// on a response (already answered by a previous call, already timed out, or was never deferred).
+// Returns tt_RET_OK once the response has been handed to the network, tt_RET_NOT_FOUND if request_id doesn't
+// match any request still waiting on a response (already answered by a previous call, already timed out, or was
+// never deferred), or tt_RET_OUT_OF_BUFFER if the server's pending storage is smaller than the response struct.
 tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_id, int8_t return_code,
                                  struct tt_Response* response);
 
