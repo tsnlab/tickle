@@ -435,3 +435,27 @@ built Release from a worktree, with the standard interfaces from `build_ros2_int
 
     - The first run, on the library before the muting fix, was inside the swing on every row as well (`/tmp/g8_ab`).
     - The 100 ms RTT row resolves only to about 40 us, as in g2 and g3.
+
+## Checkpoint run (2026-09-28, Plan): main at `958e909e`, after stage 3, g2, g3, g5 and g8
+
+`rmw_gap_acceptance.sh -w /tmp/plan_accept`, rmw_tickle rebuilt Release at `958e909e`. The script printed the
+library's md5 `e282cf1b5f53`; its symbols confirm g2, g5 and g8.
+
+| test | control | rmw_tickle | baseline (2026-09-27) |
+|---|---|---|---|
+| graph | CycloneDDS PASS | **PASS** | FAIL |
+| bag | CycloneDDS PASS | FAIL | FAIL (g1 is still open) |
+| events | CycloneDDS PASS | **PASS** | FAIL |
+| matched | CycloneDDS PASS | **PASS** | FAIL |
+| itype | CycloneDDS FAIL (VOID) | PASS | FAIL |
+| takeseq | CycloneDDS PASS | **PASS** | FAIL |
+| samehost | CycloneDDS PASS | **PASS** | FAIL |
+| range | CycloneDDS PASS | FAIL | FAIL (g6 is still open) |
+| peers | CycloneDDS PASS | FAIL | FAIL (g6 is still open) |
+
+- Six gaps are closed, each confirmed by its own acceptance test against the control.
+- The three still failing are exactly the open items, g1 and g6.
+- `itype` stays VOID. rmw_tickle raises the event, but no vendor does in this setup, so there is nothing to compare
+  it against.
+- g8's two further cases (8 processes on one host; a forced collision with the registry off) are in
+  `rmw_samehost_many.sh`, which uses the same WS and the same CycloneDDS control.
