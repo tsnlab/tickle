@@ -57,7 +57,9 @@ build() { # ref -> binary path
     # place. That happened on 2026-09-27 - build() runs in a command substitution, where set -e does not
     # reach, and a compile error left D3's binary standing in for D2's.
     rm -f "$bin"
-    if ! gcc -O2 -DNDEBUG -I"$tree/include" -I"$SHAPE" -DTICKLE_C="\"$tree/src/tickle.c\"" \
+    # BENCH_CFLAGS: compile-time settings applied to every arm alike, e.g. WIRE_PLAN.md 9.1's 32-writer builds.
+    # shellcheck disable=SC2086 # a list of flags
+    if ! gcc -O2 -DNDEBUG ${BENCH_CFLAGS:-} -I"$tree/include" -I"$SHAPE" -DTICKLE_C="\"$tree/src/tickle.c\"" \
         -o "$bin" "$HERE/core_cost_bench.c" "$SHAPE/Bench.c" "$tree/src/encoding.c" "$tree/src/log.c" -lm -lpthread >&2; then
         echo "build of $ref failed" >&2
         return 1
@@ -72,12 +74,12 @@ for ref in "$@"; do
 done
 
 : >"$OUT"
-echo "core_cost_ab $(date -Is) rounds=$ROUNDS samples=$SAMPLES cpu=$CPU bench_args=${BENCH_ARGS:-} refs=$*" >>"$OUT"
+echo "core_cost_ab $(date -Is) rounds=$ROUNDS samples=$SAMPLES cpu=$CPU bench_args=${BENCH_ARGS:-} bench_cflags=${BENCH_CFLAGS:-} refs=$*" >>"$OUT"
 for round in $(seq "$ROUNDS"); do
     for ref in "$@"; do
         # shellcheck disable=SC2086 # BENCH_ARGS is a list of the bench's own flags
         line="$(taskset -c "$CPU" "${BIN[$ref]}" "$SAMPLES" ${BENCH_ARGS:-} 2>/dev/null |
-            grep -E '^(RESULT|PUBLISH):' | tr '\n' ' ' || echo "RESULT: failed")"
+            grep -E '^(RESULT|PUBLISH|W1):' | tr '\n' ' ' || echo "RESULT: failed")"
         [ -n "$line" ] || line="RESULT: failed"
         echo "ref=$ref round=$round $line" >>"$OUT"
     done

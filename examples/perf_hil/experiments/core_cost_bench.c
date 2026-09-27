@@ -176,7 +176,12 @@ int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagra
 
 // Receiving is taking the next captured datagram from the other node, as the kernel would hand it over:
 // through tt_Node_poll() and its drain, so a received sample costs what it costs inside a real poll.
-#define MAX_WRITERS 8 // writer nodes 1..W, the reader node W+1
+// Writer nodes 1..W, the reader node W+1. BENCH_MAX_WRITERS raises it (WIRE_PLAN.md 9.1's 32-writer cases), with
+// tt_MAX_PEER_COUNT and tt_MAX_DISCOVERED_ENTITIES raised to match in every arm alike (core_cost_ab.sh BENCH_CFLAGS).
+#ifndef BENCH_MAX_WRITERS
+#define BENCH_MAX_WRITERS 8
+#endif
+#define MAX_WRITERS BENCH_MAX_WRITERS
 static struct tt_Node nodes[MAX_WRITERS + 2];
 static uint32_t cursor[MAX_WRITERS + 2]; // the next captured datagram each node has not looked at
 
@@ -680,6 +685,16 @@ int main(int argc, char** argv) {
            (double)send_clock / opt.samples, (double)recv_clock / opt.samples, tt_VERSION);
 #ifdef BENCH_CP_ENABLED
     print_brackets(opt.samples);
+#endif
+#ifdef tt_W1_PROTOTYPE
+    // WIRE_PLAN.md 9.1: how the reader routed the writers' short forms. unrouted must be 0 for a run to count.
+    uint64_t short_sent = 0;
+    for (uint32_t w = 1; w <= opt.writers; w++) {
+        short_sent += nodes[w].short_sent;
+    }
+    printf("W1: short_sent=%llu short_routed=%llu short_slow=%llu short_unrouted=%llu\n",
+           (unsigned long long)short_sent, (unsigned long long)reader->short_routed,
+           (unsigned long long)reader->short_slow, (unsigned long long)reader->short_unrouted);
 #endif
     if (opt.concurrent_publisher) {
         print_publish_latency();
