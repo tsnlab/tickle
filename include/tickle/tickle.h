@@ -624,6 +624,8 @@ struct tt_Server { // extends endpoint
         pending_response_buf[tt_MAX_SERVER_CACHE_COUNT][tt_SERVER_PENDING_ENTRY_LENGTH]; // raw tt_Response
     // As cache_storage, for pending_response_buf: tt_MAX_SERVER_CACHE_COUNT entries of
     // pending_entry_length, each holding one deferred response's C struct (service->response_size).
+    // UNUSED since 2026-09-27, with pending_response_buf: tt_Server_send_response() encodes from the caller's
+    // struct and keeps no copy. Both stay until tt_Server_set_storage()'s pending half is retired as an API change.
     uint8_t* pending_storage;
     uint32_t pending_entry_length;
     struct server_cache_clean_config pending_timeout_config[tt_MAX_SERVER_CACHE_COUNT];
@@ -657,7 +659,7 @@ struct tt_Server { // extends endpoint
 //
 // Returns tt_RET_OK once the response has been handed to the network, tt_RET_NOT_FOUND if request_id doesn't
 // match any request still waiting on a response (already answered by a previous call, already timed out, or was
-// never deferred), or tt_RET_OUT_OF_BUFFER if the server's pending storage is smaller than the response struct.
+// never deferred). The response is encoded from the caller's own struct: no copy of it is kept anywhere.
 tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_id, int8_t return_code,
                                  struct tt_Response* response);
 

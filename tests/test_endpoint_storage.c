@@ -132,8 +132,18 @@ static void test_attached_cache_holds_what_fits_and_sends_what_does_not(void) {
     EXPECT_TRUE(get_server_cache(&server, 6, 1) == NULL);
 }
 
-static void test_deferred_response_lands_in_attached_pending_storage(void) {
+static uint8_t sent[tt_MAX_BUFFER_LENGTH];
+static size_t sent_len;
+
+static void keep_sent(const void* buf, size_t len) {
+    sent_len = len < sizeof(sent) ? len : sizeof(sent);
+    memcpy(sent, buf, sent_len);
+}
+
+static void test_deferred_response_is_encoded_from_the_callers_struct(void) {
     init_server();
+    test_mock_send_hook = keep_sent;
+    sent_len = 0;
     EXPECT_EQ_INT(tt_RET_OK,
                   tt_Server_set_storage(&server, cache_area, ENTRY, pending_area, sizeof(struct fake_response)));
     // A request deferred by the callback occupies slot 0 (what defer_call_response() records).
@@ -143,9 +153,16 @@ static void test_deferred_response_lands_in_attached_pending_storage(void) {
     struct fake_response response = {.value = 0xC0FFEE, .pad = 0};
     tt_RequestId id = {.receiver = 7, .seq_no = 3};
     EXPECT_EQ_INT(tt_RET_OK, tt_Server_send_response(&server, id, 0, (struct tt_Response*)&response));
-    EXPECT_EQ_U32(0xC0FFEE, ((struct fake_response*)server_pending_entry(&server, 0))->value);
-    EXPECT_TRUE(inside(server_pending_entry(&server, 0), pending_area, sizeof(pending_area)));
-    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count); // encoded from there and sent by the call itself
+    // Encoded straight from `response` and sent by the call itself; the slot holds no copy of it (2026-09-27).
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
+    uint32_t value = 0xC0FFEE;
+    bool found = false;
+    for (size_t i = 0; i + sizeof(value) <= sent_len && !found; i++) {
+        found = memcmp(sent + i, &value, sizeof(value)) == 0;
+    }
+    EXPECT_TRUE(found);
+    EXPECT_EQ_U32((uint32_t)tt_SERVER_SLOT_EMPTY, (uint32_t)server.slot_state[0]);
+    test_mock_send_hook = NULL;
 }
 
 static void test_server_attach_refuses_what_cannot_work(void) {
@@ -224,7 +241,7 @@ static void test_client_storage(void) {
 int main(void) {
     test_zeroed_server_uses_inline_storage();
     test_attached_cache_holds_what_fits_and_sends_what_does_not();
-    test_deferred_response_lands_in_attached_pending_storage();
+    test_deferred_response_is_encoded_from_the_callers_struct();
     test_server_attach_refuses_what_cannot_work();
     test_client_storage();
 

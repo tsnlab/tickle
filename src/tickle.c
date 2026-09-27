@@ -218,15 +218,6 @@ static uint8_t* server_cache_entry(struct tt_Server* server, int slot) {
                                          : server->cache_buf[slot];
 }
 
-static uint32_t server_pending_entry_length(const struct tt_Server* server) {
-    return server->pending_storage != NULL ? server->pending_entry_length : (uint32_t)tt_SERVER_PENDING_ENTRY_LENGTH;
-}
-
-static uint8_t* server_pending_entry(struct tt_Server* server, int slot) {
-    return server->pending_storage != NULL ? server->pending_storage + ((size_t)slot * server->pending_entry_length)
-                                           : server->pending_response_buf[slot];
-}
-
 // peer_count == 0 (peers may be NULL) means "no override, send to the node's usual broadcast
 // address" - the direct successor to the old dest_ip == 0 sentinel. peer_count >= 1 sends the
 // same already-encoded buffer to each peer in turn via tt_send_to() instead - used by
@@ -7391,20 +7382,21 @@ static bool defer_call_response(struct tt_Server* server, tt_RequestId request_i
     return true;
 }
 
-static void send_ready_slot(struct tt_Node* node, struct tt_Server* server, int slot);
+static void send_ready_slot(struct tt_Node* node, struct tt_Server* server, int slot, struct tt_Response* response);
 
 tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_id, int8_t return_code,
                                  struct tt_Response* response) {
     if (server == NULL || response == NULL || server->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
-    // Encoded and sent here, before this returns, on the caller's thread and under the state lock (re-entrant, so a
-    // callback may call this too) - never later from a copy of the struct (2026-09-27). The struct is copied
-    // shallowly into the slot, so a response that points at data it does not own - a string, as every generated
-    // TickLE struct holds one - was encoded at the next poll from whatever that data had become: rmw_tickle's
-    // service responses alias the ROS response, which rclcpp destroys as soon as rmw_send_response() returns, and
-    // every string longer than std::string's inline 15 bytes arrived as garbage. The caller may free or reuse
-    // the response and everything it points at as soon as this returns.
+    // Encoded straight from the caller's `response` and sent, before this returns, on the caller's thread and under
+    // the state lock (re-entrant, so a callback may call this too). The slot keeps only its bookkeeping - request
+    // id, sender, return code, state, timer - and never a copy of the struct (2026-09-27). It used to take a shallow
+    // copy for the poll thread to encode later: a response pointing at data it does not own - a string, as every
+    // generated TickLE struct holds one - was then encoded from whatever that data had become, and rmw_tickle's
+    // service responses, which alias the ROS response rclcpp destroys as soon as rmw_send_response() returns,
+    // arrived with every string past std::string's inline 15 bytes as garbage. The caller may free or reuse the
+    // response and everything it points at as soon as this returns.
     struct tt_Node* node = server->node;
     state_lock(node);
     tt_ret_t result = tt_RET_NOT_FOUND;
@@ -7416,11 +7408,6 @@ tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_
             server->pending_request_id[i].seq_no != request_id.seq_no) {
             continue;
         }
-        if (server->service->response_size > server_pending_entry_length(server)) {
-            result = tt_RET_OUT_OF_BUFFER; // tt_Server_set_storage() refuses this; inline storage too small
-            break;
-        }
-        _tt_memcpy(server_pending_entry(server, i), response, server->service->response_size);
         server->pending_return_code[i] = return_code;
         // Under the lock the timeout (poll thread, also under it) cannot run in between; the slot is now this
         // response's, and its timer goes with it, so it cannot reclaim the slot's next request early.
@@ -7429,7 +7416,7 @@ tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_
             tt_Node_unschedule(node, pending_response_timeout, &server->pending_timeout_config[i]);
             server->pending_timeout_scheduled[i] = false;
         }
-        send_ready_slot(node, server, i);
+        send_ready_slot(node, server, i, response);
         result = tt_RET_OK;
         break;
     }
@@ -7437,9 +7424,9 @@ tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_
     return result;
 }
 
-// Encodes and sends the response READY in `slot`, and empties the slot. Under the state lock: from
-// tt_Server_send_response(), which sends at once.
-static void send_ready_slot(struct tt_Node* node, struct tt_Server* server, int slot) {
+// Encodes `response` - the caller's own, not a copy - as the answer to the request READY in `slot`, sends it, and
+// empties the slot. Under the state lock, from tt_Server_send_response().
+static void send_ready_slot(struct tt_Node* node, struct tt_Server* server, int slot, struct tt_Response* response) {
     tt_RequestId request_id = server->pending_request_id[slot];
     uint32_t sender_ip = server->pending_sender_ip[slot];
     uint16_t sender_port = server->pending_sender_port[slot];
@@ -7447,8 +7434,7 @@ static void send_ready_slot(struct tt_Node* node, struct tt_Server* server, int 
 
     uint32_t old_tx_tail = node->tx_tail;
     struct tt_SubmessageHeader* submessage_header =
-        encode_call_response(node, request_id.receiver, server, request_id.seq_no, return_code,
-                             (struct tt_Response*)server_pending_entry(server, slot), old_tx_tail);
+        encode_call_response(node, request_id.receiver, server, request_id.seq_no, return_code, response, old_tx_tail);
 
     // Reclaim the slot regardless of encode success - a failure here is already logged by
     // encode_call_response() itself, and retrying it from this same stale slot later would just fail
