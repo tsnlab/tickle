@@ -436,6 +436,62 @@ built Release from a worktree, with the standard interfaces from `build_ros2_int
     - The first run, on the library before the muting fix, was inside the swing on every row as well (`/tmp/g8_ab`).
     - The 100 ms RTT row resolves only to about 40 us, as in g2 and g3.
 
+
+## g9 - nodes in one process (found 2026-09-28 by Dev while probing g6; ranked above g6 by Plan; acceptance `inprocess`)
+
+- **Gap:** two nodes in one process never communicate. One rclpy process with a talker node and a listener node in
+  one executor: CycloneDDS received 100 of 101, **rmw_tickle 0 of 101**.
+  - All of a process's nodes share one tt_Context, and core drops its own DATA as `self_sent` (`process_submessage`),
+    with no in-process path. `test_publish_take_reuse.c` documented this as a known gap.
+  - So composition, component containers, composable-node launch files and any multi-node process get nothing on
+    their in-process topics. Actions composed in one process fail too: their feedback and status are topics.
+  - Services already work in one process: CALLREQUEST / CALLRESPONSE are exempt from the self filter (Milestone 17),
+    and `test_service_roundtrip` runs a client and a service on one node.
+- **Design, Dev before code (2026-09-28).** Compile-time `tt_LOCAL_DELIVERY`, default 0 in core and set to 1 by
+  rmw_tickle's build, as `tt_CONTEXT_ID_CLAIM` is, so core's default build stays byte-identical. No wire change.
+  - **Which subscribers.** Each Publisher keeps a count of the local Subscribers on its endpoint id (topic and type):
+    - kept when either side is created or destroyed;
+    - a publish with none pays one branch.
+  - **When.** After the sample has gone to the link, the publish hands its encoded payload to each such Subscriber
+    through `deliver_payload()`, the path a received DATA takes. It is delivered once, in publish order, as coming from
+    this context and this Publisher's entity id.
+    - The payload is copied first to a stack buffer of the sample's length. A callback that publishes again can
+      then reuse tx_buffer, which the original encoding sat in.
+    - Covered: the staging path, a sample that goes as fragments, and the zero-copy path, whose payload is the
+      caller's own.
+  - **QoS, as for a remote pair:**
+    - an RxO-incompatible local pair is not delivered: a RELIABLE Subscriber with a BEST_EFFORT Publisher, or
+      durability, deadline or liveliness as `qos_incompatible()` compares them;
+    - a direct call loses nothing, so RELIABLE holds;
+    - KEEP_LAST depth is the Subscriber's own queue, which drops the oldest as for remote samples.
+  - **TRANSIENT_LOCAL.** A durable local Subscriber gets the durable backlog of each local durable Publisher on its
+    endpoint id, oldest first, lifespan-expired entries skipped. A sample cached as fragments is reassembled; one with
+    a fragment missing is skipped.
+    - `tt_Subscriber_deliver_local_backlog()` does this. rmw_tickle calls it once the subscription's QoS is set,
+      which happens after core has created it.
+  - **No double delivery.** A context's own datagrams stay dropped as self (g8: its own socket), and a context never
+    becomes its own unicast peer. So a sample reaches a local Subscriber only in-process, and a remote one only over
+    the link, once.
+- **Pass (pre-registered):**
+  - `inprocess` (Plan) passes: talker and listener nodes in one process, plus an in-process service call, with the
+    CycloneDDS control.
+  - **Unit tests (core, mock HAL, `tt_LOCAL_DELIVERY` 1):**
+    - every sample of a local pair arrives, in order, once;
+    - a local and a remote Subscriber together: each sample arrives once at each, counted per sample id;
+    - an RxO-incompatible local pair gets nothing;
+    - a fragmented sample arrives whole;
+    - a late durable local Subscriber gets the backlog, in order, including a fragmented sample;
+    - a publish with no local Subscriber delivers nothing and sends exactly what it did before.
+  - **rmw unit test:** two nodes in one context, one publishing, one subscribing, with depth 3 and 10 samples published
+    before any take. The take gets the newest 3: KEEP_LAST as for remote samples.
+  - The rmw suite, and every acceptance test that passed before.
+  - **Mutants:** in-process delivery removed; delivered twice; the durable backlog not delivered locally; the local RxO
+    check removed.
+  - **CPU:**
+    - `rmw_lib_ab.sh` with an A/A, as before: the benchmark has no local Subscriber, so it measures the one branch;
+    - the in-process path's own cost is recorded: `conv_cost`-style, a publish with one local Subscriber against one
+      without, reported and not judged.
+  - Core's default build (`tt_LOCAL_DELIVERY` 0) is objdump-identical to its parent.
 ## Checkpoint run (2026-09-28, Plan): main at `958e909e`, after stage 3, g2, g3, g5 and g8
 
 `rmw_gap_acceptance.sh -w /tmp/plan_accept`, rmw_tickle rebuilt Release at `958e909e`. The script printed the
