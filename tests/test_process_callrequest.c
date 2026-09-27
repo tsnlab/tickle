@@ -450,6 +450,40 @@ static void test_deferred_response_is_sent_as_it_was_at_send_response(void) {
     test_mock_send_hook = NULL;
 }
 
+// Every deferred request arms a timeout on its slot; answering it must disarm that timeout. Until 2026-09-27 the
+// answer left it armed for tt_SERVER_DEFERRED_RESPONSE_TIMEOUT (5 s), one per call, and the 122nd call inside those
+// 5 s found the scheduler full: "Cannot schedule pending_response_timeout", the request could not be deferred,
+// rmw_send_response() failed, and rclcpp terminated the server process. Far more calls than the scheduler holds,
+// each answered at once, must all succeed.
+#define MANY_CALLS (3 * tt_MAX_SCHEDULER_LENGTH)
+static void test_many_answered_calls_do_not_fill_the_scheduler(void) {
+    test_mock_reset();
+    callback_count = 0;
+    stub_return_code = tt_CALL_DEFERRED;
+
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Server server;
+    init_node_service_server(&node, &service, &server);
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = REMOTE_NODE_ID;
+
+    uint32_t answered = 0;
+    for (uint16_t seq = 1; seq <= MANY_CALLS; seq++) {
+        uint32_t tail = write_callrequest(&node, seq, 0);
+        EXPECT_TRUE(process_callrequest(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+        uint8_t response_byte = 0;
+        tt_RequestId request_id = {REMOTE_NODE_ID, seq};
+        answered += tt_Server_send_response(&server, request_id, 0, (struct tt_Response*)&response_byte) == tt_RET_OK;
+    }
+    EXPECT_EQ_U32(MANY_CALLS, answered);
+    EXPECT_EQ_U32(MANY_CALLS, (uint32_t)test_mock_send_call_count);
+}
+
 int main(void) {
     test_fresh_request_invokes_callback_and_sends();
     test_retry_hits_cache_without_recalling_callback();
@@ -460,6 +494,7 @@ int main(void) {
     test_deferred_request_timeout_reclaims_slot();
     test_retry_while_deferred_does_not_recall_callback();
     test_deferred_response_is_sent_as_it_was_at_send_response();
+    test_many_answered_calls_do_not_fill_the_scheduler();
 
     if (test_result() != 0) {
         return 1;
