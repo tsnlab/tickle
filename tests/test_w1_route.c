@@ -110,7 +110,7 @@ static void init_receiver(int subscriber_count) {
 static void receive_short(uint8_t source, uint16_t handle, uint32_t seq_no) {
     uint8_t datagram[sizeof(struct tt_SingleHeader) + sizeof(struct tt_ShortDataHeader) + SAMPLE_BYTES];
     struct tt_SingleHeader single = {native_single_marker(), tt_VERSION, source, tt_SUBMESSAGE_TYPE_DATA_SHORT};
-    struct tt_ShortDataHeader header = {handle, 0, seq_no, 0};
+    struct tt_ShortDataHeader header = {handle, 0, seq_no, 0, 0};
     uint32_t value = seq_no;
     memcpy(datagram, &single, sizeof(single));
     memcpy(datagram + sizeof(single), &header, sizeof(header));

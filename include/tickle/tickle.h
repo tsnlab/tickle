@@ -2193,6 +2193,7 @@ struct tt_ShortDataHeader {
     uint16_t flags;  // 0
     uint32_t seq_no;
     uint32_t timestamp;
+    uint32_t diag_pad; // DIAGNOSTIC ONLY: 16 B, so the CDR sits where today's DATA puts it (4 mod 8)
 } __attribute__((packed));
 
 struct tt_DataHeader {

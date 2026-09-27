@@ -398,7 +398,7 @@ static uint32_t to_short_form(struct tt_Node* node, uint8_t* datagram, uint32_t 
     }
     const uint32_t shift = sizeof(struct tt_DataHeader) - sizeof(struct tt_ShortDataHeader); // 4
     single.type = tt_SUBMESSAGE_TYPE_DATA_SHORT;
-    struct tt_ShortDataHeader short_header = {node->tx_short_handle, 0, data.seq_no, data.timestamp};
+    struct tt_ShortDataHeader short_header = {node->tx_short_handle, 0, data.seq_no, data.timestamp, 0};
     uint8_t* start = datagram + single_at + shift;
     _tt_memcpy(start, &single, sizeof(single));
     _tt_memcpy(start + sizeof(single), &short_header, sizeof(short_header));
