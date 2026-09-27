@@ -82,8 +82,15 @@ for ref in "$@"; do
 done
 
 : >"$OUT"
-echo "core_cost_pi $(date -Is) pi=$PI bench=$BENCH rounds=$ROUNDS samples=$SAMPLES cpu=$CPU bench_args=${BENCH_ARGS:-} refs=$*" >>"$OUT"
+echo "core_cost_pi $(date -Is) pi=$PI bench=$BENCH rounds=$ROUNDS samples=$SAMPLES cpu=$CPU bench_args=${BENCH_ARGS:-} alternate=${ALTERNATE:-0} refs=$*" >>"$OUT"
+# ALTERNATE=1: every second round runs the refs in reverse order, so a drift along a round (the Pi warming, a long
+# ref list) lands on every arm alike instead of growing along the list (WIRE_PLAN.md 8.8 follow-up's bisect).
 for round in $(seq "$ROUNDS"); do
+    order="$LOCAL/refs"
+    if [ "${ALTERNATE:-0}" = 1 ] && [ $((round % 2)) = 0 ]; then
+        tac "$LOCAL/refs" >"$LOCAL/refs.reversed"
+        order="$LOCAL/refs.reversed"
+    fi
     while read -r ref sha; do
         # </dev/null: ssh would otherwise read the rest of the refs file this loop is reading, and every round
         # would run the first ref only (2026-09-27, the first Pi run; PI=local cannot show it, bash -c reads nothing).
@@ -93,11 +100,11 @@ for round in $(seq "$ROUNDS"); do
         # A stalled run lost datagrams it never got back and measured only its first round: not a sample.
         case "$line" in *stalled=1*) line="RESULT: failed stalled ${line#RESULT: }" ;; esac
         echo "ref=$ref round=$round $line" >>"$OUT"
-    done <"$LOCAL/refs"
+    done <"$order"
 done
 
 # Paired against the first ref, round by round.
-python3 - "$OUT" "$@" <<'EOF'
+STEPS="${STEPS:-0}" python3 - "$OUT" "$@" <<'EOF'
 import re, statistics, sys
 path, refs = sys.argv[1], sys.argv[2:]
 rows = {}
@@ -132,5 +139,13 @@ for ref in refs:
             if len(d) > 1:
                 line += f"; send user+sys vs {base} {statistics.mean(d):+.2f} +- {statistics.stdev(d) / len(d) ** 0.5:.2f}"
     print(line)
+# STEPS=1: each ref against the one listed before it, paired by round - where along a commit list a cost appears.
+import os
+if os.environ.get("STEPS") == "1":
+    for prev, ref in zip(refs, refs[1:]):
+        for key, name in [("send_ns_per_sample", "send wall"), ("recv_ns_per_sample", "recv wall")]:
+            d = [float(r[ref][key]) - float(r[prev][key]) for r in rows.values() if ref in r and prev in r]
+            if len(d) > 1:
+                print(f"step {prev} -> {ref}: {name} {statistics.mean(d):+.2f} +- {statistics.stdev(d) / len(d) ** 0.5:.2f}")
 EOF
 echo "PI_DONE"

@@ -464,6 +464,39 @@ How it reads:
     - It comes from a post-v10 change.
     - By 8.3 it is only a candidate. The 8.9 campaign A B B A has no CPU or rate row WORSE at main.
 
+**Follow-up: where main's send wall +24.5 comes from (pre-registered 2026-09-27, before running).**
+
+Plan asked for this bisect. The measurement is the 8.8 bench and runner unchanged, with a few settings:
+- Round 256, 16 rounds x 400000 samples, CPU 3, under the hil lock.
+- `ALTERNATE=1`: every second round runs the refs in reverse order, so a drift along a round lands on every arm
+  alike.
+- `STEPS=1`: each arm is also paired against the arm listed before it.
+
+The arms, in order:
+1. `fd57b01d`, the base.
+2. `fd57b01d^0`, the control.
+3. Every post-v10 commit that touches `src/` or `include/`, oldest first: `22a8f2cb` `397d927c` `4dc7ad49`
+   `5f460ad2` `45cc3299` `3015e15d` `c51ac8c2` `eef6f089` `6f019b1d` `10999967`.
+4. `86492b99` last. Its `src/` and `include/` are identical to `10999967`'s, which makes it a second control at
+   the far end.
+
+How to read it (send wall; an adjacent step's SE was 5-6 ns at 10 rounds, so ~4-5 at 16):
+- **Void** if either control's difference is outside 2 x SE: `fd57b01d^0` against `fd57b01d`, or `86492b99`
+  against `10999967`.
+- **Not reproduced** if `10999967` against `fd57b01d` is below +12 ns or below 3 x SE. The 8.8 figure then stays
+  an unexplained candidate. Nothing further is run.
+- **A step is real** at >= 3 x its own SE and >= 12 ns, which is half the effect.
+  - With 11 steps, 3 x SE keeps the chance of a false step near 3%.
+  - 12 ns is the smallest step that could carry half of +24.5.
+  - One real step carrying at least half the total names that commit. Its mechanism is then examined on that
+    commit alone, pre-registered separately.
+  - Two or more real steps: each is named, and their sum is set against the total.
+  - A total that reproduces with no real step: it is spread over several commits. It is reported that way, and no
+    commit is named.
+- **The 8.6 pair:** a step at `22a8f2cb` that `eef6f089` takes back is 8.6's reverted behaviour, not main's cost.
+- **Recv wall steps** are recorded as seen. They are the D-series' own reading (OPTIMIZATION_PLAN 11), not this
+  question.
+
 ### 8.9 The pre-v10 parent against `main`, A B B A: no CPU, rate, byte or latency row WORSE (2026-09-27)
 
 `campaign_ab_chain.sh`, `8f3811f4` / `173268a6` / `173268a6` / `8f3811f4`. `main` at `173268a6` carries v10 with its
