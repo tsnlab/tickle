@@ -42,7 +42,18 @@ Three stages, each landed and judged before the next starts.
 - every `tt_Node_*` function -> `tt_Context_*`;
 - the same in callback typedefs, comments and active docs (README, DESIGN, a CHANGELOG entry).
 
-**What is not renamed, and why:**
+**Plan's answers (same day), which supersede point 1 below where they differ:**
+- **Public config macros users set with `-D`** (`tt_NODE_*` in `config.h`) are renamed in stage 1 to `tt_CONTEXT_*`
+  where they are context-level.
+  - Each old name gets a guard: `#ifdef tt_NODE_X` -> `#error "tt_NODE_X is now tt_CONTEXT_X"`.
+  - Without it, an old `-Dtt_NODE_X` would be silently ignored behind the `#ifndef` defaults, the worst way a rename
+    can fail.
+  - A test compiles `config.h` with an old name defined and must fail.
+- **Public struct fields** in `include/` that call the context's id `node_id` are renamed in stage 1 only when they
+  are in a public header. Wire field names in docs read "context id (formerly node id)".
+- **Local variables named `node`, and internal helpers,** are left for a later tidy-up.
+
+**What is not renamed, and why (as first written):**
 1. **`tt_NODE_*` macros** (`tt_NODE_ID_INVALID`, `tt_NODE_ID_BROADCAST`, `tt_NODE_CYCLE`, `tt_NODE_UPDATE_INTERVAL`,
    `tt_NODE_TX_INTERVAL`, `tt_NODE_PORT`, `tt_NODE_ADDRESS`, `tt_NODE_MAX_LEASE_NS`; 261 occurrences), **the wire's
    `source`/`node_id`**, and local variables named `node`.
@@ -81,8 +92,13 @@ against the old one must fail to compile, not silently compile against the new.
 - A `tt_Context` owns sockets, scheduler, poll, liveliness and discovery, as today.
 - A `tt_Node` is a name, a namespace and an index within its context, and owns endpoints.
 - Every endpoint belongs to exactly one node.
-- A context creates a default node at `tt_Context_create()` (index 0, name "tickle", namespace "/"), so the simple
-  path stays one call longer at most.
+- A context creates a default node at `tt_Context_create()`, so the simple path stays one call longer at most.
+  Plan's rules for it (same day), each with a test:
+  - **Its name is unique per context:** `tickle_<context id>` in "/". A shared "/tickle" would appear once per
+    process in `ros2 node list`, and ROS warns on duplicate names.
+  - **A node that owns no endpoints and was not created explicitly is never announced** (stage 3).
+  - **rmw_tickle's contexts create no default node at all**: rmw always creates its nodes explicitly, and a default
+    one would be a phantom in every process's graph.
 
 **API sketch:**
 ```c
@@ -111,7 +127,8 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
   - endpoints on two nodes of one context each report their own node;
   - a node with endpoints refuses destroy;
   - the default node carries every endpoint created through the shorthand;
-  - rmw_tickle's nodes are core nodes.
+  - rmw_tickle's nodes are core nodes, and an rmw context has no default node;
+  - the default node's name differs between two contexts.
   - Each is a test with a mutant it fails against.
 - **Nothing observable moves:** the announce bytes are byte-identical to stage 1's for the same endpoints, since there
   is no wire change. The rmw suite, the gates and the typesupport pytest all pass.
@@ -136,6 +153,8 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
   - forgets or tombstones them with their source;
   - never matches them as endpoints: `count_matching`, RxO, peers and the W1-era directory all skip
     `tt_KIND_NODE`, each pinned by a test.
+- **An empty default node is not announced.** Only a node created explicitly, or a default node that owns at least
+  one endpoint, gets an entry. This is pinned by a test on the announce bytes.
 - **rmw:**
   - `rmw_get_node_names*()` returns local nodes plus alive remote node entries.
   - `rmw_get_{publisher,subscriber,service,client}_names_and_types_by_node()` match remote endpoints by
