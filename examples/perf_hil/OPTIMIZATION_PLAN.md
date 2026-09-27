@@ -802,3 +802,76 @@ D4, on D4's measured branch. 3 repetitions per block, 72 + 72 ok rows, 0 VOID. R
 - **The one WORSE row is a chance candidate:** c12's client wire bytes per sample, +1.0 B (+0.4%, t 2.2), in the
   latency cell with 10 ms delay and jitter. One cell, and not CPU or latency.
 - **D4 merged** as `10999967` (Dev), whose code diff is identical to the measured `63e482f9`.
+
+## 12. Fewer copies, and a received buffer the user can keep (Plan, 2026-09-27; design proposal)
+
+The user's direction (2026-09-27): TickLE's philosophy is to copy as little as possible. Where data must outlive a call,
+it should come from keeping the buffer until the user is done with it, not from copying. The service-response
+defect (tt_Server_send_response() holding pointers into rclcpp's response after it returned) came from breaking the
+rule underneath that philosophy:
+
+> **Zero-copy is safe only within the call that owns the data. Anything that outlives the call owns its bytes.**
+
+On the send side, the rmw API fixes who owns what. The message passed to `rmw_publish()` / `rmw_send_response()`
+belongs to rclcpp and is valid only until the call returns, so a send that is deferred needs its own bytes. The
+receive side is different: TickLE owns the received datagram, and can lend it for as long as the user needs it.
+
+### 12.1 The copies today, and what is planned for each
+
+| path | copy | status |
+|---|---|---|
+| service response: ROS response -> TickLE struct (`to_tickle`) | none, the struct points at the `std::string`s | kept |
+| service response: struct -> pending slot | shallow `memcpy` of the struct | **removed** (`0e71efc0`) |
+| service response: struct -> datagram (encode) | one; this is the serialisation | kept, and done inside the call since `2b8507bb` |
+| service response: datagram -> server cache (duplicate requests) | one | kept: at-least-once replies need it |
+| publish, contiguous CDR | none in user space, `sendmsg` iovec from the caller's memory | kept (`publish_zerocopy`) |
+| publish, large string/sequence fields | encode copy | **step 2**: scatter-gather above a measured size threshold |
+| receive, recvmmsg datagrams 2..N of a batch | `memcpy` from `hal.rx_batch[slot]` into `rx_buffer` (hal_linux.c) | **step 0 below**: process in place |
+| rmw take: TickLE struct -> ROS message | one: `std::string` owns its memory | inherent for C++ messages with strings |
+| rmw take/publish of fixed-size types | one | **step 3**: ROS 2 loaned messages |
+
+Steps 2 and 3 are pre-registered by Dev, and the copy map is measured first on the Pi (bytes per sample, and
+memcpy against iovec for 64 B-64 KB). If a ceiling is small, the step is dropped.
+
+### 12.2 Step 0: process a batch's datagrams where they landed (no API change)
+
+`rx_take_pending()` hands each held-back datagram to the core by copying it into `node->rx_buffer`. Instead, the
+core decodes it in place in its `rx_batch` row. Two conditions:
+- every row must meet `rx_buffer`'s alignment, which is asserted today for the generated codec's aligned reads;
+- the lifetime is the same as today's: valid until the next receive.
+
+For a throughput server with full batches, this removes one copy for 31 of every 32 datagrams. It is judged like
+D1-D5: bench first, then the rig A B B A under WIRE_PLAN 8.3.
+
+### 12.3 Lending a received sample (native API; needs the user's decision)
+
+Today a subscriber callback's sample points into the receive buffer and is valid only during the callback. A user
+who needs it later must copy it. The proposal:
+
+- **A pool of receive buffers**, `tt_RX_LEND_BUFFERS` (default 0: today's behaviour, no extra memory). On Linux it
+  extends the recvmmsg rows; on FreeRTOS each buffer is one more datagram-sized block.
+- **`tt_Sample_retain(sample)`**, called inside the callback, marks the buffer the sample lies in as held and
+  returns a handle. **`tt_Sample_release(handle)`** gives it back. A sample that is not retained costs nothing more
+  than today.
+- **The receiver never stalls:** at most `tt_RX_LEND_BUFFERS` buffers can be held at once. A retain beyond that
+  fails with `tt_RET_BUSY`, and the caller copies as today. Receiving always keeps at least one free buffer.
+- **Which samples can be lent:** those delivered straight from a datagram, i.e. in-order single-datagram samples.
+  A sample assembled from fragments or released from the reorder window already lives in TickLE-owned arenas. For
+  those, lending means pinning an arena slot, which is phase 2 and not in this proposal.
+- **The rmw mapping:** `rmw_take_loaned_message()` / `rmw_return_loaned_message_from_subscription()` for fixed-size
+  types (step 3) use the same retain/release underneath.
+
+**Costs, for the user to weigh:**
+- memory: tt_RX_LEND_BUFFERS x the datagram size (1,472 B), opt-in;
+- one branch per delivery;
+- an API contract: a held buffer delays its reuse, not the receiver, because of the cap.
+
+### 12.4 Decisions for the user
+
+1. **12.3's lending API:** go or no-go, and the default of `tt_RX_LEND_BUFFERS`. Plan's recommendation: go, default 0
+   (opt-in), phase 1 only.
+2. **The now-unused pending-response storage** (Dev, `0e71efc0`). `tt_Server.pending_response_buf` (64 x the
+   entry size, ~94 KB per server with core defaults), `tt_Server_set_storage()`'s pending half and rmw_service's
+   64 x struct allocation hold nothing since responses encode at once. They are part of the storage design the
+   user approved on 2026-09-24. Plan's recommendation: retire them, which saves the memory, and keep
+   `set_storage()` for its remaining half.
