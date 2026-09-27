@@ -1,0 +1,5 @@
+CONTROL calls_bytes=1000 4096000 (expected 1000 4096000)
+== bench round_trips=581
+== array1k round_trips=576
+== struct16 round_trips=583
+COPY_MAP_DONE

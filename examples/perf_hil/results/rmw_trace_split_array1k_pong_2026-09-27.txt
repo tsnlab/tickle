@@ -1,0 +1,17 @@
+messages 962 (skipped 0)
+     rx_wake -> rx_datagram  median    1.57 us  p90    2.08
+ rx_datagram -> deliver      median    1.43 us  p90    2.04
+     deliver -> decoded      median    0.28 us  p90    0.42
+     decoded -> converted    median    0.34 us  p90    0.48
+   converted -> signaled     median    0.40 us  p90    0.57
+    signaled -> release      median    1.08 us  p90    1.35
+     release -> timer_set    median    0.77 us  p90    1.27
+   timer_set -> exec_wake    median    0.04 us  p90    0.16
+   exec_wake -> take_enter   median    4.50 us  p90    6.23
+  take_enter -> taken        median    0.26 us  p90    0.35
+       taken -> publish      median    1.59 us  p90    2.34
+     publish -> serialized   median    0.22 us  p90    0.36
+  serialized -> encoded      median    0.53 us  p90    0.69
+     encoded -> tx_start     median    0.30 us  p90    0.38
+    tx_start -> tx_done      median   16.66 us  p90   23.51
+     rx_wake -> tx_done      median   30.32 us  p90   42.89  (the whole responder)

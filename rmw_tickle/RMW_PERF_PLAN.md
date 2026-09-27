@@ -939,3 +939,75 @@ are measured first, and built only if the measurements leave room:
   - The ceiling per sample is the copy's cost x 31/32, set against the campaign server's per-sample CPU on the Pi
     (~2.49 us at c1, WIRE_PLAN 8.9 follow-up).
   - The drop rule is 11's: under 2% or under 0.3 us, it is dropped.
+
+### 11.1 Result: (2) and M-c dropped; (3) has room only for array1k-size fixed fields (2026-09-27)
+
+Raw files:
+- `results/copy_cost_pi_2026-09-27.txt` (M-b and M-c, the client Pi, CPU 3, 20 rounds);
+- `results/copy_map_shim_2026-09-27.txt`;
+- `results/rmw_trace_split_{bench,array1k,struct16}_pong_2026-09-27.txt` (PC veth, ~970 round trips each).
+
+**M-a, the copy map.**
+
+*From the code.* Per sample and per direction, user space copies a payload twice, and the kernel twice.
+- Send side:
+  - `to_tickle`, ROS -> TickLE struct: generated element loops (`tickle->array[i] = ros.array[i]`);
+  - encode, struct -> `tx_buffer`: a constant-size `memcpy` for `byte[1024]`, field stores for the rest;
+  - `sendmsg`, `tx_buffer` -> kernel.
+- Receive side:
+  - kernel -> `rx_buffer` (`recvmmsg`);
+  - decode, `rx_buffer` -> struct: a constant-size `memcpy`; strings alias instead;
+  - `from_tickle`, struct -> ROS: element loops.
+- In addition: the reliable cache on a RELIABLE publish, the reorder hold on an out-of-order sample, and M-c's copy
+  for a datagram a batch held back.
+
+*From the shim.* Its control read exactly 1000 calls and 4096000 B. It found **no per-sample `memcpy`/`memmove` of
+64 B or more** for any of the three types.
+- That is the disagreement 11 called a finding: every per-sample copy is inlined or a loop, which a libc shim
+  cannot see.
+- So the code map stands alone for the byte counts, and the trace split for the time.
+
+*Time per copy-bearing stage.* Responder medians in us, from the trace split:
+
+| type | `to_tickle` | encode | decode | `from_tickle` | whole responder |
+|---|---:|---:|---:|---:|---:|
+| bench | 0.10 | 0.33 | 0.12 | 0.19 | 20.4 |
+| struct16 | 0.08 | 0.28 | 0.14 | 0.14 | 17.8 |
+| array1k | 0.22 | 0.53 | 0.28 | 0.34 | 30.3 |
+
+**M-b, a copy + 1 iovec against 2 iovecs, on the Pi.** The copy arm's cost minus the iovec arm's, in ns per send
+(user+sys); wall time agrees within 3 ns.
+
+| field size | copy - iovec | SE |
+|---:|---:|---:|
+| 64 B | **-9.5** (the copy is cheaper) | 2.0 |
+| 256 B | -2.5 | 2.2 |
+| 1 KB | +17.5 | 2.6 |
+| 4 KB | +104 | 3 |
+| 16 KB | +472 | 2 |
+| 60 KB | +2288 | 14 |
+
+**M-c, the held-back datagram's copy, on the Pi:** 6.4 ns at 96 B, 44.5 ns at 1472 B.
+
+**How it reads, by the rules written in 11:**
+- **(2) scatter-gather: dropped for the benchmark types.**
+  - The threshold lies between 256 B and 1 KB: 1 KB is the first size at which two iovecs win beyond 2 x SE.
+  - The ceiling per sample: `bench` and `struct16` have no field that large, so 0. `array1k`'s 1 KB field
+    saves 17.5 ns, 0.4% of a ~4.3-us send and under 0.3 us.
+  - It clears the bar only at fields of about 16 KB and up (0.47 us). Such messages (Image, PointCloud2) go as
+    DATA_FRAG fragments, whose copies are a different path. That would be a proposal of its own if anyone wants
+    it.
+- **M-c, the held-back copy: dropped.** 6.4 ns x 31/32 per sample at p1 is 0.25% of the server's ~2.49 us. At
+  p4's 1472-B datagram it is 43 ns, still under 2% and under 0.3 us. This removes the first step of Plan's lending
+  design as a copy cut on its own merits. The design's other reasons are not measured here.
+- **(3) loaned messages: dropped for `bench` and `struct16`, room left for `array1k`.**
+  - A loan would skip `to_tickle` + `from_tickle` and nothing else: encode and decode stay.
+  - `bench` 0.29 us and `struct16` 0.22 us are both under 0.3 us.
+  - `array1k` is 0.56 us per responder, ~8% of its ~7 us of user-space work (section 9's split) and ~1.8% of its
+    responder latency.
+- **Recorded as seen, not proposed.** For a fixed-size type whose TickLE struct has exactly the ROS C++ struct's
+  layout, the conversion could be skipped without the loan API at all:
+  - `array1k`'s `byte[1024]`, `int64` and `uint64` sit at the same offsets in both;
+  - the encoder would then read the ROS message itself.
+  - Whether that layout identity holds generally, and at what cost to the generator, is unmeasured. It would be
+    (3)'s cheaper form, if (3) is pursued.

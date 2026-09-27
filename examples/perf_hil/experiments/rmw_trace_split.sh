@@ -8,12 +8,13 @@
 # and rmw_perf_pingpong installed beside it. The dumps are the identity check: a build without the stamps
 # writes none, and the script says so rather than splitting nothing.
 #
-# Usage: GAP=0.005 DUR=5 rmw_trace_split.sh     Results: /tmp/rmw_trace_{pong,ping}.txt, /tmp/rmw_trace_stamps.txt
+# Usage: GAP=0.005 DUR=5 [MSG=bench|array1k|struct16] rmw_trace_split.sh     Results: /tmp/rmw_trace_{pong,ping}.txt, /tmp/rmw_trace_stamps.txt
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 BIN="$REPO/install/rmw_perf_pingpong/lib/rmw_perf_pingpong"
 GAP=${GAP:-0.005}
 DUR=${DUR:-5}
+MSG=${MSG:-bench} # bench, array1k or struct16 (RMW_PERF_PLAN.md 11, 2026-09-27)
 NS1=rt-ns1
 NS2=rt-ns2
 cleanup() {
@@ -38,11 +39,11 @@ started=$(date +%s)
 rm -f /tmp/rt_ping_done
 # The dumps are written by root (ip netns exec); a stale one from an earlier run is told apart by its mtime.
 # shellcheck disable=SC2024 # the logs are this shell's
-sudo -n ip netns exec "$NS2" timeout $((DUR + 15)) bash -c "$env; export RMW_TICKLE_TRACE_FILE=/tmp/rmw_trace_pong.txt; $BIN/pong_node -m bench & p=\$!; until [ -e /tmp/rt_ping_done ]; do sleep 0.05; done; kill -INT \$p; wait \$p" >/tmp/rmw_trace_pong.log 2>&1 &
+sudo -n ip netns exec "$NS2" timeout $((DUR + 15)) bash -c "$env; export RMW_TICKLE_TRACE_FILE=/tmp/rmw_trace_pong.txt; $BIN/pong_node -m $MSG & p=\$!; until [ -e /tmp/rt_ping_done ]; do sleep 0.05; done; kill -INT \$p; wait \$p" >/tmp/rmw_trace_pong.log 2>&1 &
 pong=$!
 sleep 4
 # shellcheck disable=SC2024
-sudo -n ip netns exec "$NS1" bash -c "$env; export RMW_TICKLE_TRACE_FILE=/tmp/rmw_trace_ping.txt; timeout -s INT $((DUR + 5)) $BIN/ping_node -d $DUR -i $GAP --wait block -m bench --stamps /tmp/rmw_trace_stamps.txt" >/tmp/rmw_trace_ping.log 2>&1
+sudo -n ip netns exec "$NS1" bash -c "$env; export RMW_TICKLE_TRACE_FILE=/tmp/rmw_trace_ping.txt; timeout -s INT $((DUR + 5)) $BIN/ping_node -d $DUR -i $GAP --wait block -m $MSG --stamps /tmp/rmw_trace_stamps.txt" >/tmp/rmw_trace_ping.log 2>&1
 touch /tmp/rt_ping_done
 wait "$pong"
 for dump in /tmp/rmw_trace_pong.txt /tmp/rmw_trace_ping.txt; do

@@ -1,0 +1,170 @@
+copy_cost_pi 2026-09-27T15:32:24+09:00 pi=10.1.1.214 cpu=3 rounds=20 ops=100000 copies=1000000
+round=1 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4298.3 ns_per_op_iovec=4298.7 wall_ns_per_op_copy=4298.6 wall_ns_per_op_iovec=4299.7
+round=1 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4308.5 ns_per_op_iovec=4308.6 wall_ns_per_op_copy=4304.9 wall_ns_per_op_iovec=4310.7
+round=1 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4578.2 ns_per_op_iovec=4548.1 wall_ns_per_op_copy=4572.3 wall_ns_per_op_iovec=4554.9
+round=1 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5457.6 ns_per_op_iovec=5347.8 wall_ns_per_op_copy=5455.4 wall_ns_per_op_iovec=5350.1
+round=1 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6527.1 ns_per_op_iovec=6067.1 wall_ns_per_op_copy=6535.5 wall_ns_per_op_iovec=6065.2
+round=1 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=10215.3 ns_per_op_iovec=7716.2 wall_ns_per_op_copy=10216.0 wall_ns_per_op_iovec=7723.0
+round=1 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.42
+round=1 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=44.77
+round=2 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4308.6 ns_per_op_iovec=4318.3 wall_ns_per_op_copy=4307.0 wall_ns_per_op_iovec=4319.5
+round=2 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4288.5 ns_per_op_iovec=4308.5 wall_ns_per_op_copy=4296.5 wall_ns_per_op_iovec=4304.4
+round=2 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4568.4 ns_per_op_iovec=4558.4 wall_ns_per_op_copy=4571.8 wall_ns_per_op_iovec=4559.9
+round=2 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5467.8 ns_per_op_iovec=5347.7 wall_ns_per_op_copy=5465.5 wall_ns_per_op_iovec=5356.2
+round=2 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6497.3 ns_per_op_iovec=6037.3 wall_ns_per_op_copy=6506.8 wall_ns_per_op_iovec=6033.4
+round=2 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9855.9 ns_per_op_iovec=7606.8 wall_ns_per_op_copy=9862.7 wall_ns_per_op_iovec=7604.3
+round=2 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.38
+round=2 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=43.64
+round=3 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4348.4 ns_per_op_iovec=4358.5 wall_ns_per_op_copy=4354.9 wall_ns_per_op_iovec=4354.9
+round=3 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4348.4 ns_per_op_iovec=4368.4 wall_ns_per_op_copy=4357.3 wall_ns_per_op_iovec=4362.7
+round=3 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4628.5 ns_per_op_iovec=4598.0 wall_ns_per_op_copy=4628.4 wall_ns_per_op_iovec=4607.0
+round=3 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5397.3 ns_per_op_iovec=5297.8 wall_ns_per_op_copy=5398.5 wall_ns_per_op_iovec=5293.9
+round=3 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6487.1 ns_per_op_iovec=6007.3 wall_ns_per_op_copy=6486.8 wall_ns_per_op_iovec=6009.1
+round=3 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9835.9 ns_per_op_iovec=7587.0 wall_ns_per_op_copy=9844.8 wall_ns_per_op_iovec=7583.8
+round=3 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.40
+round=3 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=44.83
+round=4 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4288.6 ns_per_op_iovec=4308.6 wall_ns_per_op_copy=4293.0 wall_ns_per_op_iovec=4304.0
+round=4 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4318.4 ns_per_op_iovec=4308.5 wall_ns_per_op_copy=4313.9 wall_ns_per_op_iovec=4313.9
+round=4 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4588.3 ns_per_op_iovec=4578.2 wall_ns_per_op_copy=4589.3 wall_ns_per_op_iovec=4576.8
+round=4 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5473.1 ns_per_op_iovec=5391.1 wall_ns_per_op_copy=5481.7 wall_ns_per_op_iovec=5480.4
+round=4 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6497.1 ns_per_op_iovec=6037.4 wall_ns_per_op_copy=6501.7 wall_ns_per_op_iovec=6032.8
+round=4 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9895.9 ns_per_op_iovec=7607.0 wall_ns_per_op_copy=9903.7 wall_ns_per_op_iovec=7611.0
+round=4 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.35
+round=4 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=43.85
+round=5 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4328.5 ns_per_op_iovec=4338.4 wall_ns_per_op_copy=4333.0 wall_ns_per_op_iovec=4336.3
+round=5 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4338.4 ns_per_op_iovec=4348.5 wall_ns_per_op_copy=4337.4 wall_ns_per_op_iovec=4355.1
+round=5 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4628.2 ns_per_op_iovec=4598.4 wall_ns_per_op_copy=4625.3 wall_ns_per_op_iovec=4606.0
+round=5 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5577.4 ns_per_op_iovec=5447.8 wall_ns_per_op_copy=5579.4 wall_ns_per_op_iovec=5448.9
+round=5 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6537.3 ns_per_op_iovec=6067.3 wall_ns_per_op_copy=6535.0 wall_ns_per_op_iovec=6067.3
+round=5 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9886.0 ns_per_op_iovec=7596.9 wall_ns_per_op_copy=9886.7 wall_ns_per_op_iovec=7601.2
+round=5 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=5.03
+round=5 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=43.72
+round=6 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4378.4 ns_per_op_iovec=4388.5 wall_ns_per_op_copy=4378.6 wall_ns_per_op_iovec=4387.9
+round=6 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4328.5 ns_per_op_iovec=4338.4 wall_ns_per_op_copy=4336.3 wall_ns_per_op_iovec=4334.8
+round=6 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4578.5 ns_per_op_iovec=4578.3 wall_ns_per_op_copy=4582.5 wall_ns_per_op_iovec=4575.4
+round=6 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5487.8 ns_per_op_iovec=5387.7 wall_ns_per_op_copy=5490.5 wall_ns_per_op_iovec=5386.2
+round=6 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6547.3 ns_per_op_iovec=6077.2 wall_ns_per_op_copy=6550.9 wall_ns_per_op_iovec=6075.7
+round=6 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9805.8 ns_per_op_iovec=7576.7 wall_ns_per_op_copy=9811.6 wall_ns_per_op_iovec=7580.6
+round=6 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.40
+round=6 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=44.32
+round=7 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4268.6 ns_per_op_iovec=4288.6 wall_ns_per_op_copy=4274.9 wall_ns_per_op_iovec=4290.8
+round=7 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4288.4 ns_per_op_iovec=4288.6 wall_ns_per_op_copy=4292.4 wall_ns_per_op_iovec=4287.5
+round=7 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4568.3 ns_per_op_iovec=4558.5 wall_ns_per_op_copy=4572.2 wall_ns_per_op_iovec=4551.3
+round=7 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5458.8 ns_per_op_iovec=5347.7 wall_ns_per_op_copy=5455.5 wall_ns_per_op_iovec=5351.9
+round=7 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6597.1 ns_per_op_iovec=6127.3 wall_ns_per_op_copy=6605.5 wall_ns_per_op_iovec=6130.3
+round=7 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9876.0 ns_per_op_iovec=7597.0 wall_ns_per_op_copy=9878.0 wall_ns_per_op_iovec=7602.1
+round=7 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.99
+round=7 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=43.98
+round=8 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4308.5 ns_per_op_iovec=4328.5 wall_ns_per_op_copy=4315.6 wall_ns_per_op_iovec=4332.2
+round=8 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4368.6 ns_per_op_iovec=4368.5 wall_ns_per_op_copy=4369.8 wall_ns_per_op_iovec=4370.9
+round=8 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4528.4 ns_per_op_iovec=4508.5 wall_ns_per_op_copy=4529.6 wall_ns_per_op_iovec=4515.8
+round=8 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5407.5 ns_per_op_iovec=5317.0 wall_ns_per_op_copy=5417.4 wall_ns_per_op_iovec=5315.3
+round=8 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6557.0 ns_per_op_iovec=6077.2 wall_ns_per_op_copy=6556.5 wall_ns_per_op_iovec=6080.1
+round=8 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9875.9 ns_per_op_iovec=7617.8 wall_ns_per_op_copy=9882.6 wall_ns_per_op_iovec=7619.8
+round=8 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.70
+round=8 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=44.97
+round=9 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4268.4 ns_per_op_iovec=4258.6 wall_ns_per_op_copy=4278.4 wall_ns_per_op_iovec=4257.6
+round=9 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4248.2 ns_per_op_iovec=4238.5 wall_ns_per_op_copy=4250.0 wall_ns_per_op_iovec=4249.4
+round=9 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4558.3 ns_per_op_iovec=4538.5 wall_ns_per_op_copy=4557.6 wall_ns_per_op_iovec=4542.4
+round=9 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5427.8 ns_per_op_iovec=5318.0 wall_ns_per_op_copy=5436.1 wall_ns_per_op_iovec=5319.5
+round=9 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6497.1 ns_per_op_iovec=6017.2 wall_ns_per_op_copy=6499.5 wall_ns_per_op_iovec=6018.2
+round=9 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9816.2 ns_per_op_iovec=7596.9 wall_ns_per_op_copy=9822.8 wall_ns_per_op_iovec=7600.9
+round=9 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=5.03
+round=9 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=45.60
+round=10 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4298.6 ns_per_op_iovec=4318.4 wall_ns_per_op_copy=4302.7 wall_ns_per_op_iovec=4317.0
+round=10 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4308.3 ns_per_op_iovec=4318.5 wall_ns_per_op_copy=4309.5 wall_ns_per_op_iovec=4315.8
+round=10 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4648.2 ns_per_op_iovec=4628.4 wall_ns_per_op_copy=4645.3 wall_ns_per_op_iovec=4630.0
+round=10 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5587.7 ns_per_op_iovec=5477.8 wall_ns_per_op_copy=5584.5 wall_ns_per_op_iovec=5483.1
+round=10 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6657.2 ns_per_op_iovec=6187.2 wall_ns_per_op_copy=6659.1 wall_ns_per_op_iovec=6191.7
+round=10 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9925.8 ns_per_op_iovec=7646.6 wall_ns_per_op_copy=9930.5 wall_ns_per_op_iovec=7650.4
+round=10 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.92
+round=10 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=43.91
+round=11 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4228.6 ns_per_op_iovec=4218.5 wall_ns_per_op_copy=4234.6 wall_ns_per_op_iovec=4222.7
+round=11 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4318.5 ns_per_op_iovec=4318.6 wall_ns_per_op_copy=4314.2 wall_ns_per_op_iovec=4317.8
+round=11 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4598.4 ns_per_op_iovec=4558.4 wall_ns_per_op_copy=4592.1 wall_ns_per_op_iovec=4567.7
+round=11 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5487.7 ns_per_op_iovec=5377.8 wall_ns_per_op_copy=5493.0 wall_ns_per_op_iovec=5381.4
+round=11 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6497.1 ns_per_op_iovec=6017.2 wall_ns_per_op_copy=6499.8 wall_ns_per_op_iovec=6027.9
+round=11 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9836.0 ns_per_op_iovec=7586.8 wall_ns_per_op_copy=9840.8 wall_ns_per_op_iovec=7595.2
+round=11 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.37
+round=11 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=43.52
+round=12 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4288.7 ns_per_op_iovec=4308.3 wall_ns_per_op_copy=4289.9 wall_ns_per_op_iovec=4302.2
+round=12 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4278.5 ns_per_op_iovec=4278.5 wall_ns_per_op_copy=4276.9 wall_ns_per_op_iovec=4283.6
+round=12 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4568.5 ns_per_op_iovec=4548.3 wall_ns_per_op_copy=4571.8 wall_ns_per_op_iovec=4549.5
+round=12 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5458.1 ns_per_op_iovec=5357.5 wall_ns_per_op_copy=5463.8 wall_ns_per_op_iovec=5357.8
+round=12 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6527.1 ns_per_op_iovec=6057.2 wall_ns_per_op_copy=6534.1 wall_ns_per_op_iovec=6055.2
+round=12 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=10035.7 ns_per_op_iovec=7646.4 wall_ns_per_op_copy=10039.6 wall_ns_per_op_iovec=7648.8
+round=12 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.43
+round=12 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=44.55
+round=13 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4298.5 ns_per_op_iovec=4308.5 wall_ns_per_op_copy=4298.1 wall_ns_per_op_iovec=4309.4
+round=13 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4318.5 ns_per_op_iovec=4298.6 wall_ns_per_op_copy=4315.8 wall_ns_per_op_iovec=4305.5
+round=13 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4537.4 ns_per_op_iovec=4528.3 wall_ns_per_op_copy=4544.4 wall_ns_per_op_iovec=4524.3
+round=13 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5438.0 ns_per_op_iovec=5347.7 wall_ns_per_op_copy=5436.9 wall_ns_per_op_iovec=5354.5
+round=13 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6487.0 ns_per_op_iovec=6027.6 wall_ns_per_op_copy=6497.7 wall_ns_per_op_iovec=6025.5
+round=13 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9875.6 ns_per_op_iovec=7626.7 wall_ns_per_op_copy=9877.2 wall_ns_per_op_iovec=7628.9
+round=13 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.34
+round=13 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=43.53
+round=14 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4318.4 ns_per_op_iovec=4328.6 wall_ns_per_op_copy=4318.8 wall_ns_per_op_iovec=4331.0
+round=14 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4328.4 ns_per_op_iovec=4328.4 wall_ns_per_op_copy=4333.0 wall_ns_per_op_iovec=4335.1
+round=14 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4638.4 ns_per_op_iovec=4627.3 wall_ns_per_op_copy=4642.6 wall_ns_per_op_iovec=4629.7
+round=14 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5477.2 ns_per_op_iovec=5377.1 wall_ns_per_op_copy=5478.0 wall_ns_per_op_iovec=5378.1
+round=14 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6506.7 ns_per_op_iovec=6027.2 wall_ns_per_op_copy=6508.3 wall_ns_per_op_iovec=6035.0
+round=14 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9886.3 ns_per_op_iovec=7596.9 wall_ns_per_op_copy=9893.8 wall_ns_per_op_iovec=7604.4
+round=14 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.43
+round=14 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=44.51
+round=15 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4268.6 ns_per_op_iovec=4278.4 wall_ns_per_op_copy=4270.3 wall_ns_per_op_iovec=4276.7
+round=15 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4278.5 ns_per_op_iovec=4278.4 wall_ns_per_op_copy=4281.3 wall_ns_per_op_iovec=4286.6
+round=15 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4568.3 ns_per_op_iovec=4548.6 wall_ns_per_op_copy=4567.8 wall_ns_per_op_iovec=4546.5
+round=15 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5417.6 ns_per_op_iovec=5317.9 wall_ns_per_op_copy=5418.5 wall_ns_per_op_iovec=5318.2
+round=15 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6537.0 ns_per_op_iovec=6056.9 wall_ns_per_op_copy=6534.9 wall_ns_per_op_iovec=6062.5
+round=15 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9925.9 ns_per_op_iovec=7626.6 wall_ns_per_op_copy=9921.9 wall_ns_per_op_iovec=7632.8
+round=15 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.35
+round=15 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=45.94
+round=16 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4278.7 ns_per_op_iovec=4288.6 wall_ns_per_op_copy=4279.4 wall_ns_per_op_iovec=4290.0
+round=16 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4298.1 ns_per_op_iovec=4308.4 wall_ns_per_op_copy=4298.3 wall_ns_per_op_iovec=4306.6
+round=16 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4588.1 ns_per_op_iovec=4578.1 wall_ns_per_op_copy=4592.3 wall_ns_per_op_iovec=4575.7
+round=16 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5457.5 ns_per_op_iovec=5357.6 wall_ns_per_op_copy=5462.7 wall_ns_per_op_iovec=5357.1
+round=16 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6517.3 ns_per_op_iovec=6057.4 wall_ns_per_op_copy=6523.9 wall_ns_per_op_iovec=6058.1
+round=16 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9855.7 ns_per_op_iovec=7586.7 wall_ns_per_op_copy=9864.2 wall_ns_per_op_iovec=7592.0
+round=16 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.68
+round=16 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=44.50
+round=17 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4298.6 ns_per_op_iovec=4308.5 wall_ns_per_op_copy=4301.3 wall_ns_per_op_iovec=4311.3
+round=17 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4358.4 ns_per_op_iovec=4358.5 wall_ns_per_op_copy=4360.9 wall_ns_per_op_iovec=4358.2
+round=17 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4628.2 ns_per_op_iovec=4598.1 wall_ns_per_op_copy=4623.3 wall_ns_per_op_iovec=4601.8
+round=17 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5517.1 ns_per_op_iovec=5397.8 wall_ns_per_op_copy=5510.5 wall_ns_per_op_iovec=5409.1
+round=17 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6487.2 ns_per_op_iovec=6007.2 wall_ns_per_op_copy=6492.0 wall_ns_per_op_iovec=6017.1
+round=17 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9936.3 ns_per_op_iovec=7637.2 wall_ns_per_op_copy=9943.0 wall_ns_per_op_iovec=7637.0
+round=17 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.57
+round=17 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=44.17
+round=18 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4278.4 ns_per_op_iovec=4278.3 wall_ns_per_op_copy=4276.6 wall_ns_per_op_iovec=4285.0
+round=18 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4338.3 ns_per_op_iovec=4348.3 wall_ns_per_op_copy=4342.2 wall_ns_per_op_iovec=4346.3
+round=18 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4578.5 ns_per_op_iovec=4578.4 wall_ns_per_op_copy=4587.9 wall_ns_per_op_iovec=4573.2
+round=18 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5477.8 ns_per_op_iovec=5387.2 wall_ns_per_op_copy=5482.7 wall_ns_per_op_iovec=5386.7
+round=18 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6557.1 ns_per_op_iovec=6077.5 wall_ns_per_op_copy=6558.2 wall_ns_per_op_iovec=6077.9
+round=18 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9846.1 ns_per_op_iovec=7596.9 wall_ns_per_op_copy=9853.2 wall_ns_per_op_iovec=7600.8
+round=18 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.44
+round=18 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=44.95
+round=19 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4298.4 ns_per_op_iovec=4308.5 wall_ns_per_op_copy=4301.5 wall_ns_per_op_iovec=4308.9
+round=19 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4338.5 ns_per_op_iovec=4338.1 wall_ns_per_op_copy=4335.1 wall_ns_per_op_iovec=4338.8
+round=19 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4628.5 ns_per_op_iovec=4598.4 wall_ns_per_op_copy=4622.1 wall_ns_per_op_iovec=4606.9
+round=19 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5467.9 ns_per_op_iovec=5367.9 wall_ns_per_op_copy=5470.9 wall_ns_per_op_iovec=5371.9
+round=19 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6517.2 ns_per_op_iovec=6047.4 wall_ns_per_op_copy=6523.1 wall_ns_per_op_iovec=6047.5
+round=19 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9876.6 ns_per_op_iovec=7606.5 wall_ns_per_op_copy=9876.2 wall_ns_per_op_iovec=7617.0
+round=19 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.74
+round=19 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=44.48
+round=20 RESULT: mode=iovec size=64 ops=100000 ns_per_op_copy=4298.4 ns_per_op_iovec=4308.4 wall_ns_per_op_copy=4299.7 wall_ns_per_op_iovec=4304.4
+round=20 RESULT: mode=iovec size=256 ops=100000 ns_per_op_copy=4348.6 ns_per_op_iovec=4348.2 wall_ns_per_op_copy=4353.7 wall_ns_per_op_iovec=4351.2
+round=20 RESULT: mode=iovec size=1024 ops=100000 ns_per_op_copy=4588.0 ns_per_op_iovec=4588.4 wall_ns_per_op_copy=4590.1 wall_ns_per_op_iovec=4589.1
+round=20 RESULT: mode=iovec size=4096 ops=100000 ns_per_op_copy=5477.8 ns_per_op_iovec=5377.9 wall_ns_per_op_copy=5481.7 wall_ns_per_op_iovec=5380.3
+round=20 RESULT: mode=iovec size=16384 ops=100000 ns_per_op_copy=6517.3 ns_per_op_iovec=6037.4 wall_ns_per_op_copy=6518.4 wall_ns_per_op_iovec=6042.6
+round=20 RESULT: mode=iovec size=61440 ops=100000 ns_per_op_copy=9905.8 ns_per_op_iovec=7557.1 wall_ns_per_op_copy=9905.5 wall_ns_per_op_iovec=7560.3
+round=20 RESULT: mode=copy size=96 ops=1000000 ns_per_copy=6.52
+round=20 RESULT: mode=copy size=1472 ops=1000000 ns_per_copy=44.62
+SUMMARY iovec size=64 copy_minus_iovec_cpu_ns=-9.5 se=2.0 wall_ns=-6.7 se=2.1 n=20
+SUMMARY iovec size=256 copy_minus_iovec_cpu_ns=-2.5 se=2.2 wall_ns=-2.8 se=1.3 n=20
+SUMMARY iovec size=1024 copy_minus_iovec_cpu_ns=+17.5 se=2.6 wall_ns=+16.2 se=1.3 n=20
+SUMMARY iovec size=4096 copy_minus_iovec_cpu_ns=+103.6 se=2.6 wall_ns=+99.1 se=5.5 n=20
+SUMMARY iovec size=16384 copy_minus_iovec_cpu_ns=+471.9 se=1.9 wall_ns=+473.7 se=1.0 n=20
+SUMMARY iovec size=61440 copy_minus_iovec_cpu_ns=+2287.6 se=14.2 wall_ns=+2288.0 se=13.8 n=20
+SUMMARY copy size=96 ns_per_copy_median=6.42 n=20
+SUMMARY copy size=1472 ns_per_copy_median=44.49 n=20
+COPY_COST_DONE
