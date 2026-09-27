@@ -114,6 +114,71 @@ touches a per-sample path.
   - on lyrical, the two service info queries return the same endpoints `ros2 service info --verbose` shows on CycloneDDS;
   - mutants: MATCHED not raised on unmatch; MESSAGE_LOST counting gaps twice.
 - **CPU:** MESSAGE_LOST adds work only when a gap is detected. Same CPU check as g2.
+- **Contract details, added by Dev before code (2026-09-28):**
+  - **What "matched" means.** A local endpoint and an endpoint of the other kind are matched when all of these hold:
+    - they are on the same topic, with the same type name;
+    - their QoS is compatible (the same RxO rule behind QOS_INCOMPATIBLE);
+    - a remote one is alive (`tt_Context_entity_alive`).
+    - Local endpoints count too, as they do today.
+
+    The vendors match only same-type, compatible pairs. `rmw_publisher_count_matched_subscriptions` /
+    `rmw_subscription_count_matched_publishers` change to this same predicate, so the event and the query never
+    disagree. Today they count by topic name alone, which counts a type-mismatched or incompatible endpoint as
+    matched.
+  - **When MATCHED is raised.** When rmw's discovery callback reports a remote endpoint (appear, refresh, liveliness
+    lapse or revival, depart), and when a local endpoint is created or destroyed. The matched count is recomputed for
+    each local endpoint on that topic.
+    - `current_count` is the new count.
+    - `total_count` grows by every increase, so an unmatch followed by a rematch counts twice, as in DDS.
+    - Each callback reports one entity, so an increase and a decrease cannot cancel between two recounts.
+    - The `*_change` fields are the difference since the last `rmw_take_event`.
+  - **INCOMPATIBLE_TYPE** is raised on the same triggers. It counts endpoints of the other kind on the same topic with
+    a different type name (local ones, and alive remote ones); `total_count` grows by every increase.
+    - `itype` stays VOID (the baseline run), so this criterion is judged by unit tests alone.
+  - **MESSAGE_LOST: counted from rmw's publication sequence number (psn), per writer, not from core's datagram
+    counters.**
+    - Every rmw message carries its publisher's psn, contiguous per publisher. During the subscriber callback, core
+      has already set `tt_Subscriber.last_source` / `last_entity_id` to the delivering writer.
+    - The subscription keeps the last psn per writer. A jump from p to q > p + 1 counts q - p - 1 lost messages.
+    - The first message from a writer only sets its baseline. A late joiner has lost nothing, and neither has a
+      durable replay starting mid-history.
+    - **A late arrival is not a restart (Plan's fix, 2026-09-28).** A psn below the expected next one, but within 64
+      of it, is a late arrival and is ignored: no reset and no decrement, since DDS does not decrement either.
+      - Only a jump further back resets the baseline, as for a publisher re-created under the same endpoint id,
+        which starts again at 1.
+      - Core already drops a BEST_EFFORT sample that arrives behind a newer one, so a late sample normally never
+        reaches rmw, and counting it as lost is correct.
+      - Whitebox: 1, 2, 4, 3, 5, 6 counts 1. The mutant that resets on any backward psn counts 2, because 4 is
+        counted again after 3.
+    - This counts messages, not datagrams, the same way for BEST_EFFORT and RELIABLE. A RELIABLE gap shows as a psn
+      jump only when core gives up on it (`gap_abandoned` / `gap_evicted`); one that is repaired shows nothing.
+    - Core's own gap counters are therefore not added on top: that would count the same loss twice. That is the
+      pre-registered mutant.
+    - **Limits:** a loss at the tail is counted when that writer's next message arrives, as with the vendors'
+      BEST_EFFORT. KEEP_LAST queue overflow at the reader is not a loss, as in DDS.
+    - The writer table has tt_MAX_PEER_COUNT entries. A writer beyond that evicts the least recently seen one, so an
+      evicted writer that returns starts a new baseline: under-counted, never over-counted.
+  - **CPU, amending the line above:**
+    - MESSAGE_LOST adds per-delivery work even when nothing is lost: a compare of the delivering writer against the
+      last one, and one psn compare. The psn is already parsed on that path.
+    - Recounting for MATCHED / INCOMPATIBLE_TYPE runs on the discovery path only.
+    - The same CPU check as g2 applies: `rmw_lib_ab.sh` with an A/A.
+  - **g2's callbacks** get the same slot for the five new types; the set-time count is the unread change.
+  - **Lyrical's two service queries** (`rmw_get_clients_info_by_service` / `rmw_get_servers_info_by_service`) list
+    local and remote clients / servers of the service, filled as `rmw_get_publishers_info_by_topic` fills a
+    topic's. They are checked against CycloneDDS's `ros2 service info --verbose` (Pass above).
+  - **Unit tests add:**
+    - MESSAGE_LOST, whitebox: psn sequences from two interleaved writers with known gaps give the exact count; a
+      restart and a late join count 0.
+    - MATCHED, over the wire in one process: match, unmatch (destroy), rematch. Also a type-mismatched and a
+      QoS-incompatible endpoint, which must not count as matched, and the query agreeing with the event.
+    - INCOMPATIBLE_TYPE both ways.
+  - **Mutants:**
+    - MATCHED not raised on unmatch;
+    - MESSAGE_LOST adding core's gap counters to the psn count (counting twice);
+    - the first message from a writer counted as a loss from psn 0;
+    - a reset on any backward psn (Plan's);
+    - the matched predicate ignoring the type.
 
 ## g6 - discovery options (acceptance tests `range`, `peers`)
 
