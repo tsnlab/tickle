@@ -766,3 +766,44 @@ with `rmw_pcap_split.py` into
   pong's turnaround in poll mode), which the same pcaps split.
 - **Control:** at busy poll, rmw_tickle's arrival-to-seen gap must be a few us. If it is not, the instrument
   (sysstamp) is the cause, and the `on` / `off` RTT difference says by how much.
+
+### 10.1 Result: no hidden delay; rmw_tickle's reply arrives first and is seen at the next check (2026-09-27)
+
+48 + 48 rows ok (sysstamp off and on), 0 VOID, every ping and echo matched in the pcaps. Raw rows are
+`results/rmw_poll10_2026-09-27.txt`; the per-row split is `results/rmw_poll10_split_2026-09-27.txt`. Means over
+2 repetitions, bench, in us after the ping's publish:
+
+| rmw, QoS | sleep | reply at the ping's NIC | NIC -> app sees it | seen at | reported RTT | RTT - seen |
+|---|---:|---:|---:|---:|---:|---:|
+| rmw_tickle BE / REL | 0 | **219 / 222** | **24 / 24** | **243 / 246** | 244 / 246 | 1 / 0 |
+| CycloneDDS BE / REL | 0 | 246 / 234 | 36 / 44 | 283 / 278 | 284 / 278 | 1 / 1 |
+| FastDDS BE / REL | 0 | 278 / 290 | 50 / 49 | 328 / 339 | 330 / 340 | 2 / 1 |
+| rmw_tickle BE / REL | 100 | **221 / 224** | 126 / 130 | 347 / 354 | 504 / 511 | 157 / 157 |
+| CycloneDDS BE / REL | 100 | 243 / 233 | 36 / 48 | **280 / 281** | 438 / 438 | 158 / 158 |
+| FastDDS BE / REL | 100 | 277 / 290 | 49 / 53 | 325 / 343 | 486 / 504 | 160 / 161 |
+
+- **The pre-registered outcome is the third one:** no gap. At 100 us, rmw_tickle's poll thread reads the reply
+  17.7-18.0 us after it reaches the NIC (sysstamp, against 12.4-22.6 for CycloneDDS). The application then takes it
+  at the next `spin_some()`.
+- **Plan's claim to the user at 08:00 of "~80 us more on the ping in poll mode" was wrong,** and it is corrected here.
+  - It assumed the reported poll-mode RTT ends when the reply is seen.
+  - It does not. Every rmw's reported RTT includes one more loop sleep after the reply was seen (157-161 us, the same
+    for all three), because the ping reads its RTT after the loop.
+- **rmw_tickle is ahead at every stage it controls:**
+  - its reply reaches the ping's NIC first, 219-224 us against 233-290;
+  - with busy polling the application sees it first, 24 us after arrival against 36-50.
+- **Why it loses at 100 us: the grid, and nothing else.**
+  - The ping publishes at the start of a loop cycle, so the reply lands at the same phase of the cycle in every round
+    trip.
+  - rmw_tickle's cycle is ~163 us, with a 6 us `spin_some()`. Its reply, delivered at ~240 us, falls between the
+    checks at ~163 and ~326 us and waits ~100 us for the second one.
+  - The vendors' 46-65 us `spin_some()` puts a long check window across their own arrival time. At this one sleep
+    value, it catches the reply at once.
+  - At a sleep of 0 or 200 us the phases fall the other way and rmw_tickle leads (COMPARISON rows 52-55, 64-67).
+- **What this means for the test (proposal, for the user's decision):**
+  - **(a) Random phase.** A phase-locked poll loop measures the grid, not the rmw. A real application's poll loop is
+    not synchronised with its peer's replies. A poll-mode case that publishes from a timer independent of the loop
+    gives each rmw its average catch delay, about half a cycle, and rewards a short cycle rather than one lucky
+    sleep value.
+  - **(b) Report "seen at".** It is `reply_ns`, as block mode does, rather than the after-loop time. That removes the
+    ~158 us every rmw carries today and changes no ranking.
