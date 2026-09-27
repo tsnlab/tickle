@@ -591,3 +591,36 @@ library's md5 `e282cf1b5f53`; its symbols confirm g2, g5 and g8.
     fewer silently.
   - The same check applies to the RELIABLE KEEP_LAST retransmit cache.
   - Mutant: the current growth rule.
+- **Design, Dev before code (2026-09-28).** Growth moves to the moment of need, inside core's publish path, where the
+  sample's cache footprint is known and nothing is evicted yet.
+  - **Core** gains a hook, `tt_Publisher.cache_grow`, a callback that grows the Publisher's arena and says whether
+    it did. NULL, core's default, means it never grows.
+    - Before a KEEP_LAST sample is cached, core asks whether caching it would evict one of the newest
+      `sample_depth - 1` samples for bytes: `reliable_cache_keeps_depth()`, a simulation of the eviction the write
+      would do, as `reliable_cache_admits()` does for KEEP_ALL.
+    - If it would, core calls the hook until it would not, or until the hook cannot grow any more.
+    - If room is still short, the sample is cached as before, and `tt_ReliableCache.depth_shortfalls` counts it.
+    - The ordinary path costs a branch (no hook, or room), plus the simulation's few compares when a hook is set.
+  - **rmw_tickle** sets the hook to `grow_reliable_cache()`, which doubles toward the budget limit. That is the
+    same growth, and the same budget, as today. The publish path already holds the context lock that growth needs.
+    - The after-publish rule (`keep_last_wants_more_arena()`: grow only once `depth` messages have gone out) is
+      removed.
+    - A publisher whose cache falls short logs one WARNING, with the depth it can keep and `RMW_TICKLE_CACHE_BYTES`
+      as the setting to raise.
+    - The shortfalls are summed on rmw's shutdown line as `cache_depth_shortfalls=`.
+  - **RELIABLE KEEP_LAST** uses the same cache and the same path, so its retransmit window gets the same guarantee.
+    KEEP_ALL is unchanged: its own admission refuses rather than evicts.
+- **Pass (pre-registered):**
+  - `durable` passes.
+  - Unit test (core, mock HAL):
+    - a durable KEEP_LAST 4 Publisher with a growing hook and fragmented samples keeps all 4 of 4 and of 6;
+    - with a hook that cannot grow, it keeps fewer and counts every shortfall;
+    - no hook: behaviour as before.
+  - rmw test (`test_inprocess`, reusing its 60 KB type): depth 4, 6 publishes, then a late durable subscription
+    gets the last 4. The test's depth-2 workaround goes.
+  - With `RMW_TICKLE_CACHE_BYTES` too small for 4, a late joiner gets fewer, with one WARNING and the shutdown
+    count.
+  - A RELIABLE KEEP_LAST publisher: its cache retains depth samples of 60 KB after depth publishes.
+  - The rmw suite and every acceptance test that passed before.
+  - Mutants: the old rule (growth after `depth` sends, no hook call); the hook not called; the shortfall not counted.
+  - CPU: `rmw_lib_ab.sh` with an A/A, and the core bench (`core_cost_bench`) for the new branch, since core changes.
