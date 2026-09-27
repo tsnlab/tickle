@@ -181,6 +181,16 @@ for h in "$CLIENT" "$SERVER"; do
 done
 [ "$bad" = 0 ] || { say "BUILD FAILED - not running"; exit 1; }
 fi
+# One application, the rmw chosen at run time (2026-09-27, the user's question): ping_node and pong_node are built
+# once per session and run unchanged for every rmw; RMW_IMPLEMENTATION alone selects the rmw, which
+# rmw_implementation loads dynamically. Recorded here: each binary's sha256 on both Pis, and that neither links any
+# rmw implementation itself (ldd shows the generic librmw.so / librmw_implementation.so only). A binary linking an
+# implementation directly stops the run.
+for h in "$CLIENT" "$SERVER"; do
+    ident=$(sh_ "$h" "cd /home/ci/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong && sha256sum ping_node pong_node | awk '{printf \"%s=%s \", \$2, substr(\$1,1,16)}'; for b in ping_node pong_node; do ldd \$b | grep -oE 'librmw_(tickle|fastrtps_cpp|cyclonedds_cpp|fastrtps_shared_cpp|dds_common)[^ ]*' | sed \"s/^/\$b-links-/\"; done" 2>&1)
+    say "--- binaries on $h: $ident ---"
+    case "$ident" in *-links-*) say "an application binary links an rmw implementation directly - not running"; exit 1 ;; esac
+done
 BPF_IRQ=""
 case " $BPF_ARMS " in *" on "*)
     scp -q -i "$K" -o BatchMode=yes "$REPO/examples/perf_hil/experiments/pong_rx_split.bt" "ci@$SERVER:/tmp/rmwx_pong_rx_split.bt"
@@ -333,7 +343,10 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     # spin_some_us and sleep_us - kept in the row after RESULT's fields, whose order it does not change.
     # The ping's own log (stderr) is kept per row with the pong's in $OUT.logs, for questions such as which peers
     # rmw_tickle's publisher registered.
-    res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^LOOP:|^ping_utime_s' | tr '\n' ' ' || true)
+    # PINGMAPS (2026-09-27): the rmw library the ping actually loaded, read from its /proc/PID/maps 2 s into the run by
+    # a reader pinned to core 0 (the ping runs on 1-3). Its PID is found by parentage from the launch's own $! (timeout
+    # -> time -> ping_node, taskset having exec'd) and verified by /proc/PID/exe - never by name.
+    res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log >/tmp/rmwx_ping.out & tp=\$!; pp=; for i in \$(seq 1 50); do for c in \$(cat /proc/\$tp/task/\$tp/children 2>/dev/null); do for g in \$c \$(cat /proc/\$c/task/\$c/children 2>/dev/null); do [ \"\$(readlink /proc/\$g/exe 2>/dev/null)\" = $BIN/ping_node ] && pp=\$g; done; done; [ -n \"\$pp\" ] && break; sleep 0.1; done; sleep 2; echo PINGMAPS: \$(taskset -c 0 grep -o '/[^ ]*librmw_[a-z_]*\\.so' /proc/\$pp/maps 2>/dev/null | sort -u | tr '\\n' ' ') >/tmp/rmwx_ping_maps.txt; wait \$tp; cat /tmp/rmwx_ping.out /tmp/rmwx_ping_time.txt /tmp/rmwx_ping_maps.txt" | grep -E '^RESULT:|^LOOP:|^ping_utime_s|^PINGMAPS:' | tr '\n' ' ' || true)
     res="$res $procs${idle:+ $idle}"
     if [ "$BPF" = on ]; then
         sh_ "$SERVER" "[ \"\$(readlink /proc/$bpfpid/exe)\" = /usr/bin/timeout ] && kill -TERM $bpfpid; for i in \$(seq 1 20); do [ -d /proc/$bpfpid ] || break; sleep 0.5; done" || true
@@ -385,6 +398,12 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
             || say "  (no dump from $rmw rep$rep)" ;;
     esac
     case "$maps" in *"$(lib_for "$rmw")"*) ;; *) verdict="VOID(pong loaded: ${maps:-nothing})" ;; esac
+    case "$res" in *"PINGMAPS: "*"$(lib_for "$rmw")"*) ;;
+        *) [ "$verdict" = ok ] && verdict="VOID(ping did not show $(lib_for "$rmw") in its maps)" ;; esac
+    # ... and no other implementation beside it, on either side
+    local impls
+    impls=$(echo "${res#*PINGMAPS: } | $maps" | tr ' ' '\n' | grep -oE 'librmw_(tickle|fastrtps_cpp|cyclonedds_cpp)\.so' | sort -u | wc -l)
+    [ "$impls" = 1 ] || { [ "$verdict" = ok ] && verdict="VOID($impls rmw implementations loaded across ping and pong)"; }
     case "$res" in *"framework=${rmw%@*} "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(no RESULT for $rmw)" ;; esac
     case "$res" in *"loss_pct=0 "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(loss)" ;; esac
     if [ -n "$IDLE_S" ] && [ "$TRACE" != 1 ]; then

@@ -43,6 +43,13 @@ same session, so a row is always comparable. Across rows of different letters it
     peer-registration race that had made rmw_tickle's ping broadcast). `results/rmw_scored3_2026-09-26.txt`,
     72 rows, 0 void. Against the v7 session of the same evening, rmw_tickle's RTT is unchanged in every cell
     and its pong CPU is within 2 x SE (pooled +0.69 ms, 2 SE 1.16).
+  - **One application binary; only the rmw changes (verified 2026-09-27, `results/rmw_identity_2026-09-27.txt`).**
+    `ping_node` and `pong_node` are built once per session and run unchanged for all three rmws. Their sha256 is the
+    same on both Pis in that session, and `ldd` shows neither links an rmw implementation. `RMW_IMPLEMENTATION` alone
+    selects the rmw, which `rmw_implementation` loads at run time. Every row now checks this on both sides: it reads
+    the library actually loaded from the ping's and the pong's `/proc/PID/maps`. It voids the row unless that is the
+    expected implementation, and exactly one implementation is loaded across the two. Before 2026-09-27 only the
+    pong was checked, and the ping's `framework=` was the environment variable it printed.
   - **`P` rows:** the poll-wait sweep, build `099374d2`, `results/rmw_pollsweep_2026-09-26.txt`, 144 rows,
     0 void. Every row's `LOOP:` line confirms its sleep.
   - **Both ways an application can wait are test cases** (the user's decision of 2026-09-26). In *block*
