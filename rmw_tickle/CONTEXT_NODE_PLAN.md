@@ -215,6 +215,8 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
 2. **Remove the unused pending-response storage** (user item 3): `tt_Server.pending_response_buf`,
    `set_storage()`'s pending half and rmw_service's allocation of it. A separate commit right after stage 1, so both
    API breaks ship together.
+2a. **The client's adaptive retry learns only from success** (found 2026-09-27 while verifying item 2; Plan: fix
+   before stage 2). Pre-registered below, under "Client retry fix".
 3. **Release-built tests that test nothing** (Plan, same day): `rosidl_typesupport_tickle_c_tests`' dispatch tests
    check with `assert()`, which a Release build compiles out. Fix with `-UNDEBUG` on the test targets or explicit
    checks, with a mutant showing the test fails in the Release build.
@@ -229,6 +231,54 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
      `rmw_take_loaned_message` / `rmw_return_loaned_message_from_subscription` (gated by `can_loan_messages`) sit
      directly on it, and covering reassembled large samples, where it pays.
    - If its wire change is ready close to stage 3, one version bump may carry both; otherwise v11 and v12.
+
+## Client retry fix (pre-registered 2026-09-27, before code)
+
+**The defect.** With `call_retry_interval` 0 ("auto", what core's examples and generated services pass), a call is
+retried every `1.5 x client->latency` and given up after `tt_CALL_RETRY_COUNT` (3) retries, so its whole budget is
+about `4 x 1.5 x latency`. `latency` is an EMA updated only when an answer is accepted. So:
+- It has no floor: one fast answer shrinks the budget to match it. Measured in `test_thread_safety`: call 1 answered
+  in 85 us, so the interval became 128 us and the budget about 0.5 ms.
+- It learns nothing from a timeout: a later answer slower than the budget times the call out, the EMA does not
+  move, and every call after it times out the same way, forever. The same run: 600+ consecutive timeouts on call 2,
+  `latency` frozen at 85,358 ns.
+- `test_thread_safety` hits it in about 2-3% of plain runs (5/140 at 0f877d54; 0/140 at 47ddcb75, the rate moving
+  with timing): as `answers_wrong` before 579dfcaf, as a hang since (the caller re-asks a timed-out call).
+- rmw_tickle is not affected: `rmw_client.c` sets `call_retry_interval` explicitly. Native users on the default are.
+
+**The fix, only on the auto path** (an explicit `call_retry_interval` is used as given, as today):
+- **Floor:** the interval is never below `tt_CALL_RETRY_INTERVAL` (5 ms). A lost request on a fast link is then
+  retried after 5 ms rather than after 1.5 x its latency; only core's RPC examples use the auto path (the perf_hil
+  harnesses use no RPC, rmw sets its own interval).
+- **Backoff on timeout:** when a call times out, the estimate doubles (from `tt_CALL_RETRY_INTERVAL` if it was 0),
+  so the next call's budget grows - Karn's / TCP RTO backoff.
+- **Cap:** a new `tt_CALL_RETRY_INTERVAL_MAX` (default 250 ms) bounds the interval, so the estimate never exceeds
+  it, and a call on the auto path ends within `(tt_CALL_RETRY_COUNT + 1) x tt_CALL_RETRY_INTERVAL_MAX` (1 s by
+  default) however often it has timed out: a dead server cannot grow the budget without bound. A server that
+  needs longer than that needs an explicit `call_retry_interval`.
+- **Recovery:** the first answer accepted after a backoff replaces the estimate with its own latency instead of
+  moving the EMA by 1/8, so a server that is fast again gets its short budget back on the next call, not ~30 calls
+  later. Later answers move the EMA as today.
+- The first call's interval and every retry's come from one function, which today are two copies of the same
+  arithmetic.
+
+**PASS - unit tests with the mock clock and a simulated server** (answer after a given delay, the client's
+`call_retry` timers run at their scheduled times):
+- **Fast then slow:** calls answered in 100 us, then calls answered in 3 ms. Today every slow call times out; fixed,
+  every one is answered (the floor alone gives a 20 ms budget).
+- **Slow beyond the floor:** calls answered in 40 ms. Fixed: the first few may time out, the backoff grows the
+  budget, and from then on every call is answered.
+- **Recovery:** fast, then 40 ms (backoff), then fast again: the first fast call after the slow phase brings the
+  interval back to the floor.
+- **Dead server:** 20 calls, none answered. Every call ends in `tt_CALL_TIMEOUT` within
+  `(tt_CALL_RETRY_COUNT + 1) x tt_CALL_RETRY_INTERVAL_MAX`, and the interval stops at the cap.
+- **Explicit interval unchanged:** with `call_retry_interval` set, retries are at exactly that interval and a
+  timeout changes nothing.
+- **Mutants, each failing at least one test:** no backoff; no cap; no floor; no reset on recovery.
+- **`test_thread_safety` stays on the auto path** (not pinned to an interval, which would hide the only test of
+  the default path): 200 plain + 40 tsan runs before and after. Before shows the 2-3%; after must show 0.
+- `make check-gates`, the rmw suite in a netns, and a CHANGELOG entry saying native users on the default interval
+  were affected and rmw was not.
 
 ## Order and ownership
 
