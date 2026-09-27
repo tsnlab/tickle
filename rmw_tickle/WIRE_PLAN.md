@@ -791,6 +791,33 @@ bench.**
     - The only way through would be a larger hold, which costs memory an embedded node does not have for this.
       That would be a new proposal, pre-registered on its own.
 
+**9.1 amended again before code (2026-09-27): the long form is today's DATA, and the handle travels in the
+announce.**
+- **Why.** A 20-B long form stored in the reliable cache, which must keep the long form so that retransmits go
+  long, breaks every place that assumes a 16-B DataHeader:
+  - the cache's CDR length;
+  - `send_tail_as_fragments()`;
+  - the FRAG_FIRST copy;
+  - `tt_FRAG_DATA_HEADER_LENGTH`.
+  That is a larger change than the question the bench asks.
+- **Now:**
+  - The **long form is today's DATA**, 16 B, routable without any mapping. The encoder, the reliable cache,
+    retransmits and fragments are unchanged, so a retransmission is long by construction.
+  - The **writer's handle travels in its announce entry.** `tt_UpdateEntity` gains a 16-bit `handle`, which is
+    how 9's "or from the writer's discovery list" route works. The handle directory is filled from announces and
+    list answers, not from DATA.
+  - The **short form** (12 B: handle, flags, `seq_no`, `timestamp`) is made at send time. A datagram that goes
+    out in the single-submessage form, and holds exactly one user DATA whose writer chose short, has its 16
+    bytes before the payload rewritten in place. It is then sent from 8 bytes further in. Cached copies are
+    taken before this, so they stay long.
+  - The route table, the directory's miss path, the generation, and when the writer chooses short are as
+    amended above.
+- **Bytes improve.** A long sample costs 16 B instead of 20. BEST_EFFORT after its first 16 samples then saves
+  4 x 15/16 = 3.75 B per sample, against 3.5 as first designed.
+- **What it costs.** A reader that has not processed the writer's announce cannot map a short form until the
+  next announce or a list answer. That is the unknown-reader case, whose pass line and fallback are above.
+- **Step 1 is unchanged:** its cases, and what counts as PASS.
+
 **Step 3 - bytes (deterministic).**
 - p1's `wire_bytes_per_sample` falls by 4 B per DATA, less the long forms' share. For BE after the first 16
   samples, that is 4 x 15/16 = 3.75 B.
