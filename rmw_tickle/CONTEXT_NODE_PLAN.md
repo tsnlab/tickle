@@ -346,7 +346,7 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
      - **Cost at the rmw setting:** the time to process a 600-entry announce into a 2048-entry discovered table,
        against 16.
      - Gates 10/10, and the rmw suite in a netns.
-   **4a result (2026-09-27, 3f5e2cba): capacity and the defects PASS; one pre-registered bench criterion MISSED, and
+   **4a result (2026-09-27, 2b84b15d): capacity and the defects PASS; one pre-registered bench criterion MISSED, and
    accepted.**
    - **The defect, before and after** (`tests/test_discovery_capacity.c`): 20 best-effort remote publishers, and a
      reliable subscriber on the 20th.
@@ -388,7 +388,9 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
        bitmap).
      - The bench's static data keeps its 64-byte alignment and shifts by exactly 4096 B, the code having grown past a
        page.
-   - **Bench pair**, 20 rounds, ae1d7ddb against 3f5e2cba (raw: `examples/perf_hil/results/core_cost_ab_4a*`):
+   - **Bench pair**, 20 rounds, c018fcda against 2b84b15d, measured before a rebase onto documentation commits under
+     their earlier ids ae1d7ddb and 3f5e2cba, which the raw files carry; the code is the same
+     (raw: `examples/perf_hil/results/core_cost_ab_4a*`):
 
      | run | recv difference | outside 2 x SE |
      |---|---|---|
