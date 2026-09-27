@@ -934,7 +934,7 @@ W1 minus base, ns per sample, mean +- SE:
 - A new form of W1 would be a new proposal, pre-registered on its own. It would have to explain the handler cost
   first.
 
-### 9.3 W5's ceiling, estimated before any code (2026-09-27): about 3% of join bytes on a real ROS 2 graph - recommended dropped
+### 9.3 W5's ceiling, estimated before any code (2026-09-27): about 3% of join bytes on a real ROS 2 graph - dropped (Plan, 2026-09-27)
 
 **What W5 would save.** A type name already written earlier in the same list would be replaced by a 2-byte
 reference. Per repeat, that saves the string's own `2 + len + 1` bytes, less the 2 of the reference. An entity
@@ -972,6 +972,12 @@ install: "no rmw_tickle typesupport" for rosout's `rcl_interfaces/msg/Log`. Its 
 - **The 15% is the synthetic tool's own shape.** It gives every endpoint the same 10-character type, so a type
   repeats E - 1 times. Real graphs repeat a type rarely: `ParameterEvent` for its publisher and subscription, and
   application topics that share a message type.
+
+**Checked afterwards on a real default node (2026-09-27, lyrical, rmw_tickle with the interface packages built
+by `build_ros2_interfaces.sh`).** A default-option rclcpp talker announces 10 entities: `/rosout`, the six
+parameter services, `/parameter_events` (publisher only; no subscription on this distro),
+`get_type_description` and `/chatter`. No type repeats, so W5 would save it **0 B**. The computed row above
+assumed a `/parameter_events` subscription as well.
 
 **Recommendation: drop W5.** Its ceiling on real graphs is about 3% of join bytes, tens of bytes per join, with no
 effect on packet count or join time. Building it would add a second string form to the discovery decoder, which
