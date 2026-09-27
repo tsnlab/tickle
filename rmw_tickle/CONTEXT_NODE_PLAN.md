@@ -459,7 +459,8 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
        - the announce bytes are identical.
      - **Memory:** `sizeof(struct tt_Discovery)` at 16 and 2048.
      - Gates 10/10, and the rmw suite in a netns.
-   **4b result (2026-09-27, 6df8e6e7): the index PASSES; the send criterion is MISSED, cause unexplained, open with Plan.**
+   **4b result (2026-09-27, 6df8e6e7): the index PASSES; the send criterion, MISSED as first built, is closed for core by
+   compiling the index only for large tables.**
    - **Per-sample RxO lookup** (`discovery_lookup_cost.c`):
 
      | table | entry last | entry first |
@@ -499,6 +500,15 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
        `find_or_create_writer_proxy`. `end_encode` and `send_datagram` moved to new 64-byte offsets.
      - By 8.3 as amended, the default send is outside the controls' swing in every repeat, so it counts as WORSE.
        Its cause is not established.
+   - **Resolved by Plan's option (c):** the index is compiled only for tables larger than 64 (`tt_DISCOVERY_INDEXED`).
+     - Below that, every 4b change is the parent's code.
+     - Core's default build is byte- and address-identical to 5d3ddaaa: `tickle.o` with relocations, `hal_linux.o`,
+       `encoding.o`, `log.o`, and the linked `core_cost_bench` with its data. So the send question is closed for
+       core by construction.
+     - rmw's 2048 build keeps the index (7.6 ns per lookup). Its send is judged on the rig at the end of the
+       restructure, against the 1.2 us per sample and the 36x join cost the index removes.
+     - `test_discovery_index` (128, indexed) and `test_discovery_index_linear` (16, the scan) run the same cases; the
+       gate inverted fails both.
 
 5. **rmw gaps**. The user's words, relayed by Plan: "1, 2, 3, 4번 진행하자." Each item is pre-registered before code,
    with behaviour tests and mutants, and uses CycloneDDS's or Fast DDS's behaviour as the control where one exists:
