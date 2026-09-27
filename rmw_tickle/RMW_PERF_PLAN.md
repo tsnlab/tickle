@@ -940,7 +940,7 @@ are measured first, and built only if the measurements leave room:
     (~2.49 us at c1, WIRE_PLAN 8.9 follow-up).
   - The drop rule is 11's: under 2% or under 0.3 us, it is dropped.
 
-### 11.1 Result: (2) and M-c dropped; (3) has room only for array1k-size fixed fields (2026-09-27)
+### 11.1 Result: (2), (3) and M-c all dropped for the benchmark types (2026-09-27)
 
 Raw files:
 - `results/copy_cost_pi_2026-09-27.txt` (M-b and M-c, the client Pi, CPU 3, 20 rounds);
@@ -1000,7 +1000,9 @@ Raw files:
 - **M-c, the held-back copy: dropped.** 6.4 ns x 31/32 per sample at p1 is 0.25% of the server's ~2.49 us. At
   p4's 1472-B datagram it is 43 ns, still under 2% and under 0.3 us. This removes the first step of Plan's lending
   design as a copy cut on its own merits. The design's other reasons are not measured here.
-- **(3) loaned messages: dropped for `bench` and `struct16`, room left for `array1k`.**
+- **(3) loaned messages: dropped for all three benchmark types (Plan's reading, same day).**
+  - The bar is the per-sample figure: `array1k`'s 0.56 us is 1.8% of its 30.3-us responder, under 2%. The
+    ~8% below is of the user-space part alone, which is not the bar 11 set.
   - A loan would skip `to_tickle` + `from_tickle` and nothing else: encode and decode stay.
   - `bench` 0.29 us and `struct16` 0.22 us are both under 0.3 us.
   - `array1k` is 0.56 us per responder, ~8% of its ~7 us of user-space work (section 9's split) and ~1.8% of its
