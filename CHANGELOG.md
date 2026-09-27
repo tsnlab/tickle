@@ -20,6 +20,14 @@ number, `tt_VERSION`, which moves independently.
     A late join, a durable replay and a late arrival are not losses.
   - `rmw_get_clients_info_by_service` / `rmw_get_servers_info_by_service` (lyrical) list local and remote clients
     and servers, one row each.
+- **rmw_tickle: a KEEP_LAST publisher keeps `depth` samples from the first publish** (rmw_tickle/RMW_GAPS_PLAN.md g10).
+  - Its cache arena starts small and used to grow only after `depth` messages had gone out, so a TRANSIENT_LOCAL
+    publisher of a large type gave a late joiner fewer than `depth`: 3 of 4 60 KB samples, where DDS gives 4. The
+    RELIABLE retransmit window was short the same way.
+  - Core now asks, before caching, whether the sample would evict one inside the depth. If it would, core calls the
+    Publisher's new `cache_grow` hook (rmw_tickle's doubles toward the budget).
+  - Shortfalls the budget forces are counted (`tt_ReliableCache.depth_shortfalls`), warned about once per
+    publisher, and shown on rmw's shutdown line.
 - **rmw_tickle: nodes in one process exchange topics** (rmw_tickle/RMW_GAPS_PLAN.md g9, `tt_LOCAL_DELIVERY` in
   config.h). All of a process's nodes share one context, and a context dropped its own DATA as self-sent, so
   composition and every multi-node process got nothing on their in-process topics.

@@ -7,6 +7,8 @@
 # stopped - its PID is the one $! gives there, not a search) and its park_wakes= from the shutdown line.
 #
 # Usage: rmw_lib_ab.sh <lib A> <lib B> <reps>     Results: $OUT (default /tmp/rmw_lib_ab.txt), "DONE" at the end.
+# PINGPONG_ARGS: extra flags for both nodes, e.g. --reliable (RELIABLE KEEP_LAST 8, so a reliable cache on each
+# publisher) - added for g10, whose change is on that path (2026-09-28).
 # PC-only (veth between two private netns), so no rig lock; run it detached, it takes ~1 min a rep.
 set -u
 LIB_A=${1:?usage: rmw_lib_ab.sh <lib A> <lib B> <reps>}
@@ -54,11 +56,11 @@ run_one() { # <arm A|B> <lib> <gap> <duration>
     started=$(date +%s)
     rm -f /tmp/la_ping_done
     # shellcheck disable=SC2024 # the logs are this shell's
-    sudo -n ip netns exec "$NS2" timeout $((dur + 20)) bash -c "$env; $BIN/pong_node -m bench & p=\$!; until [ -e /tmp/la_ping_done ]; do sleep 0.05; done; cat /proc/\$p/task/*/schedstat > /tmp/la_pong_sched.txt; kill -INT \$p; wait \$p" >/tmp/la_pong.log 2>&1 &
+    sudo -n ip netns exec "$NS2" timeout $((dur + 20)) bash -c "$env; $BIN/pong_node -m bench ${PINGPONG_ARGS:-} & p=\$!; until [ -e /tmp/la_ping_done ]; do sleep 0.05; done; cat /proc/\$p/task/*/schedstat > /tmp/la_pong_sched.txt; kill -INT \$p; wait \$p" >/tmp/la_pong.log 2>&1 &
     local pong=$!
     sleep 4
     # shellcheck disable=SC2024
-    sudo -n ip netns exec "$NS1" bash -c "$env; timeout -s INT $((dur + 5)) $BIN/ping_node -d $dur -i $gap --wait block -m bench --stamps /tmp/la_stamps.txt" >/tmp/la_ping.log 2>&1
+    sudo -n ip netns exec "$NS1" bash -c "$env; timeout -s INT $((dur + 5)) $BIN/ping_node -d $dur -i $gap --wait block -m bench ${PINGPONG_ARGS:-} --stamps /tmp/la_stamps.txt" >/tmp/la_ping.log 2>&1
     touch /tmp/la_ping_done
     wait "$pong"
     local rtt=stale cpu=na

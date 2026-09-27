@@ -446,14 +446,15 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
     // unchecked for the entities it dropped, which core warned about once when it happened.
     (void)fprintf(stderr,
                   "rmw_tickle: executor_poll=%d executor_poll_waits=%llu executor_handovers=%llu park_wakes=%llu "
-                  "discovery_dropped=%u nodes_kept_at_destroy=%llu id_muted_drops=%llu\n",
+                  "discovery_dropped=%u nodes_kept_at_destroy=%llu id_muted_drops=%llu cache_depth_shortfalls=%llu\n",
                   context_impl->executor_poll_enabled ? 1 : 0,
                   (unsigned long long)atomic_load(&context_impl->executor_poll_waits),
                   (unsigned long long)atomic_load(&context_impl->executor_handovers),
                   (unsigned long long)atomic_load(&context_impl->park_wakes),
                   (unsigned)context_impl->discovery.entities_dropped,
                   (unsigned long long)atomic_load(&context_impl->nodes_kept_at_destroy),
-                  (unsigned long long)context_impl->tickle_context.id_muted_drops); // (g8)
+                  (unsigned long long)context_impl->tickle_context.id_muted_drops,         // (g8)
+                  (unsigned long long)atomic_load(&context_impl->cache_depth_shortfalls)); // (g10)
 
     // watchdog_thread_running is only ever true here if start_shared_tickle_node() actually
     // managed to start it (see its own doc comment there) - nothing to join otherwise. No tt_Context_

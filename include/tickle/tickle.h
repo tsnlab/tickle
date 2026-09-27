@@ -941,9 +941,13 @@ struct tt_ReliableCache {
     // KEEP_LAST only: it evicts to honour the bound, which a KEEP_ALL publisher must never do.
     uint16_t sample_depth;
     uint16_t retained_samples; // core-owned: samples whose first record is retained now
-    uint32_t oldest_seq_no;    // oldest retained sample, 0 = nothing retained (the arena is empty)
-    uint32_t newest_seq_no;    // newest sample handed to cache_reliable_sample(), cached or not
-    uint32_t tail;             // arena offset just past the newest retained record
+    // (g10, rmw_tickle/RMW_GAPS_PLAN.md) core-owned: KEEP_LAST samples cached while the arena could not keep
+    // sample_depth of them - an eviction for bytes inside the depth, because the Publisher's cache_grow could not
+    // make room (or it has none). A caller reports it; core only counts.
+    uint32_t depth_shortfalls;
+    uint32_t oldest_seq_no; // oldest retained sample, 0 = nothing retained (the arena is empty)
+    uint32_t newest_seq_no; // newest sample handed to cache_reliable_sample(), cached or not
+    uint32_t tail;          // arena offset just past the newest retained record
     // Only ever consulted when tt_Publisher.durable is set (register_subscriber_peer_on_
     // publisher(), tickle.c) - costs a best-effort or reliable-only Publisher nothing beyond the
     // unused array slots themselves, no extra allocation or opt-in flag needed. Same capacity as
@@ -991,6 +995,11 @@ struct tt_Publisher { // extends endpoint
     struct tt_Endpoint endpoint;
     struct tt_Context* node;
     struct tt_Topic* topic;
+    // (g10, rmw_tickle/RMW_GAPS_PLAN.md) Grows reliable_cache's arena and returns whether it did - called, with the
+    // context locked, when caching a KEEP_LAST sample would evict one of the newest sample_depth - 1 for bytes, until
+    // it would not or this returns false. NULL (the default): the arena never grows, and such evictions are counted
+    // (tt_ReliableCache.depth_shortfalls). Core allocates nothing; the caller that owns the arena does.
+    bool (*cache_grow)(struct tt_Publisher* pub);
 #if tt_LOCAL_DELIVERY
     // (g9, config.h's tt_LOCAL_DELIVERY) This context's own Subscribers on this endpoint id - the ones a publish also
     // delivers to in-process. Kept by add_endpoint_to_node() / remove_endpoint_from_node(); 0: a publish pays a branch.

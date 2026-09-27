@@ -4086,6 +4086,55 @@ static void cache_sample_fragments(struct tt_Context* node, struct tt_ReliableCa
 // or the cache would hold, and later offer to retransmit, a sample no reader was ever sent, under a
 // sequence number the next publish then reuses. Split out of tt_Publisher_publish() to keep its
 // cognitive complexity under clang-tidy's threshold.
+// (g10) Whether caching a sample of `footprint` arena bytes now keeps the newest sample_depth - 1 samples beside it:
+// what the write below would do, simulated on copies of the fields eviction moves. The count bound evicts the oldest
+// sample first when sample_depth are already held, which KEEP_LAST allows; any further eviction, for bytes, would
+// take a sample inside the depth.
+static bool reliable_cache_keeps_depth(const struct tt_ReliableCache* cache, uint32_t footprint) {
+    if (cache->sample_depth == 0) {
+        return true; // no depth promised in samples
+    }
+    if (footprint > cache->arena_size) {
+        return false;
+    }
+    uint16_t depth = reliable_cache_depth(cache);
+    uint32_t oldest = cache->oldest_seq_no;
+    uint32_t tail = cache->tail;
+    if (oldest != 0 && cache->retained_samples >= cache->sample_depth) {
+        do { // the oldest sample, every record of it, goes by count
+            if (oldest == cache->newest_seq_no) {
+                oldest = 0;
+                tail = 0;
+                break;
+            }
+            oldest++;
+        } while (!reliable_cache_slot_live(cache, depth, oldest) ||
+                 !reliable_cache_record_starts_sample(cache, reliable_cache_slot(cache, depth, oldest)));
+    }
+    if (oldest == 0) {
+        return true; // nothing left retained: the whole arena is free
+    }
+    uint32_t head = reliable_cache_slot(cache, depth, oldest)->offset;
+    return reliable_cache_offset_in(cache->arena_size, false, head, tail, footprint) != UINT32_MAX;
+}
+
+// (g10) Room for this KEEP_LAST sample without evicting inside the depth: grown through the Publisher's hook while it
+// can, else counted.
+static void make_depth_room(struct tt_Context* node, struct tt_Publisher* pub,
+                            const struct tt_SubmessageHeader* submessage_header) {
+    struct tt_ReliableCache* cache = pub->reliable_cache;
+    if (pub->keep_all || cache->sample_depth == 0) {
+        return; // KEEP_ALL's own admission refuses rather than evicts
+    }
+    uint32_t footprint = sample_cache_footprint(node, submessage_header);
+    while (!reliable_cache_keeps_depth(cache, footprint)) {
+        if (pub->cache_grow == NULL || !pub->cache_grow(pub)) {
+            cache->depth_shortfalls++;
+            return;
+        }
+    }
+}
+
 static bool check_and_cache_sample(struct tt_Context* node, struct tt_Publisher* pub,
                                    struct tt_SubmessageHeader* submessage_header) {
     // With fragmentation every sample within tt_MAX_SAMPLE_LENGTH can be sent, and the caller has
@@ -4096,6 +4145,7 @@ static bool check_and_cache_sample(struct tt_Context* node, struct tt_Publisher*
     // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see cache_reliable_sample()'s own doc
     // comment above; one shared write serves both, whichever (or both) this Publisher opted into.
     if (pub->reliable_cache != NULL) {
+        make_depth_room(node, pub, submessage_header); // (g10)
 #if tt_FRAG_ENABLED
         uint32_t datagrams = sample_datagram_count(node, submessage_header);
         if (datagrams > 1) {

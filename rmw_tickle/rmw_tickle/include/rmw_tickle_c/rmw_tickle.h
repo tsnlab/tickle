@@ -291,6 +291,9 @@ struct rmw_tickle_context_impl_t {
     // expected at an rclpy exit, where handles are finalised in any order; a long-running process whose count grows
     // is leaking. Printed on the shutdown diagnostics line.
     _Atomic uint64_t nodes_kept_at_destroy;
+    // (g10) KEEP_LAST samples its publishers cached while their cache could not keep `depth` of them (the budget,
+    // RMW_TICKLE_CACHE_BYTES, reached), summed from tt_ReliableCache.depth_shortfalls; on the shutdown line.
+    _Atomic uint64_t cache_depth_shortfalls;
     atomic_bool poll_thread_parked; // the poll thread is parked (announced on handover_cond)
     pthread_cond_t handover_cond;   // NOLINT(misc-include-cleaner) - under wait_mutex
     int park_timer_fd;              // CLOCK_MONOTONIC timerfd: the lease, armed on release
@@ -678,7 +681,8 @@ typedef struct rmw_tickle_publisher_t {
     // QOS_INCOMPATIBLE_CHECK_PERIOD_NS, rmw_publisher.c - nothing for the application to tune).
     bool offered_qos_incompatible_monitoring_started;
     rmw_tickle_qos_incompatible_status_t offered_qos_incompatible;
-    rmw_tickle_matched_status_t matched;                     // (g3) RMW_EVENT_PUBLICATION_MATCHED
+    uint32_t depth_shortfalls_seen;      // (g10) tt_ReliableCache.depth_shortfalls already reported and summed
+    rmw_tickle_matched_status_t matched; // (g3) RMW_EVENT_PUBLICATION_MATCHED
     rmw_tickle_incompatible_type_status_t incompatible_type; // (g3) RMW_EVENT_PUBLISHER_INCOMPATIBLE_TYPE
 
     // QoS roadmap follow-up (Milestone 45's own latency investigation, rmw_tickle/PLAN.md) - the

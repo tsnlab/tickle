@@ -10,13 +10,13 @@
 
 // g9 (RMW_GAPS_PLAN.md): topics between two nodes of one process, which share one context. Checked: a 60 KB message
 // arrives whole in-process; KEEP_LAST depth 3 with 10 published before any take keeps the newest 3, as for remote
-// samples; a TRANSIENT_LOCAL subscription (depth 2) created after 4 publishes gets the last 2 from the durable backlog,
-// in order and whole - each goes as ~42 fragments, so the backlog reassembles them. (Depth 2, not 4: a durable
-// publisher of a type this large starts with an arena of one sample and grows only once depth messages have gone out,
-// so at depth 4 after 4 publishes it retains one - for a remote late joiner as much as a local one; reported to Plan.)
+// samples; a TRANSIENT_LOCAL subscription (depth 4) created after 6 publishes gets the last 4 from the durable backlog,
+// in order and whole - each goes as ~42 fragments, so the backlog reassembles them. g10: before it the arena grew only
+// after depth messages had gone out, and kept fewer than 4; and a budget too small for depth 4 keeps fewer, counted.
 // (Services within a process already worked; test_service_roundtrip keeps them from regressing.)
 
 #include <assert.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -35,6 +35,7 @@
 #include "rmw/rmw.h"
 #include "rmw/subscription_options.h"
 #include "rmw/types.h"
+#include "rmw_tickle_c/rmw_tickle.h"
 #include "rosidl_runtime_c/message_type_support_struct.h"
 #include "rosidl_typesupport_tickle_c/identifier.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
@@ -42,9 +43,10 @@
 #define BIG_BYTES 60000
 #define DEPTH 3
 #define BURST 10
-#define BACKLOG 4
-#define DURABLE_DEPTH 2
+#define BACKLOG 6
+#define DURABLE_DEPTH 4
 #define FIRST_DURABLE_ID 100U
+#define SMALL_BUDGET "150000" // room for two 60 KB samples, not four
 
 struct big {
     uint32_t id;
@@ -190,6 +192,25 @@ int main(void) {
     }
     printf("in-process: a late durable subscription got the last %d of %d 60 KB messages, in order, whole\n", got,
            BACKLOG);
+    assert(RMW_RET_OK == rmw_destroy_publisher(talker, pub));
+    assert(RMW_RET_OK == rmw_destroy_subscription(listener, sub));
+
+    // (g10) A budget too small for the depth: fewer are kept, and it is counted, never silent.
+    rmw_tickle_context_impl_t* context_impl = ((rmw_tickle_node_t*)talker->data)->context_impl;
+    uint64_t shortfalls_before = atomic_load(&context_impl->cache_depth_shortfalls);
+    assert(0 == setenv("RMW_TICKLE_CACHE_BYTES", SMALL_BUDGET, 1));
+    pub = publisher(talker, "/g9_small_budget", durable);
+    assert(0 == unsetenv("RMW_TICKLE_CACHE_BYTES"));
+    for (uint32_t i = 0; i < BACKLOG; i++) {
+        fill(&outgoing, FIRST_DURABLE_ID + i);
+        assert(RMW_RET_OK == rmw_publish(pub, &outgoing, NULL));
+    }
+    sub = subscription(listener, "/g9_small_budget", durable);
+    got = take_all(sub, ids, BURST);
+    uint64_t shortfalls = atomic_load(&context_impl->cache_depth_shortfalls) - shortfalls_before;
+    assert(got < DURABLE_DEPTH && shortfalls > 0);
+    printf("in-process: a %s-byte budget kept %d of depth %d, and counted %llu shortfalls\n", SMALL_BUDGET, got,
+           DURABLE_DEPTH, (unsigned long long)shortfalls);
     assert(RMW_RET_OK == rmw_destroy_publisher(talker, pub));
     assert(RMW_RET_OK == rmw_destroy_subscription(listener, sub));
 

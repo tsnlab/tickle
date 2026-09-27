@@ -16,6 +16,7 @@
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stddef.h> // offsetof - grow_on_need() (g10)
 #include <stdint.h>
 #include <stdlib.h> // getenv()/strtoull() - resolve_max_blocking_ns()
 #include <string.h>
@@ -319,29 +320,35 @@ static bool grow_reliable_cache(rmw_tickle_publisher_t* pub_impl) {
     return true;
 }
 
-// Whether a KEEP_LAST publisher is retaining fewer samples than its depth promises because its
-// arena is smaller than its budget allows - the growth signal for the policy that never blocks.
-//
-// publish_blocking()'s trigger cannot serve here: keep_all_writable() returns true immediately for
-// KEEP_LAST ("never refuses a write"), so KEEP_LAST never sees tt_RET_WOULD_BLOCK and would sit at
-// the initial slice forever, evicting by bytes long before its depth (Plan caught this in review -
-// /rosout at depth 1000 would have retained about 290 logs where it retains 1000 today). The signal
-// instead is retention itself: enough samples published for the count bound to be the one binding,
-// and fewer than depth of them still held.
-//
-// Counted in messages (tt_ReliableCache.sample_depth and retained_samples), not seq_no: seq_no counts
-// datagrams once messages fragment, and depth is a promise about messages.
-static bool keep_last_wants_more_arena(const rmw_tickle_publisher_t* pub_impl) {
+// (g10, RMW_GAPS_PLAN.md) Core's tt_Publisher.cache_grow: called, with the context locked, when caching a KEEP_LAST
+// sample would evict one of the newest `depth` for bytes, and grows the arena toward its budget. Until g10 a KEEP_LAST
+// arena grew only after `depth` messages had gone out, so a durable publisher of a large type kept fewer than `depth`
+// for a late joiner - 3 of 4 60 KB samples in the `durable` acceptance test, where DDS gives 4.
+static bool grow_on_need(struct tt_Publisher* pub) {
+    rmw_tickle_publisher_t* pub_impl =
+        (rmw_tickle_publisher_t*)((char*)pub - offsetof(rmw_tickle_publisher_t, tickle_publisher));
+    return grow_reliable_cache(pub_impl);
+}
+
+static const char* type_name_of(const rmw_tickle_publisher_t* pub_impl);
+
+// (g10) A cache that could not keep `depth` - its budget reached - is said once per publisher and counted for the
+// shutdown line; never a silent shortfall.
+static void report_depth_shortfalls(rmw_tickle_publisher_t* pub_impl) {
     const struct tt_ReliableCache* cache = pub_impl->reliable_cache;
-    if (NULL == cache || pub_impl->tickle_publisher.keep_all || NULL == cache->arena ||
-        cache->arena_size >= cache->arena_limit) {
-        return false;
+    if (NULL == cache || cache->depth_shortfalls == pub_impl->depth_shortfalls_seen) {
+        return;
     }
-    uint64_t published = pub_impl->next_publication_sequence_number - 1;
-    if (0 == cache->sample_depth || published < cache->sample_depth) {
-        return false; // not enough published yet for depth to be what limits retention
+    if (0 == pub_impl->depth_shortfalls_seen) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                               "publisher of %s: its %u-byte cache cannot keep the %u samples its depth promises at "
+                               "this sample size, so a late joiner or a resend request gets fewer - raise "
+                               "RMW_TICKLE_CACHE_BYTES (or the payload's cache_bytes)",
+                               type_name_of(pub_impl), (unsigned)cache->arena_limit, (unsigned)cache->sample_depth);
     }
-    return cache->retained_samples < cache->sample_depth;
+    atomic_fetch_add(&pub_impl->node->context_impl->cache_depth_shortfalls,
+                     (uint64_t)(cache->depth_shortfalls - pub_impl->depth_shortfalls_seen));
+    pub_impl->depth_shortfalls_seen = cache->depth_shortfalls;
 }
 
 // What to call this publisher's type in a diagnostic before anything has been created.
@@ -778,6 +785,7 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
         pub_impl->reliable_cache->sample_depth = (uint16_t)(depth < (size_t)UINT16_MAX ? depth : UINT16_MAX);
     }
     pub_impl->tickle_publisher.reliable_cache = pub_impl->reliable_cache;
+    pub_impl->tickle_publisher.cache_grow = grow_on_need; // (g10)
     pub_impl->tickle_publisher.reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
     pub_impl->tickle_publisher.durable = durable;
 
@@ -1312,15 +1320,9 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
         pub_impl->next_publication_sequence_number++;
     }
 
-    // The KEEP_LAST half of lazy reservation (keep_last_wants_more_arena() above). Two field reads
-    // on the ordinary path; the lock and the allocation happen only when retention has actually
-    // fallen short, which for a given publisher can happen at most a handful of times - the arena
-    // doubles and the limit does not move.
-    if (RMW_RET_OK == ret && keep_last_wants_more_arena(pub_impl)) {
-        tt_Context_lock(&pub_impl->node->context_impl->tickle_context);
-        (void)grow_reliable_cache(pub_impl);
-        tt_Context_unlock(&pub_impl->node->context_impl->tickle_context);
-    }
+    // The KEEP_LAST half of lazy reservation now happens inside the publish, where it is needed (grow_on_need()); what
+    // is left here is saying so when the budget stopped it. One field compare on the ordinary path.
+    report_depth_shortfalls(pub_impl);
     pthread_mutex_unlock(&pub_impl->publish_mutex);
     return ret;
 }

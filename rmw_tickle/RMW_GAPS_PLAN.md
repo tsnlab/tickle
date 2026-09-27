@@ -624,3 +624,37 @@ library's md5 `e282cf1b5f53`; its symbols confirm g2, g5 and g8.
   - The rmw suite and every acceptance test that passed before.
   - Mutants: the old rule (growth after `depth` sends, no hook call); the hook not called; the shortfall not counted.
   - CPU: `rmw_lib_ab.sh` with an A/A, and the core bench (`core_cost_bench`) for the new branch, since core changes.
+- **Result (Dev, 2026-09-28): PASS.**
+  - **Acceptance.** `durable` PASS: the late joiner on the other host gets the last 4 of 6 60 KB samples, where the
+    baseline got 3.
+  - **`test_depth_growth`** (core, mock HAL, fragmented 5000 B samples, an arena that starts with room for one):
+    - with a growing hook, 6 publishes at depth 4 leave 4 retained and no shortfall, for TRANSIENT_LOCAL and for
+      RELIABLE alike;
+    - with no hook, or one that cannot grow, fewer are retained and every short publish is counted.
+  - **`test_inprocess`** (rmw):
+    - depth 4, 6 publishes of 60 KB: a late durable subscription gets the last 4. The depth-2 workaround is gone.
+    - With `RMW_TICKLE_CACHE_BYTES=150000`, it kept 2 of depth 4, logged one WARNING naming the setting, and the
+      context counted 4 shortfalls, shown on the shutdown line as `cache_depth_shortfalls=4`.
+  - **Mutants**, each failing at the predicted assert:
+    - the hook not called (core: retained 1 of 4);
+    - a shortfall not counted;
+    - rmw setting no hook (test_inprocess: fewer than 4).
+    - The old rule, growth only after `depth` sends, is the parent build itself, and it fails `durable` in Plan's
+      baseline (3 of 4).
+  - The rmw suite passes in a private netns. Every acceptance test that passed before still passes.
+  - **Core bench** (`core_cost_ab.sh`, 11 rounds, parent twice as the A/A): medians inside the A/A spread.
+    - BEST_EFFORT: send 178.7 ns against 179.8 / 178.7, recv 51.3 against 51.5 / 51.6.
+    - `-R`: send 233.7 against 233.6 / 234.8, recv 80.8 against 78.6 / 78.8, with spreads of 19-30 ns.
+    - The bench's publisher sets no `sample_depth`, so this measures the branch.
+  - **rmw CPU**, `rmw_lib_ab.sh` with the ping-pong in `--reliable` mode (KEEP_LAST 8, so every publish goes
+    through the new check; the default BEST_EFFORT bench has no cache), parent against g10, 10 reps interleaved,
+    with an A/A. All four rows are inside:
+
+    | gap | metric | B-A median (2 SE) | A/A B-A (2 SE) | verdict |
+    |---|---|---:|---:|---|
+    | 5 ms | RTT | -0.7 us (6.6) | +4.6 us (8.4) | inside |
+    | 5 ms | pong CPU | -0.4 ms (4.5) | +2.2 ms (4.8) | inside |
+    | 100 ms | RTT | +12.5 us (17.8) | -7.6 us (15.8) | inside |
+    | 100 ms | pong CPU | -0.4 ms (0.8) | -0.1 ms (1.4) | inside |
+
+    (`rmw_lib_ab.sh` gained `PINGPONG_ARGS` for this; its default is unchanged.)
