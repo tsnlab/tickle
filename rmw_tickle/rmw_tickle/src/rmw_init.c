@@ -8,6 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
+#include <netdb.h>   // getaddrinfo() - a static peer given by name (g6)
 #include <pthread.h> // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own <pthread.h> comment
 #include <stdatomic.h>
 #include <stdint.h> // uint32_t - the trace dump below, with -DRMW_TICKLE_TRACE=ON
@@ -15,6 +16,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <arpa/inet.h>  // inet_ntop()
+#include <netinet/in.h> // struct sockaddr_in
+#include <sys/socket.h> // AF_INET
 #include <tickle/config.h>
 #include <tickle/tickle.h> // struct tt_LockStats
 #ifdef tt_TRACE
@@ -26,7 +30,8 @@
 #include "rcutils/logging_macros.h"
 #include "rcutils/macros.h" // RCUTILS_STRINGIFY
 #include "rcutils/strdup.h"
-#include "rmw/domain_id.h" // RMW_DEFAULT_DOMAIN_ID
+#include "rmw/discovery_options.h" // rmw_discovery_options_t, RMW_AUTOMATIC_DISCOVERY_RANGE_* (g6)
+#include "rmw/domain_id.h"         // RMW_DEFAULT_DOMAIN_ID
 #include "rmw/error_handling.h"
 #include "rmw/init.h"             // rmw_context_t, rmw_context_impl_t
 #include "rmw/init_options.h"     // rmw_init_options_t
@@ -34,6 +39,8 @@
 #include "rmw/rmw.h"              // rmw_init/_shutdown/_context_fini, rmw_get_implementation_identifier, ...
 #include "rmw/security_options.h" // rmw_security_options_t
 #include "rmw_tickle_c/rmw_tickle.h"
+
+static void configure_discovery(rmw_tickle_context_impl_t* impl, const rmw_discovery_options_t* discovery);
 
 const char* const rmw_tickle_identifier = RMW_TICKLE_IDENTIFIER;
 const char* const rmw_tickle_serialization_format = RMW_TICKLE_SERIALIZATION_FORMAT;
@@ -82,6 +89,13 @@ rmw_ret_t rmw_init_options_init(rmw_init_options_t* const init_options, rcutils_
     init_options->enclave = NULL;
     init_options->allocator = allocator;
     init_options->impl = NULL;
+    // (g6) As the DDS vendors do: rmw's own defaults, LOCALHOST and no static peers. rcl then sets what
+    // ROS_AUTOMATIC_DISCOVERY_RANGE says (SUBNET when unset). Left zeroed until g6, which read as NOT_SET.
+    init_options->discovery_options = rmw_get_zero_initialized_discovery_options();
+    rmw_ret_t discovery_ret = rmw_discovery_options_init(&init_options->discovery_options, 0, &allocator);
+    if (RMW_RET_OK != discovery_ret) {
+        return discovery_ret;
+    }
 
     // Set the implementation identifier
     init_options->implementation_identifier = RMW_TICKLE_IDENTIFIER;
@@ -114,6 +128,10 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
         allocator->deallocate(init_options->enclave, allocator->state);
         init_options->enclave = NULL;
     }
+    rmw_ret_t discovery_ret = rmw_discovery_options_fini(&init_options->discovery_options); // (g6)
+    if (RMW_RET_OK != discovery_ret) {
+        return discovery_ret;
+    }
     init_options->implementation_identifier = NULL;
     return RMW_RET_OK;
 }
@@ -142,6 +160,15 @@ rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_
 
     // Copy the basic structure
     memcpy(dst, src, sizeof(rmw_init_options_t));
+    // (g6) Its own static peers, not src's: fini frees each copy's.
+    dst->discovery_options = rmw_get_zero_initialized_discovery_options();
+    rcutils_allocator_t discovery_allocator = src->allocator;
+    rmw_ret_t discovery_ret =
+        rmw_discovery_options_copy(&src->discovery_options, &discovery_allocator, &dst->discovery_options);
+    if (RMW_RET_OK != discovery_ret) {
+        dst->implementation_identifier = NULL;
+        return discovery_ret;
+    }
 
     // Copy the enclave string if it exists
     if (src->enclave != NULL) {
@@ -305,7 +332,129 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
         _tt_CONFIG.context_id = atoi(node_id);
     }
 
+    configure_discovery(impl, &options->discovery_options);
     return RMW_RET_OK;
+}
+
+// ---- (g6, RMW_GAPS_PLAN.md) ROS_AUTOMATIC_DISCOVERY_RANGE and ROS_STATIC_PEERS. Our own implementation of the
+// behaviour rmw_cyclonedds shows (read and probed 2026-09-28): an unset range refuses node creation; SUBNET is the
+// links plus the static peers; SYSTEM_DEFAULT the links alone; LOCALHOST loopback plus the static peers, others
+// dropped; OFF nothing at all. _tt_CONFIG is one per process, so the last rmw_init's options are the ones every
+// context uses (rmw_cyclonedds refuses a second domain with different ones; a process here that mixes them gets the
+// last).
+
+#define PEER_TEXT_LENGTH 64
+static char peer_text[tt_MAX_LINK_COUNT][PEER_TEXT_LENGTH]; // what _tt_CONFIG.links[i].broadcast points at
+
+// One static peer as core's peer link wants it: "a.b.c.d" or "a.b.c.d/nn". A hostname is looked up now, IPv4 only.
+static bool peer_as_ipv4(const char* peer, char* out, size_t size) {
+    struct in_addr literal;
+    const char* slash = strchr(peer, '/');
+    if (NULL != strchr(peer, ':')) {
+        return false; // IPv6: TickLE is IPv4
+    }
+    if (NULL != slash) { // a subnet: its address must be literal
+        char address[PEER_TEXT_LENGTH];
+        size_t length = (size_t)(slash - peer);
+        if (length == 0 || length >= sizeof(address)) {
+            return false;
+        }
+        memcpy(address, peer, length);
+        address[length] = '\0';
+        return inet_pton(AF_INET, address, &literal) == 1 && (size_t)snprintf(out, size, "%s", peer) < size;
+    }
+    if (inet_pton(AF_INET, peer, &literal) == 1) {
+        return (size_t)snprintf(out, size, "%s", peer) < size;
+    }
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    struct addrinfo* found = NULL;
+    if (getaddrinfo(peer, NULL, &hints, &found) != 0 || NULL == found) {
+        return false;
+    }
+    bool converted = NULL != inet_ntop(AF_INET, &((struct sockaddr_in*)found->ai_addr)->sin_addr, out, (socklen_t)size);
+    freeaddrinfo(found);
+    return converted;
+}
+
+// The static peers as links 1.., after link 0 - the one the scalar addr/broadcast settings describe.
+static void configure_static_peers(const rmw_discovery_options_t* discovery) {
+    _tt_CONFIG.link_count = 0;
+    if (0 == discovery->static_peers_count) {
+        return; // no link table: core builds link 0 from the scalar settings, as always
+    }
+    _tt_CONFIG.links[0].broadcast = _tt_CONFIG.broadcast;
+    _tt_CONFIG.links[0].addr = _tt_CONFIG.addr;
+    _tt_CONFIG.links[0].unicast_threshold = tt_UNICAST_PEER_THRESHOLD;
+    _tt_CONFIG.links[0].peer = false;
+    uint8_t count = 1;
+    for (size_t i = 0; i < discovery->static_peers_count; i++) {
+        const char* peer = discovery->static_peers[i].peer_address;
+        if (count >= tt_MAX_LINK_COUNT) {
+            RCUTILS_LOG_WARN_NAMED("rmw_tickle", "static peer %s ignored: rmw_tickle holds %d static peers at most",
+                                   peer, tt_MAX_LINK_COUNT - 1);
+            continue;
+        }
+        if (!peer_as_ipv4(peer, peer_text[count], sizeof(peer_text[count]))) {
+            RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                                   "static peer %s ignored: not an IPv4 address, subnet or IPv4 host name", peer);
+            continue;
+        }
+        _tt_CONFIG.links[count].broadcast = peer_text[count];
+        _tt_CONFIG.links[count].addr = NULL;
+        _tt_CONFIG.links[count].unicast_threshold = tt_UNICAST_PEER_THRESHOLD;
+        _tt_CONFIG.links[count].peer = true;
+        count++;
+    }
+    _tt_CONFIG.link_count = count > 1 ? count : 0;
+}
+
+static void ignore_static_peers(const rmw_discovery_options_t* discovery, const char* why) {
+    if (discovery->static_peers_count > 0) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle", "%zu static peers were given, but discovery is %s, so they are ignored",
+                               discovery->static_peers_count, why);
+    }
+}
+
+static void configure_discovery(rmw_tickle_context_impl_t* impl, const rmw_discovery_options_t* discovery) {
+    impl->discovery_range_unset = false;
+    _tt_CONFIG.discovery_range = tt_DISCOVERY_RANGE_SUBNET;
+    _tt_CONFIG.link_count = 0;
+    switch (discovery->automatic_discovery_range) {
+    case RMW_AUTOMATIC_DISCOVERY_RANGE_NOT_SET:
+        impl->discovery_range_unset = true; // rmw_create_node() refuses, as rmw_cyclonedds does (observed 2026-09-28)
+        break;
+    case RMW_AUTOMATIC_DISCOVERY_RANGE_SUBNET:
+        configure_static_peers(discovery);
+        break;
+    case RMW_AUTOMATIC_DISCOVERY_RANGE_SYSTEM_DEFAULT:
+        ignore_static_peers(discovery, "SYSTEM_DEFAULT");
+        break;
+    case RMW_AUTOMATIC_DISCOVERY_RANGE_LOCALHOST:
+        if (NULL != getenv("TICKLE_BROADCAST_ADDR")) {
+            RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                                   "ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST: TICKLE_BROADCAST_ADDR=%s is "
+                                   "overridden, as nothing may leave this host",
+                                   getenv("TICKLE_BROADCAST_ADDR"));
+        }
+        _tt_CONFIG.discovery_range = tt_DISCOVERY_RANGE_LOCALHOST;
+        _tt_CONFIG.broadcast = "127.255.255.255";
+        // Bound to loopback, unless a static peer must be able to reach this context's data socket.
+        _tt_CONFIG.addr = discovery->static_peers_count > 0 ? "0.0.0.0" : "127.0.0.1";
+        configure_static_peers(discovery);
+        break;
+    case RMW_AUTOMATIC_DISCOVERY_RANGE_OFF:
+        ignore_static_peers(discovery, "OFF");
+        _tt_CONFIG.discovery_range = tt_DISCOVERY_RANGE_OFF;
+        _tt_CONFIG.broadcast = "127.255.255.255";
+        _tt_CONFIG.addr = "127.0.0.1";
+        RCUTILS_LOG_INFO_NAMED("rmw_tickle", "ROS_AUTOMATIC_DISCOVERY_RANGE=OFF: this process sends nothing and hears "
+                                             "nothing; its own nodes still talk to each other");
+        break;
+    default:
+        break;
+    }
 }
 
 // RMW_TICKLE_TRACE_FILE=<path> (2026-09-26, rmw_tickle/RMW_PERF_PLAN.md H1/H2): at the first shutdown,

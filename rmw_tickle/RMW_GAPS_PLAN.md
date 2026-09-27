@@ -259,8 +259,9 @@ touches a per-sample path.
   - mutants: LOCALHOST still broadcasting on the subnet; static peers only on one side's send.
 - **CPU:** none on the sample path.
 - **Contract details, Dev before code (2026-09-28), Plan-approved design, checked against the vendor:**
-  - **What CycloneDDS does** (rmw_cyclonedds `check_create_domain()`, rolling, and a probe on lyrical):
-    - NOT_SET makes node creation fail with "automatic discovery range must be set". `rmw_init` itself succeeds.
+  - **What CycloneDDS does**, its behaviour as read (rolling) and probed (lyrical); per the user's rule of
+    2026-09-28 the implementation is our own, and no vendor code is copied:
+    - NOT_SET makes node creation fail with an error. `rmw_init` itself succeeds.
     - SUBNET: multicast plus the static peers.
     - SYSTEM_DEFAULT: the vendor's own defaults, with static peers ignored and a warning.
     - LOCALHOST: localhost plus the static peers, no multicast.
@@ -269,7 +270,7 @@ touches a per-sample path.
     - Also: `rmw_init_options_init()` sets LOCALHOST, and rcl sets SUBNET when `ROS_AUTOMATIC_DISCOVERY_RANGE` is
       unset.
   - **rmw_tickle** follows that, per range:
-    - NOT_SET: `rmw_create_node` fails with the same message.
+    - NOT_SET: `rmw_create_node` fails, with an error of our own wording.
     - SUBNET: today's behaviour plus the static peers.
     - SYSTEM_DEFAULT: today's behaviour; static peers ignored with a WARNING.
     - LOCALHOST: broadcasts go to 127.255.255.255 only. The data socket is bound to 127.0.0.1, or to any address
@@ -293,9 +294,48 @@ touches a per-sample path.
   - OFF: nothing sent, nothing processed.
   - Static peers: they are among the destinations of a broadcast-class datagram; a CIDR peer gives its directed
     broadcast; IPv6 and overflow warn.
-  - NOT_SET: node creation refused with the message.
+  - NOT_SET: node creation refused.
   - Mutants: LOCALHOST still broadcasting on the subnet; the filter off; peers not added to the destinations.
   - Acceptance: `range` and `peers`, plus Plan's OFF arm once it is added.
+- **Result (Dev, 2026-09-28): PASS.**
+  - **Acceptance.** `range` PASS and `peers` PASS (both failed before, at 90 and 90), with CycloneDDS as the control.
+    Every other test as before: graph, events, matched, takeseq, samehost, inprocess and durable PASS; itype VOID;
+    bag FAIL (g1).
+  - **`test_discovery_range`** (core, mock HAL):
+    - LOCALHOST drops a foreign sender and counts it, and processes loopback, a peer, and a member of a /24 peer;
+    - OFF processes nothing and sends nothing;
+    - SUBNET processes everything, as before;
+    - a broadcast-class datagram goes to both peer links on the well-known port, the /24 at its directed broadcast.
+  - **`test_discovery_options`** (rmw):
+    - `rmw_init_options_init` now defaults to LOCALHOST, as the vendors do; it was left zeroed, which reads as
+      NOT_SET;
+    - LOCALHOST binds and broadcasts on loopback, or binds to any address when static peers are given;
+    - static peers become peer links: `localhost` looked up to 127.0.0.1, a /24 kept, IPv6 skipped with a WARNING;
+    - OFF and SYSTEM_DEFAULT ignore the peers with a WARNING;
+    - NOT_SET lets rmw_init through, and rmw_create_node refuses.
+  - **Mutants**, each failing at the predicted assert: the filter off; LOCALHOST passing a foreign sender; peers not
+    among the destinations.
+  - **Found on the way:**
+    - `rmw_init_options_copy` shallow-copied the options, and `_fini` never freed discovery options. Both now deep
+      copy and free them, with `rmw_discovery_options_copy` / `_fini`.
+    - With the vendors' default, the rmw unit tests now run under LOCALHOST. They pass.
+  - Core's default build (`tt_DISCOVERY_OPTIONS` 0): `tickle.o` and `hal_linux.o` are md5-identical to the parent's.
+  - The rmw suite passes in a private netns, 59/59.
+  - **Pcap control** (`experiments/g6_localhost_pcap.sh`), a talker and a listener in one netns:
+    - LOCALHOST put 0 UDP datagrams on the veth while the listener received 101;
+    - SUBNET, the control, put 66 there with the same 101 received.
+  - **CPU**, `rmw_lib_ab.sh` (SUBNET, the default, where the filter is one branch per datagram), parent against g6,
+    10 reps, with an A/A. All four rows are inside:
+
+    | gap | metric | B-A median (2 SE) | A/A B-A (2 SE) | verdict |
+    |---|---|---:|---:|---|
+    | 5 ms | RTT | -0.2 us (11.3) | +0.1 us (5.9) | inside |
+    | 5 ms | pong CPU | +0.6 ms (4.4) | -0.0 ms (2.3) | inside |
+    | 100 ms | RTT | -1.6 us (11.6) | -4.5 us (14.3) | inside |
+    | 100 ms | pong CPU | -0.1 ms (0.5) | +0.4 ms (0.9) | inside |
+
+  - Not covered yet: Plan's OFF arm in `range` (in-process only, nothing between processes). `test_discovery_range`
+    covers OFF in core.
 
 ## Stage 3 and g1 (acceptance tests `graph`, `bag`)
 

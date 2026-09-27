@@ -600,6 +600,11 @@ void tt_close(struct tt_Context* node) {
 }
 
 int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
+#if tt_DISCOVERY_OPTIONS
+    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+        return (int32_t)len; // (g6) discovery off, the user's choice: nothing goes to the link
+    }
+#endif
 #if tt_CONTEXT_ID_CLAIM
     if (node->id_muted) {
         return refuse_muted_send(node); // (g8) see refuse_muted_send()
@@ -613,6 +618,11 @@ int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
 }
 
 int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
+#if tt_DISCOVERY_OPTIONS
+    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+        return (int32_t)len; // (g6) discovery off, the user's choice: nothing goes to the link
+    }
+#endif
 #if tt_CONTEXT_ID_CLAIM
     if (node->id_muted) {
         return refuse_muted_send(node); // (g8) see refuse_muted_send()
@@ -632,6 +642,11 @@ int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_
 
 int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
+#if tt_DISCOVERY_OPTIONS
+    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+        return (int32_t)(hdr_len + body_len); // (g6) see tt_send()
+    }
+#endif
 #if tt_CONTEXT_ID_CLAIM
     if (node->id_muted) {
         return refuse_muted_send(node); // (g8) see refuse_muted_send()
@@ -667,6 +682,11 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
 #define TT_SEND_BATCH_CHUNK 64
 
 int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+#if tt_DISCOVERY_OPTIONS
+    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+        return (int32_t)count; // (g6) discovery off, the user's choice: nothing goes to the link
+    }
+#endif
 #if tt_CONTEXT_ID_CLAIM
     if (node->id_muted) {
         return refuse_muted_send(node); // (g8) see refuse_muted_send()

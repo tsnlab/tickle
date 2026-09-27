@@ -294,6 +294,8 @@ struct rmw_tickle_context_impl_t {
     // (g10) KEEP_LAST samples its publishers cached while their cache could not keep `depth` of them (the budget,
     // RMW_TICKLE_CACHE_BYTES, reached), summed from tt_ReliableCache.depth_shortfalls; on the shutdown line.
     _Atomic uint64_t cache_depth_shortfalls;
+    // (g6) rmw_init was given RMW_AUTOMATIC_DISCOVERY_RANGE_NOT_SET: rmw_create_node() refuses, as the vendors do.
+    bool discovery_range_unset;
     atomic_bool poll_thread_parked; // the poll thread is parked (announced on handover_cond)
     pthread_cond_t handover_cond;   // NOLINT(misc-include-cleaner) - under wait_mutex
     int park_timer_fd;              // CLOCK_MONOTONIC timerfd: the lease, armed on release

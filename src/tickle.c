@@ -272,9 +272,63 @@ static void check_link_mtu(struct _tt_Link* link) {
     }
 }
 
+#if tt_DISCOVERY_OPTIONS
+// (g6) A peer link's address, "a.b.c.d" or "a.b.c.d/nn", into its address, netmask and the destination it is reached at
+// (the address itself, or the subnet's directed broadcast). No OS lookup: a peer is not a local interface.
+static bool resolve_peer_link(struct _tt_Link* link) {
+    const char* text = link->broadcast;
+    uint32_t addr = 0;
+    uint32_t prefix = 32;
+    for (int part = 0; part < 4; part++) {
+        if (text == NULL || *text < '0' || *text > '9') {
+            return false;
+        }
+        uint32_t value = 0;
+        while (*text >= '0' && *text <= '9') {
+            value = (value * 10U) + (uint32_t)(*text++ - '0');
+            if (value > 255U) {
+                return false;
+            }
+        }
+        addr = (addr << 8) | value;
+        if (part < 3 && *text++ != '.') {
+            return false;
+        }
+    }
+    if (*text == '/') {
+        text++;
+        prefix = 0;
+        while (*text >= '0' && *text <= '9') {
+            prefix = (prefix * 10U) + (uint32_t)(*text++ - '0');
+        }
+    }
+    if (*text != '\0' || prefix > 32U) {
+        return false;
+    }
+    uint32_t netmask = prefix == 0 ? 0 : UINT32_MAX << (32U - prefix);
+    link->resolved_addr = addr;
+    link->resolved_netmask = netmask;
+    link->resolved_broadcast = prefix == 32U ? addr : (addr | ~netmask);
+    link->resolved = true;
+    link->resolved_mtu = -1;
+    link->mtu_below_assumed = false;
+    return true;
+}
+#endif
+
 static tt_ret_t resolve_links(void) {
     for (uint8_t i = 0; i < link_count(); i++) {
         struct _tt_Link* link = &_tt_CONFIG.links[i];
+#if tt_DISCOVERY_OPTIONS
+        if (link->peer) {
+            if (!resolve_peer_link(link)) {
+                TT_LOG_ERROR("Link %u: peer %s is not an IPv4 address - not creating the node", i,
+                             link->broadcast != NULL ? link->broadcast : "(null)");
+                return tt_RET_NO_SUCH_LINK;
+            }
+            continue;
+        }
+#endif
         link->resolved =
             tt_resolve_link(link->broadcast, &link->resolved_addr, &link->resolved_netmask, &link->resolved_broadcast);
         check_link_mtu(link);
@@ -9697,6 +9751,31 @@ static bool read_single_header(const struct tt_SingleHeader* single, uint32_t bo
     return true;
 }
 
+#if tt_DISCOVERY_OPTIONS
+#define LOOPBACK_NET 127U
+// (g6) Whether a datagram from `ip` is inside the discovery range. LOCALHOST: this host - loopback, or this context's
+// own link address - or a static peer (a peer link's address or subnet). OFF: nothing.
+static bool sender_in_range(uint32_t ip) {
+    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+        return false;
+    }
+    if ((ip >> 24) == LOOPBACK_NET) {
+        return true;
+    }
+    for (uint8_t i = 0; i < link_count(); i++) {
+        const struct _tt_Link* link = &_tt_CONFIG.links[i];
+        if (!link->resolved) {
+            continue;
+        }
+        if (link->peer ? (ip & link->resolved_netmask) == (link->resolved_addr & link->resolved_netmask)
+                       : ip == link->resolved_addr) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
 static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t head, uint32_t tail, uint32_t sender_ip,
                            uint16_t sender_port) {
     struct tt_Header single_header;
@@ -9727,6 +9806,12 @@ static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t he
     // on why this now only suppresses the topic-shaped types (DATA and its fragments, which carry announces too), not
     // CALLREQUEST/ CALLRESPONSE, and so has to be threaded down per-submessage rather than dropping the whole packet up
     // front.
+#if tt_DISCOVERY_OPTIONS
+    if (_tt_CONFIG.discovery_range != tt_DISCOVERY_RANGE_SUBNET && !sender_in_range(sender_ip)) {
+        node->rx_out_of_range++;
+        return true; // (g6) from outside the discovery range: not processed, as if never received
+    }
+#endif
     bool self_sent = header->source == node->id;
 #if tt_CONTEXT_ID_CLAIM
     if (self_sent && !tt_is_own_address(node, sender_ip, sender_port)) {

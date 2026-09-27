@@ -292,6 +292,11 @@ void tt_own_address(const struct tt_Context* node, uint32_t* ip, uint16_t* port)
 
 int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     (void)node;
+#if tt_DISCOVERY_OPTIONS
+    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+        return (int32_t)len; // as hal_linux.c: discovery off sends nothing
+    }
+#endif
 #if tt_CONTEXT_ID_CLAIM
     if (node->id_muted) {
         node->id_muted_drops++; // as hal_linux.c: a context without an id of its own sends nothing, and fails
@@ -312,6 +317,11 @@ int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
 int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
     (void)node;
     (void)buf;
+#if tt_DISCOVERY_OPTIONS
+    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+        return (int32_t)len;
+    }
+#endif
 #if tt_CONTEXT_ID_CLAIM
     if (node->id_muted) {
         node->id_muted_drops++; // as hal_linux.c: a context without an id of its own sends nothing, and fails
@@ -360,6 +370,11 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
 int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
     (void)node;
+#if tt_DISCOVERY_OPTIONS
+    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+        return (int32_t)(hdr_len + body_len);
+    }
+#endif
 #if tt_CONTEXT_ID_CLAIM
     if (node->id_muted) {
         node->id_muted_drops++; // as hal_linux.c: a context without an id of its own sends nothing, and fails

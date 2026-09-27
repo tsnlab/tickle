@@ -585,6 +585,11 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char
         RMW_SET_ERROR_MSG("context has been shut down");
         return NULL;
     }
+    if (context_impl->discovery_range_unset) { // (g6) the DDS vendors refuse here too (observed 2026-09-28)
+        RMW_SET_ERROR_MSG("no automatic discovery range was given (ROS_AUTOMATIC_DISCOVERY_RANGE): refusing to create "
+                          "a node without one");
+        return NULL;
+    }
 
     // Neither was ever actually checked (test_rmw_implementation's own test_create_destroy_node.
     // cpp's create_with_bad_arguments is what found this): an invalid name/namespace (spaces,

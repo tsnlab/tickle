@@ -20,6 +20,15 @@ number, `tt_VERSION`, which moves independently.
     A late join, a durable replay and a late arrival are not losses.
   - `rmw_get_clients_info_by_service` / `rmw_get_servers_info_by_service` (lyrical) list local and remote clients
     and servers, one row each.
+- **rmw_tickle: `ROS_AUTOMATIC_DISCOVERY_RANGE` and `ROS_STATIC_PEERS`** (rmw_tickle/RMW_GAPS_PLAN.md g6,
+  `tt_DISCOVERY_OPTIONS` in config.h). Both were ignored until now; they are read as rmw_cyclonedds reads them.
+  - LOCALHOST keeps everything on loopback and drops other senders.
+  - OFF sends nothing and processes nothing.
+  - Static peers become peer links (`_tt_CONFIG.links`, `peer`), sent every announce by unicast.
+  - NOT_SET refuses node creation.
+  - `rmw_init_options_init` now defaults to LOCALHOST, as the vendors do, and copies and frees discovery options
+    properly.
+  - The flag is set only in rmw_tickle's build; core's default build is byte-identical.
 - **rmw_tickle: a KEEP_LAST publisher keeps `depth` samples from the first publish** (rmw_tickle/RMW_GAPS_PLAN.md g10).
   - Its cache arena starts small and used to grow only after `depth` messages had gone out, so a TRANSIENT_LOCAL
     publisher of a large type gave a late joiner fewer than `depth`: 3 of 4 60 KB samples, where DDS gives 4. The

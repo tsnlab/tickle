@@ -922,12 +922,11 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | TRANSIENT_LOCAL late joiner, large type (KEEP_LAST 4, 60 KB samples) | ✅ | ✅ | ✅ | g10 (2026-09-28): the cache arena now grows before a publish would evict inside the depth, not only after `depth` messages; `durable` gets the last 4 (it got 3 before). A budget too small for the depth is warned about and counted (`cache_depth_shortfalls`), never silent. The RELIABLE retransmit window gets the same guarantee |
 | Actions (rclcpp_action: goal, feedback, result, cancel) | ✅ | ✅ | ✅ | `check_ros2_interfaces.sh -A` in CI on every push: example_interfaces Fibonacci server and client in two processes, with a control that must fail without TickLE typesupport |
 | `ROS_DOMAIN_ID` isolation | ✅ | ✅ | ✅ | well-known port 8282 + domain (`rmw_init.c`) |
-| `ROS_AUTOMATIC_DISCOVERY_RANGE` (LOCALHOST / OFF / SUBNET) | ❌ | ✅ | ✅ | `rmw_tickle` never reads `rmw_init_options_t.discovery_options`; the vendors map it to their transports |
-| `ROS_STATIC_PEERS` | ❌ | ✅ | ✅ | same: `discovery_options.static_peers` is ignored |
+| `ROS_AUTOMATIC_DISCOVERY_RANGE` (LOCALHOST / OFF / SUBNET) | ✅ | ✅ | ✅ | g6 (2026-09-28), as rmw_cyclonedds reads it: LOCALHOST keeps discovery and data on loopback (0 datagrams on the veth, `g6_localhost_pcap.sh`) and drops other senders; OFF sends and processes nothing (in-process delivery, g9, still works); NOT_SET refuses node creation; SYSTEM_DEFAULT is the links. `range` passes (it was 90/90 before) |
+| `ROS_STATIC_PEERS` | ✅ | ✅ | ✅ | g6 (2026-09-28): each peer is a link of its own (IPv4, a host name looked up at init, or a CIDR subnet at its directed broadcast; IPv6 skipped with a warning), sent every announce and broadcast-class datagram by unicast; ignored under OFF and SYSTEM_DEFAULT, as the vendor does. `peers` passes |
 | SROS2 security (`ROS_SECURITY_ENABLE`, `ROS_SECURITY_ENFORCEMENT`) | ❌ | ✅ | ✅ | Not implemented, but no longer silent (g7, 2026-09-27). With `ROS_SECURITY_ENFORCEMENT=Enforce`, `rmw_init` refuses to start; with security enabled but permissive, it starts and warns once that security is not applied (`test_security_options`). It used to start unsecured without a word. Real SROS2 support is parked (SECURITY_PLAN.md) |
 
-- The two discovery options are planned as (g6). LOCALHOST keeps discovery and data on loopback, OFF sends no
-  discovery, and static peers get the discovery summary by unicast.
+- ~~The two discovery options are planned as (g6).~~ Done by g6 (2026-09-28); see the two rows above.
 - **Security:** the immediate fix is to refuse to start when enforcement is requested, since TickLE cannot honour it
   yet. Silently running unsecured where the user demanded security is the one outcome worse than failing. Real
   SROS2 support (authentication, encryption, access control) has no counterpart in TickLE today and is a design

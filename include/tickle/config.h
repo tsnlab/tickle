@@ -468,6 +468,16 @@
 #ifndef tt_LOCAL_DELIVERY
 #define tt_LOCAL_DELIVERY 0
 #endif
+// (g6, rmw_tickle/RMW_GAPS_PLAN.md, 2026-09-28) How far a context may discover and be discovered - ROS 2's
+// ROS_AUTOMATIC_DISCOVERY_RANGE and ROS_STATIC_PEERS. 0, the default: the configured links only, as always. 1,
+// rmw_tickle's build: _tt_CONFIG.discovery_range limits it (tt_DISCOVERY_RANGE_* below), and a link marked `peer` is
+// one remote address rather than an interface - announces and every broadcast-class datagram also go to it.
+#ifndef tt_DISCOVERY_OPTIONS
+#define tt_DISCOVERY_OPTIONS 0
+#endif
+#define tt_DISCOVERY_RANGE_SUBNET 0    // the links, as always
+#define tt_DISCOVERY_RANGE_LOCALHOST 1 // only this host (loopback) and the peer links: other senders are dropped
+#define tt_DISCOVERY_RANGE_OFF 2       // nothing sent to the link, nothing received processed
 // Every context id the wire can name (a uint8_t): the size of struct tt_Context's per-peer tables, which are indexed
 // by a remote context's id. Not a setting. They were sized by tt_MAX_ENDPOINT_COUNT, which was 256 only by
 // coincidence and so could not grow (CONTEXT_NODE_PLAN.md 4a, 2026-09-27).
@@ -722,12 +732,21 @@ struct _tt_Config {
         // a caller - or a test - can see it.
         int32_t resolved_mtu;
         bool mtu_below_assumed;
+#if tt_DISCOVERY_OPTIONS
+        // (g6) One remote peer, not an interface: `broadcast` is its IPv4 address (a unicast one, or a subnet's
+        // directed broadcast), reached on the well-known port. Resolved as a /32 without asking the OS.
+        bool peer;
+#endif
     } links[tt_MAX_LINK_COUNT];
     // 0 means "no links configured explicitly": tt_bind() then synthesises exactly one from the
     // addr/broadcast/tt_UNICAST_PEER_THRESHOLD fields above, so every existing caller - and every
     // single-link deployment - keeps working without knowing links[] exists at all. The
     // single-link case is the degenerate one, not a special case.
     uint8_t link_count;
+#if tt_DISCOVERY_OPTIONS
+    // (g6) tt_DISCOVERY_RANGE_*: SUBNET (0, the default) is the links as always.
+    uint8_t discovery_range;
+#endif
 };
 
 extern struct _tt_Config _tt_CONFIG;

@@ -361,6 +361,9 @@ struct tt_Context {
     uint32_t collision_logged_ip;
     uint16_t collision_logged_port;
 #endif
+#if tt_DISCOVERY_OPTIONS
+    uint64_t rx_out_of_range; // (g6) datagrams dropped because their sender is outside _tt_CONFIG.discovery_range
+#endif
 #if tt_LOCAL_DELIVERY
     // (g9, config.h's tt_LOCAL_DELIVERY) Where a published sample's bytes wait while this context's own Subscribers
     // take it: sending reuses tx_buffer. Owned here rather than on the publishing thread's stack, which a sample of
