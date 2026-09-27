@@ -44,6 +44,26 @@ touches a per-sample path.
   - mutants: the backlog not reported at set time; the callback not cleared on NULL.
 - **CPU:** a branch per delivery when no callback is set. Core_cost bench and the rmw block RTT rows must not be WORSE
   under WIRE_PLAN 8.3, with the placement control of its 2026-09-27 amendment.
+- **Contract details, added by Dev before code (2026-09-28):**
+  - **Who calls, and under which lock.** The callback is called from rmw_tickle's poll thread, after the item is in
+    its queue and the queue's own mutex is released, so a callback that calls `rmw_take` / `rmw_take_request` /
+    `rmw_take_response` / `rmw_take_event` from inside does not deadlock. (The context lock the poll thread holds is
+    re-entrant.)
+  - **The guarantee NULL gives.** Each entity has a callback slot with its own mutex, held while the callback runs,
+    as rmw_cyclonedds does. So once a setter returns - NULL or a new callback - the old one is never called again.
+    A callback that calls a setter on its own entity deadlocks, as in rmw_cyclonedds; that is not supported.
+  - **The count at set time.**
+    - Subscription: the messages waiting in its queue.
+    - Service / client: 0 or 1, since rmw_tickle keeps one pending request or response.
+    - Event: its unread count, the same number `rmw_take_event` would report.
+    - An item arriving while its setter runs may be reported both in the set-time count and on its own, so the count
+      may be one high, never low. rclcpp's EventsExecutor tolerates a high count: a take then returns
+      `taken = false`.
+  - **Events** covered: every type rmw_tickle's `rmw_*_event_init` accepts today - deadline missed (both sides),
+    liveliness lost / changed, QoS incompatible (both sides). g3's new types get the same slot when they are added.
+    The callback's count is the change in the unread count.
+  - **Unit tests add:** once `rmw_*_set_*_callback(NULL)` has returned, a delivery from the poll thread does not call
+    the old callback, with a mutant that clears the slot without its mutex.
 
 ## g3 - the remaining event types (acceptance tests `matched`, `itype`)
 
