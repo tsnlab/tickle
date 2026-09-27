@@ -129,10 +129,14 @@ if [ "$ACTION" = 1 ]; then
     action_check="$(dirname "$check")/action_check"
     [ -x "$action_check" ] || fail "no $action_check - example_interfaces or rclcpp_action was not found when building it"
     trap 'kill "${server_pid:-}" 2>/dev/null || true; keep_logs; rm -rf "$log"' EXIT
-    TICKLE_NODE_ID=124 "$action_check" server 25 >"$log/server.txt" 2>&1 &
+    # No TICKLE_NODE_ID here, unlike the pub/sub pair below: two processes on one address take their ids from the host
+    # registry, the path users hit (RMW_GAPS_PLAN.md g8). Before g8 this pair could not talk at all - both took the
+    # address's last octet and dropped each other's packets as their own. The pub/sub pair keeps explicit ids, so
+    # both paths stay covered.
+    "$action_check" server 25 >"$log/server.txt" 2>&1 &
     server_pid=$!
     sleep 1
-    TICKLE_NODE_ID=125 "$action_check" client 20 >"$log/client.txt" 2>&1 &
+    "$action_check" client 20 >"$log/client.txt" 2>&1 &
     client_pid=$!
     ex_lib="$WORKSPACE/install/example_interfaces/lib/libexample_interfaces__rosidl_typesupport_tickle_cpp.so"
     action_identity="not seen"
