@@ -838,6 +838,32 @@ announce.**
   next announce or a list answer. That is the unknown-reader case, whose pass line and fallback are above.
 - **Step 1 is unchanged:** its cases, and what counts as PASS.
 
+**9.1 finding before any number (2026-09-27): the unknown-reader case occurs in an ordinary startup race, so W1
+cannot ship without the ack fallback.**
+- **What was seen.** The branch prototype, without the fallback, fails `test_thread_safety`: 2 nodes, 8
+  publisher threads, BEST_EFFORT, no loss injected. The reader shows seq gaps, 1 to 3 per run.
+- **The counters from three runs:**
+  - reader `short_unrouted` 31, 19 and 15;
+  - `short_routed` ~74,850 and `short_slow` 4-5, of ~74,900 short forms sent.
+- **The cause.**
+  - A writer goes short `tt_W1_LONG_EVERY` samples after it matched the reader, which happens when the writer
+    processed the reader's announce.
+  - The reader may not yet have processed the writer's announce, which carries the handles.
+  - The two announces cross independently, so this happens at every startup, not only under loss.
+- **What follows.**
+  - The ack fallback amended above is required, not an extra: the writer goes long until each reader has
+    acknowledged the mapping.
+  - Without it, W1 is a delivery regression.
+- **The order, as agreed with Plan:**
+  1. Step 1's bench now, on the prototype without the fallback. It is the cheap kill gate: recv WORSE at 1
+     writer ends W1. Every run prints `short_unrouted`, which must be 0; the bench finishes discovery before
+     its timed phases.
+  2. If it passes, the fallback is built. `test_thread_safety` must show 0 gaps over 20 runs, with the build
+     without the fallback as the control that shows gaps.
+  3. **The step-1 bench is then re-run on the fallback build, and that run is the one judged for send.** The
+     fallback puts per-reader ack state on the send path, so the first run's send figures cannot stand for the
+     final design.
+
 **Step 3 - bytes (deterministic).**
 - p1's `wire_bytes_per_sample` falls by 4 B per DATA, less the long forms' share. For BE after the first 16
   samples, that is 4 x 15/16 = 3.75 B.
