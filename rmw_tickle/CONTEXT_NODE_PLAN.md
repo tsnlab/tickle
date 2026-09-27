@@ -220,6 +220,12 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
 3. **Release-built tests that test nothing** (Plan, same day): `rosidl_typesupport_tickle_c_tests`' dispatch tests
    check with `assert()`, which a Release build compiles out. Fix with `-UNDEBUG` on the test targets or explicit
    checks, with a mutant showing the test fails in the Release build.
+   **Done 2026-09-27:** `-UNDEBUG` on all six test targets, as rmw_tickle's own tests already had.
+   - Release, before: none of the six binaries referenced `__assert_fail`.
+   - Release, after: the five that use `assert()` reference it, and all six pass. `test_primitives_cpp` already
+     checked explicitly.
+   - Mutant (`test_dispatch` expecting 11 instead of 10): passes in Release without the fix, and aborts (rc 134)
+     with it.
 4. **Stage 2**, then **stage 3** (wire v11).
 5. **Large messages, stage 1** (user item 1, "B"): rmw_tickle's direct typesupport, ROS C++ to the TickLE wire with
    no fixed-capacity intermediate struct.

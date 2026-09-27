@@ -112,6 +112,14 @@ if(BUILD_TESTING)
     rosidl_runtime_c::rosidl_runtime_c
   )
   set_target_properties(test_dispatch_srv_cpp PROPERTIES CXX_STANDARD 17)
+
+  # Their checks are assert()s, so NDEBUG - which a Release build defines - compiled every one away, and the
+  # tests passed whatever the typesupport did (2026-09-27: a Release build of all six referenced no __assert_fail).
+  # rmw_tickle's own tests had the same fix already (its CMakeLists.txt). Every test target is listed here.
+  foreach(_test_target test_dispatch test_dispatch_srv test_dispatch_nested test_dispatch_cpp test_primitives_cpp
+                       test_dispatch_srv_cpp)
+    target_compile_options(${_test_target} PRIVATE -UNDEBUG)
+  endforeach()
 endif()
 
 ament_package()
