@@ -739,6 +739,58 @@ bench.**
   - Plan decides with the number in hand.
 - PC first, in a private netns with `tc netem` loss. Then the M-type rig cells.
 
+**9.1 amended before code (2026-09-27, Plan's reading of 9.1).**
+
+**1. A table miss never drops a routable sample.**
+- The route table is a cache. A direct-mapped table evicts on a collision: two writers whose (source, handle) share
+  a slot. As first written, a known writer's short form could then miss and be dropped, a loss today's code does
+  not have.
+- **Now:** every long form also records (source, handle) -> (`endpoint_id`, `entity_id`) in a handle directory.
+  - The directory holds `tt_RX_HANDLE_DIRECTORY` entries (64), is searched linearly, and is kept per node.
+  - A writer's entry is replaced when a later long form from the same (source, handle) carries different ids,
+    e.g. a restarted writer.
+  - An entry is dropped when its source node departs.
+- **On a route-table miss:**
+  1. the directory is searched;
+  2. if it knows the writer, the sample goes through today's full route (endpoint probe, RxO, proxy search), the
+     route entry is refilled, and the sample is delivered;
+  3. only a (source, handle) the directory does not know is dropped and counted (`short_unrouted`), and triggers
+     the list request.
+- **Slot index:** `(source ^ (handle << 3)) & (tt_RX_ROUTE_SIZE - 1)`. Writers 1-32, each with handle 0, then take
+  distinct slots at the default 64.
+- **The collision cost on record.** An added bench case, `-w 32` built with `-Dtt_RX_ROUTE_SIZE=16`, puts two
+  writers on every slot, so each sample misses and takes the slow path. It is recorded, not judged: it is the
+  worst case, and the default table does not produce it at 32 writers. Both arms are built with the same flags.
+- **Added unit tests, each with a mutant that drops on a miss:**
+  - two writers forced into one slot both deliver every sample;
+  - a short form whose route entry was evicted is still delivered, through the directory.
+
+**2. The BEST_EFFORT unknown reader: the pass line, and the fallback it is judged with.**
+- **The problem.** As first designed, a reader whose first announce was lost drops up to 15 short forms before
+  the next long form: 1.5 s at 10 Hz. Today it loses none. By the user's rule that is a WORSE test, unless a
+  fallback prevents it.
+- **Step 2's pass line:** delivered samples and first-sample time are not WORSE beyond 2 x SE than the branch
+  point, in every case: late joiner and unknown reader, 10 Hz and maximum rate, 0% and 5% loss. **Otherwise W1
+  fails as designed,** and is recorded and not merged.
+- **The fallback, designed now rather than after the result:**
+  - **Writer.** It sends the long form to a reader until it has seen that reader acknowledge the mapping.
+    - A RELIABLE reader's first ACKNACK is the acknowledgement, as before.
+    - A BEST_EFFORT reader acknowledges in its next announce or summary. That carries the (source, handle) pairs
+      it has mapped since the last one, as the v8 discovery ack already carries seen generations.
+    - While any matched reader is unacknowledged, every sample the writer broadcasts goes long.
+  - **Reader.** Its first short form from an unknown (source, handle) sends the list request at once, not at the
+    summary cadence. The writer's list answer carries each writer's handle.
+    - Up to `tt_W1_HOLD` (8) unroutable short forms are held per node while the request is out.
+    - They are delivered in arrival order once the mapping arrives, from the answer or a long form, and dropped
+      after `tt_DISCOVERY_REQUEST_RETRY` if it does not.
+  - **What remains, stated in advance.** A reader the writer has never heard of, sent short forms faster than
+    one list round trip can map it: more than 8 samples within one round trip.
+    - At 10 Hz that window holds no second sample, so nothing is lost.
+    - At maximum rate it will hold more than 8. **The expected result there is WORSE on delivered samples, and
+      W1 then fails as designed.** It is not to be explained away.
+    - The only way through would be a larger hold, which costs memory an embedded node does not have for this.
+      That would be a new proposal, pre-registered on its own.
+
 **Step 3 - bytes (deterministic).**
 - p1's `wire_bytes_per_sample` falls by 4 B per DATA, less the long forms' share. For BE after the first 16
   samples, that is 4 x 15/16 = 3.75 B.
