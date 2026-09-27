@@ -459,6 +459,47 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
        - the announce bytes are identical.
      - **Memory:** `sizeof(struct tt_Discovery)` at 16 and 2048.
      - Gates 10/10, and the rmw suite in a netns.
+   **4b result (2026-09-27, 6df8e6e7): the index PASSES; the send criterion is MISSED, cause unexplained, open with Plan.**
+   - **Per-sample RxO lookup** (`discovery_lookup_cost.c`):
+
+     | table | entry last | entry first |
+     |---|---|---|
+     | full 2048 | 1202 -> **7.7 ns** | 3.5 -> 5.5 ns |
+     | 16 | 8.9 -> 6.8 ns | 4.2 -> 5.6 ns |
+
+     The lookup no longer depends on where the entry sits.
+   - **Upsert** (`discovery_upsert_cost.c`, first announce):
+
+     | entities | before | after |
+     |---:|---:|---:|
+     | 600 | 1.79 ms | 69 us |
+     | 2000 | 8.54 ms | 239 us |
+     | 16 (at 16) | 1.7 us | 1.5 us |
+
+     Upsert now grows linearly with the entity count.
+   - **Behaviour:** `test_discovery_index` covers colliding keys, one endpoint id from 32 sources, a reclaimed
+     tombstone, and forget/re-add cycles four times the index size. Each mutant fails:
+     - no rebuild after forget: 1 check (before the insert probe was bounded, it hung);
+     - a probe stopping at the first collision: 17;
+     - no rebuild after a reclaim: 1.
+   - Announce bytes are identical. Gates 10/10, rmw 48/48.
+   - **Memory:** `tt_Discovery` core 8,840 -> 8,904 B; rmw 1,130,504 -> 1,138,696 B.
+   - **Bench** (core default build, 5d3ddaaa against 6df8e6e7, 20 rounds; raw: `core_cost_ab_4b*`).
+     - Send is +5.9, +5.3 and +6.1 ns (default, `-R`, `-D`), then +4.6 and +4.4 on a repeat: WORSE in 5 of 5, about
+       3%.
+     - Receive: -1.6/-1.8, -0.2/-0.1, +0.1 ns.
+     - **Controls:**
+       - an A/A of the new binary: send -2.5 and -0.3 (held);
+       - the new helpers moved to `.text.unlikely`: send +4.7 default, +0.9 `-R`;
+       - the parent with its static data shifted 64 B, to the new build's exact addresses: send -1.2 (held), so data
+         placement is not it;
+       - forced 64-byte code alignment: send +3.4 default (outside), +2.1 `-R` (held).
+     - **No send-path function changed instructions.** Only discovery functions did: `tt_Discovery_find`,
+       `subscriber_incompatible_with_publisher`, `note_manual_assertion`, `process_announce` and
+       `find_or_create_writer_proxy`. `end_encode` and `send_datagram` moved to new 64-byte offsets.
+     - By 8.3 as amended, the default send is outside the controls' swing in every repeat, so it counts as WORSE.
+       Its cause is not established.
+
 5. **rmw gaps**. The user's words, relayed by Plan: "1, 2, 3, 4번 진행하자." Each item is pre-registered before code,
    with behaviour tests and mutants, and uses CycloneDDS's or Fast DDS's behaviour as the control where one exists:
    - **(g1) Serialized messages** (`rmw_publish_serialized_message`, `rmw_take_serialized_message*`,
