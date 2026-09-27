@@ -346,6 +346,60 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
      - **Cost at the rmw setting:** the time to process a 600-entry announce into a 2048-entry discovered table,
        against 16.
      - Gates 10/10, and the rmw suite in a netns.
+   **4a result (2026-09-27, 3f5e2cba): capacity and the defects PASS; one bench criterion NOT held, open with Plan.**
+   - **The defect, before and after** (`tests/test_discovery_capacity.c`): 20 best-effort remote publishers, and a
+     reliable subscriber on the 20th.
+
+     | table | result | checks |
+     |---|---|---|
+     | 64 | its DATA refused as RxO-incompatible | pass |
+     | 16 (rmw's before 4a) | entity dropped, KEEP_ALL UNKNOWN, **DATA delivered** | 4 fail |
+
+     - A full table counts 2 x 20 drops over two announces and warns once. Mutants without the count, or warning
+       every time, fail.
+   - **Capacity** (`tests/test_endpoint_capacity.c`, rmw settings):
+     - 64 nodes x 32 endpoints are created and found on their own nodes; the 2049th is refused.
+     - They are announced in 158 datagrams (13.0 per 1472-byte fragment) and all 2048 are learned remotely.
+     - Built with 32 fragments (before 4a), the announce is not sent and nothing is learned: 4 failing checks.
+   - **Memory:**
+
+     | build | `tt_Context` | `tt_Discovery` |
+     |---|---:|---:|
+     | core | 73,968 B, unchanged | +8 B |
+     | rmw, before | 938,736 B | 8,832 B |
+     | rmw, after | 988,912 B | 1,130,504 B |
+
+   - **Upsert cost** (`experiments/discovery_upsert_cost.c`, rmw settings, first announce into a 2048 table):
+
+     | entities | cost |
+     |---:|---:|
+     | 600 | 1.8 ms |
+     | 1000 | 3.4 ms |
+     | 2000 | 8.5 ms |
+
+     - Into a 16 table: 28 us. Its old 728 us was the per-entity warning line.
+     - The scan covers the whole table on every entity, and it is repeated on every changed announce. An index is
+       proposed as the next item.
+   - **Core default build:**
+     - Announce bytes are identical.
+     - In `tickle.o` and in the bench binary itself, every receive and publish function has the same instructions.
+       Only `node_update`, `check_liveliness`, `process_announce` and `tt_Context_create` changed (the fragment
+       bitmap).
+     - The bench's static data keeps its 64-byte alignment and shifts by exactly 4096 B, the code having grown past a
+       page.
+   - **Bench pair**, 20 rounds, ae1d7ddb against 3f5e2cba (raw: `examples/perf_hil/results/core_cost_ab_4a*`):
+
+     | run | recv difference | outside 2 x SE |
+     |---|---|---|
+     | default | +1.1, +0.9, +1.3 ns | 2 of 3 |
+     | `-R` | -1.4, -1.0, -1.0 ns | 3 of 3 |
+     | default, forced 64-byte alignment | +1.6 ns | yes |
+     | `-R`, forced 64-byte alignment | +0.1 ns | no |
+
+     - Send is held in every run.
+     - So the default receive is about 2% slower, consistently, with no executed instruction on its path changed. The
+       cause is not established; `perf` counters are not available on this PC (perf_event_paranoid 4).
+
 5. **rmw gaps**. The user's words, relayed by Plan: "1, 2, 3, 4번 진행하자." Each item is pre-registered before code,
    with behaviour tests and mutants, and uses CycloneDDS's or Fast DDS's behaviour as the control where one exists:
    - **(g1) Serialized messages** (`rmw_publish_serialized_message`, `rmw_take_serialized_message*`,
