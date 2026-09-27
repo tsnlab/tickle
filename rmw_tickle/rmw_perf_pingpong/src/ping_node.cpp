@@ -193,6 +193,7 @@ namespace {
             std::printf("%s%lu", i == 0 ? "" : "/", static_cast<unsigned long>(probe.counts[i]));
         }
         std::printf(" chi2=%.2f", chi2);
+        // NOLINTNEXTLINE(modernize-use-ranges) - std::ranges is C++20; the package builds as C++17 on jazzy (CI)
         std::sort(callback_after_send.begin(), callback_after_send.end());
         const size_t count = callback_after_send.size();
         if (count > 0) {
