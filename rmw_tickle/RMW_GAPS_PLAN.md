@@ -64,6 +64,37 @@ touches a per-sample path.
     The callback's count is the change in the unread count.
   - **Unit tests add:** once `rmw_*_set_*_callback(NULL)` has returned, a delivery from the poll thread does not call
     the old callback, with a mutant that clears the slot without its mutex.
+- **Result (Dev, 2026-09-28): PASS.**
+  - `events`: rmw_cyclonedds_cpp PASS (control), rmw_tickle PASS (it was FAIL, received=0, before g2).
+  - `test_event_callbacks` covers the four setters. It checks a call per item, the backlog at set time, that NULL
+    stops the calls, a take from inside the callback (with alarm() as the deadlock timeout), and that no call runs
+    once set(NULL) has returned. The rmw suite passes in a private netns, 50/50.
+  - Mutants, each failing at the predicted assert: backlog not reported; NULL not clearing; slot cleared without its
+    mutex.
+  - **Found while testing, fixed before push.** The first version read the backlog before storing the callback. A
+    message queued between the two was reported by neither, a count "low", which the contract above forbids. Now:
+    - the count is read after the store, under the slot mutex;
+    - a delivery with no callback set costs an atomic load and a branch, as the CPU line says, and re-checks under
+      the mutex when one is set.
+  - A race test covers it, 20000 rounds of setting while a message is delivered. It guards the order, not the
+    timing:
+    - left narrow, the old order was missed 0 of 20000 times on the PC;
+    - widened by 20 us, as a preemption would, it missed 19996 of 20000;
+    - the right order, widened the same way, missed 0.
+  - **CPU**, `rmw_lib_ab.sh`, parent vs g2, 10 reps interleaved, with an A/A (parent vs its copy) as 8.3's
+    placement control. The reading was written down before the run: WORSE only if B-A exceeds |A/A B-A| plus 2 SE.
+    All four rows are inside:
+
+    | gap | metric | B-A median (2 SE) | A/A B-A (2 SE) | verdict |
+    |---|---|---:|---:|---|
+    | 5 ms | RTT | -4.5 us (5.9) | +2.5 us (5.6) | inside |
+    | 5 ms | pong CPU | -2.0 ms (3.7) | -2.1 ms (3.1) | inside |
+    | 100 ms | RTT | +22.6 us (13.4) | +14.8 us (11.8) | inside |
+    | 100 ms | pong CPU | -0.0 ms (2.4) | +0.7 ms (1.9) | inside |
+
+  - The 100 ms RTT row resolves only to about 28 us: the A/A alone moved +14.8 us. So it rules out a large cost, not
+    a small one. A branch per delivery is the small kind.
+  - The core_cost bench was not run: g2 changes no core source, so its binary is byte-identical to the parent's.
 
 ## g3 - the remaining event types (acceptance tests `matched`, `itype`)
 

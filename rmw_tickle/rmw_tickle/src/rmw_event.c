@@ -14,6 +14,7 @@
 // wire an rmw_event_t's own .data/.event_type; rmw_wait_set.c's own check_events() is what
 // reports readiness. This file is only the "read the current status" half.
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -22,6 +23,7 @@
 #include "rcutils/error_handling.h"
 #include "rmw/error_handling.h"
 #include "rmw/event.h"
+#include "rmw/event_callback_type.h"
 #include "rmw/events_statuses/incompatible_qos.h"
 #include "rmw/events_statuses/liveliness_changed.h"
 #include "rmw/events_statuses/liveliness_lost.h"
@@ -136,5 +138,108 @@ rmw_ret_t rmw_take_event(const rmw_event_t* event_handle, void* event_info, bool
 rmw_ret_t rmw_event_fini(rmw_event_t* event) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(event, RMW_RET_INVALID_ARGUMENT);
     *event = rmw_get_zero_initialized_event();
+    return RMW_RET_OK;
+}
+
+// ---- (g2, RMW_GAPS_PLAN.md) callback slots - see rmw_tickle_callback_slot_t (rmw_tickle.h).
+
+void rmw_tickle_callback_slot_init(rmw_tickle_callback_slot_t* slot) {
+    (void)pthread_mutex_init(&slot->mutex, NULL);
+    atomic_init(&slot->callback, NULL);
+    slot->user_data = NULL;
+}
+
+void rmw_tickle_callback_slot_fini(rmw_tickle_callback_slot_t* slot) {
+    (void)pthread_mutex_destroy(&slot->mutex);
+}
+
+void rmw_tickle_callback_slot_notify(rmw_tickle_callback_slot_t* slot, size_t count) {
+    // Called from the poll thread for every delivery, so the common case - no callback set - is a load and a branch.
+    // A setter that stores its callback after this load reads the item in its own count (see _set below).
+    if (NULL == atomic_load(&slot->callback) || 0 == count) {
+        return;
+    }
+    pthread_mutex_lock(&slot->mutex);
+    rmw_event_callback_t callback = atomic_load_explicit(&slot->callback, memory_order_relaxed);
+    if (NULL != callback) { // re-read: set(NULL) may have returned since
+        callback(slot->user_data, count);
+    }
+    pthread_mutex_unlock(&slot->mutex);
+}
+
+void rmw_tickle_callback_slot_set(rmw_tickle_callback_slot_t* slot, rmw_event_callback_t callback,
+                                  const void* user_data, rmw_tickle_waiting_t waiting, const void* entity) {
+    pthread_mutex_lock(&slot->mutex);
+    slot->user_data = callback != NULL ? user_data : NULL;
+    atomic_store(&slot->callback, callback);
+    // Read after the store: an item queued before it is counted here, one queued after it notifies - so none is missed.
+    size_t backlog = NULL != callback ? waiting(entity) : 0U;
+    if (backlog > 0) {
+        callback(user_data, backlog); // items already waiting when it was set - once, now
+    }
+    pthread_mutex_unlock(&slot->mutex);
+}
+
+static size_t unread_of(const rmw_tickle_event_status_t* status) {
+    int unread = atomic_load(&status->unread_count);
+    return unread > 0 ? (size_t)unread : 0U;
+}
+static size_t event_waiting(const void* status) {
+    return unread_of((const rmw_tickle_event_status_t*)status);
+}
+static size_t liveliness_changed_waiting(const void* status) {
+    const rmw_tickle_liveliness_changed_status_t* changed = (const rmw_tickle_liveliness_changed_status_t*)status;
+    return unread_of(&changed->alive) + unread_of(&changed->not_alive);
+}
+
+// The slot an event's callback lives in, and how to read the events already unread - the count rmw_take_event() would
+// report.
+static rmw_tickle_callback_slot_t* event_slot(const rmw_event_t* event, rmw_tickle_waiting_t* waiting,
+                                              const void** entity) {
+    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)event->data;
+    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)event->data;
+    rmw_tickle_event_status_t* status = NULL;
+    switch (event->event_type) {
+    case RMW_EVENT_OFFERED_DEADLINE_MISSED:
+        status = &pub_impl->deadline_missed;
+        break;
+    case RMW_EVENT_LIVELINESS_LOST:
+        status = &pub_impl->liveliness_lost;
+        break;
+    case RMW_EVENT_OFFERED_QOS_INCOMPATIBLE:
+        status = &pub_impl->offered_qos_incompatible.base;
+        break;
+    case RMW_EVENT_REQUESTED_DEADLINE_MISSED:
+        status = &sub_impl->deadline_missed;
+        break;
+    case RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE:
+        status = &sub_impl->requested_qos_incompatible.base;
+        break;
+    case RMW_EVENT_LIVELINESS_CHANGED:
+        *waiting = liveliness_changed_waiting;
+        *entity = &sub_impl->liveliness_changed;
+        return &sub_impl->liveliness_changed.alive.callback;
+    default:
+        return NULL;
+    }
+    *waiting = event_waiting;
+    *entity = status;
+    return &status->callback;
+}
+
+rmw_ret_t rmw_event_set_callback(rmw_event_t* event, rmw_event_callback_t callback, const void* user_data) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(event, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(event->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    rmw_tickle_waiting_t waiting = NULL;
+    const void* entity = NULL;
+    rmw_tickle_callback_slot_t* slot = event_slot(event, &waiting, &entity);
+    if (NULL == slot) {
+        RMW_SET_ERROR_MSG("event type not supported by rmw_tickle");
+        return RMW_RET_UNSUPPORTED;
+    }
+    rmw_tickle_callback_slot_set(slot, callback, user_data, waiting, entity);
     return RMW_RET_OK;
 }

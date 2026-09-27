@@ -34,8 +34,6 @@
 #include "rcutils/allocator.h"
 #include "rmw/dynamic_message_type_support.h"
 #include "rmw/error_handling.h"
-#include "rmw/event.h"
-#include "rmw/event_callback_type.h"
 #include "rmw/get_network_flow_endpoints.h"
 #include "rmw/network_flow_endpoint_array.h"
 #include "rmw/ret_types.h"
@@ -221,38 +219,8 @@ rmw_ret_t rmw_take_serialized_message_with_info(const rmw_subscription_t* subscr
     NOT_YET("rmw_take_serialized_message_with_info");
 }
 
-// rclcpp's events executor and its set_on_new_*_callback() API use these; its default executors do
-// not, so an ordinary node never reaches them.
-rmw_ret_t rmw_subscription_set_on_new_message_callback(rmw_subscription_t* subscription, rmw_event_callback_t callback,
-                                                       const void* user_data) {
-    (void)subscription;
-    (void)callback;
-    (void)user_data;
-    NOT_YET("rmw_subscription_set_on_new_message_callback");
-}
-
-rmw_ret_t rmw_service_set_on_new_request_callback(rmw_service_t* service, rmw_event_callback_t callback,
-                                                  const void* user_data) {
-    (void)service;
-    (void)callback;
-    (void)user_data;
-    NOT_YET("rmw_service_set_on_new_request_callback");
-}
-
-rmw_ret_t rmw_client_set_on_new_response_callback(rmw_client_t* client, rmw_event_callback_t callback,
-                                                  const void* user_data) {
-    (void)client;
-    (void)callback;
-    (void)user_data;
-    NOT_YET("rmw_client_set_on_new_response_callback");
-}
-
-rmw_ret_t rmw_event_set_callback(rmw_event_t* event, rmw_event_callback_t callback, const void* user_data) {
-    (void)event;
-    (void)callback;
-    (void)user_data;
-    NOT_YET("rmw_event_set_callback");
-}
+// (g2) The set_on_new_*_callback() setters and rmw_event_set_callback() are implemented since 2026-09-28:
+// rmw_subscription.c, rmw_service.c, rmw_client.c and rmw_event.c.
 
 // Lyrical's rmw added these (and the header); jazzy's has neither, so they exist only where it does.
 #if defined(__has_include)

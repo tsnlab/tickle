@@ -23,11 +23,12 @@
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
-#include "rmw/qos_policy_kind.h" // rmw_qos_policy_kind_t - rmw_tickle_qos_incompatible_status_t.last_policy_kind
-#include "rmw/ret_types.h"       // rmw_ret_t
-#include "rmw/time.h"            // rmw_time_t - rmw_tickle_wire_lease_ns()
-#include "rmw/types.h"           // rmw_node_t, rmw_publisher_t, rmw_subscription_t, rmw_client_t,
-                                 // rmw_service_t, rmw_guard_condition_t, rmw_wait_set_t, rmw_qos_profile_t
+#include "rmw/event_callback_type.h" // rmw_event_callback_t - rmw_tickle_callback_slot_t (g2)
+#include "rmw/qos_policy_kind.h"     // rmw_qos_policy_kind_t - rmw_tickle_qos_incompatible_status_t.last_policy_kind
+#include "rmw/ret_types.h"           // rmw_ret_t
+#include "rmw/time.h"                // rmw_time_t - rmw_tickle_wire_lease_ns()
+#include "rmw/types.h"               // rmw_node_t, rmw_publisher_t, rmw_subscription_t, rmw_client_t,
+                                     // rmw_service_t, rmw_guard_condition_t, rmw_wait_set_t, rmw_qos_profile_t
 #include "rosidl_runtime_c/message_type_support_struct.h"
 #include "rosidl_runtime_c/service_type_support_struct.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h" // rosidl_typesupport_tickle_c_message_callbacks_t
@@ -414,9 +415,34 @@ size_t rmw_tickle_count_incompatible_publishers_locked(rmw_tickle_context_impl_t
 // split check_guard_conditions() already established; a peek must never consume, since rmw_wait()
 // itself doesn't drain an event the way a separate rmw_take_event() call does (mirrors rmw_wait()
 // peeking rmw_tickle_subscriber_t.queue_count, never popping it - only rmw_take() does that).
+// (g2, RMW_GAPS_PLAN.md) One entity's on-new-data or event callback: rmw_subscription_set_on_new_message_callback(),
+// rmw_service_set_on_new_request_callback(), rmw_client_set_on_new_response_callback(), rmw_event_set_callback().
+// rclcpp's and rclpy's EventsExecutor run on these. The mutex is held while the callback runs, as in rmw_cyclonedds,
+// so once a setter has returned the callback it replaced is never called again; a callback must not call a setter
+// on its own entity. The poll thread notifies after the item is queued and the queue's mutex released, so a
+// callback may take the item. Initialised when its entity is created (rmw_event.c's helpers).
+typedef struct rmw_tickle_callback_slot_t {
+    pthread_mutex_t mutex;
+    // NULL: none set. Written under `mutex`; atomic so that a delivery with none set costs a load and a branch.
+    _Atomic(rmw_event_callback_t) callback;
+    const void* user_data;
+} rmw_tickle_callback_slot_t;
+void rmw_tickle_callback_slot_init(rmw_tickle_callback_slot_t* slot);
+void rmw_tickle_callback_slot_fini(rmw_tickle_callback_slot_t* slot);
+// `count` new items, already queued: calls the callback with it, if one is set.
+void rmw_tickle_callback_slot_notify(rmw_tickle_callback_slot_t* slot, size_t count);
+// How many items `entity` has waiting - read by rmw_tickle_callback_slot_set() after the callback is stored.
+typedef size_t (*rmw_tickle_waiting_t)(const void* entity);
+// Sets (or, with NULL, clears) the callback; if one is set and `waiting(entity)` items are already waiting, calls it
+// once with that count before returning. The count is read after the callback is stored, so an item queued meanwhile
+// is reported here, by its own notify, or by both - high, never low.
+void rmw_tickle_callback_slot_set(rmw_tickle_callback_slot_t* slot, rmw_event_callback_t callback,
+                                  const void* user_data, rmw_tickle_waiting_t waiting, const void* entity);
+
 typedef struct rmw_tickle_event_status_t {
     atomic_int total_count;
     atomic_int unread_count;
+    rmw_tickle_callback_slot_t callback; // (g2) rmw_event_set_callback(); for LIVELINESS_CHANGED, the `alive` one's
 } rmw_tickle_event_status_t;
 
 // RMW_EVENT_LIVELINESS_CHANGED's own status (rmw_subscription.c) - two fields wider than plain
@@ -846,6 +872,7 @@ typedef struct rmw_tickle_subscriber_t {
     // doc comment (above) for what alive_count/not_alive_count report.
     bool liveliness_monitoring;
     rmw_tickle_liveliness_changed_status_t liveliness_changed;
+    rmw_tickle_callback_slot_t on_new_message; // (g2) rmw_subscription_set_on_new_message_callback()
 
     // Milestone 31/28(a) observability follow-on - RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE. See
     // rmw_tickle_publisher_t.offered_qos_incompatible_monitoring_started's own doc comment - same
@@ -908,9 +935,10 @@ typedef struct rmw_tickle_client_t {
     // holding node->mutex; rmw_take_response() - whichever thread the application calls it from -
     // has no reason to wait on that just to poll this one response slot).
     pthread_mutex_t response_mutex;
-    bool response_ready;   // client_callback() has filled response_storage (or gave up)
-    bool response_success; // false if the call timed out (tt_CALL_TIMEOUT) - response_storage
-                           // wasn't touched in that case
+    bool response_ready;                        // client_callback() has filled response_storage (or gave up)
+    rmw_tickle_callback_slot_t on_new_response; // (g2) rmw_client_set_on_new_response_callback()
+    bool response_success;                      // false if the call timed out (tt_CALL_TIMEOUT) - response_storage
+                                                // wasn't touched in that case
     int64_t response_sequence_id;
     void* response_storage; // response_callbacks->ros_struct_size bytes, reused across calls
                             // (only one outstanding at a time - see above)
@@ -948,7 +976,8 @@ typedef struct rmw_tickle_service_t {
     // outright while one is still un-answered, rather than the old design's "the whole poll
     // thread is blocked so a second one can't even arrive" side effect.
     pthread_mutex_t request_mutex;
-    bool request_available; // server_callback() has a request waiting for rmw_take_request()
+    bool request_available;                    // server_callback() has a request waiting for rmw_take_request()
+    rmw_tickle_callback_slot_t on_new_request; // (g2) rmw_service_set_on_new_request_callback()
     int64_t current_sequence_id;
     // The TickLE-level identity of the currently-available/in-flight request - server_callback()
     // sets it, rmw_send_response() reads it back to call tt_Server_send_response() with the right

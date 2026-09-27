@@ -62,8 +62,6 @@ int main(void) {
     size_t size = 0;
     expect_unsupported(rmw_get_serialized_message_size(NULL, NULL, &size), "rmw_get_serialized_message_size");
     expect_unsupported(rmw_publish_serialized_message(NULL, NULL, NULL), "rmw_publish_serialized_message");
-    expect_unsupported(rmw_subscription_set_on_new_message_callback(NULL, NULL, NULL),
-                       "rmw_subscription_set_on_new_message_callback");
 
     printf("unsupported entry points: PASS\n");
     return 0;

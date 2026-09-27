@@ -855,7 +855,7 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | Pre-allocation | 4 | 0 / 0 / 0 / 4 | 0 / 0 / 4 | 0 / 0 / 4 |
 | Publishers | 11 | 11 / 0 / 0 / 0 | 11 / 0 / 0 | 11 / 0 / 0 |
 | Loaned messages | 6 | 0 / 0 / 6 / 0 | 0 / 6 / 0 | 0 / 6 / 0 |
-| Events | 8 | 1 / 3 / 4 / 0 | 8 / 0 / 0 | 8 / 0 / 0 |
+| Events | 8 | 5 / 3 / 0 / 0 | 8 / 0 / 0 | 8 / 0 / 0 |
 | Subscriptions | 7 | 6 / 0 / 1 / 0 | 7 / 0 / 0 | 7 / 0 / 0 |
 | Content filter | 2 | 0 / 0 / 0 / 2 | 2 / 0 / 0 | 0 / 0 / 2 |
 | Services and clients | 17 | 17 / 0 / 0 / 0 | 17 / 0 / 0 | 17 / 0 / 0 |
@@ -863,14 +863,15 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | QoS | 1 | 1 / 0 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
 | Network flow endpoints | 2 | 0 / 0 / 0 / 2 | 2 / 0 / 0 | 0 / 0 / 2 |
 | Dynamic messages | 3 | 0 / 0 / 0 / 3 | 3 / 0 / 0 | 0 / 0 / 3 |
-| **All** | **94** | **65 / 3 / 14 / 12** | **83 / 6 / 5** | **76 / 6 / 12** |
+| **All** | **94** | **69 / 3 / 10 / 12** | **83 / 6 / 5** | **76 / 6 / 12** |
 
 **TickLE's gaps (❌ and ⚠️), and where each is planned:**
 - **Serialized messages** (`rmw_publish_serialized_message`, `rmw_take_serialized_message*`). rosbag2 and
   `ros2 topic echo --raw` do not work on rmw_tickle. Planned with the large-message stage 1 (direct typesupport),
   which produces exactly those bytes.
-- **On-new-data callbacks** (`rmw_*_set_on_new_*_callback`, `rmw_event_set_callback`). rclcpp's EventsExecutor
-  cannot run on rmw_tickle. Planned.
+- ~~**On-new-data callbacks** (`rmw_*_set_on_new_*_callback`, `rmw_event_set_callback`). rclcpp's EventsExecutor
+  cannot run on rmw_tickle.~~ Closed by g2 (2026-09-28): rclpy's EventsExecutor receives on rmw_tickle, as on
+  CycloneDDS (`rmw_gap_acceptance.sh events`; it received nothing before).
 - **Event types:** 6 of 11 are supported. `MESSAGE_LOST`, `PUBLICATION_MATCHED`, `SUBSCRIPTION_MATCHED` and both
   `*_INCOMPATIBLE_TYPE` are missing; both vendors serve all 11. Planned.
 - **`rmw_take_sequence`** is not defined at all. `rmw_implementation` logs a failed symbol lookup for it, and
@@ -983,10 +984,10 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | `rmw_publisher_event_init` | ⚠️ | ✅ | ✅ | TickLE 6 of 11 event types (no MESSAGE_LOST, PUBLICATION/SUBSCRIPTION_MATCHED, PUBLISHER/SUBSCRIPTION_INCOMPATIBLE_TYPE); both vendors all 11 |
 | `rmw_subscription_event_init` | ⚠️ | ✅ | ✅ | TickLE 6 of 11 event types (no MESSAGE_LOST, PUBLICATION/SUBSCRIPTION_MATCHED, PUBLISHER/SUBSCRIPTION_INCOMPATIBLE_TYPE); both vendors all 11 |
 | `rmw_take_event` | ⚠️ | ✅ | ✅ | TickLE 6 of 11 event types (no MESSAGE_LOST, PUBLICATION/SUBSCRIPTION_MATCHED, PUBLISHER/SUBSCRIPTION_INCOMPATIBLE_TYPE); both vendors all 11 |
-| `rmw_subscription_set_on_new_message_callback` | ❌ | ✅ | ✅ | rclcpp's EventsExecutor needs these |
-| `rmw_service_set_on_new_request_callback` | ❌ | ✅ | ✅ | rclcpp's EventsExecutor needs these |
-| `rmw_client_set_on_new_response_callback` | ❌ | ✅ | ✅ | rclcpp's EventsExecutor needs these |
-| `rmw_event_set_callback` | ❌ | ✅ | ✅ | rclcpp's EventsExecutor needs these |
+| `rmw_subscription_set_on_new_message_callback` | ✅ | ✅ | ✅ | g2 (2026-09-28): a call per item, what already waits reported at set time, NULL stops it (`test_event_callbacks`); an rclpy EventsExecutor listener receives (`rmw_gap_acceptance.sh events`) |
+| `rmw_service_set_on_new_request_callback` | ✅ | ✅ | ✅ | g2 (2026-09-28): a call per item, what already waits reported at set time, NULL stops it (`test_event_callbacks`); an rclpy EventsExecutor listener receives (`rmw_gap_acceptance.sh events`) |
+| `rmw_client_set_on_new_response_callback` | ✅ | ✅ | ✅ | g2 (2026-09-28): a call per item, what already waits reported at set time, NULL stops it (`test_event_callbacks`); an rclpy EventsExecutor listener receives (`rmw_gap_acceptance.sh events`) |
+| `rmw_event_set_callback` | ✅ | ✅ | ✅ | g2 (2026-09-28): a call per item, what already waits reported at set time, NULL stops it (`test_event_callbacks`); an rclpy EventsExecutor listener receives (`rmw_gap_acceptance.sh events`) |
 | `rmw_event_type_is_supported` | ✅ | ✅ | ✅ |  |
 | **Subscriptions** | | | | |
 | `rmw_create_subscription` | ✅ | ✅ | ✅ |  |

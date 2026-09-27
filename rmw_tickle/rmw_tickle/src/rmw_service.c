@@ -50,6 +50,7 @@
 #include "rcutils/error_handling.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
+#include "rmw/event_callback_type.h" // rmw_event_callback_t (g2)
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/types.h"
@@ -106,6 +107,8 @@ static int8_t server_callback(struct tt_Server* tt_server, struct tt_Request* re
     pthread_cond_broadcast(&context_impl->wait_cond);
     pthread_mutex_unlock(&context_impl->wait_mutex);
     rmw_tickle_poke_polling_executor(context_impl);
+    // (g2) An EventsExecutor's callback, after request_mutex is released, so it may take the request.
+    rmw_tickle_callback_slot_notify(&svc->on_new_request, 1);
 
     return tt_CALL_DEFERRED;
 }
@@ -192,6 +195,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
         return NULL;
     }
 
+    rmw_tickle_callback_slot_init(&svc->on_new_request); // (g2), before a request can arrive
     if (pthread_mutex_init(&svc->request_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize service request mutex");
         rmw_tickle_ros_message_destroy(callbacks.request, svc->request_storage, allocator);
@@ -287,6 +291,7 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
     tt_Context_unlock(&svc->node->context_impl->tickle_context);
 
     pthread_mutex_destroy(&svc->request_mutex);
+    rmw_tickle_callback_slot_fini(&svc->on_new_request);
 
     rcutils_allocator_t allocator = svc->allocator;
     allocator.deallocate((char*)svc->rmw_service.service_name, allocator.state);
@@ -408,4 +413,26 @@ rmw_ret_t rmw_service_request_subscription_get_actual_qos(const rmw_service_t* s
 
 rmw_ret_t rmw_service_response_publisher_get_actual_qos(const rmw_service_t* service, rmw_qos_profile_t* qos) {
     return service_actual_qos(service, qos);
+}
+
+static size_t request_waiting(const void* entity) {
+    rmw_tickle_service_t* svc = (rmw_tickle_service_t*)entity;
+    pthread_mutex_lock(&svc->request_mutex);
+    size_t waiting = svc->request_available ? 1U : 0U;
+    pthread_mutex_unlock(&svc->request_mutex);
+    return waiting;
+}
+
+// (g2, RMW_GAPS_PLAN.md) rclcpp's and rclpy's EventsExecutor: called with 1 per request; set while one is waiting (at
+// most one - rmw_tickle keeps one pending request), called once with 1.
+rmw_ret_t rmw_service_set_on_new_request_callback(rmw_service_t* service, rmw_event_callback_t callback,
+                                                  const void* user_data) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(service, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(service->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    rmw_tickle_service_t* svc = (rmw_tickle_service_t*)service->data;
+    rmw_tickle_callback_slot_set(&svc->on_new_request, callback, user_data, request_waiting, svc);
+    return RMW_RET_OK;
 }

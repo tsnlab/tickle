@@ -122,6 +122,7 @@ static void discovery_callback(struct tt_Context* node, uint8_t node_id, uint32_
 static void bump_liveliness_lost(rmw_tickle_publisher_t* pub_impl) {
     atomic_fetch_add(&pub_impl->liveliness_lost.total_count, 1);
     atomic_fetch_add(&pub_impl->liveliness_lost.unread_count, 1);
+    rmw_tickle_callback_slot_notify(&pub_impl->liveliness_lost.callback, 1); // (g2)
 }
 
 static void broadcast_wait_cond(rmw_tickle_context_impl_t* context_impl) {

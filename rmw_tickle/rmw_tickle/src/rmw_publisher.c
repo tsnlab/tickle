@@ -55,6 +55,7 @@ static void check_publisher_deadline(struct tt_Context* node, uint64_t time, voi
     if (time - pub_impl->last_activity_time >= pub_impl->deadline_period_ns) {
         atomic_fetch_add(&pub_impl->deadline_missed.total_count, 1);
         atomic_fetch_add(&pub_impl->deadline_missed.unread_count, 1);
+        rmw_tickle_callback_slot_notify(&pub_impl->deadline_missed.callback, 1); // (g2)
         // Wake anyone blocked in rmw_wait() on this event becoming ready - same wait_mutex/
         // wait_cond subscriber_callback() (rmw_subscription.c) already broadcasts on for a newly
         // queued message, for the identical reason (rmw_tickle_context_impl_t's own doc comment,
@@ -105,6 +106,7 @@ static void check_publisher_qos_incompatible(struct tt_Context* node, uint64_t t
         atomic_fetch_add(&status->base.total_count, delta);
         atomic_fetch_add(&status->base.unread_count, delta);
         status->last_policy_kind = last_kind;
+        rmw_tickle_callback_slot_notify(&status->base.callback, (size_t)delta); // (g2)
         // Wake anyone blocked in rmw_wait() on this event becoming ready - same wait_mutex/
         // wait_cond check_publisher_deadline() above already broadcasts on, identical reasoning.
         rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
@@ -914,6 +916,10 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         allocator->deallocate(pub_impl, allocator->state);
         return NULL;
     }
+    // (g2) Its event callback slots, before any event can fire.
+    rmw_tickle_callback_slot_init(&pub_impl->deadline_missed.callback);
+    rmw_tickle_callback_slot_init(&pub_impl->liveliness_lost.callback);
+    rmw_tickle_callback_slot_init(&pub_impl->offered_qos_incompatible.base.callback);
     if (pthread_mutex_init(&pub_impl->publish_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize publisher publish_mutex");
         allocator->deallocate(pub_impl->publish_scratch_buf, allocator->state);
@@ -1077,6 +1083,9 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     tt_Context_unlock(&pub_impl->node->context_impl->tickle_context);
 
     pthread_mutex_destroy(&pub_impl->publish_mutex); // Milestone 45 - see its own doc comment
+    rmw_tickle_callback_slot_fini(&pub_impl->deadline_missed.callback);
+    rmw_tickle_callback_slot_fini(&pub_impl->liveliness_lost.callback);
+    rmw_tickle_callback_slot_fini(&pub_impl->offered_qos_incompatible.base.callback);
 
     rcutils_allocator_t allocator = pub_impl->allocator;
     allocator.deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator.state);

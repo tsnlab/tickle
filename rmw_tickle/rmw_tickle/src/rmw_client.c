@@ -35,6 +35,7 @@
 #include "rcutils/error_handling.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
+#include "rmw/event_callback_type.h" // rmw_event_callback_t (g2)
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/types.h"
@@ -72,6 +73,8 @@ static void client_callback(struct tt_Client* tt_client, int8_t return_code, str
     pthread_cond_broadcast(&context_impl->wait_cond);
     pthread_mutex_unlock(&context_impl->wait_mutex);
     rmw_tickle_poke_polling_executor(context_impl);
+    // (g2) An EventsExecutor's callback, after response_mutex is released, so it may take the response.
+    rmw_tickle_callback_slot_notify(&client_impl->on_new_response, 1);
 }
 
 rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_type_support_t* type_support,
@@ -165,6 +168,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
         return NULL;
     }
 
+    rmw_tickle_callback_slot_init(&client_impl->on_new_response); // (g2), before a response can arrive
     if (pthread_mutex_init(&client_impl->response_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize client response mutex");
         rmw_tickle_ros_message_destroy(callbacks.response, client_impl->response_storage, allocator);
@@ -241,6 +245,7 @@ rmw_ret_t rmw_destroy_client(rmw_node_t* node, rmw_client_t* client) {
     tt_Context_unlock(&client_impl->node->context_impl->tickle_context);
 
     pthread_mutex_destroy(&client_impl->response_mutex);
+    rmw_tickle_callback_slot_fini(&client_impl->on_new_response);
 
     rcutils_allocator_t allocator = client_impl->allocator;
     allocator.deallocate((char*)client_impl->rmw_client.service_name, allocator.state);
@@ -383,4 +388,26 @@ rmw_ret_t rmw_client_request_publisher_get_actual_qos(const rmw_client_t* client
 
 rmw_ret_t rmw_client_response_subscription_get_actual_qos(const rmw_client_t* client, rmw_qos_profile_t* qos) {
     return client_actual_qos(client, qos);
+}
+
+static size_t response_waiting(const void* entity) {
+    rmw_tickle_client_t* client_impl = (rmw_tickle_client_t*)entity;
+    pthread_mutex_lock(&client_impl->response_mutex);
+    size_t waiting = client_impl->response_ready ? 1U : 0U;
+    pthread_mutex_unlock(&client_impl->response_mutex);
+    return waiting;
+}
+
+// (g2, RMW_GAPS_PLAN.md) rclcpp's and rclpy's EventsExecutor: called with 1 per response; set while one is waiting (at
+// most one - rmw_tickle keeps one outstanding call), called once with 1.
+rmw_ret_t rmw_client_set_on_new_response_callback(rmw_client_t* client, rmw_event_callback_t callback,
+                                                  const void* user_data) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(client, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(client->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    rmw_tickle_client_t* client_impl = (rmw_tickle_client_t*)client->data;
+    rmw_tickle_callback_slot_set(&client_impl->on_new_response, callback, user_data, response_waiting, client_impl);
+    return RMW_RET_OK;
 }

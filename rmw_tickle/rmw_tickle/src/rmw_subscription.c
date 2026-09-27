@@ -32,7 +32,8 @@
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
 #include "rmw/event.h"
-#include "rmw/qos_policy_kind.h" // rmw_qos_policy_kind_t - check_subscription_qos_incompatible()
+#include "rmw/event_callback_type.h" // rmw_event_callback_t (g2)
+#include "rmw/qos_policy_kind.h"     // rmw_qos_policy_kind_t - check_subscription_qos_incompatible()
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/time.h" // rmw_time_point_value_t
@@ -202,6 +203,8 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     // doc comment explains why the broadcast must happen under wait_mutex even though queue_count
     // itself is guarded by the separate queue_mutex above.
     wake_wait_cond(sub_impl->node->context_impl);
+    // (g2) An EventsExecutor's callback, after the queue's mutex is released, so it may take the message.
+    rmw_tickle_callback_slot_notify(&sub_impl->on_new_message, 1);
     TT_TRACE(tt_TRACE_SIGNALED);
 }
 
@@ -213,7 +216,8 @@ static void check_subscription_deadline(struct tt_Context* node, uint64_t time, 
     if (time - sub_impl->last_activity_time >= sub_impl->deadline_period_ns) {
         atomic_fetch_add(&sub_impl->deadline_missed.total_count, 1);
         atomic_fetch_add(&sub_impl->deadline_missed.unread_count, 1);
-        wake_wait_cond(sub_impl->node->context_impl); // see its own doc comment
+        wake_wait_cond(sub_impl->node->context_impl);                            // see its own doc comment
+        rmw_tickle_callback_slot_notify(&sub_impl->deadline_missed.callback, 1); // (g2)
     }
     // Deadline monitoring simply stops here on a reschedule failure - see rmw_publisher.c's own
     // check_publisher_deadline() doc comment on this same pattern.
@@ -244,11 +248,13 @@ void rmw_tickle_update_subscription_liveliness_locked(rmw_tickle_subscriber_t* s
         atomic_fetch_add(&status->alive.total_count, delta);
         atomic_fetch_add(&status->alive.unread_count, delta);
         wake_wait_cond(sub_impl->node->context_impl);
+        rmw_tickle_callback_slot_notify(&status->alive.callback, (size_t)delta); // (g2)
     } else if ((int)current < status->last_alive_count) {
         int delta = status->last_alive_count - (int)current;
         atomic_fetch_add(&status->not_alive.total_count, delta);
         atomic_fetch_add(&status->not_alive.unread_count, delta);
         wake_wait_cond(sub_impl->node->context_impl);
+        rmw_tickle_callback_slot_notify(&status->alive.callback, (size_t)delta); // (g2) one slot for the event
     }
     atomic_store(&status->alive_count, (int)current);
     atomic_store(&status->not_alive_count, (int)current_not_alive);
@@ -367,6 +373,7 @@ static void check_subscription_qos_incompatible(struct tt_Context* node, uint64_
         atomic_fetch_add(&status->base.unread_count, delta);
         status->last_policy_kind = last_kind;
         wake_wait_cond(sub_impl->node->context_impl);
+        rmw_tickle_callback_slot_notify(&status->base.callback, (size_t)delta); // (g2)
     }
     // See check_publisher_qos_incompatible()'s own identical comment - deliberately never
     // decrements total_count/unread_count on a drop, only tracks the high-water mark to detect a
@@ -510,6 +517,11 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         return NULL;
     }
 
+    // (g2) Its callback slots, before anything can be delivered to it.
+    rmw_tickle_callback_slot_init(&sub_impl->on_new_message);
+    rmw_tickle_callback_slot_init(&sub_impl->deadline_missed.callback);
+    rmw_tickle_callback_slot_init(&sub_impl->liveliness_changed.alive.callback);
+    rmw_tickle_callback_slot_init(&sub_impl->requested_qos_incompatible.base.callback);
     if (pthread_mutex_init(&sub_impl->queue_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize subscriber queue mutex");
         allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
@@ -684,6 +696,10 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     }
     pthread_mutex_unlock(&sub_impl->queue_mutex);
     pthread_mutex_destroy(&sub_impl->queue_mutex);
+    rmw_tickle_callback_slot_fini(&sub_impl->on_new_message);
+    rmw_tickle_callback_slot_fini(&sub_impl->deadline_missed.callback);
+    rmw_tickle_callback_slot_fini(&sub_impl->liveliness_changed.alive.callback);
+    rmw_tickle_callback_slot_fini(&sub_impl->requested_qos_incompatible.base.callback);
 
     rcutils_allocator_t allocator = sub_impl->allocator;
     allocator.deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator.state);
@@ -893,4 +909,26 @@ rmw_ret_t rmw_return_loaned_message_from_subscription(const rmw_subscription_t* 
     }
     RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
     return RMW_RET_UNSUPPORTED;
+}
+
+static size_t messages_waiting(const void* entity) {
+    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)entity;
+    pthread_mutex_lock(&sub_impl->queue_mutex);
+    size_t waiting = sub_impl->queue_count;
+    pthread_mutex_unlock(&sub_impl->queue_mutex);
+    return waiting;
+}
+
+// (g2, RMW_GAPS_PLAN.md) rclcpp's and rclpy's EventsExecutor: called with 1 per message queued; set while messages are
+// waiting, called once with how many. See rmw_tickle_callback_slot_t (rmw_tickle.h) for the lock and NULL contracts.
+rmw_ret_t rmw_subscription_set_on_new_message_callback(rmw_subscription_t* subscription, rmw_event_callback_t callback,
+                                                       const void* user_data) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)subscription->data;
+    rmw_tickle_callback_slot_set(&sub_impl->on_new_message, callback, user_data, messages_waiting, sub_impl);
+    return RMW_RET_OK;
 }
