@@ -12,7 +12,8 @@ Every role is an ordinary default-options rclpy node, as a user would write it, 
 A role prints one line "RESULT: key=value ..." when it ends; the script reads only that line.
 
   talker        publishes std_msgs/String "msg-<n>" on /accept_chatter at 10 Hz, with a parameter accept_param=42
-  listener      counts "msg-" strings received on /accept_chatter (ARG "events": with the EventsExecutor)
+  listener      counts "msg-" strings received on /accept_chatter (ARG "events": with the EventsExecutor;
+                ARG "dump": also prints the received numbers in order, as a SEQ: line)
   matched_pub   a publisher on /accept_matched that counts its PUBLICATION_MATCHED events
   matched_sub   a subscription on /accept_matched that counts its SUBSCRIPTION_MATCHED events
   itype_pub     a std_msgs/String publisher on /accept_itype, counting PUBLISHER_INCOMPATIBLE_TYPE events
@@ -58,16 +59,24 @@ def main():
     elif role == 'listener':
         node = Node('accept_listener')
 
+        seen = []
+
         def on_msg(msg):
             if msg.data.startswith('msg-'):
                 counts['n'] += 1
+                if arg == 'dump':
+                    seen.append(msg.data)
         node.create_subscription(String, '/accept_chatter', on_msg, 10)
         if arg == 'events':
             from rclpy.experimental import EventsExecutor
             executor = EventsExecutor()
             executor.add_node(node)
         spin_for(node, seconds, executor)
-        print('RESULT: role=listener executor=%s received=%d' % (arg or 'default', counts['n']), flush=True)
+        if arg == 'dump':
+            # the numbers received, in order - rmw_gap_acceptance.sh's bag test checks they run without a gap
+            print('SEQ: ' + ' '.join(m[4:] for m in seen), flush=True)
+        print('RESULT: role=listener executor=%s received=%d' % ('default' if arg == 'dump' else (arg or 'default'),
+                                                                   counts['n']), flush=True)
     elif role in ('matched_pub', 'matched_sub'):
         node = Node('accept_' + role)
 

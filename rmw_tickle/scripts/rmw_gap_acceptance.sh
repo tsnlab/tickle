@@ -111,14 +111,19 @@ t_bag() {
     ran "$d/talker.log" 50 || { echo "ERROR(talker did not run)"; return; }
     local recorded
     recorded=$(run_in "$NS2" "$rmw" 2 10 "" ros2 bag info "$d/bag" 2>/dev/null | grep -oE 'Messages: +[0-9]+' | grep -oE '[0-9]+' | head -1)
-    run_in "$NS1" "$rmw" 1 14 "" python3 "$NODE" listener 14 > "$d/listener.log" 2>&1 &
+    run_in "$NS1" "$rmw" 1 14 "" python3 "$NODE" listener 14 dump > "$d/listener.log" 2>&1 &
     local lp=$!
     sleep 4
     run_in "$NS2" "$rmw" 2 10 "" ros2 bag play "$d/bag" > "$d/play.log" 2>&1
     wait "$lp"
-    local got
+    local got gaps
     got=$(field "$d/listener.log" received)
-    if [ "${recorded:-0}" -ge 30 ] && [ "${got:-0}" -ge 30 ]; then echo PASS; else echo "FAIL(recorded=${recorded:-0} replayed=${got:-0})"; fi
+    # Content, not only count (LARGE_MESSAGE_PLAN pass 4): the replayed numbers must run in order without a gap, i.e.
+    # the recorded bytes deserialised to the same strings, in the order they were recorded.
+    gaps=$(grep -h '^SEQ:' "$d/listener.log" | tail -1 | tr ' ' '\n' | grep -E '^[0-9]+$' |
+        awk 'NR > 1 && $1 != prev + 1 { g++ } { prev = $1 } END { print g + 0 }')
+    if [ "${recorded:-0}" -ge 30 ] && [ "${got:-0}" -ge 30 ] && [ "${gaps:-1}" = 0 ]; then echo PASS
+    else echo "FAIL(recorded=${recorded:-0} replayed=${got:-0} out_of_order_or_missing=${gaps:-none})"; fi
 }
 t_events() {
     local rmw=$1 d=$OUTDIR/events_$1
