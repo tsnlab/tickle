@@ -62,7 +62,9 @@ env_for() {
     ip=10.77.0.$idx
     local e="source $DISTRO/setup.bash; export ROS_DOMAIN_ID=91 RMW_IMPLEMENTATION=$rmw ROS_LOG_DIR=$OUTDIR/roslog HOME=$OUTDIR/home"
     case "$rmw" in
-        rmw_tickle) e="$e; source $WS/rmw/install/setup.bash; source $WS/ifaces/install/setup.bash; export TICKLE_BROADCAST_ADDR=10.77.0.255" ;;
+        # local_setup.bash for the overlay: its setup.bash re-sources the rmw install it was built against, which can
+        # shadow WS/rmw (found by Dev on 2026-09-27: a whole run measured an older rmw_tickle that way).
+        rmw_tickle) e="$e; source $WS/rmw/install/setup.bash; source $WS/ifaces/install/local_setup.bash; export TICKLE_BROADCAST_ADDR=10.77.0.255" ;;
         rmw_fastrtps_cpp) e="$e; export FASTDDS_BUILTIN_TRANSPORTS=UDPv4" ;; # no shared memory across the two netns
         rmw_cyclonedds_cpp) e="$e; export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface address=\"$ip\"/></Interfaces></General></Domain></CycloneDDS>'" ;;
     esac
@@ -188,6 +190,13 @@ t_peers() {
 }
 # The control per test: CycloneDDS, except where it does not produce the behaviour at all (set after checking it).
 declare -A CONTROL=([itype]=${CONTROL_ITYPE:-rmw_cyclonedds_cpp})
+# The rmw_tickle every test loads must be WS's: resolve it the way the test processes will, and refuse otherwise.
+prefix=$(bash -c "set +u; $(env_for rmw_tickle 1 ""); set -u; ros2 pkg prefix rmw_tickle" 2>/dev/null)
+if [ "$prefix" != "$WS/rmw/install/rmw_tickle" ]; then
+    echo "ERROR: rmw_tickle resolves to '${prefix:-nothing}', not $WS/rmw/install/rmw_tickle - a shadowed workspace" | tee -a "$OUTDIR/summary.txt"
+    exit 3
+fi
+echo "rmw_tickle from $prefix ($(md5sum "$prefix/lib/librmw_tickle.so" | cut -c1-12))" | tee -a "$OUTDIR/summary.txt"
 ctl_fail=0
 for t in $TESTS; do
     ctl=${CONTROL[$t]:-rmw_cyclonedds_cpp}

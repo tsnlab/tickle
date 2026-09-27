@@ -318,6 +318,22 @@ on the PC, one binary does not reproduce itself between runs to within 2 x SE.
   - A difference beyond it, in the same direction in every repeat, is WORSE.
 - 8.9's and D5's few-ns results are consistent with this. They are noted here, not re-judged.
 
+### 8.3a The Pi bench's own floor (2026-09-27, Plan)
+
+`core_cost_pi_drift.sh`: one build (`f22fd4fa`) measured against itself on the client Pi, 4 occasions 15 min apart, 10
+rounds each, default and -R. Raw rows are `results/core_cost_pi_drift_2026-09-27_summary.txt`. Same binary against
+itself, ns per sample:
+
+| mode | send A/A over 4 occasions | recv A/A over 4 occasions |
+|---|---|---|
+| default | -0.62, +2.22, -0.87, +1.01 | +0.04, +0.14, +0.16, -0.17 |
+| -R | -2.04, -2.05, +0.62, +0.07 | -1.04, -0.25, +0.30, +0.37 |
+
+- **2 of the 16 comparisons fall beyond their own within-run 2 x SE**, with nothing changed. So a within-run 2 x SE
+  alone overstates what a single Pi difference means, as it did on the PC (CONTEXT_NODE_PLAN 4a).
+- **The Pi floor, applied from here on:** a core-bench difference inside ±2.5 ns on send or ±1.2 ns on receive is not
+  evidence of a change, however many SE it is. Beyond it, in the same direction on a repeat occasion, it is.
+
 ### 8.4 The fix (`4dc7ad49`) against the parent, A B B A: the receiver is fixed, the sender is not (2026-09-27)
 
 `campaign_ab_chain.sh`, `8f3811f4` / `4dc7ad49` / `4dc7ad49` / `8f3811f4`, 3 repetitions per block, 72 + 72 ok rows.
