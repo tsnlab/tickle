@@ -520,11 +520,12 @@ static bool join_shared_context(rmw_tickle_context_impl_t* context_impl, rmw_tic
         return false;
     }
     // The core node, on the shared context (CONTEXT_NODE_PLAN.md stage 2). tt_RET_OUT_OF_BUFFER when the context
-    // already hosts tt_MAX_NODES - 1 nodes (index 0 is the default node's, which rmw never uses).
+    // already hosts tt_MAX_NODES (256 in rmw builds, CMakeLists.txt); rmw never uses a default node, so index 0 is
+    // one of them.
     bool joined = false;
     if (tt_Node_create(&context_impl->tickle_context, node_impl->core_node, node_impl->rmw_node.name,
                        node_impl->rmw_node.namespace_) != tt_RET_OK) {
-        RMW_SET_ERROR_MSG("tt_Node_create() failed - more than tt_MAX_NODES - 1 nodes in one context?");
+        RMW_SET_ERROR_MSG("tt_Node_create() failed - more than tt_MAX_NODES nodes in one context?");
     } else if (!register_node(context_impl, node_impl)) {
         // Only reachable failure here is the allocator failing to grow nodes[].
         (void)tt_Node_destroy(node_impl->core_node);

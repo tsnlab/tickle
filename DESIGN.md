@@ -846,8 +846,10 @@ The core's pieces are named after rmw's:
 - **A node** (`struct tt_Node`) is a name, a namespace and an index within its context, and owns endpoints. Every
   endpoint belongs to exactly one node, whose index it records (`tt_Endpoint.node_index`, in the padding after
   `kind`, so no endpoint struct changes layout; `tt_Endpoint_node()` finds the node).
-- A context hosts up to `tt_MAX_NODES` (16) nodes. Stage 3 carries a node's index in 4 bits of an announce entry,
-  which is what bounds it.
+- A context hosts up to `tt_MAX_NODES` nodes: 16 by default, 256 in rmw_tickle builds (a composed ROS 2 bringup holds
+  15-20 nodes in one container), and at most 256, since the index is a `uint8_t`.
+- Index 0 is the default node's while it is in use. A context without one, like every rmw_tickle context, gives
+  index 0 to its last explicit node, so it can host all `tt_MAX_NODES`.
 
 **The default node.**
 - Index 0 is kept for the context's default node. The `tt_Context_create_*()` shorthands create their endpoints on

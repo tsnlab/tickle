@@ -33,12 +33,16 @@
 #include "rcutils/strdup.h"
 #include "rcutils/types/rcutils_ret.h"
 #include "rcutils/types/string_array.h"
+#include "rmw/error_handling.h"
 #include "rmw/init.h"
 #include "rmw/init_options.h"
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/types.h"
 #include "rmw_tickle_c/rmw_tickle.h"
+
+// What rmw_tickle builds set tt_MAX_NODES to (CMakeLists.txt): a composed ROS 2 bringup holds 15-20 nodes.
+#define RMW_NODES_PER_CONTEXT 256
 
 int main(void) {
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
@@ -129,6 +133,23 @@ int main(void) {
     assert(RMW_RET_OK == rmw_destroy_node(node_b));
     assert(0 == atomic_load(&context_impl->node_count));
     assert(!context_impl->poll_thread_running);
+
+    // tt_MAX_NODES rmw nodes in one context (256 in rmw builds - a composed bringup holds 15-20), each a core node;
+    // one more is refused with an error, not allowed to overrun the table (CONTEXT_NODE_PLAN.md stage 2 follow-up).
+    static_assert(tt_MAX_NODES >= RMW_NODES_PER_CONTEXT, "rmw builds host 256 nodes per context (CMakeLists.txt)");
+    static rmw_node_t* many[tt_MAX_NODES];
+    static char many_names[tt_MAX_NODES][16];
+    for (int i = 0; i < tt_MAX_NODES; i++) {
+        (void)snprintf(many_names[i], sizeof(many_names[i]), "many_%03d", i);
+        many[i] = rmw_create_node(&context, many_names[i], "/");
+        assert(NULL != many[i]);
+    }
+    rmw_node_t* one_too_many = rmw_create_node(&context, "one_too_many", "/");
+    assert(NULL == one_too_many);
+    rmw_reset_error();
+    for (int i = 0; i < tt_MAX_NODES; i++) {
+        assert(RMW_RET_OK == rmw_destroy_node(many[i]));
+    }
 
     assert(RMW_RET_OK == rmw_shutdown(&context));
     assert(RMW_RET_OK == rmw_context_fini(&context));

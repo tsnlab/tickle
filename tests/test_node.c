@@ -277,23 +277,46 @@ static void test_explicit_nodes_leave_no_default_node(void) {
     EXPECT_TRUE(context.default_node.context == NULL && context.nodes[0] == NULL);
 }
 
-// tt_MAX_NODES bounds a context's nodes, the default node's index included; a destroyed node's index is reused, and
-// a node already created cannot be created again.
-static void test_the_node_table_is_bounded_and_reused(void) {
+// Without a default node - as in every rmw_tickle context - a context hosts tt_MAX_NODES nodes of its own, index 0
+// taken last; the shorthands then have no default node to create on, and refuse. A destroyed node's index is reused,
+// and a node already created cannot be created again.
+static void test_without_a_default_node_every_index_is_usable(void) {
     static struct tt_Context context;
     setup(&context, 1);
+    static struct tt_Node nodes[tt_MAX_NODES + 1];
+    memset(nodes, 0, sizeof(nodes));
+    for (int i = 0; i < tt_MAX_NODES; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create(&context, &nodes[i], "n", "/"));
+    }
+    EXPECT_EQ_U32(0, nodes[tt_MAX_NODES - 1].index); // index 0, last
+    EXPECT_EQ_INT(tt_RET_OUT_OF_BUFFER, tt_Node_create(&context, &nodes[tt_MAX_NODES], "n", "/"));
+    EXPECT_EQ_INT(tt_RET_ILLEGAL_STATUS, tt_Node_create(&context, &nodes[0], "n", "/"));
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OUT_OF_BUFFER, tt_Context_create_publisher(&context, &pub, &topic, "chatter"));
+    EXPECT_TRUE(tt_Context_default_node(&context) == NULL);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&nodes[tt_MAX_NODES - 1], &pub, &topic, "chatter"));
+    EXPECT_TRUE(tt_Endpoint_node(&context, &pub.endpoint) == &nodes[tt_MAX_NODES - 1]);
+
+    uint8_t freed = nodes[3].index;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_destroy(&nodes[3]));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create(&context, &nodes[tt_MAX_NODES], "n", "/"));
+    EXPECT_EQ_U32(freed, nodes[tt_MAX_NODES].index);
+}
+
+// With the default node in use, it holds index 0 and the context hosts tt_MAX_NODES - 1 nodes of its own.
+static void test_with_a_default_node_one_index_is_its(void) {
+    static struct tt_Context context;
+    setup(&context, 1);
+    EXPECT_TRUE(tt_Context_default_node(&context) != NULL);
     static struct tt_Node nodes[tt_MAX_NODES];
     memset(nodes, 0, sizeof(nodes));
     for (int i = 0; i < tt_MAX_NODES - 1; i++) {
         EXPECT_EQ_INT(tt_RET_OK, tt_Node_create(&context, &nodes[i], "n", "/"));
+        EXPECT_TRUE(nodes[i].index != 0);
     }
     EXPECT_EQ_INT(tt_RET_OUT_OF_BUFFER, tt_Node_create(&context, &nodes[tt_MAX_NODES - 1], "n", "/"));
-    EXPECT_EQ_INT(tt_RET_ILLEGAL_STATUS, tt_Node_create(&context, &nodes[0], "n", "/"));
-    uint8_t freed = nodes[3].index;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_destroy(&nodes[3]));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create(&context, &nodes[tt_MAX_NODES - 1], "n", "/"));
-    EXPECT_EQ_U32(freed, nodes[tt_MAX_NODES - 1].index);
-    EXPECT_TRUE(tt_Context_default_node(&context) != NULL); // index 0 was kept for it all along
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&context, &pub, &topic, "chatter"));
 }
 
 int main(void) {
@@ -302,7 +325,8 @@ int main(void) {
     test_the_shorthands_create_on_the_default_node();
     test_default_node_names_differ_between_contexts();
     test_explicit_nodes_leave_no_default_node();
-    test_the_node_table_is_bounded_and_reused();
+    test_without_a_default_node_every_index_is_usable();
+    test_with_a_default_node_one_index_is_its();
 
     if (test_result() != 0) {
         return 1;

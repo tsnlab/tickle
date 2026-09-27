@@ -155,7 +155,7 @@ struct tt_Node {
     struct tt_Context* context; // NULL until tt_Node_create(), and again after tt_Node_destroy()
     const char* name;           // not copied - the caller's, as an endpoint's name is
     const char* namespace_name; // likewise
-    uint8_t index;              // 0 = the context's default node; < tt_MAX_NODES
+    uint8_t index;              // < tt_MAX_NODES; 0 is the default node's unless an explicit node took it
 };
 
 struct tt_Context {
@@ -1824,12 +1824,13 @@ tt_ret_t tt_Context_create_subscriber(struct tt_Context* node, struct tt_Subscri
 // that is not (or no longer) created.
 //
 // tt_Node_create(): `name` and `namespace_name` are kept, not copied, and must outlive the node. tt_RET_OUT_OF_BUFFER
-// when the context already hosts tt_MAX_NODES nodes (the default node's index included, whether or not it is in
-// use), tt_RET_ILLEGAL_STATUS if `node` is already created.
+// when the context already hosts tt_MAX_NODES nodes, the default node included once it is in use. Index 0 is taken
+// last, and only while the default node is not in use - after which the shorthands fail with tt_RET_OUT_OF_BUFFER.
+// tt_RET_ILLEGAL_STATUS if `node` is already created.
 // tt_Node_destroy(): tt_RET_ILLEGAL_STATUS while any endpoint is still created on the node - destroy those first.
 // Frees the node's index for a later tt_Node_create().
 // tt_Context_default_node(): the context's default node, brought into use if it is not yet: named
-// "tickle_<context id>" in "/", index 0. NULL for a NULL context.
+// "tickle_<context id>" in "/", index 0. NULL for a NULL context, or when an explicit node took index 0.
 tt_ret_t tt_Node_create(struct tt_Context* context, struct tt_Node* node, const char* name, const char* namespace_name);
 tt_ret_t tt_Node_destroy(struct tt_Node* node);
 struct tt_Node* tt_Context_default_node(struct tt_Context* context);

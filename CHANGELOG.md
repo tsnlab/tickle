@@ -16,7 +16,8 @@ number, `tt_VERSION`, which moves independently.
     `tt_Node_create_{publisher,subscriber,client,server}()`. Every endpoint records its node's index (`tt_Endpoint.node_index`, in existing padding; `tt_Endpoint_node()`).
   - The `tt_Context_create_*()` shorthands create on the context's default node: index 0, named `tickle_<context
     id>` in `/`, and brought into use by the first shorthand call.
-  - A context hosts up to `tt_MAX_NODES` (16).
+  - A context hosts up to `tt_MAX_NODES`: 16 by default, 256 in rmw_tickle builds, at most 256. Without a default
+    node - every rmw_tickle context - index 0 goes to an explicit node too, and the shorthands then refuse.
   - rmw_tickle's nodes are core nodes and create every endpoint on them, so its contexts have no default node.
   - No wire change: the announce bytes are identical to before for the same endpoints.
 

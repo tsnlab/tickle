@@ -450,8 +450,9 @@
 #ifndef tt_MAX_SCHEDULER_LENGTH
 #define tt_MAX_SCHEDULER_LENGTH 128 // Scheduling queue
 #endif
-// Nodes one context can host (CONTEXT_NODE_PLAN.md stage 2), its default node included. At most 16: stage 3 carries
-// a node's index in 4 bits of an announce entry.
+// Nodes one context can host (CONTEXT_NODE_PLAN.md stage 2), its default node included when in use. At most 256: a
+// node's index is a uint8_t, and stage 3 carries it in 8 spare bits of an announce entry. rmw_tickle builds set 256
+// (its CMakeLists.txt) - a composed ROS 2 bringup puts 15-20 nodes in one container.
 #ifndef tt_MAX_NODES
 #define tt_MAX_NODES 16
 #endif
@@ -710,5 +711,5 @@ static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
 static_assert(tt_MAX_ENDPOINT_COUNT <= (UINT8_MAX + 1), "node ids and endpoint slots are indexed by uint8_t");
 static_assert(tt_CALL_RETRY_INTERVAL_MAX >= tt_CALL_RETRY_INTERVAL && tt_CALL_RETRY_INTERVAL_MAX <= UINT32_MAX,
               "the auto retry interval is held between tt_CALL_RETRY_INTERVAL and a uint32_t ceiling");
-static_assert(tt_MAX_NODES >= 1 && tt_MAX_NODES <= 16,
-              "a node's index is 4 bits on the wire (CONTEXT_NODE_PLAN.md stage 3)");
+static_assert(tt_MAX_NODES >= 1 && tt_MAX_NODES <= (UINT8_MAX + 1),
+              "a node's index is a uint8_t, 8 bits on the wire (stage 3)");

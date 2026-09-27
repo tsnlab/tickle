@@ -1402,6 +1402,15 @@ static tt_ret_t add_endpoint_to_node(struct tt_Context* node, struct tt_Endpoint
         }
     }
 
+    // The default node when no owner is given. Nothing below can fail, so a call that fails leaves it unused; it
+    // cannot come into being when an explicit node took index 0 (a context without a default node may use all
+    // tt_MAX_NODES indices).
+    struct tt_Node* owner_node = owner != NULL ? owner : default_node_locked(node);
+    if (owner_node == NULL) {
+        TT_LOG_ERROR("No default node: index 0 is taken by node %s", node->nodes[0]->name);
+        return tt_RET_OUT_OF_BUFFER;
+    }
+
     // Milestone 47 - every entity kind gets its own entity_id here, the single shared
     // registration point for all four (Publisher/Subscriber/Client/Server) - see struct tt_
     // Endpoint.entity_id's own doc comment (tickle.h) for what this is and struct tt_Context.
@@ -1413,7 +1422,7 @@ static tt_ret_t add_endpoint_to_node(struct tt_Context* node, struct tt_Endpoint
         endpoint->entity_id = node->entity_id_base + node->next_entity_id++;
     }
 
-    endpoint->node_index = (owner != NULL ? owner : default_node_locked(node))->index;
+    endpoint->node_index = owner_node->index;
     node->endpoints[node->endpoint_count++] = endpoint;
     node->endpoint_index_valid = false;
     arm_announce_soon(node);
@@ -2483,6 +2492,9 @@ static struct tt_Node* default_node_locked(struct tt_Context* context) {
         return NULL;
     }
     struct tt_Node* node = &context->default_node;
+    if (context->nodes[0] != NULL && context->nodes[0] != node) {
+        return NULL; // an explicit node took index 0, which a context without a default node may do
+    }
     if (node->context == NULL) {
         (void)snprintf(context->default_node_name, sizeof(context->default_node_name), "tickle_%u",
                        (unsigned)context->id);
@@ -2510,13 +2522,16 @@ static tt_ret_t node_register_locked(struct tt_Context* context, struct tt_Node*
     if (node->context != NULL) {
         return tt_RET_ILLEGAL_STATUS;
     }
-    for (uint8_t i = 1; i < tt_MAX_NODES; i++) { // 0 is the default node's, in use or not
-        if (context->nodes[i] == NULL) {
+    // Index 0 is the default node's, so it is taken last - and only while the default node is not in use: a context
+    // whose endpoints are all on its own nodes, as rmw_tickle's are, can host tt_MAX_NODES of them.
+    for (uint32_t i = 1; i <= tt_MAX_NODES; i++) {
+        uint32_t index = i % tt_MAX_NODES;
+        if (context->nodes[index] == NULL) {
             node->context = context;
             node->name = name;
             node->namespace_name = namespace_name;
-            node->index = i;
-            context->nodes[i] = node;
+            node->index = (uint8_t)index;
+            context->nodes[index] = node;
             return tt_RET_OK;
         }
     }
