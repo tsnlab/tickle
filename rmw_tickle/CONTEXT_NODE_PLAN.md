@@ -211,16 +211,15 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
 
 ## Stage 3 - discovery carries nodes (wire v11)
 
-**The wire diff:**
+**The wire diff (amended 2026-09-27, before code, for Plan's 64-node minimum - see "Stage 3 encoding" below):**
 - **A node entry in the announce list.** `tt_UpdateEntity` with:
-  - `kind = tt_KIND_NODE` (0x40, a bit no endpoint kind uses);
+  - `kind = tt_KIND_NODE` (0x03: TOPIC and SERVICE together, which no endpoint is);
   - `entity_id` = the node's own random id;
   - `endpoint_id` = hash(namespace, name);
   - type string = namespace, name string = node name;
-  - `qos` bits 4-7 = the node's index.
+  - the node's index in the spare bits (below).
   - One per node, in the same list as its endpoints.
-- **Every endpoint entry** carries its owning node's index in `qos` bits 4-7. Bits 0-3 are the four QoS flags in use;
-  4-7 are unused today, so this costs 0 B.
+- **Every endpoint entry** carries its owning node's index in the same spare bits. 0 bytes.
 - `tt_VERSION` goes 10 -> 11.
 - **The receiver:**
   - stores node entries in the discovery table like any entity;
@@ -234,6 +233,32 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
   - `rmw_get_{publisher,subscriber,service,client}_names_and_types_by_node()` match remote endpoints by
     (source, node index).
 
+**Stage 3 encoding (pre-registered 2026-09-27, before code).** Plan asked for room for at least 64 nodes, preferably
+256, at 0 bytes. A composed Nav2 bringup puts 15-20 nodes in one container, so the sketch's 4 bits (16) would fail a
+standard deployment.
+
+- **Chosen: 8 spare bits in `kind` and `qos`, for a limit of 256.**
+  - `kind` uses 0x01/0x02 (topic/service) and 0x10/0x20 (sender/receiver). Its free bits 0x04, 0x08, 0x40 and 0x80
+    carry index bits 4-7.
+  - `qos` uses bits 0-3 (RELIABLE, DURABLE, LIVELINESS_MANUAL, KEEP_ALL). Its free bits 4-7 carry index bits 0-3.
+  - The receiver masks `kind` with 0x33 and `qos` with 0x0f before any existing use, so every current comparison sees
+    what it sees today.
+  - 256 is the whole `uint8_t` index, the core's own limit (`tt_MAX_NODES` <= 256), so the wire does not bound it
+    further.
+- **Rejected: the endpoint's `entity_id` upper bits.**
+  - Entity ids are not small per-context numbers: each is a random per-launch 32-bit base plus a counter
+    (Milestone 47).
+  - Receivers key writer proxies, durable records and tombstones on them, and rmw builds GIDs from them.
+  - Taking 8 bits would cut the launch randomness to 24 bits and change the identity of every entity. Too wide a
+    change for a 0-byte gain the spare bits already give.
+- **The test at the limit.** Two contexts in two private netns:
+  - one hosting 256 nodes (`tt_MAX_NODES` 256), each owning one endpoint, publishers and subscribers alternating.
+    256 endpoints is `tt_MAX_ENDPOINT_COUNT`'s own ceiling (an endpoint slot is a `uint8_t`), so one each is the
+    most a context can hold. The announce, 512 entries, goes out fragmented.
+  - the other, built with `tt_MAX_DISCOVERED_ENTITIES` of at least 512, must list all 256 nodes by name and
+    namespace, each with its own endpoint and no other's.
+  - A mutant that drops the `kind` half (indices mod 16) must fail it.
+
 **Stage 3 PASS, in the user's rule's terms:**
 - **Function, two processes in two private netns (`ros2 node list`, `ros2 node info /talker`, `ros2 param list
   /talker`):**
@@ -241,7 +266,7 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
   - the rmw suite passes;
   - `test_rmw_implementation`'s graph tests pass.
 - **Recorded costs, pre-registered as the price of the feature:**
-  - **M1 join bytes:** +41 B per node per list for a node named "talker" in "/"
+  - **M1 join bytes:** +41 B per node per list (the node entry; endpoint entries carry the index at 0 B) for a node named "talker" in "/"
     (28 + (2 + 1 + 1) + (2 + 6 + 1) = 41).
   - A default rclcpp node's list, 998 B, becomes ~1,039 (+4%). The M1 tool, which has one node per context, adds one
     entry per list.
@@ -275,10 +300,28 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
      checked explicitly.
    - Mutant (`test_dispatch` expecting 11 instead of 10): passes in Release without the fix, and aborts (rc 134)
      with it.
-4. **Stage 2**, then **stage 3** (wire v11).
-5. **Large messages, stage 1** (user item 1, "B"): rmw_tickle's direct typesupport, ROS C++ to the TickLE wire with
+4. **Stage 2** (done), a follow-up lifting the node limit (done: 256 per rmw context), then **stage 3** (wire v11).
+   - **Found while sizing it:** the per-context endpoint ceiling, `tt_MAX_ENDPOINT_COUNT` = 256, is a `uint8_t` slot
+     index, and it binds before the node limit does. Every rclcpp node brings about 9 endpoints by default: 6
+     parameter services, rosout, and parameter_events publisher and subscriber. So a 20-node container holds about
+     180 before any of its own topics. Put to Plan, 2026-09-27; not pre-registered yet.
+5. **rmw gaps**. The user's words, relayed by Plan: "1, 2, 3, 4번 진행하자." Each item is pre-registered before code,
+   with behaviour tests and mutants, and uses CycloneDDS's or Fast DDS's behaviour as the control where one exists:
+   - **(g1) Serialized messages** (`rmw_publish_serialized_message`, `rmw_take_serialized_message*`,
+     `rmw_get_serialized_message_size`), for rosbag2 and `ros2 topic echo --raw`. Control: rosbag2 record then
+     play of a talker, on rmw_tickle against CycloneDDS, with the messages byte-for-byte equal.
+   - **(g2) On-new-data callbacks** (`rmw_subscription/service/client_set_on_new_*_callback`,
+     `rmw_event_set_callback`), for rclcpp's EventsExecutor.
+   - **(g3) The remaining QoS event kinds** in `rmw_publisher/subscription_event_init`, and
+     `rmw_get_clients/servers_info_by_service`.
+   - **(g4)** The check pass on `ROS_AUTOMATIC_DISCOVERY_RANGE` / `ROS_STATIC_PEERS`, SROS2 and actions. Plan does it,
+     with no Dev code.
+   - **Order for Dev:** stage 3, then (g2), then (g3), then large messages stage 1 together with (g1) (both are ROS
+     message to TickLE wire bytes, and a serialized message is exactly that output), then large messages stage 2
+     with lending.
+6. **Large messages, stage 1** (user item 1, "B"): rmw_tickle's direct typesupport, ROS C++ to the TickLE wire with
    no fixed-capacity intermediate struct.
-6. **Large messages, stage 2, with receive-buffer lending** (user items 1 and 2):
+7. **Large messages, stage 2, with receive-buffer lending** (user items 1 and 2):
    - samples over 64 KB: a wider fragment index and count behind a flag, so existing cells do not grow; a 32-bit
      record length; reassembly buffers sized from `FRAG_FIRST`'s total length; dynamic allocation in rmw builds
      only (the core stays static).
