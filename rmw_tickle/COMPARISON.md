@@ -882,6 +882,18 @@ what they return `RMW_RET_UNSUPPORTED` on).
 - **On lyrical only** (not in jazzy's list above), `rmw_get_clients_info_by_service` /
   `rmw_get_servers_info_by_service`. Planned.
 
+- **A correctness defect behind the graph rows (found 2026-09-27, fixed by CONTEXT_NODE_PLAN 4a):** rmw_tickle
+  never set `tt_MAX_DISCOVERED_ENTITIES`, so it used core's default of 16 remote entities. Every ROS 2 node has 9
+  default endpoints, so nearly every real graph exceeds that. Past the capacity, entries were dropped (one log
+  line), and everything reading the table went wrong:
+  - QoS compatibility (RxO) **failed open**: a RELIABLE subscriber received an incompatible BEST_EFFORT
+    publisher's data. `test_discovery_capacity` shows it with 20 remote publishers: 4 failures at 16, pass at 64.
+  - The KEEP_ALL classification, per-entity liveliness leases (no `liveliness_changed` for those writers),
+    BEST_AVAILABLE resolution and every graph query also read the table.
+  - Data delivery with compatible QoS and the choice of unicast peers do not read it.
+  - 4a sets rmw's capacity to 2048. Core keeps 16 for FreeRTOS memory (552 B per entry), with the overflow now
+    counted and warned about.
+
 **Where TickLE matches a vendor's "not supported" (➖):** pre-allocation (all three), `rmw_get_serialized_message_size`
 (all three), and content filters, network flow endpoints and dynamic messages (as CycloneDDS; FastDDS supports them).
 
