@@ -832,6 +832,175 @@ elsewhere in this document**, not that it is unavailable.
 (~0.52ms) while `rmw_cyclonedds_cpp` is genuinely faster (~0.44ms) on the real link. RELIABLE costs
 nothing measurable over BEST_EFFORT for any of the three. 18/18 runs clean, zero loss every time.
 
+### 2.7a rmw API coverage (2026-09-27)
+
+Which of the rmw API's entry points each implementation actually serves. The list is the 94 functions
+`rmw_implementation` dispatches on jazzy (`rmw_implementation/src/functions.cpp`, branch `jazzy`). Each
+implementation's own source was read function by function: `rmw_tickle` at `main` (2026-09-27), and
+`rmw_fastrtps_cpp` / `rmw_fastrtps_shared_cpp` and `rmw_cyclonedds_cpp` at their `jazzy` branches. A body was
+classified by its returns, and the ambiguous ones (loans, events, `wait_for_all_acked`) were read by hand. The
+supported event types are the vendors' own `is_event_supported()` sets. `rmw_take_sequence` was confirmed absent
+from `librmw_tickle.so` with `nm -D`.
+
+Legend: ✅ supported · ⚠️ partial or conditional (see the note) · ❌ **a TickLE gap: the vendors support it, TickLE
+does not yet** · ➖ not supported, by design or because the feature has no counterpart (the vendor columns use ➖ for
+what they return `RMW_RET_UNSUPPORTED` on).
+
+| Area | functions | TickLE ✅ / ⚠️ / ❌ / ➖ | FastDDS ✅ / ⚠️ / ➖ | CycloneDDS ✅ / ⚠️ / ➖ |
+|---|---:|---|---|---|
+| Init and context | 8 | 8 / 0 / 0 / 0 | 8 / 0 / 0 | 8 / 0 / 0 |
+| Serialization | 7 | 3 / 0 / 3 / 1 | 6 / 0 / 1 | 6 / 0 / 1 |
+| Nodes | 2 | 2 / 0 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
+| Graph | 10 | 4 / 6 / 0 / 0 | 10 / 0 / 0 | 10 / 0 / 0 |
+| Pre-allocation | 4 | 0 / 0 / 0 / 4 | 0 / 0 / 4 | 0 / 0 / 4 |
+| Publishers | 11 | 11 / 0 / 0 / 0 | 11 / 0 / 0 | 11 / 0 / 0 |
+| Loaned messages | 6 | 0 / 0 / 6 / 0 | 0 / 6 / 0 | 0 / 6 / 0 |
+| Events | 8 | 1 / 3 / 4 / 0 | 8 / 0 / 0 | 8 / 0 / 0 |
+| Subscriptions | 7 | 6 / 0 / 1 / 0 | 7 / 0 / 0 | 7 / 0 / 0 |
+| Content filter | 2 | 0 / 0 / 0 / 2 | 2 / 0 / 0 | 0 / 0 / 2 |
+| Services and clients | 17 | 17 / 0 / 0 / 0 | 17 / 0 / 0 | 17 / 0 / 0 |
+| Waiting | 6 | 6 / 0 / 0 / 0 | 6 / 0 / 0 | 6 / 0 / 0 |
+| QoS | 1 | 1 / 0 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
+| Network flow endpoints | 2 | 0 / 0 / 0 / 2 | 2 / 0 / 0 | 0 / 0 / 2 |
+| Dynamic messages | 3 | 0 / 0 / 0 / 3 | 3 / 0 / 0 | 0 / 0 / 3 |
+| **All** | **94** | **59 / 9 / 14 / 12** | **83 / 6 / 5** | **76 / 6 / 12** |
+
+**TickLE's gaps (❌ and ⚠️), and where each is planned:**
+- **Serialized messages** (`rmw_publish_serialized_message`, `rmw_take_serialized_message*`). rosbag2 and
+  `ros2 topic echo --raw` do not work on rmw_tickle. Planned with the large-message stage 1 (direct typesupport),
+  which produces exactly those bytes.
+- **On-new-data callbacks** (`rmw_*_set_on_new_*_callback`, `rmw_event_set_callback`). rclcpp's EventsExecutor
+  cannot run on rmw_tickle. Planned.
+- **Event types:** 6 of 11 are supported. `MESSAGE_LOST`, `PUBLICATION_MATCHED`, `SUBSCRIPTION_MATCHED` and both
+  `*_INCOMPATIBLE_TYPE` are missing; both vendors serve all 11. Planned.
+- **`rmw_take_sequence`** is not defined at all. `rmw_implementation` logs a failed symbol lookup for it, and
+  `rcl_take_sequence()` fails. Planned (added to the gap list on 2026-09-27).
+- **Remote nodes in the graph** (`rmw_get_node_names*`, `*_by_node`) show only this process's nodes, so
+  `ros2 node list/info` and `ros2 param` cannot see other processes. CONTEXT_NODE_PLAN stage 3.
+- **Loaned messages:** planned with receive-buffer lending (the user's decision of 2026-09-27). The vendors support
+  them only with shared memory and for plain types.
+- **On lyrical only** (not in jazzy's list above), `rmw_get_clients_info_by_service` /
+  `rmw_get_servers_info_by_service`. Planned.
+
+**Where TickLE matches a vendor's "not supported" (➖):** pre-allocation (all three), `rmw_get_serialized_message_size`
+(all three), and content filters, network flow endpoints and dynamic messages (as CycloneDDS; FastDDS supports them).
+
+<details><summary>All 94 functions</summary>
+
+| Function | TickLE | FastDDS | CycloneDDS | Note |
+|---|:-:|:-:|:-:|---|
+| **Init and context** | | | | |
+| `rmw_get_implementation_identifier` | ✅ | ✅ | ✅ |  |
+| `rmw_init_options_init` | ✅ | ✅ | ✅ |  |
+| `rmw_init_options_copy` | ✅ | ✅ | ✅ |  |
+| `rmw_init_options_fini` | ✅ | ✅ | ✅ |  |
+| `rmw_shutdown` | ✅ | ✅ | ✅ |  |
+| `rmw_context_fini` | ✅ | ✅ | ✅ |  |
+| `rmw_set_log_severity` | ✅ | ✅ | ✅ |  |
+| `rmw_feature_supported` | ✅ | ✅ | ✅ |  |
+| **Serialization** | | | | |
+| `rmw_get_serialization_format` | ✅ | ✅ | ✅ |  |
+| `rmw_publish_serialized_message` | ❌ | ✅ | ✅ | rosbag2 and `ros2 topic echo --raw` need these |
+| `rmw_get_serialized_message_size` | ➖ | ➖ | ➖ |  |
+| `rmw_serialize` | ✅ | ✅ | ✅ |  |
+| `rmw_deserialize` | ✅ | ✅ | ✅ |  |
+| `rmw_take_serialized_message` | ❌ | ✅ | ✅ | rosbag2 and `ros2 topic echo --raw` need these |
+| `rmw_take_serialized_message_with_info` | ❌ | ✅ | ✅ | rosbag2 and `ros2 topic echo --raw` need these |
+| **Nodes** | | | | |
+| `rmw_create_node` | ✅ | ✅ | ✅ |  |
+| `rmw_destroy_node` | ✅ | ✅ | ✅ |  |
+| **Graph** | | | | |
+| `rmw_node_get_graph_guard_condition` | ✅ | ✅ | ✅ |  |
+| `rmw_get_publisher_names_and_types_by_node` | ⚠️ | ✅ | ✅ | TickLE: this process's own nodes only, until CONTEXT_NODE_PLAN stage 3 (remote nodes are not on the wire yet) |
+| `rmw_get_subscriber_names_and_types_by_node` | ⚠️ | ✅ | ✅ | TickLE: this process's own nodes only, until CONTEXT_NODE_PLAN stage 3 (remote nodes are not on the wire yet) |
+| `rmw_get_service_names_and_types_by_node` | ⚠️ | ✅ | ✅ | TickLE: this process's own nodes only, until CONTEXT_NODE_PLAN stage 3 (remote nodes are not on the wire yet) |
+| `rmw_get_client_names_and_types_by_node` | ⚠️ | ✅ | ✅ | TickLE: this process's own nodes only, until CONTEXT_NODE_PLAN stage 3 (remote nodes are not on the wire yet) |
+| `rmw_get_topic_names_and_types` | ✅ | ✅ | ✅ |  |
+| `rmw_get_node_names` | ⚠️ | ✅ | ✅ | TickLE: this process's own nodes only, until CONTEXT_NODE_PLAN stage 3 (remote nodes are not on the wire yet) |
+| `rmw_get_node_names_with_enclaves` | ⚠️ | ✅ | ✅ | TickLE: this process's own nodes only, until CONTEXT_NODE_PLAN stage 3 (remote nodes are not on the wire yet) |
+| `rmw_count_subscribers` | ✅ | ✅ | ✅ |  |
+| `rmw_compare_gids_equal` | ✅ | ✅ | ✅ |  |
+| **Pre-allocation** | | | | |
+| `rmw_init_publisher_allocation` | ➖ | ➖ | ➖ |  |
+| `rmw_fini_publisher_allocation` | ➖ | ➖ | ➖ |  |
+| `rmw_init_subscription_allocation` | ➖ | ➖ | ➖ |  |
+| `rmw_fini_subscription_allocation` | ➖ | ➖ | ➖ |  |
+| **Publishers** | | | | |
+| `rmw_create_publisher` | ✅ | ✅ | ✅ |  |
+| `rmw_destroy_publisher` | ✅ | ✅ | ✅ |  |
+| `rmw_publish` | ✅ | ✅ | ✅ |  |
+| `rmw_publisher_count_matched_subscriptions` | ✅ | ✅ | ✅ |  |
+| `rmw_publisher_get_actual_qos` | ✅ | ✅ | ✅ |  |
+| `rmw_publisher_assert_liveliness` | ✅ | ✅ | ✅ |  |
+| `rmw_publisher_wait_for_all_acked` | ✅ | ✅ | ✅ |  |
+| `rmw_subscription_count_matched_publishers` | ✅ | ✅ | ✅ |  |
+| `rmw_count_publishers` | ✅ | ✅ | ✅ |  |
+| `rmw_get_gid_for_publisher` | ✅ | ✅ | ✅ |  |
+| `rmw_get_publishers_info_by_topic` | ✅ | ✅ | ✅ |  |
+| **Loaned messages** | | | | |
+| `rmw_borrow_loaned_message` | ❌ | ⚠️ | ⚠️ | loans: TickLE planned (user decision 2026-09-27); FastDDS with data-sharing, CycloneDDS with iceoryx shared memory, plain types only |
+| `rmw_return_loaned_message_from_publisher` | ❌ | ⚠️ | ⚠️ | loans: TickLE planned (user decision 2026-09-27); FastDDS with data-sharing, CycloneDDS with iceoryx shared memory, plain types only |
+| `rmw_publish_loaned_message` | ❌ | ⚠️ | ⚠️ | loans: TickLE planned (user decision 2026-09-27); FastDDS with data-sharing, CycloneDDS with iceoryx shared memory, plain types only |
+| `rmw_take_loaned_message` | ❌ | ⚠️ | ⚠️ | loans: TickLE planned (user decision 2026-09-27); FastDDS with data-sharing, CycloneDDS with iceoryx shared memory, plain types only |
+| `rmw_take_loaned_message_with_info` | ❌ | ⚠️ | ⚠️ | loans: TickLE planned (user decision 2026-09-27); FastDDS with data-sharing, CycloneDDS with iceoryx shared memory, plain types only |
+| `rmw_return_loaned_message_from_subscription` | ❌ | ⚠️ | ⚠️ | loans: TickLE planned (user decision 2026-09-27); FastDDS with data-sharing, CycloneDDS with iceoryx shared memory, plain types only |
+| **Events** | | | | |
+| `rmw_publisher_event_init` | ⚠️ | ✅ | ✅ | TickLE 6 of 11 event types (no MESSAGE_LOST, PUBLICATION/SUBSCRIPTION_MATCHED, PUBLISHER/SUBSCRIPTION_INCOMPATIBLE_TYPE); both vendors all 11 |
+| `rmw_subscription_event_init` | ⚠️ | ✅ | ✅ | TickLE 6 of 11 event types (no MESSAGE_LOST, PUBLICATION/SUBSCRIPTION_MATCHED, PUBLISHER/SUBSCRIPTION_INCOMPATIBLE_TYPE); both vendors all 11 |
+| `rmw_take_event` | ⚠️ | ✅ | ✅ | TickLE 6 of 11 event types (no MESSAGE_LOST, PUBLICATION/SUBSCRIPTION_MATCHED, PUBLISHER/SUBSCRIPTION_INCOMPATIBLE_TYPE); both vendors all 11 |
+| `rmw_subscription_set_on_new_message_callback` | ❌ | ✅ | ✅ | rclcpp's EventsExecutor needs these |
+| `rmw_service_set_on_new_request_callback` | ❌ | ✅ | ✅ | rclcpp's EventsExecutor needs these |
+| `rmw_client_set_on_new_response_callback` | ❌ | ✅ | ✅ | rclcpp's EventsExecutor needs these |
+| `rmw_event_set_callback` | ❌ | ✅ | ✅ | rclcpp's EventsExecutor needs these |
+| `rmw_event_type_is_supported` | ✅ | ✅ | ✅ |  |
+| **Subscriptions** | | | | |
+| `rmw_create_subscription` | ✅ | ✅ | ✅ |  |
+| `rmw_destroy_subscription` | ✅ | ✅ | ✅ |  |
+| `rmw_subscription_get_actual_qos` | ✅ | ✅ | ✅ |  |
+| `rmw_take` | ✅ | ✅ | ✅ |  |
+| `rmw_take_sequence` | ❌ | ✅ | ✅ | not defined in librmw_tickle.so at all (nm, 2026-09-27) |
+| `rmw_take_with_info` | ✅ | ✅ | ✅ |  |
+| `rmw_get_subscriptions_info_by_topic` | ✅ | ✅ | ✅ |  |
+| **Content filter** | | | | |
+| `rmw_subscription_set_content_filter` | ➖ | ✅ | ➖ |  |
+| `rmw_subscription_get_content_filter` | ➖ | ✅ | ➖ |  |
+| **Services and clients** | | | | |
+| `rmw_create_client` | ✅ | ✅ | ✅ |  |
+| `rmw_destroy_client` | ✅ | ✅ | ✅ |  |
+| `rmw_send_request` | ✅ | ✅ | ✅ |  |
+| `rmw_take_response` | ✅ | ✅ | ✅ |  |
+| `rmw_client_request_publisher_get_actual_qos` | ✅ | ✅ | ✅ |  |
+| `rmw_client_response_subscription_get_actual_qos` | ✅ | ✅ | ✅ |  |
+| `rmw_create_service` | ✅ | ✅ | ✅ |  |
+| `rmw_destroy_service` | ✅ | ✅ | ✅ |  |
+| `rmw_take_request` | ✅ | ✅ | ✅ |  |
+| `rmw_send_response` | ✅ | ✅ | ✅ |  |
+| `rmw_service_response_publisher_get_actual_qos` | ✅ | ✅ | ✅ |  |
+| `rmw_service_request_subscription_get_actual_qos` | ✅ | ✅ | ✅ |  |
+| `rmw_get_service_names_and_types` | ✅ | ✅ | ✅ |  |
+| `rmw_count_clients` | ✅ | ✅ | ✅ |  |
+| `rmw_count_services` | ✅ | ✅ | ✅ |  |
+| `rmw_get_gid_for_client` | ✅ | ✅ | ✅ |  |
+| `rmw_service_server_is_available` | ✅ | ✅ | ✅ |  |
+| **Waiting** | | | | |
+| `rmw_create_guard_condition` | ✅ | ✅ | ✅ |  |
+| `rmw_destroy_guard_condition` | ✅ | ✅ | ✅ |  |
+| `rmw_trigger_guard_condition` | ✅ | ✅ | ✅ |  |
+| `rmw_create_wait_set` | ✅ | ✅ | ✅ |  |
+| `rmw_destroy_wait_set` | ✅ | ✅ | ✅ |  |
+| `rmw_wait` | ✅ | ✅ | ✅ |  |
+| **QoS** | | | | |
+| `rmw_qos_profile_check_compatible` | ✅ | ✅ | ✅ |  |
+| **Network flow endpoints** | | | | |
+| `rmw_publisher_get_network_flow_endpoints` | ➖ | ✅ | ➖ |  |
+| `rmw_subscription_get_network_flow_endpoints` | ➖ | ✅ | ➖ |  |
+| **Dynamic messages** | | | | |
+| `rmw_take_dynamic_message` | ➖ | ✅ | ➖ |  |
+| `rmw_take_dynamic_message_with_info` | ➖ | ✅ | ➖ |  |
+| `rmw_serialization_support_init` | ➖ | ✅ | ➖ |  |
+
+</details>
+
 ### 2.8 The five-metric campaign (2026-09-25)
 
 The 2026-09-25 campaign, which the F rows of section 1 have since replaced; kept for its method and its findings.
