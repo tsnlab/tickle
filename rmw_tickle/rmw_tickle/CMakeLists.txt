@@ -77,6 +77,8 @@ target_compile_definitions(rmw_tickle PUBLIC tt_SERVER_CACHE_ENTRY_LENGTH=8 tt_C
 # composed ROS 2 bringup (Nav2's, one container) holds 15-20 of them - core's default, 16, would refuse the rest.
 # 256 is the most a node's uint8_t index allows; the table costs 8 bytes per entry.
 target_compile_definitions(rmw_tickle PUBLIC tt_MAX_NODES=256)
+# (g8, RMW_GAPS_PLAN.md) Several rmw_tickle processes on one host each claim a context id of their own (config.h).
+target_compile_definitions(rmw_tickle PUBLIC tt_CONTEXT_ID_CLAIM=1)
 # Endpoints per context, and the remote entities rmw's graph API can see (CONTEXT_NODE_PLAN.md 4a). A composed Nav2
 # bringup holds ~20 nodes of ~30 endpoints each (9 per rclcpp node by default, more for lifecycle nodes and action
 # servers, plus the application's), ~600 - core's 256 would refuse the rest. 2048 is over 3x that; the endpoint index
@@ -163,7 +165,7 @@ install(
 if(BUILD_TESTING)
   find_package(ament_cmake_test REQUIRED)
 
-  foreach(_test_name test_qos test_node_lifecycle test_guard_condition_wait test_graph test_events test_liveliness_lost_watchdog test_rmw_api_surface test_multi_node test_names_and_types test_publish_take_reuse test_history_keep_all test_keep_all_blocking test_best_available test_heartbeat_piggyback_default test_type_checks test_storage_budget test_service_roundtrip test_context_fini_leaked_node test_unsupported_entry_points test_executor_poll test_domain_id test_psn_codec test_event_teardown test_security_options test_event_callbacks test_g3_events test_take_sequence)
+  foreach(_test_name test_qos test_node_lifecycle test_guard_condition_wait test_graph test_events test_liveliness_lost_watchdog test_rmw_api_surface test_multi_node test_names_and_types test_publish_take_reuse test_history_keep_all test_keep_all_blocking test_best_available test_heartbeat_piggyback_default test_type_checks test_storage_budget test_service_roundtrip test_context_fini_leaked_node test_unsupported_entry_points test_executor_poll test_domain_id test_psn_codec test_event_teardown test_security_options test_event_callbacks test_g3_events test_take_sequence test_context_id_registry)
     add_executable(${_test_name} test/${_test_name}.c)
     target_link_libraries(${_test_name} rmw_tickle Threads::Threads)
     # Every check in these tests is an assert(), so NDEBUG - which Release, now the default build type

@@ -379,3 +379,59 @@ built Release from a worktree, with the standard interfaces from `build_ros2_int
     dead pid's id is reclaimed; an EPERM pid (pid 1) counts as live; a release frees the id.
   - **Mutants:** the self filter by id only; the established side yielding; no move on collision; the registry
     treating dead pids as live; a farewell sent under the old id (the three-context test fails).
+- **Result (Dev, 2026-09-28): PASS.**
+  - **One process, today's behaviour.**
+    - Core's default build (`tt_CONTEXT_ID_CLAIM` 0): `tickle.o` and `hal_linux.o` at -O2 are byte-identical to the
+      parent's (same md5, identical objdump). Control: the same compile with the flag set differs.
+    - A lone rmw_tickle talker, parent (A, twice: A and A2) against g8 (B), captured on the veth
+      (`experiments/g8_announce_identity.sh`): three runs of three arms, IDENTICAL each time. Same id (1), same
+      lengths; B differs from A only in positions where A2 does.
+    - The comparison had to be amended after its first runs, and says so in its header:
+      - the parent alone sends its startup either as one datagram (156 B) or as two (24 + 128 B), depending on
+        whether rmw's poll thread or the first publisher wins, so datagrams are compared from the end;
+      - a time field's high byte can match between A and A2 by chance, so the header area's varying positions are
+        pooled across datagrams.
+  - **Acceptance.** `samehost` PASS: 110 of 140 at the first run; the two processes took ids 254 and 253 from the
+    registry. Every test that passed before still passes: graph, events, matched, takeseq (itype VOID as before; bag,
+    range and peers still FAIL, as they are g1 and g6).
+  - **`rmw_samehost_many.sh`**, with CycloneDDS as the control, both PASS:
+    - `many`: 8 processes in one netns, no `TICKLE_NODE_ID`. Every node sees the other 7, and a ninth's
+      `ros2 node list` names all 8.
+    - `collision`: talker and listener with the registry off take the same id. The newer one logs "moves to 115",
+      and the listener gets 180 of 181.
+  - **Unit tests:**
+    - `test_context_id_claim` (core, mock HAL): a foreign packet with this context's id is not taken as self; the
+      newcomer yields even with the lower address; two established contexts, where the higher address moves after
+      the window; the three-context repair; an explicit id never moves (one ERROR per foreign holder); no free id
+      refuses at creation and a collision leaves the context silent; the id at creation.
+    - `test_context_id_registry` (the Linux registry on a temporary file): the preferred id, then the highest free
+      one; release; a dead pid's id taken back; pid 1 (EPERM) holds its id; `avoid` and `salt`; no registry.
+  - **Plan's fix before push: a muted context is never silent towards its user.** At first a context left without an
+    id had the HAL report its sends as done.
+    - Now every send fails: `tt_Publisher_publish` returns `tt_RET_IO_ERROR`, the HAL returns -1 with ENETDOWN, and
+      `rmw_publish` returns `RMW_RET_ERROR` naming the cause.
+    - It logs ERROR once when muting starts, and counts every refusal in `id_muted_drops` on rmw's shutdown line.
+    - Test: forced exhaustion, 3 publishes, 3 errors, `id_muted_drops` 3.
+  - **Mutants**, each failing at the predicted assert:
+    - the self filter by id only;
+    - the established side yielding;
+    - no move on collision;
+    - an announce under the old id on moving;
+    - the registry treating dead pids as alive;
+    - a muted publish reported as a success.
+    - The old-id-announce mutant first survived: the mock clock gave the keeper's repair and the mover's stray
+      announce the same generation, so the third context took one for the other. The test now lets delivery take
+      time, as it does on a link.
+  - The rmw suite passes in a private netns, 56/56.
+  - **CPU**, `rmw_lib_ab.sh`, parent against the final g8 library, 10 reps interleaved, with a fresh A/A, read as
+    pre-registered. All four rows are inside:
+
+    | gap | metric | B-A median (2 SE) | A/A B-A (2 SE) | verdict |
+    |---|---|---:|---:|---|
+    | 5 ms | RTT | -0.4 us (1.2) | +1.1 us (1.7) | inside |
+    | 5 ms | pong CPU | -1.0 ms (0.7) | +0.5 ms (1.6) | inside |
+    | 100 ms | RTT | +21.0 us (25.6) | +14.2 us (29.2) | inside |
+    | 100 ms | pong CPU | +0.3 ms (0.4) | +0.0 ms (0.7) | inside |
+
+    - The first run, on the library before the muting fix, was inside the swing on every row as well (`/tmp/g8_ab`).
+    - The 100 ms RTT row resolves only to about 40 us, as in g2 and g3.

@@ -243,8 +243,61 @@ tt_ret_t tt_wake_signal(struct tt_Context* node) {
     return tt_RET_OK;
 }
 
+#if tt_CONTEXT_ID_CLAIM
+// (g8) The mock's host registry: the ids held in this process, which every context here shares, as contexts on one
+// host share /dev/shm. A test sets test_mock_ids_held[] to stand for other processes.
+bool test_mock_ids_held[tt_MAX_CONTEXT_IDS];
+
+static bool test_mock_avoided(const uint8_t* avoid, uint32_t id) {
+    return avoid != NULL && ((avoid[id / 8] >> (id % 8)) & 1U) != 0;
+}
+
+// The same choice hal_linux.c's registry makes.
+uint8_t tt_claim_context_id(struct tt_Context* node, uint8_t preferred, const uint8_t* avoid, uint32_t salt) {
+    uint8_t id = tt_CONTEXT_ID_INVALID;
+    if (preferred > 0 && preferred < 255 && !test_mock_ids_held[preferred] && !test_mock_avoided(avoid, preferred)) {
+        id = preferred;
+    } else {
+        uint32_t free_count = 0;
+        for (uint32_t i = 254; i > 0; i--) {
+            free_count += !test_mock_ids_held[i] && !test_mock_avoided(avoid, i) ? 1U : 0U;
+        }
+        uint32_t skip = free_count > 0 && salt != 0 ? salt % free_count : 0;
+        for (uint32_t i = 254; i > 0 && free_count > 0; i--) {
+            if (!test_mock_ids_held[i] && !test_mock_avoided(avoid, i) && skip-- == 0) {
+                id = (uint8_t)i;
+                break;
+            }
+        }
+    }
+    if (id != tt_CONTEXT_ID_INVALID) {
+        if (node->hal.claimed_id != tt_CONTEXT_ID_INVALID) {
+            test_mock_ids_held[node->hal.claimed_id] = false;
+        }
+        test_mock_ids_held[id] = true;
+        node->hal.claimed_id = id;
+    }
+    return id;
+}
+
+bool tt_is_own_address(const struct tt_Context* node, uint32_t ip, uint16_t port) {
+    return ip == node->hal.own_ip && port == node->hal.own_port;
+}
+
+void tt_own_address(const struct tt_Context* node, uint32_t* ip, uint16_t* port) {
+    *ip = node->hal.own_ip;
+    *port = node->hal.own_port;
+}
+#endif
+
 int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     (void)node;
+#if tt_CONTEXT_ID_CLAIM
+    if (node->id_muted) {
+        node->id_muted_drops++; // as hal_linux.c: a context without an id of its own sends nothing, and fails
+        return -1;
+    }
+#endif
 
     test_mock_send_call_count++;
     test_mock_capture_send(buf, len);
@@ -259,6 +312,12 @@ int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
 int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
     (void)node;
     (void)buf;
+#if tt_CONTEXT_ID_CLAIM
+    if (node->id_muted) {
+        node->id_muted_drops++; // as hal_linux.c: a context without an id of its own sends nothing, and fails
+        return -1;
+    }
+#endif
 
     test_mock_send_call_count++;
     test_mock_send_to_call_count++;
@@ -301,6 +360,12 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
 int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
     (void)node;
+#if tt_CONTEXT_ID_CLAIM
+    if (node->id_muted) {
+        node->id_muted_drops++; // as hal_linux.c: a context without an id of its own sends nothing, and fails
+        return -1;
+    }
+#endif
 
     // Captured as the one datagram the two pieces make, like the other send functions' buffers. Static:
     // a fragment's pieces are small, but a zero-copy body may be a whole datagram of 64 KB.

@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <tickle/config.h> // tt_CONTEXT_ID_CLAIM, tt_MAX_CONTEXT_IDS
+
 // Platform detection macros. Only these two platforms have a real HAL (src/hal_freertos.c,
 // src/hal_linux.c) - there is no generic/fallback implementation, so an unsupported host fails
 // here at compile time instead of later at link time with a confusing "undefined reference to
@@ -169,6 +171,20 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
 // not carry one: x.y.z.255 implies /24 only by convention. The operating system already knows
 // every interface's address, netmask and broadcast together, so this asks it rather than guessing.
 bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, uint32_t* bcast);
+
+#if tt_CONTEXT_ID_CLAIM
+// (g8) Claims a context id on this host for `node`: `preferred` when no other live context holds it and `avoid` (a
+// tt_MAX_CONTEXT_IDS-bit set, or NULL) does not name it; otherwise a free id not in `avoid` - the highest, counting
+// down from 254, or with `salt` non-zero the one salt picks among the free ones, so that two contexts choosing from
+// the same view do not choose alike. The id this context held before, if any, is released. 0: none free. Without a
+// host registry the choice is made from `avoid` alone, and the link settles any clash. tt_close() releases the id.
+uint8_t tt_claim_context_id(struct tt_Context* node, uint8_t preferred, const uint8_t* avoid, uint32_t salt);
+// (g8) Whether ip:port - host order, as tt_receive() reports a sender - is `node`'s own data socket, which every
+// datagram it sends comes from.
+bool tt_is_own_address(const struct tt_Context* node, uint32_t ip, uint16_t port);
+// (g8) `node`'s own data socket, for ordering two contexts that hold one id.
+void tt_own_address(const struct tt_Context* node, uint32_t* ip, uint16_t* port);
+#endif
 
 // The MTU of the local interface that owns `addr` (host byte order), or -1 when it cannot be told.
 // Asked once per resolved link at node creation, so core can say when the link is narrower than the

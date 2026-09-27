@@ -183,4 +183,21 @@ struct tt_hal {
     uint64_t rx_batch_calls;
     uint64_t rx_batch_datagrams;
     uint64_t rx_batch_full;
+#if tt_CONTEXT_ID_CLAIM
+    // (g8) The data socket's own address, host order, read back after tt_bind() (the link's address when the socket
+    // is bound to any address), and the id this context holds in the host registry (0: none).
+    uint32_t own_ip;
+    uint16_t own_port;
+    uint8_t claimed_id;
+#endif
 };
+
+#if tt_CONTEXT_ID_CLAIM
+// (g8) The host registry behind tt_claim_context_id(), as plain functions of a file, so they can be tested alone:
+// tt_MAX_CONTEXT_IDS int32_t pids, indexed by id, read and written under flock(). A pid that is not alive
+// (kill(pid, 0) fails with ESRCH) holds nothing; one that cannot be checked (EPERM, another pid namespace) counts as
+// alive - the link settles a mistake. `path` NULL, or a file that cannot be opened: the choice is made from `avoid`
+// alone. Returns the id claimed for `pid`, or 0.
+uint8_t tt_id_registry_claim(const char* path, uint8_t preferred, const uint8_t* avoid, uint32_t salt, int32_t pid);
+void tt_id_registry_release(const char* path, uint8_t id, int32_t pid);
+#endif

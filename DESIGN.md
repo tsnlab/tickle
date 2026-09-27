@@ -347,6 +347,14 @@ single-submessage form:
 - `version` is `tt_VERSION`. A datagram of another version is dropped, and the mismatch is logged once
   per remote node.
 - `source` is the sending context's ID - the context id, formerly node id (1-254; 0 is `tt_CONTEXT_ID_INVALID`).
+  It must be unique on the link, since every per-peer table is keyed by it.
+  - By default a context takes its address's last octet, so two processes on one address collide.
+  - With `tt_CONTEXT_ID_CLAIM` (rmw_tickle's build; RMW_GAPS_PLAN.md g8), a context instead claims an id in a host
+    registry: the last octet when no other process holds it.
+  - It treats a datagram as its own only when it comes from its own data socket.
+  - A datagram carrying its id from any other address is a collision, which the newer context resolves by moving to
+    an id no one on the link uses.
+  - The format is the same either way.
 - `receiver` is the destination node ID, or `tt_SUBMESSAGE_ID_ALL` (0xff) for every node.
 - `length` is the whole submessage in **bytes**, header included, normally padded to a multiple of 4. It
   is the offset to the next submessage. It is not a count of 4-byte words.

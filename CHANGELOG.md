@@ -20,6 +20,15 @@ number, `tt_VERSION`, which moves independently.
     A late join, a durable replay and a late arrival are not losses.
   - `rmw_get_clients_info_by_service` / `rmw_get_servers_info_by_service` (lyrical) list local and remote clients
     and servers, one row each.
+- **rmw_tickle: several processes on one host each get a context id of their own** (rmw_tickle/RMW_GAPS_PLAN.md g8,
+  `tt_CONTEXT_ID_CLAIM` in config.h). Until now every process on one address took the same id (the address's last
+  octet) and dropped the others' packets as its own, so a talker and a listener in two terminals exchanged nothing
+  unless `TICKLE_NODE_ID` was set.
+  - A context now claims its id in a host registry in /dev/shm, keeping the last octet when it is free.
+  - A packet is its own only when it comes from its own data socket.
+  - Two contexts that still meet on one id are separated on the link: the newer one moves to an id nobody uses.
+  - An explicit `TICKLE_NODE_ID` never moves.
+  - No wire change. The flag is set only in rmw_tickle's build; core's default build is byte-identical.
 - **rmw_tickle: `rmw_take_sequence`** (rmw_tickle/RMW_GAPS_PLAN.md g5). Takes up to `count` messages in order, following
   rmw.h's argument rules. The symbol was not defined before, so `rcl_take_sequence()` failed and
   rmw_implementation logged a failed lookup at every start.

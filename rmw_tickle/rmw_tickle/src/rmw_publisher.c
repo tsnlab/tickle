@@ -1229,7 +1229,12 @@ static rmw_ret_t publish_blocking(rmw_tickle_publisher_t* pub_impl, void* tickle
             return RMW_RET_OK;
         }
         if (tt_RET_WOULD_BLOCK != ret) {
-            RMW_SET_ERROR_MSG("tt_Publisher_publish() failed");
+            if (pub_impl->node->context_impl->tickle_context.id_muted) { // (g8)
+                RMW_SET_ERROR_MSG("rmw_tickle: this context has no id of its own on the link - every id is in use - "
+                                  "so nothing can be sent");
+            } else {
+                RMW_SET_ERROR_MSG("tt_Publisher_publish() failed");
+            }
             return RMW_RET_ERROR;
         }
 

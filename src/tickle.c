@@ -2250,6 +2250,141 @@ static tt_ret_t schedule_periodic_tasks(struct tt_Context* node) {
     return tt_RET_OK;
 }
 
+#if tt_CONTEXT_ID_CLAIM
+// ---- (g8, config.h's tt_CONTEXT_ID_CLAIM) keeping a context's id its own on the link.
+
+// How long a context counts as new: it yields on a collision within this of its creation, and a collision that
+// outlasts it is between two established contexts.
+#define ID_SETTLE_NS (2 * tt_CONTEXT_UPDATE_INTERVAL)
+
+static void set_id_bit(uint8_t* set, uint32_t id) {
+    set[id / 8] |= (uint8_t)(1U << (id % 8));
+}
+
+// The id at creation: an explicit one as it is (claimed in the registry only if free there), otherwise the preferred
+// id - the address's last octet - or, when another context on this host holds it, a free one.
+static bool claim_initial_id(struct tt_Context* node) {
+    node->hal.claimed_id = tt_CONTEXT_ID_INVALID;
+    node->id_explicit = _tt_CONFIG.context_id != tt_CONTEXT_ID_INVALID;
+    node->id_muted = false;
+    node->id_muted_drops = 0;
+    node->created_ns = tt_get_ns();
+    node->collision_since_ns = 0;
+    node->collision_last_ns = 0;
+    memset(node->ids_seen, 0, sizeof(node->ids_seen));
+    node->collision_logged_ip = 0;
+    node->collision_logged_port = 0;
+    int32_t preferred = node->id_explicit ? _tt_CONFIG.context_id : tt_get_node_id();
+    if (preferred <= tt_CONTEXT_ID_INVALID || preferred >= tt_CONTEXT_ID_BROADCAST) {
+        TT_LOG_ERROR("Invalid node id: %d", preferred);
+        return false;
+    }
+    if (node->id_explicit) {
+        // Every other id avoided: the registry records this one if it is free, and nothing else.
+        uint8_t others[tt_MAX_CONTEXT_IDS / 8];
+        memset(others, 0xff, sizeof(others));
+        others[preferred / 8] &= (uint8_t)~(1U << (preferred % 8));
+        if (tt_claim_context_id(node, (uint8_t)preferred, others, 0) != preferred) {
+            TT_LOG_ERROR("Context id %d was set explicitly, but another context on this host holds it", preferred);
+        }
+        node->id = (uint8_t)preferred;
+        return true;
+    }
+    uint8_t claimed = tt_claim_context_id(node, (uint8_t)preferred, NULL, 0);
+    if (claimed == tt_CONTEXT_ID_INVALID) {
+        TT_LOG_ERROR("No free context id: every id from 1 to 254 is held by a context on this host");
+        return false;
+    }
+    if (claimed != preferred) {
+        TT_LOG_INFO("Context id %d is held by another context on this host; this one takes %u", preferred, claimed);
+    }
+    node->id = claimed;
+    return true;
+}
+
+// A full announce, sent at once: after a move, under the new id; for the context that keeps an id, so its peers
+// replace whatever the other holder's packets left under it.
+static void announce_id_now(struct tt_Context* node, uint64_t time, void* param) {
+    (void)param;
+    node->last_modified = time;
+    broadcast_goodbye(node);
+}
+
+static void announce_after_id_change(struct tt_Context* node) {
+    tt_Context_unschedule(node, announce_id_now, NULL);
+    (void)tt_Context_schedule(node, tt_get_ns(), announce_id_now, NULL);
+}
+
+// Moves this context to an id nobody on the link has used and no context on this host holds. No farewell goes out
+// under the old id: its other holder is still there, and a farewell from that id would make peers drop it. The
+// entries this context left under the old id are replaced by the other holder's next announce, which it sends as soon
+// as it sees the collision.
+static void move_id(struct tt_Context* node, uint32_t other_ip, uint16_t other_port) {
+    uint8_t avoid[tt_MAX_CONTEXT_IDS / 8];
+    _tt_memcpy(avoid, node->ids_seen, sizeof(avoid));
+    set_id_bit(avoid, node->id);
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(node, &own_ip, &own_port);
+    uint8_t next = tt_claim_context_id(node, tt_CONTEXT_ID_INVALID, avoid, (uint32_t)own_port + 1U);
+    if (next == tt_CONTEXT_ID_INVALID) {
+        TT_LOG_ERROR("Context id %u is also held by %u.%u.%u.%u:%u and no id is free on the link: this context stops "
+                     "sending",
+                     node->id, (other_ip >> 24) & 0xffU, (other_ip >> 16) & 0xffU, (other_ip >> 8) & 0xffU,
+                     other_ip & 0xffU, other_port);
+        node->id_muted = true;
+        return;
+    }
+    TT_LOG_WARNING("Context id %u is also held by %u.%u.%u.%u:%u: this context moves to %u", node->id,
+                   (other_ip >> 24) & 0xffU, (other_ip >> 16) & 0xffU, (other_ip >> 8) & 0xffU, other_ip & 0xffU,
+                   other_port, next);
+    node->id = next;
+    node->collision_since_ns = 0;
+    announce_after_id_change(node);
+}
+
+// A packet carrying this context's id from another context: two hold one id. A context in its startup window
+// yields; an established one keeps its id and announces at once. When the collision outlasts the window, both
+// sides are established, and the one with the higher (address, port) moves. An explicit id never moves: each
+// foreign holder is reported once.
+static void handle_id_collision(struct tt_Context* node, uint32_t ip, uint16_t port) {
+    if (node->id_explicit) {
+        if (node->collision_logged_ip != ip || node->collision_logged_port != port) {
+            node->collision_logged_ip = ip;
+            node->collision_logged_port = port;
+            TT_LOG_ERROR("Context id %u was set explicitly, and %u.%u.%u.%u:%u uses it too: the two cannot tell each "
+                         "other's packets apart",
+                         node->id, (ip >> 24) & 0xffU, (ip >> 16) & 0xffU, (ip >> 8) & 0xffU, ip & 0xffU, port);
+        }
+        return;
+    }
+    if (node->id_muted) {
+        return;
+    }
+    uint64_t now = tt_get_ns();
+    bool established = now - node->created_ns >= ID_SETTLE_NS;
+    if (node->collision_since_ns == 0 || now - node->collision_last_ns > ID_SETTLE_NS) {
+        node->collision_since_ns = now; // a new collision
+        if (established) {
+            announce_after_id_change(node);
+        }
+    }
+    node->collision_last_ns = now;
+    if (!established) {
+        move_id(node, ip, port);
+        return;
+    }
+    if (now - node->collision_since_ns >= ID_SETTLE_NS) {
+        uint32_t own_ip = 0;
+        uint16_t own_port = 0;
+        tt_own_address(node, &own_ip, &own_port);
+        if (own_ip > ip || (own_ip == ip && own_port > port)) {
+            move_id(node, ip, port);
+        }
+    }
+}
+#endif
+
 tt_ret_t tt_Context_create(struct tt_Context* node) {
     if (node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
@@ -2273,12 +2408,18 @@ tt_ret_t tt_Context_create(struct tt_Context* node) {
 
     node->entity_id_base = (uint32_t)tt_get_ns();
 
+#if tt_CONTEXT_ID_CLAIM
+    if (!claim_initial_id(node)) {
+        return tt_RET_IILEGAL_NODE_ID;
+    }
+#else
     // _tt_CONFIG.context_id (see its own comment) skips auto-detection when set explicitly.
     node->id = (uint8_t)(_tt_CONFIG.context_id != tt_CONTEXT_ID_INVALID ? _tt_CONFIG.context_id : tt_get_node_id());
     if (node->id == tt_CONTEXT_ID_INVALID || node->id == tt_CONTEXT_ID_BROADCAST) {
         TT_LOG_ERROR("Invalid node id: %u", node->id);
         return tt_RET_IILEGAL_NODE_ID;
     }
+#endif
 
     if (tt_bind(node) != tt_RET_OK) {
         TT_LOG_ERROR("Cannot bind");
@@ -4110,6 +4251,14 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
+#if tt_CONTEXT_ID_CLAIM
+    // (g8) A context left without an id of its own sends nothing, and says so: an error, never a silent success.
+    if (locked_node != NULL && locked_node->id_muted) {
+        locked_node->id_muted_drops++;
+        state_unlock(locked_node);
+        return tt_RET_IO_ERROR;
+    }
+#endif
     tt_ret_t result = publisher_publish_locked(pub, data);
     if (result == tt_RET_OK && pub->liveliness_lease_duration_ns != 0) {
         // The DATA asserts the writer's liveliness (tt_Publisher_assert_liveliness() rate-limits on this).
@@ -9320,6 +9469,13 @@ static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t he
     // CALLREQUEST/ CALLRESPONSE, and so has to be threaded down per-submessage rather than dropping the whole packet up
     // front.
     bool self_sent = header->source == node->id;
+#if tt_CONTEXT_ID_CLAIM
+    if (self_sent && !tt_is_own_address(node, sender_ip, sender_port)) {
+        handle_id_collision(node, sender_ip, sender_port);
+        return true; // another context's packet under this id: neither this context's own nor a peer's to process
+    }
+    set_id_bit(node->ids_seen, header->source);
+#endif
     if (self_sent) {
         node->rx_self_sent++;
     }

@@ -447,6 +447,19 @@
 // 255 is reserved for the broadcast address.
 #define tt_CONTEXT_ID_INVALID 0x00
 #define tt_CONTEXT_ID_BROADCAST 0xff
+// (g8, rmw_tickle/RMW_GAPS_PLAN.md, 2026-09-28) Several contexts on one host, each with its own id. 0, the default: a
+// context takes the id above - the address's last octet, or _tt_CONFIG.context_id - as it always has, so two
+// processes on one address share it and drop each other's every packet as their own. 1, rmw_tickle's build:
+// - a context claims its id in a host registry (the HAL's tt_claim_context_id()): the preferred id when no other
+//   live process holds it, else a free one;
+// - a packet is its own only when it comes from its own data socket (tt_is_own_address()) - one carrying its id from
+//   anywhere else is a collision, which the newer of the two contexts resolves by moving to an id nobody on the link
+//   uses (tickle.c, handle_id_collision());
+// - an id set explicitly never moves.
+// The wire is unchanged: a source is still the sending context's id, unique on the link.
+#ifndef tt_CONTEXT_ID_CLAIM
+#define tt_CONTEXT_ID_CLAIM 0
+#endif
 // Every context id the wire can name (a uint8_t): the size of struct tt_Context's per-peer tables, which are indexed
 // by a remote context's id. Not a setting. They were sized by tt_MAX_ENDPOINT_COUNT, which was 256 only by
 // coincidence and so could not grow (CONTEXT_NODE_PLAN.md 4a, 2026-09-27).

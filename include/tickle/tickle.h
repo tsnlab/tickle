@@ -344,6 +344,23 @@ struct tt_Context {
     // tt_hal is defined indirectly via <tickle/hal.h>, which includes the
     // platform-specific HAL header (<tickle/hal_linux.h> or <tickle/hal_freertos.h>).
     struct tt_hal hal; // NOLINT(misc-include-cleaner)
+#if tt_CONTEXT_ID_CLAIM
+    // (g8, config.h's tt_CONTEXT_ID_CLAIM) Keeping this context's id its own on the link. id_explicit: set from
+    // _tt_CONFIG.context_id, so it never moves. id_muted: a collision left no free id, so this context sends nothing.
+    // created_ns starts its startup window, in which it yields on a collision. collision_since_ns / _last_ns bound
+    // the current collision (0: none). ids_seen: every source heard on the link, which a move avoids.
+    // collision_logged_*: the last foreign holder of an explicit id reported, so each is reported once.
+    // id_muted_drops: what a muted context was asked to send and refused - publishes, and datagrams at the HAL.
+    bool id_explicit;
+    bool id_muted;
+    uint64_t id_muted_drops;
+    uint64_t created_ns;
+    uint64_t collision_since_ns;
+    uint64_t collision_last_ns;
+    uint8_t ids_seen[tt_MAX_CONTEXT_IDS / 8];
+    uint32_t collision_logged_ip;
+    uint16_t collision_logged_port;
+#endif
     // Threading (tt_THREAD_SAFE, config.h) - see "Threading" at tt_Context_lock(). One lock, guarding the
     // node, its entities and the scheduler heap. User callbacks run with it held and may call back into
     // core, so it is re-entrant - not through a recursive mutex but by recording its owner: re-entry by the

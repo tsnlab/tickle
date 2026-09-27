@@ -49,6 +49,16 @@
 #include "consts.h"
 #include "log.h"
 
+#if tt_CONTEXT_ID_CLAIM
+#include <fcntl.h>  // open()
+#include <signal.h> // kill()
+#include <stdlib.h> // getenv()
+
+#include <sys/file.h>  // flock()
+#include <sys/stat.h>  // fchmod()
+#include <sys/types.h> // pid_t
+#endif
+
 // TT_RX_DROP_PERCENT - receive-side loss injection for experiments, 0 (off) by default and not
 // something a deployment ever sets.
 //
@@ -250,6 +260,185 @@ static void report_receive_buffer(int sock, const char* which) {
     }
 }
 
+#if tt_CONTEXT_ID_CLAIM
+// ---- (g8, config.h's tt_CONTEXT_ID_CLAIM) context ids of their own for several contexts on one host.
+
+static bool pid_alive(int32_t pid) {
+    if (pid <= 0) {
+        return false;
+    }
+    // EPERM (another user's process) or a pid from another namespace cannot be checked: counted alive, and the link
+    // settles it if that was wrong.
+    return kill((pid_t)pid, 0) == 0 || errno != ESRCH;
+}
+
+static bool id_avoided(const uint8_t* avoid, uint32_t id) {
+    return avoid != NULL && ((avoid[id / 8] >> (id % 8)) & 1U) != 0;
+}
+
+// The id to take, given which are held: `preferred` if free, else the highest free one, or with `salt` the free one
+// it picks. 0: none free.
+static uint8_t pick_context_id(const bool held[tt_MAX_CONTEXT_IDS], const uint8_t* avoid, uint8_t preferred,
+                               uint32_t salt) {
+    if (preferred > tt_CONTEXT_ID_INVALID && preferred < tt_CONTEXT_ID_BROADCAST && !held[preferred] &&
+        !id_avoided(avoid, preferred)) {
+        return preferred;
+    }
+    uint32_t free_count = 0;
+    for (uint32_t id = tt_CONTEXT_ID_BROADCAST - 1; id > tt_CONTEXT_ID_INVALID; id--) {
+        free_count += !held[id] && !id_avoided(avoid, id) ? 1U : 0U;
+    }
+    if (free_count == 0) {
+        return tt_CONTEXT_ID_INVALID;
+    }
+    uint32_t skip = salt != 0 ? salt % free_count : 0;
+    for (uint32_t id = tt_CONTEXT_ID_BROADCAST - 1; id > tt_CONTEXT_ID_INVALID; id--) {
+        if (!held[id] && !id_avoided(avoid, id) && skip-- == 0) {
+            return (uint8_t)id;
+        }
+    }
+    return tt_CONTEXT_ID_INVALID;
+}
+
+// The registry file, open and locked, or -1 (no path, or it cannot be used).
+static int lock_registry(const char* path) {
+    if (path == NULL) {
+        return -1;
+    }
+    int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+    if (fd < 0) {
+        return -1;
+    }
+    (void)fchmod(fd, 0666); // every user's contexts share it; the umask would narrow it
+    if (flock(fd, LOCK_EX) != 0) {
+        (void)close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static void unlock_registry(int fd) {
+    (void)flock(fd, LOCK_UN);
+    (void)close(fd);
+}
+
+uint8_t tt_id_registry_claim(const char* path, uint8_t preferred, const uint8_t* avoid, uint32_t salt, int32_t pid) {
+    bool held[tt_MAX_CONTEXT_IDS] = {false};
+    int32_t pids[tt_MAX_CONTEXT_IDS] = {0};
+    int fd = lock_registry(path);
+    if (fd < 0) {
+        return pick_context_id(held, avoid, preferred, salt);
+    }
+    // A short file reads as zeros past its end: those ids are free.
+    if (pread(fd, pids, sizeof(pids), 0) < 0) {
+        memset(pids, 0, sizeof(pids));
+    }
+    for (uint32_t id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
+        held[id] = pid_alive(pids[id]);
+    }
+    uint8_t id = pick_context_id(held, avoid, preferred, salt);
+    if (id != tt_CONTEXT_ID_INVALID &&
+        pwrite(fd, &pid, sizeof(pid), (off_t)id * (off_t)sizeof(int32_t)) != (ssize_t)sizeof(pid)) {
+        TT_LOG_WARNING("Cannot record context id %u in %s: %s", id, path, strerror(errno));
+    }
+    unlock_registry(fd);
+    return id;
+}
+
+void tt_id_registry_release(const char* path, uint8_t id, int32_t pid) {
+    int fd = lock_registry(path);
+    if (fd < 0) {
+        return;
+    }
+    int32_t holder = 0;
+    if (pread(fd, &holder, sizeof(holder), (off_t)id * (off_t)sizeof(int32_t)) == (ssize_t)sizeof(holder) &&
+        holder == pid) {
+        int32_t none = 0;
+        if (pwrite(fd, &none, sizeof(none), (off_t)id * (off_t)sizeof(int32_t)) != (ssize_t)sizeof(none)) {
+            TT_LOG_WARNING("Cannot release context id %u in %s: %s", id, path, strerror(errno));
+        }
+    }
+    unlock_registry(fd);
+}
+
+// One registry per well-known port and link, in /dev/shm: two network namespaces with different addresses share
+// /dev/shm but never an address. TICKLE_ID_REGISTRY names another directory, or "off" for none.
+static const char* registry_path(char* buf, size_t size) {
+    const char* dir = getenv("TICKLE_ID_REGISTRY");
+    if (dir != NULL && strcmp(dir, "off") == 0) {
+        return NULL;
+    }
+    int written = snprintf(buf, size, "%s/tickle-context-ids-%d-%s-%s", dir != NULL ? dir : "/dev/shm", _tt_CONFIG.port,
+                           _tt_CONFIG.addr, _tt_CONFIG.broadcast);
+    return written > 0 && (size_t)written < size ? buf : NULL;
+}
+
+#define REGISTRY_PATH_LENGTH 256
+
+uint8_t tt_claim_context_id(struct tt_Context* node, uint8_t preferred, const uint8_t* avoid, uint32_t salt) {
+    char path[REGISTRY_PATH_LENGTH];
+    const char* registry = registry_path(path, sizeof(path));
+    int32_t pid = (int32_t)getpid();
+    uint8_t id = tt_id_registry_claim(registry, preferred, avoid, salt, pid);
+    if (id != tt_CONTEXT_ID_INVALID) {
+        if (node->hal.claimed_id != tt_CONTEXT_ID_INVALID && node->hal.claimed_id != id) {
+            tt_id_registry_release(registry, node->hal.claimed_id, pid);
+        }
+        node->hal.claimed_id = id;
+    }
+    return id;
+}
+
+// A context without an id of its own sends nothing: each send fails, and is counted (tt_Context.id_muted_drops).
+static int32_t refuse_muted_send(struct tt_Context* node) {
+    node->id_muted_drops++;
+    errno = ENETDOWN;
+    return -1;
+}
+
+static void release_claimed_id(struct tt_Context* node) {
+    if (node->hal.claimed_id == tt_CONTEXT_ID_INVALID) {
+        return;
+    }
+    char path[REGISTRY_PATH_LENGTH];
+    tt_id_registry_release(registry_path(path, sizeof(path)), node->hal.claimed_id, (int32_t)getpid());
+    node->hal.claimed_id = tt_CONTEXT_ID_INVALID;
+}
+
+// The data socket's address, read back: bound to any address, it is the link's.
+static void record_own_address(struct tt_Context* node) {
+    struct sockaddr_in bound;
+    socklen_t length = sizeof(bound);
+    node->hal.own_ip = 0;
+    node->hal.own_port = 0;
+    if (getsockname(node->hal.data_sock, (struct sockaddr*)&bound, &length) == 0) {
+        node->hal.own_ip = ntohl(bound.sin_addr.s_addr);
+        node->hal.own_port = ntohs(bound.sin_port);
+    }
+    uint32_t addr = 0;
+    uint32_t netmask = 0;
+    uint32_t bcast = 0;
+    if (node->hal.own_ip == 0 && tt_resolve_link(_tt_CONFIG.broadcast, &addr, &netmask, &bcast)) {
+        node->hal.own_ip = addr;
+    }
+}
+
+#define LOOPBACK_NET 127U
+#define BITS_IN_3BYTES_HOST 24U
+
+bool tt_is_own_address(const struct tt_Context* node, uint32_t ip, uint16_t port) {
+    // Two contexts on one host never share a port; on one address, a port is enough. The address only tells this
+    // host's own loopback copy, or the link's, from another host whose context took the same port number.
+    return port == node->hal.own_port &&
+           (ip == node->hal.own_ip || node->hal.own_ip == 0 || (ip >> BITS_IN_3BYTES_HOST) == LOOPBACK_NET);
+}
+
+void tt_own_address(const struct tt_Context* node, uint32_t* ip, uint16_t* port) {
+    *ip = node->hal.own_ip;
+    *port = node->hal.own_port;
+}
+#endif
+
 tt_ret_t tt_bind(struct tt_Context* node) {
     // Set before anything below can fail into tt_close(): -1 says "nothing to close here yet",
     // the same convention node->hal.sock itself relies on implicitly (every failure that reaches
@@ -370,6 +559,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
+#if tt_CONTEXT_ID_CLAIM
+    record_own_address(node);
+#endif
 
     // eventfd(2) tt_receive() also polls, purely so tt_wake_signal() has something to write to
     // that wakes it up - see hal_linux.h's own comment on wake_fd for why this (rather than a
@@ -385,6 +577,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
 }
 
 void tt_close(struct tt_Context* node) {
+#if tt_CONTEXT_ID_CLAIM
+    release_claimed_id(node);
+#endif
     node->hal.rx_count = 0; // anything a batch still held belonged to the sockets closed below
     node->hal.rx_next = 0;
     if (node->hal.data_sock >= 0 && close(node->hal.data_sock) < 0) {
@@ -401,6 +596,11 @@ void tt_close(struct tt_Context* node) {
 }
 
 int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
+#if tt_CONTEXT_ID_CLAIM
+    if (node->id_muted) {
+        return refuse_muted_send(node); // (g8) see refuse_muted_send()
+    }
+#endif
     TT_TRACE(tt_TRACE_TX_START);
     int32_t sent = (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
                                    sizeof(struct sockaddr_in));
@@ -409,6 +609,11 @@ int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
 }
 
 int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
+#if tt_CONTEXT_ID_CLAIM
+    if (node->id_muted) {
+        return refuse_muted_send(node); // (g8) see refuse_muted_send()
+    }
+#endif
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(ip);
@@ -423,6 +628,11 @@ int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_
 
 int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
+#if tt_CONTEXT_ID_CLAIM
+    if (node->id_muted) {
+        return refuse_muted_send(node); // (g8) see refuse_muted_send()
+    }
+#endif
     // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
     struct iovec iov[2] = {
         {.iov_base = (void*)hdr, .iov_len = hdr_len},
@@ -453,6 +663,11 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
 #define TT_SEND_BATCH_CHUNK 64
 
 int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+#if tt_CONTEXT_ID_CLAIM
+    if (node->id_muted) {
+        return refuse_muted_send(node); // (g8) see refuse_muted_send()
+    }
+#endif
     uint32_t sent = 0;
     while (sent < count) {
         uint32_t chunk = count - sent < TT_SEND_BATCH_CHUNK ? count - sent : TT_SEND_BATCH_CHUNK;

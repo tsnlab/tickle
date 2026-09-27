@@ -917,7 +917,7 @@ what they return `RMW_RET_UNSUPPORTED` on).
 
 | Feature | TickLE | FastDDS | CycloneDDS | How it was checked |
 |---|:-:|:-:|:-:|---|
-| Several processes on one host (talker and listener as two processes; `ros2 topic echo` beside a talker) | ❌ | ✅ | ✅ | acceptance `samehost` (2026-09-28): CycloneDDS 80 received, rmw_tickle 0 - the processes share a context id and drop each other's packets unless `TICKLE_NODE_ID` is set. RMW_GAPS_PLAN g8, top priority |
+| Several processes on one host (talker and listener as two processes; `ros2 topic echo` beside a talker) | ✅ | ✅ | ✅ | g8 (2026-09-28): each process claims a context id of its own in a host registry (/dev/shm), a packet is a context's own only if it comes from its own socket, and a collision on the link moves the newer context. `samehost` passes (it received 0 before); 8 processes in one netns all see each other; two with the registry off separate on the link (`rmw_samehost_many.sh`). A single process per host keeps its id and sends the same bytes (`g8_announce_identity.sh`), and core's default build is unchanged |
 | Actions (rclcpp_action: goal, feedback, result, cancel) | ✅ | ✅ | ✅ | `check_ros2_interfaces.sh -A` in CI on every push: example_interfaces Fibonacci server and client in two processes, with a control that must fail without TickLE typesupport |
 | `ROS_DOMAIN_ID` isolation | ✅ | ✅ | ✅ | well-known port 8282 + domain (`rmw_init.c`) |
 | `ROS_AUTOMATIC_DISCOVERY_RANGE` (LOCALHOST / OFF / SUBNET) | ❌ | ✅ | ✅ | `rmw_tickle` never reads `rmw_init_options_t.discovery_options`; the vendors map it to their transports |
