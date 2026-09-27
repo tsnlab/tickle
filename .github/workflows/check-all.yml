@@ -183,12 +183,10 @@ jobs:
           # package install needed for that part, unlike the RISC-V cross toolchain the *next*
           # step below needs for FreeRTOS-only sources.
           pip install pytest
-          python3 -m pytest tools/typesupport/tests/
-          # The ROS 2 half of the generator and its tests moved to rmw_tickle on 2026-09-24 (user
-          # decision: every ROS-related part lives there). Separate pytest run, not one session:
-          # both directories have a conftest.py, and pytest cannot import two `conftest` modules.
-          # Needs no ROS install - it compiles against hand-written rosidl_runtime_c stand-ins.
-          python3 -m pytest rmw_tickle/rosidl_typesupport_tickle_c/test/
+          # Both suites, as make check-gates runs them (.github/scripts/test_typesupport.sh). The ROS 2 half of
+          # the generator and its tests moved to rmw_tickle on 2026-09-24 (user decision: every ROS-related part
+          # lives there). It needs no ROS install - it compiles against hand-written rosidl_runtime_c stand-ins.
+          ./.github/scripts/test_typesupport.sh
 
       - name: Generate compile_commands.json
         run: |

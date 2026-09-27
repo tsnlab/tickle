@@ -96,6 +96,7 @@ run_gate "check-rig-lock" make check-rig-lock
 run_gate "check-bench-shapes" make check-bench-shapes
 run_gate "test (unit)" make test
 run_gate "tsan (thread safety)" make tsan
+run_gate "test-typesupport (pytest)" make test-typesupport
 # CI lints the FreeRTOS HAL files on their own with include-cleaner on; `make -C platform/freertos lint`
 # does not (see lint-headers-ci there). Needs the FreeRTOS/lwIP submodules.
 if [ -f third_party/FreeRTOS-Kernel/include/FreeRTOS.h ]; then

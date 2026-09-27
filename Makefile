@@ -9,7 +9,7 @@
 
 .DEFAULT_GOAL := all
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock check-bench-shapes lint lint-rmw lint-shell clean test-linux test-freertos test-all \
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock check-bench-shapes lint lint-rmw lint-shell test-typesupport clean test-linux test-freertos test-all \
         install uninstall fuzz fuzz-corpus sanitize tsan regen
 
 all library examples set_bool uint64 ping_pong perf test lint clean fuzz fuzz-corpus sanitize tsan:
@@ -62,6 +62,11 @@ check-bench-shapes:
 # script's own header.
 lint-rmw:
 	./.github/scripts/lint_rmw.sh
+
+# The typesupport generator's pytest suites, with pytest's temp dirs under build/ - see the script's header for the
+# stray /tmp/.clang-format that made them fail on an untouched tree.
+test-typesupport:
+	./.github/scripts/test_typesupport.sh
 
 # Every gate above that can run on this machine, one line each, non-zero if any failed - so a
 # failing gate cannot be mistaken for a quiet one. See the script's own header for what it
