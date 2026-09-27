@@ -171,16 +171,22 @@ packages against the workspace this doc sets up ahead of time.
       ```python
       tickle_ros_args = ([
           '--ros-args', '--param', 'start_type_description_service:=false',
-      ] if '@COMM@' == 'ROS2' and '@RMW_IMPLEMENTATION@' == 'rmw_tickle' else [])
+      ] if '@COMM@' == 'ROS2' else [])
       ```
+      **For every rmw, not rmw_tickle alone (changed 2026-09-27).** As first written, the guard also required
+      `'@RMW_IMPLEMENTATION@' == 'rmw_tickle'`, so the vendors ran with the service on and rmw_tickle with it off:
+      an asymmetry in a comparison. Off for all three matches `rmw_perf_pingpong`, which turns it off for every
+      rmw, and leaves rmw_tickle's own rows as they were. This PC's `~/rmw_perf_ws` copy was changed the same day.
+      The rig Pis' copies (10.1.1.213/.214) are unpatched upstream, with the service on for every rmw, and so are
+      symmetric too.
       then append `+ tickle_ros_args` as the **last** element of both `node_pub`'s and
       `node_under_test`'s own `arguments=...` lists (after `-s 0`/`-p 0`/`-l ...` respectively) -
       it must come last, or `perf_test`'s own CLI parser misreads whatever follows `--ros-args` as
       more ROS arguments instead of its own flags (`boost::program_options::invalid_option_value`).
       This file is a template (`configure_file()`/`file(GENERATE)`-processed at CMake configure
       time, one instance per rmw/topic/sync-mode combination) - the `@COMM@`/`@RMW_IMPLEMENTATION@`
-      placeholders are substituted per-instance, so this guard only adds the extra args for
-      `rmw_tickle` combinations, leaving FastDDS/CycloneDDS runs untouched.
+      placeholders are substituted per-instance; the guard adds the extra args for every ROS 2
+      combination, whichever rmw it runs (see the 2026-09-27 note above).
 
    d. **The two-process case needs each side given a distinct TickLE node id.** A tickle node's
       own id defaults to the last octet of its host's own address (see `include/tickle/config.h`'s
