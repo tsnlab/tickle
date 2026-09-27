@@ -106,6 +106,11 @@ namespace pingpong {
     // --phase random publishes from its own thread and should fill the bins evenly. PHASE: reports the counts and
     // their chi-square against uniform (9 degrees of freedom: 21.67 at p = 0.01).
     //
+    // --phase jitter has no loop running across the publish: the loop starts after it, so there is no check before
+    // it. There each ping's lead - its first check minus its publish - is kept (add_lead), and binned at the end
+    // against the loop's mean cycle (bin_leads): the phase is 1 - (lead mod cycle) / cycle, the same orientation as
+    // on_check's, since there (next - send) / (next - prev) = 1 - phase.
+    //
     // on_send may run on another thread than on_check. prev is read before the send is stamped, so it is never
     // after it; the send is published last (release) and read first (acquire).
     constexpr int phase_bins = 10;
@@ -116,6 +121,7 @@ namespace pingpong {
         std::atomic<uint64_t> pending_send_ns {0};
         std::array<uint64_t, phase_bins> counts {}; // on_check's thread only
         uint64_t unplaced = 0;                      // sends with no check before them yet
+        std::vector<uint64_t> leads;                // --phase jitter: first check - publish, per ping
 
         auto on_send(uint64_t prev_ns, uint64_t send_ns) -> void {
             pending_prev_ns.store(prev_ns, std::memory_order_relaxed);
@@ -136,6 +142,22 @@ namespace pingpong {
             }
             const auto bin = static_cast<size_t>((send_ns - prev_ns) * phase_bins / (check_ns - prev_ns));
             counts[std::min(bin, counts.size() - 1)]++;
+        }
+
+        auto add_lead(uint64_t lead_ns) -> void {
+            leads.push_back(lead_ns);
+        }
+
+        auto bin_leads(uint64_t cycle_ns) -> void {
+            if (cycle_ns == 0) {
+                unplaced += leads.size();
+                return;
+            }
+            for (const uint64_t lead: leads) {
+                const uint64_t before_check = cycle_ns - (lead % cycle_ns); // in (0, cycle]
+                const auto bin = static_cast<size_t>(before_check * phase_bins / cycle_ns);
+                counts[std::min(bin, counts.size() - 1)]++;
+            }
         }
     };
 

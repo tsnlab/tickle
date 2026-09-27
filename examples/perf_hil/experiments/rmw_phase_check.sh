@@ -2,7 +2,9 @@
 # rmw_phase_check.sh - does ping_node's --phase random really put the reply at a random phase of the poll loop?
 # (RMW_PERF_PLAN 10.1's proposal (a), branch only, pending the user's decision; 2026-09-27.) PC-only: ping and pong
 # in two private netns joined by a veth pair (never the default netns - it reaches the rig over the 10.1.1.x LAN),
-# rmw_tickle, BEST_EFFORT bench, poll mode at a 100 us sleep, a round trip every 20 ms for 10 s (~500 pings).
+# BEST_EFFORT bench, poll mode at a 100 us sleep, a round trip every 20 ms for 10 s (~500 pings). RMW (default
+# rmw_tickle) picks the rmw on both sides: --phase random publishes from a second thread, which every rmw must take
+# by rclcpp's contract, so each of the three is run through it.
 #
 # Arms, each read from ping_node's PHASE: line:
 #   locked (control)   today's loop. Every publish comes just before the first check, so every ping should sit in
@@ -10,12 +12,15 @@
 #                      phase from a random one and the random arm's result means nothing.
 #   random             chi2 below 21.67 (uniform at p = 0.01, 9 degrees of freedom), with at least 90% of the pings
 #                      placed. Its callback-after-send spread (p90 - p10) should be most of a poll cycle; the
-#                      locked arm's should be a small part of one.
+#                      locked arm's should be a small part of one. (Seen on the first runs: the locked spread is not
+#                      small - the reply lands near a check and is taken at the second or the third.)
+#   jitter             the same conditions as random: one thread, a uniform pause of up to one cycle between the
+#                      publish and the first check (added 2026-09-27, after the random arm passed).
 #   locked + callback  --rtt-at callback: its RTT average should sit about one poll cycle (the sleep and its slack,
 #                      ~150 us on this PC) below the locked arm's.
 # Written before running. Exits 1 if either chi2 condition fails; the rest is printed for reading.
 #
-# Usage: rmw_phase_check.sh    Output: $OUT (default /tmp/rmw_phase_check.txt), "DONE" at the end.
+# Usage: [RMW=rmw_cyclonedds_cpp|rmw_fastrtps_cpp] rmw_phase_check.sh    Output: $OUT (default /tmp/rmw_phase_check.txt), "DONE" at the end.
 set -u
 OUT=${OUT:-/tmp/rmw_phase_check.txt}
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -39,7 +44,8 @@ sudo -n ip -n "$NS2" addr add 192.168.10.2/24 dev ph2
 for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
 sudo -n ip -n "$NS1" link set ph1 up
 sudo -n ip -n "$NS2" link set ph2 up
-ENV=". /opt/ros/lyrical/setup.bash; . $REPO/install/setup.bash; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255 ROS_HOME=/tmp/ph_roshome"
+RMW=${RMW:-rmw_tickle}
+ENV=". /opt/ros/lyrical/setup.bash; . $REPO/install/setup.bash; export RMW_IMPLEMENTATION=$RMW TICKLE_BROADCAST_ADDR=192.168.10.255 ROS_HOME=/tmp/ph_roshome"
 
 run_arm() { # <name> <extra ping args...>
     local name=$1
@@ -63,18 +69,21 @@ run_arm() { # <name> <extra ping args...>
 }
 
 : >"$OUT"
-echo "rmw_phase_check $(date -Is) repo=$(git -C "$REPO" rev-parse --short=8 HEAD)" >>"$OUT"
+echo "rmw_phase_check $(date -Is) repo=$(git -C "$REPO" rev-parse --short=8 HEAD) rmw=$RMW" >>"$OUT"
 run_arm locked --phase locked
 run_arm random --phase random
+run_arm jitter --phase jitter
 run_arm locked_callback --phase locked --rtt-at callback
 
 chi2() { grep "^arm=$1 PHASE:" "$OUT" | grep -o 'chi2=[0-9.]*' | cut -d= -f2; }
 verdict=0
 awk -v c="$(chi2 locked)" 'BEGIN { exit !(c != "" && c > 21.67) }' || { echo "CONTROL FAIL: locked chi2=$(chi2 locked)" >>"$OUT"; verdict=1; }
-awk -v c="$(chi2 random)" 'BEGIN { exit !(c != "" && c < 21.67) }' || { echo "FAIL: random chi2=$(chi2 random)" >>"$OUT"; verdict=1; }
-placed=$(grep '^arm=random PHASE:' "$OUT" | grep -o 'placed=[0-9]*' | cut -d= -f2)
-recv=$(grep '^arm=random RESULT:' "$OUT" | grep -o 'recv=[0-9]*' | cut -d= -f2)
-awk -v p="${placed:-0}" -v r="${recv:-0}" 'BEGIN { exit !(r > 0 && p >= 0.9 * r) }' || { echo "FAIL: random placed=$placed of recv=$recv" >>"$OUT"; verdict=1; }
+for arm in random jitter; do
+    awk -v c="$(chi2 $arm)" 'BEGIN { exit !(c != "" && c < 21.67) }' || { echo "FAIL: $arm chi2=$(chi2 $arm)" >>"$OUT"; verdict=1; }
+    placed=$(grep "^arm=$arm PHASE:" "$OUT" | grep -o 'placed=[0-9]*' | cut -d= -f2)
+    recv=$(grep "^arm=$arm RESULT:" "$OUT" | grep -o 'recv=[0-9]*' | cut -d= -f2)
+    awk -v p="${placed:-0}" -v r="${recv:-0}" 'BEGIN { exit !(r > 0 && p >= 0.9 * r) }' || { echo "FAIL: $arm placed=$placed of recv=$recv" >>"$OUT"; verdict=1; }
+done
 echo "VERDICT=$verdict" >>"$OUT"
 echo "DONE" >>"$OUT"
 exit "$verdict"

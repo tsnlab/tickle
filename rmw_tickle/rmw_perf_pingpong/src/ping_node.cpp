@@ -51,6 +51,7 @@ namespace {
     // here (seconds and milliseconds) rather than one, since this file needs both.
     constexpr uint64_t ns_per_s = 1000000000ULL;
     constexpr uint64_t ns_per_ms = 1000000ULL;
+    constexpr uint64_t ns_per_us_whole = 1000ULL;
 
     constexpr int discovery_poll_ms = 20;
     constexpr uint64_t reply_wait_ms = 500;    // matching the native client's own reply timeout
@@ -102,15 +103,21 @@ namespace {
     //
     // Two poll-mode options (RMW_PERF_PLAN 10.1's proposals (a) and (b), branch only, pending the user's decision);
     // both default to today's behaviour, so every earlier row stays reproducible:
-    //   --phase locked|random  locked: publish, then poll until the reply (today). random: the poll loop runs on its
-    //                          own and a second thread publishes on its own clock, so the reply lands at a random
-    //                          phase of the poll cycle (pingpong::phase_probe checks that it does).
+    //   --phase locked|random|jitter
+    //                          locked: publish, then poll until the reply (today). random: the poll loop runs on
+    //                          its own and a second thread publishes on its own clock, so the reply lands at a
+    //                          random phase of the poll cycle (pingpong::phase_probe checks that it does). jitter:
+    //                          one thread, as locked, but after the publish it sleeps a random part of one poll
+    //                          cycle before its first check - the check grid shifts by a uniform amount, which puts
+    //                          the reply at a uniform phase of it, as random does, without a second thread.
+    //                          (A random sleep before the publish would not: the grid starts at the publish.)
     //   --rtt-at loop|callback loop: the round trip ends after the poll cycle that took the reply, its sleep
     //                          included (today). callback: it ends at the reply's callback, as block mode's does.
     struct wait_mode {
         bool blocking = false;
         int poll_sleep_us = default_poll_sleep_us;
         bool random_phase = false;
+        bool jitter_phase = false;
         bool rtt_at_callback = false;
     };
 
@@ -118,7 +125,12 @@ namespace {
         uint64_t iterations = 0;
         uint64_t spin_ns = 0;
         uint64_t sleep_ns = 0;
+        uint64_t first_check_ns = 0; // the last wait's first spin_some(), for --phase jitter
     };
+
+    auto mean_cycle_ns(const loop_stats& loop) -> uint64_t {
+        return loop.iterations > 0 ? (loop.spin_ns + loop.sleep_ns) / loop.iterations : 0;
+    }
 
     // A line of its own after RESULT, so RESULT's fields stay as every parser knows them: iterations of the
     // wait loop per round trip, and in poll mode the mean spin_some() and the mean real sleep, in us.
@@ -148,6 +160,9 @@ namespace {
                 executor.spin_once(std::chrono::nanoseconds(wait_deadline - now_ns()));
             } else {
                 const uint64_t spin_start = now_ns();
+                if (loop.first_check_ns == 0) {
+                    loop.first_check_ns = spin_start;
+                }
                 probe.on_check(spin_start);
                 executor.spin_some();
                 const uint64_t sleep_start = now_ns();
@@ -165,7 +180,8 @@ namespace {
         -> void {
         uint64_t placed = 0;
         const double chi2 = pingpong::phase_chi2(probe, placed);
-        std::printf("PHASE: phase=%s rtt_at=%s placed=%lu unplaced=%lu bins=", wait.random_phase ? "random" : "locked",
+        const char* phase = wait.random_phase ? "random" : (wait.jitter_phase ? "jitter" : "locked");
+        std::printf("PHASE: phase=%s rtt_at=%s placed=%lu unplaced=%lu bins=", phase,
                     wait.rtt_at_callback ? "callback" : "loop", static_cast<unsigned long>(placed),
                     static_cast<unsigned long>(probe.unplaced));
         for (size_t i = 0; i < probe.counts.size(); i++) {
@@ -379,6 +395,8 @@ namespace {
         loop_stats loop;
         phase_probe probe;
         std::vector<uint64_t> callback_after_send;
+        const bool jitter = wait.jitter_phase && !wait.blocking;
+        std::mt19937_64 random(now_ns());
 
         uint64_t seq = 0;
         const uint64_t start = now_ns();
@@ -391,13 +409,27 @@ namespace {
             const uint64_t prev_check = probe.last_check_ns.load(std::memory_order_relaxed);
             const uint64_t sent_at = now_ns();
             Traits::set_send_ns(req, sent_at);
-            probe.on_send(prev_check, sent_at);
+            if (!jitter) {
+                probe.on_send(prev_check, sent_at);
+            }
             got_reply = false;
             pub->publish(req);
             transmitted++;
+            if (jitter) {
+                // A uniform part of one cycle, measured so far (the requested sleep until the first wait has run).
+                const uint64_t cycle = loop.iterations > 0
+                                           ? mean_cycle_ns(loop)
+                                           : static_cast<uint64_t>(wait.poll_sleep_us) * ns_per_us_whole;
+                std::this_thread::sleep_for(
+                    std::chrono::nanoseconds(std::uniform_int_distribution<uint64_t>(0, cycle)(random)));
+            }
+            loop.first_check_ns = 0;
 
             const uint64_t wait_deadline = now_ns() + (reply_wait_ms * ns_per_ms); // 500ms, matching the native client
             wait_for_reply(executor, got_reply, wait_deadline, wait, loop, probe);
+            if (jitter && loop.first_check_ns > sent_at) {
+                probe.add_lead(loop.first_check_ns - sent_at);
+            }
             if (got_reply && Traits::seq(reply_msg) == seq) {
                 pingpong::stamp_log_add(stamps, seq, sent_at, reply_ns); // --stamps, whichever the wait mode
                 callback_after_send.push_back(reply_ns - sent_at);
@@ -413,6 +445,9 @@ namespace {
         print_summary(rtt, transmitted, reliable, wait);
         print_loop_stats(loop, transmitted, wait);
         if (!wait.blocking) {
+            if (jitter) {
+                probe.bin_leads(mean_cycle_ns(loop));
+            }
             print_phase(probe, callback_after_send, wait);
         }
 
@@ -432,7 +467,9 @@ auto main(int argc, char** argv) -> int {
         if (std::strcmp(argv[i], "--wait") == 0 && i + 1 < argc) {
             wait.blocking = std::strcmp(argv[++i], "block") == 0;
         } else if (std::strcmp(argv[i], "--phase") == 0 && i + 1 < argc) {
-            wait.random_phase = std::strcmp(argv[++i], "random") == 0;
+            const char* phase = argv[++i];
+            wait.random_phase = std::strcmp(phase, "random") == 0;
+            wait.jitter_phase = std::strcmp(phase, "jitter") == 0;
         } else if (std::strcmp(argv[i], "--rtt-at") == 0 && i + 1 < argc) {
             wait.rtt_at_callback = std::strcmp(argv[++i], "callback") == 0;
         } else if (std::strcmp(argv[i], "--poll-sleep-us") == 0 && i + 1 < argc) {
