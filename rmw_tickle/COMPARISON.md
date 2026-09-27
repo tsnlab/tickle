@@ -917,6 +917,7 @@ what they return `RMW_RET_UNSUPPORTED` on).
 
 | Feature | TickLE | FastDDS | CycloneDDS | How it was checked |
 |---|:-:|:-:|:-:|---|
+| Several processes on one host (talker and listener as two processes; `ros2 topic echo` beside a talker) | ❌ | ✅ | ✅ | acceptance `samehost` (2026-09-28): CycloneDDS 80 received, rmw_tickle 0 - the processes share a context id and drop each other's packets unless `TICKLE_NODE_ID` is set. RMW_GAPS_PLAN g8, top priority |
 | Actions (rclcpp_action: goal, feedback, result, cancel) | ✅ | ✅ | ✅ | `check_ros2_interfaces.sh -A` in CI on every push: example_interfaces Fibonacci server and client in two processes, with a control that must fail without TickLE typesupport |
 | `ROS_DOMAIN_ID` isolation | ✅ | ✅ | ✅ | well-known port 8282 + domain (`rmw_init.c`) |
 | `ROS_AUTOMATIC_DISCOVERY_RANGE` (LOCALHOST / OFF / SUBNET) | ❌ | ✅ | ✅ | `rmw_tickle` never reads `rmw_init_options_t.discovery_options`; the vendors map it to their transports |
