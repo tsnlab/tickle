@@ -876,3 +876,60 @@ cannot ship without the ack fallback.**
   - a confirmed WORSE on any row fails W1.
 - The rows W1 is for: bytes at p1-p4, and receive CPU at the 8-writer cells if step 1 shows it.
 - Every other row must be held or better.
+
+### 9.2 W1 step 1 result (bench, 2026-09-27): FAIL - recv WORSE at 1 writer, and almost everywhere else
+
+**Run.**
+- `w1_bench.sh` over `core_cost_ab.sh`, 20 paired rounds x 300000 samples, CPU 15.
+- Branch point `0a099426` against the prototype `889cc995` (branch `w1-writer-handle`, without the ack fallback).
+- Raw rows: `results/w1_bench_*_2026-09-27.txt`. Reader: `w1_bench_read.py`.
+- Every W1 row has `short_unrouted=0` and delivered 300000 of 300000.
+
+W1 minus base, ns per sample, mean +- SE:
+
+| case | base recv | recv | send |
+|---|---:|---:|---:|
+| 1 writer | 50.9 | **+12.28 +- 0.11 WORSE** | **+2.66 +- 1.12 WORSE** |
+| 1 writer, discovery | 53.4 | **+10.31 +- 0.21 WORSE** | **+2.98 +- 1.10 WORSE** |
+| 8 writers | 52.4 | **+10.46 +- 0.22 WORSE** | +0.23 +- 0.90 held |
+| 8 writers, discovery | 56.1 | **+6.80 +- 0.26 WORSE** | **+1.52 +- 0.66 WORSE** |
+| 32 writers | 54.8 | **+6.24 +- 0.21 WORSE** | **+2.77 +- 0.52 WORSE** |
+| 32 writers, discovery | 62.1 | -0.53 +- 0.30 held | **+2.81 +- 0.57 WORSE** |
+| RELIABLE `-R` | 81.1 | -0.25 +- 0.19 held | +2.10 +- 2.88 held |
+| RELIABLE client `-c -R` | 75.1 | -0.30 +- 0.21 held | -1.38 +- 1.04 held |
+| 32 writers, table of 16 (collisions, recorded not judged) | 55.5 | +20.22 +- 1.52 | +3.19 +- 1.33 |
+
+**Bytes.** Exactly as computed: 96.00 -> 92.25 B per sample for BEST_EFFORT, which is 3.75 B, 4 x 15/16.
+
+**The verdict, by the rule written before the run: FAIL.**
+- Recv is WORSE at 1 writer, the case D2 lost, and by five times D2's margin (+12.3 against +2.35).
+- It is also WORSE at 8 and 32 writers, and send is WORSE in most cases.
+- The prototype is not merged. The branch stays as the record, like D2's.
+- The ack fallback is not built: the cheap gate has closed.
+
+**Recorded as seen.**
+- **The route lookup costs more than the route it replaces, even at 32 writers.** Only 32 writers with discovery
+  on, today's slowest route, comes out held (-0.5).
+- **RELIABLE never went short in the bench** (`short_sent=0`). A lossless RELIABLE reader never ACKNACKs, so "long
+  until the reader's first ACKNACK" leaves such a stream long for good.
+  - Its rows therefore measure only W1's overhead on a long stream: recv held, send held.
+  - As designed, W1 would save RELIABLE nothing without loss.
+
+**The mechanism of the recv cost: narrowed, not identified.**
+- **Not alignment.** A diagnostic arm, `1d16d3ec`, never to be merged, pads the short header to 16 B, which puts
+  the CDR back at 4 mod 8 as today's DATA has it. It is just as WORSE: recv +9.58 +- 1.86 at 1 writer and
+  +6.21 +- 0.28 at 8 writers with discovery. The prototype in the same run: +10.30 and +6.45.
+  Raw rows: `results/w1_bench_diag_aligned_*`.
+- **Not the shared delivery code.** The RELIABLE rows carry no short forms, and their recv is held. So the
+  prototype's changes to `deliver_data_to_subscriber()` and the larger context cost the long path nothing.
+- **Therefore:** the cost is in the short form's own handler, `process_data_short()`, about 10 ns more than the
+  endpoint probe, RxO check and proxy search it skips at 1 writer.
+- **The profiler was not available here** (`perf_event_paranoid` 4, and no `sudo` for perf), so where inside the
+  handler those ~40 cycles go is not known. Nothing is claimed about it.
+
+**What this closes.**
+- W1 as designed does not pass.
+- Its bytes (-2.7% at p1) would come with a receive CPU cost at every writer count, measured here, and with a
+  startup-race delivery loss that needs a fallback on the send path (9.1 finding).
+- A new form of W1 would be a new proposal, pre-registered on its own. It would have to explain the handler cost
+  first.
