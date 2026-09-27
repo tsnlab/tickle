@@ -160,6 +160,55 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
 - **CPU:** the `core_cost_ab.sh` pair (default and `-R`) is held within 2 x SE. An endpoint holding one more pointer
   is the only change on the hot path's data.
 
+### Stage 2 result: PASS, with two amendments to the sketch (2026-09-27, 5d9cace1)
+
+**Amendments, each for a pre-registered criterion:**
+- **An index, not a pointer, on the endpoint.** `tt_Endpoint.node_index` sits in the padding after `kind`, and
+  `tt_Endpoint_node()` finds the node.
+  - The sketched `struct tt_Node* node` grew every endpoint struct by 8 bytes. It cost `-R`'s receive +1.0 and +1.1 ns
+    in two runs (2 x SE 0.7 and 0.4), against the CPU criterion.
+  - With the index, `tt_Endpoint`, `tt_Publisher` and `tt_Subscriber` keep their size (24, 528, 1216) and layout.
+  - It is also what stage 3 carries on the wire.
+- **The default node comes into being lazily**, on the first `tt_Context_create_*()` shorthand call or on
+  `tt_Context_default_node()`, not at `tt_Context_create()`.
+  - A context whose endpoints are all on its own nodes, as rmw_tickle's are, then has none by construction, with no
+    flag.
+  - All three of Plan's rules hold: a unique name, never announced when empty, none in rmw.
+
+**Behaviour - each test fails against a mutant:**
+
+| test | mutant | failing checks |
+|---|---|---|
+| endpoints on two nodes report their own | owner ignored | 8 |
+| destroy refused while an endpoint lives | no check | 3 |
+| the shorthands use the default node | no default | 3 |
+| default names differ between contexts | a fixed name | 2 |
+| explicit nodes leave no default node | created eagerly | 1 |
+
+- rmw's nodes are core nodes: `test_multi_node` checks their names, indices and that there is no default node.
+- rmw's endpoints live on them: `test_graph`, `test_publish_take_reuse` and `test_service_roundtrip`. The rmw
+  publisher and service put back on the shorthand fail the last two.
+
+**Nothing observable moves:**
+- `experiments/announce_bytes.c`: the announce and the summary are byte-identical to stage 1 (2bfef75e) for the same
+  four endpoints, created through the shorthand and on an explicit node. The control, one endpoint renamed, differs
+  by 4 bytes.
+- Gates 10/10; the rmw suite 46/46 in a netns.
+
+**CPU:**
+- -O2 `tickle.o` against stage 1: only the creation paths changed instructions. Three functions differ in alignment
+  NOPs alone. Every receive and publish function is identical.
+- `core_cost_ab.sh -r 20`, 2bfef75e against e00e3e72 (the same tree as 5d9cace1):
+
+  | run | send (ns) | recv (ns) |
+  |---|---|---|
+  | default | -0.9 (2 x SE 2.4), held | -0.7 (0.5) |
+  | `-R` | -2.0 (3.4), held | -0.3 (0.3) |
+
+- Receive is a fraction of a ns faster, just outside 2 x SE. That is code placement, given the identical instructions.
+  An A/A pair of one binary put receive outside 2 x SE in 1 of 12 comparisons (+0.8, 2 x SE 0.61).
+- Raw: `examples/perf_hil/results/core_cost_ab_stage2{,_R}_2026-09-27.txt` and `core_cost_ab_aa_2026-09-27.txt`.
+
 ## Stage 3 - discovery carries nodes (wire v11)
 
 **The wire diff:**
