@@ -459,7 +459,7 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
        - the announce bytes are identical.
      - **Memory:** `sizeof(struct tt_Discovery)` at 16 and 2048.
      - Gates 10/10, and the rmw suite in a netns.
-   **4b result (2026-09-27, 6df8e6e7): the index PASSES; the send criterion, MISSED as first built, is closed for core by
+   **4b result (2026-09-27, 56a43df3): the index PASSES; the send criterion, MISSED as first built, is closed for core by
    compiling the index only for large tables.**
    - **Per-sample RxO lookup** (`discovery_lookup_cost.c`):
 
@@ -485,7 +485,8 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
      - no rebuild after a reclaim: 1.
    - Announce bytes are identical. Gates 10/10, rmw 48/48.
    - **Memory:** `tt_Discovery` core 8,840 -> 8,904 B; rmw 1,130,504 -> 1,138,696 B.
-   - **Bench** (core default build, 5d3ddaaa against 6df8e6e7, 20 rounds; raw: `core_cost_ab_4b*`).
+   - **Bench** (core default build, 12d8f290 against 56a43df3, measured before a rebase under their earlier ids 5d3ddaaa
+     and 6df8e6e7, which the raw files carry; the code is the same. 20 rounds; raw: `core_cost_ab_4b*`).
      - Send is +5.9, +5.3 and +6.1 ns (default, `-R`, `-D`), then +4.6 and +4.4 on a repeat: WORSE in 5 of 5, about
        3%.
      - Receive: -1.6/-1.8, -0.2/-0.1, +0.1 ns.
@@ -502,7 +503,7 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
        Its cause is not established.
    - **Resolved by Plan's option (c):** the index is compiled only for tables larger than 64 (`tt_DISCOVERY_INDEXED`).
      - Below that, every 4b change is the parent's code.
-     - Core's default build is byte- and address-identical to 5d3ddaaa: `tickle.o` with relocations, `hal_linux.o`,
+     - Core's default build is byte- and address-identical to 12d8f290 (measured as 5d3ddaaa, the same code): `tickle.o` with relocations, `hal_linux.o`,
        `encoding.o`, `log.o`, and the linked `core_cost_bench` with its data. So the send question is closed for
        core by construction.
      - rmw's 2048 build keeps the index (7.6 ns per lookup). Its send is judged on the rig at the end of the
