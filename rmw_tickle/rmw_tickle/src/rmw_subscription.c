@@ -33,6 +33,7 @@
 #include "rmw/error_handling.h"
 #include "rmw/event.h"
 #include "rmw/event_callback_type.h" // rmw_event_callback_t (g2)
+#include "rmw/message_sequence.h"    // rmw_message_sequence_t, rmw_message_info_sequence_t - rmw_take_sequence() (g5)
 #include "rmw/qos_policy_kind.h"     // rmw_qos_policy_kind_t - check_subscription_qos_incompatible()
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
@@ -861,6 +862,46 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
 rmw_ret_t rmw_take(const rmw_subscription_t* subscription, void* ros_message, bool* taken,
                    rmw_subscription_allocation_t* allocation) {
     return rmw_take_with_info(subscription, ros_message, taken, NULL, allocation);
+}
+
+// (g5, RMW_GAPS_PLAN.md) Up to `count` messages in queue order, each taken as rmw_take_with_info() takes one. rmw.h's
+// contract: a NULL argument, count 0 or a sequence too small is refused with both sequences unchanged, and so are
+// they when nothing is taken. Until g5 the symbol was not defined, so rcl_take_sequence() failed and
+// rmw_implementation logged a failed lookup at every start.
+rmw_ret_t rmw_take_sequence(const rmw_subscription_t* subscription, size_t count,
+                            rmw_message_sequence_t* message_sequence,
+                            rmw_message_info_sequence_t* message_info_sequence, size_t* taken,
+                            rmw_subscription_allocation_t* allocation) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(message_sequence, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(message_info_sequence, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(taken, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    if (0 == count || message_sequence->capacity < count || message_info_sequence->capacity < count) {
+        RMW_SET_ERROR_MSG("rmw_take_sequence: count must be non-zero and within both sequences' capacity");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+    size_t got = 0;
+    for (; got < count; got++) {
+        bool one = false;
+        rmw_ret_t ret = rmw_take_with_info(subscription, message_sequence->data[got], &one,
+                                           &message_info_sequence->data[got], allocation);
+        if (RMW_RET_OK != ret) {
+            return ret;
+        }
+        if (!one) {
+            break;
+        }
+    }
+    *taken = got;
+    if (got > 0) {
+        message_sequence->size = got;
+        message_info_sequence->size = got;
+    }
+    return RMW_RET_OK;
 }
 
 // See rmw_publisher.c's own rmw_publisher_get_actual_qos() doc comment - same reasoning.

@@ -856,14 +856,14 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | Publishers | 11 | 11 / 0 / 0 / 0 | 11 / 0 / 0 | 11 / 0 / 0 |
 | Loaned messages | 6 | 0 / 0 / 6 / 0 | 0 / 6 / 0 | 0 / 6 / 0 |
 | Events | 8 | 8 / 0 / 0 / 0 | 8 / 0 / 0 | 8 / 0 / 0 |
-| Subscriptions | 7 | 6 / 0 / 1 / 0 | 7 / 0 / 0 | 7 / 0 / 0 |
+| Subscriptions | 7 | 7 / 0 / 0 / 0 | 7 / 0 / 0 | 7 / 0 / 0 |
 | Content filter | 2 | 0 / 0 / 0 / 2 | 2 / 0 / 0 | 0 / 0 / 2 |
 | Services and clients | 17 | 17 / 0 / 0 / 0 | 17 / 0 / 0 | 17 / 0 / 0 |
 | Waiting | 6 | 6 / 0 / 0 / 0 | 6 / 0 / 0 | 6 / 0 / 0 |
 | QoS | 1 | 1 / 0 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
 | Network flow endpoints | 2 | 0 / 0 / 0 / 2 | 2 / 0 / 0 | 0 / 0 / 2 |
 | Dynamic messages | 3 | 0 / 0 / 0 / 3 | 3 / 0 / 0 | 0 / 0 / 3 |
-| **All** | **94** | **72 / 0 / 10 / 12** | **83 / 6 / 5** | **76 / 6 / 12** |
+| **All** | **94** | **73 / 0 / 9 / 12** | **83 / 6 / 5** | **76 / 6 / 12** |
 
 **TickLE's gaps (❌ and ⚠️), and where each is planned:**
 - **Serialized messages** (`rmw_publish_serialized_message`, `rmw_take_serialized_message*`). rosbag2 and
@@ -879,8 +879,8 @@ what they return `RMW_RET_UNSUPPORTED` on).
     hosts.
   - "Matched" now also requires the same type and compatible QoS, for the event and for
     `rmw_*_count_matched_*` alike, as in DDS.
-- **`rmw_take_sequence`** is not defined at all. `rmw_implementation` logs a failed symbol lookup for it, and
-  `rcl_take_sequence()` fails. Planned (added to the gap list on 2026-09-27).
+- ~~**`rmw_take_sequence`** is not defined at all. `rmw_implementation` logs a failed symbol lookup for it, and
+  `rcl_take_sequence()` fails.~~ Closed by g5 (2026-09-28): `takeseq` passes.
 - ~~Remote nodes in the graph~~: **closed 2026-09-27** by CONTEXT_NODE_PLAN stage 3 (wire v11). `ros2 node list/info`
   and `ros2 param` see other processes, and the acceptance test `graph` passes with the CycloneDDS control. The cost is
   +40 B per node in each discovery list; join time (M3) is within 0.3 ms (DISCOVERY_PLAN 10).
@@ -1004,7 +1004,7 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | `rmw_destroy_subscription` | ✅ | ✅ | ✅ |  |
 | `rmw_subscription_get_actual_qos` | ✅ | ✅ | ✅ |  |
 | `rmw_take` | ✅ | ✅ | ✅ |  |
-| `rmw_take_sequence` | ❌ | ✅ | ✅ | not defined in librmw_tickle.so at all (nm, 2026-09-27) |
+| `rmw_take_sequence` | ✅ | ✅ | ✅ | g5 (2026-09-28): up to count in order, the rmw.h argument rules (`test_take_sequence`; `rmw_gap_acceptance.sh takeseq`); not defined before |
 | `rmw_take_with_info` | ✅ | ✅ | ✅ |  |
 | `rmw_get_subscriptions_info_by_topic` | ✅ | ✅ | ✅ |  |
 | **Content filter** | | | | |

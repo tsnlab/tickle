@@ -34,6 +34,16 @@ touches a per-sample path.
     and the call returns `RMW_RET_OK`, as rmw.h requires.
   - A message delivered while the call runs may be included; there is no snapshot, as in the vendors.
   - Mutants: one message per call; the sizes not set; `count` 0 accepted.
+- **Result (Dev, 2026-09-28): PASS.**
+  - `takeseq`: CycloneDDS PASS (control), rmw_tickle PASS (baseline: FAIL, symbol not defined).
+  - `test_take_sequence` covers the whole contract:
+    - three of five in order, with their psns;
+    - taken below count;
+    - the empty take: `RMW_RET_OK`, 0, both sequences unchanged;
+    - `count` 0 and a count past the capacity refused.
+  - The three mutants fail it at the predicted asserts.
+  - The rmw suite passes in a private netns, 54/54.
+  - No CPU check: `rmw_take` / `rmw_take_with_info` are unchanged.
 
 ## g2 - on-new-data callbacks (acceptance test `events`)
 

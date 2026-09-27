@@ -20,6 +20,9 @@ number, `tt_VERSION`, which moves independently.
     A late join, a durable replay and a late arrival are not losses.
   - `rmw_get_clients_info_by_service` / `rmw_get_servers_info_by_service` (lyrical) list local and remote clients
     and servers, one row each.
+- **rmw_tickle: `rmw_take_sequence`** (rmw_tickle/RMW_GAPS_PLAN.md g5). Takes up to `count` messages in order, following
+  rmw.h's argument rules. The symbol was not defined before, so `rcl_take_sequence()` failed and
+  rmw_implementation logged a failed lookup at every start.
 - **rmw_tickle: on-new-data and event callbacks** (rmw_tickle/RMW_GAPS_PLAN.md g2). The four setters rclcpp's and
   rclpy's EventsExecutor use: `rmw_subscription_set_on_new_message_callback`,
   `rmw_service_set_on_new_request_callback`, `rmw_client_set_on_new_response_callback`, `rmw_event_set_callback`.
