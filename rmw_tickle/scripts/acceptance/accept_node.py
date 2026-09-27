@@ -18,6 +18,7 @@ A role prints one line "RESULT: key=value ..." when it ends; the script reads on
   matched_sub   a subscription on /accept_matched that counts its SUBSCRIPTION_MATCHED events
   itype_pub     a std_msgs/String publisher on /accept_itype, counting PUBLISHER_INCOMPATIBLE_TYPE events
   itype_sub     a std_msgs/Int32 subscription on /accept_itype, counting SUBSCRIPTION_INCOMPATIBLE_TYPE events
+  inprocess     a talker node and a listener node in ONE process and executor, then a std_srvs/Trigger call between them
 """
 import sys
 import time
@@ -77,6 +78,43 @@ def main():
             print('SEQ: ' + ' '.join(m[4:] for m in seen), flush=True)
         print('RESULT: role=listener executor=%s received=%d' % ('default' if arg == 'dump' else (arg or 'default'),
                                                                    counts['n']), flush=True)
+    elif role == 'inprocess':
+        # Two nodes in ONE process and one executor (g9): a talker node and a listener node, then a service call from
+        # one node to the other's service. Composition, component containers and multi-node processes are this shape.
+        from rclpy.executors import SingleThreadedExecutor
+        from std_srvs.srv import Trigger
+        talker = Node('accept_inproc_talker')
+        listener = Node('accept_inproc_listener')
+        pub = talker.create_publisher(String, '/accept_inproc', 10)
+
+        def on_msg(msg):
+            if msg.data.startswith('msg-'):
+                counts['n'] += 1
+        listener.create_subscription(String, '/accept_inproc', on_msg, 10)
+        talker.create_service(Trigger, '/accept_inproc_srv',
+                              lambda req, resp: setattr(resp, 'success', True) or setattr(resp, 'message', 'pong') or resp)
+        client = listener.create_client(Trigger, '/accept_inproc_srv')
+        executor = SingleThreadedExecutor()
+        executor.add_node(talker)
+        executor.add_node(listener)
+        sent = {'n': 0}
+
+        def tick():
+            sent['n'] += 1
+            pub.publish(String(data='msg-%d' % sent['n']))
+        talker.create_timer(0.1, tick)
+        spin_for(talker, seconds * 0.7, executor)
+        service_ok = 0
+        if client.wait_for_service(timeout_sec=2.0):
+            future = client.call_async(Trigger.Request())
+            end = time.monotonic() + 3.0
+            while not future.done() and time.monotonic() < end:
+                executor.spin_once(timeout_sec=0.05)
+            service_ok = int(future.done() and future.result() is not None and future.result().message == 'pong')
+        print('RESULT: role=inprocess sent=%d received=%d service_ok=%d' % (sent['n'], counts['n'], service_ok),
+              flush=True)
+        listener.destroy_node()
+        node = talker
     elif role in ('matched_pub', 'matched_sub'):
         node = Node('accept_' + role)
 

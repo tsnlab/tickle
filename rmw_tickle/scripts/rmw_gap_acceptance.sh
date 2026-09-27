@@ -15,6 +15,7 @@
 #   itype    PUBLISHER_ / SUBSCRIPTION_INCOMPATIBLE_TYPE fire for String vs Int32 on one topic     (g3)
 #   takeseq  the rmw library defines rmw_take_sequence (a symbol check, as rcl_take_sequence dispatches to it) (g5)
 #   samehost talker and listener as two processes on ONE host, and `ros2 topic echo` next to a talker (g8)
+#   inprocess a talker node and a listener node in ONE process, and a service call between them    (g9)
 #   range    ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST isolates the two hosts; SUBNET does not        (g6)
 #   peers    LOCALHOST plus ROS_STATIC_PEERS naming the other host connects them again            (g6)
 #
@@ -28,7 +29,7 @@ WS=""
 while getopts "w:" o; do case "$o" in w) WS=$OPTARG ;; *) exit 2 ;; esac; done
 shift $((OPTIND - 1))
 [ -n "$WS" ] && [ -d "$WS/rmw/install" ] && [ -d "$WS/ifaces/install" ] || { echo "usage: $0 -w WS [TEST...]" >&2; exit 2; }
-TESTS=${*:-graph bag events matched itype takeseq samehost range peers}
+TESTS=${*:-graph bag events matched itype takeseq samehost inprocess range peers}
 HERE=$(cd "$(dirname "$0")" && pwd)
 NODE="$HERE/acceptance/accept_node.py"
 DISTRO=${ROS_DISTRO_DIR:-/opt/ros/lyrical}
@@ -156,6 +157,15 @@ t_samehost() {
     got=$(field "$d/listener.log" received)
     grep -q 'data: msg-' "$d/echo.log" && echo_ok=1
     if [ "${got:-0}" -ge 50 ] && [ "$echo_ok" = 1 ]; then echo PASS; else echo "FAIL(listener=${got:-0} echo=$echo_ok)"; fi
+}
+t_inprocess() {
+    local rmw=$1 d=$OUTDIR/inprocess_$1
+    mkdir -p "$d"
+    run_in "$NS1" "$rmw" 1 12 "" python3 "$NODE" inprocess 12 > "$d/inprocess.log" 2>&1
+    ran "$d/inprocess.log" 50 || { echo "ERROR(the process did not run)"; return; }
+    local got svc
+    got=$(field "$d/inprocess.log" received); svc=$(field "$d/inprocess.log" service_ok)
+    if [ "${got:-0}" -ge 50 ] && [ "${svc:-0}" = 1 ]; then echo PASS; else echo "FAIL(received=${got:-0} service_ok=${svc:-0})"; fi
 }
 t_pair() { # role1 role2 key test
     local rmw=$1 r1=$2 r2=$3 key=$4 d=$OUTDIR/${5}_$1

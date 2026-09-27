@@ -459,3 +459,21 @@ library's md5 `e282cf1b5f53`; its symbols confirm g2, g5 and g8.
   it against.
 - g8's two further cases (8 processes on one host; a forced collision with the registry off) are in
   `rmw_samehost_many.sh`, which uses the same WS and the same CycloneDDS control.
+
+## g9 - nodes in one process (found by Dev 2026-09-28; ahead of g6; acceptance test `inprocess`)
+
+- **Gap:** two nodes in one process never exchange topics. All of a process's nodes share one tt_Context, and core
+  drops its own DATA as self-sent, with no in-process delivery path. Composition, component containers, composable
+  launch files and every multi-node rclpy or rclcpp process are affected.
+- **Baseline** (`inprocess`, one rclpy process with a talker node and a listener node in one executor, then a
+  std_srvs/Trigger call between them): CycloneDDS PASS; **rmw_tickle FAIL, topic received 0, but the in-process
+  service call succeeds** (service_ok=1). So g9 is about topics; services already work within a process.
+- **Pass** (Dev pre-registers the details):
+  - `inprocess` passes;
+  - QoS as for remote: RELIABLE without loss, KEEP_LAST overflow, and TRANSIENT_LOCAL backlog for a later local
+    subscriber;
+  - no double delivery when local and remote subscribers coexist;
+  - mutants: the delivery removed, delivered twice, and no local backlog;
+  - CPU: a publish with no local subscriber costs at most a branch.
+- The acceptance overlay now also builds `std_srvs` with TickLE typesupport. Without it the service half fails for a
+  reason unrelated to g9.
