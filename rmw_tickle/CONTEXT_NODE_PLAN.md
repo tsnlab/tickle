@@ -305,6 +305,47 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
      index, and it binds before the node limit does. Every rclcpp node brings about 9 endpoints by default: 6
      parameter services, rosout, and parameter_events publisher and subscriber. So a 20-node container holds about
      180 before any of its own topics. Put to Plan, 2026-09-27; not pre-registered yet.
+4a. **Endpoint capacity, before stage 3** (Plan, 2026-09-27: an internal capacity, so no user decision; pre-registered
+   here before code).
+   - **What binds today, found by reading every use of `tt_MAX_ENDPOINT_COUNT`.**
+     - No endpoint slot is indexed by a `uint8_t` anywhere: `endpoint_count` is a `uint32_t`, and
+       `endpoints[]` / `endpoint_index[]` hold pointers.
+     - The coupling is the per-peer tables in `struct tt_Context`: `update_generation`, `update_seen`, the
+       `update_part_*` arrays, `version_mismatch_logged`, `update_last_seen`, `traffic_last_seen`,
+       `liveliness_flags` and `reached_nodes`. These are indexed by a remote **context id** (`header->source`, a
+       `uint8_t` on the wire) but sized by `tt_MAX_ENDPOINT_COUNT`, which happens to be 256. That is why
+       `config.h` asserts `tt_MAX_ENDPOINT_COUNT <= 256`.
+   - **The change.**
+     - A new, fixed `tt_MAX_CONTEXT_IDS` (`UINT8_MAX + 1`, the wire's id space) sizes those tables and their loops.
+     - `tt_MAX_ENDPOINT_COUNT` then bounds only the local endpoint table, and the 256 assert goes.
+     - The core default stays 256.
+     - rmw_tickle's CMake sets `tt_MAX_ENDPOINT_COUNT` 2048 and `tt_ENDPOINT_INDEX_SIZE` 4096. The count, from a
+       composed Nav2 bringup: about 20 nodes. Each rclcpp node has 9 endpoints by default (6 parameter services,
+       rosout, parameter_events publisher and subscriber); a lifecycle node adds 5 services and a transition-event
+       publisher; each action server adds 3 services and 2 topics; plus the application's topics. That is about 30
+       per node, so about 600, and 2048 is more than 3x that.
+   - **Found alongside, the same class of limit:** rmw never set `tt_MAX_DISCOVERED_ENTITIES`, so its table of remote
+     entities, which rmw's whole graph API reads, holds 16 and silently drops the rest. `ros2 topic list` against a
+     Nav2 process sees 16 of its hundreds of endpoints, and stage 3's remote node list would hit the same wall.
+     - rmw sets it to 2048 too. A `tt_DiscoveredEntity` is 552 B, so that is about 1.1 MB per rmw context, on the
+       heap.
+     - `upsert_discovered_entity()` is a linear scan, so its cost at that size is measured, not assumed.
+   - **PASS.**
+     - **Core default build:**
+       - the -O2 instructions of every receive and publish function are identical to before, or any difference is
+         explained;
+       - the `core_cost_ab` pair (default and `-R`) is held within 2 x SE, read against an A/A pair;
+       - the announce bytes are identical (`experiments/announce_bytes.c`).
+     - **The rmw limit:**
+       - a context filled to 2048 endpoints (for example 64 nodes x 32), all found locally;
+       - a remote context sees the other's entities up to its discovered capacity, not 16;
+       - a mutant that sizes the per-peer tables from a small endpoint count again, or truncates an index to 8 bits,
+         fails.
+     - **Memory:** `sizeof(struct tt_Context)` and `sizeof(struct tt_Discovery)` at the core and rmw settings,
+       before and after.
+     - **Cost at the rmw setting:** the time to process a 600-entry announce into a 2048-entry discovered table,
+       against 16.
+     - Gates 10/10, and the rmw suite in a netns.
 5. **rmw gaps**. The user's words, relayed by Plan: "1, 2, 3, 4번 진행하자." Each item is pre-registered before code,
    with behaviour tests and mutants, and uses CycloneDDS's or Fast DDS's behaviour as the control where one exists:
    - **(g1) Serialized messages** (`rmw_publish_serialized_message`, `rmw_take_serialized_message*`,
@@ -319,6 +360,8 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
    - **Order for Dev:** stage 3, then (g2), then (g3), then large messages stage 1 together with (g1) (both are ROS
      message to TickLE wire bytes, and a serialized message is exactly that output), then large messages stage 2
      with lending.
+   - **(g5) `rmw_take_sequence`** is not defined in `librmw_tickle.so` at all (`nm -D`), though rmw_implementation
+     dispatches it on jazzy (Plan, 2026-09-27). COMPARISON 2.7a's row is updated in the commit that closes it.
 6. **Large messages, stage 1** (user item 1, "B"): rmw_tickle's direct typesupport, ROS C++ to the TickLE wire with
    no fixed-capacity intermediate struct.
 7. **Large messages, stage 2, with receive-buffer lending** (user items 1 and 2):
