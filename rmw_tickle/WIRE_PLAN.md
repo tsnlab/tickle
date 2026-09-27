@@ -300,6 +300,24 @@ From here on, and before any A B B A result is read:
 The v10 fix (`4dc7ad49`, 8.1a) is judged this way on the native cells (`campaign_ab_chain.sh`) and on the rmw rows
 (`rmw_lease86_rig_chain.sh` with TAG=wire_v10fix_rmw), both queued on the rig.
 
+**Amendment, 2026-09-27 (after CONTEXT_NODE_PLAN.md 4a): code layout and between-run drift.** In `core_cost_ab.sh`
+on the PC, one binary does not reproduce itself between runs to within 2 x SE.
+
+- **The evidence (4a).**
+  - The same bench binary, byte-identical in code and addresses, was measured in two separate 20-round pairs against
+    one parent: default-mode receive -0.5 ns (2 x SE 0.9), then +1.2 ns (2 x SE 0.7).
+  - Moving only cold functions, with not one instruction of the receive path changed, gave -R receive -4.3 ns
+    (2 x SE 1.1).
+  - A within-run 2 x SE therefore measures run-to-run noise inside one run. It does not measure layout, or drift
+    between runs.
+- **From here on,** a bench CPU criterion on a commit that changes code size is read against two controls:
+  - a **placement control**: the same commit with its changed cold code relocated, or an A/A pair of a trivially
+    re-linked binary;
+  - a **repeat** of the pre-registered pair on another occasion.
+  - A difference inside the swing those controls show is recorded as **layout**, not WORSE.
+  - A difference beyond it, in the same direction in every repeat, is WORSE.
+- 8.9's and D5's few-ns results are consistent with this. They are noted here, not re-judged.
+
 ### 8.4 The fix (`4dc7ad49`) against the parent, A B B A: the receiver is fixed, the sender is not (2026-09-27)
 
 `campaign_ab_chain.sh`, `8f3811f4` / `4dc7ad49` / `4dc7ad49` / `8f3811f4`, 3 repetitions per block, 72 + 72 ok rows.

@@ -346,7 +346,8 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
      - **Cost at the rmw setting:** the time to process a 600-entry announce into a 2048-entry discovered table,
        against 16.
      - Gates 10/10, and the rmw suite in a netns.
-   **4a result (2026-09-27, 3f5e2cba): capacity and the defects PASS; one bench criterion NOT held, open with Plan.**
+   **4a result (2026-09-27, 3f5e2cba): capacity and the defects PASS; one pre-registered bench criterion MISSED, and
+   accepted.**
    - **The defect, before and after** (`tests/test_discovery_capacity.c`): 20 best-effort remote publishers, and a
      reliable subscriber on the 20th.
 
@@ -399,6 +400,20 @@ The user decided three open items: "1. rmw_tickle에서 64KB를 넘는 메시지
      - Send is held in every run.
      - So the default receive is about 2% slower, consistently, with no executed instruction on its path changed. The
        cause is not established; `perf` counters are not available on this PC (perf_event_paranoid 4).
+   - **The placement experiment** (Plan's option b):
+     - The same code with only the changed cold functions marked `__attribute__((cold))`, so no receive-path
+       instruction changes, gave default receive -0.5 ns (2 x SE 0.9, held) and -R -4.3 ns.
+     - Committed and re-run as the pre-registered pair, **the identical binary** (same code and addresses) gave +1.2
+       ns (2 x SE 0.7, outside) and send +3.0 ns (2.9).
+     - So the layout hypothesis is **not confirmed**. What the experiment shows is that this bench drifts about 1.7 ns
+       between runs for one binary, beyond its within-run 2 x SE. The `cold` attributes were therefore dropped from
+       4a.
+   - **Verdict:** the pre-registered "held within 2 x SE" is **missed** on default-mode receive. The miss is an
+     unexplained ~1 ns (2%), with every receive instruction unchanged and within the bench's shown between-run drift.
+   - **Accepted** (Plan, 2026-09-27): 4a fixes two correctness defects - RxO failing open past 16 entities, and a
+     context of more than ~416 endpoints announcing nothing - which a ~1 ns receive shift does not outweigh. The rig
+     campaign at the end of the restructure decides whether it is real on the Pi.
+   - The reading rule this led to is WIRE_PLAN 8.3's amendment of the same date.
 
 5. **rmw gaps**. The user's words, relayed by Plan: "1, 2, 3, 4번 진행하자." Each item is pre-registered before code,
    with behaviour tests and mutants, and uses CycloneDDS's or Fast DDS's behaviour as the control where one exists:
