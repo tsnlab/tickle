@@ -57,7 +57,7 @@ static int32_t stub_request_encode(struct tt_Request* request, uint8_t* payload,
 static void on_answer(struct tt_Client* answered, int8_t return_code, struct tt_Response* response) {
     (void)answered;
     (void)response;
-    last_return_code = return_code;
+    last_return_code = (int)return_code;
     callbacks++;
 }
 
