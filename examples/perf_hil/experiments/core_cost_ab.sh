@@ -53,6 +53,11 @@ build() { # ref -> binary path
     fi
     # The bench and the p1 codec come from this checkout, so every arm runs the same harness; only
     # tickle.c and its headers differ.
+    # BENCH_FROM_REF=1 takes each arm's bench from its own tree instead, for a pair across an API rename that the
+    # one bench cannot compile against both sides of (CONTEXT_NODE_PLAN.md stage 1, 2026-09-27). It is the same
+    # harness only if the two bench sources differ by the rename alone - check that before reading the result.
+    local bench="$HERE/core_cost_bench.c"
+    [ "${BENCH_FROM_REF:-0}" = 1 ] && bench="$tree/examples/perf_hil/experiments/core_cost_bench.c"
     # The old binary goes first: a failed build must not leave the last good one to be measured in its
     # place. That happened on 2026-09-27 - build() runs in a command substitution, where set -e does not
     # reach, and a compile error left D3's binary standing in for D2's.
@@ -60,7 +65,7 @@ build() { # ref -> binary path
     # BENCH_CFLAGS: compile-time settings applied to every arm alike, e.g. WIRE_PLAN.md 9.1's 32-writer builds.
     # shellcheck disable=SC2086 # a list of flags
     if ! gcc -O2 -DNDEBUG ${BENCH_CFLAGS:-} -I"$tree/include" -I"$SHAPE" -DTICKLE_C="\"$tree/src/tickle.c\"" \
-        -o "$bin" "$HERE/core_cost_bench.c" "$SHAPE/Bench.c" "$tree/src/encoding.c" "$tree/src/log.c" -lm -lpthread >&2; then
+        -o "$bin" "$bench" "$SHAPE/Bench.c" "$tree/src/encoding.c" "$tree/src/log.c" -lm -lpthread >&2; then
         echo "build of $ref failed" >&2
         return 1
     fi
@@ -74,7 +79,7 @@ for ref in "$@"; do
 done
 
 : >"$OUT"
-echo "core_cost_ab $(date -Is) rounds=$ROUNDS samples=$SAMPLES cpu=$CPU bench_args=${BENCH_ARGS:-} bench_cflags=${BENCH_CFLAGS:-} refs=$*" >>"$OUT"
+echo "core_cost_ab $(date -Is) rounds=$ROUNDS samples=$SAMPLES cpu=$CPU bench_args=${BENCH_ARGS:-} bench_cflags=${BENCH_CFLAGS:-} bench_from_ref=${BENCH_FROM_REF:-0} refs=$*" >>"$OUT"
 for round in $(seq "$ROUNDS"); do
     for ref in "$@"; do
         # shellcheck disable=SC2086 # BENCH_ARGS is a list of the bench's own flags
