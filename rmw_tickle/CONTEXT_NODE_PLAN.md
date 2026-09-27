@@ -648,6 +648,44 @@ about `4 x 1.5 x latency`. `latency` is an EMA updated only when an answer is ac
 
 Raw: `examples/perf_hil/results/core_cost_ab_padding_zero{,_R}_2026-09-27.txt`.
 
+### Stage 3 result: PASS (2026-09-28, 3d3ed747)
+
+- **Function:** `rmw_gap_acceptance.sh graph` (two private netns) - `ros2 node list`, `ros2 node info` and `ros2 param
+  get` against a node in the other namespace.
+  - rmw_tickle **PASS**, with the CycloneDDS control passing.
+  - The build before stage 3 FAILS it (list 0, info 0, param 0).
+  - The rmw suite passes, 48/48, and the gates 10/10.
+- **Core tests** (`test_node_discovery`, two contexts at rmw capacities):
+  - 20 nodes x 12 endpoints and 256 nodes x 2 are all listed by name and namespace, each endpoint on its own node and
+    none on another;
+  - an empty default node is not announced, and one owning an endpoint is;
+  - a node entry registers no writer and counts as no endpoint.
+  - **Mutants, each failing:** the index's kind half dropped, the empty default node announced, and no node entries.
+  - **Amended reading:** the kind-half mutant fails the 20 x 12 shape too, not only the 256 one as pre-registered.
+    Twenty nodes use indices 1 to 20, and 16 to 20 need the kind bits.
+- **Recorded cost, M1:** the announce grows 228 -> 268 B for one node's entry: 40 B per node per list, against the
+  ~41 pre-registered. The discovery summary is unchanged but for its version byte (M2).
+- **Not measured here:** M3 join time. `discovery_join.sh` counts alive entities against (N-1) x E, and node entries
+  now add to that count, so the tool needs adapting first. Left to Plan, with the rig campaign.
+- **Core CPU**, `core_cost_ab -r 20`, 5e8799cd against 3d3ed747 (raw: `examples/perf_hil/results/core_cost_ab_stage3*`):
+
+  | run | send (ns) | recv (ns) |
+  |---|---|---|
+  | default | +1.6 (2 x SE 3.1) | +0.1 (1.5) |
+  | `-D` | +2.2 (3.3) | +0.6 (1.4) |
+  | `-R` (3 repeats) | held in every repeat | **+3.9, +4.1, +4.0** (2 x SE 1.3-1.6) |
+  | A/A default | -0.4 | +0.0 |
+  | A/A `-R` | +1.1 | +0.0 |
+
+  - **Instructions:** every per-sample function is the same but for the version immediate (0x0a -> 0x0b), the bench's
+    own context-array arithmetic (the context grew 24 B, the default node's entry), and one field offset in
+    `find_or_create_writer_proxy` (a discovery entry's `qos` moved 1 B).
+  - **Controls, read by 8.3 as amended:**
+    - the parent with its context padded 24 B: `-R` recv -1.9 ns, so context size alone does not give +4;
+    - stage 3 with only its announce functions placed in `.text.unlikely`: `-R` recv +0.8 (held), send -4.7.
+  - The `-R` receive +4 ns is inside the swing that code placement alone produces, so by 8.3 it is **layout**, not
+    WORSE. The rig campaign judges it on the Pi.
+
 ## Order and ownership
 
 - Dev writes each stage in its own worktree and pushes only after telling Plan.
