@@ -908,3 +908,50 @@ package must be rebuilt.
 picks that up only on a fresh configure: a build tree configured before it regenerates nothing when the
 generator changes, and produces a mix of old and new names that does not compile. `--cmake-force-configure`
 once, or a clean build, which is what CI does anyway.
+
+## g13 - a subscription cannot be KEEP_ALL, so `ros2 bag record` cannot subscribe (found by Dev 2026-09-28; blocks g1's `bag`)
+
+- **Gap:** `rmw_tickle_validate_qos_profile()` refuses `RMW_QOS_POLICY_HISTORY_KEEP_ALL` on a subscription, calling it
+  "an unbounded queue". `ros2 bag record` subscribes with KEEP_ALL, so with g1's entry points in place and the domain
+  default fixed (`a34979e7`) the recorder now gets as far as `rmw_create_subscription` and stops there. A publisher's
+  KEEP_ALL has been accepted since 2026-09-25, bounded by `RMW_TICKLE_KEEP_ALL_BYTES` (512 KB default, env override) -
+  only the reader side still refuses.
+- **The premise to correct first: KEEP_ALL does not mean an unbounded queue.** In DDS, HISTORY KEEP_ALL is bounded by
+  RESOURCE_LIMITS, and what distinguishes it from KEEP_LAST is not capacity but **what happens when the cache is full**:
+  KEEP_LAST overwrites the oldest unread sample, KEEP_ALL refuses to, and a RELIABLE writer is held back instead. So the
+  policy TickLE cannot honour is not "keep everything" - it is "never destroy an unread sample" - and that one is
+  implementable in bounded memory, which is the whole reason to accept it.
+- **Decision (Plan, 2026-09-28): accept KEEP_ALL on a subscription,** with these semantics:
+  - **a bounded capacity**, sized by a byte budget in the publisher's own idiom (`RMW_TICKLE_KEEP_ALL_BYTES`' reader
+    counterpart, its own name, its own env override, the derivation documented where the publisher's is);
+  - **no overwrite.** Full queue plus an arriving sample must not evict a sample the application has not taken;
+  - **back-pressure under RELIABLE.** The arriving sample is not accepted *and not acknowledged*, so the writer
+    retransmits it - which is the hold-back DDS produces, reached through the tracking bitmap that already exists;
+  - **BEST_EFFORT drops the arriving sample and counts it,** which is also what DDS does: BEST_EFFORT KEEP_ALL still
+    loses samples once the cache is full. The count must be readable and logged, never silent.
+  - **Never claim an unbounded queue.** Document the failure mode this buys: a reader that stops taking stalls its
+    RELIABLE writers. That is what KEEP_ALL means, and it is the behaviour rosbag2 is asking for.
+- **Verify the premise the design rests on, before writing the implementation.** The back-pressure arm assumes that a
+  sample left unmarked in the tracking bitmap is retransmitted by the writer. Show that with a test, not a reading of
+  the code (this plan's own rule, and it has caught two careful readings already). If it does not hold, say so and fall
+  back to dropping the *arriving* sample with a visible counter - the no-overwrite guarantee survives, the no-loss one
+  does not, and criterion 5 then has to prove zero loss from the counter rather than from the semantics.
+- **Pass, pre-registered:**
+  1. **Matching.** A KEEP_ALL subscription is created without error and matches a KEEP_LAST publisher. HISTORY is a
+     local policy, not a requested/offered one, so this must hold - checked against the CycloneDDS control arm in the
+     same test, so the claim rests on an observation and not on Plan's reading of the spec.
+  2. **No overwrite.** Capacity C, publish C+K samples with nothing taken, then take C times: the C samples taken are
+     the **first** C published. Mutant: restore the evict-the-oldest branch - this test must fail.
+  3. **Back-pressure, RELIABLE.** A writer sending faster than the reader takes, capacity small: samples delivered
+     equals samples sent, and the writer's send rate falls. Mutant: acknowledge the refused sample anyway - loss must
+     appear.
+  4. **BEST_EFFORT.** Overflow drops the arriving sample, the counter is non-zero and the log says so. A run that loses
+     samples with a zero counter fails.
+  5. **`bag` acceptance** (g1's criterion 5): `ros2 bag record` on a topic published from the other host records N
+     messages; the bag holds N, each one's content matches what was sent, and the loss counter is zero. CycloneDDS runs
+     the same test first as the control.
+  6. **No regression.** The KEEP_LAST path keeps its behaviour (the existing subscription and QoS tests pass unchanged),
+     and p1 shows no WORSE row that survives WIRE_PLAN 8.3's confirmation rule.
+- **Why this is worth a gap of its own rather than a line in g1:** rosbag2 is not the only KEEP_ALL subscriber - it is
+  the idiom for any consumer that must not lose messages - and under the incomplete-delivery rule a recorder that
+  silently drops is a LOSE, not a partial win. The semantics above are what make the difference visible.
