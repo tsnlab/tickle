@@ -1283,6 +1283,28 @@ cliff, a hot function crossing a boundary) and the exact evidence above would be
   never its sign;
 - **above it, criterion 6 is not met** and the cause is found before g13 is called closed.
 
+**Result (Dev, 2026-09-29, `bd43ea2b`): not falsified.** The unforced pair moved by 0.659% in magnitude, well below the
+3% threshold, over four arms of six runs each. So nothing turned up that one extra branch and 32 bytes cannot explain,
+and criterion 6 stands on the exact figures. **The direction is deliberately not recorded**, here or in the raw summary:
+the alignment flag alone moved one arm by 0.472%, the same order as the whole difference, so whichever way it points it
+is layout and not g13 - and quoting a favourable sign would be exactly the mistake WIRE_PLAN 10.4 exists to prevent.
+The raw output is kept at `/tmp/g13_p1_falsify_kept.txt`.
+
+**One harness, two questions, and only one of them void.** `p1_layout_check.sh` printed `VERDICT=VOID`, correctly: it
+exists to ask whether the earlier 1.1% is layout, and this unforced pair does not reproduce that 1.1%, so it cannot
+speak to it. But the question here was "is the difference 3% or more", the unforced pair is exactly the comparison that
+answers it, and six runs an arm with SEs of 2000-4400 on 3.7M samples answer it clearly. Dev did not read the printed
+verdict as the answer - which would have left criterion 6 unfalsified **for the wrong reason**, the same shape as
+everything else in this section from one more direction. **A harness's verdict is about the harness's question. When a
+run is reused for a second question, the second question needs its own reading.**
+
+**A fifth, in a waiter rather than in a test (Dev, 2026-09-29).** The until-loop waiting for the falsification run
+grepped case-insensitively for "layout", and the harness's own first line is `=== p1 layout check ... ===`. So the wait
+returned immediately, on the header, and a half-built run was nearly read as a result. It waits on `=== done` now, which
+exists only at the end. **This is CLAUDE.md rule 2's exact shape in a waiter rather than in a `pgrep`:** the check
+matched the checking's own output. Any wait condition has to be something the job prints only when the thing waited for
+has happened - and it must match on failure too, or a crash looks identical to still running.
+
 **And one more null result that was null for the wrong reason,** which is why a size check is not automatically safer
 than a timing one: Dev's first size comparison substituted the parent's rmw header but compiled it against the *current*
 `tickle.h`, so the struct came out unchanged. That is the old struct measured with the new core inside it - a null
