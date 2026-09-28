@@ -43,7 +43,22 @@ from tickle_typesupport import layout
 
 from . import ros2_adapter
 
-MUTANTS = ("absolute_align", "size_strlen", "len_prefix_plus1", "no_bound_check")
+# cpp_string_size is the one mutant that changes only the C++ codec (ros2_cpp_direct_codec.py):
+# the others live in the helpers both share, so they move both encoders the same way and the two
+# still agree with each other. Without it, nothing would prove the harness's own C++ arm can fail.
+# The last two change only the C++ codec (ros2_cpp_direct_codec.py); the others live in the
+# helpers both share, so they move both encoders the same way and the two still agree with each
+# other. Without a C++-only pair, nothing would prove the harness's C++ arm - or the C++ test
+# beside it - can fail at all. cpp_string_size breaks the first-NUL rule, which only the test
+# reaches; cpp_skip_pad breaks the layout, which only the arm reaches.
+MUTANTS = (
+    "absolute_align",
+    "size_strlen",
+    "len_prefix_plus1",
+    "no_bound_check",
+    "cpp_string_size",
+    "cpp_skip_pad",
+)
 _SWAP = {2: ("uint16_t", "__builtin_bswap16"), 4: ("uint32_t", "__builtin_bswap32"), 8: ("uint64_t", "__builtin_bswap64")}
 _SCALAR_SIZE = {
     "bool": 1,

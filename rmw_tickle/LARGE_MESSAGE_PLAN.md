@@ -227,6 +227,39 @@ supported type and omitting WString fails with both messages.
 tests package with `len_prefix_plus1` and requires that to fail on check 1 - the standing control that the harness
 can fail.
 
+### Pass 1, the C++ codec (Dev, 2026-09-28)
+
+`ros2_cpp_direct_codec.py` generates `direct_encode_size`/`direct_encode`/`direct_decode` over the C++ message,
+and the C++ callbacks now carry them. Everything that decides the layout - padding, field order, a string's
+uint16 length including its NUL, a sequence's uint16 count, the bound checks, the byte swap - is *imported* from
+the C generator rather than written again: those helpers emit plain C statements, which are valid C++. Only the
+field accessors differ (`ros.f`, `.size()`, `&ros.f[0]`, `resize()`, `assign()`). Sharing them is what answers
+this stage's first stated risk, two encoders of one wire format drifting apart. `std::vector<bool>` keeps an
+element loop, having no `data()`; `BoundedVector` has no const `data()` either, so every container is reached
+through `&ros.f[0]`, only where there is an element.
+
+**How it is checked.** The harness gained a C++ arm. A C++ message cannot be filled by the C introspection, so
+each sample is carried across: the C message the checks already built goes through the C `to_tickle` into the
+TickLE struct and the C++ `from_tickle` out of it, and that object's direct encoding must be the very bytes the
+C one produced. Over the inventory at seed 7: **287 types, 0 failures, 55,922 samples byte-compared between the
+two languages**, and the per-type hashes are unchanged from the pre-g12 baseline.
+
+**What that arm cannot reach, and what covers it.** A sample carried through a TickLE struct ends at the first
+NUL, so a `std::string` with a NUL inside it never reaches the C++ codec that way. `test_direct_codec_cpp.cpp`
+asserts those rules against bytes written out in full instead: a string ending at its first NUL, a bounded
+string refused above its bound, and a `std::vector<bool>` round trip. CI runs it beside the harness.
+
+**Two C++-only mutants**, because the shared helpers mean the original four move both encoders together and the
+two still agree:
+
+| Mutant | Must fail |
+|---|---|
+| `cpp_string_size` | `test_direct_codec_cpp` (the harness passes it - that is the gap, measured) |
+| `cpp_skip_pad` | the harness's check 1c, and only that check |
+
+Both were run: `cpp_string_size` leaves the harness green and fails the test on the length prefix;
+`cpp_skip_pad` fails check 1c with "C++ encodes 22 B where C encodes 24" and nothing else.
+
 **A generator change did not regenerate anything.** Found while building this: a generated file's only `DEPENDS` were
 its `.msg` and the capacity table, so `rosidl_typesupport_tickle_c_generate_interfaces.cmake` left every already
 generated file in place when the generator itself changed. The direct codec's first build failed on it - a freshly

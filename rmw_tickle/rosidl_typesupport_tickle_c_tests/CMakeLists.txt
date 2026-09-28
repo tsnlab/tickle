@@ -110,6 +110,26 @@ if(BUILD_TESTING)
   )
   set_target_properties(test_primitives_cpp PROPERTIES CXX_STANDARD 17)
 
+  # The C++ direct codec's own rules, where the pass-1 harness's C++ arm cannot reach - see the
+  # file's own comment.
+  add_executable(test_direct_codec_cpp test/test_direct_codec_cpp.cpp)
+  target_link_libraries(test_direct_codec_cpp
+    "${PROJECT_NAME}__rosidl_generator_c"
+    "${PROJECT_NAME}__rosidl_generator_cpp"
+    "${PROJECT_NAME}__rosidl_typesupport_cpp"
+    # The C++ direct codec itself lives here, beside the C++ converters it was generated with.
+    "${PROJECT_NAME}__rosidl_typesupport_tickle_cpp"
+    rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
+    rosidl_typesupport_tickle_cpp::rosidl_typesupport_tickle_cpp
+    rosidl_runtime_c::rosidl_runtime_c
+  )
+  set_target_properties(test_direct_codec_cpp PROPERTIES CXX_STANDARD 17)
+  target_compile_options(test_direct_codec_cpp PRIVATE -std=gnu++17)
+  # The generated C++ adapter headers are not installed - they are this package's own build output,
+  # compiled into its typesupport library - so name the directory they are written to.
+  target_include_directories(test_direct_codec_cpp PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/rosidl_typesupport_tickle_c/${PROJECT_NAME}/msg")
+
   add_executable(test_dispatch_srv_cpp test/test_dispatch_srv_cpp.cpp)
   target_link_libraries(test_dispatch_srv_cpp
     "${PROJECT_NAME}__rosidl_generator_c"

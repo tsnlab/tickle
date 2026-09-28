@@ -50,8 +50,15 @@ def test_bool_sequences_never_memcpy_from_the_bitset(tmp_path):
     # std::vector<bool> is a bitset with no data(): a memcpy() from it would not compile, or worse. std::copy over
     # its iterators is element-wise by construction, so it stays correct.
     source = _generate(tmp_path, "Flags", "bool[<=4] flags\n")
-    assert "memcpy" not in source.split("bool to_tickle", 1)[1]
+    # The two converters only - the direct codec below them memcpy's counts and every other
+    # element type, and reaches a bool sequence one element at a time (ros2_cpp_direct_codec.py).
+    converters = source.split("bool to_tickle", 1)[1].split("int32_t direct_encode_size", 1)[0]
+    assert "memcpy" not in converters
     assert "std::copy(ros.flags.begin(), ros.flags.end(), tickle->flags);" in source
+    # And the direct codec never memcpy's the bitset either: its bool sequence is an element loop.
+    direct = source.split("int32_t direct_encode(", 1)[1]
+    assert "memcpy(payload + encoded, &ros.flags[0], bytes);" not in direct
+    assert "payload[static_cast<size_t>(encoded) + i] = ros.flags[i] ? 1 : 0;" in direct
 
 
 def test_a_null_string_from_the_wire_becomes_an_empty_one(tmp_path):

@@ -27,6 +27,7 @@
 // codec itself - encode, decode, sizes - is the C one, shared.
 
 #include <cstddef>
+#include <cstdint>
 #include <new>
 #include <utility>
 
@@ -84,6 +85,29 @@ static void _@IDL_NAME@_ros_move(void * dst_ros_message, void * src_ros_message)
     std::move(*static_cast<_@IDL_NAME@_message *>(src_ros_message));
 }
 
+// The direct codec over the C++ message itself (ros2_cpp_direct_codec.py), byte-identical to the
+// C one - a message published by a C++ node is routinely taken by a C one.
+static int32_t _@IDL_NAME@_direct_encode_size(const void * ros_message)
+{
+  return direct_encode_size(*static_cast<const _@IDL_NAME@_message *>(ros_message));
+}
+
+static int32_t _@IDL_NAME@_direct_encode(const void * ros_message, uint8_t * payload, uint32_t len)
+{
+  return direct_encode(*static_cast<const _@IDL_NAME@_message *>(ros_message), payload, len);
+}
+
+static int32_t _@IDL_NAME@_direct_decode(
+  void * ros_message, const uint8_t * payload, uint32_t len, bool is_native_endian)
+{
+  try {
+    return direct_decode(
+      *static_cast<_@IDL_NAME@_message *>(ros_message), payload, len, is_native_endian);
+  } catch (const std::bad_alloc &) {
+    return -4;  // the C codec's "allocation failed", not an exception across a C caller
+  }
+}
+
 static rosidl_typesupport_tickle_c_message_callbacks_t _@IDL_NAME@_callbacks;
 #endif
 
@@ -137,10 +161,9 @@ ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
     callbacks.ros_init = &ts::_@IDL_NAME@_ros_init;
     callbacks.ros_fini = &ts::_@IDL_NAME@_ros_fini;
     callbacks.ros_move = &ts::_@IDL_NAME@_ros_move;
-    // The C direct codec reads C structs; a C++ message has none of its own yet.
-    callbacks.direct_encode_size = nullptr;
-    callbacks.direct_encode = nullptr;
-    callbacks.direct_decode = nullptr;
+    callbacks.direct_encode_size = &ts::_@IDL_NAME@_direct_encode_size;
+    callbacks.direct_encode = &ts::_@IDL_NAME@_direct_encode;
+    callbacks.direct_decode = &ts::_@IDL_NAME@_direct_decode;
     handle.data = &callbacks;
     handle.typesupport_identifier = rosidl_typesupport_tickle_cpp__identifier;
   }

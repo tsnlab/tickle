@@ -416,6 +416,10 @@ jobs:
           ./build/rosidl_typesupport_tickle_c_tests/test_dispatch_nested
           ./build/rosidl_typesupport_tickle_c_tests/test_dispatch_cpp
           ./build/rosidl_typesupport_tickle_c_tests/test_dispatch_srv_cpp
+          # The C++ direct codec's own rules - a string ending at its first NUL, a bounded string
+          # refused above its bound, std::vector<bool> - which the pass-1 harness's C++ arm cannot
+          # reach, because it carries every sample through a TickLE struct (see the file).
+          ./build/rosidl_typesupport_tickle_c_tests/test_direct_codec_cpp
           # Every primitive type's array and sequences through the C++ converters' std::copy/assign()
           # (rmw_tickle/RMW_PERF_PLAN.md 12.1-12.2).
           ./build/rosidl_typesupport_tickle_c_tests/test_primitives_cpp

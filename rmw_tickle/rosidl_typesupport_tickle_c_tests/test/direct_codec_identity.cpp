@@ -435,6 +435,19 @@ namespace {
         int32_t size;
     };
 
+    // The C++ codec's arm. A C++ message cannot be filled by the C introspection, so the sample is
+    // carried across: the C message the checks already built goes through the C to_tickle into the
+    // TickLE struct, and the C++ from_tickle out of it into a C++ object. Both converters are
+    // generated from one model, so the C++ object holds the same message; its direct encoding must
+    // then be the very bytes the C one produced. That is the property that matters - a message a
+    // C++ node publishes is routinely taken by a C one - and it needs no second random generator.
+    // Only a sample the TickLE struct can hold can be carried this way, so the arm covers
+    // everything but the capacity-only class, which the C arm alone checks.
+    struct cpp_arm {
+        const tickle_callbacks* callbacks; // the _cpp handle's own, with the C++ hooks
+        void* message;                     // ros_struct_size bytes, constructed by ros_init
+    };
+
     struct counts {
         // FNV-1a over every encoding each path produced, in sample order. A change to the wire
         // bytes of a type shows up as a changed hash between two builds, which is how a rename is
@@ -447,6 +460,7 @@ namespace {
         int regenerated = 0;
         int shrunk = 0;
         int overbound = 0;
+        int cpp_compared = 0; // samples whose C++ encoding was compared with the C one
         int decode_inputs = 0;
         int decode_capacity_only = 0;
         int failures = 0;
@@ -464,6 +478,7 @@ namespace {
         aligned_buffer out_new;
         aligned_buffer scratch;
         counts tally;
+        cpp_arm cpp;
         bool dumped; // whether a differing pair of encodings has already been printed for this type
     };
 
@@ -712,10 +727,45 @@ namespace {
         return true;
     }
 
+    // Check 1c: the C++ codec's bytes. `check.out_new` holds the C direct encoding of this sample
+    // and the TickLE struct still holds what to_tickle made of it, which is what the C++ object is
+    // built from.
+    auto cpp_agrees(checker& check, const void* msg, int32_t new_size, int sample) -> void {
+        if (check.cpp.callbacks == nullptr || check.cpp.message == nullptr || new_size < 0) {
+            return; // no C++ handle for this type, or nothing for it to match
+        }
+        // to_tickle is what the C arm just ran; run it again so the struct holds this sample, then
+        // let the C++ converter build the same message out of it.
+        if (!fits_struct(check, msg)) {
+            return; // the capacity-only class: it cannot be carried through the struct
+        }
+        check.cpp.callbacks->ros_fini(check.cpp.message);
+        check.cpp.callbacks->ros_init(check.cpp.message);
+        if (!check.cpp.callbacks->from_tickle(bytes_of(check.tickle_storage), check.cpp.message)) {
+            report(check, "1c", sample, "the C++ from_tickle refused a message the C one made");
+            return;
+        }
+        int32_t const sized = check.cpp.callbacks->direct_encode_size(check.cpp.message);
+        int32_t const size =
+            check.cpp.callbacks->direct_encode(check.cpp.message, bytes_of(check.scratch), buffer_length);
+        if (size != new_size || sized != size) {
+            report(check, "1c", sample,
+                   "C++ encodes " + std::to_string(size) + " B (size says " + std::to_string(sized) +
+                       ") where C encodes " + std::to_string(new_size));
+            return;
+        }
+        if (std::memcmp(bytes_of(check.scratch), bytes_of(check.out_new), static_cast<size_t>(size)) != 0) {
+            report(check, "1c", sample, "C++ and C encode the same message differently");
+            return;
+        }
+        check.tally.cpp_compared++;
+    }
+
     auto check_sample(checker& check, void* msg, int32_t new_size, int sample, const Message& shell) -> void {
         if (!encodings_agree(check, msg, new_size, sample) || new_size < 0) {
             return;
         }
+        cpp_agrees(check, msg, new_size, sample);
         if (decodes_back(check, msg, new_size, sample, shell)) {
             differential(check, static_cast<uint32_t>(new_size), sample, shell);
         }
@@ -808,7 +858,15 @@ namespace {
     }
 
     auto run_type(const std::string& name, const message_members* members, const tickle_callbacks* callbacks,
-                  uint64_t seed, int samples) -> counts {
+                  const tickle_callbacks* cpp_callbacks, uint64_t seed, int samples) -> counts {
+        cpp_arm cpp {nullptr, nullptr};
+        std::vector<uint64_t> cpp_storage;
+        if (cpp_callbacks != nullptr && cpp_callbacks->direct_encode != nullptr && cpp_callbacks->ros_init != nullptr) {
+            cpp_storage.assign((cpp_callbacks->ros_struct_size / 8) + 2, 0);
+            cpp.callbacks = cpp_callbacks;
+            cpp.message = cpp_storage.data();
+            cpp.callbacks->ros_init(cpp.message);
+        }
         checker check {.name = name,
                        .members = members,
                        .callbacks = callbacks,
@@ -819,6 +877,7 @@ namespace {
                        .out_new = make_buffer(buffer_length),
                        .scratch = make_buffer(buffer_length),
                        .tally = counts {},
+                       .cpp = cpp,
                        .dumped = false};
         check.gen.rng.seed(seed);
         Message const shell(members);
@@ -826,6 +885,9 @@ namespace {
             one_sample(check, sample, shell);
         }
         overbound(check);
+        if (cpp.message != nullptr) {
+            cpp.callbacks->ros_fini(cpp.message);
+        }
         return check.tally;
     }
 
@@ -927,11 +989,11 @@ namespace {
         return {packages.begin(), packages.end()};
     }
 
-    auto open_library(const std::string& package, const char* typesupport) -> void* {
+    auto open_library(const std::string& package, const char* typesupport, bool optional = false) -> void* {
         std::string name = "lib";
         name.append(package).append("__").append(typesupport).append(".so");
         void* handle = dlopen(name.c_str(), RTLD_NOW | RTLD_GLOBAL);
-        if (handle == nullptr) {
+        if (handle == nullptr && !optional) {
             std::printf("ERROR %s: %s\n", name.c_str(), dlerror());
         }
         return handle;
@@ -1002,7 +1064,8 @@ namespace {
     };
 
     auto check_one_type(const std::string& type, const rosidl_message_type_support_t* tickle,
-                        const rosidl_message_type_support_t* introspection, const options& opts, run_state& state)
+                        const rosidl_message_type_support_t* introspection,
+                        const rosidl_message_type_support_t* tickle_cpp, const options& opts, run_state& state)
         -> void {
         if (introspection == nullptr) {
             std::printf("FAIL %s: no introspection handle\n", type.c_str());
@@ -1017,15 +1080,22 @@ namespace {
         }
         state.types++;
         uint64_t const seed = opts.seed ^ std::hash<std::string> {}(type);
-        counts const tally = run_type(type, members_of(introspection), callbacks, seed, opts.samples);
+        const tickle_callbacks* cpp_callbacks =
+            tickle_cpp != nullptr ? static_cast<const tickle_callbacks*>(tickle_cpp->data) : nullptr;
+        if (cpp_callbacks != nullptr && cpp_callbacks->struct_size != sizeof(tickle_callbacks)) {
+            std::printf("FAIL %s: its C++ callbacks are a different shape (rebuild it)\n", type.c_str());
+            state.failed++;
+            return;
+        }
+        counts const tally = run_type(type, members_of(introspection), callbacks, cpp_callbacks, seed, opts.samples);
         bool const below_floor = tally.identical < opts.samples / 2;
         std::printf("%s %s identical=%d capacity_only=%d both_refused=%d regenerated=%d shrunk=%d overbound=%d "
-                    "decode_inputs=%d decode_capacity_only=%d failures=%d old_hash=%016" PRIx64 " new_hash=%016" PRIx64
-                    " seed=%" PRIu64 "\n",
+                    "cpp_compared=%d decode_inputs=%d decode_capacity_only=%d failures=%d old_hash=%016" PRIx64
+                    " new_hash=%016" PRIx64 " seed=%" PRIu64 "\n",
                     (tally.failures > 0 || below_floor) ? "FAIL" : "ok", type.c_str(), tally.identical,
                     tally.capacity_only, tally.both_refused, tally.regenerated, tally.shrunk, tally.overbound,
-                    tally.decode_inputs, tally.decode_capacity_only, tally.failures, tally.old_hash, tally.new_hash,
-                    seed);
+                    tally.cpp_compared, tally.decode_inputs, tally.decode_capacity_only, tally.failures, tally.old_hash,
+                    tally.new_hash, seed);
         if (below_floor) {
             std::printf("FAIL %s: %d of %d samples byte-compared, below the floor of %d\n", type.c_str(),
                         tally.identical, opts.samples, opts.samples / 2);
@@ -1039,6 +1109,9 @@ namespace {
         std::vector<std::string> const types = interface_messages(package);
         void* tickle_library = open_library(package, "rosidl_typesupport_tickle_c");
         void* introspection_library = open_library(package, "rosidl_typesupport_introspection_c");
+        // The C++ typesupport is optional here: a package may not build it, and the C arm stands
+        // on its own. Its absence is reported per type by cpp_compared staying at 0.
+        void* tickle_cpp_library = open_library(package, "rosidl_typesupport_tickle_cpp", true);
         if (tickle_library == nullptr || introspection_library == nullptr || types.empty()) {
             std::printf("FAIL %s: no libraries or no interfaces\n", package.c_str());
             state.failed++;
@@ -1051,8 +1124,11 @@ namespace {
                 state.declined.insert(type);
                 continue;
             }
+            const rosidl_message_type_support_t* tickle_cpp =
+                tickle_cpp_library != nullptr ? type_handle(tickle_cpp_library, "rosidl_typesupport_tickle_cpp", type)
+                                              : nullptr;
             check_one_type(type, tickle, type_handle(introspection_library, "rosidl_typesupport_introspection_c", type),
-                           opts, state);
+                           tickle_cpp, opts, state);
         }
     }
 

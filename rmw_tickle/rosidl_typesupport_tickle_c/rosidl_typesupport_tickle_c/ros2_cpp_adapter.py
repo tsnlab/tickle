@@ -37,6 +37,7 @@ the compiler reloaded it on every element. It cost 86 us for a 64-KB Image at -O
 Strings and nested elements keep their per-element code, since each needs a conversion.
 """
 
+from . import ros2_cpp_direct_codec
 from .ros2_adapter import ros2_header_path
 
 
@@ -164,6 +165,10 @@ def render_cpp_adapter(struct, ros_name, tickle_header):
         "// false only if allocating the ROS side fails.",
         f"bool from_tickle(const void* tickle_struct, {msg_type}& ros);",
         "",
+        "// The direct codec (ros2_cpp_direct_codec.py): the same bytes as the C one, from and into",
+        "// the C++ message itself, without the TickLE struct.",
+        *ros2_cpp_direct_codec.declarations(msg_type),
+        "",
         f"}}  // namespace {namespace}",
     ]
     has_ros_fields = bool(struct.fields)
@@ -172,6 +177,7 @@ def render_cpp_adapter(struct, ros_name, tickle_header):
         "#include <cstddef>",
         "#include <cstdint>",
         "#include <cstring>",
+        "#include <string>",
         "",
         f'#include "{ros_name}__rosidl_typesupport_tickle_cpp.hpp"',
         "",
@@ -211,10 +217,9 @@ def render_cpp_adapter(struct, ros_name, tickle_header):
         source_lines += ["    (void)ros;", "    (void)tickle;"]
     for f in struct.fields:
         source_lines += [f"    {line}" for line in _from_tickle_field_lines(f)]
-    source_lines += [
-        "    return true;",
-        "}",
-        "",
-        f"}}  // namespace {namespace}",
-    ]
+    source_lines += ["    return true;", "}", ""]
+    if ros2_cpp_direct_codec.needs_string_helpers(struct):
+        source_lines += ros2_cpp_direct_codec.emit_string_helpers()
+    source_lines += ros2_cpp_direct_codec.emit_functions(struct, msg_type)
+    source_lines += ["", f"}}  // namespace {namespace}"]
     return "\n".join(header_lines) + "\n", "\n".join(source_lines) + "\n"
