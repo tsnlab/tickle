@@ -174,48 +174,73 @@ def main():
                                      event_callbacks=SubscriptionEventCallbacks(incompatible_type=on_itype))
         spin_for(node, seconds)
         print('RESULT: role=%s incompatible_type_events=%d' % (role, counts['n']), flush=True)
+    elif role == 'intropeer':
+        # The endpoint the introspecting node will read. It must be in another PROCESS (here, another namespace), or
+        # the reader goes through get_topic_endpoint_info_by_topic()'s local branch, where the QoS is the real profile
+        # the publisher was created with - and that branch never had g14's defect. Dev demonstrated that the hard way
+        # on 2026-09-29: with the g14 fix reverted and rebuilt, the self-reading version of this case still passed.
+        node = Node('accept_intropeer')
+        from rclpy.qos import DurabilityPolicy
+        from rclpy.qos import LivelinessPolicy
+        from rclpy.qos import QoSProfile
+        from rclpy.qos import ReliabilityPolicy
+        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE,
+                         durability=DurabilityPolicy.VOLATILE, liveliness=LivelinessPolicy.AUTOMATIC)
+        pub = node.create_publisher(String, '/accept_intro', qos)
+
+        def tick():
+            counts['n'] += 1
+            pub.publish(String(data='msg-%d' % counts['n']))
+        node.create_timer(0.2, tick)
+        spin_for(node, seconds)
+        print('RESULT: role=intropeer sent=%d' % counts['n'], flush=True)
     elif role == 'introspect':
         # g14's generalisation (RMW_GAPS_PLAN): any value an introspection API reports must be one we would accept
-        # back. Here the round trip is done for real rather than reasoned about - the reported topic name, type name
-        # and QoS profile are handed straight back to create_publisher(), and the reported GIDs are checked for the
-        # properties a tool matching samples to endpoints relies on.
+        # back. The reported values are handed straight to the APIs that would consume them rather than inspected.
+        #
+        # This node creates NO publisher on the topic, so every endpoint it is told about is a REMOTE one, by
+        # construction rather than by filtering. That is both the branch g14 lived in - the one that starts from
+        # rmw_qos_profile_unknown - and the realistic shape, since a tool like rosbag2 is always reading somebody
+        # else's endpoint.
+        #
+        # discovered=0 is reported as its own field and is NOT a pass: a case that reports success when it found
+        # nothing to check is the failure this file has met twice in two days.
         #
         # Every checked value is PRINTED as well as judged, because a failure that says only "mismatch" does not say
-        # what was compared - the lesson from three mutants landing above their claim on 2026-09-28.
+        # what was compared.
         node = Node('accept_introspect')
         from rosidl_runtime_py.utilities import get_message
-        pub = node.create_publisher(String, '/accept_intro', 10)
-        spin_for(node, min(seconds, 3.0))
-        infos = node.get_publishers_info_by_topic('/accept_intro')
+        deadline = time.time() + max(seconds - 1.0, 1.0)
+        infos = []
+        while time.time() < deadline:
+            rclpy.spin_once(node, timeout_sec=0.2)
+            infos = node.get_publishers_info_by_topic('/accept_intro')
+            if infos:
+                break
         fails = []
-        if not infos:
-            fails.append('no_endpoint_reported')
         gids = []
         for info in infos:
             tname = info.topic_type
             gids.append(bytes(info.endpoint_gid))
-            print('REPORTED: type=%s qos=%s gid=%s' % (tname, info.qos_profile, bytes(info.endpoint_gid).hex()),
-                  flush=True)
-            # 1. the reported type name must resolve to a type
+            print('REPORTED: node=%s type=%s qos=%s gid=%s'
+                  % (info.node_name, tname, info.qos_profile, bytes(info.endpoint_gid).hex()), flush=True)
             try:
                 msg_type = get_message(tname)
             except Exception as exc:  # noqa: BLE001 - the failure itself is the result
                 fails.append('type_unresolvable:%s:%s' % (tname, type(exc).__name__))
                 continue
-            # 2. the reported name, type and QoS must be usable to create the endpoint again
+            # The round trip that g14 failed: the profile we reported for a discovered endpoint, handed back to us.
             try:
                 again = node.create_publisher(msg_type, '/accept_intro_rt', info.qos_profile)
                 node.destroy_publisher(again)
             except Exception as exc:  # noqa: BLE001
-                fails.append('recreate_refused:%s' % type(exc).__name__)
-        # 3. a GID must be non-zero and unique, or a tool cannot match a sample to its writer
+                fails.append('recreate_refused:%s:%s' % (type(exc).__name__, str(exc)[:60].replace(' ', '_')))
         for gid in gids:
             if gid == bytes(len(gid)):
                 fails.append('gid_all_zero')
         if len(set(gids)) != len(gids):
             fails.append('gid_not_unique')
-        node.destroy_publisher(pub)
-        print('RESULT: role=introspect endpoints=%d roundtrip_failures=%d detail=%s'
+        print('RESULT: role=introspect discovered=%d roundtrip_failures=%d detail=%s'
               % (len(infos), len(fails), ','.join(fails) if fails else 'none'), flush=True)
     else:
         print('RESULT: role=%s error=unknown_role' % role, flush=True)

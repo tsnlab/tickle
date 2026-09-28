@@ -313,11 +313,26 @@ t_takeseq() {
 t_introspect() {
     local d=$OUTDIR/introspect_$1
     mkdir -p "$d"
-    run_in "$NS1" "$1" 1 9 "" python3 "$NODE" introspect 6 > "$d/node.log" 2>&1
-    ran "$d/node.log" 40 || { echo "ERROR(node did not finish)"; return; }
+    # Two processes, because the endpoint has to be a REMOTE one. Dev showed on 2026-09-29 that the first version of
+    # this case - one node reading its own publisher back - passes with g14's fix reverted, because a local endpoint is
+    # served from the real profile it was created with and never went through rmw_qos_profile_unknown. A case that
+    # passes with the defect present is not a case.
+    run_in "$NS2" "$1" 2 12 "" python3 "$NODE" intropeer 10 > "$d/peer.log" 2>&1 &
+    local pp=$!
+    sleep 1
+    run_in "$NS1" "$1" 1 9 "" python3 "$NODE" introspect 8 > "$d/node.log" 2>&1
+    wait "$pp"
+    # Not ran(): that helper reads a sent= field, which this role does not print, so it could only ever fail - a check
+    # that cannot pass, which is how both arms including the control reported ERROR on the first run. The node's own
+    # RESULT line is the evidence it finished.
+    grep -q 'RESULT: role=introspect' "$d/node.log" || { echo "ERROR(node did not finish)"; return; }
     local n f
-    n=$(field "$d/node.log" endpoints); f=$(field "$d/node.log" roundtrip_failures)
-    if [ "${n:-0}" -lt 1 ]; then echo "FAIL(no endpoint reported)"; return; fi
+    n=$(field "$d/node.log" discovered); f=$(field "$d/node.log" roundtrip_failures)
+    # discovered=0 is not a pass: it means the case found nothing to check, which must not read as success.
+    if [ "${n:-0}" -lt 1 ]; then echo "FAIL(no remote endpoint discovered)"; return; fi
+    # A bare PASS on purpose until Dev's PASS(detail) generalisation of the control check has landed: the count is in
+    # the node's own RESULT line either way, and a PASS(...) the control check does not yet accept would void the case
+    # for a control failure that did not happen.
     if [ "${f:-1}" = 0 ]; then echo PASS; else echo "FAIL($(field "$d/node.log" detail))"; fi
 }
 
