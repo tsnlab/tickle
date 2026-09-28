@@ -936,6 +936,64 @@ once, or a clean build, which is what CI does anyway.
   the code (this plan's own rule, and it has caught two careful readings already). If it does not hold, say so and fall
   back to dropping the *arriving* sample with a visible counter - the no-overwrite guarantee survives, the no-loss one
   does not, and criterion 5 then has to prove zero loss from the counter rather than from the semantics.
+- **Premise result (Dev, 2026-09-28): it holds behind a gap and fails in order, which changes the design.** Three
+  pre-registered arms in `tests/test_reliable_pubsub.c`, with a control, and each assertion mutation-checked rather
+  than trusted for being green.
+  - **Arm A holds.** A sample arriving *ahead of a gap* can be declined, and core already owns the move:
+    `hold_for_reorder()` clears the bit when it cannot hold a sample and calls it un-receiving, with its own comment
+    that leaving the bit set and dropping the payload is "the one outcome a RELIABLE reader must never produce". The
+    test drives a reader with no reorder buffer, declines a sample behind an open gap, and shows the watermark held,
+    the bit clear, an ACKNACK sent, and both samples delivered once they come back.
+  - **Arm B fails.** The same refusal applied to a sample arriving *in order* cannot be made at all.
+    `deliver_data_to_subscriber()` calls `update_reliable_ack()` before the subscriber callback, so the watermark is
+    already past the sample by the time anything above core sees it, and the writer is entitled to forget it. The
+    refusal is also final: the same `seq_no` arriving again is recognised as already delivered and skipped, so the
+    callback never fires for it. On a healthy link every arrival is in order, so this is the normal case a full
+    KEEP_ALL queue meets, not a corner of it.
+  - **Control.** The same stream with nothing declined delivers every sample and sends no ACKNACK, so arm A's ACKNACK
+    was arm A's doing.
+- **Consequence: the stated fallback is not available to the RELIABLE arm.** Dropping the arriving sample and counting
+  it keeps the no-overwrite guarantee and loses the no-loss one, and criterion 5 asks for a zero loss counter on the
+  `bag` acceptance. Both cannot be true at once, so for RELIABLE the fallback is a different feature, not a smaller
+  version of this one.
+- **Design correction, pre-registered before the code: an opt-in accept hook on `struct tt_Subscriber`.** Consulted
+  in `deliver_data_to_subscriber()` **before `update_reliable_ack()`**, beside the existing RxO-incompatible drop;
+  returning false means the sample is simply never received. The first draft of this put the hook after the watermark
+  advanced and rolled it back, and reading `update_reliable_ack()` closely killed that: its own tail calls
+  `maybe_arm_acknack_retry()`, which can send an ACKNACK carrying the freshly advanced `ack_seq_no` before the
+  function has even returned. An ACKNACK reports the watermark, and a watermark implicitly acks everything below it,
+  so the rollback would have had to undo something already on the wire. Declining earlier removes the instant rather
+  than reasoning about it: no bit is set, no watermark moves, and nothing can report what never happened. Core already
+  states this is the right place - the RxO drop immediately above carries the comment that an incompatible
+  Publisher's DATA is dropped "before any reliable-tracking side effects too (`update_reliable_ack()` below), not
+  just before delivery". Recovery then needs no new machinery: `ack_seq_no` stays at the declined `seq_no`, the next
+  arrival is out of order against it, and the ordinary gap path requests the declined sample back.
+  The hook is additive (the existing callback typedef keeps its `void` return and no current caller changes), it is
+  generic flow control with no ROS in it (`project_core_no_ros_dependency`), and it introduces no second kind of
+  un-receive. BEST_EFFORT keeps drop-and-count as planned.
+  - **Controls:** a subscriber with no hook set must behave exactly as today (the existing suite is that control), and
+    a hook that always accepts must be indistinguishable from no hook at all.
+  - **Mutants, each of which must fail a named test:** (a) consult the hook *after* `update_reliable_ack()` - the
+    declined sample is acked, and the "no ACKNACK named it" arm below must catch it; (b) consult the hook after
+    delivery - the declined sample is handed up anyway; (c) decline but set the bit - the gap is never named and the
+    sample is lost; (d) let the hook decline a sample that arrived *below* the watermark - one already delivered is
+    requested again and delivered twice.
+  - **Failure mode to document where the hook is declared:** a reader that never accepts stalls its RELIABLE writers.
+    That is what KEEP_ALL means and what rosbag2 is asking for, but it must be stated at the hook, not only here.
+  - **That nothing reports a declined sample is itself a claim, so it is tested, not stated** (Plan, 2026-09-28).
+    Plan asked for an arm where a decline is attempted after the watermark has been reported, refused or impossible
+    by construction rather than merely unlikely. It is impossible by construction, and the test says so directly:
+    with the hook consulted before any tracking, the reader sends no ACKNACK naming the declined `seq_no` and never
+    raises its watermark past it - asserted over a stream with an open gap elsewhere, which is the case that would
+    otherwise have sent one. The arm that made the first design fail is kept as mutant (a): move the hook after
+    `update_reliable_ack()` and the declined sample is acked, which this test must catch.
+  - **The stall is observable or it is not shipped** (Plan, 2026-09-28): a counter and a one-time warning, plus a test
+    that the writer actually backs off rather than spinning. A reader that never drains stalling its writer is what
+    RELIABLE plus no-overwrite means, and whoever meets it must be able to read what happened.
+  - **It costs nothing when unused** (MODULE_PLAN decision 6): a build with the hook present but no subscriber setting
+    it must be indistinguishable from the parent, read against a placement control per WIRE_PLAN 8.3's amendment
+    rather than from `cpu_s` alone. If a cost does appear, `sched_cpu_s`/`sched_by_thread=` in the RESULT line
+    (`7698f669`) is the instrument to attribute it with.
 - **Pass, pre-registered:**
   1. **Matching.** A KEEP_ALL subscription is created without error and matches a KEEP_LAST publisher. HISTORY is a
      local policy, not a requested/offered one, so this must hold - checked against the CycloneDDS control arm in the

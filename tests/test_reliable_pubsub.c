@@ -3571,6 +3571,154 @@ static void test_piggyback_off_by_default_sends_no_heartbeat(void) {
     }
 }
 
+// g13 (RMW_GAPS_PLAN.md, the KEEP_ALL subscription): the premise its back-pressure arm rests on,
+// pinned by a test before anything is built on it rather than read off this file.
+//
+// The plan's back-pressure story is "a reader whose queue is full declines the sample, leaves it
+// unmarked, and the writer sends it again". Core already owns that move - hold_for_reorder() makes
+// it when it cannot hold a sample, and calls it un-receiving - so the question is not whether
+// clearing a bit works. It is whether a reader can still make that move at the moment a full
+// KEEP_ALL queue actually meets a sample.
+//
+// Pre-registered, so the answer means something whichever way it comes out:
+//
+//   arm A - a sample that arrives AHEAD OF A GAP and is declined. Expected to hold: the bit is
+//           cleared, the gap logic asks for the sample again, and the retransmit is delivered.
+//           If it holds, declining is a real mechanism and not a hope.
+//
+//   arm B - a sample that arrives IN ORDER and is declined, which is the case a full queue meets
+//           on a healthy link, where nothing is missing and every sample is the next one. If this
+//           fails, arm A does not generalise: back-pressure by declining is available only behind
+//           a gap, and g13's RELIABLE arm cannot be built on it as written. The fallback the plan
+//           already allows - drop the arriving sample and count it where someone can see it -
+//           becomes what RELIABLE gets too, unless core grows a way to hold the watermark back.
+//
+//   control - the same stream with nothing declined at all, which must deliver every sample and
+//           send no ACKNACK whatsoever. Without it "an ACKNACK was sent" is not evidence of a
+//           reader asking for what it declined: this file's own first-contact test exists because
+//           a reader once requested history that no one had.
+static void test_g13_premise_a_declined_sample_is_asked_for_again(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    // No reorder buffer: every sample arriving ahead of a gap is declined rather than held, which
+    // is exactly the shape a full KEEP_ALL queue has - somewhere to put it is what is missing.
+    sub.reorder_storage = NULL;
+    sub.reorder_slots = 0;
+    sub.reorder_slot_bytes = 0;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    // Sample 1 in order, so the stream has a baseline and arm A is not measuring first contact.
+    uint32_t tail = write_data(&node, 1, 1000, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(1, subscriber_callback_count);
+
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+
+    // Sample 2 never arrives. Sample 3 arrives ahead of that gap and is declined.
+    test_mock_send_to_call_count = 0;
+    tail = write_data(&node, 3, 3000, 3);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_INT(1, subscriber_callback_count);               // declined, so not handed up
+    EXPECT_EQ_U32(1, (uint32_t)sub.reorder_overflow);          // and declined for the reason we think
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);                       // the watermark stayed put
+    EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 0)); // sample 3's own bit was cleared too
+    EXPECT_TRUE(proxy->acknack_scheduled);
+    EXPECT_TRUE(test_mock_send_to_call_count > 0); // and it asked
+
+    // Both come back, 2 first. A declined sample that is asked for again and delivered is the whole
+    // premise; if 3 were lost here, "leave it unmarked" would be a way to lose data quietly.
+    tail = write_data(&node, 2, 2000, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(2, subscriber_callback_count);
+    tail = write_data(&node, 3, 3000, 3);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(3, subscriber_callback_count); // arm A holds: nothing was lost by declining
+    EXPECT_EQ_U32(4, proxy->ack_seq_no);
+}
+
+// Arm B: the same refusal, applied to a sample that arrives in order. This is the case a full
+// KEEP_ALL queue meets when nothing has been lost, which is most of the time.
+static void test_g13_premise_b_an_in_order_sample_cannot_be_declined(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.reorder_storage = NULL; // same reader as arm A, so the two differ only in arrival order
+    sub.reorder_slots = 0;
+    sub.reorder_slot_bytes = 0;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 1000, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+
+    // Sample 2 arrives in order. The callback is where a full queue would refuse it - and by the
+    // time the callback runs, update_reliable_ack() has already moved the watermark past it.
+    test_mock_send_to_call_count = 0;
+    int before = subscriber_callback_count;
+    tail = write_data(&node, 2, 2000, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(before + 1, subscriber_callback_count); // it was handed up, refusal or not
+    EXPECT_EQ_U32(3, proxy->ack_seq_no);                  // acked: the writer may now forget it
+    EXPECT_EQ_U32(0, (uint32_t)sub.reorder_overflow);     // no decline path was even reached
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_TRUE(!proxy->acknack_scheduled); // nothing is being asked for
+
+    // And a reader that dropped it cannot get it back by waiting: the same sample arriving again is
+    // recognised as already delivered and skipped, so the refusal is final.
+    before = subscriber_callback_count;
+    tail = write_data(&node, 2, 2000, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(before, subscriber_callback_count); // arm B fails: declining in order loses it
+}
+
+// The control. Same reader, same writer, nothing declined: every sample delivered, no ACKNACK.
+static void test_g13_premise_control_an_undeclined_stream_asks_for_nothing(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    for (uint32_t seq_no = 1; seq_no <= 3; seq_no++) {
+        uint32_t tail = write_data(&node, seq_no, 1000ULL * seq_no, seq_no);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    }
+
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_INT(3, subscriber_callback_count);
+    EXPECT_EQ_U32(4, proxy->ack_seq_no);
+    EXPECT_EQ_U32(0, (uint32_t)sub.reorder_overflow);
+    EXPECT_TRUE(!proxy->acknack_scheduled);
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // so arm A's ACKNACK was arm A's
+}
+
 int main(void) {
     test_keep_all_refuses_at_bound_and_unblocks_on_ack();
     test_keep_last_still_evicts_rather_than_refusing();
@@ -3645,6 +3793,9 @@ int main(void) {
     test_acknack_with_no_bitmap_words_is_a_pure_ack();
     test_acknack_multi_word_bitmap_retransmits_each_named_sample();
     test_forget_publisher_peer_resets_ack_seq_no();
+    test_g13_premise_a_declined_sample_is_asked_for_again();
+    test_g13_premise_b_an_in_order_sample_cannot_be_declined();
+    test_g13_premise_control_an_undeclined_stream_asks_for_nothing();
 #ifdef tt_RELIABLE_STATS
     test_keep_all_writable_cause_is_distinguished();
     test_reliable_stats_subscriber_gap_accounting();
