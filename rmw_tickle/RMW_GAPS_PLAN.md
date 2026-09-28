@@ -1165,7 +1165,7 @@ readings have been wrong on this repository already.
 
 | surface | the value | what could hand it back | the check |
 |---|---|---|---|
-| `rmw_get_publishers_info_by_topic`, `..._subscribers_...` | the QoS profile | rosbag2, `ros2 topic pub --qos-profile`, any bridge | **g14, done:** every reported profile passes our own validator |
+| `rmw_get_publishers_info_by_topic`, `..._subscribers_...` | the QoS profile | rosbag2, `ros2 topic pub --qos-profile`, any bridge | **g14, done and verified both ways:** every reported profile passes our own validator, and the `introspect` acceptance case fails against a build with the fix reverted |
 | `rmw_get_topic_names_and_types`, `..._node_names...` | topic, service and node names | `ros2 topic pub`, a bridge recreating an endpoint, a launch file | a reported name is accepted by `rmw_validate_full_topic_name` / `..._node_name` / `..._namespace` **and** by `rmw_create_publisher` with it |
 | the same | the type name | anything that looks up typesupport by name | the reported type name resolves through `rosidl_typesupport_c` to a handle |
 | `rmw_get_gid_for_publisher`, `..._client`, event payloads | the GID | `rmw_compare_gids_equal`, a tool matching a sample's `publisher_gid` to a discovered endpoint | a reported GID compares equal to itself and unequal to every other endpoint's, and a taken sample's `publisher_gid` equals the one the graph reports for that writer |
@@ -1178,6 +1178,26 @@ edge of what rmw accepts, and any prefix rmw_tickle adds on the way to the wire 
 that can actually produce a reported name our own `rmw_create_publisher` refuses is **not established by that
 observation** - it needs the round-trip test, at the maximum length and one past it, with the control being the same test
 on CycloneDDS. Filed as the first case of the name row above rather than as a defect.
+
+**The `introspect` case is verified in both directions (2026-09-29), and it took three attempts to get there.** Against
+a build with g14's fix reverted, rmw_tickle FAILS and the control PASSES; against the fixed build both PASS, with
+different binary ids each run so it was the reverted binary being measured. Its passing is therefore evidence. The three
+defects it had before that, all of the same family and all worth more than the case itself:
+
+1. **It asked its question of the endpoint that never had the defect.** The node read its own publisher back, which is
+   served from the real profile it was created with; g14 lived in the discovered-entity branch that starts from
+   `rmw_qos_profile_unknown`. Dev found this by reverting the fix and re-running rather than by reading the code, and
+   the case passed with the defect present. It now uses two processes and the reading node creates no publisher on that
+   topic, so every endpoint it is told about is remote by construction.
+2. **A check that could not pass.** The finish test went through `ran()`, which reads a `sent=` field this role never
+   prints - so it failed whatever the node did. The mirror image of a test that cannot fail, and **the control failing
+   identically is what exposed it**: had only our arm failed, it would have looked like a finding about rmw_tickle.
+3. **A failure that was silent exactly when it had something to say.** `field()` extracts numeric values only, so the
+   text `detail=` came back empty and the failure printed as a bare `FAIL()` - at the moment it was holding
+   `recreate_refused:RCLError:...rmw_tickle_only_supports_RMW_QOS` with `liveliness=4` (UNKNOWN) in the profile handed
+   back, which is g14 exactly. **A reporting path that is quiet on success and empty on failure looks healthy
+   indefinitely and fails you on the one day it matters.** Read as text at that call site rather than widening
+   `field()`, since every other caller depends on it being numeric.
 
 **Order:** the name and GID rows first, since a bridge or a `ros2 topic pub` round-trips them in ordinary use, then the
 event counts, then the format. Before the next COMPARISON re-measure, so the table is not published beside a surface

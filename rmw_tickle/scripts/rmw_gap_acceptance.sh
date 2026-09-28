@@ -330,13 +330,11 @@ t_introspect() {
     n=$(field "$d/node.log" discovered); f=$(field "$d/node.log" roundtrip_failures)
     # discovered=0 is not a pass: it means the case found nothing to check, which must not read as success.
     if [ "${n:-0}" -lt 1 ]; then echo "FAIL(no remote endpoint discovered)"; return; fi
-    # Dev's PASS(detail) generalisation of the control check has landed (see the case below), so the
-    # count could be carried here now.
-    # (was: a bare PASS on purpose until it landed - the count is in
-    # the node's own RESULT line either way, and a PASS(...) the control check does not yet accept would void the case
-    # for a control failure that did not happen.
+    # The verdict carries the count now that the control check accepts PASS(detail): a case whose result is a
+    # measurement should not have to throw it away to pass, and "how many remote endpoints did it actually check"
+    # is the one number that says whether the case did any work.
     if [ "${f:-1}" = 0 ]; then
-        echo PASS
+        echo "PASS(discovered=$n)"
     else
         # Not field(): that extracts numeric values only, so a text detail came back empty and the
         # failure printed as a bare FAIL() - silent precisely when it had something to say.
