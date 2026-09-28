@@ -116,6 +116,53 @@ and a win has to say which one it rests on.
   landed first (`7698f669`).
 - **Every run states which arm it is** - transport, lending on or off, and the build - or it is void.
 
+## 6a. The tests, because a transport is unusually easy to test into a false pass
+
+The user's instruction of 2026-09-29: the feature arrives with tests of its own. The reason this transport needs its test
+list written before the code is specific to it - **if shared memory silently falls back to loopback UDP, every functional
+test still passes and proves nothing.** So the list starts with the test that catches that, not with the feature's own
+behaviour.
+
+**The tests that can otherwise pass for the wrong reason**
+
+1. **Which transport carried the sample is asserted, never assumed.** A match reports the transport it uses, and the test
+   requires `shm`. Mutant: force the fallback (make the attach fail) - the test must fail. Without this, all of B and C
+   below are green over UDP and say nothing about the module.
+2. **Byte identity.** The datagram placed in the segment equals, byte for byte, the datagram the UDP path would have sent
+   - golden bytes captured from the UDP arm. This is section 1's constraint as a test: the same bytes through the same
+   acceptance path is what makes the same-host bypass impossible rather than merely checked for.
+3. **A datagram that must be refused is refused identically** over the segment: wrong wire version, incompatible QoS
+   (RxO), wrong context id, and - once TickLE Security exists - its authorization and protection. This is the anti-bypass
+   test, and it exists before the code so the seam cannot be shaped in a way that makes it impossible.
+
+**The segment's own rules, as core unit tests with a fake segment in the mock HAL** (so they run in `make test`, with no
+`/dev/shm` and no second process)
+
+4. Single writer, many readers: two attached readers each see every record.
+5. **No reuse before release** - a record a reader still holds is not overwritten even when the ring wraps. This is the
+   lending contract, and it is the one whose failure is silent corruption rather than an error.
+6. Capacity exhaustion is counted and warned about once, never silent.
+7. A reader that exits without releasing does not park a record forever.
+8. An owner whose registry entry is gone leaves a segment the next context reclaims.
+
+**Two processes, on Linux, in the acceptance suite**
+
+9. `samehost` gains a shared-memory arm and asserts the transport, with CycloneDDS as the control as everywhere else.
+10. Every acceptance case that passes over UDP passes unchanged with the module on - the suite run twice, not a new suite.
+11. **The reader is killed mid-run** and the writer keeps making progress, with the segment reclaimed afterwards. A kill
+    test, not a code reading: `MODULE_PLAN.md` criterion 4 is not satisfiable any other way.
+
+**The build matrix, which is where tonight's evidence changed the list**
+
+12. **CI builds and runs the suite with the feature on AND off.** On 2026-09-29 the same-host flag's default was flipped to
+    on, and the tsan target failed to **link** - that harness defines its own HAL and had no stubs for the feature's three
+    entry points. It had never covered the feature at all, and nobody knew, because the flag was off. **A flag-gated
+    feature with no CI arm that enables it is an untested feature**, and the arm has to run the suite rather than only
+    compile it.
+
+**Performance** is stages 1-3's own criteria in section 5 and is not repeated here: beat loopback UDP, do not beat g9,
+and read every timing and RSS figure against the floors in `WIRE_PLAN.md` 10.4.
+
 ## 7. Open questions
 
 1. **Notification.** A reader must learn a record arrived. A futex or an eventfd per reader costs a syscall and gives
