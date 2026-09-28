@@ -104,6 +104,94 @@ bytes would be staged twice.)*
      longer keeps a per-publisher buffer.
 6. The gates, the rmw suite in netns, and every acceptance test that passed before still pass.
 
+## Pass 1 harness: design, fixed before code (Dev, 2026-09-28)
+
+**What is generated.** The C adapter gains three functions per message, next to `to_tickle`/`from_tickle`, with the
+codec's own signatures so rmw can later call them where it calls the struct codec today:
+- `<ros_name>__direct_encode_size(const ros*)`;
+- `__direct_encode(const ros*, uint8_t*, uint32_t)`;
+- `__direct_decode(ros*, const uint8_t*, uint32_t, bool is_native_endian)`. It decodes into an initialised message and
+  allocates through `rosidl_runtime_c`, as `from_tickle` does.
+
+The C++ adapter gains the same three over the C++ object. All of them are appended to
+`rosidl_typesupport_tickle_c_message_callbacks_t`, and `struct_size` changes with it. rmw does not call them until the
+harness passes.
+
+**The limits the direct codec checks** are the IDL bound, 65,535 for a length or a count, and the buffer length. It
+never checks a profile capacity.
+
+**The harness is one program over type support handles, not generated per type.** For each type it loads the package's
+`rosidl_typesupport_tickle_c` and `rosidl_typesupport_introspection_c` libraries by symbol name. In the C++ run it
+loads the `_cpp` pair instead. Introspection builds the random messages, compares them, and knows the IDL bounds. The
+tickle handle supplies both paths:
+- **old:** `to_tickle`, then the struct encode; on decode, the struct decode, then `from_tickle`;
+- **new:** the direct functions.
+
+The seed is printed, and `-s` replays it.
+
+**Messages, 200 per type:**
+- **Length of every string and sequence:** 0, 1 or 2-4 (25% each), or a bound-filling length (25%). That is the IDL
+  bound where one exists, and otherwise 300, which is above most profile capacities, so the new-only path is exercised.
+- **Strings:** 10% carry an embedded NUL.
+- **Floats:** a fixed share are NaN, -0.0 and inf.
+- A sample above 65,507 B is regenerated with shorter lengths, and the count of regenerated samples is reported.
+
+**Checks per message.** "Alike" means both paths accept, or both refuse.
+1. **Encode.** If old accepts, new must accept with identical bytes. If old refuses, new may accept only if the
+   message is within every IDL bound and 65,535 limit, which introspection checks. That is the capacity-only class; it
+   is counted, and pass 1b checks it. Any other disagreement fails.
+   - **1b.** A message new accepts must decode through `direct_decode` to a message equal to the original. Floats are
+     compared bitwise; strings are compared up to the first NUL, which is what the wire carries.
+2. **Over-bound inputs**, built on purpose per type, with at most one each: a bounded sequence at bound+1, a bounded
+   string at bound+1, a count of 65,536, and a string of 65,535 characters. Old and new must refuse alike.
+3. **Differential decode**, on the bytes of every accepted sample:
+   - every truncation for samples up to 256 B, and 32 random ones above that;
+   - 32 single-bit flips.
+
+   Both decoders must accept or refuse alike, and on accept produce equal messages. The one allowed exception is the
+   capacity-only class: old refuses with -2 and the decoded new message is within the IDL bounds. It is counted.
+4. **Foreign endian:** the same byte sets are decoded with `is_native_endian = false` by both decoders, under the same
+   agreement rule. The old decoder's swapping is already proven against hand-built bytes by `test_crossendian.py`, so
+   agreeing with it carries that over to every type.
+
+**Coverage floor.** Every non-declined type needs at least 100 of its 200 samples in check 1's byte-identity branch
+(both accepted). A type below the floor fails, and the program lists it with its counts.
+
+**Inventory.**
+- The `build_ros2_interfaces.sh -a` workspace, via the ament index.
+- The tests package, which gains messages for:
+  - the rule-1 example `Outer{uint16; Inner{string,string}; uint32}`;
+  - sequences of strings, of structs holding strings, and of structs holding sequences;
+  - bounded strings and bounded sequences;
+  - fixed arrays of strings and of structs;
+  - a sequence of `bool`, which C++ stores as `std::vector<bool>`.
+- `rmw_perf_pingpong`: Array1k, Bench and Struct16.
+
+The declined types are a checked-in list. The program fails if a declined type is not on the list, or if a listed type
+is supported.
+
+**Mutants, each of which must fail with the named check.** They are selected at generation time by
+`TICKLE_DIRECT_CODEC_MUTANT`:
+
+| Mutant | Must fail |
+|---|---|
+| `absolute_align` | check 1 |
+| `size_strlen` | check 1, on the embedded NULs |
+| `len_prefix_plus1` | check 1 |
+| `no_bound_check` | check 2 |
+
+All four are run locally, and their output is recorded here. CI rebuilds only the tests package with
+`len_prefix_plus1` and requires the harness to fail, as the standing control that the harness can fail.
+
+**CI.** Check all's ROS 2 interfaces job runs the C and C++ harness over the whole inventory after
+`check_ros2_interfaces.sh`.
+
+**Order of work:**
+1. C generator, then harness over the tests package, then mutants;
+2. the inventory in CI;
+3. C++;
+4. rmw wiring.
+
 ## Risks stated in advance
 
 - **Two encoders for one wire format** (the struct codec for native C, the direct one for ROS) can drift. Pass 1 runs
