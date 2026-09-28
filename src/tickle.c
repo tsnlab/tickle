@@ -2829,6 +2829,9 @@ static tt_ret_t node_create_subscriber_locked(struct tt_Context* node, struct tt
     sub->tracking_bitmaps = NULL;
     sub->tracking_words = 0;
     sub->seq_no = 0;
+    sub->accept_callback = NULL; // g13 - accept everything, which is what every caller did before it existed
+    sub->accept_callback_param = NULL;
+    sub->accept_declines = 0;
     sub->rxo_drops = 0;
     sub->delivered = 0;
     sub->writer_switches = 0;
@@ -7892,6 +7895,25 @@ static void deliver_data_to_subscriber(struct tt_Context* node, struct tt_Endpoi
     // delivery - no point generating ACKNACKs a Publisher that could never honor them will never
     // answer (see this file's own pre-Milestone-31 history of exactly that silent-degradation bug).
     if (subscriber_incompatible_with_publisher(node, sub, ctx->header->source, ctx->endpoint_id)) {
+        return;
+    }
+
+    // g13 (rmw_tickle/RMW_GAPS_PLAN.md) - flow control, and it belongs HERE, above
+    // update_reliable_ack(), for the same reason the RxO drop just above does: this is the last
+    // instant at which nothing has been recorded about this sample. update_reliable_ack() advances
+    // the ack watermark AND can send an ACKNACK carrying it before it returns, and an ACKNACK's
+    // watermark implicitly acks every sample below it - so a decline made after it ran would be
+    // trying to take back something the writer had already been told. Declining before it removes
+    // that instant instead of reasoning about how narrow it is.
+    if (sub->accept_callback != NULL && !sub->accept_callback(sub, ctx->seq_no, sub->accept_callback_param)) {
+        sub->accept_declines++;
+        if (is_power_of_ten(sub->accept_declines)) {
+            TT_LOG_WARNING("Subscriber %u declined sample %u from node %u (decline #%u): nowhere to put it. A "
+                           "RELIABLE writer still holds it and will send it again, so nothing is lost yet - but a "
+                           "reader that never accepts stalls its writers, which is what a no-overwrite history "
+                           "means. A BEST_EFFORT stream has no retransmission, so there this sample is gone.",
+                           sub->endpoint.id, ctx->seq_no, ctx->header->source, sub->accept_declines);
+        }
         return;
     }
 

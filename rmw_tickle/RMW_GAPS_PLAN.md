@@ -973,11 +973,18 @@ once, or a clean build, which is what CI does anyway.
   un-receive. BEST_EFFORT keeps drop-and-count as planned.
   - **Controls:** a subscriber with no hook set must behave exactly as today (the existing suite is that control), and
     a hook that always accepts must be indistinguishable from no hook at all.
-  - **Mutants, each of which must fail a named test:** (a) consult the hook *after* `update_reliable_ack()` - the
-    declined sample is acked, and the "no ACKNACK named it" arm below must catch it; (b) consult the hook after
-    delivery - the declined sample is handed up anyway; (c) decline but set the bit - the gap is never named and the
-    sample is lost; (d) let the hook decline a sample that arrived *below* the watermark - one already delivered is
-    requested again and delivered twice.
+  - **Mutants, run and caught (Dev, 2026-09-28):** (a) consult the hook *after* `update_reliable_ack()` - this is the
+    discarded design, kept as a mutant because it is the mistake a reasonable person actually makes here rather than
+    one invented for the purpose. It is caught three times over: the declined sample's watermark advances, its bit is
+    set in the tracking bitmap so it is never named as missing, and the recovery arm delivers the wrong sample. (b)
+    count the decline but do not honour it - the declined sample is handed up anyway, caught by six assertions across
+    both arms. Both revert green.
+  - **Two mutants from the first draft do not apply to the final placement, said rather than quietly dropped:**
+    "decline but set the bit" and "decline a sample below the watermark" were both written against the rollback
+    design. With the hook consulted before any tracking there is no bit to set, and a below-watermark arrival that is
+    declined is simply not delivered - it cannot be requested again, because the watermark is already above it and no
+    gap names it, so there is no double-delivery hazard to mutate. The load-bearing property is the hook's position,
+    and (a) is the mutant that tests it.
   - **Failure mode to document where the hook is declared:** a reader that never accepts stalls its RELIABLE writers.
     That is what KEEP_ALL means and what rosbag2 is asking for, but it must be stated at the hook, not only here.
   - **That nothing reports a declined sample is itself a claim, so it is tested, not stated** (Plan, 2026-09-28).

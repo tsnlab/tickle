@@ -61,12 +61,19 @@ static void stub_data_free(struct tt_Data* data) {
     (void)data;
 }
 
+// g13 - the value is recorded, not just the count. A test that a declined sample was recovered has
+// to name the sample the application got back; "one more callback" is the same claim only when
+// nothing else could have produced it, and here something could.
+static uint32_t subscriber_callback_last_value = 0;
+
 static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
                                      struct tt_Data* data) {
     (void)subscriber;
     (void)time;
     (void)seq_no;
-    (void)data;
+    if (data != NULL) {
+        memcpy(&subscriber_callback_last_value, data, sizeof(subscriber_callback_last_value));
+    }
     subscriber_callback_count++;
 }
 
@@ -3719,6 +3726,201 @@ static void test_g13_premise_control_an_undeclined_stream_asks_for_nothing(void)
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // so arm A's ACKNACK was arm A's
 }
 
+// g13's accept hook (tickle.h's own tt_SUBSCRIBER_ACCEPT_CALLBACK): a Subscriber with nowhere to
+// put an arriving sample declines it, and the sample survives the refusal.
+//
+// These are the tests the premise arms above made necessary. Arm B showed that an in-order sample
+// cannot be refused once update_reliable_ack() has run - it is acked before the application sees
+// it, and a second copy is skipped as a duplicate - so a bounded reader that refused one lost it.
+// The hook is consulted before any of that, and what follows checks that the "before" is real and
+// not merely intended.
+static int accept_hook_calls = 0;
+static bool accept_hook_answer = true;
+static uint32_t accept_hook_last_seq_no = 0;
+static void* accept_hook_last_param = NULL;
+
+static bool test_accept_hook(struct tt_Subscriber* subscriber, uint32_t seq_no, void* param) {
+    (void)subscriber;
+    accept_hook_calls++;
+    accept_hook_last_seq_no = seq_no;
+    accept_hook_last_param = param;
+    return accept_hook_answer;
+}
+
+static void accept_hook_reset(void) {
+    accept_hook_calls = 0;
+    accept_hook_answer = true;
+    accept_hook_last_seq_no = 0;
+    accept_hook_last_param = NULL;
+}
+
+// The property arm B says is impossible without the hook: a sample refused in order is still there
+// afterwards. Mutant: consult the hook after update_reliable_ack() - the second delivery is then
+// skipped as a duplicate and the callback count stays at 1.
+static void test_g13_accept_hook_a_declined_sample_survives_the_refusal(void) {
+    test_mock_reset();
+    accept_hook_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    int sentinel = 0;
+    sub.accept_callback = test_accept_hook;
+    sub.accept_callback_param = &sentinel;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 1000, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(1, subscriber_callback_count);
+    EXPECT_EQ_INT(1, accept_hook_calls);
+    EXPECT_TRUE(accept_hook_last_param == &sentinel); // the param reaches the hook, not just the hook
+
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+
+    // Sample 2 arrives in order and is declined - the exact case arm B proved was unrecoverable.
+    accept_hook_answer = false;
+    test_mock_send_to_call_count = 0;
+    tail = write_data(&node, 2, 2000, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_INT(1, subscriber_callback_count);               // not handed up
+    EXPECT_EQ_U32(1, sub.accept_declines);                     // and counted where someone can see it
+    EXPECT_EQ_U32(2, accept_hook_last_seq_no);                 // the hook was asked about this sample
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);                       // the watermark did not move past it
+    EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 0)); // nothing recorded at all
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);  // and nothing was sent claiming it
+
+    // Now there is room. The same sample arrives again and is delivered, because as far as this
+    // Subscriber ever told anyone, it had not arrived.
+    accept_hook_answer = true;
+    tail = write_data(&node, 2, 2000, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(2, subscriber_callback_count);
+    EXPECT_EQ_U32(2, subscriber_callback_last_value); // and it is the sample that was declined
+    EXPECT_EQ_U32(3, proxy->ack_seq_no);
+    EXPECT_EQ_U32(1, sub.accept_declines); // an accepted sample is not counted as a decline
+}
+
+// The safety argument itself, which Plan asked to be shown rather than stated: a decline is never
+// reported, INCLUDING while a gap is open elsewhere and the ACKNACK machinery is live. That is the
+// case where the discarded first design would have failed, because update_reliable_ack() can send
+// an ACKNACK carrying the watermark before it returns.
+//
+// Mutant (the design that was nearly shipped): consult the hook after update_reliable_ack(). The
+// declined sample's bit is then set, this test's bitmap assertion fails, and the sample is lost -
+// never named as missing, never asked for.
+static void test_g13_accept_hook_a_decline_is_never_reported_with_a_gap_open(void) {
+    test_mock_reset();
+    accept_hook_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.accept_callback = test_accept_hook;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 1000, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+
+    // Sample 2 is lost; 3 arrives and is held. The reader is now actively asking for 2, which is
+    // what makes this the dangerous case rather than the quiet one.
+    tail = write_data(&node, 3, 3000, 3);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+    EXPECT_TRUE(proxy->acknack_scheduled);
+    EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 1ULL << 1)); // 3 received, at offset 3 - 2
+
+    // Sample 4 arrives while that gap is open, and is declined.
+    accept_hook_answer = false;
+    tail = write_data(&node, 4, 4000, 4);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(1, sub.accept_declines);
+    EXPECT_EQ_U32(2, proxy->ack_seq_no); // still below the declined sample, so nothing acks it
+    // The decisive assertion: sample 4 left no trace. Only sample 3's bit is set - if the hook ran
+    // after the tracking, 4's bit (offset 2) would be set here and 4 would never be asked for.
+    EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 1ULL << 1));
+
+    // Fill the gap. The watermark walks up over 2 and 3 and stops below 4, which is the reader
+    // saying out loud that it is still missing the sample it declined.
+    accept_hook_answer = true;
+    tail = write_data(&node, 2, 2000, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(4, proxy->ack_seq_no);
+    EXPECT_EQ_U32(3, subscriber_callback_last_value); // 2 then 3 released in order, 4 still missing
+
+    // And it is delivered when it comes back, so the decline cost a retransmission and nothing else.
+    int before = subscriber_callback_count;
+    tail = write_data(&node, 4, 4000, 4);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(before + 1, subscriber_callback_count);
+    EXPECT_EQ_U32(4, subscriber_callback_last_value); // the declined sample itself, not just one more
+    EXPECT_EQ_U32(5, proxy->ack_seq_no);
+}
+
+// Control: a hook that always accepts must be indistinguishable from no hook at all. Without this,
+// "the hook works" could be true of a hook that quietly changed the ordinary path as well.
+static void test_g13_accept_hook_that_always_accepts_changes_nothing(void) {
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    struct tt_Header header;
+
+    // Arm 1: no hook, the behaviour every caller written before g13 gets.
+    test_mock_reset();
+    accept_hook_reset();
+    subscriber_callback_count = 0;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    init_header(&header);
+    for (uint32_t seq_no = 1; seq_no <= 3; seq_no++) {
+        uint32_t tail = write_data(&node, seq_no, 1000ULL * seq_no, seq_no);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    }
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    int without_hook_delivered = subscriber_callback_count;
+    uint32_t without_hook_ack = proxy->ack_seq_no;
+    uint32_t without_hook_sends = (uint32_t)test_mock_send_to_call_count;
+    EXPECT_EQ_U32(0, sub.accept_declines);
+    EXPECT_EQ_INT(0, accept_hook_calls); // no hook set, so nothing was consulted
+
+    // Arm 2: the same stream, with a hook that accepts everything.
+    test_mock_reset();
+    accept_hook_reset();
+    subscriber_callback_count = 0;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.accept_callback = test_accept_hook;
+    init_header(&header);
+    for (uint32_t seq_no = 1; seq_no <= 3; seq_no++) {
+        uint32_t tail = write_data(&node, seq_no, 1000ULL * seq_no, seq_no);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    }
+    proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+
+    EXPECT_EQ_INT(without_hook_delivered, subscriber_callback_count);
+    EXPECT_EQ_U32(without_hook_ack, proxy->ack_seq_no);
+    EXPECT_EQ_U32(without_hook_sends, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(0, sub.accept_declines);
+    EXPECT_EQ_INT(3, accept_hook_calls); // consulted once per sample, and changed nothing
+}
+
 int main(void) {
     test_keep_all_refuses_at_bound_and_unblocks_on_ack();
     test_keep_last_still_evicts_rather_than_refusing();
@@ -3796,6 +3998,9 @@ int main(void) {
     test_g13_premise_a_declined_sample_is_asked_for_again();
     test_g13_premise_b_an_in_order_sample_cannot_be_declined();
     test_g13_premise_control_an_undeclined_stream_asks_for_nothing();
+    test_g13_accept_hook_a_declined_sample_survives_the_refusal();
+    test_g13_accept_hook_a_decline_is_never_reported_with_a_gap_open();
+    test_g13_accept_hook_that_always_accepts_changes_nothing();
 #ifdef tt_RELIABLE_STATS
     test_keep_all_writable_cause_is_distinguished();
     test_reliable_stats_subscriber_gap_accounting();

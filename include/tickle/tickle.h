@@ -1551,6 +1551,21 @@ struct tt_WriterProxy {
     struct tt_Subscriber* sub;
 };
 
+// g13 (rmw_tickle/RMW_GAPS_PLAN.md) - flow control, the reader's half. Consulted for one arriving
+// sample before anything at all is recorded about it; return false to decline it, meaning this
+// Subscriber has nowhere to put it right now. `seq_no` is the sample's full tracking sequence
+// number rather than the 16-bit one the delivery callback is handed, because a decision about which
+// sample to refuse has to name the same sample the ACKNACK machinery does.
+//
+// Declining is not dropping, and the difference is the whole point. A declined sample is never
+// received: no bit is set, the ack watermark does not move, and nothing this Subscriber sends
+// afterwards claims it. A RELIABLE writer therefore still holds it, and the ordinary gap exchange
+// fetches it once this Subscriber starts accepting again - which is what lets a bounded reader
+// refuse to overwrite an unread sample without losing one (DDS HISTORY KEEP_ALL). A BEST_EFFORT
+// stream has no retransmission, so there a decline IS a drop; accept_declines counts both, and
+// which one it was is decided by the Subscriber's own `reliable`.
+typedef bool (*tt_SUBSCRIBER_ACCEPT_CALLBACK)(struct tt_Subscriber* subscriber, uint32_t seq_no, void* param);
+
 // seq_no is the sample's sequence number from its writer: increasing, but not contiguous. Every datagram a
 // writer sends takes its own seq_no (DATAFRAG_PLAN.md section 13), so a sample that went as k fragments is
 // named by its first datagram's and the next sample's is k higher. Contiguous only while nothing fragments.
@@ -1603,6 +1618,23 @@ struct tt_Subscriber { // extends endpoint
     struct tt_Context* node;
     struct tt_Topic* topic;
     tt_SUBSCRIBER_CALLBACK callback;
+
+    // g13 (rmw_tickle/RMW_GAPS_PLAN.md) - optional flow control, consulted before this sample is
+    // recorded or delivered (see tt_SUBSCRIBER_ACCEPT_CALLBACK for what declining means). NULL
+    // (tt_Context_create_subscriber()'s own default) accepts everything, which is exactly what
+    // every caller written before this hook existed already did.
+    //
+    // THE FAILURE MODE IT BUYS, said here because whoever meets it will be reading this field: a
+    // Subscriber that keeps declining stalls its RELIABLE writers. That is not a defect in the
+    // hook, it is what a history that refuses to destroy an unread sample means - the writer is
+    // held back instead of the reader losing data - but it presents as a publisher that has stopped
+    // making progress, which is easy to mistake for a hang. accept_declines and its throttled
+    // warning are there so it reads as a stalled reader rather than a mystery.
+    tt_SUBSCRIBER_ACCEPT_CALLBACK accept_callback;
+    void* accept_callback_param;
+    // Diagnostic counter, not protocol state: how many arriving samples accept_callback has
+    // declined. Same reasoning as rxo_drops just below - the decline is otherwise silent.
+    uint32_t accept_declines;
 
     // QoS roadmap #5 (RELIABILITY) / Phase 2 (rmw_tickle/PLAN.md) - how wide a gap this Subscriber
     // can track per matched Publisher, i.e. how far ahead of its own oldest missing sample it may
