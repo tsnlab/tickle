@@ -1,11 +1,35 @@
 # Optional modules: where they plug in, and shared memory as the first one
 
-**Status: a proposal, not agreed work.** The user asked on 2026-09-28 for two frameworks kept out of core and
-pluggable by a user who wants them: (1) same-host communication over shared memory, (2) a TickLE Security that
-satisfies SROS2. This file is Plan's answer to *where* such a module attaches and *what would have to be true* for the
-first one to be worth having. The second one's design stays parked in `SECURITY_PLAN.md` until the user starts it; only
-the seam it would use is described here, because a seam designed for one consumer and retrofitted for the other is how
-the same mistake gets made twice.
+The user asked on 2026-09-28 for two frameworks kept out of core and pluggable by a user who wants them: (1) same-host
+communication over shared memory, (2) a security module that satisfies SROS2. This file is Plan's answer to *where*
+such a module attaches and *what would have to be true* for the first one to be worth having. The security design stays
+parked in `SECURITY_PLAN.md` until the user starts it; only the seam it would use is described here, because a seam
+designed for one consumer and retrofitted for the other is how the same mistake gets made twice.
+
+## 0. The user's decisions (2026-09-28)
+
+1. **The shared-memory module and the security module are separate.** Not one "optional modules" layer serving both.
+2. **The security module splits across the ROS line:** a TickLE Core half an embedded system can use, and an rmw half
+   that meets SROS2's requirements.
+3. **The core half is called TickLE Security.**
+4. **Whether the shared-memory module splits the same way is open,** with Plan asked for a recommendation. Section 3a
+   is that recommendation: it should not split.
+5. **The detailed module design plan is written once 4 is decided** - so this file stops at the seams and the criteria.
+6. **Using a module must cost no performance.** Read as: a build with the module present but not in use is
+   indistinguishable from a build without it, which is criterion 3 below, and the module's own path is measured
+   separately.
+7. **The shared-memory module must be faster than the competing products under the same conditions.** What "the same
+   conditions" means needs saying, because both vendors have a shared-memory transport of their own and their defaults
+   differ - FastDDS ships its SHM transport on, CycloneDDS's shared-memory path is off unless configured. Plan's
+   reading, unless the user says otherwise: score **both** comparisons and report both - each framework's shared-memory
+   path against ours (the engineering comparison), and each framework's default configuration against ours (what a user
+   actually meets). A win claimed on only one of those has to say which.
+8. **TickLE Security must provide security equivalent to DDS Security.** Equivalence is measured against DDS
+   Security's own five plugin functions and its threat model, which includes a malicious participant inside the domain,
+   not only a wiretap on the link - see SECURITY_PLAN.md. Two things follow: the equivalence claim needs external
+   review rather than our own reading, and the places we deliberately differ (no wire interoperability with a DDS
+   vendor; our own handshake rather than DDS-Security's) are documented as differences, not as gaps.
+9. **Shared memory first, security second** - which is also what section 3 recommends, for the reason given there.
 
 ## 1. The two are not the same kind of module
 
@@ -42,8 +66,8 @@ would gain nothing from copying the shape of an interface we are not wire-compat
 S/MIME and an XML parser; none of that belongs in core, and the user's standing principle is that core does not depend
 on ROS 2. So:
 
-- **core side:** the handshake, the per-datagram transform, and an *opaque* identity and permission it is handed. No
-  certificate parsing, no XML, no OpenSSL in core.
+- **core side - TickLE Security** (the user's name for it, decision 3): the handshake, the per-datagram transform, and
+  an *opaque* identity and permission it is handed. No certificate parsing, no XML, no OpenSSL in core.
 - **Linux/rmw side:** read the keystore, verify the CA signatures, translate governance and permissions into that
   opaque form.
 
@@ -76,6 +100,37 @@ Three tiers already exist, and shared memory has to sit between two of them or i
    class of defect; the way not to have it is for this criterion to exist before the code does.
 6. **The capacity is bounded and stated,** as every other core structure is, and exhaustion is counted and warned
    about rather than silent.
+
+### 3a. Recommendation on the user's question 4: the shared-memory module should not split
+
+**No core/rmw split. The whole transport belongs to the core-side module; the rmw layer only selects it and reports
+it.** Four reasons, and one dependency that matters more than any of them.
+
+1. **There is nothing for an rmw half to do.** "How do these bytes reach that peer" is the same question for a native
+   TickLE application and for a ROS 2 node: no typesupport, no QoS translation, no keystore, no XML. The security
+   module splits because SROS2's artefacts - X.509, S/MIME, the keystore layout - are ROS-side by nature and need
+   libraries that must not enter core. Shared memory has no equivalent; it needs POSIX `shm_open` on Linux and a
+   HAL-provided region on a target, both of which are where core already lives.
+2. **Core already knows what "same host" means.** g8 built the host registry in /dev/shm that lets a process claim a
+   context id and tells our processes on one host apart from each other. The prerequisite for choosing this transport
+   is therefore already in core, and putting the choice above core would mean asking the question twice.
+3. **Two places deciding which transport carries a sample is how criterion 5 gets violated.** If rmw could route a
+   sample to shared memory, then every rule core enforces on the datagram path would have to be re-enforced above it,
+   which is precisely the bypass that criterion exists to prevent.
+4. **An embedded system benefits too.** Two TickLE tasks in separate protection domains on one FreeRTOS target are the
+   same case as two processes on one Linux host. Logic placed in rmw would be unavailable to them, against the reason
+   decision 2 splits the security module in the first place.
+
+**What the rmw layer does get: selection and reporting, no policy.** An environment variable to force or disable the
+transport, as the vendors offer, and the transport a match actually uses made visible in introspection - so a user can
+tell why a same-host row is faster instead of guessing.
+
+**The dependency: shared memory is worth much more with receive-buffer lending than without it.** Its real prize is not
+a cheaper datagram, it is handing the reader a pointer into the segment. Copying out of the segment on arrival buys
+loopback UDP minus a syscall; lending approaches g9's in-process cost, which is the tier above. The user already
+approved lending on 2026-09-28 (`tt_Sample_retain`/`release`, LARGE_MESSAGE_PLAN's stage 2 neighbour). So the honest
+recommendation is that lending lands first or alongside, and that the pre-registration below states which of the two
+the measured win is attributed to - otherwise a good number cannot be told apart from a good number for another reason.
 
 **Order: shared memory first, security second.** Shared memory has a measurable win criterion and no open user
 decisions, while the security design has five open questions and is parked. And doing the transport first means the
