@@ -151,6 +151,21 @@ if(NOT _tickle_generator_result EQUAL 0 OR "${_tickle_generator_sources}" STREQU
                       "change to it would not regenerate anything:\n${_tickle_generator_error}")
 endif()
 
+# Also a configure dependency, not only a build one. The DEPENDS below regenerate the interfaces
+# when the generator changes, but only for a build tree whose build.make already carries them: a
+# tree configured before that existed regenerates nothing, and then mixes old and new names into
+# something that does not compile. Listing the sources here makes CMake re-run this file when one
+# changes, so the DEPENDS are rewritten first - which fixes every tree configured from now on.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_tickle_generator_sources})
+
+# Which tickle_typesupport actually got imported, in the build log. The generator runs it from
+# wherever Python finds it - a pip install, not this repository - so editing the repository's copy
+# changes nothing until it is reinstalled, and the failure looks like a generator bug rather than a
+# stale install. This line is what tells the two apart.
+list(GET _tickle_generator_sources 0 _tickle_generator_first)
+get_filename_component(_tickle_generator_dir "${_tickle_generator_first}" DIRECTORY)
+message(STATUS "rosidl_typesupport_tickle_c: generator sources under ${_tickle_generator_dir}")
+
 foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
   # rosidl_generate_interfaces_ABS_IDL_FILES holds *adapted* .idl paths (rosidl_adapt_interfaces()
   # runs before any extension, including this one, so every generator only ever has to understand
