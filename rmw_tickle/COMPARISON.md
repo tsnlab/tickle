@@ -27,12 +27,17 @@ one caught.
 the user's instruction of 2026-09-26. How that is done, the one FastDDS transport parameter tuned for
 a fair evaluation, and what was different before are all in §4.4. Read it before quoting a margin.
 
-> **Footnote, 2026-09-28.** The `A`, `T` and `V` rows were measured on `6910d840`. `main` has since gained the
-> Context/Node restructure (wire v11), the capacity work and the rmw gap fixes. Measured on the rig against that same
-> build (WIRE_PLAN.md section 10, with a confirmation re-run): TickLE's client CPU per sample is 0.5-0.7% higher at
-> P1, peak RSS about 5 KB higher, and the latency cells' wire bytes 1.4 B higher, from v11's node entries; server CPU
-> is 0.5-0.8% lower in two cells. No verdict against a vendor changes, since those margins are multiples. The rows are
-> re-measured when large-message stage 1 lands.
+> **Footnote, 2026-09-28, corrected 2026-09-29.** The `A`, `T` and `V` rows were measured on `6910d840`. `main` has
+> since gained the Context/Node restructure (wire v11), the capacity work and the rmw gap fixes. Measured on the rig
+> against that same build: the latency cells' wire bytes are 1.4 B higher, from v11's node entries, and peak RSS is
+> **11.5 KB** higher (±0.8, not the ~5 KB first recorded). **What was written here as "client CPU per sample is
+> 0.5-0.7% higher at P1" was the wrong quantity.** The p1 client saturates its core, so its CPU cannot rise and does
+> not: 19.9924 s against 19.9921 s of a 20 s run, held at t 1.3 on nanosecond-resolution `schedstat`. What is higher is
+> the cost of a sample - about 48 ns more in user time - so the run sends **1.107% fewer samples** (t −10.8). The CPU
+> ratio moved only because its denominator shrank. WIRE_PLAN.md 10.2 has the figures, 10.3 the bisect that puts the
+> origin at `5d9cace1` and the evidence that the commit adds nothing to the per-datagram path, which leaves function
+> placement as the standing hypothesis and a pre-registered test for it. No verdict against a vendor changes either
+> way, since those margins are multiples. The rows are re-measured when large-message stage 1 lands.
 
 **Where the numbers come from (the `meas.` column).** Within a row all three frameworks come from the
 same session, so a row is always comparable. Across rows of different letters it is not.
