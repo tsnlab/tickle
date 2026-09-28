@@ -19,3 +19,4 @@ rosidl_typesupport_tickle_c_tests/msg/DcNested	elems	6
 rosidl_typesupport_tickle_c_tests/msg/DcNested	outers	6
 rosidl_typesupport_tickle_c_tests/msg/DcNested	flags	6
 rosidl_typesupport_tickle_c_tests/msg/DcNested	inners	6
+rosidl_typesupport_tickle_c_tests/msg/DcGoalStatusArray	status_list	4

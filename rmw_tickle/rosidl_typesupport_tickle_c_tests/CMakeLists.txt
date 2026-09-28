@@ -52,6 +52,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/DcOuter.msg"
   "msg/DcElem.msg"
   "msg/DcNested.msg"
+  "msg/DcStamp.msg"
+  "msg/DcGoalId.msg"
+  "msg/DcGoalStatus.msg"
+  "msg/DcGoalStatusArray.msg"
   "srv/SimpleService.srv"
   DEPENDENCIES rosidl_typesupport_tickle_c_tests_dep
 )

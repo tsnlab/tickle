@@ -83,7 +83,9 @@ namespace {
     constexpr size_t bit_flips = 32;
     constexpr int reported_failures = 5; // per type, before the rest are only counted
     constexpr int from_tickle_failed = -100;
-    constexpr size_t letters = 26; // the alphabet a random string is drawn from
+    constexpr size_t dumped_bytes = 96;   // of a differing encoding, per type
+    constexpr unsigned low_nibble = 0xfU; // for the hex dump of one
+    constexpr size_t letters = 26;        // the alphabet a random string is drawn from
 
     auto members_of(const rosidl_message_type_support_t* support) -> const message_members* {
         return static_cast<const message_members*>(support->data);
@@ -454,6 +456,7 @@ namespace {
         aligned_buffer out_new;
         aligned_buffer scratch;
         counts tally;
+        bool dumped; // whether a differing pair of encodings has already been printed for this type
     };
 
     auto tickle_data(checker& check) -> tt_Data* {
@@ -493,6 +496,26 @@ namespace {
         if (check.tally.failures <= reported_failures) {
             std::printf("FAIL %s check %s sample %d: %s\n", check.name.c_str(), which, sample, detail.c_str());
         }
+    }
+
+    // A byte difference is only actionable with the bytes. Printed once per type, for the first
+    // such failure, because a type that differs usually differs on every sample - and because the
+    // build that fails may be one this machine cannot make: CI's distro carries packages a
+    // developer box does not, which is how actionlib_msgs' difference was found and could not be
+    // reproduced here.
+    auto hex_dump(const uint8_t* bytes, int32_t len) -> std::string {
+        static const char* digits = "0123456789abcdef";
+        std::string out;
+        int32_t const shown = std::min(len, static_cast<int32_t>(dumped_bytes));
+        for (int32_t index = 0; index < shown; index++) {
+            out += digits[bytes[index] >> 4U];
+            out += digits[bytes[index] & low_nibble];
+            out += ' ';
+        }
+        if (shown < len) {
+            out += "...";
+        }
+        return out;
     }
 
     auto first_difference(checker& check, int32_t a, int32_t b) -> std::string {
@@ -597,6 +620,13 @@ namespace {
                 report(check, "1", sample,
                        "bytes differ: old " + std::to_string(old.size) + " B, new " + std::to_string(new_size) + " B" +
                            first_difference(check, old.size, new_size));
+                if (!check.dumped) {
+                    check.dumped = true;
+                    std::printf("     old: %s\n     new: %s\n     tickle_struct_size=%zu\n",
+                                hex_dump(bytes_of(check.out_old), old.size).c_str(),
+                                hex_dump(bytes_of(check.out_new), new_size).c_str(),
+                                check.callbacks->tickle_struct_size);
+                }
                 return false;
             }
             check.tally.identical++;
@@ -724,7 +754,8 @@ namespace {
                        .out_old = make_buffer(buffer_length),
                        .out_new = make_buffer(buffer_length),
                        .scratch = make_buffer(buffer_length),
-                       .tally = counts {}};
+                       .tally = counts {},
+                       .dumped = false};
         check.gen.rng.seed(seed);
         Message const shell(members);
         for (int sample = 0; sample < samples; sample++) {
