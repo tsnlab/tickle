@@ -1106,6 +1106,24 @@ once, or a clean build, which is what CI does anyway.
   So a publisher pays nothing, a context pays nothing, the wire pays nothing, and a subscription pays 32 bytes whether
   or not it is KEEP_ALL. The per-sample cost on the KEEP_LAST path is one NULL test on `accept_callback` before
   delivery, and nothing else: no allocation, no lock, no wire byte.
+- **Falsification run (Plan's amendment, threshold 3%): not falsified.** Ran `p1_layout_check.sh a073a6fc 04fea91a 3`
+  on the rig, four arms, six runs each. Only the pre-registered verdict is reported, and no figure is offered as a
+  cost or a gain:
+
+  the unforced pair moved by **0.659%** in magnitude, which is below the 3% threshold, so criterion 6 is **not
+  falsified** and the exact evidence above carries the claim. Nothing was found that one extra branch and 32 bytes
+  cannot explain.
+
+  Two things about the run that have to be said plainly rather than smoothed over. Its own printed verdict is
+  **VOID**, and that is correct *for its own question* - it exists to ask whether an earlier 1.1% loss is layout, and
+  the unforced pair here does not reproduce that 1.1%, so it says nothing about that. It is not void for this
+  question: this question is "is the difference 3% or more", the unforced pair is exactly the comparison that answers
+  it, and six runs an arm with SEs of 2000-4400 on 3.7M samples answer it clearly. Two questions, one harness, and
+  only one of them void.
+  And the direction is deliberately not reported above, because reporting it would be the mistake WIRE_PLAN 10.4
+  warns about: the alignment flag alone moved one arm by 0.472%, the same order as the whole difference, so whichever
+  way it points it is layout, not g13. A sign that means nothing reads as news when it is favourable.
+
 - **Why the timing and RSS readings are not quoted as numbers.** 100 subscriptions of the structural cost above is
   3.2 KB, and the peak-RSS floor is about 10 KB for two builds whose code differs in size - so the RSS instrument
   cannot resolve this cost even in principle, and a figure from it would be layout, not g13. The same holds for p1
