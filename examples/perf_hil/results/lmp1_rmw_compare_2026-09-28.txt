@@ -1,0 +1,58 @@
+void rows: A 0, B 0
+held   rmw_tickle bench best_effort wait=block      rtt_avg_ms                       A       0.2460 (se 0.0017, n6)  B       0.2452 (se 0.0010, n6)    -0.3%  t -0.4
+held   rmw_tickle bench best_effort wait=block      rtt_min_ms                       A       0.2275 (se 0.0018, n6)  B       0.2275 (se 0.0015, n6)    +0.0%  t +0.0
+held   rmw_tickle bench best_effort wait=block      pong_cpu_ns                      A 39097701.0000 (se 561772.5982, n6)  B 38851705.8333 (se 330223.9067, n6)    -0.6%  t -0.4
+held   rmw_tickle bench best_effort wait=block      pong_idle_cpu_ns                 A 2451107.8333 (se 86461.0926, n6)  B 2372196.1667 (se 27403.6719, n6)    -3.2%  t -0.9
+held   rmw_tickle bench best_effort wait=block      ping_cpu_s                       A       0.0317 (se 0.0017, n6)  B       0.0300 (se 0.0000, n6)    -5.3%  t -1.0
+held   rmw_tickle bench best_effort wait=block      pong_maxrss_kb                   A   12828.6667 (se 1.2293, n6)  B   12828.6667 (se 1.2293, n6)    +0.0%  t +0.0
+held   rmw_tickle bench best_effort wait=block      ping_maxrss_kb                   A   12309.3333 (se 21.3333, n6)  B   12288.0000 (se 0.0000, n6)    -0.2%  t -1.0
+held   rmw_tickle bench best_effort wait=poll poll_sleep_us=100 rtt_avg_ms                       A       0.5092 (se 0.0005, n6)  B       0.5093 (se 0.0008, n6)    +0.0%  t +0.2
+better rmw_tickle bench best_effort wait=poll poll_sleep_us=100 rtt_min_ms                       A       0.4618 (se 0.0015, n6)  B       0.4570 (se 0.0009, n6)    -1.0%  t -2.7
+held   rmw_tickle bench best_effort wait=poll poll_sleep_us=100 pong_cpu_ns                      A 38948554.8333 (se 487598.4530, n6)  B 38713844.3333 (se 225082.8137, n6)    -0.6%  t -0.4
+held   rmw_tickle bench best_effort wait=poll poll_sleep_us=100 pong_idle_cpu_ns                 A 2375074.0000 (se 52302.1170, n6)  B 2307984.1667 (se 39249.1670, n6)    -2.8%  t -1.0
+held   rmw_tickle bench best_effort wait=poll poll_sleep_us=100 ping_cpu_s                       A       0.0300 (se 0.0000, n6)  B       0.0300 (se 0.0000, n6)    +0.0%  t +0.0
+held   rmw_tickle bench best_effort wait=poll poll_sleep_us=100 pong_maxrss_kb                   A   12826.0000 (se 2.6833, n6)  B   12828.6667 (se 0.6667, n6)    +0.0%  t +1.0
+held   rmw_tickle bench best_effort wait=poll poll_sleep_us=100 ping_maxrss_kb                   A   12309.3333 (se 21.3333, n6)  B   12288.0000 (se 0.0000, n6)    -0.2%  t -1.0
+held   rmw_tickle bench reliable wait=block         rtt_avg_ms                       A       0.2462 (se 0.0007, n6)  B       0.2447 (se 0.0009, n6)    -0.6%  t -1.3
+held   rmw_tickle bench reliable wait=block         rtt_min_ms                       A       0.2298 (se 0.0012, n6)  B       0.2277 (se 0.0010, n6)    -0.9%  t -1.3
+held   rmw_tickle bench reliable wait=block         pong_cpu_ns                      A 39123800.1667 (se 342210.7834, n6)  B 38804849.0000 (se 107358.5898, n6)    -0.8%  t -0.9
+held   rmw_tickle bench reliable wait=block         pong_idle_cpu_ns                 A 2452653.5000 (se 49973.4839, n6)  B 2375161.3333 (se 45139.0094, n6)    -3.2%  t -1.2
+held   rmw_tickle bench reliable wait=block         ping_cpu_s                       A       0.0317 (se 0.0017, n6)  B       0.0333 (se 0.0021, n6)    +5.3%  t +0.6
+held   rmw_tickle bench reliable wait=block         pong_maxrss_kb                   A   12850.0000 (se 0.8944, n6)  B   12850.0000 (se 0.8944, n6)    +0.0%  t +0.0
+held   rmw_tickle bench reliable wait=block         ping_maxrss_kb                   A   12288.0000 (se 0.0000, n6)  B   12288.0000 (se 0.0000, n6)    +0.0%  t +0.0
+held   rmw_tickle bench reliable wait=poll poll_sleep_us=100 rtt_avg_ms                       A       0.5108 (se 0.0007, n6)  B       0.5117 (se 0.0014, n6)    +0.2%  t +0.5
+WORSE  rmw_tickle bench reliable wait=poll poll_sleep_us=100 rtt_min_ms                       A       0.4582 (se 0.0026, n6)  B       0.4663 (se 0.0021, n6)    +1.8%  t +2.4
+held   rmw_tickle bench reliable wait=poll poll_sleep_us=100 pong_cpu_ns                      A 39217460.1667 (se 260796.1584, n6)  B 39186068.5000 (se 191098.8018, n6)    -0.1%  t -0.1
+held   rmw_tickle bench reliable wait=poll poll_sleep_us=100 pong_idle_cpu_ns                 A 2368701.8333 (se 25249.4602, n6)  B 2438212.5000 (se 25023.4885, n6)    +2.9%  t +2.0
+held   rmw_tickle bench reliable wait=poll poll_sleep_us=100 ping_cpu_s                       A       0.0300 (se 0.0000, n6)  B       0.0300 (se 0.0000, n6)    +0.0%  t +0.0
+held   rmw_tickle bench reliable wait=poll poll_sleep_us=100 pong_maxrss_kb                   A   12847.3333 (se 2.9963, n6)  B   12844.0000 (se 3.0984, n6)    -0.0%  t -0.8
+held   rmw_tickle bench reliable wait=poll poll_sleep_us=100 ping_maxrss_kb                   A   12288.0000 (se 0.0000, n6)  B   12288.0000 (se 0.0000, n6)    +0.0%  t +0.0
+held   rmw_tickle array1k best_effort wait=block    rtt_avg_ms                       A       0.2653 (se 0.0006, n6)  B       0.2638 (se 0.0009, n6)    -0.6%  t -1.4
+held   rmw_tickle array1k best_effort wait=block    rtt_min_ms                       A       0.2490 (se 0.0021, n6)  B       0.2460 (se 0.0019, n6)    -1.2%  t -1.0
+better rmw_tickle array1k best_effort wait=block    pong_cpu_ns                      A 39374936.5000 (se 260247.6890, n6)  B 38561517.5000 (se 205888.9387, n6)    -2.1%  t -2.5
+held   rmw_tickle array1k best_effort wait=block    pong_idle_cpu_ns                 A 2349040.8333 (se 48806.4969, n6)  B 2256320.1667 (se 15967.0299, n6)    -3.9%  t -1.8
+held   rmw_tickle array1k best_effort wait=block    ping_cpu_s                       A       0.0317 (se 0.0017, n6)  B       0.0300 (se 0.0000, n6)    -5.3%  t -1.0
+held   rmw_tickle array1k best_effort wait=block    pong_maxrss_kb                   A   12830.6667 (se 0.8433, n6)  B   12826.0000 (se 2.8752, n6)    -0.0%  t -1.6
+held   rmw_tickle array1k best_effort wait=block    ping_maxrss_kb                   A   12288.0000 (se 0.0000, n6)  B   12288.0000 (se 0.0000, n6)    +0.0%  t +0.0
+held   rmw_tickle array1k best_effort wait=poll poll_sleep_us=100 rtt_avg_ms                       A       0.5112 (se 0.0010, n6)  B       0.5125 (se 0.0013, n6)    +0.3%  t +0.8
+better rmw_tickle array1k best_effort wait=poll poll_sleep_us=100 rtt_min_ms                       A       0.4667 (se 0.0016, n6)  B       0.4607 (se 0.0014, n6)    -1.3%  t -2.9
+held   rmw_tickle array1k best_effort wait=poll poll_sleep_us=100 pong_cpu_ns                      A 39013916.5000 (se 260900.4910, n6)  B 39178909.1667 (se 196654.2849, n6)    +0.4%  t +0.5
+better rmw_tickle array1k best_effort wait=poll poll_sleep_us=100 pong_idle_cpu_ns                 A 2383387.1667 (se 11576.8511, n6)  B 2316704.6667 (se 28151.1134, n6)    -2.8%  t -2.2
+held   rmw_tickle array1k best_effort wait=poll poll_sleep_us=100 ping_cpu_s                       A       0.0283 (se 0.0017, n6)  B       0.0300 (se 0.0000, n6)    +5.9%  t +1.0
+held   rmw_tickle array1k best_effort wait=poll poll_sleep_us=100 pong_maxrss_kb                   A   12830.0000 (se 2.2509, n6)  B   12826.6667 (se 1.3333, n6)    -0.0%  t -1.3
+held   rmw_tickle array1k best_effort wait=poll poll_sleep_us=100 ping_maxrss_kb                   A   12288.0000 (se 0.0000, n6)  B   12288.0000 (se 0.0000, n6)    +0.0%  t +0.0
+better rmw_tickle array1k reliable wait=block       rtt_avg_ms                       A       0.2685 (se 0.0006, n6)  B       0.2655 (se 0.0009, n6)    -1.1%  t -2.8
+held   rmw_tickle array1k reliable wait=block       rtt_min_ms                       A       0.2498 (se 0.0026, n6)  B       0.2512 (se 0.0012, n6)    +0.5%  t +0.5
+held   rmw_tickle array1k reliable wait=block       pong_cpu_ns                      A 39431158.3333 (se 273991.5507, n6)  B 38997719.1667 (se 242983.3871, n6)    -1.1%  t -1.2
+held   rmw_tickle array1k reliable wait=block       pong_idle_cpu_ns                 A 2394122.3333 (se 35998.8998, n6)  B 2397021.5000 (se 45517.6970, n6)    +0.1%  t +0.0
+held   rmw_tickle array1k reliable wait=block       ping_cpu_s                       A       0.0300 (se 0.0000, n6)  B       0.0317 (se 0.0017, n6)    +5.6%  t +1.0
+held   rmw_tickle array1k reliable wait=block       pong_maxrss_kb                   A   12851.3333 (se 1.9090, n6)  B   12852.6667 (se 1.6055, n6)    +0.0%  t +0.5
+held   rmw_tickle array1k reliable wait=block       ping_maxrss_kb                   A   12288.0000 (se 0.0000, n6)  B   12288.0000 (se 0.0000, n6)    +0.0%  t +0.0
+held   rmw_tickle array1k reliable wait=poll poll_sleep_us=100 rtt_avg_ms                       A       0.5123 (se 0.0011, n6)  B       0.5117 (se 0.0010, n6)    -0.1%  t -0.4
+held   rmw_tickle array1k reliable wait=poll poll_sleep_us=100 rtt_min_ms                       A       0.4627 (se 0.0014, n6)  B       0.4633 (se 0.0028, n6)    +0.1%  t +0.2
+held   rmw_tickle array1k reliable wait=poll poll_sleep_us=100 pong_cpu_ns                      A 39626799.5000 (se 311471.3821, n6)  B 39230464.1667 (se 156870.2748, n6)    -1.0%  t -1.1
+held   rmw_tickle array1k reliable wait=poll poll_sleep_us=100 pong_idle_cpu_ns                 A 2376280.6667 (se 12231.8136, n6)  B 2452310.1667 (se 43577.1048, n6)    +3.2%  t +1.7
+held   rmw_tickle array1k reliable wait=poll poll_sleep_us=100 ping_cpu_s                       A       0.0300 (se 0.0000, n6)  B       0.0300 (se 0.0000, n6)    +0.0%  t +0.0
+held   rmw_tickle array1k reliable wait=poll poll_sleep_us=100 pong_maxrss_kb                   A   12852.6667 (se 2.6162, n6)  B   12852.0000 (se 2.0656, n6)    -0.0%  t -0.2
+held   rmw_tickle array1k reliable wait=poll poll_sleep_us=100 ping_maxrss_kb                   A   12288.0000 (se 0.0000, n6)  B   12288.0000 (se 0.0000, n6)    +0.0%  t +0.0
+--- 5 better, 50 held, 1 WORSE

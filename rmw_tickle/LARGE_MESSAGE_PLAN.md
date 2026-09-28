@@ -326,3 +326,21 @@ regenerates a dependent package's adapter, checked by mtime.
   them at empty, single and bound-filling sizes, with embedded NULs.
 - **Pooled ROS shells at take** hold one message per queued sample. The queue depth bounds that memory; it is
   reported in pass 5.
+
+## Pass 5 result, the rig half (2026-09-28, Plan)
+
+`rmw_lease86_rig_chain.sh` with TAG=lmp1_rmw: `fe26a97b` (the C++ codec, before the wiring) against `feda8093` (the
+wiring), A B B A, 3 repetitions per block, block mode plus the 100 us poll control, bench and array1k, both QoS,
+IDLE_S=10. 48 + 48 ok rows, 0 VOID. Raw rows are `results/lmp1_rmw_{A_fe26a97b,B_feda8093}_2026-09-28.txt`. Read by
+WIRE_PLAN 8.3, with 8.3a's floors: **5 better, 50 held, 1 WORSE**.
+
+- **Nothing is WORSE that the criterion covers.** Block-mode RTT is held or better in all four cells, pong CPU is held
+  or better in all eight, and peak RSS does not move (12,288 KB on the ping in every cell, to the kilobyte).
+- **Better, beyond 2 x SE:** array1k RELIABLE block RTT -1.1% (0.2685 -> 0.2655 ms, t -2.8) and array1k BEST_EFFORT
+  block pong CPU -2.1% (t -2.5), which is the direction the removed copy predicts and the cell where the payload is
+  largest.
+- **The one WORSE row is bench RELIABLE poll `rtt_min_ms`, +1.8% (t 2.4).** It is a chance candidate under 8.3: the
+  same metric is *better* in two other cells, `rtt_min` is one run's luckiest sample rather than a mean, and the cell's
+  own `rtt_avg` is held.
+- **So stage 1's wiring costs nothing measurable on the rig**, while the PC half (Dev, `6d5da13e`) shows the codec
+  1.62 us faster each way at 64 KB and 128,128 bytes per endpoint pair freed. Pass 5 is met on both halves.
