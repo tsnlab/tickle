@@ -29,8 +29,10 @@ a fair evaluation, and what was different before are all in §4.4. Read it befor
 
 > **Footnote, 2026-09-28, corrected 2026-09-29.** The `A`, `T` and `V` rows were measured on `6910d840`. `main` has
 > since gained the Context/Node restructure (wire v11), the capacity work and the rmw gap fixes. Measured on the rig
-> against that same build: the latency cells' wire bytes are 1.4 B higher, from v11's node entries, and peak RSS is
-> **11.5 KB** higher (±0.8, not the ~5 KB first recorded). **What was written here as "client CPU per sample is
+> against that same build: the latency cells' wire bytes are 1.4 B higher, from v11's node entries. **The peak-RSS lean
+> is not a lean:** it measured 11.5 KB, then 9.3 KB, and it disappears entirely when both builds are compiled with
+> `-falign-functions=32` (−1.3 KB, t −0.39) while that flag alone moves one of them by 12.0 KB. It is text pages, not
+> data - the same floor as below. **What was written here as "client CPU per sample is
 > 0.5-0.7% higher at P1" was the wrong quantity.** The p1 client saturates its core, so its CPU cannot rise and does
 > not: 19.9924 s against 19.9921 s of a 20 s run, held at t 1.3 on nanosecond-resolution `schedstat`. What is higher is
 > the cost of a sample - about 48 ns more in user time - so the run sends **1.107% fewer samples** (t −10.8). The CPU

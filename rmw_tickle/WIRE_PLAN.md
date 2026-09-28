@@ -1253,6 +1253,23 @@ the bisect's origin (`5d9cace1`, 10.3) identifies where the code size changed ra
 `a51b8d2f`'s −0.364% never was one. COMPARISON's footnote is corrected accordingly. Nothing is reverted and nothing is
 owed: what was owed was a reason, and the reason is that the instrument could not tell.
 
+**The same four arms retire the peak-RSS lean, from data already collected.** `peak_rss_kb` was recorded on every run,
+so no extra rig time was needed to ask whether that lean is the same phenomenon. It is:
+
+| pair | peak RSS | t |
+|---|---:|---:|
+| A -> B, neither forced | +9.3 KB | +2.59 |
+| Aa -> Ba, both forced | **−1.3 KB** | −0.39 |
+| A -> Aa (the flag alone) | **+12.0 KB** | +3.59 |
+| B -> Ba (the flag alone) | +1.3 KB | +0.36 |
+
+The lean disappears when both arms are aligned, and the alignment flag alone moves one arm by **more than the lean being
+investigated**. Which makes sense: forcing every function onto a 32-byte boundary grows the text segment, and peak RSS
+counts the text pages the run touches. So **a peak-RSS difference of about 10 KB between two builds whose code differs
+in size is not evidence of a data-structure cost either** - it is the same floor, in the same place, for the same
+reason. COMPARISON's footnote is corrected to say so, and the ~5 KB / 11.5 KB lean the plans have carried since
+2026-09-27 is closed rather than outstanding.
+
 **The run also found the script's own reading incomplete**, which is worth recording because the pre-registration is
 supposed to cover the outcomes. Three were written down - the gap closes, the gap survives, the control fails - and the
 run produced a fourth, a reversal, which the code classified as "survives" because it tested `|t| > 2` without a sign.
