@@ -95,6 +95,9 @@ for f in rmw_tickle/rmw_tickle/src/*.c rmw_tickle/rmw_tickle/test/*.c rmw_tickle
     fi
 done
 cpp_files=$(git ls-files '*.cpp' '*.hpp' '*.cc' | grep -Ev '^(third_party|examples/perf_hil/fastdds)/')
+# Files whose own CMake requires C++20, so CI compiles them at 20 as well - exempt from the C++17
+# compile below. Keep in step with every `CMAKE_CXX_STANDARD 20` / `cxx_std_20` in the tree.
+CXX20_TARGETS="examples/perf_hil/experiments/conv_cost/conv_cost.cpp"
 for f in $cpp_files; do
     checked=$((checked + 1))
     package_dir=$(dirname "$f")
@@ -129,6 +132,43 @@ for f in $cpp_files; do
         grep -E "$(basename "$f"):[0-9]+:[0-9]+: (warning|error)")
     if [ -n "$out" ]; then
         echo "$out" >&2
+        fail=1
+    fi
+    # And the same file compiled at CI's C++ standard, which is not necessarily this machine's.
+    # CXX_STANDARD is a minimum: a ROS 2 install whose own targets require C++20 raises ours to
+    # C++20, so a C++20 construct builds on a developer box and fails on CI's jazzy, where rclcpp
+    # leaves the standard at 17. That has now happened three times (47ddcb75's conv_cost, then
+    # 12b4f06e's direct_codec_identity, which clang-tidy's own --fix wrote), every time in CI
+    # rather than here. Taking the file's real compile command and lowering only -std reproduces
+    # CI's dialect exactly, without needing jazzy. A target that deliberately requires C++20 goes
+    # in CXX20_TARGETS below, where CI compiles it at 20 too - forgetting to list one fails here,
+    # which is the safe direction.
+    case " $CXX20_TARGETS " in
+    *" $f "*) continue ;;
+    esac
+    compile=$(python3 - "build/$package/compile_commands.json" "$REPO/$f" <<'PY'
+import json, sys
+db = json.load(open(sys.argv[1]))
+for entry in db:
+    if entry["file"] == sys.argv[2]:
+        command = entry.get("command") or " ".join(entry["arguments"])
+        print(json.dumps({"dir": entry["directory"], "command": command}))
+        break
+PY
+    )
+    if [ -z "$compile" ]; then
+        continue # a header, or a file whose own database entry the check above already reported
+    fi
+    std_dir=$(printf '%s' "$compile" | python3 -c 'import json,sys; print(json.load(sys.stdin)["dir"])')
+    std_cmd=$(printf '%s' "$compile" | python3 -c 'import json,sys; print(json.load(sys.stdin)["command"])' |
+        sed -E 's/-std=(gnu|c)\+\+[0-9a-z]+/-std=gnu++17/g; s| -o [^ ]+| -fsyntax-only|')
+    case "$std_cmd" in
+    *-std=gnu++17*) ;;
+    *) std_cmd="$std_cmd -std=gnu++17" ;;
+    esac
+    if ! out=$(cd "$std_dir" && eval "$std_cmd" 2>&1); then
+        echo "$out" | grep -E "error:" >&2
+        echo "$f: does not compile at C++17, which is what CI compiles it as - see lint_rmw.sh" >&2
         fail=1
     fi
 done
