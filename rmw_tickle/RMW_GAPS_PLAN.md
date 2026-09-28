@@ -1067,6 +1067,11 @@ once, or a clean build, which is what CI does anyway.
      the other: the counter counts what the writer said it no longer held, and the rest went while the reader was
      stopped and its window moved past. The control reports no equivalent at all.
 
+     **A sixth pair, 2026-09-29: the control lost 78 where we lost 39.** The figures above are not updated on one more
+     pair - that is the rule, not an exception made here - but it widens the control's observed range to 39-78 across six
+     runs while ours stays 37-39. So the caveat is stronger rather than weaker: **the control's spread is now nearly the
+     size of its own mean**, and any future comparison at this cell needs its repetition count set by that, not by ours.
+
      **Caveats, because a single-condition advantage is not a general one:** n = 5, one stall duration, one publisher
      depth. And the methodological point Dev found on the way is worth more than the number: **the first pair came out
      39 against 39** and would have been written up as "level", while the second pair alone would have claimed 20
@@ -1310,3 +1315,22 @@ than a timing one: Dev's first size comparison substituted the parent's rmw head
 `tickle.h`, so the struct came out unchanged. That is the old struct measured with the new core inside it - a null
 result produced by the measurement rather than by the code. Same family as `introspect` asking its question of the
 endpoint that never had the defect, and as a check that reads a field its subject never prints.
+
+
+### An operational rule the two sessions found by colliding (2026-09-29)
+
+**The netns acceptance suite and a rig campaign must not overlap.** They do not contend for the rig lock - the suite runs
+entirely in PC-side namespaces - so nothing stops them, and that is the trap: they contend for the **PC's CPU**, and it is
+the suite that suffers. Running together at load average 13.7/18.1, two of thirteen acceptance rows went VOID because the
+**CycloneDDS control** failed (`itype` with `incompatible_type_events=0` on both endpoints, `samehost` with
+`listener=110 echo=0`), and `samehost`'s control had passed earlier the same evening on the same binaries.
+
+**Why that is worse than a wasted run:** a control failure under load looks exactly like a vendor finding. Two rows with
+CycloneDDS failing and TickLE passing are the most flattering artefact available, and they would be wrong. The suite's own
+rule - a failed control voids the row - is what stopped it from being reported, which is the rule earning its place.
+
+**The campaign side was checked rather than assumed**, since the same load could in principle have touched it: 38 rows,
+0 VOID, `loss_pct=0.0` throughout while the load was at its peak - its clients and servers run on the Pis and the PC only
+orchestrates over ssh - and the rig logs showed no `10.1.1.x` peer from the netns run, the only matches being nine days
+old. So the asymmetry is real: the campaign does not notice, which is exactly why the campaign is the side that has to
+announce itself.
