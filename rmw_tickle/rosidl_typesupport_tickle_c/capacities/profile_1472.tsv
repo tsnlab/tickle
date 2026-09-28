@@ -154,4 +154,3 @@ visualization_msgs/msg/InteractiveMarkerUpdate	poses	4	payload
 visualization_msgs/msg/InteractiveMarkerUpdate	erases	4	payload
 visualization_msgs/srv/GetInteractiveMarkers	markers	1	payload
 geometry_msgs/msg/Polygon	points	112	element	auto would take the whole datagram (120), leaving nothing for PolygonStamped/PolygonInstance/SolidPrimitive, which nest it
-rosbag2_interfaces/msg/MessagesLostEvent	messages_lost_statistics	16	payload

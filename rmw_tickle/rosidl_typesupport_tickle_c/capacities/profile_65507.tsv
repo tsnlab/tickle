@@ -166,4 +166,3 @@ action_msgs/msg/GoalStatusArray	status_list	64	pinned	auto would give 2338
 action_msgs/srv/CancelGoal	goals_canceling	64	pinned	auto would give 2728
 rcl_interfaces/srv/GetParameterTypes	types	8	parallel	pairs with names (8); auto would give 65477
 sensor_msgs/msg/JoyFeedbackArray	array	64	pinned	auto would give 8184
-rosbag2_interfaces/msg/MessagesLostEvent	messages_lost_statistics	16	payload
