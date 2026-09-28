@@ -1020,3 +1020,43 @@ assumed a `/parameter_events` subscription as well.
 effect on packet count or join time. Building it would add a second string form to the discovery decoder, which
 every node runs, to save that. This follows the rule Plan set for it: a ceiling under a few % is dropped, not
 built.
+
+## 10. Everything since the COMPARISON build, on the rig (2026-09-28, Plan)
+
+`campaign_ab_chain.sh`, A = `6910d840` (the build COMPARISON's A/T/V rows were measured on, 2026-09-27) and
+B = `268dd20e`. Between them: the Context/Node restructure (stages 1-3, wire **v11**), the capacity work (4a, 4b) and
+the rmw gap fixes g2, g3, g5, g6, g8, g9, g10. 12 cells, 3 repetitions per block, 72 + 72 ok rows, 0 VOID. Then a
+**targeted re-run** of every cell that flagged, c1, c5, c9 and c10, 5 repetitions per block, 20 + 20 ok rows, as
+section 8.3 rule 2 requires before anything is called WORSE. Raw rows are
+`results/restructure_{abba,confirm}_*_2026-09-28.txt`.
+
+Run 1 gave 12 better, 70 held, 26 WORSE. The re-run separates the real from the chance:
+
+| finding | run 1 | re-run (n=10 per arm) | verdict |
+|---|---|---|---|
+| client CPU per sample, p1 throughput | c1 +0.8%, c5 +1.2%, c9 +0.7% | c1 **+0.7%** (t 4.3), c5 **+0.5%** (t 3.1), c9 **+0.5%** (t 3.1) | **CONFIRMED WORSE** |
+| server CPU per sample, c5 (5% loss) | +0.9% | **+0.4%** (t 5.0) | **CONFIRMED WORSE** |
+| wire bytes per sample, c10 (p1 latency) | +1.4 B (+0.5%) | **+1.4 B** (+0.5%, t 3.8) | **CONFIRMED WORSE** |
+| peak RSS | WORSE in 5 of 12 cells, +6 to +12 KB | c5 +5.2 KB and c10 +6.4 KB WORSE; c1 and c9 held | **CONFIRMED WORSE**, about +5 KB |
+| client CPU per sample, c10 | **+11.1%** | +0.8%, t 0.2, **held** | **not confirmed: run-1 noise** |
+| c10 round trip | +1.4% | +0.5%, t 1.4, held | not confirmed |
+| server CPU per sample, c1 / c9 | -0.4% / -0.9% | **-0.5%** / **-0.8%** | **CONFIRMED BETTER** |
+
+- **The c10 +11% client CPU did not reproduce.** In run 1 it was 141.7 -> 157.5 cpu_s/Msample; in the re-run,
+  146.0 -> 147.2 with t 0.2. A latency cell sends 100 samples in 10 s, so its per-sample CPU is a fixed cost divided
+  by 100 and swings widely. Nothing is claimed from it, and the same caution applies to any future reading of c10's
+  CPU.
+- **The wire-bytes rise is wire v11's node entries,** and it is the only wire cost. The throughput cells are
+  byte-identical (138.1 / 124.1 at p1), because an announce amortises over about a million samples; the latency cells
+  send 100, so +40 B per node per list shows as +1.4 B per sample. Section 1's rule is therefore **not met by v11**:
+  it buys a feature (remote nodes in `ros2 node list`, `ros2 param`) at a byte cost that the user approved in advance
+  as a feature cost, not as an optimisation. Recorded as such, and not scored as a pass.
+- **The client CPU rise, +0.5 to 0.7% at p1 (about 30 ns per sample), has a named hypothesis to test,** in Plan's
+  order of suspicion: g10's depth check on every reliable publish (every p1 throughput cell here is RELIABLE);
+  g9's local-delivery branch per publish; g8's id state on the send path. Dev tests it with the core bench, `-R`
+  against g10's parent, before anything is changed.
+- **Consequence for COMPARISON.md:** its A, T and V rows were measured on `6910d840`. Client CPU rows are therefore
+  about 0.5-0.7% optimistic at p1 and peak RSS about 5 KB optimistic, and the latency cells' wire bytes 1.4 B
+  optimistic. Every verdict against the vendors is unaffected: the margins there are multiples, not percent. The
+  table is re-measured once large-message stage 1 lands, since that changes the rmw rows anyway; until then this
+  section is its footnote.

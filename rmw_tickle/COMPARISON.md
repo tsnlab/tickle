@@ -27,6 +27,13 @@ one caught.
 the user's instruction of 2026-09-26. How that is done, the one FastDDS transport parameter tuned for
 a fair evaluation, and what was different before are all in §4.4. Read it before quoting a margin.
 
+> **Footnote, 2026-09-28.** The `A`, `T` and `V` rows were measured on `6910d840`. `main` has since gained the
+> Context/Node restructure (wire v11), the capacity work and the rmw gap fixes. Measured on the rig against that same
+> build (WIRE_PLAN.md section 10, with a confirmation re-run): TickLE's client CPU per sample is 0.5-0.7% higher at
+> P1, peak RSS about 5 KB higher, and the latency cells' wire bytes 1.4 B higher, from v11's node entries; server CPU
+> is 0.5-0.8% lower in two cells. No verdict against a vendor changes, since those margins are multiples. The rows are
+> re-measured when large-message stage 1 lands.
+
 **Where the numbers come from (the `meas.` column).** Within a row all three frameworks come from the
 same session, so a row is always comparable. Across rows of different letters it is not.
 - **`A` rows** come from the aligned 12-cell campaign, re-measured 2026-09-27 on `6910d840`

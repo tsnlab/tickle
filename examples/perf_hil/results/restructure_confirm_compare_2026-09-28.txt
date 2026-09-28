@@ -1,0 +1,37 @@
+WORSE  c1 T p1 Q0 none                              client.cpu_s_per_MB              A       0.0700 (se 0.0001, n10)  B       0.0705 (se 0.0001, n10)    +0.7%  t +4.3
+WORSE  c1 T p1 Q0 none                              client.cpu_s_per_Msample         A       5.3169 (se 0.0061, n10)  B       5.3566 (se 0.0069, n10)    +0.7%  t +4.3
+held   c1 T p1 Q0 none                              client.peak_rss_kb               A    1912.4000 (se 2.1868, n10)  B    1912.0000 (se 1.7889, n10)    -0.0%  t -0.1
+WORSE  c1 T p1 Q0 none                              client.send_mbps                 A     114.4905 (se 0.1305, n10)  B     113.6384 (se 0.1444, n10)    -0.7%  t -4.4
+held   c1 T p1 Q0 none                              client.wire_bytes_per_sample     A     138.1000 (se 0.0000, n10)  B     138.1000 (se 0.0000, n10)    +0.0%  t +0.0
+better c1 T p1 Q0 none                              server.cpu_s_per_MB              A       0.0329 (se 0.0000, n10)  B       0.0327 (se 0.0000, n10)    -0.5%  t -3.2
+better c1 T p1 Q0 none                              server.cpu_s_per_Msample         A       2.5007 (se 0.0027, n10)  B       2.4875 (se 0.0030, n10)    -0.5%  t -3.3
+held   c1 T p1 Q0 none                              server.loss_pct                  A       0.0000 (se 0.0000, n10)  B       0.0000 (se 0.0000, n10)    +nan%  t +0.0
+held   c1 T p1 Q0 none                              server.peak_rss_kb               A    1824.0000 (se 1.6865, n10)  B    1827.6000 (se 0.9333, n10)    +0.2%  t +1.9
+held   c1 T p1 Q0 none                              server.wire_bytes_per_sample     A     124.1000 (se 0.0000, n10)  B     124.1000 (se 0.0000, n10)    +0.0%  t +0.0
+WORSE  c5 T p1 Q0 loss 5%                           client.cpu_s_per_MB              A       0.0754 (se 0.0001, n10)  B       0.0757 (se 0.0001, n10)    +0.5%  t +3.1
+WORSE  c5 T p1 Q0 loss 5%                           client.cpu_s_per_Msample         A       5.7276 (se 0.0062, n10)  B       5.7539 (se 0.0057, n10)    +0.5%  t +3.1
+WORSE  c5 T p1 Q0 loss 5%                           client.peak_rss_kb               A    1920.0000 (se 1.4606, n10)  B    1925.2000 (se 0.8537, n10)    +0.3%  t +3.1
+WORSE  c5 T p1 Q0 loss 5%                           client.send_mbps                 A     106.1856 (se 0.1616, n10)  B     105.7789 (se 0.1017, n10)    -0.4%  t -2.1
+better c5 T p1 Q0 loss 5%                           client.wire_bytes_per_sample     A     142.8100 (se 0.0100, n10)  B     142.7600 (se 0.0163, n10)    -0.0%  t -2.6
+WORSE  c5 T p1 Q0 loss 5%                           server.cpu_s_per_MB              A       0.0396 (se 0.0000, n10)  B       0.0397 (se 0.0000, n10)    +0.4%  t +5.0
+WORSE  c5 T p1 Q0 loss 5%                           server.cpu_s_per_Msample         A       3.0071 (se 0.0018, n10)  B       3.0202 (se 0.0019, n10)    +0.4%  t +5.0
+held   c5 T p1 Q0 loss 5%                           server.loss_pct                  A       0.0000 (se 0.0000, n10)  B       0.0000 (se 0.0000, n10)    +nan%  t +0.0
+held   c5 T p1 Q0 loss 5%                           server.peak_rss_kb               A    2062.0000 (se 1.8135, n10)  B    2059.2000 (se 1.4360, n10)    -0.1%  t -1.2
+better c5 T p1 Q0 loss 5%                           server.wire_bytes_per_sample     A     129.4500 (se 0.0167, n10)  B     129.3900 (se 0.0100, n10)    -0.0%  t -3.1
+WORSE  c9 T p1 Q2 none                              client.cpu_s_per_MB              A       0.0684 (se 0.0000, n10)  B       0.0687 (se 0.0001, n10)    +0.5%  t +3.1
+WORSE  c9 T p1 Q2 none                              client.cpu_s_per_Msample         A       5.1967 (se 0.0036, n10)  B       5.2213 (se 0.0070, n10)    +0.5%  t +3.1
+held   c9 T p1 Q2 none                              client.peak_rss_kb               A    1681.2000 (se 1.3400, n10)  B    1685.6000 (se 1.9956, n10)    +0.3%  t +1.8
+WORSE  c9 T p1 Q2 none                              client.send_mbps                 A     117.1390 (se 0.0792, n10)  B     116.5827 (se 0.1557, n10)    -0.5%  t -3.2
+held   c9 T p1 Q2 none                              client.wire_bytes_per_sample     A     138.0000 (se 0.0000, n10)  B     138.0000 (se 0.0000, n10)    +0.0%  t +0.0
+better c9 T p1 Q2 none                              server.cpu_s_per_MB              A       0.0320 (se 0.0000, n10)  B       0.0318 (se 0.0000, n10)    -0.8%  t -7.3
+better c9 T p1 Q2 none                              server.cpu_s_per_Msample         A       2.4357 (se 0.0019, n10)  B       2.4172 (se 0.0017, n10)    -0.8%  t -7.4
+held   c9 T p1 Q2 none                              server.loss_pct                  A       0.0000 (se 0.0000, n10)  B       0.0000 (se 0.0000, n10)    +nan%  t +0.0
+held   c9 T p1 Q2 none                              server.peak_rss_kb               A    1824.8000 (se 1.6653, n10)  B    1827.2000 (se 0.9978, n10)    +0.1%  t +1.2
+held   c9 T p1 Q2 none                              server.wire_bytes_per_sample     A     124.0000 (se 0.0000, n10)  B     124.0000 (se 0.0000, n10)    +0.0%  t +0.0
+held   c10 L p1 Q0 none                             client.cpu_s_per_MB              A       1.9212 (se 0.0490, n10)  B       1.9371 (se 0.0522, n10)    +0.8%  t +0.2
+held   c10 L p1 Q0 none                             client.cpu_s_per_Msample         A     146.0140 (se 3.7248, n10)  B     147.2200 (se 3.9641, n10)    +0.8%  t +0.2
+held   c10 L p1 Q0 none                             client.loss_pct                  A       0.0000 (se 0.0000, n10)  B       0.0000 (se 0.0000, n10)    +nan%  t +0.0
+WORSE  c10 L p1 Q0 none                             client.peak_rss_kb               A    1660.0000 (se 1.8856, n10)  B    1666.4000 (se 0.6532, n10)    +0.4%  t +3.2
+held   c10 L p1 Q0 none                             client.rtt_avg_ms                A       0.2079 (se 0.0005, n10)  B       0.2089 (se 0.0005, n10)    +0.5%  t +1.4
+WORSE  c10 L p1 Q0 none                             client.wire_bytes_per_sample     A     283.8000 (se 0.2319, n10)  B     285.1800 (se 0.2744, n10)    +0.5%  t +3.8
+--- 6 better, 16 held, 14 WORSE
