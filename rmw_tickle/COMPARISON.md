@@ -856,7 +856,7 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | Area | functions | TickLE ✅ / ⚠️ / ❌ / ➖ | FastDDS ✅ / ⚠️ / ➖ | CycloneDDS ✅ / ⚠️ / ➖ |
 |---|---:|---|---|---|
 | Init and context | 8 | 8 / 0 / 0 / 0 | 8 / 0 / 0 | 8 / 0 / 0 |
-| Serialization | 7 | 3 / 0 / 3 / 1 | 6 / 0 / 1 | 6 / 0 / 1 |
+| Serialization | 7 | 7 / 0 / 0 / 0 | 6 / 0 / 1 | 6 / 0 / 1 |
 | Nodes | 2 | 2 / 0 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
 | Graph | 10 | 10 / 0 / 0 / 0 | 10 / 0 / 0 | 10 / 0 / 0 |
 | Pre-allocation | 4 | 0 / 0 / 0 / 4 | 0 / 0 / 4 | 0 / 0 / 4 |
@@ -870,12 +870,16 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | QoS | 1 | 1 / 0 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
 | Network flow endpoints | 2 | 0 / 0 / 0 / 2 | 2 / 0 / 0 | 0 / 0 / 2 |
 | Dynamic messages | 3 | 0 / 0 / 0 / 3 | 3 / 0 / 0 | 0 / 0 / 3 |
-| **All** | **94** | **73 / 0 / 9 / 12** | **83 / 6 / 5** | **76 / 6 / 12** |
+| **All** | **94** | **77 / 0 / 6 / 11** | **83 / 6 / 5** | **76 / 6 / 12** |
 
 **TickLE's gaps (❌ and ⚠️), and where each is planned:**
-- **Serialized messages** (`rmw_publish_serialized_message`, `rmw_take_serialized_message*`). rosbag2 and
+- ~~**Serialized messages** (`rmw_publish_serialized_message`, `rmw_take_serialized_message*`). rosbag2 and
   `ros2 topic echo --raw` do not work on rmw_tickle. Planned with the large-message stage 1 (direct typesupport),
-  which produces exactly those bytes.
+  which produces exactly those bytes.~~ Closed by g1 (2026-09-28, `a34979e7`): all four serialization entry points
+  are served through the direct codec, and `ros2 topic echo --raw` on a topic published from the other host prints the
+  sent bytes. `rmw_get_serialized_message_size` is served too, which **neither vendor implements** - the one entry
+  point where TickLE is ahead of both rather than level. `ros2 bag record` still cannot subscribe, for a reason that is
+  not serialization: it asks for KEEP_ALL history (g13).
 - ~~**On-new-data callbacks** (`rmw_*_set_on_new_*_callback`, `rmw_event_set_callback`). rclcpp's EventsExecutor
   cannot run on rmw_tickle.~~ Closed by g2 (2026-09-28): rclpy's EventsExecutor receives on rmw_tickle, as on
   CycloneDDS (`rmw_gap_acceptance.sh events`; it received nothing before).
@@ -917,8 +921,9 @@ what they return `RMW_RET_UNSUPPORTED` on).
     benchmarked here are small, so their entries sit at the front and none of the measured rows show it. 4b, a
     (context id, endpoint id) hash index, makes the lookup independent of the table's size.
 
-**Where TickLE matches a vendor's "not supported" (➖):** pre-allocation (all three), `rmw_get_serialized_message_size`
-(all three), and content filters, network flow endpoints and dynamic messages (as CycloneDDS; FastDDS supports them).
+**Where TickLE matches a vendor's "not supported" (➖):** pre-allocation (all three), and content filters, network flow
+endpoints and dynamic messages (as CycloneDDS; FastDDS supports them). `rmw_get_serialized_message_size` was on this
+list until 2026-09-28: TickLE now serves it and both vendors still return `RMW_RET_UNSUPPORTED` for it.
 
 **Behaviour behind the API, checked 2026-09-27 (Plan):**
 
@@ -954,12 +959,12 @@ what they return `RMW_RET_UNSUPPORTED` on).
 | `rmw_feature_supported` | ✅ | ✅ | ✅ |  |
 | **Serialization** | | | | |
 | `rmw_get_serialization_format` | ✅ | ✅ | ✅ |  |
-| `rmw_publish_serialized_message` | ❌ | ✅ | ✅ | rosbag2 and `ros2 topic echo --raw` need these |
-| `rmw_get_serialized_message_size` | ➖ | ➖ | ➖ |  |
+| `rmw_publish_serialized_message` | ✅ | ✅ | ✅ | g1 (2026-09-28) |
+| `rmw_get_serialized_message_size` | ✅ | ➖ | ➖ | g1 (2026-09-28); neither vendor implements it |
 | `rmw_serialize` | ✅ | ✅ | ✅ |  |
 | `rmw_deserialize` | ✅ | ✅ | ✅ |  |
-| `rmw_take_serialized_message` | ❌ | ✅ | ✅ | rosbag2 and `ros2 topic echo --raw` need these |
-| `rmw_take_serialized_message_with_info` | ❌ | ✅ | ✅ | rosbag2 and `ros2 topic echo --raw` need these |
+| `rmw_take_serialized_message` | ✅ | ✅ | ✅ | g1 (2026-09-28) |
+| `rmw_take_serialized_message_with_info` | ✅ | ✅ | ✅ | g1 (2026-09-28) |
 | **Nodes** | | | | |
 | `rmw_create_node` | ✅ | ✅ | ✅ |  |
 | `rmw_destroy_node` | ✅ | ✅ | ✅ |  |

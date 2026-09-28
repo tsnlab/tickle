@@ -56,12 +56,15 @@ int main(void) {
     rmw_reset_error();
     assert(RMW_RET_OK == rmw_set_log_severity(RMW_LOG_SEVERITY_INFO));
 
-    // One of each kind: a feature TickLE has no counterpart for, and a real gap.
+    // One of each kind that is still unsupported: pre-allocation, which TickLE has no counterpart for,
+    // and content filters, which CycloneDDS also refuses. The two serialized
+    // entry points that stood here until 2026-09-28 are implemented (g1), so this test held CI red
+    // for three commits after a34979e7 - an entry point leaving rmw_unsupported.c has to leave this
+    // list in the same change, and be counted as supported in COMPARISON.md section 2.7a.
     rmw_publisher_allocation_t allocation;
     expect_unsupported(rmw_fini_publisher_allocation(&allocation), "rmw_fini_publisher_allocation");
-    size_t size = 0;
-    expect_unsupported(rmw_get_serialized_message_size(NULL, NULL, &size), "rmw_get_serialized_message_size");
-    expect_unsupported(rmw_publish_serialized_message(NULL, NULL, NULL), "rmw_publish_serialized_message");
+    expect_unsupported(rmw_subscription_set_content_filter(NULL, NULL), "rmw_subscription_set_content_filter");
+    expect_unsupported(rmw_subscription_get_content_filter(NULL, NULL, NULL), "rmw_subscription_get_content_filter");
 
     printf("unsupported entry points: PASS\n");
     return 0;
