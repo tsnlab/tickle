@@ -112,3 +112,10 @@ compile_commands.json
 /rmw_tickle/build/
 /rmw_tickle/install/
 /rmw_tickle/log/
+
+# Python bytecode, which every run of a tool that imports another one leaves behind - ab_compare.py
+# imports campaign_summary, so examples/perf_hil/experiments/__pycache__/ reappears constantly. One
+# such file reached the repository on 2026-09-28 through a `git add -A` of that directory and had to
+# be removed again; ignoring it is what stops the next one.
+__pycache__/
+*.pyc
