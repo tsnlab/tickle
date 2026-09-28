@@ -218,6 +218,57 @@ static void count_messages_lost(rmw_tickle_subscriber_t* sub_impl, uint64_t psn)
     rmw_tickle_callback_slot_notify(&sub_impl->message_lost.callback, (size_t)count); // (g2)
 }
 
+// How many samples one subscription's queue holds. KEEP_LAST takes qos_profile->depth, which is
+// what DEPTH means. KEEP_ALL ignores depth - DDS does not define one for it - and divides a byte
+// budget instead, which is the bound DDS actually puts on KEEP_ALL (RESOURCE_LIMITS). See
+// rmw_tickle_reader_keep_all_budget_bytes() and RMW_GAPS_PLAN.md g13.
+static size_t resolve_queue_capacity(const rmw_qos_profile_t* qos_profile,
+                                     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks) {
+    if (RMW_QOS_POLICY_HISTORY_KEEP_ALL != qos_profile->history) {
+        return qos_profile->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT ? qos_profile->depth
+                                                                         : RMW_TICKLE_SUBSCRIPTION_QUEUE_DEFAULT_DEPTH;
+    }
+    // One queued sample costs its entry plus the shell it is decoded into, so that pair is what the
+    // budget is divided by - counting only the entry would understate it by the size of the
+    // message, which for a large type is essentially all of it.
+    unsigned long long per_sample =
+        (unsigned long long)sizeof(rmw_tickle_queued_message_t) + (unsigned long long)callbacks->ros_struct_size;
+    unsigned long long capacity = rmw_tickle_reader_keep_all_budget_bytes() / per_sample;
+    if (capacity < 1) {
+        capacity = 1; // a type larger than the whole budget still gets somewhere to put one
+    }
+    if (capacity > RMW_TICKLE_READER_KEEP_ALL_MAX_DEPTH) {
+        capacity = RMW_TICKLE_READER_KEEP_ALL_MAX_DEPTH;
+    }
+    return (size_t)capacity;
+}
+
+// g13 (RMW_GAPS_PLAN.md) - core asks this before it records anything about an arriving sample
+// (tt_SUBSCRIBER_ACCEPT_CALLBACK, tickle.h), and only a KEEP_ALL subscription sets it. Returning
+// false means "nowhere to put it": core then never receives the sample at all, so a RELIABLE writer
+// still holds it and the ordinary gap exchange brings it back once the application has taken
+// something. That is what lets a bounded queue refuse to overwrite an unread sample without losing
+// one. A BEST_EFFORT writer has nothing to bring it back with, so there the decline is a drop -
+// counted and warned about by core either way (tt_Subscriber.accept_declines).
+//
+// THE STALL THIS BUYS, stated where it is caused: an application that stops taking will, once this
+// queue is full, stop its RELIABLE publishers. That is what "never destroy an unread sample" means
+// and what rosbag2 asks for, but it presents as a publisher that has stopped making progress.
+//
+// Lock order: this runs on the poll thread with the node lock already held, and takes queue_mutex
+// underneath it, exactly as subscriber_callback() below does. rmw_take() takes queue_mutex alone
+// and only ever lowers queue_count, so a decision made here cannot be invalidated before
+// subscriber_callback() acts on it - room found stays room.
+static bool subscriber_accept(struct tt_Subscriber* subscriber, uint32_t seq_no, void* param) {
+    (void)subscriber;
+    (void)seq_no;
+    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)param;
+    pthread_mutex_lock(&sub_impl->queue_mutex);
+    bool room = sub_impl->queue_count < sub_impl->queue_capacity;
+    pthread_mutex_unlock(&sub_impl->queue_mutex);
+    return room;
+}
+
 static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
     (void)seq_no; // core's: counts datagrams once messages fragment - the psn comes from rmw_tickle's own header
     TT_TRACE(tt_TRACE_DELIVER);
@@ -261,9 +312,32 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
 
     pthread_mutex_lock(&sub_impl->queue_mutex);
     if (sub_impl->queue_count == sub_impl->queue_capacity) {
-        // KEEP_LAST behavior (rmw_tickle_validate_qos_profile() rejects KEEP_ALL - see rmw_tickle.h's
-        // own queue doc comment) - drop the oldest queued message to make room for this one, back
-        // into the pool rather than freeing it outright (Milestone 45).
+        if (sub_impl->keep_all) {
+            // g13 - unreachable in the ordinary course, because subscriber_accept() declined this
+            // sample before core recorded it and rmw_take() only ever makes room. Kept because
+            // "never destroy an unread sample" is the whole promise of KEEP_ALL, and the one thing
+            // that must not happen if it is ever reached is the eviction below. Drop the arriving
+            // sample instead, and give its shell back rather than leaking it.
+            //
+            // Counted and said once, not merely commented: reaching this means the hook was not
+            // consulted, and then this is silent loss of a sample the writer has been told was
+            // received. A branch that says it was reached is the difference between finding that
+            // out and not.
+            sub_impl->keep_all_unconsulted_drops++;
+            bool say_once = 1 == sub_impl->keep_all_unconsulted_drops;
+            shell_pool_push(sub_impl, ros_message);
+            pthread_mutex_unlock(&sub_impl->queue_mutex);
+            if (say_once) {
+                RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                                       "subscription %s: KEEP_ALL queue full at the enqueue, which means the accept "
+                                       "hook was not consulted - dropping this sample. This should be unreachable; "
+                                       "a sample the writer considers delivered has been lost",
+                                       sub_impl->rmw_subscription.topic_name);
+            }
+            return;
+        }
+        // KEEP_LAST behavior - drop the oldest queued message to make room for this one, back into
+        // the pool rather than freeing it outright (Milestone 45).
         rmw_tickle_queued_message_t* oldest = &sub_impl->queue[sub_impl->queue_head];
         shell_pool_push(sub_impl, oldest->ros_message);
         sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
@@ -540,12 +614,14 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
 
     // Milestone 7's QoS roadmap item #1 (HISTORY/DEPTH): qos_profile->depth sizes the queue for
     // real, rather than a fixed compile-time bound - RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT (0, unset)
-    // falls back to the previous placeholder default. rmw_tickle_validate_qos_profile() above
-    // already rejected RMW_QOS_POLICY_HISTORY_KEEP_ALL (an unbounded queue), so `depth` is always
-    // the real, finite capacity to allocate here.
-    sub_impl->queue_capacity = qos_profile->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT
-                                   ? qos_profile->depth
-                                   : RMW_TICKLE_SUBSCRIPTION_QUEUE_DEFAULT_DEPTH;
+    // falls back to the previous placeholder default.
+    //
+    // g13 (RMW_GAPS_PLAN.md): KEEP_ALL ignores `depth` - DDS does not define one for it - and sizes
+    // the queue from a byte budget instead, which is the bound DDS actually puts on KEEP_ALL
+    // (RESOURCE_LIMITS). What makes it KEEP_ALL rather than a deep KEEP_LAST is not the number but
+    // what a full queue does: it declines the arriving sample instead of destroying an unread one.
+    sub_impl->keep_all = RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history;
+    sub_impl->queue_capacity = resolve_queue_capacity(qos_profile, callbacks);
     sub_impl->queue = (rmw_tickle_queued_message_t*)allocator->zero_allocate(
         sub_impl->queue_capacity, sizeof(rmw_tickle_queued_message_t), allocator->state);
     if (NULL == sub_impl->queue) {
@@ -685,6 +761,11 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     // Plain field access, no allocation needed (unlike the Publisher side's reliable_cache) -
     // process_data()/update_reliable_ack() (tickle.c) track ack state directly on tickle_
     // subscriber itself.
+    // g13 - only a KEEP_ALL subscription sets the hook, so a KEEP_LAST one is byte for byte the
+    // subscriber it was before g13 existed: core skips the call on a NULL pointer, and nothing else
+    // on the path changed.
+    sub_impl->tickle_subscriber.accept_callback = sub_impl->keep_all ? subscriber_accept : NULL;
+    sub_impl->tickle_subscriber.accept_callback_param = sub_impl;
     sub_impl->tickle_subscriber.reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
 
     // QoS roadmap #1 (RxO matching, Milestone 31) - see tt_Subscriber.durable's own doc comment

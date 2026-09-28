@@ -99,6 +99,13 @@ unsigned long long rmw_tickle_cache_budget_bytes(void);
 // Reached by blocking the writer, never by dropping - see resolve_keep_all_arena_bytes().
 unsigned long long rmw_tickle_keep_all_budget_bytes(void);
 
+// RMW_TICKLE_READER_KEEP_ALL_BYTES: the byte budget for what one KEEP_ALL subscription may hold for
+// an application that has not taken it (2026-09-29). Default 512 KiB; unset, malformed or out of
+// range falls back to it. Reached by declining the arriving sample, never by overwriting an unread
+// one - a RELIABLE writer then holds it and sends it again, a BEST_EFFORT one cannot, so there it
+// is dropped and counted. See RMW_GAPS_PLAN.md g13.
+unsigned long long rmw_tickle_reader_keep_all_budget_bytes(void);
+
 // Bytes a submessage of this type needs at its largest - `framing` bytes of headers plus its
 // generated bound, or plus a whole datagram when it has none - never more than one datagram, rounded
 // up to a multiple of 8 so it can size an aligned storage slot.
@@ -755,6 +762,13 @@ typedef struct rmw_tickle_publisher_t {
 // default queue size.
 #define RMW_TICKLE_SUBSCRIPTION_QUEUE_DEFAULT_DEPTH 10
 
+// g13 - the ceiling on a KEEP_ALL subscription's queue, whatever the byte budget divides out to.
+// A 24-byte message against the 512 KiB default would otherwise ask for ~20000 entries, which is a
+// queue nobody drains and a wait loop nobody wants; past this the budget is not the binding
+// constraint and the depth is. Not a tuning knob: raise RMW_TICKLE_READER_KEEP_ALL_BYTES instead,
+// which is the number with a meaning.
+#define RMW_TICKLE_READER_KEEP_ALL_MAX_DEPTH 4096
+
 // Phase 3 step 3 (rmw_tickle/PLAN.md) - how long rmw_publish() blocks, by default, when a KEEP_ALL
 // Publisher refuses a write because the slowest matched Subscriber hasn't acknowledged enough for a
 // new sample to be retained without dropping an old one. Overridable per process by setting
@@ -881,6 +895,20 @@ typedef struct rmw_tickle_subscriber_t {
     size_t queue_capacity;
     size_t queue_head;
     size_t queue_count;
+    // g13 (RMW_GAPS_PLAN.md) - HISTORY KEEP_ALL, which is not "unbounded" but "never destroy an
+    // unread sample". queue_capacity above is then derived from a byte budget
+    // (rmw_tickle_reader_keep_all_budget_bytes()) instead of from qos_profile->depth, and a full
+    // queue does NOT evict its oldest entry: subscriber_accept() declines the arriving sample
+    // instead, so a RELIABLE writer holds it and sends it again. The count of declines and the
+    // throttled warning live on the core Subscriber (tt_Subscriber.accept_declines).
+    bool keep_all;
+    // g13 - how many times the full-queue branch was reached under KEEP_ALL, which should be never:
+    // subscriber_accept() declines before core records anything, and rmw_take() only ever makes
+    // room. Counted rather than only commented because if the hook ever is not consulted - a path
+    // added later, an ordering change, a build where it is compiled out - that branch drops an
+    // arriving sample, and silent loss is the one thing KEEP_ALL promises not to do. An
+    // instrumented unreachable branch says it was reached; a commented one says nothing.
+    uint32_t keep_all_unconsulted_drops;
     uint64_t reception_sequence_number;
     // Where subscriber_callback() decodes a message's CDR into the TickLE struct, callbacks->tickle_struct_size
     // bytes. Core hands the callback the payload itself (topic.data_decode_inplace), since rmw_tickle's

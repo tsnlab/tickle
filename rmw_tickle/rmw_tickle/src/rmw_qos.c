@@ -145,20 +145,20 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
     // Publisher-side (reliable_cache expiry) and Subscription-side (queue expiry) mechanisms this
     // now backs.
 
-    // QoS roadmap #1 (HISTORY/DEPTH) - depth is honored (see rmw_create_subscription()'s own
-    // queue_capacity sizing), but KEEP_ALL asks for an *unbounded* queue, which a fixed-capacity
-    // allocation can't provide - rejected here for Subscriptions (a service/client/publisher has no
-    // reader-side queue at all in this rmw's model, so KEEP_ALL is meaningless for them and this
-    // check doesn't apply). A Publisher's own KEEP_ALL is a different, meaningful request instead
-    // (its own reliable/durable retained-sample cache) - DDS QoS policy coverage inventory gap 2
-    // (rmw_tickle/PLAN.md, 2026-09-21): passes validation unrejected, honored by setup_reliable_
-    // cache() (rmw_publisher.c) with a large-but-bounded RMW_TICKLE_KEEP_ALL_DEPTH cache instead of
-    // silently downgrading to a small default depth the way it used to.
-    if (RMW_TICKLE_ENTITY_SUBSCRIPTION == entity_kind && RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history) {
-        RMW_SET_ERROR_MSG("rmw_tickle doesn't support RMW_QOS_POLICY_HISTORY_KEEP_ALL (an unbounded "
-                          "queue) - see rmw_tickle/PLAN.md's QoS roadmap #1 (HISTORY/DEPTH)");
-        return RMW_RET_UNSUPPORTED;
-    }
+    // QoS roadmap #1 (HISTORY/DEPTH) - both policies are accepted now, on either kind of entity.
+    //
+    // KEEP_ALL used to be refused on a Subscription as "an unbounded queue", and that reading was
+    // wrong (g13, RMW_GAPS_PLAN.md). In DDS, KEEP_ALL is bounded by RESOURCE_LIMITS like anything
+    // else; what distinguishes it from KEEP_LAST is not capacity but what a full cache does -
+    // KEEP_LAST overwrites the oldest unread sample and KEEP_ALL refuses to, holding the writer
+    // back instead. That promise is keepable in bounded memory, which is why refusing it cost us
+    // `ros2 bag record` for nothing. rmw_create_subscription() sizes the queue from
+    // RMW_TICKLE_READER_KEEP_ALL_BYTES and declines arriving samples when it is full; a RELIABLE
+    // writer then retransmits, a BEST_EFFORT one cannot and the sample is dropped and counted.
+    //
+    // A Publisher's KEEP_ALL is a different, already-honoured request (its retained-sample cache,
+    // setup_reliable_cache() in rmw_publisher.c), and a service or client has no reader-side queue
+    // in this rmw's model, so HISTORY says nothing about them either way.
 
     return RMW_RET_OK;
 }

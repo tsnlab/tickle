@@ -106,15 +106,18 @@ int main(void) {
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
-    // KEEP_ALL is only rejected for a subscription (an unbounded reader queue) - a publisher's own
-    // KEEP_ALL is a different, meaningful request (its reliable/durable retained-sample cache) that
-    // passes validation and is actually honored (a large-but-bounded cache) by setup_reliable_
-    // cache() - see test_history_keep_all.c for that behavior, DDS QoS policy coverage inventory
-    // gap 2 (rmw_tickle/PLAN.md).
+    // KEEP_ALL is accepted on every kind of entity (g13, RMW_GAPS_PLAN.md). A subscription's was
+    // refused here until 2026-09-29 as "an unbounded reader queue", which misread the policy: DDS
+    // bounds KEEP_ALL by RESOURCE_LIMITS like anything else, and what makes it KEEP_ALL is that a
+    // full cache declines rather than overwriting an unread sample. rmw_create_subscription() sizes
+    // it from RMW_TICKLE_READER_KEEP_ALL_BYTES - see test_keep_all_reader.c. A publisher's own
+    // KEEP_ALL remains its retained-sample cache (test_history_keep_all.c), and a service or client
+    // has no reader-side queue for HISTORY to mean anything about.
     qos = valid_profile();
     qos.history = RMW_QOS_POLICY_HISTORY_KEEP_ALL;
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
     printf("rmw_tickle_validate_qos_profile: PASS\n");
     return 0;

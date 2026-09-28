@@ -104,6 +104,19 @@ bool rmw_tickle_check_callbacks_usable(const rosidl_typesupport_tickle_c_message
 // 10BASE-T1S, TickLE's own target. Re-derive from that, not from whatever the vendor ships next.
 #define RMW_TICKLE_KEEP_ALL_BYTES_DEFAULT (512ULL * 1024ULL)
 
+// 512 KiB again, and for the reader's own reason rather than by copying the writer's. This is the
+// bound on what one KEEP_ALL subscription may hold for an application that has not taken it, and
+// what it buys is the length of a take-side stall the reader can absorb without pushing back on its
+// writers: 512 KiB is ~180 samples of a 2800-byte type, or ~340 of a 1500-byte one. Past it a
+// RELIABLE reader declines and the writer holds the sample (tt_Subscriber.accept_callback), and a
+// BEST_EFFORT one drops it and counts it, because BEST_EFFORT has nothing to hold it with.
+//
+// Why not unbounded, when KEEP_ALL is often read that way: in DDS, KEEP_ALL is bounded by
+// RESOURCE_LIMITS, and what separates it from KEEP_LAST is not capacity but what a full cache does
+// - KEEP_LAST overwrites the oldest unread sample and KEEP_ALL refuses to. That is the promise
+// rosbag2 needs and it is keepable in bounded memory (RMW_GAPS_PLAN.md g13).
+#define RMW_TICKLE_READER_KEEP_ALL_BYTES_DEFAULT (512ULL * 1024ULL)
+
 // A byte budget from the environment, or `fallback` when unset, malformed or out of range - a
 // malformed tuning knob must not stop a node starting.
 static unsigned long long env_bytes_or(const char* name, unsigned long long fallback) {
@@ -125,6 +138,10 @@ unsigned long long rmw_tickle_cache_budget_bytes(void) {
 
 unsigned long long rmw_tickle_keep_all_budget_bytes(void) {
     return env_bytes_or("RMW_TICKLE_KEEP_ALL_BYTES", RMW_TICKLE_KEEP_ALL_BYTES_DEFAULT);
+}
+
+unsigned long long rmw_tickle_reader_keep_all_budget_bytes(void) {
+    return env_bytes_or("RMW_TICKLE_READER_KEEP_ALL_BYTES", RMW_TICKLE_READER_KEEP_ALL_BYTES_DEFAULT);
 }
 
 uint32_t rmw_tickle_message_slot_bytes(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks,

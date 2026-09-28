@@ -3921,6 +3921,78 @@ static void test_g13_accept_hook_that_always_accepts_changes_nothing(void) {
     EXPECT_EQ_INT(3, accept_hook_calls); // consulted once per sample, and changed nothing
 }
 
+// g13, the bound on the accept hook's promise, and the reason criterion 5 cannot claim zero loss
+// unconditionally: a declined sample survives only while the WRITER still holds it.
+//
+// The hook keeps the reader's side of the bargain - it never acks what it did not take, so the
+// sample stays outstanding and the gap logic asks for it. What it cannot do is make the writer keep
+// it. A writer that has moved past the declined sample answers the request with an eviction
+// Heartbeat, and the reader skips it: gone, and not because anything is broken. That matters in the
+// field rather than in theory, because an ordinary ROS publisher is KEEP_LAST with a small depth,
+// which does not block and does not wait - it evicts. So a recorder that stalls longer than the
+// publisher's retained depth loses samples no matter how correct this reader is.
+//
+// Two arms, because the difference between them is the whole claim:
+//   still held - the declined sample comes back and is delivered. Nothing lost.
+//   evicted    - it is skipped, and gap_evicted counts it. Lost, but never silently, which is what
+//                the incomplete-delivery rule turns on.
+static void test_g13_a_declined_sample_survives_only_while_the_writer_holds_it(void) {
+    test_mock_reset();
+    accept_hook_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.accept_callback = test_accept_hook;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 1000, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+
+    // Arm 1: sample 2 declined, and the writer still holds it - it comes back.
+    accept_hook_answer = false;
+    tail = write_data(&node, 2, 2000, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+    EXPECT_EQ_U32(0, sub.gap_evicted);
+
+    accept_hook_answer = true;
+    tail = write_data(&node, 2, 2000, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(2, subscriber_callback_count); // delivered, nothing lost
+    EXPECT_EQ_U32(3, proxy->ack_seq_no);
+    EXPECT_EQ_U32(0, sub.gap_evicted);
+
+    // Arm 2: sample 3 declined, and this time the writer has moved on. Its Heartbeat says the
+    // oldest it still holds is 5, which is the writer saying 3 and 4 are gone.
+    accept_hook_answer = false;
+    tail = write_data(&node, 3, 3000, 3);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(3, proxy->ack_seq_no); // still asking for it, correctly
+
+    int before = subscriber_callback_count;
+    accept_hook_answer = true;
+    tail = write_heartbeat(&node, ENDPOINT_ID, 5, 6, 0);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_INT(before, subscriber_callback_count); // sample 3 was never delivered and never will be
+    EXPECT_EQ_U32(5, proxy->ack_seq_no);              // the reader moved on rather than wedging
+    EXPECT_TRUE(sub.gap_evicted > 0);                 // and it is counted, not silent
+
+    // The stream keeps working from there, so the bound costs the samples the writer dropped and
+    // nothing beyond them.
+    tail = write_data(&node, 5, 5000, 5);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(before + 1, subscriber_callback_count);
+}
+
 int main(void) {
     test_keep_all_refuses_at_bound_and_unblocks_on_ack();
     test_keep_last_still_evicts_rather_than_refusing();
@@ -4001,6 +4073,7 @@ int main(void) {
     test_g13_accept_hook_a_declined_sample_survives_the_refusal();
     test_g13_accept_hook_a_decline_is_never_reported_with_a_gap_open();
     test_g13_accept_hook_that_always_accepts_changes_nothing();
+    test_g13_a_declined_sample_survives_only_while_the_writer_holds_it();
 #ifdef tt_RELIABLE_STATS
     test_keep_all_writable_cause_is_distinguished();
     test_reliable_stats_subscriber_gap_accounting();

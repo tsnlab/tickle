@@ -985,6 +985,16 @@ once, or a clean build, which is what CI does anyway.
     declined is simply not delivered - it cannot be requested again, because the watermark is already above it and no
     gap names it, so there is no double-delivery hazard to mutate. The load-bearing property is the hook's position,
     and (a) is the mutant that tests it.
+  - **The reader's capacity is capped at 4096 entries** on top of the byte budget, deliberately: a 24-byte message
+    against the 512 KiB default divides out to roughly twenty thousand entries, which is a queue nobody drains. When
+    the cap binds rather than the budget, a reader that wanted more unread samples than that meets back-pressure
+    earlier than its byte budget implied - which is a smaller surprise than the queue, and is why the cap is not a
+    tuning knob: `RMW_TICKLE_READER_KEEP_ALL_BYTES` is the number with a meaning.
+  - **The full-queue branch under KEEP_ALL counts and warns once** (Plan, 2026-09-29). It should be unreachable - the
+    hook declines before core records anything, and `rmw_take()` only makes room - so it drops the arriving sample
+    rather than evicting an unread one. But if the hook is ever not consulted, that branch is silent loss of a sample
+    the writer was told was delivered, which is the single thing g13 promises never to do. An instrumented
+    unreachable branch says it was reached; a commented one says nothing.
   - **Failure mode to document where the hook is declared:** a reader that never accepts stalls its RELIABLE writers.
     That is what KEEP_ALL means and what rosbag2 is asking for, but it must be stated at the hook, not only here.
   - **That nothing reports a declined sample is itself a claim, so it is tested, not stated** (Plan, 2026-09-28).
@@ -1001,6 +1011,15 @@ once, or a clean build, which is what CI does anyway.
     it must be indistinguishable from the parent, read against a placement control per WIRE_PLAN 8.3's amendment
     rather than from `cpu_s` alone. If a cost does appear, `sched_cpu_s`/`sched_by_thread=` in the RESULT line
     (`7698f669`) is the instrument to attribute it with.
+    **This is a measurement and cannot be argued from the source** (Plan, 2026-09-29). "A KEEP_LAST subscription sets
+    no hook, so nothing on its path changed" is true of the source and of the function bodies, and says nothing about
+    the binary: adding `subscriber_accept()` and the KEEP_ALL sizing grows the translation unit, function addresses
+    move, and a hot function can land differently against a cache line, the loop buffer or branch-predictor aliasing.
+    That is precisely the mechanism now standing for the p1 1.1% (WIRE_PLAN 10.3): `5d9cace1`'s own -O2 comparison
+    found every receive and publish function byte-identical, with three differing in alignment NOPs alone, and it
+    still costs -1.061% at t = -16.45. Byte-identical bodies are not a null result - they are the signature of the
+    thing that cost a percent. So the construction argument is struck, and the placement-controlled reading is the
+    criterion.
 - **Pass, pre-registered:**
   1. **Matching.** A KEEP_ALL subscription is created without error and matches a KEEP_LAST publisher. HISTORY is a
      local policy, not a requested/offered one, so this must hold - checked against the CycloneDDS control arm in the
