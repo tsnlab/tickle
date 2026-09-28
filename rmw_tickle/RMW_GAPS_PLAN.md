@@ -837,3 +837,41 @@ later change to it has to be deliberate.
 Not affected, checked rather than assumed: rmw_tickle's own poll thread ignores the return, so no ROS node ever
 stopped on this. What stopped was every program written the way `examples/perf_hil/tickle`'s fourteen poll loops
 are written.
+
+## g12 - two packages with a same-named message share one codec symbol (found by Dev 2026-09-28; HIGH; shipped defect)
+
+- **Gap:** the ROS typesupport generator names the TickLE struct and its codec `<Name>Data`, with no package in the
+  name (`adapt_message`, mirrored by `Ros2Resolver`). Two packages with a same-named message therefore define the same
+  global C symbols, and the dynamic linker serves whichever library loaded first to both. rosidl's own generators
+  qualify every symbol by package for exactly this reason.
+- **Found by pass 1's harness**, which loads every package of the inventory at once. `check_ros2_interfaces.sh` loads
+  one package at a time, which is why this survived the whole P2 standard-message effort.
+- **Observed:** `actionlib_msgs/GoalStatus` encoded 25 B whose bytes 8-15 and 17-24 are heap pointers - which is
+  `action_msgs`' fixed-size `GoalStatus` encoder (uuid[16] + Time + int8 = 25 B) copying the first 25 bytes of the
+  other type's memory, `char*` fields and all. Confirmed three ways: `nm -D` shows `GoalStatusData_encode` defined `T`
+  in both libraries; the harness passes on actionlib_msgs alone and fails as soon as action_msgs is loaded beside it;
+  and a message ending in a string can only encode to a multiple of 4, which 25 is not.
+- **Scope: 31 colliding symbols in the inventory.** std_msgs and example_interfaces share 28 message names,
+  diagnostic_msgs/KeyValue collides with type_description_interfaces/KeyValue, and actionlib_msgs and action_msgs share
+  GoalStatus and GoalStatusArray. The 29 with identical layouts have been silently interchangeable; the two GoalStatus
+  ones differ, so an application using both packages puts **garbage on the wire today, with no error** - a defect in
+  shipped rmw_tickle, not in the harness.
+- **It also discloses addresses.** Those pointer bytes are ASLR'd heap addresses sent to every peer on the topic, which
+  weakens ASLR for anyone listening. Same class as the padding leak fixed this morning, and larger. It belongs in
+  SECURITY_PLAN's threat list when that plan starts.
+- **Fix (Dev):** qualify the ROS path's generated names as `<pkg>__<subfolder>__<Type>Data`, and `...Request` /
+  `...Response` for a `.srv`. TickLE's own core generator keeps `<Name>Data`, because its users write those names by
+  hand.
+- **Pass, as Dev pre-registered it:** no `Data_encode` symbol is defined by two libraries of the inventory, checked with
+  `nm` in the CI step; the pass-1 harness is green over `--all`; the acceptance suite still passes.
+- **Pass, added by Plan:**
+  - **the wire bytes must not change** for any type that had no collision. The rename touches names, not encodings, so
+    for every inventory type the post-fix encoding is compared byte for byte against the **pre-fix** build's, not only
+    against the old path within one build. A mutant that also changes an encoding must fail this.
+  - **services and actions are covered too,** with their own symbol check: a `.srv` pair and the six implicit
+    interfaces a `.action` generates are where a collision is easiest to miss.
+  - **the 29 latent collisions are asserted to be layout-identical** before the fix, so the claim "they were
+    interchangeable by luck" is checked rather than assumed - and after the fix each has its own codec.
+  - **the rebuild requirement is in the CHANGELOG:** generated symbol names change, so every interface package must be
+    rebuilt, as with this morning's callbacks `struct_size` change. Anything naming `<Name>Data` on the ROS path fails
+    to compile, which is the safe direction.
