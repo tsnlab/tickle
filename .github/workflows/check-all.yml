@@ -718,6 +718,44 @@ jobs:
             exit 1
           }
 
+      # LARGE_MESSAGE_PLAN.md pass 1: the direct codec (the ROS message straight to TickLE's wire
+      # bytes) against today's path (to_tickle, then the struct codec), over every type in the
+      # inventory the step above just built, plus the test messages. Random messages per type, in
+      # both byte orders, with truncations and bit flips; see the plan for the checks and the
+      # coverage floor. Here on every push, not once, because two encoders for one wire format can
+      # drift apart silently.
+      - name: Direct codec is byte-identical to the struct codec (LARGE_MESSAGE_PLAN pass 1)
+        run: |
+          set +u
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          source "$RUNNER_TEMP/tickle_ros2_interfaces/install/setup.bash"
+          set -u
+          ./build/rosidl_typesupport_tickle_c_tests/direct_codec_identity --all \
+            -d rmw_tickle/rosidl_typesupport_tickle_c_tests/declined_types.txt
+          # The standing control that this harness can fail at all: the same tests package, built
+          # with a codec whose string length prefix is one too large, must fail check 1. Nothing
+          # else in the build is rebuilt, and the mutant is never set in a real build.
+          TICKLE_DIRECT_CODEC_MUTANT=len_prefix_plus1 colcon build \
+            --packages-select rosidl_typesupport_tickle_c_tests_dep rosidl_typesupport_tickle_c_tests \
+            --build-base "$RUNNER_TEMP/mutant/build" --install-base "$RUNNER_TEMP/mutant/install" \
+            --cmake-args -DBUILD_SHARED_LIBS=ON
+          set +u
+          source "$RUNNER_TEMP/mutant/install/setup.bash"
+          set -u
+          if "$RUNNER_TEMP/mutant/build/rosidl_typesupport_tickle_c_tests/direct_codec_identity" \
+              rosidl_typesupport_tickle_c_tests rosidl_typesupport_tickle_c_tests_dep \
+              > "$RUNNER_TEMP/mutant.log" 2>&1; then
+            cat "$RUNNER_TEMP/mutant.log"
+            echo "control: the harness passed a codec whose string length prefix is one too large"
+            exit 1
+          fi
+          grep -q "check 1 " "$RUNNER_TEMP/mutant.log" || {
+            cat "$RUNNER_TEMP/mutant.log"
+            echo "control: the mutant failed, but not on check 1 - the harness is not reading what it thinks"
+            exit 1
+          }
+
       # Lint toolchain version, worth knowing before you debug a disagreement: tsnlab/check pins
       # cpp-linter-action to clang-format/clang-tidy 19 (actions/cpp/action.yml, version: '19').
       # A developer box on a current distro has 21 or newer, and the two genuinely disagree - a

@@ -192,6 +192,49 @@ All four are run locally, and their output is recorded here. CI rebuilds only th
 3. C++;
 4. rmw wiring.
 
+### Pass 1 results (Dev, 2026-09-28)
+
+**Two amendments to the sampling, both about coverage rather than about what is checked.**
+1. Three samples in four aim to be byte-compared; the fourth fills unbounded fields to 300, into the capacity-only
+   class. At one in two, Primitives - 13 unbounded sequences at capacity 5 - fell below the floor.
+2. A sample of the first kind that the old path refuses for a capacity is regenerated shorter (lengths capped at 2,
+   then 1, then 0) instead of being counted as capacity-only. Whether a type is byte-compared at all must not depend
+   on how small its profile capacities happen to be: `rcl_interfaces/msg/Parameter` managed 4 of 200 without this,
+   and `rosgraph_msgs/msg/Node` 1. Shrunk samples are counted and reported per type.
+
+**The harness does not treat rosidl's `structure_needs_at_least_one_member` as data.** rosidl gives a message with no
+fields that one `uint8_t` so its C struct is valid C; TickLE's generator has no such field and neither codec carries
+it, so an empty message is 0 bytes on both paths. Filling and comparing it failed 18 empty types on nothing.
+
+**Inventory** (`build_ros2_interfaces.sh -a`, 24 packages, plus the tests packages): **283 types, 0 failures**, 1
+declined (`example_interfaces/msg/WString`, a wstring), seed 1, 1 m 45 s. Byte-compared samples per type: minimum
+150, median 200. Across the run: 1,441 capacity-only samples, 3,178 shrunk, 139 regenerated for size, 244 over-bound
+inputs, and 7,392,852 decode inputs, of which 39,730 were capacity-only.
+
+The declined list is `rosidl_typesupport_tickle_c_tests/declined_types.txt`. Its own control: a list naming a
+supported type and omitting WString fails with both messages.
+
+**Mutants.** Each fails the check it was assigned, and only that one.
+
+| Mutant | Result |
+|---|---|
+| `absolute_align` | 10 findings, all check 1 (DcOuter 0 of 200 identical). |
+| `size_strlen` | 20 findings, all check 1, on the embedded NULs. |
+| `len_prefix_plus1` | 17 check 1, 3 check 1b. |
+| `no_bound_check` | 4 check 2, 5 check 3. |
+
+**CI:** Check all runs the harness over the whole inventory after `check_ros2_interfaces.sh`, then rebuilds only the
+tests package with `len_prefix_plus1` and requires that to fail on check 1 - the standing control that the harness
+can fail.
+
+**A generator change did not regenerate anything.** Found while building this: a generated file's only `DEPENDS` were
+its `.msg` and the capacity table, so `rosidl_typesupport_tickle_c_generate_interfaces.cmake` left every already
+generated file in place when the generator itself changed. The direct codec's first build failed on it - a freshly
+generated caller called a function the dependency's cached header never declared. The generator's own sources
+(`rosidl_typesupport_tickle_c` and `tickle_typesupport`, located through Python rather than guessed from a path) are
+now `DEPENDS` too, and the configure fails if that list comes back empty. Control: touching `ros2_direct_codec.py`
+regenerates a dependent package's adapter, checked by mtime.
+
 ## Risks stated in advance
 
 - **Two encoders for one wire format** (the struct codec for native C, the direct one for ROS) can drift. Pass 1 runs

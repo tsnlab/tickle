@@ -33,6 +33,16 @@ typedef struct nested_arrays_pkg__msg__OddAlign__Sequence {
     size_t capacity;
 } nested_arrays_pkg__msg__OddAlign__Sequence;
 
+// See rosidl_runtime_c/primitives_sequence_functions.h's own note: the direct codec frees a
+// sample the message already held. OddAlign has no field that owns memory, so freeing the block
+// is all of it.
+static inline void nested_arrays_pkg__msg__OddAlign__Sequence__fini(nested_arrays_pkg__msg__OddAlign__Sequence* seq) {
+    free(seq->data);
+    seq->data = NULL;
+    seq->size = 0;
+    seq->capacity = 0;
+}
+
 static inline bool nested_arrays_pkg__msg__OddAlign__Sequence__init(nested_arrays_pkg__msg__OddAlign__Sequence* seq,
                                                                     size_t size) {
     seq->data = (struct nested_arrays_pkg__msg__OddAlign*)calloc(size, sizeof(struct nested_arrays_pkg__msg__OddAlign));

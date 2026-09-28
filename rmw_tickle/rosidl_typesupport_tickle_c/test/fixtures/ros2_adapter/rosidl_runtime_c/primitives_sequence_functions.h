@@ -14,11 +14,22 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+// A decode into a message that already holds a sample frees what it held first (the direct codec
+// does; from_tickle never did, which is why this stub only needed __init until now). The real one
+// also finalises each element; here every element is plain memory.
+
 typedef struct rosidl_runtime_c__uint16__Sequence {
     uint16_t* data;
     size_t size;
     size_t capacity;
 } rosidl_runtime_c__uint16__Sequence;
+
+static inline void rosidl_runtime_c__uint16__Sequence__fini(rosidl_runtime_c__uint16__Sequence* seq) {
+    free(seq->data);
+    seq->data = NULL;
+    seq->size = 0;
+    seq->capacity = 0;
+}
 
 static inline bool rosidl_runtime_c__uint16__Sequence__init(rosidl_runtime_c__uint16__Sequence* seq, size_t size) {
     seq->data = (uint16_t*)malloc(size * sizeof(uint16_t));
@@ -36,6 +47,13 @@ typedef struct rosidl_runtime_c__float32__Sequence {
     size_t capacity;
 } rosidl_runtime_c__float32__Sequence;
 
+static inline void rosidl_runtime_c__float32__Sequence__fini(rosidl_runtime_c__float32__Sequence* seq) {
+    free(seq->data);
+    seq->data = NULL;
+    seq->size = 0;
+    seq->capacity = 0;
+}
+
 static inline bool rosidl_runtime_c__float32__Sequence__init(rosidl_runtime_c__float32__Sequence* seq, size_t size) {
     seq->data = (float*)malloc(size * sizeof(float));
     if (seq->data == NULL && size > 0) {
@@ -51,6 +69,13 @@ typedef struct rosidl_runtime_c__uint8__Sequence {
     size_t size;
     size_t capacity;
 } rosidl_runtime_c__uint8__Sequence;
+
+static inline void rosidl_runtime_c__uint8__Sequence__fini(rosidl_runtime_c__uint8__Sequence* seq) {
+    free(seq->data);
+    seq->data = NULL;
+    seq->size = 0;
+    seq->capacity = 0;
+}
 
 static inline bool rosidl_runtime_c__uint8__Sequence__init(rosidl_runtime_c__uint8__Sequence* seq, size_t size) {
     seq->data = (uint8_t*)malloc(size * sizeof(uint8_t));
@@ -75,6 +100,13 @@ typedef struct rosidl_runtime_c__char__Sequence {
     size_t size;
     size_t capacity;
 } rosidl_runtime_c__char__Sequence;
+
+static inline void rosidl_runtime_c__char__Sequence__fini(rosidl_runtime_c__char__Sequence* seq) {
+    free(seq->data);
+    seq->data = NULL;
+    seq->size = 0;
+    seq->capacity = 0;
+}
 
 static inline bool rosidl_runtime_c__char__Sequence__init(rosidl_runtime_c__char__Sequence* seq, size_t size) {
     seq->data = (char*)malloc(size * sizeof(char));

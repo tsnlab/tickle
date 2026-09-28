@@ -1,0 +1,4 @@
+# Types in the inventory that rosidl_typesupport_tickle_c declines, with the reason its
+# generated stub gives. direct_codec_identity -d fails if a type is declined and not listed, or
+# listed and supported (LARGE_MESSAGE_PLAN.md, pass 1).
+example_interfaces/msg/WString

@@ -71,6 +71,8 @@ import re
 
 from tickle_typesupport import layout, model
 
+from . import ros2_direct_codec
+
 
 def _ros2_sequence_scalar_type(scalar_type):
     """Maps a WireField's own `scalar_type` to the name `rosidl_runtime_c`'s primitive Sequence
@@ -411,6 +413,7 @@ def render_adapter(struct, ros_name, tickle_header):
         "#pragma once",
         "",
         "#include <stdbool.h>",
+        "#include <stdint.h>",
         "",
         f'#include "{ros2_header_path(ros_name)}"',
         f'#include "{tickle_header}"',
@@ -422,18 +425,17 @@ def render_adapter(struct, ros_name, tickle_header):
         f"bool {ros_name}__to_tickle(const struct {ros_name}* ros, struct {struct.c_name}* tickle);",
         f"bool {ros_name}__from_tickle(const struct {struct.c_name}* tickle, struct {ros_name}* ros);",
         "",
+        # The direct codec (ros2_direct_codec.py): the same bytes, without the TickLE struct.
+        *ros2_direct_codec.declarations(ros_name),
+        "",
         "#ifdef __cplusplus",
         "}",
         "#endif",
     ]
 
-    source_includes = ["#include <stdbool.h>"]
-    if needs_rosidl_sequence(struct):
-        # Only a variable array's own `(uint16_t)ros->*.size` cast (see _to_tickle_field_lines)
-        # actually names a stdint.h type in this file - a plain scalar/fixed-array/string field's
-        # generated lines never do (the type itself is only ever named in the *struct*
-        # declarations, which live in the headers this file includes, not here).
-        source_includes.append("#include <stdint.h>")
+    # stdint.h and stddef.h for the direct codec's int32_t/uint8_t/SIZE_MAX/INT32_MAX/uintptr_t and
+    # size_t, which every message has.
+    source_includes = ["#include <stdbool.h>", "#include <stddef.h>", "#include <stdint.h>"]
     source_includes += [
         "#include <string.h>",
         "",
@@ -457,8 +459,16 @@ def render_adapter(struct, ros_name, tickle_header):
     for adapter_header_name in nested_adapter_includes(struct):
         source_includes.append(f'#include "{adapter_header_name}"')
 
-    source_lines = source_includes + [""] + emit_to_tickle(struct, ros_name) + [""] + emit_from_tickle(
-        struct, ros_name
+    helpers = ros2_direct_codec.emit_string_helpers() if ros2_direct_codec.needs_string_helpers(struct) else []
+    source_lines = (
+        source_includes
+        + [""]
+        + emit_to_tickle(struct, ros_name)
+        + [""]
+        + emit_from_tickle(struct, ros_name)
+        + [""]
+        + helpers
+        + ros2_direct_codec.emit_functions(struct, ros_name)
     )
 
     header = "\n".join(header_lines) + "\n"
@@ -528,6 +538,9 @@ def render_type_support(struct, ros_name, tickle_header, adapter_header):
             f"    .tickle_free = (tt_DATA_FREE)&{struct.c_name}_free,",
             f"    .tickle_max_encoded_size = {_max_encoded_size_literal(struct)},",
             f"    .tickle_max_buffer_length = {model.max_buffer_length()},",
+            f"    .direct_encode_size = (rosidl_typesupport_tickle_c_direct_encode_size_function)&{ros_name}__direct_encode_size,",
+            f"    .direct_encode = (rosidl_typesupport_tickle_c_direct_encode_function)&{ros_name}__direct_encode,",
+            f"    .direct_decode = (rosidl_typesupport_tickle_c_direct_decode_function)&{ros_name}__direct_decode,",
             "};",
             "",
             "// .typesupport_identifier is set on first access below, not here - a plain (non-",

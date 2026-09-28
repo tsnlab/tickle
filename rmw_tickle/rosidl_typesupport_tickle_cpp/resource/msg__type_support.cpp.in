@@ -137,6 +137,10 @@ ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
     callbacks.ros_init = &ts::_@IDL_NAME@_ros_init;
     callbacks.ros_fini = &ts::_@IDL_NAME@_ros_fini;
     callbacks.ros_move = &ts::_@IDL_NAME@_ros_move;
+    // The C direct codec reads C structs; a C++ message has none of its own yet.
+    callbacks.direct_encode_size = nullptr;
+    callbacks.direct_encode = nullptr;
+    callbacks.direct_decode = nullptr;
     handle.data = &callbacks;
     handle.typesupport_identifier = rosidl_typesupport_tickle_cpp__identifier;
   }

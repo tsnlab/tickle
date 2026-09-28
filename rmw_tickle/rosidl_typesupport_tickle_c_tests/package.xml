@@ -43,6 +43,8 @@
   <depend>rosidl_generator_cpp</depend>
   <depend>rosidl_typesupport_cpp</depend>
   <depend>rosidl_typesupport_tickle_cpp</depend>
+  <!-- direct_codec_identity builds and compares messages through it -->
+  <depend>rosidl_typesupport_introspection_c</depend>
   <!-- srv/SimpleService.srv - rosidl_generate_interfaces() itself requires this for any .srv
        (rosidl_cmake/cmake/rosidl_generate_interfaces.cmake's own "Services depend on
        service_msgs" check). -->

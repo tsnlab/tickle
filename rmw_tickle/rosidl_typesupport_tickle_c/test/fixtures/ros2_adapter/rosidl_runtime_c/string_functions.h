@@ -45,6 +45,18 @@ typedef struct rosidl_runtime_c__String__Sequence {
 // capacity=0) - the same state String__assign() itself expects to find (it free()s whatever
 // .data already held before allocating), so calloc's own zero-fill is exactly right here, not
 // just a convenient shortcut.
+// See primitives_sequence_functions.h's own note: the direct codec frees a sample the message
+// already held. Each element is a String that owns its own .data, so each is freed too.
+static inline void rosidl_runtime_c__String__Sequence__fini(rosidl_runtime_c__String__Sequence* seq) {
+    for (size_t i = 0; i < seq->size; i++) {
+        free(seq->data[i].data);
+    }
+    free(seq->data);
+    seq->data = NULL;
+    seq->size = 0;
+    seq->capacity = 0;
+}
+
 static inline bool rosidl_runtime_c__String__Sequence__init(rosidl_runtime_c__String__Sequence* seq, size_t size) {
     seq->data = (rosidl_runtime_c__String*)calloc(size, sizeof(rosidl_runtime_c__String));
     if (seq->data == NULL && size > 0) {

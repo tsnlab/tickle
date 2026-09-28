@@ -12,6 +12,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include <tickle/tickle.h> // tt_DATA_ENCODE_SIZE/tt_DATA_ENCODE/tt_DATA_DECODE/tt_DATA_FREE
 
@@ -34,6 +35,13 @@ extern "C" {
 // shape on the other side of the conversion.
 typedef bool (*rosidl_typesupport_tickle_c_to_tickle_function)(const void* ros_message, void* tickle_message);
 typedef bool (*rosidl_typesupport_tickle_c_from_tickle_function)(const void* tickle_message, void* ros_message);
+// The direct codec (rosidl_typesupport_tickle_c/ros2_direct_codec.py): the struct codec's bytes and
+// return values, from and into the ROS message itself.
+typedef int32_t (*rosidl_typesupport_tickle_c_direct_encode_size_function)(const void* ros_message);
+typedef int32_t (*rosidl_typesupport_tickle_c_direct_encode_function)(const void* ros_message, uint8_t* payload,
+                                                                      uint32_t len);
+typedef int32_t (*rosidl_typesupport_tickle_c_direct_decode_function)(void* ros_message, const uint8_t* payload,
+                                                                      uint32_t len, bool is_native_endian);
 
 // tickle_max_encoded_size below when the type has no computable upper bound.
 //
@@ -125,6 +133,16 @@ typedef struct rosidl_typesupport_tickle_c_message_callbacks_t {
     void (*ros_init)(void* ros_message);
     void (*ros_fini)(void* ros_message);
     void (*ros_move)(void* dst_ros_message, void* src_ros_message);
+
+    // Encode a ROS message straight into TickLE's wire bytes and decode them straight back
+    // (rmw_tickle/LARGE_MESSAGE_PLAN.md, stage 1): byte-identical to to_tickle followed by
+    // tickle_encode, but limited only by the type's IDL bounds, not by the TickLE struct's
+    // capacities. Decode writes into an initialised message, which may hold a previous sample.
+    // NULL when the handle has none - a hand-written callbacks struct, or, until it gets its own,
+    // a C++ message.
+    rosidl_typesupport_tickle_c_direct_encode_size_function direct_encode_size;
+    rosidl_typesupport_tickle_c_direct_encode_function direct_encode;
+    rosidl_typesupport_tickle_c_direct_decode_function direct_decode;
 } rosidl_typesupport_tickle_c_message_callbacks_t;
 
 #ifdef __cplusplus

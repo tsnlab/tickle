@@ -12,3 +12,10 @@ rosidl_typesupport_tickle_c_tests/msg/Primitives	int32_sequence	5
 rosidl_typesupport_tickle_c_tests/msg/Primitives	uint32_sequence	5
 rosidl_typesupport_tickle_c_tests/msg/Primitives	int64_sequence	5
 rosidl_typesupport_tickle_c_tests/msg/Primitives	uint64_sequence	5
+rosidl_typesupport_tickle_c_tests/msg/DcElem	name	16
+rosidl_typesupport_tickle_c_tests/msg/DcElem	values	6
+rosidl_typesupport_tickle_c_tests/msg/DcNested	names	6
+rosidl_typesupport_tickle_c_tests/msg/DcNested	elems	6
+rosidl_typesupport_tickle_c_tests/msg/DcNested	outers	6
+rosidl_typesupport_tickle_c_tests/msg/DcNested	flags	6
+rosidl_typesupport_tickle_c_tests/msg/DcNested	inners	6

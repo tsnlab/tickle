@@ -48,6 +48,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Primitives.msg"
   "msg/Simple.msg"
   "msg/Branch.msg"
+  "msg/DcInner.msg"
+  "msg/DcOuter.msg"
+  "msg/DcElem.msg"
+  "msg/DcNested.msg"
   "srv/SimpleService.srv"
   DEPENDENCIES rosidl_typesupport_tickle_c_tests_dep
 )
@@ -112,6 +116,18 @@ if(BUILD_TESTING)
     rosidl_runtime_c::rosidl_runtime_c
   )
   set_target_properties(test_dispatch_srv_cpp PROPERTIES CXX_STANDARD 17)
+
+  # LARGE_MESSAGE_PLAN.md's pass 1: the direct codec against to_tickle + the struct codec, over any
+  # package whose types it is pointed at (it finds their handles by symbol name at run time).
+  find_package(rosidl_typesupport_introspection_c REQUIRED)
+  add_executable(direct_codec_identity test/direct_codec_identity.cpp)
+  target_link_libraries(direct_codec_identity
+    rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
+    rosidl_typesupport_introspection_c::rosidl_typesupport_introspection_c
+    rosidl_runtime_c::rosidl_runtime_c
+    ${CMAKE_DL_LIBS}
+  )
+  set_target_properties(direct_codec_identity PROPERTIES CXX_STANDARD 17)
 
   # Their checks are assert()s, so NDEBUG - which a Release build defines - compiled every one away, and the
   # tests passed whatever the typesupport did (2026-09-27: a Release build of all six referenced no __assert_fail).
