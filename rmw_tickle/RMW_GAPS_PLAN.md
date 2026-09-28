@@ -909,7 +909,7 @@ picks that up only on a fresh configure: a build tree configured before it regen
 generator changes, and produces a mix of old and new names that does not compile. `--cmake-force-configure`
 once, or a clean build, which is what CI does anyway.
 
-## g13 - a subscription cannot be KEEP_ALL, so `ros2 bag record` cannot subscribe (found by Dev 2026-09-28; blocks g1's `bag`)
+## g13 - a subscription cannot be KEEP_ALL, so `ros2 bag record` cannot subscribe (found by Dev 2026-09-28; **closed 2026-09-29**)
 
 - **Gap:** `rmw_tickle_validate_qos_profile()` refuses `RMW_QOS_POLICY_HISTORY_KEEP_ALL` on a subscription, calling it
   "an unbounded queue". `ros2 bag record` subscribes with KEEP_ALL, so with g1's entry points in place and the domain
@@ -1233,3 +1233,40 @@ defects it had before that, all of the same family and all worth more than the c
 **Order:** the name and GID rows first, since a bridge or a `ros2 topic pub` round-trips them in ordinary use, then the
 event counts, then the format. Before the next COMPARISON re-measure, so the table is not published beside a surface
 that contradicts itself.
+
+
+## g13 closed (2026-09-29): criterion by criterion, and one deliberate non-measurement
+
+| # | criterion | rests on |
+|---|---|---|
+| 1 | matching | `test_keep_all_reader.c` creates a KEEP_ALL subscription against a KEEP_LAST publisher, and the `bag` acceptance matched a real rosbag2 recorder to a real talker across the netns pair with `rmw_cyclonedds_cpp` passing the same test. **The control is an observation, not a reading of the spec** - which is why it was asked for that way |
+| 2 | no overwrite | capacity from the byte budget and not `qos.depth` (depth 2, capacity 4); capacity samples queued, three refused, and what the application takes back is the **first** four in order. Two mutants - and writing them found the test could not fail on its own claim until it was reordered |
+| 3 | back-pressure, RELIABLE | the premise was tested **before** the code and failed as stated: an in-order sample is acked before the callback and the refusal is final. That is why the accept hook exists and why it sits above `update_reliable_ack()`. A declined sample is delivered with its own content, in the ordinary case and with a gap open elsewhere; the bound is tested too, with `gap_evicted` counting what the writer says it has dropped |
+| 4 | BEST_EFFORT | a decline is a drop, counted and warned about, **with the RELIABLE arm as its control** - identical refusal, opposite outcome, the only difference being `reliable`. That the sample is gone for good is tested, not reasoned |
+| 5 | `bag` | PASS and level with the control: 77 replayed each, zero gaps, against FAIL(recorded=0) the day before. The stall arm: both lose, so DDS semantics, and within that 38.6 against 57.8 over five pairs with its caveats. Running it turned up **g14**, now fixed with an acceptance case verified in both directions |
+| 6 | no regression, and the cost | rmw suite 34/34, core green. **No timing number, by decision** - see below |
+
+**Criterion 6 is the interesting one, and the absence of a number there is a choice rather than an omission.** Both
+instruments have a floor at about the size of the effect (WIRE_PLAN 10.4: ~1% on p1 throughput, ~10 KB on peak RSS), so
+Dev measured what is exact instead: `tt_Subscriber` 1216 -> 1240, `rmw_tickle_subscriber_t` 2448 -> 2480, publisher
+unchanged, context unchanged, **every wire struct identical**. That is 32 bytes per subscription and one NULL test per
+sample on the KEEP_LAST path. A hundred subscriptions is 3.2 KB against a ~10 KB RSS floor, so that instrument cannot
+resolve it *in principle*, and p1 is below its floor by construction.
+
+**Plan's decision on whether to run the placement-controlled p1 anyway: run it, but only as a falsification, with the
+threshold written down first.** The argument against was good - a number produced by an instrument that cannot
+discriminate is a number someone later quotes as a cost - but "the reading is known in advance" is also how a
+measurement stops being made at all. So the rule is: it is worth running **only because there is an outcome that would
+change the conclusion.** One extra branch cannot cost 3%; if p1 showed that, something unexpected happened (an inlining
+cliff, a hot function crossing a boundary) and the exact evidence above would be wrong. So:
+
+- **pre-registered threshold: 3%**, well clear of the ~1% floor;
+- **below it, the plan records "not falsified" and the exact evidence carries the claim** - never a cost figure, and
+  never its sign;
+- **above it, criterion 6 is not met** and the cause is found before g13 is called closed.
+
+**And one more null result that was null for the wrong reason,** which is why a size check is not automatically safer
+than a timing one: Dev's first size comparison substituted the parent's rmw header but compiled it against the *current*
+`tickle.h`, so the struct came out unchanged. That is the old struct measured with the new core inside it - a null
+result produced by the measurement rather than by the code. Same family as `introspect` asking its question of the
+endpoint that never had the defect, and as a check that reads a field its subject never prints.
