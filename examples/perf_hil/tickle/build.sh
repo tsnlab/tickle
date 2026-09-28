@@ -156,12 +156,30 @@ debug)
     ;;
 esac
 
+# TICKLE_EXTRA_CFLAGS: compiler flags for libtickle.a *and* for this harness's own client.c/server.c, for an
+# experiment that has to change how the code is compiled without changing what it computes. WIRE_PLAN 10.3's placement
+# control passes -falign-functions=32 here, to ask whether a per-sample cost that no diff explains is function layout
+# rather than work. Empty by default, so a build without it is the build it always was.
+#
+# They reach core through CPPFLAGS, which platform/linux's own compile rule puts on the command line ahead of CFLAGS,
+# and they are part of the prefix name: a prefix keyed only by the defines would serve an archive compiled under
+# different flags as if it were this one, which is the staleness trap the comment below already records for BUILD_TYPE.
+#
+# What this arm does and does not equalise, stated because it decides what its result means: forcing an alignment makes
+# every function start on the same boundary in both arms, which removes alignment as a difference. It does not make
+# function *addresses* equal - a translation unit of a different size still places later functions differently - so a
+# gap that survives this arm has not been proven to be work. Pinning the link order is the stronger arm if this one is
+# not decisive.
+if [ -n "${TICKLE_EXTRA_CFLAGS:-}" ]; then
+    INSTALL_PREFIX="${INSTALL_PREFIX}_x$(printf '%s' "$TICKLE_EXTRA_CFLAGS" | tr -cs 'A-Za-z0-9' '_')"
+fi
+
 # Anything that changes how libtickle.a itself is compiled gets a from-scratch build into its own
 # prefix, bracketed by `make clean`. Not belt and braces: object files in the repo build dir are
 # reused across `make install` calls regardless of CPPFLAGS, so without the clean a prefix named
 # for one setting can be filled with objects compiled under another - a silently wrong measurement
 # rather than a build failure.
-CORE_DEFINES="$CORE_DEFINE $STATS_DEFINE"
+CORE_DEFINES="$CORE_DEFINE $STATS_DEFINE ${TICKLE_EXTRA_CFLAGS:-}"
 
 # Reinstall when the prefix is missing *or* older than any core source, not just when it's missing
 # (2026-09-23, a real trap: a prefix left from an earlier day silently built the example against a
@@ -216,7 +234,7 @@ TICKLE_LIBS="$(PKG_CONFIG_PATH="$PKG_CONFIG_PATH" pkg-config --libs tickle)"
 # The payload shape comes first on the include path, and the four shapes all declare the same
 # `struct BenchData` / `BenchTopic`, so every scenario's own client.c and server.c compiles
 # unchanged at each size - the size is chosen here and nowhere else.
-CFLAGS="-O2 -DBENCH_CORE_BUILD=$CORE_BUILD_TYPE -DBENCH_SAMPLE_PATH=$SAMPLE_PATH -DBENCH_DATAGRAM_BYTES=$DATAGRAM_BYTES $CORE_DEFINE $STATS_DEFINE -DBENCH_SAMPLE_BYTES=$BENCH_SAMPLE_BYTES -I$SHAPE_DIR -I$HERE/common $TICKLE_CFLAGS"
+CFLAGS="-O2 ${TICKLE_EXTRA_CFLAGS:-} -DBENCH_CORE_BUILD=$CORE_BUILD_TYPE -DBENCH_SAMPLE_PATH=$SAMPLE_PATH -DBENCH_DATAGRAM_BYTES=$DATAGRAM_BYTES $CORE_DEFINE $STATS_DEFINE -DBENCH_SAMPLE_BYTES=$BENCH_SAMPLE_BYTES -I$SHAPE_DIR -I$HERE/common $TICKLE_CFLAGS"
 
 # Compile-time proof that this shape can be sent by the build *this* libtickle.a was compiled as, and
 # by the path sample_path= will claim. The generator emits BenchData_FITS_ONE_DATAGRAM as

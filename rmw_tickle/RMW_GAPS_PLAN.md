@@ -1015,6 +1015,31 @@ once, or a clean build, which is what CI does anyway.
   5. **`bag` acceptance** (g1's criterion 5): `ros2 bag record` on a topic published from the other host records N
      messages; the bag holds N, each one's content matches what was sent, and the loss counter is zero. CycloneDDS runs
      the same test first as the control.
+
+     **Amended 2026-09-29, on Dev's finding, because the unamended criterion could not be met by any implementation.**
+     A KEEP_ALL reader's zero loss is bounded by the **writer's** retained depth, not by anything the reader controls.
+     The chain: the reader declines, `ack_seq_no` stays put, the gap logic asks for the declined sample, and the writer
+     retransmits it *if it still holds it*. If the reader declines for longer than the writer's cache retains, the
+     writer answers with Phase 1-c's eviction Heartbeat, the reader skips the sample, and it is gone -
+     `test_process_acknack_skips_expired_sample` already pins that path and `tt_Subscriber.gap_evicted` already counts
+     it. Against an ordinary KEEP_LAST publisher of depth 10 - which is what `ros2 bag record` meets in the field - a
+     recorder that stalls for more than ten samples loses them, and back-pressure does not save it, because a KEEP_LAST
+     writer does not block, it evicts.
+
+     So criterion 5 becomes three things rather than one:
+     - **it names the publisher's QoS**, because the claim is about a pair and not about the reader;
+     - **zero loss is required where the writer retains enough** (a KEEP_ALL publisher, or KEEP_LAST with depth above
+       the reader's stall): the bag holds N, contents match, and `gap_evicted` is 0;
+     - **where the writer does not retain enough, loss is permitted but must be counted and must not exceed the
+       control's.** `gap_evicted` non-zero and reported, and the same stall against CycloneDDS losing at least as much.
+
+     **The control is what decides whether this is a gap at all**, and it must be run before the plan says which:
+     a DDS reader behind a KEEP_LAST writer of depth 10 should also lose samples when it stalls, because the writer
+     evicts and the reader gets a GAP - in which case TickLE is level, this is DDS semantics rather than a TickLE
+     shortfall, and the incomplete-delivery rule is satisfied by the counter. **If CycloneDDS loses nothing where we
+     lose, that is a real gap and gets its own number** - it would mean its writer retains more than the QoS says, and
+     we would have to decide whether to match it. Either way the answer comes from the control arm, not from our
+     reading of the spec.
   6. **No regression.** The KEEP_LAST path keeps its behaviour (the existing subscription and QoS tests pass unchanged),
      and p1 shows no WORSE row that survives WIRE_PLAN 8.3's confirmation rule.
 - **Why this is worth a gap of its own rather than a line in g1:** rosbag2 is not the only KEEP_ALL subscriber - it is
