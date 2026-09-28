@@ -68,14 +68,18 @@ int main(void) {
     double worker_burn_s = WORKER_BURN_S;
     const char* arm = (getenv("ARM") != NULL) ? getenv("ARM") : "live";
     const int live = (strcmp(arm, "live") == 0) ? 1 : 0;
+    const int startup = (strcmp(arm, "startup") == 0) ? 1 : 0;
 
+    if (startup != 0) {
+        burn(MAIN_BURN_S); // before the window opens, so no counter inside it may account for this
+    }
     bench_stats_begin(&stats);
     if (pthread_create(&worker_thread, NULL, worker, &worker_burn_s) != 0) {
         printf("ARM=%s RESULT: failed reason=pthread_create\n", arm);
         return 1;
     }
-    burn(MAIN_BURN_S);
-    if (live == 0) {
+    burn(startup != 0 ? IDLE_POLL_BURN_S : MAIN_BURN_S);
+    if (live == 0 && startup == 0) {
         // The worker's whole CPU time belongs to a thread neither snapshot can name.
         g_stop = 1;
         pthread_join(worker_thread, NULL);
@@ -83,7 +87,7 @@ int main(void) {
     bench_stats_end(&stats);
     printf("ARM=%s RESULT: %s\n", arm,
            bench_stats_fields(&stats, BENCH_ROLE_SENDER, CHECK_SAMPLES, CHECK_SAMPLE_BYTES, g_fields, sizeof g_fields));
-    if (live != 0) {
+    if (live != 0 || startup != 0) {
         g_stop = 1;
         pthread_join(worker_thread, NULL);
     }

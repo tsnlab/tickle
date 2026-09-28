@@ -18,6 +18,8 @@
 #   - Either arm reporting instrument=...,sched (rather than schedgap) means /proc/self/task was
 #     unreadable: the run says nothing about the instrument's accuracy.
 #   - net is expected to fail here: this program sends nothing, and the arms are about CPU only.
+#   - sched_breakdown= is the field to read, not instrument=: an incomplete breakdown is a caveat on the breakdown and
+#     never voids a row (2026-09-29 - as instrument=fail:schedgap it voided every latency row of a campaign).
 # Usage: bench_sched_check.sh            both arms on this machine
 #        HOST=10.1.1.214 bench_sched_check.sh   both arms on that Pi, under the rig lock
 set -uo pipefail
@@ -34,7 +36,7 @@ run_local() {
     bin=$(mktemp -d)/bench_sched_check
     # shellcheck disable=SC2086 # CC_FLAGS is a deliberate word list
     gcc $CC_FLAGS -o "$bin" "$HERE/bench_sched_check.c" -lpthread || return 1
-    for arm in live exited; do ARM=$arm BENCH_IFACE=lo "$bin"; done
+    for arm in live exited startup; do ARM=$arm BENCH_IFACE=lo "$bin"; done
 }
 run_remote() {
     local key=$HOME/.ssh/tickle_ci_ed25519
@@ -44,7 +46,7 @@ run_remote() {
     "${ssh[@]}" "cat > /tmp/bench_sched_check/BenchStats.h" <"$REPO/examples/perf_hil/tickle/common/BenchStats.h" || return 1
     "${ssh[@]}" "cd /tmp/bench_sched_check && gcc -O2 -Wall -Wextra -I. -o bench_sched_check bench_sched_check.c -lpthread" \
         </dev/null || return 1
-    for arm in live exited; do
+    for arm in live exited startup; do
         # taskset: one core, so the two threads' own burn times are not confused by them running at once
         "${ssh[@]}" "cd /tmp/bench_sched_check && ARM=$arm BENCH_IFACE=eth0 taskset -c 1-3 ./bench_sched_check" </dev/null
     done

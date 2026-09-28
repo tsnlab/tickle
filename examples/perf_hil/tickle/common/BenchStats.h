@@ -106,6 +106,12 @@ static inline const char* bench_stats_iface(void) {
     return (env != NULL && env[0] != '\0') ? env : "eth0";
 }
 
+// Note for anyone reading cpu_s_per_Msample on a SHORT row: getrusage(RUSAGE_SELF) is cumulative for the whole process,
+// and this file has always divided the cumulative total by the samples of the run. Over a 20 s throughput run the
+// startup cost is negligible; over a 100-sample latency row it is most of it, so those rows' CPU-per-sample figures are
+// dominated by node creation and discovery rather than by the per-sample path. That is a property of every published
+// row on every framework, so the comparison between frameworks stands - but it is not a per-sample cost, and
+// sched_cpu_s_per_Msample (a begin-to-end delta) is the figure that is.
 static inline double bench_stats_cpu_seconds(void) {
     struct rusage usage; // NOLINT(misc-include-cleaner)
     if (getrusage(RUSAGE_SELF, &usage) != 0) {
@@ -324,6 +330,19 @@ static inline uint64_t bench_stats_delta(uint64_t begin, uint64_t end) {
 #define BENCH_CORE_BUILD_VALUE ""
 #endif
 
+// Whether sched_by_thread= can be read as where the time went. A thread born and reaped inside the window appears in
+// neither snapshot, so its CPU belongs to no named thread - which is a caveat on the BREAKDOWN and not a failure of any
+// counter. It therefore gets its own field rather than joining instrument=fail:, because every consumer of this line
+// voids a row on instrument=fail: and a DDS vendor's short-lived discovery threads would void rows whose latency, CPU
+// and wire figures are all perfectly good (2026-09-29: it did, on every latency row of the first campaign to carry
+// this instrument).
+static inline const char* sched_breakdown_state(double window_cpu_s, double unattributed_s) {
+    if (window_cpu_s <= 0.0) {
+        return "unknown";
+    }
+    return (unattributed_s > window_cpu_s / 10.0) ? "partial" : "complete";
+}
+
 // What bench_stats_fields() has computed by the time the instrument flags are decided, gathered so
 // the check reads from one place.
 struct BenchStatsTotals {
@@ -362,12 +381,6 @@ static inline void bench_stats_fail_flags(const struct BenchStats* stats, const 
         // A process cannot run for a measured interval on zero nanoseconds of any thread, so this is
         // /proc/self/task being unreadable rather than a free run - the same rule as above.
         snprintf(fail + strlen(fail), fail_len - strlen(fail), "%ssched", fail[0] != '\0' ? "," : "");
-    } else if (totals->cpu_s > 0.0 && totals->sched_unattributed_s > totals->cpu_s / 10.0) {
-        // More than a tenth of the process's CPU belongs to no thread the breakdown can name, so
-        // sched_by_thread= cannot be read as where the time went. 10% is far above cpu_s' own tick
-        // error over a run of this length (~0.5% on a 20 s run), so this fires on a missing thread
-        // rather than on quantisation.
-        snprintf(fail + strlen(fail), fail_len - strlen(fail), "%sschedgap", fail[0] != '\0' ? "," : "");
     }
 }
 
@@ -438,9 +451,16 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     }
 
     sched_cpu_ns = bench_stats_sched_by_thread(stats, by_thread, sizeof(by_thread));
-    sched_unattributed_s = cpu_s - ((double)sched_cpu_ns / 1e9);
+    // Against the WINDOW's getrusage delta, not against cpu_s. getrusage(RUSAGE_SELF) is cumulative for the whole
+    // process, while sched_cpu_ns is a begin-to-end delta, so subtracting one from the other counts every cycle spent
+    // before bench_stats_begin() as "unattributed". Over a 20 s throughput run that startup is negligible and the
+    // mistake was invisible; on a 100-sample latency run it is most of the process's CPU, and the first campaign to
+    // carry this instrument voided every latency row on both DDS vendors and on TickLE (2026-09-29, caught 40 seconds
+    // into the run). cpu_begin_s has been captured since this header existed; it just was not used here.
+    sched_unattributed_s =
+        (stats->cpu_begin_s >= 0.0) ? (cpu_s - stats->cpu_begin_s) - ((double)sched_cpu_ns / 1e9) : 0.0;
     if (sched_unattributed_s < 0.0) {
-        sched_unattributed_s = 0.0; // sched_cpu_ns is the finer instrument; cpu_s' tick can round under it
+        sched_unattributed_s = 0.0; // sched_cpu_ns is the finer instrument; the tick can round under it
     }
 
     {
@@ -451,18 +471,18 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
 
     snprintf(buf, buf_len,
              "sample_bytes=%" PRIu64 " utime_s=%.3f stime_s=%.3f cpu_s_per_Msample=%.3f cpu_s_per_MB=%.6f "
-             "sched_cpu_s=%.6f sched_cpu_s_per_Msample=%.3f sched_unattributed_s=%.6f sched_threads=%u "
-             "sched_threads_gone=%u sched_threads_over=%u peak_rss_kb=%" PRIu64 " wire_rx_bytes=%" PRIu64
-             " wire_rx_packets=%" PRIu64 " wire_tx_bytes=%" PRIu64 " wire_tx_packets=%" PRIu64
+             "sched_cpu_s=%.6f sched_cpu_s_per_Msample=%.3f sched_unattributed_s=%.6f sched_breakdown=%s "
+             "sched_threads=%u sched_threads_gone=%u sched_threads_over=%u peak_rss_kb=%" PRIu64
+             " wire_rx_bytes=%" PRIu64 " wire_rx_packets=%" PRIu64 " wire_tx_bytes=%" PRIu64 " wire_tx_packets=%" PRIu64
              " wire_bytes_total=%" PRIu64 " wire_packets_total=%" PRIu64
              " wire_bytes_per_sample=%.1f wire_packets_per_sample=%.3f wire_role_packets_per_sample=%.3f "
              "iface=%s instrument=%s%s%s%s sched_by_thread=%s",
              sample_bytes, utime_s, stime_s, samples > 0 ? cpu_s * 1e6 / (double)samples : 0.0,
              megabytes > 0.0 ? cpu_s / megabytes : 0.0, (double)sched_cpu_ns / 1e9,
              samples > 0 ? (double)sched_cpu_ns / 1e3 / (double)samples : 0.0, sched_unattributed_s,
-             stats->threads_end.count, sched_gone, stats->threads_end.over, peak_rss_kb, rx_bytes, rx_packets, tx_bytes,
-             tx_packets, wire_bytes_total, wire_packets_total,
-             samples > 0 ? (double)wire_bytes_total / (double)samples : 0.0,
+             sched_breakdown_state(cpu_s - stats->cpu_begin_s, sched_unattributed_s), stats->threads_end.count,
+             sched_gone, stats->threads_end.over, peak_rss_kb, rx_bytes, rx_packets, tx_bytes, tx_packets,
+             wire_bytes_total, wire_packets_total, samples > 0 ? (double)wire_bytes_total / (double)samples : 0.0,
              samples > 0 ? (double)wire_packets_total / (double)samples : 0.0,
              samples > 0 ? (double)role_packets / (double)samples : 0.0, stats->iface, fail[0] != '\0' ? "fail:" : "ok",
              fail, BENCH_CORE_BUILD_FIELD, BENCH_CORE_BUILD_VALUE, by_thread);
