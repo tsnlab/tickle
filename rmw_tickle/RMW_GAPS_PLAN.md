@@ -1134,3 +1134,30 @@ three: **put the general property first and let the specific values follow to ex
 own work the same night: `check_unsupported_list.sh` passed its emptied-source arm because it pulled `rmw_ret_t` out of
 `rmw_ret_t rmw_set_log_severity(` on both sides and matched the stray name against itself, and printing the two lists is
 what exposed it. Print what was compared, not only whether it matched.
+
+### g14's generalisation, as a Plan task: the other introspection surfaces (opened 2026-09-29)
+
+g14 was one instance of *a value we report that we would refuse back*. The surfaces below hand data to tools that may
+return it, so each gets the same round-trip check. **This is a task list, not a finding: nothing here is claimed to be
+broken.** Each line says what would be handed back and by what, so the check is a test and not a reading - two careful
+readings have been wrong on this repository already.
+
+| surface | the value | what could hand it back | the check |
+|---|---|---|---|
+| `rmw_get_publishers_info_by_topic`, `..._subscribers_...` | the QoS profile | rosbag2, `ros2 topic pub --qos-profile`, any bridge | **g14, done:** every reported profile passes our own validator |
+| `rmw_get_topic_names_and_types`, `..._node_names...` | topic, service and node names | `ros2 topic pub`, a bridge recreating an endpoint, a launch file | a reported name is accepted by `rmw_validate_full_topic_name` / `..._node_name` / `..._namespace` **and** by `rmw_create_publisher` with it |
+| the same | the type name | anything that looks up typesupport by name | the reported type name resolves through `rosidl_typesupport_c` to a handle |
+| `rmw_get_gid_for_publisher`, `..._client`, event payloads | the GID | `rmw_compare_gids_equal`, a tool matching a sample's `publisher_gid` to a discovered endpoint | a reported GID compares equal to itself and unequal to every other endpoint's, and a taken sample's `publisher_gid` equals the one the graph reports for that writer |
+| liveliness, deadline, incompatible-QoS, matched events | the status counts | a monitor summing them, `ros2 doctor` | the counts are self-consistent: `alive + not_alive` never exceeds the endpoints we report, `*_change` deltas match the totals, nothing negative |
+| `rmw_get_serialization_format` | `"cdr"` | `rmw_deserialize`, rosbag2's stored format field | the format we report is the one `rmw_serialize` produces and `rmw_deserialize` accepts - g1 makes this checkable end to end |
+
+**One constant worth noting now, because it is the kind of edge the name check is for and it needs no workspace to see:**
+`tt_MAX_NAME_LENGTH` is 255 and rmw's own topic-name limit is also 255, so a name at our maximum sits exactly at the
+edge of what rmw accepts, and any prefix rmw_tickle adds on the way to the wire comes out of the same budget. Whether
+that can actually produce a reported name our own `rmw_create_publisher` refuses is **not established by that
+observation** - it needs the round-trip test, at the maximum length and one past it, with the control being the same test
+on CycloneDDS. Filed as the first case of the name row above rather than as a defect.
+
+**Order:** the name and GID rows first, since a bridge or a `ros2 topic pub` round-trips them in ordinary use, then the
+event counts, then the format. Before the next COMPARISON re-measure, so the table is not published beside a surface
+that contradicts itself.
