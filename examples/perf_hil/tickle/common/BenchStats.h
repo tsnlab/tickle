@@ -31,6 +31,7 @@
 
 #pragma once
 
+#include <dirent.h> // NOLINT(misc-include-cleaner) - DIR, opendir/readdir/closedir for /proc/self/task
 #include <stdio.h>
 #include <string.h>
 
@@ -50,8 +51,15 @@
 // transmitted packets are what the payload-boundary gate reads (section 9); a subscriber's
 // received ones are its counterpart.
 // Wide enough for every field below with room to spare; snprintf truncates rather than
-// overflowing if that ever stops being true.
-#define BENCH_STATS_FIELDS_MAX 1024
+// overflowing if that ever stops being true. Raised from 1024 on 2026-09-28 for sched_by_thread=,
+// whose length grows with the process's own thread count (BENCH_STATS_THREADS_MAX of them, each a
+// name of up to 15 characters and a time).
+#define BENCH_STATS_FIELDS_MAX 2048
+
+// A TickLE or DDS harness process runs a handful of threads - the application's own, the
+// middleware's receive and event threads. 16 leaves room for a framework that spawns more, and any
+// beyond that are counted in sched_threads_over= rather than silently dropped.
+#define BENCH_STATS_THREADS_MAX 16
 
 #define BENCH_ROLE_SENDER 0
 #define BENCH_ROLE_RECEIVER 1
@@ -64,9 +72,27 @@ struct BenchStatsCounters {
     int valid;
 };
 
+// One thread's own CPU time. `name` is /proc/<tid>/comm, which is TASK_COMM_LEN (16) including its
+// terminator - so it is the thread name a debugger and `top -H` show, and matching on it is how a
+// reader tells the application's thread from the middleware's.
+struct BenchStatsThread {
+    uint64_t tid;
+    uint64_t cpu_ns;
+    char name[16];
+};
+
+struct BenchStatsThreads {
+    struct BenchStatsThread thread[BENCH_STATS_THREADS_MAX];
+    unsigned int count;
+    unsigned int over; // threads this process has beyond BENCH_STATS_THREADS_MAX
+    int valid;
+};
+
 struct BenchStats {
     struct BenchStatsCounters net_begin;
     struct BenchStatsCounters net_end;
+    struct BenchStatsThreads threads_begin;
+    struct BenchStatsThreads threads_end;
     double cpu_begin_s;
     char iface[32];
 };
@@ -143,15 +169,119 @@ static inline void bench_stats_read_net(const char* iface, struct BenchStatsCoun
     fclose(file);
 }
 
+// Per-thread CPU time at nanosecond resolution. Field 1 of /proc/<tid>/schedstat is that task's own
+// se.sum_exec_runtime in ns, which the kernel maintains unconditionally; field 2, run-queue wait, is
+// the one that needs CONFIG_SCHEDSTATS' sysctl and reads 0 without it (checked on the rig
+// 2026-09-28: /proc/sys/kernel/sched_schedstats is 0 there, field 1 still counts, so nothing here
+// reads field 2 and no zero can be mistaken for "this thread never waited").
+//
+// **Why this exists beside getrusage.** ru_utime/ru_stime come from tick-based accounting, so a
+// 20 s run's ~2 s of CPU is quantised at the tick - and the p1 client question WIRE_PLAN section 10
+// left open is a 0.5-0.7% difference, which is inside that quantisation. An instrument that cannot
+// resolve an effect cannot attribute it either. sum_exec_runtime is in ns, and it is per thread,
+// which is what turns "the process got slower" into "this thread got slower" - the next thing to
+// know once the syscall counts have come back identical.
+//
+// A thread that appears only in the end snapshot has its whole lifetime counted (its begin is 0),
+// which is the truth for a thread started inside the run. A thread that exits before the end
+// snapshot is lost entirely, and sched_threads_gone= says how many, so a total that does not add up
+// has a stated reason rather than a quiet one.
+static inline void bench_stats_read_threads(struct BenchStatsThreads* out) {
+    DIR* dir = opendir("/proc/self/task"); // NOLINT(misc-include-cleaner)
+    const struct dirent* entry = NULL;     // NOLINT(misc-include-cleaner)
+
+    memset(out, 0, sizeof(*out));
+    if (dir == NULL) {
+        return;
+    }
+    while ((entry = readdir(dir)) != NULL) { // NOLINT(misc-include-cleaner)
+        char path[64];
+        char line[128];
+        FILE* file = NULL;
+        unsigned long long tid = 0;
+        unsigned long long cpu_ns = 0;
+        struct BenchStatsThread* slot = NULL;
+
+        if (entry->d_name[0] < '0' || entry->d_name[0] > '9') {
+            continue; // "." and ".."
+        }
+        tid = strtoull(entry->d_name, NULL, 10);
+        if (out->count == BENCH_STATS_THREADS_MAX) {
+            out->over++;
+            continue;
+        }
+        snprintf(path, sizeof(path), "/proc/self/task/%llu/schedstat", tid);
+        file = fopen(path, "r");
+        if (file == NULL) {
+            continue; // the thread exited between readdir and here - not a failure of the instrument
+        }
+        if (fgets(line, (int)sizeof(line), file) == NULL || sscanf(line, "%llu", &cpu_ns) != 1) {
+            fclose(file);
+            continue;
+        }
+        fclose(file);
+
+        slot = &out->thread[out->count];
+        slot->tid = (uint64_t)tid;
+        slot->cpu_ns = (uint64_t)cpu_ns;
+        snprintf(path, sizeof(path), "/proc/self/task/%llu/comm", tid);
+        file = fopen(path, "r");
+        if (file != NULL) {
+            if (fgets(slot->name, (int)sizeof(slot->name), file) != NULL) {
+                char* newline = strchr(slot->name, '\n');
+                if (newline != NULL) {
+                    *newline = '\0';
+                }
+            }
+            fclose(file);
+        }
+        if (slot->name[0] == '\0') {
+            snprintf(slot->name, sizeof(slot->name), "tid%llu", tid);
+        }
+        out->count++;
+        out->valid = 1;
+    }
+    closedir(dir); // NOLINT(misc-include-cleaner)
+}
+
+// This thread's CPU time in the begin snapshot, or 0 when it was not running then.
+static inline uint64_t bench_stats_thread_begin_ns(const struct BenchStatsThreads* begin, uint64_t tid) {
+    for (unsigned int i = 0; i < begin->count; i++) {
+        if (begin->thread[i].tid == tid) {
+            return begin->thread[i].cpu_ns;
+        }
+    }
+    return 0;
+}
+
+// Threads in the begin snapshot that are gone from the end one, whose CPU time no delta can reach.
+static inline unsigned int bench_stats_threads_gone(const struct BenchStatsThreads* begin,
+                                                    const struct BenchStatsThreads* end) {
+    unsigned int gone = 0;
+    for (unsigned int i = 0; i < begin->count; i++) {
+        unsigned int found = 0;
+        for (unsigned int j = 0; j < end->count; j++) {
+            if (end->thread[j].tid == begin->thread[i].tid) {
+                found = 1;
+                break;
+            }
+        }
+        gone += (found == 0) ? 1 : 0;
+    }
+    return gone;
+}
+
 static inline void bench_stats_begin(struct BenchStats* stats) {
     memset(stats, 0, sizeof(*stats));
     snprintf(stats->iface, sizeof(stats->iface), "%s", bench_stats_iface());
     stats->cpu_begin_s = bench_stats_cpu_seconds();
     bench_stats_read_net(stats->iface, &stats->net_begin);
+    bench_stats_read_threads(&stats->threads_begin);
 }
 
 static inline void bench_stats_end(struct BenchStats* stats) {
     bench_stats_read_net(stats->iface, &stats->net_end);
+    bench_stats_read_threads(&stats->threads_end);
 }
 
 static inline uint64_t bench_stats_delta(uint64_t begin, uint64_t end) {
@@ -194,6 +324,92 @@ static inline uint64_t bench_stats_delta(uint64_t begin, uint64_t end) {
 #define BENCH_CORE_BUILD_VALUE ""
 #endif
 
+// What bench_stats_fields() has computed by the time the instrument flags are decided, gathered so
+// the check reads from one place.
+struct BenchStatsTotals {
+    uint64_t wire_bytes;
+    uint64_t wire_packets;
+    uint64_t peak_rss_kb;
+    uint64_t samples;
+    uint64_t sched_cpu_ns;
+    double cpu_s;
+    double sched_unattributed_s;
+};
+
+// The instrument= field's contents: one name per counter that did not work, empty when all did.
+// Each check names the counter rather than setting a single "bad" flag, because they fail for
+// unrelated reasons - a wrong interface name, a kernel without VmHWM, a run that delivered nothing,
+// an unreadable /proc/self/task. Its own function so bench_stats_fields() stays inside the project's
+// cognitive-complexity limit.
+static inline void bench_stats_fail_flags(const struct BenchStats* stats, const struct BenchStatsTotals* totals,
+                                          char* fail, size_t fail_len) {
+    fail[0] = '\0';
+    if (!stats->net_begin.valid || !stats->net_end.valid || totals->wire_bytes == 0 || totals->wire_packets == 0) {
+        snprintf(fail + strlen(fail), fail_len - strlen(fail), "%snet", fail[0] != '\0' ? "," : "");
+    }
+    if (totals->cpu_s <= 0.0) {
+        snprintf(fail + strlen(fail), fail_len - strlen(fail), "%scpu", fail[0] != '\0' ? "," : "");
+    }
+    if (totals->peak_rss_kb == 0) {
+        snprintf(fail + strlen(fail), fail_len - strlen(fail), "%srss", fail[0] != '\0' ? "," : "");
+    }
+    if (totals->samples == 0) {
+        // Not a counter failure: the run genuinely delivered nothing. Every per-sample figure is then
+        // 0 by construction rather than measured, and saying so is the honest report.
+        snprintf(fail + strlen(fail), fail_len - strlen(fail), "%ssamples", fail[0] != '\0' ? "," : "");
+    }
+    if (!stats->threads_begin.valid || !stats->threads_end.valid || totals->sched_cpu_ns == 0) {
+        // A process cannot run for a measured interval on zero nanoseconds of any thread, so this is
+        // /proc/self/task being unreadable rather than a free run - the same rule as above.
+        snprintf(fail + strlen(fail), fail_len - strlen(fail), "%ssched", fail[0] != '\0' ? "," : "");
+    } else if (totals->cpu_s > 0.0 && totals->sched_unattributed_s > totals->cpu_s / 10.0) {
+        // More than a tenth of the process's CPU belongs to no thread the breakdown can name, so
+        // sched_by_thread= cannot be read as where the time went. 10% is far above cpu_s' own tick
+        // error over a run of this length (~0.5% on a 20 s run), so this fires on a missing thread
+        // rather than on quantisation.
+        snprintf(fail + strlen(fail), fail_len - strlen(fail), "%sschedgap", fail[0] != '\0' ? "," : "");
+    }
+}
+
+// The CPU each thread alive at the end spent over the run, as a `name:seconds` list in `out`,
+// returning the total. Sorted by that time so the most expensive thread is first and the field reads
+// the same way from run to run, which readdir's order does not. Its own function rather than part of
+// bench_stats_fields() so that function stays inside the project's cognitive-complexity limit.
+static inline uint64_t bench_stats_sched_by_thread(const struct BenchStats* stats, char* out, size_t out_len) {
+    uint64_t thread_ns[BENCH_STATS_THREADS_MAX];
+    unsigned int order[BENCH_STATS_THREADS_MAX];
+    uint64_t total_ns = 0;
+    size_t len = 0;
+
+    out[0] = '\0';
+    for (unsigned int i = 0; i < stats->threads_end.count; i++) {
+        const struct BenchStatsThread* thread = &stats->threads_end.thread[i];
+        thread_ns[i] =
+            bench_stats_delta(bench_stats_thread_begin_ns(&stats->threads_begin, thread->tid), thread->cpu_ns);
+        total_ns += thread_ns[i];
+        order[i] = i;
+    }
+    // Selection sort: at most BENCH_STATS_THREADS_MAX entries, and no allocation.
+    for (unsigned int i = 0; i + 1 < stats->threads_end.count; i++) {
+        for (unsigned int j = i + 1; j < stats->threads_end.count; j++) {
+            if (thread_ns[order[j]] > thread_ns[order[i]]) {
+                unsigned int swap = order[i];
+                order[i] = order[j];
+                order[j] = swap;
+            }
+        }
+    }
+    for (unsigned int i = 0; i < stats->threads_end.count; i++) {
+        int written = snprintf(out + len, out_len - len, "%s%s:%.6f", len > 0 ? "," : "",
+                               stats->threads_end.thread[order[i]].name, (double)thread_ns[order[i]] / 1e9);
+        if (written <= 0 || (size_t)written >= out_len - len) {
+            break; // truncated: the scalar fields still hold, and this one is the readable extra
+        }
+        len += (size_t)written;
+    }
+    return total_ns;
+}
+
 static inline const char* bench_stats_fields(struct BenchStats* stats, int role, uint64_t samples,
                                              uint64_t sample_bytes, char* buf, size_t buf_len) {
     struct rusage usage; // NOLINT(misc-include-cleaner)
@@ -209,7 +425,11 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     uint64_t role_packets = (role == BENCH_ROLE_SENDER) ? tx_packets : rx_packets;
     uint64_t peak_rss_kb = bench_stats_peak_rss_kb();
     double megabytes = (double)samples * (double)sample_bytes / 1e6;
-    char fail[64];
+    uint64_t sched_cpu_ns = 0;
+    double sched_unattributed_s = 0.0;
+    unsigned int sched_gone = bench_stats_threads_gone(&stats->threads_begin, &stats->threads_end);
+    char by_thread[512];
+    char fail[80];
 
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
         utime_s = (double)usage.ru_utime.tv_sec + ((double)usage.ru_utime.tv_usec / 1e6);
@@ -217,36 +437,34 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
         cpu_s = utime_s + stime_s;
     }
 
-    // Each check names the counter that failed rather than a single "bad" flag, because the three
-    // fail for unrelated reasons: a wrong interface name, a kernel without VmHWM, a run that
-    // delivered nothing. Only the last of those is a property of the run.
-    fail[0] = '\0';
-    if (!stats->net_begin.valid || !stats->net_end.valid || wire_bytes_total == 0 || wire_packets_total == 0) {
-        snprintf(fail + strlen(fail), sizeof(fail) - strlen(fail), "%snet", fail[0] != '\0' ? "," : "");
+    sched_cpu_ns = bench_stats_sched_by_thread(stats, by_thread, sizeof(by_thread));
+    sched_unattributed_s = cpu_s - ((double)sched_cpu_ns / 1e9);
+    if (sched_unattributed_s < 0.0) {
+        sched_unattributed_s = 0.0; // sched_cpu_ns is the finer instrument; cpu_s' tick can round under it
     }
-    if (cpu_s <= 0.0) {
-        snprintf(fail + strlen(fail), sizeof(fail) - strlen(fail), "%scpu", fail[0] != '\0' ? "," : "");
-    }
-    if (peak_rss_kb == 0) {
-        snprintf(fail + strlen(fail), sizeof(fail) - strlen(fail), "%srss", fail[0] != '\0' ? "," : "");
-    }
-    if (samples == 0) {
-        // Not a counter failure: the run genuinely delivered nothing. Every per-sample figure below
-        // is then 0 by construction rather than measured, and saying so is the honest report.
-        snprintf(fail + strlen(fail), sizeof(fail) - strlen(fail), "%ssamples", fail[0] != '\0' ? "," : "");
+
+    {
+        const struct BenchStatsTotals totals = {
+            wire_bytes_total, wire_packets_total, peak_rss_kb, samples, sched_cpu_ns, cpu_s, sched_unattributed_s};
+        bench_stats_fail_flags(stats, &totals, fail, sizeof(fail));
     }
 
     snprintf(buf, buf_len,
              "sample_bytes=%" PRIu64 " utime_s=%.3f stime_s=%.3f cpu_s_per_Msample=%.3f cpu_s_per_MB=%.6f "
-             "peak_rss_kb=%" PRIu64 " wire_rx_bytes=%" PRIu64 " wire_rx_packets=%" PRIu64 " wire_tx_bytes=%" PRIu64
-             " wire_tx_packets=%" PRIu64 " wire_bytes_total=%" PRIu64 " wire_packets_total=%" PRIu64
+             "sched_cpu_s=%.6f sched_cpu_s_per_Msample=%.3f sched_unattributed_s=%.6f sched_threads=%u "
+             "sched_threads_gone=%u sched_threads_over=%u peak_rss_kb=%" PRIu64 " wire_rx_bytes=%" PRIu64
+             " wire_rx_packets=%" PRIu64 " wire_tx_bytes=%" PRIu64 " wire_tx_packets=%" PRIu64
+             " wire_bytes_total=%" PRIu64 " wire_packets_total=%" PRIu64
              " wire_bytes_per_sample=%.1f wire_packets_per_sample=%.3f wire_role_packets_per_sample=%.3f "
-             "iface=%s instrument=%s%s%s%s",
+             "iface=%s instrument=%s%s%s%s sched_by_thread=%s",
              sample_bytes, utime_s, stime_s, samples > 0 ? cpu_s * 1e6 / (double)samples : 0.0,
-             megabytes > 0.0 ? cpu_s / megabytes : 0.0, peak_rss_kb, rx_bytes, rx_packets, tx_bytes, tx_packets,
-             wire_bytes_total, wire_packets_total, samples > 0 ? (double)wire_bytes_total / (double)samples : 0.0,
+             megabytes > 0.0 ? cpu_s / megabytes : 0.0, (double)sched_cpu_ns / 1e9,
+             samples > 0 ? (double)sched_cpu_ns / 1e3 / (double)samples : 0.0, sched_unattributed_s,
+             stats->threads_end.count, sched_gone, stats->threads_end.over, peak_rss_kb, rx_bytes, rx_packets, tx_bytes,
+             tx_packets, wire_bytes_total, wire_packets_total,
+             samples > 0 ? (double)wire_bytes_total / (double)samples : 0.0,
              samples > 0 ? (double)wire_packets_total / (double)samples : 0.0,
              samples > 0 ? (double)role_packets / (double)samples : 0.0, stats->iface, fail[0] != '\0' ? "fail:" : "ok",
-             fail, BENCH_CORE_BUILD_FIELD, BENCH_CORE_BUILD_VALUE);
+             fail, BENCH_CORE_BUILD_FIELD, BENCH_CORE_BUILD_VALUE, by_thread);
     return buf;
 }
