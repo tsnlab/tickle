@@ -394,3 +394,31 @@ own rule forbids.
    - `psn_in_serialized_take` (the header is left in the bytes handed out) - fails 3 and 4;
    - `size_without_header` (`rmw_get_serialized_message_size` returns the body alone) - fails 1.
 7. The gates, the rmw suite in netns, and every acceptance test that passed before still pass.
+
+### Result (Dev, 2026-09-28)
+
+The three entry points are implemented and criteria 1 to 4 are met. `test_serialized` covers them, and all three
+pre-registered mutants are killed by the criterion they were aimed at: `no_psn_on_serialized_publish` fails 2,
+`psn_in_serialized_take` fails 3, `size_without_header` fails 1. The golden bytes match: `rmw_serialize` through
+the direct codec produces, for both fixed messages, exactly what the struct path produced before the change.
+
+**In the real system:** `ros2 topic echo --raw` on a topic published from another host prints
+`b'\x07\x00msg-57\x00\x00\x00\x00'` - the length prefix, the string, its NUL and the padding, with no psn
+header in front. That is `rmw_take_serialized_message` end to end.
+
+**The bag acceptance is not passing yet, and what stands in the way is not serialization.** Chasing it found two
+things:
+
+1. **`rmw_init_options_init` set `domain_id = 0` instead of `RMW_DEFAULT_DOMAIN_ID`** - fixed here. Zero reads to
+   rcl as a deliberate choice, so it never applied `ROS_DOMAIN_ID`: an rclpy node (which sets the domain itself)
+   and an rclcpp one (which does not) landed on different domains and could not hear each other. The bag test's
+   talker opened port 8373 and `ros2 bag record` opened 8282. Nothing in the suite had caught it because every
+   other acceptance node is rclpy, and the rig runs with no `ROS_DOMAIN_ID` at all, where both are domain 0.
+2. **`ros2 bag record` subscribes with `KEEP_ALL` history, which rmw_tickle refuses** (`rmw_qos.c`, QoS roadmap
+   #1). With the domain fixed the recorder reaches its subscription and stops there. That is a gap of its own,
+   not g1's, and it needs a decision about what an unbounded subscription queue should mean here - filed for
+   Plan rather than settled quietly.
+
+`rosbag2_interfaces` joins the inventory either way - `ros2 bag record` publishes its own split events, so a
+recorder cannot start without it - with a capacity for `MessagesLostEvent.messages_lost_statistics`, whose
+element type is not fixed-size and so cannot be auto-derived.

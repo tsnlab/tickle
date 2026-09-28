@@ -38,7 +38,6 @@
 #include "rmw/network_flow_endpoint_array.h"
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
-#include "rmw/serialized_message.h"
 #include "rmw/subscription_content_filter_options.h"
 #include "rmw/types.h"
 #include "rosidl_dynamic_typesupport/types.h"
@@ -111,15 +110,6 @@ rmw_ret_t rmw_fini_subscription_allocation(rmw_subscription_allocation_t* alloca
     UNSUPPORTED("rmw_fini_subscription_allocation");
 }
 
-rmw_ret_t rmw_get_serialized_message_size(const rosidl_message_type_support_t* type_support,
-                                          const rosidl_runtime_c__Sequence__bound* message_bounds,
-                                          size_t* size) { // NOLINT(readability-non-const-parameter)
-    (void)type_support;
-    (void)message_bounds;
-    (void)size;
-    UNSUPPORTED("rmw_get_serialized_message_size");
-}
-
 rmw_ret_t rmw_subscription_set_content_filter(rmw_subscription_t* subscription,
                                               const rmw_subscription_content_filter_options_t* options) {
     (void)subscription;
@@ -185,39 +175,6 @@ rmw_ret_t rmw_serialization_support_init(const char* serialization_lib_name, rcu
 }
 
 // --- real gaps: supported upstream, not yet here --------------------------------------------------
-
-rmw_ret_t rmw_publish_serialized_message(const rmw_publisher_t* publisher,
-                                         const rmw_serialized_message_t* serialized_message,
-                                         rmw_publisher_allocation_t* allocation) {
-    (void)publisher;
-    (void)serialized_message;
-    (void)allocation;
-    NOT_YET("rmw_publish_serialized_message");
-}
-
-rmw_ret_t rmw_take_serialized_message(const rmw_subscription_t* subscription,
-                                      rmw_serialized_message_t* serialized_message,
-                                      bool* taken, // NOLINT(readability-non-const-parameter)
-                                      rmw_subscription_allocation_t* allocation) {
-    (void)subscription;
-    (void)serialized_message;
-    (void)taken;
-    (void)allocation;
-    NOT_YET("rmw_take_serialized_message");
-}
-
-rmw_ret_t rmw_take_serialized_message_with_info(const rmw_subscription_t* subscription,
-                                                rmw_serialized_message_t* serialized_message,
-                                                bool* taken, // NOLINT(readability-non-const-parameter)
-                                                rmw_message_info_t* message_info,
-                                                rmw_subscription_allocation_t* allocation) {
-    (void)subscription;
-    (void)serialized_message;
-    (void)taken;
-    (void)message_info;
-    (void)allocation;
-    NOT_YET("rmw_take_serialized_message_with_info");
-}
 
 // (g2) The set_on_new_*_callback() setters and rmw_event_set_callback() are implemented since 2026-09-28:
 // rmw_subscription.c, rmw_service.c, rmw_client.c and rmw_event.c.

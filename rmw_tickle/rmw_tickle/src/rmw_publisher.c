@@ -36,6 +36,7 @@
 #include "rmw/qos_policy_kind.h" // rmw_qos_policy_kind_t - check_publisher_qos_incompatible()
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
+#include "rmw/serialized_message.h"
 #include "rmw/time.h" // rmw_time_total_nsec() - QoS roadmap #2 (DEADLINE)
 #include "rmw/types.h"
 #include "rmw_tickle_c/publisher_payload.h"
@@ -651,6 +652,9 @@ static bool allocate_publish_scratch(rmw_tickle_publisher_t* pub_impl,
 
 static int32_t encode_size_with_psn(struct tt_Data* data) {
     const rmw_tickle_outgoing_message_t* message = (const rmw_tickle_outgoing_message_t*)data;
+    if (NULL != message->serialized) { // (g1) already-encoded CDR: the header plus its own length
+        return (int32_t)(message->serialized_len + rmw_tickle_psn_bytes(message->publication_sequence_number));
+    }
     int32_t size = NULL != message->callbacks->direct_encode_size
                        ? message->callbacks->direct_encode_size(message->ros_message)
                        : message->callbacks->tickle_encode_size((struct tt_Data*)message->tickle);
@@ -664,6 +668,13 @@ static int32_t encode_with_psn(struct tt_Data* data, uint8_t* payload, const uin
         return -1;
     }
     (void)rmw_tickle_psn_write(message->publication_sequence_number, payload);
+    if (NULL != message->serialized) { // (g1) the caller's own CDR, copied once into tx_buffer
+        if ((size_t)(len - header) < message->serialized_len) {
+            return -1;
+        }
+        memcpy(payload + header, message->serialized, message->serialized_len);
+        return (int32_t)(message->serialized_len + header);
+    }
     int32_t encoded =
         NULL != message->callbacks->direct_encode
             ? message->callbacks->direct_encode(message->ros_message, payload + header, len - header)
@@ -1324,7 +1335,12 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     // "Strings" rule) or copies into a fixed in-place buffer - nothing this struct itself owns that
     // a second call's own to_tickle() would need to free first.
     pthread_mutex_lock(&pub_impl->publish_mutex);
-    rmw_tickle_outgoing_message_t outgoing = {pub_impl->next_publication_sequence_number, callbacks, ros_message, NULL};
+    rmw_tickle_outgoing_message_t outgoing = {.publication_sequence_number = pub_impl->next_publication_sequence_number,
+                                              .callbacks = callbacks,
+                                              .ros_message = ros_message,
+                                              .tickle = NULL,
+                                              .serialized = NULL,
+                                              .serialized_len = 0};
 
     // The fallback: a callbacks struct with no direct codec still goes through the TickLE struct,
     // and refuses here, before the publish, when the message does not fit its capacities.
@@ -1646,4 +1662,47 @@ rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher, rmw
         struct timespec sleep_duration = {.tv_sec = 0, .tv_nsec = (long)RMW_TICKLE_WAIT_FOR_ACKED_POLL_INTERVAL_NS};
         nanosleep(&sleep_duration, NULL);
     }
+}
+
+// (g1) Publishes CDR the caller already has - what `ros2 bag play` does. The bytes go to core the
+// same way an ordinary publish's do: encode_with_psn() writes this publisher's psn header into
+// tx_buffer and copies them in behind it, which is the one copy an ordinary publish makes too. So
+// blocking, the reliable cache and fragmentation all behave exactly as they do for rmw_publish().
+//
+// The bytes are this rmw's own CDR - what rmw_serialize() produces - and nothing here can check
+// that they are: a caller who hands over another middleware's encoding gets a message its peers
+// will refuse to decode, which is the same contract every rmw has.
+rmw_ret_t rmw_publish_serialized_message(const rmw_publisher_t* publisher,
+                                         const rmw_serialized_message_t* serialized_message,
+                                         rmw_publisher_allocation_t* allocation) {
+    TT_TRACE(tt_TRACE_PUBLISH);
+    (void)allocation; // pre-allocated-message optimization, not implemented
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(serialized_message, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(serialized_message->buffer, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    if (0 == serialized_message->buffer_length) {
+        RMW_SET_ERROR_MSG("cannot publish an empty serialized message");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+
+    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
+    pthread_mutex_lock(&pub_impl->publish_mutex);
+    rmw_tickle_outgoing_message_t outgoing = {.publication_sequence_number = pub_impl->next_publication_sequence_number,
+                                              .callbacks = pub_impl->callbacks,
+                                              .ros_message = NULL,
+                                              .tickle = NULL,
+                                              .serialized = serialized_message->buffer,
+                                              .serialized_len = serialized_message->buffer_length};
+    TT_TRACE(tt_TRACE_SERIALIZED);
+    rmw_ret_t ret = publish_blocking(pub_impl, &outgoing);
+    if (RMW_RET_OK == ret) {
+        pub_impl->next_publication_sequence_number++;
+    }
+    report_depth_shortfalls(pub_impl);
+    pthread_mutex_unlock(&pub_impl->publish_mutex);
+    return ret;
 }

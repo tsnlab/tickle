@@ -83,7 +83,13 @@ rmw_ret_t rmw_init_options_init(rmw_init_options_t* const init_options, rcutils_
     }
 
     init_options->instance_id = 0;
-    init_options->domain_id = 0;
+    // RMW_DEFAULT_DOMAIN_ID, not 0: it means "nobody has chosen one", which is what lets rcl fill
+    // in ROS_DOMAIN_ID. Setting 0 here reads to rcl as a deliberate choice of domain 0, so a node
+    // whose stack does not set the domain itself lands there whatever ROS_DOMAIN_ID says - and one
+    // whose stack does (rclpy) lands on the right one, so the two silently stop hearing each other.
+    // Found 2026-09-28 through the bag acceptance: its rclpy talker opened port 8373 (domain 91)
+    // while `ros2 bag record`, driven by rclcpp, opened 8282 (domain 0) and recorded nothing.
+    init_options->domain_id = RMW_DEFAULT_DOMAIN_ID;
     // Initialize security options to zero
     memset(&init_options->security_options, 0, sizeof(rmw_security_options_t));
     init_options->enclave = NULL;

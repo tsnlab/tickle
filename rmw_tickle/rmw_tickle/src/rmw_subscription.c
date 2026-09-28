@@ -30,6 +30,7 @@
 #include "rcutils/error_handling.h"
 #include "rcutils/logging_macros.h"
 #include "rcutils/strdup.h"
+#include "rcutils/types/rcutils_ret.h"
 #include "rmw/error_handling.h"
 #include "rmw/event.h"
 #include "rmw/event_callback_type.h" // rmw_event_callback_t (g2)
@@ -37,6 +38,7 @@
 #include "rmw/qos_policy_kind.h"     // rmw_qos_policy_kind_t - check_subscription_qos_incompatible()
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
+#include "rmw/serialized_message.h"
 #include "rmw/time.h" // rmw_time_point_value_t
 #include "rmw/types.h"
 #include "rmw_tickle_c/rmw_tickle.h"
@@ -811,6 +813,45 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     return RMW_RET_OK;
 }
 
+// What a take reports about the message it just handed over. Shared with (g1) the serialized take,
+// which owes its caller the same information.
+static void fill_message_info(const rmw_tickle_subscriber_t* sub_impl, const rmw_tickle_queued_message_t* entry,
+                              rmw_message_info_t* message_info) {
+    (void)sub_impl;
+    message_info->source_timestamp = (rmw_time_point_value_t)entry->source_timestamp;
+    message_info->received_timestamp = (rmw_time_point_value_t)entry->received_timestamp;
+    message_info->publication_sequence_number = entry->publication_sequence_number;
+    message_info->reception_sequence_number = entry->reception_sequence_number;
+    memset(&message_info->publisher_gid, 0, sizeof(message_info->publisher_gid));
+    message_info->publisher_gid.implementation_identifier = RMW_TICKLE_IDENTIFIER;
+    message_info->from_intra_process = false;
+}
+
+// The head of the queue, or false when there is none. Shared by rmw_take_with_info() and (g1) the
+// serialized take - the QoS bookkeeping in it is the same for both, and a second copy would drift.
+static bool dequeue_one(rmw_tickle_subscriber_t* sub_impl, rmw_tickle_queued_message_t* entry) {
+    pthread_mutex_lock(&sub_impl->queue_mutex);
+    // QoS roadmap #6 (LIFESPAN) - see rmw_tickle_subscriber_t.lifespan_ns's own doc comment. Drops
+    // (not returns) any already-expired entries from the front before taking the real head - "as
+    // if it had never been sent", same wording tickle.c's own reliable_cache-side skip uses. A
+    // no-op loop when lifespan_ns == 0 (not requested).
+    while (sub_impl->queue_count > 0 && sub_impl->lifespan_ns != 0 &&
+           tt_get_ns() - sub_impl->queue[sub_impl->queue_head].source_timestamp >= sub_impl->lifespan_ns) {
+        shell_pool_push(sub_impl, sub_impl->queue[sub_impl->queue_head].ros_message); // Milestone 45
+        sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
+        sub_impl->queue_count--;
+    }
+    if (sub_impl->queue_count == 0) {
+        pthread_mutex_unlock(&sub_impl->queue_mutex);
+        return false;
+    }
+    *entry = sub_impl->queue[sub_impl->queue_head];
+    sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
+    sub_impl->queue_count--;
+    pthread_mutex_unlock(&sub_impl->queue_mutex);
+    return true;
+}
+
 rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_message, bool* taken,
                              rmw_message_info_t* message_info, rmw_subscription_allocation_t* allocation) {
     TT_TRACE(tt_TRACE_TAKE_ENTER);
@@ -825,26 +866,11 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
 
     rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)subscription->data;
 
-    pthread_mutex_lock(&sub_impl->queue_mutex);
-    // QoS roadmap #6 (LIFESPAN) - see rmw_tickle_subscriber_t.lifespan_ns's own doc comment. Drops
-    // (not returns) any already-expired entries from the front before taking the real head - "as
-    // if it had never been sent", same wording tickle.c's own reliable_cache-side skip uses. A
-    // no-op loop when lifespan_ns == 0 (not requested).
-    while (sub_impl->queue_count > 0 && sub_impl->lifespan_ns != 0 &&
-           tt_get_ns() - sub_impl->queue[sub_impl->queue_head].source_timestamp >= sub_impl->lifespan_ns) {
-        shell_pool_push(sub_impl, sub_impl->queue[sub_impl->queue_head].ros_message); // Milestone 45
-        sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
-        sub_impl->queue_count--;
-    }
-    if (sub_impl->queue_count == 0) {
-        pthread_mutex_unlock(&sub_impl->queue_mutex);
+    rmw_tickle_queued_message_t entry;
+    if (!dequeue_one(sub_impl, &entry)) {
         *taken = false;
         return RMW_RET_OK;
     }
-    rmw_tickle_queued_message_t entry = sub_impl->queue[sub_impl->queue_head];
-    sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
-    sub_impl->queue_count--;
-    pthread_mutex_unlock(&sub_impl->queue_mutex);
 
     // Shallow copy: entry.ros_message's own string/array fields (rosidl_runtime_c__String et al.)
     // were heap-allocated by subscriber_callback()'s from_tickle() call and are transferred here
@@ -872,13 +898,7 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
     TT_TRACE(tt_TRACE_TAKEN);
 
     if (NULL != message_info) {
-        message_info->source_timestamp = (rmw_time_point_value_t)entry.source_timestamp;
-        message_info->received_timestamp = (rmw_time_point_value_t)entry.received_timestamp;
-        message_info->publication_sequence_number = entry.publication_sequence_number;
-        message_info->reception_sequence_number = entry.reception_sequence_number;
-        memset(&message_info->publisher_gid, 0, sizeof(message_info->publisher_gid));
-        message_info->publisher_gid.implementation_identifier = RMW_TICKLE_IDENTIFIER;
-        message_info->from_intra_process = false;
+        fill_message_info(sub_impl, &entry, message_info);
     }
     return RMW_RET_OK;
 }
@@ -1076,4 +1096,96 @@ rmw_ret_t rmw_subscription_set_on_new_message_callback(rmw_subscription_t* subsc
     rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)subscription->data;
     rmw_tickle_callback_slot_set(&sub_impl->on_new_message, callback, user_data, messages_waiting, sub_impl);
     return RMW_RET_OK;
+}
+
+// (g1) A serialized take encodes the queued message again rather than keeping a second queue of
+// raw bytes. The same subscription can be taken either way, so queueing both would cost every
+// subscription memory for a path most never use - and re-encoding settles the byte order for free,
+// since the queued message is native whatever arrived. The cost is one encode per serialized take,
+// on the path `ros2 bag record` uses, which is not the hot one.
+//
+// The shell goes back to the pool afterwards. A C message's fields are released first (ros_fini,
+// which since g1 the generator sets for C as well): unlike an ordinary take, nothing transferred
+// them out, so shell_pool_push()'s memset alone would drop every string and sequence in it. A C++
+// message is pushed as it stands - the pool's next decode assigns over every field, and destroying
+// the object would leave the pool holding storage no longer holding an object.
+static rmw_ret_t take_serialized(const rmw_subscription_t* subscription, rmw_serialized_message_t* serialized_message,
+                                 bool* taken, rmw_message_info_t* message_info) {
+    TT_TRACE(tt_TRACE_TAKE_ENTER);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(serialized_message, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(taken, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)subscription->data;
+    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = sub_impl->callbacks;
+    if (NULL == callbacks->direct_encode) {
+        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+            "%s was built without a direct codec, which a serialized take needs - rebuild the interface package",
+            callbacks->ros_type_name);
+        return RMW_RET_UNSUPPORTED;
+    }
+
+    rmw_tickle_queued_message_t entry;
+    if (!dequeue_one(sub_impl, &entry)) {
+        *taken = false;
+        return RMW_RET_OK;
+    }
+
+    rmw_ret_t result = RMW_RET_OK;
+    int32_t size = callbacks->direct_encode_size(entry.ros_message);
+    if (size < 0) {
+        RMW_SET_ERROR_MSG("direct_encode_size() failed on a message that was decoded from the wire");
+        result = RMW_RET_ERROR;
+    } else if (serialized_message->buffer_capacity < (size_t)size &&
+               rmw_serialized_message_resize(serialized_message, (size_t)size) != RCUTILS_RET_OK) {
+        RMW_SET_ERROR_MSG("failed to resize serialized_message");
+        result = RMW_RET_BAD_ALLOC;
+    } else {
+        int32_t written = callbacks->direct_encode(entry.ros_message, serialized_message->buffer,
+                                                   (uint32_t)serialized_message->buffer_capacity);
+        if (written < 0) {
+            RMW_SET_ERROR_MSG("direct_encode() failed on a message that was decoded from the wire");
+            result = RMW_RET_ERROR;
+        } else {
+            serialized_message->buffer_length = (size_t)written;
+        }
+    }
+
+    if (NULL == callbacks->ros_move && NULL != callbacks->ros_fini) {
+        callbacks->ros_fini(entry.ros_message); // a C message: nothing took its fields
+    }
+    pthread_mutex_lock(&sub_impl->queue_mutex);
+    shell_pool_push(sub_impl, entry.ros_message);
+    pthread_mutex_unlock(&sub_impl->queue_mutex);
+
+    if (RMW_RET_OK != result) {
+        *taken = false;
+        return result;
+    }
+    *taken = true;
+    TT_TRACE(tt_TRACE_TAKEN);
+    if (NULL != message_info) {
+        fill_message_info(sub_impl, &entry, message_info);
+    }
+    return RMW_RET_OK;
+}
+
+rmw_ret_t rmw_take_serialized_message(const rmw_subscription_t* subscription,
+                                      rmw_serialized_message_t* serialized_message,
+                                      bool* taken, // NOLINT(readability-non-const-parameter)
+                                      rmw_subscription_allocation_t* allocation) {
+    (void)allocation; // pre-allocated-message optimization, not implemented
+    return take_serialized(subscription, serialized_message, taken, NULL);
+}
+
+rmw_ret_t rmw_take_serialized_message_with_info(const rmw_subscription_t* subscription,
+                                                rmw_serialized_message_t* serialized_message,
+                                                bool* taken, // NOLINT(readability-non-const-parameter)
+                                                rmw_message_info_t* message_info,
+                                                rmw_subscription_allocation_t* allocation) {
+    (void)allocation; // pre-allocated-message optimization, not implemented
+    return take_serialized(subscription, serialized_message, taken, message_info);
 }

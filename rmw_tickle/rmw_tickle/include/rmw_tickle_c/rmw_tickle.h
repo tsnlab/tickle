@@ -589,6 +589,11 @@ typedef struct rmw_tickle_outgoing_message_t {
     // codec: rmw_tickle's own hand-written test ones, and an interface package built before it.
     // NULL whenever the direct codec is used, which is every generated type.
     void* tickle;
+    // (g1) Already-encoded CDR, from rmw_publish_serialized_message(): the encode then writes the
+    // psn header and copies these bytes, rather than encoding a message. One copy into tx_buffer,
+    // which is the one an ordinary publish makes too. NULL for an ordinary publish.
+    const uint8_t* serialized;
+    size_t serialized_len;
 } rmw_tickle_outgoing_message_t;
 
 typedef struct rmw_tickle_publisher_t {

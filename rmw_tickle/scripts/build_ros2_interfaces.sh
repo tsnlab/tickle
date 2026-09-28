@@ -58,6 +58,10 @@ INVENTORY=(
     rcl_interfaces action_msgs composition_interfaces lifecycle_msgs rosgraph_msgs service_msgs
     statistics_msgs type_description_interfaces
     unique_identifier_msgs tf2_msgs example_interfaces
+    # `ros2 bag record` publishes its own split events and answers its own services, so a recorder
+    # cannot start on rmw_tickle without these (g1, 2026-09-28): it refused to create the publisher
+    # for /events/write_split and recorded nothing, with the bag acceptance reading as 0 messages.
+    rosbag2_interfaces
 )
 
 WORKSPACE="${HOME}/tickle_ros2_interfaces"
@@ -113,6 +117,7 @@ repo_of() {
     tf2_msgs) echo geometry2 ;;
     example_interfaces) echo example_interfaces ;;
     unique_identifier_msgs) echo unique_identifier_msgs ;;
+    rosbag2_interfaces) echo rosbag2 ;;
     esac
 }
 

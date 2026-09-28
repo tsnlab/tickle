@@ -1,0 +1,10 @@
+# rmw_serialize()'s bytes for two fixed messages, captured 2026-09-28 from the build BEFORE the
+# direct codec reached rmw_serialize - which still went through the TickLE struct. g1's criterion 4:
+# comparing the new encoder against rmw_serialize of the new build would compare it with itself.
+#
+# std_msgs/String: data = "golden-bytes".
+# sensor_msgs/Image: stamp 7.11, frame_id "camera", 2x3 mono8, step 3, data[i] = i * 17 + 1.
+#
+# <type> <length> <hex>
+std_msgs/String 16 0d00676f6c64656e2d62797465730000
+sensor_msgs/Image 52 070000000b000000070063616d65726100000000020000000300000006006d6f6e6f380000000000030000000600011223344556

@@ -96,6 +96,15 @@ def _ros2_sequence_scalar_type(scalar_type):
     return "uint8" if scalar_type == "char" else scalar_type
 
 
+def ros2_functions_header_path(ros_name):
+    """rosidl's own `<pkg>/<subfolder>/detail/<type>__functions.h` - where `<Type>__fini()` lives,
+    which releases a message's fields without freeing the message. `<type>.h` beside it declares
+    only the struct."""
+    path = ros2_header_path(ros_name)
+    directory, filename = path.rsplit("/", 1)
+    return f"{directory}/detail/{filename[:-2]}__functions.h"
+
+
 def ros2_nested_struct_name(nested_struct):
     """A nested field's ROS 2 C struct name, `<pkg>__<subfolder>__<Type>` - "msg" for an ordinary
     message, "action" for one of an action's own implicit messages (`<pkg>__action__<A>_Goal`,
@@ -522,6 +531,9 @@ def render_type_support(struct, ros_name, tickle_header, adapter_header):
             '#include "rosidl_typesupport_tickle_c/message_type_support.h"',
             "",
             f'#include "{ros2_header_path(ros_name)}"',
+            # <Type>__fini(), which rosidl generates for every message: it releases a message's own
+            # fields without freeing the message itself, which is exactly ros_fini's contract.
+            f'#include "{ros2_functions_header_path(ros_name)}"',
             f'#include "{tickle_header}"',
             f'#include "{adapter_header}"',
             "",
@@ -541,6 +553,11 @@ def render_type_support(struct, ros_name, tickle_header, adapter_header):
             f"    .direct_encode_size = (rosidl_typesupport_tickle_c_direct_encode_size_function)&{ros_name}__direct_encode_size,",
             f"    .direct_encode = (rosidl_typesupport_tickle_c_direct_encode_function)&{ros_name}__direct_encode,",
             f"    .direct_decode = (rosidl_typesupport_tickle_c_direct_decode_function)&{ros_name}__direct_decode,",
+            # Set for a C message too since g1: a subscription holds messages of its own - queued,
+            # and the one a serialized take encodes from - and releasing one meant memset alone,
+            # which leaks every string and sequence in it. rosidl's own __fini does it properly.
+            # ros_init/ros_move stay NULL: zeroed storage is a valid C message and memcpy moves one.
+            f"    .ros_fini = (void (*)(void*))&{ros_name}__fini,",
             "};",
             "",
             "// .typesupport_identifier is set on first access below, not here - a plain (non-",
