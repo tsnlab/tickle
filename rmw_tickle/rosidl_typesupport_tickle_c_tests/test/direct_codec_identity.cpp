@@ -85,6 +85,7 @@ namespace {
     constexpr int from_tickle_failed = -100;
     constexpr size_t dumped_bytes = 96;   // of a differing encoding, per type
     constexpr unsigned low_nibble = 0xfU; // for the hex dump of one
+    constexpr int dumped_strings = 8;     // of a differing message's own strings
     constexpr size_t letters = 26;        // the alphabet a random string is drawn from
 
     auto members_of(const rosidl_message_type_support_t* support) -> const message_members* {
@@ -518,6 +519,51 @@ namespace {
         return out;
     }
 
+    // Beside the bytes: what the two encoders each see in this message's strings. The old path
+    // reads an uncapacitied string as a plain char* and stops at the first NUL anywhere
+    // (_tt_strnlen); the direct one stops at the first NUL within .size. Those agree only while
+    // .data is NUL-terminated at .size, which is rosidl's contract - so a difference of exactly one
+    // character says which of the two assumptions failed, and where. strnlen is bounded by size + 1,
+    // never reading past the allocation (capacity is at least size + 1).
+    auto dump_string(const std::string& path, const rosidl_runtime_c__String* str, int& budget) -> void {
+        if (budget <= 0) {
+            return;
+        }
+        budget--;
+        if (str->data == nullptr) {
+            std::printf("     %s: data=NULL size=%zu\n", path.c_str(), str->size);
+            return;
+        }
+        // memchr over size + 1 bytes, never past the allocation: rosidl keeps capacity >= size + 1.
+        const void* terminator = std::memchr(str->data, 0, str->size + 1);
+        std::printf("     %s: size=%zu first_nul=%zu%s\n", path.c_str(), str->size, first_nul_length(str),
+                    terminator == nullptr ? " NOT TERMINATED AT size" : "");
+    }
+
+    // NOLINTNEXTLINE(misc-no-recursion) - a nested field is described by its own type's members
+    auto dump_strings(const message_members* members, const void* msg, const std::string& path, int& budget) -> void {
+        for (uint32_t i = 0; i < members->member_count_; i++) {
+            const message_member& member = members->members_[i];
+            if (is_placeholder(member) || (!is_text(member) && !is_nested(member))) {
+                continue;
+            }
+            const void* field = static_cast<const char*>(msg) + member.offset_;
+            size_t const count = member.is_array_ ? count_of(member, field) : 1;
+            for (size_t index = 0; index < count && budget > 0; index++) {
+                const void* value = member.is_array_ ? element_at(member, field, index) : field;
+                std::string where = path + "." + member.name_;
+                if (member.is_array_) {
+                    where += "[" + std::to_string(index) + "]";
+                }
+                if (is_text(member)) {
+                    dump_string(where, static_cast<const rosidl_runtime_c__String*>(value), budget);
+                } else {
+                    dump_strings(members_of(member.members_), value, where, budget);
+                }
+            }
+        }
+    }
+
     auto first_difference(checker& check, int32_t a, int32_t b) -> std::string {
         int32_t const shorter = std::min(a, b);
         for (int32_t index = 0; index < shorter; index++) {
@@ -626,6 +672,8 @@ namespace {
                                 hex_dump(bytes_of(check.out_old), old.size).c_str(),
                                 hex_dump(bytes_of(check.out_new), new_size).c_str(),
                                 check.callbacks->tickle_struct_size);
+                    int budget = dumped_strings;
+                    dump_strings(check.members, msg, "msg", budget);
                 }
                 return false;
             }
