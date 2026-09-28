@@ -160,6 +160,12 @@ jobs:
         # edited apart from each other - which no amount of regenerating would reveal.
         run: make check-bench-shapes
 
+      - name: Check the unsupported-entry-point test against rmw_unsupported.c
+        # Cheap and text-only, so it runs here as well as in check-gates: it answers, without the
+        # colcon workspace, the question that made this workflow red for three commits after
+        # a34979e7 - a test asserting an entry point is unsupported after it was implemented.
+        run: make check-unsupported-list
+
       - name: Regenerate typesupport codecs and check for drift
         run: |
           pip install ./tools/typesupport

@@ -9,7 +9,7 @@
 
 .DEFAULT_GOAL := all
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock check-bench-shapes lint lint-rmw lint-shell test-typesupport clean test-linux test-freertos test-all \
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock check-bench-shapes check-unsupported-list lint lint-rmw lint-shell test-typesupport clean test-linux test-freertos test-all \
         install uninstall fuzz fuzz-corpus sanitize tsan regen
 
 all library examples set_bool uint64 ping_pong perf test lint clean fuzz fuzz-corpus sanitize tsan:
@@ -57,6 +57,12 @@ check-rig-lock:
 # header for why two sources per shape need a gate at all.
 check-bench-shapes:
 	./.github/scripts/check_bench_shapes.sh
+
+# test_unsupported_entry_points.c against rmw_unsupported.c, from their text alone - the one part of
+# rmw_tickle's own test suite that can be checked without the colcon workspace and the netns it
+# needs. See the script's own header for the failure that prompted it.
+check-unsupported-list:
+	./.github/scripts/check_unsupported_list.sh
 
 # clang-tidy over rmw_tickle/, which `make lint` excludes and CI's cpp-linter does not - see the
 # script's own header.
