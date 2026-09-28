@@ -21,6 +21,22 @@ designed for one consumer and retrofitted for the other is how the same mistake 
 6. **Using a module must cost no performance.** Read as: a build with the module present but not in use is
    indistinguishable from a build without it, which is criterion 3 below, and the module's own path is measured
    separately.
+
+   **Amended 2026-09-29, because that criterion now has a measured floor** (WIRE_PLAN 10.4). At p1
+   `reliable_throughput`, forcing `-falign-functions=32` - a flag that changes nothing the program computes - moved one
+   build's throughput by 0.859% at t = -11.4, and reversed the sign of a 0.6% difference between two builds. So
+   **throughput and CPU-per-sample cannot distinguish "no cost" from "a cost under about 1%" between two builds whose
+   code differs in size**, which is exactly what adding a module does. Three consequences for how this decision is
+   verified:
+   - **A sub-floor result is reported as "below the instrument's floor", never as "no cost".** Those are different
+     claims and a future reader must not be able to mistake one for the other. Nor is the sign reassuring: a +0.4% that
+     means nothing looks like good news and is the same nothing as -0.4%.
+   - **More repetitions do not help.** They shrink the SE and leave the systematic part untouched, so running more of
+     them to make a null look settled is worse than reporting the floor.
+   - **To get below the floor, hold the layout fixed or use a deterministic metric.** A pinned link order, or the same
+     binary with the module's path switched at run time, answers what alignment cannot. Failing that, the criteria that
+     are exact - wire bytes per sample, binary size, RSS, and the identity of the bytes on the wire - carry the claim,
+     and the timing figures are reported with the floor stated beside them.
 7. **The shared-memory module must be faster than the competing products under the same conditions.** What "the same
    conditions" means needs saying, because both vendors have a shared-memory transport of their own and their defaults
    differ - FastDDS ships its SHM transport on, CycloneDDS's shared-memory path is off unless configured. Plan's

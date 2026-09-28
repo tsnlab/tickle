@@ -1061,6 +1061,13 @@ once, or a clean build, which is what CI does anyway.
      reading of the spec.
   6. **No regression.** The KEEP_LAST path keeps its behaviour (the existing subscription and QoS tests pass unchanged),
      and p1 shows no WORSE row that survives WIRE_PLAN 8.3's confirmation rule.
+
+     **Amended 2026-09-29 (WIRE_PLAN 10.4): this criterion has a floor, and the verdict is three-valued.** g13 grows the
+     translation unit, which is precisely the case the floor was measured for - a semantically neutral alignment flag
+     moved p1 throughput by 0.859% and reversed the sign of a 0.6% difference. So the reading is *better*, *WORSE*, or
+     **"below the instrument's floor"**, and the third is not the first. "Satisfied by construction" is not available
+     either: source-identical functions still move when the binary grows, which is what 10.3 and 10.4 are about. If the
+     KEEP_LAST reading comes back under 1% at p1, the honest report is the floor, not the number and not its sign.
 - **Why this is worth a gap of its own rather than a line in g1:** rosbag2 is not the only KEEP_ALL subscriber - it is
   the idiom for any consumer that must not lose messages - and under the incomplete-delivery rule a recorder that
   silently drops is a LOSE, not a partial win. The semantics above are what make the difference visible.
