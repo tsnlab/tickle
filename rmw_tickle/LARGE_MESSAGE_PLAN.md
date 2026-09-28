@@ -344,3 +344,53 @@ WIRE_PLAN 8.3, with 8.3a's floors: **5 better, 50 held, 1 WORSE**.
   own `rtt_avg` is held.
 - **So stage 1's wiring costs nothing measurable on the rig**, while the PC half (Dev, `6d5da13e`) shows the codec
   1.62 us faster each way at 64 KB and 128,128 bytes per endpoint pair freed. Pass 5 is met on both halves.
+
+## g1: serialized messages (Dev pre-registers, 2026-09-28, before any code)
+
+Stage 1's last piece, and RMW_GAPS_PLAN's g1. `rmw_publish_serialized_message`,
+`rmw_take_serialized_message[_with_info]` and `rmw_get_serialized_message_size` are
+`NOT_YET`/`UNSUPPORTED` today, which is why `ros2 bag record` then `play` cannot round-trip on
+rmw_tickle; `rmw_serialize`/`rmw_deserialize` exist but go through the TickLE struct.
+
+### The design, and one departure from the plan's first draft
+
+**No new core API.** The draft proposed `tt_Publisher_publish_serialized(pub, prefix, prefix_len,
+body, body_len)` so the psn header could go ahead of the caller's CDR without copying it. It is not
+needed: `tt_Topic.data_encode` already writes straight into `tx_buffer`, so a publish whose
+"encode" writes the header and then `memcpy`s the caller's bytes performs exactly one copy into
+`tx_buffer` - the same one an ordinary publish makes, and the one stage 1 calls inherent. Adding a
+core entry point would buy nothing and would put a ROS-shaped concept into core, which the user's
+own rule forbids.
+
+- **Publish.** `rmw_tickle_outgoing_message_t` gains `serialized`/`serialized_len`. When set,
+  `encode_with_psn` writes the psn and copies the body; `encode_size_with_psn` returns their sum.
+  Everything else - blocking, the reliable cache, fragmentation - is unchanged, because the bytes
+  reach core the same way.
+- **Take.** A serialized take reads the queued ROS message and encodes it again with the direct
+  encoder into the caller's buffer. It does *not* keep a second queue of raw bytes: the same
+  subscription can be taken either way, so keeping both would cost every subscription memory for a
+  path most never use. This also settles the endianness question the draft raised - the queued
+  message is native, so the bytes handed out always are - at the cost of one encode per serialized
+  take, on a path (bag recording) that is not the hot one.
+- **Serialize.** `rmw_serialize`, `rmw_deserialize` and `rmw_get_serialized_message_size` use the
+  direct codec where the type has one, keeping the struct path as the fallback.
+
+### Pass criteria, fixed before the code
+
+1. **The entry points round-trip.** `rmw_serialize` then `rmw_deserialize` gives back the message,
+   and `rmw_get_serialized_message_size` equals the length `rmw_serialize` writes.
+2. **Serialized out, ordinary in.** What one publisher publishes with
+   `rmw_publish_serialized_message` a subscription takes with `rmw_take` as the same ROS message.
+3. **Ordinary out, serialized in.** What a publisher publishes with `rmw_publish` a subscription
+   takes with `rmw_take_serialized_message` as bytes **identical to `rmw_serialize` of that
+   message** - so the psn header is not in them, and nothing else is either.
+4. **Golden bytes.** `rmw_serialize` of a fixed message equals bytes captured from the build
+   *before* this change, which still uses the struct path. Comparing against the new encoder would
+   compare it with itself. Captured and checked in before the code.
+5. **Acceptance `bag`** passes on rmw_tickle with its CycloneDDS control passing, content check and
+   all.
+6. **Mutants, each failing the criterion named:**
+   - `no_psn_on_serialized_publish` (the header is not written) - fails 2;
+   - `psn_in_serialized_take` (the header is left in the bytes handed out) - fails 3 and 4;
+   - `size_without_header` (`rmw_get_serialized_message_size` returns the body alone) - fails 1.
+7. The gates, the rmw suite in netns, and every acceptance test that passed before still pass.
