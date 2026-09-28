@@ -31,7 +31,7 @@ WS=""
 while getopts "w:" o; do case "$o" in w) WS=$OPTARG ;; *) exit 2 ;; esac; done
 shift $((OPTIND - 1))
 [ -n "$WS" ] && [ -d "$WS/rmw/install" ] && [ -d "$WS/ifaces/install" ] || { echo "usage: $0 -w WS [TEST...]" >&2; exit 2; }
-TESTS=${*:-graph bag events matched itype takeseq samehost inprocess durable range peers}
+TESTS=${*:-graph bag events matched itype takeseq samehost inprocess durable range peers introspect}
 HERE=$(cd "$(dirname "$0")" && pwd)
 NODE="$HERE/acceptance/accept_node.py"
 DISTRO=${ROS_DISTRO_DIR:-/opt/ros/lyrical}
@@ -208,6 +208,24 @@ t_takeseq() {
     esac
     if nm -D --defined-only "$lib" 2>/dev/null | grep -qw rmw_take_sequence; then echo PASS; else echo "FAIL(rmw_take_sequence not defined in $(basename "$lib"))"; fi
 }
+# g14's generalisation: every value an introspection API reports is handed back to the API that would consume it -
+# the type name to the typesupport lookup, the name and QoS to create_publisher(), the GID to the uniqueness a tool
+# matching samples to writers depends on. g14 itself was found the hard way, by rosbag2 refusing to replay a recording
+# whose QoS we had supplied; this asks the same question directly instead of waiting for a tool to ask it.
+#
+# PASS means the node reported at least one endpoint and every round trip succeeded. A control that fails voids the
+# case, as everywhere else here: if CycloneDDS cannot round-trip its own report, the test is wrong, not the rmw.
+t_introspect() {
+    local d=$OUTDIR/introspect_$1
+    mkdir -p "$d"
+    run_in "$NS1" "$1" 1 9 "" python3 "$NODE" introspect 6 > "$d/node.log" 2>&1
+    ran "$d/node.log" 40 || { echo "ERROR(node did not finish)"; return; }
+    local n f
+    n=$(field "$d/node.log" endpoints); f=$(field "$d/node.log" roundtrip_failures)
+    if [ "${n:-0}" -lt 1 ]; then echo "FAIL(no endpoint reported)"; return; fi
+    if [ "${f:-1}" = 0 ]; then echo PASS; else echo "FAIL($(field "$d/node.log" detail))"; fi
+}
+
 t_range_arm() { # rmw range_value peers1 peers2 -> received count
     local rmw=$1 range=$2 p1=$3 p2=$4 d=$OUTDIR/range_${1}_$2${3:+_peers}
     mkdir -p "$d"

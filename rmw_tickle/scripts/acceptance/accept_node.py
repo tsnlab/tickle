@@ -174,6 +174,49 @@ def main():
                                      event_callbacks=SubscriptionEventCallbacks(incompatible_type=on_itype))
         spin_for(node, seconds)
         print('RESULT: role=%s incompatible_type_events=%d' % (role, counts['n']), flush=True)
+    elif role == 'introspect':
+        # g14's generalisation (RMW_GAPS_PLAN): any value an introspection API reports must be one we would accept
+        # back. Here the round trip is done for real rather than reasoned about - the reported topic name, type name
+        # and QoS profile are handed straight back to create_publisher(), and the reported GIDs are checked for the
+        # properties a tool matching samples to endpoints relies on.
+        #
+        # Every checked value is PRINTED as well as judged, because a failure that says only "mismatch" does not say
+        # what was compared - the lesson from three mutants landing above their claim on 2026-09-28.
+        node = Node('accept_introspect')
+        from rosidl_runtime_py.utilities import get_message
+        pub = node.create_publisher(String, '/accept_intro', 10)
+        spin_for(node, min(seconds, 3.0))
+        infos = node.get_publishers_info_by_topic('/accept_intro')
+        fails = []
+        if not infos:
+            fails.append('no_endpoint_reported')
+        gids = []
+        for info in infos:
+            tname = info.topic_type
+            gids.append(bytes(info.endpoint_gid))
+            print('REPORTED: type=%s qos=%s gid=%s' % (tname, info.qos_profile, bytes(info.endpoint_gid).hex()),
+                  flush=True)
+            # 1. the reported type name must resolve to a type
+            try:
+                msg_type = get_message(tname)
+            except Exception as exc:  # noqa: BLE001 - the failure itself is the result
+                fails.append('type_unresolvable:%s:%s' % (tname, type(exc).__name__))
+                continue
+            # 2. the reported name, type and QoS must be usable to create the endpoint again
+            try:
+                again = node.create_publisher(msg_type, '/accept_intro_rt', info.qos_profile)
+                node.destroy_publisher(again)
+            except Exception as exc:  # noqa: BLE001
+                fails.append('recreate_refused:%s' % type(exc).__name__)
+        # 3. a GID must be non-zero and unique, or a tool cannot match a sample to its writer
+        for gid in gids:
+            if gid == bytes(len(gid)):
+                fails.append('gid_all_zero')
+        if len(set(gids)) != len(gids):
+            fails.append('gid_not_unique')
+        node.destroy_publisher(pub)
+        print('RESULT: role=introspect endpoints=%d roundtrip_failures=%d detail=%s'
+              % (len(infos), len(fails), ','.join(fails) if fails else 'none'), flush=True)
     else:
         print('RESULT: role=%s error=unknown_role' % role, flush=True)
         return 2
