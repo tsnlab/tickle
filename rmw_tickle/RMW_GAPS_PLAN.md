@@ -1052,6 +1052,27 @@ once, or a clean build, which is what CI does anyway.
      - **where the writer does not retain enough, loss is permitted but must be counted and must not exceed the
        control's.** `gap_evicted` non-zero and reported, and the same stall against CycloneDDS losing at least as much.
 
+     **Result of the stall arm (Dev, 2026-09-29).** A recorder SIGSTOPped for 8 s behind an ordinary KEEP_LAST depth-10
+     talker; loss is published minus recorded, taken from rosbag2's own output on **both** sides so the two arms are
+     measured the same way. Five pairs:
+
+     | | runs | mean lost | SE | spread |
+     |---|---|---:|---:|---:|
+     | `rmw_cyclonedds_cpp` (control) | 39, 54, 59, 65, 72 | 57.8 | 5.6 | 33 |
+     | `rmw_tickle` | 37, 39, 39, 39, 39 | **38.6** | 0.4 | 2 |
+
+     **Both lose, so this is DDS semantics and not a TickLE shortfall** - the first branch of the criterion. And within
+     that, TickLE loses **33% fewer samples**, difference 19.2 at t = −3.4, with a spread of 2 against the control's 33.
+     `gap_evicted` was 13-16 against a loss of 37-39 and the two are reported side by side rather than one standing for
+     the other: the counter counts what the writer said it no longer held, and the rest went while the reader was
+     stopped and its window moved past. The control reports no equivalent at all.
+
+     **Caveats, because a single-condition advantage is not a general one:** n = 5, one stall duration, one publisher
+     depth. And the methodological point Dev found on the way is worth more than the number: **the first pair came out
+     39 against 39** and would have been written up as "level", while the second pair alone would have claimed 20
+     better. The control's own spread is 33. That is WIRE_PLAN 8.3's confirmation rule arriving from the other side -
+     one pair is a candidate, not a finding - and the first time it has been *the control* that is the noisy arm.
+
      **The control is what decides whether this is a gap at all**, and it must be run before the plan says which:
      a DDS reader behind a KEEP_LAST writer of depth 10 should also lose samples when it stalls, because the writer
      evicts and the reader gets a GAP - in which case TickLE is level, this is DDS semantics rather than a TickLE

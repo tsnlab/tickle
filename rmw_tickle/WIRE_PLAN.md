@@ -318,6 +318,13 @@ on the PC, one binary does not reproduce itself between runs to within 2 x SE.
   - A difference beyond it, in the same direction in every repeat, is WORSE.
 - 8.9's and D5's few-ns results are consistent with this. They are noted here, not re-judged.
 
+
+**The rule applies to the control's variance too (added 2026-09-29).** The instinct is to check whether *our* arm is
+noisy, and the acceptance suite's rosbag2 stall arm showed why that is not enough: `rmw_cyclonedds_cpp` lost 39, 54, 59,
+65 and 72 samples over five runs - a spread of 33 - while rmw_tickle lost 37, 39, 39, 39, 39, a spread of 2. The first
+pair was 39 against 39 and would have been reported as level; the second pair alone would have claimed a 20-sample
+advantage. **The number of repetitions a comparison needs is set by the noisier arm, whichever arm that is.**
+
 ### 8.3a The Pi bench's own floor (2026-09-27, Plan)
 
 `core_cost_pi_drift.sh`: one build (`f22fd4fa`) measured against itself on the client Pi, 4 occasions 15 min apart, 10
