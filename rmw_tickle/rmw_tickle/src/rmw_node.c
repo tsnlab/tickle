@@ -446,15 +446,21 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
     // unchecked for the entities it dropped, which core warned about once when it happened.
     (void)fprintf(stderr,
                   "rmw_tickle: executor_poll=%d executor_poll_waits=%llu executor_handovers=%llu park_wakes=%llu "
-                  "discovery_dropped=%u nodes_kept_at_destroy=%llu id_muted_drops=%llu cache_depth_shortfalls=%llu\n",
+                  "discovery_dropped=%u nodes_kept_at_destroy=%llu id_muted_drops=%llu cache_depth_shortfalls=%llu "
+                  "rx_malformed_drops=%llu version_mismatch_drops=%llu\n",
                   context_impl->executor_poll_enabled ? 1 : 0,
                   (unsigned long long)atomic_load(&context_impl->executor_poll_waits),
                   (unsigned long long)atomic_load(&context_impl->executor_handovers),
                   (unsigned long long)atomic_load(&context_impl->park_wakes),
                   (unsigned)context_impl->discovery.entities_dropped,
                   (unsigned long long)atomic_load(&context_impl->nodes_kept_at_destroy),
-                  (unsigned long long)context_impl->tickle_context.id_muted_drops,         // (g8)
-                  (unsigned long long)atomic_load(&context_impl->cache_depth_shortfalls)); // (g10)
+                  (unsigned long long)context_impl->tickle_context.id_muted_drops,        // (g8)
+                  (unsigned long long)atomic_load(&context_impl->cache_depth_shortfalls), // (g10)
+                  // (g11) What arrived and could not be processed. Not an error - a peer must not be able to end a
+                  // poll loop - but a node that saw any is worth knowing about: a rolling upgrade in progress, a
+                  // corrupt link, or somebody sending it rubbish.
+                  (unsigned long long)context_impl->tickle_context.rx_malformed_drops,
+                  (unsigned long long)context_impl->tickle_context.version_mismatch_drops);
 
     // watchdog_thread_running is only ever true here if start_shared_tickle_node() actually
     // managed to start it (see its own doc comment there) - nothing to join otherwise. No tt_Context_

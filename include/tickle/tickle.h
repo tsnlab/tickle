@@ -364,6 +364,13 @@ struct tt_Context {
 #if tt_DISCOVERY_OPTIONS
     uint64_t rx_out_of_range; // (g6) datagrams dropped because their sender is outside _tt_CONFIG.discovery_range
 #endif
+    // (g11, RMW_GAPS_PLAN.md) Datagrams dropped because nothing in them could be processed: a wire version this
+    // build does not speak, a bad magic, a header or submessage that runs past the datagram. A peer must never be
+    // able to end a local poll loop, so these are counted and dropped rather than returned as an error - one v10
+    // datagram used to end a v11 node outright. version_mismatch_drops is the named subset of rx_malformed_drops
+    // that a rolling upgrade produces, which is worth telling apart from an attack or a corrupt link.
+    uint64_t rx_malformed_drops;
+    uint64_t version_mismatch_drops;
 #if tt_LOCAL_DELIVERY
     // (g9, config.h's tt_LOCAL_DELIVERY) Where a published sample's bytes wait while this context's own Subscribers
     // take it: sending reuses tx_buffer. Owned here rather than on the publishing thread's stack, which a sample of

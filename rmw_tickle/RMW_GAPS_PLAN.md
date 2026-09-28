@@ -815,3 +815,25 @@ range, `data_encode` failing, and so on), which is the caller's own error and st
    - `silent_drop`: the drop is not counted - fails 1.
    - `fatal_malformed`: only the version case is made non-fatal, a truncated datagram is still fatal - fails 1 and 2.
 5. Acceptance: Plan's `v10 sender beside a v11 pair` case, and every test that passed before still passes.
+
+### Result (Dev, 2026-09-28)
+
+Fixed in core: `validate_packet_header()` counts `version_mismatch_drops`, `process_datagram_locked()` counts
+`rx_malformed_drops` and returns `tt_RET_OK`, and both join the rmw shutdown line.
+
+`tests/test_hostile_datagram.c` runs all four hostile shapes - wrong wire version, bad magic, truncated header,
+overlong submessage - through each criterion. Against the unfixed code every one of them failed: `process_datagram()`
+returned -3, and a poll whose first datagram was hostile left 3 of its 4 queued datagrams unread, which is the rig's
+failure reproduced in-process. Afterwards all pass, and the other 41 unit programs still do.
+
+Mutants, each killed by the criterion it was aimed at: `fatal_version` (criteria 1, 2 and 3), `silent_drop`
+(criterion 1 only, as intended), `fatal_malformed` (criteria 1, 2 and 3).
+
+One thing the test records rather than changes: a datagram whose header validates but whose submessages do not
+*does* stamp its sender's liveliness, because `process_packet()` stamps between the two. The header proves a peer
+speaking this wire version is transmitting, which is what that evidence claims. It is now asserted per case, so a
+later change to it has to be deliberate.
+
+Not affected, checked rather than assumed: rmw_tickle's own poll thread ignores the return, so no ROS node ever
+stopped on this. What stopped was every program written the way `examples/perf_hil/tickle`'s fourteen poll loops
+are written.

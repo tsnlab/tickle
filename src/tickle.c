@@ -9657,6 +9657,7 @@ static bool validate_packet_header(struct tt_Context* node, struct tt_Header* he
             node->version_mismatch_logged[header->source] = header->version;
             TT_LOG_ERROR("Illegal version from node %d: %d != %d", header->source, header->version, tt_VERSION);
         }
+        node->version_mismatch_drops++; // (g11) counted, and dropped by the caller - never fatal
         return false;
     }
 
@@ -9912,9 +9913,16 @@ static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, ui
     TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
                  (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
 
+    // (g11, RMW_GAPS_PLAN.md) A datagram nothing could be made of is dropped and counted, never returned as an
+    // error. The loops TickLE ships - and the ones its examples teach people to write - end on anything but OK or
+    // TIMEOUT, and drain_rx() stops on the same condition, so returning an error here let any host that can reach
+    // the port end a node with one UDP datagram: one v10 packet from a leftover process ended a v11 server on the
+    // rig, twenty seconds into its run, and voided the measurement. An error return is for this node's own
+    // failures - an encode that overflows, a socket that breaks - not for what a peer chose to send.
     if (!process_packet(node, node->rx_buffer, 0, len, ip, port)) {
         TT_LOG_ERROR("Cannot process packet");
-        return tt_RET_PROTOCOL_ERROR;
+        node->rx_malformed_drops++;
+        return tt_RET_OK;
     }
 
     return tt_RET_OK;
