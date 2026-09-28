@@ -160,14 +160,33 @@ print("unforced pair (the control that the effect is here at all):")
 p_unforced, t_unforced = gap("A", "B")
 print("forced pair (both arms -falign-functions):")
 p_forced, t_forced = gap("Aa", "Ba")
-print("what the flag itself did to each commit:")
-gap("A", "Aa")
-gap("B", "Ba")
+print("what the flag itself did to each commit (neither changes what the program computes):")
+flag_effect = {"A->Aa": gap("A", "Aa"), "B->Ba": gap("B", "Ba")}
+
+# Three outcomes were pre-registered and the run produced a fourth: the gap REVERSED under the forced alignment. The
+# original branch treated any |t| > 2 on the forced pair as "not alignment", which reads a reversal as if it were the
+# same gap surviving - the opposite of what it means. A difference whose SIGN a semantically neutral flag can flip is
+# not a difference the code is causing, so a reversal is the strongest evidence for layout, not against it.
+flag_moves = []
+for name, (pct, t) in flag_effect.items():
+    if abs(pct) > 0.5 and abs(t) > 2:
+        flag_moves.append("%s %+.3f%% (t=%.2f)" % (name, pct, t))
 
 if not (p_unforced < -0.5 and t_unforced < -2):
-    print("VERDICT=VOID - the unforced pair does not reproduce the ~1.1%; this run says nothing either way")
+    print("VERDICT=VOID - the unforced pair does not reproduce the effect; this run says nothing either way")
 elif abs(t_forced) <= 2:
     print("VERDICT=LAYOUT - forcing the alignment closes the gap (%+.3f%%, t=%.2f) while the unforced pair keeps it" % (p_forced, t_forced))
+elif p_forced > 0:
+    print("VERDICT=LAYOUT_DOMINATED - the gap REVERSES under a forced alignment (%+.3f%%, t=%.2f against %+.3f%% unforced)."
+          % (p_forced, t_forced, p_unforced))
+    print("  A difference whose sign a semantically neutral flag flips is not caused by the code. Treat differences of")
+    print("  this size at this cell as layout noise and not as a cost.")
 else:
-    print("VERDICT=NOT_ALIGNMENT - the gap survives a forced alignment (%+.3f%%, t=%.2f); next is a pinned link order, then a51b8d2f" % (p_forced, t_forced))
+    print("VERDICT=NOT_ALIGNMENT - the gap survives a forced alignment in the same direction (%+.3f%%, t=%.2f); the"
+          % (p_forced, t_forced))
+    print("  stronger arm is a pinned link order, and after that a51b8d2f.")
+
+if flag_moves:
+    print("FLOOR: the flag alone, which changes nothing the program computes, moved " + ", ".join(flag_moves) + ".")
+    print("  So this cell cannot attribute a throughput difference of that size to any code change.")
 PYEOF

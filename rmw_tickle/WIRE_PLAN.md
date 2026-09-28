@@ -1217,3 +1217,45 @@ does not identify an origin; only the ordering does.
 A step that voids is retried once and then stops the bisect rather than falling through to "clean". The first run of this
 script did fall through, and a bisect that moves on a step which measured nothing is a bisect whose answer means
 nothing.
+
+### 10.4 It is layout, and there is a floor: p1 throughput cannot attribute ~1% (2026-09-29, Plan)
+
+`p1_layout_check.sh` ran the pre-registered test: each commit built as usual and built again with
+`-falign-functions=32`, four arms, 6 runs each, rotated within every block. `6910d840` against `6515d3c6`.
+
+| pair | `sent` | | what it is |
+|---|---:|---:|---|
+| A -> B, neither forced | −0.595% | t −7.46 | the control: the effect is here tonight |
+| Aa -> Ba, both forced | **+0.453%** | t +5.12 | the same pair, alignment equalised - **the sign reverses** |
+| A -> Aa | **−0.859%** | t −11.37 | what the flag alone does to the old commit |
+| B -> Ba | +0.187% | t +2.03 | and to the new one |
+
+**The gap does not survive the forced alignment - it reverses.** Under a flag that changes nothing the program computes,
+`6515d3c6` becomes *faster* than `6910d840` by 0.45% where it was slower by 0.60%. A difference whose sign a
+semantically neutral compiler flag can flip is not a difference the code is causing. Together with Dev's finding that
+`5d9cace1` adds nothing to the per-datagram path and leaves every receive and publish function byte-identical, the
+conclusion is that **the p1 "regression" is function placement, and there is nothing in stage 2's design to fix.**
+
+**And the more useful result is the floor.** `-falign-functions=32` alone moved arm A by **−0.859%** at t = −11.4 -
+the same order as the entire difference under investigation, from a flag that changes no instruction's meaning. So:
+
+> **Floor (p1 `reliable_throughput`, both Pis, 20 s runs): a throughput or CPU-per-sample difference below about 1%
+> between two builds whose code differs in size is not evidence of a cost.** It is inside what code placement moves on
+> its own. Establishing more than that needs the layout held fixed in both arms - a pinned link order, or the same
+> binary - not more repetitions, because repetitions shrink the SE without touching the systematic part.
+
+This belongs beside section 8.3a's Pi floors (send ±2.5 ns, recv ±1.2 ns from same-binary A/A), and it is larger in
+relative terms than those, because those were measured on one binary and this one is about two.
+
+**What that retires.** The open item section 10 has carried all day - "the p1 client's CPU per sample rose 0.5-0.7%",
+later measured as 1.107% and re-framed in 10.2 as a throughput loss - **is not a finding.** It is inside the floor above,
+the bisect's origin (`5d9cace1`, 10.3) identifies where the code size changed rather than where a cost was added, and
+`a51b8d2f`'s −0.364% never was one. COMPARISON's footnote is corrected accordingly. Nothing is reverted and nothing is
+owed: what was owed was a reason, and the reason is that the instrument could not tell.
+
+**The run also found the script's own reading incomplete**, which is worth recording because the pre-registration is
+supposed to cover the outcomes. Three were written down - the gap closes, the gap survives, the control fails - and the
+run produced a fourth, a reversal, which the code classified as "survives" because it tested `|t| > 2` without a sign.
+A reversal is the *strongest* evidence for layout and it was being reported as evidence against it. The script now has
+that branch, and prints the flag's own effect on each arm as a floor line whenever it exceeds 0.5%. A pre-registration
+that enumerates outcomes has to enumerate them by sign, not by magnitude.
