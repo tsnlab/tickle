@@ -303,12 +303,21 @@ class WireStruct:
 
 @dataclass
 class TopicIR:
-    name: str  # e.g. "UInt64" -> struct UInt64Data, UInt64Topic
+    # The base every generated symbol is built from: "UInt64" -> struct UInt64Data, UInt64Topic.
+    # The ROS 2 path qualifies it by package ("std_msgs__msg__String"), because two packages with a
+    # same-named message otherwise define the same global symbols and whichever library loads first
+    # serves both - see RMW_GAPS_PLAN.md g12. TickLE's own generator leaves it as the interface
+    # name, since its users write these names by hand.
+    name: str
     data: WireStruct
+    # The file the generated .c includes, without ".h". None means the symbol base, which is what
+    # it is whenever the two are the same.
+    header_name: str | None = None
 
 
 @dataclass
 class ServiceIR:
-    name: str  # e.g. "SetBool" -> SetBoolRequest/Response, SetBoolService
+    name: str  # the symbol base, as TopicIR.name: "SetBool" -> SetBoolRequest/Response, SetBoolService
     request: WireStruct
     response: WireStruct
+    header_name: str | None = None  # as TopicIR.header_name

@@ -46,7 +46,9 @@ class Ros2Resolver:
     case: ROS 2's own grammar resolves an unqualified nested type name to the *current* package,
     tickle_typesupport._rosidl_parser's own Type.__init__ already handles this, nothing extra
     needed here to detect it), or another package's, if that one too builds rosidl_typesupport_
-    tickle_c. That independent generation uses adapt_message()'s own "<Name>Data" c_name
+    tickle_c. That independent generation uses adapt_message()'s own package-qualified c_name
+    ("<pkg>__<subfolder>__<Name>Data" since g12, where two packages with a same-named message used
+    to define the same global symbols)
     convention (not this module's own Resolver.resolve_struct()'s "pkg__Name" one) - so reusing
     it, rather than writing a second, differently-named, *incompatible* copy of an equivalent
     struct via render_nested(), is the entire point of this class: resolve_struct() never writes
@@ -128,7 +130,9 @@ class Ros2Resolver:
 
         if pkg_name == self.package_name and msg_name in self._action_local:
             spec = rosidl.parse_message_string(pkg_name, msg_name, self._action_local[msg_name])
-            struct = adapt_struct_fn(f"{msg_name}Data", spec, self, self._capacities_for(pkg_name, msg_name, "action"))
+            struct = adapt_struct_fn(
+                f"{pkg_name}__action__{msg_name}Data", spec, self, self._capacities_for(pkg_name, msg_name, "action")
+            )
             struct.header_name = f"{msg_name}.h"
             struct.origin = (pkg_name, "action", msg_name)
             self.resolved_structs[key] = struct
@@ -145,7 +149,7 @@ class Ros2Resolver:
             self.resolved_structs[key] = struct
             return struct
         spec = rosidl.parse_message_string(pkg_name, msg_name, text)
-        struct = adapt_struct_fn(f"{msg_name}Data", spec, self, self._capacities_for(pkg_name, msg_name))
+        struct = adapt_struct_fn(f"{pkg_name}__msg__{msg_name}Data", spec, self, self._capacities_for(pkg_name, msg_name))
         struct.header_name = f"{msg_name}.h"
         struct.origin = (pkg_name, "msg", msg_name)
         self.resolved_structs[key] = struct

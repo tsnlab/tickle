@@ -86,7 +86,9 @@ namespace {
     constexpr size_t dumped_bytes = 96;   // of a differing encoding, per type
     constexpr unsigned low_nibble = 0xfU; // for the hex dump of one
     constexpr int dumped_strings = 8;     // of a differing message's own strings
-    constexpr size_t letters = 26;        // the alphabet a random string is drawn from
+    constexpr uint64_t fnv_offset = 1469598103934665603ULL;
+    constexpr uint64_t fnv_prime = 1099511628211ULL;
+    constexpr size_t letters = 26; // the alphabet a random string is drawn from
 
     auto members_of(const rosidl_message_type_support_t* support) -> const message_members* {
         return static_cast<const message_members*>(support->data);
@@ -434,6 +436,11 @@ namespace {
     };
 
     struct counts {
+        // FNV-1a over every encoding each path produced, in sample order. A change to the wire
+        // bytes of a type shows up as a changed hash between two builds, which is how a rename is
+        // told apart from a re-encoding (RMW_GAPS_PLAN g12, Plan's criterion 1).
+        uint64_t old_hash = fnv_offset;
+        uint64_t new_hash = fnv_offset;
         int identical = 0;
         int capacity_only = 0;
         int both_refused = 0;
@@ -459,6 +466,13 @@ namespace {
         counts tally;
         bool dumped; // whether a differing pair of encodings has already been printed for this type
     };
+
+    auto mix(uint64_t hash, const uint8_t* bytes, int32_t len) -> uint64_t {
+        for (int32_t index = 0; index < len; index++) {
+            hash = (hash ^ bytes[index]) * fnv_prime;
+        }
+        return (hash ^ static_cast<uint64_t>(len)) * fnv_prime;
+    }
 
     auto tickle_data(checker& check) -> tt_Data* {
         return reinterpret_cast<tt_Data*>(bytes_of(check.tickle_storage));
@@ -677,6 +691,8 @@ namespace {
                 }
                 return false;
             }
+            check.tally.old_hash = mix(check.tally.old_hash, bytes_of(check.out_old), old.size);
+            check.tally.new_hash = mix(check.tally.new_hash, bytes_of(check.out_new), new_size);
             check.tally.identical++;
             return true;
         }
@@ -1004,10 +1020,12 @@ namespace {
         counts const tally = run_type(type, members_of(introspection), callbacks, seed, opts.samples);
         bool const below_floor = tally.identical < opts.samples / 2;
         std::printf("%s %s identical=%d capacity_only=%d both_refused=%d regenerated=%d shrunk=%d overbound=%d "
-                    "decode_inputs=%d decode_capacity_only=%d failures=%d seed=%" PRIu64 "\n",
+                    "decode_inputs=%d decode_capacity_only=%d failures=%d old_hash=%016" PRIx64 " new_hash=%016" PRIx64
+                    " seed=%" PRIu64 "\n",
                     (tally.failures > 0 || below_floor) ? "FAIL" : "ok", type.c_str(), tally.identical,
                     tally.capacity_only, tally.both_refused, tally.regenerated, tally.shrunk, tally.overbound,
-                    tally.decode_inputs, tally.decode_capacity_only, tally.failures, seed);
+                    tally.decode_inputs, tally.decode_capacity_only, tally.failures, tally.old_hash, tally.new_hash,
+                    seed);
         if (below_floor) {
             std::printf("FAIL %s: %d of %d samples byte-compared, below the floor of %d\n", type.c_str(),
                         tally.identical, opts.samples, opts.samples / 2);

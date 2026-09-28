@@ -1,4 +1,4 @@
-#include "@(name).h"
+#include "@(header_name).h"
 
 #include <stdint.h>
 @[if needs_string_h]@

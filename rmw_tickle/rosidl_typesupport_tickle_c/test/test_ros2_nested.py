@@ -51,27 +51,27 @@ static void test_branch_nests_leaf_by_reusing_its_own_independent_codec(void) {
     ros_in.tag = 7;
     ros_in.leaf_value.value = -42;
 
-    struct BranchData tickle;
+    struct test_msgs__msg__BranchData tickle;
     memset(&tickle, 0, sizeof(tickle));
     assert(test_msgs__msg__Branch__to_tickle(&ros_in, &tickle));
 
-    /* The whole point: Branch's own nested field is a real, plain struct LeafData - the *exact
+    /* The whole point: Branch's own nested field is a real, plain struct test_msgs__msg__LeafData - the *exact
      * same type* Leaf.msg's own independent, separate generate() call produces (not a second,
      * differently-named copy) - so this line only compiles at all if ros2_resolve.Ros2Resolver's own
      * "reuse, don't re-generate" contract actually held. */
-    struct LeafData* nested = &tickle.leaf_value;
+    struct test_msgs__msg__LeafData* nested = &tickle.leaf_value;
     assert(nested->value == -42);
     assert(tickle.tag == 7);
 
     uint8_t buf[64];
-    int32_t size = BranchData_encode_size(&tickle);
+    int32_t size = test_msgs__msg__BranchData_encode_size(&tickle);
     assert(size > 0);
-    int32_t encoded = BranchData_encode(&tickle, buf, sizeof(buf));
+    int32_t encoded = test_msgs__msg__BranchData_encode(&tickle, buf, sizeof(buf));
     assert(encoded == size);
 
-    struct BranchData decoded_tickle;
+    struct test_msgs__msg__BranchData decoded_tickle;
     memset(&decoded_tickle, 0, sizeof(decoded_tickle));
-    int32_t decoded = BranchData_decode(&decoded_tickle, buf, encoded, true);
+    int32_t decoded = test_msgs__msg__BranchData_decode(&decoded_tickle, buf, encoded, true);
     assert(decoded == encoded);
     assert(decoded_tickle.tag == 7);
     assert(decoded_tickle.leaf_value.value == -42);
@@ -82,7 +82,7 @@ static void test_branch_nests_leaf_by_reusing_its_own_independent_codec(void) {
     assert(ros_out.tag == 7);
     assert(ros_out.leaf_value.value == -42);
 
-    BranchData_free(&decoded_tickle);
+    test_msgs__msg__BranchData_free(&decoded_tickle);
     printf("test_branch_nests_leaf_by_reusing_its_own_independent_codec: PASS\n");
 }
 

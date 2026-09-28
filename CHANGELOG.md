@@ -539,6 +539,32 @@ number, `tt_VERSION`, which moves independently.
 
 ### Fixed
 
+- **Two interface packages with a same-named message no longer share one codec** (RMW_GAPS_PLAN.md g12,
+  2026-09-28). **Every interface package must be rebuilt**: the generated names change, so code naming
+  `<Name>Data` on the ROS 2 path stops compiling rather than linking to the wrong thing.
+  - The generator named a message's TickLE struct and its codec after the message alone, so
+    `std_msgs/String` and `example_interfaces/String` both defined `StringData_encode`, and
+    `action_msgs/GoalStatus` and `actionlib_msgs/GoalStatus` both defined `GoalStatusData_encode`. Whichever
+    library loaded first served both. 144 symbols collided across the shipped inventory.
+  - Where the two types had the same layout nothing showed, which is why it went unseen. Where they did not,
+    one type's messages were encoded by the other type's codec: `actionlib_msgs/GoalStatus` came out as 25
+    bytes of `action_msgs`' fixed-size struct, heap pointers included - wrong data, and addresses on the wire.
+  - Generated ROS 2 names are now package-qualified (`std_msgs__msg__StringData_encode`). TickLE's own
+    generator is unchanged: its users write those names by hand.
+  - `rmw_tickle/scripts/check_interface_symbols.sh` refuses a workspace where two interface packages define
+    the same symbol, and Check all runs it over the whole inventory on every push. A one-package-at-a-time
+    check could not have found this, because a collision needs two packages loaded at once.
+
+- **A datagram from a peer is dropped and counted, never a fatal poll return** (RMW_GAPS_PLAN.md g11,
+  2026-09-28).
+  - An unknown wire version, a bad magic, a truncated header or a submessage that does not walk made
+    `tt_Context_poll()` return `tt_RET_PROTOCOL_ERROR`, and every poll loop TickLE ships ends on anything but
+    OK or TIMEOUT. One UDP datagram from anyone who could reach the port therefore ended such a node, before
+    any discovery - and one v10 process ended a v11 server mid-measurement on the rig. rmw_tickle was never
+    affected: its poll thread ignores the return.
+  - `rx_malformed_drops` counts them, `version_mismatch_drops` the version mismatches among them, and both are
+    on rmw_tickle's shutdown line. An error return is now only for this node's own failures.
+
 - **Discovery lookups no longer scan the table** (CONTEXT_NODE_PLAN.md 4b, 2026-09-27).
   - Every received DATA's RxO check found its publisher with a linear scan, as did a MANUAL_BY_TOPIC publisher's
     liveliness assertion, which scanned all of it. So did every announced entity, up to three times (the lookup, an

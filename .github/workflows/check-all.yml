@@ -731,6 +731,10 @@ jobs:
           source install/setup.bash
           source "$RUNNER_TEMP/tickle_ros2_interfaces/install/setup.bash"
           set -u
+          # No two interface packages may define the same symbol (RMW_GAPS_PLAN g12). Before the
+          # harness, because a collision makes every later result meaningless: the type whose
+          # codec lost the race is encoded by another type's.
+          rmw_tickle/scripts/check_interface_symbols.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces"
           ./build/rosidl_typesupport_tickle_c_tests/direct_codec_identity --all \
             -d rmw_tickle/rosidl_typesupport_tickle_c_tests/declined_types.txt
           # The standing control that this harness can fail at all: the same tests package, built

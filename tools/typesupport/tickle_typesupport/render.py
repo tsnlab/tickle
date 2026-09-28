@@ -123,9 +123,11 @@ def _struct_context(struct):
 
 def render_topic(topic_ir):
     ctx = _struct_context(topic_ir.data)
+    header_name = topic_ir.header_name or topic_ir.name
     header = _expand(
         "topic.h.em",
         name=topic_ir.name,
+        header_name=header_name,
         data_name=topic_ir.data.c_name,
         data_struct_h=_expand("struct.h.em", **ctx),
         nested_includes=ctx["nested_includes"],
@@ -133,6 +135,7 @@ def render_topic(topic_ir):
     source = _expand(
         "topic.c.em",
         name=topic_ir.name,
+        header_name=header_name,
         data_name=topic_ir.data.c_name,
         data_struct_c=_expand("struct.c.em", **ctx),
         needs_string_h=ctx["needs_string_h"],
@@ -148,9 +151,11 @@ def render_service(service_ir):
     request_ctx = _struct_context(service_ir.request)
     response_ctx = _struct_context(service_ir.response)
     nested_includes = sorted(set(request_ctx["nested_includes"]) | set(response_ctx["nested_includes"]))
+    header_name = service_ir.header_name or service_ir.name
     header = _expand(
         "service.h.em",
         name=service_ir.name,
+        header_name=header_name,
         request_name=service_ir.request.c_name,
         response_name=service_ir.response.c_name,
         request_struct_h=_expand("struct.h.em", **request_ctx),
@@ -160,6 +165,7 @@ def render_service(service_ir):
     source = _expand(
         "service.c.em",
         name=service_ir.name,
+        header_name=header_name,
         request_name=service_ir.request.c_name,
         response_name=service_ir.response.c_name,
         request_struct_c=_expand("struct.c.em", **request_ctx),

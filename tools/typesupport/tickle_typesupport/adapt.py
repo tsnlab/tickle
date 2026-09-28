@@ -335,16 +335,27 @@ def adapt_struct(c_name, rosidl_spec, resolver=None, capacities=None):
     return struct
 
 
-def adapt_message(name, rosidl_message_spec, resolver=None, capacities=None):
+def adapt_message(name, rosidl_message_spec, resolver=None, capacities=None, symbol_base=None):
     """.msg -> TopicIR. `name` is the interface name (e.g. "UInt64"), independent of whatever
-    package/message name rosidl needed to satisfy its own validation."""
-    return model.TopicIR(name=name, data=adapt_struct(f"{name}Data", rosidl_message_spec, resolver, capacities))
+    package/message name rosidl needed to satisfy its own validation - and the name of the file
+    the generated .c includes. `symbol_base` is what every generated symbol is built from, `name`
+    unless given; the ROS 2 path passes a package-qualified one (see TopicIR.name)."""
+    base = symbol_base or name
+    return model.TopicIR(
+        name=base,
+        header_name=name,
+        data=adapt_struct(f"{base}Data", rosidl_message_spec, resolver, capacities),
+    )
 
 
-def adapt_service(name, rosidl_service_spec, resolver=None, request_capacities=None, response_capacities=None):
-    """.srv -> ServiceIR."""
+def adapt_service(
+    name, rosidl_service_spec, resolver=None, request_capacities=None, response_capacities=None, symbol_base=None
+):
+    """.srv -> ServiceIR. `symbol_base` as in adapt_message()."""
+    base = symbol_base or name
     return model.ServiceIR(
-        name=name,
-        request=adapt_struct(f"{name}Request", rosidl_service_spec.request, resolver, request_capacities),
-        response=adapt_struct(f"{name}Response", rosidl_service_spec.response, resolver, response_capacities),
+        name=base,
+        header_name=name,
+        request=adapt_struct(f"{base}Request", rosidl_service_spec.request, resolver, request_capacities),
+        response=adapt_struct(f"{base}Response", rosidl_service_spec.response, resolver, response_capacities),
     )

@@ -281,6 +281,7 @@ def _generate_action(package, name, text, resolver, table, source_label, outdir,
                         rosidl.parse_message_string(package, message_name, message_text),
                         resolver,
                         capacity_file.for_message(table, message_name, "action"),
+                        symbol_base=f"{package}__action__{message_name}",
                     ),
                 )
                 for message_name, message_text in messages.items()
@@ -294,7 +295,14 @@ def _generate_action(package, name, text, resolver, table, source_label, outdir,
                 service_irs.append(
                     (
                         service_name,
-                        adapt.adapt_service(f"{service_name}_srv", spec, resolver, request_capacities, response_capacities),
+                        adapt.adapt_service(
+                            f"{service_name}_srv",
+                            spec,
+                            resolver,
+                            request_capacities,
+                            response_capacities,
+                            symbol_base=f"{package}__srv__{service_name}",
+                        ),
                     )
                 )
     except ros2_resolve.UnsupportedNestedPackage as unsupported:
@@ -365,7 +373,9 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
     if subfolder == "msg":
         spec = rosidl.parse_message_string(package, name, text)
         try:
-            ir = adapt.adapt_message(name, spec, resolver, capacity_file.for_message(table, name))
+            ir = adapt.adapt_message(
+                name, spec, resolver, capacity_file.for_message(table, name), symbol_base=f"{package}__msg__{name}"
+            )
         except ros2_resolve.UnsupportedNestedPackage as unsupported:
             return _decline(package, subfolder, name, outdir, source_label, fmt_dir, _nested_package_reason(unsupported))
         except adapt.UnsupportedFieldError as error:
@@ -397,7 +407,14 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
             table, name, {f.name for f in spec.request.fields}, {f.name for f in spec.response.fields}
         )
         try:
-            ir = adapt.adapt_service(srv_tickle_name, spec, resolver, request_capacities, response_capacities)
+            ir = adapt.adapt_service(
+                srv_tickle_name,
+                spec,
+                resolver,
+                request_capacities,
+                response_capacities,
+                symbol_base=f"{package}__srv__{name}",
+            )
         except ros2_resolve.UnsupportedNestedPackage as unsupported:
             return _decline(package, subfolder, name, outdir, source_label, fmt_dir, _nested_package_reason(unsupported))
         except adapt.UnsupportedFieldError as error:

@@ -43,19 +43,19 @@ static void test_char_array_roundtrip(void) {
     ros_in.char_values.size = 2;
     ros_in.char_values.capacity = 2;
 
-    struct CharArrayData tickle;
+    struct test_msgs__msg__CharArrayData tickle;
     memset(&tickle, 0, sizeof(tickle));
     assert(test_msgs__msg__CharArray__to_tickle(&ros_in, &tickle));
 
     uint8_t buf[64];
-    int32_t size = CharArrayData_encode_size(&tickle);
+    int32_t size = test_msgs__msg__CharArrayData_encode_size(&tickle);
     assert(size > 0);
-    int32_t encoded = CharArrayData_encode(&tickle, buf, sizeof(buf));
+    int32_t encoded = test_msgs__msg__CharArrayData_encode(&tickle, buf, sizeof(buf));
     assert(encoded == size);
 
-    struct CharArrayData decoded_tickle;
+    struct test_msgs__msg__CharArrayData decoded_tickle;
     memset(&decoded_tickle, 0, sizeof(decoded_tickle));
-    int32_t decoded = CharArrayData_decode(&decoded_tickle, buf, encoded, true);
+    int32_t decoded = test_msgs__msg__CharArrayData_decode(&decoded_tickle, buf, encoded, true);
     assert(decoded == encoded);
 
     struct test_msgs__msg__CharArray ros_out;
@@ -65,7 +65,7 @@ static void test_char_array_roundtrip(void) {
     assert(ros_out.char_values.size == 2);
     assert(memcmp(ros_out.char_values.data, char_values_data, sizeof(char_values_data)) == 0);
 
-    CharArrayData_free(&decoded_tickle);
+    test_msgs__msg__CharArrayData_free(&decoded_tickle);
     printf("test_char_array_roundtrip: PASS\n");
 }
 
