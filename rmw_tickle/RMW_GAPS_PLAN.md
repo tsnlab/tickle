@@ -758,3 +758,28 @@ nothing between processes, CycloneDDS's observed behaviour.
 
 **Every gap on the list is closed except g1** (serialized messages, with large-message stage 1), each confirmed by its
 own acceptance test against the control. SECURITY_PLAN stays parked, at the user's word.
+
+## g11 - one wrong-version datagram ends a node's poll loop (found 2026-09-28; HIGH; a remote denial of service)
+
+- **Gap:** `check_version()` returns false for a wire version it does not know (tickle.c:9656-9660); its caller turns
+  that into `tt_RET_PROTOCOL_ERROR` (tickle.c:9916-9917); and every poll loop we ship stops on anything but OK or
+  TIMEOUT, e.g. `reliable_throughput/server.c:344`. So **one UDP datagram carrying a different version byte ends the
+  receiving node**, before any discovery, matching or authentication.
+- **Observed on the rig, 2026-09-28 14:49:31.** A v11 server received one v10 datagram from a leftover v10 process:
+  `Illegal version from node 2: 10 != 11`, `Cannot process packet`, then its traffic summary and `RESULT: recv=0`, in
+  the same second, with `-d 20` on its command line. Its peer then timed out with nothing to match, which is what
+  voided that measurement.
+- **Why it matters:**
+  - anyone able to send a datagram to the well-known port can stop a node, with no state and no handshake. It belongs
+    in SECURITY_PLAN's threat list, though that plan stays parked;
+  - a rolling upgrade is impossible: one old node takes down every new one, and the wire version has been bumped
+    three times this week;
+  - it can void a measurement silently, as it did here.
+- **Pass** (Dev pre-registers the details):
+  - an unknown wire version is counted (`version_mismatch_drops`) and dropped, the rate-limited log stays, and the
+    poll returns OK so the loop continues;
+  - a whitebox peer sends a wrong-version datagram, then a valid one: delivery continues and the count is 1;
+  - the same for a malformed submessage, and for every other path that returns `tt_RET_PROTOCOL_ERROR` from a
+    received datagram - a remote peer must not be able to end a local loop;
+  - a mutant that keeps the fatal return fails those tests;
+  - on the rig, a v10 sender beside a v11 pair does not stop them.

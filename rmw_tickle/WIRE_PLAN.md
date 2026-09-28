@@ -1060,3 +1060,45 @@ Run 1 gave 12 better, 70 held, 26 WORSE. The re-run separates the real from the 
   optimistic. Every verdict against the vendors is unaffected: the margins there are multiples, not percent. The
   table is re-measured once large-message stage 1 lands, since that changes the rmw rows anyway; until then this
   section is its footnote.
+
+### 10.1 The p1 client's +0.5-0.7%: not the system calls (2026-09-28, Plan)
+
+Section 10 confirmed it twice. Four things now exclude a mechanism, and none of them finds one:
+
+1. **Core's own per-sample send path is flat** across `25ac7fe0..268dd20e`, plain and as the client's scheduler-driven
+   loop, and g10's depth check costs +0.3 ns (Dev, `results/core_cost_p1_client_cpu_2026-09-28.md`).
+2. **g8, g9 and g6 are not in a native build at all.** Their code compiles only where rmw_tickle's CMakeLists defines
+   `tt_CONTEXT_ID_CLAIM`, `tt_LOCAL_DELIVERY` and `tt_DISCOVERY_OPTIONS`; `examples/perf_hil/tickle/build.sh` defines
+   none of them. Worth remembering before any future native suspicion list.
+3. **`struct tt_Context`'s hot fields have not moved.** 73,792 -> 73,992 B, and `tx_buffer` (14,112), `rx_buffer`
+   (17,620) and `hal` (23,656) are at identical offsets in both.
+4. **The system calls per sample are identical** (`p1_client_syscalls.sh`, `strace -c -f` on the c1 client at both
+   commits, about 214,000 samples each; raw in `results/p1_client_syscalls*_2026-09-28.txt`):
+
+| syscall | A per sample | B per sample | difference |
+|---|---:|---:|---:|
+| sendto | 1.02157 | 1.02160 | +0.00003 |
+| recvmmsg | 0.00427 | 0.00428 | +0.00001 |
+| ppoll | 0.00422 | 0.00422 | +0.00000 |
+| recvfrom | 0.00420 | 0.00421 | +0.00001 |
+| all calls | 2.07430 | 2.07439 | +0.00009 |
+
+By this section's pre-registered reading, agreement within 1% means the rise is **not the call count**. What remains
+is the cost per call or code placement in the client binary, and separating those needs per-thread `schedstat` at
+nanosecond resolution rather than `getrusage`, whose user/kernel split is attributed per tick and so cannot resolve
+30 ns per sample (the campaign's own utime/stime rise is +17/+23 ns at c1, each inside its own noise while their sum
+is not).
+
+**Recorded and left open.** It is 30 ns on 5,300, no vendor verdict moves (TickLE 5.3 against CycloneDDS 6.9 and
+FastDDS 19.0 at that cell), and large-message stage 1 rewrites this path, whose own pass 5 re-measures these cells.
+The next campaign should carry per-thread schedstat so the question answers itself.
+
+**Three harness defects found in this run, each of which had made a result look like data:**
+- a `pkill -f '<scenario>/server'` pattern that matches nothing, because the real command line is `./server -Q -d 20`
+  after a `cd`. The previous arm's server survived into the next one (CLAUDE.md rule 2: a pattern that matches
+  nothing). The PID now comes from the launch itself and is checked through `/proc/PID/exe`.
+- `d=~/tickle/...` expanded on **this** host, so every remote `cd` failed, silently, with the client's stderr
+  discarded. The path is the Pi's own now, and the client's stderr is kept.
+- `setsid ... &` inside an ssh command holds that ssh open until the server exits, so the command substitution
+  blocked for the server's whole life and the client always ran against a dead server. It needs its own subshell,
+  `( setsid ... & )`, which is why the same thing had worked when typed by hand.

@@ -1,0 +1,8 @@
+=== p1 client syscalls per sample, 2026-09-28T15:01:48+09:00, A 6910d840, B 268dd20e ===
+--- built 6910d840 on both rpis ---
+  server pid=158884 opened/version_errors: 1/0/
+sha=6910d840 sent=213718
+--- built 268dd20e on both rpis ---
+  server pid=159187 opened/version_errors: 1/0/
+sha=268dd20e sent=213976
+=== done 2026-09-28T15:02:38+09:00 ===
