@@ -14,6 +14,11 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
+  <!-- endpoint_memory (LARGE_MESSAGE_PLAN.md pass 5) links rmw_tickle::rmw_tickle. Declared here, not only as a
+       find_package in CMakeLists.txt: CI builds this package in the same colcon call as rmw_tickle, and colcon orders
+       that call from these declarations alone - without this line conv_cost started before rmw_tickle was installed and
+       its find_package failed (6d5da13e, run 36411065518). -->
+  <depend>rmw_tickle</depend>
   <depend>rosidl_typesupport_cpp</depend>
   <depend>rosidl_typesupport_tickle_c</depend>
   <depend>rosidl_typesupport_tickle_cpp</depend>
