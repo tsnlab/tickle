@@ -47,7 +47,13 @@ SCEN=reliable_throughput; SIZE=p1; SAVE=/tmp/p1lay
 srv_pid=""
 LAST_SENT=""
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=10 "ci@$1" "${@:2}"; }
-: >"$OUT"; say() { echo "$*" | tee -a "$OUT"; }
+: >"$OUT"
+say() { echo "$*" | tee -a "$OUT"; }
+# For anything said from inside a function whose stdout is captured: the file and stderr, never stdout. The first
+# version of this script said the built sha through say() from inside build_arm, which a command substitution then
+# swallowed into the variable - so the "did the flag reach the compiler" guard below compared two strings that always
+# differed by the arm name and could never fire. A guard that cannot fire is worse than no guard.
+note() { echo "$*" >>"$OUT"; echo "$*" >&2; }
 say "=== p1 layout check $(date -Is) A=$A B=$B align='$ALIGN' blocks=$BLOCKS ==="
 
 build_arm() { # build_arm <sha> <arm-name> <extra-cflags>
@@ -55,18 +61,16 @@ build_arm() { # build_arm <sha> <arm-name> <extra-cflags>
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $sha && git clean -fdqx -e install -e build -e log
 cat > examples/perf_hil/tickle/common/BenchStats.h" <"$REPO/examples/perf_hil/tickle/common/BenchStats.h" >/dev/null \
-            || { say "FATAL checkout/instrument copy failed for $sha on $h"; return 1; }
+            || { note "FATAL checkout/instrument copy failed for $sha on $h"; return 1; }
         # build.sh is taken from THIS checkout too, because TICKLE_EXTRA_CFLAGS is newer than the A commit and an old
         # build.sh would ignore the flag silently - which would look exactly like "alignment made no difference".
         sh_ "$h" "cat > ~/tickle/examples/perf_hil/tickle/build.sh && chmod +x ~/tickle/examples/perf_hil/tickle/build.sh" \
-            <"$REPO/examples/perf_hil/tickle/build.sh" >/dev/null || { say "FATAL build.sh copy failed on $h"; return 1; }
+            <"$REPO/examples/perf_hil/tickle/build.sh" >/dev/null || { note "FATAL build.sh copy failed on $h"; return 1; }
         out=$(sh_ "$h" "set -e; cd ~/tickle/examples/perf_hil/tickle && TICKLE_EXTRA_CFLAGS='$extra' ./build.sh $SCEN $SIZE > /tmp/p1lay_build.log 2>&1 || { echo BUILD_FAILED; tail -3 /tmp/p1lay_build.log; exit 0; }
 mkdir -p $SAVE/$name && cp ${SCEN}_${SIZE}/client ${SCEN}_${SIZE}/server $SAVE/$name/ && sha256sum $SAVE/$name/client | cut -c1-16" </dev/null 2>&1 | tail -1)
-        case "$out" in *BUILD_FAILED*) say "FATAL build failed for arm $name on $h"; return 1;; esac
+        case "$out" in *BUILD_FAILED*) note "FATAL build failed for arm $name on $h: $out"; return 1;; esac
     done
-    say "  arm $name ($sha, extra='$extra') built, client sha256=$out"
-    # The identity check that makes the arms meaningful: a forced arm whose binary equals its unforced twin means the
-    # flag never reached the compiler, and the run would report "alignment changed nothing" for the wrong reason.
+    note "  arm $name ($sha, extra='$extra') built, client sha256=$out"
     echo "$out"
 }
 
@@ -99,6 +103,10 @@ sha_A=$(build_arm "$A" A "") || exit 1
 sha_B=$(build_arm "$B" B "") || exit 1
 sha_Aa=$(build_arm "$A" Aa "$ALIGN") || exit 1
 sha_Ba=$(build_arm "$B" Ba "$ALIGN") || exit 1
+# The identity check that makes the arms meaningful: a forced arm whose binary equals its unforced twin means the flag
+# never reached the compiler, and the run would report "alignment changed nothing" for the wrong reason. All four are
+# printed whether or not it fires, so the log shows what was compared rather than only the verdict.
+say "  built: A=$sha_A Aa=$sha_Aa  B=$sha_B Ba=$sha_Ba"
 if [ "$sha_A" = "$sha_Aa" ] || [ "$sha_B" = "$sha_Ba" ]; then
     say "FATAL a forced arm's binary is identical to its unforced twin - '$ALIGN' never reached the compiler."
     say "  A=$sha_A Aa=$sha_Aa  B=$sha_B Ba=$sha_Ba"
