@@ -902,8 +902,19 @@ what they return `RMW_RET_UNSUPPORTED` on).
 - ~~**Event types:** 6 of 11 are supported. `MESSAGE_LOST`, `PUBLICATION_MATCHED`, `SUBSCRIPTION_MATCHED` and both
   `*_INCOMPATIBLE_TYPE` are missing; both vendors serve all 11.~~ Closed by g3 (2026-09-28): all 11.
   - `matched` passes (it failed before).
-  - `itype` passes on rmw_tickle but stays VOID, since neither vendor raises INCOMPATIBLE_TYPE across the two
-    hosts.
+  - `itype` passes on rmw_tickle and stays VOID, and **the reason is a semantic difference rather than a missing
+    feature in the control** (established 2026-09-29, after a first reading that pointed the other way). Both
+    implementations detect the String-vs-Int32 mismatch and refuse to match the pair; they disagree about which event
+    says so. rmw_tickle reports INCOMPATIBLE_TYPE (1 event on the subscription, 2 on the publisher, no
+    incompatible-QoS warning). `rmw_cyclonedds_cpp` reports it as **INCOMPATIBLE_QOS with policy INVALID** - its own
+    node logs say "offering incompatible QoS ... Last incompatible policy: INVALID" - and so
+    `incompatible_type_events=0` is true of it without being the whole story. A binary search for the string
+    `incompatible_type` in `librmw_cyclonedds_cpp.so` finds nothing, which is consistent with both readings and settles
+    neither; the node log settles it.
+    So the row is kept as it is, because "we raise the event rmw defines for this condition" is a real property worth
+    holding, and the control's behaviour is recorded here so the VOID is explained rather than open. Swapping in
+    FastDDS as the control was considered and is not obviously a fix: if it also routes a type mismatch through QoS
+    incompatibility, the test fails its control for the same reason.
   - "Matched" now also requires the same type and compatible QoS, for the event and for
     `rmw_*_count_matched_*` alike, as in DDS.
 - ~~**`rmw_take_sequence`** is not defined at all. `rmw_implementation` logs a failed symbol lookup for it, and
