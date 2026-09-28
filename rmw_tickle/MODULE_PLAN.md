@@ -18,6 +18,24 @@ designed for one consumer and retrofitted for the other is how the same mistake 
    transport a match used - which is a few lines in existing code rather than a part of the module.
 5. **The detailed module design plan is written once 4 is decided.** Written as `SHM_PLAN.md`; this file stays the
    seam-and-criteria document that both modules answer to.
+
+**Decision added 2026-09-29: the same-host capability is compile-time conditional and ON by default**, with the user's
+words being that the default is to have the feature and a user turns it off if they need to. Two things that follow, and
+the second is not a size argument:
+
+- **What it costs where it is compiled in, measured rather than estimated:** about **1 KB of text** (`tt_LOCAL_DELIVERY`,
+  the closest existing analogue, moved a FreeRTOS image from 143,108 to 144,132 bytes, +0.72%), and **nothing when off**.
+  So "in core" versus "a separate module" was never a size question - the proposal was always core-behind-a-flag, and only
+  an *unconditional* implementation would cost anything. README.md's optimisation section carries the numbers and how to
+  reproduce them.
+- **On FreeRTOS it is off, and the platform decides that, not the size.** `tt_CONTEXT_ID_CLAIM=1` does not compile there:
+  the HAL has no host registry to claim an id in, because there are no processes to tell apart, and `struct tt_hal` has no
+  `claimed_id` (checked 2026-09-29 by building it). A HAL that grows the primitive flips the default with a `-D`. **The
+  conditionality is what the platform can supply.**
+- **The lever that matters on a microcontroller is RAM, not text.** The same image is 140 KiB of text against 207 KiB of
+  bss, and TickLE never allocates - every table is sized at compile time. So the shared-memory module's record ring is the
+  real cost there, which is why `SHM_PLAN.md` requires a fixed, stated capacity with exhaustion counted rather than a
+  ring sized by hope.
 6. **Using a module must cost no performance.** Read as: a build with the module present but not in use is
    indistinguishable from a build without it, which is criterion 3 below, and the module's own path is measured
    separately.

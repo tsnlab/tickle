@@ -457,8 +457,21 @@
 //   uses (tickle.c, handle_id_collision());
 // - an id set explicitly never moves.
 // The wire is unchanged: a source is still the sending context's id, unique on the link.
+//
+// **On by default since 2026-09-29 (the user's decision): several processes on one host is what a Linux deployment
+// normally is, so it should work without being asked for, and a build that does not want it turns it off.** It costs
+// about 1 KB of text where it is compiled in, measured the way README.md's optimisation section describes.
+//
+// Off by default on FreeRTOS, and not because of size: that HAL has no host registry to claim an id in - there are no
+// processes to tell apart - and `struct tt_hal` there has no `claimed_id`, so tt_CONTEXT_ID_CLAIM=1 does not compile
+// (checked 2026-09-29). The conditionality is what the platform can supply, not a size preference. A HAL that grows the
+// primitive can flip this with a -D.
 #ifndef tt_CONTEXT_ID_CLAIM
+#if defined(TT_PLATFORM_FREERTOS)
 #define tt_CONTEXT_ID_CLAIM 0
+#else
+#define tt_CONTEXT_ID_CLAIM 1
+#endif
 #endif
 // (g9, rmw_tickle/RMW_GAPS_PLAN.md, 2026-09-28) Delivery between endpoints of one context. 0, the default: a context
 // drops its own DATA as self-sent, so its own Subscribers never receive its own Publishers' samples. 1, rmw_tickle's

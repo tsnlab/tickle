@@ -105,6 +105,62 @@ copy `libtickle.a` + `include/tickle/` into your project directly, if you'd rath
 - Delivery is BEST_EFFORT unless a publisher is given a reliable cache. What each mode promises
   is under "Delivery guarantees" below.
 
+## Optimising the build: binary size and RAM
+
+Every optional feature is a compile-time `#define` in [include/tickle/config.h](include/tickle/config.h), so a build
+contains only what it is told to contain and a `-D` on the command line wins over every default. Measured on
+2026-09-29, `selftest` role, RISC-V, `-O1`, `--gc-sections`:
+
+| | text | data | bss |
+|---|---:|---:|---:|
+| FreeRTOS image, defaults | 143,108 B (140 KiB) | 220 B | 212,100 B (207 KiB) |
+| the same with `tt_LOCAL_DELIVERY=1` | 144,132 B (+1,024 B, +0.72%) | 220 B | unchanged |
+
+For reference, the core library alone on x86-64 (release) is 84,426 B of text, of which `tickle.o` is 74,842 B.
+
+**Read the bss column first.** On a microcontroller the binding constraint is almost always RAM, not flash, and TickLE
+never allocates: every table is sized at compile time, so bss is where a capacity decision shows up. Turning features
+off saves kilobytes of text; lowering a capacity saves tens of kilobytes of RAM.
+
+**The capacities worth looking at**, with their defaults:
+
+| define | default | what one more costs |
+|---|---:|---|
+| `tt_MAX_DISCOVERED_ENTITIES` | 16 | ~552 B of bss per remote entity. `rmw_tickle` builds set 2048; a small embedded graph does not need it |
+| `tt_MAX_ENDPOINT_COUNT` | 256 | local publishers and subscriptions one context can hold |
+| `tt_MAX_NAME_LENGTH` | 255 | every endpoint name is stored at full length |
+| `tt_MAX_BUFFER_LENGTH` | one Ethernet UDP payload | the datagram buffer; raising it for large samples costs that much per context |
+| `tt_MAX_RELIABLE_HISTORY` | 64 | retained samples per reliable writer |
+| `tt_MAX_PEER_COUNT` | 8 | per-peer tracking state |
+| `tt_MAX_NODES` | 16 | nodes within a context |
+
+**The features that can be left out**, each costing nothing when off:
+
+| define | default | what it is |
+|---|---:|---|
+| `tt_CONTEXT_ID_CLAIM` | **1** (0 on FreeRTOS) | several processes on one host, each with its own context id. On by default because that is what a Linux deployment normally is; FreeRTOS has no processes to tell apart and its HAL has no registry, so it is off and `=1` does not compile there |
+| `tt_LOCAL_DELIVERY` | 0 | delivery between endpoints of one context, in-process. `rmw_tickle` sets it, since every ROS 2 node in a process shares one context |
+| `tt_DISCOVERY_OPTIONS` | 0 | `ROS_AUTOMATIC_DISCOVERY_RANGE` and `ROS_STATIC_PEERS` behaviour |
+
+**How to measure your own build, rather than trust this table.** The numbers above are one role on one architecture;
+yours will differ.
+
+```sh
+riscv64-unknown-elf-size platform/freertos/RTOSDemo-selftest-1.elf   # text/data/bss of the image
+size -t platform/linux/build/*.o                                     # or the native objects
+```
+
+**And check that your `-D` reached the compiler before believing a delta.** `platform/freertos/Makefile` assigns
+`CFLAGS` rather than appending to `CPPFLAGS`, so passing `CPPFLAGS=-Dtt_...` to `make` there changes nothing and the
+build comes out byte-identical - which reads exactly like "that feature is free". Confirm the *object file* moved, not
+only the image:
+
+```sh
+riscv64-unknown-elf-size obj-selftest-1/src/tickle.c.o
+```
+
+If it has not changed, the flag did not arrive. Edit the default in `config.h`, or add the define to `CFLAGS` itself.
+
 ## Delivery guarantees
 
 Both modes make promises **per writer**. Samples from two different publishers have no order

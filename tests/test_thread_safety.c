@@ -172,6 +172,39 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
     return send_all(node, hdr, hdr_len, body, body_len);
 }
 
+// The three HAL entry points tt_CONTEXT_ID_CLAIM=1 reaches (g8's several-processes-on-one-host support, on by default
+// since 2026-09-29). This file is its own HAL - the tsan target links tickle.c and no platform HAL at all - so turning
+// the feature on by default made it fail to LINK rather than fail a check, which is the honest way for a test harness
+// to say it does not cover a feature.
+//
+// Deliberately the simplest behaviour that keeps the thread-safety test about what it is about: the preferred id is
+// always granted, so no collision path runs here, and a datagram is never "from our own socket", so nothing is dropped
+// as self-sent. The collision and self-address paths have their own tests (test_samehost, tests/test_context_id_*);
+// what this file exercises is concurrent access, and it must not silently change which packets it delivers.
+uint8_t tt_claim_context_id(struct tt_Context* node, uint8_t preferred, const uint8_t* avoid, uint32_t salt) {
+    (void)node;
+    (void)avoid;
+    (void)salt;
+    return preferred;
+}
+
+bool tt_is_own_address(const struct tt_Context* node, uint32_t ip, uint16_t port) {
+    (void)node;
+    (void)ip;
+    (void)port;
+    return false;
+}
+
+void tt_own_address(const struct tt_Context* node, uint32_t* ip, uint16_t* port) {
+    (void)node;
+    if (ip != NULL) {
+        *ip = 0;
+    }
+    if (port != NULL) {
+        *port = 0;
+    }
+}
+
 int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
     for (uint32_t i = 0; i < count; i++) {
         if (send_all(node, datagrams[i].head, datagrams[i].head_len, datagrams[i].body, datagrams[i].body_len) < 0) {
