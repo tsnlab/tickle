@@ -128,6 +128,12 @@ if(BUILD_TESTING)
     ${CMAKE_DL_LIBS}
   )
   set_target_properties(direct_codec_identity PROPERTIES CXX_STANDARD 17)
+  # CXX_STANDARD is a minimum: a ROS 2 install whose own targets require C++20 raises this one to
+  # C++20, and CI's jazzy does not, so a C++20 construct compiles on a developer box and fails in
+  # CI. It did once (std::ranges and set::contains, put there by clang-tidy's own --fix). Forcing
+  # the dialect makes the local build the compile CI actually runs. Last -std wins for GCC and
+  # Clang, which is what this package is built with; it is also what clang-tidy reads.
+  target_compile_options(direct_codec_identity PRIVATE -std=gnu++17)
 
   # Their checks are assert()s, so NDEBUG - which a Release build defines - compiled every one away, and the
   # tests passed whatever the typesupport did (2026-09-27: a Release build of all six referenced no __assert_fail).

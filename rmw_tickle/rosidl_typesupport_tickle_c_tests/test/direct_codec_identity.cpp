@@ -31,6 +31,12 @@
 // A type needs half its samples byte-compared (check 1's identical branch).
 //
 // Usage: direct_codec_identity [-s seed] [-n samples] [-d declined_list] (--all | pkg...)
+//
+// C++17, not what this file happens to compile as. A ROS 2 install whose own targets require
+// C++20 raises this target's standard (CMake takes the higher of the two), so a developer box on
+// a newer distro compiles std::ranges and set::contains happily while CI's jazzy does not - which
+// is how both reached CI once. clang-tidy's modernize-use-ranges/readability-container-contains
+// suggest them for the same reason, and their --fix reintroduces them; keep the C++17 forms.
 
 #include <algorithm>
 #include <array>
@@ -456,7 +462,7 @@ namespace {
 
     // Whether to_tickle accepts: false is exactly "some TickLE capacity is exceeded".
     auto fits_struct(checker& check, const void* msg) -> bool {
-        std::ranges::fill(check.tickle_storage.words, 0);
+        std::fill(check.tickle_storage.words.begin(), check.tickle_storage.words.end(), 0);
         return check.callbacks->to_tickle(msg, bytes_of(check.tickle_storage));
     }
 
@@ -469,7 +475,7 @@ namespace {
     }
 
     auto old_decode(checker& check, uint32_t len, bool is_native_endian, void* out) -> int32_t {
-        std::ranges::fill(check.tickle_storage.words, 0);
+        std::fill(check.tickle_storage.words.begin(), check.tickle_storage.words.end(), 0);
         int32_t const size =
             check.callbacks->tickle_decode(tickle_data(check), bytes_of(check.scratch), len, is_native_endian);
         if (size < 0) {
@@ -505,7 +511,7 @@ namespace {
     auto decode_pair(checker& check, const std::vector<uint8_t>& input, bool is_native_endian, int sample,
                      const Message& shell) -> void {
         check.tally.decode_inputs++;
-        std::ranges::copy(input, bytes_of(check.scratch));
+        std::copy(input.begin(), input.end(), bytes_of(check.scratch));
         auto len = static_cast<uint32_t>(input.size());
         Message const old_msg(check.members);
         int32_t const old_size = old_decode(check, len, is_native_endian, old_msg.get());
@@ -964,15 +970,15 @@ namespace {
         }
         std::set<std::string> const expected = read_list(opts.declined_path);
         for (const auto& type: state.declined) {
-            if (!expected.contains(type)) {
+            if (expected.count(type) == 0) {
                 std::printf("FAIL %s: declined, but not on the declined list\n", type.c_str());
                 state.failed++;
             }
         }
         for (const auto& type: expected) {
             std::string const package = split(type, '/')[0];
-            bool const checked = std::ranges::find(opts.packages, package) != opts.packages.end();
-            if (checked && !state.declined.contains(type)) {
+            bool const checked = std::find(opts.packages.begin(), opts.packages.end(), package) != opts.packages.end();
+            if (checked && state.declined.count(type) == 0) {
                 std::printf("FAIL %s: on the declined list, but supported\n", type.c_str());
                 state.failed++;
             }
