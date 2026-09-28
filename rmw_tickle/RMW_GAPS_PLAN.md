@@ -1089,6 +1089,37 @@ once, or a clean build, which is what CI does anyway.
      **"below the instrument's floor"**, and the third is not the first. "Satisfied by construction" is not available
      either: source-identical functions still move when the binary grows, which is what 10.3 and 10.4 are about. If the
      KEEP_LAST reading comes back under 1% at p1, the honest report is the floor, not the number and not its sign.
+- **Criterion 3/6, "costs nothing when unused", answered exactly rather than statistically (Dev, 2026-09-29).** Both
+  instruments that would have answered it have a floor at roughly this size (WIRE_PLAN 10.3/10.4), so the claim is
+  carried on the figures that are deterministic. Measured by compiling the same size program against the parent's
+  headers (`a073a6fc`, the commit before the accept hook) and against the current ones:
+
+  | | parent | with g13 | cost |
+  |---|---|---|---|
+  | `struct tt_Subscriber` | 1216 | 1240 | **+24 B per subscriber** |
+  | `rmw_tickle_subscriber_t` | 2448 | 2480 | **+32 B per subscription** |
+  | `struct tt_Publisher` | 536 | 536 | 0 |
+  | `rmw_tickle_publisher_t` | 1312 | 1312 | 0 |
+  | `struct tt_Context` | 74008 | 74008 | 0 |
+  | every wire struct (`tt_Header`, `tt_DataHeader`, `tt_AckNackHeader`, `tt_HeartbeatHeader`, `tt_SubmessageHeader`, `tt_UpdateEntity`) | - | - | **0** |
+
+  So a publisher pays nothing, a context pays nothing, the wire pays nothing, and a subscription pays 32 bytes whether
+  or not it is KEEP_ALL. The per-sample cost on the KEEP_LAST path is one NULL test on `accept_callback` before
+  delivery, and nothing else: no allocation, no lock, no wire byte.
+- **Why the timing and RSS readings are not quoted as numbers.** 100 subscriptions of the structural cost above is
+  3.2 KB, and the peak-RSS floor is about 10 KB for two builds whose code differs in size - so the RSS instrument
+  cannot resolve this cost even in principle, and a figure from it would be layout, not g13. The same holds for p1
+  throughput: g13 grows the translation unit, an alignment flag alone moved p1 by 0.859% and reversed the sign of a
+  0.6% difference, and the real per-sample delta here is one predictable branch. A placement-controlled p1 run would
+  therefore produce a number below its own floor **by construction**, which is not a result. The exact figures above
+  are the claim; the run can be made if the measurement is wanted on record, but its reading is known in advance and
+  that is the reason it has not been made.
+- **A size comparison is as easy to get wrong as a timing one.** The first attempt here substituted the parent's rmw
+  header but compiled it against the *current* `tickle.h`, so `rmw_tickle_subscriber_t` came out unchanged at 2480 -
+  a null result that was really the parent struct measured with the new core inside it. Both header sets have to move
+  together. Same family as the rest of this section: the check ran, gave an answer, and the answer was about
+  something else.
+
 - **Why this is worth a gap of its own rather than a line in g1:** rosbag2 is not the only KEEP_ALL subscriber - it is
   the idiom for any consumer that must not lose messages - and under the incomplete-delivery rule a recorder that
   silently drops is a LOSE, not a partial win. The semantics above are what make the difference visible.
