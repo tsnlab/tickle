@@ -875,3 +875,36 @@ are written.
   - **the rebuild requirement is in the CHANGELOG:** generated symbol names change, so every interface package must be
     rebuilt, as with this morning's callbacks `struct_size` change. Anything naming `<Name>Data` on the ROS path fails
     to compile, which is the safe direction.
+
+### Result (Dev, 2026-09-28)
+
+**Measured before the fix, as criterion 3 asked.** 31 type names were defined by two packages each. 29 were
+layout-identical, so they had been interchangeable by luck: `Bool`, `Byte`, `ByteMultiArray`, `Char`, `Empty`,
+the `Float`/`Int`/`UInt` family and their `MultiArray` forms, `KeyValue`, `MultiArrayDimension`,
+`MultiArrayLayout` and `String`. Two were not: `action_msgs/GoalStatus` is `{GoalInfo, int8}` where
+`actionlib_msgs/GoalStatus` is `{GoalID, uint8, string}`, and their `GoalStatusArray` likewise. Counting every
+exported symbol rather than type names, 144 collided.
+
+**The change.** The ROS 2 path's generated symbols are package-qualified: `<pkg>__<subfolder>__<Type>Data`,
+and `<pkg>__srv__<Name>Request`/`Response` for a service. `TopicIR` and `ServiceIR` gained a `header_name`, so
+a generated file keeps its own name while its symbols carry the package - the include and the symbol base were
+one string before. TickLE's own generator passes no `symbol_base` and is unchanged, because its users write
+those names by hand.
+
+**Criterion 1, the wire bytes.** All 287 types in the inventory and the test packages encode identically
+before and after, on both paths, at seed 7 - compared by a per-type FNV-1a over every encoding, which the
+harness now prints as `old_hash`/`new_hash`. Zero differences. A change that altered an encoding rather than a
+name would move a hash.
+
+**Criteria 2 and 4, the symbol check.** `rmw_tickle/scripts/check_interface_symbols.sh` counts strong
+definitions across every interface library - messages, services and an action's implicit interfaces alike -
+and refuses a workspace where two packages define one symbol. Weak symbols (C++ template instantiations) and
+TickLE core's own `tt_` symbols are excluded, with the reason in the script. Its control: the pre-fix build
+fails it with 144 collisions; the fixed build passes with 4,013 symbols across 44 libraries. Check all runs it
+before the harness, since a collision makes every later result meaningless. The CHANGELOG says every interface
+package must be rebuilt.
+
+**One thing to know when rebuilding.** The generator's own sources became `DEPENDS` earlier today, but CMake
+picks that up only on a fresh configure: a build tree configured before it regenerates nothing when the
+generator changes, and produces a mix of old and new names that does not compile. `--cmake-force-configure`
+once, or a clean build, which is what CI does anyway.
