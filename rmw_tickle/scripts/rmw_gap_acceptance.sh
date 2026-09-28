@@ -10,6 +10,8 @@
 #
 #   graph    ros2 node list / node info / param get against a node in the other namespace       (stage 3)
 #   bag      ros2 bag record, then ros2 bag play into a listener in the other namespace            (g1, serialized messages)
+#   bagstall ros2 bag record while the recorder is SIGSTOPped behind a KEEP_LAST depth-10 talker (g13, the bound on
+#            zero loss: a KEEP_ALL reader never destroys an unread sample but cannot make the writer keep one)
 #   events   a listener on rclpy's EventsExecutor receives the other side's talker                 (g2, on-new-data callbacks)
 #   matched  PUBLICATION_MATCHED / SUBSCRIPTION_MATCHED fire on both sides                          (g3)
 #   itype    PUBLISHER_ / SUBSCRIPTION_INCOMPATIBLE_TYPE fire for String vs Int32 on one topic     (g3)
@@ -31,7 +33,7 @@ WS=""
 while getopts "w:" o; do case "$o" in w) WS=$OPTARG ;; *) exit 2 ;; esac; done
 shift $((OPTIND - 1))
 [ -n "$WS" ] && [ -d "$WS/rmw/install" ] && [ -d "$WS/ifaces/install" ] || { echo "usage: $0 -w WS [TEST...]" >&2; exit 2; }
-TESTS=${*:-graph bag events matched itype takeseq samehost inprocess durable range peers introspect}
+TESTS=${*:-graph bag bagstall events matched itype takeseq samehost inprocess durable range peers introspect}
 HERE=$(cd "$(dirname "$0")" && pwd)
 NODE="$HERE/acceptance/accept_node.py"
 DISTRO=${ROS_DISTRO_DIR:-/opt/ros/lyrical}
@@ -128,6 +130,99 @@ t_bag() {
         awk 'NR > 1 && $1 != prev + 1 { g++ } { prev = $1 } END { print g + 0 }')
     if [ "${recorded:-0}" -ge 30 ] && [ "${got:-0}" -ge 30 ] && [ "${gaps:-1}" = 0 ]; then echo PASS
     else echo "FAIL(recorded=${recorded:-0} replayed=${got:-0} out_of_order_or_missing=${gaps:-none})"; fi
+}
+# bagstall: a recorder that stops taking, behind an ordinary KEEP_LAST depth-10 publisher (g13
+# criterion 5's stall arm, RMW_GAPS_PLAN.md). The base `bag` test shows a recorder that keeps up
+# loses nothing; this one asks what happens when it does not, which is the case the zero-loss claim
+# cannot cover: a KEEP_ALL reader never destroys an unread sample, but it cannot make the WRITER
+# keep one, and a KEEP_LAST depth-10 writer evicts rather than blocking.
+#
+# The stall is SIGSTOP on the recorder, which is the honest model of "the application stopped
+# taking" and is identical for both rmws - no knob of ours is involved, so the arms are comparable.
+# Loss is (published - recorded) on both sides, taken from the talker's own RESULT line and from
+# `ros2 bag info`, i.e. from rosbag2 rather than from any counter of ours, so neither arm is
+# measured by an instrument the other does not have.
+#
+# Pre-registered reading:
+#   both lose         - this is DDS semantics rather than a shortfall, and the criterion is that
+#                       rmw_tickle's loss does not exceed the control's, and that ours is visible
+#                       (gap_evicted non-zero in the recorder's own shutdown line).
+#   only rmw_tickle   - a real gap with its own number; the writer's retention or the reader's
+#                       recovery is worse than CycloneDDS's and that has to be decided, not excused.
+#   neither loses     - the stall did not stall. VOID, not a pass: check the recorder was actually
+#                       stopped and that enough was published while it was.
+t_bagstall() {
+    local rmw=$1 d=$OUTDIR/bagstall_$1
+    mkdir -p "$d"
+    run_in "$NS1" "$rmw" 1 26 "" python3 "$NODE" talker 26 > "$d/talker.log" 2>&1 &
+    local tp=$!
+    sleep 3
+
+    # The recorder's PID is written by the shell that becomes it (exec), so it is captured at launch
+    # and never searched for - `pgrep` here would match this script's own command line as readily as
+    # the recorder (the project's rule 2, learned the hard way).
+    local pidfile="$d/recorder.pid"
+    run_in "$NS2" "$rmw" 2 20 "" bash -c "'echo \$\$ > $pidfile; exec ros2 bag record -o $d/bag --topics /accept_chatter'" \
+        > "$d/record.log" 2>&1 &
+    local rp=$!
+    sleep 5
+
+    local pid="" stalled=0 why="pid not written"
+    pid=$(cat "$pidfile" 2>/dev/null)
+    # Verified before it is signalled, not assumed from the file: a stale pidfile from an earlier run
+    # would otherwise aim SIGSTOP at whatever holds that number now. Note the empty-pid guard is not
+    # tidiness - with an empty $pid the path below becomes /proc//cmdline, which reads the KERNEL
+    # command line and succeeds, so the check would answer about something else entirely.
+    #
+    # Each way this can fail says so separately. The first version of this printed one message for
+    # all three, and when it fired the run could not say whether the recorder was missing, the
+    # verification had failed, or the signal had been refused - which is the same defect as a test
+    # that cannot say what it failed on.
+    # The empty-pid branch comes first and returns without touching /proc, rather than relying on the
+    # next test to be false: with an empty $pid the path is /proc//cmdline, which is the KERNEL
+    # command line, and it exists and reads successfully - so the verification would answer about
+    # something else entirely. Refusing before the read is cheaper than a comment explaining it.
+    if [ -z "$pid" ]; then
+        why="pid not written"
+    elif ! tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 'bag record'; then
+        why="pid $pid is not the recorder: [$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | head -c 120)]"
+    elif ! kill -STOP "$pid" 2>/dev/null; then
+        # The recorder runs as this same user (run_in's own `sudo -u $USER`), so this needs no sudo -
+        # and the earlier version's `sudo -n kill` failed silently when sudo wanted a password.
+        why="SIGSTOP refused for pid $pid"
+    else
+        stalled=1
+        sleep 8 # ~80 samples published at 10 Hz while nobody is taking; the writer retains 10
+        kill -CONT "$pid" 2>/dev/null
+    fi
+    wait "$rp" 2>/dev/null
+    wait "$tp"
+
+    if [ "$stalled" != 1 ]; then echo "ERROR(recorder not stalled: $why)"; return; fi
+    ran "$d/talker.log" 50 || { echo "ERROR(talker did not run)"; return; }
+
+    local published recorded evicted lost
+    published=$(field "$d/talker.log" sent)
+    recorded=$(run_in "$NS2" "$rmw" 2 10 "" ros2 bag info "$d/bag" 2>/dev/null |
+        grep -oE 'Messages: +[0-9]+' | grep -oE '[0-9]+' | head -1)
+    lost=$((${published:-0} - ${recorded:-0}))
+    # Ours only, and reported beside the loss rather than instead of it: the incomplete-delivery rule
+    # turns on whether a drop is visible, and this is where ours becomes visible.
+    evicted=$(grep -hoE 'gap_evicted=[0-9]+' "$d/record.log" 2>/dev/null | tail -1 | cut -d= -f2)
+    local numbers="published=${published:-0} recorded=${recorded:-0} lost=$lost gap_evicted=${evicted:-n/a}"
+    # No loss means the stall did not stall - VOID, not a pass. Written this way round deliberately:
+    # "nobody lost anything" is what a broken stall and a perfect reader both look like, and only one
+    # of them is a result.
+    if [ "$lost" -le 0 ]; then echo "ERROR(stall produced no loss, so it did not stall: $numbers)"; return; fi
+    # Ours must additionally be visible. gap_evicted counts the samples the WRITER said it no longer
+    # held, which is a subset of the loss - the rest went while the reader was stopped and its window
+    # moved past them - so this is "the loss is counted", not "the counter equals the loss", and the
+    # two numbers are printed side by side rather than one standing for the other.
+    if [ "$rmw" = rmw_tickle ] && [ "${evicted:-0}" -le 0 ]; then
+        echo "FAIL(loss is not visible in any counter: $numbers)"
+        return
+    fi
+    echo "PASS($numbers)"
 }
 t_events() {
     local rmw=$1 d=$OUTDIR/events_$1
@@ -278,7 +373,10 @@ for t in $TESTS; do
         echo "$t $rmw | $v" | tee -a "$OUTDIR/summary.txt"
     done
     VERDICT[$t:control]="$ctl ${VERDICT[$t:$ctl]}"
-    case "${VERDICT[$t:$ctl]}" in PASS) ;; *) ctl_fail=1; echo "$t: control ($ctl) failed - VOID" | tee -a "$OUTDIR/summary.txt" ;; esac
+    # PASS or PASS(detail): a test whose result is a measurement rather than a yes/no carries its
+    # numbers in the verdict (bagstall), and throwing them away to satisfy an exact match would lose
+    # the only thing that run produced. Every test that prints a bare PASS still matches.
+    case "${VERDICT[$t:$ctl]}" in PASS | PASS\(*) ;; *) ctl_fail=1; echo "$t: control ($ctl) failed - VOID" | tee -a "$OUTDIR/summary.txt" ;; esac
 done
 echo "=== results in $OUTDIR ===" | tee -a "$OUTDIR/summary.txt"
 printf '%-9s | %-45s | %s\n' test control rmw_tickle | tee -a "$OUTDIR/summary.txt"
