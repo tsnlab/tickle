@@ -55,6 +55,7 @@
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/sanity_checks.h" // rmw_check_zero_rmw_string_array()
+#include "rmw/time.h"          // rmw_time_t, RMW_DURATION_INFINITE
 #include "rmw/topic_endpoint_info.h"
 #include "rmw/topic_endpoint_info_array.h"
 #include "rmw/types.h"
@@ -1152,6 +1153,21 @@ static rmw_ret_t populate_topic_endpoint_info(rcutils_allocator_t* allocator, co
     return RMW_RET_OK;
 }
 
+// rmw_qos.c has its own NSEC_PER_SEC for the same split; these are two translation units and
+// neither exports it, so it is named per file rather than shared through a header for one constant.
+#define GRAPH_NSEC_PER_SEC 1000000000ULL
+
+// An announced duration as rmw states one. TickLE's wire convention is that 0 means "no
+// requirement", and rmw/DDS spell that RMW_DURATION_INFINITE rather than zero - a literal 0 here
+// would read as "a deadline of no time at all", which is the opposite. CycloneDDS reports the same
+// infinity for an unset deadline, which is what the bag acceptance's control arm shows.
+static rmw_time_t announced_duration(uint64_t duration_ns) {
+    if (0 == duration_ns) {
+        return (rmw_time_t)RMW_DURATION_INFINITE;
+    }
+    return (rmw_time_t) {.sec = duration_ns / GRAPH_NSEC_PER_SEC, .nsec = duration_ns % GRAPH_NSEC_PER_SEC};
+}
+
 // The actual scan+build behind rmw_get_publishers_info_by_topic()/_subscriptions_info_by_topic()
 // below - unlike the names_and_types family above, every individual matching endpoint instance
 // (local or remote) gets its own row here, none deduplicated by name. A remote entity's node_name/node_namespace are
@@ -1202,6 +1218,22 @@ static rmw_ret_t get_topic_endpoint_info_by_topic(rmw_tickle_context_impl_t* con
                                                                       : RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
         qos.durability = (entity->qos & tt_UPDATE_QOS_DURABLE) != 0 ? RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL
                                                                     : RMW_QOS_POLICY_DURABILITY_VOLATILE;
+        // LIVELINESS and the two durations are announced as well (struct tt_DiscoveredEntity's own
+        // qos/deadline_duration_ns/liveliness_lease_duration_ns), and they participate in endpoint
+        // matching, so they are exactly what this API guarantees discovery shares - leaving them
+        // UNKNOWN was not caution, it was a value we do not have to invent being left out.
+        //
+        // It was also incoherent, which is how it was found (RMW_GAPS_PLAN g13, the bag
+        // acceptance). rosbag2 records the publisher's reported QoS into the bag and offers it
+        // again on playback, so `ros2 bag play` asked rmw_tickle to create a publisher with
+        // liveliness UNKNOWN - and rmw_tickle_validate_qos_profile() refuses UNKNOWN, so we
+        // rejected a profile we had ourselves reported. Recording worked, playback published
+        // nothing, and the topic was skipped with a QoS error naming our own validator.
+        qos.liveliness = (entity->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0
+                             ? RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC
+                             : RMW_QOS_POLICY_LIVELINESS_AUTOMATIC;
+        qos.deadline = announced_duration(entity->deadline_duration_ns);
+        qos.liveliness_lease_duration = announced_duration(entity->liveliness_lease_duration_ns);
         const struct tt_DiscoveredEntity* owner = remote_node_of(context_impl, entity); // stage 3
         ret = populate_topic_endpoint_info(
             allocator, owner != NULL ? owner->name : "", owner != NULL ? owner->type : "", entity->type, endpoint_type,

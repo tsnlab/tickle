@@ -3993,6 +3993,68 @@ static void test_g13_a_declined_sample_survives_only_while_the_writer_holds_it(v
     EXPECT_EQ_INT(before + 1, subscriber_callback_count);
 }
 
+// g13 criterion 4: BEST_EFFORT. The same hook, and a different meaning - here a decline IS a drop.
+//
+// A BEST_EFFORT stream has no retransmission, so nothing brings a declined sample back. That is not
+// a shortcoming of the hook; it is what BEST_EFFORT means, and DDS says the same - a BEST_EFFORT
+// KEEP_ALL reader still loses samples once its cache is full. What the plan requires, and what is
+// asserted here, is that the loss is counted rather than silent: under the incomplete-delivery rule
+// a drop nobody can see and a drop with a number beside it are not the same result.
+//
+// The control is the RELIABLE arm above (test_g13_accept_hook_a_declined_sample_survives_the_
+// refusal): identical refusal, opposite outcome, and the difference is the Subscriber's own
+// `reliable`. Without it "BEST_EFFORT loses the sample" would not be evidence of anything, since a
+// test that never recovers a sample cannot tell losing it from never having asked for it.
+static void test_g13_best_effort_decline_is_a_counted_drop(void) {
+    test_mock_reset();
+    accept_hook_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.reliable = false; // the one difference from the RELIABLE arm
+    sub.accept_callback = test_accept_hook;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 1000, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(1, subscriber_callback_count);
+    EXPECT_EQ_U32(0, sub.accept_declines);
+
+    // Sample 2 declined. Nothing is sent about it - a BEST_EFFORT reader never ACKNACKs at all, so
+    // the writer is not even told, which is precisely why it cannot come back.
+    accept_hook_answer = false;
+    test_mock_send_to_call_count = 0;
+    tail = write_data(&node, 2, 2000, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_INT(1, subscriber_callback_count);              // not delivered
+    EXPECT_EQ_U32(1, sub.accept_declines);                    // and the loss has a number
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // nothing asked for it
+
+    // The stream carries on: sample 3 is delivered normally, so a decline costs exactly the sample
+    // it refused. A reader that wedged after one drop would be a far worse bargain than the loss.
+    accept_hook_answer = true;
+    tail = write_data(&node, 3, 3000, 3);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(2, subscriber_callback_count);
+    EXPECT_EQ_U32(1, sub.accept_declines); // an accepted sample is not counted as a drop
+
+    // And sample 2 is gone for good: BEST_EFFORT ordering discards anything no newer than what was
+    // delivered, so even a late copy would not reach the application. Stated by testing it rather
+    // than by reasoning about it, because this is the sentence the plan's criterion rests on.
+    int before = subscriber_callback_count;
+    tail = write_data(&node, 2, 2000, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(before, subscriber_callback_count);
+    EXPECT_EQ_U32(1, (uint32_t)sub.out_of_order_discarded);
+}
+
 int main(void) {
     test_keep_all_refuses_at_bound_and_unblocks_on_ack();
     test_keep_last_still_evicts_rather_than_refusing();
@@ -4074,6 +4136,7 @@ int main(void) {
     test_g13_accept_hook_a_decline_is_never_reported_with_a_gap_open();
     test_g13_accept_hook_that_always_accepts_changes_nothing();
     test_g13_a_declined_sample_survives_only_while_the_writer_holds_it();
+    test_g13_best_effort_decline_is_a_counted_drop();
 #ifdef tt_RELIABLE_STATS
     test_keep_all_writable_cause_is_distinguished();
     test_reliable_stats_subscriber_gap_accounting();
