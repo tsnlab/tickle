@@ -132,6 +132,25 @@ message(STATUS "rosidl_typesupport_tickle_c: ${_tickle_capacities_summary}")
 file(STRINGS "${_tickle_capacities_deps}" _tickle_capacities_sources)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_tickle_capacities_sources})
 
+# The generator's own sources, so that changing it regenerates (2026-09-28). Until now a generated
+# file depended only on its .msg and the capacity table, so a generator change left every already
+# generated file as it was. That is not merely stale output: the direct codec's first build failed
+# because this package's freshly generated caller called a function the dependency's cached,
+# not-regenerated header never declared. Resolved by asking Python where the two modules actually
+# are, rather than guessing a path from ${rosidl_typesupport_tickle_c_DIR} - the installed layout
+# has a Python version in it, and tickle_typesupport is pip-installed somewhere else entirely.
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}" -c
+    "import importlib.util, pathlib; print(';'.join(sorted(str(f) for m in ('rosidl_typesupport_tickle_c', 'tickle_typesupport') for d in importlib.util.find_spec(m).submodule_search_locations for f in list(pathlib.Path(d).rglob('*.py')) + list(pathlib.Path(d).rglob('*.em')))))"
+  RESULT_VARIABLE _tickle_generator_result
+  OUTPUT_VARIABLE _tickle_generator_sources
+  ERROR_VARIABLE _tickle_generator_error
+  OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT _tickle_generator_result EQUAL 0 OR "${_tickle_generator_sources}" STREQUAL "")
+  message(FATAL_ERROR "rosidl_typesupport_tickle_c: cannot find the generator's own sources, so a "
+                      "change to it would not regenerate anything:\n${_tickle_generator_error}")
+endif()
+
 foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
   # rosidl_generate_interfaces_ABS_IDL_FILES holds *adapted* .idl paths (rosidl_adapt_interfaces()
   # runs before any extension, including this one, so every generator only ever has to understand
@@ -254,7 +273,7 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
       ${_tickle_generated_pkg_args}
       --max-buffer-length "${rosidl_typesupport_tickle_c_MAX_BUFFER_LENGTH}"
       --capacities "${_tickle_capacities_file}"
-    DEPENDS "${_src_file}" "${_tickle_capacities_file}"
+    DEPENDS "${_src_file}" "${_tickle_capacities_file}" ${_tickle_generator_sources}
     COMMENT "Generating TickLE type support for ${_idl_name}"
     VERBATIM
   )
