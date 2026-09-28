@@ -1102,3 +1102,45 @@ The next campaign should carry per-thread schedstat so the question answers itse
 - `setsid ... &` inside an ssh command holds that ssh open until the server exits, so the command substitution
   blocked for the server's whole life and the client always ran against a dead server. It needs its own subshell,
   `( setsid ... & )`, which is why the same thing had worked when typed by hand.
+
+### 10.2 It was never a CPU rise: the client saturates its core, and throughput fell (2026-09-28, Plan)
+
+Section 10 carried this as "the p1 RELIABLE client's CPU per sample rose 0.5-0.7%", confirmed twice and unattributed.
+With per-thread `schedstat` in the RESULT line (`7698f669`), `p1_cpu_attribute.sh` re-ran the comparison against
+`6910d840` at 8 runs an arm, ABBA-interleaved, zero void - and the framing was wrong.
+
+| figure | A, 6910d840 | B, main at 2d937a02 | | |
+|---|---|---|---|---|
+| `sched_cpu_s` (total CPU, ns-resolution) | 19.9924 ± 0.0001 | 19.9921 ± 0.0002 | −0.001% | t −1.28, **held** |
+| `elapsed_s` | 20.0000 | 20.0000 | | fixed by `-d` |
+| `sent` | 3,776,205 ± 2,691 | 3,734,398 ± 2,772 | **−1.107%** | t −10.8 |
+| `send_mbps` | 114.797 ± 0.082 | 113.526 ± 0.084 | −1.107% | t −10.8 |
+| user time per sample | 860.3 ± 6.9 ns | 908.7 ± 7.3 ns | **+48.4 ns (+5.6%)** | t +3.97 |
+| kernel time per sample | 4434.9 ± 6.7 ns | 4445.7 ± 6.9 ns | +10.8 ns (+0.24%) | t +1.1 |
+| `cpu_s_per_Msample` | 5.2949 ± 0.0038 | 5.3543 ± 0.0041 | +1.12% | t +10.7 |
+| `peak_rss_kb` | 1916.5 ± 2.2 | 1928.0 ± 0.8 | +11.5 KB | t +4.95 |
+
+**The client spends 19.992 s of CPU in a 20.000 s run in both arms.** It saturates its core, so its total CPU cannot
+rise - and it did not, to within t = 1.3 on an instrument that resolves nanoseconds. What rose is the cost of a sample:
+about 48 ns more in **user** time, with kernel time per sample flat. In a saturated sender that shows up as fewer
+samples in the same 20 s, which is exactly what `sent` says. `cpu_s_per_Msample` rose only because its denominator
+shrank. **The metric was reporting a throughput regression in CPU's clothing, and it is 1.1%, not 0.5-0.7%** - the
+larger figure because this pair spans more commits than section 10's did.
+
+Three things follow, and the first two are corrections to this file:
+
+- **Section 10.1's conclusion stands but its next step was wrong.** Identical syscall counts plus flat kernel time per
+  sample agree: this is not the system calls. But the next lever is not per-thread attribution - the client is one
+  thread (`sched_threads=1`, the whole 19.99 s under `client`), so there is no thread to name. It is **user-space work
+  per sample**, ~48 ns, about 115 cycles at 2.4 GHz.
+- **"Core's own send path is flat" cannot be right as measured.** Whatever `core_cost_pi` covered, it did not cover
+  these 48 ns. Either the microbenchmark misses the changed code, or it measures it outside the cache and branch
+  environment the real loop has. That is worth knowing on its own: a microbenchmark that misses a 5.6% user-time rise
+  in the path it claims to measure is a defective instrument, not a reassurance.
+- **`sent` is the instrument from here.** It moved at t = −10.8 where the CPU ratio is the same information divided by
+  a constant, it needs no per-thread breakdown, and its SE is 0.07% of its mean. `p1_throughput_bisect.sh` bisects the
+  18 commits in the range that touch `src/` or `include/` on that figure, re-measuring the baseline inside every step so
+  rig drift lands on both arms rather than on the verdict.
+
+**The peak-RSS lean is also larger than recorded:** +11.5 KB here against the ~+5 KB carried in COMPARISON's footnote,
+and deterministic enough to be beyond doubt (SE 0.8 KB). It is the same open item, measured better.
