@@ -1085,3 +1085,45 @@ CI-only locally. The lesson to carry rather than rediscover: when a change moves
 unsupported, or changes what a test asserts about rmw behaviour, the CI run is the first real check, so watch that run
 rather than the local gate table. Whoever next wants this closed properly should cost out running the ctest suite
 against a pre-built workspace in the netns, and decide whether it belongs in `check-gates` or in a pre-push hook.
+
+## g14 - we reported a QoS profile we would not accept (found by Dev 2026-09-29 through g13's `bag`; HIGH; shipped defect)
+
+- **Gap:** `rmw_get_publishers_info_by_topic()` filled RELIABILITY and DURABILITY for a discovered endpoint and left the
+  rest of the profile at `rmw_qos_profile_unknown`. rosbag2 records the profile it is told and offers it back on
+  playback, and `rmw_tickle_validate_qos_profile()` refuses UNKNOWN - so playback of our own recording failed with
+  "Ignoring a topic '/accept_chatter' ... rmw_tickle only supports RMW_QOS_POLICY_LIVELINESS_AUTOMATIC /
+  MANUAL_BY_TOPIC" (`rmw_qos.c:109`). **We told a tool a profile and then refused it when the tool repeated it back.**
+- **How it surfaced:** g13's `bag` acceptance, first run after the KEEP_ALL fix: `recorded` went 0 -> 73, so the
+  recorder worked, and `replayed` stayed 0. The two bags side by side say it plainly - ours history unknown, liveliness
+  unknown, deadline 0; CycloneDDS keep_last/10, automatic, infinite.
+- **Why it is its own number and not part of g13.** g13 is about a reader's history policy. This is an asymmetry between
+  what rmw_tickle *announces* and what it *validates*, it was in shipped code before g13 existed, and it breaks any tool
+  that round-trips a reported profile - rosbag2 is the one we happened to run.
+- **Fix (Dev, 2026-09-29):** report what is actually announced and participates in matching - LIVELINESS and both
+  durations - rather than leaving them UNKNOWN. A wire 0 maps to `RMW_DURATION_INFINITE`, because 0 means "no
+  requirement" on the wire while a literal zero reads as a deadline of no time at all; the control's bag reports the
+  same infinity, so that mapping is **measured against CycloneDDS rather than chosen**. HISTORY and LIFESPAN are
+  genuinely not announced, stay UNKNOWN, and did not block playback.
+- **Pass, and the reason it is stated as an invariant rather than as a policy list:** `test_reported_qos.c` hands every
+  profile rmw_tickle reports straight back to rmw_tickle's own validator, over three endpoint shapes, and requires it to
+  be accepted. A per-policy assertion would have to be extended by hand every time a policy is added or announced;
+  the invariant covers policies nobody has thought of yet. The profiles are printed, not only asserted, so a failure
+  says what was compared.
+- **The general rule this is an instance of, worth applying past QoS:** *any value we report through an introspection
+  API must be one we would accept back.* `rmw_get_*_info_by_topic`, the graph APIs and the event payloads all hand data
+  to tools that may return it, and a reported value we refuse is a defect even when the reporting is "only
+  informational". Plan should check the other introspection surfaces against this before the next COMPARISON re-measure.
+- **Result:** `bag` passes and is level with the control - rmw_tickle replayed 77, `rmw_cyclonedds_cpp` replayed 77,
+  zero gaps on both - against FAIL(recorded=0) the day before, so the pre-registered "expected to fail before the fix"
+  is on record and the test can fail.
+
+### A test-shape defect that happened three times in one night, recorded once
+
+In `test_keep_all_reader`, in the `bound` test and again in `test_reported_qos`, a pre-registered mutant failed **before
+reaching the claim it was aimed at** - on a specific per-policy or per-decline assertion several lines above the general
+property the file exists to pin. Each time the suite was green and the mutant failed, which together look like proof and
+are not: the check answered, but it was not the thing being checked that answered. The fix is one shape, applied to all
+three: **put the general property first and let the specific values follow to explain it.** The same defect in Plan's
+own work the same night: `check_unsupported_list.sh` passed its emptied-source arm because it pulled `rmw_ret_t` out of
+`rmw_ret_t rmw_set_log_severity(` on both sides and matched the stray name against itself, and printing the two lists is
+what exposed it. Print what was compared, not only whether it matched.
