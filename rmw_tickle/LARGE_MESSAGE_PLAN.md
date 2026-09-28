@@ -291,6 +291,25 @@ any interface package built before this. It is the old two-step, and `test_publi
 **Acceptance, on the wired build:** `inprocess`, `durable`, `samehost`, `graph`, `events`, `matched`, `takeseq`,
 `range` and `peers` all pass, each with its CycloneDDS control passing. All 31 rmw unit programs pass in a netns.
 
+### Pass 5, the PC half (Dev, 2026-09-28)
+
+Both measurements compare `fe26a97b` - the C++ codec, before rmw used either - against `feda8093`, the wiring.
+Written up with the pre-registered reading in `examples/perf_hil/results/lmp1_codec_and_memory_2026-09-28.md`.
+
+**The codec alone** (conv_cost, 15 rounds of 200 calls, CPU pinned). Image at 64,000 B: the struct path takes
+3.211 us to encode and 3.237 us to decode, the direct codec **1.591 us and 1.595 us** - a saving of 1.62 us each
+way against spreads of 0.07 to 0.18 us. The saving is the `to_tickle` step to three figures (1.589 us), which is
+what the prediction said. The 16 KB control saves 0.218 us, a quarter as much for a quarter the bytes, so it
+scales with the copy rather than being a fixed overhead. `roundtrip_ok=1`.
+
+**The per-endpoint memory** (endpoint_memory, allocator bytes, a slope after a warm pair, `std_msgs/Empty` as
+the control). Image: **133,705 bytes per publisher-and-subscription pair before, 5,577 after** - a fall of
+128,128 against a predicted 2 x 64,044, the two TickLE structs a pair used to hold. They agree to within 40
+bytes, and the control does not move. What is left of Image's slope is indistinguishable from Empty's: the
+difference is a fixed 24.7 KB for the run, halving per pair as the count doubles (493.5, 246.7, 123.4 bytes at
+50, 100, 200 pairs). Residue after destroying every endpoint was checked for the same reason and does not scale
+with the count either, so it is not a leak.
+
 **A generator change did not regenerate anything.** Found while building this: a generated file's only `DEPENDS` were
 its `.msg` and the capacity table, so `rosidl_typesupport_tickle_c_generate_interfaces.cmake` left every already
 generated file in place when the generator itself changed. The direct codec's first build failed on it - a freshly

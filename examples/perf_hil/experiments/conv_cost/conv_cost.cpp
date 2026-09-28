@@ -35,6 +35,7 @@
 #include <rosidl_typesupport_cpp/message_type_support.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/byte_multi_array.hpp>
+#include <tickle/tickle.h> // tt_Data, which the codec callbacks take
 
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
 #include "rosidl_typesupport_tickle_cpp/identifier.h"
@@ -57,6 +58,72 @@ namespace {
     auto median(std::vector<double> values) -> double {
         std::ranges::sort(values);
         return values[values.size() / 2];
+    }
+
+    // The rounds' spread, which is what says whether a difference between two medians is real
+    // (LARGE_MESSAGE_PLAN pass 5's own reading rule).
+    auto spread(std::vector<double> values) -> double {
+        const auto bounds = std::ranges::minmax_element(values);
+        return *bounds.max - *bounds.min;
+    }
+
+    constexpr size_t wire_capacity = 65507;
+
+    struct codec_times {
+        double struct_encode;
+        double direct_encode;
+        double struct_decode;
+        double direct_decode;
+    };
+
+    // LARGE_MESSAGE_PLAN.md pass 5, the codec alone: the direct codec against the struct path, into
+    // one buffer so that only the codec differs. Its own function because four more timed loops put
+    // run()'s cognitive complexity over clang-tidy's threshold. False on a codec failure, which is a
+    // result to report rather than a number to average.
+    template <typename Message>
+    auto time_codecs(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks, const Message* msg,
+                     Message& back, void* tickle, std::vector<uint8_t>& wire, int calls, codec_times& times) -> bool {
+        const double encode_start = now_us();
+        for (int call = 0; call < calls; call++) {
+            if (!callbacks->to_tickle(msg, tickle) ||
+                callbacks->tickle_encode(static_cast<tt_Data*>(tickle), wire.data(),
+                                         static_cast<uint32_t>(wire.size())) < 0) {
+                std::printf("struct encode FAILED\n");
+                return false;
+            }
+        }
+        const double struct_encoded = now_us();
+        int32_t size = 0;
+        for (int call = 0; call < calls; call++) {
+            size = callbacks->direct_encode(msg, wire.data(), static_cast<uint32_t>(wire.size()));
+            if (size < 0) {
+                std::printf("direct encode FAILED\n");
+                return false;
+            }
+        }
+        const double direct_encoded = now_us();
+        for (int call = 0; call < calls; call++) {
+            if (callbacks->tickle_decode(static_cast<tt_Data*>(tickle), wire.data(), static_cast<uint32_t>(size),
+                                         true) < 0 ||
+                !callbacks->from_tickle(tickle, &back)) {
+                std::printf("struct decode FAILED\n");
+                return false;
+            }
+            callbacks->tickle_free(static_cast<tt_Data*>(tickle));
+        }
+        const double struct_decoded = now_us();
+        for (int call = 0; call < calls; call++) {
+            if (callbacks->direct_decode(&back, wire.data(), static_cast<uint32_t>(size), true) < 0) {
+                std::printf("direct decode FAILED\n");
+                return false;
+            }
+        }
+        const double direct_decoded = now_us();
+        times.struct_encode = (struct_encoded - encode_start) / calls;
+        times.direct_encode = (direct_encoded - struct_encoded) / calls;
+        times.struct_decode = (struct_decoded - direct_encoded) / calls;
+        times.direct_decode = (direct_decoded - struct_decoded) / calls;
+        return true;
     }
 
     struct free_deleter {
@@ -90,6 +157,15 @@ namespace {
         std::vector<double> copy_us;
         std::vector<double> serialize_us;
         std::vector<double> deserialize_us;
+        // LARGE_MESSAGE_PLAN.md pass 5, the codec alone: what rmw does now (the direct codec, from
+        // and into the ROS message) against what it did before (the TickLE struct in between).
+        // Both encode into the same buffer, so only the codec differs.
+        std::vector<double> struct_encode_us;
+        std::vector<double> direct_encode_us;
+        std::vector<double> struct_decode_us;
+        std::vector<double> direct_decode_us;
+        std::vector<uint8_t> wire(wire_capacity);
+        const bool has_direct = callbacks->direct_encode != nullptr;
         for (int round = 0; round < rounds; round++) {
             const double start = now_us();
             for (int call = 0; call < calls; call++) {
@@ -121,6 +197,14 @@ namespace {
                 serialization.deserialize_message(&serialized, &back);
             }
             const double deserialize_end = now_us();
+            codec_times times {};
+            if (has_direct && !time_codecs(callbacks, &msg, back, tickle.get(), wire, calls, times)) {
+                return;
+            }
+            struct_encode_us.push_back(times.struct_encode);
+            direct_encode_us.push_back(times.direct_encode);
+            struct_decode_us.push_back(times.struct_decode);
+            direct_decode_us.push_back(times.direct_decode);
             to_us.push_back((converted - start) / calls);
             from_us.push_back((restored - converted) / calls);
             copy_us.push_back((copied - restored) / calls);
@@ -131,9 +215,13 @@ namespace {
         const char* rmw = std::getenv("RMW_IMPLEMENTATION"); // NOLINT(concurrency-mt-unsafe) - one thread
         std::printf(
             "RESULT: type=%s bytes=%zu rmw=%s to_tickle_us=%.3f from_tickle_us=%.3f memcpy_us=%.3f serialize_us=%.3f "
-            "deserialize_us=%.3f roundtrip_ok=%d lib=%s\n",
+            "deserialize_us=%.3f struct_encode_us=%.3f direct_encode_us=%.3f struct_decode_us=%.3f "
+            "direct_decode_us=%.3f struct_encode_spread_us=%.3f direct_encode_spread_us=%.3f "
+            "struct_decode_spread_us=%.3f direct_decode_spread_us=%.3f roundtrip_ok=%d lib=%s\n",
             name, bytes, rmw != nullptr ? rmw : "default", median(to_us), median(from_us), median(copy_us),
-            median(serialize_us), median(deserialize_us), same ? 1 : 0,
+            median(serialize_us), median(deserialize_us), median(struct_encode_us), median(direct_encode_us),
+            median(struct_decode_us), median(direct_decode_us), spread(struct_encode_us), spread(direct_encode_us),
+            spread(struct_decode_us), spread(direct_decode_us), same ? 1 : 0,
             info.dli_fname != nullptr ? info.dli_fname : "?");
     }
 
