@@ -58,6 +58,7 @@ MUTANTS = (
     "no_bound_check",
     "cpp_string_size",
     "cpp_skip_pad",
+    "keep_shell_tail",
 )
 _SWAP = {2: ("uint16_t", "__builtin_bswap16"), 4: ("uint32_t", "__builtin_bswap32"), 8: ("uint64_t", "__builtin_bswap64")}
 _SCALAR_SIZE = {
@@ -500,14 +501,26 @@ def _field_decode(f):
             + ["decoded += (int32_t)bytes;"]
         )
     seq = f"rosidl_runtime_c__{ros2_adapter._ros2_sequence_scalar_type(f.scalar_type)}__Sequence"
+    # A decode has to leave the message holding this sample and nothing of the last one, because
+    # rmw hands it a pooled shell that still holds the previous sample (rmw_subscription.c). The
+    # keep_shell_tail mutant reuses an allocation that is merely big enough and leaves .size as it
+    # was, so a shorter sample keeps the longer one's tail - the exact failure a pool invites.
+    reset = (
+        [f"if ({r}.size < count) {{"]
+        + [f"    {ln}" for ln in [f"{seq}__fini(&{r});", f"if (!{seq}__init(&{r}, count)) {{ return -4; }}"]]
+        + ["}"]
+        if mutant() == "keep_shell_tail"
+        else [f"{seq}__fini(&{r});", f"if (!{seq}__init(&{r}, count)) {{ return -4; }}"]
+    )
     return _braced(
         _count_decode(f)
         + _pad_decode(f.element_align, None)
         + [
             f"size_t bytes = (size_t)count * {size};",
             "if ((size_t)decoded + bytes > len) { return -1; }",
-            f"{seq}__fini(&{r});",
-            f"if (!{seq}__init(&{r}, count)) {{ return -4; }}",
+        ]
+        + reset
+        + [
             "if (bytes > 0) {",
             f"    memcpy({r}.data, payload + decoded, bytes);",
             "}",

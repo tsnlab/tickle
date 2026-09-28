@@ -582,6 +582,12 @@ static inline uint32_t rmw_tickle_psn_read(const uint8_t* bytes, uint32_t length
 typedef struct rmw_tickle_outgoing_message_t {
     uint64_t publication_sequence_number;
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks;
+    // The ROS message itself, which the direct codec encodes straight into tx_buffer
+    // (LARGE_MESSAGE_PLAN.md stage 1). NULL only on the fallback path below.
+    const void* ros_message;
+    // The TickLE struct, filled by to_tickle - the fallback for a callbacks struct with no direct
+    // codec: rmw_tickle's own hand-written test ones, and an interface package built before it.
+    // NULL whenever the direct codec is used, which is every generated type.
     void* tickle;
 } rmw_tickle_outgoing_message_t;
 
@@ -699,6 +705,9 @@ typedef struct rmw_tickle_publisher_t {
     // only holds the node lock around the actual tt_Publisher_publish() call itself, unchanged: this
     // lock's own job is purely to stop two threads racing on the shared scratch buffer during the
     // to_tickle() conversion that happens before the node lock is ever taken.
+    // Only for the fallback path (rmw_tickle_outgoing_message_t.tickle): a type with a direct
+    // codec keeps no per-publisher buffer at all, which is the point of stage 1 - the encoder
+    // writes the ROS message straight into core's tx_buffer.
     void* publish_scratch_buf;
     pthread_mutex_t publish_mutex;
     // The next message's publication sequence number (ROS's, rmw/types.h): this Publisher's own count of

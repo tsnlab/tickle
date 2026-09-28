@@ -627,9 +627,33 @@ static void arm_heartbeat_piggyback(rmw_tickle_publisher_t* pub_impl) {
     }
 }
 
+// (LARGE_MESSAGE_PLAN.md stage 1) The direct codec where the type has one - the ROS message goes
+// straight into core's tx_buffer, with no TickLE struct in between and so no per-publisher buffer.
+// The fallback is the struct path, for a callbacks struct without it.
+// Only the fallback path needs a buffer: with a direct codec this publisher keeps no message-sized
+// storage of its own at all (LARGE_MESSAGE_PLAN.md stage 1, and what its per-endpoint memory slope
+// measures). Split out of rmw_create_publisher() to keep its cognitive complexity under
+// clang-tidy's threshold.
+static bool allocate_publish_scratch(rmw_tickle_publisher_t* pub_impl,
+                                     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks,
+                                     const rcutils_allocator_t* allocator) {
+    pub_impl->publish_scratch_buf = NULL;
+    if (NULL != callbacks->direct_encode) {
+        return true;
+    }
+    pub_impl->publish_scratch_buf = allocator->allocate(callbacks->tickle_struct_size, allocator->state);
+    if (NULL == pub_impl->publish_scratch_buf) {
+        RMW_SET_ERROR_MSG("failed to allocate publish scratch buffer");
+        return false;
+    }
+    return true;
+}
+
 static int32_t encode_size_with_psn(struct tt_Data* data) {
     const rmw_tickle_outgoing_message_t* message = (const rmw_tickle_outgoing_message_t*)data;
-    int32_t size = message->callbacks->tickle_encode_size((struct tt_Data*)message->tickle);
+    int32_t size = NULL != message->callbacks->direct_encode_size
+                       ? message->callbacks->direct_encode_size(message->ros_message)
+                       : message->callbacks->tickle_encode_size((struct tt_Data*)message->tickle);
     return size < 0 ? size : size + (int32_t)rmw_tickle_psn_bytes(message->publication_sequence_number);
 }
 
@@ -641,7 +665,9 @@ static int32_t encode_with_psn(struct tt_Data* data, uint8_t* payload, const uin
     }
     (void)rmw_tickle_psn_write(message->publication_sequence_number, payload);
     int32_t encoded =
-        message->callbacks->tickle_encode((struct tt_Data*)message->tickle, payload + header, len - header);
+        NULL != message->callbacks->direct_encode
+            ? message->callbacks->direct_encode(message->ros_message, payload + header, len - header)
+            : message->callbacks->tickle_encode((struct tt_Data*)message->tickle, payload + header, len - header);
     return encoded < 0 ? encoded : encoded + (int32_t)header;
 }
 
@@ -917,9 +943,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // once here (callbacks->tickle_struct_size is fixed for this Publisher's whole lifetime),
     // reused by every rmw_publish() call from here on instead of a fresh allocate() each time.
     pub_impl->next_publication_sequence_number = 1;
-    pub_impl->publish_scratch_buf = allocator->allocate(callbacks->tickle_struct_size, allocator->state);
-    if (NULL == pub_impl->publish_scratch_buf) {
-        RMW_SET_ERROR_MSG("failed to allocate publish scratch buffer");
+    if (!allocate_publish_scratch(pub_impl, callbacks, allocator)) {
         allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
         allocator->deallocate(pub_impl, allocator->state);
         return NULL;
@@ -1300,18 +1324,20 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     // "Strings" rule) or copies into a fixed in-place buffer - nothing this struct itself owns that
     // a second call's own to_tickle() would need to free first.
     pthread_mutex_lock(&pub_impl->publish_mutex);
-    void* tickle_buf = pub_impl->publish_scratch_buf;
-    rmw_tickle_outgoing_message_t outgoing = {pub_impl->next_publication_sequence_number, callbacks, tickle_buf};
+    rmw_tickle_outgoing_message_t outgoing = {pub_impl->next_publication_sequence_number, callbacks, ros_message, NULL};
 
-    if (!callbacks->to_tickle(ros_message, tickle_buf)) {
-        // A bounds-check failure (a variable array/bounded string longer than TickLE's resolved
-        // capacity) - see ros2_adapter.py's own emit_to_tickle() doc comment.
-        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
-            "cannot publish this %s: a sequence or string in it is longer than the capacity TickLE generated the "
-            "type with - raise it with a capacity file (TICKLE_CAPACITIES_PATH) and rebuild the package",
-            callbacks->ros_type_name);
-        pthread_mutex_unlock(&pub_impl->publish_mutex);
-        return RMW_RET_ERROR;
+    // The fallback: a callbacks struct with no direct codec still goes through the TickLE struct,
+    // and refuses here, before the publish, when the message does not fit its capacities.
+    if (NULL == callbacks->direct_encode) {
+        outgoing.tickle = pub_impl->publish_scratch_buf;
+        if (!callbacks->to_tickle(ros_message, outgoing.tickle)) {
+            RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+                "cannot publish this %s: a sequence or string in it is longer than the capacity TickLE generated the "
+                "type with - raise it with a capacity file (TICKLE_CAPACITIES_PATH) and rebuild the package",
+                callbacks->ros_type_name);
+            pthread_mutex_unlock(&pub_impl->publish_mutex);
+            return RMW_RET_ERROR;
+        }
     }
 
     TT_TRACE(tt_TRACE_SERIALIZED);

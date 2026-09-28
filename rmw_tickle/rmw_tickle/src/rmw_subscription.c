@@ -125,16 +125,36 @@ static void free_nothing(struct tt_Data* data) {
     (void)data;
 }
 
-// Reads rmw_tickle's per-message header off the payload core delivered and decodes the CDR behind it into
-// the subscription's decode_scratch. Returns false for a message that is not rmw_tickle's shape.
+// Reads rmw_tickle's per-message header off the payload core delivered, and decodes the CDR behind
+// it straight into `ros_message` - a shell from the pool (LARGE_MESSAGE_PLAN.md stage 1). Returns
+// false for a message that is not rmw_tickle's shape, or whose CDR does not decode.
+//
+// The direct codec writes every field of the shell, so one that still holds the previous sample is
+// overwritten rather than merged: a string is assigned, a sequence finalised and reinitialised at
+// its new count, a fixed array copied over. That is what makes a pooled shell safe to reuse, and
+// what the pass-1 harness's check 1b asserts per type by decoding into a shell that deliberately
+// holds the sample before.
+//
+// The fallback, for a callbacks struct with no direct codec, is the old two-step: decode into the
+// subscription's own TickLE struct, convert out of it, and free what the decode allocated.
 static bool decode_with_psn(rmw_tickle_subscriber_t* sub_impl, const struct payload_view* view,
-                            uint64_t* publication_sequence_number) {
+                            uint64_t* publication_sequence_number, void* ros_message) {
     uint32_t header = rmw_tickle_psn_read(view->payload, view->length, view->is_native, publication_sequence_number);
     if (0 == header) {
         return false;
     }
-    return sub_impl->callbacks->tickle_decode((struct tt_Data*)sub_impl->decode_scratch, view->payload + header,
-                                              view->length - header, view->is_native) >= 0;
+    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = sub_impl->callbacks;
+    if (NULL != callbacks->direct_decode) {
+        return callbacks->direct_decode(ros_message, view->payload + header, view->length - header, view->is_native) >=
+               0;
+    }
+    struct tt_Data* tickle = (struct tt_Data*)sub_impl->decode_scratch;
+    if (callbacks->tickle_decode(tickle, view->payload + header, view->length - header, view->is_native) < 0) {
+        return false;
+    }
+    bool converted = callbacks->from_tickle(sub_impl->decode_scratch, ros_message);
+    callbacks->tickle_free(tickle);
+    return converted;
 }
 
 // (g3, RMW_GAPS_PLAN.md) The entry for the writer core is delivering from now, claimed if it is new: a free entry,
@@ -203,36 +223,33 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
         (rmw_tickle_subscriber_t*)((char*)tt_sub - offsetof(rmw_tickle_subscriber_t, tickle_subscriber));
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = sub_impl->callbacks;
     uint64_t publication_sequence_number = 0;
-    if (!decode_with_psn(sub_impl, (const struct payload_view*)data, &publication_sequence_number)) {
-        return; // not an rmw_tickle message, or its CDR does not decode: nothing to hand up
-    }
-    count_messages_lost(sub_impl, publication_sequence_number); // (g3) MESSAGE_LOST
-    TT_TRACE(tt_TRACE_DECODED);
-    struct tt_Data* tickle = (struct tt_Data*)sub_impl->decode_scratch;
 
     // Milestone 45 - reuse an already-zeroed shell from the pool instead of a fresh zero_allocate()
     // when one's available (see shell_pool's own doc comment, rmw_tickle.h) - falls back to a real
     // allocation exactly as before whenever the pool's empty (e.g. before any rmw_take() has ever
-    // returned one, or a sustained burst deeper than queue_capacity).
+    // returned one, or a sustained burst deeper than queue_capacity). Taken before the decode now,
+    // because the decode writes into it (LARGE_MESSAGE_PLAN.md stage 1).
     pthread_mutex_lock(&sub_impl->queue_mutex);
     void* ros_message = shell_pool_pop(sub_impl);
     pthread_mutex_unlock(&sub_impl->queue_mutex);
     if (NULL == ros_message) {
         ros_message = rmw_tickle_ros_message_create(callbacks, &sub_impl->allocator);
         if (NULL == ros_message) {
-            callbacks->tickle_free(tickle);
             return; // Nothing more useful to do from inside a poll-thread callback - drop silently.
         }
     }
-    bool converted = callbacks->from_tickle(tickle, ros_message);
-    TT_TRACE(tt_TRACE_CONVERTED);
-    callbacks->tickle_free(tickle);
-    if (!converted) {
+
+    if (!decode_with_psn(sub_impl, (const struct payload_view*)data, &publication_sequence_number, ros_message)) {
+        // Not an rmw_tickle message, or its CDR does not decode: nothing to hand up. The shell goes
+        // back, zeroed on the way (shell_pool_push) - a half-written one must not be handed out.
         pthread_mutex_lock(&sub_impl->queue_mutex);
         shell_pool_push(sub_impl, ros_message);
         pthread_mutex_unlock(&sub_impl->queue_mutex);
         return;
     }
+    count_messages_lost(sub_impl, publication_sequence_number); // (g3) MESSAGE_LOST
+    TT_TRACE(tt_TRACE_DECODED);
+    TT_TRACE(tt_TRACE_CONVERTED);
 
     // QoS roadmap #2 (DEADLINE) - see rmw_tickle_subscriber_t.last_activity_time's own doc
     // comment. This function already runs under the node lock (its own module doc comment above),
@@ -568,8 +585,12 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     // Milestone 45 - shell_pool's own doc comment (rmw_tickle.h). Sized queue_capacity, same as
     // queue[] itself - the most shells that can ever be genuinely in flight at once.
     sub_impl->shell_pool = (void**)allocator->zero_allocate(sub_impl->queue_capacity, sizeof(void*), allocator->state);
-    sub_impl->decode_scratch = allocator->zero_allocate(1, callbacks->tickle_struct_size, allocator->state);
-    if (NULL == sub_impl->shell_pool || NULL == sub_impl->decode_scratch) {
+    // Only the fallback needs it: with a direct codec the payload decodes straight into a pooled
+    // shell, so this subscription keeps no message-sized buffer of its own.
+    sub_impl->decode_scratch = NULL != callbacks->direct_decode
+                                   ? NULL
+                                   : allocator->zero_allocate(1, callbacks->tickle_struct_size, allocator->state);
+    if (NULL == sub_impl->shell_pool || (NULL == sub_impl->decode_scratch && NULL == callbacks->direct_decode)) {
         RMW_SET_ERROR_MSG("failed to allocate subscriber shell_pool");
         allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
         allocator->deallocate(sub_impl->decode_scratch, allocator->state);

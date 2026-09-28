@@ -260,6 +260,37 @@ two still agree:
 Both were run: `cpp_string_size` leaves the harness green and fails the test on the length prefix;
 `cpp_skip_pad` fails check 1c with "C++ encodes 22 B where C encodes 24" and nothing else.
 
+### Stage 1 wired into rmw (Dev, 2026-09-28)
+
+**Publish.** `encode_with_psn`/`encode_size_with_psn` call the direct encoder on the ROS message itself, so the
+bytes go straight into core's `tx_buffer` behind the psn header. **A publisher of a type with a direct codec now
+allocates no message-sized buffer at all** - `publish_scratch_buf` is only taken for the fallback below, and
+`test_shell_pool` asserts it is NULL. That is the revision's own claim, and pass 5's per-endpoint slope is where a
+buffer creeping back would show.
+
+**Take.** The payload decodes straight into a pooled ROS shell; `decode_scratch` is likewise only allocated for
+the fallback, and asserted NULL. The shell is taken *before* the decode now, and returned to the pool - zeroed on
+the way - whenever the decode refuses, so a half-written shell is never handed out.
+
+**The fallback stays,** for a callbacks struct with no direct codec: rmw_tickle's own hand-written test ones, and
+any interface package built before this. It is the old two-step, and `test_publish_take_reuse` exercises it.
+
+**The pooled shells' limit, stated and tested** (the risk list, and Plan's ask):
+- **How many.** The pool is sized `queue_capacity`, the subscription's depth - the most shells that can be in
+  flight at once. `shell_pool_push` destroys rather than pools anything beyond that, so the count can never
+  exceed it. `test_shell_pool` asserts the bound after a burst deeper than the queue.
+- **When the queue is full.** KEEP_LAST drops the oldest back into the pool rather than freeing it: after depth+2
+  deliveries exactly `depth` are queued, and the ones kept are the newest. Asserted by content, not only by count.
+- **Reset, not reused dirty.** A shell handed back out carries nothing of the sample before it, because the
+  decoder writes every field. `test_shell_pool` shows it directly - a long sample, then a short one into the same
+  shell - and the generator's own **`keep_shell_tail`** mutant is the proof at the level where the reset lives: it
+  reuses an allocation that is merely big enough and leaves the old count, and the pass-1 harness's **check 1b**
+  fails on it, only that check. Its control on the rmw side: dropping the shell on a failed decode instead of
+  returning it fails `test_shell_pool` at the line that counts the pool.
+
+**Acceptance, on the wired build:** `inprocess`, `durable`, `samehost`, `graph`, `events`, `matched`, `takeseq`,
+`range` and `peers` all pass, each with its CycloneDDS control passing. All 31 rmw unit programs pass in a netns.
+
 **A generator change did not regenerate anything.** Found while building this: a generated file's only `DEPENDS` were
 its `.msg` and the capacity table, so `rosidl_typesupport_tickle_c_generate_interfaces.cmake` left every already
 generated file in place when the generator itself changed. The direct codec's first build failed on it - a freshly
