@@ -783,3 +783,35 @@ own acceptance test against the control. SECURITY_PLAN stays parked, at the user
     received datagram - a remote peer must not be able to end a local loop;
   - a mutant that keeps the fatal return fails those tests;
   - on the rig, a v10 sender beside a v11 pair does not stop them.
+
+### The rule this establishes
+
+**A received datagram must never make `tt_Context_poll()` return an error.** Whatever a peer sends - a version we do
+not speak, a bad magic, a truncated header, a submessage that does not walk - is a dropped datagram with a counter,
+not a fatal return. An error return is for this node's own failures: an encode that overflows, a socket that breaks.
+The five other `tt_RET_PROTOCOL_ERROR` sites in `tickle.c` are all on the send path (`data_encode_size` out of
+range, `data_encode` failing, and so on), which is the caller's own error and stays as it is.
+
+### The change
+
+- `validate_packet_header()` counts `version_mismatch_drops` on a version mismatch, keeping its existing
+  rate-limited log.
+- `process_datagram_locked()` counts `rx_malformed_drops` - every datagram dropped as unprocessable, of which
+  `version_mismatch_drops` is the named subset - and returns `tt_RET_OK`.
+- Both counters join the rmw shutdown line, beside `rx_out_of_range`.
+
+### Pass criteria, fixed before the code
+
+1. **The unit contract.** `process_datagram()` returns `tt_RET_OK` for each of: a wrong wire version, a bad magic, a
+   datagram shorter than a header, and a submessage length that runs past the datagram. The right counter moves by
+   exactly one in each case, and no other counter does.
+2. **The loop does not stop.** A poll whose first datagram is one of those, with a backlog behind it, drains the
+   backlog (`test_mock_try_receive_remaining` reaches 0, `rx_datagrams` counts every one) and returns OK. This is
+   the property the rig lost.
+3. **Delivery afterwards is unaffected.** A valid datagram after a hostile one is processed in full: its source's
+   `traffic_last_seen` is stamped, where the hostile one's is not.
+4. **Mutants, each of which must fail one of the above:**
+   - `fatal_version`: the version mismatch returns `tt_RET_PROTOCOL_ERROR` again - fails 1 and 2.
+   - `silent_drop`: the drop is not counted - fails 1.
+   - `fatal_malformed`: only the version case is made non-fatal, a truncated datagram is still fatal - fails 1 and 2.
+5. Acceptance: Plan's `v10 sender beside a v11 pair` case, and every test that passed before still passes.
