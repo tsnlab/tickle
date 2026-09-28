@@ -27,19 +27,28 @@ one caught.
 the user's instruction of 2026-09-26. How that is done, the one FastDDS transport parameter tuned for
 a fair evaluation, and what was different before are all in §4.4. Read it before quoting a margin.
 
-> **Footnote, 2026-09-28, corrected 2026-09-29.** The `A`, `T` and `V` rows were measured on `6910d840`. `main` has
-> since gained the Context/Node restructure (wire v11), the capacity work and the rmw gap fixes. Measured on the rig
-> against that same build: the latency cells' wire bytes are 1.4 B higher, from v11's node entries. **The peak-RSS lean
-> is not a lean:** it measured 11.5 KB, then 9.3 KB, and it disappears entirely when both builds are compiled with
-> `-falign-functions=32` (−1.3 KB, t −0.39) while that flag alone moves one of them by 12.0 KB. It is text pages, not
-> data - the same floor as below. **What was written here as "client CPU per sample is
-> 0.5-0.7% higher at P1" was the wrong quantity.** The p1 client saturates its core, so its CPU cannot rise and does
-> not: 19.9924 s against 19.9921 s of a 20 s run, held at t 1.3 on nanosecond-resolution `schedstat`. What is higher is
-> the cost of a sample - about 48 ns more in user time - so the run sends **1.107% fewer samples** (t −10.8). The CPU
-> ratio moved only because its denominator shrank. WIRE_PLAN.md 10.2 has the figures, 10.3 the bisect that puts the
-> origin at `5d9cace1` and the evidence that the commit adds nothing to the per-datagram path, which leaves function
-> placement as the standing hypothesis and a pre-registered test for it. No verdict against a vendor changes either
-> way, since those margins are multiples. The rows are re-measured when large-message stage 1 lands.
+> **Re-measured 2026-09-29 on `9dbffd40`, and the footnote this replaces is kept below it.** The `A`, `T` and `V` rows
+> had been carried from `6910d840` with a footnote listing how `main` differed. `main` now has large-message stage 1, the
+> Context/Node restructure (wire v11), the capacity work, the rmw gap fixes, g13's KEEP_ALL reader and g14, so the whole
+> set was re-run in one chain, all three frameworks in the same sessions
+> (`results/cmp_{A,T,V}_9dbffd40_2026-09-29.txt`, and `..._verdicts.txt` for the first two):
+>
+> | block | what it is | result |
+> |---|---|---|
+> | `A` | the aligned 12-cell native campaign, 3 repetitions, FastDDS as shipped | **WIN 97, DRAW/TIE 11, LOSE 0, VOID 0** over 108 comparable metric-cells |
+> | `T` | cells 3, 4 and 6 again with FastDDS's `maxMessageSize` 1472 (the user's fair-evaluation setting) | **WIN 27, TIE 3, LOSE 0, VOID 0** |
+> | `V` | the rmw block, `wait=block`, `bench` and `array1k` x BEST_EFFORT and RELIABLE | **rmw_tickle lowest in 16 of 16**, every one clear of the runner-up by more than 2xSE, on RTT, ping RSS, pong RSS and pong CPU |
+>
+> No cell lost and none voided. The rmw RTTs are 0.244-0.269 ms against CycloneDDS's 0.272-0.291 and FastDDS's
+> 0.318-0.350; rmw peak RSS is ~12.3 MB against 14.7 and 23.8.
+>
+> **The previous footnote, and why its central figure was withdrawn rather than updated:** it said TickLE's client CPU
+> per sample was 0.5-0.7% higher at p1 than `6910d840`, and later 1.107%. That difference was neither a CPU cost nor a
+> regression - the p1 client saturates its core, so its total CPU is unchanged (19.9924 s against 19.9921 s of a 20 s
+> run), the cost of a *sample* rose, and forcing the same function alignment on both builds **reverses** the sign. It is
+> code placement, and WIRE_PLAN 10.4 records the floor that follows: **below about 1% on p1 throughput and about 10 KB on
+> peak RSS, two builds whose code differs in size cannot be separated at all.** The peak-RSS "lean" of 5, then 11.5, KB
+> went the same way - it is text pages, and it vanishes when both builds are aligned.
 
 **Where the numbers come from (the `meas.` column).** Within a row all three frameworks come from the
 same session, so a row is always comparable. Across rows of different letters it is not.
