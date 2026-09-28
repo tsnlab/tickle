@@ -12,9 +12,12 @@ designed for one consumer and retrofitted for the other is how the same mistake 
 2. **The security module splits across the ROS line:** a TickLE Core half an embedded system can use, and an rmw half
    that meets SROS2's requirements.
 3. **The core half is called TickLE Security.**
-4. **Whether the shared-memory module splits the same way is open,** with Plan asked for a recommendation. Section 3a
-   is that recommendation: it should not split.
-5. **The detailed module design plan is written once 4 is decided** - so this file stops at the seams and the criteria.
+4. **Decided 2026-09-28, after Plan's recommendation in section 3a: the shared-memory module does not split - it is a
+   core-only module.** The user's words: a module used only by core. There is no shared-memory half in rmw at all;
+   what rmw contributes is what it already does for other transports - read an environment variable, and report which
+   transport a match used - which is a few lines in existing code rather than a part of the module.
+5. **The detailed module design plan is written once 4 is decided.** Written as `SHM_PLAN.md`; this file stays the
+   seam-and-criteria document that both modules answer to.
 6. **Using a module must cost no performance.** Read as: a build with the module present but not in use is
    indistinguishable from a build without it, which is criterion 3 below, and the module's own path is measured
    separately.
@@ -101,7 +104,7 @@ Three tiers already exist, and shared memory has to sit between two of them or i
 6. **The capacity is bounded and stated,** as every other core structure is, and exhaustion is counted and warned
    about rather than silent.
 
-### 3a. Recommendation on the user's question 4: the shared-memory module should not split
+### 3a. Question 4, answered: the shared-memory module should not split - and the user decided so
 
 **No core/rmw split. The whole transport belongs to the core-side module; the rmw layer only selects it and reports
 it.** Four reasons, and one dependency that matters more than any of them.

@@ -955,3 +955,24 @@ once, or a clean build, which is what CI does anyway.
 - **Why this is worth a gap of its own rather than a line in g1:** rosbag2 is not the only KEEP_ALL subscriber - it is
   the idiom for any consumer that must not lose messages - and under the incomplete-delivery rule a recorder that
   silently drops is a LOSE, not a partial win. The semantics above are what make the difference visible.
+
+## Known gap in the local gates: rmw behaviour is only tested in CI (recorded 2026-09-28)
+
+`make check-gates` is core-only and deliberately cheap. rmw_tickle's own ctest suite cannot join it as it stands: it
+needs the whole colcon workspace (rmw_tickle, both typesupport packages and the generated interface overlay, with
+`AMENT_PREFIX_PATH` set) and it has to run inside the `dev_rmw_tests` netns with a default route on `lo`. So **a change
+to rmw_tickle that makes an rmw test stale is green locally and red in CI**, which is what happened on 2026-09-28: g1
+implemented two serialized entry points, `test_unsupported_entry_points` still asserted they were unsupported, and
+`Check all` stayed red for three commits.
+
+Two answers were considered and one taken. A separate `make check-rmw` target assuming an already-built workspace was
+offered by Dev and declined: a gate that only helps when someone remembers to run it is not a gate. Instead the
+specific class was closed statically - `make check-unsupported-list` (`9f7f40f6`) cross-checks
+`test_unsupported_entry_points.c` against `rmw_unsupported.c` in both directions from their text alone, with no build,
+and runs in `check-gates` and in `Check all`.
+
+**What stays open:** every other rmw behaviour test - events, graph, QoS, discovery, the acceptance suite - is still
+CI-only locally. The lesson to carry rather than rediscover: when a change moves an entry point between supported and
+unsupported, or changes what a test asserts about rmw behaviour, the CI run is the first real check, so watch that run
+rather than the local gate table. Whoever next wants this closed properly should cost out running the ctest suite
+against a pre-built workspace in the netns, and decide whether it belongs in `check-gates` or in a pre-push hook.
