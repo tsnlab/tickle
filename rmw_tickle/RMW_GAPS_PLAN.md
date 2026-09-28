@@ -1334,3 +1334,43 @@ rule - a failed control voids the row - is what stopped it from being reported, 
 orchestrates over ssh - and the rig logs showed no `10.1.1.x` peer from the netns run, the only matches being nine days
 old. So the asymmetry is real: the campaign does not notice, which is exactly why the campaign is the side that has to
 announce itself.
+
+
+## Work list: the shared-memory module and the tests that can judge it (opened 2026-09-29, the user's instruction)
+
+The user asked for the implementation **and** the test cases that can properly test it and compare it fairly with the
+competing products, as work-list items rather than as a plan paragraph. Design and staging are in `SHM_PLAN.md`; the
+tests are its section 6a. What belongs here is the order of work and who owns each piece.
+
+| # | item | owner | done when |
+|---|---|---|---|
+| S1 | the transport seam in core, with UDP still carrying everything | Dev | wire bytes identical to the parent, and CPU, RSS and binary size read against a placement control - all three against the floors in WIRE_PLAN 10.4, not as bare numbers |
+| S2 | the transport-identity test **first**, before any segment exists | Plan | a match reports the transport it used; forcing the attach to fail makes the test fail. Without this every later test is green over loopback and says nothing |
+| S3 | the segment, with a copy on arrival | Dev | the whole acceptance suite passes with the module on, unchanged; `samehost` asserts `shm`; beats loopback UDP at p1-p4 by more than 2xSE with nothing worse |
+| S4 | core unit tests against a fake segment in the mock HAL | Dev | SHM_PLAN 6a items 4-8 - single writer with many readers, no reuse before release, exhaustion counted, a reader that exits holding a record, reclaim after a dead owner |
+| S5 | the kill test | Plan | reader killed mid-run, writer still making progress, segment reclaimed. A kill test, not a code reading |
+| S6 | **the fair-comparison harness** | Plan | see below - this is the item the user named and the one with the most ways to be unfair |
+| S7 | lending (`tt_Sample_retain`/`release`) | Dev | S3's numbers improve again, and by how much, so the win is attributed to lending rather than to "shared memory" |
+| S8 | the CI matrix arm | Plan | the suite **runs**, not only compiles, with the feature on as well as off |
+
+### S6, the fair comparison, in detail - because "same conditions" is the whole question
+
+Both vendors have a shared-memory transport of their own and **their defaults differ**: FastDDS ships its SHM transport
+on, CycloneDDS's shared-memory path is off unless configured. So a single number cannot be fair, and the plan is to score
+**both comparisons and report both**, with any win naming which one it rests on:
+
+- **engineering arm** - each framework's own shared-memory path against ours, all three explicitly configured;
+- **default arm** - each framework's out-of-the-box configuration against ours, which is what a user actually meets.
+
+Four requirements that the existing campaign does not yet meet, each of which is a way to be accidentally unfair:
+
+1. **Both processes on one host.** Every campaign cell today is cross-host, so the same-host tier has no cells at all.
+   A same-host cell set has to be added, on one Pi, with the same payload shapes as p1-p4.
+2. **Each arm proves which transport it used**, on every framework and not only on ours - a vendor arm that quietly fell
+   back to loopback would flatter us exactly as ours would flatter itself. Read it from each framework's own
+   introspection or counters, and VOID the row when it cannot be read.
+3. **The QoS stays identical across the three**, as the user required on 2026-09-26 and as `campaign_sweep.sh` already
+   enforces by voiding a row whose RESULT line does not show the values.
+4. **The floors apply.** A same-host difference under about 1% on throughput, or 10 KB on RSS, is not a result
+   (WIRE_PLAN 10.4), and the in-process tier (g9) is the lower bound: a same-host number faster than in-process delivery
+   means the harness is wrong, not that the transport is fast.
