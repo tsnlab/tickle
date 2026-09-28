@@ -1144,3 +1144,76 @@ Three things follow, and the first two are corrections to this file:
 
 **The peak-RSS lean is also larger than recorded:** +11.5 KB here against the ~+5 KB carried in COMPARISON's footnote,
 and deterministic enough to be beyond doubt (SE 0.8 KB). It is the same open item, measured better.
+
+### 10.3 The 1.1% enters at the `tt_Node` restructure (2026-09-29, Plan)
+
+`p1_throughput_bisect.sh` over the 18 commits in `6910d840..2d937a02` that touch `src/` or `include/`, on `sent`, with
+the baseline re-measured inside every step so drift lands on both arms. Four steps, ABBA, 4 runs an arm:
+
+| candidate | commit | `sent` vs baseline | t | verdict |
+|---:|---|---:|---:|---|
+| 4/18 | `0f877d54` remove the deferred-response storage | -0.024% | -0.16 | clean |
+| 6/18 | `a51b8d2f` zero submessage padding | -0.364% | -2.19 | clean by the rule |
+| **7/18** | **`5d9cace1` a lightweight core `tt_Node` (CONTEXT_NODE_PLAN stage 2)** | **-1.061%** | **-16.45** | **REGRESSED** |
+| 9/18 | `2b84b15d` endpoint capacity, per-peer tables by context id (4a) | -1.080% | -8.61 | REGRESSED |
+
+**The first regressing commit is `5d9cace1`, and it carries the whole effect.** Candidate 9's -1.080% is the same 1.1%
+seen further along the range, not a second cost on top: the two agree to within their SEs. Candidate 6's -0.364% at
+t = -2.19 is a candidate and not a finding by section 8.3's own rule - one cell just past 2xSE, with n = 3 in its
+baseline arm because a survivor voided one run - and since 7 already accounts for the full 1.1%, the reading is that 6 is
+noise. If the mechanism found in 7 does not explain all 48 ns, 6 is where to look next.
+
+**What was ruled out rather than assumed.** The obvious explanation for a per-sample cost arriving with a capacity change
+is a larger working set, so that was checked first, and it does not hold for a native build: the per-peer arrays were
+sized by `tt_MAX_ENDPOINT_COUNT` (256) and are now sized by `tt_MAX_CONTEXT_IDS` (256) - identical - and
+`tt_MAX_DISCOVERED_ENTITIES` is still 16 there. The cost is work, not footprint. `5d9cace1` changed 168 lines of
+`src/tickle.c` to put every endpoint on a node within a context, and ~48 ns is about 115 cycles at 2.4 GHz.
+
+**And the work explanation is wrong too. Dev checked the commit and it adds nothing to the per-datagram path.** All
+fifteen hunks in `src/tickle.c` sit between `add_endpoint_to_node()` and the new `tt_Node` API - creation and
+registration - with nothing in publish, `process_packet` or delivery; `tt_Endpoint_node()` is called at creation, not per
+sample. The layout hazard was designed out when the commit was written, with its own measurement: `node_index` is a
+`uint8_t` in the existing padding after `tt_Endpoint.kind`, because the sketch that put a pointer there grew every
+endpoint struct by 8 bytes and cost `-R`'s receive +1.0 and +1.1 ns over two runs at 2xSE; `tt_Endpoint`,
+`tt_Publisher` and `tt_Subscriber` keep their sizes exactly (24, 528, 1216) and their layout, and the node table went at
+the end of `tt_Context` so no hot field moved. Its own -O2 comparison against `2bfef75e` found **every receive and
+publish function byte-identical**, with `forget_peers_from_source`, `tt_Context_unschedule` and `keep_all_writable`
+differing in alignment NOPs alone - and `keep_all_writable` is on the publish path.
+
+**So the standing hypothesis is code placement, not work:** adding the node API to the translation unit moved function
+addresses, and a hot function landed differently against a cache-line boundary, the loop buffer or branch-predictor
+aliasing. That class moves throughput by about a percent with no instruction change, it is invisible in a diff, and it
+fits flat kernel time with +48 ns of user time and no new memory traffic. It is also what section 8.3's own amendment
+already says to do about commits that change code size, and this measurement did not do it.
+
+**The decisive test, pre-registered here before it runs:** re-measure `sent` with the function layout forced the same way
+in both arms - `-falign-functions=32` on each - alongside the unforced pair in the same session as the control.
+- the forced pair's gap closes to within 2xSE while the unforced pair still shows ~1.1% -> **placement**. There is
+  nothing in stage 2's design to fix, and the honest statement is that the 1.1% is what it cost to grow the translation
+  unit, which the next campaign should read against a relocated build rather than attribute to a feature.
+- the forced pair keeps the gap -> placement is not the explanation, and `a51b8d2f` is the next suspect.
+- the unforced pair does not reproduce ~1.1% tonight -> the whole run is void and says nothing either way; that arm is
+  the control for exactly this.
+
+**Neither of us proposes reverting or restructuring on the strength of the bisect.** Ordering identifies an origin and
+magnitude does not; by the same argument an origin does not identify a mechanism. A mechanism that says "nothing was
+added to the path" is a finding, not a failure to find one.
+
+Note which commit the bisect did *not* blame. An hour before it converged, candidate 9 alone had been measured at
+-1.080% and reported to Dev as "essentially the whole effect in one commit" - true about its size, wrong about its being
+the cause, because the bisect had not yet reached the earlier commit carrying the same 1.1%. A single arm's magnitude
+does not identify an origin; only the ordering does.
+
+**Two harness defects, the same class as 10.1's three - state set where it cannot be seen:**
+- `run_one()` echoed its result, so every call ran in a command substitution, a subshell, and its assignment to
+  `srv_pid` never reached the parent. `kill_server()` then always had an empty PID, every arm's server survived into the
+  next arm, and several ended up bound to 8282 at once writing over one log. Clients stalled at `sent=256` and the first
+  step voided. The count now returns through a global.
+- The guard added for that - `assert_one_server()`, which counts our own servers on the rig by `/proc/PID/exe` rather
+  than by a pattern - immediately caught a second one: rebuilding a candidate overwrites `$SAVE/cand/server`, so a
+  surviving process's `exe` reads `".../server (deleted)"` and the kill's pattern missed it. The guard voided that run
+  instead of letting it score, which is why the numbers above stand, and the pattern now matches both forms.
+
+A step that voids is retried once and then stops the bisect rather than falling through to "clean". The first run of this
+script did fall through, and a bisect that moves on a step which measured nothing is a bisect whose answer means
+nothing.

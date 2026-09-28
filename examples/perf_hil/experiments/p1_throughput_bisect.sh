@@ -61,7 +61,10 @@ mkdir -p $SAVE/$name && cp ${SCEN}_${SIZE}/client ${SCEN}_${SIZE}/server $SAVE/$
 
 kill_server() {
     [ -z "${srv_pid:-}" ] && return 0
-    sh_ "$SERVER" "case \"\$(readlink /proc/$srv_pid/exe 2>/dev/null)\" in $SAVE/*/server) kill -TERM $srv_pid;; esac
+    # The "(deleted)" form matters: rebuilding a candidate overwrites $SAVE/cand/server, so a server still running from
+    # the previous step reads its exe as ".../server (deleted)" and the bare pattern misses it. That is how the first run
+    # of every step found a survivor until assert_one_server() started catching it.
+    sh_ "$SERVER" "case \"\$(readlink /proc/$srv_pid/exe 2>/dev/null)\" in $SAVE/*/server|\"$SAVE\"/*/\"server (deleted)\") kill -TERM $srv_pid;; esac
 for i in 1 2 3 4 5; do [ -d /proc/$srv_pid ] || break; sleep 1; done; true" </dev/null >/dev/null
     srv_pid=""
 }
