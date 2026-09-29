@@ -18,7 +18,7 @@
 #       without changing behaviour, and it is what proves the counters work BEFORE anything depends on them.
 #   EXPECT=shm (stage 1 onwards):
 #     - PASS needs tx_shm > 0 AND every remaining UDP datagram accounted for by a named reason:
-#       tx_udp == segment_broadcast_to_udp + segment_oversize_to_udp + segment_unattached_to_udp + segment_full_to_udp.
+#       tx_udp == tx_udp_broadcast + tx_udp_oversize + tx_udp_unattached + tx_udp_full.
 #     - NOT tx_udp == 0, which is unachievable and was wrong in the first version of this script. A segment carries
 #       unicast datagrams to a known peer: the name is computed from that peer's (address, port, context id), so a
 #       broadcast destination has no name to compute and cannot go over a segment even in principle. Announces and
@@ -183,7 +183,10 @@ for shape in $SHAPES; do
             ;;
         shm)
             named=0; missing=0
-            for reason in segment_broadcast_to_udp segment_oversize_to_udp segment_unattached_to_udp segment_full_to_udp; do
+            # The RESULT-line names, not the core field names (segment_*_to_udp). They differ on purpose - see
+            # BenchStats.h's bench_stats_set_fallbacks() - and the first version of this loop looked for the C names,
+            # so every shape voided with "no by-reason counters" while the line carried all four.
+            for reason in tx_udp_broadcast tx_udp_oversize tx_udp_unattached tx_udp_full; do
                 reason_count=$(field "$line" "$reason")
                 if [ -z "${reason_count:-}" ]; then missing=1; else named=$((named + reason_count)); fi
             done

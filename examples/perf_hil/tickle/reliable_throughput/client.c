@@ -594,6 +594,8 @@ int main(int argc, char** argv) {
     // segment carries the shape under test). Read from the context rather than counted here, so one place counts.
     bench_stats_set_transport(&g_bench_stats, node.tx_datagrams_by_transport, node.rx_datagrams_by_transport,
                               (size_t)tt_TRANSPORT_COUNT);
+    bench_stats_set_fallbacks(&g_bench_stats, node.segment_broadcast_to_udp, node.segment_oversized_to_udp,
+                              node.segment_unattached_to_udp, node.segment_full_to_udp);
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
            "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f keep_all=%d durable=%d reliable_depth=%u "

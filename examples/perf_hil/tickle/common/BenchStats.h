@@ -103,7 +103,12 @@ struct BenchStats {
     double cpu_begin_s;
     uint64_t tx_by_transport[BENCH_TRANSPORT_MAX];
     uint64_t rx_by_transport[BENCH_TRANSPORT_MAX];
+    uint64_t udp_broadcast;
+    uint64_t udp_oversize;
+    uint64_t udp_unattached;
+    uint64_t udp_full;
     int transport_valid; // 0 until a harness calls bench_stats_set_transport(): the DDS harnesses never do
+    int fallbacks_valid; // likewise for bench_stats_set_fallbacks()
     char iface[32];
 };
 
@@ -308,6 +313,25 @@ static inline void bench_stats_set_transport(struct BenchStats* stats, const uin
     stats->transport_valid = 1;
 }
 
+// The four reasons a datagram went by UDP while the shared-memory module was built, for SHM_PLAN.md's S2 assertion:
+// tx_udp must equal their sum, so every UDP datagram has a named reason and an *unexplained* fallback fails the test.
+// tx_udp == 0 is unachievable - a segment carries unicast to a known peer, and a broadcast has no peer whose name could
+// be computed - which is why the assertion is about attribution rather than about zero.
+//
+// The RESULT-line names and the core field names differ on purpose. Here they are tx_udp_* because a reader checking
+// the assertion should see four fields that obviously sum to tx_udp; in struct tt_Context they are segment_*_to_udp
+// because there the question is what the segment did. The mapping is this one call site, and these are its two halves:
+//   tx_udp_broadcast  <- segment_broadcast_to_udp     tx_udp_oversize    <- segment_oversized_to_udp
+//   tx_udp_unattached <- segment_unattached_to_udp    tx_udp_full        <- segment_full_to_udp
+static inline void bench_stats_set_fallbacks(struct BenchStats* stats, uint64_t broadcast, uint64_t oversize,
+                                             uint64_t unattached, uint64_t full) {
+    stats->udp_broadcast = broadcast;
+    stats->udp_oversize = oversize;
+    stats->udp_unattached = unattached;
+    stats->udp_full = full;
+    stats->fallbacks_valid = 1;
+}
+
 static inline void bench_stats_end(struct BenchStats* stats) {
     bench_stats_read_net(stats->iface, &stats->net_end);
     bench_stats_read_threads(&stats->threads_end);
@@ -467,6 +491,7 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     char by_thread[512];
     char fail[80];
     char transport[96];
+    char fallbacks[160];
 
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
         utime_s = (double)usage.ru_utime.tv_sec + ((double)usage.ru_utime.tv_usec / 1e6);
@@ -477,6 +502,13 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     sched_cpu_ns = bench_stats_sched_by_thread(stats, by_thread, sizeof(by_thread));
     // SHM_PLAN's S2 assertion reads these: for a same-host pair with the segment in use, tx_udp must be 0 for the shape
     // under test. Printed only when a harness supplied them, per bench_stats_set_transport()'s own comment.
+    fallbacks[0] = '\0';
+    if (stats->fallbacks_valid != 0) {
+        snprintf(fallbacks, sizeof(fallbacks),
+                 " tx_udp_broadcast=%" PRIu64 " tx_udp_oversize=%" PRIu64 " tx_udp_unattached=%" PRIu64
+                 " tx_udp_full=%" PRIu64,
+                 stats->udp_broadcast, stats->udp_oversize, stats->udp_unattached, stats->udp_full);
+    }
     transport[0] = '\0';
     if (stats->transport_valid != 0) {
         snprintf(transport, sizeof(transport),
@@ -508,7 +540,7 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
              " wire_rx_bytes=%" PRIu64 " wire_rx_packets=%" PRIu64 " wire_tx_bytes=%" PRIu64 " wire_tx_packets=%" PRIu64
              " wire_bytes_total=%" PRIu64 " wire_packets_total=%" PRIu64
              " wire_bytes_per_sample=%.1f wire_packets_per_sample=%.3f wire_role_packets_per_sample=%.3f "
-             "iface=%s instrument=%s%s%s%s sched_by_thread=%s%s",
+             "iface=%s instrument=%s%s%s%s sched_by_thread=%s%s%s",
              sample_bytes, utime_s, stime_s, samples > 0 ? cpu_s * 1e6 / (double)samples : 0.0,
              megabytes > 0.0 ? cpu_s / megabytes : 0.0, (double)sched_cpu_ns / 1e9,
              samples > 0 ? (double)sched_cpu_ns / 1e3 / (double)samples : 0.0, sched_unattributed_s,
@@ -517,6 +549,6 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
              wire_bytes_total, wire_packets_total, samples > 0 ? (double)wire_bytes_total / (double)samples : 0.0,
              samples > 0 ? (double)wire_packets_total / (double)samples : 0.0,
              samples > 0 ? (double)role_packets / (double)samples : 0.0, stats->iface, fail[0] != '\0' ? "fail:" : "ok",
-             fail, BENCH_CORE_BUILD_FIELD, BENCH_CORE_BUILD_VALUE, by_thread, transport);
+             fail, BENCH_CORE_BUILD_FIELD, BENCH_CORE_BUILD_VALUE, by_thread, transport, fallbacks);
     return buf;
 }
