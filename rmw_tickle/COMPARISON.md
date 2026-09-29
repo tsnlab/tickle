@@ -378,10 +378,11 @@ Table rows 7-17. The two deep dives that follow (§2.2a, §2.2b) are where the R
 > second cell agreeing rather than a statistic - quoted as a direction, not a margin.
 >
 > So the module is a trade rather than a cost: **roughly +47% throughput and a shorter tail where a same-host peer
-> exists, against -2.0% to -2.7% at p1 where one cannot - and nothing measurable at p2, where the link is the limit.** That is the shape lazy creation would resolve - keep the gain, stop
+> exists, against -2.0% to -2.7% at p1 where one cannot - with p2 unable to see either way, because the link is the
+> limit there.** That is the shape lazy creation would resolve - keep the gain, stop
 > charging the hosts that can never collect it.
 >
-> **At p2 the throughput cost disappears, which locates it rather than removing it** (measured 2026-09-30 on
+> **At p2 nothing can see the throughput cost, which is not the same as its being absent** (measured 2026-09-30 on
 > `6e73a592`, n=6 per arm, `results/seam_module_cost_p2_6e73a592_2026-09-30.txt`):
 >
 > | cell, p2 1292 B | module on | module off | gap |
@@ -390,10 +391,15 @@ Table rows 7-17. The two deep dives that follow (§2.2a, §2.2b) are where the R
 > | reliable throughput | 937.25 +- 0.02 | 937.23 +- 0.01 | -0.00%, t -0.94 |
 > | peak RSS | 2,143 / 2,723 kB | 1,743 / 2,319 kB | **+400 kB** |
 >
-> Both arms sit at about 937 Mbps, which is this link's ceiling - so at p2 the bottleneck is the wire and not the CPU,
-> and a per-datagram cost on the send path has nowhere to show. **So the -2.0% to -2.7% is a small-payload effect**,
-> where a 76-byte sample means the datagram rate is high enough for CPU to be the limit. It is not a general
-> throughput cost, and any statement of it should say at which payload.
+> Both arms sit at about 937 Mbps, which is this link's ceiling. **A ceiling is a measurement with a known blind spot,
+> not a null result:** where the wire is the limit, a per-datagram cost on the send path has nowhere to appear, so this
+> pair says nothing about whether the cost exists at p2 - only that no p2 throughput measurement on this link can see
+> it. "No cost at p2" and "p2 cannot show a cost" read as the same sentence and are not.
+>
+> What the pair does establish is where the cost is *visible*: **the -2.0% to -2.7% is measurable only where CPU is the
+> limit**, which at these payloads means a 76-byte sample driving the datagram rate high enough. Any statement of that
+> figure should name the payload. Showing whether it is present at p2 would need a cell that is not link-limited - a
+> slower link, or a same-host pair where the ceiling is far higher.
 >
 > **The ~400 kB of RSS does not go away at p2**, because the segment is one fixed mapping per context regardless of
 > traffic. That half of the cost is paid by every deployment, at every payload, whether or not a same-host peer exists.
