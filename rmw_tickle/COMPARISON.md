@@ -422,6 +422,25 @@ Table rows 7-17. The two deep dives that follow (§2.2a, §2.2b) are where the R
 > **The ~400 kB of RSS does not go away at p2**, because the segment is one fixed mapping per context regardless of
 > traffic. That half of the cost is paid by every deployment, at every payload, whether or not a same-host peer exists.
 >
+> **One qualification on the gain, found by the control arm on its second day and not yet explained.** Commit
+> `573cfed9` triggered two `Test all` runs one second apart on the same runner, and they disagreed:
+>
+> | run | module on | module off |
+> |---|---|---|
+> | passed | 4,388.8 Mbps, 0.0% loss | 1,515.5 Mbps, 0.0% loss |
+> | failed | 3,128.9 Mbps, **7.2% loss** | 1,902.7 Mbps, 0.0% loss |
+>
+> The *slower* module-on arm is the one that lost 1,258,780 of 20,487,230 samples; the faster one lost none. So this is
+> not a rate ceiling - it is contention, two suites competing for one runner, and **the module turns a starved reader
+> into dropped samples where the UDP path turns it into lower throughput.** That is what a best-effort ring that drops
+> when full does, and the kernel's socket buffer absorbing the same starvation is why the off arm only slows down.
+>
+> It is a real difference in behaviour under load and it is **not** characterised: one observation, an uncontrolled
+> cause, and no repetitions. What it does establish is that the +47% should not be quoted without it - a throughput
+> gain whose failure mode is silent sample loss is a different proposition from one that degrades by slowing down,
+> and a best-effort reader may or may not accept it. The perf floor caught it at 7.2% against a 2% limit, which is
+> the floor doing its job on its second day.
+>
 > **What is not yet measured, so one cell does not stand for the module.** The +47% is best-effort throughput at one
 > payload shape - the cell the module exists for, which is why it is the headline, but the trade at p2, p3 and p4 is
 > unmeasured, and so is cross-host latency. The cross-host cost above covers both reliability modes at p1 only. Until
