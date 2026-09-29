@@ -855,6 +855,58 @@ elsewhere in this document**, not that it is unavailable.
 (~0.52ms) while `rmw_cyclonedds_cpp` is genuinely faster (~0.44ms) on the real link. RELIABLE costs
 nothing measurable over BEST_EFFORT for any of the three. 18/18 runs clean, zero loss every time.
 
+### 2.7 zenoh-pico (2026-09-29)
+
+A fourth framework, measured on the rig by the same campaign, in the same session, through the same `RESULT:` line and
+the same instrument gate. Harness at `examples/perf_hil/zenohpico/`, raw rows at
+`results/cmp_zenohpico_c8_54c27bbc_2026-09-29.txt`, plan and pre-registration at `ZENOH_PICO_PLAN.md`.
+
+**Only one cell is scored, and the reason is a capability difference rather than a measurement choice.** zenoh-pico does
+not repair loss. Its own source says so in the same words on both transports - `src/transport/multicast/rx.c:194` and
+`src/transport/unicast/rx.c:106`, *"@TODO: amend once reliability is in place. For the time being only monotonic SNs are
+ensured"* - so `Z_RELIABILITY_RELIABLE` means ordering, not retransmission. **Our RELIABLE cells therefore have no
+counterpart in it**, and running them would produce numbers where we look worse for paying for machinery it does not run
+and better under loss where it drops what we repair. Neither would mean what a reader takes it to mean. Cell 8,
+best-effort throughput, is the one cell where all four make the same promise.
+
+**Cell 8, `best_effort_throughput` p1 (76 B sample), 5 s, 3 repetitions, both Pis:**
+
+| framework | sent | send Mbps | client CPU s/Msample | client peak RSS kB | wire B/sample | loss % |
+|---|---:|---:|---:|---:|---:|---:|
+| **TickLE** | 443,866 | 53.97 | **10.870** | **1,763** | **138.0** | **0.000** |
+| zenoh-pico | 438,313 | 53.30 | 15.726 | 2,147 | 139.0 | 0.000 |
+| CycloneDDS | 555,871 | **71.15** | 14.159 | 4,971 | 178.0 | 0.200 |
+| FastDDS | 369,211 | 47.26 | 13.580 | 14,216 | 254.0 | 16.033 |
+
+TickLE is lowest on CPU per sample, peak RSS and wire bytes, each clear of the runner-up by more than 2xSE. **CycloneDDS
+sends more: 71.15 Mbps against our 53.97, also clear at 2xSE - that is a cell we lose and it is reported as one.** It
+also drops 0.2% where we drop none, which is a trade a best-effort reader may well accept; the row states both rather
+than choosing which to emphasise.
+
+**zenoh-pico's result is the interesting one.** Its throughput is within 1.3% of ours and its wire overhead is 139 B
+against our 138 - essentially identical - while costing 45% more CPU per sample and 22% more memory. It loses nothing.
+
+**Its batching did not engage, which is a measured answer rather than an assumption.** zenoh-pico batches into one
+network operation by default (`Z_BATCH_MULTICAST_SIZE` 2048) and the row above was taken with batching **on**
+(`express=0`), yet `wire_packets_per_sample` is 1.000: at this rate each publication is flushed before the next arrives,
+so there is never a second message to coalesce. The harness carries an express arm (`-X`, or `BENCH_ZENOH_EXPRESS=1`)
+to turn batching off per publisher, and for this cell the two arms are the same wire shape. **Batching is where a
+small-payload cell could have been decided and here it was not** - a cell with a slower reader or a busier link is where
+it would be, and that cell does not exist yet.
+
+**What is not compared, and why:**
+
+- **every RELIABLE cell** - no counterpart (above);
+- **DEADLINE, LIVELINESS, LIFESPAN, DURABILITY and a history depth** - zenoh-pico has no equivalent of any of them, so
+  §2's cells 5-9 are not scored for it;
+- **KEEP_ALL and KEEP_LAST** map to `Z_CONGESTION_CONTROL_BLOCK` and `DROP`, which is the same choice in spirit - block
+  or drop when the link is full - but is not a depth, so a depth cell has no counterpart either;
+- **a router configuration** - zenoh-pico reaches a wide-area path through a router, which is a different topology from
+  our direct link and would be a different measurement rather than this cell.
+
+**What it does that we do not:** it runs peer-to-peer over UDP multicast with no router, which was verified by running
+it rather than read - and at 627 KB of shared library it is in the same size class as TickLE rather than the DDS pair.
+
 ### 2.7a rmw API coverage (2026-09-27)
 
 Which of the rmw API's entry points each implementation actually serves. The list is the 94 functions
