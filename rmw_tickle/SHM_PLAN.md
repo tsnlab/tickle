@@ -382,6 +382,38 @@ everywhere else.
 **Performance** is stages 1-3's own criteria in section 5 and is not repeated here: beat loopback UDP, do not beat g9,
 and read every timing and RSS figure against the floors in `WIRE_PLAN.md` 10.4.
 
+## 6b. Stage 1's results so far (Dev, 2026-09-29)
+
+**S2, transport identity, ALL PASS on both shapes** - the assertion that had to exist before the code:
+
+    p1: PASS(sample_path=datagram sent=51863 tx_shm=108700 tx_udp=5108 all named)
+    p4: PASS(sample_path=frag     sent=15110 tx_shm=65382  tx_udp=3793 all named)
+
+Both shapes, so the seam is wired for the single-datagram and the batch/fragment paths alike rather than for one of
+them - which is what a per-shape assertion buys over a mode flag. "all named" is the invariant: every UDP datagram
+has one of the four by-reason counters against it.
+
+**The external control confirms it by absence.** `wire_tx_packets` is the kernel's own count for the interface, and
+on the first crossing run `tx_udp=4547` against `wire_tx_packets=4548` - drift 1 - while `tx_shm=98303` was invisible
+to it. The datagrams claimed for UDP are the ones the interface saw, and the rest demonstrably did not go that way.
+That comparison is two-sided: a datagram wrongly counted as shm makes `tx_udp` fall below the interface count, one
+wrongly counted as udp makes it exceed.
+
+**The acceptance suite passes with the module on, and the module engaged** (item 10). All thirteen cases pass, with
+`itype`'s control failing for the reason already recorded (CycloneDDS reports a type mismatch as INCOMPATIBLE_QOS).
+The second half matters as much as the first, because a suite that passes with the transport permanently inert says
+nothing - so the segment's use is read off the same traffic line:
+
+    graph tx_shm=74   bag tx_shm=154   events tx_shm=114   matched tx_shm=25
+    samehost tx_shm=196 (against tx_udp=95)   durable tx_shm=552   introspect tx_shm=25
+    inprocess tx_shm=1 - correct: nodes in one process deliver locally, not over a transport
+
+**Byte identity and the anti-bypass test** (items 2 and 3) are core unit tests with mutants: flip one bit into the
+slot and byte identity fails; have the drain count an arrival and skip the acceptance path and the wrong-version
+datagram is no longer refused.
+
+**Still owed:** the p1-p4 numbers against WIRE_PLAN 10.4's floors, and items 4, 6, 7, 8, 9 and 11 of section 6a.
+
 ## 7. Open questions
 
 1. **Notification.** A reader must learn a record arrived. A futex or an eventfd per reader costs a syscall and gives
