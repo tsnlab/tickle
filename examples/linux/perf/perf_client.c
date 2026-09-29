@@ -142,7 +142,13 @@ static void report(struct tt_Context* node, uint64_t time, void* param) {
 // the numbers themselves rather than a pass/fail verdict; perf_server.c's own RESULT line is the
 // authoritative side (it can see loss, this side can't), this one's just for visibility into
 // what the sender itself achieved.
-static void print_summary(uint64_t start_time) {
+// The segment counters go on the RESULT line and not only in the traffic line, for a reason measured
+// on 2026-09-30: a CI run lost 1,258,780 of 20,487,230 samples with the module on while the shm-off
+// arm beside it lost none, and the cause had to be INFERRED as a full ring because the row did not
+// say so. The traffic line carries shm_full_dropped; this tier parses the RESULT line. A row that
+// carries its own evidence is the whole argument SHM_PLAN makes for the by-reason counters, and it
+// stops one observation needing a second run to become a measurement.
+static void print_summary(const struct tt_Context* node, uint64_t start_time) {
     char sent_buf[TT_GROUPED_BUF_LEN];
     char buffer_full_buf[TT_GROUPED_BUF_LEN];
     char megabytes_buf[TT_GROUPED_F3_BUF_LEN];
@@ -159,8 +165,11 @@ static void print_summary(uint64_t start_time) {
     printf("%s messages sent, %s MB, %.3f sec, avg %s Mbps, %s times tx buffer was full\n",
            tt_format_grouped(total_sent_msgs, sent_buf), tt_format_grouped_f3(megabytes, megabytes_buf), elapsed_s,
            tt_format_grouped_f3(avg_mbps, avg_mbps_buf), tt_format_grouped(total_buffer_full, buffer_full_buf));
-    printf("RESULT: sent=%s avg_mbps=%s buffer_full=%s\n", tt_format_grouped(total_sent_msgs, sent_buf),
-           tt_format_grouped_f3(avg_mbps, avg_mbps_buf), tt_format_grouped(total_buffer_full, buffer_full_buf));
+    printf("RESULT: sent=%s avg_mbps=%s buffer_full=%s tx_shm=%lu tx_udp=%lu shm_full_dropped=%lu\n",
+           tt_format_grouped(total_sent_msgs, sent_buf), tt_format_grouped_f3(avg_mbps, avg_mbps_buf),
+           tt_format_grouped(total_buffer_full, buffer_full_buf),
+           (unsigned long)node->tx_datagrams_by_transport[tt_TRANSPORT_SHM],
+           (unsigned long)node->tx_datagrams_by_transport[tt_TRANSPORT_UDP], (unsigned long)node->segment_full_dropped);
 }
 
 static void print_usage(const char* prog) {
@@ -357,7 +366,7 @@ int main(int argc, char** argv) {
 
     run_send_loop(&node, &pub, next_send_time, send_interval_ns, poll_timeout);
 
-    print_summary(start_time);
+    print_summary(&node, start_time);
 
     tt_Context_destroy(&node);
     free(reliable_cache_arena); // NULL unless -R was passed; free(NULL) is a no-op

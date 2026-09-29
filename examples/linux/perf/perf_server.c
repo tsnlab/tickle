@@ -392,7 +392,7 @@ static void report(struct tt_Context* node, uint64_t time, void* param) {
 // plays for latency. Still numbers, not a pass/fail verdict - throughput/loss is a spectrum a
 // human or CI log scraper judges against a threshold, not a binary outcome the way "did the
 // response ever arrive at all" is for set_bool/uint64.
-static void print_summary(uint64_t start_time) {
+static void print_summary(const struct tt_Context* node, uint64_t start_time) {
     char recv_buf[TT_GROUPED_BUF_LEN];
     char dropped_buf[TT_GROUPED_BUF_LEN];
     char megabytes_buf[TT_GROUPED_F3_BUF_LEN];
@@ -448,9 +448,15 @@ static void print_summary(uint64_t start_time) {
     printf("one-way latency (sender clock -> here, NTP-dependent - see this file's own comment): "
            "min/avg/max = %.3f/%.3f/%.3f ms\n",
            min_latency_ms, avg_latency_ms, max_latency_ms);
-    printf("RESULT: recv=%s dropped=%s loss_pct=%.1f avg_mbps=%s avg_latency_ms=%.3f\n",
+    // rx_shm/rx_udp say WHICH transport delivered this row, which the loss figure above cannot. Same
+    // argument as t_samehost's rx_shm assertion (SHM_PLAN 6a item 9): a tier that reports loss
+    // without saying what carried the traffic reads identically whether the module did the work or
+    // none of it.
+    printf("RESULT: recv=%s dropped=%s loss_pct=%.1f avg_mbps=%s avg_latency_ms=%.3f rx_shm=%lu rx_udp=%lu\n",
            tt_format_grouped(total_received_msgs, recv_buf), tt_format_grouped(total_dropped, dropped_buf), loss_pct,
-           tt_format_grouped_f3(avg_mbps, avg_mbps_buf), avg_latency_ms);
+           tt_format_grouped_f3(avg_mbps, avg_mbps_buf), avg_latency_ms,
+           (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_SHM],
+           (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_UDP]);
 }
 
 static void print_usage(const char* prog) {
@@ -563,7 +569,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    print_summary(start_time);
+    print_summary(&node, start_time);
 
     tt_Context_destroy(&node);
 
