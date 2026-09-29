@@ -793,8 +793,24 @@ it. **A gate that fails one run in four is worse than no gate, because what it t
 
 **So no delivery floor is asserted there.** Any line inside a 0.15-11.4% range is a number nobody can derive,
 which is this document's own objection to "tx_udp small and flat"; the figure is printed for a reader instead.
-The honest repair is to make `push()` drop rather than block, so both paths share a policy and a floor becomes
-derivable - a change to a harness older than this module, in its own commit.
+**The repair suggested here twice - make `push()` drop rather than block - was tried on 2026-09-30 and reverted
+the same hour, because the measurement said so.** Both halves of the argument for it turned out to be wrong:
+
+- **It does not make a floor derivable.** With both paths dropping at the same depth the loss is a function of
+  thread scheduling rather than of either policy, so no threshold follows from the design. Exact accounting does
+  not save it either: `push()` drops control datagrams as well as samples, and reliable retransmission means a
+  dropped datagram is often a delivered sample. That claim was made here before it was checked, and is
+  withdrawn.
+- **And it makes the harness a worse instrument.** Blocking is what flow-controls the publisher threads.
+  Without it they run unthrottled: across six runs five delivered all 20,000 samples per thread and one
+  delivered 7,151, with the new drop counter at zero - so that run exercised a third of the traffic and the
+  loss was not even from the new path. A harness that exercises less, and varies in how much, is worse than an
+  unfaithful one whose unfaithfulness is written down.
+
+The two assertions that were testing the harness were fixed on their own terms and needed no change here. What
+the mismatch leaves behind is a comment at `push()` saying it was measured rather than missed, and the paired
+comparison - a module-on arm against a module-off arm in the same harness - as the honest substitute for a
+floor.
 
 **And the ordering assertion there is not evidence, which was checked rather than assumed.** With the
 pre-2026-09-29 reroute-past-a-full-ring behaviour restored - the thing that actually reordered the stream on
@@ -886,6 +902,46 @@ segment for removing an artefact - and items 9 and 11 of section 6a. Item 4 is d
 **A cost to carry into the budget, measured by Plan in the same control:** peak RSS is 2,388 kB with the segment
 and 2,004 kB without, so the own-segment mapping costs about 384 kB resident. That is not part of the regression
 and is expected from the 512 KiB reservation, but it is a real cost of the module being on by default.
+
+## 6c. What the module changes about behaviour under load, as a property rather than a caveat
+
+Everything in 6b is a defect found and fixed. This section is not that. It is what the module **is**, and a
+user deciding whether to turn it on needs it before they see any throughput figure.
+
+**Under load, this module's failure mode is silent sample loss. UDP's is lower throughput.** Both are legal for
+a best-effort reader and they are not the same proposition.
+
+The ring is bounded - `tt_SEGMENT_SLOTS` slots of `tt_SEGMENT_SLOT_BYTES` - and a full ring **drops**, because
+the alternative is worse in a way that was measured: rerouting the datagram to UDP puts it ahead of the records
+already queued in the ring, the reader delivers the newer one and discards everything older behind it, and that
+cost 97.6% of delivery on the same-host cell. So drop-on-full stands, and it is the right repair. What it means
+is that a reader which falls behind loses samples where the same reader on UDP would simply have slowed the
+sender down, because the kernel's socket buffer absorbs the same starvation.
+
+**Measured, in the one place the two policies could be compared directly.** A CI run on 2026-09-30 produced
+both arms one second apart on the same runner:
+
+    Integration Linux            3,128.9 Mbps   7.2% loss   1,258,780 of 20,487,230 samples
+    Integration Linux shm-off    1,902.7 Mbps   0.0% loss
+
+The *slower* module-on arm is the one that lost samples, and the faster module-on run in the same pair lost
+none - so this is contention, not a rate ceiling. One observation, an uncontrolled cause, no repetitions; it
+does not establish a rate. What it establishes is that **the two paths answer a starved reader differently**,
+and that is a design property rather than a run's bad luck.
+
+**Three things follow that are worth stating plainly:**
+
+- **It is visible.** `shm_full_dropped` counts every datagram a full ring refused, and it is on the node's
+  traffic line and on the perf tier's RESULT line. A row that loses samples this way says so. The hole worth
+  knowing about is that a *subscriber's* `loss_pct` cannot see it - a refused datagram is never sent, so it is
+  not a gap in anything the reader receives. On 2026-09-30 a row of mine read `loss_pct=0.0` beside
+  `shm_full_dropped=54,328`: 0.513% of that stream was never sent and the delivery check was silent about it.
+  Both numbers were right; only together are they informative.
+- **The fix is not a larger ring.** Raising `tt_SEGMENT_BYTES` moves the threshold rather than measuring it,
+  and it would have made the failing run above pass. The counter is what lets the real threshold be found.
+- **Whether a slow reader should get back-pressure instead is a design choice and not a defect to be fixed
+  quietly.** Making a writer wait and letting a reader lose samples are both legitimate, and choosing between
+  them is choosing what this module promises. It belongs with the user's decision 6, not in a commit.
 
 ## 7. Open questions
 

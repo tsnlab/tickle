@@ -123,6 +123,22 @@ void tt_close(struct tt_Context* node) {
     (void)node;
 }
 
+// BLOCKS when the queue is full rather than dropping, and that is a decision rather than an
+// oversight - it was changed to drop on 2026-09-30 and changed back the same hour, because the
+// measurement said so.
+//
+// The argument for dropping was faithfulness: a real UDP socket drops, this models one, and its
+// being lossless was what let two assertions here test the harness rather than the module ("no gaps
+// at all" and "the last sample arrived", both of which started failing once the shared-memory module
+// was engaged). That argument is sound in the abstract and did not survive contact. Dropping removes
+// the flow control that blocking provides, so the publisher threads run unthrottled: across six runs
+// five delivered all 20,000 per thread and one delivered 7,151 - a run exercising a third of the
+// traffic, and its own drop counter at zero, so the loss was not even from the new drop path.
+//
+// A harness that exercises less, and varies in how much, is a worse instrument than an unfaithful
+// one whose unfaithfulness is written down. The two assertions were fixed on their own terms and
+// needed no change here. What is left is this comment, so the next person to notice the mismatch
+// knows it was measured rather than missed.
 static void push(uint8_t to_id, uint8_t from_id, const void* hdr, size_t hdr_len, const void* body, size_t body_len) {
     struct queue* q = &queues[to_id];
     pthread_mutex_lock(&q->lock);
