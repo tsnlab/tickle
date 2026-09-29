@@ -367,6 +367,16 @@ Table rows 7-17. The two deep dives that follow (§2.2a, §2.2b) are where the R
 > `f938461e` for this reason, did not move these cells at all. **The larger half is the seam on the send path, which
 > every datagram crosses whether or not a segment could ever exist.**
 >
+> **And what it buys where a peer IS same-host, so the cost is not read alone.** CI now runs the Linux integration
+> suite twice, once with the module compiled out (`.github/scripts/test_linux_module_off.sh`, RMW_GAPS_PLAN S8), so
+> both arms come from one run on one machine. On `010bdcbb` the same-host perf tier read **2,793.5 Mbps with the
+> module on against 1,902.7 with it out, both at 0.0% loss - +46.8%**. Dev's own A/B on a different machine gave
+> +35.6% (3,163.9 against 2,332.6). Two machines, same direction.
+>
+> So the module is a trade rather than a cost: **roughly +47% where a same-host peer exists, -2.0% to -2.7% where one
+> cannot.** That is the shape lazy creation would resolve - keep the gain, stop charging the hosts that can never
+> collect it.
+>
 > **These are cells where no peer can ever be same-host, so the cost buys nothing on them**, and the user's decision 6
 > is that using a module must cost no performance. The concrete option the number argues for is creating the segment
 > lazily, once a same-host peer is actually seen - discovery already knows what it needs - which would remove both the
