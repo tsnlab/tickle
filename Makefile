@@ -9,7 +9,7 @@
 
 .DEFAULT_GOAL := all
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock check-bench-shapes check-unsupported-list lint lint-rmw lint-shell test-typesupport clean test-linux test-freertos test-all \
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock check-bench-shapes check-unsupported-list check-context-reset lint lint-rmw lint-shell test-typesupport clean test-linux test-freertos test-all \
         install uninstall fuzz fuzz-corpus sanitize tsan regen
 
 all library examples set_bool uint64 ping_pong perf test lint clean fuzz fuzz-corpus sanitize tsan:
@@ -61,6 +61,14 @@ check-bench-shapes:
 # test_unsupported_entry_points.c against rmw_unsupported.c, from their text alone - the one part of
 # rmw_tickle's own test suite that can be checked without the colcon workspace and the netns it
 # needs. See the script's own header for the failure that prompted it.
+# Every field of struct tt_Context must be initialised by reset_node_state(), or listed with what sets it instead.
+# The mutants run first and in the same gate: they delete an assignment, add an unreset field, and put a read outside
+# the #if that guards its write, and each must be caught - a gate nobody has watched fail is not a gate, and this one
+# exists because two fields shipped uninitialised on 2026-09-29, the second passing garbage pointers to munmap().
+check-context-reset:
+	python3 tests/mutants_check_context_reset.py
+	python3 .github/scripts/check_context_reset.py
+
 check-unsupported-list:
 	./.github/scripts/check_unsupported_list.sh
 

@@ -95,6 +95,7 @@ run_gate "check-doc-shas" make check-doc-shas
 run_gate "check-rig-lock" make check-rig-lock
 run_gate "check-bench-shapes" make check-bench-shapes
 run_gate "check-unsupported-list" make check-unsupported-list
+run_gate "check-context-reset" make check-context-reset
 run_gate "test (unit)" make test
 run_gate "tsan (thread safety)" make tsan
 run_gate "test-typesupport (pytest)" make test-typesupport
