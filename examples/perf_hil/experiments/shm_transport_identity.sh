@@ -32,8 +32,10 @@
 #     - If the RESULT line carries no by-reason counters, the shape is VOID and says so: the assertion cannot be made,
 #       and a pass that skipped it would be the thing this whole script exists to prevent.
 #   Always, whatever EXPECT is:
-#     - the external control: tx_udp + tx_shm against wire_tx_packets, the kernel's own /proc/net/dev count for the
-#       interface. They agreed within 2 packets on a 947k-datagram run. A drift beyond the tolerance below means a seam
+#     - the external control: tx_udp against wire_tx_packets, the kernel's own /proc/net/dev count for the
+#       interface - not the sum, because a datagram carried by the segment never reaches the interface, so tx_shm is
+#       confirmed by its ABSENCE there. They agreed within 1 packet on the first run where the data direction crossed
+#       (tx_udp=4547, wire_tx_packets=4548, tx_shm=98303). A drift beyond the tolerance below means a seam
 #       counter is wrong, and the run says so rather than reporting a transport verdict from a broken instrument.
 #     - a run whose sent= is below MIN_SENT is VOID: too few samples to have exercised the shape.
 #   And the control that this script can fail at all: run it with EXPECT=shm today. It must FAIL on both shapes, because
@@ -71,7 +73,9 @@ say "=== S2 transport identity $(date -Is) EXPECT=$EXPECT shapes='$SHAPES' ==="
 # isolate, this environment stops representing a same-host pair and the script has to change.)
 #
 # Why not one namespace with both addresses in it, which is the more obvious reading of "same host": the external control
-# then cannot work, and the control is what showed it. With both addresses local the kernel routes .1 -> .2 through
+# then cannot work, and the control is what showed it. (The figures in this paragraph are from stage 0, when tx_shm was
+# structurally zero and the control compared the SUM - they are a record of how this environment was chosen, not of the
+# rule above, which now compares tx_udp alone.) With both addresses local the kernel routes .1 -> .2 through
 # loopback and the veth never sees the traffic (first run: tx_udp+tx_shm=561119 against wire_tx_packets=28305 on the
 # veth); pointing BENCH_IFACE at lo instead swapped the problem for another, because lo carries BOTH processes' datagrams
 # and one process's counter cannot be compared against a shared interface (second run: 300907 against 405305). One
@@ -171,12 +175,21 @@ for shape in $SHAPES; do
         say "$shape: VOID(no tx_udp/tx_shm in the RESULT line - the harness did not set them)"
         fails=$((fails + 1)); continue
     fi
-    total=$((tx_udp + tx_shm))
     # The external control first: a transport verdict from a broken counter is worse than no verdict.
-    tol=$(python3 -c "print(max($TOL_ABS, $total * $TOL_PCT / 100.0))")
-    drift=$(python3 -c "print(abs($total - ${wire:-0}))")
+    #
+    # Against tx_udp, NOT tx_udp+tx_shm. wire_tx_packets is the kernel's count for the interface, and
+    # a datagram that went over the segment never reaches it - that is the whole point of the
+    # module. Comparing the sum was right while tx_shm was structurally zero and becomes an
+    # automatic failure the moment the transport works: the first run with the data direction
+    # crossing reported drift 98302 while tx_udp=4547 matched wire_tx_packets=4548 exactly.
+    #
+    # So this stays a real external control rather than becoming a tautology: it says the datagrams
+    # we claim went over UDP are the ones the interface saw, and tx_shm is confirmed by their
+    # ABSENCE from it - which is a stronger statement than the sum ever made.
+    tol=$(python3 -c "print(max($TOL_ABS, $tx_udp * $TOL_PCT / 100.0))")
+    drift=$(python3 -c "print(abs($tx_udp - ${wire:-0}))")
     if python3 -c "import sys; sys.exit(0 if $drift > $tol else 1)"; then
-        say "$shape: FAIL(counter drift: tx_udp+tx_shm=$total against wire_tx_packets=${wire:-none}, drift $drift > tol $tol)"
+        say "$shape: FAIL(counter drift: tx_udp=$tx_udp against wire_tx_packets=${wire:-none}, drift $drift > tol $tol)"
         fails=$((fails + 1)); continue
     fi
     case "$EXPECT" in
