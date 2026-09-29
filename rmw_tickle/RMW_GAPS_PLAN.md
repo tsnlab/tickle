@@ -1407,14 +1407,49 @@ On a same-host cell the data interface is `lo`, and `BenchStats.h` already reads
 and reports `wire_packets_per_sample` for all four harnesses from the same code. That number answers the question
 directly:
 
-| `wire_packets_per_sample` on `lo` | what carried the samples |
+**The bands have been measured rather than guessed, and the guessed ones were wrong** (`s6_witness_check.sh`,
+2026-09-30, `results/s6_witness_573cfed9_2026-09-30.txt`, both roles on one Pi, `BENCH_IFACE=lo`, n=3 per arm). The
+first version of this design proposed "at or below 0.05 means shared memory, at or above 0.80 means the kernel". The
+run refused both, by its own pre-registration, and the two reasons are worth more than the thresholds were:
+
+| arm | `wire_packets_per_sample` on `lo` | `tx_shm` | `tx_udp` | send Mbps |
+|---|---:|---:|---:|---:|
+| module on | 0.273 (0.234-0.306) | 3,162,505 | 7 | 434.18 |
+| module off | **2.000** (every rep) | 0 | 895,691 | 108.91 |
+
+- **The kernel-path baseline on loopback is 2.0 per sample, not 1.0.** `wire_tx_packets` and `wire_rx_packets` are both
+  898,467 for 898,463 samples: on `lo` a datagram is counted once leaving and once arriving, on the same interface. Any
+  absolute band written for a two-interface cell is wrong here by a factor of two.
+- **The shared-memory arm is not zero, and should not be.** The client put 7 UDP datagrams on the wire in total, all
+  broadcast (`tx_udp_broadcast=7`), with 3.0 million samples through the segment - and `lo` still shows 449,926 packets
+  each way. Those carry no samples: the transport legitimately signals over the socket while the data goes through the
+  ring (the doorbell that wakes a blocked reader is the mechanism here). **A transport using shared memory for data
+  does not stop using the network for control**, and a witness that expects zero mistakes control traffic for a
+  fallback.
+
+**So the witness is real but must be calibrated per cell from its own kernel-path arm, as a ratio rather than an
+absolute.** Here that ratio is 0.273 / 2.000 = **13.7%**, a 7.3x separation, which discriminates without ambiguity. The
+rule for S6:
+
+| ratio of the arm's `lo` packets-per-sample to the same cell's kernel-path arm | reading |
 |---|---|
-| at or below 0.05 | shared memory - the kernel network stack barely saw the run |
-| at or above 0.80 | the kernel path, whatever the configuration claimed |
-| between 0.05 and 0.80 | a mixed or partial path - **VOID**, and the row says so rather than picking a side |
+| at or below ~0.25 | shared memory carried the data; what remains is control traffic |
+| at or above ~0.75 | the kernel carried the data, whatever the configuration claimed |
+| between | a mixed or partial path - **VOID**, and the row says so rather than picking a side |
+
+**Every cell therefore needs its own kernel-path arm measured beside the arm under test**, which for the vendors means
+their shared-memory path off as well as on. That is more runs than the original design implied and it is not optional:
+without the paired baseline the ratio has no denominator. It also means each framework's control traffic is measured
+rather than assumed, which matters because discovery, acknowledgements and iceoryx signalling will each put a different
+non-sample load on the interface.
 
 The middle band is the valuable one. A vendor arm that quietly fell back for some fraction of its traffic lands there,
 and the honest report is "this arm did not use one transport" rather than a number averaged over two.
+
+**Our own counter and the witness agreed, which was the outcome that mattered most.** On the module-on arm `tx_shm`
+was 3,162,505 against `tx_udp` 7, and the witness independently saw the data leave the network path; on the off arm
+`tx_shm` was 0 against `tx_udp` 895,691 and the witness saw a full kernel path. Two instruments, one fact, no
+disagreement - so neither is currently suspect and the pairing below stands as a live check rather than a formality.
 
 **Our own counter then becomes a control rather than the evidence.** `tx_shm / (tx_shm + tx_udp)` and the loopback
 witness are two independent measurements of one fact, so they must agree: on a TickLE same-host row, a high `tx_shm`
