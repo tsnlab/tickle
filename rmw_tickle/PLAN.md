@@ -2965,6 +2965,41 @@ two remaining large pieces, Security comes before wireless.** So `WIRELESS_PLAN.
 `SECURITY_PLAN.md` in the queue; `SECURITY_PLAN.md` stays parked too, since the user's standing rule is that it starts
 only on their explicit word - what changed is its position, not its status. **Nothing in either is started.**
 
+### What the order was decided on, so it is not re-argued from scratch
+
+One **constraint** and five **judgements**, kept apart on purpose - the constraint is not negotiable and the judgements
+are, and a reader who disagrees should be able to see which is which.
+
+**The constraint - machinery dependency.** If A's machinery is what B needs, A comes first or it gets written twice.
+That is the only thing fixing 2 before 3: a loan API built before receive-buffer lending *is* the lending machinery,
+written a second time. It is also why 4 sits next to them rather than later.
+
+**The judgements, in the precedence they were applied:**
+
+1. **Closing a gap the headline table shows.** Loans are the last ❌ in COMPARISON §2.7a, and that table is the public
+   scoreboard, so finishing it is worth more than the feature alone. This is what pulled loans up to 3 instead of
+   leaving them among other rmw work.
+2. **A test exists before the thing it judges is claimed.** S2 had to exist before the segment; items 5's tests and
+   harnesses gate the *claims* of 1-4 rather than their code, which is why they are at 5 and not at the end.
+3. **The two sessions should not wait on each other.** 1-4 are Dev's (core and rmw), 5-7 are Plan's (measurement and
+   documentation), and they run in parallel rather than in sequence.
+4. **Work that cannot conclude goes last and is reframed.** Item 7's residuals are inside or near 10.4's floors, so the
+   first question is whether either is measurable at all - a question, not a task. Late costs nothing; early costs a
+   measurement that cannot answer.
+5. **Things that never get a slot get one.** Housekeeping is 8 because otherwise it is never anything.
+
+**Where the order is weak, stated rather than defended:**
+
+- **3 before 4 is a value judgement, not a constraint.** Both sit on lending. Loans went first because they close the ❌;
+  large-message stage 2 is a capability nobody has asked for by name recently. If samples above 64 KB matter more than
+  the table, they swap, and nothing else moves.
+- **6 after 5 is weak.** Both are Plan's. 5 gates claims about work in flight; 6 is a defect class with no current claim
+  depending on it. They could swap.
+- **The whole order assumes stage 1 succeeds.** If shared memory does not beat loopback UDP once measured, 2 and 3 still
+  follow (loans need lending whatever the numbers say), but the fair comparison's framing changes and item 5 becomes the
+  interesting work rather than the supporting work. **The list depends on a result, not only on code**, and that is worth
+  knowing before the result arrives.
+
 ### The wired work that remains, in the order it should be done
 
 The ordering is not arbitrary: items 1 to 3 are one piece of machinery seen from three sides, which is why they come
