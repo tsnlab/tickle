@@ -1,7 +1,9 @@
 # Wireless and remote paths: what we would have to change, and what to measure first
 
 **Status: PARKED.** The user asked on 2026-09-29 for this to be planned and **not executed until they say so**, and to
-study zenoh while planning it. Nothing here is started. Read it beside `MODULE_PLAN.md` (the seam work already under way,
+study an existing WAN-oriented system while planning it - referred to throughout as **Case A** rather than by name
+(the user's decision, 2026-09-29): an open-source pub/sub middleware built for wide-area paths, whose published design we
+read and whose behaviour we would verify by running it. Nothing here is started. Read it beside `MODULE_PLAN.md` (the seam work already under way,
 which turns out to be the attachment point for most of this) and `SECURITY_PLAN.md` (also parked, and a prerequisite for
 any public path).
 
@@ -31,15 +33,15 @@ design argument, not a result, and is marked as such.
 | bandwidth is metered and variable | **138.6 B per sample against CycloneDDS's 180 and FastDDS's 286** (measured 2026-09-29). This advantage **grows** when airtime is the scarce resource | — |
 | the endpoint is small | 140 KiB of text, 207 KiB of bss, 1.9 MB RSS (measured) | — |
 
-## 3. The three gaps that decide it, and what zenoh does about each
+## 3. The three gaps that decide it, and what Case A does about each
 
-Everything below about zenoh is **our reading of its published design and has to be verified against its documentation
+Everything below about Case A is **our reading of its published design and has to be verified against its documentation
 and behaviour before anything is built on it.** We do not copy its code - the same rule the user set for CycloneDDS and
-FastDDS applies here (zenoh is EPL-2.0 / Apache-2.0); we study the behaviour and write our own.
+FastDDS applies here - Case A is permissively licensed and that changes nothing; we study the behaviour and write our own.
 
 ### 3.1 Reaching the far end (NAT, firewalls)
 
-- **What zenoh appears to do:** router, peer and client modes. A client dials **out** to a router, and a router in the
+- **What Case A appears to do:** router, peer and client modes. A client dials **out** to a router, and a router in the
   cloud relays between clients that could never reach each other directly. **That solves NAT with a relay rather than
   with hole-punching** - no STUN, no TURN, no ICE state machine.
 - **What that suggests for us:** a relay is far smaller than ICE and fits what we already have. Our unicast peer
@@ -51,12 +53,12 @@ FastDDS applies here (zenoh is EPL-2.0 / Apache-2.0); we study the behaviour and
 
 ### 3.2 Not destroying the link (congestion)
 
-- **What zenoh appears to do:** a per-message congestion-control policy - block or drop - rather than a TCP-style
+- **What Case A appears to do:** a per-message congestion-control policy - block or drop - rather than a TCP-style
   window. The application says what matters; the middleware does not invent a rate.
 - **What that suggests for us:** our RELIABLE/BEST_EFFORT split plus `max_blocking_time` is already close to that shape,
   so the policy layer may need little. **What we genuinely lack is pacing against the network**, which is what turns a
   burst into bufferbloat on a shared radio.
-- **And a second thing worth more than pacing on a radio:** zenoh batches small messages into one network frame. Over
+- **And a second thing worth more than pacing on a radio:** Case A batches small messages into one network frame. Over
   wireless, per-frame airtime and per-frame loss dominate per-byte cost, so **batching beats byte-efficiency** - and we
   already have the mechanism, `tt_send_batch`, with four call sites. This is the cheapest wireless win available and it
   is measurable on the wired rig first.
@@ -65,9 +67,69 @@ FastDDS applies here (zenoh is EPL-2.0 / Apache-2.0); we study the behaviour and
 
 - Our answer is `SECURITY_PLAN.md`, which is parked. Nothing about wireless changes its design; it changes its
   **priority**, because a public path without it is not deployable at all.
-- zenoh's answer is link-level TLS/QUIC, which is a different choice from ours (end-to-end per-topic protection). Theirs
+- Case A's answer is link-level TLS/QUIC, which is a different choice from ours (end-to-end per-topic protection). Theirs
   is simpler and protects the link; ours protects against other participants too. Neither is wrong; they answer different
   threat models, and ours is the one DDS Security also answers.
+
+## 3.4 A relay of our own: a separate process, or a module inside core?
+
+Asked by the user on 2026-09-29, prompted by Case A having a router as a separate thing. **Plan's answer: a separate
+process, built on core, and not a module merged into core.** Four reasons, and the fourth is the one that settles it.
+
+**1. The capacity models conflict.** Every table in core is fixed at compile time, which is a decision made for the
+embedded target (`tt_MAX_PEER_COUNT` 8, `tt_MAX_DISCOVERED_ENTITIES` 16 by default). A relay's client count is a
+deployment variable. Putting the relay in core leaves two options: a large static table in every embedded image, or
+dynamic allocation inside core. The second breaks "the library never allocates", which is not a preference here but the
+thing the whole buffer-ownership design rests on.
+
+**2. The acceptance rule is the opposite one.** g8's rule is that a packet is ours only when it arrives on our own
+socket. A relay must accept packets **addressed to someone else** and forward them. Behind a flag inside core, that
+becomes a switch that inverts a security-relevant acceptance rule in every build - the same class of hazard `SHM_PLAN.md`
+criterion 5 exists to prevent for the same-host path.
+
+**3. There is no application.** Everything in core serves an application's endpoints. A relay's publishers and
+subscriptions are bookkeeping. Its lifecycle is a service's - restart, monitoring, deployment, possibly TLS termination -
+which is not what a library does.
+
+**4. The client side is already there, so there is no large piece to merge.** For an endpoint to use a relay it needs to
+unicast to a configured address, and that is exactly what `ROS_STATIC_PEERS` already does (g6). **The endpoint does not
+need to know that the peer it is configured with happens to forward.** So the core-side change is small and the work is
+all in the separate process - which removes the premise of the question rather than answering it.
+
+**The shape that follows:**
+
+| where | what |
+|---|---|
+| core | the wire codec, discovery parsing, later TickLE Security's handshake, **plus a "forward" primitive**: explicitly opt-in, off by default, exposed as an API rather than as a behaviour |
+| a separate binary | the relay: that API plus its own dynamic client table |
+| an endpoint | almost unchanged - a static peer that happens to be a relay |
+
+Case A is, as we read it, the same codebase in a different mode rather than a second protocol, which makes "module or
+separate process" a false choice: the answer is both, a thin opt-in capability in core and a separate process as the
+deployable thing. **That reading is unverified and is on section 5's list.**
+
+### The hard part, which is discovery and has no answer yet
+
+Our discovery is broadcast-based. Through a relay:
+
+- if the relay **forwards announces verbatim**, endpoints match each other directly and **our matching rules stay
+  untouched** - but the addresses in those announces are ones the far endpoint cannot reach;
+- so either the relay **rewrites addresses** (it must then understand our wire, and becomes a participant rather than a
+  pipe), or an endpoint **learns "reply to this peer via the relay"** (a per-peer return path in core, which is a small
+  concept but a new one).
+
+The second looks smaller and closer to our structure, but that is a **design judgement and is not asserted**: it is the
+first thing to settle if this is ever started, and it is where a wrong choice costs the most.
+
+### One thing this argues for that was not visible when we chose it
+
+A relay sees everything that passes through it. **With end-to-end protection it cannot read the traffic**, so it can sit
+outside the trust boundary. Our choice of end-to-end per-topic protection over link-level encryption - made for the DDS
+Security threat model, where a malicious participant inside the domain is in scope - turns out to be what makes a relay
+deployable at all. Case A's link-level TLS/QUIC answers a different threat model and would require trusting the router.
+
+**And the costs, stated rather than implied:** a relay is a single point of failure, a bandwidth funnel, and one extra hop.
+On a wide-area path the WAN RTT usually dominates that hop, but "usually" is a measurement nobody here has made.
 
 ## 4. The measurement path, and it comes before any of section 3
 
@@ -90,9 +152,9 @@ FastDDS applies here (zenoh is EPL-2.0 / Apache-2.0); we study the behaviour and
 - Any row whose RESULT line does not show the injected netem parameters is VOID, the same rule the campaign already
   applies to QoS.
 
-## 5. What to verify about zenoh before relying on any of section 3
+## 5. What to verify about Case A before relying on any of section 3
 
-Each of these is currently our reading and would be checked by running zenoh rather than by reading about it - the same
+Each of these is currently our reading and would be checked by running Case A rather than by reading about it - the same
 standard we hold ourselves to:
 
 1. that a router really does relay between two clients neither of which can reach the other, and what it costs in added
@@ -111,4 +173,4 @@ track since it gates any public path regardless.
 
 Until then, the honest statement about TickLE's place is: **a controlled link** - TSN or 10Base-T1S wired, or a single
 trusted L2 segment - is where the measured advantages are real today, and an internet-crossing remote deployment is
-better served by WebRTC or zenoh at this moment.
+better served by WebRTC or by a Case A-shaped system at this moment.
