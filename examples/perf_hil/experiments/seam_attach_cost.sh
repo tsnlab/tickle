@@ -173,7 +173,10 @@ for scen, d in rows.items():
     mon, son, non = stat(on)
     moff, soff, noff = stat(off)
     # Checked first: the ON arm must land near the figure that prompted the run.
-    ref = OBSERVED_ON_MBPS.get(scen)
+    # A reference of 0 means "no prior ON figure for this cell, so there is nothing to reproduce" - the guard is
+    # skipped rather than dividing by zero. It exists to catch a changed situation, and a cell measured for the first
+    # time has no situation to have changed.
+    ref = OBSERVED_ON_MBPS.get(scen) or None
     if ref is not None and abs(mon - ref) / ref > 0.15:
         print("VERDICT=VOID - ON came back %.2f Mbps against the %.2f that prompted this run (>15%% apart)." % (mon, ref))
         print("  Something other than the thing under test changed; this run says nothing either way.")

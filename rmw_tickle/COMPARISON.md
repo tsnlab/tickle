@@ -378,8 +378,25 @@ Table rows 7-17. The two deep dives that follow (§2.2a, §2.2b) are where the R
 > second cell agreeing rather than a statistic - quoted as a direction, not a margin.
 >
 > So the module is a trade rather than a cost: **roughly +47% throughput and a shorter tail where a same-host peer
-> exists, -2.0% to -2.7% where one cannot.** That is the shape lazy creation would resolve - keep the gain, stop
+> exists, against -2.0% to -2.7% at p1 where one cannot - and nothing measurable at p2, where the link is the limit.** That is the shape lazy creation would resolve - keep the gain, stop
 > charging the hosts that can never collect it.
+>
+> **At p2 the throughput cost disappears, which locates it rather than removing it** (measured 2026-09-30 on
+> `6e73a592`, n=6 per arm, `results/seam_module_cost_p2_6e73a592_2026-09-30.txt`):
+>
+> | cell, p2 1292 B | module on | module off | gap |
+> |---|---:|---:|---:|
+> | best-effort throughput | 937.71 +- 0.03 | 937.76 +- 0.02 | +0.01%, t 1.32 |
+> | reliable throughput | 937.25 +- 0.02 | 937.23 +- 0.01 | -0.00%, t -0.94 |
+> | peak RSS | 2,143 / 2,723 kB | 1,743 / 2,319 kB | **+400 kB** |
+>
+> Both arms sit at about 937 Mbps, which is this link's ceiling - so at p2 the bottleneck is the wire and not the CPU,
+> and a per-datagram cost on the send path has nowhere to show. **So the -2.0% to -2.7% is a small-payload effect**,
+> where a 76-byte sample means the datagram rate is high enough for CPU to be the limit. It is not a general
+> throughput cost, and any statement of it should say at which payload.
+>
+> **The ~400 kB of RSS does not go away at p2**, because the segment is one fixed mapping per context regardless of
+> traffic. That half of the cost is paid by every deployment, at every payload, whether or not a same-host peer exists.
 >
 > **What is not yet measured, so one cell does not stand for the module.** The +47% is best-effort throughput at one
 > payload shape - the cell the module exists for, which is why it is the headline, but the trade at p2, p3 and p4 is
