@@ -414,6 +414,19 @@
 // tt_MAX_BUFFER_LENGTH (rmw_tickle, to 65507) gets it too: its samples then fragment at the control
 // datagram, while service requests and responses, which do not fragment, keep the large datagram.
 // -Dtt_FRAG_ENABLED=0 keeps such a build on the OS's IP fragmentation instead - the benchmark's ipfrag arm.
+// (SHM_PLAN.md) The shared-memory transport. 1 everywhere it can be built, 0 on FreeRTOS, which has no shm_open
+// and where the segment is a HAL-provided region rather than a file - stage 1 does not carry that form, so the
+// module compiles out there entirely and a target that cannot use it pays nothing for it. Same shape as
+// tt_CONTEXT_ID_CLAIM above, and for the same reason: a module the user can turn off has to actually leave when it
+// is off, not merely be skipped at runtime.
+#ifndef tt_SEGMENT_ENABLED
+#if defined(TT_PLATFORM_FREERTOS)
+#define tt_SEGMENT_ENABLED 0
+#else
+#define tt_SEGMENT_ENABLED 1
+#endif
+#endif
+
 // SHM_PLAN.md stage 1: the shared-memory segment's own capacity, as a byte budget with the slot
 // count derived - the idiom g13's reader queue already uses, because it is the bound that stays
 // meaningful when the datagram size changes underneath it.

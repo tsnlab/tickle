@@ -534,6 +534,23 @@ struct tt_Context {
     // the above: same outcome on the wire, different cause, and only the pair distinguishes a
     // module doing its job from one that never attaches anywhere.
     uint64_t segment_unattached_to_udp;
+
+#if tt_SEGMENT_ENABLED
+    // What this context has mapped, indexed by the remote context id - the same index
+    // traffic_last_seen[] uses, because within one context's view a remote context id is which peer
+    // this is. The address and port are kept beside the mapping because the name was computed from
+    // them: a peer that reappears at a different address is a different segment, not this one.
+    //
+    // `own_segment` is this context's own, the one peers attach to. It is created at bind time,
+    // when the address and context id it is named from are finally known.
+    struct tt_SegmentPeer {
+        struct tt_SegmentHeader* mapping;
+        uint32_t ip;
+        uint16_t port;
+        uint32_t incarnation; // what was in the header when we attached; a change means a new peer
+    } segment_peers[tt_MAX_CONTEXT_IDS];
+    struct tt_SegmentHeader* own_segment;
+#endif
     uint64_t summaries_skipped; // short-lease summaries not sent: the node's traffic had reached every peer
     uint64_t summaries_ridden;  // once-a-second summaries sent just ahead of a data send
     uint64_t rx_datagrams;

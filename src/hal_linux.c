@@ -49,14 +49,26 @@
 #include "consts.h"
 #include "log.h"
 
+// Both /dev/shm users need these - the context-id registry and the segment - and they are
+// independent settings, so the guard is the disjunction. Written this way after clang-tidy caught
+// the duplicate: the segment's own include of <sys/stat.h> beside the registry's was not only
+// redundant, it hid that a build with the registry off and the segment on would have lost them.
+#if tt_CONTEXT_ID_CLAIM || tt_SEGMENT_ENABLED
+#include <fcntl.h> // open()
+
+#include <sys/stat.h> // fchmod(), fstat()
+#endif
+
 #if tt_CONTEXT_ID_CLAIM
-#include <fcntl.h>  // open()
 #include <signal.h> // kill()
 #include <stdlib.h> // getenv()
 
 #include <sys/file.h>  // flock()
-#include <sys/stat.h>  // fchmod()
 #include <sys/types.h> // pid_t
+#endif
+
+#if tt_SEGMENT_ENABLED
+#include <sys/mman.h> // mmap/munmap - the segment (SHM_PLAN.md stage 1)
 #endif
 
 // TT_RX_DROP_PERCENT - receive-side loss injection for experiments, 0 (off) by default and not
@@ -1025,3 +1037,81 @@ tt_ret_t tt_wake_signal(struct tt_Context* node) {
     }
     return tt_RET_OK;
 }
+
+#if tt_SEGMENT_ENABLED
+// The segment's platform half (SHM_PLAN.md stage 1). Only the mapping lives here: the ring, the
+// naming and the header checks are core's, so they are the same code and the same tests everywhere
+// and only the way pages are obtained differs.
+//
+// Plain open()/ftruncate()/mmap() on a /dev/shm path rather than shm_open(), matching
+// registry_path() above - same directory, same visibility across network namespaces, and one fewer
+// library to link.
+// The segment's own mode constant rather than the registry's REGISTRY_MODE, which sits inside the
+// registry's #if and would make this module silently depend on that one being enabled.
+#define SEGMENT_MODE 0666
+
+void* tt_segment_create(const char* path, size_t bytes) {
+    // Unlinked first, so a segment left behind by a dead context of this name is replaced rather
+    // than inherited. Anyone still holding the old mapping keeps it and sees the old incarnation,
+    // which is precisely what lets them notice they are stale.
+    (void)unlink(path);
+    int segment_fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, SEGMENT_MODE);
+    if (segment_fd < 0) {
+        TT_LOG_WARNING("Cannot create segment %s: %s", path, strerror(errno));
+        return NULL;
+    }
+    if (ftruncate(segment_fd, (off_t)bytes) != 0) {
+        TT_LOG_WARNING("Cannot size segment %s to %zu: %s", path, bytes, strerror(errno));
+        (void)close(segment_fd);
+        (void)unlink(path);
+        return NULL;
+    }
+    void* mapping = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, segment_fd, 0);
+    (void)close(segment_fd); // the mapping keeps the region alive; the descriptor has no further use
+    if (mapping == MAP_FAILED) {
+        TT_LOG_WARNING("Cannot map segment %s: %s", path, strerror(errno));
+        (void)unlink(path);
+        return NULL;
+    }
+    return mapping;
+}
+
+void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
+    int segment_fd = open(path, O_RDWR | O_CLOEXEC);
+    if (segment_fd < 0) {
+        // ENOENT is the ordinary case and not a failure: a peer on another host, or one built
+        // without the module. Anything else is a real refusal and is worth telling apart, because
+        // a permission problem that reads as "not same host" is a module that is inert for a
+        // reason nobody can see.
+        *why = (uint8_t)(errno == ENOENT ? tt_SEGMENT_ABSENT : tt_SEGMENT_REFUSED);
+        return NULL;
+    }
+    // A region smaller than expected is refused rather than mapped short: the caller is about to
+    // index slots inside it, and a short mapping would fault on a slot that is legitimately there
+    // by the header's own numbers.
+    struct stat info;
+    if (fstat(segment_fd, &info) != 0 || (size_t)info.st_size < bytes) {
+        *why = (uint8_t)tt_SEGMENT_BAD_HEADER;
+        (void)close(segment_fd);
+        return NULL;
+    }
+    void* mapping = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, segment_fd, 0);
+    (void)close(segment_fd);
+    if (mapping == MAP_FAILED) {
+        *why = (uint8_t)tt_SEGMENT_REFUSED;
+        return NULL;
+    }
+    *why = (uint8_t)tt_SEGMENT_ATTACHED;
+    return mapping;
+}
+
+void tt_segment_detach(void* mapping, size_t bytes) {
+    if (mapping != NULL) {
+        (void)munmap(mapping, bytes);
+    }
+}
+
+void tt_segment_unlink(const char* path) {
+    (void)unlink(path);
+}
+#endif

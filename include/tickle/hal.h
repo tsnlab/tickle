@@ -179,6 +179,33 @@ bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, u
 // the same view do not choose alike. The id this context held before, if any, is released. 0: none free. Without a
 // host registry the choice is made from `avoid` alone, and the link settles any clash. tt_close() releases the id.
 uint8_t tt_claim_context_id(struct tt_Context* node, uint8_t preferred, const uint8_t* avoid, uint32_t salt);
+
+#if tt_SEGMENT_ENABLED
+// The shared-memory segment's platform half (SHM_PLAN.md stage 1). Only the mapping is here; the
+// ring, the naming and the header validation are core's, so they are the same code and the same
+// tests on every platform and only the way pages are obtained differs.
+//
+// tt_segment_create(): the region this context owns, sized `bytes`, created fresh - any previous
+// one of the same name is replaced, because a segment left by a dead context of the same name is
+// exactly what the header's incarnation exists to detect and there is no reason to inherit it.
+// Returns NULL on failure, which is not fatal: the context simply has no segment and its peers
+// reach it over UDP.
+void* tt_segment_create(const char* path, size_t bytes);
+// tt_segment_attach(): map a peer's existing region read/write. Does not create. `bytes` is what
+// the caller expects; a region smaller than that is refused, since the caller is about to index
+// slots inside it. Returns NULL and sets *why to the reason, which the caller counts.
+//
+// *why carries an `enum tt_SegmentAttach` value (tickle.h) as a uint8_t rather than the enum
+// itself: this header is included by tickle.h and cannot include it back, and the alternative -
+// moving a transport type into config.h to break the cycle - would put it where nothing else of
+// its kind lives. Only tt_SEGMENT_ABSENT and tt_SEGMENT_REFUSED are produced here; the header
+// checks that produce the rest are core's, because they are the same on every platform.
+void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why);
+void tt_segment_detach(void* mapping, size_t bytes);
+// Removes the name. The mapping survives in anyone who still holds it, which is why a reader checks
+// the incarnation rather than trusting that a name still resolves to the segment it attached to.
+void tt_segment_unlink(const char* path);
+#endif
 // (g8) Whether ip:port - host order, as tt_receive() reports a sender - is `node`'s own data socket, which every
 // datagram it sends comes from.
 bool tt_is_own_address(const struct tt_Context* node, uint32_t ip, uint16_t port);
