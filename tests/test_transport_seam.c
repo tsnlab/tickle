@@ -559,6 +559,137 @@ static void test_a_datagram_crosses_a_segment(void) {
     test_mock_segments_free();
 }
 
+// The mock's test_mock_send_last_buf is deliberately NOT the wire bytes: a datagram sent in the
+// single-submessage form is rewritten into the classic form, 4 bytes longer, so every decoder in
+// the tests can read it. Byte identity has to compare what the HAL was actually handed, so it uses
+// the raw hook instead - the first version of this test compared against the normalised copy and
+// reported a 4-byte difference that was the mock's own rewrite, not the transport's.
+static uint8_t raw_sent[tt_SEGMENT_SLOT_BYTES];
+static size_t raw_sent_len = 0;
+
+static void capture_raw_send(const void* buf, size_t len) {
+    raw_sent_len = len < sizeof(raw_sent) ? len : sizeof(raw_sent);
+    memcpy(raw_sent, buf, raw_sent_len);
+}
+
+// SHM_PLAN 6a item 2: byte identity. The datagram placed in the segment equals, byte for byte, the
+// one the UDP path would have sent. That is section 1's constraint as a test rather than as an
+// intention - "the same datagram through the same acceptance path" is what makes a same-host bypass
+// impossible instead of merely discouraged, and a transport free to reshape its payload would be a
+// second wire format nobody is testing.
+//
+// Both arms send the same publish through the same encoder; only the destination differs. The mock
+// captures what the HAL was handed, which is the UDP arm's golden bytes.
+static void test_segment_bytes_equal_what_udp_would_have_sent(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    // Arm 1: no segment anywhere, so the datagram goes to the socket and the mock captures it.
+    struct tt_Context udp_node;
+    struct tt_Topic udp_topic;
+    struct tt_Publisher udp_pub;
+    init_node_topic_pub(&udp_node, &udp_topic, &udp_pub);
+    udp_node.hal.own_ip = PEER_IP;
+    udp_node.hal.own_port = PEER_PORT;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        udp_pub.peers[i].context_id = tt_CONTEXT_ID_INVALID;
+    }
+    udp_pub.peers[0].context_id = OWNER_ID;
+    udp_pub.peers[0].ip = OWNER_IP;
+    udp_pub.peers[0].port = OWNER_PORT;
+
+    uint32_t value = 0x5a5a5a5a;
+    raw_sent_len = 0;
+    test_mock_send_hook = capture_raw_send;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&udp_pub, (struct tt_Data*)&value));
+    test_mock_send_hook = NULL;
+    EXPECT_TRUE(raw_sent_len > 0); // the arm captured something to compare against
+
+    uint8_t golden[tt_SEGMENT_SLOT_BYTES];
+    uint32_t golden_len = (uint32_t)raw_sent_len;
+    EXPECT_TRUE(golden_len <= sizeof(golden));
+    memcpy(golden, raw_sent, golden_len);
+
+    // Arm 2: the same publish, with the peer's segment present so it takes the segment instead.
+    struct tt_Context reader;
+    struct tt_Topic reader_topic;
+    struct tt_Publisher reader_pub;
+    init_node_topic_pub(&reader, &reader_topic, &reader_pub);
+    reader.id = OWNER_ID;
+    reader.hal.own_ip = OWNER_IP;
+    reader.hal.own_port = OWNER_PORT;
+    reader.entity_id_base = OWNER_INCARNATION;
+    create_own_segment(&reader);
+    EXPECT_TRUE(reader.own_segment != NULL);
+
+    struct tt_Context shm_node;
+    struct tt_Topic shm_topic;
+    struct tt_Publisher shm_pub;
+    init_node_topic_pub(&shm_node, &shm_topic, &shm_pub);
+    shm_node.hal.own_ip = PEER_IP;
+    shm_node.hal.own_port = PEER_PORT;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        shm_pub.peers[i].context_id = tt_CONTEXT_ID_INVALID;
+    }
+    shm_pub.peers[0].context_id = OWNER_ID;
+    shm_pub.peers[0].ip = OWNER_IP;
+    shm_pub.peers[0].port = OWNER_PORT;
+
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&shm_pub, (struct tt_Data*)&value));
+    EXPECT_TRUE(shm_node.tx_datagrams_by_transport[tt_TRANSPORT_SHM] > 0); // it really took the segment
+
+    uint8_t carried[tt_SEGMENT_SLOT_BYTES];
+    uint32_t carried_len = 0;
+    uint32_t from_ip = 0;
+    uint16_t from_port = 0;
+    EXPECT_TRUE(
+        segment_read(reader.own_segment, carried, (uint32_t)sizeof(carried), &carried_len, &from_ip, &from_port));
+
+    EXPECT_EQ_U32(golden_len, carried_len);
+    EXPECT_EQ_INT(0, memcmp(golden, carried, carried_len < golden_len ? carried_len : golden_len));
+
+    test_mock_segments_free();
+}
+
+// SHM_PLAN 6a item 3, the anti-bypass test: a datagram that must be refused is refused identically
+// over the segment. The point is not that the segment validates anything itself - it is that a
+// segment arrival goes through the SAME acceptance path, so a datagram cannot reach an application
+// by choosing a transport. A seam that handed records straight to delivery would pass every
+// functional test and be a hole.
+static void test_a_refused_datagram_is_refused_over_the_segment_too(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context reader;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&reader, &topic, &pub);
+    reader.id = OWNER_ID;
+    reader.hal.own_ip = OWNER_IP;
+    reader.hal.own_port = OWNER_PORT;
+    reader.entity_id_base = OWNER_INCARNATION;
+    create_own_segment(&reader);
+    EXPECT_TRUE(reader.own_segment != NULL);
+
+    // A datagram from the future: a version this build does not speak. Over UDP this is counted and
+    // dropped (g11 - it used to end the poll loop outright).
+    struct tt_Header bad;
+    memset(&bad, 0, sizeof(bad));
+    bad.magic_value = NATIVE_MAGIC_VALUE;
+    bad.version = tt_VERSION + 1;
+    bad.source = PEER_CONTEXT_ID;
+
+    uint64_t drops_before = reader.version_mismatch_drops;
+    EXPECT_TRUE(segment_write(reader.own_segment, &bad, (uint32_t)sizeof(bad), PEER_IP, PEER_PORT));
+    drain_own_segment(&reader);
+
+    EXPECT_EQ_U32(1, (uint32_t)(reader.version_mismatch_drops - drops_before));     // refused, and counted
+    EXPECT_EQ_U32(1, (uint32_t)reader.rx_datagrams_by_transport[tt_TRANSPORT_SHM]); // it did arrive
+    EXPECT_EQ_U32(0, (uint32_t)reader.rx_datagrams_by_transport[tt_TRANSPORT_UDP]);
+
+    test_mock_segments_free();
+}
+
 // A received datagram is counted once, on the transport it arrived over.
 static void test_received_datagram_is_counted_as_udp(void) {
     test_mock_reset();
@@ -594,6 +725,8 @@ int main(void) {
     test_impossible_length_is_refused_and_does_not_wedge();
     test_every_udp_datagram_has_a_named_reason();
     test_a_datagram_crosses_a_segment();
+    test_segment_bytes_equal_what_udp_would_have_sent();
+    test_a_refused_datagram_is_refused_over_the_segment_too();
     test_received_datagram_is_counted_as_udp();
 
     printf("test_transport_seam: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
