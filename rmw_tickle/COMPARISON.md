@@ -874,6 +874,33 @@ counterpart in it**, and running them would produce numbers where we look worse 
 and better under loss where it drops what we repair. Neither would mean what a reader takes it to mean. Cell 8,
 best-effort throughput, is the one cell where all four make the same promise.
 
+> **PROVISIONAL - the TickLE row below is measured on a regressed build and understates it by more than half.**
+> Discovered 2026-09-29 after this section was written. The transport seam added that day retries a shared-memory
+> attach on *every datagram* to a peer that has no segment, which on a two-host link is every datagram and can never
+> succeed; each failed attempt is an `open()` that fails `ENOENT`, roughly 87,000 wasted system calls per second.
+>
+> A control run at the same commit, differing only by `-Dtt_SEGMENT_ENABLED=0` (harness
+> `examples/perf_hil/experiments/seam_attach_cost.sh`, raw rows `results/seam_attach_cost_d4413383_2026-09-29.txt`),
+> n=6 per arm on this same cell 8:
+>
+> | arm | send Mbps | CPU s/Msample |
+> |---|---:|---:|
+> | segment compiled in (the row below) | 54.03 +- 0.15 | 10.843 +- 0.033 |
+> | segment compiled out | **119.86 +- 0.49** | **5.075 +- 0.021** |
+>
+> **So the reading below - "CycloneDDS sends more: 71.15 against our 53.97 ... a cell we lose to a DDS
+> implementation" - is an artefact of that defect and not a result.** Against CycloneDDS's 71.15 the unencumbered
+> figure wins the cell rather than losing it. That is stated as the expectation and not as the number: compiling the
+> module out is not the same as fixing it, and the replacement row will be measured on the fixed build, where a
+> correctly cached negative attach should cost near zero on a cross-host link but is not assumed to cost exactly
+> zero. The CPU and peak-RSS figures in the TickLE row are affected the same way.
+>
+> The row is left standing rather than deleted because it is what was measured and the reading drawn from it was
+> published; it is replaced, not amended, once the defect is fixed and the cell re-measured. zenoh-pico's and the two
+> DDS rows are unaffected - they share the rig and the harness, not the defect. **CycloneDDS being flat across the
+> regression (92.84 -> 93.62 Mbps on cell 1) is what identified the change as ours**, and is also why the vendor arms
+> could not have caught it: they control for the environment, not for our own code.
+
 **Cell 8, `best_effort_throughput` p1 (76 B sample), 5 s, 3 repetitions, both Pis:**
 
 | framework | sent | send Mbps | client CPU s/Msample | client peak RSS kB | wire B/sample | loss % |
