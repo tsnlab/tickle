@@ -18,7 +18,19 @@
 #       without changing behaviour, and it is what proves the counters work BEFORE anything depends on them.
 #   EXPECT=shm (stage 1 onwards):
 #     - PASS needs tx_shm > 0 AND every remaining UDP datagram accounted for by a named reason:
-#       tx_udp == tx_udp_broadcast + tx_udp_oversize + tx_udp_unattached + tx_udp_full.
+#       tx_udp == tx_udp_broadcast + tx_udp_oversize + tx_udp_unattached.
+#     - THREE reasons, not four. tx_udp_full was removed on 2026-09-29 because a full ring no longer falls back: it
+#       drops. The fallback was itself a bug - rerouting a datagram to the socket sent it AHEAD of the records already
+#       queued in the ring, so one logical stream travelled two paths of different latency, arrived out of order, and
+#       best-effort delivery discarded the older half by design. It cost 97.6% of delivery on the same-host perf test
+#       (rx_shm 30,046,644, out_of_order_discarded 30,043,775, delivered ~= rx_udp) for most of a day while every
+#       gate stayed green. A full queue now drops, which is what the kernel's socket buffer already did on the UDP
+#       path, and the reliable path's retransmission covers it.
+#     - shm_full_dropped replaces it on the RESULT line and is deliberately NOT part of the sum: it is no longer a
+#       fallback, and adding it in would make the invariant false. It is still required to be PRESENT - its absence
+#       voids the shape - because it is now the ONLY place a full ring is visible, which makes it matter more than
+#       when it was one term of four. It is reported and never thresholded, for the same reason the sum is exact:
+#       a threshold on "how much dropping is acceptable" is a number nobody here can derive.
 #     - NOT tx_udp == 0, which is unachievable and was wrong in the first version of this script. A segment carries
 #       unicast datagrams to a known peer: the name is computed from that peer's (address, port, context id), so a
 #       broadcast destination has no name to compute and cannot go over a segment even in principle. Announces and
@@ -206,12 +218,17 @@ for shape in $SHAPES; do
             # The RESULT-line names, not the core field names (segment_*_to_udp). They differ on purpose - see
             # BenchStats.h's bench_stats_set_fallbacks() - and the first version of this loop looked for the C names,
             # so every shape voided with "no by-reason counters" while the line carried all four.
-            for reason in tx_udp_broadcast tx_udp_oversize tx_udp_unattached tx_udp_full; do
+            for reason in tx_udp_broadcast tx_udp_oversize tx_udp_unattached; do
                 reason_count=$(field "$line" "$reason")
                 if [ -z "${reason_count:-}" ]; then missing=1; else named=$((named + reason_count)); fi
             done
+            # Required present, never summed. A full ring drops rather than falling back, so this is not a reason a
+            # datagram went by UDP - but it is the only signal that the ring is too small, and a shape that cannot
+            # report it is as blind as one with no reasons at all.
+            full_dropped=$(field "$line" shm_full_dropped)
+            [ -n "${full_dropped:-}" ] || missing=1
             if [ "$missing" = 1 ]; then
-                say "$shape: VOID(the RESULT line carries no by-reason fallback counters - the assertion cannot be made)"
+                say "$shape: VOID(the RESULT line lacks a by-reason fallback counter or shm_full_dropped - the assertion cannot be made)"
                 fails=$((fails + 1))
             elif [ "$tx_shm" -le 0 ]; then
                 say "$shape: FAIL(nothing went over the segment: tx_shm=0 tx_udp=$tx_udp)"
@@ -220,7 +237,7 @@ for shape in $SHAPES; do
                 say "$shape: FAIL(unexplained fallback: tx_udp=$tx_udp against $named accounted for by named reasons)"
                 fails=$((fails + 1))
             else
-                say "$shape: PASS(sample_path=$path sent=$sent tx_shm=$tx_shm tx_udp=$tx_udp all named)"
+                say "$shape: PASS(sample_path=$path sent=$sent tx_shm=$tx_shm tx_udp=$tx_udp all named, shm_full_dropped=$full_dropped)"
             fi
             ;;
         *) say "FATAL EXPECT must be udp or shm"; exit 1 ;;

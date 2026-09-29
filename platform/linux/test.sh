@@ -239,10 +239,48 @@ PERF_COOLDOWN_S=5
 PERF_DURATION_S=${PERF_DURATION_S:-60}
 run_pair perf_client "-d $((PERF_DURATION_S + PERF_WARMUP_S + PERF_COOLDOWN_S))" \
     perf_server "-d $PERF_DURATION_S -w $PERF_WARMUP_S -W $PERF_COOLDOWN_S" || status=1
-recv=$(grep '^RESULT:' perf_server.log | tail -1 | sed -n 's/.*recv=\([0-9,]*\).*/\1/p' | tr -d ',')
+perf_result=$(grep '^RESULT:' perf_server.log | tail -1)
+recv=$(printf '%s' "$perf_result" | sed -n 's/.*recv=\([0-9,]*\).*/\1/p' | tr -d ',')
 recv=${recv:-0}
 echo "perf_server received $recv message(s) (need >= $MIN_COUNT)"
 [ "$recv" -ge "$MIN_COUNT" ] || status=1
+
+# The liveness check above cannot fail for any reason short of total silence, and on 2026-09-29 that mattered: the
+# shared-memory module's full-ring fallback reordered one logical stream across two paths, best-effort delivery
+# discarded the older half, and this tier reported PASS through all of it - 97.6% loss and an 8x throughput collapse,
+# from 1,017.9 Mbps to 122.7, green every time, for most of a day. "At least 5 messages" against a run that normally
+# delivers 5.3 million is a check that cannot fail, which is the same defect class as a pattern that matches nothing.
+# So the tier now also asserts what the run was supposed to achieve, not merely that it happened.
+#
+# WHAT THESE TWO NUMBERS ARE, stated plainly because a floor nobody can justify is the next version of this problem:
+#   - PERF_MAX_LOSS_PCT=2.0. Both observed green runs lost exactly 0.0% (dropped=0), so any loss at all is already
+#     outside what this test has ever done on a healthy build; 2.0 is slack for a loaded runner, not a budget.
+#   - PERF_MIN_MBPS=400. This is deliberately loose - about 40% of the 1,017.9 Mbps last-green figure - because two
+#     green data points give no variance estimate and a floor tuned on a guess would be flaky, which is how a
+#     threshold gets raised until it cannot fail again. It is set to catch a COLLAPSE (it rejects both 122.7 and the
+#     147.3 of the broken build) while tolerating a machine having a bad day. It should be tightened once several
+#     green runs on the same runner give a real spread; until then, loose and honest beats tight and arbitrary.
+# Both are overridable so a slower machine can run the suite without editing it, and an ABSENT field fails rather
+# than passes: the fields are always printed by a current harness, so their absence means a stale binary or a
+# changed RESULT line, and "the number I wanted to check was missing" must never read as "the check passed".
+PERF_MAX_LOSS_PCT=${PERF_MAX_LOSS_PCT:-2.0}
+PERF_MIN_MBPS=${PERF_MIN_MBPS:-400}
+perf_loss=$(printf '%s' "$perf_result" | sed -n 's/.*loss_pct=\([0-9.]*\).*/\1/p')
+perf_mbps=$(printf '%s' "$perf_result" | sed -n 's/.*avg_mbps=\([0-9,.]*\).*/\1/p' | tr -d ',')
+if [ -z "$perf_loss" ] || [ -z "$perf_mbps" ]; then
+    echo "perf_server: FAIL - RESULT line carries no loss_pct/avg_mbps, so neither can be checked: ${perf_result:-<no RESULT line>}"
+    status=1
+else
+    echo "perf_server loss_pct=$perf_loss (need <= $PERF_MAX_LOSS_PCT), avg_mbps=$perf_mbps (need >= $PERF_MIN_MBPS)"
+    awk -v l="$perf_loss" -v m="$PERF_MAX_LOSS_PCT" 'BEGIN { exit !(l <= m) }' || {
+        echo "perf_server: FAIL - lost $perf_loss% of the stream (limit $PERF_MAX_LOSS_PCT%)"
+        status=1
+    }
+    awk -v t="$perf_mbps" -v f="$PERF_MIN_MBPS" 'BEGIN { exit !(t >= f) }' || {
+        echo "perf_server: FAIL - $perf_mbps Mbps is below the $PERF_MIN_MBPS Mbps floor"
+        status=1
+    }
+fi
 add_summary perf perf_server.log
 
 echo
