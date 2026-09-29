@@ -1390,6 +1390,52 @@ Four requirements that the existing campaign does not yet meet, each of which is
    means the harness is wrong, not that the transport is fast.
 
 
+#### S6's transport witness, and why it is the loopback counter rather than each vendor's introspection (2026-09-30, Plan)
+
+Requirement 2 above - *each arm proves which transport it used, on every framework and not only on ours* - is the one
+that decides whether this comparison is worth running, and the obvious implementation is the wrong one. Reading each
+framework's own introspection means three different instruments, each of which can report what it was **configured**
+with rather than what it **did**: FastDDS can have its SHM transport enabled and still fall back per-datagram,
+CycloneDDS reports SharedMemory enabled whether or not `iox-roudi` is actually answering, and our own `tx_shm` is a
+counter we wrote and would be grading our own homework with. Every one of those is a configuration read, which is the
+failure this project has now made four times in one week - a `transport=tcp` field printed by a dead session, a
+sanitizer that was never linked, a ThreadSanitizer gate that never created a segment, a `sudo -n kill` that killed
+nothing.
+
+**So the witness is the loopback interface's own packet counter, which no framework controls and none can flatter.**
+On a same-host cell the data interface is `lo`, and `BenchStats.h` already reads `wire_tx_packets` / `wire_rx_packets`
+and reports `wire_packets_per_sample` for all four harnesses from the same code. That number answers the question
+directly:
+
+| `wire_packets_per_sample` on `lo` | what carried the samples |
+|---|---|
+| at or below 0.05 | shared memory - the kernel network stack barely saw the run |
+| at or above 0.80 | the kernel path, whatever the configuration claimed |
+| between 0.05 and 0.80 | a mixed or partial path - **VOID**, and the row says so rather than picking a side |
+
+The middle band is the valuable one. A vendor arm that quietly fell back for some fraction of its traffic lands there,
+and the honest report is "this arm did not use one transport" rather than a number averaged over two.
+
+**Our own counter then becomes a control rather than the evidence.** `tx_shm / (tx_shm + tx_udp)` and the loopback
+witness are two independent measurements of one fact, so they must agree: on a TickLE same-host row, a high `tx_shm`
+share with a loopback witness near 1.0 means our counter is lying, and a low share with a witness near 0 means the
+witness is. **Either disagreement VOIDs the row and is a finding about the instrument, not about the transport.** That
+pairing is the only part of this design that could catch a defect in the thing we built, which is why it is in.
+
+**The two bounds from requirement 4, stated as refusals rather than as guidance:**
+
+- **Lower:** a same-host throughput difference under about 1%, or an RSS difference under 10 KB, is not a result
+  (WIRE_PLAN 10.4). At same-host rates - the module measured 2,793 Mbps against 1,902 in CI - a real shared-memory
+  effect is tens of percent, so anything near the floor here is far more likely to be layout than transport.
+- **Upper:** g9's in-process delivery is the ceiling. A same-host row faster than in-process delivery of the same
+  payload means the harness is wrong - it is claiming that crossing a process boundary beat not crossing one - and the
+  row is VOID with the harness named, not published as a record.
+
+**What is still open in this design, so it is not mistaken for finished.** The engineering arm needs `iox-roudi`
+running for CycloneDDS, which is an operational prerequisite rather than a flag, and the arm must fail loudly when the
+daemon is absent rather than silently measuring CycloneDDS's network path and labelling it shared memory. That is the
+same shape as everything above, and it is the first thing to build once the cells exist.
+
 ## g15 - `publish_zerocopy()` sends datagrams that `tx_datagrams` never counts (found by Dev 2026-09-29; LOW severity, HIGH consequence for S1)
 
 - **Gap:** `tt_Context.tx_datagrams` is incremented in `send_datagram_to()`, `send_datagram()` and the fragment batch,
