@@ -263,6 +263,13 @@ echo "perf_server received $recv message(s) (need >= $MIN_COUNT)"
 # Both are overridable so a slower machine can run the suite without editing it, and an ABSENT field fails rather
 # than passes: the fields are always printed by a current harness, so their absence means a stale binary or a
 # changed RESULT line, and "the number I wanted to check was missing" must never read as "the check passed".
+# A second delivery check, because the first one has a hole. On 2026-09-30 a run reported loss_pct=0.0 while the
+# publisher's own counters said 54,328 of 10,583,484 samples - 0.513% - had been refused by a full shared-memory ring
+# and, under drop-on-full, never sent at all. The accounting closes to 23 samples in flight
+# (tx_shm + tx_udp + shm_full_dropped = sent), so those samples are really gone; the subscriber's loss figure did not
+# see them because it is computed over its own counted window while the counter covers the whole process. A delivery
+# loss the delivery check cannot see is the same defect as "need >= 5", one level in - so the ring's own refusals are
+# now checked against the same limit, and printed on every run whether or not they trip it.
 PERF_MAX_LOSS_PCT=${PERF_MAX_LOSS_PCT:-2.0}
 PERF_MIN_MBPS=${PERF_MIN_MBPS:-400}
 perf_loss=$(printf '%s' "$perf_result" | sed -n 's/.*loss_pct=\([0-9.]*\).*/\1/p')
@@ -278,6 +285,22 @@ else
     }
     awk -v t="$perf_mbps" -v f="$PERF_MIN_MBPS" 'BEGIN { exit !(t >= f) }' || {
         echo "perf_server: FAIL - $perf_mbps Mbps is below the $PERF_MIN_MBPS Mbps floor"
+        status=1
+    }
+fi
+
+# The shared-memory ring's own refusals, from the publisher's line. Absent when the module is compiled out, which is
+# not a failure - the field only exists when there is a ring to refuse.
+perf_client_result=$(grep '^RESULT:' perf_client.log 2>/dev/null | tail -1)
+perf_full_dropped=$(printf '%s' "$perf_client_result" | sed -n 's/.*shm_full_dropped=\([0-9,]*\).*/\1/p' | tr -d ',')
+perf_sent=$(printf '%s' "$perf_client_result" | sed -n 's/.*sent=\([0-9,]*\).*/\1/p' | tr -d ',')
+if [ -n "$perf_full_dropped" ] && [ -n "$perf_sent" ] && [ "$perf_sent" -gt 0 ]; then
+    perf_drop_pct=$(awk -v d="$perf_full_dropped" -v s="$perf_sent" 'BEGIN { printf "%.3f", 100 * d / s }')
+    echo "perf_client shm_full_dropped=$perf_full_dropped of sent=$perf_sent ($perf_drop_pct%, need <= $PERF_MAX_LOSS_PCT)"
+    awk -v d="$perf_drop_pct" -v m="$PERF_MAX_LOSS_PCT" 'BEGIN { exit !(d <= m) }' || {
+        echo "perf_client: FAIL - a full shared-memory ring refused $perf_drop_pct% of the stream (limit $PERF_MAX_LOSS_PCT%)"
+        echo "  Those samples were never sent. The subscriber's loss figure may read 0.0 and still be right about"
+        echo "  what it saw, because it counts a window and this counts the whole run."
         status=1
     }
 fi
