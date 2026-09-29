@@ -122,6 +122,15 @@ jobs:
         continue-on-error: true
         run: make test-linux
 
+      # S8's control arm (RMW_GAPS_PLAN.md): the same suite with the shared-memory module compiled out. On
+      # 2026-09-29 this suite was red for thirteen commits and nothing in CI could say whether the module was the
+      # cause; it was, and that was established by a person building the tree both ways in a terminal. The script
+      # refuses to run if the two libraries come out byte-identical, so the arm cannot silently become a no-op.
+      - name: Integration - Linux HAL over netns, shared memory OFF (control)
+        id: itest_linux_shm_off
+        continue-on-error: true
+        run: .github/scripts/test_linux_module_off.sh
+
       - name: Integration - FreeRTOS HAL over QEMU virtio-net
         id: itest_freertos
         continue-on-error: true
@@ -186,6 +195,7 @@ jobs:
             'Fuzz smoke=${{ steps.fuzz.outcome }}' \
             'Same-host=${{ steps.itest_samehost.outcome }}' \
             'Integration Linux=${{ steps.itest_linux.outcome }}' \
+            'Integration Linux shm-off=${{ steps.itest_linux_shm_off.outcome }}' \
             'Integration FreeRTOS=${{ steps.itest_freertos.outcome }}'; do
             name="${s%%=*}"; outcome="${s#*=}"
             printf '%-22s %s\n' "$name" "$outcome"
