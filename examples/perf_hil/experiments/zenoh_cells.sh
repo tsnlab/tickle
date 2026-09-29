@@ -48,11 +48,47 @@ SIZES=${SIZES:-"p1 p2 p3 p4"}
 # Extra client arguments, for the latency cells: -i sets the ping interval, and the round trip is the measurement
 # rather than the rate, so those cells run -i 0.1 -d 10 the way the other three frameworks' latency cells do.
 CLI_ARGS=${CLI_ARGS:-}
+# Network shaping, same conditions and the same discipline as campaign_sweep.sh: applied on the client's eth0, read
+# back rather than trusted to an exit status (tc qdisc del legitimately fails when there is nothing to delete), and
+# cleared by an EXIT trap. A run that starts with netem already on the interface refuses, because silently clearing
+# it would hide that an earlier run died holding the rig shaped.
+NET=${NET:-N0}
 OUT=${OUT:-/tmp/zenoh_cells.txt}
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=10 "ci@$1" "${@:2}"; }
+tc_netem_present() { sh_ "$CLIENT" "tc qdisc show dev eth0" 2>/dev/null | grep -q netem; }
+tc_apply() {
+    case "$1" in
+    N0) sh_ "$CLIENT" "sudo -n tc qdisc del dev eth0 root" >/dev/null 2>&1 || true
+        if tc_netem_present; then
+            echo "FATAL: netem still on $CLIENT eth0 after del - the rig is left shaped" >&2
+            sh_ "$CLIENT" "tc qdisc show dev eth0" >&2 || true
+            return 1
+        fi ;;
+    N1) sh_ "$CLIENT" "sudo -n tc qdisc replace dev eth0 root netem loss 5%" ;;
+    N2) sh_ "$CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay 10ms 2ms" ;;
+    N3) sh_ "$CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay 1ms reorder 5% 50%" ;;
+    *)  echo "unknown network condition $1" >&2; return 1 ;;
+    esac
+}
+tc_describe() {
+    case "$1" in
+    N0) echo "none" ;; N1) echo "loss 5%" ;; N2) echo "delay 10ms jitter 2ms" ;; N3) echo "delay 1ms reorder 5%" ;;
+    esac
+}
 : >"$OUT"
 say() { echo "$*" | tee -a "$OUT"; }
+if [ "$NET" != N0 ] && tc_netem_present; then
+    say "REFUSING TO START: $CLIENT eth0 already has netem on it, so the baseline would not be unshaped."
+    sh_ "$CLIENT" "tc qdisc show dev eth0" | tee -a "$OUT"
+    say "A previous run was probably SIGKILLed. Clear it with: sudo -n tc qdisc del dev eth0 root"
+    exit 1
+fi
+if [ "$NET" != N0 ]; then
+    tc_apply "$NET" || { say "FATAL could not apply $NET"; exit 1; }
+    tc_netem_present || { say "FATAL $NET was applied but no netem is on the interface"; exit 1; }
+fi
+say "  network: $NET ($(tc_describe "$NET"))"
 say "=== zenoh-pico cells $(date -Is) reps=$REPS dur=$DUR scens='$SCENS' sizes='$SIZES' ==="
 
 for SCEN in $SCENS; do
@@ -89,7 +125,18 @@ kill_server() {
 for i in 1 2 3 4 5; do [ -d /proc/$srv_pid ] || break; sleep 1; done; true" </dev/null >/dev/null
     srv_pid=""
 }
-trap kill_server EXIT
+# ONE EXIT trap for the whole script. bash REPLACES an EXIT handler rather than appending to it, so when this
+# `trap kill_server EXIT` was added below a `trap tc_apply N0 EXIT` set earlier, the netem restore was silently
+# discarded and a completed run left the rig shaped at delay 10ms - which would have corrupted every later
+# measurement on it, ours and CI's alike. The next two runs refused to start because of it, which is the only
+# reason it was noticed within the minute. Everything that must happen on the way out happens here.
+on_exit() {
+    kill_server
+    if [ "$NET" != N0 ]; then
+        tc_apply N0 || echo "RIG LEFT SHAPED - clear it before any further measurement" >&2
+    fi
+}
+trap on_exit EXIT
 
 for SCEN in $SCENS; do
   for SIZE in $SIZES; do
@@ -115,10 +162,10 @@ for SCEN in $SCENS; do
         srv_pid=$(sh_ "$SERVER" "cd ~/tickle/examples/perf_hil/zenohpico/${SCEN}_${SIZE} && rm -f /tmp/zrc_server.pid
 (setsid sh -c 'echo \$\$ > /tmp/zrc_server.pid; exec env $SRV_ENV taskset -c 1-3 stdbuf -oL ./server -d $SRV_DUR' > /tmp/zrc_server.log 2>&1 < /dev/null &); sleep 2; cat /tmp/zrc_server.pid" </dev/null)
         cline=$(sh_ "$CLIENT" "cd ~/tickle/examples/perf_hil/zenohpico/${SCEN}_${SIZE} && env $CLI_ENV taskset -c 1-3 stdbuf -oL ./client -d $DUR $CLI_ARGS 2>&1 | grep '^RESULT'" </dev/null)
-        [ -n "$cline" ] && say "scen=$SCEN size=$SIZE rep$r $cline"
+        [ -n "$cline" ] && say "scen=$SCEN size=$SIZE net=$NET rep$r $cline"
         kill_server
         sline=$(sh_ "$SERVER" "grep '^RESULT' /tmp/zrc_server.log | tail -1" </dev/null)
-        [ -n "$sline" ] && say "scen=$SCEN size=$SIZE rep$r $sline"
+        [ -n "$sline" ] && say "scen=$SCEN size=$SIZE net=$NET rep$r $sline"
         say "  $SCEN $SIZE rep$r client sent=$(printf '%s' "$cline" | grep -oE 'sent=[0-9]+' | cut -d= -f2) server received=$(printf '%s' "$sline" | grep -oE 'received=[0-9]+' | cut -d= -f2)"
     done
   done
@@ -133,10 +180,11 @@ import re, sys, math, collections, statistics as st
 # entirely healthy on the client side with received=0 on the server.
 cli, srv = {}, {}
 for line in open(sys.argv[1]):
-    m = re.match(r"scen=(\S+) size=(\S+) rep(\d+) (RESULT:.*)", line.strip())
+    m = re.match(r"scen=(\S+) size=(\S+) net=(\S+) rep(\d+) (RESULT:.*)", line.strip())
     if not m:
         continue
-    scen, rep, rest = "%s %s" % (m.group(1), m.group(2)), int(m.group(3)), m.group(4)
+    scen = "%s %s %s" % (m.group(1), m.group(2), m.group(3))
+    rep, rest = int(m.group(4)), m.group(5)
     f = dict(kv.split("=", 1) for kv in rest.split() if "=" in kv)
     (cli if f.get("role") == "client" else srv)[(scen, rep)] = f
 

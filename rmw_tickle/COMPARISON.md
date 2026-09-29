@@ -161,8 +161,8 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 2 | RTT max (tail) | P1 76 B | ✅ **0.270** | 0.604 | ❌ 0.720 | 0.363 | A |
 | 3 | RTT mean | P2 1292 B | ✅ **0.233** | 0.316 | ❌ 0.376 | 0.247 | A |
 | 4 | RTT max (tail) | P2 1292 B | ✅ **0.349** | 0.634 | ❌ 10.8 | 0.428 | A |
-| 5 | RTT mean | +10 ms netem | ⚪ 10.1 | ⚪ 10.4 | ⚪ 10.5 | – | A |
-| 6 | RTT max (tail) | +10 ms netem | ✅ **12.2** | 12.3 | ❌ 23.1 | – | A |
+| 5 | RTT mean | +10 ms netem | ⚪ 10.1 | ⚪ 10.4 | ⚪ 10.5 | 10.07 | A |
+| 6 | RTT max (tail) | +10 ms netem | ✅ **12.2** | 12.3 | ❌ 23.1 | 12.15 | A |
 | | **[Throughput](#22-throughput)** (Mbps) | | | | |  | |
 | 7 | RELIABLE | P1 76 B | ✅ **115** | ❌ 40.8 | 93.0 | 236.8 † | A |
 | 8 | RELIABLE | P2 1292 B | ✅ **937** | ❌ 647 | 851 | ✗ † | A |
@@ -170,37 +170,37 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 10 | RELIABLE | P4 2800 B | ✅ **943** | ❌ 635 | 863 | ✗ † | T |
 | 11 | BEST_EFFORT | P1, max rate | ✅ **119** | ❌ 47.9 | 71.7 | 53.4 | A |
 | 12 | RELIABLE KEEP_LAST 64 | P1 | ✅ **117** | ❌ 41.9 | 89.3 | – | A |
-| 13 | RELIABLE | P1, **5% loss** | ✅ **106** | 6.6 | ❌ 3.1 | – | A |
-| 14 | RELIABLE | P4, **5% loss** | ✅ **854** | 214 | ❌ 11.8 | – | T |
-| 15 | RELIABLE | P1, 5% reorder | ✅ **104** | ❌ 32.2 | 67.4 | – | A |
+| 13 | RELIABLE | P1, **5% loss** | ✅ **106** | 6.6 | ❌ 3.1 | ✗ † | A |
+| 14 | RELIABLE | P4, **5% loss** | ✅ **854** | 214 | ❌ 11.8 | ✗ † | T |
+| 15 | RELIABLE | P1, 5% reorder | ✅ **104** | ❌ 32.2 | 67.4 | ✗ † | A |
 | 16 | retention under loss | P1: 5% loss / unshaped | ✅ **92.7%** | 16.1% | ❌ 3.3% | – | A |
 | 17 | retention under loss | P4: 5% loss / unshaped | ✅ **90.5%** | 33.7% | ❌ 1.4% | – | T |
 | | **[CPU](#23-cpu)** (cpu_s / Msample) | | | | |  | |
 | 18 | throughput, client | P1 76 B | ✅ **5.3** | ❌ 19.0 | 6.9 | 2.57 † | A |
-| 19 | throughput, server | P1 76 B | ✅ **2.5** | ❌ 19.2 | 11.0 | – | A |
-| 20 | throughput, client | P2 1292 B | ✅ **6.5** | ❌ 19.3 | 8.5 | – | A |
-| 21 | throughput, server | P2 1292 B | ✅ **3.8** | ❌ 20.2 | 14.5 | – | A |
-| 22 | throughput, client | P4 2800 B | ✅ **12.2** | ❌ 38.7 | 14.1 | – | T |
-| 23 | throughput, server | P4 2800 B | ✅ **8.2** | ❌ 33.5 | 19.6 | – | T |
+| 19 | throughput, server | P1 76 B | ✅ **2.5** | ❌ 19.2 | 11.0 | 1.42 † | A |
+| 20 | throughput, client | P2 1292 B | ✅ **6.5** | ❌ 19.3 | 8.5 | ✗ † | A |
+| 21 | throughput, server | P2 1292 B | ✅ **3.8** | ❌ 20.2 | 14.5 | ✗ † | A |
+| 22 | throughput, client | P4 2800 B | ✅ **12.2** | ❌ 38.7 | 14.1 | ✗ † | T |
+| 23 | throughput, server | P4 2800 B | ✅ **8.2** | ❌ 33.5 | 19.6 | ✗ † | T |
 | 24 | latency | P1 76 B | ✅ **155** | ❌ 356 | 237 | 121.1 | A |
 | 25 | latency | P2 1292 B | ✅ **135** | ❌ 393 | 239 | 144.6 | A |
-| 26 | throughput, client | P1, 5% loss | ✅ **5.7** | ❌ 27.6 | 12.9 | – | A |
-| 27 | throughput, client | P4, 5% loss | ✅ **14.4** | ❌ 63.5 | 43.0 | – | T |
+| 26 | throughput, client | P1, 5% loss | ✅ **5.7** | ❌ 27.6 | 12.9 | ✗ † | A |
+| 27 | throughput, client | P4, 5% loss | ✅ **14.4** | ❌ 63.5 | 43.0 | ✗ † | T |
 | | **[Memory](#24-memory)** (peak RSS, KB) | | | | |  | |
 | 28 | throughput, client | P1 76 B | ✅ **1,916** | ❌ 15,904 | 5,232 | 2,127 † | A |
-| 29 | throughput, client | P2 1292 B | ✅ **2,196** | ❌ 15,048 | 6,400 | – | A |
-| 30 | throughput, client | P4 2800 B | ✅ **2,268** | ❌ 13,976 | 5,572 | – | T |
+| 29 | throughput, client | P2 1292 B | ✅ **2,196** | ❌ 15,048 | 6,400 | ✗ † | A |
+| 30 | throughput, client | P4 2800 B | ✅ **2,268** | ❌ 13,976 | 5,572 | ✗ † | T |
 | 31 | latency, client | P1 76 B | ✅ **1,660** | ❌ 14,340 | 4,836 | 2,135 | A |
-| 32 | throughput, server | P1 76 B | ✅ **1,828** | ❌ 14,332 | 4,888 | – | A |
-| 33 | throughput, server | P4 2800 B | ✅ **2,848** | ❌ 13,992 | 4,900 | – | T |
-| 34 | throughput, server | P4, 5% loss | ✅ **2,848** | ❌ 14,332 | 6,400 | – | T |
+| 32 | throughput, server | P1 76 B | ✅ **1,828** | ❌ 14,332 | 4,888 | 2,127 † | A |
+| 33 | throughput, server | P4 2800 B | ✅ **2,848** | ❌ 13,992 | 4,900 | ✗ † | T |
+| 34 | throughput, server | P4, 5% loss | ✅ **2,848** | ❌ 14,332 | 6,400 | ✗ † | T |
 | | **[Bandwidth](#25-bandwidth)** (wire B / sample) | | | | |  | |
 | 35 | wire bytes | P1 76 B | ✅ **138** | ❌ 286 | 180 | 93.6 † | A |
-| 36 | wire bytes | P2 1292 B | ✅ **1,355** | ❌ 1,502 | 1,397 | – | A |
-| 37 | wire bytes | P3 1424 B | ✅ **1,487** | ❌ 1,865 | 1,585 | – | T |
-| 38 | wire bytes | P4 2800 B | ✅ **2,921** | ❌ 3,460 | 2,950 | – | T |
-| 39 | wire bytes | P1, 5% loss | ✅ **143** | ❌ 287 | 194 | – | A |
-| 40 | wire bytes | P4, 5% loss | ✅ **3,041** | ❌ 4,384 | 3,230 | – | T |
+| 36 | wire bytes | P2 1292 B | ✅ **1,355** | ❌ 1,502 | 1,397 | ✗ † | A |
+| 37 | wire bytes | P3 1424 B | ✅ **1,487** | ❌ 1,865 | 1,585 | ✗ † | T |
+| 38 | wire bytes | P4 2800 B | ✅ **2,921** | ❌ 3,460 | 2,950 | ✗ † | T |
+| 39 | wire bytes | P1, 5% loss | ✅ **143** | ❌ 287 | 194 | ✗ † | A |
+| 40 | wire bytes | P4, 5% loss | ✅ **3,041** | ❌ 4,384 | 3,230 | ✗ † | T |
 | 41 | framing overhead | single datagram | ✅ **62.1** | ❌ 210.3 | 104.2 | – | A |
 | | **[QoS mechanics](#26-qos-mechanics)** | | | | |  | |
 | 42 | DURABILITY late join | durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | – | S |
@@ -1894,6 +1894,37 @@ row in the master table for the other three, so they live here rather than as ro
 | p2 1292 B | 867.28 +- 3.46 | 16.358 | 2,129 | 1,356.0 | 1.000 | 0.000 |
 | p3 1424 B | 940.60 +- 0.29 | 16.545 | 2,132 | 1,487.9 | 1.000 | 0.000 |
 | p4 2800 B | 944.72 +- 0.46 | 32.642 | 2,132 | 2,910.8 | 2.000 | 0.000 |
+
+**Under shaping** (`results/zenoh_zn_N*_8673ab4d_2026-09-29.txt`, same netem conditions as the campaign, applied to
+the client's eth0 and read back rather than trusted, 3 reps each). Every row states the condition it ran under; a row
+that did not would be void:
+
+| condition | cell | result |
+|---|---|---|
+| delay 10 ms +- 2 ms | latency P1, multicast | RTT mean **10.070 +- 0.030** ms, max 12.145, loss 0 |
+| delay 10 ms +- 2 ms | latency P1, TCP | RTT mean 10.278 +- 0.112 ms, max 12.208, loss 0 |
+| loss 5% | best-effort p1 | 52.97 +- 0.13 Mbps, **loss 5.019 +- 0.034%** |
+| loss 5% | reliable p1, TCP | all three reps VOID - the session died as it does unshaped above p1 |
+| delay 1 ms + reorder 5% | best-effort p1 | 45.06 +- 0.04 Mbps, loss 0.095 +- 0.030% |
+
+**The loss row is the one worth reading.** zenoh-pico's best-effort arm loses 5.019% against 5% injected - it delivers
+exactly what the network leaves and repairs nothing, which is what its own source says. Its throughput barely moves
+(52.97 against 53.40 unshaped, 99.2% retained) **because dropping is free**; TickLE's 92.7% retention on the
+comparable RELIABLE cell is the cost of getting the other 5% back. The two numbers look similar and mean opposite
+things, which is exactly why the loss cells have no counterpart in it and are marked rather than scored. Its TCP arm,
+which would repair, does not survive the cell at all.
+
+**Subscriber-side cost, from the same runs** (the master table's server rows). Only the cells whose publisher row
+survived are reported: the reliable p2/p3/p4 subscribers show 539-858 CPU s/Msample, which is not a measurement of
+anything except a session that died after a few hundred samples, so they are `✗` there as on the publisher side.
+
+| cell | transport | server CPU s/Msample | server peak RSS kB |
+|---|---|---:|---:|
+| p1 76 B | TCP | 1.418 | 2,127 |
+| p1 76 B | UDP multicast | 4.103 | 2,127 |
+| p2 1292 B | UDP multicast | 4.280 | 2,133 |
+| p3 1424 B | UDP multicast | 4.337 | 2,135 |
+| p4 2800 B | UDP multicast | 8.687 | 2,139 |
 
 **Its latency cells, 100 round trips each, 3 reps, one ping in flight at a time** (`results/zenoh_latency_*`). Both
 transports were measured, and they agree to within a few microseconds - which is the expected answer at this rate,
