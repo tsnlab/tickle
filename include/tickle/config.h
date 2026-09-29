@@ -414,6 +414,54 @@
 // tt_MAX_BUFFER_LENGTH (rmw_tickle, to 65507) gets it too: its samples then fragment at the control
 // datagram, while service requests and responses, which do not fragment, keep the large datagram.
 // -Dtt_FRAG_ENABLED=0 keeps such a build on the OS's IP fragmentation instead - the benchmark's ipfrag arm.
+// SHM_PLAN.md stage 1: the shared-memory segment's own capacity, as a byte budget with the slot
+// count derived - the idiom g13's reader queue already uses, because it is the bound that stays
+// meaningful when the datagram size changes underneath it.
+//
+// A slot holds one datagram, not one sample, and it is sized by tt_CONTROL_MAX_LENGTH rather than
+// by tt_MAX_BUFFER_LENGTH. Those differ where it matters: an rmw build raises the buffer to 65507
+// while its topics still fragment at the control datagram, so sizing slots by the buffer would make
+// a 64-slot ring 4.2 MB against 94 KB in a native build - most of the peak-RSS margin rmw_tickle
+// wins on, spent on slack in slots that never fill.
+//
+// The cost of that choice, stated because it is a real scope limit and not an oversight: **service
+// requests and responses do not fragment** (see tt_MAX_SAMPLE_LENGTH below and valid_msg_size() in
+// tickle.c), so a service message larger than a slot goes over UDP. That is deliberate, it is
+// counted rather than silent (struct tt_Context.segment_oversized_to_udp), and S2 expects `udp` for
+// such a shape by design. The fix if measurement ever asks for it is variable-length records
+// spanning contiguous slots, which is not stage 1: complexity added before a measurement asks for
+// it cannot be attributed to anything.
+#ifndef tt_SEGMENT_BYTES
+#define tt_SEGMENT_BYTES (512 * 1024)
+#endif
+#define tt_SEGMENT_SLOT_BYTES tt_CONTROL_MAX_LENGTH
+// 8 bytes of per-slot header (struct tt_SegmentSlot) - spelled out rather than sizeof() because
+// this has to be a preprocessor constant.
+#define tt_SEGMENT_SLOT_STRIDE (8 + tt_SEGMENT_SLOT_BYTES)
+#define tt_SEGMENT_RAW_SLOTS (tt_SEGMENT_BYTES / tt_SEGMENT_SLOT_STRIDE)
+
+// Rounded down to a power of two so the ring indexes with a mask, by an explicit ladder rather than
+// preprocessor arithmetic - the value is worth being able to read off the page.
+#if tt_SEGMENT_RAW_SLOTS >= 1024
+#define tt_SEGMENT_SLOTS 1024
+#elif tt_SEGMENT_RAW_SLOTS >= 512
+#define tt_SEGMENT_SLOTS 512
+#elif tt_SEGMENT_RAW_SLOTS >= 256
+#define tt_SEGMENT_SLOTS 256
+#elif tt_SEGMENT_RAW_SLOTS >= 128
+#define tt_SEGMENT_SLOTS 128
+#elif tt_SEGMENT_RAW_SLOTS >= 64
+#define tt_SEGMENT_SLOTS 64
+#elif tt_SEGMENT_RAW_SLOTS >= 32
+#define tt_SEGMENT_SLOTS 32
+#elif tt_SEGMENT_RAW_SLOTS >= 16
+#define tt_SEGMENT_SLOTS 16
+#elif tt_SEGMENT_RAW_SLOTS >= 8
+#define tt_SEGMENT_SLOTS 8
+#else
+#define tt_SEGMENT_SLOTS 4
+#endif
+
 #ifndef tt_MAX_SAMPLE_LENGTH
 #define tt_MAX_SAMPLE_LENGTH tt_MAX_BUFFER_LENGTH
 #endif
@@ -783,6 +831,12 @@ static_assert(tt_RELIABLE_BITMAP_MAX_BITS % tt_RELIABLE_BITMAP_WORD_BITS == 0,
 static_assert(tt_RELIABLE_BITMAP_MAX_BITS >= tt_RELIABLE_BITMAP_BITS,
               "tt_RELIABLE_BITMAP_MAX_BITS is the ceiling for tt_RELIABLE_BITMAP_BITS");
 static_assert(tt_ENDPOINT_INDEX_SIZE >= tt_MAX_ENDPOINT_COUNT, "the endpoint index must have room for every endpoint");
+// Structural, not a performance depth: a ring of fewer than four slots cannot usefully separate a
+// writer from a reader at all. The depth stage 1 actually needs is a measured criterion (about one
+// poll period of output - roughly 25 datagrams at the 4.1 us a datagram S2 measured), and asserting
+// that here would break the `ipfrag` diagnostic arm, which legitimately overrides
+// tt_CONTROL_MAX_LENGTH upwards and must still build.
+static_assert(tt_SEGMENT_RAW_SLOTS >= 4, "tt_SEGMENT_BYTES is too small to hold four datagram slots");
 static_assert(tt_MAX_BUFFER_LENGTH <= tt_IPV4_UDP_MAX_PAYLOAD,
               "tt_MAX_BUFFER_LENGTH above 65507 cannot be one IPv4 UDP datagram, and "
               "the protocol's uint16 lengths could not describe it either");

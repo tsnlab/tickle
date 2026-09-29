@@ -523,6 +523,17 @@ struct tt_Context {
     // enum for why the reason is kept rather than a yes/no: every failure here falls back to UDP
     // and works, so a module that never attaches anywhere is invisible without it.
     uint32_t segment_attach[tt_SEGMENT_ATTACH_COUNT];
+    // Datagrams that went over UDP although the segment was working, because they were larger than a
+    // slot - a service request or response, which do not fragment (config.h's tt_SEGMENT_BYTES).
+    // Kept apart from segment_attach[] deliberately: "this datagram was not for the segment" and
+    // "the segment could not be attached" are different events, and one number for both would cost
+    // exactly the distinction the attach reasons were added for. A row carrying this and an empty
+    // attach table says the module is working and this shape is out of its scope.
+    uint64_t segment_oversized_to_udp;
+    // Datagrams that went over UDP because no segment could be attached for that peer. The pair to
+    // the above: same outcome on the wire, different cause, and only the pair distinguishes a
+    // module doing its job from one that never attaches anywhere.
+    uint64_t segment_unattached_to_udp;
     uint64_t summaries_skipped; // short-lease summaries not sent: the node's traffic had reached every peer
     uint64_t summaries_ridden;  // once-a-second summaries sent just ahead of a data send
     uint64_t rx_datagrams;

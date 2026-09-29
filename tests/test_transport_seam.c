@@ -218,6 +218,8 @@ static void test_reset_zeroes_the_per_transport_counters(void) {
     for (int reason = 0; reason < tt_SEGMENT_ATTACH_COUNT; reason++) {
         EXPECT_EQ_U32(0, node.segment_attach[reason]); // added later than the pair above, same trap
     }
+    EXPECT_EQ_U32(0, (uint32_t)node.segment_oversized_to_udp);
+    EXPECT_EQ_U32(0, (uint32_t)node.segment_unattached_to_udp);
     EXPECT_EQ_U32(0, (uint32_t)node.tx_datagrams); // the scalar they must stay beside
     EXPECT_EQ_U32(0, (uint32_t)node.rx_datagrams);
 }

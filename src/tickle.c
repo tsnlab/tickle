@@ -2447,6 +2447,8 @@ static void reset_node_state(struct tt_Context* node) {
     for (int reason = 0; reason < tt_SEGMENT_ATTACH_COUNT; reason++) {
         node->segment_attach[reason] = 0;
     }
+    node->segment_oversized_to_udp = 0;
+    node->segment_unattached_to_udp = 0;
     node->summaries_skipped = 0;
     node->summaries_ridden = 0;
     node->tx_dropped_oversize = 0;
