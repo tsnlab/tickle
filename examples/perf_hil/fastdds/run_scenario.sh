@@ -14,8 +14,11 @@ shift
 CLIENT_ARGS="${*:--i 0.1 -d 10}"
 
 SSH_KEY="$HOME/.ssh/tickle_ci_ed25519"
-RPI_CLIENT="10.1.1.214"
-RPI_SERVER="10.1.1.213"
+# Overridable so a same-host cell can put both processes on one Pi (SHM_PLAN.md's S6: the campaign has only cross-host
+# cells, and the shared-memory module's whole case is the same-host tier). Defaults unchanged, so every existing cell runs
+# exactly as before.
+RPI_CLIENT="${RPI_CLIENT:-10.1.1.214}"
+RPI_SERVER="${RPI_SERVER:-10.1.1.213}"
 LIB_PATH="/opt/ros/jazzy/lib"
 # Pins FastDDS to the eth0 test link, where tc applies - see fastdds_eth0_only.xml's header.
 # FASTDDS_PROFILE picks the XML profile (2026-09-26): fastdds_eth0_only.xml is FastDDS as shipped apart

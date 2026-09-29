@@ -17,8 +17,20 @@
 #     - PASS needs tx_shm == 0 and tx_udp > 0 on both shapes. That is a real assertion about the seam being wired
 #       without changing behaviour, and it is what proves the counters work BEFORE anything depends on them.
 #   EXPECT=shm (stage 1 onwards):
-#     - PASS needs tx_udp == 0 and tx_shm > 0 on EACH shape. A shape that still shows udp is the partial-seam failure
-#       this script exists to catch, and it is reported by name rather than as a total.
+#     - PASS needs tx_shm > 0 AND every remaining UDP datagram accounted for by a named reason:
+#       tx_udp == segment_broadcast_to_udp + segment_oversize_to_udp + segment_unattached_to_udp + segment_full_to_udp.
+#     - NOT tx_udp == 0, which is unachievable and was wrong in the first version of this script. A segment carries
+#       unicast datagrams to a known peer: the name is computed from that peer's (address, port, context id), so a
+#       broadcast destination has no name to compute and cannot go over a segment even in principle. Announces and
+#       summaries are broadcast, so a running context always has some tx_udp (found by Dev, 2026-09-29, before the first
+#       run rather than in it).
+#     - The repair is an exact assertion rather than a weaker one. "tx_udp small and flat" would need a threshold
+#       nobody can derive; "every UDP datagram has a named reason" needs none, and it is strictly stronger - it fails on
+#       an UNEXPLAINED fallback, which is the most valuable failure this script could report and the one a threshold
+#       would hide. A shape that did not go over the segment then shows up as a large unexplained remainder, which is
+#       the partial-seam signature in its exact form.
+#     - If the RESULT line carries no by-reason counters, the shape is VOID and says so: the assertion cannot be made,
+#       and a pass that skipped it would be the thing this whole script exists to prevent.
 #   Always, whatever EXPECT is:
 #     - the external control: tx_udp + tx_shm against wire_tx_packets, the kernel's own /proc/net/dev count for the
 #       interface. They agreed within 2 packets on a 947k-datagram run. A drift beyond the tolerance below means a seam
@@ -170,11 +182,22 @@ for shape in $SHAPES; do
             fi
             ;;
         shm)
-            if [ "$tx_udp" = 0 ] && [ "$tx_shm" -gt 0 ]; then
-                say "$shape: PASS(sample_path=$path sent=$sent tx_shm=$tx_shm tx_udp=0 wire=$wire drift=$drift)"
-            else
-                say "$shape: FAIL(this shape did not go over the segment: tx_udp=$tx_udp tx_shm=$tx_shm)"
+            named=0; missing=0
+            for reason in segment_broadcast_to_udp segment_oversize_to_udp segment_unattached_to_udp segment_full_to_udp; do
+                reason_count=$(field "$line" "$reason")
+                if [ -z "${reason_count:-}" ]; then missing=1; else named=$((named + reason_count)); fi
+            done
+            if [ "$missing" = 1 ]; then
+                say "$shape: VOID(the RESULT line carries no by-reason fallback counters - the assertion cannot be made)"
                 fails=$((fails + 1))
+            elif [ "$tx_shm" -le 0 ]; then
+                say "$shape: FAIL(nothing went over the segment: tx_shm=0 tx_udp=$tx_udp)"
+                fails=$((fails + 1))
+            elif [ "$tx_udp" != "$named" ]; then
+                say "$shape: FAIL(unexplained fallback: tx_udp=$tx_udp against $named accounted for by named reasons)"
+                fails=$((fails + 1))
+            else
+                say "$shape: PASS(sample_path=$path sent=$sent tx_shm=$tx_shm tx_udp=$tx_udp all named)"
             fi
             ;;
         *) say "FATAL EXPECT must be udp or shm"; exit 1 ;;

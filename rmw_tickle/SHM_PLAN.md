@@ -263,6 +263,29 @@ test: a first run of the native harness gave `tx_udp=946982` against `wire_tx_pa
 packets. A seam counter that drifts from the interface is then caught by any row rather than by remembering to check -
 which matters because the alternative was trusting the counters that S2's whole verdict rests on.
 
+**S2's assertion corrected 2026-09-29, before its first real run rather than in it.** `tx_udp == 0` is unachievable and
+was wrong as written. A segment carries **unicast datagrams to a known peer** - the name is computed from that peer's
+(address, port, context id) - so a **broadcast destination has no name to compute and cannot go over a segment even in
+principle**. Announces and summaries are broadcast, so a running context always has some `tx_udp` (Dev's finding, made
+before the run).
+
+The repair is an **exact** assertion rather than a weaker one:
+
+> `tx_shm > 0`, **and** `tx_udp` equals the sum of the by-reason fallback counters -
+> `segment_broadcast_to_udp + segment_oversize_to_udp + segment_unattached_to_udp + segment_full_to_udp`.
+
+"tx_udp small and flat" would need a threshold nobody can derive. "Every UDP datagram has a named reason" needs none and
+is **strictly stronger**: it fails on an *unexplained* fallback, which is the most valuable failure this test could
+report and exactly what a threshold would hide. A shape that did not go over the segment then appears as a large
+unexplained remainder - the partial-seam signature in its exact form. And when the RESULT line carries no by-reason
+counters the shape is **VOID and says so**, because a pass that skipped the assertion is the thing this script exists to
+prevent.
+
+**That also fixes the number of fallback counters at four, one per cause**, which is the same argument as keeping
+oversized and unattached apart, extended: *full* is a sizing signal, *unattached* a discovery signal, *oversized* a scope
+signal, and *broadcast* a by-design signal. One counter for all four would say only "something fell back", and the
+assertion above would have nothing to check against.
+
 The assertion is then exact rather than interpretive: for a same-host pair, `udp_sent == 0` for the shape under test,
 **checked per shape** - one payload that fits a datagram, one that fragments, and a request/reply so `tt_send_to` is on
 the list - rather than once for the run. The partial-seam case fails it, which is the only reason the test exists.
