@@ -256,8 +256,24 @@ struct tt_SegmentHeader {
 // header->slot_bytes of payload capacity whatever the datagram's length.
 struct tt_SegmentSlot {
     uint32_t length;
-    uint32_t reserved;
+    // Who sent it. A socket arrival carries this from recvfrom(), and the acceptance path uses it
+    // for more than diagnostics - discovery learns where a peer lives from the address its announce
+    // arrived on. A record without it forces the reader to invent one, and a peer learned from an
+    // invented address is recorded at that address and can never be reached again: it was 0.0.0.0:0
+    // here, which made every later send to that peer fall out of the unicast path entirely.
+    //
+    // So the rule the slot enforces is that a record carries what the datagram would have carried at
+    // the socket. Attribution being right - the arrival counted as shm - is not enough if a value
+    // inside it means the wrong thing.
+    uint32_t sender_ip;
+    uint16_t sender_port;
+    uint16_t reserved;
 };
+// config.h cannot use sizeof(), so it spells the stride as a literal; this is where the two are
+// held together. Nothing else would notice them drifting apart, and the symptom would be a reader
+// indexing slots at a different pitch from the writer - every record after the first one wrong.
+static_assert(tt_SEGMENT_SLOT_STRIDE == sizeof(struct tt_SegmentSlot) + tt_SEGMENT_SLOT_BYTES,
+              "tt_SEGMENT_SLOT_STRIDE must match struct tt_SegmentSlot");
 
 // Why an attach failed. Counted rather than collapsed into a boolean because all of these fall back
 // to UDP safely and therefore look identical from outside - which means a module that is

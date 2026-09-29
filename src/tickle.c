@@ -535,7 +535,8 @@ static size_t segment_bytes(uint32_t slots, uint32_t slot_bytes) {
 // One datagram into the ring. False when it will not fit the slot, or when the ring is full - both
 // leave the ring untouched and both mean "send this over UDP instead", which is the module's own
 // documented failure mode rather than an error.
-static bool segment_write(struct tt_SegmentHeader* header, const void* buf, uint32_t len) {
+static bool segment_write(struct tt_SegmentHeader* header, const void* buf, uint32_t len, uint32_t sender_ip,
+                          uint16_t sender_port) {
     if (len > header->slot_bytes) {
         return false;
     }
@@ -549,6 +550,8 @@ static bool segment_write(struct tt_SegmentHeader* header, const void* buf, uint
     struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)slot;
     memcpy(slot + sizeof(*slot_header), buf, len);
     slot_header->length = len;
+    slot_header->sender_ip = sender_ip;
+    slot_header->sender_port = sender_port;
     slot_header->reserved = 0;
     // Release: the payload and the length above must be visible before the index that publishes
     // them, or a reader can see a slot it is entitled to read and find the previous datagram in it.
@@ -559,7 +562,8 @@ static bool segment_write(struct tt_SegmentHeader* header, const void* buf, uint
 // One datagram out of the ring, copied (stage 1 copies on arrival; lending is stage 2). False when
 // the ring is empty. `size` is the caller's buffer, and a record larger than it is refused rather
 // than truncated - a truncated datagram would be handed to the acceptance path as if it were whole.
-static bool segment_read(struct tt_SegmentHeader* header, void* buf, uint32_t size, uint32_t* len) {
+static bool segment_read(struct tt_SegmentHeader* header, void* buf, uint32_t size, uint32_t* len, uint32_t* sender_ip,
+                         uint16_t* sender_port) {
     uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_RELAXED); // ours to move
     uint32_t write_index = __atomic_load_n(&header->write_index, __ATOMIC_ACQUIRE);
     if (write_index == read_index) {
@@ -578,6 +582,8 @@ static bool segment_read(struct tt_SegmentHeader* header, void* buf, uint32_t si
     }
     memcpy(buf, slot + sizeof(*slot_header), length);
     *len = length;
+    *sender_ip = slot_header->sender_ip;
+    *sender_port = slot_header->sender_port;
     // Release only after the copy: this is what makes the no-reuse rule enforceable from the
     // writer's side, because until this store the writer still counts the slot as in flight.
     __atomic_store_n(&header->read_index, read_index + 1U, __ATOMIC_RELEASE);
@@ -776,7 +782,10 @@ static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_
     if (body_len != 0) {
         memcpy(datagram + hdr_len, body, body_len);
     }
-    if (!segment_write(segment, datagram, (uint32_t)total)) {
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(node, &own_ip, &own_port);
+    if (!segment_write(segment, datagram, (uint32_t)total, own_ip, own_port)) {
         *reason = UDP_BECAUSE_FULL;
         return false;
     }
@@ -10373,13 +10382,16 @@ static void drain_own_segment(struct tt_Context* node) {
     }
     for (uint32_t drained = 0; drained < tt_SEGMENT_DRAIN_PER_POLL; drained++) {
         uint32_t len = 0;
-        if (!segment_read(node->own_segment, node->rx_buffer, (uint32_t)sizeof(node->rx_buffer), &len)) {
+        uint32_t sender_ip = 0;
+        uint16_t sender_port = 0;
+        if (!segment_read(node->own_segment, node->rx_buffer, (uint32_t)sizeof(node->rx_buffer), &len, &sender_ip,
+                          &sender_port)) {
             return; // empty, or a record this mapping could not hold - segment_read() counts that
         }
-        // The sender's address is not carried in the record: a segment is point to point by
-        // construction, so "who sent this" is the peer whose segment this is - and the datagram's
-        // own header carries the context id the acceptance path actually uses.
-        (void)process_datagram_locked(node, (int32_t)len, 0, 0, tt_TRANSPORT_SHM);
+        // The sender's own address, carried in the record. Not invented here and not inferred from
+        // whose segment this is: several peers write into one segment, and discovery learns where a
+        // peer lives from the address its announce arrived on.
+        (void)process_datagram_locked(node, (int32_t)len, sender_ip, sender_port, tt_TRANSPORT_SHM);
     }
 }
 #endif

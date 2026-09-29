@@ -151,7 +151,14 @@ for shape in $SHAPES; do
         say "$shape: VOID($alive of our servers alive, expected 1 - a previous shape's server survived)"
         fails=$((fails + 1)); continue
     fi
-    line=$(sudo -n ip netns exec "$NS1" setpriv --reuid="$OUR_UID" --regid="$OUR_GID" --clear-groups env BENCH_IFACE="$IF1" "$d/client" -Q -d "$DUR" 2>&1 | grep '^RESULT')
+    # The client's output is kept, not only its RESULT line. The publisher lives on this side, so
+    # its diagnostics - "Publisher peer registered" above all - are what distinguish "the segment
+    # was not attached" from "this datagram was never a segment candidate", and piping straight into
+    # grep threw away the half of the evidence the by-reason counters point at.
+    # shellcheck disable=SC2024 # the redirect is this user's, which is what is wanted: the log is ours, not root's
+    sudo -n ip netns exec "$NS1" setpriv --reuid="$OUR_UID" --regid="$OUR_GID" --clear-groups env \
+        BENCH_IFACE="$IF1" "$d/client" -Q -d "$DUR" >"/tmp/shmid_cli_$shape.log" 2>&1
+    line=$(grep '^RESULT' "/tmp/shmid_cli_$shape.log")
     sent=$(field "$line" sent)
     tx_udp=$(field "$line" tx_udp); tx_shm=$(field "$line" tx_shm)
     wire=$(field "$line" wire_tx_packets)

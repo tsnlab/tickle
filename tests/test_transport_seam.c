@@ -334,19 +334,21 @@ static void test_ring_round_trips_a_datagram(void) {
 
     uint8_t out[RING_SLOT_BYTES];
     uint32_t len = 0;
-    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len)); // empty to begin with
+    uint32_t from_ip = 0;
+    uint16_t from_port = 0;
+    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port)); // empty to begin with
 
     const char* payload = "a datagram";
-    EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1));
-    EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len));
+    EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1, OWNER_IP, OWNER_PORT));
+    EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port));
     EXPECT_EQ_U32((uint32_t)strlen(payload) + 1, len);
     EXPECT_EQ_INT(0, strcmp(payload, (const char*)out));
-    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len)); // and empty again
+    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port)); // and empty again
 
     // More than a slot holds is refused rather than written short.
     uint8_t oversize[RING_SLOT_BYTES + 1];
     memset(oversize, 'x', sizeof(oversize));
-    EXPECT_TRUE(!segment_write(ring, oversize, (uint32_t)sizeof(oversize)));
+    EXPECT_TRUE(!segment_write(ring, oversize, (uint32_t)sizeof(oversize), OWNER_IP, OWNER_PORT));
 }
 
 // The rule whose failure is silent corruption rather than an error: a full ring refuses, it does
@@ -359,13 +361,13 @@ static void test_full_ring_refuses_rather_than_overwriting(void) {
     for (uint32_t i = 0; i < RING_SLOTS; i++) {
         char payload[RING_SLOT_BYTES];
         snprintf(payload, sizeof(payload), "record-%u", i);
-        EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1));
+        EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1, OWNER_IP, OWNER_PORT));
     }
 
     // Full. Several attempts, because a writer that overwrites once per call would still leave the
     // count right after one.
     for (int attempt = 0; attempt < 3; attempt++) {
-        EXPECT_TRUE(!segment_write(ring, "intruder", 9));
+        EXPECT_TRUE(!segment_write(ring, "intruder", 9, OWNER_IP, OWNER_PORT));
     }
 
     // The queued records are the ones written, in order, untouched by the refused writes.
@@ -374,12 +376,14 @@ static void test_full_ring_refuses_rather_than_overwriting(void) {
         snprintf(expected, sizeof(expected), "record-%u", i);
         uint8_t out[RING_SLOT_BYTES];
         uint32_t len = 0;
-        EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len));
+        uint32_t from_ip = 0;
+        uint16_t from_port = 0;
+        EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port));
         EXPECT_EQ_INT(0, strcmp(expected, (const char*)out));
     }
 
     // And a released slot is reusable, or the ring would wedge after one fill.
-    EXPECT_TRUE(segment_write(ring, "after drain", 12));
+    EXPECT_TRUE(segment_write(ring, "after drain", 12, OWNER_IP, OWNER_PORT));
 }
 
 // Free-running indices, so the ring keeps working past the point where they wrap the slot count.
@@ -390,11 +394,13 @@ static void test_ring_survives_many_wraps(void) {
     for (uint32_t i = 0; i < RING_SLOTS * 10U; i++) {
         char payload[RING_SLOT_BYTES];
         snprintf(payload, sizeof(payload), "wrap-%u", i);
-        EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1));
+        EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1, OWNER_IP, OWNER_PORT));
 
         uint8_t out[RING_SLOT_BYTES];
         uint32_t len = 0;
-        EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len));
+        uint32_t from_ip = 0;
+        uint16_t from_port = 0;
+        EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port));
         EXPECT_EQ_INT(0, strcmp(payload, (const char*)out));
     }
 }
@@ -405,15 +411,17 @@ static void test_impossible_length_is_refused_and_does_not_wedge(void) {
     uint8_t storage[4096];
     struct tt_SegmentHeader* ring = make_ring(storage, RING_SLOTS, RING_SLOT_BYTES);
 
-    EXPECT_TRUE(segment_write(ring, "good", 5));
-    EXPECT_TRUE(segment_write(ring, "also good", 10));
+    EXPECT_TRUE(segment_write(ring, "good", 5, OWNER_IP, OWNER_PORT));
+    EXPECT_TRUE(segment_write(ring, "also good", 10, OWNER_IP, OWNER_PORT));
     // Corrupt the first record's length, as a broken writer or a foreign mapping would.
     ((struct tt_SegmentSlot*)segment_slot(ring, 0))->length = RING_SLOT_BYTES + 1000U;
 
     uint8_t out[RING_SLOT_BYTES];
     uint32_t len = 0;
-    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len)); // refused
-    EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len));  // and the ring moved on
+    uint32_t from_ip = 0;
+    uint16_t from_port = 0;
+    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port)); // refused
+    EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port));  // and the ring moved on
     EXPECT_EQ_INT(0, strcmp("also good", (const char*)out));
 }
 
@@ -481,6 +489,11 @@ static void test_a_datagram_crosses_a_segment(void) {
     init_node_topic_pub(&reader, &topic, &pub);
     reader.id = OWNER_ID;
     reader.entity_id_base = OWNER_INCARNATION;
+    // Distinct, non-zero addresses for the two contexts. Without this every address assertion below
+    // compares 0 with 0 and holds no matter what the code does - which is exactly how the first
+    // version of this test passed against a mutant that dropped the sender address entirely.
+    reader.hal.own_ip = OWNER_IP;
+    reader.hal.own_port = OWNER_PORT;
     create_own_segment(&reader);
     EXPECT_TRUE(reader.own_segment != NULL);
     EXPECT_EQ_INT(1, test_mock_segment_creates);
@@ -491,6 +504,8 @@ static void test_a_datagram_crosses_a_segment(void) {
     struct tt_Topic writer_topic;
     struct tt_Publisher writer_pub;
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
+    writer.hal.own_ip = PEER_IP; // different from the reader's, so "whose address is this" is a real question
+    writer.hal.own_port = PEER_PORT;
     uint32_t own_ip = 0;
     uint16_t own_port = 0;
     tt_own_address(&reader, &own_ip, &own_port);
@@ -509,6 +524,27 @@ static void test_a_datagram_crosses_a_segment(void) {
     EXPECT_EQ_U32(1, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
     EXPECT_EQ_U32(0, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_UDP]);
     EXPECT_EQ_INT(1, test_mock_segment_attaches); // and it attached to find it
+
+    // The record carries the writer's own address, which is what a socket arrival would have. This
+    // is asserted here because getting it wrong was invisible to every other check: the arrival was
+    // correctly counted as shm, the totals agreed, and discovery silently recorded the peer at the
+    // invented address 0.0.0.0:0 - after which nothing could ever address it again. The attribution
+    // was right and a value inside it meant the wrong thing.
+    uint32_t record_ip = 0;
+    uint16_t record_port = 0;
+    uint32_t record_len = 0;
+    uint8_t peek[tt_SEGMENT_SLOT_BYTES];
+    struct tt_SegmentHeader* seg = reader.own_segment;
+    uint32_t saved_read = seg->read_index;
+    EXPECT_TRUE(segment_read(seg, peek, (uint32_t)sizeof(peek), &record_len, &record_ip, &record_port));
+    // The WRITER's address, not the reader's - the first version of this compared against the
+    // reader's, which was both the wrong subject and, with both of them zero, an assertion that
+    // could not fail. Non-zero is asserted separately so that zeroing them again is caught even if
+    // some future change makes the two contexts share an address.
+    EXPECT_TRUE(record_ip != 0);
+    EXPECT_EQ_U32(PEER_IP, record_ip);
+    EXPECT_EQ_U32((uint32_t)PEER_PORT, (uint32_t)record_port);
+    seg->read_index = saved_read; // put it back for the drain below, which is what is being tested
 
     // The reader finds it on its own next pass - no notification, by design.
     uint64_t rx_before = reader.rx_datagrams_by_transport[tt_TRANSPORT_SHM];
