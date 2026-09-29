@@ -253,7 +253,23 @@ t_samehost() {
     local got echo_ok=0
     got=$(field "$d/listener.log" received)
     grep -q 'data: msg-' "$d/echo.log" && echo_ok=1
-    if [ "${got:-0}" -ge 50 ] && [ "$echo_ok" = 1 ]; then echo PASS; else echo "FAIL(listener=${got:-0} echo=$echo_ok)"; fi
+    # (SHM_PLAN 6a item 9) WHICH transport carried it, asserted rather than assumed. Two processes on
+    # one host is the one case the shared-memory module exists for, and without this the case passes
+    # identically whether the module carried every sample or none of them - which is exactly how it
+    # went unnoticed that the module was inert in the tsan gate for its whole life.
+    #
+    # rmw_tickle's own traffic line carries rx_shm; CycloneDDS prints nothing of the kind, so this
+    # applies to rmw_tickle alone. An ABSENT line FAILS rather than passes: "the module was not
+    # engaged" and "the instrument was not there" would otherwise look the same, and only one of them
+    # is a finding.
+    local shm=""
+    if [ "$rmw" = rmw_tickle ]; then
+        shm=$(grep -o 'rx_shm=[0-9]*' "$d/listener.log" | tail -1 | cut -d= -f2)
+        if [ -z "$shm" ]; then echo "FAIL(no traffic line in the listener log: transport unknown)"; return; fi
+        if [ "$shm" = 0 ]; then echo "FAIL(listener=${got:-0} echo=$echo_ok rx_shm=0: nothing crossed the segment)"; return; fi
+    fi
+    if [ "${got:-0}" -ge 50 ] && [ "$echo_ok" = 1 ]; then echo "PASS${shm:+ (rx_shm=$shm)}"
+    else echo "FAIL(listener=${got:-0} echo=$echo_ok${shm:+ rx_shm=$shm})"; fi
 }
 t_inprocess() {
     local rmw=$1 d=$OUTDIR/inprocess_$1

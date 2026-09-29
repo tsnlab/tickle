@@ -806,6 +806,54 @@ found it trying to measure the retry's cost: the two arms came out byte-identica
 report rather than concluding the retry was free. All five are guarded now, and the override is verified by
 building with one rather than by reading the header.
 
+**Items 9 and 11 (2026-09-30), and a defect shipped in `f938461e` that only item 11 could find.**
+
+**Item 9** - `t_samehost` now reads `rx_shm` from the listener's own traffic line and fails when it is zero,
+**and fails when the line is absent at all**. The second half is the point: "the module was not engaged" and
+"the instrument was not there" read identically, which is how the tsan gate stayed inert for the module's whole
+life. CycloneDDS prints no such line, so the control is untouched.
+
+**Item 11** - `examples/perf_hil/experiments/segment_reader_kill.sh`: two core processes in a private netns,
+the reader killed with SIGKILL mid-run. It PASSES with the numbers agreeing for the first time:
+
+    shm_gave_up=3                  the writer judged the reader dead and gave the segment up
+    shm_full_dropped=3,380,492     the ring filled and stayed full, nobody draining it
+    tx_udp_broadcast=2,615,288     no peers left, so it broadcast
+    writer progress 8 -> 21 lines, still alive
+    successor reader recv=2,268,247  a fresh reader took the name over
+
+**And it found that the dead-reader rule was unreachable as shipped.** `peer_segment()`'s revalidation memsets
+the cache entry, which cleared `last_progress_ns` - so the clock restarted every `tt_SEGMENT_REVALIDATE_SENDS`
+sends, about seventy times a second on a writer sending three hundred thousand datagrams a second, and could
+never reach one second. **This is the fourth condition in this module that could not decide anything**, and the
+first to reach main. The clock is now carried across a revalidation when the address is unchanged, since a
+revalidation is bookkeeping about the mapping and says nothing about whether the reader is consuming.
+
+Necessity established by control rather than by argument: with the fix reverted, `shm_gave_up=0` and the test
+FAILS; with it, `shm_gave_up=3` and it PASSES.
+
+**Three defects in the test itself, all of which made it report PASS on nothing**, recorded because each is a
+shape this project keeps meeting:
+
+1. **`sudo -n kill -9` never killed anything.** The sudoers rule here covers `ip netns` and nothing else, the
+   reader runs as this user anyway, and the failure went into `2>/dev/null`. Three runs reported on a reader
+   that completed its full forty seconds - the reader's own log said `40.001 sec`. **An action that silently
+   does not happen reads exactly like one that did.** The target's identity is now checked against
+   `/proc/PID/exe` before the kill and its absence after, and either check failing makes the run VOID.
+2. **The verdict started at PASS** and fell through to it whenever a comparison errored - which they did,
+   because `grep -c` prints 0 *and exits 1*, so `|| echo 0` made every count the string `"0\n0"`. It now starts
+   at VOID and is only lowered once every question has answered with a number.
+3. **The assertion "the writer gave the dead peer up" was tested against `tx_udp_unattached`**, which rises for
+   every ordinary reason a peer has no segment. A build whose dead-reader threshold was raised to an hour -
+   which can never abandon anyone - produced 196,962 against the real build's 203,318. The counter that rises
+   only in the abandoning branch is now on the traffic line as `shm_gave_up`, beside `shm_doorbells_sent` and
+   `shm_doorbells_received`.
+
+**A finding from the same run, not yet fixed:** `shm_doorbells_sent=2,853,609`. A reader killed while blocked
+leaves `reader_waiting` set in its own header and nobody clears it, so every writer rings a doorbell - a real
+`sendto()` - for every datagram until it gives the peer up. The give-up now bounds that at about a second, but
+a second at three hundred thousand datagrams a second is still hundreds of thousands of wasted syscalls.
+
 **Still owed:** the p1-p4 numbers against WIRE_PLAN 10.4's floors - **not measurable until Plan re-measures cell 1
 with the fix in**, since anything measured against a build paying 87,000 failed syscalls a second would credit the
 segment for removing an artefact - and items 9 and 11 of section 6a. Item 4 is done (`71e5ca86`).

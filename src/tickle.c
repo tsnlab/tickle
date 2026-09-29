@@ -689,8 +689,21 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
         // report its death. Only asking the name again can, and a peer that never asks writes into
         // a ring nobody drains for as long as it lives. The file at that name is now either gone,
         // the same one, or the successor's, and the attach below answers all three.
+        // The dead-reader clock survives this, and that is the whole of a defect shipped in
+        // f938461e. A revalidation is bookkeeping about the MAPPING; it says nothing about whether
+        // the reader is consuming. Clearing it here - and the entry is recomputed every
+        // tt_SEGMENT_REVALIDATE_SENDS sends - restarted the clock about seventy times a second on a
+        // writer sending three hundred thousand datagrams a second, so it could never reach
+        // tt_SEGMENT_DEAD_READER_NS and the rule was unreachable on every writer that matters.
+        // Measured: a writer against a reader killed with SIGKILL reported shm_gave_up=0 for the
+        // whole run.
+        //
+        // Carried across only when the address is unchanged. A different peer behind this id is a
+        // different relationship and starts its own clock.
+        uint64_t carried_progress = same_address ? entry->last_progress_ns : 0;
         tt_segment_detach(entry->mapping, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
         memset(entry, 0, sizeof(*entry));
+        entry->last_progress_ns = carried_progress;
     }
 
     char path[tt_SEGMENT_PATH_LENGTH];
@@ -721,7 +734,9 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
     entry->port = port;
     entry->incarnation = header->incarnation;
     entry->missing = false;
-    entry->last_progress_ns = 0;
+    // last_progress_ns is NOT cleared here: a fresh entry has it at zero from the memset, and a
+    // re-attach carries the reader's own clock across (above). Setting it here was the other half of
+    // the same defect.
     entry->recheck_in = tt_SEGMENT_REVALIDATE_SENDS;
     return header;
 }
@@ -11183,7 +11198,12 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 // Why each UDP datagram went that way, on the same line as the totals. Without it a
                 // split like tx_udp=6694744 tx_shm=6746571 says only "half and half" and the next
                 // question - which half, and why - needs another run. It cost one on 2026-09-29.
-                "tx_udp_broadcast=%lu tx_udp_oversize=%lu tx_udp_unattached=%lu shm_full_dropped=%lu",
+                "tx_udp_broadcast=%lu tx_udp_oversize=%lu tx_udp_unattached=%lu shm_full_dropped=%lu "
+                // How many peers this context gave up on, and how many doorbells it rang. The first
+                // is the only counter that rises ONLY when a reader was judged dead, and without it
+                // "the writer abandoned the corpse" cannot be told apart from the ordinary reasons
+                // tx_udp_unattached rises - which is a test that cannot fail, found as one.
+                "shm_gave_up=%lu shm_doorbells_sent=%lu shm_doorbells_received=%lu",
                 node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
                 (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
                 (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -11193,7 +11213,9 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_UDP],
                 (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_SHM],
                 (unsigned long)node->segment_broadcast_to_udp, (unsigned long)node->segment_oversized_to_udp,
-                (unsigned long)node->segment_unattached_to_udp, (unsigned long)node->segment_full_dropped);
+                (unsigned long)node->segment_unattached_to_udp, (unsigned long)node->segment_full_dropped,
+                (unsigned long)node->segment_attach[tt_SEGMENT_REFUSED], (unsigned long)node->segment_doorbells_sent,
+                (unsigned long)node->segment_doorbells_received);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads
