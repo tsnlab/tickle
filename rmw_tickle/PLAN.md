@@ -2957,3 +2957,31 @@ longer cut at 3 s. The design and pre-registered measurements are in
 7/8/9 alongside anything → 10 following each milestone as it lands, not saved for the end. 17
 (TickLE core, not `rmw_tickle`) only needs 4 to already exist so its own bridge has something to
 replace, and can proceed independently of 11/15/16's own C++/conformance track.
+
+## Priority: finish the wired work, then Security, then wireless (the user's decision, 2026-09-29)
+
+The user's words: wireless comes later, the wired work is finished first, and **if a priority has to be set between the
+two remaining large pieces, Security comes before wireless.** So `WIRELESS_PLAN.md` stays parked and moves behind
+`SECURITY_PLAN.md` in the queue; `SECURITY_PLAN.md` stays parked too, since the user's standing rule is that it starts
+only on their explicit word - what changed is its position, not its status. **Nothing in either is started.**
+
+### The wired work that remains, in the order it should be done
+
+The ordering is not arbitrary: items 1 to 3 are one piece of machinery seen from three sides, which is why they come
+first and why doing them out of order would mean building the same thing twice.
+
+| # | item | why here | owner |
+|---|---|---|---|
+| 1 | **shared memory, stages 1 and 1a** - the wiring, then notification as its own experiment | in flight; stage 1's claim is throughput and CPU, latency waits for 1a (`SHM_PLAN.md`) | Dev |
+| 2 | **receive-buffer lending** (shm stage 2, `tt_Sample_retain`/`release`) | the user approved it 2026-09-28. It is where most of the same-host win is, and it is the machinery item 3 needs | Dev |
+| 3 | **loaned messages** - `rmw_borrow_loaned_message` and its five siblings | **the last ❌ in COMPARISON §2.7a**: 6 entry points, TickLE 0 of 6, and *both vendors support them only with shared memory*. So this closes on items 1-2 rather than on new work, and it takes the table from 77/94 to 83/94 with no ❌ left | Dev |
+| 4 | **large-message stage 2** - samples above 64 KB (wider frag index, 32-bit record length, reassembly sized from FRAG_FIRST) | the user's staged-support decision of 2026-09-28; shares lending's machinery | Dev |
+| 5 | **S5, S6, S8** - the kill test, the fair-comparison harness, the CI matrix arm that runs the suite with the module on | `RMW_GAPS_PLAN.md`'s shared-memory work list. S6 is the one with the most ways to be unfair and it has no same-host cells yet | Plan |
+| 6 | **the introspection round-trip rows** - names, type names, GIDs, event counts, serialization format | g14's generalisation: any value an introspection API reports must be one we would accept back. Only the QoS row is done | Plan |
+| 7 | **the two open residuals** - ARM send ~+4 ns, and the +40 ns question the ablation branches are held for | both are inside or near the floors in `WIRE_PLAN.md` 10.4, so the first question is whether either is measurable at all before it is chased | Plan |
+| 8 | **housekeeping** - TSN Lab licence headers on `examples/perf_hil/{fastdds,cyclonedds}`, delete the merged branches, release the ablation branches once item 7 closes | small, and it is the kind of thing that never gets its own slot unless it has one | either |
+
+**What "finished" means for the wired work**, so the boundary is not a matter of opinion later: COMPARISON §2.7a shows no
+❌; the shared-memory module has stage 2's numbers with the floors applied and its fair comparison scored both ways
+(vendor shared-memory path and vendor default); and the introspection surfaces of item 6 have each been round-tripped
+with a control. Then Security starts, on the user's word.
