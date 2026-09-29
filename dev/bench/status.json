@@ -14,11 +14,11 @@
           },
           "linux": {
             "build": "pass",
-            "integration": "fail",
+            "integration": "pass",
             "unit": "pass"
           }
         },
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/36640563758"
+        "run_url": "https://github.com/tsnlab/tickle/actions/runs/36640565320"
       },
       "commit": "573cfed9630b2b191fbe59675659acc9069f6213",
       "commit_short": "573cfed",
