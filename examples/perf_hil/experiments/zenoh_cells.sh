@@ -44,22 +44,35 @@ if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_
 REPS=${REPS:-${1:-3}}
 DUR=${DUR:-${2:-5}}
 SCENS=${SCENS:-"reliable_throughput best_effort_throughput"}
-SIZE=p1
+SIZES=${SIZES:-"p1 p2 p3 p4"}
+# Extra client arguments, for the latency cells: -i sets the ping interval, and the round trip is the measurement
+# rather than the rate, so those cells run -i 0.1 -d 10 the way the other three frameworks' latency cells do.
+CLI_ARGS=${CLI_ARGS:-}
 OUT=${OUT:-/tmp/zenoh_cells.txt}
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=10 "ci@$1" "${@:2}"; }
 : >"$OUT"
 say() { echo "$*" | tee -a "$OUT"; }
-say "=== zenoh-pico cells $(date -Is) reps=$REPS dur=$DUR scens='$SCENS' ==="
+say "=== zenoh-pico cells $(date -Is) reps=$REPS dur=$DUR scens='$SCENS' sizes='$SIZES' ==="
 
 for SCEN in $SCENS; do
+  for SIZE in $SIZES; do
     for h in "$CLIENT" "$SERVER"; do
         out=$(sh_ "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main
 cd examples/perf_hil/zenohpico && ./build.sh $SCEN $SIZE > /tmp/zp_build.log 2>&1 || { echo BUILD_FAILED; tail -5 /tmp/zp_build.log; exit 0; }
-sha256sum ${SCEN}_${SIZE}/client | cut -c1-16" </dev/null 2>&1 | tail -1)
-        case "$out" in *BUILD_FAILED*) say "FATAL build failed for $SCEN on $h: $out"; exit 1;; esac
-        say "  $SCEN built on $h, client sha256=$out"
+sha256sum ${SCEN}_${SIZE}/client | cut -c1-16" </dev/null 2>&1)
+        # The whole output, not tail -1. build.sh's failure path echoes BUILD_FAILED and THEN five lines of the
+        # compiler's diagnostics, so taking the last line took "compilation terminated." and the marker was never
+        # seen: the guard could not fire, and nine reps ran against binaries that did not exist. Third time tonight
+        # for this shape, and the first two were other people's.
+        case "$out" in *BUILD_FAILED*|*"No such file"*|*error:*)
+            say "FATAL build failed for $SCEN $SIZE on $h:"; say "$out"; exit 1;;
+        esac
+        out=$(printf '%s' "$out" | tail -1)
+        case "$out" in [0-9a-f][0-9a-f]*) ;; *) say "FATAL no sha256 for $SCEN $SIZE on $h: $out"; exit 1;; esac
+        say "  $SCEN $SIZE built on $h, client sha256=$out"
     done
+  done
 done
 
 # The server is started DIRECTLY rather than through run_scenario.sh, and with a far longer life than the client.
@@ -79,7 +92,8 @@ for i in 1 2 3 4 5; do [ -d /proc/$srv_pid ] || break; sleep 1; done; true" </de
 trap kill_server EXIT
 
 for SCEN in $SCENS; do
-    say "### $SCEN ###"
+  for SIZE in $SIZES; do
+    say "### $SCEN $SIZE ###"
     # Endpoints only for the reliable cell: that one is TCP peer-to-peer, which is the only configuration where
     # zenoh-pico's reliability is real. Best-effort stays on UDP multicast, where both sides promise the same thing.
     if [ "$SCEN" = reliable_throughput ]; then
@@ -93,13 +107,14 @@ for SCEN in $SCENS; do
         kill_server
         srv_pid=$(sh_ "$SERVER" "cd ~/tickle/examples/perf_hil/zenohpico/${SCEN}_${SIZE} && rm -f /tmp/zrc_server.pid
 (setsid sh -c 'echo \$\$ > /tmp/zrc_server.pid; exec env $SRV_ENV taskset -c 1-3 stdbuf -oL ./server -d $SRV_DUR' > /tmp/zrc_server.log 2>&1 < /dev/null &); sleep 2; cat /tmp/zrc_server.pid" </dev/null)
-        cline=$(sh_ "$CLIENT" "cd ~/tickle/examples/perf_hil/zenohpico/${SCEN}_${SIZE} && env $CLI_ENV taskset -c 1-3 stdbuf -oL ./client -d $DUR 2>&1 | grep '^RESULT'" </dev/null)
-        [ -n "$cline" ] && say "scen=$SCEN rep$r $cline"
+        cline=$(sh_ "$CLIENT" "cd ~/tickle/examples/perf_hil/zenohpico/${SCEN}_${SIZE} && env $CLI_ENV taskset -c 1-3 stdbuf -oL ./client -d $DUR $CLI_ARGS 2>&1 | grep '^RESULT'" </dev/null)
+        [ -n "$cline" ] && say "scen=$SCEN size=$SIZE rep$r $cline"
         kill_server
         sline=$(sh_ "$SERVER" "grep '^RESULT' /tmp/zrc_server.log | tail -1" </dev/null)
-        [ -n "$sline" ] && say "scen=$SCEN rep$r $sline"
-        say "  $SCEN rep$r client sent=$(printf '%s' "$cline" | grep -oE 'sent=[0-9]+' | cut -d= -f2) server received=$(printf '%s' "$sline" | grep -oE 'received=[0-9]+' | cut -d= -f2)"
+        [ -n "$sline" ] && say "scen=$SCEN size=$SIZE rep$r $sline"
+        say "  $SCEN $SIZE rep$r client sent=$(printf '%s' "$cline" | grep -oE 'sent=[0-9]+' | cut -d= -f2) server received=$(printf '%s' "$sline" | grep -oE 'received=[0-9]+' | cut -d= -f2)"
     done
+  done
 done
 say "=== done $(date -Is) ==="
 
@@ -111,10 +126,10 @@ import re, sys, math, collections, statistics as st
 # entirely healthy on the client side with received=0 on the server.
 cli, srv = {}, {}
 for line in open(sys.argv[1]):
-    m = re.match(r"scen=(\S+) rep(\d+) (RESULT:.*)", line.strip())
+    m = re.match(r"scen=(\S+) size=(\S+) rep(\d+) (RESULT:.*)", line.strip())
     if not m:
         continue
-    scen, rep, rest = m.group(1), int(m.group(2)), m.group(3)
+    scen, rep, rest = "%s %s" % (m.group(1), m.group(2)), int(m.group(3)), m.group(4)
     f = dict(kv.split("=", 1) for kv in rest.split() if "=" in kv)
     (cli if f.get("role") == "client" else srv)[(scen, rep)] = f
 
@@ -130,11 +145,21 @@ for key, c in sorted(cli.items()):
     tag = "%s rep%d" % (scen, rep)
     sent = num(c, "sent")
     s_row = srv.get(key)
-    if sent < 100000:
+    if sent < 100000 and "latency" not in scen:
         print("VOID %s: sent=%d below 100000" % (tag, sent)); continue
     # The two checks that read the OUTCOME rather than the configuration. transport=tcp says what the harness was
     # ASKED for; these say what happened. The first run of this script counted 15,326,932 puts at 1,863 Mbps over a
     # 1 Gbps link with 745 bytes on the wire, and its line still said transport=tcp.
+    latency = "latency" in scen
+    if latency:
+        # A latency cell sends ~100 pings, not 100000, and its pass condition is that the pongs came back.
+        got = num(c, "recv")
+        if got <= 0.0:
+            print("VOID %s: recv=0 - no pong returned, so there is no round trip to report" % tag); continue
+        c["_recv"] = got
+        c["_loss_pct"] = num(c, "loss_pct")
+        rows[scen].append(c)
+        continue
     if num(c, "wire_bytes_per_sample") <= 0.0:
         print("VOID %s: wire_bytes_per_sample=0 - the samples never reached the wire" % tag); continue
     if num(c, "send_mbps") > 1000.0:
@@ -145,7 +170,7 @@ for key, c in sorted(cli.items()):
     if recv <= 0.0:
         print("VOID %s: server received=0. The publisher measured itself talking to nobody, and over multicast that"
               " looks exactly like a healthy run - loss_pct is then 0 lost of 0 received." % tag); continue
-    if scen == "reliable_throughput" and c.get("transport") != "tcp":
+    if scen.startswith("reliable_throughput") and c.get("transport") != "tcp":
         print("VOID %s: transport=%s, not tcp" % (tag, c.get("transport"))); continue
     c["_recv"] = recv
     c["_loss_pct"] = 100.0 * (sent - recv) / sent if sent else 0.0
@@ -161,6 +186,15 @@ for scen in sorted(rows):
         print("VOID: fewer than 3 usable reps. The cell is not reported."); continue
     print("  transport=%s reliability=%s express=%s" % (rs[0].get("transport", "udp/multicast"),
           rs[0].get("reliability", "best_effort"), rs[0].get("express", "?")))
+    if "latency" in scen:
+        for k, label in (("rtt_avg_ms", "RTT mean ms"), ("rtt_max_ms", "RTT max ms"),
+                         ("rtt_min_ms", "RTT min ms"), ("cpu_s_per_Msample", "CPU s/Msample"),
+                         ("peak_rss_kb", "peak RSS kB"), ("_loss_pct", "loss %")):
+            v = [num(f, k) for f in rs if k in f]
+            if v:
+                print("  %-18s %10.3f +- %.3f" % (label, st.mean(v), se(v)))
+        print("  sent/recv: " + ", ".join("%d/%d" % (num(f, "sent"), f["_recv"]) for f in rs))
+        continue
     for k, label in (("send_mbps", "send Mbps"), ("cpu_s_per_Msample", "CPU s/Msample"),
                      ("peak_rss_kb", "peak RSS kB"), ("wire_bytes_per_sample", "wire B/sample"),
                      ("wire_packets_per_sample", "wire pkts/sample"), ("_loss_pct", "loss %")):
