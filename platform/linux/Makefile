@@ -338,7 +338,7 @@ LINT_EXCLUDE_RE = ^(third_party|platform|examples/freertos)/|hal_freertos\.
 #
 # clang-format covers both, because that half IS gated the moment one of them is touched - which is
 # how a formatting failure reached main on 2026-09-23.
-LINT_TIDY_EXCLUDE_PATHS = rmw_tickle|examples/perf_hil/(cyclonedds|fastdds)
+LINT_TIDY_EXCLUDE_PATHS = rmw_tickle|examples/perf_hil/(cyclonedds|fastdds|zenohpico)
 
 # rmw_tickle/rosidl_typesupport_tickle_c/test/fixtures/ros2_adapter/'s hand-written rosidl_runtime_c stand-ins
 # cross-include each other by ROS 2's own relative-path convention ("rosidl_runtime_c/string.h"),
