@@ -417,6 +417,51 @@ static void test_impossible_length_is_refused_and_does_not_wedge(void) {
     EXPECT_EQ_INT(0, strcmp("also good", (const char*)out));
 }
 
+// S2's assertion, pinned in-process: every UDP datagram has a named reason, so tx_udp equals the
+// sum of the four by-reason counters. The module is built in here and no segment exists, so every
+// datagram falls back - which is the case that would hide a miscount, because all four counters
+// being zero except one is the easiest thing to get accidentally right.
+//
+// The invariant is structural (count_udp() is the only path that increments tx_udp, and it names a
+// reason in the same call), so this test cannot fail while that holds. It is here because the
+// structure is what a future edit would break, and because S2 asserts the same thing across a
+// process boundary where no helper can reach - two checks of one property at two scopes.
+static void test_every_udp_datagram_has_a_named_reason(void) {
+    test_mock_reset();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        pub.peers[i].context_id = tt_CONTEXT_ID_INVALID;
+    }
+    pub.peers[0].context_id = PEER_CONTEXT_ID;
+    pub.peers[0].ip = PEER_IP;
+    pub.peers[0].port = PEER_PORT;
+
+    // A unicast shape and a broadcast shape, so more than one reason is in play - a test with one
+    // reason would pass against a helper that always named that reason.
+    for (uint32_t i = 0; i < SAMPLES; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));
+    }
+    uint8_t body[ZEROCOPY_BODY] = {0};
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)publish_zerocopy(&pub, body, (uint32_t)sizeof(body)));
+    pub.peers[0].context_id = tt_CONTEXT_ID_INVALID; // now every destination is a broadcast
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)publish_zerocopy(&pub, body, (uint32_t)sizeof(body)));
+
+    uint64_t named = node.segment_broadcast_to_udp + node.segment_oversized_to_udp + node.segment_unattached_to_udp +
+                     node.segment_full_to_udp;
+    EXPECT_TRUE(node.tx_datagrams_by_transport[tt_TRANSPORT_UDP] > 0); // the arm sent something
+    EXPECT_EQ_U32((uint32_t)node.tx_datagrams_by_transport[tt_TRANSPORT_UDP], (uint32_t)named);
+    EXPECT_EQ_U32(0, (uint32_t)node.tx_datagrams_by_transport[tt_TRANSPORT_SHM]); // no segment exists
+
+    // And more than one reason actually occurred, or the equality above is a weaker claim than it
+    // looks: broadcast for the unaddressed shape, unattached for the peer with no segment.
+    EXPECT_TRUE(node.segment_broadcast_to_udp > 0);
+    EXPECT_TRUE(node.segment_unattached_to_udp > 0);
+}
+
 // A received datagram is counted once, on the transport it arrived over.
 static void test_received_datagram_is_counted_as_udp(void) {
     test_mock_reset();
@@ -450,6 +495,7 @@ int main(void) {
     test_full_ring_refuses_rather_than_overwriting();
     test_ring_survives_many_wraps();
     test_impossible_length_is_refused_and_does_not_wedge();
+    test_every_udp_datagram_has_a_named_reason();
     test_received_datagram_is_counted_as_udp();
 
     printf("test_transport_seam: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");

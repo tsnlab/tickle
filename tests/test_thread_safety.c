@@ -172,6 +172,33 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
     return send_all(node, hdr, hdr_len, body, body_len);
 }
 
+#if tt_SEGMENT_ENABLED
+// The segment's HAL entry points (SHM_PLAN.md stage 1). Refusing to create and reporting every peer
+// as absent is the honest stub here: this binary has no shared memory and every send goes over its
+// own transport, so the module must decide "not same host" rather than be half-present.
+void* tt_segment_create(const char* path, size_t bytes) {
+    (void)path;
+    (void)bytes;
+    return NULL;
+}
+
+void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
+    (void)path;
+    (void)bytes;
+    *why = (uint8_t)tt_SEGMENT_ABSENT;
+    return NULL;
+}
+
+void tt_segment_detach(void* mapping, size_t bytes) {
+    (void)mapping;
+    (void)bytes;
+}
+
+void tt_segment_unlink(const char* path) {
+    (void)path;
+}
+#endif
+
 // The three HAL entry points tt_CONTEXT_ID_CLAIM=1 reaches (g8's several-processes-on-one-host support, on by default
 // since 2026-09-29). This file is its own HAL - the tsan target links tickle.c and no platform HAL at all - so turning
 // the feature on by default made it fail to LINK rather than fail a check, which is the honest way for a test harness

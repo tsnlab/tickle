@@ -222,6 +222,8 @@ enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT }
 // wire is untouched, and the address already distinguishes what a wire token would.
 #define tt_SEGMENT_MAGIC 0x544b5347U // "TKSG", checked before anything else in the mapping is read
 #define tt_SEGMENT_VERSION 1
+// Longest segment path this build can form: "/dev/shm/tickle-seg-255.255.255.255-65535-255" and a NUL.
+#define tt_SEGMENT_PATH_LENGTH 64
 
 struct tt_SegmentHeader {
     uint32_t magic;
@@ -529,11 +531,25 @@ struct tt_Context {
     // "the segment could not be attached" are different events, and one number for both would cost
     // exactly the distinction the attach reasons were added for. A row carrying this and an empty
     // attach table says the module is working and this shape is out of its scope.
+    // Datagrams that went over UDP because they were broadcast - no single peer, so no name to
+    // compute and no segment even in principle. By design rather than by failure, and the largest
+    // of the four in any running context, because announces and summaries are broadcast.
+    //
+    // It exists because without it these were counted as unattached: a running module would have
+    // reported a large discovery-failure count for traffic that was never a candidate. The
+    // assertion would still have summed correctly and the diagnosis would have been wrong, which
+    // is worse than a failure.
+    uint64_t segment_broadcast_to_udp;
     uint64_t segment_oversized_to_udp;
     // Datagrams that went over UDP because no segment could be attached for that peer. The pair to
     // the above: same outcome on the wire, different cause, and only the pair distinguishes a
     // module doing its job from one that never attaches anywhere.
     uint64_t segment_unattached_to_udp;
+    // Datagrams that went over UDP because the peer's ring was full. The third of the trio and a
+    // different signal again: oversized is scope, unattached is discovery, full is sizing - a run
+    // where this moves says tt_SEGMENT_BYTES is too small for the offered load, which no other
+    // counter can say.
+    uint64_t segment_full_to_udp;
 
 #if tt_SEGMENT_ENABLED
     // What this context has mapped, indexed by the remote context id - the same index

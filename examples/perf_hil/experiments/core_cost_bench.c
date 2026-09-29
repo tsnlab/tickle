@@ -149,6 +149,33 @@ static int32_t capture(uint32_t ip, const void* head, size_t head_len, const voi
     return (int32_t)len;
 }
 
+#if tt_SEGMENT_ENABLED
+// The segment's HAL entry points (SHM_PLAN.md stage 1). Refusing to create and reporting every peer
+// as absent is the honest stub here: this binary has no shared memory and every send goes over its
+// own transport, so the module must decide "not same host" rather than be half-present.
+void* tt_segment_create(const char* path, size_t bytes) {
+    (void)path;
+    (void)bytes;
+    return NULL;
+}
+
+void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
+    (void)path;
+    (void)bytes;
+    *why = (uint8_t)tt_SEGMENT_ABSENT;
+    return NULL;
+}
+
+void tt_segment_detach(void* mapping, size_t bytes) {
+    (void)mapping;
+    (void)bytes;
+}
+
+void tt_segment_unlink(const char* path) {
+    (void)path;
+}
+#endif
+
 int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     (void)node;
     return capture(0, buf, len, NULL, 0);

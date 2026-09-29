@@ -456,4 +456,97 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
     }
     return -1;
 }
+
+#if tt_SEGMENT_ENABLED
+// The segment's platform half, mocked (SHM_PLAN.md stage 1). Regions live in ordinary heap memory
+// and are found by name, which is all core asks of them: the ring, the naming and the header checks
+// are core's, so a test driving two contexts through this mock exercises the same code a real
+// mapping would - only the pages differ.
+//
+// Deliberately NOT a no-op returning NULL. A mock that could never attach would make every shm test
+// pass by falling back to UDP, which is the failure these tests exist to detect.
+#define TEST_MOCK_MAX_SEGMENTS 8
+
+struct test_mock_segment {
+    char path[tt_SEGMENT_PATH_LENGTH];
+    void* region;
+    size_t bytes;
+    bool present; // unlinked segments stay mapped for whoever holds them, as a real one would
+};
+
+struct test_mock_segment test_mock_segments[TEST_MOCK_MAX_SEGMENTS];
+int test_mock_segment_creates = 0;
+int test_mock_segment_attaches = 0;
+
+static struct test_mock_segment* test_mock_find_segment(const char* path) {
+    for (int i = 0; i < TEST_MOCK_MAX_SEGMENTS; i++) {
+        if (test_mock_segments[i].region != NULL && test_mock_segments[i].present &&
+            strcmp(test_mock_segments[i].path, path) == 0) {
+            return &test_mock_segments[i];
+        }
+    }
+    return NULL;
+}
+
+void* tt_segment_create(const char* path, size_t bytes) {
+    struct test_mock_segment* existing = test_mock_find_segment(path);
+    if (existing != NULL) {
+        existing->present = false; // replaced, as a real create unlinks first
+    }
+    for (int i = 0; i < TEST_MOCK_MAX_SEGMENTS; i++) {
+        if (test_mock_segments[i].region == NULL) {
+            test_mock_segments[i].region = calloc(1, bytes);
+            if (test_mock_segments[i].region == NULL) {
+                return NULL;
+            }
+            snprintf(test_mock_segments[i].path, sizeof(test_mock_segments[i].path), "%s", path);
+            test_mock_segments[i].bytes = bytes;
+            test_mock_segments[i].present = true;
+            test_mock_segment_creates++;
+            return test_mock_segments[i].region;
+        }
+    }
+    return NULL;
+}
+
+void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
+    struct test_mock_segment* found = test_mock_find_segment(path);
+    if (found == NULL) {
+        *why = (uint8_t)tt_SEGMENT_ABSENT;
+        return NULL;
+    }
+    if (found->bytes < bytes) {
+        *why = (uint8_t)tt_SEGMENT_BAD_HEADER;
+        return NULL;
+    }
+    *why = (uint8_t)tt_SEGMENT_ATTACHED;
+    test_mock_segment_attaches++;
+    return found->region; // one region, two users - which is the point
+}
+
+void tt_segment_detach(void* mapping, size_t bytes) {
+    (void)mapping;
+    (void)bytes; // the region outlives its attachers here, as a real mapping's file does
+}
+
+void tt_segment_unlink(const char* path) {
+    struct test_mock_segment* found = test_mock_find_segment(path);
+    if (found != NULL) {
+        found->present = false;
+    }
+}
+
+// Frees every region. Called by a test that creates segments; test_mock_reset() does not, because a
+// context may still hold a mapping when it runs.
+static void test_mock_segments_free(void) {
+    for (int i = 0; i < TEST_MOCK_MAX_SEGMENTS; i++) {
+        free(test_mock_segments[i].region);
+        test_mock_segments[i].region = NULL;
+        test_mock_segments[i].present = false;
+    }
+    test_mock_segment_creates = 0;
+    test_mock_segment_attaches = 0;
+}
+#endif
+
 #endif

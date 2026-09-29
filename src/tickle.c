@@ -590,52 +590,244 @@ static void note_attach(struct tt_Context* node, enum tt_SegmentAttach reason) {
     node->segment_attach[reason]++;
 }
 
-static enum tt_Transport transport_for(const struct tt_Context* node, uint32_t ip, uint16_t port) {
+#if tt_SEGMENT_ENABLED
+// The peer's segment, attached on first use and kept. NULL when this peer is not reachable that way
+// - another host, no module, or a segment we refused - and the reason is counted by the caller.
+//
+// Attaching lazily rather than at discovery keeps the decision where the traffic is: a peer we
+// never send to costs no mapping, and a peer that appears and disappears costs one attempt rather
+// than a subscription to its lifecycle. The cached entry is keyed by context id and remembers the
+// address it was named from, because a peer that reappears at a different address is a different
+// segment and must not be reached through this one.
+static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t context_id, uint32_t ip, uint16_t port) {
+    if (context_id == tt_CONTEXT_ID_INVALID) {
+        return NULL; // a broadcast has no single peer, so no name to compute
+    }
+    struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
+    if (entry->mapping != NULL) {
+        if (entry->ip != ip || entry->port != port) {
+            // Same id, different address: the id was re-handed, or this peer moved. Either way the
+            // mapping we hold is not this peer's.
+            tt_segment_detach(entry->mapping, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
+            memset(entry, 0, sizeof(*entry));
+        } else if (entry->mapping->incarnation != entry->incarnation) {
+            // The peer we attached to has been replaced by one holding the same id at the same
+            // address. Counted, because this is the case the header exists for.
+            note_attach(node, tt_SEGMENT_STALE);
+            tt_segment_detach(entry->mapping, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
+            memset(entry, 0, sizeof(*entry));
+        } else {
+            return entry->mapping;
+        }
+    }
+
+    char path[tt_SEGMENT_PATH_LENGTH];
+    if (segment_name(path, sizeof(path), ip, port, context_id) < 0) {
+        note_attach(node, tt_SEGMENT_BAD_HEADER); // a name we cannot form is a segment we cannot find
+        return NULL;
+    }
+    uint8_t why = (uint8_t)tt_SEGMENT_ABSENT;
+    void* mapping = tt_segment_attach(path, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES), &why);
+    if (mapping == NULL) {
+        note_attach(node, (enum tt_SegmentAttach)why);
+        return NULL;
+    }
+
+    struct tt_SegmentHeader* header = mapping;
+    enum tt_SegmentAttach verdict = segment_header_check(header, ip, port, context_id, 0);
+    if (verdict != tt_SEGMENT_ATTACHED) {
+        note_attach(node, verdict);
+        tt_segment_detach(mapping, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
+        return NULL;
+    }
+    note_attach(node, tt_SEGMENT_ATTACHED);
+    entry->mapping = header;
+    entry->ip = ip;
+    entry->port = port;
+    entry->incarnation = header->incarnation;
+    return header;
+}
+#endif
+
+// Which transport carries a datagram to this destination. Stage 1: the peer's segment when one can
+// be attached, UDP otherwise - and "otherwise" is every reason, all of them safe and all of them
+// counted, because a module that never attaches anywhere looks exactly like one correctly deciding
+// that nothing here is same-host.
+static enum tt_Transport transport_for(struct tt_Context* node, uint8_t context_id, uint32_t ip, uint16_t port) {
+#if tt_SEGMENT_ENABLED
+    return peer_segment(node, context_id, ip, port) != NULL ? tt_TRANSPORT_SHM : tt_TRANSPORT_UDP;
+#else
     (void)node;
+    (void)context_id;
     (void)ip;
     (void)port;
-    return tt_TRANSPORT_UDP; // stage 1 adds the same-host case; nothing else exists yet
+    return tt_TRANSPORT_UDP;
+#endif
 }
+
+// The most destinations one datagram can have: a peer each, or a broadcast per link.
+#define TX_MAX_DESTINATIONS (tt_MAX_LINK_COUNT > tt_MAX_PEER_COUNT ? tt_MAX_LINK_COUNT : tt_MAX_PEER_COUNT)
+
+// The most datagrams one batch can carry, which is NOT the same number. send_datagram() batches one
+// datagram to several destinations (TX_MAX_DESTINATIONS, 8); send_fragments() batches all of one
+// sample's fragments to a single destination (tt_FRAG_MAX_COUNT, 64). Sizing a batch-sized array by
+// the first overflows on the second - which is how this constant came to exist, from a stack
+// smashing abort in test_data_frag rather than from reading the two call sites.
+#define TX_MAX_BATCH (TX_MAX_DESTINATIONS > tt_FRAG_MAX_COUNT ? TX_MAX_DESTINATIONS : tt_FRAG_MAX_COUNT)
+static_assert(TX_MAX_BATCH >= TX_MAX_DESTINATIONS && TX_MAX_BATCH >= tt_FRAG_MAX_COUNT,
+              "a batch array must hold the largest batch either caller can pass");
 
 static void count_tx(struct tt_Context* node, enum tt_Transport transport, uint32_t datagrams) {
     node->tx_datagrams += datagrams;
     node->tx_datagrams_by_transport[transport] += datagrams;
 }
 
+// Why a datagram went over UDP although the module is built in. Every UDP datagram has exactly one
+// of these, which is what makes tx_udp == the sum of the four by-reason counters an invariant
+// rather than a hope (SHM_PLAN.md's S2 asserts the same thing end to end).
+enum udp_reason {
+    UDP_BECAUSE_BROADCAST, // no single peer, so no name: by design
+    UDP_BECAUSE_OVERSIZED, // larger than a slot: a service, which does not fragment
+    UDP_BECAUSE_UNATTACHED,
+    UDP_BECAUSE_FULL
+};
+
+// The only way to count a UDP datagram. The two increments happen together here so that no path can
+// record a fallback without naming its reason - asserting that afterwards would catch a drift, this
+// makes the drift impossible to write.
+static void count_udp(struct tt_Context* node, enum udp_reason reason, uint32_t datagrams) {
+    count_tx(node, tt_TRANSPORT_UDP, datagrams);
+    switch (reason) {
+    case UDP_BECAUSE_BROADCAST:
+        node->segment_broadcast_to_udp += datagrams;
+        break;
+    case UDP_BECAUSE_OVERSIZED:
+        node->segment_oversized_to_udp += datagrams;
+        break;
+    case UDP_BECAUSE_UNATTACHED:
+        node->segment_unattached_to_udp += datagrams;
+        break;
+    case UDP_BECAUSE_FULL:
+        node->segment_full_to_udp += datagrams;
+        break;
+    }
+}
+
+#if tt_SEGMENT_ENABLED
+// One datagram to a peer's segment. Returns true when the segment took it; otherwise *reason says
+// why it must go over UDP, and the caller counts it - the reason is returned rather than counted
+// here so that exactly one place increments tx_udp and its reason together.
+static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_t ip, uint16_t port, const void* hdr,
+                            size_t hdr_len, const void* body, size_t body_len, enum udp_reason* reason) {
+    if (context_id == tt_CONTEXT_ID_INVALID) {
+        *reason = UDP_BECAUSE_BROADCAST; // no single peer, so no name to compute: never a candidate
+        return false;
+    }
+    struct tt_SegmentHeader* segment = peer_segment(node, context_id, ip, port);
+    if (segment == NULL) {
+        *reason = UDP_BECAUSE_UNATTACHED;
+        return false;
+    }
+    size_t total = hdr_len + body_len;
+    if (total > segment->slot_bytes) {
+        *reason = UDP_BECAUSE_OVERSIZED; // a service request or response: they do not fragment
+        return false;
+    }
+    // Assembled here rather than written in two pieces: a slot is one record, and a reader seeing a
+    // half-written record is what fixed slots exist to prevent.
+    uint8_t datagram[tt_SEGMENT_SLOT_BYTES];
+    memcpy(datagram, hdr, hdr_len);
+    if (body_len != 0) {
+        memcpy(datagram + hdr_len, body, body_len);
+    }
+    if (!segment_write(segment, datagram, (uint32_t)total)) {
+        *reason = UDP_BECAUSE_FULL;
+        return false;
+    }
+    count_tx(node, tt_TRANSPORT_SHM, 1);
+    return true;
+}
+#endif
+
+// The four send shapes. Each tries the peer's segment first when the destination is a known peer,
+// and falls back to UDP for any reason at all - the fallback is the module's documented failure
+// mode rather than an error, which is exactly why every reason for taking it is counted.
 static int32_t seam_send(struct tt_Context* node, const void* buf, size_t len) {
-    count_tx(node, transport_for(node, 0, 0), 1);
+    count_udp(node, UDP_BECAUSE_BROADCAST, 1); // this shape is the HAL's broadcast address by definition
     return tt_send(node, buf, len);
 }
 
-static int32_t seam_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
-    count_tx(node, transport_for(node, ip, port), 1);
+static int32_t seam_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port,
+                            uint8_t context_id) {
+    enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
+#if tt_SEGMENT_ENABLED
+    if (segment_deliver(node, context_id, ip, port, buf, len, NULL, 0, &reason)) {
+        return (int32_t)len;
+    }
+#else
+    (void)context_id;
+    reason = context_id == tt_CONTEXT_ID_INVALID ? UDP_BECAUSE_BROADCAST : UDP_BECAUSE_UNATTACHED;
+#endif
+    count_udp(node, reason, 1);
     return tt_send_to(node, buf, len, ip, port);
 }
 
 static int32_t seam_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body,
-                             size_t body_len, uint32_t ip, uint16_t port) {
-    count_tx(node, transport_for(node, ip, port), 1);
+                             size_t body_len, uint32_t ip, uint16_t port, uint8_t context_id) {
+    enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
+#if tt_SEGMENT_ENABLED
+    if (segment_deliver(node, context_id, ip, port, hdr, hdr_len, body, body_len, &reason)) {
+        return (int32_t)(hdr_len + body_len);
+    }
+#else
+    reason = context_id == tt_CONTEXT_ID_INVALID ? UDP_BECAUSE_BROADCAST : UDP_BECAUSE_UNATTACHED;
+#endif
+    count_udp(node, reason, 1);
     return tt_send_iov(node, hdr, hdr_len, body, body_len, ip, port);
 }
 
-// A batch is one call and several datagrams, and each may be addressed differently - so it is
-// counted per datagram, by its own destination, not once for the batch.
-static int32_t seam_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+// A batch is one call and several datagrams, each possibly to a different peer, so the segment is
+// tried per datagram and only the ones that did not take it are left for the socket. The copy
+// happens only when the batch is actually split.
+static int32_t seam_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count,
+                               const uint8_t* context_ids) {
+#if tt_SEGMENT_ENABLED
+    struct tt_OutDatagram remaining[TX_MAX_BATCH];
+    uint32_t left = 0;
     for (uint32_t i = 0; i < count; i++) {
-        count_tx(node, transport_for(node, datagrams[i].ip, datagrams[i].port), 1);
+        enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
+        if (segment_deliver(node, context_ids[i], datagrams[i].ip, datagrams[i].port, datagrams[i].head,
+                            datagrams[i].head_len, datagrams[i].body, datagrams[i].body_len, &reason)) {
+            continue;
+        }
+        // Counted per datagram, by its own reason - a batch can mix them, and a batch counted once
+        // by the first datagram's reason would name the wrong cause for the rest.
+        count_udp(node, reason, 1);
+        remaining[left++] = datagrams[i];
+    }
+    if (left == 0) {
+        return 0; // every datagram took a segment; nothing for the socket
+    }
+    return tt_send_batch(node, remaining, left);
+#else
+    for (uint32_t i = 0; i < count; i++) {
+        count_udp(node, context_ids[i] == tt_CONTEXT_ID_INVALID ? UDP_BECAUSE_BROADCAST : UDP_BECAUSE_UNATTACHED, 1);
     }
     return tt_send_batch(node, datagrams, count);
+#endif
 }
 
-// One datagram to one address; ip 0 is the HAL's own broadcast address, as for seam_send_iov().
-static bool send_datagram_to(struct tt_Context* node, const struct tx_datagram* dgram, uint32_t ip, uint16_t port) {
+// One datagram to one address; ip 0 is the HAL's own broadcast address, as for tt_send_iov().
+static bool send_datagram_to(struct tt_Context* node, const struct tx_datagram* dgram, uint32_t ip, uint16_t port,
+                             uint8_t context_id) {
     if (dgram->body_len != 0) {
-        return seam_send_iov(node, dgram->head, dgram->head_len, dgram->body, dgram->body_len, ip, port) >= 0;
+        return seam_send_iov(node, dgram->head, dgram->head_len, dgram->body, dgram->body_len, ip, port, context_id) >=
+               0;
     }
     if (ip == 0) {
         return seam_send(node, dgram->head, dgram->head_len) >= 0;
     }
-    return seam_send_to(node, dgram->head, dgram->head_len, ip, port) >= 0;
+    return seam_send_to(node, dgram->head, dgram->head_len, ip, port, context_id) >= 0;
 }
 
 // Where one datagram goes, as ip/port with ip 0 meaning the HAL's own broadcast address. The routing
@@ -644,9 +836,13 @@ static bool send_datagram_to(struct tt_Context* node, const struct tx_datagram* 
 struct tx_destination {
     uint32_t ip;
     uint16_t port;
+    // Which peer this destination is, or tt_CONTEXT_ID_INVALID for a broadcast. The segment's name
+    // is computed from (address, port, context id), so a destination with no single peer has no
+    // name to compute and can only go over UDP - which is why announces and summaries never leave
+    // the interface however well the module is working.
+    uint8_t context_id;
 };
 // Every link's broadcast, or every peer: the most either rule below can produce.
-#define TX_MAX_DESTINATIONS (tt_MAX_LINK_COUNT > tt_MAX_PEER_COUNT ? tt_MAX_LINK_COUNT : tt_MAX_PEER_COUNT)
 
 // Broadcast, when there is no addressable peer set: either nobody is known yet, or the caller has
 // batched submessages for different peers into one buffer and cannot aim it. Goes out on every
@@ -658,11 +854,12 @@ struct tx_destination {
 // a new one that happens to be equivalent.
 static uint8_t broadcast_destinations(struct tx_destination* out) {
     if (link_count() <= 1) {
-        out[0] = (struct tx_destination) {0, 0};
+        out[0] = (struct tx_destination) {0, 0, tt_CONTEXT_ID_INVALID};
         return 1;
     }
     for (uint8_t i = 0; i < link_count(); i++) {
-        out[i] = (struct tx_destination) {_tt_CONFIG.links[i].resolved_broadcast, (uint16_t)_tt_CONFIG.port};
+        out[i] = (struct tx_destination) {_tt_CONFIG.links[i].resolved_broadcast, (uint16_t)_tt_CONFIG.port,
+                                          tt_CONTEXT_ID_INVALID};
     }
     return link_count();
 }
@@ -686,17 +883,17 @@ static uint8_t link_destinations(const struct tt_Peer* peers, uint8_t peer_count
 
     if (on_link > _tt_CONFIG.links[link_index].unicast_threshold) {
         if (link_count() <= 1) {
-            out[written] = (struct tx_destination) {0, 0};
+            out[written] = (struct tx_destination) {0, 0, tt_CONTEXT_ID_INVALID};
         } else {
-            out[written] =
-                (struct tx_destination) {_tt_CONFIG.links[link_index].resolved_broadcast, (uint16_t)_tt_CONFIG.port};
+            out[written] = (struct tx_destination) {_tt_CONFIG.links[link_index].resolved_broadcast,
+                                                    (uint16_t)_tt_CONFIG.port, tt_CONTEXT_ID_INVALID};
         }
         return (uint8_t)(written + 1);
     }
 
     for (uint8_t i = 0; i < peer_count && written < TX_MAX_DESTINATIONS; i++) {
         if (link_of_ip(peers[i].ip) == link_index) {
-            out[written++] = (struct tx_destination) {peers[i].ip, peers[i].port};
+            out[written++] = (struct tx_destination) {peers[i].ip, peers[i].port, peers[i].context_id};
         }
     }
     return written;
@@ -726,14 +923,16 @@ static bool send_datagram(struct tt_Context* node, const struct tx_datagram* dgr
         return true; // addressed peers, none on any link: nothing to send, as before
     }
     if (count == 1) {
-        return send_datagram_to(node, dgram, destinations[0].ip, destinations[0].port);
+        return send_datagram_to(node, dgram, destinations[0].ip, destinations[0].port, destinations[0].context_id);
     }
     struct tt_OutDatagram batch[TX_MAX_DESTINATIONS];
+    uint8_t batch_context_ids[TX_MAX_DESTINATIONS];
     for (uint8_t i = 0; i < count; i++) {
         batch[i] = (struct tt_OutDatagram) {dgram->head,     dgram->head_len,    dgram->body,
                                             dgram->body_len, destinations[i].ip, destinations[i].port};
+        batch_context_ids[i] = destinations[i].context_id;
     }
-    return seam_send_batch(node, batch, count) >= 0;
+    return seam_send_batch(node, batch, count, batch_context_ids) >= 0;
 }
 
 static bool flush_tx(struct tt_Context* node, uint32_t len, const struct tt_Peer* peers, uint8_t peer_count) {
@@ -921,11 +1120,15 @@ static bool send_fragments(struct tt_Context* node, const struct tt_DataHeader* 
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
     uint8_t destination_count = tx_destinations(peers, peer_count, destinations);
     for (uint8_t dest = 0; dest < destination_count; dest++) {
+        // Every fragment of this sample goes to the same destination, so the batch's peer ids are
+        // uniform - unlike send_datagram()'s batch, where one datagram goes to several peers.
+        uint8_t fragment_context_ids[TX_MAX_BATCH];
         for (uint32_t index = 0; index < count; index++) {
             batch[index].ip = destinations[dest].ip;
             batch[index].port = destinations[dest].port;
+            fragment_context_ids[index] = destinations[dest].context_id;
         }
-        if (seam_send_batch(node, batch, count) < 0) {
+        if (seam_send_batch(node, batch, count, fragment_context_ids) < 0) {
             return false;
         }
     }
@@ -2447,8 +2650,10 @@ static void reset_node_state(struct tt_Context* node) {
     for (int reason = 0; reason < tt_SEGMENT_ATTACH_COUNT; reason++) {
         node->segment_attach[reason] = 0;
     }
+    node->segment_broadcast_to_udp = 0;
     node->segment_oversized_to_udp = 0;
     node->segment_unattached_to_udp = 0;
+    node->segment_full_to_udp = 0;
     node->summaries_skipped = 0;
     node->summaries_ridden = 0;
     node->tx_dropped_oversize = 0;
@@ -3599,7 +3804,8 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
     if (peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD) {
         note_reached(node, pub->peers, peer_count);
         for (uint8_t i = 0; i < peer_count; i++) {
-            if (seam_send_iov(node, head, head_len, body, body_len, pub->peers[i].ip, pub->peers[i].port) < 0) {
+            if (seam_send_iov(node, head, head_len, body, body_len, pub->peers[i].ip, pub->peers[i].port,
+                              pub->peers[i].context_id) < 0) {
                 return tt_RET_IO_ERROR;
             }
         }
@@ -3607,7 +3813,8 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
         if (link_count() <= 1) {
             note_reached(node, NULL, 0); // the HAL's one broadcast address; with several links it is not every link
         }
-        if (seam_send_iov(node, head, head_len, body, body_len, 0, 0) < 0) {
+        // Broadcast: no single peer, so tt_CONTEXT_ID_INVALID and therefore UDP.
+        if (seam_send_iov(node, head, head_len, body, body_len, 0, 0, tt_CONTEXT_ID_INVALID) < 0) {
             return tt_RET_IO_ERROR;
         }
     }
