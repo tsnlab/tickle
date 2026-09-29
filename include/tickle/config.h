@@ -448,6 +448,9 @@
 #define tt_SEGMENT_BYTES (512 * 1024)
 #endif
 #define tt_SEGMENT_SLOT_BYTES tt_CONTROL_MAX_LENGTH
+// Most records taken from a segment in one poll, so a writer that keeps its ring full cannot starve
+// the socket - the poll returns and comes back, which is the fairness the socket drain already has.
+#define tt_SEGMENT_DRAIN_PER_POLL 64
 // 8 bytes of per-slot header (struct tt_SegmentSlot) - spelled out rather than sizeof() because
 // this has to be a preprocessor constant.
 #define tt_SEGMENT_SLOT_STRIDE (8 + tt_SEGMENT_SLOT_BYTES)

@@ -649,6 +649,42 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
 }
 #endif
 
+#if tt_SEGMENT_ENABLED
+// This context's own segment: the one its peers attach to. Named from its own (address, port,
+// context id), which is what a peer computes from what discovery told it.
+static void create_own_segment(struct tt_Context* node) {
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(node, &own_ip, &own_port);
+
+    char path[tt_SEGMENT_PATH_LENGTH];
+    if (segment_name(path, sizeof(path), own_ip, own_port, node->id) < 0) {
+        return;
+    }
+    void* mapping = tt_segment_create(path, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
+    if (mapping == NULL) {
+        return; // no segment: peers reach this context over UDP, counted as unattached on their side
+    }
+
+    struct tt_SegmentHeader* header = mapping;
+    // The ring's fields before the magic, so a peer that attaches between these two writes cannot
+    // see a header it believes and a ring it cannot index. The magic is the last thing written and
+    // the first thing checked.
+    header->version = tt_SEGMENT_VERSION;
+    header->owner_ip = own_ip;
+    header->owner_port = own_port;
+    header->owner_context_id = node->id;
+    header->incarnation = node->entity_id_base != 0 ? node->entity_id_base : (uint32_t)tt_get_ns();
+    header->slots = tt_SEGMENT_SLOTS;
+    header->slot_bytes = tt_SEGMENT_SLOT_BYTES;
+    header->write_index = 0;
+    header->read_index = 0;
+    __atomic_store_n(&header->magic, tt_SEGMENT_MAGIC, __ATOMIC_RELEASE);
+    node->own_segment = header;
+}
+
+#endif
+
 // Which transport carries a datagram to this destination. Stage 1: the peer's segment when one can
 // be attached, UDP otherwise - and "otherwise" is every reason, all of them safe and all of them
 // counted, because a module that never attaches anywhere looks exactly like one correctly deciding
@@ -2911,6 +2947,14 @@ tt_ret_t tt_Context_create(struct tt_Context* node) {
     }
 
     TT_LOG_INFO("Node open at %d", _tt_CONFIG.port);
+
+#if tt_SEGMENT_ENABLED
+    // Created here because this is the first moment the three things its name is built from are all
+    // known: the address comes from the bind, and the context id from just above. A failure is not
+    // fatal - the context simply has no segment and its peers reach it over UDP, which is the
+    // module's documented fallback and is counted as unattached on their side.
+    create_own_segment(node);
+#endif
 
     return schedule_periodic_tasks(node);
 }
@@ -10304,24 +10348,58 @@ static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t he
 // *result and returns true; on a timeout that was just a short wait for a due scheduler entry
 // (not the caller's real timeout), returns false so the caller keeps polling.
 // Decodes and dispatches one just-received datagram of `len` bytes now sitting in node->rx_buffer.
-static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port);
+// The one place a datagram enters core, whichever transport carried it - which is what lets the
+// transport be a required parameter rather than something the counting infers. An arrival cannot be
+// recorded without saying where it came from, the same way count_udp() makes a fallback impossible
+// to count without naming its reason. That matters more here than on the send side: a sum like
+// rx_udp + rx_shm agreeing with a packet count would look like proof while a misattributed arrival
+// hid inside it.
+static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
+                                        enum tt_Transport transport);
 
 // rx_buffer itself needs no lock - only the one poller touches it (struct tt_Context.poller_active) - but
 // everything a datagram updates does, so each one is processed under the state lock.
-static tt_ret_t process_datagram(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port) {
+#if tt_SEGMENT_ENABLED
+// Everything waiting in this context's own segment, handed to the same acceptance path a socket
+// arrival takes - the whole point of the seam being that a datagram is a datagram once it is
+// inside. The transport is passed rather than inferred, so an arrival cannot be recorded without
+// saying where it came from.
+//
+// Bounded per call so a writer that keeps the ring full cannot starve the socket: the poll returns
+// and comes back, which is the same fairness the socket drain already has.
+static void drain_own_segment(struct tt_Context* node) {
+    if (node->own_segment == NULL) {
+        return;
+    }
+    for (uint32_t drained = 0; drained < tt_SEGMENT_DRAIN_PER_POLL; drained++) {
+        uint32_t len = 0;
+        if (!segment_read(node->own_segment, node->rx_buffer, (uint32_t)sizeof(node->rx_buffer), &len)) {
+            return; // empty, or a record this mapping could not hold - segment_read() counts that
+        }
+        // The sender's address is not carried in the record: a segment is point to point by
+        // construction, so "who sent this" is the peer whose segment this is - and the datagram's
+        // own header carries the context id the acceptance path actually uses.
+        (void)process_datagram_locked(node, (int32_t)len, 0, 0, tt_TRANSPORT_SHM);
+    }
+}
+#endif
+
+static tt_ret_t process_datagram(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
+                                 enum tt_Transport transport) {
     state_lock(node);
-    tt_ret_t result = process_datagram_locked(node, len, ip, port);
+    tt_ret_t result = process_datagram_locked(node, len, ip, port, transport);
     state_unlock(node);
     return result;
 }
 
-static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port) {
+static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
+                                        enum tt_Transport transport) {
     node->rx_tail = (uint32_t)len;
     node->rx_datagrams++;
     // The receive half of the seam (SHM_PLAN.md stage 0). One place, because there is one place a
     // datagram enters core - and stage 1's segment arrivals will be counted here too rather than
     // beside it, so the two transports are never counted by two different rules.
-    node->rx_datagrams_by_transport[tt_TRANSPORT_UDP]++;
+    node->rx_datagrams_by_transport[transport]++;
     if (node->rx_via_data_port) {
         node->rx_via_data_datagrams++;
     } else {
@@ -10370,7 +10448,7 @@ static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
                 node->rx_clock_ns = tt_get_ns(); // a long drain keeps its stamps within microseconds (D1)
                 since_clock = 1;
             }
-            result = process_datagram(node, len, ip, port);
+            result = process_datagram(node, len, ip, port, tt_TRANSPORT_UDP);
         } else {
             // D4: datagrams the HAL already holds are processed under one lock, up to tt_RX_LOCK_CHUNK of them -
             // a publishing thread waits at most one chunk (OPTIMIZATION_PLAN.md 11.4).
@@ -10385,7 +10463,7 @@ static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
                     node->rx_clock_ns = tt_get_ns();
                     since_clock = 1;
                 }
-                result = process_datagram_locked(node, len, ip, port);
+                result = process_datagram_locked(node, len, ip, port, tt_TRANSPORT_UDP);
             }
             state_unlock(node);
         }
@@ -10427,7 +10505,7 @@ static bool handle_receive_result(struct tt_Context* node, int32_t len, uint32_t
         return true;
     }
 
-    *result = process_datagram(node, len, ip, port);
+    *result = process_datagram(node, len, ip, port, tt_TRANSPORT_UDP);
     return true;
 }
 
@@ -10439,13 +10517,19 @@ static tt_ret_t poll_once_nonblocking(struct tt_Context* node, uint64_t time) {
     while (run_due_entry(node, time, &has_next, &next)) {
     }
 
+#if tt_SEGMENT_ENABLED
+    // Before the socket, because a segment arrival is already in memory and costs no syscall to
+    // find - and because a caller polling non-blocking wants whatever is cheapest to hand back.
+    drain_own_segment(node);
+#endif
+
     uint32_t ip = 0;
     uint16_t port = 0;
     int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
     if (len < 0) {
         return tt_RET_TIMEOUT;
     }
-    return drain_rx(node, process_datagram(node, len, ip, port));
+    return drain_rx(node, process_datagram(node, len, ip, port, tt_TRANSPORT_UDP));
 }
 
 // A negative-timeout poll returns once what fell due has run - every entry due by now, not just the
@@ -10571,6 +10655,15 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
     const uint64_t poll_start = time;
     node->rx_clock_ns = time;
 
+#if tt_SEGMENT_ENABLED
+    // A segment arrival is not something poll() can wait on (SHM_PLAN open question 1 - stage 1 has
+    // no notification by design, so the reader finds records on its own next pass). Draining here,
+    // once per call rather than inside the wait, is what makes that true: the cost is up to one
+    // poll period of latency, which is why stage 1 claims throughput and CPU and explicitly does
+    // not claim latency.
+    drain_own_segment(node);
+#endif
+
     // timeout == 0: one non-blocking pass - run everything due now, drain whatever RX is already
     // waiting, return. No poll()/select() wait at all. For a caller that just wants to make
     // progress and get straight back to its own work (a tight publish loop with -i 0), where a
@@ -10613,7 +10706,7 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
             uint16_t port = 0;
             int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
             if (len >= 0) {
-                return drain_rx(node, process_datagram(node, len, ip, port));
+                return drain_rx(node, process_datagram(node, len, ip, port, tt_TRANSPORT_UDP));
             }
         } else {
             consecutive_scheduler_runs = 0;

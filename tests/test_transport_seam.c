@@ -462,6 +462,67 @@ static void test_every_udp_datagram_has_a_named_reason(void) {
     EXPECT_TRUE(node.segment_unattached_to_udp > 0);
 }
 
+// The first datagram that actually goes over a segment, end to end in one process: one context
+// creates its segment, another writes into it by name, and the first drains it into the same
+// acceptance path a socket arrival takes.
+//
+// This is the arm that makes tx_shm and rx_shm mean anything. Everything before it could pass with
+// the transport permanently inert, because a fallback to UDP is correct behaviour and the counters
+// would still have summed - which is precisely the failure S2 exists to catch at process scope and
+// this catches at function scope.
+static void test_a_datagram_crosses_a_segment(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    // The reader: a context with its own segment, which is what a peer attaches to.
+    struct tt_Context reader;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&reader, &topic, &pub);
+    reader.id = OWNER_ID;
+    reader.entity_id_base = OWNER_INCARNATION;
+    create_own_segment(&reader);
+    EXPECT_TRUE(reader.own_segment != NULL);
+    EXPECT_EQ_INT(1, test_mock_segment_creates);
+
+    // The writer: a second context that reaches the first as a peer. tt_own_address() gives the
+    // mock's own address for both, which is what makes them find each other here.
+    struct tt_Context writer;
+    struct tt_Topic writer_topic;
+    struct tt_Publisher writer_pub;
+    init_node_topic_pub(&writer, &writer_topic, &writer_pub);
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(&reader, &own_ip, &own_port);
+
+    // A datagram the acceptance path will accept: a valid header from the writer.
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = PEER_CONTEXT_ID;
+
+    enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
+    bool took = segment_deliver(&writer, OWNER_ID, own_ip, own_port, &header, sizeof(header), NULL, 0, &reason);
+
+    EXPECT_TRUE(took); // it went over the segment, not to the socket
+    EXPECT_EQ_U32(1, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    EXPECT_EQ_U32(0, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_UDP]);
+    EXPECT_EQ_INT(1, test_mock_segment_attaches); // and it attached to find it
+
+    // The reader finds it on its own next pass - no notification, by design.
+    uint64_t rx_before = reader.rx_datagrams_by_transport[tt_TRANSPORT_SHM];
+    drain_own_segment(&reader);
+    EXPECT_EQ_U32(1, (uint32_t)(reader.rx_datagrams_by_transport[tt_TRANSPORT_SHM] - rx_before));
+    EXPECT_EQ_U32(0, (uint32_t)reader.rx_datagrams_by_transport[tt_TRANSPORT_UDP]);
+
+    // Draining again finds nothing: the record was released, not re-read.
+    drain_own_segment(&reader);
+    EXPECT_EQ_U32(1, (uint32_t)(reader.rx_datagrams_by_transport[tt_TRANSPORT_SHM] - rx_before));
+
+    test_mock_segments_free();
+}
+
 // A received datagram is counted once, on the transport it arrived over.
 static void test_received_datagram_is_counted_as_udp(void) {
     test_mock_reset();
@@ -478,7 +539,7 @@ static void test_received_datagram_is_counted_as_udp(void) {
     memcpy(node.rx_buffer, &header, sizeof(header));
 
     uint64_t before = node.rx_datagrams;
-    (void)process_datagram_locked(&node, (int32_t)sizeof(header), PEER_IP, PEER_PORT);
+    (void)process_datagram_locked(&node, (int32_t)sizeof(header), PEER_IP, PEER_PORT, tt_TRANSPORT_UDP);
 
     EXPECT_EQ_U32((uint32_t)(node.rx_datagrams - before), (uint32_t)node.rx_datagrams_by_transport[tt_TRANSPORT_UDP]);
     EXPECT_EQ_U32(0, (uint32_t)node.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
@@ -496,6 +557,7 @@ int main(void) {
     test_ring_survives_many_wraps();
     test_impossible_length_is_refused_and_does_not_wedge();
     test_every_udp_datagram_has_a_named_reason();
+    test_a_datagram_crosses_a_segment();
     test_received_datagram_is_counted_as_udp();
 
     printf("test_transport_seam: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");

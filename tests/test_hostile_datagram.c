@@ -117,7 +117,7 @@ static void test_a_hostile_datagram_is_a_drop_not_an_error(void) {
         setup(&node);
         int32_t len = hostile_cases[i].write(node.rx_buffer);
 
-        tt_ret_t result = process_datagram(&node, len, SENDER_IP, SENDER_PORT);
+        tt_ret_t result = process_datagram(&node, len, SENDER_IP, SENDER_PORT, tt_TRANSPORT_UDP);
 
         printf("  case: %s\n", hostile_cases[i].name);
         EXPECT_EQ_INT(tt_RET_OK, result);
@@ -157,10 +157,10 @@ static void test_delivery_continues_after_a_hostile_datagram(void) {
         test_mock_now = tt_SECOND;
 
         int32_t hostile_len = hostile_cases[i].write(node.rx_buffer);
-        EXPECT_EQ_INT(tt_RET_OK, process_datagram(&node, hostile_len, SENDER_IP, SENDER_PORT));
+        EXPECT_EQ_INT(tt_RET_OK, process_datagram(&node, hostile_len, SENDER_IP, SENDER_PORT, tt_TRANSPORT_UDP));
 
         int32_t valid_len = write_valid(node.rx_buffer, FRIENDLY_SOURCE);
-        EXPECT_EQ_INT(tt_RET_OK, process_datagram(&node, valid_len, SENDER_IP, SENDER_PORT));
+        EXPECT_EQ_INT(tt_RET_OK, process_datagram(&node, valid_len, SENDER_IP, SENDER_PORT, tt_TRANSPORT_UDP));
 
         printf("  case: %s\n", hostile_cases[i].name);
         EXPECT_EQ_U64(tt_SECOND, node.traffic_last_seen[FRIENDLY_SOURCE]);
@@ -177,7 +177,7 @@ static void test_a_flood_of_wrong_version_logs_once(void) {
     int32_t len = write_wrong_version(node.rx_buffer);
 
     for (int i = 0; i < 100; i++) {
-        EXPECT_EQ_INT(tt_RET_OK, process_datagram(&node, len, SENDER_IP, SENDER_PORT));
+        EXPECT_EQ_INT(tt_RET_OK, process_datagram(&node, len, SENDER_IP, SENDER_PORT, tt_TRANSPORT_UDP));
     }
 
     EXPECT_EQ_U64(100, node.version_mismatch_drops);
