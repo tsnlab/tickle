@@ -1362,6 +1362,20 @@ on, CycloneDDS's shared-memory path is off unless configured. So a single number
 - **engineering arm** - each framework's own shared-memory path against ours, all three explicitly configured;
 - **default arm** - each framework's out-of-the-box configuration against ours, which is what a user actually meets.
 
+**Feasibility settled 2026-09-29, and neither vendor has to be excluded.** The engineering arm needs each vendor's own
+shared-memory path to actually work on the rig, which was an open question and is now checked on the client Pi:
+
+| framework | shared-memory path | what the arm needs |
+|---|---|---|
+| FastDDS | `libfastrtps.so` present; its SHM transport ships **on** | nothing - the default arm and the engineering arm may be the same run, which has to be verified rather than assumed |
+| CycloneDDS 0.10.5 | **available**: `libddsc.so.0.10.5` carries the `CycloneDDS/Domain/SharedMemory` config path (19 matches for SharedMemory/iceoryx), and the Iceoryx bindings are installed (`ros-jazzy-iceoryx-binding-c`, `iceoryx-hoofs`) | `SharedMemory` enabled in its config XML **and `iox-roudi` running** - the daemon is at `/opt/ros/jazzy/bin/iox-roudi`. That is an operational requirement, not a flag |
+| TickLE | the module being built | `tt_SEGMENT_ENABLED`, on by default |
+
+**This corrects an implication in the earlier draft** of this item, which read as though CycloneDDS might have no
+shared-memory path to compare against. It has one. So the incomplete-delivery rule does not get to excuse an arm here:
+if the CycloneDDS engineering arm cannot be made to run, that is a setup failure of ours to report, not a vendor that
+lacks the feature.
+
 Four requirements that the existing campaign does not yet meet, each of which is a way to be accidentally unfair:
 
 1. **Both processes on one host.** Every campaign cell today is cross-host, so the same-host tier has no cells at all.
