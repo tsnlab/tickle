@@ -10427,12 +10427,26 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
 
     // After the null check, not before it: the first version of this line dereferenced node to
     // print the counters and only then asked whether node was NULL.
+    // tx_udp/tx_shm/rx_udp/rx_shm are here as well as in the benchmark's RESULT line (SHM_PLAN
+    // stage 0) because the two instruments reach different runs: the RESULT line covers the native
+    // campaign, and this covers everything that goes through rmw - the acceptance suite runs rclpy
+    // nodes, which have no RESULT line, so without this S2 could assert on the campaign and not on
+    // the acceptance suite. Same names in both, so one grep reads either.
+    //
+    // tx_datagrams stays alongside deliberately rather than being replaced by the split: the two
+    // are produced by the same seam and must agree, so a reader who sees tx_udp + tx_shm differ
+    // from tx_datagrams is looking at a counting defect and not at a transport story.
     TT_LOG_INFO("Node %u traffic: tx_datagrams=%lu rx_datagrams=%lu rx_self_sent=%lu rx_self_sent_data=%lu "
-                "rx_self_sent_data_unicast=%lu rx_via_data=%lu rx_via_well_known=%lu tx_dropped_oversize=%lu",
+                "rx_self_sent_data_unicast=%lu rx_via_data=%lu rx_via_well_known=%lu tx_dropped_oversize=%lu "
+                "tx_udp=%lu tx_shm=%lu rx_udp=%lu rx_shm=%lu",
                 node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
                 (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
                 (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
-                (unsigned long)node->rx_via_well_known_datagrams, (unsigned long)node->tx_dropped_oversize);
+                (unsigned long)node->rx_via_well_known_datagrams, (unsigned long)node->tx_dropped_oversize,
+                (unsigned long)node->tx_datagrams_by_transport[tt_TRANSPORT_UDP],
+                (unsigned long)node->tx_datagrams_by_transport[tt_TRANSPORT_SHM],
+                (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_UDP],
+                (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads

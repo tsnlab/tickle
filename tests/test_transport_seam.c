@@ -98,6 +98,15 @@ static void expect_all_udp(struct tt_Context* node, const char* what) {
     EXPECT_EQ_U32((uint32_t)test_mock_send_call_count, (uint32_t)node->tx_datagrams);
     EXPECT_EQ_U32((uint32_t)test_mock_send_call_count, (uint32_t)node->tx_datagrams_by_transport[tt_TRANSPORT_UDP]);
     EXPECT_EQ_U32(0, (uint32_t)node->tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    // The invariant that survives stage 1, when shm stops being zero: the split and the total come
+    // from the same seam and must agree. A reader who sees them differ is looking at a counting
+    // defect, not a transport story - which is what makes the traffic line's tx_udp/tx_shm
+    // self-checking against the tx_datagrams printed beside them.
+    uint64_t split = 0;
+    for (int transport = 0; transport < tt_TRANSPORT_COUNT; transport++) {
+        split += node->tx_datagrams_by_transport[transport];
+    }
+    EXPECT_EQ_U32((uint32_t)node->tx_datagrams, (uint32_t)split);
     if (test_mock_send_call_count == 0) {
         printf("  %s: nothing was sent, so this arm asserts nothing\n", what);
     }
@@ -185,6 +194,31 @@ static void test_batch_shape_is_counted_per_datagram(void) {
     expect_all_udp(&node, "batch shape");
 }
 
+// The defect that got past the seam: tt_Context is caller-owned and reset_node_state() initialises
+// field by field, so a field added to the struct and not to that function is never zeroed - it is
+// whatever the caller's memory held, plus increments. The per-transport arrays were added that way
+// and read as stack addresses (a run that sent 949,078 datagrams reported tx_udp=140723338891185)
+// until they were reset beside their scalars.
+//
+// It is worth a test rather than a fix alone because the class recurs: every future field here has
+// the same trap, and a counter starting from garbage cannot be told from one the seam never
+// reached - the false negative shaped exactly like the failure these counters exist to catch. The
+// arm fills the context with a non-zero pattern first, because a context that starts zeroed cannot
+// fail this no matter how many fields the reset forgets.
+static void test_reset_zeroes_the_per_transport_counters(void) {
+    struct tt_Context node;
+    memset(&node, 0xAA, sizeof(node));
+    node_init_locks(&node);
+    reset_node_state(&node);
+
+    for (int transport = 0; transport < tt_TRANSPORT_COUNT; transport++) {
+        EXPECT_EQ_U32(0, (uint32_t)node.tx_datagrams_by_transport[transport]);
+        EXPECT_EQ_U32(0, (uint32_t)node.rx_datagrams_by_transport[transport]);
+    }
+    EXPECT_EQ_U32(0, (uint32_t)node.tx_datagrams); // the scalar they must stay beside
+    EXPECT_EQ_U32(0, (uint32_t)node.rx_datagrams);
+}
+
 // A received datagram is counted once, on the transport it arrived over.
 static void test_received_datagram_is_counted_as_udp(void) {
     test_mock_reset();
@@ -211,6 +245,7 @@ int main(void) {
     test_ordinary_publish_is_counted_as_udp();
     test_zerocopy_publish_is_counted_as_udp();
     test_batch_shape_is_counted_per_datagram();
+    test_reset_zeroes_the_per_transport_counters();
     test_received_datagram_is_counted_as_udp();
 
     printf("test_transport_seam: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
