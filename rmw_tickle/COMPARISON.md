@@ -345,17 +345,33 @@ Table rows 7-17. The two deep dives that follow (§2.2a, §2.2b) are where the R
 | c7 | P1, reorder 5% | **73.9** | 67.9 | 31.4 | – |
 | c8 | P1, BEST_EFFORT | **119** | 71.7 | 47.4 | 53.8 |
 
-> **What the shared-memory module costs on these cross-host cells, measured 2026-09-29 on `81deaa53`.** The rows above
-> are the `A` campaign on `9dbffd40`, before the module existed. On current main, with the module enabled as it ships,
-> the same two cells read **112.46 +- 0.09 Mbps** (c1) and **117.19 +- 0.22** (c8), against **114.22 +- 0.13** and
-> **120.60 +- 0.28** for the identical tree with `-Dtt_SEGMENT_ENABLED=0` - n=6 per arm,
-> `experiments/seam_attach_cost.sh`, raw rows `results/seam_attach_cost_fixed_81deaa53_2026-09-29.txt`. That is a cost
-> of **1.57% and 2.91%**, both above WIRE_PLAN 10.4's ~1% floor, plus ~396 kB of peak RSS for the context's own
-> segment. It is not the attach retry: the counters give `tx_udp_unattached=927173` against
-> `shm_attach_attempts=3608`, a ratio of 257.0, so the negative cache works exactly as specified and accounts for
-> about 0.5 Mbps of the 1.76 - the rest is the seam's own per-datagram cost. **These are cells where no peer can ever
-> be same-host, so the cost buys nothing here**, and the user's decision 6 is that using a module must cost no
-> performance. Recorded as a measured fact for that decision, not resolved in this document.
+> **What the shared-memory module costs on these cross-host cells, measured 2026-09-29 on `f938461e`.** The rows
+> above are the `A` campaign on `9dbffd40`, before the module existed. On current main, with the module enabled as it
+> ships, the same two cells read **112.01 +- 0.10 Mbps** (c1) and **117.07 +- 0.22** (c8) against **114.27 +- 0.10**
+> and **120.19 +- 0.52** for the identical tree with `-Dtt_SEGMENT_ENABLED=0` - n=6 per arm,
+> `experiments/seam_attach_cost.sh`, raw rows `results/seam_module_cost_f938461e_2026-09-29.txt`. That is
+> **2.02% and 2.66%**, both above WIRE_PLAN 10.4's ~1% floor, plus ~396 kB of peak RSS for the context's own segment.
+>
+> **The cost decomposes, and the decomposition is measured rather than argued.** A second pair of arms differing only
+> by `-Dtt_SEGMENT_ATTACH_RETRY_SENDS` (256 as shipped against 2^30, i.e. never re-asking) gives
+> **0.56% and 0.52%** (`results/seam_retry_arm_f938461e_2026-09-29.txt`):
+>
+> | | c1 reliable | c8 best-effort |
+> |---|---:|---:|
+> | total module cost | 2.02% | 2.66% |
+> | the negative cache's re-ask interval | 0.56% | 0.52% |
+> | structural: the send path's branch and counters | ~1.46% | ~2.14% |
+>
+> The attach caching itself is sound - the counters give `tx_udp_unattached` 927,173 against `shm_attach_attempts`
+> 3,608, a ratio of 257.0, so it re-asks exactly as specified. Eliding the drain's lock on an empty ring, added in
+> `f938461e` for this reason, did not move these cells at all. **The larger half is the seam on the send path, which
+> every datagram crosses whether or not a segment could ever exist.**
+>
+> **These are cells where no peer can ever be same-host, so the cost buys nothing on them**, and the user's decision 6
+> is that using a module must cost no performance. The concrete option the number argues for is creating the segment
+> lazily, once a same-host peer is actually seen - discovery already knows what it needs - which would remove both the
+> throughput cost and the 396 kB for exactly the deployments that never benefit. Recorded as a measured fact and a
+> named option for that decision, not resolved in this document.
 
 **zenoh-pico is reference material and is not scored here** (§4.4a). `†` is TCP, the only configuration where its
 reliability is real; its c1 lead is a stream protocol coalescing about eleven samples into each segment

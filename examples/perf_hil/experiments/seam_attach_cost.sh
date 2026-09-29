@@ -189,12 +189,14 @@ for scen, d in rows.items():
     pct = 100 * (moff - mon) / mon
     print("  OFF vs ON: %+.2f%%  t=%.2f" % (pct, t))
     if abs(t) <= 2 or abs(pct) <= 1.0:
-        print("VERDICT=NOT_THE_SEAM - compiling the segment out does not recover the throughput (%+.2f%%, t=%.2f)." % (pct, t))
-        print("  The halving is elsewhere in 9dbffd40..d4413383; the next step is a bisect over those commits.")
+        print("VERDICT=NO_DIFFERENCE - the two arms are within the floor of each other (%+.2f%%, t=%.2f)." % (pct, t))
+        print("  Whatever OFF_FLAG removed does not cost measurably at this cell.")
     elif pct > 0:
-        print("VERDICT=FINDING - the seam is the cost. Compiling it out recovers %+.2f%% (t=%.2f)." % (pct, t))
-        print("  Stage 1's p1-p4 figures are not measurable until the failed attach is remembered, and")
-        print("  COMPARISON.md 2.7's cell-8 TickLE row is an artefact of this - including its 'a cell we lose' claim.")
+        print("VERDICT=FINDING - what OFF_FLAG removes costs %+.2f%% at this cell (t=%.2f)." % (pct, t))
+        print("  What that means depends on the flag, and the run's own header says which was passed:")
+        print("    -Dtt_SEGMENT_ENABLED=0                  -> the module's total cost where no peer can be same-host")
+        print("    -Dtt_SEGMENT_ATTACH_RETRY_SENDS=<large> -> the negative cache's re-ask interval alone")
+        print("  Subtracting the second from the first is the structural cost of the seam itself.")
     else:
         print("VERDICT=UNEXPECTED - OFF is SLOWER than ON (%+.2f%%, t=%.2f). No conclusion drawn." % (pct, t))
         print("  A segment path faster compiled in than compiled out is a third thing, and wants its own look.")
