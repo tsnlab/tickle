@@ -670,6 +670,21 @@ struct tt_Context {
         //
         // The success path is the whole discriminator, and it always was.
         uint64_t last_progress_ns;
+        // What this peer's read_index was when we last rang its doorbell. A reader killed while
+        // blocked leaves reader_waiting set in its own header and nobody clears it, so without this
+        // every writer rings - a real sendto() - for every datagram until it gives that peer up.
+        // Measured on a SIGKILL run: 2,853,609 doorbells into a socket nobody was reading.
+        //
+        // A doorbell that produced no drain is not worth repeating, and read_index is how that is
+        // known. Under load the question never arises: a reader that is not blocked never sets the
+        // flag. When it is blocked it has drained everything, so the index has moved since our last
+        // ring and we ring again - which is the case the doorbell exists for.
+        // `doorbell_rung` is not redundant with the index: both start at zero, and so does a fresh
+        // ring's read_index, so without it the very FIRST doorbell reads as one already sent and is
+        // never rung. The test caught that immediately, which is the only reason this comment is
+        // about a fixed bug rather than a shipped one.
+        bool doorbell_rung;
+        uint32_t doorbell_read_index;
     } segment_peers[tt_MAX_CONTEXT_IDS];
     struct tt_SegmentHeader* own_segment;
 #endif

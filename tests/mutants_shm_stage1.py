@@ -54,6 +54,13 @@ MUTANTS = [
         "test_a_sleeping_reader_is_rung_and_a_busy_one_is_not",
     ),
     (
+        "ringing only once for a reader that never answers",
+        "src/tickle.c",
+        "        if (!peer->doorbell_rung || read_index != peer->doorbell_read_index) {",
+        "        if (true) {",
+        "test_a_sleeping_reader_is_rung_and_a_busy_one_is_not",
+    ),
+    (
         "not ringing it for a reader that is awake",
         "src/tickle.c",
         "    if (__atomic_load_n(&segment->reader_waiting, __ATOMIC_SEQ_CST) != 0) {",

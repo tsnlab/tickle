@@ -1538,6 +1538,32 @@ static void test_a_sleeping_reader_is_rung_and_a_busy_one_is_not(void) {
     EXPECT_EQ_U32(9, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
     EXPECT_EQ_U32(0, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_UDP]);
 
+    // **A reader that does not answer is not rung again.** The flag says "asleep" and a reader killed
+    // while blocked leaves it saying that for ever, with nobody to clear it - so without this rule a
+    // writer rings a real sendto() for every datagram it sends to a corpse. Measured on a SIGKILL
+    // run before the rule existed: 2,853,609 doorbells into a socket nobody was reading.
+    //
+    // read_index is what distinguishes the two. A live reader drains before it blocks again, so the
+    // index has moved and the next record rings; a dead one leaves it where it was for ever.
+    int sends_before_repeat = test_mock_send_to_call_count;
+    for (int i = 0; i < 16; i++) {
+        EXPECT_TRUE(
+            segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason));
+    }
+    EXPECT_EQ_INT(sends_before_repeat, test_mock_send_to_call_count); // not one more, for sixteen records
+
+    // And when the reader does answer - it drains, so read_index moves - the next record rings again.
+    // Without this arm the assertion above would also hold for a doorbell that had simply stopped
+    // working, which is the failure that would cost the module everything it just won.
+    uint32_t len = 0;
+    uint32_t from_ip = 0;
+    uint16_t from_port = 0;
+    uint8_t out[tt_SEGMENT_SLOT_BYTES];
+    EXPECT_TRUE(segment_read(owner.own_segment, out, sizeof(out), &len, &from_ip, &from_port));
+    int rung_after_drain = test_mock_send_to_call_count;
+    EXPECT_TRUE(segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason));
+    EXPECT_EQ_INT(rung_after_drain + 1, test_mock_send_to_call_count);
+
     // Awake again: back to costing nothing.
     segment_reader_waiting(&owner, false);
     int after_wake = test_mock_send_to_call_count;

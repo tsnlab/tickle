@@ -952,8 +952,17 @@ static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_
     // circumstance - the receive path drops it before the magic check - so this adds nothing another
     // implementation can parse and nothing that could be mistaken for data.
     if (__atomic_load_n(&segment->reader_waiting, __ATOMIC_SEQ_CST) != 0) {
-        (void)tt_send_to(node, "", 0, ip, port);
-        node->segment_doorbells_sent++;
+        // Once per reader advance, not once per datagram. A reader that has not taken anything since
+        // our last ring did not answer it, and ringing again cannot help - it is dead, or it is
+        // about to wake for the ring we already sent.
+        struct tt_SegmentPeer* peer = &node->segment_peers[context_id];
+        uint32_t read_index = __atomic_load_n(&segment->read_index, __ATOMIC_ACQUIRE);
+        if (!peer->doorbell_rung || read_index != peer->doorbell_read_index) {
+            peer->doorbell_rung = true;
+            peer->doorbell_read_index = read_index;
+            (void)tt_send_to(node, "", 0, ip, port);
+            node->segment_doorbells_sent++;
+        }
     }
     return true;
 }

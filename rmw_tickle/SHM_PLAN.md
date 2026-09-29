@@ -849,10 +849,28 @@ shape this project keeps meeting:
    only in the abandoning branch is now on the traffic line as `shm_gave_up`, beside `shm_doorbells_sent` and
    `shm_doorbells_received`.
 
-**A finding from the same run, not yet fixed:** `shm_doorbells_sent=2,853,609`. A reader killed while blocked
-leaves `reader_waiting` set in its own header and nobody clears it, so every writer rings a doorbell - a real
-`sendto()` - for every datagram until it gives the peer up. The give-up now bounds that at about a second, but
-a second at three hundred thousand datagrams a second is still hundreds of thousands of wasted syscalls.
+**And a finding from the same run, since fixed: `shm_doorbells_sent=2,853,609`.** A reader killed while
+blocked leaves `reader_waiting` set in its own header and nobody clears it, so every writer rang a doorbell - a
+real `sendto()` - for every datagram it sent to the corpse.
+
+**The rule: a doorbell that was not answered is not rung again.** The writer remembers the peer's `read_index`
+at its last ring and does not ring while it has not moved. A live reader drains before it blocks again, so the
+index has always moved and the next record rings, which is the case the doorbell exists for; a dead one leaves
+it where it was for ever and is rung exactly once. Under load the question never arises, because a reader that
+is not blocked never sets the flag.
+
+Measured on the same SIGKILL run: **2,853,609 -> 728,513**. The remainder is the doorbell working rather than
+waste - it is the live phase, where each ring wakes a reader that had gone to sleep, and the alternative to
+that is the 12.2 Mbps and 241 ms this module had before the doorbell existed. Read as phases, the ~2.1 million
+removed are the twenty-one seconds after the kill, which is what the rule was for; that split is inferred from
+the two totals rather than measured per phase.
+
+**A bug the test caught on the way in, worth keeping because it is the same shape as the rest:** the first
+doorbell did not ring. `doorbell_read_index` and a fresh ring's `read_index` both start at zero, so "we have
+already rung at this index" was true before anything had been rung. An explicit `doorbell_rung` flag says
+"never" rather than encoding it as a coincidence of zeroes. The control arm - a reader that drains, after
+which the next record must ring again - is what stops the whole assertion passing for a doorbell that had
+simply stopped working.
 
 **Still owed:** the p1-p4 numbers against WIRE_PLAN 10.4's floors - **not measurable until Plan re-measures cell 1
 with the fix in**, since anything measured against a build paying 87,000 failed syscalls a second would credit the
