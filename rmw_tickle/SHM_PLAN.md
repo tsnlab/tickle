@@ -123,8 +123,34 @@ and it is worth its own commit for exactly that reason.
 **Stage 1 - a segment, with a copy.** Same-host peers exchange datagrams through the segment; the reader copies out on
 arrival. *Must prove:* every acceptance and unit test that passes over UDP passes over the segment, unchanged; the
 `samehost` acceptance passes; a datagram that should be refused (wrong version, incompatible QoS, wrong context) is
-refused identically; and it beats loopback UDP on latency and CPU per sample at p1-p4 by more than 2xSE with nothing
-worse by the same rule.
+refused identically; and it beats loopback UDP on **throughput and CPU per sample** at p1-p4 by more than 2xSE with
+nothing worse by the same rule.
+
+**Stage 1's claim is deliberately scoped to throughput and CPU, and its latency cells are VOID by construction (decided
+2026-09-29; Plan's call, since it owns the measurement).** Dev asked, before building the ring, whether stage 1 should
+carry a notification mechanism. It should not - and the reason it should not also decides what stage 1 may claim:
+
+- **A UDP reader is woken by the kernel** when a datagram arrives: the poll blocks on the socket, which is why
+  `wait=block` is a scored case at all. **A segment with no notification wakes the reader on its own next poll tick
+  instead**, so a stage 1 latency figure would be dominated by up to one poll period - about 100 us - rather than by the
+  transport. Shared memory would *lose* on latency for a reason that has nothing to do with shared memory, and the loss
+  would be attributed to it.
+- **That is not a smaller version of the design, it is a different wait model.** A reader watching a socket and a segment
+  has to block on both, so the notification is not an optimisation on top of the ring - it is what lets a shm reader block
+  at all. Building one now means building it on a guess and measuring afterwards, which is the wrong order here: open
+  question 1 (futex/eventfd versus spin) is a measurement, not a preference.
+- **So** stage 1 builds no notification, the ring has no wakeup mechanism to undo when the measurement picks one, and the
+  **latency cells are void for the shm arm with the reason stated** rather than printed as numbers someone will quote.
+  Throughput and CPU per sample are unaffected by the wait model at saturation, and are the honest claim.
+- **One requirement that keeps the rows unreadable-in-the-wrong-way impossible: every row states the reader's wait
+  model.** The rmw rows already carry `wait=block|poll`; the native shm arm must say it is timer-woken. A timer-woken shm
+  latency beside a socket-woken UDP latency is an invitation to the wrong conclusion, and a row that cannot be misread is
+  cheaper than a correction.
+
+**Stage 1a - notification, as its own experiment.** Three arms on the same ring - futex, eventfd, and a bounded spin -
+measured at p1 for latency and p4 for throughput, with CPU per sample as the cost side and **g9's in-process path as the
+floor** (a same-host latency below in-process delivery means the harness is wrong, not that the transport is fast). Only
+after this do the latency cells stop being void, and only then does this plan claim "beats loopback UDP on latency".
 
 **Stage 2 - lending.** The reader reads in place and releases. *Must prove:* the stage 1 numbers improve again, and by
 how much - this is the number that says what lending itself bought; no record is reused before release, shown by a test
