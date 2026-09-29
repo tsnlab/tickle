@@ -510,6 +510,80 @@ static enum tt_SegmentAttach segment_header_check(const struct tt_SegmentHeader*
     return tt_SEGMENT_ATTACHED;
 }
 
+// The ring. Single writer (the segment's owner) and single reader (the peer that attached), which
+// is what lets the two indices be ordinary loads and stores with acquire/release rather than a
+// lock: each index has exactly one writer, and each side reads the other's.
+//
+// THE RULE WHOSE FAILURE IS SILENT: a writer must never reuse a slot the reader has not released.
+// Every other error here announces itself - a refused write returns false, a bad header is a
+// counted attach failure - but overwriting a slot in flight hands the reader a datagram that
+// changes underneath it, and it is detected by nothing. So the writer refuses when the ring is
+// full, which costs a fallback to UDP for that datagram, and the test for it sits beside this code
+// rather than after it.
+static uint8_t* segment_slot(struct tt_SegmentHeader* header, uint32_t index) {
+    uint8_t* base = (uint8_t*)header + sizeof(*header);
+    size_t stride = sizeof(struct tt_SegmentSlot) + header->slot_bytes;
+    return base + ((size_t)(index & (header->slots - 1U)) * stride);
+}
+
+// Bytes a segment of this shape occupies, so the writer that creates it and the reader that maps it
+// agree without either one recomputing the layout from parts.
+static size_t segment_bytes(uint32_t slots, uint32_t slot_bytes) {
+    return sizeof(struct tt_SegmentHeader) + ((size_t)slots * (sizeof(struct tt_SegmentSlot) + slot_bytes));
+}
+
+// One datagram into the ring. False when it will not fit the slot, or when the ring is full - both
+// leave the ring untouched and both mean "send this over UDP instead", which is the module's own
+// documented failure mode rather than an error.
+static bool segment_write(struct tt_SegmentHeader* header, const void* buf, uint32_t len) {
+    if (len > header->slot_bytes) {
+        return false;
+    }
+    uint32_t write_index = __atomic_load_n(&header->write_index, __ATOMIC_RELAXED); // ours to move
+    uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_ACQUIRE);   // theirs
+    if (write_index - read_index >= header->slots) {
+        return false; // full: the oldest slot is still in flight, and it is not ours to reuse
+    }
+
+    uint8_t* slot = segment_slot(header, write_index);
+    struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)slot;
+    memcpy(slot + sizeof(*slot_header), buf, len);
+    slot_header->length = len;
+    slot_header->reserved = 0;
+    // Release: the payload and the length above must be visible before the index that publishes
+    // them, or a reader can see a slot it is entitled to read and find the previous datagram in it.
+    __atomic_store_n(&header->write_index, write_index + 1U, __ATOMIC_RELEASE);
+    return true;
+}
+
+// One datagram out of the ring, copied (stage 1 copies on arrival; lending is stage 2). False when
+// the ring is empty. `size` is the caller's buffer, and a record larger than it is refused rather
+// than truncated - a truncated datagram would be handed to the acceptance path as if it were whole.
+static bool segment_read(struct tt_SegmentHeader* header, void* buf, uint32_t size, uint32_t* len) {
+    uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_RELAXED); // ours to move
+    uint32_t write_index = __atomic_load_n(&header->write_index, __ATOMIC_ACQUIRE);
+    if (write_index == read_index) {
+        return false; // empty
+    }
+
+    uint8_t* slot = segment_slot(header, read_index);
+    const struct tt_SegmentSlot* slot_header = (const struct tt_SegmentSlot*)slot;
+    uint32_t length = slot_header->length;
+    if (length > header->slot_bytes || length > size) {
+        // A length the slot cannot hold means the segment is not what it claims - the writer is
+        // broken or the mapping is not ours. Release the slot so the ring does not wedge, and let
+        // the caller count it; do not try to read the payload.
+        __atomic_store_n(&header->read_index, read_index + 1U, __ATOMIC_RELEASE);
+        return false;
+    }
+    memcpy(buf, slot + sizeof(*slot_header), length);
+    *len = length;
+    // Release only after the copy: this is what makes the no-reuse rule enforceable from the
+    // writer's side, because until this store the writer still counts the slot as in flight.
+    __atomic_store_n(&header->read_index, read_index + 1U, __ATOMIC_RELEASE);
+    return true;
+}
+
 // Counted where it happens rather than by the caller, so a new attach path cannot forget to - the
 // same reason the transport counts live in the seam and not at the twelve send sites.
 static void note_attach(struct tt_Context* node, enum tt_SegmentAttach reason) {

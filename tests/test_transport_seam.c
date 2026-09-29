@@ -306,6 +306,115 @@ static void test_segment_header_catches_what_the_name_cannot(void) {
                   (int)segment_header_check(&header, OWNER_IP, OWNER_PORT, OWNER_ID, OWNER_INCARNATION));
 }
 
+#define RING_SLOTS 4
+#define RING_SLOT_BYTES 64
+
+// A segment laid out in ordinary memory. The ring is the same code whether the pages came from
+// shm_open or from the stack, and everything worth asserting about it is reachable here - which is
+// why the ring lives in core and only the mapping is the HAL's.
+static struct tt_SegmentHeader* make_ring(void* storage, uint32_t slots, uint32_t slot_bytes) {
+    struct tt_SegmentHeader* header = storage;
+    memset(storage, 0, segment_bytes(slots, slot_bytes));
+    header->magic = tt_SEGMENT_MAGIC;
+    header->version = tt_SEGMENT_VERSION;
+    header->owner_ip = OWNER_IP;
+    header->owner_port = OWNER_PORT;
+    header->owner_context_id = OWNER_ID;
+    header->incarnation = OWNER_INCARNATION;
+    header->slots = slots;
+    header->slot_bytes = slot_bytes;
+    return header;
+}
+
+static void test_ring_round_trips_a_datagram(void) {
+    uint8_t storage[4096];
+    struct tt_SegmentHeader* ring = make_ring(storage, RING_SLOTS, RING_SLOT_BYTES);
+
+    uint8_t out[RING_SLOT_BYTES];
+    uint32_t len = 0;
+    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len)); // empty to begin with
+
+    const char* payload = "a datagram";
+    EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1));
+    EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len));
+    EXPECT_EQ_U32((uint32_t)strlen(payload) + 1, len);
+    EXPECT_EQ_INT(0, strcmp(payload, (const char*)out));
+    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len)); // and empty again
+
+    // More than a slot holds is refused rather than written short.
+    uint8_t oversize[RING_SLOT_BYTES + 1];
+    memset(oversize, 'x', sizeof(oversize));
+    EXPECT_TRUE(!segment_write(ring, oversize, (uint32_t)sizeof(oversize)));
+}
+
+// The rule whose failure is silent corruption rather than an error: a full ring refuses, it does
+// not overwrite. Asserted by reading the queue back afterwards, not by the return value alone -
+// a writer that returned false AND overwrote would pass a check of the boolean.
+static void test_full_ring_refuses_rather_than_overwriting(void) {
+    uint8_t storage[4096];
+    struct tt_SegmentHeader* ring = make_ring(storage, RING_SLOTS, RING_SLOT_BYTES);
+
+    for (uint32_t i = 0; i < RING_SLOTS; i++) {
+        char payload[RING_SLOT_BYTES];
+        snprintf(payload, sizeof(payload), "record-%u", i);
+        EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1));
+    }
+
+    // Full. Several attempts, because a writer that overwrites once per call would still leave the
+    // count right after one.
+    for (int attempt = 0; attempt < 3; attempt++) {
+        EXPECT_TRUE(!segment_write(ring, "intruder", 9));
+    }
+
+    // The queued records are the ones written, in order, untouched by the refused writes.
+    for (uint32_t i = 0; i < RING_SLOTS; i++) {
+        char expected[RING_SLOT_BYTES];
+        snprintf(expected, sizeof(expected), "record-%u", i);
+        uint8_t out[RING_SLOT_BYTES];
+        uint32_t len = 0;
+        EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len));
+        EXPECT_EQ_INT(0, strcmp(expected, (const char*)out));
+    }
+
+    // And a released slot is reusable, or the ring would wedge after one fill.
+    EXPECT_TRUE(segment_write(ring, "after drain", 12));
+}
+
+// Free-running indices, so the ring keeps working past the point where they wrap the slot count.
+static void test_ring_survives_many_wraps(void) {
+    uint8_t storage[4096];
+    struct tt_SegmentHeader* ring = make_ring(storage, RING_SLOTS, RING_SLOT_BYTES);
+
+    for (uint32_t i = 0; i < RING_SLOTS * 10U; i++) {
+        char payload[RING_SLOT_BYTES];
+        snprintf(payload, sizeof(payload), "wrap-%u", i);
+        EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1));
+
+        uint8_t out[RING_SLOT_BYTES];
+        uint32_t len = 0;
+        EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len));
+        EXPECT_EQ_INT(0, strcmp(payload, (const char*)out));
+    }
+}
+
+// A length the slot could not hold means the segment is not what it claims. The slot is released so
+// the ring cannot wedge, and nothing of the payload is handed up.
+static void test_impossible_length_is_refused_and_does_not_wedge(void) {
+    uint8_t storage[4096];
+    struct tt_SegmentHeader* ring = make_ring(storage, RING_SLOTS, RING_SLOT_BYTES);
+
+    EXPECT_TRUE(segment_write(ring, "good", 5));
+    EXPECT_TRUE(segment_write(ring, "also good", 10));
+    // Corrupt the first record's length, as a broken writer or a foreign mapping would.
+    ((struct tt_SegmentSlot*)segment_slot(ring, 0))->length = RING_SLOT_BYTES + 1000U;
+
+    uint8_t out[RING_SLOT_BYTES];
+    uint32_t len = 0;
+    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len)); // refused
+    EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len));  // and the ring moved on
+    EXPECT_EQ_INT(0, strcmp("also good", (const char*)out));
+}
+
 // A received datagram is counted once, on the transport it arrived over.
 static void test_received_datagram_is_counted_as_udp(void) {
     test_mock_reset();
@@ -335,6 +444,10 @@ int main(void) {
     test_reset_zeroes_the_per_transport_counters();
     test_segment_name_separates_peers_that_differ();
     test_segment_header_catches_what_the_name_cannot();
+    test_ring_round_trips_a_datagram();
+    test_full_ring_refuses_rather_than_overwriting();
+    test_ring_survives_many_wraps();
+    test_impossible_length_is_refused_and_does_not_wedge();
     test_received_datagram_is_counted_as_udp();
 
     printf("test_transport_seam: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");

@@ -232,6 +232,29 @@ struct tt_SegmentHeader {
     uint8_t owner_context_id;
     uint8_t reserved2;
     uint32_t incarnation; // per launch: distinguishes a re-handed context id from its predecessor
+
+    // The ring, single writer (the owner) and single reader (the peer that attached). Fixed-size
+    // slots rather than a byte stream: a datagram never straddles the wrap, so a reader never sees
+    // half a record and there is no partial-write state to recover from after a writer dies
+    // mid-record. The cost is the slack in a slot larger than its datagram, which is memory and not
+    // correctness.
+    //
+    // The indices are plain uint32_t accessed with __atomic_* builtins rather than _Atomic, for the
+    // reason this header already gives elsewhere: _Atomic is not a C++ type and these structures
+    // are read from C++ too. They are free-running counters, not offsets - `slots` is a power of
+    // two and the slot is index & (slots - 1), so "full" is a subtraction that stays correct across
+    // the wrap where a comparison of masked offsets would not.
+    uint32_t slots;      // power of two
+    uint32_t slot_bytes; // payload capacity of one slot
+    uint32_t write_index;
+    uint32_t read_index;
+};
+
+// One slot. `length` is the datagram's own length; the payload follows, and the slot is
+// header->slot_bytes of payload capacity whatever the datagram's length.
+struct tt_SegmentSlot {
+    uint32_t length;
+    uint32_t reserved;
 };
 
 // Why an attach failed. Counted rather than collapsed into a boolean because all of these fall back
