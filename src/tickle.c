@@ -478,6 +478,44 @@ static inline void note_reached(struct tt_Context* node, const struct tt_Peer* p
 // `transport_for()` is where stage 1 chooses; for now every peer is UDP, by construction and not by
 // default, so stage 0's own test - every datagram udp, shm zero - is a real assertion about the
 // seam being wired and about the counters working before anything depends on them.
+// The name a reader computes for a peer's segment: (address, port, context id), every field from
+// ordinary discovery (struct tt_Peer), so no new discovery mechanism and no wire change. The
+// address is what makes it unique where the context id alone is not - two network namespaces share
+// /dev/shm but never an address, which is the same reason registry_path() keys on it.
+//
+// Returns the length written, or a negative value if it would not fit - never a truncated name,
+// because a truncated name is a name two different peers could share.
+static int32_t segment_name(char* buf, size_t size, uint32_t ip, uint16_t port, uint8_t context_id) {
+    int written = snprintf(buf, size, "/dev/shm/tickle-seg-%u.%u.%u.%u-%u-%u", (ip >> 24) & MASK_8BIT,
+                           (ip >> 16) & MASK_8BIT, (ip >> BITS_IN_1BYTE) & MASK_8BIT, ip & MASK_8BIT, port, context_id);
+    return written > 0 && (size_t)written < size ? written : -1;
+}
+
+// What a reader checks after attaching, and the reason the name alone is not enough: see
+// struct tt_SegmentHeader. `expected_incarnation` is 0 on a first attach, when any incarnation is
+// acceptable and the caller records what it found; on a later check it is what was recorded, and a
+// different value means the peer we knew has been replaced by one that happens to hold the same
+// context id.
+static enum tt_SegmentAttach segment_header_check(const struct tt_SegmentHeader* header, uint32_t ip, uint16_t port,
+                                                  uint8_t context_id, uint32_t expected_incarnation) {
+    if (header->magic != tt_SEGMENT_MAGIC || header->version != tt_SEGMENT_VERSION) {
+        return tt_SEGMENT_BAD_HEADER;
+    }
+    if (header->owner_ip != ip || header->owner_port != port || header->owner_context_id != context_id) {
+        return tt_SEGMENT_WRONG_OWNER;
+    }
+    if (expected_incarnation != 0 && header->incarnation != expected_incarnation) {
+        return tt_SEGMENT_STALE;
+    }
+    return tt_SEGMENT_ATTACHED;
+}
+
+// Counted where it happens rather than by the caller, so a new attach path cannot forget to - the
+// same reason the transport counts live in the seam and not at the twelve send sites.
+static void note_attach(struct tt_Context* node, enum tt_SegmentAttach reason) {
+    node->segment_attach[reason]++;
+}
+
 static enum tt_Transport transport_for(const struct tt_Context* node, uint32_t ip, uint16_t port) {
     (void)node;
     (void)ip;
@@ -2328,6 +2366,12 @@ static void reset_node_state(struct tt_Context* node) {
     for (int transport = 0; transport < tt_TRANSPORT_COUNT; transport++) {
         node->tx_datagrams_by_transport[transport] = 0;
         node->rx_datagrams_by_transport[transport] = 0;
+    }
+    // Reset with them, for the reason the pair above exists: a field added to this struct and not to
+    // this function is never zero, and a counter that starts from garbage cannot be told from one
+    // the code never reached.
+    for (int reason = 0; reason < tt_SEGMENT_ATTACH_COUNT; reason++) {
+        node->segment_attach[reason] = 0;
     }
     node->summaries_skipped = 0;
     node->summaries_ridden = 0;

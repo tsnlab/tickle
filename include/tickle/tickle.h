@@ -205,6 +205,50 @@ struct tt_Node {
 // transport needs a value here and no new fields anywhere.
 enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT };
 
+// A shared-memory segment's own header, validated by a reader after it attaches (SHM_PLAN.md stage
+// 1). The name a reader computes - (peer address, peer port, peer context id), all from ordinary
+// discovery - is enough to be unique across network namespaces, because the address is exactly what
+// separates them. It is NOT enough to be certain, and this header is the difference.
+//
+// What the name cannot see: a context id is re-handed once its holder dies, so a segment left by a
+// dead context legitimately carries the name a new reader computes, and the triple has nothing in
+// it that tells one incarnation from the next. Attaching to that segment would not fail - it would
+// read a dead peer's records as the live peer's. The header turns that into a detected mismatch and
+// a fall back to UDP, which is the same move the wire already makes with its version check, in the
+// one place a wire check cannot reach.
+//
+// `incarnation` is drawn per launch from the same clock as tt_Context.entity_id_base. It is not
+// derivable by the peer, so it travels here rather than on the wire: stage 0's claim is that the
+// wire is untouched, and the address already distinguishes what a wire token would.
+#define tt_SEGMENT_MAGIC 0x544b5347U // "TKSG", checked before anything else in the mapping is read
+#define tt_SEGMENT_VERSION 1
+
+struct tt_SegmentHeader {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t reserved;
+    uint32_t owner_ip; // the three fields the reader computed the name from, echoed back to be checked
+    uint16_t owner_port;
+    uint8_t owner_context_id;
+    uint8_t reserved2;
+    uint32_t incarnation; // per launch: distinguishes a re-handed context id from its predecessor
+};
+
+// Why an attach failed. Counted rather than collapsed into a boolean because all of these fall back
+// to UDP safely and therefore look identical from outside - which means a module that is
+// permanently inert in the field is indistinguishable from one correctly deciding "not same host".
+// S2 catches an inert module in a two-namespace pair; only a counter catches it in a deployment.
+// Same shape as the zero-copy counter that reported nothing while working (g15).
+enum tt_SegmentAttach {
+    tt_SEGMENT_ATTACHED = 0,
+    tt_SEGMENT_ABSENT,      // no such segment: a different host, or a peer built without the module
+    tt_SEGMENT_REFUSED,     // present but not openable: permissions, or another user's segment
+    tt_SEGMENT_BAD_HEADER,  // magic or version wrong: not ours, or a version we cannot read
+    tt_SEGMENT_WRONG_OWNER, // header's triple is not the peer we computed the name for: a collision
+    tt_SEGMENT_STALE,       // right owner, different incarnation: the peer we knew has been replaced
+    tt_SEGMENT_ATTACH_COUNT
+};
+
 struct tt_Context {
     uint8_t id;
     uint32_t endpoint_count;
@@ -452,6 +496,10 @@ struct tt_Context {
     // to ask how many went each way, per shape of send, which is what these answer.
     uint64_t tx_datagrams_by_transport[tt_TRANSPORT_COUNT];
     uint64_t rx_datagrams_by_transport[tt_TRANSPORT_COUNT];
+    // Why segment attaches failed, indexed by enum tt_SegmentAttach (SHM_PLAN.md stage 1). See that
+    // enum for why the reason is kept rather than a yes/no: every failure here falls back to UDP
+    // and works, so a module that never attaches anywhere is invisible without it.
+    uint32_t segment_attach[tt_SEGMENT_ATTACH_COUNT];
     uint64_t summaries_skipped; // short-lease summaries not sent: the node's traffic had reached every peer
     uint64_t summaries_ridden;  // once-a-second summaries sent just ahead of a data send
     uint64_t rx_datagrams;

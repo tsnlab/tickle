@@ -215,8 +215,95 @@ static void test_reset_zeroes_the_per_transport_counters(void) {
         EXPECT_EQ_U32(0, (uint32_t)node.tx_datagrams_by_transport[transport]);
         EXPECT_EQ_U32(0, (uint32_t)node.rx_datagrams_by_transport[transport]);
     }
+    for (int reason = 0; reason < tt_SEGMENT_ATTACH_COUNT; reason++) {
+        EXPECT_EQ_U32(0, node.segment_attach[reason]); // added later than the pair above, same trap
+    }
     EXPECT_EQ_U32(0, (uint32_t)node.tx_datagrams); // the scalar they must stay beside
     EXPECT_EQ_U32(0, (uint32_t)node.rx_datagrams);
+}
+
+#define SEG_NAME_MAX 128
+#define OWNER_IP 0x0a4d0002
+#define OWNER_PORT 8282
+#define OWNER_ID 7
+#define OWNER_INCARNATION 0x12345678U
+
+static struct tt_SegmentHeader valid_header(void) {
+    struct tt_SegmentHeader header;
+    memset(&header, 0, sizeof(header));
+    header.magic = tt_SEGMENT_MAGIC;
+    header.version = tt_SEGMENT_VERSION;
+    header.owner_ip = OWNER_IP;
+    header.owner_port = OWNER_PORT;
+    header.owner_context_id = OWNER_ID;
+    header.incarnation = OWNER_INCARNATION;
+    return header;
+}
+
+// The name is built from what discovery already knows, and its whole job is to be different for
+// peers that are different. The two namespaces case is the one it exists for: same context id,
+// different address, and the registry keys on the address for the same reason.
+static void test_segment_name_separates_peers_that_differ(void) {
+    char a[SEG_NAME_MAX];
+    char b[SEG_NAME_MAX];
+
+    EXPECT_TRUE(segment_name(a, sizeof(a), OWNER_IP, OWNER_PORT, OWNER_ID) > 0);
+
+    // Same id, different address - two network namespaces on one host.
+    EXPECT_TRUE(segment_name(b, sizeof(b), OWNER_IP + 1, OWNER_PORT, OWNER_ID) > 0);
+    EXPECT_TRUE(strcmp(a, b) != 0);
+
+    // Same address and id, different port.
+    EXPECT_TRUE(segment_name(b, sizeof(b), OWNER_IP, OWNER_PORT + 1, OWNER_ID) > 0);
+    EXPECT_TRUE(strcmp(a, b) != 0);
+
+    // Same address and port, different id - two contexts in one namespace.
+    EXPECT_TRUE(segment_name(b, sizeof(b), OWNER_IP, OWNER_PORT, OWNER_ID + 1) > 0);
+    EXPECT_TRUE(strcmp(a, b) != 0);
+
+    // And the same peer twice is the same name, or a reader could never find a writer at all.
+    EXPECT_TRUE(segment_name(b, sizeof(b), OWNER_IP, OWNER_PORT, OWNER_ID) > 0);
+    EXPECT_EQ_INT(0, strcmp(a, b));
+
+    // A buffer too small is refused rather than truncated: a truncated name is a name two different
+    // peers could share, which is the one outcome the naming exists to prevent.
+    char tiny[8];
+    EXPECT_TRUE(segment_name(tiny, sizeof(tiny), OWNER_IP, OWNER_PORT, OWNER_ID) < 0);
+}
+
+// What the name cannot see, and therefore what the header is for.
+static void test_segment_header_catches_what_the_name_cannot(void) {
+    struct tt_SegmentHeader header = valid_header();
+
+    // The ordinary case: right peer, first attach, any incarnation accepted.
+    EXPECT_EQ_INT((int)tt_SEGMENT_ATTACHED, (int)segment_header_check(&header, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
+
+    // Not ours, or a version this build cannot read. Checked before anything else is believed.
+    header.magic = tt_SEGMENT_MAGIC + 1;
+    EXPECT_EQ_INT((int)tt_SEGMENT_BAD_HEADER, (int)segment_header_check(&header, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
+    header = valid_header();
+    header.version = tt_SEGMENT_VERSION + 1;
+    EXPECT_EQ_INT((int)tt_SEGMENT_BAD_HEADER, (int)segment_header_check(&header, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
+
+    // A segment whose owner is not the peer the name was computed for - a collision. Each field of
+    // the triple separately, because one of them agreeing is not the claim.
+    header = valid_header();
+    EXPECT_EQ_INT((int)tt_SEGMENT_WRONG_OWNER,
+                  (int)segment_header_check(&header, OWNER_IP + 1, OWNER_PORT, OWNER_ID, 0));
+    EXPECT_EQ_INT((int)tt_SEGMENT_WRONG_OWNER,
+                  (int)segment_header_check(&header, OWNER_IP, OWNER_PORT + 1, OWNER_ID, 0));
+    EXPECT_EQ_INT((int)tt_SEGMENT_WRONG_OWNER,
+                  (int)segment_header_check(&header, OWNER_IP, OWNER_PORT, OWNER_ID + 1, 0));
+
+    // The case that has no wire equivalent: the right owner triple, a different incarnation. A
+    // context id is re-handed when its holder dies, so this segment legitimately carries the name a
+    // new reader computes - and reading it would hand a dead peer's records to a live one. Only the
+    // incarnation separates them, and it is why the header exists at all.
+    EXPECT_EQ_INT((int)tt_SEGMENT_STALE,
+                  (int)segment_header_check(&header, OWNER_IP, OWNER_PORT, OWNER_ID, OWNER_INCARNATION + 1));
+    // Same incarnation as recorded: the peer we attached to is the peer still there.
+    EXPECT_EQ_INT((int)tt_SEGMENT_ATTACHED,
+                  (int)segment_header_check(&header, OWNER_IP, OWNER_PORT, OWNER_ID, OWNER_INCARNATION));
 }
 
 // A received datagram is counted once, on the transport it arrived over.
@@ -246,6 +333,8 @@ int main(void) {
     test_zerocopy_publish_is_counted_as_udp();
     test_batch_shape_is_counted_per_datagram();
     test_reset_zeroes_the_per_transport_counters();
+    test_segment_name_separates_peers_that_differ();
+    test_segment_header_catches_what_the_name_cannot();
     test_received_datagram_is_counted_as_udp();
 
     printf("test_transport_seam: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
