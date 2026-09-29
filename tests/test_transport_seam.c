@@ -142,6 +142,49 @@ static void test_zerocopy_publish_is_counted_as_udp(void) {
     expect_all_udp(&node, "zerocopy publish");
 }
 
+// The batch shape. send_datagram() sends to one destination through send_datagram_to() and to
+// several as one seam_send_batch(), and a batch is several datagrams in one call - so it is the
+// shape most likely to be counted once instead of per datagram, which is exactly the under-count
+// that would make a half-wired seam look fine.
+//
+// Reached with two peers rather than with a fragmenting payload, deliberately. send_fragments()
+// uses the same seam_send_batch(), but fragmentation is compiled in only by defining
+// tt_MAX_SAMPLE_LENGTH above tt_MAX_BUFFER_LENGTH before including tickle.h, which this binary does
+// not - so an arm written against fragments here would compile away to nothing while looking like
+// coverage. Two peers exercise the same seam function unconditionally.
+//
+// The fragment case is not left unguarded: tests/test_data_frag.c is built with fragmentation in
+// and asserts the per-fragment datagram count directly. That is not a claim from reading - a mutant
+// counting a batch once instead of per datagram fails test_data_frag.c:508/523/550 before this file
+// even runs.
+static void test_batch_shape_is_counted_per_datagram(void) {
+    test_mock_reset();
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        pub.peers[i].context_id = tt_CONTEXT_ID_INVALID;
+    }
+    pub.peers[0].context_id = PEER_CONTEXT_ID;
+    pub.peers[0].ip = PEER_IP;
+    pub.peers[0].port = PEER_PORT;
+    pub.peers[1].context_id = PEER_CONTEXT_ID + 1;
+    pub.peers[1].ip = PEER_IP + 1;
+    pub.peers[1].port = PEER_PORT;
+
+    for (uint32_t i = 0; i < SAMPLES; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));
+    }
+
+    // The arm only means something if a batch actually happened: without this, two peers that
+    // resolved to one destination would send one datagram each and the assertion below would pass
+    // while testing the single-destination path a second time.
+    EXPECT_TRUE(test_mock_send_batch_call_count > 0);
+    EXPECT_TRUE(test_mock_send_call_count > SAMPLES); // more datagrams than samples, i.e. per peer
+    expect_all_udp(&node, "batch shape");
+}
+
 // A received datagram is counted once, on the transport it arrived over.
 static void test_received_datagram_is_counted_as_udp(void) {
     test_mock_reset();
@@ -167,6 +210,7 @@ static void test_received_datagram_is_counted_as_udp(void) {
 int main(void) {
     test_ordinary_publish_is_counted_as_udp();
     test_zerocopy_publish_is_counted_as_udp();
+    test_batch_shape_is_counted_per_datagram();
     test_received_datagram_is_counted_as_udp();
 
     printf("test_transport_seam: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
