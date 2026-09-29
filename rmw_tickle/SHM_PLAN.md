@@ -31,9 +31,22 @@ Three attachment points, all of them already present in core for UDP:
 | Receive | hand core a datagram and, later, release it | the whole acceptance path, unchanged |
 | Peer lifecycle | create, attach to, detach from and reclaim a segment | when a peer appears, times out or is replaced |
 
-The transport choice belongs to core because core already knows what "same host" means: g8's host registry in /dev/shm
-gives each context on a host an id of its own, and a peer discovered with the same host identity is a candidate for
-this transport. **No new discovery mechanism.** If the module is not built, or the peer is not on this host, or attach
+**Corrected 2026-09-29, and the correction matters more than the claim it replaces.** This section said the transport
+choice rests on "g8's host registry in /dev/shm gives each context on a host an id of its own". **It does not: that
+registry is keyed per network, not per host.** `registry_path()` builds `tickle-context-ids-<port>-<addr>-<broadcast>`,
+and six of them exist on this machine as this is written, including `tickle-context-ids-8282-0.0.0.0-10.77.0.255` beside
+`tickle-context-ids-8282-0.0.0.0-192.168.10.255`. That is correct for what the registry is for - an id must be unique per
+network - and it means **two contexts in different namespaces can both hold context id 5.**
+
+The consequence is exactly the failure section 1 is most concerned with, arriving through naming rather than through the
+protocol: **a segment named by context id would collide across the very pair S2 runs in.** Two contexts would open the
+same segment, each believing it was the peer's, and nothing would report an error - they would read each other's records.
+
+**What is true, and is what the transport choice actually rests on:** `/dev/shm` is shared across network namespaces -
+verified by creating a file in one and reading it from another with the same inode, and stated already at
+`hal_linux.c:368` in the code that depends on it, "two network namespaces with different addresses share /dev/shm but
+never an address". So two namespaces on one machine are a same-host pair, which is what makes S2's environment represent
+what this module has to serve. **No new discovery mechanism.** If the module is not built, or the peer is not on this host, or attach
 fails, the peer is reached over UDP exactly as today - that fallback path is the module's own failure mode, and it is
 silent by design in the sense that correctness does not depend on it, but it is counted so a user can see it happened.
 
@@ -50,8 +63,27 @@ Decisions to make explicitly, because each one has a failure mode that only show
 - **Single writer, many readers.** The only writer is the owning context, which removes the general multi-writer
   concurrency problem. Readers coordinate with the writer through a per-record sequence and the release accounting
   below.
-- **Naming and permissions.** A name derived from the context id (so a stale segment is identifiable), created with
-  the owner's own user and no wider access. A segment a process cannot open is a fallback to UDP, not an error.
+- **Naming (decided 2026-09-29, Dev's proposal with two additions).** The segment is named from **(peer address, peer
+  port, peer context id)**, all three already in `struct tt_Peer` from ordinary discovery and known to both sides. The
+  address is what differs between two namespaces, so the triple is unique where the id alone is not - for the same reason
+  the id registry keys on it. **No wire change and no host token in the announce:** the address already distinguishes what
+  a token would, and stage 0's claim is that the wire is untouched. "Are we on the same host" is then answered by
+  *attempting to attach*: if the segment opens we are, if it does not we use UDP, which is the fallback this section
+  already describes rather than a new mechanism. A HAL-provided segment on FreeRTOS can key the same triple however it
+  likes.
+  - **Addition 1, which is what makes the naming safe rather than merely unique: never trust the name.** The segment
+    carries a header - magic, version, the owner's own (address, port, id) and a **per-launch incarnation token** - and the
+    reader **validates it after attaching**. A context id is re-handed once its holder dies, so a stale segment can
+    legitimately carry a name a new reader will compute, and the name alone cannot distinguish incarnations. With the
+    header a collision or a stale segment is *detected* and the pair falls back to UDP; without it the failure is the
+    silent one. It is the same reasoning the wire already applies with its version check, in the one place a wire check
+    cannot reach.
+  - **Addition 2: attach failures are counted by reason.** "The attach failed" is ambiguous between a different host, a
+    permission refusal and a missing segment, and all three fall back to UDP safely - which is exactly how a module that is
+    **permanently inert in the field** would look identical to one correctly deciding "not same host". S2 catches an inert
+    module in the test environment; only a counter catches it in production.
+- **Permissions.** Created with the owner's own user and no wider access. A segment a process cannot open is a fallback to
+  UDP, not an error - and it is counted, per addition 2.
 - **Reclaim after a crash is a requirement, not a nicety.** A killed writer leaves its segment mapped by its readers
   and its name in place. The owner unlinks at teardown; a reader that finds the owner gone detaches and falls back;
   and a stale name whose owner is no longer in the host registry is reclaimed by the next context that would create
