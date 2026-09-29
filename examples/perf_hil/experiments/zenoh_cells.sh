@@ -96,7 +96,14 @@ for SCEN in $SCENS; do
     say "### $SCEN $SIZE ###"
     # Endpoints only for the reliable cell: that one is TCP peer-to-peer, which is the only configuration where
     # zenoh-pico's reliability is real. Best-effort stays on UDP multicast, where both sides promise the same thing.
-    if [ "$SCEN" = reliable_throughput ]; then
+    # Any reliable_* cell, not just the throughput one: matching the exact string left reliable_latency with no
+    # endpoints, and the harness then refused to open rather than quietly running the cell over multicast and
+    # labelling it reliable. The refusal was right; the condition was wrong.
+    case "$SCEN" in
+    reliable_*) ;;
+    *) SRV_ENV=""; CLI_ENV="" ;;
+    esac
+    if [ "${SCEN#reliable_}" != "$SCEN" ]; then
         SRV_ENV="BENCH_ZENOH_LISTEN=tcp/192.168.10.2:7447"
         CLI_ENV="BENCH_ZENOH_CONNECT=tcp/192.168.10.2:7447"
     else

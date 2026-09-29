@@ -1,0 +1,92 @@
+=== zenoh-pico cells 2026-09-29T22:48:57+09:00 reps=3 dur=10 scens='best_effort_latency reliable_latency' sizes='p1 p2' ===
+  best_effort_latency p1 built on 10.1.1.214, client sha256=d282905e29b7887b
+  best_effort_latency p1 built on 10.1.1.213, client sha256=d282905e29b7887b
+  best_effort_latency p2 built on 10.1.1.214, client sha256=69cc5b1b6f176808
+  best_effort_latency p2 built on 10.1.1.213, client sha256=69cc5b1b6f176808
+  reliable_latency p1 built on 10.1.1.214, client sha256=557de1cbcd4e3f0b
+  reliable_latency p1 built on 10.1.1.213, client sha256=557de1cbcd4e3f0b
+  reliable_latency p2 built on 10.1.1.214, client sha256=69ff657b9273e12e
+  reliable_latency p2 built on 10.1.1.213, client sha256=69ff657b9273e12e
+### best_effort_latency p1 ###
+--- best_effort_latency rep 1/3 2026-09-29T22:49:14+09:00 ---
+scen=best_effort_latency size=p1 rep1 RESULT: framework=zenohpico scenario=best_effort_latency role=client sent=100 recv=100 loss_pct=0.0 rtt_min_ms=0.212 rtt_avg_ms=0.221 rtt_max_ms=0.360 transport=udp_multicast reliability=best_effort sample_bytes=76 utime_s=0.000 stime_s=0.012 cpu_s_per_Msample=121.420 cpu_s_per_MB=1.597632 sched_cpu_s=0.007844 sched_cpu_s_per_Msample=78.442 sched_unattributed_s=0.000321 sched_breakdown=complete sched_threads=2 sched_threads_gone=0 sched_threads_over=0 peak_rss_kb=2132 wire_rx_bytes=12375 wire_rx_packets=105 wire_tx_bytes=14144 wire_tx_packets=110 wire_bytes_total=26519 wire_packets_total=215 wire_bytes_per_sample=265.2 wire_packets_per_sample=2.150 wire_role_packets_per_sample=1.100 iface=eth0 instrument=ok sched_by_thread=client:0.005051,client:0.002793
+scen=best_effort_latency size=p1 rep1 RESULT: framework=zenohpico scenario=best_effort_latency role=server received=100 echoed=100 transport=udp_multicast reliability=best_effort sample_bytes=76 utime_s=0.005 stime_s=0.011 cpu_s_per_Msample=151.650 cpu_s_per_MB=1.995395 sched_cpu_s=0.007870 sched_cpu_s_per_Msample=78.704 sched_unattributed_s=0.000272 sched_breakdown=complete sched_threads=2 sched_threads_gone=0 sched_threads_over=0 peak_rss_kb=2136 wire_rx_bytes=12569 wire_rx_packets=109 wire_tx_bytes=14213 wire_tx_packets=111 wire_bytes_total=26782 wire_packets_total=220 wire_bytes_per_sample=267.8 wire_packets_per_sample=2.200 wire_role_packets_per_sample=1.090 iface=eth0 instrument=ok sched_by_thread=server:0.004706,server:0.003165
+  best_effort_latency p1 rep1 client sent=100 server received=100
+--- best_effort_latency rep 2/3 2026-09-29T22:49:31+09:00 ---
+scen=best_effort_latency size=p1 rep2 RESULT: framework=zenohpico scenario=best_effort_latency role=client sent=100 recv=100 loss_pct=0.0 rtt_min_ms=0.207 rtt_avg_ms=0.222 rtt_max_ms=0.383 transport=udp_multicast reliability=best_effort sample_bytes=76 utime_s=0.003 stime_s=0.009 cpu_s_per_Msample=120.960 cpu_s_per_MB=1.591579 sched_cpu_s=0.007857 sched_cpu_s_per_Msample=78.566 sched_unattributed_s=0.000313 sched_breakdown=complete sched_threads=2 sched_threads_gone=0 sched_threads_over=0 peak_rss_kb=2136 wire_rx_bytes=12375 wire_rx_packets=105 wire_tx_bytes=14144 wire_tx_packets=110 wire_bytes_total=26519 wire_packets_total=215 wire_bytes_per_sample=265.2 wire_packets_per_sample=2.150 wire_role_packets_per_sample=1.100 iface=eth0 instrument=ok sched_by_thread=client:0.005075,client:0.002782
+scen=best_effort_latency size=p1 rep2 RESULT: framework=zenohpico scenario=best_effort_latency role=server received=100 echoed=100 transport=udp_multicast reliability=best_effort sample_bytes=76 utime_s=0.006 stime_s=0.009 cpu_s_per_Msample=150.540 cpu_s_per_MB=1.980789 sched_cpu_s=0.007753 sched_cpu_s_per_Msample=77.529 sched_unattributed_s=0.000339 sched_breakdown=complete sched_threads=2 sched_threads_gone=0 sched_threads_over=0 peak_rss_kb=2136 wire_rx_bytes=12569 wire_rx_packets=109 wire_tx_bytes=14282 wire_tx_packets=112 wire_bytes_total=26851 wire_packets_total=221 wire_bytes_per_sample=268.5 wire_packets_per_sample=2.210 wire_role_packets_per_sample=1.090 iface=eth0 instrument=ok sched_by_thread=server:0.004744,server:0.003009
+  best_effort_latency p1 rep2 client sent=100 server received=100
+--- best_effort_latency rep 3/3 2026-09-29T22:49:49+09:00 ---
+scen=best_effort_latency size=p1 rep3 RESULT: framework=zenohpico scenario=best_effort_latency role=client sent=100 recv=100 loss_pct=0.0 rtt_min_ms=0.211 rtt_avg_ms=0.221 rtt_max_ms=0.347 transport=udp_multicast reliability=best_effort sample_bytes=76 utime_s=0.000 stime_s=0.012 cpu_s_per_Msample=121.020 cpu_s_per_MB=1.592368 sched_cpu_s=0.007819 sched_cpu_s_per_Msample=78.186 sched_unattributed_s=0.000320 sched_breakdown=complete sched_threads=2 sched_threads_gone=0 sched_threads_over=0 peak_rss_kb=2136 wire_rx_bytes=12375 wire_rx_packets=105 wire_tx_bytes=14144 wire_tx_packets=110 wire_bytes_total=26519 wire_packets_total=215 wire_bytes_per_sample=265.2 wire_packets_per_sample=2.150 wire_role_packets_per_sample=1.100 iface=eth0 instrument=ok sched_by_thread=client:0.005039,client:0.002780
+scen=best_effort_latency size=p1 rep3 RESULT: framework=zenohpico scenario=best_effort_latency role=server received=100 echoed=100 transport=udp_multicast reliability=best_effort sample_bytes=76 utime_s=0.005 stime_s=0.009 cpu_s_per_Msample=137.280 cpu_s_per_MB=1.806316 sched_cpu_s=0.007731 sched_cpu_s_per_Msample=77.310 sched_unattributed_s=0.000264 sched_breakdown=complete sched_threads=2 sched_threads_gone=0 sched_threads_over=0 peak_rss_kb=2136 wire_rx_bytes=12569 wire_rx_packets=109 wire_tx_bytes=14282 wire_tx_packets=112 wire_bytes_total=26851 wire_packets_total=221 wire_bytes_per_sample=268.5 wire_packets_per_sample=2.210 wire_role_packets_per_sample=1.090 iface=eth0 instrument=ok sched_by_thread=server:0.004756,server:0.002975
+  best_effort_latency p1 rep3 client sent=100 server received=100
+### best_effort_latency p2 ###
+--- best_effort_latency rep 1/3 2026-09-29T22:50:07+09:00 ---
+scen=best_effort_latency size=p2 rep1 RESULT: framework=zenohpico scenario=best_effort_latency role=client sent=100 recv=100 loss_pct=0.0 rtt_min_ms=0.231 rtt_avg_ms=0.246 rtt_max_ms=0.379 transport=udp_multicast reliability=best_effort sample_bytes=1292 utime_s=0.003 stime_s=0.012 cpu_s_per_Msample=142.720 cpu_s_per_MB=0.110464 sched_cpu_s=0.008654 sched_cpu_s_per_Msample=86.539 sched_unattributed_s=0.000318 sched_breakdown=complete sched_threads=2 sched_threads_gone=0 sched_threads_over=0 peak_rss_kb=2136 wire_rx_bytes=134075 wire_rx_packets=105 wire_tx_bytes=135838 wire_tx_packets=110 wire_bytes_total=269913 wire_packets_total=215 wire_bytes_per_sample=2699.1 wire_packets_per_sample=2.150 wire_role_packets_per_sample=1.100 iface=eth0 instrument=ok sched_by_thread=client:0.005722,client:0.002932
+scen=best_effort_latency size=p2 rep1 RESULT: framework=zenohpico scenario=best_effort_latency role=server received=100 echoed=100 transport=udp_multicast reliability=best_effort sample_bytes=1292 utime_s=0.005 stime_s=0.011 cpu_s_per_Msample=160.920 cpu_s_per_MB=0.124551 sched_cpu_s=0.008196 sched_cpu_s_per_Msample=81.962 sched_unattributed_s=0.000268 sched_breakdown=complete sched_threads=2 sched_threads_gone=0 sched_threads_over=0 peak_rss_kb=2128 wire_rx_bytes=134263 wire_rx_packets=109 wire_tx_bytes=135982 wire_tx_packets=112 wire_bytes_total=270245 wire_packets_total=221 wire_bytes_per_sample=2702.4 wire_packets_per_sample=2.210 wire_role_packets_per_sample=1.090 iface=eth0 instrument=ok sched_by_thread=server:0.004999,server:0.003197
+  best_effort_latency p2 rep1 client sent=100 server received=100
+--- best_effort_latency rep 2/3 2026-09-29T22:50:25+09:00 ---
+scen=best_effort_latency size=p2 rep2 RESULT: framework=zenohpico scenario=best_effort_latency role=client sent=100 recv=100 loss_pct=0.0 rtt_min_ms=0.232 rtt_avg_ms=0.249 rtt_max_ms=0.524 transport=udp_multicast reliability=best_effort sample_bytes=1292 utime_s=0.003 stime_s=0.011 cpu_s_per_Msample=141.400 cpu_s_per_MB=0.109443 sched_cpu_s=0.008494 sched_cpu_s_per_Msample=84.937 sched_unattributed_s=0.000506 sched_breakdown=complete sched_threads=2 sched_threads_gone=0 sched_threads_over=0 peak_rss_kb=2136 wire_rx_bytes=134075 wire_rx_packets=105 wire_tx_bytes=135844 wire_tx_packets=110 wire_bytes_total=269919 wire_packets_total=215 wire_bytes_per_sample=2699.2 wire_packets_per_sample=2.150 wire_role_packets_per_sample=1.100 iface=eth0 instrument=ok sched_by_thread=client:0.005563,client:0.002931
+scen=best_effort_latency size=p2 rep2 RESULT: framework=zenohpico scenario=best_effort_latency role=server received=100 echoed=100 transport=udp_multicast reliability=best_effort sample_bytes=1292 utime_s=0.002 stime_s=0.013 cpu_s_per_Msample=155.990 cpu_s_per_MB=0.120735 sched_cpu_s=0.008289 sched_cpu_s_per_Msample=82.891 sched_unattributed_s=0.000345 sched_breakdown=complete sched_threads=2 sched_threads_gone=0 sched_threads_over=0 peak_rss_kb=2132 wire_rx_bytes=134269 wire_rx_packets=109 wire_tx_bytes=135982 wire_tx_packets=112 wire_bytes_total=270251 wire_packets_total=221 wire_bytes_per_sample=2702.5 wire_packets_per_sample=2.210 wire_role_packets_per_sample=1.090 iface=eth0 instrument=ok sched_by_thread=server:0.005208,server:0.003082
+  best_effort_latency p2 rep2 client sent=100 server received=100
+--- best_effort_latency rep 3/3 2026-09-29T22:50:43+09:00 ---
+scen=best_effort_latency size=p2 rep3 RESULT: framework=zenohpico scenario=best_effort_latency role=client sent=100 recv=100 loss_pct=0.0 rtt_min_ms=0.238 rtt_avg_ms=0.247 rtt_max_ms=0.380 transport=udp_multicast reliability=best_effort sample_bytes=1292 utime_s=0.004 stime_s=0.011 cpu_s_per_Msample=149.540 cpu_s_per_MB=0.115743 sched_cpu_s=0.008750 sched_cpu_s_per_Msample=87.498 sched_unattributed_s=0.000317 sched_breakdown=complete sched_threads=2 sched_threads_gone=0 sched_threads_over=0 peak_rss_kb=2140 wire_rx_bytes=134075 wire_rx_packets=105 wire_tx_bytes=135844 wire_tx_packets=110 wire_bytes_total=269919 wire_packets_total=215 wire_bytes_per_sample=2699.2 wire_packets_per_sample=2.150 wire_role_packets_per_sample=1.100 iface=eth0 instrument=ok sched_by_thread=client:0.005837,client:0.002913
+scen=best_effort_latency size=p2 rep3 RESULT: framework=zenohpico scenario=best_effort_latency role=server received=100 echoed=100 transport=udp_multicast reliability=best_effort sample_bytes=1292 utime_s=0.003 stime_s=0.013 cpu_s_per_Msample=160.120 cpu_s_per_MB=0.123932 sched_cpu_s=0.007953 sched_cpu_s_per_Msample=79.527 sched_unattributed_s=0.000282 sched_breakdown=complete sched_threads=2 sched_threads_gone=0 sched_threads_over=0 peak_rss_kb=2120 wire_rx_bytes=134269 wire_rx_packets=109 wire_tx_bytes=135913 wire_tx_packets=111 wire_bytes_total=270182 wire_packets_total=220 wire_bytes_per_sample=2701.8 wire_packets_per_sample=2.200 wire_role_packets_per_sample=1.090 iface=eth0 instrument=ok sched_by_thread=server:0.004879,server:0.003074
+  best_effort_latency p2 rep3 client sent=100 server received=100
+### reliable_latency p1 ###
+--- reliable_latency rep 1/3 2026-09-29T22:51:01+09:00 ---
+scen=reliable_latency size=p1 rep1 RESULT: framework=zenohpico scenario=reliable_latency role=client error=no_endpoint
+scen=reliable_latency size=p1 rep1 RESULT: framework=zenohpico scenario=reliable_latency role=server error=no_endpoint
+  reliable_latency p1 rep1 client sent= server received=
+--- reliable_latency rep 2/3 2026-09-29T22:51:04+09:00 ---
+scen=reliable_latency size=p1 rep2 RESULT: framework=zenohpico scenario=reliable_latency role=client error=no_endpoint
+scen=reliable_latency size=p1 rep2 RESULT: framework=zenohpico scenario=reliable_latency role=server error=no_endpoint
+  reliable_latency p1 rep2 client sent= server received=
+--- reliable_latency rep 3/3 2026-09-29T22:51:09+09:00 ---
+scen=reliable_latency size=p1 rep3 RESULT: framework=zenohpico scenario=reliable_latency role=client error=no_endpoint
+scen=reliable_latency size=p1 rep3 RESULT: framework=zenohpico scenario=reliable_latency role=server error=no_endpoint
+  reliable_latency p1 rep3 client sent= server received=
+### reliable_latency p2 ###
+--- reliable_latency rep 1/3 2026-09-29T22:51:13+09:00 ---
+scen=reliable_latency size=p2 rep1 RESULT: framework=zenohpico scenario=reliable_latency role=client error=no_endpoint
+scen=reliable_latency size=p2 rep1 RESULT: framework=zenohpico scenario=reliable_latency role=server error=no_endpoint
+  reliable_latency p2 rep1 client sent= server received=
+--- reliable_latency rep 2/3 2026-09-29T22:51:16+09:00 ---
+scen=reliable_latency size=p2 rep2 RESULT: framework=zenohpico scenario=reliable_latency role=client error=no_endpoint
+scen=reliable_latency size=p2 rep2 RESULT: framework=zenohpico scenario=reliable_latency role=server error=no_endpoint
+  reliable_latency p2 rep2 client sent= server received=
+--- reliable_latency rep 3/3 2026-09-29T22:51:20+09:00 ---
+scen=reliable_latency size=p2 rep3 RESULT: framework=zenohpico scenario=reliable_latency role=client error=no_endpoint
+scen=reliable_latency size=p2 rep3 RESULT: framework=zenohpico scenario=reliable_latency role=server error=no_endpoint
+  reliable_latency p2 rep3 client sent= server received=
+=== done 2026-09-29T22:51:23+09:00 ===
+VOID reliable_latency p1 rep1: recv=0 - no pong returned, so there is no round trip to report
+VOID reliable_latency p1 rep2: recv=0 - no pong returned, so there is no round trip to report
+VOID reliable_latency p1 rep3: recv=0 - no pong returned, so there is no round trip to report
+VOID reliable_latency p2 rep1: recv=0 - no pong returned, so there is no round trip to report
+VOID reliable_latency p2 rep2: recv=0 - no pong returned, so there is no round trip to report
+VOID reliable_latency p2 rep3: recv=0 - no pong returned, so there is no round trip to report
+
+=== zenoh-pico best_effort_latency p1 p1, 3 usable reps ===
+  transport=udp_multicast reliability=best_effort express=?
+  RTT mean ms             0.221 +- 0.000
+  RTT max ms              0.363 +- 0.011
+  RTT min ms              0.210 +- 0.002
+  CPU s/Msample         121.133 +- 0.144
+  peak RSS kB          2134.667 +- 1.333
+  loss %                  0.000 +- 0.000
+  sent/recv: 100/100, 100/100, 100/100
+
+=== zenoh-pico best_effort_latency p2 p1, 3 usable reps ===
+  transport=udp_multicast reliability=best_effort express=?
+  RTT mean ms             0.247 +- 0.001
+  RTT max ms              0.428 +- 0.048
+  RTT min ms              0.234 +- 0.002
+  CPU s/Msample         144.553 +- 2.522
+  peak RSS kB          2137.333 +- 1.333
+  loss %                  0.000 +- 0.000
+  sent/recv: 100/100, 100/100, 100/100
+
+  Reference material, not a competitor: no win or loss is claimed from these rows (user, 2026-09-29).
+  The reliable cell's reliability is TCP's stream repair, not per-datagram retransmission - a different
+  mechanism making the same promise, which the COMPARISON row must state.

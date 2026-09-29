@@ -27,6 +27,14 @@ retransmission, on both of its transports, by its own source. A `†` cell there
 against DDS's and ours: a different mechanism making the same promise to an application, not the same mechanism
 measured twice. Its best-effort cells are UDP multicast and carry no dagger.
 
+**`✗` means measured, and the transport did not survive the cell.** zenoh-pico's reliable cells run over TCP, and
+above a 76-byte payload the TCP session dies a few hundred samples into a max-rate run: `write_fail=1`, 47 packets and
+787 KB on the wire, after which its publisher returns success for every further put and the run reports 13 million
+samples at 27,128 Mbps over a 1 Gbps link. All nine p2/p3/p4 repetitions were voided by the rate-above-link and
+zero-wire-bytes rules. That is a property of the implementation under sustained load, not a missing measurement, so it
+is marked rather than left blank. Its best-effort cells carry the same payloads without trouble - 867, 941 and 945
+Mbps at p2, p3 and p4, zero loss - and those are in §4.4a.
+
 **zenoh-pico's cells come from their own session (`Z`), not from `A` or `T`.** Within an `A` row the three
 DDS-shaped frameworks were measured in the same session and are tightly comparable; the zenoh figure beside them was
 measured on the same rig, the same link and the same `-d 5`, but on a different evening. Treat a zenoh margin as
@@ -149,18 +157,18 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | zenoh-pico | meas. |
 |---|---|---|---|---|---|---|---|
 | | **[Latency](#21-latency)** (ms) | | | | |  | |
-| 1 | RTT mean | P1 76 B | ✅ **0.207** | ❌ 0.287 | 0.266 | – | A |
-| 2 | RTT max (tail) | P1 76 B | ✅ **0.270** | 0.604 | ❌ 0.720 | – | A |
-| 3 | RTT mean | P2 1292 B | ✅ **0.233** | 0.316 | ❌ 0.376 | – | A |
-| 4 | RTT max (tail) | P2 1292 B | ✅ **0.349** | 0.634 | ❌ 10.8 | – | A |
+| 1 | RTT mean | P1 76 B | ✅ **0.207** | ❌ 0.287 | 0.266 | 0.221 | A |
+| 2 | RTT max (tail) | P1 76 B | ✅ **0.270** | 0.604 | ❌ 0.720 | 0.363 | A |
+| 3 | RTT mean | P2 1292 B | ✅ **0.233** | 0.316 | ❌ 0.376 | 0.247 | A |
+| 4 | RTT max (tail) | P2 1292 B | ✅ **0.349** | 0.634 | ❌ 10.8 | 0.428 | A |
 | 5 | RTT mean | +10 ms netem | ⚪ 10.1 | ⚪ 10.4 | ⚪ 10.5 | – | A |
 | 6 | RTT max (tail) | +10 ms netem | ✅ **12.2** | 12.3 | ❌ 23.1 | – | A |
 | | **[Throughput](#22-throughput)** (Mbps) | | | | |  | |
-| 7 | RELIABLE | P1 76 B | ✅ **115** | ❌ 40.8 | 93.0 | 234.7 † | A |
-| 8 | RELIABLE | P2 1292 B | ✅ **937** | ❌ 647 | 851 | – | A |
-| 9 | RELIABLE | P3 1424 B | ✅ **943** | ❌ 439 | 808 | – | T |
-| 10 | RELIABLE | P4 2800 B | ✅ **943** | ❌ 635 | 863 | – | T |
-| 11 | BEST_EFFORT | P1, max rate | ✅ **119** | ❌ 47.9 | 71.7 | 53.8 | A |
+| 7 | RELIABLE | P1 76 B | ✅ **115** | ❌ 40.8 | 93.0 | 236.8 † | A |
+| 8 | RELIABLE | P2 1292 B | ✅ **937** | ❌ 647 | 851 | ✗ † | A |
+| 9 | RELIABLE | P3 1424 B | ✅ **943** | ❌ 439 | 808 | ✗ † | T |
+| 10 | RELIABLE | P4 2800 B | ✅ **943** | ❌ 635 | 863 | ✗ † | T |
+| 11 | BEST_EFFORT | P1, max rate | ✅ **119** | ❌ 47.9 | 71.7 | 53.4 | A |
 | 12 | RELIABLE KEEP_LAST 64 | P1 | ✅ **117** | ❌ 41.9 | 89.3 | – | A |
 | 13 | RELIABLE | P1, **5% loss** | ✅ **106** | 6.6 | ❌ 3.1 | – | A |
 | 14 | RELIABLE | P4, **5% loss** | ✅ **854** | 214 | ❌ 11.8 | – | T |
@@ -168,26 +176,26 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 16 | retention under loss | P1: 5% loss / unshaped | ✅ **92.7%** | 16.1% | ❌ 3.3% | – | A |
 | 17 | retention under loss | P4: 5% loss / unshaped | ✅ **90.5%** | 33.7% | ❌ 1.4% | – | T |
 | | **[CPU](#23-cpu)** (cpu_s / Msample) | | | | |  | |
-| 18 | throughput, client | P1 76 B | ✅ **5.3** | ❌ 19.0 | 6.9 | 2.59 † | A |
+| 18 | throughput, client | P1 76 B | ✅ **5.3** | ❌ 19.0 | 6.9 | 2.57 † | A |
 | 19 | throughput, server | P1 76 B | ✅ **2.5** | ❌ 19.2 | 11.0 | – | A |
 | 20 | throughput, client | P2 1292 B | ✅ **6.5** | ❌ 19.3 | 8.5 | – | A |
 | 21 | throughput, server | P2 1292 B | ✅ **3.8** | ❌ 20.2 | 14.5 | – | A |
 | 22 | throughput, client | P4 2800 B | ✅ **12.2** | ❌ 38.7 | 14.1 | – | T |
 | 23 | throughput, server | P4 2800 B | ✅ **8.2** | ❌ 33.5 | 19.6 | – | T |
-| 24 | latency | P1 76 B | ✅ **155** | ❌ 356 | 237 | – | A |
-| 25 | latency | P2 1292 B | ✅ **135** | ❌ 393 | 239 | – | A |
+| 24 | latency | P1 76 B | ✅ **155** | ❌ 356 | 237 | 121.1 | A |
+| 25 | latency | P2 1292 B | ✅ **135** | ❌ 393 | 239 | 144.6 | A |
 | 26 | throughput, client | P1, 5% loss | ✅ **5.7** | ❌ 27.6 | 12.9 | – | A |
 | 27 | throughput, client | P4, 5% loss | ✅ **14.4** | ❌ 63.5 | 43.0 | – | T |
 | | **[Memory](#24-memory)** (peak RSS, KB) | | | | |  | |
 | 28 | throughput, client | P1 76 B | ✅ **1,916** | ❌ 15,904 | 5,232 | 2,127 † | A |
 | 29 | throughput, client | P2 1292 B | ✅ **2,196** | ❌ 15,048 | 6,400 | – | A |
 | 30 | throughput, client | P4 2800 B | ✅ **2,268** | ❌ 13,976 | 5,572 | – | T |
-| 31 | latency, client | P1 76 B | ✅ **1,660** | ❌ 14,340 | 4,836 | – | A |
+| 31 | latency, client | P1 76 B | ✅ **1,660** | ❌ 14,340 | 4,836 | 2,135 | A |
 | 32 | throughput, server | P1 76 B | ✅ **1,828** | ❌ 14,332 | 4,888 | – | A |
 | 33 | throughput, server | P4 2800 B | ✅ **2,848** | ❌ 13,992 | 4,900 | – | T |
 | 34 | throughput, server | P4, 5% loss | ✅ **2,848** | ❌ 14,332 | 6,400 | – | T |
 | | **[Bandwidth](#25-bandwidth)** (wire B / sample) | | | | |  | |
-| 35 | wire bytes | P1 76 B | ✅ **138** | ❌ 286 | 180 | 93.7 † | A |
+| 35 | wire bytes | P1 76 B | ✅ **138** | ❌ 286 | 180 | 93.6 † | A |
 | 36 | wire bytes | P2 1292 B | ✅ **1,355** | ❌ 1,502 | 1,397 | – | A |
 | 37 | wire bytes | P3 1424 B | ✅ **1,487** | ❌ 1,865 | 1,585 | – | T |
 | 38 | wire bytes | P4 2800 B | ✅ **2,921** | ❌ 3,460 | 2,950 | – | T |
@@ -336,6 +344,18 @@ Table rows 7-17. The two deep dives that follow (§2.2a, §2.2b) are where the R
 | c5 | P1, **5% loss** | **95.8** | 3.39 | 9.31 | – |
 | c7 | P1, reorder 5% | **73.9** | 67.9 | 31.4 | – |
 | c8 | P1, BEST_EFFORT | **119** | 71.7 | 47.4 | 53.8 |
+
+> **What the shared-memory module costs on these cross-host cells, measured 2026-09-29 on `81deaa53`.** The rows above
+> are the `A` campaign on `9dbffd40`, before the module existed. On current main, with the module enabled as it ships,
+> the same two cells read **112.46 +- 0.09 Mbps** (c1) and **117.19 +- 0.22** (c8), against **114.22 +- 0.13** and
+> **120.60 +- 0.28** for the identical tree with `-Dtt_SEGMENT_ENABLED=0` - n=6 per arm,
+> `experiments/seam_attach_cost.sh`, raw rows `results/seam_attach_cost_fixed_81deaa53_2026-09-29.txt`. That is a cost
+> of **1.57% and 2.91%**, both above WIRE_PLAN 10.4's ~1% floor, plus ~396 kB of peak RSS for the context's own
+> segment. It is not the attach retry: the counters give `tx_udp_unattached=927173` against
+> `shm_attach_attempts=3608`, a ratio of 257.0, so the negative cache works exactly as specified and accounts for
+> about 0.5 Mbps of the 1.76 - the rest is the seam's own per-datagram cost. **These are cells where no peer can ever
+> be same-host, so the cost buys nothing here**, and the user's decision 6 is that using a module must cost no
+> performance. Recorded as a measured fact for that decision, not resolved in this document.
 
 **zenoh-pico is reference material and is not scored here** (§4.4a). `†` is TCP, the only configuration where its
 reliability is real; its c1 lead is a stream protocol coalescing about eleven samples into each segment
@@ -1863,6 +1883,33 @@ default (`Z_BATCH_MULTICAST_SIZE` 2048) and that cell was taken with batching **
 per sample is 1.000: at that rate each publication is flushed before the next arrives, so there is never a second
 message to coalesce. The harness carries an express arm (`-X`) to turn batching off per publisher, and for that cell
 the two arms are the same wire shape. The contrast between 1.000 and 0.094 is the finding, not either number alone.
+
+**Its own payload sweep, best-effort over UDP multicast** (3 reps each, both Pis, `-d 5`, publisher and subscriber
+counts equal on every rep, `results/zenoh_payload_sweep_56d3a0a5_2026-09-29.txt`). These payloads have no best-effort
+row in the master table for the other three, so they live here rather than as rows only one implementation has:
+
+| payload | send Mbps | CPU s/Msample | peak RSS kB | wire B/sample | wire pkts/sample | loss % |
+|---|---:|---:|---:|---:|---:|---:|
+| p1 76 B | 53.40 +- 0.13 | 15.706 | 2,125 | 139.0 | 1.000 | 0.000 |
+| p2 1292 B | 867.28 +- 3.46 | 16.358 | 2,129 | 1,356.0 | 1.000 | 0.000 |
+| p3 1424 B | 940.60 +- 0.29 | 16.545 | 2,132 | 1,487.9 | 1.000 | 0.000 |
+| p4 2800 B | 944.72 +- 0.46 | 32.642 | 2,132 | 2,910.8 | 2.000 | 0.000 |
+
+**Its latency cells, 100 round trips each, 3 reps, one ping in flight at a time** (`results/zenoh_latency_*`). Both
+transports were measured, and they agree to within a few microseconds - which is the expected answer at this rate,
+since neither repair mechanism has anything to do at 10 pings a second on a clean link, and is a small check that the
+two paths are carrying the same traffic:
+
+| cell | transport | RTT mean ms | RTT max ms | RTT min ms | peak RSS kB | loss % |
+|---|---|---:|---:|---:|---:|---:|
+| P1 76 B | UDP multicast | 0.221 +- 0.000 | 0.363 +- 0.011 | 0.210 | 2,135 | 0.000 |
+| P1 76 B | TCP | 0.221 +- 0.001 | 0.336 +- 0.024 | 0.209 | 2,127 | 0.000 |
+| P2 1292 B | UDP multicast | 0.247 +- 0.001 | 0.428 +- 0.048 | 0.234 | 2,137 | 0.000 |
+| P2 1292 B | TCP | 0.246 +- 0.000 | 0.372 +- 0.009 | 0.234 | 2,132 | 0.000 |
+
+TickLE leads every one of those four rows (0.207/0.270 and 0.233/0.349) and zenoh-pico is second, ahead of both DDS
+implementations on mean and tail alike. The master table carries the multicast arm, since that is the one whose
+promise matches the cell.
 
 **What has no counterpart, so its column reads `–`:**
 

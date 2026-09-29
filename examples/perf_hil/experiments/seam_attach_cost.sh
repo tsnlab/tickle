@@ -55,6 +55,12 @@ DUR=${DUR:-5}
 SIZE=${SIZE:-p1}
 SCENS=${SCENS:-"reliable_throughput best_effort_throughput"}
 OUT=${OUT:-/tmp/seam_attach_cost.txt}
+# What the ON arm is expected to reproduce. Before the fix this guarded against measuring a situation that had
+# changed under us: ON had to come back near the 52.88/53.97 that prompted the run, or the comparison meant nothing.
+# After the fix the question is the opposite one - whether ON has caught up with OFF - so the reference moves with
+# it, and is passed in rather than edited, so the script keeps working for both questions.
+REF_RELIABLE=${REF_RELIABLE:-52.88}
+REF_BEST_EFFORT=${REF_BEST_EFFORT:-53.97}
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 SAVE=/tmp/seamcost
 srv_pid=""
@@ -64,6 +70,7 @@ sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=10 "ci@$1" "${@:2}"; }
 say() { echo "$*" | tee -a "$OUT"; }
 # Said to the file and stderr, never stdout: build_arm's stdout is captured into a variable.
 note() { echo "$*" >>"$OUT"; echo "$*" >&2; }
+say "  reference: ON expected near reliable=$REF_RELIABLE best_effort=$REF_BEST_EFFORT"
 say "=== seam attach cost $(date -Is) sha=$SHA off='$OFF_FLAG' dur=$DUR blocks=$BLOCKS scens='$SCENS' ==="
 
 build_arm() { # build_arm <scen> <arm-name> <extra-cflags>
@@ -101,7 +108,7 @@ run_one() { # run_one <scen> <arm-name>; sets LAST_SENT
     alive=$(assert_one_server)
     [ "$alive" = 1 ] || { say "    ABORT: $alive of our servers alive, expected 1"; return 0; }
     line=$(sh_ "$CLIENT" "cd $SAVE/$scen/$name && taskset -c 1-3 ./client -Q -d $DUR 2>&1 | grep '^RESULT'" </dev/null)
-    LAST_SENT=$(echo "$line" | grep -oE 'sent=[0-9]+' | cut -d= -f2)
+    LAST_SENT=$(echo "$line" | grep -oE '(^| )sent=[0-9]+' | head -1 | cut -d= -f2)
     [ -n "$LAST_SENT" ] && say "scen=$scen arm=$name $line"
 }
 
@@ -126,7 +133,7 @@ for scen in $SCENS; do
 done
 say "=== done $(date -Is) ==="
 
-python3 - "$OUT" <<'PYEOF' | tee -a "$OUT"
+REF_RELIABLE="$REF_RELIABLE" REF_BEST_EFFORT="$REF_BEST_EFFORT" python3 - "$OUT" <<'PYEOF' | tee -a "$OUT"
 import math, re, sys, collections
 rows = collections.defaultdict(lambda: collections.defaultdict(list))
 for line in open(sys.argv[1]):
@@ -152,7 +159,9 @@ def stat(v):
     return mu, (0.0 if n < 2 else math.sqrt(sum((x - mu) ** 2 for x in v) / (n - 1) / n)), n
 
 # The observation this run has to reproduce before it may compare anything.
-OBSERVED_ON_MBPS = {"reliable_throughput": 52.88, "best_effort_throughput": 53.97}
+import os
+OBSERVED_ON_MBPS = {"reliable_throughput": float(os.environ.get("REF_RELIABLE", "52.88")),
+                    "best_effort_throughput": float(os.environ.get("REF_BEST_EFFORT", "53.97"))}
 
 for scen, d in rows.items():
     print("\n=== %s ===" % scen)
