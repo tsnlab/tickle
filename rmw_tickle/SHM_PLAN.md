@@ -57,6 +57,51 @@ Decisions to make explicitly, because each one has a failure mode that only show
 - **One segment per writing context, not per topic or per pair.** A reader attaches to a writer's segment read-only.
   Per-pair segments multiply by peers; per-topic segments multiply by topics and make a late-created topic need a new
   segment mid-run. Per-writer is the smallest number that still lets a reader map only what it needs.
+- **Slot size and the budget (decided 2026-09-29, Plan's call on the numbers since it owns the measurement).**
+
+  `slot_bytes = tt_CONTROL_MAX_LENGTH`, `tt_SEGMENT_BYTES` default **512 KiB** per writing context, compile-time and
+  overridable by `-D` like every other core capacity. That gives about **340 slots** in both an rmw build and a native
+  one, because `tt_CONTROL_MAX_LENGTH` is 1472 in both.
+
+  **Why not `tt_MAX_BUFFER_LENGTH`, which is the obvious pick:** an rmw build compiles with
+  `-Dtt_MAX_BUFFER_LENGTH=65507`, so a 64-slot ring would be **4.2 MB per writing context** against 94 KB in a native
+  build. Measured rmw peak RSS is 12.3 MB against CycloneDDS's 14.7 and FastDDS's 23.8 - a 4.2 MB ring would spend most
+  of the margin we win on, in the metric we win on, as slack in slots that never fill.
+
+  **Why not a fixed budget with 65507-byte slots either**, which was the counter-proposal: 512 KiB then yields **8
+  slots**, and 8 is too shallow, by a number from our own measurement rather than by feel. The S2 run sent 967,475
+  datagrams in 4 s, about **4.1 us per datagram**; a reader drains on its poll, nominally every 100 us; so a ring must
+  hold at least one poll period of output, roughly **25 datagrams**, and comfortably more to absorb a burst. 8 slots is
+  33 us of output and would be full most of the time, with the writer blocking or falling back - and stage 1 would then
+  fail its own throughput criterion for a sizing reason rather than a transport one. 340 slots is 1.4 ms of output.
+
+  **What that costs, stated rather than buried: a datagram larger than a slot goes by UDP.** Dev established the case
+  this matters for, and the correction is worth keeping because it contradicts a claim made here first: **service
+  requests and responses do not fragment.** `config.h:415` says it where it is decided - "a build that raises
+  tt_MAX_BUFFER_LENGTH (rmw_tickle, to 65507) ... its samples then fragment at the control datagram, while service
+  requests and responses, which do not fragment, keep the large datagram" - and `valid_msg_size()` bounds a request and a
+  response by `tt_MAX_BUFFER_LENGTH`, not by the control datagram. So in an rmw build a large service call really is a
+  single 65507-byte datagram, and MTU-sized slots cannot carry it.
+
+  **So it goes by UDP, deliberately, counted, and written down here** - which is the whole difference from the failure
+  Dev was warning about. A module that carries topics and quietly never carries services is worse than one that does not
+  work; a module that carries topics and says, in a counter and in this plan, that oversized datagrams use UDP is a
+  scope limit. Three things make it that rather than the other:
+  - a dedicated counter for oversized datagrams routed to UDP, so the cause is named rather than inferred from which
+    shapes show `shm`;
+  - **S2's expectation for a service shape is `udp` by design**, recorded here so a future reader cannot take it for a
+    partially wired seam - which is exactly what that matrix is otherwise for;
+  - a `static_assert` that the budget yields at least a structural minimum of slots (4), so a configuration that would
+    leave a one-slot ring is a build error. The *performance* depth requirement above is a measured criterion of stage 1
+    and not an assert, because the `ipfrag` diagnostic arm legitimately has a 65507-byte control datagram and must still
+    build.
+
+  **And the fix if measurement says services matter:** one ring with variable-length records spanning several
+  contiguous slots, padding to the end rather than straddling the wrap so Dev's no-half-records property survives. That
+  carries every datagram at one slot size and removes the scope limit, at the cost of a reserve-N-slots writer and a
+  span-aware reader. It is deliberately **not** stage 1: stage 1 measures topics, and complexity added before a
+  measurement asks for it is complexity that cannot be attributed.
+
 - **Fixed capacity, chosen at context creation and stated,** like every other core structure. A ring of records sized
   from the same budget idiom the KEEP_ALL publisher cache uses (`RMW_TICKLE_KEEP_ALL_BYTES`' sibling). Exhaustion is
   counted and warned about once - never silent, never unbounded.
