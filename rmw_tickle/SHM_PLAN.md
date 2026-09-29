@@ -286,6 +286,19 @@ oversized and unattached apart, extended: *full* is a sizing signal, *unattached
 signal, and *broadcast* a by-design signal. One counter for all four would say only "something fell back", and the
 assertion above would have nothing to check against.
 
+**And the fourth counter immediately earned itself, in a way worth recording as its own lesson.** Adding it exposed that
+`segment_deliver()` returns false for a broadcast - a broadcast has no context id - and the caller was counting that as
+**unattached**. So a healthy running context would have reported a large *unattached* count, which is a discovery signal,
+for traffic that was never a candidate for the segment at all. **The assertion above would have held numerically and the
+diagnosis would have been wrong**, which is worse than a failure: a failure gets investigated. The rule that follows is
+not about counters specifically - *an invariant can hold while one of its components means the wrong thing*, so a sum
+that checks out is not evidence that its parts are correctly attributed.
+
+**The invariant is maintained by construction, not only asserted** (Dev's decision, and the better of the two): one
+helper increments `tx_udp` and exactly one reason counter together, so no path can count a UDP datagram without naming
+why. S2 still earns its place, because it checks the same thing end to end across a process boundary where a helper
+cannot reach - but the drift it would have caught after the fact is now impossible to write.
+
 The assertion is then exact rather than interpretive: for a same-host pair, `udp_sent == 0` for the shape under test,
 **checked per shape** - one payload that fits a datagram, one that fragments, and a request/reply so `tt_send_to` is on
 the list - rather than once for the run. The partial-seam case fails it, which is the only reason the test exists.
