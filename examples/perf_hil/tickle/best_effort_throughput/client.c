@@ -121,7 +121,12 @@ int main(int argc, char** argv) {
     bench_stats_set_transport(&g_bench_stats, node.tx_datagrams_by_transport, node.rx_datagrams_by_transport,
                               (size_t)tt_TRANSPORT_COUNT);
     bench_stats_set_fallbacks(&g_bench_stats, node.segment_broadcast_to_udp, node.segment_oversized_to_udp,
-                              node.segment_unattached_to_udp, node.segment_full_to_udp);
+                              node.segment_unattached_to_udp, node.segment_full_dropped);
+    // Beside them, and never without them: how often the context asked /dev/shm about a peer at all.
+    // segment_unattached_to_udp counts datagrams that fell back; this counts the attempts behind
+    // them, and the day the two were equal is the day cross-host throughput halved.
+    bench_stats_set_attach(&g_bench_stats, node.segment_attach, (size_t)tt_SEGMENT_ATTACH_COUNT,
+                           (size_t)tt_SEGMENT_ATTACHED, (size_t)tt_SEGMENT_ABSENT);
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=tickle scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
            "send_mbps=%.3f %s\n",

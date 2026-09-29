@@ -440,7 +440,261 @@ nothing - so the segment's use is read off the same traffic line:
 slot and byte identity fails; have the drain count an arrival and skip the acceptance path and the wrong-version
 datagram is no longer refused.
 
-**Still owed:** the p1-p4 numbers against WIRE_PLAN 10.4's floors, and items 4, 6, 7, 8, 9 and 11 of section 6a.
+**The regression the campaign caught, and the one the tests then caught (2026-09-29 evening).**
+
+Plan measured cell 1 (reliable_throughput p1) after the seam landed and found TickLE's cross-host throughput
+**halved** - 114.62 Mbps on `9dbffd40` in the morning against 52.88 on `d4413383` - with CPU per sample doubled,
+while CycloneDDS was flat across the same runs on both metrics. The control settled it on its first block: the same
+commit with `-Dtt_SEGMENT_ENABLED=0` came back at 114.19 Mbps, within 0.4% of the morning's figure, against 52.35
+with the segment on. The binaries' hashes differed, so the flag reached the compiler - a check the harness makes
+because "the flag changed nothing" and "the flag never arrived" otherwise look identical.
+
+The cause was in `peer_segment()`, and its own comment was the specification it failed to meet: *"a peer that
+appears and disappears costs one attempt rather than a subscription to its lifecycle"*. Only the **positive**
+answer was cached. The failure path wrote nothing to the entry, so a peer on another host - where a segment can
+never exist even in principle - was asked again for every datagram, an `open()` that walks `/dev/shm` and fails,
+about 87,000 times a second per sender. The fallback was working exactly as designed: `tx_udp_unattached` was
+433,875 of 433,881. **The cost was not the fallback, it was asking again.**
+
+Two things follow, and the second is the more important.
+
+**The fix is a cache with an expiry on both answers, not on one.** A "no" is remembered for
+`tt_SEGMENT_ATTACH_RETRY_SENDS` (256) sends, so a peer that binds later still becomes reachable. A "yes" is
+remembered for `tt_SEGMENT_REVALIDATE_SENDS` (4096) sends, and that half was found by the tests for items 7 and 8
+rather than by the rig: **an owner that is killed leaves its region mapped, intact, and carrying the incarnation
+the peer recorded, so nothing inside a mapping can ever say its owner has gone.** The incarnation check reads the
+header *through the mapping we already hold*, which is the old file. Only asking the name again has a different
+answer. Without that expiry a peer writes into an orphan for as long as it lives, counted as `tx_shm`, delivered
+nowhere - and the first version of item 8's test asserted the incarnation would catch it, which is how this
+surfaced.
+
+For an owner killed with **no successor**, even asking the name again finds the same orphaned file, so there is a
+third signal: a ring that refuses `tt_SEGMENT_FULL_STREAK_ABANDON` (1024) sends in a row with nothing in between.
+A reader that is merely behind breaks the streak with a single drained slot; one that is dead never does. The
+peer then gives the mapping up and reaches that peer over UDP, which is where it still is - it was the reader that
+died, not the link. That is item 11's property made testable without the rig, and the local run confirms the
+control arm too: at 697 Mbps a genuinely slow reader produced 382,083 full-ring fallbacks and triggered the
+abandon exactly **once**, recovering 256 datagrams later.
+
+**And the row could not have shown any of it, which is the part worth fixing permanently.** `segment_attach[]`
+already counted every attempt by outcome and nothing published it. Had `shm_attach_absent` been on the RESULT
+line, "436,722 absent attempts for 436,728 datagrams" would have been on the face of every row from the day the
+seam landed. It is there now - `shm_attach_attempts`, `shm_attach_ok`, `shm_attach_absent` - by the same argument
+that put the four by-reason fallback counters there: **the fallback counters exist so a UDP datagram can never be
+uncounted, and an attach that is retried deserves the same.** The comparison is one glance: attempts should be a
+small fraction of datagrams, never one per datagram.
+
+`examples/perf_hil/experiments/shm_attach_counters_local.sh` reads the line back in a private netns rather than
+trusting that a field which compiles also prints - the `fallbacks` buffer was 160 bytes and nearly full when these
+three were added, and a truncated field would have reproduced exactly the blindness they were added to remove.
+
+**Items 6, 7 and 8 are done, with a mutant apiece** (`tests/mutants_shm_stage1.py`, six mutants, all die):
+
+- **6, capacity exhaustion counted and warned once** - and the warning carries the ring's shape and how much got
+  through before it first filled, because that number is what separates the two causes. A ring too small for the
+  load fills after about as many records as it has slots; a ring whose slot sequences were never seeded is a ring
+  of **one** and fills after the first. Both move `segment_full_to_udp`, and reading the second as the first sends
+  you to `tt_SEGMENT_BYTES` for a bug that is in `create_own_segment()`. Plan asked for that case by name; the test
+  runs both arms and asserts they differ.
+- **7, a reader that exits does not park a record forever** - in this topology the reader is the owner, and until
+  today `tt_Context_destroy()` unlinked nothing, so every context that ever ran left a file in `/dev/shm`. The leak
+  is invisible in a test because `tt_segment_create()` unlinks first and the next context at that name replaces it.
+  Its dual is in the same place: a **writer** that dies between claiming a slot and publishing it wedges the reader
+  at that index for good, and an empty head and an abandoned one are identical from the slot alone. The owner now
+  counts consecutive drain passes that find something outstanding and nothing readable, and says so once.
+- **8, a segment left by a dead owner is reclaimed** - `tt_segment_create()` unlinks before creating, so the
+  successor gets a new region with a new incarnation and the orphaned records do not come with it.
+
+**The defect that mattered most, found in CI's own numbers twelve hours after it shipped (2026-09-29).**
+
+Main's CI went red at `1c69658a`, "a datagram crosses the segment", and stayed red for ten commits because nobody
+looked - the rule to check every workflow after every push exists for exactly this and was applied to the workflows
+that seemed relevant instead of to all of them. Two tiers failed, both on services (`test_service_roundtrip`,
+`test_event_callbacks`, and `set_bool` at 17/20), and a third tier **passed** while collapsing:
+
+    same-host perf, from each commit's Test all
+    dbd9a932  (last green)                     recv 5,309,077   dropped          0   loss  0.0%   1,017.9 Mbps
+    1c69658a  (a datagram crosses the segment) recv 3,751,560   dropped          0   loss  0.0%     719.3 Mbps
+    54c27bbc  (the module engaged)             recv   768,104   dropped 30,975,424   loss 97.6%     147.3 Mbps
+
+The same-host cell is *the* cell this module exists to win, and with the module engaged it was eight times worse
+than our own UDP loopback had been without it. Plan found this by reading the numbers inside a tier that reported
+PASS; its criterion is `perf_server received N message(s) (need >= 5)` against a run that normally delivers 5.3
+million, which is a check that cannot fail.
+
+**The cause was one line above the RESULT, in the subscriber's own delivery stats:**
+
+    rx_shm=36,125,590   rx_udp=892,835
+    delivered=895,209   out_of_order_discarded=36,123,071
+
+Every datagram that arrived over the segment was discarded, and `delivered` is `rx_udp`. Not a full ring, not
+corruption: **the fallback itself.** A datagram rerouted to UDP because the ring was full arrives *ahead* of the
+records already queued in that ring, because the socket does not wait for the reader's next drain. The subscriber
+delivers the newer one and then discards every older record behind it. One logical stream carried over two paths
+of different latency reorders itself, and best-effort delivery discards the loser by design.
+
+**So a full ring now drops the datagram instead of rerouting it.** A full queue drops - which is what the kernel's
+socket buffer was already doing on the UDP path - and the reliable path's own retransmission covers it. The
+alternative considered and rejected was to keep the fallback and have the reader drain the ring to empty before
+every socket read: that fixes the ring-behind case and breaks on the refill, where a record written *after* a UDP
+datagram is delivered *before* it. Every rule that lets a stream change path under load has a window like that,
+and the only sound version is not to change path.
+
+`segment_full_to_udp` is therefore `segment_full_dropped`, and **S2's invariant is three reasons, not four**:
+
+> `tx_udp == tx_udp_broadcast + tx_udp_oversize + tx_udp_unattached`
+
+with `shm_full_dropped` printed beside them and deliberately outside the sum. It is not a fallback any more, so
+including it would make the invariant false - and it is now the only place a full ring shows up at all.
+
+**Two mixed-stream cases remain, named rather than left to be found the same way.** A service request or response
+larger than a slot still goes by UDP (`tx_udp_oversize`) while smaller datagrams to the same peer go by segment;
+services are request/reply and largely self-paced, so the risk is low but real. And the first datagrams to a peer
+go by UDP until the attach succeeds, then switch - safe in practice because the ring is empty at that point, but
+by circumstance rather than by construction.
+
+**The service failures are a second, independent defect: the segment has no notification.** `node_poll()` drains
+the ring once at the top of the call and then blocks in `tt_receive()` on the socket. Nothing a peer writes into
+the segment can end that wait, so a record placed there is invisible until the wait ends - and the wait is bounded
+by the next scheduler entry, not by any small slice. The claim in the code that the cost is "up to one poll period
+of latency" was wrong: for an idle node there is no poll period, there is the next timer. A service client blocked
+on a reply that crossed the segment sleeps until something unrelated falls due, which is inside the deadline
+sometimes and not others - 17 of 20. Plan established it is a race rather than a logic error by a natural control:
+`1ac62742` passed 20/20 and its parent `54c27bbc` failed 17/20 with a **byte-identical** `set_bool` binary, the
+only changes between them being a zenoh harness file and this document.
+
+The fix is a doorbell rather than a polling slice, since a slice would trade correctness back for the idle wakeups
+the poll loop was rebuilt to remove. The owner publishes a `reader_waiting` flag in its segment header, set
+immediately before it blocks and cleared when it wakes; a writer that has just published a record re-reads that
+flag and, only if it is set, sends a zero-length UDP datagram to the owner's data port - the one descriptor the
+reader is already waiting on. Under load the reader is never blocked, so the flag is never set and the doorbell
+costs nothing. A zero-length datagram is not a valid TickLE datagram under any circumstance, so the receive path
+drops it before the magic check and counts it: no new parsable wire form, nothing another implementation can
+observe. The flag is checked *after* the write, which is what closes the window where the reader sets it between
+the writer's check and the writer's write.
+
+**And the defect that was actually stopping the suite was neither of the reordering ones: uninitialised memory.**
+
+`tt_Context` is caller-owned and `reset_node_state()` initialises field by field. `segment_peers[256]` and
+`own_segment` were added to the struct and not to that function, so a context began life with whatever was on the
+caller's stack in those fields - and `release_segments()`, added the same evening, walks all 256 entries at teardown
+and calls `munmap()` on every non-NULL one:
+
+    SEGREL peer id=1   mapping=0x71ff46f0d000   <- the one real mapping
+    SEGREL peer id=98  mapping=0x279f8
+    SEGREL peer id=104 mapping=0x3
+    SEGREL peer id=124 mapping=0x40
+
+It unmapped parts of its own process at random, and every node in `make test-linux` segfaulted at exit. **This
+section already records this exact trap** - "a field added to this struct and not to this function is never zero" -
+about the per-transport counters, where it produced `tx_udp=140723338891185`. The counters only lied. These are
+pointers, and the consequence was a crash in a different place each time.
+
+No unit test could see it, for a reason worth keeping: every test in `tests/test_transport_seam.c` memsets its
+context before use, which is exactly what a real caller is not required to do. The one arm that *did* fill a context
+with 0xAA asserted only on the counters, because that is what it was written for. It now asserts on `own_segment`
+and on every `segment_peers[]` entry, and there is a mutant for it.
+
+**Four attempts before that each looked like an answer, and the cheap one worked:**
+
+- **gdb on one side of the pair.** The traced process never crashed and the untraced one always did, in *both*
+  directions. Tracing moved the timing, so "which side crashes" was an artefact of where gdb was attached.
+- **`CFLAGS=-fsanitize=address` passed to `make test-linux`.** `platform/linux/test.sh` re-invokes make itself
+  without the caller's CFLAGS, so the examples were never built with ASAN. The run produced a bare "Segmentation
+  fault" and no report - **a sanitizer that was never linked, whose silence read exactly like a clean run.** The
+  reproduction script now refuses to run unless `ldd` shows the sanitizer in the binary.
+- **A first fix to `release_segments()`** for a double-unmap that exists only under the mock's shared-region
+  semantics; the real HAL maps a fresh region per attach, so it was a fix for a bug that was not there. The crash
+  continued and that read as "a second cause" rather than "wrong cause".
+- **A false failure from the mutant harness itself.** Its restore used `shutil.copy2`, which preserves the original
+  mtime, so the restored file looked older than the objects built while the mutant was applied and `make` considered
+  the build up to date. The next `make test` ran a binary compiled from mutated source and reported four failures
+  that were not in the tree. Fixed with `copy()` plus a touch.
+
+What settled it was the cheapest possible step, taken last instead of first: **disable `release_segments()`
+entirely, re-run the suite, count segfaults.** Zero. Then markers inside the function. No reading and no inference,
+and it took two minutes against the hour the readings took.
+
+**What the counters said once they were on the line, and the rule that got three versions wrong.**
+
+Putting the four by-reason counters into the node's own traffic log - the line every integration run already
+prints - answered in one run what two runs of reasoning had not:
+
+    tx_udp=2,446,989  tx_shm=2,475,524
+    tx_udp_broadcast=141  tx_udp_oversize=0  tx_udp_unattached=2,446,848  shm_full_dropped=9,819,292
+
+Two things at once. The ring overruns badly - 9.8 million datagrams dropped against a UDP arm that dropped
+**none** - and 2.4 million took the *unattached* fallback on a run whose peer was alive from start to finish.
+The second is the module abandoning a healthy peer and re-attaching, over and over, which puts one logical
+stream on two paths all by itself: the thing drop-on-full exists to prevent, reintroduced by the heuristic
+that was supposed to handle a dead reader.
+
+**The dead-reader rule took three attempts, and the first two were each found by a mutant surviving rather
+than by anyone noticing:**
+
+1. *N consecutive refusals.* Measures the writer, not the reader. At same-host rates a healthy reader goes
+   thousands of our sends between two of its own poll passes, so the threshold says more about our send rate
+   than about whether anyone is listening.
+2. *N consecutive refusals with `read_index` unmoved.* Added to fix (1), and **unreachable**: any movement by
+   the reader frees a slot, so the very next write succeeds and resets the count anyway. The added condition
+   could never be the thing that decided. Its mutant survived, which is the only reason that was noticed - and
+   the first response to that was to add a *timed* version of the same unreachable idea, whose mutant also
+   survived.
+3. *Time since we last managed to put anything in the ring.* One line, and the discriminator was always there:
+   a success resets the clock, a reader that has taken nothing for `tt_SEGMENT_DEAD_READER_NS` has stopped,
+   and one that is merely behind frees a slot now and then. No count, no index.
+
+The lesson is not about segments. **A condition that cannot decide the outcome reads exactly like one that
+can**, and the only thing that told the difference here was asking whether removing it changed any test. Twice
+the answer was no, and twice the code had already shipped in my head as "fixed".
+
+**The third defect, and the one that made the first two look like they had made things worse.** With ordering
+fixed and the flapping gone, the cell collapsed further rather than recovering: 73,081 records delivered against
+UDP's 12,463,222, 12.2 Mbps, **241 ms** of latency, and 66 million dropped by a full ring. The ring had no
+back-pressure and looked like a sizing problem.
+
+It was not sizing. **The segment has no way to wake a reader that is blocked on its socket** - `node_poll()`
+drains the ring at the top of the call and then waits on the socket, and nothing written into shared memory can
+end that wait. As long as some traffic still went by UDP the reader kept being woken by accident; once the first
+two fixes put *everything* on the segment, the socket went quiet and the reader ran only on its timers. 241 ms is
+that timer. **The doorbell looked optional for exactly as long as a separate defect was doing its job for it**,
+which is the clearest example this project has produced of a component whose absence is invisible while something
+else accidentally covers for it.
+
+The fix is a doorbell rather than a polling slice, which would have traded correctness back for the idle wakeups
+the poll loop was rebuilt to remove. The owner sets `reader_waiting` in its own segment header immediately before
+it blocks and clears it when it wakes; a writer reads that flag **after** it publishes a record - which is what
+closes the window where the owner sets it between the writer's check and the writer's write - and only if it is
+set sends a **zero-length UDP datagram** to the owner's data port, the one descriptor the reader is already
+waiting on. The owner drains once more after setting the flag, closing the window the other way. Under load the
+reader is never inside a wait, so the flag is never set and the doorbell costs a relaxed load per send. A
+zero-length datagram is not a valid TickLE datagram under any circumstance, so the receive path drops it before
+the magic check: no new parsable wire form and nothing another implementation can observe. `tt_SEGMENT_VERSION`
+goes to 2, because a peer built against version 1 would read the ring correctly and never set the flag.
+
+**Stage 1 now wins the cell it exists to win.** Paired arms in one run, same tree, differing only by
+`-Dtt_SEGMENT_ENABLED=0`, library hashes `cd9b5f7f` and `d77f4882`:
+
+    arm   perf RESULT                                                          discards
+    on    recv 16,501,477  dropped 10   loss 0.0%  3,163.883 Mbps  0.007 ms     0
+    off   recv 12,166,049  dropped  0   loss 0.0%  2,332.637 Mbps  0.008 ms     0
+
+**+35.6% throughput at equal loss and equal latency**, against a starting point this evening of 147 Mbps and
+97.6% loss. `tx_shm=19,213,752` against `tx_udp=102`, and those 102 are all broadcast - the one shape that can
+never take a segment. `shm_full_dropped=10` in a sixty-second run, so the ring is not the constraint once the
+reader is woken when there is something for it.
+
+The three fixes only work together, and the order in which they were found is the wrong way round: each of the
+first two made the measured cell *worse* on its own, because each removed traffic from the socket that had been
+waking the reader by accident.
+
+**Still owed:** the p1-p4 numbers against WIRE_PLAN 10.4's floors - **not measurable until Plan re-measures cell 1
+with the fix in**, since anything measured against a build paying 87,000 failed syscalls a second would credit the
+segment for removing an artefact - and items 9 and 11 of section 6a. Item 4 is done (`71e5ca86`).
+
+**A cost to carry into the budget, measured by Plan in the same control:** peak RSS is 2,388 kB with the segment
+and 2,004 kB without, so the own-segment mapping costs about 384 kB resident. That is not part of the regression
+and is expected from the 512 KiB reservation, but it is a real cost of the module being on by default.
 
 ## 7. Open questions
 

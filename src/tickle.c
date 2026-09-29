@@ -475,9 +475,12 @@ static inline void note_reached(struct tt_Context* node, const struct tt_Peer* p
 // payload that really did travel over the segment. Here, coverage is a property of the code's
 // shape: a send that does not go through these does not reach a transport at all.
 //
-// `transport_for()` is where stage 1 chooses; for now every peer is UDP, by construction and not by
-// default, so stage 0's own test - every datagram udp, shm zero - is a real assertion about the
-// seam being wired and about the counters working before anything depends on them.
+// Where the choice is made: `segment_deliver()`, in one place, because it has to assemble the
+// datagram anyway and cannot decide "segment" without also deciding it fits a slot. Stage 0 left a
+// separate `transport_for()` here that answered the same question from the peer alone; it was never
+// called once stage 1 landed, and it is gone rather than kept, since two functions answering one
+// question is how the answers come to differ. With the segment compiled out every datagram is udp
+// and shm is zero, which is still stage 0's own assertion about the seam being wired.
 // The name a reader computes for a peer's segment: (address, port, context id), every field from
 // ordinary discovery (struct tt_Peer), so no new discovery mechanism and no wire change. The
 // address is what makes it unique where the context id alone is not - two network namespaces share
@@ -618,6 +621,18 @@ static void note_attach(struct tt_Context* node, enum tt_SegmentAttach reason) {
 }
 
 #if tt_SEGMENT_ENABLED
+// A peer asked about and found to have no segment for us. Kept against the address it was asked
+// about, so the same id at a different address is asked about at once rather than inheriting this
+// answer, and with a countdown rather than a flag, so "no" is temporary by construction.
+static void remember_absent(struct tt_SegmentPeer* entry, uint32_t ip, uint16_t port) {
+    entry->mapping = NULL;
+    entry->incarnation = 0;
+    entry->ip = ip;
+    entry->port = port;
+    entry->missing = true;
+    entry->recheck_in = tt_SEGMENT_ATTACH_RETRY_SENDS;
+}
+
 // The peer's segment, attached on first use and kept. NULL when this peer is not reachable that way
 // - another host, no module, or a segment we refused - and the reason is counted by the caller.
 //
@@ -626,37 +641,69 @@ static void note_attach(struct tt_Context* node, enum tt_SegmentAttach reason) {
 // than a subscription to its lifecycle. The cached entry is keyed by context id and remembers the
 // address it was named from, because a peer that reappears at a different address is a different
 // segment and must not be reached through this one.
+//
+// **Both answers are cached, and the negative one was not.** The paragraph above described "one
+// attempt" as though it were implemented, and for a peer with no segment it was one attempt *per
+// datagram*: the failure path wrote nothing to the entry, so the next send recomputed the name and
+// called tt_segment_attach() again. On another host that is an open() that walks /dev/shm and
+// fails, and it cost half of TickLE's cross-host throughput and doubled CPU per sample between
+// 9dbffd40 and d4413383 - with CycloneDDS flat across the same runs, so it was ours. The comment
+// was the specification and the code was the bug. A miss is now remembered for
+// tt_SEGMENT_ATTACH_RETRY_SENDS sends: long enough that the cost disappears, short enough that a
+// peer which binds later still becomes attachable.
 static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t context_id, uint32_t ip, uint16_t port) {
     if (context_id == tt_CONTEXT_ID_INVALID) {
         return NULL; // a broadcast has no single peer, so no name to compute
     }
     struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
-    if (entry->mapping != NULL) {
+    if (entry->mapping == NULL && entry->missing) {
         if (entry->ip != ip || entry->port != port) {
-            // Same id, different address: the id was re-handed, or this peer moved. Either way the
-            // mapping we hold is not this peer's.
-            tt_segment_detach(entry->mapping, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
-            memset(entry, 0, sizeof(*entry));
-        } else if (entry->mapping->incarnation != entry->incarnation) {
-            // The peer we attached to has been replaced by one holding the same id at the same
-            // address. Counted, because this is the case the header exists for.
-            note_attach(node, tt_SEGMENT_STALE);
-            tt_segment_detach(entry->mapping, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
-            memset(entry, 0, sizeof(*entry));
-        } else {
-            return entry->mapping;
+            memset(entry, 0, sizeof(*entry)); // a different peer behind this id: ask about that one now
+        } else if (entry->recheck_in > 0) {
+            entry->recheck_in--;
+            return NULL; // asked recently; the answer does not change between two datagrams
         }
+    }
+    if (entry->mapping != NULL) {
+        // Asked and answered as two questions rather than a chain of four branches: three of those
+        // branches did the same two things and differed only in what was worth counting, which is a
+        // clone however it is written out.
+        const bool same_address = entry->ip == ip && entry->port == port;
+        const bool same_owner = same_address && entry->mapping->incarnation == entry->incarnation;
+        if (same_owner && entry->recheck_in > 0) {
+            entry->recheck_in--;
+            return entry->mapping; // the common case, and the only one that costs nothing
+        }
+        if (same_address && !same_owner) {
+            // Replaced in place by an owner holding the same id at the same address. Counted,
+            // because this is what the incarnation is for - though it is worth being honest that
+            // tt_segment_create() unlinks before it creates, so a successor gets a *new* file while
+            // this mapping keeps the old one. What actually notices a replaced owner is the recheck
+            // below; this covers a hypothetical in-place reuse and is not the mechanism to rely on.
+            note_attach(node, tt_SEGMENT_STALE);
+        }
+        // Given up, for whichever of the three reasons brought us here: a different address behind
+        // this id, an owner replaced, or simply that the recheck has fallen due. That last one is
+        // not housekeeping - an owner killed since we attached leaves this region mapped, readable,
+        // and carrying the incarnation we recorded, so nothing read *through* this mapping can ever
+        // report its death. Only asking the name again can, and a peer that never asks writes into
+        // a ring nobody drains for as long as it lives. The file at that name is now either gone,
+        // the same one, or the successor's, and the attach below answers all three.
+        tt_segment_detach(entry->mapping, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
+        memset(entry, 0, sizeof(*entry));
     }
 
     char path[tt_SEGMENT_PATH_LENGTH];
     if (segment_name(path, sizeof(path), ip, port, context_id) < 0) {
         note_attach(node, tt_SEGMENT_BAD_HEADER); // a name we cannot form is a segment we cannot find
+        remember_absent(entry, ip, port);
         return NULL;
     }
     uint8_t why = (uint8_t)tt_SEGMENT_ABSENT;
     void* mapping = tt_segment_attach(path, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES), &why);
     if (mapping == NULL) {
         note_attach(node, (enum tt_SegmentAttach)why);
+        remember_absent(entry, ip, port);
         return NULL;
     }
 
@@ -665,6 +712,7 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
     if (verdict != tt_SEGMENT_ATTACHED) {
         note_attach(node, verdict);
         tt_segment_detach(mapping, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
+        remember_absent(entry, ip, port);
         return NULL;
     }
     note_attach(node, tt_SEGMENT_ATTACHED);
@@ -672,6 +720,9 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
     entry->ip = ip;
     entry->port = port;
     entry->incarnation = header->incarnation;
+    entry->missing = false;
+    entry->last_progress_ns = 0;
+    entry->recheck_in = tt_SEGMENT_REVALIDATE_SENDS;
     return header;
 }
 #endif
@@ -716,23 +767,52 @@ static void create_own_segment(struct tt_Context* node) {
     node->own_segment = header;
 }
 
-#endif
+// Everything this context mapped, handed back. Nothing else does it: a segment is a file in
+// /dev/shm, so a context that exits without unlinking leaves it there for good. The leak hides in
+// a test because create unlinks first, so the next context at the same address and id replaces the
+// stale file and sees nothing wrong - it is only unbounded in a system that runs long enough.
+//
+// Peers' mappings are unmapped and never unlinked: those files belong to those peers and are still
+// being read by them. Only this context's own segment is this context's to remove.
+static void release_segments(struct tt_Context* node) {
+    size_t bytes = segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES);
 
-// Which transport carries a datagram to this destination. Stage 1: the peer's segment when one can
-// be attached, UDP otherwise - and "otherwise" is every reason, all of them safe and all of them
-// counted, because a module that never attaches anywhere looks exactly like one correctly deciding
-// that nothing here is same-host.
-static enum tt_Transport transport_for(struct tt_Context* node, uint8_t context_id, uint32_t ip, uint16_t port) {
-#if tt_SEGMENT_ENABLED
-    return peer_segment(node, context_id, ip, port) != NULL ? tt_TRANSPORT_SHM : tt_TRANSPORT_UDP;
-#else
-    (void)node;
-    (void)context_id;
-    (void)ip;
-    (void)port;
-    return tt_TRANSPORT_UDP;
-#endif
+    // The name is computed FIRST, while the mapping is certainly still there, and the own mapping is
+    // taken out of the table before the loop - because a context is routinely attached to its own
+    // segment as one of its peers. It unicasts to itself, so peer_segment() attaches to the file it
+    // created, and segment_peers[own id].mapping and own_segment are then the same region. Unmapping
+    // it in the loop and reading owner_ip out of it afterwards is a use-after-munmap, and it
+    // segfaulted every node in the suite at teardown while every unit test stayed green, because the
+    // mock's detach is a no-op and cannot reproduce an unmapped page.
+    struct tt_SegmentHeader* own = node->own_segment;
+    node->own_segment = NULL;
+    char path[tt_SEGMENT_PATH_LENGTH];
+    bool named =
+        own != NULL && segment_name(path, sizeof(path), own->owner_ip, own->owner_port, own->owner_context_id) >= 0;
+
+    // Peers' mappings are unmapped and never unlinked: those files belong to those peers and are
+    // still being read by them. Only this context's own segment is this context's to remove - and it
+    // is skipped here so it is unmapped exactly once, below.
+    for (int id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
+        struct tt_SegmentHeader* mapping = node->segment_peers[id].mapping;
+        if (mapping != NULL && mapping != own) {
+            tt_segment_detach(mapping, bytes);
+        }
+        memset(&node->segment_peers[id], 0, sizeof(node->segment_peers[id]));
+    }
+
+    if (own != NULL) {
+        if (named) {
+            // Unlinked before unmapping, so no peer attaches to a segment this context has stopped
+            // draining. A peer already holding it keeps its mapping until it next asks the name,
+            // which is what the recheck is for.
+            tt_segment_unlink(path);
+        }
+        tt_segment_detach(own, bytes);
+    }
 }
+
+#endif
 
 // The most destinations one datagram can have: a peer each, or a broadcast per link.
 #define TX_MAX_DESTINATIONS (tt_MAX_LINK_COUNT > tt_MAX_PEER_COUNT ? tt_MAX_LINK_COUNT : tt_MAX_PEER_COUNT)
@@ -757,8 +837,7 @@ static void count_tx(struct tt_Context* node, enum tt_Transport transport, uint3
 enum udp_reason {
     UDP_BECAUSE_BROADCAST, // no single peer, so no name: by design
     UDP_BECAUSE_OVERSIZED, // larger than a slot: a service, which does not fragment
-    UDP_BECAUSE_UNATTACHED,
-    UDP_BECAUSE_FULL
+    UDP_BECAUSE_UNATTACHED
 };
 
 // The only way to count a UDP datagram. The two increments happen together here so that no path can
@@ -775,9 +854,6 @@ static void count_udp(struct tt_Context* node, enum udp_reason reason, uint32_t 
         break;
     case UDP_BECAUSE_UNATTACHED:
         node->segment_unattached_to_udp += datagrams;
-        break;
-    case UDP_BECAUSE_FULL:
-        node->segment_full_to_udp += datagrams;
         break;
     }
 }
@@ -813,10 +889,57 @@ static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_
     uint16_t own_port = 0;
     tt_own_address(node, &own_ip, &own_port);
     if (!segment_write(segment, datagram, (uint32_t)total, own_ip, own_port)) {
-        *reason = UDP_BECAUSE_FULL;
-        return false;
+        // Dropped, not rerouted, and this is the whole reason the function returns true here. A
+        // datagram sent over UDP because the ring was full arrives AHEAD of the records already in
+        // the ring - the socket does not wait for the reader's next drain - so the reader delivers
+        // it and then discards everything older behind it. That is not a corner case: it cost CI's
+        // same-host cell 97.6% of its traffic and 8x of its throughput. One logical stream, one
+        // path. A full ring is a full queue, and a full queue drops.
+        node->segment_full_dropped++;
+        // A ring that will not take anything, again and again, is how an owner that stopped draining
+        // looks from here - there is no other signal, since a killed owner's region stays mapped and
+        // valid. Given up past the streak, after which this peer is UNATTACHED and reached over UDP,
+        // which is safe precisely because there is no longer a reader to deliver anything out of
+        // order to. The next recheck attaches again if it was wrong.
+        struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
+        uint64_t now = tt_get_ns();
+        if (entry->last_progress_ns == 0) {
+            entry->last_progress_ns = now; // the first refusal since we last got something in
+        }
+        if (now - entry->last_progress_ns >= tt_SEGMENT_DEAD_READER_NS) {
+            tt_segment_detach(entry->mapping, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
+            memset(entry, 0, sizeof(*entry));
+            remember_absent(entry, ip, port);
+            note_attach(node, tt_SEGMENT_REFUSED); // asked for and given up on, which is what REFUSED says
+        }
+        if (node->segment_full_warnings == 0) {
+            node->segment_full_warnings++;
+            // The ring's shape and how much got through before it first filled, because
+            // segment_full_dropped on its own cannot tell the two causes apart: a ring that is too
+            // small for the load fills after roughly as many datagrams as it has slots, while a
+            // ring whose slot sequences were never seeded is a ring of ONE and fills after the
+            // first record - and that reads as a sizing problem, which is the wrong repair.
+            TT_LOG_WARNING("Segment ring of context %u is full: %u slots of %u bytes, first full after %llu datagrams "
+                           "over shared memory. Filling after about as many datagrams as there are slots is a sizing "
+                           "signal; filling after one or two is a ring that was never seeded.",
+                           (unsigned)context_id, (unsigned)segment->slots, (unsigned)segment->slot_bytes,
+                           (unsigned long long)node->tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+        }
+        return true; // handled: by dropping it, which is the ordered thing to do
     }
+    // A slot taken means we made progress, not that the reader did - so the reader's own clock is
+    // left alone here and only the refusal path touches it.
+    node->segment_peers[context_id].last_progress_ns = 0;
     count_tx(node, tt_TRANSPORT_SHM, 1);
+    // Read after the write, never before: an owner that set the flag while this record was being
+    // copied has already passed its own last drain, so only a check on this side of the publish can
+    // see that it needs waking. A zero-length datagram is not a valid TickLE datagram under any
+    // circumstance - the receive path drops it before the magic check - so this adds nothing another
+    // implementation can parse and nothing that could be mistaken for data.
+    if (__atomic_load_n(&segment->reader_waiting, __ATOMIC_SEQ_CST) != 0) {
+        (void)tt_send_to(node, "", 0, ip, port);
+        node->segment_doorbells_sent++;
+    }
     return true;
 }
 #endif
@@ -2725,7 +2848,36 @@ static void reset_node_state(struct tt_Context* node) {
     node->segment_broadcast_to_udp = 0;
     node->segment_oversized_to_udp = 0;
     node->segment_unattached_to_udp = 0;
-    node->segment_full_to_udp = 0;
+    node->segment_full_dropped = 0;
+#if tt_SEGMENT_ENABLED
+    // The segment state, for the reason this function already gives twice over: tt_Context is
+    // caller-owned and this initialises field by field, so a field added to the struct and not to
+    // this function is never zero. It was a lie about a counter the first time. This time it is
+    // POINTERS - segment_peers[].mapping held whatever was on the caller's stack, and the teardown
+    // walked all 256 entries and called munmap() on 0x3, 0x40, 0x10 and the rest, unmapping parts of
+    // the process at random. Every node in the integration suite segfaulted at exit, and no unit
+    // test could see it: they memset their context before use, which is exactly what a real caller
+    // is not required to do.
+    memset(node->segment_peers, 0, sizeof(node->segment_peers));
+    node->own_segment = NULL;
+#endif
+    node->segment_full_warnings = 0;
+    node->segment_head_stalls = 0;
+    node->segment_head_stall_passes = 0;
+    node->segment_stall_warnings = 0;
+    node->segment_doorbells_sent = 0;
+    node->segment_doorbells_received = 0;
+    // Counters that only ever increment, and therefore only ever reported whatever was on the
+    // caller's stack. Found by the structural check Plan built after `segment_peers` shipped
+    // uninitialised: this function is where a field is initialised, and the three below had been
+    // added to the struct without being added here. Two of them are what a reader consults when a
+    // node delivered nothing - "how many datagrams did we throw away, and why" - so answering that
+    // from garbage is worse than not answering it.
+    node->rx_malformed_drops = 0;
+    node->version_mismatch_drops = 0;
+#if tt_DISCOVERY_OPTIONS
+    node->rx_out_of_range = 0; // the field itself only exists under this flag, as does every read of it
+#endif
     node->summaries_skipped = 0;
     node->summaries_ridden = 0;
     node->tx_dropped_oversize = 0;
@@ -10403,23 +10555,80 @@ static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, ui
 //
 // Bounded per call so a writer that keeps the ring full cannot starve the socket: the poll returns
 // and comes back, which is the same fairness the socket drain already has.
-static void drain_own_segment(struct tt_Context* node) {
-    if (node->own_segment == NULL) {
+// The head of the ring when the drain found nothing to read. A claimed slot keeps the sequence it
+// had while free, so "empty" and "claimed by a writer that never published" look identical from the
+// slot; what separates them is write_index, which moves on the claim. Ahead of read_index with
+// nothing readable means something was taken from the ring and not put back.
+//
+// A writer mid-memcpy looks exactly like a writer that died, and must, so this counts rather than
+// concludes: the warning waits for tt_SEGMENT_STALL_PASSES consecutive passes, which no live writer
+// survives. The reason it is worth detecting at all is that a wedged head is permanent - the reader
+// cannot read past it, the ring then fills, and every peer falls back to UDP with only
+// segment_full_dropped to show for it, pointing at the ring's size instead of at the dead writer.
+// Whether this context is about to sleep on its socket, published in its own segment header so its
+// peers can see it. Sequentially consistent both ways: a writer publishes a record and then reads
+// this, the owner writes this and then drains, and it is that pairing - not either store alone -
+// that makes it impossible for a record to sit in the ring with nobody coming for it.
+static void segment_reader_waiting(struct tt_Context* node, bool waiting) {
+    if (node->own_segment != NULL) {
+        __atomic_store_n(&node->own_segment->reader_waiting, waiting ? 1U : 0U, __ATOMIC_SEQ_CST);
+    }
+}
+
+static void note_head_stall(struct tt_Context* node) {
+    struct tt_SegmentHeader* header = node->own_segment;
+    uint32_t write_index = __atomic_load_n(&header->write_index, __ATOMIC_ACQUIRE);
+    uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_RELAXED); // the owner's own
+    if (write_index == read_index) {
+        node->segment_head_stall_passes = 0; // nothing outstanding: the ring is genuinely empty
         return;
     }
+    node->segment_head_stalls++;
+    node->segment_head_stall_passes++;
+    if (node->segment_head_stall_passes == tt_SEGMENT_STALL_PASSES && node->segment_stall_warnings == 0) {
+        node->segment_stall_warnings++;
+        TT_LOG_WARNING("Segment ring head stalled: slot %u was claimed by a peer that never published it, and %u "
+                       "drain passes have found it so. Nothing can be read past it and the ring will fill; traffic "
+                       "falls back to UDP from here, which is correct but will look like a sizing problem.",
+                       (unsigned)(read_index & (header->slots - 1U)), (unsigned)node->segment_head_stall_passes);
+    }
+}
+
+// Returns how many records it delivered, and through `emptied` whether the ring is now empty. The
+// caller must not read the socket while it is not: the socket is drained to exhaustion (drain_rx)
+// while this used to stop after 64 records, so the ring ran permanently behind - and a single
+// datagram of the same stream arriving by socket, a broadcast sample say, advances the subscriber's
+// watermark past everything still queued in the ring, all of which is then discarded on arrival.
+// A few hundred thousand socket arrivals invalidated thirty-six million ring records that way on
+// CI's same-host cell. Ordering between two queues is not a property of either queue; it is a
+// property of the order they are read in.
+static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
+    *emptied = true;
+    if (node->own_segment == NULL) {
+        return 0;
+    }
+    uint32_t delivered = 0;
     for (uint32_t drained = 0; drained < tt_SEGMENT_DRAIN_PER_POLL; drained++) {
         uint32_t len = 0;
         uint32_t sender_ip = 0;
         uint16_t sender_port = 0;
         if (!segment_read(node->own_segment, node->rx_buffer, (uint32_t)sizeof(node->rx_buffer), &len, &sender_ip,
                           &sender_port)) {
-            return; // empty, or a record this mapping could not hold - segment_read() counts that
+            note_head_stall(node); // empty, or a head nobody is coming back for - the two look alike
+            return delivered;
         }
+        delivered++;
+        node->segment_head_stall_passes = 0; // something was read, so the head is moving
         // The sender's own address, carried in the record. Not invented here and not inferred from
         // whose segment this is: several peers write into one segment, and discovery learns where a
         // peer lives from the address its announce arrived on.
         (void)process_datagram_locked(node, (int32_t)len, sender_ip, sender_port, tt_TRANSPORT_SHM);
     }
+    // The bound was reached with records still there. Bounded rather than unbounded so one busy peer
+    // cannot hold the caller inside this function; `emptied` is how the caller learns not to read the
+    // socket yet.
+    *emptied = false;
+    return delivered;
 }
 #endif
 
@@ -10433,6 +10642,16 @@ static tt_ret_t process_datagram(struct tt_Context* node, int32_t len, uint32_t 
 
 static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
                                         enum tt_Transport transport) {
+#if tt_SEGMENT_ENABLED
+    // A doorbell: somebody put a record in this context's segment while it was asleep on this socket,
+    // and rang. There is nothing to parse - waking up was the message - and it is dropped here,
+    // before the magic check, because a zero-length datagram would otherwise be logged as a malformed
+    // one every time the module did its job.
+    if (len == 0) {
+        node->segment_doorbells_received++;
+        return tt_RET_OK;
+    }
+#endif
     node->rx_tail = (uint32_t)len;
     node->rx_datagrams++;
     // The receive half of the seam (SHM_PLAN.md stage 0). One place, because there is one place a
@@ -10557,9 +10776,13 @@ static tt_ret_t poll_once_nonblocking(struct tt_Context* node, uint64_t time) {
     }
 
 #if tt_SEGMENT_ENABLED
-    // Before the socket, because a segment arrival is already in memory and costs no syscall to
-    // find - and because a caller polling non-blocking wants whatever is cheapest to hand back.
-    drain_own_segment(node);
+    // Before the socket, and to empty. Cheapest-first is the lesser reason; the real one is that a
+    // socket datagram read while records are still queued in the ring arrives ahead of them and
+    // makes the reader discard them.
+    bool emptied = true;
+    if (drain_own_segment(node, &emptied) > 0 || !emptied) {
+        return tt_RET_OK; // data is data: hand it back rather than reaching past it for the socket
+    }
 #endif
 
     uint32_t ip = 0;
@@ -10641,7 +10864,22 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
 
     uint32_t ip = 0;
     uint16_t port = 0;
+#if tt_SEGMENT_ENABLED
+    // Published before the wait, and then one more drain: a record written before the flag became
+    // visible to its writer has no doorbell coming for it, so the only way not to sleep on top of it
+    // is to look once more after saying we are about to sleep.
+    segment_reader_waiting(node, true);
+    bool emptied_before_wait = true;
+    if (drain_own_segment(node, &emptied_before_wait) > 0 || !emptied_before_wait) {
+        segment_reader_waiting(node, false);
+        wait_until_store(node, 0);
+        return false; // something is there: go round the loop and hand it back rather than waiting
+    }
+#endif
     int32_t len = tt_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
+#if tt_SEGMENT_ENABLED
+    segment_reader_waiting(node, false);
+#endif
 
     wait_until_store(node, 0); // not waiting: an insert now is seen by the loop
     if (len >= 0) {
@@ -10695,12 +10933,15 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
     node->rx_clock_ns = time;
 
 #if tt_SEGMENT_ENABLED
-    // A segment arrival is not something poll() can wait on (SHM_PLAN open question 1 - stage 1 has
-    // no notification by design, so the reader finds records on its own next pass). Draining here,
-    // once per call rather than inside the wait, is what makes that true: the cost is up to one
-    // poll period of latency, which is why stage 1 claims throughput and CPU and explicitly does
-    // not claim latency.
-    drain_own_segment(node);
+    // A segment arrival is not something poll() can wait on, so the ring is drained here, at the top
+    // of the call, and to empty - and if anything came out of it this call returns with it rather
+    // than going on to sleep on top of data it already has. Reaching the socket first would put a
+    // newer datagram in front of what is still queued here, which is the whole of the defect this
+    // ordering exists to prevent.
+    bool ring_emptied = true;
+    if (drain_own_segment(node, &ring_emptied) > 0 || !ring_emptied) {
+        return tt_RET_OK;
+    }
 #endif
 
     // timeout == 0: one non-blocking pass - run everything due now, drain whatever RX is already
@@ -10897,7 +11138,11 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
     // from tx_datagrams is looking at a counting defect and not at a transport story.
     TT_LOG_INFO("Node %u traffic: tx_datagrams=%lu rx_datagrams=%lu rx_self_sent=%lu rx_self_sent_data=%lu "
                 "rx_self_sent_data_unicast=%lu rx_via_data=%lu rx_via_well_known=%lu tx_dropped_oversize=%lu "
-                "tx_udp=%lu tx_shm=%lu rx_udp=%lu rx_shm=%lu",
+                "tx_udp=%lu tx_shm=%lu rx_udp=%lu rx_shm=%lu "
+                // Why each UDP datagram went that way, on the same line as the totals. Without it a
+                // split like tx_udp=6694744 tx_shm=6746571 says only "half and half" and the next
+                // question - which half, and why - needs another run. It cost one on 2026-09-29.
+                "tx_udp_broadcast=%lu tx_udp_oversize=%lu tx_udp_unattached=%lu shm_full_dropped=%lu",
                 node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
                 (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
                 (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -10905,7 +11150,9 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned long)node->tx_datagrams_by_transport[tt_TRANSPORT_UDP],
                 (unsigned long)node->tx_datagrams_by_transport[tt_TRANSPORT_SHM],
                 (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_UDP],
-                (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+                (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_SHM],
+                (unsigned long)node->segment_broadcast_to_udp, (unsigned long)node->segment_oversized_to_udp,
+                (unsigned long)node->segment_unattached_to_udp, (unsigned long)node->segment_full_dropped);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads
@@ -10970,6 +11217,11 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
     }
     __atomic_store_n(&node->sched_inbox_pending, 0, __ATOMIC_RELAXED);
 
+#if tt_SEGMENT_ENABLED
+    // Before the socket goes: the segment is named from this context's address, and the
+    // teardown below is the last point at which that name is still this context's.
+    release_segments(node);
+#endif
     tt_close(node);
 
     return tt_RET_OK;

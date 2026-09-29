@@ -106,9 +106,13 @@ struct BenchStats {
     uint64_t udp_broadcast;
     uint64_t udp_oversize;
     uint64_t udp_unattached;
-    uint64_t udp_full;
-    int transport_valid; // 0 until a harness calls bench_stats_set_transport(): the DDS harnesses never do
-    int fallbacks_valid; // likewise for bench_stats_set_fallbacks()
+    uint64_t shm_full_dropped;
+    int transport_valid;      // 0 until a harness calls bench_stats_set_transport(): the DDS harnesses never do
+    int fallbacks_valid;      // likewise for bench_stats_set_fallbacks()
+    uint64_t attach_attempts; // every tt_segment_attach() the context made, by any outcome
+    uint64_t attach_ok;
+    uint64_t attach_absent;
+    int attach_valid; // likewise for bench_stats_set_attach()
     char iface[32];
 };
 
@@ -322,14 +326,38 @@ static inline void bench_stats_set_transport(struct BenchStats* stats, const uin
 // the assertion should see four fields that obviously sum to tx_udp; in struct tt_Context they are segment_*_to_udp
 // because there the question is what the segment did. The mapping is this one call site, and these are its two halves:
 //   tx_udp_broadcast  <- segment_broadcast_to_udp     tx_udp_oversize    <- segment_oversized_to_udp
-//   tx_udp_unattached <- segment_unattached_to_udp    tx_udp_full        <- segment_full_to_udp
+//   tx_udp_unattached <- segment_unattached_to_udp    shm_full_dropped   <- segment_full_dropped
+//
+// Three reasons sum to tx_udp, not four. shm_full_dropped is deliberately NOT one of them: since 2026-09-29 a full
+// ring drops the datagram instead of rerouting it, because a rerouted datagram overtakes the records still in the
+// ring and makes the reader discard every one of them. It is still printed, and it is still the sizing signal it
+// always was - it is simply no longer a fallback, so adding it into tx_udp would make the invariant false.
 static inline void bench_stats_set_fallbacks(struct BenchStats* stats, uint64_t broadcast, uint64_t oversize,
-                                             uint64_t unattached, uint64_t full) {
+                                             uint64_t unattached, uint64_t full_dropped) {
     stats->udp_broadcast = broadcast;
     stats->udp_oversize = oversize;
     stats->udp_unattached = unattached;
-    stats->udp_full = full;
+    stats->shm_full_dropped = full_dropped;
     stats->fallbacks_valid = 1;
+}
+
+// How many times the context asked /dev/shm about a peer, and how those attempts came out. On the RESULT line because
+// of what happened without it: from the seam landing until 2026-09-29 a peer with no segment was re-asked for *every*
+// datagram - a failed open() about 87,000 times a second - and it cost 54% of cross-host throughput for a day while
+// every functional test stayed green. Nothing on the row could have shown it. With these fields it is one comparison on
+// the face of every row: shm_attach_absent should be a handful of attempts, not one per datagram, so
+// shm_attach_absent next to tx_udp_unattached is the check. The fallback counters were added so a UDP datagram can
+// never be uncounted; this is the same argument applied to an attach that is retried.
+static inline void bench_stats_set_attach(struct BenchStats* stats, const uint32_t* attach, size_t count,
+                                          size_t ok_index, size_t absent_index) {
+    uint64_t total = 0;
+    for (size_t i = 0; i < count; i++) {
+        total += attach[i];
+    }
+    stats->attach_attempts = total;
+    stats->attach_ok = ok_index < count ? attach[ok_index] : 0;
+    stats->attach_absent = absent_index < count ? attach[absent_index] : 0;
+    stats->attach_valid = 1;
 }
 
 static inline void bench_stats_end(struct BenchStats* stats) {
@@ -491,7 +519,7 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     char by_thread[512];
     char fail[80];
     char transport[96];
-    char fallbacks[160];
+    char fallbacks[320];
 
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
         utime_s = (double)usage.ru_utime.tv_sec + ((double)usage.ru_utime.tv_usec / 1e6);
@@ -506,8 +534,14 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     if (stats->fallbacks_valid != 0) {
         snprintf(fallbacks, sizeof(fallbacks),
                  " tx_udp_broadcast=%" PRIu64 " tx_udp_oversize=%" PRIu64 " tx_udp_unattached=%" PRIu64
-                 " tx_udp_full=%" PRIu64,
-                 stats->udp_broadcast, stats->udp_oversize, stats->udp_unattached, stats->udp_full);
+                 " shm_full_dropped=%" PRIu64,
+                 stats->udp_broadcast, stats->udp_oversize, stats->udp_unattached, stats->shm_full_dropped);
+    }
+    if (stats->attach_valid != 0) {
+        size_t used = strlen(fallbacks);
+        snprintf(fallbacks + used, sizeof(fallbacks) - used,
+                 " shm_attach_attempts=%" PRIu64 " shm_attach_ok=%" PRIu64 " shm_attach_absent=%" PRIu64,
+                 stats->attach_attempts, stats->attach_ok, stats->attach_absent);
     }
     transport[0] = '\0';
     if (stats->transport_valid != 0) {

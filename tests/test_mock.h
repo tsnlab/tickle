@@ -185,6 +185,16 @@ static inline size_t test_classic_form(const void* datagram, size_t len, uint8_t
 
 #ifdef TEST_MOCK_DEFINE_STORAGE
 static void test_mock_capture_send(const void* buf, size_t len) {
+    if (len == 0) {
+        // A doorbell. There is no header to normalise, and test_classic_form() would read one out of
+        // a zero-length buffer to try.
+        test_mock_send_last_wire_len = 0;
+        test_mock_send_last_len = 0;
+        if (test_mock_send_hook != NULL) {
+            test_mock_send_hook(buf, len);
+        }
+        return;
+    }
     uint8_t classic[tt_MAX_BUFFER_LENGTH * 2 + sizeof(struct tt_Header)];
     size_t classic_len = len < tt_MAX_BUFFER_LENGTH * 2 ? test_classic_form(buf, len, classic) : len;
     test_mock_send_last_wire_len = len;
@@ -471,12 +481,19 @@ struct test_mock_segment {
     char path[tt_SEGMENT_PATH_LENGTH];
     void* region;
     size_t bytes;
-    bool present; // unlinked segments stay mapped for whoever holds them, as a real one would
+    bool present;  // unlinked segments stay mapped for whoever holds them, as a real one would
+    bool detached; // cleared on create/attach: a second detach with no attach between is the defect
 };
 
 struct test_mock_segment test_mock_segments[TEST_MOCK_MAX_SEGMENTS];
 int test_mock_segment_creates = 0;
 int test_mock_segment_attaches = 0;
+// Every call to tt_segment_attach(), including the ones that find nothing. The successful ones are
+// counted above; this one exists because the cost of a *failed* attach is what a peer on another
+// host pays, and it was being paid once per datagram. A count that only rose on success could not
+// see that at all.
+int test_mock_segment_attach_calls = 0;
+int test_mock_segment_double_detaches = 0;
 
 static struct test_mock_segment* test_mock_find_segment(const char* path) {
     for (int i = 0; i < TEST_MOCK_MAX_SEGMENTS; i++) {
@@ -502,6 +519,7 @@ void* tt_segment_create(const char* path, size_t bytes) {
             snprintf(test_mock_segments[i].path, sizeof(test_mock_segments[i].path), "%s", path);
             test_mock_segments[i].bytes = bytes;
             test_mock_segments[i].present = true;
+            test_mock_segments[i].detached = false;
             test_mock_segment_creates++;
             return test_mock_segments[i].region;
         }
@@ -510,6 +528,7 @@ void* tt_segment_create(const char* path, size_t bytes) {
 }
 
 void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
+    test_mock_segment_attach_calls++;
     struct test_mock_segment* found = test_mock_find_segment(path);
     if (found == NULL) {
         *why = (uint8_t)tt_SEGMENT_ABSENT;
@@ -520,13 +539,27 @@ void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
         return NULL;
     }
     *why = (uint8_t)tt_SEGMENT_ATTACHED;
+    found->detached = false;
     test_mock_segment_attaches++;
     return found->region; // one region, two users - which is the point
 }
 
+// The region outlives its attachers here, as a real mapping's file does - but a *second* detach of
+// the same pointer without a re-attach is recorded, because that is the one thing a no-op cannot
+// otherwise reproduce. A real munmap makes the page inaccessible, so a double detach followed by any
+// read is a segfault; on 2026-09-29 that crashed every node in the integration suite at teardown
+// while every unit test here stayed green.
 void tt_segment_detach(void* mapping, size_t bytes) {
-    (void)mapping;
-    (void)bytes; // the region outlives its attachers here, as a real mapping's file does
+    (void)bytes;
+    for (int i = 0; i < TEST_MOCK_MAX_SEGMENTS; i++) {
+        if (test_mock_segments[i].region == mapping) {
+            if (test_mock_segments[i].detached) {
+                test_mock_segment_double_detaches++;
+            }
+            test_mock_segments[i].detached = true;
+            return;
+        }
+    }
 }
 
 void tt_segment_unlink(const char* path) {
@@ -543,9 +576,12 @@ static void test_mock_segments_free(void) {
         free(test_mock_segments[i].region);
         test_mock_segments[i].region = NULL;
         test_mock_segments[i].present = false;
+        test_mock_segments[i].detached = false;
     }
     test_mock_segment_creates = 0;
     test_mock_segment_attaches = 0;
+    test_mock_segment_attach_calls = 0;
+    test_mock_segment_double_detaches = 0;
 }
 #endif
 

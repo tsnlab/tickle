@@ -221,7 +221,10 @@ enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT }
 // derivable by the peer, so it travels here rather than on the wire: stage 0's claim is that the
 // wire is untouched, and the address already distinguishes what a wire token would.
 #define tt_SEGMENT_MAGIC 0x544b5347U // "TKSG", checked before anything else in the mapping is read
-#define tt_SEGMENT_VERSION 1
+// 2 since 2026-09-29: the header gained reader_waiting. A context built against version 1 reads the
+// ring correctly and never sets the flag, so its peers would publish to a sleeping owner and never
+// ring the doorbell - added latency with nothing to see, which is what the version is for.
+#define tt_SEGMENT_VERSION 2
 // Longest segment path this build can form: "/dev/shm/tickle-seg-255.255.255.255-65535-255" and a NUL.
 #define tt_SEGMENT_PATH_LENGTH 64
 
@@ -235,11 +238,14 @@ struct tt_SegmentHeader {
     uint8_t reserved2;
     uint32_t incarnation; // per launch: distinguishes a re-handed context id from its predecessor
 
-    // The ring, single writer (the owner) and single reader (the peer that attached). Fixed-size
-    // slots rather than a byte stream: a datagram never straddles the wrap, so a reader never sees
-    // half a record and there is no partial-write state to recover from after a writer dies
-    // mid-record. The cost is the slack in a slot larger than its datagram, which is memory and not
-    // correctness.
+    // The ring: many writers - every peer that wants to reach the owner - and one reader, the owner
+    // itself. (This comment said "single writer, single reader" until 2026-09-29; that was the
+    // topology an earlier draft of SHM_PLAN.md described and not the one built, and the description
+    // being wrong here is how `write_index` came to be claimed with a plain load and store.)
+    // Fixed-size slots rather than a byte stream: a datagram never straddles the wrap, so a reader
+    // never sees half a record and there is no partial-write state to recover from after a writer
+    // dies mid-record. The cost is the slack in a slot larger than its datagram, which is memory and
+    // not correctness.
     //
     // The indices are plain uint32_t accessed with __atomic_* builtins rather than _Atomic, for the
     // reason this header already gives elsewhere: _Atomic is not a C++ type and these structures
@@ -250,6 +256,19 @@ struct tt_SegmentHeader {
     uint32_t slot_bytes; // payload capacity of one slot
     uint32_t write_index;
     uint32_t read_index;
+
+    // Set by the owner immediately before it blocks on its socket, cleared when it wakes. Shared
+    // memory cannot wake a thread that is inside a socket wait, and once the segment carries nearly
+    // all the traffic there is nothing left on the socket to wake it either: measured, the reader
+    // then ran only on its timers and delivered 73,081 records where UDP delivered 12,463,222, at
+    // 241 ms of latency. The module had been getting away with it only because a separate defect was
+    // still pushing millions of datagrams down the socket.
+    //
+    // Checked by the writer AFTER it publishes, which closes the window where the owner sets the flag
+    // between the writer's check and the writer's write; the owner drains once more after setting it,
+    // which closes the window the other way. Under load the owner is never inside a wait, so the flag
+    // is never set and the doorbell is never rung.
+    uint32_t reader_waiting;
 };
 
 // One slot. `length` is the datagram's own length; the payload follows, and the slot is
@@ -572,11 +591,39 @@ struct tt_Context {
     // the above: same outcome on the wire, different cause, and only the pair distinguishes a
     // module doing its job from one that never attaches anywhere.
     uint64_t segment_unattached_to_udp;
-    // Datagrams that went over UDP because the peer's ring was full. The third of the trio and a
-    // different signal again: oversized is scope, unattached is discovery, full is sizing - a run
-    // where this moves says tt_SEGMENT_BYTES is too small for the offered load, which no other
-    // counter can say.
-    uint64_t segment_full_to_udp;
+    // Datagrams DROPPED because the peer's ring was full - not rerouted, dropped, the way a full
+    // socket buffer drops. This counter said "to_udp" until 2026-09-29 and the behaviour matched the
+    // name, and that was the defect: a datagram rerouted to UDP overtakes the records still sitting
+    // in the ring ahead of it, so the reader delivers the newer one first and discards every older
+    // one behind it. Measured on CI's same-host cell: 36,125,590 datagrams arrived over the segment
+    // and 36,123,071 were discarded as out of order, throughput 1,018 -> 147 Mbps. One logical
+    // stream cannot be carried over two paths of different latency, so a full ring now costs the
+    // datagram rather than its ordering, and the reliable path's own retransmission covers it.
+    //
+    // A run where this moves still says what it always said - tt_SEGMENT_BYTES is too small for the
+    // offered load - and nothing else can say it.
+    uint64_t segment_full_dropped;
+
+    // Warnings actually emitted, not events seen. A warning that repeats per datagram buries the
+    // one line worth reading, so each of these is latched - and it is a count rather than a bool so
+    // that "warned once" is a number a test can assert, and a latch that fires twice is a failure a
+    // bool could not report.
+    uint32_t segment_full_warnings;
+    // Drain passes that found the head of the ring claimed by a writer that never published it.
+    // `write_index` moves on the claim and the slot's sequence only on the publish, so a claimed
+    // head is indistinguishable from an empty one by the slot alone - the question is whether
+    // anything is outstanding at all. Transient under load, since a writer mid-copy looks the same;
+    // what matters is persistence, which is what segment_head_stall_passes measures. A writer that
+    // dies between its claim and its publish stops the segment for good, and without this the only
+    // symptom is every peer's datagrams being dropped with segment_full_dropped - a sizing signal - as
+    // the sole evidence, which points at the wrong cause.
+    uint64_t segment_head_stalls;
+    uint32_t segment_head_stall_passes; // consecutive; reset the moment a record is read
+    uint32_t segment_stall_warnings;
+    // Doorbells sent to a sleeping owner's data port, and received. Counted because "never needed"
+    // and "never rung" look identical from a latency figure, and only one of them is good news.
+    uint64_t segment_doorbells_sent;
+    uint64_t segment_doorbells_received;
 
 #if tt_SEGMENT_ENABLED
     // What this context has mapped, indexed by the remote context id - the same index
@@ -591,6 +638,38 @@ struct tt_Context {
         uint32_t ip;
         uint16_t port;
         uint32_t incarnation; // what was in the header when we attached; a change means a new peer
+        // The negative answer, remembered. A peer on another host has no segment and never will,
+        // and without this the question is asked again for every datagram - an open() that walks
+        // /dev/shm and fails, about 87,000 times a second per sender, which halved cross-host
+        // throughput and doubled CPU per sample when it shipped. `missing` says this (ip, port) was
+        // asked about and had nothing for us.
+        bool missing;
+        // Sends before this entry is asked about again, whichever way it was answered. A "no" must
+        // expire so a peer that binds later becomes reachable. A "yes" must expire too, and that is
+        // less obvious: an owner that was killed leaves its region mapped, intact, with the same
+        // incarnation in it, so nothing *inside* the mapping can ever say it is orphaned - only
+        // asking the name again can, and a peer that never asks writes into a ring no one drains.
+        uint32_t recheck_in;
+        // When we last managed to put anything in this peer's ring, or 0 if we have just managed it.
+        // A reader that has taken nothing for tt_SEGMENT_DEAD_READER_NS, while we have had records
+        // for it the whole time, has stopped; one that is merely behind still frees a slot now and
+        // then, and any success sets this back to 0.
+        //
+        // **Time, and nothing else.** Two earlier versions of this rule each added a condition that
+        // could not decide anything, and each was found only by its mutant surviving:
+        //
+        //   - "N consecutive refusals" measured the writer, not the reader. At same-host rates a
+        //     healthy reader goes thousands of our sends between two of its own poll passes, so the
+        //     rule fired constantly on a live peer - 2,446,848 "unattached" datagrams in one run -
+        //     and the re-attach that followed put one logical stream on two paths, which is the
+        //     defect drop-on-full exists to prevent.
+        //   - "...and read_index has not moved" was added to fix that and was unreachable: any
+        //     movement by the reader frees a slot, so the next write succeeds and resets the count
+        //     anyway. The extra condition could never be what decided. Adding a second, timed
+        //     version of the same idea repeated the mistake exactly.
+        //
+        // The success path is the whole discriminator, and it always was.
+        uint64_t last_progress_ns;
     } segment_peers[tt_MAX_CONTEXT_IDS];
     struct tt_SegmentHeader* own_segment;
 #endif

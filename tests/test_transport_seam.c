@@ -68,6 +68,13 @@ static void stub_free(struct tt_Data* data) {
     (void)data;
 }
 
+// One drain pass. drain_own_segment() reports whether the ring emptied, which is the poll loop's
+// business and not these tests' - they drive the ring directly and assert on what came out.
+static void drain_pass(struct tt_Context* node) {
+    bool emptied = false;
+    (void)drain_own_segment(node, &emptied);
+}
+
 static void init_node_topic_pub(struct tt_Context* node, struct tt_Topic* topic, struct tt_Publisher* pub) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
@@ -221,8 +228,26 @@ static void test_reset_zeroes_the_per_transport_counters(void) {
     }
     EXPECT_EQ_U32(0, (uint32_t)node.segment_oversized_to_udp);
     EXPECT_EQ_U32(0, (uint32_t)node.segment_unattached_to_udp);
+    EXPECT_EQ_U32(0, (uint32_t)node.segment_full_dropped);
     EXPECT_EQ_U32(0, (uint32_t)node.tx_datagrams); // the scalar they must stay beside
     EXPECT_EQ_U32(0, (uint32_t)node.rx_datagrams);
+
+#if tt_SEGMENT_ENABLED
+    // And the segment's own state, which is the same trap with worse consequences. The counters
+    // above only lied; segment_peers[].mapping holds POINTERS, and left at whatever was on the
+    // caller's stack the teardown walked all 256 entries and called munmap() on 0x3, 0x40, 0x10 and
+    // the rest, unmapping parts of the process at random. Every node in the integration suite
+    // segfaulted at exit while this file stayed green - because every test here memsets its context
+    // first, which is exactly what a real caller is not required to do. That is why this arm fills
+    // the context with 0xAA and why it must keep doing so.
+    EXPECT_TRUE(node.own_segment == NULL);
+    for (int id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
+        EXPECT_TRUE(node.segment_peers[id].mapping == NULL);
+        EXPECT_TRUE(!node.segment_peers[id].missing);
+        EXPECT_EQ_U32(0, node.segment_peers[id].recheck_in);
+        EXPECT_EQ_U32(0, (uint32_t)node.segment_peers[id].last_progress_ns);
+    }
+#endif
 }
 
 #define SEG_NAME_MAX 128
@@ -463,8 +488,10 @@ static void test_every_udp_datagram_has_a_named_reason(void) {
     pub.peers[0].context_id = tt_CONTEXT_ID_INVALID; // now every destination is a broadcast
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish_zerocopy(&pub, body, (uint32_t)sizeof(body)));
 
-    uint64_t named = node.segment_broadcast_to_udp + node.segment_oversized_to_udp + node.segment_unattached_to_udp +
-                     node.segment_full_to_udp;
+    // Three reasons, not four: since 2026-09-29 a full ring drops the datagram rather than sending
+    // it by UDP, so segment_full_dropped is not a fallback and adding it here would make the
+    // invariant false. Asserted separately below that nothing was dropped in this arm.
+    uint64_t named = node.segment_broadcast_to_udp + node.segment_oversized_to_udp + node.segment_unattached_to_udp;
     EXPECT_TRUE(node.tx_datagrams_by_transport[tt_TRANSPORT_UDP] > 0); // the arm sent something
     EXPECT_EQ_U32((uint32_t)node.tx_datagrams_by_transport[tt_TRANSPORT_UDP], (uint32_t)named);
     EXPECT_EQ_U32(0, (uint32_t)node.tx_datagrams_by_transport[tt_TRANSPORT_SHM]); // no segment exists
@@ -473,6 +500,7 @@ static void test_every_udp_datagram_has_a_named_reason(void) {
     // looks: broadcast for the unaddressed shape, unattached for the peer with no segment.
     EXPECT_TRUE(node.segment_broadcast_to_udp > 0);
     EXPECT_TRUE(node.segment_unattached_to_udp > 0);
+    EXPECT_EQ_U32(0, (uint32_t)node.segment_full_dropped); // no segment here, so nothing to fill
 }
 
 // The first datagram that actually goes over a segment, end to end in one process: one context
@@ -554,12 +582,12 @@ static void test_a_datagram_crosses_a_segment(void) {
 
     // The reader finds it on its own next pass - no notification, by design.
     uint64_t rx_before = reader.rx_datagrams_by_transport[tt_TRANSPORT_SHM];
-    drain_own_segment(&reader);
+    drain_pass(&reader);
     EXPECT_EQ_U32(1, (uint32_t)(reader.rx_datagrams_by_transport[tt_TRANSPORT_SHM] - rx_before));
     EXPECT_EQ_U32(0, (uint32_t)reader.rx_datagrams_by_transport[tt_TRANSPORT_UDP]);
 
     // Draining again finds nothing: the record was released, not re-read.
-    drain_own_segment(&reader);
+    drain_pass(&reader);
     EXPECT_EQ_U32(1, (uint32_t)(reader.rx_datagrams_by_transport[tt_TRANSPORT_SHM] - rx_before));
 
     test_mock_segments_free();
@@ -687,7 +715,7 @@ static void test_a_refused_datagram_is_refused_over_the_segment_too(void) {
 
     uint64_t drops_before = reader.version_mismatch_drops;
     EXPECT_TRUE(segment_write(reader.own_segment, &bad, (uint32_t)sizeof(bad), PEER_IP, PEER_PORT));
-    drain_own_segment(&reader);
+    drain_pass(&reader);
 
     EXPECT_EQ_U32(1, (uint32_t)(reader.version_mismatch_drops - drops_before));     // refused, and counted
     EXPECT_EQ_U32(1, (uint32_t)reader.rx_datagrams_by_transport[tt_TRANSPORT_SHM]); // it did arrive
@@ -816,6 +844,711 @@ static void test_received_datagram_is_counted_as_udp(void) {
     EXPECT_EQ_U32(0, (uint32_t)node.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
 }
 
+// The regression test for the defect Plan found on the rig on 2026-09-29: cross-host throughput
+// halved and CPU per sample doubled between 9dbffd40 and d4413383, with CycloneDDS flat across the
+// same runs. Every datagram to a peer on another host re-asked /dev/shm whether that peer had a
+// segment, because peer_segment()'s failure path wrote nothing to the cache entry. The cost is a
+// failed open() per datagram - about 87,000 a second per sender at the rates cell 1 runs at.
+//
+// What is asserted is the number of *calls*, including the failing ones, which is why the mock
+// counts those separately: a counter that only rose on success could not see this defect at all,
+// and every functional test passed while it was there. The control arm is the same peer once a
+// segment exists for it, where one attach must serve every later datagram - so the test
+// distinguishes "asks once" from "never asks".
+static void test_a_peer_with_no_segment_is_asked_once_not_per_datagram(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+    node.hal.own_ip = PEER_IP;
+    node.hal.own_port = PEER_PORT;
+
+    // No segment exists at the owner's address, which is every peer on another host.
+    const int sends = 64; // well inside tt_SEGMENT_ATTACH_RETRY_SENDS, so one ask must cover them all
+    for (int i = 0; i < sends; i++) {
+        EXPECT_TRUE(peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT) == NULL);
+    }
+    EXPECT_EQ_INT(1, test_mock_segment_attach_calls);
+    // The miss is counted once too, not once per datagram: segment_attach[] is a count of attempts,
+    // and the per-datagram count is segment_unattached_to_udp, which the caller keeps.
+    EXPECT_EQ_U32(1, node.segment_attach[tt_SEGMENT_ABSENT]);
+
+    // And it is not permanent. Past the countdown the question is asked again, which is what makes
+    // a peer that binds later reachable rather than written off.
+    for (uint32_t i = 0; i < tt_SEGMENT_ATTACH_RETRY_SENDS; i++) {
+        (void)peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT);
+    }
+    EXPECT_EQ_INT(2, test_mock_segment_attach_calls);
+
+    // A different address behind the same context id is asked about at once - the cached "no" was
+    // about a peer that is not this one.
+    int before = test_mock_segment_attach_calls;
+    EXPECT_TRUE(peer_segment(&node, OWNER_ID, OWNER_IP + 1, OWNER_PORT) == NULL);
+    EXPECT_EQ_INT(before + 1, test_mock_segment_attach_calls);
+
+    // Control: with a segment there, one attach serves every subsequent datagram. Without this arm
+    // the assertions above would also pass against a peer_segment() that never attached at all.
+    test_mock_reset();
+    test_mock_segments_free();
+    struct tt_Context owner;
+    struct tt_Topic owner_topic;
+    struct tt_Publisher owner_pub;
+    init_node_topic_pub(&owner, &owner_topic, &owner_pub);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+
+    memset(node.segment_peers, 0, sizeof(node.segment_peers));
+    for (int i = 0; i < sends; i++) {
+        EXPECT_TRUE(peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
+    }
+    EXPECT_EQ_INT(1, test_mock_segment_attach_calls);
+
+    test_mock_segments_free();
+}
+
+// Item 6 of SHM_PLAN 6a: capacity exhaustion counted and warned about once, never silent - and the
+// warning has to say enough to tell the two causes apart. A ring that is too small for the offered
+// load fills after roughly as many records as it has slots; a ring whose slot sequences were never
+// seeded is a ring of ONE and fills after the first record. Both move segment_full_dropped, and
+// reading the second as the first sends you to tt_SEGMENT_BYTES for a bug that is in
+// create_own_segment(). Plan asked for this case specifically, and it is not hypothetical: the
+// seeding loop exists because zeroed memory leaves slot 0 claimable and every other slot not.
+static void test_capacity_exhaustion_is_counted_and_warned_once(void) {
+    uint8_t storage[4096];
+
+    // Arm A, seeded as create_own_segment() seeds it: the ring holds as many records as it has
+    // slots before it refuses.
+    struct tt_SegmentHeader* seeded = make_ring(storage, RING_SLOTS, RING_SLOT_BYTES);
+    uint32_t accepted = 0;
+    while (segment_write(seeded, "x", 2, PEER_IP, PEER_PORT)) {
+        accepted++;
+        if (accepted > RING_SLOTS * 4) {
+            break; // a ring that never fills is its own failure, caught by the assertion below
+        }
+    }
+    EXPECT_EQ_U32(RING_SLOTS, accepted);
+
+    // Arm B, the ring of one: the same ring with the seeding left out, which is what zeroed shared
+    // memory gives. It takes exactly one record and is full for ever after.
+    uint8_t unseeded_storage[4096];
+    struct tt_SegmentHeader* unseeded = make_ring(unseeded_storage, RING_SLOTS, RING_SLOT_BYTES);
+    for (uint32_t index = 0; index < RING_SLOTS; index++) {
+        ((struct tt_SegmentSlot*)segment_slot(unseeded, index))->sequence = 0; // as calloc left it
+    }
+    uint32_t accepted_unseeded = 0;
+    while (segment_write(unseeded, "x", 2, PEER_IP, PEER_PORT)) {
+        accepted_unseeded++;
+        if (accepted_unseeded > RING_SLOTS * 4) {
+            break;
+        }
+    }
+    EXPECT_EQ_U32(1, accepted_unseeded);
+    // The two arms differ, which is the whole point: the count of records a ring takes before its
+    // first refusal is what separates a sizing problem from a seeding one, and it is that number
+    // the warning carries.
+    EXPECT_TRUE(accepted != accepted_unseeded);
+
+    // Warned once, however many datagrams meet the full ring. Driven through segment_deliver(),
+    // because that is where the warning lives and where a repeat would be emitted.
+    test_mock_reset();
+    test_mock_segments_free();
+    struct tt_Context owner;
+    struct tt_Topic owner_topic;
+    struct tt_Publisher owner_pub;
+    init_node_topic_pub(&owner, &owner_topic, &owner_pub);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+
+    struct tt_Context writer;
+    struct tt_Topic writer_topic;
+    struct tt_Publisher writer_pub;
+    init_node_topic_pub(&writer, &writer_topic, &writer_pub);
+    writer.hal.own_ip = PEER_IP;
+    writer.hal.own_port = PEER_PORT;
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = PEER_CONTEXT_ID;
+
+    // Fill the owner's ring, then keep going. Nothing drains it, so every send past the fill meets
+    // a full ring.
+    uint32_t sends = tt_SEGMENT_SLOTS + 16U;
+    uint32_t not_handled = 0;
+    for (uint32_t i = 0; i < sends; i++) {
+        enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
+        if (!segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason)) {
+            not_handled++;
+        }
+    }
+    // Every send was handled by the seam: the ones that fitted went into the ring and the rest were
+    // dropped. None came back for UDP, which is the point - a datagram rerouted past a full ring
+    // overtakes the records still in it and makes the reader discard them all.
+    EXPECT_EQ_U32(0, not_handled);
+    EXPECT_EQ_U32(tt_SEGMENT_SLOTS, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    EXPECT_EQ_U32(0, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_UDP]);
+    EXPECT_EQ_U32(16, (uint32_t)writer.segment_full_dropped); // the ring took its slots and dropped the rest
+    EXPECT_EQ_U32(1, writer.segment_full_warnings);           // said once
+    // And not once per dropped datagram, which is the failure this latch exists for.
+    EXPECT_TRUE(writer.segment_full_warnings != (uint32_t)writer.segment_full_dropped);
+
+    test_mock_segments_free();
+}
+
+// A writer that claims a slot and dies before publishing it wedges the reader at that index for
+// good: the slot keeps the sequence it had while free, so "empty" and "claimed and abandoned" look
+// identical from the slot alone. The ring then fills, every datagram to that peer is dropped, and
+// the only evidence is segment_full_dropped - a sizing signal - pointing at the wrong cause. This is
+// the same confusion item 6 guards against from the other side, which is why both are here.
+//
+// The control arm is a published record: a head that can be read must not be reported as stalled,
+// or the warning fires on every busy segment and means nothing.
+static void test_a_stalled_head_is_noticed_rather_than_read_as_a_sizing_problem(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context owner;
+    struct tt_Topic owner_topic;
+    struct tt_Publisher owner_pub;
+    init_node_topic_pub(&owner, &owner_topic, &owner_pub);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+
+    // Control 1: an empty ring is not a stalled one. Nothing has been claimed, so there is nothing
+    // the reader is waiting for.
+    for (uint32_t i = 0; i < tt_SEGMENT_STALL_PASSES + 8U; i++) {
+        drain_pass(&owner);
+    }
+    EXPECT_EQ_U64(0, owner.segment_head_stalls);
+    EXPECT_EQ_U32(0, owner.segment_stall_warnings);
+
+    // Control 2: a published record is read, and reading it clears the count rather than leaving it
+    // to accumulate across the life of the segment.
+    EXPECT_TRUE(segment_write(owner.own_segment, "hello", 6, PEER_IP, PEER_PORT));
+    drain_pass(&owner);
+    EXPECT_EQ_U64(0, owner.segment_head_stalls);
+
+    // The wedge: a writer claims the head and never publishes it. Staged by moving write_index the
+    // way segment_write()'s compare-and-exchange does, and then stopping - which is exactly what a
+    // writer killed between its claim and its memcpy leaves behind.
+    struct tt_SegmentHeader* seg = owner.own_segment;
+    uint32_t claimed = __atomic_load_n(&seg->write_index, __ATOMIC_RELAXED);
+    __atomic_store_n(&seg->write_index, claimed + 1U, __ATOMIC_RELEASE);
+
+    for (uint32_t i = 0; i < tt_SEGMENT_STALL_PASSES - 1U; i++) {
+        drain_pass(&owner);
+    }
+    // Not yet: a writer in the middle of a memcpy looks the same, and warning on that would fire on
+    // every busy segment. The count moves, the warning waits.
+    EXPECT_EQ_U64(tt_SEGMENT_STALL_PASSES - 1U, owner.segment_head_stalls);
+    EXPECT_EQ_U32(0, owner.segment_stall_warnings);
+
+    drain_pass(&owner);
+    EXPECT_EQ_U32(1, owner.segment_stall_warnings);
+
+    // And once, however long it stays wedged.
+    for (uint32_t i = 0; i < tt_SEGMENT_STALL_PASSES; i++) {
+        drain_pass(&owner);
+    }
+    EXPECT_EQ_U32(1, owner.segment_stall_warnings);
+
+    test_mock_segments_free();
+}
+
+// Item 7: a context that goes away does not leave its records, or its segment, behind. In this
+// topology the reader is the owner, so "a reader that exits" is a context being destroyed - and
+// until 2026-09-29 tt_Context_destroy() unlinked nothing, so every context that ever ran left a
+// file in /dev/shm. The leak is invisible in a test unless it is looked for, because
+// tt_segment_create() unlinks before creating and the next context at that name replaces it.
+//
+// The control is the assertion before the destroy: without it, a test that computed the wrong name
+// would find "no segment there" both times and pass while unlinking nothing.
+static void test_destroy_takes_the_segment_with_it(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context owner;
+    struct tt_Topic owner_topic;
+    struct tt_Publisher owner_pub;
+    init_node_topic_pub(&owner, &owner_topic, &owner_pub);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+
+    // The owner has a peer mapped as well, so the teardown is asked about both kinds of mapping.
+    struct tt_Context other;
+    struct tt_Topic other_topic;
+    struct tt_Publisher other_pub;
+    init_node_topic_pub(&other, &other_topic, &other_pub);
+    other.id = PEER_CONTEXT_ID;
+    other.entity_id_base = OWNER_INCARNATION + 1U;
+    other.hal.own_ip = PEER_IP;
+    other.hal.own_port = PEER_PORT;
+    create_own_segment(&other);
+    EXPECT_TRUE(peer_segment(&owner, PEER_CONTEXT_ID, PEER_IP, PEER_PORT) != NULL);
+
+    char path[tt_SEGMENT_PATH_LENGTH];
+    EXPECT_TRUE(segment_name(path, sizeof(path), OWNER_IP, OWNER_PORT, OWNER_ID) > 0);
+    char peer_path[tt_SEGMENT_PATH_LENGTH];
+    EXPECT_TRUE(segment_name(peer_path, sizeof(peer_path), PEER_IP, PEER_PORT, PEER_CONTEXT_ID) > 0);
+
+    // Control: the segment is there under exactly this name before the destroy. An attach is how
+    // the question is asked, because that is how a peer asks it.
+    uint8_t why = (uint8_t)tt_SEGMENT_ABSENT;
+    void* found = tt_segment_attach(path, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES), &why);
+    EXPECT_TRUE(found != NULL);
+
+    // A context is attached to its OWN segment as a peer too - it unicasts to itself - so the
+    // teardown has the same region in segment_peers[] and in own_segment. Staged explicitly,
+    // because it is what the real suite does on every node and what this test missed the first
+    // time: the teardown unmapped it as a peer and then read the owner's name out of it, which is a
+    // use-after-munmap. It segfaulted every node in the integration suite while this file stayed
+    // green, because the mock's detach cannot make a page inaccessible.
+    EXPECT_TRUE(peer_segment(&owner, OWNER_ID, OWNER_IP, OWNER_PORT) == owner.own_segment);
+
+    EXPECT_EQ_INT(tt_RET_OK, (int)tt_Context_destroy(&owner));
+    // Unmapped exactly once. The mock cannot fault on a stale pointer, so it counts instead - which
+    // is the nearest a no-op detach can get to reproducing the crash.
+    EXPECT_EQ_INT(0, test_mock_segment_double_detaches);
+
+    // Gone: unlinked, so no peer can attach to a segment nobody is draining.
+    why = (uint8_t)tt_SEGMENT_ATTACHED;
+    found = tt_segment_attach(path, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES), &why);
+    EXPECT_TRUE(found == NULL);
+    EXPECT_EQ_INT((int)tt_SEGMENT_ABSENT, (int)why);
+    EXPECT_TRUE(owner.own_segment == NULL);
+    EXPECT_TRUE(owner.segment_peers[PEER_CONTEXT_ID].mapping == NULL);
+
+    // The peer's own segment is NOT unlinked by the owner's teardown: it belongs to that peer, which
+    // is still running and still reading it. Unmapping it is this context's business; removing it
+    // is not.
+    why = (uint8_t)tt_SEGMENT_ABSENT;
+    found = tt_segment_attach(peer_path, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES), &why);
+    EXPECT_TRUE(found != NULL);
+
+    EXPECT_EQ_INT(tt_RET_OK, (int)tt_Context_destroy(&other));
+    test_mock_segments_free();
+}
+
+// Item 8: a context that died without unlinking leaves a segment behind, and the next context at
+// that name takes it over rather than inheriting it. tt_segment_create() unlinks first, so the new
+// owner gets a new region - and the peer still holding the old mapping finds out through the
+// incarnation, which is the field's whole purpose.
+//
+// "Died without unlinking" is staged by simply not tearing the first context down, which is what a
+// SIGKILL leaves: the mapping goes with the process and the file stays.
+static void test_a_segment_left_by_a_dead_owner_is_reclaimed(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context dead;
+    struct tt_Topic dead_topic;
+    struct tt_Publisher dead_pub;
+    init_node_topic_pub(&dead, &dead_topic, &dead_pub);
+    dead.id = OWNER_ID;
+    dead.entity_id_base = OWNER_INCARNATION;
+    dead.hal.own_ip = OWNER_IP;
+    dead.hal.own_port = OWNER_PORT;
+    create_own_segment(&dead);
+    EXPECT_TRUE(dead.own_segment != NULL);
+
+    // A peer attaches while it is alive, and puts a record in it.
+    struct tt_Context writer;
+    struct tt_Topic writer_topic;
+    struct tt_Publisher writer_pub;
+    init_node_topic_pub(&writer, &writer_topic, &writer_pub);
+    writer.hal.own_ip = PEER_IP;
+    writer.hal.own_port = PEER_PORT;
+    struct tt_SegmentHeader* old_mapping = peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT);
+    EXPECT_TRUE(old_mapping != NULL);
+    EXPECT_TRUE(segment_write(old_mapping, "orphan", 7, PEER_IP, PEER_PORT));
+
+    // The owner dies. Nothing is unlinked and nothing is drained: the record above is now parked in
+    // a segment no one reads.
+
+    // A new context takes the same address and context id - the case the name cannot distinguish,
+    // which is why the header carries an incarnation.
+    struct tt_Context reborn;
+    struct tt_Topic reborn_topic;
+    struct tt_Publisher reborn_pub;
+    init_node_topic_pub(&reborn, &reborn_topic, &reborn_pub);
+    reborn.id = OWNER_ID;
+    reborn.entity_id_base = OWNER_INCARNATION + 99U;
+    reborn.hal.own_ip = OWNER_IP;
+    reborn.hal.own_port = OWNER_PORT;
+    create_own_segment(&reborn);
+    EXPECT_TRUE(reborn.own_segment != NULL);
+
+    // A different region, so the orphaned record did not come with it. Asserted by the ring's state
+    // rather than by the pointer, because two allocations can land at one address once the first is
+    // freed - and here the old one is deliberately still alive.
+    EXPECT_TRUE(reborn.own_segment != old_mapping);
+    EXPECT_EQ_U32(0, reborn.own_segment->write_index);
+    EXPECT_EQ_U32(0, reborn.own_segment->read_index);
+    EXPECT_EQ_U32(OWNER_INCARNATION + 99U, reborn.own_segment->incarnation);
+
+    // The writer's cached mapping is still the dead one, and this is the assertion the first version
+    // of this test got wrong. It expected the incarnation check to catch it - but that check reads
+    // the header *through the mapping we already hold*, and that region is the old file: unlinked,
+    // still mapped, still carrying the incarnation we recorded. Nothing inside a mapping can ever
+    // say its owner has gone. So this is the real window, and it is asserted rather than wished
+    // away: until the recheck falls due, the writer is putting datagrams into an orphan.
+    EXPECT_TRUE(peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT) == old_mapping);
+
+    // What closes the window is asking the name again, which is the only question that has a
+    // different answer now. Past tt_SEGMENT_REVALIDATE_SENDS the entry is dropped and re-attached,
+    // and the file at that name is the successor's.
+    struct tt_SegmentHeader* new_mapping = old_mapping;
+    for (uint32_t i = 0; i < tt_SEGMENT_REVALIDATE_SENDS; i++) {
+        new_mapping = peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT);
+    }
+    EXPECT_TRUE(new_mapping != NULL);
+    EXPECT_TRUE(new_mapping != old_mapping);
+    EXPECT_TRUE(new_mapping == reborn.own_segment);
+    EXPECT_EQ_U32(OWNER_INCARNATION + 99U, new_mapping->incarnation);
+
+    // The new owner drains its own segment and finds nothing: the orphan was not inherited.
+    uint64_t rx_before = reborn.rx_datagrams_by_transport[tt_TRANSPORT_SHM];
+    drain_pass(&reborn);
+    EXPECT_EQ_U64(rx_before, reborn.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+
+    test_mock_segments_free();
+}
+
+// The other half of a dead owner, and the one item 11 needs: an owner that is killed with nobody
+// taking its name. The file stays, the mapping stays valid, the incarnation never changes, and
+// re-attaching by name finds the very same region - so every test the peer can apply to the segment
+// says it is healthy. The only thing that changes is that nothing drains it, and the writer sees
+// that as a ring that will not take anything, ever.
+//
+// What must happen is that the writer keeps making progress. It gives the segment up after a streak
+// of refusals and goes back to UDP, where the peer is still reachable - it is the reader that died,
+// not the link. The control is a ring that is full because the reader is merely behind: one drained
+// slot must be enough to keep the segment.
+static void test_a_writer_gives_up_on_a_ring_nobody_drains(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context dead;
+    struct tt_Topic dead_topic;
+    struct tt_Publisher dead_pub;
+    init_node_topic_pub(&dead, &dead_topic, &dead_pub);
+    dead.id = OWNER_ID;
+    dead.entity_id_base = OWNER_INCARNATION;
+    dead.hal.own_ip = OWNER_IP;
+    dead.hal.own_port = OWNER_PORT;
+    create_own_segment(&dead);
+    EXPECT_TRUE(dead.own_segment != NULL);
+
+    struct tt_Context writer;
+    struct tt_Topic writer_topic;
+    struct tt_Publisher writer_pub;
+    init_node_topic_pub(&writer, &writer_topic, &writer_pub);
+    writer.hal.own_ip = PEER_IP;
+    writer.hal.own_port = PEER_PORT;
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = PEER_CONTEXT_ID;
+
+    // Nothing ever drains the ring - the owner is dead. Send until the writer gives up, plus a
+    // margin, and watch where the datagrams go.
+    // The clock is what decides now, so the clock is what this arm drives. Each send costs a
+    // millisecond of mock time; the reader never takes anything, so its silence crosses
+    // tt_SEGMENT_DEAD_READER_NS and the writer gives up.
+    uint32_t sends = tt_SEGMENT_SLOTS + 2048U;
+    uint32_t to_udp = 0;
+    for (uint32_t i = 0; i < sends; i++) {
+        test_mock_now += 1000000ULL; // 1 ms per send
+        enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
+        if (!segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason)) {
+            EXPECT_EQ_INT((int)UDP_BECAUSE_UNATTACHED, (int)reason);
+            to_udp++;
+        }
+    }
+    // Progress resumes. While the mapping is held a full ring drops, because rerouting past it would
+    // reorder the stream - but once the writer gives the mapping up there is no reader left to
+    // reorder anything for, so the peer becomes UNATTACHED and its datagrams go by UDP again. That
+    // is the difference between a reader that is behind and a reader that is gone.
+    EXPECT_TRUE(to_udp > 0);
+    EXPECT_EQ_U32(tt_SEGMENT_SLOTS, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    EXPECT_EQ_U32(sends - tt_SEGMENT_SLOTS - (uint32_t)writer.segment_full_dropped, to_udp);
+    // Given up rather than retried for ever. Asserted as an EVENT that happened, not as the state at
+    // the end of the loop: the give-up is followed by a recheck that re-attaches, so whether the
+    // mapping is held when the loop happens to stop is a fact about the loop's length and not about
+    // the rule. The first version asserted the end state and failed for that reason alone.
+    EXPECT_TRUE(writer.segment_attach[tt_SEGMENT_REFUSED] >= 1);
+
+    // Control: a reader that is behind, not dead. The ring fills, but a single drained slot resets
+    // the streak, so the segment is kept - otherwise the first busy moment would push every peer
+    // onto UDP and the module would quietly stop being used.
+    test_mock_reset();
+    test_mock_segments_free();
+    struct tt_Context slow;
+    struct tt_Topic slow_topic;
+    struct tt_Publisher slow_pub;
+    init_node_topic_pub(&slow, &slow_topic, &slow_pub);
+    slow.id = OWNER_ID;
+    slow.entity_id_base = OWNER_INCARNATION;
+    slow.hal.own_ip = OWNER_IP;
+    slow.hal.own_port = OWNER_PORT;
+    create_own_segment(&slow);
+
+    struct tt_Context patient;
+    struct tt_Topic patient_topic;
+    struct tt_Publisher patient_pub;
+    init_node_topic_pub(&patient, &patient_topic, &patient_pub);
+    patient.hal.own_ip = PEER_IP;
+    patient.hal.own_port = PEER_PORT;
+
+    for (uint32_t i = 0; i < sends; i++) {
+        test_mock_now += 1000000ULL; // the same millisecond a send, so the two arms differ only in the reader
+        uint64_t dropped_before = patient.segment_full_dropped;
+        enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
+        (void)segment_deliver(&patient, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason);
+        if (patient.segment_full_dropped != dropped_before) {
+            // The reader catches up by one pass, which is all it takes. Watched through the drop
+            // counter rather than through the return value, because the seam now reports a dropped
+            // datagram as handled - the first version of this arm watched the return value, never
+            // drained at all, and so tested a dead reader twice instead of a slow one once.
+            drain_pass(&slow);
+        }
+    }
+    EXPECT_TRUE(patient.segment_peers[OWNER_ID].mapping != NULL);
+    EXPECT_TRUE(!patient.segment_peers[OWNER_ID].missing);
+    EXPECT_EQ_U32(0, patient.segment_attach[tt_SEGMENT_REFUSED]);
+
+    // Third arm, and the one the first two between them missed: a reader that never catches up. It
+    // drains one record for every refusal, so the ring is permanently full and yet the reader is
+    // plainly alive. The control above emptied the ring on every pass, which is not what a reader
+    // under load does - and against the first version of this rule, which counted refusals alone,
+    // this arm gives the segment up on a healthy peer, sends by UDP until the recheck, re-attaches
+    // and repeats. That flapping is one logical stream on two paths, which is exactly what
+    // drop-on-full exists to prevent. On the rig it cost 2,446,848 "unattached" datagrams in a run
+    // whose peer was alive from start to finish.
+    test_mock_reset();
+    test_mock_segments_free();
+    struct tt_Context behind;
+    struct tt_Topic behind_topic;
+    struct tt_Publisher behind_pub;
+    init_node_topic_pub(&behind, &behind_topic, &behind_pub);
+    behind.id = OWNER_ID;
+    behind.entity_id_base = OWNER_INCARNATION;
+    behind.hal.own_ip = OWNER_IP;
+    behind.hal.own_port = OWNER_PORT;
+    create_own_segment(&behind);
+
+    struct tt_Context ahead;
+    struct tt_Topic ahead_topic;
+    struct tt_Publisher ahead_pub;
+    init_node_topic_pub(&ahead, &ahead_topic, &ahead_pub);
+    ahead.hal.own_ip = PEER_IP;
+    ahead.hal.own_port = PEER_PORT;
+
+    // Long enough in mock time to cross the dead-reader threshold many times over. The reader here
+    // is permanently behind but never stops, so it must never be given up on however long the run.
+    uint32_t behind_sends = tt_SEGMENT_SLOTS + 8192U;
+    for (uint32_t i = 0; i < behind_sends; i++) {
+        test_mock_now += 1000000ULL; // 8 seconds of mock time, eight times the dead-reader threshold
+        uint64_t dropped_before = ahead.segment_full_dropped;
+        enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
+        (void)segment_deliver(&ahead, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason);
+        if (ahead.segment_full_dropped != dropped_before) {
+            // One record, not a whole pass: read_index moves, the ring stays full. That is what
+            // "behind" means, and it is the state a loaded reader lives in.
+            uint32_t len = 0;
+            uint32_t from_ip = 0;
+            uint16_t from_port = 0;
+            uint8_t out[tt_SEGMENT_SLOT_BYTES];
+            (void)segment_read(behind.own_segment, out, sizeof(out), &len, &from_ip, &from_port);
+        }
+    }
+    // Refused for far longer than the dead-reader threshold, or the arm cannot distinguish the rule
+    // from its absence - which is the whole reason it exists.
+    EXPECT_TRUE(ahead.segment_full_dropped > 1000);
+    EXPECT_TRUE(ahead.segment_peers[OWNER_ID].mapping != NULL);
+    EXPECT_TRUE(!ahead.segment_peers[OWNER_ID].missing);
+    EXPECT_EQ_U32(0, ahead.segment_attach[tt_SEGMENT_REFUSED]);
+    EXPECT_EQ_U32(0, (uint32_t)ahead.tx_datagrams_by_transport[tt_TRANSPORT_UDP]); // never flapped to UDP
+
+    test_mock_segments_free();
+}
+
+// The drain's contract, which is the whole of the ordering fix stated as a property: it empties the
+// ring, and when it cannot it says so.
+//
+// This is not fussiness about a return value. The socket is drained to exhaustion by drain_rx(),
+// while this was draining 64 records against a 256-slot ring, so the ring ran permanently behind.
+// TickLE sends DATA unicast with few peers and by broadcast otherwise, and a broadcast can never go
+// over a segment - so some samples of the same stream always arrive by socket, and each one
+// advances the subscriber's watermark past everything still queued in the ring, which is then
+// discarded on arrival. One socket arrival discards the entire backlog behind it, which is why a
+// few hundred thousand of them could invalidate thirty-six million ring records on CI's same-host
+// cell. The caller must not read the socket while `emptied` is false, and this is where that is
+// checked.
+static void test_the_drain_empties_the_ring_or_says_it_did_not(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context owner;
+    struct tt_Topic owner_topic;
+    struct tt_Publisher owner_pub;
+    init_node_topic_pub(&owner, &owner_topic, &owner_pub);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+
+    // Control: an empty ring is emptied, trivially, and delivers nothing. Without this arm the
+    // assertions below would also hold for a drain that always reported success.
+    bool emptied = false;
+    EXPECT_EQ_U32(0, drain_own_segment(&owner, &emptied));
+    EXPECT_TRUE(emptied);
+
+    // A ring holding more than the old 64-record cap. Every one of them comes out in a single call,
+    // which is the change: at the old cap this returned after 64 and the caller went on to read the
+    // socket with 136 records still queued behind it.
+    const uint32_t records = 200;
+    EXPECT_TRUE(records > 64); // the old cap, named here so this arm cannot quietly stop testing it
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = PEER_CONTEXT_ID;
+    for (uint32_t i = 0; i < records; i++) {
+        EXPECT_TRUE(segment_write(owner.own_segment, &header, sizeof(header), PEER_IP, PEER_PORT));
+    }
+
+    emptied = false;
+    EXPECT_EQ_U32(records, drain_own_segment(&owner, &emptied));
+    EXPECT_TRUE(emptied);
+    EXPECT_EQ_U32(owner.own_segment->write_index, owner.own_segment->read_index); // nothing left behind
+
+    // And when it genuinely cannot empty the ring it reports that rather than pretending. Staged by
+    // wedging the head - a writer that claimed a slot and never published it - with a record behind
+    // it, which is the one case where records remain and no further progress is possible.
+    struct tt_SegmentHeader* seg = owner.own_segment;
+    uint32_t claimed = __atomic_load_n(&seg->write_index, __ATOMIC_RELAXED);
+    __atomic_store_n(&seg->write_index, claimed + 1U, __ATOMIC_RELEASE); // claimed, never published
+    emptied = false;
+    EXPECT_EQ_U32(0, drain_own_segment(&owner, &emptied));
+    // A wedged head is reported as emptied on purpose: nothing can ever be read past it, so refusing
+    // to read the socket for ever would turn one dead writer into a dead context. The stall counter
+    // is what carries that case, and it moved.
+    EXPECT_TRUE(emptied);
+    EXPECT_TRUE(owner.segment_head_stalls > 0);
+
+    test_mock_segments_free();
+}
+
+// The doorbell. Shared memory cannot wake a thread that is inside a socket wait, and once the
+// segment carries nearly all the traffic there is nothing left on the socket to wake it either: the
+// reader then runs only on its timers. Measured on the same-host cell with ordering already fixed,
+// that was 73,081 records delivered against UDP's 12,463,222, at 241 ms of latency. The module had
+// been getting away with it only because a separate defect was still pushing millions of datagrams
+// down the socket - so the doorbell looked optional for exactly as long as something else was
+// accidentally doing its job.
+//
+// The control is the same publish with the flag clear: a loaded reader is never inside a wait, so it
+// must cost nothing at all. Without that arm this would also pass against a writer that rang on
+// every record, which is the version that would quietly undo the module's whole point.
+static void test_a_sleeping_reader_is_rung_and_a_busy_one_is_not(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context owner;
+    struct tt_Topic owner_topic;
+    struct tt_Publisher owner_pub;
+    init_node_topic_pub(&owner, &owner_topic, &owner_pub);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+    EXPECT_EQ_U32(0, owner.own_segment->reader_waiting); // nobody is waiting yet
+
+    struct tt_Context writer;
+    struct tt_Topic writer_topic;
+    struct tt_Publisher writer_pub;
+    init_node_topic_pub(&writer, &writer_topic, &writer_pub);
+    writer.hal.own_ip = PEER_IP;
+    writer.hal.own_port = PEER_PORT;
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = PEER_CONTEXT_ID;
+
+    // Control: the owner is awake. Records go into the ring and not one datagram goes to the socket.
+    int sends_before = test_mock_send_to_call_count;
+    for (int i = 0; i < 8; i++) {
+        enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
+        EXPECT_TRUE(
+            segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason));
+    }
+    EXPECT_EQ_INT(sends_before, test_mock_send_to_call_count);
+    EXPECT_EQ_U32(0, (uint32_t)writer.segment_doorbells_sent);
+
+    // Asleep. The owner publishes that before it blocks, and the writer reads it after it publishes.
+    segment_reader_waiting(&owner, true);
+    EXPECT_EQ_U32(1, owner.own_segment->reader_waiting);
+
+    enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
+    EXPECT_TRUE(segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason));
+    EXPECT_EQ_INT(sends_before + 1, test_mock_send_to_call_count);
+    EXPECT_EQ_U32(1, (uint32_t)writer.segment_doorbells_sent);
+    // Zero length, to the owner's own address. The length is the whole of the contract: a datagram of
+    // any other size would be parsed as data by the receiver.
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_last_wire_len);
+    EXPECT_EQ_U32(OWNER_IP, test_mock_send_to_last_ip);
+    EXPECT_EQ_U32((uint32_t)OWNER_PORT, (uint32_t)test_mock_send_to_last_port);
+    // The record still went into the ring - the doorbell is a wake-up, not a delivery.
+    EXPECT_EQ_U32(9, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    EXPECT_EQ_U32(0, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_UDP]);
+
+    // Awake again: back to costing nothing.
+    segment_reader_waiting(&owner, false);
+    int after_wake = test_mock_send_to_call_count;
+    EXPECT_TRUE(segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason));
+    EXPECT_EQ_INT(after_wake, test_mock_send_to_call_count);
+
+    // And the receiving end treats a zero-length datagram as a doorbell rather than as a malformed
+    // datagram: counted, and dropped before the magic check, so ringing it never fills the log with
+    // errors about the module doing its job.
+    uint64_t rung_before = owner.segment_doorbells_received;
+    uint64_t malformed_before = owner.rx_malformed_drops;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)process_datagram(&owner, 0, PEER_IP, PEER_PORT, tt_TRANSPORT_UDP));
+    EXPECT_EQ_U32(1, (uint32_t)(owner.segment_doorbells_received - rung_before));
+    EXPECT_EQ_U32(0, (uint32_t)(owner.rx_malformed_drops - malformed_before));
+
+    test_mock_segments_free();
+}
+
 int main(void) {
     test_ordinary_publish_is_counted_as_udp();
     test_zerocopy_publish_is_counted_as_udp();
@@ -833,6 +1566,14 @@ int main(void) {
     test_segment_bytes_equal_what_udp_would_have_sent();
     test_a_refused_datagram_is_refused_over_the_segment_too();
     test_received_datagram_is_counted_as_udp();
+    test_a_peer_with_no_segment_is_asked_once_not_per_datagram();
+    test_capacity_exhaustion_is_counted_and_warned_once();
+    test_a_stalled_head_is_noticed_rather_than_read_as_a_sizing_problem();
+    test_destroy_takes_the_segment_with_it();
+    test_a_segment_left_by_a_dead_owner_is_reclaimed();
+    test_a_writer_gives_up_on_a_ring_nobody_drains();
+    test_the_drain_empties_the_ring_or_says_it_did_not();
+    test_a_sleeping_reader_is_rung_and_a_busy_one_is_not();
 
     printf("test_transport_seam: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();
