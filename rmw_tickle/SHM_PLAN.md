@@ -123,6 +123,61 @@ list written before the code is specific to it - **if shared memory silently fal
 test still passes and proves nothing.** So the list starts with the test that catches that, not with the feature's own
 behaviour.
 
+**S2's contract, decided 2026-09-29 before the seam was written, because the seam has to carry it**
+
+The transport-identity test cannot be a mode flag. There are **four send entry points** in core - `tt_send` (2 call
+sites), `tt_send_to` (2), `tt_send_iov` (4), `tt_send_batch` (4), twelve in `src/tickle.c`, counted rather than assumed -
+and one receive point, `process_packet()`. A seam that wires `tt_send` and leaves the iov and batch paths on UDP would
+report "shm" to a mode flag while **fragmented samples and batched ack paths went over loopback**, and every functional
+test would still be green.
+
+So what the test reads is **how many datagrams went each way**:
+
+- per context, counts of datagrams **sent and received per transport** - `shm` and `udp` at minimum, with room for a
+  third;
+- **counted by wrapping the HAL calls themselves**, not at the places that count today - so all twelve send sites are
+  covered by construction rather than by remembering to instrument each one. That is not a precaution: **remembering has
+  already failed once in this exact code** (see the box below);
+- readable by a **native** harness and not only through rmw, since the campaign runs native clients while the acceptance
+  suite runs rclpy nodes;
+- printed in the RESULT line by `BenchStats.h`, as `retransmitted` and `gap_evicted` already are, so a row carries its
+  own evidence instead of depending on a log.
+
+The assertion is then exact rather than interpretive: for a same-host pair, `udp_sent == 0` for the shape under test,
+**checked per shape** - one payload that fits a datagram, one that fragments, and a request/reply so `tt_send_to` is on
+the list - rather than once for the run. The partial-seam case fails it, which is the only reason the test exists.
+
+**The evidence that "by construction" is the requirement and not a style preference (Dev, 2026-09-29).**
+`tt_Context.tx_datagrams` is incremented in three places - `send_datagram_to()`, `send_datagram()` and the fragment batch
+- which cover **eleven** of the twelve send sites. The twelfth is `publish_zerocopy()` (`src/tickle.c:3377`), which calls
+`tt_send_iov()` directly at 3417 and 3425 and increments nothing. Measured with the mock HAL counting every datagram it
+is handed:
+
+```
+ordinary publish:  published=5  tx_datagrams=5  mock_send_calls=5
+publish_zerocopy:  published=5  tx_datagrams=0  mock_send_calls=5
+```
+
+Five datagrams left the node and the counter said none did. Filed as its own defect below, and decisive for S1: **per-
+transport counters placed at the three existing counting sites would inherit that hole exactly**, and the hole is on the
+zero-copy path - which is where a shared-memory transport has the most to offer. S2 would then report `shm` at zero for a
+payload that really did travel over the segment, and the natural reading would be "the seam is not wired" when the truth
+is "the counter is not there". **A false negative shaped exactly like the failure the test exists to catch.** So the seam
+wraps the HAL calls and `tx_datagrams` moves into it: twelve sites become one place, and the zero-copy gap closes as a
+side effect rather than as a separate fix.
+
+**Field names (Dev's, adopted):** an array indexed by transport rather than a field per transport, so a third transport
+needs no new fields and the seam cannot acquire a counter someone forgets to add -
+`enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM = 1, tt_TRANSPORT_COUNT }`, with
+`tx_datagrams_by_transport[]` and `rx_datagrams_by_transport[]` on `struct tt_Context` beside the existing
+`tx_datagrams`/`rx_datagrams`, printed flat in the RESULT line as `tx_udp= tx_shm= rx_udp= rx_shm=` because
+`BenchStats.h`'s consumers parse `key=value`.
+
+**This also gives stage 0 a test it would not otherwise have:** with the counters in and no segment yet, every datagram
+is `udp` and `shm` is zero. That is a real assertion about the seam being wired without changing behaviour, and it is the
+arm that proves the counters work **before** anything depends on them - the same ordering that this plan asks for
+everywhere else.
+
 **The tests that can otherwise pass for the wrong reason**
 
 1. **Which transport carried the sample is asserted, never assumed.** A match reports the transport it uses, and the test

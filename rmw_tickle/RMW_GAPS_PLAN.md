@@ -1374,3 +1374,35 @@ Four requirements that the existing campaign does not yet meet, each of which is
 4. **The floors apply.** A same-host difference under about 1% on throughput, or 10 KB on RSS, is not a result
    (WIRE_PLAN 10.4), and the in-process tier (g9) is the lower bound: a same-host number faster than in-process delivery
    means the harness is wrong, not that the transport is fast.
+
+
+## g15 - `publish_zerocopy()` sends datagrams that `tx_datagrams` never counts (found by Dev 2026-09-29; LOW severity, HIGH consequence for S1)
+
+- **Gap:** `tt_Context.tx_datagrams` is incremented in `send_datagram_to()`, `send_datagram()` and the fragment batch,
+  covering eleven of the twelve `tt_send*` call sites in `src/tickle.c`. The twelfth, `publish_zerocopy()` (line 3377),
+  calls `tt_send_iov()` directly at 3417 and 3425 and increments nothing.
+- **Measured, not read** (mock HAL counting every datagram handed to it):
+
+  | path | published | `tx_datagrams` | datagrams the HAL saw |
+  |---|---:|---:|---:|
+  | ordinary publish | 5 | 5 | 5 |
+  | `publish_zerocopy` | 5 | **0** | 5 |
+
+- **Severity as a defect today: low.** It is a diagnostic counter, not delivery - nothing is lost, and only the traffic
+  line under-reports. But it under-reports on **the zero-copy path**, which is the path someone debugging throughput is
+  most likely to be on, so the number is wrong exactly when it is being trusted.
+- **Consequence for the shared-memory work: high**, and it is why the fix is shaped the way it is. Per-transport counters
+  placed at the three existing counting sites would inherit the hole, on the path where shared memory has the most to
+  offer, and S2 would report `shm` at zero for a payload that really did travel over the segment. **A false negative
+  shaped exactly like the failure S2 exists to catch.**
+- **Fix:** taken inside S1 rather than separately. The seam wraps the HAL calls, `tx_datagrams` moves into it, and the
+  twelve sites become one place - so this closes as a side effect of the seam being built correctly. Filed anyway,
+  because a defect that is fixed as a by-product still needs a record saying it existed and how it was found.
+- **Pass:** `publish_zerocopy` and the ordinary path both report `tx_datagrams` equal to the datagrams the HAL was handed,
+  with the mock HAL's own count as the control; and no send site increments a counter outside the seam, checked by there
+  being one place that does it.
+- **How it was found is worth as much as the finding.** Dev first read the direct `tt_send_iov` calls, concluded the
+  *ordinary* publish path was uncounted, and was about to report that. The test said `published=5 tx_datagrams=5`: the
+  ordinary path is fine, and the calls being read belong to `publish_zerocopy`, which that path never reaches. Ten
+  minutes of three arms turned a wrong claim into a right one - and a defect report about the wrong function into a
+  correct one about the right one.
