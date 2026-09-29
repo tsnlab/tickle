@@ -784,6 +784,13 @@ A second error in the same reading, recorded because it is the kind that flatter
 as "at most 0.19%" from counting gap *events*. A single gap skips many samples. Measured properly it is **29
 to 2,281 of 20,000 per thread, 0.15% to 11.4%** - wrong by a factor of sixty, in the reassuring direction.
 
+**A second assertion in the same harness had the same defect and was found the hard way (2026-09-30).**
+`received[t] == SAMPLES_PER_THREAD` - "the last sample arrived" - is also a no-loss claim, about the tail
+rather than the middle, and best-effort promises nothing about it either. It survived because `push()` blocks,
+and it began failing **about one run in four** once the segment was engaged: 8,215 of 20,000 in one gate run,
+15,088 in another. It went in with the harness change and came out a commit later, after a flaky gate caught
+it. **A gate that fails one run in four is worse than no gate, because what it teaches is to run it again.**
+
 **So no delivery floor is asserted there.** Any line inside a 0.15-11.4% range is a number nobody can derive,
 which is this document's own objection to "tx_udp small and flat"; the figure is printed for a reader instead.
 The honest repair is to make `push()` drop rather than block, so both paths share a policy and a floor becomes

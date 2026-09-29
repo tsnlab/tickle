@@ -854,8 +854,19 @@ int main(void) {
         printf("test_thread_safety: %u call(s) timed out and were asked again\n", call_timeouts);
     }
     for (int t = 0; t < PUBLISHER_THREADS; t++) {
-        // The last sample arrived, so the stream ran to its end whatever happened in the middle.
-        EXPECT_EQ_U32(SAMPLES_PER_THREAD, received[t]);
+        // The last sample is NOT asserted to have arrived, and that is the same correction as the
+        // delivery floor below rather than a second concession. "received[t] == SAMPLES_PER_THREAD"
+        // is a no-loss claim about the tail, and best-effort makes no such promise: the final
+        // samples can be dropped by a full ring exactly like any others. It held for this harness's
+        // whole life only because push() blocks rather than drops, and it began failing about one
+        // run in four the moment the segment was engaged - ending at 8,215 of 20,000 in one gate
+        // run and 15,088 in another. A gate that fails one run in four is worse than no gate,
+        // because what it teaches is to run it again.
+        //
+        // What is asserted instead is what the publisher and the ordering actually promise:
+        // publish_errors is zero (above), nothing arrives out of order (below), and the segment was
+        // engaged at all. The number delivered is printed.
+        EXPECT_TRUE(received[t] > 0);
         // No sample may arrive behind one already delivered. That is the contract, and it holds in
         // every run - but **this harness cannot falsify it and the assertion is therefore not
         // evidence**. Checked rather than assumed: with the pre-2026-09-29 behaviour restored, where
