@@ -116,6 +116,19 @@ fi
 echo
 echo "== gates"
 printf '%s\n' "${results[@]}"
+# What this script does NOT run, said every time rather than left to be discovered. On 2026-09-29 both CI workflows
+# were red for twelve hours while check-gates was green on every commit, and the two tiers that were failing are
+# exactly the two below: a green run here was read as "CI will pass" by two sessions in a row. The gate cannot run
+# them cheaply - they need a netns, a built rmw and several minutes - but it can stop implying it did.
+cat <<'NOTCOVERED'
+
+   NOT COVERED HERE - a pass above does not predict CI:
+     make test-linux      two nodes over the Linux HAL in a netns: the service round trip (set_bool),
+                          the perf tier's loss and throughput floors, DURABILITY/HISTORY/LIFESPAN.
+     the rmw test suite   test_service_roundtrip, test_event_callbacks and the rest of rmw_tickle's own tests.
+   Both ran red all day on 2026-09-29 while this script reported every gate PASS. Run them before trusting a push:
+     make test-linux
+NOTCOVERED
 echo "   clang-tidy: ${TIDY:-$(command -v clang-tidy || echo none)} (version ${tidy_major:-?})"
 if [ "$lint_is_advisory" = 1 ]; then
     cat <<MSG
