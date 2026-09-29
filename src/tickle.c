@@ -457,16 +457,73 @@ static inline void note_reached(struct tt_Context* node, const struct tt_Peer* p
     }
 }
 
-// One datagram to one address; ip 0 is the HAL's own broadcast address, as for tt_send_iov().
+// ---------------------------------------------------------------------------------------------
+// The transport seam (SHM_PLAN.md stage 0). Every datagram core sends leaves through one of these
+// four, and every datagram it receives is counted in one place, so "which transport carried this"
+// is asked and answered where the bytes actually move.
+//
+// Stage 0 puts UDP behind all of them and adds nothing else: the wire is byte-identical to the
+// build before the seam, which is the claim that carries this stage. What the seam buys now is the
+// counting, and the counting is the point rather than a side effect - a test that asks a mode flag
+// "which transport is this peer on" gets a correct answer from a seam that is only half wired,
+// because the flag describes the decision and not the traffic. Counts describe the traffic.
+//
+// Why it wraps the HAL calls rather than sitting where tx_datagrams was counted before: it was
+// counted at three places that between them missed publish_zerocopy() (g15), which sent datagrams
+// the counter never saw. Per-transport counters placed there would inherit that hole on the
+// zero-copy path - the path shared memory has the most to offer - and report shm at zero for a
+// payload that really did travel over the segment. Here, coverage is a property of the code's
+// shape: a send that does not go through these does not reach a transport at all.
+//
+// `transport_for()` is where stage 1 chooses; for now every peer is UDP, by construction and not by
+// default, so stage 0's own test - every datagram udp, shm zero - is a real assertion about the
+// seam being wired and about the counters working before anything depends on them.
+static enum tt_Transport transport_for(const struct tt_Context* node, uint32_t ip, uint16_t port) {
+    (void)node;
+    (void)ip;
+    (void)port;
+    return tt_TRANSPORT_UDP; // stage 1 adds the same-host case; nothing else exists yet
+}
+
+static void count_tx(struct tt_Context* node, enum tt_Transport transport, uint32_t datagrams) {
+    node->tx_datagrams += datagrams;
+    node->tx_datagrams_by_transport[transport] += datagrams;
+}
+
+static int32_t seam_send(struct tt_Context* node, const void* buf, size_t len) {
+    count_tx(node, transport_for(node, 0, 0), 1);
+    return tt_send(node, buf, len);
+}
+
+static int32_t seam_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
+    count_tx(node, transport_for(node, ip, port), 1);
+    return tt_send_to(node, buf, len, ip, port);
+}
+
+static int32_t seam_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, const void* body,
+                             size_t body_len, uint32_t ip, uint16_t port) {
+    count_tx(node, transport_for(node, ip, port), 1);
+    return tt_send_iov(node, hdr, hdr_len, body, body_len, ip, port);
+}
+
+// A batch is one call and several datagrams, and each may be addressed differently - so it is
+// counted per datagram, by its own destination, not once for the batch.
+static int32_t seam_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        count_tx(node, transport_for(node, datagrams[i].ip, datagrams[i].port), 1);
+    }
+    return tt_send_batch(node, datagrams, count);
+}
+
+// One datagram to one address; ip 0 is the HAL's own broadcast address, as for seam_send_iov().
 static bool send_datagram_to(struct tt_Context* node, const struct tx_datagram* dgram, uint32_t ip, uint16_t port) {
-    node->tx_datagrams++;
     if (dgram->body_len != 0) {
-        return tt_send_iov(node, dgram->head, dgram->head_len, dgram->body, dgram->body_len, ip, port) >= 0;
+        return seam_send_iov(node, dgram->head, dgram->head_len, dgram->body, dgram->body_len, ip, port) >= 0;
     }
     if (ip == 0) {
-        return tt_send(node, dgram->head, dgram->head_len) >= 0;
+        return seam_send(node, dgram->head, dgram->head_len) >= 0;
     }
-    return tt_send_to(node, dgram->head, dgram->head_len, ip, port) >= 0;
+    return seam_send_to(node, dgram->head, dgram->head_len, ip, port) >= 0;
 }
 
 // Where one datagram goes, as ip/port with ip 0 meaning the HAL's own broadcast address. The routing
@@ -483,7 +540,7 @@ struct tx_destination {
 // batched submessages for different peers into one buffer and cannot aim it. Goes out on every
 // link, because this is how a node is discovered at all and its peers may be on any of them.
 //
-// One link goes through tt_send() and the HAL's precomputed broadcast address. That is not only an
+// One link goes through seam_send() and the HAL's precomputed broadcast address. That is not only an
 // optimisation: it keeps the single-link case - every deployment that has not configured links[],
 // which is all of them today - on exactly the path it used before per-link existed, rather than on
 // a new one that happens to be equivalent.
@@ -548,7 +605,7 @@ static uint8_t tx_destinations(const struct tt_Peer* peers, uint8_t peer_count, 
 
 // One datagram to the destinations a flush would send it to. To one destination it goes exactly as it always
 // has, through send_datagram_to(); to several - peers on one link, or one broadcast per link - it goes as one
-// tt_send_batch(), so that sending the same bytes to more peers stops costing a system call per peer.
+// seam_send_batch(), so that sending the same bytes to more peers stops costing a system call per peer.
 static bool send_datagram(struct tt_Context* node, const struct tx_datagram* dgram, const struct tt_Peer* peers,
                           uint8_t peer_count) {
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
@@ -564,8 +621,7 @@ static bool send_datagram(struct tt_Context* node, const struct tx_datagram* dgr
         batch[i] = (struct tt_OutDatagram) {dgram->head,     dgram->head_len,    dgram->body,
                                             dgram->body_len, destinations[i].ip, destinations[i].port};
     }
-    node->tx_datagrams += count;
-    return tt_send_batch(node, batch, count) >= 0;
+    return seam_send_batch(node, batch, count) >= 0;
 }
 
 static bool flush_tx(struct tt_Context* node, uint32_t len, const struct tt_Peer* peers, uint8_t peer_count) {
@@ -718,7 +774,7 @@ static uint32_t frag_write_header(uint8_t* out, const struct tt_DataHeader* data
 // only the framing is built here, once for every destination. Only for a sample that no DATA could
 // carry, so there are always at least two.
 //
-// All of a sample's fragments to one destination go in one tt_send_batch() - one sendmmsg() on Linux -
+// All of a sample's fragments to one destination go in one seam_send_batch() - one sendmmsg() on Linux -
 // which is what returns a fragmented sample to the single send system call it cost before it had to be
 // fragmented (DATAFRAG_PLAN.md 6.5, step 3). Destination by destination, so each receiver gets a sample's
 // fragments back to back.
@@ -757,8 +813,7 @@ static bool send_fragments(struct tt_Context* node, const struct tt_DataHeader* 
             batch[index].ip = destinations[dest].ip;
             batch[index].port = destinations[dest].port;
         }
-        node->tx_datagrams += count;
-        if (tt_send_batch(node, batch, count) < 0) {
+        if (seam_send_batch(node, batch, count) < 0) {
             return false;
         }
     }
@@ -3414,7 +3469,7 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
     if (peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD) {
         note_reached(node, pub->peers, peer_count);
         for (uint8_t i = 0; i < peer_count; i++) {
-            if (tt_send_iov(node, head, head_len, body, body_len, pub->peers[i].ip, pub->peers[i].port) < 0) {
+            if (seam_send_iov(node, head, head_len, body, body_len, pub->peers[i].ip, pub->peers[i].port) < 0) {
                 return tt_RET_IO_ERROR;
             }
         }
@@ -3422,7 +3477,7 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
         if (link_count() <= 1) {
             note_reached(node, NULL, 0); // the HAL's one broadcast address; with several links it is not every link
         }
-        if (tt_send_iov(node, head, head_len, body, body_len, 0, 0) < 0) {
+        if (seam_send_iov(node, head, head_len, body, body_len, 0, 0) < 0) {
             return tt_RET_IO_ERROR;
         }
     }
@@ -9926,6 +9981,10 @@ static tt_ret_t process_datagram(struct tt_Context* node, int32_t len, uint32_t 
 static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port) {
     node->rx_tail = (uint32_t)len;
     node->rx_datagrams++;
+    // The receive half of the seam (SHM_PLAN.md stage 0). One place, because there is one place a
+    // datagram enters core - and stage 1's segment arrivals will be counted here too rather than
+    // beside it, so the two transports are never counted by two different rules.
+    node->rx_datagrams_by_transport[tt_TRANSPORT_UDP]++;
     if (node->rx_via_data_port) {
         node->rx_via_data_datagrams++;
     } else {

@@ -1,0 +1,174 @@
+/*
+ * Copyright (c) 2025-2026 TSN Lab, Inc.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This file is part of TickLE. TickLE is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 3, as published by the Free
+ * Software Foundation. A proprietary license is also available on request - see README.md.
+ */
+
+// The transport seam (SHM_PLAN.md stage 0), before any transport exists to choose.
+//
+// Stage 0 adds no segment and sends nothing new, so there is exactly one behavioural claim to make
+// and it is worth making now rather than at stage 3: **every datagram goes out as UDP and is
+// counted, and the shared-memory count stays at zero.** That is a real assertion about the seam
+// being wired, and - more to the point - it is what proves the counters themselves work *before*
+// anything depends on them. Without it, the first use of these counters would also be their first
+// test, which is the arrangement that has produced several false passes in this project.
+//
+// The counters exist because a transport test cannot ask "which transport was selected". A seam
+// wired for tt_send() but not for tt_send_iov()/tt_send_batch() would answer that question
+// correctly and still put fragmented samples and batched acks on the old path. Only "how many
+// datagrams went each way" catches that, so that is what is counted, at the seam, where every send
+// converges.
+//
+// g15 is pinned here too: tt_Context.tx_datagrams used to be incremented at the call sites and
+// publish_zerocopy() was missed, so five datagrams left the node while the counter said none had.
+// The seam makes coverage structural, and the zerocopy arm below is the regression guard - it is
+// the path shared memory has the most to offer, so a counter blind there would report shm at zero
+// for a payload that really did travel over the segment.
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include <tickle/tickle.h>
+
+#define TEST_COMMON_DEFINE_STORAGE
+#include "test_common.h"
+#define TEST_MOCK_DEFINE_STORAGE
+#include "test_mock.h"
+
+// Whitebox: the seam and publish_zerocopy() are static, same approach as the other whitebox tests.
+#include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
+
+#define ENDPOINT_ID 0xaabbccdd
+#define PEER_CONTEXT_ID 2
+#define PEER_IP 0x0a000002
+#define PEER_PORT 7000
+#define SAMPLES 5
+#define ZEROCOPY_BODY 16
+
+static int32_t stub_encode_size(struct tt_Data* data) {
+    (void)data;
+    return (int32_t)sizeof(uint32_t);
+}
+
+static int32_t stub_encode(struct tt_Data* data, uint8_t* payload, const uint32_t len) {
+    if (len < sizeof(uint32_t)) {
+        return -1;
+    }
+    memcpy(payload, data, sizeof(uint32_t));
+    return (int32_t)sizeof(uint32_t);
+}
+
+static void stub_free(struct tt_Data* data) {
+    (void)data;
+}
+
+static void init_node_topic_pub(struct tt_Context* node, struct tt_Topic* topic, struct tt_Publisher* pub) {
+    memset(node, 0, sizeof(*node));
+    node_init_locks(node);
+    node->id = 1;
+    node->tx_tail = sizeof(struct tt_Header);
+    node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
+
+    memset(topic, 0, sizeof(*topic));
+    topic->name = "seam_topic";
+    topic->data_size = sizeof(uint32_t);
+    topic->data_encode_size = stub_encode_size;
+    topic->data_encode = stub_encode;
+    topic->data_free = stub_free;
+
+    memset(pub, 0, sizeof(*pub));
+    pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
+    pub->endpoint.id = ENDPOINT_ID;
+    pub->endpoint.name = "seam_pub";
+    pub->node = node;
+    pub->topic = topic;
+    node->endpoint_count = 1;
+    node->endpoints[0] = (struct tt_Endpoint*)pub;
+}
+
+// Every datagram the mock was handed is counted, and counted as UDP. The mock's own count is the
+// control: without it "tx_datagrams went up by five" would be consistent with five datagrams, with
+// fifty, or with none actually reaching the transport.
+static void expect_all_udp(struct tt_Context* node, const char* what) {
+    EXPECT_EQ_U32((uint32_t)test_mock_send_call_count, (uint32_t)node->tx_datagrams);
+    EXPECT_EQ_U32((uint32_t)test_mock_send_call_count, (uint32_t)node->tx_datagrams_by_transport[tt_TRANSPORT_UDP]);
+    EXPECT_EQ_U32(0, (uint32_t)node->tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    if (test_mock_send_call_count == 0) {
+        printf("  %s: nothing was sent, so this arm asserts nothing\n", what);
+    }
+}
+
+// The ordinary publish path: encode, flush, send.
+static void test_ordinary_publish_is_counted_as_udp(void) {
+    test_mock_reset();
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+
+    for (uint32_t i = 0; i < SAMPLES; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));
+    }
+
+    EXPECT_TRUE(test_mock_send_call_count > 0); // the arm sent something, so it can fail
+    expect_all_udp(&node, "ordinary publish");
+}
+
+// g15's path. Before the seam this sent datagrams the counter never saw.
+static void test_zerocopy_publish_is_counted_as_udp(void) {
+    test_mock_reset();
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        pub.peers[i].context_id = tt_CONTEXT_ID_INVALID;
+    }
+    pub.peers[0].context_id = PEER_CONTEXT_ID;
+    pub.peers[0].ip = PEER_IP;
+    pub.peers[0].port = PEER_PORT;
+
+    uint8_t body[ZEROCOPY_BODY] = {0};
+    for (int i = 0; i < SAMPLES; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)publish_zerocopy(&pub, body, (uint32_t)sizeof(body)));
+    }
+
+    EXPECT_EQ_INT(SAMPLES, test_mock_send_call_count);
+    expect_all_udp(&node, "zerocopy publish");
+}
+
+// A received datagram is counted once, on the transport it arrived over.
+static void test_received_datagram_is_counted_as_udp(void) {
+    test_mock_reset();
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = PEER_CONTEXT_ID;
+    memcpy(node.rx_buffer, &header, sizeof(header));
+
+    uint64_t before = node.rx_datagrams;
+    (void)process_datagram_locked(&node, (int32_t)sizeof(header), PEER_IP, PEER_PORT);
+
+    EXPECT_EQ_U32((uint32_t)(node.rx_datagrams - before), (uint32_t)node.rx_datagrams_by_transport[tt_TRANSPORT_UDP]);
+    EXPECT_EQ_U32(0, (uint32_t)node.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+}
+
+int main(void) {
+    test_ordinary_publish_is_counted_as_udp();
+    test_zerocopy_publish_is_counted_as_udp();
+    test_received_datagram_is_counted_as_udp();
+
+    printf("test_transport_seam: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
+    return test_result();
+}

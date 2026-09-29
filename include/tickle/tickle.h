@@ -199,6 +199,12 @@ struct tt_Node {
     uint8_t index;              // < tt_MAX_NODES; 0 is the default node's unless an explicit node took it
 };
 
+// Which transport carried a datagram (SHM_PLAN.md stage 0). Core decides this per peer; the module
+// behind the seam only carries bytes. UDP is 0 so a zeroed context starts counting on the transport
+// that always exists, and the enum is what the per-transport counters are indexed by - a third
+// transport needs a value here and no new fields anywhere.
+enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT };
+
 struct tt_Context {
     uint8_t id;
     uint32_t endpoint_count;
@@ -434,6 +440,18 @@ struct tt_Context {
     // on it can be handed by the kernel to the sender's own socket, which shows up here as a
     // sender receiving its own traffic back.
     uint64_t tx_datagrams;
+    // The same totals split by the transport that carried them (SHM_PLAN.md stage 0), indexed by
+    // enum tt_Transport. They are maintained in the send/receive seam rather than at the call
+    // sites, which is the whole point: tx_datagrams itself was incremented at three of the twelve
+    // send sites' worth of paths and missed publish_zerocopy() entirely (g15), so a counter that
+    // has to be remembered at each site is a counter that will be forgotten at one. Counting where
+    // the datagram actually reaches the transport makes coverage a property of the code's shape.
+    //
+    // What they are for: a test cannot ask "which transport was selected" and learn anything - a
+    // partially wired seam would answer correctly and still send most datagrams the old way. It has
+    // to ask how many went each way, per shape of send, which is what these answer.
+    uint64_t tx_datagrams_by_transport[tt_TRANSPORT_COUNT];
+    uint64_t rx_datagrams_by_transport[tt_TRANSPORT_COUNT];
     uint64_t summaries_skipped; // short-lease summaries not sent: the node's traffic had reached every peer
     uint64_t summaries_ridden;  // once-a-second summaries sent just ahead of a data send
     uint64_t rx_datagrams;
