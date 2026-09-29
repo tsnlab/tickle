@@ -2319,6 +2319,16 @@ static void reset_node_state(struct tt_Context* node) {
     node->discovery_callback_param = NULL;
 
     node->tx_datagrams = 0;
+    // The per-transport pair beside their scalars, because they were added without being reset and every read of them
+    // was stack garbage plus increments (found 2026-09-29 while verifying BenchStats' new tx_udp=/tx_shm= fields: a run
+    // that really sent 949,078 datagrams reported tx_udp=140723338891185, a stack address). tt_Context is caller-owned
+    // and this function initialises field by field rather than memset-ing, so a new field that is only ever incremented
+    // is never zero - and a counter that starts from garbage cannot be told from one the seam failed to reach, which is
+    // exactly the false negative SHM_PLAN's S2 exists to catch.
+    for (int transport = 0; transport < tt_TRANSPORT_COUNT; transport++) {
+        node->tx_datagrams_by_transport[transport] = 0;
+        node->rx_datagrams_by_transport[transport] = 0;
+    }
     node->summaries_skipped = 0;
     node->summaries_ridden = 0;
     node->tx_dropped_oversize = 0;

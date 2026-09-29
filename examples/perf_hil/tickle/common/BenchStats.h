@@ -88,12 +88,22 @@ struct BenchStatsThreads {
     int valid;
 };
 
+// The per-transport datagram counts a TickLE harness copies out of its own tt_Context (the send/receive seam maintains
+// them - SHM_PLAN.md's S2 contract). Kept as plain integers rather than as the enum-indexed array itself, so this
+// header stays free of tickle.h and the two DDS harnesses that share it need no TickLE type. Two entries, UDP then SHM:
+// a third transport means editing this header, which is the price of that independence and is stated here so it is not
+// a surprise.
+#define BENCH_TRANSPORT_MAX 2
+
 struct BenchStats {
     struct BenchStatsCounters net_begin;
     struct BenchStatsCounters net_end;
     struct BenchStatsThreads threads_begin;
     struct BenchStatsThreads threads_end;
     double cpu_begin_s;
+    uint64_t tx_by_transport[BENCH_TRANSPORT_MAX];
+    uint64_t rx_by_transport[BENCH_TRANSPORT_MAX];
+    int transport_valid; // 0 until a harness calls bench_stats_set_transport(): the DDS harnesses never do
     char iface[32];
 };
 
@@ -285,6 +295,19 @@ static inline void bench_stats_begin(struct BenchStats* stats) {
     bench_stats_read_threads(&stats->threads_begin);
 }
 
+// Called by a TickLE harness with its context's own arrays, before bench_stats_fields(). Absent for the DDS harnesses,
+// and the fields are then left OUT of the RESULT line rather than printed as zeros - a zero would read as "no datagrams
+// went anywhere", which is exactly the confusion the counters exist to prevent.
+static inline void bench_stats_set_transport(struct BenchStats* stats, const uint64_t* sent, const uint64_t* received,
+                                             size_t count) {
+    size_t kept = (count < (size_t)BENCH_TRANSPORT_MAX) ? count : (size_t)BENCH_TRANSPORT_MAX;
+    for (size_t i = 0; i < kept; i++) {
+        stats->tx_by_transport[i] = sent[i];
+        stats->rx_by_transport[i] = received[i];
+    }
+    stats->transport_valid = 1;
+}
+
 static inline void bench_stats_end(struct BenchStats* stats) {
     bench_stats_read_net(stats->iface, &stats->net_end);
     bench_stats_read_threads(&stats->threads_end);
@@ -443,6 +466,7 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     unsigned int sched_gone = bench_stats_threads_gone(&stats->threads_begin, &stats->threads_end);
     char by_thread[512];
     char fail[80];
+    char transport[96];
 
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
         utime_s = (double)usage.ru_utime.tv_sec + ((double)usage.ru_utime.tv_usec / 1e6);
@@ -451,6 +475,14 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     }
 
     sched_cpu_ns = bench_stats_sched_by_thread(stats, by_thread, sizeof(by_thread));
+    // SHM_PLAN's S2 assertion reads these: for a same-host pair with the segment in use, tx_udp must be 0 for the shape
+    // under test. Printed only when a harness supplied them, per bench_stats_set_transport()'s own comment.
+    transport[0] = '\0';
+    if (stats->transport_valid != 0) {
+        snprintf(transport, sizeof(transport),
+                 " tx_udp=%" PRIu64 " tx_shm=%" PRIu64 " rx_udp=%" PRIu64 " rx_shm=%" PRIu64, stats->tx_by_transport[0],
+                 stats->tx_by_transport[1], stats->rx_by_transport[0], stats->rx_by_transport[1]);
+    }
     // Against the WINDOW's getrusage delta, not against cpu_s. getrusage(RUSAGE_SELF) is cumulative for the whole
     // process, while sched_cpu_ns is a begin-to-end delta, so subtracting one from the other counts every cycle spent
     // before bench_stats_begin() as "unattributed". Over a 20 s throughput run that startup is negligible and the
@@ -476,7 +508,7 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
              " wire_rx_bytes=%" PRIu64 " wire_rx_packets=%" PRIu64 " wire_tx_bytes=%" PRIu64 " wire_tx_packets=%" PRIu64
              " wire_bytes_total=%" PRIu64 " wire_packets_total=%" PRIu64
              " wire_bytes_per_sample=%.1f wire_packets_per_sample=%.3f wire_role_packets_per_sample=%.3f "
-             "iface=%s instrument=%s%s%s%s sched_by_thread=%s",
+             "iface=%s instrument=%s%s%s%s sched_by_thread=%s%s",
              sample_bytes, utime_s, stime_s, samples > 0 ? cpu_s * 1e6 / (double)samples : 0.0,
              megabytes > 0.0 ? cpu_s / megabytes : 0.0, (double)sched_cpu_ns / 1e9,
              samples > 0 ? (double)sched_cpu_ns / 1e3 / (double)samples : 0.0, sched_unattributed_s,
@@ -485,6 +517,6 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
              wire_bytes_total, wire_packets_total, samples > 0 ? (double)wire_bytes_total / (double)samples : 0.0,
              samples > 0 ? (double)wire_packets_total / (double)samples : 0.0,
              samples > 0 ? (double)role_packets / (double)samples : 0.0, stats->iface, fail[0] != '\0' ? "fail:" : "ok",
-             fail, BENCH_CORE_BUILD_FIELD, BENCH_CORE_BUILD_VALUE, by_thread);
+             fail, BENCH_CORE_BUILD_FIELD, BENCH_CORE_BUILD_VALUE, by_thread, transport);
     return buf;
 }

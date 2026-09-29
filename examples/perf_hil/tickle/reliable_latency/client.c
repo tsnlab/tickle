@@ -207,6 +207,10 @@ int main(int argc, char** argv) {
     if (received > 0) {
         printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", rtt_min_ms, avg, rtt_max_ms);
     }
+    // The seam's own per-transport counts, for SHM_PLAN's S2 assertion (tx_udp must be 0 for a same-host pair once the
+    // segment carries the shape under test). Read from the context rather than counted here, so one place counts.
+    bench_stats_set_transport(&g_bench_stats, node.tx_datagrams_by_transport, node.rx_datagrams_by_transport,
+                              (size_t)tt_TRANSPORT_COUNT);
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=tickle scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.0f "
            "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "

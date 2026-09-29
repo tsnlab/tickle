@@ -143,6 +143,12 @@ So what the test reads is **how many datagrams went each way**:
 - printed in the RESULT line by `BenchStats.h`, as `retransmitted` and `gap_evicted` already are, so a row carries its
   own evidence instead of depending on a log.
 
+**And the counters get an external control for free, on every row.** `wire_tx_packets` in the same RESULT line is the
+kernel's own `/proc/net/dev` count for the interface, so `tx_udp + tx_shm` can be compared against it without a dedicated
+test: a first run of the native harness gave `tx_udp=946982` against `wire_tx_packets=946984`, agreeing within two
+packets. A seam counter that drifts from the interface is then caught by any row rather than by remembering to check -
+which matters because the alternative was trusting the counters that S2's whole verdict rests on.
+
 The assertion is then exact rather than interpretive: for a same-host pair, `udp_sent == 0` for the shape under test,
 **checked per shape** - one payload that fits a datagram, one that fragments, and a request/reply so `tt_send_to` is on
 the list - rather than once for the run. The partial-seam case fails it, which is the only reason the test exists.
@@ -172,6 +178,14 @@ needs no new fields and the seam cannot acquire a counter someone forgets to add
 `tx_datagrams_by_transport[]` and `rx_datagrams_by_transport[]` on `struct tt_Context` beside the existing
 `tx_datagrams`/`rx_datagrams`, printed flat in the RESULT line as `tx_udp= tx_shm= rx_udp= rx_shm=` because
 `BenchStats.h`'s consumers parse `key=value`.
+
+**A defect the first verification found, before anything depended on the counters (2026-09-29).** The new arrays were
+added without being reset: `tt_Context` is caller-owned and `reset_node_state()` initialises field by field rather than
+memset-ing, so a field that is only ever incremented is never zero. A run that really sent 949,078 datagrams reported
+`tx_udp=140723338891185` - a stack address. **A counter that starts from garbage cannot be told from one the seam failed
+to reach**, which is precisely the false negative this section exists to prevent, so it would have discredited S2's
+verdict in the direction hardest to notice. Fixed beside the scalars they belong to, and found only because the RESULT
+field was run rather than assumed to work once it compiled.
 
 **This also gives stage 0 a test it would not otherwise have:** with the counters in and no segment yet, every datagram
 is `udp` and `shm` is zero. That is a real assertion about the seam being wired without changing behaviour, and it is the
