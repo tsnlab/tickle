@@ -855,90 +855,103 @@ elsewhere in this document**, not that it is unavailable.
 (~0.52ms) while `rmw_cyclonedds_cpp` is genuinely faster (~0.44ms) on the real link. RELIABLE costs
 nothing measurable over BEST_EFFORT for any of the three. 18/18 runs clean, zero loss every time.
 
-### 2.7 zenoh-pico (2026-09-29)
+### 2.7 zenoh-pico (2026-09-29, re-measured)
 
 **zenoh-pico is reference material here, not a competitor this project is measured against** (the user's decision,
-2026-09-29). The comparison TickLE is judged by is against DDS - FastDDS and CycloneDDS - and a cell where zenoh-pico is
-faster is information rather than a defeat. It is measured to the same standard anyway, because a reference that is
+2026-09-29). The comparison TickLE is judged by is against DDS - FastDDS and CycloneDDS - and a cell where zenoh-pico
+is faster is information rather than a defeat. It is measured to the same standard anyway, because a reference that is
 loosely measured is worth less than none.
 
-Measured on the rig by the same campaign, in the same session, through the same `RESULT:` line and the same instrument
-gate. Harness at `examples/perf_hil/zenohpico/`, raw rows at `results/cmp_zenohpico_c8_54c27bbc_2026-09-29.txt`, plan and
-pre-registration at `ZENOH_PICO_PLAN.md`.
+Harness at `examples/perf_hil/zenohpico/`, runner `examples/perf_hil/experiments/zenoh_cells.sh`, raw rows at
+`results/zenoh_cells_31d58011_2026-09-29.txt`, plan and pre-registration at `ZENOH_PICO_PLAN.md`.
 
-**Only one cell is scored, and the reason is a capability difference rather than a measurement choice.** zenoh-pico does
-not repair loss. Its own source says so in the same words on both transports - `src/transport/multicast/rx.c:194` and
-`src/transport/unicast/rx.c:106`, *"@TODO: amend once reliability is in place. For the time being only monotonic SNs are
-ensured"* - so `Z_RELIABILITY_RELIABLE` means ordering, not retransmission. **Our RELIABLE cells therefore have no
-counterpart in it**, and running them would produce numbers where we look worse for paying for machinery it does not run
-and better under loss where it drops what we repair. Neither would mean what a reader takes it to mean. Cell 8,
-best-effort throughput, is the one cell where all four make the same promise.
-
-> **PROVISIONAL - the TickLE row below is measured on a regressed build and understates it by more than half.**
-> Discovered 2026-09-29 after this section was written. The transport seam added that day retries a shared-memory
-> attach on *every datagram* to a peer that has no segment, which on a two-host link is every datagram and can never
-> succeed; each failed attempt is an `open()` that fails `ENOENT`, roughly 87,000 wasted system calls per second.
+> **Both figures below are re-measurements, and the first version of this section was taken with a subscriber that was
+> not running.** `run_scenario.sh` forwards the same arguments to both sides, so `-d 5` gave the *server* a
+> five-second lifetime while the client spent three of them settling and then measured for five: the subscriber was
+> gone before the measured window opened. Over TCP this was loud - no session, so the publisher discarded locally and
+> counted 15,326,932 puts at 1,863 Mbps over a 1 Gbps link while putting 745 bytes on the wire. **Over multicast it
+> was silent**, because a publisher transmits to the group whether or not anyone is listening: every client-side
+> number looked plausible, and the row's `loss 0.000` was 0 lost of 0 received. A loss rate divided out of nothing
+> reads exactly like a perfect one.
 >
-> A control run at the same commit, differing only by `-Dtt_SEGMENT_ENABLED=0` (harness
-> `examples/perf_hil/experiments/seam_attach_cost.sh`, raw rows `results/seam_attach_cost_d4413383_2026-09-29.txt`),
-> n=6 per arm on this same cell 8:
->
-> | arm | send Mbps | CPU s/Msample |
-> |---|---:|---:|
-> | segment compiled in (the row below) | 54.03 +- 0.15 | 10.843 +- 0.033 |
-> | segment compiled out | **119.86 +- 0.49** | **5.075 +- 0.021** |
->
-> **So the reading below - "CycloneDDS sends more: 71.15 against our 53.97 ... a cell we lose to a DDS
-> implementation" - is an artefact of that defect and not a result.** Against CycloneDDS's 71.15 the unencumbered
-> figure wins the cell rather than losing it. That is stated as the expectation and not as the number: compiling the
-> module out is not the same as fixing it, and the replacement row will be measured on the fixed build, where a
-> correctly cached negative attach should cost near zero on a cross-host link but is not assumed to cost exactly
-> zero. The CPU and peak-RSS figures in the TickLE row are affected the same way.
->
-> The row is left standing rather than deleted because it is what was measured and the reading drawn from it was
-> published; it is replaced, not amended, once the defect is fixed and the cell re-measured. zenoh-pico's and the two
-> DDS rows are unaffected - they share the rig and the harness, not the defect. **CycloneDDS being flat across the
-> regression (92.84 -> 93.62 Mbps on cell 1) is what identified the change as ours**, and is also why the vendor arms
-> could not have caught it: they control for the environment, not for our own code.
+> The client-side numbers turned out to be close to correct (53.30 -> 53.77 Mbps, 15.726 -> 15.602 CPU s/Msample),
+> because publishing into a multicast group costs nearly the same whether or not anyone is there. **The loss figure
+> was not correct, and neither was the sentence it supported.** zenoh-pico does lose nothing on this cell - that is
+> now measured, 440,854 of 440,854 - but the earlier run could not have known it. The runner now starts the server
+> itself with a longer life, prints `sent` beside `received` on every rep, and voids any rep with `received=0`.
 
-**Cell 8, `best_effort_throughput` p1 (76 B sample), 5 s, 3 repetitions, both Pis:**
+#### Cell 8, `best_effort_throughput` p1 (76 B sample), 5 s, 3 reps, both Pis
 
-| framework | sent | send Mbps | client CPU s/Msample | client peak RSS kB | wire B/sample | loss % |
-|---|---:|---:|---:|---:|---:|---:|
-| **TickLE** | 443,866 | 53.97 | **10.870** | **1,763** | **138.0** | **0.000** |
-| zenoh-pico | 438,313 | 53.30 | 15.726 | 2,147 | 139.0 | 0.000 |
-| CycloneDDS | 555,871 | **71.15** | 14.159 | 4,971 | 178.0 | 0.200 |
-| FastDDS | 369,211 | 47.26 | 13.580 | 14,216 | 254.0 | 16.033 |
+| framework | send Mbps | client CPU s/Msample | client peak RSS kB | wire B/sample | loss % |
+|---|---:|---:|---:|---:|---:|
+| **TickLE** | *see note* | *see note* | *see note* | **138.0** | **0.000** |
+| zenoh-pico | 53.77 +- 0.15 | 15.602 +- 0.029 | 2,124 +- 6 | 139.0 | 0.000 |
+| CycloneDDS | **71.15** | 14.159 | 4,971 | 178.0 | 0.200 |
+| FastDDS | 47.26 | 13.580 | 14,216 | 254.0 | 16.033 |
 
-TickLE is lowest on CPU per sample, peak RSS and wire bytes, each clear of the runner-up by more than 2xSE.
-**CycloneDDS sends more: 71.15 Mbps against our 53.97, also clear at 2xSE - and that one is a cell we lose to a DDS
-implementation, which is the comparison that counts.** It also drops 0.2% where we drop none, which is a trade a
-best-effort reader may well accept; the row states both rather than choosing which to emphasise. zenoh-pico's place in
-the table is as a reference point, so its numbers are neither a win nor a loss for this project.
+> **TickLE's throughput, CPU and RSS on this cell are withheld pending a re-measure.** The figures published earlier
+> (53.97 Mbps, 10.870 CPU s/Msample) were taken on a build carrying the shared-memory attach regression, which cost
+> more than half of cross-host throughput by retrying a segment attach on every datagram to a peer that can never
+> have one. A control at the same commit with the module compiled out returned 119.86 +- 0.49 Mbps and 5.075 +- 0.021
+> CPU s/Msample (`experiments/seam_attach_cost.sh`), so the earlier row understated TickLE by more than half and its
+> reading - "a cell we lose to a DDS implementation" - was an artefact rather than a result. Against CycloneDDS's
+> 71.15 the unencumbered figure wins the cell. It is stated as an expectation and not as a number, because compiling
+> the module out is not the same as fixing it, and the replacement row will be measured on the fixed build.
 
-**zenoh-pico's result is the interesting one.** Its throughput is within 1.3% of ours and its wire overhead is 139 B
-against our 138 - essentially identical - while costing 45% more CPU per sample and 22% more memory. It loses nothing.
+#### Cell 1, `reliable_throughput` p1 (76 B sample), 5 s, 3 reps, both Pis
 
-**Its batching did not engage, which is a measured answer rather than an assumption.** zenoh-pico batches into one
-network operation by default (`Z_BATCH_MULTICAST_SIZE` 2048) and the row above was taken with batching **on**
-(`express=0`), yet `wire_packets_per_sample` is 1.000: at this rate each publication is flushed before the next arrives,
-so there is never a second message to coalesce. The harness carries an express arm (`-X`, or `BENCH_ZENOH_EXPRESS=1`)
-to turn batching off per publisher, and for this cell the two arms are the same wire shape. **Batching is where a
-small-payload cell could have been decided and here it was not** - a cell with a slower reader or a busier link is where
-it would be, and that cell does not exist yet.
+zenoh-pico measured **over TCP**, at the user's instruction (2026-09-29): its `Z_RELIABILITY_RELIABLE` means monotonic
+sequence numbers rather than retransmission - its own source says so on both transports - so TCP peer-to-peer is the
+only configuration where its reliability is real. **This compares two different mechanisms making the same promise to
+an application**, TCP's stream repair against DDS's and ours, rather than comparing like with like.
+
+| framework | transport | send Mbps | client CPU s/Msample | client peak RSS kB | wire B/sample | pkts/sample | loss % |
+|---|---|---:|---:|---:|---:|---:|---:|
+| zenoh-pico | TCP | **234.67 +- 2.75** | **2.594 +- 0.030** | **2,127 +- 1** | **93.7 +- 0.2** | 0.094 | 0.000 |
+| TickLE | UDP | *see note* | *see note* | 2,004 | 138.6 | 1.005 | 0.000 |
+| CycloneDDS | UDP | 93.62 | 6.860 | 5,288 | 180.2 | - | 0.000 |
+| FastDDS | UDP | 39.52 | 19.488 | 15,897 | 286.3 | - | 0.000 |
+
+TickLE's entry is withheld for the same reason as cell 8; the control arm with the module compiled out gave
+114.18 +- 0.05 Mbps at 5.327 +- 0.002 CPU s/Msample, which is within 0.4% of the figure measured before the
+regression landed.
+
+**zenoh-pico leads this cell by a wide margin and the reason is visible in one column.** `pkts/sample` is 0.094:
+about eleven samples per TCP segment. A 76-byte sample carried in its own UDP datagram pays a full Ethernet, IP and
+UDP header every time; the same sample in a coalesced TCP stream amortises one header across eleven. That is the whole
+of the 93.7 against our 138.6 wire bytes per sample, and most of the throughput gap with it. **It is a property of
+running a stream protocol, not of zenoh being better at the same job** - and it is the clearest measurement anyone
+here has of what batching is worth on a small-payload cell, which `WIRELESS_PLAN.md` section 3.2 names as the cheapest
+win available and which `tt_send_batch` already has the mechanism for.
+
+The honest counterweight, and it is why this is reference material rather than a target: a TCP stream buys that
+coalescing with head-of-line blocking, a connection per peer, and no multicast. Our per-datagram model exists so that
+one lost sample does not stall the ones behind it, which is the property cells 6 and 11-12 measure and which this cell
+does not.
+
+**Its batching did not engage on the best-effort cell, which is a measured answer rather than an assumption.**
+zenoh-pico batches into one network operation by default (`Z_BATCH_MULTICAST_SIZE` 2048) and cell 8 was taken with
+batching **on** (`express=0`), yet `wire_packets_per_sample` is 1.000: at that rate each publication is flushed before
+the next arrives, so there is never a second message to coalesce. The harness carries an express arm (`-X`, or
+`BENCH_ZENOH_EXPRESS=1`) to turn batching off per publisher, and for that cell the two arms are the same wire shape.
+The TCP cell above is where coalescing did engage, and the contrast between 1.000 and 0.094 packets per sample is the
+finding rather than either number alone.
 
 **What is not compared, and why:**
 
-- **every RELIABLE cell** - no counterpart (above);
 - **DEADLINE, LIVELINESS, LIFESPAN, DURABILITY and a history depth** - zenoh-pico has no equivalent of any of them, so
   §2's cells 5-9 are not scored for it;
 - **KEEP_ALL and KEEP_LAST** map to `Z_CONGESTION_CONTROL_BLOCK` and `DROP`, which is the same choice in spirit - block
   or drop when the link is full - but is not a depth, so a depth cell has no counterpart either;
+- **the loss cells (6, 11, 12)** - zenoh-pico repairs nothing on multicast and TCP repairs everything on unicast, so
+  neither arm answers what those cells ask, which is how selective repair behaves against a lossy link;
 - **a router configuration** - zenoh-pico reaches a wide-area path through a router, which is a different topology from
   our direct link and would be a different measurement rather than this cell.
 
-**What it does that we do not:** it runs peer-to-peer over UDP multicast with no router, which was verified by running
-it rather than read - and at 627 KB of shared library it is in the same size class as TickLE rather than the DDS pair.
+**What it does that we do not:** it runs peer-to-peer over UDP multicast with no router, and peer-to-peer over TCP with
+no router - both verified by running them rather than read, the second after its own examples were used as a control to
+establish that the unicast peer path works at all. At 627 KB of shared library it is in the same size class as TickLE
+rather than the DDS pair.
 
 ### 2.7a rmw API coverage (2026-09-27)
 
