@@ -857,9 +857,14 @@ nothing measurable over BEST_EFFORT for any of the three. 18/18 runs clean, zero
 
 ### 2.7 zenoh-pico (2026-09-29)
 
-A fourth framework, measured on the rig by the same campaign, in the same session, through the same `RESULT:` line and
-the same instrument gate. Harness at `examples/perf_hil/zenohpico/`, raw rows at
-`results/cmp_zenohpico_c8_54c27bbc_2026-09-29.txt`, plan and pre-registration at `ZENOH_PICO_PLAN.md`.
+**zenoh-pico is reference material here, not a competitor this project is measured against** (the user's decision,
+2026-09-29). The comparison TickLE is judged by is against DDS - FastDDS and CycloneDDS - and a cell where zenoh-pico is
+faster is information rather than a defeat. It is measured to the same standard anyway, because a reference that is
+loosely measured is worth less than none.
+
+Measured on the rig by the same campaign, in the same session, through the same `RESULT:` line and the same instrument
+gate. Harness at `examples/perf_hil/zenohpico/`, raw rows at `results/cmp_zenohpico_c8_54c27bbc_2026-09-29.txt`, plan and
+pre-registration at `ZENOH_PICO_PLAN.md`.
 
 **Only one cell is scored, and the reason is a capability difference rather than a measurement choice.** zenoh-pico does
 not repair loss. Its own source says so in the same words on both transports - `src/transport/multicast/rx.c:194` and
@@ -878,10 +883,11 @@ best-effort throughput, is the one cell where all four make the same promise.
 | CycloneDDS | 555,871 | **71.15** | 14.159 | 4,971 | 178.0 | 0.200 |
 | FastDDS | 369,211 | 47.26 | 13.580 | 14,216 | 254.0 | 16.033 |
 
-TickLE is lowest on CPU per sample, peak RSS and wire bytes, each clear of the runner-up by more than 2xSE. **CycloneDDS
-sends more: 71.15 Mbps against our 53.97, also clear at 2xSE - that is a cell we lose and it is reported as one.** It
-also drops 0.2% where we drop none, which is a trade a best-effort reader may well accept; the row states both rather
-than choosing which to emphasise.
+TickLE is lowest on CPU per sample, peak RSS and wire bytes, each clear of the runner-up by more than 2xSE.
+**CycloneDDS sends more: 71.15 Mbps against our 53.97, also clear at 2xSE - and that one is a cell we lose to a DDS
+implementation, which is the comparison that counts.** It also drops 0.2% where we drop none, which is a trade a
+best-effort reader may well accept; the row states both rather than choosing which to emphasise. zenoh-pico's place in
+the table is as a reference point, so its numbers are neither a win nor a loss for this project.
 
 **zenoh-pico's result is the interesting one.** Its throughput is within 1.3% of ours and its wire overhead is 139 B
 against our 138 - essentially identical - while costing 45% more CPU per sample and 22% more memory. It loses nothing.

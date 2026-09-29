@@ -17,9 +17,21 @@ ssh_run() {
 # stdbuf: zenoh-pico's examples and this harness print through libc, and with stdout redirected the RESULT line
 # sits in a full buffer until exit - a subscriber killed before it flushes looks exactly like one that received
 # nothing. Found the first time this harness was run (2026-09-29).
-ssh_run "$RPI_SERVER" "cd ~/$REMOTE_DIR; nohup $PIN stdbuf -oL ./server $* > /tmp/zenohpico_server.log 2>&1 < /dev/null &"
+# The reliable scenario is TCP peer-to-peer with no router - the subscriber listens, the publisher connects - because
+# that is the only configuration where zenoh-pico's reliability is real (ZENOH_PICO_PLAN.md section 1). The best-effort
+# scenario stays on UDP multicast, where both sides make the same best-effort promise. The endpoints are the rig's
+# measurement link, not the management LAN.
+if [ "${SCEN_DIR%%_*}" = reliable ]; then
+    ZENOH_SERVER_ADDR="${ZENOH_SERVER_ADDR:-192.168.10.2}"
+    ZENOH_EP_LISTEN="BENCH_ZENOH_LISTEN=tcp/$ZENOH_SERVER_ADDR:7447"
+    ZENOH_EP_CONNECT="BENCH_ZENOH_CONNECT=tcp/$ZENOH_SERVER_ADDR:7447"
+else
+    ZENOH_EP_LISTEN=""
+    ZENOH_EP_CONNECT=""
+fi
+ssh_run "$RPI_SERVER" "cd ~/$REMOTE_DIR; nohup env $ZENOH_EP_LISTEN $PIN stdbuf -oL ./server $* > /tmp/zenohpico_server.log 2>&1 < /dev/null &"
 sleep 2
-ssh_run "$RPI_CLIENT" "cd ~/$REMOTE_DIR && $PIN stdbuf -oL ./client $*" | grep '^RESULT:'
+ssh_run "$RPI_CLIENT" "cd ~/$REMOTE_DIR && env $ZENOH_EP_CONNECT $PIN stdbuf -oL ./client $*" | grep '^RESULT:'
 sleep 2
 ssh_run "$RPI_SERVER" "pkill -INT -x server" || true
 sleep 1
