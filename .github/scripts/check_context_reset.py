@@ -25,19 +25,30 @@ import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
-# Fields that deliberately outlive reset_node_state(), each with the reason it does.
-SURVIVES_RESET = {}
+# Fields not assigned by reset_node_state(), each with WHAT SETS IT INSTEAD - not "why it is exempt". Dev's
+# distinction, and it is the right one: "exempt" invites the next person to add a line, "set by X" invites them to
+# check that X still runs.
+SURVIVES_RESET = {
+    "id_explicit": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
+    "id_muted": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
+    "id_muted_drops": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
+    "created_ns": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
+    "collision_since_ns": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
+    "collision_last_ns": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
+    "ids_seen": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
+}
 
 # Fields that predate this check and have NOT yet been classified. They are NOT endorsed: each one is either a
 # deliberate survivor that belongs in SURVIVES_RESET with its reason, or a live instance of the bug above. The list
 # exists so the check can be switched on for NEW fields today rather than waiting for all of them to be reviewed.
 # Shrinking it to empty is the job; nothing may be added to it.
+# Confirmed by Dev 2026-09-29 as live instances of the bug, awaiting the fix in reset_node_state(): each is a
+# uint64_t counter that is only ever incremented, so a caller-owned context reports whatever was on the stack. Two of
+# them are what a reader consults when a node delivered nothing, and "how many did we throw away and why" answered
+# from garbage is worse than not answering. They are NOT allowlisted; the check reports them until they are reset.
 UNREVIEWED = {
-    "collision_last_ns", "collision_logged_ip", "collision_logged_port", "collision_since_ns", "created_ns",
-    "default_node_name", "endpoint_index", "hal", "id_explicit", "id_muted", "id_muted_drops", "ids_seen",
-    "local_scratch", "poller_active", "poller_thread", "rx_clock_ns", "rx_malformed_drops", "rx_out_of_range",
-    "rx_targeted", "sched_inbox", "sched_inbox_pending", "sched_inbox_state", "state_depth", "state_lock",
-    "state_lock_stats", "state_owner", "version_mismatch_drops", "version_mismatch_logged", "wait_seq",
+    "collision_logged_ip", "collision_logged_port",     "default_node_name", "endpoint_index", "hal",     "local_scratch", "poller_active", "poller_thread", "rx_clock_ns",     "rx_targeted", "sched_inbox", "sched_inbox_pending", "sched_inbox_state", "state_depth", "state_lock",
+    "state_lock_stats", "state_owner", "version_mismatch_logged", "wait_seq",
     "wait_until_hi", "wait_until_lo",
 }
 
@@ -91,6 +102,75 @@ def reset_touches(source):
     return touched
 
 
+GUARD_RE = re.compile(r"#\s*(if|ifdef|ifndef|elif|else|endif)\b\s*(.*)")
+
+
+def guard_map(lines):
+    """For each line index, the stack of preprocessor conditions it sits under."""
+    stack, out = [], []
+    for line in lines:
+        st = line.strip()
+        m = GUARD_RE.match(st)
+        if m:
+            kind = m.group(1)
+            if kind in ("if", "ifdef", "ifndef"):
+                out.append(tuple(stack))
+                stack.append(st)
+                continue
+            if kind in ("elif", "else"):
+                if stack:
+                    stack[-1] = st
+                out.append(tuple(stack[:-1]) if stack else ())
+                continue
+            if kind == "endif":
+                out.append(tuple(stack[:-1]) if stack else ())
+                if stack:
+                    stack.pop()
+                continue
+        out.append(tuple(stack))
+    return out
+
+
+def guard_mismatches(source, fields):
+    """Fields assigned ONLY under some #if, but read when that #if is off.
+
+    Dev asked for "fail on a field assigned in a flag-gated branch only". That exact rule fires on seven fields that
+    are perfectly correct - the tt_CONTEXT_ID_CLAIM family is written by claim_initial_id() under the flag and every
+    one of its reads is under the same flag, so with the flag off the fields are neither written nor read. The
+    property that actually matters is narrower, and this is it: a field is a bug when it can be READ under weaker
+    conditions than it is ever WRITTEN under. That is the shape that leaves a live read of memory nobody set.
+    """
+    lines = source.split("\n")
+    guards = guard_map(lines)
+    writes, reads = {}, {}
+    for i, line in enumerate(lines):
+        code = re.sub(r"//.*$", "", line)
+        for m in re.finditer(r"(?:\w+)->(\w+)\s*(\+\+|--|[-+|&^]?=(?!=))", code):
+            writes.setdefault(m.group(1), []).append(guards[i])
+        for m in re.finditer(r"(?:\w+)->(\w+)", code):
+            reads.setdefault(m.group(1), []).append(guards[i])
+        for m in re.finditer(r"memset\s*\(\s*(?:&\s*)?\w+->(\w+)", code):
+            writes.setdefault(m.group(1), []).append(guards[i])
+    bad = []
+    for field, wg in writes.items():
+        # Only struct tt_Context's own fields: the file is full of other structs reached the same way
+        # (tt_SegmentHeader's slots/read_index, tt_SegmentPeer's ip/port), and they are not what this checks.
+        if field not in fields:
+            continue
+        if not all(g for g in wg):
+            continue  # at least one unguarded write: fine
+        needed = set(wg[0])
+        for g in wg[1:]:
+            needed &= set(g)
+        if not needed:
+            continue
+        for g in reads.get(field, []):
+            if not needed & set(g):
+                bad.append((field, sorted(needed)))
+                break
+    return bad
+
+
 def main():
     fields = context_fields((ROOT / "include/tickle/tickle.h").read_text())
     touched = reset_touches((ROOT / "src/tickle.c").read_text())
@@ -102,8 +182,16 @@ def main():
           % (len(fields), len([f for f in fields if f in touched])))
     if stale:
         print("  note: now reset, so they can leave the lists: " + ", ".join(stale))
+    mism = guard_mismatches((ROOT / "src/tickle.c").read_text(), set(fields))
+    if mism:
+        print("\ncheck-context-reset: FAIL - field(s) written only under a condition, but read when it is off:")
+        for field, needed in mism:
+            print("    %s  (written only under %s)" % (field, ", ".join(needed)))
+        print("\nA read of a field nobody wrote in that build configuration. This is the shape that cost 2026-09-29:")
+        print("a field whose initialiser is compiled out while its reader is not.")
+        return 1
     if not missing:
-        print("  OK - every field is reset or classified")
+        print("  OK - every field is reset or classified, and none is read under weaker conditions than it is written")
         return 0
     print("\ncheck-context-reset: FAIL - %d field(s) of struct tt_Context are never assigned by reset_node_state():"
           % len(missing))
