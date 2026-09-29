@@ -53,6 +53,15 @@ static bool latency_session_open(z_owned_session_t* session) {
     z_owned_config_t config;
     z_config_default(&config);
     zp_config_insert(z_loan_mut(config), Z_CONFIG_MODE_KEY, "peer");
+#if !BENCH_RELIABLE
+    // Multicast peer mode needs the group given explicitly - with no endpoint at all z_open() simply fails, which
+    // is what the first run of these cells did on both sides. Same group, port and interface as the best-effort
+    // throughput harness beside it, so the two cells differ in what they measure and not in how they are connected.
+    const char* iface = getenv("BENCH_IFACE") != NULL ? getenv("BENCH_IFACE") : "eth0";
+    char listen[128];
+    snprintf(listen, sizeof(listen), "udp/224.0.0.225:7447#iface=%s", iface);
+    zp_config_insert(z_loan_mut(config), Z_CONFIG_LISTEN_KEY, listen);
+#endif
 #if BENCH_RELIABLE
     const char* ep_listen = getenv("BENCH_ZENOH_LISTEN");
     const char* ep_connect = getenv("BENCH_ZENOH_CONNECT");

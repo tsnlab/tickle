@@ -76,7 +76,11 @@ int main(int argc, char** argv) {
     z_owned_publisher_t pub;
     z_publisher_options_t popts;
     z_publisher_options_default(&popts);
-    popts.congestion_control = Z_CONGESTION_CONTROL_BLOCK;
+#if BENCH_RELIABLE
+    popts.congestion_control = Z_CONGESTION_CONTROL_BLOCK; // the reliable pair's promise, as in its throughput twin
+#else
+    popts.congestion_control = Z_CONGESTION_CONTROL_DROP; // the best-effort pair's promise: drop when full
+#endif
 #ifdef Z_FEATURE_UNSTABLE_API
     popts.reliability = BENCH_RELIABLE ? Z_RELIABILITY_RELIABLE : Z_RELIABILITY_BEST_EFFORT;
 #endif
