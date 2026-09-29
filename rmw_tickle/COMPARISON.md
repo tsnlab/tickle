@@ -373,6 +373,24 @@ Table rows 7-17. The two deep dives that follow (§2.2a, §2.2b) are where the R
 > module on against 1,902.7 with it out, both at 0.0% loss - +46.8%**. Dev's own A/B on a different machine gave
 > +35.6% (3,163.9 against 2,332.6). Two machines, same direction.
 >
+> **Why the same-host gain reads as both +46.8% and 4.3x, which are the same fact at two payloads.** The module's
+> same-host benefit is a *datagram-rate* gain, and how much of it appears as throughput depends on whether bandwidth
+> is also in the way. The module-off arm turns out to be datagram-rate limited rather than bandwidth limited, which the
+> two cells show together:
+>
+> | module-off arm | payload | datagrams/s | throughput |
+> |---|---:|---:|---:|
+> | same-host best-effort p1 (`s6_witness_check.sh`) | 76 B | 179,693 | 109.25 Mbps |
+> | the CI perf tier | ~1,438 B | 165,392 | 1,902.67 Mbps |
+>
+> Within 8.6% of each other on datagrams per second across a 19x difference in payload. So 109 Mbps is not a
+> suspiciously low baseline - it is what ~180,000 datagrams/s is worth at 76 bytes. With the module on the same cell
+> reaches **770,111 datagrams/s, a 4.29x rate gain**, and at 76 bytes there is enough bandwidth headroom for all of it
+> to appear as throughput (468 Mbps). At 1,438 bytes there is not: 2,793 Mbps is close to what this loopback will
+> carry, so the same rate gain shows up as +46.8% instead. **Both figures are the same improvement, clipped by
+> different limits** - which is why the module's case should be stated as a datagram-rate gain and not as a single
+> percentage.
+>
 > The same run's same-host ping/pong tier points the same way: **RTT mean 0.135 ms with the module on against 0.149
 > with it out, and the tail 0.206 against 0.431.** That is one run of 300 round trips with no repetitions, so it is a
 > second cell agreeing rather than a statistic - quoted as a direction, not a margin.
