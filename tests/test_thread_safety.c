@@ -173,29 +173,85 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
 }
 
 #if tt_SEGMENT_ENABLED
-// The segment's HAL entry points (SHM_PLAN.md stage 1). Refusing to create and reporting every peer
-// as absent is the honest stub here: this binary has no shared memory and every send goes over its
-// own transport, so the module must decide "not same host" rather than be half-present.
+// The segment's HAL entry points (SHM_PLAN.md stage 1), backed by real memory that two contexts in
+// this process genuinely share.
+//
+// These used to return NULL for everything, which meant the segment was never created, never
+// attached, and never drained - so the one gate in this project that runs threads against the core
+// was passing while never touching the shared-memory module at all. SHM_PLAN item 12 says a
+// flag-gated feature with no arm that enables it is an untested feature; this was that, in the
+// tsan gate, and it cost a real defect: drain_own_segment() called process_datagram_locked()
+// WITHOUT the state lock from the day the segment landed (1c69658a). Every test that drives the
+// drain is single-threaded, so nothing had a second party to race with - until rmw_tickle's
+// executor did, and its publisher segfaulted.
+//
+// The table has a lock of its own because this harness must not race on its own bookkeeping; the
+// regions it hands out are exactly what the module is supposed to race on, and that is the point.
+#define TEST_TSAN_MAX_SEGMENTS 8
+static struct {
+    char path[tt_SEGMENT_PATH_LENGTH];
+    void* region;
+    size_t bytes;
+    bool present;
+} tsan_segments[TEST_TSAN_MAX_SEGMENTS];
+static pthread_mutex_t tsan_segments_lock = PTHREAD_MUTEX_INITIALIZER;
+
 void* tt_segment_create(const char* path, size_t bytes) {
-    (void)path;
-    (void)bytes;
-    return NULL;
+    void* region = NULL;
+    pthread_mutex_lock(&tsan_segments_lock);
+    for (int i = 0; i < TEST_TSAN_MAX_SEGMENTS; i++) {
+        if (tsan_segments[i].region != NULL && strcmp(tsan_segments[i].path, path) == 0) {
+            tsan_segments[i].present = false; // a real create unlinks first
+        }
+    }
+    for (int i = 0; i < TEST_TSAN_MAX_SEGMENTS; i++) {
+        if (tsan_segments[i].region == NULL) {
+            tsan_segments[i].region = calloc(1, bytes);
+            if (tsan_segments[i].region != NULL) {
+                snprintf(tsan_segments[i].path, sizeof(tsan_segments[i].path), "%s", path);
+                tsan_segments[i].bytes = bytes;
+                tsan_segments[i].present = true;
+                region = tsan_segments[i].region;
+            }
+            break;
+        }
+    }
+    pthread_mutex_unlock(&tsan_segments_lock);
+    return region;
 }
 
 void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
-    (void)path;
-    (void)bytes;
+    void* region = NULL;
     *why = (uint8_t)tt_SEGMENT_ABSENT;
-    return NULL;
+    pthread_mutex_lock(&tsan_segments_lock);
+    for (int i = 0; i < TEST_TSAN_MAX_SEGMENTS; i++) {
+        if (tsan_segments[i].region != NULL && tsan_segments[i].present && strcmp(tsan_segments[i].path, path) == 0) {
+            if (tsan_segments[i].bytes < bytes) {
+                *why = (uint8_t)tt_SEGMENT_BAD_HEADER;
+                break;
+            }
+            *why = (uint8_t)tt_SEGMENT_ATTACHED;
+            region = tsan_segments[i].region; // one region, two users - which is the point
+            break;
+        }
+    }
+    pthread_mutex_unlock(&tsan_segments_lock);
+    return region;
 }
 
 void tt_segment_detach(void* mapping, size_t bytes) {
     (void)mapping;
-    (void)bytes;
+    (void)bytes; // the region outlives its attachers here, as a real mapping's file does
 }
 
 void tt_segment_unlink(const char* path) {
-    (void)path;
+    pthread_mutex_lock(&tsan_segments_lock);
+    for (int i = 0; i < TEST_TSAN_MAX_SEGMENTS; i++) {
+        if (tsan_segments[i].region != NULL && strcmp(tsan_segments[i].path, path) == 0) {
+            tsan_segments[i].present = false;
+        }
+    }
+    pthread_mutex_unlock(&tsan_segments_lock);
 }
 #endif
 
@@ -222,13 +278,18 @@ bool tt_is_own_address(const struct tt_Context* node, uint32_t ip, uint16_t port
     return false;
 }
 
+// The address this node's datagrams appear to come from, which is what pop_locked() reports as the
+// sender. These used to be 0/0 for every node while pop_locked() reported 10.0.0.<id>:2000<id>, so a
+// context named its own segment from one address and its peers looked for it at another: every
+// attach came back ABSENT and the segment was never used here. That is a harness that reports a
+// node's identity two different ways, and it made the shared-memory module invisible to the one
+// gate in this project that runs threads.
 void tt_own_address(const struct tt_Context* node, uint32_t* ip, uint16_t* port) {
-    (void)node;
     if (ip != NULL) {
-        *ip = 0;
+        *ip = 0x0a000000U + node->id;
     }
     if (port != NULL) {
-        *port = 0;
+        *port = (uint16_t)(20000 + node->id);
     }
 }
 
@@ -354,9 +415,15 @@ static struct tt_Publisher publishers[PUBLISHER_THREADS];
 static struct tt_Subscriber subscribers[PUBLISHER_THREADS];
 static char names[PUBLISHER_THREADS][32];
 
-static uint32_t received[PUBLISHER_THREADS];     // written by B's poll thread
-static uint32_t out_of_order[PUBLISHER_THREADS]; // written by B's poll thread
-static uint32_t publish_errors;                  // atomic
+static uint32_t received[PUBLISHER_THREADS]; // written by B's poll thread
+// A gap in the sequence and a sample that goes BACKWARDS are different facts and were counted as one
+// until 2026-09-29. A gap means a sample did not arrive; backwards means one arrived after a later
+// one. Only the second is an ordering defect, and only the second is something every transport here
+// promises. See the assertions at the end of main() for why that distinction had to be made.
+static uint32_t gaps[PUBLISHER_THREADS];      // written by B's poll thread
+static uint32_t backwards[PUBLISHER_THREADS]; // written by B's poll thread
+static uint32_t delivered[PUBLISHER_THREADS]; // written by B's poll thread
+static uint32_t publish_errors;               // atomic
 
 static uint32_t timer_ids[TIMERS];      // timer i's param is &timer_ids[i], which holds i
 static uint32_t timer_runs[TIMERS];     // written by A's poll thread
@@ -372,12 +439,15 @@ static void on_sample(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no,
     const struct sample* s = (const struct sample*)data;
     uint32_t t = (uint32_t)(sub - subscribers);
     if (t >= PUBLISHER_THREADS || s->thread != t) {
-        out_of_order[0]++;
+        backwards[0]++;
         return;
     }
-    if (s->seq != received[t] + 1) {
-        out_of_order[t]++;
+    if (s->seq < received[t] + 1) {
+        backwards[t]++; // a sample behind one already delivered: an ordering defect, always
+    } else if (s->seq > received[t] + 1) {
+        gaps[t]++; // a sample did not arrive: loss, which best-effort does not promise against
     }
+    delivered[t]++;
     received[t] = s->seq;
 }
 
@@ -784,8 +854,44 @@ int main(void) {
         printf("test_thread_safety: %u call(s) timed out and were asked again\n", call_timeouts);
     }
     for (int t = 0; t < PUBLISHER_THREADS; t++) {
+        // The last sample arrived, so the stream ran to its end whatever happened in the middle.
         EXPECT_EQ_U32(SAMPLES_PER_THREAD, received[t]);
-        EXPECT_EQ_U32(0, out_of_order[t]);
+        // No sample may arrive behind one already delivered. That is the contract, and it holds in
+        // every run - but **this harness cannot falsify it and the assertion is therefore not
+        // evidence**. Checked rather than assumed: with the pre-2026-09-29 behaviour restored, where
+        // a full ring rerouted its datagram to UDP and caused exactly this reordering on the rig,
+        // `backwards` stayed at zero across four runs. The reason is that push() hands a datagram to
+        // the same queue the peer reads while the ring is drained to empty first, so ring records
+        // always precede queued ones here; on a real socket the socket is drained to exhaustion
+        // while the ring lags, which is where the reordering came from.
+        //
+        // Kept because it costs nothing and would catch a gross regression. Not counted as a guard.
+        // What this harness does falsify is the data race - without the state lock in
+        // drain_own_segment(), ThreadSanitizer reports one and the run exits 2 - and the engaged
+        // check below.
+        EXPECT_EQ_U32(0, backwards[t]);
+        // **No delivery floor is asserted here, and that is a considered refusal rather than a gap
+        // in the test.** These publishers are BEST-EFFORT: a bounded queue that is full drops, which
+        // is what the segment's 256-slot ring does and what a real UDP socket does. This harness's
+        // own fake transport does NOT - push() blocks on a condition variable when its 256 slots are
+        // full - so it is lossless by construction, and the assertion that used to stand here ("no
+        // gaps at all") was only ever satisfiable by that. **It was testing the harness, not the
+        // module**, and it passed for the module's whole life while the module was never engaged.
+        //
+        // With the segment engaged the loss measured across six runs was 29 to 2,281 samples of
+        // 20,000 per thread - 0.15% to 11.4% - and NOT ONE sample arrived out of order. A floor
+        // anywhere in that range would be a number nobody can derive, which is the objection this
+        // project already makes to "tx_udp small and flat". The figure is a property of a harness
+        // whose two transports have opposite full-queue policies, so it is printed for a reader and
+        // not asserted on.
+        //
+        // The honest repair is to make push() drop rather than block, so both paths have the same
+        // policy and a tight floor becomes derivable. That is a change to a harness older than this
+        // module and it belongs in its own commit.
+        if (delivered[t] != SAMPLES_PER_THREAD) {
+            printf("test_thread_safety: thread %d delivered %u of %u (best-effort, %u gap(s))\n", t, delivered[t],
+                   (unsigned)SAMPLES_PER_THREAD, gaps[t]);
+        }
     }
     uint32_t wrong_runs = 0;
     for (uint32_t i = 0; i < TIMERS; i++) {
@@ -794,6 +900,33 @@ int main(void) {
     EXPECT_EQ_U32(0, wrong_runs);
     EXPECT_TRUE(busy_checked);
     EXPECT_TRUE(busy_seen);
+
+#if tt_SEGMENT_ENABLED
+    // The module has to have been ENGAGED, not merely compiled in. This harness returned NULL from
+    // every segment entry point until 2026-09-29, so the one gate that runs threads against the core
+    // passed for months while never touching the shared-memory module - and the defect it should
+    // have caught (drain_own_segment() calling process_datagram_locked() without the state lock)
+    // lived from 1c69658a until an rmw executor segfaulted over it.
+    //
+    // A run where these are zero is a run that proves nothing about the segment under threads, and
+    // it would look exactly like a clean one. So it fails instead.
+    EXPECT_TRUE(node_a.tx_datagrams_by_transport[tt_TRANSPORT_SHM] > 0 ||
+                node_b.tx_datagrams_by_transport[tt_TRANSPORT_SHM] > 0);
+    EXPECT_TRUE(node_a.rx_datagrams_by_transport[tt_TRANSPORT_SHM] > 0 ||
+                node_b.rx_datagrams_by_transport[tt_TRANSPORT_SHM] > 0);
+    printf("segment diag: a own=%p attach[ok=%u absent=%u refused=%u bad=%u wrong=%u stale=%u] "
+           "bcast=%lu unattached=%lu oversize=%lu\n",
+           (void*)node_a.own_segment, node_a.segment_attach[tt_SEGMENT_ATTACHED],
+           node_a.segment_attach[tt_SEGMENT_ABSENT], node_a.segment_attach[tt_SEGMENT_REFUSED],
+           node_a.segment_attach[tt_SEGMENT_BAD_HEADER], node_a.segment_attach[tt_SEGMENT_WRONG_OWNER],
+           node_a.segment_attach[tt_SEGMENT_STALE], (unsigned long)node_a.segment_broadcast_to_udp,
+           (unsigned long)node_a.segment_unattached_to_udp, (unsigned long)node_a.segment_oversized_to_udp);
+    printf("segment under threads: a tx_shm=%lu rx_shm=%lu, b tx_shm=%lu rx_shm=%lu\n",
+           (unsigned long)node_a.tx_datagrams_by_transport[tt_TRANSPORT_SHM],
+           (unsigned long)node_a.rx_datagrams_by_transport[tt_TRANSPORT_SHM],
+           (unsigned long)node_b.tx_datagrams_by_transport[tt_TRANSPORT_SHM],
+           (unsigned long)node_b.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+#endif
 
 #ifndef CONTROL_BUILD
     printf("state lock: %lu acquisitions, %lu contended, %lu ns waited (node A)\n",

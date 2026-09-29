@@ -769,16 +769,36 @@ those are non-zero rather than trusting them - a run where the segment is inert 
 threads and would read exactly like a clean one. **Watched failing before being trusted**: with the lock
 removed, `WARNING: ThreadSanitizer: data race` and exit 2; with it, the suite passes.
 
-**That harness change is written and verified but deliberately NOT landed with the lock fix**, because turning
-the segment on in it makes `test_thread_safety` report 2-3 out-of-order samples per publisher thread - and that
-is the mixed-stream limit this document already names, finally visible. In that harness a "UDP" datagram is
-handed to the peer's queue synchronously while a segment record waits for the peer's next drain, so the two
-paths have wildly different latencies and a stream that uses both reorders. The control settles which it is:
-with the segment inert the same run has `out_of_order` at zero, so it is the segment being *used*, not the
-lock fix.
+**A correction to what that harness change was said to expose (2026-09-29, same night).** It was described
+here and in `f938461e`'s commit message as making the mixed-stream reordering visible. **It does not.**
+Instrumenting each gap with its direction gives every one as FORWARD - a sample that did not arrive - and
+**not one BACKWARDS**. Those publishers have no `reliable` set, so they are best-effort, and a bounded queue
+that is full drops, which is what the ring does and what a real UDP socket does.
 
-It is landed with the fix for what it exposes, not before, and it is not weakened to pass in the meantime -
-relaxing that assertion would be the same move as `received >= 5`.
+**The harness's own fake transport does not drop: `push()` blocks on a condition variable when its 256 slots
+are full.** Same depth, opposite policy. So the assertion that stood there - no gaps at all - was only ever
+satisfiable by the harness being lossless. It was testing the harness and not the module, which is how it
+passed for the module's whole life while the module was never engaged at all.
+
+A second error in the same reading, recorded because it is the kind that flatters: the loss was first reported
+as "at most 0.19%" from counting gap *events*. A single gap skips many samples. Measured properly it is **29
+to 2,281 of 20,000 per thread, 0.15% to 11.4%** - wrong by a factor of sixty, in the reassuring direction.
+
+**So no delivery floor is asserted there.** Any line inside a 0.15-11.4% range is a number nobody can derive,
+which is this document's own objection to "tx_udp small and flat"; the figure is printed for a reader instead.
+The honest repair is to make `push()` drop rather than block, so both paths share a policy and a floor becomes
+derivable - a change to a harness older than this module, in its own commit.
+
+**And the ordering assertion there is not evidence, which was checked rather than assumed.** With the
+pre-2026-09-29 reroute-past-a-full-ring behaviour restored - the thing that actually reordered the stream on
+the rig - `backwards` stayed at zero across four runs. In that harness `push()` hands a datagram to the same
+queue the peer reads while the ring is drained to empty first, so ring records always precede queued ones; on a
+real socket the socket is drained to exhaustion while the ring lags, which is where the reordering came from.
+The assertion stays because it costs nothing and is labelled in the source as not a guard.
+
+**What that harness does falsify, both watched failing:** the data race (without the state lock,
+ThreadSanitizer reports one and the run exits 2) and the engaged check (with the NULL stubs restored, the
+`tx_shm > 0` assertion fails). Those two are its contribution, and they are the reason it lands.
 
 **A tunable that could not be tuned (Plan, measured).** `tt_SEGMENT_ATTACH_RETRY_SENDS` and four other segment
 constants were bare `#define`s with no `#ifndef`, so `-D` overrides were silently discarded by the header. Plan
