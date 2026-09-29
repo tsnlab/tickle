@@ -373,9 +373,18 @@ Table rows 7-17. The two deep dives that follow (§2.2a, §2.2b) are where the R
 > module on against 1,902.7 with it out, both at 0.0% loss - +46.8%**. Dev's own A/B on a different machine gave
 > +35.6% (3,163.9 against 2,332.6). Two machines, same direction.
 >
-> So the module is a trade rather than a cost: **roughly +47% where a same-host peer exists, -2.0% to -2.7% where one
-> cannot.** That is the shape lazy creation would resolve - keep the gain, stop charging the hosts that can never
-> collect it.
+> The same run's same-host ping/pong tier points the same way: **RTT mean 0.135 ms with the module on against 0.149
+> with it out, and the tail 0.206 against 0.431.** That is one run of 300 round trips with no repetitions, so it is a
+> second cell agreeing rather than a statistic - quoted as a direction, not a margin.
+>
+> So the module is a trade rather than a cost: **roughly +47% throughput and a shorter tail where a same-host peer
+> exists, -2.0% to -2.7% where one cannot.** That is the shape lazy creation would resolve - keep the gain, stop
+> charging the hosts that can never collect it.
+>
+> **What is not yet measured, so one cell does not stand for the module.** The +47% is best-effort throughput at one
+> payload shape - the cell the module exists for, which is why it is the headline, but the trade at p2, p3 and p4 is
+> unmeasured, and so is cross-host latency. The cross-host cost above covers both reliability modes at p1 only. Until
+> those exist, "+47% / -2%" is the shape of the trade on the cells we have, not its full extent.
 >
 > **These are cells where no peer can ever be same-host, so the cost buys nothing on them**, and the user's decision 6
 > is that using a module must cost no performance. The concrete option the number argues for is creating the segment

@@ -1283,3 +1283,42 @@ run produced a fourth, a reversal, which the code classified as "survives" becau
 A reversal is the *strongest* evidence for layout and it was being reported as evidence against it. The script now has
 that branch, and prints the flag's own effect on each arm as a floor line whenever it exceeds 0.5%. A pre-registration
 that enumerates outcomes has to enumerate them by sign, not by magnitude.
+
+### 10.5 The two residuals are measurable in the bench and not in the campaign (2026-09-30, Plan)
+
+PLAN.md's wired item 7 holds two open residuals and asks one question before either is chased: **is it measurable at
+all?** Answered here from the numbers already taken, with no new run.
+
+**A coherence check first, because the whole comparison rests on it.** 8.8's send-loop bench has a base median of
+**5,387 ns** per send. The campaign's p1 client reports `cpu_s_per_Msample` of **5,327 ns**. Two independent
+instruments on two different harnesses, 1.11% apart - so the bench's send path really is essentially the whole of a
+p1 sample's cost, and a nanosecond figure from one can be read as a percentage of the other.
+
+| residual | size | as a share of a send | bench t |
+|---|---:|---:|---:|
+| the summary skip's remainder at `eef6f089` (8.6) | +4.3 +- 1.9 ns | **0.080%** | 2.26 |
+| main's send wall, 8.8's follow-up | +24.5 +- 5.2 ns | **0.455%** | 4.71 |
+| the campaign's +40-50 ns on the reliable client (8.1/8.4) | +40 to +50 ns | **0.74-0.93%** | - |
+
+**Every one of them is below 10.4's floor**, which is ~1% on p1 throughput or CPU-per-sample between two builds whose
+code differs in size. So the answer is not one number but two, and the distinction is the useful part:
+
+- **In the bench they are measurable.** It holds the loop, the payload and the machine fixed and resolves +4.3 ns at
+  t = 2.26 and +24.5 ns at t = 4.71. Nothing here says the effects are not real.
+- **In the campaign they are not, and no amount of repetition changes that.** At p1 they are 0.08% to 0.93% of a
+  sample, inside what `-falign-functions=32` alone moved on its own (-0.859%, t -11.4). 10.4's own conclusion applies
+  unchanged: repetitions shrink the SE without touching the systematic part, so separating them needs the layout held
+  fixed - a pinned link order or the same binary - and not a longer run.
+
+**What follows for item 7, and it is a decision rather than a measurement.** A change justified by one of these
+residuals can be demonstrated in the bench and can never be demonstrated at p1. That is worth knowing *before* the
+work, because the wire-protocol rule is that a change must leave every test better: a wire change bought with +4.3 ns
+of send would have to show up somewhere the campaign can see, and by this arithmetic it cannot. So the honest status
+is **not "unresolved" but "resolved as unchaseable at campaign scale"** - and the 8.8 follow-up already reached the
+same place from the other side, finding send utime flat at `fd57b01d` and concluding the +40 ns is not on the real
+send path at all.
+
+**The ablation branches** (`d4-state-lock-chunk-on-main`, `d5-inline-skip-gate`) are what item 7 was holding. On this
+reading they are no longer needed for it. They are still the only branches merged into `main`, so PLAN item 8's
+"delete the merged branches" and "hold the ablation branches" name the same two - releasing them is now a decision
+someone can take rather than one item 7 is blocking.
