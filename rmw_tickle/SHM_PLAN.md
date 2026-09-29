@@ -60,8 +60,15 @@ Decisions to make explicitly, because each one has a failure mode that only show
 - **Slot size and the budget (decided 2026-09-29, Plan's call on the numbers since it owns the measurement).**
 
   `slot_bytes = tt_CONTROL_MAX_LENGTH`, `tt_SEGMENT_BYTES` default **512 KiB** per writing context, compile-time and
-  overridable by `-D` like every other core capacity. That gives about **340 slots** in both an rmw build and a native
-  one, because `tt_CONTROL_MAX_LENGTH` is 1472 in both.
+  overridable by `-D` like every other core capacity. That gives **256 slots** in both an rmw build and a native one,
+  because `tt_CONTROL_MAX_LENGTH` is 1472 in both - **the identity that was the whole point of the objection**, and it is
+  checked by compiling the size program both ways rather than by reasoning about the constants.
+
+  The derivation, carried here because the next person to change the budget needs it: the slot header is 8 bytes, so the
+  stride is 1480; 512 KiB divided by that is 354; and it **rounds down to a power of two** so the ring indexes with a
+  mask, giving 256 slots and 378,880 bytes actually used of the 512 KiB ceiling. **The budget is a cap, not a target** -
+  the 28% left over is the price of masked indexing, and it is cheaper than a modulo on every record. (This corrected an
+  earlier "about 340" in this section, which was the raw division written down without the rounding that follows it.)
 
   **Why not `tt_MAX_BUFFER_LENGTH`, which is the obvious pick:** an rmw build compiles with
   `-Dtt_MAX_BUFFER_LENGTH=65507`, so a 64-slot ring would be **4.2 MB per writing context** against 94 KB in a native
@@ -69,7 +76,11 @@ Decisions to make explicitly, because each one has a failure mode that only show
   of the margin we win on, in the metric we win on, as slack in slots that never fill.
 
   **Why not a fixed budget with 65507-byte slots either**, which was the counter-proposal: 512 KiB then yields **8
-  slots**, and 8 is too shallow, by a number from our own measurement rather than by feel. The S2 run sent 967,475
+  slots**, and 8 is too shallow, by a number from our own measurement rather than by feel. The argument for it was that a
+  deeper ring is less necessary when datagrams are larger, which is true and does not carry the conclusion: **a reader's
+  drain rate is set by its poll period, not by the datagram size**, so the time a ring covers is slots times per-datagram
+  cost and 8 slots is 33 us however large the datagrams are. Worth recording as its own shape, because it is the one this
+  repository keeps meeting in new clothes - **a plausible mechanism standing in for a number.** The S2 run sent 967,475
   datagrams in 4 s, about **4.1 us per datagram**; a reader drains on its poll, nominally every 100 us; so a ring must
   hold at least one poll period of output, roughly **25 datagrams**, and comfortably more to absorb a burst. 8 slots is
   33 us of output and would be full most of the time, with the writer blocking or falling back - and stage 1 would then
