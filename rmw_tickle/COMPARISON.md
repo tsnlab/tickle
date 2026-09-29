@@ -14,9 +14,23 @@ Column order in every table is fixed: **TickLE, FastDDS, CycloneDDS**.
 
 ## 1. The one table
 
-Every experiment in this document, all three frameworks side by side. **✅ = best in that row,
+Every experiment in this document, all four implementations side by side. **✅ = best in that row,
 ❌ = worst in that row.** Lower is better for latency, CPU, memory and bandwidth; higher is better
 for throughput. Each row's explanation is in section 2 below, linked from its own name.
+
+**zenoh-pico is reference material and is never scored** (the user's decision, 2026-09-29). It takes no ✅ and no ❌,
+it does not enter any win/draw/lose total, and a row where it leads is information rather than a defeat: the
+comparison this project is judged by is against DDS. Its column reads **`–` where the cell was not measured for it**
+and carries a number only where it was. **`†` marks a cell measured over TCP**, which is the only configuration where
+zenoh-pico's reliability is real - its `Z_RELIABILITY_RELIABLE` means monotonic sequence numbers rather than
+retransmission, on both of its transports, by its own source. A `†` cell therefore compares *TCP's stream repair*
+against DDS's and ours: a different mechanism making the same promise to an application, not the same mechanism
+measured twice. Its best-effort cells are UDP multicast and carry no dagger.
+
+**zenoh-pico's cells come from their own session (`Z`), not from `A` or `T`.** Within an `A` row the three
+DDS-shaped frameworks were measured in the same session and are tightly comparable; the zenoh figure beside them was
+measured on the same rig, the same link and the same `-d 5`, but on a different evening. Treat a zenoh margin as
+looser than a within-row one, and read §4.4 before quoting it.
 
 **⚪ means a row is deliberately not scored** (rows 5, 45, 46, 47). That is not
 missing data. It is this document's central rule: a comparison that cannot be made fairly is worth
@@ -122,90 +136,96 @@ same session, so a row is always comparable. Across rows of different letters it
   median detection time is shown, measured from the last received sample. All three match the lease within 1 ms,
   hence no winner. Across the 20 reps, TickLE's were all within 0.2 ms of the lease at every lease tried (1, 2 and
   4 s). CycloneDDS had one rep about 94 ms late at each lease, and FastDDS one 78 ms late at 1 s.
+- **`Z` rows** are zenoh-pico, measured on its own (`experiments/zenoh_cells.sh`, 2026-09-29, `31d58011`,
+  `results/zenoh_cells_31d58011_2026-09-29.txt`, 3 repetitions, `-d 5`, both Pis, same link and same shapes as `A`).
+  They are **not** from the `A` or `T` sessions, so a zenoh margin is looser than a within-row one. Every rep pairs
+  the publisher's row with the subscriber's and voids on `received=0`, which is why these are re-measurements: the
+  first two attempts ran against a subscriber that had already exited, and over multicast that failed silently - a
+  publisher transmits to the group whether or not anyone listens, so `loss 0.000` was 0 lost of 0 received. §4.4a.
 
 Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` and
 `campaign_tuned_fastdds_2026-09-26*`.
 
-| # | Metric | Condition | TickLE | FastDDS | CycloneDDS | meas. |
-|---|---|---|---|---|---|---|
-| | **[Latency](#21-latency)** (ms) | | | | | |
-| 1 | RTT mean | P1 76 B | ✅ **0.207** | ❌ 0.287 | 0.266 | A |
-| 2 | RTT max (tail) | P1 76 B | ✅ **0.270** | 0.604 | ❌ 0.720 | A |
-| 3 | RTT mean | P2 1292 B | ✅ **0.233** | 0.316 | ❌ 0.376 | A |
-| 4 | RTT max (tail) | P2 1292 B | ✅ **0.349** | 0.634 | ❌ 10.8 | A |
-| 5 | RTT mean | +10 ms netem | ⚪ 10.1 | ⚪ 10.4 | ⚪ 10.5 | A |
-| 6 | RTT max (tail) | +10 ms netem | ✅ **12.2** | 12.3 | ❌ 23.1 | A |
-| | **[Throughput](#22-throughput)** (Mbps) | | | | | |
-| 7 | RELIABLE | P1 76 B | ✅ **115** | ❌ 40.8 | 93.0 | A |
-| 8 | RELIABLE | P2 1292 B | ✅ **937** | ❌ 647 | 851 | A |
-| 9 | RELIABLE | P3 1424 B | ✅ **943** | ❌ 439 | 808 | T |
-| 10 | RELIABLE | P4 2800 B | ✅ **943** | ❌ 635 | 863 | T |
-| 11 | BEST_EFFORT | P1, max rate | ✅ **119** | ❌ 47.9 | 71.7 | A |
-| 12 | RELIABLE KEEP_LAST 64 | P1 | ✅ **117** | ❌ 41.9 | 89.3 | A |
-| 13 | RELIABLE | P1, **5% loss** | ✅ **106** | 6.6 | ❌ 3.1 | A |
-| 14 | RELIABLE | P4, **5% loss** | ✅ **854** | 214 | ❌ 11.8 | T |
-| 15 | RELIABLE | P1, 5% reorder | ✅ **104** | ❌ 32.2 | 67.4 | A |
-| 16 | retention under loss | P1: 5% loss / unshaped | ✅ **92.7%** | 16.1% | ❌ 3.3% | A |
-| 17 | retention under loss | P4: 5% loss / unshaped | ✅ **90.5%** | 33.7% | ❌ 1.4% | T |
-| | **[CPU](#23-cpu)** (cpu_s / Msample) | | | | | |
-| 18 | throughput, client | P1 76 B | ✅ **5.3** | ❌ 19.0 | 6.9 | A |
-| 19 | throughput, server | P1 76 B | ✅ **2.5** | ❌ 19.2 | 11.0 | A |
-| 20 | throughput, client | P2 1292 B | ✅ **6.5** | ❌ 19.3 | 8.5 | A |
-| 21 | throughput, server | P2 1292 B | ✅ **3.8** | ❌ 20.2 | 14.5 | A |
-| 22 | throughput, client | P4 2800 B | ✅ **12.2** | ❌ 38.7 | 14.1 | T |
-| 23 | throughput, server | P4 2800 B | ✅ **8.2** | ❌ 33.5 | 19.6 | T |
-| 24 | latency | P1 76 B | ✅ **155** | ❌ 356 | 237 | A |
-| 25 | latency | P2 1292 B | ✅ **135** | ❌ 393 | 239 | A |
-| 26 | throughput, client | P1, 5% loss | ✅ **5.7** | ❌ 27.6 | 12.9 | A |
-| 27 | throughput, client | P4, 5% loss | ✅ **14.4** | ❌ 63.5 | 43.0 | T |
-| | **[Memory](#24-memory)** (peak RSS, KB) | | | | | |
-| 28 | throughput, client | P1 76 B | ✅ **1,916** | ❌ 15,904 | 5,232 | A |
-| 29 | throughput, client | P2 1292 B | ✅ **2,196** | ❌ 15,048 | 6,400 | A |
-| 30 | throughput, client | P4 2800 B | ✅ **2,268** | ❌ 13,976 | 5,572 | T |
-| 31 | latency, client | P1 76 B | ✅ **1,660** | ❌ 14,340 | 4,836 | A |
-| 32 | throughput, server | P1 76 B | ✅ **1,828** | ❌ 14,332 | 4,888 | A |
-| 33 | throughput, server | P4 2800 B | ✅ **2,848** | ❌ 13,992 | 4,900 | T |
-| 34 | throughput, server | P4, 5% loss | ✅ **2,848** | ❌ 14,332 | 6,400 | T |
-| | **[Bandwidth](#25-bandwidth)** (wire B / sample) | | | | | |
-| 35 | wire bytes | P1 76 B | ✅ **138** | ❌ 286 | 180 | A |
-| 36 | wire bytes | P2 1292 B | ✅ **1,355** | ❌ 1,502 | 1,397 | A |
-| 37 | wire bytes | P3 1424 B | ✅ **1,487** | ❌ 1,865 | 1,585 | T |
-| 38 | wire bytes | P4 2800 B | ✅ **2,921** | ❌ 3,460 | 2,950 | T |
-| 39 | wire bytes | P1, 5% loss | ✅ **143** | ❌ 287 | 194 | A |
-| 40 | wire bytes | P4, 5% loss | ✅ **3,041** | ❌ 4,384 | 3,230 | T |
-| 41 | framing overhead | single datagram | ✅ **62.1** | ❌ 210.3 | 104.2 | A |
-| | **[QoS mechanics](#26-qos-mechanics)** | | | | | |
-| 42 | DURABILITY late join | durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | S |
-| 43 | HISTORY, within depth | burst | 160/160 | 160/160 | 160/160 | S |
-| 44 | HISTORY, beyond depth | burst | ✅ **147.7/160** | ❌ 109/160 | ❌ 109/160 | S |
-| 45 | DEADLINE detection | 50 ms | ⚪ works | ⚪ works | ⚪ works | S |
-| 46 | LIVELINESS detection | lease 2.0 s | ⚪ 2000.1 ms | ⚪ 1999.1 ms | ⚪ 2000.1 ms | L |
-| 47 | LIFESPAN expiry | 100 ms | ⚪ works | ⚪ works | ⚪ works | S |
-| | **[rmw layer](#27-the-rmw-layer)** (ms, cross-host) | | | | | |
-| 48 | RTT mean, block wait, BEST_EFFORT | Bench (64 B) | ✅ **0.244** | ❌ 0.320 | 0.276 | V |
-| 49 | RTT mean, block wait, RELIABLE | Bench (64 B) | ✅ **0.242** | ❌ 0.328 | 0.273 | V |
-| 50 | RTT mean, block wait, BEST_EFFORT | Array1k | ✅ **0.267** | ❌ 0.341 | 0.291 | V |
-| 51 | RTT mean, block wait, RELIABLE | Array1k | ✅ **0.267** | ❌ 0.355 | 0.284 | V |
-| 52 | RTT mean, busy poll (no sleep), BEST_EFFORT | Bench (64 B) | ✅ **0.240** | ❌ 0.320 | 0.273 | J |
-| 53 | RTT mean, busy poll (no sleep), RELIABLE | Bench (64 B) | ✅ **0.242** | ❌ 0.330 | 0.270 | J |
-| 54 | RTT mean, busy poll (no sleep), BEST_EFFORT | Array1k | ✅ **0.261** | ❌ 0.336 | 0.289 | J |
-| 55 | RTT mean, busy poll (no sleep), RELIABLE | Array1k | ✅ **0.263** | ❌ 0.350 | 0.281 | J |
-| 56 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ✅ **0.293** | ❌ 0.357 | 0.308 | J |
-| 57 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.297 | 0.359 | ⚪ 0.340 | J |
-| 58 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.311** | ❌ 0.369 | 0.324 | J |
-| 59 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.315 | 0.377 | ⚪ 0.354 | J |
-| 60 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.316 | 0.372 | ⚪ 0.322 | J |
-| 61 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Bench (64 B) | ✅ **0.320** | ❌ 0.387 | 0.329 | J |
-| 62 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.338** | ❌ 0.394 | 0.349 | J |
-| 63 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.338 | 0.400 | ⚪ 0.346 | J |
-| 64 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.365 | 0.419 | ⚪ 0.367 | J |
-| 65 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.366 | 0.424 | ⚪ 0.375 | J |
-| 66 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Array1k | ⚪ 0.388 | 0.433 | ⚪ 0.395 | J |
-| 67 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.392 | 0.442 | ⚪ 0.384 | J |
-| 68 | peak RSS, ping process (KB) | Bench, block, BEST_EFFORT | ✅ **11,264** | ❌ 23,636 | 14,848 | V |
-| 69 | peak RSS, pong process (KB) | Bench, block, BEST_EFFORT | ✅ **11,732** | ❌ 23,620 | 14,532 | V |
-| 70 | pong CPU, whole run (ms) | Bench, block, BEST_EFFORT | ✅ **34.9** | ❌ 55.8 | 43.6 | V |
-| 71 | pong CPU, whole run (ms) | Bench, block, RELIABLE | ✅ **34.9** | ❌ 59.0 | 48.5 | V |
+| # | Metric | Condition | TickLE | FastDDS | CycloneDDS | zenoh-pico | meas. |
+|---|---|---|---|---|---|---|---|
+| | **[Latency](#21-latency)** (ms) | | | | |  | |
+| 1 | RTT mean | P1 76 B | ✅ **0.207** | ❌ 0.287 | 0.266 | – | A |
+| 2 | RTT max (tail) | P1 76 B | ✅ **0.270** | 0.604 | ❌ 0.720 | – | A |
+| 3 | RTT mean | P2 1292 B | ✅ **0.233** | 0.316 | ❌ 0.376 | – | A |
+| 4 | RTT max (tail) | P2 1292 B | ✅ **0.349** | 0.634 | ❌ 10.8 | – | A |
+| 5 | RTT mean | +10 ms netem | ⚪ 10.1 | ⚪ 10.4 | ⚪ 10.5 | – | A |
+| 6 | RTT max (tail) | +10 ms netem | ✅ **12.2** | 12.3 | ❌ 23.1 | – | A |
+| | **[Throughput](#22-throughput)** (Mbps) | | | | |  | |
+| 7 | RELIABLE | P1 76 B | ✅ **115** | ❌ 40.8 | 93.0 | 234.7 † | A |
+| 8 | RELIABLE | P2 1292 B | ✅ **937** | ❌ 647 | 851 | – | A |
+| 9 | RELIABLE | P3 1424 B | ✅ **943** | ❌ 439 | 808 | – | T |
+| 10 | RELIABLE | P4 2800 B | ✅ **943** | ❌ 635 | 863 | – | T |
+| 11 | BEST_EFFORT | P1, max rate | ✅ **119** | ❌ 47.9 | 71.7 | 53.8 | A |
+| 12 | RELIABLE KEEP_LAST 64 | P1 | ✅ **117** | ❌ 41.9 | 89.3 | – | A |
+| 13 | RELIABLE | P1, **5% loss** | ✅ **106** | 6.6 | ❌ 3.1 | – | A |
+| 14 | RELIABLE | P4, **5% loss** | ✅ **854** | 214 | ❌ 11.8 | – | T |
+| 15 | RELIABLE | P1, 5% reorder | ✅ **104** | ❌ 32.2 | 67.4 | – | A |
+| 16 | retention under loss | P1: 5% loss / unshaped | ✅ **92.7%** | 16.1% | ❌ 3.3% | – | A |
+| 17 | retention under loss | P4: 5% loss / unshaped | ✅ **90.5%** | 33.7% | ❌ 1.4% | – | T |
+| | **[CPU](#23-cpu)** (cpu_s / Msample) | | | | |  | |
+| 18 | throughput, client | P1 76 B | ✅ **5.3** | ❌ 19.0 | 6.9 | 2.59 † | A |
+| 19 | throughput, server | P1 76 B | ✅ **2.5** | ❌ 19.2 | 11.0 | – | A |
+| 20 | throughput, client | P2 1292 B | ✅ **6.5** | ❌ 19.3 | 8.5 | – | A |
+| 21 | throughput, server | P2 1292 B | ✅ **3.8** | ❌ 20.2 | 14.5 | – | A |
+| 22 | throughput, client | P4 2800 B | ✅ **12.2** | ❌ 38.7 | 14.1 | – | T |
+| 23 | throughput, server | P4 2800 B | ✅ **8.2** | ❌ 33.5 | 19.6 | – | T |
+| 24 | latency | P1 76 B | ✅ **155** | ❌ 356 | 237 | – | A |
+| 25 | latency | P2 1292 B | ✅ **135** | ❌ 393 | 239 | – | A |
+| 26 | throughput, client | P1, 5% loss | ✅ **5.7** | ❌ 27.6 | 12.9 | – | A |
+| 27 | throughput, client | P4, 5% loss | ✅ **14.4** | ❌ 63.5 | 43.0 | – | T |
+| | **[Memory](#24-memory)** (peak RSS, KB) | | | | |  | |
+| 28 | throughput, client | P1 76 B | ✅ **1,916** | ❌ 15,904 | 5,232 | 2,127 † | A |
+| 29 | throughput, client | P2 1292 B | ✅ **2,196** | ❌ 15,048 | 6,400 | – | A |
+| 30 | throughput, client | P4 2800 B | ✅ **2,268** | ❌ 13,976 | 5,572 | – | T |
+| 31 | latency, client | P1 76 B | ✅ **1,660** | ❌ 14,340 | 4,836 | – | A |
+| 32 | throughput, server | P1 76 B | ✅ **1,828** | ❌ 14,332 | 4,888 | – | A |
+| 33 | throughput, server | P4 2800 B | ✅ **2,848** | ❌ 13,992 | 4,900 | – | T |
+| 34 | throughput, server | P4, 5% loss | ✅ **2,848** | ❌ 14,332 | 6,400 | – | T |
+| | **[Bandwidth](#25-bandwidth)** (wire B / sample) | | | | |  | |
+| 35 | wire bytes | P1 76 B | ✅ **138** | ❌ 286 | 180 | 93.7 † | A |
+| 36 | wire bytes | P2 1292 B | ✅ **1,355** | ❌ 1,502 | 1,397 | – | A |
+| 37 | wire bytes | P3 1424 B | ✅ **1,487** | ❌ 1,865 | 1,585 | – | T |
+| 38 | wire bytes | P4 2800 B | ✅ **2,921** | ❌ 3,460 | 2,950 | – | T |
+| 39 | wire bytes | P1, 5% loss | ✅ **143** | ❌ 287 | 194 | – | A |
+| 40 | wire bytes | P4, 5% loss | ✅ **3,041** | ❌ 4,384 | 3,230 | – | T |
+| 41 | framing overhead | single datagram | ✅ **62.1** | ❌ 210.3 | 104.2 | – | A |
+| | **[QoS mechanics](#26-qos-mechanics)** | | | | |  | |
+| 42 | DURABILITY late join | durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | – | S |
+| 43 | HISTORY, within depth | burst | 160/160 | 160/160 | 160/160 | – | S |
+| 44 | HISTORY, beyond depth | burst | ✅ **147.7/160** | ❌ 109/160 | ❌ 109/160 | – | S |
+| 45 | DEADLINE detection | 50 ms | ⚪ works | ⚪ works | ⚪ works | – | S |
+| 46 | LIVELINESS detection | lease 2.0 s | ⚪ 2000.1 ms | ⚪ 1999.1 ms | ⚪ 2000.1 ms | – | L |
+| 47 | LIFESPAN expiry | 100 ms | ⚪ works | ⚪ works | ⚪ works | – | S |
+| | **[rmw layer](#27-the-rmw-layer)** (ms, cross-host) | | | | |  | |
+| 48 | RTT mean, block wait, BEST_EFFORT | Bench (64 B) | ✅ **0.244** | ❌ 0.320 | 0.276 | – | V |
+| 49 | RTT mean, block wait, RELIABLE | Bench (64 B) | ✅ **0.242** | ❌ 0.328 | 0.273 | – | V |
+| 50 | RTT mean, block wait, BEST_EFFORT | Array1k | ✅ **0.267** | ❌ 0.341 | 0.291 | – | V |
+| 51 | RTT mean, block wait, RELIABLE | Array1k | ✅ **0.267** | ❌ 0.355 | 0.284 | – | V |
+| 52 | RTT mean, busy poll (no sleep), BEST_EFFORT | Bench (64 B) | ✅ **0.240** | ❌ 0.320 | 0.273 | – | J |
+| 53 | RTT mean, busy poll (no sleep), RELIABLE | Bench (64 B) | ✅ **0.242** | ❌ 0.330 | 0.270 | – | J |
+| 54 | RTT mean, busy poll (no sleep), BEST_EFFORT | Array1k | ✅ **0.261** | ❌ 0.336 | 0.289 | – | J |
+| 55 | RTT mean, busy poll (no sleep), RELIABLE | Array1k | ✅ **0.263** | ❌ 0.350 | 0.281 | – | J |
+| 56 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ✅ **0.293** | ❌ 0.357 | 0.308 | – | J |
+| 57 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.297 | 0.359 | ⚪ 0.340 | – | J |
+| 58 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.311** | ❌ 0.369 | 0.324 | – | J |
+| 59 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.315 | 0.377 | ⚪ 0.354 | – | J |
+| 60 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.316 | 0.372 | ⚪ 0.322 | – | J |
+| 61 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Bench (64 B) | ✅ **0.320** | ❌ 0.387 | 0.329 | – | J |
+| 62 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.338** | ❌ 0.394 | 0.349 | – | J |
+| 63 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.338 | 0.400 | ⚪ 0.346 | – | J |
+| 64 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.365 | 0.419 | ⚪ 0.367 | – | J |
+| 65 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.366 | 0.424 | ⚪ 0.375 | – | J |
+| 66 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Array1k | ⚪ 0.388 | 0.433 | ⚪ 0.395 | – | J |
+| 67 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.392 | 0.442 | ⚪ 0.384 | – | J |
+| 68 | peak RSS, ping process (KB) | Bench, block, BEST_EFFORT | ✅ **11,264** | ❌ 23,636 | 14,848 | – | V |
+| 69 | peak RSS, pong process (KB) | Bench, block, BEST_EFFORT | ✅ **11,732** | ❌ 23,620 | 14,532 | – | V |
+| 70 | pong CPU, whole run (ms) | Bench, block, BEST_EFFORT | ✅ **34.9** | ❌ 55.8 | 43.6 | – | V |
+| 71 | pong CPU, whole run (ms) | Bench, block, RELIABLE | ✅ **34.9** | ❌ 59.0 | 48.5 | – | V |
 
 **FastDDS as shipped (`maxMessageSize` 65,500), at the same cells, for reference.** Aligned campaign,
 same QoS:
@@ -308,14 +328,18 @@ Table rows 7-17. The two deep dives that follow (§2.2a, §2.2b) are where the R
 
 `send_mbps`, client, median of 3.
 
-| cell | condition | TickLE | CycloneDDS | FastDDS |
-|---|---|---|---|---|
-| c1 | P1, no shaping | **106** | 93.3 | 36.6 |
-| c3 | P3 | **938** | 812 | 502 |
-| c4 | P4 | **948** | 861 | 831 |
-| c5 | P1, **5% loss** | **95.8** | 3.39 | 9.31 |
-| c7 | P1, reorder 5% | **73.9** | 67.9 | 31.4 |
-| c8 | P1, BEST_EFFORT | **119** | 71.7 | 47.4 |
+| cell | condition | TickLE | CycloneDDS | FastDDS | zenoh-pico |
+|---|---|---|---|---|---|
+| c1 | P1, no shaping | **106** | 93.3 | 36.6 | 234.7 † |
+| c3 | P3 | **938** | 812 | 502 | – |
+| c4 | P4 | **948** | 861 | 831 | – |
+| c5 | P1, **5% loss** | **95.8** | 3.39 | 9.31 | – |
+| c7 | P1, reorder 5% | **73.9** | 67.9 | 31.4 | – |
+| c8 | P1, BEST_EFFORT | **119** | 71.7 | 47.4 | 53.8 |
+
+**zenoh-pico is reference material and is not scored here** (§4.4a). `†` is TCP, the only configuration where its
+reliability is real; its c1 lead is a stream protocol coalescing about eleven samples into each segment
+(0.094 packets per sample against our 1.005), not the same mechanism measured twice.
 
 c5 is the largest single result in the campaign. Under 5% packet loss TickLE keeps **90.6%** of its
 unshaped throughput; CycloneDDS keeps 3.5% and FastDDS 26.4%. This is RELIABLE + KEEP_ALL for all
@@ -854,104 +878,6 @@ elsewhere in this document**, not that it is unavailable.
 **Reading**: cross-host, `rmw_tickle` and `rmw_fastrtps_cpp` land within noise of each other
 (~0.52ms) while `rmw_cyclonedds_cpp` is genuinely faster (~0.44ms) on the real link. RELIABLE costs
 nothing measurable over BEST_EFFORT for any of the three. 18/18 runs clean, zero loss every time.
-
-### 2.7 zenoh-pico (2026-09-29, re-measured)
-
-**zenoh-pico is reference material here, not a competitor this project is measured against** (the user's decision,
-2026-09-29). The comparison TickLE is judged by is against DDS - FastDDS and CycloneDDS - and a cell where zenoh-pico
-is faster is information rather than a defeat. It is measured to the same standard anyway, because a reference that is
-loosely measured is worth less than none.
-
-Harness at `examples/perf_hil/zenohpico/`, runner `examples/perf_hil/experiments/zenoh_cells.sh`, raw rows at
-`results/zenoh_cells_31d58011_2026-09-29.txt`, plan and pre-registration at `ZENOH_PICO_PLAN.md`.
-
-> **Both figures below are re-measurements, and the first version of this section was taken with a subscriber that was
-> not running.** `run_scenario.sh` forwards the same arguments to both sides, so `-d 5` gave the *server* a
-> five-second lifetime while the client spent three of them settling and then measured for five: the subscriber was
-> gone before the measured window opened. Over TCP this was loud - no session, so the publisher discarded locally and
-> counted 15,326,932 puts at 1,863 Mbps over a 1 Gbps link while putting 745 bytes on the wire. **Over multicast it
-> was silent**, because a publisher transmits to the group whether or not anyone is listening: every client-side
-> number looked plausible, and the row's `loss 0.000` was 0 lost of 0 received. A loss rate divided out of nothing
-> reads exactly like a perfect one.
->
-> The client-side numbers turned out to be close to correct (53.30 -> 53.77 Mbps, 15.726 -> 15.602 CPU s/Msample),
-> because publishing into a multicast group costs nearly the same whether or not anyone is there. **The loss figure
-> was not correct, and neither was the sentence it supported.** zenoh-pico does lose nothing on this cell - that is
-> now measured, 440,854 of 440,854 - but the earlier run could not have known it. The runner now starts the server
-> itself with a longer life, prints `sent` beside `received` on every rep, and voids any rep with `received=0`.
-
-#### Cell 8, `best_effort_throughput` p1 (76 B sample), 5 s, 3 reps, both Pis
-
-| framework | send Mbps | client CPU s/Msample | client peak RSS kB | wire B/sample | loss % |
-|---|---:|---:|---:|---:|---:|
-| **TickLE** | *see note* | *see note* | *see note* | **138.0** | **0.000** |
-| zenoh-pico | 53.77 +- 0.15 | 15.602 +- 0.029 | 2,124 +- 6 | 139.0 | 0.000 |
-| CycloneDDS | **71.15** | 14.159 | 4,971 | 178.0 | 0.200 |
-| FastDDS | 47.26 | 13.580 | 14,216 | 254.0 | 16.033 |
-
-> **TickLE's throughput, CPU and RSS on this cell are withheld pending a re-measure.** The figures published earlier
-> (53.97 Mbps, 10.870 CPU s/Msample) were taken on a build carrying the shared-memory attach regression, which cost
-> more than half of cross-host throughput by retrying a segment attach on every datagram to a peer that can never
-> have one. A control at the same commit with the module compiled out returned 119.86 +- 0.49 Mbps and 5.075 +- 0.021
-> CPU s/Msample (`experiments/seam_attach_cost.sh`), so the earlier row understated TickLE by more than half and its
-> reading - "a cell we lose to a DDS implementation" - was an artefact rather than a result. Against CycloneDDS's
-> 71.15 the unencumbered figure wins the cell. It is stated as an expectation and not as a number, because compiling
-> the module out is not the same as fixing it, and the replacement row will be measured on the fixed build.
-
-#### Cell 1, `reliable_throughput` p1 (76 B sample), 5 s, 3 reps, both Pis
-
-zenoh-pico measured **over TCP**, at the user's instruction (2026-09-29): its `Z_RELIABILITY_RELIABLE` means monotonic
-sequence numbers rather than retransmission - its own source says so on both transports - so TCP peer-to-peer is the
-only configuration where its reliability is real. **This compares two different mechanisms making the same promise to
-an application**, TCP's stream repair against DDS's and ours, rather than comparing like with like.
-
-| framework | transport | send Mbps | client CPU s/Msample | client peak RSS kB | wire B/sample | pkts/sample | loss % |
-|---|---|---:|---:|---:|---:|---:|---:|
-| zenoh-pico | TCP | **234.67 +- 2.75** | **2.594 +- 0.030** | **2,127 +- 1** | **93.7 +- 0.2** | 0.094 | 0.000 |
-| TickLE | UDP | *see note* | *see note* | 2,004 | 138.6 | 1.005 | 0.000 |
-| CycloneDDS | UDP | 93.62 | 6.860 | 5,288 | 180.2 | - | 0.000 |
-| FastDDS | UDP | 39.52 | 19.488 | 15,897 | 286.3 | - | 0.000 |
-
-TickLE's entry is withheld for the same reason as cell 8; the control arm with the module compiled out gave
-114.18 +- 0.05 Mbps at 5.327 +- 0.002 CPU s/Msample, which is within 0.4% of the figure measured before the
-regression landed.
-
-**zenoh-pico leads this cell by a wide margin and the reason is visible in one column.** `pkts/sample` is 0.094:
-about eleven samples per TCP segment. A 76-byte sample carried in its own UDP datagram pays a full Ethernet, IP and
-UDP header every time; the same sample in a coalesced TCP stream amortises one header across eleven. That is the whole
-of the 93.7 against our 138.6 wire bytes per sample, and most of the throughput gap with it. **It is a property of
-running a stream protocol, not of zenoh being better at the same job** - and it is the clearest measurement anyone
-here has of what batching is worth on a small-payload cell, which `WIRELESS_PLAN.md` section 3.2 names as the cheapest
-win available and which `tt_send_batch` already has the mechanism for.
-
-The honest counterweight, and it is why this is reference material rather than a target: a TCP stream buys that
-coalescing with head-of-line blocking, a connection per peer, and no multicast. Our per-datagram model exists so that
-one lost sample does not stall the ones behind it, which is the property cells 6 and 11-12 measure and which this cell
-does not.
-
-**Its batching did not engage on the best-effort cell, which is a measured answer rather than an assumption.**
-zenoh-pico batches into one network operation by default (`Z_BATCH_MULTICAST_SIZE` 2048) and cell 8 was taken with
-batching **on** (`express=0`), yet `wire_packets_per_sample` is 1.000: at that rate each publication is flushed before
-the next arrives, so there is never a second message to coalesce. The harness carries an express arm (`-X`, or
-`BENCH_ZENOH_EXPRESS=1`) to turn batching off per publisher, and for that cell the two arms are the same wire shape.
-The TCP cell above is where coalescing did engage, and the contrast between 1.000 and 0.094 packets per sample is the
-finding rather than either number alone.
-
-**What is not compared, and why:**
-
-- **DEADLINE, LIVELINESS, LIFESPAN, DURABILITY and a history depth** - zenoh-pico has no equivalent of any of them, so
-  §2's cells 5-9 are not scored for it;
-- **KEEP_ALL and KEEP_LAST** map to `Z_CONGESTION_CONTROL_BLOCK` and `DROP`, which is the same choice in spirit - block
-  or drop when the link is full - but is not a depth, so a depth cell has no counterpart either;
-- **the loss cells (6, 11, 12)** - zenoh-pico repairs nothing on multicast and TCP repairs everything on unicast, so
-  neither arm answers what those cells ask, which is how selective repair behaves against a lossy link;
-- **a router configuration** - zenoh-pico reaches a wide-area path through a router, which is a different topology from
-  our direct link and would be a different measurement rather than this cell.
-
-**What it does that we do not:** it runs peer-to-peer over UDP multicast with no router, and peer-to-peer over TCP with
-no router - both verified by running them rather than read, the second after its own examples were used as a control to
-establish that the unicast peer path works at all. At 627 KB of shared library it is in the same size class as TickLE
-rather than the DDS pair.
 
 ### 2.7a rmw API coverage (2026-09-27)
 
@@ -1906,6 +1832,68 @@ Pre-registered before the tuned runs:
   every RTPS fragment carries its own headers where an IP fragment carries 20 B, and its throughput
   stays about the same.
 - **TickLE keeps every row.** Any row it loses is reported as lost.
+
+### 4.4a zenoh-pico: how it is configured, and what has no counterpart
+
+zenoh-pico appears in the tables above as **reference material, never scored** (the user's decision, 2026-09-29).
+The comparison this project is judged by is against DDS; a cell where zenoh-pico leads is information. It is measured
+to the same standard anyway, because a reference that is loosely measured is worth less than none. Harness at
+`examples/perf_hil/zenohpico/`, runner `experiments/zenoh_cells.sh`, pre-registration in `ZENOH_PICO_PLAN.md`.
+
+**The two configurations, and why there are two.** `Z_RELIABILITY_RELIABLE` in zenoh-pico means monotonic sequence
+numbers, **not** retransmission - its own source says so in the same words on both transports
+(`src/transport/multicast/rx.c:194`, `src/transport/unicast/rx.c:106`: *"@TODO: amend once reliability is in place.
+For the time being only monotonic SNs are ensured"*). So its reliable cells are run **TCP peer-to-peer**, subscriber
+listening and publisher connecting with no router, which is the only configuration where its reliability is real, and
+those cells carry `†` in the tables. Best-effort cells stay on UDP multicast, where both sides promise the same thing.
+A `†` cell compares TCP's stream repair against DDS's and ours - a different mechanism making the same promise.
+
+**Why it leads the reliable P1 cell, in one column.** Its wire packets per sample there is **0.094**: about eleven
+samples in each TCP segment. A 76-byte sample in its own UDP datagram pays a full Ethernet, IP and UDP header every
+time; the same sample in a coalesced stream amortises one header across eleven. That is the whole of 93.7 against our
+138 wire bytes per sample, and most of the throughput gap with it. **It is a property of running a stream protocol,
+not of zenoh being better at the same job**, and the counterweight is what the stream buys it with: head-of-line
+blocking, a connection per peer, and no multicast - precisely what our per-datagram design refuses so that one lost
+sample does not stall the ones behind it, which is what cells 13-17 measure. It is also the clearest number anyone
+here has for **what batching is worth on a small-payload cell**, which `WIRELESS_PLAN.md` §3.2 argues for on separate
+grounds and which `tt_send_batch` already has the mechanism for.
+
+**Its batching did not engage on the best-effort cell, which is measured rather than assumed.** zenoh-pico batches by
+default (`Z_BATCH_MULTICAST_SIZE` 2048) and that cell was taken with batching **on** (`express=0`), yet its packets
+per sample is 1.000: at that rate each publication is flushed before the next arrives, so there is never a second
+message to coalesce. The harness carries an express arm (`-X`) to turn batching off per publisher, and for that cell
+the two arms are the same wire shape. The contrast between 1.000 and 0.094 is the finding, not either number alone.
+
+**What has no counterpart, so its column reads `–`:**
+
+- **DEADLINE, LIVELINESS, LIFESPAN, DURABILITY and a history depth** - zenoh-pico has no equivalent of any of them,
+  so rows 42-47 are not measured for it;
+- **KEEP_ALL and KEEP_LAST** map to `Z_CONGESTION_CONTROL_BLOCK` and `DROP`, the same choice in spirit - block or drop
+  when the link is full - but not a depth, so a depth cell has no counterpart either;
+- **the loss and reorder cells (13-17, 39-40)** - it repairs nothing on multicast and TCP repairs everything on
+  unicast, so neither arm answers what those cells ask, which is how selective repair behaves against a lossy link;
+- **the rmw rows (48 onward)** - there is no `rmw_zenoh` in this comparison;
+- **a router configuration** - it reaches a wide-area path through a router, a different topology from our direct
+  link, and that would be a different measurement rather than these cells.
+
+**A measurement error worth recording, because the shape of it generalises.** The first two zenoh runs were taken
+against a subscriber that had already exited: `run_scenario.sh` forwards the same arguments to both sides, so `-d 5`
+gave the server a five-second life while the client spent three settling and then measured for five. Over TCP it was
+loud - no session, so the publisher discarded locally and still counted 15,326,932 puts at 1,863 Mbps over a 1 Gbps
+link with 745 bytes on the wire. **Over multicast it was silent**, because a publisher transmits to the group whether
+or not anyone listens: every client-side number looked plausible and the published `loss 0.000` was 0 lost of 0
+received. A loss rate divided out of nothing reads exactly like a perfect one. The re-measured client-side figures
+came back close to the originals (53.30 -> 53.77 Mbps), because publishing into a group costs nearly the same with
+nobody there; **the loss figure did not, and neither did the sentence it supported.** The pre-registered VOID rule
+that let it through required `transport=tcp`, which states what the harness was *asked* for - the dead-session line
+said `transport=tcp`. The runner now pairs every publisher row with its subscriber row and voids on `received=0`, on
+zero wire bytes per sample, and on a rate above the link's capacity. zenoh-pico's own `z_pub`/`z_sub` over the same
+endpoints were used as a control before any of this was attributed, which is what established that the fault was
+ours rather than zenoh-pico's.
+
+**What it does that we do not:** peer-to-peer over UDP multicast with no router, and peer-to-peer over TCP with no
+router - both verified by running them. At 627 KB of shared library it is in the same size class as TickLE rather
+than the DDS pair.
 
 ### 4.5 The one thing the campaign predicted wrong, and what it cost
 
