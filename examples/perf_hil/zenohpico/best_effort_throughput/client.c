@@ -56,7 +56,10 @@ int main(int argc, char** argv) {
     bench_stats_begin(&g_bench_stats);
     double duration_s = 10.0;
     double interval_s = 0.0;
-    bool express = false;
+    // BENCH_ZENOH_EXPRESS=1 is the same switch as -X, for the campaign: campaign_sweep.sh passes its per-cell extra
+    // args to TickLE only, so the fairness arm has to arrive through the environment or it cannot be run from the
+    // matrix at all. Both are reported as express= in the RESULT line, so a row always says which arm it was.
+    bool express = getenv("BENCH_ZENOH_EXPRESS") != NULL && getenv("BENCH_ZENOH_EXPRESS")[0] == '1';
     const char* iface = getenv("BENCH_IFACE") != NULL ? getenv("BENCH_IFACE") : "eth0";
     const char* keyexpr = "bench/stream";
 

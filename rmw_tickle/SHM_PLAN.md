@@ -357,7 +357,35 @@ everywhere else.
 **The segment's own rules, as core unit tests with a fake segment in the mock HAL** (so they run in `make test`, with no
 `/dev/shm` and no second process)
 
-4. Single writer, many readers: two attached readers each see every record.
+4. **Many writers, one reader** - two writers into one segment, both records seen, none lost, and the slot claim
+   contended deliberately rather than by luck.
+
+   **Topology decided 2026-09-29, and the plan was the half that was wrong.** This list said "single writer, many
+   readers: two attached readers each see every record", which is a segment per *writer* that readers attach to.
+   Section 2 said the opposite - "place a datagram in the peer's segment" - and the implementation followed section 2:
+   **one segment per context, created and drained by its owner, written by every peer that wants to reach it.** The two
+   are not compatible and only one can be tested. **The implementation's direction stands and this item is corrected to
+   match it**, for three reasons:
+   - the reader drains **one** place rather than polling a ring per peer, and the poll loop is the latency-critical
+     path; a per-writer topology makes the reader's cost grow with the number of peers it hears from;
+   - the name is computed from **the peer being sent to**, which is what the send path already has in `struct tt_Peer` -
+     a per-writer topology would need the reverse lookup;
+   - **lending still works**: the writer copies into the receiver's segment, and the reader lends *that* copy to the
+     application without a second copy, which is exactly what stage 2 asks for. So this does not have to be rebuilt
+     between stages, which was the constraint that ordered lending before loans in the first place.
+
+   **What it costs, recorded rather than discovered later:** a publisher with N local subscribers writes N copies, where
+   a per-writer segment would write one that all N read. That is irrelevant to every cell we measure (one publisher, one
+   subscriber) and it is the condition under which the per-writer or a hybrid descriptor design becomes worth building -
+   **a cell the campaign does not have**. If same-host fan-out ever matters, that cell comes first and this decision is
+   revisited with a number rather than with a preference.
+
+   **And the defect this reading found, which is the reason item 4 exists at all:** `segment_write()` did a plain load
+   of `write_index` and a store of `write_index + 1` - a read-modify-write with no atomicity, in a ring that is
+   many-writer by construction. Two peers publishing to one context concurrently claim the same slot: one record lost,
+   one slot written twice, **no error anywhere**. It had not shown up because every test drove a single writer and the
+   acceptance cases have too few peers at too low a rate for a collision to be likely - **which is the worst kind of not
+   showing up**, and precisely why this item's test has to contend the claim deliberately.
 5. **No reuse before release** - a record a reader still holds is not overwritten even when the ring wraps. This is the
    lending contract, and it is the one whose failure is silent corruption rather than an error.
 6. Capacity exhaustion is counted and warned about once, never silent.
