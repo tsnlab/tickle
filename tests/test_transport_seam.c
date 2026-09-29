@@ -1425,8 +1425,15 @@ static void test_the_drain_empties_the_ring_or_says_it_did_not(void) {
     // Control: an empty ring is emptied, trivially, and delivers nothing. Without this arm the
     // assertions below would also hold for a drain that always reported success.
     bool emptied = false;
+    uint64_t acquisitions_before = owner.state_lock_stats.acquisitions;
     EXPECT_EQ_U32(0, drain_own_segment(&owner, &emptied));
     EXPECT_TRUE(emptied);
+    // And it costs no lock. This is not a micro-optimisation dressed up as a test: a context on
+    // another host from every peer has a ring that is ALWAYS empty, because nobody can attach to it,
+    // so a lock taken per poll to discover that is a cost paid forever by the deployments that can
+    // never benefit from the module. Plan measured the module costing 1.6-2.9% cross-host, and a
+    // per-poll lock is exactly the size of thing that lands in that budget.
+    EXPECT_EQ_U64(acquisitions_before, owner.state_lock_stats.acquisitions);
 
     // A ring holding more than the old 64-record cap. Every one of them comes out in a single call,
     // which is the change: at the old cap this returned after 64 and the caller went on to read the

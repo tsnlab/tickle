@@ -10607,22 +10607,63 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
     if (node->own_segment == NULL) {
         return 0;
     }
+    // Nothing published and nothing claimed means no records, and that is worth knowing WITHOUT the
+    // state lock. Both indices are free-running counters and equal means nothing is outstanding; a
+    // record arriving immediately after is taken on the next poll, exactly as one arriving a moment
+    // later always was.
+    //
+    // This is the whole of a cross-host context's experience of the segment - its ring is always
+    // empty, because no peer can ever attach to it - so without this fast path every such
+    // deployment pays a lock acquire and release per poll to discover nothing, and pays it forever.
+    // Plan raised it against the measured 1.6-2.9% the module costs cross-host, which is exactly the
+    // budget a per-poll lock lands in. segment_head_stall_passes is the polling thread's own and is
+    // touched nowhere else, so resetting it here needs no lock either.
+    struct tt_SegmentHeader* header = node->own_segment;
+    if (__atomic_load_n(&header->write_index, __ATOMIC_ACQUIRE) ==
+        __atomic_load_n(&header->read_index, __ATOMIC_RELAXED)) {
+        node->segment_head_stall_passes = 0;
+        return 0;
+    }
+
     uint32_t delivered = 0;
-    for (uint32_t drained = 0; drained < tt_SEGMENT_DRAIN_PER_POLL; drained++) {
-        uint32_t len = 0;
-        uint32_t sender_ip = 0;
-        uint16_t sender_port = 0;
-        if (!segment_read(node->own_segment, node->rx_buffer, (uint32_t)sizeof(node->rx_buffer), &len, &sender_ip,
-                          &sender_port)) {
-            note_head_stall(node); // empty, or a head nobody is coming back for - the two look alike
+    uint32_t drained = 0;
+    while (drained < tt_SEGMENT_DRAIN_PER_POLL) {
+        // The state lock, in chunks, exactly as drain_rx() takes it for the socket. It is required:
+        // process_datagram_locked() says so in its name and every field a datagram touches is under
+        // it. This drain called it **unlocked from the day the segment landed** (1c69658a) and
+        // nothing caught it, because every test that drives the drain is single-threaded - the core
+        // integration suite runs one thread per process, so the race has no second party. rmw_tickle
+        // has an executor, and there it corrupted state until the publisher segfaulted: "Check all"
+        // went red on 1c69658a and stayed red, and this is why.
+        //
+        // Chunked rather than one lock for the whole drain so a publishing thread waits at most
+        // tt_RX_LOCK_CHUNK records, which is the bound drain_rx() already chose for the same reason.
+        state_lock(node);
+        uint32_t taken = 0;
+        bool ran_dry = false;
+        while (taken < tt_RX_LOCK_CHUNK && drained + taken < tt_SEGMENT_DRAIN_PER_POLL) {
+            uint32_t len = 0;
+            uint32_t sender_ip = 0;
+            uint16_t sender_port = 0;
+            if (!segment_read(node->own_segment, node->rx_buffer, (uint32_t)sizeof(node->rx_buffer), &len, &sender_ip,
+                              &sender_port)) {
+                note_head_stall(node); // empty, or a head nobody is coming back for - the two look alike
+                ran_dry = true;
+                break;
+            }
+            node->segment_head_stall_passes = 0; // something was read, so the head is moving
+            taken++;
+            // The sender's own address, carried in the record. Not invented here and not inferred
+            // from whose segment this is: several peers write into one segment, and discovery learns
+            // where a peer lives from the address its announce arrived on.
+            (void)process_datagram_locked(node, (int32_t)len, sender_ip, sender_port, tt_TRANSPORT_SHM);
+        }
+        state_unlock(node);
+        delivered += taken;
+        drained += taken;
+        if (ran_dry) {
             return delivered;
         }
-        delivered++;
-        node->segment_head_stall_passes = 0; // something was read, so the head is moving
-        // The sender's own address, carried in the record. Not invented here and not inferred from
-        // whose segment this is: several peers write into one segment, and discovery learns where a
-        // peer lives from the address its announce arrived on.
-        (void)process_datagram_locked(node, (int32_t)len, sender_ip, sender_port, tt_TRANSPORT_SHM);
     }
     // The bound was reached with records still there. Bounded rather than unbounded so one busy peer
     // cannot hold the caller inside this function; `emptied` is how the caller learns not to read the

@@ -75,6 +75,13 @@ MUTANTS = [
         "test_capacity_exhaustion_is_counted_and_warned_once",
     ),
     (
+        "the empty ring costing no lock",
+        "src/tickle.c",
+        "    struct tt_SegmentHeader* header = node->own_segment;\n    if (__atomic_load_n(&header->write_index, __ATOMIC_ACQUIRE) ==",
+        "    struct tt_SegmentHeader* header = node->own_segment;\n    if (false && __atomic_load_n(&header->write_index, __ATOMIC_ACQUIRE) ==",
+        "test_the_drain_empties_the_ring_or_says_it_did_not",
+    ),
+    (
         "draining the ring past the old 64-record cap",
         "include/tickle/config.h",
         "#define tt_SEGMENT_DRAIN_PER_POLL (tt_SEGMENT_SLOTS * 4)",

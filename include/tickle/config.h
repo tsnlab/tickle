@@ -447,16 +447,27 @@
 #ifndef tt_SEGMENT_BYTES
 #define tt_SEGMENT_BYTES (512 * 1024)
 #endif
+// Every constant below is #ifndef-guarded, and that is not decoration. Until 2026-09-29 they were
+// bare #defines, so -Dtt_SEGMENT_ATTACH_RETRY_SENDS=... was silently overridden by this header and
+// changed nothing. Plan found it by trying to measure the retry's cost directly: the two arms came
+// out byte-identical and the harness refused to report rather than telling us the retry was free.
+// A tunable that cannot be tuned reads exactly like a tunable whose value does not matter.
+#ifndef tt_SEGMENT_SLOT_BYTES
 #define tt_SEGMENT_SLOT_BYTES tt_CONTROL_MAX_LENGTH
+#endif
 // Most records taken from a segment in one poll, so a writer that keeps its ring full cannot starve
 // the socket - the poll returns and comes back, which is the fairness the socket drain already has.
+#ifndef tt_SEGMENT_DRAIN_PER_POLL
 #define tt_SEGMENT_DRAIN_PER_POLL (tt_SEGMENT_SLOTS * 4)
+#endif
 
 // Consecutive drain passes with the head of the ring claimed but never published, before the owner
 // says so. A publish takes a memcpy, so a handful of passes over a claimed head is ordinary
 // concurrency; a thousand is a writer that is not coming back. High enough that a busy segment
 // never warns, low enough that a wedged one is reported in well under a second of polling.
+#ifndef tt_SEGMENT_STALL_PASSES
 #define tt_SEGMENT_STALL_PASSES 1000
+#endif
 
 // Sends to a peer with no segment before asking /dev/shm about it again. The answer for a peer on
 // another host never changes, so asking per datagram is pure cost - measured at roughly 87,000
@@ -464,7 +475,9 @@
 // permanent either: a peer that binds after we first sent to it, or that restarts, has to become
 // attachable. 256 sends costs about 0.4% of the failed calls and bounds the delay at 256 datagrams,
 // which on a link busy enough for the cost to matter is well under a millisecond.
+#ifndef tt_SEGMENT_ATTACH_RETRY_SENDS
 #define tt_SEGMENT_ATTACH_RETRY_SENDS 256
+#endif
 
 // Sends over an attached segment before the peer asks the name again. This is not paranoia about
 // the mapping going bad: an owner killed between one datagram and the next leaves its region mapped
@@ -472,7 +485,9 @@
 // by name can - the file is either gone or has been replaced by the successor's. Larger than the
 // negative interval because a working segment is the common case and this costs an open() and a
 // remap, not just an open().
+#ifndef tt_SEGMENT_REVALIDATE_SENDS
 #define tt_SEGMENT_REVALIDATE_SENDS 4096
+#endif
 
 // How long a reader may take nothing at all from its ring, while we have records for it, before the
 // writer gives the segment up and reaches that peer over UDP until the next recheck.
@@ -485,7 +500,9 @@
 // One second is far longer than any scheduling delay a live reader can suffer and far shorter than
 // a peer's discovery lease, so a reader that trips this has stopped, and the cost of being wrong is
 // UDP until the next recheck.
+#ifndef tt_SEGMENT_DEAD_READER_NS
 #define tt_SEGMENT_DEAD_READER_NS (1000ULL * 1000ULL * 1000ULL)
+#endif
 // 16 bytes of per-slot header (struct tt_SegmentSlot: length, sender address, port, sequence) - spelled out
 // rather than sizeof() because this has to be a preprocessor constant. A static_assert in tickle.h
 // checks the two agree, since nothing else would notice them drifting apart.

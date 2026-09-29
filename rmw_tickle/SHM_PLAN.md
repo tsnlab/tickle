@@ -688,6 +688,104 @@ The three fixes only work together, and the order in which they were found is th
 first two made the measured cell *worse* on its own, because each removed traffic from the socket that had been
 waking the reader by accident.
 
+**CI, after `add73df8`.** `Test all` is green for the first time since `1c69658a` twelve hours earlier, and it
+passes Plan's new perf tier on its own criterion rather than on the old `received >= 5`: loss 0.0% and
+3,163.883 Mbps against a 2.0% / 400 Mbps floor. The rmw suite is green too - `test_service_roundtrip` and
+`test_event_callbacks`, the two service tests that had been failing all day, both pass, and the summary is
+**68 tests, 0 errors, 0 failures**. Those were the doorbell's doing: a service client blocked on a reply that
+crossed the segment had been sleeping until some unrelated timer fired.
+
+One failure remains, in `Check all` and nowhere else: the **rclcpp default-node publisher segfaults** in
+`check_ros2_interfaces.sh -r`. The plain rmw-level path passes in the same run ("PASS - both types
+round-tripped"), so it is specific to a node that also starts parameter services, `/rosout` and the type
+description service. `Check all` was already red on every parent commit, so this is not a regression to revert
+but the next thing to fix.
+
+**A caution recorded because it nearly became a fourth wrong turn.** The failing run logs
+`Segment ring of context 122 is full: 256 slots of 1472 bytes, first full after 9 datagrams`, and "full after
+9" reads exactly like the mis-seeded ring this warning was written to describe. It is not. The count is *this
+node's own* shm datagrams, and a segment is written by many peers - so a node can see the ring full after nine
+of its own writes while other peers supplied the rest. The two builds' geometry was checked by printing it
+rather than by reasoning about it, and both are 256 slots of 1472 bytes. **The warning's own wording is the
+defect here**: "filling after one or two is a ring that was never seeded" is true only for a single writer, and
+this ring is many-writer by construction. It should report the ring's occupancy, which is `write_index -
+read_index` and belongs to nobody, instead of a number that belongs to whoever happened to be logging.
+
+**Debugging notes for this module, put first because both of tonight's races cost an hour before anyone
+reached them.**
+
+1. **A timing-dependent defect cannot be observed by an instrument that changes timing.** Twice tonight, on
+   two unrelated crashes, the process under gdb did not crash and the untraced one did - *in both directions*,
+   so "which side crashes" was a fact about where gdb was attached and nothing else. This is not "gdb is
+   unreliable": it is that for a suspected race the first move is to **remove the suspect and count**, not to
+   watch it. Disabling `release_segments()` and re-running took two minutes and named the function; markers
+   inside it named the line. Both times that was reached fourth.
+2. **A sanitizer that was never linked is silent, and its silence reads exactly like a clean run.**
+   `platform/linux/test.sh` re-invokes `make` without the caller's `CFLAGS`, so `-fsanitize=address` passed to
+   `make test-linux` never reached the examples. Check with `ldd`, not with intent.
+3. **Restore a source file with something that changes its mtime.** `shutil.copy2` preserves it, so `make`
+   considers objects built from the mutant up to date and the next run reports failures that are not in the
+   tree.
+4. **Read the numbers inside a passing tier.** The same-host perf tier reported PASS through 97.6% loss and an
+   8x throughput collapse for most of a day, because its criterion was `received >= 5` against a run that
+   normally delivers 5.3 million.
+
+**The defect behind every `Check all` failure, and it was never the ring: the drain held no lock.**
+
+`drain_own_segment()` calls `process_datagram_locked()` - a function whose name states its contract, and whose
+socket-side twin `drain_rx()` wraps the same call in `state_lock`/`state_unlock`. It did so **unlocked from the
+commit the segment landed in**, `1c69658a`, which is exactly where `Check all` went red and stayed red.
+
+**Nothing caught it because every test that drives the drain is single-threaded.** The core integration suite
+runs one thread per process, so the race had no second party. `rmw_tickle` has an executor; there it corrupted
+state until the publisher segfaulted. The first symptom was the service tests failing, the second was
+`check_ros2_interfaces.sh -r` crashing, and both were the same unlocked write.
+
+Fixed by taking the lock in chunks of `tt_RX_LOCK_CHUNK`, which is what `drain_rx()` already chose so a
+publishing thread waits at most a chunk. The lock is re-entrant, so the call sites that already hold it are
+unaffected.
+
+**Reproduced and verified off CI, before and after, on the same machine**: `check_ros2_interfaces.sh -r`
+segfaulted at 22:40 and returned `check_ros2_interfaces: PASS`, exit 0, at 22:44, with only this change between
+(`rmw_tickle/scripts/night_repro_rclcpp_segv.sh`). Two earlier attempts to catch it under gdb failed the same
+way an earlier crash had: **the traced process never crashed and the untraced one always did**, because tracing
+moves the timing. What worked both times was the cheap thing - disable the suspect entirely, re-run, count
+crashes - and it should have been first, not fourth.
+
+**The gate that should have caught it, and now does.** `test_thread_safety` is the one binary in this project
+that runs threads against the core, and its HAL returned NULL from every segment entry point - so it had been
+passing while never creating, attaching or draining a segment at all. That is SHM_PLAN item 12's "a flag-gated
+feature with no arm that enables it is an untested feature", in the tsan gate, costing exactly the defect it
+existed to prevent.
+
+Its stubs are now backed by real shared regions, and a second reporting bug had to be fixed first: the harness
+told a node its own address was `0.0.0.0:0` while reporting that node's datagrams as coming from
+`10.0.0.<id>:2000<id>`, so a context named its own segment from one address and its peers looked for it at
+another. Every attach returned ABSENT. **A harness that states a node's identity two different ways makes a
+module invisible without failing anything.**
+
+With both fixed the gate reports `attach[ok=20 absent=0]` and `tx_shm=80333 rx_shm=80333`, and the run asserts
+those are non-zero rather than trusting them - a run where the segment is inert proves nothing about it under
+threads and would read exactly like a clean one. **Watched failing before being trusted**: with the lock
+removed, `WARNING: ThreadSanitizer: data race` and exit 2; with it, the suite passes.
+
+**That harness change is written and verified but deliberately NOT landed with the lock fix**, because turning
+the segment on in it makes `test_thread_safety` report 2-3 out-of-order samples per publisher thread - and that
+is the mixed-stream limit this document already names, finally visible. In that harness a "UDP" datagram is
+handed to the peer's queue synchronously while a segment record waits for the peer's next drain, so the two
+paths have wildly different latencies and a stream that uses both reorders. The control settles which it is:
+with the segment inert the same run has `out_of_order` at zero, so it is the segment being *used*, not the
+lock fix.
+
+It is landed with the fix for what it exposes, not before, and it is not weakened to pass in the meantime -
+relaxing that assertion would be the same move as `received >= 5`.
+
+**A tunable that could not be tuned (Plan, measured).** `tt_SEGMENT_ATTACH_RETRY_SENDS` and four other segment
+constants were bare `#define`s with no `#ifndef`, so `-D` overrides were silently discarded by the header. Plan
+found it trying to measure the retry's cost: the two arms came out byte-identical and the harness refused to
+report rather than concluding the retry was free. All five are guarded now, and the override is verified by
+building with one rather than by reading the header.
+
 **Still owed:** the p1-p4 numbers against WIRE_PLAN 10.4's floors - **not measurable until Plan re-measures cell 1
 with the fix in**, since anything measured against a build paying 87,000 failed syscalls a second would credit the
 segment for removing an artefact - and items 9 and 11 of section 6a. Item 4 is done (`71e5ca86`).
