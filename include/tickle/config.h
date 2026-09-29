@@ -451,10 +451,10 @@
 // Most records taken from a segment in one poll, so a writer that keeps its ring full cannot starve
 // the socket - the poll returns and comes back, which is the fairness the socket drain already has.
 #define tt_SEGMENT_DRAIN_PER_POLL 64
-// 12 bytes of per-slot header (struct tt_SegmentSlot: length, sender address, port) - spelled out
+// 16 bytes of per-slot header (struct tt_SegmentSlot: length, sender address, port, sequence) - spelled out
 // rather than sizeof() because this has to be a preprocessor constant. A static_assert in tickle.h
 // checks the two agree, since nothing else would notice them drifting apart.
-#define tt_SEGMENT_SLOT_STRIDE (12 + tt_SEGMENT_SLOT_BYTES)
+#define tt_SEGMENT_SLOT_STRIDE (16 + tt_SEGMENT_SLOT_BYTES)
 #define tt_SEGMENT_RAW_SLOTS (tt_SEGMENT_BYTES / tt_SEGMENT_SLOT_STRIDE)
 
 // Rounded down to a power of two so the ring indexes with a mask, by an explicit ladder rather than

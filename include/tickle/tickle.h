@@ -268,6 +268,17 @@ struct tt_SegmentSlot {
     uint32_t sender_ip;
     uint16_t sender_port;
     uint16_t reserved;
+    // Which record this slot holds, and whether it is finished. A context's segment is written by
+    // EVERY peer that wants to reach it and read by one - many writers, one reader - so the write
+    // index alone cannot say a slot is ready: a writer that claims a later slot may finish before
+    // one that claimed an earlier slot, and a reader trusting the index would read a slot nobody
+    // had written yet.
+    //
+    // A writer claims an index with a compare-and-exchange, fills the slot, then stores index + 1
+    // here with release. The reader takes a slot only when this equals its own read index + 1,
+    // which is true exactly when that slot's writer has finished. On release it stores
+    // index + slots, marking the slot free for the writer one lap later.
+    uint32_t sequence;
 };
 // config.h cannot use sizeof(), so it spells the stride as a literal; this is where the two are
 // held together. Nothing else would notice them drifting apart, and the symptom would be a reader

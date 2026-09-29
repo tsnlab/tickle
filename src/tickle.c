@@ -540,54 +540,75 @@ static bool segment_write(struct tt_SegmentHeader* header, const void* buf, uint
     if (len > header->slot_bytes) {
         return false;
     }
-    uint32_t write_index = __atomic_load_n(&header->write_index, __ATOMIC_RELAXED); // ours to move
-    uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_ACQUIRE);   // theirs
-    if (write_index - read_index >= header->slots) {
-        return false; // full: the oldest slot is still in flight, and it is not ours to reuse
+
+    // Claim an index. Many peers write into one context's segment, so this is a compare-and-exchange
+    // rather than a load and a store: two writers that both read the same index would both fill the
+    // same slot, losing one record and writing the other twice, with nothing to report it.
+    uint32_t claimed = __atomic_load_n(&header->write_index, __ATOMIC_RELAXED);
+    struct tt_SegmentSlot* slot_header = NULL;
+    for (;;) {
+        uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_ACQUIRE);
+        if (claimed - read_index >= header->slots) {
+            return false; // full: the oldest slot is still in flight and is not ours to reuse
+        }
+        slot_header = (struct tt_SegmentSlot*)segment_slot(header, claimed);
+        // The slot must also be free by its own reckoning. A reader releases a slot by setting its
+        // sequence to the index one lap ahead, so this is what says the previous occupant has gone -
+        // the index alone cannot, since the reader moves read_index before any particular slot is
+        // reusable in a multi-writer ring.
+        if (__atomic_load_n(&slot_header->sequence, __ATOMIC_ACQUIRE) != claimed) {
+            return false;
+        }
+        if (__atomic_compare_exchange_n(&header->write_index, &claimed, claimed + 1U, true, __ATOMIC_ACQ_REL,
+                                        __ATOMIC_RELAXED)) {
+            break; // ours; `claimed` is the index we won
+        }
+        // Lost the race: __atomic_compare_exchange_n has reloaded `claimed` with the current value.
     }
 
-    uint8_t* slot = segment_slot(header, write_index);
-    struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)slot;
+    uint8_t* slot = (uint8_t*)slot_header;
     memcpy(slot + sizeof(*slot_header), buf, len);
     slot_header->length = len;
     slot_header->sender_ip = sender_ip;
     slot_header->sender_port = sender_port;
     slot_header->reserved = 0;
-    // Release: the payload and the length above must be visible before the index that publishes
-    // them, or a reader can see a slot it is entitled to read and find the previous datagram in it.
-    __atomic_store_n(&header->write_index, write_index + 1U, __ATOMIC_RELEASE);
+    // Release: everything above must be visible before the sequence that publishes it. The reader
+    // takes this slot exactly when it sees claimed + 1 here, so a writer that finished later than a
+    // writer with a higher index cannot make the reader read an unwritten slot.
+    __atomic_store_n(&slot_header->sequence, claimed + 1U, __ATOMIC_RELEASE);
     return true;
 }
 
 // One datagram out of the ring, copied (stage 1 copies on arrival; lending is stage 2). False when
 // the ring is empty. `size` is the caller's buffer, and a record larger than it is refused rather
 // than truncated - a truncated datagram would be handed to the acceptance path as if it were whole.
+//
+// One reader, so read_index needs no compare-and-exchange; what it does need is the slot's own
+// sequence, because with many writers a published write_index does not mean this slot is filled.
 static bool segment_read(struct tt_SegmentHeader* header, void* buf, uint32_t size, uint32_t* len, uint32_t* sender_ip,
                          uint16_t* sender_port) {
     uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_RELAXED); // ours to move
-    uint32_t write_index = __atomic_load_n(&header->write_index, __ATOMIC_ACQUIRE);
-    if (write_index == read_index) {
-        return false; // empty
+    struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)segment_slot(header, read_index);
+    if (__atomic_load_n(&slot_header->sequence, __ATOMIC_ACQUIRE) != read_index + 1U) {
+        return false; // empty, or the writer that claimed this slot has not finished with it
     }
 
-    uint8_t* slot = segment_slot(header, read_index);
-    const struct tt_SegmentSlot* slot_header = (const struct tt_SegmentSlot*)slot;
+    uint8_t* slot = (uint8_t*)slot_header;
     uint32_t length = slot_header->length;
-    if (length > header->slot_bytes || length > size) {
-        // A length the slot cannot hold means the segment is not what it claims - the writer is
-        // broken or the mapping is not ours. Release the slot so the ring does not wedge, and let
-        // the caller count it; do not try to read the payload.
-        __atomic_store_n(&header->read_index, read_index + 1U, __ATOMIC_RELEASE);
-        return false;
+    bool usable = length <= header->slot_bytes && length <= size;
+    if (usable) {
+        memcpy(buf, slot + sizeof(*slot_header), length);
+        *len = length;
+        *sender_ip = slot_header->sender_ip;
+        *sender_port = slot_header->sender_port;
     }
-    memcpy(buf, slot + sizeof(*slot_header), length);
-    *len = length;
-    *sender_ip = slot_header->sender_ip;
-    *sender_port = slot_header->sender_port;
-    // Release only after the copy: this is what makes the no-reuse rule enforceable from the
-    // writer's side, because until this store the writer still counts the slot as in flight.
+    // Released either way, so a record this mapping could not hold cannot wedge the ring. The slot
+    // is marked free for the writer one lap ahead, and only then does read_index move - a writer
+    // checks the sequence, so releasing in this order is what stops it reusing a slot still being
+    // copied out of.
+    __atomic_store_n(&slot_header->sequence, read_index + header->slots, __ATOMIC_RELEASE);
     __atomic_store_n(&header->read_index, read_index + 1U, __ATOMIC_RELEASE);
-    return true;
+    return usable;
 }
 
 // Counted where it happens rather than by the caller, so a new attach path cannot forget to - the
@@ -685,6 +706,12 @@ static void create_own_segment(struct tt_Context* node) {
     header->slot_bytes = tt_SEGMENT_SLOT_BYTES;
     header->write_index = 0;
     header->read_index = 0;
+    // Each slot starts free for the writer of its own index. Zeroed memory would leave slot 0
+    // claimable and every other slot permanently not - a ring of one, which would have looked like
+    // a working module carrying a trickle.
+    for (uint32_t index = 0; index < header->slots; index++) {
+        ((struct tt_SegmentSlot*)segment_slot(header, index))->sequence = index;
+    }
     __atomic_store_n(&header->magic, tt_SEGMENT_MAGIC, __ATOMIC_RELEASE);
     node->own_segment = header;
 }

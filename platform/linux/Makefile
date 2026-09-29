@@ -240,6 +240,15 @@ $(OBJ)/tests/test_thread_safety: $(TEST_DIR)/test_thread_safety.c $(SRC)/tickle.
                                  | $(OBJ)/tests
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
 
+# test_transport_seam.c needs -lpthread for the same reason and only for one arm: the segment's ring
+# is written by many peers and read by one, and the defect that shape invites - two writers claiming
+# one slot - cannot be staged from a single thread. A hand-staged version of that test passed
+# against the broken writer, which is why it is a real race now. It includes tickle.c itself
+# (whitebox), so it links like the ordinary tests and only adds the library.
+$(OBJ)/tests/test_transport_seam: $(TEST_DIR)/test_transport_seam.c $(SRC)/encoding.c $(SRC)/log.c | $(OBJ)/tests
+	$(CC) $(CPPFLAGS) $(DEPFLAGS) $(CFLAGS) -MM -MP -MT $@ -MF $@.d $<
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
+
 tsan:
 	$(MAKE) clean
 	$(MAKE) $(OBJ)/tests/test_thread_safety CFLAGS='-O1 -g -Wall -Wextra -fsanitize=thread'

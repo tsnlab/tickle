@@ -29,6 +29,7 @@
 // the path shared memory has the most to offer, so a counter blind there would report shm at zero
 // for a payload that really did travel over the segment.
 
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -325,6 +326,10 @@ static struct tt_SegmentHeader* make_ring(void* storage, uint32_t slots, uint32_
     header->incarnation = OWNER_INCARNATION;
     header->slots = slots;
     header->slot_bytes = slot_bytes;
+    // As create_own_segment() does: each slot free for the writer of its own index, not zero.
+    for (uint32_t index = 0; index < slots; index++) {
+        ((struct tt_SegmentSlot*)segment_slot(header, index))->sequence = index;
+    }
     return header;
 }
 
@@ -530,13 +535,15 @@ static void test_a_datagram_crosses_a_segment(void) {
     // correctly counted as shm, the totals agreed, and discovery silently recorded the peer at the
     // invented address 0.0.0.0:0 - after which nothing could ever address it again. The attribution
     // was right and a value inside it meant the wrong thing.
-    uint32_t record_ip = 0;
-    uint16_t record_port = 0;
-    uint32_t record_len = 0;
-    uint8_t peek[tt_SEGMENT_SLOT_BYTES];
+    // Inspected in place rather than read out. segment_read() releases the slot as well as moving
+    // read_index - it has to, since a writer checks the slot's own sequence - so the older trick of
+    // reading and restoring read_index no longer puts the record back, and the drain below would
+    // find nothing. Whitebox test, whitebox look.
     struct tt_SegmentHeader* seg = reader.own_segment;
-    uint32_t saved_read = seg->read_index;
-    EXPECT_TRUE(segment_read(seg, peek, (uint32_t)sizeof(peek), &record_len, &record_ip, &record_port));
+    const struct tt_SegmentSlot* first = (const struct tt_SegmentSlot*)segment_slot(seg, seg->read_index);
+    uint32_t record_ip = first->sender_ip;
+    uint16_t record_port = first->sender_port;
+    EXPECT_EQ_U32(seg->read_index + 1U, first->sequence); // published, i.e. there is a record to look at
     // The WRITER's address, not the reader's - the first version of this compared against the
     // reader's, which was both the wrong subject and, with both of them zero, an assertion that
     // could not fail. Non-zero is asserted separately so that zeroing them again is caught even if
@@ -544,7 +551,6 @@ static void test_a_datagram_crosses_a_segment(void) {
     EXPECT_TRUE(record_ip != 0);
     EXPECT_EQ_U32(PEER_IP, record_ip);
     EXPECT_EQ_U32((uint32_t)PEER_PORT, (uint32_t)record_port);
-    seg->read_index = saved_read; // put it back for the drain below, which is what is being tested
 
     // The reader finds it on its own next pass - no notification, by design.
     uint64_t rx_before = reader.rx_datagrams_by_transport[tt_TRANSPORT_SHM];
@@ -690,6 +696,104 @@ static void test_a_refused_datagram_is_refused_over_the_segment_too(void) {
     test_mock_segments_free();
 }
 
+// SHM_PLAN 6a item 4: many writers into one segment, which is this topology's inherent shape - a
+// context's segment is written by every peer that wants to reach it and read by one.
+//
+// Two real threads, because the defect this exists for cannot be staged from one. segment_write()
+// used to load write_index and store it back with no atomicity, so two writers that both read the
+// same value took the same slot: one record lost, one written twice, nothing reported.
+//
+// The first version of this test tried to stage that by hand - one writer claiming an index, the
+// other running in the window - and it PASSED against the pre-fix writer, because the staged claim
+// had already advanced write_index so the second writer never collided. It tested the slot's
+// readiness rule and called itself a contention test. Two threads hammering the same ring do
+// reproduce it: the claim is lost on the first collision, and with this many writes a collision is
+// not in doubt.
+#define CONTEND_WRITES 20000
+#define CONTEND_SLOTS 64
+#define CONTEND_BYTES 32
+
+struct contend_arg {
+    struct tt_SegmentHeader* ring;
+    uint32_t tag;      // which writer: goes in the payload so a lost or duplicated record is visible
+    uint32_t accepted; // writes the ring took
+    uint32_t finished; // set last, so the reader knows when nothing more is coming
+};
+
+// Retries a refused write rather than counting it as done: the ring is far smaller than the run,
+// so a writer that gave up on "full" would finish early and the two would barely overlap - the test
+// would stop contending, which is the one thing it is for.
+static void* contend_writer(void* raw) {
+    struct contend_arg* arg = raw;
+    for (uint32_t i = 0; i < CONTEND_WRITES; i++) {
+        uint32_t payload[2] = {arg->tag, i};
+        while (!segment_write(arg->ring, payload, (uint32_t)sizeof(payload), OWNER_IP + arg->tag, OWNER_PORT)) {
+            // Full: the reader is behind. Spin - it is a live thread and the wait is microseconds.
+        }
+        arg->accepted++;
+    }
+    __atomic_store_n(&arg->finished, 1U, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+static void test_two_writers_contend_for_one_segment(void) {
+    static uint8_t storage[sizeof(struct tt_SegmentHeader) +
+                           ((size_t)CONTEND_SLOTS * (sizeof(struct tt_SegmentSlot) + CONTEND_BYTES))];
+    struct tt_SegmentHeader* ring = make_ring(storage, CONTEND_SLOTS, CONTEND_BYTES);
+
+    struct contend_arg a = {ring, 0, 0, 0};
+    struct contend_arg b = {ring, 1, 0, 0};
+    pthread_t ta;
+    pthread_t tb;
+    EXPECT_EQ_INT(0, pthread_create(&ta, NULL, contend_writer, &a));
+    EXPECT_EQ_INT(0, pthread_create(&tb, NULL, contend_writer, &b));
+
+    // The reader runs here while both write, so the ring keeps draining and they keep contending.
+    uint32_t drained[2] = {0, 0};
+    uint32_t seen = 0;
+    for (;;) {
+        uint8_t out[CONTEND_BYTES];
+        uint32_t len = 0;
+        uint32_t from_ip = 0;
+        uint16_t from_port = 0;
+        if (segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port)) {
+            uint32_t payload[2];
+            memcpy(payload, out, sizeof(payload));
+            EXPECT_TRUE(payload[0] < 2);
+            if (payload[0] < 2) {
+                EXPECT_EQ_U32(OWNER_IP + payload[0], from_ip); // its own writer's address, not the other's
+                drained[payload[0]]++;
+            }
+            seen++;
+            continue;
+        }
+        // Empty. Stop only once both writers have finished - and look once more after that, since
+        // one can publish between the two checks.
+        if (__atomic_load_n(&a.finished, __ATOMIC_ACQUIRE) != 0 &&
+            __atomic_load_n(&b.finished, __ATOMIC_ACQUIRE) != 0) {
+            if (!segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port)) {
+                break;
+            }
+            uint32_t payload[2];
+            memcpy(payload, out, sizeof(payload));
+            if (payload[0] < 2) {
+                drained[payload[0]]++;
+            }
+            seen++;
+        }
+    }
+    pthread_join(ta, NULL);
+    pthread_join(tb, NULL);
+
+    // Every record the ring accepted is one the reader saw: none lost to a stolen slot, none
+    // duplicated by two writers filling one. This is what the pre-fix writer fails.
+    EXPECT_EQ_U32(CONTEND_WRITES, a.accepted);
+    EXPECT_EQ_U32(CONTEND_WRITES, b.accepted);
+    EXPECT_EQ_U32(a.accepted, drained[0]);
+    EXPECT_EQ_U32(b.accepted, drained[1]);
+    EXPECT_EQ_U32(a.accepted + b.accepted, seen);
+}
+
 // A received datagram is counted once, on the transport it arrived over.
 static void test_received_datagram_is_counted_as_udp(void) {
     test_mock_reset();
@@ -723,6 +827,7 @@ int main(void) {
     test_full_ring_refuses_rather_than_overwriting();
     test_ring_survives_many_wraps();
     test_impossible_length_is_refused_and_does_not_wedge();
+    test_two_writers_contend_for_one_segment();
     test_every_udp_datagram_has_a_named_reason();
     test_a_datagram_crosses_a_segment();
     test_segment_bytes_equal_what_udp_would_have_sent();
