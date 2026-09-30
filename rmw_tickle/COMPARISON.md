@@ -435,8 +435,16 @@ Table rows 7-17. The two deep dives that follow (§2.2a, §2.2b) are where the R
 > into dropped samples where the UDP path turns it into lower throughput.** That is what a best-effort ring that drops
 > when full does, and the kernel's socket buffer absorbing the same starvation is why the off arm only slows down.
 >
-> It is a real difference in behaviour under load and it is **not** characterised: one observation, an uncontrolled
-> cause, and no repetitions. What it does establish is that the +47% should not be quoted without it - a throughput
+> **A third occurrence, on `a73b8888`, now names the carrier rather than leaving it to inference.** With
+> `shm_full_dropped` on the perf tier's row, the module-on arm reported **623,217 refusals of 25,163,669 sent
+> (2.477%) beside a subscriber-side loss of 2.9%** at 4,049 Mbps, while the module-off arm in the same run had zero of
+> each. The two figures corroborate: the ring's refusals account for most of the loss the subscriber saw, and the
+> remainder is other loss. So this is no longer one uncontrolled observation - it is three occurrences, of which the
+> latest attributes the loss to a full ring by direct count rather than by elimination.
+>
+> It is still **not** characterised, in the sense that nobody has established the threshold: 0.0% loss appeared at
+> 4,388 Mbps and 2.477% at 4,049, so the trigger is not rate alone and contention is involved. What has changed is
+> that the effect is now measured at its source instead of inferred from a discrepancy. What it does establish is that the +47% should not be quoted without it - a throughput
 > gain whose failure mode is silent sample loss is a different proposition from one that degrades by slowing down,
 > and a best-effort reader may or may not accept it. The perf floor caught it at 7.2% against a 2% limit, which is
 > the floor doing its job on its second day.
