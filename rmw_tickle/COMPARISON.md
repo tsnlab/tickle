@@ -149,6 +149,25 @@ same session, so a row is always comparable. Across rows of different letters it
   which the matrix had for no framework (`results/cmp_p1p4_gap_99033118_2026-09-30.txt`, 3 repetitions, all three
   campaign frameworks in one session, WIN 38 / DRAW 4 / LOSE 0 / VOID 0 over the comparable metric-cells). zenoh-pico's
   figures in those rows come from its own `Z` session and carry the same looser-comparability caveat as its others.
+- **Every peak-RSS figure for TickLE and rmw_tickle was measured with the shared-memory segment mapped**, and since
+  lazy creation landed that is a condition rather than a constant. **At the default `tt_SEGMENT_BYTES` of 512 KiB the
+  segment maps about 380 kB**, not 512: the slot count is `tt_SEGMENT_BYTES / (16 + tt_SEGMENT_SLOT_BYTES)` rounded
+  down to a power of two, so 524,288/1,488 = 352 becomes 256 slots of 1,472 bytes. That is worth stating because
+  someone reading `tt_SEGMENT_BYTES` will expect the configured figure. It agrees with the ~400 kB difference measured
+  between the module-on and module-off arms at p2 (2,143 against 1,743 kB) - a computed size and an observed delta
+  reaching the same number independently.
+  - **`tt_SEGMENT_BYTES` is `#ifndef`-guarded, so the size is already build-configurable** (`-Dtt_SEGMENT_BYTES=...`).
+    What is not configurable is per-application sizing at runtime: an application that knows its own burst shape
+    cannot size the ring without rebuilding the library.
+  - The saving applies to a context with **no same-host peer and no self-delivery** - self-delivery builds the segment
+    through `peer_segment()`, so a node whose own subscriber matches its own publisher still creates one. Which of the
+    rmw rows are which has not been measured, so no row is annotated: the condition is named and the figures are left
+    as they were measured, on builds that did create the segment.
+- **Every latency row 1-6b is a `reliable_latency` cell**, so zenoh-pico's column there is its **TCP** arm and carries
+  `†`. Rows 1-4 first went in from its multicast arm, which was wrong: multicast is its best-effort configuration.
+  The means barely move (0.221 either way at P1, 0.247 against 0.246 at P2) but the tails do - 0.363 against 0.336 at
+  P1, 0.428 against 0.372 at P2 - and at P4 the two arms differ by half, 0.270 multicast against 0.402 TCP. A row that
+  names RELIABLE has to carry the arm that makes that promise, and its numbers are not interchangeable with the other's.
 - **`§` means derived from a measured row rather than run as its own cell.** Row 41 is row 35's wire bytes per sample
   at P1 minus the 76-byte payload, which reproduces all three published figures exactly (138.0-76=62.0 against 62.1,
   286.3-76=210.3, 180.2-76=104.2), so zenoh-pico's is 139.0-76=63.0. It is taken from its **multicast** arm and not
@@ -173,14 +192,14 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | zenoh-pico | rmw_zenoh | meas. |
 |---|---|---|---|---|---|---|---|---|
 | | **[Latency](#21-latency)** (ms) | | | | |  | – | |
-| 1 | RTT mean | P1 76 B | ✅ **0.207** | ❌ 0.287 | 0.266 | 0.221 | – | A |
-| 2 | RTT max (tail) | P1 76 B | ✅ **0.270** | 0.604 | ❌ 0.720 | 0.363 | – | A |
-| 3 | RTT mean | P2 1292 B | ✅ **0.233** | 0.316 | ❌ 0.376 | 0.247 | – | A |
-| 4 | RTT max (tail) | P2 1292 B | ✅ **0.349** | 0.634 | ❌ 10.8 | 0.428 | – | A |
+| 1 | RTT mean | P1 76 B | ✅ **0.207** | ❌ 0.287 | 0.266 | 0.221 † | – | A |
+| 2 | RTT max (tail) | P1 76 B | ✅ **0.270** | 0.604 | ❌ 0.720 | 0.336 † | – | A |
+| 3 | RTT mean | P2 1292 B | ✅ **0.233** | 0.316 | ❌ 0.376 | 0.246 † | – | A |
+| 4 | RTT max (tail) | P2 1292 B | ✅ **0.349** | 0.634 | ❌ 10.8 | 0.372 † | – | A |
 | 5 | RTT mean | +10 ms netem | ⚪ 10.1 | ⚪ 10.4 | ⚪ 10.5 | 10.07 | – | A |
 | 6 | RTT max (tail) | +10 ms netem | ✅ **12.2** | 12.3 | ❌ 23.1 | 12.15 | – | A |
-| 6a | RTT mean | P3 1424 B | ✅ **0.239** | ❌ 0.347 | 0.308 | – | – | G |
-| 6b | RTT mean | P4 2800 B | ✅ **0.281** | ❌ 0.364 | 0.339 | – | – | G |
+| 6a | RTT mean | P3 1424 B | ✅ **0.239** | ❌ 0.347 | 0.308 | 0.248 † | – | G |
+| 6b | RTT mean | P4 2800 B | ✅ **0.281** | ❌ 0.364 | 0.339 | 0.402 † | – | G |
 | | **[Throughput](#22-throughput)** (Mbps) | | | | |  | – | |
 | 7 | RELIABLE | P1 76 B | ✅ **115** | ❌ 40.8 | 93.0 | 236.8 † | – | A |
 | 8 | RELIABLE | P2 1292 B | ✅ **937** | ❌ 647 | 851 | ✗ † | – | A |
