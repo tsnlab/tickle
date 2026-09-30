@@ -1391,6 +1391,25 @@ Four requirements that the existing campaign does not yet meet, each of which is
    means the harness is wrong, not that the transport is fast.
 
 
+#### The first rig task after the server is back: verifying lazy creation, and its one precondition (2026-09-30)
+
+Lazy segment creation landed in `8cf8cdc9`/`ff57253a` with local gates and both CI workflows green, but it has **not**
+been verified on the rig. That is the first measurement to run, and it has a precondition worth setting up rather than
+discovering:
+
+- **The instrument** is the `segment-self` lines each process prints, naming every `/dev/shm/tickle-seg-*` it has
+  mapped. That names the file rather than inferring from a size, which is why it beats the RSS pair for this question.
+- **The assertion**: a cross-host-only node shows **no** such line until a same-host peer announces, gains one when a
+  peer appears, and loses it when the last one departs.
+- **The precondition, and the reason it is written here.** `shm_segments_created`, `shm_segments_released` and
+  `shm_same_host_peers` are on the node traffic line, which `node_destroy_locked()` prints - so **the run must destroy
+  its nodes, not kill them**, or the line never appears at all. A killed node produces no counters, and "no traffic
+  line" reads exactly like "the counters were zero": that is what voided the first oversize-window reading on
+  2026-09-30, and it would void this one the same way. Dev flagged it before rather than after, which is the only
+  reason it is a precondition and not a lost run.
+
+Run it against `ff57253a` or later.
+
 #### S9, the two mixed-stream windows: what would demonstrate each, and why only one is measurable now (2026-09-30, Plan)
 
 SHM_PLAN 6c names two places where one logical stream can still take two paths to the same peer, and has a
