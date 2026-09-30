@@ -147,7 +147,7 @@ same session, so a row is always comparable. Across rows of different letters it
 - **Rows 52-59 and 64-67 are blank for rmw_zenoh_cpp because they were not run, and that is the whole reason.** They
   are the busy-poll and 50/200 us poll-wait variants; only the block-wait set (48-51, 68-71) was measured on
   2026-09-30, and the 100 us set was measured in a configuration (`phase: locked`) that no row describes, so its
-  numbers are in `results/rmw_4way_pollwait_934f90de_2026-09-30.txt` and in no cell. Each variant is one
+  numbers are in `results/rmw_4way_pollwait_bbc783ee_2026-09-30.txt` and in no cell. Each variant is one
   `rmw_crosshost_rtt.sh` run away; nothing about them is unmeasurable.
 - **Rows 16-17 are `✗ †` rather than blank or filled.** They are RELIABLE retention, and zenoh-pico's reliable arm is
   TCP, which does not survive a max-rate run above a 76-byte payload - so row 17 has no reliable figure available at
@@ -161,8 +161,14 @@ same session, so a row is always comparable. Across rows of different letters it
   TickLE. It is the opposite: zenoh keeps its throughput because dropping is free, and TickLE's missing 7-10% is what
   recovering the lost samples costs. The same number in the same column meaning opposite things is why these cells are
   marked instead of filled.
+- **Result file paths in this document are relative to `examples/perf_hil/`.** Both 2026-09-30 rmw files were renamed
+  on 2026-09-30 because each carried the *previous* run's SHA in its name while its header recorded the build it had
+  actually measured: the block file said `ea910ae7` and had measured `934f90de`, the poll-wait file said `934f90de`
+  and had measured `bbc783ee`. The names now carry the measured build. An audit of all 190 result files found these
+  two and no others - 26 files carry a SHA in both name and header and the rest agreed - and `check-results-provenance`
+  now fails a commit where the two disagree.
 - **`W` rows** are the four-way rmw block-wait measurement of 2026-09-30 (`rmw_crosshost_rtt.sh`, `WAITS=block`,
-  `results/rmw_4way_block_ea910ae7_2026-09-30.txt`, 3 repetitions, median of 3, all four implementations in one
+  `results/rmw_4way_block_934f90de_2026-09-30.txt`, 3 repetitions, median of 3, all four implementations in one
   session, 0 VOID, both sides' `/proc` maps checked per row). They **replace** the `V` figures in rows 48-51 and 68-71
   rather than adding a column to them: a row whose four figures came from two different sessions is exactly what §4.2's
   own rule forbids, and rmw_zenoh_cpp could not have been in the 2026-09-27 session. The `V` figures they replace read

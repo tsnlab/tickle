@@ -9,7 +9,7 @@
 
 .DEFAULT_GOAL := all
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock check-bench-shapes check-unsupported-list check-context-reset lint lint-rmw lint-shell test-typesupport clean test-linux test-freertos test-all \
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock check-bench-shapes check-unsupported-list check-context-reset check-results-provenance lint lint-rmw lint-shell test-typesupport clean test-linux test-freertos test-all \
         install uninstall fuzz fuzz-corpus sanitize tsan regen
 
 all library examples set_bool uint64 ping_pong perf test lint clean fuzz fuzz-corpus sanitize tsan:
@@ -68,6 +68,12 @@ check-bench-shapes:
 check-context-reset:
 	python3 tests/mutants_check_context_reset.py
 	python3 .github/scripts/check_context_reset.py
+
+# A result file's name must not claim a build it did not measure. The mutants run first, for the same reason
+# as above: a checker that has only ever passed has not been shown to decide anything.
+check-results-provenance:
+	python3 tests/mutants_check_results_provenance.py
+	python3 .github/scripts/check_results_provenance.py
 
 check-unsupported-list:
 	./.github/scripts/check_unsupported_list.sh
