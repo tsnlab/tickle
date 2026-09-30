@@ -16,6 +16,15 @@ A lesson in a document did not prevent the recurrence, so this is the version th
 a person has to remember. The behavioural counterpart is tests/test_*.c's 0xAA reset test, which catches it at
 runtime; this catches it before anything runs, and fails closed on a field nobody has classified.
 
+DO NOT MAKE THIS CHECK CLEVERER. It compares two lists and has no theory about which fields matter, and that is why
+it works. Of the four real findings it produced on 2026-09-29/30, every one was boring: rx_malformed_drops,
+rx_out_of_range and version_mismatch_drops are increment-only counters, and version_mismatch_logged is a log-rate
+latch. Nothing a person scanning tt_Context for "interesting" state would have stopped on - and version_mismatch_logged
+was the worst of them, being read to decide whether a human ever hears that a peer's every datagram is being dropped.
+A check that ranked fields by plausibility would have found none of the four. The standing temptation with a
+list-comparison check is to add judgement to it; adding judgement is how it would start skipping exactly these.
+(Dev's observation, 2026-09-30, after calling all 21 unreviewed fields.)
+
 A field that legitimately survives a reset goes in SURVIVES_RESET below WITH A REASON. That is the point: adding a
 field then becomes a decision someone has to write down, rather than an omission nobody sees.
 """
