@@ -929,6 +929,22 @@ none - so this is contention, not a rate ceiling. One observation, an uncontroll
 does not establish a rate. What it establishes is that **the two paths answer a starved reader differently**,
 and that is a design property rather than a run's bad luck.
 
+**A second observation, on `7eaad571`, with the accounting closed** - which the run above did not have, because
+the counters were not yet on the RESULT line:
+
+    module ON   sent 53,405,295  tx_shm 48,387,684  tx_udp 78  shm_full_dropped 5,017,606
+                recv 41,656,984  loss 8.6%   7,987.0 Mbps
+    module OFF  sent 22,431,239  tx_shm 0   tx_udp 22,431,313  shm_full_dropped 0
+                recv 19,195,623  loss 0.0%   3,680.4 Mbps
+
+48,387,684 + 78 + 5,017,606 = 53,405,368 against `sent` 53,405,295 - 73 apart, in flight. **So every one of the
+five million lost samples was refused by a full ring before it was ever sent, and that is the whole of the
+8.6%.** Nothing was lost in transit and nothing is unaccounted for.
+
+Two observations now, on different days and different commits, and they agree on the shape rather than on a
+rate: **the module roughly doubles throughput and loses samples where the kernel path loses none.** The rate
+differs with contention, as it must, and neither run establishes one.
+
 **Three things follow that are worth stating plainly:**
 
 - **It is visible.** `shm_full_dropped` counts every datagram a full ring refused, and it is on the node's
