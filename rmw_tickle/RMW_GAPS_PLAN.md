@@ -1352,6 +1352,7 @@ tests are its section 6a. What belongs here is the order of work and who owns ea
 | S6 | **the fair-comparison harness** | Plan | see below - this is the item the user named and the one with the most ways to be unfair |
 | S7 | lending (`tt_Sample_retain`/`release`) | Dev | S3's numbers improve again, and by how much, so the win is attributed to lending rather than to "shared memory" |
 | S8 | the CI matrix arm | Plan | the suite **runs**, not only compiles, with the feature on as well as off |
+| S9 | **the two mixed-stream windows**, measured rather than reasoned about | Plan | SHM_PLAN 6c names both and demonstrates neither. Until one path per peer is shown to hold, "one logical stream, one path" is a design intention and not a property |
 
 ### S6, the fair comparison, in detail - because "same conditions" is the whole question
 
@@ -1389,6 +1390,38 @@ Four requirements that the existing campaign does not yet meet, each of which is
    (WIRE_PLAN 10.4), and the in-process tier (g9) is the lower bound: a same-host number faster than in-process delivery
    means the harness is wrong, not that the transport is fast.
 
+
+#### S9, the two mixed-stream windows: what would demonstrate each, and why only one is measurable now (2026-09-30, Plan)
+
+SHM_PLAN 6c names two places where one logical stream can still take two paths to the same peer, and has a
+demonstration of neither. That matters more than it sounds: **rerouting past a full ring is what cost 97.4% of
+delivery on 2026-09-29**, and the repair was "one path per peer". If either window is real, that repair is incomplete
+in a way nothing currently fails on.
+
+**Window A - an oversize service datagram.** `segment_deliver()` returns `UDP_BECAUSE_OVERSIZED` for a datagram larger
+than a slot, with the comment that service requests and responses do not fragment. So a service exchange whose request
+fits and whose response does not - or the reverse - has one leg on the socket and the other in the ring, to the same
+peer, at the same time. The ring is drained per poll pass while the socket is drained to exhaustion, which is the
+latency difference that produced the original reordering.
+
+*Measurable now, and independent of any pending decision.* Two processes on one host, a service whose request and
+response straddle `tt_SEGMENT_SLOT_BYTES`, and the receiver checking whether the pair ever arrives out of order.
+**Pre-registered reading:** a run where `tx_udp_oversize > 0` and `tx_shm > 0` for the same peer and the receiver
+observes no inversion across many exchanges is evidence the window is not reachable in practice, and the row says how
+many exchanges it took to say so - a window nobody can trigger in 10,000 exchanges is a different claim from one
+nobody has tried to trigger. An observed inversion is the finding, and it makes 6c's "low risk, named rather than
+demonstrated" into a defect with a reproduction.
+
+**Window B - the pre-attach window.** The first datagrams to a peer go over UDP because the attach has not succeeded
+yet, then the stream switches to the segment. 6c calls this safe in practice because the switch happens once, during
+discovery, while the ring is empty - "safe in practice, not by construction", which is the honest form.
+
+**Not measurable usefully yet, and the reason is a decision rather than a difficulty.** Lazy segment creation - if the
+user chooses it - changes exactly when a segment first exists and therefore how long and how busy this window is.
+Measuring it against today's bind-time creation would produce a number that describes a build nobody would ship if the
+answer goes the other way. So B waits on decision 6, and that is a dependency worth stating rather than a delay:
+**the open question in that decision ("what happens to a peer that appears before we have a segment") is this window,
+asked from the other side.**
 
 #### S6's transport witness, and why it is the loopback counter rather than each vendor's introspection (2026-09-30, Plan)
 
