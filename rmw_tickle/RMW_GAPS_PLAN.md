@@ -1452,17 +1452,51 @@ KEEP_ALL's own machinery or the reader's tracking window.
 | KEEP_ALL (`-Q`) | X cross-host, no segment | 3,678,046 | 3,678,046 | 0 | 0 | 0 |
 | KEEP_ALL (`-Q`) | S same-host, segment in use | 4,838,148 | 4,838,148 | 0 | **2** | 1 |
 
-Under KEEP_ALL the ring refused two writes out of 4.8 M and the samples were not lost: core's refusal leaves the
-sample pending and the writer comes back to the same one, and the ring-full condition reaches that path. Under
-KEEP_LAST 1.25 M samples were discarded and only 6 were retransmitted - the writer did not know it had dropped
-them - and the reader abandoned 1,249,837 as gaps. That is what KEEP_LAST means: the writer promises the last N
-samples and nothing older, so this is the contract being honoured and not a reliability defect. The KEEP_LAST
-accounting closes exactly: 17,339,421 sent - 1,250,056 dropped + 6 retransmitted = 16,089,371 received.
+**The ring is not what protects KEEP_ALL, and the first version of this section said it was.** It claimed the
+ring-full condition reaches core's refusal path and leaves the sample pending. It does not, on two counts, and both
+are settled rather than argued:
+
+- `segment_deliver(node, context_id, ip, port, hdr, hdr_len, body, body_len, reason)` takes raw bytes. It holds no
+  publisher and no `keep_all`, so it cannot behave differently for one HISTORY than the other. That is its
+  signature, not an inference.
+- the ring filled in BOTH runs, and at almost the same place - the writer says so itself: "first full after 914,342
+  datagrams" under KEEP_ALL, "after 845,250" under KEEP_LAST. So neither "the refusal reaches the ring" nor its
+  opposite, "flow control stops the ring ever filling", describes what happened.
+
+What differs is what the writer can still do **after** the ring has dropped a datagram, and it is entirely upstream
+of the segment:
+
+| after the ring drops one | KEEP_LAST | KEEP_ALL |
+|---|---|---|
+| may the writer have evicted that sample? | yes - KEEP_LAST promises only the last N | no - `keep_all_writable()` refuses a publish that would evict an unacknowledged sample |
+| how far ahead of the reader can it be? | unbounded | `keepall_bound_samples=256` unacknowledged, which is exactly the ring's 256 slots |
+| dropped / resent / lost | 1,250,056 / 6 / 1,250,050 | 2 / 1 / 0 |
+
+So under KEEP_LAST the reader's NACK arrives for a sample the writer no longer holds:
+`find_resendable_cache_entry()` finds nothing resendable and returns before any send, which is why 6
+retransmissions stand against 1.25 M gaps. The writer did not try and fail to resend - it had nothing left to
+resend. Under KEEP_ALL the sample is still in the cache because eviction was refused, so the rare drop is
+recovered, and the unacknowledged bound keeps the publisher from ever getting more than a ring's worth ahead.
+
+That is KEEP_LAST's contract being honoured, not a reliability defect: the writer promises the last N samples and
+nothing older. The accounting closes exactly: 17,339,421 sent - 1,250,056 dropped + 6 retransmitted = 16,089,371
+received.
 
 So the behaviour is already the one the DDS definition asks for, keyed on RELIABILITY x HISTORY, and the open
 decision needs no change to `segment_deliver()`. What it costs is throughput: same-host KEEP_ALL carried 4.84 M
 samples where KEEP_LAST carried 16.1 M, which is the price of back-pressure and is paid only by the QoS that asked
 for it.
+
+**Why the attribution mattered enough to correct.** As first written it invited the reading "the ring's refusal
+handles back-pressure", and from there "so a bigger ring would fix KEEP_LAST too". That is backwards. The
+protection is ACK-based flow control at the cache and the refusal to evict unacknowledged samples; under KEEP_LAST
+there is no flow control at any layer, and a bigger ring moves the threshold without changing what either HISTORY
+promises.
+
+Not established: `publish_refused` would show the throttle firing in one number, but the example's
+`print_reliable_stats()` is compiled out in this build - the header carries a no-op second definition - so no
+RSTATS line exists in these logs. The claim above rests on the two signatures and on the ring's own "first full
+after" line, not on that counter.
 
 Two things this does NOT establish, and neither should be written as if it did. The X-vs-S gap under KEEP_ALL
 (3.68 M against 4.84 M) is not a shared-memory speedup: X is cross-host and S is same-host, so transport and
