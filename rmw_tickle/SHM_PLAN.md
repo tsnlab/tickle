@@ -1043,6 +1043,21 @@ dying with the control holding.
 same reason: with creation deferred, `tx_shm=0` has two entirely different meanings - "no peer could have used
 one" and "one could, and it broke" - and without a counter that rose they leave the same absence behind.
 
+**But putting them there does not make them readable by the campaign, and that was an assumption rather than
+a check.** Every `examples/perf_hil/*/run_scenario.sh` pipes both the client's and the server's output through
+`grep '^RESULT:'`, so the `Node <id> traffic:` line these counters live on is discarded before anything sees
+it. The examples do call `tt_Context_destroy()` and the line is printed - it is filtered out one step later.
+So no campaign cell has ever carried a segment counter, and anything instrumented on that line is invisible to
+the whole comparison table. Verification of lazy creation needs a harness that keeps the full log and drives
+the examples itself (`examples/perf_hil/experiments/lazy_segment_lifecycle.sh`), which is how the rig run below
+was done.
+
+The general form is worth stating because it is the same one this document keeps finding: **an instrument is
+not wired up until something has read it end to end.** A counter on a line nobody keeps reads exactly like a
+counter that stayed at zero. The alternative - carrying these on the `RESULT:` line, where `tx_shm`, `tx_udp`
+and `shm_full_dropped` already are - is the smaller change and has not been made yet; it needs a run to verify
+rather than a reading.
+
 `test_thread_safety`'s fake transport gave its two nodes 10.0.0.1 and 10.0.0.2: two nodes on two *hosts* that
 nonetheless share a `/dev/shm`, which cannot happen. Once creation became conditional on a peer being on this
 host, that addressing was what said they were not, and every attach came back ABSENT for a new reason. Both
