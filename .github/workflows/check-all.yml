@@ -11,14 +11,29 @@ on:
 # where a socket buffer absorbs the same starvation and merely slows. So the suite is sensitive to a second copy of
 # itself, and a workflow that sometimes collides with itself gets its failures explained away before anyone looks.
 #
-# cancel-in-progress is deliberately FALSE, against the usual default. Cancelling a superseded run would stop the
-# contention just as well and would be cheaper, but it would also leave commits with no verdict at all - and this
-# project's rule is that every push's CI is checked on every workflow, after thirteen commits' worth of red went unseen
-# because nobody was looking at the right job. Queueing keeps every commit's answer and still admits only one run at a
-# time. The group is keyed on the ref so branches do not serialise against each other.
+# Keyed on the SHA, and this is the second version: the first keyed on the ref with cancel-in-progress FALSE, chosen so
+# that no commit would lose its verdict. It did the opposite. `cancel-in-progress: false` keeps the RUNNING run alive,
+# but GitHub allows one PENDING run per group and a newly queued run cancels the previously pending one - so with pushes
+# arriving faster than the suite completes, intermediate commits got no result at all. On 2026-09-30 `6de94cbd`, which
+# carried a real fix, had both workflows cancelled and zero CI answer, and `33dcb786` lost one of its two. That is worse
+# than the duplicate runs it replaced: duplicates gave two answers that sometimes disagreed, which is noisy but
+# readable, and this gave none - the exact shape that let thirteen commits of red go unseen.
+#
+# `cancel-in-progress: false` reads as "nothing is cancelled" and means "the running one is not cancelled". The name
+# describes the configuration and not the outcome, which is the same gap as a VOID rule that checked `transport=tcp`
+# and a CI condition that checked whether a counter field existed.
+#
+# The bug being fixed was two runs for ONE SHA, so the group names exactly that and nothing wider. Two runs of one
+# commit collapse to one; different commits never touch each other's runs, so no verdict can be lost. cancel-in-progress
+# is true here because the two runs it can ever collapse are of identical bytes, where discarding one loses nothing.
+#
+# What this does NOT do is serialise different commits, so cross-commit contention on one runner is possible again. That
+# was never the observed cause - both pairs found on 2026-09-29/30 were two runs of one SHA seconds apart - and if it
+# ever is, it needs a runner-level answer rather than a concurrency group, because a group can only cancel or queue and
+# queueing is what ate a verdict here.
 concurrency:
-  group: check-all-${{ github.ref }}
-  cancel-in-progress: false
+  group: check-all-${{ github.sha }}
+  cancel-in-progress: true
 
 jobs:
   check-all:
