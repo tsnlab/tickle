@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-host rmw-layer round trip: rmw_tickle against rmw_fastrtps_cpp and rmw_cyclonedds_cpp, each
+# Cross-host rmw-layer round trip: rmw_tickle against rmw_fastrtps_cpp, rmw_cyclonedds_cpp and rmw_zenoh_cpp, each
 # reached the way a ROS 2 application reaches it (rclcpp, RMW_IMPLEMENTATION), ping on rpi#1 and pong
 # on rpi#2 (rmw_tickle/rmw_perf_pingpong). Re-measures COMPARISON.md's rmw rows, the only rows where
 # TickLE is not first, on the current core. The previous figures (0.524/0.523 ms against FastDDS
@@ -124,6 +124,12 @@ env_for() {
         rmw_tickle) echo "$ENV_BASE; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         rmw_fastrtps_cpp) echo "$ENV_BASE; export RMW_IMPLEMENTATION=rmw_fastrtps_cpp FASTRTPS_DEFAULT_PROFILES_FILE=$FDDS_PROFILE" ;;
         rmw_cyclonedds_cpp) echo "$ENV_BASE; export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp CYCLONEDDS_URI='$CDDS_URI'" ;;
+        # Added 2026-09-30 at the user's instruction. No router daemon: rmw_zenoh_cpp's shipped session config is
+        # mode "peer" with autoconnect to both routers and peers and connect_scouted true, so two peers on this L2
+        # segment find each other by multicast scouting - the same way the other two rmws run here, with no extra
+        # process. `rmw_zenohd` exists in the package if that turns out to be wrong; a session that does not form
+        # shows up as a run with no pong rather than as a number, which is what makes trying it without one safe.
+        rmw_zenoh_cpp) echo "$ENV_BASE; export RMW_IMPLEMENTATION=rmw_zenoh_cpp" ;;
     esac
 }
 lib_for() {
@@ -135,6 +141,7 @@ lib_for() {
         rmw_tickle) echo "/home/ci/tickle/install/rmw_tickle/lib/librmw_tickle.so" ;;
         rmw_fastrtps_cpp) echo "/librmw_fastrtps_cpp.so" ;;
         rmw_cyclonedds_cpp) echo "/librmw_cyclonedds_cpp.so" ;;
+        rmw_zenoh_cpp) echo "/librmw_zenoh_cpp.so" ;;
     esac
 }
 
