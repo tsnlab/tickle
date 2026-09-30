@@ -144,11 +144,36 @@ same session, so a row is always comparable. Across rows of different letters it
   median detection time is shown, measured from the last received sample. All three match the lease within 1 ms,
   hence no winner. Across the 20 reps, TickLE's were all within 0.2 ms of the lease at every lease tried (1, 2 and
   4 s). CycloneDDS had one rep about 94 ms late at each lease, and FastDDS one 78 ms late at 1 s.
-- **Rows 52-59 and 64-67 are blank for rmw_zenoh_cpp because they were not run, and that is the whole reason.** They
-  are the busy-poll and 50/200 us poll-wait variants; only the block-wait set (48-51, 68-71) was measured on
-  2026-09-30, and the 100 us set was measured in a configuration (`phase: locked`) that no row describes, so its
-  numbers are in `results/rmw_4way_pollwait_bbc783ee_2026-09-30.txt` and in no cell. Each variant is one
-  `rmw_crosshost_rtt.sh` run away; nothing about them is unmeasurable.
+- **Rows 52-67 were re-measured four-way on 2026-10-01**, all sixteen at one build (`934f90de`), `--phase jitter
+  --rtt-at callback` as the `J` rows are defined, **7 repetitions**, medians shown
+  (`results/rmw_4way_poll0_cb_r7_934f90de_2026-10-01.txt`, `..._poll50_200_cb_r7_...`, `..._poll100_cb_r7_...`;
+  448 rows, 8 VOID). They replace the earlier three-framework figures rather than adding a column, for §4.2's
+  reason: a row whose figures come from two sessions is not a comparison. TickLE takes 9 rows and draws 7, and
+  loses none; every draw is with CycloneDDS, and FastDDS and rmw_zenoh_cpp are separable in all sixteen.
+
+  Three things about the method are worth stating, because each was a wrong answer first.
+
+  **`--rtt-at` is not optional detail.** A first pass left it at its default (`loop`) while setting `--phase
+  jitter`, and every figure came out 0.11 ms high at 50 us and 0.27 ms high at 200 us - all four frameworks
+  together, which is what a condition difference looks like and a regression does not. `loop` reads the round trip
+  after the poll cycle's sleep, `callback` reads it in the reply's callback. The busy-poll rows reproduced the old
+  numbers exactly in that same pass, which is the control that identifies it: with no sleep the two read at the
+  same moment.
+
+  **The verdicts use overlap of the repetitions' interquartile ranges, not mean +- 2 SE.** With 2 SE, row 55 came
+  out a draw on the strength of a single repetition whose `rtt_max` was 24.911 ms against that cell's median
+  maximum of 0.523 - one ~25 ms hiccup in 100 round trips, which moved that repetition's mean from 0.265 to 0.507
+  and the cell's standard error with it. The median is unmoved by such a flier and so is the IQR, so the same
+  robust rule is applied to all sixteen rows rather than to the one that needed it. That flier is the only one in
+  448 rows at a 10x-median-maximum threshold.
+
+  **The VOID rate is 1.8%, against 1.0% by construction.** The harness voids a repetition whose phase histogram
+  fails a chi-square test at `chi2 < 21.67`, which is the 1% critical value for 9 degrees of freedom - ten bins,
+  100 pings, confirmed by recomputing the printed chi-square from the printed bin counts. Eight VOIDs in 448 rows
+  is about twice expected and would happen by chance about 2% of the time. The jitter comes from the one ping
+  binary all four frameworks share, so any framework dependence would have to act through cycle timing rather
+  than through the generator; 8 events cannot separate that from the test's own false-positive rate, and every
+  VOIDed repetition is simply dropped.
 - **Rows 16-17 are `✗ †` rather than blank or filled.** They are RELIABLE retention, and zenoh-pico's reliable arm is
   TCP, which does not survive a max-rate run above a 76-byte payload - so row 17 has no reliable figure available at
   all. Measured on 2026-09-30 with a diagnostic zenoh-pico build, the reason is on the *subscriber*: its decoder
@@ -288,22 +313,22 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 49 | RTT mean, block wait, RELIABLE | Bench (64 B) | ✅ **0.247** | 0.335 | 0.269 | – | ❌ 0.386 | W |
 | 50 | RTT mean, block wait, BEST_EFFORT | Array1k | ✅ **0.263** | 0.338 | 0.294 | – | ❌ 0.611 | W |
 | 51 | RTT mean, block wait, RELIABLE | Array1k | ✅ **0.269** | 0.354 | 0.284 | – | ❌ 0.609 | W |
-| 52 | RTT mean, busy poll (no sleep), BEST_EFFORT | Bench (64 B) | ✅ **0.240** | ❌ 0.320 | 0.273 | – | – | J |
-| 53 | RTT mean, busy poll (no sleep), RELIABLE | Bench (64 B) | ✅ **0.242** | ❌ 0.330 | 0.270 | – | – | J |
-| 54 | RTT mean, busy poll (no sleep), BEST_EFFORT | Array1k | ✅ **0.261** | ❌ 0.336 | 0.289 | – | – | J |
-| 55 | RTT mean, busy poll (no sleep), RELIABLE | Array1k | ✅ **0.263** | ❌ 0.350 | 0.281 | – | – | J |
-| 56 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ✅ **0.293** | ❌ 0.357 | 0.308 | – | – | J |
-| 57 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.297 | 0.359 | ⚪ 0.340 | – | – | J |
-| 58 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.311** | ❌ 0.369 | 0.324 | – | – | J |
-| 59 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.315 | 0.377 | ⚪ 0.354 | – | – | J |
-| 60 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.316 | 0.372 | ⚪ 0.322 | – | – | J |
-| 61 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Bench (64 B) | ✅ **0.320** | ❌ 0.387 | 0.329 | – | – | J |
-| 62 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.338** | ❌ 0.394 | 0.349 | – | – | J |
-| 63 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.338 | 0.400 | ⚪ 0.346 | – | – | J |
-| 64 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.365 | 0.419 | ⚪ 0.367 | – | – | J |
-| 65 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.366 | 0.424 | ⚪ 0.375 | – | – | J |
-| 66 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Array1k | ⚪ 0.388 | 0.433 | ⚪ 0.395 | – | – | J |
-| 67 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.392 | 0.442 | ⚪ 0.384 | – | – | J |
+| 52 | RTT mean, busy poll (no sleep), BEST_EFFORT | Bench (64 B) | ✅ **0.241** | 0.315 | 0.268 | – | ❌ 0.382 | J |
+| 53 | RTT mean, busy poll (no sleep), RELIABLE | Bench (64 B) | ✅ **0.241** | 0.327 | 0.272 | – | ❌ 0.382 | J |
+| 54 | RTT mean, busy poll (no sleep), BEST_EFFORT | Array1k | ✅ **0.264** | 0.338 | 0.290 | – | ❌ 0.613 | J |
+| 55 | RTT mean, busy poll (no sleep), RELIABLE | Array1k | ✅ **0.265** | 0.350 | 0.280 | – | ❌ 0.610 | J |
+| 56 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ✅ **0.294** | 0.354 | 0.307 | – | ❌ 0.424 | J |
+| 57 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Bench (64 B) | ✅ **0.297** | 0.359 | 0.311 | – | ❌ 0.421 | J |
+| 58 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.315** | 0.369 | 0.329 | – | ❌ 0.650 | J |
+| 59 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.314 | 0.382 | ⚪ 0.318 | – | ❌ 0.647 | J |
+| 60 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ✅ **0.318** | 0.367 | 0.330 | – | ❌ 0.455 | J |
+| 61 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Bench (64 B) | ✅ **0.322** | 0.384 | 0.327 | – | ❌ 0.444 | J |
+| 62 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Array1k | ⚪ 0.345 | 0.396 | ⚪ 0.351 | – | ❌ 0.672 | J |
+| 63 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.343 | 0.406 | ⚪ 0.343 | – | ❌ 0.671 | J |
+| 64 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.358 | 0.410 | ⚪ 0.365 | – | ❌ 0.499 | J |
+| 65 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.369 | 0.425 | ⚪ 0.373 | – | ❌ 0.504 | J |
+| 66 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Array1k | ⚪ 0.387 | 0.443 | ⚪ 0.403 | – | ❌ 0.736 | J |
+| 67 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.391 | 0.444 | ⚪ 0.380 | – | ❌ 0.726 | J |
 | 68 | peak RSS, ping process (KB) | Bench, block, BEST_EFFORT | ✅ **12,544** | 23,748 | 14,592 | – | ❌ 70,072 | W |
 | 69 | peak RSS, pong process (KB) | Bench, block, BEST_EFFORT | ✅ **13,216** | 23,632 | 14,532 | – | ❌ 70,484 | W |
 | 70 | pong CPU, whole run (ms) | Bench, block, BEST_EFFORT | ✅ **37.4** | 57.7 | 43.5 | – | ❌ 91.8 | W |
