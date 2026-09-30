@@ -167,13 +167,23 @@ same session, so a row is always comparable. Across rows of different letters it
   robust rule is applied to all sixteen rows rather than to the one that needed it. That flier is the only one in
   448 rows at a 10x-median-maximum threshold.
 
-  **The VOID rate is 1.8%, against 1.0% by construction.** The harness voids a repetition whose phase histogram
-  fails a chi-square test at `chi2 < 21.67`, which is the 1% critical value for 9 degrees of freedom - ten bins,
-  100 pings, confirmed by recomputing the printed chi-square from the printed bin counts. Eight VOIDs in 448 rows
-  is about twice expected and would happen by chance about 2% of the time. The jitter comes from the one ping
-  binary all four frameworks share, so any framework dependence would have to act through cycle timing rather
-  than through the generator; 8 events cannot separate that from the test's own false-positive rate, and every
-  VOIDed repetition is simply dropped.
+  **The VOID rate is 1.8%, against 1.0% by construction, and that is unremarkable.** The harness voids a
+  repetition whose phase histogram fails a chi-square test at `chi2 < 21.67`, which is the 1% critical value for 9
+  degrees of freedom - ten bins, 100 pings, confirmed by recomputing the printed chi-square from the printed bin
+  counts. Eight VOIDs in 448 rows against an expected 4.48 is **p = 8.5%** (Poisson, one-sided) - a result one
+  evening in twelve produces with nothing wrong at all. An earlier draft of this note said "about 2%", which was
+  the figure for an earlier 96-row run (four VOIDs against 0.96 expected, p = 1.7%) carried over instead of
+  recomputed; 2% would invite someone to chase this, and 8.5% correctly says there is nothing here to chase. The
+  jitter comes from the one ping binary all four frameworks share, so any framework dependence would have to act
+  through cycle timing rather than through the generator, and 8 events cannot separate that from the test's own
+  false positives. Every VOIDed repetition is simply dropped.
+
+  **And the row-by-row drift is scatter, which is worth saying rather than leaving to inference.** Against each
+  row's own previous TickLE figure, ten rows are slower, five faster and one unchanged, the largest move being
+  +0.007 ms (row 62, +2.1%). Ten of fifteen in one direction is a two-sided sign-test **p = 30%**: the 2:1 split
+  invites a reading of drift and does not support one. Vendor arms control the rig; our own figure is what a
+  regression would have to beat, so the comparison is against `e141eb6a`'s column rather than against the
+  vendors'.
 - **Rows 16-17 are `✗ †` rather than blank or filled.** They are RELIABLE retention, and zenoh-pico's reliable arm is
   TCP, which does not survive a max-rate run above a 76-byte payload - so row 17 has no reliable figure available at
   all. Measured on 2026-09-30 with a diagnostic zenoh-pico build, the reason is on the *subscriber*: its decoder
