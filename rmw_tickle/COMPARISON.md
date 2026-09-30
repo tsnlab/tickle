@@ -144,6 +144,17 @@ same session, so a row is always comparable. Across rows of different letters it
   median detection time is shown, measured from the last received sample. All three match the lease within 1 ms,
   hence no winner. Across the 20 reps, TickLE's were all within 0.2 ms of the lease at every lease tried (1, 2 and
   4 s). CycloneDDS had one rep about 94 ms late at each lease, and FastDDS one 78 ms late at 1 s.
+- **`W` rows** are the four-way rmw block-wait measurement of 2026-09-30 (`rmw_crosshost_rtt.sh`, `WAITS=block`,
+  `results/rmw_4way_block_ea910ae7_2026-09-30.txt`, 3 repetitions, median of 3, all four implementations in one
+  session, 0 VOID, both sides' `/proc` maps checked per row). They **replace** the `V` figures in rows 48-51 and 68-71
+  rather than adding a column to them: a row whose four figures came from two different sessions is exactly what §4.2's
+  own rule forbids, and rmw_zenoh_cpp could not have been in the 2026-09-27 session. The `V` figures they replace read
+  within 0.005 ms of these on TickLE and 0.000 on FastDDS at row 48, so this is a consistency repair and not a change
+  of result - except on TickLE's peak RSS, which rose from 11,264 to 12,544 kB as the shared-memory segment was added
+  to core in between (about 380 kB of that, per the note above).
+  - **rmw_zenoh_cpp needs a Zenoh router**, so this session ran `rmw_zenohd` on the pong host with an eth0-only
+    config, the same pinning the other three get. Its figures include that mandatory extra hop: it is last on every
+    row here, and its peak RSS of 70 MB against rmw_tickle's 12.5 is the largest single gap in this table.
 - **`G` rows** are the five cells added to the campaign matrix on 2026-09-30 at the user's instruction that p1-p4 be
   measured for every framework on every metric - best-effort throughput at p2/p3/p4 and reliable latency at p3/p4,
   which the matrix had for no framework (`results/cmp_p1p4_gap_99033118_2026-09-30.txt`, 3 repetitions, all three
@@ -250,10 +261,10 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 46 | LIVELINESS detection | lease 2.0 s | ⚪ 2000.1 ms | ⚪ 1999.1 ms | ⚪ 2000.1 ms | – | – | L |
 | 47 | LIFESPAN expiry | 100 ms | ⚪ works | ⚪ works | ⚪ works | – | – | S |
 | | **[rmw layer](#27-the-rmw-layer)** (ms, cross-host) | | | | |  | – | |
-| 48 | RTT mean, block wait, BEST_EFFORT | Bench (64 B) | ✅ **0.244** | ❌ 0.320 | 0.276 | – | – | V |
-| 49 | RTT mean, block wait, RELIABLE | Bench (64 B) | ✅ **0.242** | ❌ 0.328 | 0.273 | – | – | V |
-| 50 | RTT mean, block wait, BEST_EFFORT | Array1k | ✅ **0.267** | ❌ 0.341 | 0.291 | – | – | V |
-| 51 | RTT mean, block wait, RELIABLE | Array1k | ✅ **0.267** | ❌ 0.355 | 0.284 | – | – | V |
+| 48 | RTT mean, block wait, BEST_EFFORT | Bench (64 B) | ✅ **0.246** | 0.320 | 0.269 | – | ❌ 0.381 | W |
+| 49 | RTT mean, block wait, RELIABLE | Bench (64 B) | ✅ **0.247** | 0.335 | 0.269 | – | ❌ 0.386 | W |
+| 50 | RTT mean, block wait, BEST_EFFORT | Array1k | ✅ **0.263** | 0.338 | 0.294 | – | ❌ 0.611 | W |
+| 51 | RTT mean, block wait, RELIABLE | Array1k | ✅ **0.269** | 0.354 | 0.284 | – | ❌ 0.609 | W |
 | 52 | RTT mean, busy poll (no sleep), BEST_EFFORT | Bench (64 B) | ✅ **0.240** | ❌ 0.320 | 0.273 | – | – | J |
 | 53 | RTT mean, busy poll (no sleep), RELIABLE | Bench (64 B) | ✅ **0.242** | ❌ 0.330 | 0.270 | – | – | J |
 | 54 | RTT mean, busy poll (no sleep), BEST_EFFORT | Array1k | ✅ **0.261** | ❌ 0.336 | 0.289 | – | – | J |
@@ -270,10 +281,10 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 65 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.366 | 0.424 | ⚪ 0.375 | – | – | J |
 | 66 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Array1k | ⚪ 0.388 | 0.433 | ⚪ 0.395 | – | – | J |
 | 67 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.392 | 0.442 | ⚪ 0.384 | – | – | J |
-| 68 | peak RSS, ping process (KB) | Bench, block, BEST_EFFORT | ✅ **11,264** | ❌ 23,636 | 14,848 | – | – | V |
-| 69 | peak RSS, pong process (KB) | Bench, block, BEST_EFFORT | ✅ **11,732** | ❌ 23,620 | 14,532 | – | – | V |
-| 70 | pong CPU, whole run (ms) | Bench, block, BEST_EFFORT | ✅ **34.9** | ❌ 55.8 | 43.6 | – | – | V |
-| 71 | pong CPU, whole run (ms) | Bench, block, RELIABLE | ✅ **34.9** | ❌ 59.0 | 48.5 | – | – | V |
+| 68 | peak RSS, ping process (KB) | Bench, block, BEST_EFFORT | ✅ **12,544** | 23,748 | 14,592 | – | ❌ 70,072 | W |
+| 69 | peak RSS, pong process (KB) | Bench, block, BEST_EFFORT | ✅ **13,216** | 23,632 | 14,532 | – | ❌ 70,484 | W |
+| 70 | pong CPU, whole run (ms) | Bench, block, BEST_EFFORT | ✅ **37.4** | 57.7 | 43.5 | – | ❌ 91.8 | W |
+| 71 | pong CPU, whole run (ms) | Bench, block, RELIABLE | ✅ **37.2** | 60.4 | 48.5 | – | ❌ 94.1 | W |
 
 **FastDDS as shipped (`maxMessageSize` 65,500), at the same cells, for reference.** Aligned campaign,
 same QoS:
