@@ -1472,6 +1472,16 @@ of the segment:
 | how far ahead of the reader can it be? | unbounded | `keepall_bound_samples=256` unacknowledged, which is exactly the ring's 256 slots |
 | dropped / resent / lost | 1,250,056 / 6 / 1,250,050 | 2 / 1 / 0 |
 
+Both halves do work and neither alone accounts for the result. Cache retention explains **0 lost** - the NACK
+recovers what the ring dropped - but not **2 dropped instead of 1.25 M**: had the publisher continued at the
+KEEP_LAST rate after the first fill, the ring would have gone on filling and each drop would have needed its own
+recovery, and the run would show on the order of a million retransmissions rather than one. The throttle is what
+keeps the second fill from happening, and it is visible from outside in the send counts alone - 17,339,421 samples
+under KEEP_LAST against 4,838,148 under KEEP_ALL in the same 20 s on the same binary, 3.58x fewer. Take the
+throttle away and the 2 becomes a million; take the retention away and the 2 becomes 2 abandoned gaps. (How much
+of that 3.58x is refusal and how much is KEEP_ALL's extra per-sample work cannot be split from these runs;
+`publish_refused` is the number that would, and it is recorded below as missing.)
+
 So under KEEP_LAST the reader's NACK arrives for a sample the writer no longer holds:
 `find_resendable_cache_entry()` finds nothing resendable and returns before any send, which is why 6
 retransmissions stand against 1.25 M gaps. The writer did not try and fail to resend - it had nothing left to
