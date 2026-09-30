@@ -1391,6 +1391,38 @@ Four requirements that the existing campaign does not yet meet, each of which is
    means the harness is wrong, not that the transport is fast.
 
 
+#### Why zenoh-pico's TCP arm dies above p1, and the log that would say (opened 2026-09-30, user's decision to defer)
+
+COMPARISON's `✗ †` cells are zenoh-pico's RELIABLE rows at p2 and above. **p1 is healthy** - 1,952,454 samples at
+93.6 wire bytes per sample, no loss - so the reproduction target is **p2**, not p1.
+
+**What is established, from the run's own numbers.** At p2 a real TCP stream flowed: 47 packets averaging 16,757
+bytes (kernel TSO/GSO coalescing), carrying about 610 samples. Then exactly one `z_publisher_put()` returned < 0
+(`write_fail=1`), and after that every put returned success while nothing further reached the wire - the run reported
+13,123,180 samples at 27,128 Mbps over a 1 Gbps link. A zenoh session owns links; when a link is torn down the
+session handle stays valid, and a publisher on a session with no usable link accepts a put and discards it locally.
+So **the link died, the session object did not, and the publisher became a local sink that reports success.**
+
+**What is not established: why the link died.** Three mechanisms are all consistent with what was kept, and cannot be
+distinguished from it:
+
+| candidate | why it would appear at p2 and not p1 |
+|---|---|
+| batching / fragmentation | 76 B fits one batch; 1292 B plus headers may cross `Z_BATCH_UNICAST_SIZE` into the fragmentation path |
+| send buffer against `Z_CONGESTION_CONTROL_BLOCK` | BLOCK should block the writer; if the write instead times out and zenoh treats that as link failure, the link closes. p2's byte rate is ~17x p1's, so the buffer fills far sooner |
+| lease starvation | if BLOCK stalls the writer long enough that the keepalive task cannot run, the peer declares the link dead. This fits "one write_fail then permanently dead" best |
+
+**The cheapest discriminator is the client's own stderr, and the harness currently throws it away.** zenoh-pico logs
+link closure with a reason, but `run_scenario.sh` and `zenoh_cells.sh` keep only `^RESULT` lines, so the message that
+would name the mechanism was never retained. That is the instrumentation gap to close first: keep the client and
+server logs, reproduce p2 once, and read what it says. `ss -ti` during the run (is the send queue full, are there
+retransmits) and a packet capture (clean FIN, RST, or simply idle - which alone separates lease starvation from the
+other two) are the follow-ups if the log is not decisive.
+
+**Until then `✗ †` means "measured, and the transport did not survive the cell"** and not "measured, and here is why".
+The distinction is the point: the cells are not blank and they are not explained either. **No tuning was attempted** -
+the figures are zenoh-pico's shipped defaults - so "no configuration survives this" is also not established.
+
 #### The first rig task after the server is back: verifying lazy creation, and its one precondition (2026-09-30)
 
 Lazy segment creation landed in `8cf8cdc9`/`ff57253a` with local gates and both CI workflows green, but it has **not**
