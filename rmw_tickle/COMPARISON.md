@@ -144,6 +144,15 @@ same session, so a row is always comparable. Across rows of different letters it
   median detection time is shown, measured from the last received sample. All three match the lease within 1 ms,
   hence no winner. Across the 20 reps, TickLE's were all within 0.2 ms of the lease at every lease tried (1, 2 and
   4 s). CycloneDDS had one rep about 94 ms late at each lease, and FastDDS one 78 ms late at 1 s.
+- **`G` rows** are the five cells added to the campaign matrix on 2026-09-30 at the user's instruction that p1-p4 be
+  measured for every framework on every metric - best-effort throughput at p2/p3/p4 and reliable latency at p3/p4,
+  which the matrix had for no framework (`results/cmp_p1p4_gap_99033118_2026-09-30.txt`, 3 repetitions, all three
+  campaign frameworks in one session, WIN 38 / DRAW 4 / LOSE 0 / VOID 0 over the comparable metric-cells). zenoh-pico's
+  figures in those rows come from its own `Z` session and carry the same looser-comparability caveat as its others.
+- **`‡` marks a cell where two implementations are both at the link ceiling**, about 940 Mbps here, so the cell cannot
+  separate them: TickLE 943 against zenoh-pico 941 at p3, and 944 against 945 at p4, are differences well inside
+  WIRE_PLAN 10.4's ~1% floor. **A ceiling is a blind spot, not a result** - neither row is a win for anyone, and row
+  11c carries no tick for that reason.
 - **`Z` rows** are zenoh-pico, measured on its own (`experiments/zenoh_cells.sh`, 2026-09-29, `31d58011`,
   `results/zenoh_cells_31d58011_2026-09-29.txt`, 3 repetitions, `-d 5`, both Pis, same link and same shapes as `A`).
   They are **not** from the `A` or `T` sessions, so a zenoh margin is looser than a within-row one. Every rep pairs
@@ -154,86 +163,91 @@ same session, so a row is always comparable. Across rows of different letters it
 Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` and
 `campaign_tuned_fastdds_2026-09-26*`.
 
-| # | Metric | Condition | TickLE | FastDDS | CycloneDDS | zenoh-pico | meas. |
-|---|---|---|---|---|---|---|---|
-| | **[Latency](#21-latency)** (ms) | | | | |  | |
-| 1 | RTT mean | P1 76 B | ✅ **0.207** | ❌ 0.287 | 0.266 | 0.221 | A |
-| 2 | RTT max (tail) | P1 76 B | ✅ **0.270** | 0.604 | ❌ 0.720 | 0.363 | A |
-| 3 | RTT mean | P2 1292 B | ✅ **0.233** | 0.316 | ❌ 0.376 | 0.247 | A |
-| 4 | RTT max (tail) | P2 1292 B | ✅ **0.349** | 0.634 | ❌ 10.8 | 0.428 | A |
-| 5 | RTT mean | +10 ms netem | ⚪ 10.1 | ⚪ 10.4 | ⚪ 10.5 | 10.07 | A |
-| 6 | RTT max (tail) | +10 ms netem | ✅ **12.2** | 12.3 | ❌ 23.1 | 12.15 | A |
-| | **[Throughput](#22-throughput)** (Mbps) | | | | |  | |
-| 7 | RELIABLE | P1 76 B | ✅ **115** | ❌ 40.8 | 93.0 | 236.8 † | A |
-| 8 | RELIABLE | P2 1292 B | ✅ **937** | ❌ 647 | 851 | ✗ † | A |
-| 9 | RELIABLE | P3 1424 B | ✅ **943** | ❌ 439 | 808 | ✗ † | T |
-| 10 | RELIABLE | P4 2800 B | ✅ **943** | ❌ 635 | 863 | ✗ † | T |
-| 11 | BEST_EFFORT | P1, max rate | ✅ **119** | ❌ 47.9 | 71.7 | 53.4 | A |
-| 12 | RELIABLE KEEP_LAST 64 | P1 | ✅ **117** | ❌ 41.9 | 89.3 | – | A |
-| 13 | RELIABLE | P1, **5% loss** | ✅ **106** | 6.6 | ❌ 3.1 | ✗ † | A |
-| 14 | RELIABLE | P4, **5% loss** | ✅ **854** | 214 | ❌ 11.8 | ✗ † | T |
-| 15 | RELIABLE | P1, 5% reorder | ✅ **104** | ❌ 32.2 | 67.4 | ✗ † | A |
-| 16 | retention under loss | P1: 5% loss / unshaped | ✅ **92.7%** | 16.1% | ❌ 3.3% | – | A |
-| 17 | retention under loss | P4: 5% loss / unshaped | ✅ **90.5%** | 33.7% | ❌ 1.4% | – | T |
-| | **[CPU](#23-cpu)** (cpu_s / Msample) | | | | |  | |
-| 18 | throughput, client | P1 76 B | ✅ **5.3** | ❌ 19.0 | 6.9 | 2.57 † | A |
-| 19 | throughput, server | P1 76 B | ✅ **2.5** | ❌ 19.2 | 11.0 | 1.42 † | A |
-| 20 | throughput, client | P2 1292 B | ✅ **6.5** | ❌ 19.3 | 8.5 | ✗ † | A |
-| 21 | throughput, server | P2 1292 B | ✅ **3.8** | ❌ 20.2 | 14.5 | ✗ † | A |
-| 22 | throughput, client | P4 2800 B | ✅ **12.2** | ❌ 38.7 | 14.1 | ✗ † | T |
-| 23 | throughput, server | P4 2800 B | ✅ **8.2** | ❌ 33.5 | 19.6 | ✗ † | T |
-| 24 | latency | P1 76 B | ✅ **155** | ❌ 356 | 237 | 121.1 | A |
-| 25 | latency | P2 1292 B | ✅ **135** | ❌ 393 | 239 | 144.6 | A |
-| 26 | throughput, client | P1, 5% loss | ✅ **5.7** | ❌ 27.6 | 12.9 | ✗ † | A |
-| 27 | throughput, client | P4, 5% loss | ✅ **14.4** | ❌ 63.5 | 43.0 | ✗ † | T |
-| | **[Memory](#24-memory)** (peak RSS, KB) | | | | |  | |
-| 28 | throughput, client | P1 76 B | ✅ **1,916** | ❌ 15,904 | 5,232 | 2,127 † | A |
-| 29 | throughput, client | P2 1292 B | ✅ **2,196** | ❌ 15,048 | 6,400 | ✗ † | A |
-| 30 | throughput, client | P4 2800 B | ✅ **2,268** | ❌ 13,976 | 5,572 | ✗ † | T |
-| 31 | latency, client | P1 76 B | ✅ **1,660** | ❌ 14,340 | 4,836 | 2,135 | A |
-| 32 | throughput, server | P1 76 B | ✅ **1,828** | ❌ 14,332 | 4,888 | 2,127 † | A |
-| 33 | throughput, server | P4 2800 B | ✅ **2,848** | ❌ 13,992 | 4,900 | ✗ † | T |
-| 34 | throughput, server | P4, 5% loss | ✅ **2,848** | ❌ 14,332 | 6,400 | ✗ † | T |
-| | **[Bandwidth](#25-bandwidth)** (wire B / sample) | | | | |  | |
-| 35 | wire bytes | P1 76 B | ✅ **138** | ❌ 286 | 180 | 93.6 † | A |
-| 36 | wire bytes | P2 1292 B | ✅ **1,355** | ❌ 1,502 | 1,397 | ✗ † | A |
-| 37 | wire bytes | P3 1424 B | ✅ **1,487** | ❌ 1,865 | 1,585 | ✗ † | T |
-| 38 | wire bytes | P4 2800 B | ✅ **2,921** | ❌ 3,460 | 2,950 | ✗ † | T |
-| 39 | wire bytes | P1, 5% loss | ✅ **143** | ❌ 287 | 194 | ✗ † | A |
-| 40 | wire bytes | P4, 5% loss | ✅ **3,041** | ❌ 4,384 | 3,230 | ✗ † | T |
-| 41 | framing overhead | single datagram | ✅ **62.1** | ❌ 210.3 | 104.2 | – | A |
-| | **[QoS mechanics](#26-qos-mechanics)** | | | | |  | |
-| 42 | DURABILITY late join | durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | – | S |
-| 43 | HISTORY, within depth | burst | 160/160 | 160/160 | 160/160 | – | S |
-| 44 | HISTORY, beyond depth | burst | ✅ **147.7/160** | ❌ 109/160 | ❌ 109/160 | – | S |
-| 45 | DEADLINE detection | 50 ms | ⚪ works | ⚪ works | ⚪ works | – | S |
-| 46 | LIVELINESS detection | lease 2.0 s | ⚪ 2000.1 ms | ⚪ 1999.1 ms | ⚪ 2000.1 ms | – | L |
-| 47 | LIFESPAN expiry | 100 ms | ⚪ works | ⚪ works | ⚪ works | – | S |
-| | **[rmw layer](#27-the-rmw-layer)** (ms, cross-host) | | | | |  | |
-| 48 | RTT mean, block wait, BEST_EFFORT | Bench (64 B) | ✅ **0.244** | ❌ 0.320 | 0.276 | – | V |
-| 49 | RTT mean, block wait, RELIABLE | Bench (64 B) | ✅ **0.242** | ❌ 0.328 | 0.273 | – | V |
-| 50 | RTT mean, block wait, BEST_EFFORT | Array1k | ✅ **0.267** | ❌ 0.341 | 0.291 | – | V |
-| 51 | RTT mean, block wait, RELIABLE | Array1k | ✅ **0.267** | ❌ 0.355 | 0.284 | – | V |
-| 52 | RTT mean, busy poll (no sleep), BEST_EFFORT | Bench (64 B) | ✅ **0.240** | ❌ 0.320 | 0.273 | – | J |
-| 53 | RTT mean, busy poll (no sleep), RELIABLE | Bench (64 B) | ✅ **0.242** | ❌ 0.330 | 0.270 | – | J |
-| 54 | RTT mean, busy poll (no sleep), BEST_EFFORT | Array1k | ✅ **0.261** | ❌ 0.336 | 0.289 | – | J |
-| 55 | RTT mean, busy poll (no sleep), RELIABLE | Array1k | ✅ **0.263** | ❌ 0.350 | 0.281 | – | J |
-| 56 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ✅ **0.293** | ❌ 0.357 | 0.308 | – | J |
-| 57 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.297 | 0.359 | ⚪ 0.340 | – | J |
-| 58 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.311** | ❌ 0.369 | 0.324 | – | J |
-| 59 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.315 | 0.377 | ⚪ 0.354 | – | J |
-| 60 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.316 | 0.372 | ⚪ 0.322 | – | J |
-| 61 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Bench (64 B) | ✅ **0.320** | ❌ 0.387 | 0.329 | – | J |
-| 62 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.338** | ❌ 0.394 | 0.349 | – | J |
-| 63 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.338 | 0.400 | ⚪ 0.346 | – | J |
-| 64 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.365 | 0.419 | ⚪ 0.367 | – | J |
-| 65 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.366 | 0.424 | ⚪ 0.375 | – | J |
-| 66 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Array1k | ⚪ 0.388 | 0.433 | ⚪ 0.395 | – | J |
-| 67 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.392 | 0.442 | ⚪ 0.384 | – | J |
-| 68 | peak RSS, ping process (KB) | Bench, block, BEST_EFFORT | ✅ **11,264** | ❌ 23,636 | 14,848 | – | V |
-| 69 | peak RSS, pong process (KB) | Bench, block, BEST_EFFORT | ✅ **11,732** | ❌ 23,620 | 14,532 | – | V |
-| 70 | pong CPU, whole run (ms) | Bench, block, BEST_EFFORT | ✅ **34.9** | ❌ 55.8 | 43.6 | – | V |
-| 71 | pong CPU, whole run (ms) | Bench, block, RELIABLE | ✅ **34.9** | ❌ 59.0 | 48.5 | – | V |
+| # | Metric | Condition | TickLE | FastDDS | CycloneDDS | zenoh-pico | rmw_zenoh | meas. |
+|---|---|---|---|---|---|---|---|---|
+| | **[Latency](#21-latency)** (ms) | | | | |  | – | |
+| 1 | RTT mean | P1 76 B | ✅ **0.207** | ❌ 0.287 | 0.266 | 0.221 | – | A |
+| 2 | RTT max (tail) | P1 76 B | ✅ **0.270** | 0.604 | ❌ 0.720 | 0.363 | – | A |
+| 3 | RTT mean | P2 1292 B | ✅ **0.233** | 0.316 | ❌ 0.376 | 0.247 | – | A |
+| 4 | RTT max (tail) | P2 1292 B | ✅ **0.349** | 0.634 | ❌ 10.8 | 0.428 | – | A |
+| 5 | RTT mean | +10 ms netem | ⚪ 10.1 | ⚪ 10.4 | ⚪ 10.5 | 10.07 | – | A |
+| 6 | RTT max (tail) | +10 ms netem | ✅ **12.2** | 12.3 | ❌ 23.1 | 12.15 | – | A |
+| 6a | RTT mean | P3 1424 B | ✅ **0.239** | ❌ 0.347 | 0.308 | – | – | G |
+| 6b | RTT mean | P4 2800 B | ✅ **0.281** | ❌ 0.364 | 0.339 | – | – | G |
+| | **[Throughput](#22-throughput)** (Mbps) | | | | |  | – | |
+| 7 | RELIABLE | P1 76 B | ✅ **115** | ❌ 40.8 | 93.0 | 236.8 † | – | A |
+| 8 | RELIABLE | P2 1292 B | ✅ **937** | ❌ 647 | 851 | ✗ † | – | A |
+| 9 | RELIABLE | P3 1424 B | ✅ **943** | ❌ 439 | 808 | ✗ † | – | T |
+| 10 | RELIABLE | P4 2800 B | ✅ **943** | ❌ 635 | 863 | ✗ † | – | T |
+| 11 | BEST_EFFORT | P1, max rate | ✅ **119** | ❌ 47.9 | 71.7 | 53.4 | – | A |
+| 11a | BEST_EFFORT | P2 1292 B, max rate | ✅ **938** | ❌ 756 | 914 | 867 | – | G |
+| 11b | BEST_EFFORT | P3 1424 B, max rate | ✅ **943** | ❌ 608 | 820 | 941 ‡ | – | G |
+| 11c | BEST_EFFORT | P4 2800 B, max rate | **944** | ❌ 915 | 938 | 945 ‡ | – | G |
+| 12 | RELIABLE KEEP_LAST 64 | P1 | ✅ **117** | ❌ 41.9 | 89.3 | – | – | A |
+| 13 | RELIABLE | P1, **5% loss** | ✅ **106** | 6.6 | ❌ 3.1 | ✗ † | – | A |
+| 14 | RELIABLE | P4, **5% loss** | ✅ **854** | 214 | ❌ 11.8 | ✗ † | – | T |
+| 15 | RELIABLE | P1, 5% reorder | ✅ **104** | ❌ 32.2 | 67.4 | ✗ † | – | A |
+| 16 | retention under loss | P1: 5% loss / unshaped | ✅ **92.7%** | 16.1% | ❌ 3.3% | – | – | A |
+| 17 | retention under loss | P4: 5% loss / unshaped | ✅ **90.5%** | 33.7% | ❌ 1.4% | – | – | T |
+| | **[CPU](#23-cpu)** (cpu_s / Msample) | | | | |  | – | |
+| 18 | throughput, client | P1 76 B | ✅ **5.3** | ❌ 19.0 | 6.9 | 2.57 † | – | A |
+| 19 | throughput, server | P1 76 B | ✅ **2.5** | ❌ 19.2 | 11.0 | 1.42 † | – | A |
+| 20 | throughput, client | P2 1292 B | ✅ **6.5** | ❌ 19.3 | 8.5 | ✗ † | – | A |
+| 21 | throughput, server | P2 1292 B | ✅ **3.8** | ❌ 20.2 | 14.5 | ✗ † | – | A |
+| 22 | throughput, client | P4 2800 B | ✅ **12.2** | ❌ 38.7 | 14.1 | ✗ † | – | T |
+| 23 | throughput, server | P4 2800 B | ✅ **8.2** | ❌ 33.5 | 19.6 | ✗ † | – | T |
+| 24 | latency | P1 76 B | ✅ **155** | ❌ 356 | 237 | 121.1 | – | A |
+| 25 | latency | P2 1292 B | ✅ **135** | ❌ 393 | 239 | 144.6 | – | A |
+| 26 | throughput, client | P1, 5% loss | ✅ **5.7** | ❌ 27.6 | 12.9 | ✗ † | – | A |
+| 27 | throughput, client | P4, 5% loss | ✅ **14.4** | ❌ 63.5 | 43.0 | ✗ † | – | T |
+| | **[Memory](#24-memory)** (peak RSS, KB) | | | | |  | – | |
+| 28 | throughput, client | P1 76 B | ✅ **1,916** | ❌ 15,904 | 5,232 | 2,127 † | – | A |
+| 29 | throughput, client | P2 1292 B | ✅ **2,196** | ❌ 15,048 | 6,400 | ✗ † | – | A |
+| 30 | throughput, client | P4 2800 B | ✅ **2,268** | ❌ 13,976 | 5,572 | ✗ † | – | T |
+| 31 | latency, client | P1 76 B | ✅ **1,660** | ❌ 14,340 | 4,836 | 2,135 | – | A |
+| 32 | throughput, server | P1 76 B | ✅ **1,828** | ❌ 14,332 | 4,888 | 2,127 † | – | A |
+| 33 | throughput, server | P4 2800 B | ✅ **2,848** | ❌ 13,992 | 4,900 | ✗ † | – | T |
+| 34 | throughput, server | P4, 5% loss | ✅ **2,848** | ❌ 14,332 | 6,400 | ✗ † | – | T |
+| | **[Bandwidth](#25-bandwidth)** (wire B / sample) | | | | |  | – | |
+| 35 | wire bytes | P1 76 B | ✅ **138** | ❌ 286 | 180 | 93.6 † | – | A |
+| 36 | wire bytes | P2 1292 B | ✅ **1,355** | ❌ 1,502 | 1,397 | ✗ † | – | A |
+| 37 | wire bytes | P3 1424 B | ✅ **1,487** | ❌ 1,865 | 1,585 | ✗ † | – | T |
+| 38 | wire bytes | P4 2800 B | ✅ **2,921** | ❌ 3,460 | 2,950 | ✗ † | – | T |
+| 39 | wire bytes | P1, 5% loss | ✅ **143** | ❌ 287 | 194 | ✗ † | – | A |
+| 40 | wire bytes | P4, 5% loss | ✅ **3,041** | ❌ 4,384 | 3,230 | ✗ † | – | T |
+| 41 | framing overhead | single datagram | ✅ **62.1** | ❌ 210.3 | 104.2 | – | – | A |
+| | **[QoS mechanics](#26-qos-mechanics)** | | | | |  | – | |
+| 42 | DURABILITY late join | durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | – | – | S |
+| 43 | HISTORY, within depth | burst | 160/160 | 160/160 | 160/160 | – | – | S |
+| 44 | HISTORY, beyond depth | burst | ✅ **147.7/160** | ❌ 109/160 | ❌ 109/160 | – | – | S |
+| 45 | DEADLINE detection | 50 ms | ⚪ works | ⚪ works | ⚪ works | – | – | S |
+| 46 | LIVELINESS detection | lease 2.0 s | ⚪ 2000.1 ms | ⚪ 1999.1 ms | ⚪ 2000.1 ms | – | – | L |
+| 47 | LIFESPAN expiry | 100 ms | ⚪ works | ⚪ works | ⚪ works | – | – | S |
+| | **[rmw layer](#27-the-rmw-layer)** (ms, cross-host) | | | | |  | – | |
+| 48 | RTT mean, block wait, BEST_EFFORT | Bench (64 B) | ✅ **0.244** | ❌ 0.320 | 0.276 | – | – | V |
+| 49 | RTT mean, block wait, RELIABLE | Bench (64 B) | ✅ **0.242** | ❌ 0.328 | 0.273 | – | – | V |
+| 50 | RTT mean, block wait, BEST_EFFORT | Array1k | ✅ **0.267** | ❌ 0.341 | 0.291 | – | – | V |
+| 51 | RTT mean, block wait, RELIABLE | Array1k | ✅ **0.267** | ❌ 0.355 | 0.284 | – | – | V |
+| 52 | RTT mean, busy poll (no sleep), BEST_EFFORT | Bench (64 B) | ✅ **0.240** | ❌ 0.320 | 0.273 | – | – | J |
+| 53 | RTT mean, busy poll (no sleep), RELIABLE | Bench (64 B) | ✅ **0.242** | ❌ 0.330 | 0.270 | – | – | J |
+| 54 | RTT mean, busy poll (no sleep), BEST_EFFORT | Array1k | ✅ **0.261** | ❌ 0.336 | 0.289 | – | – | J |
+| 55 | RTT mean, busy poll (no sleep), RELIABLE | Array1k | ✅ **0.263** | ❌ 0.350 | 0.281 | – | – | J |
+| 56 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ✅ **0.293** | ❌ 0.357 | 0.308 | – | – | J |
+| 57 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.297 | 0.359 | ⚪ 0.340 | – | – | J |
+| 58 | RTT mean, poll wait, 50 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.311** | ❌ 0.369 | 0.324 | – | – | J |
+| 59 | RTT mean, poll wait, 50 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.315 | 0.377 | ⚪ 0.354 | – | – | J |
+| 60 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.316 | 0.372 | ⚪ 0.322 | – | – | J |
+| 61 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Bench (64 B) | ✅ **0.320** | ❌ 0.387 | 0.329 | – | – | J |
+| 62 | RTT mean, poll wait, 100 us sleep, random phase, BEST_EFFORT | Array1k | ✅ **0.338** | ❌ 0.394 | 0.349 | – | – | J |
+| 63 | RTT mean, poll wait, 100 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.338 | 0.400 | ⚪ 0.346 | – | – | J |
+| 64 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Bench (64 B) | ⚪ 0.365 | 0.419 | ⚪ 0.367 | – | – | J |
+| 65 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Bench (64 B) | ⚪ 0.366 | 0.424 | ⚪ 0.375 | – | – | J |
+| 66 | RTT mean, poll wait, 200 us sleep, random phase, BEST_EFFORT | Array1k | ⚪ 0.388 | 0.433 | ⚪ 0.395 | – | – | J |
+| 67 | RTT mean, poll wait, 200 us sleep, random phase, RELIABLE | Array1k | ⚪ 0.392 | 0.442 | ⚪ 0.384 | – | – | J |
+| 68 | peak RSS, ping process (KB) | Bench, block, BEST_EFFORT | ✅ **11,264** | ❌ 23,636 | 14,848 | – | – | V |
+| 69 | peak RSS, pong process (KB) | Bench, block, BEST_EFFORT | ✅ **11,732** | ❌ 23,620 | 14,532 | – | – | V |
+| 70 | pong CPU, whole run (ms) | Bench, block, BEST_EFFORT | ✅ **34.9** | ❌ 55.8 | 43.6 | – | – | V |
+| 71 | pong CPU, whole run (ms) | Bench, block, RELIABLE | ✅ **34.9** | ❌ 59.0 | 48.5 | – | – | V |
 
 **FastDDS as shipped (`maxMessageSize` 65,500), at the same cells, for reference.** Aligned campaign,
 same QoS:
