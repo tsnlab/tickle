@@ -904,18 +904,40 @@ static void release_own_segment(struct tt_Context* node) {
     }
     node->own_segment = NULL;
     char path[tt_SEGMENT_PATH_LENGTH];
+    // From the header, not from node->id: move_id() can renumber a live context on an id collision,
+    // and the file on disk still carries the id it was created under.
     const bool named = segment_name(path, sizeof(path), own->owner_ip, own->owner_port, own->owner_context_id) >= 0;
-    // Our own entry in the peer table aliases this same region when this context delivers to itself,
-    // so it is cleared here rather than detached again - the double-unmap that release_segments()
-    // exists to avoid.
-    if (node->segment_peers[node->id].mapping == own) {
-        memset(&node->segment_peers[node->id], 0, sizeof(node->segment_peers[node->id]));
+    // Any entry aliasing this region is cleared, found BY IDENTITY rather than at index node->id. A
+    // context delivering to itself has its own id pointing at its own region - but move_id() can
+    // change node->id while that entry stays where it was, so indexing by the current id would find
+    // an empty slot, unmap the region anyway, and leave the old entry dangling. That is a
+    // use-after-munmap of the kind release_segments() was written to avoid, and this is the function
+    // that can now run while the context is still going.
+    for (int id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
+        if (node->segment_peers[id].mapping == own) {
+            memset(&node->segment_peers[id], 0, sizeof(node->segment_peers[id]));
+        }
     }
     if (named) {
         tt_segment_unlink(path);
     }
     tt_segment_detach(own, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
     node->segments_released++;
+}
+
+// Whether this context is itself attached to its own segment, which is what delivering to itself
+// leaves behind. Asked by identity, not at index node->id: move_id() can renumber a live context on
+// an id collision and the entry does not move with it.
+static bool own_segment_attached_by_self(const struct tt_Context* node) {
+    if (node->own_segment == NULL) {
+        return false;
+    }
+    for (int id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
+        if (node->segment_peers[id].mapping == node->own_segment) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Discovery's departing edge. The segment goes when the last peer that could open it has gone - and
@@ -927,7 +949,7 @@ static void forget_same_host_peer(struct tt_Context* node, uint8_t context_id) {
     }
     node->same_host_peer[context_id] = false;
     node->same_host_peer_count--;
-    if (node->same_host_peer_count == 0 && node->segment_peers[node->id].mapping == NULL) {
+    if (node->same_host_peer_count == 0 && !own_segment_attached_by_self(node)) {
         release_own_segment(node);
     }
 }

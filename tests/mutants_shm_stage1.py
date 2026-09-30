@@ -150,8 +150,8 @@ MUTANTS = [
     (
         "releasing only on the LAST departure",
         "src/tickle.c",
-        "    if (node->same_host_peer_count == 0 && node->segment_peers[node->id].mapping == NULL) {",
-        "    if (node->segment_peers[node->id].mapping == NULL) {",
+        "    if (node->same_host_peer_count == 0 && !own_segment_attached_by_self(node)) {",
+        "    if (!own_segment_attached_by_self(node)) {",
         "test_the_last_same_host_peer_leaving_takes_the_segment",
     ),
     (
@@ -164,7 +164,7 @@ MUTANTS = [
     (
         "keeping the segment a context still delivers to itself through",
         "src/tickle.c",
-        "    if (node->same_host_peer_count == 0 && node->segment_peers[node->id].mapping == NULL) {",
+        "    if (node->same_host_peer_count == 0 && !own_segment_attached_by_self(node)) {",
         "    if (node->same_host_peer_count == 0) {",
         "test_a_context_delivering_to_itself_keeps_its_segment",
     ),
@@ -174,6 +174,13 @@ MUTANTS = [
         "    if (named) {\n        tt_segment_unlink(path);\n    }\n    tt_segment_detach(own, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));",
         "    (void)named;\n    tt_segment_detach(own, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));",
         "test_the_last_same_host_peer_leaving_takes_the_segment",
+    ),
+    (
+        "finding our own attachment by identity rather than at index node->id",
+        "src/tickle.c",
+        "    if (node->same_host_peer_count == 0 && !own_segment_attached_by_self(node)) {",
+        "    if (node->same_host_peer_count == 0 && node->segment_peers[node->id].mapping == NULL) {",
+        "test_a_renumbered_context_still_knows_it_holds_its_own_segment",
     ),
 ]
 

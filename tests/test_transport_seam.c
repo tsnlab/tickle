@@ -1849,6 +1849,47 @@ static void test_a_context_delivering_to_itself_keeps_its_segment(void) {
     release_segments(&node);
 }
 
+// move_id() renumbers a live context when two hold one id, and the peer table does not move with it:
+// a context that had attached to its own segment under its old id still has that entry, at the old
+// index. Releasing on the LAST departure then has to find that entry by identity, because looking at
+// segment_peers[node->id] would find an empty slot, unmap the region, and leave the old entry
+// pointing into it - a use-after-munmap, and one this release path introduced by being the first
+// thing that can unmap a segment while the context is still running.
+static void test_a_renumbered_context_still_knows_it_holds_its_own_segment(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+    node.id = OWNER_ID;
+    node.hal.own_ip = OWNER_IP;
+    node.hal.own_port = OWNER_PORT;
+
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(&node, &own_ip, &own_port);
+    note_same_host_peer(&node, PEER_CONTEXT_ID, own_ip);
+    EXPECT_TRUE(peer_segment(&node, node.id, own_ip, own_port) != NULL);
+    struct tt_SegmentHeader* own = node.own_segment;
+    EXPECT_TRUE(node.segment_peers[OWNER_ID].mapping == own);
+
+    // The collision, as move_id() leaves it: a new id, and the old entry exactly where it was.
+    node.id = OWNER_ID + 5;
+    EXPECT_TRUE(node.segment_peers[node.id].mapping == NULL); // what indexing by the new id would see
+
+    forget_same_host_peer(&node, PEER_CONTEXT_ID);
+
+    EXPECT_TRUE(node.own_segment != NULL); // still held, because we still use it
+    EXPECT_EQ_U32(0, (uint32_t)node.segments_released);
+    EXPECT_EQ_INT(0, test_mock_segment_unlinks);
+    EXPECT_TRUE(node.segment_peers[OWNER_ID].mapping == own); // and the old entry is not dangling
+
+    release_segments(&node);
+    EXPECT_EQ_INT(0, test_mock_segment_double_detaches);
+}
+
 int main(void) {
     test_ordinary_publish_is_counted_as_udp();
     test_zerocopy_publish_is_counted_as_udp();
@@ -1882,6 +1923,7 @@ int main(void) {
     test_the_last_same_host_peer_leaving_takes_the_segment();
     test_a_peer_we_never_counted_leaving_changes_nothing();
     test_a_context_delivering_to_itself_keeps_its_segment();
+    test_a_renumbered_context_still_knows_it_holds_its_own_segment();
 
     printf("test_transport_seam: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();

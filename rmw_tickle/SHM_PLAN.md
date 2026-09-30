@@ -959,7 +959,105 @@ differs with contention, as it must, and neither run establishes one.
   quietly.** Making a writer wait and letting a reader lose samples are both legitimate, and choosing between
   them is choosing what this module promises. It belongs with the user's decision 6, not in a commit.
 
+## 6d. Lazy creation: the segment's lifetime is the span in which a peer could open it (Dev, 2026-09-30, `8cf8cdc9`)
+
+Until this change a context created its segment at bind. That is the earliest moment its name can be built -
+the address comes from the bind and the context id from just above it - and it was the wrong moment, because
+it makes the segment's lifetime the context's lifetime rather than the span in which anything could use it.
+A deployment whose peers are all on other hosts paid for a **379 kB** ring (256 slots of 1,472 bytes) that
+nothing could ever attach to. That figure agrees with the off-arm/on-arm RSS pair measured at p2, ≈1,743 kB
+against ≈2,143 kB, which is the same ≈400 kB from the other direction.
+
+**Why the user chose this shape.** Discovery already reports both edges. It knows when a peer appears inside
+the same host and it knows when one goes, so the lifecycle is symmetric and the segment can be built when
+something can use it and given up when nothing can:
+
+- **Appearing:** `note_same_host_peer()`, from `process_announce()`, keyed on the announcing peer's address
+  being our own. A peer anywhere else can never open the file we would create - the name is built from
+  (ip, port, context id) - so building one for it would be the eager behaviour under another name.
+- **Departing:** `forget_same_host_peer()`, from `presume_node_dead()`, releasing when the **last** such peer
+  has gone.
+
+**Self-delivery is a separate claim on the segment, and missing it would have been silent.** A context
+unicasts to itself and attaches to the file it created - which is why `release_segments()` must unmap that
+region exactly once. Keying creation solely on *other* same-host peers would have moved self-delivery onto
+UDP, and a context alone on its host has no other trigger at all. So `peer_segment()` builds the segment on
+demand when asked for our own id, and release refuses while `segment_peers[own id].mapping` is non-NULL.
+
+**Only the liveliness timeout releases, deliberately.** A graceful farewell arrives as an announce, and at
+that point it cannot be told from the periodic refresh that also calls
+`forget_peers_from_source(preserve_ack=true)` while the node is alive. Hooking that would release and rebuild
+the segment under its peers once a second. The cost of the choice made is holding a segment until the silence
+limit after a graceful departure; the cost of the other would be dropping a ring somebody is still writing to.
+
+**Releasing is safe but not free, and the cost is worth stating rather than calling it none.** A peer judged
+gone by timeout may still be alive and still hold a mapping, and unlinking does not invalidate a mapping that
+already exists - so it goes on writing into a file that will never be read. Its own dead-reader rule notices
+within `tt_SEGMENT_DEAD_READER_NS` and it falls back to UDP, and its revalidation re-attaches it to whatever
+is built next. Being wrong here costs that peer a second on the slower path. It is not loss and it does not
+wedge.
+
+### The race this exposed, which was shipped and is fixed here
+
+`create_own_segment()` writes every header field and seeds every slot's sequence, then publishes the lot with
+`__ATOMIC_RELEASE` on the magic - the "magic last, magic checked first" handshake section 3 describes. But
+`segment_header_check()` read that magic with a **plain load**. A release store pairs with an acquire load and
+with nothing else, so a reader could see a valid magic beside a `slots` still zero: a header believed and a
+ring that cannot be indexed.
+
+**It was safe only by accident.** Creation at bind finished before any peer could attach, so creator and
+attacher never overlapped. Deferred creation makes "a peer attaches while the owner is still building it" the
+ordinary case, and ThreadSanitizer reported the race the first time the two could run at once. The load is now
+`__ATOMIC_ACQUIRE`; tsan reports the race with the plain load and is clean with the acquire, from the same
+instrument.
+
+This is the second time this week a correct-looking release/acquire pair has turned out to be half a pair,
+and both halves read as careful code. The general form: **a release store with no acquire load is a comment,
+not a barrier.**
+
+### Releasing while the context runs is new, and one thing had to move with it
+
+`release_segments()` only ever ran at teardown. `release_own_segment()` is the first thing that can unmap a
+segment **while the context is still going**, and that makes one existing assumption unsafe: `move_id()`
+renumbers a live context when two hold one id, and the peer table does not move with it. A context that had
+attached to its own segment under its old id still has that entry at the old index, so a release that looked
+at `segment_peers[node->id]` would find an empty slot, unmap the region anyway, and leave the old entry
+pointing into it - a use-after-munmap, the same class as the teardown segfault that `release_segments()`
+was written to avoid.
+
+So both the guard and the cleanup find our own attachment **by identity** - scanning for an entry whose
+mapping is our own segment - rather than by index. The unlink path likewise takes the name from the header's
+`owner_context_id` and not from `node->id`, because the file carries the id it was created under. A test
+renumbers a context that holds its own segment and asserts the release refuses; with the index version it
+fails on four assertions, one of them the dangling entry itself.
+
+### What makes the claim testable
+
+The claim is mostly a NEGATIVE one - that no segment is built until something can use it - and a test of an
+absence passes just as well against the old eager code. So the controls carry it: a peer on another host
+building nothing, a departure that is not the last one, a peer never counted leaving, and a context delivering
+to itself keeping its segment. Seven new mutants in `tests/mutants_shm_stage1.py`, twenty in all, every one
+dying with the control holding.
+
+`shm_segments_created`, `shm_segments_released` and `shm_same_host_peers` are on the node traffic line for the
+same reason: with creation deferred, `tx_shm=0` has two entirely different meanings - "no peer could have used
+one" and "one could, and it broke" - and without a counter that rose they leave the same absence behind.
+
+`test_thread_safety`'s fake transport gave its two nodes 10.0.0.1 and 10.0.0.2: two nodes on two *hosts* that
+nonetheless share a `/dev/shm`, which cannot happen. Once creation became conditional on a peer being on this
+host, that addressing was what said they were not, and every attach came back ABSENT for a new reason. Both
+contexts now have one address and differ by port. `tx_shm` went from 0 to 79,503 and `unattached` from 79,970
+to 257 - and the segment was built through the real announce path, not by the test calling in.
+
+### What is now measurable that was not
+
+Section 6c's **pre-attach mixed-stream window** (S9 window B) becomes reachable: with the segment built on a
+discovery edge, there is a real interval in which a same-host peer exists, has been announced, and has not yet
+attached, during which its traffic takes UDP. Before this change that window existed only at process start.
+It has not been measured yet, and this section does not claim it has.
+
 ## 7. Open questions
+
 
 1. **Notification.** A reader must learn a record arrived. A futex or an eventfd per reader costs a syscall and gives
    back the wakeup latency the poll loop currently pays; a pure spin costs a core. The choice interacts with the poll
