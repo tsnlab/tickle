@@ -144,6 +144,19 @@ same session, so a row is always comparable. Across rows of different letters it
   median detection time is shown, measured from the last received sample. All three match the lease within 1 ms,
   hence no winner. Across the 20 reps, TickLE's were all within 0.2 ms of the lease at every lease tried (1, 2 and
   4 s). CycloneDDS had one rep about 94 ms late at each lease, and FastDDS one 78 ms late at 1 s.
+- **Rows 52-59 and 64-67 are blank for rmw_zenoh_cpp because they were not run, and that is the whole reason.** They
+  are the busy-poll and 50/200 us poll-wait variants; only the block-wait set (48-51, 68-71) was measured on
+  2026-09-30, and the 100 us set was measured in a configuration (`phase: locked`) that no row describes, so its
+  numbers are in `results/rmw_4way_pollwait_934f90de_2026-09-30.txt` and in no cell. Each variant is one
+  `rmw_crosshost_rtt.sh` run away; nothing about them is unmeasurable.
+- **Rows 16-17 are `✗ †` rather than blank or filled.** They are RELIABLE retention, and zenoh-pico's reliable arm is
+  TCP, which does not survive a max-rate run above a 76-byte payload - so row 17 has no reliable figure available at
+  all. Its best-effort arm *was* measured under 5% loss and the figures are in §4.4a, but they must not go in these
+  cells, and the reason is the more interesting half: **zenoh-pico's best-effort arm retains 98.2% of its unshaped
+  throughput at p1 and 99.6% at p4, against TickLE's 92.7% and 90.5%.** Read as a column that looks like a loss for
+  TickLE. It is the opposite: zenoh keeps its throughput because dropping is free, and TickLE's missing 7-10% is what
+  recovering the lost samples costs. The same number in the same column meaning opposite things is why these cells are
+  marked instead of filled.
 - **`W` rows** are the four-way rmw block-wait measurement of 2026-09-30 (`rmw_crosshost_rtt.sh`, `WAITS=block`,
   `results/rmw_4way_block_ea910ae7_2026-09-30.txt`, 3 repetitions, median of 3, all four implementations in one
   session, 0 VOID, both sides' `/proc` maps checked per row). They **replace** the `V` figures in rows 48-51 and 68-71
@@ -224,8 +237,8 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 13 | RELIABLE | P1, **5% loss** | ✅ **106** | 6.6 | ❌ 3.1 | ✗ † | – | A |
 | 14 | RELIABLE | P4, **5% loss** | ✅ **854** | 214 | ❌ 11.8 | ✗ † | – | T |
 | 15 | RELIABLE | P1, 5% reorder | ✅ **104** | ❌ 32.2 | 67.4 | ✗ † | – | A |
-| 16 | retention under loss | P1: 5% loss / unshaped | ✅ **92.7%** | 16.1% | ❌ 3.3% | – | – | A |
-| 17 | retention under loss | P4: 5% loss / unshaped | ✅ **90.5%** | 33.7% | ❌ 1.4% | – | – | T |
+| 16 | retention under loss | P1: 5% loss / unshaped | ✅ **92.7%** | 16.1% | ❌ 3.3% | – | ✗ † | A |
+| 17 | retention under loss | P4: 5% loss / unshaped | ✅ **90.5%** | 33.7% | ❌ 1.4% | – | ✗ † | T |
 | | **[CPU](#23-cpu)** (cpu_s / Msample) | | | | |  | – | |
 | 18 | throughput, client | P1 76 B | ✅ **5.3** | ❌ 19.0 | 6.9 | 2.57 † | – | A |
 | 19 | throughput, server | P1 76 B | ✅ **2.5** | ❌ 19.2 | 11.0 | 1.42 † | – | A |
@@ -2063,6 +2076,20 @@ row in the master table for the other three, so they live here rather than as ro
 | p2 1292 B | 867.28 +- 3.46 | 16.358 | 2,129 | 1,356.0 | 1.000 | 0.000 |
 | p3 1424 B | 940.60 +- 0.29 | 16.545 | 2,132 | 1,487.9 | 1.000 | 0.000 |
 | p4 2800 B | 944.72 +- 0.46 | 32.642 | 2,132 | 2,910.8 | 2.000 | 0.000 |
+
+**Its retention under 5% injected loss, best-effort arm** (`results/zenoh_loss_p1p4_be3d42bf_2026-09-30.txt`,
+3 reps each, unshaped baselines from the payload sweep above):
+
+| payload | shaped | unshaped | retained | delivered loss |
+|---|---:|---:|---:|---:|
+| p1 76 B | 52.463 +- 0.034 | 53.402 | **98.2%** | 5.019% |
+| p4 2800 B | 940.972 +- 1.682 | 944.723 | **99.6%** | 13.874% |
+
+Retention is near-total because a best-effort publisher that drops pays nothing to drop. The delivered loss is the
+figure that matters, and at p4 it is **13.9% against 5% injected** - a 2800-byte sample spans more than one datagram,
+so losing either loses the sample, and the per-sample loss is larger than the per-datagram rate that caused it. That
+is a property of fragmenting without repair, and it is why these figures are not comparable with the RELIABLE
+retention rows (16-17), where the missing throughput is the cost of recovery rather than the absence of it.
 
 **Under shaping** (`results/zenoh_zn_N*_8673ab4d_2026-09-29.txt`, same netem conditions as the campaign, applied to
 the client's eth0 and read back rather than trusted, 3 reps each). Every row states the condition it ran under; a row
