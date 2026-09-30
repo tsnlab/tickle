@@ -442,6 +442,21 @@ Table rows 7-17. The two deep dives that follow (§2.2a, §2.2b) are where the R
 > remainder is other loss. So this is no longer one uncontrolled observation - it is three occurrences, of which the
 > latest attributes the loss to a full ring by direct count rather than by elimination.
 >
+> **And on `7eaad571` the accounting closes, which settles where the loss happens.** With the counters on the row:
+>
+> | | samples |
+> |---|---:|
+> | through the ring (`tx_shm`) | 48,387,684 |
+> | over the socket (`tx_udp`) | 78 |
+> | refused by a full ring (`shm_full_dropped`) | 5,017,606 |
+> | **sum** | **53,405,368** |
+> | reported sent | 53,405,295 |
+>
+> Seventy-three apart, in flight at the sampling boundary. So **every one of the five million lost samples was refused
+> before it was ever sent**, and that is the whole of that run's 8.6%: nothing lost in transit, nothing unaccounted
+> for. The module's loss under load is entirely a publisher-side refusal, not a delivery failure - which is what makes
+> `shm_full_dropped` the right place to look and a subscriber's `loss_pct` the wrong one.
+>
 > It is still **not** characterised, in the sense that nobody has established the threshold: 0.0% loss appeared at
 > 4,388 Mbps and 2.477% at 4,049, so the trigger is not rate alone and contention is involved. What has changed is
 > that the effect is now measured at its source instead of inferred from a discrepancy. What it does establish is that the +47% should not be quoted without it - a throughput
