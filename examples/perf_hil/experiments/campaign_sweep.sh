@@ -125,6 +125,15 @@ MATRIX=(
     "L|p1|Q0|N0|reliable_latency|"
     "L|p2|Q0|N0|reliable_latency|"
     "L|p1|Q0|N2|reliable_latency|"
+    # Appended 2026-09-30 at the user's instruction: "p1~p4 should be tested for every case, TickLE or DDS or
+    # Zenoh". The matrix had reliable throughput at p1-p4 but best-effort at p1 only and latency at p1-p2 only, so
+    # three of the five metrics had no large-payload row for any framework. Appended rather than inserted so every
+    # existing cell keeps its number - COMPARISON and WIRE_PLAN refer to cells positionally (c1, c8, ...).
+    "T|p2|Q1|N0|best_effort_throughput|"
+    "T|p3|Q1|N0|best_effort_throughput|"
+    "T|p4|Q1|N0|best_effort_throughput|"
+    "L|p3|Q0|N0|reliable_latency|"
+    "L|p4|Q0|N0|reliable_latency|"
 )
 # Scenario/payload pairs that have to exist as built directories.
 needed_variants() {
