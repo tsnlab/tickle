@@ -151,7 +151,11 @@ same session, so a row is always comparable. Across rows of different letters it
   `rmw_crosshost_rtt.sh` run away; nothing about them is unmeasurable.
 - **Rows 16-17 are `✗ †` rather than blank or filled.** They are RELIABLE retention, and zenoh-pico's reliable arm is
   TCP, which does not survive a max-rate run above a 76-byte payload - so row 17 has no reliable figure available at
-  all. Its best-effort arm *was* measured under 5% loss and the figures are in §4.4a, but they must not go in these
+  all. Measured on 2026-09-30 with a diagnostic zenoh-pico build, the reason is on the *subscriber*: its decoder
+  meets a message it does not recognise while decoding a PUSH key expression (`_Z_ERR_MESSAGE_ZENOH_UNKNOWN`, -114),
+  declares the connection compromised and drops the peer about 7 s in. The publisher is never told - it logs nothing
+  even at ERROR level and goes on reporting success - so a client RESULT line from such a run describes a healthy
+  run that did not happen. Read those cells as "the transport did not survive", never as a throughput figure. Its best-effort arm *was* measured under 5% loss and the figures are in §4.4a, but they must not go in these
   cells, and the reason is the more interesting half: **zenoh-pico's best-effort arm retains 98.2% of its unshaped
   throughput at p1 and 99.6% at p4, against TickLE's 92.7% and 90.5%.** Read as a column that looks like a loss for
   TickLE. It is the opposite: zenoh keeps its throughput because dropping is free, and TickLE's missing 7-10% is what

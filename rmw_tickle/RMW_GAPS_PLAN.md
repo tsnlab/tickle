@@ -1391,7 +1391,7 @@ Four requirements that the existing campaign does not yet meet, each of which is
    means the harness is wrong, not that the transport is fast.
 
 
-#### Why zenoh-pico's TCP arm dies above p1, and the log that would say (opened 2026-09-30, user's decision to defer)
+#### Why zenoh-pico's TCP arm dies above p1: the subscriber's decoder rejects a message (answered 2026-09-30)
 
 COMPARISON's `✗ †` cells are zenoh-pico's RELIABLE rows at p2 and above. **p1 is healthy** - 1,952,454 samples at
 93.6 wire bytes per sample, no loss - so the reproduction target is **p2**, not p1.
@@ -1403,14 +1403,35 @@ bytes (kernel TSO/GSO coalescing), carrying about 610 samples. Then exactly one 
 session handle stays valid, and a publisher on a session with no usable link accepts a put and discards it locally.
 So **the link died, the session object did not, and the publisher became a local sink that reports success.**
 
-**What is not established: why the link died.** Three mechanisms are all consistent with what was kept, and cannot be
-distinguished from it:
+**Why the link died, measured.** A diagnostic build (`ZENOH_DEBUG`, its own prefix, identity checked: the two
+libraries differ in bytes, the scenario binary's RUNPATH points at the diagnostic prefix, and the measurement
+library contains none of the log format strings the diagnostic one does) reproduced p2 reliable and the
+**subscriber** said it in one line:
 
-| candidate | why it would appear at p2 and not p1 |
-|---|---|
-| batching / fragmentation | 76 B fits one batch; 1292 B plus headers may cross `Z_BATCH_UNICAST_SIZE` into the fragmentation path |
-| send buffer against `Z_CONGESTION_CONTROL_BLOCK` | BLOCK should block the writer; if the write instead times out and zenoh treats that as link failure, the link closes. p2's byte rate is ~17x p1's, so the buffer fills far sooner |
-| lease starvation | if BLOCK stalls the writer long enough that the keepalive task cannot run, the peer declares the link dead. This fits "one write_fail then permanently dead" best |
+    WARN  ::_z_unicast_process_messages  Connection compromised due to message processing error: -114
+    ERROR ::_zp_unicast_process_peer_event  Dropping peer due to processing error
+
+`-114` is `_Z_ERR_MESSAGE_ZENOH_UNKNOWN` (`include/zenoh-pico/utils/result.h:56`), and at level 3 the three lines
+before it are `Received Z_FRAME` / `Handling _Z_N_PUSH` / `Decoding _RESKEY`. So the subscriber's decoder met a
+zenoh message it did not recognise **while decoding a PUSH's key expression**, declared the connection compromised
+and dropped the peer, about 7 s into a 20 s run. 99 samples had arrived.
+
+None of the three candidates is what happened. It is not congestion, not a blocked send buffer and not lease
+starvation: it is a decode failure on the receiving side.
+
+**And the publisher was never told.** With logging at ERROR level the client printed nothing at all - not one line -
+while reporting `sent=52,027,128` against `wire_tx_packets=27`. Its only signal was the single `write_fail=1`. So
+zenoh-pico's publisher cannot observe that its subscriber threw the link away; a put into a session whose link is
+gone returns success. That, rather than the decode failure, is what makes the cell dangerous to read: the client's
+RESULT line describes a healthy run.
+
+**What is indicated but NOT established: stream desynchronisation.** An *unknown message* while decoding a key
+expression is what a decoder sees once it has lost framing alignment - it is reading a length or a tag from the
+middle of something else - and framing is exactly what differs between p1 and p2, where 1292-byte samples plus
+headers meet batching. That is a reading of the symptom, not a measurement of the cause. What would settle it: a
+capture of the last frames before the drop, comparing declared frame lengths against the bytes actually present,
+or a run with batching bounded (`Z_BATCH_UNICAST_SIZE`) - which is also still the tuning **nobody has attempted**,
+so "no configuration survives this" remains unestablished.
 
 **The instrumentation gap is larger than it first looked, and the first version of this section got it wrong.** It
 said the cheapest discriminator was the client's own stderr, which the harness threw away by keeping only `^RESULT`
