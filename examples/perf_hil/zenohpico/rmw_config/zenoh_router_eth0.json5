@@ -1,0 +1,21 @@
+/// rmw_zenoh_cpp router config for the tickle-hil rig, eth0 only.
+///
+/// WHY THIS FILE EXISTS. The other three rmws in rmw_crosshost_rtt.sh are each pinned to the eth0 measurement link
+/// and nothing else - TICKLE_BROADCAST_ADDR for rmw_tickle, an eth0-only XML profile for FastDDS (without it FastDDS
+/// also sends on wlan0, the 2026-09-22 E2 finding), CYCLONEDDS_URI for CycloneDDS. rmw_zenoh_cpp was started with no
+/// equivalent, and two things followed: the router logged "Zenoh can be reached at:" with no endpoints, and the ping
+/// on the other Pi could not find it at all ("Unable to connect to a Zenoh router", then "timed out waiting for a
+/// match"). So this is a fairness requirement before it is a connectivity one - a zenoh reached over the management
+/// LAN would not be measured on the same link as the other three.
+{
+  mode: "router",
+  listen: {
+    endpoints: ["tcp/192.168.10.2:7447"],
+  },
+  scouting: {
+    multicast: {
+      enabled: true,
+      interface: "eth0",
+    },
+  },
+}

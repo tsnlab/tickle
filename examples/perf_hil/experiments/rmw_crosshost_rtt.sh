@@ -129,7 +129,7 @@ env_for() {
         # segment find each other by multicast scouting - the same way the other two rmws run here, with no extra
         # process. `rmw_zenohd` exists in the package if that turns out to be wrong; a session that does not form
         # shows up as a run with no pong rather than as a number, which is what makes trying it without one safe.
-        rmw_zenoh_cpp) echo "$ENV_BASE; export RMW_IMPLEMENTATION=rmw_zenoh_cpp" ;;
+        rmw_zenoh_cpp) echo "$ENV_BASE; export RMW_IMPLEMENTATION=rmw_zenoh_cpp ZENOH_SESSION_CONFIG_URI=$ZENOH_SESSION_CFG" ;;
     esac
 }
 lib_for() {
@@ -249,7 +249,52 @@ spin_off() {
     done
     sleep 1
 }
-trap spin_off EXIT
+# rmw_zenoh_cpp needs a Zenoh router and says so at runtime: "Unable to connect to a Zenoh router. Have you started
+# a router with `ros2 run rmw_zenoh_cpp rmw_zenohd`", then "timed out waiting for a match". Its shipped session config
+# reads mode "peer" with autoconnect to routers and peers, which is why the first attempt was made without one - that
+# was a behavioural question answered from a config file, and the run corrected it. One router on the pong host serves
+# both nodes; they find it by the same multicast scouting the config describes.
+ZENOHD_PID=""
+ZENOH_ROUTER_CFG=${ZENOH_ROUTER_CFG:-/tmp/zenoh_router_eth0.json5}
+ZENOH_SESSION_CFG=${ZENOH_SESSION_CFG:-/tmp/zenoh_session_eth0.json5}
+zenohd_on() {
+    case " $RMW_LIST " in *" rmw_zenoh_cpp "*) ;; *) return 0 ;; esac
+    # `ros2 run` is a WRAPPER: the daemon it spawns is a child with a different pid, so $! names the wrapper and
+    # killing it leaves the daemon holding tcp/7447. That happened on the first attempt - the next router could not
+    # bind, and the /proc check had passed because the wrapper really was gone. setsid makes the wrapper a process
+    # group leader, so the group id is the wrapper's pid and killing the GROUP takes the daemon with it.
+    # The configs ship with the repo and are copied here, not left in /tmp by hand: a run whose config file is
+    # missing gets the shipped default, which is the no-router peer mode that fails - and it would fail the same way
+    # whether the file was absent or wrong, which is the kind of silent difference this harness exists to refuse.
+    local cfgdir="$REPO/examples/perf_hil/zenohpico/rmw_config"
+    local h
+    for h in "$CLIENT" "$SERVER"; do
+        scp -q -i "$K" -o BatchMode=yes "$cfgdir/zenoh_router_eth0.json5" "$cfgdir/zenoh_session_eth0.json5" "ci@$h:/tmp/" \
+            || { say "FATAL could not copy the zenoh configs to $h"; return 1; }
+    done
+    ZENOHD_PID=$(sh_ "$SERVER" "$ENV_BASE; export ZENOH_ROUTER_CONFIG_URI=$ZENOH_ROUTER_CFG; setsid nohup ros2 run rmw_zenoh_cpp rmw_zenohd > /tmp/rmwx_zenohd.log 2>&1 < /dev/null & echo \$!")
+    sleep 4
+    # Verified by /proc/PID, not by assuming the launch worked: a router that failed to start would otherwise look
+    # exactly like the no-router case this exists to remove, and every zenoh row would void for the same reason twice.
+    # Checked on the LISTENER, not on the wrapper's pid: "the wrapper is alive" and "a router is accepting
+    # connections" are different facts, and only the second is what the measurement needs.
+    if ! sh_ "$SERVER" "ss -ltn 2>/dev/null | grep -q ':7447 '" >/dev/null 2>&1; then
+        say "FATAL no router listening on $SERVER:7447 (wrapper pid ${ZENOHD_PID:-none}); zenoh rows would all VOID"
+        sh_ "$SERVER" "tail -5 /tmp/rmwx_zenohd.log" 2>&1 | sed 's/^/  /' | tee -a "$OUT"
+        return 1
+    fi
+    say "  rmw_zenohd up on $SERVER, pid $ZENOHD_PID"
+}
+zenohd_off() {
+    [ -z "${ZENOHD_PID:-}" ] && return 0
+    # The whole process group, and then verified by the port rather than by the pid.
+    sh_ "$SERVER" "kill -TERM -- -$ZENOHD_PID 2>/dev/null; sleep 2; ss -ltn 2>/dev/null | grep -q ':7447 ' && { echo 'router still listening on 7447'; kill -KILL -- -$ZENOHD_PID 2>/dev/null; }" >/dev/null 2>&1 || true
+    ZENOHD_PID=""
+}
+# ONE exit handler. spin_off had the trap; adding a second `trap ... EXIT` would silently replace it, which is how a
+# netem restore was lost on 2026-09-29.
+rmwx_on_exit() { spin_off; zenohd_off; }
+trap rmwx_on_exit EXIT
 freqs() { echo "$(sh_ "$CLIENT" 'cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq') $(sh_ "$SERVER" 'cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq')"; }
 
 # CAPTURE=1 (2026-09-26, RMW_PERF_PLAN.md section 6): tcpdump on both Pis for every run, so a round trip can be
@@ -421,7 +466,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
         *) [ "$verdict" = ok ] && verdict="VOID(ping did not show $(lib_for "$rmw") in its maps)" ;; esac
     # ... and no other implementation beside it, on either side
     local impls
-    impls=$(echo "${res#*PINGMAPS: } | $maps" | tr ' ' '\n' | grep -oE 'librmw_(tickle|fastrtps_cpp|cyclonedds_cpp)\.so' | sort -u | wc -l)
+    impls=$(echo "${res#*PINGMAPS: } | $maps" | tr ' ' '\n' | grep -oE 'librmw_(tickle|fastrtps_cpp|cyclonedds_cpp|zenoh_cpp)\.so' | sort -u | wc -l)
     [ "$impls" = 1 ] || { [ "$verdict" = ok ] && verdict="VOID($impls rmw implementations loaded across ping and pong)"; }
     case "$res" in *"framework=${rmw%@*} "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(no RESULT for $rmw)" ;; esac
     case "$res" in *"loss_pct=0 "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(loss)" ;; esac
@@ -456,6 +501,10 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
         scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_trace_$rmw.txt" "$OUT.traces/$rmw.txt" || say "  (trace copy failed for $rmw)"
     fi
 }
+# The router goes up once, before any measurement, and comes down in the exit handler. Failing here is fatal rather
+# than warned: without it every zenoh row voids, which is a correct refusal but a wasted run.
+zenohd_on || exit 1
+
 for rep in $(seq 1 "$REPS"); do
   for spin in $SPIN_ARMS; do
     if [ "$spin" = on ]; then spin_on; else spin_off; fi

@@ -1,0 +1,18 @@
+/// rmw_zenoh_cpp session config for the tickle-hil rig: connect to the router on the eth0 link explicitly.
+///
+/// The shipped default is mode "peer" with autoconnect and multicast scouting, which is why the first attempt was
+/// made without any config at all. It does not work here: rmw_zenoh_cpp refuses to proceed without a router even in
+/// peer mode, and scouting did not find one across the rig's two interfaces. Naming the router's endpoint removes
+/// both problems and pins the session to the measured link, as the other three rmws are pinned.
+{
+  mode: "peer",
+  connect: {
+    endpoints: ["tcp/192.168.10.2:7447"],
+  },
+  scouting: {
+    multicast: {
+      enabled: true,
+      interface: "eth0",
+    },
+  },
+}

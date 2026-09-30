@@ -149,10 +149,17 @@ same session, so a row is always comparable. Across rows of different letters it
   which the matrix had for no framework (`results/cmp_p1p4_gap_99033118_2026-09-30.txt`, 3 repetitions, all three
   campaign frameworks in one session, WIN 38 / DRAW 4 / LOSE 0 / VOID 0 over the comparable metric-cells). zenoh-pico's
   figures in those rows come from its own `Z` session and carry the same looser-comparability caveat as its others.
+- **`§` means derived from a measured row rather than run as its own cell.** Row 41 is row 35's wire bytes per sample
+  at P1 minus the 76-byte payload, which reproduces all three published figures exactly (138.0-76=62.0 against 62.1,
+  286.3-76=210.3, 180.2-76=104.2), so zenoh-pico's is 139.0-76=63.0. It is taken from its **multicast** arm and not
+  its TCP one: "single datagram" requires one datagram per sample, and the TCP arm coalesces about eleven samples into
+  each segment (0.094 packets per sample), where a per-datagram overhead is not a meaningful quantity.
 - **`‡` marks a cell where two implementations are both at the link ceiling**, about 940 Mbps here, so the cell cannot
   separate them: TickLE 943 against zenoh-pico 941 at p3, and 944 against 945 at p4, are differences well inside
-  WIRE_PLAN 10.4's ~1% floor. **A ceiling is a blind spot, not a result** - neither row is a win for anyone, and row
-  11c carries no tick for that reason.
+  WIRE_PLAN 10.4's ~1% floor. **Both carry ✅** - the user's rule, 2026-09-30: where there are two winners, mark both.
+  That reads correctly as a tie for first rather than as an arbitrary pick, and `‡` says why they cannot be separated.
+  It does not change the scoring rule: zenoh-pico's ticks are for reading the row and stay out of the WIN/DRAW/LOSE
+  totals, which are still TickLE against the two DDS implementations.
 - **`Z` rows** are zenoh-pico, measured on its own (`experiments/zenoh_cells.sh`, 2026-09-29, `31d58011`,
   `results/zenoh_cells_31d58011_2026-09-29.txt`, 3 repetitions, `-d 5`, both Pis, same link and same shapes as `A`).
   They are **not** from the `A` or `T` sessions, so a zenoh margin is looser than a within-row one. Every rep pairs
@@ -181,8 +188,8 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 10 | RELIABLE | P4 2800 B | ✅ **943** | ❌ 635 | 863 | ✗ † | – | T |
 | 11 | BEST_EFFORT | P1, max rate | ✅ **119** | ❌ 47.9 | 71.7 | 53.4 | – | A |
 | 11a | BEST_EFFORT | P2 1292 B, max rate | ✅ **938** | ❌ 756 | 914 | 867 | – | G |
-| 11b | BEST_EFFORT | P3 1424 B, max rate | ✅ **943** | ❌ 608 | 820 | 941 ‡ | – | G |
-| 11c | BEST_EFFORT | P4 2800 B, max rate | **944** | ❌ 915 | 938 | 945 ‡ | – | G |
+| 11b | BEST_EFFORT | P3 1424 B, max rate | ✅ **943** ‡ | ❌ 608 | 820 | ✅ **941** ‡ | – | G |
+| 11c | BEST_EFFORT | P4 2800 B, max rate | ✅ **944** ‡ | ❌ 915 | 938 | ✅ **945** ‡ | – | G |
 | 12 | RELIABLE KEEP_LAST 64 | P1 | ✅ **117** | ❌ 41.9 | 89.3 | – | – | A |
 | 13 | RELIABLE | P1, **5% loss** | ✅ **106** | 6.6 | ❌ 3.1 | ✗ † | – | A |
 | 14 | RELIABLE | P4, **5% loss** | ✅ **854** | 214 | ❌ 11.8 | ✗ † | – | T |
@@ -215,7 +222,7 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 38 | wire bytes | P4 2800 B | ✅ **2,921** | ❌ 3,460 | 2,950 | ✗ † | – | T |
 | 39 | wire bytes | P1, 5% loss | ✅ **143** | ❌ 287 | 194 | ✗ † | – | A |
 | 40 | wire bytes | P4, 5% loss | ✅ **3,041** | ❌ 4,384 | 3,230 | ✗ † | – | T |
-| 41 | framing overhead | single datagram | ✅ **62.1** | ❌ 210.3 | 104.2 | – | – | A |
+| 41 | framing overhead | single datagram | ✅ **62.1** | ❌ 210.3 | 104.2 | 63.0 § | – | A |
 | | **[QoS mechanics](#26-qos-mechanics)** | | | | |  | – | |
 | 42 | DURABILITY late join | durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | – | – | S |
 | 43 | HISTORY, within depth | burst | 160/160 | 160/160 | 160/160 | – | – | S |
