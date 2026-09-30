@@ -1438,6 +1438,38 @@ other two) are the follow-ups if the log is not decisive.
 The distinction is the point: the cells are not blank and they are not explained either. **No tuning was attempted** -
 the figures are zenoh-pico's shipped defaults - so "no configuration survives this" is also not established.
 
+#### Back-pressure on the shared-memory path is already keyed on HISTORY, measured (2026-09-30, Plan)
+
+The open question was whether the segment ring's drop-on-full bypasses the reliability machinery. It does not.
+Measured with `lazy_segment_lifecycle.sh` on the rig at 9b5e23be, `reliable_throughput` p1, 20 s, identical binary
+hash on both hosts. Arm S is writer and reader on one host, so the segment is in use; arm X is the same QoS across
+hosts with no segment at all, and it is there so that any loss can be attributed to the segment rather than to
+KEEP_ALL's own machinery or the reader's tracking window.
+
+| HISTORY | arm | sent | received | lost | shm_full_dropped | retransmitted |
+|---|---|---|---|---|---|---|
+| KEEP_LAST (default) | S same-host | 17,339,421 | 16,089,371 | 1,250,050 (7.2%) | 1,250,056 | 6 |
+| KEEP_ALL (`-Q`) | X cross-host, no segment | 3,678,046 | 3,678,046 | 0 | 0 | 0 |
+| KEEP_ALL (`-Q`) | S same-host, segment in use | 4,838,148 | 4,838,148 | 0 | **2** | 1 |
+
+Under KEEP_ALL the ring refused two writes out of 4.8 M and the samples were not lost: core's refusal leaves the
+sample pending and the writer comes back to the same one, and the ring-full condition reaches that path. Under
+KEEP_LAST 1.25 M samples were discarded and only 6 were retransmitted - the writer did not know it had dropped
+them - and the reader abandoned 1,249,837 as gaps. That is what KEEP_LAST means: the writer promises the last N
+samples and nothing older, so this is the contract being honoured and not a reliability defect. The KEEP_LAST
+accounting closes exactly: 17,339,421 sent - 1,250,056 dropped + 6 retransmitted = 16,089,371 received.
+
+So the behaviour is already the one the DDS definition asks for, keyed on RELIABILITY x HISTORY, and the open
+decision needs no change to `segment_deliver()`. What it costs is throughput: same-host KEEP_ALL carried 4.84 M
+samples where KEEP_LAST carried 16.1 M, which is the price of back-pressure and is paid only by the QoS that asked
+for it.
+
+Two things this does NOT establish, and neither should be written as if it did. The X-vs-S gap under KEEP_ALL
+(3.68 M against 4.84 M) is not a shared-memory speedup: X is cross-host and S is same-host, so transport and
+locality move together and no same-host UDP control was run. And nothing here speaks to runtime per-application
+ring sizing, which remains a separate request: `tt_SEGMENT_BYTES` is a compile-time `#ifndef`, and a larger ring
+moves the KEEP_LAST threshold without changing what either HISTORY promises.
+
 #### The first rig task after the server is back: verifying lazy creation, and its one precondition (2026-09-30)
 
 Lazy segment creation landed in `8cf8cdc9`/`ff57253a` with local gates and both CI workflows green, but it has **not**

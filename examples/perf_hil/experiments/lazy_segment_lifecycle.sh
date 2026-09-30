@@ -67,6 +67,13 @@ RELEASE_AT=${RELEASE_AT:-8}
 REATTACH_AT=${REATTACH_AT:-14}
 PAYLOAD=${PAYLOAD:-p1}
 SCEN=${SCEN:-best_effort_throughput}
+# Extra flags for the examples, so a QoS can be varied without a second copy of this harness. CLI_ARGS="-Q" runs
+# the writer under HISTORY.KEEP_ALL, where core refuses a write rather than discarding it - the one setting under
+# which loss is not permitted, and therefore the only one that can say whether the shared-memory ring's
+# drop-on-full participates in that refusal or bypasses it. Keep arm X in any such run: it is the same QoS over
+# UDP with no segment, so loss there separates "KEEP_ALL or the reader's window" from "the segment".
+CLI_ARGS=${CLI_ARGS:-}
+SRV_ARGS=${SRV_ARGS:-}
 OUT=${OUT:-/tmp/lazy_segment_lifecycle.txt}
 DIAG=${DIAG:-/tmp/lazy_segment_diag}
 K=$HOME/.ssh/tickle_ci_ed25519
@@ -111,7 +118,7 @@ fetch_log() {  # fetch_log <host> <remote log> <local name>; whole log, both str
 # trying to tell apart, and a default of 0 would silently merge them into the interesting one.
 field() { grep -oE "(^| )$2=[0-9]+" "$1" 2>/dev/null | tail -1 | cut -d= -f2 | grep -E '^[0-9]+$' || echo -; }
 
-say "=== lazy segment lifecycle $(date -Is) arms='$ARMS' scen=$SCEN payload=$PAYLOAD dur=${DUR}s ==="
+say "=== lazy segment lifecycle $(date -Is) arms='$ARMS' scen=$SCEN payload=$PAYLOAD dur=${DUR}s cli_args='$CLI_ARGS' srv_args='$SRV_ARGS' ==="
 say "    writer host $HOST_A, other host $HOST_B, release at ${RELEASE_AT}s, re-attach at ${REATTACH_AT}s"
 
 # Both hosts build from origin/main and the SHA is printed, because the counters being read here arrived in
@@ -137,8 +144,8 @@ for ARM in $ARMS; do
     if [ "$SELFTEST" = 1 ]; then
         say "  selftest: reading $DIAG/$wl and $DIAG/$rl, no host touched"
     else
-    rpid=$(launch "$RHOST" "$REMOTE" server "-d $((DUR + 10))" /tmp/lsl_r1.log /tmp/lsl_r1.pid)
-    wpid=$(launch "$HOST_A" "$REMOTE" client "-d $DUR" /tmp/lsl_w.log /tmp/lsl_w.pid)
+    rpid=$(launch "$RHOST" "$REMOTE" server "-d $((DUR + 10)) $SRV_ARGS" /tmp/lsl_r1.log /tmp/lsl_r1.pid)
+    wpid=$(launch "$HOST_A" "$REMOTE" client "-d $DUR $CLI_ARGS" /tmp/lsl_w.log /tmp/lsl_w.pid)
     say "  reader pid $rpid on $RHOST, writer pid $wpid on $HOST_A"
     r2pid=""
     case $ARM in
@@ -149,7 +156,7 @@ for ARM in $ARMS; do
     esac
     if [ "$ARM" = A ]; then
         sleep $((REATTACH_AT - RELEASE_AT))
-        r2pid=$(launch "$RHOST" "$REMOTE" server "-d $((DUR + 10))" /tmp/lsl_r2.log /tmp/lsl_r2.pid)
+        r2pid=$(launch "$RHOST" "$REMOTE" server "-d $((DUR + 10)) $SRV_ARGS" /tmp/lsl_r2.log /tmp/lsl_r2.pid)
         say "  second reader pid $r2pid started at ${REATTACH_AT}s"
     fi
     # The writer ends on its own -d. Wait for it rather than signalling it, so its destroy is the ordinary path.
