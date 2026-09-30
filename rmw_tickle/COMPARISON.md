@@ -237,8 +237,8 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 13 | RELIABLE | P1, **5% loss** | ✅ **106** | 6.6 | ❌ 3.1 | ✗ † | – | A |
 | 14 | RELIABLE | P4, **5% loss** | ✅ **854** | 214 | ❌ 11.8 | ✗ † | – | T |
 | 15 | RELIABLE | P1, 5% reorder | ✅ **104** | ❌ 32.2 | 67.4 | ✗ † | – | A |
-| 16 | retention under loss | P1: 5% loss / unshaped | ✅ **92.7%** | 16.1% | ❌ 3.3% | – | ✗ † | A |
-| 17 | retention under loss | P4: 5% loss / unshaped | ✅ **90.5%** | 33.7% | ❌ 1.4% | – | ✗ † | T |
+| 16 | retention under loss | P1: 5% loss / unshaped | ✅ **92.7%** | 16.1% | ❌ 3.3% | ✗ † | – | A |
+| 17 | retention under loss | P4: 5% loss / unshaped | ✅ **90.5%** | 33.7% | ❌ 1.4% | ✗ † | – | T |
 | | **[CPU](#23-cpu)** (cpu_s / Msample) | | | | |  | – | |
 | 18 | throughput, client | P1 76 B | ✅ **5.3** | ❌ 19.0 | 6.9 | 2.57 † | – | A |
 | 19 | throughput, server | P1 76 B | ✅ **2.5** | ❌ 19.2 | 11.0 | 1.42 † | – | A |
