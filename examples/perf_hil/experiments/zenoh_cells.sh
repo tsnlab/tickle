@@ -68,6 +68,14 @@ OUT=${OUT:-/tmp/zenoh_cells.txt}
 # Start at level 1 (errors only): a closing link is an error, and level 3 puts a printf on the data path, which
 # changes the thing being measured. Escalate only if level 1 says nothing.
 DIAG=${DIAG:-/tmp/zenoh_cells_diag}
+# Forwarded verbatim to build.sh ON THE RIG HOSTS. Without this a ZENOH_DEBUG set here stays here: the build runs
+# over ssh and ssh carries no environment, so the diagnostic build would silently be an ordinary one - a run that
+# looks like the experiment and cannot answer it. For the diagnostic arm:
+#   ZBUILD_ENV="ZENOH_DEBUG=1 ZENOH_PICO_PREFIX=\$HOME/zenohpico_install_dbg ZENOH_PICO_SRC=\$HOME/zenohpico_src_dbg"
+# Note that the scenario binaries themselves are rebuilt into the same ${SCEN}_${SIZE} directory either way, so
+# after a diagnostic run the next measurement run must rebuild them - which build.sh does unconditionally, and the
+# prefix marker refuses to serve the wrong logging level, so a stale logging library cannot be linked unnoticed.
+ZBUILD_ENV=${ZBUILD_ENV:-}
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=10 "ci@$1" "${@:2}"; }
 tc_netem_present() { sh_ "$CLIENT" "tc qdisc show dev eth0" 2>/dev/null | grep -q netem; }
@@ -104,13 +112,13 @@ if [ "$NET" != N0 ]; then
     tc_netem_present || { say "FATAL $NET was applied but no netem is on the interface"; exit 1; }
 fi
 say "  network: $NET ($(tc_describe "$NET"))"
-say "=== zenoh-pico cells $(date -Is) reps=$REPS dur=$DUR scens='$SCENS' sizes='$SIZES' ==="
+say "=== zenoh-pico cells $(date -Is) reps=$REPS dur=$DUR scens='$SCENS' sizes='$SIZES' zbuild_env='$ZBUILD_ENV' ==="
 
 for SCEN in $SCENS; do
   for SIZE in $SIZES; do
     for h in "$CLIENT" "$SERVER"; do
         out=$(sh_ "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main
-cd examples/perf_hil/zenohpico && ./build.sh $SCEN $SIZE > /tmp/zp_build.log 2>&1 || { echo BUILD_FAILED; tail -5 /tmp/zp_build.log; exit 0; }
+cd examples/perf_hil/zenohpico && env $ZBUILD_ENV ./build.sh $SCEN $SIZE > /tmp/zp_build.log 2>&1 || { echo BUILD_FAILED; tail -5 /tmp/zp_build.log; exit 0; }
 sha256sum ${SCEN}_${SIZE}/client | cut -c1-16" </dev/null 2>&1)
         # The whole output, not tail -1. build.sh's failure path echoes BUILD_FAILED and THEN five lines of the
         # compiler's diagnostics, so taking the last line took "compilation terminated." and the marker was never
