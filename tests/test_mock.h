@@ -494,6 +494,10 @@ int test_mock_segment_attaches = 0;
 // see that at all.
 int test_mock_segment_attach_calls = 0;
 int test_mock_segment_double_detaches = 0;
+// Unlinks, so that "the segment was released" can be asserted on the file being taken away and not
+// only on a pointer going NULL. Lazy release has to do both, and a release that forgot the unlink
+// would leave a file in /dev/shm for good while every pointer assertion still passed.
+int test_mock_segment_unlinks = 0;
 
 static struct test_mock_segment* test_mock_find_segment(const char* path) {
     for (int i = 0; i < TEST_MOCK_MAX_SEGMENTS; i++) {
@@ -563,6 +567,7 @@ void tt_segment_detach(void* mapping, size_t bytes) {
 }
 
 void tt_segment_unlink(const char* path) {
+    test_mock_segment_unlinks++;
     struct test_mock_segment* found = test_mock_find_segment(path);
     if (found != NULL) {
         found->present = false;
@@ -582,6 +587,7 @@ static void test_mock_segments_free(void) {
     test_mock_segment_attaches = 0;
     test_mock_segment_attach_calls = 0;
     test_mock_segment_double_detaches = 0;
+    test_mock_segment_unlinks = 0;
 }
 #endif
 

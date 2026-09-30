@@ -1582,6 +1582,273 @@ static void test_a_sleeping_reader_is_rung_and_a_busy_one_is_not(void) {
     test_mock_segments_free();
 }
 
+// ---------------------------------------------------------------------------------------------
+// Lazy segment creation (SHM_PLAN stage 1, option B).
+//
+// The segment used to be built at bind, which meant every context paid for a ring whether or not
+// anything on its host could ever open one - a cross-host-only deployment carried the whole cost for
+// nothing. It is now built when something can use it, and the only reason that is possible is that
+// discovery reports both edges: an announce says a same-host peer appeared, and a departure says one
+// has gone.
+//
+// The claim under test is a negative one, which is why the controls matter more than usual here:
+// "no segment yet" looks exactly like "the segment failed to build", and a test that only checks the
+// creating cases would pass just as well against the old eager code. So the first case below asserts
+// the absence, the third asserts that a peer on another host still produces nothing, and both would
+// fail if creation were moved back to bind.
+static void test_a_context_alone_on_its_host_builds_no_segment(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+    node.id = OWNER_ID;
+    node.hal.own_ip = OWNER_IP;
+    node.hal.own_port = OWNER_PORT;
+
+    // Nothing has happened to it but coming up. This is the assertion the eager version fails.
+    EXPECT_TRUE(node.own_segment == NULL);
+    EXPECT_EQ_U32(0, (uint32_t)node.segments_created);
+    EXPECT_EQ_U32(0, (uint32_t)node.same_host_peer_count);
+    EXPECT_EQ_INT(0, test_mock_segment_creates);
+}
+
+static void test_a_same_host_peer_appearing_builds_the_segment(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+    node.id = OWNER_ID;
+    node.hal.own_ip = OWNER_IP;
+    node.hal.own_port = OWNER_PORT;
+
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(&node, &own_ip, &own_port);
+    note_same_host_peer(&node, PEER_CONTEXT_ID, own_ip);
+
+    EXPECT_TRUE(node.own_segment != NULL);
+    EXPECT_EQ_U32(1, (uint32_t)node.segments_created);
+    EXPECT_EQ_U32(1, (uint32_t)node.same_host_peer_count);
+    EXPECT_EQ_INT(1, test_mock_segment_creates);
+
+    // And it is a usable segment, not merely a non-NULL pointer: the header a peer checks first.
+    EXPECT_EQ_U32(tt_SEGMENT_MAGIC, node.own_segment->magic);
+    EXPECT_EQ_U32(OWNER_ID, node.own_segment->owner_context_id);
+
+    release_segments(&node);
+}
+
+// The control. A peer that does not share our address can never open the file we would create, so
+// creating one for it is the eager behaviour under a different name. Remove the address comparison
+// in note_same_host_peer() and this is the case that fails.
+static void test_a_peer_on_another_host_builds_nothing(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+    node.id = OWNER_ID;
+    node.hal.own_ip = OWNER_IP;
+    node.hal.own_port = OWNER_PORT;
+
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(&node, &own_ip, &own_port);
+    // Same port, different host - so it is the address that decides and not some other field.
+    note_same_host_peer(&node, PEER_CONTEXT_ID, own_ip ^ 0x00010000U);
+
+    EXPECT_TRUE(node.own_segment == NULL);
+    EXPECT_EQ_U32(0, (uint32_t)node.segments_created);
+    EXPECT_EQ_U32(0, (uint32_t)node.same_host_peer_count);
+    EXPECT_EQ_INT(0, test_mock_segment_creates);
+}
+
+// Announces repeat - every periodic refresh arrives here - so the appearing edge has to be idempotent
+// or a context would unlink and rebuild its segment under its peers once a second.
+static void test_a_repeated_announce_builds_nothing_more(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+    node.id = OWNER_ID;
+    node.hal.own_ip = OWNER_IP;
+    node.hal.own_port = OWNER_PORT;
+
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(&node, &own_ip, &own_port);
+    struct tt_SegmentHeader* first = NULL;
+    for (int i = 0; i < 5; i++) {
+        note_same_host_peer(&node, PEER_CONTEXT_ID, own_ip);
+        if (first == NULL) {
+            first = node.own_segment;
+        }
+    }
+
+    EXPECT_EQ_U32(1, (uint32_t)node.segments_created);
+    EXPECT_EQ_U32(1, (uint32_t)node.same_host_peer_count);
+    EXPECT_EQ_INT(1, test_mock_segment_creates);
+    EXPECT_TRUE(node.own_segment == first); // the same region throughout, not a replacement
+
+    // A second, different peer on the same host counts once more but still builds nothing.
+    note_same_host_peer(&node, PEER_CONTEXT_ID + 1, own_ip);
+    EXPECT_EQ_U32(2, (uint32_t)node.same_host_peer_count);
+    EXPECT_EQ_INT(1, test_mock_segment_creates);
+
+    release_segments(&node);
+}
+
+// Self-delivery. A context unicasts to itself and then attaches to the file it created, which is why
+// release_segments() has to unmap that region exactly once. With creation deferred, asking for our
+// own id is the edge that keeps that on shared memory - and a context alone on its host has no other
+// trigger at all, so without this it would have silently moved to UDP and no test would have said so.
+static void test_delivering_to_ourselves_builds_the_segment(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+    node.id = OWNER_ID;
+    node.hal.own_ip = OWNER_IP;
+    node.hal.own_port = OWNER_PORT;
+
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(&node, &own_ip, &own_port);
+    EXPECT_TRUE(node.own_segment == NULL); // nothing yet, and no announce is coming
+
+    struct tt_SegmentHeader* mine = peer_segment(&node, node.id, own_ip, own_port);
+
+    EXPECT_TRUE(node.own_segment != NULL); // asking for our own segment built it
+    EXPECT_EQ_U32(1, (uint32_t)node.segments_created);
+    EXPECT_TRUE(mine != NULL);                             // and the ask was answered, so a self-send takes it
+    EXPECT_EQ_U32(0, (uint32_t)node.same_host_peer_count); // we are not a peer of ourselves
+
+    release_segments(&node);
+}
+
+// The departing edge. Deferred creation without it only moves the cost: a context whose same-host
+// peers have all gone would hold the ring for the rest of its life.
+static void test_the_last_same_host_peer_leaving_takes_the_segment(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+    node.id = OWNER_ID;
+    node.hal.own_ip = OWNER_IP;
+    node.hal.own_port = OWNER_PORT;
+
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(&node, &own_ip, &own_port);
+    note_same_host_peer(&node, PEER_CONTEXT_ID, own_ip);
+    note_same_host_peer(&node, PEER_CONTEXT_ID + 1, own_ip);
+    EXPECT_EQ_U32(2, (uint32_t)node.same_host_peer_count);
+    EXPECT_TRUE(node.own_segment != NULL);
+
+    // One of two leaving is not the last one. This is the control for the release: a rule that
+    // released on any departure would pass every other assertion here and fail this one.
+    forget_same_host_peer(&node, PEER_CONTEXT_ID);
+    EXPECT_EQ_U32(1, (uint32_t)node.same_host_peer_count);
+    EXPECT_TRUE(node.own_segment != NULL);
+    EXPECT_EQ_U32(0, (uint32_t)node.segments_released);
+
+    forget_same_host_peer(&node, PEER_CONTEXT_ID + 1);
+    EXPECT_EQ_U32(0, (uint32_t)node.same_host_peer_count);
+    EXPECT_TRUE(node.own_segment == NULL);
+    EXPECT_EQ_U32(1, (uint32_t)node.segments_released);
+    EXPECT_EQ_INT(1, test_mock_segment_unlinks);
+
+    // And a peer appearing again builds a fresh one, so release is not a one-way door.
+    note_same_host_peer(&node, PEER_CONTEXT_ID, own_ip);
+    EXPECT_TRUE(node.own_segment != NULL);
+    EXPECT_EQ_U32(2, (uint32_t)node.segments_created);
+
+    release_segments(&node);
+}
+
+// A departure this context never counted must not decrement anything. The count is read to decide
+// whether to release, so an unbalanced decrement would wrap uint16_t to 65535 and the segment would
+// never be released again - or, from 1, release it while a peer was still there.
+static void test_a_peer_we_never_counted_leaving_changes_nothing(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+    node.id = OWNER_ID;
+    node.hal.own_ip = OWNER_IP;
+    node.hal.own_port = OWNER_PORT;
+
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(&node, &own_ip, &own_port);
+    note_same_host_peer(&node, PEER_CONTEXT_ID, own_ip);
+    EXPECT_EQ_U32(1, (uint32_t)node.same_host_peer_count);
+
+    // A cross-host peer we never counted, and the same one twice.
+    forget_same_host_peer(&node, PEER_CONTEXT_ID + 9);
+    forget_same_host_peer(&node, PEER_CONTEXT_ID);
+    forget_same_host_peer(&node, PEER_CONTEXT_ID);
+
+    EXPECT_EQ_U32(0, (uint32_t)node.same_host_peer_count); // zero, not 65535
+    EXPECT_EQ_U32(1, (uint32_t)node.segments_released);    // released once, not twice
+    EXPECT_EQ_INT(1, test_mock_segment_unlinks);
+
+    release_segments(&node);
+}
+
+// Self-delivery is a claim on the segment that no departure can settle. A context that delivers to
+// itself has our own id in the peer table pointing at our own region; releasing it there would unmap
+// a region that table still refers to, and the next self-send would write through a dangling pointer.
+static void test_a_context_delivering_to_itself_keeps_its_segment(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&node, &topic, &pub);
+    node.id = OWNER_ID;
+    node.hal.own_ip = OWNER_IP;
+    node.hal.own_port = OWNER_PORT;
+
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(&node, &own_ip, &own_port);
+    note_same_host_peer(&node, PEER_CONTEXT_ID, own_ip);
+    // We now deliver to ourselves as well, which attaches our own id to our own region.
+    EXPECT_TRUE(peer_segment(&node, node.id, own_ip, own_port) != NULL);
+    EXPECT_TRUE(node.segment_peers[node.id].mapping != NULL);
+
+    forget_same_host_peer(&node, PEER_CONTEXT_ID);
+
+    EXPECT_EQ_U32(0, (uint32_t)node.same_host_peer_count);
+    EXPECT_TRUE(node.own_segment != NULL);              // still ours to use
+    EXPECT_EQ_U32(0, (uint32_t)node.segments_released); // and not released under us
+    EXPECT_EQ_INT(0, test_mock_segment_unlinks);
+
+    release_segments(&node);
+}
+
 int main(void) {
     test_ordinary_publish_is_counted_as_udp();
     test_zerocopy_publish_is_counted_as_udp();
@@ -1607,6 +1874,14 @@ int main(void) {
     test_a_writer_gives_up_on_a_ring_nobody_drains();
     test_the_drain_empties_the_ring_or_says_it_did_not();
     test_a_sleeping_reader_is_rung_and_a_busy_one_is_not();
+    test_a_context_alone_on_its_host_builds_no_segment();
+    test_a_same_host_peer_appearing_builds_the_segment();
+    test_a_peer_on_another_host_builds_nothing();
+    test_a_repeated_announce_builds_nothing_more();
+    test_delivering_to_ourselves_builds_the_segment();
+    test_the_last_same_host_peer_leaving_takes_the_segment();
+    test_a_peer_we_never_counted_leaving_changes_nothing();
+    test_a_context_delivering_to_itself_keeps_its_segment();
 
     printf("test_transport_seam: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();

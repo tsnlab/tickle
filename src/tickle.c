@@ -501,7 +501,20 @@ static int32_t segment_name(char* buf, size_t size, uint32_t ip, uint16_t port, 
 // context id.
 static enum tt_SegmentAttach segment_header_check(const struct tt_SegmentHeader* header, uint32_t ip, uint16_t port,
                                                   uint8_t context_id, uint32_t expected_incarnation) {
-    if (header->magic != tt_SEGMENT_MAGIC || header->version != tt_SEGMENT_VERSION) {
+    // ACQUIRE, and everything below depends on it. create_own_segment() writes every other field and
+    // seeds every slot's sequence, and only then stores the magic with __ATOMIC_RELEASE - so the magic
+    // is the barrier that publishes the rest. A release store pairs with an acquire load and with
+    // nothing else: read this with a plain load and the compiler or the processor may hand back a
+    // magic that is already set beside a `slots` that is still zero, which is a header believed and a
+    // ring that cannot be indexed.
+    //
+    // This was written as a plain load and was safe only by accident: the segment used to be created
+    // at bind, before any peer could possibly attach, so the two never overlapped. Deferred creation
+    // makes "a peer attaches while the owner is still building it" the ordinary case, and
+    // ThreadSanitizer reported it as a real race between create_own_segment() and this function the
+    // first time the two could run at once.
+    if (__atomic_load_n(&header->magic, __ATOMIC_ACQUIRE) != tt_SEGMENT_MAGIC ||
+        header->version != tt_SEGMENT_VERSION) {
         return tt_SEGMENT_BAD_HEADER;
     }
     if (header->owner_ip != ip || header->owner_port != port || header->owner_context_id != context_id) {
@@ -651,9 +664,19 @@ static void remember_absent(struct tt_SegmentPeer* entry, uint32_t ip, uint16_t 
 // was the specification and the code was the bug. A miss is now remembered for
 // tt_SEGMENT_ATTACH_RETRY_SENDS sends: long enough that the cost disappears, short enough that a
 // peer which binds later still becomes attachable.
+static void ensure_own_segment(struct tt_Context* node);
+
 static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t context_id, uint32_t ip, uint16_t port) {
     if (context_id == tt_CONTEXT_ID_INVALID) {
         return NULL; // a broadcast has no single peer, so no name to compute
+    }
+    if (context_id == node->id) {
+        // Ourselves. A context unicasts to itself and then attaches to the file it created, which is
+        // why release_segments() has to unmap that region exactly once - so with the segment built on
+        // demand rather than at bind, this is the edge that keeps self-delivery on shared memory. It
+        // is also the only trigger a context alone on its host ever has, which is the point: it pays
+        // for a segment when it uses one, not because it started.
+        ensure_own_segment(node);
     }
     struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
     if (entry->mapping == NULL && entry->missing) {
@@ -780,6 +803,38 @@ static void create_own_segment(struct tt_Context* node) {
     }
     __atomic_store_n(&header->magic, tt_SEGMENT_MAGIC, __ATOMIC_RELEASE);
     node->own_segment = header;
+    node->segments_created++;
+}
+
+// Whether this context has a segment for peers to write into, building it if a same-host peer has
+// appeared and it does not exist yet. Idempotent, because both edges that can want it - discovery
+// learning of a peer, and a send that needs our own ring - arrive independently and in either order.
+static void ensure_own_segment(struct tt_Context* node) {
+    if (node->own_segment == NULL) {
+        create_own_segment(node);
+    }
+}
+
+// Discovery's appearing edge. A peer at our own address is one that can open the file we create; one
+// anywhere else never will, and building a segment for it would be the eager behaviour under another
+// name. Our own id is not a peer here: a context that delivers to itself gets its segment from
+// peer_segment() instead, so a node alone on a host still builds one only if it actually needs it.
+static void note_same_host_peer(struct tt_Context* node, uint8_t context_id, uint32_t peer_ip) {
+    if (context_id == tt_CONTEXT_ID_INVALID || context_id == node->id) {
+        return;
+    }
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(node, &own_ip, &own_port);
+    // own_ip 0 means the address is not known yet, and every peer_ip would compare equal to it.
+    if (own_ip == 0 || peer_ip != own_ip) {
+        return;
+    }
+    if (!node->same_host_peer[context_id]) {
+        node->same_host_peer[context_id] = true;
+        node->same_host_peer_count++;
+    }
+    ensure_own_segment(node);
 }
 
 // Everything this context mapped, handed back. Nothing else does it: a segment is a file in
@@ -824,6 +879,56 @@ static void release_segments(struct tt_Context* node) {
             tt_segment_unlink(path);
         }
         tt_segment_detach(own, bytes);
+    }
+}
+
+// This context's own segment alone, given up while the context goes on running - the departing half
+// of deferred creation, and the half that makes it worth anything: a context that outlives its
+// same-host peers would otherwise hold the ring for as long as it ran.
+//
+// Unlink before unmap, for release_segments()' reason: no peer should attach to a segment nobody is
+// draining any more.
+//
+// Releasing is safe but not free, and it is worth being exact about the cost rather than calling it
+// none. A peer that discovery judged gone by liveliness timeout may still be alive and still hold a
+// mapping of this file, and unlinking does not invalidate a mapping that already exists - so it goes
+// on writing into a file that will never be read again. Its own dead-reader rule notices within
+// tt_SEGMENT_DEAD_READER_NS and it falls back to UDP, and its revalidation re-attaches it to whatever
+// this context builds next. So being wrong here costs that peer a second on the slower path. It is
+// not loss, and it does not wedge - but it is why this is driven by the last departure and not by a
+// timer.
+static void release_own_segment(struct tt_Context* node) {
+    struct tt_SegmentHeader* own = node->own_segment;
+    if (own == NULL) {
+        return;
+    }
+    node->own_segment = NULL;
+    char path[tt_SEGMENT_PATH_LENGTH];
+    const bool named = segment_name(path, sizeof(path), own->owner_ip, own->owner_port, own->owner_context_id) >= 0;
+    // Our own entry in the peer table aliases this same region when this context delivers to itself,
+    // so it is cleared here rather than detached again - the double-unmap that release_segments()
+    // exists to avoid.
+    if (node->segment_peers[node->id].mapping == own) {
+        memset(&node->segment_peers[node->id], 0, sizeof(node->segment_peers[node->id]));
+    }
+    if (named) {
+        tt_segment_unlink(path);
+    }
+    tt_segment_detach(own, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
+    node->segments_released++;
+}
+
+// Discovery's departing edge. The segment goes when the last peer that could open it has gone - and
+// not while this context is still using it to deliver to itself, which is a separate claim on it that
+// no departure can settle.
+static void forget_same_host_peer(struct tt_Context* node, uint8_t context_id) {
+    if (context_id == tt_CONTEXT_ID_INVALID || !node->same_host_peer[context_id]) {
+        return;
+    }
+    node->same_host_peer[context_id] = false;
+    node->same_host_peer_count--;
+    if (node->same_host_peer_count == 0 && node->segment_peers[node->id].mapping == NULL) {
+        release_own_segment(node);
     }
 }
 
@@ -2884,7 +2989,16 @@ static void reset_node_state(struct tt_Context* node) {
     // is not required to do.
     memset(node->segment_peers, 0, sizeof(node->segment_peers));
     node->own_segment = NULL;
+    // The same reasoning one step further, and with more riding on it than on a counter: with the
+    // segment built on demand, same_host_peer[] is READ to decide whether to build one and
+    // same_host_peer_count to decide whether to give it up. Left as stack garbage, a context would
+    // believe in peers it has never heard from - building a segment at the first announce from
+    // anywhere, or, worse, never releasing one because the count never reaches zero.
+    memset(node->same_host_peer, 0, sizeof(node->same_host_peer));
 #endif
+    node->same_host_peer_count = 0;
+    node->segments_created = 0;
+    node->segments_released = 0;
     node->segment_full_warnings = 0;
     node->segment_head_stalls = 0;
     node->segment_head_stall_passes = 0;
@@ -3169,13 +3283,12 @@ tt_ret_t tt_Context_create(struct tt_Context* node) {
 
     TT_LOG_INFO("Node open at %d", _tt_CONFIG.port);
 
-#if tt_SEGMENT_ENABLED
-    // Created here because this is the first moment the three things its name is built from are all
-    // known: the address comes from the bind, and the context id from just above. A failure is not
-    // fatal - the context simply has no segment and its peers reach it over UDP, which is the
-    // module's documented fallback and is counted as unattached on their side.
-    create_own_segment(node);
-#endif
+    // The segment is NOT created here, though this is the first moment its name could be built. It is
+    // built when something can use it: when an announce shows a peer at this same address
+    // (note_same_host_peer()), or when this context first sends to itself (peer_segment()). A context
+    // whose peers are all on other hosts never builds one, which is the whole point - it was paying
+    // for a ring nobody could open. A failure to build is still not fatal: peers reach this context
+    // over UDP, counted as unattached on their side.
 
     return schedule_periodic_tasks(node);
 }
@@ -7297,6 +7410,16 @@ static uint64_t longest_lease_from(const struct tt_Context* node, uint8_t source
 static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t silent_ns) {
     TT_LOG_WARNING("Node %d presumed dead (silent for %lu ms)", source, (unsigned long)(silent_ns / tt_MILLISECOND));
     forget_peers_from_source(node, source, /*preserve_ack=*/false);
+#if tt_SEGMENT_ENABLED
+    // The departing edge for the segment, and deliberately only this one. A graceful farewell arrives
+    // as an announce, which is indistinguishable here from the periodic refresh that also calls
+    // forget_peers_from_source(preserve_ack=true) while the node is still very much alive - hooking
+    // that would release and rebuild the segment under its peers once a second. A node that says
+    // goodbye and goes then falls silent, so this path collects it a few seconds later instead. The
+    // cost of that choice is holding a segment slightly longer than necessary; the cost of the other
+    // one would be dropping it while somebody was writing to it.
+    forget_same_host_peer(node, source);
+#endif
     tombstone_discovered_entities_from_source(node, source);
     node->update_seen[source] = false;
     node->update_generation[source] = 0;
@@ -7780,6 +7903,11 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
                              uint8_t frag_index, uint8_t frag_count) {
     uint8_t source = header->source;
     node->update_last_seen[source] = tt_get_ns();
+#if tt_SEGMENT_ENABLED
+    // Before the announce is decoded, because it is the address this datagram came from that decides
+    // whether a segment could serve this peer, and that is known whether or not the body parses.
+    note_same_host_peer(node, source, sender_ip);
+#endif
 
     struct tt_AnnounceHeader* announce = decode(node, buffer, &head, tail, sizeof(struct tt_AnnounceHeader));
     if (announce == NULL) {
@@ -11221,7 +11349,13 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 // is the only counter that rises ONLY when a reader was judged dead, and without it
                 // "the writer abandoned the corpse" cannot be told apart from the ordinary reasons
                 // tx_udp_unattached rises - which is a test that cannot fail, found as one.
-                "shm_gave_up=%lu shm_doorbells_sent=%lu shm_doorbells_received=%lu",
+                "shm_gave_up=%lu shm_doorbells_sent=%lu shm_doorbells_received=%lu "
+                // Whether this context ever built a segment, and whether it still has one. With
+                // creation deferred until a same-host peer appears, tx_shm=0 has two entirely
+                // different meanings - "no peer could have used one" and "one could, and it broke" -
+                // and shm_segments_created is what separates them. A reader who sees created=0 on a
+                // run that expected shared memory should look at same_host_peers before the ring.
+                "shm_segments_created=%lu shm_segments_released=%lu shm_same_host_peers=%u",
                 node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
                 (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
                 (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -11233,7 +11367,8 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned long)node->segment_broadcast_to_udp, (unsigned long)node->segment_oversized_to_udp,
                 (unsigned long)node->segment_unattached_to_udp, (unsigned long)node->segment_full_dropped,
                 (unsigned long)node->segment_attach[tt_SEGMENT_REFUSED], (unsigned long)node->segment_doorbells_sent,
-                (unsigned long)node->segment_doorbells_received);
+                (unsigned long)node->segment_doorbells_received, (unsigned long)node->segments_created,
+                (unsigned long)node->segments_released, node->same_host_peer_count);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads

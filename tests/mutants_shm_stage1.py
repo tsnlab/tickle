@@ -123,6 +123,58 @@ MUTANTS = [
         "    // release_segments(node); -- mutant",
         "test_destroy_takes_the_segment_with_it",
     ),
+    # Lazy segment creation (stage 1, option B). The claim here is mostly a NEGATIVE one - that no
+    # segment is built until something can use it - and a test of an absence passes just as well
+    # against the old eager code unless the controls below can fail.
+    (
+        "the address deciding whether a peer is on this host",
+        "src/tickle.c",
+        "    if (own_ip == 0 || peer_ip != own_ip) {",
+        "    if (own_ip == 0) {",
+        "test_a_peer_on_another_host_builds_nothing",
+    ),
+    (
+        "the discovery edge building the segment at all",
+        "src/tickle.c",
+        "        node->same_host_peer_count++;\n    }\n    ensure_own_segment(node);",
+        "        node->same_host_peer_count++;\n    }",
+        "test_a_same_host_peer_appearing_builds_the_segment",
+    ),
+    (
+        "self-delivery building the segment it needs",
+        "src/tickle.c",
+        "    if (context_id == node->id) {",
+        "    if (false && context_id == node->id) {",
+        "test_delivering_to_ourselves_builds_the_segment",
+    ),
+    (
+        "releasing only on the LAST departure",
+        "src/tickle.c",
+        "    if (node->same_host_peer_count == 0 && node->segment_peers[node->id].mapping == NULL) {",
+        "    if (node->segment_peers[node->id].mapping == NULL) {",
+        "test_the_last_same_host_peer_leaving_takes_the_segment",
+    ),
+    (
+        "ignoring a departure for a peer never counted",
+        "src/tickle.c",
+        "    if (context_id == tt_CONTEXT_ID_INVALID || !node->same_host_peer[context_id]) {",
+        "    if (context_id == tt_CONTEXT_ID_INVALID) {",
+        "test_a_peer_we_never_counted_leaving_changes_nothing",
+    ),
+    (
+        "keeping the segment a context still delivers to itself through",
+        "src/tickle.c",
+        "    if (node->same_host_peer_count == 0 && node->segment_peers[node->id].mapping == NULL) {",
+        "    if (node->same_host_peer_count == 0) {",
+        "test_a_context_delivering_to_itself_keeps_its_segment",
+    ),
+    (
+        "unlinking the file, not merely unmapping it",
+        "src/tickle.c",
+        "    if (named) {\n        tt_segment_unlink(path);\n    }\n    tt_segment_detach(own, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));",
+        "    (void)named;\n    tt_segment_detach(own, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));",
+        "test_the_last_same_host_peer_leaving_takes_the_segment",
+    ),
 ]
 
 

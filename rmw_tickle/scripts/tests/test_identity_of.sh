@@ -12,6 +12,9 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source-path=SCRIPTDIR
+# The gate runs shellcheck without -x, where following a source is off and SC1091 is the
+# only thing it can say. lib/identity.sh is linted in its own right, and by its own test.
+# shellcheck disable=SC1091
 . "$HERE/../lib/identity.sh"
 
 work="$(mktemp -d)"

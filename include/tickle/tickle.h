@@ -624,6 +624,18 @@ struct tt_Context {
     // and "never rung" look identical from a latency figure, and only one of them is good news.
     uint64_t segment_doorbells_sent;
     uint64_t segment_doorbells_received;
+    // How many times this context built its own segment and gave it up again, and how many peers it
+    // currently believes share its host. Out here with the other counters rather than behind
+    // tt_SEGMENT_ENABLED because the traffic line that prints them is compiled either way; they stay
+    // zero when the module is off, which is the truth.
+    //
+    // Deferred creation is otherwise invisible from outside: "no segment yet because no peer could
+    // use one" and "a segment was wanted and could not be built" leave the same absence behind, and
+    // only a counter that rose tells them apart. same_host_peer_count is uint16_t, not uint8_t:
+    // tt_MAX_CONTEXT_IDS is 256, so a byte would wrap to zero with every peer still present.
+    uint64_t segments_created;
+    uint64_t segments_released;
+    uint16_t same_host_peer_count;
 
 #if tt_SEGMENT_ENABLED
     // What this context has mapped, indexed by the remote context id - the same index
@@ -687,6 +699,17 @@ struct tt_Context {
         uint32_t doorbell_read_index;
     } segment_peers[tt_MAX_CONTEXT_IDS];
     struct tt_SegmentHeader* own_segment;
+    // Which peers share this host, indexed by remote context id. Only a peer at our own address can
+    // ever open the file we create - the name is built from (ip, port, context id) - so the segment
+    // needs to exist exactly while at least one such peer does. Discovery reports both edges of that:
+    // an announce says one appeared, and forget_peers_from_source() that one has gone. That symmetry
+    // is the whole reason the segment can be built on demand rather than at bind.
+    //
+    // The count is kept rather than derived because the departure path asks only "is there still
+    // one", and deriving it would put a 256-entry scan on every departure. uint16_t, not uint8_t:
+    // tt_MAX_CONTEXT_IDS is 256, so a byte would wrap to zero with every peer still present and
+    // release the segment out from under all of them.
+    bool same_host_peer[tt_MAX_CONTEXT_IDS];
 #endif
     uint64_t summaries_skipped; // short-lease summaries not sent: the node's traffic had reached every peer
     uint64_t summaries_ridden;  // once-a-second summaries sent just ahead of a data send

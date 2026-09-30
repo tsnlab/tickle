@@ -119,6 +119,9 @@ export TICKLE_BROADCAST_ADDR="${TICKLE_BROADCAST_ADDR:-127.255.255.255}"
 # CHECK_ROS2_KEEP_LOGS=DIR keeps every process's output (copied there on exit) - for chasing a
 # failure that does not reproduce on demand.
 # shellcheck source-path=SCRIPTDIR
+# The gate runs shellcheck without -x, where following a source is off and SC1091 is the
+# only thing it can say. lib/identity.sh is linted in its own right, and by its own test.
+# shellcheck disable=SC1091
 . "$HERE/lib/identity.sh"
 
 keep_logs() {

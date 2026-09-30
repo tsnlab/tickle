@@ -60,6 +60,10 @@ static void tt_Context_unlock(struct tt_Context* node) {
 #define QUEUE_SLOTS 256
 #define DATAGRAM_MAX 1600
 #define NODE_COUNT 2
+// The one host both contexts are on. Shared memory is only possible between contexts that share a
+// machine, so a harness meant to exercise it cannot give them different addresses - see
+// tt_own_address() below.
+#define TEST_HOST_IP 0x0a000001U
 #define DELIVERY_GIVE_UP_NS (20ULL * 1000ULL * 1000ULL * 1000ULL)
 
 struct _tt_Config _tt_CONFIG = {
@@ -300,9 +304,21 @@ bool tt_is_own_address(const struct tt_Context* node, uint32_t ip, uint16_t port
 // attach came back ABSENT and the segment was never used here. That is a harness that reports a
 // node's identity two different ways, and it made the shared-memory module invisible to the one
 // gate in this project that runs threads.
+//
+// Amended 2026-09-30, for the second time the addressing here made the module invisible. These gave
+// each node an address of its own - 10.0.0.1 and 10.0.0.2 - which models two nodes on two HOSTS that
+// nonetheless share a /dev/shm. Nothing can be on two hosts and share a shared-memory segment, and
+// once segment creation became conditional on a peer being on this host, the harness's own addressing
+// was what said they were not: every attach came back ABSENT again, for a new reason.
+//
+// So both contexts now have ONE address and differ by port, which is what two contexts on a host
+// actually look like, and which is the only arrangement in which the thing under test can happen.
+// Routing is unaffected: the queues are indexed by context id and pop_locked() synthesises the
+// sender's address from from_id, so these values never decided where a datagram went - only who a
+// context believed it and its peer were.
 void tt_own_address(const struct tt_Context* node, uint32_t* ip, uint16_t* port) {
     if (ip != NULL) {
-        *ip = 0x0a000000U + node->id;
+        *ip = TEST_HOST_IP;
     }
     if (port != NULL) {
         *port = (uint16_t)(20000 + node->id);
@@ -323,7 +339,9 @@ static int32_t pop_locked(struct queue* q, void* buf, size_t len, uint32_t* ip, 
     struct datagram* d = &q->slots[q->head];
     uint32_t n = d->len < len ? d->len : (uint32_t)len;
     memcpy(buf, d->bytes, n);
-    *ip = 0x0a000000U + d->from_id;
+    // One host, distinct ports - the same identity tt_own_address() reports, which is the point: a
+    // harness that answers "who is this" two different ways is how the segment went untested twice.
+    *ip = TEST_HOST_IP;
     *port = (uint16_t)(20000 + d->from_id);
     q->head = (q->head + 1) % QUEUE_SLOTS;
     q->count--;
