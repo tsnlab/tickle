@@ -2899,6 +2899,15 @@ static void reset_node_state(struct tt_Context* node) {
     // from garbage is worse than not answering it.
     node->rx_malformed_drops = 0;
     node->version_mismatch_drops = 0;
+    // The rate limiter that decides whether a wire-version mismatch is EVER logged, and the worst of
+    // this family because it is READ to make a decision rather than merely reported. Its only two
+    // appearances in this file are a read and the write beside it, and nothing initialised it - so a
+    // caller-owned context began with 256 bytes of stack garbage in a latch whose whole job is "log
+    // this source once per version it speaks". One chance in 256 per source that the garbage byte
+    // equals that source's version, and the single log line about a peer whose every datagram is
+    // being dropped is suppressed. version_mismatch_drops still counts it, but a counter is what you
+    // read once you suspect something and the log line is what tells you to suspect.
+    memset(node->version_mismatch_logged, 0, sizeof(node->version_mismatch_logged));
 #if tt_DISCOVERY_OPTIONS
     node->rx_out_of_range = 0; // the field itself only exists under this flag, as does every read of it
 #endif
