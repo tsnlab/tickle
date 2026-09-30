@@ -295,7 +295,13 @@ else
     # needs the two arms compared in one place - both steps writing their figures out and a third comparing them,
     # so loss is admissible only when it buys throughput the off arm does not reach. That is the proper version and
     # it belongs in the workflow, not in a script that runs once per arm and cannot see the other.
-    if grep -q 'shm_full_dropped=' perf_client.log 2>/dev/null; then
+    # Discriminate on what the run DID, not on whether a field exists. The first version of this grepped for
+    # `shm_full_dropped=`, which the traffic lines print as 0 even when the module is compiled out - so it matched the
+    # kernel arm too and quietly removed the bound from the one path that must keep it. Caught on 32b43c15, where the
+    # module-off arm printed "reported, not bounded" about a kernel path. `tx_shm` above zero is the outcome test:
+    # samples actually went through a segment in this run.
+    perf_tx_shm=$(grep -oE 'tx_shm=[0-9]+' perf_client.log 2>/dev/null | tail -1 | cut -d= -f2)
+    if [ -n "${perf_tx_shm:-}" ] && [ "$perf_tx_shm" -gt 0 ] 2>/dev/null; then
         echo "perf_server: loss on the shared-memory path is reported, not bounded - see the shm_full_dropped line"
         echo "  (a full ring dropping is documented behaviour; what it should be allowed to cost is decision 6)"
     else
