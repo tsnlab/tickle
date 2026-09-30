@@ -40,5 +40,11 @@ echo "=== 3/3 check_ros2_interfaces -r $(date -Is) ==="
 # ulimit so the crash leaves something to look at, and the netns rule does not apply here: this runs
 # on loopback (TICKLE_BROADCAST_ADDR=127.255.255.255), which never leaves the host.
 ulimit -c unlimited
-"$REPO/rmw_tickle/scripts/check_ros2_interfaces.sh" -w "$WS" -r
+CHECK_ROS2_KEEP_LOGS=/tmp/rclcpp_ifaces_logs "$REPO/rmw_tickle/scripts/check_ros2_interfaces.sh" -w "$WS" -r
 echo "=== check exit $? at $(date -Is) ==="
+
+# The oversize mixed-stream window used to be read here too, from these same kept logs. It now has
+# its own instrument, check_mixed_stream_window.sh, which gates the reading on the libraries having
+# been the ones under test and distinguishes "no traffic line was printed" from "the counter was
+# zero" - a distinction this copy did not make, and the reason a reading of 0 was quoted from a run
+# whose counters had not been read at all. One question, one instrument.

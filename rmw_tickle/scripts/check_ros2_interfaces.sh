@@ -118,6 +118,9 @@ export TICKLE_BROADCAST_ADDR="${TICKLE_BROADCAST_ADDR:-127.255.255.255}"
 
 # CHECK_ROS2_KEEP_LOGS=DIR keeps every process's output (copied there on exit) - for chasing a
 # failure that does not reproduce on demand.
+# shellcheck source-path=SCRIPTDIR
+. "$HERE/lib/identity.sh"
+
 keep_logs() {
     if [ -n "${CHECK_ROS2_KEEP_LOGS:-}" ]; then
         mkdir -p "$CHECK_ROS2_KEEP_LOGS"
@@ -139,27 +142,13 @@ if [ "$ACTION" = 1 ]; then
     "$action_check" client 20 >"$log/client.txt" 2>&1 &
     client_pid=$!
     ex_lib="$WORKSPACE/install/example_interfaces/lib/libexample_interfaces__rosidl_typesupport_tickle_cpp.so"
-    action_identity="not seen"
-    for _ in $(seq 1 100); do
-        if [ -r "/proc/$client_pid/maps" ] && grep -q "libexample_interfaces__rosidl_typesupport_tickle_cpp" "/proc/$client_pid/maps"; then
-            mapped_rmw=$(grep -o '/[^ ]*librmw_tickle\.so' "/proc/$client_pid/maps" | sort -u | head -1)
-            mapped_ex=$(grep -o '/[^ ]*libexample_interfaces__rosidl_typesupport_tickle_cpp\.so' "/proc/$client_pid/maps" | sort -u | head -1)
-            if [ "$(readlink -f "$mapped_rmw")" = "$(readlink -f "$rmw_lib")" ] &&
-                [ "$(readlink -f "$mapped_ex")" = "$(readlink -f "$ex_lib")" ]; then
-                action_identity="OK: $mapped_rmw and $mapped_ex"
-            else
-                action_identity="WRONG LIBRARY: mapped $mapped_rmw and $mapped_ex, expected $rmw_lib and $ex_lib"
-            fi
-            break
-        fi
-        sleep 0.1
-    done
     client_status=0
     wait "$client_pid" || client_status=$?
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
-    grep -v '\[INFO\]' "$log/server.txt" | tail -3
-    grep -v '\[INFO\]' "$log/client.txt" | tail -4
+    grep -v '\[INFO\]' "$log/server.txt" | grep -v '^identity-self \|^segment-self ' | tail -3
+    grep -v '\[INFO\]' "$log/client.txt" | grep -v '^identity-self \|^segment-self ' | tail -4
+    action_identity=$(identity_of "$log/client.txt" "$rmw_lib" "$ex_lib")
     echo "identity: $action_identity"
     case "$action_identity" in OK:*) ;; *) fail "the libraries under test were not the ones loaded" ;; esac
     [ "$client_status" = 0 ] || fail "the Fibonacci action did not round-trip through rmw_tickle (exit $client_status)"
@@ -177,55 +166,24 @@ sleep 1
 TICKLE_NODE_ID=122 "${publisher[@]}" >"$log/pub.txt" 2>&1 &
 pub_pid=$!
 
-# -r: the rclcpp node's own maps. Read while it runs, like the subscriber's below: it must have
-# loaded rmw_tickle and this workspace's type_description_interfaces typesupport - the package
-# whose absence is what used to stop a default node from starting.
-pub_identity="not checked"
-if [ "$RCLCPP" = 1 ]; then
-    pub_identity="not seen"
-    td_lib="$WORKSPACE/install/type_description_interfaces/lib/libtype_description_interfaces__rosidl_typesupport_tickle_c.so"
-    for _ in $(seq 1 50); do
-        if [ -r "/proc/$pub_pid/maps" ] && grep -q "libtype_description_interfaces__rosidl_typesupport_tickle_c" "/proc/$pub_pid/maps"; then
-            mapped_rmw=$(grep -o '/[^ ]*librmw_tickle\.so' "/proc/$pub_pid/maps" | sort -u | head -1)
-            mapped_td=$(grep -o '/[^ ]*libtype_description_interfaces__rosidl_typesupport_tickle_c\.so' "/proc/$pub_pid/maps" | sort -u | head -1)
-            if [ "$(readlink -f "$mapped_rmw")" = "$(readlink -f "$rmw_lib")" ] &&
-                [ "$(readlink -f "$mapped_td")" = "$(readlink -f "$td_lib")" ]; then
-                pub_identity="OK: $mapped_rmw and $mapped_td"
-            else
-                pub_identity="WRONG LIBRARY: mapped $mapped_rmw and $mapped_td, expected $rmw_lib and $td_lib"
-            fi
-            break
-        fi
-        sleep 0.1
-    done
-fi
-
-# Identity, read from the subscriber while it runs: the exact files, not name patterns.
-identity="not seen"
-for _ in $(seq 1 50); do
-    if [ -r "/proc/$sub_pid/maps" ] && grep -q "libstd_msgs__rosidl_typesupport_tickle_c" "/proc/$sub_pid/maps"; then
-        mapped_rmw=$(grep -o '/[^ ]*librmw_tickle\.so' "/proc/$sub_pid/maps" | sort -u | head -1)
-        mapped_ts=$(grep -o '/[^ ]*libstd_msgs__rosidl_typesupport_tickle_c\.so' "/proc/$sub_pid/maps" | sort -u | head -1)
-        if [ "$(readlink -f "$mapped_rmw")" = "$(readlink -f "$rmw_lib")" ] &&
-            [ "$(readlink -f "$mapped_ts")" = "$(readlink -f "$ts_lib")" ]; then
-            identity="OK: $mapped_rmw and $mapped_ts"
-        else
-            identity="WRONG LIBRARY: mapped $mapped_rmw and $mapped_ts, expected $rmw_lib and $ts_lib"
-        fi
-        break
-    fi
-    sleep 0.1
-done
+# -r: the rclcpp node must have loaded rmw_tickle and this workspace's type_description_interfaces
+# typesupport - the package whose absence is what used to stop a default node from starting.
+td_lib="$WORKSPACE/install/type_description_interfaces/lib/libtype_description_interfaces__rosidl_typesupport_tickle_c.so"
 
 sub_status=0
 wait "$sub_pid" || sub_status=$?
 pub_status=0
 wait "$pub_pid" 2>/dev/null || pub_status=$?
-cat "$log/sub.txt"
+grep -v '^identity-self \|^segment-self ' "$log/sub.txt"
+identity=$(identity_of "$log/sub.txt" "$rmw_lib" "$ts_lib")
 echo "identity: $identity"
+# Which segments the subscriber had mapped. Not a pass/fail - a reading, and the only one that shows
+# the shared-memory lifecycle without racing the process it is about.
+echo "segments mapped by sub: $(sed -n 's/^segment-self [^:]*: //p' "$log/sub.txt" | sort -u | tr '\n' ' ')"
 case "$identity" in OK:*) ;; *) fail "the libraries under test were not the ones loaded" ;; esac
 if [ "$RCLCPP" = 1 ]; then
-    grep -v '\[INFO\]' "$log/pub.txt" | tail -3
+    grep -v '\[INFO\]' "$log/pub.txt" | grep -v '^identity-self \|^segment-self ' | tail -3
+    pub_identity=$(identity_of "$log/pub.txt" "$rmw_lib" "$td_lib")
     echo "publisher identity: $pub_identity"
     [ "$pub_status" = 0 ] || {
         cat "$log/pub.txt" >&2

@@ -38,6 +38,7 @@
 
 #include "action_msgs/srv/cancel_goal.hpp"
 #include "example_interfaces/action/fibonacci.hpp"
+#include "identity.h"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/client.hpp"
 #include "rclcpp_action/client_goal_handle.hpp"
@@ -98,6 +99,7 @@ namespace {
             [](const std::shared_ptr<GoalHandle>& goal_handle) {
                 std::thread(execute, goal_handle).detach();
             });
+        report_identity("action server");
         rclcpp::executors::SingleThreadedExecutor executor;
         executor.add_node(node);
         executor.spin_until_future_complete(std::promise<void>().get_future(), std::chrono::seconds(seconds));
@@ -150,6 +152,7 @@ namespace {
 
     auto request(const rclcpp::Node::SharedPtr& node, long seconds) -> int {
         auto client = rclcpp_action::create_client<Fibonacci>(node, "/tickle_check_fibonacci");
+        report_identity("action client");
         if (!client->wait_for_action_server(server_wait)) {
             std::printf("action client: FAIL - no action server within %ld s\n",
                         static_cast<long>(server_wait.count()));

@@ -21,6 +21,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "identity.h"
 #include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
 #include "rcutils/strdup.h"
@@ -79,6 +80,7 @@ static int publish(rmw_node_t* node, const rmw_qos_profile_t* qos, long rounds) 
     if (NULL == string_pub || NULL == header_pub) {
         return fail("rmw_create_publisher");
     }
+    report_identity("pub");
     std_msgs__msg__String string_msg;
     std_msgs__msg__Header header_msg;
     std_msgs__msg__String__init(&string_msg);
@@ -137,6 +139,7 @@ static int subscribe(rmw_node_t* node, const rmw_qos_profile_t* qos, long rounds
     if (NULL == string_sub || NULL == header_sub) {
         return fail("rmw_create_subscription");
     }
+    report_identity("sub");
     std_msgs__msg__String string_msg;
     std_msgs__msg__Header header_msg;
     std_msgs__msg__String__init(&string_msg);

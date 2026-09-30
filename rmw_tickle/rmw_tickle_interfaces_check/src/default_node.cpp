@@ -36,6 +36,7 @@
 #include <thread>
 #include <type_traits>
 
+#include "identity.h"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/header.hpp"
@@ -97,6 +98,7 @@ namespace {
         auto header_pub = node->create_publisher<std_msgs::msg::Header>("/tickle_check_header", qos_depth);
         auto bytes_pub = node->create_publisher<std_msgs::msg::UInt8MultiArray>("/tickle_check_bytes", qos_depth);
         auto joints_pub = node->create_publisher<sensor_msgs::msg::JointState>("/tickle_check_joints", qos_depth);
+        report_identity("default_node pub");
         rclcpp::executors::SingleThreadedExecutor executor;
         executor.add_node(node);
         const long rounds = seconds * rounds_per_second;
@@ -152,6 +154,7 @@ namespace {
             "/tickle_check_joints", qos_depth, [&got](const sensor_msgs::msg::JointState& msg) {
                 report("sensor_msgs/JointState", msg, got[3]);
             });
+        report_identity("default_node sub");
         rclcpp::executors::SingleThreadedExecutor executor;
         executor.add_node(node);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
