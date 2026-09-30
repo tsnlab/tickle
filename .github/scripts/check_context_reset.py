@@ -45,21 +45,57 @@ SURVIVES_RESET = {
     "collision_since_ns": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
     "collision_last_ns": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
     "ids_seen": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
+    # Classified by Dev 2026-09-30, the whole of what UNREVIEWED held. node_init_locks() is called from
+    # tt_Context_create() before anything can reach the node, which is a function someone can check still runs -
+    # unlike "lifetime-scoped", which is a category.
+    "state_lock": "node_init_locks(), at create, before anything can reach the node",
+    "state_owner": "node_init_locks(), at create, before anything can reach the node",
+    "state_depth": "node_init_locks(), at create, before anything can reach the node",
+    "state_lock_stats": "node_init_locks(), at create, before anything can reach the node",
+    "poller_thread": "node_init_locks(), at create, before anything can reach the node",
+    "poller_active": "node_init_locks(), at create, before anything can reach the node",
+    "sched_inbox_state": "node_init_locks(), at create, before anything can reach the node",
+    "sched_inbox_pending": "node_init_locks(), at create, before anything can reach the node",
+    "wait_seq": "node_init_locks(), at create, before anything can reach the node",
+    "wait_until_hi": "node_init_locks(), at create, before anything can reach the node",
+    "wait_until_lo": "node_init_locks(), at create, before anything can reach the node",
+    "rx_clock_ns": "node_init_locks(), at create, before anything can reach the node",
+    "collision_logged_ip": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
+    "collision_logged_port": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
+    "hal": "tt_bind() and the platform HAL, which writes every member it uses",
+    "endpoint_index": "rebuild_endpoint_index(), which writes every slot to NULL before any lookup walks it",
+    "sched_inbox": "the CAS that claims a slot into WRITING; sched_inbox_state[] is the guard and node_init_locks() "
+                   "does initialise that, so the payload never needs to be",
+    "default_node_name": "the snprintf() one line before node->name is pointed at it",
+    "rx_targeted": "process_data(), per datagram, before every read of it",
+    # Not "believed" any more, and the first version of this entry named the WRONG MECHANISM - it said the gap logic
+    # guarantees an incomplete sample is never delivered. The gap logic has nothing to do with it. cached_sample()
+    # sets *payload = NULL at the top and reaches *payload = out only after copying all frag_count fragments
+    # contiguously; every early return is before that assignment and the caller checks for NULL. So a missing
+    # fragment leaves this buffer PARTIALLY WRITTEN and never read. An entry naming the wrong mechanism is worse than
+    # one saying "believed": the wrong mechanism reads as checked, and whoever maintained the gap logic would have
+    # thought they were maintaining this. tests/test_durable_frag_gather.c states it as a thing that can fail, in its
+    # own binary because cached_sample() needs tt_LOCAL_DELIVERY and tt_FRAG_ENABLED together and no other test
+    # binary has both - the first version of that test was compiled out entirely and "passed" without its symbol
+    # being in the binary at all.
+    "local_scratch": "nothing - it is scratch. cached_sample() leaves *payload NULL unless the gather completed, "
+                     "so a partly written buffer is never read; checked by tests/test_durable_frag_gather.c",
 }
 
 # Fields that predate this check and have NOT yet been classified. They are NOT endorsed: each one is either a
 # deliberate survivor that belongs in SURVIVES_RESET with its reason, or a live instance of the bug above. The list
 # exists so the check can be switched on for NEW fields today rather than waiting for all of them to be reviewed.
 # Shrinking it to empty is the job; nothing may be added to it.
-# Confirmed by Dev 2026-09-29 as live instances of the bug, awaiting the fix in reset_node_state(): each is a
-# uint64_t counter that is only ever incremented, so a caller-owned context reports whatever was on the stack. Two of
-# them are what a reader consults when a node delivered nothing, and "how many did we throw away and why" answered
-# from garbage is worse than not answering. They are NOT allowlisted; the check reports them until they are reset.
-UNREVIEWED = {
-    "collision_logged_ip", "collision_logged_port",     "default_node_name", "endpoint_index", "hal",     "local_scratch", "poller_active", "poller_thread", "rx_clock_ns",     "rx_targeted", "sched_inbox", "sched_inbox_pending", "sched_inbox_state", "state_depth", "state_lock",
-    "state_lock_stats", "state_owner", "version_mismatch_logged", "wait_seq",
-    "wait_until_hi", "wait_until_lo",
-}
+# EMPTY as of 2026-09-30, which was the job. Of the 24 it began with, four were live instances of the bug and are
+# now reset - rx_malformed_drops, rx_out_of_range, version_mismatch_drops and version_mismatch_logged - and the other
+# twenty are in SURVIVES_RESET above with what sets each. Nothing may be added here: a new field is either reset or
+# classified with a reason, and this set existing at all was a concession to the fields that predated the check.
+#
+# Worth recording why the hit rate was four for four on things worth looking at: comparing two lists has no theory
+# about which fields matter, so it could not skip the boring ones - and all four were boring. Three increment-only
+# counters and a log latch; nothing a person scanning the struct for "interesting" state would have stopped on. A
+# cleverer check that ranked fields by plausibility would have found none of them.
+UNREVIEWED = set()
 
 
 def block(lines, start):
