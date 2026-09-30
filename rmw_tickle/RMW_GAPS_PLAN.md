@@ -1579,12 +1579,47 @@ demonstrated" into a defect with a reproduction.
 yet, then the stream switches to the segment. 6c calls this safe in practice because the switch happens once, during
 discovery, while the ring is empty - "safe in practice, not by construction", which is the honest form.
 
-**Not measurable usefully yet, and the reason is a decision rather than a difficulty.** Lazy segment creation - if the
-user chooses it - changes exactly when a segment first exists and therefore how long and how busy this window is.
-Measuring it against today's bind-time creation would produce a number that describes a build nobody would ship if the
-answer goes the other way. So B waits on decision 6, and that is a dependency worth stating rather than a delay:
-**the open question in that decision ("what happens to a peer that appears before we have a segment") is this window,
-asked from the other side.**
+**Measured 2026-09-30, now that the decision is made and lazy creation is verified.** The window's length is
+`tx_udp_unattached`, the writer's own count of datagrams that went to the socket because the peer was not attached
+yet, and it came out the same in all three same-host arms of `lazy_segment_lifecycle.sh`:
+
+| arm | tx_udp_unattached | tx_udp_broadcast | tx_udp total | tx_shm | delivered out_of_order |
+|---|---|---|---|---|---|
+| best_effort | 257 | 22 | 279 | 13,260,070 | 0 |
+| reliable KEEP_LAST | 257 | 21 | 278 | 16,089,136 | 0 |
+| reliable KEEP_ALL | 257 | 21 | 278 | 4,856,794 | 0 |
+
+So the window is real and **257 datagrams long at the default retry count**, and the number is derivable rather
+than merely repeatable: `tt_SEGMENT_ATTACH_RETRY_SENDS` is 256 (`config.h:479`, `#ifndef`-guarded so `-D` moves it),
+`remember_absent()` sets `recheck_in` to it, and `peer_segment()` decrements and returns NULL while it is above
+zero. One failing attach that gets remembered, then 256 sends that do not re-ask, then the next send re-attempts and
+attaches: 1 + 256 = 257, every time. Measurement and derivation agree to the datagram.
+
+**Why it did not move across a 3.4x range of send rates is the part worth stating**, and it is not robustness: the
+window is counted in **sends, not time**. Nothing in it is a clock, so it cannot move with load and cannot move with
+a discovery interval either. Two consequences follow that these arms cannot show. Its length is a configuration
+choice rather than a property of discovery, so any claim about 257 has to name the default. And because it counts
+this sender's sends to that peer, a low-rate publisher spends the same 257 datagrams over a far longer wall-clock
+time - all three arms here were high-rate, so they cannot tell "257 datagrams" from "a few milliseconds"; the
+derivation can, and it says datagrams.
+
+The two UDP reasons account for the whole of `tx_udp` in every arm. No inversion reached the application anywhere.
+
+**What is NOT established, and the instrument that is missing.** "No inversion reached the application" is not "the
+window produces no inversions". The reliable arms show real reordering absorbed by the reorder buffer
+(`reorder_held_peak=201`, `reorder_delivered=2212`) against only 6 retransmissions, so most of that reordering is
+not retransmission - and nothing available attributes any of it to the UDP-to-segment boundary. The delivery
+accounting has no per-sample record of which path a sample took; it has per-datagram totals on the writer and
+per-sample ordering on the reader, and nothing joining them.
+
+`via_socket_flips` looks like the missing witness and is not, which is worth writing down because the name invites
+it: it counts transitions of `via_data_port`, the well-known port against the data port, **both of them UDP**. Its
+22 tracks `tx_udp_broadcast=21`, not the segment. Reading the counter's declaration rather than its name is what
+stopped a claim that the same-host stream flips between socket and segment 22 times - which would have contradicted
+6c's "the switch happens once" on the strength of a counter that cannot see the switch at all.
+
+Closing this needs a path bit in the delivery accounting, the way `via_data_port` already does for sockets. Until
+then 6c's "safe in practice, not by construction" stands exactly as written, with a length attached to it.
 
 #### S6's transport witness, and why it is the loopback counter rather than each vendor's introspection (2026-09-30, Plan)
 
