@@ -1412,10 +1412,25 @@ distinguished from it:
 | send buffer against `Z_CONGESTION_CONTROL_BLOCK` | BLOCK should block the writer; if the write instead times out and zenoh treats that as link failure, the link closes. p2's byte rate is ~17x p1's, so the buffer fills far sooner |
 | lease starvation | if BLOCK stalls the writer long enough that the keepalive task cannot run, the peer declares the link dead. This fits "one write_fail then permanently dead" best |
 
-**The cheapest discriminator is the client's own stderr, and the harness currently throws it away.** zenoh-pico logs
-link closure with a reason, but `run_scenario.sh` and `zenoh_cells.sh` keep only `^RESULT` lines, so the message that
-would name the mechanism was never retained. That is the instrumentation gap to close first: keep the client and
-server logs, reproduce p2 once, and read what it says. `ss -ti` during the run (is the send queue full, are there
+**The instrumentation gap is larger than it first looked, and the first version of this section got it wrong.** It
+said the cheapest discriminator was the client's own stderr, which the harness threw away by keeping only `^RESULT`
+lines. Keeping only `^RESULT` lines is real and is now fixed, but it was never the whole reason, and on its own the
+fix could not have decided anything. What was actually checked afterwards, on the rig and in the source:
+
+| claim in the first version | what is actually true |
+|---|---|
+| zenoh-pico logs link closure with a reason | only if the library is built with `-DZENOH_DEBUG`; without it every `_Z_LOG` call compiles to nothing, and our measurement build passes no such flag. Both rig hosts run d9b4eea, release 1.10.1 |
+| the message is on stderr | zenoh-pico logs through `printf`, so stdout. "Keep stderr" would have been the wrong fix even in a build that logs |
+| our client's stderr carries something | our client writes to stderr nowhere at all; `write_fail` is our own counter and is already in the RESULT line |
+
+So the instrument needs both halves: a **diagnostic build** with logging compiled in, and a harness that keeps the
+whole stream. Both are now in place. The diagnostic build gets a prefix of its own and the prefix refuses to be
+reused at a different logging level, because the RESULT line carries no build tag at all - its `transport=tcp` is a
+literal in the printf - so a logging library left in the measurement prefix would yield numbers indistinguishable
+from clean ones. Start at `ZENOH_DEBUG=1`, errors only: a closing link is an error, and level 3 puts a `printf` on
+the data path and changes the thing being measured.
+
+Then reproduce p2 once and read what it says. `ss -ti` during the run (is the send queue full, are there
 retransmits) and a packet capture (clean FIN, RST, or simply idle - which alone separates lease starvation from the
 other two) are the follow-ups if the log is not decisive.
 

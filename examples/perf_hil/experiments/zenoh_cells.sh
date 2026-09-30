@@ -54,6 +54,20 @@ CLI_ARGS=${CLI_ARGS:-}
 # it would hide that an earlier run died holding the rig shaped.
 NET=${NET:-N0}
 OUT=${OUT:-/tmp/zenoh_cells.txt}
+# Per-rep diagnostics from BOTH sides, kept because this harness used to throw them away: it captured the run with
+# `./client ... 2>&1 | grep '^RESULT'`, so anything that was not a RESULT line died at the far end of the pipe and
+# never crossed the network. Keeping them is necessary but NOT sufficient, and the difference cost an hour to find:
+#   - zenoh-pico 1.10.1 compiles every one of its own log calls OUT unless the library is built with -DZENOH_DEBUG,
+#     which our measurement build does not pass. So in a measurement build there is nothing to keep.
+#   - what logging it does have prints with printf, i.e. to STDOUT, so "keep stderr" would have been the wrong fix
+#     even in a build that logs. This keeps the whole stream, both descriptors, in a file.
+#   - our own client writes nothing to stderr at all; write_fail is our counter and is already in the RESULT line.
+# To ask WHY a link dies, run against a diagnostic build, which has a prefix of its own so its numbers can never be
+# mistaken for measurements (see zenohpico/build.sh):
+#   ZENOH_DEBUG=1 ZENOH_PICO_PREFIX=$HOME/zenohpico_install_dbg ZENOH_PICO_SRC=$HOME/zenohpico_src_dbg
+# Start at level 1 (errors only): a closing link is an error, and level 3 puts a printf on the data path, which
+# changes the thing being measured. Escalate only if level 1 says nothing.
+DIAG=${DIAG:-/tmp/zenoh_cells_diag}
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=10 "ci@$1" "${@:2}"; }
 tc_netem_present() { sh_ "$CLIENT" "tc qdisc show dev eth0" 2>/dev/null | grep -q netem; }
@@ -78,6 +92,7 @@ tc_describe() {
 }
 : >"$OUT"
 say() { echo "$*" | tee -a "$OUT"; }
+mkdir -p "$DIAG"
 if [ "$NET" != N0 ] && tc_netem_present; then
     say "REFUSING TO START: $CLIENT eth0 already has netem on it, so the baseline would not be unshaped."
     sh_ "$CLIENT" "tc qdisc show dev eth0" | tee -a "$OUT"
@@ -161,12 +176,34 @@ for SCEN in $SCENS; do
         kill_server
         srv_pid=$(sh_ "$SERVER" "cd ~/tickle/examples/perf_hil/zenohpico/${SCEN}_${SIZE} && rm -f /tmp/zrc_server.pid
 (setsid sh -c 'echo \$\$ > /tmp/zrc_server.pid; exec env $SRV_ENV taskset -c 1-3 stdbuf -oL ./server -d $SRV_DUR' > /tmp/zrc_server.log 2>&1 < /dev/null &); sleep 2; cat /tmp/zrc_server.pid" </dev/null)
-        cline=$(sh_ "$CLIENT" "cd ~/tickle/examples/perf_hil/zenohpico/${SCEN}_${SIZE} && env $CLI_ENV taskset -c 1-3 stdbuf -oL ./client -d $DUR $CLI_ARGS 2>&1 | grep '^RESULT'" </dev/null)
+        cline=$(sh_ "$CLIENT" "cd ~/tickle/examples/perf_hil/zenohpico/${SCEN}_${SIZE} && env $CLI_ENV taskset -c 1-3 stdbuf -oL ./client -d $DUR $CLI_ARGS > /tmp/zp_client.log 2>&1; grep '^RESULT' /tmp/zp_client.log" </dev/null)
         [ -n "$cline" ] && say "scen=$SCEN size=$SIZE net=$NET rep$r $cline"
         kill_server
         sline=$(sh_ "$SERVER" "grep '^RESULT' /tmp/zrc_server.log | tail -1" </dev/null)
         [ -n "$sline" ] && say "scen=$SCEN size=$SIZE net=$NET rep$r $sline"
         say "  $SCEN $SIZE rep$r client sent=$(printf '%s' "$cline" | grep -oE 'sent=[0-9]+' | cut -d= -f2) server received=$(printf '%s' "$sline" | grep -oE 'received=[0-9]+' | cut -d= -f2)"
+        # Both sides' own words, retained per rep. A failure to READ a log gets its own line: "I could not look" and
+        # "the run said nothing" are different findings, and if they print the same the absence of a diagnosis reads
+        # as the absence of a problem.
+        for side in client server; do
+            case $side in
+            client) dh=$CLIENT; rlog=/tmp/zp_client.log ;;
+            server) dh=$SERVER; rlog=/tmp/zrc_server.log ;;
+            esac
+            dlog="$DIAG/${SCEN}_${SIZE}_${NET}_rep${r}_${side}.log"
+            if ! sh_ "$dh" "cat $rlog" </dev/null >"$dlog" 2>/dev/null; then
+                say "  !! could not read the $side log ($dh:$rlog): this rep has NO diagnostics, which is a hole in the"
+                say "     evidence and not a quiet run. Do not read its RESULT line as unexplained."
+                continue
+            fi
+            nd=$(grep -cv '^RESULT' "$dlog" 2>/dev/null || true); nd=${nd:-0}
+            if [ "$nd" -eq 0 ]; then
+                say "  $side said nothing beyond its RESULT line ($dlog)"
+            else
+                say "  $side said $nd line(s) besides RESULT; last 12 follow, whole log in $dlog"
+                grep -v '^RESULT' "$dlog" | tail -12 | sed 's/^/    | /' | tee -a "$OUT"
+            fi
+        done
     done
   done
 done
