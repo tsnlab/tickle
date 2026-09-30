@@ -191,7 +191,14 @@ for ARM in $ARMS; do
     txudp=$(field "$DIAG/$wl" tx_udp)
     full=$(field "$DIAG/$wl" shm_full_dropped)
     gave=$(field "$DIAG/$wl" shm_gave_up)
-    recv=$(field "$DIAG/$rl" received)
+    # tickle's server prints recv=, zenoh-pico's prints received=. The first version of this looked only for
+    # received= and so read "-" from every tickle run, which VOIDed four arms whose counters were in fact exactly
+    # what they should have been. The selftest did not catch it because its fixture was written from the same wrong
+    # assumption as the code - a fixture invented by the author cannot contradict the author. The fixtures are now
+    # taken from a real run (LSL_SELFTEST=1 against a $DIAG that a real run filled), which is the only version of
+    # this test that can fail for the right reason.
+    recv=$(field "$DIAG/$rl" recv)
+    [ "$recv" = - ] && recv=$(field "$DIAG/$rl" received)
     say "  arm=$ARM created=$created released=$released same_host_peers=$peers tx_shm=$txshm tx_udp=$txudp shm_full_dropped=$full shm_gave_up=$gave reader_received=$recv"
     if [ "$recv" = "-" ] || [ "${recv:-0}" = 0 ]; then
         say "  VOID arm $ARM: the reader received nothing, so this arm measured no delivery and its counters"
