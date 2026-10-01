@@ -206,7 +206,10 @@ for i in 1 2 3 4 5; do [ -d /proc/$roudi_pid ] || break; sleep 1; done; true" </
 }
 
 cdds_run() {  # cdds_run <arm> <uri>
-    local arm=$1 uri=$2 dir=/home/ci/tickle/examples/perf_hil/cyclonedds/$SCEN all line
+    # ${SCEN}_${SIZE}, not $SCEN: build.sh puts the binaries in "$HERE/${SCENARIO}_${PAYLOAD}" when a payload is
+    # given, same as fastdds. I read the source directory as the output one because at the time I looked the
+    # built directory did not exist yet - the listing was of a tree that had not been built.
+    local arm=$1 uri=$2 dir=/home/ci/tickle/examples/perf_hil/cyclonedds/${SCEN}_${SIZE} all line
     cleanup
     srv_pid=$(sh_ "$HOST" "cd $dir && rm -f /tmp/s6_cdds.pid
 (setsid sh -c 'echo \$\$ >/tmp/s6_cdds.pid; exec env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='\''$uri'\'' taskset -c 1 ./server -d $((DUR + 40))' >/tmp/s6_cdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_cdds.pid" </dev/null)
@@ -234,8 +237,10 @@ run_cyclonedds_cell() {
     local out
     out=$(sh_ "$HOST" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA
 cd examples/perf_hil/cyclonedds && ./build.sh $SCEN $SIZE >/tmp/s6_cdds_build.log 2>&1 || { echo BUILD_FAILED; cat /tmp/s6_cdds_build.log; exit 0; }
-sha256sum $SCEN/client | cut -c1-16" </dev/null 2>&1)
-    case "$out" in *BUILD_FAILED*|*error:*) say "FATAL cyclonedds build failed:"; say "$out"; return 1;; esac
+sha256sum ${SCEN}_${SIZE}/client | cut -c1-16" </dev/null 2>&1)
+    # "No such file" from sha256sum means the build wrote nothing where this cell will look, which is a failure
+    # even though build.sh exited 0. Checked here rather than discovered three repetitions later.
+    case "$out" in *BUILD_FAILED*|*error:*|*"No such file"*) say "FATAL cyclonedds build produced no client at ${SCEN}_${SIZE}/:"; say "$out"; return 1;; esac
     say "  cyclonedds built at $SHA, client sha256=$(printf '%s' "$out" | tail -1)"
     say "  NOTE: CycloneDDS prints no per-run identity field, unlike FastDDS's transport_profile=. This arm's"
     say "        identity is the daemon bracket - ready before, alive after - and is weaker for it."
