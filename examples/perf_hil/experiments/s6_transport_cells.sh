@@ -178,15 +178,41 @@ run_fastdds_cell() {
 # identity rests on bracketing it with the daemon's liveness - ready before, still alive after - plus the witness.
 # "Still alive after" is not decoration: if RouDi dies mid-run CycloneDDS does not fail, it falls back to the
 # network, and the arm would be a kernel-path run wearing a shared-memory label.
-CDDS_LIB_PATH=${CDDS_LIB_PATH:-/opt/ros/jazzy/lib/aarch64-linux-gnu}
+# DERIVED FROM THE BINARY, NOT HARDCODED, and that is the whole point. Two prefixes are installed on the rig:
+# jazzy's CycloneDDS 0.10.5 and rolling's 11.0.1. build.sh searches /opt/ros/rolling FIRST, so the campaign's
+# client links libddsc.so.11 from rolling through a baked-in DT_RPATH - every CycloneDDS figure in COMPARISON is
+# 11.0.1, which nothing in that document currently says.
+#
+# The first version of this cell copied run_scenario.sh's LIB_PATH (jazzy) and the ON arm failed with
+# "Failed to load PSMX library 'psmx_iox'" and then "dds_create_writer failed": DT_RPATH resolved libddsc from
+# rolling while LD_LIBRARY_PATH pointed the plugin search at jazzy, which ships no psmx_iox at all. Taking the
+# prefix from the binary's own RPATH makes the daemon, the plugin and the library match by construction instead
+# of by my getting three paths right.
+#
+# Worth recording from that failure: CycloneDDS did NOT silently fall back to the network when the plugin was
+# missing. It refused to create the writer. The design note above assumed the opposite - "without the daemon
+# CycloneDDS does not fail, it uses its network path" - and at least in this failure mode that is not what it
+# does. Whether it falls back when the plugin loads but RouDi is absent is a different question and still untested,
+# so the refusal below stays.
+CDDS_LIB_PATH=${CDDS_LIB_PATH:-}
 CDDS_URI_OFF='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
 CDDS_URI_ON='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery><SharedMemory><Enable>true</Enable></SharedMemory></Domain></CycloneDDS>'
 roudi_pid=""
 
+# The prefix the client's own RPATH names, and the RouDi that lives beside it.
+cdds_paths() {
+    local dir=/home/ci/tickle/examples/perf_hil/cyclonedds/${SCEN}_${SIZE}
+    CDDS_LIB_PATH=$(sh_ "$HOST" "readelf -d $dir/client 2>/dev/null | sed -n 's/.*RPATH.*\[\(.*\)\]/\1/p' | head -1" </dev/null)
+    [ -n "$CDDS_LIB_PATH" ] || { say "  FATAL the client has no RPATH, so the matching RouDi cannot be derived"; return 1; }
+    CDDS_ROUDI=${CDDS_LIB_PATH%/lib/*}/bin/iox-roudi
+    sh_ "$HOST" "test -x $CDDS_ROUDI" </dev/null || { say "  FATAL no iox-roudi at $CDDS_ROUDI, beside the library the client links"; return 1; }
+    say "  client links $CDDS_LIB_PATH; using $CDDS_ROUDI"
+}
+
 roudi_on() {
     roudi_pid=$(sh_ "$HOST" "rm -f /tmp/s6_roudi.pid /tmp/s6_roudi.log
 export LD_LIBRARY_PATH=$CDDS_LIB_PATH
-(setsid sh -c 'echo \$\$ >/tmp/s6_roudi.pid; exec /opt/ros/jazzy/bin/iox-roudi' >/tmp/s6_roudi.log 2>&1 </dev/null &)
+(setsid sh -c 'echo \$\$ >/tmp/s6_roudi.pid; exec $CDDS_ROUDI' >/tmp/s6_roudi.log 2>&1 </dev/null &)
 for i in 1 2 3 4 5 6 7 8 9 10; do grep -q 'RouDi is ready for clients' /tmp/s6_roudi.log 2>/dev/null && break; sleep 1; done
 cat /tmp/s6_roudi.pid" </dev/null)
     if ! sh_ "$HOST" "grep -q 'RouDi is ready for clients' /tmp/s6_roudi.log" </dev/null; then
@@ -242,6 +268,7 @@ sha256sum ${SCEN}_${SIZE}/client | cut -c1-16" </dev/null 2>&1)
     # even though build.sh exited 0. Checked here rather than discovered three repetitions later.
     case "$out" in *BUILD_FAILED*|*error:*|*"No such file"*) say "FATAL cyclonedds build produced no client at ${SCEN}_${SIZE}/:"; say "$out"; return 1;; esac
     say "  cyclonedds built at $SHA, client sha256=$(printf '%s' "$out" | tail -1)"
+    cdds_paths || return 1
     say "  NOTE: CycloneDDS prints no per-run identity field, unlike FastDDS's transport_profile=. This arm's"
     say "        identity is the daemon bracket - ready before, alive after - and is weaker for it."
     for r in $(seq 1 "$REPS"); do
