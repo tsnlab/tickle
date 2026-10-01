@@ -1035,21 +1035,46 @@ namespace {
         bool all = false;
     };
 
+    [[noreturn]] auto usage_error(const std::string& detail) -> void {
+        std::fprintf(stderr,
+                     "direct_codec_identity: %s\n"
+                     "usage: direct_codec_identity [-s seed] [-n samples] [-d declined_list] (--all | pkg...)\n",
+                     detail.c_str());
+        std::exit(2);
+    }
+
+    // Anything beginning with '-' that is not a known flag is an ERROR, and so is a known flag with no
+    // value after it. Both used to fall through to the package list: `--seed 123` was taken as two
+    // package names, the tool generated its own seed, reported "4 package(s)" and failed them all with
+    // "no direct codec in its callbacks (rebuild it)" - which reads exactly like "does not reproduce".
+    // A measurement tool that quietly measures something other than what it was asked for is worse than
+    // one that refuses, because its output looks like an answer.
     auto parse(int argc, char** argv) -> options {
         options opts {.seed = std::random_device {}()};
         for (int i = 1; i < argc; i++) {
             std::string const arg = argv[i];
-            if (arg == "-s" && i + 1 < argc) {
-                opts.seed = std::strtoull(argv[++i], nullptr, 10);
-            } else if (arg == "-n" && i + 1 < argc) {
-                opts.samples = std::atoi(argv[++i]);
-            } else if (arg == "-d" && i + 1 < argc) {
-                opts.declined_path = argv[++i];
+            const bool is_flag = arg.size() > 1 && arg[0] == '-';
+            if (arg == "-s" || arg == "-n" || arg == "-d") {
+                if (i + 1 >= argc) {
+                    usage_error(arg + " needs a value");
+                }
+                if (arg == "-s") {
+                    opts.seed = std::strtoull(argv[++i], nullptr, 10);
+                } else if (arg == "-n") {
+                    opts.samples = std::atoi(argv[++i]);
+                } else {
+                    opts.declined_path = argv[++i];
+                }
             } else if (arg == "--all") {
                 opts.all = true;
+            } else if (is_flag) {
+                usage_error("unknown option " + arg);
             } else {
                 opts.packages.push_back(arg);
             }
+        }
+        if (!opts.all && opts.packages.empty()) {
+            usage_error("no package named, and --all not given");
         }
         if (opts.all) {
             opts.packages = tickle_packages();
