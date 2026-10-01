@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The shared-memory arm of SHM_PLAN's S6, for FastDDS. Paired with fastdds_eth0_only.xml, which is
+  the same participant with the shared-memory transport absent - that file is this arm's kernel-path
+  denominator, and the S6 ratio has no meaning without it.
+
+  Why a second file rather than a flag: fastdds_eth0_only.xml declares <useBuiltinTransports>false
+  </useBuiltinTransports>, which removes FastDDS's built-in shared-memory transport along with the
+  built-in UDP one. So the campaign's existing arm is UDP-only *by construction*, not by accident,
+  and it stays that way - every cross-host figure in COMPARISON came from it. This file adds the
+  shared-memory descriptor beside the same eth0 UDP descriptor and changes nothing else.
+
+  Both transports are listed deliberately. FastDDS prefers shared memory for a same-host match and
+  needs the UDP transport anyway for discovery, so an arm with shared memory alone would measure a
+  participant that cannot discover rather than one that uses a different data path. S6's witness is
+  the loopback packet counter precisely because "both transports configured" does not say which one
+  carried the samples - the interface counter does.
+
+  The interfaceWhiteList is unchanged and still lists both rig addresses. On a same-host cell both
+  processes run on one Pi and address each other at that Pi's own 192.168.10.x, which Linux delivers
+  through the loopback device - which is what makes BENCH_IFACE=lo the witness for this cell.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>eth0_udp</transport_id>
+      <type>UDPv4</type>
+      <interfaceWhiteList>
+        <address>192.168.10.2</address>
+        <address>192.168.10.3</address>
+      </interfaceWhiteList>
+    </transport_descriptor>
+    <transport_descriptor>
+      <transport_id>samehost_shm</transport_id>
+      <type>SHM</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="shm_and_eth0_participant" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>samehost_shm</transport_id>
+        <transport_id>eth0_udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>
