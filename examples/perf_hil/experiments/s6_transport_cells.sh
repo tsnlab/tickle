@@ -55,7 +55,7 @@ if [ "$ANALYSE_ONLY" != 1 ]; then
     export RIG_LOCK_HELD_HIL=1   # so the tickle cell's own harness does not take the lock again
 fi
 
-FRAMEWORKS=${FRAMEWORKS:-"tickle fastdds"}
+FRAMEWORKS=${FRAMEWORKS:-"tickle fastdds cyclonedds"}
 REPS=${REPS:-3}
 DUR=${DUR:-5}
 SCEN=${SCEN:-reliable_throughput}
@@ -70,12 +70,17 @@ mkdir -p "$(dirname "$OUT")"
 say() { echo "$*" | tee -a "$OUT"; }
 
 srv_pid=""
-cleanup() {   # ONE EXIT trap for the whole script: a second one silently replaces the first
+cleanup() {
     [ -n "${srv_pid:-}" ] && sh_ "$HOST" "case \"\$(readlink /proc/$srv_pid/exe 2>/dev/null)\" in
         */server) kill -TERM $srv_pid;; esac" </dev/null >/dev/null 2>&1
     srv_pid=""
 }
-trap cleanup EXIT
+# ONE EXIT trap for the whole script - a second `trap ... EXIT` silently replaces the first, which once left the
+# rig shaped at delay 10ms after a clean exit. The daemon is stopped here too, not by a trap of its own.
+# roudi_off is defined further down with the cyclonedds cell; if the script exits before reaching that definition
+# this would be a "command not found" inside the trap, so it is called only when it exists.
+on_exit() { cleanup; declare -f roudi_off >/dev/null && roudi_off; }
+trap on_exit EXIT
 
 if [ "$ANALYSE_ONLY" = 1 ]; then
     echo "=== S6 verdicts only, against the existing $OUT - no host touched ==="
@@ -158,16 +163,95 @@ run_fastdds_cell() {
 }
 
 [ "$ANALYSE_ONLY" = 1 ] && FRAMEWORKS=""   # analyse an existing $OUT: run no cells
+# ---------------------------------------------------------------- cyclonedds: a daemon, and a weaker identity
+# Checked on the rig before this was written, because two of the three facts were not what the file names implied:
+#   - libddsc here is 0.10.5 at /opt/ros/jazzy/lib/aarch64-linux-gnu/, NOT /opt/ros/jazzy/lib/ - an ldd of the
+#     latter says "No such file or directory", which looks exactly like "no iceoryx dependency" if the line is
+#     counted rather than read.
+#   - it DOES have shared-memory support compiled in: the SharedMemory config element,
+#     dds_is_shared_memory_available, dds_loan_shared_memory_buffer, 52 iceoryx strings.
+#   - iox-roudi starts, reserves its segments, prints "RouDi is ready for clients", and stops on TERM.
+#
+# THE IDENTITY PROBLEM IS REAL HERE AND WEAKER THAN FASTDDS'S. FastDDS prints transport_profile= on its RESULT
+# line, so each repetition testifies to the configuration it ran. CycloneDDS prints nothing of the kind: both arms
+# are the same binary with a different CYCLONEDDS_URI, and nothing in the output says which. So the ON arm's
+# identity rests on bracketing it with the daemon's liveness - ready before, still alive after - plus the witness.
+# "Still alive after" is not decoration: if RouDi dies mid-run CycloneDDS does not fail, it falls back to the
+# network, and the arm would be a kernel-path run wearing a shared-memory label.
+CDDS_LIB_PATH=${CDDS_LIB_PATH:-/opt/ros/jazzy/lib/aarch64-linux-gnu}
+CDDS_URI_OFF='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
+CDDS_URI_ON='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery><SharedMemory><Enable>true</Enable></SharedMemory></Domain></CycloneDDS>'
+roudi_pid=""
+
+roudi_on() {
+    roudi_pid=$(sh_ "$HOST" "rm -f /tmp/s6_roudi.pid /tmp/s6_roudi.log
+export LD_LIBRARY_PATH=$CDDS_LIB_PATH
+(setsid sh -c 'echo \$\$ >/tmp/s6_roudi.pid; exec /opt/ros/jazzy/bin/iox-roudi' >/tmp/s6_roudi.log 2>&1 </dev/null &)
+for i in 1 2 3 4 5 6 7 8 9 10; do grep -q 'RouDi is ready for clients' /tmp/s6_roudi.log 2>/dev/null && break; sleep 1; done
+cat /tmp/s6_roudi.pid" </dev/null)
+    if ! sh_ "$HOST" "grep -q 'RouDi is ready for clients' /tmp/s6_roudi.log" </dev/null; then
+        say "  FATAL RouDi did not report ready. Refusing the ON arm rather than measuring CycloneDDS's network"
+        say "        path and labelling it shared memory. Its log said:"
+        sh_ "$HOST" "tail -5 /tmp/s6_roudi.log" </dev/null 2>/dev/null | sed 's/^/        | /' | tee -a "$OUT"
+        roudi_off; return 1
+    fi
+    say "  RouDi ready, pid $roudi_pid"
+}
+
+roudi_off() {
+    [ -z "${roudi_pid:-}" ] && return 0
+    sh_ "$HOST" "case \"\$(readlink /proc/$roudi_pid/exe 2>/dev/null)\" in */iox-roudi) kill -TERM $roudi_pid;; esac
+for i in 1 2 3 4 5; do [ -d /proc/$roudi_pid ] || break; sleep 1; done; true" </dev/null >/dev/null 2>&1
+    roudi_pid=""
+}
+
+cdds_run() {  # cdds_run <arm> <uri>
+    local arm=$1 uri=$2 dir=/home/ci/tickle/examples/perf_hil/cyclonedds/$SCEN all line
+    cleanup
+    srv_pid=$(sh_ "$HOST" "cd $dir && rm -f /tmp/s6_cdds.pid
+(setsid sh -c 'echo \$\$ >/tmp/s6_cdds.pid; exec env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='\''$uri'\'' taskset -c 1 ./server -d $((DUR + 40))' >/tmp/s6_cdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_cdds.pid" </dev/null)
+    all=$(sh_ "$HOST" "cd $dir && env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='$uri' taskset -c 2 ./client -d $DUR >/tmp/s6_cdds_client.log 2>&1; cat /tmp/s6_cdds_client.log" </dev/null)
+    line=$(printf '%s\n' "$all" | grep '^RESULT' | head -1)
+    cleanup
+    if [ -z "$line" ]; then
+        say "  arm=$arm produced no RESULT line. What it did say:"
+        printf '%s\n' "$all" | grep -v '^RESULT' | tail -6 | sed 's/^/       | /' | tee -a "$OUT"
+        return 0
+    fi
+    # The ON arm only counts if the daemon outlived it: RouDi dying mid-run is a silent fall back to the network.
+    if [ "$arm" = ON ]; then
+        if [ -z "$(sh_ "$HOST" "readlink /proc/$roudi_pid/exe 2>/dev/null" </dev/null)" ]; then
+            say "  arm=ON DISCARDED: RouDi was not alive at the end of this repetition, so the run may have fallen"
+            say "       back to the network partway. Not recorded."
+            return 0
+        fi
+    fi
+    say "arm=$arm $line"
+}
+
+run_cyclonedds_cell() {
+    say "### cyclonedds cell: ON=SharedMemory+RouDi  OFF=the campaign's own URI (same binary, URI is the arm) ==="
+    local out
+    out=$(sh_ "$HOST" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA
+cd examples/perf_hil/cyclonedds && ./build.sh $SCEN $SIZE >/tmp/s6_cdds_build.log 2>&1 || { echo BUILD_FAILED; cat /tmp/s6_cdds_build.log; exit 0; }
+sha256sum $SCEN/client | cut -c1-16" </dev/null 2>&1)
+    case "$out" in *BUILD_FAILED*|*error:*) say "FATAL cyclonedds build failed:"; say "$out"; return 1;; esac
+    say "  cyclonedds built at $SHA, client sha256=$(printf '%s' "$out" | tail -1)"
+    say "  NOTE: CycloneDDS prints no per-run identity field, unlike FastDDS's transport_profile=. This arm's"
+    say "        identity is the daemon bracket - ready before, alive after - and is weaker for it."
+    for r in $(seq 1 "$REPS"); do
+        say "--- cyclonedds rep $r/$REPS $(date -Is) ---"
+        if roudi_on; then cdds_run ON "$CDDS_URI_ON"; fi
+        roudi_off
+        cdds_run OFF "$CDDS_URI_OFF"
+    done
+}
+
 for fw in $FRAMEWORKS; do
     case $fw in
     tickle)  run_tickle_cell ;;
     fastdds) run_fastdds_cell ;;
-    cyclonedds)
-        say "### cyclonedds cell: REFUSED ==="
-        say "  Its shared-memory path needs iox-roudi, and without the daemon CycloneDDS does not fail - it uses"
-        say "  its network path while its configuration still reports SharedMemory enabled. Measuring that and"
-        say "  calling it shared memory is the configuration-read this design exists to avoid, so this cell is"
-        say "  refused until the daemon's lifecycle is built (RMW_GAPS_PLAN S6's named next step)." ;;
+    cyclonedds) run_cyclonedds_cell ;;
     *) say "### unknown framework '$fw' - ignored, and said so rather than passed over silently" ;;
     esac
 done
@@ -185,7 +269,14 @@ for line in open(sys.argv[1]):
     w = re.search(r"wire_packets_per_sample=([0-9.]+)", rest)
     shm = re.search(r"\btx_shm=([0-9]+)", rest)
     udp = re.search(r"\btx_udp=([0-9]+)", rest)
-    fw = "tickle" if shm else "fastdds"
+    # The framework comes from the RESULT line's own framework= field. An earlier version inferred it as
+    # "tickle if tx_shm is present else fastdds", which was true while there were two cells and silently merged
+    # cyclonedds into fastdds's arms the moment there were three.
+    fwm = re.search(r"framework=(\w+)", rest)
+    if not fwm:
+        print(f"  skipped a row with no framework= field: {rest[:60]}")
+        continue
+    fw = fwm.group(1)
     if w: rows[(fw, arm)].append((float(w.group(1)),
                                  int(shm.group(1)) if shm else None,
                                  int(udp.group(1)) if udp else None))
@@ -209,7 +300,7 @@ for fw in sorted({k[0] for k in rows}):
     if band is None:
         print(f"    VOID {fw}: between 0.25 and 0.75. Reported as a mixed path rather than averaged over two.")
         continue
-    if fw == "tickle":
+    if fw == "tickle":  # the cross-check applies only where we wrote the counter
         shm_tot = sum(x[1] for x in on if x[1] is not None)
         udp_tot = sum(x[2] for x in on if x[2] is not None)
         share = shm_tot/(shm_tot+udp_tot) if (shm_tot+udp_tot) else 0.0
