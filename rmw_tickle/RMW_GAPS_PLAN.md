@@ -1738,10 +1738,51 @@ so the sentence naming the cause was discarded and the log recorded six absences
 fixed in `a9db5cb7`: the variable is set, and a run with no RESULT line now prints what the client and the server
 actually said.
 
-**What is still open in this design, so it is not mistaken for finished.** The engineering arm needs `iox-roudi`
-running for CycloneDDS, which is an operational prerequisite rather than a flag, and the arm must fail loudly when the
-daemon is absent rather than silently measuring CycloneDDS's network path and labelling it shared memory. That is the
-same shape as everything above, and it is the first thing to build once the cells exist.
+**THE THIRD CELL, 2026-10-01, AND WE LOSE IT** (`s6_transport_cells.sh`, `13d17e4a`, same conditions as the other
+two, `results/s6_cells_cyclonedds_13d17e4a_2026-10-01.txt`):
+
+| cell | arm | `wire_packets_per_sample` | ratio | send Mbps (median) | min..max |
+|---|---|---:|---:|---:|---|
+| tickle | ON | 0.228 | 0.113 | 146.78 | 146.75..146.97 |
+| tickle | OFF | 2.024 | - | 99.02 | 98.98..100.33 |
+| cyclonedds | ON | 0.000 | **0.000** | **159.09** | 150.66..160.22 |
+| cyclonedds | OFF | 2.038 | - | 58.37 | 52.65..59.54 |
+| fastdds | ON | 0.000 | 0.000 | 61.68 | 60.52..62.81 |
+| fastdds | OFF | 2.000 | - | 16.98 | 16.90..18.07 |
+
+**With each framework on its own shared-memory path, CycloneDDS carries 8.4% more than TickLE and the two do not
+overlap** - its slowest repetition, 150.66, is above our fastest, 146.97. This is a loss on the cell S6 was built to
+decide, and it is stated first rather than after its mitigations. The shared-memory gain over each framework's own
+kernel arm is 1.48x for us, 2.73x for CycloneDDS and 3.63x for FastDDS.
+
+Three things that belong with it, none of which is an excuse:
+
+- **It is a different mechanism, not a faster version of ours.** CycloneDDS 11.0.1 reaches shared memory through
+  iceoryx via a PSMX plugin and a separate daemon; `iox-roudi` reserved 66.8 MB plus 149.3 MB of shared memory
+  before any application connected. Ours is a 380 kB segment created in-process on demand. A throughput number
+  does not show that, and the comparison on memory belongs in its own row rather than as a footnote here.
+- **The witness separates them for a reason worth keeping.** Ours is 0.228 and both vendors are 0.000: our doorbell
+  wakes a blocked reader over the socket, theirs signal inside their own segments. That is a design difference the
+  interface counter can see and a throughput number cannot.
+- **n=3, and the ranges are non-overlapping rather than merely different medians.** The claim is that CycloneDDS is
+  faster on this cell at this payload, not that it is faster in general: p1 is 76 bytes, and the p2-p4 cells of this
+  design have not been run.
+
+**What this took, and the premise it corrected.** The ON arm first failed with `Failed to load PSMX library
+'psmx_iox'` and `dds_create_writer failed`. Two CycloneDDS prefixes are installed on the rig - jazzy's 0.10.5 and
+rolling's 11.0.1 - and `build.sh` searches rolling first, so **every native CycloneDDS figure in COMPARISON is
+11.0.1, which that document does not say**. The cell had copied `run_scenario.sh`'s jazzy `LIB_PATH`, so `libddsc`
+resolved from rolling by `DT_RPATH` while the plugin search looked in jazzy, which ships no `psmx_iox`. The cell now
+takes the prefix from the client's own RPATH and uses the RouDi beside it, so library, plugin and daemon match by
+construction.
+
+And the design's premise above - *without the daemon CycloneDDS does not fail, it uses its network path* - is not
+what this version did. With the plugin missing it **refused to create the writer** and said so three times. The
+refusal in the harness stays, because whether it falls back when the plugin loads but RouDi is absent is a different
+question and still untested; but the sentence as written describes a behaviour this CycloneDDS did not show.
+
+**What is still open.** The p2-p4 cells, and CycloneDDS's memory cost measured rather than quoted from RouDi's
+startup lines.
 
 ## g15 - `publish_zerocopy()` sends datagrams that `tx_datagrams` never counts (found by Dev 2026-09-29; LOW severity, HIGH consequence for S1)
 
