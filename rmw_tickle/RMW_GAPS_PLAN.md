@@ -1697,6 +1697,47 @@ pairing is the only part of this design that could catch a defect in the thing w
   payload means the harness is wrong - it is claiming that crossing a process boundary beat not crossing one - and the
   row is VOID with the harness named, not published as a record.
 
+**MEASURED 2026-10-01 (`s6_transport_cells.sh`, `a9db5cb7`, `reliable_throughput` p1, both roles on
+10.1.1.214, `BENCH_IFACE=lo`, 5 s, 3 reps, results in `results/`).** Two cells, each with its own kernel-path arm,
+and both frameworks' data did go through shared memory:
+
+| cell | arm | `wire_packets_per_sample` | ratio | reading | send Mbps |
+|---|---|---:|---:|---|---:|
+| tickle | ON | 0.228 | **0.113** | shared memory carried the data | 146.97 |
+| tickle | OFF (`-Dtt_SEGMENT_ENABLED=0`) | 2.024 | 1 (denominator) | kernel | 99.02 |
+| fastdds | ON (`fastdds_shm_and_eth0.xml`) | 0.000 | **0.000** | shared memory carried the data | 61.68 |
+| fastdds | OFF (`fastdds_eth0_only.xml`) | 2.000 | 1 (denominator) | kernel | 16.98 |
+
+**With each framework on its own shared-memory path, TickLE carries 2.38x FastDDS's throughput** (146.97 against
+61.68), and on the kernel path 5.83x (99.02 against 16.98). The shared-memory gain is 1.48x for TickLE and 3.63x
+for FastDDS - FastDDS gains more because its kernel arm starts lower, not because its segment is faster.
+
+**The cross-check passed, which is the part that could have found a defect in our own instrument.** On the ON arm
+`tx_shm` was 3,635,899 against `tx_udp` 789, a share of 1.000, while the loopback witness independently saw the
+data leave the network path. Two instruments, one fact, no disagreement - so neither is currently suspect.
+
+**FastDDS's witness is 0.000 where ours is 0.228, and that is information rather than a better score.** Our
+doorbell wakes a blocked reader over the socket, so a TickLE segment legitimately keeps a little interface traffic;
+FastDDS's shared-memory transport notifies inside its own segment and leaves none. It means the 0.25 band is
+generous for FastDDS and comparatively tight for us, and a future TickLE change that added signalling could
+approach the band from below without anything being wrong.
+
+**The upper bound does not trigger, with the margin stated rather than asserted.** g9's recorded in-process cost is
+about 92 ns per publish of a 64 B sample to one local Subscriber, which is thousands of Mbps; 146.97 Mbps is far
+below it, and even allowing a 10x hardware penalty for the Pi against the machine g9 was measured on it would be
+~660 Mbps. The caveat is that g9's figure is a mock-HAL measurement on a different machine, so it bounds the
+direction here and not the value - a same-host figure within a factor of two of it would need the ceiling
+re-measured on the Pi before being published.
+
+**What this cost to get, recorded because the symptom was an absence.** The FastDDS cell's first six runs produced
+no RESULT line at all: the binaries carry no rpath to their own libraries, `run_scenario.sh` exports
+`LD_LIBRARY_PATH=/opt/ros/jazzy/lib` and the new cell did not, so every client died on
+`libfastrtps.so.2.14: cannot open shared object file`. The cell had captured the client through `| grep '^RESULT'`,
+so the sentence naming the cause was discarded and the log recorded six absences - the same defect fixed in
+`zenoh_cells.sh` the previous night, reintroduced the same day in a harness written from scratch. Both halves are
+fixed in `a9db5cb7`: the variable is set, and a run with no RESULT line now prints what the client and the server
+actually said.
+
 **What is still open in this design, so it is not mistaken for finished.** The engineering arm needs `iox-roudi`
 running for CycloneDDS, which is an operational prerequisite rather than a flag, and the arm must fail loudly when the
 daemon is absent rather than silently measuring CycloneDDS's network path and labelling it shared memory. That is the
