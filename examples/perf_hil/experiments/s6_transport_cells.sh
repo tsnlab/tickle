@@ -101,6 +101,11 @@ run_tickle_cell() {
 }
 
 # ---------------------------------------------------------------- fastdds: two profiles, one binary
+# FastDDS's binaries do not carry an rpath to their own libraries - run_scenario.sh exports this, and a client
+# started without it dies on `libfastrtps.so.2.14: cannot open shared object file` before printing anything. The
+# first version of this cell omitted it and lost six runs to it.
+FDDS_LIB_PATH=${FDDS_LIB_PATH:-/opt/ros/jazzy/lib}
+
 fdds_build() {
     local out
     out=$(sh_ "$HOST" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA
@@ -115,11 +120,23 @@ fdds_run() {  # fdds_run <arm> <profile-basename>
     p="$dir/$prof"
     sh_ "$HOST" "test -f $p" </dev/null || { say "  FATAL arm $arm: profile $prof is not on $HOST"; return 1; }
     cleanup
+    local env_common="BENCH_IFACE=lo LD_LIBRARY_PATH=$FDDS_LIB_PATH FASTRTPS_DEFAULT_PROFILES_FILE=$p"
     srv_pid=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && rm -f /tmp/s6_fdds.pid
-(setsid sh -c 'echo \$\$ >/tmp/s6_fdds.pid; exec env BENCH_IFACE=lo FASTRTPS_DEFAULT_PROFILES_FILE=$p taskset -c 1 ./server -d $((DUR + 40))' >/tmp/s6_fdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_fdds.pid" </dev/null)
-    line=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && env BENCH_IFACE=lo FASTRTPS_DEFAULT_PROFILES_FILE=$p taskset -c 2 ./client -d $DUR 2>&1 | grep '^RESULT'" </dev/null)
+(setsid sh -c 'echo \$\$ >/tmp/s6_fdds.pid; exec env $env_common taskset -c 1 ./server -d $((DUR + 40))' >/tmp/s6_fdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_fdds.pid" </dev/null)
+    # The WHOLE output, kept on the Pi and then read, rather than piped through grep '^RESULT' at the far end. A
+    # client that cannot load its libraries says so on stderr and prints no RESULT line at all; the first version of
+    # this cell discarded that sentence and reported "produced no RESULT line" six times without the reason.
+    local all
+    all=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && env $env_common taskset -c 2 ./client -d $DUR >/tmp/s6_fdds_client.log 2>&1; cat /tmp/s6_fdds_client.log" </dev/null)
+    line=$(printf '%s\n' "$all" | grep '^RESULT' | head -1)
     cleanup
-    if [ -z "$line" ]; then say "  arm=$arm produced no RESULT line"; return 0; fi
+    if [ -z "$line" ]; then
+        say "  arm=$arm produced no RESULT line. What it did say:"
+        printf '%s\n' "$all" | grep -v '^RESULT' | tail -6 | sed 's/^/       | /' | tee -a "$OUT"
+        say "  server's last lines:"
+        sh_ "$HOST" "tail -4 /tmp/s6_fdds_server.log" </dev/null 2>/dev/null | sed 's/^/       | /' | tee -a "$OUT"
+        return 0
+    fi
     # Identity: the arm must report the profile it was given. Checked per rep, because the environment can arrive
     # for one rep and not the next, and an arm that silently reverted would otherwise be averaged in.
     case "$line" in
