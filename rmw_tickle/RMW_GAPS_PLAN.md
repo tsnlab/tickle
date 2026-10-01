@@ -1781,8 +1781,33 @@ what this version did. With the plugin missing it **refused to create the writer
 refusal in the harness stays, because whether it falls back when the plugin loads but RouDi is absent is a different
 question and still untested; but the sentence as written describes a behaviour this CycloneDDS did not show.
 
-**What is still open.** The p2-p4 cells, and CycloneDDS's memory cost measured rather than quoted from RouDi's
-startup lines.
+**p2 (1292 B), all three cells, 2026-10-01** (`f8caed35`, same conditions, `results/s6_cells_p2_f8caed35_2026-10-01.txt`):
+
+| cell | arm | witness | ratio | send Mbps (median) | min..max |
+|---|---|---:|---:|---:|---|
+| tickle | ON | 0.245 | 0.121 | 2521.10 | 2514.00..2521.18 |
+| tickle | OFF | 2.025 | - | 1624.56 | 1616.24..1624.57 |
+| cyclonedds | ON | 0.000 | 0.000 | 2647.34 | 2332.10..2676.30 |
+| cyclonedds | OFF | 2.014 | - | 1004.60 | 991.26..1006.63 |
+| fastdds | ON | 0.000 | 0.000 | 971.27 | 956.48..975.35 |
+| fastdds | OFF | 2.000 | - | 267.60 | 267.32..283.95 |
+
+**p1 and p2 do not give the same answer, and the difference is in the spread rather than the medians.** At p1
+CycloneDDS is 8.4% ahead with ranges that do not overlap - a loss. At p2 it is 5.0% ahead on the median but its
+range is 2332..2676 against our 2514..2521, so **the two are not separable and the cell is a draw**. Our
+repetitions are tight at both payloads (0.2 Mbps apart at p1, 7 at p2); theirs spread by 10 at p1 and 344 at p2.
+A median comparison alone would have called both cells losses, and one of them is not.
+
+Two further things the p2 row shows:
+
+- **Our kernel path is 1.6x theirs at p2** (1624.56 against 1004.60) and 1.7x at p1. Their shared-memory advantage
+  is the size of their jump from a slower starting point - 2.63x at p2 against our 1.55x - not a faster ceiling.
+- **The witness holds its shape across payloads**: ours 0.228 then 0.245, both vendors 0.000 at both. The doorbell
+  traffic scales with datagrams rather than bytes, which is what a per-datagram signal should do.
+
+**What is still open.** The p3-p4 cells, and CycloneDDS's memory cost measured rather than quoted from RouDi's
+startup lines - which matters more after these two rows, because 216 MB of reserved shared memory against our
+380 kB is the other half of a comparison that currently shows only throughput.
 
 ## g15 - `publish_zerocopy()` sends datagrams that `tx_datagrams` never counts (found by Dev 2026-09-29; LOW severity, HIGH consequence for S1)
 
