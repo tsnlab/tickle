@@ -622,6 +622,11 @@ struct tt_Context {
     uint32_t segment_stall_warnings;
     // Doorbells sent to a sleeping owner's data port, and received. Counted because "never needed"
     // and "never rung" look identical from a latency figure, and only one of them is good news.
+    // Consecutive times the liveliness check declined to judge because datagrams were still unread -
+    // see tt_LIVELINESS_DEFER_NS. Read to decide whether to defer again, so it must be initialised;
+    // reset the moment a run actually judges.
+    uint16_t liveliness_deferrals;
+    uint64_t liveliness_deferrals_total; // how often that happened at all, for a reader of the log
     uint64_t segment_doorbells_sent;
     uint64_t segment_doorbells_received;
     // How many times this context built its own segment and gave it up again, and how many peers it

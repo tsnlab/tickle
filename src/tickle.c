@@ -3025,6 +3025,8 @@ static void reset_node_state(struct tt_Context* node) {
     node->segment_head_stalls = 0;
     node->segment_head_stall_passes = 0;
     node->segment_stall_warnings = 0;
+    node->liveliness_deferrals = 0;
+    node->liveliness_deferrals_total = 0;
     node->segment_doorbells_sent = 0;
     node->segment_doorbells_received = 0;
     // Counters that only ever increment, and therefore only ever reported whatever was on the
@@ -7506,6 +7508,25 @@ static void check_entity_leases(struct tt_Context* node, uint64_t time, uint64_t
 // the first time.
 static void check_liveliness(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
+    // Nothing is judged while datagrams are still unread. This entry runs before the socket is read
+    // (poll_once_nonblocking() drains every due entry first), so a node descheduled past
+    // tt_LIVELINESS_SILENCE_NS would otherwise declare peers dead whose datagrams were already sitting
+    // in its buffer - which is not silence, it is not having looked. Both sides of a starved pair do it
+    // to each other; that is the 2026-09-30 CI failure, on a commit that changed no code.
+    //
+    // Capped, because "defer while busy" with no bound would let a saturated socket postpone a real
+    // death for ever. The next receive pass empties the queue, so one deferral is normally enough.
+    if (tt_rx_buffered(node) > 0 && node->liveliness_deferrals < tt_LIVELINESS_MAX_DEFERRALS) {
+        node->liveliness_deferrals++;
+        node->liveliness_deferrals_total++;
+        if (node->liveliness_check_scheduled) {
+            (void)tt_Context_unschedule(node, check_liveliness, NULL);
+            node->liveliness_check_scheduled = false;
+        }
+        arm_liveliness_check(node, time + tt_LIVELINESS_DEFER_NS);
+        return;
+    }
+    node->liveliness_deferrals = 0;
     if (node->liveliness_check_scheduled) {
         // Run early, by a test or by a re-arm that lost a race with the entry itself: take the entry out,
         // this run re-arms.

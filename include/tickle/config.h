@@ -725,6 +725,28 @@
 #define tt_DISCOVERY_PENDING_REQUESTS 8
 #endif
 
+// Liveliness must not be judged from a window this node spent descheduled. The check runs as a
+// scheduler entry and poll_once_nonblocking() runs every due entry BEFORE reading the socket, so a
+// process starved for longer than tt_LIVELINESS_SILENCE_NS wakes with its own clock far advanced and
+// its peers' datagrams still queued - and would declare them dead without reading one of them. A peer
+// whose datagram is in our buffer was not silent; we had not looked.
+//
+// Found on 2026-09-30 in CI (run 36787898559) on a commit that changed no code: on a loaded runner both
+// nodes declared EACH OTHER dead 3.5 s apart while 100 samples were published, and delivery stopped at
+// 5. Raising tt_LIVELINESS_SILENCE_NS does not address it - that only changes how much starvation is
+// needed, and a shared runner can always supply more.
+//
+// So the check defers while anything is unread, and these two bound that deferral. The socket is
+// drained by the very next receive pass, so one deferral is normally all it takes; the cap exists only
+// so a permanently saturated socket cannot postpone detecting a real death for ever. At these values a
+// genuine death is reported at most 4 ms late.
+#ifndef tt_LIVELINESS_DEFER_NS
+#define tt_LIVELINESS_DEFER_NS (1 * tt_MILLISECOND)
+#endif
+#ifndef tt_LIVELINESS_MAX_DEFERRALS
+#define tt_LIVELINESS_MAX_DEFERRALS 4
+#endif
+
 #ifndef tt_LIVELINESS_MISS_THRESHOLD
 #define tt_LIVELINESS_MISS_THRESHOLD 3
 #endif

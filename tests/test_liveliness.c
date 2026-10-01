@@ -570,6 +570,128 @@ static void test_lease_expiry_drops_writer_proxy_on_subscriber(void) {
     EXPECT_TRUE(restarted->keep_all != tt_WRITER_KEEP_ALL_YES); // re-learned from the new announce, not inherited
 }
 
+// A peer whose datagrams are sitting unread in our socket buffer was NOT silent - we had not looked.
+//
+// This is the CI failure of 2026-09-30 (run 36787898559, Check all on 45d64060): on a loaded GitHub
+// runner both nodes declared EACH OTHER dead, 3.5 s apart, while the publisher published 100 samples
+// and delivery stopped at 5 - on a commit that changed no code at all.
+//
+// The mechanism is ORDERING, not a threshold. poll_once_nonblocking() is:
+//
+//     while (run_due_entry(node, time, &has_next, &next)) { }   // every due entry, this check among them
+//     ...
+//     len = tt_try_receive(...);                                 // the socket, only afterwards
+//
+// So a process descheduled for longer than tt_LIVELINESS_SILENCE_NS wakes with its own clock far
+// advanced AND its peers' datagrams queued, and judges the whole gap as peer silence before reading
+// one of them. Both sides were starved, so both did it. Raising the limit does not fix this - it only
+// changes how much starvation is required, and a shared runner can always supply more.
+//
+// Every other liveliness test in this file calls process_packet() and THEN check_liveliness(), so they
+// all prove that evidence ALREADY READ refreshes the clock. None covers evidence that has arrived and
+// not been read, which is the only case that fails.
+static void test_a_peer_with_datagrams_waiting_unread_is_not_dead(void) {
+    // Arm 1: starved observer, the peer's DATA waiting unread. It must survive.
+    struct tt_Context node;
+    init_node(&node);
+    struct tt_Publisher pub;
+    init_publisher(&pub, &node);
+    receive_update(&node, 0, 100);
+    EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]);
+
+    const uint64_t starved = tt_LIVELINESS_SILENCE_NS * 3;
+    test_mock_now = starved;
+    // The peer's datagram, left in the buffer the mock hands back and NOT processed - which is what an
+    // unread socket looks like. tt_try_receive() leaves the buffer as it is and returns the length.
+    uint32_t pending_len = liveliness_write_packet(node.rx_buffer, REMOTE_NODE_ID, tt_SUBMESSAGE_TYPE_DATA,
+                                                   (uint16_t)sizeof(struct tt_DataHeader));
+    test_mock_try_receive_len = (int32_t)pending_len;
+    test_mock_try_receive_remaining = 1;
+    // Armed by hand: schedule_periodic_tasks() is part of opening a node and this whitebox context
+    // never opened one, so without this the poll has no due entry, runs nothing, and every arm below
+    // passes for the wrong reason. The control in arm 2 caught exactly that.
+    arm_liveliness_check(&node, test_mock_now);
+
+    (void)tt_Context_poll(&node, 0);
+
+    EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]); // it was transmitting the whole time
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+    test_mock_try_receive_remaining = 0;
+
+    // Arm 2, the control that must still die: the same silence with NOTHING waiting is a real death.
+    struct tt_Context quiet;
+    init_node(&quiet);
+    struct tt_Publisher quiet_pub;
+    init_publisher(&quiet_pub, &quiet);
+    receive_update(&quiet, 0, 100);
+    EXPECT_TRUE(quiet.update_seen[REMOTE_NODE_ID]);
+    test_mock_now = starved;
+    test_mock_try_receive_remaining = 0;
+    arm_liveliness_check(&quiet, test_mock_now);
+    (void)tt_Context_poll(&quiet, 0);
+    EXPECT_TRUE(!quiet.update_seen[REMOTE_NODE_ID]); // nothing to hear, so presumed gone - correct
+
+    // Arm 3, the ordering already covered: read first, then check, and the peer survives. Kept so the
+    // two orderings sit side by side - arm 1 differs from this one only in when the datagram is read.
+    struct tt_Context read_first;
+    init_node(&read_first);
+    struct tt_Publisher read_first_pub;
+    init_publisher(&read_first_pub, &read_first);
+    receive_update(&read_first, 0, 100);
+    test_mock_now = starved;
+    uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)];
+    uint32_t len =
+        liveliness_write_packet(buf, REMOTE_NODE_ID, tt_SUBMESSAGE_TYPE_DATA, (uint16_t)sizeof(struct tt_DataHeader));
+    EXPECT_TRUE(process_packet(&read_first, buf, 0, len, 0xc0a80a02, 8282));
+    arm_liveliness_check(&read_first, test_mock_now);
+    (void)tt_Context_poll(&read_first, 0);
+    EXPECT_TRUE(read_first.update_seen[REMOTE_NODE_ID]);
+}
+
+// The cap on that deferral, which is the half that can silently not exist. "Defer while anything is
+// unread" with no bound lets a socket that is never empty postpone a real death for ever - and a
+// saturated node is where one is most likely.
+//
+// This drives check_liveliness() DIRECTLY rather than through tt_Context_poll(), and that is the whole
+// point of it. The first version of this arm went through the poll with a 16-datagram backlog and
+// passed - but drain_rx() empties the queue in one call, so the queue was empty from the second pass
+// on, the cap was never reached, and removing the cap altogether changed nothing. It measured the
+// backlog draining, not the bound. A mutant that deleted the cap survived it.
+//
+// Calling the check directly is what keeps rx_buffered() above zero across every round, so the cap is
+// the only thing that can end the deferral. Worth knowing that in real use the cap is rarely reached
+// for exactly the reason that broke the first attempt: the next receive pass empties the queue.
+static void test_a_busy_socket_cannot_postpone_a_real_death_for_ever(void) {
+    struct tt_Context node;
+    init_node(&node);
+    struct tt_Publisher pub;
+    init_publisher(&pub, &node);
+    receive_update(&node, 0, 100);
+    EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]);
+
+    test_mock_now = tt_LIVELINESS_SILENCE_NS * 3;
+    // Buffered and never drained, because nothing here reads the socket.
+    test_mock_try_receive_remaining = 1;
+    EXPECT_TRUE(tt_rx_buffered(&node) > 0);
+
+    for (int i = 0; i < tt_LIVELINESS_MAX_DEFERRALS; i++) {
+        check_liveliness(&node, test_mock_now, NULL);
+        EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]); // deferred, not judged, every round up to the cap
+    }
+    EXPECT_EQ_U32(tt_LIVELINESS_MAX_DEFERRALS, (uint32_t)node.liveliness_deferrals);
+    EXPECT_TRUE(tt_rx_buffered(&node) > 0); // still busy: only the cap can end this
+
+    check_liveliness(&node, test_mock_now, NULL); // one past the cap
+
+    EXPECT_TRUE(!node.update_seen[REMOTE_NODE_ID]); // silent throughout, and the queue was never its
+    EXPECT_TRUE(node.liveliness_deferrals_total >= (uint64_t)tt_LIVELINESS_MAX_DEFERRALS);
+    // The counter resets the moment a run judges, so the NEXT starved episode gets its deferrals too.
+    // Without this the fix works once per process and then never again, which no other assertion here
+    // would notice - a mutant that deleted the reset survived until this line existed.
+    EXPECT_EQ_U32(0, (uint32_t)node.liveliness_deferrals);
+    test_mock_try_receive_remaining = 0;
+}
+
 int main(void) {
     test_lease_expiry_drops_writer_proxy_on_subscriber();
     test_lease_expiry_drops_subscriber_from_publisher_ack_set();
@@ -580,6 +702,10 @@ int main(void) {
     test_node_limit_runs_from_the_last_packet();
     test_self_sent_packet_does_not_refresh();
     test_expires_peer_after_missed_intervals();
+    test_mock_reset();
+    test_a_peer_with_datagrams_waiting_unread_is_not_dead();
+    test_mock_reset();
+    test_a_busy_socket_cannot_postpone_a_real_death_for_ever();
     test_mock_reset();
     test_does_not_expire_before_threshold();
     test_mock_reset();
