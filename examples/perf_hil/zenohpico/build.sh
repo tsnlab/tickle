@@ -48,6 +48,11 @@ if [ -f "$PREFIX/lib/libzenohpico.so" ] || [ -f "$PREFIX/lib/libzenohpico.a" ]; 
     # version of this script could pass ZENOH_DEBUG at all. That is why "no marker" reads as "none" instead of
     # refusing: it grandfathers the rig's existing measurement prefixes without weakening the check.
     HAVE_DEBUG=$(cat "$MARKER" 2>/dev/null || echo none)
+    # A marker written before the options were recorded carries only the logging level. It can only have come
+    # from a build with no extra CMake options, because no earlier version of this script could pass any - the
+    # same reasoning that lets an absent marker mean "none". Normalise rather than refuse, or changing the
+    # marker's format would throw away every prefix that is in fact correct.
+    case "$HAVE_DEBUG" in *" opts:"*) ;; *) HAVE_DEBUG="$HAVE_DEBUG opts:none" ;; esac
     if [ "$HAVE_DEBUG" != "$WANT_DEBUG" ]; then
         echo "REFUSING: $PREFIX holds a zenoh-pico built with logging '$HAVE_DEBUG', this run asks for '$WANT_DEBUG'." >&2
         echo "Nothing in a RESULT line says which library produced it, so reusing one for the other would make a" >&2
