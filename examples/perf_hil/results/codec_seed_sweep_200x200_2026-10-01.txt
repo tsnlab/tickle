@@ -1,0 +1,27 @@
+=== codec seed sweep 2026-10-01T14:48:40+09:00 seeds=200 pkg=rosidl_typesupport_tickle_c_tests ===
+--- control: seed 3991436827, the one CI drew ---
+  FAIL rosidl_typesupport_tickle_c_tests/msg/DcNested check 3 sample 38: old refuses with -2, new accepts (native, 331 B)
+  FAIL rosidl_typesupport_tickle_c_tests/msg/DcNested identical=165 capacity_only=35 both_refused=0 regenerated=0 shrunk=0 overbound=4 cpp_compared=165 decode_inputs=34546 decode_capacity_only=725 failures=1 old_hash=e25ff79c83773c9e new_hash=e25ff79c83773c9e seed=15078841505615037457
+--- sweep ---
+=== done 2026-10-01T14:57:20+09:00 ===
+
+=== per type: variable-length members (each carries a count a flip can damage) vs failures ===
+                  type  var-len members  failures
+            Primitives               25         0
+              DcNested                9         0
+                DcElem                3         0
+               DcInner                2         0
+              DcGoalId                1         0
+          DcGoalStatus                1         0
+     DcGoalStatusArray                1         0
+                Branch                0         0
+               DcOuter                0         0
+               DcStamp                0         0
+                Simple                0         0
+
+failures 0 over 0 seeds that produced any; checks: 
+on types with >=2 variable-length members: 0
+on types with NO variable-length member:   0
+
+VERDICT: the sweep found nothing. That neither supports nor refutes the explanation - it says the
+         rate is below what this many seeds can see, and the next question is how many are needed.
