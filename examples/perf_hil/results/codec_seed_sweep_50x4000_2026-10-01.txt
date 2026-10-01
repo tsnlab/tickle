@@ -1,0 +1,11 @@
+=== deeper sweep 2026-10-01T14:57:50+09:00: 50 seeds x 4000 samples per type = 200,000 samples/type ===
+    the 200x200 sweep found 0 failures; raising samples per seed explores more inputs per unit time
+seed=2415085394 FAIL rosidl_typesupport_tickle_c_tests/msg/DcElem check 4 sample 3700: old refuses with -2, new accepts (foreign, 2424 B)
+seed=2415085394 FAIL rosidl_typesupport_tickle_c_tests/msg/DcElem identical=3534 capacity_only=466 both_refused=0 regenerated=0 shrunk=0 overbound=3 cpp_compared=3534 decode_inputs=589472 decode_capacity_only=15202 failures=1 old_hash=4fc4c2bf58951d03 new_hash=4fc4c2bf58951d03 seed=5277004699752263261
+seed=774553864 FAIL rosidl_typesupport_tickle_c_tests/msg/DcNested check 3 sample 2058: old refuses with -2, new accepts (native, 451 B)
+seed=774553864 FAIL rosidl_typesupport_tickle_c_tests/msg/DcNested identical=3257 capacity_only=743 both_refused=0 regenerated=0 shrunk=0 overbound=4 cpp_compared=3257 decode_inputs=717660 decode_capacity_only=16939 failures=1 old_hash=b9d0ba310fe3c9da new_hash=b9d0ba310fe3c9da seed=15078841506667920130
+seed=3428989625 FAIL rosidl_typesupport_tickle_c_tests/msg/DcNested check 3 sample 253: old refuses with -2, new accepts (native, 283 B)
+seed=3428989625 FAIL rosidl_typesupport_tickle_c_tests/msg/DcNested identical=3232 capacity_only=768 both_refused=0 regenerated=0 shrunk=0 overbound=4 cpp_compared=3232 decode_inputs=716260 decode_capacity_only=17660 failures=1 old_hash=f9ef6fd787dbf83b new_hash=f9ef6fd787dbf83b seed=15078841506159886515
+seed=922480429 FAIL rosidl_typesupport_tickle_c_tests/msg/DcNested check 3 sample 2761: old refuses with -2, new accepts (native, 395 B)
+seed=922480429 FAIL rosidl_typesupport_tickle_c_tests/msg/DcNested identical=3243 capacity_only=757 both_refused=0 regenerated=0 shrunk=0 overbound=4 cpp_compared=3243 decode_inputs=716812 decode_capacity_only=17434 failures=1 old_hash=ecbf439cbbe05a74 new_hash=ecbf439cbbe05a74 seed=15078841506805208359
+=== done 2026-10-01T15:41:14+09:00 ===

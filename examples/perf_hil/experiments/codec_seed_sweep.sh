@@ -22,6 +22,32 @@
 # be changing the thing under test. The per-type rate is what this run decides; the byte offset is Dev's single
 # instrumented instance and stays that.
 #
+# RESULT (2026-10-01, 50 seeds x 4000 samples = 200,000 per type; results/codec_seed_sweep_50x4000_2026-10-01.txt).
+# Four failures: DcNested x3 (check 3), DcElem x1 (check 4). THE PREDICTOR ABOVE IS REFUTED AS WRITTEN, and the
+# thing that refutes it is the one type it ranked first:
+#
+#   type        var-len members   of those, elements that carry their own lengths   failures
+#   Primitives               25                                                 0          0
+#   DcNested                  9                                                 7          3
+#   DcElem                    3                                                 2          1
+#   DcInner                   2                                                 2          0
+#   Branch/DcOuter/DcStamp/Simple  0                                            0          0
+#
+# Primitives has the most length fields of any type here and never failed. Its variable-length members are
+# sequences of FIXED-WIDTH primitives, so a damaged count still shifts the frame - but both decoders then read the
+# same fixed-width values out of the shifted stream and agree about them. The two types that failed are the two
+# with the most elements that THEMSELVES carry lengths: strings and nested structs holding strings. So what makes
+# the decoders diverge is not a damaged count, it is a damaged count that causes FURTHER counts to be misread.
+# That sharpens Dev's frame-shift explanation rather than overturning it, and it is the cascade that matters.
+#
+# Honest limit: n=4. DcInner has 2 nested-length members and no failures, so its absence says nothing at this rate.
+# What the data supports is directional - failures occur only where elements carry their own lengths - not a
+# coefficient.
+#
+# RATE, for "how often will CI go red". Events scale with samples, so 4 in 50 seeds at n=4000 is 0.004 events per
+# seed at CI's n=200: about 1 run in 250. The earlier 200-seed sweep at n=200 saw zero against an expectation of
+# 0.8, which is consistent (P(0) = 45%) rather than contradictory.
+#
 # Usage: codec_seed_sweep.sh [SEEDS] [PKG]      Output: $OUT (default ~/rig_results_safe/codec_seed_sweep.txt)
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
