@@ -1805,9 +1805,46 @@ Two further things the p2 row shows:
 - **The witness holds its shape across payloads**: ours 0.228 then 0.245, both vendors 0.000 at both. The doorbell
   traffic scales with datagrams rather than bytes, which is what a per-datagram signal should do.
 
-**What is still open.** The p3-p4 cells, and CycloneDDS's memory cost measured rather than quoted from RouDi's
-startup lines - which matters more after these two rows, because 216 MB of reserved shared memory against our
-380 kB is the other half of a comparison that currently shows only throughput.
+**p3 and p4, 2026-10-01** (`19c79528`, same conditions; `results/s6_cells_p3_…` and `…_p4_…`). The four payloads
+together are the result, and they do not tell one story:
+
+| payload | TickLE ON | CycloneDDS ON | verdict | our kernel arm / theirs |
+|---|---|---|---|---|
+| p1 76 B | 146.78 [146.8..147.0] | 159.09 [150.7..160.2] | **cyclonedds +8.4%, separable** | 1.70x |
+| p2 1292 B | 2521.10 [2514..2521] | 2647.34 [2332..2676] | draw, 5.0% apart, overlapping | 1.62x |
+| p3 1424 B | 2786.17 [2777..2787] | 2751.68 [2718..2835] | draw, 1.2% apart, overlapping | 1.64x |
+| p4 2800 B | 2744.98 [2742..2747] | **5286.53** [4821..5497] | **cyclonedds +92.6%, separable** | 0.97x |
+
+**The p4 cell has a mechanical explanation and it is a design finding, not a tuning one.** Our own counters say it
+in one line:
+
+| cell | samples sent | `tx_shm` | datagrams per sample |
+|---|---:|---:|---:|
+| p3 (1424 B) | 1,222,862 | 1,227,385 | 1.004 |
+| p4 (2800 B) | 612,033 | 1,228,595 | **2.007** |
+
+`tx_shm` is the same in both - about 1.23 M datagrams in 5 s - while the samples delivered halve. **Our
+shared-memory path is limited by datagrams per second, not by bytes per second**, and a 2800-byte sample costs two
+of them because a slot is `tt_SEGMENT_SLOT_BYTES`, which is `tt_CONTROL_MAX_LENGTH` - 1472 bytes, the network
+datagram size. iceoryx hands over a pointer to a buffer of whatever size, so one sample is one transfer at any
+payload. **The segment inherits the network's MTU although shared memory has no MTU**, and that is the whole of
+the 92.6%: their curve keeps climbing past p3 and ours stops.
+
+The same reading explains the rest of the row. Our kernel arm leads theirs by 1.6-1.7x at p1-p3 and falls to 0.97x
+at p4, because the kernel path fragments there too; and our witness rises 0.228, 0.245, 0.252, 0.348 across the
+four, which is the doorbell traffic following the datagram count rather than the byte count - exactly what it
+should do, and at p4 there are twice as many datagrams to ring for.
+
+**What this does and does not establish.** It establishes that a slot bounded by the datagram size costs us
+roughly half the throughput once a sample exceeds it, measured, with the counter and the interface witness
+agreeing. It does not establish that unbinding the slot is free: a larger slot means fewer slots in the same
+`tt_SEGMENT_BYTES`, so the ring holds less and the KEEP_LAST drop threshold moves - the measurement in the
+back-pressure section above is the one that would move with it. Nothing here should be read as "make the slot
+bigger" without that arm.
+
+**What is still open.** CycloneDDS's memory cost measured rather than quoted from RouDi's startup lines, which
+matters more after p4 than before it: 216 MB of reserved shared memory against our 380 kB is the other half of a
+comparison that so far shows only throughput, and at p4 the throughput half goes against us.
 
 ## g15 - `publish_zerocopy()` sends datagrams that `tx_datagrams` never counts (found by Dev 2026-09-29; LOW severity, HIGH consequence for S1)
 
