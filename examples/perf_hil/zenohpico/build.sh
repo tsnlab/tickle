@@ -26,13 +26,23 @@ SCENARIO=${1:?usage: build.sh <scenario> <payload>}
 PAYLOAD=${2:?usage: build.sh <scenario> <payload>}
 ZENOH_PICO_REF=${ZENOH_PICO_REF:-main}
 ZENOH_DEBUG=${ZENOH_DEBUG:-}
+# Arbitrary CMake options for the zenoh-pico build, so a tuned arm can be built without editing this file.
+# The knobs that matter for the reliable cells above p1 are BATCH_UNICAST_SIZE (default 2048), FRAG_MAX_SIZE
+# (4096) and Z_FEATURE_BATCHING (1): COMPARISON's `✗` rows record a TCP link that dies a few hundred samples into
+# a max-rate run, and no tuning of those has ever been attempted, so "no configuration survives this" is not
+# established. Example:
+#   ZENOH_CMAKE_OPTS="-DZ_FEATURE_BATCHING=0" ZENOH_PICO_PREFIX=$HOME/zenohpico_install_nobatch ...
+ZENOH_CMAKE_OPTS=${ZENOH_CMAKE_OPTS:-}
 PREFIX=${ZENOH_PICO_PREFIX:-$HOME/zenohpico_install}
 SRC=${ZENOH_PICO_SRC:-$HOME/zenohpico_src}
 SHAPE_DIR="$HERE/../tickle/common/$PAYLOAD"
 CC=${CC:-gcc}
 
 MARKER="$PREFIX/.tickle_zenoh_debug"
-WANT_DEBUG=${ZENOH_DEBUG:-none}
+# The marker records EVERY build option, not just the logging level. A prefix holding a library built with
+# different batching is as wrong to reuse as one built with logging on, and the RESULT line still carries no build
+# tag to tell them apart.
+WANT_DEBUG="${ZENOH_DEBUG:-none} opts:${ZENOH_CMAKE_OPTS:-none}"
 if [ -f "$PREFIX/lib/libzenohpico.so" ] || [ -f "$PREFIX/lib/libzenohpico.a" ]; then
     # A prefix from before this marker existed can only have been built with logging off, because no earlier
     # version of this script could pass ZENOH_DEBUG at all. That is why "no marker" reads as "none" instead of
@@ -50,8 +60,11 @@ else
     git clone -q --depth 1 --branch "$ZENOH_PICO_REF" https://github.com/eclipse-zenoh/zenoh-pico.git "$SRC"
     debug_arg=()
     [ -n "$ZENOH_DEBUG" ] && debug_arg=(-DZENOH_DEBUG="$ZENOH_DEBUG")
+    extra_arg=()
+    # shellcheck disable=SC2206 # deliberately word-split: ZENOH_CMAKE_OPTS is a list of -D flags
+    [ -n "$ZENOH_CMAKE_OPTS" ] && extra_arg=($ZENOH_CMAKE_OPTS)
     cmake -S "$SRC" -B "$SRC/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-        ${debug_arg[0]+"${debug_arg[@]}"} >/dev/null
+        ${debug_arg[0]+"${debug_arg[@]}"} ${extra_arg[0]+"${extra_arg[@]}"} >/dev/null
     cmake --build "$SRC/build" --parallel "$(nproc)" >/dev/null
     cmake --install "$SRC/build" >/dev/null
     printf '%s\n' "$WANT_DEBUG" >"$MARKER"
@@ -77,4 +90,4 @@ for role in client server; do
     # shellcheck disable=SC2086 # CFLAGS/LIBS are deliberate word lists
     $CC $CFLAGS -o "$SCEN_DIR/$role" "$HERE/$SCENARIO/$role.c" $LIBS -Wl,-rpath,"$PREFIX/lib"
 done
-echo "Built $SCEN_DIR/{client,server} against $PREFIX (zenoh-pico logging=$WANT_DEBUG)"
+echo "Built $SCEN_DIR/{client,server} against $PREFIX (zenoh-pico build=$WANT_DEBUG)"

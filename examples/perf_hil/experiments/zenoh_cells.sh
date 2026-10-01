@@ -76,6 +76,15 @@ DIAG=${DIAG:-/tmp/zenoh_cells_diag}
 # after a diagnostic run the next measurement run must rebuild them - which build.sh does unconditionally, and the
 # prefix marker refuses to serve the wrong logging level, so a stale logging library cannot be linked unnoticed.
 ZBUILD_ENV=${ZBUILD_ENV:-}
+# A tuned arm, for the `✗` cells. COMPARISON records p2 and above as "measured, and the transport did not survive
+# the cell", with the subscriber's decoder meeting a message it does not recognise. zenoh-pico's batching packs
+# several samples into one 2048-byte unicast batch by default, so the knobs to try are BATCH_UNICAST_SIZE,
+# FRAG_MAX_SIZE and Z_FEATURE_BATCHING - none of which has ever been changed. Pre-registered reading:
+#   the link survives the cell  -> the `✗` was a configuration limit, the cell becomes measurable, and the row
+#                                  must say which configuration produced the figure
+#   it dies with the same -114  -> batching is eliminated as the cause, the `✗` stands, and one mechanism is gone
+# A tuned build is NOT a shipped-default measurement, so it gets its own prefix and the prefix marker records the
+# options; a figure from it may never be presented as zenoh-pico out of the box.
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=10 "ci@$1" "${@:2}"; }
 tc_netem_present() { sh_ "$CLIENT" "tc qdisc show dev eth0" 2>/dev/null | grep -q netem; }
