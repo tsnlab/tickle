@@ -294,7 +294,9 @@ static void cache_write_record(struct tt_Context* node, struct tt_ReliableCache*
     // previous record left in those one-to-three bytes.
     memset(node->tx_buffer, (int)(seq_no & 0xFF), ROUNDUP(payload_len));
     node->tx_tail = payload_len;
-    cache_reliable_sample(node, submessage_header, cache, seq_no);
+    // The raw length, as the publish path now passes it: the cache rounds it, and the helper asserts the two
+    // agree so a caller that computes it differently is caught rather than silently cached short.
+    cache_reliable_sample(node, submessage_header, cache, seq_no, payload_len);
 }
 
 // True when seq_no is retained right now *and* its arena bytes still read back as written.

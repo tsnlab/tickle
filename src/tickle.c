@@ -1503,7 +1503,7 @@ static bool flush_tx(struct tt_Context* node, uint32_t len, const struct tt_Peer
 #define FRAG_FIRST_PAYLOAD (tt_CONTROL_MAX_LENGTH - FRAG_FRAMING_LENGTH - sizeof(struct tt_FragFirstHeader))
 #define FRAG_CONT_PAYLOAD (tt_CONTROL_MAX_LENGTH - FRAG_FRAMING_LENGTH - sizeof(struct tt_FragContHeader))
 // The largest CDR a fragmented sample carries: tt_MAX_SAMPLE_LENGTH, plus the padding a DATA record is
-// rounded up by (reliable_record_length()), since a retransmission is cut from the cached record.
+// rounded up by (record_length_checked()), since a retransmission is cut from the cached record.
 #define FRAG_MAX_CDR (tt_MAX_SAMPLE_LENGTH + 3)
 _Static_assert(1 + ((FRAG_MAX_CDR - FRAG_FIRST_PAYLOAD + FRAG_CONT_PAYLOAD - 1) / FRAG_CONT_PAYLOAD) <=
                    tt_FRAG_MAX_COUNT,
@@ -4679,9 +4679,20 @@ static void reliable_cache_drop_leading_tombstones(struct tt_ReliableCache* cach
 // How many bytes of arena the submessage now sitting at submessage_header will need. Shared with
 // tt_Publisher_publish()'s KEEP_ALL admission check, so the two cannot disagree about the size of
 // the record one of them is deciding about and the other is writing.
-static uint32_t reliable_record_length(const struct tt_Context* node,
-                                       const struct tt_SubmessageHeader* submessage_header) {
-    return (uint32_t)ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
+// Bytes of cache arena one encoded sample occupies: its raw length rounded to end_encode()'s 4-byte
+// submessage alignment, since a retransmission is cut from the cached record and must match what was sent.
+//
+// The raw length is passed in rather than derived from node->tx_tail, which is what this did until
+// 2026-10-02. "The distance from this submessage to tx_buffer's current end" is only the sample's length
+// while the sample is the last thing in tx_buffer - true today and the first thing SHM_PLAN 6e breaks, since
+// its encoder writes into a segment slot where that subtraction is between two unrelated addresses. The
+// equivalence was checked before the derivation was removed: a temporary assert compared the two on every
+// path the suite walks, 44 tests green, and a mutant four bytes out failed it in test_data_frag.
+static uint32_t record_length_checked(const struct tt_Context* node,
+                                      const struct tt_SubmessageHeader* submessage_header, uint32_t raw_len) {
+    (void)node;
+    (void)submessage_header;
+    return (uint32_t)ROUNDUP(raw_len);
 }
 
 // Where a length-byte record goes in an arena whose live records occupy [head, tail) - or
@@ -4852,8 +4863,8 @@ static void reliable_cache_count_sample(struct tt_ReliableCache* cache, const ui
 }
 
 static void cache_reliable_sample(struct tt_Context* node, struct tt_SubmessageHeader* submessage_header,
-                                  struct tt_ReliableCache* cache, uint32_t seq_no) {
-    uint32_t length = reliable_record_length(node, submessage_header);
+                                  struct tt_ReliableCache* cache, uint32_t seq_no, uint32_t encoded_len) {
+    uint32_t length = record_length_checked(node, submessage_header, encoded_len);
     reliable_cache_admit_sample(cache);
     uint8_t* record = reliable_cache_reserve(cache, seq_no, length);
     if (record != NULL) {
@@ -4973,10 +4984,10 @@ static uint32_t frag_header_length(uint32_t index) {
 
 // Bytes of arena the encoded sample at submessage_header takes: its one record, or one per fragment.
 static uint32_t sample_cache_footprint(const struct tt_Context* node,
-                                       const struct tt_SubmessageHeader* submessage_header) {
+                                       const struct tt_SubmessageHeader* submessage_header, uint32_t encoded_len) {
     uint32_t count = sample_datagram_count(node, submessage_header);
     if (count == 1) {
-        return reliable_record_length(node, submessage_header);
+        return record_length_checked(node, submessage_header, encoded_len);
     }
     uint32_t total = 0;
 #if tt_FRAG_ENABLED
@@ -4996,12 +5007,13 @@ static uint32_t sample_cache_footprint(const struct tt_Context* node,
 // tt_Publisher_publish() to keep its cognitive complexity under clang-tidy's threshold, the same
 // reasoning check_and_cache_sample() below was split out for.
 static uint32_t keep_all_refused_record_bytes(const struct tt_Publisher* pub, const struct tt_Context* node,
-                                              const struct tt_SubmessageHeader* submessage_header) {
+                                              const struct tt_SubmessageHeader* submessage_header,
+                                              uint32_t encoded_len) {
     if (!pub->keep_all || pub->reliable_cache == NULL || !any_peer_ack_matched(pub)) {
         return 0; // KEEP_LAST may evict, an unretained Publisher has nothing to evict, and with no
                   // matched Subscriber there is nobody whose acknowledgement could ever arrive
     }
-    uint32_t record = sample_cache_footprint(node, submessage_header);
+    uint32_t record = sample_cache_footprint(node, submessage_header, encoded_len);
     uint32_t min_ack = min_peer_ack_seq_no(pub);
     if (reliable_cache_admits(pub->reliable_cache, reliable_cache_depth(pub->reliable_cache), record,
                               min_ack > 0 ? min_ack - 1 : 0)) {
@@ -5015,7 +5027,7 @@ static uint32_t keep_all_refused_record_bytes(const struct tt_Publisher* pub, co
 // that goes as several datagrams, each taking a seq_no - the unacknowledged count, which the check before
 // encoding could only make for one. Records what was refused, so tt_Publisher_writable() and the writable
 // callback answer about the sample the caller will retry.
-static bool keep_all_refuses_encoded(struct tt_Publisher* pub, const struct tt_Context* node,
+static bool keep_all_refuses_encoded(struct tt_Publisher* pub, const struct tt_Context* node, uint32_t encoded_len,
                                      const struct tt_SubmessageHeader* submessage_header) {
     uint32_t datagrams = sample_datagram_count(node, submessage_header);
     if (datagrams > 1 && pub->keep_all && reliable_cache_depth(pub->reliable_cache) != 0 && any_peer_ack_matched(pub)) {
@@ -5026,7 +5038,7 @@ static bool keep_all_refuses_encoded(struct tt_Publisher* pub, const struct tt_C
             return true;
         }
     }
-    uint32_t refused_record = keep_all_refused_record_bytes(pub, node, submessage_header);
+    uint32_t refused_record = keep_all_refused_record_bytes(pub, node, submessage_header, encoded_len);
     if (refused_record != 0) {
         pub->blocked_record_bytes = refused_record; // what keep_all_writable() asks about from now on
         RSTAT_INC(publish_refused_bytes);
@@ -5041,19 +5053,19 @@ static bool keep_all_refuses_encoded(struct tt_Publisher* pub, const struct tt_C
 // section 13). A sample with more fragments than the cache has index slots, or more bytes than its
 // arena, is sent and not retained: its seq_no are left as tombstones, which an ACKNACK is answered for
 // with the eviction Heartbeat. Keeping part of a sample would advertise datagrams no reader could use.
-static void cache_sample_fragments(struct tt_Context* node, struct tt_ReliableCache* cache,
+static void cache_sample_fragments(struct tt_Context* node, struct tt_ReliableCache* cache, uint32_t raw_len,
                                    struct tt_SubmessageHeader* submessage_header, uint32_t first_seq_no,
                                    uint32_t count) {
     uint16_t depth = reliable_cache_depth(cache);
     if (depth == 0) {
         return;
     }
-    uint32_t length = (uint32_t)((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
+    uint32_t length = raw_len;
     memset(node->tx_buffer + node->tx_tail, 0, ROUNDUP(length) - length); // sent padded; cached the same
     const struct tt_DataHeader* data_header = (const struct tt_DataHeader*)(submessage_header + 1);
     const uint8_t* cdr = (const uint8_t*)(data_header + 1);
     uint32_t cdr_len = sample_cdr_length(node, submessage_header);
-    bool keep = count <= depth && sample_cache_footprint(node, submessage_header) <= cache->arena_size;
+    bool keep = count <= depth && sample_cache_footprint(node, submessage_header, raw_len) <= cache->arena_size;
     if (!keep) {
         TT_LOG_WARNING("Reliable sample %u (%u fragments) exceeds the cache (%u slots, %u bytes) - sent, not cached",
                        first_seq_no, count, depth, cache->arena_size);
@@ -5117,12 +5129,12 @@ static bool reliable_cache_keeps_depth(const struct tt_ReliableCache* cache, uin
 // (g10) Room for this KEEP_LAST sample without evicting inside the depth: grown through the Publisher's hook while it
 // can, else counted.
 static void make_depth_room(struct tt_Context* node, struct tt_Publisher* pub,
-                            const struct tt_SubmessageHeader* submessage_header) {
+                            const struct tt_SubmessageHeader* submessage_header, uint32_t encoded_len) {
     struct tt_ReliableCache* cache = pub->reliable_cache;
     if (pub->keep_all || cache->sample_depth == 0) {
         return; // KEEP_ALL's own admission refuses rather than evicts
     }
-    uint32_t footprint = sample_cache_footprint(node, submessage_header);
+    uint32_t footprint = sample_cache_footprint(node, submessage_header, encoded_len);
     while (!reliable_cache_keeps_depth(cache, footprint)) {
         if (pub->cache_grow == NULL || !pub->cache_grow(pub)) {
             cache->depth_shortfalls++;
@@ -5132,7 +5144,7 @@ static void make_depth_room(struct tt_Context* node, struct tt_Publisher* pub,
 }
 
 static bool check_and_cache_sample(struct tt_Context* node, struct tt_Publisher* pub,
-                                   struct tt_SubmessageHeader* submessage_header) {
+                                   struct tt_SubmessageHeader* submessage_header, uint32_t encoded_len) {
     // With fragmentation every sample within tt_MAX_SAMPLE_LENGTH can be sent, and the caller has
     // already refused anything larger.
     if (!tt_FRAG_ENABLED && !submessage_fits_datagram(node, submessage_header)) {
@@ -5141,15 +5153,16 @@ static bool check_and_cache_sample(struct tt_Context* node, struct tt_Publisher*
     // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see cache_reliable_sample()'s own doc
     // comment above; one shared write serves both, whichever (or both) this Publisher opted into.
     if (pub->reliable_cache != NULL) {
-        make_depth_room(node, pub, submessage_header); // (g10)
+        make_depth_room(node, pub, submessage_header, encoded_len); // (g10)
 #if tt_FRAG_ENABLED
         uint32_t datagrams = sample_datagram_count(node, submessage_header);
         if (datagrams > 1) {
-            cache_sample_fragments(node, pub->reliable_cache, submessage_header, pub->seq_no + 1, datagrams);
+            cache_sample_fragments(node, pub->reliable_cache, encoded_len, submessage_header, pub->seq_no + 1,
+                                   datagrams);
             return true;
         }
 #endif
-        cache_reliable_sample(node, submessage_header, pub->reliable_cache, pub->seq_no + 1);
+        cache_reliable_sample(node, submessage_header, pub->reliable_cache, pub->seq_no + 1, encoded_len);
     }
     return true;
 }
@@ -5295,7 +5308,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 #endif
 
     // The halves of KEEP_ALL's promise that need the encoded sample (2026-09-25, 2026-09-26).
-    if (keep_all_refuses_encoded(pub, node, submessage_header)) {
+    if (keep_all_refuses_encoded(pub, node, node->tx_tail - old_tx_tail, submessage_header)) {
         rollback(node, old_tx_tail);
         pub->writable_pending = true;
         RSTAT_INC(publish_refused);
@@ -5305,7 +5318,11 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 
     // One seq_no per datagram the sample goes as - counted now, while it still sits in tx_buffer.
     uint32_t datagrams = sample_datagram_count(node, submessage_header);
-    if (!check_and_cache_sample(node, pub, submessage_header)) {
+    // The length the encode produced, from the tail this publish saved before it began, rather than derived
+    // inside the cache from tx_tail. 6e's encoder step writes into a slot, where "distance to tx_buffer's
+    // current end" is a difference between two unrelated addresses.
+    uint32_t record_len = node->tx_tail - old_tx_tail; // raw; the cache rounds, the padding needs it unrounded
+    if (!check_and_cache_sample(node, pub, submessage_header, record_len)) {
         rollback(node, old_tx_tail);
         return tt_RET_PROTOCOL_ERROR;
     }
