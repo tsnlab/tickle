@@ -134,6 +134,24 @@ case "$rmw_suite_rc" in
         ;;
 esac
 
+# Every gate above builds ONE configuration. On 2026-10-03 a commit passed 13 of 13 here and broke
+# -Dtt_SEGMENT_ENABLED=0, which CI builds in four jobs (two of them FreeRTOS, which also compiles the
+# segment out). The rig found it in nine seconds. This sweeps the configurations with -fsyntax-only, so it
+# writes no object and cannot disturb a build beside it. Same three-state vocabulary as the gate above: a
+# sweep that could not run says so rather than passing quietly.
+name="build configs (syntax)"
+printf '== %s\n' "$name"
+./.github/scripts/sweep_build_configs.sh
+sweep_rc=$?
+case "$sweep_rc" in
+    0) results+=("PASS  $name") ;;
+    77) skip_gate "no C compiler to sweep with - the configurations were NOT checked" ;;
+    *)
+        results+=("FAIL  $name")
+        failed=1
+        ;;
+esac
+
 echo
 echo "== gates"
 printf '%s\n' "${results[@]}"
