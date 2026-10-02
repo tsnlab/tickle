@@ -251,6 +251,28 @@ done
 [ ${#added[@]} = 0 ] || echo "also building, as dependencies: ${added[*]}"
 mapfile -t PACKAGES < <(printf '%s\n' "${!wanted[@]}" | sort)
 
+# rosbag2_interfaces/msg/MessagesLostEvent needs an explicit capacity: its nested
+# MessagesLostEventTopicStat holds an unbounded string, so the element is not fixed-size and the
+# array's capacity cannot be auto-derived. Without it the generator declines the type and
+# `ros2 bag record` cannot start under rmw_tickle at all.
+#
+# It is NOT in the shipped profiles, because the type does not exist in every distro's rosbag2 and
+# a capacity row naming a type absent from the package source is a hard error (capacities.py's
+# check_types_exist, which is right to be strict - it catches typos). Shipping it broke CI on
+# 2026-10-03: present on this machine's rosbag2, absent from the one CI assembles. So it is supplied
+# here, conditionally on the .msg actually being there.
+mlev=$(find "$SRC" -path '*/rosbag2_interfaces/msg/MessagesLostEvent.msg' -print -quit 2>/dev/null)
+if [ -n "$mlev" ]; then
+    mkdir -p "$WORKSPACE/capacities"
+    printf '%s\t%s\t%s\t%s\t%s\n' rosbag2_interfaces/msg/MessagesLostEvent messages_lost_statistics 8 \
+        structural "needed for ros2 bag record; see build_ros2_interfaces.sh" \
+        > "$WORKSPACE/capacities/rosbag2_interfaces.capacities"
+    export TICKLE_CAPACITIES_PATH="$WORKSPACE/capacities${TICKLE_CAPACITIES_PATH:+:$TICKLE_CAPACITIES_PATH}"
+    echo "capacities: MessagesLostEvent found, supplying its capacity via $WORKSPACE/capacities"
+else
+    echo "capacities: no MessagesLostEvent.msg in this rosbag2 - nothing to supply"
+fi
+
 override=()
 if colcon build --help 2>/dev/null | grep -q -- --allow-overriding; then
     override=(--allow-overriding "${PACKAGES[@]}")

@@ -35,7 +35,9 @@
 #   "pid N is not the recorder: []" - an EMPTY /proc/N/cmdline, because the process it was about to SIGSTOP
 #   had already exited. That check refusing rather than signalling is it working, not failing.
 #
-#   The rows are in rosidl_typesupport_tickle_c/capacities/profile_*.tsv. Remove them and both
+#   The capacity is supplied by build_ros2_interfaces.sh, conditionally on the .msg existing - it is
+#   NOT in the shipped profiles, because the type is absent from some distros' rosbag2 and a row naming
+#   a missing type is a hard error. Rebuild the workspace without it and both
 #   cases go back to looking like two unrelated defects in recording and in retention.
 #
 # Usage: rmw_gap_acceptance.sh -w WS [TEST...]   (default: all). WS holds rmw/install (rmw_tickle) and ifaces/install
