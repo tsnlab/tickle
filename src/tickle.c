@@ -576,6 +576,32 @@ static uint8_t* segment_slot(struct tt_SegmentHeader* header, uint32_t index) {
     return base + ((size_t)(index & (header->slots - 1U)) * stride);
 }
 
+// The slot size this context builds its own segment with: the user's if they set one, the compiled default
+// otherwise. One place interprets the sentinel, so "did the user choose this?" is asked where it is answered
+// and not re-derived at each use.
+static uint32_t own_slot_bytes(void) {
+    return _tt_CONFIG.segment_slot_bytes != 0 ? _tt_CONFIG.segment_slot_bytes : (uint32_t)tt_SEGMENT_SLOT_BYTES;
+}
+
+// Is a user-set slot size one this context can build a segment from at all? Checked at creation, where the
+// answer is the same for every topic and the user is still in a position to change it.
+//
+// WHAT THIS DOES NOT CHECK, said here because the gap is the interesting half. The user's decision of
+// 2026-10-02 was that a user who SETS this and then has a type too large for it should get an error from
+// tt_Context_create_publisher(), while a user on the default gets the segment_oversized_to_udp counter -
+// correctness against performance. The per-topic half of that is not here, and not because it was
+// forgotten: struct tt_Topic carries data_size (the C struct) and data_encode_size (a function OF a sample),
+// and neither is the maximum ENCODED size. For a sequence or a string the encoded size depends on how full
+// the sample is, so calling data_encode_size() on a zeroed instance would return the minimum and pass a type
+// that does not fit when populated - a check that reads as a guarantee and is not one. The maximum is known
+// one layer up, in rosidl_typesupport_tickle_c's capacity profile, and the per-topic check belongs there.
+// Core checks what core knows exactly.
+static bool valid_slot_bytes(uint32_t slot_bytes) {
+    // Below a datagram header nothing can be placed at all, and above tt_MAX_SAMPLE_LENGTH the ring would be
+    // sized for samples this build refuses to send anywhere.
+    return slot_bytes >= sizeof(struct tt_Header) && slot_bytes <= tt_MAX_SAMPLE_LENGTH;
+}
+
 // Bytes a segment of this shape occupies, so the writer that creates it and the reader that maps it
 // agree without either one recomputing the layout from parts.
 static size_t segment_bytes(uint32_t slots, uint32_t slot_bytes) {
@@ -853,7 +879,7 @@ static void create_own_segment(struct tt_Context* node) {
     if (segment_name(path, sizeof(path), own_ip, own_port, node->id) < 0) {
         return;
     }
-    void* mapping = tt_segment_create(path, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
+    void* mapping = tt_segment_create(path, segment_bytes(tt_SEGMENT_SLOTS, own_slot_bytes()));
     if (mapping == NULL) {
         return; // no segment: peers reach this context over UDP, counted as unattached on their side
     }
@@ -868,7 +894,7 @@ static void create_own_segment(struct tt_Context* node) {
     header->owner_context_id = node->id;
     header->incarnation = node->entity_id_base != 0 ? node->entity_id_base : (uint32_t)tt_get_ns();
     header->slots = tt_SEGMENT_SLOTS;
-    header->slot_bytes = tt_SEGMENT_SLOT_BYTES;
+    header->slot_bytes = own_slot_bytes();
     header->write_index = 0;
     header->read_index = 0;
     // Each slot starts free for the writer of its own index. Zeroed memory would leave slot 0
@@ -943,7 +969,11 @@ static void note_same_host_peer(struct tt_Context* node, uint8_t context_id, uin
 // Peers' mappings are unmapped and never unlinked: those files belong to those peers and are still
 // being read by them. Only this context's own segment is this context's to remove.
 static void release_segments(struct tt_Context* node) {
-    size_t bytes = segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES);
+    // From the header, not from the configuration, for the same reason the attach reads it there: with the
+    // slot size settable at runtime, what this context BUILT is the only thing that says how much to unmap, and
+    // re-deriving it would hand munmap a length that is right only while nothing changed between.
+    size_t bytes = node->own_segment != NULL ? segment_bytes(node->own_segment->slots, node->own_segment->slot_bytes)
+                                             : segment_bytes(tt_SEGMENT_SLOTS, own_slot_bytes());
 
     // The name is computed FIRST, while the mapping is certainly still there, and the own mapping is
     // taken out of the table before the loop - because a context is routinely attached to its own
@@ -1020,7 +1050,8 @@ static void release_own_segment(struct tt_Context* node) {
     if (named) {
         tt_segment_unlink(path);
     }
-    tt_segment_detach(own, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
+    // The header's own geometry, as release_segments() uses: what this context built is what must be unmapped.
+    tt_segment_detach(own, segment_bytes(own->slots, own->slot_bytes));
     node->segments_released++;
 }
 
@@ -3372,6 +3403,16 @@ tt_ret_t tt_Context_create(struct tt_Context* node) {
     if (node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
+#if tt_SEGMENT_ENABLED
+    // A slot size the user set and this build cannot use is their configuration and their error, so it is
+    // refused here rather than quietly replaced by the default - a value silently ignored reads exactly like
+    // a value that had no effect, which is the shape config.h's own #ifndef guards were in until 2026-09-29.
+    if (_tt_CONFIG.segment_slot_bytes != 0 && !valid_slot_bytes(_tt_CONFIG.segment_slot_bytes)) {
+        TT_LOG_ERROR("Configured segment slot of %u bytes is outside [%u, %u] and cannot hold a datagram",
+                     _tt_CONFIG.segment_slot_bytes, (unsigned)sizeof(struct tt_Header), (unsigned)tt_MAX_SAMPLE_LENGTH);
+        return tt_RET_INVALID_ARGUMENT;
+    }
+#endif
     reset_node_state(node);
     // Before anything else can reach the node. Not concurrent-safe itself ("Threading", tickle.h): no
     // other thread may hold a node that is being created.

@@ -1913,6 +1913,52 @@ static void test_a_renumbered_context_still_knows_it_holds_its_own_segment(void)
 // The opposite direction (owner SMALLER) was already refused by tt_segment_attach()'s fstat, which is
 // why this hole survived: the half that is visible from the file size was covered in the HAL, and a
 // larger file looks fine from there.
+// SHM_PLAN 6e: the slot size is the user's, set at runtime. Three things, because a value that is read but
+// ignored reads exactly like a value that had no effect - which is what tt_SEGMENT_SLOT_BYTES itself was
+// until 2026-09-29, when it turned out -D had never reached it.
+static void test_a_configured_slot_size_is_the_one_built(void) {
+    const uint32_t configured = (uint32_t)tt_SEGMENT_SLOT_BYTES / 2U;
+    struct tt_Context owner;
+    uint32_t saved = _tt_CONFIG.segment_slot_bytes;
+
+    // The control first, and it is not decoration: with nothing configured the header must carry the
+    // COMPILED default, or "the configured value appeared" would be indistinguishable from "every segment
+    // has that size now".
+    _tt_CONFIG.segment_slot_bytes = 0;
+    memset(&owner, 0, sizeof(owner));
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+    EXPECT_EQ_U32((uint32_t)tt_SEGMENT_SLOT_BYTES, owner.own_segment->slot_bytes);
+    release_own_segment(&owner);
+    test_mock_segments_free();
+
+    _tt_CONFIG.segment_slot_bytes = configured;
+    memset(&owner, 0, sizeof(owner));
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+    // In the header, which is what a peer reads and what sizes every later map of this region.
+    EXPECT_EQ_U32(configured, owner.own_segment->slot_bytes);
+    EXPECT_EQ_U32((uint32_t)tt_SEGMENT_SLOTS, owner.own_segment->slots);
+    release_own_segment(&owner);
+    test_mock_segments_free();
+
+    // And a size this build cannot use is refused rather than quietly replaced by the default, because a
+    // silently ignored setting is the failure this whole field exists to avoid repeating.
+    _tt_CONFIG.segment_slot_bytes = 1; // below a datagram header
+    memset(&owner, 0, sizeof(owner));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, (int)tt_Context_create(&owner));
+
+    _tt_CONFIG.segment_slot_bytes = saved;
+}
+
 static void test_a_segment_with_another_geometry_is_refused(void) {
     test_mock_reset();
     test_mock_segments_free();
@@ -1975,6 +2021,7 @@ int main(void) {
     test_reset_zeroes_the_per_transport_counters();
     test_segment_name_separates_peers_that_differ();
     test_segment_header_catches_what_the_name_cannot();
+    test_a_configured_slot_size_is_the_one_built();
     test_a_segment_with_another_geometry_is_refused();
     test_ring_round_trips_a_datagram();
     test_full_ring_refuses_rather_than_overwriting();

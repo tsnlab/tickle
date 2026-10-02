@@ -899,6 +899,21 @@ struct _tt_Config {
     // (g6) tt_DISCOVERY_RANGE_*: SUBNET (0, the default) is the links as always.
     uint8_t discovery_range;
 #endif
+    // Bytes of payload one shared-memory slot holds, or 0 (the default) for tt_SEGMENT_SLOT_BYTES.
+    //
+    // Runtime rather than only -D, for three reasons measured on 2026-10-02. The hot path never used the
+    // constant - segment_slot() takes its stride and its mask from the header - so moving it costs nothing
+    // where it would be felt. One binary can then serve deployments whose messages differ. And the value
+    // appears in the header a peer reads, so a results file can say which geometry produced it rather than
+    // leaving it to be inferred from a build.
+    //
+    // **Zero is not a size, it is the absence of a choice**, and the two are answered differently. A user who
+    // set this and then has a type that does not fit gets an error from tt_Context_create_publisher(): they
+    // chose a value that does not match their data, their intended behaviour does not happen, and that is
+    // correctness. A user on the default gets the segment_oversized_to_udp counter and one log line per
+    // topic, because the sample is still delivered over UDP and that is performance. Reporting both the same
+    // way would make the alarm unreadable in the case where it matters.
+    uint32_t segment_slot_bytes;
 };
 
 extern struct _tt_Config _tt_CONFIG;
