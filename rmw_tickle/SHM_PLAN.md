@@ -1198,6 +1198,36 @@ nobody reading its log.
 At today's defaults that is 512 KiB / (16 + 1472) = 352 slots. A slot sized for p4 gives 185, and holding 352 at that
 slot size needs about 1 MiB - still nothing beside 216 MB.
 
+### The two halves are separable, and the larger gain is in the smaller one (2026-10-02, implementing)
+
+Writing this section I treated "encode into the slot" and "do not fragment" as one change. They are not, and the
+distinction decides what to build first:
+
+| | what it buys | what it needs |
+|---|---|---|
+| **(a) do not fragment an all-local sample** | **p4's 92.6%** | the limit the decision compares against |
+| (b) the encoder writes into the slot | one copy per publish | parameterising ~71 `tx_buffer`/`tx_tail` references |
+
+Fragmenting is a decision about how many datagrams a sample becomes, not about where it is written, so (a) needs
+nothing from (b). The pieces it does need are already in: a runtime slot size that can hold a whole sample
+(`e94f6240`), a cache that takes an explicit length rather than measuring to `tx_buffer`'s end (`28347057`,
+`bc7ed108`), and a two-step attach so a peer with a different geometry still interoperates (`4f5b40da`).
+
+**And (a) has a consequence this section did not state: an unfragmented record cannot fall back to UDP.** It is
+larger than the MTU by construction, so if the segment is not there, there is nowhere else for it to go. That
+makes the rule conservative rather than optimistic:
+
+- fragment as the network requires **unless** every destination is same-host **and already attached** **and** the
+  record fits that peer's `slot_bytes`;
+- a destination not yet attached, or a broadcast with no known peer list, fragments as today.
+
+The *full* ring is not the hazard it first looks like, and that is Dev's measurement rather than an argument: a
+full ring must never reroute to UDP anyway, because a datagram sent that way overtakes the records already in the
+ring and the reader discards everything older behind it - 97.6% of CI's same-host traffic when it was tried. So
+for an attached same-host peer the fallback was never available; a full ring drops, and an unfragmented record
+changes only the size of what is dropped. What (a) must not do is produce a record for a peer whose segment it
+has not confirmed.
+
 ### How this will be read, written before it is run
 
 The cell is S6's `reliable_throughput` p4, all-local, against the figures in COMPARISON 2.2c (TickLE **2,745**,
