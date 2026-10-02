@@ -18,6 +18,8 @@ A role prints one line "RESULT: key=value ..." when it ends; the script reads on
   matched_sub   a subscription on /accept_matched that counts its SUBSCRIPTION_MATCHED events
   itype_pub     a std_msgs/String publisher on /accept_itype, counting PUBLISHER_INCOMPATIBLE_TYPE events
   itype_sub     a std_msgs/Int32 subscription on /accept_itype, counting SUBSCRIPTION_INCOMPATIBLE_TYPE events
+  itype_match_pub  a std_msgs/String publisher on /accept_itype_match, publishing, counting type events
+  itype_match_sub  a std_msgs/String subscription on the same topic, counting receipts and type events
   durable_pub   TRANSIENT_LOCAL KEEP_LAST 4, publishes 6 sensor_msgs/Image samples of 60,000 bytes, then keeps running
   durable_sub   created later with the same QoS: reports how many backlog samples arrived, which, and whether in order
   inprocess     a talker node and a listener node in ONE process and executor, then a std_srvs/Trigger call between them
@@ -161,6 +163,28 @@ def main():
                                      event_callbacks=SubscriptionEventCallbacks(matched=on_matched))
         spin_for(node, seconds)
         print('RESULT: role=%s matched_events=%d' % (role, counts['n']), flush=True)
+    elif role in ('itype_match_pub', 'itype_match_sub'):
+        # The NEGATIVE arm of itype: the SAME type on both sides. A correct counter stays at 0 here.
+        # Delivery is asserted too - 0 events with 0 received is two nodes that never met, which is
+        # not the same answer as 0 events while they were talking, and must not borrow its verdict.
+        node = Node('accept_' + role)
+        counts['rx'] = 0
+
+        def on_itype_match(info):
+            counts['n'] += 1
+        if role == 'itype_match_pub':
+            pub = node.create_publisher(String, '/accept_itype_match', 10,
+                                        event_callbacks=PublisherEventCallbacks(
+                                            incompatible_type=on_itype_match))
+            node.create_timer(0.2, lambda: pub.publish(String(data='match')))
+        else:
+            node.create_subscription(String, '/accept_itype_match',
+                                     lambda m: counts.__setitem__('rx', counts['rx'] + 1), 10,
+                                     event_callbacks=SubscriptionEventCallbacks(
+                                         incompatible_type=on_itype_match))
+        spin_for(node, seconds)
+        print('RESULT: role=%s incompatible_type_events=%d received=%d'
+              % (role, counts['n'], counts['rx']), flush=True)
     elif role in ('itype_pub', 'itype_sub'):
         node = Node('accept_' + role)
 

@@ -15,6 +15,8 @@
 #   events   a listener on rclpy's EventsExecutor receives the other side's talker                 (g2, on-new-data callbacks)
 #   matched  PUBLICATION_MATCHED / SUBSCRIPTION_MATCHED fire on both sides                          (g3)
 #   itype    PUBLISHER_ / SUBSCRIPTION_INCOMPATIBLE_TYPE fire for String vs Int32 on one topic     (g3)
+#   itypeneg the same counters stay at 0 when the types MATCH, while samples are delivered      (g3, the
+#            arm that can fail: without it, itype's PASS is consistent with a counter that always fires)
 #   takeseq  the rmw library defines rmw_take_sequence (a symbol check, as rcl_take_sequence dispatches to it) (g5)
 #   samehost talker and listener as two processes on ONE host, and `ros2 topic echo` next to a talker (g8)
 #   durable  a late TRANSIENT_LOCAL KEEP_LAST 4 subscriber on the other host gets exactly the last 4 of 6 60,000-byte
@@ -50,7 +52,7 @@ WS=""
 while getopts "w:" o; do case "$o" in w) WS=$OPTARG ;; *) exit 2 ;; esac; done
 shift $((OPTIND - 1))
 [ -n "$WS" ] && [ -d "$WS/rmw/install" ] && [ -d "$WS/ifaces/install" ] || { echo "usage: $0 -w WS [TEST...]" >&2; exit 2; }
-TESTS=${*:-graph bag bagstall events matched itype takeseq samehost inprocess durable range peers introspect names}
+TESTS=${*:-graph bag bagstall events matched itype itypeneg takeseq samehost inprocess durable range peers introspect names}
 HERE=$(cd "$(dirname "$0")" && pwd)
 NODE="$HERE/acceptance/accept_node.py"
 DISTRO=${ROS_DISTRO_DIR:-/opt/ros/lyrical}
@@ -340,6 +342,32 @@ t_matched() { t_pair "$1" matched_pub matched_sub matched_events matched; }
 # Counting only INCOMPATIBLE_TYPE made the control report 0 and the row print "control failed - VOID"
 # on every run (2026-10-02). A VOID that is always there is noise that hides the VOIDs that mean
 # something, and the control had been detecting the mismatch the whole time.
+t_itypeneg() {
+    # The arm that can fail: matched types must deliver AND leave the counter at 0. Without this,
+    # t_itype's PASS is consistent with a counter that fires unconditionally.
+    local rmw=$1 d=$OUTDIR/itypeneg_$1
+    mkdir -p "$d"
+    run_in "$NS1" "$rmw" 1 10 "" python3 "$NODE" itype_match_pub 10 > "$d/pub.log" 2>&1 &
+    local p1=$!
+    run_in "$NS2" "$rmw" 2 10 "" python3 "$NODE" itype_match_sub 10 > "$d/sub.log" 2>&1
+    wait "$p1"
+    if ! result "$d/pub.log" | grep -q . || ! result "$d/sub.log" | grep -q .; then
+        echo "ERROR(a node did not finish)"
+        return
+    fi
+    local tp ts rx
+    tp=$(field "$d/pub.log" incompatible_type_events)
+    ts=$(field "$d/sub.log" incompatible_type_events)
+    rx=$(field "$d/sub.log" received)
+    if [ "${rx:-0}" -eq 0 ]; then
+        echo "VOID(nothing delivered: the pair never matched, so a 0 event count says nothing)"
+    elif [ "${tp:-0}" -eq 0 ] && [ "${ts:-0}" -eq 0 ]; then
+        echo "PASS(received=$rx, no type events on matched types)"
+    else
+        echo "FAIL(type events on MATCHED types: ${tp:-0}/${ts:-0} - the counter is unconditional)"
+    fi
+}
+
 t_itype() {
     local rmw=$1 d=$OUTDIR/itype_$1
     mkdir -p "$d"
