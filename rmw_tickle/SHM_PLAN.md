@@ -1467,6 +1467,29 @@ cannot be partially applied, and it wants a rested reading of `end_encode()`'s b
    elsewhere - the slot write, the drain loop, cache behaviour - and a FIFO doorbell will not close the cell. The
    two figures also come from different runs on different days, so combining them is an estimate. The measurement
    that settles it is the p2 latency cell re-run against a FIFO doorbell, not this benchmark.
+
+   **The gap re-measured on current code, 2026-10-03 (`a55d9cf9`), before building anything against it.** The 8 us
+   above was taken on `fcc4ddb4`, and `record_size_limit()` has since entered the publish path of every build. It
+   was measured inert on p4 THROUGHPUT, which says nothing about p2 latency - a different scenario, a different
+   payload, and a metric a few hundred nanoseconds can move. 3 reps, 1,977 round trips each, both arms pure
+   (`tx_shm` share 0.993 and 0.000, so neither is the mixture 2.2c's own ON arm carried):
+
+   | arm | this run | COMPARISON 2.2c | |
+   |---|---:|---:|---|
+   | OFF, kernel | **0.046** | **0.046** | the control, and it reproduces exactly |
+   | ON, segment | **0.051** | 0.050 | 2.2c's ON was 13.5% kernel; this one is not |
+
+   The control matching to three decimals is what makes the rest readable: the box, the harness and the metric
+   agree with the run being compared against, so a difference in the other arm is the code and not the rig.
+
+   **The gap stands and is separable** - ranges 0.051..0.052 against 0.045..0.046 - at **+10.9%, which is 5.0 us**,
+   not 8. So the premise survives: there is a real, repeatable, separable cost to our own segment path at p2.
+
+   **The sizing argument does not survive, and it fails in the direction that should worry us.** 5.61 us against a
+   5.0 us gap is 112%. A saving that exceeds the whole gap is not a better doorbell; it is proof that a figure from
+   `wake_cost`'s own round trip cannot be subtracted from this cell's gap at all. The honest form of open question 1
+   is therefore: a FIFO doorbell is worth building and measuring IN THIS CELL, and no number should be predicted
+   for it beforehand. The 8 us it was sized against describes a build that no longer exists.
 2. **Whether a same-host pair keeps its UDP socket at all,** for discovery only, or whether discovery also moves into
    the segment. Keeping discovery on UDP is the smaller change and keeps one discovery path; moving it is what would
    let two processes talk with no network stack at all, which is a real claim for an embedded target.
