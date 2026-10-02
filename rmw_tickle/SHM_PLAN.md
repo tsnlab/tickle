@@ -1131,13 +1131,37 @@ owner's `header->slot_bytes`. With the size configurable per context those can d
 header first, read `slots` and `slot_bytes`, and then map the whole region. The header becomes the single authority,
 which is what it should have been.
 
-**This closes a hole that exists today and is independent of this work.** `segment_header_check()` validates magic,
-version, owner and incarnation - **not `slots` or `slot_bytes`**. `tt_SEGMENT_SLOT_BYTES` has been `#ifndef`-guarded
-since 2026-09-29 precisely so it can be overridden with `-D`, so two processes built with different values are a
-supported configuration that would map one length and index with another. The expected outcome is a fault rather
-than silent corruption, which is still worse than a clean refusal. **This is read from the source and has not been
-reproduced**; it needs a test that builds two arms with different values and has one attach to the other. Adding the
-two fields to `segment_header_check()` is a small fix worth making whether or not the rest of this section is built.
+**This closes a hole that was here already - measured 2026-10-02 by Dev, and it is worse than the four readings
+that preceded it.** `segment_header_check()` validated magic, version, owner and incarnation but **not `slots` or
+`slot_bytes`**, while `tt_SEGMENT_SLOT_BYTES` has been `#ifndef`-guarded since 2026-09-29 precisely so it can be
+overridden with `-D`. Two builds at `tt_SEGMENT_BYTES` 512K and 1M, geometry verified distinct by a compiled probe
+rather than by trusting the `-D`, 2000 messages:
+
+| arm | `tx_shm` | `shm_full_dropped` | exit | subscriber received |
+|---|---:|---:|---:|---:|
+| control, default against default | 1,842 | 0 | 0 | all |
+| **owner LARGER than the attacher** | 259 | **1,535** | **0** | **536 of 2,000** |
+| owner smaller | 0 | 0 | 0 | all, over UDP |
+
+**There is no fault.** The writer fills the slots its short mapping can address, then reads a slot header past it -
+inside the page-rounding slack, so nothing traps - finds a `sequence` that is not the index it claimed, and
+`segment_write()` reports the ring full. `write_index` never advances past that slot, so **the ring is full for
+ever**. `shm_full_dropped` is drop-on-full, so those 1,535 datagrams were discarded rather than rerouted, and the
+publisher printed "sent 2,000 message(s)" and exited 0.
+
+Four readings of this were wrong before the experiment: "a fault either way" (Plan), "silently the wrong slot"
+(Dev), "the smaller direction works correctly" (Dev), and the sentence this paragraph replaces. What settled the
+smaller direction was not in `tickle.c` at all - `tt_segment_attach()` in `hal_linux.c` already `fstat`s the file
+and refuses a region shorter than the length asked for, with a comment giving exactly that reason. So the two
+directions were never symmetric: one was guarded in the HAL and invisible to anyone reading the ring, and the other
+was unguarded and silent.
+
+`segment_header_check()` now compares both fields and returns `tt_SEGMENT_BAD_HEADER` on a mismatch. For the larger
+direction that closes a hole; for the smaller it makes an existing refusal explicit rather than incidental.
+
+**It also raises the stake on the two-step attach above.** A runtime slot size makes mismatched geometry ordinary
+rather than exotic, and the failure it would meet is the wedged ring, not a crash. The header being the single
+authority is what removes the class, and the geometry check is the guard until it is.
 
 ### What the API reports, and what it does not
 
