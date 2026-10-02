@@ -709,6 +709,10 @@ struct tt_Context {
         uint32_t doorbell_read_index;
     } segment_peers[tt_MAX_CONTEXT_IDS];
     struct tt_SegmentHeader* own_segment;
+    // One-shot, so the reason a whole-record send was refused is stated once rather than per sample. Added
+    // 2026-10-03 after four rig campaigns inferred it from throughput, which cannot tell "no effect" from
+    // "never ran".
+    bool whole_refusal_logged;
     // Which peers share this host, indexed by remote context id. Only a peer at our own address can
     // ever open the file we create - the name is built from (ip, port, context id) - so the segment
     // needs to exist exactly while at least one such peer does. Discovery reports both edges of that:

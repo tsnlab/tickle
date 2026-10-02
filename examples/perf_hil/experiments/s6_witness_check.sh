@@ -38,6 +38,10 @@ SCEN=${SCEN:-best_effort_throughput}
 SIZE=${SIZE:-p1}
 OFF_FLAG=${OFF_FLAG:--Dtt_SEGMENT_ENABLED=0}
 CLI_ARGS=${CLI_ARGS:-}   # forwarded from s6_transport_cells.sh so all three frameworks get the same client arguments
+# Build flags both arms carry, for measuring a cell at a geometry other than the compiled default - SHM_PLAN
+# 6e(a) does nothing at the default slot of one datagram, because a sample too large for a slot is exactly
+# what it refuses to send whole. Added to BOTH arms so the ON/OFF difference stays the segment itself.
+BUILD_FLAGS=${BUILD_FLAGS:-}
 OUT=${OUT:-/tmp/s6_witness.txt}
 HOST=10.1.1.214          # both roles on the client Pi
 K=$HOME/.ssh/tickle_ci_ed25519
@@ -46,6 +50,7 @@ sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=10 "ci@$1" "${@:2}"; }
 : >"$OUT"
 say() { echo "$*" | tee -a "$OUT"; }
 note() { echo "$*" >>"$OUT"; echo "$*" >&2; }
+say "  BUILD_FLAGS='$BUILD_FLAGS'"
 say "=== S6 witness check $(date -Is) sha=$SHA scen=$SCEN size=$SIZE dur=$DUR reps=$REPS iface=lo host=$HOST ==="
 
 srv_pid=""
@@ -81,8 +86,8 @@ run_one() { # run_one <arm>
     kill_server
 }
 
-sha_on=$(build_arm ON "") || exit 1
-sha_off=$(build_arm OFF "$OFF_FLAG") || exit 1
+sha_on=$(build_arm ON "$BUILD_FLAGS") || exit 1
+sha_off=$(build_arm OFF "$BUILD_FLAGS $OFF_FLAG") || exit 1
 say "  built: ON=$sha_on OFF=$sha_off"
 if [ "$sha_on" = "$sha_off" ]; then
     say "FATAL the OFF arm's binary is identical to ON - '$OFF_FLAG' never reached the compiler."

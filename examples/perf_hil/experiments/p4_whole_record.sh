@@ -37,6 +37,15 @@ REPS=${REPS:-3}
 DUR=${DUR:-5}
 SIZE=${SIZE:-p4}
 OUT=${OUT:-$HOME/rig_results_safe/p4_whole_record.txt}
+# 6e(a) is INERT at the default slot, measured 2026-10-03: a p4 sample is 2800 bytes and the default slot is
+# one datagram, so the predicate refuses - correctly - and both arms sent 2.01 datagrams per sample. A slot
+# that can hold the sample is therefore part of the thing being tested, not a tuning knob, and it is applied
+# to BOTH arms so the only difference between them stays the commit.
+# 4096, not 2816. The first attempt used "p4 rounded up" and still fragmented: the record is the CDR PLUS
+# tt_Header, the submessage header and the data header, about 2,840 bytes for a 2,800-byte sample, so a 2,816
+# slot is short by a few dozen. Sized generously rather than exactly, because the point of the run is whether
+# a whole record helps, not how tightly a slot can be cut.
+BUILD_FLAGS=${BUILD_FLAGS:--Dtt_SEGMENT_SLOT_BYTES=4096}
 : >"$OUT"
 say() { echo "$*" | tee -a "$OUT"; }
 say "=== p4 whole record $(date -Is) before=$BEFORE after=$AFTER size=$SIZE reps=$REPS dur=$DUR ==="
@@ -47,6 +56,7 @@ for arm in before after; do
     # Only the tickle cell: the vendors are unchanged between these two SHAs, so running them would spend rig
     # time to re-measure a constant. COMPARISON's vendor figures stand.
     FRAMEWORKS=tickle REPS="$REPS" DUR="$DUR" SCEN=reliable_throughput SIZE="$SIZE" SHA="$sha" \
+        BUILD_FLAGS="$BUILD_FLAGS" \
         OUT="$OUT.$arm" "$REPO/examples/perf_hil/experiments/s6_transport_cells.sh" >>"$OUT.driver" 2>&1
     grep -hE 'arm=ON .*framework=tickle' "$OUT.$arm" 2>/dev/null | tee -a "$OUT" >/dev/null
 done
@@ -63,21 +73,33 @@ for line in open(sys.argv[1]):
     if cur and "framework=tickle" in line and "arm=ON" in line:
         f = dict(kv.split("=", 1) for kv in line.split() if "=" in kv)
         try:
-            rows[cur].append((float(f["send_mbps"]), int(f.get("tx_shm", 0)), int(f.get("sent", 0))))
+            rows[cur].append((float(f["send_mbps"]), int(f.get("tx_shm", 0)), int(f.get("sent", 0)),
+                              f.get("sample_path", "?")))
         except (KeyError, ValueError):
             pass
 
 print()
-print("  arm      n   send_mbps median   range                 datagrams/sample")
+print("  arm      n   send_mbps median   range                 datagrams/sample  sample_path")
+paths = {}
 for arm in ("before", "after"):
     rs = rows[arm]
     if not rs:
         print(f"  {arm:<8} 0   (no usable reps)"); continue
     mb = [r[0] for r in rs]
     dps = [r[1] / r[2] for r in rs if r[2]]
+    paths[arm] = sorted({r[3] for r in rs})
     print(f"  {arm:<8} {len(rs)}   {st.median(mb):>14.1f}   {min(mb):.1f}..{max(mb):.1f}"
-          f"{'':>8} {st.median(dps) if dps else float('nan'):.2f}")
+          f"{'':>8} {st.median(dps) if dps else float('nan'):.2f}{'':>12} {','.join(paths[arm])}")
 print()
+# Did the thing under test engage at all? Asked before any throughput verdict, because "no separable change"
+# and "the mechanism never ran" read identically in the numbers and mean completely different things - the
+# first run of this harness spent a rig campaign learning that at the default slot.
+if paths.get("after") and all(p == "frag" for p in paths["after"]):
+    print("INERT: the after arm still took the fragment path on every repetition, so 6e(a) never granted and")
+    print("  the throughput figures below compare two identical behaviours. Check the slot against the record")
+    print("  size - the record is the CDR plus tt_Header, the submessage header and the data header - before")
+    print("  reading anything else here.")
+    print()
 b, a = [r[0] for r in rows["before"]], [r[0] for r in rows["after"]]
 if len(b) < 2 or len(a) < 2:
     print("VOID: fewer than two usable repetitions on an arm.")

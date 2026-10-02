@@ -66,6 +66,8 @@ SCEN=${SCEN:-reliable_throughput}
 # framework's witness unusable. A latency cell therefore needs -i to set the ping interval, which the harness had
 # no way to pass.
 CLI_ARGS=${CLI_ARGS:-}
+# Forwarded to the tickle cell, which is the only one whose geometry we compile.
+BUILD_FLAGS=${BUILD_FLAGS:-}
 SIZE=${SIZE:-p1}
 SHA=${SHA:-$(git -C "$REPO" rev-parse --short HEAD)}
 OUT=${OUT:-$HOME/rig_results_safe/s6_transport_cells.txt}
@@ -100,7 +102,7 @@ fi
 run_tickle_cell() {
     local sub="$OUT.tickle"
     say "### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ==="
-    if ! OUT="$sub" DUR="$DUR" SCEN="$SCEN" SIZE="$SIZE" CLI_ARGS="$CLI_ARGS" \
+    if ! OUT="$sub" DUR="$DUR" SCEN="$SCEN" SIZE="$SIZE" CLI_ARGS="$CLI_ARGS" BUILD_FLAGS="$BUILD_FLAGS" \
          "$REPO/examples/perf_hil/experiments/s6_witness_check.sh" "$SHA" "$REPS" >/dev/null 2>&1; then
         say "  tickle cell FAILED to run - see $sub"
     fi

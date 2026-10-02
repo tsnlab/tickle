@@ -3150,6 +3150,7 @@ static void reset_node_state(struct tt_Context* node) {
     // is not required to do.
     memset(node->segment_peers, 0, sizeof(node->segment_peers));
     node->own_segment = NULL;
+    node->whole_refusal_logged = false;
     // The same reasoning one step further, and with more riding on it than on a counter: with the
     // segment built on demand, same_host_peer[] is READ to decide whether to build one and
     // same_host_peer_count to decide whether to give it up. Left as stack garbage, a context would
@@ -5001,9 +5002,14 @@ static uint8_t unicast_destinations_for(const struct tt_Publisher* pub, uint32_t
 // changes only the size of what a full ring drops, not whether it has somewhere to go.
 //
 // The minimum across peers, because one record is built and every destination has to take it.
-static uint32_t whole_record_limit_for(const struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count) {
+// Not const: it records, once, why it refused. See tt_Context.whole_refusal_logged.
+static uint32_t whole_record_limit_for(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count) {
 #if tt_SEGMENT_ENABLED
     if (peers == NULL || peer_count == 0) {
+        if (!node->whole_refusal_logged) {
+            node->whole_refusal_logged = true;
+            TT_LOG_INFO("Whole-record send refused: this publish has no unicast destinations (broadcast)");
+        }
         return 0;
     }
     uint32_t smallest = UINT32_MAX;
@@ -5015,13 +5021,24 @@ static uint32_t whole_record_limit_for(const struct tt_Context* node, const stru
         seen++;
         const struct tt_SegmentPeer* entry = &node->segment_peers[peers[i].context_id];
         if (entry->mapping == NULL || entry->ip != peers[i].ip || entry->port != peers[i].port) {
+            // Said once per context, because four rig campaigns were spent inferring why this refused from
+            // throughput numbers that look identical whether the mechanism is absent or merely never granted.
+            // An answer in the log costs one line and ends the guessing; reasoning about it cost a night.
+            if (!node->whole_refusal_logged) {
+                node->whole_refusal_logged = true;
+                TT_LOG_INFO("Whole-record send refused: peer %u %s", peers[i].context_id,
+                            entry->mapping == NULL ? "has no attached segment" : "is at a different address");
+            }
             return 0;
         }
         if (entry->mapping->slot_bytes < smallest) {
             smallest = entry->mapping->slot_bytes;
         }
     }
-    return seen == peer_count ? smallest : 0;
+    if (seen != peer_count) {
+        return 0;
+    }
+    return smallest;
 #else
     UNUSED(node);
     UNUSED(peers);
