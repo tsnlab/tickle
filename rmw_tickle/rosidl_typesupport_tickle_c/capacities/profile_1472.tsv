@@ -154,3 +154,11 @@ visualization_msgs/msg/InteractiveMarkerUpdate	poses	4	payload
 visualization_msgs/msg/InteractiveMarkerUpdate	erases	4	payload
 visualization_msgs/srv/GetInteractiveMarkers	markers	1	payload
 geometry_msgs/msg/Polygon	points	112	element	auto would take the whole datagram (120), leaving nothing for PolygonStamped/PolygonInstance/SolidPrimitive, which nest it
+
+# rosbag2_interfaces (2026-10-03). `ros2 bag record` publishes MessagesLostEvent on
+# /events/rosbag2_messages_lost as it starts. Its nested MessagesLostEventTopicStat holds an unbounded
+# string, so the element is not fixed-size and this array's capacity cannot be AUTO-derived; without an
+# explicit one the generator declines the type and the recorder never starts. Measured, not assumed:
+# this row alone makes it generate, and removing it is the only one of the three candidates that puts
+# the decline back (the two string fields take the runtime default and are not needed here).
+rosbag2_interfaces/msg/MessagesLostEvent	messages_lost_statistics	8	structural	fixed part is then 164 B of the 1444 B budget (p2_inventory, N=1472)

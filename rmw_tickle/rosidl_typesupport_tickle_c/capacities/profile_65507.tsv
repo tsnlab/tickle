@@ -166,3 +166,11 @@ action_msgs/msg/GoalStatusArray	status_list	64	pinned	auto would give 2338
 action_msgs/srv/CancelGoal	goals_canceling	64	pinned	auto would give 2728
 rcl_interfaces/srv/GetParameterTypes	types	8	parallel	pairs with names (8); auto would give 65477
 sensor_msgs/msg/JoyFeedbackArray	array	64	pinned	auto would give 8184
+
+# rosbag2_interfaces (2026-10-03). `ros2 bag record` publishes MessagesLostEvent on
+# /events/rosbag2_messages_lost as it starts. Its nested MessagesLostEventTopicStat holds an unbounded
+# string, so the element is not fixed-size and this array's capacity cannot be AUTO-derived; without an
+# explicit one the generator declines the type and the recorder never starts. Measured, not assumed:
+# this row alone makes it generate, and removing it is the only one of the three candidates that puts
+# the decline back (the two string fields take the runtime default and are not needed here).
+rosbag2_interfaces/msg/MessagesLostEvent	messages_lost_statistics	32	structural	one entry per topic that lost messages since the last event
