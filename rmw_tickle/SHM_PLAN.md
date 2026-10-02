@@ -1286,6 +1286,73 @@ is the expected result, not a mixed one.
   must outlive a wrap. Worth settling early, because it changes how much decision 2 is worth.
 - **The header-validation hole above**, which needs the two-build test before it is called a defect.
 
+### 6e(a) was built, and it cannot deliver before 6e(b) (2026-10-03)
+
+Decision 1 - do not fragment a sample bound only for shared memory - was implemented in `838d659c` as
+`whole_record_limit_for()`, a predicate that raises the record limit to the destination's slot when every
+destination is a same-host peer whose segment is attached. Its unit tests pass in both directions. Across four
+rig campaigns it never changed a number, and this section records why, because the reason is not the one that
+was being inferred.
+
+**Two instruments were wrong before any of the measurements were.**
+
+- `s6_witness_check.sh` ran the client as `... 2>&1 | grep '^RESULT'`. The client is the publisher, the only
+  side that can refuse a whole-record send, so every diagnostic it printed went into the pipe. Searching the
+  *server* log for a publisher-only message returned nothing, and nothing is what "it did not refuse" looks
+  like. The client's output is kept in a file now.
+- `p4_whole_record.sh` decided INERT from `sample_path`. That is `-DBENCH_SAMPLE_PATH`, a compile-time string
+  `build.sh` chooses from `TICKLE_P4_PATH`: in a frag build it reads `frag` whatever any sample did. The test
+  could not fail. It said INERT on four campaigns without once inspecting behaviour, and was right every time,
+  carried by the datagrams-per-sample figure beside it. That figure decides it now.
+
+`experiments/whole_record_refusal.sh` asks the publisher instead. Every condition in the predicate is
+publisher-local state, so none of it needs the rig: one private namespace, both roles, and core names the cause
+in its own words. Its positive control - the same pair across two namespaces, where a segment is impossible -
+prints `a destination has no attached segment`, so silence from the same-host run is the publisher's and not
+the harness's. The control arm reproduces the rig cell to within 1.2% (2713 Mbps here, 2745 on the rig), which
+is what makes the rest of this measurable without rig time.
+
+**What the publisher said: nothing. It grants.** And when it grants, the cell collapses.
+
+| arm (same binary pair, only the slot differs) | `tx_dropped_oversize` | samples sent in 5 s | send_mbps |
+|---|---:|---:|---:|
+| default slot (6e(a) cannot raise the limit) | 0 | 605,696 | **2713.5** |
+| slot 4096 (6e(a) grants) | 277,500 | 421 | **1.9** |
+
+**The first cause was the bound disagreeing with itself.** 6e(a) raised the limit for the datagram count and for
+the retention cache, so the cache stored the sample as one whole record - but `end_encode_sample()` still tested
+the constant `FRAG_WHOLE_DATA_LIMIT` and put two fragments on the wire. The subscriber then NACKed, and
+`send_cached_record()` handed the cached *whole* record to `end_encode()`, whose `submessage_fits_datagram()`
+measured it against `tt_MAX_BUFFER_LENGTH` and refused it. Forever. That is the 277,500. The cache and the wire
+disagreed about one number, which is precisely what hoisting the destination decision above the datagram count
+was supposed to prevent; the comment claiming so sits on the code that did it.
+
+`record_size_limit(node, floor, peers, peer_count)` is the repair: one bound, asked at each send site with
+**that send's** destinations rather than computed once and threaded down. It has to be per-site - a publish may
+go to two peers and the retransmission of the same sample to the one node that asked, so a single value is
+right for one and wrong for the other. `seam_send_to()` no longer falls back to UDP for a record only a segment
+can carry, since such a record is larger than a datagram by construction.
+
+**The second cause is ring economics, and it is why 6e(a) is held.** With the bound repaired the retransmit
+refusals fall from 277,500 to 141, and the cell is still at 0.66-0.82 Mbps: `shm_full_dropped` 934, RELIABLE
+never recovering, the subscriber logging `Still waiting on reliable seq_no 52 ... after 176 retries`. Restoring
+the slot *count* to the default's 512 by widening the segment changed nothing (934 against 936), which rules out
+sizing. A 2800-byte sample held as one 4096-byte slot costs about 2.7x the ring bytes of the same sample as two
+datagram-sized ones, and the acknowledgements travel through the same rings, so samples and acks starve each
+other.
+
+So the order in this plan is wrong and the dependency runs the other way: **6e(b) is the prerequisite for
+6e(a)**, not an optimisation on top of it. Encoding into the slot is what stops a whole record costing a whole
+slot; until it exists, carrying a record whole buys one fewer datagram and pays several times its own ring
+footprint. `valid_slot_bytes()` therefore caps the runtime slot at one datagram, so an application cannot select
+the collapsing configuration, and a build may still set `tt_SEGMENT_SLOT_BYTES` higher to measure the path.
+
+**What is still not established.** The rig has never been observed granting: its cells show 2.01 datagrams per
+sample, so something there refuses that does not refuse here, and the instrumented build (`a5e9c553`) has not yet
+been run on it. That answer does not change the hold - the collapse is reproducible locally and the cause is
+structural - but it is the one remaining question about the predicate itself. Nothing from any of this has been
+written into COMPARISON: there is still no p4 figure to write.
+
 ## 7. Open questions
 
 

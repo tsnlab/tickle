@@ -596,10 +596,24 @@ static uint32_t own_slot_bytes(void) {
 // that does not fit when populated - a check that reads as a guarantee and is not one. The maximum is known
 // one layer up, in rosidl_typesupport_tickle_c's capacity profile, and the per-topic check belongs there.
 // Core checks what core knows exactly.
+// The largest record that goes whole: one control datagram. Both the point where a sample starts
+// fragmenting and the ceiling on a configured segment slot, declared once here because they are the
+// same bound and were briefly two.
+#define FRAG_WHOLE_DATA_LIMIT tt_CONTROL_MAX_LENGTH
+
 static bool valid_slot_bytes(uint32_t slot_bytes) {
-    // Below a datagram header nothing can be placed at all, and above tt_MAX_SAMPLE_LENGTH the ring would be
-    // sized for samples this build refuses to send anywhere.
-    return slot_bytes >= sizeof(struct tt_Header) && slot_bytes <= tt_MAX_SAMPLE_LENGTH;
+    // Below a datagram header nothing can be placed at all. The ceiling is a datagram's worth rather than
+    // tt_MAX_SAMPLE_LENGTH, because a slot larger than a datagram is only useful for carrying a record whole
+    // - SHM_PLAN 6e(a) - and that configuration was measured on 2026-10-03 to collapse the cell it was meant
+    // to win: 2713 Mbps at the default slot against 0.8 at 4096, the ring full 934 times and RELIABLE never
+    // recovering. Restoring the slot COUNT to the default's 512 changed nothing (934 against 936), so it is
+    // not sizing. A 2800-byte sample held as one 4096-byte slot costs about 2.7x the ring bytes of the same
+    // sample as two datagram-sized ones, and the acknowledgements travel through the same rings, so the
+    // samples and the acks starve each other. 6e(b) - the encoder writing into the slot, which is what stops
+    // a whole record costing a whole slot - is the prerequisite, and this ceiling lifts with it, not before.
+    // A build may still set tt_SEGMENT_SLOT_BYTES higher to measure that path (whole_record_refusal.sh does);
+    // this is the runtime knob, and it should not hand an application a configuration measured 3000x worse.
+    return slot_bytes >= sizeof(struct tt_Header) && slot_bytes <= FRAG_WHOLE_DATA_LIMIT;
 }
 
 // Bytes a segment of this shape occupies, so the writer that creates it and the reader that maps it
@@ -1244,6 +1258,11 @@ static int32_t seam_send_to(struct tt_Context* node, const void* buf, size_t len
     (void)context_id;
     reason = context_id == tt_CONTEXT_ID_INVALID ? UDP_BECAUSE_BROADCAST : UDP_BECAUSE_UNATTACHED;
 #endif
+    if (len > (size_t)tt_MAX_BUFFER_LENGTH) {
+        TT_LOG_ERROR("Record of %u bytes needs a segment and this destination has none free - dropped", (unsigned)len);
+        node->tx_dropped_oversize++;
+        return -1;
+    }
     count_udp(node, reason, 1);
     return tt_send_to(node, buf, len, ip, port);
 }
@@ -1411,6 +1430,19 @@ static bool send_datagram(struct tt_Context* node, const struct tx_datagram* dgr
     return seam_send_batch(node, batch, count, batch_context_ids) >= 0;
 }
 
+static uint32_t whole_record_limit_for(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count);
+
+// The largest record this particular send may carry: a datagram's worth, unless every destination is a
+// same-host peer whose segment can take more (SHM_PLAN 6e(a)). Asked at each send site with THAT send's
+// destinations rather than computed once and passed down, because the destinations differ between a
+// publish and the retransmission of the same sample to the one node that asked for it - a single threaded
+// value would be right for one of them and wrong for the other.
+static uint32_t record_size_limit(struct tt_Context* node, uint32_t floor, const struct tt_Peer* peers,
+                                  uint8_t peer_count) {
+    uint32_t whole = whole_record_limit_for(node, peers, peer_count);
+    return whole > floor ? whole : floor;
+}
+
 static bool flush_tx(struct tt_Context* node, uint32_t len, const struct tt_Peer* peers, uint8_t peer_count) {
     // Check at least 1 submessage is contained
     if (len < sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader)) {
@@ -1424,9 +1456,10 @@ static bool flush_tx(struct tt_Context* node, uint32_t len, const struct tt_Peer
     // past one datagram (16 ROS-sized endpoints) and then failed every publish after it.
     // end_encode() now refuses a submessage that could never fit, so this should be unreachable;
     // it stays as the guarantee that nothing can wedge the buffer.
-    if (len > tt_MAX_BUFFER_LENGTH) {
-        TT_LOG_ERROR("Flush length %u exceeds tt_MAX_BUFFER_LENGTH %d - dropping %u pending bytes", len,
-                     tt_MAX_BUFFER_LENGTH, node->tx_tail - (uint32_t)sizeof(struct tt_Header));
+    uint32_t flush_limit = record_size_limit(node, tt_MAX_BUFFER_LENGTH, peers, peer_count);
+    if (len > flush_limit) {
+        TT_LOG_ERROR("Flush length %u exceeds the %u this send can carry - dropping %u pending bytes", len, flush_limit,
+                     node->tx_tail - (uint32_t)sizeof(struct tt_Header));
         node->tx_dropped_oversize++;
         node->tx_tail = sizeof(struct tt_Header);
         node->tx_has_pending_update = false;
@@ -1493,7 +1526,6 @@ static bool flush_tx(struct tt_Context* node, uint32_t len, const struct tt_Peer
 // Outside the tt_FRAG_ENABLED guard since 2026-10-03: the publish path passes it as the limit a sample may
 // reach before being split, and does so whether or not this build fragments - a build that cannot split
 // still has to say what 'whole' means. The value does not depend on the flag.
-#define FRAG_WHOLE_DATA_LIMIT tt_CONTROL_MAX_LENGTH
 
 #if tt_FRAG_ENABLED
 // The largest datagram a DATA goes as whole; a larger sample fragments. The control datagram rather than
@@ -1659,13 +1691,14 @@ static bool send_tail_as_fragments(struct tt_Context* node, struct tt_Submessage
 // could fit one datagram on its own. False means it never can, however the buffer around it is
 // flushed: the protocol does not fragment. Counts and logs the refusal, so each caller only has to
 // roll back.
-static bool submessage_fits_datagram(struct tt_Context* node, const struct tt_SubmessageHeader* submessage_header) {
+static bool submessage_fits_datagram(struct tt_Context* node, const struct tt_SubmessageHeader* submessage_header,
+                                     uint32_t limit) {
     size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
-    if (sizeof(struct tt_Header) + ROUNDUP(length) <= tt_MAX_BUFFER_LENGTH) {
+    if (sizeof(struct tt_Header) + ROUNDUP(length) <= limit) {
         return true;
     }
-    TT_LOG_ERROR("Submessage type %u of %u bytes can never fit a %d-byte datagram - not sent", submessage_header->type,
-                 (unsigned)ROUNDUP(length), tt_MAX_BUFFER_LENGTH);
+    TT_LOG_ERROR("Submessage type %u of %u bytes can never fit the %u this send can carry - not sent",
+                 submessage_header->type, (unsigned)ROUNDUP(length), limit);
     node->tx_dropped_oversize++;
     return false;
 }
@@ -1704,7 +1737,8 @@ static bool end_encode(struct tt_Context* node, struct tt_SubmessageHeader* subm
     // buffer, where flush_tx() would refuse it again - and before that check dropped instead of
     // returning, it stayed there and blocked every later send. The protocol does not fragment, so
     // there is nothing else to do with it; the caller learns from `false` and rolls back.
-    if (!submessage_fits_datagram(node, submessage_header)) {
+    if (!submessage_fits_datagram(node, submessage_header,
+                                  record_size_limit(node, tt_MAX_BUFFER_LENGTH, peers, peer_count))) {
         node->tx_tail = base;
         return false;
     }
@@ -4987,6 +5021,7 @@ enum tt_WholeRefusal {
 
 // Says a cause once per node. Separate from the tests above so each of them stays a single line and the
 // cognitive-complexity gate keeps its grip on the decision rather than on the reporting.
+#if tt_SEGMENT_ENABLED
 static void note_whole_refusal(struct tt_Context* node, enum tt_WholeRefusal why, const char* detail) {
     const uint16_t bit = (uint16_t)(1U << (unsigned)why);
     if ((node->whole_refusals_logged & bit) != 0) {
@@ -4995,6 +5030,16 @@ static void note_whole_refusal(struct tt_Context* node, enum tt_WholeRefusal why
     node->whole_refusals_logged |= bit;
     TT_LOG_INFO("Whole-record send refused: %s", detail);
 }
+#else
+// The bitmask it writes lives inside the same guard, and with no segment there is no whole-record send to
+// refuse. A no-op here rather than a guard around each of the four call sites, which is how whole_record_limit_for()
+// below already handles the same split - and it keeps the callers reading as one decision.
+static void note_whole_refusal(struct tt_Context* node, enum tt_WholeRefusal why, const char* detail) {
+    UNUSED(node);
+    UNUSED(why);
+    UNUSED(detail);
+}
+#endif
 
 static uint8_t unicast_destinations_for(struct tt_Context* node, const struct tt_Publisher* pub, uint32_t old_tx_tail,
                                         bool is_flush, const struct tt_Peer** out_peers) {
@@ -5062,8 +5107,12 @@ static uint32_t whole_record_limit_for(struct tt_Context* node, const struct tt_
             }
             return 0;
         }
-        if (entry->mapping->slot_bytes < smallest) {
-            smallest = entry->mapping->slot_bytes;
+        uint32_t usable = entry->mapping->slot_bytes;
+        if (usable > (uint32_t)tt_MAX_SAMPLE_LENGTH) {
+            usable = (uint32_t)tt_MAX_SAMPLE_LENGTH; // tx_buffer holds one sample of this size and no more
+        }
+        if (usable < smallest) {
+            smallest = usable;
         }
     }
     if (seen != peer_count) {
@@ -5282,7 +5331,7 @@ static bool check_and_cache_sample(struct tt_Context* node, struct tt_Publisher*
                                    uint32_t whole_limit) {
     // With fragmentation every sample within tt_MAX_SAMPLE_LENGTH can be sent, and the caller has
     // already refused anything larger.
-    if (!tt_FRAG_ENABLED && !submessage_fits_datagram(node, submessage_header)) {
+    if (!tt_FRAG_ENABLED && !submessage_fits_datagram(node, submessage_header, whole_limit)) {
         return false;
     }
     // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see cache_reliable_sample()'s own doc
@@ -5335,7 +5384,8 @@ static bool end_encode_sample(struct tt_Context* node, struct tt_SubmessageHeade
                               const struct tt_Peer* peers, uint8_t peer_count, uint32_t old_tx_tail) {
 #if tt_FRAG_ENABLED
     size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
-    if (sizeof(struct tt_Header) + ROUNDUP(length) > FRAG_WHOLE_DATA_LIMIT) {
+    if (sizeof(struct tt_Header) + ROUNDUP(length) >
+        record_size_limit(node, FRAG_WHOLE_DATA_LIMIT, peers, peer_count)) {
         return send_tail_as_fragments(node, submessage_header, peers, peer_count);
     }
 #endif

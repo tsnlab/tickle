@@ -2018,6 +2018,36 @@ static void test_a_configured_slot_size_is_the_one_built(void) {
     memset(&owner, 0, sizeof(owner));
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, (int)tt_Context_create(&owner));
 
+    // Above a datagram is refused for the same reason and a different cause: a slot larger than a datagram
+    // is only useful for carrying a record whole, and that path is held until SHM_PLAN 6e(b) because it was
+    // measured to collapse the cell it was meant to win (see valid_slot_bytes()).
+    //
+    // Only compiled where it can decide. In a build whose samples all fit a datagram, tt_MAX_SAMPLE_LENGTH
+    // and FRAG_WHOLE_DATA_LIMIT are the same number, so the old ceiling and the new one reject exactly the
+    // same values and the assertion below passes whichever is in the source - checked by mutation on
+    // 2026-10-03, where swapping the bound back left the whole suite green. A test that cannot fail is worse
+    // than no test, because it reads as cover. This asserts the ceiling in a build that can tell them apart
+    // (any frag build, e.g. the p4 harness at tt_MAX_SAMPLE_LENGTH=4096) and says so where it cannot.
+#if tt_MAX_SAMPLE_LENGTH > FRAG_WHOLE_DATA_LIMIT
+    _tt_CONFIG.segment_slot_bytes = (uint32_t)FRAG_WHOLE_DATA_LIMIT + 1U;
+    memset(&owner, 0, sizeof(owner));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, (int)tt_Context_create(&owner));
+#endif
+
+    // The boundary itself is allowed, so the refusal above is the ceiling and not an off-by-one that would
+    // also reject every usable size.
+    _tt_CONFIG.segment_slot_bytes = (uint32_t)FRAG_WHOLE_DATA_LIMIT;
+    memset(&owner, 0, sizeof(owner));
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+    EXPECT_EQ_U32((uint32_t)FRAG_WHOLE_DATA_LIMIT, owner.own_segment->slot_bytes);
+    release_own_segment(&owner);
+    test_mock_segments_free();
+
     _tt_CONFIG.segment_slot_bytes = saved;
 }
 
