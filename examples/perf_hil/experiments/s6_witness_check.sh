@@ -81,7 +81,11 @@ run_one() { # run_one <arm>
     srv_pid=$(sh_ "$HOST" "cd $SAVE/$name && rm -f /tmp/s6wit.pid
 (setsid sh -c 'echo \$\$ > /tmp/s6wit.pid; exec env BENCH_IFACE=lo taskset -c 1 ./server -Q -d $((DUR + 40))' > /tmp/s6wit_server.log 2>&1 < /dev/null &); sleep 2; cat /tmp/s6wit.pid" </dev/null)
     sh_ "$HOST" "grep -q 'Node open' /tmp/s6wit_server.log" </dev/null || { say "    no server opened for arm=$name"; return 0; }
-    line=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo taskset -c 2 ./client -Q -d $DUR $CLI_ARGS 2>&1 | grep '^RESULT'" </dev/null)
+    # Kept in a file rather than piped straight into grep. Everything the client said that was not a RESULT
+    # line used to go in the pipe's bin, so a diagnostic the publisher prints - and the publisher is the only
+    # side that can refuse a whole-record send - was unreadable: on 2026-10-03 its absence from the SERVER log
+    # was nearly read as "it did not refuse", when the truth was that nothing had ever captured it.
+    line=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo taskset -c 2 ./client -Q -d $DUR $CLI_ARGS >/tmp/s6wit_client.log 2>&1; grep '^RESULT' /tmp/s6wit_client.log" </dev/null)
     [ -n "$line" ] && say "arm=$name $line"
     kill_server
 }

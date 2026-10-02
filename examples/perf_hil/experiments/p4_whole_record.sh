@@ -20,8 +20,8 @@
 #        one still open is lost tx_buffer batching; ring depth was measured not-separable on 2026-10-02
 #        (slot_depth_cost.sh) though that harness could not see a cost below ~20%.
 #   ranges OVERLAP                                    -> 6e(a) did not deliver. The mechanism is in and its
-#        predicate is tested, so the question becomes whether it ever GRANTS in this cell - check tx_shm
-#        against datagrams per sample rather than assuming the path was taken.
+#        predicate is tested, so the question becomes whether it ever GRANTS in this cell - read datagrams
+#        per sample, and if it is near 2 ask the publisher for the cause rather than inferring one.
 #   after separably BELOW before                      -> report that first. A whole record is one larger ring
 #        write where there were two smaller ones, and a slot sized for it halves the ring at a fixed segment
 #        size; neither was expected to cost, and both were measured not to, but this is the arm that would
@@ -94,11 +94,18 @@ print()
 # Did the thing under test engage at all? Asked before any throughput verdict, because "no separable change"
 # and "the mechanism never ran" read identically in the numbers and mean completely different things - the
 # first run of this harness spent a rig campaign learning that at the default slot.
-if paths.get("after") and all(p == "frag" for p in paths["after"]):
-    print("INERT: the after arm still took the fragment path on every repetition, so 6e(a) never granted and")
-    print("  the throughput figures below compare two identical behaviours. Check the slot against the record")
-    print("  size - the record is the CDR plus tt_Header, the submessage header and the data header - before")
-    print("  reading anything else here.")
+# Read from datagrams per sample, NOT from sample_path. sample_path is -DBENCH_SAMPLE_PATH, a compile-time
+# string chosen by build.sh from TICKLE_P4_PATH: for a frag build it reads "frag" whatever any sample did, so
+# the test this replaces could not fail and said INERT on four campaigns without ever inspecting behaviour. It
+# happened to be right, carried by the figure below it. A whole-record send puts one datagram on the wire per
+# sample; a split one puts two; retransmissions push the ratio up, never down, so a ratio at or above ~1.5 is
+# evidence of splitting and only a ratio near 1.0 is evidence of a grant.
+dps_after = [r[1] / r[2] for r in rows["after"] if r[2]]
+if dps_after and min(dps_after) >= 1.5:
+    print(f"INERT: the after arm sent {st.median(dps_after):.2f} datagrams per sample, so records were still")
+    print("  split and 6e(a) never granted - the throughput figures below compare two identical behaviours.")
+    print("  Ask the publisher why rather than inferring it: whole_record_refusal.sh prints the refused cause")
+    print("  in core's own words, and s6_witness_check.sh now keeps the client's log for exactly that.")
     print()
 b, a = [r[0] for r in rows["before"]], [r[0] for r in rows["after"]]
 if len(b) < 2 or len(a) < 2:

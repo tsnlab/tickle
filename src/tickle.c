@@ -3150,7 +3150,7 @@ static void reset_node_state(struct tt_Context* node) {
     // is not required to do.
     memset(node->segment_peers, 0, sizeof(node->segment_peers));
     node->own_segment = NULL;
-    node->whole_refusal_logged = false;
+    node->whole_refusals_logged = 0;
     // The same reasoning one step further, and with more riding on it than on a counter: with the
     // segment built on demand, same_host_peer[] is READ to decide whether to build one and
     // same_host_peer_count to decide whether to give it up. Left as stack garbage, a context would
@@ -4971,14 +4971,49 @@ static bool try_publish_zerocopy(struct tt_Publisher* pub, struct tt_Data* data,
 // ahead of this DATA submessage, since unicasting would reach these peers and not whatever else needs the whole
 // segment. Extracted when 6e(a) moved this above the datagram count and publisher_publish_locked() went one over
 // the cognitive-complexity gate; it is one decision and now has one name.
-static uint8_t unicast_destinations_for(const struct tt_Publisher* pub, uint32_t old_tx_tail, bool is_flush,
-                                        const struct tt_Peer** out_peers) {
+// Why a whole-record send was refused. One bit each in tt_Context.whole_refusals_logged, so every cause gets
+// said once and no cause can hide behind another: the first version of this was a single bool, and a single
+// bool reports whichever cause fires first and then stays silent for the life of the node - which, for a
+// publisher that batches, would have been "batched" forever and never the segment answer being looked for.
+enum tt_WholeRefusal {
+    tt_WHOLE_REFUSE_BATCHED = 0,   // the publisher batches; this publish is not a flush
+    tt_WHOLE_REFUSE_NO_PEERS,      // no known unicast peer - a broadcast
+    tt_WHOLE_REFUSE_PEER_SPREAD,   // more destinations than tt_UNICAST_PEER_THRESHOLD
+    tt_WHOLE_REFUSE_BUFFER_IN_USE, // something else is already unflushed ahead of this DATA
+    tt_WHOLE_REFUSE_UNATTACHED,    // a destination has no segment of ours attached
+    tt_WHOLE_REFUSE_ADDRESS,       // a destination's context id is behind a different (ip, port)
+    tt_WHOLE_REFUSE_PEER_COUNT,    // the array yielded fewer live entries than count_peers() promised
+};
+
+// Says a cause once per node. Separate from the tests above so each of them stays a single line and the
+// cognitive-complexity gate keeps its grip on the decision rather than on the reporting.
+static void note_whole_refusal(struct tt_Context* node, enum tt_WholeRefusal why, const char* detail) {
+    const uint16_t bit = (uint16_t)(1U << (unsigned)why);
+    if ((node->whole_refusals_logged & bit) != 0) {
+        return;
+    }
+    node->whole_refusals_logged |= bit;
+    TT_LOG_INFO("Whole-record send refused: %s", detail);
+}
+
+static uint8_t unicast_destinations_for(struct tt_Context* node, const struct tt_Publisher* pub, uint32_t old_tx_tail,
+                                        bool is_flush, const struct tt_Peer** out_peers) {
     *out_peers = NULL;
     if (!is_flush) {
+        note_whole_refusal(node, tt_WHOLE_REFUSE_BATCHED, "this publisher batches, so the publish is not a flush");
         return 0;
     }
     uint8_t count = count_peers(pub->peers);
-    if (count < 1 || count > tt_UNICAST_PEER_THRESHOLD || old_tx_tail != sizeof(struct tt_Header)) {
+    if (count < 1) {
+        note_whole_refusal(node, tt_WHOLE_REFUSE_NO_PEERS, "no known unicast peer, so this publish broadcasts");
+        return 0;
+    }
+    if (count > tt_UNICAST_PEER_THRESHOLD) {
+        note_whole_refusal(node, tt_WHOLE_REFUSE_PEER_SPREAD, "more destinations than the unicast threshold");
+        return 0;
+    }
+    if (old_tx_tail != sizeof(struct tt_Header)) {
+        note_whole_refusal(node, tt_WHOLE_REFUSE_BUFFER_IN_USE, "another submessage is already unflushed ahead");
         return 0;
     }
     *out_peers = pub->peers;
@@ -5002,15 +5037,11 @@ static uint8_t unicast_destinations_for(const struct tt_Publisher* pub, uint32_t
 // changes only the size of what a full ring drops, not whether it has somewhere to go.
 //
 // The minimum across peers, because one record is built and every destination has to take it.
-// Not const: it records, once, why it refused. See tt_Context.whole_refusal_logged.
+// Not const: it records, once per cause, why it refused. See tt_Context.whole_refusals_logged.
 static uint32_t whole_record_limit_for(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count) {
 #if tt_SEGMENT_ENABLED
     if (peers == NULL || peer_count == 0) {
-        if (!node->whole_refusal_logged) {
-            node->whole_refusal_logged = true;
-            TT_LOG_INFO("Whole-record send refused: this publish has no unicast destinations (broadcast)");
-        }
-        return 0;
+        return 0; // unicast_destinations_for() already said which of its four reasons this was
     }
     uint32_t smallest = UINT32_MAX;
     uint8_t seen = 0;
@@ -5021,13 +5052,13 @@ static uint32_t whole_record_limit_for(struct tt_Context* node, const struct tt_
         seen++;
         const struct tt_SegmentPeer* entry = &node->segment_peers[peers[i].context_id];
         if (entry->mapping == NULL || entry->ip != peers[i].ip || entry->port != peers[i].port) {
-            // Said once per context, because four rig campaigns were spent inferring why this refused from
+            // Said once per cause, because four rig campaigns were spent inferring why this refused from
             // throughput numbers that look identical whether the mechanism is absent or merely never granted.
             // An answer in the log costs one line and ends the guessing; reasoning about it cost a night.
-            if (!node->whole_refusal_logged) {
-                node->whole_refusal_logged = true;
-                TT_LOG_INFO("Whole-record send refused: peer %u %s", peers[i].context_id,
-                            entry->mapping == NULL ? "has no attached segment" : "is at a different address");
+            if (entry->mapping == NULL) {
+                note_whole_refusal(node, tt_WHOLE_REFUSE_UNATTACHED, "a destination has no attached segment");
+            } else {
+                note_whole_refusal(node, tt_WHOLE_REFUSE_ADDRESS, "a destination is at a different address");
             }
             return 0;
         }
@@ -5036,6 +5067,10 @@ static uint32_t whole_record_limit_for(struct tt_Context* node, const struct tt_
         }
     }
     if (seen != peer_count) {
+        // The silent exit. It had no diagnostic at all until 2026-10-03, which is exactly the shape of defect
+        // the other six were added to end: a refusal that leaves no trace reads, from outside, as a mechanism
+        // that does not work.
+        note_whole_refusal(node, tt_WHOLE_REFUSE_PEER_COUNT, "fewer live peer entries than the peer count");
         return 0;
     }
     return smallest;
@@ -5432,7 +5467,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // the byte bound and the count bound came apart on 2026-09-25.
     bool is_flush = !pub->batch;
     const struct tt_Peer* peers = NULL;
-    uint8_t peer_count = unicast_destinations_for(pub, old_tx_tail, is_flush, &peers);
+    uint8_t peer_count = unicast_destinations_for(node, pub, old_tx_tail, is_flush, &peers);
     uint32_t whole_to_peers = whole_record_limit_for(node, peers, peer_count);
     if (whole_to_peers > whole_limit) {
         whole_limit = whole_to_peers;
