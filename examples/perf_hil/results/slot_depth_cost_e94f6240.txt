@@ -1,0 +1,24 @@
+=== slot depth cost 2026-10-02T22:47:27+09:00 big_slot=2816 big_seg=1048576 ===
+  arm small: slots=256 slot_bytes=1472 bytes=524288
+  arm big: slots=128 slot_bytes=2816 bytes=524288
+  arm deep: slots=256 slot_bytes=2816 bytes=1048576
+--- small rep 1/3 ---
+--- big rep 1/3 ---
+--- deep rep 1/3 ---
+--- small rep 2/3 ---
+--- big rep 2/3 ---
+--- deep rep 2/3 ---
+--- small rep 3/3 ---
+--- big rep 3/3 ---
+--- deep rep 3/3 ---
+=== done 2026-10-02T22:51:31+09:00 ===
+
+  arm     n  samples median   range                 tx_shm median  full_dropped  delivered
+  small   3         752,687   747,987..848,547         9,836,373        53,008  all
+  big     3         734,713   693,199..817,109         9,026,157        48,396  all
+  deep    3         700,092   633,475..836,465         9,153,415        37,113  all
+
+DEPTH IS NOT SEPARABLE: small 747,987..848,547 and big 693,199..817,109 overlap.
+  A slot sized for p4 costs nothing measurable in back-pressure at this rate, so 6e's p4
+  prediction stands on batching alone. Judged on SAMPLES, which is the item; tx_shm counts
+  datagrams and read 'within 10%' on a run where samples had fallen 17%.

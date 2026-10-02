@@ -1206,8 +1206,30 @@ CycloneDDS 5,287, FastDDS 1,983).
 Unfragmenting halves the datagram count for a 2800 B sample, so the naive prediction is about **5,400**. Two known
 costs pull against it and the arms below separate them:
 
-- **a shallower ring**: a slot that holds p4 gives 185 slots where 1472 B gave 352. Control: the same run with
-  `segment_bytes` raised to hold 352 slots at the new slot size. If the figure moves, ring depth is the cost.
+- **a shallower ring**: a slot that holds p4 gives 128 slots where 1472 B gave 256. **Measured 2026-10-02,
+  before the encoder work, because designing on an unknown cost is choosing blind**
+  (`experiments/slot_depth_cost.sh`, 3 arms x 3 reps, `results/slot_depth_cost_e94f6240.txt`):
+
+  | arm | slot / slots | samples, median | range |
+  |---|---|---:|---|
+  | small | 1472 / 256 | 752,687 | 747,987..848,547 |
+  | big, p4 slot | 2816 / 128 | 734,713 | 693,199..817,109 |
+  | deep, p4 slot, 1 MiB segment | 2816 / 256 | 700,092 | 633,475..836,465 |
+
+  Taken at the 512 KiB default, so "small" is the 256-slot ring that was current when it ran; `5ee4b7e6` moved the
+  default to 768 KiB and 512 slots hours later. The arms are named by their geometry rather than by "today" for
+  that reason - what this measured is 256 against 128 slots, and it stays true whatever the default becomes.
+
+  **All three ranges overlap, so depth is not separable here** and 6e's p4 prediction stands on batching
+  alone. Stated as not-separable rather than free: this harness's own spread is 13-32% across repetitions
+  of one arm, so a real cost below about 20% would not show. If the encoder work's measured gain falls
+  short of its prediction, ring depth is still a candidate and wants a quieter instrument before it is
+  ruled out.
+
+  Two errors in the first version of that run are worth carrying. It judged on `tx_shm`, which counts
+  **datagrams** - an event - where the question is about **samples**, the item; on the event counter the
+  arms read "within 10%" while samples had fallen 17%. And it was n=1, against a quantity whose run-to-run
+  spread is as large as the effect, so neither the 17% nor its absence meant anything.
 - **lost batching**: `tx_buffer` coalesces several samples per flush and one sample per slot cannot. Visible as
   `segment_doorbells_sent` per sample rising, and in CPU per Msample rather than in throughput alone.
 

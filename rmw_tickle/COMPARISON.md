@@ -219,12 +219,22 @@ same session, so a row is always comparable. Across rows of different letters it
   campaign frameworks in one session, WIN 38 / DRAW 4 / LOSE 0 / VOID 0 over the comparable metric-cells). zenoh-pico's
   figures in those rows come from its own `Z` session and carry the same looser-comparability caveat as its others.
 - **Every peak-RSS figure for TickLE and rmw_tickle was measured with the shared-memory segment mapped**, and since
-  lazy creation landed that is a condition rather than a constant. **At the default `tt_SEGMENT_BYTES` of 512 KiB the
-  segment maps about 380 kB**, not 512: the slot count is `tt_SEGMENT_BYTES / (16 + tt_SEGMENT_SLOT_BYTES)` rounded
-  down to a power of two, so 524,288/1,488 = 352 becomes 256 slots of 1,472 bytes. That is worth stating because
-  someone reading `tt_SEGMENT_BYTES` will expect the configured figure. It agrees with the ~400 kB difference measured
-  between the module-on and module-off arms at p2 (2,143 against 1,743 kB) - a computed size and an observed delta
-  reaching the same number independently.
+  lazy creation landed that is a condition rather than a constant. The mapping is not the configured number: the slot
+  count is `tt_SEGMENT_BYTES / (16 + tt_SEGMENT_SLOT_BYTES)` rounded **down to a power of two**, so what rounds away
+  is lost.
+
+  | `tt_SEGMENT_BYTES` | raw slots | used | maps | wasted |
+  |---|---:|---:|---:|---:|
+  | 512 KiB, the default until `5ee4b7e6` | 352 | 256 | 381 kB | 27% |
+  | **768 KiB, the default since** | 528 | **512** | **762 kB** | **3%** |
+
+  **The figures below this line were measured at 512 KiB and say 256 slots**; they are not restated, because a
+  measurement belongs to the build that produced it. What changes with the default is the mapping, not the
+  mechanism, and any figure quoted as *current* RSS wants re-measuring rather than doubling.
+
+  The 381 kB agreed with the ~400 kB difference measured between the module-on and module-off arms at p2 (2,143
+  against 1,743 kB) - a computed size and an observed delta reaching the same number independently, which is the
+  check that makes the arithmetic above trustworthy at the new size too.
   - **`tt_SEGMENT_BYTES` is `#ifndef`-guarded, so the size is already build-configurable** (`-Dtt_SEGMENT_BYTES=...`).
     What is not configurable is per-application sizing at runtime: an application that knows its own burst shape
     cannot size the ring without rebuilding the library.
@@ -622,7 +632,7 @@ kernel-path arm. Our `tx_shm` counter agrees with the witness independently, so 
 million samples than CycloneDDS and FastDDS, and 3.6-9.4x less resident memory. The 11 MB beside CycloneDDS is its
 **application** process only: its shared memory arrives through iceoryx, whose `iox-roudi` daemon reserved 66.8 MB
 plus 149.3 MB of shared memory before any application connected. That 216 MB is a real cost of choosing that path
-and is not in the table, because it is not in the process the table measures. Ours is a 380 kB segment created
+and is not in the table, because it is not in the process the table measures. Ours is a 762 kB segment created
 in-process on demand, with no daemon.
 
 **Throughput is a split result and p4 is a loss, stated first.** At p3 we lead by 1.2%, at p2 CycloneDDS leads by
