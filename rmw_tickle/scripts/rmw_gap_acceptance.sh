@@ -310,7 +310,47 @@ t_pair() { # role1 role2 key test
     if [ "${a:-0}" -ge 1 ] && [ "${b:-0}" -ge 1 ]; then echo PASS; else echo "FAIL($r1=${a:-0} $r2=${b:-0})"; fi
 }
 t_matched() { t_pair "$1" matched_pub matched_sub matched_events matched; }
-t_itype() { t_pair "$1" itype_pub itype_sub incompatible_type_events itype; }
+# Not t_pair: the two implementations signal one mismatch with two different events, and collapsing
+# that into pass/fail lost the distinction.
+#
+#   INCOMPATIBLE_TYPE on both sides   PASS - the event the mismatch IS, which is what rmw_tickle raises
+#   INCOMPATIBLE_QOS instead          PASS(detail) - rmw_cyclonedds_cpp reports the mismatch through
+#                                     the QoS event with policy INVALID. The scenario still produced a
+#                                     signal the application can act on, so the control has done its
+#                                     job; naming the difference is more useful than voiding the row.
+#   neither                           FAIL - the mismatch was not reported at all, which is the gap
+#
+# Counting only INCOMPATIBLE_TYPE made the control report 0 and the row print "control failed - VOID"
+# on every run (2026-10-02). A VOID that is always there is noise that hides the VOIDs that mean
+# something, and the control had been detecting the mismatch the whole time.
+t_itype() {
+    local rmw=$1 d=$OUTDIR/itype_$1
+    mkdir -p "$d"
+    run_in "$NS1" "$rmw" 1 10 "" python3 "$NODE" itype_pub 10 > "$d/itype_pub.log" 2>&1 &
+    local p1=$!
+    run_in "$NS2" "$rmw" 2 10 "" python3 "$NODE" itype_sub 10 > "$d/itype_sub.log" 2>&1
+    wait "$p1"
+    if grep -q UnsupportedEventTypeError "$d/itype_pub.log" "$d/itype_sub.log"; then
+        echo "FAIL(rclpy: UnsupportedEventTypeError)"
+        return
+    fi
+    if ! result "$d/itype_pub.log" | grep -q . || ! result "$d/itype_sub.log" | grep -q .; then
+        echo "ERROR(a node did not finish)"
+        return
+    fi
+    local tp ts qp qs
+    tp=$(field "$d/itype_pub.log" incompatible_type_events)
+    ts=$(field "$d/itype_sub.log" incompatible_type_events)
+    qp=$(field "$d/itype_pub.log" incompatible_qos_events)
+    qs=$(field "$d/itype_sub.log" incompatible_qos_events)
+    if [ "${tp:-0}" -ge 1 ] && [ "${ts:-0}" -ge 1 ]; then
+        echo PASS
+    elif [ "${qp:-0}" -ge 1 ] && [ "${qs:-0}" -ge 1 ]; then
+        echo "PASS(via incompatible QoS, not type: qos=${qp:-0}/${qs:-0})"
+    else
+        echo "FAIL(type=${tp:-0}/${ts:-0} qos=${qp:-0}/${qs:-0})"
+    fi
+}
 t_takeseq() {
     local lib
     case "$1" in

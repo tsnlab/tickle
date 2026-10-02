@@ -164,16 +164,30 @@ def main():
     elif role in ('itype_pub', 'itype_sub'):
         node = Node('accept_' + role)
 
+        # Both events, because the two implementations signal the same mismatch differently and the
+        # difference is the finding. rmw_tickle raises INCOMPATIBLE_TYPE, which is the event the
+        # mismatch is; rmw_cyclonedds_cpp raises INCOMPATIBLE_QOS with policy INVALID instead (its own
+        # log says so: "requesting incompatible QoS ... Last incompatible policy: INVALID"). Counting
+        # only the first made the control report 0 and the row read as VOID on every run, which hides
+        # a real VOID among the noise - the control was detecting the mismatch the whole time.
+        counts['qos'] = 0
+
         def on_itype(info):
             counts['n'] += 1
+
+        def on_iqos(info):
+            counts['qos'] += 1
         if role == 'itype_pub':
             node.create_publisher(String, '/accept_itype', 10,
-                                  event_callbacks=PublisherEventCallbacks(incompatible_type=on_itype))
+                                  event_callbacks=PublisherEventCallbacks(incompatible_type=on_itype,
+                                                                          incompatible_qos=on_iqos))
         else:
             node.create_subscription(Int32, '/accept_itype', lambda m: None, 10,
-                                     event_callbacks=SubscriptionEventCallbacks(incompatible_type=on_itype))
+                                     event_callbacks=SubscriptionEventCallbacks(incompatible_type=on_itype,
+                                                                                incompatible_qos=on_iqos))
         spin_for(node, seconds)
-        print('RESULT: role=%s incompatible_type_events=%d' % (role, counts['n']), flush=True)
+        print('RESULT: role=%s incompatible_type_events=%d incompatible_qos_events=%d'
+              % (role, counts['n'], counts['qos']), flush=True)
     elif role == 'intropeer':
         # The endpoint the introspecting node will read. It must be in another PROCESS (here, another namespace), or
         # the reader goes through get_topic_endpoint_info_by_topic()'s local branch, where the QoS is the real profile
