@@ -1280,10 +1280,35 @@ is the expected result, not a mixed one.
 
 ### What is not established
 
-- **Whether the ring can serve as the RELIABLE retention cache for an all-local publisher.** The bytes are already
-  in the ring until it wraps, so the retention copy may be removable, taking an all-local RELIABLE sample from four
-  writes to two. Against it: the ring is sized for flow rather than retention depth, and TRANSIENT_LOCAL's backlog
-  must outlive a wrap. Worth settling early, because it changes how much decision 2 is worth.
+- **Whether the ring can serve as the RELIABLE retention cache for an all-local publisher: no, and the reason is
+  not the one written here (settled by reading, 2026-10-03).** This asked it as a sizing question - "the ring is
+  sized for flow rather than retention depth" - and sizing is the secondary objection. The primary one is
+  ownership, and it is structural rather than a matter of degree:
+
+  1. **The memory belongs to the receiver.** `own_segment` is one ring per *context*, which that node READS
+     (`segment_read(node->own_segment, ...)`); a publisher sends by writing into the *subscriber's* inbox, through
+     `segment_peers[]`. The sender cannot pin, reserve or re-read anything in it. Retention has to be memory the
+     sender controls, and this is not.
+  2. **Delivery is what frees the slot.** The reader releases a slot by setting its sequence one lap ahead, after
+     which any writer may take it - and `segment_write()`'s own comment says many peers write into one context's
+     segment, so the next occupant may belong to a different *node* entirely. Retention must outlive delivery;
+     the ring's contract is that delivery ends the record's life. The two requirements are opposed, not merely
+     mismatched in size.
+  3. **The samples that need retransmitting are almost never the ones the ring still holds.** `segment_write()`
+     either lands the record or returns false because the ring is full, and in the second case nothing was
+     written at all - so a full-ring drop, which is this path's ordinary loss, leaves nothing to retain. There IS
+     one written-but-lost case, and it does not help: a record larger than the reader's `rx_buffer` is counted as
+     read and discarded, because `segment_read()` releases the slot either way so that a record a mapping cannot
+     hold can never wedge the ring. The slot is gone in exactly the case a retransmission would want it back.
+
+  TRANSIENT_LOCAL makes the same point from the other end: a late joiner's backlog has to survive an arbitrary
+  amount of unrelated traffic through a ring shared with every other sender on the host.
+
+  **What this changes about decision 2.** The plan counted an all-local RELIABLE sample as four writes going to
+  two. It is four going to three: encoding into the slot removes the `tx_buffer` copy, and the retention copy
+  stays. For BEST_EFFORT it is three going to two, as written. So 6e(b) is worth one write per sample on both
+  paths rather than one on BEST_EFFORT and two on RELIABLE - still the larger of the two halves, but the
+  RELIABLE case is not the extra prize this plan expected.
 - **The header-validation hole above**, which needs the two-build test before it is called a defect.
 
 ### 6e(a) was built, and it cannot deliver before 6e(b) (2026-10-03)
