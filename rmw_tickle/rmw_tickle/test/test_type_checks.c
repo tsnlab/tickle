@@ -198,6 +198,26 @@ int main(void) {
     response_callbacks.tickle_max_buffer_length = tt_MAX_BUFFER_LENGTH;
     assert(4 == create_all(node)); // and nothing was left half-created
 
+    // No tickle typesupport for the type AT ALL: the handle has no tickle entry, so nothing inside
+    // it can say which type this was, and the endpoint's own name is the only thing that identifies
+    // it to a user. Each of the four names its own kind. This is the one branch that names the
+    // endpoint - the refusals above set their own, more specific message and must survive.
+    const char* real_msg_id = msg_handle.typesupport_identifier;
+    const char* real_srv_id = service_handle.typesupport_identifier;
+    msg_handle.typesupport_identifier = "rosidl_typesupport_introspection_c";
+    assert(NULL == rmw_create_publisher(node, &msg_handle, "/type_checks", &q, &pub_opts));
+    assert(error_mentions("typesupport for the type of publisher '/type_checks'"));
+    assert(NULL == rmw_create_subscription(node, &msg_handle, "/type_checks", &q, &sub_opts));
+    assert(error_mentions("typesupport for the type of subscription '/type_checks'"));
+    msg_handle.typesupport_identifier = real_msg_id;
+    service_handle.typesupport_identifier = "rosidl_typesupport_introspection_c";
+    assert(NULL == rmw_create_service(node, &service_handle, "/type_checks_srv", &q));
+    assert(error_mentions("typesupport for the type of service '/type_checks_srv'"));
+    assert(NULL == rmw_create_client(node, &service_handle, "/type_checks_srv", &q));
+    assert(error_mentions("typesupport for the type of client '/type_checks_srv'"));
+    service_handle.typesupport_identifier = real_srv_id;
+    assert(4 == create_all(node)); // and the restored handles are still good
+
     // A callbacks struct written by a different generator version: its leading struct_size is not
     // this build's sizeof. Refused before any other field is read - in a real older library even
     // ros_type_name is not where this build would look. 0 (hand-written, like these) and the right

@@ -38,7 +38,8 @@ rmw_ret_t rmw_serialize(const void* ros_message, const rosidl_message_type_suppo
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_message, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(serialized_message, RMW_RET_INVALID_ARGUMENT);
 
-    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = rmw_tickle_get_message_callbacks(type_support);
+    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks =
+        rmw_tickle_get_message_callbacks(type_support, NULL, NULL);
     if (NULL == callbacks) {
         return RMW_RET_ERROR; // error message already set
     }
@@ -108,7 +109,8 @@ rmw_ret_t rmw_deserialize(const rmw_serialized_message_t* serialized_message,
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(serialized_message, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_message, RMW_RET_INVALID_ARGUMENT);
 
-    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = rmw_tickle_get_message_callbacks(type_support);
+    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks =
+        rmw_tickle_get_message_callbacks(type_support, NULL, NULL);
     if (NULL == callbacks) {
         return RMW_RET_ERROR; // error message already set
     }
@@ -164,7 +166,8 @@ rmw_ret_t rmw_get_serialized_message_size(const rosidl_message_type_support_t* t
                                           size_t* size) { // NOLINT(readability-non-const-parameter)
     (void)message_bounds;
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(size, RMW_RET_INVALID_ARGUMENT);
-    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = rmw_tickle_get_message_callbacks(type_support);
+    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks =
+        rmw_tickle_get_message_callbacks(type_support, NULL, NULL);
     if (NULL == callbacks) {
         return RMW_RET_ERROR; // error message already set
     }

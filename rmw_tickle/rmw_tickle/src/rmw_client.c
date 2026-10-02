@@ -111,18 +111,8 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     }
 
     rmw_tickle_service_typesupport_t callbacks;
-    if (!rmw_tickle_get_service_callbacks(type_support, &callbacks)) {
-        // Named, because the message rmw_tickle_get_service_callbacks() sets cannot say WHICH type it
-        // could not resolve - the handle it was given has no tickle entry, so there is nothing in it
-        // to name - and the name is the only thing that tells a user which package to generate. A
-        // recorder that failed to start on 2026-10-02 took most of an hour to attribute for exactly
-        // that reason: the error said a service type was unsupported and every candidate had to be
-        // checked by hand.
-        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING("no " RMW_TICKLE_IDENTIFIER
-                                             " typesupport for the type of %s '%s' - was its package built with "
-                                             "rosidl_typesupport_tickle_c?",
-                                             "client", service_name);
-        return NULL;
+    if (!rmw_tickle_get_service_callbacks(type_support, "client", service_name, &callbacks)) {
+        return NULL; // error message already set, and it names this endpoint
     }
 
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;

@@ -68,8 +68,13 @@ static inline bool rmw_tickle_identifier_matches(const char* identifier) {
 // a .msg with a nested field, not yet supported - see rosidl_typesupport_tickle_c/PLAN.md notes) -
 // never asserts/crashes on a mismatched type_support the way the lower-level dispatch functions
 // themselves might.
+// Returns NULL for three different reasons, and each sets its own message: a null handle, no tickle
+// typesupport for this type at all, and a callbacks struct from a different generator version. Only the
+// middle one names the endpoint, from `what`/`name` (pass NULL where there is no endpoint to name, as
+// serialization does). Setting a message at the call site instead flattens all three into the middle
+// one's wording and cost a CI failure on 2026-10-02.
 const rosidl_typesupport_tickle_c_message_callbacks_t*
-rmw_tickle_get_message_callbacks(const rosidl_message_type_support_t* type_support);
+rmw_tickle_get_message_callbacks(const rosidl_message_type_support_t* type_support, const char* what, const char* name);
 
 // Whether a type can be used by a publisher, subscription, client or service of this build - false
 // with an rmw error naming the type and both numbers when it cannot:
@@ -141,8 +146,10 @@ typedef struct rmw_tickle_service_typesupport_t {
     const rosidl_typesupport_tickle_c_message_callbacks_t* response;
 } rmw_tickle_service_typesupport_t;
 
-bool rmw_tickle_get_service_callbacks(const rosidl_service_type_support_t* type_support,
-                                      rmw_tickle_service_typesupport_t* out);
+// `what`/`name` are only used to name the endpoint in the "no typesupport at all" message, as for
+// rmw_tickle_get_message_callbacks() above and for the same reason.
+bool rmw_tickle_get_service_callbacks(const rosidl_service_type_support_t* type_support, const char* what,
+                                      const char* name, rmw_tickle_service_typesupport_t* out);
 
 // rmw_create_publisher()/_subscription()/_client()/_service() each pass their own kind so rmw_
 // tickle_validate_qos_profile() can tell a topic (Publisher/Subscriber - no retry mechanism of any
