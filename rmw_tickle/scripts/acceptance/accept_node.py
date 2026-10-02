@@ -342,6 +342,41 @@ def main():
                     print('REPORTED: sample_publisher_gid=%s' % b.hex(), flush=True)
                     if not b or b == bytes(len(b)):
                         fails.append('sample_gid_all_zero:len_%d' % len(b))
+            # Two writers on ONE topic in ONE node must not share a graph gid. This is checkable where
+            # graph-versus-sample equality is not: the control reports two encodings of the same writer
+            # (above), so equality is not an rmw guarantee - but a gid that cannot tell two endpoints
+            # apart fails at the field's only purpose, in every implementation.
+            #
+            # It is the collision Milestone 47 removed from rmw_get_gid_for_publisher() by moving it off
+            # the shared name hash. rmw_graph.c's encode_gid() still encodes endpoint_id, which IS that
+            # hash - hash(topic name + endpoint name) - so two publishers of one topic in one node get
+            # the same bytes by construction.
+            PAIR = '/gid_collision_probe'
+            p_one = node.create_publisher(String, PAIR, 10)
+            p_two = node.create_publisher(String, PAIR, 10)
+            pair_deadline = time.time() + 5.0
+            pair_infos = []
+            while time.time() < pair_deadline:
+                rclpy.spin_once(node, timeout_sec=0.2)
+                pair_infos = node.get_publishers_info_by_topic(PAIR)
+                if len(pair_infos) >= 2:
+                    break
+            pair_gids = []
+            for info in pair_infos:
+                raw = info.endpoint_gid if hasattr(info, 'endpoint_gid') else None
+                if raw is not None:
+                    pair_gids.append(bytes(raw).hex())
+            print('REPORTED: pair_graph_gids=%s' % ','.join(pair_gids), flush=True)
+            if len(pair_infos) < 2:
+                # Its own answer rather than a quiet pass: two publishers that never both appeared
+                # cannot say anything about whether their gids differ.
+                fails.append('pair_not_discovered:saw_%d' % len(pair_infos))
+            elif len(pair_gids) < 2:
+                fails.append('pair_gids_unreadable:got_%d' % len(pair_gids))
+            elif len(set(pair_gids)) < len(pair_gids):
+                fails.append('two_writers_share_a_graph_gid')
+            node.destroy_publisher(p_one)
+            node.destroy_publisher(p_two)
             print('RESULT: role=names discovered=%d roundtrip_failures=%d detail=%s'
                   % (len(infos), len(fails), ','.join(fails) if fails else 'none'), flush=True)
     else:

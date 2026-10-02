@@ -1125,17 +1125,31 @@ rmw_ret_t rmw_get_client_names_and_types_by_node(const rmw_node_t* node, rcutils
 // publisher() (rmw_publisher.c) - a real, if not RTPS-shaped, unique-within-this-TickLE-network
 // identity for any endpoint, local or remote (struct tt_DiscoveredEntity carries the same two
 // fields for exactly this reason).
-static void encode_gid(uint8_t node_id, uint32_t endpoint_id, uint8_t gid[RMW_GID_STORAGE_SIZE]) {
+// The gid a tool uses to tell one endpoint from another, in rmw_get_gid_for_publisher()'s layout -
+// which the comment here used to claim was "reused verbatim" while this encoded something else.
+//
+// `entity_id`, not endpoint_id. endpoint_id is hash(topic/service name + endpoint name), so two
+// publishers of one topic in one node share it BY CONSTRUCTION and so shared a gid - the collision
+// Milestone 47 removed from rmw_get_gid_for_publisher() by moving it off that hash, reintroduced
+// here. Measured 2026-10-02 by rmw_gap_acceptance.sh names: rmw_tickle FAIL
+// (two_writers_share_a_graph_gid) where the rmw_cyclonedds_cpp control PASSED.
+//
+// Note what this does NOT buy, because the obvious stronger claim is false: a sample's gid and the
+// graph's gid for the same writer are still not required to be equal, and the control proves it -
+// CycloneDDS reports 011074bc... in the graph and ee9da3db... on the sample, two encodings of one
+// writer. Equality is not an rmw guarantee and a test asserting it fails everywhere. Uniqueness is
+// the property the field exists for, and it is the one that was broken.
+static void encode_gid(uint8_t node_id, uint32_t entity_id, uint8_t gid[RMW_GID_STORAGE_SIZE]) {
     memset(gid, 0, RMW_GID_STORAGE_SIZE);
     gid[0] = node_id;
-    memcpy(&gid[1], &endpoint_id, sizeof(endpoint_id));
+    memcpy(&gid[1], &entity_id, sizeof(entity_id));
 }
 
 // Fills one rmw_topic_endpoint_info_t entry - shared by both the local-endpoint and discovered-
 // entity halves of get_topic_endpoint_info_by_topic() below.
 static rmw_ret_t populate_topic_endpoint_info(rcutils_allocator_t* allocator, const char* node_name,
                                               const char* node_namespace, const char* topic_type,
-                                              rmw_endpoint_type_t endpoint_type, uint8_t node_id, uint32_t endpoint_id,
+                                              rmw_endpoint_type_t endpoint_type, uint8_t node_id, uint32_t entity_id,
                                               const rmw_qos_profile_t* qos, rmw_topic_endpoint_info_t* info) {
     *info = rmw_get_zero_initialized_topic_endpoint_info();
     if (RMW_RET_OK != rmw_topic_endpoint_info_set_node_name(info, node_name, allocator) ||
@@ -1146,7 +1160,7 @@ static rmw_ret_t populate_topic_endpoint_info(rcutils_allocator_t* allocator, co
         return RMW_RET_BAD_ALLOC; // each setter already set its own error message
     }
     uint8_t gid[RMW_GID_STORAGE_SIZE];
-    encode_gid(node_id, endpoint_id, gid);
+    encode_gid(node_id, entity_id, gid);
     if (RMW_RET_OK != rmw_topic_endpoint_info_set_gid(info, gid, RMW_GID_STORAGE_SIZE)) {
         return RMW_RET_BAD_ALLOC;
     }
@@ -1199,7 +1213,7 @@ static rmw_ret_t get_topic_endpoint_info_by_topic(rmw_tickle_context_impl_t* con
         struct local_endpoint_details details = get_local_endpoint_details(endpoint);
         ret = populate_topic_endpoint_info(allocator, details.owning_node_name, details.owning_node_namespace,
                                            details.type_name, endpoint_type, context_impl->tickle_context.id,
-                                           endpoint->id, details.qos, &info_array->info_array[index]);
+                                           endpoint->entity_id, details.qos, &info_array->info_array[index]);
         if (ret != RMW_RET_OK) {
             tt_Context_unlock(&context_impl->tickle_context);
             fini_topic_endpoint_info_array_ignore_result(info_array, allocator);
@@ -1235,6 +1249,11 @@ static rmw_ret_t get_topic_endpoint_info_by_topic(rmw_tickle_context_impl_t* con
         qos.deadline = announced_duration(entity->deadline_duration_ns);
         qos.liveliness_lease_duration = announced_duration(entity->liveliness_lease_duration_ns);
         const struct tt_DiscoveredEntity* owner = remote_node_of(context_impl, entity); // stage 3
+        // REMOTE endpoints still pass endpoint_id, so two remote publishers of one topic still share
+        // a graph gid. Not an oversight: struct tt_DiscoveredEntity does not record entity_id yet,
+        // though the announce already carries it (tt_UpdateEntity.entity_id, Phase 2), so closing this
+        // is a discovery-cache change rather than a wire one. Local endpoints are fixed above, which is
+        // what the acceptance case measures - two writers in one node.
         ret = populate_topic_endpoint_info(
             allocator, owner != NULL ? owner->name : "", owner != NULL ? owner->type : "", entity->type, endpoint_type,
             entity->context_id, entity->endpoint_id, &qos, &info_array->info_array[index]);
@@ -1302,12 +1321,11 @@ rmw_ret_t rmw_get_subscriptions_info_by_topic(const rmw_node_t* node, rcutils_al
 #if __has_include("rmw/get_service_endpoint_info.h")
 static rmw_ret_t populate_service_endpoint_info(rcutils_allocator_t* allocator, const char* node_name,
                                                 const char* node_namespace, const char* service_type,
-                                                rmw_endpoint_type_t endpoint_type, uint8_t node_id,
-                                                uint32_t endpoint_id, const rmw_qos_profile_t* qos,
-                                                rmw_service_endpoint_info_t* info) {
+                                                rmw_endpoint_type_t endpoint_type, uint8_t node_id, uint32_t entity_id,
+                                                const rmw_qos_profile_t* qos, rmw_service_endpoint_info_t* info) {
     *info = rmw_get_zero_initialized_service_endpoint_info();
     uint8_t gid[RMW_GID_STORAGE_SIZE];
-    encode_gid(node_id, endpoint_id, gid);
+    encode_gid(node_id, entity_id, gid);
     if (RMW_RET_OK != rmw_service_endpoint_info_set_node_name(info, node_name, allocator) ||
         RMW_RET_OK != rmw_service_endpoint_info_set_node_namespace(info, node_namespace, allocator) ||
         RMW_RET_OK != rmw_service_endpoint_info_set_service_type(info, service_type, allocator) ||
@@ -1347,7 +1365,7 @@ static rmw_ret_t fill_service_endpoint_info_locked(rmw_tickle_context_impl_t* co
         struct local_endpoint_details details = get_local_endpoint_details(endpoint);
         rmw_ret_t ret = populate_service_endpoint_info(
             allocator, details.owning_node_name, details.owning_node_namespace, details.type_name, endpoint_type,
-            context_impl->tickle_context.id, endpoint->id, &rmw_qos_profile_services_default,
+            context_impl->tickle_context.id, endpoint->entity_id, &rmw_qos_profile_services_default,
             &info_array->info_array[index++]);
         if (ret != RMW_RET_OK) {
             return ret;
@@ -1360,6 +1378,11 @@ static rmw_ret_t fill_service_endpoint_info_locked(rmw_tickle_context_impl_t* co
             continue;
         }
         const struct tt_DiscoveredEntity* owner = remote_node_of(context_impl, entity); // stage 3
+        // REMOTE endpoints still pass endpoint_id, so two remote publishers of one topic still share
+        // a graph gid. Not an oversight: struct tt_DiscoveredEntity does not record entity_id yet,
+        // though the announce already carries it (tt_UpdateEntity.entity_id, Phase 2), so closing this
+        // is a discovery-cache change rather than a wire one. Local endpoints are fixed above, which is
+        // what the acceptance case measures - two writers in one node.
         rmw_ret_t ret = populate_service_endpoint_info(
             allocator, owner != NULL ? owner->name : "", owner != NULL ? owner->type : "", entity->type, endpoint_type,
             entity->context_id, entity->endpoint_id, &rmw_qos_profile_unknown, &info_array->info_array[index++]);
