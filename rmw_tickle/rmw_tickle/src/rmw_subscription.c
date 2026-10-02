@@ -573,7 +573,15 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
 
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = rmw_tickle_get_message_callbacks(type_support);
     if (NULL == callbacks || !rmw_tickle_check_callbacks_usable(callbacks)) {
-        return NULL; // error message already set
+        // Named, for the reason rmw_create_service() gives: the handle has no tickle entry, so the
+        // message set inside cannot say which type it was, and the topic name is the only thing that
+        // identifies it to a user. Found by hitting it twice in one evening - once for a service,
+        // then one line later for a message.
+        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+            "no " RMW_TICKLE_IDENTIFIER " typesupport for the type of subscription '%s' - was its package built with "
+            "rosidl_typesupport_tickle_c?",
+            topic_name);
+        return NULL;
     }
 
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
