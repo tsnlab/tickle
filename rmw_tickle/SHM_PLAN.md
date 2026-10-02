@@ -1378,6 +1378,55 @@ been run on it. That answer does not change the hold - the collapse is reproduci
 structural - but it is the one remaining question about the predicate itself. Nothing from any of this has been
 written into COMPARISON: there is still no p4 figure to write.
 
+### 6e(b): the seam is three fields, not a hundred and eighty (inventory + design, 2026-10-03)
+
+`src/tickle.c` has ~138 references to `tx_buffer`/`tx_tail`, which made decision 2 look like a file-wide
+refactor. Counted per function it is not. (Two automatic attributions were built and thrown away first - an
+awk tracker that carried its function name across boundaries and reported 3 and 15 where the truth was 1 and
+1, and a brace-matcher that ran past the end of a function and credited it with 42 in a "4,153-line" body.
+The table below was verified by hand.)
+
+| function | refs | what it is |
+|---|---:|---|
+| `publisher_publish_locked` | 19 | the publish path decision 2 changes |
+| `client_call_locked` | 13 | the same decision for a service call |
+| `flush_tx` | 9 | hands the buffer to the transport |
+| `build_and_send_update` | 7 | discovery - not sample data, no slot to go to |
+| `send_acknack_range` | 6 | a control submessage, same |
+| `start_encode` / `encode` / `encode_string` / `rollback` | 3/2/2/2 | the encoder primitives |
+
+**The risk this plan named is mostly not there.** 6e lists RELIABLE retention, DURABILITY and ACKNACK as the
+three things that assume `tx_buffer`. Measured: `cache_reliable_sample` 0, `make_depth_room` 0,
+`process_acknack` 0, `cache_sample_fragments` 1. Retention already works on the cache arena. The one coupled
+consumer is `send_cached_record()` (3), which copies a cached record back INTO `tx_buffer` to retransmit it -
+a consumer of the encoder, not of retention, and open question 4 above says why it cannot simply point at a
+slot instead.
+
+**The seam.** Every encoder primitive reaches the buffer through exactly three fields - `node->tx_buffer`,
+`node->tx_tail`, `node->tx_size` - and so does every consumer that measures what was just encoded:
+
+    sample_cdr_length        node->tx_buffer + node->tx_tail - submessage_header
+    submessage_fits_datagram node->tx_buffer + node->tx_tail - submessage_header
+    end_encode               node->tx_buffer + node->tx_tail - submessage_header
+    send_tail_as_fragments   (uint8_t*)submessage_header - node->tx_buffer
+
+None of them assumes the buffer is the node's OWN. They assume base-plus-tail is where the encode ended. So
+**redirecting those three fields at a slot carries the encoder and its length consumers unchanged**, and
+decision 2 becomes a change to where a publish points them rather than a rewrite of how anything encodes.
+
+**What must not be redirected, and why the 6e(a) predicate is the guard.** Three consumers assume the bytes
+are going out as a datagram and must not run while the target is a slot: `send_tail_as_fragments()` (a slot
+has no MTU, so there is nothing to fragment), `end_encode()`'s deferral branches (they move a submessage to
+the front of the NEXT buffer, which a slot does not have), and `flush_tx()` (it hands `tx_buffer` to the
+transport). All three are already excluded by the conditions `unicast_destinations_for()` tests - an
+immediate flush, a small known peer set, and `old_tx_tail == sizeof(struct tt_Header)`, which is to say an
+empty buffer with nothing batched ahead. The predicate built for 6e(a) is therefore also the precondition
+for redirecting, which is the one piece of 6e(a) that survives its own hold.
+
+**Not started.** The inventory and the seam are written down; the change is not made. Sequencing it behind a
+night that already put one memory-safety defect on main is deliberate - the first slice is a redirect that
+cannot be partially applied, and it wants a rested reading of `end_encode()`'s branches rather than a fast one.
+
 ## 7. Open questions
 
 
