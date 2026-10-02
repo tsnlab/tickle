@@ -1071,12 +1071,156 @@ discovery edge, there is a real interval in which a same-host peer exists, has b
 attached, during which its traffic takes UDP. Before this change that window existed only at process start.
 It has not been measured yet, and this section does not claim it has.
 
+## 6e. The send path: choose the transport before encoding (user decisions, 2026-10-02)
+
+Everything above this section treats the segment as a **datagram** transport: a record carries exactly what a UDP
+datagram would, and `tt_SEGMENT_SLOT_BYTES` is `tt_CONTROL_MAX_LENGTH`, which is `tt_ETHERNET_UDP_PAYLOAD`. That is
+why the module was cheap to add and why nothing in the wire protocol had to move. S6 then measured what it costs:
+at p4 (2800 B) a sample does not fit one slot, so it arrives as two datagrams, and CycloneDDS carries **92.6%** more
+on the same cell (COMPARISON 2.2c). The segment inherits a limit the medium does not impose.
+
+This section is the design that removes it. The decisions below are the user's, taken in conversation on
+2026-10-02; the measurements they rest on are 2.2c's, and the criteria are written here **before** any of it is
+built.
+
+### The four decisions
+
+1. **A sample bound only for shared memory is not fragmented.** There is no MTU in a segment. Fast DDS states the
+   same property of its own transport - the only size limit is the machine's memory, and no network fragmentation
+   is needed - and it is the reason its p4 cell does not have ours.
+
+2. **The encoder writes into the slot, not into `tx_buffer`.** The goal is **fewer memory writes**, not shared
+   memory for its own sake. Today an all-local BEST_EFFORT sample is written three times: encode into `tx_buffer`,
+   copy into the slot, copy out to the reader. Encoding in place removes the middle one. The receive side's copy is
+   section 4's lending and is staged separately, so a measurement can attribute the win to one or the other.
+
+3. **Mixed destinations use both paths, and the fragmentation decision follows the network.** A publisher with a
+   same-host and a remote subscriber cannot have one framing. It fragments as the network requires and the local
+   peer receives those same fragments - today's behaviour, so **no regression and no gain in the mixed case**.
+
+   This is not a compromise, it is what keeps `seq_no` correct. Our `seq_no` is **per datagram**, not per sample
+   (the user's decision of 2026-09-26, so that a loss costs one datagram's retransmission rather than a sample's;
+   `tickle.h` - "this datagram's own; the sample's is `seq_no - frag_index`"). DDS does the opposite: RTPS numbers
+   samples and fragments carry a fragment number inside one sequence number. Because ours counts datagrams, a
+   sample that went as one record locally and k fragments remotely would have to advance one publisher-wide
+   counter by both 1 and k. Advance by 1 and the next sample collides with the remote fragments; advance by k and
+   the local peer sees k-1 numbers it will never receive and NACKs for datagrams that do not exist. Matching the
+   network removes the question instead of answering it.
+
+   **So the p4 gain belongs to all-local publishers only.** The S6 cell is exactly that shape, so the measurement
+   will show it in full; a deployment with both local and remote subscribers on one topic gets nothing. The
+   COMPARISON row must say so rather than quote the number bare.
+
+4. **The slot size is the user's, set at runtime.** It makes total memory predictable, which is what we sell against
+   a 216 MB pre-allocated daemon, and it lets an application size the ring for its own messages.
+
+### Why runtime costs nothing on the data path
+
+`segment_slot()` already computes its stride from the header:
+
+    size_t stride = sizeof(struct tt_SegmentSlot) + header->slot_bytes;
+    return base + ((size_t)(index & (header->slots - 1U)) * stride);
+
+The hot path never used the compile-time constant. `tt_SEGMENT_SLOT_BYTES` appears only in `segment_bytes()` at
+attach, create and detach, and in the one store that seeds `header->slot_bytes`. Moving the value into the context's
+configuration therefore changes four call sites outside the data path and nothing inside it.
+
+**The attach becomes two steps, and that is the real cost.** Today an attacher maps
+`segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES)` computed from **its own** constants, then indexes with the
+owner's `header->slot_bytes`. With the size configurable per context those can differ, so the attacher must map the
+header first, read `slots` and `slot_bytes`, and then map the whole region. The header becomes the single authority,
+which is what it should have been.
+
+**This closes a hole that exists today and is independent of this work.** `segment_header_check()` validates magic,
+version, owner and incarnation - **not `slots` or `slot_bytes`**. `tt_SEGMENT_SLOT_BYTES` has been `#ifndef`-guarded
+since 2026-09-29 precisely so it can be overridden with `-D`, so two processes built with different values are a
+supported configuration that would map one length and index with another. The expected outcome is a fault rather
+than silent corruption, which is still worse than a clean refusal. **This is read from the source and has not been
+reproduced**; it needs a test that builds two arms with different values and has one attach to the other. Adding the
+two fields to `segment_header_check()` is a small fix worth making whether or not the rest of this section is built.
+
+### What the API reports, and what it does not
+
+A publisher whose type cannot fit a slot still works: its samples go over UDP and are counted in
+`segment_oversized_to_udp`. So "cannot use the segment" is not a failure of `create_publisher`, and returning a new
+non-zero code for it would break every existing caller - our own examples test `if (ret != 0)`
+(`examples/linux/perf/perf_client.c:309`, `examples/linux/uint64/publisher.c:126`), and would abort on a working
+publisher.
+
+Nor does it get an output field. The rule is the division, not the mechanism:
+
+| | goes in | because |
+|---|---|---|
+| the user set the slot size and a type does not fit | the **return value** of `tt_Context_create_publisher()` | they chose a value that does not match their data: the intended behaviour does not happen, so it is a **correctness** problem |
+| the size is the default and a type does not fit | the existing `segment_oversized_to_udp` counter, plus one log line per topic | the data is delivered, over UDP: it is a **performance** fact, not a mistake |
+
+Only a user who set the value is told through the return, and they are writing new code that handles it, so nothing
+existing breaks. Everyone else sees no new API surface at all. **No new output field**: `segment_oversized_to_udp`
+already reports the diagnostic half, and a field would duplicate it while adding a second place every caller has to
+check. `pub->batch`, `pub->reliable_cache` and `pub->durable` are not precedent for this - they are inputs the user
+writes, not outputs.
+
+The check belongs at **publisher creation**, not at the first oversized sample. The type is known then, the
+typesupport knows its maximum encoded size, it fires once per topic rather than per sample, and it fires even if a
+sample that large never occurs in testing. A first-sample check reports hours into a run, on a target that may have
+nobody reading its log.
+
+**The guideline the user gets** (the deliverable section 4 of the conversation asked for):
+
+    slot_bytes     >= the largest encoded message on any topic whose subscribers may be same-host
+    slots           = segment_bytes / (sizeof(struct tt_SegmentSlot) + slot_bytes)
+    segment_bytes  >= (sizeof(struct tt_SegmentSlot) + slot_bytes) x burst depth
+
+At today's defaults that is 512 KiB / (16 + 1472) = 352 slots. A slot sized for p4 gives 185, and holding 352 at that
+slot size needs about 1 MiB - still nothing beside 216 MB.
+
+### How this will be read, written before it is run
+
+The cell is S6's `reliable_throughput` p4, all-local, against the figures in COMPARISON 2.2c (TickLE **2,745**,
+CycloneDDS 5,287, FastDDS 1,983).
+
+Unfragmenting halves the datagram count for a 2800 B sample, so the naive prediction is about **5,400**. Two known
+costs pull against it and the arms below separate them:
+
+- **a shallower ring**: a slot that holds p4 gives 185 slots where 1472 B gave 352. Control: the same run with
+  `segment_bytes` raised to hold 352 slots at the new slot size. If the figure moves, ring depth is the cost.
+- **lost batching**: `tx_buffer` coalesces several samples per flush and one sample per slot cannot. Visible as
+  `segment_doorbells_sent` per sample rising, and in CPU per Msample rather than in throughput alone.
+
+| outcome | reading |
+|---|---|
+| p4 separably above 2,745, near 5,400 | the fragmentation bound was the whole cost; record it and the all-local caveat |
+| p4 separably above 2,745, well short of 5,400 | the bound was real but ring depth or batching eats part of it; the control arm says which, and **that number is what we report**, not the naive prediction |
+| p4 not separably above 2,745 | the change did not deliver. It is not kept on throughput grounds, whatever else it tidies |
+| p1, p2 or p3 separably **below** their 2.2c figures | a regression from the shallower ring. Report first, before any gain |
+
+Ranges, not medians: p2 and p3 against CycloneDDS are draws on overlapping ranges today and must not become "wins"
+on a median that moved inside its own spread.
+
+**Latency is not this change's metric and must not be read as one.** 2.2c measured our segment path at 0.058 ms
+against our own kernel path at 0.050 - the segment costs 16% on a p2 round trip, pure arm against pure arm - and
+nothing here touches the doorbell that is the candidate cause. A p4 throughput win beside an unchanged latency loss
+is the expected result, not a mixed one.
+
+### What is not established
+
+- **Whether the ring can serve as the RELIABLE retention cache for an all-local publisher.** The bytes are already
+  in the ring until it wraps, so the retention copy may be removable, taking an all-local RELIABLE sample from four
+  writes to two. Against it: the ring is sized for flow rather than retention depth, and TRANSIENT_LOCAL's backlog
+  must outlive a wrap. Worth settling early, because it changes how much decision 2 is worth.
+- **The header-validation hole above**, which needs the two-build test before it is called a defect.
+
 ## 7. Open questions
 
 
-1. **Notification.** A reader must learn a record arrived. A futex or an eventfd per reader costs a syscall and gives
-   back the wakeup latency the poll loop currently pays; a pure spin costs a core. The choice interacts with the poll
-   and block wait modes that are both scored (`project_rmw_poll_and_block_cases`), so it is measured, not argued.
+1. **Notification, and it now has a number.** A reader must learn a record arrived. Today that is a zero-length UDP
+   datagram per reader advance (`segment_doorbells_sent`), which in a ping/pong is one per sample because the reader
+   sleeps every time. COMPARISON 2.2c measured the consequence with no mixture either side: **pure kernel 0.050 ms
+   against pure segment 0.058 at p2, ranges separable, 16%**, while both vendors signal inside their own segments
+   and gain 29-41% from theirs. A futex or an eventfd costs a syscall and gives back the wakeup latency; a pure spin
+   costs a core; a named unix-domain datagram keeps the single `ppoll` wait point and skips the IP stack. The choice
+   interacts with the poll and block wait modes that are both scored (`project_rmw_poll_and_block_cases`), so it is
+   measured, not argued - a micro-benchmark of the three wakes on the rig decides it before any of them is built.
 2. **Whether a same-host pair keeps its UDP socket at all,** for discovery only, or whether discovery also moves into
    the segment. Keeping discovery on UDP is the smaller change and keeps one discovery path; moving it is what would
    let two processes talk with no network stack at all, which is a real claim for an embedded target.
