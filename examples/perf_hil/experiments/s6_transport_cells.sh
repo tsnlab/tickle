@@ -59,6 +59,13 @@ FRAMEWORKS=${FRAMEWORKS:-"tickle fastdds cyclonedds"}
 REPS=${REPS:-3}
 DUR=${DUR:-5}
 SCEN=${SCEN:-reliable_throughput}
+# Extra client arguments, passed through to every framework's client so all three get the SAME ones.
+# Why this exists (2026-10-02): DUR means different things in the two scenarios. In reliable_throughput, DUR=5 is
+# five seconds of millions of samples; in reliable_latency the client pings once a second, so DUR=5 is FIVE round
+# trips - and the first S6 latency run produced exactly that, with TickLE's segment never attaching and every
+# framework's witness unusable. A latency cell therefore needs -i to set the ping interval, which the harness had
+# no way to pass.
+CLI_ARGS=${CLI_ARGS:-}
 SIZE=${SIZE:-p1}
 SHA=${SHA:-$(git -C "$REPO" rev-parse --short HEAD)}
 OUT=${OUT:-$HOME/rig_results_safe/s6_transport_cells.txt}
@@ -93,7 +100,7 @@ fi
 run_tickle_cell() {
     local sub="$OUT.tickle"
     say "### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ==="
-    if ! OUT="$sub" DUR="$DUR" SCEN="$SCEN" SIZE="$SIZE" \
+    if ! OUT="$sub" DUR="$DUR" SCEN="$SCEN" SIZE="$SIZE" CLI_ARGS="$CLI_ARGS" \
          "$REPO/examples/perf_hil/experiments/s6_witness_check.sh" "$SHA" "$REPS" >/dev/null 2>&1; then
         say "  tickle cell FAILED to run - see $sub"
     fi
@@ -132,7 +139,7 @@ fdds_run() {  # fdds_run <arm> <profile-basename>
     # client that cannot load its libraries says so on stderr and prints no RESULT line at all; the first version of
     # this cell discarded that sentence and reported "produced no RESULT line" six times without the reason.
     local all
-    all=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && env $env_common taskset -c 2 ./client -d $DUR >/tmp/s6_fdds_client.log 2>&1; cat /tmp/s6_fdds_client.log" </dev/null)
+    all=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && env $env_common taskset -c 2 ./client -d $DUR $CLI_ARGS >/tmp/s6_fdds_client.log 2>&1; cat /tmp/s6_fdds_client.log" </dev/null)
     line=$(printf '%s\n' "$all" | grep '^RESULT' | head -1)
     cleanup
     if [ -z "$line" ]; then
@@ -239,7 +246,7 @@ cdds_run() {  # cdds_run <arm> <uri>
     cleanup
     srv_pid=$(sh_ "$HOST" "cd $dir && rm -f /tmp/s6_cdds.pid
 (setsid sh -c 'echo \$\$ >/tmp/s6_cdds.pid; exec env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='\''$uri'\'' taskset -c 1 ./server -d $((DUR + 40))' >/tmp/s6_cdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_cdds.pid" </dev/null)
-    all=$(sh_ "$HOST" "cd $dir && env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='$uri' taskset -c 2 ./client -d $DUR >/tmp/s6_cdds_client.log 2>&1; cat /tmp/s6_cdds_client.log" </dev/null)
+    all=$(sh_ "$HOST" "cd $dir && env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='$uri' taskset -c 2 ./client -d $DUR $CLI_ARGS >/tmp/s6_cdds_client.log 2>&1; cat /tmp/s6_cdds_client.log" </dev/null)
     line=$(printf '%s\n' "$all" | grep '^RESULT' | head -1)
     cleanup
     if [ -z "$line" ]; then

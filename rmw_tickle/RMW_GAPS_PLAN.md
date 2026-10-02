@@ -1429,9 +1429,15 @@ RESULT line describes a healthy run.
 expression is what a decoder sees once it has lost framing alignment - it is reading a length or a tag from the
 middle of something else - and framing is exactly what differs between p1 and p2, where 1292-byte samples plus
 headers meet batching. That is a reading of the symptom, not a measurement of the cause. What would settle it: a
-capture of the last frames before the drop, comparing declared frame lengths against the bytes actually present,
-or a run with batching bounded (`Z_BATCH_UNICAST_SIZE`) - which is also still the tuning **nobody has attempted**,
-so "no configuration survives this" remains unestablished.
+capture of the last frames before the drop, comparing declared frame lengths against the bytes actually present.
+
+**Batching is eliminated; the send rate is not** (2026-10-01/02, Plan). Two tunings were run, each on its own
+prefix. `-DZ_FEATURE_BATCHING=0` changed nothing: p2 died the same way, `write_fail=1`, the same `-114` drop. So
+batching is not the mechanism. But **pacing the publisher makes the cell survive completely**: at `-i 0.0001`
+(10,000 puts/s) p2 delivered 120,006 of 120,006 with 0% loss, 164.5 MB on the wire and one packet per sample,
+62.0 Mbps - no `write_fail`, no peer drop, on the **stock** library with no build flags at all. The ladder below
+it (`-i 0.001`, `-i 0.0002`) is equally clean. So the trigger is the rate at which the send buffer is filled, not
+the payload size on its own, and "no configuration survives this" is now **disproved** rather than unestablished.
 
 **The instrumentation gap is larger than it first looked, and the first version of this section got it wrong.** It
 said the cheapest discriminator was the client's own stderr, which the harness threw away by keeping only `^RESULT`
@@ -1455,9 +1461,11 @@ Then reproduce p2 once and read what it says. `ss -ti` during the run (is the se
 retransmits) and a packet capture (clean FIN, RST, or simply idle - which alone separates lease starvation from the
 other two) are the follow-ups if the log is not decisive.
 
-**Until then `✗ †` means "measured, and the transport did not survive the cell"** and not "measured, and here is why".
-The distinction is the point: the cells are not blank and they are not explained either. **No tuning was attempted** -
-the figures are zenoh-pico's shipped defaults - so "no configuration survives this" is also not established.
+**`✗ †` means "measured, and the transport did not survive the cell"**, and the cells stay that way. The user
+decided this on 2026-10-02, after the paced run above showed the link can be made to survive: a figure produced by
+throttling the publisher from our own harness is our rate limit, not zenoh-pico's throughput, and placing it beside
+the DDS arms would read as a measurement of the framework. "Not measurable" is the honest cell, so **do not fill
+rows 8-10 and the other `✗ †` cells with the paced numbers**, and do not reopen this without being asked.
 
 #### Back-pressure on the shared-memory path is already keyed on HISTORY, measured (2026-09-30, Plan)
 

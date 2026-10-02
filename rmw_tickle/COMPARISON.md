@@ -593,6 +593,49 @@ unshaped throughput; CycloneDDS keeps 3.5% and FastDDS 26.4%. This is RELIABLE +
 three, verified from the harnesses rather than assumed, with every sample delivered on all three
 sides (`sent == recv`).
 
+### 2.2c The shared-memory path, all three frameworks on their own (2026-10-01)
+
+Every figure above is the **network** path. This section is the other one: each framework carrying the same
+traffic over **its own shared-memory transport**, which is the comparison S6 was built to make. Both roles run on
+one rig Pi (10.1.1.214), `BENCH_IFACE=lo`, `reliable_throughput`, 5 s, 3 repetitions, medians below; harness
+`experiments/s6_transport_cells.sh`, raw rows `results/s6_cells_p{2,3,4}_*_2026-10-01.txt`.
+
+**Each arm proved which transport actually carried it** rather than being configured and believed: the loopback
+interface's own packet counter is the witness, validated beforehand on the one framework whose transport we can
+force (`s6_witness_check.sh`). On the `ON` arms the witness reads 0.000 for both vendors and 0.228 for us - our
+doorbell wakes a blocked reader over the socket, theirs signal inside their own segments - against ~2.0 on every
+kernel-path arm. Our `tx_shm` counter agrees with the witness independently, so neither instrument is suspect.
+
+| metric | cell | TickLE | CycloneDDS | FastDDS |
+|---|---|---:|---:|---:|
+| **CPU**, client s/Msample | p2 1292 B | ✅ **2.309** | 3.927 | ❌ 10.701 |
+| | p3 1424 B | ✅ **2.342** | 4.149 | ❌ 11.182 |
+| | p4 2800 B | ✅ **3.775** | 4.215 | ❌ 11.338 |
+| **Memory**, client peak RSS kB | p2 1292 B | ✅ **3,092** | 11,100 | ❌ 23,840 |
+| | p3 1424 B | ✅ **3,100** | 11,128 | ❌ 24,344 |
+| | p4 2800 B | ✅ **3,152** | 11,816 | ❌ 29,732 |
+| **Throughput**, send Mbps | p2 1292 B | 2,521 | ✅ **2,647** | ❌ 971 |
+| | p3 1424 B | ✅ **2,786** | 2,752 | ❌ 1,021 |
+| | p4 2800 B | 2,745 | ✅ **5,287** | ❌ 1,983 |
+
+**CPU and memory are ours on every cell, and the memory figure understates the gap.** We use 1.7-4.6x less CPU per
+million samples than CycloneDDS and FastDDS, and 3.6-9.4x less resident memory. The 11 MB beside CycloneDDS is its
+**application** process only: its shared memory arrives through iceoryx, whose `iox-roudi` daemon reserved 66.8 MB
+plus 149.3 MB of shared memory before any application connected. That 216 MB is a real cost of choosing that path
+and is not in the table, because it is not in the process the table measures. Ours is a 380 kB segment created
+in-process on demand, with no daemon.
+
+**Throughput is a split result and p4 is a loss, stated first.** At p3 we lead by 1.2%, at p2 CycloneDDS leads by
+5.0%, and at p4 it carries **92.6%** more than we do. The cause is mechanical and ours: `tt_SEGMENT_SLOT_BYTES` is
+bounded by the network MTU, so a 2800-byte sample takes two slots on a path that has no MTU - **our segment
+inherits a limit the medium does not impose**. Unbinding the slot from the datagram size is the fix the number
+argues for, and it is not free: a larger slot means fewer slots in the same ring, so the back-pressure cells
+(SHM_PLAN) would need re-measuring with it.
+
+**What is still not measured here: RTT.** All three frameworks' shared-memory latency is unmeasured - the cells
+above are throughput, CPU and memory only. A same-host RTT row needs `rmw_perf_pingpong`'s shape on the rig rather
+than this harness, and until it exists this section says nothing about latency on the segment path.
+
 ### 2.2a Scenario 4 in detail: RELIABLE under injected loss (re-measured 2026-09-23)
 
 Scenario 4's own single-number rows above were replaced by this section. Two reasons, both real

@@ -37,6 +37,7 @@ DUR=${DUR:-5}
 SCEN=${SCEN:-best_effort_throughput}
 SIZE=${SIZE:-p1}
 OFF_FLAG=${OFF_FLAG:--Dtt_SEGMENT_ENABLED=0}
+CLI_ARGS=${CLI_ARGS:-}   # forwarded from s6_transport_cells.sh so all three frameworks get the same client arguments
 OUT=${OUT:-/tmp/s6_witness.txt}
 HOST=10.1.1.214          # both roles on the client Pi
 K=$HOME/.ssh/tickle_ci_ed25519
@@ -75,7 +76,7 @@ run_one() { # run_one <arm>
     srv_pid=$(sh_ "$HOST" "cd $SAVE/$name && rm -f /tmp/s6wit.pid
 (setsid sh -c 'echo \$\$ > /tmp/s6wit.pid; exec env BENCH_IFACE=lo taskset -c 1 ./server -Q -d $((DUR + 40))' > /tmp/s6wit_server.log 2>&1 < /dev/null &); sleep 2; cat /tmp/s6wit.pid" </dev/null)
     sh_ "$HOST" "grep -q 'Node open' /tmp/s6wit_server.log" </dev/null || { say "    no server opened for arm=$name"; return 0; }
-    line=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo taskset -c 2 ./client -Q -d $DUR 2>&1 | grep '^RESULT'" </dev/null)
+    line=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo taskset -c 2 ./client -Q -d $DUR $CLI_ARGS 2>&1 | grep '^RESULT'" </dev/null)
     [ -n "$line" ] && say "arm=$name $line"
     kill_server
 }

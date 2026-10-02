@@ -158,12 +158,17 @@ namespace {
             printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", stats.min_ms, avg, stats.max_ms);
         }
         bench_stats_end(&harness::g_bench_stats);
+        // transport_profile= is the arm's identity, and until 2026-10-02 only the throughput client printed it.
+        // S6's latency cell checks each rep's RESULT line for it, so without this field that check could never pass
+        // - the FastDDS arm was refused on every repetition and the cell reported nothing, which reads as a FastDDS
+        // finding and is a harness defect. Same source as the throughput client's, so the two cells name the arm the
+        // same way.
         printf("RESULT: framework=fastdds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.0f "
                "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
-               "cpu_mhz_at_rtt_max=%.1f %s\n",
+               "cpu_mhz_at_rtt_max=%.1f transport_profile=%s %s\n",
                static_cast<unsigned long>(stats.transmitted), static_cast<unsigned long>(stats.received), loss_pct,
                stats.min_ms, avg, stats.max_ms, BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq),
-               BenchCpuFreq_max_mhz(&g_rtt_freq), stats.cpu_mhz_at_max,
+               BenchCpuFreq_max_mhz(&g_rtt_freq), stats.cpu_mhz_at_max, harness::transport_profile(),
                harness::bench_fields(BENCH_ROLE_SENDER, stats.transmitted));
     }
 
