@@ -115,6 +115,25 @@ else
     run_lint_gate "lint-rmw" make lint-rmw "${lint_vars[@]}"
 fi
 
+# CI's "Check all" runs rmw_tickle's own ctest suite and this script did not: on 2026-10-02 every
+# gate above reported PASS on a commit that broke test_type_checks, and main stayed red for three
+# commits. The script reports WHY it could not run separately from a failure, because "I could not
+# look" must not read as "it passed".
+name="rmw suite (as CI)"
+printf '== %s\n' "$name"
+./.github/scripts/run_rmw_suite.sh
+rmw_suite_rc=$?
+case "$rmw_suite_rc" in
+    0) results+=("PASS  $name") ;;
+    77) skip_gate "no ROS workspace with TickLE typesupport interfaces (set RMW_TEST_WS, or build_ros2_interfaces.sh)" ;;
+    78) skip_gate "no ROS installation" ;;
+    79) skip_gate "no provable private netns (needs passwordless 'ip') - the suite did NOT run" ;;
+    *)
+        results+=("FAIL  $name")
+        failed=1
+        ;;
+esac
+
 echo
 echo "== gates"
 printf '%s\n' "${results[@]}"
@@ -127,9 +146,10 @@ cat <<'NOTCOVERED'
    NOT COVERED HERE - a pass above does not predict CI:
      make test-linux      two nodes over the Linux HAL in a netns: the service round trip (set_bool),
                           the perf tier's loss and throughput floors, DURABILITY/HISTORY/LIFESPAN.
-     the rmw test suite   test_service_roundtrip, test_event_callbacks and the rest of rmw_tickle's own tests.
-   Both ran red all day on 2026-09-29 while this script reported every gate PASS. Run them before trusting a push:
+   It ran red all day on 2026-09-29 while this script reported every gate PASS. Run it before trusting a push:
      make test-linux
+   (rmw_tickle's own suite WAS in this list until 2026-10-03; it is now the "rmw suite (as CI)" gate
+   above, which SKIPs with its reason when it cannot run rather than passing silently.)
 NOTCOVERED
 echo "   clang-tidy: ${TIDY:-$(command -v clang-tidy || echo none)} (version ${tidy_major:-?})"
 if [ "$lint_is_advisory" = 1 ]; then
