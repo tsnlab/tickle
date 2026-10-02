@@ -1916,6 +1916,68 @@ static void test_a_renumbered_context_still_knows_it_holds_its_own_segment(void)
 // SHM_PLAN 6e: the slot size is the user's, set at runtime. Three things, because a value that is read but
 // ignored reads exactly like a value that had no effect - which is what tt_SEGMENT_SLOT_BYTES itself was
 // until 2026-09-29, when it turned out -D had never reached it.
+// SHM_PLAN 6e(a): the limit a sample may reach before being split is raised only for destinations that can
+// actually take a whole record. Each condition is checked on its own, because the cost of getting this wrong is
+// a record larger than a datagram with nowhere to go - UDP is not a fallback for it.
+//
+// And the ordering this exposes, which is behaviour rather than a test detail: a publisher attaches to a peer's
+// segment on the SEND path, after the limit has been decided, so the FIRST sample to a peer always splits as the
+// network requires and only later ones can go whole. Conservative in the right direction, and asserted below so
+// that it is a decision rather than an accident.
+static void test_only_an_attached_same_host_peer_raises_the_whole_limit(void) {
+    struct tt_Context owner;
+    struct tt_Context sender;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+
+    memset(&owner, 0, sizeof(owner));
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+
+    init_node_topic_pub(&sender, &topic, &pub);
+    sender.hal.own_ip = PEER_IP;
+    sender.hal.own_port = PEER_PORT;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        pub.peers[i].context_id = tt_CONTEXT_ID_INVALID;
+    }
+    pub.peers[0].context_id = OWNER_ID;
+    pub.peers[0].ip = OWNER_IP;
+    pub.peers[0].port = OWNER_PORT;
+
+    // Nothing attached yet: this is the first-publish state, and it must refuse.
+    EXPECT_EQ_U32(0, whole_record_limit_for(&sender, pub.peers, 1));
+
+    // A broadcast refuses whatever is attached, because its destinations are not these peers.
+    EXPECT_EQ_U32(0, whole_record_limit_for(&sender, NULL, 0));
+
+    // Attach, as the send path does.
+    EXPECT_TRUE(peer_segment(&sender, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
+    EXPECT_EQ_U32((uint32_t)tt_SEGMENT_SLOT_BYTES, whole_record_limit_for(&sender, pub.peers, 1));
+
+    // A peer that moved: same context id, different address. The entry describes the segment we opened for
+    // the OLD address, so granting on it would build a record for a segment we have never seen.
+    uint32_t real_ip = pub.peers[0].ip;
+    pub.peers[0].ip = real_ip + 1;
+    EXPECT_EQ_U32(0, whole_record_limit_for(&sender, pub.peers, 1));
+    pub.peers[0].ip = real_ip;
+
+    // Two peers, one of them not attached: the record is built once and every destination has to take it.
+    pub.peers[1].context_id = (uint8_t)(OWNER_ID + 1);
+    pub.peers[1].ip = OWNER_IP + 2;
+    pub.peers[1].port = OWNER_PORT;
+    EXPECT_EQ_U32(0, whole_record_limit_for(&sender, pub.peers, 2));
+    pub.peers[1].context_id = tt_CONTEXT_ID_INVALID;
+
+    EXPECT_EQ_U32((uint32_t)tt_SEGMENT_SLOT_BYTES, whole_record_limit_for(&sender, pub.peers, 1));
+    release_segments(&sender);
+    release_own_segment(&owner);
+    test_mock_segments_free();
+}
+
 static void test_a_configured_slot_size_is_the_one_built(void) {
     const uint32_t configured = (uint32_t)tt_SEGMENT_SLOT_BYTES / 2U;
     struct tt_Context owner;
@@ -2021,6 +2083,7 @@ int main(void) {
     test_reset_zeroes_the_per_transport_counters();
     test_segment_name_separates_peers_that_differ();
     test_segment_header_catches_what_the_name_cannot();
+    test_only_an_attached_same_host_peer_raises_the_whole_limit();
     test_a_configured_slot_size_is_the_one_built();
     test_a_segment_with_another_geometry_is_refused();
     test_ring_round_trips_a_datagram();

@@ -4965,6 +4965,71 @@ static bool try_publish_zerocopy(struct tt_Publisher* pub, struct tt_Data* data,
 
 // How many seq_no - and datagrams - the encoded DATA submessage at submessage_header takes: 1, or one
 // per fragment when no datagram can carry it (DATAFRAG_PLAN.md section 13).
+// The peers this publish will unicast to, or none when it will broadcast - mirrors tt_Client_call()'s own peer
+// decision. Unicast only when there is a small enough known count AND nothing else is already sitting unflushed
+// ahead of this DATA submessage, since unicasting would reach these peers and not whatever else needs the whole
+// segment. Extracted when 6e(a) moved this above the datagram count and publisher_publish_locked() went one over
+// the cognitive-complexity gate; it is one decision and now has one name.
+static uint8_t unicast_destinations_for(const struct tt_Publisher* pub, uint32_t old_tx_tail, bool is_flush,
+                                        const struct tt_Peer** out_peers) {
+    *out_peers = NULL;
+    if (!is_flush) {
+        return 0;
+    }
+    uint8_t count = count_peers(pub->peers);
+    if (count < 1 || count > tt_UNICAST_PEER_THRESHOLD || old_tx_tail != sizeof(struct tt_Header)) {
+        return 0;
+    }
+    *out_peers = pub->peers;
+    return count;
+}
+
+// The largest record every destination of this send could take whole, or 0 when any of them could not.
+//
+// SHM_PLAN 6e(a): a sample bound only for shared memory need not be split, because a segment has no MTU. The
+// conditions are all necessary and each rules out a way of producing a record with nowhere to go - an
+// unfragmented record is larger than one datagram by construction, so UDP is not a fallback for it:
+//
+//   peer_count == 0   a broadcast, whose destinations are not known here and include every remote node.
+//   not attached      we have no segment for that peer, so its datagrams take the socket.
+//   a different (ip, port) behind the same context id   a different peer, whose segment we have not opened.
+//   slot_bytes too small   it would be refused at the ring and fall back to the socket, oversized.
+//
+// A FULL ring is deliberately not among them. A full ring already drops rather than rerouting - sending that
+// datagram over UDP would overtake the records already in the ring and make the reader discard everything older
+// behind it, which cost CI's same-host cell 97.6% of its traffic when it was tried - so an unfragmented record
+// changes only the size of what a full ring drops, not whether it has somewhere to go.
+//
+// The minimum across peers, because one record is built and every destination has to take it.
+static uint32_t whole_record_limit_for(const struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count) {
+#if tt_SEGMENT_ENABLED
+    if (peers == NULL || peer_count == 0) {
+        return 0;
+    }
+    uint32_t smallest = UINT32_MAX;
+    uint8_t seen = 0;
+    for (int i = 0; i < tt_MAX_PEER_COUNT && seen < peer_count; i++) {
+        if (peers[i].context_id == tt_CONTEXT_ID_INVALID) {
+            continue;
+        }
+        seen++;
+        const struct tt_SegmentPeer* entry = &node->segment_peers[peers[i].context_id];
+        if (entry->mapping == NULL || entry->ip != peers[i].ip || entry->port != peers[i].port) {
+            return 0;
+        }
+        if (entry->mapping->slot_bytes < smallest) {
+            smallest = entry->mapping->slot_bytes;
+        }
+    }
+    return seen == peer_count ? smallest : 0;
+#else
+    UNUSED(node);
+    UNUSED(peers);
+    UNUSED(peer_count);
+    return 0;
+#endif
+}
+
 // How many datagrams this encoded sample goes as. `raw_len` is the length the encode produced, passed in for
 // the same reason record_length_checked() takes it: deriving it from tx_tail is only the sample's length while
 // the sample is the last thing in tx_buffer, and SHM_PLAN 6e's encoder step puts it somewhere else.
@@ -5345,6 +5410,16 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // MTU by construction - has somewhere to go. Passed rather than reached for, so the cache's footprint
     // and the sent datagram count cannot disagree about it.
     uint32_t whole_limit = FRAG_WHOLE_DATA_LIMIT;
+    // Hoisted above the datagram count, which used to be decided before it. 6e(a) needs to know WHERE this
+    // sample is going before it can say how many pieces it goes in, and deciding the destination twice is how
+    // the byte bound and the count bound came apart on 2026-09-25.
+    bool is_flush = !pub->batch;
+    const struct tt_Peer* peers = NULL;
+    uint8_t peer_count = unicast_destinations_for(pub, old_tx_tail, is_flush, &peers);
+    uint32_t whole_to_peers = whole_record_limit_for(node, peers, peer_count);
+    if (whole_to_peers > whole_limit) {
+        whole_limit = whole_to_peers;
+    }
     // One seq_no per datagram the sample goes as - counted now, while it still sits in tx_buffer.
     uint32_t datagrams = sample_datagram_count(node, submessage_header, record_len, whole_limit);
     if (!check_and_cache_sample(node, pub, submessage_header, record_len, whole_limit)) {
@@ -5363,16 +5438,6 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // pub->batch == true keeps today's behavior unconditionally: never flush here, let
     // node_flush()'s own tt_CONTEXT_TX_INTERVAL tick decide broadcast vs. unicast for the whole
     // accumulated buffer at once.
-    bool is_flush = !pub->batch;
-    const struct tt_Peer* peers = NULL;
-    uint8_t peer_count = 0;
-    if (is_flush) {
-        uint8_t count = count_peers(pub->peers);
-        if (count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && old_tx_tail == sizeof(struct tt_Header)) {
-            peers = pub->peers;
-            peer_count = count;
-        }
-    }
     // Piggybacked Heartbeat (heartbeat_piggyback_every, tickle.h). Decided here, before the DATA's
     // end_encode(), because a piggyback changes whether that end_encode() flushes: the DATA is left
     // pending so the Heartbeat can be appended behind it and one flush sends both. Only when this
