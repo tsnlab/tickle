@@ -23,6 +23,20 @@
 #   range    ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST isolates the two hosts; SUBNET does not        (g6)
 #   peers    LOCALHOST plus ROS_STATIC_PEERS naming the other host connects them again            (g6)
 #
+#   BOTH bag cases currently fail on rmw_tickle for ONE reason that is neither recording nor retention, and it is
+#   worth knowing before reading their numbers as a finding (2026-10-02): `ros2 bag record` publishes
+#   /events/rosbag2_messages_lost as it starts, carrying rosbag2_interfaces/msg/MessagesLostEvent, and the
+#   generator DECLINES that type - its MessagesLostEventTopicStat[] has no fixed per-element wire size, so no
+#   capacity can be derived for it. The recorder therefore never starts:
+#
+#       no rmw_tickle typesupport for the type of publisher '/events/rosbag2_messages_lost'
+#
+#   bag then reports recorded=0 replayed=0, which reads like a recording defect, and bagstall reports
+#   "pid N is not the recorder: []" - an EMPTY /proc/N/cmdline, because the process it was about to SIGSTOP had
+#   already exited. That check refusing rather than signalling is it working, not failing. Adding capacities for
+#   the type was tried and did not lift the decline: a string capacity gives a fixed buffer, not a fixed wire
+#   size. So these two say nothing about g1 or g13 until the type is supported.
+#
 # Usage: rmw_gap_acceptance.sh -w WS [TEST...]   (default: all). WS holds rmw/install (rmw_tickle) and ifaces/install
 # (the standard interfaces with TickLE typesupport, build_ros2_interfaces.sh). Output: one line per test and rmw, then a
 # table; exit 0 when every control passed (the rmw_tickle results are the report, not the exit status).
