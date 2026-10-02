@@ -6,7 +6,13 @@ a scheduler entry, poll_once_nonblocking() runs every due entry BEFORE reading t
 starved process therefore wakes with its peers' datagrams queued and declares them dead without
 reading one. Both sides of a starved pair do it to each other, which is what CI showed.
 
-The fix is four claims, and each of these removes exactly one of them. Two of the four survived a
+The deferral half was NOT the fix for the starved case, and the commit that added it said it was.
+On Linux tt_rx_buffered() counts datagrams already pulled into our own batch, so it is zero exactly
+on a starved wake-up; test_mock.h gives the same function the other meaning, which is why four
+mutants died against a condition that cannot be true in production. The lateness allowance
+(unobserved_ns) is the fix for that case, and its mutants are at the end of this list.
+
+Each of these removes exactly one claim. Two of the four survived a
 first attempt and are the reason this file exists rather than a single test: the cap was unreachable
 because drain_rx() empties the queue in one pass, and the counter's reset was uncovered because every
 arm used a fresh context.
@@ -53,6 +59,30 @@ MUTANTS = [
         GUARD,
         "    if (node->liveliness_deferrals < tt_LIVELINESS_MAX_DEFERRALS) {",
         "test_expires_peer_after_missed_intervals",
+    ),
+    # The lateness allowance: the window a node spent descheduled is not evidence of anyone's silence.
+    # The second of these is the one that matters most - a guard that widens unconditionally forgives
+    # the real deaths too, and from the surviving peer alone that looks identical to widening correctly.
+    (
+        "the allowance at all",
+        "src/tickle.c",
+        "    uint64_t limit = tt_LIVELINESS_SILENCE_NS + unobserved_ns;",
+        "    uint64_t limit = tt_LIVELINESS_SILENCE_NS;",
+        "test_a_descheduled_node_does_not_blame_its_peers",
+    ),
+    (
+        "granting it from lateness rather than unconditionally",
+        "src/tickle.c",
+        "    if (node->liveliness_check_scheduled && time > node->liveliness_check_ns) {\n        unobserved_ns = time - node->liveliness_check_ns;\n    }",
+        "    if (true) {\n        unobserved_ns = tt_LIVELINESS_SILENCE_NS * 100;\n    }",
+        "test_an_ordinary_run_does_not_widen_the_limit",
+    ),
+    (
+        "measuring the lateness at all",
+        "src/tickle.c",
+        "        unobserved_ns = time - node->liveliness_check_ns;",
+        "        unobserved_ns = 0;",
+        "test_a_descheduled_node_does_not_blame_its_peers",
     ),
 ]
 

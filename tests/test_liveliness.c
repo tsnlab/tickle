@@ -692,6 +692,78 @@ static void test_a_busy_socket_cannot_postpone_a_real_death_for_ever(void) {
     test_mock_try_receive_remaining = 0;
 }
 
+// A node that was not running cannot have heard anyone, so the window it spent descheduled is not
+// evidence of their silence.
+//
+// This is the CI failure of 2026-09-30 and again of 2026-10-01 (runs 36787898559, 36834931043), on
+// commits that changed no code: on a loaded GitHub runner both nodes declared EACH OTHER dead 3.5 s
+// apart while 100 samples were published, and delivery stopped at 5.
+//
+// The first attempt at this deferred while tt_rx_buffered() was non-zero and was a no-op in
+// production - on Linux that counts datagrams already pulled into our own batch, not what the kernel
+// holds, so it is zero exactly on a starved wake-up. It passed its tests only because the mock gives
+// that function the other meaning. The lateness below needs no HAL query at all: the scheduler entry
+// knows when it was due.
+static void test_a_descheduled_node_does_not_blame_its_peers(void) {
+    struct tt_Context node;
+    init_node(&node);
+    struct tt_Publisher pub;
+    init_publisher(&pub, &node);
+    receive_update(&node, 0, 100);
+    EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]);
+
+    // Armed for a moment well inside the limit, then not run until long past it: the gap is ours.
+    const uint64_t armed_for = tt_LIVELINESS_SILENCE_NS / 4;
+    arm_liveliness_check(&node, armed_for);
+    test_mock_now = tt_LIVELINESS_SILENCE_NS * 3;
+    check_liveliness(&node, test_mock_now, NULL);
+
+    EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]); // we were not listening; that is not their silence
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+}
+
+// The control that makes the one above mean something: a HEALTHY run must not measurably widen. A
+// guard that forgives every run forgives the real deaths too, and "widened correctly" and "widened
+// always" look identical from the surviving peer alone.
+static void test_an_ordinary_run_does_not_widen_the_limit(void) {
+    struct tt_Context node;
+    init_node(&node);
+    struct tt_Publisher pub;
+    init_publisher(&pub, &node);
+    receive_update(&node, 0, 100);
+
+    // Due just past the limit and running 1 us late, which is what an ordinary scheduler looks like.
+    // The peer has been silent the whole time and must be given up.
+    const uint64_t due = tt_LIVELINESS_SILENCE_NS + 1;
+    arm_liveliness_check(&node, due);
+    test_mock_now = due + tt_MICROSECOND;
+    check_liveliness(&node, test_mock_now, NULL);
+
+    EXPECT_TRUE(!node.update_seen[REMOTE_NODE_ID]); // ordinary lateness forgives nothing
+}
+
+// And the allowance is granted once rather than compounding: after a stall, the NEXT run is late only
+// by its own lateness, so a peer that really has gone is still given up one ordinary interval later.
+// Without this a single stall would make a node permanently unable to declare anyone dead.
+static void test_the_allowance_does_not_carry_into_the_next_run(void) {
+    struct tt_Context node;
+    init_node(&node);
+    struct tt_Publisher pub;
+    init_publisher(&pub, &node);
+    receive_update(&node, 0, 100);
+
+    arm_liveliness_check(&node, tt_LIVELINESS_SILENCE_NS / 4);
+    test_mock_now = tt_LIVELINESS_SILENCE_NS * 3;
+    check_liveliness(&node, test_mock_now, NULL);
+    EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]); // forgiven once
+
+    // The stall is over. This run is armed and punctual, and the peer has still said nothing.
+    uint64_t const armed = node.liveliness_check_ns;
+    test_mock_now = armed + tt_MICROSECOND;
+    check_liveliness(&node, test_mock_now, NULL);
+    EXPECT_TRUE(!node.update_seen[REMOTE_NODE_ID]); // and now it is a real death
+}
+
 int main(void) {
     test_lease_expiry_drops_writer_proxy_on_subscriber();
     test_lease_expiry_drops_subscriber_from_publisher_ack_set();
@@ -702,6 +774,12 @@ int main(void) {
     test_node_limit_runs_from_the_last_packet();
     test_self_sent_packet_does_not_refresh();
     test_expires_peer_after_missed_intervals();
+    test_mock_reset();
+    test_a_descheduled_node_does_not_blame_its_peers();
+    test_mock_reset();
+    test_an_ordinary_run_does_not_widen_the_limit();
+    test_mock_reset();
+    test_the_allowance_does_not_carry_into_the_next_run();
     test_mock_reset();
     test_a_peer_with_datagrams_waiting_unread_is_not_dead();
     test_mock_reset();

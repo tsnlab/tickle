@@ -440,6 +440,23 @@ int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* data
 }
 
 // The mock's backlog counts as held: tt_try_receive() hands it out with nothing to wait for.
+//
+// **THIS DOES NOT MEAN WHAT THE LINUX HAL'S tt_rx_buffered() MEANS, and core logic that branches on
+// it cannot be tested here.** Here it is kernel-side availability - datagrams the mock will hand out.
+// In hal_linux.c it is `rx_count - rx_next`: datagrams ALREADY PULLED into our own batch by a
+// previous recvmmsg(), with rx_count assigned in exactly one place, after a receive that read
+// something. The two are near-opposites on the case that matters: a process that has not received
+// yet sees a non-zero count here and zero there.
+//
+// That is not hypothetical. On 2026-09-30 a liveliness fix deferred judgement while
+// tt_rx_buffered() > 0, to stop a descheduled node declaring peers dead whose datagrams were already
+// waiting. It passed its tests here and was a no-op in production, because on a starved wake-up the
+// batch is empty and the kernel holds everything. Four mutants died against a condition that cannot
+// be true in the thing being fixed. The replacement (unobserved_ns in check_liveliness()) asks how
+// late the scheduler entry is instead, which needs no HAL query and so cannot be faked by a mock.
+//
+// So: if a change in core reads this function to decide something, the test that covers it belongs
+// somewhere the real HAL runs - or the decision belongs on a quantity the mock cannot misrepresent.
 uint32_t tt_rx_buffered(const struct tt_Context* node) {
     (void)node;
     return test_mock_try_receive_remaining > 0 ? (uint32_t)test_mock_try_receive_remaining : 0U;

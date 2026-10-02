@@ -7477,7 +7477,7 @@ static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t 
 
 // The node-level half of check_liveliness(): presumes dead each remote node silent past its limit, and
 // lowers *next to the earliest limit still ahead.
-static void check_node_silence(struct tt_Context* node, uint64_t time, uint64_t* next) {
+static void check_node_silence(struct tt_Context* node, uint64_t time, uint64_t unobserved_ns, uint64_t* next) {
     for (int i = 0; i < tt_MAX_CONTEXT_IDS; i++) {
         if (!node->update_seen[i] && !update_parts_any(node, (uint8_t)i)) {
             continue; // never heard from this node id at all - nothing to expire
@@ -7485,7 +7485,12 @@ static void check_node_silence(struct tt_Context* node, uint64_t time, uint64_t*
         // A node heard only through fragments of an announce it never finished (update_seen still false)
         // has entities recorded all the same, so it expires by the same clock as one that completed.
         uint64_t last = source_last_heard(node, (uint8_t)i);
-        uint64_t limit = tt_LIVELINESS_SILENCE_NS;
+        // The limit plus the time we were not watching. A peer is presumed gone after
+        // tt_LIVELINESS_SILENCE_NS of silence WE OBSERVED; a window this node spent descheduled is not
+        // silence we observed, and counting it is how a live peer gets declared dead on a loaded
+        // machine. Added once per run and not accumulated: the next run is late only by its own
+        // lateness, so a peer that really has gone is reported one ordinary interval later at worst.
+        uint64_t limit = tt_LIVELINESS_SILENCE_NS + unobserved_ns;
         if (time > last && time - last > limit) {
             // Only for a node already that quiet. Capped as a DDS participant lease caps its writers': an
             // entity's lease cannot keep a silent node alive past tt_CONTEXT_MAX_LEASE_NS.
@@ -7530,14 +7535,35 @@ static void check_entity_leases(struct tt_Context* node, uint64_t time, uint64_t
 // the first time.
 static void check_liveliness(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
-    // Nothing is judged while datagrams are still unread. This entry runs before the socket is read
-    // (poll_once_nonblocking() drains every due entry first), so a node descheduled past
-    // tt_LIVELINESS_SILENCE_NS would otherwise declare peers dead whose datagrams were already sitting
-    // in its buffer - which is not silence, it is not having looked. Both sides of a starved pair do it
-    // to each other; that is the 2026-09-30 CI failure, on a commit that changed no code.
+    // How late this run is against the moment it was armed for, and the whole of why that matters:
+    // **it is time during which this node was not running, so it cannot be evidence that anyone else
+    // was silent.** A healthy scheduler is late by microseconds and this is noise; a descheduled
+    // process is late by seconds, and without this it wakes with its own clock far advanced and
+    // declares every peer dead for a window it spent not listening. Both sides of a starved pair do
+    // it to each other, which is the shape of the CI failures on 2026-09-30 and 2026-10-01.
+    //
+    // Measured, not inferred: the scheduler entry knows when it was due. No clock heuristic, no
+    // threshold to tune, and it degrades to nothing exactly when the node is healthy - which is the
+    // property that keeps it a guard rather than a blanket amnesty.
+    uint64_t unobserved_ns = 0;
+    if (node->liveliness_check_scheduled && time > node->liveliness_check_ns) {
+        unobserved_ns = time - node->liveliness_check_ns;
+    }
+
+    // Nothing is judged while datagrams are still unread: evidence in hand that has not been looked at.
+    //
+    // **This does NOT cover the descheduled case, and the commit that added it said it did. It was
+    // wrong.** On Linux tt_rx_buffered() returns rx_count - rx_next, which counts datagrams already
+    // pulled into our own batch by a previous recvmmsg() - not what the kernel is holding. A starved
+    // process wakes with its peers' datagrams in the SOCKET, with rx_count == rx_next == 0, so this
+    // condition is false exactly when the starvation case needs it. The tests did not catch that
+    // because test_mock.h's tt_rx_buffered() means kernel-side availability instead, so four mutants
+    // died against a condition that cannot be true in production. unobserved_ns above is the fix for
+    // that case; this one keeps a narrower job of its own, which is real: drain_rx() takes at most
+    // tt_RX_LOCK_CHUNK per lock, so a long batch really can still be part-drained when this runs.
     //
     // Capped, because "defer while busy" with no bound would let a saturated socket postpone a real
-    // death for ever. The next receive pass empties the queue, so one deferral is normally enough.
+    // death for ever.
     if (tt_rx_buffered(node) > 0 && node->liveliness_deferrals < tt_LIVELINESS_MAX_DEFERRALS) {
         node->liveliness_deferrals++;
         node->liveliness_deferrals_total++;
@@ -7556,7 +7582,7 @@ static void check_liveliness(struct tt_Context* node, uint64_t time, void* param
         node->liveliness_check_scheduled = false;
     }
     uint64_t next = time + tt_CONTEXT_UPDATE_INTERVAL;
-    check_node_silence(node, time, &next);
+    check_node_silence(node, time, unobserved_ns, &next);
     check_entity_leases(node, time, &next);
     arm_liveliness_check(node, next);
 }
