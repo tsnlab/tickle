@@ -1,0 +1,13 @@
+=== ros2 interfaces flake 2026-10-02T21:19:07+09:00 reps=10 load=1 ws=/home/semih/rmw_accept_ws ===
+  arm on: da240cd418c1c669
+  arm off: 80c991aacfe7c1d9
+  load: 16 spinners (pids 1763529 1763530 1763531 1763532 1763533 1763534 1763535 1763536 1763537 1763538 1763539 1763540 1763541 1763542 1763543 1763544)
+--- module ON, 10 reps ---
+--- module OFF (control), 10 reps ---
+=== done 2026-10-02T21:32:53+09:00 ===
+
+  module ON  : 0 of 10 failed
+  module OFF : 0 of 10 failed  (control)
+
+VOID: neither arm failed, so the flake did not reproduce here and nothing was discriminated.
+      This machine is quieter than the runner. Re-run with LOAD=1 before concluding anything.
