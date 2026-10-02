@@ -182,6 +182,24 @@ MUTANTS = [
         "    if (node->same_host_peer_count == 0 && node->segment_peers[node->id].mapping == NULL) {",
         "test_a_renumbered_context_still_knows_it_holds_its_own_segment",
     ),
+    # The geometry check (2026-10-02). Measured before it was written: a 512-slot owner against a
+    # 256-slot attacher does NOT fault - it wedges the ring and drops 1535 of 2000 messages silently,
+    # while the publisher reports success and exits 0. The opposite direction was already refused by
+    # tt_segment_attach()'s fstat, which is why only half of this was ever covered.
+    (
+        "refusing a segment whose geometry is not ours",
+        "src/tickle.c",
+        "    if (header->slots != tt_SEGMENT_SLOTS || header->slot_bytes != tt_SEGMENT_SLOT_BYTES) {",
+        "    if (false) {",
+        "test_a_segment_with_another_geometry_is_refused",
+    ),
+    (
+        "checking slot_bytes as well as slots",
+        "src/tickle.c",
+        "    if (header->slots != tt_SEGMENT_SLOTS || header->slot_bytes != tt_SEGMENT_SLOT_BYTES) {",
+        "    if (header->slots != tt_SEGMENT_SLOTS) {",
+        "test_a_segment_with_another_geometry_is_refused",
+    ),
 ]
 
 

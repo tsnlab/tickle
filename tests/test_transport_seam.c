@@ -265,6 +265,13 @@ static struct tt_SegmentHeader valid_header(void) {
     header.owner_port = OWNER_PORT;
     header.owner_context_id = OWNER_ID;
     header.incarnation = OWNER_INCARNATION;
+    // The geometry, without which this was never a valid header - only one nothing checked. A header
+    // with slots == 0 is not merely incomplete: segment_slot() masks with slots - 1U, so zero becomes
+    // 0xFFFFFFFF and every index is wild. create_own_segment() always writes both fields, so omitting
+    // them here built something the product cannot produce, and the omission went unnoticed for as
+    // long as nothing read them.
+    header.slots = (uint32_t)tt_SEGMENT_SLOTS;
+    header.slot_bytes = (uint32_t)tt_SEGMENT_SLOT_BYTES;
     return header;
 }
 
@@ -1890,6 +1897,53 @@ static void test_a_renumbered_context_still_knows_it_holds_its_own_segment(void)
     EXPECT_EQ_INT(0, test_mock_segment_double_detaches);
 }
 
+// A segment whose geometry is not ours is refused, because every slot address inside it is computed
+// from the OWNER's numbers while the mapping length is ours.
+//
+// Measured on 2026-10-02 with two real builds, a 512-slot owner and a 256-slot attacher: it does not
+// fault, which is what makes it worth a test. The writer fills the slots it can address, then reads a
+// slot header beyond its mapping, finds a sequence that is not the index it claimed, and returns
+// "ring full" - for ever, because write_index never advances past that slot. 1535 of 2000 messages
+// were dropped silently while the publisher reported "sent 2,000 message(s)" and exited 0.
+//
+// The opposite direction (owner SMALLER) was already refused by tt_segment_attach()'s fstat, which is
+// why this hole survived: the half that is visible from the file size was covered in the HAL, and a
+// larger file looks fine from there.
+static void test_a_segment_with_another_geometry_is_refused(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context owner;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_topic_pub(&owner, &topic, &pub);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+
+    // The header is otherwise perfect: right magic, version, owner and incarnation. Only the geometry
+    // differs, which is exactly the case nothing looked at.
+    EXPECT_EQ_U32((uint32_t)tt_SEGMENT_SLOTS, owner.own_segment->slots);
+    owner.own_segment->slots = (uint32_t)tt_SEGMENT_SLOTS * 2U;
+    EXPECT_EQ_INT(tt_SEGMENT_BAD_HEADER,
+                  (int)segment_header_check(owner.own_segment, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
+
+    owner.own_segment->slots = (uint32_t)tt_SEGMENT_SLOTS; // restore, then the other field
+    EXPECT_EQ_INT(tt_SEGMENT_ATTACHED, (int)segment_header_check(owner.own_segment, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
+    owner.own_segment->slot_bytes = (uint32_t)tt_SEGMENT_SLOT_BYTES - 1U;
+    EXPECT_EQ_INT(tt_SEGMENT_BAD_HEADER,
+                  (int)segment_header_check(owner.own_segment, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
+
+    // And the control that keeps this from being "refuse everything": our own geometry still attaches.
+    owner.own_segment->slot_bytes = (uint32_t)tt_SEGMENT_SLOT_BYTES;
+    EXPECT_EQ_INT(tt_SEGMENT_ATTACHED, (int)segment_header_check(owner.own_segment, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
+
+    release_segments(&owner);
+}
+
 int main(void) {
     test_ordinary_publish_is_counted_as_udp();
     test_zerocopy_publish_is_counted_as_udp();
@@ -1897,6 +1951,7 @@ int main(void) {
     test_reset_zeroes_the_per_transport_counters();
     test_segment_name_separates_peers_that_differ();
     test_segment_header_catches_what_the_name_cannot();
+    test_a_segment_with_another_geometry_is_refused();
     test_ring_round_trips_a_datagram();
     test_full_ring_refuses_rather_than_overwriting();
     test_ring_survives_many_wraps();

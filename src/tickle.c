@@ -520,6 +520,30 @@ static enum tt_SegmentAttach segment_header_check(const struct tt_SegmentHeader*
     if (header->owner_ip != ip || header->owner_port != port || header->owner_context_id != context_id) {
         return tt_SEGMENT_WRONG_OWNER;
     }
+    // The geometry, which until 2026-10-02 nothing checked. segment_slot() strides by
+    // header->slot_bytes and masks by header->slots - the OWNER's numbers - while peer_segment() maps
+    // segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES), OURS. Both are #ifndef-guarded, so two
+    // processes built with different -D are a configuration somebody can reach.
+    //
+    // Half of it was already covered, in the HAL rather than here, which is why reading this function
+    // alone did not show it: tt_segment_attach() fstats the file and refuses one SMALLER than the
+    // length asked for. That direction fails cleanly today - measured, 2026-10-02: tx_shm=0, every
+    // sample over UDP, nothing lost.
+    //
+    // The other direction is invisible from the file size, because a LARGER file looks fine - and it
+    // does not fault, which is what both of the predictions made before the measurement got wrong. The
+    // writer fills the slots its short mapping can address, then reads a slot header it cannot see,
+    // finds a sequence that is not the index it claimed, and returns "ring full". write_index never
+    // advances past that slot, so the ring is full for ever after. Measured with a 512-slot owner and
+    // a 256-slot attacher: 259 datagrams over shared memory, then **shm_full_dropped=1535 of 2000
+    // messages, silently** - drop-on-full discards rather than rerouting - while the application was
+    // told "sent 2,000 message(s)" and the process exited 0. Its subscriber received 536.
+    //
+    // So this refuses instead, and the pair falls back to UDP, which is the module's documented
+    // behaviour when a segment is unavailable and costs nothing but the kernel path.
+    if (header->slots != tt_SEGMENT_SLOTS || header->slot_bytes != tt_SEGMENT_SLOT_BYTES) {
+        return tt_SEGMENT_BAD_HEADER;
+    }
     if (expected_incarnation != 0 && header->incarnation != expected_incarnation) {
         return tt_SEGMENT_STALE;
     }
