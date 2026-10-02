@@ -639,8 +639,37 @@ in-process on demand, with no daemon.
 5.0%, and at p4 it carries **92.6%** more than we do. The cause is mechanical and ours: `tt_SEGMENT_SLOT_BYTES` is
 bounded by the network MTU, so a 2800-byte sample takes two slots on a path that has no MTU - **our segment
 inherits a limit the medium does not impose**. Unbinding the slot from the datagram size is the fix the number
-argues for, and it is not free: a larger slot means fewer slots in the same ring, so the back-pressure cells
-(SHM_PLAN) would need re-measuring with it.
+argues for. It was built and measured on 2026-10-03, and it does not work.
+
+**Provenance of the 2,745, and what happened when the slot was unbound (2026-10-03).** The figure above is the
+**fragmenting** path. That is what the cell does and the number is sound, but it is worth saying outright,
+because `end_encode_sample()` tested a constant rather than the limit the rest of the publish had computed, so
+every sample went as two datagrams whatever the slot was set to. Four campaigns run with a 4096-byte slot
+reported ~2,730 Mbps at 2.01 datagrams per sample and were read as "the mechanism is inert"; they were measuring
+that constant winning, not a whole-record path performing well.
+
+With the bound made consistent - `record_size_limit()`, one bound asked at each send site with that send's own
+destinations - the whole-record path engages, and the cell collapses. On the rig, and on an off-rig
+reproduction whose control arm tracks the rig to within 1.2%:
+
+| p4 same-host cell | send Mbps | ring drops | RELIABLE |
+|---|---:|---:|---|
+| default slot, record split in two | **2,730** | 0 | drains |
+| 4096-byte slot, record carried whole | **1.4** | 946 | never recovers |
+
+**The cost this section used to predict was the wrong one.** It said a larger slot means fewer slots in the same
+ring. Widening the segment to restore the slot *count* to the default's 512 changed nothing - 934 drops against
+936 - so it is not sizing. A 2800-byte sample held in one 4096-byte slot costs about 2.7x the ring **bytes** of
+the same sample as two datagram-sized ones, and acknowledgements travel through the same rings, so samples and
+acks starve each other.
+
+So the dependency runs the other way round from how SHM_PLAN 6e was written: **6e(b), the encoder writing into
+the slot, is the prerequisite for 6e(a)**, because it is what stops a whole record costing a whole slot.
+`valid_slot_bytes()` caps the runtime slot at one datagram until then, so no application can select the
+collapsing configuration; a build may still set `tt_SEGMENT_SLOT_BYTES` higher to measure it
+(`experiments/whole_record_refusal.sh`). Nothing in this table changes as a result - there is no p4 figure yet to
+replace it with, and `record_size_limit()` itself was measured inert on the default path (ON -0.63% against a
+control, segments compiled out, of -0.48%, a 0.16 pp difference).
 
 **RTT, measured 2026-10-02 on `fcc4ddb4`** (same harness with `SCEN=reliable_latency`, `-i 0.005` over 10 s so each
 rep is ~1,950 round trips, one ping in flight at a time, 3 reps, `results/s6_latency_p2_fcc4ddb4.txt`). Every

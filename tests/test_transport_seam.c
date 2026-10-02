@@ -1978,6 +1978,65 @@ static void test_only_an_attached_same_host_peer_raises_the_whole_limit(void) {
     test_mock_segments_free();
 }
 
+// The limit must read peer_count entries and not one more. Every case above hands it pub.peers, a full
+// tt_MAX_PEER_COUNT array, which is why none of them caught the loop walking tt_MAX_PEER_COUNT and skipping
+// holes: that is safe for pub.peers and reads off the end of the single tt_Peer the retransmit path puts on
+// its stack - end_encode(node, hdr, true, &target, 1), from send_cached_record(). Found on 2026-10-03 by the
+// fuzz tier as an ASan stack-buffer-overflow, one second into the run, after the gates and 44 unit suites
+// had all passed. The tests exercised the decision; nothing exercised the shape of the caller's array.
+//
+// This is a one-element array deliberately. Under ASan - which is how CI runs the unit suite, and how this
+// was caught - anything read past [0] is a reported overflow rather than a silent pass.
+static void test_the_limit_reads_only_the_peers_it_was_given(void) {
+    struct tt_Context owner;
+    struct tt_Context sender;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+
+    memset(&owner, 0, sizeof(owner));
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+
+    init_node_topic_pub(&sender, &topic, &pub);
+    sender.hal.own_ip = PEER_IP;
+    sender.hal.own_port = PEER_PORT;
+
+    // Exactly one, as the retransmit path has.
+    struct tt_Peer target;
+    memset(&target, 0, sizeof(target));
+    target.context_id = OWNER_ID;
+    target.ip = OWNER_IP;
+    target.port = OWNER_PORT;
+
+    EXPECT_EQ_U32(0, whole_record_limit_for(&sender, &target, 1)); // nothing attached yet
+    EXPECT_TRUE(peer_segment(&sender, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
+    EXPECT_EQ_U32((uint32_t)tt_SEGMENT_SLOT_BYTES, whole_record_limit_for(&sender, &target, 1));
+
+    // And through the bound every send site actually asks, not only the predicate underneath it.
+    EXPECT_EQ_U32((uint32_t)tt_SEGMENT_SLOT_BYTES,
+                  record_size_limit(&sender, (uint32_t)sizeof(struct tt_Header), &target, 1));
+
+    // The case that actually overflowed, and the first version of this test did not cover it. With a VALID
+    // single peer the old loop stopped at i=0 because `seen` reached peer_count, so it passed on the broken
+    // source and would have shipped as cover. An INVALID entry never increments `seen`, so the old loop ran
+    // on to tt_MAX_PEER_COUNT and read off the end of this one-element object. That is the shape the fuzzer
+    // produced: a retransmit target whose context id is unset.
+    struct tt_Peer lone_invalid;
+    memset(&lone_invalid, 0, sizeof(lone_invalid));
+    lone_invalid.context_id = tt_CONTEXT_ID_INVALID;
+    EXPECT_EQ_U32(0, whole_record_limit_for(&sender, &lone_invalid, 1));
+    EXPECT_EQ_U32((uint32_t)sizeof(struct tt_Header),
+                  record_size_limit(&sender, (uint32_t)sizeof(struct tt_Header), &lone_invalid, 1));
+
+    release_segments(&sender);
+    release_own_segment(&owner);
+    test_mock_segments_free();
+}
+
 static void test_a_configured_slot_size_is_the_one_built(void) {
     const uint32_t configured = (uint32_t)tt_SEGMENT_SLOT_BYTES / 2U;
     struct tt_Context owner;
@@ -2114,6 +2173,7 @@ int main(void) {
     test_segment_name_separates_peers_that_differ();
     test_segment_header_catches_what_the_name_cannot();
     test_only_an_attached_same_host_peer_raises_the_whole_limit();
+    test_the_limit_reads_only_the_peers_it_was_given();
     test_a_configured_slot_size_is_the_one_built();
     test_a_segment_with_another_geometry_is_refused();
     test_ring_round_trips_a_datagram();

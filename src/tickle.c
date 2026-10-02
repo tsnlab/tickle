@@ -5090,7 +5090,13 @@ static uint32_t whole_record_limit_for(struct tt_Context* node, const struct tt_
     }
     uint32_t smallest = UINT32_MAX;
     uint8_t seen = 0;
-    for (int i = 0; i < tt_MAX_PEER_COUNT && seen < peer_count; i++) {
+    // i < peer_count, which is what link_destinations() and every other peer walk in this file do: the
+    // array holds the caller's peer_count entries and nothing says it is longer. This loop originally
+    // walked tt_MAX_PEER_COUNT skipping holes, which is safe for pub->peers and reads off the end of a
+    // single-peer stack object - end_encode(node, hdr, true, &target, 1), the retransmit path. That path
+    // only began calling this function when record_size_limit() was added, so the call sites widened and
+    // the contract did not. The fuzzer found it in under a second as an ASan stack-buffer-overflow.
+    for (uint8_t i = 0; i < peer_count; i++) {
         if (peers[i].context_id == tt_CONTEXT_ID_INVALID) {
             continue;
         }
