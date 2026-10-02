@@ -444,8 +444,28 @@
 // such a shape by design. The fix if measurement ever asks for it is variable-length records
 // spanning contiguous slots, which is not stage 1: complexity added before a measurement asks for
 // it cannot be attributed to anything.
+// **Choose this from your own system, not from this default - README.md has the formula.** In short:
+// the ring has to hold what the publisher produces while the subscriber is not running, so
+//
+//     slots >= publish rate (datagrams/s) x the subscriber's worst-case stall (s)
+//     bytes  = slots x (16 + tt_SEGMENT_SLOT_BYTES)
+//
+// and if that stall cannot be characterised, `shm_full_dropped` on the node traffic line is the
+// feedback signal: non-zero under your real load means the ring is smaller than your burst.
+//
+// **The slot count rounds DOWN to a power of two, so a careless value wastes up to half of it.** At
+// 1472-byte slots the stride is 1488 bytes:
+//
+//     512 KiB -> 352 raw slots -> 256 used, 372 KiB mapped, 27% of the value unusable
+//     768 KiB -> 528 raw slots -> 512 used, 744 KiB mapped,  3% unusable
+//
+// 768 KiB is the default for that reason (raised from 512 KiB on 2026-10-02): it doubles the slots
+// and drops the waste from 27% to 3%, which is the only change to this value justified without a
+// measurement. It is a per-context cost - a host running N contexts with a same-host peer each pays
+// N times it - though a context with no same-host peer and no self-delivery creates no segment at
+// all and pays nothing.
 #ifndef tt_SEGMENT_BYTES
-#define tt_SEGMENT_BYTES (512 * 1024)
+#define tt_SEGMENT_BYTES (768 * 1024)
 #endif
 // Every constant below is #ifndef-guarded, and that is not decoration. Until 2026-09-29 they were
 // bare #defines, so -Dtt_SEGMENT_ATTACH_RETRY_SENDS=... was silently overridden by this header and

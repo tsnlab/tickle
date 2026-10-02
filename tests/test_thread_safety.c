@@ -937,18 +937,19 @@ int main(void) {
         EXPECT_EQ_U32(0, backwards[t]);
         // **No delivery floor is asserted here, and that is a considered refusal rather than a gap
         // in the test.** These publishers are BEST-EFFORT: a bounded queue that is full drops, which
-        // is what the segment's 256-slot ring does and what a real UDP socket does. This harness's
-        // own fake transport does NOT - push() blocks on a condition variable when its 256 slots are
-        // full - so it is lossless by construction, and the assertion that used to stand here ("no
-        // gaps at all") was only ever satisfiable by that. **It was testing the harness, not the
-        // module**, and it passed for the module's whole life while the module was never engaged.
+        // is what the segment ring does and what a real UDP socket does. This harness's fake
+        // transport used NOT to - push() blocked on a condition variable when its queue was full, so
+        // it was lossless by construction, and the assertion that used to stand here ("no gaps at
+        // all") was only ever satisfiable by that. **It was testing the harness, not the module**,
+        // and it passed for the module's whole life while the module was never engaged. push() now
+        // drops and counts, so both policies match and loss is attributable - see the accounting at
+        // the end of main().
         //
-        // With the segment engaged the loss measured across six runs was 29 to 2,281 samples of
-        // 20,000 per thread - 0.15% to 11.4% - and NOT ONE sample arrived out of order. A floor
-        // anywhere in that range would be a number nobody can derive, which is the objection this
-        // project already makes to "tx_udp small and flat". The figure is a property of a harness
-        // whose two transports have opposite full-queue policies, so it is printed for a reader and
-        // not asserted on.
+        // A floor is still not asserted, and the measurements are why. Delivery across runs on one
+        // machine: 80000/80000, 11775/80000, 80000/80000 - 0%, 85%, 0% - which is drop-on-full in
+        // front of a writer faster than its reader. A floor anywhere in that range would be a number
+        // nobody can derive, which is the objection this project already makes to "tx_udp small and
+        // flat". What IS asserted is that every sample is accounted for, which the counting bought.
         //
         // The honest repair is to make push() drop rather than block, so both paths have the same
         // policy and a tight floor becomes derivable. That is a change to a harness older than this

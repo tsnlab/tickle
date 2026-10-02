@@ -161,6 +161,66 @@ riscv64-unknown-elf-size obj-selftest-1/src/tickle.c.o
 
 If it has not changed, the flag did not arrive. Edit the default in `config.h`, or add the define to `CFLAGS` itself.
 
+## Sizing the shared-memory ring
+
+Two contexts on one host exchange datagrams through a shared-memory ring instead of the kernel. The ring is
+the buffer the network used to be, and it is a **much smaller** one: the UDP path has a send buffer and a
+receive buffer of `tt_SOCKET_BUFFER_SIZE` (1 MiB requested on each side, kernel-clamped) plus whatever is in
+flight, where the segment has one shared ring of `tt_SEGMENT_BYTES`. The same QoS that never loses a sample
+over UDP can lose heavily over the segment, and the cause is capacity rather than policy.
+
+**The ring must hold what the publisher produces while the subscriber is not running.** That is the whole
+sizing rule:
+
+```
+slots  >=  publish rate (datagrams/s)  x  the subscriber's worst-case stall (seconds)
+bytes   =  slots  x  (16 + tt_SEGMENT_SLOT_BYTES)
+```
+
+The stall is a property of your system, not of TickLE: how long the subscribing process can go without being
+scheduled, under the worst load you intend to support. A 20 kHz publisher against a subscriber that can be
+descheduled for 25 ms needs 500 slots; the same publisher against a 1 ms stall needs 20.
+
+**If you cannot characterise the stall, measure instead.** Every node prints `shm_full_dropped` on its traffic
+line at destroy. Run your own worst case and read it:
+
+| `shm_full_dropped` | what it means |
+|---|---|
+| 0 | the ring absorbed every burst - it is large enough, and may be larger than it needs to be |
+| non-zero | the ring is smaller than your burst, and those samples were **discarded, not resent** |
+
+Drop-on-full is deliberate and is not a fallback to UDP: a datagram sent over the socket because the ring was
+full arrives *ahead* of records still queued in the ring, and the reader then discards everything older behind
+it. That was measured costing 97.6% of a same-host stream, which is why a full ring drops instead. See
+"Delivery guarantees" below for what each QoS promises once it does.
+
+### The slot count rounds down to a power of two
+
+`tt_SEGMENT_BYTES` is a byte budget, but the ring indexes with a mask, so the slot count is rounded **down** to
+a power of two. A value just under a boundary wastes nearly half of what you asked for. At the default
+1472-byte slots (stride 1488 B):
+
+| `tt_SEGMENT_BYTES` | raw slots | slots used | mapped | unusable |
+|---|---:|---:|---:|---:|
+| 512 KiB | 352 | 256 | 372 KiB | **27%** |
+| **768 KiB (default)** | 528 | **512** | 744 KiB | 3% |
+| 1 MiB | 704 | 512 | 744 KiB | **27%** |
+| 1.5 MiB | 1057 | 1024 | 1488 KiB | 3% |
+
+So pick a value just **above** a power-of-two slot count, not a round number of bytes. Check what you actually
+got rather than assuming - the slot count is in the "Segment ring of context N is full" warning and in the
+header any peer reads.
+
+### What it costs
+
+The ring is allocated when the segment is created and every slot is written then (each starts free for the
+writer of its own index), so the cost is resident immediately rather than growing with use. It is **per
+context**: a host running N contexts that each have a same-host peer pays N times it. A context with no
+same-host peer and no self-delivery creates no segment at all and pays nothing.
+
+Set it with `-Dtt_SEGMENT_BYTES=...` like any other constant in
+[include/tickle/config.h](include/tickle/config.h).
+
 ## Delivery guarantees
 
 Both modes make promises **per writer**. Samples from two different publishers have no order
