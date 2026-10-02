@@ -539,9 +539,19 @@ static enum tt_SegmentAttach segment_header_check(const struct tt_SegmentHeader*
     // messages, silently** - drop-on-full discards rather than rerouting - while the application was
     // told "sent 2,000 message(s)" and the process exited 0. Its subscriber received 536.
     //
-    // So this refuses instead, and the pair falls back to UDP, which is the module's documented
-    // behaviour when a segment is unavailable and costs nothing but the kernel path.
-    if (header->slots != tt_SEGMENT_SLOTS || header->slot_bytes != tt_SEGMENT_SLOT_BYTES) {
+    // That was refused outright between c97fac8b and this commit - any mismatch fell back to UDP, which was
+    // right while the attacher mapped ITS OWN length. It no longer does: peer_segment() reads the geometry from
+    // the header and maps what the owner actually built, so a different geometry is now something we handle
+    // rather than something that wedges us. A pair whose slots are smaller than our datagrams simply sends the
+    // ones that do not fit over UDP, counted in segment_oversized_to_udp, which is already the documented
+    // behaviour for a sample larger than a slot.
+    //
+    // What stays refused is a geometry that cannot be indexed at all, because segment_slot() masks with
+    // slots - 1: zero slots makes that mask 0xFFFFFFFF and every index wild, and a non-power-of-two makes the
+    // mask skip addresses that exist. Neither is something create_own_segment() can produce, so meeting one
+    // means the header is corrupt or is not ours - and test_transport_seam.c's valid_header() was building
+    // exactly that (slots = 0, slot_bytes = 0) and calling it valid until 2026-10-02.
+    if (header->slots == 0 || (header->slots & (header->slots - 1U)) != 0 || header->slot_bytes == 0) {
         return tt_SEGMENT_BAD_HEADER;
     }
     if (expected_incarnation != 0 && header->incarnation != expected_incarnation) {
@@ -690,6 +700,55 @@ static void remember_absent(struct tt_SegmentPeer* entry, uint32_t ip, uint16_t 
 // peer which binds later still becomes attachable.
 static void ensure_own_segment(struct tt_Context* node);
 
+// Maps a peer's segment in two steps, because the length to map is inside the thing being mapped: the header
+// first, on its own, and then the region at the size the OWNER built. A single attach could only ask for our own
+// geometry and would then index with the owner's, which is what wedged a mismatched pair - with a larger owner
+// the writer filled what its short mapping could address, read a slot header it could not see, got a sequence
+// that was not the index it claimed, and reported the ring full for ever: 1,535 of 2,000 datagrams silently
+// dropped, exit 0 (measured 2026-10-02, examples/perf_hil/experiments/segment_geometry_mismatch.sh). Two opens
+// instead of one, on a path that runs once per peer and is cached, not once per datagram.
+//
+// NULL with *out_verdict set on every refusal, so the caller has one failure path and this has one job.
+static struct tt_SegmentHeader* attach_peer_segment(const char* path, uint32_t ip, uint16_t port, uint8_t context_id,
+                                                    size_t* out_bytes, enum tt_SegmentAttach* out_verdict) {
+    uint8_t why = (uint8_t)tt_SEGMENT_ABSENT;
+    struct tt_SegmentHeader* probe = tt_segment_attach(path, sizeof(struct tt_SegmentHeader), &why);
+    if (probe == NULL) {
+        *out_verdict = (enum tt_SegmentAttach)why;
+        return NULL;
+    }
+    // Checked on the probe before its numbers size anything: a geometry has to be one that can be indexed
+    // before it can be trusted to say how much to map.
+    enum tt_SegmentAttach verdict = segment_header_check(probe, ip, port, context_id, 0);
+    size_t bytes = segment_bytes(probe->slots, probe->slot_bytes);
+    tt_segment_detach(probe, sizeof(struct tt_SegmentHeader));
+    if (verdict != tt_SEGMENT_ATTACHED) {
+        *out_verdict = verdict;
+        return NULL;
+    }
+
+    struct tt_SegmentHeader* mapping = tt_segment_attach(path, bytes, &why);
+    if (mapping == NULL) {
+        *out_verdict = (enum tt_SegmentAttach)why;
+        return NULL;
+    }
+    // Again on the full mapping, not only on the probe. Between the two opens the owner could have exited and a
+    // new one created a segment at the same name with a different geometry, and the numbers that sized this
+    // mapping would then describe something that is gone - the same reason the incarnation is checked at all.
+    verdict = segment_header_check(mapping, ip, port, context_id, 0);
+    if (verdict == tt_SEGMENT_ATTACHED && segment_bytes(mapping->slots, mapping->slot_bytes) != bytes) {
+        verdict = tt_SEGMENT_STALE;
+    }
+    if (verdict != tt_SEGMENT_ATTACHED) {
+        tt_segment_detach(mapping, bytes);
+        *out_verdict = verdict;
+        return NULL;
+    }
+    *out_bytes = bytes;
+    *out_verdict = tt_SEGMENT_ATTACHED;
+    return mapping;
+}
+
 static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t context_id, uint32_t ip, uint16_t port) {
     if (context_id == tt_CONTEXT_ID_INVALID) {
         return NULL; // a broadcast has no single peer, so no name to compute
@@ -748,7 +807,7 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
         // Carried across only when the address is unchanged. A different peer behind this id is a
         // different relationship and starts its own clock.
         uint64_t carried_progress = same_address ? entry->last_progress_ns : 0;
-        tt_segment_detach(entry->mapping, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
+        tt_segment_detach(entry->mapping, entry->mapped_bytes);
         memset(entry, 0, sizeof(*entry));
         entry->last_progress_ns = carried_progress;
     }
@@ -759,22 +818,15 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
         remember_absent(entry, ip, port);
         return NULL;
     }
-    uint8_t why = (uint8_t)tt_SEGMENT_ABSENT;
-    void* mapping = tt_segment_attach(path, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES), &why);
-    if (mapping == NULL) {
-        note_attach(node, (enum tt_SegmentAttach)why);
-        remember_absent(entry, ip, port);
-        return NULL;
-    }
-
-    struct tt_SegmentHeader* header = mapping;
-    enum tt_SegmentAttach verdict = segment_header_check(header, ip, port, context_id, 0);
-    if (verdict != tt_SEGMENT_ATTACHED) {
+    size_t bytes = 0;
+    enum tt_SegmentAttach verdict = tt_SEGMENT_ABSENT;
+    struct tt_SegmentHeader* header = attach_peer_segment(path, ip, port, context_id, &bytes, &verdict);
+    if (header == NULL) {
         note_attach(node, verdict);
-        tt_segment_detach(mapping, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
         remember_absent(entry, ip, port);
         return NULL;
     }
+    entry->mapped_bytes = bytes;
     note_attach(node, tt_SEGMENT_ATTACHED);
     entry->mapping = header;
     entry->ip = ip;
@@ -912,7 +964,8 @@ static void release_segments(struct tt_Context* node) {
     for (int id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
         struct tt_SegmentHeader* mapping = node->segment_peers[id].mapping;
         if (mapping != NULL && mapping != own) {
-            tt_segment_detach(mapping, bytes);
+            // The peer's own length, not ours: since the attach became two-step these can differ.
+            tt_segment_detach(mapping, node->segment_peers[id].mapped_bytes);
         }
         memset(&node->segment_peers[id], 0, sizeof(node->segment_peers[id]));
     }
@@ -1095,7 +1148,7 @@ static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_
             entry->last_progress_ns = now; // the first refusal since we last got something in
         }
         if (now - entry->last_progress_ns >= tt_SEGMENT_DEAD_READER_NS) {
-            tt_segment_detach(entry->mapping, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));
+            tt_segment_detach(entry->mapping, entry->mapped_bytes);
             memset(entry, 0, sizeof(*entry));
             remember_absent(entry, ip, port);
             note_attach(node, tt_SEGMENT_REFUSED); // asked for and given up on, which is what REFUSED says

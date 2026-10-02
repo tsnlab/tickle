@@ -11,6 +11,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h> // size_t, for struct tt_SegmentPeer.mapped_bytes
 #include <stdint.h>
 
 #include <tickle/config.h>
@@ -652,6 +653,10 @@ struct tt_Context {
     // when the address and context id it is named from are finally known.
     struct tt_SegmentPeer {
         struct tt_SegmentHeader* mapping;
+        // How many bytes `mapping` covers, which is the OWNER's geometry and not ours. Every detach has to
+        // unmap exactly what was mapped, and until the attach became two-step every site recomputed the length
+        // from our own tt_SEGMENT_SLOTS/tt_SEGMENT_SLOT_BYTES - correct only while every context agreed.
+        size_t mapped_bytes;
         uint32_t ip;
         uint16_t port;
         uint32_t incarnation; // what was in the header when we attached; a change means a new peer

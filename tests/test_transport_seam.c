@@ -563,7 +563,7 @@ static void test_a_datagram_crosses_a_segment(void) {
     EXPECT_TRUE(took); // it went over the segment, not to the socket
     EXPECT_EQ_U32(1, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
     EXPECT_EQ_U32(0, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_UDP]);
-    EXPECT_EQ_INT(1, test_mock_segment_attaches); // and it attached to find it
+    EXPECT_EQ_INT(2, test_mock_segment_attaches); // and it attached to find it: the header probe, then the region
 
     // The record carries the writer's own address, which is what a socket arrival would have. This
     // is asserted here because getting it wrong was invisible to every other check: the arrival was
@@ -915,7 +915,11 @@ static void test_a_peer_with_no_segment_is_asked_once_not_per_datagram(void) {
     for (int i = 0; i < sends; i++) {
         EXPECT_TRUE(peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
     }
-    EXPECT_EQ_INT(1, test_mock_segment_attach_calls);
+    // Two, not one, since the attach became two-step: a probe that reads the owner's geometry, then the
+    // region at the owner's size. What this assertion is for is unchanged - the count does not grow with
+    // `sends`, so the attach is still cached rather than repeated per datagram. The absent case above
+    // stays at one, because a probe that finds nothing returns before the second map.
+    EXPECT_EQ_INT(2, test_mock_segment_attach_calls);
 
     test_mock_segments_free();
 }
@@ -1925,17 +1929,37 @@ static void test_a_segment_with_another_geometry_is_refused(void) {
     EXPECT_TRUE(owner.own_segment != NULL);
 
     // The header is otherwise perfect: right magic, version, owner and incarnation. Only the geometry
-    // differs, which is exactly the case nothing looked at.
+    // differs - and what that means changed when the attach became two-step.
+    //
+    // A geometry that is merely DIFFERENT is now attached rather than refused. The attacher reads these numbers
+    // and maps what the owner actually built, so a bigger ring or a different slot size is something it
+    // handles; a datagram too large for the owner's slot goes over UDP and is counted, which is already the
+    // documented behaviour for a sample that does not fit. Between c97fac8b and the two-step attach these
+    // refused, correctly, because the attacher mapped its own length and then indexed with the owner's.
     EXPECT_EQ_U32((uint32_t)tt_SEGMENT_SLOTS, owner.own_segment->slots);
     owner.own_segment->slots = (uint32_t)tt_SEGMENT_SLOTS * 2U;
-    EXPECT_EQ_INT(tt_SEGMENT_BAD_HEADER,
-                  (int)segment_header_check(owner.own_segment, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
+    EXPECT_EQ_INT(tt_SEGMENT_ATTACHED, (int)segment_header_check(owner.own_segment, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
 
     owner.own_segment->slots = (uint32_t)tt_SEGMENT_SLOTS; // restore, then the other field
     EXPECT_EQ_INT(tt_SEGMENT_ATTACHED, (int)segment_header_check(owner.own_segment, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
     owner.own_segment->slot_bytes = (uint32_t)tt_SEGMENT_SLOT_BYTES - 1U;
+    EXPECT_EQ_INT(tt_SEGMENT_ATTACHED, (int)segment_header_check(owner.own_segment, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
+    owner.own_segment->slot_bytes = (uint32_t)tt_SEGMENT_SLOT_BYTES;
+
+    // What stays refused is a geometry that cannot be INDEXED, because segment_slot() masks with slots - 1.
+    // Three ways to be unindexable, each checked: a guard that only rejected zero would pass a
+    // non-power-of-two mask, which skips addresses that exist rather than making every index wild.
+    owner.own_segment->slots = 0;
     EXPECT_EQ_INT(tt_SEGMENT_BAD_HEADER,
                   (int)segment_header_check(owner.own_segment, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
+    owner.own_segment->slots = (uint32_t)tt_SEGMENT_SLOTS + 1U; // not a power of two
+    EXPECT_EQ_INT(tt_SEGMENT_BAD_HEADER,
+                  (int)segment_header_check(owner.own_segment, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
+    owner.own_segment->slots = (uint32_t)tt_SEGMENT_SLOTS;
+    owner.own_segment->slot_bytes = 0;
+    EXPECT_EQ_INT(tt_SEGMENT_BAD_HEADER,
+                  (int)segment_header_check(owner.own_segment, OWNER_IP, OWNER_PORT, OWNER_ID, 0));
+    owner.own_segment->slot_bytes = (uint32_t)tt_SEGMENT_SLOT_BYTES;
 
     // And the control that keeps this from being "refuse everything": our own geometry still attaches.
     owner.own_segment->slot_bytes = (uint32_t)tt_SEGMENT_SLOT_BYTES;

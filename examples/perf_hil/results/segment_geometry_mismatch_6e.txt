@@ -1,0 +1,13 @@
+=== segment geometry mismatch 2026-10-02T20:25:16+09:00 big=1048576 ===
+  arm small: slots=256 slot_bytes=1472 bytes=524288
+  arm big: slots=512 slot_bytes=1472 bytes=1048576
+--- control: matched geometry (big owner, big writer) ---
+--- arm: mismatched (big owner, small writer) ---
+=== done 2026-10-02T20:26:14+09:00 ===
+
+  control (matched)    tx_shm=9842135 tx_udp=125 shm_full_dropped=32188 sent=817921 received=817921
+  arm     (mismatched) tx_shm=9736050 tx_udp=255 shm_full_dropped=24961 sent=687641 received=687641
+
+PASS: 9736050 datagrams through a segment whose geometry is not ours against the control's 9842135, every
+      one of 687641 samples delivered, and shm_full_dropped 24961 against the control's 32188 - a
+      full ring at this rate, not a wedged one. It stopped at 259 and lost 1,535 before this.
