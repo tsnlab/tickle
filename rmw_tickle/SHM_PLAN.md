@@ -1485,11 +1485,25 @@ cannot be partially applied, and it wants a rested reading of `end_encode()`'s b
    **The gap stands and is separable** - ranges 0.051..0.052 against 0.045..0.046 - at **+10.9%, which is 5.0 us**,
    not 8. So the premise survives: there is a real, repeatable, separable cost to our own segment path at p2.
 
-   **The sizing argument does not survive, and it fails in the direction that should worry us.** 5.61 us against a
-   5.0 us gap is 112%. A saving that exceeds the whole gap is not a better doorbell; it is proof that a figure from
-   `wake_cost`'s own round trip cannot be subtracted from this cell's gap at all. The honest form of open question 1
-   is therefore: a FIFO doorbell is worth building and measuring IN THIS CELL, and no number should be predicted
-   for it beforehand. The 8 us it was sized against describes a build that no longer exists.
+   **Corrected within the hour, because the first version of this paragraph compared across publish rates.** It
+   said the sizing argument "does not survive" on the grounds that 5.61 us against a 5.0 us gap is 112%. That set a
+   200/s measurement against an 8 us figure taken at **20/s**: COMPARISON 2.2c's pure pair (0.050 / 0.058, +16%) is
+   labelled `p2, 20/s`, while this run used `-i 0.005`, which is 200/s - the same rate as 2.2c's *mixed* table,
+   whose OFF arm of 0.046 is exactly what the control here reproduced. Comparing a gap measured at one rate against
+   a gap measured at another is the same error as comparing a ten-sample run to a 1,950-sample one, in a place where
+   both numbers were real.
+
+   **Both gaps stand, and the difference between them is itself the finding.** 8.0 us at 20/s, 5.0 us at 200/s. That
+   is what a per-WAKE cost looks like when it is divided by samples: at 20/s the reader sleeps between every sample
+   and pays a doorbell for each, and at 200/s it finds work already waiting and coalesces. So the doorbell's share of
+   the gap is rate-dependent by construction, and the 70% figure describes 20/s - the rate at which it matters most,
+   which is also the rate most like a service call or a control loop.
+
+   **What this still does not license is a predicted number.** `wake_cost` measures a doorbell's own round trip with
+   no transport around it; this cell measures a gap that contains the slot write, the drain loop and cache behaviour
+   as well. Subtracting one from the other is an estimate whichever rate it is done at, and it is now an estimate
+   with a known rate-dependence on top. The measurement that settles it remains the p2 cell re-run against a real
+   FIFO doorbell, at both rates, with the gap at each one stated separately.
 2. **Whether a same-host pair keeps its UDP socket at all,** for discovery only, or whether discovery also moves into
    the segment. Keeping discovery on UDP is the smaller change and keeps one discovery path; moving it is what would
    let two processes talk with no network stack at all, which is a real claim for an embedded target.
