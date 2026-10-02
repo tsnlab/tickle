@@ -58,8 +58,13 @@ static void setup(void) {
     context.discovery = &discovery;
 }
 
+// entity_id derived from endpoint_id and deliberately different from it, so a lookup that returns the
+// wrong one of the two is a failure rather than a coincidence.
+#define ENTITY_ID_OF(endpoint_id) ((uint32_t)(endpoint_id) ^ 0xE1D00000U)
+
 static void add(uint8_t source, uint32_t endpoint_id) {
-    upsert_discovered_entity(&context, source, endpoint_id, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
+    upsert_discovered_entity(&context, source, endpoint_id, ENTITY_ID_OF(endpoint_id), tt_KIND_TOPIC_PUBLISHER, 0, 0, 0,
+                             0, "t", "e");
 }
 
 static bool known(uint8_t source, uint32_t endpoint_id) {
@@ -153,9 +158,39 @@ static void test_forget_and_readd_never_grows_the_index(void) {
     EXPECT_TRUE(known(SOURCE_A, (uint32_t)CYCLES));
 }
 
+// The discovery cache keeps the entity's own id, not only the endpoint id it shares with every other
+// endpoint of the same topic and name. rmw_graph.c encodes a gid from this, and encoding endpoint_id
+// there gave two remote publishers of one topic identical gids.
+//
+// The announce has carried entity_id since Phase 2; what was missing was this table keeping it, so the
+// assertion is that the value survives the upsert rather than that it arrives.
+static void test_entity_id_is_kept_beside_endpoint_id(void) {
+    setup();
+    add(7, 0x11112222);
+    const struct tt_DiscoveredEntity* found = tt_Discovery_find(&discovery, 7, 0x11112222);
+    EXPECT_TRUE(found != NULL);
+    if (found != NULL) {
+        EXPECT_EQ_U32(0x11112222U, found->endpoint_id);
+        EXPECT_EQ_U32(ENTITY_ID_OF(0x11112222U), found->entity_id);
+        // And they are not the same value, or the assertion above would hold however the two were
+        // confused - the defect this exists to catch is exactly that confusion.
+        EXPECT_TRUE(found->entity_id != found->endpoint_id);
+    }
+
+    // A re-announce from a restarted publisher keeps endpoint_id and brings a NEW entity_id. The slot
+    // must follow the instance, or the gid goes on naming the process that died.
+    upsert_discovered_entity(&context, 7, 0x11112222, 0xABCD1234U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
+    found = tt_Discovery_find(&discovery, 7, 0x11112222);
+    EXPECT_TRUE(found != NULL);
+    if (found != NULL) {
+        EXPECT_EQ_U32(0xABCD1234U, found->entity_id);
+    }
+}
+
 int main(void) {
     test_colliding_keys_are_found_and_forgotten();
     test_one_endpoint_id_from_many_sources();
+    test_entity_id_is_kept_beside_endpoint_id();
     test_a_reclaimed_tombstone_changes_its_key_in_the_index();
     test_forget_and_readd_never_grows_the_index();
 

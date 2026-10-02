@@ -61,6 +61,9 @@ static void init_header(struct tt_Header* header, uint8_t source) {
 
 // Same shape as test_peer_discovery.c's own write_update_one_entity() - kept local rather than
 // shared so this file doesn't take on a cross-file dependency for one small helper.
+// The entity_id a test announce carries for a given endpoint_id - see write_update_one_entity().
+#define TEST_ENTITY_ID_OF(endpoint_id) ((uint32_t)(endpoint_id) ^ 0xE1D00000U)
+
 static uint32_t write_update_one_entity(uint8_t* buf, uint64_t last_modified, uint32_t endpoint_id, uint8_t kind,
                                         const char* type, const char* name) {
     struct test_announce* update_header = test_announce_at(buf);
@@ -70,6 +73,12 @@ static uint32_t write_update_one_entity(uint8_t* buf, uint64_t last_modified, ui
 
     struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(buf + tail);
     entity->endpoint_id = endpoint_id;
+    // Deliberately NOT endpoint_id, and deliberately set at all: the real announce always carries
+    // entity_id (Phase 2) and this helper used to leave whatever was in the buffer, which reached the
+    // discovery cache as soon as upsert_discovered_entity() began recording it. Derived rather than
+    // constant so a test can predict it, and distinct from endpoint_id so anything that confuses the
+    // two fails instead of agreeing by accident.
+    entity->entity_id = TEST_ENTITY_ID_OF(endpoint_id);
     entity->kind = kind;
     tail += sizeof(struct tt_UpdateEntity);
 

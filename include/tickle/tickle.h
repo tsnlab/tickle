@@ -812,6 +812,17 @@ struct tt_Peer {
 struct tt_DiscoveredEntity {
     uint8_t context_id;
     uint32_t endpoint_id;
+    // This entity's own tt_Endpoint.entity_id, as its announce carried it (tt_UpdateEntity.entity_id,
+    // Phase 2). Beside endpoint_id rather than instead of it, because they answer different questions:
+    // endpoint_id is hash(topic/service name + endpoint name), which two endpoints of one topic in one
+    // process SHARE by construction, while entity_id identifies the instance.
+    //
+    // Recorded because a remote endpoint's identity has to outlive the announce that carried it:
+    // rmw_graph.c encodes a gid from this table, and encoding endpoint_id there gave two remote
+    // publishers of one topic the same gid - the collision Milestone 47 removed from
+    // rmw_get_gid_for_publisher(). The local half of that was fixed first because it was what the
+    // acceptance case could measure; this is the half that needed the value kept here.
+    uint32_t entity_id;
     uint8_t kind; // tt_KIND_TOPIC_PUBLISHER / _SUBSCRIBER / SERVICE_CLIENT / _SERVER, or tt_KIND_NODE (stage 3)
     // Stage 3: the index, in its context, of the node the entity belongs to - for a tt_KIND_NODE entry, its own. A
     // remote endpoint's node is the tt_KIND_NODE entry with the same context_id and node_index. For a node entry,

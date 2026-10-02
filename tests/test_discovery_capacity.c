@@ -36,6 +36,11 @@
 // Whitebox: two contexts in one process, datagrams carried between them by hand.
 #include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
 
+// The entity_id a test gives a discovered entity: derived from endpoint_id so it is predictable, and
+// deliberately DIFFERENT from it so anything that confuses the two fails rather than agreeing by
+// accident. endpoint_id is shared by every endpoint of one topic and name; entity_id is the instance.
+#define ENTITY_ID_OF(endpoint_id) ((uint32_t)(endpoint_id) ^ 0xE1D00000U)
+
 #define PUBLISHERS 20
 #define REMOTE_ID 2
 #define LOCAL_ID 1
@@ -175,8 +180,8 @@ static void test_a_full_table_counts_what_it_drops_and_warns_once(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&local, &discovery, NULL, NULL));
     // Fill every slot with entities of a third context, so the remote's publishers find none free.
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        upsert_discovered_entity(&local, REMOTE_ID + 1, (uint32_t)i + 1U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t",
-                                 "e");
+        upsert_discovered_entity(&local, REMOTE_ID + 1, (uint32_t)i + 1U, ENTITY_ID_OF((uint32_t)i + 1U),
+                                 tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
     }
     EXPECT_EQ_U32(0, discovery.entities_dropped);
     for (int i = 0; i < PUBLISHERS; i++) {

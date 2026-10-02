@@ -2172,8 +2172,8 @@ static struct tt_DiscoveredEntity* discovery_free_slot(struct tt_Discovery* disc
 // appear/refresh callback. No-op (not even the callback) if no discovery cache is attached -
 // every caller below calls this unconditionally rather than checking node->discovery first, the
 // same way logging macros check their own level instead of every call site checking it.
-static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
-                                     uint8_t node_index, uint8_t qos, uint64_t deadline_duration_ns,
+static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, uint32_t endpoint_id, uint32_t entity_id,
+                                     uint8_t kind, uint8_t node_index, uint8_t qos, uint64_t deadline_duration_ns,
                                      uint64_t liveliness_lease_duration_ns, const char* type, const char* name) {
     if (node->discovery == NULL) {
         return;
@@ -2235,6 +2235,11 @@ static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, u
 
     slot->context_id = node_id;
     slot->endpoint_id = endpoint_id;
+    // Assigned on the re-announce path too, not only on first sight: a restarted publisher keeps its
+    // endpoint_id (same topic, same name) and gets a NEW entity_id, which is the whole reason the
+    // instance is identified by the latter. Writing it only when the slot is new would leave the gid
+    // naming the process that died.
+    slot->entity_id = entity_id;
     slot->kind = kind;
     slot->node_index = node_index;
     slot->qos = qos;
@@ -7999,8 +8004,9 @@ static bool decode_update_entities(struct tt_Context* node, struct tt_Header* he
         // Recorded regardless of kind or whether a local endpoint matched above - discovery
         // (tt_Context_set_discovery()) lists every remote entity a node has heard of, not just ones
         // this node itself can talk to.
-        upsert_discovered_entity(node, header->source, endpoint_id, update_entity->kind, node_index, update_entity->qos,
-                                 deadline_duration_ns, liveliness_lease_duration_ns, type, name);
+        upsert_discovered_entity(node, header->source, endpoint_id, update_entity->entity_id, update_entity->kind,
+                                 node_index, update_entity->qos, deadline_duration_ns, liveliness_lease_duration_ns,
+                                 type, name);
     }
 
     return true;

@@ -32,6 +32,12 @@
 #include "../../../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: the check is static
 #include "../../../tests/test_mock.h"
 
+// The entity_id a test or benchmark gives a discovered entity: derived from endpoint_id so it is
+// predictable, and deliberately DIFFERENT from it so anything that confuses the two fails rather than
+// agreeing by accident. The two answer different questions - endpoint_id is shared by every endpoint
+// of one topic and name, entity_id identifies the instance.
+#define ENTITY_ID_OF(endpoint_id) ((uint32_t)(endpoint_id) ^ 0xE1D00000U)
+
 #define ROUNDS 21
 #define CALLS 100000
 #define PUBLISHER_SOURCE 2
@@ -59,15 +65,16 @@ static int compare(const void* a, const void* b) {
 static void fill(bool last) {
     memset(&discovery, 0, sizeof(discovery));
     if (!last) {
-        upsert_discovered_entity(&context, PUBLISHER_SOURCE, PUBLISHER_ENDPOINT, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0,
-                                 "t", "p");
+        upsert_discovered_entity(&context, PUBLISHER_SOURCE, PUBLISHER_ENDPOINT, ENTITY_ID_OF(PUBLISHER_ENDPOINT),
+                                 tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "p");
     }
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES - 1U; i++) {
-        upsert_discovered_entity(&context, OTHER_SOURCE, i + 1U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "o");
+        upsert_discovered_entity(&context, OTHER_SOURCE, i + 1U, ENTITY_ID_OF(i + 1U), tt_KIND_TOPIC_PUBLISHER, 0, 0, 0,
+                                 0, "t", "o");
     }
     if (last) {
-        upsert_discovered_entity(&context, PUBLISHER_SOURCE, PUBLISHER_ENDPOINT, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0,
-                                 "t", "p");
+        upsert_discovered_entity(&context, PUBLISHER_SOURCE, PUBLISHER_ENDPOINT, ENTITY_ID_OF(PUBLISHER_ENDPOINT),
+                                 tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "p");
     }
 }
 

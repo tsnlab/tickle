@@ -28,6 +28,12 @@
 // test_durability_pubsub.c.
 #include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
 
+// The entity_id a test or benchmark gives a discovered entity: derived from endpoint_id so it is
+// predictable, and deliberately DIFFERENT from it so anything that confuses the two fails rather than
+// agreeing by accident. The two answer different questions - endpoint_id is shared by every endpoint
+// of one topic and name, entity_id identifies the instance.
+#define ENTITY_ID_OF(endpoint_id) ((uint32_t)(endpoint_id) ^ 0xE1D00000U)
+
 #define LOCAL_NODE_ID 1
 #define REMOTE_NODE_ID 2
 #define ENDPOINT_ID 0xaabbccdd
@@ -197,8 +203,8 @@ static void test_reliable_subscriber_drops_data_from_besteffort_publisher(void) 
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
     // Discovered Publisher offers neither RELIABLE nor DURABLE (qos = 0) - incompatible with this
     // Subscriber's own sub.reliable request.
-    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "test_topic",
-                             "test_publisher");
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, ENTITY_ID_OF(ENDPOINT_ID), tt_KIND_TOPIC_PUBLISHER, 0,
+                             0, 0, 0, "test_topic", "test_publisher");
 
     struct tt_Header header;
     init_header(&header);
@@ -224,8 +230,8 @@ static void test_reliable_subscriber_receives_data_from_reliable_publisher(void)
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
-    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, tt_UPDATE_QOS_RELIABLE, 0,
-                             0, "test_topic", "test_publisher");
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, ENTITY_ID_OF(ENDPOINT_ID), tt_KIND_TOPIC_PUBLISHER, 0,
+                             tt_UPDATE_QOS_RELIABLE, 0, 0, "test_topic", "test_publisher");
 
     struct tt_Header header;
     init_header(&header);
@@ -251,8 +257,8 @@ static void test_durable_subscriber_drops_data_from_volatile_publisher(void) {
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
-    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "test_topic",
-                             "test_publisher");
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, ENTITY_ID_OF(ENDPOINT_ID), tt_KIND_TOPIC_PUBLISHER, 0,
+                             0, 0, 0, "test_topic", "test_publisher");
 
     struct tt_Header header;
     init_header(&header);
@@ -375,8 +381,8 @@ static void test_deadline_subscriber_drops_data_from_looser_publisher(void) {
     memset(&discovery, 0, sizeof(discovery));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
     // Discovered Publisher only promises 200ms - too loose for this Subscriber's 100ms request.
-    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 200000000, 0,
-                             "test_topic", "test_publisher");
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, ENTITY_ID_OF(ENDPOINT_ID), tt_KIND_TOPIC_PUBLISHER, 0,
+                             0, 200000000, 0, "test_topic", "test_publisher");
 
     struct tt_Header header;
     init_header(&header);
@@ -402,8 +408,8 @@ static void test_deadline_subscriber_receives_data_from_tighter_publisher(void) 
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
-    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 100000000, 0,
-                             "test_topic", "test_publisher");
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, ENTITY_ID_OF(ENDPOINT_ID), tt_KIND_TOPIC_PUBLISHER, 0,
+                             0, 100000000, 0, "test_topic", "test_publisher");
 
     struct tt_Header header;
     init_header(&header);
@@ -432,8 +438,8 @@ static void test_liveliness_manual_subscriber_drops_data_from_automatic_publishe
     memset(&discovery, 0, sizeof(discovery));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
     // Discovered Publisher offers AUTOMATIC (qos = 0, no tt_UPDATE_QOS_LIVELINESS_MANUAL bit).
-    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "test_topic",
-                             "test_publisher");
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, ENTITY_ID_OF(ENDPOINT_ID), tt_KIND_TOPIC_PUBLISHER, 0,
+                             0, 0, 0, "test_topic", "test_publisher");
 
     struct tt_Header header;
     init_header(&header);
@@ -459,7 +465,7 @@ static void test_liveliness_manual_subscriber_receives_data_from_manual_publishe
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
-    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0,
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, ENTITY_ID_OF(ENDPOINT_ID), tt_KIND_TOPIC_PUBLISHER, 0,
                              tt_UPDATE_QOS_LIVELINESS_MANUAL, 0, 0, "test_topic", "test_publisher");
 
     struct tt_Header header;
@@ -488,8 +494,8 @@ static void test_liveliness_lease_subscriber_drops_data_from_looser_publisher(vo
     memset(&discovery, 0, sizeof(discovery));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_discovery(&node, &discovery, NULL, NULL));
     // Discovered Publisher's own lease is 2s - too loose for this Subscriber's 1s requirement.
-    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 2000000000,
-                             "test_topic", "test_publisher");
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, ENTITY_ID_OF(ENDPOINT_ID), tt_KIND_TOPIC_PUBLISHER, 0,
+                             0, 0, 2000000000, "test_topic", "test_publisher");
 
     struct tt_Header header;
     init_header(&header);

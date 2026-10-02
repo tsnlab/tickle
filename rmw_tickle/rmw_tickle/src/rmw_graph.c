@@ -1129,10 +1129,14 @@ rmw_ret_t rmw_get_client_names_and_types_by_node(const rmw_node_t* node, rcutils
 // which the comment here used to claim was "reused verbatim" while this encoded something else.
 //
 // `entity_id`, not endpoint_id. endpoint_id is hash(topic/service name + endpoint name), so two
-// publishers of one topic in one node share it BY CONSTRUCTION and so shared a gid - the collision
-// Milestone 47 removed from rmw_get_gid_for_publisher() by moving it off that hash, reintroduced
-// here. Measured 2026-10-02 by rmw_gap_acceptance.sh names: rmw_tickle FAIL
-// (two_writers_share_a_graph_gid) where the rmw_cyclonedds_cpp control PASSED.
+// publishers of one topic share it BY CONSTRUCTION and so shared a gid - the collision Milestone 47
+// removed from rmw_get_gid_for_publisher() by moving it off that hash, reintroduced here. Measured
+// 2026-10-02 by rmw_gap_acceptance.sh names: rmw_tickle FAIL (two_writers_share_a_graph_gid) where
+// the rmw_cyclonedds_cpp control PASSED.
+//
+// Both halves now: local endpoints give their own endpoint->entity_id, and discovered ones give
+// tt_DiscoveredEntity.entity_id, which the announce had always carried (tt_UpdateEntity.entity_id,
+// Phase 2) and the discovery cache had not kept.
 //
 // Note what this does NOT buy, because the obvious stronger claim is false: a sample's gid and the
 // graph's gid for the same writer are still not required to be equal, and the control proves it -
@@ -1249,14 +1253,9 @@ static rmw_ret_t get_topic_endpoint_info_by_topic(rmw_tickle_context_impl_t* con
         qos.deadline = announced_duration(entity->deadline_duration_ns);
         qos.liveliness_lease_duration = announced_duration(entity->liveliness_lease_duration_ns);
         const struct tt_DiscoveredEntity* owner = remote_node_of(context_impl, entity); // stage 3
-        // REMOTE endpoints still pass endpoint_id, so two remote publishers of one topic still share
-        // a graph gid. Not an oversight: struct tt_DiscoveredEntity does not record entity_id yet,
-        // though the announce already carries it (tt_UpdateEntity.entity_id, Phase 2), so closing this
-        // is a discovery-cache change rather than a wire one. Local endpoints are fixed above, which is
-        // what the acceptance case measures - two writers in one node.
-        ret = populate_topic_endpoint_info(
-            allocator, owner != NULL ? owner->name : "", owner != NULL ? owner->type : "", entity->type, endpoint_type,
-            entity->context_id, entity->endpoint_id, &qos, &info_array->info_array[index]);
+        ret = populate_topic_endpoint_info(allocator, owner != NULL ? owner->name : "",
+                                           owner != NULL ? owner->type : "", entity->type, endpoint_type,
+                                           entity->context_id, entity->entity_id, &qos, &info_array->info_array[index]);
         if (ret != RMW_RET_OK) {
             tt_Context_unlock(&context_impl->tickle_context);
             fini_topic_endpoint_info_array_ignore_result(info_array, allocator);
@@ -1378,14 +1377,9 @@ static rmw_ret_t fill_service_endpoint_info_locked(rmw_tickle_context_impl_t* co
             continue;
         }
         const struct tt_DiscoveredEntity* owner = remote_node_of(context_impl, entity); // stage 3
-        // REMOTE endpoints still pass endpoint_id, so two remote publishers of one topic still share
-        // a graph gid. Not an oversight: struct tt_DiscoveredEntity does not record entity_id yet,
-        // though the announce already carries it (tt_UpdateEntity.entity_id, Phase 2), so closing this
-        // is a discovery-cache change rather than a wire one. Local endpoints are fixed above, which is
-        // what the acceptance case measures - two writers in one node.
         rmw_ret_t ret = populate_service_endpoint_info(
             allocator, owner != NULL ? owner->name : "", owner != NULL ? owner->type : "", entity->type, endpoint_type,
-            entity->context_id, entity->endpoint_id, &rmw_qos_profile_unknown, &info_array->info_array[index++]);
+            entity->context_id, entity->entity_id, &rmw_qos_profile_unknown, &info_array->info_array[index++]);
         if (ret != RMW_RET_OK) {
             return ret;
         }
