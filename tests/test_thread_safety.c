@@ -143,11 +143,30 @@ void tt_close(struct tt_Context* node) {
 // one whose unfaithfulness is written down. The two assertions were fixed on their own terms and
 // needed no change here. What is left is this comment, so the next person to notice the mismatch
 // knows it was measured rather than missed.
+// Datagrams this fake transport discarded because the destination queue was full, per destination.
+// uint64 and plain: every write is under that queue's own lock.
+static uint64_t harness_dropped[NODE_COUNT + 1];
+
+// Drops when full, and counts it. It used to BLOCK here, and that made this harness lossless by
+// construction - which is not what either transport it stands in for does. A real UDP socket whose
+// buffer is full discards and reports success; the segment ring refuses and the sender drops
+// (segment_deliver()'s own "a full queue drops"). A harness that instead waits for the reader turns
+// every capacity problem into back-pressure that neither path has, so the delivery assertion that
+// used to sit below it - "no gaps at all" - was satisfiable only by the harness, and passed for this
+// module's whole life while the module was never engaged.
+//
+// Counted rather than silent, because a dropped datagram here and one dropped by the segment are
+// different facts: without the count, loss measured at the application cannot be attributed and no
+// floor is derivable from it. With it, every sample is accounted for - see the accounting assertion
+// at the end of main().
 static void push(uint8_t to_id, uint8_t from_id, const void* hdr, size_t hdr_len, const void* body, size_t body_len) {
     struct queue* q = &queues[to_id];
     pthread_mutex_lock(&q->lock);
-    while (q->count == QUEUE_SLOTS) {
-        pthread_cond_wait(&q->changed, &q->lock);
+    if (q->count == QUEUE_SLOTS) {
+        harness_dropped[to_id]++;
+        pthread_cond_broadcast(&q->changed); // the reader may still be waiting on an earlier record
+        pthread_mutex_unlock(&q->lock);
+        return;
     }
     struct datagram* d = &q->slots[(q->head + q->count) % QUEUE_SLOTS];
     d->len = (uint32_t)(hdr_len + body_len);
@@ -887,6 +906,7 @@ int main(void) {
     if (call_timeouts != 0) {
         printf("test_thread_safety: %u call(s) timed out and were asked again\n", call_timeouts);
     }
+    uint32_t delivered_total = 0;
     for (int t = 0; t < PUBLISHER_THREADS; t++) {
         // The last sample is NOT asserted to have arrived, and that is the same correction as the
         // delivery floor below rather than a second concession. "received[t] == SAMPLES_PER_THREAD"
@@ -937,7 +957,31 @@ int main(void) {
             printf("test_thread_safety: thread %d delivered %u of %u (best-effort, %u gap(s))\n", t, delivered[t],
                    (unsigned)SAMPLES_PER_THREAD, gaps[t]);
         }
+        delivered_total += delivered[t];
     }
+    // Every sample this run produced is now accounted for, which is what making push() drop bought.
+    // Before it, loss could only be reported as a percentage nobody could derive - the objection this
+    // file already makes to "tx_udp small and flat". Now each sample either arrived or was discarded
+    // by a queue that says so, and the two sides are compared rather than described.
+    //
+    // Not an equality on sample counts: a sample can span datagrams, and a dropped FRAGMENT loses the
+    // whole sample while costing one drop. So the claim is the direction that must hold - nothing is
+    // delivered that was never sent, and nothing vanishes with every queue reporting itself empty of
+    // drops. A run that loses samples with harness_dropped and shm_full_dropped both zero is loss with
+    // no mechanism, which is the one outcome that would mean this harness is still lying.
+    const uint32_t produced = (uint32_t)PUBLISHER_THREADS * (uint32_t)SAMPLES_PER_THREAD;
+    uint64_t harness_drops = 0;
+    for (int i = 0; i <= NODE_COUNT; i++) {
+        harness_drops += harness_dropped[i];
+    }
+    printf("harness: %u of %u samples delivered, harness dropped %lu datagram(s), segment dropped %lu\n",
+           delivered_total, produced, (unsigned long)harness_drops,
+           (unsigned long)(node_a.segment_full_dropped + node_b.segment_full_dropped));
+    EXPECT_TRUE(delivered_total <= produced);
+    if (delivered_total < produced) {
+        EXPECT_TRUE(harness_drops > 0 || (node_a.segment_full_dropped + node_b.segment_full_dropped) > 0);
+    }
+
     uint32_t wrong_runs = 0;
     for (uint32_t i = 0; i < TIMERS; i++) {
         wrong_runs += timer_runs[i] != (timer_cancelled[i] ? 0U : 1U);
