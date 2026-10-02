@@ -659,9 +659,15 @@ and the fixed one **pure segment**, with no mixture either side.
 
 Ranges separable: **our segment path costs 16% on a round trip at p2**, more than the 8.7% the mixed arm showed.
 The attach fix is correct and it made this worse, which is not a contradiction - it routes traffic onto the path
-that is slower for us, and the cost was always there behind the mixture. The doorbell is the candidate (a
-zero-length UDP datagram per wake, where both vendors signal inside their own segments) and is not yet measured
-against an alternative.
+that is slower for us, and the cost was always there behind the mixture.
+
+**The doorbell is most of it, measured** (`experiments/wake_cost.{c,sh}`, 20,000 round trips, 3 reps, both roles on
+one Pi, `results/wake_cost_relint.txt`). Waking a blocked reader costs **15.72 us** by the zero-length UDP datagram
+we send today, **10.11** by a FIFO and **9.52** by a futex - and **17.94 by a unix-domain datagram, which is slower
+than what we have**. A FIFO is nameable like the segment file and pollable like the socket, so it joins the reader's
+existing `ppoll` set and changes nothing structural, for 90% of what the futex buys. The 5.61 us it saves is **70%**
+of this cell's 8 us gap, so a third of the 16% is elsewhere and a FIFO doorbell will not close it on its own. See
+SHM_PLAN open question 1.
 
 **Why 13.5% - the first ~257 samples of any same-host stream went over the kernel. Fixed 2026-10-02 in
 `fc34c8d1`.** The counters said it exactly: `shm_attach_attempts=2`, `shm_attach_absent=1`,

@@ -1213,14 +1213,43 @@ is the expected result, not a mixed one.
 ## 7. Open questions
 
 
-1. **Notification, and it now has a number.** A reader must learn a record arrived. Today that is a zero-length UDP
-   datagram per reader advance (`segment_doorbells_sent`), which in a ping/pong is one per sample because the reader
-   sleeps every time. COMPARISON 2.2c measured the consequence with no mixture either side: **pure kernel 0.050 ms
-   against pure segment 0.058 at p2, ranges separable, 16%**, while both vendors signal inside their own segments
-   and gain 29-41% from theirs. A futex or an eventfd costs a syscall and gives back the wakeup latency; a pure spin
-   costs a core; a named unix-domain datagram keeps the single `ppoll` wait point and skips the IP stack. The choice
-   interacts with the poll and block wait modes that are both scored (`project_rmw_poll_and_block_cases`), so it is
-   measured, not argued - a micro-benchmark of the three wakes on the rig decides it before any of them is built.
+1. **Notification. Measured 2026-10-02, and the answer is a FIFO.** A reader must learn a record arrived. Today
+   that is a zero-length UDP datagram per reader advance (`segment_doorbells_sent`), which in a ping/pong is one
+   per sample because the reader sleeps every time. COMPARISON 2.2c measured the consequence with no mixture
+   either side: **pure kernel 0.050 ms against pure segment 0.058 at p2, ranges separable, 16%**, while both
+   vendors signal inside their own segments and gain 29-41% from theirs.
+
+   `experiments/wake_cost.{c,sh}` measures the mechanisms themselves, with no transport around them, both roles on
+   one rig Pi, 20,000 round trips, 3 reps (`results/wake_cost_4arm.txt`):
+
+   | mechanism | RTT p50 us | saves vs today | keeps the single `ppoll` wait point |
+   |---|---:|---:|---|
+   | zero-length UDP (today) | 15.72 | - | yes |
+   | unix-domain datagram | 17.94 | **-2.22, it is slower** | yes |
+   | **FIFO** | **10.11** | **5.61** | **yes** |
+   | futex | 9.52 | 6.20 | no |
+
+   The file was then restructured to pass the repository's own clang-tidy - 53 findings, including a `main` at
+   cognitive complexity 81 - and re-run, because a measurement belongs to the binary that produced it and
+   "the refactor was mechanical" is an argument rather than evidence. The four arms moved by at most 0.4 us
+   (`results/wake_cost_4arm.txt` is the pre-restructure run, `wake_cost_relint.txt` the published one), which is
+   the control for the refactor.
+
+   **The unix-domain arm was the one this plan argued for and it is worse than what we have.** The reasoning was
+   that skipping the IP stack must be cheaper; Linux's UDP loopback path is well optimised and AF_UNIX datagram has
+   its own costs. Written down because the reasoning was the error, not the arithmetic: the candidates had been
+   chosen by argument rather than by listing what is both nameable and pollable, which is also why the FIFO - the
+   one that won - was missing from the first run.
+
+   **A FIFO takes 90% of futex's benefit and changes nothing structural.** It is nameable like the segment file, so
+   no fd needs passing; it is pollable, so it joins the existing `ppoll` set; and it never enters the socket layer.
+   futex buys 0.6 us per round trip more and costs a rewritten wait loop that also interacts with the poll and block
+   wait modes, both of which are scored (`project_rmw_poll_and_block_cases`). That is not a good trade.
+
+   **What this does not establish.** 5.61 us against the 8 us 2.2c's gap needs is **70%**, so a third of it is
+   elsewhere - the slot write, the drain loop, cache behaviour - and a FIFO doorbell will not close the cell. The
+   two figures also come from different runs on different days, so combining them is an estimate. The measurement
+   that settles it is the p2 latency cell re-run against a FIFO doorbell, not this benchmark.
 2. **Whether a same-host pair keeps its UDP socket at all,** for discovery only, or whether discovery also moves into
    the segment. Keeping discovery on UDP is the smaller change and keeps one discovery path; moving it is what would
    let two processes talk with no network stack at all, which is a real claim for an embedded target.

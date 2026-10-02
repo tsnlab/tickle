@@ -1,0 +1,34 @@
+=== wake cost 2026-10-02T18:21:45+09:00 host=10.1.1.214 iters=20000 reps=3 ===
+--- building on 10.1.1.214 ---
+  built, sha256=82b8ce580087b3eb
+--- rep 1/3 2026-10-02T18:21:46+09:00 ---
+rep=1 RESULT: role=client mechanism=udp n=20000 rtt_mean_us=15.980 rtt_p50_us=15.815 rtt_min_us=14.889 rtt_p99_us=21.963
+rep=1 RESULT: role=client mechanism=unix n=20000 rtt_mean_us=18.201 rtt_p50_us=17.926 rtt_min_us=17.611 rtt_p99_us=24.870
+rep=1 RESULT: role=client mechanism=fifo n=20000 rtt_mean_us=10.388 rtt_p50_us=10.074 rtt_min_us=4.296 rtt_p99_us=14.574
+rep=1 RESULT: role=client mechanism=futex n=20000 rtt_mean_us=9.662 rtt_p50_us=9.519 rtt_min_us=1.129 rtt_p99_us=13.815
+--- rep 2/3 2026-10-02T18:21:52+09:00 ---
+rep=2 RESULT: role=client mechanism=udp n=20000 rtt_mean_us=15.801 rtt_p50_us=15.722 rtt_min_us=13.074 rtt_p99_us=22.037
+rep=2 RESULT: role=client mechanism=unix n=20000 rtt_mean_us=18.222 rtt_p50_us=18.000 rtt_min_us=17.481 rtt_p99_us=24.723
+rep=2 RESULT: role=client mechanism=fifo n=20000 rtt_mean_us=10.581 rtt_p50_us=10.518 rtt_min_us=4.685 rtt_p99_us=14.704
+rep=2 RESULT: role=client mechanism=futex n=20000 rtt_mean_us=9.539 rtt_p50_us=9.519 rtt_min_us=1.129 rtt_p99_us=13.870
+--- rep 3/3 2026-10-02T18:21:59+09:00 ---
+rep=3 RESULT: role=client mechanism=udp n=20000 rtt_mean_us=15.730 rtt_p50_us=15.445 rtt_min_us=13.222 rtt_p99_us=20.278
+rep=3 RESULT: role=client mechanism=unix n=20000 rtt_mean_us=18.203 rtt_p50_us=17.944 rtt_min_us=15.667 rtt_p99_us=24.797
+rep=3 RESULT: role=client mechanism=fifo n=20000 rtt_mean_us=10.445 rtt_p50_us=10.111 rtt_min_us=4.648 rtt_p99_us=14.722
+rep=3 RESULT: role=client mechanism=futex n=20000 rtt_mean_us=9.741 rtt_p50_us=9.519 rtt_min_us=7.371 rtt_p99_us=13.796
+=== done 2026-10-02T18:22:06+09:00 ===
+
+=== round-trip cost of one wake mechanism, medians over reps ===
+mech       n      mean us       p50 us       min us
+udp        3       15.801       15.722       13.222
+unix       3       18.203       17.944       17.481
+fifo       3       10.445       10.111        4.648
+futex      3        9.662        9.519        1.129
+
+  unix   saves -2.222 us per round trip (-1.111 us per wake)
+  fifo   saves 5.611 us per round trip (2.805 us per wake)
+  futex  saves 6.203 us per round trip (3.101 us per wake)
+
+VERDICT=PARTIAL - the best alternative saves 6.203 us per round trip against the ~8 us needed, so the
+  doorbell could account for about 78% of 2.2c's gap and not all of it. Report the fraction; do not
+  call the doorbell the cause.
