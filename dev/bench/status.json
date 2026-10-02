@@ -3,6 +3,30 @@
     {
       "buildtest": {
         "branch": "main",
+        "commit": "4f5b40da5c11d712135372f29fa625d89f228b2e",
+        "commit_short": "4f5b40d",
+        "date": "2026-10-02T12:02Z",
+        "rows": {
+          "freertos": {
+            "build": "pass",
+            "integration": "pass",
+            "unit": "n/a"
+          },
+          "linux": {
+            "build": "pass",
+            "integration": "pass",
+            "unit": "pass"
+          }
+        },
+        "run_url": "https://github.com/tsnlab/tickle/actions/runs/37002792614"
+      },
+      "commit": "4f5b40da5c11d712135372f29fa625d89f228b2e",
+      "commit_short": "4f5b40d",
+      "date": "2026-10-02T12:02Z"
+    },
+    {
+      "buildtest": {
+        "branch": "main",
         "commit": "5d53b149e92999dc42e43eec3d7e3c558aa6706a",
         "commit_short": "5d53b14",
         "date": "2026-10-02T11:24Z",
@@ -2375,31 +2399,7 @@
       "commit": "e8e277d3cdaceaf589bf3226ef1af224c9d9f5f1",
       "commit_short": "e8e277d",
       "date": "2026-09-29T07:34Z"
-    },
-    {
-      "buildtest": {
-        "branch": "main",
-        "commit": "b0d7e51390ae427ad7d7276679aabd8337c71d52",
-        "commit_short": "b0d7e51",
-        "date": "2026-09-29T05:38Z",
-        "rows": {
-          "freertos": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "n/a"
-          },
-          "linux": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "pass"
-          }
-        },
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/36526061075"
-      },
-      "commit": "b0d7e51390ae427ad7d7276679aabd8337c71d52",
-      "commit_short": "b0d7e51",
-      "date": "2026-09-29T05:38Z"
     }
   ],
-  "updated": "2026-10-02 11:24 UTC"
+  "updated": "2026-10-02 12:03 UTC"
 }
