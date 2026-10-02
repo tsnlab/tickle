@@ -4961,16 +4961,24 @@ static bool try_publish_zerocopy(struct tt_Publisher* pub, struct tt_Data* data,
 
 // How many seq_no - and datagrams - the encoded DATA submessage at submessage_header takes: 1, or one
 // per fragment when no datagram can carry it (DATAFRAG_PLAN.md section 13).
+// How many datagrams this encoded sample goes as. `raw_len` is the length the encode produced, passed in for
+// the same reason record_length_checked() takes it: deriving it from tx_tail is only the sample's length while
+// the sample is the last thing in tx_buffer, and SHM_PLAN 6e's encoder step puts it somewhere else.
+//
+// This one was missed by the pass that fixed the cache's consumers, and it is the one that matters most to 6e:
+// the fragmentation decision is what 6e changes for an all-local publish, so a length derived from the send
+// buffer here would have been the first thing to go wrong.
 static uint32_t sample_datagram_count(const struct tt_Context* node,
-                                      const struct tt_SubmessageHeader* submessage_header) {
+                                      const struct tt_SubmessageHeader* submessage_header, uint32_t raw_len) {
 #if tt_FRAG_ENABLED
-    size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
+    size_t length = raw_len;
     if (sizeof(struct tt_Header) + ROUNDUP(length) > FRAG_WHOLE_DATA_LIMIT) {
         return frag_count_for(sample_cdr_length(node, submessage_header));
     }
 #else
     UNUSED(node);
     UNUSED(submessage_header);
+    UNUSED(raw_len);
 #endif
     return 1;
 }
@@ -4985,7 +4993,7 @@ static uint32_t frag_header_length(uint32_t index) {
 // Bytes of arena the encoded sample at submessage_header takes: its one record, or one per fragment.
 static uint32_t sample_cache_footprint(const struct tt_Context* node,
                                        const struct tt_SubmessageHeader* submessage_header, uint32_t encoded_len) {
-    uint32_t count = sample_datagram_count(node, submessage_header);
+    uint32_t count = sample_datagram_count(node, submessage_header, encoded_len);
     if (count == 1) {
         return record_length_checked(node, submessage_header, encoded_len);
     }
@@ -5029,7 +5037,7 @@ static uint32_t keep_all_refused_record_bytes(const struct tt_Publisher* pub, co
 // callback answer about the sample the caller will retry.
 static bool keep_all_refuses_encoded(struct tt_Publisher* pub, const struct tt_Context* node, uint32_t encoded_len,
                                      const struct tt_SubmessageHeader* submessage_header) {
-    uint32_t datagrams = sample_datagram_count(node, submessage_header);
+    uint32_t datagrams = sample_datagram_count(node, submessage_header, encoded_len);
     if (datagrams > 1 && pub->keep_all && reliable_cache_depth(pub->reliable_cache) != 0 && any_peer_ack_matched(pub)) {
         uint32_t min_ack = min_peer_ack_seq_no(pub);
         uint32_t acked_through = min_ack > 0 ? min_ack - 1 : 0;
@@ -5155,7 +5163,7 @@ static bool check_and_cache_sample(struct tt_Context* node, struct tt_Publisher*
     if (pub->reliable_cache != NULL) {
         make_depth_room(node, pub, submessage_header, encoded_len); // (g10)
 #if tt_FRAG_ENABLED
-        uint32_t datagrams = sample_datagram_count(node, submessage_header);
+        uint32_t datagrams = sample_datagram_count(node, submessage_header, encoded_len);
         if (datagrams > 1) {
             cache_sample_fragments(node, pub->reliable_cache, encoded_len, submessage_header, pub->seq_no + 1,
                                    datagrams);
@@ -5317,7 +5325,8 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     }
 
     // One seq_no per datagram the sample goes as - counted now, while it still sits in tx_buffer.
-    uint32_t datagrams = sample_datagram_count(node, submessage_header);
+    uint32_t record_len_raw = node->tx_tail - old_tx_tail;
+    uint32_t datagrams = sample_datagram_count(node, submessage_header, record_len_raw);
     // The length the encode produced, from the tail this publish saved before it began, rather than derived
     // inside the cache from tx_tail. 6e's encoder step writes into a slot, where "distance to tx_buffer's
     // current end" is a difference between two unrelated addresses.
