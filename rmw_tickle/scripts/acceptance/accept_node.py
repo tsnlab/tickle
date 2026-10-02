@@ -252,7 +252,7 @@ def main():
         # past what rmw takes, and anything we REPORT at that length would be a value we would refuse back.
         # The test runs at the maximum that can be created, since rcl refuses to create anything longer: what it
         # can decide is whether a name at the edge survives the round trip intact.
-        LONG = '/' + 'n' * 245      # 247 incl. the slash: the longest rclpy accepts (verified 2026-10-02)
+        LONG = '/' + 'n' * 246      # 247 incl. the slash: the longest rclpy accepts (verified 2026-10-02)
         if role == 'namepeer':
             node = Node('accept_namepeer')
             pub = node.create_publisher(String, LONG, 10)
@@ -285,7 +285,7 @@ def main():
             while time.time() < deadline:
                 rclpy.spin_once(node, timeout_sec=0.2)
                 infos = node.get_publishers_info_by_topic(LONG)
-                if infos and got['msg'] is not None:
+                if infos and got['info'] is not None:
                     break
             fails = []
             # The topic name has to come from the API that REPORTS one. TopicEndpointInfo does not carry it - you
@@ -321,25 +321,27 @@ def main():
                     node.destroy_publisher(again)
                 except Exception as exc:  # noqa: BLE001
                     fails.append('recreate_refused:%s:%s' % (type(exc).__name__, str(exc)[:40].replace(' ', '_')))
-            # The delivered sample's gid against the graph's. "Could not look" gets its own answer rather than
-            # passing quietly: a check that reports success when it never ran is the failure this file has met
-            # twice. The two sides are shaped differently - the graph gives a list of ints, the sample a dict of
-            # {implementation_identifier, data} - so both are reduced to bytes and compared over the length they
-            # share, which is what "the same writer" means here.
+            # The delivered sample's publisher_gid. "Could not look" gets its own answer rather than passing
+            # quietly: a check that reports success when it never ran is the failure this file has met twice.
+            #
+            # What this does NOT check, and why: the first version asked whether the sample's gid EQUALS the one
+            # the graph reports for that writer. The control disproved the premise - CycloneDDS reports
+            # 011074bc88519fb4... in the graph and ee9da3dbfffbb4b6... on the sample, two encodings of the same
+            # writer - so that equality is not something rmw guarantees and a test asserting it fails everywhere.
+            # What a tool matching samples to writers actually needs is weaker and is checkable: the sample must
+            # carry a gid at all, and it must not be all zeros, or every writer looks like every other.
             if got['info'] is None:
                 fails.append('no_sample_delivered')
-            elif not infos:
-                pass  # already reported as discovered=0 by the caller
             else:
                 pg = got['info'].get('publisher_gid')
                 raw = pg.get('data') if isinstance(pg, dict) else pg
                 if raw is None:
                     fails.append('sample_carries_no_publisher_gid')
                 else:
-                    a, b = bytes(raw), bytes(infos[0].endpoint_gid)
-                    k = min(len(a), len(b))
-                    if k == 0 or a[:k] != b[:k]:
-                        fails.append('sample_gid_ne_graph_gid:%s_vs_%s' % (a.hex()[:16], b.hex()[:16]))
+                    b = bytes(raw)
+                    print('REPORTED: sample_publisher_gid=%s' % b.hex(), flush=True)
+                    if not b or b == bytes(len(b)):
+                        fails.append('sample_gid_all_zero:len_%d' % len(b))
             print('RESULT: role=names discovered=%d roundtrip_failures=%d detail=%s'
                   % (len(infos), len(fails), ','.join(fails) if fails else 'none'), flush=True)
     else:

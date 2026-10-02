@@ -1253,6 +1253,45 @@ defects it had before that, all of the same family and all worth more than the c
    indefinitely and fails you on the one day it matters.** Read as text at that call site rather than widening
    `field()`, since every other caller depends on it being numeric.
 
+**THE NAME AND GID ROWS, RUN 2026-10-02 (`rmw_gap_acceptance.sh names`). The names pass; the GID row is a real
+gap.** Control `rmw_cyclonedds_cpp` PASSES, `rmw_tickle` FAILS with `sample_gid_all_zero:len_16`.
+
+| what was handed back | to what | result |
+|---|---|---|
+| a 247-character topic name from `get_topic_names_and_types()` | `validate_full_topic_name`, then `create_publisher` | **pass**, byte-identical, both rmws |
+| the reported node name and namespace | `validate_node_name`, `validate_namespace` | **pass**, both rmws |
+| a delivered sample's `message_info.publisher_gid` | is it present and non-zero | **rmw_tickle fails**: 16 zero bytes |
+
+`fill_message_info()` in `rmw_subscription.c` memsets `publisher_gid` to zero and sets only the implementation
+identifier; it takes the subscriber as `(void)sub_impl`. So every sample reports the same empty gid, and a tool
+matching samples to writers - which is the field's only purpose - cannot. The asymmetry is what makes it a gap
+rather than a missing feature: `rmw_get_gid_for_publisher` returns a real per-instance `entity_id` (Milestone 47
+deliberately moved it off the shared name hash), so a tool can learn a writer's gid from the graph and still never
+match a sample to it.
+
+**What is established about fixing it, and what is not.** The identity is on the wire and in the receive path:
+`struct tt_FragSlot` keys a reassembly on `entity_id` plus `source` ("with source and seq_no, which sample this
+is"), and the subscriber keeps one tracking window per simultaneously tracked remote Publisher. So this looks like
+a plumbing gap rather than a wire change. **Not established:** whether `subscriber_callback()` can reach that
+identity today - its `struct tt_Data*` is opaque and the core exposes no accessor for a sample's sender - so the
+fix may need a small core API addition, and `rmw_tickle_queued_message_t` would need a field to carry it from the
+callback to the take.
+
+**Three defects in the case itself, all found by running it, two of which would have passed as findings.**
+Writing it was not enough and the first version was wrong three times:
+
+1. **A one-argument subscription callback left `take_message()` returning None forever**, because the executor had
+   already consumed the message to dispatch the callback. The GID check could never pass. Found by probing the
+   API, before any run.
+2. **The topic name was validated against a constant this file defines**, not against what the graph reports -
+   `TopicEndpointInfo` does not carry a topic name, you query by it. That is close to a check that cannot fail.
+   `get_topic_names_and_types()` is the surface the row actually names.
+3. **The first GID check asserted the sample's gid EQUALS the graph's, and the control disproved the premise.**
+   CycloneDDS reports `011074bc88519fb4...` in the graph and `ee9da3dbfffbb4b6...` on the sample - two encodings
+   of one writer - so rmw guarantees no such equality and the assertion failed on every implementation. Replaced
+   by what a consumer actually needs and what the control can pass: the gid must be present and not all zeros.
+   **Without the control this would have been published as a finding about rmw_tickle**, since our arm failed too.
+
 **Order:** the name and GID rows first, since a bridge or a `ros2 topic pub` round-trips them in ordinary use, then the
 event counts, then the format. Before the next COMPARISON re-measure, so the table is not published beside a surface
 that contradicts itself.

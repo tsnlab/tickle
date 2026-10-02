@@ -1360,7 +1360,7 @@ list until 2026-09-28: TickLE now serves it and both vendors still return `RMW_R
 | `rmw_publisher_wait_for_all_acked` | ✅ | ✅ | ✅ |  |
 | `rmw_subscription_count_matched_publishers` | ✅ | ✅ | ✅ |  |
 | `rmw_count_publishers` | ✅ | ✅ | ✅ |  |
-| `rmw_get_gid_for_publisher` | ✅ | ✅ | ✅ |  |
+| `rmw_get_gid_for_publisher` | ✅ | ✅ | ✅ | returns a real per-instance id (`entity_id`, not the shared name hash - Milestone 47). Note the asymmetry with `rmw_take_with_info` above: this end of the pair works, so a tool can learn a writer's gid and still never match a sample to it |
 | `rmw_get_publishers_info_by_topic` | ✅ | ✅ | ✅ |  |
 | **Loaned messages** | | | | |
 | `rmw_borrow_loaned_message` | ❌ | ⚠️ | ⚠️ | loans: TickLE planned (user decision 2026-09-27); FastDDS with data-sharing, CycloneDDS with iceoryx shared memory, plain types only |
@@ -1384,7 +1384,7 @@ list until 2026-09-28: TickLE now serves it and both vendors still return `RMW_R
 | `rmw_subscription_get_actual_qos` | ✅ | ✅ | ✅ |  |
 | `rmw_take` | ✅ | ✅ | ✅ |  |
 | `rmw_take_sequence` | ✅ | ✅ | ✅ | g5 (2026-09-28): up to count in order, the rmw.h argument rules (`test_take_sequence`; `rmw_gap_acceptance.sh takeseq`); not defined before |
-| `rmw_take_with_info` | ✅ | ✅ | ✅ |  |
+| `rmw_take_with_info` | ⚠️ | ✅ | ✅ | present, but the `message_info.publisher_gid` it hands back is **16 zero bytes** on every sample (`fill_message_info()`, `rmw_subscription.c`, which memsets it and ignores the subscriber). A tool matching a received sample to the writer that sent it - the field's purpose - cannot. Found 2026-10-02 by `rmw_gap_acceptance.sh names`, whose CycloneDDS control PASSES. Timestamps and both sequence numbers are correct |
 | `rmw_get_subscriptions_info_by_topic` | ✅ | ✅ | ✅ |  |
 | **Content filter** | | | | |
 | `rmw_subscription_set_content_filter` | ➖ | ✅ | ➖ |  |
