@@ -835,6 +835,28 @@ static void note_same_host_peer(struct tt_Context* node, uint8_t context_id, uin
         node->same_host_peer_count++;
     }
     ensure_own_segment(node);
+    // And let a cached "no" about this peer expire now rather than in tt_SEGMENT_ATTACH_RETRY_SENDS
+    // sends. Measured 2026-10-02 (COMPARISON 2.2c): in a same-host ping/pong every repetition read
+    // shm_attach_absent=1, tx_udp_unattached=257, shm_attach_ok=1 - the first attach lost a race with
+    // the peer building its own segment, and the countdown then held the answer for 256 more sends. An
+    // exchange shorter than that never used shared memory at all, which is the shape of a request/reply
+    // service. The countdown is right for the case it was built for, a peer on another host that will
+    // never have a segment; it is wrong here, because this function is reached only for a peer at our
+    // own address, which is exactly the peer about to have one. Discovery already knew what the sender
+    // was waiting for and had no way to say it.
+    //
+    // Only the negative answer. A "yes" expires for its own reason - an owner that was killed leaves
+    // the mapping intact and only asking the name again can tell - and clearing that here would make
+    // every attached peer re-verify once per announce, which is a cost with no finding behind it.
+    //
+    // The bound on the new cost: an announce, not a datagram. A same-host peer that genuinely never
+    // builds a segment is re-asked once per announce interval, against the once-per-datagram open()
+    // that cost half our cross-host throughput and motivated the cache. peer_segment() still compares
+    // the address itself, so an entry cached for a different (ip, port) is reset there as before.
+    struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
+    if (entry->mapping == NULL && entry->missing) {
+        entry->recheck_in = 0;
+    }
 }
 
 // Everything this context mapped, handed back. Nothing else does it: a segment is a file in
