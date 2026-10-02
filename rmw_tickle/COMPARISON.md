@@ -647,18 +647,43 @@ Both halves are results. The 0.050 beats CycloneDDS's 0.061 and FastDDS's 0.099,
 latency still chooses us; but their segments buy them 29-41% and ours costs us 8.7%, which is the direction that
 matters for where the work goes next.
 
-**And our figure is the flattering one, not the harsh one.** Our `ON` arm is 13.5% kernel traffic in every
-repetition (`tx_shm` 1,722 against `tx_udp` 269 of 1,977 samples) - and the kernel is our *faster* arm here, so the
-mixture pulls the `ON` mean down. The pure-segment round trip is worse than 0.050, by an amount this cell cannot
-separate.
+**And our figure was the flattering one, not the harsh one - now measured.** The `ON` arm above is 13.5% kernel
+traffic in every repetition, and the kernel is our *faster* arm here, so the mixture pulled the `ON` mean down. The
+attach fix gave the clean comparison this cell could not: at 20/s the unfixed build is **pure kernel** (`tx_shm` 0)
+and the fixed one **pure segment**, with no mixture either side.
 
-**Why 13.5%, and it is not noise: the first ~257 samples of any same-host stream go over the kernel.** The counters
-say it exactly - `shm_attach_attempts=2`, `shm_attach_absent=1`, `tx_udp_unattached=257`, then `shm_attach_ok=1` -
-and all three repetitions give the identical figure. The first attach attempt loses a race with the peer's segment
-creation, and `tt_SEGMENT_ATTACH_RETRY_SENDS` (256) then holds the negative cache until the 257th send. **A
-same-host exchange shorter than that never uses shared memory at all**, which the first attempt at this cell
-demonstrated by accident: at the throughput cells' `DUR=5` the latency client pings once a second, so it sent five
-samples, `tx_shm` was 0, and there was nothing to measure.
+| p2, 20/s, 3 reps | RTT mean ms | reps |
+|---|---:|---|
+| pure kernel | **0.050** | 0.049, 0.050, 0.051 |
+| pure segment | 0.058 | 0.057, 0.058, 0.058 |
+
+Ranges separable: **our segment path costs 16% on a round trip at p2**, more than the 8.7% the mixed arm showed.
+The attach fix is correct and it made this worse, which is not a contradiction - it routes traffic onto the path
+that is slower for us, and the cost was always there behind the mixture. The doorbell is the candidate (a
+zero-length UDP datagram per wake, where both vendors signal inside their own segments) and is not yet measured
+against an alternative.
+
+**Why 13.5% - the first ~257 samples of any same-host stream went over the kernel. Fixed 2026-10-02 in
+`fc34c8d1`.** The counters said it exactly: `shm_attach_attempts=2`, `shm_attach_absent=1`,
+`tx_udp_unattached=257`, then `shm_attach_ok=1`, identically in all three repetitions. The first attach lost a race
+with the peer's segment creation and `tt_SEGMENT_ATTACH_RETRY_SENDS` (256) held the negative cache until the 257th
+send. `note_same_host_peer()` now clears a cached miss, since it is reached only for a peer at our own address -
+the peer about to have a segment.
+
+Measured both ways at two send rates (`experiments/segment_attach_hint.sh`, 3 reps,
+`results/segment_attach_hint_fc34c8d1.txt`), because the countdown is in **sends** and the announce is in **time**:
+
+| rate | arm | sent | `tx_shm` | `tx_udp_unattached` |
+|---|---:|---:|---:|---:|
+| 200/s | before | 1,977 | 1,722 | 257 |
+| 200/s | after | 1,977 | 1,978 | **1** |
+| 20/s | before | 200 | **0** | 202 |
+| 20/s | after | 200 | 201 | **1** |
+
+**At 20/s the unfixed build never attached at all**, because 200 samples is fewer than the countdown - the shape of
+a request/reply service doing a handful of calls a second. The prediction written before the run was that the hint
+would save ~56 sends at 200/s, from the 1 s announce interval against 1.28 s of countdown; it saved 256, because
+that arithmetic counted only the periodic announce and forgot discovery's own exchange at match time.
 
 ### 2.2a Scenario 4 in detail: RELIABLE under injected loss (re-measured 2026-09-23)
 
