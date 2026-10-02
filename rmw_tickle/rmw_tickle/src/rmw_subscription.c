@@ -350,6 +350,9 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     sub_impl->queue[tail_index].received_timestamp = tt_get_ns();
     sub_impl->queue[tail_index].publication_sequence_number = publication_sequence_number;
     sub_impl->queue[tail_index].reception_sequence_number = sub_impl->reception_sequence_number++;
+    // Valid only inside this callback, so it is read here and not at take time.
+    tt_Subscriber_delivering_writer(tt_sub, &sub_impl->queue[tail_index].sender_node_id,
+                                    &sub_impl->queue[tail_index].sender_entity_id);
     sub_impl->queue_count++;
     pthread_mutex_unlock(&sub_impl->queue_mutex);
 
@@ -903,8 +906,14 @@ static void fill_message_info(const rmw_tickle_subscriber_t* sub_impl, const rmw
     message_info->received_timestamp = (rmw_time_point_value_t)entry->received_timestamp;
     message_info->publication_sequence_number = entry->publication_sequence_number;
     message_info->reception_sequence_number = entry->reception_sequence_number;
+    // Until 2026-10-02 this reported sixteen zero bytes on every sample, so nothing could match a received
+    // sample to the writer that sent it - the field's only purpose - while rmw_get_gid_for_publisher() was
+    // returning a real per-instance id all along. Same layout as that function builds, from the same pair, so
+    // a gid taken from the graph and a gid taken from a sample compare equal for one writer.
     memset(&message_info->publisher_gid, 0, sizeof(message_info->publisher_gid));
     message_info->publisher_gid.implementation_identifier = RMW_TICKLE_IDENTIFIER;
+    message_info->publisher_gid.data[0] = entry->sender_node_id;
+    memcpy(&message_info->publisher_gid.data[1], &entry->sender_entity_id, sizeof(entry->sender_entity_id));
     message_info->from_intra_process = false;
 }
 

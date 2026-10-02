@@ -1391,8 +1391,8 @@ list until 2026-09-28: TickLE now serves it and both vendors still return `RMW_R
 | `rmw_publisher_wait_for_all_acked` | ✅ | ✅ | ✅ |  |
 | `rmw_subscription_count_matched_publishers` | ✅ | ✅ | ✅ |  |
 | `rmw_count_publishers` | ✅ | ✅ | ✅ |  |
-| `rmw_get_gid_for_publisher` | ✅ | ✅ | ✅ | returns a real per-instance id (`entity_id`, not the shared name hash - Milestone 47). Note the asymmetry with `rmw_take_with_info` above: this end of the pair works, so a tool can learn a writer's gid and still never match a sample to it |
-| `rmw_get_publishers_info_by_topic` | ✅ | ✅ | ✅ |  |
+| `rmw_get_gid_for_publisher` | ✅ | ✅ | ✅ | returns a real per-instance id (`entity_id`, not the shared name hash - Milestone 47) |
+| `rmw_get_publishers_info_by_topic` | ✅ | ✅ | ✅ | **The gid it reports is not the one `rmw_get_gid_for_publisher()` returns for the same endpoint** (found 2026-10-02): `encode_gid()` in `rmw_graph.c` still encodes `endpoint_id`, the topic-name hash, while Milestone 47 moved the publisher's gid to `entity_id`. Its comment says the encoding is "reused verbatim" from that function and it no longer is. Two consequences: a sample's gid cannot be matched to a graph endpoint, and two publishers on one topic share a graph gid, which is the collision Milestone 47 removed. For a **remote** endpoint the graph could not report `entity_id` today in any case - `struct tt_DiscoveredEntity` carries `context_id` and `endpoint_id` and not `entity_id`, so closing it there is a discovery change, not a one-line one |
 | **Loaned messages** | | | | |
 | `rmw_borrow_loaned_message` | ❌ | ⚠️ | ⚠️ | loans: TickLE planned (user decision 2026-09-27); FastDDS with data-sharing, CycloneDDS with iceoryx shared memory, plain types only |
 | `rmw_return_loaned_message_from_publisher` | ❌ | ⚠️ | ⚠️ | loans: TickLE planned (user decision 2026-09-27); FastDDS with data-sharing, CycloneDDS with iceoryx shared memory, plain types only |
@@ -1415,7 +1415,7 @@ list until 2026-09-28: TickLE now serves it and both vendors still return `RMW_R
 | `rmw_subscription_get_actual_qos` | ✅ | ✅ | ✅ |  |
 | `rmw_take` | ✅ | ✅ | ✅ |  |
 | `rmw_take_sequence` | ✅ | ✅ | ✅ | g5 (2026-09-28): up to count in order, the rmw.h argument rules (`test_take_sequence`; `rmw_gap_acceptance.sh takeseq`); not defined before |
-| `rmw_take_with_info` | ⚠️ | ✅ | ✅ | present, but the `message_info.publisher_gid` it hands back is **16 zero bytes** on every sample (`fill_message_info()`, `rmw_subscription.c`, which memsets it and ignores the subscriber). A tool matching a received sample to the writer that sent it - the field's purpose - cannot. Found 2026-10-02 by `rmw_gap_acceptance.sh names`, whose CycloneDDS control PASSES. Timestamps and both sequence numbers are correct |
+| `rmw_take_with_info` | ✅ | ✅ | ✅ | `message_info.publisher_gid` was **16 zero bytes** on every sample until 2026-10-02, so no two writers could be told apart; it now carries the sending (context id, entity_id) pair, shaped as `rmw_get_gid_for_publisher()` shapes one. `rmw_gap_acceptance.sh names` passes with its CycloneDDS control. **It does not yet compare equal to the gid the graph reports for the same endpoint** - see `rmw_get_publishers_info_by_topic` |
 | `rmw_get_subscriptions_info_by_topic` | ✅ | ✅ | ✅ |  |
 | **Content filter** | | | | |
 | `rmw_subscription_set_content_filter` | ➖ | ✅ | ➖ |  |

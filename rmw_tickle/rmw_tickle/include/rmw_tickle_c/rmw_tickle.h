@@ -851,6 +851,12 @@ typedef struct rmw_tickle_queued_message_t {
     uint64_t received_timestamp;
     uint64_t publication_sequence_number;
     uint64_t reception_sequence_number;
+    // Which writer sent this one, read from the core at delivery and carried here because
+    // rmw_take_with_info() runs later, on another thread, with nothing of the arrival left in scope.
+    // Shaped as rmw_get_gid_for_publisher() shapes a gid, so fill_message_info() writes the same five
+    // bytes and the two ends of the pair match by construction rather than by being kept in step.
+    uint8_t sender_node_id;
+    uint32_t sender_entity_id;
 } rmw_tickle_queued_message_t;
 
 // TickLE specific subscriber data

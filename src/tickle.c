@@ -8287,6 +8287,8 @@ static void deliver_payload(struct tt_Context* node, struct tt_Subscriber* sub, 
         struct tt_Data* inplace = topic->data_decode_inplace(payload, length, is_native);
         if (inplace != NULL) {
             record_delivery_order(node, sub, seq_no, timestamp, source, entity_id, via_data_port);
+            sub->delivering_source = source;
+            sub->delivering_entity_id = entity_id;
             sub->callback(sub, timestamp, (uint16_t)seq_no, inplace);
             return;
         }
@@ -8303,6 +8305,8 @@ static void deliver_payload(struct tt_Context* node, struct tt_Subscriber* sub, 
     }
 
     record_delivery_order(node, sub, seq_no, timestamp, source, entity_id, via_data_port);
+    sub->delivering_source = source;
+    sub->delivering_entity_id = entity_id;
     sub->callback(sub, timestamp, (uint16_t)seq_no, (struct tt_Data*)data);
     topic->data_free((struct tt_Data*)data);
 }

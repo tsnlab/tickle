@@ -2121,6 +2121,18 @@ struct tt_Subscriber { // extends endpoint
     uint32_t last_entity_id;
     uint64_t last_timestamp;
     bool last_via_data_port;
+    // Which writer the sample being handed to .callback came from, read through
+    // tt_Subscriber_delivering_writer(). Meaningful ONLY for the duration of that call: outside it
+    // they name whatever arrived last, which is not a question anyone is asking.
+    //
+    // Set at the two callback sites rather than read off last_source/last_entity_id above, which
+    // hold the same values by the time the callback runs because record_delivery_order() assigns
+    // them on its way out. That would work today and would go stale the moment anything moved or
+    // conditionalised that call - and a gid that is confidently wrong is the defect this exists to
+    // fix (rmw_tickle reported sixteen zero bytes for every sample until 2026-10-02). Two scalars
+    // of duplication buys a dependency that is visible at the line that depends on it.
+    uint8_t delivering_source;
+    uint32_t delivering_entity_id;
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
@@ -2253,6 +2265,25 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data);
 tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub);
 
 tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
+
+// Which writer sent the sample currently being delivered: the sending context's id and that endpoint's own
+// entity_id, the pair that identifies one Publisher INSTANCE rather than one topic name (struct tt_Endpoint.id is a
+// name hash and two Publishers on one topic share it - Milestone 47).
+//
+// Call ONLY from inside a tt_Subscriber callback. Outside one these name whatever arrived last, which answers a
+// question nobody asked, so there is nothing useful to return and the contract is the caller's to keep - the same
+// convention as every other plain-field access on these structs.
+//
+// Exists because rmw_tickle has to hand rmw_message_info_t.publisher_gid to anything matching a received sample to
+// the writer that sent it, and until 2026-10-02 it reported sixteen zero bytes on every sample while
+// rmw_get_gid_for_publisher() returned a real per-instance id - so a tool could learn a writer's gid from the graph
+// and never match a sample to it.
+static inline void tt_Subscriber_delivering_writer(const struct tt_Subscriber* sub, uint8_t* out_source,
+                                                   uint32_t* out_entity_id) {
+    *out_source = sub->delivering_source;
+    *out_entity_id = sub->delivering_entity_id;
+}
+
 #if tt_LOCAL_DELIVERY
 // (g9) Hands a durable Subscriber the durable backlog of this context's own durable Publishers on its topic, oldest
 // first, as a late-joining remote Subscriber gets it over the link. For a caller that sets the Subscriber's QoS after
