@@ -306,6 +306,15 @@ for line in open(sys.argv[1]):
     if not m: continue
     arm, rest = m.group(1), m.group(2)
     w = re.search(r"wire_packets_per_sample=([0-9.]+)", rest)
+    # Bytes as well as packets, because the packet counter alone cannot see every shared-memory transport.
+    # Measured 2026-10-02 on the latency cell: TickLE's packet ratio was 1.000 while tx_shm said 87% of samples
+    # went through the segment - and the bytes ratio was 0.147, with bytes-per-packet falling 1,339 -> 197. Both
+    # are true. Our doorbell wakes a blocked reader over the socket, so a segment-carried sample still costs one
+    # small packet; in the throughput cells batching coalesces many samples into each packet and the packet ratio
+    # drops, but a latency cell sends one sample at a time and there is nothing to coalesce. So the packet witness
+    # is blind to OUR transport in a per-sample scenario, and a cross-check that reads only packets blames the
+    # wrong instrument.
+    b = re.search(r"wire_bytes_per_sample=([0-9.]+)", rest)
     shm = re.search(r"\btx_shm=([0-9]+)", rest)
     udp = re.search(r"\btx_udp=([0-9]+)", rest)
     # The framework comes from the RESULT line's own framework= field. An earlier version inferred it as
@@ -318,7 +327,8 @@ for line in open(sys.argv[1]):
     fw = fwm.group(1)
     if w: rows[(fw, arm)].append((float(w.group(1)),
                                  int(shm.group(1)) if shm else None,
-                                 int(udp.group(1)) if udp else None))
+                                 int(udp.group(1)) if udp else None,
+                                 float(b.group(1)) if b else None))
 print()
 print("=== S6 verdicts: the witness as a ratio against the same cell's own kernel-path arm ===")
 for fw in sorted({k[0] for k in rows}):
@@ -345,8 +355,23 @@ for fw in sorted({k[0] for k in rows}):
         share = shm_tot/(shm_tot+udp_tot) if (shm_tot+udp_tot) else 0.0
         print(f"    cross-check: our own tx_shm share on the ON arm = {share:.3f} ({shm_tot} shm, {udp_tot} udp)")
         if share >= 0.5 and ratio >= 0.75:
-            print("    VOID tickle: tx_shm says shared memory, the loopback witness says kernel. Our counter is")
-            print("         the suspect - it is the one we wrote. This is a finding about the instrument.")
+            # Before blaming our own counter, ask the third instrument. Bytes and packets are independent readings
+            # of the same interface, and a transport that moves the PAYLOAD off the wire while still sending a
+            # per-sample notification shows exactly this: packets unchanged, bytes collapsed. If the bytes agree
+            # with tx_shm, two instruments out of three agree and the packet counter is simply blind to this
+            # transport in this scenario - which is a fact about the cell's shape, not a defect in the counter.
+            bon = [x[3] for x in on if x[3] is not None]
+            boff = [x[3] for x in off if x[3] is not None]
+            bratio = (st.median(bon)/st.median(boff)) if bon and boff and st.median(boff) > 0 else None
+            if bratio is not None and bratio <= 0.25:
+                print(f"    witness-by-bytes {bratio:.3f} (packets {ratio:.3f}): the payload left the wire and the")
+                print("         per-sample notification did not. tx_shm and the byte counter agree, so the packet")
+                print("         ratio is blind to this transport here rather than contradicting them. Cell stands.")
+            else:
+                print("    VOID tickle: tx_shm says shared memory, and neither the packet nor the byte witness")
+                bshow = "n/a" if bratio is None else f"{bratio:.3f}"
+                print(f"         agrees (packets {ratio:.3f}, bytes {bshow}). Our counter is the suspect - it is")
+                print("         the one we wrote. This is a finding about the instrument.")
         elif share < 0.5 and ratio <= 0.25:
             print("    VOID tickle: tx_shm says kernel, the witness says shared memory. The witness is the")
             print("         suspect here. Either way S6 cannot use either number until it is known which.")

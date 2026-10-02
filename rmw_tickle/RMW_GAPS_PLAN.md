@@ -1776,6 +1776,51 @@ Three things that belong with it, none of which is an excuse:
   faster on this cell at this payload, not that it is faster in general: p1 is 76 bytes, and the p2-p4 cells of this
   design have not been run.
 
+**THE LATENCY CELL, 2026-10-02, AND TWO INSTRUMENT FINDINGS WORTH MORE THAN THE ROW**
+(`s6_latency_driver.sh` over the same harness, `fcc4ddb4`, p2, `-i 0.005` over 10 s, 3 reps,
+`results/s6_latency_p2_fcc4ddb4.txt`). The numbers are in COMPARISON §2.2c. What belongs here is how the cell
+behaved, because the first attempt produced nothing and both reasons were ours.
+
+**1. `DUR` means different things in the two scenarios, and nothing said so.** The throughput cells use `DUR=5`,
+which is five seconds of millions of samples. The latency client pings **once a second**, so the same `DUR=5` is
+five round trips. Every arm sent five samples; TickLE's `tx_shm` was 0 and its witness 1.000, CycloneDDS came out
+MIXED, and the cell reported no number. A parameter that is sound in one scenario and silently degenerate in
+another is not caught by any check that looks at a single run - it needs the two scenarios compared. `CLI_ARGS`
+now passes through to all three frameworks' clients, and the tickle cell forwards it to `s6_witness_check.sh`, so
+the arms still receive identical arguments.
+
+**2. The FastDDS arm's identity check could not pass.** S6 reads `transport_profile=` from each repetition's
+RESULT line, and only `fastdds/reliable_throughput/client.cpp` printed it. Every repetition was refused -
+correctly, by a check doing its job - and the cell reported nothing for FastDDS. **That absence reads as "FastDDS
+has no shared-memory latency", which is a finding about a framework, and it was a missing printf in our harness.**
+The latency client now prints the same field from the same source.
+
+**3. The packet witness is blind to OUR transport in a per-sample cell.** With the cell finally running, TickLE's
+`wire_packets_per_sample` ratio was **1.000** while `tx_shm` said 87% of samples went through the segment. The
+harness's cross-check fired and named our counter as the suspect, on the rule that the instrument we wrote is the
+one to doubt. **It named the wrong one.** The third instrument settles it: `wire_bytes_per_sample` fell from
+5,360.6 to 789.5, a ratio of 0.147, and bytes-per-packet from 1,339 to 197. The payload left the wire; the
+per-sample doorbell did not. Both counters are correct and they are measuring different things.
+
+The reason it does not show in the throughput cells is coalescing: there, batching puts many samples in each
+packet and the packet ratio falls to 0.113, so the witness discriminates. A latency cell sends one sample at a
+time and there is nothing to coalesce, so our doorbell holds the packet count at parity whatever the transport.
+**A witness validated on one scenario is not thereby validated on another** - `s6_witness_check.sh` was run on
+`best_effort_throughput`, and that is where its band rule was earned.
+
+The cross-check now consults the byte ratio before blaming a counter: if bytes agree with `tx_shm`, two
+instruments of three agree and the cell stands with the disagreement explained. The VOID path still fires - fed
+the same run with the ON arm's bytes forced up to the OFF arm's, it VOIDs - so this is a branch that decides
+rather than one that always excuses us.
+
+**4. The first ~257 samples of any same-host stream go over the kernel.** `shm_attach_attempts=2`,
+`shm_attach_absent=1`, `tx_udp_unattached=257`, then `shm_attach_ok=1`, identically in all three repetitions. The
+first attach attempt loses a race with the peer's segment creation and `tt_SEGMENT_ATTACH_RETRY_SENDS` (256) holds
+the negative cache until the 257th send. A same-host exchange shorter than that **never uses shared memory**, and
+a request/reply service doing a handful of calls is exactly that shape. This is a design question for SHM_PLAN -
+discovery already knows when a same-host peer appears, so the re-ask need not be driven by a send counter at all -
+and it is recorded here as a measured fact, not resolved.
+
 **What this took, and the premise it corrected.** The ON arm first failed with `Failed to load PSMX library
 'psmx_iox'` and `dds_create_writer failed`. Two CycloneDDS prefixes are installed on the rig - jazzy's 0.10.5 and
 rolling's 11.0.1 - and `build.sh` searches rolling first, so **every native CycloneDDS figure in COMPARISON is

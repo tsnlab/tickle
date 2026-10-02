@@ -28,3 +28,14 @@ for sz in $SIZES; do
     echo "=== $sz finished $(date -Is) ===" >> "$HOME/rig_results_safe/s6_latency_driver.log"
 done
 echo "ALL_DONE $(date -Is)" >> "$HOME/rig_results_safe/s6_latency_driver.log"
+
+# PRE-REGISTERED for the 2026-10-02 re-run, after the first attempt produced no number:
+#   The first run used the throughput cells' DUR=5 with the latency client's default 1 s ping interval, so each arm
+#   sent FIVE samples. TickLE's tx_shm was 0 and its witness 1.000 - the segment never attached. The reading is that
+#   tt_SEGMENT_ATTACH_RETRY_SENDS is 256: a first attach attempt that fails is re-asked only every 256 sends, and
+#   five sends never reach it. So this run uses -i 0.005 over DUR=10, about 2,000 round trips per rep, which passes
+#   that threshold roughly eight times.
+#     TickLE's ON arm attaches (tx_shm > 0, witness <= 0.25)  -> the reading was right, and the RTT cell is valid
+#     TickLE's ON arm still does not attach                   -> the threshold is NOT the explanation and the cell
+#         stays VOID; that is then a finding about the attach heuristic on low-volume traffic, not about latency,
+#         and it is worth more than the RTT row was.

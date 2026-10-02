@@ -33,7 +33,7 @@ WS=""
 while getopts "w:" o; do case "$o" in w) WS=$OPTARG ;; *) exit 2 ;; esac; done
 shift $((OPTIND - 1))
 [ -n "$WS" ] && [ -d "$WS/rmw/install" ] && [ -d "$WS/ifaces/install" ] || { echo "usage: $0 -w WS [TEST...]" >&2; exit 2; }
-TESTS=${*:-graph bag bagstall events matched itype takeseq samehost inprocess durable range peers introspect}
+TESTS=${*:-graph bag bagstall events matched itype takeseq samehost inprocess durable range peers introspect names}
 HERE=$(cd "$(dirname "$0")" && pwd)
 NODE="$HERE/acceptance/accept_node.py"
 DISTRO=${ROS_DISTRO_DIR:-/opt/ros/lyrical}
@@ -354,6 +354,33 @@ t_introspect() {
     else
         # Not field(): that extracts numeric values only, so a text detail came back empty and the
         # failure printed as a bare FAIL() - silent precisely when it had something to say.
+        echo "FAIL($(result "$d/node.log" | grep -oE 'detail=[^ ]+' | cut -d= -f2-))"
+    fi
+}
+
+# The name and GID rows of g14's generalisation, which RMW_GAPS_PLAN orders first because a bridge or a
+# `ros2 topic pub` round-trips both in ordinary use. Same shape as t_introspect and for the same reason: the
+# endpoint has to be REMOTE, or the reader is served from the real values it created locally and the branch that
+# starts from a discovered entity is never exercised.
+#
+# The topic is 247 characters, the longest rclpy accepts - rmw's limit is 255 less the 8 it reserves for its own
+# prefixes - so the names are read back at the edge rather than in the middle, which is where a truncation or a
+# prefix overrunning the budget would show. A control that fails voids the case, as everywhere else here.
+t_names() {
+    local d=$OUTDIR/names_$1
+    mkdir -p "$d"
+    run_in "$NS2" "$1" 2 12 "" python3 "$NODE" namepeer 10 > "$d/peer.log" 2>&1 &
+    local pp=$!
+    sleep 1
+    run_in "$NS1" "$1" 1 9 "" python3 "$NODE" names 8 > "$d/node.log" 2>&1
+    wait "$pp"
+    grep -q 'RESULT: role=names' "$d/node.log" || { echo "ERROR(node did not finish)"; return; }
+    local n f
+    n=$(field "$d/node.log" discovered); f=$(field "$d/node.log" roundtrip_failures)
+    if [ "${n:-0}" -lt 1 ]; then echo "FAIL(no remote endpoint discovered)"; return; fi
+    if [ "${f:-1}" = 0 ]; then
+        echo "PASS(discovered=$n)"
+    else
         echo "FAIL($(result "$d/node.log" | grep -oE 'detail=[^ ]+' | cut -d= -f2-))"
     fi
 }

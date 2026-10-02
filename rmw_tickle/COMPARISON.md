@@ -632,9 +632,33 @@ inherits a limit the medium does not impose**. Unbinding the slot from the datag
 argues for, and it is not free: a larger slot means fewer slots in the same ring, so the back-pressure cells
 (SHM_PLAN) would need re-measuring with it.
 
-**What is still not measured here: RTT.** All three frameworks' shared-memory latency is unmeasured - the cells
-above are throughput, CPU and memory only. A same-host RTT row needs `rmw_perf_pingpong`'s shape on the rig rather
-than this harness, and until it exists this section says nothing about latency on the segment path.
+**RTT, measured 2026-10-02 on `fcc4ddb4`** (same harness with `SCEN=reliable_latency`, `-i 0.005` over 10 s so each
+rep is ~1,950 round trips, one ping in flight at a time, 3 reps, `results/s6_latency_p2_fcc4ddb4.txt`). Every
+framework's two arms have **non-overlapping ranges**, so each verdict is separable rather than a median difference:
+
+| cell | TickLE | CycloneDDS | FastDDS |
+|---|---:|---:|---:|
+| RTT mean, kernel arm (`OFF`) | **0.046** | 0.103 | 0.139 |
+| RTT mean, shared memory (`ON`) | ✅ **0.050** | 0.061 | ❌ 0.099 |
+| what its own segment did to it | **+8.7% worse** | -41% | -29% |
+
+**We are fastest on the segment path and the only one whose segment makes latency worse than its own kernel path.**
+Both halves are results. The 0.050 beats CycloneDDS's 0.061 and FastDDS's 0.099, so a user choosing on same-host
+latency still chooses us; but their segments buy them 29-41% and ours costs us 8.7%, which is the direction that
+matters for where the work goes next.
+
+**And our figure is the flattering one, not the harsh one.** Our `ON` arm is 13.5% kernel traffic in every
+repetition (`tx_shm` 1,722 against `tx_udp` 269 of 1,977 samples) - and the kernel is our *faster* arm here, so the
+mixture pulls the `ON` mean down. The pure-segment round trip is worse than 0.050, by an amount this cell cannot
+separate.
+
+**Why 13.5%, and it is not noise: the first ~257 samples of any same-host stream go over the kernel.** The counters
+say it exactly - `shm_attach_attempts=2`, `shm_attach_absent=1`, `tx_udp_unattached=257`, then `shm_attach_ok=1` -
+and all three repetitions give the identical figure. The first attach attempt loses a race with the peer's segment
+creation, and `tt_SEGMENT_ATTACH_RETRY_SENDS` (256) then holds the negative cache until the 257th send. **A
+same-host exchange shorter than that never uses shared memory at all**, which the first attempt at this cell
+demonstrated by accident: at the throughput cells' `DUR=5` the latency client pings once a second, so it sent five
+samples, `tx_shm` was 0, and there was nothing to measure.
 
 ### 2.2a Scenario 4 in detail: RELIABLE under injected loss (re-measured 2026-09-23)
 

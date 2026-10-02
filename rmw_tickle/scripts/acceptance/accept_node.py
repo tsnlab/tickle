@@ -242,6 +242,106 @@ def main():
             fails.append('gid_not_unique')
         print('RESULT: role=introspect discovered=%d roundtrip_failures=%d detail=%s'
               % (len(infos), len(fails), ','.join(fails) if fails else 'none'), flush=True)
+    elif role in ('namepeer', 'names'):
+        # The name and GID rows of g14's generalisation (RMW_GAPS_PLAN, "the other introspection surfaces"), which
+        # that table orders first because a bridge or a `ros2 topic pub` round-trips both in ordinary use.
+        #
+        # The edge this is built around, measured rather than assumed: tt_MAX_NAME_LENGTH is 255, and rmw's own
+        # limit for a full topic name is 255 MINUS 8 reserved for the prefixes it adds (rt/, rq/, rr/), so 247 is
+        # the longest name rclpy will accept. A name our core would carry happily therefore sits eight characters
+        # past what rmw takes, and anything we REPORT at that length would be a value we would refuse back.
+        # The test runs at the maximum that can be created, since rcl refuses to create anything longer: what it
+        # can decide is whether a name at the edge survives the round trip intact.
+        LONG = '/' + 'n' * 245      # 247 incl. the slash: the longest rclpy accepts (verified 2026-10-02)
+        if role == 'namepeer':
+            node = Node('accept_namepeer')
+            pub = node.create_publisher(String, LONG, 10)
+
+            def tick():
+                counts['n'] += 1
+                pub.publish(String(data='msg-%d' % counts['n']))
+            node.create_timer(0.2, tick)
+            spin_for(node, seconds)
+            print('RESULT: role=namepeer sent=%d' % counts['n'], flush=True)
+        else:
+            from rclpy.validate_full_topic_name import validate_full_topic_name
+            from rclpy.validate_namespace import validate_namespace
+            from rclpy.validate_node_name import validate_node_name
+            node = Node('accept_names')
+            got = {'info': None}
+
+            # Two-argument callback, so the sample's MessageInfo arrives WITH it. The first version of this role
+            # registered a one-argument callback and then called sub.handle.take_message() for the info; that always
+            # returned None, because the executor had already consumed the message to dispatch the callback - a
+            # check that could never pass, found by probing the API rather than by reading it. Subscribing is not
+            # decoration here: the GID row's second half asks whether a DELIVERED sample's publisher_gid is the
+            # value the graph reports for that writer, which the graph alone cannot answer.
+            def on_msg(_msg, info):
+                if got['info'] is None:
+                    got['info'] = info
+            node.create_subscription(String, LONG, on_msg, 10)
+            deadline = time.time() + max(seconds - 1.0, 1.0)
+            infos = []
+            while time.time() < deadline:
+                rclpy.spin_once(node, timeout_sec=0.2)
+                infos = node.get_publishers_info_by_topic(LONG)
+                if infos and got['msg'] is not None:
+                    break
+            fails = []
+            # The topic name has to come from the API that REPORTS one. TopicEndpointInfo does not carry it - you
+            # query by it - so validating LONG there would be checking a constant this file defines against itself.
+            # get_topic_names_and_types() is the surface the task list names, and what it hands back is a value a
+            # bridge or `ros2 topic pub` would use.
+            reported_topics = [t for t, _types in node.get_topic_names_and_types() if len(t) > 200]
+            if not reported_topics:
+                fails.append('long_topic_not_reported_in_graph')
+            for t in reported_topics:
+                print('REPORTED: topic_len=%d topic_tail=%s' % (len(t), t[-12:]), flush=True)
+                if t != LONG:
+                    fails.append('topic_name_altered:len_%d_vs_%d' % (len(t), len(LONG)))
+                try:
+                    validate_full_topic_name(t)
+                except Exception as exc:  # noqa: BLE001
+                    fails.append('topic_refused:%s:%s' % (type(exc).__name__, str(exc)[:40].replace(' ', '_')))
+            for info in infos:
+                print('REPORTED: node=%s ns=%s gid=%s'
+                      % (info.node_name, info.node_namespace,
+                         bytes(info.endpoint_gid).hex()), flush=True)
+                # Each reported name goes back to the validator that governs its kind. A name we report and would
+                # then refuse is the defect; which of the two refused it is the useful half of the message.
+                for label, value, fn in (('node', info.node_name, validate_node_name),
+                                         ('ns', info.node_namespace, validate_namespace)):
+                    try:
+                        fn(value)
+                    except Exception as exc:  # noqa: BLE001 - the refusal is the result
+                        fails.append('%s_refused:%s:%s' % (label, type(exc).__name__, str(exc)[:40].replace(' ', '_')))
+                # And to the API a tool would actually call with it.
+                try:
+                    again = node.create_publisher(String, LONG, 10)
+                    node.destroy_publisher(again)
+                except Exception as exc:  # noqa: BLE001
+                    fails.append('recreate_refused:%s:%s' % (type(exc).__name__, str(exc)[:40].replace(' ', '_')))
+            # The delivered sample's gid against the graph's. "Could not look" gets its own answer rather than
+            # passing quietly: a check that reports success when it never ran is the failure this file has met
+            # twice. The two sides are shaped differently - the graph gives a list of ints, the sample a dict of
+            # {implementation_identifier, data} - so both are reduced to bytes and compared over the length they
+            # share, which is what "the same writer" means here.
+            if got['info'] is None:
+                fails.append('no_sample_delivered')
+            elif not infos:
+                pass  # already reported as discovered=0 by the caller
+            else:
+                pg = got['info'].get('publisher_gid')
+                raw = pg.get('data') if isinstance(pg, dict) else pg
+                if raw is None:
+                    fails.append('sample_carries_no_publisher_gid')
+                else:
+                    a, b = bytes(raw), bytes(infos[0].endpoint_gid)
+                    k = min(len(a), len(b))
+                    if k == 0 or a[:k] != b[:k]:
+                        fails.append('sample_gid_ne_graph_gid:%s_vs_%s' % (a.hex()[:16], b.hex()[:16]))
+            print('RESULT: role=names discovered=%d roundtrip_failures=%d detail=%s'
+                  % (len(infos), len(fails), ','.join(fails) if fails else 'none'), flush=True)
     else:
         print('RESULT: role=%s error=unknown_role' % role, flush=True)
         return 2
