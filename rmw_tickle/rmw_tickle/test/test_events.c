@@ -304,9 +304,22 @@ int main(void) {
 
     rmw_tickle_publisher_t* offered_pub_impl = (rmw_tickle_publisher_t*)offered_pub->data;
     rmw_tickle_context_impl_t* context_impl = offered_pub_impl->node->context_impl;
-    // >= RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS (tt_CONTEXT_UPDATE_INTERVAL, 1s) so the
-    // periodic check's own first firing after event_init() below has time to actually run.
-    rmw_time_t qos_wait_timeout = {2, 0};
+    // >= RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS (rmw_publisher.c / rmw_subscription.c, both
+    // defined as tt_CONTEXT_UPDATE_INTERVAL) so the periodic check's own first firing after
+    // event_init() below has time to actually run.
+    //
+    // Derived rather than written as a number. It used to be a bare `{2, 0}` under a comment that
+    // named the constant it depends on and then did not use it, leaving exactly one period of
+    // slack: the wait has to cover a whole check period plus whatever that first firing costs, and
+    // at a 1 s period two seconds is two periods. test_liveliness_lost_watchdog.c carried the same
+    // shape and a check-gates run failed on it on 2026-10-04; the only difference here is that
+    // this one has not been seen to fail yet.
+    //
+    // Four periods is a bound on patience, not on the behaviour: a check that never fires fails
+    // this assertion however long it waits, and a passing run never reaches the bound, so the wall
+    // time does not change.
+    const uint64_t qos_wait_ns = 4U * (uint64_t)tt_CONTEXT_UPDATE_INTERVAL;
+    rmw_time_t qos_wait_timeout = {qos_wait_ns / tt_SECOND, qos_wait_ns % tt_SECOND};
 
     // RMW_EVENT_OFFERED_QOS_INCOMPATIBLE: this Publisher offers neither RELIABLE nor TRANSIENT_
     // LOCAL (base_qos()) - a discovered remote Subscriber requesting RELIABLE is incompatible.
