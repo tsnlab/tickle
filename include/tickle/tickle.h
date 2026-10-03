@@ -2571,16 +2571,26 @@ struct tt_SingleHeader {
 #define tt_SUBMESSAGE_TYPE_FRAG_FIRST 8
 #define tt_SUBMESSAGE_TYPE_FRAG_CONT 9
 
-// A DATA record that exists ONLY inside a shared-memory segment (SHM_PLAN 6e). It declares how many
-// seq_nos it covers, so a sample consumes the number the network form would need whatever path it
-// takes, and the reader advances by that span. It is never sent on a socket and never will be: the
-// network wire is unchanged by 6e, which is the whole point of giving this its own type rather than
-// widening tt_DataHeader.
+// RESERVED, AND NOTHING PRODUCES IT. Read this before planning anything around it.
 //
-// Because section 1's safety claim is that a segment record takes the SAME acceptance path as a
-// datagram, this type breaks the symmetry and must be REFUSED when it arrives over the socket -
-// otherwise a multi-slot record can be injected from the network. That refusal is why the type is
-// here before anything produces it: the guard lands first, not after.
+// It was defined for a design that is not the one built. SHM_PLAN 6e needed a segment record to
+// declare how many seq_nos its sample covers, and the first sketch gave that job to a submessage
+// type of its own. The implementation put the span in the SLOT header instead -
+// tt_SegmentSlot.seq_span - because the slot is what a segment reader parses before it parses
+// anything else, and because the record inside it is then an ordinary DATA, identical on both
+// paths. So the span exists and works, and this type is not how it travels. The previous version
+// of this comment still described the submessage carrying the span, which stopped being true the
+// day the slot field landed and would have sent the next reader looking in the wrong place.
+//
+// The only code that ever sets this type is tests/test_hostile_datagram.c, which builds one
+// deliberately to prove it is refused.
+//
+// It stays defined, and the guard in process_submessage() stays with it, for two reasons. The
+// number must never be given a new meaning - a later build that reused 10 would find this one
+// refusing its traffic. And the guard is the cheap half of section 1's safety claim: a segment
+// record is safe only because it takes the SAME acceptance path as a datagram, so a record that
+// could only have been built by something with write access to a segment has to be refused when it
+// arrives from the network instead. rx_shm_only_on_socket counts that, and reaches the RESULT line.
 //
 // 10, not 7: type 1 (UPDATE) and type 7 (UPDATE_PART) are retired and the comment above forbids
 // giving either a new meaning.
