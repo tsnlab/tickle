@@ -1420,6 +1420,48 @@ writing a plausible mechanism where a measured one belongs looks like, and it is
    microsecond. Both are worth doing; only one of them is the p4 cell.
 
 
+#### How the first wide-slot measurement was diagnosed (Plan, 2026-10-03), recorded because each step ruled something out
+
+The seq-span build's first p4 run at `tt_SEGMENT_SLOT_BYTES=4096` collapsed: `sent=128`, `write_fail=49`,
+`tx_shm=15411`, `drained=timeout`, **byte-identical across three 5-second reps**. Three identical rows rule out
+load, scheduling and thermal effects before anything else is considered - it is a limit, not a variance.
+
+The chain, and what each step eliminated:
+
+| step | what it showed | what it ruled out |
+|---|---|---|
+| control arm in the same run (slot 1472) | 121,941 samples/s against the 121,767 it had to reproduce, 2.008 datagrams/sample, `drained=acked` | the rig, the load, the harness, the build |
+| `tt_SEGMENT_BYTES`/stride arithmetic | 768 KiB / 4112 = 191 -> 128 slots, exactly the observed `sent` | nothing yet - two candidates predicted 128 (the ring, and `tt_MAX_RELIABLE_HISTORY` 64 x span 2) |
+| `what_bounds_128.sh` at slot 8192 (ring of 64) | `sent=128` again | **the ring**: halving the ring did not move the limit, so the slot-count match was coincidence |
+| `write_fail` is the harness `-B` counter | 49 x 100 ms = 4.9 s of a 5 s run | a capacity bound: the publisher was *blocked*, not refused |
+| the receiver's own RESULT line | `rx_shm` = `tx_shm` to the digit (15,401 vs 15,401), `recv=1`, `frag_reassembled=0`, every loss counter 0 | **the transport**: it delivered every record and lost none |
+
+The last row needed a harness change to exist at all. The server installs a handler for `SIGINT` only
+(`reliable_throughput/server.c`) and `s6_witness_check.sh` sent `SIGTERM`, so the subscriber had never printed
+its counters in this harness - the question "did the subscriber read the records or never see them?" was
+unanswerable for the mechanical reason that nothing had ever asked it. It sends `INT` first now, `TERM` as
+fallback, and says so explicitly when no RESULT line comes back, because "the server was not asked" and "the
+server had nothing to say" must not read alike.
+
+**The cause, found by Dev in the code once the measurement had cornered it:** `seq_span` had one write site and
+zero read sites. `segment_read()` never looked at it and never passed it on, so a receiver advanced one seq_no
+for a record that consumed two, waited forever for a seq_no that by construction does not exist, and solicited
+it - which is the retransmission that made `tx_shm` 120x `sent`. `gap_abandoned` and `gap_evicted` stayed at
+zero throughout because every retry *succeeded*: the record did arrive, so no abandonment condition was ever
+reached.
+
+**The lesson worth keeping is about the shape of the defect, not the defect.** A field that is written and
+never read has no shape: it compiles, it lints, and the test written for it asserted that the publisher
+*stored* the span rather than that anything *used* it. So a two-sided change passed its own test with one side
+missing, and it took three rig experiments and a harness fix to see what a grep for read sites shows in a
+second. When a change adds a field, grep its **read** sites before believing it works, and write the assertion
+against the consequence - "the receiver advanced by N" - not the storage.
+
+A record that is read and not accepted must increment something naming the reason. Here `rx_shm` said it
+arrived and `recv` said it did not, with nothing between them, and that gap is what let the cell look like a
+publisher problem for a day.
+
+
 ### 6e(b): the seam is three fields, not a hundred and eighty (inventory + design, 2026-10-03)
 
 `src/tickle.c` has ~138 references to `tx_buffer`/`tx_tail`, which made decision 2 look like a file-wide
