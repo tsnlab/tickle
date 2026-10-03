@@ -1698,9 +1698,15 @@ static bool send_tail_as_fragments(struct tt_Context* node, struct tt_Submessage
 // could fit one datagram on its own. False means it never can, however the buffer around it is
 // flushed: the protocol does not fragment. Counts and logs the refusal, so each caller only has to
 // roll back.
+// `length` is passed rather than derived. It used to be taken as tx_buffer + tx_tail -
+// submessage_header, which requires two things the signature does not ask for: that the pointer is
+// inside tx_buffer, and that tx_tail is this submessage's end. send_cached_record() needs the same
+// question answered about a record in the reliable arena, where that subtraction is between two
+// unrelated addresses - passing it one delivered 23 of 200 samples in test_data_frag, and the fix
+// there was a comment telling the next caller not to use this function. A function whose repair is a
+// warning to its callers is the thing that is wrong. Both callers already hold the length.
 static bool submessage_fits_datagram(struct tt_Context* node, const struct tt_SubmessageHeader* submessage_header,
-                                     uint32_t limit) {
-    size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
+                                     size_t length, uint32_t limit) {
     if (sizeof(struct tt_Header) + ROUNDUP(length) <= limit) {
         return true;
     }
@@ -1744,7 +1750,7 @@ static bool end_encode(struct tt_Context* node, struct tt_SubmessageHeader* subm
     // buffer, where flush_tx() would refuse it again - and before that check dropped instead of
     // returning, it stayed there and blocked every later send. The protocol does not fragment, so
     // there is nothing else to do with it; the caller learns from `false` and rolls back.
-    if (!submessage_fits_datagram(node, submessage_header,
+    if (!submessage_fits_datagram(node, submessage_header, length,
                                   record_size_limit(node, tt_MAX_BUFFER_LENGTH, peers, peer_count))) {
         node->tx_tail = base;
         return false;
@@ -5357,7 +5363,7 @@ static bool check_and_cache_sample(struct tt_Context* node, struct tt_Publisher*
                                    uint32_t whole_limit) {
     // With fragmentation every sample within tt_MAX_SAMPLE_LENGTH can be sent, and the caller has
     // already refused anything larger.
-    if (!tt_FRAG_ENABLED && !submessage_fits_datagram(node, submessage_header, whole_limit)) {
+    if (!tt_FRAG_ENABLED && !submessage_fits_datagram(node, submessage_header, encoded_len, whole_limit)) {
         return false;
     }
     // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see cache_reliable_sample()'s own doc
@@ -8063,12 +8069,9 @@ static bool send_cached_record(struct tt_Context* node, const uint8_t* record, u
     // The seq_nos come out right by construction, which is what the seq span bought: frag_write_header()
     // gives fragment i the base seq_no + i, and the span reserved exactly that many when the sample was
     // published. A receiver cannot tell these fragments from ones the first publish would have sent.
-    // Measured from `len`, the cached record's own length, and NOT with submessage_fits_datagram():
-    // that one derives the length as tx_buffer + tx_tail - submessage_header, and this record is in the
-    // arena, where the subtraction is between two unrelated addresses. Passing an arena pointer to it
-    // delivered 23 of 200 samples in test_data_frag before this line read the length it already had -
-    // the same defect this morning removed from end_encode_sample(), reintroduced by calling a function
-    // that still has it.
+    // Compared here rather than through submessage_fits_datagram(), which answers the same question but
+    // treats a no as a failure: it logs an error and counts tx_dropped_oversize. Here a record that does
+    // not fit is the ordinary signal to re-fragment, not something that could never be sent.
     if (sizeof(struct tt_Header) + ROUNDUP(len) > record_size_limit(node, tt_MAX_BUFFER_LENGTH, target, 1)) {
         const struct tt_DataHeader* cached = (const struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader));
         uint32_t head_len = (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader));
