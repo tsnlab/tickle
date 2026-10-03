@@ -623,15 +623,30 @@ static uint32_t own_slot_bytes(void) {
 static bool valid_slot_bytes(uint32_t slot_bytes) {
     // Below a datagram header nothing can be placed at all. The ceiling is a datagram's worth rather than
     // tt_MAX_SAMPLE_LENGTH, because a slot larger than a datagram is only useful for carrying a record whole
-    // - SHM_PLAN 6e(a) - and that configuration was measured on 2026-10-03 to collapse the cell it was meant
-    // to win: 2713 Mbps at the default slot against 0.8 at 4096, the ring full 934 times and RELIABLE never
-    // recovering. Restoring the slot COUNT to the default's 512 changed nothing (934 against 936), so it is
-    // not sizing. A 2800-byte sample held as one 4096-byte slot costs about 2.7x the ring bytes of the same
-    // sample as two datagram-sized ones, and the acknowledgements travel through the same rings, so the
-    // samples and the acks starve each other. 6e(b) - the encoder writing into the slot, which is what stops
-    // a whole record costing a whole slot - is the prerequisite, and this ceiling lifts with it, not before.
-    // A build may still set tt_SEGMENT_SLOT_BYTES higher to measure that path (whole_record_refusal.sh does);
-    // this is the runtime knob, and it should not hand an application a configuration measured 3000x worse.
+    // - SHM_PLAN 6e(a).
+    //
+    // THE MEASUREMENT THIS CEILING WAS PUT HERE FOR WAS MEASURING A BUG, and is corrected in place
+    // rather than deleted because the reading drawn from it was published too. It said: "2713 Mbps
+    // at the default slot against 0.8 at 4096, the ring full 934 times and RELIABLE never
+    // recovering", and concluded that a whole record costs about 2.7x the ring bytes so samples
+    // and acks starve each other. The 0.8 was not ring economics. At 4096 a sample travels whole,
+    // and until 2026-10-03 nothing read the span the slot carried, so the reader advanced its
+    // watermark by one per record and waited for a seq_no the publisher had already spent. The
+    // cell delivered one sample out of fifteen thousand received records with every loss counter
+    // at zero. Re-measured on the fixed build, same harness, same run, control included:
+    //
+    //     1472 (default)  2732 Mbps   2.01 slots/sample   recv = sent, loss 0
+    //     4096            2713 Mbps   1.01 slots/sample   recv = sent, loss 0
+    //
+    // So a whole record costs HALF the slots and delivers the same rate - 0.99x, three reps. The
+    // starvation argument does not survive, and neither does "3000x worse".
+    //
+    // The ceiling stays anyway, and for a plainer reason: there is no measured benefit. Halving
+    // slots per sample bought nothing, so raising the runtime knob would hand an application a
+    // larger per-slot memory cost for a throughput that does not move. 6e(b) - the encoder writing
+    // into the slot - remains the prerequisite for the memory side of the argument, and if it
+    // lands, this is re-measured again rather than assumed. A build may still set
+    // tt_SEGMENT_SLOT_BYTES higher to measure that path (whole_record_refusal.sh does).
     return slot_bytes >= sizeof(struct tt_Header) && slot_bytes <= FRAG_WHOLE_DATA_LIMIT;
 }
 
