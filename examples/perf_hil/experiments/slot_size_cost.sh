@@ -38,6 +38,7 @@ say "=== done $(date -Is) ==="
 python3 - "$OUT" <<'PYEOF' | tee -a "$OUT"
 import re, sys, statistics as st
 rows = {}
+thin = {}
 for line in open(sys.argv[1]):
     m = re.match(r'S=(\d+) ', line)
     if not m or 'framework=tickle' not in line:
@@ -46,6 +47,11 @@ for line in open(sys.argv[1]):
     try:
         sent = int(f['sent'])
         if sent < 1000:
+            # Say what was dropped. On 2026-10-03 this filter - added after a ten-round-trip run was nearly
+            # read as a result - silently removed every row of a collapsed arm (sent=167), and the verdict
+            # came out as "fewer than N usable arms", which reads as "no data" rather than "the cell fell
+            # over". Those are different facts and the harness reported the wrong one.
+            thin.setdefault(int(m.group(1)), []).append(sent)
             continue
         rows.setdefault(int(m.group(1)), []).append(
             (float(f['send_mbps']), int(f.get('tx_shm', 0)), sent, int(f.get('shm_full_dropped', 0))))

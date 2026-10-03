@@ -1350,10 +1350,21 @@ seq_nos" - and the reader advances by N.
 | seq_no advance | depends on destinations | **always N** |
 | mixed destinations | must be forbidden | **work**: whole to the local peer, fragments to the remote one, one seq space |
 | cache entry | bound to the path it was published on | **path-independent** |
-| segment detaching after publish | breaks (oversize drop) | re-fragments; the seq space already has N |
+| segment detaching after publish | breaks (oversize drop) | re-fragments, **once the code to do so exists** - see below |
 
 The third and fourth rows are the substance. A path-independent cache removes the latent failure 6e(a) carried
 even inside its own restriction.
+
+**The row above asserted a behaviour that did not exist, and it is worth saying why (2026-10-03).** "It
+re-fragments" was written as a property of the design. What the design had actually established was that seq
+span makes re-fragmentation *expressible* - the cache entry can say it covers N - which is a possibility, not
+an action. `send_cached_record()`'s whole-record branch went to `end_encode()`, whose own comment says the
+protocol does not fragment there and the caller learns from `false`; the fragmenting branch lived only in
+`end_encode_sample()`, on the publish path. Raising the slot ceiling on that basis would have turned the
+2026-10-03 oversize drop into "a retransmission that never succeeds" - the same failure wearing a different
+symptom. Dev found it before building, by reading the code the table described. Re-fragmentation on the
+retransmit path is a piece of its own, and it is the ceiling's precondition rather than a consequence of seq
+span.
 
 **Cost.** The network wire does not change at all - **zero bytes** - because this submessage only ever exists
 inside a segment. `tt_DataHeader` grows from 16 to 20 bytes for the shared-memory form (a one-byte span plus
