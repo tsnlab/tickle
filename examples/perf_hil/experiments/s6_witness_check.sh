@@ -54,10 +54,21 @@ say "  BUILD_FLAGS='$BUILD_FLAGS'"
 say "=== S6 witness check $(date -Is) sha=$SHA scen=$SCEN size=$SIZE dur=$DUR reps=$REPS iface=lo host=$HOST ==="
 
 srv_pid=""
+# INT before TERM, because the server only prints its RESULT line if it is allowed to finish. It installs a
+# handler for SIGINT alone (reliable_throughput/server.c), so the TERM this used to send killed it outright and
+# the receiver's counters have never been captured by this harness at all. That mattered on 2026-10-03: the
+# question "did the subscriber read the records or never see them?" is answered by the server's rx_shm, and the
+# only reason it could not be answered was that nothing had ever asked the server to say it. TERM stays as the
+# fallback for a server that ignores INT, so a wedged process still cannot outlive the run.
+#
+# The /proc/PID/exe check stays and is the point: the pid came from the launch, and this confirms what it is
+# before signalling it.
 kill_server() {
     [ -z "${srv_pid:-}" ] && return 0
-    sh_ "$HOST" "case \"\$(readlink /proc/$srv_pid/exe 2>/dev/null)\" in $SAVE/*/server*) kill -TERM $srv_pid;; esac
-for i in 1 2 3 4 5; do [ -d /proc/$srv_pid ] || break; sleep 1; done; true" </dev/null >/dev/null
+    sh_ "$HOST" "case \"\$(readlink /proc/$srv_pid/exe 2>/dev/null)\" in $SAVE/*/server*) kill -INT $srv_pid;; esac
+for i in 1 2 3 4 5; do [ -d /proc/$srv_pid ] || break; sleep 1; done
+case \"\$(readlink /proc/$srv_pid/exe 2>/dev/null)\" in $SAVE/*/server*) kill -TERM $srv_pid;; esac
+for i in 1 2 3; do [ -d /proc/$srv_pid ] || break; sleep 1; done; true" </dev/null >/dev/null
     srv_pid=""
 }
 trap kill_server EXIT
@@ -94,6 +105,18 @@ run_one() { # run_one <arm>
     line=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo taskset -c 2 ./client -Q -d $DUR $CLI_ARGS >/tmp/s6wit_client.log 2>&1; grep '^RESULT' /tmp/s6wit_client.log" </dev/null)
     [ -n "$line" ] && say "arm=$name $line"
     kill_server
+    # The receiver's own line, collected after the server has been asked to stop and allowed to print it. A
+    # client line alone cannot distinguish a publisher that stalls from a subscriber that does: on 2026-10-03 a
+    # cell sent 128 samples and timed out, and whether the subscriber had read them (rx_shm > 0) or never seen
+    # them (rx_shm = 0) was the whole question and could not be asked. Reported as absent rather than skipped -
+    # "the server said nothing" and "the server was never asked" must not look alike.
+    local sline
+    sline=$(sh_ "$HOST" "grep '^RESULT' /tmp/s6wit_server.log 2>/dev/null" </dev/null)
+    if [ -n "$sline" ]; then
+        say "arm=$name $sline"
+    else
+        say "    arm=$name: the server printed no RESULT line (it was killed before it could, or it failed early)"
+    fi
 }
 
 sha_on=$(build_arm ON "$BUILD_FLAGS") || exit 1
