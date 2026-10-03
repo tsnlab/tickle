@@ -1088,6 +1088,11 @@ built.
 1. **A sample bound only for shared memory is not fragmented.** There is no MTU in a segment. Fast DDS states the
    same property of its own transport - the only size limit is the machine's memory, and no network fragmentation
    is needed - and it is the reason its p4 cell does not have ours.
+   **Superseded in form, kept in intent (2026-10-03).** The first implementation expressed this by raising the
+   record limit for all-local destinations, which made `pub->seq_no`'s advance depend on who was listening - see
+   "6e(a) is replaced, not patched" below. The decision stands; what carries it is a record that declares how many
+   seq_nos it covers, so the seq space stays invariant and a publisher with both a local and a remote subscriber
+   is expressible rather than forbidden.
 
 2. **The encoder writes into the slot, not into `tx_buffer`.** The goal is **fewer memory writes**, not shared
    memory for its own sake. Today an all-local BEST_EFFORT sample is written three times: encode into `tx_buffer`,
@@ -1311,72 +1316,98 @@ is the expected result, not a mixed one.
   RELIABLE case is not the extra prize this plan expected.
 - **The header-validation hole above**, which needs the two-build test before it is called a defect.
 
-### 6e(a) was built, and it cannot deliver before 6e(b) (2026-10-03)
+### 6e(a) is replaced, not patched: the record declares its seq span (user design, 2026-10-03)
 
-Decision 1 - do not fragment a sample bound only for shared memory - was implemented in `838d659c` as
-`whole_record_limit_for()`, a predicate that raises the record limit to the destination's slot when every
-destination is a same-host peer whose segment is attached. Its unit tests pass in both directions. Across four
-rig campaigns it never changed a number, and this section records why, because the reason is not the one that
-was being inferred.
+6e(a) was built in `838d659c` as `whole_record_limit_for()`, a predicate raising the record limit when every
+destination is a same-host peer with an attached segment. It was then held, and it is now **superseded**. This
+section records why the built version was wrong at the root, what replaces it, and the two measurements that
+settle what the p4 cell actually costs.
 
-**Two instruments were wrong before any of the measurements were.**
+#### What the built version got wrong
 
-- `s6_witness_check.sh` ran the client as `... 2>&1 | grep '^RESULT'`. The client is the publisher, the only
-  side that can refuse a whole-record send, so every diagnostic it printed went into the pipe. Searching the
-  *server* log for a publisher-only message returned nothing, and nothing is what "it did not refuse" looks
-  like. The client's output is kept in a file now.
-- `p4_whole_record.sh` decided INERT from `sample_path`. That is `-DBENCH_SAMPLE_PATH`, a compile-time string
-  `build.sh` chooses from `TICKLE_P4_PATH`: in a frag build it reads `frag` whatever any sample did. The test
-  could not fail. It said INERT on four campaigns without once inspecting behaviour, and was right every time,
-  carried by the datagrams-per-sample figure beside it. That figure decides it now.
+    uint32_t datagrams = sample_datagram_count(node, submessage_header, record_len, whole_limit);
+    ...
+    pub->seq_no += datagrams;
 
-`experiments/whole_record_refusal.sh` asks the publisher instead. Every condition in the predicate is
-publisher-local state, so none of it needs the rig: one private namespace, both roles, and core names the cause
-in its own words. Its positive control - the same pair across two namespaces, where a segment is impossible -
-prints `a destination has no attached segment`, so silence from the same-host run is the publisher's and not
-the harness's. The control arm reproduces the rig cell to within 1.2% (2713 Mbps here, 2745 on the rig), which
-is what makes the rest of this measurable without rig time.
+`whole_limit` comes from `record_size_limit()` and so from the destinations. **A publisher's seq_no therefore
+advances at a rate that depends on who is listening and whether their segment happens to be attached.** The
+same p4 sample consumes one seq_no for an all-local publisher and two when a remote subscriber is present.
 
-**What the publisher said: nothing. It grants.** And when it grants, the cell collapses.
+That is why 6e(a) had to forbid mixed destinations - not as a conservative choice but because the design could
+not represent them. And the prohibition is not even sufficient: it is evaluated at **publish** time while
+retransmission happens **later**. If a peer's segment detaches in between, a whole record cached against one
+seq_no must go to that peer over UDP, where it exceeds a datagram by construction and is dropped. That is the
+`tx_dropped_oversize` the 2026-10-03 run measured.
 
-| arm (same binary pair, only the slot differs) | `tx_dropped_oversize` | samples sent in 5 s | send_mbps |
-|---|---:|---:|---:|
-| default slot (6e(a) cannot raise the limit) | 0 | 605,696 | **2713.5** |
-| slot 4096 (6e(a) grants) | 277,500 | 421 | **1.9** |
+#### What replaces it
 
-**The first cause was the bound disagreeing with itself.** 6e(a) raised the limit for the datagram count and for
-the retention cache, so the cache stored the sample as one whole record - but `end_encode_sample()` still tested
-the constant `FRAG_WHOLE_DATA_LIMIT` and put two fragments on the wire. The subscriber then NACKed, and
-`send_cached_record()` handed the cached *whole* record to `end_encode()`, whose `submessage_fits_datagram()`
-measured it against `tt_MAX_BUFFER_LENGTH` and refused it. Forever. That is the 277,500. The cache and the wire
-disagreed about one number, which is precisely what hoisting the destination decision above the datagram count
-was supposed to prevent; the comment claiming so sits on the code that did it.
+Keep seq_no consumption **invariant**: a sample always consumes the number of seq_nos the network form would
+need, whatever path it takes. A shared-memory record then carries a **seq span** - "this record covers N
+seq_nos" - and the reader advances by N.
 
-`record_size_limit(node, floor, peers, peer_count)` is the repair: one bound, asked at each send site with
-**that send's** destinations rather than computed once and threaded down. It has to be per-site - a publish may
-go to two peers and the retransmission of the same sample to the one node that asked, so a single value is
-right for one and wrong for the other. `seam_send_to()` no longer falls back to UDP for a record only a segment
-can carry, since such a record is larger than a datagram by construction.
+| | built 6e(a) | seq-span design |
+|---|---|---|
+| seq_no advance | depends on destinations | **always N** |
+| mixed destinations | must be forbidden | **work**: whole to the local peer, fragments to the remote one, one seq space |
+| cache entry | bound to the path it was published on | **path-independent** |
+| segment detaching after publish | breaks (oversize drop) | re-fragments; the seq space already has N |
 
-**The second cause is ring economics, and it is why 6e(a) is held.** With the bound repaired the retransmit
-refusals fall from 277,500 to 141, and the cell is still at 0.66-0.82 Mbps: `shm_full_dropped` 934, RELIABLE
-never recovering, the subscriber logging `Still waiting on reliable seq_no 52 ... after 176 retries`. Restoring
-the slot *count* to the default's 512 by widening the segment changed nothing (934 against 936), which rules out
-sizing. A 2800-byte sample held as one 4096-byte slot costs about 2.7x the ring bytes of the same sample as two
-datagram-sized ones, and the acknowledgements travel through the same rings, so samples and acks starve each
-other.
+The third and fourth rows are the substance. A path-independent cache removes the latent failure 6e(a) carried
+even inside its own restriction.
 
-So the order in this plan is wrong and the dependency runs the other way: **6e(b) is the prerequisite for
-6e(a)**, not an optimisation on top of it. Encoding into the slot is what stops a whole record costing a whole
-slot; until it exists, carrying a record whole buys one fewer datagram and pays several times its own ring
-footprint. `valid_slot_bytes()` therefore caps the runtime slot at one datagram, so an application cannot select
-the collapsing configuration, and a build may still set `tt_SEGMENT_SLOT_BYTES` higher to measure the path.
+**Cost.** The network wire does not change at all - **zero bytes** - because this submessage only ever exists
+inside a segment. `tt_DataHeader` grows from 16 to 20 bytes for the shared-memory form (a one-byte span plus
+alignment), which on a 2824-byte record is **0.14%**. Older peers are already safe: the acceptance path logs
+and skips an unknown submessage type rather than failing, and the segment header carries a `version` field for
+negotiation.
 
-**What is still not established.** The rig has never been observed granting: its cells show 2.01 datagrams per
-sample, so something there refuses that does not refuse here, and the instrumented build (`a5e9c553`) has not yet
-been run on it. That answer does not change the hold - the collapse is reproducible locally and the cause is
-structural - but it is the one remaining question about the predicate itself. Nothing from any of this has been
-written into COMPARISON: there is still no p4 figure to write.
+**One safety condition that must not be skipped.** Section 1's claim is that a segment record takes the same
+acceptance path as a datagram. A shared-memory-only type breaks that symmetry, so **it must be refused when it
+arrives on the socket**, with a test. Otherwise a multi-slot record can be injected from the network.
+
+#### What the cell costs, measured (`experiments/slot_rate_hypothesis.sh`, `slot_size_cost.sh`)
+
+Converting COMPARISON 2.2c to samples/s and adding arms that vary only the datagram size gives five points over
+1 to 4 slots per sample and 1292 to 2800 bytes of payload. **C = samples/s x slots is constant to 1.4%**:
+243,905 / 244,558 / 244,125 / 244,763 / 241,400. A slot write costs **4.10 us whatever is in it**. CycloneDDS
+over iceoryx costs **4.24 us per chunk** and puts a whole sample in one.
+
+**Our per-slot cost is competitive with theirs. We lose p4 because we spend two slots where they spend one.**
+
+Every one of those five points had `slot_bytes` of 800, 1024 or 1472, because `tt_CONTROL_MAX_LENGTH` follows
+`tt_MAX_BUFFER_LENGTH` downward and the slot follows that - so one slot for p4 needs 4096, outside everything
+measured, and the only observation ever taken there was the stall. `slot_size_cost.sh` isolates size from count
+by running p2, which fits one slot either way:
+
+| slot_bytes | samples/s | datagrams/sample | ring drops |
+|---:|---:|---:|---:|
+| 1472 | 243,834 | 1.00 | 0 |
+| 4096 | 244,089 | 1.00 | 0 |
+
+**+0.1%, and no drops.** Slot size is not a cost, and the 946 ring drops of 2026-10-03 were the whole-record
+plumbing rather than the geometry - same slot size, none here. That had been asserted on belief and is now
+measured.
+
+So one slot per sample gives 244,125 x 2800 x 8 = **5,468 Mbps** against CycloneDDS's 5,287, with both axes
+covered: slot count by interpolation over 1-4, slot size by direct measurement at 4096.
+
+**What the 4.10 us is remains unknown and is not guessed at here.** Client CPU is 4.03, 4.63 and 5.25 us per
+sample across the arms while the rate falls as exactly 1/slots, putting the client at about 49% of a core, so
+it is not CPU saturation. An earlier version of this section explained the cell with "about 2.7x the ring
+bytes, and acks starving against samples" - arithmetically wrong (1.38x) and never measured. That is what
+writing a plausible mechanism where a measured one belongs looks like, and it is why this paragraph stops.
+
+#### Order
+
+1. **Seq span first.** Without it a whole-record send is unsound, and that unsoundness is what the 1.4 Mbps
+   stall was. It is also what makes mixed destinations work, which the built 6e(a) could never do.
+2. **Then one slot per sample.** Either a slot large enough for the record, now measured to cost nothing, or a
+   record spanning consecutive slots at the shipped geometry. The second keeps 256 samples held at 768 KiB
+   where the first holds 128, and is the better shape if the ring protocol can claim K slots atomically.
+3. **6e(b) is a different prize.** Encoding into the slot removes one memcpy per sample. At 4.10 us per slot
+   write, halving the slot count is worth about 2x on p4 and a 2.8 KB copy on this hardware is well under a
+   microsecond. Both are worth doing; only one of them is the p4 cell.
+
 
 ### 6e(b): the seam is three fields, not a hundred and eighty (inventory + design, 2026-10-03)
 
