@@ -93,7 +93,7 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     node.endpoints[0] = (struct tt_Endpoint*)&sub;
 
     memcpy(node.rx_buffer, data, size);
-    process_packet(&node, node.rx_buffer, 0, (uint32_t)size, 0x0a000002, 8282);
+    process_packet(&node, node.rx_buffer, 0, (uint32_t)size, 0x0a000002, 8282, tt_TRANSPORT_UDP);
 
     return 0;
 }

@@ -194,7 +194,7 @@ static void publish(uint32_t id, uint32_t size) {
 static void carry_captured(struct tt_Context* to, uint32_t ip) {
     for (int i = 0; i < captured_count; i++) {
         memcpy(to->rx_buffer, captured[i], captured_length[i]);
-        (void)process_packet(to, to->rx_buffer, 0, (uint32_t)captured_length[i], ip, PORT);
+        (void)process_packet(to, to->rx_buffer, 0, (uint32_t)captured_length[i], ip, PORT, tt_TRANSPORT_UDP);
     }
 }
 

@@ -3217,6 +3217,7 @@ static void reset_node_state(struct tt_Context* node) {
     // node delivered nothing - "how many datagrams did we throw away, and why" - so answering that
     // from garbage is worse than not answering it.
     node->rx_malformed_drops = 0;
+    node->rx_shm_only_on_socket = 0;
     node->version_mismatch_drops = 0;
     // The rate limiter that decides whether a wire-version mismatch is EVER logged, and the worst of
     // this family because it is READ to make a decision rather than merely reported. Its only two
@@ -10842,7 +10843,7 @@ static bool process_frag(struct tt_Context* node, struct tt_Header* header, uint
 
 static bool process_submessage(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header,
-                               uint32_t sender_ip, uint16_t sender_port, bool self_sent) {
+                               uint32_t sender_ip, uint16_t sender_port, bool self_sent, enum tt_Transport transport) {
     // Each process_X() below already logs its own specific reason on failure, so this switch
     // doesn't log again on top of that - only the type dispatch itself gets a message here.
     // sender_ip/sender_port (this packet's own source, from tt_receive() - see
@@ -10891,6 +10892,28 @@ static bool process_submessage(struct tt_Context* node, struct tt_Header* header
         if (!self_sent) {
             process_frag(node, header, buffer, head, body_tail, submessage_header->type, sender_ip, sender_port);
         }
+        return true;
+    case tt_SUBMESSAGE_TYPE_SHM_DATA:
+        if (transport != tt_TRANSPORT_SHM) {
+            // SHM_PLAN 6e's safety condition, which it names as not skippable. This record declares how
+            // many seq_nos it covers, which only something with write access to a segment may say; from
+            // the socket it is an injection or a bug, never a rolling upgrade. Counted apart from version
+            // skew for that reason, and dropped rather than returned as an error - the default case below
+            // explains why a peer must never be able to end a local poll loop.
+            node->rx_shm_only_on_socket++;
+            node->rx_malformed_drops++;
+            TT_LOG_WARNING("Shared-memory-only submessage type %u arrived over the socket from %u.%u.%u.%u:%u, "
+                           "refused",
+                           (unsigned)submessage_header->type, (unsigned)((sender_ip >> 24) & MASK_8BIT),
+                           (unsigned)((sender_ip >> 16) & MASK_8BIT),
+                           (unsigned)((sender_ip >> BITS_IN_1BYTE) & MASK_8BIT), (unsigned)(sender_ip & MASK_8BIT),
+                           (unsigned)sender_port);
+            return true;
+        }
+        // A segment record of this type, which nothing produces yet - SHM_PLAN 6e's span step is what
+        // will. Skipping is the honest handling until then, and it keeps "refused on the socket" apart
+        // from "this build does not read spans", which are different answers.
+        TT_LOG_WARNING("Shared-memory DATA record received, but this build does not read seq spans yet; skipping");
         return true;
     default:
         // An unknown type is most likely a submessage from a newer protocol revision (see
@@ -10950,7 +10973,7 @@ static bool data_is_announce(struct tt_Header* header, const uint8_t* buffer, ui
 // the classic walk below or from a single-submessage datagram (process_packet()).
 static bool dispatch_submessage(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                 uint32_t body_tail, struct tt_SubmessageHeader* submessage_header, uint32_t sender_ip,
-                                uint16_t sender_port, bool self_sent) {
+                                uint16_t sender_port, bool self_sent, enum tt_Transport transport) {
     // Counted before the receiver filter below, deliberately: a node's own DATA is addressed to
     // whoever it was published to, not to itself, so filtering first would hide exactly the case
     // this counter exists to detect. A sample only: since tt_VERSION 7 an announce is a DATA too.
@@ -10967,13 +10990,14 @@ static bool dispatch_submessage(struct tt_Context* node, struct tt_Header* heade
         return true;
     }
     return process_submessage(node, header, buffer, head, body_tail, submessage_header, sender_ip, sender_port,
-                              self_sent);
+                              self_sent, transport);
 }
 
 // Decodes and dispatches one submessage starting at *head, advancing *head past it.
 static enum submessage_walk_result process_one_submessage(struct tt_Context* node, struct tt_Header* header,
                                                           uint8_t* buffer, uint32_t* head, uint32_t tail,
-                                                          uint32_t sender_ip, uint16_t sender_port, bool self_sent) {
+                                                          uint32_t sender_ip, uint16_t sender_port, bool self_sent,
+                                                          enum tt_Transport transport) {
     struct tt_SubmessageHeader* submessage_header =
         decode(node, buffer, head, tail, sizeof(struct tt_SubmessageHeader));
     if (submessage_header == NULL) {
@@ -10996,7 +11020,7 @@ static enum submessage_walk_result process_one_submessage(struct tt_Context* nod
 
     const uint32_t body_tail = *head + sub_length - sizeof(struct tt_SubmessageHeader);
     if (!dispatch_submessage(node, header, buffer, *head, body_tail, submessage_header, sender_ip, sender_port,
-                             self_sent)) {
+                             self_sent, transport)) {
         return SUBMSG_ERROR;
     }
 
@@ -11047,7 +11071,7 @@ static bool sender_in_range(uint32_t ip) {
 #endif
 
 static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t head, uint32_t tail, uint32_t sender_ip,
-                           uint16_t sender_port) {
+                           uint16_t sender_port, enum tt_Transport transport) {
     struct tt_Header single_header;
     struct tt_SubmessageHeader single_submessage;
     bool single = false;
@@ -11139,11 +11163,11 @@ static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t he
 
     if (single) {
         return dispatch_submessage(node, header, buffer, head, tail, &single_submessage, sender_ip, sender_port,
-                                   self_sent);
+                                   self_sent, transport);
     }
     while (true) {
         enum submessage_walk_result result =
-            process_one_submessage(node, header, buffer, &head, tail, sender_ip, sender_port, self_sent);
+            process_one_submessage(node, header, buffer, &head, tail, sender_ip, sender_port, self_sent, transport);
         if (result == SUBMSG_DONE) {
             break;
         }
@@ -11337,7 +11361,7 @@ static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, ui
     // the port end a node with one UDP datagram: one v10 packet from a leftover process ended a v11 server on the
     // rig, twenty seconds into its run, and voided the measurement. An error return is for this node's own
     // failures - an encode that overflows, a socket that breaks - not for what a peer chose to send.
-    if (!process_packet(node, node->rx_buffer, 0, len, ip, port)) {
+    if (!process_packet(node, node->rx_buffer, 0, len, ip, port, transport)) {
         TT_LOG_ERROR("Cannot process packet");
         node->rx_malformed_drops++;
         return tt_RET_OK;

@@ -493,6 +493,11 @@ struct tt_Context {
     // that a rolling upgrade produces, which is worth telling apart from an attack or a corrupt link.
     uint64_t rx_malformed_drops;
     uint64_t version_mismatch_drops;
+    // The named subset that is not a version skew or a corrupt link but a record that could only have
+    // been built by something with write access to a segment, arriving from the network instead
+    // (tt_SUBMESSAGE_TYPE_SHM_DATA). Counted apart because an upgrade produces the one and nothing
+    // legitimate produces the other.
+    uint64_t rx_shm_only_on_socket;
 #if tt_LOCAL_DELIVERY
     // (g9, config.h's tt_LOCAL_DELIVERY) Where a published sample's bytes wait while this context's own Subscribers
     // take it: sending reuses tx_buffer. Owned here rather than on the publishing thread's stack, which a sample of
@@ -2507,6 +2512,21 @@ struct tt_SingleHeader {
 // uses the same two types, split differently - see tt_DISCOVERY_ENDPOINT_ID.
 #define tt_SUBMESSAGE_TYPE_FRAG_FIRST 8
 #define tt_SUBMESSAGE_TYPE_FRAG_CONT 9
+
+// A DATA record that exists ONLY inside a shared-memory segment (SHM_PLAN 6e). It declares how many
+// seq_nos it covers, so a sample consumes the number the network form would need whatever path it
+// takes, and the reader advances by that span. It is never sent on a socket and never will be: the
+// network wire is unchanged by 6e, which is the whole point of giving this its own type rather than
+// widening tt_DataHeader.
+//
+// Because section 1's safety claim is that a segment record takes the SAME acceptance path as a
+// datagram, this type breaks the symmetry and must be REFUSED when it arrives over the socket -
+// otherwise a multi-slot record can be injected from the network. That refusal is why the type is
+// here before anything produces it: the guard lands first, not after.
+//
+// 10, not 7: type 1 (UPDATE) and type 7 (UPDATE_PART) are retired and the comment above forbids
+// giving either a new meaning.
+#define tt_SUBMESSAGE_TYPE_SHM_DATA 10
 
 struct tt_SubmessageHeader {
     uint8_t type;     // tt_SUBMESSAGE_TYPE_* above

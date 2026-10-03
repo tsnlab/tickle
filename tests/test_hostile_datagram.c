@@ -63,6 +63,15 @@ static int32_t write_valid(uint8_t* buffer, uint8_t source) {
     return (int32_t)(sizeof(*header) + sizeof(*submessage) + sizeof(*data));
 }
 
+// A datagram carrying the shared-memory-only record type (SHM_PLAN 6e). It only ever exists inside a
+// segment, and section 1's safety claim - that a segment record takes the same acceptance path as a
+// datagram - is what makes arriving on the socket an injection rather than a protocol variant.
+static int32_t write_shm_only_record(uint8_t* buffer) {
+    int32_t len = write_valid(buffer, HOSTILE_SOURCE);
+    ((struct tt_SubmessageHeader*)(buffer + sizeof(struct tt_Header)))->type = tt_SUBMESSAGE_TYPE_SHM_DATA;
+    return len;
+}
+
 static int32_t write_wrong_version(uint8_t* buffer) {
     int32_t len = write_valid(buffer, HOSTILE_SOURCE);
     ((struct tt_Header*)buffer)->version = (uint8_t)(tt_VERSION - 1);
@@ -127,6 +136,35 @@ static void test_a_hostile_datagram_is_a_drop_not_an_error(void) {
     }
 }
 
+// SHM_PLAN 6e names this as the one safety condition that must not be skipped: a record that declares
+// how many seq_nos it covers may only come from something with write access to a segment. Arriving on
+// the socket it must be REFUSED, or a multi-slot record can be injected from the network.
+//
+// The same bytes down both paths, because a refusal that also fires for the legitimate arrival would
+// be indistinguishable from this one working.
+static void test_a_shm_only_record_is_refused_on_the_socket(void) {
+    struct tt_Context node;
+
+    setup(&node);
+    int32_t len = write_shm_only_record(node.rx_buffer);
+    tt_ret_t result = process_datagram(&node, len, SENDER_IP, SENDER_PORT, tt_TRANSPORT_UDP);
+    printf("  case: shared-memory-only record over the socket\n");
+    EXPECT_EQ_INT(tt_RET_OK, result); // dropped and counted, never an error - a peer must not end a poll loop
+    EXPECT_EQ_U64(1, node.rx_shm_only_on_socket);
+    EXPECT_EQ_U64(1, node.rx_malformed_drops);
+    EXPECT_EQ_U64(0, node.version_mismatch_drops); // not a rolling upgrade, and must not read as one
+
+    // The control. Identical bytes arriving the way this type is meant to: not refused, not counted.
+    // Without this the test passes just as well against a build that refuses the type everywhere.
+    setup(&node);
+    len = write_shm_only_record(node.rx_buffer);
+    result = process_datagram(&node, len, SENDER_IP, SENDER_PORT, tt_TRANSPORT_SHM);
+    printf("  case: the same record arriving from a segment\n");
+    EXPECT_EQ_INT(tt_RET_OK, result);
+    EXPECT_EQ_U64(0, node.rx_shm_only_on_socket);
+    EXPECT_EQ_U64(0, node.rx_malformed_drops);
+}
+
 // Pass criterion 2: the property the rig lost. The first datagram of a poll being hostile must not
 // stop the drain - before this, drain_rx() returned on it and the backlog was never read.
 static void test_a_hostile_first_datagram_does_not_stop_the_drain(void) {
@@ -186,6 +224,7 @@ static void test_a_flood_of_wrong_version_logs_once(void) {
 
 int main(void) {
     test_a_hostile_datagram_is_a_drop_not_an_error();
+    test_a_shm_only_record_is_refused_on_the_socket();
     test_a_hostile_first_datagram_does_not_stop_the_drain();
     test_delivery_continues_after_a_hostile_datagram();
     test_a_flood_of_wrong_version_logs_once();

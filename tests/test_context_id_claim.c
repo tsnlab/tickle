@@ -146,7 +146,7 @@ static void carry(struct tt_Context* from, struct tt_Context** to, int to_count)
         for (int i = 0; i < captured_count; i++) {
             memcpy(to[t]->rx_buffer, captured[i], captured_length[i]);
             (void)process_packet(to[t], to[t]->rx_buffer, 0, (uint32_t)captured_length[i], from->hal.own_ip,
-                                 from->hal.own_port);
+                                 from->hal.own_port, tt_TRANSPORT_UDP);
         }
     }
     test_mock_send_hook = NULL;
@@ -156,7 +156,7 @@ static void carry(struct tt_Context* from, struct tt_Context** to, int to_count)
 static void carry_reaction(uint32_t ip, uint16_t port, struct tt_Context* to) {
     for (int i = 0; i < reacted_count; i++) {
         memcpy(to->rx_buffer, reacted[i], reacted_length[i]);
-        (void)process_packet(to, to->rx_buffer, 0, (uint32_t)reacted_length[i], ip, port);
+        (void)process_packet(to, to->rx_buffer, 0, (uint32_t)reacted_length[i], ip, port, tt_TRANSPORT_UDP);
     }
 }
 
@@ -174,7 +174,7 @@ static void run_due(struct tt_Context* from, struct tt_Context** to, int to_coun
         for (int i = 0; i < captured_count; i++) {
             memcpy(to[t]->rx_buffer, captured[i], captured_length[i]);
             (void)process_packet(to[t], to[t]->rx_buffer, 0, (uint32_t)captured_length[i], from->hal.own_ip,
-                                 from->hal.own_port);
+                                 from->hal.own_port, tt_TRANSPORT_UDP);
         }
     }
 }

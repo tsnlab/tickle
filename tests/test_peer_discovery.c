@@ -613,7 +613,8 @@ static void duo_deliver(struct tt_Context* one, struct tt_Context* two) {
         duo_last_delivered[datagram->from] = test_mock_now;
         memcpy(to->rx_buffer, datagram->bytes, datagram->len);
         to->rx_via_data_port = datagram->unicast;
-        EXPECT_TRUE(process_packet(to, to->rx_buffer, 0, datagram->len, 0x0a000000U + datagram->from, 8282));
+        EXPECT_TRUE(
+            process_packet(to, to->rx_buffer, 0, datagram->len, 0x0a000000U + datagram->from, 8282, tt_TRANSPORT_UDP));
     }
     duo_count = 0;
 }
@@ -931,7 +932,7 @@ static void test_requests_beyond_the_threshold_are_answered_by_one_broadcast(voi
     for (int i = 0; i < requesters; i++) {
         uint32_t len = write_request(node.rx_buffer, (uint8_t)(REMOTE_NODE_ID + i), (uint32_t)node.last_modified);
         node.rx_via_data_port = true;
-        EXPECT_TRUE(process_packet(&node, node.rx_buffer, 0, len, 0xc0a80a02U + (uint32_t)i, 8282));
+        EXPECT_TRUE(process_packet(&node, node.rx_buffer, 0, len, 0xc0a80a02U + (uint32_t)i, 8282, tt_TRANSPORT_UDP));
     }
     if (node.tx_tail != sizeof(struct tt_Header)) {
         (void)flush_tx(&node, node.tx_tail, NULL, 0); // what the flush tick does with the batched broadcast
@@ -941,7 +942,7 @@ static void test_requests_beyond_the_threshold_are_answered_by_one_broadcast(voi
 
     test_mock_now += tt_CONTEXT_TX_INTERVAL;
     uint32_t len = write_request(node.rx_buffer, REMOTE_NODE_ID, (uint32_t)node.last_modified);
-    EXPECT_TRUE(process_packet(&node, node.rx_buffer, 0, len, 0xc0a80a02U, 8282));
+    EXPECT_TRUE(process_packet(&node, node.rx_buffer, 0, len, 0xc0a80a02U, 8282, tt_TRANSPORT_UDP));
     EXPECT_EQ_INT(tt_UNICAST_PEER_THRESHOLD + 1, answers_unicast);
     EXPECT_EQ_INT(1, answers_broadcast);
     test_mock_send_hook = NULL;

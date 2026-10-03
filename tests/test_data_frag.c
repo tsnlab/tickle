@@ -193,7 +193,7 @@ static void init_pair(uint32_t len) {
 }
 
 static void deliver(int d) {
-    EXPECT_TRUE(process_packet(&receiver, datagrams[d], 0, datagram_len[d], SENDER_IP, PORT));
+    EXPECT_TRUE(process_packet(&receiver, datagrams[d], 0, datagram_len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
 }
 
 static void publish_captured(void) {
@@ -366,9 +366,9 @@ static void test_samples_interleave_across_slots(void) {
     publish_captured(); // seq_no 2, same payload
     // Each completes in publish order, so BEST_EFFORT ordering keeps both: a sample 1 completing after
     // sample 2 would rightly be discarded as out of order.
-    EXPECT_TRUE(process_packet(&receiver, first[0], 0, first_len[0], SENDER_IP, PORT));
+    EXPECT_TRUE(process_packet(&receiver, first[0], 0, first_len[0], SENDER_IP, PORT, tt_TRANSPORT_UDP));
     deliver(0);
-    EXPECT_TRUE(process_packet(&receiver, first[1], 0, first_len[1], SENDER_IP, PORT));
+    EXPECT_TRUE(process_packet(&receiver, first[1], 0, first_len[1], SENDER_IP, PORT, tt_TRANSPORT_UDP));
     EXPECT_EQ_INT(1, delivered_count);
     deliver(1);
     EXPECT_EQ_INT(2, delivered_count);
@@ -390,13 +390,13 @@ static void test_full_pool_abandons_the_oldest_and_counts_it(void) {
     EXPECT_EQ_INT(0, delivered_count);
 
     // The abandoned sample's last fragment cannot complete it - it starts a new, incomplete slot...
-    EXPECT_TRUE(process_packet(&receiver, lasts[0], 0, last_len[0], SENDER_IP, PORT));
+    EXPECT_TRUE(process_packet(&receiver, lasts[0], 0, last_len[0], SENDER_IP, PORT, tt_TRANSPORT_UDP));
     EXPECT_EQ_INT(0, delivered_count);
     // ...while every sample that kept its slot still completes (control: abandonment took exactly one).
     // The new slot for sample 0 took sample 1's, so start from 2.
     EXPECT_EQ_U64(2, receiver.frag_abandoned);
     for (int s = 2; s <= tt_FRAG_REASSEMBLY_SLOTS; s++) {
-        EXPECT_TRUE(process_packet(&receiver, lasts[s], 0, last_len[s], SENDER_IP, PORT));
+        EXPECT_TRUE(process_packet(&receiver, lasts[s], 0, last_len[s], SENDER_IP, PORT, tt_TRANSPORT_UDP));
     }
     EXPECT_EQ_INT(tt_FRAG_REASSEMBLY_SLOTS - 1, delivered_count);
 }
@@ -801,7 +801,7 @@ static void sim_drain(void) {
         }
         struct tt_Context* to = d->from == SENDER_ID ? &receiver : &sender;
         sim_acting = to->id;
-        process_packet(to, d->bytes, 0, d->len, d->from == SENDER_ID ? SENDER_IP : RECEIVER_IP, PORT);
+        process_packet(to, d->bytes, 0, d->len, d->from == SENDER_ID ? SENDER_IP : RECEIVER_IP, PORT, tt_TRANSPORT_UDP);
     }
 }
 
@@ -1115,10 +1115,10 @@ static void test_reliable_two_writers_interleaved(void) {
     }
     start_capture();
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&second_pub, (struct tt_Data*)&sample_len));
-    EXPECT_TRUE(process_packet(&receiver, first_writer[0], 0, first_len[0], SENDER_IP, PORT));
-    EXPECT_TRUE(process_packet(&receiver, datagrams[0], 0, datagram_len[0], SENDER_IP + 2, PORT));
-    EXPECT_TRUE(process_packet(&receiver, first_writer[1], 0, first_len[1], SENDER_IP, PORT));
-    EXPECT_TRUE(process_packet(&receiver, datagrams[1], 0, datagram_len[1], SENDER_IP + 2, PORT));
+    EXPECT_TRUE(process_packet(&receiver, first_writer[0], 0, first_len[0], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    EXPECT_TRUE(process_packet(&receiver, datagrams[0], 0, datagram_len[0], SENDER_IP + 2, PORT, tt_TRANSPORT_UDP));
+    EXPECT_TRUE(process_packet(&receiver, first_writer[1], 0, first_len[1], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    EXPECT_TRUE(process_packet(&receiver, datagrams[1], 0, datagram_len[1], SENDER_IP + 2, PORT, tt_TRANSPORT_UDP));
     EXPECT_EQ_INT(2, delivered_count);
     EXPECT_EQ_U32(0, sub.reorder_overflow);
 }

@@ -167,7 +167,7 @@ static bool matched(int k) {
 }
 
 static void deliver(int d) {
-    EXPECT_TRUE(process_packet(&receiver, datagrams[d], 0, datagram_len[d], SENDER_IP, SENDER_PORT));
+    EXPECT_TRUE(process_packet(&receiver, datagrams[d], 0, datagram_len[d], SENDER_IP, SENDER_PORT, tt_TRANSPORT_UDP));
 }
 
 static void deliver_all(void) {

@@ -106,7 +106,8 @@ static uint64_t take_announce(void) {
     uint64_t start = wall_ns();
     for (int i = 0; i < captured_count; i++) {
         memcpy(local.rx_buffer, captured[i], captured_length[i]);
-        (void)process_packet(&local, local.rx_buffer, 0, (uint32_t)captured_length[i], REMOTE_IP, REMOTE_PORT);
+        (void)process_packet(&local, local.rx_buffer, 0, (uint32_t)captured_length[i], REMOTE_IP, REMOTE_PORT,
+                             tt_TRANSPORT_UDP);
     }
     return wall_ns() - start;
 }

@@ -898,7 +898,8 @@ static bool deliver_raw(struct tt_Context* receiver, struct tt_Topic* topic, str
     init_subscriber_registered_on_node(sub, receiver, topic);
     subscriber_callback_count = 0;
     memcpy(receiver->rx_buffer, sent_raw, sent_raw_len);
-    return process_packet(receiver, receiver->rx_buffer, 0, (uint32_t)sent_raw_len, 0xc0a80a02U, 8282);
+    return process_packet(receiver, receiver->rx_buffer, 0, (uint32_t)sent_raw_len, 0xc0a80a02U, 8282,
+                          tt_TRANSPORT_UDP);
 }
 
 static void test_a_lone_broadcast_sample_goes_in_the_single_form(void) {

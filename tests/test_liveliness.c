@@ -139,7 +139,7 @@ static void test_data_refreshes_node_liveliness(void) {
     uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)];
     uint32_t len =
         liveliness_write_packet(buf, REMOTE_NODE_ID, tt_SUBMESSAGE_TYPE_DATA, (uint16_t)sizeof(struct tt_DataHeader));
-    EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282, tt_TRANSPORT_UDP));
 
     check_liveliness(&node, late, NULL);
     EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]); // still alive - it is plainly transmitting
@@ -161,7 +161,7 @@ static void test_acknack_refreshes_node_liveliness(void) {
     uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_AckNackHeader)];
     uint32_t len = liveliness_write_packet(buf, REMOTE_NODE_ID, tt_SUBMESSAGE_TYPE_ACKNACK,
                                            (uint16_t)sizeof(struct tt_AckNackHeader));
-    EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282, tt_TRANSPORT_UDP));
 
     check_liveliness(&node, late, NULL);
     EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]);
@@ -186,7 +186,7 @@ static void test_node_limit_runs_from_the_last_packet(void) {
     uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)];
     uint32_t len =
         liveliness_write_packet(buf, REMOTE_NODE_ID, tt_SUBMESSAGE_TYPE_DATA, (uint16_t)sizeof(struct tt_DataHeader));
-    EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282, tt_TRANSPORT_UDP));
 
     // Past the limit from the announce, but not from the DATA: alive.
     check_liveliness(&node, tt_LIVELINESS_SILENCE_NS + 1, NULL);
@@ -215,7 +215,7 @@ static void test_self_sent_packet_does_not_refresh(void) {
     uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)];
     uint32_t len =
         liveliness_write_packet(buf, LOCAL_NODE_ID, tt_SUBMESSAGE_TYPE_DATA, (uint16_t)sizeof(struct tt_DataHeader));
-    EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282, tt_TRANSPORT_UDP));
 
     EXPECT_EQ_U32(0, (uint32_t)node.update_last_seen[LOCAL_NODE_ID]);
 }
@@ -651,7 +651,7 @@ static void test_a_peer_with_datagrams_waiting_unread_is_not_dead(void) {
     uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)];
     uint32_t len =
         liveliness_write_packet(buf, REMOTE_NODE_ID, tt_SUBMESSAGE_TYPE_DATA, (uint16_t)sizeof(struct tt_DataHeader));
-    EXPECT_TRUE(process_packet(&read_first, buf, 0, len, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_packet(&read_first, buf, 0, len, 0xc0a80a02, 8282, tt_TRANSPORT_UDP));
     arm_liveliness_check(&read_first, test_mock_now);
     (void)tt_Context_poll(&read_first, 0);
     EXPECT_TRUE(read_first.update_seen[REMOTE_NODE_ID]);

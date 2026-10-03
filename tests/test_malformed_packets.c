@@ -197,7 +197,7 @@ static void test_rejects_truncated_header(void) {
     uint8_t buf[sizeof(struct tt_Header) - 1];
     memset(buf, 0xff, sizeof(buf));
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0, tt_TRANSPORT_UDP));
 }
 
 // Neither the native nor byte-swapped magic value - not this protocol at all (random noise, or
@@ -209,7 +209,7 @@ static void test_rejects_bad_magic(void) {
     uint8_t buf[sizeof(struct tt_Header)];
     write_header(buf, 0xdead, tt_VERSION, REMOTE_NODE_ID);
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0, tt_TRANSPORT_UDP));
 }
 
 // A peer speaking an older wire version than we understand must be rejected, not misparsed as
@@ -221,7 +221,7 @@ static void test_rejects_old_version(void) {
     uint8_t buf[sizeof(struct tt_Header)];
     write_header(buf, NATIVE_MAGIC_VALUE, tt_VERSION - 1, REMOTE_NODE_ID);
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0, tt_TRANSPORT_UDP));
 }
 
 // Phase 2 (rmw_tickle/PLAN.md) - a *newer* peer must be rejected too, where the check used to
@@ -235,18 +235,18 @@ static void test_rejects_newer_version(void) {
     uint8_t buf[sizeof(struct tt_Header)];
     write_header(buf, NATIVE_MAGIC_VALUE, tt_VERSION + 1, REMOTE_NODE_ID);
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0, tt_TRANSPORT_UDP));
 
     // Repeated mismatched packets from the same peer log once, not once each (an unfiltered log
     // line per packet is its own denial of service at max rate) - the bookkeeping that enforces it.
     EXPECT_EQ_U32((uint32_t)(tt_VERSION + 1), (uint32_t)node.version_mismatch_logged[REMOTE_NODE_ID]);
-    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0, tt_TRANSPORT_UDP));
     EXPECT_EQ_U32((uint32_t)(tt_VERSION + 1), (uint32_t)node.version_mismatch_logged[REMOTE_NODE_ID]);
 
     // A different wrong version from the same peer re-arms it, so a peer that restarts on another
     // version is still reported.
     write_header(buf, NATIVE_MAGIC_VALUE, tt_VERSION - 1, REMOTE_NODE_ID);
-    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0, tt_TRANSPORT_UDP));
     EXPECT_EQ_U32((uint32_t)(tt_VERSION - 1), (uint32_t)node.version_mismatch_logged[REMOTE_NODE_ID]);
 }
 
@@ -259,7 +259,7 @@ static void test_ignores_self_sent_packet(void) {
     uint8_t buf[sizeof(struct tt_Header)];
     write_header(buf, NATIVE_MAGIC_VALUE, tt_VERSION, LOCAL_NODE_ID);
 
-    EXPECT_TRUE(process_packet(&node, buf, 0, sizeof(buf), 0, 0));
+    EXPECT_TRUE(process_packet(&node, buf, 0, sizeof(buf), 0, 0, tt_TRANSPORT_UDP));
 }
 
 // A submessage claiming a length shorter than its own header can't be real - reject before the
@@ -274,7 +274,7 @@ static void test_rejects_submessage_length_too_small(void) {
     uint32_t tail = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL,
                                              sizeof(struct tt_SubmessageHeader) - 1);
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, tail, 0, 0));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, tail, 0, 0, tt_TRANSPORT_UDP));
 }
 
 // A submessage claiming to be far longer than the bytes actually available must be rejected,
@@ -290,7 +290,7 @@ static void test_rejects_submessage_length_exceeds_buffer(void) {
     // but the submessage claims to be 0xffff bytes long.
     uint32_t tail = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL, 0xffff);
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, tail, 0, 0));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, tail, 0, 0, tt_TRANSPORT_UDP));
 }
 
 // An unknown type (likely a newer protocol revision's submessage - validate_packet_header()
@@ -310,7 +310,7 @@ static void test_skips_unknown_submessage_type_and_continues(void) {
     offset =
         append_data_header(buf, offset, 0x1234, 1); // no subscriber -> process_data() returns "not mine", not error
 
-    EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0));
+    EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0, tt_TRANSPORT_UDP));
 }
 
 // ACKNACK is a known-but-unimplemented type in this release. Same contract: skip it, keep going.
@@ -328,7 +328,7 @@ static void test_skips_acknack_and_continues(void) {
     offset = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL, data_len);
     offset = append_data_header(buf, offset, 0x1234, 1);
 
-    EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0));
+    EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0, tt_TRANSPORT_UDP));
 }
 
 // Sanity check in the other direction: two well-formed DATA submessages back to back in one
@@ -352,7 +352,7 @@ static void test_accepts_two_valid_data_submessages(void) {
     offset = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL, submessage_length);
     offset = append_data_header(buf, offset, 0x2222, 2);
 
-    EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0));
+    EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0, tt_TRANSPORT_UDP));
 }
 
 // Milestone 17: a self-sent CALLREQUEST (client and service co-located on the same tt_Context)
@@ -374,7 +374,7 @@ static void test_self_sent_callrequest_reaches_server(void) {
     append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_CALLREQUEST, tt_SUBMESSAGE_ID_ALL,
                              (uint16_t)(body_end - offset));
 
-    EXPECT_TRUE(process_packet(&node, buf, 0, body_end, 0, 0));
+    EXPECT_TRUE(process_packet(&node, buf, 0, body_end, 0, 0, tt_TRANSPORT_UDP));
     EXPECT_EQ_U32(1, (uint32_t)self_sent_callback_count);
 }
 
@@ -396,7 +396,7 @@ static void test_self_sent_data_is_still_ignored(void) {
     offset = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL, data_len);
     offset = append_data_header(buf, offset, ENDPOINT_ID, 1);
 
-    EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0));
+    EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0, tt_TRANSPORT_UDP));
     EXPECT_EQ_U32(0, (uint32_t)self_sent_subscriber_callback_count);
 }
 

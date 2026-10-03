@@ -150,7 +150,8 @@ static void test_a_context_at_capacity_is_created_found_and_announced(void) {
     EXPECT_TRUE(captured_count > 32); // more fragments than the old limit allowed
     for (int i = 0; i < captured_count; i++) {
         memcpy(local.rx_buffer, captured[i], captured_length[i]);
-        (void)process_packet(&local, local.rx_buffer, 0, (uint32_t)captured_length[i], REMOTE_IP, REMOTE_PORT);
+        (void)process_packet(&local, local.rx_buffer, 0, (uint32_t)captured_length[i], REMOTE_IP, REMOTE_PORT,
+                             tt_TRANSPORT_UDP);
     }
     int known = 0;
     for (int i = 0; i < ENDPOINTS; i++) {

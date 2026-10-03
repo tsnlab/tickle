@@ -179,7 +179,7 @@ static void test_reverse_endian_data_routes_and_unswaps(void) {
     memcpy(buf + off, &payload_be, sizeof(payload_be));
     off += sizeof(payload_be);
 
-    EXPECT_TRUE(process_packet(&node, buf, 0, off, 0, 0));
+    EXPECT_TRUE(process_packet(&node, buf, 0, off, 0, 0, tt_TRANSPORT_UDP));
     EXPECT_EQ_U32(1, (uint32_t)sub_calls);
     EXPECT_EQ_U32(42, (uint32_t)sub_seq);
     EXPECT_TRUE(sub_time == 0x55667788ULL * tt_MICROSECOND); // swapped, then rebuilt to nanoseconds
@@ -252,7 +252,7 @@ static void test_reverse_endian_update_matches_and_learns_peer(void) {
 
     uint32_t sender_ip = 0x0a000005;
     uint16_t sender_port = 9999;
-    EXPECT_TRUE(process_packet(&node, buf, 0, off, sender_ip, sender_port));
+    EXPECT_TRUE(process_packet(&node, buf, 0, off, sender_ip, sender_port, tt_TRANSPORT_UDP));
 
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].context_id);
@@ -343,7 +343,7 @@ static void test_reverse_endian_callrequest_reaches_server(void) {
     call_req->retry = 0;
     off += sizeof(struct tt_CallRequestHeader);
 
-    EXPECT_TRUE(process_packet(&node, buf, 0, off, 0x0a000009, 8282));
+    EXPECT_TRUE(process_packet(&node, buf, 0, off, 0x0a000009, 8282, tt_TRANSPORT_UDP));
 
     // A CallResponse was unicast straight back to the requester.
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);

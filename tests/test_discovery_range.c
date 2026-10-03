@@ -101,7 +101,7 @@ static void configure(uint8_t range, bool with_peers) {
 // Whether the local context learned the remote one from the announce handed to it from `ip`.
 static bool heard_from(uint32_t ip) {
     memcpy(local.rx_buffer, announce, announce_length);
-    (void)process_packet(&local, local.rx_buffer, 0, (uint32_t)announce_length, ip, PORT);
+    (void)process_packet(&local, local.rx_buffer, 0, (uint32_t)announce_length, ip, PORT, tt_TRANSPORT_UDP);
     return local.update_seen[REMOTE_ID];
 }
 
