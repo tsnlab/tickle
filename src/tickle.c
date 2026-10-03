@@ -5387,13 +5387,22 @@ static bool append_piggybacked_heartbeat(struct tt_Context* node, struct tt_Publ
 // fragmentation is compiled in - its fragments, sent at once whatever is_flush says, since a fragment
 // never shares a datagram. Rolls back to old_tx_tail on failure where that is still meaningful.
 static bool end_encode_sample(struct tt_Context* node, struct tt_SubmessageHeader* submessage_header, bool is_flush,
-                              const struct tt_Peer* peers, uint8_t peer_count, uint32_t old_tx_tail) {
+                              const struct tt_Peer* peers, uint8_t peer_count, uint32_t old_tx_tail,
+                              uint32_t record_len) {
 #if tt_FRAG_ENABLED
-    size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
+    // The length the encode produced, passed rather than reached for - the last site that still derived it
+    // as "the distance from this submessage to tx_buffer's current end". record_length_checked() stopped
+    // doing that on 2026-10-02 for the reason its comment gives: the subtraction mixes tx_buffer's base
+    // with a submessage_header that SHM_PLAN 6e's encoder puts in a segment slot, where the two are
+    // unrelated addresses. It is also the reason to pass it rather than recompute it here - this decision
+    // and sample_datagram_count()'s must not be able to disagree about one sample's length.
+    size_t length = record_len;
     if (sizeof(struct tt_Header) + ROUNDUP(length) >
         record_size_limit(node, FRAG_WHOLE_DATA_LIMIT, peers, peer_count)) {
         return send_tail_as_fragments(node, submessage_header, peers, peer_count);
     }
+#else
+    UNUSED(record_len); // the fragmentation decision is the only reader, and it is compiled out
 #endif
     if (!end_encode(node, submessage_header, is_flush, peers, peer_count)) {
         rollback(node, old_tx_tail);
@@ -5553,7 +5562,8 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // Heartbeat buried in a batch arrives no sooner than the batch does.
     bool piggyback = piggyback_due(pub, is_flush);
 
-    if (!end_encode_sample(node, submessage_header, is_flush && !piggyback, peers, peer_count, old_tx_tail)) {
+    if (!end_encode_sample(node, submessage_header, is_flush && !piggyback, peers, peer_count, old_tx_tail,
+                           record_len)) {
         return tt_RET_IO_ERROR;
     }
 
