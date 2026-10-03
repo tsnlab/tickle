@@ -657,11 +657,39 @@ reproduction whose control arm tracks the rig to within 1.2%:
 | default slot, record split in two | **2,730** | 0 | drains |
 | 4096-byte slot, record carried whole | **1.4** | 946 | never recovers |
 
-**The cost this section used to predict was the wrong one.** It said a larger slot means fewer slots in the same
-ring. Widening the segment to restore the slot *count* to the default's 512 changed nothing - 934 drops against
-936 - so it is not sizing. A 2800-byte sample held in one 4096-byte slot costs about 2.7x the ring **bytes** of
-the same sample as two datagram-sized ones, and acknowledgements travel through the same rings, so samples and
-acks starve each other.
+**Two corrections to this section, both mine (2026-10-03).** It predicted that a larger slot means fewer slots
+in the same ring; widening the segment to restore the slot *count* changed nothing (934 drops against 936), so
+sizing is ruled out and that much stands. But the replacement cause written here - "about 2.7x the ring bytes,
+and acknowledgements starve against samples" - was **arithmetically wrong and never measured**. The real ratio
+is 4112 against 2976 bytes, which is **1.38x**, and nothing measured the ack interaction. The 1.4 Mbps result
+was a **stall**, not a throughput ceiling: RELIABLE never recovered and the subscriber logged `Still waiting on
+reliable seq_no 52 ... after 176 retries`. Conflating "no gain" with "catastrophic stall" is what produced the
+wrong story.
+
+**What the cell actually costs, measured (`experiments/slot_rate_hypothesis.sh`).** Converting this table to
+samples/s and adding three arms that vary only the datagram size gives five points spanning 1 to 4 slots per
+sample and 1292 to 2800 bytes of payload:
+
+| slots/sample | samples/s | C = samples/s x slots |
+|---:|---:|---:|
+| 1 (p2, 1292 B) | 243,905 | 243,905 |
+| 1 (p3, 1424 B) | 244,558 | 244,558 |
+| 2 (p4, datagram 1472) | 121,587 | 244,125 |
+| 3 (p4, datagram 1024) | 81,269 | 244,763 |
+| 4 (p4, datagram 800) | 60,115 | 241,400 |
+
+**C is constant to 1.4% across all five**, so `samples/s = C / slots` and the segment path costs **4.10 us per
+slot write** regardless of how many bytes that slot carries. CycloneDDS over iceoryx costs **4.24 us per chunk**
+and carries a whole sample in one. **Our per-slot cost is competitive with theirs; we lose p4 because we spend
+two slots where they spend one.** One slot per sample extrapolates to 244,125 x 2800 x 8 = **5,468 Mbps**,
+against their measured 5,287 - and that is now an extrapolation from four measured slot counts rather than a
+prediction.
+
+**What the 4.10 us IS remains unknown, and is deliberately not guessed at here.** Client CPU is 4.03, 4.63 and
+5.25 us per sample on the three arms while the rate falls as exactly 1/slots, which puts the client at about 49%
+of a core - so it is not CPU saturation. Something that scales exactly with slot count binds it, and the
+previous version of this paragraph is what happens when a plausible mechanism is written down in place of a
+measured one.
 
 So the dependency runs the other way round from how SHM_PLAN 6e was written: **6e(b), the encoder writing into
 the slot, is the prerequisite for 6e(a)**, because it is what stops a whole record costing a whole slot.

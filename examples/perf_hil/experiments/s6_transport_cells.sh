@@ -103,6 +103,7 @@ run_tickle_cell() {
     local sub="$OUT.tickle"
     say "### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ==="
     if ! OUT="$sub" DUR="$DUR" SCEN="$SCEN" SIZE="$SIZE" CLI_ARGS="$CLI_ARGS" BUILD_FLAGS="$BUILD_FLAGS" \
+         TICKLE_DATAGRAM_BYTES="${TICKLE_DATAGRAM_BYTES:-}" \
          "$REPO/examples/perf_hil/experiments/s6_witness_check.sh" "$SHA" "$REPS" >/dev/null 2>&1; then
         say "  tickle cell FAILED to run - see $sub"
     fi
