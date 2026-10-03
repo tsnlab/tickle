@@ -702,9 +702,35 @@ it is also per-seq_no cannot be told apart today, because this build gives every
 two quantities are equal by construction. SHM_PLAN 6e's seq-span change separates them, and the measurement
 that follows it is what decides whether one slot per sample is worth 2x or 12%.
 
-**The comparison that is NOT available.** Our 12,225 Mbps at BEST_EFFORT cannot be set against CycloneDDS's
-5,287, which is RELIABLE. No vendor BEST_EFFORT figure exists for this cell. Our RELIABLE p4 remains 2,728
-against their 5,287, and that is the row that stands.
+**The comparison that is NOT available, and why measuring it did not make it available.** Our 12,225 Mbps at
+BEST_EFFORT cannot be set against CycloneDDS's 5,287, which is RELIABLE. On 2026-10-03 the missing vendor
+BEST_EFFORT figure was measured on the rig (campaign cells 8 and 15, 3 reps each, `instrument=ok` on all 18
+runs, `~/rig_results_safe/vendor_be_p4_20261003.txt`):
+
+| p4, BEST_EFFORT, rig | TickLE | CycloneDDS | FastDDS |
+|---|---:|---:|---:|
+| send Mbps, mean of 3 | 943.9 | 938.4 | 914.8 |
+| spread across reps | 0.2 | 0.1 | 0.2 |
+
+**That cell cannot discriminate, and the reason is the link.** All three sit at 1 GbE line rate; the whole
+spread across nine runs is 29 Mbps, 3% of the rate. TickLE leads CycloneDDS by 0.6% outside the repetition
+spread, and reading that as a transport result would be reading a saturated link. Every TickLE row reports
+`tx_shm=0`, which is correct - the rig is two hosts and the segment transport cannot apply there at all.
+
+**So 12,225 still has no counterpart, and the measurement above is not it.** 12,225 is a single-host
+shared-memory figure and the vendors were measured over a wire; the rig cannot produce their shared-memory
+number, because the configuration that produces ours does not exist on two hosts. The comparison this cell
+needs is **the vendors' own shared-memory transports on one host** - Fast DDS ships one and the rig profile
+`fastdds_eth0_only.xml` disables it deliberately, CycloneDDS has its own and iceoryx. Until that is measured,
+no claim of the form "our transport is faster at p4" has anything under it.
+
+Our RELIABLE p4 remains 2,728 against their 5,287, and that is the row that stands.
+
+The run's control cell is c8 (P1 BEST_EFFORT), whose TickLE figure is published below at 117.07 +- 0.22 Mbps;
+it came back **117.2** (3 reps, 116.8..117.8). Per this document's own rule that identifies the condition the
+run was in - the same c8 configuration - and does not validate anything about c15. Also recorded because it
+bears on how c8 is read: FastDDS lost **15.5%** of samples in that cell on this run (`recv=315,870` of
+`sent=373,667`), so its 48.2 Mbps is a rate at which it was not delivering.
 
 **What the 4.10 us IS remains unknown, and is deliberately not guessed at here.** Client CPU is 4.03, 4.63 and
 5.25 us per sample on the three arms while the rate falls as exactly 1/slots, which puts the client at about 49%
