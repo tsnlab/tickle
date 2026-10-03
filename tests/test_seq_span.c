@@ -153,12 +153,17 @@ static void test_a_wide_slot_does_not_shrink_the_span(void) {
     // And the number reached the slot. Without this the publisher could stop reporting the span and
     // every other assertion in this file would still pass - the reset discipline and the bound check
     // both hold perfectly well about a number nobody ever sets.
-    // The publisher put the span on the node, which is what this commit is responsible for. The slot it
-    // ends up in cannot be checked here yet: end_encode()'s own flush branch still caps at
-    // tt_MAX_BUFFER_LENGTH rather than at record_size_limit(), so a record wider than a datagram is
-    // neither fragmented nor refused - it is left in tx_buffer and never sent. Measured, not assumed:
-    // after this publish tx_shm and tx_udp are both 0 and the peer's write_index is still 0.
-    EXPECT_EQ_INT(2, sender.tx_seq_span);
+    // End to end: the number the publisher allocated reached the slot. This assertion was written when
+    // it could not pass - end_encode()'s flush branch capped at tt_MAX_BUFFER_LENGTH rather than at
+    // record_size_limit(), so a record wider than a datagram was neither fragmented nor refused but
+    // silently retained in tx_buffer, with tx_shm and tx_udp both 0 and this write_index still 0.
+    EXPECT_EQ_U32(1, owner.own_segment->write_index); // it was actually sent, over shared memory
+    const struct tt_SegmentSlot* slot = (const struct tt_SegmentSlot*)segment_slot(owner.own_segment, 0);
+    EXPECT_EQ_U32(2, slot->seq_span);
+
+    // And the publisher's copy went back to 1 when the buffer emptied, so it cannot ride out on the next
+    // record. That is set_tx_tail()'s doing, not this test's.
+    EXPECT_EQ_INT(1, sender.tx_seq_span);
 
     release_segments(&sender);
     release_own_segment(&owner);
@@ -274,16 +279,16 @@ static void test_a_span_outside_the_wire_bound_is_refused(void) {
     uint8_t datagram[64];
     memset(datagram, 0x5A, sizeof(datagram));
 
-    EXPECT_TRUE(segment_write(owner.own_segment, datagram, sizeof(datagram), OWNER_IP, OWNER_PORT, 2));
+    EXPECT_TRUE(segment_write(owner.own_segment, datagram, sizeof(datagram), NULL, 0, OWNER_IP, OWNER_PORT, 2));
     EXPECT_EQ_INT(2, ((const struct tt_SegmentSlot*)segment_slot(owner.own_segment, 0))->seq_span);
 
-    EXPECT_TRUE(
-        segment_write(owner.own_segment, datagram, sizeof(datagram), OWNER_IP, OWNER_PORT, tt_FRAG_MAX_COUNT + 1));
+    EXPECT_TRUE(segment_write(owner.own_segment, datagram, sizeof(datagram), NULL, 0, OWNER_IP, OWNER_PORT,
+                              tt_FRAG_MAX_COUNT + 1));
     EXPECT_EQ_INT(
         1,
         ((const struct tt_SegmentSlot*)segment_slot(owner.own_segment, 1))->seq_span); // out of range -> the safe one
 
-    EXPECT_TRUE(segment_write(owner.own_segment, datagram, sizeof(datagram), OWNER_IP, OWNER_PORT, 0));
+    EXPECT_TRUE(segment_write(owner.own_segment, datagram, sizeof(datagram), NULL, 0, OWNER_IP, OWNER_PORT, 0));
     EXPECT_EQ_INT(1, ((const struct tt_SegmentSlot*)segment_slot(owner.own_segment, 2))->seq_span); // 0 means 1
 
     release_own_segment(&owner);

@@ -644,8 +644,18 @@ static size_t segment_bytes(uint32_t slots, uint32_t slot_bytes) {
 // One datagram into the ring. False when it will not fit the slot, or when the ring is full - both
 // leave the ring untouched and both mean "send this over UDP instead", which is the module's own
 // documented failure mode rather than an error.
-static bool segment_write(struct tt_SegmentHeader* header, const void* buf, uint32_t len, uint32_t sender_ip,
-                          uint16_t sender_port, uint16_t seq_span) {
+// The record is given in its two pieces and assembled IN THE SLOT. segment_deliver() used to join them
+// in a stack buffer of tt_SEGMENT_SLOT_BYTES - our own compile-time constant - while the size it checked
+// against was the PEER's slot_bytes, read from the mapped header. Two deciders of one bound: a peer built
+// with a larger slot than ours accepted a record our buffer could not hold, and a 2068-byte record into a
+// 1472-byte frame smashed the stack (found 2026-10-03, the return addresses were the payload's own fill
+// byte). Writing the pieces straight into the slot removes the second number and the buffer with it.
+//
+// Safe because a slot is not published until the release store of `sequence` below: a reader cannot see a
+// half-written record whether it was written in one memcpy or two.
+static bool segment_write(struct tt_SegmentHeader* header, const void* hdr, uint32_t hdr_len, const void* body,
+                          uint32_t body_len, uint32_t sender_ip, uint16_t sender_port, uint16_t seq_span) {
+    const uint32_t len = hdr_len + body_len;
     if (len > header->slot_bytes) {
         return false;
     }
@@ -676,7 +686,10 @@ static bool segment_write(struct tt_SegmentHeader* header, const void* buf, uint
     }
 
     uint8_t* slot = (uint8_t*)slot_header;
-    memcpy(slot + sizeof(*slot_header), buf, len);
+    memcpy(slot + sizeof(*slot_header), hdr, hdr_len);
+    if (body_len != 0) {
+        memcpy(slot + sizeof(*slot_header) + hdr_len, body, body_len);
+    }
     slot_header->length = len;
     slot_header->sender_ip = sender_ip;
     slot_header->sender_port = sender_port;
@@ -1189,17 +1202,11 @@ static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_
         *reason = UDP_BECAUSE_OVERSIZED; // a service request or response: they do not fragment
         return false;
     }
-    // Assembled here rather than written in two pieces: a slot is one record, and a reader seeing a
-    // half-written record is what fixed slots exist to prevent.
-    uint8_t datagram[tt_SEGMENT_SLOT_BYTES];
-    memcpy(datagram, hdr, hdr_len);
-    if (body_len != 0) {
-        memcpy(datagram + hdr_len, body, body_len);
-    }
     uint32_t own_ip = 0;
     uint16_t own_port = 0;
     tt_own_address(node, &own_ip, &own_port);
-    if (!segment_write(segment, datagram, (uint32_t)total, own_ip, own_port, node->tx_seq_span)) {
+    if (!segment_write(segment, hdr, (uint32_t)hdr_len, body, (uint32_t)body_len, own_ip, own_port,
+                       node->tx_seq_span)) {
         // Dropped, not rerouted, and this is the whole reason the function returns true here. A
         // datagram sent over UDP because the ring was full arrives AHEAD of the records already in
         // the ring - the socket does not wait for the reader's next drain - so the reader delivers
@@ -1782,9 +1789,20 @@ static bool end_encode(struct tt_Context* node, struct tt_SubmessageHeader* subm
     // How large the datagram carrying this submessage may grow: the full tt_MAX_BUFFER_LENGTH only
     // for a submessage that is on its own in the buffer, tt_CONTROL_MAX_LENGTH once it shares one
     // (config.h). Identical to before whenever the two are equal, which is core's default.
+    //
+    // Through record_size_limit() since 2026-10-03, as the refusal at the top of this function and
+    // flush_tx()'s own flush_limit already were. Without it the three disagreed: the refusal admitted a
+    // record the destination's slot could take, and this branch then measured it against a datagram,
+    // found it too large, and DEFERRED it - "it can't go out in this flush either". Deferred where
+    // nothing comes back for it, so the record sat in tx_buffer and was never sent while the publish
+    // returned OK. Measured: tx_shm 0, tx_udp 0, the peer's write_index still 0, and no counter moved.
+    // A silent retention, not a drop, which is why no existing test or statistic showed it.
+    //
+    // Only the alone case is raised. A submessage sharing a datagram cannot be a whole record bound for
+    // a slot: unicast_destinations_for() requires an empty buffer before it will grant one.
     uint32_t limit = tt_CONTROL_MAX_LENGTH;
     if (base == sizeof(struct tt_Header)) {
-        limit = tt_MAX_BUFFER_LENGTH;
+        limit = record_size_limit(node, tt_MAX_BUFFER_LENGTH, peers, peer_count);
     }
 
     // The padding goes on the wire, counted in the submessage's length, so it is zeroed: it used to carry whatever an
