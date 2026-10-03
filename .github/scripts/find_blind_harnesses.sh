@@ -3,9 +3,9 @@
 #
 # NOT A GATE, AND DELIBERATELY NOT WIRED INTO check-gates. Run it by hand when you suspect a
 # harness is blind to its own evidence. The reason it is not a gate is the number it prints: on
-# 2026-10-03 it found 36 instances across the 113 harnesses in examples/perf_hil/experiments, and
-# a rule that fires 36 times is describing the house convention rather than a defect. Making it a
-# gate would mean annotating 36 existing lines, and a gate people learn to annotate past is worse
+# 2026-10-03 it found 40 instances across the harnesses under examples/perf_hil, and
+# a rule that fires 40 times is describing the house convention rather than a defect. Making it a
+# gate would mean annotating 40 existing lines, and a gate people learn to annotate past is worse
 # than no gate. If you are reading this because you want to enforce it: the count is the argument,
 # so re-run it first and see whether the population has actually changed.
 #
@@ -18,7 +18,7 @@
 #   the log of ./client or ./server: their output IS the measurement. Discarding the rest destroys
 #     evidence about the thing being studied.
 #
-# That distinction is the whole rule, and it is what took 95 down to 36 with every build log
+# That distinction is the whole rule, and it is what took 95 down to 40 with every build log
 # correctly excluded. So this looks only at the benchmark binaries:
 #
 #   (a) ./client or ./server invoked and piped straight into a filter
@@ -60,6 +60,13 @@
 #   It was found because the count came out 36 and not the 35 that two fixes predicted, and the
 #   odd one was chased rather than assumed. That is the use this script is for: not enforcement,
 #   but a number a person can check an expectation against.
+#
+#   FOUR MORE, found when the scope was widened from experiments/ to all of examples/perf_hil:
+#   every vendor's run_scenario.sh - cyclonedds:95, fastdds:66, tickle:67, zenohpico:34 - ends its
+#   client invocation in `| grep "^RESULT:"`. Those four scripts run every benchmark this project
+#   has, so a client that dies before printing RESULT leaves nothing behind for any vendor. They
+#   were invisible to the first version of this script because it looked at one directory, which
+#   is the same defect it exists to find, in itself.
 # Escape hatch, on the flagged line: # whole-log-not-needed: <reason>
 # The reason belongs where the next reader is, not in a list somewhere else.
 #
@@ -68,7 +75,7 @@
 
 set -uo pipefail
 
-ROOT="${1:-examples/perf_hil/experiments}"
+ROOT="${1:-examples/perf_hil}"
 FILTERS='grep|egrep|fgrep|sed|awk|head|tail|cut|wc'
 WHOLE='cat|source|\.|cp|scp|less|more|tee|python3?|mv|rsync'
 PRODUCER='\./(client|server)\b'
@@ -90,7 +97,12 @@ flag() { # file line kind message
     findings=$((findings + 1))
 }
 
-for f in "$ROOT"/*.sh; do
+# Recursive, and the default is the whole of examples/perf_hil rather than experiments/
+# alone. The first version looked only at experiments/ and so could not see that all three
+# vendors' run_scenario.sh - the scripts that run EVERY benchmark - end their client invocation
+# in `| grep "^RESULT:"`. A tool for finding blind spots that is itself pointed at one directory
+# has one.
+while IFS= read -r f; do
     [ -f "$f" ] || continue
 
     # (a) a benchmark binary piped straight into a filter.
@@ -133,7 +145,7 @@ for f in "$ROOT"/*.sh; do
             flag "$f" "$first" "b" "every consumption of $p (written by a measured process) is a filter"
         fi
     done
-done
+done < <(find "$ROOT" -type f -name '*.sh' | sort)
 
 echo "---"
 echo "findings=$findings hatched=$hatched"
