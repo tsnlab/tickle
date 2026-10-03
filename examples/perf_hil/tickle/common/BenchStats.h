@@ -119,7 +119,8 @@ struct BenchStats {
     // the 2026-10-03 defect one layer up: a field written and never read looks exactly like a
     // working system that reports nothing.
     uint64_t span_absorbed;      // seq positions a whole record's span covered beyond its own
-    uint64_t head_stalls;        // the reader looked and found nothing: an empty ring OR a stuck head
+    uint64_t head_stalls;        // head claimed but not yet published - a race, not a stall (see below)
+    uint64_t stall_warnings;     // the head stayed claimed for tt_SEGMENT_STALL_PASSES: a REAL stall
     uint64_t shm_only_on_socket; // a segment-only record arrived from the network
     int shm_diag_valid;          // likewise for bench_stats_set_shm_diagnostics()
     char iface[32];
@@ -378,25 +379,31 @@ static inline void bench_stats_set_attach(struct BenchStats* stats, const uint32
 //   span_absorbed       zero while shared-memory records flow means the span is not reaching the
 //                       reader. That exact state delivered 1 sample out of 15,401 received records
 //                       on 2026-10-03 with every loss counter also reading zero.
-//   head_stalls         how often the reader looked and found nothing. READ THIS CAREFULLY before
-//                       drawing anything from it: note_head_stall()'s own comment is "empty, or a
-//                       head nobody is coming back for - the two look alike", so a reader that is
-//                       simply faster than its writer runs this up as hard as a wedged one. The
-//                       first run to carry it measured 44,627-48,363 on an arm that delivered every
-//                       sample with zero loss, and the same range on an arm that delivered none.
-//                       It is a rate of empty polls, not evidence of a stall. The number that
-//                       distinguishes them is tt_Context.segment_head_stall_passes, the CONSECUTIVE
-//                       count, which is reset the moment a record is read - and it is not exported
-//                       here because an end-of-run sample of a live counter is not a peak.
-//                       Head-of-line stalling genuinely is invisible in throughput alone - a
-//                       stalled reader and a slow writer produce the same rate - but this is not
-//                       yet the instrument that sees it.
+//   head_stalls         drain passes that found the ring NOT empty and the head still unreadable.
+//                       It does not count empty polls - note_head_stall() compares write_index
+//                       against read_index and returns without counting when they are equal. What
+//                       it does count is mostly benign: a writer that has claimed the head and not
+//                       yet published it looks identical to one that died holding it, and at
+//                       600,000 samples a second that race is constant. The first run to carry it
+//                       measured 44,627-48,363 on an arm delivering every sample with zero loss,
+//                       and 70,153-73,196 on another arm also delivering every sample - so a large
+//                       value is normal and the number is a rate, not a verdict.
+//   stall_warnings      the verdict. tt_Context.segment_stall_warnings rises when the head stays
+//                       claimed for tt_SEGMENT_STALL_PASSES drain passes in a row, which is a
+//                       writer that died between its claim and its publish - the ring stops for
+//                       good and traffic silently falls back to UDP. Zero means no persistent
+//                       stall was ever seen; anything else is one, and it is the clean pass/fail
+//                       that head_stalls is not. Head-of-line stalling is invisible in throughput
+//                       alone - a stalled reader and a slow writer produce the same rate - so this
+//                       is the instrument for it.
 //   shm_only_on_socket  a record that only something with write access to a segment could have
 //                       built, arriving from the network instead.
 static inline void bench_stats_set_shm_diagnostics(struct BenchStats* stats, uint64_t span_absorbed,
-                                                   uint64_t head_stalls, uint64_t shm_only_on_socket) {
+                                                   uint64_t head_stalls, uint64_t stall_warnings,
+                                                   uint64_t shm_only_on_socket) {
     stats->span_absorbed = span_absorbed;
     stats->head_stalls = head_stalls;
+    stats->stall_warnings = stall_warnings;
     stats->shm_only_on_socket = shm_only_on_socket;
     stats->shm_diag_valid = 1;
 }
@@ -560,7 +567,7 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     char by_thread[512];
     char fail[80];
     char transport[96];
-    char shmdiag[160];
+    char shmdiag[224];
     char fallbacks[320];
 
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
@@ -594,8 +601,9 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     shmdiag[0] = '\0';
     if (stats->shm_diag_valid != 0) {
         snprintf(shmdiag, sizeof(shmdiag),
-                 " rx_span_absorbed=%" PRIu64 " segment_head_stalls=%" PRIu64 " rx_shm_only_on_socket=%" PRIu64,
-                 stats->span_absorbed, stats->head_stalls, stats->shm_only_on_socket);
+                 " rx_span_absorbed=%" PRIu64 " segment_head_stalls=%" PRIu64 " segment_stall_warnings=%" PRIu64
+                 " rx_shm_only_on_socket=%" PRIu64,
+                 stats->span_absorbed, stats->head_stalls, stats->stall_warnings, stats->shm_only_on_socket);
     }
     // Against the WINDOW's getrusage delta, not against cpu_s. getrusage(RUSAGE_SELF) is cumulative for the whole
     // process, while sched_cpu_ns is a begin-to-end delta, so subtracting one from the other counts every cycle spent
