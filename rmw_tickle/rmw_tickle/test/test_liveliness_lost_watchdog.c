@@ -185,7 +185,21 @@ int main(void) {
     // lost(), rmw_node.c) waiting for the unlock() just above - rmw_wait() with a real timeout (rather
     // than immediately calling rmw_take_event()) gives it room to finish that call and broadcast
     // its own wait_cond, without this test racing a fixed short sleep against it.
-    rmw_time_t recovery_timeout = {2, 0}; // generous: only needs to cover scheduling latency
+    //
+    // Derived from the tick rather than written as a number, because the number was wrong about
+    // what it had to cover. It used to be a bare `{2, 0}` with the comment "generous: only needs
+    // to cover scheduling latency" - but the watchdog does not run on scheduling latency, it runs
+    // on the scheduler tick, and tt_CONTEXT_UPDATE_INTERVAL is a whole second. Two seconds is two
+    // ticks, so a single late tick spent most of the budget, and the test failed once in a
+    // check-gates run on 2026-10-04 while passing 28 times in a row when re-run on a quieter
+    // machine - the shape of a margin that depends on load rather than on the thing under test.
+    //
+    // This does not weaken the assertion. The property is "the lost event arrives", not "it
+    // arrives within two seconds": the timeout is a bound on the test's patience, and a watchdog
+    // that is actually broken never fires at all and still fails here. hang_duration_ns above is
+    // derived from the same constants; this was the one number in the test that was not.
+    const uint64_t recovery_ns = 4U * (uint64_t)tt_CONTEXT_UPDATE_INTERVAL;
+    rmw_time_t recovery_timeout = {recovery_ns / tt_SECOND, recovery_ns % tt_SECOND};
     events.events[0] = &liveliness_lost_event;
     assert(RMW_RET_OK == rmw_wait(NULL, NULL, NULL, NULL, &events, wait_set, &recovery_timeout));
     assert(NULL != events.events[0]);
