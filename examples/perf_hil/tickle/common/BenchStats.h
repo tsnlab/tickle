@@ -119,7 +119,7 @@ struct BenchStats {
     // the 2026-10-03 defect one layer up: a field written and never read looks exactly like a
     // working system that reports nothing.
     uint64_t span_absorbed;      // seq positions a whole record's span covered beyond its own
-    uint64_t head_stalls;        // the ring's head would not move - a reader that is not draining
+    uint64_t head_stalls;        // the reader looked and found nothing: an empty ring OR a stuck head
     uint64_t shm_only_on_socket; // a segment-only record arrived from the network
     int shm_diag_valid;          // likewise for bench_stats_set_shm_diagnostics()
     char iface[32];
@@ -378,8 +378,19 @@ static inline void bench_stats_set_attach(struct BenchStats* stats, const uint32
 //   span_absorbed       zero while shared-memory records flow means the span is not reaching the
 //                       reader. That exact state delivered 1 sample out of 15,401 received records
 //                       on 2026-10-03 with every loss counter also reading zero.
-//   head_stalls         the ring's head would not move. Head-of-line stalling is invisible in
-//                       throughput alone: a stalled reader and a slow writer produce the same rate.
+//   head_stalls         how often the reader looked and found nothing. READ THIS CAREFULLY before
+//                       drawing anything from it: note_head_stall()'s own comment is "empty, or a
+//                       head nobody is coming back for - the two look alike", so a reader that is
+//                       simply faster than its writer runs this up as hard as a wedged one. The
+//                       first run to carry it measured 44,627-48,363 on an arm that delivered every
+//                       sample with zero loss, and the same range on an arm that delivered none.
+//                       It is a rate of empty polls, not evidence of a stall. The number that
+//                       distinguishes them is tt_Context.segment_head_stall_passes, the CONSECUTIVE
+//                       count, which is reset the moment a record is read - and it is not exported
+//                       here because an end-of-run sample of a live counter is not a peak.
+//                       Head-of-line stalling genuinely is invisible in throughput alone - a
+//                       stalled reader and a slow writer produce the same rate - but this is not
+//                       yet the instrument that sees it.
 //   shm_only_on_socket  a record that only something with write access to a segment could have
 //                       built, arriving from the network instead.
 static inline void bench_stats_set_shm_diagnostics(struct BenchStats* stats, uint64_t span_absorbed,

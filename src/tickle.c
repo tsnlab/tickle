@@ -1648,6 +1648,17 @@ static bool send_fragments(struct tt_Context* node, const struct tt_DataHeader* 
     }
     uint32_t count = frag_count_for(cdr_len);
 
+    // Every datagram from here carries its own seq_no - frag_write_header() gives fragment i the
+    // base plus i - so each one's span is 1 and the sample's span is spent by the set of them.
+    // Cleared here rather than at the call sites because this is the one place that knows it is
+    // about to emit several datagrams for one sample, and because getting it wrong is silent in
+    // both directions. Leaving the sample's span standing made EVERY fragment's slot claim the
+    // whole sample's span: the reader then absorbed two seq positions per fragment, its watermark
+    // ran ahead of the stream, and every later sample was classified as a duplicate. Measured on
+    // the rig at the default slot_bytes 1472 on 2026-10-03 - recv=0 with frag_duplicate equal to
+    // the number of samples sent, while the publisher's own sent count looked perfectly healthy.
+    node->tx_seq_span = 1;
+
     // One framing per fragment: header, submessage header, and the fragment header.
     uint8_t framings[tt_FRAG_MAX_COUNT][FRAG_FRAMING_LENGTH + sizeof(struct tt_FragFirstHeader)];
     struct tt_OutDatagram batch[tt_FRAG_MAX_COUNT];

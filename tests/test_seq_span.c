@@ -450,6 +450,110 @@ static void test_a_whole_record_advances_the_reader_by_its_span(void) {
     test_mock_segments_free();
 }
 
+// The other path, and the one the test above does not reach. A sample too wide for the
+// destination's slot goes as fragments, and frag_write_header() gives fragment i the base seq_no
+// plus i - so each fragment genuinely occupies one seq position and its span is 1. The sample's
+// span is spent by the set of them, not carried by each.
+//
+// Until 2026-10-03 every fragment's slot claimed the WHOLE sample's span, because the publisher
+// sets tt_Context.tx_seq_span once per sample and segment_deliver() reads it for every record it
+// writes. While nothing read the field back that was harmless. The moment the reader began acting
+// on it, a two-fragment sample made the reader absorb four seq positions instead of two, its
+// watermark ran ahead of the stream, and every later sample arrived below it and was counted as a
+// duplicate. On the rig at the DEFAULT slot_bytes that was recv=0 with frag_duplicate equal to
+// every sample sent - and the publisher's own sent and send_mbps looked completely healthy, which
+// is how a harness summary reported 121,781 samples/s for an arm that delivered nothing.
+//
+// The test above passed throughout, because it only ever exercises the whole-record path. Fixing
+// one path and testing one path is what let this through 45 unit binaries and 15 gates.
+static void test_each_fragment_carries_its_own_seq_position(void) {
+    struct tt_Context owner;
+    struct tt_Context sender;
+    struct tt_Topic topic;
+    struct tt_Topic owner_topic;
+    struct tt_Publisher pub;
+    struct tt_Subscriber sub;
+
+    memset(&owner, 0, sizeof(owner));
+    node_init_locks(&owner);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    owner.tx_tail = sizeof(struct tt_Header);
+    owner.tx_size = sizeof(owner.tx_buffer);
+    owner.rx_seq_span = 1;
+    // The DEFAULT geometry, deliberately: this is the shipping configuration, and it is the one
+    // the whole-record test cannot reach because there a BIG_SAMPLE_BYTES record does not fit.
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+    EXPECT_TRUE(owner.own_segment->slot_bytes < BIG_SAMPLE_BYTES); // or this is not the frag path
+
+    memset(&owner_topic, 0, sizeof(owner_topic));
+    owner_topic.name = "span_topic";
+    owner_topic.data_size = sizeof(uint32_t);
+    owner_topic.data_encode_size = big_encode_size;
+    owner_topic.data_encode = big_encode;
+    owner_topic.data_decode = span_decode;
+    owner_topic.data_free = big_free;
+
+    memset(&sub, 0, sizeof(sub));
+    sub.endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
+    sub.endpoint.id = ENDPOINT_ID;
+    sub.node = &owner;
+    sub.topic = &owner_topic;
+    sub.callback = span_callback;
+    sub.reliable = true;
+    sub.reorder_storage = span_reorder_storage;
+    sub.reorder_slots = SPAN_REORDER_SLOTS;
+    sub.reorder_slot_bytes = SPAN_REORDER_SLOT_BYTES;
+    memset(span_reorder_storage, 0, sizeof(span_reorder_storage));
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        sub.writers[i].context_id = tt_CONTEXT_ID_INVALID;
+    }
+    owner.endpoint_count = 1;
+    owner.endpoints[0] = (struct tt_Endpoint*)&sub;
+
+    init_sender(&sender, &topic, &pub);
+    pub.reliable = true;
+    pub.peers[0].context_id = OWNER_ID;
+    pub.peers[0].ip = OWNER_IP;
+    pub.peers[0].port = OWNER_PORT;
+    EXPECT_TRUE(peer_segment(&sender, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
+
+    span_callback_count = 0;
+    uint32_t value = 7;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    // Two datagrams for one sample, so two slots, and the publisher still spent two seq_nos.
+    EXPECT_EQ_U32(2, owner.own_segment->write_index);
+    EXPECT_EQ_U32(2, pub.seq_no);
+
+    // The direct assertion: each slot says ONE, not the sample's two. This is what was wrong, and
+    // it is checkable without running the reader at all.
+    for (uint32_t i = 0; i < 2; i++) {
+        const struct tt_SegmentSlot* slot = (const struct tt_SegmentSlot*)segment_slot(owner.own_segment, i);
+        EXPECT_EQ_U32(1, slot->seq_span);
+    }
+
+    // And the consequence, which is what the rig saw: with four positions absorbed for two
+    // fragments the watermark passes the stream and the next sample reads as already seen.
+    bool emptied = false;
+    (void)drain_own_segment(&owner, &emptied);
+    EXPECT_EQ_U32(1, span_callback_count);
+    EXPECT_EQ_U64(0, owner.rx_span_absorbed); // a fragment absorbs nothing beyond itself
+
+    test_mock_now += 1000000;
+    value = 8;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    (void)drain_own_segment(&owner, &emptied);
+    EXPECT_EQ_U32(2, span_callback_count);
+
+    release_segments(&sender);
+    release_own_segment(&owner);
+    test_mock_segments_free();
+}
+
 int main(void) {
     test_without_a_segment_the_span_is_the_wire_count();
     test_a_wide_slot_does_not_shrink_the_span();
@@ -457,6 +561,7 @@ int main(void) {
     test_a_span_does_not_outlive_its_datagram();
     test_a_span_outside_the_wire_bound_is_refused();
     test_a_whole_record_advances_the_reader_by_its_span();
+    test_each_fragment_carries_its_own_seq_position();
 
     printf("test_seq_span: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();
