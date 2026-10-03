@@ -102,7 +102,19 @@ run_one() { # run_one <arm>
     # line used to go in the pipe's bin, so a diagnostic the publisher prints - and the publisher is the only
     # side that can refuse a whole-record send - was unreadable: on 2026-10-03 its absence from the SERVER log
     # was nearly read as "it did not refuse", when the truth was that nothing had ever captured it.
-    line=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo taskset -c 2 ./client -Q -d $DUR $CLI_ARGS >/tmp/s6wit_client.log 2>&1; grep '^RESULT' /tmp/s6wit_client.log" </dev/null)
+    # The whole client log comes back and is filtered here, not on the Pi. `a5e9c553` turned a
+    # `./client | grep '^RESULT'` pipe into this file so the diagnostic would stop being DESTROYED - and it
+    # succeeded at that; the text sits on the rig's disk where a person who ssh's in can read it. But the
+    # HARNESS still saw one line, so for every automated purpose the diagnostic may as well not exist, and
+    # that is the state in which the server half was written the same afternoon with the same defect.
+    # Two of the three consumers in this file have now been this shape. The output comes back whole.
+    local clog
+    clog=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo taskset -c 2 ./client -Q -d $DUR $CLI_ARGS >/tmp/s6wit_client.log 2>&1; cat /tmp/s6wit_client.log" </dev/null)
+    line=$(printf '%s\n' "$clog" | grep '^RESULT' | head -1)
+    if [ -z "$line" ]; then
+        say "    arm=$name: the client printed no RESULT line. What it did say:"
+        printf '%s\n' "$clog" | tail -6 | sed 's/^/       | /' | tee -a "$OUT"
+    fi
     [ -n "$line" ] && say "arm=$name $line"
     kill_server
     # The receiver's own line, collected after the server has been asked to stop and allowed to print it. A
@@ -110,13 +122,24 @@ run_one() { # run_one <arm>
     # cell sent 128 samples and timed out, and whether the subscriber had read them (rx_shm > 0) or never seen
     # them (rx_shm = 0) was the whole question and could not be asked. Reported as absent rather than skipped -
     # "the server said nothing" and "the server was never asked" must not look alike.
-    local sline
-    sline=$(sh_ "$HOST" "grep '^RESULT' /tmp/s6wit_server.log 2>/dev/null" </dev/null)
+    #
+    # The WHOLE server log is read, not `grep '^RESULT'` of it. The client half of this harness learned that on
+    # 2026-10-03 and the server half was written the same afternoon with the same defect: core prints
+    # `Subscriber %u delivery: ... reorder_held_peak=...` through TT_LOG_INFO (src/tickle.c), which is NOT the
+    # RESULT line, and a grep for RESULT discards it. That counter is exactly the one that distinguishes
+    # "records were dropped" from "records are being HELD waiting for a seq that cannot come" - the question
+    # this harness existed to answer that night - and it was being printed and thrown away.
+    local slog sline dline
+    slog=$(sh_ "$HOST" "cat /tmp/s6wit_server.log 2>/dev/null" </dev/null)
+    sline=$(printf '%s\n' "$slog" | grep '^RESULT' | head -1)
+    dline=$(printf '%s\n' "$slog" | grep 'delivery:' | tail -1)
     if [ -n "$sline" ]; then
         say "arm=$name $sline"
     else
-        say "    arm=$name: the server printed no RESULT line (it was killed before it could, or it failed early)"
+        say "    arm=$name: the server printed no RESULT line. Its last lines were:"
+        printf '%s\n' "$slog" | tail -6 | sed 's/^/       | /' | tee -a "$OUT"
     fi
+    [ -n "$dline" ] && say "arm=$name server-delivery $dline"
 }
 
 sha_on=$(build_arm ON "$BUILD_FLAGS") || exit 1
