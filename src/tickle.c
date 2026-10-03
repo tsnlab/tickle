@@ -5557,7 +5557,16 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
         whole_limit = whole_to_peers;
     }
     // One seq_no per datagram the sample goes as - counted now, while it still sits in tx_buffer.
-    uint32_t datagrams = sample_datagram_count(node, submessage_header, record_len, whole_limit);
+    // The sample's SEQ SPAN: how many seq_nos it consumes. Counted against the NETWORK form -
+    // FRAG_WHOLE_DATA_LIMIT, not whole_limit - so it is the same number whatever path the sample takes
+    // (SHM_PLAN 6e). Until 2026-10-03 this used whole_limit, which comes from the destinations, so a
+    // publisher's seq_no advanced at a rate that depended on who was listening and whether their segment
+    // happened to be attached: the same sample consumed one seq_no for an all-local publisher and two
+    // when a remote subscriber was present. That is why 6e(a) had to forbid mixed destinations, and the
+    // prohibition was not even sufficient - it is evaluated at publish while retransmission happens
+    // later, so a segment detaching in between left a whole record that had to go out over UDP, where it
+    // exceeds a datagram by construction and was dropped (the measured tx_dropped_oversize).
+    uint32_t seq_span = sample_datagram_count(node, submessage_header, record_len, FRAG_WHOLE_DATA_LIMIT);
     if (!check_and_cache_sample(node, pub, submessage_header, record_len, whole_limit)) {
         rollback(node, old_tx_tail);
         return tt_RET_PROTOCOL_ERROR;
@@ -5586,7 +5595,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
         return tt_RET_IO_ERROR;
     }
 
-    pub->seq_no += datagrams;
+    pub->seq_no += seq_span;
 
     // After seq_no++, so the Heartbeat's last_seq_no includes the DATA it travels with.
     if (piggyback && !append_piggybacked_heartbeat(node, pub, peers, peer_count)) {

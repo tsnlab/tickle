@@ -1924,6 +1924,7 @@ static void test_a_renumbered_context_still_knows_it_holds_its_own_segment(void)
 // segment on the SEND path, after the limit has been decided, so the FIRST sample to a peer always splits as the
 // network requires and only later ones can go whole. Conservative in the right direction, and asserted below so
 // that it is a decision rather than an accident.
+
 static void test_only_an_attached_same_host_peer_raises_the_whole_limit(void) {
     struct tt_Context owner;
     struct tt_Context sender;
