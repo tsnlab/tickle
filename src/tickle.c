@@ -7939,7 +7939,13 @@ static uint64_t longest_lease_from(const struct tt_Context* node, uint8_t source
 // "crashed" from "partitioned" from "just slow" - none of those are observable from here, and DDS-style
 // liveliness has the same limitation.
 static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t silent_ns) {
-    TT_LOG_WARNING("Node %d presumed dead (silent for %lu ms)", source, (unsigned long)(silent_ns / tt_MILLISECOND));
+    // liveliness_deferrals_total rides along because this line is where a reader asks the question
+    // it answers: was this a real death, or were we too starved to hear? Its own declaration says
+    // it is "for a reader of the log" and it was not in any log, so the thing it promised could
+    // not be checked anywhere. A large count beside a death means the check kept standing down
+    // while datagrams went unread, and the silence may be ours rather than the peer's.
+    TT_LOG_WARNING("Node %d presumed dead (silent for %lu ms, liveliness deferred %lu times so far)", source,
+                   (unsigned long)(silent_ns / tt_MILLISECOND), (unsigned long)node->liveliness_deferrals_total);
     forget_peers_from_source(node, source, /*preserve_ack=*/false);
 #if tt_SEGMENT_ENABLED
     // The departing edge for the segment, and deliberately only this one. A graceful farewell arrives
