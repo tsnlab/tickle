@@ -1609,7 +1609,7 @@ static uint32_t frag_write_header(uint8_t* out, const struct tt_DataHeader* data
 // fragmented (DATAFRAG_PLAN.md 6.5, step 3). Destination by destination, so each receiver gets a sample's
 // fragments back to back.
 static bool send_fragments(struct tt_Context* node, const struct tt_DataHeader* data_header, const uint8_t* cdr,
-                           uint32_t cdr_len, const struct tt_Peer* peers, uint8_t peer_count) {
+                           uint32_t cdr_len, const struct tt_Peer* peers, uint8_t peer_count, uint8_t receiver) {
     if (cdr_len <= FRAG_FIRST_PAYLOAD || cdr_len > FRAG_MAX_CDR) {
         TT_LOG_ERROR("Sample of %u bytes cannot be sent as fragments", cdr_len);
         node->tx_dropped_oversize++;
@@ -1627,8 +1627,8 @@ static bool send_fragments(struct tt_Context* node, const struct tt_DataHeader* 
         header->version = tt_VERSION;
         header->source = node->id;
         uint32_t length = frag_payload_length(index, cdr_len);
-        uint32_t header_length = frag_write_header(framing + sizeof(struct tt_Header), data_header, index, count,
-                                                   length, tt_SUBMESSAGE_ID_ALL);
+        uint32_t header_length =
+            frag_write_header(framing + sizeof(struct tt_Header), data_header, index, count, length, receiver);
         uint32_t framing_length = (uint32_t)sizeof(struct tt_Header) + header_length;
         uint32_t skip = to_single_form(framing, framing_length, length);
         batch[index] = (struct tt_OutDatagram) {
@@ -1688,7 +1688,7 @@ static bool send_tail_as_fragments(struct tt_Context* node, struct tt_Submessage
     bool sent = send_fragments(node, (const struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader)),
                                record + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader),
                                length - (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)),
-                               peers, peer_count);
+                               peers, peer_count, tt_SUBMESSAGE_ID_ALL);
     node->tx_tail = base;
     return sent;
 }
@@ -4385,7 +4385,8 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 #if tt_FRAG_ENABLED
     if (sizeof(framing) + body_len > FRAG_WHOLE_DATA_LIMIT) {
         bool unicast = peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD;
-        if (!send_fragments(node, data_header, body, body_len, unicast ? pub->peers : NULL, unicast ? peer_count : 0)) {
+        if (!send_fragments(node, data_header, body, body_len, unicast ? pub->peers : NULL, unicast ? peer_count : 0,
+                            tt_SUBMESSAGE_ID_ALL)) {
             return tt_RET_IO_ERROR;
         }
         pub->seq_no += frag_count_for(body_len); // one seq_no per datagram
@@ -8046,6 +8047,33 @@ static bool send_cached_record(struct tt_Context* node, const uint8_t* record, u
         uint32_t skip = to_single_form(head, framing_length, len - header_length);
         struct tx_datagram dgram = {head + skip, framing_length - skip, record + header_length, len - header_length};
         return send_datagram(node, &dgram, target, 1);
+    }
+#endif
+#if tt_FRAG_ENABLED
+    // A whole record this destination cannot take. It was cached whole because the destination it was
+    // PUBLISHED to could take it - a same-host peer with a wide enough slot - and that peer's segment
+    // may have gone since. SHM_PLAN 6e's own table says this case re-fragments; until 2026-10-03 nothing
+    // did, and end_encode() below would refuse it for ever ("the protocol does not fragment, so there is
+    // nothing else to do with it"), which is the same failure as the oversize drop in a later disguise.
+    //
+    // Sent straight from the arena rather than through tx_buffer: send_fragments() takes pointers, so the
+    // copy below is not needed, and going through send_tail_as_fragments() instead would flush whatever
+    // else is batched - a broadcast, in the middle of an addressed retransmission.
+    //
+    // The seq_nos come out right by construction, which is what the seq span bought: frag_write_header()
+    // gives fragment i the base seq_no + i, and the span reserved exactly that many when the sample was
+    // published. A receiver cannot tell these fragments from ones the first publish would have sent.
+    // Measured from `len`, the cached record's own length, and NOT with submessage_fits_datagram():
+    // that one derives the length as tx_buffer + tx_tail - submessage_header, and this record is in the
+    // arena, where the subtraction is between two unrelated addresses. Passing an arena pointer to it
+    // delivered 23 of 200 samples in test_data_frag before this line read the length it already had -
+    // the same defect this morning removed from end_encode_sample(), reintroduced by calling a function
+    // that still has it.
+    if (sizeof(struct tt_Header) + ROUNDUP(len) > record_size_limit(node, tt_MAX_BUFFER_LENGTH, target, 1)) {
+        const struct tt_DataHeader* cached = (const struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader));
+        uint32_t head_len = (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader));
+        return send_fragments(node, cached, record + head_len, len - head_len, target, 1,
+                              addressed ? target->context_id : tt_SUBMESSAGE_ID_ALL);
     }
 #endif
     uint32_t old_tx_tail = node->tx_tail;

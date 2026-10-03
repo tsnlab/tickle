@@ -155,9 +155,70 @@ static void test_a_wide_slot_does_not_shrink_the_span(void) {
     test_mock_segments_free();
 }
 
+// SHM_PLAN 6e's table says a segment detaching after publish re-fragments. Until 2026-10-03 nothing
+// did: send_cached_record()'s whole-record branch ended in end_encode(), whose own comment is "the
+// protocol does not fragment, so there is nothing else to do with it; the caller learns from false and
+// rolls back". A record cached whole for a same-host peer whose segment then went would have been
+// refused for ever - the oversize drop in a later disguise.
+//
+// The receiver must not be able to tell these fragments from ones the first publish would have sent,
+// which is what makes the seq span load-bearing: frag_write_header() gives fragment i the base seq_no
+// plus i, and the span reserved exactly that many.
+static void test_a_whole_record_the_target_cannot_take_is_refragmented(void) {
+    struct tt_Context sender;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_sender(&sender, &topic, &pub);
+    test_mock_reset();
+
+    // A cached record as check_and_cache_sample() leaves one: submessage header, DataHeader, CDR.
+    static uint8_t record[sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) + BIG_SAMPLE_BYTES];
+    memset(record, 0xC3, sizeof(record));
+    struct tt_SubmessageHeader* sub = (struct tt_SubmessageHeader*)record;
+    sub->type = tt_SUBMESSAGE_TYPE_DATA;
+    sub->receiver = tt_SUBMESSAGE_ID_ALL;
+    sub->length = (uint16_t)sizeof(record);
+    struct tt_DataHeader* data = (struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader));
+    data->endpoint_id = ENDPOINT_ID;
+    data->seq_no = 41; // the sample's base; its span reserved 41 and 42
+    data->entity_id = 9;
+
+    struct tt_Peer target;
+    memset(&target, 0, sizeof(target));
+    target.context_id = OWNER_ID;
+    target.ip = OWNER_IP;
+    target.port = OWNER_PORT;
+
+    // No segment attached, so this destination takes datagrams and the record is larger than one.
+    EXPECT_EQ_U32(0, whole_record_limit_for(&sender, &target, 1));
+    uint64_t oversize_before = sender.tx_dropped_oversize;
+
+    EXPECT_TRUE(send_cached_record(&sender, record, (uint16_t)sizeof(record), true, &target));
+
+    // Not refused, and not counted as something that could never be sent.
+    EXPECT_EQ_U64(oversize_before, sender.tx_dropped_oversize);
+
+    // The last datagram out is the sample's second fragment: seq_no 42 = base + 1, index 1 of 2, and
+    // addressed to the node that asked rather than broadcast. Those are exactly the values a first
+    // publish of this sample would have put there.
+    const struct tt_SubmessageHeader* out =
+        (const struct tt_SubmessageHeader*)(test_mock_send_last_buf + sizeof(struct tt_Header));
+    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_FRAG_CONT, out->type);
+    EXPECT_EQ_INT(OWNER_ID, out->receiver);
+    const struct tt_FragContHeader* cont =
+        (const struct tt_FragContHeader*)(test_mock_send_last_buf + sizeof(struct tt_Header) +
+                                          sizeof(struct tt_SubmessageHeader));
+    EXPECT_EQ_U32(42, cont->seq_no);
+    EXPECT_EQ_INT(1, cont->frag_index);
+    EXPECT_EQ_INT(2, cont->frag_count);
+
+    test_mock_segments_free();
+}
+
 int main(void) {
     test_without_a_segment_the_span_is_the_wire_count();
     test_a_wide_slot_does_not_shrink_the_span();
+    test_a_whole_record_the_target_cannot_take_is_refragmented();
 
     printf("test_seq_span: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();
