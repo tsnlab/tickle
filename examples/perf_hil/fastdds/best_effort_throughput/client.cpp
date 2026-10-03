@@ -141,7 +141,8 @@ auto main(int argc, char** argv) -> int {
     bench_stats_end(&harness::g_bench_stats);
     printf("RESULT: framework=fastdds scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
            "send_mbps=%.3f %s transport_profile=%s\n",
-           static_cast<unsigned long>(sent), elapsed_s, mbps, harness::bench_fields(BENCH_ROLE_SENDER, sent), harness::transport_profile());
+           static_cast<unsigned long>(sent), elapsed_s, mbps, harness::bench_fields(BENCH_ROLE_SENDER, sent),
+           harness::transport_profile());
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

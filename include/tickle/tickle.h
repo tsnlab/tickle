@@ -430,6 +430,23 @@ struct tt_Context {
     // span cannot outlive the datagram it belongs to. A stale one would be invisible: it would ride out
     // on the NEXT record, which has no reason to have a span at all.
     uint16_t tx_seq_span;
+    // The receive-side counterpart, and the half that was missing until 2026-10-03. A record that
+    // travelled whole carries the span its publisher allocated (tt_SegmentSlot.seq_span), and the
+    // seq_nos after its own are consumed by that same sample - no separate record will ever carry
+    // them. Until this existed the reader advanced its watermark by one per record, waited for a
+    // number nothing would ever send, and ACKNACK-requested it forever: on the rig at slot_bytes
+    // 4096 that turned 15,401 perfectly delivered records into 1 delivered sample, with every loss
+    // counter reading zero because nothing was lost. The field was carried and no code read it,
+    // which compiles, passes its tests, and looks exactly like working code.
+    //
+    // Set at the single entry point every datagram passes through (process_datagram_locked()), so
+    // no path can forget to set it and no arrival can inherit the previous one's span. It is read
+    // rather than consumed: one DATA can match several Subscribers, each with its own WriterProxy
+    // and each needing the same span, so clearing it on first use would be correct for the first
+    // reader and silently wrong for every other one. The socket path sets it to 1 - not as a
+    // fallback but as the right answer, since there a sample's fragments really are separate
+    // datagrams that each carry their own seq_no.
+    uint16_t rx_seq_span;
     // Set whenever node_update()'s always-broadcast UPDATE announce is sitting batched,
     // unflushed, in tx_buffer (cleared once a flush actually sends it) - node_flush() must not
     // unicast while this is true, since tx_buffer is one shared buffer flushed as a unit and an
@@ -532,6 +549,13 @@ struct tt_Context {
     // (tt_SUBMESSAGE_TYPE_SHM_DATA). Counted apart because an upgrade produces the one and nothing
     // legitimate produces the other.
     uint64_t rx_shm_only_on_socket;
+    // Seq positions a whole record's span covered beyond its own, absorbed by the reader because
+    // nothing will ever send them (absorb_seq_span(), rx_seq_span above). It exists because its
+    // absence has no shape: a span that is carried but never applied, and a span that is not
+    // carried at all, produce the identical picture from outside - every record delivered, every
+    // loss counter zero, and no samples. If records are arriving over shared memory and this stays
+    // at zero, the span is not reaching the reader, whatever the writer thinks it put in the slot.
+    uint64_t rx_span_absorbed;
 #if tt_LOCAL_DELIVERY
     // (g9, config.h's tt_LOCAL_DELIVERY) Where a published sample's bytes wait while this context's own Subscribers
     // take it: sending reuses tx_buffer. Owned here rather than on the publishing thread's stack, which a sample of

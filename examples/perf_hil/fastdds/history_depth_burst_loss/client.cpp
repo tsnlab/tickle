@@ -145,7 +145,8 @@ auto main(int argc, char** argv) -> int {
 
     printf("RESULT: framework=fastdds scenario=history_depth_burst_loss role=client sent=%lu "
            "write_dropped=%lu transport_profile=%s\n",
-           static_cast<unsigned long>(result.sent), static_cast<unsigned long>(result.dropped), harness::transport_profile());
+           static_cast<unsigned long>(result.sent), static_cast<unsigned long>(result.dropped),
+           harness::transport_profile());
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

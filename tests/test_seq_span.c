@@ -67,6 +67,34 @@ static void big_free(struct tt_Data* data) {
     (void)data;
 }
 
+// The receiving side of this file's topic. big_encode() writes BIG_SAMPLE_BYTES of filler with the
+// value in the first four bytes; this takes those four back out. The payload is deliberately larger
+// than the value, which is the whole point of the file: a sample the wire form must split.
+static int32_t span_decode(struct tt_Data* data, const uint8_t* payload, const uint32_t len, bool is_native_endian) {
+    (void)is_native_endian;
+    if (len < sizeof(uint32_t)) {
+        return -1;
+    }
+    memcpy(data, payload, sizeof(uint32_t));
+    return (int32_t)sizeof(uint32_t);
+}
+
+static uint32_t span_callback_count;
+static void span_callback(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
+    (void)subscriber;
+    (void)time;
+    (void)seq_no;
+    (void)data;
+    span_callback_count++;
+}
+
+// Wide enough for a whole BIG_SAMPLE_BYTES record: a RELIABLE Subscriber with no usable reorder
+// buffer un-receives a sample that arrives ahead of a gap, which would make the second half of the
+// receive test measure that fallback instead of the watermark.
+#define SPAN_REORDER_SLOTS 8
+#define SPAN_REORDER_SLOT_BYTES (sizeof(struct tt_ReorderSlot) + BIG_SAMPLE_BYTES)
+static uint64_t span_reorder_storage[SPAN_REORDER_SLOTS * SPAN_REORDER_SLOT_BYTES / sizeof(uint64_t)];
+
 static void init_sender(struct tt_Context* node, struct tt_Topic* topic, struct tt_Publisher* pub) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
@@ -295,12 +323,140 @@ static void test_a_span_outside_the_wire_bound_is_refused(void) {
     test_mock_segments_free();
 }
 
+// The receiving half, and the half that did not exist until 2026-10-03. Every test above is about
+// the number the PUBLISHER allocates and puts in the slot; none of them asks whether anything then
+// reads it. Nothing did. segment_read() never looked at tt_SegmentSlot.seq_span, so the reader
+// advanced its watermark by one per record and then waited for a seq_no the publisher had already
+// spent on the same sample - a number no datagram will ever carry.
+//
+// It is worth being precise about how invisible that is, because it is why this test is here and
+// not somewhere cheaper. On the rig at slot_bytes 4096 the transport was perfect: rx_shm equalled
+// tx_shm to the digit, 15,401 against 15,401, and frag_abandoned, gap_abandoned, gap_evicted and
+// lost all read zero. 15,401 flawlessly delivered records produced one delivered sample. A field
+// that is written and never read has no shape of its own: it compiles, it passes, and from outside
+// it looks exactly like a working protocol that is simply not delivering anything.
+//
+// So this asserts on the watermark and on the second sample, not on the slot. The slot assertion
+// in test_a_wide_slot_does_not_shrink_the_span() passed throughout.
+static void test_a_whole_record_advances_the_reader_by_its_span(void) {
+    struct tt_Context owner;
+    struct tt_Context sender;
+    struct tt_Topic topic;
+    struct tt_Topic owner_topic;
+    struct tt_Publisher pub;
+    struct tt_Subscriber sub;
+
+    memset(&owner, 0, sizeof(owner));
+    node_init_locks(&owner);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    owner.tx_tail = sizeof(struct tt_Header);
+    owner.tx_size = sizeof(owner.tx_buffer);
+    // Wide slots from the start, not widened afterwards. create_own_segment() sizes the mapping and
+    // seeds every slot's sequence using the stride it was built with, so moving slot_bytes later
+    // leaves slot 0 valid and every slot after it pointing at a sequence that will never match -
+    // a ring of one. The test above never noticed because it writes a single record; this one
+    // writes two, and the second silently never reached the segment.
+    // (valid_slot_bytes() caps the runtime knob at one datagram until 6e(b); this is whitebox and
+    // sets the field create_own_segment() actually reads, same as that test's own comment says.)
+    const uint32_t saved_slot_bytes = _tt_CONFIG.segment_slot_bytes;
+    _tt_CONFIG.segment_slot_bytes = 4096;
+    create_own_segment(&owner);
+    _tt_CONFIG.segment_slot_bytes = saved_slot_bytes;
+    EXPECT_TRUE(owner.own_segment != NULL);
+    EXPECT_EQ_U32(4096, owner.own_segment->slot_bytes);
+
+    memset(&owner_topic, 0, sizeof(owner_topic));
+    owner_topic.name = "span_topic";
+    owner_topic.data_size = sizeof(uint32_t);
+    owner_topic.data_encode_size = big_encode_size;
+    owner_topic.data_encode = big_encode;
+    owner_topic.data_decode = span_decode;
+    owner_topic.data_free = big_free;
+
+    memset(&sub, 0, sizeof(sub));
+    sub.endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
+    sub.endpoint.id = ENDPOINT_ID;
+    sub.node = &owner;
+    sub.topic = &owner_topic;
+    sub.callback = span_callback;
+    sub.reliable = true;
+    sub.reorder_storage = span_reorder_storage;
+    sub.reorder_slots = SPAN_REORDER_SLOTS;
+    sub.reorder_slot_bytes = SPAN_REORDER_SLOT_BYTES;
+    memset(span_reorder_storage, 0, sizeof(span_reorder_storage));
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        sub.writers[i].context_id = tt_CONTEXT_ID_INVALID;
+    }
+    owner.endpoint_count = 1;
+    owner.endpoints[0] = (struct tt_Endpoint*)&sub;
+
+    init_sender(&sender, &topic, &pub);
+    pub.reliable = true;
+    pub.peers[0].context_id = OWNER_ID;
+    pub.peers[0].ip = OWNER_IP;
+    pub.peers[0].port = OWNER_PORT;
+    EXPECT_TRUE(peer_segment(&sender, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
+    // Read from the owner's real header, not set here: the limit the publisher uses and the ring
+    // the reader drains are now the same geometry.
+    EXPECT_EQ_U32(4096, whole_record_limit_for(&sender, pub.peers, 1));
+
+    span_callback_count = 0;
+
+    // Sample one: seq_no 1, and it consumes 2 because that is what the wire form would need.
+    uint32_t value = 7;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_EQ_U32(2, pub.seq_no); // seq_no 1 was this sample's; the span spent 2 as well
+
+    bool emptied = false;
+    (void)drain_own_segment(&owner, &emptied);
+    EXPECT_EQ_U32(1, span_callback_count);
+
+    // The assertion the bug was hiding behind. The reader saw ONE record and must stand at 3,
+    // because seq_no 2 was spent on the sample it just took. At 2 it is waiting for a number that
+    // will never come, and every later sample piles up behind it.
+    // Found by scanning rather than by guessing the entity_id the sender stamps on the record:
+    // this file's sender is built by hand, and a lookup that silently missed would read as "no
+    // proxy" rather than as a wrong expectation.
+    struct tt_WriterProxy* proxy = NULL;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (sub.writers[i].context_id != tt_CONTEXT_ID_INVALID) {
+            proxy = &sub.writers[i];
+            break;
+        }
+    }
+    EXPECT_TRUE(proxy != NULL);
+    if (proxy != NULL) {
+        EXPECT_EQ_U32(3, proxy->ack_seq_no);
+    }
+    // And the absorption is counted, so a span that stops arriving is visible as a number rather
+    // than as silence.
+    EXPECT_EQ_U64(1, owner.rx_span_absorbed);
+
+    // Sample two: seq_no 3. This is the one the rig never delivered - 15,400 further records after
+    // the first produced nothing, because the watermark was stuck one short of every one of them.
+    // The clock has to move, or the second sample is discarded as not newer than the first and
+    // this would pass or fail for a reason that has nothing to do with the span.
+    test_mock_now += 1000000;
+    value = 8;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    (void)drain_own_segment(&owner, &emptied);
+    EXPECT_EQ_U32(2, span_callback_count);
+
+    release_segments(&sender);
+    release_own_segment(&owner);
+    test_mock_segments_free();
+}
+
 int main(void) {
     test_without_a_segment_the_span_is_the_wire_count();
     test_a_wide_slot_does_not_shrink_the_span();
     test_a_whole_record_the_target_cannot_take_is_refragmented();
     test_a_span_does_not_outlive_its_datagram();
     test_a_span_outside_the_wire_bound_is_refused();
+    test_a_whole_record_advances_the_reader_by_its_span();
 
     printf("test_seq_span: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();

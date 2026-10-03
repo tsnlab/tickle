@@ -373,14 +373,15 @@ static void test_ring_round_trips_a_datagram(void) {
     uint32_t len = 0;
     uint32_t from_ip = 0;
     uint16_t from_port = 0;
-    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port)); // empty to begin with
+    uint16_t from_span = 0;
+    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port, &from_span)); // empty to begin with
 
     const char* payload = "a datagram";
     EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1, NULL, 0, OWNER_IP, OWNER_PORT, 1));
-    EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port));
+    EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port, &from_span));
     EXPECT_EQ_U32((uint32_t)strlen(payload) + 1, len);
     EXPECT_EQ_INT(0, strcmp(payload, (const char*)out));
-    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port)); // and empty again
+    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port, &from_span)); // and empty again
 
     // More than a slot holds is refused rather than written short.
     uint8_t oversize[RING_SLOT_BYTES + 1];
@@ -415,7 +416,8 @@ static void test_full_ring_refuses_rather_than_overwriting(void) {
         uint32_t len = 0;
         uint32_t from_ip = 0;
         uint16_t from_port = 0;
-        EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port));
+        uint16_t from_span = 0;
+        EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port, &from_span));
         EXPECT_EQ_INT(0, strcmp(expected, (const char*)out));
     }
 
@@ -437,7 +439,8 @@ static void test_ring_survives_many_wraps(void) {
         uint32_t len = 0;
         uint32_t from_ip = 0;
         uint16_t from_port = 0;
-        EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port));
+        uint16_t from_span = 0;
+        EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port, &from_span));
         EXPECT_EQ_INT(0, strcmp(payload, (const char*)out));
     }
 }
@@ -457,8 +460,9 @@ static void test_impossible_length_is_refused_and_does_not_wedge(void) {
     uint32_t len = 0;
     uint32_t from_ip = 0;
     uint16_t from_port = 0;
-    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port)); // refused
-    EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port));  // and the ring moved on
+    uint16_t from_span = 0;
+    EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port, &from_span)); // refused
+    EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port, &from_span));  // and the ring moved on
     EXPECT_EQ_INT(0, strcmp("also good", (const char*)out));
 }
 
@@ -683,8 +687,9 @@ static void test_segment_bytes_equal_what_udp_would_have_sent(void) {
     uint32_t carried_len = 0;
     uint32_t from_ip = 0;
     uint16_t from_port = 0;
-    EXPECT_TRUE(
-        segment_read(reader.own_segment, carried, (uint32_t)sizeof(carried), &carried_len, &from_ip, &from_port));
+    uint16_t from_span = 0;
+    EXPECT_TRUE(segment_read(reader.own_segment, carried, (uint32_t)sizeof(carried), &carried_len, &from_ip, &from_port,
+                             &from_span));
 
     EXPECT_EQ_U32(golden_len, carried_len);
     EXPECT_EQ_INT(0, memcmp(golden, carried, carried_len < golden_len ? carried_len : golden_len));
@@ -792,7 +797,8 @@ static void test_two_writers_contend_for_one_segment(void) {
         uint32_t len = 0;
         uint32_t from_ip = 0;
         uint16_t from_port = 0;
-        if (segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port)) {
+        uint16_t from_span = 0;
+        if (segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port, &from_span)) {
             uint32_t payload[2];
             memcpy(payload, out, sizeof(payload));
             EXPECT_TRUE(payload[0] < 2);
@@ -807,7 +813,7 @@ static void test_two_writers_contend_for_one_segment(void) {
         // one can publish between the two checks.
         if (__atomic_load_n(&a.finished, __ATOMIC_ACQUIRE) != 0 &&
             __atomic_load_n(&b.finished, __ATOMIC_ACQUIRE) != 0) {
-            if (!segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port)) {
+            if (!segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port, &from_span)) {
                 break;
             }
             uint32_t payload[2];
@@ -846,7 +852,7 @@ static void test_received_datagram_is_counted_as_udp(void) {
     memcpy(node.rx_buffer, &header, sizeof(header));
 
     uint64_t before = node.rx_datagrams;
-    (void)process_datagram_locked(&node, (int32_t)sizeof(header), PEER_IP, PEER_PORT, tt_TRANSPORT_UDP);
+    (void)process_datagram_locked(&node, (int32_t)sizeof(header), PEER_IP, PEER_PORT, tt_TRANSPORT_UDP, 1);
 
     EXPECT_EQ_U32((uint32_t)(node.rx_datagrams - before), (uint32_t)node.rx_datagrams_by_transport[tt_TRANSPORT_UDP]);
     EXPECT_EQ_U32(0, (uint32_t)node.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
@@ -1392,8 +1398,9 @@ static void test_a_writer_gives_up_on_a_ring_nobody_drains(void) {
             uint32_t len = 0;
             uint32_t from_ip = 0;
             uint16_t from_port = 0;
+            uint16_t from_span = 0;
             uint8_t out[tt_SEGMENT_SLOT_BYTES];
-            (void)segment_read(behind.own_segment, out, sizeof(out), &len, &from_ip, &from_port);
+            (void)segment_read(behind.own_segment, out, sizeof(out), &len, &from_ip, &from_port, &from_span);
         }
     }
     // Refused for far longer than the dead-reader threshold, or the arm cannot distinguish the rule
@@ -1570,8 +1577,9 @@ static void test_a_sleeping_reader_is_rung_and_a_busy_one_is_not(void) {
     uint32_t len = 0;
     uint32_t from_ip = 0;
     uint16_t from_port = 0;
+    uint16_t from_span = 0;
     uint8_t out[tt_SEGMENT_SLOT_BYTES];
-    EXPECT_TRUE(segment_read(owner.own_segment, out, sizeof(out), &len, &from_ip, &from_port));
+    EXPECT_TRUE(segment_read(owner.own_segment, out, sizeof(out), &len, &from_ip, &from_port, &from_span));
     int rung_after_drain = test_mock_send_to_call_count;
     EXPECT_TRUE(segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason));
     EXPECT_EQ_INT(rung_after_drain + 1, test_mock_send_to_call_count);

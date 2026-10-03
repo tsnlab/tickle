@@ -712,7 +712,7 @@ static bool segment_write(struct tt_SegmentHeader* header, const void* hdr, uint
 // One reader, so read_index needs no compare-and-exchange; what it does need is the slot's own
 // sequence, because with many writers a published write_index does not mean this slot is filled.
 static bool segment_read(struct tt_SegmentHeader* header, void* buf, uint32_t size, uint32_t* len, uint32_t* sender_ip,
-                         uint16_t* sender_port) {
+                         uint16_t* sender_port, uint16_t* seq_span) {
     uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_RELAXED); // ours to move
     struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)segment_slot(header, read_index);
     if (__atomic_load_n(&slot_header->sequence, __ATOMIC_ACQUIRE) != read_index + 1U) {
@@ -727,6 +727,12 @@ static bool segment_read(struct tt_SegmentHeader* header, void* buf, uint32_t si
         *len = length;
         *sender_ip = slot_header->sender_ip;
         *sender_port = slot_header->sender_port;
+        // "0 means 1", the field's own convention (tt_SegmentSlot.seq_span), and a writer from
+        // before version 3 leaves zeroes here. Anything above the wire bound is a slot that does
+        // not agree with the protocol, and is read as 1 rather than trusted: believing it would
+        // skip the reader's watermark past seq_nos that do exist.
+        uint16_t span = slot_header->seq_span;
+        *seq_span = (span >= 1 && span <= tt_FRAG_MAX_COUNT) ? span : 1;
     }
     // Released either way, so a record this mapping could not hold cannot wedge the ring. The slot
     // is marked free for the writer one lap ahead, and only then does read_index move - a writer
@@ -3260,7 +3266,14 @@ static void reset_node_state(struct tt_Context* node) {
     // from garbage is worse than not answering it.
     node->rx_malformed_drops = 0;
     node->rx_shm_only_on_socket = 0;
+    node->rx_span_absorbed = 0;
     node->version_mismatch_drops = 0;
+    // The span of the record currently being processed. 1 is its resting value, not a zero: a
+    // datagram that carries no span consumes one seq_no, and process_datagram_locked() re-states it
+    // on every arrival anyway. Garbage here would be read as "this record consumed N seq_nos" and
+    // would skip a reader's watermark past samples that do exist - the opposite of the bug it was
+    // added to fix, and silent in the same way.
+    node->rx_seq_span = 1;
     // The rate limiter that decides whether a wire-version mismatch is EVER logged, and the worst of
     // this family because it is READ to make a decision rather than merely reported. Its only two
     // appearances in this file are a read and the write beside it, and nothing initialised it - so a
@@ -6938,6 +6951,33 @@ struct new_gap_range {
 // update_reliable_ack()'s in-window (0 < offset < tt_RELIABLE_BITMAP_BITS) arrival: records it in
 // received_bitmap and reports any gap it newly opened via *new_gap. Returns false for a duplicate
 // (its bit was already set), true otherwise.
+// The seq_nos a whole record's span covers beyond its own. A sample consumes the number of seq_nos
+// its NETWORK form would need whatever path it takes (SHM_PLAN 6e), so a record that travelled
+// whole over shared memory leaves the positions after its own permanently empty: the publisher
+// allocated them to this same sample and no datagram will ever carry them. The reader has to stop
+// waiting for them, and this is the only thing it may do with them.
+//
+// Set directly rather than through record_out_of_order_arrival(), on purpose: these are not
+// arrivals. Routing them through it would move prev_highest and swallow the new_gap report for the
+// genuinely missing samples below, which is how the reader asks for what it actually lost.
+//
+// Returns how many positions were absorbed, for the counter - a span that is being carried but not
+// applied, and a span that is not being carried at all, are the same shape from outside.
+static uint32_t absorb_seq_span(struct tt_WriterProxy* proxy, uint32_t first_offset, uint16_t span) {
+    uint32_t absorbed = 0;
+    for (uint16_t i = 1; i < span; i++) {
+        uint64_t offset = (uint64_t)first_offset + i;
+        if (offset >= proxy_window_bits(proxy)) {
+            break; // past the window - the ordinary watermark machinery reaches it by itself
+        }
+        if (!bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset)) {
+            bitmap_set_bit(proxy->received_bitmap, (uint32_t)offset);
+            absorbed++;
+        }
+    }
+    return absorbed;
+}
+
 static bool record_out_of_order_arrival(struct tt_WriterProxy* proxy, uint32_t offset, struct new_gap_range* new_gap) {
     if (bitmap_test_bit(proxy->received_bitmap, offset)) {
         RSTAT_INC(duplicates);
@@ -7113,6 +7153,11 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
             }
             proxy->probe_ns = 0;
         }
+        // Before the advance, not after: bit j is "received(ack_seq_no + j)" and ack_seq_no is
+        // still this sample's own number here, so the span's positions are bits 1..span-1.
+        // advance_ack_seq_no() steps one and then absorbs the contiguous run that follows, which
+        // is exactly these, landing the watermark on seq_no + span in one go.
+        node->rx_span_absorbed += absorb_seq_span(proxy, 0, node->rx_seq_span);
         advance_ack_seq_no(proxy);
     } else {
         // NOTE: deliberately *not* fast-forwarding past a wide gap here, on every arrival that's
@@ -7127,6 +7172,11 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         uint64_t offset = (uint64_t)seq_no - proxy->ack_seq_no;
         if (offset < proxy_window_bits(proxy)) {
             is_new = record_out_of_order_arrival(proxy, (uint32_t)offset, &new_gap);
+            // After, not before, and this is the half that differs from the in-order case: the gap
+            // report above is computed against the highest bit set so far, so absorbing the span
+            // first would hide the real gap below this arrival and the reader would never ask for
+            // what it genuinely lost.
+            node->rx_span_absorbed += absorb_seq_span(proxy, (uint32_t)offset, node->rx_seq_span);
         } else {
             // Unlike the "far ahead but still inside the tracking window" case this function's
             // own comment above warns against fast-forwarding on, an offset this wide (>=
@@ -11271,7 +11321,7 @@ static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t he
 // rx_udp + rx_shm agreeing with a packet count would look like proof while a misattributed arrival
 // hid inside it.
 static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
-                                        enum tt_Transport transport);
+                                        enum tt_Transport transport, uint16_t seq_span);
 
 // rx_buffer itself needs no lock - only the one poller touches it (struct tt_Context.poller_active) - but
 // everything a datagram updates does, so each one is processed under the state lock.
@@ -11373,8 +11423,9 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
             uint32_t len = 0;
             uint32_t sender_ip = 0;
             uint16_t sender_port = 0;
+            uint16_t seq_span = 1;
             if (!segment_read(node->own_segment, node->rx_buffer, (uint32_t)sizeof(node->rx_buffer), &len, &sender_ip,
-                              &sender_port)) {
+                              &sender_port, &seq_span)) {
                 note_head_stall(node); // empty, or a head nobody is coming back for - the two look alike
                 ran_dry = true;
                 break;
@@ -11384,7 +11435,9 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
             // The sender's own address, carried in the record. Not invented here and not inferred
             // from whose segment this is: several peers write into one segment, and discovery learns
             // where a peer lives from the address its announce arrived on.
-            (void)process_datagram_locked(node, (int32_t)len, sender_ip, sender_port, tt_TRANSPORT_SHM);
+            // The span travels with the record, not with the peer: the same writer's next record
+            // may be a different size and consume a different number of seq_nos.
+            (void)process_datagram_locked(node, (int32_t)len, sender_ip, sender_port, tt_TRANSPORT_SHM, seq_span);
         }
         state_unlock(node);
         delivered += taken;
@@ -11404,13 +11457,19 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
 static tt_ret_t process_datagram(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
                                  enum tt_Transport transport) {
     state_lock(node);
-    tt_ret_t result = process_datagram_locked(node, len, ip, port, transport);
+    // Every caller of this wrapper is a socket path, where a sample's fragments are separate
+    // datagrams that really do each carry their own seq_no. Span 1 is not a default here, it is
+    // the right answer; the segment drain is the one path that reads a span off the record.
+    tt_ret_t result = process_datagram_locked(node, len, ip, port, transport, 1);
     state_unlock(node);
     return result;
 }
 
 static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
-                                        enum tt_Transport transport) {
+                                        enum tt_Transport transport, uint16_t seq_span) {
+    // Set here and nowhere else, so no arrival path can forget to and none inherits the last
+    // record's span. Read, not consumed: one DATA can match several Subscribers and each needs it.
+    node->rx_seq_span = (seq_span >= 1) ? seq_span : 1;
 #if tt_SEGMENT_ENABLED
     // A doorbell: somebody put a record in this context's segment while it was asleep on this socket,
     // and rang. There is nothing to parse - waking up was the message - and it is dropped here,
@@ -11490,7 +11549,7 @@ static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
                     node->rx_clock_ns = tt_get_ns();
                     since_clock = 1;
                 }
-                result = process_datagram_locked(node, len, ip, port, tt_TRANSPORT_UDP);
+                result = process_datagram_locked(node, len, ip, port, tt_TRANSPORT_UDP, 1);
             }
             state_unlock(node);
         }
