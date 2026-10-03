@@ -113,6 +113,15 @@ struct BenchStats {
     uint64_t attach_ok;
     uint64_t attach_absent;
     int attach_valid; // likewise for bench_stats_set_attach()
+    // Three core counters that were collected and had nowhere to go. This repository's own
+    // principle - an instrument that is collected but not on the RESULT line is not an instrument -
+    // was being broken by the very counters added to make shared-memory faults visible, which is
+    // the 2026-10-03 defect one layer up: a field written and never read looks exactly like a
+    // working system that reports nothing.
+    uint64_t span_absorbed;      // seq positions a whole record's span covered beyond its own
+    uint64_t head_stalls;        // the ring's head would not move - a reader that is not draining
+    uint64_t shm_only_on_socket; // a segment-only record arrived from the network
+    int shm_diag_valid;          // likewise for bench_stats_set_shm_diagnostics()
     char iface[32];
 };
 
@@ -360,6 +369,27 @@ static inline void bench_stats_set_attach(struct BenchStats* stats, const uint32
     stats->attach_valid = 1;
 }
 
+// The shared-memory path's three diagnostics, which say WHY a cell delivered what it delivered
+// when the delivery counts alone cannot. Each is zero in the healthy case, so unlike the transport
+// counters a zero here is a reading rather than an instrument failure - but they are still printed
+// only when a harness supplies them, because a DDS harness has no such path and three zeros would
+// claim it was measured.
+//
+//   span_absorbed       zero while shared-memory records flow means the span is not reaching the
+//                       reader. That exact state delivered 1 sample out of 15,401 received records
+//                       on 2026-10-03 with every loss counter also reading zero.
+//   head_stalls         the ring's head would not move. Head-of-line stalling is invisible in
+//                       throughput alone: a stalled reader and a slow writer produce the same rate.
+//   shm_only_on_socket  a record that only something with write access to a segment could have
+//                       built, arriving from the network instead.
+static inline void bench_stats_set_shm_diagnostics(struct BenchStats* stats, uint64_t span_absorbed,
+                                                   uint64_t head_stalls, uint64_t shm_only_on_socket) {
+    stats->span_absorbed = span_absorbed;
+    stats->head_stalls = head_stalls;
+    stats->shm_only_on_socket = shm_only_on_socket;
+    stats->shm_diag_valid = 1;
+}
+
 static inline void bench_stats_end(struct BenchStats* stats) {
     bench_stats_read_net(stats->iface, &stats->net_end);
     bench_stats_read_threads(&stats->threads_end);
@@ -519,6 +549,7 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     char by_thread[512];
     char fail[80];
     char transport[96];
+    char shmdiag[160];
     char fallbacks[320];
 
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
@@ -549,6 +580,12 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
                  " tx_udp=%" PRIu64 " tx_shm=%" PRIu64 " rx_udp=%" PRIu64 " rx_shm=%" PRIu64, stats->tx_by_transport[0],
                  stats->tx_by_transport[1], stats->rx_by_transport[0], stats->rx_by_transport[1]);
     }
+    shmdiag[0] = '\0';
+    if (stats->shm_diag_valid != 0) {
+        snprintf(shmdiag, sizeof(shmdiag),
+                 " rx_span_absorbed=%" PRIu64 " segment_head_stalls=%" PRIu64 " rx_shm_only_on_socket=%" PRIu64,
+                 stats->span_absorbed, stats->head_stalls, stats->shm_only_on_socket);
+    }
     // Against the WINDOW's getrusage delta, not against cpu_s. getrusage(RUSAGE_SELF) is cumulative for the whole
     // process, while sched_cpu_ns is a begin-to-end delta, so subtracting one from the other counts every cycle spent
     // before bench_stats_begin() as "unattributed". Over a 20 s throughput run that startup is negligible and the
@@ -574,7 +611,7 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
              " wire_rx_bytes=%" PRIu64 " wire_rx_packets=%" PRIu64 " wire_tx_bytes=%" PRIu64 " wire_tx_packets=%" PRIu64
              " wire_bytes_total=%" PRIu64 " wire_packets_total=%" PRIu64
              " wire_bytes_per_sample=%.1f wire_packets_per_sample=%.3f wire_role_packets_per_sample=%.3f "
-             "iface=%s instrument=%s%s%s%s sched_by_thread=%s%s%s",
+             "iface=%s instrument=%s%s%s%s sched_by_thread=%s%s%s%s",
              sample_bytes, utime_s, stime_s, samples > 0 ? cpu_s * 1e6 / (double)samples : 0.0,
              megabytes > 0.0 ? cpu_s / megabytes : 0.0, (double)sched_cpu_ns / 1e9,
              samples > 0 ? (double)sched_cpu_ns / 1e3 / (double)samples : 0.0, sched_unattributed_s,
@@ -583,6 +620,6 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
              wire_bytes_total, wire_packets_total, samples > 0 ? (double)wire_bytes_total / (double)samples : 0.0,
              samples > 0 ? (double)wire_packets_total / (double)samples : 0.0,
              samples > 0 ? (double)role_packets / (double)samples : 0.0, stats->iface, fail[0] != '\0' ? "fail:" : "ok",
-             fail, BENCH_CORE_BUILD_FIELD, BENCH_CORE_BUILD_VALUE, by_thread, transport, fallbacks);
+             fail, BENCH_CORE_BUILD_FIELD, BENCH_CORE_BUILD_VALUE, by_thread, transport, fallbacks, shmdiag);
     return buf;
 }
