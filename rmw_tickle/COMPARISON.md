@@ -678,12 +678,33 @@ sample and 1292 to 2800 bytes of payload:
 | 3 (p4, datagram 1024) | 81,269 | 244,763 |
 | 4 (p4, datagram 800) | 60,115 | 241,400 |
 
-**C is constant to 1.4% across all five**, so `samples/s = C / slots` and the segment path costs **4.10 us per
-slot write** regardless of how many bytes that slot carries. CycloneDDS over iceoryx costs **4.24 us per chunk**
-and carries a whole sample in one. **Our per-slot cost is competitive with theirs; we lose p4 because we spend
-two slots where they spend one.** One slot per sample extrapolates to 244,125 x 2800 x 8 = **5,468 Mbps**,
-against their measured 5,287 - and that is now an extrapolation from four measured slot counts rather than a
-prediction.
+**C is constant to 1.4% across all five**, so `samples/s = C / slots`. **What C is, however, is not what this
+section first said.** It read 4.10 us as the segment path's own cost and extrapolated one slot per sample to
+5,468 Mbps. Running the same cell under BEST_EFFORT - same payload, same slot count, zero ring drops - says
+otherwise:
+
+| p4, same slots, same payload | samples/s | us per slot |
+|---|---:|---:|
+| RELIABLE | 121,767 | **4.09** |
+| BEST_EFFORT | 545,737 | **0.92** |
+
+**The segment transport costs 0.92 us per slot. RELIABLE adds 3.17.** So C was never a transport constant, and
+the 5,468 figure rested on treating it as one. It is withdrawn.
+
+**The 3.17 us is not flow control, measured by elimination.** Quadrupling the reliable window moved it -0.1%;
+raising the KEEP_ALL arena eleven-fold (524,288 to 5,778,180 bytes, the applied value checked rather than the
+requested one) moved it +0.2%; ring drops are zero; and with `TICKLE_RELIABLE_STATS` the publisher reports
+**`publish_refused=8` out of 609,216 sends.** Nothing is refusing it and nothing is full. It simply spends
+~3.2 us per datagram not running, at 49% of a core.
+
+**What it IS remains unknown and is not guessed at here.** It is per-datagram and it is not capacity. Whether
+it is also per-seq_no cannot be told apart today, because this build gives every datagram its own seq_no - the
+two quantities are equal by construction. SHM_PLAN 6e's seq-span change separates them, and the measurement
+that follows it is what decides whether one slot per sample is worth 2x or 12%.
+
+**The comparison that is NOT available.** Our 12,225 Mbps at BEST_EFFORT cannot be set against CycloneDDS's
+5,287, which is RELIABLE. No vendor BEST_EFFORT figure exists for this cell. Our RELIABLE p4 remains 2,728
+against their 5,287, and that is the row that stands.
 
 **What the 4.10 us IS remains unknown, and is deliberately not guessed at here.** Client CPU is 4.03, 4.63 and
 5.25 us per sample on the three arms while the rate falls as exactly 1/slots, which puts the client at about 49%

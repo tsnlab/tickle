@@ -72,7 +72,7 @@ cat > examples/perf_hil/tickle/common/BenchStats.h" <"$REPO/examples/perf_hil/ti
     # through BUILD_FLAGS instead is refused by build.sh on purpose, because then the RESULT line's
     # datagram_bytes= label would report 1472 for a build that is not: "datagram_bytes= would misreport
     # this build". That guard is right, so the fix is to forward the variable it wants.
-    out=$(sh_ "$HOST" "set -e; cd ~/tickle/examples/perf_hil/tickle && TICKLE_EXTRA_CFLAGS='$extra' TICKLE_DATAGRAM_BYTES='${TICKLE_DATAGRAM_BYTES:-}' ./build.sh $SCEN $SIZE > /tmp/s6wit_build.log 2>&1 || { echo BUILD_FAILED; tail -5 /tmp/s6wit_build.log; exit 0; }
+    out=$(sh_ "$HOST" "set -e; cd ~/tickle/examples/perf_hil/tickle && TICKLE_EXTRA_CFLAGS='$extra' TICKLE_DATAGRAM_BYTES='${TICKLE_DATAGRAM_BYTES:-}' TICKLE_RELIABLE_STATS='${TICKLE_RELIABLE_STATS:-}' TICKLE_FRAG_SLOTS='${TICKLE_FRAG_SLOTS:-}' ./build.sh $SCEN $SIZE > /tmp/s6wit_build.log 2>&1 || { echo BUILD_FAILED; tail -5 /tmp/s6wit_build.log; exit 0; }
 mkdir -p $SAVE/$name && cp ${SCEN}_${SIZE}/client ${SCEN}_${SIZE}/server $SAVE/$name/ && sha256sum $SAVE/$name/client | cut -c1-16" </dev/null 2>&1)
     case "$out" in *BUILD_FAILED*|*error:*|*"No such file"*) note "FATAL build failed for $name:"; note "$out"; return 1;; esac
     out=$(printf '%s' "$out" | tail -1)
