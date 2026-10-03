@@ -770,6 +770,35 @@ collapsing configuration; a build may still set `tt_SEGMENT_SLOT_BYTES` higher t
 replace it with, and `record_size_limit()` itself was measured inert on the default path (ON -0.63% against a
 control, segments compiled out, of -0.48%, a 0.16 pp difference).
 
+**MEASURED 2026-10-04, and the figure that justified the cap was measuring a defect.** The pair this section and
+`valid_slot_bytes()`'s own comment rested on - **2713 Mbps at the default slot against 0.8 at 4096, "3000x
+worse"** - is withdrawn. The 0.8 was a receiver that could not accept a whole record at all: `seq_span` was
+written into every slot header and read by nothing, so a reader advanced one seq_no for a record that consumed
+two and waited forever for a number that by construction does not exist. Re-measured on `6648ca69` with that
+fixed (`one_slot_decides.sh`, 3 reps each, both arms `recv == sent`, loss 0, `segment_stall_warnings=0`):
+
+| slot bytes | samples/s | slots/sample | send Mbps | delivery |
+|---|---:|---:|---:|---|
+| 1472 (default) | **121,898** | 2.01 | 2,732 | `recv = sent`, loss 0 |
+| 4096 | **121,050** | 1.01 | 2,713 | `recv = sent`, loss 0 |
+| ratio | **0.99x** | 0.50x | | |
+
+**Halving the slots a sample occupies moved throughput by -1%.** That is the answer to the question this section
+left open, and it is decisive against one of the two live models: a per-datagram wait predicted +100% and is
+refuted. The pre-registered per-seq_no prediction was 137,700 samples/s against a measured 121,050 - inside the
+harness's pre-registered +-15% band at 12.1%, in both runs (12.05% and 12.09%), so the verdict is **the wait is
+per-seq_no**, with the standing observation that the model is about 12% optimistic in a way two runs agree on and
+noise does not explain.
+
+**The cap stays, on a different basis.** Its old justification is refuted; the new one is that there is no
+measured gain to buy with it - opening the runtime knob would cost an application per-slot memory for throughput
+that does not move. 6e(b) remains the premise of the memory-side argument, and when it lands this is to be
+re-measured rather than assumed. **Fragment 3 is a 12% item, not a 2x item, and its priority drops accordingly.**
+
+The earlier reading in this section - that a whole record costs a whole slot and therefore 6e(b) must precede
+6e(a) - is not supported by this measurement: the whole record uses half the slots at the same throughput. What
+was actually blocking 6e(a) was the missing receiver half, not ring economics.
+
 **RTT, measured 2026-10-02 on `fcc4ddb4`** (same harness with `SCEN=reliable_latency`, `-i 0.005` over 10 s so each
 rep is ~1,950 round trips, one ping in flight at a time, 3 reps, `results/s6_latency_p2_fcc4ddb4.txt`). Every
 framework's two arms have **non-overlapping ranges**, so each verdict is separable rather than a median difference:

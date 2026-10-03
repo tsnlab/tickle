@@ -85,7 +85,23 @@ fdds_arm() {
     say "  DURING: ${during:-(없음)}"
     sleep "$DUR"
     kill_all
-    say "  클라이언트가 RESULT 를 냈는가: $(sh_ "grep -c '^RESULT' /tmp/dsw_client.log 2>/dev/null || echo 0" </dev/null)"
+    # 로그 전체를 가져와 여기서 거른다. 처음 쓸 때 `grep -c '^RESULT' ... || echo 0` 이었는데 세 가지가
+    # 한꺼번에 틀렸다: 개수만 꺼내서 클라이언트가 무엇을 말했는지 볼 수 없고, `|| echo 0` 때문에 ssh 가
+    # 실패해도 0 이 나와 "RESULT 를 안 냈다" 와 "물어보지 못했다" 가 같은 값으로 돌아오며, 그래서 이
+    # 실험이 실패했을 때 원인을 남기지 않는다. 같은 결함의 세 번째 사례이고, 두 번째를 고친 바로 그
+    # 푸시에 들어 있었다 - find_blind_harnesses.sh 가 36 과 35 의 차이로 잡았다.
+    local clog n
+    clog=$(sh_ "cat /tmp/dsw_client.log 2>/dev/null" </dev/null) || clog="__SSH_FAILED__"
+    if [ "$clog" = "__SSH_FAILED__" ]; then
+        say "  클라이언트 로그를 가져오지 못했다 (ssh 실패) - RESULT 가 없는 것과 다르다"
+    else
+        n=$(printf '%s\n' "$clog" | grep -c '^RESULT')
+        say "  클라이언트 RESULT 줄: $n"
+        if [ "$n" = 0 ]; then
+            say "  RESULT 가 없다. 클라이언트가 한 말:"
+            printf '%s\n' "$clog" | tail -6 | sed 's/^/       | /' | tee -a "$OUT"
+        fi
+    fi
     printf '%s' "$during"
 }
 

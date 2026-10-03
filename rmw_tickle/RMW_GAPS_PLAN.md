@@ -1763,6 +1763,31 @@ for FastDDS - FastDDS gains more because its kernel arm starts lower, not becaus
 `tx_shm` was 3,635,899 against `tx_udp` 789, a share of 1.000, while the loopback witness independently saw the
 data leave the network path. Two instruments, one fact, no disagreement - so neither is currently suspect.
 
+**This table's denominator is sound, and that is worth stating because a later cell's was not (2026-10-04).**
+Re-running the same harness at **p4 BEST_EFFORT** on 2026-10-03, every fastdds row - *both* arms, six of six -
+reported `wire_packets_per_sample=0.000`. The `fastdds_eth0_only.xml` arm is this design's kernel-path
+denominator, and at that size and reliability it put **nothing** on loopback while moving ~12,900 Mbps of
+samples, so the samples did not travel by any transport the witness can see.
+
+Where they did go is recorded on the rig rather than inferred: `/dev/shm` held six `fast_datasharing_*` segments
+created at 21:33:41, 21:33:51, 21:34:01, 21:34:11, 21:34:21 and 21:34:31 against fastdds reps starting 21:33:40,
+21:34:00 and 21:34:20 - **one per arm-run, including all three `eth0_only` runs.** Fast DDS data-sharing bypasses
+the transport layer entirely, so `useBuiltinTransports=false` removes the shared-memory *transport* and does not
+disable it.
+
+**The scope is this cell, not the table above.** At p1 RELIABLE the `eth0_only` arm reports 2.000 packets per
+sample - it demonstrably used the kernel - so the 2026-10-01 ratios stand. The denominator is
+scenario-dependent, and the failure appeared only at p4 BEST_EFFORT. An earlier note of mine said every fastdds
+ratio in S6 was divided by the wrong thing; that was a generalisation from one cell and the 2.000 above refutes
+it.
+
+**What it means for a p4 BEST_EFFORT fastdds cell**: it has no kernel-path denominator today and the ratio cannot
+be computed. Disabling data-sharing needs a code change - the bench passes `DATAWRITER_QOS_DEFAULT` built in
+code, so an XML `<data_sharing>` element never reaches the writer - and that is the prerequisite for making this
+cell measurable. The `/dev/shm` observation needs no code and is what settled the question; the harness written
+for it (`experiments/fastdds_datasharing_witness.sh`) remains the way to confirm it deliberately rather than from
+leftovers.
+
 **FastDDS's witness is 0.000 where ours is 0.228, and that is information rather than a better score.** Our
 doorbell wakes a blocked reader over the socket, so a TickLE segment legitimately keeps a little interface traffic;
 FastDDS's shared-memory transport notifies inside its own segment and leaves none. It means the 0.25 band is
