@@ -159,8 +159,8 @@ auto main(int argc, char** argv) -> int {
     ack_writer->write(&ack);
 
     printf("RESULT: framework=fastdds scenario=durability_late_join role=client durable=%d "
-           "received=%u backlog_delivery_ms=%.3f\n",
-           static_cast<int>(durable), received, backlog_delivery_ms);
+           "received=%u backlog_delivery_ms=%.3f transport_profile=%s\n",
+           static_cast<int>(durable), received, backlog_delivery_ms, harness::transport_profile());
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

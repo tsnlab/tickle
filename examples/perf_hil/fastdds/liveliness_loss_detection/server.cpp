@@ -169,9 +169,9 @@ auto main(int argc, char** argv) -> int {
                                          : -1.0;
 
     printf("RESULT: framework=fastdds scenario=liveliness_loss_detection role=server recv=%lu "
-           "loss_detected=%d detect_latency_ms=%.3f lease_s=%.3f\n",
+           "loss_detected=%d detect_latency_ms=%.3f lease_s=%.3f transport_profile=%s\n",
            static_cast<unsigned long>(listener.received()), static_cast<int>(g_loss_detected), detect_latency_ms,
-           opts.lease_s);
+           opts.lease_s, harness::transport_profile());
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

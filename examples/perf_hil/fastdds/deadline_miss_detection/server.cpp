@@ -132,8 +132,8 @@ auto main(int argc, char** argv) -> int {
     reader->get_requested_deadline_missed_status(final_status);
 
     printf("RESULT: framework=fastdds scenario=deadline_miss_detection role=server recv=%lu "
-           "requested_missed_total=%u\n",
-           static_cast<unsigned long>(received), final_status.total_count);
+           "requested_missed_total=%u transport_profile=%s\n",
+           static_cast<unsigned long>(received), final_status.total_count, harness::transport_profile());
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

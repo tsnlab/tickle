@@ -162,8 +162,8 @@ auto main(int argc, char** argv) -> int {
     const uint32_t seq = publish_until(writer, opts);
 
     printf("RESULT: framework=fastdds scenario=liveliness_loss_detection role=client sent=%u "
-           "(ran to completion, not killed)\n",
-           seq);
+           "(ran to completion, not killed) transport_profile=%s\n",
+           seq, harness::transport_profile());
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

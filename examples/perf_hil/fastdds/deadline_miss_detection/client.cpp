@@ -186,8 +186,8 @@ auto main(int argc, char** argv) -> int {
                                          : -1.0;
 
     printf("RESULT: framework=fastdds scenario=deadline_miss_detection role=client sent=%lu "
-           "offered_missed_total=%u detect_latency_ms=%.3f\n",
-           static_cast<unsigned long>(result.sent), miss_count, detect_latency_ms);
+           "offered_missed_total=%u detect_latency_ms=%.3f transport_profile=%s\n",
+           static_cast<unsigned long>(result.sent), miss_count, detect_latency_ms, harness::transport_profile());
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

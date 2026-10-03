@@ -144,8 +144,8 @@ auto main(int argc, char** argv) -> int {
     writer->wait_for_acknowledgments(eprosima::fastrtps::Duration_t(ack_wait_s, 0));
 
     printf("RESULT: framework=fastdds scenario=history_depth_burst_loss role=client sent=%lu "
-           "write_dropped=%lu\n",
-           static_cast<unsigned long>(result.sent), static_cast<unsigned long>(result.dropped));
+           "write_dropped=%lu transport_profile=%s\n",
+           static_cast<unsigned long>(result.sent), static_cast<unsigned long>(result.dropped), harness::transport_profile());
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

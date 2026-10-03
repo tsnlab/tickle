@@ -157,8 +157,8 @@ auto main(int argc, char** argv) -> int {
     const bool acked = wait_for_ack(ack_reader, harness::now_ns() + ack_wait_ns);
 
     printf("RESULT: framework=fastdds scenario=durability_late_join role=server durable=%d "
-           "backlog_sent=%u acked=%d\n",
-           static_cast<int>(durable), backlog_count, static_cast<int>(acked));
+           "backlog_sent=%u acked=%d transport_profile=%s\n",
+           static_cast<int>(durable), backlog_count, static_cast<int>(acked), harness::transport_profile());
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);
