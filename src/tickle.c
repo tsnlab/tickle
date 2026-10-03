@@ -34,6 +34,13 @@ _Static_assert((TT_FRAMING_HDR + sizeof(struct tt_DataHeader)) % 4 == 0, "DATA p
 _Static_assert((TT_FRAMING_HDR + sizeof(struct tt_CallRequestHeader)) % 4 == 0, "CALLREQUEST payload not 4-aligned");
 _Static_assert((TT_FRAMING_HDR + sizeof(struct tt_CallResponseHeader)) % 4 == 0, "CALLRESPONSE payload not 4-aligned");
 _Static_assert(offsetof(struct tt_Context, tx_buffer) % 4 == 0, "tx_buffer not 4-aligned in tt_Context");
+// A slot's payload sits at sizeof(tt_SegmentHeader) + N * (sizeof(tt_SegmentSlot) + slot_bytes) +
+// sizeof(tt_SegmentSlot). An encoder writing a record there needs the same 4-alignment the assert above
+// gives tx_buffer, and these two make that reduce to slot_bytes % 4 == 0 - which is what
+// whole_record_limit_for() checks. Without them a field added to either struct would silently make a
+// passing runtime check insufficient, which is how a guard comes to be sufficient by accident.
+_Static_assert(sizeof(struct tt_SegmentHeader) % 4 == 0, "tt_SegmentHeader must keep slots 4-aligned");
+_Static_assert(sizeof(struct tt_SegmentSlot) % 4 == 0, "tt_SegmentSlot must keep payloads 4-aligned");
 _Static_assert(offsetof(struct tt_Context, rx_buffer) % 4 == 0, "rx_buffer not 4-aligned in tt_Context");
 #undef TT_FRAMING_HDR
 #if tt_FRAG_ENABLED
@@ -5017,6 +5024,7 @@ enum tt_WholeRefusal {
     tt_WHOLE_REFUSE_UNATTACHED,    // a destination has no segment of ours attached
     tt_WHOLE_REFUSE_ADDRESS,       // a destination's context id is behind a different (ip, port)
     tt_WHOLE_REFUSE_PEER_COUNT,    // the array yielded fewer live entries than count_peers() promised
+    tt_WHOLE_REFUSE_SLOT_ALIGN,    // a destination's slot_bytes would put payloads off 4-alignment
 };
 
 // Says a cause once per node. Separate from the tests above so each of them stays a single line and the
@@ -5111,6 +5119,16 @@ static uint32_t whole_record_limit_for(struct tt_Context* node, const struct tt_
             } else {
                 note_whole_refusal(node, tt_WHOLE_REFUSE_ADDRESS, "a destination is at a different address");
             }
+            return 0;
+        }
+        if ((entry->mapping->slot_bytes % 4U) != 0U) {
+            // Refused before the path that would need it exists, rather than after. A record encoded
+            // into a slot must land 4-aligned, as it does in tx_buffer; with both segment structs a
+            // multiple of 4 (asserted at the top of this file) that is exactly slot_bytes % 4 == 0.
+            // Today's whole-record send is a copy and would not care, so this costs nothing now and
+            // cannot be forgotten later - the order last night's defects arrived in was always the
+            // other one.
+            note_whole_refusal(node, tt_WHOLE_REFUSE_SLOT_ALIGN, "a destination's slot_bytes is not a multiple of 4");
             return 0;
         }
         uint32_t usable = entry->mapping->slot_bytes;

@@ -1958,6 +1958,16 @@ static void test_only_an_attached_same_host_peer_raises_the_whole_limit(void) {
     EXPECT_TRUE(peer_segment(&sender, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
     EXPECT_EQ_U32((uint32_t)tt_SEGMENT_SLOT_BYTES, whole_record_limit_for(&sender, pub.peers, 1));
 
+    // A destination whose slots would put payloads off 4-alignment. An encoder writing a record into a
+    // slot needs the alignment tx_buffer is asserted to have, and with both segment structs a multiple of
+    // 4 that reduces to slot_bytes % 4. Checked here before any path depends on it, so the guard cannot
+    // arrive after the code that needs it.
+    uint32_t real_slot_bytes = sender.segment_peers[OWNER_ID].mapping->slot_bytes;
+    sender.segment_peers[OWNER_ID].mapping->slot_bytes = real_slot_bytes - 1U;
+    EXPECT_EQ_U32(0, whole_record_limit_for(&sender, pub.peers, 1));
+    sender.segment_peers[OWNER_ID].mapping->slot_bytes = real_slot_bytes;
+    EXPECT_EQ_U32((uint32_t)tt_SEGMENT_SLOT_BYTES, whole_record_limit_for(&sender, pub.peers, 1));
+
     // A peer that moved: same context id, different address. The entry describes the segment we opened for
     // the OLD address, so granting on it would build a record for a segment we have never seen.
     uint32_t real_ip = pub.peers[0].ip;
