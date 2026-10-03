@@ -136,7 +136,12 @@ fdds_run() {  # fdds_run <arm> <profile-basename>
     p="$dir/$prof"
     sh_ "$HOST" "test -f $p" </dev/null || { say "  FATAL arm $arm: profile $prof is not on $HOST"; return 1; }
     cleanup
+    # BENCH_FASTDDS_NO_DATASHARING 이 ssh 를 명시적으로 건넌다. 안 넘기면 로컬 쉘에 남고 양쪽 arm 이
+    # 같은 설정으로 돌며, 그 실패는 2026-10-03 아침 TICKLE_DATAGRAM_BYTES 와 똑같은 모양이다 - 조용하고,
+    # 결과는 "처치가 아무 효과도 없었다" 로 읽힌다. 도착했는지는 행의 transport_profile= 끝에 붙는
+    # +nodsh 가 말하고, 그것이 이 arm 의 신원 검사다.
     local env_common="BENCH_IFACE=lo LD_LIBRARY_PATH=$FDDS_LIB_PATH FASTRTPS_DEFAULT_PROFILES_FILE=$p"
+    [ -n "${BENCH_FASTDDS_NO_DATASHARING:-}" ] && env_common="$env_common BENCH_FASTDDS_NO_DATASHARING=$BENCH_FASTDDS_NO_DATASHARING"
     srv_pid=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && rm -f /tmp/s6_fdds.pid
 (setsid sh -c 'echo \$\$ >/tmp/s6_fdds.pid; exec env $env_common taskset -c 1 ./server -d $((DUR + 40))' >/tmp/s6_fdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_fdds.pid" </dev/null)
     # The WHOLE output, kept on the Pi and then read, rather than piped through grep '^RESULT' at the far end. A

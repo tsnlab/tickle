@@ -59,17 +59,18 @@ kill_all() {
 done
 sleep 2; true" </dev/null >/dev/null 2>&1
 }
-trap 'kill_all' EXIT
+trap 'kill_all; rm -f "${before_file:-}"' EXIT
 
+# BEFORE 를 "비어 있어야 한다" 가 아니라 "집합" 으로 잡는다. 처음에는 잔재가 있으면 VOID 로 했는데,
+# 그러면 실행 전에 /dev/shm 을 지워야 하고 그것은 공유 하드웨어에서의 되돌릴 수 없는 작업이다. 이번 실행이
+# 만든 것은 BEFORE 에 없던 이름이므로 집합 차이로 충분하고, 지울 이유가 사라진다. 잔재 자체도 정보다 -
+# 2026-10-03 의 잔재 여섯 개가 이 질문에 먼저 답했다.
 before="$(shm_list)"
-say "--- BEFORE: /dev/shm 의 datasharing 세그먼트 ---"
+say "--- BEFORE: /dev/shm 의 datasharing 세그먼트 (이번 실행의 것은 여기 없는 이름이다) ---"
 say "${before:-(없음)}"
-if [ -n "$before" ]; then
-    say ""
-    say "VOID: 시작 전에 이미 datasharing 세그먼트가 있다. 이번 실행이 만든 것과 이전 실행의 잔재를"
-    say "  구분할 수 없으므로 아무것도 결론짓지 않는다. 정리한 뒤 다시 돌릴 것."
-    exit 0
-fi
+before_file=$(mktemp); printf '%s\n' "$before" | sort >"$before_file"
+# 이번 실행이 새로 만든 것만.
+new_since_before() { printf '%s\n' "$1" | sort | comm -13 "$before_file" - | grep -v '^$' || true; }
 
 # fdds_arm <라벨> <프로파일>: 서버를 띄우고 클라이언트를 돌리는 동안 /dev/shm 을 본다.
 fdds_arm() {
@@ -81,8 +82,10 @@ fdds_arm() {
     local envc="BENCH_IFACE=lo LD_LIBRARY_PATH=$FDDS_LIB_PATH FASTRTPS_DEFAULT_PROFILES_FILE=$dir/$prof"
     sh_ "cd $dir/${SCEN}_${SIZE} && (setsid sh -c 'echo \$\$ >/tmp/dsw_srv.pid; exec env $envc taskset -c 1 ./server -d $((DUR + 30))' >/tmp/dsw_server.log 2>&1 </dev/null &); sleep 3; true" </dev/null >/dev/null
     sh_ "cd $dir/${SCEN}_${SIZE} && (setsid sh -c 'echo \$\$ >/tmp/dsw_cli.pid; exec env $envc taskset -c 2 ./client -d $DUR' >/tmp/dsw_client.log 2>&1 </dev/null &); sleep 3; true" </dev/null >/dev/null
-    local during; during="$(shm_list)"
-    say "  DURING: ${during:-(없음)}"
+    local during fresh; during="$(shm_list)"
+    fresh="$(new_since_before "$during")"
+    say "  DURING 전체: ${during:-(없음)}"
+    say "  이번 실행이 새로 만든 것: ${fresh:-(없음)}"
     sleep "$DUR"
     kill_all
     # 로그 전체를 가져와 여기서 거른다. 처음 쓸 때 `grep -c '^RESULT' ... || echo 0` 이었는데 세 가지가
@@ -102,7 +105,7 @@ fdds_arm() {
             printf '%s\n' "$clog" | tail -6 | sed 's/^/       | /' | tee -a "$OUT"
         fi
     fi
-    printf '%s' "$during"
+    printf '%s' "$fresh"
 }
 
 off_seen="$(fdds_arm OFF_eth0_only fastdds_eth0_only.xml)"
