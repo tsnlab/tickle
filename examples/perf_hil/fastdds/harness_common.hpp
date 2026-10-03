@@ -184,8 +184,8 @@ namespace harness {
     // can be read as the wrong arm. It goes in transport_profile() rather than a field of its own
     // so there is one place to look for "what configuration was this".
     inline auto no_datasharing() -> bool {
-        const char* v = std::getenv("BENCH_FASTDDS_NO_DATASHARING");
-        return v != nullptr && v[0] != '\0' && v[0] != '0';
+        const char* flag = std::getenv("BENCH_FASTDDS_NO_DATASHARING");
+        return flag != nullptr && flag[0] != '\0' && flag[0] != '0';
     }
 
     inline auto transport_profile() -> const char* {
