@@ -795,6 +795,41 @@ measured gain to buy with it - opening the runtime knob would cost an applicatio
 that does not move. 6e(b) remains the premise of the memory-side argument, and when it lands this is to be
 re-measured rather than assumed. **Fragment 3 is a 12% item, not a 2x item, and its priority drops accordingly.**
 
+### Same-host p4 BEST_EFFORT against Fast DDS, measured 2026-10-04 on `8cc373fb`
+
+The vendor counterpart this document said did not exist. Three runs on one rig, 5 reps each, every quoted figure
+drop-free and every arm's identity checked on its own RESULT line (`p4_shm_headtohead_reps5_20261004.txt`,
+`p4_fastdds_default_dsh_20261004.txt`):
+
+| path | TickLE | Fast DDS | ratio |
+|---|---:|---:|---:|
+| shared memory, **as a user gets it** | **14,293** (n=3, 14,264..14,312) | **13,413** (n=5, 13,277..13,508) | **1.07x** |
+| Fast DDS's SHM *transport*, data-sharing off | 14,293 | 5,565 (n=5, 5,410..5,658) | 2.57x |
+| kernel path, both verified at 2.000 pkt/sample | 2,105 (n=5) | 1,125 (n=5) | 1.87x |
+| each framework's own shared-memory gain | 6.79x | **11.6x** | |
+
+**The first row is the comparison that describes what a user experiences, and it is 1.07x, not 2.57x.** The
+ranges do not overlap so the lead is real, but it is 6.6%. The 2.57x row is against a configuration nobody runs
+by default: Fast DDS's shared-memory *transport* with data-sharing disabled, which exists here only because
+disabling data-sharing is what gave the cell a kernel-path denominator at all.
+
+**Why the distinction is not a technicality.** Data-sharing bypasses the transport layer, so with it on, Fast
+DDS's two profile arms are the same speed - 13,413 against 13,037, overlapping ranges - and the transport
+profile is irrelevant to the result. S6 correctly VOIDs that pair with "the kernel-path arm shows 0.000 packets
+per sample, so there is no denominator": the loopback witness cannot see data-sharing, and a cell measured that
+way has no baseline. Both facts are needed, which is why both rows are here.
+
+**The last row is the finding we come off worst in.** Fast DDS's fast path is worth **11.6x** its own kernel
+path; ours is worth 6.79x. Our kernel path is the better one (2,105 against 1,125, 1.87x) and our shared-memory
+path is ahead by only 6.6%, so **most of our same-host lead is inherited from the network path rather than
+earned by the segment.** That is the direction for 6e(b) and for whatever the 12% gap in the per-seq_no model
+turns out to be, and it is a sharper statement of where the work goes than any figure above it.
+
+**Withdrawn**: the ~12,900 Mbps figure seen on 2026-10-03 for Fast DDS data-sharing is not quoted anywhere. Those
+rows failed their identity check because the fastdds RESULT line carried no `transport_profile=` field at the
+time, and a refused row is not a result. 13,413 replaces it, measured after `9ccf12b5` gave every fastdds RESULT
+line that field.
+
 The earlier reading in this section - that a whole record costs a whole slot and therefore 6e(b) must precede
 6e(a) - is not supported by this measurement: the whole record uses half the slots at the same throughput. What
 was actually blocking 6e(a) was the missing receiver half, not ring economics.
