@@ -145,7 +145,31 @@ for arm in ("ON", "OFF"):
     udp = [num(f, "tx_udp") for f in rs]
     print("  wire_packets_per_sample  %.4f  (reps: %s)" % (st.mean(w), ", ".join("%.4f" % x for x in w)))
     print("  iface=%s  tx_shm mean %.0f   tx_udp mean %.0f" % (rs[0].get("iface", "?"), st.mean(shm), st.mean(udp)))
-    print("  send_mbps %.2f" % st.mean([num(f, "send_mbps") for f in rs]))
+    # send_mbps is the PUBLISHER's rate, and since 2026-09-29 a full ring DROPS the datagram rather than
+    # rerouting it (BenchStats.h), so a rep with shm_full_dropped > 0 counts samples that were never
+    # delivered. On 2026-10-03 this printed one mean over three p4 BEST_EFFORT reps of which two had
+    # dropped ~16% of their datagrams - and those two read HIGHER (12,987 and 12,679 Mbps) than the clean
+    # one (11,310), because dropping is cheaper than delivering. A throughput figure that rises as
+    # delivery fails is not a throughput figure, and it was about to be published as one.
+    #
+    # So the drop-free reps are the measurement and the rest are reported, not averaged in and not
+    # silently removed - the same rule the harnesses beside this one follow for a thin arm.
+    clean = [f for f in rs if num(f, "shm_full_dropped") == 0]
+    dirty = [f for f in rs if num(f, "shm_full_dropped") > 0]
+    if dirty:
+        print("  %d/%d reps DROPPED at the ring (shm_full_dropped=%s) - those are not throughput" %
+              (len(dirty), len(rs), ", ".join("%.0f" % num(f, "shm_full_dropped") for f in dirty)))
+    if clean:
+        mbps = [num(f, "send_mbps") for f in clean]
+        print("  send_mbps %.2f  (n=%d drop-free reps: %s)" %
+              (st.mean(mbps), len(clean), ", ".join("%.0f" % x for x in mbps)))
+        if len(clean) < 3:
+            print("    NOTE: fewer than 3 drop-free reps, so this figure has no spread worth quoting.")
+    else:
+        print("  send_mbps VOID: every rep dropped at the ring. The ring is undersized for this cell, and")
+        print("    THAT is this cell's result - not a rate taken while %d%% of the datagrams were discarded." %
+              round(100.0 * st.mean([num(f, "shm_full_dropped") for f in rs]) /
+                    max(1.0, st.mean([num(f, "tx_shm") for f in rs]))))
     verdicts.append((arm, (st.mean(w), st.mean(shm), st.mean(udp))))
 
 d = dict(verdicts)

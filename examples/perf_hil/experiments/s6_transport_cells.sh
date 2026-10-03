@@ -329,10 +329,17 @@ for line in open(sys.argv[1]):
         print(f"  skipped a row with no framework= field: {rest[:60]}")
         continue
     fw = fwm.group(1)
+    # send_mbps and shm_full_dropped travel with the row because the throughput reading needs both. A full
+    # ring DROPS the datagram (BenchStats.h, since 2026-09-29), and send_mbps is the PUBLISHER's rate, so a
+    # dropping rep counts samples that were never delivered.
+    mb = re.search(r"\bsend_mbps=([0-9.]+)", rest)
+    fd = re.search(r"\bshm_full_dropped=([0-9]+)", rest)
     if w: rows[(fw, arm)].append((float(w.group(1)),
                                  int(shm.group(1)) if shm else None,
                                  int(udp.group(1)) if udp else None,
-                                 float(b.group(1)) if b else None))
+                                 float(b.group(1)) if b else None,
+                                 float(mb.group(1)) if mb else None,
+                                 int(fd.group(1)) if fd else 0))
 print()
 print("=== S6 verdicts: the witness as a ratio against the same cell's own kernel-path arm ===")
 for fw in sorted({k[0] for k in rows}):
@@ -343,6 +350,28 @@ for fw in sorted({k[0] for k in rows}):
         continue
     mon, moff = st.median([x[0] for x in on]), st.median([x[0] for x in off])
     print(f"    ON  wire_packets_per_sample median {mon:.3f}   OFF median {moff:.3f}")
+    # Throughput, separated by whether the ring dropped. On 2026-10-03 nine p4 BEST_EFFORT reps split 5 clean /
+    # 4 dropping (7.2%..32.5%), and correlation(drop fraction, reported rate) was +0.925: the rate RISES as
+    # delivery fails, because dropping is cheaper than delivering. A single figure from such a cell can land
+    # anywhere from 11,098 to 15,243 depending only on how much that rep discarded, with nothing on the RESULT
+    # line making the difference visible. So this prints the drop-free n and range and never averages the two
+    # together - the same rule the harnesses beside this one follow for a thin arm, and it is reported rather
+    # than silently filtered.
+    for label, arm_rows in (("ON", on), ("OFF", off)):
+        mbps = [x[4] for x in arm_rows if x[4] is not None]
+        if not mbps:
+            continue
+        clean = [x[4] for x in arm_rows if x[4] is not None and x[5] == 0]
+        dirty = [(x[4], x[5]) for x in arm_rows if x[4] is not None and x[5] > 0]
+        if clean:
+            rng = f"{min(clean):.0f}..{max(clean):.0f}" if len(clean) > 1 else "no spread, n=1"
+            print(f"    {label} send_mbps drop-free n={len(clean)}/{len(arm_rows)}  mean {st.mean(clean):.0f}  ({rng})")
+        else:
+            print(f"    {label} send_mbps VOID: every rep dropped at the ring. The ring is undersized for this")
+            print(f"         cell and THAT is the result, not a rate taken while datagrams were being discarded.")
+        if dirty:
+            shown = ", ".join(f"{m:.0f} Mbps/{d} dropped" for m, d in sorted(dirty))
+            print(f"    {label} {len(dirty)}/{len(arm_rows)} reps DROPPED and are NOT throughput: {shown}")
     if moff <= 0:
         print(f"    VOID {fw}: the kernel-path arm shows {moff:.3f} packets per sample, so there is no denominator.")
         continue

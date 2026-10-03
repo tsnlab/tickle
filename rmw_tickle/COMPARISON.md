@@ -702,6 +702,30 @@ it is also per-seq_no cannot be told apart today, because this build gives every
 two quantities are equal by construction. SHM_PLAN 6e's seq-span change separates them, and the measurement
 that follows it is what decides whether one slot per sample is worth 2x or 12%.
 
+**QUALIFIED, 2026-10-03: this cell cannot be reported as a single number.** Re-measured over 9 reps
+(`s6_transport_cells.sh`, `SCEN=best_effort_throughput SIZE=p4`, `~/rig_results_safe/s6_be_p4_reps9_20261003.txt`),
+the ring filled in **4 of 9** reps and discarded 7.2%, 11.6%, 22.3% and 32.5% of their datagrams. Since 2026-09-29
+a full ring *drops* the datagram rather than rerouting it (BenchStats.h) and `send_mbps` is the publisher's rate,
+so those reps count samples that were never delivered - and they read **higher** for it:
+
+| | n | send Mbps |
+|---|---|---|
+| drop-free reps | 5 | mean **11,802**, range 11,098..12,454 |
+| reps that dropped 7.2..32.5% | 4 | 12,620, 12,934, 13,409, 15,243 |
+
+**correlation(drop fraction, reported rate) = +0.925 across all nine reps.** The rate rises monotonically as
+delivery fails, which identifies the mechanism rather than suggesting it: dropping is cheaper than delivering.
+
+The published 12,225 **is inside the drop-free range** and is not refuted - an earlier note here called it
+"probably contaminated" on the strength of a single drop-free rep, which was too little to say that. What the
+nine reps do establish is that a lone figure from this cell is unsafe: depending only on how much that rep
+dropped, it can land anywhere from 11,098 to 15,243, and nothing on the RESULT line makes the difference
+visible to a reader. So this cell carries its drop-free n and range from here on, and the harness reports
+drop-free and dropping reps separately instead of averaging them.
+
+The same run's kernel-path arm was drop-free in all 9 reps at 2,099..2,126 Mbps, so **shared memory is 5.6x the
+kernel path on one host** - both arms clean, and the comparison that cell can actually support.
+
 **The comparison that is NOT available, and why measuring it did not make it available.** Our 12,225 Mbps at
 BEST_EFFORT cannot be set against CycloneDDS's 5,287, which is RELIABLE. On 2026-10-03 the missing vendor
 BEST_EFFORT figure was measured on the rig (campaign cells 8 and 15, 3 reps each, `instrument=ok` on all 18
