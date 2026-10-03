@@ -119,3 +119,8 @@ compile_commands.json
 # be removed again; ignoring it is what stops the next one.
 __pycache__/
 *.pyc
+
+# Per-machine Claude Code session settings. Ignored globally on one developer machine via
+# ~/.config/git/ignore, which is why it has never appeared here - but a global ignore is not shared,
+# so on anyone else's checkout this file is visible and one `git add -A` away from being committed.
+.claude/settings.local.json
