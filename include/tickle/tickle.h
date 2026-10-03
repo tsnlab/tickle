@@ -225,7 +225,13 @@ enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT }
 // 2 since 2026-09-29: the header gained reader_waiting. A context built against version 1 reads the
 // ring correctly and never sets the flag, so its peers would publish to a sleeping owner and never
 // ring the doorbell - added latency with nothing to see, which is what the version is for.
-#define tt_SEGMENT_VERSION 2
+// 3 since 2026-10-03: a slot's `reserved` became `seq_span` (below). The dangerous direction is a new
+// writer and an old reader - the writer puts 2 in a field the reader ignores, and the reader advances one
+// seq_no where two were consumed, which is a permanent gap between two processes on one host. The other
+// direction is safe on its own (an old writer writes 0, and cannot produce a multi-seq record anyway), but
+// the version check covers both and that reasoning covers one. segment_attach() refuses a mismatch and the
+// peer falls back to UDP, so the bump is the whole fix.
+#define tt_SEGMENT_VERSION 3
 // Longest segment path this build can form: "/dev/shm/tickle-seg-255.255.255.255-65535-255" and a NUL.
 #define tt_SEGMENT_PATH_LENGTH 64
 
@@ -282,12 +288,27 @@ struct tt_SegmentSlot {
     // invented address is recorded at that address and can never be reached again: it was 0.0.0.0:0
     // here, which made every later send to that peer fall out of the unicast path entirely.
     //
-    // So the rule the slot enforces is that a record carries what the datagram would have carried at
-    // the socket. Attribution being right - the arrival counted as shm - is not enough if a value
-    // inside it means the wrong thing.
+    // The rule this slot enforced until 2026-10-03 was that a record carries what the datagram would
+    // have carried at the socket - attribution being right is not enough if a value inside it means the
+    // wrong thing. seq_span below is the first field that is deliberately NOT that: it is information
+    // only the shared-memory path has, and a datagram has nowhere to put it. So the rule now reads: a
+    // record carries what the datagram would have carried, PLUS what only this path can say - and the
+    // second kind must be unable to arrive from the network, which is why it lives here in the slot
+    // header rather than in the submessage. A socket datagram has no slot header, so a span cannot be
+    // injected; that is a structural guarantee rather than a check that could be forgotten.
     uint32_t sender_ip;
     uint16_t sender_port;
-    uint16_t reserved;
+    // How many seq_nos this record covers (SHM_PLAN 6e). A sample consumes the number of seq_nos the
+    // NETWORK form would need whatever path it takes, so a record carried whole in one slot where the
+    // wire would have fragmented it covers more than one, and the reader must advance by this many.
+    //
+    // 0 means 1. Every record written before this field had a meaning wrote 0 here, and a reader that
+    // treated 0 as "advance nothing" would stall on the first one.
+    //
+    // Bounded by tt_FRAG_MAX_COUNT: a span larger than that is a record the network form could not have
+    // carried at all, since frag_count is a uint8_t counting the same datagrams. Asserted where it is
+    // written rather than trusted from the arithmetic that produced it.
+    uint16_t seq_span;
     // Which record this slot holds, and whether it is finished. A context's segment is written by
     // EVERY peer that wants to reach it and read by one - many writers, one reader - so the write
     // index alone cannot say a slot is ready: a writer that claims a later slot may finish before
@@ -396,6 +417,19 @@ struct tt_Context {
     tt_ALIGNAS(4) uint8_t tx_buffer[tt_TX_BUFFER_LENGTH];
     uint32_t tx_tail;
     uint32_t tx_size;
+    // How many seq_nos the datagram now in tx_buffer consumes (SHM_PLAN 6e). 1 for every datagram the
+    // wire can carry; N for a record carried whole in one segment slot where the wire would have sent N
+    // fragments. Carried here rather than threaded because this is the structure that already carries
+    // this datagram: flush_tx() is not handed the bytes either, it reads them from tx_buffer/tx_tail.
+    //
+    // It is the PUBLISHER's number. It is not recomputed further down - two independent deciders of how
+    // many seq_nos a sample consumes, disagreeing after one of them changed, is the defect 6e exists to
+    // remove, and re-deriving it at the write site would keep two deciders and only move the second one.
+    //
+    // Only set_tx_tail() may move tx_tail, and it returns this to 1 whenever the buffer empties, so a
+    // span cannot outlive the datagram it belongs to. A stale one would be invisible: it would ride out
+    // on the NEXT record, which has no reason to have a span at all.
+    uint16_t tx_seq_span;
     // Set whenever node_update()'s always-broadcast UPDATE announce is sitting batched,
     // unflushed, in tx_buffer (cleared once a flush actually sends it) - node_flush() must not
     // unicast while this is true, since tx_buffer is one shared buffer flushed as a unit and an

@@ -203,8 +203,20 @@ static bool encode_string(struct tt_Context* node, const char* str) {
     return true;
 }
 
+// The only way tx_tail moves. A datagram's seq span (tt_Context.tx_seq_span) belongs to the datagram in
+// tx_buffer, so it returns to 1 the moment that buffer empties - as a property of this function rather
+// than a rule each site has to remember. The sites that rewind the tail to abandon a half-built datagram
+// are the ones that would otherwise leak a span onto the next record, and they all come through here or
+// through the two that empty the buffer outright.
+static void set_tx_tail(struct tt_Context* node, uint32_t tail) {
+    node->tx_tail = tail;
+    if (tail <= sizeof(struct tt_Header)) {
+        node->tx_seq_span = 1;
+    }
+}
+
 static void rollback(struct tt_Context* node, uint32_t old_tx_tail) {
-    node->tx_tail = old_tx_tail;
+    set_tx_tail(node, old_tx_tail);
 }
 
 // Where a client's or server's retry and deferred-response storage lives: the caller's, attached by
@@ -633,7 +645,7 @@ static size_t segment_bytes(uint32_t slots, uint32_t slot_bytes) {
 // leave the ring untouched and both mean "send this over UDP instead", which is the module's own
 // documented failure mode rather than an error.
 static bool segment_write(struct tt_SegmentHeader* header, const void* buf, uint32_t len, uint32_t sender_ip,
-                          uint16_t sender_port) {
+                          uint16_t sender_port, uint16_t seq_span) {
     if (len > header->slot_bytes) {
         return false;
     }
@@ -668,7 +680,11 @@ static bool segment_write(struct tt_SegmentHeader* header, const void* buf, uint
     slot_header->length = len;
     slot_header->sender_ip = sender_ip;
     slot_header->sender_port = sender_port;
-    slot_header->reserved = 0;
+    // The publisher's number, not recomputed here. Checked against a bound with its own source of
+    // truth: a span above tt_FRAG_MAX_COUNT is a record the network form could not have carried at all,
+    // since frag_count counts the same datagrams in a uint8_t. Out of range means the value did not come
+    // from the arithmetic that should have produced it, so take the one that is always safe.
+    slot_header->seq_span = (seq_span >= 1 && seq_span <= tt_FRAG_MAX_COUNT) ? seq_span : 1;
     // Release: everything above must be visible before the sequence that publishes it. The reader
     // takes this slot exactly when it sees claimed + 1 here, so a writer that finished later than a
     // writer with a higher index cannot make the reader read an unwritten slot.
@@ -1157,6 +1173,8 @@ static void count_udp(struct tt_Context* node, enum udp_reason reason, uint32_t 
 // here so that exactly one place increments tx_udp and its reason together.
 static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_t ip, uint16_t port, const void* hdr,
                             size_t hdr_len, const void* body, size_t body_len, enum udp_reason* reason) {
+    // node->tx_seq_span is this datagram's, set by the publisher and returned to 1 by set_tx_tail() when
+    // the buffer empties. Read here and passed down because segment_write() is given no node.
     if (context_id == tt_CONTEXT_ID_INVALID) {
         *reason = UDP_BECAUSE_BROADCAST; // no single peer, so no name to compute: never a candidate
         return false;
@@ -1181,7 +1199,7 @@ static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_
     uint32_t own_ip = 0;
     uint16_t own_port = 0;
     tt_own_address(node, &own_ip, &own_port);
-    if (!segment_write(segment, datagram, (uint32_t)total, own_ip, own_port)) {
+    if (!segment_write(segment, datagram, (uint32_t)total, own_ip, own_port, node->tx_seq_span)) {
         // Dropped, not rerouted, and this is the whole reason the function returns true here. A
         // datagram sent over UDP because the ring was full arrives AHEAD of the records already in
         // the ring - the socket does not wait for the reader's next drain - so the reader delivers
@@ -1468,7 +1486,7 @@ static bool flush_tx(struct tt_Context* node, uint32_t len, const struct tt_Peer
         TT_LOG_ERROR("Flush length %u exceeds the %u this send can carry - dropping %u pending bytes", len, flush_limit,
                      node->tx_tail - (uint32_t)sizeof(struct tt_Header));
         node->tx_dropped_oversize++;
-        node->tx_tail = sizeof(struct tt_Header);
+        set_tx_tail(node, sizeof(struct tt_Header));
         node->tx_has_pending_update = false;
         return false;
     }
@@ -1525,7 +1543,7 @@ static bool flush_tx(struct tt_Context* node, uint32_t len, const struct tt_Peer
     node->tx_has_pending_update = false;
 
     _tt_memmove(node->tx_buffer + sizeof(struct tt_Header), node->tx_buffer + len, node->tx_tail - len);
-    node->tx_tail = sizeof(struct tt_Header) + (node->tx_tail - len);
+    set_tx_tail(node, (uint32_t)(sizeof(struct tt_Header) + (node->tx_tail - len)));
 
     return true;
 }
@@ -1674,12 +1692,12 @@ static bool send_tail_as_fragments(struct tt_Context* node, struct tt_Submessage
     uint32_t length = node->tx_tail - base;
     memset(node->tx_buffer + node->tx_tail, 0, ROUNDUP(length) - length);
     length = ROUNDUP(length);
-    node->tx_tail = base + length;
+    set_tx_tail(node, base + length);
     if (base > sizeof(struct tt_Header)) {
         // What was batched ahead goes first, as it would have ahead of a DATA. flush_tx() moves the
         // sample down behind the header, which is where it is read from below.
         if (!flush_tx(node, base, NULL, 0)) {
-            node->tx_tail = base;
+            set_tx_tail(node, base);
             return false;
         }
         base = sizeof(struct tt_Header);
@@ -1689,7 +1707,7 @@ static bool send_tail_as_fragments(struct tt_Context* node, struct tt_Submessage
                                record + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader),
                                length - (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)),
                                peers, peer_count, tt_SUBMESSAGE_ID_ALL);
-    node->tx_tail = base;
+    set_tx_tail(node, base);
     return sent;
 }
 #endif
@@ -1752,7 +1770,7 @@ static bool end_encode(struct tt_Context* node, struct tt_SubmessageHeader* subm
     // there is nothing else to do with it; the caller learns from `false` and rolls back.
     if (!submessage_fits_datagram(node, submessage_header, length,
                                   record_size_limit(node, tt_MAX_BUFFER_LENGTH, peers, peer_count))) {
-        node->tx_tail = base;
+        set_tx_tail(node, base);
         return false;
     }
 
@@ -3260,7 +3278,7 @@ static void reset_node_state(struct tt_Context* node) {
 #endif
 
     memset(node->tx_buffer, 0, sizeof(node->tx_buffer));
-    node->tx_tail = sizeof(struct tt_Header);
+    set_tx_tail(node, sizeof(struct tt_Header));
     node->tx_size = sizeof(node->tx_buffer);
     node->tx_has_pending_update = false;
     node->flush_scheduled = false;
@@ -5597,6 +5615,11 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // Heartbeat buried in a batch arrives no sooner than the batch does.
     bool piggyback = piggyback_due(pub, is_flush);
 
+    // This datagram's seq footprint, for the segment path to record. Set here because this is where the
+    // seq_nos are allocated, and the slot's reader must advance by the same number this publisher is
+    // about to add. set_tx_tail() returns it to 1 when the buffer empties, so it cannot ride out on a
+    // later record; segment_write() checks it against tt_FRAG_MAX_COUNT rather than trusting it.
+    node->tx_seq_span = (uint16_t)seq_span;
     if (!end_encode_sample(node, submessage_header, is_flush && !piggyback, peers, peer_count, old_tx_tail,
                            record_len)) {
         return tt_RET_IO_ERROR;

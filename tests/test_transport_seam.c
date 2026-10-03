@@ -376,7 +376,7 @@ static void test_ring_round_trips_a_datagram(void) {
     EXPECT_TRUE(!segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port)); // empty to begin with
 
     const char* payload = "a datagram";
-    EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1, OWNER_IP, OWNER_PORT));
+    EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1, OWNER_IP, OWNER_PORT, 1));
     EXPECT_TRUE(segment_read(ring, out, sizeof(out), &len, &from_ip, &from_port));
     EXPECT_EQ_U32((uint32_t)strlen(payload) + 1, len);
     EXPECT_EQ_INT(0, strcmp(payload, (const char*)out));
@@ -385,7 +385,7 @@ static void test_ring_round_trips_a_datagram(void) {
     // More than a slot holds is refused rather than written short.
     uint8_t oversize[RING_SLOT_BYTES + 1];
     memset(oversize, 'x', sizeof(oversize));
-    EXPECT_TRUE(!segment_write(ring, oversize, (uint32_t)sizeof(oversize), OWNER_IP, OWNER_PORT));
+    EXPECT_TRUE(!segment_write(ring, oversize, (uint32_t)sizeof(oversize), OWNER_IP, OWNER_PORT, 1));
 }
 
 // The rule whose failure is silent corruption rather than an error: a full ring refuses, it does
@@ -398,13 +398,13 @@ static void test_full_ring_refuses_rather_than_overwriting(void) {
     for (uint32_t i = 0; i < RING_SLOTS; i++) {
         char payload[RING_SLOT_BYTES];
         snprintf(payload, sizeof(payload), "record-%u", i);
-        EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1, OWNER_IP, OWNER_PORT));
+        EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1, OWNER_IP, OWNER_PORT, 1));
     }
 
     // Full. Several attempts, because a writer that overwrites once per call would still leave the
     // count right after one.
     for (int attempt = 0; attempt < 3; attempt++) {
-        EXPECT_TRUE(!segment_write(ring, "intruder", 9, OWNER_IP, OWNER_PORT));
+        EXPECT_TRUE(!segment_write(ring, "intruder", 9, OWNER_IP, OWNER_PORT, 1));
     }
 
     // The queued records are the ones written, in order, untouched by the refused writes.
@@ -420,7 +420,7 @@ static void test_full_ring_refuses_rather_than_overwriting(void) {
     }
 
     // And a released slot is reusable, or the ring would wedge after one fill.
-    EXPECT_TRUE(segment_write(ring, "after drain", 12, OWNER_IP, OWNER_PORT));
+    EXPECT_TRUE(segment_write(ring, "after drain", 12, OWNER_IP, OWNER_PORT, 1));
 }
 
 // Free-running indices, so the ring keeps working past the point where they wrap the slot count.
@@ -431,7 +431,7 @@ static void test_ring_survives_many_wraps(void) {
     for (uint32_t i = 0; i < RING_SLOTS * 10U; i++) {
         char payload[RING_SLOT_BYTES];
         snprintf(payload, sizeof(payload), "wrap-%u", i);
-        EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1, OWNER_IP, OWNER_PORT));
+        EXPECT_TRUE(segment_write(ring, payload, (uint32_t)strlen(payload) + 1, OWNER_IP, OWNER_PORT, 1));
 
         uint8_t out[RING_SLOT_BYTES];
         uint32_t len = 0;
@@ -448,8 +448,8 @@ static void test_impossible_length_is_refused_and_does_not_wedge(void) {
     uint8_t storage[4096];
     struct tt_SegmentHeader* ring = make_ring(storage, RING_SLOTS, RING_SLOT_BYTES);
 
-    EXPECT_TRUE(segment_write(ring, "good", 5, OWNER_IP, OWNER_PORT));
-    EXPECT_TRUE(segment_write(ring, "also good", 10, OWNER_IP, OWNER_PORT));
+    EXPECT_TRUE(segment_write(ring, "good", 5, OWNER_IP, OWNER_PORT, 1));
+    EXPECT_TRUE(segment_write(ring, "also good", 10, OWNER_IP, OWNER_PORT, 1));
     // Corrupt the first record's length, as a broken writer or a foreign mapping would.
     ((struct tt_SegmentSlot*)segment_slot(ring, 0))->length = RING_SLOT_BYTES + 1000U;
 
@@ -721,7 +721,7 @@ static void test_a_refused_datagram_is_refused_over_the_segment_too(void) {
     bad.source = PEER_CONTEXT_ID;
 
     uint64_t drops_before = reader.version_mismatch_drops;
-    EXPECT_TRUE(segment_write(reader.own_segment, &bad, (uint32_t)sizeof(bad), PEER_IP, PEER_PORT));
+    EXPECT_TRUE(segment_write(reader.own_segment, &bad, (uint32_t)sizeof(bad), PEER_IP, PEER_PORT, 1));
     drain_pass(&reader);
 
     EXPECT_EQ_U32(1, (uint32_t)(reader.version_mismatch_drops - drops_before));     // refused, and counted
@@ -762,7 +762,7 @@ static void* contend_writer(void* raw) {
     struct contend_arg* arg = raw;
     for (uint32_t i = 0; i < CONTEND_WRITES; i++) {
         uint32_t payload[2] = {arg->tag, i};
-        while (!segment_write(arg->ring, payload, (uint32_t)sizeof(payload), OWNER_IP + arg->tag, OWNER_PORT)) {
+        while (!segment_write(arg->ring, payload, (uint32_t)sizeof(payload), OWNER_IP + arg->tag, OWNER_PORT, 1)) {
             // Full: the reader is behind. Spin - it is a live thread and the wait is microseconds.
         }
         arg->accepted++;
@@ -938,7 +938,7 @@ static void test_capacity_exhaustion_is_counted_and_warned_once(void) {
     // slots before it refuses.
     struct tt_SegmentHeader* seeded = make_ring(storage, RING_SLOTS, RING_SLOT_BYTES);
     uint32_t accepted = 0;
-    while (segment_write(seeded, "x", 2, PEER_IP, PEER_PORT)) {
+    while (segment_write(seeded, "x", 2, PEER_IP, PEER_PORT, 1)) {
         accepted++;
         if (accepted > RING_SLOTS * 4) {
             break; // a ring that never fills is its own failure, caught by the assertion below
@@ -954,7 +954,7 @@ static void test_capacity_exhaustion_is_counted_and_warned_once(void) {
         ((struct tt_SegmentSlot*)segment_slot(unseeded, index))->sequence = 0; // as calloc left it
     }
     uint32_t accepted_unseeded = 0;
-    while (segment_write(unseeded, "x", 2, PEER_IP, PEER_PORT)) {
+    while (segment_write(unseeded, "x", 2, PEER_IP, PEER_PORT, 1)) {
         accepted_unseeded++;
         if (accepted_unseeded > RING_SLOTS * 4) {
             break;
@@ -1051,7 +1051,7 @@ static void test_a_stalled_head_is_noticed_rather_than_read_as_a_sizing_problem(
 
     // Control 2: a published record is read, and reading it clears the count rather than leaving it
     // to accumulate across the life of the segment.
-    EXPECT_TRUE(segment_write(owner.own_segment, "hello", 6, PEER_IP, PEER_PORT));
+    EXPECT_TRUE(segment_write(owner.own_segment, "hello", 6, PEER_IP, PEER_PORT, 1));
     drain_pass(&owner);
     EXPECT_EQ_U64(0, owner.segment_head_stalls);
 
@@ -1191,7 +1191,7 @@ static void test_a_segment_left_by_a_dead_owner_is_reclaimed(void) {
     writer.hal.own_port = PEER_PORT;
     struct tt_SegmentHeader* old_mapping = peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT);
     EXPECT_TRUE(old_mapping != NULL);
-    EXPECT_TRUE(segment_write(old_mapping, "orphan", 7, PEER_IP, PEER_PORT));
+    EXPECT_TRUE(segment_write(old_mapping, "orphan", 7, PEER_IP, PEER_PORT, 1));
 
     // The owner dies. Nothing is unlinked and nothing is drained: the record above is now parked in
     // a segment no one reads.
@@ -1457,7 +1457,7 @@ static void test_the_drain_empties_the_ring_or_says_it_did_not(void) {
     header.version = tt_VERSION;
     header.source = PEER_CONTEXT_ID;
     for (uint32_t i = 0; i < records; i++) {
-        EXPECT_TRUE(segment_write(owner.own_segment, &header, sizeof(header), PEER_IP, PEER_PORT));
+        EXPECT_TRUE(segment_write(owner.own_segment, &header, sizeof(header), PEER_IP, PEER_PORT, 1));
     }
 
     emptied = false;

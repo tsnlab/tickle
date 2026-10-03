@@ -150,6 +150,16 @@ static void test_a_wide_slot_does_not_shrink_the_span(void) {
     // Two: what the wire form needs. Not one, which is what this destination could have taken whole.
     EXPECT_EQ_U32(2, pub.seq_no - before);
 
+    // And the number reached the slot. Without this the publisher could stop reporting the span and
+    // every other assertion in this file would still pass - the reset discipline and the bound check
+    // both hold perfectly well about a number nobody ever sets.
+    // The publisher put the span on the node, which is what this commit is responsible for. The slot it
+    // ends up in cannot be checked here yet: end_encode()'s own flush branch still caps at
+    // tt_MAX_BUFFER_LENGTH rather than at record_size_limit(), so a record wider than a datagram is
+    // neither fragmented nor refused - it is left in tx_buffer and never sent. Measured, not assumed:
+    // after this publish tx_shm and tx_udp are both 0 and the peer's write_index is still 0.
+    EXPECT_EQ_INT(2, sender.tx_seq_span);
+
     release_segments(&sender);
     release_own_segment(&owner);
     test_mock_segments_free();
@@ -215,10 +225,77 @@ static void test_a_whole_record_the_target_cannot_take_is_refragmented(void) {
     test_mock_segments_free();
 }
 
+// The reset discipline, pre-registered by Plan as the test that decides whether it holds: a stale span
+// survives every test that publishes one kind of record, because it only shows up on the NEXT one. So
+// publish a wide record (span 2) and then an ordinary one, and look at what the second slot got.
+//
+// The second arm is the abandon path: a datagram that is built and rewound must not leave its span
+// behind either. rollback() is the one way the tail rewinds, and set_tx_tail() is the one way it moves,
+// which is what makes this a property rather than a convention.
+static void test_a_span_does_not_outlive_its_datagram(void) {
+    struct tt_Context sender;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_sender(&sender, &topic, &pub);
+
+    // A span belongs to a datagram in tx_buffer. An empty buffer has none.
+    EXPECT_EQ_U32(sizeof(struct tt_Header), sender.tx_tail);
+    sender.tx_seq_span = 1;
+
+    // Set one as a publish would, then abandon the datagram the way every rewind path does.
+    sender.tx_seq_span = 2;
+    uint32_t saved = sender.tx_tail;
+    set_tx_tail(&sender, saved + 64); // a half-built datagram
+    EXPECT_EQ_INT(2, sender.tx_seq_span);
+    rollback(&sender, saved);
+    EXPECT_EQ_INT(1, sender.tx_seq_span); // abandoned, so the span went with it
+
+    // And whenever the buffer empties, however it empties.
+    sender.tx_seq_span = 3;
+    set_tx_tail(&sender, sizeof(struct tt_Header));
+    EXPECT_EQ_INT(1, sender.tx_seq_span);
+
+    test_mock_segments_free();
+}
+
+// segment_write() checks the publisher's number against a bound with its own source of truth rather
+// than trusting it: a span above tt_FRAG_MAX_COUNT is a record the network form could not have carried,
+// since frag_count counts the same datagrams in a uint8_t.
+static void test_a_span_outside_the_wire_bound_is_refused(void) {
+    struct tt_Context owner;
+    memset(&owner, 0, sizeof(owner));
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+
+    uint8_t datagram[64];
+    memset(datagram, 0x5A, sizeof(datagram));
+
+    EXPECT_TRUE(segment_write(owner.own_segment, datagram, sizeof(datagram), OWNER_IP, OWNER_PORT, 2));
+    EXPECT_EQ_INT(2, ((const struct tt_SegmentSlot*)segment_slot(owner.own_segment, 0))->seq_span);
+
+    EXPECT_TRUE(
+        segment_write(owner.own_segment, datagram, sizeof(datagram), OWNER_IP, OWNER_PORT, tt_FRAG_MAX_COUNT + 1));
+    EXPECT_EQ_INT(
+        1,
+        ((const struct tt_SegmentSlot*)segment_slot(owner.own_segment, 1))->seq_span); // out of range -> the safe one
+
+    EXPECT_TRUE(segment_write(owner.own_segment, datagram, sizeof(datagram), OWNER_IP, OWNER_PORT, 0));
+    EXPECT_EQ_INT(1, ((const struct tt_SegmentSlot*)segment_slot(owner.own_segment, 2))->seq_span); // 0 means 1
+
+    release_own_segment(&owner);
+    test_mock_segments_free();
+}
+
 int main(void) {
     test_without_a_segment_the_span_is_the_wire_count();
     test_a_wide_slot_does_not_shrink_the_span();
     test_a_whole_record_the_target_cannot_take_is_refragmented();
+    test_a_span_does_not_outlive_its_datagram();
+    test_a_span_outside_the_wire_bound_is_refused();
 
     printf("test_seq_span: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();
