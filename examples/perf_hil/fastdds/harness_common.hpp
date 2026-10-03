@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <time.h> // NOLINT(modernize-deprecated-headers) - clock_gettime()/nanosleep() are POSIX, not in <ctime>
 
 #include "../tickle/common/BenchStats.h"
@@ -177,12 +178,47 @@ namespace harness {
     // datagram (fastdds_eth0_only_mms1472.xml) as well as shipped (fastdds_eth0_only.xml). Both runs
     // come out of the same binaries, so only the environment tells them apart, and a row has to say
     // which it was, or a tuned figure could be read as a shipped one.
+    //
+    // BENCH_FASTDDS_NO_DATASHARING adds "+nodsh" to the same field, for the same reason: it is
+    // another way the same binaries can be run, and a row that does not say which one produced it
+    // can be read as the wrong arm. It goes in transport_profile() rather than a field of its own
+    // so there is one place to look for "what configuration was this".
+    inline auto no_datasharing() -> bool {
+        const char* v = std::getenv("BENCH_FASTDDS_NO_DATASHARING");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }
+
     inline auto transport_profile() -> const char* {
+        static std::string label;
         const char* path = std::getenv("FASTRTPS_DEFAULT_PROFILES_FILE");
-        if (path == nullptr || path[0] == '\0') {
-            return "none";
+        const char* base = "none";
+        if (path != nullptr && path[0] != '\0') {
+            const char* slash = std::strrchr(path, '/');
+            base = slash != nullptr ? slash + 1 : path;
         }
-        const char* slash = std::strrchr(path, '/');
-        return slash != nullptr ? slash + 1 : path;
+        if (!no_datasharing()) {
+            return base;
+        }
+        label = std::string(base) + "+nodsh";
+        return label.c_str();
+    }
+
+    // Data-sharing is not a transport, so useBuiltinTransports=false does not remove it: it hands
+    // the reader the sample in mapped memory without reaching the transport layer at all. That is
+    // why the eth0_only arm was not the kernel-path denominator it was being used as - at p4
+    // BEST_EFFORT every one of its runs created a /dev/shm/fast_datasharing_ segment. Turning it
+    // off is what gives that cell a denominator.
+    //
+    // In C++ and not in the XML profile, and that is a measured conclusion rather than a taste: a
+    // profile carrying <data_writer is_default_profile="true"> with
+    // <data_sharing><kind>OFF</kind></data_sharing> was written, pushed and run on the rig, and
+    // the segment appeared anyway - control 1, treatment 1. Fast DDS applies is_default_profile to
+    // the participant; a DataWriter profile has to be asked for by name through
+    // create_datawriter_with_profile(), so the XML could not have worked without a code change
+    // either way. That profile was removed rather than left looking like an arm that works.
+    template <typename Qos> inline void apply_datasharing_policy(Qos& qos) {
+        if (no_datasharing()) {
+            qos.data_sharing().off();
+        }
     }
 } // namespace harness

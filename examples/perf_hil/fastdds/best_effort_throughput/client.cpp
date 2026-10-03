@@ -120,6 +120,7 @@ auto main(int argc, char** argv) -> int {
     // (COMPARISON.md's design principle 3).
     DataWriterQos wqos = DATAWRITER_QOS_DEFAULT;
     wqos.reliability().kind = BEST_EFFORT_RELIABILITY_QOS;
+    harness::apply_datasharing_policy(wqos);
 
     Publisher* const publisher = participant->create_publisher(PUBLISHER_QOS_DEFAULT);
     DataWriter* const writer = publisher->create_datawriter(topic, wqos);

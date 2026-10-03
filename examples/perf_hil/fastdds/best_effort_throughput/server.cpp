@@ -116,6 +116,7 @@ auto main(int argc, char** argv) -> int {
 
     DataReaderQos rqos = DATAREADER_QOS_DEFAULT;
     rqos.reliability().kind = BEST_EFFORT_RELIABILITY_QOS;
+    harness::apply_datasharing_policy(rqos);
 
     Subscriber* const subscriber = participant->create_subscriber(SUBSCRIBER_QOS_DEFAULT);
     DataReader* const reader = subscriber->create_datareader(topic, rqos);
