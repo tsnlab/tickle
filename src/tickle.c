@@ -1335,15 +1335,12 @@ static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_
     // see that it needs waking. A zero-length datagram is not a valid TickLE datagram under any
     // circumstance - the receive path drops it before the magic check - so this adds nothing another
     // implementation can parse and nothing that could be mistaken for data.
-    if (__atomic_load_n(&segment->reader_waiting, __ATOMIC_SEQ_CST) != 0) {
-        // Once per reader advance, not once per datagram. A reader that has not taken anything since
-        // our last ring did not answer it, and ringing again cannot help - it is dead, or it is
-        // about to wake for the ring we already sent.
+    uint32_t sleeping = __atomic_load_n(&segment->reader_waiting, __ATOMIC_SEQ_CST);
+    if (sleeping != 0) {
+        // Once per sleep of the reader, not once per datagram (struct tt_SegmentPeer.doorbell_generation).
         struct tt_SegmentPeer* peer = &node->segment_peers[context_id];
-        uint32_t read_index = __atomic_load_n(&segment->read_index, __ATOMIC_ACQUIRE);
-        if (!peer->doorbell_rung || read_index != peer->doorbell_read_index) {
-            peer->doorbell_rung = true;
-            peer->doorbell_read_index = read_index;
+        if (sleeping != peer->doorbell_generation) {
+            peer->doorbell_generation = sleeping;
             if (peer->bell_fd_plus1 > 0) {
                 tt_segment_bell_ring(peer->bell_fd_plus1 - 1); // the FIFO: no socket layer on either side
                 node->segment_bells_rung++;
@@ -3349,6 +3346,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->liveliness_deferrals_total = 0;
     node->segment_doorbells_sent = 0;
     node->segment_bells_rung = 0;
+    node->segment_sleep_generation = 0;
     node->segment_doorbells_received = 0;
     // Counters that only ever increment, and therefore only ever reported whatever was on the
     // caller's stack. Found by the structural check Plan built after `segment_peers` shipped
@@ -11505,9 +11503,19 @@ static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, ui
 // this, the owner writes this and then drains, and it is that pairing - not either store alone -
 // that makes it impossible for a record to sit in the ring with nobody coming for it.
 static void segment_reader_waiting(struct tt_Context* node, bool waiting) {
-    if (node->own_segment != NULL) {
-        __atomic_store_n(&node->own_segment->reader_waiting, waiting ? 1U : 0U, __ATOMIC_SEQ_CST);
+    if (node->own_segment == NULL) {
+        return;
     }
+    uint32_t value = 0;
+    if (waiting) {
+        // A new generation for every sleep, and never 0, which means awake. Writers ring each one once.
+        node->segment_sleep_generation++;
+        if (node->segment_sleep_generation == 0) {
+            node->segment_sleep_generation = 1;
+        }
+        value = node->segment_sleep_generation;
+    }
+    __atomic_store_n(&node->own_segment->reader_waiting, value, __ATOMIC_SEQ_CST);
 }
 
 static void note_head_stall(struct tt_Context* node) {

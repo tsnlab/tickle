@@ -1562,8 +1562,8 @@ static void test_a_sleeping_reader_is_rung_and_a_busy_one_is_not(void) {
     // writer rings a real sendto() for every datagram it sends to a corpse. Measured on a SIGKILL
     // run before the rule existed: 2,853,609 doorbells into a socket nobody was reading.
     //
-    // read_index is what distinguishes the two. A live reader drains before it blocks again, so the
-    // index has moved and the next record rings; a dead one leaves it where it was for ever.
+    // The sleep's generation is what distinguishes the two (2026-10-05). A dead reader's stays where it was for
+    // ever; a live one that blocks again writes a new one.
     int sends_before_repeat = test_mock_send_to_call_count;
     for (int i = 0; i < 16; i++) {
         EXPECT_TRUE(
@@ -1571,18 +1571,32 @@ static void test_a_sleeping_reader_is_rung_and_a_busy_one_is_not(void) {
     }
     EXPECT_EQ_INT(sends_before_repeat, test_mock_send_to_call_count); // not one more, for sixteen records
 
-    // And when the reader does answer - it drains, so read_index moves - the next record rings again.
-    // Without this arm the assertion above would also hold for a doorbell that had simply stopped
-    // working, which is the failure that would cost the module everything it just won.
+    // **And a reader that went back to sleep is rung again even though it took nothing.** This is the case the old
+    // rule - ring again only once read_index has moved - could not see: on the rig a live reader re-slept with up to
+    // 512 records unread, the index had not moved, and p4 RELIABLE stalled 400-500 ms at a time. Here the owner wakes
+    // and blocks again without draining, which is exactly that sequence.
+    segment_reader_waiting(&owner, false);
+    segment_reader_waiting(&owner, true);
+    EXPECT_EQ_U32(2, owner.own_segment->reader_waiting); // the second sleep's generation
+    int rung_after_resleep = test_mock_send_to_call_count;
+    EXPECT_TRUE(segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason));
+    EXPECT_EQ_INT(rung_after_resleep + 1, test_mock_send_to_call_count);
+    // ...once for that sleep, as for the first.
+    EXPECT_TRUE(segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason));
+    EXPECT_EQ_INT(rung_after_resleep + 1, test_mock_send_to_call_count);
+
+    // Draining inside the same sleep does not ring again: the reader that drains is awake, and it will block again
+    // under a new generation if it finds nothing - the arm above. Without this arm the rule could be "ring whenever
+    // the index moved", which is the old one plus noise.
     uint32_t len = 0;
     uint32_t from_ip = 0;
     uint16_t from_port = 0;
     uint16_t from_span = 0;
     uint8_t out[tt_SEGMENT_SLOT_BYTES];
     EXPECT_TRUE(segment_read(owner.own_segment, out, sizeof(out), &len, &from_ip, &from_port, &from_span));
-    int rung_after_drain = test_mock_send_to_call_count;
+    int after_drain = test_mock_send_to_call_count;
     EXPECT_TRUE(segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason));
-    EXPECT_EQ_INT(rung_after_drain + 1, test_mock_send_to_call_count);
+    EXPECT_EQ_INT(after_drain, test_mock_send_to_call_count);
 
     // Awake again: back to costing nothing.
     segment_reader_waiting(&owner, false);

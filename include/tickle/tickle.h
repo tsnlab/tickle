@@ -231,7 +231,10 @@ enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT }
 // direction is safe on its own (an old writer writes 0, and cannot produce a multi-seq record anyway), but
 // the version check covers both and that reasoning covers one. segment_attach() refuses a mismatch and the
 // peer falls back to UDP, so the bump is the whole fix.
-#define tt_SEGMENT_VERSION 3
+// 4 since 2026-10-05: reader_waiting carries the generation of the owner's sleep instead of 1, and a writer rings
+// once per generation rather than once per read_index. A new writer with an old owner would see the generation stuck
+// at 1 and ring once ever, so the bump - refused attach, UDP between the two - is again the whole compatibility story.
+#define tt_SEGMENT_VERSION 4
 // Longest segment path this build can form: "/dev/shm/tickle-seg-255.255.255.255-65535-255" and a NUL.
 #define tt_SEGMENT_PATH_LENGTH 64
 
@@ -275,6 +278,8 @@ struct tt_SegmentHeader {
     // between the writer's check and the writer's write; the owner drains once more after setting it,
     // which closes the window the other way. Under load the owner is never inside a wait, so the flag
     // is never set and the doorbell is never rung.
+    // 0 while the owner is awake; while it is about to sleep or asleep, the generation of that sleep (never 0), so a
+    // writer can tell a reader that went back to sleep from one that never woke (struct tt_SegmentPeer).
     uint32_t reader_waiting;
 };
 
@@ -692,7 +697,9 @@ struct tt_Context {
     uint16_t liveliness_deferrals;
     uint64_t liveliness_deferrals_total; // how often that happened at all, for a reader of the log
     uint64_t segment_doorbells_sent;
-    uint64_t segment_bells_rung; // of segment_doorbells_sent, the ones rung through the FIFO rather than UDP
+    uint64_t segment_bells_rung;
+    uint32_t segment_sleep_generation; // the last generation this context wrote into its own reader_waiting // of
+                                       // segment_doorbells_sent, the ones rung through the FIFO rather than UDP
     uint64_t segment_doorbells_received;
     // How many times this context built its own segment and gave it up again, and how many peers it
     // currently believes share its host. Out here with the other counters rather than behind
@@ -761,16 +768,15 @@ struct tt_Context {
         // every writer rings - a real sendto() - for every datagram until it gives that peer up.
         // Measured on a SIGKILL run: 2,853,609 doorbells into a socket nobody was reading.
         //
-        // A doorbell that produced no drain is not worth repeating, and read_index is how that is
-        // known. Under load the question never arises: a reader that is not blocked never sets the
-        // flag. When it is blocked it has drained everything, so the index has moved since our last
-        // ring and we ring again - which is the case the doorbell exists for.
-        // `doorbell_rung` is not redundant with the index: both start at zero, and so does a fresh
-        // ring's read_index, so without it the very FIRST doorbell reads as one already sent and is
-        // never rung. The test caught that immediately, which is the only reason this comment is
-        // about a fixed bug rather than a shipped one.
-        bool doorbell_rung;
-        uint32_t doorbell_read_index;
+        // Once per SLEEP, not once per reader advance (2026-10-05). A reader that sets reader_waiting writes the
+        // generation of that sleep there, and a writer rings each generation once: a dead reader leaves its last
+        // generation behind and is rung once, not per datagram, which is what the per-advance rule was for. That rule
+        // assumed a reader that had taken nothing since our ring was dead or about to wake for it. On the rig a live
+        // reader went back to sleep without taking anything, with up to 512 records unread, and the writer - seeing
+        // no advance - never rang again: p4 RELIABLE stalled 400-500 ms at a time until the reader woke for its own
+        // timer (diagnosed with the ring's indices printed at each stall; ringing on every write ended the stalls and
+        // cost the reader 50% more CPU). A new sleep is a new generation, so it is rung again.
+        uint32_t doorbell_generation;
         // The peer's FIFO doorbell, opened when its segment is attached (tt_segment_bell_open()), stored PLUS ONE so
         // that the memset(0) every teardown path ends with means "none" rather than standard input. 0: ring over UDP.
         int32_t bell_fd_plus1;
