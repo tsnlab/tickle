@@ -825,6 +825,24 @@ path is ahead by only 6.6%, so **most of our same-host lead is inherited from th
 earned by the segment.** That is the direction for 6e(b) and for whatever the 12% gap in the per-seq_no model
 turns out to be, and it is a sharper statement of where the work goes than any figure above it.
 
+**Re-measured 2026-10-04 23:41 on `e17b4e6f`** - after the io_uring receive hint and the FIFO doorbell (below, "Where
+the segment publisher's system time went"). Same harness, same cell, same rig, 5 reps per framework, every TickLE row
+`tx_shm` share 1.000 and every quoted figure drop-free (`~/rig_results_safe/p4_shm_headtohead_e17b4e6f.txt`):
+
+| p4 BEST_EFFORT, one host, as a user gets it | TickLE `e17b4e6f` | Fast DDS (data-sharing on) | |
+|---|---:|---:|---|
+| send Mbps | **20,385** (20,291..20,461, n=4 of 5) | 13,240 (12,571..13,549, n=5) | **1.54x**, ranges separate |
+| publisher CPU per sample | **1.071 us** (0.957..1.105) | 1.694 us (1.660..1.774) | **-37%** |
+| publisher peak RSS | **3.2 MB** | 15.9 MB | about a fifth |
+| wire bytes per sample | 0 | 0 | both stay in memory |
+
+**The 1.07x of this morning is 1.54x tonight, and TickLE now uses less CPU per sample than Fast DDS on this cell
+rather than only less memory.** Our own shared-memory gain over our kernel path (2,095 Mbps, n=5) is now **9.7x**
+against 6.79x this morning, approaching Fast DDS's 11.6x from a kernel path that is itself 1.87x faster. One TickLE
+rep of five dropped (2.23M samples, ring full) and is excluded, as the cell's rules require; Fast DDS dropped none.
+The subscriber side is reported for TickLE only (1.061 us per sample, 2.6 MB): the Fast DDS cell records its
+publisher's RESULT line and not its subscriber's, so there is nothing to set it against.
+
 **Where that per-sample budget does NOT go, measured 2026-10-04** (`ring_cost_model.c`, a four-arm cross-core
 model of the ring pinned to the cores the bench uses, 5 reps of 10M records, read against the measured
 1.507 us/sample of the p3 segment arm):
