@@ -635,6 +635,34 @@ plus 149.3 MB of shared memory before any application connected. That 216 MB is 
 and is not in the table, because it is not in the process the table measures. Ours is a 762 kB segment created
 in-process on demand, with no daemon.
 
+**Re-measured 2026-10-05 on `8d1c3712` - after ACK solicitation stopped being clocked by a 1 ms timer - and two of
+the three cells turn round.** Same harness, cell and rig, 3 reps per framework, every arm's witness agreeing
+(`~/rig_results_safe/s6_reliable_p{2,3,4}_8d1c3712.txt`):
+
+| RELIABLE send Mbps, one host | TickLE `8d1c3712` | CycloneDDS | FastDDS |
+|---|---:|---:|---:|
+| p2 1292 B | ✅ **9,774** (9,713..9,816) | 2,621 (2,593..2,638) | ❌ 953 |
+| p3 1424 B | ✅ **10,359** (10,055..10,550) | 2,778 (2,708..2,845) | ❌ 1,028 |
+| p4 2800 B | VOID, see below | 5,776 (5,431..6,395) | 2,045 |
+
+**Why it was a loss.** A KEEP_ALL Publisher asked for acknowledgement at most once per reliable retry interval
+(1 ms), and its window is 256 seq_nos, so it could never send more than ~256 seq_nos per millisecond: **241k
+samples/s, on two different machines alike**, with the publisher idle 60% of the time. The solicitation is now
+clocked by the ACKNACK that answers it and spaced by data (one per half-window of new seq_nos), and a refused
+Publisher re-asks on its own timer (`d7e02846`, `8d1c3712`). The same change made the cross-host A-B-B-A campaign
+(17 cells, 6 reps per arm) **37 metrics better, 112 held, 1 worse**; the one is c6's client peak RSS, +6.7 kB at
+t = 2.0, inside WIRE_PLAN 10.4's ~10 KB floor between builds of different code size, so it is reported and not
+counted (`~/rig_results_safe/selfclock2_compare.txt`). Its first version failed that campaign - c6 lost 87% of its
+throughput to a Publisher waiting for an answer that was never re-requested - and was fixed before merging.
+
+**p4 is VOID by the cell's own rule, and the reason is a new defect, not a slow path.** Every rep dropped at the
+ring (65-195 datagrams), so the send rate is not read. What was delivered is 10,250-10,858 Mbps against CycloneDDS's
+5,776, and the transport lost nothing it accepted (`frag_abandoned=0`, `gap_abandoned=0`). But in each rep the
+application gave up 4-7 samples after its 100 ms blocking bound (`write_fail` equals the subscriber's `lost`
+exactly): a KEEP_ALL window of 128 samples is 256 datagrams at p4, the same as the ring's 256 slots, and the stalls
+began when the Publisher got fast enough to fill it. Not yet diagnosed; it is the next item, and until it is fixed
+this cell carries no TickLE figure.
+
 **Throughput is a split result and p4 is a loss, stated first.** At p3 we lead by 1.2%, at p2 CycloneDDS leads by
 5.0%, and at p4 it carries **92.6%** more than we do. The cause is mechanical and ours: `tt_SEGMENT_SLOT_BYTES` is
 bounded by the network MTU, so a 2800-byte sample takes two slots on a path that has no MTU - **our segment
