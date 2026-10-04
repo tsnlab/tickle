@@ -25,6 +25,7 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
+#include <tickle/hal_linux.h> // tt_HAL_IO_URING, struct tt_hal
 #include <tickle/tickle.h>
 
 #include "Bench.h"
@@ -43,6 +44,9 @@ static const double default_duration_s = 10.0;
 static const double discovery_margin_s = 2.0;
 static const double bits_per_byte = 8.0;
 static const double bits_per_megabit = 1e6;
+
+// Room for "rx_hint=refused uring_arms=<20 digits> uring_skipped=<20 digits>".
+#define RX_HINT_FIELD_BYTES 96
 
 static double interval_s = 0.0; // 0 = as fast as possible, matching the DDS-native scenarios' own default
 static double duration_s = default_duration_s;
@@ -130,9 +134,20 @@ int main(int argc, char** argv) {
     bench_stats_set_attach(&g_bench_stats, node.segment_attach, (size_t)tt_SEGMENT_ATTACH_COUNT,
                            (size_t)tt_SEGMENT_ATTACHED, (size_t)tt_SEGMENT_ABSENT);
     bench_stats_end(&g_bench_stats);
+    // Which way this run learned of arrivals while busy, so an io_uring arm that the kernel refused cannot pass for
+    // one that ran: rx_hint=uring only when the ring was set up, with how often it was armed and how many reads it
+    // saved.
+    char rx_hint[RX_HINT_FIELD_BYTES];
+#if tt_HAL_IO_URING
+    snprintf(rx_hint, sizeof rx_hint, "rx_hint=%s uring_arms=%llu uring_skipped=%llu",
+             node.hal.uring_fd >= 0 ? "uring" : "refused", (unsigned long long)node.hal.uring_arms,
+             (unsigned long long)node.hal.uring_skipped);
+#else
+    snprintf(rx_hint, sizeof rx_hint, "rx_hint=read");
+#endif
     printf("RESULT: framework=tickle scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f %s\n",
-           (unsigned long)sent, elapsed_s, mbps,
+           "send_mbps=%.3f %s %s\n",
+           (unsigned long)sent, elapsed_s, mbps, rx_hint,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

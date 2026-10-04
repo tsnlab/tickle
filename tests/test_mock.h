@@ -462,6 +462,12 @@ uint32_t tt_rx_buffered(const struct tt_Context* node) {
     return test_mock_try_receive_remaining > 0 ? (uint32_t)test_mock_try_receive_remaining : 0U;
 }
 
+// No cheaper way to know than reading, so "may be" - the behaviour before tt_rx_maybe_ready() existed.
+bool tt_rx_maybe_ready(struct tt_Context* node) {
+    (void)node;
+    return true;
+}
+
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     (void)node;
     (void)buf;

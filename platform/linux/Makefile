@@ -183,7 +183,15 @@ ALL_OBJS = $(OBJS) $(ALL_EXAMPLE_OBJS)
 # Two nodes on one host, over loopback. Needs no root and no namespaces, unlike test.sh, so this
 # one can run on every push - see test_samehost.sh's own header for the bug it exists to catch and
 # why a test that avoided the problem is what let that bug reach a benchmark.
-test-samehost: examples
+# The io_uring refusal shim for test_samehost.sh's second pass (README.md, "io_uring").
+refuse_io_uring.so: ../../tests/support/refuse_io_uring.c
+	$(CC) -shared -fPIC -O2 -o $@ $< -ldl
+
+# tt_rx_maybe_ready() against the real HAL - the unit tests link the mock one (rx_hint_check.c says why it matters).
+rx_hint_check: rx_hint_check.c libtickle.a
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
+
+test-samehost: examples refuse_io_uring.so rx_hint_check
 	./test_samehost.sh
 
 test: config-renames $(TEST_BINS)
@@ -487,5 +495,5 @@ clean:
 	# currently selected, so switching BUILD_TYPE and running `clean` doesn't leave the
 	# other mode's stale cache behind.
 	rm -rf obj/*/
-	rm -f libtickle.a
+	rm -f libtickle.a refuse_io_uring.so rx_hint_check
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))

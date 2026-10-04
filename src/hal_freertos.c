@@ -390,6 +390,12 @@ uint32_t tt_rx_buffered(const struct tt_Context* node) {
     return 0; // every receive here asks the stack; nothing is held back
 }
 
+// No cheaper way to know than reading, so "may be" - the behaviour before tt_rx_maybe_ready() existed.
+bool tt_rx_maybe_ready(struct tt_Context* node) {
+    (void)node;
+    return true;
+}
+
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     // lwIP does NOT honor MSG_DONTWAIT per recvfrom() call the way Linux does - without O_NONBLOCK
     // on the socket it can still block on an empty socket, which hangs drain_rx()'s "keep calling

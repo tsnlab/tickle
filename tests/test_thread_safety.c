@@ -398,6 +398,12 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     return result;
 }
 
+// No cheaper way to know than reading, so "may be" - the behaviour before tt_rx_maybe_ready() existed.
+bool tt_rx_maybe_ready(struct tt_Context* node) {
+    (void)node;
+    return true;
+}
+
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct queue* q = &queues[node->id];
     pthread_mutex_lock(&q->lock);

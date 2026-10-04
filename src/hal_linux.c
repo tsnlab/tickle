@@ -43,6 +43,12 @@
 #include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/hal_linux.h> // tt_RX_BATCH, struct tt_mmsghdr
+#if tt_HAL_IO_URING           // after hal_linux.h, which derives it from tt_HAL_RX_HINT
+// __NR_io_uring_*: <sys/syscall.h> is the portable spelling; the number itself lives in an architecture's own header
+// (asm/unistd_64.h on x86-64, asm-generic/unistd.h on arm64), which include-cleaner would have us name instead.
+#include <linux/io_uring.h> // tt_rx_maybe_ready()
+#include <sys/syscall.h>    // NOLINT(misc-include-cleaner)
+#endif
 #include <tickle/tickle.h>
 #include <tickle/trace.h>
 
@@ -67,8 +73,9 @@
 #include <sys/types.h> // pid_t
 #endif
 
-#if tt_SEGMENT_ENABLED
-#include <sys/mman.h> // mmap/munmap - the segment (SHM_PLAN.md stage 1)
+// The segment's mapping (SHM_PLAN.md stage 1) and io_uring's rings are both mmap()ed.
+#if tt_SEGMENT_ENABLED || tt_HAL_IO_URING
+#include <sys/mman.h>
 #endif
 
 // TT_RX_DROP_PERCENT - receive-side loss injection for experiments, 0 (off) by default and not
@@ -455,12 +462,20 @@ void tt_own_address(const struct tt_Context* node, uint32_t* ip, uint16_t* port)
 }
 #endif
 
+#if tt_HAL_IO_URING
+static bool uring_setup(struct tt_Context* node);
+static void uring_close(struct tt_Context* node);
+#endif
+
 tt_ret_t tt_bind(struct tt_Context* node) {
     // Set before anything below can fail into tt_close(): -1 says "nothing to close here yet",
     // the same convention node->hal.sock itself relies on implicitly (every failure that reaches
     // tt_close() below happens after sock was already created successfully).
     node->hal.wake_fd = -1;
     node->hal.data_sock = -1;
+#if tt_HAL_IO_URING
+    node->hal.uring_fd = -1; // tt_close() after a failed bind must not close what was never opened
+#endif
     node->hal.rx_prefer_data = false;
     node->hal.rx_idle = 0;
     node->hal.rx_count = 0;
@@ -589,12 +604,21 @@ tt_ret_t tt_bind(struct tt_Context* node) {
         return tt_RET_IO_ERROR;
     }
 
+#if tt_HAL_IO_URING
+    if (!uring_setup(node) && tt_HAL_RX_HINT == tt_RX_HINT_URING) {
+        tt_close(node); // the reason was logged by uring_refused()
+        return tt_RET_UNSUPPORTED;
+    }
+#endif
     return tt_RET_OK;
 }
 
 void tt_close(struct tt_Context* node) {
 #if tt_CONTEXT_ID_CLAIM
     release_claimed_id(node);
+#endif
+#if tt_HAL_IO_URING
+    uring_close(node); // before the sockets: a poll in flight on a socket being closed is cancelled with the ring
 #endif
     node->hal.rx_count = 0; // anything a batch still held belonged to the sockets closed below
     node->hal.rx_next = 0;
@@ -1024,6 +1048,205 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
     TT_TRACE(tt_TRACE_RX_DATAGRAM);
     return ret;
 }
+
+#if tt_HAL_IO_URING
+// tt_rx_maybe_ready()'s machinery. Deliberately the smallest io_uring there is: no liburing, no buffers, no
+// multishot - one-shot POLLIN on each receive socket, submitted only after a check found that socket unarmed, and
+// completed by the kernel the first time a datagram makes it readable. So a socket nobody writes to costs one
+// submission ever, and a quiet one is checked by reading a counter in shared memory.
+//
+// Why one-shot and not multishot: a multishot poll posts a completion for every wake-up, which on a busy receiver
+// is one per datagram - work added to the kernel path, where the cross-host figures are made. One-shot posts once
+// per arm, and arming happens only from the busy-loop check, so a context that never runs that check pays nothing.
+// It also needs Linux 5.1 rather than 5.13.
+#define URING_ENTRIES 4U
+#define URING_SOCKETS 2U
+
+static void uring_unmap(struct tt_hal* hal) {
+    if (hal->uring_sqes != NULL) {
+        (void)munmap(hal->uring_sqes, hal->uring_sqes_len);
+    }
+    if (hal->uring_cq_map != NULL && hal->uring_cq_map != hal->uring_sq_map) {
+        (void)munmap(hal->uring_cq_map, hal->uring_cq_map_len);
+    }
+    if (hal->uring_sq_map != NULL) {
+        (void)munmap(hal->uring_sq_map, hal->uring_sq_map_len);
+    }
+    hal->uring_sqes = NULL;
+    hal->uring_cq_map = NULL;
+    hal->uring_sq_map = NULL;
+}
+
+static void uring_close(struct tt_Context* node) {
+    struct tt_hal* hal = &node->hal;
+    if (hal->uring_fd < 0) {
+        return;
+    }
+    uring_unmap(hal);
+    (void)close(hal->uring_fd);
+    hal->uring_fd = -1;
+    hal->uring_armed = 0;
+}
+
+// Refused is not an error: Docker's default seccomp profile, Kubernetes' RuntimeDefault and
+// kernel.io_uring_disabled all refuse it, and the context works without it - every check then reads the socket, as
+// it did before. Said once per process, so the reason a deployment is slower is in its log (README, "io_uring").
+static void uring_refused(const char* step, int err) {
+#if tt_HAL_RX_HINT == tt_RX_HINT_URING
+    TT_LOG_ERROR("io_uring refused (%s: %s) and this build requires it (tt_HAL_RX_HINT=tt_RX_HINT_URING) - not "
+                 "creating the context. Allow io_uring (README.md, \"io_uring\") or build with tt_RX_HINT_AUTO.",
+                 step, strerror(err));
+#else
+    static bool told = false;
+    if (!told) {
+        told = true;
+        TT_LOG_WARNING("io_uring unavailable (%s: %s) - a busy context will check its sockets with a read each time. "
+                       "See README.md, \"io_uring\", to allow it.",
+                       step, strerror(err));
+    }
+#endif
+}
+
+static bool uring_setup(struct tt_Context* node) {
+    struct tt_hal* hal = &node->hal;
+    hal->uring_fd = -1;
+    hal->uring_armed = 0;
+    hal->uring_sq_map = NULL;
+    hal->uring_cq_map = NULL;
+    hal->uring_sqes = NULL;
+
+    struct io_uring_params params;
+    memset(&params, 0, sizeof(params));
+    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
+    int ring_fd = (int)syscall(__NR_io_uring_setup, URING_ENTRIES, &params);
+    if (ring_fd < 0) {
+        uring_refused("io_uring_setup", errno);
+        return false;
+    }
+    hal->uring_fd = ring_fd;
+    hal->uring_sq_map_len = params.sq_off.array + (params.sq_entries * sizeof(uint32_t));
+    hal->uring_cq_map_len = params.cq_off.cqes + (params.cq_entries * sizeof(struct io_uring_cqe));
+    const bool single = (params.features & IORING_FEAT_SINGLE_MMAP) != 0;
+    if (single && hal->uring_cq_map_len > hal->uring_sq_map_len) {
+        hal->uring_sq_map_len = hal->uring_cq_map_len;
+    }
+    void* sq_map = mmap(NULL, hal->uring_sq_map_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_fd,
+                        IORING_OFF_SQ_RING);
+    if (sq_map == MAP_FAILED) {
+        uring_refused("mmap SQ", errno);
+        uring_close(node);
+        return false;
+    }
+    hal->uring_sq_map = sq_map;
+    void* cq_map = sq_map;
+    if (!single) {
+        cq_map = mmap(NULL, hal->uring_cq_map_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_fd,
+                      IORING_OFF_CQ_RING);
+        if (cq_map == MAP_FAILED) {
+            uring_refused("mmap CQ", errno);
+            uring_close(node);
+            return false;
+        }
+    }
+    hal->uring_cq_map = cq_map;
+    hal->uring_sqes_len = params.sq_entries * sizeof(struct io_uring_sqe);
+    void* sqes =
+        mmap(NULL, hal->uring_sqes_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_fd, IORING_OFF_SQES);
+    if (sqes == MAP_FAILED) {
+        uring_refused("mmap SQEs", errno);
+        uring_close(node);
+        return false;
+    }
+    hal->uring_sqes = sqes;
+    uint8_t* sq_base = (uint8_t*)sq_map;
+    uint8_t* cq_base = (uint8_t*)cq_map;
+    hal->uring_sq_tail = (uint32_t*)(sq_base + params.sq_off.tail);
+    hal->uring_sq_mask = (uint32_t*)(sq_base + params.sq_off.ring_mask);
+    hal->uring_sq_array = (uint32_t*)(sq_base + params.sq_off.array);
+    hal->uring_cq_head = (uint32_t*)(cq_base + params.cq_off.head);
+    hal->uring_cq_tail = (uint32_t*)(cq_base + params.cq_off.tail);
+    hal->uring_cq_mask = (uint32_t*)(cq_base + params.cq_off.ring_mask);
+    hal->uring_cqes = cq_base + params.cq_off.cqes;
+    return true;
+}
+
+// Completions in, armed bits out. A completion means its socket became readable (or the poll ended for another
+// reason - an error, a cancellation), and either way that socket is no longer armed, which is what makes the next
+// check read it.
+static void uring_harvest(struct tt_hal* hal) {
+    uint32_t head = *hal->uring_cq_head; // ours to move
+    uint32_t tail = __atomic_load_n(hal->uring_cq_tail, __ATOMIC_ACQUIRE);
+    if (head == tail) {
+        return;
+    }
+    const struct io_uring_cqe* cqes = (const struct io_uring_cqe*)hal->uring_cqes;
+    for (; head != tail; head++) {
+        uint64_t which = cqes[head & *hal->uring_cq_mask].user_data;
+        if (which < URING_SOCKETS) {
+            hal->uring_armed &= (uint8_t)~(1U << which);
+        }
+    }
+    __atomic_store_n(hal->uring_cq_head, head, __ATOMIC_RELEASE);
+}
+
+// One submission for every socket in `bits`, in one io_uring_enter(). A poll on a socket that is already readable
+// completes at once, so arming before the read that will empty it loses nothing.
+static void uring_arm(struct tt_hal* hal, uint8_t bits) {
+    const int fds[URING_SOCKETS] = {hal->sock, hal->data_sock};
+    uint32_t tail = *hal->uring_sq_tail; // ours to move
+    uint32_t added = 0;
+    struct io_uring_sqe* sqes = (struct io_uring_sqe*)hal->uring_sqes;
+    for (uint32_t i = 0; i < URING_SOCKETS; i++) {
+        if ((bits & (1U << i)) == 0 || fds[i] < 0) {
+            continue;
+        }
+        uint32_t index = (tail + added) & *hal->uring_sq_mask;
+        struct io_uring_sqe* sqe = &sqes[index];
+        memset(sqe, 0, sizeof(*sqe));
+        sqe->opcode = IORING_OP_POLL_ADD;
+        sqe->fd = fds[i];
+        uint32_t mask = POLLIN; // NOLINT(misc-include-cleaner) - <poll.h>
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+        mask = (mask << 16) | (mask >> 16); // the kernel reads poll32_events half-word swapped on big-endian
+#endif
+        sqe->poll32_events = mask;
+        sqe->user_data = i;
+        hal->uring_sq_array[index] = index;
+        added++;
+    }
+    if (added == 0) {
+        return;
+    }
+    __atomic_store_n(hal->uring_sq_tail, tail + added, __ATOMIC_RELEASE);
+    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
+    int submitted = (int)syscall(__NR_io_uring_enter, hal->uring_fd, added, 0U, 0U, NULL, 0);
+    if (submitted < 0) {
+        return; // nothing armed: the next check reads the socket, as without the ring
+    }
+    hal->uring_arms++;
+    hal->uring_armed |= bits;
+}
+
+bool tt_rx_maybe_ready(struct tt_Context* node) {
+    struct tt_hal* hal = &node->hal;
+    if (hal->uring_fd < 0 || tt_rx_buffered(node) != 0) {
+        return true;
+    }
+    uring_harvest(hal);
+    const uint8_t all = (uint8_t)((1U << URING_SOCKETS) - 1U);
+    if (hal->uring_armed == all) {
+        hal->uring_skipped++;
+        return false; // both polls still waiting: nothing has arrived on either socket since they were armed
+    }
+    uring_arm(hal, (uint8_t)(all & ~hal->uring_armed));
+    return true; // unarmed means unknown: let the caller read, the poll now in flight covers what comes after
+}
+#else
+bool tt_rx_maybe_ready(struct tt_Context* node) {
+    (void)node;
+    return true;
+}
+#endif
 
 tt_ret_t tt_wake_signal(struct tt_Context* node) {
     uint64_t one = 1;

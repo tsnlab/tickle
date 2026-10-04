@@ -123,6 +123,28 @@ static inline uintptr_t tt_thread_self(void) {
 #endif
 
 // Linux-specific hardware abstraction layer structure
+// How a busy poll loop learns that a datagram arrived (tt_rx_maybe_ready(), README.md "io_uring"):
+//   tt_RX_HINT_AUTO  0, the default: io_uring when the kernel allows it; when it is refused (Docker's default
+//                    seccomp profile, Kubernetes RuntimeDefault, kernel.io_uring_disabled, Linux < 5.1) one warning,
+//                    and every check reads the socket instead. Default because it works for a user who never read
+//                    README.md, at the price of ~1.5 KB of code that tt_RX_HINT_READ leaves out.
+//   tt_RX_HINT_READ  1: never io_uring - every check reads the socket, and none of the io_uring code is compiled.
+//   tt_RX_HINT_URING 2: io_uring or nothing - a refusal fails context creation with tt_RET_UNSUPPORTED, so a
+//                    deployment that must have it finds out at start-up rather than by being slower.
+#define tt_RX_HINT_AUTO 0
+#define tt_RX_HINT_READ 1
+#define tt_RX_HINT_URING 2
+#ifndef tt_HAL_RX_HINT
+#define tt_HAL_RX_HINT tt_RX_HINT_AUTO
+#endif
+#if tt_HAL_RX_HINT != tt_RX_HINT_READ && tt_HAL_RX_HINT != tt_RX_HINT_AUTO && tt_HAL_RX_HINT != tt_RX_HINT_URING
+#error "tt_HAL_RX_HINT must be tt_RX_HINT_AUTO (0), tt_RX_HINT_READ (1) or tt_RX_HINT_URING (2)"
+#endif
+#ifdef tt_HAL_IO_URING
+#error "tt_HAL_IO_URING is derived from tt_HAL_RX_HINT; set tt_HAL_RX_HINT instead"
+#endif
+#define tt_HAL_IO_URING (tt_HAL_RX_HINT != tt_RX_HINT_READ)
+
 struct tt_hal {
     // The well-known port (_tt_CONFIG.port), shared with every other node on this host via
     // SO_REUSEADDR. Broadcasts are addressed here, so this is how a node is reached before anyone
@@ -183,6 +205,29 @@ struct tt_hal {
     uint64_t rx_batch_calls;
     uint64_t rx_batch_datagrams;
     uint64_t rx_batch_full;
+#if tt_HAL_IO_URING
+    // tt_rx_maybe_ready() (hal_linux.c): an io_uring whose only job is one-shot POLLIN on the two receive sockets, so
+    // a busy loop learns that a datagram arrived from a completion in shared memory rather than by asking the kernel.
+    // uring_fd < 0 when the kernel refused it (seccomp, kernel.io_uring_disabled, an old kernel) - then every answer
+    // is "may be", which is the behaviour without it. Bit 0 the well-known socket, bit 1 the data socket.
+    int uring_fd;
+    uint8_t uring_armed; // a poll is in flight for this socket: no completion yet means nothing has arrived
+    void* uring_sq_map;
+    size_t uring_sq_map_len;
+    void* uring_cq_map; // == uring_sq_map when the kernel maps both rings at once
+    size_t uring_cq_map_len;
+    void* uring_sqes;
+    size_t uring_sqes_len;
+    uint32_t* uring_sq_tail;
+    uint32_t* uring_sq_mask;
+    uint32_t* uring_sq_array;
+    uint32_t* uring_cq_head;
+    uint32_t* uring_cq_tail;
+    uint32_t* uring_cq_mask;
+    void* uring_cqes;
+    uint64_t uring_arms;    // poll submissions, each one io_uring_enter() - the cost side of the trade
+    uint64_t uring_skipped; // tt_rx_maybe_ready() answers of "no", each one a read that was not made
+#endif
 #if tt_CONTEXT_ID_CLAIM
     // (g8) The data socket's own address, host order, read back after tt_bind() (the link's address when the socket
     // is bound to any address), and the id this context holds in the host registry (0: none).

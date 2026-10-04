@@ -85,6 +85,9 @@ typedef enum tt_ret_t {
                                    // interface owns it by definition, it is the compiled-in
                                    // default, and it is the catch-all that makes an unconfigured
                                    // node work at all.
+    tt_RET_UNSUPPORTED = -15,      // This build requires something the running system refuses - today only
+                                   // tt_HAL_RX_HINT=tt_RX_HINT_URING on a kernel or container that does not allow
+                                   // io_uring (hal_linux.h). Not retryable: the same system refuses it again.
     tt_RET_WOULD_BLOCK = -13,      // Phase 3 (rmw_tickle/PLAN.md) - tt_Publisher_publish() on a
                                    // KEEP_ALL Publisher whose next write would have to evict a
                                    // sample no matched Subscriber has acknowledged yet. Nothing was
@@ -229,6 +232,13 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
 // none). Core keeps its state lock across such datagrams and never across a read from the socket
 // (OPTIMIZATION_PLAN.md 11.4, D4).
 uint32_t tt_rx_buffered(const struct tt_Context* node);
+
+// Could a non-blocking read find anything? Asked by a poll loop that is busy running scheduled work and wants to
+// check its sockets without paying a system call to learn that nothing came (2026-10-04: a max-rate segment
+// publisher spent a third of its system time on empty reads). true means "may be": the caller then reads with
+// tt_try_receive(), which may still find nothing. false must mean nothing has arrived since the HAL last looked. A
+// HAL with no cheaper way to know returns true, which is exactly the behaviour before this function existed.
+bool tt_rx_maybe_ready(struct tt_Context* node);
 
 // Wakes a concurrent tt_receive() blocked on this node (from any thread, including this one - a
 // self-signal), making it return -3 immediately instead of waiting out the rest of its timeout.

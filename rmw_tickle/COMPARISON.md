@@ -848,6 +848,55 @@ confirmed by `offsetof` - but removing it is worth 3.2%, inside neither pre-regi
 when a whole record halved the slots it occupies. What the remaining ~93% is remains open, and copying, layout,
 ring capacity and seq_no accounting have each now been excluded by measurement rather than by argument.
 
+**Where the segment publisher's system time went, measured 2026-10-04** - the first named component of the ~93%.
+The p3 segment arm's own RESULT line already said where to look: the publisher was CPU-bound (`sched_cpu_s` 4.90 of a
+5.0 s run) and **half of that was system time** (`utime_s` 2.40, `stime_s` 2.51). A shared-memory publish that needs
+the kernel for half its cost is paying for something other than shared memory.
+
+`experiments/syscall_census.sh` counted it with `strace -c` (counts only - strace inflates time), against a control
+whose answer is known: the OFF arm's publisher must send one datagram per p3 sample, and it read **1.000**.
+
+| per sample, p3 BEST_EFFORT, one Pi | ON publisher | ON subscriber | OFF publisher (control) |
+|---|---:|---:|---:|
+| all syscalls | 0.367 | 0.361 | 1.002 |
+| `recvmmsg` returning nothing | **0.240** | 0.120 | - |
+| `sendto` (ON: the doorbell) | 0.124 | - | 1.000 |
+| `ppoll` + `recvfrom` (woken by a doorbell) | - | 0.240 | - |
+
+**0.240 of them were the publisher asking its own sockets whether anything had arrived.** `tt_Context_poll()` peeks
+at both sockets after every `tt_SCHEDULER_IO_INTERLEAVE` (8) scheduler entries so a max-rate publisher still hears
+its ACKNACKs - two empty `recvmmsg` per eight samples, almost none of which ever find anything.
+
+**The fix is event-driven, not a tuned interval** (the user's direction, 2026-10-04). Raising the interleave to 64
+or bounding it by 50 us of time removed most of the cost on the rig - 880k and 898k delivered against 631k - but a
+count of 512 starved discovery so long that 0.12-0.21M samples went out as broadcasts before the subscriber was
+learned, and any interval is a number to re-tune per target. Instead the Linux HAL now learns of arrivals from
+**io_uring**: a one-shot `POLLIN` per socket, armed only from that busy-loop check, completed by the kernel into
+memory shared with the process (`tt_rx_maybe_ready()`, `hal.h`). A quiet socket then costs a memory read; the ring
+was armed 11-21 times per five-second run. No thread is added. README.md, "io_uring", documents the default, the
+fallback, and why Docker's default seccomp profile refuses io_uring.
+
+Measured on the rig with `experiments/segment_arms.sh` on `b5e365de` plus the change, 7 reps per arm round-robin,
+treatment checked on every row (`rx_hint=read` / `rx_hint=uring`), `~/rig_results_safe/segarms_uring_20261004.txt`:
+
+| p3 BEST_EFFORT, segment, one Pi | before (read per check) | io_uring | |
+|---|---:|---:|---|
+| delivered k samples/s, all 7 reps | 661.9 (641.4..669.5) | **865.2** (789.6..897.8) | **1.31x**, ranges separate |
+| send k samples/s, drop-free reps | 661.9 (n=7) | **893.3** (890.7..897.8, n=4) | **1.35x** |
+| publisher CPU per sample | 1.478 us | **1.055 us** | **-29%** |
+| subscriber CPU per sample | 1.080 us | **0.831 us** | -23% |
+
+Three of the seven io_uring reps dropped (BEST_EFFORT ring full): the publisher now outruns the subscriber, which
+costs 0.83 us per sample. So **the reader is the next bottleneck on this cell**, and the drop-free send rate is a
+lower bound on what the publisher alone can do. The arm's own `recvmmsg` count was not re-run under strace; the
+rate, CPU and arm counts are what this table rests on.
+
+Two arms built along the way are recorded and not shipped: a reader that spins up to 5 us before sleeping (a tuned
+value, and its first version never drained the ring it found non-empty - 1.2k samples/s delivered, caught by the
+delivered-rate column and not by 46 unit-test binaries, because the mock HAL has no segment;
+`experiments/local_segment_cell.sh` now runs the real ring on the PC in a namespace so that cannot recur unseen),
+and the interleave/interval arms above.
+
 **Withdrawn**: the ~12,900 Mbps figure seen on 2026-10-03 for Fast DDS data-sharing is not quoted anywhere. Those
 rows failed their identity check because the fastdds RESULT line carried no `transport_profile=` field at the
 time, and a refused row is not a result. 13,413 replaces it, measured after `9ccf12b5` gave every fastdds RESULT

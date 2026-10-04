@@ -3573,9 +3573,12 @@ tt_ret_t tt_Context_create(struct tt_Context* node) {
     }
 #endif
 
-    if (tt_bind(node) != tt_RET_OK) {
+    tt_ret_t bound = tt_bind(node);
+    if (bound != tt_RET_OK) {
         TT_LOG_ERROR("Cannot bind");
-        return tt_RET_IO_ERROR;
+        // tt_RET_UNSUPPORTED is kept: unlike a socket error it says the build and the system disagree, and retrying
+        // cannot help (hal.h).
+        return bound == tt_RET_UNSUPPORTED ? bound : tt_RET_IO_ERROR;
     }
 
     TT_LOG_INFO("Node open at %d", _tt_CONFIG.port);
@@ -11780,6 +11783,24 @@ tt_ret_t tt_Context_poll(struct tt_Context* node, int64_t timeout) {
     return result;
 }
 
+// The non-blocking socket check a busy poll loop squeezes in between scheduler entries. Asks tt_rx_maybe_ready()
+// first because its answer is usually free: a HAL that can tell from memory that nothing arrived saves the read that
+// would have said so (hal.h; 2026-10-04, two empty reads per eight samples were a third of a max-rate segment
+// publisher's system time). True with *result set when something was read and the poll should return.
+static bool busy_peek(struct tt_Context* node, tt_ret_t* result) {
+    if (!tt_rx_maybe_ready(node)) {
+        return false;
+    }
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+    if (len < 0) {
+        return false;
+    }
+    *result = drain_rx(node, process_datagram(node, len, ip, port, tt_TRANSPORT_UDP));
+    return true;
+}
+
 static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
     // Negative: wait exactly until the next scheduler entry is due, or indefinitely when there is none
     // (see tt_Context_poll() in tickle.h). The loop below always bounded a wait by the next due entry, but
@@ -11842,11 +11863,9 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
             // scheduler work run. Not the caller's own real wait (never blocks): if nothing's
             // there, fall straight back into scheduler processing next iteration.
             consecutive_scheduler_runs = 0;
-            uint32_t ip = 0;
-            uint16_t port = 0;
-            int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
-            if (len >= 0) {
-                return drain_rx(node, process_datagram(node, len, ip, port, tt_TRANSPORT_UDP));
+            tt_ret_t peeked = tt_RET_TIMEOUT;
+            if (busy_peek(node, &peeked)) {
+                return peeked;
             }
         } else {
             consecutive_scheduler_runs = 0;

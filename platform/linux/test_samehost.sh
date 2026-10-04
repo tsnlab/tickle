@@ -32,6 +32,8 @@ set -eu
 
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 PUB="$HERE/publisher"
+# LD_PRELOAD library that makes io_uring_setup() fail with EPERM (tests/support/refuse_io_uring.c).
+REFUSE_SHIM="$HERE/refuse_io_uring.so"
 SUB="$HERE/subscriber"
 # Loopback broadcast: both nodes are on this host, and this keeps the test's traffic off whatever
 # network the machine is attached to. That is not a detail - on 2026-09-23 TickLE's compiled-in
@@ -70,16 +72,6 @@ for pid in $(pgrep -x subscriber 2>/dev/null) $(pgrep -x publisher 2>/dev/null);
     esac
 done
 
-# -d bounds the subscriber's own run so it exits and prints its statistics by itself; the
-# publisher is given a shorter -c/-i budget so it finishes first and the count is complete.
-"$SUB" -b "$BCAST" -I "$SUB_ID" -d 14 >"$SUB_LOG" 2>&1 </dev/null &
-SUB_PID=$!
-sleep 2
-
-timeout 30 "$PUB" -b "$BCAST" -I "$PUB_ID" -c "$COUNT" -i 1 >"$PUB_LOG" 2>&1 || true
-wait "$SUB_PID" 2>/dev/null || true
-SUB_PID=
-
 fail() {
     echo "same-host test: FAIL - $1" >&2
     echo "--- subscriber ---" >&2
@@ -89,33 +81,74 @@ fail() {
     exit 1
 }
 
-received=$(grep -c '^seq=' "$SUB_LOG" || true)
-[ "$received" -eq "$COUNT" ] || fail "subscriber received $received of $COUNT messages"
+run_pass() { # run_pass <label> [LD_PRELOAD library]
+    PASS_LABEL=$1
+    PRELOAD=${2:-}
+    # -d bounds the subscriber's own run so it exits and prints its statistics by itself; the
+    # publisher is given a shorter -c/-i budget so it finishes first and the count is complete.
+    env ${PRELOAD:+LD_PRELOAD="$PRELOAD"} "$SUB" -b "$BCAST" -I "$SUB_ID" -d 14 >"$SUB_LOG" 2>&1 </dev/null &
+    SUB_PID=$!
+    sleep 2
 
-# The assertion that catches the mechanism rather than the symptom, and with no margin to eat.
-#
-# Two earlier versions were weaker. `pub_self -lt pub_tx` was satisfied by the precise benchmark
-# signature this test exists to catch (10009 self-received of 10010 sent is "less than"). Requiring
-# that at least COUNT of what was sent did not come back was correct but had a margin of zero in
-# three runs of five, and config.h's own zero-known-peers rule can eat it: a data sample published
-# before any peer is known goes out as a broadcast and comes back to its own sender, adding one to
-# each side. That would have failed this gate on a system behaving correctly, and a gate that can
-# fail on correct behaviour is one people learn to re-run rather than read.
-#
-# Counting self-received DATA alone was not enough either, and this run proved it rather than
-# predicted it: the publisher's first sample goes out before any peer is known, so it is a
-# broadcast, and a broadcast comes back to its own sender. rx_self_sent_data was 1 on a completely
-# healthy run.
-#
-# rx_self_sent_data_unicast is the one with no legitimate non-zero case. A node's own unicast data
-# is addressed to somebody else by construction, so receiving it back means the kernel handed the
-# sender its own stream and nothing else. No arithmetic, no margin, and no race to lose.
-pub_self_uni=$(sed -n 's/.*Node .* traffic: .*rx_self_sent_data_unicast=\([0-9]*\).*/\1/p' "$PUB_LOG" | tail -1)
-pub_self_data=$(sed -n 's/.*rx_self_sent_data=\([0-9]*\) .*/\1/p' "$PUB_LOG" | tail -1)
-pub_tx=$(sed -n 's/.*Node .* traffic: tx_datagrams=\([0-9]*\).*/\1/p' "$PUB_LOG" | tail -1)
-pub_self=$(sed -n 's/.*Node .* traffic: .*rx_self_sent=\([0-9]*\).*/\1/p' "$PUB_LOG" | tail -1)
-[ -n "$pub_self_uni" ] || fail "publisher printed no traffic counters"
-[ "$pub_self_uni" -eq 0 ] ||
-    fail "publisher received $pub_self_uni of its own unicast data samples back - its unicast is landing on its own socket"
+    timeout 30 env ${PRELOAD:+LD_PRELOAD="$PRELOAD"} "$PUB" -b "$BCAST" -I "$PUB_ID" -c "$COUNT" -i 1 >"$PUB_LOG" 2>&1 || true
+    wait "$SUB_PID" 2>/dev/null || true
+    SUB_PID=
 
-echo "same-host test: PASS ($received/$COUNT delivered, publisher self-received $pub_self_uni unicast data samples, $pub_self_data data samples in total, $pub_self of $pub_tx datagrams overall)"
+
+    received=$(grep -c '^seq=' "$SUB_LOG" || true)
+    [ "$received" -eq "$COUNT" ] || fail "subscriber received $received of $COUNT messages"
+
+    # The assertion that catches the mechanism rather than the symptom, and with no margin to eat.
+    #
+    # Two earlier versions were weaker. `pub_self -lt pub_tx` was satisfied by the precise benchmark
+    # signature this test exists to catch (10009 self-received of 10010 sent is "less than"). Requiring
+    # that at least COUNT of what was sent did not come back was correct but had a margin of zero in
+    # three runs of five, and config.h's own zero-known-peers rule can eat it: a data sample published
+    # before any peer is known goes out as a broadcast and comes back to its own sender, adding one to
+    # each side. That would have failed this gate on a system behaving correctly, and a gate that can
+    # fail on correct behaviour is one people learn to re-run rather than read.
+    #
+    # Counting self-received DATA alone was not enough either, and this run proved it rather than
+    # predicted it: the publisher's first sample goes out before any peer is known, so it is a
+    # broadcast, and a broadcast comes back to its own sender. rx_self_sent_data was 1 on a completely
+    # healthy run.
+    #
+    # rx_self_sent_data_unicast is the one with no legitimate non-zero case. A node's own unicast data
+    # is addressed to somebody else by construction, so receiving it back means the kernel handed the
+    # sender its own stream and nothing else. No arithmetic, no margin, and no race to lose.
+    pub_self_uni=$(sed -n 's/.*Node .* traffic: .*rx_self_sent_data_unicast=\([0-9]*\).*/\1/p' "$PUB_LOG" | tail -1)
+    pub_self_data=$(sed -n 's/.*rx_self_sent_data=\([0-9]*\) .*/\1/p' "$PUB_LOG" | tail -1)
+    pub_tx=$(sed -n 's/.*Node .* traffic: tx_datagrams=\([0-9]*\).*/\1/p' "$PUB_LOG" | tail -1)
+    pub_self=$(sed -n 's/.*Node .* traffic: .*rx_self_sent=\([0-9]*\).*/\1/p' "$PUB_LOG" | tail -1)
+    [ -n "$pub_self_uni" ] || fail "publisher printed no traffic counters"
+    [ "$pub_self_uni" -eq 0 ] ||
+        fail "publisher received $pub_self_uni of its own unicast data samples back - its unicast is landing on its own socket"
+    echo "same-host test: PASS [$PASS_LABEL] ($received/$COUNT delivered, publisher self-received $pub_self_uni unicast data samples, $pub_self_data data samples in total, $pub_self of $pub_tx datagrams overall)"
+}
+
+run_pass "default"
+if grep -q 'io_uring unavailable' "$PUB_LOG"; then
+    echo "same-host test: NOTE - this host refuses io_uring, so the pass above already ran the fallback"
+fi
+
+# The same exchange with io_uring refused, as Docker's default seccomp profile refuses it (README.md, "io_uring"). A
+# refused ring must cost speed, never delivery. The warning is what proves the refusal reached the HAL: without it
+# this pass would be the first one again and could not fail for the reason it exists.
+# The hint itself, against the real HAL, both with the ring and refused (rx_hint_check.c). Exit 2 is "compiled out".
+hint_rc=0
+"$HERE/rx_hint_check" || hint_rc=$?
+if [ "$hint_rc" -eq 0 ]; then
+    LD_PRELOAD="$REFUSE_SHIM" "$HERE/rx_hint_check" refused || { echo "same-host test: FAIL - rx_hint_check refused" >&2; exit 1; }
+elif [ "$hint_rc" -ne 2 ]; then
+    echo "same-host test: FAIL - rx_hint_check exited $hint_rc" >&2
+    exit 1
+fi
+
+if strings "$PUB" | grep -q 'io_uring unavailable'; then
+    [ -f "$REFUSE_SHIM" ] || { echo "same-host test: $REFUSE_SHIM missing (make test-samehost builds it)" >&2; exit 1; }
+    run_pass "io_uring refused" "$REFUSE_SHIM"
+    grep -q 'io_uring unavailable' "$PUB_LOG" ||
+        fail "the refusal shim did not reach the publisher: no 'io_uring unavailable' warning, so this pass tested nothing"
+else
+    echo "same-host test: io_uring compiled out (tt_HAL_IO_URING=0) - no refused pass"
+fi

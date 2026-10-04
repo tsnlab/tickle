@@ -221,6 +221,68 @@ same-host peer and no self-delivery creates no segment at all and pays nothing.
 Set it with `-Dtt_SEGMENT_BYTES=...` like any other constant in
 [include/tickle/config.h](include/tickle/config.h).
 
+## io_uring: how a busy context learns that data arrived
+
+On Linux, TickLE uses **io_uring** by default (`tt_HAL_RX_HINT=tt_RX_HINT_AUTO`) for one narrow job: telling a context that is busy
+running its own scheduled work - a publisher sending as fast as it can - whether anything has arrived on its sockets.
+Without it the only way to find out is to ask the kernel with a read, and almost every such read answers "nothing".
+With it, the kernel records the arrival in memory shared with the process, and the check is a memory read. No thread is
+added: the context stays single-threaded, and io_uring is used only to *learn* that a socket became readable - the
+datagrams themselves are still read and processed exactly as before.
+
+**What it buys.** Measured on the rig (2026-10-04, one Raspberry Pi, publisher and subscriber on one host through the
+shared-memory segment, p3 = 1424-byte samples, BEST_EFFORT at full rate, 7 reps per arm): with io_uring the
+subscriber received **1.31x** as many samples per second (865k against 662k, ranges separate), and the publisher
+spent **29% less CPU per sample** (1.055 us against 1.478) and the subscriber 23% less. Without it, the publisher was
+making 0.24 empty reads per sample - a third of its system time - to learn that nothing had arrived; with it, the
+ring was armed 11 to 21 times in a five-second run. Provenance: `rmw_tickle/COMPARISON.md`, "Where the segment
+publisher's system time went".
+
+**Why it is sometimes blocked, and what allowing it means.** io_uring has been one of the largest sources of Linux kernel
+privilege-escalation bugs in recent years - Google reported in 2023 that 60% of the kernel exploits submitted to its
+kCTF programme targeted it, and turned it off on ChromeOS, for Android apps and on its production servers. Operations
+performed through io_uring also do not pass through seccomp's per-system-call filter. For those reasons:
+
+- **Docker** (since 25.0) blocks `io_uring_setup`, `io_uring_enter` and `io_uring_register` in its default seccomp
+  profile.
+- **Kubernetes'** `RuntimeDefault` seccomp profile blocks them as well.
+- Linux 6.6 and later have the sysctl `kernel.io_uring_disabled`: `0` allows it, `1` allows it only for members of
+  `kernel.io_uring_group` (or `CAP_SYS_ADMIN`), `2` disables it. Some distributions ship it set.
+
+Allowing io_uring widens the kernel surface reachable from inside the container. Decide that for your deployment; TickLE
+works either way.
+
+**When it is refused, nothing breaks.** The context logs one warning naming the refused step and checks its sockets with
+a read each time, which is how it worked before io_uring - correct, and slower for a busy publisher. The benchmark
+`RESULT` line reports which one ran: `rx_hint=uring`, `rx_hint=refused` or `rx_hint=read` (`tt_RX_HINT_READ`).
+
+**To allow it.** TickLE needs only two of the three calls - `io_uring_setup` and `io_uring_enter`, never
+`io_uring_register` - so allow just those:
+
+```sh
+# Docker: start from the default profile and allow the two calls
+curl -sSLo seccomp-default.json https://raw.githubusercontent.com/moby/moby/master/profiles/seccomp/default.json
+jq '.syscalls += [{"names": ["io_uring_setup", "io_uring_enter"], "action": "SCMP_ACT_ALLOW"}]' \
+    seccomp-default.json > seccomp-tickle.json
+docker run --security-opt seccomp=seccomp-tickle.json ...
+```
+
+On Kubernetes, install the same profile on the nodes and select it with
+`securityContext.seccompProfile: {type: Localhost, localhostProfile: <path>}`. On the host, `sysctl
+kernel.io_uring_disabled=0` (or `1` with the process in `kernel.io_uring_group`). Avoid `seccomp=unconfined`: it allows
+everything, not only these two calls.
+
+**Three builds**, chosen with `-Dtt_HAL_RX_HINT=...` ([include/tickle/hal_linux.h](include/tickle/hal_linux.h)):
+
+| value | behaviour | when to choose it |
+|---|---|---|
+| `tt_RX_HINT_AUTO` (0, default) | io_uring when allowed, a read per check when refused (one warning) | always works, whether or not anyone read this section |
+| `tt_RX_HINT_READ` (1) | never io_uring; its code is not compiled | the smallest binary: about 1.5 KB less code |
+| `tt_RX_HINT_URING` (2) | io_uring or nothing: a refusal fails `tt_Context_create()` with `tt_RET_UNSUPPORTED` and an error naming the cause | a deployment that must not silently run slower |
+
+io_uring needs Linux 5.1 or later (one-shot `IORING_OP_POLL_ADD`); on an older kernel it is refused like any other
+refusal. FreeRTOS does not use it.
+
 ## Delivery guarantees
 
 Both modes make promises **per writer**. Samples from two different publishers have no order
