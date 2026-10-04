@@ -698,8 +698,9 @@ struct tt_Context {
     uint64_t liveliness_deferrals_total; // how often that happened at all, for a reader of the log
     uint64_t segment_doorbells_sent;
     uint64_t segment_bells_rung;
-    uint32_t segment_sleep_generation; // the last generation this context wrote into its own reader_waiting // of
-                                       // segment_doorbells_sent, the ones rung through the FIFO rather than UDP
+    uint32_t segment_sleep_generation; // the last generation this context wrote into its own reader_waiting
+    uint32_t segment_slot_ceiling; // the largest slot_bytes of any peer segment attached (record_size_limit()) // of
+                                   // segment_doorbells_sent, the ones rung through the FIFO rather than UDP
     uint64_t segment_doorbells_received;
     // How many times this context built its own segment and gave it up again, and how many peers it
     // currently believes share its host. Out here with the other counters rather than behind

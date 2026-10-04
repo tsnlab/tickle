@@ -170,6 +170,9 @@ static void test_a_wide_slot_does_not_shrink_the_span(void) {
     // until 6e(b) lands, and this test is about the seq space rather than that ceiling. 4096 is a
     // multiple of 4, which whole_record_limit_for() requires of any slot it grants.
     sender.segment_peers[OWNER_ID].mapping->slot_bytes = 4096;
+    // The slot is widened after the attach, which production never does (a segment's geometry is fixed when it is
+    // created), so the ceiling record_size_limit() keeps from the attach is widened with it.
+    sender.segment_slot_ceiling = 4096;
     EXPECT_EQ_U32(4096, whole_record_limit_for(&sender, pub.peers, 1));
 
     uint32_t before = pub.seq_no;

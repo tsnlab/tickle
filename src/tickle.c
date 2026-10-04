@@ -960,6 +960,11 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
     // re-attach carries the reader's own clock across (above). Setting it here was the other half of
     // the same defect.
     entry->recheck_in = tt_SEGMENT_REVALIDATE_SENDS;
+    // Only ever raised: a ceiling too high costs the walk record_size_limit() skips; one too low would cap a record
+    // below what a peer can take.
+    if (header->slot_bytes > node->segment_slot_ceiling) {
+        node->segment_slot_ceiling = header->slot_bytes;
+    }
 #if tt_SEGMENT_BELL_FIFO
     char bell[tt_SEGMENT_PATH_LENGTH];
     if (bell_name(bell, sizeof(bell), ip, port, context_id) >= 0) {
@@ -1554,6 +1559,16 @@ static uint32_t whole_record_limit_for(struct tt_Context* node, const struct tt_
 // value would be right for one of them and wrong for the other.
 static uint32_t record_size_limit(struct tt_Context* node, uint32_t floor, const struct tt_Peer* peers,
                                   uint8_t peer_count) {
+#if tt_SEGMENT_ENABLED
+    // whole_record_limit_for() answers with the smallest slot among the destinations, or 0, so it can never exceed
+    // the largest slot this context has ever attached to. When that is no more than the floor - every peer at the
+    // default slot of one datagram - the answer is the floor whatever the destinations are, and the walk is skipped.
+    // It was four walks per publish; skipping them measured -1.5% publisher CPU on p3 (2026-10-05, 6 reps per arm,
+    // ranges separate), small and just above the ~1% layout floor of WIRE_PLAN 10.4.
+    if (node->segment_slot_ceiling <= floor) {
+        return floor;
+    }
+#endif
     uint32_t whole = whole_record_limit_for(node, peers, peer_count);
     return whole > floor ? whole : floor;
 }
@@ -3347,6 +3362,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->segment_doorbells_sent = 0;
     node->segment_bells_rung = 0;
     node->segment_sleep_generation = 0;
+    node->segment_slot_ceiling = 0;
     node->segment_doorbells_received = 0;
     // Counters that only ever increment, and therefore only ever reported whatever was on the
     // caller's stack. Found by the structural check Plan built after `segment_peers` shipped

@@ -884,6 +884,20 @@ rep of five dropped (2.23M samples, ring full) and is excluded, as the cell's ru
 The subscriber side is reported for TickLE only (1.061 us per sample, 2.6 MB): the Fast DDS cell records its
 publisher's RESULT line and not its subscriber's, so there is nothing to set it against.
 
+**All three same-host BEST_EFFORT sizes, all three frameworks, 2026-10-05 on `313cda37`** - after tonight's receive
+hint, FIFO doorbell and per-sleep doorbell. Same harness, 3 reps per framework, every TickLE rep drop-free, every arm's
+witness agreeing (`~/rig_results_safe/s6_be_p{2,3,4}_313cda37.txt`):
+
+| BEST_EFFORT send Mbps, one host | TickLE | FastDDS (as shipped: data-sharing) | CycloneDDS (iceoryx) |
+|---|---:|---:|---:|
+| p2 1292 B | ✅ **12,916** (12,907..12,925) | 6,445 (6,354..6,504) | ❌ 4,531 |
+| p3 1424 B | ✅ **13,771** (13,688..13,824) | 6,922 (6,831..7,052) | ❌ 4,924 |
+| p4 2800 B | ✅ **20,448** (20,382..20,566) | 13,445 (13,361..13,542) | ❌ 9,389 |
+
+**2.0x FastDDS at p2 and p3, 1.52x at p4; 2.2-2.9x CycloneDDS.** FastDDS's two profile arms both run data-sharing,
+so its "kernel" arm is VOID for having no denominator, as before; the shipped configuration is the comparison a user
+meets, and it is the one quoted.
+
 **Where that per-sample budget does NOT go, measured 2026-10-04** (`ring_cost_model.c`, a four-arm cross-core
 model of the ring pinned to the cores the bench uses, 5 reps of 10M records, read against the measured
 1.507 us/sample of the p3 segment arm):
