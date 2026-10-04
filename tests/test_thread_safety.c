@@ -283,6 +283,27 @@ void tt_segment_detach(void* mapping, size_t bytes) {
     (void)bytes; // the region outlives its attachers here, as a real mapping's file does
 }
 
+// No doorbell FIFO in the mock: peers ring over (mock) UDP, as with a platform that has none.
+int32_t tt_segment_bell_create(struct tt_Context* node, const char* path) {
+    (void)node;
+    (void)path;
+    return -1;
+}
+void tt_segment_bell_destroy(struct tt_Context* node, const char* path) {
+    (void)node;
+    (void)path;
+}
+int32_t tt_segment_bell_open(const char* path) {
+    (void)path;
+    return -1;
+}
+void tt_segment_bell_ring(int32_t bell) {
+    (void)bell;
+}
+void tt_segment_bell_close(int32_t bell) {
+    (void)bell;
+}
+
 void tt_segment_unlink(const char* path) {
     pthread_mutex_lock(&tsan_segments_lock);
     for (int i = 0; i < TEST_TSAN_MAX_SEGMENTS; i++) {

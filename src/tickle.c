@@ -513,6 +513,30 @@ static int32_t segment_name(char* buf, size_t size, uint32_t ip, uint16_t port, 
     return written > 0 && (size_t)written < size ? written : -1;
 }
 
+#if tt_SEGMENT_ENABLED && tt_SEGMENT_BELL_FIFO
+// The doorbell FIFO's name: the segment's plus a suffix, so a writer that can name the segment can name its bell and
+// the two cannot drift apart (tt_segment_bell_create(), hal.h). Same contract as segment_name(): never truncated.
+static int32_t bell_name(char* buf, size_t size, uint32_t ip, uint16_t port, uint8_t context_id) {
+    char segment[tt_SEGMENT_PATH_LENGTH];
+    if (segment_name(segment, sizeof(segment), ip, port, context_id) < 0) {
+        return -1;
+    }
+    int written = snprintf(buf, size, "%s.bell", segment);
+    return written > 0 && (size_t)written < size ? written : -1;
+}
+#endif
+
+#if tt_SEGMENT_ENABLED
+// Closes this entry's end of the peer's bell. Every path that forgets a peer calls it before its memset: the memset
+// alone would leak the descriptor, and a stale one could later ring a stranger's pipe.
+static void peer_bell_close(struct tt_SegmentPeer* entry) {
+    if (entry->bell_fd_plus1 > 0) {
+        tt_segment_bell_close(entry->bell_fd_plus1 - 1);
+        entry->bell_fd_plus1 = 0;
+    }
+}
+#endif
+
 // What a reader checks after attaching, and the reason the name alone is not enough: see
 // struct tt_SegmentHeader. `expected_incarnation` is 0 on a first attach, when any incarnation is
 // acceptable and the caller records what it found; on a later check it is what was recorded, and a
@@ -861,6 +885,7 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
     struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
     if (entry->mapping == NULL && entry->missing) {
         if (entry->ip != ip || entry->port != port) {
+            peer_bell_close(entry);
             memset(entry, 0, sizeof(*entry)); // a different peer behind this id: ask about that one now
         } else if (entry->recheck_in > 0) {
             entry->recheck_in--;
@@ -905,6 +930,7 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
         // different relationship and starts its own clock.
         uint64_t carried_progress = same_address ? entry->last_progress_ns : 0;
         tt_segment_detach(entry->mapping, entry->mapped_bytes);
+        peer_bell_close(entry);
         memset(entry, 0, sizeof(*entry));
         entry->last_progress_ns = carried_progress;
     }
@@ -934,6 +960,13 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
     // re-attach carries the reader's own clock across (above). Setting it here was the other half of
     // the same defect.
     entry->recheck_in = tt_SEGMENT_REVALIDATE_SENDS;
+#if tt_SEGMENT_BELL_FIFO
+    char bell[tt_SEGMENT_PATH_LENGTH];
+    if (bell_name(bell, sizeof(bell), ip, port, context_id) >= 0) {
+        int32_t bell_fd = tt_segment_bell_open(bell);
+        entry->bell_fd_plus1 = bell_fd >= 0 ? bell_fd + 1 : 0; // none: this peer is rung over UDP
+    }
+#endif
     return header;
 }
 #endif
@@ -977,6 +1010,14 @@ static void create_own_segment(struct tt_Context* node) {
     __atomic_store_n(&header->magic, tt_SEGMENT_MAGIC, __ATOMIC_RELEASE);
     node->own_segment = header;
     node->segments_created++;
+#if tt_SEGMENT_BELL_FIFO
+    // The bell after the segment, so a writer that finds the bell finds a segment behind it. Without one, peers
+    // ring over UDP - slower, and still correct.
+    char bell[tt_SEGMENT_PATH_LENGTH];
+    if (bell_name(bell, sizeof(bell), own_ip, own_port, node->id) >= 0) {
+        (void)tt_segment_bell_create(node, bell);
+    }
+#endif
 }
 
 // Whether this context has a segment for peers to write into, building it if a same-host peer has
@@ -1039,6 +1080,20 @@ static void note_same_host_peer(struct tt_Context* node, uint8_t context_id, uin
 //
 // Peers' mappings are unmapped and never unlinked: those files belong to those peers and are still
 // being read by them. Only this context's own segment is this context's to remove.
+// The owner's doorbell goes with its segment, named from the header for release_own_segment()'s reason: the id
+// may have moved since, and the file carries the one it was created under.
+static void release_own_bell(struct tt_Context* node, const struct tt_SegmentHeader* own) {
+#if tt_SEGMENT_BELL_FIFO
+    char bell[tt_SEGMENT_PATH_LENGTH];
+    if (bell_name(bell, sizeof(bell), own->owner_ip, own->owner_port, own->owner_context_id) >= 0) {
+        tt_segment_bell_destroy(node, bell);
+    }
+#else
+    (void)node;
+    (void)own;
+#endif
+}
+
 static void release_segments(struct tt_Context* node) {
     // From the header, not from the configuration, for the same reason the attach reads it there: with the
     // slot size settable at runtime, what this context BUILT is the only thing that says how much to unmap, and
@@ -1068,6 +1123,7 @@ static void release_segments(struct tt_Context* node) {
             // The peer's own length, not ours: since the attach became two-step these can differ.
             tt_segment_detach(mapping, node->segment_peers[id].mapped_bytes);
         }
+        peer_bell_close(&node->segment_peers[id]);
         memset(&node->segment_peers[id], 0, sizeof(node->segment_peers[id]));
     }
 
@@ -1078,6 +1134,7 @@ static void release_segments(struct tt_Context* node) {
             // which is what the recheck is for.
             tt_segment_unlink(path);
         }
+        release_own_bell(node, own);
         tt_segment_detach(own, bytes);
     }
 }
@@ -1115,12 +1172,14 @@ static void release_own_segment(struct tt_Context* node) {
     // that can now run while the context is still going.
     for (int id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
         if (node->segment_peers[id].mapping == own) {
+            peer_bell_close(&node->segment_peers[id]);
             memset(&node->segment_peers[id], 0, sizeof(node->segment_peers[id]));
         }
     }
     if (named) {
         tt_segment_unlink(path);
     }
+    release_own_bell(node, own);
     // The header's own geometry, as release_segments() uses: what this context built is what must be unmapped.
     tt_segment_detach(own, segment_bytes(own->slots, own->slot_bytes));
     node->segments_released++;
@@ -1247,6 +1306,7 @@ static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_
         }
         if (now - entry->last_progress_ns >= tt_SEGMENT_DEAD_READER_NS) {
             tt_segment_detach(entry->mapping, entry->mapped_bytes);
+            peer_bell_close(entry);
             memset(entry, 0, sizeof(*entry));
             remember_absent(entry, ip, port);
             note_attach(node, tt_SEGMENT_REFUSED); // asked for and given up on, which is what REFUSED says
@@ -1284,7 +1344,12 @@ static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_
         if (!peer->doorbell_rung || read_index != peer->doorbell_read_index) {
             peer->doorbell_rung = true;
             peer->doorbell_read_index = read_index;
-            (void)tt_send_to(node, "", 0, ip, port);
+            if (peer->bell_fd_plus1 > 0) {
+                tt_segment_bell_ring(peer->bell_fd_plus1 - 1); // the FIFO: no socket layer on either side
+                node->segment_bells_rung++;
+            } else {
+                (void)tt_send_to(node, "", 0, ip, port);
+            }
             node->segment_doorbells_sent++;
         }
     }
@@ -3283,6 +3348,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->liveliness_deferrals = 0;
     node->liveliness_deferrals_total = 0;
     node->segment_doorbells_sent = 0;
+    node->segment_bells_rung = 0;
     node->segment_doorbells_received = 0;
     // Counters that only ever increment, and therefore only ever reported whatever was on the
     // caller's stack. Found by the structural check Plan built after `segment_peers` shipped
@@ -12026,7 +12092,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 // is the only counter that rises ONLY when a reader was judged dead, and without it
                 // "the writer abandoned the corpse" cannot be told apart from the ordinary reasons
                 // tx_udp_unattached rises - which is a test that cannot fail, found as one.
-                "shm_gave_up=%lu shm_doorbells_sent=%lu shm_doorbells_received=%lu "
+                "shm_gave_up=%lu shm_doorbells_sent=%lu shm_bells_rung=%lu shm_doorbells_received=%lu "
                 // Whether this context ever built a segment, and whether it still has one. With
                 // creation deferred until a same-host peer appears, tx_shm=0 has two entirely
                 // different meanings - "no peer could have used one" and "one could, and it broke" -
@@ -12044,8 +12110,9 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned long)node->segment_broadcast_to_udp, (unsigned long)node->segment_oversized_to_udp,
                 (unsigned long)node->segment_unattached_to_udp, (unsigned long)node->segment_full_dropped,
                 (unsigned long)node->segment_attach[tt_SEGMENT_REFUSED], (unsigned long)node->segment_doorbells_sent,
-                (unsigned long)node->segment_doorbells_received, (unsigned long)node->segments_created,
-                (unsigned long)node->segments_released, node->same_host_peer_count);
+                (unsigned long)node->segment_bells_rung, (unsigned long)node->segment_doorbells_received,
+                (unsigned long)node->segments_created, (unsigned long)node->segments_released,
+                node->same_host_peer_count);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads

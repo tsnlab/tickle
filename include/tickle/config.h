@@ -485,6 +485,12 @@
 // says so. A publish takes a memcpy, so a handful of passes over a claimed head is ordinary
 // concurrency; a thousand is a writer that is not coming back. High enough that a busy segment
 // never warns, low enough that a wedged one is reported in well under a second of polling.
+// Whether a segment's doorbell is a FIFO beside it (1, the default) or only the zero-length UDP datagram it was
+// before 2026-10-04 (0). The FIFO is what a peer uses when it finds one; a peer without one is rung over UDP either
+// way, so this is a choice of footprint and of A/B arm, not of compatibility (tt_segment_bell_create(), hal.h).
+#ifndef tt_SEGMENT_BELL_FIFO
+#define tt_SEGMENT_BELL_FIFO 1
+#endif
 #ifndef tt_SEGMENT_STALL_PASSES
 #define tt_SEGMENT_STALL_PASSES 1000
 #endif

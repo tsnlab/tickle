@@ -208,6 +208,20 @@ void tt_segment_detach(void* mapping, size_t bytes);
 // Removes the name. The mapping survives in anyone who still holds it, which is why a reader checks
 // the incarnation rather than trusting that a name still resolves to the segment it attached to.
 void tt_segment_unlink(const char* path);
+// The doorbell beside a segment (SHM_PLAN.md 7.1, 2026-10-04): a named FIFO, so a writer that has the segment's name
+// has the bell's too, and its read end joins the reader's existing wait (tt_receive()) - no second wait point, no
+// thread. It replaces a zero-length UDP datagram, which cost the writer a trip through the socket layer and the reader
+// a ppoll, a recvfrom and an empty recvmmsg per wake-up. A platform without one returns -1 from create and open, and
+// the writer rings over UDP as before; tt_receive() reports a rung bell as a zero-length datagram, which is what a
+// doorbell has always been to core.
+//   create  - the owner's read end, kept in the HAL and added to tt_receive()'s wait. 0, or -1 if there is none.
+//   destroy - closes it and removes the name.
+//   open    - a writer's end of a peer's bell, or -1. ring writes one byte and never blocks; close closes it.
+int32_t tt_segment_bell_create(struct tt_Context* node, const char* path);
+void tt_segment_bell_destroy(struct tt_Context* node, const char* path);
+int32_t tt_segment_bell_open(const char* path);
+void tt_segment_bell_ring(int32_t bell);
+void tt_segment_bell_close(int32_t bell);
 #endif
 // (g8) Whether ip:port - host order, as tt_receive() reports a sender - is `node`'s own data socket, which every
 // datagram it sends comes from.

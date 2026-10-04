@@ -692,6 +692,7 @@ struct tt_Context {
     uint16_t liveliness_deferrals;
     uint64_t liveliness_deferrals_total; // how often that happened at all, for a reader of the log
     uint64_t segment_doorbells_sent;
+    uint64_t segment_bells_rung; // of segment_doorbells_sent, the ones rung through the FIFO rather than UDP
     uint64_t segment_doorbells_received;
     // How many times this context built its own segment and gave it up again, and how many peers it
     // currently believes share its host. Out here with the other counters rather than behind
@@ -770,6 +771,9 @@ struct tt_Context {
         // about a fixed bug rather than a shipped one.
         bool doorbell_rung;
         uint32_t doorbell_read_index;
+        // The peer's FIFO doorbell, opened when its segment is attached (tt_segment_bell_open()), stored PLUS ONE so
+        // that the memset(0) every teardown path ends with means "none" rather than standard input. 0: ring over UDP.
+        int32_t bell_fd_plus1;
     } segment_peers[tt_MAX_CONTEXT_IDS];
     struct tt_SegmentHeader* own_segment;
     // One bit per tt_WholeRefusal cause, so the reason a whole-record send was refused is stated once per

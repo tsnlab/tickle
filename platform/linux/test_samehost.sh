@@ -123,6 +123,18 @@ run_pass() { # run_pass <label> [LD_PRELOAD library]
     [ -n "$pub_self_uni" ] || fail "publisher printed no traffic counters"
     [ "$pub_self_uni" -eq 0 ] ||
         fail "publisher received $pub_self_uni of its own unicast data samples back - its unicast is landing on its own socket"
+    # The doorbell (SHM_PLAN 7.1): every one the publisher rang must have gone through the FIFO. A subscriber that
+    # sleeps a second between samples needs one per sample, so the count cannot be zero by accident - and if it is,
+    # the pair did not use the segment at all, which is said rather than passed.
+    pub_bells=$(sed -n 's/.*Node .* traffic: .*shm_doorbells_sent=\([0-9]*\) shm_bells_rung=\([0-9]*\).*/\1 \2/p' "$PUB_LOG" | tail -1)
+    [ -n "$pub_bells" ] || fail "publisher printed no doorbell counters"
+    doorbells=${pub_bells% *}
+    bells=${pub_bells#* }
+    if [ "$doorbells" -eq 0 ]; then
+        echo "same-host test: NOTE [$PASS_LABEL] - the publisher rang no doorbell; this pass did not exercise the segment"
+    elif [ "$bells" -ne "$doorbells" ]; then
+        fail "the publisher rang $doorbells doorbells and only $bells through the FIFO"
+    fi
     echo "same-host test: PASS [$PASS_LABEL] ($received/$COUNT delivered, publisher self-received $pub_self_uni unicast data samples, $pub_self_data data samples in total, $pub_self of $pub_tx datagrams overall)"
 }
 

@@ -172,6 +172,10 @@ struct tt_hal {
     // EADDRNOTAVAIL. eventfd needs no address or interface at all. -1 before tt_bind() creates it
     // (or if creation fails partway through), so tt_close() knows not to close it.
     int wake_fd;
+    // The read end of this context's segment doorbell (tt_segment_bell_create()), stored PLUS ONE: 0 means none, so a
+    // tt_hal that was only zeroed - test_poll_signal.c builds one that way - does not poll standard input, which is
+    // what a plain fd field of 0 would be. In tt_receive()'s ppoll set always, as fd - 1: ppoll ignores -1.
+    int bell_fd_plus1;
     // Which socket gets first refusal on the next read, alternating. Without it, preferring one
     // socket whenever both are ready is not merely a delay: under a sustained stream on the
     // preferred socket the other is never read at all. That matters most exactly where it is

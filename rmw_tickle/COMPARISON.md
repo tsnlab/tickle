@@ -891,6 +891,34 @@ costs 0.83 us per sample. So **the reader is the next bottleneck on this cell**,
 lower bound on what the publisher alone can do. The arm's own `recvmmsg` count was not re-run under strace; the
 rate, CPU and arm counts are what this table rests on.
 
+**The doorbell is a FIFO now, measured 2026-10-04 late.** With the publisher no longer peeking, the next term on
+the publisher was the doorbell itself: a zero-length UDP datagram per reader wake-up, 0.071 per sample, each one a
+trip through the socket layer for the writer and a `ppoll` + `recvfrom` + an empty `recvmmsg` for the reader.
+SHM_PLAN 7.1 had already chosen the replacement by measurement (a FIFO took 90% of a futex's benefit and joins the
+existing `ppoll` set); it is built: a named FIFO beside each segment, opened by a writer when it attaches, rung with a
+one-byte `write()`, and reported by `tt_receive()` as the zero-length datagram a doorbell always was to core. A peer
+without one is rung over UDP as before. `tt_SEGMENT_BELL_FIFO=0` is the A/B arm.
+
+Rig, `experiments/segment_arms.sh` on `e19c349f` plus the change, 7 reps per arm round-robin, both treatments checked
+on every row (`rx_hint=uring`; `bells_rung=0` on the UDP arm, `bells_rung == doorbells_sent > 0` on the FIFO arm),
+`~/rig_results_safe/segarms_fifo_20261004.txt`:
+
+| p3 BEST_EFFORT, segment, one Pi | UDP doorbell | FIFO doorbell | |
+|---|---:|---:|---|
+| delivered k samples/s, all 7 reps | 831.5 (700.2..899.6) | **1,180.0** (1,070.6..1,203.0) | **1.42x**, ranges separate |
+| send k samples/s, drop-free reps | 891.8 (n=3) | **1,197.5** (1,181.7..1,203.0, n=5) | 1.34x, separate |
+| publisher CPU per sample (user / sys) | 1.096 us (0.613 / 0.401) | **0.834 us** (0.655 / 0.169) | **-24%** |
+| subscriber CPU per sample (user / sys) | 0.832 us (0.344 / 0.493) | 0.808 us (0.349 / 0.459) | -3% |
+
+**Against the start of the evening (read-per-check, UDP doorbell: 661.9k), the cell now delivers 1,180k - 1.78x -
+with the publisher's system time per sample down from 0.78 us to 0.17 us.** The subscriber has not moved as much: it
+now keeps up, so it sleeps more often (0.137 doorbells per sample against 0.071) and each wake-up still costs it a
+`ppoll`, a FIFO `read` and the scheduler round trip. Its 0.459 us of system time per sample is the next term.
+
+The rig binaries carried the bell's descriptor as a plain fd in `struct tt_hal`; the committed version stores it plus
+one so a zeroed `tt_hal` does not poll standard input (`test_poll_signal.c` builds one that way and caught it). The
+path every real context takes - `tt_bind()` initialising the field - is the same in both.
+
 Two arms built along the way are recorded and not shipped: a reader that spins up to 5 us before sleeping (a tuned
 value, and its first version never drained the ring it found non-empty - 1.2k samples/s delivered, caught by the
 delivered-rate column and not by 46 unit-test binaries, because the mock HAL has no segment;

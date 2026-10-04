@@ -330,7 +330,7 @@ sanitize:
 # examples/freertos/ (and hal_freertos.*) are cross-compiled and have their own lint pass -
 # `make -C platform/freertos lint`, see CONTRIBUTING.md - and clang-tidy cannot parse them without
 # that target's own flags. third_party/ isn't ours.
-LINT_EXCLUDE_RE = ^(third_party|platform|examples/freertos)/|hal_freertos\.
+LINT_EXCLUDE_RE = ^(third_party|platform/freertos|examples/freertos)/|hal_freertos\.
 # Tracked C++ sources (.cpp/.hpp/.cc) get the clang-format half of lint only (2026-09-26): CI's
 # cpp-linter formats every changed .cpp too, and a FastDDS harness edit went red there after passing
 # here, because lint listed .c/.h alone. clang-tidy stays C-only - the C++ files need vendor headers

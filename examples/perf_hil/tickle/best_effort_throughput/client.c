@@ -145,9 +145,13 @@ int main(int argc, char** argv) {
 #else
     snprintf(rx_hint, sizeof rx_hint, "rx_hint=read");
 #endif
+    // Which way the doorbells went: bells_rung of doorbells_sent through the FIFO, the rest over UDP.
+    char bells[RX_HINT_FIELD_BYTES];
+    snprintf(bells, sizeof bells, "doorbells_sent=%llu bells_rung=%llu",
+             (unsigned long long)node.segment_doorbells_sent, (unsigned long long)node.segment_bells_rung);
     printf("RESULT: framework=tickle scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f %s %s\n",
-           (unsigned long)sent, elapsed_s, mbps, rx_hint,
+           "send_mbps=%.3f %s %s %s\n",
+           (unsigned long)sent, elapsed_s, mbps, rx_hint, bells,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

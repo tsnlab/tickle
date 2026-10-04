@@ -472,6 +472,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     // the same convention node->hal.sock itself relies on implicitly (every failure that reaches
     // tt_close() below happens after sock was already created successfully).
     node->hal.wake_fd = -1;
+    node->hal.bell_fd_plus1 = 0; // no segment yet, so no doorbell (tt_segment_bell_create())
     node->hal.data_sock = -1;
 #if tt_HAL_IO_URING
     node->hal.uring_fd = -1; // tt_close() after a failed bind must not close what was never opened
@@ -630,6 +631,12 @@ void tt_close(struct tt_Context* node) {
     if (close(node->hal.sock) < 0) {
         TT_LOG_ERROR("Cannot close socket: %s", strerror(errno));
     }
+#if tt_SEGMENT_ENABLED
+    if (node->hal.bell_fd_plus1 > 0) { // normally closed with the segment (release_own_segment()); the backstop
+        (void)close(node->hal.bell_fd_plus1 - 1);
+        node->hal.bell_fd_plus1 = 0;
+    }
+#endif
     if (node->hal.wake_fd >= 0 && close(node->hal.wake_fd) < 0) {
         TT_LOG_ERROR("Cannot close wake eventfd: %s", strerror(errno));
     }
@@ -771,6 +778,14 @@ int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* data
 #define TT_RX_IDLE_WELL_KNOWN 1U
 #define TT_RX_IDLE_DATA 2U
 
+// tt_receive()'s wait set: the two sockets, the wake eventfd, and - with the segment - its doorbell FIFO.
+#if tt_SEGMENT_ENABLED
+#define RX_WAIT_FDS 4
+#define RX_WAIT_BELL 3
+#else
+#define RX_WAIT_FDS 3
+#endif
+
 // Hands out the next datagram the last recvmmsg() read and held back, or -1 when none is waiting.
 static int32_t rx_take_pending(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct tt_hal* hal = &node->hal;
@@ -875,6 +890,10 @@ static int32_t rx_fill(struct tt_Context* node, int socket_fd, void* buf, size_t
 #endif
 }
 
+#if tt_SEGMENT_ENABLED
+static void bell_drain(struct tt_Context* node);
+#endif
+
 int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     // What the last batch read comes first, and without a wait: holding it behind ppoll() would delay
     // datagrams that have already arrived.
@@ -914,15 +933,20 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
         // struct pollfd/POLLIN/ppoll() live in a glibc-private header; <poll.h> (included above)
         // is the correct public header.
         // NOLINTNEXTLINE(misc-include-cleaner)
-        struct pollfd pfd[3] = {
+        struct pollfd pfd[RX_WAIT_FDS] = {
             {.fd = node->hal.sock, .events = POLLIN, .revents = 0},      // NOLINT(misc-include-cleaner)
             {.fd = node->hal.wake_fd, .events = POLLIN, .revents = 0},   // NOLINT(misc-include-cleaner)
             {.fd = node->hal.data_sock, .events = POLLIN, .revents = 0}, // NOLINT(misc-include-cleaner)
+#if tt_SEGMENT_ENABLED
+            {.fd = node->hal.bell_fd_plus1 - 1,
+             .events = POLLIN,
+             .revents = 0}, // NOLINT(misc-include-cleaner) - -1: ignored
+#endif
         };
         // sigmask=NULL: no signal-mask swap needed, only ppoll()'s own real (not
         // millisecond-rounded) timeout resolution is what's wanted here.
         // NOLINTNEXTLINE(misc-include-cleaner)
-        int poll_ret = ppoll(pfd, 3, timeout_ts_ptr, NULL);
+        int poll_ret = ppoll(pfd, RX_WAIT_FDS, timeout_ts_ptr, NULL);
         if (poll_ret > 0 && ((pfd[0].revents | pfd[2].revents) & POLLIN) != 0) { // NOLINT(misc-include-cleaner)
             TT_TRACE(tt_TRACE_RX_WAKE);
         }
@@ -945,6 +969,19 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
             (void)read(node->hal.wake_fd, &discard, sizeof(discard));
             return -3; // Interrupted
         }
+#if tt_SEGMENT_ENABLED
+        if ((pfd[RX_WAIT_BELL].revents & POLLIN) != 0) { // NOLINT(misc-include-cleaner)
+            bell_drain(node);
+            if (((pfd[0].revents | pfd[2].revents) & POLLIN) == 0) { // NOLINT(misc-include-cleaner)
+                // Only the bell: a record is in the segment and neither socket has anything, so the drain that
+                // follows must not ask them (the empty recvmmsg per wake-up the UDP doorbell cost).
+                node->hal.rx_idle = TT_RX_IDLE_WELL_KNOWN | TT_RX_IDLE_DATA;
+                *ip = 0;
+                *port = 0;
+                return 0; // a rung bell is a zero-length datagram to core, which is what a doorbell always was
+            }
+        }
+#endif
         // Broadcasts arrive on the well-known socket and unicast on this node's own data socket.
         // Whichever is ready gets read; when both are, they alternate. A fixed preference would
         // not merely delay the other socket - under a sustained stream on the preferred one the
@@ -1336,5 +1373,62 @@ void tt_segment_detach(void* mapping, size_t bytes) {
 
 void tt_segment_unlink(const char* path) {
     (void)unlink(path);
+}
+
+// The doorbell FIFO (hal.h). Its name is the segment's plus a suffix, built by core, so the two cannot drift.
+//
+// The owner opens its own FIFO read-write rather than read-only: a FIFO with no writer reports POLLHUP to a reader
+// for as long as nobody has it open for writing, which would turn every wait into a busy loop between peers. Holding
+// both ends keeps it quiet. Non-blocking both ways - a reader must never sleep in read(), and a writer finding the
+// pipe full has nothing to do: a full pipe is a bell already rung.
+int32_t tt_segment_bell_create(struct tt_Context* node, const char* path) {
+    (void)unlink(path); // a bell left by a dead context of this name is replaced, as its segment is
+    if (mkfifo(path, SEGMENT_MODE) != 0) {
+        TT_LOG_WARNING("Cannot create segment doorbell %s: %s - peers will ring over UDP", path, strerror(errno));
+        return -1;
+    }
+    // The umask applied to mkfifo(); the peer may run as another user, exactly as for the segment itself.
+    (void)chmod(path, SEGMENT_MODE);
+    int bell = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (bell < 0) {
+        TT_LOG_WARNING("Cannot open segment doorbell %s: %s - peers will ring over UDP", path, strerror(errno));
+        (void)unlink(path);
+        return -1;
+    }
+    node->hal.bell_fd_plus1 = bell + 1;
+    return 0;
+}
+
+void tt_segment_bell_destroy(struct tt_Context* node, const char* path) {
+    if (node->hal.bell_fd_plus1 > 0) {
+        (void)close(node->hal.bell_fd_plus1 - 1);
+        node->hal.bell_fd_plus1 = 0;
+    }
+    (void)unlink(path);
+}
+
+int32_t tt_segment_bell_open(const char* path) {
+    // O_WRONLY|O_NONBLOCK fails with ENXIO when nobody holds the read end - an owner that has gone - and with ENOENT
+    // for a peer from before the bell existed. Both are answered by ringing over UDP.
+    return open(path, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+}
+
+void tt_segment_bell_ring(int32_t bell) {
+    const uint8_t one = 1;
+    (void)write(bell, &one, sizeof(one)); // EAGAIN: the pipe is full of rings the reader has not drained yet
+}
+
+void tt_segment_bell_close(int32_t bell) {
+    (void)close(bell);
+}
+
+// Empties the bell so a level-triggered ppoll() stops reporting it. Rings carry no content: how many were written
+// does not matter, only that the reader is now awake and about to drain the segment.
+#define BELL_DRAIN_BYTES 64 // rings read per call: any size empties the pipe, a larger one in fewer reads
+
+static void bell_drain(struct tt_Context* node) {
+    uint8_t discard[BELL_DRAIN_BYTES];
+    while (read(node->hal.bell_fd_plus1 - 1, discard, sizeof(discard)) == (ssize_t)sizeof(discard)) {
+    }
 }
 #endif

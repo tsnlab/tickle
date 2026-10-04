@@ -20,7 +20,9 @@
 #     same non-overlap rule (added 2026-10-04 after 5 of 7 baseline reps dropped and left the send-rate verdict
 #     VOID). What a subscriber received is a figure a drop cannot inflate.
 #   - TREATMENT CHECK: an arm built with tt_HAL_RX_HINT=1 (read) must report rx_hint=read on every client RESULT line, and
-#     every other arm rx_hint=uring (the default since 2026-10-04; rx_hint=refused means the rig refused io_uring); otherwise the arm is VOID - an arm
+#     every other arm rx_hint=uring (the default since 2026-10-04; rx_hint=refused means the rig refused io_uring).
+#     Likewise an arm built with tt_SEGMENT_BELL_FIFO=0 must report bells_rung=0, and every other arm that rang a
+#     doorbell must have rung it through the FIFO (bells_rung > 0).; otherwise the arm is VOID - an arm
 #     that silently ran without its treatment looks exactly like a null result.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -137,6 +139,16 @@ for name in names:
     if hints != {want}:
         void_arm.add(name)
         print(f'  {name}: VOID - treatment check wanted rx_hint={want}, got {sorted(hints)}')
+        continue
+    # The doorbell's treatment (2026-10-04): an arm built with tt_SEGMENT_BELL_FIFO=0 must ring nothing through the
+    # FIFO, and every other arm that rang at all must have rung through it.
+    fifo_off = 'tt_SEGMENT_BELL_FIFO=0' in flags[name]
+    bad = [r for r in reps if 'bells_rung' in cli[(name, r)] and
+           ((int(cli[(name, r)]['bells_rung']) != 0) if fifo_off else
+            (int(cli[(name, r)].get('doorbells_sent', 0)) > 0 and int(cli[(name, r)]['bells_rung']) == 0))]
+    if bad:
+        void_arm.add(name)
+        print(f'  {name}: VOID - doorbell treatment check failed in reps {bad} (fifo_off={fifo_off})')
         continue
     d = [int(srv[(name, r)]['recv']) / float(cli[(name, r)]['elapsed_s']) / 1e3 for r in reps if (name, r) in srv]
     if len(d) < 3:
