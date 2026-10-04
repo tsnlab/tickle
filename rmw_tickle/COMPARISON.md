@@ -825,6 +825,29 @@ path is ahead by only 6.6%, so **most of our same-host lead is inherited from th
 earned by the segment.** That is the direction for 6e(b) and for whatever the 12% gap in the per-seq_no model
 turns out to be, and it is a sharper statement of where the work goes than any figure above it.
 
+**Where that per-sample budget does NOT go, measured 2026-10-04** (`ring_cost_model.c`, a four-arm cross-core
+model of the ring pinned to the cores the bench uses, 5 reps of 10M records, read against the measured
+1.507 us/sample of the p3 segment arm):
+
+| component | absolute | share of the 1.507 us budget | verdict |
+|---|---:|---:|---|
+| the two payload copies | 0.039 us | **2.6%** | not the cause |
+| header cache-line contention | 0.048 us | **3.2%** | between the bands; reported, nothing built |
+| both removed | 0.107 us | 7.1% | super-additive (plain sum 0.087) |
+
+**About 93% of the per-sample budget is neither copying nor the header layout.** The arms differ only by
+compile-time flags (`-DPAD_INDICES`, `-DNO_COPY`), and A1/A2/A3 held spreads of 0.1..2.9% over five reps.
+
+This refutes two things that looked plausible from reading. An estimate that the two copies were ~36% of the
+budget rested on an assumed 10 GB/s; the hardware's own figure makes them 2.6%. And the header's read-only
+geometry (`slots` at offset 20, `slot_bytes` at 24) genuinely does share cache line 0 with `write_index` at 28,
+which the writer CASes every sample and the reader reads on every delivery - the collision is real and was
+confirmed by `offsetof` - but removing it is worth 3.2%, inside neither pre-registered band.
+
+**So 6e(b) keeps its memory argument and loses its speed argument**, consistent with the 0.99x already measured
+when a whole record halved the slots it occupies. What the remaining ~93% is remains open, and copying, layout,
+ring capacity and seq_no accounting have each now been excluded by measurement rather than by argument.
+
 **Withdrawn**: the ~12,900 Mbps figure seen on 2026-10-03 for Fast DDS data-sharing is not quoted anywhere. Those
 rows failed their identity check because the fastdds RESULT line carried no `transport_profile=` field at the
 time, and a refused row is not a result. 13,413 replaces it, measured after `9ccf12b5` gave every fastdds RESULT
