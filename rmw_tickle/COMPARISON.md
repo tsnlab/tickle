@@ -14,6 +14,10 @@ Column order in every table is fixed: **TickLE, FastDDS, CycloneDDS**.
 
 ## 1. The one table
 
+**The table below is the cross-host campaign: publisher and subscriber on two Pis over the rig's link. Results with
+both on one host, where each framework uses its own shared-memory transport, are in [1a](#1a-same-host-shared-memory)
+below.**
+
 Every experiment in this document, all four implementations side by side. **✅ = best in that row,
 ❌ = worst in that row.** Lower is better for latency, CPU, memory and bandwidth; higher is better
 for throughput. Each row's explanation is in section 2 below, linked from its own name.
@@ -364,6 +368,46 @@ same QoS:
 
 The tuned profile trades some of FastDDS's lossless P3/P4 throughput and bytes for completing under
 loss. Both are shown so neither configuration's weakness is hidden.
+
+### 1a. Same host (shared memory)
+
+Publisher and subscriber on **one** rig Pi, each framework on its own shared-memory path: TickLE's segment,
+**FastDDS as shipped** (data-sharing, which it enables by default) and **CycloneDDS with iceoryx**. Every arm's transport
+is checked by a witness that cannot be configured into agreeing (the loopback packet count, and our own `tx_shm`
+share), and every throughput figure is from drop-free repetitions only. Same rig and harness as the cross-host table
+(`experiments/s6_transport_cells.sh`); 3 repetitions per framework unless noted; ranges in §2.2c. **✅ = best,
+❌ = worst** in the row.
+
+| # | Metric | Condition | TickLE | FastDDS | CycloneDDS | build | details |
+|---|---|---|---|---|---|---|---|
+| | **Throughput, send Mbps** (higher is better) | | | | | | |
+| S1 | BEST_EFFORT, max rate | P2 1292 B | ✅ **12,916** | 6,445 | ❌ 4,531 | `313cda37` | [§2.2c](#22c-the-shared-memory-path-all-three-frameworks-on-their-own-2026-10-01) |
+| S2 | BEST_EFFORT, max rate | P3 1424 B | ✅ **13,771** | 6,922 | ❌ 4,924 | `313cda37` | §2.2c |
+| S3 | BEST_EFFORT, max rate | P4 2800 B | ✅ **20,448** | 13,445 | ❌ 9,389 | `313cda37` | §2.2c |
+| S4 | RELIABLE | P2 1292 B | ✅ **9,774** | ❌ 953 | 2,621 | `8d1c3712` | §2.2c |
+| S5 | RELIABLE | P3 1424 B | ✅ **10,359** | ❌ 1,028 | 2,778 | `8d1c3712` | §2.2c |
+| S6 | RELIABLE | P4 2800 B | ✅ **12,289** | ❌ 2,004 | 5,240 | `fe45f276` | §2.2c |
+| | **Latency, RTT mean ms** (lower is better; one ping in flight, 200/s unless noted) | | | | | | |
+| S7 | RTT | P2 1292 B | ✅ **0.030** | ❌ 0.158 | 0.063 | `e17b4e6f` | §2.2c |
+| S8 | RTT, 20/s (60 s) | P2 1292 B | ✅ **0.032** | ❌ 0.197 | 0.071 | `e17b4e6f` | §2.2c |
+| S9 | RTT | P3 1424 B | ✅ **0.030** | ❌ 0.098 | 0.061 | `5689da96` | §2.2c |
+| S10 | RTT | P4 2800 B | ✅ **0.051** | ❌ 0.099 | 0.064 | `5689da96` | §2.2c |
+| | **CPU** (lower is better) | | | | | | |
+| S11 | publisher, us per sample | BEST_EFFORT P4, max rate | ✅ **1.071** | ❌ 1.694 | – | `e17b4e6f` | [same-host p4](#same-host-p4-best_effort-against-fast-dds-measured-2026-10-04-on-8cc373fb) |
+| S12 | client, us per round trip | RTT P2, 20/s | ✅ **66.0** | ❌ 136.7 | 102.1 | `e17b4e6f` | §2.2c |
+| | **Memory** (lower is better) | | | | | | |
+| S13 | publisher peak RSS, MB | BEST_EFFORT P4 | ✅ **3.2** | ❌ 15.9 | – | `e17b4e6f` | same-host p4 |
+| | **Bandwidth** | | | | | | |
+| S14 | wire bytes per sample | every cell above | 0 | 0 | 0 | | nothing leaves the host |
+
+**How to read it.** Every same-host cell measured is TickLE's. Three things the table does not say on its own:
+- **CPU and memory are not yet measured for all three frameworks on every cell.** S11 and S13 compare against FastDDS
+  only, and the CycloneDDS memory figure excludes iceoryx's `iox-roudi` daemon, which reserved 216 MB of shared memory
+  before any application connected (§2.2c, 2026-10-01). Filling the empty cells is on the to-do list.
+- **The rows come from four builds** of the same night, each measured after the change that moved it; a later build
+  re-measured on a row it did not change is not repeated here. S6's CycloneDDS figure is from the same run as ours (an
+  earlier run gave 5,776).
+- **The narrowest lead is S10, p4 latency (1.26x CycloneDDS):** a p4 sample is two datagrams and two slots on our path.
 
 ### Where TickLE does not come first, stated up front
 
