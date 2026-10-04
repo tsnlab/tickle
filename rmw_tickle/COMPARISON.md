@@ -1048,6 +1048,20 @@ configuration), at both rates SHM_PLAN 7.1 asked for (`~/rig_results_safe/s6_lat
 | 20/s, kernel path | ✅ **0.049** (0.048..0.050) | 0.109 | ❌ 0.148 |
 | client CPU per sample at 20/s, shared memory | ✅ **66.0 us** | 102.1 | ❌ 136.7 |
 
+**p3 and p4 at 200/s, 2026-10-05 on `5689da96`** (same harness and rule, 3 reps per arm, every witness agreeing,
+`~/rig_results_safe/s6_latency_p{3,4}_200hz_5689da96.txt`):
+
+| RTT mean, ms | TickLE | CycloneDDS | FastDDS |
+|---|---:|---:|---:|
+| p3, shared memory | ✅ **0.030** (0.030..0.030) | 0.061 | ❌ 0.098 |
+| p3, kernel path | ✅ **0.046** | 0.104 | ❌ 0.138 |
+| p4, shared memory | ✅ **0.051** (0.051..0.051) | 0.064 | ❌ 0.099 |
+| p4, kernel path | ✅ **0.081** | 0.112 | ❌ 0.139 |
+
+Ours on every cell. The p4 lead over CycloneDDS (1.26x) is the narrowest of the four sizes: a p4 sample is two
+datagrams and two slots on our segment path (`sample_path=frag`), and the round trip pays for both. That is where the
+whole-record work (SHM_PLAN 6e) would act on latency, and it is the next latency item.
+
 **Our segment now saves 34% (200/s) and 34% (20/s) of a round trip against our own kernel path, where it cost 8.7%
 and 16%.** The controls hold: the kernel arms read 0.046 and 0.049, exactly what 2.2c and the pure-kernel run above
 read on `fcc4ddb4`, so the change in the segment arm is the code. Against the vendors' own segments we are now 2.1x
