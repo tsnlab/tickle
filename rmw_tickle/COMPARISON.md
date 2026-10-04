@@ -643,7 +643,7 @@ the three cells turn round.** Same harness, cell and rig, 3 reps per framework, 
 |---|---:|---:|---:|
 | p2 1292 B | ✅ **9,774** (9,713..9,816) | 2,621 (2,593..2,638) | ❌ 953 |
 | p3 1424 B | ✅ **10,359** (10,055..10,550) | 2,778 (2,708..2,845) | ❌ 1,028 |
-| p4 2800 B | VOID, see below | 5,776 (5,431..6,395) | 2,045 |
+| p4 2800 B | VOID on `8d1c3712`; ✅ **12,289** (12,115..12,526) on `fe45f276`, below | 5,776; 5,240 on the later run | ❌ 2,045; 2,004 |
 
 **Why it was a loss.** A KEEP_ALL Publisher asked for acknowledgement at most once per reliable retry interval
 (1 ms), and its window is 256 seq_nos, so it could never send more than ~256 seq_nos per millisecond: **241k
@@ -660,8 +660,21 @@ ring (65-195 datagrams), so the send rate is not read. What was delivered is 10,
 5,776, and the transport lost nothing it accepted (`frag_abandoned=0`, `gap_abandoned=0`). But in each rep the
 application gave up 4-7 samples after its 100 ms blocking bound (`write_fail` equals the subscriber's `lost`
 exactly): a KEEP_ALL window of 128 samples is 256 datagrams at p4, the same as the ring's 256 slots, and the stalls
-began when the Publisher got fast enough to fill it. Not yet diagnosed; it is the next item, and until it is fixed
-this cell carries no TickLE figure.
+began when the Publisher got fast enough to fill it.
+
+**Diagnosed and fixed the same night (`fe45f276`), and the stated cause above was wrong.** The window equalling the
+ring was a guess; printing the subscriber's ring from the writer at each stall showed the real state: the reader had
+set `reader_waiting`, up to 512 records were unread, and the writer had already rung at that `read_index`, so by the
+rule "ring again only once the reader has advanced" it never rang again. A live reader had gone back to sleep without
+taking anything, which the rule assumed only a dead one does. The same lost wakeup also explains this cell's earlier
+rare give-ups (`write_fail=3` on `ab0e621c`, before any of tonight's changes) and the BEST_EFFORT cells' occasional
+mass drops (a 427k-drop rep in the A/B). The writer now rings each SLEEP of the reader once - `reader_waiting` holds a
+generation - which still rings a dead reader once and not per datagram. A-B-A-B on the rig: stalls 7/15/3/0 -> 0/0/0/0,
+ring drops -> 0, reader CPU unchanged; ringing on every write had also ended the stalls, at +50% reader CPU.
+
+Re-measured on `fe45f276`, 3 reps per framework, every TickLE rep drop-free with `write_fail=0` and `lost=0`
+(`~/rig_results_safe/s6_reliable_p4_fe45f276.txt`): **TickLE 12,289 Mbps (12,115..12,526), CycloneDDS 5,240
+(4,642..5,576), FastDDS 2,004 - 2.35x CycloneDDS.** All three RELIABLE same-host cells are now ours.
 
 **Throughput is a split result and p4 is a loss, stated first.** At p3 we lead by 1.2%, at p2 CycloneDDS leads by
 5.0%, and at p4 it carries **92.6%** more than we do. The cause is mechanical and ours: `tt_SEGMENT_SLOT_BYTES` is
