@@ -1590,6 +1590,10 @@ struct tt_Publisher { // extends endpoint
     uint64_t last_ack_solicit_ns;
     // Whether a solicitation is waiting for its ACKNACK (solicit_ack_throttled()). Core-private.
     bool ack_solicit_outstanding;
+    // seq_no when the last solicitation was sent: the watermark path asks again only a threshold of new seq_nos on.
+    uint32_t ack_solicit_seq_no;
+    // keep_all_resolicit() is in the scheduler for this Publisher. Core-private.
+    bool resolicit_armed;
 
     // QoS roadmap #6 (LIFESPAN, rmw_tickle/PLAN.md). 0 (tt_Context_create_publisher()'s own default):
     // disabled, today's only behavior - reliable_cache entries never expire on their own (only

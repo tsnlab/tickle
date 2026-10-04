@@ -3887,6 +3887,8 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
     pub->ack_solicit_watermark_pct = 0; // no watermark-triggered solicitation either (Phase 3 (d))
     pub->last_ack_solicit_ns = 0;
     pub->ack_solicit_outstanding = false;
+    pub->ack_solicit_seq_no = 0;
+    pub->resolicit_armed = false;
     // Every field an announce or the reliability path reads, not only the ones above: these
     // used to be left as found, and a caller whose struct was not already zero (a stack or reused
     // allocation) announced whatever QoS bits the garbage made, and could start with ack slots that
@@ -4701,11 +4703,14 @@ static void notify_writable_if_pending(struct tt_Publisher* pub) {
 
 // Sends one solicitation unless the shared throttle says it's too soon. Split out so the watermark
 // path below and the refusal path in tt_Publisher_publish() can't drift apart on the throttle.
+static uint64_t ack_solicit_min_gap(const struct tt_Publisher* pub) {
+    return pub->ack_solicit_period_ns > reliable_retry_interval_publisher() ? pub->ack_solicit_period_ns
+                                                                            : reliable_retry_interval_publisher();
+}
+
 static void solicit_ack_throttled(struct tt_Publisher* pub) {
     uint64_t now = tt_get_ns();
-    uint64_t min_gap = pub->ack_solicit_period_ns > reliable_retry_interval_publisher()
-                           ? pub->ack_solicit_period_ns
-                           : reliable_retry_interval_publisher();
+    uint64_t min_gap = ack_solicit_min_gap(pub);
     // Self-clocked (2026-10-04): one solicitation in flight at a time, and the next one as soon as an ACKNACK
     // answers it. min_gap is then only how long an unanswered one waits before it is assumed lost and repeated.
     // A fixed gap alone set the RELIABLE ceiling at one acknowledgement per millisecond - on one host, a KEEP_ALL
@@ -4715,9 +4720,39 @@ static void solicit_ack_throttled(struct tt_Publisher* pub) {
         return;
     }
     pub->ack_solicit_outstanding = true;
+    pub->ack_solicit_seq_no = pub->seq_no; // where the watermark path counts the next half-window from
     pub->last_ack_solicit_ns = now;
     RSTAT_INC(ack_solicit_sent);
     (void)tt_Publisher_request_ack(pub);
+}
+
+// A refused Publisher's own retry of its solicitation (2026-10-05). The refusal asks once; if that request or its
+// answer is lost, nothing else asks while the Publisher is stopped - seq_no no longer moves, so the watermark cannot
+// fire, and a caller that waits for writable_callback (rmw_tickle's publish_blocking() does) never retries the
+// publish that would. The cross-host A/B found exactly that at p4 under 5% loss: 4.5 s of a 5 s run spent waiting,
+// -87% throughput. So the Publisher arms this itself while it is refused, as a retransmission timer for the request:
+// it fires one retry interval after the last solicitation, asks again if still refused, and ends when it is not.
+static void keep_all_resolicit(struct tt_Context* node, uint64_t time, void* param);
+
+static void arm_keep_all_resolicit(struct tt_Publisher* pub) {
+    if (pub->resolicit_armed) {
+        return;
+    }
+    if (tt_Context_schedule(pub->node, pub->last_ack_solicit_ns + ack_solicit_min_gap(pub), keep_all_resolicit, pub)) {
+        pub->resolicit_armed = true;
+    }
+}
+
+static void keep_all_resolicit(struct tt_Context* node, uint64_t time, void* param) {
+    UNUSED(node);
+    UNUSED(time);
+    struct tt_Publisher* pub = param;
+    pub->resolicit_armed = false;
+    if (!pub->writable_pending) {
+        return; // writable again: there is nothing left to chase
+    }
+    solicit_ack_throttled(pub);
+    arm_keep_all_resolicit(pub);
 }
 
 // How many unacknowledged samples should trigger a solicitation, or 0 for "never".
@@ -4765,6 +4800,13 @@ static void maybe_solicit_ack_at_watermark(struct tt_Publisher* pub) {
     uint32_t acked_through = min_ack > 0 ? min_ack - 1 : 0; // ack_seq_no means "everything below it"
     uint32_t unacked = pub->seq_no > acked_through ? pub->seq_no - acked_through : 0;
     if (unacked < threshold) {
+        return;
+    }
+    // One solicitation per `threshold` new seq_nos (2026-10-05). The answer clocks the next one
+    // (solicit_ack_throttled()), but on a link whose round trip is shorter than the retry interval that alone asks
+    // more often than before: the cross-host A/B measured 1.6x the ACKNACKs per sample and +2% CPU on cells that
+    // never blocked. Counting data instead of time bounds it at two per window whatever the round trip.
+    if (pub->ack_solicit_seq_no != 0 && pub->seq_no - pub->ack_solicit_seq_no < threshold) {
         return;
     }
 
@@ -5614,6 +5656,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
         // lost, which is exactly what a lossy link does, the stall would last until something else
         // happened to ask. Soliciting here bounds recovery to one throttle interval in every case.
         solicit_ack_throttled(pub);
+        arm_keep_all_resolicit(pub);
         return tt_RET_WOULD_BLOCK;
     }
 
@@ -5689,6 +5732,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
         pub->writable_pending = true;
         RSTAT_INC(publish_refused);
         solicit_ack_throttled(pub); // same bounded-stall reasoning as the count-based refusal above
+        arm_keep_all_resolicit(pub);
         return tt_RET_WOULD_BLOCK;
     }
 
@@ -6268,6 +6312,11 @@ static tt_ret_t publisher_destroy_locked(struct tt_Publisher* pub) {
     // Same reasoning, for a still-armed periodic ACK solicitation.
     if (pub->ack_solicit_period_ns != 0) {
         tt_Context_unschedule(node, send_ack_solicit, pub);
+    }
+    // ...and for a refused Publisher's own retry of its solicitation.
+    if (pub->resolicit_armed) {
+        tt_Context_unschedule(node, keep_all_resolicit, pub);
+        pub->resolicit_armed = false;
     }
 
     if (!remove_endpoint_from_node(node, endpoint)) {

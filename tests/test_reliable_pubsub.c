@@ -2627,7 +2627,8 @@ static void test_keep_all_solicitation_is_throttled(void) {
 //
 // The control is the test above: the same stretch with no ACKNACK costs no extra send. Here the only difference is
 // the ACKNACK, so a send difference is the ACKNACK's doing.
-static void test_keep_all_solicitation_reopens_on_acknack(void) {
+// Runs the same stretch with or without an ACKNACK in the middle, and says whether the Publisher asked again.
+static bool solicits_again_after_half_window(bool with_acknack) {
     test_mock_reset();
     test_mock_now = 10 * tt_MILLISECOND; // see the test above for why not 0
 
@@ -2642,23 +2643,78 @@ static void test_keep_all_solicitation_reopens_on_acknack(void) {
         EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
     }
     EXPECT_TRUE(last_sent_heartbeat() != NULL);
-    EXPECT_TRUE(pub.ack_solicit_outstanding);
-
-    // The Subscriber answers, acknowledging seq_nos 1 and 2: 30 unacknowledged, below the watermark again.
-    struct tt_Header header;
-    init_header(&header);
-    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 3, 0ULL);
-    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    EXPECT_TRUE(!pub.ack_solicit_outstanding);
-
+    if (with_acknack) { // acknowledges seq_nos 1 and 2
+        struct tt_Header header;
+        init_header(&header);
+        uint32_t tail = write_acknack(&node, ENDPOINT_ID, 3, 0ULL);
+        EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    }
     int before = test_mock_send_call_count + test_mock_send_to_call_count;
-    for (int i = 0; i < 2; i++) { // 30 -> 32, at the watermark again, the clock still unmoved
+    for (int i = 0; i < 31; i++) { // less than a half-window of new data: no solicitation either way
         EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
     }
-    int sends = (test_mock_send_call_count + test_mock_send_to_call_count) - before;
-    EXPECT_TRUE(sends > 2);                     // two samples and a solicitation, not the samples alone
-    EXPECT_TRUE(last_sent_heartbeat() != NULL); // ...and the extra one is the solicitation
-    EXPECT_TRUE(pub.ack_solicit_outstanding);
+    int per_sample = (test_mock_send_call_count + test_mock_send_to_call_count - before) / 31;
+    before = test_mock_send_call_count + test_mock_send_to_call_count;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // the 32nd new one
+    return test_mock_send_call_count + test_mock_send_to_call_count - before > per_sample;
+}
+
+// ...and the throttle is clocked by the answer and by the data, not by the clock (2026-10-04/05). Once an ACKNACK
+// has answered the solicitation in flight, the Publisher asks again after a half-window of new seq_nos, with the
+// clock unmoved; without the ACKNACK it does not. The only difference between the two runs is the ACKNACK. A fixed
+// gap alone made one acknowledgement per millisecond the RELIABLE ceiling (241k samples/s on one host, on two
+// machines alike) and starved a Publisher waiting for its writable callback; asking on every ACKNACK instead put
+// 1.6x the ACKNACKs per sample on the wire cross-host, which counting data bounds at two per window.
+static void test_keep_all_solicitation_reopens_on_acknack(void) {
+    EXPECT_TRUE(solicits_again_after_half_window(true));
+    EXPECT_TRUE(!solicits_again_after_half_window(false)); // the control: same stretch, no answer, no new request
+}
+
+// A refused Publisher keeps asking by itself while it stays refused (2026-10-05). A caller that waits for the
+// writable callback never retries the publish, so if the refusal's solicitation or its answer is lost nothing else
+// would ask: the cross-host A/B spent 4.5 s of a 5 s run that way at p4 under 5% loss. keep_all_resolicit() is the
+// Publisher's own retransmission timer for the request - armed once per refusal episode, firing one retry interval
+// after the last solicitation, and doing nothing once the Publisher is writable again.
+static void test_keep_all_refused_publisher_resolicits_by_itself(void) {
+    test_mock_reset();
+    test_mock_now = 10 * tt_MILLISECOND;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 4);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16); // depth 4 binds
+
+    uint32_t value = 1;
+    for (int i = 0; i < 4; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    uint32_t scheduled_before = node.scheduler_tail;
+    EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_TRUE(pub.resolicit_armed);
+    EXPECT_EQ_U32(scheduled_before + 1, node.scheduler_tail); // one entry for the episode
+    EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_EQ_U32(scheduled_before + 1, node.scheduler_tail); // a second refusal does not add another
+
+    // Nobody publishes again. One retry interval later the timer fires and asks on its own.
+    test_mock_now += reliable_retry_interval_publisher();
+    int before = test_mock_send_call_count + test_mock_send_to_call_count;
+    keep_all_resolicit(&node, test_mock_now, &pub);
+    EXPECT_TRUE(test_mock_send_call_count + test_mock_send_to_call_count > before);
+    EXPECT_TRUE(last_sent_heartbeat() != NULL);
+    EXPECT_TRUE(pub.resolicit_armed); // still refused, so it re-arms
+
+    // Writable again: the next firing finds nothing to chase and stays quiet.
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 5, 0ULL);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(!pub.writable_pending);
+    test_mock_now += reliable_retry_interval_publisher();
+    before = test_mock_send_call_count + test_mock_send_to_call_count;
+    keep_all_resolicit(&node, test_mock_now, &pub);
+    EXPECT_EQ_INT(before, test_mock_send_call_count + test_mock_send_to_call_count);
+    EXPECT_TRUE(!pub.resolicit_armed);
 }
 
 // Lays one Heartbeat into node->rx_buffer, same shape as tests/test_heartbeat.c's own - duplicated
@@ -4112,6 +4168,7 @@ int main(void) {
     test_keep_all_solicits_before_blocking();
     test_keep_all_solicitation_is_throttled();
     test_keep_all_solicitation_reopens_on_acknack();
+    test_keep_all_refused_publisher_resolicits_by_itself();
     test_unknown_policy_still_terminates_on_eviction();
     test_keep_all_writable_callback_fires_once();
     test_keep_all_unblocks_when_last_subscriber_leaves();

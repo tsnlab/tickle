@@ -80,6 +80,7 @@
 /platform/linux/pong
 /platform/linux/perf_client
 /platform/linux/perf_server
+/platform/linux/rx_hint_check
 
 # clang-tidy's compilation database, when generated locally (e.g. `bear -- make all`, as
 # check-all.yml does in CI) - a local build-path artifact, not something to commit.
