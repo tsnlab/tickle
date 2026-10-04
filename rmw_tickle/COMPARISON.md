@@ -672,6 +672,14 @@ mass drops (a 427k-drop rep in the A/B). The writer now rings each SLEEP of the 
 generation - which still rings a dead reader once and not per datagram. A-B-A-B on the rig: stalls 7/15/3/0 -> 0/0/0/0,
 ring drops -> 0, reader CPU unchanged; ringing on every write had also ended the stalls, at +50% reader CPU.
 
+**Cross-host check of the night's last two core changes** (`8d1c3712` -> `63f00280`: the per-sleep doorbell and the
+size-limit fast path), A-B-B-A over all 17 campaign cells, 6 reps per arm (`~/rig_results_safe/safety_compare.txt`):
+**20 metrics better, 121 held, 9 worse at 2xSE.** The nine are all small - server CPU per sample +0.1..0.5% (c8,
+c13, c15), c4's line-rate send 943.71 -> 943.63 Mbps, wire bytes per sample +0.01% (c4, c5) - and every one is inside
+WIRE_PLAN 10.4's ~1% floor between builds of different code size. Neither change adds work on the cross-host
+subscriber's path (the doorbell is the same-host writer's, and the fast path only removes a walk), so they are reported
+here and not counted; the strict rule's verdict is stated rather than hidden.
+
 Re-measured on `fe45f276`, 3 reps per framework, every TickLE rep drop-free with `write_fail=0` and `lost=0`
 (`~/rig_results_safe/s6_reliable_p4_fe45f276.txt`): **TickLE 12,289 Mbps (12,115..12,526), CycloneDDS 5,240
 (4,642..5,576), FastDDS 2,004 - 2.35x CycloneDDS.** All three RELIABLE same-host cells are now ours.
