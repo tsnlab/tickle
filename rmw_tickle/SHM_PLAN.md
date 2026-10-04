@@ -1593,7 +1593,10 @@ cannot be partially applied, and it wants a rested reading of `end_encode()`'s b
    with a one-byte non-blocking `write()`, and a peer without one is rung over UDP. On the rig's p3 BEST_EFFORT
    throughput cell it delivered **1.42x** the UDP doorbell's rate (1,180k against 831.5k samples/s, 7 reps each,
    ranges separate) and cut the publisher's CPU per sample by 24% (COMPARISON, "The doorbell is a FIFO now"). The
-   p2 latency cell this item said would settle it is still to be re-run at both 20/s and 200/s.
+   p2 latency cell this item said would settle it was re-run at both rates the same night, and settled it the other
+   way round from how it was posed: the segment path no longer costs 8-16% of a round trip, it **saves 34%** at
+   200/s and at 20/s (0.030 and 0.032 ms against 0.046 and 0.049 on the kernel arm, ranges separate; COMPARISON,
+   "Re-measured 2026-10-04/05 on `e17b4e6f`").
 
 2. **Whether a same-host pair keeps its UDP socket at all,** for discovery only, or whether discovery also moves into
    the segment. Keeping discovery on UDP is the smaller change and keeps one discovery path; moving it is what would

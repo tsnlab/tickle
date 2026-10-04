@@ -981,6 +981,24 @@ Ranges separable: **our segment path costs 16% on a round trip at p2**, more tha
 The attach fix is correct and it made this worse, which is not a contradiction - it routes traffic onto the path
 that is slower for us, and the cost was always there behind the mixture.
 
+**Re-measured 2026-10-04/05 on `e17b4e6f`, after the FIFO doorbell - and the sign has turned.** Same harness and
+cell (`SCEN=reliable_latency`, p2, one ping in flight, 3 reps per arm, every arm's witness agreeing with its
+configuration), at both rates SHM_PLAN 7.1 asked for (`~/rig_results_safe/s6_latency_p2_{200hz,20hz}_e17b4e6f.txt`):
+
+| p2 RTT mean, ms | TickLE | CycloneDDS | FastDDS |
+|---|---:|---:|---:|
+| 200/s, shared memory | ✅ **0.030** (0.030..0.031) | 0.063 (0.061..0.066) | ❌ 0.158 (0.098..0.278) |
+| 200/s, kernel path | ✅ **0.046** (0.046..0.046) | 0.102 | ❌ 0.138 |
+| 20/s, shared memory (60 s, ~1,200 RTTs) | ✅ **0.032** (0.031..0.033) | 0.071 (0.068..0.076) | ❌ 0.197 (0.103..0.383) |
+| 20/s, kernel path | ✅ **0.049** (0.048..0.050) | 0.109 | ❌ 0.148 |
+| client CPU per sample at 20/s, shared memory | ✅ **66.0 us** | 102.1 | ❌ 136.7 |
+
+**Our segment now saves 34% (200/s) and 34% (20/s) of a round trip against our own kernel path, where it cost 8.7%
+and 16%.** The controls hold: the kernel arms read 0.046 and 0.049, exactly what 2.2c and the pure-kernel run above
+read on `fcc4ddb4`, so the change in the segment arm is the code. Against the vendors' own segments we are now 2.1x
+(CycloneDDS) and 3-5x (FastDDS) faster on this cell. FastDDS's shared-memory arm carries one repetition at each rate
+with a ~112 ms maximum, which is what widens its range; it is reported as measured.
+
 **The doorbell is most of it, measured** (`experiments/wake_cost.{c,sh}`, 20,000 round trips, 3 reps, both roles on
 one Pi, `results/wake_cost_relint.txt`). Waking a blocked reader costs **15.72 us** by the zero-length UDP datagram
 we send today, **10.11** by a FIFO and **9.52** by a futex - and **17.94 by a unix-domain datagram, which is slower
