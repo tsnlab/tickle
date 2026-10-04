@@ -157,6 +157,18 @@ static uint64_t pending_since_ns = 0;
 // for, and the write would then never be accepted no matter how large -B is.
 static const double keep_all_retry_s = 0.00005; // 50us
 
+// BENCH_KEEP_ALL_POLL=1 keeps the 50us retry above as an A/B arm (2026-10-04). The default waits for the event
+// instead: tt_Publisher.writable_callback fires when an ACKNACK makes room, and the main loop - outside
+// tt_Context_poll(), where scheduling is allowed - puts send_one back at once. A fixed retry interval is a number
+// that has to suit every target, and it made this client poll where CycloneDDS's dds_write() simply wakes.
+#ifndef BENCH_KEEP_ALL_POLL
+#define BENCH_KEEP_ALL_POLL 0
+#endif
+static uint64_t keep_all_retries = 0;    // refusals that had to wait, either way
+static volatile bool g_writable = false; // set by on_writable(), consumed by the main loop
+static bool g_give_up_scheduled = false; // at most one give-up check in the scheduler at a time
+static bool g_blocked = false;           // send_one is not scheduled: it waits for the event or the bound
+
 // Drain bookkeeping - see drain_tick(). The poll interval matches tt_RELIABLE_RETRY_INTERVAL: there
 // is no point asking again faster than the recovery it is waiting on can answer.
 static const double drain_poll_s = 0.001;
@@ -207,6 +219,39 @@ static uint64_t max_blocking_ns_value(void) {
     return (uint64_t)(max_blocking_ms * (double)tt_MILLISECOND);
 }
 
+static void send_one(struct tt_Context* node, uint64_t time, void* param);
+
+// The bound on a wait for the writable event. ONE such check is ever scheduled: the first version scheduled one
+// per refusal, and a run that blocks and unblocks quickly filled the scheduler with stale checks until
+// tt_Context_schedule() refused send_one itself - the chain was lost and the client slept in tt_Context_poll()
+// forever (local A/B, 2026-10-05). So a check that finds the current wait not yet due moves itself to that wait's
+// deadline instead of acting or adding another.
+static void give_up_check(struct tt_Context* node, uint64_t time, void* param) {
+    (void)param;
+    g_give_up_scheduled = false;
+    if (!g_blocked) {
+        return; // the wait it was set for ended with the event
+    }
+    uint64_t deadline = pending_since_ns + max_blocking_ns_value();
+    if (time < deadline) {
+        g_give_up_scheduled = true; // a later wait than the one it was set for: follow it
+        tt_Context_schedule(node, deadline, give_up_check, NULL);
+        return;
+    }
+    g_blocked = false;
+    send_one(node, time, NULL); // past the bound now, so this attempt drops the sample if it is still refused
+}
+
+// tt_Publisher.writable_callback: runs inside tt_Context_poll() and must not re-enter TickLE, so it only signals.
+// tt_Context_interrupt() is the signal: it only writes the wake eventfd (safe from a signal handler, so safe here),
+// and it is what makes the running tt_Context_poll() return now rather than at the next scheduled entry - up to the
+// whole blocking bound later.
+static void on_writable(struct tt_Publisher* pub, void* param) {
+    (void)param;
+    g_writable = true;
+    (void)tt_Context_interrupt(pub->node);
+}
+
 static void send_one(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
     if (g_interrupted || tt_get_ns() >= g_deadline_ns) {
@@ -244,7 +289,17 @@ static void send_one(struct tt_Context* node, uint64_t time, void* param) {
         // Still inside the budget: come back to this same sample through the scheduler, which is
         // what lets tt_Context_poll() run (and ACKNACKs arrive) between attempts. See
         // keep_all_retry_s' own comment for why this can't be a loop.
+        keep_all_retries++;
+#if BENCH_KEEP_ALL_POLL
         tt_Context_schedule(node, time + (uint64_t)(keep_all_retry_s * (double)tt_SECOND), send_one, NULL);
+#else
+        // Wait for the event; the only timer is the bound, so a Subscriber that never acks still ends the wait.
+        g_blocked = true;
+        if (!g_give_up_scheduled) {
+            g_give_up_scheduled = true;
+            tt_Context_schedule(node, pending_since_ns + max_blocking_ns_value(), give_up_check, NULL);
+        }
+#endif
         return;
     } else if (ret == tt_RET_WOULD_BLOCK) {
         // Budget expired. Drop the sample and move on, counting it - the Subscriber will see this
@@ -467,6 +522,19 @@ static uint32_t keepall_bound_samples(const struct tt_Publisher* pub, const stru
     return by_bytes < samples ? by_bytes : samples;
 }
 
+// The writable event, acted on in the main loop rather than in the callback: outside tt_Context_poll(), TickLE may be
+// called, and send_one goes back on the scheduler only if it was waiting for exactly this.
+static void resume_if_writable(struct tt_Context* node) {
+    if (!g_writable) {
+        return;
+    }
+    g_writable = false;
+    if (g_blocked) {
+        g_blocked = false;
+        tt_Context_schedule(node, tt_get_ns(), send_one, NULL);
+    }
+}
+
 int main(int argc, char** argv) {
     // Armed at the very top, before any middleware setup, so the counters cover discovery
     // too - identically for all three frameworks, which is what makes them comparable.
@@ -541,6 +609,9 @@ int main(int argc, char** argv) {
     // this side the binding limit and quietly measure something narrower than the run asked for -
     // hence keep_all_default_depth above.
     pub.keep_all = keep_all;
+#if !BENCH_KEEP_ALL_POLL
+    pub.writable_callback = on_writable;
+#endif
     pub.durable = durable;
     // Phase 3 prerequisite (d) - off unless -W asked for it, so the default run is byte-for-byte
     // the Phase 1 experiment.
@@ -570,8 +641,10 @@ int main(int argc, char** argv) {
     tt_Context_schedule(&node, send_start, send_one, NULL);
 
     ret = tt_RET_OK;
-    while (!g_interrupted && !g_sending_done && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
+    while (!g_interrupted && !g_sending_done &&
+           (ret == tt_RET_OK || ret == tt_RET_TIMEOUT || ret == tt_RET_INTERRUPTED)) {
         ret = tt_Context_poll(&node, -1);
+        resume_if_writable(&node);
     }
     // Drain until every matched peer has confirmed the last accepted sample, or drain_s elapses -
     // see drain_tick()'s own comment for why a fixed-duration drain measured the wrong thing.
@@ -609,7 +682,7 @@ int main(int argc, char** argv) {
            "throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u drained=%s drain_cap_s=%.1f peer_acks_end=%u "
            "peer_acks_min=%u cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d "
            "cpu_main_share=%.2f cpu_migrations=%u retransmitted=%u arena_bytes=%u keepall_samples=%u "
-           "keepall_bound_samples=%u %s\n",
+           "keepall_bound_samples=%u keep_all_wait=%s keep_all_retries=%llu %s\n",
            (unsigned long)sent, (unsigned long)write_fail, duration_s, mbps, max_blocking_ms, keep_all ? 1 : 0,
            durable ? 1 : 0, reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct,
            g_drain_fully_acked ? "acked" : "timeout", drain_s, count_peer_acks(&pub),
@@ -617,6 +690,7 @@ int main(int argc, char** argv) {
            BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq), g_cpu_freq.samples,
            BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place), g_cpu_place.migrations,
            pub.retransmitted, pub_cache.arena_size, keepall_samples, keepall_bound_samples(&pub, &pub_cache),
+           BENCH_KEEP_ALL_POLL ? "poll" : "event", (unsigned long long)keep_all_retries,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
     print_reliable_stats("client");

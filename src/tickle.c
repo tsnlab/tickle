@@ -3886,6 +3886,7 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
     pub->ack_solicit_period_ns = 0;     // no periodic ACK solicitation by default - see its own doc comment
     pub->ack_solicit_watermark_pct = 0; // no watermark-triggered solicitation either (Phase 3 (d))
     pub->last_ack_solicit_ns = 0;
+    pub->ack_solicit_outstanding = false;
     // Every field an announce or the reliability path reads, not only the ones above: these
     // used to be left as found, and a caller whose struct was not already zero (a stack or reused
     // allocation) announced whatever QoS bits the garbage made, and could start with ack slots that
@@ -4705,10 +4706,15 @@ static void solicit_ack_throttled(struct tt_Publisher* pub) {
     uint64_t min_gap = pub->ack_solicit_period_ns > reliable_retry_interval_publisher()
                            ? pub->ack_solicit_period_ns
                            : reliable_retry_interval_publisher();
-    if (pub->last_ack_solicit_ns != 0 && now - pub->last_ack_solicit_ns < min_gap) {
+    // Self-clocked (2026-10-04): one solicitation in flight at a time, and the next one as soon as an ACKNACK
+    // answers it. min_gap is then only how long an unanswered one waits before it is assumed lost and repeated.
+    // A fixed gap alone set the RELIABLE ceiling at one acknowledgement per millisecond - on one host, a KEEP_ALL
+    // window of 256 every 1 ms is the 241k samples/s the cell measured on two different machines alike.
+    if (pub->ack_solicit_outstanding && now - pub->last_ack_solicit_ns < min_gap) {
         RSTAT_INC(ack_solicit_suppressed);
         return;
     }
+    pub->ack_solicit_outstanding = true;
     pub->last_ack_solicit_ns = now;
     RSTAT_INC(ack_solicit_sent);
     (void)tt_Publisher_request_ack(pub);
@@ -10439,6 +10445,7 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
     // Heartbeat, answered regardless of pub->reliable) - only the actual byte retransmission below
     // is RELIABILITY's own exclusive contract.
     record_peer_ack(pub, header->source, sender_entity_id, seq_no);
+    pub->ack_solicit_outstanding = false; // answered: the next solicitation may go at once (solicit_ack_throttled())
     // Phase 3 - this ACKNACK may have freed room a refused publish was waiting on. Fired here, from
     // inside tt_Context_poll()'s own packet handling, so the callback runs on the node's thread like
     // every other callback (see tt_Publisher.writable_callback's doc comment on what it may do).

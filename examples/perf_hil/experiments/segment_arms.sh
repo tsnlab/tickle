@@ -135,8 +135,12 @@ dsum, void_arm = {}, set()
 for name in names:
     reps = [r for (a, r) in cli if a == name]
     want = 'read' if 'tt_HAL_RX_HINT=1' in flags[name] else 'uring'
-    hints = {cli[(name, r)].get('rx_hint', 'read') for r in reps}
-    if hints != {want}:
+    # A client that does not print rx_hint (reliable_throughput) carries no evidence either way, so the check is
+    # skipped for it rather than failed - and said, so the skip is visible.
+    hints = {cli[(name, r)]['rx_hint'] for r in reps if 'rx_hint' in cli[(name, r)]}
+    if not hints:
+        print(f'  {name}: rx_hint not reported by this scenario - treatment check skipped')
+    elif hints != {want}:
         void_arm.add(name)
         print(f'  {name}: VOID - treatment check wanted rx_hint={want}, got {sorted(hints)}')
         continue

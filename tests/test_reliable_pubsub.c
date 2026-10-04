@@ -2389,6 +2389,10 @@ static void test_keep_all_refuses_at_bound_and_unblocks_on_ack(void) {
     }
 
     EXPECT_TRUE(!tt_Publisher_writable(&pub));
+    // The watermark's solicitation is still unanswered, so the refusal re-asks only once that one has had the retry
+    // interval to come back (solicit_ack_throttled()). This test passed for a year at the mock's t=0 without the
+    // advance, because a stamp of 0 read as "never solicited" - the clock's artefact, not the throttle's rule.
+    test_mock_now += reliable_retry_interval_publisher();
     int sends_before = test_mock_send_call_count + test_mock_send_to_call_count;
     EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
     // Phase 3 step 4 - a refusal does send something now, but never the sample: it solicits an ACK
@@ -2613,6 +2617,48 @@ static void test_keep_all_solicitation_is_throttled(void) {
     int throttled_sends = (test_mock_send_call_count + test_mock_send_to_call_count) - before_throttled;
 
     EXPECT_EQ_INT(quiet_sends, throttled_sends); // past the watermark costs exactly what below it did
+}
+
+// ...and the throttle is clocked by the answer, not only by the clock (2026-10-04). Once an ACKNACK has answered the
+// solicitation in flight, the next publish past the watermark asks again at once, with the clock unmoved. A fixed
+// minimum gap alone made one acknowledgement per millisecond the RELIABLE ceiling - 241k samples/s on one host,
+// on two different machines alike - and starved a Publisher that waits for its writable callback instead of
+// retrying: its refusal's solicitation was suppressed and nothing else asked for 50 ms.
+//
+// The control is the test above: the same stretch with no ACKNACK costs no extra send. Here the only difference is
+// the ACKNACK, so a send difference is the ACKNACK's doing.
+static void test_keep_all_solicitation_reopens_on_acknack(void) {
+    test_mock_reset();
+    test_mock_now = 10 * tt_MILLISECOND; // see the test above for why not 0
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 64);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 1); // bound = 64, watermark 32
+
+    uint32_t value = 1;
+    for (int i = 0; i < 32; i++) { // the 32nd reaches the watermark: the one solicitation the clock allows
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    EXPECT_TRUE(last_sent_heartbeat() != NULL);
+    EXPECT_TRUE(pub.ack_solicit_outstanding);
+
+    // The Subscriber answers, acknowledging seq_nos 1 and 2: 30 unacknowledged, below the watermark again.
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 3, 0ULL);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(!pub.ack_solicit_outstanding);
+
+    int before = test_mock_send_call_count + test_mock_send_to_call_count;
+    for (int i = 0; i < 2; i++) { // 30 -> 32, at the watermark again, the clock still unmoved
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    int sends = (test_mock_send_call_count + test_mock_send_to_call_count) - before;
+    EXPECT_TRUE(sends > 2);                     // two samples and a solicitation, not the samples alone
+    EXPECT_TRUE(last_sent_heartbeat() != NULL); // ...and the extra one is the solicitation
+    EXPECT_TRUE(pub.ack_solicit_outstanding);
 }
 
 // Lays one Heartbeat into node->rx_buffer, same shape as tests/test_heartbeat.c's own - duplicated
@@ -4065,6 +4111,7 @@ int main(void) {
     test_keep_all_sustains_on_clean_link();
     test_keep_all_solicits_before_blocking();
     test_keep_all_solicitation_is_throttled();
+    test_keep_all_solicitation_reopens_on_acknack();
     test_unknown_policy_still_terminates_on_eviction();
     test_keep_all_writable_callback_fires_once();
     test_keep_all_unblocks_when_last_subscriber_leaves();

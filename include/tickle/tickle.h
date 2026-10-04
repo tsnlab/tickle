@@ -1588,6 +1588,8 @@ struct tt_Publisher { // extends endpoint
     // tt_get_ns() of the most recent ACK solicitation from either path (watermark or periodic
     // timer), or 0 if none yet. Core-private bookkeeping, not a caller-set field.
     uint64_t last_ack_solicit_ns;
+    // Whether a solicitation is waiting for its ACKNACK (solicit_ack_throttled()). Core-private.
+    bool ack_solicit_outstanding;
 
     // QoS roadmap #6 (LIFESPAN, rmw_tickle/PLAN.md). 0 (tt_Context_create_publisher()'s own default):
     // disabled, today's only behavior - reliable_cache entries never expire on their own (only
