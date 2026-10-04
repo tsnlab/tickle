@@ -21,8 +21,8 @@ MUTANTS = [
     (
         "negative attach caching",
         "src/tickle.c",
-        "        note_attach(node, (enum tt_SegmentAttach)why);\n        remember_absent(entry, ip, port);\n",
-        "        note_attach(node, (enum tt_SegmentAttach)why);\n",
+        "        note_attach(node, verdict);\n        remember_absent(entry, ip, port);\n",
+        "        note_attach(node, verdict);\n",
         "test_a_peer_with_no_segment_is_asked_once_not_per_datagram",
     ),
     (
@@ -171,8 +171,8 @@ MUTANTS = [
     (
         "unlinking the file, not merely unmapping it",
         "src/tickle.c",
-        "    if (named) {\n        tt_segment_unlink(path);\n    }\n    tt_segment_detach(own, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));",
-        "    (void)named;\n    tt_segment_detach(own, segment_bytes(tt_SEGMENT_SLOTS, tt_SEGMENT_SLOT_BYTES));",
+        "    if (named) {\n        tt_segment_unlink(path);\n    }\n    release_own_bell(node, own);",
+        "    (void)named;\n    release_own_bell(node, own);",
         "test_the_last_same_host_peer_leaving_takes_the_segment",
     ),
     (
@@ -187,17 +187,17 @@ MUTANTS = [
     # while the publisher reports success and exits 0. The opposite direction was already refused by
     # tt_segment_attach()'s fstat, which is why only half of this was ever covered.
     (
-        "refusing a segment whose geometry is not ours",
+        "refusing a geometry that cannot be indexed",
         "src/tickle.c",
-        "    if (header->slots != tt_SEGMENT_SLOTS || header->slot_bytes != tt_SEGMENT_SLOT_BYTES) {",
+        "    if (header->slots == 0 || (header->slots & (header->slots - 1U)) != 0 || header->slot_bytes == 0) {",
         "    if (false) {",
         "test_a_segment_with_another_geometry_is_refused",
     ),
     (
         "checking slot_bytes as well as slots",
         "src/tickle.c",
-        "    if (header->slots != tt_SEGMENT_SLOTS || header->slot_bytes != tt_SEGMENT_SLOT_BYTES) {",
-        "    if (header->slots != tt_SEGMENT_SLOTS) {",
+        "    if (header->slots == 0 || (header->slots & (header->slots - 1U)) != 0 || header->slot_bytes == 0) {",
+        "    if (header->slots == 0 || (header->slots & (header->slots - 1U)) != 0) {",
         "test_a_segment_with_another_geometry_is_refused",
     ),
 ]
