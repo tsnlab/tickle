@@ -153,9 +153,13 @@ int main(int argc, char** argv) {
     }
 
     printf("RESULT: framework=tickle scenario=reliable_latency role=server cpu_mhz_mean=%.1f cpu_mhz_min=%.1f "
-           "cpu_mhz_max=%.1f retransmitted=%u gap_abandoned=%u\n",
+           "cpu_mhz_max=%.1f retransmitted=%u gap_abandoned=%u doorbells_sent=%llu bells_rung=%llu sleeps=%lu "
+           "rx_shm=%llu tx_shm=%llu\n",
            BenchCpuFreq_mean_mhz(&g_echo_freq), BenchCpuFreq_min_mhz(&g_echo_freq), BenchCpuFreq_max_mhz(&g_echo_freq),
-           pub.retransmitted, sub.gap_abandoned);
+           pub.retransmitted, sub.gap_abandoned, (unsigned long long)node.segment_doorbells_sent,
+           (unsigned long long)node.segment_bells_rung, (unsigned long)node.segment_sleep_generation,
+           (unsigned long long)node.rx_datagrams_by_transport[tt_TRANSPORT_SHM],
+           (unsigned long long)node.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
 
     tt_Context_destroy(&node);
     return 0;

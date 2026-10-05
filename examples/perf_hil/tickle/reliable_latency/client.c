@@ -223,10 +223,16 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=tickle scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.0f "
            "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
-           "cpu_mhz_at_rtt_max=%.1f retransmitted=%u gap_abandoned=%u %s\n",
+           "cpu_mhz_at_rtt_max=%.1f retransmitted=%u gap_abandoned=%u doorbells_sent=%llu bells_rung=%llu sleeps=%lu "
+           "%s\n",
            (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms,
            BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq), BenchCpuFreq_max_mhz(&g_rtt_freq),
            cpu_mhz_at_rtt_max, g_pub->retransmitted, sub.gap_abandoned,
+           // Wakes per round trip: doorbells this side rang into the peer's sleeps, and how often this side slept.
+           // A sample that crosses as two datagrams can cost two of each if the reader drains the first and sleeps
+           // again before the second lands, and that is what these exist to show (S10, p4 against p3).
+           (unsigned long long)node.segment_doorbells_sent, (unsigned long long)node.segment_bells_rung,
+           (unsigned long)node.segment_sleep_generation,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 
