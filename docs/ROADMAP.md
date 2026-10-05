@@ -7,6 +7,14 @@ The details live in the source documents named in parentheses. Last consolidated
 
 The user's active list (2026-10-05), in order.
 
+0. **A fair testbed** (the user, 2026-10-05; ahead of everything below once rmw KEEP_ALL is closed): the published
+   comparison must not rest on a setup tuned for TickLE. Found: the same-host cells (S1-S16, `s6_transport_cells.sh`,
+   `s6_witness_check.sh`) pin each process to ONE core, which squeezes the multi-threaded DDS processes and suits
+   single-threaded TickLE; the cross-host cells pin every framework to cores 1-3 (symmetric, but not how software is
+   run). Pinning began because Pi core 0 takes the interrupts. Re-measure the headline tables with no pinning, the
+   OS scheduling every framework, and publish the pinned figures only as a labelled note. Then audit the rest of the
+   rig the same way: socket buffer sizes, CPU governor, IRQ affinity, vendor profiles (FastDDS XML, CycloneDDS
+   URI, iceoryx), build flags. P1-P4 stay as they are: each measures something real (the user, 2026-10-05).
 1. **Find the p4 same-host latency gap**: p4's round trip is ~21 us longer than p3's, but only after the processes
    idle (rig: +6 us at 0.5 ms ping spacing, +20 us at 5 ms; CycloneDDS 0-2 us). Ruled out so far: an extra wake
    (p4 rings the same doorbells per round trip as p3, `p4_wake_count.sh`), and the doorbell sitting between the two

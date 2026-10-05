@@ -84,7 +84,10 @@ ssh_run() {
 # TickLE the fast mode every run while leaving CycloneDDS and FastDDS on the coin flip, which
 # would bias the comparison in our favour by about 15% a quarter of the time. A partial fix here
 # is worse than none.
-PIN="taskset -c 1-3"
+# Not pinned by default (2026-10-05, the user's rule): pinning is not how software is run, and the comparison must not
+# rest on it. PIN="taskset -c 1-3" reproduces the earlier pinned runs, kept away from core 0 (the Pi's interrupt core),
+# for the labelled note beside the unpinned headline.
+PIN=${PIN:-}
 
 ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; export CYCLONEDDS_URI='$CDDS_URI'; cd ~/$REMOTE_DIR; nohup $PIN ./server $CLIENT_ARGS > /tmp/cdds_${SCENARIO}_server.log 2>&1 < /dev/null &"
 # 5s, not 2s (2026-09-20, real finding): a TRANSIENT_LOCAL reader's own match negotiation against a

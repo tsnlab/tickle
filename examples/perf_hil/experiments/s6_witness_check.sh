@@ -28,6 +28,10 @@
 # wrong reason.
 # Usage: s6_witness_check.sh [SHA] [REPS]     Output: $OUT (default /tmp/s6_witness.txt)
 set -uo pipefail
+# Not pinned by default (2026-10-05, the user's rule): the old taskset -c 1 / -c 2 put each process on ONE core, which
+# squeezes the multi-threaded DDS processes and suits single-threaded TickLE. PIN_SERVER="taskset -c 1"
+# PIN_CLIENT="taskset -c 2" reproduce those runs for the labelled note beside the unpinned headline.
+export PIN_SERVER="${PIN_SERVER:-}" PIN_CLIENT="${PIN_CLIENT:-}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -96,7 +100,7 @@ run_one() { # run_one <arm>
     local name=$1 line
     kill_server
     srv_pid=$(sh_ "$HOST" "cd $SAVE/$name && rm -f /tmp/s6wit.pid
-(setsid sh -c 'echo \$\$ > /tmp/s6wit.pid; exec env BENCH_IFACE=lo taskset -c 1 ./server -Q -d $((DUR + 40))' > /tmp/s6wit_server.log 2>&1 < /dev/null &); sleep 2; cat /tmp/s6wit.pid" </dev/null)
+(setsid sh -c 'echo \$\$ > /tmp/s6wit.pid; exec env BENCH_IFACE=lo $PIN_SERVER ./server -Q -d $((DUR + 40))' > /tmp/s6wit_server.log 2>&1 < /dev/null &); sleep 2; cat /tmp/s6wit.pid" </dev/null)
     sh_ "$HOST" "grep -q 'Node open' /tmp/s6wit_server.log" </dev/null || { say "    no server opened for arm=$name"; return 0; }
     # Kept in a file rather than piped straight into grep. Everything the client said that was not a RESULT
     # line used to go in the pipe's bin, so a diagnostic the publisher prints - and the publisher is the only
@@ -109,7 +113,7 @@ run_one() { # run_one <arm>
     # that is the state in which the server half was written the same afternoon with the same defect.
     # Two of the three consumers in this file have now been this shape. The output comes back whole.
     local clog
-    clog=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo taskset -c 2 ./client -Q -d $DUR $CLI_ARGS >/tmp/s6wit_client.log 2>&1; cat /tmp/s6wit_client.log" </dev/null)
+    clog=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo $PIN_CLIENT ./client -Q -d $DUR $CLI_ARGS >/tmp/s6wit_client.log 2>&1; cat /tmp/s6wit_client.log" </dev/null)
     line=$(printf '%s\n' "$clog" | grep '^RESULT' | head -1)
     if [ -z "$line" ]; then
         say "    arm=$name: the client printed no RESULT line. What it did say:"

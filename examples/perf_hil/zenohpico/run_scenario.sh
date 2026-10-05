@@ -8,7 +8,10 @@ SSH_KEY="$HOME/.ssh/tickle_ci_ed25519"
 RPI_CLIENT="${RPI_CLIENT:-10.1.1.214}"
 RPI_SERVER="${RPI_SERVER:-10.1.1.213}"
 REMOTE_DIR="tickle/examples/perf_hil/zenohpico/$SCEN_DIR"
-PIN=${PIN:-taskset -c 1-3}
+# Not pinned by default (2026-10-05, the user's rule): pinning is not how software is run, and the comparison must not
+# rest on it. PIN="taskset -c 1-3" reproduces the earlier pinned runs, kept away from core 0 (the Pi's interrupt core),
+# for the labelled note beside the unpinned headline.
+PIN=${PIN:-}
 ssh_run() {
     local host=$1
     shift

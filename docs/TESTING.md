@@ -138,7 +138,9 @@ zenoh-pico is measured to the same standard but kept as reference only; it is ne
   instead of it.
 - **The same environment:**
   - the same Pis and session, with frameworks interleaved in every repetition;
-  - the same CPU governor, and every process pinned to cores 1-3 (`taskset -c 1-3`);
+  - the same CPU governor, and no pinning: the OS schedules every process (since 2026-10-05; section 5). The
+    earlier runs pinned to cores 1-3 (cross host) or one core per process (same host); `PIN`, `PIN_SERVER` and
+    `PIN_CLIENT` reproduce them for a labelled note only;
   - data restricted to `eth0`, and release builds on all sides (TickLE rows assert `core_build=release`);
   - the same server lifetime and 3 s drain cap.
 - **The same payloads**, P1-P4, gated by `check_bench_shapes.sh`. The size rule is `sample + base framing <= 1514`.
@@ -184,7 +186,42 @@ zenoh-pico is measured to the same standard but kept as reference only; it is ne
   - The Pi bench's own A/A floor is ±2.5 ns for send and ±1.2 ns for receive (`core_cost_pi_drift.sh`).
 - **Session-bound:** compare only within one session. Day-to-day offsets of about 13 µs in latency affect every implementation.
 
-## 5. Main experiment harnesses
+## 5. Principles: the setup must not favour TickLE
+
+Section 4 says how the frameworks are made equal. This section says what decides it, and was written after the
+same-host table turned out to rest on a setting that suited TickLE (2026-10-05, the user's review): every process was
+pinned to one core. TickLE is single-threaded, so one core is all it uses; FastDDS and CycloneDDS run several threads,
+and one core makes them take turns. Pinning had started for a sound reason - core 0 of a Pi takes the interrupts, and
+a single thread that lands there runs slower - but nobody runs software pinned, and a vendor could dismiss the whole
+table for it.
+
+1. **A result is only worth publishing if a vendor cannot dismiss it.** A lead that comes from the test setup is not
+   a lead. When a setting is in doubt, choose the one that favours the other side.
+2. **Run software the way its users run it.** The OS scheduler places threads, kernel settings are the
+   distribution's, every product keeps its shipped defaults for everything that is not a QoS policy. Nothing is
+   pinned, tuned or warmed up for the measurement.
+3. **Any change to the environment is an arm, not the setup.** Pinning off the interrupt core, a larger socket buffer,
+   a tuned vendor profile: each is measured on every framework and reported beside the untuned headline, labelled,
+   never instead of it.
+4. **Symmetric is not the same as neutral.** The same `taskset` on every process still favoured TickLE, because the
+   frameworks are built differently. Ask what each setting does to each architecture - threads, buffers, batching,
+   transports - not only whether it was applied to all.
+5. **P1-P4 all stay, and every one is reported.** Each measures something real (the user, 2026-10-05). They follow
+   the Ethernet frame (`sample + base framing <= 1514`); P3 is the size where TickLE's smaller framing still fits one
+   datagram and the vendors need two, which is a real difference in framing - so no claim rests on P3 alone.
+6. **Measure what is delivered.** A sender's rate says nothing about a reader that kept up with a tenth of it (the
+   same-host BEST_EFFORT rows are still send rates; ROADMAP).
+7. **Report everything.** Every cell, every VOID, every row TickLE loses or draws, every tuned arm beside its shipped
+   one; a correction is made in place with its cause, never by deleting the figure it corrects.
+8. **Constants are not fitted to the rig.** A value tuned on two Raspberry Pi 5s may be wrong elsewhere. Prefer an
+   algorithm that derives it from what the running system measures; where a fitted value stays, README.md gives the
+   formula (ROADMAP "Testbed-independent constants").
+
+Still to audit against these (ROADMAP "A fair testbed"): socket buffer sizes, the CPU governor, IRQ affinity, the
+vendor profiles (FastDDS XML, CycloneDDS URI, iceoryx), build flags, and whether any rate or duration was picked
+because TickLE does well at it.
+
+## 6. Main experiment harnesses
 
 All are in `examples/perf_hil/experiments/`. Each one's header holds its pre-registered reading.
 
@@ -217,7 +254,7 @@ All are in `examples/perf_hil/experiments/`. Each one's header holds its pre-reg
 Also `.github/scripts/compare_rmw_perf.sh`: a hand-run comparison of rmw_tickle against both vendors through
 `buildfarm_perf_tests`, with the vendors forced onto UDPv4. It takes the `box` lock.
 
-## 6. Measurement checklist
+## 7. Measurement checklist
 
 Before the run
 - [ ] Write the reading rules into the harness, including what would falsify the hypothesis, and enforce them in code, not in a comment.

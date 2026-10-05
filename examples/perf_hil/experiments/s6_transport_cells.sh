@@ -47,6 +47,10 @@
 # here so the verdicts can be shown to DECIDE - fed an arm pair that must pass and pairs that must each be refused,
 # they have to disagree. The same code path, not a copy of it: a copy drifts and then tests itself.
 set -uo pipefail
+# Not pinned by default (2026-10-05, the user's rule): the old taskset -c 1 / -c 2 put each process on ONE core, which
+# squeezes the multi-threaded DDS processes and suits single-threaded TickLE. PIN_SERVER="taskset -c 1"
+# PIN_CLIENT="taskset -c 2" reproduce those runs for the labelled note beside the unpinned headline.
+export PIN_SERVER="${PIN_SERVER:-}" PIN_CLIENT="${PIN_CLIENT:-}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 ANALYSE_ONLY=${S6_ANALYSE_ONLY:-0}
 if [ "$ANALYSE_ONLY" != 1 ]; then
@@ -143,12 +147,12 @@ fdds_run() {  # fdds_run <arm> <profile-basename>
     local env_common="BENCH_IFACE=lo LD_LIBRARY_PATH=$FDDS_LIB_PATH FASTRTPS_DEFAULT_PROFILES_FILE=$p"
     [ -n "${BENCH_FASTDDS_NO_DATASHARING:-}" ] && env_common="$env_common BENCH_FASTDDS_NO_DATASHARING=$BENCH_FASTDDS_NO_DATASHARING"
     srv_pid=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && rm -f /tmp/s6_fdds.pid
-(setsid sh -c 'echo \$\$ >/tmp/s6_fdds.pid; exec env $env_common taskset -c 1 ./server -d $((DUR + 40))' >/tmp/s6_fdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_fdds.pid" </dev/null)
+(setsid sh -c 'echo \$\$ >/tmp/s6_fdds.pid; exec env $env_common $PIN_SERVER ./server -d $((DUR + 40))' >/tmp/s6_fdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_fdds.pid" </dev/null)
     # The WHOLE output, kept on the Pi and then read, rather than piped through grep '^RESULT' at the far end. A
     # client that cannot load its libraries says so on stderr and prints no RESULT line at all; the first version of
     # this cell discarded that sentence and reported "produced no RESULT line" six times without the reason.
     local all
-    all=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && env $env_common taskset -c 2 ./client -d $DUR $CLI_ARGS >/tmp/s6_fdds_client.log 2>&1; cat /tmp/s6_fdds_client.log" </dev/null)
+    all=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && env $env_common $PIN_CLIENT ./client -d $DUR $CLI_ARGS >/tmp/s6_fdds_client.log 2>&1; cat /tmp/s6_fdds_client.log" </dev/null)
     line=$(printf '%s\n' "$all" | grep '^RESULT' | head -1)
     cleanup
     if [ -z "$line" ]; then
@@ -254,8 +258,8 @@ cdds_run() {  # cdds_run <arm> <uri>
     local arm=$1 uri=$2 dir=/home/ci/tickle/examples/perf_hil/cyclonedds/${SCEN}_${SIZE} all line
     cleanup
     srv_pid=$(sh_ "$HOST" "cd $dir && rm -f /tmp/s6_cdds.pid
-(setsid sh -c 'echo \$\$ >/tmp/s6_cdds.pid; exec env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='\''$uri'\'' taskset -c 1 ./server -d $((DUR + 40))' >/tmp/s6_cdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_cdds.pid" </dev/null)
-    all=$(sh_ "$HOST" "cd $dir && env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='$uri' taskset -c 2 ./client -d $DUR $CLI_ARGS >/tmp/s6_cdds_client.log 2>&1; cat /tmp/s6_cdds_client.log" </dev/null)
+(setsid sh -c 'echo \$\$ >/tmp/s6_cdds.pid; exec env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='\''$uri'\'' $PIN_SERVER ./server -d $((DUR + 40))' >/tmp/s6_cdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_cdds.pid" </dev/null)
+    all=$(sh_ "$HOST" "cd $dir && env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='$uri' $PIN_CLIENT ./client -d $DUR $CLI_ARGS >/tmp/s6_cdds_client.log 2>&1; cat /tmp/s6_cdds_client.log" </dev/null)
     line=$(printf '%s\n' "$all" | grep '^RESULT' | head -1)
     cleanup
     if [ -z "$line" ]; then

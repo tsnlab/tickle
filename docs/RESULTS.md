@@ -288,7 +288,7 @@ trips), not a per-message cost. rmw_tickle's RSS includes its shared-memory segm
 Every figure comes from the rig's two dedicated Raspberry Pi 5s over a point-to-point 1 GbE link (or one of them, for
 section 1); nothing measured on the dev PC is published. Native rows use each framework's own API with identical
 payload shapes, the same explicit QoS asserted on every row, release builds on all sides, processes pinned away from
-the NIC interrupt core, frameworks interleaved within one session, 3 repetitions and medians. A cell is VOID when a
+the NIC interrupt core (to be replaced by unpinned figures: TESTING.md section 5), frameworks interleaved within one session, 3 repetitions and medians. A cell is VOID when a
 payload crosses a framework's datagram boundary unexpectedly, when history policies differ, or when delivery is
 incomplete (an incomplete vendor is excluded and listed; an incomplete TickLE loses the cell). FastDDS's only tuned
 parameter is `maxMessageSize` 1472 in the `T` rows. Full rules, fairness audit and zenoh-pico configuration:
