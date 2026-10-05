@@ -2000,6 +2000,58 @@ static void test_process_acknack_from_unmatched_entity_records_nothing(void) {
 // came in and were ignored. The ACKNACK now matches the reader: an ack entry (so KEEP_ALL counts it) and a peer (so
 // the Publisher unicasts to it). The control is the same ACKNACK for an entity discovery has seen depart, which
 // must not be revived.
+// The other half of claim_from_acknack(): a reader acknowledges a KEEP_ALL writer the first time it hears it, so the
+// writer can match it within one round trip even when the reader's announce never reaches it (2026-10-05, rig: the
+// 180-1230 samples per run evicted before the first loss made the reader ask). One pure acknowledgement - no resend
+// bits, so nothing is resent - and then silence while everything arrives in order. The control is the same stream
+// from a writer announced without KEEP_ALL: a healthy reader of it stays silent from the first sample, as before.
+static void run_first_contact_stream(bool writer_keep_all, int* sends_after_first, int* sends_after_three) {
+    test_mock_reset();
+    static struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&node, &discovery, NULL, NULL));
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, 0x33330001, tt_KIND_TOPIC_PUBLISHER, 0,
+                             (uint8_t)(tt_UPDATE_QOS_RELIABLE | (writer_keep_all ? tt_UPDATE_QOS_KEEP_ALL : 0)), 0, 0,
+                             "type", "name");
+
+    struct tt_Header header;
+    init_header(&header);
+    for (uint32_t seq = 1; seq <= 3; seq++) {
+        uint32_t tail = write_data(&node, seq, (uint64_t)seq * 100, seq);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        if (seq == 1) {
+            *sends_after_first = test_mock_send_to_call_count;
+            if (writer_keep_all) {
+                EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip); // to the writer itself
+            }
+        }
+    }
+    *sends_after_three = test_mock_send_to_call_count;
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(4, proxy->ack_seq_no); // all three delivered in order either way
+    EXPECT_EQ_U32(0, (uint32_t)proxy->retry);
+    tt_Context_set_discovery(&node, NULL, NULL, NULL);
+}
+
+static void test_a_reader_acknowledges_a_keep_all_writer_on_first_contact(void) {
+    int first = -1;
+    int three = -1;
+    run_first_contact_stream(/*writer_keep_all=*/true, &first, &three);
+    EXPECT_EQ_INT(1, first); // one acknowledgement, on the first sample
+    EXPECT_EQ_INT(1, three); // and nothing more while all is well
+
+    run_first_contact_stream(/*writer_keep_all=*/false, &first, &three);
+    EXPECT_EQ_INT(0, first);
+    EXPECT_EQ_INT(0, three);
+}
+
 static void test_keep_all_publisher_claims_its_reader_from_an_acknack(void) {
     test_mock_reset();
     static struct tt_Discovery discovery;
@@ -4299,6 +4351,7 @@ int main(void) {
     test_two_subscriber_entities_on_one_node_ack_independently();
     test_process_acknack_from_unmatched_entity_records_nothing();
     test_keep_all_publisher_claims_its_reader_from_an_acknack();
+    test_a_reader_acknowledges_a_keep_all_writer_on_first_contact();
     test_ack_table_full_refuses_further_entities();
     test_acknack_rejects_malformed_bitmap_words();
     test_acknack_with_no_bitmap_words_is_a_pure_ack();

@@ -7335,6 +7335,17 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         proxy->ack_seq_no = seq_no;
         proxy->reorder_cursor = seq_no;
     }
+    if (first_contact && proxy->keep_all == tt_WRITER_KEEP_ALL_YES) {
+        // A pure acknowledgement (no resend bits) the moment a KEEP_ALL writer is first heard (2026-10-05): it tells
+        // the writer this reader exists and where it starts, one round trip after its first sample. A writer that has
+        // not received this reader's announce learns of it only from an ACKNACK (claim_from_acknack()), and a
+        // healthy reader otherwise never sends one - so on the rig a max-rate KEEP_ALL writer ran unmatched, evicting,
+        // until the first loss made the reader ask, and the samples lost before that ask were gone (180-1230 per
+        // 20 s run at 5% loss). Saying "everything below seq_no" requests nothing, so nothing is resent. KEEP_ALL only:
+        // there an unmatched writer evicting breaks the contract, while a KEEP_LAST writer evicts by design and a
+        // healthy reader of one stays silent, as before.
+        send_acknack_range(node, proxy, 0, -1);
+    }
 
     if (seq_no < proxy->ack_seq_no) {
         RSTAT_INC(late_below_ack);
