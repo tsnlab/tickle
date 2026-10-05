@@ -329,8 +329,8 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 42 | DURABILITY late join | durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | – | – | S |
 | 43 | HISTORY, within depth | burst | 160/160 | 160/160 | 160/160 | – | – | S |
 | 44 | HISTORY, beyond depth | burst | ✅ **147.7/160** | ❌ 109/160 | ❌ 109/160 | – | – | S |
-| 45 | DEADLINE detection | 50 ms | ⚪ works | ⚪ works | ⚪ works | – | – | S |
-| 46 | LIVELINESS detection | lease 2.0 s | ⚪ 2000.1 ms | ⚪ 1999.1 ms | ⚪ 2000.1 ms | – | – | L |
+| 45 | DEADLINE detection | 50 ms | ⚪ works | ⚪ works | ⚪ works | – | ✗ no event ¶ | S |
+| 46 | LIVELINESS detection | lease 2.0 s | ⚪ 2000.1 ms | ⚪ 1999.1 ms | ⚪ 2000.1 ms | – | ✗ no event ¶ | L |
 | 47 | LIFESPAN expiry | 100 ms | ⚪ works | ⚪ works | ⚪ works | – | – | S |
 | | **[rmw layer](#27-the-rmw-layer)** (ms, cross-host) | | | | |  | – | |
 | 48 | RTT mean, block wait, BEST_EFFORT | Bench (64 B) | ✅ **0.246** | 0.320 | 0.269 | – | ❌ 0.381 | W |
@@ -368,6 +368,13 @@ same QoS:
 
 The tuned profile trades some of FastDDS's lossless P3/P4 throughput and bytes for completing under
 loss. Both are shown so neither configuration's weakness is hidden.
+
+**¶ Rows 42-47, rmw_zenoh column (2026-10-05).** Asked of the rmw itself (`experiments/rmw_qos_support_probe.{py,sh}` on
+a rig Pi, ROS 2 jazzy, both DDS rmws as controls - each accepted all six cases and every event): rmw_zenoh_cpp
+**accepts** DURABILITY, HISTORY, DEADLINE, LIVELINESS and LIFESPAN when a publisher is created, but **refuses the
+deadline-missed and liveliness-lost events** (`UnsupportedEventTypeError`). Rows 45 and 46 measure detection, which
+is an event, so they cannot be measured for it: `✗ no event`. Rows 42-44 and 47 stay `–`, not measured - the policies
+are accepted. rmw_tickle accepted all six and both events.
 
 ### 1a. Same host (shared memory)
 
@@ -722,7 +729,11 @@ size-limit fast path), A-B-B-A over all 17 campaign cells, 6 reps per arm (`~/ri
 c13, c15), c4's line-rate send 943.71 -> 943.63 Mbps, wire bytes per sample +0.01% (c4, c5) - and every one is inside
 WIRE_PLAN 10.4's ~1% floor between builds of different code size. Neither change adds work on the cross-host
 subscriber's path (the doorbell is the same-host writer's, and the fast path only removes a walk), so they are reported
-here and not counted; the strict rule's verdict is stated rather than hidden.
+here and not counted; the strict rule's verdict is stated rather than hidden. **Followed up the same morning with a layout control** (`experiments/layout_control.sh`,
+A/B and both again with `-falign-functions=32`, 6 runs per arm, the three BEST_EFFORT cells): p2 and p4 did not
+reproduce at all (A->B t = 0.64 and 0.80); p1 reproduced at +0.21% (t = 2.16, ~5 ns per sample) and kept +0.18% under the
+forced alignment. So p1's is not function alignment; it may be data layout (`tt_Context` and its peer table changed size
+between the two builds) or work, and at 0.2% it is left there (`~/rig_results_safe/layout_control_be_20261005.txt`).
 
 Re-measured on `fe45f276`, 3 reps per framework, every TickLE rep drop-free with `write_fail=0` and `lost=0`
 (`~/rig_results_safe/s6_reliable_p4_fe45f276.txt`): **TickLE 12,289 Mbps (12,115..12,526), CycloneDDS 5,240
