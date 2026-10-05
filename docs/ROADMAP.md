@@ -7,21 +7,47 @@ The details live in the source documents named in parentheses. Last consolidated
 
 The user's active list (2026-10-05), in order.
 
-1. **Widen the p4 same-host latency lead**: a p4 sample costs two datagrams and two slots on the segment path, so
-   send whole records or encode into the slot. (COMPARISON 1a; SHM_PLAN 6e(a)/6e(b))
+1. **Find the p4 same-host latency gap**: p4's round trip is ~21 us longer than p3's, but only after the processes
+   idle (rig: +6 us at 0.5 ms ping spacing, +20 us at 5 ms; CycloneDDS 0-2 us). Ruled out so far: an extra wake
+   (p4 rings the same doorbells per round trip as p3, `p4_wake_count.sh`), and the doorbell sitting between the two
+   fragments (`93504234` moved it after the batch; the gap stayed +21 us at 5 ms, falsified by its own rule). Next:
+   per-stage timestamps on the rig. (`p4_interval_rig.sh`; RESULTS S10)
 2. **Fill COMPARISON 1a's empty cells**: CPU and RSS for all three frameworks on every same-host cell (CycloneDDS
    including iox-roudi), and the vendors' DELIVERED rates on the same-host BEST_EFFORT rows. The rows compare send
    rates today, and FastDDS's KEEP_LAST 1 reader took 154 of 3.1M samples. (COMPARISON 1a notes)
-3. **Break down the publisher's user time** (~0.65 us/sample at p3): it is the largest unexplained cost. Needs perf
-   access on the rig or the PC, which is the user's decision. (COMPARISON 2.2c)
+3. **Publisher user time** (0.637 us/sample at p3): broken down with perf on the rig (RESULTS, same-host notes):
+   clock 25%, memcpy 28%, segment indices 12% (now on their own cache lines, `e0873623`). Next: let
+   `tt_Publisher_publish()` called from a scheduled callback reuse the time the poll loop just read (one of the four
+   clock reads), and copy once by encoding into the slot.
 4. **Reduce the reader wake cost** (~3.1 us of system time per wake) without tuned spin values: each wake is paid
    per sample at low rates. (COMPARISON 2.2c; SHM_PLAN 7 q1)
-5. **Re-measure rmw_tickle KEEP_ALL on the rig** (it has ROS 2 jazzy) after the ACK-solicitation fix: the
-   published figures predate that fix. (COMPARISON 2.7)
+5. **rmw_tickle KEEP_ALL on the rig**: the first run lost ~5% of samples under 5% loss in every build. Six causes
+   found and fixed on 2026-10-05: a busy socket starved the data socket (`b6de8a4d`); an endpoint was announced
+   before its QoS was final (`155eecb7`); a publisher could not learn its reader except from an announce lost in
+   its own looped-back flood (`25c2e1ce`, matched from the ACKNACK; `71289352` and `5028366d`, the reader
+   acknowledges a KEEP_ALL writer once); the reader's queue overflowed when the reorder buffer released a burst
+   (`7b760c5d`); KEEP_ALL evicted the unacknowledged rest of a fragmented sample (`7fb6fabf`). At `7b760c5d`, 0%
+   loss evicts nothing (6/6). Still open: at 5% loss Array1k loses ~5% of the 3-4k samples broadcast before the
+   writer matches its reader (156-405 per run). Also queued as its own task: a reader process that hangs after
+   its writer leaves. (`rmw_keepall_rig.sh`, `rmw_keepall_evict_repro.sh`, `rxo_mismatch_repro.sh`)
+5a. **Testbed-independent constants** (added by the user 2026-10-05, not urgent; ordered after the reader-wake item
+   and before rmw same-host and FreeRTOS, because FreeRTOS is the first other platform and re-measurements should
+   rest on settled constants): every tunable in TickLE (intervals, thresholds, ring and window sizes, retry and
+   spin counts, timer periods) was measured on two Raspberry Pi 5s and may be fitted to them. For each, record
+   whether it is (a) derived by an algorithm from what the running system measures (preferred - e.g. the dynamic
+   retry interval from srtt/rttvar), (b) a protocol or memory bound that does not depend on the platform, or (c) a
+   value fitted to the rig. Replace (c) with (a) where possible; where a fitted value stays, README.md gives the
+   formula that produced it and how to recompute it on another platform. Start from the old constants audit
+   (`git show 3c0c505b:examples/perf_hil/CONSTANTS_AUDIT.md`) and include config.h, hal_linux.h and rmw_tickle's
+   RMW_TICKLE_* defaults.
 6. **Re-measure rmw same-host performance**: the rmw same-host rows predate the segment, FIFO and wake fixes.
    (COMPARISON 2.7; RMW_PERF_PLAN)
 7. **FreeRTOS: implement tt_rx_maybe_ready() with an lwIP netconn receive callback**: today only the Linux HAL has
-   the receive hint. (include/tickle/hal.h; SHM_PLAN 7 q3)
+   the receive hint. lwIP's socket layer hard-wires its own netconn callback (`DEFAULT_SOCKET_EVENTCB` in
+   `sockets.c` is not configurable), so the callback needs the HAL on the netconn API: `netconn_new_with_callback()`
+   per socket, a callback that counts arrivals and gives one FreeRTOS semaphore, `tt_receive()` waiting on that
+   semaphore (which also replaces the loopback wake socket), reads with `NETCONN_DONTBLOCK`. About 250 lines of
+   `src/hal_freertos.c`; `make test-freertos` is the check. (include/tickle/hal.h; SHM_PLAN 7 q3)
 8. **CycloneDDS arm of the mixed shared-memory + network test**: the mixed-delivery test has no Cyclone arm yet.
    It needs iceoryx plus network config. (COMPARISON 1a, mixed delivery)
 

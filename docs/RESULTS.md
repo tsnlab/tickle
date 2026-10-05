@@ -67,6 +67,18 @@ repetitions only. **✅ = best, ❌ = worst** in the row.
   reserved 216 MB of shared memory before any application connected. TickLE's segment is in-process, no daemon.
 - **The rows come from four builds** of one night, each measured after the change that moved it.
 - **S10 is the narrowest lead (1.26x CycloneDDS):** a p4 sample is two datagrams and two slots on TickLE's path.
+  The extra time appears only after idling: p4 - p3 is +6 us at 0.5 ms ping spacing and +20 us at 5 ms, against
+  CycloneDDS's 0-2 us (`experiments/p4_interval_rig.sh`, `6234e915`). Ruled out: an extra wake (p4 rings the same
+  doorbells per round trip, `p4_wake_count.sh`) and the doorbell's place between the fragments (`93504234` moved it
+  after the batch; the gap at 5 ms stayed +21 us, which its pre-registered rule reads as refuted). Still open.
+- **Where a same-host publisher's user time goes** (p3 BEST_EFFORT at max rate, 1.24M samples/s, 0.637 us of user
+  time per sample, `25c2e1ce`, `perf record -e cycles:u` on rpi-1, 3 reps each within 2% of the unprofiled rate;
+  `experiments/perf_publisher_profile.sh`): the clock 25% (4.13 `clock_gettime` per sample: 2 by the bench
+  application, as in the FastDDS and CycloneDDS benches, 1 by `tt_Publisher_publish()`'s timestamp, 1 by the poll
+  loop's scheduler; counted by `perf_publisher_clock.sh`), `memcpy` 28%, the segment header's shared indices 12%,
+  the rest 35%. The header's three indices shared one cache line; `e0873623` gave each its own: +1.77% rate and
+  -2.24% user time per sample, against +0.23% / +0.20% on the same commits built without the segment
+  (`segment_layout_ab.sh`, 4 rounds of A B B A).
   FastDDS's S7/S8 ranges are wide (0.098..0.278, 0.103..0.383 ms) from one rep with a ~112 ms maximum.
 - **Where the lead comes from:** on p4 BEST_EFFORT, TickLE's shared memory is 9.7x its own kernel path and FastDDS's
   is 11.6x its own; TickLE's kernel path is 1.87x faster than FastDDS's (`e17b4e6f`). Raw files:
