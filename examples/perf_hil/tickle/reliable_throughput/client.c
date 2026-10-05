@@ -650,9 +650,14 @@ int main(int argc, char** argv) {
     // see drain_tick()'s own comment for why a fixed-duration drain measured the wrong thing.
     g_drain_deadline_ns = tt_get_ns() + (uint64_t)(drain_s * (double)tt_SECOND);
     tt_Context_schedule(&node, tt_get_ns(), drain_tick, NULL);
+    // tt_RET_INTERRUPTED continues the drain as it continues the send loop above (2026-10-06): on_writable() still
+    // fires when an ACKNACK frees room, and its tt_Context_interrupt() made this loop end at the first such ACKNACK,
+    // before the one confirming the last sample. Every run since d7e02846 reported drained=timeout with every
+    // sample received; the bisect on a lossless veth pair named that commit, and BENCH_KEEP_ALL_POLL=1 drained.
     ret = tt_RET_OK;
-    while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
+    while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT || ret == tt_RET_INTERRUPTED)) {
         ret = tt_Context_poll(&node, -1);
+        g_writable = false; // nothing waits for room any more; the drain asks for acknowledgements itself
     }
 
     double mbps = duration_s > 0.0

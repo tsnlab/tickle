@@ -3489,6 +3489,8 @@ static void reset_node_state(struct tt_Context* node) {
     node->tx_has_pending_update = false;
     node->flush_scheduled = false;
     node->announce_soon_scheduled = false;
+    node->rx_checked_ns = 0; // the timed receive check starts unmeasured: the first busy loop peeks at once
+    node->rx_check_cost_ns = 0;
     node->endpoints_changed_ns = 0;
     node->discovery_reply_tick = 0;
     node->discovery_reply_count = 0;
