@@ -128,6 +128,12 @@ case "$rmw_suite_rc" in
     77) skip_gate "no ROS workspace with TickLE typesupport interfaces (set RMW_TEST_WS, or build_ros2_interfaces.sh)" ;;
     78) skip_gate "no ROS installation" ;;
     79) skip_gate "no provable private netns (needs passwordless 'ip') - the suite did NOT run" ;;
+    80)
+        # The build came from some other checkout. Not a SKIP: the environment is fine and the gate
+        # would otherwise report on code nobody asked about, which is the defect it was built to stop.
+        results+=("FAIL  $name - NOT THIS CHECKOUT: the build is not provably from $REPO")
+        failed=1
+        ;;
     *)
         results+=("FAIL  $name")
         failed=1

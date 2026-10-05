@@ -16,7 +16,16 @@
 #   77  no ROS workspace with TickLE typesupport interfaces -> SKIP
 #   78  no ROS installation -> SKIP
 #   79  could not create or could not PROVE a private netns -> SKIP; the suite did not run
+#   80  the build could not be PROVEN to come from this checkout -> NOT THIS CHECKOUT, which fails the
+#       run: whatever the suite would say is about some other source tree
 #   1+  the suite ran and something failed -> FAIL
+#
+# Which checkout is tested (2026-10-05). The workspace is shared by every checkout on this machine, and
+# it used to be built in its one default build/ directory. CMake keeps the source directory it was first
+# configured with in CMakeCache.txt, and colcon reuses that cache: run from a worktree, the build took
+# 0.2 s, compiled nothing, and ctest ran /home/semih/tickle-dev's code - and this row said PASS about a
+# checkout nobody had asked about. So each checkout now gets a build/install/log base of its own, keyed on
+# its path, and after the build the script asks the build itself which sources it compiled.
 set -uo pipefail
 
 ROS_SETUP=$(find /opt/ros -maxdepth 2 -name setup.bash -print -quit 2>/dev/null)
@@ -32,7 +41,18 @@ done
     exit 77
 }
 
-SRC="$(git rev-parse --show-toplevel)/rmw_tickle"
+TOP="$(git rev-parse --show-toplevel)" || exit 1
+TOP="$(realpath "$TOP")"
+SRC="$TOP/rmw_tickle"
+# One base per checkout, never the workspace's default build/ (which belongs to whichever checkout
+# configured it first). The hash keeps two checkouts with the same basename apart; the basename is for
+# whoever lists the directory.
+KEY="$(printf '%s' "$TOP" | sha1sum | cut -c1-12)-$(basename "$TOP")"
+BASE="$WS/rmw/per_checkout/$KEY"
+BUILD_BASE="$BASE/build"
+INSTALL_BASE="$BASE/install"
+mkdir -p "$BASE/log" || exit 90
+export COLCON_LOG_PATH="$BASE/log"
 NS="rmwgate$$"
 # shellcheck disable=SC2329  # invoked by the EXIT trap below, which shellcheck cannot see
 cleanup() { sudo -n ip netns del "$NS" 2>/dev/null; }
@@ -46,11 +66,39 @@ source "$WS/ifaces/install/setup.bash"
 set -u
 
 cd "$WS/rmw" || exit 90
-if ! colcon build --base-paths "$SRC" --packages-select rmw_tickle; then
+echo "run_rmw_suite: checkout $TOP -> $BASE"
+if ! colcon build --base-paths "$SRC" --packages-select rmw_tickle \
+    --build-base "$BUILD_BASE" --install-base "$INSTALL_BASE"; then
     echo "run_rmw_suite: build failed - the previous binary is still on disk, so NOTHING was tested"
     exit 1
 fi
-echo "run_rmw_suite: testing $(md5sum "$WS"/rmw/install/rmw_tickle/lib/librmw_tickle.so | cut -c1-12)"
+
+# Ask the build which sources it compiled, rather than trusting the directory it was given. Three
+# independent witnesses, each of which named /home/semih/tickle-dev in the 2026-10-05 defect: the CMake
+# cache's source dir, the object CMake made from the core's tickle.c (its path is the source's path), and
+# that object's own dependency file. A witness that is missing is a failure to look, not a pass.
+not_this_checkout() {
+    echo "run_rmw_suite: NOT THIS CHECKOUT - $1"
+    echo "run_rmw_suite: the build in $BUILD_BASE/rmw_tickle is not provably from $TOP; the suite did NOT test it"
+    exit 80
+}
+cache="$BUILD_BASE/rmw_tickle/CMakeCache.txt"
+[ -f "$cache" ] || not_this_checkout "no $cache"
+cache_src=$(sed -n 's/^rmw_tickle_SOURCE_DIR:STATIC=//p' "$cache")
+[ "$(realpath -m "${cache_src:-/nonexistent}")" = "$SRC/rmw_tickle" ] \
+    || not_this_checkout "CMakeCache rmw_tickle_SOURCE_DIR='$cache_src', expected '$SRC/rmw_tickle'"
+core_obj_d="$BUILD_BASE/rmw_tickle/CMakeFiles/rmw_tickle.dir$TOP/src/tickle.c.o.d"
+[ -f "$core_obj_d" ] || not_this_checkout "no object for $TOP/src/tickle.c (looked for $core_obj_d)"
+grep -qF "$TOP/src/tickle.c" "$core_obj_d" \
+    || not_this_checkout "$core_obj_d does not name $TOP/src/tickle.c"
+echo "run_rmw_suite: source proof cache=$cache_src core_obj=${core_obj_d#"$BUILD_BASE"/}"
+lib="$INSTALL_BASE/rmw_tickle/lib/librmw_tickle.so"
+# The install step rewrites the RPATH, so the bytes differ; the GNU build ID is what the linker stamped.
+build_id() { readelf -n "$1" 2>/dev/null | sed -n 's/.*Build ID: //p'; }
+built_id=$(build_id "$BUILD_BASE/rmw_tickle/librmw_tickle.so")
+[ -n "$built_id" ] && [ "$built_id" = "$(build_id "$lib")" ] \
+    || not_this_checkout "installed $lib is not the library this build made (build id '${built_id:-none}')"
+echo "run_rmw_suite: testing $(md5sum "$lib" | cut -c1-12)"
 
 if ! sudo -n ip netns add "$NS" 2>/dev/null \
     || ! sudo -n ip netns exec "$NS" ip link set lo up \
@@ -76,16 +124,18 @@ sudo -n ip netns exec "$NS" sudo -n -u "$USER" bash -c "
     set +u
     source '$ROS_SETUP'
     source '$WS/ifaces/install/setup.bash'
-    source '$WS/rmw/install/setup.bash'
+    source '$INSTALL_BASE/setup.bash'
     set -u
-    cd '$WS/rmw' && colcon test --base-paths '$SRC' --packages-select rmw_tickle --event-handlers console_cohesion+
+    export COLCON_LOG_PATH='$BASE/log'
+    cd '$WS/rmw' && colcon test --base-paths '$SRC' --packages-select rmw_tickle \
+        --build-base '$BUILD_BASE' --install-base '$INSTALL_BASE' --event-handlers console_cohesion+
 "
 test_rc=$?
 # `colcon test` exits 0 even when ctest cases FAIL - it reports "N packages had test failures" and
 # returns success. `colcon test-result` is the one that carries the verdict. Taking it from the wrong
 # command made this gate report PASS on a deliberately broken build the first time it was asked to
 # fail, which is the whole defect this gate exists to prevent.
-colcon test-result --all | tail -5
+colcon test-result --all --test-result-base "$BUILD_BASE/rmw_tickle" | tail -5
 result_rc=${PIPESTATUS[0]}
 if [ "$test_rc" -ne 0 ] || [ "$result_rc" -ne 0 ]; then
     echo "run_rmw_suite: FAILED (colcon test=$test_rc, test-result=$result_rc)"
