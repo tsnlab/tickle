@@ -1501,6 +1501,9 @@ struct tt_Publisher { // extends endpoint
     // nothing further, 0.125 Mbps where the same run reaches 109 Mbps once acknowledgements flow.
     // Zero loss is the worst case for KEEP_ALL, not the easiest one.
     bool keep_all;
+    // Until when a KEEP_ALL Publisher that has matched no Subscriber yet grows its arena rather than evict (0: not
+    // started). Set at its first cached publish to one tt_CONTEXT_UPDATE_INTERVAL later (keep_all_room_before_match()).
+    uint64_t keep_all_unmatched_until_ns;
 
     // Phase 3 - fired when a KEEP_ALL Publisher that had to refuse a write becomes writable again,
     // i.e. when an incoming ACKNACK advances the slowest matched Subscriber far enough. NULL (the

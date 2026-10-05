@@ -5653,14 +5653,49 @@ static bool reliable_cache_keeps_depth(const struct tt_ReliableCache* cache, uin
     return reliable_cache_offset_in(cache->arena_size, false, head, tail, footprint) != UINT32_MAX;
 }
 
+// KEEP_ALL's admission refuses only on behalf of matched Subscribers, so until the first one is matched nothing guards
+// the arena - yet what the Publisher broadcasts meanwhile reaches Subscribers it has not matched, and each asks again
+// for what it missed as soon as it acknowledges. Evicting those samples for bytes lost them for good: rmw KEEP_ALL
+// Array4k under 5% loss, 5-8 samples per run, all in the first second (rig, 2026-10-05). So in that window the arena
+// grows through the Publisher's hook rather than evicts. The window is one tt_CONTEXT_UPDATE_INTERVAL from the first
+// publish: every live node announces at least once an interval, so a Subscriber that exists is matched by its end,
+// and a Publisher still unmatched then has nobody to keep samples for and evicts as before rather than take its
+// whole budget. The index ring's count bound is not grown: it holds far more datagrams than one match takes.
+static void keep_all_room_before_match(struct tt_Context* node, struct tt_Publisher* pub,
+                                       const struct tt_SubmessageHeader* submessage_header, uint32_t encoded_len,
+                                       uint32_t whole_limit) {
+    if (any_peer_ack_matched(pub)) {
+        return;
+    }
+    uint64_t now = tt_get_ns();
+    if (pub->keep_all_unmatched_until_ns == 0) {
+        pub->keep_all_unmatched_until_ns = now + tt_CONTEXT_UPDATE_INTERVAL;
+    }
+    if (now > pub->keep_all_unmatched_until_ns || pub->cache_grow == NULL) {
+        return;
+    }
+    struct tt_ReliableCache* cache = pub->reliable_cache;
+    uint32_t footprint = sample_cache_footprint(node, submessage_header, encoded_len, whole_limit);
+    // acked_through 0: room without evicting anything, since nobody has acknowledged anything.
+    while (!reliable_cache_admits(cache, reliable_cache_depth(cache), footprint, 0)) {
+        if (!pub->cache_grow(pub)) {
+            return;
+        }
+    }
+}
+
 // (g10) Room for this KEEP_LAST sample without evicting inside the depth: grown through the Publisher's hook while it
 // can, else counted.
 static void make_depth_room(struct tt_Context* node, struct tt_Publisher* pub,
                             const struct tt_SubmessageHeader* submessage_header, uint32_t encoded_len,
                             uint32_t whole_limit) {
     struct tt_ReliableCache* cache = pub->reliable_cache;
-    if (pub->keep_all || cache->sample_depth == 0) {
-        return; // KEEP_ALL's own admission refuses rather than evicts
+    if (pub->keep_all) {
+        keep_all_room_before_match(node, pub, submessage_header, encoded_len, whole_limit);
+        return; // after the first match KEEP_ALL's own admission refuses rather than evicts
+    }
+    if (cache->sample_depth == 0) {
+        return;
     }
     uint32_t footprint = sample_cache_footprint(node, submessage_header, encoded_len, whole_limit);
     while (!reliable_cache_keeps_depth(cache, footprint)) {

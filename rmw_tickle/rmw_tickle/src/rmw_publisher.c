@@ -324,7 +324,8 @@ static bool grow_reliable_cache(rmw_tickle_publisher_t* pub_impl) {
 // (g10, RMW_GAPS_PLAN.md) Core's tt_Publisher.cache_grow: called, with the context locked, when caching a KEEP_LAST
 // sample would evict one of the newest `depth` for bytes, and grows the arena toward its budget. Until g10 a KEEP_LAST
 // arena grew only after `depth` messages had gone out, so a durable publisher of a large type kept fewer than `depth`
-// for a late joiner - 3 of 4 60 KB samples in the `durable` acceptance test, where DDS gives 4.
+// for a late joiner - 3 of 4 60 KB samples in the `durable` acceptance test, where DDS gives 4. Core also calls it for
+// a KEEP_ALL publisher that has matched no subscriber yet, for one discovery interval (keep_all_room_before_match()).
 static bool grow_on_need(struct tt_Publisher* pub) {
     rmw_tickle_publisher_t* pub_impl =
         (rmw_tickle_publisher_t*)((char*)pub - offsetof(rmw_tickle_publisher_t, tickle_publisher));
