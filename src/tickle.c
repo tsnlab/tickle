@@ -4672,6 +4672,7 @@ static uint32_t keep_all_bound(const struct tt_Publisher* pub) {
 // Defined with the rest of the cache arithmetic below; keep_all_writable() needs it here.
 static bool reliable_cache_admits(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t length,
                                   uint32_t acked_through);
+static uint32_t keep_all_acked_through(const struct tt_Publisher* pub);
 
 // Whether a KEEP_ALL Publisher may accept one more sample: refused only when accepting it would
 // push the unacknowledged run past keep_all_bound(), i.e. would force cache_reliable_sample() to
@@ -4703,8 +4704,7 @@ static bool keep_all_writable(const struct tt_Publisher* pub) {
         return true; // nothing left to wait for
     }
 
-    uint32_t min_ack = min_peer_ack_seq_no(pub);
-    uint32_t acked_through = min_ack > 0 ? min_ack - 1 : 0; // ack_seq_no means "everything below it"
+    uint32_t acked_through = keep_all_acked_through(pub);
     // The next sample takes one seq_no, or - one that was refused for its datagram count - that many.
     uint32_t unacked_after_this =
         pub->seq_no + (pub->blocked_datagrams > 1 ? pub->blocked_datagrams : 1) - acked_through;
@@ -4908,6 +4908,23 @@ static void reliable_cache_drop_leading_tombstones(struct tt_ReliableCache* cach
 // reliable_cache_write_offset() below can read the oldest record's own offset directly.
 static void reliable_cache_evict_one(struct tt_ReliableCache* cache, uint16_t depth);
 
+// Whether the retained record under seq_no is a fragment continuing a sample rather than starting one.
+static bool reliable_cache_record_continues(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t seq_no) {
+#if tt_FRAG_ENABLED
+    if (seq_no == 0 || cache->oldest_seq_no == 0 || seq_no < cache->oldest_seq_no || seq_no > cache->newest_seq_no) {
+        return false;
+    }
+    const struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
+    return entry->len != 0 && entry->seq_no == seq_no &&
+           ((const struct tt_SubmessageHeader*)(cache->arena + entry->offset))->type == tt_SUBMESSAGE_TYPE_FRAG_CONT;
+#else
+    UNUSED(cache);
+    UNUSED(depth);
+    UNUSED(seq_no);
+    return false;
+#endif
+}
+
 // Whether the oldest retained record is a fragment continuing a sample rather than starting one.
 static bool reliable_cache_oldest_continues(const struct tt_ReliableCache* cache, uint16_t depth) {
 #if tt_FRAG_ENABLED
@@ -4922,6 +4939,27 @@ static bool reliable_cache_oldest_continues(const struct tt_ReliableCache* cache
     UNUSED(depth);
     return false;
 #endif
+}
+
+// KEEP_ALL's "acknowledged through", rounded down to a whole sample (2026-10-05). Readers acknowledge datagrams, and a
+// fragmented sample is several, so the acknowledgement can stop inside one; but the cache evicts whole samples
+// (reliable_cache_evict_oldest()), so evicting the acknowledged first fragment takes the unacknowledged rest with it.
+// The admission checks counted records and passed; the reader then heard those continuations had gone. Rig, Array4k
+// (4 fragments) at 5% loss with the reader matched: gap_evicted 751-1912 per 20 s run, every logged eviction at the
+// reader's ack and the one after it (experiments/rmw_keepall_evict_repro.sh). Every KEEP_ALL check that decides
+// whether something may be evicted asks this instead of min_ack - 1.
+static uint32_t keep_all_acked_through(const struct tt_Publisher* pub) {
+    uint32_t min_ack = min_peer_ack_seq_no(pub);
+    uint32_t acked_through = min_ack > 0 ? min_ack - 1 : 0; // ack_seq_no means "everything below it"
+#if tt_FRAG_ENABLED
+    const struct tt_ReliableCache* cache = pub->reliable_cache;
+    uint16_t depth = reliable_cache_depth(cache);
+    while (acked_through != 0 && cache != NULL && depth != 0 &&
+           reliable_cache_record_continues(cache, depth, acked_through + 1)) {
+        acked_through--; // the first unacknowledged record continues a sample: none of that sample is evictable
+    }
+#endif
+    return acked_through;
 }
 
 // Evicts the oldest retained sample - every datagram of it. A fragmented sample is cached one record per
@@ -5479,9 +5517,8 @@ static uint32_t keep_all_refused_record_bytes(const struct tt_Publisher* pub, co
                   // matched Subscriber there is nobody whose acknowledgement could ever arrive
     }
     uint32_t record = sample_cache_footprint(node, submessage_header, encoded_len, whole_limit);
-    uint32_t min_ack = min_peer_ack_seq_no(pub);
     if (reliable_cache_admits(pub->reliable_cache, reliable_cache_depth(pub->reliable_cache), record,
-                              min_ack > 0 ? min_ack - 1 : 0)) {
+                              keep_all_acked_through(pub))) {
         return 0;
     }
     return record;
@@ -5497,7 +5534,7 @@ static bool keep_all_refuses_encoded(struct tt_Publisher* pub, const struct tt_C
     uint32_t datagrams = sample_datagram_count(node, submessage_header, encoded_len, whole_limit);
     if (datagrams > 1 && pub->keep_all && reliable_cache_depth(pub->reliable_cache) != 0 && any_peer_ack_matched(pub)) {
         uint32_t min_ack = min_peer_ack_seq_no(pub);
-        uint32_t acked_through = min_ack > 0 ? min_ack - 1 : 0;
+        uint32_t acked_through = keep_all_acked_through(pub);
         if (pub->seq_no + datagrams - acked_through > keep_all_bound(pub)) {
             pub->blocked_datagrams = (uint16_t)datagrams;
             return true;

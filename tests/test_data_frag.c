@@ -1198,6 +1198,39 @@ static void test_keep_all_counts_every_datagram(void) {
     EXPECT_EQ_U32(6, pub.seq_no);
 }
 
+static void test_keep_all_never_evicts_the_unacknowledged_rest_of_a_sample(void) {
+    // The cache evicts whole samples, readers acknowledge datagrams: an acknowledgement that stops inside a
+    // sample must count as stopping before it, or admitting the next sample evicts the acknowledged first
+    // fragment AND its unacknowledged continuations (rig, 2026-10-05: gap_evicted 751-1912 per run, Array4k).
+    // Depth 8 is chosen so the record count decides: 6 + 3 - 1 = 8 fits if fragment 1 alone counts as
+    // acknowledged; 6 + 3 - 0 = 9 does not once the acknowledgement is rounded to whole samples.
+    init_pair(4000); // 3 datagrams a sample
+    make_reliable();
+    frag_cache.depth = 8;
+    pub.keep_all = true;
+    pub.peer_acks[0].context_id = RECEIVER_ID;
+    pub.peer_acks[0].ack_seq_no = 1;
+    publish_captured(); // seq_no 1..3
+    publish_captured(); // seq_no 4..6
+    EXPECT_EQ_U32(6, pub.seq_no);
+
+    pub.peer_acks[0].ack_seq_no = 2; // fragment 1 of sample 1 acknowledged, its fragments 2 and 3 not
+    EXPECT_EQ_U32(0, keep_all_acked_through(&pub));
+    start_capture();
+    EXPECT_EQ_INT(tt_RET_WOULD_BLOCK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    EXPECT_EQ_U32(1, frag_cache.oldest_seq_no); // nothing evicted
+    EXPECT_TRUE(reliable_cache_slot_live(&frag_cache, 8, 3));
+
+    pub.peer_acks[0].ack_seq_no = 3; // still inside sample 1
+    EXPECT_EQ_U32(0, keep_all_acked_through(&pub));
+    pub.peer_acks[0].ack_seq_no = 4; // all of sample 1: now it may go
+    EXPECT_EQ_U32(3, keep_all_acked_through(&pub));
+    EXPECT_TRUE(tt_Publisher_writable(&pub));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    EXPECT_EQ_U32(9, pub.seq_no);
+    EXPECT_EQ_U32(4, frag_cache.oldest_seq_no); // sample 1 went whole, and only after it was all acknowledged
+}
+
 int main(void) {
     test_topics_up_to_the_sample_limit_can_be_created();
     test_largest_data_is_not_fragmented();
@@ -1224,6 +1257,7 @@ int main(void) {
     test_keep_last_evicts_whole_samples();
     test_sample_depth_bounds_keep_last_in_samples();
     test_keep_all_counts_every_datagram();
+    test_keep_all_never_evicts_the_unacknowledged_rest_of_a_sample();
     test_retransmission_resends_only_the_lost_datagram();
     test_original_and_retransmission_agree_on_fragment_count();
     test_durability_backlog_sends_fragmented_samples();
