@@ -479,6 +479,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
 #endif
     node->hal.rx_prefer_data = false;
     node->hal.rx_idle = 0;
+    node->hal.rx_idle_returns = 0;
     node->hal.rx_count = 0;
     node->hal.rx_next = 0;
     node->hal.rx_headers_for = NULL;
@@ -774,9 +775,11 @@ int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* data
     return (int32_t)count;
 }
 
-// Bits of struct tt_hal.rx_idle - see tt_try_receive().
-#define TT_RX_IDLE_WELL_KNOWN 1U
-#define TT_RX_IDLE_DATA 2U
+// Bits of struct tt_hal.rx_idle (TT_RX_IDLE_WELL_KNOWN, TT_RX_IDLE_DATA, hal_linux.h) - see tt_try_receive().
+// How many datagrams tt_try_receive() returns while a socket is skipped before it asks that socket again (struct
+// tt_hal.rx_idle_returns). One empty read per 64 is about 1.5% more receive calls, and only while one socket is busy
+// and the other idle; it bounds how long the idle one can go unread at 64 datagrams instead of forever.
+#define TT_RX_IDLE_RECHECK 64U
 
 // tt_receive()'s wait set: the two sockets, the wake eventfd, and - with the segment - its doorbell FIFO.
 #if tt_SEGMENT_ENABLED
@@ -1039,17 +1042,32 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
 // empty one, and the call that ended each drain spent two. Measured on the rig's server, 1.58 receive
 // syscalls per delivered sample against CycloneDDS's 0.74, and 34% of them returned nothing - 95% of the
 // server's syscall time was receiving. Now a socket ppoll() did not report ready, or one a read here has
-// found empty, is skipped until the next wait (struct tt_hal.rx_idle). A datagram that lands on a skipped
-// socket in the meantime is not lost or delayed past the next poll: readiness is level-triggered, so the
-// very next ppoll() reports it. When every socket is idle this answers without a syscall, and clears the
-// bits so the next drain - one not preceded by a wait, like a non-blocking poll - asks both again.
+// found empty, is skipped until the next wait (struct tt_hal.rx_idle) - or until TT_RX_IDLE_RECHECK datagrams
+// later, because a drain session need not end: a socket refilled as fast as it is read keeps drain_rx() going,
+// and without the recheck the skipped socket was never read again (struct tt_hal.rx_idle_returns). Otherwise a
+// datagram that lands on a skipped socket waits at most until the next ppoll(), which is level-triggered. When every
+// socket is idle this answers without a syscall, and clears the bits so the next drain - one not preceded by a wait,
+// like a non-blocking poll - asks both again.
 uint32_t tt_rx_buffered(const struct tt_Context* node) {
     return node->hal.rx_next < node->hal.rx_count ? (uint32_t)(node->hal.rx_count - node->hal.rx_next) : 0U;
+}
+
+// Counts a datagram returned while a socket is being skipped, and asks every socket again after TT_RX_IDLE_RECHECK.
+static void rx_idle_count_return(struct tt_Context* node) {
+    if (node->hal.rx_idle == 0) {
+        return;
+    }
+    node->hal.rx_idle_returns++;
+    if (node->hal.rx_idle_returns >= TT_RX_IDLE_RECHECK) {
+        node->hal.rx_idle = 0;
+        node->hal.rx_idle_returns = 0;
+    }
 }
 
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     int32_t pending = rx_take_pending(node, buf, len, ip, port);
     if (pending >= 0) {
+        rx_idle_count_return(node);
         return pending;
     }
     // MSG_DONTWAIT makes just this call non-blocking regardless of the socket's own mode - no
@@ -1080,8 +1098,10 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
     }
     if (ret < 0) {
         node->hal.rx_idle = 0; // drained: the next drain session asks every socket again
-        return -1;             // Nothing waiting
+        node->hal.rx_idle_returns = 0;
+        return -1; // Nothing waiting
     }
+    rx_idle_count_return(node);
     TT_TRACE(tt_TRACE_RX_DATAGRAM);
     return ret;
 }

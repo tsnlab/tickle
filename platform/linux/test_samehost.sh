@@ -146,6 +146,9 @@ fi
 # The same exchange with io_uring refused, as Docker's default seccomp profile refuses it (README.md, "io_uring"). A
 # refused ring must cost speed, never delivery. The warning is what proves the refusal reached the HAL: without it
 # this pass would be the first one again and could not fail for the reason it exists.
+# A busy socket must not starve an idle-marked one (rx_idle_check.c): exit 0 only, a setup failure is a failure here.
+"$HERE/rx_idle_check" || { echo "same-host test: FAIL - rx_idle_check" >&2; exit 1; }
+
 # The hint itself, against the real HAL, both with the ring and refused (rx_hint_check.c). Exit 2 is "compiled out".
 hint_rc=0
 "$HERE/rx_hint_check" || hint_rc=$?
