@@ -596,6 +596,11 @@ struct tt_Context {
     // (OPTIMIZATION_PLAN.md 11, D1). Raw nanoseconds, beside poller_thread: the poll writes that line anyway, and a
     // division per poll cost a sender polling once a sample ~3 ns (WIRE_PLAN.md 8). Only the poller touches it.
     uint64_t rx_clock_ns;
+    // When a busy poll next looks at the socket between scheduler entries (tt_RX_CHECK_RATIO, config.h): the
+    // time the poll last finished looking - a peek or a wait - and what an empty peek costs here, a moving
+    // average of the loop's own clock readings (1/8 weight to the newest). Only the poller touches them.
+    uint64_t rx_checked_ns;
+    uint64_t rx_check_cost_ns;
     uint32_t state_depth; // how many times the owner has taken it; only the owner reads or writes it
     struct tt_LockStats state_lock_stats;
     // The scheduler inbox: tt_Context_schedule() from a thread that does not hold the state lock puts its entry

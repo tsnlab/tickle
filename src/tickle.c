@@ -12161,6 +12161,47 @@ static bool busy_peek(struct tt_Context* node, tt_ret_t* result) {
     return true;
 }
 
+// How long a busy poll loop runs scheduler entries between two looks at the socket: tt_RX_CHECK_RATIO times what
+// an empty look costs here, so looking takes the same share of a busy loop's time on any platform - a look the
+// io_uring hint answers from memory comes after nearly every entry, a recvmmsg() that finds nothing after a run
+// of them (2026-10-05; it was a fixed 8 entries, whose period was 8 times whatever an entry costs on the
+// hardware). Never longer than tt_RECEIVE_TIMEOUT, the most scheduler work a poll runs before handing control
+// back, so a dear or mismeasured read cannot starve receive. A clock too coarse to see a read measures 0, and a
+// look then follows every entry: the safe direction.
+static uint64_t rx_check_budget(const struct tt_Context* node) {
+    const uint64_t budget = node->rx_check_cost_ns * (uint64_t)tt_RX_CHECK_RATIO;
+    return budget < (uint64_t)tt_RECEIVE_TIMEOUT ? budget : (uint64_t)tt_RECEIVE_TIMEOUT;
+}
+
+// Whether the busy loop looks at the socket before running another entry: an entry has run since it last looked,
+// so the answer may have changed, and the budget has run out.
+static bool rx_check_due(const struct tt_Context* node, uint64_t now, bool ran_since_check) {
+    return ran_since_check && now - node->rx_checked_ns >= rx_check_budget(node);
+}
+
+// How a busy poll loop iteration ended up treating the socket.
+enum rx_look {
+    RX_LOOK_NONE, // it ran a scheduler entry
+    RX_LOOK_PEEK, // it peeked without waiting and found nothing
+    RX_LOOK_WAIT, // it went through the I/O wait
+};
+
+// Records a look at the socket between `start` and `end`, the loop's own two clock readings around it, so nothing
+// extra is read. An empty peek's cost goes into rx_check_cost_ns: a moving average with 1/8 to the newest, so one
+// read the OS preempted moves the budget an eighth of the way, and tt_RECEIVE_TIMEOUT bounds even that.
+static void note_rx_look(struct tt_Context* node, enum rx_look look, uint64_t start, uint64_t end,
+                         bool* ran_since_check) {
+    if (look == RX_LOOK_NONE) {
+        return;
+    }
+    if (look == RX_LOOK_PEEK) {
+        const uint64_t cost = end - start;
+        node->rx_check_cost_ns = node->rx_check_cost_ns - (node->rx_check_cost_ns / 8) + (cost / 8);
+    }
+    node->rx_checked_ns = end;
+    *ran_since_check = false;
+}
+
 static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
     // Negative: wait exactly until the next scheduler entry is due, or indefinitely when there is none
     // (see tt_Context_poll() in tickle.h). The loop below always bounded a wait by the next due entry, but
@@ -12195,50 +12236,49 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
         return poll_once_nonblocking(node, time);
     }
 
-    // EXPERIMENTAL (branch experiment/poll-loop-io-interleave, rmw_tickle/PLAN.md's own "Further
-    // latency research" section) - counts scheduler entries run back-to-back without a receive
-    // check, so a continuously-rescheduling task (a max-rate Publisher's own send loop) can't
-    // starve tt_receive() for this whole call's own timeout budget. See tt_SCHEDULER_IO_INTERLEAVE's
-    // own doc comment (config.h) for the full reasoning.
-    uint32_t consecutive_scheduler_runs = 0;
+    // A due scheduler entry is preferred to the socket, so an entry that is always due - a max-rate publisher's
+    // own send loop - would keep tt_receive() from running and its ACKNACKs unheard. Between entries the loop
+    // therefore peeks, without waiting, once the time since it last looked reaches rx_check_budget(): measured,
+    // not counted (tt_RX_CHECK_RATIO, config.h). And only after an entry has run since that look, so two peeks
+    // never come back to back with nothing between them that could change the answer.
+    bool ran_since_check = false;
     bool did_work = false; // a scheduler entry has run during this call
 
     while (until_next_event || timeout > 0) {
         bool has_next = false;
         uint64_t next = 0;
         bool ran = false;
-        if (consecutive_scheduler_runs < tt_SCHEDULER_IO_INTERLEAVE) {
+        if (!rx_check_due(node, time, ran_since_check)) {
             ran = run_due_entry(node, time, &has_next, &next); // runs one if due, else says when
         } else {
             has_next = sched_next_time(node, &next);
         }
 
+        enum rx_look look = RX_LOOK_NONE;
         if (ran) {
-            // Run scheduler first
-            consecutive_scheduler_runs++;
+            ran_since_check = true;
             did_work = true;
         } else if (has_next && next <= time) {
-            // A scheduler entry is still due, but tt_SCHEDULER_IO_INTERLEAVE consecutive ones have
-            // already run without a receive check - force one non-blocking peek before letting more
-            // scheduler work run. Not the caller's own real wait (never blocks): if nothing's
-            // there, fall straight back into scheduler processing next iteration.
-            consecutive_scheduler_runs = 0;
-            tt_ret_t peeked = tt_RET_TIMEOUT;
-            if (busy_peek(node, &peeked)) {
-                return peeked;
+            // An entry is still due, but so is the receive check: one non-blocking peek, never the caller's own
+            // wait. If nothing is there, scheduler work resumes on the next iteration.
+            tt_ret_t peek_result = tt_RET_TIMEOUT;
+            if (busy_peek(node, &peek_result)) {
+                return peek_result;
             }
+            look = RX_LOOK_PEEK;
         } else {
-            consecutive_scheduler_runs = 0;
             tt_ret_t result;
             if (poll_wait_io(node, has_next, next, time, timeout, until_next_event, did_work, &result)) {
                 return result;
             }
+            look = RX_LOOK_WAIT;
         }
 
         uint64_t new_time = tt_get_ns();
         if (!until_next_event) {
             timeout -= (int64_t)(new_time - time);
         }
+        note_rx_look(node, look, time, new_time, &ran_since_check);
         time = new_time;
         node->rx_clock_ns = time;
         if (until_next_event && did_work && time - poll_start >= (uint64_t)tt_RECEIVE_TIMEOUT) {

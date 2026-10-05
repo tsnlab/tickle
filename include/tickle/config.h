@@ -320,17 +320,20 @@
 #ifndef tt_RECEIVE_TIMEOUT
 #define tt_RECEIVE_TIMEOUT (100 * tt_MICROSECOND) // nanosecond
 #endif
-// EXPERIMENTAL (branch experiment/poll-loop-io-interleave, rmw_tickle/PLAN.md's own "Further
-// latency research" section) - tt_Context_poll()'s own inner loop favors an already-due scheduler
-// entry over ever calling tt_receive(), with no cap on how many may run consecutively before an
-// I/O check happens. A continuously-rescheduling task (e.g. a max-rate Publisher's own send loop,
-// interval_s=0) can then starve tt_receive() for a whole call's own tt_RECEIVE_TIMEOUT budget,
-// meaning ACKNACK responsiveness ends up bounded by how rarely the scheduler queue goes idle, not
-// by real network RTT. This bounds how many scheduler entries may run back-to-back before a
-// forced, non-blocking tt_try_receive() peek is squeezed in between them - unvalidated on real HIL
-// yet, this specific value (8) is a first guess, not yet tuned.
-#ifndef tt_SCHEDULER_IO_INTERLEAVE
-#define tt_SCHEDULER_IO_INTERLEAVE 8
+// How much scheduler work a busy tt_Context_poll() runs per unit of time spent looking at the socket and finding
+// nothing. The poll prefers an already-due scheduler entry to tt_receive(), so an entry that is always due (a
+// max-rate publisher's send loop) would leave its ACKNACKs unheard; between entries the loop therefore peeks,
+// without waiting, once the time since it last looked reaches this ratio times what an empty peek costs - a
+// moving average of its own clock readings - and never later than tt_RECEIVE_TIMEOUT (rx_check_budget(),
+// tickle.c). Empty peeks then take about 1/(ratio + 1) of a busy loop on any platform: a look the io_uring hint
+// answers from memory comes after nearly every entry, a recvmmsg() that finds nothing after a run of them. A
+// dimensionless share, not a fitted value: raise it to spend less on empty reads, lower it to hear sooner.
+// It replaces tt_SCHEDULER_IO_INTERLEAVE (2026-10-05), a count of entries whose period scaled with the hardware.
+#ifndef tt_RX_CHECK_RATIO
+#define tt_RX_CHECK_RATIO 8
+#endif
+#ifdef tt_SCHEDULER_IO_INTERLEAVE
+#error "tt_SCHEDULER_IO_INTERLEAVE was removed: the receive check is timed, see tt_RX_CHECK_RATIO (ROADMAP.md 5a)"
 #endif
 // Whether TickLE core may be called from more than one thread (2026-09-25). 1: every public tt_*
 // function is safe to call from any thread, concurrently with tt_Context_poll() on another - see

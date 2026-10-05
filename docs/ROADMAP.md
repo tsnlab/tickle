@@ -61,13 +61,15 @@ The user's active list (2026-10-05), in order.
    (`git show 3c0c505b:examples/perf_hil/CONSTANTS_AUDIT.md`) and include config.h, hal_linux.h and rmw_tickle's
    RMW_TICKLE_* defaults.
    Inventory done 2026-10-05; the fitted values that stay (c) are in README.md "Tuning for your platform". Still
-   to replace by an algorithm (a), most fitted and hottest first: `tt_SCHEDULER_IO_INTERLEAVE` 8 (a count standing
-   in for a time budget; its comment still calls it experimental); `tt_RELIABLE_RETRY_GRANULARITY` 100 us (measure
+   to replace by an algorithm (a), most fitted and hottest first: `tt_RELIABLE_RETRY_GRANULARITY` 100 us (measure
    timer lateness); `TT_RX_IDLE_RECHECK` 64 and `tt_SEGMENT_ATTACH_RETRY_SENDS` / `_REVALIDATE_SENDS` (send counts
    whose period scales with the rate); `tt_CALL_RETRY_INTERVAL` / `_MAX`, `tt_SERVER_CACHE_TIMEOUT` and
    `RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS` (srtt-relative bounds, as `08e568af` did for the reliable retry);
    `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` (from the tracking window); `tt_DISCOVERY_REQUEST_RETRY` (RTT +
    `tt_CONTEXT_TX_INTERVAL`) and `tt_SEGMENT_DEAD_READER_NS` (from `tt_LIVELINESS_SILENCE_NS`).
+   Done: `tt_SCHEDULER_IO_INTERLEAVE` (8 entries) is now `tt_RX_CHECK_RATIO`, a timed receive check - the budget is
+   the ratio times the measured cost of an empty peek, capped at `tt_RECEIVE_TIMEOUT` (`test_rx_check_budget`); a rig
+   A/B against the count is still owed before its figures are re-quoted.
 6. **Re-measure rmw same-host performance**: the rmw same-host rows predate the segment, FIFO and wake fixes.
    (COMPARISON 2.7; RMW_PERF_PLAN)
 7. **FreeRTOS: implement tt_rx_maybe_ready() with an lwIP netconn receive callback**: today only the Linux HAL has

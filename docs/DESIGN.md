@@ -43,8 +43,9 @@ Principles that shape everything below:
   With nothing scheduled it waits indefinitely: an idle node does not wake up.
 - Waiting uses `ppoll()` with the timeout as an argument (never `SO_RCVTIMEO`), over the well-known socket, the
   data socket, an `eventfd` for wake-ups and, when present, the segment doorbell FIFO.
-- At most `tt_SCHEDULER_IO_INTERLEAVE` (8) due scheduler entries run back to back before a non-blocking receive
-  check, so a max-rate publisher cannot starve ACKNACK processing.
+- Between due scheduler entries a busy poll peeks at the socket, without waiting, once the time since it last looked
+  reaches `tt_RX_CHECK_RATIO` (8) times what an empty peek measures here, and never later than `tt_RECEIVE_TIMEOUT`:
+  a max-rate publisher cannot starve ACKNACK processing, and empty peeks take about 1/9 of a busy loop on any platform.
 - A high-rate publisher must call `tt_Context_poll(ctx, 0)` between sends, not block.
 
 **Threading.** With `tt_THREAD_SAFE=1` (default) every public `tt_*` call may come from any thread, concurrently with
@@ -497,7 +498,7 @@ All are compile-time `-D` overrides unless noted. Times in nanoseconds.
 | `tt_SERVER_CACHE_ENTRY_LENGTH`, `tt_CLIENT_CACHE_LENGTH` | 2 x buffer | 8 | inline storage (rmw attaches its own) |
 | `tt_MAX_SCHEDULER_LENGTH` | 128 | | scheduler entries |
 | `tt_SCHED_INBOX_LENGTH` | 32 | | cross-thread timer inbox |
-| `tt_SCHEDULER_IO_INTERLEAVE` | 8 | | due entries before an I/O check |
+| `tt_RX_CHECK_RATIO` | 8 | | busy-loop scheduler time per unit of empty receive check |
 | `tt_RECEIVE_TIMEOUT` | 100 us | | poll slice some callers pass |
 | `tt_RX_BATCH` | 32 (1 if buffer > control) | | datagrams per `recvmmsg()` |
 | `tt_RX_CLOCK_REFRESH` | 16 | | datagrams per clock read |
