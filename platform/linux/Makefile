@@ -328,7 +328,7 @@ sanitize:
 #
 # The exclusions that remain are scope decisions, not artifact filtering. platform/ and
 # examples/freertos/ (and hal_freertos.*) are cross-compiled and have their own lint pass -
-# `make -C platform/freertos lint`, see CONTRIBUTING.md - and clang-tidy cannot parse them without
+# `make -C platform/freertos lint`, see docs/CONTRIBUTING.md - and clang-tidy cannot parse them without
 # that target's own flags. third_party/ isn't ours.
 LINT_EXCLUDE_RE = ^(third_party|platform/freertos|examples/freertos)/|hal_freertos\.
 # Tracked C++ sources (.cpp/.hpp/.cc) get the clang-format half of lint only (2026-09-26): CI's

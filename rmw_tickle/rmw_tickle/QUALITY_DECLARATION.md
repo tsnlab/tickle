@@ -47,7 +47,7 @@ All changes occur through pull requests, reviewed before merging.
 ### Contributor Origin [2.ii]
 
 This package uses DCO as its confirmation of contributor origin policy. More information can be
-found in [CONTRIBUTING](../../CONTRIBUTING.md).
+found in [CONTRIBUTING](../../docs/CONTRIBUTING.md).
 
 ### Peer Review Policy [2.iii]
 
@@ -70,7 +70,7 @@ Quality declaration documents are linked in the [README](../../README.md) of thi
 ### Feature Documentation [3.i]
 
 `rmw_tickle`'s own feature set and design decisions are documented in this repository's
-[DESIGN.md](../../DESIGN.md) and [`rmw_tickle/PLAN.md`](../PLAN.md) (the latter tracking, per
+[docs/DESIGN.md](../../docs/DESIGN.md) and [docs/RMW.md](../../docs/RMW.md) (the latter tracking, per
 milestone, what's implemented and what's explicitly deferred - e.g. the QoS roadmap, currently
 supported message-type subset, and known limitations like single-node-per-process).
 
@@ -81,7 +81,7 @@ supported message-type subset, and known limitations like single-node-per-proces
 ### Population of Changelog [3.iii]
 
 `rmw_tickle`'s changes are recorded alongside the rest of this repository's in a single, shared
-[CHANGELOG.md](../../CHANGELOG.md), not (yet) a REP-132-format `CHANGELOG.rst` of its own.
+[CHANGELOG.md](../../docs/CHANGELOG.md), not (yet) a REP-132-format `CHANGELOG.rst` of its own.
 
 ### Documentation of Quality Level [3.iv]
 
@@ -95,7 +95,8 @@ All of `rmw_tickle`'s public features are ROS middleware features.
 
 Unit, integration, and system tests higher up in the stack - in particular
 [`test_rmw_implementation`](https://github.com/ros2/rmw_implementation/tree/rolling/test_rmw_implementation)
-(wired into `check-all.yml` as of `rmw_tickle/PLAN.md`'s Milestone 15) - provide feature coverage,
+(wired into `check-all.yml` as of the former `rmw_tickle/PLAN.md`'s Milestone 15, readable with
+`git show 3c0c505b:rmw_tickle/PLAN.md`) - provide feature coverage,
 the same package `rmw_fastrtps_cpp`'s and `rmw_cyclonedds_cpp`'s own quality declarations cite for
 this exact purpose. Coverage is currently partial: `rmw_tickle`'s own accepted-QoS subset (only
 `BEST_EFFORT` reliability for topics, no loaned messages, single node per process, ...) means a
@@ -122,15 +123,12 @@ own 90-100% branch coverage tracking.
 
 ### Performance [4.iv]
 
-`rmw_tickle` has real, active performance-tracking CI (`.github/workflows/rmw-perf.yml`, tracking
-`rmw_tickle`'s own before/after latency and throughput on every push) - something neither
-`rmw_fastrtps_cpp` nor `rmw_cyclonedds_cpp` currently has ("does not currently have performance
-tests," their own quality declarations' own words). See `rmw_tickle/PLAN.md`'s Milestone 14 for
-why this is scoped as a regression tracker for `rmw_tickle` itself rather than a cross-vendor
-comparison (the same-host test topology both DDS vendors' own shared-memory transport would win
-unfairly), and TickLE core's own hardware-in-the-loop rig
-(`.github/workflows/performance.yml`, two real Raspberry Pis) for real-target-network-medium
-numbers below the `rmw` boundary.
+`rmw_tickle` has performance-tracking CI (`.github/workflows/rmw-perf.yml`, `rmw_tickle`'s own before/after
+latency and throughput), run by hand (`workflow_dispatch`) rather than on every push, because it needs the
+dedicated rig - something neither `rmw_fastrtps_cpp` nor `rmw_cyclonedds_cpp` currently has ("does not currently
+have performance tests," their own quality declarations' own words). It is a regression tracker for `rmw_tickle`
+itself, not a cross-vendor comparison. Cross-vendor figures, taken on TickLE core's two-Raspberry-Pi rig
+(`.github/workflows/performance.yml`, also dispatch-only), are in `docs/RESULTS.md`.
 
 ### Linters and Static Analysis [4.v]
 

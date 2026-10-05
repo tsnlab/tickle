@@ -312,7 +312,7 @@ run_all_scenarios() {
 
 summarize() {
     {
-        echo "## TickLE HIL scenario results (rmw_tickle/COMPARISON.md §2-3 methodology)"
+        echo "## TickLE HIL scenario results (docs/TESTING.md methodology)"
         echo
         echo "| Scenario | Condition | Result |"
         echo "|---|---|---|"

@@ -85,8 +85,8 @@ def render_markdown(rows):
     lines.append("")
     lines.append(
         f"{len(rows)} `test_rmw_implementation` executables ran against `rmw_tickle` "
-        f"({total_tests} test cases total). See `rmw_tickle/PLAN.md`'s Milestone 15 for which "
-        "skips are confirmed-legitimate documented gaps versus what would be a real regression."
+        f"({total_tests} test cases total). See Milestone 15 of `git show 3c0c505b:rmw_tickle/PLAN.md` "
+        "for which skips are confirmed-legitimate documented gaps versus what would be a real regression."
     )
     return "\n".join(lines) + "\n"
 

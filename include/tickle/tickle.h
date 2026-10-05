@@ -721,8 +721,9 @@ struct tt_Context {
     // this is. The address and port are kept beside the mapping because the name was computed from
     // them: a peer that reappears at a different address is a different segment, not this one.
     //
-    // `own_segment` is this context's own, the one peers attach to. It is created at bind time,
-    // when the address and context id it is named from are finally known.
+    // `own_segment` is this context's own, the one peers attach to. It is created lazily by
+    // ensure_own_segment(), when a same-host peer first appears, after the address and context id it is named
+    // from are known.
     struct tt_SegmentPeer {
         struct tt_SegmentHeader* mapping;
         // How many bytes `mapping` covers, which is the OWNER's geometry and not ours. Every detach has to

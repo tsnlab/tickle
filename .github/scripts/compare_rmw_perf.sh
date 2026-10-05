@@ -17,7 +17,7 @@
 # after "TickLE Plan" had started integrating this into rmw-perf.yml - a standalone script run
 # by hand, with results copied into rmw_tickle/COMPARISON.md afterward, is enough for something
 # this intermittent). Run this directly on a box with buildfarm_perf_tests already provisioned
-# per .github/scripts/README-rmw-perf.md (today, that's the tickle-perf self-hosted runner's own
+# per docs/RMW_PERF_SETUP.md (today, that's the tickle-perf self-hosted runner's own
 # ~/rmw_perf_ws - SSH there and run this script from a checkout of this repo).
 #
 # Usage: .github/scripts/compare_rmw_perf.sh [runtime_seconds]
@@ -137,6 +137,6 @@ colcon test \
   --ctest-args -R two_process_rmw_ || true
 colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose || true
 
-echo "=== Summary (copy the table below into rmw_tickle/COMPARISON.md by hand) ==="
+echo "=== Summary (copy the table below into docs/RESULTS.md by hand) ==="
 python3 "$SCRIPT_DIR/rmw_perf_summary.py" \
   "$RMW_PERF_WS/build/buildfarm_perf_tests/test_results/buildfarm_perf_tests"

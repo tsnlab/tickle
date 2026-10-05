@@ -90,7 +90,7 @@ def render_markdown(rows):
     lines.append("")
     lines.append(
         "Same-host, rmw_tickle-only run - not a cross-vendor comparison and not a real-target-"
-        "network-medium measurement. See `rmw_tickle/PLAN.md`'s benchmark plan for why this is "
+        "network-medium measurement. See docs/RMW_PERF_SETUP.md for why this is "
         "useful for tracking rmw_tickle's own before/after regressions, not as an authoritative "
         "absolute latency figure or a fair fight against rmw_fastrtps_cpp/rmw_cyclonedds_cpp "
         "(which auto-negotiate a same-host shared-memory transport this same-host rig would "

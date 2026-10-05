@@ -6,6 +6,9 @@ All notable changes to TickLE are recorded here. The format follows
 (`TICKLE_VERSION_*` in `include/tickle/tickle.h`). The on-the-wire protocol has its own
 number, `tt_VERSION`, which moves independently.
 
+Entries cite planning documents (`PLAN.md`, `RMW_GAPS_PLAN.md`, ...) that were condensed into `docs/` on 2026-10-05;
+read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
+
 ## [Unreleased]
 
 ### Added

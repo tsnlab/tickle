@@ -1,10 +1,13 @@
 # rmw_tickle performance runner setup (`tickle-perf`)
 
-[`rmw-perf.yml`](../workflows/rmw-perf.yml) tracks `rmw_tickle`'s own before/after performance
+> Formerly `.github/scripts/README-rmw-perf.md`. Citations of `rmw_tickle/PLAN.md` refer to the text at `3c0c505b`
+> (`git show 3c0c505b:rmw_tickle/PLAN.md`).
+
+[`rmw-perf.yml`](../.github/workflows/rmw-perf.yml) tracks `rmw_tickle`'s own before/after performance
 using [`ros2/buildfarm_perf_tests`](https://github.com/ros2/buildfarm_perf_tests) (which wraps
 [`ros2/performance_test`](https://github.com/ros2/performance_test)), on a self-hosted runner
 registered with the `tickle-perf` label. This is a **different rig from `tickle-hil`**
-([`README.md`](README.md)): one machine, not a pair of Raspberry Pis, and it runs a full ROS 2
+([TESTING.md](TESTING.md)): one machine, not a pair of Raspberry Pis, and it runs a full ROS 2
 stack rather than TickLE's own plain Makefile build.
 
 **Not a cross-vendor comparison** - `PERF_TEST_RMW_IMPLEMENTATIONS` (`rmw-perf.yml`) is
@@ -226,7 +229,7 @@ packages against the workspace this doc sets up ahead of time.
       assert len(performance_logs) == 1, f'expected one performance log, got {performance_logs}'
       performance_data = read_performance_test_csv(performance_logs[0])
 
-      # Exit codes alone pass a run that delivered nothing - see README-rmw-perf.md patch (e).
+      # Exit codes alone pass a run that delivered nothing - see this document's patch (e).
       total_received = performance_data['received'].sum()
       assert total_received > 0, (
           f'run exited cleanly but delivered no messages at all '

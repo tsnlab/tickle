@@ -96,8 +96,10 @@ Harnesses live in `examples/perf_hil/experiments/`. Results belong in the docume
 
 ## Documents
 
-`rmw_tickle/COMPARISON.md` (vendor comparison), `SHM_PLAN.md`, `PLAN.md`, `DESIGN.md`. **Everything in the
-repository is English**, including commit messages.
+Everything except `README.md` lives in `docs/`: `RESULTS.md` (every published figure, vendor comparison), `DESIGN.md`,
+`RMW.md`, `TESTING.md`, `ROADMAP.md`. Keep them short: a reader skims. The pre-2026-10-05 planning documents
+(`PLAN.md`, `SHM_PLAN.md`, `COMPARISON.md`, ...) are at `git show 3c0c505b:<path>` (DESIGN.md section 16).
+**Everything in the repository is English**, including commit messages.
 
 - A published figure carries its provenance — which build, which rate, which arm. A number without it gets
   re-measured against the wrong baseline, or a correct change gets reverted for measuring worse.

@@ -21,13 +21,27 @@ set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
-DOCS=(rmw_tickle/PLAN.md rmw_tickle/COMPARISON.md README.md)
+# README.md and everything in docs/ (2026-10-05: the planning documents were condensed there). A listed
+# document that is missing fails rather than being skipped: when the documents moved, a silent skip would
+# have left this check passing while it read nothing.
+shopt -s nullglob
+DOCS=(README.md docs/*.md)
+shopt -u nullglob
 
 fail=0
 checked=0
 
+if [ "${#DOCS[@]}" -lt 2 ]; then
+    echo "doc-shas: docs/ has no documents - nothing to check is a failure, not a pass" >&2
+    exit 1
+fi
+
 for doc in "${DOCS[@]}"; do
-    [ -f "$doc" ] || continue
+    if [ ! -f "$doc" ]; then
+        echo "doc-shas: $doc is listed but missing" >&2
+        fail=1
+        continue
+    fi
     # Backtick-quoted hex runs of 7-40 characters. Two things that match this and are not broken
     # citations, both found by running it:
     #
@@ -69,6 +83,6 @@ for doc in "${DOCS[@]}"; do
 done
 
 if [ "$fail" = 0 ]; then
-    echo "doc-shas: $checked cited sha(s) all exist and are reachable from HEAD"
+    echo "doc-shas: $checked cited sha(s) in ${#DOCS[@]} document(s) all exist and are reachable from HEAD"
 fi
 exit "$fail"

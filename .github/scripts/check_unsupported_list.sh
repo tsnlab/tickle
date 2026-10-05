@@ -55,7 +55,7 @@ for name in $asserted; do
     if ! printf '%s\n' "$defined" | grep -qx "$name"; then
         echo "check-unsupported-list: FAIL $name is asserted UNSUPPORTED by the test but rmw_unsupported.c"
         echo "  no longer defines it - the entry point is implemented, so it must leave the test's list too,"
-        echo "  and be counted as supported in rmw_tickle/COMPARISON.md section 2.7a."
+        echo "  and be counted as supported in docs/RMW.md's support table."
         status=1
     fi
 done

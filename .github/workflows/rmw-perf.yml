@@ -2,7 +2,7 @@ name: rmw_tickle performance
 
 # Tracks rmw_tickle's own before/after performance via ros2/buildfarm_perf_tests - not a
 # cross-vendor comparison against rmw_fastrtps_cpp/rmw_cyclonedds_cpp (see PERF_TEST_RMW_
-# IMPLEMENTATIONS below and README-rmw-perf.md for why that comparison isn't a fair one on this
+# IMPLEMENTATIONS below and docs/RMW_PERF_SETUP.md for why that comparison isn't a fair one on this
 # same-host rig).
 
 # workflow_dispatch only (see the note above) - and never pull_request: DESIGN.md's "no pull_request
@@ -43,7 +43,7 @@ jobs:
   compare:
     # A different rig from `tickle-hil` (performance.yml) - one Ubuntu machine running a full
     # ROS 2 stack, not a pair of Raspberry Pis running TickLE's own plain Makefile build. See
-    # .github/scripts/README-rmw-perf.md for what must already be provisioned on it before this
+    # .github/scripts/docs/RMW_PERF_SETUP.md for what must already be provisioned on it before this
     # workflow can do anything useful.
     runs-on: [self-hosted, tickle-perf]
     timeout-minutes: 30
@@ -51,7 +51,7 @@ jobs:
     env:
       # Not necessarily "jazzy" - each ROS 2 distro officially targets one specific Ubuntu release,
       # and this rig's actual Ubuntu version dictates which one packages.ros.org has binaries for
-      # at all (see README-rmw-perf.md's own "What's needed" section for how this runner's real
+      # at all (see docs/RMW_PERF_SETUP.md's own "What's needed" section for how this runner's real
       # value was determined - Ubuntu 26.04 here has no Jazzy build, only "lyrical"). Update this
       # if the runner ever moves to a different Ubuntu release.
       ROS_DISTRO_NAME: lyrical
@@ -59,7 +59,7 @@ jobs:
       # TickLE's single-datagram ceiling (tt_MAX_BUFFER_LENGTH = 1472 bytes, include/tickle/
       # config.h - no fragmentation) and no nested-message types (rosidl_typesupport_tickle_c
       # doesn't generate for those yet - confirmed the hard way: Struct256 embeds a nested
-      # Struct16 field, so it's excluded here, not just "small enough" - see README-rmw-perf.md's
+      # Struct16 field, so it's excluded here, not just "small enough" - see docs/RMW_PERF_SETUP.md's
       # own provisioning notes on the Array1k/Struct16.msg symlink workaround this rig needs).
       PERF_TEST_TOPICS: "Array1k;Struct16"
       # Keep TickLE's discovery traffic on the runner box (2026-09-23, a real incident): this job
@@ -80,7 +80,7 @@ jobs:
       # way. So this rig now tracks rmw_tickle's own before/after regressions only (still useful:
       # it already caught two real wire-level bugs - PLAN.md's Milestone 12) rather than claiming
       # an absolute "faster/slower than FastDDS/CycloneDDS" number this same-host setup can't
-      # honestly produce. See README-rmw-perf.md for the full reasoning.
+      # honestly produce. See docs/RMW_PERF_SETUP.md for the full reasoning.
       PERF_TEST_RMW_IMPLEMENTATIONS: "rmw_tickle"
       # Short by buildfarm_perf_tests' own default (30s/topic) for a first pass across 2 topics x
       # 3 rmws x 2 sync modes - revisit once real per-combo runtime on this rig is known.
@@ -96,7 +96,7 @@ jobs:
           # never shell-expanded, and `${{ github.workspace }}` is the checkout dir, not the
           # runner's home) - GITHUB_ENV is the one way to compute this once and have every later
           # step (and action input) see the real value as `$RMW_PERF_WS`/`${{ env.RMW_PERF_WS }}`.
-          # Must match .github/scripts/README-rmw-perf.md's own provisioning location exactly.
+          # Must match .github/scripts/docs/RMW_PERF_SETUP.md's own provisioning location exactly.
           echo "RMW_PERF_WS=$HOME/rmw_perf_ws" >> "$GITHUB_ENV"
           echo "RMW_PERF_RESULTS_DIR=$HOME/rmw_perf_ws/build/buildfarm_perf_tests/test_results/buildfarm_perf_tests" >> "$GITHUB_ENV"
           # Where the benchmark step stages a private copy of its results, inside the rig lock,
@@ -108,7 +108,7 @@ jobs:
       - name: Build rmw_tickle against the pre-provisioned ROS 2 + DDS-vendor underlay
         run: |
           # Sourcing order matters: base ROS 2 first, then the buildfarm_perf_tests/performance_
-          # test underlay (an overlay on top of it - see README-rmw-perf.md's own provisioning
+          # test underlay (an overlay on top of it - see docs/RMW_PERF_SETUP.md's own provisioning
           # steps), then this repo's own fresh build becomes a second overlay on top of both.
           source "/opt/ros/$ROS_DISTRO_NAME/setup.bash"
           source "$RMW_PERF_WS/install/setup.bash"
@@ -135,7 +135,7 @@ jobs:
 
       - name: Verify the delivery assertion is present
         run: |
-          # This job's only failing path comes from README-rmw-perf.md's provisioning patch (e):
+          # This job's only failing path comes from docs/RMW_PERF_SETUP.md's provisioning patch (e):
           # launch_test's own gate checks exit codes and nothing else, so without (e) a run that
           # exchanges zero messages for its whole duration passes - observed on 2026-09-23, a cell
           # reporting received 0 / lost 7902 that launch_test called Passed in 16.01 seconds.
@@ -148,11 +148,11 @@ jobs:
           # fail.
           f="$RMW_PERF_WS/src/buildfarm_perf_tests/test/test_performance.py.in"
           if [ ! -f "$f" ]; then
-            echo "::error::$f is missing - the workspace is not provisioned (README-rmw-perf.md)" >&2
+            echo "::error::$f is missing - the workspace is not provisioned (docs/RMW_PERF_SETUP.md)" >&2
             exit 1
           fi
           if ! grep -q 'total_received' "$f"; then
-            echo "::error::$f has no delivery assertion. Apply README-rmw-perf.md provisioning" \
+            echo "::error::$f has no delivery assertion. Apply docs/RMW_PERF_SETUP.md provisioning" \
                  "patch (e) - without it this job cannot fail on a run that delivers nothing," \
                  "which is the only thing it is here to catch." >&2
             exit 1
@@ -164,7 +164,7 @@ jobs:
           # get_available_rmw_implementations() (rmw_implementation_cmake) - what buildfarm_
           # perf_tests' own test/CMakeLists.txt uses to discover installed rmws - runs at *this*
           # package's own CMake configure time, reading whatever's in AMENT_PREFIX_PATH right now.
-          # It was already built once during one-time provisioning (README-rmw-perf.md), before
+          # It was already built once during one-time provisioning (docs/RMW_PERF_SETUP.md), before
           # rmw_tickle existed anywhere - so it has to be reconfigured/rebuilt here, every run,
           # now that the previous step's overlay puts rmw_tickle in AMENT_PREFIX_PATH too. This is
           # the one part of the pre-provisioned workspace CI does rebuild - performance_test and
@@ -177,7 +177,7 @@ jobs:
           # *current directory* (this job's repo checkout), not to --base-paths - without these,
           # build/install output would land inside the git checkout instead of alongside
           # buildfarm_perf_tests' own sources in $RMW_PERF_WS, where every later step here (and
-          # README-rmw-perf.md's own provisioning) expects to find it.
+          # docs/RMW_PERF_SETUP.md's own provisioning) expects to find it.
           # Under the same box lock as the benchmark, because this step is a *writer* of the
           # shared tree and the earlier fix only covered its readers (2026-09-24). It rewrites
           # $RMW_PERF_WS/build and install - the trees a manual repro run on this box executes
@@ -325,7 +325,7 @@ jobs:
           echo "timestamp-ordering violations (gated): ${ts:-0}"
           if [ "${ts:-0}" -gt 0 ]; then
             echo "::error::${ts} timestamp-ordering violation(s) - a Subscriber was delivered a sample" \
-                 "no newer than the previous one. See README-rmw-perf.md patch (f)."
+                 "no newer than the previous one. See docs/RMW_PERF_SETUP.md patch (f)."
             grep -rh 'TICKLE-PATCH-F timestamp_not_newer' "$logs" | head -20
             exit 1
           fi
