@@ -2052,6 +2052,32 @@ static void test_a_reader_acknowledges_a_keep_all_writer_on_first_contact(void) 
     EXPECT_EQ_INT(0, three);
 }
 
+// The same acknowledgement when the writer's DATA arrives before its announce says KEEP_ALL - on the rig the usual
+// order: 3 of 5 runs matched nobody until this (2026-10-05). Nothing on the first sample (not yet known to be
+// KEEP_ALL), one acknowledgement when the announce says so, none when the same announce repeats.
+static void test_a_reader_acknowledges_a_writer_learned_keep_all_after_its_data(void) {
+    test_mock_reset();
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(0, test_mock_send_to_call_count); // KEEP_ALL not known yet
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+
+    update_writer_proxies_keep_all(&node, ENDPOINT_ID, REMOTE_NODE_ID, proxy->entity_id, tt_WRITER_KEEP_ALL_YES);
+    EXPECT_EQ_INT(1, test_mock_send_to_call_count);
+    EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip);
+    update_writer_proxies_keep_all(&node, ENDPOINT_ID, REMOTE_NODE_ID, proxy->entity_id, tt_WRITER_KEEP_ALL_YES);
+    EXPECT_EQ_INT(1, test_mock_send_to_call_count); // the periodic resend of the same announce says nothing new
+}
+
 static void test_keep_all_publisher_claims_its_reader_from_an_acknack(void) {
     test_mock_reset();
     static struct tt_Discovery discovery;
@@ -4352,6 +4378,7 @@ int main(void) {
     test_process_acknack_from_unmatched_entity_records_nothing();
     test_keep_all_publisher_claims_its_reader_from_an_acknack();
     test_a_reader_acknowledges_a_keep_all_writer_on_first_contact();
+    test_a_reader_acknowledges_a_writer_learned_keep_all_after_its_data();
     test_ack_table_full_refuses_further_entities();
     test_acknack_rejects_malformed_bitmap_words();
     test_acknack_with_no_bitmap_words_is_a_pure_ack();

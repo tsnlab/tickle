@@ -7905,7 +7905,16 @@ static void update_writer_proxies_keep_all(struct tt_Context* node, uint32_t end
         struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
         for (int j = 0; j < tt_MAX_PEER_COUNT; j++) {
             if (sub->writers[j].context_id == node_id && sub->writers[j].entity_id == entity_id) {
-                sub->writers[j].keep_all = keep_all;
+                struct tt_WriterProxy* proxy = &sub->writers[j];
+                bool learned_keep_all = keep_all == tt_WRITER_KEEP_ALL_YES && proxy->keep_all != tt_WRITER_KEEP_ALL_YES;
+                proxy->keep_all = keep_all;
+                // The first-contact acknowledgement (update_reliable_ack()) for a writer whose DATA arrived before its
+                // announce said KEEP_ALL - on the rig the usual order, since a new publisher's data starts at once and
+                // its announce a millisecond later: 3 of 5 runs then matched nobody (2026-10-05). Either order now
+                // ends in the one acknowledgement.
+                if (learned_keep_all && sub->reliable && proxy->sender_ip != 0) {
+                    send_acknack_range(node, proxy, 0, -1);
+                }
             }
         }
     }
