@@ -2230,6 +2230,11 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
 // match_any_entity drops every entity that node hosts (a whole node departing); otherwise just the
 // one named entity (a single Subscriber's own lease expiring while its node stays up).
 static void forget_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id, bool match_any_entity) {
+    struct tt_DepartedAck* departed = &pub->departed_acks[pub->departed_next];
+    pub->departed_next = (uint8_t)((pub->departed_next + 1U) % tt_DEPARTED_ACKS);
+    departed->context_id = node_id;
+    departed->entity_id = match_any_entity ? 0 : entity_id;
+    departed->at_ns = tt_get_ns();
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
         if (pub->peer_acks[i].context_id != node_id) {
             continue;
@@ -3962,6 +3967,11 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
         pub->peer_acks[i].entity_id = 0;
         pub->peer_acks[i].ack_seq_no = 0;
         pub->peer_acks[i].tracking_words = 0;
+    }
+    for (int i = 0; i < tt_DEPARTED_ACKS; i++) {
+        pub->departed_acks[i].context_id = tt_CONTEXT_ID_INVALID;
+        pub->departed_acks[i].entity_id = 0;
+        pub->departed_acks[i].at_ns = 0;
     }
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
@@ -8459,6 +8469,45 @@ struct update_peer_ctx {
     uint32_t announce_generation;
 };
 
+// A reliable Publisher learns of a Subscriber from its ACKNACK when its announce never arrived (2026-10-05). A reader
+// only ACKNACKs a writer it has matched, after its own RxO check, so the ACKNACK is as good a match as the announce
+// - and on the rig it was the only one that got through: a max-rate publisher broadcasting before it knows any
+// peer floods its own well-known socket with its looped-back datagrams (the Pis grant 425,984 bytes of receive
+// buffer), every one of the reader's announces and summaries was lost there in 14 of 14 unregistered runs, and
+// KEEP_ALL with nobody to wait for evicted ~5% of samples under 5% loss while the reader's ACKNACKs arrived by
+// unicast, thousands of them, and were ignored. Claiming the entry makes KEEP_ALL wait for this reader - never less
+// than it did - and the peer makes the Publisher unicast to it, which ends the flood. Not for a reader that has
+// just left (departed_acks, or tombstoned in discovery): a straggling ACKNACK must not revive it, or KEEP_ALL would
+// wait for a reader that is gone. The reader's announced window is not known
+// yet, so the entry keeps the default bound until its announce, which replaces it, arrives.
+static void claim_from_acknack(struct tt_Context* node, struct tt_Publisher* pub, uint8_t source, uint32_t endpoint_id,
+                               uint32_t sender_entity_id, uint32_t sender_ip, uint16_t sender_port) {
+    if (!pub->reliable || sender_entity_id == 0 || find_peer_ack(pub, source, sender_entity_id) != NULL) {
+        return;
+    }
+    if (node->discovery != NULL) {
+        const struct tt_DiscoveredEntity* seen = tt_Discovery_find(node->discovery, source, endpoint_id);
+        if (seen != NULL && !seen->alive) {
+            return;
+        }
+    }
+    uint64_t now = tt_get_ns();
+    for (int i = 0; i < tt_DEPARTED_ACKS; i++) {
+        const struct tt_DepartedAck* departed = &pub->departed_acks[i];
+        if (departed->context_id == source && (departed->entity_id == 0 || departed->entity_id == sender_entity_id) &&
+            now - departed->at_ns < tt_DEPARTED_ACK_NS) {
+            return; // it has just left: an ACKNACK that was in flight, not a reader to wait for
+        }
+    }
+    if (claim_peer_ack(pub, source, sender_entity_id) == NULL) {
+        return; // a full table: the same refusal register_subscriber_peer_on_publisher() makes
+    }
+    (void)upsert_peer(pub->peers, source, sender_ip, sender_port);
+    TT_LOG_INFO("Publisher peer claimed from its ACKNACK: node %u entity %08x for endpoint %u (its announce has not "
+                "arrived)",
+                source, sender_entity_id, endpoint_id);
+}
+
 static void register_subscriber_peer_on_publisher(struct tt_Context* node, struct tt_Endpoint* endpoint,
                                                   void* ctx_ptr) {
     struct update_peer_ctx* ctx = (struct update_peer_ctx*)ctx_ptr;
@@ -10543,6 +10592,7 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
     // legitimately solicit and track an ACKNACK reply too (tt_Publisher_request_ack()'s own
     // Heartbeat, answered regardless of pub->reliable) - only the actual byte retransmission below
     // is RELIABILITY's own exclusive contract.
+    claim_from_acknack(node, pub, header->source, endpoint_id, sender_entity_id, sender_ip, sender_port);
     record_peer_ack(pub, header->source, sender_entity_id, seq_no);
     pub->ack_solicit_outstanding = false; // answered: the next solicitation may go at once (solicit_ack_throttled())
     // Phase 3 - this ACKNACK may have freed room a refused publish was waiting on. Fired here, from

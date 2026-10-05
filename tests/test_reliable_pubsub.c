@@ -1955,9 +1955,10 @@ static void test_two_subscriber_entities_on_one_node_ack_independently(void) {
     EXPECT_TRUE(!tt_Publisher_is_acked_by_all_peers(&pub, 7)); // 7 itself isn't acked by the slow one
 }
 
-// An ACKNACK whose sender this Publisher never matched (or with no sender id at all) still routes
-// and retransmits, but must not be counted as anyone's ack - the conservative direction: counting
-// it would let a KEEP_ALL writer unblock on a Subscriber it isn't actually tracking.
+// An ACKNACK from an entity this Publisher has not matched must never count toward another Subscriber's ack - that
+// would let a KEEP_ALL writer unblock early. Since 2026-10-05 it does claim an entry of its own (claim_from_acknack():
+// a reader only ACKNACKs a writer it has matched), which makes the writer wait for MORE readers, never fewer. An
+// ACKNACK with no sender id at all still claims nothing.
 static void test_process_acknack_from_unmatched_entity_records_nothing(void) {
     test_mock_reset();
 
@@ -1986,7 +1987,74 @@ static void test_process_acknack_from_unmatched_entity_records_nothing(void) {
     const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
     EXPECT_TRUE(ack != NULL);
     EXPECT_EQ_U32(0, ack->ack_seq_no); // the tracked Subscriber still hasn't acked anything
-    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID + 99) == NULL);
+    const struct tt_PeerAck* claimed = find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID + 99);
+    EXPECT_TRUE(claimed != NULL); // its own entry, with its own ack
+    EXPECT_EQ_U32(10, claimed->ack_seq_no);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, 0) == NULL); // no sender id: nothing to claim
+    // The slowest reader still decides: 9 is acked by the newcomer and not by the matched one.
+    EXPECT_TRUE(!tt_Publisher_is_acked_by_all_peers(&pub, 9));
+}
+
+// The rig's failure (2026-10-05): a KEEP_ALL Publisher whose reader's announce never arrived had no ack entry, so
+// "nobody to wait for" made it writable, and its cache evicted unacknowledged samples while the reader's ACKNACKs
+// came in and were ignored. The ACKNACK now matches the reader: an ack entry (so KEEP_ALL counts it) and a peer (so
+// the Publisher unicasts to it). The control is the same ACKNACK for an entity discovery has seen depart, which
+// must not be revived.
+static void test_keep_all_publisher_claims_its_reader_from_an_acknack(void) {
+    test_mock_reset();
+    static struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&node, &discovery, NULL, NULL));
+
+    TEST_RELIABLE_CACHE(cache, 4);
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+    pub.keep_all = true;
+    EXPECT_EQ_INT(0, (int)count_peers(pub.peers)); // the announce never arrived: nobody known
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_acknack_from(&node, ENDPOINT_ID, REMOTE_SUB_ENTITY_ID, 3, NULL, 0);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
+    EXPECT_TRUE(ack != NULL);
+    EXPECT_EQ_U32(3, ack->ack_seq_no);
+    EXPECT_EQ_INT(1, (int)count_peers(pub.peers));
+    EXPECT_EQ_U32(TEST_SENDER_IP, pub.peers[0].ip);
+    EXPECT_EQ_U32((uint32_t)TEST_SENDER_PORT, (uint32_t)pub.peers[0].port);
+    EXPECT_TRUE(any_peer_ack_matched(&pub)); // KEEP_ALL now has someone to wait for
+
+    // Control 1: a reader its node announced farewell for (its ack state dropped as a real departure) is not revived
+    // by an ACKNACK that was already in flight.
+    forget_publisher_peer(&pub, REMOTE_NODE_ID, /*preserve_ack=*/false);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) == NULL);
+    tail = write_acknack_from(&node, ENDPOINT_ID, REMOTE_SUB_ENTITY_ID, 4, NULL, 0);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) == NULL);
+    EXPECT_EQ_INT(0, (int)count_peers(pub.peers));
+
+    // ...but only for as long as an ACKNACK could still be in flight: a second later the same reader is claimed again.
+    test_mock_now += tt_DEPARTED_ACK_NS;
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) != NULL);
+
+    // Control 2: an entity discovery holds as presumed dead (tombstoned) is not revived either.
+    upsert_discovered_entity(&node, REMOTE_NODE_ID + 1, ENDPOINT_ID, REMOTE_SUB_ENTITY_ID + 1, tt_KIND_TOPIC_SUBSCRIBER,
+                             0, tt_UPDATE_QOS_RELIABLE, 0, 0, "type", "name");
+    tombstone_discovered_entities_from_source(&node, REMOTE_NODE_ID + 1);
+    header.source = REMOTE_NODE_ID + 1;
+    tail = write_acknack_from(&node, ENDPOINT_ID, REMOTE_SUB_ENTITY_ID + 1, 3, NULL, 0);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP + 1, TEST_SENDER_PORT));
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID + 1, REMOTE_SUB_ENTITY_ID + 1) == NULL);
 }
 
 // The ack table filling up must refuse the match outright rather than matching a Subscriber whose
@@ -4230,6 +4298,7 @@ int main(void) {
     test_oversized_window_request_is_clamped();
     test_two_subscriber_entities_on_one_node_ack_independently();
     test_process_acknack_from_unmatched_entity_records_nothing();
+    test_keep_all_publisher_claims_its_reader_from_an_acknack();
     test_ack_table_full_refuses_further_entities();
     test_acknack_rejects_malformed_bitmap_words();
     test_acknack_with_no_bitmap_words_is_a_pure_ack();

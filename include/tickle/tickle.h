@@ -1364,6 +1364,10 @@ enum tt_WriterKeepAll {
 };
 
 // One matched remote node's acknowledgement state on a Publisher - see tt_Publisher.peer_acks.
+// struct tt_Publisher.departed_acks: how many recent departures it remembers, and for how long (1 s).
+#define tt_DEPARTED_ACKS 8
+#define tt_DEPARTED_ACK_NS 1000000000ULL
+
 struct tt_PeerAck {
     uint8_t context_id; // tt_CONTEXT_ID_INVALID (0, matching zero-init) = unused entry
     // Phase 2 (rmw_tickle/PLAN.md) - which Subscriber *entity* on that node, learned from its own
@@ -1438,6 +1442,15 @@ struct tt_Publisher { // extends endpoint
     // advisory use; a real gap for Phase 3's KEEP_ALL blocking, which needs per-Subscriber
     // identity on the wire - see rmw_tickle/PLAN.md's Phase 3 prerequisite (b).
     struct tt_PeerAck peer_acks[tt_MAX_ACK_ENTRIES];
+    // The last tt_DEPARTED_ACKS ack entries dropped by a real departure, so a straggling ACKNACK from a reader that has
+    // just left cannot re-claim it (claim_from_acknack(), tickle.c). entity_id 0 = every entity of context_id. A
+    // record older than tt_DEPARTED_ACK_NS is ignored: it only has to outlast ACKNACKs already in flight.
+    struct tt_DepartedAck {
+        uint64_t at_ns;
+        uint32_t entity_id;
+        uint8_t context_id; // tt_CONTEXT_ID_INVALID = unused
+    } departed_acks[tt_DEPARTED_ACKS];
+    uint8_t departed_next;
 
     // false (tt_Context_create_publisher()'s own default): tt_Publisher_publish() flushes every call
     // immediately, same as RPC already does (DESIGN.md's "RPC and Publish flush immediately by
