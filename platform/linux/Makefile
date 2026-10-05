@@ -125,7 +125,7 @@ TEST_DIR = $(ROOT)/tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/test_*.c)
 TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/tests/%,$(TEST_SRCS))
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test config-renames test-samehost headers-cpp lint lint-shell clean fuzz fuzz-corpus sanitize tsan
+.PHONY: all library examples set_bool uint64 ping_pong perf test config-renames test-samehost headers-cpp lint lint-shell clean fuzz fuzz-corpus sanitize tsan coverage
 
 all:
 	$(MAKE) library
@@ -265,6 +265,34 @@ tsan:
 	$(MAKE) clean
 	$(MAKE) $(OBJ)/tests/test_thread_safety CFLAGS='-O1 -g -Wall -Wextra -fsanitize=thread'
 	TSAN_OPTIONS=halt_on_error=1 ./$(OBJ)/tests/test_thread_safety
+
+# Line and branch coverage of src/ by the unit tests - tracked, not enforced (no threshold fails anything; see
+# rmw_tickle/rmw_tickle/QUALITY_DECLARATION.md, 4.iii). The same `make test`, built with --coverage into its own
+# obj/coverage/ tree, so the debug and release trees and every gate are untouched; the tree is rebuilt from clean
+# each time, because .gcda counters accumulate across runs and a stale one would report a test that no longer runs.
+# The figure is core - tickle.c, encoding.c, log.c. The HALs are excluded: the unit tests link the mock HAL, and the
+# one that #includes hal_linux.c (test_poll_signal) reaches 19% of it, which would only dilute the core figure. The
+# real HAL is exercised by the integration tiers (test-samehost, test-linux), which are not measured here.
+# Reports land in obj/coverage/report/: index.html (per-line), coverage.xml (Cobertura), summary.json, summary.txt.
+# -fprofile-update=atomic: test_thread_safety and test_transport_seam run core from several threads, and with the
+# default non-atomic counters gcov reported a negative hit count on tickle.c and gcovr refused the whole report.
+# gcovr comes from apt (`apt install gcovr`) or pip; override with GCOVR=/path/to/gcovr.
+GCOVR ?= gcovr
+COV_OBJ = obj/coverage
+COV_REPORT = $(COV_OBJ)/report
+coverage:
+	@command -v $(GCOVR) >/dev/null || { echo "coverage: cannot resolve $(GCOVR) - apt install gcovr, or GCOVR=..." >&2; exit 1; }
+	rm -rf $(COV_OBJ)
+	$(MAKE) test OBJ=$(COV_OBJ) CFLAGS='-O0 -g -Wall -Wextra --coverage -fprofile-update=atomic'
+	mkdir -p $(COV_REPORT)
+	$(GCOVR) --root $(REPO_ROOT) --filter '$(REPO_ROOT)/src/' --exclude '.*/src/hal_[^/]*\.c$$' \
+	    --html-details $(COV_REPORT)/index.html --cobertura $(COV_REPORT)/coverage.xml \
+	    --json-summary-pretty --json-summary $(COV_REPORT)/summary.json --txt $(COV_REPORT)/summary.txt \
+	    $(COV_OBJ)/tests
+	@python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); \
+	    print("coverage: core (src/, HALs excluded) lines %.1f%% (%d/%d), branches %.1f%% (%d/%d), %d files" % ( \
+	    s["line_percent"], s["line_covered"], s["line_total"], \
+	    s["branch_percent"], s["branch_covered"], s["branch_total"], len(s["files"])))' $(COV_REPORT)/summary.json
 
 $(OBJ)/tests:
 	mkdir -p $@

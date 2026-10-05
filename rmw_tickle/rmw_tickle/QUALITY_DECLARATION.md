@@ -118,9 +118,23 @@ added.
 
 ### Coverage [4.iii]
 
-`rmw_tickle` does not currently track line or branch coverage - no coverage infrastructure exists
-in this repository yet. This is a known gap relative to `rmw_fastrtps_cpp`'s/`rmw_cyclonedds_cpp`'s
-own 90-100% branch coverage tracking.
+Coverage is tracked, not enforced: no threshold fails a build.
+
+- **TickLE core** (the library `rmw_tickle` wraps): line and branch coverage of `src/` (HALs excluded) by the unit
+  tests. `make coverage` builds `make test` with `--coverage` into its own `platform/linux/obj/coverage/` tree and
+  reads it with gcovr; the reports (HTML per line, Cobertura XML, JSON summary) land in
+  `platform/linux/obj/coverage/report/`. CI runs it on every push and PR in `test-all.yml` ("Coverage (tracked, not
+  enforced)"), writes the per-file table into the job summary and uploads the reports as the `coverage-report`
+  artifact. On 2026-10-05 it read about 90.6% of lines and 72.6% of branches (tickle.c, encoding.c, log.c); the
+  multi-threaded tests make the count vary by a few lines between runs.
+- **`rmw_tickle` itself**: not tracked yet. CI builds it with colcon and runs its tests in `check-all.yml`; adding
+  `--coverage` there means a second colcon build in an already long job, so it is left as follow-up work. The
+  recipe, not yet run: `colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_C_FLAGS=--coverage -DCMAKE_CXX_FLAGS=--coverage`,
+  `colcon test --packages-select rmw_tickle` (in a private network namespace), then
+  `gcovr --root rmw_tickle/rmw_tickle build/rmw_tickle`.
+
+This is still short of `rmw_fastrtps_cpp`'s/`rmw_cyclonedds_cpp`'s own branch coverage tracking, which covers the
+rmw layer as well as the library under it.
 
 ### Performance [4.iv]
 
@@ -200,7 +214,7 @@ package.
 | 4 | **Testing** | --- |
 | 4.i | Feature items tests | * |
 | 4.ii | Public API tests | * |
-| 4.iii | Coverage | ☓ |
+| 4.iii | Coverage | * |
 | 4.iv | Performance tests (if applicable) | ✓ |
 | 4.v | Linters and static analysis | ✓ |
 | 5 | **Dependencies** | --- |

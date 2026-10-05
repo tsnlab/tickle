@@ -112,8 +112,11 @@ what is missing, in order:
 1. **Every change through a pull request**, with DCO sign-off checked and CI required before merge (REP-2004 2.i,
    2.ii, 2.iv). Today changes are pushed to `main` after the local gates, unsigned. Needs the user's decision,
    since it changes how every session works. (Peer review is optional at Level 2 and required at Level 1.)
-2. **Coverage tracking** in CI (gcov/lcov) for core and rmw_tickle; Level 2 tracks it, Level 1 enforces a bound
-   (4.iii).
+2. **Coverage tracking** in CI for core and rmw_tickle; Level 2 tracks it, Level 1 enforces a bound (4.iii).
+   Core: done - `make coverage` (gcovr, unit tests, HALs excluded), run by `test-all.yml` with the table in the job
+   summary and the reports as an artifact; 90.6% of lines and 72.6% of branches on 2026-10-05. rmw_tickle: open -
+   CI's colcon build in `check-all.yml` is not built with `--coverage`; an untested recipe is in the declaration's
+   4.iii.
 3. **A vulnerability disclosure policy** (`SECURITY.md`, REP-2006 response schedule) (7.i).
 4. **Dependencies at Level 2 or better** (5): quality declarations for `rosidl_typesupport_tickle_c` and
    `rosidl_typesupport_tickle_cpp`, and a written quality justification for TickLE core, rmw_tickle's one non-ROS

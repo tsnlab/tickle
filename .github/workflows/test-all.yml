@@ -122,6 +122,26 @@ jobs:
         continue-on-error: true
         run: make test
 
+      # Line and branch coverage of core by the unit tests (QUALITY_DECLARATION.md 4.iii): tracked, not enforced.
+      # It builds into its own obj/coverage/ tree, so no other tier's objects change, and it is deliberately absent
+      # from the Gate list below - no figure fails the job, and a failing unit test is already "Unit tests" above.
+      # Upload comes straight after because `make sanitize` below starts with `make clean`, which removes the report.
+      - name: Coverage (tracked, not enforced)
+        id: coverage
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y gcovr
+          make coverage
+          python3 .github/scripts/coverage_summary.py platform/linux/obj/coverage/report/summary.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always() && steps.coverage.outcome != 'skipped'
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: platform/linux/obj/coverage/report/
+          if-no-files-found: warn
+
       - name: Unit tests under ASan + UBSan
         id: sanitize
         continue-on-error: true

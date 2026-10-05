@@ -11,6 +11,7 @@ All commands run from the repository root.
 | Tier | Command | What it is | Needs |
 |---|---|---|---|
 | Unit | `make test` | `tests/test_*.c`, whitebox: each includes `src/tickle.c` and a mock HAL (`tests/test_mock.h`). No real I/O. | a C compiler |
+| Coverage | `make coverage` | the unit tests built with `--coverage`; line and branch figures for core (`src/`, HALs excluded), reports in `platform/linux/obj/coverage/report/`. Tracked, not enforced. | gcovr |
 | Sanitizers | `make sanitize` | the unit tests under ASan + UBSan | |
 | Threads | `make tsan` | the thread-safety test under ThreadSanitizer | |
 | Fuzz | `make fuzz FUZZ_ARGS='-max_total_time=60'` | libFuzzer on the packet parser, seeded from `tests/fuzz_corpus/` | clang |
@@ -80,7 +81,7 @@ Verdicts: `PASS`, `FAIL`, `SKIP` (could not run, with the reason), `ADVS` (lint 
 
 | Workflow | Trigger | Job | What it runs |
 |---|---|---|---|
-| `test-all.yml` "Test all" | push, PR | `test` | Linux and FreeRTOS builds, FreeRTOS lint, doc SHAs, rig-lock coverage, `headers-cpp`, `test`, `sanitize`, `tsan`, fuzz smoke (45 s), `test-samehost`, `test-linux`, `test-linux` with shared memory compiled out (control), `test-freertos` |
+| `test-all.yml` "Test all" | push, PR | `test` | Linux and FreeRTOS builds, FreeRTOS lint, doc SHAs, rig-lock coverage, `headers-cpp`, `test`, `coverage` (job summary + `coverage-report` artifact, not gated), `sanitize`, `tsan`, fuzz smoke (45 s), `test-samehost`, `test-linux`, `test-linux` with shared memory compiled out (control), `test-freertos` |
 | `check-all.yml` "Check all" | push, PR | `check-all` | lint and clang-tidy, bench shapes, the unsupported-entry-point list, codec drift, typesupport tests, the rmw_tickle build, its ctest suite, upstream rmw conformance, std_msgs through rmw_tickle, codec identity |
 | `performance.yml` "Performance Test" | manual only | `test`, `publish` | the HIL scenarios on the two Pis (`run_perf.sh`); a regression alert can fail the run only for the two throughput groups |
 | `rmw-perf.yml` "rmw_tickle performance" | manual only | `compare` | `buildfarm_perf_tests` on the `tickle-perf` machine; tracks rmw_tickle against itself, not against the vendors |
