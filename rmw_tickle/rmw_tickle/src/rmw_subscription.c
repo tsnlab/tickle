@@ -718,11 +718,15 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         return NULL;
     }
 
+    // Held from the create until every announced field is final (reliable, durable, deadline, liveliness), released
+    // after the match count below or on the failure path. Released in between, the poll thread could announce this
+    // subscription with the create's reset QoS under its new generation, and the generation dedup would keep that
+    // wrong record on the remote side for good - see rmw_publisher.c's rmw_create_publisher(), where it was found.
     tt_Context_lock(&node_impl->context_impl->tickle_context);
     tt_ret_t ret = tt_Node_create_subscriber(node_impl->core_node, &sub_impl->tickle_subscriber, &sub_impl->topic,
                                              sub_impl->rmw_subscription.topic_name, subscriber_callback);
-    tt_Context_unlock(&node_impl->context_impl->tickle_context);
     if (ret != tt_RET_OK) {
+        tt_Context_unlock(&node_impl->context_impl->tickle_context);
         RMW_SET_ERROR_MSG("tt_Context_create_subscriber() failed");
         pthread_mutex_destroy(&sub_impl->queue_mutex);
         allocator->deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator->state);
@@ -824,6 +828,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     tt_Context_lock(&node_impl->context_impl->tickle_context);
     rmw_tickle_update_matches_locked(node_impl->context_impl, sub_impl->rmw_subscription.topic_name, 0);
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context); // the create's: every announced field is final now
     // (g9) A durable subscription joining late gets the durable backlog of this process's own publishers on its
     // topic, as it would a remote one's - only now, with its durability set.
     tt_Subscriber_deliver_local_backlog(&sub_impl->tickle_subscriber);

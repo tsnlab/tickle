@@ -976,11 +976,18 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
 
     // Same tt_Context_interrupt()-then-lock pattern rmw_destroy_node() already established - see
     // rmw_tickle.h's own rmw_tickle_context_impl_t doc comment for the full contract.
+    // Held from the create until every announced field is final, released only at the return below (or on a failure
+    // path). tt_Node_create_publisher() resets reliable/keep_all/durable/deadline/lease and makes the endpoint
+    // announceable at once; the fields are set after it. With the lock released in between, the poll thread could
+    // announce this publisher as BEST_EFFORT under its new generation, and every later, correct announce carries the
+    // same generation and is dropped as a resend - so the remote reader kept "offered reliable=0" for good, dropped
+    // every sample, and a KEEP_ALL publisher gave up after 100 ms (1 in 36 rig runs; 25/25 with the window widened,
+    // experiments/rxo_mismatch_repro.sh). The lock is re-entrant, so the nested lock/unlock pairs below are unchanged.
     tt_Context_lock(&node_impl->context_impl->tickle_context);
     tt_ret_t ret = tt_Node_create_publisher(node_impl->core_node, &pub_impl->tickle_publisher, &pub_impl->topic,
                                             pub_impl->rmw_publisher.topic_name);
-    tt_Context_unlock(&node_impl->context_impl->tickle_context);
     if (ret != tt_RET_OK) {
+        tt_Context_unlock(&node_impl->context_impl->tickle_context);
         RMW_SET_ERROR_MSG("tt_Context_create_publisher() failed");
         allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
         allocator->deallocate(pub_impl, allocator->state);
@@ -1017,6 +1024,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         rmw_tickle_update_matches_locked(node_impl->context_impl, pub_impl->rmw_publisher.topic_name,
                                          tt_KIND_TOPIC_SUBSCRIBER);
         tt_Context_unlock(&node_impl->context_impl->tickle_context);
+        tt_Context_unlock(&node_impl->context_impl->tickle_context); // the create's, held since (see above)
         allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
         allocator->deallocate(pub_impl, allocator->state);
         return NULL;
@@ -1106,6 +1114,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     tt_Context_lock(&node_impl->context_impl->tickle_context);
     rmw_tickle_update_matches_locked(node_impl->context_impl, pub_impl->rmw_publisher.topic_name, 0);
     tt_Context_unlock(&node_impl->context_impl->tickle_context);
+    tt_Context_unlock(&node_impl->context_impl->tickle_context); // the create's: every announced field is final now
     return &pub_impl->rmw_publisher;
 }
 
