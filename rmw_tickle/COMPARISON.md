@@ -404,10 +404,18 @@ share), and every throughput figure is from drop-free repetitions only. Same rig
 | S12 | client, us per round trip | RTT P2, 20/s | ✅ **66.0** | ❌ 136.7 | 102.1 | `e17b4e6f` | §2.2c |
 | | **Memory** (lower is better) | | | | | | |
 | S13 | publisher peak RSS, MB | BEST_EFFORT P4 | ✅ **3.2** | ❌ 15.9 | – | `e17b4e6f` | same-host p4 |
+| | **Mixed: one publisher, one subscriber on its host and one across the link** (delivered k samples/s, p2) | | | | | | |
+| S15 | BEST_EFFORT, each subscriber | local / remote | ✅ **90.7 / 90.7**, loss 0 | 53.1 / 54.6, loss 4-22% | – | `7f127d56` | mixed note below |
+| S16 | RELIABLE, each subscriber | local / remote | ✅ **90.7 / 90.7** | 30.8 / 30.8 | – | `7f127d56` | mixed note below |
 | | **Bandwidth** | | | | | | |
 | S14 | wire bytes per sample | every cell above | 0 | 0 | 0 | | nothing leaves the host |
 
-**How to read it.** Every same-host cell measured is TickLE's. Three things the table does not say on its own:
+**How to read it.** Every same-host cell measured is TickLE's. Four things the table does not say on its own:
+- **S1-S3 compare send rates, and for the vendors that is not what a subscriber gets.** FastDDS's bench subscriber uses
+  the default reader QoS (KEEP_LAST 1); on one host its writer overwrites whatever the reader has not taken, and in
+  `mixed_delivery.sh`'s FastDDS LOCAL_ONLY arm (p2 BEST_EFFORT, 3 reps) the subscriber took **154 of 3.1 million**
+  samples sent. TickLE's figures are drop-free reps, so for it sent equals delivered. Delivered rates for both vendors on
+  S1-S3 are on the to-do list; until then these rows are a send-rate comparison, not a delivery one.
 - **CPU and memory are not yet measured for all three frameworks on every cell.** S11 and S13 compare against FastDDS
   only, and the CycloneDDS memory figure excludes iceoryx's `iox-roudi` daemon, which reserved 216 MB of shared memory
   before any application connected (§2.2c, 2026-10-01). Filling the empty cells is on the to-do list.
@@ -415,6 +423,17 @@ share), and every throughput figure is from drop-free repetitions only. Same rig
   re-measured on a row it did not change is not repeated here. S6's CycloneDDS figure is from the same run as ours (an
   earlier run gave 5,776).
 - **The narrowest lead is S10, p4 latency (1.26x CycloneDDS):** a p4 sample is two datagrams and two slots on our path.
+
+**Mixed delivery (S15, S16), 2026-10-05** (`experiments/mixed_delivery.sh`: publisher and one subscriber on 10.1.1.214,
+a second subscriber on 10.1.1.213; MIXED against LOCAL_ONLY and REMOTE_ONLY controls, 3 reps each, rotated; TickLE's arm
+proven to use both paths by `tx_shm` and `tx_udp`, FastDDS's remote subscriber by its own eth0 packets). With a
+subscriber across the link, **both frameworks deliver to the local subscriber at the link's pace**, because one
+publisher's sends go both ways: TickLE's local subscriber gets 90.7k/s in MIXED against 1,269k/s alone. TickLE gives
+both subscribers the full link rate with no loss, at BEST_EFFORT and RELIABLE alike; FastDDS loses 4-22% at
+BEST_EFFORT and delivers a third of that rate at RELIABLE. No RELIABLE subscriber of either lost a sample after it was
+matched. (The first reading of TickLE's local subscriber as losing 70-75 RELIABLE samples was the harness counting
+samples published before that subscriber matched - `first_seq=76` - which a VOLATILE subscriber never gets; corrected
+to `post_match_lost` before any verdict.)
 
 ### Where TickLE does not come first, stated up front
 
