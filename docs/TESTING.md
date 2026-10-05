@@ -225,6 +225,13 @@ Before the run
 - [ ] Work out the sample size first. If an event happens with probability p, n runs miss it with probability (1-p)^n. Let the noisier arm set the repetition count.
 - [ ] Use the same QoS on every framework and shipped defaults otherwise. Check each arm's build type.
 - [ ] Take the rig lock inside the detached job. Make the trap restore `tc`.
+- [ ] Never pin a perf_test process to one CPU. Its runner holds a bare test-and-set spinlock across
+  `spin_once(100 ms)` and its main thread spins for it every second; on one CPU the spinner runs only while the
+  holder sleeps holding the lock, so the stats stall (one 1 s loop took 8.49 s) and the process never exits once
+  traffic stops - with any rmw. `rmw_wait_hang_repro.sh` (2026-10-05, rmw_tickle 7b760c5d): on one CPU rmw_tickle hung in
+  10 of 10 valid runs (RELIABLE KEEP_ALL and BEST_EFFORT) and an idle CycloneDDS subscriber in 3 of 3, with
+  rmw_wait returning every ~100 ms in the hung process; unpinned 0 of 4, two CPUs 0 of 3, one CPU with a fair
+  lock in perf_test 0 of 6. Two or more cores, as the rig's `taskset -c 1-3`.
 
 During the run
 - [ ] Read the first minute of output.
