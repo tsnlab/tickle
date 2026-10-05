@@ -15,6 +15,11 @@
 # lead the pinned arm showed, the row says so - that is the point of measuring it.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# The rig lock is taken once, here, for the whole run (2026-10-05): each s6_transport_cells.sh call used to take and
+# release it, and a KEEP_ALL campaign queued meanwhile took it between two cells; the next cell then waited out
+# rig_lock's 1800 s and was lost (exit 75). With the lock held, the inner calls see RIG_LOCK_HELD_HIL=1 and skip theirs.
+export RIG_LOCK_SCOPE=hil
+if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
 SHA=${SHA:?set SHA to a pushed commit}
 FRAMEWORKS=${FRAMEWORKS:-"tickle fastdds cyclonedds"}
 REPS=${REPS:-3}

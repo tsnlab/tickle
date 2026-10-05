@@ -24,22 +24,23 @@ Publisher and subscriber on **one** rig Pi, each framework on its own shared-mem
 **FastDDS as shipped** (data-sharing, on by default) and **CycloneDDS with iceoryx**. Each arm's transport is checked
 by a witness that cannot be configured into agreeing (loopback packet count, and TickLE's own `tx_shm` share).
 Harness `experiments/s6_transport_cells.sh`, 3 repetitions per framework unless noted, throughput from drop-free
-repetitions only. **✅ = best, ❌ = worst** in the row.
+repetitions only. **No process is pinned to a core** (TESTING.md section 5); S1-S7 and S9-S10 are from
+`experiments/fair_samehost_remeasure.sh` on `7fb6fabf`, and the pinned figures are a note below. **✅ = best, ❌ = worst** in the row.
 
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | build | details |
 |---|---|---|---|---|---|---|---|
 | | **Throughput, send Mbps** (higher is better) | | | | | | |
-| S1 | BEST_EFFORT, max rate | P2 1292 B | ✅ **12,916** | 6,445 | ❌ 4,531 | `313cda37` | [notes](#same-host-notes) |
-| S2 | BEST_EFFORT, max rate | P3 1424 B | ✅ **13,771** | 6,922 | ❌ 4,924 | `313cda37` | [notes](#same-host-notes) |
-| S3 | BEST_EFFORT, max rate | P4 2800 B | ✅ **20,448** | 13,445 | ❌ 9,389 | `313cda37` | [notes](#same-host-notes) |
-| S4 | RELIABLE | P2 1292 B | ✅ **9,774** | ❌ 953 | 2,621 | `8d1c3712` | [notes](#same-host-notes) |
-| S5 | RELIABLE | P3 1424 B | ✅ **10,359** | ❌ 1,028 | 2,778 | `8d1c3712` | [notes](#same-host-notes) |
-| S6 | RELIABLE | P4 2800 B | ✅ **12,289** | ❌ 2,004 | 5,240 | `fe45f276` | [notes](#same-host-notes) |
+| S1 | BEST_EFFORT, max rate | P2 1292 B | ✅ **13,494** | 6,519 | ❌ 4,446 | `7fb6fabf` | [notes](#same-host-notes) |
+| S2 | BEST_EFFORT, max rate | P3 1424 B | ✅ **14,303** | 7,117 | ❌ 4,899 | `7fb6fabf` | [notes](#same-host-notes) |
+| S3 | BEST_EFFORT, max rate | P4 2800 B | ✅ **22,779** | 13,447 | ❌ 9,426 | `7fb6fabf` | [notes](#same-host-notes) |
+| S4 | RELIABLE | P2 1292 B | ✅ **10,095** | ❌ 948 | 2,253 | `7fb6fabf` | [notes](#same-host-notes) |
+| S5 | RELIABLE | P3 1424 B | ✅ **10,819** | ❌ 1,063 | 2,391 | `7fb6fabf` | [notes](#same-host-notes) |
+| S6 | RELIABLE | P4 2800 B | ✅ **12,609** | ❌ 1,696 | 4,605 | `7fb6fabf` | [notes](#same-host-notes) |
 | | **Latency, RTT mean ms** (lower is better; one ping in flight, 200/s unless noted) | | | | | | |
-| S7 | RTT | P2 1292 B | ✅ **0.030** | ❌ 0.158 | 0.063 | `e17b4e6f` | [notes](#same-host-notes) |
+| S7 | RTT | P2 1292 B | ✅ **0.031** | ❌ 0.110 | 0.067 | `7fb6fabf` | [notes](#same-host-notes) |
 | S8 | RTT, 20/s (60 s) | P2 1292 B | ✅ **0.032** | ❌ 0.197 | 0.071 | `e17b4e6f` | [notes](#same-host-notes) |
-| S9 | RTT | P3 1424 B | ✅ **0.030** | ❌ 0.098 | 0.061 | `5689da96` | [notes](#same-host-notes) |
-| S10 | RTT | P4 2800 B | ✅ **0.051** | ❌ 0.099 | 0.064 | `5689da96` | [notes](#same-host-notes) |
+| S9 | RTT | P3 1424 B | ✅ **0.031** | ❌ 0.100 | 0.070 | `7fb6fabf` | [notes](#same-host-notes) |
+| S10 | RTT | P4 2800 B | ✅ **0.052** | ❌ 0.103 | 0.067 | `7fb6fabf` | [notes](#same-host-notes) |
 | | **CPU** (lower is better) | | | | | | |
 | S11 | publisher, us per sample | BEST_EFFORT P4, max rate | ✅ **1.071** | ❌ 1.694 | – | `e17b4e6f` | [notes](#same-host-notes) |
 | S12 | client, us per round trip | RTT P2, 20/s | ✅ **66.0** | ❌ 136.7 | 102.1 | `e17b4e6f` | [notes](#same-host-notes) |
@@ -53,6 +54,15 @@ repetitions only. **✅ = best, ❌ = worst** in the row.
 
 ### Same-host notes
 
+- **Unpinned is the headline; pinned is this note** (2026-10-05, `fair_samehost_remeasure.sh`, `7fb6fabf`, each cell
+  run unpinned and with the server on core 1 and the client on core 2, back to back, order alternating). No row's
+  leader changes. TickLE moves within 3% either way. Pinning to one core each helped the multi-threaded DDS processes,
+  not TickLE: unpinned/pinned is 0.86x / 0.82x / 0.88x for CycloneDDS at S4-S6, 0.83x for FastDDS at S6, and
+  1.06-1.15x RTT for CycloneDDS at S7, S9, S10. Pinned medians (TickLE, FastDDS, CycloneDDS): S1 13,542 / 6,489 /
+  4,539; S2 14,277 / 7,003 / 4,960; S3 22,584 / 13,460 / 9,501; S4 10,026 / 939 / 2,629; S5 10,811 / 1,045 / 2,934;
+  S6 12,701 / 2,049 / 5,235; S7 0.030 / 0.099 / 0.062; S9 0.031 / 0.098 / 0.061; S10 0.052 / 0.099 / 0.063 ms.
+  Raw files `~/rig_results_safe/fair_samehost_7fb6fabf_20261005-190124.*`. S8 and S11-S13 are still the pinned
+  figures of their builds and have not been re-measured unpinned.
 - **S1-S3 compare send rates, not delivery.** FastDDS's bench subscriber uses the default reader QoS (KEEP_LAST 1);
   on one host its writer overwrites what the reader has not taken, and in `mixed_delivery.sh`'s FastDDS LOCAL_ONLY
   arm (p2 BEST_EFFORT, 3 reps) the subscriber took **154 of 3.1 million** samples sent. TickLE's figures are
@@ -60,13 +70,12 @@ repetitions only. **✅ = best, ❌ = worst** in the row.
   that drops at a full ring reads *higher* (dropping is cheaper than delivering), which is why such reps are excluded.
 - **S6 (RELIABLE p4)** was VOID on `8d1c3712`: a lost-wakeup defect (the writer did not ring a reader that had gone
   back to sleep) made the application give up 4-7 samples per rep. Fixed in `fe45f276` (the writer now rings each
-  sleep of the reader once) and re-measured there with every rep `write_fail=0`, `lost=0`. S6's CycloneDDS figure is
-  from that same run; an earlier run gave 5,776. S4-S5 were measured after ACK solicitation stopped being clocked by
+  sleep of the reader once) and re-measured there with every rep `write_fail=0`, `lost=0`. That pinned run gave
+  CycloneDDS 5,240 (an earlier one 5,776). S4-S5 were first measured after ACK solicitation stopped being clocked by
   a 1 ms timer (`8d1c3712`); before that, TickLE lost S4 and S6 to CycloneDDS.
 - **S11 and S13 compare against FastDDS only.** CycloneDDS's memory excludes iceoryx's `iox-roudi` daemon, which
   reserved 216 MB of shared memory before any application connected. TickLE's segment is in-process, no daemon.
-- **The rows come from four builds** of one night, each measured after the change that moved it.
-- **S10 is the narrowest lead (1.26x CycloneDDS):** a p4 sample is two datagrams and two slots on TickLE's path.
+- **S10 is the narrowest lead (1.29x CycloneDDS):** a p4 sample is two datagrams and two slots on TickLE's path.
   The extra time appears only after idling: p4 - p3 is +6 us at 0.5 ms ping spacing and +20 us at 5 ms, against
   CycloneDDS's 0-2 us (`experiments/p4_interval_rig.sh`, `6234e915`). Ruled out: an extra wake (p4 rings the same
   doorbells per round trip, `p4_wake_count.sh`) and the doorbell's place between the fragments (`93504234` moved it
@@ -287,8 +296,9 @@ trips), not a per-message cost. rmw_tickle's RSS includes its shared-memory segm
 
 Every figure comes from the rig's two dedicated Raspberry Pi 5s over a point-to-point 1 GbE link (or one of them, for
 section 1); nothing measured on the dev PC is published. Native rows use each framework's own API with identical
-payload shapes, the same explicit QoS asserted on every row, release builds on all sides, processes pinned away from
-the NIC interrupt core (to be replaced by unpinned figures: TESTING.md section 5), frameworks interleaved within one session, 3 repetitions and medians. A cell is VOID when a
+payload shapes, the same explicit QoS asserted on every row, release builds on all sides, processes unpinned in section 1
+(pinned figures are a labelled note; the cross-host rows are still pinned away from the NIC interrupt core and are
+to be re-measured unpinned: TESTING.md section 5), frameworks interleaved within one session, 3 repetitions and medians. A cell is VOID when a
 payload crosses a framework's datagram boundary unexpectedly, when history policies differ, or when delivery is
 incomplete (an incomplete vendor is excluded and listed; an incomplete TickLE loses the cell). FastDDS's only tuned
 parameter is `maxMessageSize` 1472 in the `T` rows. Full rules, fairness audit and zenoh-pico configuration:
