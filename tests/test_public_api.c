@@ -86,6 +86,50 @@ static void* const public_api[] = {
     (void*)tt_is_reverse_endian,
 };
 
+// Every tt_ret_t value must be distinct: a switch with one case per code fails to compile on a
+// duplicate. Real failure: tt_RET_UNSUPPORTED was added as -15, the value tt_RET_BUSY already had, so
+// an io_uring-only build refused by its container read as "another thread is polling". Add a case
+// whenever hal.h gains a code.
+static const char* ret_name(tt_ret_t ret) {
+    switch (ret) {
+    case tt_RET_OK:
+        return "OK";
+    case tt_RET_TIMEOUT:
+        return "TIMEOUT";
+    case tt_RET_IO_ERROR:
+        return "IO_ERROR";
+    case tt_RET_PROTOCOL_ERROR:
+        return "PROTOCOL_ERROR";
+    case tt_RET_OUT_OF_MEMORY:
+        return "OUT_OF_MEMORY";
+    case tt_RET_OUT_OF_BUFFER:
+        return "OUT_OF_BUFFER";
+    case tt_RET_OUT_OF_SCHEDULE:
+        return "OUT_OF_SCHEDULE";
+    case tt_RET_IILEGAL_NODE_ID:
+        return "IILEGAL_NODE_ID";
+    case tt_RET_IILEGAL_ENDPOINT_ID:
+        return "IILEGAL_ENDPOINT_ID";
+    case tt_RET_ILLEGAL_STATUS:
+        return "ILLEGAL_STATUS";
+    case tt_RET_INVALID_ARGUMENT:
+        return "INVALID_ARGUMENT";
+    case tt_RET_INTERRUPTED:
+        return "INTERRUPTED";
+    case tt_RET_NOT_FOUND:
+        return "NOT_FOUND";
+    case tt_RET_WOULD_BLOCK:
+        return "WOULD_BLOCK";
+    case tt_RET_NO_SUCH_LINK:
+        return "NO_SUCH_LINK";
+    case tt_RET_UNSUPPORTED:
+        return "UNSUPPORTED";
+    case tt_RET_BUSY:
+        return "BUSY";
+    }
+    return NULL;
+}
+
 int main(void) {
     // Nothing is called - resolving the addresses above is the test. The count is printed so a
     // silently-emptied table is visible rather than passing vacuously.
@@ -95,6 +139,11 @@ int main(void) {
             fprintf(stderr, "public_api[%zu] is NULL\n", i);
             test_failures++;
         }
+    }
+
+    if (ret_name(tt_RET_BUSY) == NULL || strcmp(ret_name(tt_RET_UNSUPPORTED), "UNSUPPORTED") != 0) {
+        fprintf(stderr, "ret_name() does not name every code\n");
+        test_failures++;
     }
 
     printf("test_public_api: %zu public functions link; %s\n", count,

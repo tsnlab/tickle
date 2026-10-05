@@ -85,7 +85,7 @@ typedef enum tt_ret_t {
                                    // interface owns it by definition, it is the compiled-in
                                    // default, and it is the catch-all that makes an unconfigured
                                    // node work at all.
-    tt_RET_UNSUPPORTED = -15,      // This build requires something the running system refuses - today only
+    tt_RET_UNSUPPORTED = -16,      // This build requires something the running system refuses - today only
                                    // tt_HAL_RX_HINT=tt_RX_HINT_URING on a kernel or container that does not allow
                                    // io_uring (hal_linux.h). Not retryable: the same system refuses it again.
     tt_RET_WOULD_BLOCK = -13,      // Phase 3 (rmw_tickle/PLAN.md) - tt_Publisher_publish() on a
