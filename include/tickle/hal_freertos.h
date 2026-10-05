@@ -68,6 +68,12 @@ static inline void tt_lock_destroy(tt_lock_t* lock) {
 static inline uintptr_t tt_thread_self(void) {
     return (uintptr_t)xTaskGetCurrentTaskHandle();
 }
+// Not used for state_lock()'s hand-off: taskYIELD() only yields to tasks of equal or higher priority, so a
+// higher-priority task yielding in a loop for a lower-priority poller would wait for ever. Priority already decides
+// who runs here; the hand-off is compiled out (tickle.c).
+#define tt_HAL_THREAD_YIELD 0
+static inline void tt_thread_yield(void) {
+}
 #else
 typedef struct {
     char unused;
@@ -96,6 +102,9 @@ static inline void tt_lock_destroy(tt_lock_t* lock) {
 }
 static inline uintptr_t tt_thread_self(void) {
     return 1;
+}
+#define tt_HAL_THREAD_YIELD 0
+static inline void tt_thread_yield(void) {
 }
 #endif
 

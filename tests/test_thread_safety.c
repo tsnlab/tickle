@@ -866,6 +866,66 @@ static bool all_delivered(void) {
     return done;
 }
 
+// The poller is let in first (2026-10-05). A thread that takes and releases the state lock in a tight loop - an rmw
+// publish loop, every sample - used to take it back before the poller it had just woken could run, so the poll thread
+// waited tens of milliseconds while ACKNACKs sat unread (KEEP_ALL matched its reader 0.1-0.35 s late on the rig).
+// Here one thread loops on the lock while another, marked as the poller, asks for it once. What is counted is how many
+// times the looping thread still takes the lock after it has seen the poller waiting: at most once (the hold it was
+// already in), against hundreds when the mutex is left to decide.
+#if !defined(CONTROL_BUILD) && tt_HAL_THREAD_YIELD
+#define HANDOFF_ROUNDS 20
+#define HANDOFF_LOOP_CAP 2000000 // the looping thread's give-up, so a failure ends instead of hanging
+static struct tt_Context* handoff_node;
+static int handoff_poller_in; // set by the poller once it holds the lock
+static long handoff_barged;   // looping thread's acquisitions after it saw the poller waiting
+
+static void* handoff_looper(void* arg) {
+    (void)arg;
+    long barged = 0;
+    for (long i = 0; i < HANDOFF_LOOP_CAP && !__atomic_load_n(&handoff_poller_in, __ATOMIC_ACQUIRE); i++) {
+        tt_Context_lock(handoff_node);
+        if (__atomic_load_n(&handoff_node->poller_waiting, __ATOMIC_ACQUIRE) != 0) {
+            barged++;
+        }
+        tt_Context_unlock(handoff_node);
+    }
+    __atomic_store_n(&handoff_barged, barged, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+static void* handoff_poller(void* arg) {
+    (void)arg;
+    __atomic_store_n(&handoff_node->poller_thread, tt_thread_self(), __ATOMIC_RELAXED);
+    tt_Context_lock(handoff_node);
+    __atomic_store_n(&handoff_poller_in, 1, __ATOMIC_RELEASE);
+    tt_Context_unlock(handoff_node);
+    __atomic_store_n(&handoff_node->poller_thread, 0, __ATOMIC_RELAXED);
+    return NULL;
+}
+
+static void test_a_waiting_poller_gets_the_lock_first(struct tt_Context* node) {
+    handoff_node = node;
+    long worst = 0;
+    for (int round = 0; round < HANDOFF_ROUNDS; round++) {
+        __atomic_store_n(&handoff_poller_in, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&handoff_barged, 0, __ATOMIC_RELEASE);
+        pthread_t looper;
+        pthread_t poller;
+        pthread_create(&looper, NULL, handoff_looper, NULL);
+        struct timespec settle = {0, 1000000}; // let the loop get going before the poller asks
+        nanosleep(&settle, NULL);
+        pthread_create(&poller, NULL, handoff_poller, NULL);
+        pthread_join(poller, NULL);
+        pthread_join(looper, NULL);
+        long barged = __atomic_load_n(&handoff_barged, __ATOMIC_ACQUIRE);
+        worst = barged > worst ? barged : worst;
+        EXPECT_TRUE(__atomic_load_n(&handoff_poller_in, __ATOMIC_ACQUIRE) == 1);
+    }
+    printf("test_thread_safety: the looping thread took the lock at most %ld time(s) past a waiting poller\n", worst);
+    EXPECT_TRUE(worst <= 1);
+}
+#endif
+
 int main(void) {
 #if defined(tt_THREAD_SAFE) && !tt_THREAD_SAFE
     // A single-thread build (config.h): the locks are no-ops by design, so there is nothing here to test,
@@ -924,6 +984,10 @@ int main(void) {
     tt_Context_interrupt(&node_b);
     pthread_join(poll_a, NULL);
     pthread_join(poll_b, NULL);
+#if !defined(CONTROL_BUILD) && tt_HAL_THREAD_YIELD
+    // After the pollers have stopped, so the two threads here are the only ones asking for node_a's lock.
+    test_a_waiting_poller_gets_the_lock_first(&node_a);
+#endif
 
     EXPECT_EQ_U32(0, publish_errors);
     EXPECT_EQ_U32(0, calls_unanswered);

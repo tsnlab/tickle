@@ -53,6 +53,7 @@ SURVIVES_RESET = {
     "state_depth": "node_init_locks(), at create, before anything can reach the node",
     "state_lock_stats": "node_init_locks(), at create, before anything can reach the node",
     "poller_thread": "node_init_locks(), at create, before anything can reach the node",
+    "poller_waiting": "node_init_locks(), at create, before anything can reach the node",
     "poller_active": "node_init_locks(), at create, before anything can reach the node",
     "sched_inbox_state": "node_init_locks(), at create, before anything can reach the node",
     "sched_inbox_pending": "node_init_locks(), at create, before anything can reach the node",

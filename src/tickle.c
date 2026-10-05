@@ -2896,14 +2896,37 @@ static void state_lock_waited(struct tt_Context* node, uint64_t start) {
     }
 }
 
+// The poller goes first (2026-10-05). The mutex has no hand-off: a thread that releases it and asks again - an rmw
+// publish loop, every sample - takes it back before the waiter it just woke has run, so the poll thread could wait
+// tens of milliseconds for its turn while ACKNACKs and announces sat unread on its sockets. A KEEP_ALL writer then
+// matched its reader 0.1-0.35 s late on the rig and evicted what it broadcast meanwhile; in a netns the poller's wait
+// was 11 ms of an 11.5 ms window and 59 ms of a 60 ms one (experiments/rmw_keepall_evict_repro.sh). So a poller that
+// has to wait says so (poller_waiting), and any other thread asking for the lock yields until the poller has it.
+// Only the blocking path defers: state_try_lock() still answers at once, which tt_Context_schedule() relies on to
+// fall back to its inbox instead of waiting while it may already hold the lock in a callback (poll_wait_io()).
 static void state_lock(struct tt_Context* node) {
     if (state_lock_owned(node)) {
         node->state_depth++; // re-entry from a callback, or a public call made inside another
         return;
     }
+    bool is_poller =
+        __atomic_load_n(&node->poller_thread, __ATOMIC_RELAXED) == tt_thread_self(); // NOLINT(misc-include-cleaner)
+#if tt_HAL_THREAD_YIELD // NOLINT(misc-include-cleaner) - from the platform header hal.h selects
+    if (!is_poller) {
+        while (__atomic_load_n(&node->poller_waiting, __ATOMIC_ACQUIRE) != 0) {
+            tt_thread_yield(); // NOLINT(misc-include-cleaner)
+        }
+    }
+#endif
     if (!tt_lock_try(&node->state_lock)) { // NOLINT(misc-include-cleaner)
         uint64_t start = tt_get_ns();
+        if (is_poller) {
+            __atomic_add_fetch(&node->poller_waiting, 1U, __ATOMIC_RELEASE);
+        }
         tt_lock_acquire(&node->state_lock); // NOLINT(misc-include-cleaner)
+        if (is_poller) {
+            __atomic_sub_fetch(&node->poller_waiting, 1U, __ATOMIC_RELEASE);
+        }
         state_lock_waited(node, start);
     }
     state_lock_taken(node);
@@ -3291,6 +3314,7 @@ static void node_init_locks(struct tt_Context* node) {
     node->state_depth = 0;
     node->state_lock_stats = (struct tt_LockStats) {0};
     __atomic_store_n(&node->poller_thread, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&node->poller_waiting, 0, __ATOMIC_RELAXED);
     for (int i = 0; i < tt_SCHED_INBOX_LENGTH; i++) {
         __atomic_store_n(&node->sched_inbox_state[i], tt_SCHED_SLOT_EMPTY, __ATOMIC_RELAXED);
     }

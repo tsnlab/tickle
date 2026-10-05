@@ -586,6 +586,9 @@ struct tt_Context {
     tt_lock_t state_lock;    // NOLINT(misc-include-cleaner) - from the platform header hal.h selects, like hal
     uintptr_t state_owner;   // tt_thread_self() of the holder, 0 when free; accessed through __atomic builtins
     uintptr_t poller_thread; // tt_thread_self() of the thread inside tt_Context_poll(), 0 when none; __atomic
+    // Non-zero while the poller is blocked waiting for state_lock; other threads then let it in first (state_lock(),
+    // tickle.c). __atomic.
+    uint32_t poller_waiting;
     // The time the running tt_Context_poll() last read (tt_get_ns()), 0 outside one: the receive path's "now" - a
     // received DATA's 32-bit timestamp is rebuilt against it (timestamp_from_wire()), a peer's last sign of
     // life is stamped with it (traffic_last_seen) - so receiving a datagram reads no clock of its own. Read

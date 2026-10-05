@@ -11,6 +11,7 @@
 #pragma once
 
 #include <pthread.h>
+#include <sched.h>   // sched_yield() - tt_thread_yield()
 #include <stdbool.h> // rx_prefer_data
 #include <stdint.h>
 #include <time.h>
@@ -91,6 +92,12 @@ static inline void tt_lock_destroy(tt_lock_t* lock) {
 static inline uintptr_t tt_thread_self(void) {
     return (uintptr_t)pthread_self();
 }
+// Gives the CPU to another runnable thread (state_lock()'s hand-off to a waiting poller, tickle.c). Linux schedules
+// preemptively across cores, so a thread that yields in a loop cannot keep the one it waits for from running.
+#define tt_HAL_THREAD_YIELD 1
+static inline void tt_thread_yield(void) {
+    (void)sched_yield();
+}
 #else
 typedef struct {
     char unused;
@@ -119,6 +126,9 @@ static inline void tt_lock_destroy(tt_lock_t* lock) {
 }
 static inline uintptr_t tt_thread_self(void) {
     return 1;
+}
+#define tt_HAL_THREAD_YIELD 0 // one thread: nobody to yield to
+static inline void tt_thread_yield(void) {
 }
 #endif
 
