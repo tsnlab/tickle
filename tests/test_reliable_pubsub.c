@@ -2078,6 +2078,36 @@ static void test_a_reader_acknowledges_a_writer_learned_keep_all_after_its_data(
     EXPECT_EQ_INT(1, test_mock_send_to_call_count); // the periodic resend of the same announce says nothing new
 }
 
+// A writer this reader has not heard announce yet (discovery attached, no entry) is acknowledged on its first DATA
+// too, without waiting for the announce that queues behind that DATA (2026-10-05: waiting still left 1-10 samples per
+// run lost on the rig). Once only: the KEEP_ALL announce that follows sends nothing more.
+static void test_a_reader_acknowledges_a_not_yet_announced_writer_once(void) {
+    test_mock_reset();
+    static struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&node, &discovery, NULL, NULL));
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(1, test_mock_send_to_call_count); // acknowledged on the first DATA, announce or not
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_TRUE(proxy->presence_acked);
+    update_writer_proxies_keep_all(&node, ENDPOINT_ID, REMOTE_NODE_ID, proxy->entity_id, tt_WRITER_KEEP_ALL_YES);
+    EXPECT_EQ_INT(1, test_mock_send_to_call_count); // the KEEP_ALL announce adds nothing
+    tail = write_data(&node, 2, 200, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(1, test_mock_send_to_call_count); // and in-order data stays silent
+    tt_Context_set_discovery(&node, NULL, NULL, NULL);
+}
+
 static void test_keep_all_publisher_claims_its_reader_from_an_acknack(void) {
     test_mock_reset();
     static struct tt_Discovery discovery;
@@ -4379,6 +4409,7 @@ int main(void) {
     test_keep_all_publisher_claims_its_reader_from_an_acknack();
     test_a_reader_acknowledges_a_keep_all_writer_on_first_contact();
     test_a_reader_acknowledges_a_writer_learned_keep_all_after_its_data();
+    test_a_reader_acknowledges_a_not_yet_announced_writer_once();
     test_ack_table_full_refuses_further_entities();
     test_acknack_rejects_malformed_bitmap_words();
     test_acknack_with_no_bitmap_words_is_a_pure_ack();

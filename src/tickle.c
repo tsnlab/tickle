@@ -6755,6 +6755,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             // sample. Anything the writer published earlier is invisible from here - see struct
             // tt_WriterProxy's own doc comment (tickle.h) for the limitation that implies.
             proxy->keep_all = writer_announced_keep_all(sub->node, node_id, ((struct tt_Endpoint*)sub)->id);
+            proxy->presence_acked = false;
             // Phase 2 - this slot's own window inside the Subscriber's tracking storage: the
             // caller-provided buffer when it gave one, otherwise the builtin default.
             uint64_t* tracking = sub->tracking_bitmaps != NULL ? sub->tracking_bitmaps : sub->builtin_tracking;
@@ -7340,6 +7341,22 @@ static void rstat_on_arrival(const struct tt_WriterProxy* proxy, uint32_t seq_no
 // duplicate (an accepted, narrow miss, same category as this file's other honest residuals) but
 // carries no risk of misclassifying a genuinely new sample - the trade-off deliberately made in
 // the safer direction after the wider version's own real-CI-confirmed failure.
+// A pure acknowledgement (no resend bits, "everything below ack_seq_no") that tells a writer this reader exists - once
+// per writer (2026-10-05). A writer that has not received this reader's announce learns of it only from an ACKNACK
+// (claim_from_acknack()), and a healthy reader otherwise never sends one, so a max-rate KEEP_ALL writer ran
+// unmatched, evicting what it had broadcast, until the first loss made the reader ask (rig: 180-1230 samples per 20 s
+// run at 5% loss). Sent at first contact for a writer announced KEEP_ALL, or not yet announced at all - waiting for
+// its announce, which queues behind its DATA on this reader's socket, still left 1-10 lost per run; and when an
+// announce turns a writer KEEP_ALL later. Never for a writer announced without KEEP_ALL: it evicts by design, and a
+// healthy reader of one stays silent, as before. Requests nothing, so nothing is resent.
+static void ack_writer_presence(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy) {
+    if (proxy->presence_acked || !sub->reliable || proxy->sender_ip == 0) {
+        return;
+    }
+    proxy->presence_acked = true;
+    send_acknack_range(node, proxy, 0, -1);
+}
+
 static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
                                 uint16_t sender_port) {
@@ -7396,16 +7413,9 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         proxy->ack_seq_no = seq_no;
         proxy->reorder_cursor = seq_no;
     }
-    if (first_contact && proxy->keep_all == tt_WRITER_KEEP_ALL_YES) {
-        // A pure acknowledgement (no resend bits) the moment a KEEP_ALL writer is first heard (2026-10-05): it tells
-        // the writer this reader exists and where it starts, one round trip after its first sample. A writer that has
-        // not received this reader's announce learns of it only from an ACKNACK (claim_from_acknack()), and a
-        // healthy reader otherwise never sends one - so on the rig a max-rate KEEP_ALL writer ran unmatched, evicting,
-        // until the first loss made the reader ask, and the samples lost before that ask were gone (180-1230 per
-        // 20 s run at 5% loss). Saying "everything below seq_no" requests nothing, so nothing is resent. KEEP_ALL only:
-        // there an unmatched writer evicting breaks the contract, while a KEEP_LAST writer evicts by design and a
-        // healthy reader of one stays silent, as before.
-        send_acknack_range(node, proxy, 0, -1);
+    if (first_contact && (proxy->keep_all == tt_WRITER_KEEP_ALL_YES ||
+                          (proxy->keep_all == tt_WRITER_KEEP_ALL_UNKNOWN && node->discovery != NULL))) {
+        ack_writer_presence(node, sub, proxy);
     }
 
     if (seq_no < proxy->ack_seq_no) {
@@ -7967,14 +7977,9 @@ static void update_writer_proxies_keep_all(struct tt_Context* node, uint32_t end
         for (int j = 0; j < tt_MAX_PEER_COUNT; j++) {
             if (sub->writers[j].context_id == node_id && sub->writers[j].entity_id == entity_id) {
                 struct tt_WriterProxy* proxy = &sub->writers[j];
-                bool learned_keep_all = keep_all == tt_WRITER_KEEP_ALL_YES && proxy->keep_all != tt_WRITER_KEEP_ALL_YES;
                 proxy->keep_all = keep_all;
-                // The first-contact acknowledgement (update_reliable_ack()) for a writer whose DATA arrived before its
-                // announce said KEEP_ALL - on the rig the usual order, since a new publisher's data starts at once and
-                // its announce a millisecond later: 3 of 5 runs then matched nobody (2026-10-05). Either order now
-                // ends in the one acknowledgement.
-                if (learned_keep_all && sub->reliable && proxy->sender_ip != 0) {
-                    send_acknack_range(node, proxy, 0, -1);
+                if (keep_all == tt_WRITER_KEEP_ALL_YES) {
+                    ack_writer_presence(node, sub, proxy); // its DATA came before this announce: either order, once
                 }
             }
         }

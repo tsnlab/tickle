@@ -1913,6 +1913,9 @@ struct tt_WriterProxy {
     // lost, with the Publisher's own null_evicted and publish_refused both zero - all of it inside
     // the first announce interval, and reported as ordinary transport loss rather than a refusal.
     enum tt_WriterKeepAll keep_all;
+    // Whether this reader has told the writer it exists with a pure acknowledgement (ack_writer_presence(),
+    // tickle.c): once per writer, whichever of its first DATA or its KEEP_ALL announce comes first.
+    bool presence_acked;
     // RELIABLE in-order delivery - the next sequence number this writer's samples may be released
     // from the reorder buffer at. Only ever moves forward, and drain_reorder() visits each value
     // once, which is what makes draining O(released) overall rather than a scan of the whole
