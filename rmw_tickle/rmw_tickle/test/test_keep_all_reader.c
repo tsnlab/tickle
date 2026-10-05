@@ -157,6 +157,22 @@ static bool deliver(rmw_tickle_subscriber_t* sub_impl, rmw_tickle_publisher_t* p
     return true;
 }
 
+// What core's reorder buffer does: hands up a sample the hook already admitted when it arrived out of order, without
+// asking again, once the gap before it fills.
+static void release(rmw_tickle_subscriber_t* sub_impl, rmw_tickle_publisher_t* pub_impl, const char* text,
+                    uint64_t psn) {
+    struct keep_all_ros_msg message = {.text = (char*)text};
+    rmw_tickle_outgoing_message_t outgoing = {.publication_sequence_number = psn,
+                                              .callbacks = &keep_all_callbacks,
+                                              .ros_message = &message,
+                                              .tickle = NULL};
+    uint8_t wire[MAX_TEXT + RMW_TICKLE_PSN_BYTES];
+    int32_t size = pub_impl->topic.data_encode((struct tt_Data*)&outgoing, wire, (uint32_t)sizeof(wire));
+    assert(size > 0);
+    sub_impl->tickle_subscriber.callback(&sub_impl->tickle_subscriber, 0, (uint16_t)psn,
+                                         sub_impl->topic.data_decode_inplace(wire, (uint32_t)size, true));
+}
+
 static char* take_one(rmw_subscription_t* sub) {
     struct keep_all_ros_msg incoming = {.text = NULL};
     bool taken = false;
@@ -201,7 +217,8 @@ int main(void) {
     rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)sub->data;
 
     assert(sub_impl->keep_all);
-    assert(WANTED_CAPACITY == sub_impl->queue_capacity); // the budget sized it, not qos.depth (2)
+    assert(WANTED_CAPACITY == sub_impl->queue_limit); // the budget sized it, not qos.depth (2)
+    assert(WANTED_CAPACITY + RMW_TICKLE_KEEP_ALL_HEADROOM == sub_impl->queue_capacity);
     assert(NULL != sub_impl->tickle_subscriber.accept_callback);
     assert(sub_impl == sub_impl->tickle_subscriber.accept_callback_param);
 
@@ -254,6 +271,44 @@ int main(void) {
     assert(NULL != resumed && 0 == strcmp("after-drain", resumed));
     free(resumed);
 
+    // Criterion 3 (2026-10-05): samples admitted while there was room, held in core's reorder buffer and released
+    // together when the gap before them fills, all fit - even onto a queue the application has let fill to its limit.
+    // On the rig ~8,000 samples per 20 s run at 5% loss were dropped here as "unreachable". Mutant: no headroom
+    // (queue_capacity = queue_limit) - the released samples are dropped and keep_all_unconsulted_drops counts them.
+    enum { RELEASED = 16, PSN_HELD = 200, PSN_RELEASED = 300, PSN_REFILL = 400, PSN_LATE = 500, PSN_NEW = 501 };
+    for (int i = 0; i < WANTED_CAPACITY; i++) {
+        char text[MAX_TEXT];
+        snprintf(text, sizeof(text), "held-before-%d", i);
+        assert(deliver(sub_impl, pub_impl, text, (uint64_t)PSN_HELD + (uint64_t)i));
+    }
+    for (int i = 0; i < RELEASED; i++) {
+        char text[MAX_TEXT];
+        snprintf(text, sizeof(text), "released-%d", i);
+        release(sub_impl, pub_impl, text, (uint64_t)PSN_RELEASED + (uint64_t)i);
+    }
+    assert(0 == sub_impl->keep_all_unconsulted_drops);
+    assert(WANTED_CAPACITY + RELEASED == (int)sub_impl->queue_count);
+    for (int i = 0; i < WANTED_CAPACITY + RELEASED; i++) {
+        char expected[MAX_TEXT];
+        if (i < WANTED_CAPACITY) {
+            snprintf(expected, sizeof(expected), "held-before-%d", i);
+        } else {
+            snprintf(expected, sizeof(expected), "released-%d", i - WANTED_CAPACITY);
+        }
+        char* text = take_one(sub);
+        assert(NULL != text && 0 == strcmp(expected, text));
+        free(text);
+    }
+    // ...and the admission limit still holds while the headroom is in use: a NEW arrival is declined.
+    for (int i = 0; i < WANTED_CAPACITY; i++) {
+        assert(deliver(sub_impl, pub_impl, "refill", (uint64_t)PSN_REFILL + (uint64_t)i));
+    }
+    release(sub_impl, pub_impl, "released-late", PSN_LATE);
+    assert(!deliver(sub_impl, pub_impl, "new-arrival", PSN_NEW));
+    while (NULL != (resumed = take_one(sub))) {
+        free(resumed);
+    }
+
     // The control: an otherwise identical KEEP_LAST subscription sets no hook at all, so nothing on
     // its path changed. Its depth, not the budget, sizes it.
     rmw_qos_profile_t last_qos = base_qos(RMW_QOS_POLICY_HISTORY_KEEP_LAST);
@@ -263,6 +318,7 @@ int main(void) {
     assert(!last_impl->keep_all);
     assert(NULL == last_impl->tickle_subscriber.accept_callback);
     assert(2 == (int)last_impl->queue_capacity);
+    assert(2 == (int)last_impl->queue_limit); // no headroom: KEEP_LAST evicts, it never has to hold a burst
 
     assert(RMW_RET_OK == rmw_destroy_subscription(node, last));
     assert(RMW_RET_OK == rmw_destroy_subscription(node, sub));

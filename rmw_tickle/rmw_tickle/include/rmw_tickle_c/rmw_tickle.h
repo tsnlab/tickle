@@ -824,6 +824,9 @@ typedef struct rmw_tickle_publisher_t {
 // keeping a shallower history than this - a small ROS HISTORY depth, say - makes the excess
 // unusable rather than harmful to it, and that Publisher logs a warning saying so.
 #define RMW_TICKLE_TRACKING_WORDS 16
+// rmw_tickle_subscriber_t.queue_limit: what a KEEP_ALL queue holds beyond its admission limit - every sample core's
+// reorder window can hold, plus every fragment reassembly slot.
+#define RMW_TICKLE_KEEP_ALL_HEADROOM (((size_t)RMW_TICKLE_TRACKING_WORDS * 64U) + (size_t)tt_FRAG_REASSEMBLY_SLOTS)
 
 // How many samples a RELIABLE subscription can hold while it waits for a gap.
 //
@@ -906,6 +909,14 @@ typedef struct rmw_tickle_subscriber_t {
     // subscription() time (Milestone 7's QoS roadmap item #1), not a fixed compile-time bound.
     rmw_tickle_queued_message_t* queue;
     size_t queue_capacity;
+    // How many queued messages subscriber_accept() admits a new arrival up to: queue_capacity for KEEP_LAST; for
+    // KEEP_ALL the byte-budget depth, while queue_capacity also holds RMW_TICKLE_KEEP_ALL_HEADROOM more (2026-10-05).
+    // The hook is asked when a sample arrives, but a sample that arrives out of order waits in core's reorder buffer
+    // and enters the queue only when the gap before it fills - together with everything held behind it. Admitted
+    // against room that was there at arrival, such a burst overflowed the queue on the rig: ~8,000 samples per 20 s
+    // run at 5% loss dropped at the enqueue that should be unreachable. The headroom is the most the reorder buffer and
+    // the fragment pool can release at once, so admitted samples always fit.
+    size_t queue_limit;
     size_t queue_head;
     size_t queue_count;
     // g13 (RMW_GAPS_PLAN.md) - HISTORY KEEP_ALL, which is not "unbounded" but "never destroy an

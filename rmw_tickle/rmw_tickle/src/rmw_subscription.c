@@ -264,7 +264,7 @@ static bool subscriber_accept(struct tt_Subscriber* subscriber, uint32_t seq_no,
     (void)seq_no;
     rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)param;
     pthread_mutex_lock(&sub_impl->queue_mutex);
-    bool room = sub_impl->queue_count < sub_impl->queue_capacity;
+    bool room = sub_impl->queue_count < sub_impl->queue_limit;
     pthread_mutex_unlock(&sub_impl->queue_mutex);
     return room;
 }
@@ -314,7 +314,9 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     if (sub_impl->queue_count == sub_impl->queue_capacity) {
         if (sub_impl->keep_all) {
             // g13 - unreachable in the ordinary course, because subscriber_accept() declined this
-            // sample before core recorded it and rmw_take() only ever makes room. Kept because
+            // sample before core recorded it, rmw_take() only ever makes room, and the queue holds
+            // RMW_TICKLE_KEEP_ALL_HEADROOM beyond the admission limit for samples released from core's
+            // reorder buffer (queue_limit). Kept because
             // "never destroy an unread sample" is the whole promise of KEEP_ALL, and the one thing
             // that must not happen if it is ever reached is the eviction below. Drop the arriving
             // sample instead, and give its shell back rather than leaking it.
@@ -625,7 +627,8 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     // (RESOURCE_LIMITS). What makes it KEEP_ALL rather than a deep KEEP_LAST is not the number but
     // what a full queue does: it declines the arriving sample instead of destroying an unread one.
     sub_impl->keep_all = RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history;
-    sub_impl->queue_capacity = resolve_queue_capacity(qos_profile, callbacks);
+    sub_impl->queue_limit = resolve_queue_capacity(qos_profile, callbacks);
+    sub_impl->queue_capacity = sub_impl->queue_limit + (sub_impl->keep_all ? RMW_TICKLE_KEEP_ALL_HEADROOM : 0);
     sub_impl->queue = (rmw_tickle_queued_message_t*)allocator->zero_allocate(
         sub_impl->queue_capacity, sizeof(rmw_tickle_queued_message_t), allocator->state);
     if (NULL == sub_impl->queue) {
