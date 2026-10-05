@@ -15,6 +15,16 @@ The user's active list (2026-10-05), in order.
    OS scheduling every framework, and publish the pinned figures only as a labelled note. Then audit the rest of the
    rig the same way: socket buffer sizes, CPU governor, IRQ affinity, vendor profiles (FastDDS XML, CycloneDDS
    URI, iceoryx), build flags. P1-P4 stay as they are: each measures something real (the user, 2026-10-05).
+   Audited 2026-10-05: socket buffers (all three capped at the rig's 212,992 B; if `rmem_max` is ever raised,
+   FastDDS's XML must raise its own too), governor (`ondemand` for all; a `performance` arm needs the user's sudo),
+   IRQs (all on CPU0 for all), vendor profiles (neutral; CycloneDDS's shared memory is opt-in and enabled for it)
+   are even. Fixed: the latency clients now pace alike (TickLE's sent on a fixed period and idled one round trip
+   less) and print median and p99 beside the mean; the campaign rotates the frameworks' order; rmw_tickle is
+   built at the vendors' `-O2` instead of `-O3` (`rmw_crosshost_rtt.sh`; `rmw_keepall_rig.sh` next); versions
+   are in RESULTS section 3. Open: (a) every framework's KEEP_ALL bound in the campaign is derived from TickLE's
+   512 KiB budget (`campaign_sweep.sh` common_args) - identical, but chosen from TickLE's side; an arm with the
+   vendors' own defaults (CycloneDDS unlimited, FastDDS 5000) should sit beside it; (b) `s6_transport_cells.sh`
+   runs each framework's repetitions back to back, not interleaved.
 1. **Find the p4 same-host latency gap**: p4's round trip is ~21 us longer than p3's, but only after the processes
    idle (rig: +6 us at 0.5 ms ping spacing, +20 us at 5 ms; CycloneDDS 0-2 us). Ruled out so far: an extra wake
    (p4 rings the same doorbells per round trip as p3, `p4_wake_count.sh`), and the doorbell sitting between the two
@@ -35,8 +45,10 @@ The user's active list (2026-10-05), in order.
    its own looped-back flood (`25c2e1ce`, matched from the ACKNACK; `71289352` and `5028366d`, the reader
    acknowledges a KEEP_ALL writer once); the reader's queue overflowed when the reorder buffer released a burst
    (`7b760c5d`); KEEP_ALL evicted the unacknowledged rest of a fragmented sample (`7fb6fabf`). At `7b760c5d`, 0%
-   loss evicts nothing (6/6). Still open: at 5% loss Array1k loses ~5% of the 3-4k samples broadcast before the
-   writer matches its reader (156-405 per run). Also queued as its own task: a reader process that hangs after
+   loss evicts nothing (6/6). Then three more: the poll thread starved of the state lock (`40db021d`), a reader
+   that had not heard the writer announce did not acknowledge it (`a4408d0a`), and an unmatched KEEP_ALL writer
+   evicted by bytes what it broadcast before its first match (`a8c1cd83`). **Closed 2026-10-05:** at `a8c1cd83`
+   all 12 runs lose nothing, at 0% and 5% loss (RESULTS rows 72-75). Also queued as its own task: a reader process that hangs after
    its writer leaves. (`rmw_keepall_rig.sh`, `rmw_keepall_evict_repro.sh`, `rxo_mismatch_repro.sh`)
 5a. **Testbed-independent constants** (added by the user 2026-10-05, not urgent; ordered after the reader-wake item
    and before rmw same-host and FreeRTOS, because FreeRTOS is the first other platform and re-measurements should
@@ -48,6 +60,14 @@ The user's active list (2026-10-05), in order.
    formula that produced it and how to recompute it on another platform. Start from the old constants audit
    (`git show 3c0c505b:examples/perf_hil/CONSTANTS_AUDIT.md`) and include config.h, hal_linux.h and rmw_tickle's
    RMW_TICKLE_* defaults.
+   Inventory done 2026-10-05; the fitted values that stay (c) are in README.md "Tuning for your platform". Still
+   to replace by an algorithm (a), most fitted and hottest first: `tt_SCHEDULER_IO_INTERLEAVE` 8 (a count standing
+   in for a time budget; its comment still calls it experimental); `tt_RELIABLE_RETRY_GRANULARITY` 100 us (measure
+   timer lateness); `TT_RX_IDLE_RECHECK` 64 and `tt_SEGMENT_ATTACH_RETRY_SENDS` / `_REVALIDATE_SENDS` (send counts
+   whose period scales with the rate); `tt_CALL_RETRY_INTERVAL` / `_MAX`, `tt_SERVER_CACHE_TIMEOUT` and
+   `RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS` (srtt-relative bounds, as `08e568af` did for the reliable retry);
+   `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` (from the tracking window); `tt_DISCOVERY_REQUEST_RETRY` (RTT +
+   `tt_CONTEXT_TX_INTERVAL`) and `tt_SEGMENT_DEAD_READER_NS` (from `tt_LIVELINESS_SILENCE_NS`).
 6. **Re-measure rmw same-host performance**: the rmw same-host rows predate the segment, FIFO and wake fixes.
    (COMPARISON 2.7; RMW_PERF_PLAN)
 7. **FreeRTOS: implement tt_rx_maybe_ready() with an lwIP netconn receive callback**: today only the Linux HAL has
@@ -62,6 +82,45 @@ The user's active list (2026-10-05), in order.
 ## Next
 
 Open work that is not parked, deduplicated across all sources. Rough priority order within each group.
+
+### RESOURCE_LIMITS shaped like DDS (the user, 2026-10-05)
+
+KEEP_ALL is bounded today by two process-wide byte budgets (`RMW_TICKLE_KEEP_ALL_BYTES`,
+`RMW_TICKLE_READER_KEEP_ALL_BYTES`), a per-publisher override, and fixed sample-count ceilings the user does not see
+(the tracking window, the index ring, the reader's 4,096). DDS bounds it per writer and per reader in samples
+(`max_samples`, `max_samples_per_instance`), checked against HISTORY at creation. Follow DDS's shape: a sample-count
+limit settable per publisher and per subscription, one visible bound rather than several, and the same consistency
+check. How (QoS extension, payload, both) is decided when the work starts. Comparison: docs/RMW.md, QoS,
+RESOURCE_LIMITS.
+
+### A core QoS API shaped like rmw's (the user, 2026-10-05)
+
+Core's QoS is fields set one by one on the endpoint (`reliable`, `durable`, `keep_all`, `deadline_duration_ns`,
+`lifespan_duration_ns`, `liveliness_lease_duration_ns`, `liveliness_manual`), and history is storage the caller
+sizes and attaches (`reliable_cache` with its index and arena; `capacity`, `depth` and `sample_depth`; the
+subscriber's `reorder_storage`). rmw and DDS take one QoS profile (history + depth, reliability, durability,
+deadline, lifespan, liveliness + lease) applied at creation. Give core a QoS profile struct shaped like
+`rmw_qos_profile_t`, applied at endpoint creation, with a helper that computes the storage a profile needs so the
+caller still owns the memory (no malloc in core). Keep the field API working meanwhile; `max_blocking_time` and the
+RESOURCE_LIMITS item above belong in the same profile.
+
+### rmw_tickle at REP-2004 Quality Level 2 (the user, 2026-10-05)
+
+The goal: from Quality Level 4 (`rmw_tickle/rmw_tickle/QUALITY_DECLARATION.md`) to Level 2. What Level 2 asks and
+what is missing, in order:
+
+1. **Every change through a pull request**, with DCO sign-off checked and CI required before merge (REP-2004 2.i,
+   2.ii, 2.iv). Today changes are pushed to `main` after the local gates, unsigned. Needs the user's decision,
+   since it changes how every session works. (Peer review is optional at Level 2 and required at Level 1.)
+2. **Coverage tracking** in CI (gcov/lcov) for core and rmw_tickle; Level 2 tracks it, Level 1 enforces a bound
+   (4.iii).
+3. **A vulnerability disclosure policy** (`SECURITY.md`, REP-2006 response schedule) (7.i).
+4. **Dependencies at Level 2 or better** (5): quality declarations for `rosidl_typesupport_tickle_c` and
+   `rosidl_typesupport_tickle_cpp`, and a written quality justification for TickLE core, rmw_tickle's one non-ROS
+   dependency.
+5. **A stable version** (`>= 1.0.0`) with declared API and ABI stability policies (1.ii, 1.iv, 1.v).
+6. **All REP-2000 Tier 1 platforms** (6): Linux only today. Check jazzy's Tier 1 list; a platform not supported
+   (Windows, if listed) needs a HAL port or a documented exception.
 
 ### Wired work (the user's order of 2026-09-29: finish wired, then Security, then wireless)
 

@@ -101,6 +101,24 @@ below.
 | LIVELINESS | AUTOMATIC, MANUAL_BY_TOPIC, BEST_AVAILABLE (topics) | The lease counts from the last sign of life. Leases under 6 ms are refused |
 | LIFESPAN | any finite value | Expires samples in both the publisher cache and the subscriber queue |
 
+- **RESOURCE_LIMITS (for reference; not an rmw QoS policy).** ROS 2's QoS profile has no RESOURCE_LIMITS, but
+  KEEP_ALL cannot be kept without one: in DDS, KEEP_ALL means "refuse rather than overwrite" and RESOURCE_LIMITS
+  says when to refuse. rmw_tickle bounds it differently from DDS:
+
+  | | DDS `ResourceLimitsQosPolicy` | rmw_tickle |
+  |---|---|---|
+  | unit | samples: `max_samples`, `max_instances`, `max_samples_per_instance` | bytes, plus fixed sample-count ceilings below |
+  | where it is set | each writer's, reader's and topic's QoS | process-wide environment (`RMW_TICKLE_KEEP_ALL_BYTES`, `RMW_TICKLE_READER_KEEP_ALL_BYTES`, 512 KiB each); a publisher can override its own through `rmw_specific_publisher_payload` (`publisher_payload.h`); a subscription cannot |
+  | instances | per key | none: rmw_tickle has no keyed topics |
+  | writer bound | samples in the writer's history | unacknowledged bytes, and at most the readers' tracking window (1,024 samples) and the index ring (2,048 datagrams); TRANSIENT_LOCAL is bounded by its replay depth (8,192), not bytes |
+  | reader bound | `max_samples` | the byte budget divided by one decoded ROS message plus its queue entry, at most 4,096 |
+  | consistency check | `max_samples >= max_samples_per_instance >= HISTORY.depth`, refused at creation | none needed: KEEP_ALL has no depth, and a budget below one sample is raised to one |
+  | memory | preallocated up to a limit (Fast DDS `allocated_samples`) or as needed | as needed, doubling toward the budget |
+  | defaults | CycloneDDS: unlimited (the writer is held by its non-standard byte watermark `WhcHigh`, 500 kB); Fast DDS: 5,000 samples | 512 KiB per publisher and per subscription |
+
+  When the bound is reached both behave alike: a KEEP_ALL publisher blocks up to `RMW_TICKLE_MAX_BLOCKING_MS` (DDS:
+  `max_blocking_time`) and then fails the publish with a timeout; a RELIABLE subscription declines new samples, so
+  the writer holds and resends them (DDS: the sample is rejected and resent); a BEST_EFFORT one drops and counts them.
 - RxO matching covers RELIABILITY, DURABILITY, DEADLINE and LIVELINESS. An incompatible pair does not match, and both
   sides get an event.
 - `BEST_AVAILABLE` is resolved once, when the endpoint is created, against the endpoints already discovered.

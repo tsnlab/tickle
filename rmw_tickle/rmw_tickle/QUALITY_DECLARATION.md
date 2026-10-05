@@ -42,21 +42,24 @@ repository it lives in:
 
 ### Change Requests [2.i]
 
-All changes occur through pull requests, reviewed before merging.
+Not met today. Changes are pushed to `main` directly after the repository's local gates (`make check-gates`) pass,
+and CI (`check-all.yml`, `test-all.yml`) runs on every push. Moving every change to a pull request is the first step
+to Quality Level 3. (Corrected 2026-10-05: this section used to say that all changes go through reviewed pull
+requests, which was not true.)
 
 ### Contributor Origin [2.ii]
 
-This package uses DCO as its confirmation of contributor origin policy. More information can be
-found in [CONTRIBUTING](../../docs/CONTRIBUTING.md).
+Not met today. [CONTRIBUTING](../../docs/CONTRIBUTING.md) names DCO as the policy, but commits do not carry a
+`Signed-off-by` line and nothing checks for one. (Corrected 2026-10-05.)
 
 ### Peer Review Policy [2.iii]
 
-All pull requests are peer-reviewed before merging, following a review policy matching general
-practice for the repository, though not yet a documented, centrally-published policy of its own.
+Not met today: there is no pull-request review, since changes do not go through pull requests (2.i).
+(Corrected 2026-10-05.)
 
 ### Continuous Integration [2.iv]
 
-All pull requests must pass CI (`check-all.yml`): build, lint (clang-format/clang-tidy), the
+Every push must pass CI (`check-all.yml`): build, lint (clang-format/clang-tidy), the
 package's own test suite, and (as of this document) the upstream `test_rmw_implementation`
 conformance suite - see [Testing](#testing-4) below. `rmw_tickle` is currently tested on Linux
 only (see [Platform Support](#platform-support-6)), not all REP-2000 Tier 1 platforms.
@@ -98,11 +101,9 @@ Unit, integration, and system tests higher up in the stack - in particular
 (wired into `check-all.yml` as of the former `rmw_tickle/PLAN.md`'s Milestone 15, readable with
 `git show 3c0c505b:rmw_tickle/PLAN.md`) - provide feature coverage,
 the same package `rmw_fastrtps_cpp`'s and `rmw_cyclonedds_cpp`'s own quality declarations cite for
-this exact purpose. Coverage is currently partial: `rmw_tickle`'s own accepted-QoS subset (only
-`BEST_EFFORT` reliability for topics, no loaned messages, single node per process, ...) means a
-real, documented fraction of that upstream suite is skipped for `rmw_tickle` specifically - see
-`rmw_tickle/PLAN.md`'s Milestone 15 for the exact, itemized list and why each one is skipped
-rather than failing.
+this exact purpose. Coverage is partial: a documented fraction of that upstream suite is skipped for `rmw_tickle` (what is
+supported and what is not is in [docs/RMW.md](../../docs/RMW.md), "What works, and what does not").
+(Corrected 2026-10-05: this used to say that only BEST_EFFORT was accepted for topics; all six QoS policies are.)
 
 `rmw_tickle`'s own scoped test suite (`test/test_qos.c`, `test/test_node_lifecycle.c`,
 `test/test_guard_condition_wait.c`, `rmw_tickle/PLAN.md`'s Milestone 10) additionally covers
@@ -133,7 +134,7 @@ itself, not a cross-vendor comparison. Cross-vendor figures, taken on TickLE cor
 ### Linters and Static Analysis [4.v]
 
 `rmw_tickle` uses and passes clang-format and clang-tidy, run repository-wide in `check-all.yml`
-(`cpp-linter-action`) on every pull request - the same linting infrastructure the rest of this
+(`cpp-linter-action`) on every push - the same linting infrastructure the rest of this
 repository already uses, not a separate ROS-specific linter set (`ament_lint_common` et al.).
 
 ## Dependencies [5]
@@ -185,9 +186,9 @@ package.
 | 1.iv | API stability policy | ☓ |
 | 1.v | ABI stability policy | ☓ |
 | 2 | **Change control process** | --- |
-| 2.i | All changes occur on change request | ✓ |
-| 2.ii | Contributor origin (DCO, CLA, etc) | ✓ |
-| 2.iii | Peer review policy | ✓ |
+| 2.i | All changes occur on change request | ☓ |
+| 2.ii | Contributor origin (DCO, CLA, etc) | ☓ |
+| 2.iii | Peer review policy | ☓ |
 | 2.iv | CI policy | ✓ |
 | 2.v | Documentation policy | ✓ |
 | 3 | **Documentation** | --- |

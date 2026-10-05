@@ -823,7 +823,9 @@ typedef struct rmw_tickle_publisher_t {
 // window (struct tt_Subscriber.tracking_bitmaps' own sizing rule, tickle.h). A remote Publisher
 // keeping a shallower history than this - a small ROS HISTORY depth, say - makes the excess
 // unusable rather than harmful to it, and that Publisher logs a warning saying so.
+#ifndef RMW_TICKLE_TRACKING_WORDS
 #define RMW_TICKLE_TRACKING_WORDS 16
+#endif
 // rmw_tickle_subscriber_t.queue_limit: what a KEEP_ALL queue holds beyond its admission limit - every sample core's
 // reorder window can hold, plus every fragment reassembly slot.
 #define RMW_TICKLE_KEEP_ALL_HEADROOM (((size_t)RMW_TICKLE_TRACKING_WORDS * 64U) + (size_t)tt_FRAG_REASSEMBLY_SLOTS)

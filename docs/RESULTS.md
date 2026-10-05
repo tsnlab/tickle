@@ -15,7 +15,8 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
   FastDDS 16.1% / 33.7%, CycloneDDS 3.3% / 1.4% (rows 16-17).
 - **Same host (shared memory):** TickLE leads every measured cell, but S1-S3 compare *send* rates (see notes).
 - **rmw layer:** rmw_tickle is first on every block-wait row and every poll-wait row except seven draws with
-  CycloneDDS (rows 59, 62-67). It loses no row.
+  CycloneDDS (rows 59, 62-67). It loses no row. Under RELIABLE + KEEP_ALL at 5% loss it delivers 35x (Array1k) and
+  78x (Array4k) CycloneDDS's rate with no sample lost; FastDDS refuses those runs (rows 72-75).
 - **Not scored:** row 5 (netem dominates), rows 45-47 (all detect correctly), zenoh-pico (reference only).
 
 ## 1. Same host (shared memory)
@@ -187,6 +188,10 @@ repetitions only. **No process is pinned to a core** (TESTING.md section 5); S1-
 | 69 | peak RSS, pong process (KB) | Bench, block, BEST_EFFORT | ✅ **13,216** | 23,632 | 14,532 | – | ❌ 70,484 | W |
 | 70 | pong CPU, whole run (ms) | Bench, block, BEST_EFFORT | ✅ **37.4** | 57.7 | 43.5 | – | ❌ 91.8 | W |
 | 71 | pong CPU, whole run (ms) | Bench, block, RELIABLE | ✅ **37.2** | 60.4 | 48.5 | – | ❌ 94.1 | W |
+| 72 | delivered msg/s, KEEP_ALL, max rate | Array1k, 0% loss | ✅ **87,977** | ✗ 15,180 | 84,217 | – | – | K |
+| 73 | delivered msg/s, KEEP_ALL, max rate | Array1k, 5% loss | ✅ **65,051** | ✗ refused | ❌ 1,837 | – | – | K |
+| 74 | delivered msg/s, KEEP_ALL, max rate | Array4k, 0% loss | ✅ ‡ **27,421** | ✗ 27,521 | ✅ ‡ 27,201 | – | – | K |
+| 75 | delivered msg/s, KEEP_ALL, max rate | Array4k, 5% loss | ✅ **26,483** | ✗ refused | ❌ 339 | – | – | K |
 
 ### Legend
 
@@ -196,7 +201,8 @@ repetitions only. **No process is pinned to a core** (TESTING.md section 5); S1-
   session (`Z`, `results/zenoh_cells_31d58011_2026-09-29.txt`), so its margins are looser than a within-row one.
 - **`†`** measured over TCP, the only configuration where zenoh-pico's reliability is real (its RELIABLE means
   monotonic sequence numbers, not retransmission). Untagged zenoh-pico cells are its UDP-multicast best-effort arm.
-- **`✗`** measured, and the transport did not survive the cell: zenoh-pico's TCP session dies a few hundred samples
+- **`✗`** in rows 72-75: the vendor is excluded, for incomplete delivery or a refused run (see the rmw layer notes).
+- **`✗`** elsewhere: measured, and the transport did not survive the cell: zenoh-pico's TCP session dies a few hundred samples
   into a max-rate run above 76 B while its publisher keeps reporting success. Never read it as a figure.
 - **`‡`** both at the ~940 Mbps link ceiling and inseparable (inside the ~1% floor between builds); both carry ✅.
 - **`§`** derived from a measured row: row 41 is row 35 minus the 76 B payload.
@@ -218,6 +224,7 @@ Within a row all scored frameworks come from one session; across letters they do
 | `L` | liveliness, `liveliness_l2.sh`, 2026-09-27, `0f220ba0`, 20 reps (`results/liveliness_l2e_2026-09-27.txt`) |
 | `W` | four-way rmw block wait, `934f90de`, 3 reps (`results/rmw_4way_block_934f90de_2026-09-30.txt`) |
 | `J` | four-way rmw poll wait, random phase, RTT at callback, `934f90de`, 7 reps (`results/rmw_4way_poll*_cb_r7_*_2026-10-01.txt`) |
+| `K` | rmw RELIABLE + KEEP_ALL, apex `perf_test` at max rate across the link, 20 s, 3 reps, medians, `a8c1cd83`, 2026-10-05 (`experiments/rmw_keepall_rig.sh`; `~/rig_results_safe/rmw_keepall_rig_prematch_20261005-221714.txt`) |
 
 ### Latency
 
@@ -270,7 +277,7 @@ depth, both DDS 109 (deterministic, 3/3).
 
 ### rmw layer
 
-Rows 48-71. `rmw_tickle`, `rmw_fastrtps_cpp`, `rmw_cyclonedds_cpp` and `rmw_zenoh_cpp` driven through `rclcpp` by one
+Rows 48-71 (72-75 below). `rmw_tickle`, `rmw_fastrtps_cpp`, `rmw_cyclonedds_cpp` and `rmw_zenoh_cpp` driven through `rclcpp` by one
 unchanged ping/pong binary pair; `RMW_IMPLEMENTATION` alone selects the rmw, and every row checks both sides'
 `/proc/PID/maps`. Block wait (`W`) is the `spin()` pattern; poll wait (`J`) loops on `spin_some()` with 0, 50, 100 or
 200 us sleeps and a random pause so the reply lands at a random phase. `J` verdicts use overlap of the repetitions'
@@ -278,6 +285,16 @@ interquartile ranges; ⚪ is a draw. rmw_zenoh_cpp needs a Zenoh router, run on 
 figures. Memory is from outside each process; CPU is the pong's whole-run thread time (4 s idle plus 100 round
 trips), not a per-message cost. rmw_tickle's RSS includes its shared-memory segment: row 68 rose from 11,264 to
 12,544 kB when the segment was added to core.
+
+**Rows 72-75 (rmw KEEP_ALL, `K`):** apex `perf_test` publisher alone on one Pi and subscriber alone on the other,
+RELIABLE + KEEP_ALL, `-r 0`, `tc netem` loss on the publisher's egress, each arm identified by `/proc/PID/maps`.
+rmw_tickle lost no sample in any of its 12 runs (`gap_evicted` 0, no give-up). FastDDS is excluded (✗): at 0% loss
+it delivered 22-28% fewer samples than it sent (lost 70-80k per run), and at 5% loss its publisher blocked past
+`max_blocking_time` and `perf_test` ended (the KEEP_ALL contract refusing, in every run). CycloneDDS delivered
+everything at 0% loss; at 5% Array1k two of its three runs sent about four times what arrived (lost ~106k). Row 74
+is at the link's ceiling for both (‡). rmw_tickle was built `Release` (`-O3`) here and the vendors are the
+distribution's `-O2`; at 35x and 78x the build type cannot explain rows 73 and 75, and rows 72 and 74 are re-measured
+with rmw_tickle at `-O2` next.
 
 ### Where TickLE does not come first
 
@@ -296,13 +313,20 @@ trips), not a per-message cost. rmw_tickle's RSS includes its shared-memory segm
 
 Every figure comes from the rig's two dedicated Raspberry Pi 5s over a point-to-point 1 GbE link (or one of them, for
 section 1); nothing measured on the dev PC is published. Native rows use each framework's own API with identical
-payload shapes, the same explicit QoS asserted on every row, release builds on all sides, processes unpinned in section 1
-(pinned figures are a labelled note; the cross-host rows are still pinned away from the NIC interrupt core and are
-to be re-measured unpinned: TESTING.md section 5), frameworks interleaved within one session, 3 repetitions and medians. A cell is VOID when a
-payload crosses a framework's datagram boundary unexpectedly, when history policies differ, or when delivery is
-incomplete (an incomplete vendor is excluded and listed; an incomplete TickLE loses the cell). FastDDS's only tuned
-parameter is `maxMessageSize` 1472 in the `T` rows. Full rules, fairness audit and zenoh-pico configuration:
-[TESTING.md](TESTING.md).
+payload shapes, the same explicit QoS asserted on every row, optimised builds on all sides, 3 repetitions and medians.
+Section 1 runs unpinned (pinned figures are a labelled note); the cross-host rows are still pinned to cores 1-3, away
+from the NIC interrupt core, and are to be re-measured unpinned (TESTING.md section 5). Cross-host cells interleave
+the frameworks within each repetition; section 1's harness runs each framework's repetitions back to back, one
+framework after another within a cell. A cell is VOID when a payload crosses a framework's datagram boundary
+unexpectedly, when history policies differ, or when delivery is incomplete (an incomplete vendor is excluded and
+listed; an incomplete TickLE loses the cell). FastDDS's only tuned parameter is `maxMessageSize` 1472 in the `T` rows.
+Full rules, fairness audit and zenoh-pico configuration: [TESTING.md](TESTING.md).
+
+**Versions** (rig, Ubuntu 24.04, aarch64): the native rows use CycloneDDS 11.0.1 (the `rolling` build, linked by
+`cyclonedds/build.sh`) with iceoryx 2.0.5 for section 1, and Fast DDS 2.14.6 (ROS jazzy); the rmw rows use jazzy's
+`rmw_cyclonedds_cpp` (CycloneDDS 0.10.5) and `rmw_fastrtps_cpp` (Fast DDS 2.14.6). Vendor libraries are the
+distribution's packages (CMake build type None, Debian's `-O2`); TickLE's core is built `-O2 -DNDEBUG`. Rows
+measured before 2026-10-05 built rmw_tickle as `Release` (`-O3`); later rmw rows build it with the vendors' `-O2`.
 
 ## 4. Open work
 

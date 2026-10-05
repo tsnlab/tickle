@@ -71,6 +71,27 @@ docker run --security-opt seccomp=seccomp-tickle.json ...
 On Kubernetes use the same profile as `seccompProfile: {type: Localhost, localhostProfile: <path>}`. Avoid
 `seccomp=unconfined`.
 
+## Tuning for your platform
+
+The defaults were checked on the test rig (two Raspberry Pi 5s, 1 GbE). The values below depend on the hardware, so
+derive them for yours rather than copying ours. Constants are `-D` overrides at build time (every one in
+`include/tickle/config.h` is `#ifndef`-guarded); rmw_tickle's two byte budgets are environment variables.
+
+| constant | default | derive it as |
+|---|---|---|
+| `tt_SEGMENT_BYTES` | 768 KiB | slots = peak datagram rate x longest reader stall; bytes = slots x (16 + `tt_SEGMENT_SLOT_BYTES`). Slots round **down** to a power of two, so size for a power of two: 768 KiB is 512 slots of 1472 B. |
+| `tt_SOCKET_BUFFER_SIZE` | 1 MiB | peak receive rate (bytes/s) x longest drain stall. The kernel clamps it to `net.core.rmem_max` / `wmem_max`, so raise those too. |
+| `tt_RX_BATCH` (Linux HAL) | 32 | the datagrams one wake-up drains at your peak rate (p95). The rig drained about 30. rmw_tickle builds with 1 (its datagram is 64 KB), not yet measured. |
+| `tt_RX_CLOCK_REFRESH` | 16 | the clock staleness you accept for receive stamps / processing time per datagram. 16 x ~85 ns = ~1.4 us on the dev PC. |
+| `tt_RX_LOCK_CHUNK` | 8 | the longest wait you accept for a thread that publishes while the poll thread receives / processing time per datagram. |
+| `tt_RELIABLE_RETRY_INITIAL` | 1 ms | about 4 x the link's round trip. It is used only until the first RTT sample, after which the retry follows the measured RTT. |
+| `RMW_TICKLE_KEEP_ALL_BYTES` (env) | 512 KiB | link rate x the longest acknowledgement stall a KEEP_ALL writer should ride out: 42 ms at 100 Mbit/s, 420 ms at 10 Mbit/s. |
+| `RMW_TICKLE_READER_KEEP_ALL_BYTES` (env) | 512 KiB | sample size x the samples an application may leave untaken before its writers are pushed back. |
+| `RMW_TICKLE_TRACKING_WORDS` | 16 (1,024 samples) | 64 x words >= peak sample rate x the time a lost sample takes to repair. Tracking further back than the writer retains recovers nothing. |
+
+Constants that stand in for a time or a rate are being replaced by algorithms (docs/ROADMAP.md, "Now" 5a) and are
+not listed here.
+
 ## Run the examples
 
 ```sh
