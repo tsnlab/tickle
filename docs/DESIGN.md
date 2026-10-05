@@ -249,13 +249,15 @@ KEEP_ALL writer would stop at its bound. So the writer solicits acks itself (a H
   relative to srtt since 2026-10-05: the first wait is `srtt + max(tt_CALL_RETRY_GRANULARITY, 4 x rttvar)`, each
   retry of the call waits twice the one before, each at most `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` (64) x srtt. The seed
   `tt_CALL_RETRY_INTERVAL` (5 ms) stands in for srtt until a first answer. A call gives up after
-  `(2^(count+1) - 1)` first waits (15). A timeout doubles srtt, up to `tt_CALL_RETRY_BACKOFF_LIMIT` (1 s, evidence-free
-  growth only); the next answer replaces the estimate.
+  `(2^(count+1) - 1)` first waits (15), and never later than `(count + 1) x tt_CALL_DEADLINE_PER_SEND` (1 s, the old
+  worst case): a wait past that is cut there. A timeout doubles srtt, up to that deadline; the next answer replaces
+  the estimate.
 - A Server caches each answered response in one of `tt_MAX_SERVER_CACHE_COUNT` (64) slots, so a retried request gets
   the same answer without re-running the callback. It keeps it for the longer of the client's seed schedule (or the
   service's explicit `call_retry_interval x (count + 1)`) and `tt_SERVER_CACHE_GAP_MULTIPLE` (4) x the longest
   recent gap between a response and the same client's retry; each retry served re-arms it, and a retry after expiry
-  teaches the server that client's gap. A first transmission (retry 0) is never served from the cache. A full cache
+  teaches the server that client's gap. A response is dropped when its client turns out to be a new incarnation
+  (discovery lists it under another entity_id, or a farewell). A full cache
   evicts the response sent longest ago.
 - **Deferred responses:** a callback may return `tt_CALL_DEFERRED` and answer later from any thread with
   `tt_Server_send_response()`, which encodes and sends before it returns (the caller's data need only live for the
@@ -499,7 +501,7 @@ All are compile-time `-D` overrides unless noted. Times in nanoseconds.
 | `tt_CALL_RETRY_INTERVAL` | 5 ms | | RPC auto retry seed, until a first answer |
 | `tt_CALL_RETRY_GRANULARITY` | 200 us | | two hosts' event lateness term |
 | `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` | 64 | | a wait's ceiling in srtt |
-| `tt_CALL_RETRY_BACKOFF_LIMIT` | 1 s | | backed-off srtt bound (dead server) |
+| `tt_CALL_DEADLINE_PER_SEND` | 250 ms | | auto call fails within (count + 1) x this (1 s) |
 | `tt_CALL_RETRY_COUNT` | 3 | | RPC retries |
 | `tt_SERVER_CACHE_GAP_MULTIPLE` | 4 | | answered-response cache, in observed retry gaps |
 | `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT` | 5 s | | deferred response slot lifetime |

@@ -3852,6 +3852,7 @@ static tt_ret_t node_create_server_locked(struct tt_Context* node, struct tt_Ser
         server->cache[i] = NULL;
         server->clean_scheduled[i] = false;
         server->cache_sent_at[i] = 0;
+        server->cache_client_entity[i] = 0;
         server->slot_state[i] = tt_SERVER_SLOT_EMPTY;
         server->pending_timeout_scheduled[i] = false;
     }
@@ -4367,22 +4368,59 @@ static uint64_t compute_retry_interval(const struct tt_Client* client, uint32_t 
     return wait;
 }
 
+static uint32_t call_retry_count(const struct tt_Client* client) {
+    // 0 means tt_CALL_RETRY_COUNT, as struct tt_Service documents. It used to be compared as given,
+    // so 0 - what every caller in the tree passes, core's own examples included, and what a
+    // zero-allocated rmw_tickle client holds - meant no retries at all: the call was abandoned at
+    // its first retry interval (~7.5 ms), and a response arriving after that was ignored as
+    // "CallResponse with no outstanding call". Found 2026-09-24 by the first rmw test to make a real
+    // service call, where the deferred response took longer than that to be sent.
+    return client->service->call_retry_count != 0 ? client->service->call_retry_count : (uint32_t)tt_CALL_RETRY_COUNT;
+}
+
+// How long after it was made an auto-path call reports failure at the latest: (count + 1) x tt_CALL_DEADLINE_PER_SEND,
+// the worst case the old fixed 250 ms ceiling gave (config.h). An explicit call_retry_interval has no deadline: its
+// (count + 1) waits are used as given, as before.
+static uint64_t call_deadline(const struct tt_Client* client) {
+    if (client->service->call_retry_interval != 0) {
+        return UINT64_MAX;
+    }
+    uint64_t sends = (uint64_t)call_retry_count(client) + 1;
+    return sends > UINT64_MAX / (uint64_t)tt_CALL_DEADLINE_PER_SEND ? UINT64_MAX
+                                                                    : sends * (uint64_t)tt_CALL_DEADLINE_PER_SEND;
+}
+
+// When the wait after the call's `retry`-th send, starting at `now`, ends: the retry interval, cut short at the
+// call's deadline.
+static uint64_t call_next_wake(const struct tt_Client* client, uint32_t retry, uint64_t now) {
+    uint64_t deadline = call_deadline(client);
+    uint64_t deadline_at = deadline > UINT64_MAX - client->cache_time ? UINT64_MAX : client->cache_time + deadline;
+    uint64_t wait = compute_retry_interval(client, retry);
+    uint64_t wake = wait > UINT64_MAX - now ? UINT64_MAX : now + wait;
+    return wake < deadline_at ? wake : deadline_at;
+}
+
+static bool call_past_deadline(const struct tt_Client* client, uint64_t now) {
+    uint64_t deadline = call_deadline(client);
+    return deadline != UINT64_MAX && now >= client->cache_time && now - client->cache_time >= deadline;
+}
+
 // A call on the auto path timed out: double the latency estimate (from the seed if there is none yet), so the next
-// call waits longer (Karn's / TCP's RTO backoff), up to tt_CALL_RETRY_BACKOFF_LIMIT - a bound on growth without
-// evidence only, so an estimate already above it, measured, is kept. The estimate is otherwise learnt only from
-// accepted answers, so without this a server that became slower than the budget timed out every call from then on.
-// The next accepted answer replaces the estimate outright (latency_backed_off), so a server that is fast again gets
-// its budget back at once.
+// call waits longer (Karn's / TCP's RTO backoff). It stops at the call's deadline: no wait can be longer than that,
+// so growing the estimate past it would change nothing but how far back down an answer has to bring it. An estimate
+// already above it, measured, is kept. The estimate is otherwise learnt only from accepted answers, so without this a
+// server that became slower than the budget timed out every call from then on. The next accepted answer replaces the
+// estimate outright (latency_backed_off), so a server that is fast again gets its budget back at once.
 static void back_off_retry_interval(struct tt_Client* client) {
     if (client->service->call_retry_interval != 0) {
         return;
     }
+    uint64_t limit = call_deadline(client);
+    limit = limit > UINT32_MAX ? UINT32_MAX : limit;
     uint64_t latency = client->latency == 0 ? (uint64_t)tt_CALL_RETRY_INTERVAL : client->latency;
-    if (latency < (uint64_t)tt_CALL_RETRY_BACKOFF_LIMIT) {
+    if (latency < limit) {
         latency *= 2;
-        if (latency > (uint64_t)tt_CALL_RETRY_BACKOFF_LIMIT) {
-            latency = (uint64_t)tt_CALL_RETRY_BACKOFF_LIMIT;
-        }
+        latency = latency > limit ? limit : latency;
     }
     client->latency = (uint32_t)latency;
     client->latency_backed_off = true;
@@ -4402,17 +4440,10 @@ static void call_retry(struct tt_Context* node, uint64_t time, void* param) {
     struct tt_CallRequestHeader* callrequest_header =
         (struct tt_CallRequestHeader*)((void*)submessage_header + sizeof(struct tt_SubmessageHeader));
 
-    // 0 means tt_CALL_RETRY_COUNT, as struct tt_Service documents. It used to be compared as given,
-    // so 0 - what every caller in the tree passes, core's own examples included, and what a
-    // zero-allocated rmw_tickle client holds - meant no retries at all: the call was abandoned at
-    // its first retry interval (~7.5 ms), and a response arriving after that was ignored as
-    // "CallResponse with no outstanding call". Found 2026-09-24 by the first rmw test to make a real
-    // service call, where the deferred response took longer than that to be sent.
-    uint32_t retry_count =
-        client->service->call_retry_count != 0 ? client->service->call_retry_count : (uint32_t)tt_CALL_RETRY_COUNT;
-    if (++callrequest_header->retry > retry_count) {
+    uint64_t now = tt_get_ns();
+    if (++callrequest_header->retry > call_retry_count(client) || call_past_deadline(client, now)) {
         back_off_retry_interval(client);
-        client->callback(client, tt_CALL_TIMEOUT, NULL); // every retry went unanswered
+        client->callback(client, tt_CALL_TIMEOUT, NULL); // every retry went unanswered, or the deadline passed
 
         client->cache = NULL;
         return;
@@ -4420,8 +4451,7 @@ static void call_retry(struct tt_Context* node, uint64_t time, void* param) {
 
     resend_call_request(node, client, submessage_header);
 
-    if (!tt_Context_schedule(node, tt_get_ns() + compute_retry_interval(client, callrequest_header->retry), call_retry,
-                             client)) {
+    if (!tt_Context_schedule(node, call_next_wake(client, callrequest_header->retry, now), call_retry, client)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
         client->callback(client, tt_CALL_TIMEOUT, NULL); // can't arm another retry - treat as no answer
 
@@ -4520,7 +4550,7 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
     client->cache_time = tt_get_ns();
     client->seq_no++;
 
-    if (!tt_Context_schedule(node, tt_get_ns() + compute_retry_interval(client, 0), call_retry, client)) {
+    if (!tt_Context_schedule(node, call_next_wake(client, 0, client->cache_time), call_retry, client)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
         client->cache = NULL;
         return tt_RET_OUT_OF_SCHEDULE;
@@ -8908,6 +8938,8 @@ static bool update_parts_complete(const struct tt_Context* node, uint8_t source,
 // A lost fragment leaves the announce incomplete - its generation not applied - so the source's next
 // summary draws a request, and the reply resends every fragment under the same generation, which fills the
 // gap without starting over; until then the source is known by the fragments that did arrive.
+static void drop_cached_responses_from_source(struct tt_Context* node, uint8_t source, bool farewell);
+
 static bool process_announce(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                              uint32_t tail, uint32_t sender_ip, uint16_t sender_port, uint32_t generation,
                              uint8_t frag_index, uint8_t frag_count) {
@@ -8975,6 +9007,8 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
     // endpoint it no longer lists, or a farewell listing nothing at all), so a departed Subscriber
     // can't hold a KEEP_ALL writer's ack set forever.
     drop_ack_state_for_unmatched_source(node, source);
+    // The same for a Server's cached responses: a client this announce shows gone or replaced has none to retry.
+    drop_cached_responses_from_source(node, source, whole && announce->entity_count == 0);
 
     // First time we've ever heard from this node, as opposed to it changing its endpoints since -
     // captured before update_seen[] is set, because that's the state reply_with_own_announce() needs
@@ -9871,6 +9905,27 @@ static int find_server_cache_slot(struct tt_Server* server, uint8_t receiver, ui
     return -1;
 }
 
+// The entity_id under which discovery knows `receiver`'s client of this service, or 0 when it does not know one (no
+// discovery table attached, or not announced yet). An entity_id is drawn per launch (tt_Context.entity_id_base), so a
+// restarted client process, or a client re-created in one, announces a different one under the same context id.
+static uint32_t server_client_entity(const struct tt_Server* server, uint8_t receiver) {
+    const struct tt_DiscoveredEntity* client =
+        server->node != NULL ? tt_Discovery_find(server->node->discovery, receiver, server->endpoint.id) : NULL;
+    return client != NULL && client->kind == tt_KIND_SERVICE_CLIENT ? client->entity_id : 0;
+}
+
+// Whether slot `slot`'s response was cached for an earlier incarnation of the client now asking: discovery knew the
+// client then and knows it now, under different entity_ids. When either side is unknown it cannot tell, and the
+// response stands - the old behaviour, which a farewell still bounds (drop_cached_responses_from_source()).
+static bool server_cache_slot_is_stale(const struct tt_Server* server, int slot, uint8_t receiver) {
+    uint32_t cached_for = server->cache_client_entity[slot];
+    if (cached_for == 0) {
+        return false;
+    }
+    uint32_t current = server_client_entity(server, receiver);
+    return current != 0 && current != cached_for;
+}
+
 static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
     int slot = find_server_cache_slot(server, receiver, seq_no);
     return slot >= 0 ? server->cache[slot] : NULL;
@@ -9935,6 +9990,35 @@ static void clear_server_cache_slot(struct tt_Server* server, int slot) {
     }
     server->cache[slot] = NULL;
     server->cache_sent_at[slot] = 0; // the client moved on, or the slot is wanted: nothing to learn from it
+    server->cache_client_entity[slot] = 0;
+}
+
+// A complete announce from `source` has just been applied. Every local Server drops the responses - live or expired
+// - it holds for a client on `source` that announce shows to be gone or replaced: all of them on a farewell (an
+// announce listing nothing, tt_Context_destroy()), and with discovery attached, each one whose client the source no
+// longer lists, or lists under another entity_id. A restarted client reusing the context id starts its seq_no at 0
+// again; without this its first calls could be answered with its predecessor's responses.
+static void drop_cached_responses_from_source(struct tt_Context* node, uint8_t source, bool farewell) {
+    for (uint32_t index = 0; index < node->endpoint_count; index++) {
+        struct tt_Endpoint* endpoint = node->endpoints[index];
+        if (endpoint == NULL || endpoint->kind != tt_KIND_SERVICE_SERVER) {
+            continue;
+        }
+        struct tt_Server* server = (struct tt_Server*)endpoint;
+        uint32_t current = farewell ? 0 : server_client_entity(server, source);
+        for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+            if (server->cache[i] == NULL && server->cache_sent_at[i] == 0) {
+                continue; // holds nothing
+            }
+            if (((const struct tt_SubmessageHeader*)server_cache_entry(server, i))->receiver != source) {
+                continue;
+            }
+            bool replaced = server->cache_client_entity[i] != 0 && current != server->cache_client_entity[i];
+            if (farewell || replaced) {
+                clear_server_cache_slot(server, i);
+            }
+        }
+    }
 }
 
 // Expiry. The slot keeps cache_sent_at and its bytes, so a retry that comes after this can still be matched to it
@@ -9973,7 +10057,7 @@ static void learn_from_expired_response(struct tt_Server* server, uint8_t receiv
             !server_cache_slot_names(server, i, receiver, seq_no)) {
             continue;
         }
-        if (now > server->cache_sent_at[i]) {
+        if (now > server->cache_sent_at[i] && !server_cache_slot_is_stale(server, i, receiver)) {
             uint64_t gap = now - server->cache_sent_at[i];
             uint64_t lifetime = server_cache_lifetime(server);
             uint64_t bound = lifetime > UINT64_MAX / 2 ? UINT64_MAX : 2 * lifetime;
@@ -10042,6 +10126,7 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
     }
 
     server->cache_sent_at[free_slot] = now;
+    server->cache_client_entity[free_slot] = server_client_entity(server, receiver);
     server->cache[free_slot] = cache;
 
     return true;
@@ -10331,17 +10416,22 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
         return true;
     }
 
-    // Check cache - for a retry only. A first transmission (retry 0) is a new call by definition: a client node that
-    // restarted under the same id starts its seq_no at 0 again, and with responses kept as long as their client may
-    // still retry (server_cache_lifetime()), its first call would otherwise get the previous incarnation's answer.
-    int cached_slot = -1;
-    if (callrequest_header->retry != 0) {
-        cached_slot = find_server_cache_slot(server, header->source, seq_no);
-        if (cached_slot >= 0) {
-            note_server_cache_hit(server, cached_slot);
-        } else {
-            learn_from_expired_response(server, header->source, seq_no);
-        }
+    // Check cache - for any request, a duplicated first transmission (retry 0) included: answering it again would run
+    // a non-idempotent callback twice. What must not be answered from the cache is a request from a new incarnation of
+    // the client - a restarted process reusing the context id, whose seq_no starts at 0 again. Discovery tells the two
+    // apart where it can (server_cache_slot_is_stale()); a farewell drops the source's responses outright
+    // (drop_cached_responses_from_source()).
+    int cached_slot = find_server_cache_slot(server, header->source, seq_no);
+    if (cached_slot >= 0 && server_cache_slot_is_stale(server, cached_slot, header->source)) {
+        TT_LOG_DEBUG("Cached response for node %d is from an earlier incarnation of its client - dropped",
+                     header->source);
+        clear_server_cache_slot(server, cached_slot);
+        cached_slot = -1;
+    }
+    if (cached_slot >= 0) {
+        note_server_cache_hit(server, cached_slot);
+    } else if (callrequest_header->retry != 0) {
+        learn_from_expired_response(server, header->source, seq_no);
     }
     struct tt_SubmessageHeader* cached = cached_slot >= 0 ? server->cache[cached_slot] : NULL;
     uint32_t old_tx_tail = node->tx_tail;

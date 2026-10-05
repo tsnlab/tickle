@@ -338,15 +338,16 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   (`call_retry_interval` 0) is RFC 6298's `srtt + max(tt_CALL_RETRY_GRANULARITY, 4 x rttvar)`, doubled at each
   retry of a call and at most `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` x srtt, in place of 1.5 x an EMA held between a fixed
   5 ms floor and 250 ms ceiling. `tt_CALL_RETRY_INTERVAL` is now only the seed before a first answer;
-  `tt_CALL_RETRY_INTERVAL_MAX` is replaced by `tt_CALL_RETRY_BACKOFF_LIMIT`, which bounds only the growth of a
-  timed-out estimate. A call against a dead server can now take up to ~15 s once the estimate has fully backed off
-  (it was 1 s).
+  `tt_CALL_RETRY_INTERVAL_MAX` is replaced by `tt_CALL_DEADLINE_PER_SEND` (250 ms), which bounds the call rather
+  than the interval: an auto-path call still reports failure within `(count + 1) x` it (1 s), as before, while a
+  measured srtt above 250 ms is used unclamped.
 - **A Server keeps an answered response as long as its client may retry** (same item). `tt_SERVER_CACHE_TIMEOUT`
   (100 ms) is gone: the lifetime is the longer of the client's seed schedule (or the service's explicit retry
   schedule) and `tt_SERVER_CACHE_GAP_MULTIPLE` x the retry gaps the server has measured, re-armed by every retry it
-  serves. A first transmission (retry 0) is no longer answered from the cache, so a restarted client reusing its id
-  cannot get its previous incarnation's answer, and a full cache evicts its oldest response instead of not sending
-  the new one.
+  serves. A response is dropped when its client turns out to be a new incarnation - discovery lists it under
+  another entity_id, or its node said farewell - so a restarted client reusing its id (seq_no back at 0) does
+  not get its predecessor's answer, while a duplicated first request is still answered from the cache. A full
+  cache evicts its oldest response instead of not sending the new one.
 
 - **rmw_tickle: "matched" now means what it means in DDS** (RMW_GAPS_PLAN.md g3). An endpoint of the other kind is
   matched when all of these hold: same topic, same type, compatible QoS, and alive if remote.

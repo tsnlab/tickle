@@ -1090,6 +1090,11 @@ struct tt_Server { // extends endpoint
     // entry keeps it: cache[i] is NULL but the slot still names (client, seq_no), so a retry arriving after the
     // expiry measures how much longer that client waits than this server kept its answer (server_cache_lifetime()).
     uint64_t cache_sent_at[tt_MAX_SERVER_CACHE_COUNT];
+    // Which incarnation of the client slot i's response is for: the client's entity_id as discovery knew it when the
+    // response was cached (struct tt_DiscoveredEntity.entity_id, drawn per launch), 0 when discovery did not know it.
+    // A request whose client discovery now knows under another entity_id comes from a new client - a restarted
+    // process reusing the context id, whose seq_no starts at 0 again - and must not get this response.
+    uint32_t cache_client_entity[tt_MAX_SERVER_CACHE_COUNT];
     // The longest recent gap, ns, between a response going out and the same client asking again - a decaying
     // maximum of what retries have shown this server. 0 until the first retry arrives.
     uint64_t client_retry_gap;

@@ -72,11 +72,20 @@ The user's active list (2026-10-05), in order.
    Done 2026-10-05: the RPC retry bounds are srtt-relative (`tt_CALL_RETRY_MAX_SRTT_MULTIPLE`, per-retry doubling;
    `tt_CALL_RETRY_INTERVAL` is now only the seed and `_MAX` is gone), and the server's response cache lives as long
    as the client's schedule it can know plus the retry gaps it has measured (`tt_SERVER_CACHE_GAP_MULTIPLE`;
-   `tt_SERVER_CACHE_TIMEOUT` is gone). `tt_CALL_RETRY_BACKOFF_LIMIT` (1 s) stays absolute: it bounds evidence-free
-   growth only, as RFC 6298 2.5 does. `RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS` (100 ms) stays: an rmw call must live
-   until the server's `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT` (ROS 2 has no rmw-level service timeout), and core's
-   auto path ends a call after a retry count derived from srtt. It can move to the auto interval once core has a
-   call deadline separate from the retry count.
+   `tt_SERVER_CACHE_TIMEOUT` is gone). `tt_CALL_DEADLINE_PER_SEND` (250 ms) stays absolute on purpose: an auto call
+   still reports failure within `(count + 1) x` it (1 s), the old worst case - a policy bound on how long an
+   application waits, not a link estimate. `RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS` (100 ms) stays: an rmw call must
+   live until the server's `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT` (ROS 2 has no rmw-level service timeout), and
+   core's auto path ends a call within 1 s. It can move to the auto interval once a service can set the call's
+   deadline separately from its retry interval.
+   Open: a restarted client can still get its predecessor's cached answer in one case. A server tells client
+   incarnations apart by discovery's per-launch entity_id (recorded with each response) and drops a source's
+   responses on its farewell. Not covered: a client that crashed (no farewell), restarted under the same context
+   id within the old response's lifetime, and whose first request reaches the server before its new announce
+   does - the server still knows the old entity_id then. The same holds without a discovery table attached,
+   for any restart without a farewell. Nothing on the wire identifies the incarnation in a CallRequest (the
+   segment header's `incarnation` exists only between same-host peers); a per-launch tag in the CallRequest's
+   `reserved` byte would close it, as a wire change.
 6. **Re-measure rmw same-host performance**: the rmw same-host rows predate the segment, FIFO and wake fixes.
    (COMPARISON 2.7; RMW_PERF_PLAN)
 7. **FreeRTOS: implement tt_rx_maybe_ready() with an lwIP netconn receive callback**: today only the Linux HAL has

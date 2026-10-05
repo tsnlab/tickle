@@ -185,12 +185,14 @@ static void test_a_fast_answer_after_a_backoff_restores_the_interval(void) {
     EXPECT_EQ_U64(FAST + spread, compute_retry_interval(&client, 0));
 }
 
-// A dead server: every call ends in tt_CALL_TIMEOUT, the estimate grown without evidence stops at
-// tt_CALL_RETRY_BACKOFF_LIMIT however many calls time out, and no call outlasts the retry schedule that limit gives.
+// A dead server: every call ends in tt_CALL_TIMEOUT, and none takes longer than the old worst case - (count + 1) x the
+// old fixed 250 ms ceiling, 1 s with the defaults - however far the backoff has grown the estimate: the last calls,
+// fully backed off, take exactly that. Killed by: the deadline removed (a backed-off call runs 15 x its first wait).
 static void test_a_dead_server_bounds_every_call(void) {
     setup(0);
     uint64_t took = 0;
     uint64_t longest = 0;
+    const uint64_t old_worst_case = (uint64_t)(tt_CALL_RETRY_COUNT + 1) * 250 * MS;
     for (int i = 0; i < 20; i++) {
         callbacks = 0;
         EXPECT_TRUE(!run_call(NEVER, &took));
@@ -198,12 +200,28 @@ static void test_a_dead_server_bounds_every_call(void) {
         EXPECT_EQ_INT((int)tt_CALL_TIMEOUT, last_return_code);
         longest = took > longest ? took : longest;
     }
-    EXPECT_EQ_U32((uint32_t)tt_CALL_RETRY_BACKOFF_LIMIT, client.latency);
-    uint64_t schedule = 0;
-    for (uint32_t k = 0; k <= tt_CALL_RETRY_COUNT; k++) {
-        schedule += compute_retry_interval(&client, k);
-    }
-    EXPECT_TRUE(longest <= schedule);
+    EXPECT_EQ_U64(old_worst_case, (uint64_t)(tt_CALL_RETRY_COUNT + 1) * tt_CALL_DEADLINE_PER_SEND);
+    EXPECT_TRUE(longest <= old_worst_case);
+    EXPECT_EQ_U64(old_worst_case, took);           // the 20th call: fully backed off, cut at the deadline
+    EXPECT_EQ_U32(old_worst_case, client.latency); // and the estimate stopped growing there
+}
+
+// A measured srtt above 250 ms is used as it is, and an unanswered call still reports failure within the old worst
+// case: a 400 ms link (rttvar 200 ms) waits 1.2 s before its first resend by the estimate, and the deadline cuts that
+// wait at 1 s. Killed by: the deadline removed (it would end at 15 x 1.2 s); the 250 ms ceiling put back is killed by
+// test_a_large_srtt_is_not_clamped_to_250ms().
+static void test_an_unanswered_call_reports_failure_within_the_old_worst_case(void) {
+    setup(0);
+    client.latency = 400 * MS;
+    client.latency_var = 200 * MS;
+    EXPECT_EQ_U64(1200 * MS, compute_retry_interval(&client, 0)); // not clamped
+    uint64_t took = 0;
+    int sends_before = test_mock_send_call_count;
+    EXPECT_TRUE(!run_call(NEVER, &took));
+    EXPECT_EQ_U64((uint64_t)(tt_CALL_RETRY_COUNT + 1) * 250 * MS, took);
+    // The wait cut at the deadline ends the call there: no burst of the remaining retries at the deadline. Killed
+    // by: the deadline check in call_retry() removed (the remaining retries would all go out at 1 s).
+    EXPECT_EQ_INT(1, test_mock_send_call_count - sends_before);
 }
 
 // The pins for the srtt-relative bounds (ROADMAP 5a). Each states the mutant it kills.
@@ -311,6 +329,7 @@ int main(void) {
     test_the_ceiling_is_a_multiple_of_srtt();
     test_each_retry_of_a_call_waits_twice_as_long();
     test_the_seed_is_used_until_a_first_answer();
+    test_an_unanswered_call_reports_failure_within_the_old_worst_case();
 
     if (test_result() != 0) {
         return 1;

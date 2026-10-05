@@ -611,18 +611,114 @@ static void test_one_miss_cannot_inflate_the_lifetime_without_bound(void) {
     EXPECT_TRUE(server_cache_lifetime(&server) <= (uint64_t)tt_SERVER_CACHE_GAP_MULTIPLE * 2 * seed);
 }
 
-// A first transmission (retry 0) is never answered from the cache: only a retry can be the same call again. A client
-// node that restarts under the same id starts its seq_no at 0 again, and with a cache that lives as long as the
-// client may retry, its first call would otherwise get the previous incarnation's answer. Killed by: the retry check
-// removed (the second call is answered from the cache, the callback runs once).
-static void test_a_first_transmission_is_never_served_from_the_cache(void) {
+// A duplicated first transmission (retry 0) is the same call: it gets the cached answer, and a non-idempotent
+// callback still runs once. Killed by: first transmissions bypassing the cache (the callback would run twice).
+static void test_a_duplicated_first_transmission_is_served_from_the_cache(void) {
     struct tt_Context node;
     struct tt_Service service;
     struct tt_Server server;
     setup_lifetime(&node, &service, &server);
     uint64_t t0 = test_mock_now;
     ask(&node, REMOTE_NODE_ID, 0, 0, t0);
-    ask(&node, REMOTE_NODE_ID, 0, 0, t0 + MS); // the restarted client's own seq_no 0
+    ask(&node, REMOTE_NODE_ID, 0, 0, t0 + MS); // the network delivered it twice
+    EXPECT_EQ_U32(1, (uint32_t)callback_count);
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_call_count); // answered twice, run once
+}
+
+static struct tt_Discovery discovery;
+
+// A discovery table holding the remote client of this service under `entity_id` (0: not listed at all).
+static void announce_client(struct tt_Context* node, uint32_t entity_id) {
+    node->discovery = &discovery;
+    forget_discovered_entities_from_source(node, REMOTE_NODE_ID);
+    if (entity_id != 0) {
+        upsert_discovered_entity(node, REMOTE_NODE_ID, ENDPOINT_ID, entity_id, tt_KIND_SERVICE_CLIENT, 0, 0, 0, 0,
+                                 "test_service", "client");
+    }
+}
+
+static void setup_with_discovery(struct tt_Context* node, struct tt_Service* service, struct tt_Server* server) {
+    setup_lifetime(node, service, server);
+    memset(&discovery, 0, sizeof(discovery));
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        discovery.entities[i].context_id = tt_CONTEXT_ID_INVALID;
+    }
+    announce_client(node, 100);
+}
+
+// The same with discovery attached: the client is still the one discovery knows (entity 100), so the duplicate is
+// answered from the cache. Killed by: the incarnation check firing when the entity is unchanged.
+static void test_a_duplicate_from_the_same_incarnation_is_served_from_the_cache(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_with_discovery(&node, &service, &server);
+    uint64_t t0 = test_mock_now;
+    ask(&node, REMOTE_NODE_ID, 0, 0, t0);
+    ask(&node, REMOTE_NODE_ID, 0, 0, t0 + MS);
+    EXPECT_EQ_U32(1, (uint32_t)callback_count);
+}
+
+// A client that restarted under the same context id (its seq_no back at 0) and has been discovered under its new
+// entity_id is a new client: its seq_no 0 runs the callback, whatever its predecessor's seq_no 0 left in the cache -
+// first transmission or retry. Killed by: the incarnation check at lookup removed (the predecessor's answer is sent).
+static void test_a_restarted_client_does_not_get_its_predecessors_answer(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_with_discovery(&node, &service, &server);
+    uint64_t t0 = test_mock_now;
+    ask(&node, REMOTE_NODE_ID, 0, 0, t0);
+    announce_client(&node, 200); // restarted: a new launch draws a new entity_id
+    // Only discovery changed (no announce went through process_announce here), so it is the lookup that decides.
+    ask(&node, REMOTE_NODE_ID, 0, 0, t0 + MS);
+    EXPECT_EQ_U32(2, (uint32_t)callback_count);
+    announce_client(&node, 300); // restarted again; its first send was lost, so the cache sees a retry first
+    ask(&node, REMOTE_NODE_ID, 0, 1, t0 + (2 * MS));
+    EXPECT_EQ_U32(3, (uint32_t)callback_count);
+}
+
+// The announce that shows a client gone or replaced drops its responses at once (they could only ever be answered
+// wrongly), live or expired. Killed by: the "replaced or gone" test in drop_cached_responses_from_source() removed.
+static void test_an_announce_without_the_client_drops_its_responses(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_with_discovery(&node, &service, &server);
+    ask(&node, REMOTE_NODE_ID, 0, 0, test_mock_now);
+    drop_cached_responses_from_source(&node, REMOTE_NODE_ID, false); // the same client re-announced: kept
+    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 0) != NULL);
+    announce_client(&node, 200);
+    drop_cached_responses_from_source(&node, REMOTE_NODE_ID, false);
+    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 0) == NULL); // replaced
+    ask(&node, REMOTE_NODE_ID, 1, 0, test_mock_now + MS);
+    announce_client(&node, 0);
+    drop_cached_responses_from_source(&node, REMOTE_NODE_ID, false);
+    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 1) == NULL); // gone
+}
+
+// Without discovery the server cannot tell incarnations apart, but a farewell (tt_Context_destroy()'s announce
+// listing nothing) still drops everything cached for that source, so a client that exits and is started again under
+// the same id is not answered from its predecessor's cache. Killed by: the hook in process_announce() removed.
+static void test_a_farewell_drops_the_sources_responses(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    uint64_t t0 = test_mock_now;
+    ask(&node, REMOTE_NODE_ID, 0, 0, t0);
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = REMOTE_NODE_ID;
+    uint8_t farewell[sizeof(struct tt_AnnounceHeader)];
+    memset(farewell, 0, sizeof(farewell)); // entity_count 0
+    EXPECT_TRUE(process_announce(&node, &header, farewell, 0, sizeof(farewell), 0, 0, 7, 0, 1));
+    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 0) == NULL);
+
+    ask(&node, REMOTE_NODE_ID, 0, 0, t0 + MS); // the next process under that id, its seq_no back at 0
     EXPECT_EQ_U32(2, (uint32_t)callback_count);
 }
 
@@ -661,7 +757,11 @@ int main(void) {
     test_a_retrying_client_keeps_its_response();
     test_a_slow_client_is_learnt_from_one_miss();
     test_one_miss_cannot_inflate_the_lifetime_without_bound();
-    test_a_first_transmission_is_never_served_from_the_cache();
+    test_a_duplicated_first_transmission_is_served_from_the_cache();
+    test_a_duplicate_from_the_same_incarnation_is_served_from_the_cache();
+    test_a_restarted_client_does_not_get_its_predecessors_answer();
+    test_an_announce_without_the_client_drops_its_responses();
+    test_a_farewell_drops_the_sources_responses();
     test_full_slots_evict_the_oldest_response();
 
     if (test_result() != 0) {
