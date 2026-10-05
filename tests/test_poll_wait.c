@@ -297,6 +297,59 @@ static void test_a_long_drain_keeps_its_stamps_fresh(void) {
     EXPECT_TRUE(node.traffic_last_seen[STAMP_SOURCE] >= last_arrived - (tt_RX_CLOCK_REFRESH * tt_MICROSECOND));
 }
 
+// An entry another thread schedules between the loop's run_due_entry() and poll_wait_io()'s re-read of the
+// heap, at a time no later than the poll's own clock reading - read on that thread before the poller read its
+// own, or simply in the past. Its tt_Context_schedule() saw no wait in progress (wait_until 0), so it woke
+// nobody; the re-read is the only place it can be seen. It is due, so the poll must not wait for it at all:
+// before 2026-10-05 the wait length was next - time, which is 0 ("no timeout": block until a datagram) when
+// it is due exactly now and negative - also no timeout on hal_linux.c, whose ppoll() takes only a positive
+// value - when it is due earlier; under a positive timeout an entry due earlier wrapped past the budget and
+// the wait ran to its end. Called the way node_poll() calls it, with what run_due_entry() reported (nothing
+// scheduled) and that iteration's clock reading; the entry goes in either way another thread can put it
+// there - through the inbox (the state lock was busy) or straight into the heap (it was free).
+#define RACE_TIME (40 * tt_MILLISECOND)
+static void check_late_entry(int64_t due_offset, int64_t timeout, bool through_inbox) {
+    struct tt_Context node;
+    setup(&node);
+    test_mock_receive_advances_clock = false;
+    test_mock_now = RACE_TIME;
+    uint64_t due = (uint64_t)((int64_t)RACE_TIME + due_offset);
+    if (through_inbox) {
+        EXPECT_TRUE(sched_inbox_push(&node, due, count_entry, NULL));
+    } else {
+        sched_heap_insert(&node, due, count_entry, NULL);
+    }
+
+    tt_ret_t result = tt_RET_OK;
+    bool ended = poll_wait_io(&node, false, 0, RACE_TIME, timeout, timeout < 0, false, &result);
+
+    if (due_offset <= 0) {
+        // Due: back to the loop to run it, with no wait at all and no wait left published.
+        EXPECT_TRUE(!ended);
+        EXPECT_EQ_INT(0, test_mock_receive_call_count);
+    } else {
+        // The control: an entry not yet due is waited for, exactly - the fixture does reach tt_receive() and
+        // the timeout it hands over is the one read here.
+        EXPECT_EQ_INT(1, test_mock_receive_call_count);
+        EXPECT_EQ_U64((uint64_t)due_offset, (uint64_t)test_mock_receive_last_timeout);
+    }
+    EXPECT_EQ_U64(0, wait_until_load(&node));
+    EXPECT_EQ_INT(0, entry_runs);          // poll_wait_io() runs nothing itself
+    EXPECT_EQ_INT(1, node.scheduler_tail); // the entry is in the heap for the loop
+}
+
+static void test_an_entry_due_by_the_wait_decision_is_not_waited_for(void) {
+    const int64_t budget = (int64_t)tt_SECOND;
+    for (int inbox = 0; inbox < 2; inbox++) {
+        check_late_entry(0, -1, inbox != 0);                            // due now: was "no timeout"
+        check_late_entry(-(int64_t)tt_MICROSECOND, -1, inbox != 0);     // overdue: was negative
+        check_late_entry(0, budget, inbox != 0);                        // was 0 inside a budget
+        check_late_entry(-(int64_t)tt_MICROSECOND, budget, inbox != 0); // was the whole budget
+        check_late_entry((int64_t)tt_MILLISECOND, -1, inbox != 0);      // control
+        check_late_entry((int64_t)tt_MILLISECOND, budget, inbox != 0);  // control
+    }
+}
+
 int main(void) {
     test_negative_poll_waits_until_the_next_entry();
     test_negative_poll_with_nothing_scheduled_blocks_indefinitely();
@@ -310,6 +363,7 @@ int main(void) {
     test_flush_arms_once_and_does_not_tick_when_idle();
     test_a_datagram_after_a_long_wait_is_stamped_when_it_arrived();
     test_a_long_drain_keeps_its_stamps_fresh();
+    test_an_entry_due_by_the_wait_decision_is_not_waited_for();
 
     if (test_result() != 0) {
         return 1;

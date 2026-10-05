@@ -12000,6 +12000,13 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
     const struct tt_TCB* head = peek_scheduler(node);
     has_next = head != NULL;
     next = has_next ? head->time : next;
+    // An entry another thread scheduled since the loop's run_due_entry(), at a time no later than this
+    // iteration's clock reading, is due: it saw no wait to wake, and the wait length below would be 0 or
+    // negative - no timeout at all - or, under a budget, wrap past it. Go round the loop and run it.
+    if (has_next && next <= time) {
+        state_unlock(node);
+        return false;
+    }
     uint64_t until = has_next ? next : UINT64_MAX;
     if (!until_next_event && time + (uint64_t)timeout < until) {
         until = time + (uint64_t)timeout;
