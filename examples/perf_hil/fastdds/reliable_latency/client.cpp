@@ -46,6 +46,7 @@
 
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../../tickle/common/CpuFreq.h"
+#include "../../tickle/common/RttQuantiles.h"
 #include "../harness_common.hpp"
 #include "Bench.h"
 #include "BenchPubSubTypes.h"
@@ -67,6 +68,7 @@ namespace {
     // Sampled AFTER the round trip is recorded, never between send and receive, so it cannot perturb what
     // it measures. Identical in all three frameworks' clients, per the fairness rule.
     struct BenchCpuFreq g_rtt_freq;
+    struct BenchRtt g_rtt;
 
     struct rtt_stats {
         uint64_t transmitted = 0;
@@ -104,6 +106,7 @@ namespace {
             stats.max_ms = rtt_ms;
         }
         stats.sum_ms += rtt_ms;
+        BenchRtt_add(&g_rtt, rtt_ms);
         BenchCpuFreq_sample(&g_rtt_freq, harness::now_ns(), 0);
         if (new_max) {
             stats.cpu_mhz_at_max = BenchCpuFreq_last_mhz(&g_rtt_freq);
@@ -165,11 +168,12 @@ namespace {
         // same way.
         printf("RESULT: framework=fastdds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.0f "
                "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
-               "cpu_mhz_at_rtt_max=%.1f transport_profile=%s %s\n",
+               "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u transport_profile=%s %s\n",
                static_cast<unsigned long>(stats.transmitted), static_cast<unsigned long>(stats.received), loss_pct,
                stats.min_ms, avg, stats.max_ms, BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq),
-               BenchCpuFreq_max_mhz(&g_rtt_freq), stats.cpu_mhz_at_max, harness::transport_profile(),
-               harness::bench_fields(BENCH_ROLE_SENDER, stats.transmitted));
+               BenchCpuFreq_max_mhz(&g_rtt_freq), stats.cpu_mhz_at_max, BenchRtt_quantile(&g_rtt, BENCH_RTT_P50),
+               BenchRtt_quantile(&g_rtt, BENCH_RTT_P99), static_cast<unsigned>(g_rtt.count),
+               harness::transport_profile(), harness::bench_fields(BENCH_ROLE_SENDER, stats.transmitted));
     }
 
 } // namespace

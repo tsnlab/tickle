@@ -97,12 +97,17 @@ variant_args() {
         *) echo "" ;;
     esac
 }
+# rmw_tickle is built the way the vendor rmws it is compared with were (fairness audit, 2026-10-05): the jazzy debs
+# export their CMake targets as "-none" - CMAKE_BUILD_TYPE None, Debian's -O2, no NDEBUG - while this built rmw_tickle
+# as Release, -O3 -DNDEBUG. -g -O2 is the level they share; the packages' hardening and LTO flags are not repeated,
+# since stripped binaries do not say which the build farm used.
+RMW_TICKLE_BUILD="-DCMAKE_BUILD_TYPE=None '-DCMAKE_C_FLAGS=-g -O2' '-DCMAKE_CXX_FLAGS=-g -O2'"
 VBUILD=""
 for v in $TICKLE_VARIANTS; do
     [ "$v" = default ] && continue
     VBUILD="$VBUILD
 colcon build --base-paths \$HOME/tickle --build-base \$HOME/rmw_variants/$v/build --install-base \$HOME/rmw_variants/$v/install \
-  --packages-select rmw_tickle --cmake-args -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release $(variant_args "$v") > /tmp/rmwx_build_$v.log 2>&1 \
+  --packages-select rmw_tickle --cmake-args -DBUILD_SHARED_LIBS=ON $RMW_TICKLE_BUILD $(variant_args "$v") > /tmp/rmwx_build_$v.log 2>&1 \
   || { echo \"VARIANT $v BUILD FAILED on \$(hostname)\"; tail -20 /tmp/rmwx_build_$v.log; exit 1; }
 test -f \$HOME/rmw_variants/$v/install/rmw_tickle/lib/librmw_tickle.so"
 done
@@ -173,7 +178,7 @@ cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdq
 export PYTHONPATH=\$HOME/tickle/tools/typesupport\${PYTHONPATH:+:\$PYTHONPATH}
 set +u; source /opt/ros/jazzy/setup.bash; set -u
 colcon build --packages-select rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_tickle \
-  --cmake-args -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release > /tmp/rmwx_build1.log 2>&1 \
+  --cmake-args -DBUILD_SHARED_LIBS=ON $RMW_TICKLE_BUILD > /tmp/rmwx_build1.log 2>&1 \
   || { echo \"STAGE 1 BUILD FAILED on \$(hostname)\"; tail -25 /tmp/rmwx_build1.log; exit 1; }
 set +u; source \$HOME/tickle/install/setup.bash; set -u
 colcon build --base-paths \$HOME/rmw_perf_ws --build-base \$HOME/rmw_perf_ws/build --install-base \$HOME/rmw_perf_ws/install \

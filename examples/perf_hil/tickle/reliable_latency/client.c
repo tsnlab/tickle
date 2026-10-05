@@ -27,6 +27,7 @@
 #include "Bench.h"
 #include "BenchStats.h" // shared instrumentation - see its own header
 #include "CpuFreq.h"
+#include "RttQuantiles.h"
 
 static struct BenchStats g_bench_stats;
 static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
@@ -61,6 +62,17 @@ static uint64_t transmitted = 0, received = 0;
 static double rtt_min_ms = -1.0, rtt_max_ms = 0.0, rtt_sum_ms = 0.0;
 static uint32_t seq = 0;
 static struct tt_Publisher* g_pub;
+static struct tt_Context* g_node;
+// The ping this client is waiting on (0: none). Paced as the CycloneDDS and FastDDS clients are (fairness audit,
+// 2026-10-05): the next ping goes one interval after the reply, or after a 500 ms wait with no reply, so every
+// framework idles exactly one interval between a reply and the next ping. This client used to send on a fixed period
+// from the previous send, idling one round trip less, and how long a process idles moves its next round trip (the p4
+// gap, RESULTS S10). A reply to an older ping is not counted, as theirs discard a stale one.
+static uint32_t awaiting = 0;
+static uint64_t awaiting_until_ns = 0; // when the ping being waited on is given up
+static const uint64_t response_wait_ns = 500ULL * 1000ULL * 1000ULL;
+
+static void ping(struct tt_Context* node, uint64_t time, void* param);
 
 // CPU frequency around each round trip (2026-09-25). A tail excursion after the scheduler-driven poll
 // has two platform explanations besides the change itself: an ordinary loss recovery, or the ondemand
@@ -69,13 +81,19 @@ static struct tt_Publisher* g_pub;
 // Sampled AFTER the round trip is recorded, never between send and receive, so it cannot perturb what
 // it measures. Identical in all three frameworks' clients, per the fairness rule.
 static struct BenchCpuFreq g_rtt_freq;
+static struct BenchRtt g_rtt;
 static double cpu_mhz_at_rtt_max = -1.0;
 
 static void pong_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
     (void)sub;
     (void)timestamp;
     (void)seq_no;
-    double rtt_ms = (double)(tt_get_ns() - data->send_ns) / ns_per_ms;
+    if (awaiting == 0 || data->seq != awaiting) {
+        return; // a reply to a ping already given up on
+    }
+    awaiting = 0;
+    uint64_t now = tt_get_ns();
+    double rtt_ms = (double)(now - data->send_ns) / ns_per_ms;
     received++;
     if (rtt_min_ms < 0.0 || rtt_ms < rtt_min_ms) {
         rtt_min_ms = rtt_ms;
@@ -85,10 +103,22 @@ static void pong_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
         rtt_max_ms = rtt_ms;
     }
     rtt_sum_ms += rtt_ms;
+    BenchRtt_add(&g_rtt, rtt_ms);
     BenchCpuFreq_sample(&g_rtt_freq, tt_get_ns(), 0);
     if (new_max) {
         cpu_mhz_at_rtt_max = BenchCpuFreq_last_mhz(&g_rtt_freq);
     }
+    tt_Context_schedule(g_node, now + (uint64_t)(interval_s * (double)tt_SECOND), ping, NULL);
+}
+
+// No reply within the wait: give this ping up and send the next one an interval later, as the DDS clients do.
+static void ping_timeout(struct tt_Context* node, uint64_t time, void* param) {
+    (void)param;
+    if (awaiting == 0 || time < awaiting_until_ns) {
+        return; // answered in time, or this is an earlier ping's timer: the current ping is not due yet
+    }
+    awaiting = 0;
+    tt_Context_schedule(node, time + (uint64_t)(interval_s * (double)tt_SECOND), ping, NULL);
 }
 
 static void ping(struct tt_Context* node, uint64_t time, void* param) {
@@ -101,7 +131,9 @@ static void ping(struct tt_Context* node, uint64_t time, void* param) {
     if (ret == tt_RET_OK) {
         transmitted++;
     }
-    tt_Context_schedule(node, time + (uint64_t)(interval_s * (double)tt_SECOND), ping, NULL);
+    awaiting = msg.seq;
+    awaiting_until_ns = time + response_wait_ns;
+    tt_Context_schedule(node, awaiting_until_ns, ping_timeout, NULL);
 }
 
 static void stop(struct tt_Context* node, uint64_t time, void* param) {
@@ -165,6 +197,7 @@ int main(int argc, char** argv) {
     pub.reliable_cache = &pub_cache;
     pub.reliable = true;
     g_pub = &pub;
+    g_node = &node;
 
     struct tt_Subscriber sub;
     ret = tt_Context_create_subscriber(&node, &sub, &BenchTopic, "pong", (tt_SUBSCRIBER_CALLBACK)pong_callback);
@@ -223,11 +256,13 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=tickle scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.0f "
            "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
-           "cpu_mhz_at_rtt_max=%.1f retransmitted=%u gap_abandoned=%u doorbells_sent=%llu bells_rung=%llu sleeps=%lu "
+           "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u retransmitted=%u gap_abandoned=%u "
+           "doorbells_sent=%llu bells_rung=%llu sleeps=%lu "
            "%s\n",
            (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms,
            BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq), BenchCpuFreq_max_mhz(&g_rtt_freq),
-           cpu_mhz_at_rtt_max, g_pub->retransmitted, sub.gap_abandoned,
+           cpu_mhz_at_rtt_max, BenchRtt_quantile(&g_rtt, BENCH_RTT_P50), BenchRtt_quantile(&g_rtt, BENCH_RTT_P99),
+           (unsigned)g_rtt.count, g_pub->retransmitted, sub.gap_abandoned,
            // Wakes per round trip: doorbells this side rang into the peer's sleeps, and how often this side slept.
            // A sample that crosses as two datagrams can cost two of each if the reader drains the first and sleeps
            // again before the second lands, and that is what these exist to show (S10, p4 against p3).

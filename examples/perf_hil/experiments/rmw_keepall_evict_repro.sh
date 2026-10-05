@@ -31,7 +31,7 @@
 #       it had: the Heartbeat's first_available_seq_no / the "gone" answer is wrong, not the cache admission.
 #
 # Usage: rmw_keepall_evict_repro.sh            (builds, then runs ARMS)
-#   env: W=/tmp/keepall_evict  PUB_CPUS=2 (pin the publisher)  SUB_CPUS=4 (pin the subscriber: a reader slower than the writer)  RCVBUF=212992 (inst only: the rig Pis' socket buffer)  NOREPLY=1 (inst: subscriber sends no announce reply)  DROP_OWN=1 (inst: publisher's well-known socket drops its own address, fix option (c) prototype)  ACK_CLAIM=1 (inst: fix option (a) prototype)  SKIP_BUILD=1  REBUILD=inst  QUICK=1  BUILDS="plain inst"  DUR=20  REPS=2
+#   env: W=/tmp/keepall_evict  PUB_CPUS=2 (pin the publisher)  SUB_CPUS=4,5 (pin the subscriber - never to ONE cpu: perf_test's SpinLock then hangs it)  RATE=1000 (paced publisher)  RCVBUF=212992 (inst only: the rig Pis' socket buffer)  NOREPLY=1 (inst: subscriber sends no announce reply)  DROP_OWN=1 (inst: publisher's well-known socket drops its own address, fix option (c) prototype)  ACK_CLAIM=1 (inst: fix option (a) prototype)  SKIP_BUILD=1  REBUILD=inst  QUICK=1  BUILDS="plain inst"  DUR=20  REPS=2
 set -o pipefail
 REPO=/home/semih/tickle
 W="${W:-/tmp/keepall_evict}"
@@ -152,7 +152,7 @@ run_one() { # build keep(ka|kl) topic loss rep
     local sp=$!
     sleep 2
     sudo -n ip netns exec "$NS_P" env W="$W" OUT="$OUT" BCAST="$BCAST" HOME="$HOME" KEEPALL_DBG_RCVBUF="${RCVBUF:-}" KEEPALL_DBG_DROP_SRC="${DROP_OWN:+$NET.1}" KEEPALL_DBG_ACK_CLAIM="${ACK_CLAIM:-}" TICKLE_NODE_ID=101 CPUS="${PUB_CPUS:-}" \
-        "$LAUNCH" "$b" "${stem}_pub" "${common[@]}" "${hist[@]}" -r 0 -p 1 -s 0 --expected_num_subs 1 \
+        "$LAUNCH" "$b" "${stem}_pub" "${common[@]}" "${hist[@]}" -r "${RATE:-0}" -p 1 -s 0 --expected_num_subs 1 \
         --max_runtime "$DUR" "${rosargs[@]}"
     wait "$sp"
     echo "RUN $stem want=$W/$b/install/rmw_tickle/lib/librmw_tickle.so tc=[$(cat "$OUT/${stem}_tc.txt")]" >> "$OUT/index.txt"

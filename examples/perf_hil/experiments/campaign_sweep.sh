@@ -369,7 +369,13 @@ for rep in $(seq 1 "$REPS"); do
             tc_apply "$net"; current_net="$net"
             say "  [tc: $(tc_describe "$net")]"
         fi
-        for fw in $FWS; do
+        # The frameworks' order rotates by one every cell and every repetition (fairness audit, 2026-10-05): it was
+        # always tickle, cyclonedds, fastdds, so whichever ran first in a cell always ran on a rig that had idled
+        # through the tc change, and the last always followed the other two. Rotating spreads both over all three.
+        read -ra fws <<<"$FWS"
+        shift_by=$(((rep - 1 + idx - 1) % ${#fws[@]}))
+        for k in "${!fws[@]}"; do
+            fw=${fws[$(((k + shift_by) % ${#fws[@]}))]}
             cell "$num" "$shape" "$payload" "$qos" "$net" "$scenario" "$extra" "$fw" "$rep"
         done
     done

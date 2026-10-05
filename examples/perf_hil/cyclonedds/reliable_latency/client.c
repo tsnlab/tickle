@@ -25,6 +25,7 @@
 
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../../tickle/common/CpuFreq.h"
+#include "../../tickle/common/RttQuantiles.h"
 #include "../common.h"
 #include "Bench.h"
 
@@ -50,6 +51,7 @@ static uint64_t now_ns(void) {
 // Sampled AFTER the round trip is recorded, never between send and receive, so it cannot perturb what
 // it measures. Identical in all three frameworks' clients, per the fairness rule.
 static struct BenchCpuFreq g_rtt_freq;
+static struct BenchRtt g_rtt;
 static double cpu_mhz_at_rtt_max = -1.0;
 
 int main(int argc, char** argv) {
@@ -142,6 +144,7 @@ int main(int argc, char** argv) {
                 }
                 rtt_sum_ms += rtt_ms;
                 rtt_sum_sq_ms += rtt_ms * rtt_ms;
+                BenchRtt_add(&g_rtt, rtt_ms);
                 BenchCpuFreq_sample(&g_rtt_freq, now_ns(), 0);
                 if (new_max) {
                     cpu_mhz_at_rtt_max = BenchCpuFreq_last_mhz(&g_rtt_freq);
@@ -166,10 +169,11 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.0f "
            "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
-           "cpu_mhz_at_rtt_max=%.1f %s\n",
+           "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u %s\n",
            (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms,
            BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq), BenchCpuFreq_max_mhz(&g_rtt_freq),
-           cpu_mhz_at_rtt_max,
+           cpu_mhz_at_rtt_max, BenchRtt_quantile(&g_rtt, BENCH_RTT_P50), BenchRtt_quantile(&g_rtt, BENCH_RTT_P99),
+           (unsigned)g_rtt.count,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

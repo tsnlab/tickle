@@ -87,6 +87,58 @@ sub("    uint32_t skipped = first_available_seq_no - proxy->ack_seq_no;\n",
     "    }\n")
 
 
+sub('#include "log.h"\n', '#include "log.h"\n#define KTL_US() ((unsigned long)(tt_get_ns() / 1000U)) /* KEEPALL_DBG */\n')
+# Timeline (2026-10-05 evening): microsecond stamps (tt_get_ns() is CLOCK_REALTIME, shared across the netns) for
+# every step between a KEEP_ALL writer's creation and its first match. "KTL <event>" lines.
+sub("static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count);\n\n",
+    "static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer* peers, uint8_t peer_count);\n\n"
+    "static void ktl_lock(struct tt_Context* node, const char* what) {\n"
+    "    fprintf(stderr, \"KTL %s node=%u t=%lu rx_self=%lu rx_data=%lu tx=%lu lock_acq=%lu contended=%lu wait_us=%lu poller_contended=%lu poller_wait_us=%lu\\n\",\n"
+    "            what, (unsigned)node->id, KTL_US(), (unsigned long)node->rx_self_sent, (unsigned long)node->rx_via_data_datagrams,\n"
+    "            (unsigned long)node->tx_datagrams, (unsigned long)node->state_lock_stats.acquisitions,\n"
+    "            (unsigned long)node->state_lock_stats.contended, (unsigned long)(node->state_lock_stats.wait_ns / 1000U),\n"
+    "            (unsigned long)node->state_lock_stats.poller_contended,\n"
+    "            (unsigned long)(node->state_lock_stats.poller_wait_ns / 1000U));\n"
+    "}\n")
+sub("static void announce_soon(struct tt_Context* node, uint64_t time, void* param) {\n    UNUSED(param);\n",
+    "static void announce_soon(struct tt_Context* node, uint64_t time, void* param) {\n    UNUSED(param);\n"
+    "    { static int n; if (++n <= 10) { fprintf(stderr, \"KTL announce_soon_run node=%u t=%lu due_late_us=%ld\\n\", (unsigned)node->id,\n"
+    "      KTL_US(), (long)((int64_t)(tt_get_ns() - (node->endpoints_changed_ns + tt_CONTEXT_TX_INTERVAL)) / 1000)); } } /* KEEPALL_DBG */\n")
+sub("static void arm_announce_soon(struct tt_Context* node) {\n",
+    "static void arm_announce_soon(struct tt_Context* node) {\n"
+    "    { static int n; if (++n <= 20) { fprintf(stderr, \"KTL announce_armed node=%u t=%lu\\n\", (unsigned)node->id, KTL_US()); } } /* KEEPALL_DBG */\n")
+sub("    // Whatever was pending (including any batched announce - see node_update()/node_flush()) just\n",
+    "    if (node->tx_has_pending_update) { static int n; if (++n <= 10) { /* KEEPALL_DBG */\n"
+    "        fprintf(stderr, \"KTL announce_on_wire node=%u t=%lu len=%u peers=%u\\n\", (unsigned)node->id, KTL_US(), len, (unsigned)peer_count); } }\n"
+    "    // Whatever was pending (including any batched announce - see node_update()/node_flush()) just\n")
+sub("    if (first_contact && proxy->keep_all == tt_WRITER_KEEP_ALL_YES) {\n",
+    "    if (first_contact) { fprintf(stderr, \"KTL reader_first_data node=%u from=%u seq=%u keep_all=%d t=%lu\\n\", (unsigned)node->id,\n"
+    "        (unsigned)proxy->context_id, seq_no, (int)proxy->keep_all, KTL_US()); } /* KEEPALL_DBG */\n"
+    "    if (first_contact && proxy->keep_all == tt_WRITER_KEEP_ALL_YES) {\n")
+sub("                if (learned_keep_all && sub->reliable && proxy->sender_ip != 0) {\n",
+    "                if (learned_keep_all) { fprintf(stderr, \"KTL reader_learned_keep_all node=%u t=%lu has_addr=%d\\n\",\n"
+    "                    (unsigned)node->id, KTL_US(), (int)(proxy->sender_ip != 0)); } /* KEEPALL_DBG */\n"
+    "                if (learned_keep_all && sub->reliable && proxy->sender_ip != 0) {\n")
+sub("static void send_acknack_range(struct tt_Context* node, struct tt_WriterProxy* proxy, int low_bit, int high_bit) {\n",
+    "static void send_acknack_range(struct tt_Context* node, struct tt_WriterProxy* proxy, int low_bit, int high_bit) {\n"
+    "    { static int n; if (++n <= 15) { fprintf(stderr, \"KTL reader_acknack_send node=%u t=%lu ack=%u low=%d high=%d\\n\",\n"
+    "      (unsigned)node->id, KTL_US(), proxy->ack_seq_no, low_bit, high_bit); } } /* KEEPALL_DBG */\n")
+sub("static bool process_acknack(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,\n"
+    "                            uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {\n",
+    "static bool process_acknack(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,\n"
+    "                            uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {\n"
+    "    { static int n; if (++n <= 5) { fprintf(stderr, \"KTL writer_acknack_processed node=%u from=%u t=%lu\\n\",\n"
+    "      (unsigned)node->id, (unsigned)header->source, KTL_US()); ktl_lock(node, \"lock_at_acknack\"); } } /* KEEPALL_DBG */\n")
+sub("    TT_LOG_INFO(\"Publisher peer claimed from its ACKNACK: node %u entity %08x for endpoint %u (its announce has not \"\n",
+    "    fprintf(stderr, \"KTL writer_claim node=%u t=%lu pub_seq=%u\\n\", (unsigned)node->id, KTL_US(), pub->seq_no); /* KEEPALL_DBG */\n"
+    "    ktl_lock(node, \"lock_at_claim\");\n"
+    "    TT_LOG_INFO(\"Publisher peer claimed from its ACKNACK: node %u entity %08x for endpoint %u (its announce has not \"\n")
+sub("static bool keep_all_writable(const struct tt_Publisher* pub) {\n",
+    "static bool keep_all_writable(const struct tt_Publisher* pub) {\n"
+    "    if (pub->keep_all && pub->seq_no == 0) { static int n; if (++n == 1) { /* KEEPALL_DBG */\n"
+    "        fprintf(stderr, \"KTL writer_first_publish node=%u t=%lu\\n\", (unsigned)pub->node->id, KTL_US());\n"
+    "        ktl_lock(pub->node, \"lock_at_first_publish\"); } }\n")
+
 # Which loop evicted: tag each eviction call site.
 src_count = src.count("        RSTAT_INC(evicted_by_count);\n        reliable_cache_evict_oldest(cache, depth);\n")
 if src_count != 2:
@@ -105,7 +157,7 @@ sub("static void reprocess_known_announces(struct tt_Context* node) {\n",
     "    if (++g_dbg_reproc <= 20) { /* KEEPALL_DBG */\n"
     "        int seen = 0;\n"
     "        for (int k = 0; k < tt_MAX_CONTEXT_IDS; k++) { seen += node->update_seen[k] ? 1 : 0; }\n"
-    "        fprintf(stderr, \"KEEPALL_DBG reprocess node=%u seen_sources=%d t=%lu\\n\", (unsigned)node->id, seen, (unsigned long)(tt_get_ns() / 1000000U));\n"
+    "        fprintf(stderr, \"KEEPALL_DBG reprocess node=%u seen_sources=%d t=%lu\\n\", (unsigned)node->id, seen, KTL_US());\n"
     "    }\n")
 
 sub("    node->update_last_seen[source] = tt_get_ns();\n    if (discovery_generation_applied(node, source, generation)) {\n",
@@ -120,7 +172,7 @@ sub("    node->update_last_seen[source] = tt_get_ns();\n    if (discovery_genera
 sub("    bool requested_manual = (ctx->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;\n",
     "    bool requested_manual = (ctx->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;\n"
     "    if (++g_dbg_reg <= 40) { /* KEEPALL_DBG */\n"
-    "        fprintf(stderr, \"KEEPALL_DBG register_at pub_seq=%u t=%lu\\n\", pub->seq_no, (unsigned long)(tt_get_ns() / 1000000U));\n"
+    "        fprintf(stderr, \"KTL writer_register node=%u pub_seq=%u t=%lu\\n\", (unsigned)node->id, pub->seq_no, KTL_US()); ktl_lock(node, \"lock_at_register\");\n"
     "        fprintf(stderr, \"KEEPALL_DBG register pub_ep=%u from=%u entity=%08x qos=%x req_rel=%d pub_rel=%d req_dur=%d \"\n"
     "                \"pub_dur=%d req_dl=%lu pub_dl=%lu req_manual=%d pub_manual=%d req_lease=%lu pub_lease=%lu tw=%u\\n\",\n"
     "                endpoint->id, (unsigned)ctx->header->source, ctx->entity_id, (unsigned)ctx->qos,\n"

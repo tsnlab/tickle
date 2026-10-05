@@ -77,6 +77,10 @@ say "=== rmw KEEP_ALL on the rig, $(date -Is): head $HEAD_SHA, ack $ACK_SHA, pre
     "topics: $TOPICS, loss: $LOSSES, arms: $ARMS, out $OUT ==="
 
 # ---- build: head into ~/tickle/install (typesupport too), pre and ack as librmw_tickle.so-only variants ----------
+# rmw_tickle is built the way the vendor rmws it is compared with were (fairness audit, 2026-10-05): the jazzy debs
+# export their CMake targets as "-none" - CMAKE_BUILD_TYPE None, Debian's -O2, no NDEBUG - while this built rmw_tickle
+# as Release, -O3 -DNDEBUG. -g -O2 is the level they share. perf_test is one binary for every arm and stays Release.
+RMW_TICKLE_BUILD="-DCMAKE_BUILD_TYPE=None '-DCMAKE_C_FLAGS=-g -O2' '-DCMAKE_CXX_FLAGS=-g -O2'"
 if [ "${SKIP_BUILD:-0}" != 1 ]; then
 say "--- building on both Pis ---"
 pids=()
@@ -86,7 +90,7 @@ cd ~/tickle && git fetch -q origin && git reset -q --hard $HEAD_SHA && git clean
 export PYTHONPATH=\$HOME/tickle/tools/typesupport\${PYTHONPATH:+:\$PYTHONPATH}
 set +u; source /opt/ros/jazzy/setup.bash; set -u
 colcon build --packages-select rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_tickle \
-  --cmake-args -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release > /tmp/ka_build1.log 2>&1 \
+  --cmake-args -DBUILD_SHARED_LIBS=ON $RMW_TICKLE_BUILD > /tmp/ka_build1.log 2>&1 \
   || { echo \"STAGE 1 FAILED on \$(hostname)\"; tail -25 /tmp/ka_build1.log; exit 1; }
 set +u; source \$HOME/tickle/install/setup.bash; set -u
 # The interface packages' TickLE bindings are regenerated with this generator: perf_test's were from 2026-09-20.
@@ -100,7 +104,7 @@ for v in pre:$PRE_SHA ack:$ACK_SHA; do
   git worktree add -q --detach \$HOME/rmw_variants/\$name/src \$sha
   colcon build --base-paths \$HOME/rmw_variants/\$name/src --build-base \$HOME/rmw_variants/\$name/build \
     --install-base \$HOME/rmw_variants/\$name/install --packages-select rmw_tickle \
-    --cmake-args -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release > /tmp/ka_build_\$name.log 2>&1 \
+    --cmake-args -DBUILD_SHARED_LIBS=ON $RMW_TICKLE_BUILD > /tmp/ka_build_\$name.log 2>&1 \
     || { echo \"VARIANT \$name FAILED on \$(hostname)\"; tail -25 /tmp/ka_build_\$name.log; exit 1; }
 done
 echo \"built on \$(hostname): head \$(git rev-parse --short HEAD), pre \$(git -C \$HOME/rmw_variants/pre/src rev-parse --short HEAD), ack \$(git -C \$HOME/rmw_variants/ack/src rev-parse --short HEAD)\"
