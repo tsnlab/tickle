@@ -154,7 +154,7 @@ bool rmw_tickle_get_service_callbacks(const rosidl_service_type_support_t* type_
 // rmw_create_publisher()/_subscription()/_client()/_service() each pass their own kind so rmw_
 // tickle_validate_qos_profile() can tell a topic (Publisher/Subscriber - no retry mechanism of any
 // kind) from a service/client (TickLE's own tt_Client_call() already retries up to tt_CALL_RETRY_
-// COUNT times, tt_CALL_RETRY_INTERVAL apart) - see that function's own comment on RELIABILITY for
+// COUNT times, at srtt-relative intervals) - see that function's own comment on RELIABILITY for
 // why the distinction matters.
 typedef enum rmw_tickle_entity_kind_t {
     RMW_TICKLE_ENTITY_PUBLISHER,

@@ -23,11 +23,16 @@
 // cache_buf[][]/clean_config[]/clean_scheduled[] slots directly.
 #include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
 
+// A server always has its service (tt_Context_create_server() refuses one without); the cache's lifetime reads the
+// service's call_retry_* to know its clients' retry schedule. Zeroed: the default schedule.
+static struct tt_Service default_service;
+
 static void init_node_and_server(struct tt_Context* node, struct tt_Server* server) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     memset(server, 0, sizeof(*server));
     server->node = node;
+    server->service = &default_service;
 }
 
 // Writes a fake, already-encoded CallResponse submessage straight into node->tx_buffer, the

@@ -150,7 +150,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     // timeout is the application's business (rclcpp's future). And the server always answers through
     // tt_Server_send_response() - deferred until the ROS executor has taken the request and run the
     // callback - so the answer can take as long as that callback does. Core's defaults (TickLE's own
-    // synchronous services: a few retries ~1.5 x latency apart, tens of milliseconds) would abandon
+    // synchronous services: a few retries from srtt, each twice the last - 15 round trips or so) would abandon
     // any call slower than that, and the late response would be ignored.
     //
     // So a call lives as long as the server keeps it: retried every RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS

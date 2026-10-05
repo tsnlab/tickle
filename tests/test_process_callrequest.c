@@ -484,6 +484,167 @@ static void test_many_answered_calls_do_not_fill_the_scheduler(void) {
     EXPECT_EQ_U32(MANY_CALLS, (uint32_t)test_mock_send_call_count);
 }
 
+// --- How long an answered response is kept (ROADMAP "Now" 5a, 2026-10-05) ---------------------------------------
+// It used to be a fixed tt_SERVER_CACHE_TIMEOUT (100 ms), fitted to the rig and already shorter than the 250 ms the
+// client's own retry interval could reach. The server cannot see the client's srtt, so it keeps a response for the
+// longest of what it can know: the client's retry schedule before any answer (the seed, from the shared defaults or
+// this service's explicit call_retry_*), and a multiple of the gaps it has actually seen between a response going
+// out and the same client asking again. Each pin names the mutant it kills.
+
+#define US 1000ULL
+#define MS 1000000ULL
+
+// Runs every scheduler entry due by `to`, on the mock clock.
+static void advance_to(struct tt_Context* node, uint64_t to) {
+    for (;;) {
+        struct tt_TCB* due = peek_scheduler(node);
+        if (due == NULL || due->time > to) {
+            break;
+        }
+        struct tt_TCB fire = *due;
+        pop_scheduler(node);
+        test_mock_now = fire.time;
+        fire.function(node, fire.time, fire.param);
+    }
+    test_mock_now = to;
+}
+
+static void ask(struct tt_Context* node, uint8_t source, uint16_t seq_no, uint8_t retry, uint64_t at) {
+    advance_to(node, at);
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = source;
+    uint32_t tail = write_callrequest(node, seq_no, retry);
+    EXPECT_TRUE(process_callrequest(node, &header, node->rx_buffer, 0, tail, 0, 0));
+}
+
+static void setup_lifetime(struct tt_Context* node, struct tt_Service* service, struct tt_Server* server) {
+    test_mock_reset();
+    test_mock_now = 1000 * MS;
+    callback_count = 0;
+    stub_return_code = 0;
+    init_node_service_server(node, service, server);
+}
+
+// Before it has seen any client retry, the server keeps a response for the default client's whole seed schedule:
+// 5 + 10 + 20 + 40 ms, the waits of a client with no answer yet. A retry at the end of it is served from the cache.
+static void test_the_seed_lifetime_is_the_default_clients_schedule(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    uint64_t window = ((2ULL << tt_CALL_RETRY_COUNT) - 1) * tt_CALL_RETRY_INTERVAL;
+    EXPECT_EQ_U64(window, server_cache_lifetime(&server));
+    uint64_t t0 = test_mock_now;
+    ask(&node, REMOTE_NODE_ID, 1, 0, t0);
+    ask(&node, REMOTE_NODE_ID, 1, tt_CALL_RETRY_COUNT, t0 + window - US); // retries 1..count-1 were lost
+    EXPECT_EQ_U32(1, (uint32_t)callback_count);
+}
+
+// A service with an explicit call_retry_interval tells the server the client's schedule exactly: (count + 1) waits
+// of that interval - the formula tt_SERVER_CACHE_TIMEOUT's own comment gave and nobody computed. Killed by: the
+// fixed 100 ms (a retry at 150 ms re-runs the callback), and by the seed ignoring the explicit interval (75 ms).
+static void test_an_explicit_interval_sets_the_lifetime(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    service.call_retry_interval = 50 * MS;
+    EXPECT_EQ_U64(4ULL * 50 * MS, server_cache_lifetime(&server));
+    uint64_t t0 = test_mock_now;
+    ask(&node, REMOTE_NODE_ID, 1, 0, t0);
+    ask(&node, REMOTE_NODE_ID, 1, 3, t0 + (150 * MS)); // only the third retry gets through
+    EXPECT_EQ_U32(1, (uint32_t)callback_count);
+}
+
+// A client whose retries are 60, 120 and 240 ms apart (60 ms first interval, doubled per retry) finds its response
+// every time: each hit re-arms the entry, for a multiple of the gap it just measured. Killed by: the fixed 100 ms
+// (the 180 ms retry misses), the re-arm removed (the entry dies at 75 ms), and the re-arm without the measured gap
+// (it dies 75 ms after the first hit, before the second).
+static void test_a_retrying_client_keeps_its_response(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    uint64_t t0 = test_mock_now;
+    ask(&node, REMOTE_NODE_ID, 1, 0, t0);
+    ask(&node, REMOTE_NODE_ID, 1, 1, t0 + (60 * MS));
+    ask(&node, REMOTE_NODE_ID, 1, 2, t0 + (180 * MS));
+    ask(&node, REMOTE_NODE_ID, 1, 3, t0 + (420 * MS));
+    EXPECT_EQ_U32(1, (uint32_t)callback_count);
+    EXPECT_EQ_U32(4, (uint32_t)test_mock_send_call_count); // the answer and three resends
+}
+
+// A client slower than anything the server has seen misses once - its retry arrives after the entry expired - and
+// the server learns from that miss: the expired entry still names (client, seq_no) and when it went out. The next
+// call's response is then kept long enough. Killed by: the learning from an expired entry removed (the second call
+// re-runs its callback too), and by the fixed 100 ms.
+static void test_a_slow_client_is_learnt_from_one_miss(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    uint64_t t0 = test_mock_now;
+    ask(&node, REMOTE_NODE_ID, 1, 0, t0);
+    ask(&node, REMOTE_NODE_ID, 1, 1, t0 + (200 * MS)); // after the 75 ms seed: a miss, the callback runs again
+    EXPECT_EQ_U32(2, (uint32_t)callback_count);
+    ask(&node, REMOTE_NODE_ID, 2, 0, t0 + (300 * MS));
+    ask(&node, REMOTE_NODE_ID, 2, 1, t0 + (500 * MS)); // the same 200 ms gap: now a hit
+    EXPECT_EQ_U32(3, (uint32_t)callback_count);
+}
+
+// What one miss can teach is bounded: a gap measured against a long-expired entry - a client that restarted and
+// reused the id, say - counts as at most twice the current lifetime, not as itself. Killed by: the clamp removed
+// (the lifetime would become GAP_MULTIPLE x 10 s).
+static void test_one_miss_cannot_inflate_the_lifetime_without_bound(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    uint64_t seed = server_cache_lifetime(&server);
+    uint64_t t0 = test_mock_now;
+    ask(&node, REMOTE_NODE_ID, 1, 0, t0);
+    ask(&node, REMOTE_NODE_ID, 1, 1, t0 + (10000 * MS));
+    EXPECT_TRUE(server_cache_lifetime(&server) > seed); // it did learn
+    EXPECT_TRUE(server_cache_lifetime(&server) <= (uint64_t)tt_SERVER_CACHE_GAP_MULTIPLE * 2 * seed);
+}
+
+// A first transmission (retry 0) is never answered from the cache: only a retry can be the same call again. A client
+// node that restarts under the same id starts its seq_no at 0 again, and with a cache that lives as long as the
+// client may retry, its first call would otherwise get the previous incarnation's answer. Killed by: the retry check
+// removed (the second call is answered from the cache, the callback runs once).
+static void test_a_first_transmission_is_never_served_from_the_cache(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    uint64_t t0 = test_mock_now;
+    ask(&node, REMOTE_NODE_ID, 0, 0, t0);
+    ask(&node, REMOTE_NODE_ID, 0, 0, t0 + MS); // the restarted client's own seq_no 0
+    EXPECT_EQ_U32(2, (uint32_t)callback_count);
+}
+
+// With every slot holding a live response, a new client's answer evicts the one sent longest ago instead of not
+// being sent at all ("Out of server cache slots" used to roll the response back). Killed by: the eviction removed.
+static void test_full_slots_evict_the_oldest_response(void) {
+    struct tt_Context node;
+    struct tt_Service service;
+    struct tt_Server server;
+    setup_lifetime(&node, &service, &server);
+    uint64_t t0 = test_mock_now;
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        ask(&node, (uint8_t)(10 + i), 1, 0, t0 + ((uint64_t)i * US));
+    }
+    uint8_t newcomer = (uint8_t)(10 + tt_MAX_SERVER_CACHE_COUNT);
+    ask(&node, newcomer, 1, 0, t0 + MS);
+    EXPECT_EQ_U32(tt_MAX_SERVER_CACHE_COUNT + 1, (uint32_t)test_mock_send_call_count);
+    EXPECT_TRUE(get_server_cache(&server, newcomer, 1) != NULL);
+    EXPECT_TRUE(get_server_cache(&server, 10, 1) == NULL); // the oldest went
+    EXPECT_TRUE(get_server_cache(&server, 11, 1) != NULL); // and only it
+}
+
 int main(void) {
     test_fresh_request_invokes_callback_and_sends();
     test_retry_hits_cache_without_recalling_callback();
@@ -495,6 +656,13 @@ int main(void) {
     test_retry_while_deferred_does_not_recall_callback();
     test_deferred_response_is_sent_as_it_was_at_send_response();
     test_many_answered_calls_do_not_fill_the_scheduler();
+    test_the_seed_lifetime_is_the_default_clients_schedule();
+    test_an_explicit_interval_sets_the_lifetime();
+    test_a_retrying_client_keeps_its_response();
+    test_a_slow_client_is_learnt_from_one_miss();
+    test_one_miss_cannot_inflate_the_lifetime_without_bound();
+    test_a_first_transmission_is_never_served_from_the_cache();
+    test_full_slots_evict_the_oldest_response();
 
     if (test_result() != 0) {
         return 1;

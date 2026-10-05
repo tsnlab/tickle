@@ -166,8 +166,12 @@ static uint32_t rstat_popcount_bitmap(const uint64_t* bitmap, uint16_t words) {
 #define RSTAT_ADD(field, n) ((void)0)
 #endif
 
+// Saturates at UINT32_MAX (~4.3 s) rather than wrapping: a call answered after 5 s would otherwise read as 0.7 s.
 static uint32_t calculate_latency(uint64_t start, uint64_t end) {
-    return end > start ? (uint32_t)(end - start) : 0;
+    if (end <= start) {
+        return 0;
+    }
+    return end - start > UINT32_MAX ? UINT32_MAX : (uint32_t)(end - start);
 }
 
 static struct tt_SubmessageHeader* start_encode(struct tt_Context* node, uint8_t type, uint8_t receiver) {
@@ -3796,6 +3800,7 @@ static tt_ret_t node_create_client_locked(struct tt_Context* node, struct tt_Cli
     client->cache_length = 0;
     client->cache_time = 0;
     client->latency = 0;
+    client->latency_var = 0;
     client->latency_backed_off = false;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         client->peers[i].context_id = tt_CONTEXT_ID_INVALID;
@@ -3846,11 +3851,13 @@ static tt_ret_t node_create_server_locked(struct tt_Context* node, struct tt_Ser
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         server->cache[i] = NULL;
         server->clean_scheduled[i] = false;
+        server->cache_sent_at[i] = 0;
         server->slot_state[i] = tt_SERVER_SLOT_EMPTY;
         server->pending_timeout_scheduled[i] = false;
     }
     server->cache_storage = NULL; // inline - see server_cache_entry()
     server->cache_entry_length = 0;
+    server->client_retry_gap = 0;
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
     if (result != tt_RET_OK) {
@@ -3895,6 +3902,9 @@ static tt_ret_t server_set_storage_locked(struct tt_Server* server, uint8_t* cac
         if (server->cache[i] != NULL) {
             return tt_RET_ILLEGAL_STATUS; // an entry already lives in the storage being replaced
         }
+    }
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        server->cache_sent_at[i] = 0; // an expired entry's key lived in the old storage
     }
     server->cache_storage = cache_storage; // NULL = inline, see server_cache_entry()
     server->cache_entry_length = cache_storage != NULL ? cache_entry_length : 0;
@@ -4306,40 +4316,73 @@ static void resend_call_request(struct tt_Context* node, struct tt_Client* clien
     }
 }
 
-// The interval between a call's retries. An explicit call_retry_interval is used as given. The auto path (0) is 1.5 x
-// the client's latency estimate, held between tt_CALL_RETRY_INTERVAL and tt_CALL_RETRY_INTERVAL_MAX
-// (CONTEXT_NODE_PLAN.md "Client retry fix", 2026-09-27). Without the floor one fast answer shrank the whole budget of
-// every later call to match it - 85 us measured gave 0.5 ms - and a slower answer then timed each call out.
-static uint32_t compute_retry_interval(const struct tt_Client* client) {
+// The sum of a call's waits: `waits` of them, the first `first` and each twice the one before, none above `ceiling`.
+// Saturates rather than wraps. The client's whole retry schedule - and, for a server, how long that client may still
+// be retrying (server_client_window()).
+static uint64_t call_retry_window(uint64_t first, uint64_t ceiling, uint32_t waits) {
+    uint64_t total = 0;
+    uint64_t wait = first < ceiling ? first : ceiling;
+    for (uint32_t k = 0; k < waits; k++) {
+        if (wait >= ceiling) { // every wait from here on is the ceiling
+            uint64_t left = (uint64_t)(waits - k);
+            return ceiling != 0 && left > (UINT64_MAX - total) / ceiling ? UINT64_MAX : total + (left * ceiling);
+        }
+        total += wait;
+        wait = wait > ceiling / 2 ? ceiling : wait * 2;
+    }
+    return total;
+}
+
+// The first wait of a call on the auto path, and the ceiling of each: srtt + max(G, 4 * rttvar) and
+// tt_CALL_RETRY_MAX_SRTT_MULTIPLE * srtt, with the seed tt_CALL_RETRY_INTERVAL standing in for srtt until a first
+// answer. See config.h for why the bounds are relative to srtt and why the one absolute term remains.
+static void call_retry_bounds(const struct tt_Client* client, uint64_t* first, uint64_t* ceiling) {
+    if (client->latency == 0) {
+        *first = (uint64_t)tt_CALL_RETRY_INTERVAL;
+        *ceiling = (uint64_t)tt_CALL_RETRY_INTERVAL * tt_CALL_RETRY_MAX_SRTT_MULTIPLE;
+        return;
+    }
+    uint64_t srtt = client->latency;
+    uint64_t spread = 4ULL * client->latency_var;
+    if (spread < (uint64_t)tt_CALL_RETRY_GRANULARITY) {
+        spread = (uint64_t)tt_CALL_RETRY_GRANULARITY;
+    }
+    *first = srtt + spread;
+    *ceiling = srtt * tt_CALL_RETRY_MAX_SRTT_MULTIPLE;
+}
+
+// The wait after a call's `retry`-th send (0: the call itself). An explicit call_retry_interval is used as given, every
+// time. The auto path (0) doubles the first wait at each retry, up to the ceiling (call_retry_bounds()).
+static uint64_t compute_retry_interval(const struct tt_Client* client, uint32_t retry) {
     if (client->service->call_retry_interval != 0) {
         return client->service->call_retry_interval;
     }
-
-    uint64_t retry_interval = client->latency == 0 ? tt_CALL_RETRY_INTERVAL : client->latency;
-    retry_interval += retry_interval >> 1; // latency * 1.5
-    if (retry_interval < tt_CALL_RETRY_INTERVAL) {
-        retry_interval = tt_CALL_RETRY_INTERVAL;
+    uint64_t first = 0;
+    uint64_t ceiling = 0;
+    call_retry_bounds(client, &first, &ceiling);
+    uint64_t wait = first < ceiling ? first : ceiling;
+    for (uint32_t k = 0; k < retry && wait < ceiling; k++) {
+        wait = wait > ceiling / 2 ? ceiling : wait * 2;
     }
-    if (retry_interval > tt_CALL_RETRY_INTERVAL_MAX) {
-        retry_interval = tt_CALL_RETRY_INTERVAL_MAX;
-    }
-    return (uint32_t)retry_interval;
+    return wait;
 }
 
-// A call on the auto path timed out: double the latency estimate, up to tt_CALL_RETRY_INTERVAL_MAX, so the next call
-// waits longer (Karn's / TCP's RTO backoff). The estimate is otherwise learnt only from accepted answers, so without
-// this a server that became slower than the budget timed out every call from then on. The next accepted answer
-// replaces the estimate outright (latency_backed_off), so a server that is fast again gets its budget back at once.
+// A call on the auto path timed out: double the latency estimate (from the seed if there is none yet), so the next
+// call waits longer (Karn's / TCP's RTO backoff), up to tt_CALL_RETRY_BACKOFF_LIMIT - a bound on growth without
+// evidence only, so an estimate already above it, measured, is kept. The estimate is otherwise learnt only from
+// accepted answers, so without this a server that became slower than the budget timed out every call from then on.
+// The next accepted answer replaces the estimate outright (latency_backed_off), so a server that is fast again gets
+// its budget back at once.
 static void back_off_retry_interval(struct tt_Client* client) {
     if (client->service->call_retry_interval != 0) {
         return;
     }
-    // From the floor at least: an estimate below it (one fast answer) doubled would stay under the floor, and the
-    // interval with it, for several timeouts in a row.
-    uint64_t latency = client->latency < tt_CALL_RETRY_INTERVAL ? tt_CALL_RETRY_INTERVAL : client->latency;
-    latency *= 2;
-    if (latency > tt_CALL_RETRY_INTERVAL_MAX) {
-        latency = tt_CALL_RETRY_INTERVAL_MAX;
+    uint64_t latency = client->latency == 0 ? (uint64_t)tt_CALL_RETRY_INTERVAL : client->latency;
+    if (latency < (uint64_t)tt_CALL_RETRY_BACKOFF_LIMIT) {
+        latency *= 2;
+        if (latency > (uint64_t)tt_CALL_RETRY_BACKOFF_LIMIT) {
+            latency = (uint64_t)tt_CALL_RETRY_BACKOFF_LIMIT;
+        }
     }
     client->latency = (uint32_t)latency;
     client->latency_backed_off = true;
@@ -4377,7 +4420,8 @@ static void call_retry(struct tt_Context* node, uint64_t time, void* param) {
 
     resend_call_request(node, client, submessage_header);
 
-    if (!tt_Context_schedule(node, tt_get_ns() + compute_retry_interval(client), call_retry, client)) {
+    if (!tt_Context_schedule(node, tt_get_ns() + compute_retry_interval(client, callrequest_header->retry), call_retry,
+                             client)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
         client->callback(client, tt_CALL_TIMEOUT, NULL); // can't arm another retry - treat as no answer
 
@@ -4476,7 +4520,7 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
     client->cache_time = tt_get_ns();
     client->seq_no++;
 
-    if (!tt_Context_schedule(node, tt_get_ns() + compute_retry_interval(client), call_retry, client)) {
+    if (!tt_Context_schedule(node, tt_get_ns() + compute_retry_interval(client, 0), call_retry, client)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
         client->cache = NULL;
         return tt_RET_OUT_OF_SCHEDULE;
@@ -9808,20 +9852,77 @@ static bool process_data(struct tt_Context* node, struct tt_Header* header, uint
     return process_data_for(node, header, buffer, head, tail, sender_ip, sender_port, false);
 }
 
-static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
-    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-        if (server->cache[i] != NULL) {
-            struct tt_SubmessageHeader* submessage_header = server->cache[i];
-            struct tt_CallResponseHeader* callresponse_header =
-                (struct tt_CallResponseHeader*)((void*)submessage_header + sizeof(struct tt_SubmessageHeader));
+// Whether slot `slot`'s buffer names (receiver, seq_no). Meaningful while the slot holds a live entry (cache[slot])
+// or an expired one not yet reused (cache_sent_at[slot] != 0).
+static bool server_cache_slot_names(struct tt_Server* server, int slot, uint8_t receiver, uint16_t seq_no) {
+    const struct tt_SubmessageHeader* submessage_header =
+        (const struct tt_SubmessageHeader*)server_cache_entry(server, slot);
+    const struct tt_CallResponseHeader* callresponse_header =
+        (const struct tt_CallResponseHeader*)((const uint8_t*)submessage_header + sizeof(struct tt_SubmessageHeader));
+    return submessage_header->receiver == receiver && callresponse_header->seq_no == seq_no;
+}
 
-            if ((submessage_header->receiver == receiver) && (callresponse_header->seq_no == seq_no)) {
-                return submessage_header;
-            }
+static int find_server_cache_slot(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (server->cache[i] != NULL && server_cache_slot_names(server, i, receiver, seq_no)) {
+            return i;
         }
     }
+    return -1;
+}
 
-    return NULL;
+static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
+    int slot = find_server_cache_slot(server, receiver, seq_no);
+    return slot >= 0 ? server->cache[slot] : NULL;
+}
+
+// How long the client of this service may go on retrying one call before it has any answer to estimate from: its
+// seed schedule (call_retry_window() over tt_CALL_RETRY_INTERVAL), or, when the service sets call_retry_interval
+// explicitly, (count + 1) waits of exactly that - what both ends of a service share without anything on the wire.
+static uint64_t server_client_window(const struct tt_Server* server) {
+    const struct tt_Service* service = server->service;
+    uint32_t count = service->call_retry_count != 0 ? service->call_retry_count : (uint32_t)tt_CALL_RETRY_COUNT;
+    uint32_t waits = count == UINT32_MAX ? count : count + 1;
+    if (service->call_retry_interval != 0) {
+        return call_retry_window(service->call_retry_interval, service->call_retry_interval, waits);
+    }
+    return call_retry_window((uint64_t)tt_CALL_RETRY_INTERVAL,
+                             (uint64_t)tt_CALL_RETRY_INTERVAL * tt_CALL_RETRY_MAX_SRTT_MULTIPLE, waits);
+}
+
+// How long an answered response is kept for a retrying client: the client's seed schedule, or
+// tt_SERVER_CACHE_GAP_MULTIPLE x the longest recent retry gap this server has seen, whichever is longer. See
+// config.h for why the server derives it from these and not from the client's srtt.
+static uint64_t server_cache_lifetime(const struct tt_Server* server) {
+    uint64_t window = server_client_window(server);
+    uint64_t learnt = server->client_retry_gap > UINT64_MAX / tt_SERVER_CACHE_GAP_MULTIPLE
+                          ? UINT64_MAX
+                          : server->client_retry_gap * tt_SERVER_CACHE_GAP_MULTIPLE;
+    return learnt > window ? learnt : window;
+}
+
+// A retry arrived `gap` after this server last sent that call's response. A decaying maximum: a slower client
+// counts at once, a faster population pulls it down an eighth per sample.
+static void note_client_retry_gap(struct tt_Server* server, uint64_t gap) {
+    uint64_t decayed = server->client_retry_gap - (server->client_retry_gap / 8);
+    server->client_retry_gap = gap > decayed ? gap : decayed;
+}
+
+// (Re-)arms slot `slot`'s expiry one lifetime from `now`. False if the scheduler is full, with nothing armed.
+static bool arm_server_cache_expiry(struct tt_Server* server, int slot, uint64_t now) {
+    if (server->clean_scheduled[slot]) {
+        tt_Context_unschedule(server->node, server_cache_clean, &server->clean_config[slot]);
+        server->clean_scheduled[slot] = false;
+    }
+    uint64_t lifetime = server_cache_lifetime(server);
+    uint64_t expires_at = lifetime > UINT64_MAX - now ? UINT64_MAX : now + lifetime;
+    server->clean_config[slot].server = server;
+    server->clean_config[slot].slot = slot;
+    if (!tt_Context_schedule(server->node, expires_at, server_cache_clean, &server->clean_config[slot])) {
+        return false;
+    }
+    server->clean_scheduled[slot] = true;
+    return true;
 }
 
 // Cancels slot i's cleanup timer (if any) and frees it up for reuse. The timer must be
@@ -9833,8 +9934,11 @@ static void clear_server_cache_slot(struct tt_Server* server, int slot) {
         server->clean_scheduled[slot] = false;
     }
     server->cache[slot] = NULL;
+    server->cache_sent_at[slot] = 0; // the client moved on, or the slot is wanted: nothing to learn from it
 }
 
+// Expiry. The slot keeps cache_sent_at and its bytes, so a retry that comes after this can still be matched to it
+// (learn_from_expired_response()) until the slot is reused.
 static void server_cache_clean(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(node);
     UNUSED(time);
@@ -9844,18 +9948,65 @@ static void server_cache_clean(struct tt_Context* node, uint64_t time, void* par
     clean->server->clean_scheduled[clean->slot] = false;
 }
 
+// A retry served from the cache: what it took the client to ask again is a sample of its retry gap, and a client
+// still retrying is the evidence the entry is wanted, so it is re-armed from now.
+static void note_server_cache_hit(struct tt_Server* server, int slot) {
+    uint64_t now = tt_get_ns();
+    if (now > server->cache_sent_at[slot]) {
+        note_client_retry_gap(server, now - server->cache_sent_at[slot]);
+    }
+    server->cache_sent_at[slot] = now;
+    if (!arm_server_cache_expiry(server, slot, now)) {
+        TT_LOG_ERROR("Cannot schedule server_cache_clean");
+        clear_server_cache_slot(server, slot); // never an entry with no way to expire
+    }
+}
+
+// A retry with no live entry: if its response did go out and has since expired, the client waits longer than this
+// server kept it, and the gap says by how much. One such sample counts as at most twice the current lifetime, so a
+// stale match - a restarted client reusing the id, long after - raises it by a bounded step and not to whatever it
+// measured; a genuinely slow client gets there in a few misses.
+static void learn_from_expired_response(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
+    uint64_t now = tt_get_ns();
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (server->cache[i] != NULL || server->cache_sent_at[i] == 0 ||
+            !server_cache_slot_names(server, i, receiver, seq_no)) {
+            continue;
+        }
+        if (now > server->cache_sent_at[i]) {
+            uint64_t gap = now - server->cache_sent_at[i];
+            uint64_t lifetime = server_cache_lifetime(server);
+            uint64_t bound = lifetime > UINT64_MAX / 2 ? UINT64_MAX : 2 * lifetime;
+            note_client_retry_gap(server, gap < bound ? gap : bound);
+        }
+        server->cache_sent_at[i] = 0; // learnt once
+        return;
+    }
+}
+
 static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeader* submessage_header,
                              uint8_t receiver) {
     size_t length = ROUNDUP((uintptr_t)server->node->tx_buffer + server->node->tx_tail - (uintptr_t)submessage_header);
 
-    int free_slot = -1;
+    // A slot that never held anything first, then the expired entry sent longest ago (it can still teach a gap, so
+    // it goes last among the free), and with every slot live, the live entry sent longest ago - evicted rather than
+    // the new response not being sent at all, which is what a full cache used to mean.
+    int empty_slot = -1;
+    int expired_slot = -1;
+    int oldest_live = -1;
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         if (server->cache[i] != NULL && server->cache[i]->receiver == receiver) {
             clear_server_cache_slot(server, i);
         }
 
-        if (free_slot < 0 && server->cache[i] == NULL) {
-            free_slot = i;
+        if (server->cache[i] == NULL) {
+            if (server->cache_sent_at[i] == 0) {
+                empty_slot = empty_slot < 0 ? i : empty_slot;
+            } else if (expired_slot < 0 || server->cache_sent_at[i] < server->cache_sent_at[expired_slot]) {
+                expired_slot = i;
+            }
+        } else if (oldest_live < 0 || server->cache_sent_at[i] < server->cache_sent_at[oldest_live]) {
+            oldest_live = i;
         }
     }
 
@@ -9863,15 +10014,17 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
         // Larger than this server's cache entries (tt_Server_set_storage() sized them for this
         // service's responses, and this one is bigger). Sent, not cached: refusing to send it would
         // turn a size limit on a retry optimisation into a lost response. A retry re-runs the
-        // callback, exactly as it does once a cached response has timed out.
+        // callback, exactly as it does once a cached response has expired.
         TT_LOG_WARNING("Response of %u bytes exceeds the server's %u-byte cache entries - sent, not cached",
                        (unsigned)length, (unsigned)server_cache_entry_length(server));
         return true;
     }
 
+    int free_slot = empty_slot >= 0 ? empty_slot : expired_slot;
     if (free_slot < 0) {
-        TT_LOG_ERROR("Out of server cache slots");
-        return false;
+        TT_LOG_DEBUG("Server cache full - evicting the response sent longest ago");
+        free_slot = oldest_live;
+        clear_server_cache_slot(server, free_slot);
     }
 
     // Copy into this slot's own fixed buffer instead of malloc'ing one.
@@ -9879,18 +10032,16 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
     _tt_memcpy(cache, submessage_header, length);
     cache->length = length;
 
-    server->clean_config[free_slot].server = server;
-    server->clean_config[free_slot].slot = free_slot;
-
     // Only publish `cache` into the slot once its cleanup timer is guaranteed to run;
     // otherwise the slot would hold an entry that never gets cleared.
-    if (!tt_Context_schedule(server->node, tt_get_ns() + tt_SERVER_CACHE_TIMEOUT, server_cache_clean,
-                             &server->clean_config[free_slot])) {
+    uint64_t now = tt_get_ns();
+    if (!arm_server_cache_expiry(server, free_slot, now)) {
         TT_LOG_ERROR("Cannot schedule server_cache_clean");
+        server->cache_sent_at[free_slot] = 0; // its bytes were just overwritten: no longer an expired entry either
         return false;
     }
 
-    server->clean_scheduled[free_slot] = true;
+    server->cache_sent_at[free_slot] = now;
     server->cache[free_slot] = cache;
 
     return true;
@@ -10180,8 +10331,19 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
         return true;
     }
 
-    // Check cache
-    struct tt_SubmessageHeader* cached = get_server_cache(server, header->source, seq_no);
+    // Check cache - for a retry only. A first transmission (retry 0) is a new call by definition: a client node that
+    // restarted under the same id starts its seq_no at 0 again, and with responses kept as long as their client may
+    // still retry (server_cache_lifetime()), its first call would otherwise get the previous incarnation's answer.
+    int cached_slot = -1;
+    if (callrequest_header->retry != 0) {
+        cached_slot = find_server_cache_slot(server, header->source, seq_no);
+        if (cached_slot >= 0) {
+            note_server_cache_hit(server, cached_slot);
+        } else {
+            learn_from_expired_response(server, header->source, seq_no);
+        }
+    }
+    struct tt_SubmessageHeader* cached = cached_slot >= 0 ? server->cache[cached_slot] : NULL;
     uint32_t old_tx_tail = node->tx_tail;
 
     struct tt_SubmessageHeader* submessage_header;
@@ -10320,13 +10482,20 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
     // until it fires and no-ops (call_retry() already guards on cache == NULL).
     tt_Context_unschedule(node, call_retry, client);
 
+    // RFC 6298's estimator, with the reliable retry's gains (note_recovery_sample()): the first answer - or the first
+    // since a backoff, see back_off_retry_interval() - sets srtt = R and rttvar = R / 2; each later one moves rttvar a
+    // quarter of the way to |srtt - R| and srtt an eighth of the way to R. R is at least 1 ns, so an answer can never
+    // leave srtt at the 0 that means "none yet".
+    latency = latency == 0 ? 1 : latency;
     if (client->latency == 0 || client->latency_backed_off) {
-        client->latency = latency; // the first answer, or the first since a backoff: see back_off_retry_interval()
+        client->latency = latency;
+        client->latency_var = latency / 2;
         client->latency_backed_off = false;
     } else {
-        // Latency moving average
-        // client->latency * 0.875 + latency * 0.125
-        client->latency = (client->latency - (client->latency >> 3)) + (latency >> 3);
+        uint32_t deviation = client->latency > latency ? client->latency - latency : latency - client->latency;
+        client->latency_var =
+            (uint32_t)((((uint64_t)RECOVERY_RTTVAR_KEEP * client->latency_var) + deviation) / RECOVERY_RTTVAR_DIV);
+        client->latency = (uint32_t)((((uint64_t)RECOVERY_SRTT_KEEP * client->latency) + latency) / RECOVERY_SRTT_DIV);
     }
 
     client->callback(client, callresponse_header->return_code, response);
@@ -12488,6 +12657,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
             for (int j = 0; j < tt_MAX_SERVER_CACHE_COUNT; j++) {
                 server->cache[j] = NULL;
                 server->clean_scheduled[j] = false;
+                server->cache_sent_at[j] = 0;
             }
         }
     }

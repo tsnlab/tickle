@@ -274,25 +274,61 @@
 #define tt_RELIABLE_BITMAP_MAX_BITS 4096
 #endif
 #define tt_RELIABLE_BITMAP_MAX_WORDS (tt_RELIABLE_BITMAP_MAX_BITS / tt_RELIABLE_BITMAP_WORD_BITS)
+// A Client's retries (struct tt_Service.call_retry_interval 0, the auto path) - the same RFC 6298 estimator as the
+// reliable retry above, over call-to-answer times, with bounds relative to the link since 2026-10-05 (ROADMAP "Now"
+// 5a, as 08e568af did for the reliable retry). They used to be a 5 ms floor and a 250 ms ceiling, both fitted to the
+// rig: the floor held a 100 us link's retry 50 x past its round trip, and the ceiling retried a 400 ms link before
+// any answer could arrive.
+//
+// The first wait of a call is srtt + max(GRANULARITY, 4 * rttvar), and each retry of the same call waits twice the
+// one before (RFC 6298 5.5), each at most MAX_SRTT_MULTIPLE * srtt. The doubling is what the old floor was really
+// for: a call gives up after (count + 1) waits, so with a constant interval one fast answer shrank the budget of
+// every later call to a few round trips, and an answer slower than that timed out (CONTEXT_NODE_PLAN.md "Client
+// retry fix", 2026-09-27: 85 us measured gave 0.5 ms). Doubling makes the budget (2^(count+1) - 1) first waits -
+// 15 with the default count - so a retry can fire early without the call giving up early.
+//
+// INTERVAL is the seed: the first wait until a client has its first answer, standing in for srtt. GRANULARITY is
+// twice the reliable retry's, because a call's round trip has two late-running events in it, not one: this host's
+// retry timer and the server's dispatch of the request. Both are host properties, not link ones, and provisional
+// as tt_RELIABLE_RETRY_GRANULARITY is.
+//
+// A timed-out call doubles srtt (Karn's / TCP's backoff), so a server that became slower than the budget is reached
+// again; the next answer replaces the estimate outright. BACKOFF_LIMIT bounds only that evidence-free growth, as
+// RFC 6298 2.5 allows a maximum: a measured srtt is never clamped by it. It sets how long a call against a dead
+// server takes once the estimate has grown all the way, (2^(count+1) - 1) x ~LIMIT - ~15 s by default, reached only
+// after 8 consecutive timed-out calls from the seed (more from a faster estimate) - and how slow a server may become
+// and still be reached again.
 #ifndef tt_CALL_RETRY_INTERVAL
-#define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND) // Default value
+#define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND) // nanosecond - the seed, until a first answer
 #endif
 #ifndef tt_CALL_RETRY_COUNT
 #define tt_CALL_RETRY_COUNT 3 // count
 #endif
-// The auto retry interval's ceiling (call_retry_interval 0): it grows by backoff after a timeout and never past this,
-// so a call on the auto path ends within (tt_CALL_RETRY_COUNT + 1) x this - 1 s by default - even against a dead
-// server. A server that needs longer to answer needs an explicit call_retry_interval.
-#ifndef tt_CALL_RETRY_INTERVAL_MAX
-#define tt_CALL_RETRY_INTERVAL_MAX (250 * tt_MILLISECOND)
+#ifndef tt_CALL_RETRY_GRANULARITY
+#define tt_CALL_RETRY_GRANULARITY (2 * tt_RELIABLE_RETRY_GRANULARITY) // nanosecond - two hosts' event lateness
 #endif
-#ifndef tt_SERVER_CACHE_TIMEOUT
-#define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)
+#ifndef tt_CALL_RETRY_MAX_SRTT_MULTIPLE
+#define tt_CALL_RETRY_MAX_SRTT_MULTIPLE 64 // a wait's ceiling, in multiples of srtt
+#endif
+#ifndef tt_CALL_RETRY_BACKOFF_LIMIT
+#define tt_CALL_RETRY_BACKOFF_LIMIT (1 * tt_SECOND) // nanosecond - how far a timeout may grow srtt without an answer
+#endif
+// How long a Server keeps an answered response for a retrying client (server_cache_lifetime(), tickle.c). It used to
+// be a fixed 100 ms whose comment gave the formula - client latency x (count + 1) - that nothing computed, and which
+// was already shorter than the 250 ms a client's retry interval could reach. The server cannot see the client's
+// srtt (nothing on the wire carries it), so it keeps a response for the longest of what it can know: the client's
+// retry schedule before any answer (the seed above, or this service's own explicit call_retry_interval x (count +
+// 1)), and GAP_MULTIPLE x the longest recent gap between a response going out and the same client asking again. Each
+// retry served re-arms the entry. 4 is the client's own doubling (the next gap is twice the last) times a margin of
+// 2. A client slower than anything seen misses once, and its retry - matched against the expired entry, which still
+// names it - teaches the server its gap. A first transmission (retry 0) is never answered from the cache.
+#ifndef tt_SERVER_CACHE_GAP_MULTIPLE
+#define tt_SERVER_CACHE_GAP_MULTIPLE 4
 #endif
 // How long a tt_SERVER_CALLBACK that returned tt_CALL_DEFERRED has to eventually call
 // tt_Server_send_response() before the slot reserved for it is reclaimed (Milestone 17,
-// rmw_tickle/PLAN.md) - deliberately much longer than tt_SERVER_CACHE_TIMEOUT above, which times
-// out re-sending an *already-computed* answer to a retrying client, not waiting on the
+// rmw_tickle/PLAN.md) - deliberately much longer than an answered response's cache lifetime above,
+// which covers re-sending an *already-computed* answer to a retrying client, not waiting on the
 // application to compute one in the first place. Matches rmw_tickle's own pre-existing
 // RMW_TICKLE_SERVICE_RESPONSE_TIMEOUT_NS default (rmw_tickle.h) - not a coincidence, that value
 // was standing in for this exact primitive not existing yet.
@@ -988,8 +1024,10 @@ static_assert(tt_FRAG_REASSEMBLY_SLOTS >= 1, "fragmentation needs at least one r
 static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
               "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");
 static_assert(tt_MAX_CONTEXT_IDS % 32 == 0, "reached_nodes[] packs the per-peer bits 32 to a word");
-static_assert(tt_CALL_RETRY_INTERVAL_MAX >= tt_CALL_RETRY_INTERVAL && tt_CALL_RETRY_INTERVAL_MAX <= UINT32_MAX,
-              "the auto retry interval is held between tt_CALL_RETRY_INTERVAL and a uint32_t ceiling");
+static_assert(tt_CALL_RETRY_BACKOFF_LIMIT >= tt_CALL_RETRY_INTERVAL && tt_CALL_RETRY_BACKOFF_LIMIT <= UINT32_MAX,
+              "a backed-off call estimate starts from the seed and is kept in a uint32_t");
+static_assert(tt_CALL_RETRY_MAX_SRTT_MULTIPLE >= 1, "a wait's ceiling is at least srtt");
+static_assert(tt_SERVER_CACHE_GAP_MULTIPLE >= 1, "a response is kept at least one observed retry gap");
 static_assert(tt_MAX_NODES >= 1 && tt_MAX_NODES <= (UINT8_MAX + 1),
               "a node's index is a uint8_t, 8 bits on the wire (stage 3)");
 static_assert(tt_UPDATE_MAX_PARTS >= 1 && tt_UPDATE_MAX_PARTS <= UINT8_MAX,

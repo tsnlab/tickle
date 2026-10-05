@@ -1028,8 +1028,9 @@ struct tt_Client { // extends endpoint
     uint32_t cache_length;
     struct tt_SubmessageHeader* cache; // NULL when idle, else points into cache_buf
     uint64_t cache_time;               // Cache time
-    uint32_t latency;                  // Call latency estimate, ns: an EMA of accepted answers, doubled on a timeout
-    bool latency_backed_off;           // The last call timed out; the next accepted answer replaces the estimate
+    uint32_t latency;        // Call latency estimate (srtt), ns: an EMA of accepted answers, doubled on a timeout
+    uint32_t latency_var;    // Its mean deviation (rttvar), ns - RFC 6298's, as for the reliable retry
+    bool latency_backed_off; // The last call timed out; the next accepted answer replaces the estimate
 
     // Known Servers matching this Client's service, learned via UPDATE announces - see
     // tt_UNICAST_PEER_THRESHOLD.
@@ -1085,6 +1086,13 @@ struct tt_Server { // extends endpoint
     struct tt_SubmessageHeader* cache[tt_MAX_SERVER_CACHE_COUNT]; // NULL when slot i is unused
     struct server_cache_clean_config clean_config[tt_MAX_SERVER_CACHE_COUNT];
     bool clean_scheduled[tt_MAX_SERVER_CACHE_COUNT]; // Whether clean_config[i]'s timer is pending
+    // When slot i's response last went out (cached, or resent to a retry); 0 when the slot holds nothing. An expired
+    // entry keeps it: cache[i] is NULL but the slot still names (client, seq_no), so a retry arriving after the
+    // expiry measures how much longer that client waits than this server kept its answer (server_cache_lifetime()).
+    uint64_t cache_sent_at[tt_MAX_SERVER_CACHE_COUNT];
+    // The longest recent gap, ns, between a response going out and the same client asking again - a decaying
+    // maximum of what retries have shown this server. 0 until the first retry arrives.
+    uint64_t client_retry_gap;
 
     // Milestone 17: one slot per request whose callback returned tt_CALL_DEFERRED - tracked
     // separately from cache[]/cache_buf[] above, which only ever holds an *already-answered*
@@ -2343,7 +2351,7 @@ tt_ret_t tt_Context_create_server(struct tt_Context* node, struct tt_Server* ser
 // the server to its inline storage - and before it has cached a response. The area holds
 // tt_MAX_SERVER_CACHE_COUNT entries of cache_entry_length, each one already-encoded response kept for a
 // retrying client. A response larger than an entry is still sent, just not cached, so a retry re-runs the
-// callback - as it does once a cached response has timed out (tt_SERVER_CACHE_TIMEOUT).
+// callback - as it does once a cached response has expired (server_cache_lifetime(), tickle.c).
 // The length must be a multiple of 8 and the area 8-byte aligned. A NULL area goes back to the inline one.
 // tt_RET_INVALID_ARGUMENT for a misfit, tt_RET_ILLEGAL_STATUS if an entry is already cached.
 // (It also took a deferred-response area until 2026-09-27; deferred responses are no longer copied.)

@@ -13,6 +13,11 @@
 // timers fire at their scheduled times, and the server's answer arrives a given time after the request was first
 // sent, or never. The interval used to be 1.5 x an EMA of accepted answers only, with no floor: one fast answer
 // shrank every later call's budget to match, and an answer slower than that timed out every call from then on.
+//
+// Since 2026-10-05 (ROADMAP "Now" 5a) the bounds are relative to the link, as 08e568af made them for the reliable
+// retry: srtt + max(tt_CALL_RETRY_GRANULARITY, 4 * rttvar), doubled at every retry of a call, at most
+// tt_CALL_RETRY_MAX_SRTT_MULTIPLE * srtt. The fixed 5 ms floor and 250 ms ceiling are gone; the per-call doubling is
+// what lets the floor go without the budget of a call shrinking to one fast answer.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -162,24 +167,26 @@ static void test_answers_slower_than_the_floor_are_reached_by_backoff(void) {
     EXPECT_EQ_INT(15, answered);
 }
 
-// After timeouts have backed the estimate off, the first fast answer brings the interval straight back to the floor,
-// not 1/8 of the way per call.
-static void test_a_fast_answer_after_a_backoff_restores_the_floor(void) {
+// After timeouts have backed the estimate off, the first fast answer brings the interval straight back to what that
+// answer alone says (srtt = R, rttvar = R / 2: srtt + max(G, 4 * rttvar)), not 1/8 of the way per call.
+static void test_a_fast_answer_after_a_backoff_restores_the_interval(void) {
     setup(0);
     uint64_t took = 0;
     for (int i = 0; i < 3; i++) {
         EXPECT_TRUE(run_call(FAST, &took));
     }
+    uint64_t before = compute_retry_interval(&client, 0);
     for (int i = 0; i < 5; i++) {
         EXPECT_TRUE(!run_call(NEVER, &took)); // the server stops answering
     }
-    EXPECT_TRUE(compute_retry_interval(&client) > 10 * tt_CALL_RETRY_INTERVAL);
-    EXPECT_TRUE(run_call(FAST, &took)); // it answers again, fast
-    EXPECT_EQ_U32((uint32_t)tt_CALL_RETRY_INTERVAL, compute_retry_interval(&client));
+    EXPECT_TRUE(compute_retry_interval(&client, 0) > 8 * before); // five doublings of the estimate
+    EXPECT_TRUE(run_call(FAST, &took));                           // it answers again, fast
+    uint64_t spread = 4 * (FAST / 2) > tt_CALL_RETRY_GRANULARITY ? 4 * (FAST / 2) : tt_CALL_RETRY_GRANULARITY;
+    EXPECT_EQ_U64(FAST + spread, compute_retry_interval(&client, 0));
 }
 
-// A dead server: every call ends in tt_CALL_TIMEOUT, none takes longer than (count + 1) x the cap, and the interval
-// stops at the cap however many calls time out.
+// A dead server: every call ends in tt_CALL_TIMEOUT, the estimate grown without evidence stops at
+// tt_CALL_RETRY_BACKOFF_LIMIT however many calls time out, and no call outlasts the retry schedule that limit gives.
 static void test_a_dead_server_bounds_every_call(void) {
     setup(0);
     uint64_t took = 0;
@@ -191,8 +198,92 @@ static void test_a_dead_server_bounds_every_call(void) {
         EXPECT_EQ_INT((int)tt_CALL_TIMEOUT, last_return_code);
         longest = took > longest ? took : longest;
     }
-    EXPECT_TRUE(longest <= (uint64_t)(tt_CALL_RETRY_COUNT + 1) * tt_CALL_RETRY_INTERVAL_MAX);
-    EXPECT_EQ_U32((uint32_t)tt_CALL_RETRY_INTERVAL_MAX, compute_retry_interval(&client));
+    EXPECT_EQ_U32((uint32_t)tt_CALL_RETRY_BACKOFF_LIMIT, client.latency);
+    uint64_t schedule = 0;
+    for (uint32_t k = 0; k <= tt_CALL_RETRY_COUNT; k++) {
+        schedule += compute_retry_interval(&client, k);
+    }
+    EXPECT_TRUE(longest <= schedule);
+}
+
+// The pins for the srtt-relative bounds (ROADMAP 5a). Each states the mutant it kills.
+
+// A fast, steady link retries at srtt + G - far sooner than the old fixed 5 ms floor. Killed by: the 5 ms floor put
+// back (the interval would be 5 ms); the G term removed (it would be srtt + 4 * rttvar, ~163 us).
+static void test_a_small_srtt_retries_well_before_5ms(void) {
+    setup(0);
+    uint64_t took = 0;
+    for (int i = 0; i < 5; i++) {
+        EXPECT_TRUE(run_call(FAST, &took));
+    }
+    EXPECT_EQ_U32(FAST, client.latency);
+    EXPECT_TRUE(4 * (uint64_t)client.latency_var < tt_CALL_RETRY_GRANULARITY); // steady: the G term is the spread
+    EXPECT_EQ_U64(FAST + tt_CALL_RETRY_GRANULARITY, compute_retry_interval(&client, 0));
+    // And the timer a call actually arms says the same.
+    struct tt_Request request;
+    uint64_t start = test_mock_now;
+    EXPECT_TRUE(tt_Client_call(&client, &request) == tt_RET_OK);
+    struct tt_TCB* due = peek_scheduler(&node);
+    EXPECT_TRUE(due != NULL);
+    if (due != NULL) {
+        EXPECT_EQ_U64(FAST + tt_CALL_RETRY_GRANULARITY, due->time - start);
+        EXPECT_TRUE(due->time - start < tt_CALL_RETRY_INTERVAL / 10);
+    }
+}
+
+// A slow link is not clamped: 400 ms answers retry after 400 ms + G, where the old 250 ms ceiling retried before
+// any answer could arrive. Killed by: the 250 ms ceiling put back.
+static void test_a_large_srtt_is_not_clamped_to_250ms(void) {
+    setup(0);
+    client.latency = 400 * MS;
+    client.latency_var = 0;
+    EXPECT_EQ_U64((400 * MS) + tt_CALL_RETRY_GRANULARITY, compute_retry_interval(&client, 0));
+    EXPECT_TRUE(compute_retry_interval(&client, 0) > 250 * MS);
+    // End to end from a fresh client: the seed's schedule (75 ms) is too short for a 400 ms link, the backoff grows
+    // it until an answer gets through, and from then on every call is answered with srtt at the measured 400 ms.
+    setup(0);
+    uint64_t took = 0;
+    for (int i = 0; i < 4; i++) {
+        (void)run_call(400 * MS, &took);
+    }
+    int answered = 0;
+    for (int i = 0; i < 5; i++) {
+        answered += run_call(400 * MS, &took) ? 1 : 0;
+    }
+    EXPECT_EQ_INT(5, answered);
+    EXPECT_EQ_U32(400 * MS, client.latency);
+}
+
+// The ceiling binds only for a pathological estimate - variance far beyond the mean - and is relative to srtt.
+// Killed by: the ceiling removed (the interval would be 100 us + 40 ms).
+static void test_the_ceiling_is_a_multiple_of_srtt(void) {
+    setup(0);
+    client.latency = 100 * US;
+    client.latency_var = 10 * MS;
+    EXPECT_EQ_U64(100 * US * tt_CALL_RETRY_MAX_SRTT_MULTIPLE, compute_retry_interval(&client, 0));
+}
+
+// Each retry of one call waits twice the one before (RFC 6298 5.5), up to the ceiling, so a call's budget is
+// (2^(count+1) - 1) x the first interval rather than (count + 1) x it. Killed by: the per-retry doubling removed.
+static void test_each_retry_of_a_call_waits_twice_as_long(void) {
+    setup(0);
+    client.latency = 100 * US;
+    client.latency_var = 0;
+    uint64_t first = compute_retry_interval(&client, 0);
+    EXPECT_EQ_U64(2 * first, compute_retry_interval(&client, 1));
+    EXPECT_EQ_U64(4 * first, compute_retry_interval(&client, 2));
+    EXPECT_EQ_U64(100 * US * tt_CALL_RETRY_MAX_SRTT_MULTIPLE, compute_retry_interval(&client, 10)); // the ceiling
+    uint64_t took = 0;
+    EXPECT_TRUE(!run_call(NEVER, &took));
+    EXPECT_EQ_U64(((2ULL << tt_CALL_RETRY_COUNT) - 1) * first, took);
+}
+
+// Before any answer the seed tt_CALL_RETRY_INTERVAL stands in for srtt, and the server's response cache is kept for
+// at least that whole schedule (server_client_window(), tested in test_process_callrequest.c).
+static void test_the_seed_is_used_until_a_first_answer(void) {
+    setup(0);
+    EXPECT_EQ_U64((uint64_t)tt_CALL_RETRY_INTERVAL, compute_retry_interval(&client, 0));
+    EXPECT_EQ_U64(2 * (uint64_t)tt_CALL_RETRY_INTERVAL, compute_retry_interval(&client, 1));
 }
 
 // An explicit call_retry_interval is used as given: no floor, no backoff, no cap - a timeout changes nothing.
@@ -204,16 +295,22 @@ static void test_an_explicit_interval_is_used_as_given(void) {
         EXPECT_TRUE(!run_call(NEVER, &took));
         EXPECT_EQ_U64((uint64_t)(tt_CALL_RETRY_COUNT + 1) * explicit_interval, took);
     }
-    EXPECT_EQ_U32(explicit_interval, compute_retry_interval(&client));
+    EXPECT_EQ_U64(explicit_interval, compute_retry_interval(&client, 0));
+    EXPECT_EQ_U64(explicit_interval, compute_retry_interval(&client, 2)); // no doubling either
     EXPECT_EQ_U32(0, client.latency);
 }
 
 int main(void) {
     test_fast_then_slow_answers_are_all_answered();
     test_answers_slower_than_the_floor_are_reached_by_backoff();
-    test_a_fast_answer_after_a_backoff_restores_the_floor();
+    test_a_fast_answer_after_a_backoff_restores_the_interval();
     test_a_dead_server_bounds_every_call();
     test_an_explicit_interval_is_used_as_given();
+    test_a_small_srtt_retries_well_before_5ms();
+    test_a_large_srtt_is_not_clamped_to_250ms();
+    test_the_ceiling_is_a_multiple_of_srtt();
+    test_each_retry_of_a_call_waits_twice_as_long();
+    test_the_seed_is_used_until_a_first_answer();
 
     if (test_result() != 0) {
         return 1;

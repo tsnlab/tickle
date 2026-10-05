@@ -61,15 +61,22 @@ The user's active list (2026-10-05), in order.
    (`git show 3c0c505b:examples/perf_hil/CONSTANTS_AUDIT.md`) and include config.h, hal_linux.h and rmw_tickle's
    RMW_TICKLE_* defaults.
    Inventory done 2026-10-05; the fitted values that stay (c) are in README.md "Tuning for your platform". Still
-   to replace by an algorithm (a), most fitted and hottest first: `tt_RELIABLE_RETRY_GRANULARITY` 100 us (measure
-   timer lateness); `TT_RX_IDLE_RECHECK` 64 and `tt_SEGMENT_ATTACH_RETRY_SENDS` / `_REVALIDATE_SENDS` (send counts
-   whose period scales with the rate); `tt_CALL_RETRY_INTERVAL` / `_MAX`, `tt_SERVER_CACHE_TIMEOUT` and
-   `RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS` (srtt-relative bounds, as `08e568af` did for the reliable retry);
+   to replace by an algorithm (a), most fitted and hottest first: `tt_RELIABLE_RETRY_GRANULARITY` 100 us and
+   `tt_CALL_RETRY_GRANULARITY` (2x it) (measure timer lateness); `TT_RX_IDLE_RECHECK` 64 and
+   `tt_SEGMENT_ATTACH_RETRY_SENDS` / `_REVALIDATE_SENDS` (send counts whose period scales with the rate);
    `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` (from the tracking window); `tt_DISCOVERY_REQUEST_RETRY` (RTT +
    `tt_CONTEXT_TX_INTERVAL`) and `tt_SEGMENT_DEAD_READER_NS` (from `tt_LIVELINESS_SILENCE_NS`).
    Done: `tt_SCHEDULER_IO_INTERLEAVE` (8 entries) is now `tt_RX_CHECK_RATIO`, a timed receive check - the budget is
    the ratio times the measured cost of an empty peek, capped at `tt_RECEIVE_TIMEOUT` (`test_rx_check_budget`); a rig
    A/B against the count is still owed before its figures are re-quoted.
+   Done 2026-10-05: the RPC retry bounds are srtt-relative (`tt_CALL_RETRY_MAX_SRTT_MULTIPLE`, per-retry doubling;
+   `tt_CALL_RETRY_INTERVAL` is now only the seed and `_MAX` is gone), and the server's response cache lives as long
+   as the client's schedule it can know plus the retry gaps it has measured (`tt_SERVER_CACHE_GAP_MULTIPLE`;
+   `tt_SERVER_CACHE_TIMEOUT` is gone). `tt_CALL_RETRY_BACKOFF_LIMIT` (1 s) stays absolute: it bounds evidence-free
+   growth only, as RFC 6298 2.5 does. `RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS` (100 ms) stays: an rmw call must live
+   until the server's `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT` (ROS 2 has no rmw-level service timeout), and core's
+   auto path ends a call after a retry count derived from srtt. It can move to the auto interval once core has a
+   call deadline separate from the retry count.
 6. **Re-measure rmw same-host performance**: the rmw same-host rows predate the segment, FIFO and wake fixes.
    (COMPARISON 2.7; RMW_PERF_PLAN)
 7. **FreeRTOS: implement tt_rx_maybe_ready() with an lwIP netconn receive callback**: today only the Linux HAL has

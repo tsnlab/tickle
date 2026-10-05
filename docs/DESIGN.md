@@ -245,12 +245,18 @@ KEEP_ALL writer would stop at its bound. So the writer solicits acks itself (a H
 ## 7. Services (RPC)
 
 - A Client has one outstanding call, cached for retry in `cache_buf` (or caller-attached storage).
-- Retries: `call_retry_interval` if set. Otherwise (auto) the interval is `1.5 x` the latency estimate, floored at
-  `tt_CALL_RETRY_INTERVAL` (5 ms), doubled on timeout, capped at `tt_CALL_RETRY_INTERVAL_MAX` (250 ms), reset by the
-  first answer after a backoff. A call ends within `(tt_CALL_RETRY_COUNT + 1) x` the cap (1 s) even against a dead
-  server.
-- A Server caches each answered response in one of `tt_MAX_SERVER_CACHE_COUNT` (64) slots for
-  `tt_SERVER_CACHE_TIMEOUT` (100 ms), so a retried request gets the same answer without re-running the callback.
+- Retries: `call_retry_interval` if set, every time. Otherwise (auto) RFC 6298 over call-to-answer times, with bounds
+  relative to srtt since 2026-10-05: the first wait is `srtt + max(tt_CALL_RETRY_GRANULARITY, 4 x rttvar)`, each
+  retry of the call waits twice the one before, each at most `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` (64) x srtt. The seed
+  `tt_CALL_RETRY_INTERVAL` (5 ms) stands in for srtt until a first answer. A call gives up after
+  `(2^(count+1) - 1)` first waits (15). A timeout doubles srtt, up to `tt_CALL_RETRY_BACKOFF_LIMIT` (1 s, evidence-free
+  growth only); the next answer replaces the estimate.
+- A Server caches each answered response in one of `tt_MAX_SERVER_CACHE_COUNT` (64) slots, so a retried request gets
+  the same answer without re-running the callback. It keeps it for the longer of the client's seed schedule (or the
+  service's explicit `call_retry_interval x (count + 1)`) and `tt_SERVER_CACHE_GAP_MULTIPLE` (4) x the longest
+  recent gap between a response and the same client's retry; each retry served re-arms it, and a retry after expiry
+  teaches the server that client's gap. A first transmission (retry 0) is never served from the cache. A full cache
+  evicts the response sent longest ago.
 - **Deferred responses:** a callback may return `tt_CALL_DEFERRED` and answer later from any thread with
   `tt_Server_send_response()`, which encodes and sends before it returns (the caller's data need only live for the
   call). An unanswered slot is reclaimed after `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT` (5 s); a retry of a pending
@@ -490,9 +496,12 @@ All are compile-time `-D` overrides unless noted. Times in nanoseconds.
 | `tt_RELIABLE_RETRY` | 3 | | KEEP_LAST give-up |
 | `tt_RELIABLE_BITMAP_BITS` / `_MAX_BITS` | 256 / 4096 | | reader window default / ceiling |
 | `tt_MAX_RELIABLE_HISTORY` | 64 | | reference cache depth for examples |
-| `tt_CALL_RETRY_INTERVAL` / `_MAX` | 5 ms / 250 ms | | RPC auto retry floor / cap |
+| `tt_CALL_RETRY_INTERVAL` | 5 ms | | RPC auto retry seed, until a first answer |
+| `tt_CALL_RETRY_GRANULARITY` | 200 us | | two hosts' event lateness term |
+| `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` | 64 | | a wait's ceiling in srtt |
+| `tt_CALL_RETRY_BACKOFF_LIMIT` | 1 s | | backed-off srtt bound (dead server) |
 | `tt_CALL_RETRY_COUNT` | 3 | | RPC retries |
-| `tt_SERVER_CACHE_TIMEOUT` | 100 ms | | answered-response cache |
+| `tt_SERVER_CACHE_GAP_MULTIPLE` | 4 | | answered-response cache, in observed retry gaps |
 | `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT` | 5 s | | deferred response slot lifetime |
 | `tt_MAX_SERVER_CACHE_COUNT` | 64 | | server response slots |
 | `tt_SERVER_CACHE_ENTRY_LENGTH`, `tt_CLIENT_CACHE_LENGTH` | 2 x buffer | 8 | inline storage (rmw attaches its own) |
