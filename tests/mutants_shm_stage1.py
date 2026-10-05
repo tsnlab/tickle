@@ -61,6 +61,13 @@ MUTANTS = [
         "test_a_sleeping_reader_is_rung_and_a_busy_one_is_not",
     ),
     (
+        "ringing for a batch once, after its last record",
+        "src/tickle.c",
+        "datagrams[i].head_len, datagrams[i].body, datagrams[i].body_len, &reason, false)) {",
+        "datagrams[i].head_len, datagrams[i].body, datagrams[i].body_len, &reason, true)) {",
+        "test_a_batch_is_rung_for_once_after_its_last_record",
+    ),
+    (
         "not ringing it for a reader that is awake",
         "src/tickle.c",
         "    if (sleeping != 0) {",

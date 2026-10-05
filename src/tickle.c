@@ -1269,8 +1269,39 @@ static void count_udp(struct tt_Context* node, enum udp_reason reason, uint32_t 
 // One datagram to a peer's segment. Returns true when the segment took it; otherwise *reason says
 // why it must go over UDP, and the caller counts it - the reason is returned rather than counted
 // here so that exactly one place increments tx_udp and its reason together.
-static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_t ip, uint16_t port, const void* hdr,
-                            size_t hdr_len, const void* body, size_t body_len, enum udp_reason* reason) {
+// Rings the owner of `segment` if it is asleep, once per sleep. Called after the records it is for are published -
+// by segment_deliver() for a single record, by seam_send_batch() once per peer after the whole batch (2026-10-05):
+// ringing between the fragments of one sample put the doorbell's write() and the wake-up it starts between the
+// first fragment and the second, so after an idle period every p4 sample paid it before its second half could even
+// be written - the rig's p4 - p3 round-trip gap was +6 us at 0.5 ms ping spacing and +20 us at 5 ms, CycloneDDS's
+// 0-2 us (experiments/p4_interval_rig.sh).
+static void segment_ring_if_asleep(struct tt_Context* node, uint8_t context_id, struct tt_SegmentHeader* segment,
+                                   uint32_t ip, uint16_t port) {
+    // Read after the write, never before: an owner that set the flag while this record was being
+    // copied has already passed its own last drain, so only a check on this side of the publish can
+    // see that it needs waking. A zero-length datagram is not a valid TickLE datagram under any
+    // circumstance - the receive path drops it before the magic check - so this adds nothing another
+    // implementation can parse and nothing that could be mistaken for data.
+    uint32_t sleeping = __atomic_load_n(&segment->reader_waiting, __ATOMIC_SEQ_CST);
+    if (sleeping != 0) {
+        // Once per sleep of the reader, not once per datagram (struct tt_SegmentPeer.doorbell_generation).
+        struct tt_SegmentPeer* peer = &node->segment_peers[context_id];
+        if (sleeping != peer->doorbell_generation) {
+            peer->doorbell_generation = sleeping;
+            if (peer->bell_fd_plus1 > 0) {
+                tt_segment_bell_ring(peer->bell_fd_plus1 - 1); // the FIFO: no socket layer on either side
+                node->segment_bells_rung++;
+            } else {
+                (void)tt_send_to(node, "", 0, ip, port);
+            }
+            node->segment_doorbells_sent++;
+        }
+    }
+}
+
+static bool segment_deliver_ringing(struct tt_Context* node, uint8_t context_id, uint32_t ip, uint16_t port,
+                                    const void* hdr, size_t hdr_len, const void* body, size_t body_len,
+                                    enum udp_reason* reason, bool ring_now) {
     // node->tx_seq_span is this datagram's, set by the publisher and returned to 1 by set_tx_tail() when
     // the buffer empties. Read here and passed down because segment_write() is given no node.
     if (context_id == tt_CONTEXT_ID_INVALID) {
@@ -1335,27 +1366,16 @@ static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_
     // left alone here and only the refusal path touches it.
     node->segment_peers[context_id].last_progress_ns = 0;
     count_tx(node, tt_TRANSPORT_SHM, 1);
-    // Read after the write, never before: an owner that set the flag while this record was being
-    // copied has already passed its own last drain, so only a check on this side of the publish can
-    // see that it needs waking. A zero-length datagram is not a valid TickLE datagram under any
-    // circumstance - the receive path drops it before the magic check - so this adds nothing another
-    // implementation can parse and nothing that could be mistaken for data.
-    uint32_t sleeping = __atomic_load_n(&segment->reader_waiting, __ATOMIC_SEQ_CST);
-    if (sleeping != 0) {
-        // Once per sleep of the reader, not once per datagram (struct tt_SegmentPeer.doorbell_generation).
-        struct tt_SegmentPeer* peer = &node->segment_peers[context_id];
-        if (sleeping != peer->doorbell_generation) {
-            peer->doorbell_generation = sleeping;
-            if (peer->bell_fd_plus1 > 0) {
-                tt_segment_bell_ring(peer->bell_fd_plus1 - 1); // the FIFO: no socket layer on either side
-                node->segment_bells_rung++;
-            } else {
-                (void)tt_send_to(node, "", 0, ip, port);
-            }
-            node->segment_doorbells_sent++;
-        }
+    if (ring_now) {
+        segment_ring_if_asleep(node, context_id, segment, ip, port);
     }
     return true;
+}
+
+// One record, rung for at once if its reader is asleep.
+static bool segment_deliver(struct tt_Context* node, uint8_t context_id, uint32_t ip, uint16_t port, const void* hdr,
+                            size_t hdr_len, const void* body, size_t body_len, enum udp_reason* reason) {
+    return segment_deliver_ringing(node, context_id, ip, port, hdr, hdr_len, body, body_len, reason, true);
 }
 #endif
 
@@ -1409,16 +1429,32 @@ static int32_t seam_send_batch(struct tt_Context* node, const struct tt_OutDatag
 #if tt_SEGMENT_ENABLED
     struct tt_OutDatagram remaining[TX_MAX_BATCH];
     uint32_t left = 0;
+    // The peers this batch wrote to, each rung once after the whole batch is in (segment_ring_if_asleep()).
+    uint8_t rung_for[TX_MAX_BATCH];
+    uint32_t peers = 0;
     for (uint32_t i = 0; i < count; i++) {
         enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
-        if (segment_deliver(node, context_ids[i], datagrams[i].ip, datagrams[i].port, datagrams[i].head,
-                            datagrams[i].head_len, datagrams[i].body, datagrams[i].body_len, &reason)) {
+        if (segment_deliver_ringing(node, context_ids[i], datagrams[i].ip, datagrams[i].port, datagrams[i].head,
+                                    datagrams[i].head_len, datagrams[i].body, datagrams[i].body_len, &reason, false)) {
+            bool seen = false;
+            for (uint32_t known = 0; known < peers && !seen; known++) {
+                seen = rung_for[known] == context_ids[i];
+            }
+            if (!seen) {
+                rung_for[peers++] = context_ids[i];
+            }
             continue;
         }
         // Counted per datagram, by its own reason - a batch can mix them, and a batch counted once
         // by the first datagram's reason would name the wrong cause for the rest.
         count_udp(node, reason, 1);
         remaining[left++] = datagrams[i];
+    }
+    for (uint32_t written = 0; written < peers; written++) {
+        struct tt_SegmentPeer* peer = &node->segment_peers[rung_for[written]];
+        if (peer->mapping != NULL) { // a peer given up on during this batch has nobody left to wake
+            segment_ring_if_asleep(node, rung_for[written], peer->mapping, peer->ip, peer->port);
+        }
     }
     if (left == 0) {
         return 0; // every datagram took a segment; nothing for the socket
