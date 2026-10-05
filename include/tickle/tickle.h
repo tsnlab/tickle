@@ -234,7 +234,13 @@ enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT }
 // 4 since 2026-10-05: reader_waiting carries the generation of the owner's sleep instead of 1, and a writer rings
 // once per generation rather than once per read_index. A new writer with an old owner would see the generation stuck
 // at 1 and ring once ever, so the bump - refused attach, UDP between the two - is again the whole compatibility story.
-#define tt_SEGMENT_VERSION 4
+// 5 since 2026-10-05: write_index, read_index and reader_waiting each on a cache line of their own, which moves them.
+#define tt_SEGMENT_VERSION 5
+// The line size the segment header pads its shared indices to. 64 on the rig's Cortex-A76 and on x86-64; a target with
+// a larger line still works, only with the false sharing this exists to remove.
+#ifndef tt_SEGMENT_CACHE_LINE
+#define tt_SEGMENT_CACHE_LINE 64
+#endif
 // Longest segment path this build can form: "/dev/shm/tickle-seg-255.255.255.255-65535-255" and a NUL.
 #define tt_SEGMENT_PATH_LENGTH 64
 
@@ -264,8 +270,12 @@ struct tt_SegmentHeader {
     // the wrap where a comparison of masked offsets would not.
     uint32_t slots;      // power of two
     uint32_t slot_bytes; // payload capacity of one slot
-    uint32_t write_index;
-    uint32_t read_index;
+    // One cache line each (2026-10-05, segment version 5). They were adjacent, so the writers' CAS on write_index,
+    // the owner's store to read_index on every drain, and every writer's load of reader_waiting after every batch all
+    // moved the same line between cores: perf on the rig put 8.3% of a p3 publisher's user cycles in the
+    // reader_waiting load and 4% in the claim CAS (experiments/perf_publisher_profile.sh).
+    tt_ALIGNAS(tt_SEGMENT_CACHE_LINE) uint32_t write_index;
+    tt_ALIGNAS(tt_SEGMENT_CACHE_LINE) uint32_t read_index;
 
     // Set by the owner immediately before it blocks on its socket, cleared when it wakes. Shared
     // memory cannot wake a thread that is inside a socket wait, and once the segment carries nearly
@@ -280,7 +290,7 @@ struct tt_SegmentHeader {
     // is never set and the doorbell is never rung.
     // 0 while the owner is awake; while it is about to sleep or asleep, the generation of that sleep (never 0), so a
     // writer can tell a reader that went back to sleep from one that never woke (struct tt_SegmentPeer).
-    uint32_t reader_waiting;
+    tt_ALIGNAS(tt_SEGMENT_CACHE_LINE) uint32_t reader_waiting;
 };
 
 // One slot. `length` is the datagram's own length; the payload follows, and the slot is
