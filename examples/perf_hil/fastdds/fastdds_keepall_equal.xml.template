@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  EQUAL-BOUND KEEP_ALL writer: F0 (fastdds_eth0_only.xml) plus a KEEP_ALL writer history of exactly @N@ samples.
+  A template: experiments/rmw_keepall_rig.sh (EQUAL_BOUND mode) writes one copy per bound with @N@ replaced, validates
+  it against the rig's own fastRTPS_profiles.xsd and records its sha256 (docs/ROADMAP.md "Now" 0, open item (a): the
+  rmw KEEP_ALL rows give every framework the same bound - DDS in samples, rmw_tickle in bytes worth the same samples).
+
+  The transport and participant parts are fastdds_eth0_only.xml unchanged; see it for why Fast DDS is pinned to eth0.
+  How a default data_writer profile reaches rmw_fastrtps_cpp, and what rmw overwrites (not resource_limits):
+  fastdds_keepall_F1.xml's header.
+
+  resource_limits: max_samples @N@ is a KEEP_ALL writer history's only bound on a keyless topic (Fast DDS 2.14
+  DataWriterHistory). max_instances 1 and max_samples_per_instance @N@ keep DataWriterImpl's consistency check
+  (max_samples >= max_instances x max_samples_per_instance) true - the defaults, 10 x 400, would fail it below 4,000.
+  allocated_samples 100 (its default) is below every @N@ the harness uses and only sets the preallocation.
+  The profile is every writer's default in the process: rosout's KEEP_LAST 1000 is held to @N@ too (Fast DDS warns and
+  uses max_samples_per_instance as its depth). rosout carries no measured traffic.
+  max_blocking_time stays at its 100 ms default, as in every published rmw KEEP_ALL row. The reader is untouched.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>eth0_udp</transport_id>
+      <type>UDPv4</type>
+      <interfaceWhiteList>
+        <address>192.168.10.2</address>
+        <address>192.168.10.3</address>
+      </interfaceWhiteList>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="eth0_only_participant" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>eth0_udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+  <data_writer profile_name="keepall_equal_@N@_writer" is_default_profile="true">
+    <topic>
+      <resourceLimitsQos>
+        <max_samples>@N@</max_samples>
+        <max_instances>1</max_instances>
+        <max_samples_per_instance>@N@</max_samples_per_instance>
+        <allocated_samples>100</allocated_samples>
+        <extra_samples>1</extra_samples>
+      </resourceLimitsQos>
+    </topic>
+  </data_writer>
+</profiles>
