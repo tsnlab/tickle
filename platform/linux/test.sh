@@ -428,7 +428,18 @@ tx_udp=$(printf '%s' "$samehost_result" | sed -n 's/.*tx_udp=\([0-9]*\).*/\1/p')
 same_host=$(field shm_same_host_peers samehost_server.log)
 echo "default broadcast, one host: tx_shm=${tx_shm:-<absent>} tx_udp=${tx_udp:-<absent>}" \
     "server shm_same_host_peers=${same_host:-<absent>}"
-if [ "${tx_shm:-0}" -gt "${tx_udp:-0}" ] && [ "${same_host:-0}" -gt 0 ]; then
+# The module-off control (.github/scripts/test_linux_module_off.sh runs this with CPPFLAGS=-Dtt_SEGMENT_ENABLED=0,
+# which make exports to this script) has no segment to use: there the same step must show the stream on UDP and no
+# segment at all, the inverse of the module-on expectation - not be skipped.
+case " ${CPPFLAGS:-} " in *"-Dtt_SEGMENT_ENABLED=0"*) module_off=1 ;; *) module_off=0 ;; esac
+if [ "$module_off" = 1 ]; then
+    if [ "${tx_shm:-1}" -eq 0 ] && [ "${tx_udp:-0}" -gt 0 ]; then
+        echo "default broadcast, one host: PASS - module compiled out, the stream went over UDP"
+    else
+        echo "default broadcast, one host: FAIL - module compiled out, yet tx_shm=${tx_shm:-<absent>} tx_udp=${tx_udp:-<absent>}"
+        status=1
+    fi
+elif [ "${tx_shm:-0}" -gt "${tx_udp:-0}" ] && [ "${same_host:-0}" -gt 0 ]; then
     echo "default broadcast, one host: PASS - shared memory carried the stream"
 else
     echo "default broadcast, one host: FAIL - two processes on one host did not use shared memory"
