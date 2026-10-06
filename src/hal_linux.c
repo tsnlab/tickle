@@ -1472,15 +1472,26 @@ void tt_segment_bell_destroy(struct tt_Context* node, const char* path) {
     (void)unlink(path);
 }
 
+// Read-write, not write-only, so that this end always counts as a reader of the pipe. A write-only end outlives the
+// owner that held the read end, and write() on a FIFO with no reader fails with EPIPE AND raises SIGPIPE, whose
+// default action ends the process: a same-host subscriber that exited left its reader_waiting flag set, the
+// publisher rang it and died with status 141 (tests/test_segment_bell.c; CI never saw it because the GitHub runner
+// starts steps with SIGPIPE ignored). Holding a read end costs the ring nothing - it stays one write() - where
+// blocking the signal around each ring would have cost two or three syscalls per wake-up. Linux defines O_RDWR on a
+// FIFO (fifo(7)); POSIX leaves it undefined, and this HAL is Linux's.
+//
+// What this end gives up is ENXIO at open for an owner that has gone: that bell now opens, and its rings fill a pipe
+// nobody reads until write() returns EAGAIN, which is as useless and as harmless as the UDP doorbell it used to
+// fall back to - a dead owner is found by its ring refusing records (segment_deliver_ringing() in core), not by its
+// bell. ENOENT, a peer from before the bell existed, still falls back to UDP. This end never reads, so it takes
+// nothing from the owner's wait, edge-triggered or not.
 int32_t tt_segment_bell_open(const char* path) {
-    // O_WRONLY|O_NONBLOCK fails with ENXIO when nobody holds the read end - an owner that has gone - and with ENOENT
-    // for a peer from before the bell existed. Both are answered by ringing over UDP.
-    return open(path, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    return open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
 }
 
 void tt_segment_bell_ring(int32_t bell) {
     const uint8_t one = 1;
-    (void)write(bell, &one, sizeof(one)); // EAGAIN: the pipe is full of rings the reader has not drained yet
+    (void)write(bell, &one, sizeof(one)); // EAGAIN: the pipe is full of rings no reader has drained
 }
 
 void tt_segment_bell_close(int32_t bell) {
