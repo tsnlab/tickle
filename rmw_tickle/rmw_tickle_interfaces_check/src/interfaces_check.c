@@ -174,7 +174,13 @@ int main(int argc, char** argv) {
     rmw_qos_profile_t qos = rmw_qos_profile_default; // RELIABLE, KEEP_LAST 10 - ROS 2's default
     int status = publisher ? publish(node, &qos, rounds) : subscribe(node, &qos, rounds);
     fflush(stdout);
-    // Leave through the OS rather than tearing the context down: this is a one-shot check, and the
-    // exit status is its whole result.
+    // Tear the node down rather than leave through the OS: destroying the last node is what prints
+    // rmw_tickle's traffic line and each Subscriber's delivery line, the only record of what a run
+    // that failed actually received. Without them a CI failure (2026-10-06, a subscriber that took
+    // nothing in 15 s) could not say whether nothing arrived or something arrived and was refused.
+    // The exit status stays the check's result either way.
+    (void)rmw_destroy_node(node);
+    (void)rmw_shutdown(&context);
+    fflush(stdout);
     return status;
 }
