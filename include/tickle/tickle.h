@@ -725,6 +725,14 @@ struct tt_Context {
     uint32_t segment_slot_ceiling; // the largest slot_bytes of any peer segment attached (record_size_limit()) // of
                                    // segment_doorbells_sent, the ones rung through the FIFO rather than UDP
     uint64_t segment_doorbells_received;
+    // The shortest sleep a doorbell has ended, from the decision to sleep to the resume: the least sleeping has cost
+    // this reader, and how long it may wait for a record already claimed instead (segment_await_claim()). 0 until the
+    // first. Polling thread only.
+    uint64_t segment_sleep_cost_ns;
+    // How many times this context's own ring was waited on without announcing a sleep, and how many of those waits
+    // ended with the record published - the rest slept as before.
+    uint64_t segment_claim_waits;
+    uint64_t segment_claim_waits_published;
     // How many times this context built its own segment and gave it up again, and how many peers it
     // currently believes share its host. Out here with the other counters rather than behind
     // tt_SEGMENT_ENABLED because the traffic line that prints them is compiled either way; they stay
