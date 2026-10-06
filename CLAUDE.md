@@ -28,7 +28,10 @@ clang-format (lintenv 19) → git add → make check-gates → read the table �
 
 A commit once passed 13 of 13 gates and broke `-Dtt_SEGMENT_ENABLED=0`; CI failed four jobs on it, two of
 them FreeRTOS, which also compiles the segment out. The `build configs (syntax)` gate now sweeps eight
-configurations, but the table still does not cover:
+configurations, and since 2026-10-06 a `freertos link` row links the RISC-V FreeRTOS build as CI does (a 64-bit
+atomic linked on Linux and failed only there). The rows run in parallel (~100 s). `make check-gates DOCS_ONLY=1`
+runs only the document rows when every changed path is a document, and the full set otherwise. The table still
+does not cover:
 
 - `make test-linux` — two nodes over the Linux HAL in a netns. It ran red all day on 2026-09-29 while every
   gate reported PASS. Run it before trusting a push that touches the HAL or the transport.
