@@ -1,0 +1,639 @@
+# ab_samehost_fixture.txt - synthetic s6_transport_cells.sh output for `ab_samehost.py selftest`.
+# Nine commits a..i (sha = the letter x 40; g, h, i as noted), three cells, two block files of two repetitions each per commit and
+# cell. Only the fields the self-test's pre-registration reads are present. What each commit is made to show:
+#   a  the base: no shm_encoded_in_slot on its traffic line (main has no such counter); one extra repetition
+#      with window=short and cpu 0.30, which must be dropped (pooled, it would hide b's gain)
+#   b  best_effort p3 cpu_s_per_Msample 0.80 -> 0.70                          -> IMPROVED
+#   c  reliable_latency p3 rtt_p50 30 -> 36 us                                -> WORSE
+#   d  as b, but the p4 control's win_send_mbps moved 14000 -> 12000           -> VOID (a moved control)
+#   e  as b, but no reliable_latency file at all                               -> NO VERDICT (a missing arm)
+#   f  as b, but shm_encoded_in_slot=0: the treatment never applied            -> VOID
+#   g  (sha 1 x 40) the change with no effect, counter present                  -> PASS
+#   h  (sha 2 x 40) a re-run of a, so no counter: as arm B its treatment cannot be looked at -> NO VERDICT
+#   i  (sha 3 x 40) as b, but its p3 client binary is byte-identical to a's  -> VOID (never compiled in)
+#   g's p4 (control-only) binary is byte-identical to a's: printed as a note, not refused
+# plus a p3 file named for b whose header says sha=a (cpu 0.95): refused by identity; pooled, it would hide
+# b's gain. Both guards were shown to decide by removing each: the b case then reads PASS.
+# Lines before the first '### file' are not part of any file.
+### file b1_aaaaaaaa_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=aaaaaaaaaaaaaaaa
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0aaaaaaaaaaaaaaa
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14260.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14260.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7570.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14340.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.8100
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14340.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7630.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5200
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14420.0 window=short doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.3000
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14420.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7690.0 window=short doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5600
+### file b1_aaaaaaaa_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=aaaaaaaaaaaaaaaa
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0aaaaaaaaaaaaaaa
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0295 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20409 window=ok utime_s=0.068 stime_s=0.292
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.330 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0305 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20419 window=ok utime_s=0.068 stime_s=0.298
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.350 cpu_s=0.430
+### file b1_aaaaaaaa_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=aaaaaaaaaaaaaaaa
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0aaaaaaaaaaaaaaa
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13950.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14050.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0200
+### file b2_aaaaaaaa_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=aaaaaaaaaaaaaaaa
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0aaaaaaaaaaaaaaa
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14280.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7950
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14280.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7585.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14320.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.8050
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14320.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7615.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5100
+### file b2_aaaaaaaa_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=aaaaaaaaaaaaaaaa
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0aaaaaaaaaaaaaaa
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0297 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20412 window=ok utime_s=0.068 stime_s=0.293
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.335 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0302 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20416 window=ok utime_s=0.068 stime_s=0.296
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.345 cpu_s=0.430
+### file b2_aaaaaaaa_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=aaaaaaaaaaaaaaaa
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0aaaaaaaaaaaaaaa
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13975.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14025.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0100
+### file b1_bbbbbbbb_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=bbbbbbbbbbbbbbbb
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0bbbbbbbbbbbbbbb
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14260.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.6900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14260.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7570.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14340.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7100
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14340.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7630.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5200
+### file b1_bbbbbbbb_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=bbbbbbbbbbbbbbbb
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0bbbbbbbbbbbbbbb
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0295 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20409 window=ok utime_s=0.068 stime_s=0.292
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.330 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0305 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20419 window=ok utime_s=0.068 stime_s=0.298
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.350 cpu_s=0.430
+### file b1_bbbbbbbb_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=bbbbbbbbbbbbbbbb
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0bbbbbbbbbbbbbbb
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13950.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14050.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0200
+### file b2_bbbbbbbb_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=bbbbbbbbbbbbbbbb
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0bbbbbbbbbbbbbbb
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14280.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.6950
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14280.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7585.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14320.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7050
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14320.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7615.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5100
+### file b2_bbbbbbbb_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=bbbbbbbbbbbbbbbb
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0bbbbbbbbbbbbbbb
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0297 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20412 window=ok utime_s=0.068 stime_s=0.293
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.335 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0302 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20416 window=ok utime_s=0.068 stime_s=0.296
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.345 cpu_s=0.430
+### file b2_bbbbbbbb_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=bbbbbbbbbbbbbbbb
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0bbbbbbbbbbbbbbb
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13975.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14025.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0100
+### file b1_cccccccc_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=cccccccccccccccccccccccccccccccccccccccc scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=cccccccccccccccc
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0ccccccccccccccc
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14260.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14260.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7570.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14340.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.8100
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14340.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7630.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5200
+### file b1_cccccccc_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=cccccccccccccccccccccccccccccccccccccccc scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=cccccccccccccccc
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0ccccccccccccccc
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0355 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20409 window=ok utime_s=0.068 stime_s=0.292
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.330 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0365 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20419 window=ok utime_s=0.068 stime_s=0.298
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.350 cpu_s=0.430
+### file b1_cccccccc_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=cccccccccccccccccccccccccccccccccccccccc scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=cccccccccccccccc
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0ccccccccccccccc
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13950.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14050.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0200
+### file b2_cccccccc_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=cccccccccccccccccccccccccccccccccccccccc scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=cccccccccccccccc
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0ccccccccccccccc
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14280.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7950
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14280.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7585.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14320.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.8050
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14320.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7615.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5100
+### file b2_cccccccc_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=cccccccccccccccccccccccccccccccccccccccc scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=cccccccccccccccc
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0ccccccccccccccc
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0357 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20412 window=ok utime_s=0.068 stime_s=0.293
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.335 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0362 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20416 window=ok utime_s=0.068 stime_s=0.296
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.345 cpu_s=0.430
+### file b2_cccccccc_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=cccccccccccccccccccccccccccccccccccccccc scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=cccccccccccccccc
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0ccccccccccccccc
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13975.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14025.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0100
+### file b1_dddddddd_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=dddddddddddddddddddddddddddddddddddddddd scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=dddddddddddddddd
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0ddddddddddddddd
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14260.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.6900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14260.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7570.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14340.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7100
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14340.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7630.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5200
+### file b1_dddddddd_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=dddddddddddddddddddddddddddddddddddddddd scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=dddddddddddddddd
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0ddddddddddddddd
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0295 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20409 window=ok utime_s=0.068 stime_s=0.292
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.330 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0305 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20419 window=ok utime_s=0.068 stime_s=0.298
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.350 cpu_s=0.430
+### file b1_dddddddd_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=dddddddddddddddddddddddddddddddddddddddd scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=dddddddddddddddd
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0ddddddddddddddd
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=11950.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=12050.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0200
+### file b2_dddddddd_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=dddddddddddddddddddddddddddddddddddddddd scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=dddddddddddddddd
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0ddddddddddddddd
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14280.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.6950
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14280.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7585.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14320.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7050
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14320.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7615.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5100
+### file b2_dddddddd_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=dddddddddddddddddddddddddddddddddddddddd scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=dddddddddddddddd
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0ddddddddddddddd
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0297 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20412 window=ok utime_s=0.068 stime_s=0.293
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.335 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0302 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20416 window=ok utime_s=0.068 stime_s=0.296
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.345 cpu_s=0.430
+### file b2_dddddddd_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=dddddddddddddddddddddddddddddddddddddddd scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=dddddddddddddddd
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0ddddddddddddddd
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=11975.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=12025.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0100
+### file b1_eeeeeeee_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=eeeeeeeeeeeeeeee
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0eeeeeeeeeeeeeee
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14260.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.6900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14260.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7570.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14340.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7100
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14340.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7630.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5200
+### file b1_eeeeeeee_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=eeeeeeeeeeeeeeee
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0eeeeeeeeeeeeeee
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13950.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14050.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0200
+### file b2_eeeeeeee_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=eeeeeeeeeeeeeeee
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0eeeeeeeeeeeeeee
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14280.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.6950
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14280.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7585.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14320.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7050
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14320.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7615.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5100
+### file b2_eeeeeeee_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=eeeeeeeeeeeeeeee
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0eeeeeeeeeeeeeee
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13975.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14025.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0100
+### file b1_ffffffff_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=ffffffffffffffffffffffffffffffffffffffff scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=ffffffffffffffff
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0fffffffffffffff
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14260.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.6900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14260.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7570.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14340.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7100
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14340.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7630.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5200
+### file b1_ffffffff_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=ffffffffffffffffffffffffffffffffffffffff scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=ffffffffffffffff
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0fffffffffffffff
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0295 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20409 window=ok utime_s=0.068 stime_s=0.292
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.330 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0305 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20419 window=ok utime_s=0.068 stime_s=0.298
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.350 cpu_s=0.430
+### file b1_ffffffff_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=ffffffffffffffffffffffffffffffffffffffff scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=ffffffffffffffff
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0fffffffffffffff
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13950.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14050.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0200
+### file b2_ffffffff_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=ffffffffffffffffffffffffffffffffffffffff scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=ffffffffffffffff
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0fffffffffffffff
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14280.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.6950
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14280.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7585.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14320.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7050
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14320.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7615.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5100
+### file b2_ffffffff_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=ffffffffffffffffffffffffffffffffffffffff scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=ffffffffffffffff
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0fffffffffffffff
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0297 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20412 window=ok utime_s=0.068 stime_s=0.293
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.335 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0302 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20416 window=ok utime_s=0.068 stime_s=0.296
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.345 cpu_s=0.430
+### file b2_ffffffff_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=ffffffffffffffffffffffffffffffffffffffff scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=ffffffffffffffff
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0fffffffffffffff
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13975.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14025.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0100
+### file b1_11111111_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=1111111111111111111111111111111111111111 scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=1111111111111111
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0111111111111111
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14260.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14260.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7570.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14340.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.8100
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14340.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7630.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5200
+### file b1_11111111_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=1111111111111111111111111111111111111111 scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=1111111111111111
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0111111111111111
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0295 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20409 window=ok utime_s=0.068 stime_s=0.292
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.330 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0305 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20419 window=ok utime_s=0.068 stime_s=0.298
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.350 cpu_s=0.430
+### file b1_11111111_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=1111111111111111111111111111111111111111 scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=aaaaaaaaaaaaaaaa
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0111111111111111
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13950.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14050.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0200
+### file b2_11111111_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=1111111111111111111111111111111111111111 scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=1111111111111111
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0111111111111111
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14280.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7950
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14280.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7585.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14320.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.8050
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14320.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7615.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5100
+### file b2_11111111_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=1111111111111111111111111111111111111111 scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=1111111111111111
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0111111111111111
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0297 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20412 window=ok utime_s=0.068 stime_s=0.293
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.335 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0302 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20416 window=ok utime_s=0.068 stime_s=0.296
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.345 cpu_s=0.430
+### file b2_11111111_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=1111111111111111111111111111111111111111 scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=aaaaaaaaaaaaaaaa
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0111111111111111
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13975.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14025.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0100
+### file b1_22222222_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=2222222222222222222222222222222222222222 scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=2222222222222222
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0222222222222222
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14260.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14260.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7570.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14340.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.8100
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14340.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7630.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5200
+### file b1_22222222_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=2222222222222222222222222222222222222222 scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=2222222222222222
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0222222222222222
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0295 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20409 window=ok utime_s=0.068 stime_s=0.292
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.330 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0305 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20419 window=ok utime_s=0.068 stime_s=0.298
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.350 cpu_s=0.430
+### file b1_22222222_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=2222222222222222222222222222222222222222 scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=2222222222222222
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0222222222222222
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13950.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14050.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0200
+### file b2_22222222_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=2222222222222222222222222222222222222222 scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=2222222222222222
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0222222222222222
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14280.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7950
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14280.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7585.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14320.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.8050
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14320.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7615.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5100
+### file b2_22222222_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=2222222222222222222222222222222222222222 scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=2222222222222222
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0222222222222222
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0297 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20412 window=ok utime_s=0.068 stime_s=0.293
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.335 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0302 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20416 window=ok utime_s=0.068 stime_s=0.296
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.345 cpu_s=0.430
+### file b2_22222222_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=2222222222222222222222222222222222222222 scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=2222222222222222
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0222222222222222
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13975.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14025.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0100
+### file b1_33333333_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=3333333333333333333333333333333333333333 scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=aaaaaaaaaaaaaaaa
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0333333333333333
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14260.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.6900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14260.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7570.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14340.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7100
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14340.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7630.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5200
+### file b1_33333333_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=3333333333333333333333333333333333333333 scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=3333333333333333
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0333333333333333
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0295 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20409 window=ok utime_s=0.068 stime_s=0.292
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.330 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0305 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20419 window=ok utime_s=0.068 stime_s=0.298
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.350 cpu_s=0.430
+### file b1_33333333_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=3333333333333333333333333333333333333333 scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=3333333333333333
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0333333333333333
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13950.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9800
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14050.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0200
+### file b2_33333333_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=3333333333333333333333333333333333333333 scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=aaaaaaaaaaaaaaaa
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0333333333333333
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14280.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.6950
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14280.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7585.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.4900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14320.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.7050
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=server recv=11294213 win_recv_mbps=14320.0 window=ok
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=4.000 stime_s=4.670 cpu_s=8.670
+  arm=OFF RESULT: framework=tickle scenario=best_effort_throughput role=client sent=6000000 win_send_mbps=7615.0 window=ok doorbells_sent=0 bells_rung=0 cpu_s_per_Msample=1.5100
+### file b2_33333333_reliable_latency_p3_i_0.005.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=3333333333333333333333333333333333333333 scen=reliable_latency size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=3333333333333333
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0333333333333333
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0297 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20412 window=ok utime_s=0.068 stime_s=0.293
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.335 cpu_s=0.430
+  arm=ON RESULT: framework=tickle scenario=reliable_latency sent=10155 recv=10155 rtt_p50_ms=0.0302 rtt_p99_ms=0.040 doorbells_sent=10154 bells_rung=10154 sleeps=20416 window=ok utime_s=0.068 stime_s=0.296
+  arm=ON RESULT: framework=tickle scenario=reliable_latency role=server doorbells_sent=10151 bells_rung=10151 sleeps=10249
+  arm=ON server-delivery [2026-10-06 00:00:00] [INFO] Subscriber 1 delivery: delivered=10155 out_of_order=0
+  arm=ON PROC: framework=tickle role=server state=ok utime_s=0.090 stime_s=0.345 cpu_s=0.430
+### file b2_33333333_best_effort_throughput_p4.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=3333333333333333333333333333333333333333 scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=3333333333333333
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0333333333333333
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=13975.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=1.9900
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=2000000 win_send_mbps=14025.0 window=ok doorbells_sent=300000 bells_rung=300000 cpu_s_per_Msample=2.0100
+### file b3_bbbbbbbb_best_effort_throughput_p3.txt
+=== S6 transport cells 2026-10-06T00:00:00+09:00 sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa scen=best_effort_throughput size=p3 dur=10s reps=2 host=10.1.1.214 iface=lo ===
+### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ===
+    arm ON (extra='') built, client sha256=aaaaaaaaaaaaaaaa
+    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0aaaaaaaaaaaaaaa
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14300.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.9400
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14300.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.9600
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14300.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.9450
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000
+  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client sent=11294213 win_send_mbps=14300.0 window=ok doorbells_sent=1605252 bells_rung=1605252 cpu_s_per_Msample=0.9550
+  arm=ON client-traffic [2026-10-06 00:00:00] [INFO] Node 1 traffic: tx_shm=11294214 shm_doorbells_sent=1605252 shm_bells_rung=1605252 shm_encoded_in_slot=11294000

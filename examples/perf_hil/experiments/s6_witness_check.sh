@@ -131,6 +131,13 @@ run_one() { # run_one <arm>
         printf '%s\n' "$clog" | tail -6 | sed 's/^/       | /' | tee -a "$OUT"
     fi
     [ -n "$line" ] && say "arm=$name $line"
+    # The core's own traffic line (src/tickle.c, printed when the node is destroyed), recorded whole after the RESULT
+    # line it belongs to. Some counters exist only there - shm_encoded_in_slot, shm_doorbells_received - and an A/B
+    # whose treatment is one of them (ab_samehost.sh) cannot otherwise show the treatment was applied. Absent if the
+    # client never destroyed its node; a reader then sees no client-traffic line, not a zero.
+    local tline
+    tline=$(printf '%s\n' "$clog" | grep ' traffic: ' | tail -1)
+    [ -n "$line" ] && [ -n "$tline" ] && say "arm=$name client-traffic $tline"
     # The server's CPU and memory read from outside it, just before it is asked to stop (proc_snap.sh), the same
     # instrument s6_transport_cells.sh uses on every framework's server and on iox-roudi. Taken here because not every
     # server prints them itself: no latency server carries BenchStats fields. state=gone says "could not look".
@@ -160,6 +167,8 @@ run_one() { # run_one <arm>
         printf '%s\n' "$slog" | tail -6 | sed 's/^/       | /' | tee -a "$OUT"
     fi
     [ -n "$dline" ] && say "arm=$name server-delivery $dline"
+    tline=$(printf '%s\n' "$slog" | grep ' traffic: ' | tail -1)
+    [ -n "$tline" ] && say "arm=$name server-traffic $tline"
     say "arm=$name PROC: framework=tickle role=server ${snap:-state=gone}"
 }
 
