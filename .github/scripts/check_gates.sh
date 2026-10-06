@@ -158,6 +158,24 @@ case "$sweep_rc" in
         ;;
 esac
 
+# Every gate above compiles for this host, and the sweep above never links. On 2026-10-06 a 64-bit relaxed
+# atomic store linked on x86-64 and failed only in CI's "Build - FreeRTOS RISC-V": RV32 lowers it to
+# __atomic_store_8, which picolibc does not provide. This is that build, from scratch, when the cross
+# compiler is here - and a loud SKIP with how to install it when it is not.
+name="build freertos (link, as CI)"
+printf '== %s\n' "$name"
+./.github/scripts/build_freertos.sh
+freertos_rc=$?
+case "$freertos_rc" in
+    0) results+=("PASS  $name") ;;
+    77) skip_gate "NO RISC-V CROSS COMPILER - the FreeRTOS link was NOT checked; install: sudo apt-get install gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf picolibc-riscv64-unknown-elf" ;;
+    78) skip_gate "FreeRTOS/lwIP submodules not checked out - the FreeRTOS link was NOT checked; git submodule update --init" ;;
+    *)
+        results+=("FAIL  $name")
+        failed=1
+        ;;
+esac
+
 echo
 echo "== gates"
 printf '%s\n' "${results[@]}"
@@ -170,6 +188,7 @@ cat <<'NOTCOVERED'
    NOT COVERED HERE - a pass above does not predict CI:
      make test-linux      two nodes over the Linux HAL in a netns: the service round trip (set_bool),
                           the perf tier's loss and throughput floors, DURABILITY/HISTORY/LIFESPAN.
+     make test-freertos   the FreeRTOS round trip under QEMU (the "build freertos" gate above only links it).
    It ran red all day on 2026-09-29 while this script reported every gate PASS. Run it before trusting a push:
      make test-linux
    (rmw_tickle's own suite WAS in this list until 2026-10-03; it is now the "rmw suite (as CI)" gate
