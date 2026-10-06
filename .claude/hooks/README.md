@@ -1,7 +1,7 @@
 # Hooks
 
 Guards that enforce a few of this repository's rules mechanically, so following them does not depend on
-remembering them. They run as `PreToolUse` hooks on `Bash`, deny or ask, and cost nothing in context.
+remembering them. They run as `PreToolUse` hooks on `Bash`, deny, ask or warn, and cost nothing in context.
 
 ## Why these live here and not in an organization-wide plugin
 
@@ -19,11 +19,11 @@ So: project-scoped, in the repository rather than in somebody's home directory, 
 
 ## What each one does
 
-| hook | denies | asks | silent on |
-|---|---|---|---|
-| `guard-repo-wide-git` | `git stash`, `git commit -a` where `.claude-shared-checkout` exists | the same elsewhere | explicit-path commits, `git status` |
-| `guard-process-identity` | - | `pgrep -f`, `ps \| grep` | `/proc/<pid>/comm`, `pgrep -x` |
-| `guard-format-before-add` | staging an unformatted C/C++ file | when the pinned formatter is missing | formatted files, non-C files |
+| hook | denies | asks | warns | silent on |
+|---|---|---|---|---|
+| `guard-repo-wide-git` | `git stash`, `git commit -a` where `.claude-shared-checkout` exists | the same elsewhere | - | explicit-path commits, `git status` |
+| `guard-process-identity` | - | - | `pgrep -f`, `ps \| grep` (since 2026-10-06; it asked before, and a night's work waited 7 h 40 min on it) | `/proc/<pid>/comm`, `pgrep -x` |
+| `guard-format-before-add` | staging an unformatted C/C++ file | when the pinned formatter is missing | - | formatted files, non-C files |
 
 `guard-format-before-add` asking rather than allowing when the formatter is absent is deliberate: a silent
 pass there is indistinguishable from a clean tree, and "I could not look" needs its own answer.

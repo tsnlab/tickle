@@ -7,6 +7,12 @@ The details live in the source documents named in parentheses. Last consolidated
 
 The user's active list (2026-10-05), in order.
 
+0a. **Warm-up and cool-down for every framework** (the user, 2026-10-06): every cell discards an equal warm-up at
+   the start and cool-down at the end for all frameworks before its statistics, so no figure is a start-up or
+   teardown transient. Found by item 6: TickLE's same-host p4 latency (S10) was a first-lap figure (first-touch page
+   faults on the 11.6 MB reorder ring, ~16 us of its +20 us; `p4_reorder_firsttouch.sh`). Then re-measure S7-S10 and
+   the cross-host latency rows. Separately, in core: deliver in-order fragments from one hot buffer instead of the
+   reorder ring (the ring stays for out-of-order).
 0. **A fair testbed** (the user, 2026-10-05; ahead of everything below once rmw KEEP_ALL is closed): the published
    comparison must not rest on a setup tuned for TickLE. Found: the same-host cells (S1-S16, `s6_transport_cells.sh`,
    `s6_witness_check.sh`) pin each process to ONE core, which squeezes the multi-threaded DDS processes and suits
@@ -152,27 +158,6 @@ deadline, lifespan, liveliness + lease) applied at creation. Give core a QoS pro
 caller still owns the memory (no malloc in core). Keep the field API working meanwhile; `max_blocking_time` and the
 RESOURCE_LIMITS item above belong in the same profile.
 
-### rmw_tickle at REP-2004 Quality Level 2 (the user, 2026-10-05)
-
-The goal: from Quality Level 4 (`rmw_tickle/rmw_tickle/QUALITY_DECLARATION.md`) to Level 2. What Level 2 asks and
-what is missing, in order:
-
-1. **Every change through a pull request**, with DCO sign-off checked and CI required before merge (REP-2004 2.i,
-   2.ii, 2.iv). Today changes are pushed to `main` after the local gates, unsigned. Needs the user's decision,
-   since it changes how every session works. (Peer review is optional at Level 2 and required at Level 1.)
-2. **Coverage tracking** in CI for core and rmw_tickle; Level 2 tracks it, Level 1 enforces a bound (4.iii).
-   Core: done - `make coverage` (gcovr, unit tests, HALs excluded), run by `test-all.yml` with the table in the job
-   summary and the reports as an artifact; 90.6% of lines and 72.6% of branches on 2026-10-05. rmw_tickle: open -
-   CI's colcon build in `check-all.yml` is not built with `--coverage`; an untested recipe is in the declaration's
-   4.iii.
-3. **A vulnerability disclosure policy** (`SECURITY.md`, REP-2006 response schedule) (7.i).
-4. **Dependencies at Level 2 or better** (5): quality declarations for `rosidl_typesupport_tickle_c` and
-   `rosidl_typesupport_tickle_cpp`, and a written quality justification for TickLE core, rmw_tickle's one non-ROS
-   dependency.
-5. **A stable version** (`>= 1.0.0`) with declared API and ABI stability policies (1.ii, 1.iv, 1.v).
-6. **All REP-2000 Tier 1 platforms** (6): Linux only today. Check jazzy's Tier 1 list; a platform not supported
-   (Windows, if listed) needs a HAL port or a documented exception.
-
 ### Wired work (the user's order of 2026-09-29: finish wired, then Security, then wireless)
 
 - **Receive-buffer lending** (`tt_Sample_retain`/`release`, SHM stage 2 / S7): most of the same-host win is
@@ -278,6 +263,31 @@ went ahead: refuse to start under `ROS_SECURITY_ENFORCEMENT=Enforce`, and say on
   library and budget on FreeRTOS (mbedTLS?); (3) the wire change and its bytes under the wire rule; (4) what
   "enforced" means when MACsec cannot be verified from user space; (5) testing against a CycloneDDS SROS2 control
   and the rig's links with MACsec on.
+
+### rmw_tickle at REP-2004 Quality Level 2 (the user, 2026-10-05; after the security plan, the user, 2026-10-06)
+
+Deferred until after the parked security plan (SECURITY_PLAN), including the switch to pull requests and the
+disclosure policy.
+
+The goal: from Quality Level 4 (`rmw_tickle/rmw_tickle/QUALITY_DECLARATION.md`) to Level 2. What Level 2 asks and
+what is missing, in order:
+
+1. **Every change through a pull request**, with DCO sign-off checked and CI required before merge (REP-2004 2.i,
+   2.ii, 2.iv). Today changes are pushed to `main` after the local gates, unsigned. Needs the user's decision,
+   since it changes how every session works. (Peer review is optional at Level 2 and required at Level 1.)
+2. **Coverage tracking** in CI for core and rmw_tickle; Level 2 tracks it, Level 1 enforces a bound (4.iii).
+   Core: done - `make coverage` (gcovr, unit tests, HALs excluded), run by `test-all.yml` with the table in the job
+   summary and the reports as an artifact; 90.6% of lines and 72.6% of branches on 2026-10-05. rmw_tickle: open -
+   CI's colcon build in `check-all.yml` is not built with `--coverage`; an untested recipe is in the declaration's
+   4.iii.
+3. **A vulnerability disclosure policy** (`SECURITY.md`, REP-2006 response schedule) (7.i).
+4. **Dependencies at Level 2 or better** (5): quality declarations for `rosidl_typesupport_tickle_c` and
+   `rosidl_typesupport_tickle_cpp`, and a written quality justification for TickLE core, rmw_tickle's one non-ROS
+   dependency.
+5. **A stable version** (`>= 1.0.0`) with declared API and ABI stability policies (1.ii, 1.iv, 1.v).
+6. **All REP-2000 Tier 1 platforms** (6): Linux only today. Check jazzy's Tier 1 list; a platform not supported
+   (Windows, if listed) needs a HAL port or a documented exception.
+
 
 ## Done recently (2026-10-04/05)
 
