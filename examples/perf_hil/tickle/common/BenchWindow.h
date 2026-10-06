@@ -22,6 +22,15 @@
 // and cool-down pings are spaced -I apart (the edge interval): their job is to run the round trip through every slot
 // once, which takes the same number of pings at any spacing, and at the campaign's 0.1 s spacing 4096 of them would
 // otherwise take seven minutes. The idle before the first measured ping is still the measured -i.
+// Each edge is bounded by count AND time (2026-10-07): it ends at the first of -W (-C) round trips or -T seconds since
+// its own first ping, judged when one of its round trips ends (reply or 500 ms give-up), by BenchWindow_edge_close()
+// in all three clients. Count alone made a run's length RTT x 8,192: at the rig's 10 ms netem delay that is ~95 s of
+// edges, and under 5% loss each lost ping costs the 500 ms give-up. The TickLE server's lifetime cap was sized for a
+// fast round trip and ended mid-warm-up, its client then gave every ping up and outran the cell's timeout (c12,
+// campaign 2026-10-07), and the orphaned client was the "leftover" that voided the next cells. With the time bound a
+// client's whole run is at most ~2 x -T + -d + discovery, whatever the link does, so a server's backstop and a cell's
+// timeout can be computed. The RESULT line says which bound ended each edge (warmup_end=, cooldown_end=: count or
+// time) beside the round trips it sent (warmup=, cooldown=) and the bound (edge_max_s=).
 //
 // THROUGHPUT (best_effort_throughput, reliable_throughput, client and server): counted in seconds of the SENDER's
 // clock, read from each sample's own send_ns. A sample is counted into a bucket of BENCH_WINDOW_BUCKET_NS by
@@ -45,6 +54,10 @@
 #define BENCH_WARMUP_ROUND_TRIPS 4096U
 #define BENCH_COOLDOWN_ROUND_TRIPS 4096U
 #define BENCH_EDGE_INTERVAL_S 0.001
+// 20 s per edge: on the rig a lossless round trip plus the 1 ms edge spacing is ~1.3 ms, so 4,096 of them take ~5.5 s
+// and the count ends the edge in every unshaped cell; at 10 ms delay ~1,800 round trips fit, every framework alike.
+// -T 0 removes the time bound (count only, the pre-2026-10-07 rule).
+#define BENCH_EDGE_MAX_S 20.0
 
 // Throughput: seconds at each end, the same for every framework and at both ends. Two seconds covers the ondemand
 // governor's ramp (tens of ms) many times over, and a lap of TickLE's 4096-slot ring at any rate above 2,048 samples/s,
@@ -58,6 +71,35 @@
 #define BENCH_WINDOW_BUCKETS (1U << 17U)
 #define BENCH_WINDOW_NS_PER_S 1e9
 #define BENCH_WINDOW_FIELDS_MAX 256
+
+// Whether a latency edge (warm-up or cool-down) is complete, asked when one of its round trips has ended: "count" once
+// it has sent want round trips, "time" once max_s seconds have passed since its first ping (max_s <= 0: no time
+// bound), NULL while it goes on. The same rule in every client (BenchWindow.h's LATENCY paragraph).
+static inline const char* BenchWindow_edge_close(uint32_t sent, uint32_t want, uint64_t first_ns, uint64_t now_ns,
+                                                 double max_s) {
+    if (sent >= want) {
+        return "count";
+    }
+    if (max_s > 0.0 && sent > 0 && now_ns > first_ns && (double)(now_ns - first_ns) >= max_s * BENCH_WINDOW_NS_PER_S) {
+        return "time";
+    }
+    return NULL;
+}
+
+// The RESULT line's warmup_end=/cooldown_end= value: what closed the edge, or "open" if the run ended inside it.
+static inline const char* BenchWindow_edge_end_name(const char* end) {
+    return end != NULL ? end : "open";
+}
+
+// The longest one edge can last, for a server's lifetime backstop: the time bound plus the round trip it is judged
+// after (at most the clients' 500 ms give-up), or with no time bound every ping given up.
+#define BENCH_EDGE_GIVE_UP_S 0.5
+static inline double BenchWindow_edge_bound_s(uint32_t count, double edge_interval_s, double max_s) {
+    if (max_s > 0.0) {
+        return max_s + edge_interval_s + BENCH_EDGE_GIVE_UP_S;
+    }
+    return (double)count * (edge_interval_s + BENCH_EDGE_GIVE_UP_S);
+}
 
 struct BenchWindow {
     double warmup_s;

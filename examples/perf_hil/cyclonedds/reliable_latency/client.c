@@ -134,6 +134,7 @@ int main(int argc, char** argv) {
     uint32_t warmup_rtts = BENCH_WARMUP_ROUND_TRIPS;
     uint32_t cooldown_rtts = BENCH_COOLDOWN_ROUND_TRIPS;
     double edge_interval_s = BENCH_EDGE_INTERVAL_S;
+    double edge_max_s = BENCH_EDGE_MAX_S;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
@@ -145,6 +146,8 @@ int main(int argc, char** argv) {
             cooldown_rtts = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "-I") == 0 && i + 1 < argc) {
             edge_interval_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-T") == 0 && i + 1 < argc) {
+            edge_max_s = atof(argv[++i]); // each edge's time bound (BenchWindow.h); 0: count only
         }
     }
 
@@ -197,12 +200,16 @@ int main(int argc, char** argv) {
 
     // Warm-up, measured window, cool-down (BenchWindow.h), paced exactly as the TickLE client paces them: the edge
     // interval between edge round trips, the measured -i before every measured ping including the first, and before
-    // the first cool-down ping.
+    // the first cool-down ping. Each edge ends at the first of its count or edge_max_s seconds, judged after each of
+    // its round trips (BenchWindow_edge_close(), as the TickLE client judges it on each reply or give-up).
     uint32_t warmup_sent = 0;
-    while (!g_interrupted && warmup_sent < warmup_rtts) {
+    uint64_t warmup_first_ns = now_ns();
+    const char* warmup_end = warmup_rtts == 0 ? "count" : NULL;
+    while (!g_interrupted && warmup_end == NULL) {
         ping_once(writer, reader, waitset, ++seq, false, &stats);
         warmup_sent++;
-        sleep_s(warmup_sent < warmup_rtts ? edge_interval_s : interval_s);
+        warmup_end = BenchWindow_edge_close(warmup_sent, warmup_rtts, warmup_first_ns, now_ns(), edge_max_s);
+        sleep_s(warmup_end == NULL ? edge_interval_s : interval_s);
     }
     uint64_t deadline = now_ns() + (uint64_t)(duration_s * ns_per_s_real);
     while (!g_interrupted && now_ns() < deadline) {
@@ -210,10 +217,15 @@ int main(int argc, char** argv) {
         sleep_s(interval_s);
     }
     uint32_t cooldown_sent = 0;
-    while (!g_interrupted && cooldown_sent < cooldown_rtts) {
+    uint64_t cooldown_first_ns = now_ns();
+    const char* cooldown_end = cooldown_rtts == 0 ? "count" : NULL;
+    while (!g_interrupted && cooldown_end == NULL) {
         ping_once(writer, reader, waitset, ++seq, false, &stats);
         cooldown_sent++;
-        sleep_s(edge_interval_s);
+        cooldown_end = BenchWindow_edge_close(cooldown_sent, cooldown_rtts, cooldown_first_ns, now_ns(), edge_max_s);
+        if (cooldown_end == NULL) {
+            sleep_s(edge_interval_s);
+        }
     }
 
     uint64_t lost = stats.transmitted - stats.received;
@@ -231,13 +243,15 @@ int main(int argc, char** argv) {
     printf("RESULT: framework=cyclonedds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.6f "
            "rtt_min_ms=%.3f rtt_avg_ms=%.6f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
            "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u "
-           "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f window=%s %s\n",
+           "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f edge_max_s=%.3f warmup_end=%s "
+           "cooldown_end=%s "
+           "window=%s %s\n",
            (unsigned long)stats.transmitted, (unsigned long)stats.received, loss_pct, stats.min_ms, avg, stats.max_ms,
            BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq), BenchCpuFreq_max_mhz(&g_rtt_freq),
            cpu_mhz_at_rtt_max, BenchRtt_quantile(&g_rtt, BENCH_RTT_P50), BenchRtt_quantile(&g_rtt, BENCH_RTT_P99),
            (unsigned)g_rtt.count, warmup_sent, cooldown_sent, (unsigned long)stats.measured_recv,
-           (unsigned long)stats.measured_sent, edge_interval_s,
-           stats.measured_recv > 0 ? "ok" : "fail:no_measured_round_trip",
+           (unsigned long)stats.measured_sent, edge_interval_s, edge_max_s, BenchWindow_edge_end_name(warmup_end),
+           BenchWindow_edge_end_name(cooldown_end), stats.measured_recv > 0 ? "ok" : "fail:no_measured_round_trip",
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, stats.transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

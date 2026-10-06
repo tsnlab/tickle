@@ -89,19 +89,48 @@ ssh_run() {
 # for the labelled note beside the unpinned headline.
 PIN=${PIN:-}
 
-ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; export CYCLONEDDS_URI='$CDDS_URI'; cd ~/$REMOTE_DIR; nohup $PIN ./server $CLIENT_ARGS > /tmp/cdds_${SCENARIO}_server.log 2>&1 < /dev/null &"
+# Both remote processes are stopped by the PID their launch recorded, checked against /proc/<pid>/exe, never by a name
+# pattern - and from an EXIT trap, so a run that ends early stops them too (2026-10-07). This used to be
+# `pkill -INT -x server` after the client returned, which a run killed by campaign_sweep.sh's `timeout 180`, or ended
+# by `set -e` when the client printed no RESULT line, never reached: the server ran on (the DDS latency servers have no
+# lifetime cap at all), and so did the remote client, which the local ssh's death does not stop. On 2026-10-07 such a
+# client (c12, TickLE, giving every ping up at 500 ms after its server's cap expired) was the "leftover" that voided
+# the next rows across c12 and c16.
+SERVER_PID_FILE="/tmp/cdds_${SCENARIO}_server.pid"
+CLIENT_PID_FILE="/tmp/cdds_${SCENARIO}_client.pid"
+# stop_remote <host> <pid file> <binary>: SIGINT (each bench's own clean exit, which prints its RESULT line), wait up
+# to 10 s for it to go, then SIGKILL. Does nothing if the PID is no longer that binary.
+stop_remote() {
+    # shellcheck disable=SC2029 # $2, $3 and $REMOTE_DIR are expanded here on purpose; \$p on the rpi
+    ssh_run "$1" "p=\$(cat '$2' 2>/dev/null) || exit 0
+        is_it() { case \$(readlink /proc/\$p/exe 2>/dev/null) in */$REMOTE_DIR/$3) return 0 ;; esac; return 1; }
+        is_it || exit 0
+        kill -INT \$p
+        for _ in \$(seq 1 100); do is_it || exit 0; sleep 0.1; done
+        kill -KILL \$p && echo \"$3 \$p ignored SIGINT for 10 s: SIGKILL\" >&2" || true
+}
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
+stop_both() {
+    stop_remote "$RPI_CLIENT" "$CLIENT_PID_FILE" client
+    stop_remote "$RPI_SERVER" "$SERVER_PID_FILE" server
+}
+trap stop_both EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+
+ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; export CYCLONEDDS_URI='$CDDS_URI'; cd ~/$REMOTE_DIR; nohup $PIN ./server $CLIENT_ARGS > /tmp/cdds_${SCENARIO}_server.log 2>&1 < /dev/null & echo \$! > $SERVER_PID_FILE"
 # 5s, not 2s (2026-09-20, real finding): a TRANSIENT_LOCAL reader's own match negotiation against a
 # writer carrying a non-trivial durability_service history took meaningfully longer on this rig than
 # a plain volatile match (~1.5-2s) - 2s left the client's own 15s match-wait budget too tight often
 # enough to matter; 5s was reliable across repeated real runs.
 sleep 5
-ssh_run "$RPI_CLIENT" "export LD_LIBRARY_PATH=$LIB_PATH; export CYCLONEDDS_URI='$CDDS_URI'; cd ~/$REMOTE_DIR && $PIN ./client $CLIENT_ARGS" | grep '^RESULT:'
-# pkill first, then read the log - not just pkill (2026-09-21, real gap found the hard way): this
+ssh_run "$RPI_CLIENT" "export LD_LIBRARY_PATH=$LIB_PATH; export CYCLONEDDS_URI='$CDDS_URI'; cd ~/$REMOTE_DIR && echo \$\$ > $CLIENT_PID_FILE && exec $PIN ./client $CLIENT_ARGS" | grep '^RESULT:'
+# Stop the server first (stop_remote: SIGINT, then wait for it to go), then read the log - not just stop it (2026-09-21,
+# real gap found the hard way): this
 # script never actually printed the server's own RESULT line at all before this fix - only the
 # client's own line ever reached stdout, silently losing every server-side recv/loss number for
 # every scenario whose server is the authoritative side (best_effort_throughput,
 # reliable_throughput, ...) unless someone happened to read the remote log file by hand
 # afterward. Matches examples/perf_hil/tickle/run_scenario.sh's own identical fix.
-ssh_run "$RPI_SERVER" "pkill -INT -x server" || true
-sleep 1
+stop_remote "$RPI_SERVER" "$SERVER_PID_FILE" server
 ssh_run "$RPI_SERVER" "cat /tmp/cdds_${SCENARIO}_server.log" | grep '^RESULT:'

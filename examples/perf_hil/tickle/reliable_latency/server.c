@@ -81,6 +81,7 @@ int main(int argc, char** argv) {
     uint32_t warmup_rtts = BENCH_WARMUP_ROUND_TRIPS;
     uint32_t cooldown_rtts = BENCH_COOLDOWN_ROUND_TRIPS;
     double edge_interval_s = BENCH_EDGE_INTERVAL_S;
+    double edge_max_s = BENCH_EDGE_MAX_S;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
@@ -90,13 +91,17 @@ int main(int argc, char** argv) {
             cooldown_rtts = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "-I") == 0 && i + 1 < argc) {
             edge_interval_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-T") == 0 && i + 1 < argc) {
+            edge_max_s = atof(argv[++i]);
         }
     }
     safety_cap_s += safety_cap_buffer_s;
-    // -d is the client's MEASURED window; its warm-up and cool-down round trips come on top. Each costs the edge
-    // interval plus a round trip, allowed edge_rtt_allowance_s here - a backstop, run_scenario.sh ends this server.
-    const double edge_rtt_allowance_s = 0.005;
-    safety_cap_s += (double)(warmup_rtts + cooldown_rtts) * (edge_interval_s + edge_rtt_allowance_s);
+    // -d is the client's MEASURED window; its warm-up and cool-down come on top, each at most its time bound plus one
+    // round trip (BenchWindow_edge_bound_s()). A backstop only: run_scenario.sh SIGINTs this server when the client is
+    // done. It used to allow 5 ms per edge round trip, which a 10 ms netem delay outran: the server ended mid-warm-up,
+    // its client gave every later ping up at 500 ms each and outlived the cell's timeout (c12, campaign 2026-10-07).
+    safety_cap_s += BenchWindow_edge_bound_s(warmup_rtts, edge_interval_s, edge_max_s) +
+                    BenchWindow_edge_bound_s(cooldown_rtts, edge_interval_s, edge_max_s);
 
     // real HIL link's own broadcast address (run_perf.sh's own PERF_LINK_BROADCAST) - the
     // compiled-in default (255.255.255.255) doesn't match this subnet, which breaks

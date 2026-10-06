@@ -80,6 +80,9 @@ namespace {
         uint64_t measured_recv = 0;
         uint32_t warmup_sent = 0;
         uint32_t cooldown_sent = 0;
+        // Which bound closed each edge ("count" or "time", BenchWindow_edge_close()); nullptr while it is open.
+        const char* warmup_end = nullptr;
+        const char* cooldown_end = nullptr;
         double min_ms = -1.0;
         double max_ms = 0.0;
         double sum_ms = 0.0;
@@ -92,6 +95,7 @@ namespace {
         uint32_t warmup_rtts = BENCH_WARMUP_ROUND_TRIPS;
         uint32_t cooldown_rtts = BENCH_COOLDOWN_ROUND_TRIPS;
         double edge_interval_s = BENCH_EDGE_INTERVAL_S;
+        double edge_max_s = BENCH_EDGE_MAX_S;
     };
 
     auto parse_options(int argc, char** argv) -> client_options {
@@ -107,6 +111,8 @@ namespace {
                 opts.cooldown_rtts = static_cast<uint32_t>(strtoul(argv[++i], nullptr, 10));
             } else if (strcmp(argv[i], "-I") == 0 && i + 1 < argc) {
                 opts.edge_interval_s = atof(argv[++i]);
+            } else if (strcmp(argv[i], "-T") == 0 && i + 1 < argc) {
+                opts.edge_max_s = atof(argv[++i]); // each edge's time bound (BenchWindow.h); 0: count only
             }
         }
         return opts;
@@ -171,23 +177,35 @@ namespace {
 
     // Warm-up, measured window, cool-down (BenchWindow.h), paced exactly as the TickLE and CycloneDDS clients pace
     // them: the edge interval between edge round trips, the measured -i before every measured ping including the
-    // first, and before the first cool-down ping.
+    // first, and before the first cool-down ping. Each edge ends at the first of its count or edge_max_s seconds,
+    // judged after each of its round trips (BenchWindow_edge_close(), as the TickLE client judges it on each reply or
+    // give-up).
     void run_phases(DataWriter* writer, DataReader* reader, const client_options& opts, rtt_stats& stats) {
         uint32_t seq = 0;
-        while (!harness::interrupted() && stats.warmup_sent < opts.warmup_rtts) {
+        const uint64_t warmup_first_ns = harness::now_ns();
+        stats.warmup_end = opts.warmup_rtts == 0 ? "count" : nullptr;
+        while (!harness::interrupted() && stats.warmup_end == nullptr) {
             ping_once(writer, reader, ++seq, false, stats);
             stats.warmup_sent++;
-            harness::sleep_seconds(stats.warmup_sent < opts.warmup_rtts ? opts.edge_interval_s : opts.interval_s);
+            stats.warmup_end = BenchWindow_edge_close(stats.warmup_sent, opts.warmup_rtts, warmup_first_ns,
+                                                      harness::now_ns(), opts.edge_max_s);
+            harness::sleep_seconds(stats.warmup_end == nullptr ? opts.edge_interval_s : opts.interval_s);
         }
         const uint64_t deadline = harness::now_ns() + harness::seconds_to_ns(opts.duration_s);
         while (!harness::interrupted() && harness::now_ns() < deadline) {
             ping_once(writer, reader, ++seq, true, stats);
             harness::sleep_seconds(opts.interval_s);
         }
-        while (!harness::interrupted() && stats.cooldown_sent < opts.cooldown_rtts) {
+        const uint64_t cooldown_first_ns = harness::now_ns();
+        stats.cooldown_end = opts.cooldown_rtts == 0 ? "count" : nullptr;
+        while (!harness::interrupted() && stats.cooldown_end == nullptr) {
             ping_once(writer, reader, ++seq, false, stats);
             stats.cooldown_sent++;
-            harness::sleep_seconds(opts.edge_interval_s);
+            stats.cooldown_end = BenchWindow_edge_close(stats.cooldown_sent, opts.cooldown_rtts, cooldown_first_ns,
+                                                        harness::now_ns(), opts.edge_max_s);
+            if (stats.cooldown_end == nullptr) {
+                harness::sleep_seconds(opts.edge_interval_s);
+            }
         }
     }
 
@@ -212,19 +230,22 @@ namespace {
         // - the FastDDS arm was refused on every repetition and the cell reported nothing, which reads as a FastDDS
         // finding and is a harness defect. Same source as the throughput client's, so the two cells name the arm the
         // same way.
-        printf("RESULT: framework=fastdds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.6f "
-               "rtt_min_ms=%.3f rtt_avg_ms=%.6f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
-               "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u "
-               "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f window=%s "
-               "transport_profile=%s %s\n",
-               static_cast<unsigned long>(stats.transmitted), static_cast<unsigned long>(stats.received), loss_pct,
-               stats.min_ms, avg, stats.max_ms, BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq),
-               BenchCpuFreq_max_mhz(&g_rtt_freq), stats.cpu_mhz_at_max, BenchRtt_quantile(&g_rtt, BENCH_RTT_P50),
-               BenchRtt_quantile(&g_rtt, BENCH_RTT_P99), static_cast<unsigned>(g_rtt.count), stats.warmup_sent,
-               stats.cooldown_sent, static_cast<unsigned long>(stats.measured_recv),
-               static_cast<unsigned long>(stats.measured_sent), opts.edge_interval_s,
-               stats.measured_recv > 0 ? "ok" : "fail:no_measured_round_trip", harness::transport_profile(),
-               harness::bench_fields(BENCH_ROLE_SENDER, stats.transmitted));
+        printf(
+            "RESULT: framework=fastdds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.6f "
+            "rtt_min_ms=%.3f rtt_avg_ms=%.6f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
+            "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u "
+            "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f edge_max_s=%.3f warmup_end=%s "
+            "cooldown_end=%s window=%s "
+            "transport_profile=%s %s\n",
+            static_cast<unsigned long>(stats.transmitted), static_cast<unsigned long>(stats.received), loss_pct,
+            stats.min_ms, avg, stats.max_ms, BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq),
+            BenchCpuFreq_max_mhz(&g_rtt_freq), stats.cpu_mhz_at_max, BenchRtt_quantile(&g_rtt, BENCH_RTT_P50),
+            BenchRtt_quantile(&g_rtt, BENCH_RTT_P99), static_cast<unsigned>(g_rtt.count), stats.warmup_sent,
+            stats.cooldown_sent, static_cast<unsigned long>(stats.measured_recv),
+            static_cast<unsigned long>(stats.measured_sent), opts.edge_interval_s, opts.edge_max_s,
+            BenchWindow_edge_end_name(stats.warmup_end), BenchWindow_edge_end_name(stats.cooldown_end),
+            stats.measured_recv > 0 ? "ok" : "fail:no_measured_round_trip", harness::transport_profile(),
+            harness::bench_fields(BENCH_ROLE_SENDER, stats.transmitted));
     }
 
 } // namespace

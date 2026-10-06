@@ -85,7 +85,14 @@ enum bench_phase { PHASE_WARMUP, PHASE_MEASURED, PHASE_COOLDOWN };
 static uint32_t warmup_rtts = BENCH_WARMUP_ROUND_TRIPS;
 static uint32_t cooldown_rtts = BENCH_COOLDOWN_ROUND_TRIPS;
 static double edge_interval_s = BENCH_EDGE_INTERVAL_S;
+static double edge_max_s = BENCH_EDGE_MAX_S;
 static enum bench_phase g_phase = PHASE_WARMUP;
+// Which bound closed each edge ("count" or "time", BenchWindow_edge_close()); NULL while it is open. Judged when an
+// edge round trip ends - its reply or its give-up - exactly where the DDS clients judge it, after ping_once().
+static const char* warmup_end = NULL;
+static const char* cooldown_end = NULL;
+static uint64_t warmup_first_ns = 0;
+static uint64_t cooldown_first_ns = 0;
 static uint64_t g_measure_end_ns = 0;
 static uint32_t warmup_sent = 0;
 static uint32_t cooldown_sent = 0;
@@ -95,7 +102,10 @@ static bool awaiting_measured = false; // whether the ping being waited on is a 
 
 // The phase the next ping belongs to, moving on when the current one is complete.
 static enum bench_phase advance_phase(uint64_t now) {
-    if (g_phase == PHASE_WARMUP && warmup_sent >= warmup_rtts) {
+    if (g_phase == PHASE_WARMUP && warmup_end == NULL && warmup_rtts == 0) {
+        warmup_end = "count"; // no warm-up asked for
+    }
+    if (g_phase == PHASE_WARMUP && warmup_end != NULL) {
         g_phase = PHASE_MEASURED;
         g_measure_end_ns = now + (uint64_t)(duration_s * (double)tt_SECOND);
     }
@@ -105,10 +115,16 @@ static enum bench_phase advance_phase(uint64_t now) {
     return g_phase;
 }
 
-// The idle before the next ping: the edge interval inside warm-up and cool-down, the measured -i otherwise - so the
-// first measured ping, like every other, follows one -i of idling.
-static double next_interval_s(void) {
-    bool edge = (g_phase == PHASE_WARMUP && warmup_sent < warmup_rtts) || g_phase == PHASE_COOLDOWN;
+// Called when a round trip has ended (reply or give-up): closes the current edge if it is complete, then returns the
+// idle before the next ping - the edge interval inside warm-up and cool-down, the measured -i otherwise, so the first
+// measured ping, like every other, follows one -i of idling.
+static double next_interval_s(uint64_t now) {
+    if (g_phase == PHASE_WARMUP && warmup_end == NULL) {
+        warmup_end = BenchWindow_edge_close(warmup_sent, warmup_rtts, warmup_first_ns, now, edge_max_s);
+    } else if (g_phase == PHASE_COOLDOWN && cooldown_end == NULL) {
+        cooldown_end = BenchWindow_edge_close(cooldown_sent, cooldown_rtts, cooldown_first_ns, now, edge_max_s);
+    }
+    bool edge = (g_phase == PHASE_WARMUP && warmup_end == NULL) || g_phase == PHASE_COOLDOWN;
     return edge ? edge_interval_s : interval_s;
 }
 
@@ -134,7 +150,7 @@ static void pong_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
     double rtt_ms = (double)(now - data->send_ns) / ns_per_ms;
     received++;
     if (!awaiting_measured) {
-        tt_Context_schedule(g_node, now + (uint64_t)(next_interval_s() * (double)tt_SECOND), ping, NULL);
+        tt_Context_schedule(g_node, now + (uint64_t)(next_interval_s(now) * (double)tt_SECOND), ping, NULL);
         return; // a warm-up or cool-down round trip: counted in recv=, kept out of every statistic
     }
     measured_recv++;
@@ -151,7 +167,7 @@ static void pong_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
     if (new_max) {
         cpu_mhz_at_rtt_max = BenchCpuFreq_last_mhz(&g_rtt_freq);
     }
-    tt_Context_schedule(g_node, now + (uint64_t)(next_interval_s() * (double)tt_SECOND), ping, NULL);
+    tt_Context_schedule(g_node, now + (uint64_t)(next_interval_s(now) * (double)tt_SECOND), ping, NULL);
 }
 
 // No reply within the wait: give this ping up and send the next one an interval later, as the DDS clients do.
@@ -173,7 +189,7 @@ static void ping_timeout(struct tt_Context* node, uint64_t time, void* param) {
         return;
     }
     awaiting = 0;
-    tt_Context_schedule(node, time + (uint64_t)(next_interval_s() * (double)tt_SECOND), ping, NULL);
+    tt_Context_schedule(node, time + (uint64_t)(next_interval_s(time) * (double)tt_SECOND), ping, NULL);
 }
 
 static void ping(struct tt_Context* node, uint64_t time, void* param) {
@@ -182,7 +198,10 @@ static void ping(struct tt_Context* node, uint64_t time, void* param) {
         return;
     }
     enum bench_phase phase = advance_phase(tt_get_ns());
-    if (phase == PHASE_COOLDOWN && cooldown_sent >= cooldown_rtts) {
+    if (phase == PHASE_COOLDOWN && cooldown_end == NULL && cooldown_rtts == 0) {
+        cooldown_end = "count"; // no cool-down asked for
+    }
+    if (phase == PHASE_COOLDOWN && cooldown_end != NULL) {
         g_interrupted = 1; // the run ends after its cool-down, not at a fixed time
         return;
     }
@@ -192,11 +211,15 @@ static void ping(struct tt_Context* node, uint64_t time, void* param) {
         transmitted++;
     }
     if (phase == PHASE_WARMUP) {
-        warmup_sent++;
+        if (warmup_sent++ == 0) {
+            warmup_first_ns = msg.send_ns;
+        }
     } else if (phase == PHASE_MEASURED) {
         measured_sent++;
     } else {
-        cooldown_sent++;
+        if (cooldown_sent++ == 0) {
+            cooldown_first_ns = msg.send_ns;
+        }
     }
     awaiting_measured = phase == PHASE_MEASURED;
     awaiting = msg.seq;
@@ -223,6 +246,8 @@ int main(int argc, char** argv) {
             cooldown_rtts = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "-I") == 0 && i + 1 < argc) {
             edge_interval_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-T") == 0 && i + 1 < argc) {
+            edge_max_s = atof(argv[++i]); // each edge's time bound (BenchWindow.h); 0: count only
         }
     }
 
@@ -333,7 +358,8 @@ int main(int argc, char** argv) {
            "rtt_min_ms=%.3f rtt_avg_ms=%.6f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
            "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u retransmitted=%u gap_abandoned=%u "
            "doorbells_sent=%llu bells_rung=%llu sleeps=%lu "
-           "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f window=%s poll_ret=%d "
+           "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f edge_max_s=%.3f warmup_end=%s "
+           "cooldown_end=%s window=%s poll_ret=%d "
            "%s\n",
            (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms,
            BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq), BenchCpuFreq_max_mhz(&g_rtt_freq),
@@ -347,6 +373,7 @@ int main(int argc, char** argv) {
            // warmup= and cooldown= are the round trips each end SENT; measured= is the round trips whose RTT the
            // statistics above are taken over. measured=0 is window=fail, never a latency.
            warmup_sent, cooldown_sent, (unsigned long)measured_recv, (unsigned long)measured_sent, edge_interval_s,
+           edge_max_s, BenchWindow_edge_end_name(warmup_end), BenchWindow_edge_end_name(cooldown_end),
            measured_recv > 0 ? "ok" : "fail:no_measured_round_trip", poll_ret,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));

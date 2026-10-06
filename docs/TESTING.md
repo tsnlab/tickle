@@ -229,8 +229,10 @@ table for it.
    formula (ROADMAP "Testbed-independent constants").
 9. **No figure is a start-up or teardown transient** (the user, 2026-10-06). Every cell excludes the same warm-up
    and cool-down for every framework before its statistics. Latency: 4096 round trips at each end, 1 ms apart
-   (`-W`/`-C`/`-I`; 4096 is TickLE's largest ring, so every slot is written once), around `-d` seconds of measured
-   pings; RTT figures are over the measured round trips only and the line says `warmup= cooldown= measured=`.
+   (`-W`/`-C`/`-I`; 4096 is TickLE's largest ring, so every slot is written once), each edge ending early once 20 s
+   have passed since its first ping (`-T`; 2026-10-07, after 8,192 round trips at 10 ms delay outran a cell's timeout),
+   around `-d` seconds of measured pings; RTT figures are over the measured round trips only and the line says
+   `warmup= cooldown= measured= edge_max_s= warmup_end= cooldown_end=` (`count` or `time`).
    Throughput: 2 s at each end of sender time (`--warmup-s`/`--cooldown-s`) around `-d` measured seconds, client and
    server windowed by the same rule on each sample's `send_ns`; read `win_send_mbps`/`win_recv_mbps`, with the
    whole-run `send_mbps`/`recv_mbps` beside them. `window=fail:...` is VOID, never a figure. Defaults and reasons:

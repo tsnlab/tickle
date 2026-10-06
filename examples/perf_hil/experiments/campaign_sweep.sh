@@ -5,7 +5,8 @@
 #
 # 12 combinations x 3 frameworks x 3 repetitions = 108 runs, ~45 min, plus ~8 min of builds. Since warm-up and
 # cool-down (2026-10-06) a throughput cell sends for 2 + 5 + 2 = 9 s instead of 5 (+4 s), and a latency cell adds
-# 8,192 edge round trips at 1 ms spacing, about 10-14 s on the rig (+~12 s); the 17-cell matrix runs about 25 min
+# 8,192 edge round trips at 1 ms spacing, about 10-14 s on the rig (+~12 s), each edge cut at EDGE_MAX_S (20 s) on a
+# slow or lossy link; the 17-cell matrix runs about 25 min
 # longer in all.
 # Frameworks are interleaved within each repetition so a drift during the session lands on all
 # three rather than on whichever ran last.
@@ -47,13 +48,16 @@ DUR="${DUR:-5}"
 # Warm-up and cool-down, identical for every framework (the user, 2026-10-06; TESTING.md section 5; the defaults and
 # the reasons are in tickle/common/BenchWindow.h). DUR and the latency cell's -d 10 are the MEASURED window: a
 # throughput client sends for WARMUP_S + DUR + COOLDOWN_S, a latency client pings WARMUP_RTTS times EDGE_INTERVAL_S
-# apart, then -d 10 at -i 0.1, then COOLDOWN_RTTS more. Passed explicitly, never left to the binaries' defaults, and
+# apart, then -d 10 at -i 0.1, then COOLDOWN_RTTS more - each edge ending early, by the same rule in every client, once
+# EDGE_MAX_S seconds have passed since its first ping (2026-10-07: 8,192 round trips at the 10 ms netem delay outran
+# the TickLE server's lifetime and this script's per-cell timeout). Passed explicitly, never left to the binaries' defaults, and
 # read back from every RESULT line (window_void below).
 WARMUP_S="${WARMUP_S:-2}"
 COOLDOWN_S="${COOLDOWN_S:-2}"
 WARMUP_RTTS="${WARMUP_RTTS:-4096}"
 COOLDOWN_RTTS="${COOLDOWN_RTTS:-4096}"
 EDGE_INTERVAL_S="${EDGE_INTERVAL_S:-0.001}"
+EDGE_MAX_S="${EDGE_MAX_S:-20}"
 # FWS limits the frameworks (2026-09-27): "tickle" alone for a TickLE-only A/B such as WIRE_PLAN's bundle against its
 # parent, where the vendors do not change. The default is all three.
 FWS="${FWS:-tickle cyclonedds fastdds}"
@@ -225,7 +229,7 @@ fi
 
 say "=== campaign sweep, $(date -Is), OPTIMIZATION_PLAN.md rev 4 ==="
 say "repo $(git -C "$REPO" rev-parse --short "${SHA:-origin/main}"), ${REPS} reps, -d ${DUR}, out $OUT"
-say "warm-up/cool-down: throughput ${WARMUP_S}s/${COOLDOWN_S}s, latency ${WARMUP_RTTS}/${COOLDOWN_RTTS} round trips ${EDGE_INTERVAL_S}s apart"
+say "warm-up/cool-down: throughput ${WARMUP_S}s/${COOLDOWN_S}s, latency ${WARMUP_RTTS}/${COOLDOWN_RTTS} round trips ${EDGE_INTERVAL_S}s apart, at most ${EDGE_MAX_S}s each"
 say ""
 say "FASTDDS_PROFILE=${FASTDDS_PROFILE:-fastdds_eth0_only.xml}"
 say "TICKLE_P4_PATH=${TICKLE_P4_PATH:-frag} (p4 TickLE rows must report sample_path=${TICKLE_P4_PATH:-frag}; p1-p3 datagram)"
@@ -341,7 +345,7 @@ qos_identity_void() { # $1 scenario, $2 payload, $3 qos, $4 fw, $5 result line
 # of sender time, latency in round trips; run_scenario.sh forwards the same arguments to the server.
 window_args() { # $1 shape
     if [ "$1" = L ]; then
-        echo "-W $WARMUP_RTTS -C $COOLDOWN_RTTS -I $EDGE_INTERVAL_S"
+        echo "-W $WARMUP_RTTS -C $COOLDOWN_RTTS -I $EDGE_INTERVAL_S -T $EDGE_MAX_S"
     else
         echo "--warmup-s $WARMUP_S --cooldown-s $COOLDOWN_S"
     fi
@@ -356,8 +360,15 @@ window_void() { # $1 shape, $2 result line(s)
     esac
     if [ "$1" = L ]; then
         case "$2" in *"window=ok"*) ;; *) echo "no window= field"; return 0 ;; esac
-        case "$2" in *"warmup=$WARMUP_RTTS "*) ;; *) echo "warmup not $WARMUP_RTTS round trips"; return 0 ;; esac
-        case "$2" in *"cooldown=$COOLDOWN_RTTS "*) ;; *) echo "cooldown not $COOLDOWN_RTTS round trips"; return 0 ;; esac
+        # Each edge is WARMUP_RTTS (COOLDOWN_RTTS) round trips, or fewer when EDGE_MAX_S ended it - which the line must say
+        # (warmup_end=time), with the bound it was given. An edge that is neither ("open": interrupted) voids the row.
+        local want_max
+        want_max=$(printf 'edge_max_s=%.3f' "$EDGE_MAX_S")
+        case "$2" in *"$want_max "*) ;; *) echo "not $want_max"; return 0 ;; esac
+        case "$2" in *"warmup=$WARMUP_RTTS "*"warmup_end=count "*|*"warmup_end=time "*) ;;
+            *) echo "warmup neither $WARMUP_RTTS round trips nor ended by time"; return 0 ;; esac
+        case "$2" in *"cooldown=$COOLDOWN_RTTS "*"cooldown_end=count "*|*"cooldown_end=time "*) ;;
+            *) echo "cooldown neither $COOLDOWN_RTTS round trips nor ended by time"; return 0 ;; esac
         return 0
     fi
     local roles windows edges want

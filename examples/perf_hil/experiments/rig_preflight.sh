@@ -23,8 +23,8 @@
 #   PREFLIGHT_TOPO=samens (s6 / fair_samehost cells, same-host on the rig) both processes in one namespace, sharing
 #                         one private /dev/shm, so the same-host transports are what carries the samples.
 # Short on purpose: throughput -d $PF_DUR (1 s) between a $PF_EDGE_S (0.25 s) warm-up and cool-down; latency
-# $PF_LAT_EDGE (512) warm-up and cool-down round trips, then -d $PF_LAT_D (1 s) at -i $PF_LAT_I (0.005), so more than
-# a thousand pings in all. These replace the job's own -d/-i/window arguments; its QoS arguments are kept verbatim.
+# $PF_LAT_EDGE (512) warm-up and cool-down round trips, each bounded at -T $PF_LAT_EDGE_MAX_S (20 s, the rig's), then
+# -d $PF_LAT_D (1 s) at -i $PF_LAT_I (0.005), so more than a thousand pings in all. These replace the job's own -d/-i/window arguments; its QoS arguments are kept verbatim.
 #
 # WHAT IT CHECKS, per job (implemented in check_job below, not only listed here):
 #   - the client exited 0 within its timeout, and the server stopped on SIGINT and exited 0;
@@ -37,7 +37,8 @@
 #     recv == sent, lost == 0 (a DDS server may count up to write_fail= sequence gaps: refused writes), and its
 #     windows must agree (|win_recv - win_sent| <= 2%);
 #   - drained=acked on every reliable_throughput client;
-#   - latency: warmup= and cooldown= are what was asked, measured > 0, measured_sent >= 80% of -d / (-i + rtt), and
+#   - latency: warmup= and cooldown= are what was asked, or fewer with warmup_end=time (cooldown_end=time) - the edge
+#     ran into its -T bound - and edge_max_s= is the bound given; measured > 0, measured_sent >= 80% of -d / (-i + rtt), and
 #     at N0 every measured ping came back (measured == measured_sent);
 #   - nothing in either log, outside the RESULT lines, says terminate, timeout/timed out, abort, segmentation fault,
 #     core dumped or sanitizer.
@@ -46,7 +47,8 @@
 #
 # Usage: rig_preflight.sh 'scenario:payload:net:common args:tickle-only args' ...
 #   net is N0..N3 as in campaign_sweep.sh. Example: 'reliable_throughput:p1:N0:-N 2048 -B 100:-Q'
-#   env: SHA FWS PREFLIGHT_TOPO PREFLIGHT_SRC PF_JOBS(4) PF_DUR PF_EDGE_S PF_LAT_D PF_LAT_I PF_LAT_EDGE TICKLE_P4_PATH
+#   env: SHA FWS PREFLIGHT_TOPO PREFLIGHT_SRC PF_JOBS(4) PF_DUR PF_EDGE_S PF_LAT_D PF_LAT_I PF_LAT_EDGE PF_LAT_EDGE_MAX_S
+#        TICKLE_P4_PATH
 #        PREFLIGHT_OUT (default ~/rig_results_safe/preflight/<stamp>_<sha8>; every job's logs and the summary)
 # Needs passwordless `sudo -n ip` (tc runs inside the namespaces, through `ip netns exec`, so nothing else is shaped).
 set -uo pipefail
@@ -113,6 +115,7 @@ PF_EDGE_S=${PF_EDGE_S:-0.25}
 PF_LAT_D=${PF_LAT_D:-1}
 PF_LAT_I=${PF_LAT_I:-0.005}
 PF_LAT_EDGE=${PF_LAT_EDGE:-512}
+PF_LAT_EDGE_MAX_S=${PF_LAT_EDGE_MAX_S:-20}
 CYCLONE_LIB=${CYCLONE_LIB:-/opt/ros/lyrical/lib/x86_64-linux-gnu}
 CYCLONE_BIN=${CYCLONE_BIN:-/opt/ros/lyrical/bin}
 case "$TOPO" in veth | samens) ;; *) echo "PREFLIGHT_TOPO must be veth or samens" >&2; exit 2 ;; esac
@@ -256,7 +259,7 @@ required_fields() { # $1 scenario, $2 role
     reliable_throughput:server) echo "recv lost win_s win_recv win_recv_mbps warmup_s cooldown_s" ;;
     best_effort_throughput:client) echo "sent send_mbps win_s win_sent win_send_mbps warmup_s cooldown_s" ;;
     best_effort_throughput:server) echo "recv lost win_s win_recv win_recv_mbps warmup_s cooldown_s" ;;
-    reliable_latency:client) echo "sent recv rtt_min_ms rtt_avg_ms rtt_max_ms warmup cooldown measured measured_sent" ;;
+    reliable_latency:client) echo "sent recv rtt_min_ms rtt_avg_ms rtt_max_ms warmup cooldown measured measured_sent edge_max_s" ;;
     reliable_latency:server) echo "" ;;
     esac
 }
@@ -307,8 +310,16 @@ check_job() { # $1 problems file, $2 fw, $3 scen, $4 net, $5 keep_all(0/1), $6 c
         meas=$(field "$cline" measured); msent=$(field "$cline" measured_sent)
         num_ok "$recv" && [ "${recv%.*}" -gt 0 ] || echo "client recv=${recv:-absent}, want > 0" >>"$P"
         num_ok "$sent" && num_ok "$recv" && [ "${recv%.*}" -gt "${sent%.*}" ] && echo "client recv=$recv > sent=$sent" >>"$P"
-        [ "$(field "$cline" warmup)" = "$PF_LAT_EDGE" ] || echo "client warmup=$(field "$cline" warmup), asked $PF_LAT_EDGE" >>"$P"
-        [ "$(field "$cline" cooldown)" = "$PF_LAT_EDGE" ] || echo "client cooldown=$(field "$cline" cooldown), asked $PF_LAT_EDGE" >>"$P"
+        local edge end
+        for edge in warmup cooldown; do
+            end=$(field "$cline" "${edge}_end")
+            case "$end:$(field "$cline" "$edge")" in
+            "count:$PF_LAT_EDGE" | time:*) ;;
+            *) echo "client $edge=$(field "$cline" "$edge") ${edge}_end=${end:-absent}, asked $PF_LAT_EDGE or -T $PF_LAT_EDGE_MAX_S s" >>"$P" ;;
+            esac
+        done
+        awk -v a="$(field "$cline" edge_max_s)" -v b="$PF_LAT_EDGE_MAX_S" 'BEGIN{exit !(a == b + 0)}' ||
+            echo "client edge_max_s=$(field "$cline" edge_max_s), asked $PF_LAT_EDGE_MAX_S" >>"$P"
         # A ping waits for its pong and then -i, so a run sends about -d / (-i + RTT): under N2, 66 in 1 s.
         want=$(awk -v d="$PF_LAT_D" -v i="$PF_LAT_I" -v r="$(field "$cline" rtt_avg_ms)" \
             'BEGIN{p = i + r / 1000.0; printf "%d", 0.8 * d / p}')
@@ -366,7 +377,7 @@ run_job() { # $1 id, $2 fw, $3 spec
     local nsa="pf$$-${id}a" nsb="pf$$-${id}b" va="pf$$v${id}a" vb="pf$$v${id}b"
     local args window keep_all=0
     if [ "$scen" = reliable_latency ]; then
-        window="-W $PF_LAT_EDGE -C $PF_LAT_EDGE -I 0.001"
+        window="-W $PF_LAT_EDGE -C $PF_LAT_EDGE -I 0.001 -T $PF_LAT_EDGE_MAX_S"
         args="$common -i $PF_LAT_I -d $PF_LAT_D $window"
     else
         window="--warmup-s $PF_EDGE_S --cooldown-s $PF_EDGE_S"
