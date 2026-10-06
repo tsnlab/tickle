@@ -101,6 +101,17 @@ The user's active list (2026-10-05), in order.
 
 Open work that is not parked, deduplicated across all sources. Rough priority order within each group.
 
+### Fast DDS under KEEP_ALL, from its side (the user, 2026-10-06)
+
+The rmw KEEP_ALL rows (RESULTS 72-75) run every rmw at its defaults. Fast DDS's write times out at 5% loss: 100 ms
+`max_blocking_time`, a 5,000-sample history and a 3 s heartbeat period (RESULTS, rmw layer notes). To show it fairly:
+(1) fix `rmw_keepall_rig.sh`'s summary to count loss only after the first received id and report the pre-match gap
+separately (perf_test's `--expected_num_subs` is compiled out in the rig's build); (2) run F0 (defaults; must
+reproduce), F1 (+ `max_blocking_time` 5 s: predicts ~3 s stalls, no timeout), F2 (F1 + `heartbeatPeriod` 50 ms:
+predicts short stalls and a much higher rate), F3 (F0 + `max_samples` 50,000: tells the subscriber bottleneck at
+Array1k 0% from a writer-history one), with CycloneDDS as the control; (3) publish a "vendor-tuned" Fast DDS arm
+beside the defaults, labelled as such.
+
 ### RESOURCE_LIMITS shaped like DDS (the user, 2026-10-05)
 
 KEEP_ALL is bounded today by two process-wide byte budgets (`RMW_TICKLE_KEEP_ALL_BYTES`,

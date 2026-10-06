@@ -16,7 +16,8 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
 - **Same host (shared memory):** TickLE leads every measured cell, but S1-S3 compare *send* rates (see notes).
 - **rmw layer:** rmw_tickle is first on every block-wait row and every poll-wait row except seven draws with
   CycloneDDS (rows 59, 62-67). It loses no row. Under RELIABLE + KEEP_ALL at 5% loss it delivers 35x (Array1k) and
-  78x (Array4k) CycloneDDS's rate with no sample lost; FastDDS refuses those runs (rows 72-75).
+  78x (Array4k) CycloneDDS's rate with no sample lost; FastDDS's write times out under its default 100 ms bound
+  and the run ends (rows 72-75).
 - **Not scored:** row 5 (netem dominates), rows 45-47 (all detect correctly), zenoh-pico (reference only).
 
 ## 1. Same host (shared memory)
@@ -188,9 +189,9 @@ repetitions only. **No process is pinned to a core** (TESTING.md section 5); S1-
 | 69 | peak RSS, pong process (KB) | Bench, block, BEST_EFFORT | ✅ **13,216** | 23,632 | 14,532 | – | ❌ 70,484 | W |
 | 70 | pong CPU, whole run (ms) | Bench, block, BEST_EFFORT | ✅ **37.4** | 57.7 | 43.5 | – | ❌ 91.8 | W |
 | 71 | pong CPU, whole run (ms) | Bench, block, RELIABLE | ✅ **37.2** | 60.4 | 48.5 | – | ❌ 94.1 | W |
-| 72 | delivered msg/s, KEEP_ALL, max rate | Array1k, 0% loss | ✅ **87,977** | ✗ 15,180 | 84,217 | – | – | K |
+| 72 | delivered msg/s, KEEP_ALL, max rate | Array1k, 0% loss | ✅ **87,977** | ❌ 15,180 | 84,217 | – | – | K |
 | 73 | delivered msg/s, KEEP_ALL, max rate | Array1k, 5% loss | ✅ **65,051** | ✗ refused | ❌ 1,837 | – | – | K |
-| 74 | delivered msg/s, KEEP_ALL, max rate | Array4k, 0% loss | ✅ ‡ **27,421** | ✗ 27,521 | ✅ ‡ 27,201 | – | – | K |
+| 74 | delivered msg/s, KEEP_ALL, max rate | Array4k, 0% loss | ✅ ‡ **27,421** | ✅ ‡ 27,521 | ✅ ‡ 27,201 | – | – | K |
 | 75 | delivered msg/s, KEEP_ALL, max rate | Array4k, 5% loss | ✅ **26,483** | ✗ refused | ❌ 339 | – | – | K |
 
 ### Legend
@@ -201,7 +202,8 @@ repetitions only. **No process is pinned to a core** (TESTING.md section 5); S1-
   session (`Z`, `results/zenoh_cells_31d58011_2026-09-29.txt`), so its margins are looser than a within-row one.
 - **`†`** measured over TCP, the only configuration where zenoh-pico's reliability is real (its RELIABLE means
   monotonic sequence numbers, not retransmission). Untagged zenoh-pico cells are its UDP-multicast best-effort arm.
-- **`✗`** in rows 72-75: the vendor is excluded, for incomplete delivery or a refused run (see the rmw layer notes).
+- **`✗`** in rows 73 and 75: the vendor's publisher ended the run (Fast DDS's KEEP_ALL write timed out; see the rmw
+  layer notes).
 - **`✗`** elsewhere: measured, and the transport did not survive the cell: zenoh-pico's TCP session dies a few hundred samples
   into a max-rate run above 76 B while its publisher keeps reporting success. Never read it as a figure.
 - **`‡`** both at the ~940 Mbps link ceiling and inseparable (inside the ~1% floor between builds); both carry ✅.
@@ -288,13 +290,28 @@ trips), not a per-message cost. rmw_tickle's RSS includes its shared-memory segm
 
 **Rows 72-75 (rmw KEEP_ALL, `K`):** apex `perf_test` publisher alone on one Pi and subscriber alone on the other,
 RELIABLE + KEEP_ALL, `-r 0`, `tc netem` loss on the publisher's egress, each arm identified by `/proc/PID/maps`.
-rmw_tickle lost no sample in any of its 12 runs (`gap_evicted` 0, no give-up). FastDDS is excluded (✗): at 0% loss
-it delivered 22-28% fewer samples than it sent (lost 70-80k per run), and at 5% loss its publisher blocked past
-`max_blocking_time` and `perf_test` ended (the KEEP_ALL contract refusing, in every run). CycloneDDS delivered
-everything at 0% loss; at 5% Array1k two of its three runs sent about four times what arrived (lost ~106k). Row 74
-is at the link's ceiling for both (‡). rmw_tickle was built `Release` (`-O3`) here and the vendors are the
-distribution's `-O2`; at 35x and 78x the build type cannot explain rows 73 and 75, and rows 72 and 74 are re-measured
-with rmw_tickle at `-O2` next.
+rmw_tickle lost no sample in any of its 12 runs (`gap_evicted` 0, no give-up). Every rmw blocks a full KEEP_ALL
+publisher for 100 ms by default (`max_blocking_time`; ROS 2 QoS has no field for it).
+
+- **"Refused" (FastDDS at 5% loss, all runs) means:** Fast DDS's `DataWriter::write()` returned `RETCODE_TIMEOUT`.
+  Its KEEP_ALL history (default `max_samples` 5,000) was full, the oldest sample was not yet acknowledged by the
+  reader, and 100 ms passed. One lost sample holds the whole 5,000-sample window, and when a repair and the
+  heartbeat riding on it are both lost, the next heartbeat comes from Fast DDS's 3 s periodic timer, 30 times the
+  100 ms budget. `rmw_fastrtps_cpp` turns the timeout into `RMW_RET_ERROR` ("cannot publish data"), rclcpp into an
+  `RCLError` exception, and `perf_test` does not catch it, so the run ends (after 1-6 s). Nothing was delivered
+  wrongly; the writer gave up waiting, as KEEP_ALL with a 100 ms bound allows. With eProsima's own settings for a
+  high-rate stream (a longer `max_blocking_time`, a shorter `heartbeatPeriod`) it would not end; that "vendor-tuned"
+  arm is on the roadmap.
+- **Corrected 2026-10-06: FastDDS at 0% loss is not an incomplete delivery.** This note said it "delivered 22-28%
+  fewer samples than it sent" and excluded it (✗). Those 70-80k samples were written before its reader matched
+  (~0.7 s): `perf_test` counts every id below the first one received as lost, and a VOLATILE writer rightly does
+  not deliver what it wrote before the match. Its `--expected_num_subs` is compiled out in this build, so publishing
+  starts before matching for every arm. The rows count delivered samples per second after the start, which this does
+  not touch, so FastDDS is scored in rows 72 and 74. CycloneDDS's "lost ~106k" in two Array1k 5% runs is the same
+  artefact. At Array1k FastDDS's rate is steady at ~16k/s with ~320 ms latency (its full 5,000-sample history
+  draining at that rate); Array4k is at the link's ceiling for all three (‡).
+- rmw_tickle was built `Release` (`-O3`) here and the vendors are the distribution's `-O2`; at 35x and 78x the build
+  type cannot explain rows 73 and 75, and rows 72 and 74 are re-measured with rmw_tickle at `-O2` next.
 
 ### Where TickLE does not come first
 
