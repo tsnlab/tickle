@@ -333,6 +333,81 @@ if [ -n "$perf_full_dropped" ] && [ -n "$perf_sent" ] && [ "$perf_sent" -gt 0 ];
 fi
 add_summary perf perf_server.log
 
+# The DEFAULT broadcast, 255.255.255.255 - rmw_tickle's, unless TICKLE_BROADCAST_ADDR is set - which no interface
+# owns. Every pair above names a directed broadcast, and so did every rig harness, which is how a context on the
+# default never learning its own address went unseen: it then treated no peer as same-host, built no segment, and two
+# processes on one host never used shared memory at all (found 2026-10-06; tests/test_own_address.c). Two steps, one
+# each way, so neither can pass by the other's mechanism:
+#   - same host: perf_client and perf_server both in $NS1. The publisher must send MOST of the stream over shared
+#     memory (tx_shm > tx_udp), and the server must have counted a same-host peer. Not tx_shm > 0: the first version
+#     of this step passed on 13 datagrams of 539,152, with the stream itself broadcast over UDP.
+#   - two hosts: perf_client in $NS1, perf_server in $NS2, on the same default. Traffic must arrive (or the next
+#     check is about nothing), and neither side may count a same-host peer or send over shared memory - the two
+#     namespaces share /dev/shm, so a context that took a peer on another address for its own host would find out
+#     only by its traffic vanishing into a ring nobody reads.
+# The limited broadcast leaves by the default route, so each namespace gets one: without it sendto() has nowhere to
+# go. And loopback comes up, as on any real host: a unicast between two processes on one address is delivered through
+# it, and with it down the two never learn each other - on a directed broadcast too (checked 2026-10-06: 16 of 667,558
+# datagrams over shared memory either way), so the same-host step would measure this script's namespace and not the
+# product. Both added after every pair above, which never needed them.
+sudo ip -n "$NS1" link set lo up
+sudo ip -n "$NS2" link set lo up
+sudo ip -n "$NS1" route add default dev "$VETH1"
+sudo ip -n "$NS2" route add default dev "$VETH2"
+DEFAULT_BCAST=255.255.255.255
+field() { # field <name> <file>: the last value printed for <name>=, digits only, or nothing
+    grep -oE "$1=[0-9,]+" "$2" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ','
+}
+
+rm -f samehost_server.log samehost_client.log
+# shellcheck disable=SC2024 # the redirect is the calling shell's, on purpose (user-owned logs)
+sudo ip netns exec "$NS1" ./perf_server -b "$DEFAULT_BCAST" -d 4 </dev/null >samehost_server.log 2>&1 &
+samehost_pid=$!
+sleep 1
+# shellcheck disable=SC2024
+sudo ip netns exec "$NS1" ./perf_client -b "$DEFAULT_BCAST" -d 4 </dev/null >samehost_client.log 2>&1
+wait "$samehost_pid" 2>/dev/null
+# From the RESULT line, which counts the whole process; absent reads as 0 and fails.
+samehost_result=$(grep '^RESULT:' samehost_client.log | tail -1)
+tx_shm=$(printf '%s' "$samehost_result" | sed -n 's/.*tx_shm=\([0-9]*\).*/\1/p')
+tx_udp=$(printf '%s' "$samehost_result" | sed -n 's/.*tx_udp=\([0-9]*\).*/\1/p')
+same_host=$(field shm_same_host_peers samehost_server.log)
+echo "default broadcast, one host: tx_shm=${tx_shm:-<absent>} tx_udp=${tx_udp:-<absent>}" \
+    "server shm_same_host_peers=${same_host:-<absent>}"
+if [ "${tx_shm:-0}" -gt "${tx_udp:-0}" ] && [ "${same_host:-0}" -gt 0 ]; then
+    echo "default broadcast, one host: PASS - shared memory carried the stream"
+else
+    echo "default broadcast, one host: FAIL - two processes on one host did not use shared memory"
+    echo "=== samehost_server.log ===" && cat samehost_server.log
+    echo "=== samehost_client.log ===" && cat samehost_client.log
+    status=1
+fi
+
+rm -f crosshost_server.log crosshost_client.log
+# shellcheck disable=SC2024
+sudo ip netns exec "$NS2" ./perf_server -b "$DEFAULT_BCAST" -d 4 </dev/null >crosshost_server.log 2>&1 &
+crosshost_pid=$!
+sleep 1
+# shellcheck disable=SC2024
+sudo ip netns exec "$NS1" ./perf_client -b "$DEFAULT_BCAST" -d 4 </dev/null >crosshost_client.log 2>&1
+wait "$crosshost_pid" 2>/dev/null
+cross_recv=$(grep '^RESULT:' crosshost_server.log | tail -1 | sed -n 's/.*recv=\([0-9,]*\).*/\1/p' | tr -d ',')
+cross_tx_shm=$(grep '^RESULT:' crosshost_client.log | tail -1 | sed -n 's/.*tx_shm=\([0-9]*\).*/\1/p')
+cross_same_server=$(field shm_same_host_peers crosshost_server.log)
+cross_same_client=$(field shm_same_host_peers crosshost_client.log)
+echo "default broadcast, two hosts: recv=${cross_recv:-<absent>} tx_shm=${cross_tx_shm:-<absent>}" \
+    "shm_same_host_peers server=${cross_same_server:-<absent>} client=${cross_same_client:-<absent>}"
+# Absent is a failure, not a zero: a field nobody printed is a check that did not look.
+if [ "${cross_recv:-0}" -ge "$MIN_COUNT" ] && [ "${cross_tx_shm:-x}" = 0 ] && [ "${cross_same_server:-x}" = 0 ] &&
+    [ "${cross_same_client:-x}" = 0 ]; then
+    echo "default broadcast, two hosts: PASS - delivered over UDP, and neither side took the other for same-host"
+else
+    echo "default broadcast, two hosts: FAIL"
+    echo "=== crosshost_server.log ===" && cat crosshost_server.log
+    echo "=== crosshost_client.log ===" && cat crosshost_client.log
+    status=1
+fi
+
 echo
 echo "=== Summary ==="
 if [ "$status" -eq 0 ]; then

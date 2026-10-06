@@ -428,7 +428,36 @@ static void release_claimed_id(struct tt_Context* node) {
     node->hal.claimed_id = tt_CONTEXT_ID_INVALID;
 }
 
-// The data socket's address, read back: bound to any address, it is the link's.
+// The source address the kernel puts on a datagram this host sends to `destination`, host order, or 0 when no route
+// reaches it. A connected UDP socket is given exactly that address by the same route lookup sendto() makes, and
+// connecting sends nothing.
+static uint32_t route_source_address(const struct sockaddr_in* destination) {
+    int probe = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (probe < 0) {
+        return 0;
+    }
+    uint32_t source = 0;
+    int optval = 1;
+    struct sockaddr_in chosen;
+    socklen_t length = sizeof(chosen);
+    // SO_BROADCAST first: connect() to a broadcast address is refused with EACCES without it, as sendto() would be.
+    // NOLINTNEXTLINE(misc-include-cleaner)
+    if (setsockopt(probe, SOL_SOCKET, SO_BROADCAST, (const void*)&optval, sizeof(optval)) == 0 &&
+        connect(probe, (const struct sockaddr*)destination, sizeof(*destination)) == 0 &&
+        getsockname(probe, (struct sockaddr*)&chosen, &length) == 0) {
+        source = ntohl(chosen.sin_addr.s_addr);
+    }
+    close(probe);
+    return source;
+}
+
+// The data socket's address, read back, as a peer sees it on what this context sends - same-host discovery
+// (tickle.c, note_same_host_peer()) compares a peer's address with it, and the shared-memory segment is named from it.
+// Bound to a specific address, it is that one. Bound to any address, it is the link's when an interface owns the
+// configured broadcast, and otherwise - the limited broadcast 255.255.255.255, which no interface owns and which is
+// rmw_tickle's default - the source address the kernel chooses for that broadcast, which is what every datagram
+// tt_send() sends carries. Until 2026-10-06 that last case was left at 0: the context never knew its own address,
+// treated no peer as same-host, and on a default configuration never used shared memory at all.
 static void record_own_address(struct tt_Context* node) {
     struct sockaddr_in bound;
     socklen_t length = sizeof(bound);
@@ -443,6 +472,9 @@ static void record_own_address(struct tt_Context* node) {
     uint32_t bcast = 0;
     if (node->hal.own_ip == 0 && tt_resolve_link(_tt_CONFIG.broadcast, &addr, &netmask, &bcast)) {
         node->hal.own_ip = addr;
+    }
+    if (node->hal.own_ip == 0) {
+        node->hal.own_ip = route_source_address(&node->hal.broadcast_addr);
     }
 }
 
