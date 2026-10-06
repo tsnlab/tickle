@@ -271,6 +271,9 @@ static void test_a_datagram_after_a_long_wait_is_stamped_when_it_arrived(void) {
 
     EXPECT_EQ_U64(tt_SECOND + (500 * tt_MILLISECOND), node.traffic_last_seen[STAMP_SOURCE]);
     EXPECT_EQ_U64(0, node.rx_clock_ns); // and outside a poll the clock is read again
+    // The send path keeps the same reading past the poll (tx_clock_ns, send_clock()): its deadlines only need a
+    // reading that is never early, and a send between polls must not read the clock for them.
+    EXPECT_EQ_U64(tt_SECOND + (500 * tt_MILLISECOND), node.tx_clock_ns);
 }
 
 static void test_a_long_drain_keeps_its_stamps_fresh(void) {

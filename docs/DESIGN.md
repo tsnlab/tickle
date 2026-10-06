@@ -380,11 +380,14 @@ Compiled in by default on Linux (`tt_SEGMENT_ENABLED`), out on FreeRTOS.
 - A context builds its segment when the first same-host peer appears in discovery (or when it delivers to itself),
   and releases it when the liveliness timeout removes the last one. A host with no same-host peers pays nothing.
 - `tt_segment_create()` unlinks any stale file first, so a dead owner's records are never inherited; teardown unlinks.
-- A writer re-asks a name every `tt_SEGMENT_ATTACH_RETRY_SENDS` (256) sends when absent and every
-  `tt_SEGMENT_REVALIDATE_SENDS` (4096) when attached, so a peer that binds late becomes reachable and a replaced
-  owner is noticed.
+- A writer re-asks a name after a time, not a count of sends: when absent, `tt_CONTEXT_TX_INTERVAL` (1 ms) after the
+  first miss, doubling per miss up to `tt_CONTEXT_UPDATE_INTERVAL` (1 s), and at once when discovery hears a same-host
+  peer; when attached, every `tt_CONTEXT_UPDATE_INTERVAL`. A peer that binds late becomes reachable and a replaced
+  owner is noticed within those times at any send rate. Until 2026-10-06 they were 256 and 4096 sends (four minutes
+  and over an hour at 1 Hz). The deadlines are read from the clock the poll or a publish already took
+  (`tx_clock_ns`), so a send reads no clock for them.
 - A reader that takes nothing for `tt_SEGMENT_DEAD_READER_NS` (1 s) while records wait is given up; the writer uses UDP
-  until the next recheck.
+  for `tt_CONTEXT_UPDATE_INTERVAL` before it asks again.
 - A writer that dies between claim and publish wedges the head; the owner warns after `tt_SEGMENT_STALL_PASSES`.
 
 **One path per peer, and drop on full.**
@@ -522,8 +525,6 @@ All are compile-time `-D` overrides unless noted. Times in nanoseconds.
 | `tt_SEGMENT_SLOTS` | derived (512) | | power of two |
 | `tt_SEGMENT_BELL_FIFO` | 1 | | FIFO doorbell (0 = UDP doorbell) |
 | `tt_SEGMENT_DRAIN_PER_POLL` | 4 x slots | | records drained per poll |
-| `tt_SEGMENT_ATTACH_RETRY_SENDS` | 256 | | sends before re-asking an absent segment |
-| `tt_SEGMENT_REVALIDATE_SENDS` | 4096 | | sends before re-checking an attached one |
 | `tt_SEGMENT_DEAD_READER_NS` | 1 s | | reader silence before falling back to UDP |
 | `tt_SEGMENT_STALL_PASSES` | 1000 | | wedged-head warning |
 | `tt_CONTEXT_ID_CLAIM` | 1 (0 FreeRTOS) | 1 | host-registry id claiming |

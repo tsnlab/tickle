@@ -62,13 +62,21 @@ The user's active list (2026-10-05), in order.
    RMW_TICKLE_* defaults.
    Inventory done 2026-10-05; the fitted values that stay (c) are in README.md "Tuning for your platform". Still
    to replace by an algorithm (a), most fitted and hottest first: `tt_RELIABLE_RETRY_GRANULARITY` 100 us and
-   `tt_CALL_RETRY_GRANULARITY` (2x it) (measure timer lateness); `TT_RX_IDLE_RECHECK` 64 and
-   `tt_SEGMENT_ATTACH_RETRY_SENDS` / `_REVALIDATE_SENDS` (send counts whose period scales with the rate);
+   `tt_CALL_RETRY_GRANULARITY` (2x it) (measure timer lateness);
    `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` (from the tracking window); `tt_DISCOVERY_REQUEST_RETRY` (RTT +
    `tt_CONTEXT_TX_INTERVAL`) and `tt_SEGMENT_DEAD_READER_NS` (from `tt_LIVELINESS_SILENCE_NS`).
    Done: `tt_SCHEDULER_IO_INTERLEAVE` (8 entries) is now `tt_RX_CHECK_RATIO`, a timed receive check - the budget is
    the ratio times the measured cost of an empty peek, capped at `tt_RECEIVE_TIMEOUT` (`test_rx_check_budget`); a rig
    A/B against the count is still owed before its figures are re-quoted.
+   Done 2026-10-06: the three counts whose period scaled with the rate are times. `TT_RX_IDLE_RECHECK` (64 datagrams)
+   is `TT_RX_IDLE_RECHECK_NS` = `tt_RECEIVE_TIMEOUT` by the poll's own clock (`rx_clock_ns`): a skipped socket is
+   asked again after the same bound the poll puts on scheduler work (`test_poll_signal`, both directions).
+   `tt_SEGMENT_ATTACH_RETRY_SENDS` (256) is a backoff from `tt_CONTEXT_TX_INTERVAL` doubling to
+   `tt_CONTEXT_UPDATE_INTERVAL`, restarted by a same-host announce, and a dead reader's give-up holds the full
+   interval; `tt_SEGMENT_REVALIDATE_SENDS` (4096) is `tt_CONTEXT_UPDATE_INTERVAL` - at 1 Hz they were four minutes
+   and over an hour. The send path reads no clock for them: the poll and every publish leave their reading in
+   `tx_clock_ns` (`test_transport_seam`, `test_poll_wait`). Both names now stop the build if set. A rig A/B against
+   the counts is owed before same-host or max-rate figures are re-quoted.
    Done 2026-10-05: the RPC retry bounds are srtt-relative (`tt_CALL_RETRY_MAX_SRTT_MULTIPLE`, per-retry doubling;
    `tt_CALL_RETRY_INTERVAL` is now only the seed and `_MAX` is gone), and the server's response cache lives as long
    as the client's schedule it can know plus the retry gaps it has measured (`tt_SERVER_CACHE_GAP_MULTIPLE`;

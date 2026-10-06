@@ -61,6 +61,7 @@ SURVIVES_RESET = {
     "wait_until_hi": "node_init_locks(), at create, before anything can reach the node",
     "wait_until_lo": "node_init_locks(), at create, before anything can reach the node",
     "rx_clock_ns": "node_init_locks(), at create, before anything can reach the node",
+    "tx_clock_ns": "node_init_locks(), at create, before anything can reach the node",
     "collision_logged_ip": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
     "collision_logged_port": "claim_initial_id(), under tt_CONTEXT_ID_CLAIM; every read is under the same guard",
     "hal": "tt_bind() and the platform HAL, which writes every member it uses",

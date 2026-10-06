@@ -793,16 +793,42 @@ static void note_attach(struct tt_Context* node, enum tt_SegmentAttach reason) {
 }
 
 #if tt_SEGMENT_ENABLED
+// The send path's "now", for the segment cache's deadlines (struct tt_SegmentPeer.recheck_at_ns): the latest reading
+// the running poll or a publish already took (tt_Context.tx_clock_ns), so a send reads no clock of its own. Stale by
+// at most a poll iteration or a drain's tt_RX_CLOCK_REFRESH datagrams; a stale reading only makes a recheck late,
+// never early. A context that has done neither yet reads the clock.
+static uint64_t send_clock(struct tt_Context* node) {
+    const uint64_t now = __atomic_load_n(&node->tx_clock_ns, __ATOMIC_RELAXED);
+    return now != 0 ? now : tt_get_ns();
+}
+
+// How long a "no" is kept before the name is asked again: tt_CONTEXT_TX_INTERVAL after the first miss, doubling with
+// each miss after it, up to tt_CONTEXT_UPDATE_INTERVAL. Times, where they were counts of sends (ROADMAP.md 5a):
+// tt_SEGMENT_ATTACH_RETRY_SENDS was 256 sends, under a millisecond at the rig's max rate and four minutes at 1 Hz -
+// the late binder it exists for stayed on UDP for 256 datagrams whatever they took. Now a peer that binds just after
+// our first ask (the startup race note_same_host_peer() describes) is found within a millisecond at any rate, and one
+// that never will - every peer on another host - costs one failed open() a second once the backoff has run out,
+// where the count cost one per 256 datagrams for as long as it was sent to. 87,000 failed opens a second halved
+// throughput, so one costs ~6 us on the rig: the first second costs ten of them, and every second after it one.
+static uint64_t absent_gap(const struct tt_SegmentPeer* entry) {
+    if (entry->absent_gap_ns == 0) {
+        return tt_CONTEXT_TX_INTERVAL;
+    }
+    const uint64_t doubled = entry->absent_gap_ns * 2U;
+    return doubled < (uint64_t)tt_CONTEXT_UPDATE_INTERVAL ? doubled : (uint64_t)tt_CONTEXT_UPDATE_INTERVAL;
+}
+
 // A peer asked about and found to have no segment for us. Kept against the address it was asked
 // about, so the same id at a different address is asked about at once rather than inheriting this
-// answer, and with a countdown rather than a flag, so "no" is temporary by construction.
-static void remember_absent(struct tt_SegmentPeer* entry, uint32_t ip, uint16_t port) {
+// answer, and with a deadline rather than a flag, so "no" is temporary by construction.
+static void remember_absent(struct tt_SegmentPeer* entry, uint32_t ip, uint16_t port, uint64_t now) {
     entry->mapping = NULL;
     entry->incarnation = 0;
     entry->ip = ip;
     entry->port = port;
     entry->missing = true;
-    entry->recheck_in = tt_SEGMENT_ATTACH_RETRY_SENDS;
+    entry->absent_gap_ns = absent_gap(entry);
+    entry->recheck_at_ns = now + entry->absent_gap_ns;
 }
 
 // The peer's segment, attached on first use and kept. NULL when this peer is not reachable that way
@@ -820,9 +846,9 @@ static void remember_absent(struct tt_SegmentPeer* entry, uint32_t ip, uint16_t 
 // called tt_segment_attach() again. On another host that is an open() that walks /dev/shm and
 // fails, and it cost half of TickLE's cross-host throughput and doubled CPU per sample between
 // 9dbffd40 and d4413383 - with CycloneDDS flat across the same runs, so it was ours. The comment
-// was the specification and the code was the bug. A miss is now remembered for
-// tt_SEGMENT_ATTACH_RETRY_SENDS sends: long enough that the cost disappears, short enough that a
-// peer which binds later still becomes attachable.
+// was the specification and the code was the bug. A miss is now remembered for a time (absent_gap()):
+// long enough that the cost disappears, short enough that a peer which binds later still becomes
+// attachable.
 static void ensure_own_segment(struct tt_Context* node);
 
 // Maps a peer's segment in two steps, because the length to map is inside the thing being mapped: the header
@@ -887,12 +913,12 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
         ensure_own_segment(node);
     }
     struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
+    const uint64_t now = send_clock(node);
     if (entry->mapping == NULL && entry->missing) {
         if (entry->ip != ip || entry->port != port) {
             peer_bell_close(entry);
             memset(entry, 0, sizeof(*entry)); // a different peer behind this id: ask about that one now
-        } else if (entry->recheck_in > 0) {
-            entry->recheck_in--;
+        } else if (now < entry->recheck_at_ns) {
             return NULL; // asked recently; the answer does not change between two datagrams
         }
     }
@@ -902,8 +928,7 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
         // clone however it is written out.
         const bool same_address = entry->ip == ip && entry->port == port;
         const bool same_owner = same_address && entry->mapping->incarnation == entry->incarnation;
-        if (same_owner && entry->recheck_in > 0) {
-            entry->recheck_in--;
+        if (same_owner && now < entry->recheck_at_ns) {
             return entry->mapping; // the common case, and the only one that costs nothing
         }
         if (same_address && !same_owner) {
@@ -923,9 +948,9 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
         // the same one, or the successor's, and the attach below answers all three.
         // The dead-reader clock survives this, and that is the whole of a defect shipped in
         // f938461e. A revalidation is bookkeeping about the MAPPING; it says nothing about whether
-        // the reader is consuming. Clearing it here - and the entry is recomputed every
-        // tt_SEGMENT_REVALIDATE_SENDS sends - restarted the clock about seventy times a second on a
-        // writer sending three hundred thousand datagrams a second, so it could never reach
+        // the reader is consuming. Clearing it here - and the entry was then recomputed every 4096
+        // sends - restarted the clock about seventy times a second on a writer sending three hundred
+        // thousand datagrams a second, so it could never reach
         // tt_SEGMENT_DEAD_READER_NS and the rule was unreachable on every writer that matters.
         // Measured: a writer against a reader killed with SIGKILL reported shm_gave_up=0 for the
         // whole run.
@@ -942,7 +967,7 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
     char path[tt_SEGMENT_PATH_LENGTH];
     if (segment_name(path, sizeof(path), ip, port, context_id) < 0) {
         note_attach(node, tt_SEGMENT_BAD_HEADER); // a name we cannot form is a segment we cannot find
-        remember_absent(entry, ip, port);
+        remember_absent(entry, ip, port, now);
         return NULL;
     }
     size_t bytes = 0;
@@ -950,7 +975,7 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
     struct tt_SegmentHeader* header = attach_peer_segment(path, ip, port, context_id, &bytes, &verdict);
     if (header == NULL) {
         note_attach(node, verdict);
-        remember_absent(entry, ip, port);
+        remember_absent(entry, ip, port, now);
         return NULL;
     }
     entry->mapped_bytes = bytes;
@@ -963,7 +988,13 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
     // last_progress_ns is NOT cleared here: a fresh entry has it at zero from the memset, and a
     // re-attach carries the reader's own clock across (above). Setting it here was the other half of
     // the same defect.
-    entry->recheck_in = tt_SEGMENT_REVALIDATE_SENDS;
+    // Asked again after tt_CONTEXT_UPDATE_INTERVAL, the interval discovery itself re-learns a peer in: a successor
+    // that took this name is written to within a second of the owner's death at any rate. It was 4096 sends
+    // (tt_SEGMENT_REVALIDATE_SENDS), 14 ms at the rig's max rate and over an hour at 1 Hz, during which every
+    // datagram went into a ring nobody would drain (ROADMAP.md 5a). One re-attach - two opens and two maps - a
+    // second costs nothing measurable; the count paid seventy a second at max rate.
+    entry->absent_gap_ns = 0;
+    entry->recheck_at_ns = now + (uint64_t)tt_CONTEXT_UPDATE_INTERVAL;
     // Only ever raised: a ceiling too high costs the walk record_size_limit() skips; one too low would cap a record
     // below what a peer can take.
     if (header->slot_bytes > node->segment_slot_ceiling) {
@@ -1058,8 +1089,9 @@ static void note_same_host_peer(struct tt_Context* node, uint8_t context_id, uin
         node->same_host_peer_count++;
     }
     ensure_own_segment(node);
-    // And let a cached "no" about this peer expire now rather than in tt_SEGMENT_ATTACH_RETRY_SENDS
-    // sends. Measured 2026-10-02 (COMPARISON 2.2c): in a same-host ping/pong every repetition read
+    // And let a cached "no" about this peer expire now rather than at its deadline (absent_gap()), restarting
+    // the backoff: this is the peer most likely to have a segment next. When this was written the deadline was
+    // 256 sends. Measured 2026-10-02 (COMPARISON 2.2c): in a same-host ping/pong every repetition read
     // shm_attach_absent=1, tx_udp_unattached=257, shm_attach_ok=1 - the first attach lost a race with
     // the peer building its own segment, and the countdown then held the answer for 256 more sends. An
     // exchange shorter than that never used shared memory at all, which is the shape of a request/reply
@@ -1078,7 +1110,8 @@ static void note_same_host_peer(struct tt_Context* node, uint8_t context_id, uin
     // the address itself, so an entry cached for a different (ip, port) is reset there as before.
     struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
     if (entry->mapping == NULL && entry->missing) {
-        entry->recheck_in = 0;
+        entry->recheck_at_ns = 0;
+        entry->absent_gap_ns = 0;
     }
 }
 
@@ -1348,7 +1381,12 @@ static bool segment_deliver_ringing(struct tt_Context* node, uint8_t context_id,
             tt_segment_detach(entry->mapping, entry->mapped_bytes);
             peer_bell_close(entry);
             memset(entry, 0, sizeof(*entry));
-            remember_absent(entry, ip, port);
+            remember_absent(entry, ip, port, now);
+            // Kept for the longest gap at once, not the first: the file is there and healthy, so asking again
+            // in a millisecond would re-attach the same dead ring and drop for another tt_SEGMENT_DEAD_READER_NS.
+            // A second over UDP for every second of drops - where 256 sends was under a millisecond of it.
+            entry->absent_gap_ns = tt_CONTEXT_UPDATE_INTERVAL;
+            entry->recheck_at_ns = now + (uint64_t)tt_CONTEXT_UPDATE_INTERVAL;
             note_attach(node, tt_SEGMENT_REFUSED); // asked for and given up on, which is what REFUSED says
         }
         if (node->segment_full_warnings == 0) {
@@ -3326,6 +3364,7 @@ static void node_init_locks(struct tt_Context* node) {
     __atomic_store_n(&node->poller_active, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_seq, 0, __ATOMIC_RELAXED);
     node->rx_clock_ns = 0;
+    __atomic_store_n(&node->tx_clock_ns, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_until_hi, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_until_lo, 0, __ATOMIC_RELAXED);
 }
@@ -4660,6 +4699,18 @@ static uint64_t rx_now(const struct tt_Context* node) {
     return node->rx_clock_ns != 0 ? node->rx_clock_ns : tt_get_ns();
 }
 
+// A reading of the clock someone already took, kept for the send path's deadlines (tt_Context.tx_clock_ns, see
+// send_clock()). Relaxed: a publishing thread reads what the poller wrote, and an older value is only a later recheck.
+static void tx_clock_store(struct tt_Context* node, uint64_t now) {
+    __atomic_store_n(&node->tx_clock_ns, now, __ATOMIC_RELAXED);
+}
+
+// The running poll's reading, for the receive path (rx_clock_ns) and the send path (tx_clock_ns) alike.
+static void poll_clock_store(struct tt_Context* node, uint64_t now) {
+    node->rx_clock_ns = now;
+    tx_clock_store(node, now);
+}
+
 static uint64_t timestamp_from_wire(const struct tt_Context* node, uint32_t sent_us) {
     int64_t now_us = (int64_t)(rx_now(node) / tt_MICROSECOND);
     int64_t rebuilt_us = now_us + (int32_t)(sent_us - (uint32_t)now_us);
@@ -4691,7 +4742,9 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
         (struct tt_DataHeader*)(framing + sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
     data_header->endpoint_id = endpoint->id;
     data_header->seq_no = pub->seq_no + 1;
-    data_header->timestamp = timestamp_to_wire(tt_get_ns());
+    const uint64_t stamped_ns = tt_get_ns();
+    tx_clock_store(node, stamped_ns); // the send below may need "now" (send_clock()): this reading, not another
+    data_header->timestamp = timestamp_to_wire(stamped_ns);
     data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
 
     uint8_t peer_count = count_peers(pub->peers);
@@ -5921,7 +5974,9 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 
     data_header->endpoint_id = endpoint->id;
     data_header->seq_no = pub->seq_no + 1;
-    data_header->timestamp = timestamp_to_wire(tt_get_ns());
+    const uint64_t stamped_ns = tt_get_ns();
+    tx_clock_store(node, stamped_ns); // the send below may need "now" (send_clock()): this reading, not another
+    data_header->timestamp = timestamp_to_wire(stamped_ns);
     data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
 
     // DataBody
@@ -12180,7 +12235,7 @@ static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
                 break; // -1 nothing waiting, -2 I/O error - either way, done draining
             }
             if (++since_clock > tt_RX_CLOCK_REFRESH) {
-                node->rx_clock_ns = tt_get_ns(); // a long drain keeps its stamps within microseconds (D1)
+                poll_clock_store(node, tt_get_ns()); // a long drain keeps its stamps within microseconds (D1)
                 since_clock = 1;
             }
             result = process_datagram(node, len, ip, port, tt_TRANSPORT_UDP);
@@ -12195,7 +12250,7 @@ static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
                     break;
                 }
                 if (++since_clock > tt_RX_CLOCK_REFRESH) {
-                    node->rx_clock_ns = tt_get_ns();
+                    poll_clock_store(node, tt_get_ns());
                     since_clock = 1;
                 }
                 result = process_datagram_locked(node, len, ip, port, tt_TRANSPORT_UDP, 1);
@@ -12367,7 +12422,7 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
 
     wait_until_store(node, 0); // not waiting: an insert now is seen by the loop
     if (len >= 0) {
-        node->rx_clock_ns = tt_get_ns(); // the wait may have been long: what arrived is stamped from here
+        poll_clock_store(node, tt_get_ns()); // the wait may have been long: what arrived is stamped from here
     }
 
     // A wait that ended with nothing received BEFORE the entry it was waiting for fell due was cut short
@@ -12473,7 +12528,7 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
 
     uint64_t time = tt_get_ns();
     const uint64_t poll_start = time;
-    node->rx_clock_ns = time;
+    poll_clock_store(node, time);
 
 #if tt_SEGMENT_ENABLED
     // A segment arrival is not something poll() can wait on, so the ring is drained here, at the top
@@ -12541,7 +12596,7 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
         }
         note_rx_look(node, look, time, new_time, &ran_since_check);
         time = new_time;
-        node->rx_clock_ns = time;
+        poll_clock_store(node, time);
         if (until_next_event && did_work && time - poll_start >= (uint64_t)tt_RECEIVE_TIMEOUT) {
             return tt_RET_TIMEOUT; // the busy-node slice
         }

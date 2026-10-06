@@ -479,7 +479,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
 #endif
     node->hal.rx_prefer_data = false;
     node->hal.rx_idle = 0;
-    node->hal.rx_idle_returns = 0;
+    node->hal.rx_idle_since_ns = 0;
     node->hal.rx_count = 0;
     node->hal.rx_next = 0;
     node->hal.rx_headers_for = NULL;
@@ -776,10 +776,16 @@ int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* data
 }
 
 // Bits of struct tt_hal.rx_idle (TT_RX_IDLE_WELL_KNOWN, TT_RX_IDLE_DATA, hal_linux.h) - see tt_try_receive().
-// How many datagrams tt_try_receive() returns while a socket is skipped before it asks that socket again (struct
-// tt_hal.rx_idle_returns). One empty read per 64 is about 1.5% more receive calls, and only while one socket is busy
-// and the other idle; it bounds how long the idle one can go unread at 64 datagrams instead of forever.
-#define TT_RX_IDLE_RECHECK 64U
+// How long tt_try_receive() goes on returning datagrams while a socket is skipped before it asks that socket again
+// (struct tt_hal.rx_idle_since_ns): tt_RECEIVE_TIMEOUT, the same bound the poll loop puts on scheduler work before it
+// looks at the socket at all, so neither can keep the other from the data socket for longer. It costs one empty read
+// per tt_RECEIVE_TIMEOUT, only while one socket is busy and the other idle - a fixed share of time on any hardware.
+// It was a count, 64 datagrams (2026-10-05), whose period was 64 times whatever handling a datagram cost: ~64 us of
+// starvation on a fast receiver, 64 ms behind a 1 ms callback, and an empty read every 64 datagrams however fast they
+// came (ROADMAP.md 5a). The time is the one the running poll already read (struct tt_Context.rx_clock_ns,
+// refreshed every tt_RX_CLOCK_REFRESH datagrams of a drain), so the bound is tt_RECEIVE_TIMEOUT or tt_RX_CLOCK_REFRESH
+// datagrams, whichever ends later, and the check reads no clock of its own inside a poll.
+#define TT_RX_IDLE_RECHECK_NS ((uint64_t)tt_RECEIVE_TIMEOUT)
 
 // tt_receive()'s wait set: the two sockets, the wake eventfd, and - with the segment - its doorbell FIFO.
 #if tt_SEGMENT_ENABLED
@@ -905,6 +911,7 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
         return pending;
     }
     node->hal.rx_idle = 0; // a timeout or an interrupt leaves no readiness to go on
+    node->hal.rx_idle_since_ns = 0;
     // Wait for readability with ppoll() instead of arming SO_RCVTIMEO via setsockopt() before
     // every recvfrom(): the timeout here changes on nearly every call (it tracks whatever
     // scheduled event is due next), and re-arming a socket option that often is pure overhead -
@@ -1042,9 +1049,9 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
 // empty one, and the call that ended each drain spent two. Measured on the rig's server, 1.58 receive
 // syscalls per delivered sample against CycloneDDS's 0.74, and 34% of them returned nothing - 95% of the
 // server's syscall time was receiving. Now a socket ppoll() did not report ready, or one a read here has
-// found empty, is skipped until the next wait (struct tt_hal.rx_idle) - or until TT_RX_IDLE_RECHECK datagrams
-// later, because a drain session need not end: a socket refilled as fast as it is read keeps drain_rx() going,
-// and without the recheck the skipped socket was never read again (struct tt_hal.rx_idle_returns). Otherwise a
+// found empty, is skipped until the next wait (struct tt_hal.rx_idle) - or until TT_RX_IDLE_RECHECK_NS has
+// passed, because a drain session need not end: a socket refilled as fast as it is read keeps drain_rx() going,
+// and without the recheck the skipped socket was never read again (struct tt_hal.rx_idle_since_ns). Otherwise a
 // datagram that lands on a skipped socket waits at most until the next ppoll(), which is level-triggered. When every
 // socket is idle this answers without a syscall, and clears the bits so the next drain - one not preceded by a wait,
 // like a non-blocking poll - asks both again.
@@ -1052,15 +1059,21 @@ uint32_t tt_rx_buffered(const struct tt_Context* node) {
     return node->hal.rx_next < node->hal.rx_count ? (uint32_t)(node->hal.rx_count - node->hal.rx_next) : 0U;
 }
 
-// Counts a datagram returned while a socket is being skipped, and asks every socket again after TT_RX_IDLE_RECHECK.
+// Notes a datagram returned while a socket is being skipped, and asks every socket again once TT_RX_IDLE_RECHECK_NS
+// has passed since the first such return. "Now" is the running poll's reading; outside a poll (a caller draining
+// with tt_try_receive() itself) there is none, and the clock is read, as rx_now() does in core for the same reason.
 static void rx_idle_count_return(struct tt_Context* node) {
     if (node->hal.rx_idle == 0) {
         return;
     }
-    node->hal.rx_idle_returns++;
-    if (node->hal.rx_idle_returns >= TT_RX_IDLE_RECHECK) {
+    const uint64_t now = node->rx_clock_ns != 0 ? node->rx_clock_ns : tt_get_ns();
+    if (node->hal.rx_idle_since_ns == 0) {
+        node->hal.rx_idle_since_ns = now;
+        return;
+    }
+    if (now - node->hal.rx_idle_since_ns >= TT_RX_IDLE_RECHECK_NS) {
         node->hal.rx_idle = 0;
-        node->hal.rx_idle_returns = 0;
+        node->hal.rx_idle_since_ns = 0;
     }
 }
 
@@ -1098,7 +1111,7 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
     }
     if (ret < 0) {
         node->hal.rx_idle = 0; // drained: the next drain session asks every socket again
-        node->hal.rx_idle_returns = 0;
+        node->hal.rx_idle_since_ns = 0;
         return -1; // Nothing waiting
     }
     rx_idle_count_return(node);

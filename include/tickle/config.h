@@ -541,24 +541,21 @@
 #define tt_SEGMENT_STALL_PASSES 1000
 #endif
 
-// Sends to a peer with no segment before asking /dev/shm about it again. The answer for a peer on
-// another host never changes, so asking per datagram is pure cost - measured at roughly 87,000
-// failed open() calls a second per sender, which halved cross-host throughput. It must not become
-// permanent either: a peer that binds after we first sent to it, or that restarts, has to become
-// attachable. 256 sends costs about 0.4% of the failed calls and bounds the delay at 256 datagrams,
-// which on a link busy enough for the cost to matter is well under a millisecond.
-#ifndef tt_SEGMENT_ATTACH_RETRY_SENDS
-#define tt_SEGMENT_ATTACH_RETRY_SENDS 256
+// How long a writer keeps its answer about a peer's segment before asking /dev/shm again - not a
+// tunable of its own any more. A "no" is kept tt_CONTEXT_TX_INTERVAL after the first miss, doubling
+// with each miss in a row up to tt_CONTEXT_UPDATE_INTERVAL: asking per datagram cost ~87,000 failed
+// open() calls a second per sender and halved cross-host throughput, and the answer must not become
+// permanent either, since a peer that binds after we first sent to it has to become attachable. A
+// "yes" is kept tt_CONTEXT_UPDATE_INTERVAL: an owner killed between one datagram and the next leaves
+// its region mapped and unchanged, incarnation included, so only re-attaching by name finds the
+// successor's file. Both were counts of sends until 2026-10-06 (256 and 4096), so their delays grew as
+// the sender slowed - a successor written to after 4096 datagrams, over an hour at 1 Hz (ROADMAP.md 5a,
+// absent_gap() and peer_segment() in tickle.c).
+#ifdef tt_SEGMENT_ATTACH_RETRY_SENDS
+#error "tt_SEGMENT_ATTACH_RETRY_SENDS was removed: a missing segment is re-asked after a time (ROADMAP.md 5a)"
 #endif
-
-// Sends over an attached segment before the peer asks the name again. This is not paranoia about
-// the mapping going bad: an owner killed between one datagram and the next leaves its region mapped
-// and unchanged, incarnation included, so re-reading the header can never reveal it. Re-attaching
-// by name can - the file is either gone or has been replaced by the successor's. Larger than the
-// negative interval because a working segment is the common case and this costs an open() and a
-// remap, not just an open().
-#ifndef tt_SEGMENT_REVALIDATE_SENDS
-#define tt_SEGMENT_REVALIDATE_SENDS 4096
+#ifdef tt_SEGMENT_REVALIDATE_SENDS
+#error "tt_SEGMENT_REVALIDATE_SENDS was removed: an attached segment is re-asked every tt_CONTEXT_UPDATE_INTERVAL"
 #endif
 
 // How long a reader may take nothing at all from its ring, while we have records for it, before the

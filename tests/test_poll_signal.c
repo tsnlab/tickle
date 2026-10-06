@@ -238,6 +238,87 @@ static void test_drain_after_a_wait_reads_only_ready_sockets(void) {
     close_pair_node();
 }
 
+// A socket skipped as idle is asked again after a TIME, TT_RX_IDLE_RECHECK_NS of the running poll's clock, not
+// after a count of datagrams from the busy one (ROADMAP.md 5a). The count, 64, held the data socket - every ACKNACK
+// and discovery reply - unread for 64 x the handling time of one datagram, which is the hardware's and the
+// application's, not ours. The well-known socket is flooded and the data socket marked idle by a real wait; a probe
+// then lands on the data socket, and the poll's clock (tt_Context.rx_clock_ns, which drain_rx() keeps) is moved by
+// hand: these are whitebox tests of the HAL's rule, and the clock is the input.
+#define RECHECK_FLOOD 150 // datagrams queued on the busy socket; past the old count of 64 plus a batch
+
+// Queues the flood on the well-known socket, lets a real wait mark the data socket idle (ppoll sees only the
+// well-known one), then queues the probe on the data socket. Returns the poll clock to start from.
+static uint64_t open_flooded_pair_node(void) {
+    open_pair_node();
+    for (int i = 0; i < RECHECK_FLOOD; i++) {
+        EXPECT_EQ_INT(1, (int)send(pair_wk[1], "w", 1, 0));
+    }
+    uint8_t buf[16] = {0};
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    EXPECT_EQ_INT(1, tt_receive(&node, buf, sizeof(buf), &ip, &port, (int64_t)SHORT_WAIT_NS));
+    EXPECT_EQ_INT(TT_RX_IDLE_DATA, node.hal.rx_idle); // the state the starved publisher was in
+    EXPECT_EQ_INT(1, (int)send(pair_data[1], "p", 1, 0));
+    node.rx_clock_ns = tt_SECOND; // any reading; 0 would mean "outside a poll"
+    return node.rx_clock_ns;
+}
+
+// The starvation bound, in time: with each datagram taking a quarter of TT_RX_IDLE_RECHECK_NS to handle - a slow
+// callback - the data socket is asked again by the fifth read. The count asked it again at the 64th, 16 periods late.
+static void test_a_skipped_socket_is_asked_again_after_a_time(void) {
+    uint64_t clock = open_flooded_pair_node();
+    const uint64_t step = TT_RX_IDLE_RECHECK_NS / 4U;
+    const int asked_by = 5; // the first return starts the period; four steps later it has passed
+    int unskipped_at = -1;
+    int probe_at = -1;
+    int drained = 0;
+    for (int read = 1; read <= RECHECK_FLOOD + 1 && probe_at < 0; read++) {
+        uint8_t tag = 0;
+        if (try_one(&tag) < 0) {
+            drained = 1;
+            break;
+        }
+        if (unskipped_at < 0 && (node.hal.rx_idle & TT_RX_IDLE_DATA) == 0) {
+            unskipped_at = read;
+        }
+        if (tag == 'p') {
+            probe_at = read;
+        }
+        clock += step;
+        node.rx_clock_ns = clock;
+    }
+    EXPECT_TRUE(unskipped_at > 0 && unskipped_at <= asked_by);
+    // And the probe itself comes back while the busy socket still has a backlog: after the batch already read
+    // and at most one more from the busy socket, whose turn it may be.
+    EXPECT_EQ_INT(0, drained);
+    EXPECT_TRUE(probe_at > 0 && probe_at <= asked_by + (2 * tt_RX_BATCH) + 1);
+    close_pair_node();
+}
+
+// The cost bound, in time: while the period has not passed, the skipped socket is not asked, however many datagrams
+// the busy one returns - a fast drain pays no empty read per 64 datagrams. The clock stands still here, so the probe
+// is read only once the busy socket has run dry, by the next session.
+static void test_a_skipped_socket_is_not_asked_before_the_time(void) {
+    (void)open_flooded_pair_node();
+    int probe_at = -1;
+    int drained_at = -1;
+    for (int read = 1; read <= RECHECK_FLOOD + 2 && probe_at < 0; read++) {
+        uint8_t tag = 0;
+        if (try_one(&tag) < 0) {
+            drained_at = read;
+            continue;
+        }
+        if (tag == 'p') {
+            probe_at = read;
+        }
+    }
+    EXPECT_TRUE(drained_at > 0);        // the busy socket ran dry first ...
+    EXPECT_TRUE(probe_at > drained_at); // ... and only then was the probe read
+    uint8_t tag = 0;
+    EXPECT_EQ_INT(-1, try_one(&tag)); // and nothing else was left behind
+    close_pair_node();
+}
+
 #if tt_RX_BATCH > 1
 static uint64_t elapsed_ns_since(const struct timespec* start) {
     struct timespec now;
@@ -330,6 +411,8 @@ int main(void) {
 #endif
     test_drain_skips_a_socket_found_empty();
     test_drain_after_a_wait_reads_only_ready_sockets();
+    test_a_skipped_socket_is_asked_again_after_a_time();
+    test_a_skipped_socket_is_not_asked_before_the_time();
     test_timed_wait_times_out();
     test_wake_signal_ends_an_indefinite_wait();
     test_signal_ends_an_indefinite_wait();
