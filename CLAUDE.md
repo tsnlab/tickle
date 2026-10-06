@@ -91,8 +91,10 @@ Harnesses live in `examples/perf_hil/experiments/`. Results belong in the docume
   our range to a bare historical point.
 - **Check the sample count before the value.** A ten-round-trip run once agreed with a 1,950-round-trip
   published figure to three decimals.
-- **Identify a process by `/proc/<pid>/comm` or `/proc/<pid>/exe`, never by its command line.** Every
-  pattern, including the `[c]ommand` bracket idiom, eventually matches the checking command itself.
+- **Never identify a process by a few keywords of its command line.** Every keyword pattern, including the
+  `[c]ommand` bracket idiom, eventually matches the checking command itself. Identify it by `/proc/<pid>/comm` or
+  `/proc/<pid>/exe`, or by its exact, complete command line (the whole argument vector compared for equality), and
+  then use that PID.
 
 ## Documents
 

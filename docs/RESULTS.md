@@ -319,8 +319,8 @@ publisher for 100 ms by default (`max_blocking_time`; ROS 2 QoS has no field for
   (F3) kept the runs alive, because it never filled in 20 s: it then delivered **760 msg/s at Array1k (9.0 s
   latency) and 109 msg/s at Array4k**, against CycloneDDS's 1,949 and 346 in the same session and rmw_tickle's
   65,051 and 26,483 at `a8c1cd83` (rows 73, 75 now read 70,126 and 26,486). So with a normal configuration Fast
-  DDS does not run this cell: under 5% loss at max rate its publisher ends, and the one setting that keeps it alive delivers 760 / 109 msg/s. That is recorded
-  as the result; the cause inside Fast DDS is not pursued.
+  DDS does not run this cell: under 5% loss at max rate its publisher ends, and the one setting that keeps it alive
+  delivers 760 / 109 msg/s. That is recorded as the result; the cause inside Fast DDS is not pursued.
 - **Corrected 2026-10-06: FastDDS at 0% loss is not an incomplete delivery.** This note said it "delivered 22-28%
   fewer samples than it sent" and excluded it (✗). Those 70-80k samples were written before its reader matched
   (~0.7 s): `perf_test` counts every id below the first one received as lost, and a VOLATILE writer rightly does
