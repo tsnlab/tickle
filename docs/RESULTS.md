@@ -318,9 +318,9 @@ publisher for 100 ms by default (`max_blocking_time`; ROS 2 QoS has no field for
   its oldest sample stayed unacknowledged for over 5 s however often it asked. Only a 50,000-sample writer history
   (F3) kept the runs alive, because it never filled in 20 s: it then delivered **760 msg/s at Array1k (9.0 s
   latency) and 109 msg/s at Array4k**, against CycloneDDS's 1,949 and 346 in the same session and rmw_tickle's
-  65,051 and 26,483 (rows 73, 75). So under 5% loss at max rate Fast DDS's repair falls far behind its writes, and
-  the default bound turns that into an error; what stalls the repair is not yet identified (next: the reader's own
-  5,000-sample history, and ASYNCHRONOUS publishing with a flow controller - ROADMAP).
+  65,051 and 26,483 (rows 73, 75). So with a normal configuration Fast DDS does not run this cell: under 5% loss at
+  max rate its publisher ends, and the one setting that keeps it alive delivers 760 / 109 msg/s. That is recorded
+  as the result; the cause inside Fast DDS is not pursued.
 - **Corrected 2026-10-06: FastDDS at 0% loss is not an incomplete delivery.** This note said it "delivered 22-28%
   fewer samples than it sent" and excluded it (✗). Those 70-80k samples were written before its reader matched
   (~0.7 s): `perf_test` counts every id below the first one received as lost, and a VOLATILE writer rightly does

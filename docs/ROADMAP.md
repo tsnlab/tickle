@@ -123,10 +123,8 @@ Open work that is not parked, deduplicated across all sources. Rough priority or
 
 **Run 2026-10-06** (`fastdds_keepall_arms.sh`, RESULTS rows 72-75 notes): F0 reproduced the timeout; F1 and F2
 falsified the 3 s heartbeat explanation (writes stalled over 5 s even with 50 ms heartbeats); F3 survived only because
-its 50,000-sample history never filled (760 / 109 msg/s at 5% loss). Still to find what stalls Fast DDS's repair:
-F4 = F3 + the reader's history (`max_samples` on the data_reader, the subscriber side) and F5 = F1 +
-`RMW_FASTRTPS_PUBLICATION_MODE=ASYNCHRONOUS` with a flow controller below the link, eProsima's recommendation for
-high-rate streams.
+its 50,000-sample history never filled (760 / 109 msg/s at 5% loss). **Closed** (the user, 2026-10-06): with a normal
+configuration it does not run, and RESULTS says so; Fast DDS's internal cause is not pursued.
 
 The rmw KEEP_ALL rows (RESULTS 72-75) run every rmw at its defaults. Fast DDS's write times out at 5% loss: 100 ms
 `max_blocking_time`, a 5,000-sample history and a 3 s heartbeat period (RESULTS, rmw layer notes). To show it fairly:
