@@ -310,9 +310,17 @@ publisher for 100 ms by default (`max_blocking_time`; ROS 2 QoS has no field for
   heartbeat riding on it are both lost, the next heartbeat comes from Fast DDS's 3 s periodic timer, 30 times the
   100 ms budget. `rmw_fastrtps_cpp` turns the timeout into `RMW_RET_ERROR` ("cannot publish data"), rclcpp into an
   `RCLError` exception, and `perf_test` does not catch it, so the run ends (after 1-6 s). Nothing was delivered
-  wrongly; the writer gave up waiting, as KEEP_ALL with a 100 ms bound allows. With eProsima's own settings for a
-  high-rate stream (a longer `max_blocking_time`, a shorter `heartbeatPeriod`) it would not end; that "vendor-tuned"
-  arm is on the roadmap.
+  wrongly; the writer gave up waiting, as KEEP_ALL with a 100 ms bound allows.
+- **Fast DDS tuned through its own XML** (`experiments/fastdds_keepall_arms.sh`, `6bfda159`, 2026-10-06, 3 reps per
+  arm, CycloneDDS as the control; `~/rig_results_safe/fastdds_keepall_arms_20261006-104033.txt`). The heartbeat
+  explanation above was tested and **falsified**: with `max_blocking_time` 5 s (F1) and also with a 50 ms
+  `heartbeatPeriod` (F2), every 5%-loss run still ended - after 4-7 s in which the writer made no progress at all, so
+  its oldest sample stayed unacknowledged for over 5 s however often it asked. Only a 50,000-sample writer history
+  (F3) kept the runs alive, because it never filled in 20 s: it then delivered **760 msg/s at Array1k (9.0 s
+  latency) and 109 msg/s at Array4k**, against CycloneDDS's 1,949 and 346 in the same session and rmw_tickle's
+  65,051 and 26,483 (rows 73, 75). So under 5% loss at max rate Fast DDS's repair falls far behind its writes, and
+  the default bound turns that into an error; what stalls the repair is not yet identified (next: the reader's own
+  5,000-sample history, and ASYNCHRONOUS publishing with a flow controller - ROADMAP).
 - **Corrected 2026-10-06: FastDDS at 0% loss is not an incomplete delivery.** This note said it "delivered 22-28%
   fewer samples than it sent" and excluded it (✗). Those 70-80k samples were written before its reader matched
   (~0.7 s): `perf_test` counts every id below the first one received as lost, and a VOLATILE writer rightly does
