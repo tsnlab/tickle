@@ -104,8 +104,11 @@ BOUNDARY = {
 LINE = re.compile(
     r"^c(?P<num>\d+)\s+(?P<shape>[TL])\s+(?P<payload>p\d)\s+(?P<qos>Q\d)\s+"
     r"(?P<net>.+?)\s+(?P<fw>tickle|cyclonedds|fastdds)\s+rep(?P<rep>\d+)\s+\|\s+"
-    r"(?P<verdict>\S+)\s+\|\s+(?P<fields>.*)$"
+    r"(?P<verdict>[^|]+?)\s+\|\s*(?P<fields>.*)$"
 )
+# The verdict may contain spaces (VOID(no RESULT line)); before 2026-10-06 it was \S+, so such a row did not match
+# and vanished instead of counting as VOID. A row of this shape that still does not match is reported, not dropped.
+ROW_START = re.compile(r"^c\d+\s+[TL]\s+p\d\s+Q\d\s")
 
 
 def parse(path):
@@ -113,6 +116,8 @@ def parse(path):
     for line in open(path, encoding="utf-8"):
         m = LINE.match(line.rstrip())
         if not m:
+            if ROW_START.match(line) and " rep" in line:
+                print(f"UNPARSED ROW (not counted - fix the parser): {line.rstrip()[:160]}", file=sys.stderr)
             continue
         key = (int(m["num"]), m["shape"], m["payload"], m["qos"], m["net"].strip())
         fw = cells.setdefault(key, OrderedDict()).setdefault(
