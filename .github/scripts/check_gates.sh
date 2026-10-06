@@ -68,6 +68,74 @@ results=()
 # of every tree, which would have deleted the unit tests' binaries while they ran); the FreeRTOS build in a mktemp
 # directory; the sweep writes nothing. A new row that writes a tree another row also uses must not simply be launched:
 # give it a directory of its own, or make the two one command that runs them in order.
+#
+# Docs-only, opt in: `make check-gates DOCS_ONLY=1` (or --docs-only). When every changed path - staged, modified and
+# tracked, and every commit between the upstream (else origin/main) and HEAD - is under docs/, is a *.md, or is under
+# examples/perf_hil/results/, only the rows that read those files run: check-doc-shas (README.md, docs/*.md) and
+# check-results-provenance (examples/perf_hil/results/). The rest print `SKIP  <name> (docs-only change)`. Anything
+# else - a script or source file in one of those places, a path outside them, no changed path at all, or a base that
+# does not resolve - runs every row and says which path decided it. CI runs everything regardless.
+docs_only_requested=0
+case "${1:-}" in
+    --docs-only) docs_only_requested=1 ;;
+    "") ;;
+    *)
+        echo "usage: $0 [--docs-only]" >&2
+        exit 2
+        ;;
+esac
+[ "${GATES_DOCS_ONLY:-0}" = 1 ] && docs_only_requested=1
+
+# The paths a push of this tree would carry. GATES_BASE_REF overrides the base (the upstream, else origin/main).
+changed_paths() {
+    # --no-renames: a rename lists both of its paths, so moving a source file into docs/ is not a docs-only change.
+    git diff --no-renames --cached --name-only
+    git diff --no-renames --name-only
+    local base="${GATES_BASE_REF:-}"
+    if [ -z "$base" ]; then
+        base=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) || base=origin/main
+    fi
+    if git rev-parse -q --verify "$base^{commit}" >/dev/null; then
+        git diff --no-renames --name-only "$base...HEAD"
+    else
+        # Not a path anything can match as a document, so it forces the full set.
+        printf '(base %s does not resolve)\n' "$base"
+    fi
+}
+
+# A path only the documents' rows read. Code-shaped files are excluded even under docs/ or results/: lint-shell reads
+# every *.sh in the tree, lint every *.c/*.h, and the gate cannot know what reads a new kind of file.
+is_doc_path() {
+    case "$1" in
+        *.sh | *.py | *.c | *.h | *.cpp | *.hpp | *.cc | *.yml | *.yaml | *.mk | *Makefile | *CMakeLists.txt | *.cmake | *.json)
+            return 1
+            ;;
+        docs/* | *.md | examples/perf_hil/results/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+docs_only=0
+if [ "$docs_only_requested" = 1 ]; then
+    mapfile -t paths < <(changed_paths | sort -u)
+    offending=""
+    for p in "${paths[@]}"; do
+        is_doc_path "$p" || {
+            offending="$p"
+            break
+        }
+    done
+    if [ "${#paths[@]}" = 0 ]; then
+        echo "== docs-only requested, but nothing is changed against the base - running every row"
+    elif [ -n "$offending" ]; then
+        echo "== docs-only requested, but '$offending' is not a document path - running every row"
+    else
+        docs_only=1
+        echo "== docs-only change (${#paths[@]} paths): running only the rows that read documents"
+    fi
+fi
+# The rows that read docs/, *.md or examples/perf_hil/results/ - the only ones a docs-only change runs.
+DOC_ROWS=" docshas prov "
 
 LOGDIR="$(mktemp -d "${TMPDIR:-/tmp}/tickle-gates.XXXXXX")" || exit 1
 ids=()
@@ -81,6 +149,10 @@ launch() {
     ids+=("$id")
     NAME[$id]="$name"
     KIND[$id]="$kind"
+    if [ "$docs_only" = 1 ] && [ "${DOC_ROWS/ $id /}" = "$DOC_ROWS" ]; then
+        printf 'SKIP  %s (docs-only change)\n' "$name" >"$LOGDIR/$id.row"
+        return
+    fi
     (
         start=$(date +%s)
         "$@" >"$LOGDIR/$id.log" 2>&1 </dev/null
@@ -94,7 +166,11 @@ preskip() {
     ids+=("$1")
     NAME[$1]="$2"
     KIND[$1]=skip
-    printf 'SKIP  %s -- %s\n' "$2" "$3" >"$LOGDIR/$1.row"
+    if [ "$docs_only" = 1 ]; then
+        printf 'SKIP  %s (docs-only change)\n' "$2" >"$LOGDIR/$1.row"
+    else
+        printf 'SKIP  %s -- %s\n' "$2" "$3" >"$LOGDIR/$1.row"
+    fi
 }
 
 lint_kind=gate

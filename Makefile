@@ -91,8 +91,9 @@ test-typesupport:
 # Every gate above that can run on this machine, one line each, non-zero if any failed - so a
 # failing gate cannot be mistaken for a quiet one. See the script's own header for what it
 # deliberately does not cover.
+# DOCS_ONLY=1: only the rows that read documents, when every changed path is one (see the script's header).
 check-gates:
-	./.github/scripts/check_gates.sh
+	./.github/scripts/check_gates.sh $(if $(filter 1,$(DOCS_ONLY)),--docs-only)
 
 headers-cpp:
 	$(MAKE) -C platform/linux headers-cpp
