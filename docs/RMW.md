@@ -159,7 +159,7 @@ says so when it does.
 
 | Variable | Effect | Default |
 |---|---|---|
-| `TICKLE_BROADCAST_ADDR` | broadcast address, and with it the interface used. **Set it**: unset means limited broadcast on the default route | limited broadcast |
+| `TICKLE_BROADCAST_ADDR` | broadcast address, and with it the interface used. Unset means the limited broadcast on the default route; since 2026-10-06 two processes on one host still find each other and use shared memory then (before, they only did with this set) | limited broadcast |
 | `TICKLE_NODE_ID` | fixed context id | claimed automatically |
 | `RMW_TICKLE_EXECUTOR_POLL` | `0` turns executor-driven receive off | on |
 | `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` | add a Heartbeat to every Nth RELIABLE sample; `0` turns it off | tracking window / 16 (64) |
