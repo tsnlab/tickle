@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TUNED VARIANT F2: F1 plus heartbeatPeriod 50 ms.
+  Arm fastdds@F2 of experiments/fastdds_keepall_arms.sh (docs/ROADMAP.md, "Fast DDS under KEEP_ALL, from its
+  side"). The transport and participant parts are fastdds_eth0_only.xml unchanged (that file is arm F0); see it for
+  why Fast DDS is pinned to eth0.
+
+  Two changes from F0: max_blocking_time 5 s (as F1), and the writer's periodic heartbeat every 50 ms instead of
+  3 s, so a repair lost together with its piggybacked heartbeat is re-solicited within 50 ms.
+
+  nackResponseDelay (writer) and heartbeatResponseDelay (reader) stay at their 5 ms defaults. They are already ten
+  times shorter than the new period and several hundred times shorter than the stall under test, so they cannot be
+  what limits F2; moving them would make F2 a second treatment, and heartbeatResponseDelay one applied to the
+  subscriber's reader, which the hypothesis does not involve.
+
+  How it reaches rmw_fastrtps_cpp: as in fastdds_keepall_F1.xml (default data_writer profile through
+  FASTRTPS_DEFAULT_PROFILES_FILE; rmw does not overwrite max_blocking_time or the writer's times).
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>eth0_udp</transport_id>
+      <type>UDPv4</type>
+      <interfaceWhiteList>
+        <address>192.168.10.2</address>
+        <address>192.168.10.3</address>
+      </interfaceWhiteList>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="eth0_only_participant" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>eth0_udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+  <data_writer profile_name="keepall_F2_writer" is_default_profile="true">
+    <qos>
+      <reliability>
+        <!-- Fast DDS default: 100 ms. -->
+        <max_blocking_time>
+          <sec>5</sec>
+          <nanosec>0</nanosec>
+        </max_blocking_time>
+      </reliability>
+    </qos>
+    <times>
+      <!-- Fast DDS default: 3 s. -->
+      <heartbeatPeriod>
+        <sec>0</sec>
+        <nanosec>50000000</nanosec>
+      </heartbeatPeriod>
+    </times>
+  </data_writer>
+</profiles>

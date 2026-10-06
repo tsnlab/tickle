@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TUNED VARIANT F3: F0 plus a KEEP_ALL writer history of 50,000 samples.
+  Arm fastdds@F3 of experiments/fastdds_keepall_arms.sh (docs/ROADMAP.md, "Fast DDS under KEEP_ALL, from its
+  side"). The transport and participant parts are fastdds_eth0_only.xml unchanged (that file is arm F0); see it for
+  why Fast DDS is pinned to eth0.
+
+  The one change: resource_limits max_samples 50,000 (default 5,000). Under KEEP_ALL that is the writer history's
+  only bound (Fast DDS 2.14 DataWriterHistory sizes a KEEP_ALL history by max_samples alone; max_instances and
+  max_samples_per_instance bound KEEP_LAST and keyed topics). The other four fields are written out at their
+  defaults so the realized limits are on the page; they pass DataWriterImpl's consistency check
+  (max_samples >= max_instances x max_samples_per_instance = 4,000, allocated_samples <= max_samples).
+  max_blocking_time stays at its 100 ms default. The subscriber's reader keeps its default 5,000 too: the
+  question is the writer's history.
+
+  How it reaches rmw_fastrtps_cpp: as in fastdds_keepall_F1.xml (default data_writer profile through
+  FASTRTPS_DEFAULT_PROFILES_FILE; rmw sets history kind and depth from ROS but never resource_limits).
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>eth0_udp</transport_id>
+      <type>UDPv4</type>
+      <interfaceWhiteList>
+        <address>192.168.10.2</address>
+        <address>192.168.10.3</address>
+      </interfaceWhiteList>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="eth0_only_participant" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>eth0_udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+  <data_writer profile_name="keepall_F3_writer" is_default_profile="true">
+    <topic>
+      <resourceLimitsQos>
+        <!-- Fast DDS default: 5000. -->
+        <max_samples>50000</max_samples>
+        <max_instances>10</max_instances>
+        <max_samples_per_instance>400</max_samples_per_instance>
+        <allocated_samples>100</allocated_samples>
+        <extra_samples>1</extra_samples>
+      </resourceLimitsQos>
+    </topic>
+  </data_writer>
+</profiles>

@@ -41,16 +41,30 @@
 #   Falsification: if ack is not BETTER than pre in any 5%-loss cell, the fix does not reach the rmw layer at max
 #     rate on this link; that is a valid result and is published as such.
 #   Latency is printed but not judged: the two Pis' clocks are not synchronised to the precision it would need.
+#   LOSS (changed 2026-10-06, before the next run): perf_test counts every id below the first one it receives as
+#     lost, and the rig's build compiles --expected_num_subs out, so samples published before the match showed as
+#     loss for every arm. Loss is now counted from the second after the first delivery; the first delivered
+#     second's gap is reported apart as the pre-match gap, and the old all-rows figure is kept beside it.
+#
+# Also driven by fastdds_keepall_arms.sh (Fast DDS QoS arms): ARMS may name fastdds@<F> (F0 = fastdds_eth0_only.xml,
+# F<n> = fastdds/fastdds_keepall_F<n>.xml, copied from THIS checkout to /tmp/ka_fdds_<F>.xml on both Pis), CELLS
+# may list topic:loss pairs instead of TOPICS x LOSSES, and SUMMARY names the summary script. With no tickle arm in
+# ARMS nothing is built and HEAD_SHA is not needed.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
 
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
-HEAD_SHA=${HEAD_SHA:?set HEAD_SHA to a pushed commit}
+ARMS=${ARMS:-"tickle@pre tickle@ack tickle@head fastdds cyclonedds"}
+HAS_TICKLE=0; case " $ARMS " in *" tickle@"*) HAS_TICKLE=1 ;; esac
+if [ "$HAS_TICKLE" = 1 ]; then HEAD_SHA=${HEAD_SHA:?set HEAD_SHA to a pushed commit}; else HEAD_SHA=${HEAD_SHA:-none}; fi
 PRE_SHA=${PRE_SHA:-674f0dcb}; ACK_SHA=${ACK_SHA:-8d1c3712}
 REPS=${REPS:-3}; DUR=${DUR:-20}; TOPICS=${TOPICS:-"Array1k Array4k"}; LOSSES=${LOSSES:-"0 5"}
-ARMS=${ARMS:-"tickle@pre tickle@ack tickle@head fastdds cyclonedds"}
+if [ -z "${CELLS:-}" ]; then
+    CELLS=""; for l in $LOSSES; do for t in $TOPICS; do CELLS="$CELLS $t:$l"; done; done
+fi
+SUMMARY=${SUMMARY:-$REPO/examples/perf_hil/experiments/rmw_keepall_rig_summary.py}
 DOMAIN=${DOMAIN:-61}
 OUT=${OUT:-$HOME/rig_results_safe/rmw_keepall_rig_$(date +%Y%m%d-%H%M%S)}
 mkdir -p "$OUT.runs"
@@ -74,7 +88,8 @@ cleanup() {
 trap cleanup EXIT
 
 say "=== rmw KEEP_ALL on the rig, $(date -Is): head $HEAD_SHA, ack $ACK_SHA, pre $PRE_SHA, $REPS reps, ${DUR}s," \
-    "topics: $TOPICS, loss: $LOSSES, arms: $ARMS, out $OUT ==="
+    "cells:$CELLS, arms: $ARMS, out $OUT ==="
+[ "$HAS_TICKLE" = 1 ] || SKIP_BUILD=1
 
 # ---- build: head into ~/tickle/install (typesupport too), pre and ack as librmw_tickle.so-only variants ----------
 # rmw_tickle is built the way the vendor rmws it is compared with were (fairness audit, 2026-10-05): the jazzy debs
@@ -117,11 +132,11 @@ bad=0; for p in "${pids[@]}"; do wait "$p" || bad=1; done
 fi
 
 # The three tickle binaries must differ, on each Pi, or the arms are one binary under three names.
-for h in "$CLIENT" "$SERVER"; do
+[ "$HAS_TICKLE" = 1 ] && for h in "$CLIENT" "$SERVER"; do
     n=$(sh_ "$h" "sha256sum \$HOME/tickle/install/rmw_tickle/lib/librmw_tickle.so \$HOME/rmw_variants/pre/install/rmw_tickle/lib/librmw_tickle.so \$HOME/rmw_variants/ack/install/rmw_tickle/lib/librmw_tickle.so | awk '{print \$1}' | sort -u | wc -l" </dev/null)
     if [ "$n" != 3 ]; then say "VOID OVERALL: $h has $n distinct librmw_tickle.so, not 3"; exit 1; fi
 done
-say "identity: three distinct librmw_tickle.so on both Pis"
+[ "$HAS_TICKLE" = 1 ] && say "identity: three distinct librmw_tickle.so on both Pis"
 
 CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General></Domain></CycloneDDS>'
 FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
@@ -137,6 +152,9 @@ env_for() {
         tickle@*) echo "source \$HOME/rmw_variants/${1#tickle@}/install/local_setup.bash"
             echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         fastdds) echo "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp FASTRTPS_DEFAULT_PROFILES_FILE=$FDDS_PROFILE" ;;
+        # The QoS arms: the profile is the only treatment, so nothing else that steers rmw_fastrtps may leak in.
+        fastdds@*) echo "unset RMW_FASTRTPS_USE_QOS_FROM_XML RMW_FASTRTPS_PUBLICATION_MODE FASTDDS_DEFAULT_PROFILES_FILE"
+            echo "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp FASTRTPS_DEFAULT_PROFILES_FILE=/tmp/ka_fdds_${1#fastdds@}.xml" ;;
         cyclonedds) echo "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp CYCLONEDDS_URI='$CDDS_URI'" ;;
     esac
     echo "export ROS_DOMAIN_ID=$DOMAIN"
@@ -145,8 +163,14 @@ lib_for() {
     case "$1" in
         tickle@head) echo "/home/ci/tickle/install/rmw_tickle/lib/librmw_tickle.so" ;;
         tickle@*) echo "/home/ci/rmw_variants/${1#tickle@}/install/rmw_tickle/lib/librmw_tickle.so" ;;
-        fastdds) echo "librmw_fastrtps_cpp.so" ;;
+        fastdds | fastdds@*) echo "librmw_fastrtps_cpp.so" ;;
         cyclonedds) echo "librmw_cyclonedds_cpp.so" ;;
+    esac
+}
+fdds_src() { # the profile in THIS checkout behind arm fastdds@<F>
+    case "$1" in
+        F0) echo "$REPO/examples/perf_hil/fastdds/fastdds_eth0_only.xml" ;;
+        *) echo "$REPO/examples/perf_hil/fastdds/fastdds_keepall_$1.xml" ;;
     esac
 }
 
@@ -157,16 +181,38 @@ LAUNCHER='#!/bin/bash
 role=$1; envfile=$2; shift 2
 source "$envfile"
 PT=$HOME/rmw_perf_ws/install/performance_test/lib/performance_test/perf_test
-rm -f /tmp/ka_$role.log /tmp/ka_$role.maps /tmp/ka_$role.pid
+rm -f /tmp/ka_$role.log /tmp/ka_$role.maps /tmp/ka_$role.pid /tmp/ka_$role.treat
 setsid nohup bash -c "echo \$\$ > /tmp/ka_$role.pid; exec \"\$0\" \"\$@\"" "$PT" "$@" > /tmp/ka_$role.log 2>&1 < /dev/null &
 for i in 1 2 3 4 5 6 7 8 9 10; do [ -s /tmp/ka_$role.pid ] && break; sleep 0.2; done
 p=$(cat /tmp/ka_$role.pid)
-( sleep 2; grep -o "/[^ ]*librmw_[a-z_]*\.so" /proc/$p/maps 2>/dev/null | sort -u > /tmp/ka_$role.maps ) > /dev/null 2>&1 < /dev/null &
+# The treatment as perf_test received it: the exported middleware variables (what exec hands on), and the profile
+# file they name with its hash, read now and again from the process itself at 2 s if it is still alive.
+treat() { grep -E "^(RMW_|FASTRTPS_|FASTDDS_|CYCLONEDDS_URI|ROS_DOMAIN_ID|SKIP_DEFAULT_XML_FILE)" | sort
+    f=$(sed -n "s/^FASTRTPS_DEFAULT_PROFILES_FILE=//p" "$1"); [ -n "$f" ] && echo "profile_sha256=$(sha256sum < "$f" | cut -c1-64) $f"; }
+env > /tmp/ka_$role.envall; { echo "[launcher env]"; treat /tmp/ka_$role.envall < /tmp/ka_$role.envall; } > /tmp/ka_$role.treat
+( sleep 2; grep -o "/[^ ]*librmw_[a-z_]*\.so" /proc/$p/maps 2>/dev/null | sort -u > /tmp/ka_$role.maps
+  if tr "\0" "\n" < /proc/$p/environ > /tmp/ka_$role.envproc 2>/dev/null && [ -s /tmp/ka_$role.envproc ]; then
+    echo "[/proc/$p/environ]"; treat /tmp/ka_$role.envproc < /tmp/ka_$role.envproc
+  else echo "[/proc/$p/environ] unreadable: perf_test ended before 2 s"; fi >> /tmp/ka_$role.treat
+  rm -f /tmp/ka_$role.envall /tmp/ka_$role.envproc ) > /dev/null 2>&1 < /dev/null &
 '
 for h in "$CLIENT" "$SERVER"; do
     printf '%s' "$LAUNCHER" | sh_ "$h" "cat > /tmp/ka_launch.sh && chmod +x /tmp/ka_launch.sh" || { say "launcher copy failed"; exit 1; }
     for arm in $ARMS; do
         env_for "$arm" | sh_ "$h" "cat > /tmp/ka_env_${arm/@/_}.sh" || { say "env copy failed"; exit 1; }
+        case "$arm" in fastdds@*) ;; *) continue ;; esac
+        F=${arm#fastdds@}; src=$(fdds_src "$F")
+        [ -f "$src" ] || { say "no profile $src for $arm"; exit 1; }
+        sh_ "$h" "cat > /tmp/ka_fdds_$F.xml" < "$src" || { say "profile copy failed"; exit 1; }
+        local_sha=$(sha256sum < "$src" | cut -c1-64)
+        pi_sha=$(sh_ "$h" "sha256sum < /tmp/ka_fdds_$F.xml" </dev/null | cut -c1-64)
+        [ "$local_sha" = "$pi_sha" ] || { say "profile $F on $h hashes $pi_sha, not $local_sha"; exit 1; }
+        cp "$src" "$OUT.runs/profile_$F.xml"
+        if [ "$h" = "$CLIENT" ]; then
+            echo "PROFILE $F sha256=$local_sha src=${src#"$REPO"/} pi=/tmp/ka_fdds_$F.xml" >> "$OUT.runs/profiles.txt"
+            say "treatment $arm: ${src#"$REPO"/} sha256 $local_sha -> /tmp/ka_fdds_$F.xml on both Pis; env:" \
+                "$(env_for "$arm" | grep -E '^(export|unset) ' | grep -v ROS_DOMAIN | tr '\n' ';')"
+        fi
     done
 done
 
@@ -193,6 +239,8 @@ run_one() { # arm topic loss rep
     k2=$(wait_done "$SERVER" sub 20)
     scp -q -i "$K" -o BatchMode=yes "ci@$CLIENT:/tmp/ka_pub.log" "$OUT.runs/${stem}_pub.log" 2>/dev/null
     scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/ka_sub.log" "$OUT.runs/${stem}_sub.log" 2>/dev/null
+    sh_ "$CLIENT" "cat /tmp/ka_pub.treat 2>/dev/null" </dev/null > "$OUT.runs/${stem}_pub.treat"
+    sh_ "$SERVER" "cat /tmp/ka_sub.treat 2>/dev/null" </dev/null > "$OUT.runs/${stem}_sub.treat"
     local mp ms
     mp=$(sh_ "$CLIENT" "cat /tmp/ka_pub.maps 2>/dev/null" </dev/null | tr '\n' ' ')
     ms=$(sh_ "$SERVER" "cat /tmp/ka_sub.maps 2>/dev/null" </dev/null | tr '\n' ' ')
@@ -200,10 +248,11 @@ run_one() { # arm topic loss rep
         >> "$OUT.runs/index.txt"
 }
 
-for loss in $LOSSES; do
+cell_losses=$(for c in $CELLS; do echo "${c#*:}"; done | awk '!seen[$0]++')
+for loss in $cell_losses; do
     set_loss "$loss" || { say "tc failed for $loss%"; exit 1; }
     say "--- loss $loss% ($(sh_ "$CLIENT" "tc qdisc show dev eth0" </dev/null | head -1)) ---"
-    for topic in $TOPICS; do
+    for topic in $(for c in $CELLS; do [ "${c#*:}" = "$loss" ] && echo "${c%%:*}"; done); do
         for rep in $(seq 1 "$REPS"); do
             read -r -a order <<<"$ARMS"
             n=${#order[@]}; s=$(( (rep - 1) % n ))
@@ -218,4 +267,4 @@ done
 set_loss 0
 say "=== runs done $(date -Is); tc restored ==="
 
-python3 "$REPO/examples/perf_hil/experiments/rmw_keepall_rig_summary.py" "$OUT.runs" "$DUR" | tee -a "$SUM"
+python3 "$SUMMARY" "$OUT.runs" "$DUR" | tee -a "$SUM"

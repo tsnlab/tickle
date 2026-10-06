@@ -2,6 +2,15 @@
 """Reads rmw_keepall_rig.sh's runs and applies the reading rules written in its header.
 
 Usage: rmw_keepall_rig_summary.py <OUT.runs dir> <DUR>
+
+Loss (2026-10-06): perf_test counts every id below the first one it receives as lost (its previous id starts at 0),
+and --expected_num_subs is compiled out in the rig's build, so whatever the publisher sent before the match showed
+as loss for every arm. loss_split() therefore reports three figures from the subscriber's per-second rows:
+  lost_all   the old figure, every row summed (kept for comparison);
+  prematch   the first delivered second's count: first received id - 1, plus any gap inside that same second
+             (perf_test's rows cannot separate the two; under RELIABLE a later gap is a delivery defect anyway);
+  lost       every row after that one - the loss the verdicts use.
+The three are perf_test's per-second figures (count / T_loop, T_loop ~1.00 s) summed, so lost_all == prematch + lost.
 """
 import math
 import re
@@ -9,6 +18,7 @@ import statistics
 import sys
 from pathlib import Path
 
+INDEX_RE = r"RUN (\S+) pub_maps=\[(.*?)\] sub_maps=\[(.*?)\] pub_killed=(\S+) sub_killed=(\S+) want=(\S+)"
 ERROR_MARKERS = ("terminate", "exception", "what():", "timeout", "Segmentation", "Aborted")
 
 
@@ -36,6 +46,16 @@ def rows(path):
     return out, text
 
 
+def loss_split(sub):
+    """(lost_all, prematch, lost_after) from the subscriber's rows; see the module docstring."""
+    lost_all = round(sum(r.get("lost", 0) for r in sub))
+    first = next((i for i, r in enumerate(sub) if r.get("received", 0) > 0), None)
+    if first is None:
+        return lost_all, 0, lost_all
+    prematch = round(sum(r.get("lost", 0) for r in sub[:first + 1]))
+    return lost_all, prematch, lost_all - prematch
+
+
 def loaded(want, maps):
     """A tickle arm names its library's exact path; a vendor arm names the file, found anywhere on the path."""
     paths = maps.split()
@@ -54,7 +74,7 @@ def main():
     runs, dur = Path(sys.argv[1]), int(sys.argv[2])
     index = {}
     for line in (runs / "index.txt").read_text().splitlines():
-        m = re.match(r"RUN (\S+) pub_maps=\[(.*?)\] sub_maps=\[(.*?)\] pub_killed=(\S+) sub_killed=(\S+) want=(\S+)", line)
+        m = re.match(INDEX_RE, line)
         if m:
             index[m.group(1)] = m.groups()[1:]
 
@@ -80,26 +100,30 @@ def main():
             continue
         steady = live[2:-1] if len(live) > 4 else live
         rate = statistics.mean(r["received"] for r in steady)
-        lost = int(sum(r.get("lost", 0) for r in sub))
+        lost_all, prematch, lost = loss_split(sub)
         sent = int(sum(r.get("sent", 0) for r in pub))
         recv = int(sum(r.get("received", 0) for r in sub))
-        errors = [mk for mk in ERROR_MARKERS if mk in ptext] + (["publisher killed at deadline"] if pkilled != "no" else [])
+        errors = [mk for mk in ERROR_MARKERS if mk in ptext]
+        errors += ["publisher killed at deadline"] if pkilled != "no" else []
         cpu_pub = (pub[-1]["ru_utime"] + pub[-1]["ru_stime"]) / sent * 1e6 if pub and sent else float("nan")
         cpu_sub = (sub[-1]["ru_utime"] + sub[-1]["ru_stime"]) / recv * 1e6 if recv else float("nan")
         lat = statistics.mean(r["latency_mean (ms)"] for r in steady) if steady else float("nan")
-        rec = dict(rep=int(rep), refused=refused, rate=rate, lost=lost, sent=sent, recv=recv, errors=errors,
+        rec = dict(rep=int(rep), refused=refused, rate=rate, lost=lost, lost_all=lost_all, prematch=prematch,
+                   sent=sent, recv=recv, errors=errors,
                    cpu_pub=cpu_pub, cpu_sub=cpu_sub, lat=lat, seconds=len(live))
         cells.setdefault((topic, int(loss)), {}).setdefault(arm, []).append(rec)
         if arm in ("tickle@ack", "tickle@head") and (lost or errors):
             failures.append(f"{stem}: lost={lost} errors={errors}")
 
     print()
-    print(f"=== per run, {dur} s publisher runtime (delivered msgs/s over steady seconds; CPU us per sample; latency not judged) ===")
+    print(f"=== per run, {dur} s publisher runtime (delivered msgs/s over steady seconds; CPU us per sample; "
+          "latency not judged; lost = after the first delivered second) ===")
     for (topic, loss), arms in sorted(cells.items()):
         for arm, recs in sorted(arms.items()):
             for r in sorted(recs, key=lambda r: r["rep"]):
                 print(f"{topic:8} l{loss:<2} {arm:12} r{r['rep']} rate {r['rate']:9.1f}/s  sent {r['sent']:8}  recv "
-                      f"{r['recv']:8}  lost {r['lost']:6}  cpu pub {r['cpu_pub']:6.2f} sub {r['cpu_sub']:6.2f}  "
+                      f"{r['recv']:8}  lost {r['lost']:6} (pre-match {r['prematch']:7}, old all-rows "
+                      f"{r['lost_all']:7})  cpu pub {r['cpu_pub']:6.2f} sub {r['cpu_sub']:6.2f}  "
                       f"lat {r['lat']:.3f} ms  {'REFUSED after ' + str(r['seconds']) + ' s ' if r['refused'] else ''}"
                       f"{('ERR ' + ','.join(r['errors'])) if r['errors'] else ''}")
 
@@ -131,7 +155,8 @@ def main():
             print(f"{topic} l{loss}: VOID - no control has two usable reps: " + ", ".join(unusable))
             continue
         floor = max(floors)
-        line = [f"{topic} l{loss}: drift floor {floor:.3f}x" + (f" (without {', '.join(unusable)})" if unusable else "")]
+        without = f" (without {', '.join(unusable)})" if unusable else ""
+        line = [f"{topic} l{loss}: drift floor {floor:.3f}x{without}"]
         for a, b in (("tickle@pre", "tickle@ack"), ("tickle@ack", "tickle@head")):
             ra = [r["rate"] for r in arms.get(a, []) if not r["refused"]]
             rb = [r["rate"] for r in arms.get(b, []) if not r["refused"]]
@@ -149,8 +174,8 @@ def main():
             else:
                 v = "HELD"
             line.append(f"{b} vs {a}: {mb:.0f} vs {ma:.0f}/s = {ratio:.3f}x {v}")
-        ctl_txt = ", ".join(f"{c} {statistics.mean(r['rate'] for r in arms[c]):.0f}/s" for c in ("fastdds", "cyclonedds")
-                            if arms.get(c))
+        ctl_txt = ", ".join(f"{c} {statistics.mean(r['rate'] for r in arms[c]):.0f}/s"
+                            for c in ("fastdds", "cyclonedds") if arms.get(c))
         print("  ".join(line) + f"  [{ctl_txt}]")
         if loss > 0 and any("tickle@ack vs tickle@pre" in x and x.endswith("BETTER") for x in line):
             ack_better_under_loss.append(f"{topic} l{loss}")

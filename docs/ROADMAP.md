@@ -128,7 +128,8 @@ separately (perf_test's `--expected_num_subs` is compiled out in the rig's build
 reproduce), F1 (+ `max_blocking_time` 5 s: predicts ~3 s stalls, no timeout), F2 (F1 + `heartbeatPeriod` 50 ms:
 predicts short stalls and a much higher rate), F3 (F0 + `max_samples` 50,000: tells the subscriber bottleneck at
 Array1k 0% from a writer-history one), with CycloneDDS as the control; (3) publish a "vendor-tuned" Fast DDS arm
-beside the defaults, labelled as such.
+beside the defaults, labelled as such. (1) is done and (2) is ready to run: `experiments/fastdds_keepall_arms.sh`
+(profiles `fastdds/fastdds_keepall_F*.xml`, reading rules in `fastdds_keepall_arms_summary.py`), ~30 min of rig.
 
 ### RESOURCE_LIMITS shaped like DDS (the user, 2026-10-05)
 

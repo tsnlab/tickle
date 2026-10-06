@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TUNED VARIANT F1: F0 plus max_blocking_time 5 s.
+  Arm fastdds@F1 of experiments/fastdds_keepall_arms.sh (docs/ROADMAP.md, "Fast DDS under KEEP_ALL, from its
+  side"). The transport and participant parts are fastdds_eth0_only.xml unchanged (that file is arm F0); see it for
+  why Fast DDS is pinned to eth0.
+
+  The one change: a full KEEP_ALL history blocks write() for up to 5 s instead of 100 ms, longer than the 3 s
+  periodic heartbeat, so a repair that has to wait for that heartbeat no longer ends the publisher.
+
+  How it reaches rmw_fastrtps_cpp (jazzy 8.4.4, Fast DDS 2.14.6): FASTRTPS_DEFAULT_PROFILES_FILE names this file,
+  DomainParticipantFactory loads it, and the data_writer profile marked is_default_profile="true" becomes every
+  Publisher's default DataWriterQos. rmw starts from that default (RMW_FASTRTPS_USE_QOS_FROM_XML unset) and
+  overwrites from the ROS QoS only history kind and depth, reliability kind, durability, deadline, lifespan,
+  liveliness and the data representation, plus its own publish mode (SYNCHRONOUS), history memory policy and data
+  sharing (off). reliability.max_blocking_time, resource_limits and the writer's times are not among them, so they
+  stay as set here, and the ROS-level QoS (RELIABLE, KEEP_ALL, VOLATILE) is unchanged. RMW_FASTRTPS_USE_QOS_FROM_XML=1
+  would also hand publish mode and memory policy to the XML - a second treatment, so it is not used.
+  The profile applies to every DDS writer in the process (rosout and parameter events too); only the perf_test
+  topic carries traffic that matters.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>eth0_udp</transport_id>
+      <type>UDPv4</type>
+      <interfaceWhiteList>
+        <address>192.168.10.2</address>
+        <address>192.168.10.3</address>
+      </interfaceWhiteList>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="eth0_only_participant" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>eth0_udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+  <data_writer profile_name="keepall_F1_writer" is_default_profile="true">
+    <qos>
+      <reliability>
+        <!-- Fast DDS default: 100 ms. -->
+        <max_blocking_time>
+          <sec>5</sec>
+          <nanosec>0</nanosec>
+        </max_blocking_time>
+      </reliability>
+    </qos>
+  </data_writer>
+</profiles>
