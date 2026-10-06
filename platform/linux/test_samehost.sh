@@ -149,6 +149,17 @@ fi
 # A busy socket must not starve an idle-marked one (rx_idle_check.c): exit 0 only, a setup failure is a failure here.
 "$HERE/rx_idle_check" || { echo "same-host test: FAIL - rx_idle_check" >&2; exit 1; }
 
+# No lost wake-up between a same-host writer and a sleeping reader (bell_wake_check.c). Its two contexts talk over
+# loopback only, as this script's own pair does. Exit 0 only, a setup failure is a failure here; its own lines are
+# shown either way, since they say what was exercised.
+if "$HERE/bell_wake_check" >"$SUB_LOG" 2>&1; then
+    grep '^bell_wake_check' "$SUB_LOG"
+else
+    cat "$SUB_LOG" >&2
+    echo "same-host test: FAIL - bell_wake_check" >&2
+    exit 1
+fi
+
 # The hint itself, against the real HAL, both with the ring and refused (rx_hint_check.c). Exit 2 is "compiled out".
 hint_rc=0
 "$HERE/rx_hint_check" || hint_rc=$?

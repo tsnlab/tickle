@@ -407,8 +407,10 @@ Compiled in by default on Linux (`tt_SEGMENT_ENABLED`), out on FreeRTOS.
 
 - Shared memory cannot end a socket wait, so before blocking the owner writes a new, never-zero **sleep generation**
   into `reader_waiting` and drains once more; it writes 0 on waking.
-- A writer reads `reader_waiting` after publishing a record (sequentially consistent on both sides, so no record can
-  sit unseen). If it is non-zero and differs from the last generation it rang for this peer, it rings once.
+- A writer reads `reader_waiting` after publishing a record, and each side puts a full fence between its store and
+  its load, so no record can sit unseen. Without the writer's fence x86 let the load overtake the slot's release
+  store and lost about 3.5 wake-ups per 100,000 round trips (`platform/linux/bell_wake_check.c`). If it is non-zero
+  and differs from the last generation it rang for this peer, it rings once.
   A busy reader is never asleep, so a loaded ring costs no doorbells; a reader that goes back to sleep with records
   unread is rung again; a dead reader is rung once, not per datagram.
 - The bell is a named FIFO beside the segment (`<segment>.bell`, `tt_SEGMENT_BELL_FIFO=1`), opened by writers on

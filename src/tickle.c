@@ -1286,6 +1286,16 @@ static void segment_ring_if_asleep(struct tt_Context* node, uint8_t context_id, 
     // see that it needs waking. A zero-length datagram is not a valid TickLE datagram under any
     // circumstance - the receive path drops it before the magic check - so this adds nothing another
     // implementation can parse and nothing that could be mistaken for data.
+    //
+    // The fence is what makes "after" true (2026-10-06). The record is published by a RELEASE store of its slot's
+    // sequence (segment_write()), and a release store followed by a load of another word is the one pair C11 lets
+    // the hardware reorder: on x86 the load is answered while the store still sits in this core's store buffer. Then
+    // this side reads 0 here, the owner stores its generation and finds the slot not yet published, and both conclude
+    // the other will act - the store-buffer litmus, a lost wake-up. Seen on the PC as 3-4 per 100,000 round trips
+    // (platform/linux/bell_wake_check.c); "sequentially consistent on both sides" was true of the two accesses to
+    // reader_waiting and not of the two that have to be ordered across it. Arm64's acquire load after a release
+    // store happens to be ordered, which is why nothing on the rig showed it.
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     uint32_t sleeping = __atomic_load_n(&segment->reader_waiting, __ATOMIC_SEQ_CST);
     if (sleeping != 0) {
         // Once per sleep of the reader, not once per datagram (struct tt_SegmentPeer.doorbell_generation).
@@ -12212,9 +12222,10 @@ static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, ui
 // cannot read past it, the ring then fills, and every peer falls back to UDP with only
 // segment_full_dropped to show for it, pointing at the ring's size instead of at the dead writer.
 // Whether this context is about to sleep on its socket, published in its own segment header so its
-// peers can see it. Sequentially consistent both ways: a writer publishes a record and then reads
-// this, the owner writes this and then drains, and it is that pairing - not either store alone -
-// that makes it impossible for a record to sit in the ring with nobody coming for it.
+// peers can see it. Fenced both ways: a writer publishes a record and then reads this, the owner
+// writes this and then drains, and it is that pairing - each side's store ordered before its own
+// later load by a full fence, not either store alone - that makes it impossible for a record to sit
+// in the ring with nobody coming for it (segment_ring_if_asleep() says what went wrong without one).
 static void segment_reader_waiting(struct tt_Context* node, bool waiting) {
     if (node->own_segment == NULL) {
         return;
@@ -12229,6 +12240,12 @@ static void segment_reader_waiting(struct tt_Context* node, bool waiting) {
         value = node->segment_sleep_generation;
     }
     __atomic_store_n(&node->own_segment->reader_waiting, value, __ATOMIC_SEQ_CST);
+    if (waiting) {
+        // The other half of segment_ring_if_asleep()'s fence: the drain that follows reads the ring with acquire
+        // loads, and C11 orders a seq_cst store before a later acquire load of another word no more than it orders a
+        // release store before one. x86's locked store and Arm64's ldar happen to; an RCpc acquire (ldapr) need not.
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    }
 }
 
 static void note_head_stall(struct tt_Context* node) {
