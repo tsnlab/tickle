@@ -99,6 +99,14 @@ The user's active list (2026-10-05), in order.
    `/tmp/abc_counts2time_compare.txt` (copied to `~/rig_results_safe/ab_hotpath_2026-10-06/`). To redo: one change
    per commit (the three counts separately), each with its own A/B on the cells it can touch, before it lands. The
    designs and their tests are in the reverted commits.
+   Redone 2026-10-06 one change per commit on branch `ab/hotpath-split`, each A/B'd against its parent (cells 1 6 8
+   10, 10 reps per arm; `~/rig_results_safe/ab_split_2026-10-06/`): the RX idle recheck by time landed (`12036197`)
+   after a re-judgement with pre-registered primaries (PASS: c1 send +6.1% t 1.5, c10 RTT -0.6%, c6 wire -0.1%, c1
+   RSS +0.5%; `~/rig_results_safe/ab_rxidle_2026-10-06/`). Kept off main: the segment attach backoff (c10 RTT +2.7%,
+   t 5.0 - the source of the bundle's latency cost - and its 64-bit `tx_clock_ns` does not link on RV32 FreeRTOS),
+   the revalidate by time (needs that clock; redesign without a 64-bit atomic), and the timed receive check (c6 CPU
+   +2.0% t 4.3 and wire +0.6% t 3.8 again; hypothesis: with io_uring its budget falls below a microsecond, so ACKNACKs
+   are handled one at a time and repairs are duplicated).
    Being rebuilt one change per commit, each A/B'd alone before it lands: (1) `TT_RX_IDLE_RECHECK` (64 datagrams) ->
    `TT_RX_IDLE_RECHECK_NS` = `tt_RECEIVE_TIMEOUT` by the poll's own clock (`test_poll_signal`, `rx_idle_check`).
    Done 2026-10-05: the RPC retry bounds are srtt-relative (`tt_CALL_RETRY_MAX_SRTT_MULTIPLE`, per-retry doubling;
