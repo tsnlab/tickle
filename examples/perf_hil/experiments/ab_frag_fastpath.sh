@@ -45,11 +45,14 @@ n=0
 for sha in $A $B $B $A; do
     n=$((n + 1))
     for win in first warm; do
-        args="-i 0.005"; [ $win = first ] && args="-i 0.005 -W 0 -C 0"
+        # The window goes through WINDOW_ARGS, which s6_transport_cells.sh appends after CLI_ARGS: given in CLI_ARGS
+        # (the first run, 2026-10-06) it was overridden by s6's default, and both windows ran warmed.
+        args="-i 0.005"; window="-W 4096 -C 4096 -I 0.001"; [ $win = first ] && window="-W 0 -C 0 -I 0.001"
         for size in p3 p4; do
             out="$OUTB.b${n}_${sha:0:8}_${win}_${size}.txt"
             say "--- block $n sha ${sha:0:8} window $win $size ($(date +%T))"
-            FRAMEWORKS=tickle SCEN=reliable_latency SIZE=$size DUR=10 REPS=$REPS SHA=$sha CLI_ARGS="$args" OUT="$out" \
+            FRAMEWORKS=tickle SCEN=reliable_latency SIZE=$size DUR=10 REPS=$REPS SHA=$sha CLI_ARGS="$args" \
+                WINDOW_ARGS="$window" OUT="$out" \
                 PREFLIGHT=0 "$X/s6_transport_cells.sh" >"$out.log" 2>&1
             say "    exit $?"
         done
@@ -65,7 +68,7 @@ for path in glob.glob(outb + '.b*_*.txt'):
         continue
     sha, win, size = m.groups()
     for line in open(path, errors='replace'):
-        r = re.match(r'arm=ON RESULT: framework=tickle .*?rtt_p50_ms=([\d.]+)', line)
+        r = re.match(r'arm=ON RESULT: framework=tickle .*?rtt_p50_ms=([\d.]+)', line.strip())
         if r and 'role=server' not in line:
             vals.setdefault((sha, win, size), []).append(float(r.group(1)) * 1000.0)
 def ms(k):

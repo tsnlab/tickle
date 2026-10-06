@@ -122,6 +122,9 @@ for L in $BLOCKS; do
         IFS='|' read -r scen size extra slug <<<"$l"
         out="$OUTB.b${n}_${sha:0:8}_${slug}.txt"
         say "--- block $n arm $L ${sha:0:8} $scen $size '$extra' ($(date +%T))"
+        # A cell's extra args go to CLI_ARGS. The measured window does NOT: s6_transport_cells.sh appends its own
+        # WINDOW_ARGS after CLI_ARGS, so a -W/-C given here is overridden (ab_frag_fastpath.sh, 2026-10-06). Set
+        # WINDOW_ARGS in the environment for a whole run instead.
         FRAMEWORKS=tickle SCEN=$scen SIZE=$size DUR=$DUR REPS=$REPS SHA=$sha CLI_ARGS="$extra" OUT="$out" PREFLIGHT=0 \
             "$X/s6_transport_cells.sh" >"$out.log" 2>&1
         rc=$?
