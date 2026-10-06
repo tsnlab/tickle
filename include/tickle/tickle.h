@@ -725,6 +725,10 @@ struct tt_Context {
     uint32_t segment_slot_ceiling; // the largest slot_bytes of any peer segment attached (record_size_limit()) // of
                                    // segment_doorbells_sent, the ones rung through the FIFO rather than UDP
     uint64_t segment_doorbells_received;
+    // Samples encoded straight into a peer's slot rather than into tx_buffer and then copied (SHM_PLAN 6e(b),
+    // tt_SEGMENT_ENCODE_IN_SLOT). Each is also one of tx_shm. The arm's own report of its treatment: an A/B whose
+    // treated arm shows 0 here measured the two-copy path twice.
+    uint64_t segment_encoded_in_slot;
     // How many times this context built its own segment and gave it up again, and how many peers it
     // currently believes share its host. Out here with the other counters rather than behind
     // tt_SEGMENT_ENABLED because the traffic line that prints them is compiled either way; they stay
