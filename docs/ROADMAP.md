@@ -81,8 +81,11 @@ The user's active list (2026-10-05), in order.
    the lost-wakeup fence (B) cost nothing - every primary held - and landed (`7f9f7c62`); x86 lost 3-4 wake-ups per
    100,000 round trips without it. epoll_pwait2 + the edge-triggered bell (C, `ab/wake-epoll`) cut same-host RTT p50
    20% (30 -> 24 us) and system time per sleep 17-21%, but raised max-rate BEST_EFFORT p3 system time per sample 59%
-   and user time 33%; VOID by its control and not landed. Fixing the max-rate cost while keeping the wake gain is in
-   progress.
+   and user time 33%; VOID by its control and not landed. Round 2 (2026-10-07, C' = C + a claim wait bounded by the
+   reader's own measured sleep cost, `ab/wake-epoll2` 56ccb264; `~/rig_results_safe/ab_samehost_reader_wake2_*`):
+   against the fence alone, latency still -20% (RTT p50 30 -> 24 us) and system time per sleep -17..-21%, but
+   max-rate BEST_EFFORT p3 CPU per sample +13.4% (t 59) - WORSE, not landed; against C it is 20% better. Next: find
+   the remaining max-rate cost.
 5. **rmw_tickle KEEP_ALL on the rig**: the first run lost ~5% of samples under 5% loss in every build. Six causes
    found and fixed on 2026-10-05: a busy socket starved the data socket (`b6de8a4d`); an endpoint was announced
    before its QoS was final (`155eecb7`); a publisher could not learn its reader except from an announce lost in
