@@ -296,10 +296,14 @@ int main(int argc, char** argv) {
     // No fixed stop: ping() ends the run once the cool-down is done.
     tt_Context_schedule(&node, start + (uint64_t)(discovery_margin_s * (double)tt_SECOND), ping, NULL);
 
+    // The run ends when ping() says so (cool-down done) or on SIGINT - not on whichever other status the poll returns
+    // (2026-10-06: a preflight run ended its cool-down at 36 of 512 round trips with exit 0). poll_ret= says what
+    // ended the loop, so an early end is visible in the RESULT line.
     ret = tt_RET_OK;
-    while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
+    while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT || ret == tt_RET_INTERRUPTED)) {
         ret = tt_Context_poll(&node, -1);
     }
+    int poll_ret = (int)ret;
 
     uint64_t lost = transmitted - received;
     double loss_pct = transmitted > 0 ? (100.0 * (double)lost / (double)transmitted) : 0.0;
@@ -329,7 +333,7 @@ int main(int argc, char** argv) {
            "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
            "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u retransmitted=%u gap_abandoned=%u "
            "doorbells_sent=%llu bells_rung=%llu sleeps=%lu "
-           "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f window=%s "
+           "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f window=%s poll_ret=%d "
            "%s\n",
            (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms,
            BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq), BenchCpuFreq_max_mhz(&g_rtt_freq),
@@ -343,7 +347,7 @@ int main(int argc, char** argv) {
            // warmup= and cooldown= are the round trips each end SENT; measured= is the round trips whose RTT the
            // statistics above are taken over. measured=0 is window=fail, never a latency.
            warmup_sent, cooldown_sent, (unsigned long)measured_recv, (unsigned long)measured_sent, edge_interval_s,
-           measured_recv > 0 ? "ok" : "fail:no_measured_round_trip",
+           measured_recv > 0 ? "ok" : "fail:no_measured_round_trip", poll_ret,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 
