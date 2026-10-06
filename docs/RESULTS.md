@@ -132,14 +132,14 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | zenoh-pico | rmw_zenoh | meas. |
 |---|---|---|---|---|---|---|---|---|
 | | **[Latency](#latency)** (ms) | | | | |  | – | |
-| 1 | RTT mean | P1 76 B | ✅ **0.211** | 0.297 | ❌ 0.329 | 0.221 † | – | A |
+| 1 | RTT mean | P1 76 B | ✅ **0.209** | ❌ 0.285 | 0.260 | 0.221 † | – | A |
 | 2 | RTT max (tail) | P1 76 B | ✅ **0.298** | 0.604 | ❌ 10.761 | 0.336 † | – | A |
-| 3 | RTT mean | P2 1292 B | ✅ **0.237** | ❌ 0.322 | 0.281 | 0.246 † | – | A |
+| 3 | RTT mean | P2 1292 B | ✅ **0.231** | ❌ 0.316 | 0.273 | 0.246 † | – | A |
 | 4 | RTT max (tail) | P2 1292 B | ✅ **0.356** | 0.622 | ❌ 0.830 | 0.372 † | – | A |
 | 5 | RTT mean | +10 ms netem | ⚪ 10.3 | ⚪ 10.4 | ⚪ 10.4 | 10.07 | – | A |
 | 6 | RTT max (tail) | +10 ms netem | ✅ **12.2** | 12.3 | ❌ 41.2 | 12.15 | – | A |
 | 6a | RTT mean | P3 1424 B | ✅ **0.237** | ❌ 0.346 | 0.337 | 0.248 † | – | A |
-| 6b | RTT mean | P4 2800 B | ✅ **0.279** | ❌ 0.362 | 0.306 | 0.402 † | – | A |
+| 6b | RTT mean | P4 2800 B | ✅ **0.249** | ❌ 0.348 | 0.293 | 0.402 † | – | A |
 | | **[Throughput](#throughput)** (Mbps) | | | | |  | – | |
 | 7 | RELIABLE | P1 76 B | ✅ **101** | ❌ 29.6 | 50.9 | 236.8 † | – | A |
 | 8 | RELIABLE | P2 1292 B | ✅ **938** | ❌ 538 | 830 | ✗ † | – | A |
@@ -255,6 +255,12 @@ Within a row all scored frameworks come from one session; across letters they do
 
 ### Latency
 
+Rows 1, 3 and 6b were re-measured on 2026-10-07 with the equal warm-up and cool-down every framework now drops
+(`campaign_sweep.sh` CELLS 10 11 17, `f40a2adf`, unpinned;
+`~/rig_results_safe/crosshost_latency_warm_f40a2adf_20261007-035608.txt`; p50 / p99 ms there: P1 0.207 / 0.239, 0.282 / 0.324, 0.255 / 0.296; P2 0.228 / 0.261, 0.312 / 0.363, 0.270 / 0.308;
+P4 0.248 / 0.271, 0.346 / 0.378, 0.289 / 0.330). The same run could not refresh rows 5-6 (10 ms netem: TickLE's
+4,096-round-trip warm-up outran the cell's timeout) or 6a (TickLE's server outlived its run and the leftover guard
+voided it) - harness defects, being fixed; those rows keep their `3ae721aa` figures.
 Rows 1-6b. `reliable_latency`, one ping in flight, 100 round trips per rep, median of 3; tails (rows 2, 4, 6) are
 the median of the reps' maxima. Every client now paces alike (the next ping one interval after the reply) and
 prints the median and p99 too: at P1 they are TickLE 0.207 / 0.243, FastDDS 0.286 / 0.475, CycloneDDS 0.255 / 0.303
