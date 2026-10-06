@@ -50,6 +50,11 @@ The user's active list (2026-10-05), in order.
 2. **Fill COMPARISON 1a's empty cells**: CPU and RSS for all three frameworks on every same-host cell (CycloneDDS
    including iox-roudi), and the vendors' DELIVERED rates on the same-host BEST_EFFORT rows. The rows compare send
    rates today, and FastDDS's KEEP_LAST 1 reader took 154 of 3.1M samples. (COMPARISON 1a notes)
+   Harness ready (2026-10-06): `s6_transport_cells.sh` records each server's RESULT line (stopped with SIGINT now), its
+   /proc CPU and VmHWM (`proc_snap.sh`) and iox-roudi's per repetition; `fair_samehost_summary.py` prints them with the
+   delivered rate. Waiting on the user: the vendors' BEST_EFFORT history depth, `BE_HISTORY=` (`-K` on all three;
+   unset = KEEP_LAST 1, as today; `tickle/common/BenchHistory.h`). A PC smoke run showed CycloneDDS's shared-memory
+   reader taking 4-8% of what was sent at either depth, with its bench reader taking one sample per wake.
 3. **Publisher user time** (0.637 us/sample at p3): broken down with perf on the rig (RESULTS, same-host notes):
    clock 25%, memcpy 28%, segment indices 12% (now on their own cache lines, `e0873623`). Next: let
    `tt_Publisher_publish()` called from a scheduled callback reuse the time the poll loop just read (one of the four

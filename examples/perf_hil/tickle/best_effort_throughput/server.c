@@ -28,6 +28,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchHistory.h"
 #include "BenchStats.h" // shared instrumentation - see its own header
 #include "BenchWindow.h"
 
@@ -36,6 +37,10 @@ static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 // What arrived, windowed by the sender's own clock exactly as the client windows what it sent (BenchWindow.h).
 static struct BenchWindow g_window;
 static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
+// -K, accepted and echoed so all three frameworks are given the same arguments (BenchHistory.h). TickLE has no
+// history cache to apply it to; history= says so and names the ring that queues instead.
+static int g_history = BENCH_HISTORY_DEFAULT;
+static char g_history_field[BENCH_HISTORY_FIELD_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -71,8 +76,8 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
-        } else {
-            (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
+        } else if (!BenchWindow_parse_arg(&g_window, argc, argv, &i)) {
+            (void)BenchHistory_parse_arg(&g_history, argc, argv, &i);
         }
     }
     // The client sends for warm-up + -d + cool-down, so this side's backstop covers all three.
@@ -131,12 +136,14 @@ int main(int argc, char** argv) {
                            (size_t)tt_SEGMENT_ATTACHED, (size_t)tt_SEGMENT_ABSENT);
     bench_stats_end(&g_bench_stats);
 
-    printf(
-        "RESULT: framework=tickle scenario=best_effort_throughput role=server recv=%lu lost=%lu loss_pct=%.1f %s %s\n",
-        (unsigned long)received, (unsigned long)lost, loss_pct,
-        BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
-        bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
-                           sizeof g_bench_fields));
+    printf("RESULT: framework=tickle scenario=best_effort_throughput role=server recv=%lu lost=%lu loss_pct=%.1f %s "
+           "history=none segment_slots=%d %s %s\n",
+           (unsigned long)received, (unsigned long)lost, loss_pct,
+           BenchHistory_arg_field(g_history, g_history_field, sizeof g_history_field),
+           tt_SEGMENT_ENABLED ? (int)tt_SEGMENT_SLOTS : 0,
+           BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
+           bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
+                              sizeof g_bench_fields));
 
     tt_Context_destroy(&node);
     return 0;

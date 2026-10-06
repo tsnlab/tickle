@@ -112,4 +112,21 @@ static inline bool wait_for_reader_match(dds_entity_t participant, dds_entity_t 
     return status.current_count > 0;
 }
 
+// The history an entity actually runs, read back from the entity rather than from the QoS that was passed in, as
+// "history=keep_last:<depth>", "history=keep_all" or "history=unreadable" (tickle/common/BenchHistory.h).
+static inline const char* cdds_history_field(dds_entity_t entity, char* out, size_t out_len) {
+    dds_qos_t* qos = dds_create_qos();
+    dds_history_kind_t kind = DDS_HISTORY_KEEP_LAST;
+    int32_t depth = 0;
+    if (dds_get_qos(entity, qos) != DDS_RETCODE_OK || !dds_qget_history(qos, &kind, &depth)) {
+        snprintf(out, out_len, "history=unreadable");
+    } else if (kind == DDS_HISTORY_KEEP_ALL) {
+        snprintf(out, out_len, "history=keep_all");
+    } else {
+        snprintf(out, out_len, "history=keep_last:%d", (int)depth);
+    }
+    dds_delete_qos(qos);
+    return out;
+}
+
 #endif

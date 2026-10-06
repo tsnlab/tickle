@@ -42,6 +42,9 @@ SCEN=${SCEN:-best_effort_throughput}
 SIZE=${SIZE:-p1}
 OFF_FLAG=${OFF_FLAG:--Dtt_SEGMENT_ENABLED=0}
 CLI_ARGS=${CLI_ARGS:-}   # forwarded from s6_transport_cells.sh so all three frameworks get the same client arguments
+# Arguments for client AND server, forwarded from s6_transport_cells.sh like CLI_ARGS: today the BEST_EFFORT history
+# depth (-K, tickle/common/BenchHistory.h), which TickLE accepts and echoes so every framework is given the same argv.
+HISTORY_ARGS=${HISTORY_ARGS:-}
 # Warm-up and cool-down, to client and server alike (tickle/common/BenchWindow.h; s6_transport_cells.sh passes the
 # same value to all three frameworks). DUR is the measured window between them.
 case "$SCEN" in
@@ -63,6 +66,7 @@ note() { echo "$*" >>"$OUT"; echo "$*" >&2; }
 say "  BUILD_FLAGS='$BUILD_FLAGS'"
 say "=== S6 witness check $(date -Is) sha=$SHA scen=$SCEN size=$SIZE dur=$DUR reps=$REPS iface=lo host=$HOST ==="
 say "  WINDOW_ARGS='$WINDOW_ARGS'"
+say "  HISTORY_ARGS='$HISTORY_ARGS'"
 
 srv_pid=""
 # INT before TERM, because the server only prints its RESULT line if it is allowed to finish. It installs a
@@ -107,7 +111,7 @@ run_one() { # run_one <arm>
     local name=$1 line
     kill_server
     srv_pid=$(sh_ "$HOST" "cd $SAVE/$name && rm -f /tmp/s6wit.pid
-(setsid sh -c 'echo \$\$ > /tmp/s6wit.pid; exec env BENCH_IFACE=lo $PIN_SERVER ./server -Q -d $((DUR + 40)) $WINDOW_ARGS' > /tmp/s6wit_server.log 2>&1 < /dev/null &); sleep 2; cat /tmp/s6wit.pid" </dev/null)
+(setsid sh -c 'echo \$\$ > /tmp/s6wit.pid; exec env BENCH_IFACE=lo $PIN_SERVER ./server -Q -d $((DUR + 40)) $WINDOW_ARGS $HISTORY_ARGS' > /tmp/s6wit_server.log 2>&1 < /dev/null &); sleep 2; cat /tmp/s6wit.pid" </dev/null)
     sh_ "$HOST" "grep -q 'Node open' /tmp/s6wit_server.log" </dev/null || { say "    no server opened for arm=$name"; return 0; }
     # Kept in a file rather than piped straight into grep. Everything the client said that was not a RESULT
     # line used to go in the pipe's bin, so a diagnostic the publisher prints - and the publisher is the only
@@ -120,13 +124,18 @@ run_one() { # run_one <arm>
     # that is the state in which the server half was written the same afternoon with the same defect.
     # Two of the three consumers in this file have now been this shape. The output comes back whole.
     local clog
-    clog=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo $PIN_CLIENT ./client -Q -d $DUR $CLI_ARGS $WINDOW_ARGS >/tmp/s6wit_client.log 2>&1; cat /tmp/s6wit_client.log" </dev/null)
+    clog=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo $PIN_CLIENT ./client -Q -d $DUR $CLI_ARGS $WINDOW_ARGS $HISTORY_ARGS >/tmp/s6wit_client.log 2>&1; cat /tmp/s6wit_client.log" </dev/null)
     line=$(printf '%s\n' "$clog" | grep '^RESULT' | head -1)
     if [ -z "$line" ]; then
         say "    arm=$name: the client printed no RESULT line. What it did say:"
         printf '%s\n' "$clog" | tail -6 | sed 's/^/       | /' | tee -a "$OUT"
     fi
     [ -n "$line" ] && say "arm=$name $line"
+    # The server's CPU and memory read from outside it, just before it is asked to stop (proc_snap.sh), the same
+    # instrument s6_transport_cells.sh uses on every framework's server and on iox-roudi. Taken here because not every
+    # server prints them itself: no latency server carries BenchStats fields. state=gone says "could not look".
+    local snap
+    snap=$(sh_ "$HOST" "sh -s -- ${srv_pid:-0} '$SAVE/*/server*'" <"$REPO/examples/perf_hil/experiments/proc_snap.sh")
     kill_server
     # The receiver's own line, collected after the server has been asked to stop and allowed to print it. A
     # client line alone cannot distinguish a publisher that stalls from a subscriber that does: on 2026-10-03 a
@@ -151,6 +160,7 @@ run_one() { # run_one <arm>
         printf '%s\n' "$slog" | tail -6 | sed 's/^/       | /' | tee -a "$OUT"
     fi
     [ -n "$dline" ] && say "arm=$name server-delivery $dline"
+    say "arm=$name PROC: framework=tickle role=server ${snap:-state=gone}"
 }
 
 sha_on=$(build_arm ON "$BUILD_FLAGS") || exit 1

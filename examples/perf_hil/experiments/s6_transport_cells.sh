@@ -37,8 +37,30 @@
 # refuses that cell with a message rather than measuring the network path and labelling it shared memory. Building
 # the daemon's lifecycle is the named next step in RMW_GAPS_PLAN's S6 section.
 #
+# COST AND DELIVERY (2026-10-06, ROADMAP "Fill COMPARISON 1a's empty cells"). Every recorded repetition now carries,
+# for every framework and both arms, what each process cost and what arrived - not only the client's send rate:
+#   - the client's RESULT line (its own utime/stime, cpu_s_per_Msample, peak_rss_kb, win_send_mbps), as before;
+#   - the server's own RESULT line. The DDS servers used to be stopped with TERM, which they do not handle, so they
+#     never printed one: no vendor's delivered count or receiver CPU had ever reached this file. They are stopped with
+#     INT now (TERM only if INT has not ended them in 10 s), as s6_witness_check.sh stops TickLE's;
+#   - arm=<A> PROC: the server's CPU and VmHWM read from /proc just before it is stopped (proc_snap.sh, the process
+#     identified by /proc/PID/exe). One instrument for every framework's server, including the latency servers, of
+#     which only TickLE's prints a RESULT line and none prints BenchStats fields;
+#   - arm=ON ROUDI: on CycloneDDS's ON arm, iox-roudi's CPU over the repetition (a /proc reading after it reported
+#     ready and another after the server stopped, so it brackets both applications' whole lives) and its VmHWM, VmRSS
+#     and RssShmem at the end, with its start-up CPU apart. CycloneDDS's shared-memory transport is that daemon plus
+#     the two processes; RESULTS S11/S13 compared against FastDDS only because the daemon was not counted.
+# The verdict block prints them per framework and arm (s6_reps.py says exactly what each figure is), beside the
+# witness. The DELIVERED rate is the server's win_recv_mbps, printed beside the client's win_send_mbps.
+#
+# BE_HISTORY=<depth> (best_effort_throughput only): passes -K <depth> to client AND server of every framework - the
+# vendors' writer and reader run KEEP_LAST <depth>, TickLE echoes it (it has no history cache; BenchHistory.h). Unset,
+# nothing is passed and each product runs its default (KEEP_LAST 1 on both vendors), as every published S1-S3 row did.
+# Which depth is fair is the user's decision (ROADMAP); whatever is chosen, every RESULT line must echo
+# history_arg=<what was asked>, and a repetition whose client or server does not is not recorded.
+#
 # Usage: s6_transport_cells.sh            Output: $OUT (default ~/rig_results_safe/s6_transport_cells.txt)
-#   FRAMEWORKS="tickle fastdds"  REPS=3  DUR=5  SCEN=reliable_throughput  SIZE=p1  SHA=<sha>
+#   FRAMEWORKS="tickle fastdds"  REPS=3  DUR=5  SCEN=reliable_throughput  SIZE=p1  SHA=<sha>  BE_HISTORY=<depth>
 #
 # OUT defaults to a path on DISK, not /tmp: /tmp here is tmpfs, and the reboot of 2026-09-30 23:54 took a running
 # measurement's output with it. A location is not a durability property.
@@ -53,6 +75,23 @@ set -uo pipefail
 export PIN_SERVER="${PIN_SERVER:-}" PIN_CLIENT="${PIN_CLIENT:-}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 ANALYSE_ONLY=${S6_ANALYSE_ONLY:-0}
+# Checked before the lock is taken: a mistyped depth must not hold the rig.
+BE_HISTORY=${BE_HISTORY:-}
+HISTORY_ARGS=""
+if [ -n "$BE_HISTORY" ]; then
+    case "$BE_HISTORY" in
+    '' | *[!0-9]* | 0*) echo "BE_HISTORY='$BE_HISTORY' is not a positive integer" >&2; exit 2 ;;
+    esac
+    if [ "${SCEN:-reliable_throughput}" != best_effort_throughput ]; then
+        echo "BE_HISTORY applies to SCEN=best_effort_throughput only (the RELIABLE cells' -K already means KEEP_LAST" >&2
+        echo "instead of their KEEP_ALL baseline); refusing rather than changing a RELIABLE cell's QoS." >&2
+        exit 2
+    fi
+    HISTORY_ARGS="-K $BE_HISTORY"
+fi
+# What every BEST_EFFORT RESULT line must echo (BenchHistory.h); empty for the other scenarios, which print none.
+WANT_HISTORY=""
+[ "${SCEN:-reliable_throughput}" = best_effort_throughput ] && WANT_HISTORY="history_arg=${BE_HISTORY:-default}"
 if [ "$ANALYSE_ONLY" != 1 ]; then
     export RIG_LOCK_SCOPE=hil
     if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then
@@ -64,7 +103,7 @@ if [ "$ANALYSE_ONLY" != 1 ]; then
             export SHA
             if ! PREFLIGHT_TOPO=samens FWS="${FRAMEWORKS:-tickle fastdds cyclonedds}" \
                 "$REPO/examples/perf_hil/experiments/rig_preflight.sh" \
-                "${SCEN:-reliable_throughput}:${SIZE:-p1}:N0:${CLI_ARGS:-}:-Q"; then
+                "${SCEN:-reliable_throughput}:${SIZE:-p1}:N0:${CLI_ARGS:-} $HISTORY_ARGS:-Q"; then
                 echo "REFUSING TO TAKE THE RIG: rig_preflight.sh failed (above). PREFLIGHT=0 overrides." >&2
                 exit 1
             fi
@@ -112,6 +151,54 @@ cleanup() {
         */server) kill -TERM $srv_pid;; esac" </dev/null >/dev/null 2>&1
     srv_pid=""
 }
+# The server's CPU and memory from /proc, read on $HOST by proc_snap.sh, which identifies it by /proc/PID/exe.
+proc_snap() { # proc_snap <pid> <exe-glob>
+    sh_ "$HOST" "sh -s -- ${1:-0} '$2'" <"$REPO/examples/perf_hil/experiments/proc_snap.sh"
+}
+
+# INT first, because only a server allowed to finish prints its RESULT line - the DDS servers install a handler for
+# SIGINT alone, and the TERM cleanup() sends killed them outright, so no vendor's receiver line had ever been captured
+# here. TERM after 10 s, so a wedged server still cannot outlive the repetition. How it stopped goes in STOP_HOW - not
+# printed for a $(...) to capture, because a subshell's srv_pid="" would not reach this shell.
+STOP_HOW=""
+stop_server() {
+    STOP_HOW="stop=none"
+    [ -z "${srv_pid:-}" ] && return 0
+    STOP_HOW=$(sh_ "$HOST" "case \"\$(readlink /proc/$srv_pid/exe 2>/dev/null)\" in */server) kill -INT $srv_pid;; esac
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -d /proc/$srv_pid ] || break; sleep 1; done
+case \"\$(readlink /proc/$srv_pid/exe 2>/dev/null)\" in */server) kill -TERM $srv_pid; echo stop=term_after_10s;; *) echo stop=int;; esac" </dev/null 2>/dev/null)
+    srv_pid=""
+}
+
+# A BEST_EFFORT line that does not echo the history it was asked for ran a configuration nobody asked for.
+history_ok() { # history_ok <RESULT line>
+    [ -z "$WANT_HISTORY" ] && return 0
+    case " $1 " in *" $WANT_HISTORY "*) return 0 ;; esac
+    return 1
+}
+
+# The client's line, then the server's own line and its /proc reading, as one repetition (s6_reps.py reads them in
+# this order). Returns 1, and records nothing, if either line is missing the history it was asked for.
+record_rep() { # record_rep <arm> <client line> <server log> <proc snapshot> <how the server stopped> <framework>
+    local arm=$1 line=$2 slog=$3 snap=$4 stop=$5 fw=$6 sline
+    sline=$(printf '%s\n' "$slog" | grep '^RESULT' | head -1)
+    if ! history_ok "$line" || { [ -n "$sline" ] && ! history_ok "$sline"; }; then
+        say "  arm=$arm HISTORY IDENTITY FAILED: a RESULT line does not echo $WANT_HISTORY. Not recorded."
+        say "       client: $(printf '%s' "$line" | grep -oE 'history[a-z_]*=[^ ]*' | tr '\n' ' ')"
+        say "       server: $(printf '%s' "$sline" | grep -oE 'history[a-z_]*=[^ ]*' | tr '\n' ' ')"
+        return 1
+    fi
+    say "arm=$arm $line"
+    if [ -n "$sline" ]; then
+        say "arm=$arm $sline"
+    elif [ "$SCEN" != reliable_latency ]; then # the DDS latency servers print no RESULT line by design
+        say "  arm=$arm: the server printed no RESULT line ($stop). Its last lines were:"
+        printf '%s\n' "$slog" | tail -4 | sed 's/^/       | /' | tee -a "$OUT"
+    fi
+    say "arm=$arm PROC: framework=$fw role=server ${snap:-state=gone} $stop"
+    return 0
+}
+
 # ONE EXIT trap for the whole script - a second `trap ... EXIT` silently replaces the first, which once left the
 # rig shaped at delay 10ms after a clean exit. The daemon is stopped here too, not by a trap of its own.
 # roudi_off is defined further down with the cyclonedds cell; if the script exits before reaching that definition
@@ -125,6 +212,8 @@ else
 say "=== S6 transport cells $(date -Is) sha=$SHA scen=$SCEN size=$SIZE dur=${DUR}s reps=$REPS host=$HOST iface=lo ==="
 say "    frameworks: $FRAMEWORKS"
 say "    window (every framework, client and server): $WINDOW_ARGS"
+[ "$SCEN" = best_effort_throughput ] &&
+    say "    BEST_EFFORT history (every framework, client and server): ${HISTORY_ARGS:-none passed, so each product runs its default} (${WANT_HISTORY})"
 fi
 
 # ---------------------------------------------------------------- tickle: delegate, do not re-implement
@@ -132,6 +221,7 @@ run_tickle_cell() {
     local sub="$OUT.tickle"
     say "### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ==="
     if ! OUT="$sub" DUR="$DUR" SCEN="$SCEN" SIZE="$SIZE" CLI_ARGS="$CLI_ARGS" WINDOW_ARGS="$WINDOW_ARGS" BUILD_FLAGS="$BUILD_FLAGS" \
+         HISTORY_ARGS="$HISTORY_ARGS" \
          TICKLE_DATAGRAM_BYTES="${TICKLE_DATAGRAM_BYTES:-}" TICKLE_RELIABLE_STATS="${TICKLE_RELIABLE_STATS:-}" \
          TICKLE_FRAG_SLOTS="${TICKLE_FRAG_SLOTS:-}" \
          "$REPO/examples/perf_hil/experiments/s6_witness_check.sh" "$SHA" "$REPS" >/dev/null 2>&1; then
@@ -139,6 +229,12 @@ run_tickle_cell() {
     fi
     if [ ! -s "$sub" ]; then
         say "  tickle cell produced no output at $sub. That is 'could not look', not 'no difference'."
+        return 0
+    fi
+    # The history identity, checked here for TickLE as record_rep() checks it for the vendors: a repetition whose
+    # client or server line does not echo it is dropped whole, before anything reads it.
+    if [ -n "$WANT_HISTORY" ] && grep -E '^arm=\S+ RESULT:' "$sub" | grep -vqF " $WANT_HISTORY "; then
+        say "  tickle HISTORY IDENTITY FAILED: a RESULT line in $sub does not echo $WANT_HISTORY. The cell is not recorded."
         return 0
     fi
     grep -E '^(arm=|FATAL|  arm )' "$sub" | sed 's/^/  /' | tee -a "$OUT" >/dev/null
@@ -172,14 +268,18 @@ fdds_run() {  # fdds_run <arm> <profile-basename>
     local env_common="BENCH_IFACE=lo LD_LIBRARY_PATH=$FDDS_LIB_PATH FASTRTPS_DEFAULT_PROFILES_FILE=$p"
     [ -n "${BENCH_FASTDDS_NO_DATASHARING:-}" ] && env_common="$env_common BENCH_FASTDDS_NO_DATASHARING=$BENCH_FASTDDS_NO_DATASHARING"
     srv_pid=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && rm -f /tmp/s6_fdds.pid
-(setsid sh -c 'echo \$\$ >/tmp/s6_fdds.pid; exec env $env_common $PIN_SERVER ./server -d $((DUR + 40)) $WINDOW_ARGS' >/tmp/s6_fdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_fdds.pid" </dev/null)
+(setsid sh -c 'echo \$\$ >/tmp/s6_fdds.pid; exec env $env_common $PIN_SERVER ./server -d $((DUR + 40)) $WINDOW_ARGS $HISTORY_ARGS' >/tmp/s6_fdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_fdds.pid" </dev/null)
     # The WHOLE output, kept on the Pi and then read, rather than piped through grep '^RESULT' at the far end. A
     # client that cannot load its libraries says so on stderr and prints no RESULT line at all; the first version of
     # this cell discarded that sentence and reported "produced no RESULT line" six times without the reason.
     local all
-    all=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && env $env_common $PIN_CLIENT ./client -d $DUR $CLI_ARGS $WINDOW_ARGS >/tmp/s6_fdds_client.log 2>&1; cat /tmp/s6_fdds_client.log" </dev/null)
+    all=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && env $env_common $PIN_CLIENT ./client -d $DUR $CLI_ARGS $WINDOW_ARGS $HISTORY_ARGS >/tmp/s6_fdds_client.log 2>&1; cat /tmp/s6_fdds_client.log" </dev/null)
     line=$(printf '%s\n' "$all" | grep '^RESULT' | head -1)
-    cleanup
+    local snap stop slog
+    snap=$(proc_snap "$srv_pid" '*/server')
+    stop_server
+    stop=$STOP_HOW
+    slog=$(sh_ "$HOST" "cat /tmp/s6_fdds_server.log 2>/dev/null" </dev/null)
     if [ -z "$line" ]; then
         say "  arm=$arm produced no RESULT line. What it did say:"
         printf '%s\n' "$all" | grep -v '^RESULT' | tail -6 | sed 's/^/       | /' | tee -a "$OUT"
@@ -190,7 +290,7 @@ fdds_run() {  # fdds_run <arm> <profile-basename>
     # Identity: the arm must report the profile it was given. Checked per rep, because the environment can arrive
     # for one rep and not the next, and an arm that silently reverted would otherwise be averaged in.
     case "$line" in
-    *"transport_profile=$prof"*) say "arm=$arm $line" ;;
+    *"transport_profile=$prof"*) record_rep "$arm" "$line" "$slog" "$snap" "$stop" fastdds ;;
     *) say "  arm=$arm IDENTITY FAILED: its RESULT line does not say transport_profile=$prof, so this rep ran a"
        say "       configuration it was not asked for. Not recorded."
        say "       $line" ;;
@@ -283,24 +383,45 @@ cdds_run() {  # cdds_run <arm> <uri>
     local arm=$1 uri=$2 dir=/home/ci/tickle/examples/perf_hil/cyclonedds/${SCEN}_${SIZE} all line
     cleanup
     srv_pid=$(sh_ "$HOST" "cd $dir && rm -f /tmp/s6_cdds.pid
-(setsid sh -c 'echo \$\$ >/tmp/s6_cdds.pid; exec env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='\''$uri'\'' $PIN_SERVER ./server -d $((DUR + 40)) $WINDOW_ARGS' >/tmp/s6_cdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_cdds.pid" </dev/null)
-    all=$(sh_ "$HOST" "cd $dir && env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='$uri' $PIN_CLIENT ./client -d $DUR $CLI_ARGS $WINDOW_ARGS >/tmp/s6_cdds_client.log 2>&1; cat /tmp/s6_cdds_client.log" </dev/null)
+(setsid sh -c 'echo \$\$ >/tmp/s6_cdds.pid; exec env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='\''$uri'\'' $PIN_SERVER ./server -d $((DUR + 40)) $WINDOW_ARGS $HISTORY_ARGS' >/tmp/s6_cdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_cdds.pid" </dev/null)
+    all=$(sh_ "$HOST" "cd $dir && env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='$uri' $PIN_CLIENT ./client -d $DUR $CLI_ARGS $WINDOW_ARGS $HISTORY_ARGS >/tmp/s6_cdds_client.log 2>&1; cat /tmp/s6_cdds_client.log" </dev/null)
     line=$(printf '%s\n' "$all" | grep '^RESULT' | head -1)
-    cleanup
+    local snap stop slog
+    snap=$(proc_snap "$srv_pid" '*/server')
+    stop_server
+    stop=$STOP_HOW
+    slog=$(sh_ "$HOST" "cat /tmp/s6_cdds_server.log 2>/dev/null" </dev/null)
     if [ -z "$line" ]; then
         say "  arm=$arm produced no RESULT line. What it did say:"
         printf '%s\n' "$all" | grep -v '^RESULT' | tail -6 | sed 's/^/       | /' | tee -a "$OUT"
-        return 0
+        return 1
     fi
     # The ON arm only counts if the daemon outlived it: RouDi dying mid-run is a silent fall back to the network.
     if [ "$arm" = ON ]; then
         if [ -z "$(sh_ "$HOST" "readlink /proc/$roudi_pid/exe 2>/dev/null" </dev/null)" ]; then
             say "  arm=ON DISCARDED: RouDi was not alive at the end of this repetition, so the run may have fallen"
             say "       back to the network partway. Not recorded."
-            return 0
+            return 1
         fi
     fi
-    say "arm=$arm $line"
+    record_rep "$arm" "$line" "$slog" "$snap" "$stop" cyclonedds
+}
+
+# iox-roudi's share of a repetition: CPU between the two readings (after it reported ready, after the server stopped),
+# memory as at the second. state=gone if either reading could not see it - "could not look", never a zero.
+roudi_fields() { # roudi_fields <first proc_snap line> <second>
+    python3 - "$1" "$2" <<'PYEOF'
+import sys
+a, b = (dict(kv.split('=', 1) for kv in s.split() if '=' in kv) for s in sys.argv[1:3])
+if a.get('state') != 'ok' or b.get('state') != 'ok':
+    print('state=gone')
+else:
+    print('state=ok cpu_s=%.3f utime_s=%.3f stime_s=%.3f sched_cpu_s=%.6f start_cpu_s=%s vmhwm_kb=%s vmrss_kb=%s '
+          'rssshmem_kb=%s' % (
+              float(b['cpu_s']) - float(a['cpu_s']), float(b['utime_s']) - float(a['utime_s']),
+              float(b['stime_s']) - float(a['stime_s']), float(b['sched_cpu_s']) - float(a['sched_cpu_s']),
+              a['cpu_s'], b['vmhwm_kb'], b['vmrss_kb'], b['rssshmem_kb']))
+PYEOF
 }
 
 run_cyclonedds_cell() {
@@ -318,7 +439,14 @@ sha256sum ${SCEN}_${SIZE}/client | cut -c1-16" </dev/null 2>&1)
     say "        identity is the daemon bracket - ready before, alive after - and is weaker for it."
     for r in $(seq 1 "$REPS"); do
         say "--- cyclonedds rep $r/$REPS $(date -Is) ---"
-        if roudi_on; then cdds_run ON "$CDDS_URI_ON"; fi
+        if roudi_on; then
+            local r0 r1
+            r0=$(proc_snap "$roudi_pid" '*/iox-roudi')
+            if cdds_run ON "$CDDS_URI_ON"; then
+                r1=$(proc_snap "$roudi_pid" '*/iox-roudi')
+                say "arm=ON ROUDI: framework=cyclonedds role=roudi $(roudi_fields "$r0" "$r1")"
+            fi
+        fi
         roudi_off
         cdds_run OFF "$CDDS_URI_OFF"
     done
@@ -336,13 +464,17 @@ done
 
 # Not `A && cat || tee`: if cat failed, tee would run and append the verdicts to the file being analysed.
 if [ "$ANALYSE_ONLY" = 1 ]; then SINK=(cat); else SINK=(tee -a "$OUT"); fi
-python3 - "$OUT" <<'PYEOF' | "${SINK[@]}"
+python3 - "$OUT" "$REPO/examples/perf_hil/experiments" "$SCEN" <<'PYEOF' | "${SINK[@]}"
 import re, statistics as st, sys, collections
 rows = collections.defaultdict(list)
 for line in open(sys.argv[1]):
     m = re.match(r"^\s*arm=(\S+) .*RESULT:(.*)$", line)
     if not m: continue
     arm, rest = m.group(1), m.group(2)
+    # Client rows only. The tickle cell's server lines have been copied in beside its client lines since the witness
+    # was built, and were counted as repetitions: its "ON n=6" for three reps (2026-10-05). The vendors' server lines
+    # are captured now too; a server's wire counters are the same interface's, but a repetition is one row.
+    if re.search(r"\brole=server\b", rest): continue
     w = re.search(r"wire_packets_per_sample=([0-9.]+)", rest)
     # Bytes as well as packets, because the packet counter alone cannot see every shared-memory transport.
     # Measured 2026-10-02 on the latency cell: TickLE's packet ratio was 1.000 while tx_shm said 87% of samples
@@ -453,4 +585,23 @@ for fw in sorted({k[0] for k in rows}):
             print("         suspect here. Either way S6 cannot use either number until it is known which.")
         else:
             print("    the two independent instruments agree, so neither is currently suspect.")
+
+# Cost and delivery, per framework and arm: medians over the recorded repetitions (s6_reps.py defines each figure).
+sys.path.insert(0, sys.argv[2])
+import s6_reps
+reps, orphans = s6_reps.read_reps(sys.argv[1])
+print()
+print("=== cost and delivery, medians over recorded repetitions (s6_reps.py) ===")
+if orphans:
+    print(f"  {orphans} server/PROC/ROUDI line(s) had no repetition to belong to and were not used")
+for fw in sorted({r['fw'] for r in reps}):
+    for arm in ("ON", "OFF"):
+        rs = [r for r in reps if r['fw'] == fw and r['arm'] == arm]
+        if not rs:
+            continue
+        figs = [s6_reps.figures(r, sys.argv[3]) for r in rs]
+        print(f"  {fw} {arm} n={len(rs)}: " + " ".join(s6_reps.summarise(figs, sys.argv[3])))
+        hist = sorted({f['history'] for f in figs if 'history' in f})
+        if hist:
+            print(f"    history (arg client/server): {', '.join(hist)}")
 PYEOF

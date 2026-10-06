@@ -35,6 +35,7 @@
 
 #include <dds/dds.h>
 
+#include "../../tickle/common/BenchHistory.h"
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../../tickle/common/BenchWindow.h"
 #include "../common.h"
@@ -45,6 +46,10 @@ static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 // The measured window: -d seconds between a warm-up and a cool-down (BenchWindow.h).
 static struct BenchWindow g_window;
 static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
+// -K <depth>: KEEP_LAST depth of this writer and the server's reader; absent, the product default (BenchHistory.h).
+static int g_history = BENCH_HISTORY_DEFAULT;
+static char g_history_arg[BENCH_HISTORY_FIELD_MAX];
+static char g_history_field[BENCH_HISTORY_FIELD_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -70,8 +75,8 @@ int main(int argc, char** argv) {
             duration_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
-        } else {
-            (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
+        } else if (!BenchWindow_parse_arg(&g_window, argc, argv, &i)) {
+            (void)BenchHistory_parse_arg(&g_history, argc, argv, &i);
         }
     }
     // -d is the measured window; the client sends for warm-up + -d + cool-down (BenchWindow.h).
@@ -88,6 +93,9 @@ int main(int argc, char** argv) {
     // (COMPARISON.md's design principle 3).
     dds_qos_t* qos = dds_create_qos();
     dds_qset_reliability(qos, DDS_RELIABILITY_BEST_EFFORT, 0);
+    if (g_history > 0) {
+        dds_qset_history(qos, DDS_HISTORY_KEEP_LAST, g_history);
+    }
     dds_entity_t writer = dds_create_writer(participant, topic, qos, NULL);
     dds_delete_qos(qos);
     if (writer < 0) {
@@ -122,9 +130,11 @@ int main(int argc, char** argv) {
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(struct Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f %s %s\n",
+           "send_mbps=%.3f %s %s %s %s\n",
            (unsigned long)sent, elapsed_s, mbps,
            BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
+           BenchHistory_arg_field(g_history, g_history_arg, sizeof g_history_arg),
+           cdds_history_field(writer, g_history_field, sizeof g_history_field),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

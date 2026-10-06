@@ -36,6 +36,7 @@
 #include <fastdds/dds/topic/TypeSupport.hpp>
 #include <fastdds/dds/topic/qos/TopicQos.hpp>
 
+#include "../../tickle/common/BenchHistory.h"
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../../tickle/common/BenchWindow.h"
 #include "../harness_common.hpp"
@@ -53,6 +54,39 @@ namespace {
     struct BenchWindow g_window;
     std::array<char, BENCH_WINDOW_FIELDS_MAX> g_window_fields {};
 
+    // -K <depth>: KEEP_LAST depth of the writer and the reader; absent, the product default (BenchHistory.h).
+    int g_history = BENCH_HISTORY_DEFAULT;
+    std::array<char, BENCH_HISTORY_FIELD_MAX> g_history_arg {};
+    std::array<char, BENCH_HISTORY_FIELD_MAX> g_history_field {};
+
+    // -K <depth> (tickle/common/BenchHistory.h): KEEP_LAST at that depth, with the resource limits raised to hold it.
+    // Fast DDS 2.14's default max_samples_per_instance is 400 (max_samples 5000), and a depth above it is an
+    // inconsistent QoS the entity refuses to be created with. Without -K nothing is set: the product default.
+    template <typename Qos> void apply_history_depth(Qos& qos, int depth) {
+        if (depth <= 0) {
+            return;
+        }
+        qos.history().kind = KEEP_LAST_HISTORY_QOS;
+        qos.history().depth = depth;
+        if (qos.resource_limits().max_samples_per_instance < depth) {
+            qos.resource_limits().max_samples_per_instance = depth;
+        }
+        if (qos.resource_limits().max_samples < depth) {
+            qos.resource_limits().max_samples = depth;
+        }
+    }
+
+    // The history the entity actually runs, read back from it rather than from the QoS that was passed in.
+    auto history_field(const HistoryQosPolicy& history) -> const char* {
+        if (history.kind == KEEP_ALL_HISTORY_QOS) {
+            snprintf(g_history_field.data(), g_history_field.size(), "history=keep_all");
+        } else {
+            snprintf(g_history_field.data(), g_history_field.size(), "history=keep_last:%d",
+                     static_cast<int>(history.depth));
+        }
+        return g_history_field.data();
+    }
+
     struct client_options {
         double duration_s = default_duration_s;
         double interval_s = 0.0; // 0 = as fast as possible
@@ -66,8 +100,8 @@ namespace {
                 opts.duration_s = atof(argv[++i]);
             } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
                 opts.interval_s = atof(argv[++i]);
-            } else {
-                (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
+            } else if (!BenchWindow_parse_arg(&g_window, argc, argv, &i)) {
+                (void)BenchHistory_parse_arg(&g_history, argc, argv, &i);
             }
         }
         return opts;
@@ -130,6 +164,7 @@ auto main(int argc, char** argv) -> int {
     // (COMPARISON.md's design principle 3).
     DataWriterQos wqos = DATAWRITER_QOS_DEFAULT;
     wqos.reliability().kind = BEST_EFFORT_RELIABILITY_QOS;
+    apply_history_depth(wqos, g_history);
     harness::apply_datasharing_policy(wqos);
 
     Publisher* const publisher = participant->create_publisher(PUBLISHER_QOS_DEFAULT);
@@ -153,11 +188,13 @@ auto main(int argc, char** argv) -> int {
     const double mbps = harness::mbps(sent, sizeof(Bench), elapsed_s);
     bench_stats_end(&harness::g_bench_stats);
     printf("RESULT: framework=fastdds scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f %s %s transport_profile=%s\n",
+           "send_mbps=%.3f %s %s %s %s transport_profile=%s\n",
            static_cast<unsigned long>(sent), elapsed_s, mbps,
            BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields.data(),
                               g_window_fields.size()),
-           harness::bench_fields(BENCH_ROLE_SENDER, sent), harness::transport_profile());
+           BenchHistory_arg_field(g_history, g_history_arg.data(), g_history_arg.size()),
+           history_field(writer->get_qos().history()), harness::bench_fields(BENCH_ROLE_SENDER, sent),
+           harness::transport_profile());
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

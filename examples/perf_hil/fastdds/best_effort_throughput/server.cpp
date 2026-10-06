@@ -36,6 +36,7 @@
 #include <fastdds/dds/topic/qos/TopicQos.hpp>
 #include <fastdds/rtps/common/Time_t.h>
 
+#include "../../tickle/common/BenchHistory.h"
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../../tickle/common/BenchWindow.h"
 #include "../harness_common.hpp"
@@ -53,14 +54,47 @@ namespace {
     struct BenchWindow g_window;
     std::array<char, BENCH_WINDOW_FIELDS_MAX> g_window_fields {};
 
+    // -K <depth>: KEEP_LAST depth of the writer and the reader; absent, the product default (BenchHistory.h).
+    int g_history = BENCH_HISTORY_DEFAULT;
+    std::array<char, BENCH_HISTORY_FIELD_MAX> g_history_arg {};
+    std::array<char, BENCH_HISTORY_FIELD_MAX> g_history_field {};
+
+    // -K <depth> (tickle/common/BenchHistory.h): KEEP_LAST at that depth, with the resource limits raised to hold it.
+    // Fast DDS 2.14's default max_samples_per_instance is 400 (max_samples 5000), and a depth above it is an
+    // inconsistent QoS the entity refuses to be created with. Without -K nothing is set: the product default.
+    template <typename Qos> void apply_history_depth(Qos& qos, int depth) {
+        if (depth <= 0) {
+            return;
+        }
+        qos.history().kind = KEEP_LAST_HISTORY_QOS;
+        qos.history().depth = depth;
+        if (qos.resource_limits().max_samples_per_instance < depth) {
+            qos.resource_limits().max_samples_per_instance = depth;
+        }
+        if (qos.resource_limits().max_samples < depth) {
+            qos.resource_limits().max_samples = depth;
+        }
+    }
+
+    // The history the entity actually runs, read back from it rather than from the QoS that was passed in.
+    auto history_field(const HistoryQosPolicy& history) -> const char* {
+        if (history.kind == KEEP_ALL_HISTORY_QOS) {
+            snprintf(g_history_field.data(), g_history_field.size(), "history=keep_all");
+        } else {
+            snprintf(g_history_field.data(), g_history_field.size(), "history=keep_last:%d",
+                     static_cast<int>(history.depth));
+        }
+        return g_history_field.data();
+    }
+
     auto parse_safety_cap(int argc, char** argv) -> double {
         double safety_cap_s = default_safety_cap_s;
         BenchWindow_init(&g_window);
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
                 safety_cap_s = atof(argv[++i]);
-            } else {
-                (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
+            } else if (!BenchWindow_parse_arg(&g_window, argc, argv, &i)) {
+                (void)BenchHistory_parse_arg(&g_history, argc, argv, &i);
             }
         }
         // The client sends for warm-up + -d + cool-down, so this side's backstop covers all three.
@@ -91,7 +125,7 @@ namespace {
         }
     }
 
-    void report(const harness::stream_stats& stats) {
+    void report(const harness::stream_stats& stats, const DataReader* reader) {
         const double elapsed_s = harness::stream_elapsed_s(stats);
         const double loss_pct = harness::stream_loss_pct(stats);
         const double mbps = harness::mbps(stats.received, sizeof(Bench), elapsed_s);
@@ -99,12 +133,14 @@ namespace {
         bench_stats_end(&harness::g_bench_stats);
 
         printf("RESULT: framework=fastdds scenario=best_effort_throughput role=server recv=%lu lost=%lu "
-               "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f %s %s transport_profile=%s\n",
+               "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f %s %s %s %s transport_profile=%s\n",
                static_cast<unsigned long>(stats.received), static_cast<unsigned long>(stats.lost), loss_pct, elapsed_s,
                mbps,
                BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields.data(),
                                   g_window_fields.size()),
-               harness::bench_fields(BENCH_ROLE_RECEIVER, stats.received), harness::transport_profile());
+               BenchHistory_arg_field(g_history, g_history_arg.data(), g_history_arg.size()),
+               history_field(reader->get_qos().history()), harness::bench_fields(BENCH_ROLE_RECEIVER, stats.received),
+               harness::transport_profile());
     }
 
 } // namespace
@@ -131,6 +167,7 @@ auto main(int argc, char** argv) -> int {
 
     DataReaderQos rqos = DATAREADER_QOS_DEFAULT;
     rqos.reliability().kind = BEST_EFFORT_RELIABILITY_QOS;
+    apply_history_depth(rqos, g_history);
     harness::apply_datasharing_policy(rqos);
 
     Subscriber* const subscriber = participant->create_subscriber(SUBSCRIBER_QOS_DEFAULT);
@@ -142,7 +179,7 @@ auto main(int argc, char** argv) -> int {
 
     harness::stream_stats stats;
     receive_until(reader, harness::now_ns() + harness::seconds_to_ns(safety_cap_s), stats);
-    report(stats);
+    report(stats, reader);
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

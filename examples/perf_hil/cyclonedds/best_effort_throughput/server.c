@@ -37,8 +37,10 @@
 
 #include <dds/dds.h>
 
+#include "../../tickle/common/BenchHistory.h"
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../../tickle/common/BenchWindow.h"
+#include "../common.h"
 #include "Bench.h"
 
 static struct BenchStats g_bench_stats;
@@ -46,6 +48,10 @@ static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 // What arrived, windowed by the sender's own clock exactly as the client windows what it sent (BenchWindow.h).
 static struct BenchWindow g_window;
 static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
+// -K <depth>: KEEP_LAST depth of this reader and the client's writer; absent, the product default (BenchHistory.h).
+static int g_history = BENCH_HISTORY_DEFAULT;
+static char g_history_arg[BENCH_HISTORY_FIELD_MAX];
+static char g_history_field[BENCH_HISTORY_FIELD_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -68,8 +74,8 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
-        } else {
-            (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
+        } else if (!BenchWindow_parse_arg(&g_window, argc, argv, &i)) {
+            (void)BenchHistory_parse_arg(&g_history, argc, argv, &i);
         }
     }
     // The client sends for warm-up + -d + cool-down, so this side's backstop covers all three.
@@ -92,6 +98,9 @@ int main(int argc, char** argv) {
 
     dds_qos_t* qos = dds_create_qos();
     dds_qset_reliability(qos, DDS_RELIABILITY_BEST_EFFORT, 0);
+    if (g_history > 0) {
+        dds_qset_history(qos, DDS_HISTORY_KEEP_LAST, g_history);
+    }
     dds_entity_t reader = dds_create_reader(participant, topic, qos, NULL);
     dds_entity_t dummy_writer = dds_create_writer(participant, ack_topic, qos, NULL);
     dds_delete_qos(qos);
@@ -146,9 +155,11 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
 
     printf("RESULT: framework=cyclonedds scenario=best_effort_throughput role=server recv=%lu lost=%lu "
-           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f %s %s\n",
+           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f %s %s %s %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, elapsed_s, mbps,
            BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
+           BenchHistory_arg_field(g_history, g_history_arg, sizeof g_history_arg),
+           cdds_history_field(reader, g_history_field, sizeof g_history_field),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

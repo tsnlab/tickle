@@ -29,6 +29,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchHistory.h"
 #include "BenchStats.h" // shared instrumentation - see its own header
 #include "BenchWindow.h"
 
@@ -37,6 +38,10 @@ static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 // The measured window: -d seconds between a warm-up and a cool-down (BenchWindow.h).
 static struct BenchWindow g_window;
 static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
+// -K, accepted and echoed so all three frameworks are given the same arguments (BenchHistory.h). TickLE has no
+// history cache to apply it to; history= says so and names the ring that queues instead.
+static int g_history = BENCH_HISTORY_DEFAULT;
+static char g_history_field[BENCH_HISTORY_FIELD_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -86,8 +91,8 @@ int main(int argc, char** argv) {
             interval_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = atof(argv[++i]);
-        } else {
-            (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
+        } else if (!BenchWindow_parse_arg(&g_window, argc, argv, &i)) {
+            (void)BenchHistory_parse_arg(&g_history, argc, argv, &i);
         }
     }
     // -d is the measured window; the client sends for warm-up + -d + cool-down (BenchWindow.h).
@@ -160,10 +165,11 @@ int main(int argc, char** argv) {
     snprintf(bells, sizeof bells, "doorbells_sent=%llu bells_rung=%llu",
              (unsigned long long)node.segment_doorbells_sent, (unsigned long long)node.segment_bells_rung);
     printf("RESULT: framework=tickle scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f %s %s %s %s\n",
+           "send_mbps=%.3f %s %s history=none segment_slots=%d %s %s %s\n",
            (unsigned long)sent, elapsed_s, mbps,
            BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
-           rx_hint, bells,
+           BenchHistory_arg_field(g_history, g_history_field, sizeof g_history_field),
+           tt_SEGMENT_ENABLED ? (int)tt_SEGMENT_SLOTS : 0, rx_hint, bells,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 
