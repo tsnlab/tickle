@@ -42,6 +42,19 @@ OBJCOPY = $(CROSS)objcopy
 # doesn't clobber another's cached objects (they're compiled with different -D flags).
 ROLE ?= selftest
 NODE_ID ?= 1
+# RX_PATH picks how src/hal_freertos.c talks to lwIP (tt_HAL_FREERTOS_NETCONN, include/tickle/hal_freertos.h):
+#   netconn (default) - the netconn API with an arrival-counting callback, which gives tt_rx_maybe_ready() its answer
+#   socket            - the BSD socket API, the HAL before 2026-10-06; its builds carry a -socket suffix
+RX_PATH ?= netconn
+ifeq ($(RX_PATH),netconn)
+RX_FLAGS = -Dtt_HAL_FREERTOS_NETCONN=1
+RX_SUFFIX =
+else ifeq ($(RX_PATH),socket)
+RX_FLAGS = -Dtt_HAL_FREERTOS_NETCONN=0
+RX_SUFFIX = -socket
+else
+$(error Unknown RX_PATH '$(RX_PATH)': expected 'netconn' or 'socket')
+endif
 
 ifeq ($(ROLE),selftest)
 MAIN_SRC = main.c
@@ -95,7 +108,7 @@ ARCH_FLAGS = -march=rv32imac_zicsr_zifencei -mabi=ilp32 -mcmodel=medlow
 # -DTT_PLATFORM_FREERTOS: see include/tickle/hal.h's platform detection - unlike __linux__,
 # FreeRTOS has no standard compiler-predefined macro of its own.
 CFLAGS = $(ARCH_FLAGS) -O1 -g -Wall -Wextra -ffreestanding -fno-common -DTT_PLATFORM_FREERTOS \
-         -DNET_NODE_ID=$(NODE_ID) \
+         -DNET_NODE_ID=$(NODE_ID) $(RX_FLAGS) \
          -I. -Iboard -Ilwip_arch $(ROLE_INCLUDES) \
          -I$(FREERTOS)/include -I$(RISCV_PORT) \
          -I$(LWIP)/src/include -I$(LWIP_FREERTOS_PORT)/include \
@@ -110,7 +123,7 @@ ASFLAGS = $(ARCH_FLAGS) -I$(CHIP_EXT) -I.
 # crt0/linker script so our own start.S/link.ld stay in control of boot and memory layout.
 CFLAGS += --specs=picolibc.specs
 
-ELF = RTOSDemo-$(ROLE)-$(NODE_ID).elf
+ELF = RTOSDemo-$(ROLE)-$(NODE_ID)$(RX_SUFFIX).elf
 LDFLAGS = $(ARCH_FLAGS) -nostartfiles --specs=picolibc.specs -T board/link.ld \
           -Wl,--gc-sections -Wl,-Map=$(ELF:.elf=.map)
 
@@ -154,7 +167,7 @@ REPO_ROOT = $(abspath $(ROOT))
 # Per-(ROLE,NODE_ID) obj dir: objects compiled with different -DNET_NODE_ID/-DROLE-selected
 # sources aren't interchangeable, so each combination that's actually built keeps its own cache
 # instead of clobbering (or, worse, silently reusing) another combination's.
-OBJ_DIR = obj-$(ROLE)-$(NODE_ID)
+OBJ_DIR = obj-$(ROLE)-$(NODE_ID)$(RX_SUFFIX)
 OBJS = $(foreach src,$(SRCS),$(OBJ_DIR)/$(patsubst $(REPO_ROOT)/%,%,$(abspath $(src))).o)
 
 .PHONY: all clean run lint lint-headers-ci

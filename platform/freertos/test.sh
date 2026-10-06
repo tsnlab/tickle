@@ -14,7 +14,8 @@
 # (.github/workflows/performance.yml), just emulated instead of on real hardware.
 #
 # Every TickLE example doubles as a functional/performance test of the library itself (see
-# README's "Run examples"), so this runs all four pairs, in order:
+# README's "Run examples"), so after the single-instance selftest (run_selftest below) this runs all four pairs, in
+# order:
 #   - uint64 (publisher/subscriber): pub/sub - also the only pair that exercises
 #     tt_Publisher_publish()'s batched (not immediately flushed) send path, which ping/pong's and
 #     set_bool's always-immediately-flushed tt_Client_call() never reaches at all - see
@@ -137,7 +138,42 @@ $(printf '%-10s PASS (%s saw %s, %s saw %s)' "$label" "$server_role" "$server_se
     return 0
 }
 
+# The single-instance selftest (main.c), once per RX_PATH (Makefile): polls, tt_Context_interrupt() before and during a
+# poll, and the receive path's cost - empty reads per datagram, which the netconn build must hold near zero and the
+# socket build, the control, must show. main.c decides PASS/FAIL against those pre-registered bounds and ends QEMU
+# through the virt test device with that status, so the exit status and the PASS line must agree. A group of its own,
+# so that no other guest's traffic lands in its counts.
+SELFTEST_MCAST_GROUP=230.0.0.1:5010
+run_selftest() {
+    rx_path=$1
+    suffix=""
+    [ "$rx_path" = netconn ] || suffix="-$rx_path"
+    log="selftest$suffix.log"
+
+    make ROLE=selftest RX_PATH="$rx_path" NODE_ID=1 all
+
+    timeout 60 qemu-system-riscv32 -machine virt -nographic -bios none -kernel "RTOSDemo-selftest-1$suffix.elf" \
+        -global virtio-mmio.force-legacy=off \
+        -netdev socket,id=net0,mcast=$SELFTEST_MCAST_GROUP -device virtio-net-device,netdev=net0 \
+        </dev/null >"$log" 2>&1
+    selftest_status=$?
+
+    echo "=== $log ==="
+    cat "$log"
+    rx_lines=$(grep 'selftest: rx ' "$log" | sed 's/^selftest: //' | tr '\n' ';')
+    if [ "$selftest_status" -eq 0 ] && grep -q '^selftest: PASS' "$log"; then
+        SUMMARY="$SUMMARY
+$(printf '%-10s PASS (%s)' "selftest/$rx_path" "$rx_lines")"
+        return 0
+    fi
+    SUMMARY="$SUMMARY
+$(printf '%-10s FAIL (status %s; %s failed checks)' "selftest/$rx_path" "$selftest_status" "$(grep -c '^selftest: FAIL ' "$log")")"
+    return 1
+}
+
 status=0
+run_selftest netconn || status=1
+run_selftest socket || status=1
 run_round_trip uint64 publisher 1 subscriber 2 'publisher: sent data=' 'subscriber: seq=' || status=1
 run_round_trip set_bool client 1 server 2 'client: call=.*success=' 'server: request data=' || status=1
 run_round_trip ping_pong ping 1 pong 2 'ping: seq=.*time=' 'pong: request seq=' "$PING_DURATION_S" || status=1

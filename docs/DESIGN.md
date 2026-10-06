@@ -516,6 +516,7 @@ All are compile-time `-D` overrides unless noted. Times in nanoseconds.
 | `tt_RX_CLOCK_REFRESH` | 16 | | datagrams per clock read |
 | `tt_RX_LOCK_CHUNK` | 8 | | buffered datagrams per lock hold |
 | `tt_HAL_RX_HINT` | AUTO (0) | | io_uring receive hint: AUTO / READ / URING |
+| `tt_HAL_FREERTOS_NETCONN` | 1 | | FreeRTOS HAL on lwIP netconn with an arrival count (receive hint); 0 = BSD sockets |
 | `tt_SOCKET_BUFFER_SIZE` | 1 MiB | 4 MiB | requested SO_SNDBUF/SO_RCVBUF |
 | `tt_SEGMENT_ENABLED` | 1 (0 FreeRTOS) | 1 | shared-memory transport |
 | `tt_SEGMENT_BYTES` | 768 KiB | | ring budget per context |

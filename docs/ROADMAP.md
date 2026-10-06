@@ -139,6 +139,10 @@ The user's active list (2026-10-05), in order.
    per socket, a callback that counts arrivals and gives one FreeRTOS semaphore, `tt_receive()` waiting on that
    semaphore (which also replaces the loopback wake socket), reads with `NETCONN_DONTBLOCK`. About 250 lines of
    `src/hal_freertos.c`; `make test-freertos` is the check. (include/tickle/hal.h; SHM_PLAN 7 q3)
+   Done 2026-10-06, as described, default `tt_HAL_FREERTOS_NETCONN=1`; the socket HAL stays behind `=0`. The QEMU
+   selftest counts empty reads per datagram: 1.0 (waiting poll) and ~1,200 (busy poll) on sockets, 0 and 0 on
+   netconn, which also answers `tt_try_receive()`'s "nothing" from the count. Found on the way: closing an lwIP
+   socket faults, because lwIP sets errno, picolibc keeps errno thread-local, and the board never sets `tp`.
 8. **CycloneDDS arm of the mixed shared-memory + network test**: the mixed-delivery test has no Cyclone arm yet.
    It needs iceoryx plus network config. (COMPARISON 1a, mixed delivery)
 

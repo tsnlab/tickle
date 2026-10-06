@@ -258,6 +258,7 @@ bool tt_rx_maybe_ready(struct tt_Context* node);
 // self-signal), making it return -3 immediately instead of waiting out the rest of its timeout.
 // Safe to call whether or not a call is currently blocked; if none is, the signal is simply
 // waiting for the next one (see each platform's own tt_bind()/tt_receive() for how - an eventfd
-// on Linux, a self-connected loopback UDP socket on FreeRTOS, each watched by the same poll()/select()
-// call as the real socket). tt_Context_interrupt() (tickle.h) is the public entry point that calls this.
+// on Linux, watched by the same poll() as the real sockets; on FreeRTOS a flag plus the semaphore that
+// tt_receive() waits on, or a loopback UDP socket in its select() with tt_HAL_FREERTOS_NETCONN=0).
+// tt_Context_interrupt() (tickle.h) is the public entry point that calls this.
 tt_ret_t tt_wake_signal(struct tt_Context* node);

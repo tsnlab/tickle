@@ -19,7 +19,7 @@ All commands run from the repository root.
 | Headers | `make headers-cpp` | public headers compile as C and as C++ | |
 | Same host | `make test-samehost` | two nodes on one host over loopback, plus an io_uring-refused pass | no root |
 | Linux HAL | `make test-linux` | two nodes in two network namespaces joined by a veth pair | passwordless `sudo ip` |
-| FreeRTOS HAL | `make test-freertos` | a round trip under QEMU over emulated virtio-net | RISC-V toolchain, QEMU |
+| FreeRTOS HAL | `make test-freertos` | a single-node selftest on each HAL build (interrupt wake, empty reads per datagram), then round trips under QEMU over emulated virtio-net | RISC-V toolchain, QEMU |
 | All self-contained | `make test-all` | `test`, `headers-cpp`, `check-doc-shas`, `check-rig-lock`, `check-bench-shapes`, `test-samehost`, `test-linux`, `test-freertos` | all of the above |
 | Typesupport | `make test-typesupport` | the code generator's pytest suites | Python |
 | Codec drift | `make regen` | regenerates committed codecs; CI fails on any diff | `tickle-typesupport` installed |
