@@ -23,7 +23,7 @@ set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$HERE/../tickle/reliable_throughput_p1"
 OUT=/tmp/shm_attach_counters_local.log
-NS=tt-shmattach
+NS=tt-shmattach-$$
 SECONDS_TO_RUN=${SECONDS_TO_RUN:-5}
 
 [ -x "$BIN/server" ] && [ -x "$BIN/client" ] || {

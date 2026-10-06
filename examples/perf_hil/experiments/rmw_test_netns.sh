@@ -25,7 +25,7 @@ colcon build --packages-select rmw_tickle --cmake-args -DBUILD_SHARED_LIBS=ON >/
 rc=$?
 echo "BUILD_EXIT $rc"
 [ "$rc" = 0 ] || { echo ALL_DONE; exit 1; }
-NS=tt-rmwtest
+NS=tt-rmwtest-$$
 sudo -n ip netns del "$NS" 2>/dev/null
 sudo -n ip netns add "$NS" || { echo "netns failed"; echo ALL_DONE; exit 1; }
 sudo -n ip -n "$NS" link set lo up

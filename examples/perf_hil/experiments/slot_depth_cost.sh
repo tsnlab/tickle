@@ -42,7 +42,7 @@
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
-NS=tt-depthns
+NS=tt-depthns-$$
 OUT=${OUT:-$HOME/rig_results_safe/slot_depth_cost}
 BIG_SLOT=${BIG_SLOT:-2816}
 BIG_SEG=${BIG_SEG:-1048576}

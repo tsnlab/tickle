@@ -45,8 +45,8 @@ OUT=${OUT:-/tmp/veth_frag_duplicate.txt}
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PERF="$(cd "$HERE/.." && pwd)"
 ARMS_DIR=${ARMS_DIR:-/tmp/veth_frag_duplicate_arms}
-NS1=fragdup-ns1
-NS2=fragdup-ns2
+NS1=fragdup-ns1-$$
+NS2=fragdup-ns2-$$
 CLIENT_LOG=/tmp/veth_frag_duplicate_client.log
 SERVER_LOG=/tmp/veth_frag_duplicate_server.log
 
@@ -70,9 +70,7 @@ run_one() { # <arm> <delay_us>
     local arm=$1 delay=$2
     cleanup
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-    sudo -n ip link add fragdup1 type veth peer name fragdup2 || exit 1
-    sudo -n ip link set fragdup1 netns "$NS1"
-    sudo -n ip link set fragdup2 netns "$NS2"
+    sudo -n ip link add fragdup1 netns "$NS1" type veth peer name fragdup2 netns "$NS2" || exit 1
     sudo -n ip -n "$NS1" addr add 192.168.10.1/24 dev fragdup1
     sudo -n ip -n "$NS2" addr add 192.168.10.2/24 dev fragdup2
     for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done

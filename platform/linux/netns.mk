@@ -5,7 +5,7 @@
 #
 # The automated round-trip test (platform/linux/test.sh, via `make test-linux` at the repo root)
 # also runs in a namespace pair now, but manages its own (torn down on exit, distinct names:
-# tickle-ns1/tickle-ns2) and does not use or depend on these targets - so a `createns` here and a
+# tickle-ns1-<pid>/tickle-ns2-<pid>) and does not use or depend on these targets - so a `createns` here and a
 # `test-linux` run can coexist.
 #
 # Split out of platform/linux/Makefile so build logic and this environment-specific tooling don't

@@ -33,8 +33,8 @@ PERF="$(cd "$HERE/.." && pwd)"
 REPO="$(cd "$PERF/../.." && pwd)"
 ARMS_DIR=${ARMS_DIR:-/tmp/veth_rx_batch_arms}
 BEFORE_WT=/tmp/veth_rx_batch_before_wt
-NS1=rxb-ns1
-NS2=rxb-ns2
+NS1=rxb-ns1-$$
+NS2=rxb-ns2-$$
 CLIENT_LOG=/tmp/veth_rx_batch_client.log
 SERVER_LOG=/tmp/veth_rx_batch_server.log
 
@@ -66,9 +66,7 @@ build_arm() { # <name> <perf dir> <env...>
 setup_ns() {
     cleanup
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-    sudo -n ip link add rxb1 type veth peer name rxb2 || exit 1
-    sudo -n ip link set rxb1 netns "$NS1"
-    sudo -n ip link set rxb2 netns "$NS2"
+    sudo -n ip link add rxb1 netns "$NS1" type veth peer name rxb2 netns "$NS2" || exit 1
     sudo -n ip -n "$NS1" addr add 192.168.10.1/24 dev rxb1
     sudo -n ip -n "$NS2" addr add 192.168.10.2/24 dev rxb2
     for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done

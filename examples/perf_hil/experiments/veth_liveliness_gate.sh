@@ -33,8 +33,8 @@ PERF="$(cd "$HERE/.." && pwd)"
 REPO="$(cd "$PERF/../.." && pwd)"
 ARMS_DIR=${ARMS_DIR:-/tmp/veth_liveliness_gate_arms}
 BEFORE_WT=/tmp/veth_liveliness_gate_before_wt
-NS1=lvg-ns1
-NS2=lvg-ns2
+NS1=lvg-ns1-$$
+NS2=lvg-ns2-$$
 CLIENT_LOG=/tmp/veth_liveliness_gate_client.log
 SERVER_LOG=/tmp/veth_liveliness_gate_server.log
 
@@ -59,9 +59,7 @@ build_arm() { # <name> <perf dir> <env...>
 setup_ns() {
     cleanup
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-    sudo -n ip link add lvg1 type veth peer name lvg2 || exit 1
-    sudo -n ip link set lvg1 netns "$NS1"
-    sudo -n ip link set lvg2 netns "$NS2"
+    sudo -n ip link add lvg1 netns "$NS1" type veth peer name lvg2 netns "$NS2" || exit 1
     sudo -n ip -n "$NS1" addr add 192.168.10.1/24 dev lvg1
     sudo -n ip -n "$NS2" addr add 192.168.10.2/24 dev lvg2
     for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done

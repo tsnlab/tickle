@@ -14,9 +14,11 @@ REPO="$(cd "$HERE/../../.." && pwd)"
 OUT=${OUT:-/tmp/copy_map.txt}
 W="$(mktemp -d /tmp/copy_map_XXXXXX)"
 BIN="$REPO/install/rmw_perf_pingpong/lib/rmw_perf_pingpong"
+NS1=cm-ns1-$$
+NS2=cm-ns2-$$
 cleanup() {
-    sudo -n ip netns del cm-ns1 2>/dev/null
-    sudo -n ip netns del cm-ns2 2>/dev/null
+    sudo -n ip netns del "$NS1" 2>/dev/null
+    sudo -n ip netns del "$NS2" 2>/dev/null
     rm -rf "$W"
     return 0
 }
@@ -30,26 +32,24 @@ control=$(awk '{c += $4; b += $5} END {print c " " b}' "$W/control.txt")
 echo "CONTROL calls_bytes=$control (expected 1000 4096000)" >>"$OUT"
 [ "$control" = "1000 4096000" ] || { echo "CONTROL FAILED" >>"$OUT"; exit 1; }
 
-sudo -n ip netns del cm-ns1 2>/dev/null
-sudo -n ip netns del cm-ns2 2>/dev/null
-sudo -n ip netns add cm-ns1 && sudo -n ip netns add cm-ns2 || exit 1
-sudo -n ip link add cm1 type veth peer name cm2 || exit 1
-sudo -n ip link set cm1 netns cm-ns1
-sudo -n ip link set cm2 netns cm-ns2
-sudo -n ip -n cm-ns1 addr add 192.168.10.1/24 dev cm1
-sudo -n ip -n cm-ns2 addr add 192.168.10.2/24 dev cm2
-for ns in cm-ns1 cm-ns2; do sudo -n ip -n "$ns" link set lo up; done
-sudo -n ip -n cm-ns1 link set cm1 up
-sudo -n ip -n cm-ns2 link set cm2 up
+sudo -n ip netns del "$NS1" 2>/dev/null
+sudo -n ip netns del "$NS2" 2>/dev/null
+sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
+sudo -n ip link add cm1 netns "$NS1" type veth peer name cm2 netns "$NS2" || exit 1
+sudo -n ip -n "$NS1" addr add 192.168.10.1/24 dev cm1
+sudo -n ip -n "$NS2" addr add 192.168.10.2/24 dev cm2
+for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
+sudo -n ip -n "$NS1" link set cm1 up
+sudo -n ip -n "$NS2" link set cm2 up
 ENV=". /opt/ros/lyrical/setup.bash; . $REPO/install/setup.bash; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255 ROS_HOME=/tmp/copy_map_roshome"
 
 for msg in bench array1k struct16; do
     # shellcheck disable=SC2024 # the logs are this shell's
-    sudo -n ip netns exec cm-ns2 bash -c "$ENV; export COPY_COUNT_OUT=$W/pong_$msg.txt LD_PRELOAD=$W/shim.so; timeout -k 2 -s INT 9 $BIN/pong_node -m $msg" >"$W/pong_$msg.log" 2>&1 &
+    sudo -n ip netns exec "$NS2" bash -c "$ENV; export COPY_COUNT_OUT=$W/pong_$msg.txt LD_PRELOAD=$W/shim.so; timeout -k 2 -s INT 9 $BIN/pong_node -m $msg" >"$W/pong_$msg.log" 2>&1 &
     pong=$!
     sleep 3
     # shellcheck disable=SC2024
-    sudo -n ip netns exec cm-ns1 bash -c "$ENV; export COPY_COUNT_OUT=$W/ping_$msg.txt LD_PRELOAD=$W/shim.so; timeout -k 2 -s INT 6 $BIN/ping_node -d 3 -i 0.005 --wait block -m $msg" >"$W/ping_$msg.log" 2>&1
+    sudo -n ip netns exec "$NS1" bash -c "$ENV; export COPY_COUNT_OUT=$W/ping_$msg.txt LD_PRELOAD=$W/shim.so; timeout -k 2 -s INT 6 $BIN/ping_node -d 3 -i 0.005 --wait block -m $msg" >"$W/ping_$msg.log" 2>&1
     wait "$pong"
     rtts=$(grep -oE 'recv=[0-9]+' "$W/ping_$msg.log" | head -1 | cut -d= -f2)
     echo "== $msg round_trips=${rtts:-0}" >>"$OUT"

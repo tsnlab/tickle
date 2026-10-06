@@ -21,11 +21,15 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../../.." && pwd)
 BIN=/tmp/discovery_node
 BR=dscbr0
+# Per-run names: concurrent runs on one PC must not delete each other's namespaces. The bridge and its ports live
+# in a private hub namespace, so nothing this script creates exists in the root namespace.
+NSP=dsc-$$
+HUB=$NSP-hub
 
 cleanup() {
     local i
-    for i in $(seq 1 32); do sudo -n ip netns del "dsc-ns$i" 2>/dev/null; done
-    sudo -n ip link del "$BR" 2>/dev/null
+    for i in $(seq 1 32); do sudo -n ip netns del "$NSP-ns$i" 2>/dev/null; done
+    sudo -n ip netns del "$HUB" 2>/dev/null
     return 0
 }
 trap cleanup EXIT
@@ -52,28 +56,28 @@ gcc -O2 -o "$BIN" "$HERE/discovery_node.c" "$SHAPE/Bench.c" -I"$SHAPE" \
 say "=== discovery scaling, $(date -Is), core ${SHA:0:8}, warm-up ${WARM_S}s, window ${WINDOW_S}s ==="
 
 counters() { # $1 ns index -> "rx_bytes rx_packets tx_bytes tx_packets"
-    sudo -n ip netns exec "dsc-ns$1" sh -c "cd /sys/class/net/dscv$1/statistics && echo \$(cat rx_bytes rx_packets tx_bytes tx_packets)"
+    sudo -n ip netns exec "$NSP-ns$1" sh -c "cd /sys/class/net/dscv$1/statistics && echo \$(cat rx_bytes rx_packets tx_bytes tx_packets)"
 }
 
 for rep in $(seq 1 "$REPS"); do
   for n in $NS; do
     for e in $ES; do
         cleanup
-        sudo -n ip link add "$BR" type bridge && sudo -n ip link set "$BR" up || exit 1
+        sudo -n ip netns add "$HUB" && sudo -n ip -n "$HUB" link add "$BR" type bridge \
+            && sudo -n ip -n "$HUB" link set "$BR" up || exit 1
         for i in $(seq 1 "$n"); do
-            sudo -n ip netns add "dsc-ns$i"
-            sudo -n ip link add "dscv$i" type veth peer name "dscb$i"
-            sudo -n ip link set "dscv$i" netns "dsc-ns$i"
-            sudo -n ip link set "dscb$i" master "$BR"
-            sudo -n ip link set "dscb$i" up
-            sudo -n ip netns exec "dsc-ns$i" sysctl -qw net.ipv6.conf.all.disable_ipv6=1
-            sudo -n ip -n "dsc-ns$i" addr add "192.168.20.$i/24" dev "dscv$i"
-            sudo -n ip -n "dsc-ns$i" link set lo up
-            sudo -n ip -n "dsc-ns$i" link set "dscv$i" up
+            sudo -n ip netns add "$NSP-ns$i"
+            sudo -n ip link add "dscv$i" netns "$NSP-ns$i" type veth peer name "dscb$i" netns "$HUB"
+            sudo -n ip -n "$HUB" link set "dscb$i" master "$BR"
+            sudo -n ip -n "$HUB" link set "dscb$i" up
+            sudo -n ip netns exec "$NSP-ns$i" sysctl -qw net.ipv6.conf.all.disable_ipv6=1
+            sudo -n ip -n "$NSP-ns$i" addr add "192.168.20.$i/24" dev "dscv$i"
+            sudo -n ip -n "$NSP-ns$i" link set lo up
+            sudo -n ip -n "$NSP-ns$i" link set "dscv$i" up
         done
         for i in $(seq 1 "$n"); do
             # shellcheck disable=SC2024 # the log is meant to be written as this user, not root
-            sudo -n ip netns exec "dsc-ns$i" "$BIN" "$i" "$e" $((WARM_S + WINDOW_S + 3)) 192.168.20.255 \
+            sudo -n ip netns exec "$NSP-ns$i" "$BIN" "$i" "$e" $((WARM_S + WINDOW_S + 3)) 192.168.20.255 \
                 > "/tmp/discovery_node_$i.log" 2>&1 &
         done
         sleep "$WARM_S"

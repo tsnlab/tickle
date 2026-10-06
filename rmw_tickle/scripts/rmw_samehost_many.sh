@@ -16,8 +16,8 @@ WS=
 CASES=${*:-many collision}
 DISTRO=/opt/ros/lyrical
 OUT=${OUT:-/tmp/rmw_samehost_many}
-NS1=rsm1
-NS2=rsm2
+NS1=rsm1-$$
+NS2=rsm2-$$
 NODES=8
 mkdir -p "$OUT/home"
 : >"$OUT/summary.txt"
@@ -74,8 +74,7 @@ run_in() { # RMW EXTRA SECONDS CMD...
 setup_ns() {
     cleanup
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-    sudo -n ip link add rsmv1 type veth peer name rsmv2 || exit 1
-    sudo -n ip link set rsmv1 netns "$NS1"; sudo -n ip link set rsmv2 netns "$NS2"
+    sudo -n ip link add rsmv1 netns "$NS1" type veth peer name rsmv2 netns "$NS2" || exit 1
     sudo -n ip -n "$NS1" addr add 10.79.0.1/24 dev rsmv1; sudo -n ip -n "$NS2" addr add 10.79.0.2/24 dev rsmv2
     for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
     sudo -n ip -n "$NS1" link set rsmv1 up; sudo -n ip -n "$NS2" link set rsmv2 up

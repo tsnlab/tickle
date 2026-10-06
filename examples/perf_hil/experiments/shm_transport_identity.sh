@@ -95,9 +95,8 @@ say "=== S2 transport identity $(date -Is) EXPECT=$EXPECT shapes='$SHAPES' ==="
 for ns in "$NS1" "$NS2"; do
     sudo -n ip netns add "$ns" || { say "FATAL cannot create namespace $ns"; exit 1; }
 done
-sudo -n ip link add "$IF1" type veth peer name "$IF2" || { say "FATAL cannot create the veth pair"; exit 1; }
-sudo -n ip link set "$IF1" netns "$NS1"
-sudo -n ip link set "$IF2" netns "$NS2"
+# Created inside the two namespaces, so the names never exist in the root namespace another run could be using.
+sudo -n ip link add "$IF1" netns "$NS1" type veth peer name "$IF2" netns "$NS2" || { say "FATAL cannot create the veth pair"; exit 1; }
 sudo -n ip -n "$NS1" addr add 192.168.10.1/24 dev "$IF1"
 sudo -n ip -n "$NS2" addr add 192.168.10.2/24 dev "$IF2"
 sudo -n ip -n "$NS1" link set lo up

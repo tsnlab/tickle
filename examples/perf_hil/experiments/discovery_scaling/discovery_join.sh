@@ -27,12 +27,16 @@ OUT=${OUT:-/tmp/discovery_join.txt}
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../../.." && pwd)
 BR=dscjbr0
+# Per-run names: concurrent runs on one PC must not delete each other's namespaces. The bridge and its ports live
+# in a private hub namespace, so nothing this script creates exists in the root namespace.
+NSP=dscj-$$
+HUB=$NSP-hub
 DEFINE=-Dtt_MAX_DISCOVERED_ENTITIES=512
 
 cleanup() {
     local i
-    for i in $(seq 1 32); do sudo -n ip netns del "dscj-ns$i" 2>/dev/null; done
-    sudo -n ip link del "$BR" 2>/dev/null
+    for i in $(seq 1 32); do sudo -n ip netns del "$NSP-ns$i" 2>/dev/null; done
+    sudo -n ip netns del "$HUB" 2>/dev/null
     return 0
 }
 trap cleanup EXIT
@@ -57,25 +61,25 @@ gcc -O2 $DEFINE -o "$BIN" "$HERE/discovery_node.c" "$SHAPE/Bench.c" -I"$SHAPE" \
 topology() { # $1 node count
     local i
     cleanup
-    sudo -n ip link add "$BR" type bridge && sudo -n ip link set "$BR" up || exit 1
+    sudo -n ip netns add "$HUB" && sudo -n ip -n "$HUB" link add "$BR" type bridge \
+        && sudo -n ip -n "$HUB" link set "$BR" up || exit 1
     for i in $(seq 1 "$1"); do
-        sudo -n ip netns add "dscj-ns$i"
-        sudo -n ip link add "dscjv$i" type veth peer name "dscjb$i"
-        sudo -n ip link set "dscjv$i" netns "dscj-ns$i"
-        sudo -n ip link set "dscjb$i" master "$BR"
-        sudo -n ip link set "dscjb$i" up
-        sudo -n ip netns exec "dscj-ns$i" sysctl -qw net.ipv6.conf.all.disable_ipv6=1
-        sudo -n ip -n "dscj-ns$i" addr add "192.168.21.$i/24" dev "dscjv$i"
-        sudo -n ip -n "dscj-ns$i" link set lo up
-        sudo -n ip -n "dscj-ns$i" link set "dscjv$i" up
+        sudo -n ip netns add "$NSP-ns$i"
+        sudo -n ip link add "dscjv$i" netns "$NSP-ns$i" type veth peer name "dscjb$i" netns "$HUB"
+        sudo -n ip -n "$HUB" link set "dscjb$i" master "$BR"
+        sudo -n ip -n "$HUB" link set "dscjb$i" up
+        sudo -n ip netns exec "$NSP-ns$i" sysctl -qw net.ipv6.conf.all.disable_ipv6=1
+        sudo -n ip -n "$NSP-ns$i" addr add "192.168.21.$i/24" dev "dscjv$i"
+        sudo -n ip -n "$NSP-ns$i" link set lo up
+        sudo -n ip -n "$NSP-ns$i" link set "dscjv$i" up
         if [ "$MODE" = loss ]; then
-            sudo -n ip netns exec "dscj-ns$i" tc qdisc add dev "dscjv$i" root netem loss "${LOSS}%" || exit 1
+            sudo -n ip netns exec "$NSP-ns$i" tc qdisc add dev "dscjv$i" root netem loss "${LOSS}%" || exit 1
         fi
     done
 }
 node() { # $1 index, $2 seconds, $3 log
     # shellcheck disable=SC2024 # the log is meant to be written as this user, not root
-    sudo -n ip netns exec "dscj-ns$1" "$BIN" "$1" "$E" "$2" 192.168.21.255 $(((N - 1) * E)) > "$3" 2>&1
+    sudo -n ip netns exec "$NSP-ns$1" "$BIN" "$1" "$E" "$2" 192.168.21.255 $(((N - 1) * E)) > "$3" 2>&1
 }
 row() { # $1 label, $2 log
     local r

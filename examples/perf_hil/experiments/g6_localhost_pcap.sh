@@ -13,8 +13,8 @@ set -u
 OUT=${OUT:-/tmp/g6_localhost_pcap}
 IFACES=${IFACES:-/tmp/dev_accept/ifaces/install/local_setup.bash}
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-NS1=g6pc1
-NS2=g6pc2
+NS1=g6pc1-$$
+NS2=g6pc2-$$
 mkdir -p "$OUT/home"
 : >"$OUT/summary.txt"
 cleanup() {
@@ -48,8 +48,7 @@ PY
 for range in LOCALHOST SUBNET; do
     cleanup
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-    sudo -n ip link add g6pv1 type veth peer name g6pv2 || exit 1
-    sudo -n ip link set g6pv1 netns "$NS1"; sudo -n ip link set g6pv2 netns "$NS2"
+    sudo -n ip link add g6pv1 netns "$NS1" type veth peer name g6pv2 netns "$NS2" || exit 1
     sudo -n ip -n "$NS1" addr add 10.83.0.1/24 dev g6pv1; sudo -n ip -n "$NS2" addr add 10.83.0.2/24 dev g6pv2
     for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
     sudo -n ip -n "$NS1" link set g6pv1 up; sudo -n ip -n "$NS2" link set g6pv2 up

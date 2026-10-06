@@ -38,7 +38,7 @@
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
-NS=tt-geomns
+NS=tt-geomns-$$
 OUT=${OUT:-$HOME/rig_results_safe/segment_geometry_mismatch}
 BIG=${BIG:-1048576}   # the owner's tt_SEGMENT_BYTES; the default is 512 KiB, so this is twice the slots
 rm -rf "$OUT"; mkdir -p "$OUT"

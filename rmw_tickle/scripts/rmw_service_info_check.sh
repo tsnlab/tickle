@@ -14,8 +14,8 @@ WS=
 [ -n "$WS" ] && [ -d "$WS/rmw/install" ] && [ -d "$WS/ifaces/install" ] || { echo "usage: $0 -w WS" >&2; exit 2; }
 DISTRO=/opt/ros/lyrical
 OUT=${OUT:-/tmp/rmw_service_info_check}
-NS1=rsic1
-NS2=rsic2
+NS1=rsic1-$$
+NS2=rsic2-$$
 mkdir -p "$OUT/home"
 cleanup() {
     for ns in "$NS1" "$NS2"; do
@@ -54,8 +54,7 @@ env_for() { # RMW IDX
 for rmw in rmw_cyclonedds_cpp rmw_tickle; do
     cleanup
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-    sudo -n ip link add rsiv1 type veth peer name rsiv2 || exit 1
-    sudo -n ip link set rsiv1 netns "$NS1"; sudo -n ip link set rsiv2 netns "$NS2"
+    sudo -n ip link add rsiv1 netns "$NS1" type veth peer name rsiv2 netns "$NS2" || exit 1
     sudo -n ip -n "$NS1" addr add 10.78.0.1/24 dev rsiv1; sudo -n ip -n "$NS2" addr add 10.78.0.2/24 dev rsiv2
     for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
     sudo -n ip -n "$NS1" link set rsiv1 up; sudo -n ip -n "$NS2" link set rsiv2 up

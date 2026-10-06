@@ -24,7 +24,7 @@ set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 BIN="$REPO/platform/linux"
-NS=tt-btns
+NS=tt-btns-$$
 OUT=${OUT:-/tmp/segment_teardown_bt.log}
 
 [ -x "$BIN/publisher" ] || { echo "VOID: build the examples with ASAN first"; exit 1; }

@@ -45,8 +45,8 @@ REPS=${1:?usage: rmw_executor_poll_ab.sh <reps>}
 OUT=${OUT:-/tmp/rmw_executor_poll_ab.txt}
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 BIN="$REPO/install/rmw_perf_pingpong/lib/rmw_perf_pingpong"
-NS1=rep-ns1
-NS2=rep-ns2
+NS1=rep-ns1-$$
+NS2=rep-ns2-$$
 cleanup() {
     sudo -n ip netns del "$NS1" 2>/dev/null
     sudo -n ip netns del "$NS2" 2>/dev/null
@@ -57,9 +57,7 @@ trap cleanup EXIT
 setup_ns() {
     cleanup
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-    sudo -n ip link add rep1 type veth peer name rep2 || exit 1
-    sudo -n ip link set rep1 netns "$NS1"
-    sudo -n ip link set rep2 netns "$NS2"
+    sudo -n ip link add rep1 netns "$NS1" type veth peer name rep2 netns "$NS2" || exit 1
     sudo -n ip -n "$NS1" addr add 192.168.10.1/24 dev rep1
     sudo -n ip -n "$NS2" addr add 192.168.10.2/24 dev rep2
     for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done

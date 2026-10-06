@@ -56,8 +56,8 @@ TESTS=${*:-graph bag bagstall events matched itype itypeneg takeseq samehost inp
 HERE=$(cd "$(dirname "$0")" && pwd)
 NODE="$HERE/acceptance/accept_node.py"
 DISTRO=${ROS_DISTRO_DIR:-/opt/ros/lyrical}
-NS1=acc-ns1
-NS2=acc-ns2
+NS1=acc-ns1-$$
+NS2=acc-ns2-$$
 OUTDIR=${OUTDIR:-$WS/acceptance_$(date +%Y%m%d-%H%M%S)}
 mkdir -p "$OUTDIR"
 cleanup() {
@@ -73,8 +73,7 @@ trap cleanup EXIT
 setup_ns() {
     cleanup
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-    sudo -n ip link add accv1 type veth peer name accv2 || exit 1
-    sudo -n ip link set accv1 netns "$NS1"; sudo -n ip link set accv2 netns "$NS2"
+    sudo -n ip link add accv1 netns "$NS1" type veth peer name accv2 netns "$NS2" || exit 1
     sudo -n ip -n "$NS1" addr add 10.77.0.1/24 dev accv1; sudo -n ip -n "$NS2" addr add 10.77.0.2/24 dev accv2
     for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
     sudo -n ip -n "$NS1" link set accv1 up; sudo -n ip -n "$NS2" link set accv2 up

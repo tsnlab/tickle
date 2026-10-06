@@ -14,9 +14,9 @@
 # code, exercised the same way running it by hand would.
 #
 # Runs the two sides in two network namespaces joined by a veth pair, each with its own distinct
-# address (tickle-ns1 = 192.168.10.1, tickle-ns2 = 192.168.10.2). This needs root (creating a
-# namespace/veth is CAP_NET_ADMIN, and entering one via `ip netns exec` needs it too) - the quick
-# inner loop that doesn't is `make test` (unit tests, mock HAL). An earlier version of this script
+# address (tickle-ns1-<pid> = <net>.1, tickle-ns2-<pid> = <net>.2, a subnet claimed per run - see
+# RUN_ID below). This needs root (creating a namespace/veth is CAP_NET_ADMIN, and entering one via
+# `ip netns exec` needs it too) - the quick inner loop that doesn't is `make test` (unit tests, mock HAL). An earlier version of this script
 # put both sides in one shared network namespace over loopback to avoid that, distinguished only
 # by an -I node-id override - but a kernel delivers a *unicast* packet aimed at one wildcard-bound
 # socket to whichever such socket bound last, not by any real address distinction, so that setup
@@ -51,14 +51,29 @@ set -u
 cd "$(dirname "$0")" || exit 1
 
 MIN_COUNT=5
-BROADCAST=192.168.10.255
-NS1=tickle-ns1
-NS2=tickle-ns2
+
+# Several sessions run this suite on one PC at the same time. On 2026-10-06 two concurrent runs failed and passed
+# on rerun: both used the fixed namespaces tickle-ns1/tickle-ns2, and each run's setup/teardown deleted the other's
+# mid-run. So everything this run creates in a shared place is its own:
+#   - Namespaces are suffixed with this shell's PID, unique among live processes, and teardown deletes only those.
+#   - The veth pair is created directly inside the two namespaces, so its names never exist in the root namespace
+#     and cannot collide with anyone's; deleting a namespace deletes its end, so there is nothing else to tidy.
+#   - The subnet is claimed, not fixed. Namespaces isolate addresses but NOT /dev/shm, and the shared-memory
+#     segments and the context-id registry are named by address (src/tickle.c segment_name(), src/hal_linux.c
+#     registry_path()). Two runs on 192.168.10.0/24 would therefore attach to each other's segments. A run takes
+#     10.<128+k/256>.<k%256>.0/24 for the first k, starting at PID mod 32768, whose claim directory it can mkdir
+#     (atomic), and removes the claim on exit. A run killed with SIGKILL leaves its claim behind; the next run
+#     skips it, and /tmp is cleared at boot. 10.128.0.0/9 stays clear of the rig's 10.1.1.x management LAN.
+#   - Two runs in the SAME checkout would still share the binaries and *.log files in this directory, which CI
+#     uploads by those names, so they are serialized by a lock keyed on this directory instead.
+RUN_ID=$$
+NS1=tickle-ns1-$RUN_ID
+NS2=tickle-ns2-$RUN_ID
 VETH1=tickle-veth1
 VETH2=tickle-veth2
-NS1_ADDR=192.168.10.1
-NS2_ADDR=192.168.10.2
 PREFIX=24
+CLAIM_ROOT=${TMPDIR:-/tmp}/tickle-test-linux
+CLAIM=""
 
 # Probe the exact privilege this needs (sudo + ip), not a blanket `sudo -n true` - a scoped
 # `NOPASSWD: /usr/sbin/ip` sudoers rule (which is all this wants) passes the former and not the
@@ -74,22 +89,43 @@ if ! sudo -n ip netns list >/dev/null 2>&1; then
     fi
 fi
 
+# Only this run's own names: a namespace another run is using is never touched.
+# shellcheck disable=SC2329  # invoked by the EXIT trap below
 teardown_ns() {
     sudo ip netns del "$NS1" 2>/dev/null || true
     sudo ip netns del "$NS2" 2>/dev/null || true
-    # If a previous run died between creating the veth and moving it into a namespace, both ends
-    # are still in the root namespace - deleting either end removes the pair.
-    sudo ip link del "$VETH1" 2>/dev/null || true
+    [ -n "$CLAIM" ] && rm -rf "$CLAIM"
+    return 0
+}
+
+claim_subnet() {
+    mkdir -p "$CLAIM_ROOT" || exit 1
+    k=$((RUN_ID % 32768))
+    tries=0
+    while ! mkdir "$CLAIM_ROOT/slot-$k" 2>/dev/null; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge 256 ]; then
+            echo "ERROR: no free test subnet - 256 claims in $CLAIM_ROOT are taken (stale ones are safe to delete)" >&2
+            exit 1
+        fi
+        k=$(((k + 1) % 32768))
+    done
+    CLAIM="$CLAIM_ROOT/slot-$k"
+    echo "$RUN_ID" >"$CLAIM/pid"
+    NET=10.$((128 + k / 256)).$((k % 256))
+    BROADCAST=$NET.255
+    NS1_ADDR=$NET.1
+    NS2_ADDR=$NET.2
 }
 
 setup_ns() {
-    teardown_ns # idempotent: start from a clean slate even if a previous run left something behind
+    # Leftovers of an earlier run can only carry this name if it had this PID, so this cannot hit a live run.
+    sudo ip netns del "$NS1" 2>/dev/null || true
+    sudo ip netns del "$NS2" 2>/dev/null || true
 
     sudo ip netns add "$NS1"
     sudo ip netns add "$NS2"
-    sudo ip link add "$VETH1" type veth peer name "$VETH2"
-    sudo ip link set "$VETH1" netns "$NS1"
-    sudo ip link set "$VETH2" netns "$NS2"
+    sudo ip link add "$VETH1" netns "$NS1" type veth peer name "$VETH2" netns "$NS2"
     sudo ip -n "$NS1" addr add "$NS1_ADDR/$PREFIX" dev "$VETH1"
     sudo ip -n "$NS2" addr add "$NS2_ADDR/$PREFIX" dev "$VETH2"
     sudo ip -n "$NS1" link set "$VETH1" up
@@ -102,7 +138,25 @@ setup_ns() {
 }
 
 trap teardown_ns EXIT
+# The EXIT trap does not run on a signal death in every sh; turning the signal into an exit makes it run.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+# One run per checkout at a time (see the comment at RUN_ID). Held on fd 9 until this shell exits.
+LOCK_FILE=${TMPDIR:-/tmp}/tickle-test-linux-$(pwd | cksum | cut -d' ' -f1).lock
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "test-linux: another run is using this checkout ($(pwd)) - waiting for it (up to 15 min)"
+    flock -w 900 9 || {
+        echo "ERROR: still locked after 15 min: $LOCK_FILE" >&2
+        exit 1
+    }
+fi
+
+claim_subnet
 setup_ns
+echo "test-linux: run $RUN_ID - namespaces $NS1/$NS2, subnet $NET.0/$PREFIX"
 
 # Launches $receiver in ns2 (background, bounded via $receiver_args - typically -d 15, a generous
 # cap) then $sender in ns1 (foreground, bounded via $sender_args), waits for both, dumps their

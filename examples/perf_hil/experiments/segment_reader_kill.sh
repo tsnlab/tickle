@@ -22,7 +22,7 @@ set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 BIN="$REPO/platform/linux"
-NS=tt-killns
+NS=tt-killns-$$
 OUT=${OUT:-/tmp/segment_reader_kill}
 rm -rf "$OUT"; mkdir -p "$OUT"
 

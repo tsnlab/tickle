@@ -35,8 +35,8 @@ set -u
 REPS=${1:?usage: rmw_late_peer_check.sh <reps>}
 OUT=${OUT:-/tmp/rmw_late_peer_check.txt}
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-NS1=lpc-ns1
-NS2=lpc-ns2
+NS1=lpc-ns1-$$
+NS2=lpc-ns2-$$
 cleanup() {
     sudo -n ip netns del "$NS1" 2>/dev/null
     sudo -n ip netns del "$NS2" 2>/dev/null
@@ -63,9 +63,7 @@ run_one() { # <arm>
     local arm=$1
     cleanup
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-    sudo -n ip link add lpc1 type veth peer name lpc2 || exit 1
-    sudo -n ip link set lpc1 netns "$NS1"
-    sudo -n ip link set lpc2 netns "$NS2"
+    sudo -n ip link add lpc1 netns "$NS1" type veth peer name lpc2 netns "$NS2" || exit 1
     sudo -n ip -n "$NS1" addr add 192.168.10.1/24 dev lpc1
     sudo -n ip -n "$NS2" addr add 192.168.10.2/24 dev lpc2
     for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done

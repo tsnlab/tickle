@@ -27,7 +27,7 @@
 set -u
 DIR=${1:?usage: whole_record_refusal.sh <p4 scenario dir>}
 DUR=${DUR:-5}
-NS=wholerec-ns
+NS=wholerec-ns-$$
 OUT=${OUT:-$HOME/rig_results_safe/whole_record_refusal.txt}
 CLIENT_LOG=/tmp/wholerec_client.log
 SERVER_LOG=/tmp/wholerec_server.log
@@ -44,9 +44,7 @@ sudo -n ip netns exec "$NS" ip link set lo up || exit 1
 # namespace gets a link that does. A veth pair with BOTH ends inside this one namespace, rather than a
 # dummy: it is a real broadcast-capable link, and keeping both ends here is what makes the two processes
 # same-host peers, which is the entire precondition 6e(a) is being asked about.
-sudo -n ip link add wrec0 type veth peer name wrec1 || exit 1
-sudo -n ip link set wrec0 netns "$NS"
-sudo -n ip link set wrec1 netns "$NS"
+sudo -n ip link add wrec0 netns "$NS" type veth peer name wrec1 netns "$NS" || exit 1
 sudo -n ip netns exec "$NS" ip addr add 192.168.10.1/24 broadcast 192.168.10.255 dev wrec0 || exit 1
 sudo -n ip netns exec "$NS" ip link set wrec0 up
 sudo -n ip netns exec "$NS" ip link set wrec1 up

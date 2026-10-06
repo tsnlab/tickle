@@ -37,7 +37,7 @@ REPO=/home/semih/tickle
 W="${W:-/tmp/keepall_evict}"
 OUT="${OUT:-$W/run_$(date +%Y%m%d-%H%M%S)}"
 DUR="${DUR:-20}"; REPS="${REPS:-2}"; BUILDS="${BUILDS:-plain inst}"
-NS_P=kae-pub; NS_S=kae-sub; VP=kaev0; VS=kaev1; NET=192.168.77; BCAST=$NET.255
+NS_P=kae-pub-$$; NS_S=kae-sub-$$; VP=kaev0; VS=kaev1; NET=192.168.77; BCAST=$NET.255
 mkdir -p "$OUT"
 exec > >(tee -a "$OUT/summary.txt") 2>&1
 say() { echo "[$(date +%T)] $*"; }

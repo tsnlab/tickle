@@ -28,8 +28,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 LIB="$REPO/install/rmw_tickle/lib/librmw_tickle.so"
 KEEP="$(mktemp /tmp/g8_announce_keep.XXXXXX)"
 cp "$LIB" "$KEEP"
-NS1=g8an1
-NS2=g8an2
+NS1=g8an1-$$
+NS2=g8an2-$$
 mkdir -p "$OUT/home"
 cleanup() {
     for ns in "$NS1" "$NS2"; do
@@ -58,8 +58,7 @@ run_arm() { # ARM LIB
     cp "$lib" "$LIB" || exit 1
     [ "$(md5sum <"$LIB")" = "$(md5sum <"$lib")" ] || { echo "arm $arm: the copy did not take" >&2; exit 1; }
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-    sudo -n ip link add g8av1 type veth peer name g8av2 || exit 1
-    sudo -n ip link set g8av1 netns "$NS1"; sudo -n ip link set g8av2 netns "$NS2"
+    sudo -n ip link add g8av1 netns "$NS1" type veth peer name g8av2 netns "$NS2" || exit 1
     sudo -n ip -n "$NS1" addr add 10.80.0.1/24 dev g8av1; sudo -n ip -n "$NS2" addr add 10.80.0.2/24 dev g8av2
     for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
     sudo -n ip -n "$NS1" link set g8av1 up; sudo -n ip -n "$NS2" link set g8av2 up

@@ -20,8 +20,8 @@ BIN="$REPO/install/rmw_perf_pingpong/lib/rmw_perf_pingpong"
 LIB="$REPO/install/rmw_tickle/lib/librmw_tickle.so"
 KEEP="$(mktemp /tmp/rmw_lib_ab_keep.XXXXXX)"
 cp "$LIB" "$KEEP"
-NS1=la-ns1
-NS2=la-ns2
+NS1=la-ns1-$$
+NS2=la-ns2-$$
 cleanup() {
     sudo -n ip netns del "$NS1" 2>/dev/null
     sudo -n ip netns del "$NS2" 2>/dev/null
@@ -34,9 +34,7 @@ setup_ns() {
     sudo -n ip netns del "$NS1" 2>/dev/null
     sudo -n ip netns del "$NS2" 2>/dev/null
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-    sudo -n ip link add la1 type veth peer name la2 || exit 1
-    sudo -n ip link set la1 netns "$NS1"
-    sudo -n ip link set la2 netns "$NS2"
+    sudo -n ip link add la1 netns "$NS1" type veth peer name la2 netns "$NS2" || exit 1
     sudo -n ip -n "$NS1" addr add 192.168.10.1/24 dev la1
     sudo -n ip -n "$NS2" addr add 192.168.10.2/24 dev la2
     for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done

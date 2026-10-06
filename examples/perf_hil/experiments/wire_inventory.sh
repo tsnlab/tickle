@@ -26,8 +26,8 @@ if [ -n "${SHA:-}" ]; then
     mkdir -p "$BHOME"
     TK="$WT/examples/perf_hil/tickle"
 fi
-NS1=wirinv-ns1
-NS2=wirinv-ns2
+NS1=wirinv-ns1-$$
+NS2=wirinv-ns2-$$
 MATRIX=(
     "T|p1|Q0|N0|reliable_throughput|-Q"
     "T|p2|Q0|N0|reliable_throughput|-Q"
@@ -82,9 +82,7 @@ for cell in "${MATRIX[@]}"; do
     args="$args $extra $(common_args "$scenario" "$payload" "$qos")"
     cleanup
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-    sudo -n ip link add wirinv1 type veth peer name wirinv2
-    sudo -n ip link set wirinv1 netns "$NS1"
-    sudo -n ip link set wirinv2 netns "$NS2"
+    sudo -n ip link add wirinv1 netns "$NS1" type veth peer name wirinv2 netns "$NS2"
     sudo -n ip -n "$NS1" addr add 192.168.10.1/24 dev wirinv1
     sudo -n ip -n "$NS2" addr add 192.168.10.2/24 dev wirinv2
     for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done

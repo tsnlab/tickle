@@ -61,7 +61,7 @@ B="$W/build_$TAG"
 OUT="${OUT:-$W/run_${TAG}_$(date +%Y%m%d-%H%M%S)}"
 DUR="${DUR:-15}"; REPS="${REPS:-4}"; LOSS="${LOSS:-5}"; SUB_CPUS="${SUB_CPUS:-4}"; GRACE="${GRACE:-20}"
 ARMS="${ARMS:-pin_ka free_ka pin_be}"; RW_PROBES="${RW_PROBES:-6}"
-NS_P=rwh-pub; NS_S=rwh-sub; VP=rwhv0; VS=rwhv1; NET=192.168.78; BCAST=$NET.255
+NS_P=rwh-pub-$$; NS_S=rwh-sub-$$; VP=rwhv0; VS=rwhv1; NET=192.168.78; BCAST=$NET.255
 mkdir -p "$OUT"
 exec > >(tee -a "$OUT/summary.txt") 2>&1
 say() { echo "[$(date +%T)] $*"; }

@@ -31,8 +31,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 BEFORE=$(git -C "$REPO" rev-parse "${BEFORE:?BEFORE=sha}") || exit 1
 AFTER=$(git -C "$REPO" rev-parse "${AFTER:?AFTER=sha}") || exit 1
-NS1=l3-ns1
-NS2=l3-ns2
+NS1=l3-ns1-$$
+NS2=l3-ns2-$$
 kill_ns() { local p; for p in $(sudo -n ip netns pids "$1" 2>/dev/null); do sudo -n ip netns exec "$1" kill -TERM "$p" 2>/dev/null; done; }
 cleanup() {
     kill_ns "$NS1"; kill_ns "$NS2"
@@ -60,8 +60,7 @@ run() { # $1 arm, $2 dir, $3 case, $4 rep
     [ "$kind" = data1 ] && lease=1.0
     cleanup
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-    sudo -n ip link add l3v1 type veth peer name l3v2
-    sudo -n ip link set l3v1 netns "$NS1"; sudo -n ip link set l3v2 netns "$NS2"
+    sudo -n ip link add l3v1 netns "$NS1" type veth peer name l3v2 netns "$NS2"
     sudo -n ip -n "$NS1" addr add 192.168.10.1/24 dev l3v1; sudo -n ip -n "$NS2" addr add 192.168.10.2/24 dev l3v2
     for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
     sudo -n ip -n "$NS1" link set l3v1 up; sudo -n ip -n "$NS2" link set l3v2 up

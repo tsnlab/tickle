@@ -15,8 +15,8 @@ BIN="$REPO/install/rmw_perf_pingpong/lib/rmw_perf_pingpong"
 GAP=${GAP:-0.005}
 DUR=${DUR:-5}
 MSG=${MSG:-bench} # bench, array1k or struct16 (RMW_PERF_PLAN.md 11, 2026-09-27)
-NS1=rt-ns1
-NS2=rt-ns2
+NS1=rt-ns1-$$
+NS2=rt-ns2-$$
 cleanup() {
     sudo -n ip netns del "$NS1" 2>/dev/null
     sudo -n ip netns del "$NS2" 2>/dev/null
@@ -25,9 +25,7 @@ cleanup() {
 trap cleanup EXIT
 cleanup
 sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
-sudo -n ip link add rt1 type veth peer name rt2 || exit 1
-sudo -n ip link set rt1 netns "$NS1"
-sudo -n ip link set rt2 netns "$NS2"
+sudo -n ip link add rt1 netns "$NS1" type veth peer name rt2 netns "$NS2" || exit 1
 sudo -n ip -n "$NS1" addr add 192.168.10.1/24 dev rt1
 sudo -n ip -n "$NS2" addr add 192.168.10.2/24 dev rt2
 for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
