@@ -162,7 +162,7 @@ says so when it does.
 | `TICKLE_BROADCAST_ADDR` | broadcast address, and with it the interface used. **Set it**: unset means limited broadcast on the default route | limited broadcast |
 | `TICKLE_NODE_ID` | fixed context id | claimed automatically |
 | `RMW_TICKLE_EXECUTOR_POLL` | `0` turns executor-driven receive off | on |
-| `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` | add a Heartbeat to every Nth RELIABLE sample; `0` turns it off | 64 |
+| `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` | add a Heartbeat to every Nth RELIABLE sample; `0` turns it off | tracking window / 16 (64) |
 | `RMW_TICKLE_HEARTBEAT_PERIOD_NS` | also send a periodic Heartbeat | off |
 | `RMW_TICKLE_MAX_BLOCKING_MS` | longest a KEEP_ALL publish may block | 100 |
 | `RMW_TICKLE_CACHE_BYTES` | KEEP_LAST publisher cache budget | 1 MiB |

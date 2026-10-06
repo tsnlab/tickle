@@ -3535,6 +3535,8 @@ static void reset_node_state(struct tt_Context* node) {
     node->discovery_reply_count = 0;
     memset(node->discovery_requests, 0, sizeof(node->discovery_requests));
     node->discovery_retry_scheduled = false;
+    node->discovery_retry_ns = 0;
+    memset(node->discovery_rtt_ns, 0, sizeof(node->discovery_rtt_ns));
     node->liveliness_check_scheduled = false;
     node->liveliness_check_ns = 0;
     memset(node->liveliness_flags, 0, sizeof(node->liveliness_flags));
@@ -8997,6 +8999,8 @@ static bool update_parts_complete(const struct tt_Context* node, uint8_t source,
 // gap without starting over; until then the source is known by the fragments that did arrive.
 static void drop_cached_responses_from_source(struct tt_Context* node, uint8_t source, bool farewell);
 
+static void note_discovery_round_trip(struct tt_Context* node, uint8_t source, uint32_t generation);
+
 static bool process_announce(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                              uint32_t tail, uint32_t sender_ip, uint16_t sender_port, uint32_t generation,
                              uint8_t frag_index, uint8_t frag_count) {
@@ -9071,6 +9075,7 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
     // captured before update_seen[] is set, because that's the state reply_with_own_announce() needs
     // to not reply forever (see its own comment).
     bool is_first_contact_from_sender = !node->update_seen[source];
+    note_discovery_round_trip(node, source, generation);
     node->update_generation[source] = generation;
     node->update_seen[source] = true;
     // A changed announce that came by broadcast is answered too (2026-09-26): the node that changed may
@@ -10848,18 +10853,60 @@ static bool discovery_generation_applied(const struct tt_Context* node, uint8_t 
 
 static void discovery_request_retry(struct tt_Context* node, uint64_t time, void* param);
 
+// How long a request to `source` waits for its list before it is sent again (ROADMAP.md 5a): the round trip
+// measured to that node plus one tt_CONTEXT_TX_INTERVAL, the flush tick an answer can wait for when it is
+// batched (rule 4); tt_DISCOVERY_REQUEST_RETRY, the seed, until a round trip has been measured.
+static uint64_t discovery_retry_after(const struct tt_Context* node, uint8_t source) {
+    uint32_t rtt = node->discovery_rtt_ns[source];
+    return rtt != 0 ? (uint64_t)rtt + tt_CONTEXT_TX_INTERVAL : tt_DISCOVERY_REQUEST_RETRY;
+}
+
+// The list `source` announced as `generation` has just been applied: if it was asked for, that is a round
+// trip, folded into tt_Context.discovery_rtt_ns the way RFC 6298 smooths srtt (gain 1/8; the first sample
+// is taken whole). An announce nobody asked for - a broadcast change, a periodic one - times nothing.
+static void note_discovery_round_trip(struct tt_Context* node, uint8_t source, uint32_t generation) {
+    for (int i = 0; i < tt_DISCOVERY_PENDING_REQUESTS; i++) {
+        const struct tt_DiscoveryRequest* request = &node->discovery_requests[i];
+        if (request->attempts == 0 || request->source != source || request->generation != generation) {
+            continue;
+        }
+        uint64_t elapsed = tt_get_ns() - request->first_sent_ns;
+        // 1 ns at least: 0 means "not measured", and an answer delivered within the same clock reading is
+        // a measured round trip of nothing (two nodes in one process on the mock clock).
+        uint32_t sample = elapsed >= UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
+        if (sample == 0) {
+            sample = 1;
+        }
+        uint32_t srtt = node->discovery_rtt_ns[source];
+        if (srtt == 0) {
+            node->discovery_rtt_ns[source] = sample;
+        } else {
+            node->discovery_rtt_ns[source] = (uint32_t)((int64_t)srtt + (((int64_t)sample - (int64_t)srtt) / 8));
+        }
+        return;
+    }
+}
+
+// Makes sure discovery_request_retry() runs by `due_ns`: moves the one scheduled entry earlier if needed. Each
+// peer has its own retry delay (discovery_retry_after()), so a request to a near peer can fall due before the
+// entry already armed for a far one - with one delay for all, a newer request never did.
 static void arm_discovery_request_retry(struct tt_Context* node, uint64_t due_ns) {
     if (node->discovery_retry_scheduled) {
-        return;
+        if (due_ns >= node->discovery_retry_ns) {
+            return;
+        }
+        (void)tt_Context_unschedule(node, discovery_request_retry, NULL);
+        node->discovery_retry_scheduled = false;
     }
     if (tt_Context_schedule(node, due_ns, discovery_request_retry, NULL)) {
         node->discovery_retry_scheduled = true;
+        node->discovery_retry_ns = due_ns;
     } else {
         TT_LOG_ERROR("Cannot schedule discovery_request_retry"); // the next summary asks again
     }
 }
 
-// Re-sends each open request whose list has not arrived within tt_DISCOVERY_REQUEST_RETRY, and closes the
+// Re-sends each open request whose list has not arrived within discovery_retry_after(), and closes the
 // ones answered or out of attempts - the peer's next summary asks again after that. Runs only while some
 // request is open.
 static void discovery_request_retry(struct tt_Context* node, uint64_t time, void* param) {
@@ -10875,7 +10922,8 @@ static void discovery_request_retry(struct tt_Context* node, uint64_t time, void
             request->attempts = 0;
             continue;
         }
-        if (time - request->sent_ns >= tt_DISCOVERY_REQUEST_RETRY) {
+        uint64_t retry_after = discovery_retry_after(node, request->source);
+        if (time - request->sent_ns >= retry_after) {
             if (request->attempts >= tt_DISCOVERY_REQUEST_ATTEMPTS) {
                 request->attempts = 0;
                 continue;
@@ -10884,7 +10932,7 @@ static void discovery_request_retry(struct tt_Context* node, uint64_t time, void
             request->attempts++;
             request->sent_ns = time;
         }
-        uint64_t due = request->sent_ns + tt_DISCOVERY_REQUEST_RETRY;
+        uint64_t due = request->sent_ns + retry_after;
         next = due < next ? due : next;
     }
     if (next != UINT64_MAX) {
@@ -10915,14 +10963,14 @@ static void request_discovery_list(struct tt_Context* node, uint8_t source, uint
     if (slot == NULL) {
         return; // every slot busy: sent, not retried - the next summary asks again
     }
-    *slot = (struct tt_DiscoveryRequest) {generation, sender_ip, sender_port, source, 1, now};
-    arm_discovery_request_retry(node, now + tt_DISCOVERY_REQUEST_RETRY);
+    *slot = (struct tt_DiscoveryRequest) {generation, sender_ip, sender_port, source, 1, now, now};
+    arm_discovery_request_retry(node, now + discovery_retry_after(node, source));
 }
 
 // A discovery summary from `source` (send_discovery_summary()). Liveliness first, whatever else it says -
 // exactly what an announce refreshes (rule 1). A generation already applied needs nothing more (rule 2); any
 // other - a change missed, a node never heard in full - is asked for (rule 3), and asked again within
-// tt_DISCOVERY_REQUEST_RETRY if the list does not come.
+// discovery_retry_after() if the list does not come.
 static bool process_discovery_summary(struct tt_Context* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
                                       uint16_t sender_port) {
     node->update_last_seen[source] = tt_get_ns();

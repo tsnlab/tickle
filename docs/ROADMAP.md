@@ -62,9 +62,17 @@ The user's active list (2026-10-05), in order.
    RMW_TICKLE_* defaults.
    Inventory done 2026-10-05; the fitted values that stay (c) are in README.md "Tuning for your platform". Still
    to replace by an algorithm (a), most fitted and hottest first: `tt_RELIABLE_RETRY_GRANULARITY` 100 us and
-   `tt_CALL_RETRY_GRANULARITY` (2x it) (measure timer lateness);
-   `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` (from the tracking window); `tt_DISCOVERY_REQUEST_RETRY` (RTT +
-   `tt_CONTEXT_TX_INTERVAL`) and `tt_SEGMENT_DEAD_READER_NS` (from `tt_LIVELINESS_SILENCE_NS`).
+   `tt_CALL_RETRY_GRANULARITY` (2x it) (measure timer lateness).
+   Done 2026-10-06: the list-request retry is the round trip measured to that peer (smoothed, timed from a
+   request's first send to its list being applied) plus `tt_CONTEXT_TX_INTERVAL`; `tt_DISCOVERY_REQUEST_RETRY`
+   (10 ms) is only the seed before a peer is timed, and a near peer's request now moves the one retry entry earlier
+   (`test_discovery_retry_follows_the_round_trip`). `tt_SEGMENT_DEAD_READER_NS` is one summary interval of
+   `tt_LIVELINESS_SILENCE_NS` (1 s at defaults), with a static_assert that it stays below that silence - the
+   literal 1 s broke that order at an update interval under ~286 ms. `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY`'s
+   default is the tracking window / `RMW_TICKLE_HEARTBEATS_PER_WINDOW` (16), the measured 64 at today's window
+   (`test_heartbeat_piggyback_default`); k = 16 is still the sweep's choice and is in README.md. On the rig a
+   same-host peer's retry drops from 10 ms to about 1 ms, so the four attempts span ~4 ms instead of 40 ms: the
+   M5 discovery cell under loss should be re-run before its figures are re-quoted.
    Done: `tt_SCHEDULER_IO_INTERLEAVE` (8 entries) is now `tt_RX_CHECK_RATIO`, a timed receive check - the budget is
    the ratio times the measured cost of an empty peek, capped at `tt_RECEIVE_TIMEOUT` (`test_rx_check_budget`); a rig
    A/B against the count is still owed before its figures are re-quoted.

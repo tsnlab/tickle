@@ -85,9 +85,11 @@ derive them for yours rather than copying ours. Constants are `-D` overrides at 
 | `tt_RX_CLOCK_REFRESH` | 16 | the clock staleness you accept for receive stamps / processing time per datagram. 16 x ~85 ns = ~1.4 us on the dev PC. |
 | `tt_RX_LOCK_CHUNK` | 8 | the longest wait you accept for a thread that publishes while the poll thread receives / processing time per datagram. |
 | `tt_RELIABLE_RETRY_INITIAL` | 1 ms | about 4 x the link's round trip. It is used only until the first RTT sample, after which the retry follows the measured RTT. |
+| `tt_DISCOVERY_REQUEST_RETRY` | 10 ms | above the link's round trip + `tt_CONTEXT_TX_INTERVAL`. Used only until a peer's first list answer is timed; after that the retry is that measured round trip + `tt_CONTEXT_TX_INTERVAL`. |
 | `RMW_TICKLE_KEEP_ALL_BYTES` (env) | 512 KiB | link rate x the longest acknowledgement stall a KEEP_ALL writer should ride out: 42 ms at 100 Mbit/s, 420 ms at 10 Mbit/s. |
 | `RMW_TICKLE_READER_KEEP_ALL_BYTES` (env) | 512 KiB | sample size x the samples an application may leave untaken before its writers are pushed back. |
 | `RMW_TICKLE_TRACKING_WORDS` | 16 (1,024 samples) | 64 x words >= peak sample rate x the time a lost sample takes to repair. Tracking further back than the writer retains recovers nothing. |
+| `RMW_TICKLE_HEARTBEATS_PER_WINDOW` | 16 | piggybacked Heartbeats per tracking window; the interval is window / this (64 at 1,024). Chosen by a rig sweep at max rate and 8% loss (every 64 left 0-1 window jumps a run, as a 1 ms periodic Heartbeat did); raise it if a reader still jumps its window under your loss. |
 
 Constants that stand in for a time or a rate are being replaced by algorithms (docs/ROADMAP.md, "Now" 5a) and are
 not listed here.

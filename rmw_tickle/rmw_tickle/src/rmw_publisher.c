@@ -570,8 +570,10 @@ static uint64_t resolve_heartbeat_period_ns(void) {
     return (uint64_t)period;
 }
 
-// Heartbeat piggybacked on every Nth sample of a RELIABLE publisher. On by default at N=64;
-// RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY=0 turns it off, any other number replaces 64.
+// Heartbeat piggybacked on every Nth sample of a RELIABLE publisher. On by default at
+// N = RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY_DEFAULT (rmw_tickle.h): the tracking window divided by
+// RMW_TICKLE_HEARTBEATS_PER_WINDOW, 64 at today's 1024-sample window. RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY=0
+// turns it off, any other number replaces the default.
 //
 // The alternative to the periodic switch above, measured against it: a periodic Heartbeat costs a
 // whole datagram per period whatever the data rate, while a piggybacked one rides a datagram being
@@ -582,13 +584,17 @@ static uint64_t resolve_heartbeat_period_ns(void) {
 // Default on is the user's decision (2026-09-24, translated: "turn it on by default"), taken on Plan's measurement at
 // 9afacfe1..118507ed: at max rate N=64 took window jumps from 505-767 per run to 0-1, the same as
 // a 1ms periodic Heartbeat, and it costs 0.37 B per sample (+0.035%) with no extra datagram, where
-// the periodic one nearly doubles the datagram count at 1000/s. Periodic stays opt-in.
+// the periodic one nearly doubles the datagram count at 1000/s. Periodic stays opt-in. That N=64 was
+// measured at a 1024-sample window and is kept as 16 Heartbeats per window, so it follows the window
+// (ROADMAP.md 5a).
 //
 // Unset or empty means the default. A value that does not parse also falls back to the default,
 // with a warning, rather than to off: the "a malformed tuning value must not stop a node starting"
 // rule the other knobs here follow, applied to a switch whose normal state is on - a typo should
 // not silently remove loss recovery that nobody asked to remove.
-#define RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY_DEFAULT 64U
+// At least one per window, or the division rounds to 0 - which is "off".
+_Static_assert(RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY_DEFAULT >= 1U,
+               "the tracking window must hold RMW_TICKLE_HEARTBEATS_PER_WINDOW samples, or the default is off");
 
 static uint32_t resolve_heartbeat_piggyback_every(void) {
     const char* env = getenv("RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY");

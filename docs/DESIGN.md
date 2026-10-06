@@ -173,7 +173,8 @@ endpoint count.
 
 - The generation changes exactly when the endpoint list does and differs across restarts.
 - A summary with an already-applied generation is liveliness only. Any other generation draws one request, retried
-  every `tt_DISCOVERY_REQUEST_RETRY` (10 ms) up to `tt_DISCOVERY_REQUEST_ATTEMPTS` (4) times, tracked in
+  after the round trip measured to that peer plus `tt_CONTEXT_TX_INTERVAL` (`tt_DISCOVERY_REQUEST_RETRY`, 10 ms, until
+  one is measured) up to `tt_DISCOVERY_REQUEST_ATTEMPTS` (4) times, tracked in
   `tt_DISCOVERY_PENDING_REQUESTS` (8) slots.
 - Up to `tt_UNICAST_PEER_THRESHOLD` requests per tick are answered unicast; more are answered by one broadcast, so a
   burst of joining nodes costs one broadcast.
@@ -386,7 +387,8 @@ Compiled in by default on Linux (`tt_SEGMENT_ENABLED`), out on FreeRTOS.
   owner is noticed within those times at any send rate. Until 2026-10-06 they were 256 and 4096 sends (four minutes
   and over an hour at 1 Hz). The deadlines are read from the clock the poll or a publish already took
   (`tx_clock_ns`), so a send reads no clock for them.
-- A reader that takes nothing for `tt_SEGMENT_DEAD_READER_NS` (1 s) while records wait is given up; the writer uses UDP
+- A reader that takes nothing for `tt_SEGMENT_DEAD_READER_NS` (one summary interval of `tt_LIVELINESS_SILENCE_NS`, 1 s;
+  a static_assert keeps it below that silence) while records wait is given up; the writer uses UDP
   for `tt_CONTEXT_UPDATE_INTERVAL` before it asks again.
 - A writer that dies between claim and publish wedges the head; the owner warns after `tt_SEGMENT_STALL_PASSES`.
 
@@ -490,7 +492,7 @@ All are compile-time `-D` overrides unless noted. Times in nanoseconds.
 | `tt_MAX_NODES` | 16 | 256 | nodes per context |
 | `tt_MAX_DISCOVERED_ENTITIES` | 16 | 2048 | remote entity table (affects RxO, leases) |
 | `tt_UPDATE_MAX_PARTS` | 32 | 255 | fragments of one announce |
-| `tt_DISCOVERY_REQUEST_RETRY` / `_ATTEMPTS` | 10 ms / 4 | | list request retry |
+| `tt_DISCOVERY_REQUEST_RETRY` / `_ATTEMPTS` | 10 ms / 4 | | list request retry seed (then RTT + tx interval) |
 | `tt_LIVELINESS_MISS_THRESHOLD` | 3 | | silence limit = 3.5 intervals |
 | `tt_LIVELINESS_LEASE_DIVISOR` | 6 | | summaries per shortest lease |
 | `tt_CONTEXT_MAX_LEASE_NS` | 10 s | | longest lease that holds a silent node |
@@ -525,7 +527,7 @@ All are compile-time `-D` overrides unless noted. Times in nanoseconds.
 | `tt_SEGMENT_SLOTS` | derived (512) | | power of two |
 | `tt_SEGMENT_BELL_FIFO` | 1 | | FIFO doorbell (0 = UDP doorbell) |
 | `tt_SEGMENT_DRAIN_PER_POLL` | 4 x slots | | records drained per poll |
-| `tt_SEGMENT_DEAD_READER_NS` | 1 s | | reader silence before falling back to UDP |
+| `tt_SEGMENT_DEAD_READER_NS` | silence x 2/7 (1 s) | | reader silence before falling back to UDP |
 | `tt_SEGMENT_STALL_PASSES` | 1000 | | wedged-head warning |
 | `tt_CONTEXT_ID_CLAIM` | 1 (0 FreeRTOS) | 1 | host-registry id claiming |
 | `tt_LOCAL_DELIVERY` | 0 | 1 | in-process delivery within a context |

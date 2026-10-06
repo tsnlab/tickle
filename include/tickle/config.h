@@ -566,11 +566,18 @@
 // own poll passes, and a count-based rule abandoned it constantly - then re-attached, then abandoned
 // again, putting one logical stream on two paths all by itself.
 //
-// One second is far longer than any scheduling delay a live reader can suffer and far shorter than
-// a peer's discovery lease, so a reader that trips this has stopped, and the cost of being wrong is
-// UDP until the next recheck.
+// The limit is one summary interval of liveliness silence: tt_LIVELINESS_SILENCE_NS is
+// tt_LIVELINESS_MISS_THRESHOLD intervals and a half, and this is the silence of one of them. A reader
+// whose node is alive sends a summary every interval from the same poll loop that drains its ring, so
+// one whole interval without a take is far longer than any scheduling delay a live reader suffers; and
+// it is shorter than the silence after which that node would be presumed dead (which drops the segment
+// anyway, forget_same_host_peer()), so this rule decides first and is not dead code. The cost of being
+// wrong is UDP until the next recheck. It was a literal 1 s until 2026-10-06 (ROADMAP.md 5a) - the same
+// value at the default tt_CONTEXT_UPDATE_INTERVAL, but a build with an interval below ~286 ms put the
+// liveliness silence under it, and the rule could no longer fire before the peer was presumed dead.
+// Derived now, and the ordering is a static_assert at the end of this file.
 #ifndef tt_SEGMENT_DEAD_READER_NS
-#define tt_SEGMENT_DEAD_READER_NS (1000ULL * 1000ULL * 1000ULL)
+#define tt_SEGMENT_DEAD_READER_NS (tt_LIVELINESS_SILENCE_NS * 2U / (((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * 2U) + 1U))
 #endif
 // 16 bytes of per-slot header (struct tt_SegmentSlot: length, sender address, port, sequence) - spelled out
 // rather than sizeof() because this has to be a preprocessor constant. A static_assert in tickle.h
@@ -778,11 +785,15 @@
 #define tt_CONTEXT_MAX_LEASE_NS (10 * tt_SECOND)
 #endif
 
-// A request for a peer's endpoint list (DISCOVERY_PLAN.md rule 3) that has not brought the list within
-// tt_DISCOVERY_REQUEST_RETRY is sent again, up to tt_DISCOVERY_REQUEST_ATTEMPTS times in all; after that the
-// peer's next summary starts over. A lost request or reply then costs a few ms, not the rest of a summary
-// interval: M5 (5% loss, 2026-09-26) saw one node wait 2 s for a list, two losses in a row. The answer goes
-// out at once, so the retry delay only has to cover a round trip and a flush tick. Requests to at most
+// A request for a peer's endpoint list (DISCOVERY_PLAN.md rule 3) that has not brought the list within the
+// retry delay is sent again, up to tt_DISCOVERY_REQUEST_ATTEMPTS times in all; after that the peer's next
+// summary starts over. A lost request or reply then costs a round trip, not the rest of a summary interval:
+// M5 (5% loss, 2026-09-26) saw one node wait 2 s for a list, two losses in a row. The answer goes out at
+// once, so the delay only has to cover a round trip and a flush tick, and since 2026-10-06 it is exactly
+// that: the round trip measured to that peer (tt_Context.discovery_rtt_ns, smoothed, timed from each
+// request's first send) plus tt_CONTEXT_TX_INTERVAL (discovery_retry_after(), tickle.c; ROADMAP.md 5a).
+// tt_DISCOVERY_REQUEST_RETRY is only the seed, used for a peer no answer has been timed from yet - 10 ms,
+// the value the delay had before, fitted to nothing but generous for a LAN. Requests to at most
 // tt_DISCOVERY_PENDING_REQUESTS peers are tracked at a time; one more is still sent, just not retried.
 #ifndef tt_DISCOVERY_REQUEST_RETRY
 #define tt_DISCOVERY_REQUEST_RETRY (10 * tt_MILLISECOND)
@@ -1012,6 +1023,9 @@ static_assert(tt_ENDPOINT_INDEX_SIZE >= tt_MAX_ENDPOINT_COUNT, "the endpoint ind
 // that here would break the `ipfrag` diagnostic arm, which legitimately overrides
 // tt_CONTROL_MAX_LENGTH upwards and must still build.
 static_assert(tt_SEGMENT_RAW_SLOTS >= 4, "tt_SEGMENT_BYTES is too small to hold four datagram slots");
+static_assert(tt_SEGMENT_DEAD_READER_NS < tt_LIVELINESS_SILENCE_NS,
+              "a stopped same-host reader must be given up before its node is presumed dead - see "
+              "tt_SEGMENT_DEAD_READER_NS");
 static_assert(tt_MAX_BUFFER_LENGTH <= tt_IPV4_UDP_MAX_PAYLOAD,
               "tt_MAX_BUFFER_LENGTH above 65507 cannot be one IPv4 UDP datagram, and "
               "the protocol's uint16 lengths could not describe it either");

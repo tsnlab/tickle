@@ -826,6 +826,22 @@ typedef struct rmw_tickle_publisher_t {
 #ifndef RMW_TICKLE_TRACKING_WORDS
 #define RMW_TICKLE_TRACKING_WORDS 16
 #endif
+// How often a RELIABLE publisher piggybacks a Heartbeat on its DATA by default (rmw_publisher.c,
+// arm_heartbeat_piggyback(); RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY overrides it). The Heartbeat carries the
+// publisher's first available sample, which is how a reader learns that a sample it is missing has been
+// evicted and skips it; if the reader does not learn it before RMW_TICKLE_TRACKING_WORDS * 64 samples
+// have gone past the gap, its tracking window is full and it jumps instead. So what matters is how many
+// chances the reader gets per window, not the count itself: RMW_TICKLE_HEARTBEATS_PER_WINDOW, and the
+// interval is the window divided by it. 16 per window is what the rig sweep chose (rmw_heartbeat_sweep.sh,
+// 9afacfe1..118507ed, at the 1024-sample window: every 64 took max-rate window jumps from 505-767 a run to
+// 0-1, as a 1 ms periodic Heartbeat does), and it yields that measured 64 at today's window. Until
+// 2026-10-06 the 64 was a literal, so a narrower window kept 64 and gave the reader fewer chances than the
+// sweep found enough (4 at a 256-sample window) (ROADMAP.md 5a).
+#ifndef RMW_TICKLE_HEARTBEATS_PER_WINDOW
+#define RMW_TICKLE_HEARTBEATS_PER_WINDOW 16U
+#endif
+#define RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY_DEFAULT \
+    (((uint32_t)RMW_TICKLE_TRACKING_WORDS * 64U) / RMW_TICKLE_HEARTBEATS_PER_WINDOW)
 // rmw_tickle_subscriber_t.queue_limit: what a KEEP_ALL queue holds beyond its admission limit - every sample core's
 // reorder window can hold, plus every fragment reassembly slot.
 #define RMW_TICKLE_KEEP_ALL_HEADROOM (((size_t)RMW_TICKLE_TRACKING_WORDS * 64U) + (size_t)tt_FRAG_REASSEMBLY_SLOTS)

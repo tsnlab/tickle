@@ -41,9 +41,11 @@
 #include "rosidl_typesupport_tickle_c/identifier.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
 
-// Must match RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY_DEFAULT (rmw_publisher.c) - internal, so pinned
-// here rather than referenced, the same as test_history_keep_all.c's depth constants.
-#define EXPECTED_DEFAULT_EVERY 64U
+// The default is derived from the tracking window (rmw_tickle.h, RMW_TICKLE_HEARTBEATS_PER_WINDOW): a
+// Heartbeat every window / 16 samples. Spelled out here from the window rather than taken from
+// RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY_DEFAULT, so the test states the relation instead of agreeing with
+// whatever the macro says - and a build with another RMW_TICKLE_TRACKING_WORDS is held to it too.
+#define EXPECTED_DEFAULT_EVERY (((uint32_t)RMW_TICKLE_TRACKING_WORDS * 64U) / 16U)
 
 #define ENV_NAME "RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY"
 
@@ -158,8 +160,10 @@ int main(void) {
 
     const enum rmw_qos_reliability_policy_e reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
 
-    // The point of the test: nothing set, a RELIABLE publisher piggybacks at the default.
+    // The point of the test: nothing set, a RELIABLE publisher piggybacks at the default - 16 times per
+    // tracking window, and at today's 1024-sample window that is the 64 the rig sweep measured.
     assert(EXPECTED_DEFAULT_EVERY == armed_every(node, NULL, reliable));
+    assert(RMW_TICKLE_TRACKING_WORDS != 16 || 64U == armed_every(node, NULL, reliable));
     assert(EXPECTED_DEFAULT_EVERY == armed_every(node, "", reliable));
 
     // 0 is how it is turned off, and it must really be off in the core, not just in the log.

@@ -966,10 +966,11 @@ static bool drop_first_unicast_list_from_one(const struct duo_datagram* datagram
     return false;
 }
 
-// A lost request or reply is asked for again within tt_DISCOVERY_REQUEST_RETRY, not at the next summary (M5,
+// A lost request or reply is asked for again within the retry delay, not at the next summary (M5,
 // 2026-09-26: one node waited 2 s for a list at 5% loss, two losses in a row). Node 1's change broadcast and
 // its first unicast answer are both lost; node 2 still knows the new list within the retry delay of its
-// first request. Control: 5 ms after that request, it does not yet.
+// first request. Control: just before that delay, it does not yet. The delay is whatever node 2 has
+// measured to node 1 by then (discovery_retry_after(); test_discovery_retry_follows_the_round_trip).
 static void test_a_lost_answer_is_asked_for_again_at_once(void) {
     static struct tt_Context one;
     static struct tt_Context two;
@@ -989,9 +990,10 @@ static void test_a_lost_answer_is_asked_for_again_at_once(void) {
         duo_run_until(&one, &two, test_mock_now + tt_MILLISECOND);
     }
     uint64_t asked = test_mock_now;
-    duo_run_until(&one, &two, asked + (5 * tt_MILLISECOND));
+    uint64_t retry_after = discovery_retry_after(&two, 1);
+    duo_run_until(&one, &two, asked + retry_after - 1);
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers)); // control: the first answer was lost
-    duo_run_until(&one, &two, asked + tt_DISCOVERY_REQUEST_RETRY + (2 * tt_MILLISECOND));
+    duo_run_until(&one, &two, asked + retry_after + (2 * tt_MILLISECOND));
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
     EXPECT_EQ_INT(2, duo_requests[2]);
     duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND)); // and it ends there
@@ -1026,6 +1028,101 @@ static void test_a_summary_while_a_request_is_open_sends_nothing_more(void) {
     EXPECT_TRUE(process_discovery_summary(&node, REMOTE_NODE_ID, 7, 0xc0a80a02U, 8282));
     EXPECT_EQ_INT(1, requests_sent);
     EXPECT_TRUE(process_discovery_summary(&node, REMOTE_NODE_ID, 8, 0xc0a80a02U, 8282));
+    EXPECT_EQ_INT(2, requests_sent);
+    test_mock_send_hook = NULL;
+}
+
+// Runs `node`'s due scheduler entries, in order, until `until`.
+static void run_scheduler_until(struct tt_Context* node, uint64_t until) {
+    while (true) {
+        uint64_t head = UINT64_MAX;
+        if (!sched_next_time(node, &head) || head > until) {
+            break;
+        }
+        if (head > test_mock_now) {
+            test_mock_now = head;
+        }
+        bool has_next = false;
+        uint64_t next = 0;
+        (void)run_due_entry(node, test_mock_now, &has_next, &next);
+    }
+    test_mock_now = until;
+}
+
+// `source`'s list of generation `generation` arrives, empty: what applies it is all that matters here.
+static void apply_list(struct tt_Context* node, uint8_t source, uint32_t generation) {
+    struct tt_Header header;
+    init_header(&header, source);
+    uint32_t tail = write_update_no_entities(node->rx_buffer, generation);
+    EXPECT_TRUE(process_data(node, &header, node->rx_buffer, 0, tail, 0x0a000000U + source, 8282));
+    EXPECT_TRUE(node->update_seen[source] && node->update_generation[source] == generation);
+}
+
+// The retry delay of a list request is the round trip measured to that peer plus a flush tick
+// (discovery_retry_after(); ROADMAP.md 5a), not one 10 ms for every link. Two peers are asked once and
+// answer after 2 ms and 30 ms; asked again, neither answers, and each is re-asked exactly its own round
+// trip plus tt_CONTEXT_TX_INTERVAL after the request - the fast one well inside the old 10 ms, the slow one
+// not before its answer could have come back. Controls: a peer no answer has been timed from keeps the
+// seed, and an announce nobody asked for times nothing.
+static void test_discovery_retry_follows_the_round_trip(void) {
+    test_mock_reset();
+    test_mock_now = tt_SECOND;
+    test_mock_send_hook = count_requests;
+    static struct tt_Context node;
+    init_node(&node);
+    const uint8_t near = 2;
+    const uint8_t far = 3;
+    const uint8_t unknown = 4;
+    const uint64_t fast = 2 * tt_MILLISECOND;
+    const uint64_t slow = 30 * tt_MILLISECOND; // longer than the seed: the slow peer is re-asked meanwhile
+    EXPECT_EQ_U64(tt_DISCOVERY_REQUEST_RETRY, discovery_retry_after(&node, near));
+
+    // Learn both round trips. The slow one is timed from the first request, not from its retries.
+    uint64_t asked = test_mock_now;
+    EXPECT_TRUE(process_discovery_summary(&node, near, 7, 0x0a000000U + near, 8282));
+    EXPECT_TRUE(process_discovery_summary(&node, far, 7, 0x0a000000U + far, 8282));
+    run_scheduler_until(&node, asked + fast);
+    apply_list(&node, near, 7);
+    run_scheduler_until(&node, asked + slow);
+    apply_list(&node, far, 7);
+    EXPECT_EQ_U32((uint32_t)fast, node.discovery_rtt_ns[near]);
+    EXPECT_EQ_U32((uint32_t)slow, node.discovery_rtt_ns[far]);
+
+    // The fast peer is re-asked one round trip and a flush tick after the request, and not before.
+    requests_sent = 0;
+    asked = test_mock_now;
+    EXPECT_TRUE(process_discovery_summary(&node, near, 8, 0x0a000000U + near, 8282));
+    run_scheduler_until(&node, asked + fast + tt_CONTEXT_TX_INTERVAL - 1);
+    EXPECT_EQ_INT(1, requests_sent);
+    run_scheduler_until(&node, asked + fast + tt_CONTEXT_TX_INTERVAL);
+    EXPECT_EQ_INT(2, requests_sent);
+    apply_list(&node, near, 8);
+    // A second sample is smoothed in (gain 1/8), timed from the first request: fast + a tick.
+    EXPECT_EQ_U32((uint32_t)(fast + (tt_CONTEXT_TX_INTERVAL / 8)), node.discovery_rtt_ns[near]);
+
+    // The slow peer, the same - where the seed would have re-asked it three times meanwhile.
+    requests_sent = 0;
+    asked = test_mock_now;
+    EXPECT_TRUE(process_discovery_summary(&node, far, 8, 0x0a000000U + far, 8282));
+    run_scheduler_until(&node, asked + slow + tt_CONTEXT_TX_INTERVAL - 1);
+    EXPECT_EQ_INT(1, requests_sent);
+    run_scheduler_until(&node, asked + slow + tt_CONTEXT_TX_INTERVAL);
+    EXPECT_EQ_INT(2, requests_sent);
+
+    // Control: an announce nobody asked for - generation 9 while 8 is the one requested - times nothing.
+    test_mock_now += tt_MILLISECOND;
+    apply_list(&node, far, 9);
+    EXPECT_EQ_U32((uint32_t)slow, node.discovery_rtt_ns[far]);
+
+    // Control: a peer never timed keeps the seed.
+    requests_sent = 0;
+    run_scheduler_until(&node, test_mock_now + tt_SECOND); // the far request runs out of attempts
+    requests_sent = 0;
+    asked = test_mock_now;
+    EXPECT_TRUE(process_discovery_summary(&node, unknown, 7, 0x0a000000U + unknown, 8282));
+    run_scheduler_until(&node, asked + tt_DISCOVERY_REQUEST_RETRY - 1);
+    EXPECT_EQ_INT(1, requests_sent);
+    run_scheduler_until(&node, asked + tt_DISCOVERY_REQUEST_RETRY);
     EXPECT_EQ_INT(2, requests_sent);
     test_mock_send_hook = NULL;
 }
@@ -1445,6 +1542,7 @@ int main(void) {
     test_requests_beyond_the_threshold_are_answered_by_one_broadcast();
     test_a_lost_answer_is_asked_for_again_at_once();
     test_a_summary_while_a_request_is_open_sends_nothing_more();
+    test_discovery_retry_follows_the_round_trip();
     test_two_lost_summaries_never_presume_a_node_dead();
     test_an_automatic_lease_runs_from_the_data_and_lapses_on_time();
     test_a_manual_lease_is_not_kept_by_other_topics_data();

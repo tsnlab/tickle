@@ -144,8 +144,9 @@ struct tt_DiscoveryRequest {
     uint32_t ip;
     uint16_t port;
     uint8_t source;
-    uint8_t attempts; // requests sent so far, tt_DISCOVERY_REQUEST_ATTEMPTS at most
-    uint64_t sent_ns;
+    uint8_t attempts;       // requests sent so far, tt_DISCOVERY_REQUEST_ATTEMPTS at most
+    uint64_t sent_ns;       // the latest of them, which the retry delay runs from
+    uint64_t first_sent_ns; // the first, which the round trip is timed from (tt_Context.discovery_rtt_ns)
 };
 
 struct tt_Endpoint {
@@ -488,6 +489,15 @@ struct tt_Context {
     // entry, discovery_request_retry(), serves them all while any is open.
     struct tt_DiscoveryRequest discovery_requests[tt_DISCOVERY_PENDING_REQUESTS];
     bool discovery_retry_scheduled;
+    uint64_t discovery_retry_ns; // when that entry is due, while discovery_retry_scheduled
+    // Per source node, the smoothed round trip of our requests for its list (ns, 0 = none measured yet):
+    // from a request's first send to the list it asked for being applied, so it includes the flush tick
+    // the answer may have waited for. Timed from the FIRST send, as the reliable path times its recovery
+    // (tt_WriterProxy.recovery_srtt_ns): a retried request's sample is biased upward, which errs toward
+    // fewer premature retries, and a link slower than the seed is measured at all. A retry is sent this
+    // plus tt_CONTEXT_TX_INTERVAL after the request (discovery_retry_after(), tickle.c). Kept across a
+    // peer's death: it describes the path to that node id, and the next answer corrects it.
+    uint32_t discovery_rtt_ns[tt_MAX_CONTEXT_IDS];
     // LIVELINESS (rmw_tickle/LIVELINESS_PLAN.md). One scheduler entry, check_liveliness(), armed at the
     // earliest expiry among the remote nodes and leased entities this node tracks (liveliness_check_ns),
     // re-armed when it fires and moved earlier only for something new that expires sooner.
