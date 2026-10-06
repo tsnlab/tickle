@@ -71,6 +71,19 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
 
 ### Same-host notes
 
+- **Why FastDDS delivered ~0% in S1d-S3d** (an exceptional figure, so its reading is spelled out). Its publisher sent
+  ~5.5M samples in 9 s and its subscriber took 105-284 of them, in every rep and at every size. Our bench is not the
+  cause as far as we can see: both sides run the same explicit KEEP_LAST 1, BEST_EFFORT, Fast DDS 2.14's default
+  resource limits, and data-sharing matched (its listener thread was busy). The likely cause is Fast DDS's
+  data-sharing design, read from its 2.14.6 sources: the subscriber reads the samples out of the **publisher's own
+  history pool**, which at KEEP_LAST 1 holds two payloads (depth + one extra). At ~620k samples/s the publisher reuses
+  each payload within microseconds, and the subscriber silently discards every sample it finds overwritten while or
+  after reading it (the warnings that say so are below Fast DDS's default log level). That is KEEP_LAST 1 doing what
+  it says - keep only the newest - with a reader that cannot keep up with a max-rate writer; TickLE's segment instead
+  queues up to 512 datagrams in the subscriber's own ring, which is transport buffering, not history. The run's "OFF"
+  arm was not a kernel-path control for Fast DDS: data-sharing is a QoS, not a transport, so the eth0-only profile did
+  not turn it off (s6 marked that pair VOID). **Not yet confirmed by a run**: `experiments/fastdds_be_delivery.sh`
+  (queued) compares KEEP_LAST 1 with depth 64, data-sharing off, a slowed publisher, and Fast DDS's own discard count.
 - **2026-10-06 re-measure** (`9f919c8b`): S10 fell from 0.052 to **0.036 ms** - the old figure was a first-lap one,
   ~16 us of first-touch page faults on the reliable reorder ring before warm-up was excluded (ROADMAP Now 1). The
   BEST_EFFORT rows now also show what was delivered (S1d-S3d): at KEEP_LAST 1, the DDS default, FastDDS's reader took
