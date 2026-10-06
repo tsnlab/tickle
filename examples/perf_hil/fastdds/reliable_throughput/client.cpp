@@ -230,7 +230,7 @@ auto main(int argc, char** argv) -> int {
     const double mbps = harness::mbps(result.sent, sizeof(Bench), elapsed_s);
     bench_stats_end(&harness::g_bench_stats);
     printf("RESULT: framework=fastdds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
-           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s drain_cap_s=%.1f cpu_main=%d "
+           "elapsed_s=%.3f send_mbps=%.6f max_blocking_ms=%.3f drained=%s drain_cap_s=%.1f cpu_main=%d "
            "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d keepall_samples=%d "
            "transport_profile=%s %s %s\n",
            static_cast<unsigned long>(result.sent), static_cast<unsigned long>(result.write_fail), elapsed_s, mbps,

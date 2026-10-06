@@ -132,7 +132,7 @@ int main(int argc, char** argv) {
     double loss_pct = total > 0 ? (100.0 * (double)lost / (double)total) : 0.0;
 
     printf("RESULT: framework=cyclonedds scenario=lifespan_expiry role=server pause_s=%.3f "
-           "recv=%lu lost=%lu loss_pct=%.1f\n",
+           "recv=%lu lost=%lu loss_pct=%.6f\n",
            pause_s, (unsigned long)received, (unsigned long)lost, loss_pct);
 
     dds_delete(participant);

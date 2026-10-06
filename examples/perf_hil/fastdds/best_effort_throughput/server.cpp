@@ -133,7 +133,7 @@ namespace {
         bench_stats_end(&harness::g_bench_stats);
 
         printf("RESULT: framework=fastdds scenario=best_effort_throughput role=server recv=%lu lost=%lu "
-               "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f %s %s %s %s transport_profile=%s\n",
+               "loss_pct=%.6f elapsed_s=%.3f recv_mbps=%.6f %s %s %s %s transport_profile=%s\n",
                static_cast<unsigned long>(stats.received), static_cast<unsigned long>(stats.lost), loss_pct, elapsed_s,
                mbps,
                BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields.data(),

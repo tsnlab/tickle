@@ -165,7 +165,7 @@ int main(int argc, char** argv) {
     snprintf(bells, sizeof bells, "doorbells_sent=%llu bells_rung=%llu",
              (unsigned long long)node.segment_doorbells_sent, (unsigned long long)node.segment_bells_rung);
     printf("RESULT: framework=tickle scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f %s %s history=none segment_slots=%d %s %s %s\n",
+           "send_mbps=%.6f %s %s history=none segment_slots=%d %s %s %s\n",
            (unsigned long)sent, elapsed_s, mbps,
            BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            BenchHistory_arg_field(g_history, g_history_field, sizeof g_history_field),

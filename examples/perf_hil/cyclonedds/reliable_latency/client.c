@@ -228,8 +228,8 @@ int main(int argc, char** argv) {
                (unsigned long)stats.measured_recv);
     }
     bench_stats_end(&g_bench_stats);
-    printf("RESULT: framework=cyclonedds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.0f "
-           "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
+    printf("RESULT: framework=cyclonedds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.6f "
+           "rtt_min_ms=%.3f rtt_avg_ms=%.6f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
            "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u "
            "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f window=%s %s\n",
            (unsigned long)stats.transmitted, (unsigned long)stats.received, loss_pct, stats.min_ms, avg, stats.max_ms,

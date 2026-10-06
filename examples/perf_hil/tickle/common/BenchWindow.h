@@ -172,7 +172,7 @@ static inline const char* BenchWindow_fields(const struct BenchWindow* window, c
     double mbps = result.seconds > 0.0 ? (double)result.samples * (double)sample_bytes * bits_per_byte /
                                              bits_per_megabit / result.seconds
                                        : 0.0;
-    snprintf(out, out_len, "warmup_s=%.3f cooldown_s=%.3f win_s=%.3f win_%s=%llu win_%s_mbps=%.3f window=%s",
+    snprintf(out, out_len, "warmup_s=%.3f cooldown_s=%.3f win_s=%.3f win_%s=%llu win_%s_mbps=%.6f window=%s",
              window->warmup_s, window->cooldown_s, result.seconds, count_name, (unsigned long long)result.samples,
              rate_name, mbps, result.state);
     return out;

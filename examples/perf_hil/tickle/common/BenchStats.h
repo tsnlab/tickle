@@ -623,13 +623,17 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
         bench_stats_fail_flags(stats, &totals, fail, sizeof(fail));
     }
 
+    // Every field campaign_summary.py scores is printed with enough digits that rounding cannot decide a verdict, in
+    // all three harnesses (2026-10-06): cpu_s_per_MB at %.3f once left one significant digit at p4, and a loss_pct
+    // at %.1f turned FastDDS's 66 lost samples into 0.0 and a WIN into a DRAW. Fixed decimals, never %g: the
+    // parsers read [-0-9.]+.
     snprintf(buf, buf_len,
-             "sample_bytes=%" PRIu64 " utime_s=%.3f stime_s=%.3f cpu_s_per_Msample=%.3f cpu_s_per_MB=%.6f "
-             "sched_cpu_s=%.6f sched_cpu_s_per_Msample=%.3f sched_unattributed_s=%.6f sched_breakdown=%s "
+             "sample_bytes=%" PRIu64 " utime_s=%.3f stime_s=%.3f cpu_s_per_Msample=%.6f cpu_s_per_MB=%.9f "
+             "sched_cpu_s=%.6f sched_cpu_s_per_Msample=%.6f sched_unattributed_s=%.6f sched_breakdown=%s "
              "sched_threads=%u sched_threads_gone=%u sched_threads_over=%u peak_rss_kb=%" PRIu64
              " wire_rx_bytes=%" PRIu64 " wire_rx_packets=%" PRIu64 " wire_tx_bytes=%" PRIu64 " wire_tx_packets=%" PRIu64
              " wire_bytes_total=%" PRIu64 " wire_packets_total=%" PRIu64
-             " wire_bytes_per_sample=%.1f wire_packets_per_sample=%.3f wire_role_packets_per_sample=%.3f "
+             " wire_bytes_per_sample=%.4f wire_packets_per_sample=%.3f wire_role_packets_per_sample=%.3f "
              "iface=%s instrument=%s%s%s%s sched_by_thread=%s%s%s%s",
              sample_bytes, utime_s, stime_s, samples > 0 ? cpu_s * 1e6 / (double)samples : 0.0,
              megabytes > 0.0 ? cpu_s / megabytes : 0.0, (double)sched_cpu_ns / 1e9,

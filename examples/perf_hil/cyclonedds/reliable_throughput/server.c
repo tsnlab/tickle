@@ -179,7 +179,7 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
 
     printf("RESULT: framework=cyclonedds scenario=reliable_throughput role=server recv=%lu lost=%lu "
-           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f keep_all=%d keep_last_depth=%d keepall_samples=%d %s %s\n",
+           "loss_pct=%.6f elapsed_s=%.3f recv_mbps=%.6f keep_all=%d keep_last_depth=%d keepall_samples=%d %s %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, elapsed_s, mbps, keep_last_depth > 0 ? 0 : 1,
            keep_last_depth, keepall_samples,
            BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),

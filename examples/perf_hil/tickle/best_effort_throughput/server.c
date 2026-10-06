@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
                            (size_t)tt_SEGMENT_ATTACHED, (size_t)tt_SEGMENT_ABSENT);
     bench_stats_end(&g_bench_stats);
 
-    printf("RESULT: framework=tickle scenario=best_effort_throughput role=server recv=%lu lost=%lu loss_pct=%.1f %s "
+    printf("RESULT: framework=tickle scenario=best_effort_throughput role=server recv=%lu lost=%lu loss_pct=%.6f %s "
            "history=none segment_slots=%d %s %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct,
            BenchHistory_arg_field(g_history, g_history_field, sizeof g_history_field),

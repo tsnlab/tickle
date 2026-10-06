@@ -137,8 +137,8 @@ int main(int argc, char** argv) {
     if (received > 0) {
         printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", rtt_min_ms, avg, rtt_max_ms);
     }
-    printf("RESULT: framework=tickle scenario=best_effort_latency sent=%lu recv=%lu loss_pct=%.0f "
-           "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f\n",
+    printf("RESULT: framework=tickle scenario=best_effort_latency sent=%lu recv=%lu loss_pct=%.6f "
+           "rtt_min_ms=%.3f rtt_avg_ms=%.6f rtt_max_ms=%.3f\n",
            (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms);
 
     tt_Context_destroy(&node);

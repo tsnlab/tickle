@@ -10,7 +10,10 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
 - **Cross-host (two Raspberry Pi 5s over 1 GbE):** TickLE is best in every scored row of latency, throughput, CPU,
   memory and bandwidth at P1-P4, with and without injected loss, under identical explicit QoS, against FastDDS both
   as shipped and tuned, with no process pinned to a core. The campaign scored **WIN 136, DRAW/TIE 14, LOSE 0,
-  VOID 0** (`A`, 17 cells) and **WIN 18, TIE 2, LOSE 0** (`T`), at `3ae721aa`.
+  VOID 0** (`A`, 17 cells) and **WIN 18, TIE 2, LOSE 0** (`T`), at `3ae721aa`. Scored on the unrounded loss
+  (recomputed from each line's `lost`/`recv`), `A` is **WIN 137, DRAW/TIE 13**: cell 9's (KEEP_LAST 64) server
+  `loss_pct` was a DRAW only because FastDDS's 66 and 58 lost samples printed as `loss_pct=0.0`. The RESULT lines
+  have printed every scored field with enough digits since 2026-10-06 (`%.6f`; `cpu_s_per_MB` `%.9f`).
 - **The largest margin is RELIABLE under 5% loss:** TickLE keeps 93.2% (P1) and 91.6% (P4) of its throughput;
   FastDDS 47.6% / 38.9%, CycloneDDS 5.5% / 1.6% (rows 16-17).
 - **Same host (shared memory):** TickLE leads every measured cell, but S1-S3 compare *send* rates (see notes).

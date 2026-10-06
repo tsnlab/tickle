@@ -130,7 +130,7 @@ int main(int argc, char** argv) {
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(struct Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f %s %s %s %s\n",
+           "send_mbps=%.6f %s %s %s %s\n",
            (unsigned long)sent, elapsed_s, mbps,
            BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            BenchHistory_arg_field(g_history, g_history_arg, sizeof g_history_arg),

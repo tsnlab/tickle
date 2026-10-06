@@ -692,7 +692,7 @@ int main(int argc, char** argv) {
                            (size_t)tt_SEGMENT_ATTACHED, (size_t)tt_SEGMENT_ABSENT);
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
-           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f keep_all=%d durable=%d reliable_depth=%u "
+           "elapsed_s=%.3f send_mbps=%.6f max_blocking_ms=%.3f keep_all=%d durable=%d reliable_depth=%u "
            "throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u drained=%s drain_cap_s=%.1f peer_acks_end=%u "
            "peer_acks_min=%u cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d "
            "cpu_main_share=%.2f cpu_migrations=%u retransmitted=%u arena_bytes=%u keepall_samples=%u "

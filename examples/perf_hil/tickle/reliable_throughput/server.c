@@ -406,8 +406,8 @@ int main(int argc, char** argv) {
     // without delivering - core counts them in every build now, where before a RELIABLE Subscriber
     // could drop samples with every production counter at zero. They separate "never arrived"
     // from "given up on", which recv against the client's sent cannot.
-    printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f "
-           "post_match_lost=%lu post_match_loss_pct=%.1f prematch_window=%u first_seq=%u window_samples=%u "
+    printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.6f "
+           "post_match_lost=%lu post_match_loss_pct=%.6f prematch_window=%u first_seq=%u window_samples=%u "
            "keepall_samples=%u "
            "reorder_slots=%u frag_slots=%d frag_reassembled=%lu frag_abandoned=%lu frag_dropped=%lu "
            "frag_duplicate=%lu "

@@ -139,8 +139,8 @@ namespace {
         if (stats.received > 0) {
             printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", stats.min_ms, avg, stats.max_ms);
         }
-        printf("RESULT: framework=fastdds scenario=best_effort_latency sent=%lu recv=%lu loss_pct=%.0f "
-               "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f transport_profile=%s\n",
+        printf("RESULT: framework=fastdds scenario=best_effort_latency sent=%lu recv=%lu loss_pct=%.6f "
+               "rtt_min_ms=%.3f rtt_avg_ms=%.6f rtt_max_ms=%.3f transport_profile=%s\n",
                static_cast<unsigned long>(stats.transmitted), static_cast<unsigned long>(stats.received), loss_pct,
                stats.min_ms, avg, stats.max_ms, harness::transport_profile());
     }

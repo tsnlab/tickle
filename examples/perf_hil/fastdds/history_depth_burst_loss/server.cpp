@@ -137,7 +137,7 @@ auto main(int argc, char** argv) -> int {
     receive_until(reader, harness::now_ns() + harness::seconds_to_ns(opts.safety_cap_s), gaps);
 
     printf("RESULT: framework=fastdds scenario=history_depth_burst_loss role=server pause_s=%.1f "
-           "recv=%lu lost=%lu loss_pct=%.1f transport_profile=%s\n",
+           "recv=%lu lost=%lu loss_pct=%.6f transport_profile=%s\n",
            opts.pause_s, static_cast<unsigned long>(gaps.received), static_cast<unsigned long>(gaps.lost),
            harness::seq_gaps_loss_pct(gaps), harness::transport_profile());
 

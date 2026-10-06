@@ -154,7 +154,7 @@ int main(int argc, char** argv) {
     double loss_pct = total > 0 ? (100.0 * (double)lost / (double)total) : 0.0;
 
     printf("RESULT: framework=tickle scenario=history_depth_burst_loss role=server pause_s=%.1f "
-           "recv=%lu lost=%lu loss_pct=%.1f\n",
+           "recv=%lu lost=%lu loss_pct=%.6f\n",
            pause_s, (unsigned long)received, (unsigned long)lost, loss_pct);
 
     tt_Context_destroy(&node);

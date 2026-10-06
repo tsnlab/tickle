@@ -232,10 +232,6 @@ RESOURCE_LIMITS item above belong in the same profile.
   was not predicted. (DATAFRAG_PLAN 14)
 - **DATA_FRAG follow-ups**: arm C with a 30 s FastDDS drain cap, a raw-line re-run of the 4-fragment arm, the
   unexplained 0.57 duplicates per loss on the rig. (DATAFRAG_PLAN 12, 16)
-- **More digits in the RESULT lines of all three harnesses**: the p4 cpu_s_per_MB verdict flips on rounding.
-  (DATAFRAG_PLAN 11)
-- **P3 bench shape has 3.4 B of headroom**: move it to ~1400 B or gate it in `check_bench_shapes.sh`.
-  (OPTIMIZATION_PLAN 3a)
 - **Discovery join time (M3) is not measured**: `discovery_join.sh` must be adapted first.
   (CONTEXT_NODE_PLAN stage 3 result)
 - **rmw_zenoh QoS rows 42-44 and 47 are not measured**: the QoS probe now exists to measure them.

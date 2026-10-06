@@ -188,7 +188,7 @@ auto main(int argc, char** argv) -> int {
     const double mbps = harness::mbps(sent, sizeof(Bench), elapsed_s);
     bench_stats_end(&harness::g_bench_stats);
     printf("RESULT: framework=fastdds scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f %s %s %s %s transport_profile=%s\n",
+           "send_mbps=%.6f %s %s %s %s transport_profile=%s\n",
            static_cast<unsigned long>(sent), elapsed_s, mbps,
            BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields.data(),
                               g_window_fields.size()),
