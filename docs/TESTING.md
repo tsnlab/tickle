@@ -176,10 +176,13 @@ zenoh-pico is measured to the same standard but kept as reference only; it is ne
 - **Every campaign has a control:** an arm the change provably cannot touch, such as a vendor arm, the `rmw_cyclonedds_cpp` acceptance run, or the shared-memory-OFF build. Compare our delta with the control's delta.
 - **Compare a figure with its own previous value**, not with a vendor or with a bare historical point.
 - **A-B-B-A blocks:** two TickLE builds are run interleaved as A B B A (3 repetitions per block, 6 per arm), so drift over the session falls on both arms. Tools: `campaign_ab_chain.sh`, read with `ab_compare.py`.
-- **2xSE reading:** a difference counts only if it lies beyond twice the combined standard error.
-  - With about 110 comparisons per run, about 4 WORSE rows are expected by chance.
-  - So a WORSE row is only a candidate. It is confirmed if the same metric is WORSE in at least half of its cells, or if a targeted A-B-B-A re-run finds it again.
+- **Primary metrics decide an A/B (2026-10-06):** `PRIMARY="metric[,cN:role.metric...]"` is named before the run, from what the change is meant to move. The verdict (`PASS` / `WORSE`) is taken on those alone, each at a Bonferroni threshold for their count (2.0 x SE for one, 2.43 for three, 2.84 for ten). Every other metric is printed as secondary and never decides. Without `PRIMARY`, `ab_compare.py` prints `NO VERDICT`.
+- **2xSE reading of the secondaries:** a difference counts only if it lies beyond twice the combined standard error.
+  - With about 40 comparisons per chain, about 2 WORSE rows are expected by chance.
+  - So a secondary WORSE row is only a candidate. It is confirmed if the same metric is WORSE in at least half of its cells, or if a targeted A-B-B-A re-run with it as primary finds it again.
   - An unconfirmed candidate is listed with its t value, not hidden.
+- **Repetitions from data:** `reps_needed.py` turns earlier campaigns' rep-to-rep spread into the repetitions per arm a 1% or 3% change needs. Choose `REPS` from it, not from habit.
+- **Preflight before the rig:** `rig_preflight.sh` runs every cell shape a rig job is about to run for a few seconds in private network namespaces on the PC and checks each RESULT line. The campaign drivers call it before they take the rig lock (`PREFLIGHT=0` skips it).
 - **Win rule:** TickLE wins a cell only when it beats every scored vendor outside the spread. Inside the spread the cell is a draw.
 - **The layout floor:** between two builds whose code differs in size, a throughput or CPU-per-sample difference below about 1% (p1), or about 10 KB of peak RSS, says nothing.
   - Function placement alone moves results that much.
@@ -241,7 +244,9 @@ All are in `examples/perf_hil/experiments/`. Each one's header holds its pre-reg
 | `campaign_sweep.sh` | The cross-vendor campaign: 12 cells x 3 frameworks x 3 repetitions, interleaved, five metrics |
 | `campaign_summary.py` | Computes the per-cell verdicts (WIN/DRAW/LOSE/VOID) from a sweep's output |
 | `campaign_ab_chain.sh` | Is build B better or worse than build A on the campaign cells? (A-B-B-A) |
-| `ab_compare.py` | Reads A/B arms per cell and metric at 2xSE |
+| `ab_compare.py` | Reads A/B arms per cell and metric; the verdict comes from the pre-registered primary metrics only |
+| `rig_preflight.sh` | Does every cell shape about to go to the rig run, and print a sound RESULT line? (PC, private netns, ~70 s) |
+| `reps_needed.py` | How many repetitions per arm does a 1% or 3% change need, from earlier campaigns' spread? |
 | `comparison_remeasure_chain.sh` | Re-measures the published comparison on one build, all three frameworks |
 | `core_cost_ab.sh` | Core CPU per sample, send and receive, between commits on the PC (no network, no rig lock) |
 | `core_cost_pi_drift.sh` | The Pi bench's own noise floor (one build against itself) |
