@@ -17,15 +17,20 @@
  * receive loop, its loss accounting, its QoS and the RESULT line are unchanged.
  */
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <string>
 
 #include <fastdds/dds/core/policy/QosPolicies.hpp>
+#include <fastdds/dds/core/status/BaseStatus.hpp>
 #include <fastdds/dds/domain/DomainParticipant.hpp>
 #include <fastdds/dds/domain/DomainParticipantFactory.hpp>
 #include <fastdds/dds/domain/qos/DomainParticipantQos.hpp>
+#include <fastdds/dds/log/Log.hpp>
 #include <fastdds/dds/subscriber/DataReader.hpp>
 #include <fastdds/dds/subscriber/SampleInfo.hpp>
 #include <fastdds/dds/subscriber/Subscriber.hpp>
@@ -58,6 +63,77 @@ namespace {
     int g_history = BENCH_HISTORY_DEFAULT;
     std::array<char, BENCH_HISTORY_FIELD_MAX> g_history_arg {};
     std::array<char, BENCH_HISTORY_FIELD_MAX> g_history_field {};
+
+    // Fast DDS's own account of the samples it threw away (examples/perf_hil/experiments/fastdds_be_delivery.sh).
+    //
+    // fdds_sample_lost= is always printed: the reader's SAMPLE_LOST status, which 2.14's StatelessReader raises for a
+    // gap in the sequence numbers it was NOTIFIED of. A sample that reached the reader's history and was dropped
+    // afterwards is not in it - which is what makes it worth printing beside our own lost=.
+    //
+    // fdds_warn_*= only under BENCH_FASTDDS_COUNT_WARNINGS=1, because it changes the run: it raises Fast DDS's log
+    // verbosity to Warning, so every discard below costs a formatted string and a trip through the log thread. The
+    // three are the warnings 2.14.6 logs when a data-sharing reader discards a sample the writer has reused:
+    //   overridden - ReadTakeCommand::check_datasharing_validity, at take: "Change <sn> from <guid> is overidden"
+    //   dirty      - ReaderPool::get_next_unread_payload: "Dirty data detected on datasharing writer"
+    //   overtook   - ReaderPool::ensure_reading_reference_is_in_bounds: "overtook reader in datasharing pool"
+    // Matched on the message text because that is all a LogConsumer is given; a text that stopped matching would
+    // read as zero, so the arm that uses this also has to show the counter is alive (fdds_warn_total > 0 on F1).
+    struct discard_counts {
+        std::atomic<uint64_t> overridden {0};
+        std::atomic<uint64_t> dirty {0};
+        std::atomic<uint64_t> overtook {0};
+        std::atomic<uint64_t> total {0}; // every warning or error that reached the consumer
+    };
+    discard_counts g_discards;
+    bool g_count_warnings = false;
+    constexpr size_t discard_fields_max = 192;
+    std::array<char, discard_fields_max> g_discard_fields {};
+
+    class DiscardCounter : public LogConsumer {
+      public:
+        void Consume(const Log::Entry& entry) override {
+            g_discards.total.fetch_add(1, std::memory_order_relaxed);
+            const std::string& msg = entry.message;
+            if (msg.find("is overidden") != std::string::npos) {
+                g_discards.overridden.fetch_add(1, std::memory_order_relaxed);
+            } else if (msg.find("Dirty data detected") != std::string::npos) {
+                g_discards.dirty.fetch_add(1, std::memory_order_relaxed);
+            } else if (msg.find("overtook reader") != std::string::npos) {
+                g_discards.overtook.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    };
+
+    void arm_warning_counter() {
+        const char* flag = std::getenv("BENCH_FASTDDS_COUNT_WARNINGS");
+        g_count_warnings = flag != nullptr && flag[0] != '\0' && flag[0] != '0';
+        if (!g_count_warnings) {
+            return;
+        }
+        Log::ClearConsumers(); // the default stdout consumer would print every discard
+        Log::RegisterConsumer(std::make_unique<DiscardCounter>());
+        Log::SetVerbosity(Log::Kind::Warning);
+    }
+
+    auto discard_fields(const DataReader* reader) -> const char* {
+        SampleLostStatus lost;
+        const bool have_lost = reader->get_sample_lost_status(lost) == ReturnCode_t::RETCODE_OK;
+        if (!g_count_warnings) {
+            snprintf(g_discard_fields.data(), g_discard_fields.size(), "fdds_sample_lost=%d fdds_warn=off",
+                     have_lost ? static_cast<int>(lost.total_count) : -1);
+            return g_discard_fields.data();
+        }
+        Log::Flush(); // the consumer runs on the log thread; what is still queued has not been counted
+        snprintf(g_discard_fields.data(), g_discard_fields.size(),
+                 "fdds_sample_lost=%d fdds_warn=on fdds_warn_overridden=%lu fdds_warn_dirty=%lu "
+                 "fdds_warn_overtook=%lu fdds_warn_total=%lu",
+                 have_lost ? static_cast<int>(lost.total_count) : -1,
+                 static_cast<unsigned long>(g_discards.overridden.load()),
+                 static_cast<unsigned long>(g_discards.dirty.load()),
+                 static_cast<unsigned long>(g_discards.overtook.load()),
+                 static_cast<unsigned long>(g_discards.total.load()));
+        return g_discard_fields.data();
+    }
 
     // -K <depth> (tickle/common/BenchHistory.h): KEEP_LAST at that depth, with the resource limits raised to hold it.
     // Fast DDS 2.14's default max_samples_per_instance is 400 (max_samples 5000), and a depth above it is an
@@ -133,14 +209,14 @@ namespace {
         bench_stats_end(&harness::g_bench_stats);
 
         printf("RESULT: framework=fastdds scenario=best_effort_throughput role=server recv=%lu lost=%lu "
-               "loss_pct=%.6f elapsed_s=%.3f recv_mbps=%.6f %s %s %s %s transport_profile=%s\n",
+               "loss_pct=%.6f elapsed_s=%.3f recv_mbps=%.6f %s %s %s %s %s transport_profile=%s\n",
                static_cast<unsigned long>(stats.received), static_cast<unsigned long>(stats.lost), loss_pct, elapsed_s,
                mbps,
                BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields.data(),
                                   g_window_fields.size()),
                BenchHistory_arg_field(g_history, g_history_arg.data(), g_history_arg.size()),
-               history_field(reader->get_qos().history()), harness::bench_fields(BENCH_ROLE_RECEIVER, stats.received),
-               harness::transport_profile());
+               history_field(reader->get_qos().history()), discard_fields(reader),
+               harness::bench_fields(BENCH_ROLE_RECEIVER, stats.received), harness::transport_profile());
     }
 
 } // namespace
@@ -152,6 +228,7 @@ auto main(int argc, char** argv) -> int {
     const double safety_cap_s = parse_safety_cap(argc, argv);
 
     harness::install_sigint_handler();
+    arm_warning_counter(); // before any entity exists, so no discard is logged before the consumer is in place
 
     DomainParticipant* const participant =
         DomainParticipantFactory::get_instance()->create_participant(0, PARTICIPANT_QOS_DEFAULT);

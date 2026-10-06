@@ -267,6 +267,9 @@ fdds_run() {  # fdds_run <arm> <profile-basename>
     # +nodsh 가 말하고, 그것이 이 arm 의 신원 검사다.
     local env_common="BENCH_IFACE=lo LD_LIBRARY_PATH=$FDDS_LIB_PATH FASTRTPS_DEFAULT_PROFILES_FILE=$p"
     [ -n "${BENCH_FASTDDS_NO_DATASHARING:-}" ] && env_common="$env_common BENCH_FASTDDS_NO_DATASHARING=$BENCH_FASTDDS_NO_DATASHARING"
+    # Same crossing for the best_effort_throughput server's discard counter (fastdds_be_delivery.sh); its identity
+    # is the server line's own fdds_warn=on, which that script checks.
+    [ -n "${BENCH_FASTDDS_COUNT_WARNINGS:-}" ] && env_common="$env_common BENCH_FASTDDS_COUNT_WARNINGS=$BENCH_FASTDDS_COUNT_WARNINGS"
     srv_pid=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && rm -f /tmp/s6_fdds.pid
 (setsid sh -c 'echo \$\$ >/tmp/s6_fdds.pid; exec env $env_common $PIN_SERVER ./server -d $((DUR + 40)) $WINDOW_ARGS $HISTORY_ARGS' >/tmp/s6_fdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_fdds.pid" </dev/null)
     # The WHOLE output, kept on the Pi and then read, rather than piped through grep '^RESULT' at the far end. A
