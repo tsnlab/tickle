@@ -195,7 +195,11 @@ rx_hint_check: rx_hint_check.c libtickle.a
 rx_idle_check: rx_idle_check.c libtickle.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
-test-samehost: examples refuse_io_uring.so rx_hint_check rx_idle_check
+# No lost wake-up between a same-host writer and a sleeping reader (bell_wake_check.c says how it forces the race).
+bell_wake_check: bell_wake_check.c $(ROOT)/examples/uint64/UInt64.c libtickle.a
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ bell_wake_check.c $(ROOT)/examples/uint64/UInt64.c $(LDLIBS)
+
+test-samehost: examples refuse_io_uring.so rx_hint_check rx_idle_check bell_wake_check
 	./test_samehost.sh
 
 test: config-renames $(TEST_BINS)
@@ -531,5 +535,5 @@ clean:
 	# currently selected, so switching BUILD_TYPE and running `clean` doesn't leave the
 	# other mode's stale cache behind.
 	rm -rf obj/*/
-	rm -f libtickle.a refuse_io_uring.so rx_hint_check rx_idle_check
+	rm -f libtickle.a refuse_io_uring.so rx_hint_check rx_idle_check bell_wake_check
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))
