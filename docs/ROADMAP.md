@@ -76,7 +76,9 @@ The user's active list (2026-10-05), in order.
    interval; `tt_SEGMENT_REVALIDATE_SENDS` (4096) is `tt_CONTEXT_UPDATE_INTERVAL` - at 1 Hz they were four minutes
    and over an hour. The send path reads no clock for them: the poll and every publish leave their reading in
    `tx_clock_ns` (`test_transport_seam`, `test_poll_wait`). Both names now stop the build if set. A rig A/B against
-   the counts is owed before same-host or max-rate figures are re-quoted.
+   the counts is owed before same-host or max-rate figures are re-quoted. `seam_attach_cost.sh`,
+   `segment_attach_hint.sh` and `s6_latency_driver.sh` still pass `-Dtt_SEGMENT_ATTACH_RETRY_SENDS` for an arm and
+   no longer build that arm; use the parent commit as the control instead.
    Done 2026-10-05: the RPC retry bounds are srtt-relative (`tt_CALL_RETRY_MAX_SRTT_MULTIPLE`, per-retry doubling;
    `tt_CALL_RETRY_INTERVAL` is now only the seed and `_MAX` is gone), and the server's response cache lives as long
    as the client's schedule it can know plus the retry gaps it has measured (`tt_SERVER_CACHE_GAP_MULTIPLE`;
