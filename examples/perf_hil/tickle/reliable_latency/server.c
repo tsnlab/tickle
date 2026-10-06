@@ -51,9 +51,12 @@ static void handle_sigint(int sig) {
 static struct tt_Publisher* g_pub;
 
 // TickLE-only diagnostics for the latency tail question (2026-09-25), not compared across frameworks -
-// the CycloneDDS and FastDDS latency servers print no RESULT line at all. The server host's clock
-// matters as much as the client's: it idles between pings too, so the ondemand governor can lower it
-// before each echo. Sampled after the echo is published, never before it.
+// the CycloneDDS and FastDDS latency servers print no RESULT line at all. Sampled twice, when the loop
+// starts and when it ends, and never per echo (2026-10-06): a sample is an open, a read and a close of
+// sysfs, and taken after every echo it put three syscalls a round trip into this server's system time that
+// the CycloneDDS and FastDDS servers, which sample nothing, never paid - in a cell that compares exactly
+// that cost. The clients sample per round trip, alike in all three. So the fields stay, and say what the
+// server's clock was at the two ends of the run, not at each echo.
 static struct BenchCpuFreq g_echo_freq;
 
 static void ping_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
@@ -61,7 +64,6 @@ static void ping_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
     (void)timestamp;
     (void)seq_no;
     tt_Publisher_publish(g_pub, (struct tt_Data*)data);
-    BenchCpuFreq_sample(&g_echo_freq, tt_get_ns(), 0);
 }
 
 static const double default_safety_cap_s = 40.0;
@@ -163,9 +165,11 @@ int main(int argc, char** argv) {
     // 500ms (nanoseconds), so the deadline/g_interrupted check re-runs.
     const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
     ret = tt_RET_OK;
+    BenchCpuFreq_sample(&g_echo_freq, tt_get_ns(), 0); // the run's start; see g_echo_freq
     while (!g_interrupted && tt_get_ns() < deadline && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
         ret = tt_Context_poll(&node, poll_timeout_ns);
     }
+    BenchCpuFreq_sample(&g_echo_freq, tt_get_ns(), 0); // and its end
 
     printf("RESULT: framework=tickle scenario=reliable_latency role=server cpu_mhz_mean=%.1f cpu_mhz_min=%.1f "
            "cpu_mhz_max=%.1f retransmitted=%u gap_abandoned=%u doorbells_sent=%llu bells_rung=%llu sleeps=%lu "
