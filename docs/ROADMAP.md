@@ -77,6 +77,12 @@ The user's active list (2026-10-05), in order.
    anew; not landed until then.
 4. **Reduce the reader wake cost** (~3.1 us of system time per wake) without tuned spin values: each wake is paid
    per sample at low rates. (COMPARISON 2.2c; SHM_PLAN 7 q1)
+   Rig A/B 2026-10-07 (`ab_samehost.sh`, three arms, `~/rig_results_safe/ab_samehost_reader_wake_20261007-021122.*`):
+   the lost-wakeup fence (B) cost nothing - every primary held - and landed (`7f9f7c62`); x86 lost 3-4 wake-ups per
+   100,000 round trips without it. epoll_pwait2 + the edge-triggered bell (C, `ab/wake-epoll`) cut same-host RTT p50
+   20% (30 -> 24 us) and system time per sleep 17-21%, but raised max-rate BEST_EFFORT p3 system time per sample 59%
+   and user time 33%; VOID by its control and not landed. Fixing the max-rate cost while keeping the wake gain is in
+   progress.
 5. **rmw_tickle KEEP_ALL on the rig**: the first run lost ~5% of samples under 5% loss in every build. Six causes
    found and fixed on 2026-10-05: a busy socket starved the data socket (`b6de8a4d`); an endpoint was announced
    before its QoS was final (`155eecb7`); a publisher could not learn its reader except from an announce lost in
