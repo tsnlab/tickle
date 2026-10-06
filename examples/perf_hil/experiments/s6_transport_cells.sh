@@ -70,6 +70,14 @@ SCEN=${SCEN:-reliable_throughput}
 # framework's witness unusable. A latency cell therefore needs -i to set the ping interval, which the harness had
 # no way to pass.
 CLI_ARGS=${CLI_ARGS:-}
+# Warm-up and cool-down (the user, 2026-10-06; TESTING.md section 5; defaults and reasons in tickle/common/BenchWindow.h),
+# passed to every framework's client AND server, so all three exclude the same edges. DUR is the measured window: a
+# throughput rep sends for 2 + DUR + 2 s (+4 s a rep), a latency rep adds 8,192 edge round trips 1 ms apart (+~10 s a
+# rep). Read back below: a row whose window= is not ok is not a figure.
+case "$SCEN" in
+reliable_latency) WINDOW_ARGS=${WINDOW_ARGS:-"-W 4096 -C 4096 -I 0.001"} ;;
+*) WINDOW_ARGS=${WINDOW_ARGS:-"--warmup-s 2 --cooldown-s 2"} ;;
+esac
 # Forwarded to the tickle cell, which is the only one whose geometry we compile.
 BUILD_FLAGS=${BUILD_FLAGS:-}
 SIZE=${SIZE:-p1}
@@ -100,13 +108,14 @@ if [ "$ANALYSE_ONLY" = 1 ]; then
 else
 say "=== S6 transport cells $(date -Is) sha=$SHA scen=$SCEN size=$SIZE dur=${DUR}s reps=$REPS host=$HOST iface=lo ==="
 say "    frameworks: $FRAMEWORKS"
+say "    window (every framework, client and server): $WINDOW_ARGS"
 fi
 
 # ---------------------------------------------------------------- tickle: delegate, do not re-implement
 run_tickle_cell() {
     local sub="$OUT.tickle"
     say "### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ==="
-    if ! OUT="$sub" DUR="$DUR" SCEN="$SCEN" SIZE="$SIZE" CLI_ARGS="$CLI_ARGS" BUILD_FLAGS="$BUILD_FLAGS" \
+    if ! OUT="$sub" DUR="$DUR" SCEN="$SCEN" SIZE="$SIZE" CLI_ARGS="$CLI_ARGS" WINDOW_ARGS="$WINDOW_ARGS" BUILD_FLAGS="$BUILD_FLAGS" \
          TICKLE_DATAGRAM_BYTES="${TICKLE_DATAGRAM_BYTES:-}" TICKLE_RELIABLE_STATS="${TICKLE_RELIABLE_STATS:-}" \
          TICKLE_FRAG_SLOTS="${TICKLE_FRAG_SLOTS:-}" \
          "$REPO/examples/perf_hil/experiments/s6_witness_check.sh" "$SHA" "$REPS" >/dev/null 2>&1; then
@@ -147,12 +156,12 @@ fdds_run() {  # fdds_run <arm> <profile-basename>
     local env_common="BENCH_IFACE=lo LD_LIBRARY_PATH=$FDDS_LIB_PATH FASTRTPS_DEFAULT_PROFILES_FILE=$p"
     [ -n "${BENCH_FASTDDS_NO_DATASHARING:-}" ] && env_common="$env_common BENCH_FASTDDS_NO_DATASHARING=$BENCH_FASTDDS_NO_DATASHARING"
     srv_pid=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && rm -f /tmp/s6_fdds.pid
-(setsid sh -c 'echo \$\$ >/tmp/s6_fdds.pid; exec env $env_common $PIN_SERVER ./server -d $((DUR + 40))' >/tmp/s6_fdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_fdds.pid" </dev/null)
+(setsid sh -c 'echo \$\$ >/tmp/s6_fdds.pid; exec env $env_common $PIN_SERVER ./server -d $((DUR + 40)) $WINDOW_ARGS' >/tmp/s6_fdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_fdds.pid" </dev/null)
     # The WHOLE output, kept on the Pi and then read, rather than piped through grep '^RESULT' at the far end. A
     # client that cannot load its libraries says so on stderr and prints no RESULT line at all; the first version of
     # this cell discarded that sentence and reported "produced no RESULT line" six times without the reason.
     local all
-    all=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && env $env_common $PIN_CLIENT ./client -d $DUR $CLI_ARGS >/tmp/s6_fdds_client.log 2>&1; cat /tmp/s6_fdds_client.log" </dev/null)
+    all=$(sh_ "$HOST" "cd $dir/${SCEN}_${SIZE} && env $env_common $PIN_CLIENT ./client -d $DUR $CLI_ARGS $WINDOW_ARGS >/tmp/s6_fdds_client.log 2>&1; cat /tmp/s6_fdds_client.log" </dev/null)
     line=$(printf '%s\n' "$all" | grep '^RESULT' | head -1)
     cleanup
     if [ -z "$line" ]; then
@@ -258,8 +267,8 @@ cdds_run() {  # cdds_run <arm> <uri>
     local arm=$1 uri=$2 dir=/home/ci/tickle/examples/perf_hil/cyclonedds/${SCEN}_${SIZE} all line
     cleanup
     srv_pid=$(sh_ "$HOST" "cd $dir && rm -f /tmp/s6_cdds.pid
-(setsid sh -c 'echo \$\$ >/tmp/s6_cdds.pid; exec env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='\''$uri'\'' $PIN_SERVER ./server -d $((DUR + 40))' >/tmp/s6_cdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_cdds.pid" </dev/null)
-    all=$(sh_ "$HOST" "cd $dir && env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='$uri' $PIN_CLIENT ./client -d $DUR $CLI_ARGS >/tmp/s6_cdds_client.log 2>&1; cat /tmp/s6_cdds_client.log" </dev/null)
+(setsid sh -c 'echo \$\$ >/tmp/s6_cdds.pid; exec env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='\''$uri'\'' $PIN_SERVER ./server -d $((DUR + 40)) $WINDOW_ARGS' >/tmp/s6_cdds_server.log 2>&1 </dev/null &); sleep 3; cat /tmp/s6_cdds.pid" </dev/null)
+    all=$(sh_ "$HOST" "cd $dir && env BENCH_IFACE=lo LD_LIBRARY_PATH=$CDDS_LIB_PATH CYCLONEDDS_URI='$uri' $PIN_CLIENT ./client -d $DUR $CLI_ARGS $WINDOW_ARGS >/tmp/s6_cdds_client.log 2>&1; cat /tmp/s6_cdds_client.log" </dev/null)
     line=$(printf '%s\n' "$all" | grep '^RESULT' | head -1)
     cleanup
     if [ -z "$line" ]; then
@@ -341,7 +350,16 @@ for line in open(sys.argv[1]):
     # send_mbps and shm_full_dropped travel with the row because the throughput reading needs both. A full
     # ring DROPS the datagram (BenchStats.h, since 2026-09-29), and send_mbps is the PUBLISHER's rate, so a
     # dropping rep counts samples that were never delivered.
-    mb = re.search(r"\bsend_mbps=([0-9.]+)", rest)
+    #
+    # The rate is the measured window's, win_send_mbps (2026-10-06, warm-up and cool-down excluded; send_mbps is the
+    # whole run's and stays on the line for comparison). A row whose window= is not ok keeps its witness, which
+    # counts the whole process either way, but contributes no rate. A line from before the window existed has no
+    # win_send_mbps and is read by its send_mbps, as it always was.
+    mb = re.search(r"\bwin_send_mbps=([0-9.]+)", rest) or re.search(r"\bsend_mbps=([0-9.]+)", rest)
+    wf = re.search(r"\bwindow=(fail\S*)", rest)
+    if wf:
+        print(f"  {fw} arm={arm}: window={wf.group(1)} - no rate taken from this row")
+        mb = None
     fd = re.search(r"\bshm_full_dropped=([0-9]+)", rest)
     if w: rows[(fw, arm)].append((float(w.group(1)),
                                  int(shm.group(1)) if shm else None,
@@ -374,9 +392,9 @@ for fw in sorted({k[0] for k in rows}):
         dirty = [(x[4], x[5]) for x in arm_rows if x[4] is not None and x[5] > 0]
         if clean:
             rng = f"{min(clean):.0f}..{max(clean):.0f}" if len(clean) > 1 else "no spread, n=1"
-            print(f"    {label} send_mbps drop-free n={len(clean)}/{len(arm_rows)}  mean {st.mean(clean):.0f}  ({rng})")
+            print(f"    {label} win_send_mbps drop-free n={len(clean)}/{len(arm_rows)}  mean {st.mean(clean):.0f}  ({rng})")
         else:
-            print(f"    {label} send_mbps VOID: every rep dropped at the ring. The ring is undersized for this")
+            print(f"    {label} win_send_mbps VOID: every rep dropped at the ring. The ring is undersized for this")
             print(f"         cell and THAT is the result, not a rate taken while datagrams were being discarded.")
         if dirty:
             shown = ", ".join(f"{m:.0f} Mbps/{d} dropped" for m, d in sorted(dirty))

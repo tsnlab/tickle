@@ -29,9 +29,13 @@
 
 #include "Bench.h"
 #include "BenchStats.h" // shared instrumentation - see its own header
+#include "BenchWindow.h"
 
 static struct BenchStats g_bench_stats;
 static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
+// What arrived, windowed by the sender's own clock exactly as the client windows what it sent (BenchWindow.h).
+static struct BenchWindow g_window;
+static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -52,6 +56,7 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     }
     last_seq = data->seq;
     received++;
+    BenchWindow_add(&g_window, data->send_ns);
 }
 
 static const double default_safety_cap_s = 40.0;
@@ -62,11 +67,16 @@ int main(int argc, char** argv) {
     // too - identically for all three frameworks, which is what makes them comparable.
     bench_stats_begin(&g_bench_stats);
     double safety_cap_s = default_safety_cap_s;
+    BenchWindow_init(&g_window);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
+        } else {
+            (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
         }
     }
+    // The client sends for warm-up + -d + cool-down, so this side's backstop covers all three.
+    safety_cap_s += g_window.warmup_s + g_window.cooldown_s;
     // +15s buffer - see deadline_miss_detection/server.c's own doc comment for the real bug this
     // avoids (run_scenario.sh forwards the same -d to both sides, but it means "this side's own
     // send duration" on the client vs. "don't hang forever" here - taken verbatim, this side could
@@ -121,10 +131,12 @@ int main(int argc, char** argv) {
                            (size_t)tt_SEGMENT_ATTACHED, (size_t)tt_SEGMENT_ABSENT);
     bench_stats_end(&g_bench_stats);
 
-    printf("RESULT: framework=tickle scenario=best_effort_throughput role=server recv=%lu lost=%lu loss_pct=%.1f %s\n",
-           (unsigned long)received, (unsigned long)lost, loss_pct,
-           bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
-                              sizeof g_bench_fields));
+    printf(
+        "RESULT: framework=tickle scenario=best_effort_throughput role=server recv=%lu lost=%lu loss_pct=%.1f %s %s\n",
+        (unsigned long)received, (unsigned long)lost, loss_pct,
+        BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
+        bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
+                           sizeof g_bench_fields));
 
     tt_Context_destroy(&node);
     return 0;

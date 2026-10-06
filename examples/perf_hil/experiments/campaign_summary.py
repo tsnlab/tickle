@@ -67,7 +67,7 @@ DIRECTION = {
 #
 # cpu_s_per_Msample and cpu_s_per_MB are the normalised forms and stay verdict metrics; they are
 # what section 2's "less CPU than both DDS vendors" has to mean in a fixed-duration test.
-INFORMATIONAL = ("utime_s", "stime_s")
+INFORMATIONAL = ("utime_s", "stime_s", "whole_send_mbps", "whole_recv_mbps")
 # wire_packets_per_sample is deliberately NOT in DIRECTION. It is the boundary GATE, not a metric to
 # win: at P1/P2 all three are meant to read 1.0, and calling an intended three-way equality a draw
 # (or worse, a win) would be a verdict on the test design rather than on TickLE. The controlled test
@@ -127,7 +127,21 @@ def parse(path):
         for chunk in re.split(r"(?=role=)", m["fields"]):
             role_m = re.match(r"role=(\w+)", chunk)
             role = role_m.group(1) if role_m else "client"
-            for k, v in re.findall(r"([A-Za-z_]\w*)=([-\d.]+)", chunk):
+            pairs = re.findall(r"([A-Za-z_]\w*)=([-\d.]+)", chunk)
+            # Warm-up and cool-down (2026-10-06, TESTING.md section 5): a rate is scored over the measured window.
+            # A line that carries win_send_mbps/win_recv_mbps has its whole-run send_mbps/recv_mbps renamed to
+            # whole_*, kept but not scored; a line from before the window existed is read as it always was.
+            # (Latency needs nothing here: rtt_* are already taken over the measured round trips only.)
+            have = {k for k, _ in pairs}
+            renamed = []
+            for k, v in pairs:
+                if k in ("send_mbps", "recv_mbps") and f"win_{k}" in have:
+                    renamed.append((f"whole_{k}", v))
+                elif k in ("win_send_mbps", "win_recv_mbps"):
+                    renamed.append((k[len("win_"):], v))
+                else:
+                    renamed.append((k, v))
+            for k, v in renamed:
                 if k in ("sent", "recv"):
                     fw["delivery"][k] = float(v)
                 if k in POLICY:
@@ -339,8 +353,9 @@ def main(path):
             vend = {v: per_fw[v]["vals"][m] for v in VENDORS
                     if v in per_fw and m in per_fw[v]["vals"]}
             cols = "  ".join(f"{name[:6]} {fmt(vals)}" for name, vals in vend.items())
-            print(f"   {m:<24} tickle {fmt(tvals[m]):<22} {cols:<44} not-comparable"
-                  f"  (absolute CPU over a fixed duration; see cpu_s_per_Msample)")
+            why = ("whole run incl. warm-up and cool-down; scored over the window" if "whole_" in m
+                   else "absolute CPU over a fixed duration; see cpu_s_per_Msample")
+            print(f"   {m:<24} tickle {fmt(tvals[m]):<22} {cols:<44} not-comparable  ({why})")
         for m in metrics:
             t = per_fw["tickle"]["vals"][m]
             vend = {v: per_fw[v]["vals"][m] for v in VENDORS

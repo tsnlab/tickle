@@ -105,7 +105,9 @@ run_arm() { # run_arm <rep> <size> <interval> <len:short|long> <dur> <pf:none|pr
     csha=$(sh_ "sha256sum $D/$sz/client | cut -c1-16" </dev/null)
     srv_wrap=$(sh_ "cd $D/$sz && rm -f $D/srv.pid
 (setsid sh -c 'echo \$\$ > $D/srv.pid; exec python3 $D/rusage_run.py env BENCH_IFACE=lo $pre ./server -Q -d $((dur + 40))' > $D/srv.log 2>&1 < /dev/null &); sleep 2; cat $D/srv.pid" </dev/null)
-    clog=$(sh_ "cd $D/$sz && python3 $D/rusage_run.py env BENCH_IFACE=lo $pre ./client -Q -d $dur -i $iv > $D/cli.log 2>&1; cat $D/cli.log" </dev/null)
+    # -W 0 -C 0: this harness measures the FIRST lap on purpose, so it keeps the client's pre-2026-10-06 behaviour
+    # (no warm-up, no cool-down) - the default warm-up would put every arm past lap one (BenchWindow.h).
+    clog=$(sh_ "cd $D/$sz && python3 $D/rusage_run.py env BENCH_IFACE=lo $pre ./client -Q -d $dur -i $iv -W 0 -C 0 > $D/cli.log 2>&1; cat $D/cli.log" </dev/null)
     stop_server
     slog=$(sh_ "cat $D/srv.log" </dev/null)
     say "ARM $tag client_sha=$csha"

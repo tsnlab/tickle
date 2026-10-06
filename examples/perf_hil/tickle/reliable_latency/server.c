@@ -25,6 +25,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "BenchWindow.h"
 #include "CpuFreq.h"
 
 // Reorder-buffer geometry for this example's RELIABLE Subscriber - see where it is assigned.
@@ -74,12 +75,26 @@ static const double safety_cap_buffer_s = 15.0;
 int main(int argc, char** argv) {
     BenchCpuFreq_init(&g_echo_freq);
     double safety_cap_s = default_safety_cap_s;
+    // The client's warm-up and cool-down, forwarded like -d (BenchWindow.h).
+    uint32_t warmup_rtts = BENCH_WARMUP_ROUND_TRIPS;
+    uint32_t cooldown_rtts = BENCH_COOLDOWN_ROUND_TRIPS;
+    double edge_interval_s = BENCH_EDGE_INTERVAL_S;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-W") == 0 && i + 1 < argc) {
+            warmup_rtts = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "-C") == 0 && i + 1 < argc) {
+            cooldown_rtts = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "-I") == 0 && i + 1 < argc) {
+            edge_interval_s = atof(argv[++i]);
         }
     }
     safety_cap_s += safety_cap_buffer_s;
+    // -d is the client's MEASURED window; its warm-up and cool-down round trips come on top. Each costs the edge
+    // interval plus a round trip, allowed edge_rtt_allowance_s here - a backstop, run_scenario.sh ends this server.
+    const double edge_rtt_allowance_s = 0.005;
+    safety_cap_s += (double)(warmup_rtts + cooldown_rtts) * (edge_interval_s + edge_rtt_allowance_s);
 
     // real HIL link's own broadcast address (run_perf.sh's own PERF_LINK_BROADCAST) - the
     // compiled-in default (255.255.255.255) doesn't match this subnet, which breaks

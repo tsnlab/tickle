@@ -17,6 +17,7 @@
  * Brought up to the repository's C++ clang-tidy checks on 2026-09-25 (see harness_common.hpp); the
  * send loop, its pacing, its QoS and the RESULT line are unchanged.
  */
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +37,7 @@
 #include <fastdds/dds/topic/qos/TopicQos.hpp>
 
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
+#include "../../tickle/common/BenchWindow.h"
 #include "../harness_common.hpp"
 #include "Bench.h"
 #include "BenchPubSubTypes.h"
@@ -47,6 +49,10 @@ namespace {
     constexpr double default_duration_s = 10.0;
     constexpr double match_timeout_s = 10.0;
 
+    // The measured window: -d seconds between a warm-up and a cool-down (BenchWindow.h).
+    struct BenchWindow g_window;
+    std::array<char, BENCH_WINDOW_FIELDS_MAX> g_window_fields {};
+
     struct client_options {
         double duration_s = default_duration_s;
         double interval_s = 0.0; // 0 = as fast as possible
@@ -54,11 +60,14 @@ namespace {
 
     auto parse_options(int argc, char** argv) -> client_options {
         client_options opts;
+        BenchWindow_init(&g_window);
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
                 opts.duration_s = atof(argv[++i]);
             } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
                 opts.interval_s = atof(argv[++i]);
+            } else {
+                (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
             }
         }
         return opts;
@@ -86,6 +95,7 @@ namespace {
             msg.send_ns(harness::now_ns());
             if (writer->write(&msg)) {
                 sent++;
+                BenchWindow_add(&g_window, msg.send_ns());
             }
             if (interval_s > 0.0) {
                 harness::sleep_seconds(interval_s);
@@ -135,15 +145,19 @@ auto main(int argc, char** argv) -> int {
     }
 
     const uint64_t start = harness::now_ns();
-    const uint64_t sent = send_until(writer, start + harness::seconds_to_ns(opts.duration_s), opts.interval_s);
+    // -d is the measured window; the client sends for warm-up + -d + cool-down (BenchWindow.h).
+    const double send_s = g_window.warmup_s + opts.duration_s + g_window.cooldown_s;
+    const uint64_t sent = send_until(writer, start + harness::seconds_to_ns(send_s), opts.interval_s);
 
     const double elapsed_s = static_cast<double>(harness::now_ns() - start) / harness::ns_per_s_real;
     const double mbps = harness::mbps(sent, sizeof(Bench), elapsed_s);
     bench_stats_end(&harness::g_bench_stats);
     printf("RESULT: framework=fastdds scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f %s transport_profile=%s\n",
-           static_cast<unsigned long>(sent), elapsed_s, mbps, harness::bench_fields(BENCH_ROLE_SENDER, sent),
-           harness::transport_profile());
+           "send_mbps=%.3f %s %s transport_profile=%s\n",
+           static_cast<unsigned long>(sent), elapsed_s, mbps,
+           BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields.data(),
+                              g_window_fields.size()),
+           harness::bench_fields(BENCH_ROLE_SENDER, sent), harness::transport_profile());
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

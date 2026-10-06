@@ -200,7 +200,8 @@ table for it.
    a lead. When a setting is in doubt, choose the one that favours the other side.
 2. **Run software the way its users run it.** The OS scheduler places threads, kernel settings are the
    distribution's, every product keeps its shipped defaults for everything that is not a QoS policy. Nothing is
-   pinned, tuned or warmed up for the measurement.
+   pinned, tuned or prepared for the measurement outside the run (item 9's warm-up is part of every run, identical
+   for all, and only decides which samples are counted).
 3. **Any change to the environment is an arm, not the setup.** Pinning off the interrupt core, a larger socket buffer,
    a tuned vendor profile: each is measured on every framework and reported beside the untuned headline, labelled,
    never instead of it.
@@ -217,6 +218,15 @@ table for it.
 8. **Constants are not fitted to the rig.** A value tuned on two Raspberry Pi 5s may be wrong elsewhere. Prefer an
    algorithm that derives it from what the running system measures; where a fitted value stays, README.md gives the
    formula (ROADMAP "Testbed-independent constants").
+9. **No figure is a start-up or teardown transient** (the user, 2026-10-06). Every cell excludes the same warm-up
+   and cool-down for every framework before its statistics. Latency: 4096 round trips at each end, 1 ms apart
+   (`-W`/`-C`/`-I`; 4096 is TickLE's largest ring, so every slot is written once), around `-d` seconds of measured
+   pings; RTT figures are over the measured round trips only and the line says `warmup= cooldown= measured=`.
+   Throughput: 2 s at each end of sender time (`--warmup-s`/`--cooldown-s`) around `-d` measured seconds, client and
+   server windowed by the same rule on each sample's `send_ns`; read `win_send_mbps`/`win_recv_mbps`, with the
+   whole-run `send_mbps`/`recv_mbps` beside them. `window=fail:...` is VOID, never a figure. Defaults and reasons:
+   `examples/perf_hil/tickle/common/BenchWindow.h`. Found when TickLE's same-host p4 latency turned out to be a
+   first-lap figure (ROADMAP 0a).
 
 Still to audit against these (ROADMAP "A fair testbed"): socket buffer sizes, the CPU governor, IRQ affinity, the
 vendor profiles (FastDDS XML, CycloneDDS URI, iceoryx), build flags, and whether any rate or duration was picked

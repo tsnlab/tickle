@@ -3,7 +3,10 @@
 # Implements examples/perf_hil/OPTIMIZATION_PLAN.md rev 4. Read that first - this script is the
 # mechanism, the plan is the reasoning, and the reading rules below come from its section 9.
 #
-# 12 combinations x 3 frameworks x 3 repetitions = 108 runs, ~45 min, plus ~8 min of builds.
+# 12 combinations x 3 frameworks x 3 repetitions = 108 runs, ~45 min, plus ~8 min of builds. Since warm-up and
+# cool-down (2026-10-06) a throughput cell sends for 2 + 5 + 2 = 9 s instead of 5 (+4 s), and a latency cell adds
+# 8,192 edge round trips at 1 ms spacing, about 10-14 s on the rig (+~12 s); the 17-cell matrix runs about 25 min
+# longer in all.
 # Frameworks are interleaved within each repetition so a drift during the session lands on all
 # three rather than on whichever ran last.
 #
@@ -41,6 +44,16 @@ PH="$(cd "$HERE/.." && pwd)"
 REPO="$(cd "$PH/../.." && pwd)"
 REPS="${REPS:-3}"
 DUR="${DUR:-5}"
+# Warm-up and cool-down, identical for every framework (the user, 2026-10-06; TESTING.md section 5; the defaults and
+# the reasons are in tickle/common/BenchWindow.h). DUR and the latency cell's -d 10 are the MEASURED window: a
+# throughput client sends for WARMUP_S + DUR + COOLDOWN_S, a latency client pings WARMUP_RTTS times EDGE_INTERVAL_S
+# apart, then -d 10 at -i 0.1, then COOLDOWN_RTTS more. Passed explicitly, never left to the binaries' defaults, and
+# read back from every RESULT line (window_void below).
+WARMUP_S="${WARMUP_S:-2}"
+COOLDOWN_S="${COOLDOWN_S:-2}"
+WARMUP_RTTS="${WARMUP_RTTS:-4096}"
+COOLDOWN_RTTS="${COOLDOWN_RTTS:-4096}"
+EDGE_INTERVAL_S="${EDGE_INTERVAL_S:-0.001}"
 # FWS limits the frameworks (2026-09-27): "tickle" alone for a TickLE-only A/B such as WIRE_PLAN's bundle against its
 # parent, where the vendors do not change. The default is all three.
 FWS="${FWS:-tickle cyclonedds fastdds}"
@@ -146,6 +159,7 @@ needed_variants() {
 
 say "=== campaign sweep, $(date -Is), OPTIMIZATION_PLAN.md rev 4 ==="
 say "repo $(git -C "$REPO" rev-parse --short "${SHA:-origin/main}"), ${REPS} reps, -d ${DUR}, out $OUT"
+say "warm-up/cool-down: throughput ${WARMUP_S}s/${COOLDOWN_S}s, latency ${WARMUP_RTTS}/${COOLDOWN_RTTS} round trips ${EDGE_INTERVAL_S}s apart"
 say ""
 # CELLS="1 5 3 4 6" runs only those combinations (1-based, in MATRIX order), keeping each cell's
 # number so its label still matches the published c-numbers. Added 2026-09-26 to re-establish c6
@@ -286,6 +300,42 @@ qos_identity_void() { # $1 scenario, $2 payload, $3 qos, $4 fw, $5 result line
     return 0
 }
 
+# The warm-up and cool-down every framework gets, identically (see WARMUP_S above). Throughput is windowed in seconds
+# of sender time, latency in round trips; run_scenario.sh forwards the same arguments to the server.
+window_args() { # $1 shape
+    if [ "$1" = L ]; then
+        echo "-W $WARMUP_RTTS -C $COOLDOWN_RTTS -I $EDGE_INTERVAL_S"
+    else
+        echo "--warmup-s $WARMUP_S --cooldown-s $COOLDOWN_S"
+    fi
+}
+# Did every role of this row exclude the warm-up and cool-down it was given, and measure something in between?
+# Returns a VOID reason, or nothing. window=fail (nothing measured) and a missing window= field both void the row: a
+# statistic over an empty window, or over the whole run, is not the figure this campaign publishes.
+window_void() { # $1 shape, $2 result line(s)
+    case "$2" in *"window=fail"*)
+        grep -oE 'window=fail:[a-z_]+' <<<"$2" | head -1 || true
+        return 0 ;;
+    esac
+    if [ "$1" = L ]; then
+        case "$2" in *"window=ok"*) ;; *) echo "no window= field"; return 0 ;; esac
+        case "$2" in *"warmup=$WARMUP_RTTS "*) ;; *) echo "warmup not $WARMUP_RTTS round trips"; return 0 ;; esac
+        case "$2" in *"cooldown=$COOLDOWN_RTTS "*) ;; *) echo "cooldown not $COOLDOWN_RTTS round trips"; return 0 ;; esac
+        return 0
+    fi
+    local roles windows edges want
+    roles=$(grep -oE 'role=[a-z]+' <<<"$2" | wc -l || true)
+    windows=$(grep -oF 'window=ok' <<<"$2" | wc -l || true)
+    want=$(printf 'warmup_s=%.3f cooldown_s=%.3f' "$WARMUP_S" "$COOLDOWN_S")
+    edges=$(grep -oF "$want" <<<"$2" | wc -l || true)
+    if [ "$roles" -eq 0 ] || [ "$windows" -ne "$roles" ]; then
+        echo "window=ok on $windows of $roles roles"
+    elif [ "$edges" -ne "$roles" ]; then
+        echo "$want on $edges of $roles roles"
+    fi
+    return 0
+}
+
 # --- one cell --------------------------------------------------------------------------------
 # $1 combination number, $2 shape, $3 payload, $4 qos, $5 network, $6 scenario, $7 extra, $8 fw, $9 rep
 cell() {
@@ -293,6 +343,7 @@ cell() {
     local left; left=$(wait_rig_quiet)
     local args="-d $DUR"
     [ "$shape" = L ] && args="-i 0.1 -d 10"
+    args="$args $(window_args "$shape")"
     # The QoS all three get, identically and explicitly (see the matrix header).
     local common
     common=$(common_args "$scenario" "$payload" "$qos")
@@ -315,6 +366,13 @@ cell() {
         local qv
         qv=$(qos_identity_void "$scenario" "$payload" "$qos" "$fw" "$res")
         [ -z "$qv" ] || verdict="VOID(qos: $qv)"
+    fi
+    if [ -n "$res" ] && [ "$verdict" = ok ]; then
+        local wv
+        wv=$(window_void "$shape" "$res")
+        # No spaces in the verdict: campaign_summary.py reads it as one \S+ token, and a line it cannot parse is
+        # dropped rather than counted as VOID.
+        [ -z "$wv" ] || verdict="VOID(window:${wv// /_})"
     fi
     # FastDDS's XML profile (2026-09-26): shipped, or with maxMessageSize tuned per the user's decision.
     # Only reliable_throughput prints transport_profile=; a row that ran the other profile is void.

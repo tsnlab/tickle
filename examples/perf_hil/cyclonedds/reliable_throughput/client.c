@@ -24,12 +24,16 @@
 #include <dds/dds.h>
 
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
-#include "../../tickle/common/CpuPlace.h"   // shared with the TickLE harness - see its own header
+#include "../../tickle/common/BenchWindow.h"
+#include "../../tickle/common/CpuPlace.h" // shared with the TickLE harness - see its own header
 #include "../common.h"
 #include "Bench.h"
 
 static struct BenchStats g_bench_stats;
 static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
+// The measured window: -d seconds between a warm-up and a cool-down (BenchWindow.h).
+static struct BenchWindow g_window;
+static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -65,6 +69,7 @@ int main(int argc, char** argv) {
     // the three frameworks by default; the campaign now passes all three the same number of samples,
     // and every RESULT line's keepall_samples= says which it was. The same letter in all three.
     int keepall_samples = 4000;
+    BenchWindow_init(&g_window);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-K") == 0 && i + 1 < argc) {
             keep_last_depth = atoi(argv[++i]);
@@ -78,8 +83,12 @@ int main(int argc, char** argv) {
             drain_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-N") == 0 && i + 1 < argc) {
             keepall_samples = atoi(argv[++i]);
+        } else {
+            (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
         }
     }
+    // -d is the measured window; the client sends for warm-up + -d + cool-down (BenchWindow.h).
+    double send_s = g_window.warmup_s + duration_s + g_window.cooldown_s;
 
     struct sigaction sa = {0};
     sa.sa_handler = handle_sigint;
@@ -128,13 +137,14 @@ int main(int argc, char** argv) {
     // lost too; write_fail lets the two be told apart (rmw_tickle/PLAN.md Phase 3, item 5).
     uint64_t write_fail = 0;
     uint64_t start = now_ns();
-    uint64_t deadline = start + (uint64_t)(duration_s * 1e9);
+    uint64_t deadline = start + (uint64_t)(send_s * 1e9);
 
     while (!g_interrupted && now_ns() < deadline) {
         struct Bench msg = {.seq = ++seq, .send_ns = now_ns()};
         BenchCpuPlace_sample(&cpu_place, now_ns(), 100000000ULL);
         if (dds_write(writer, &msg) == DDS_RETCODE_OK) {
             sent++;
+            BenchWindow_add(&g_window, msg.send_ns);
         } else {
             write_fail++;
         }
@@ -158,10 +168,11 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
            "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s drain_cap_s=%.1f cpu_main=%d "
-           "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d keepall_samples=%d %s\n",
+           "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d keepall_samples=%d %s %s\n",
            (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms, drained, drain_s,
            BenchCpuPlace_main_cpu(&cpu_place), BenchCpuPlace_main_share(&cpu_place), cpu_place.migrations,
            keep_last_depth > 0 ? 0 : 1, keep_last_depth, keepall_samples,
+           BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

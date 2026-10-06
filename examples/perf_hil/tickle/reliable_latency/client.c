@@ -26,6 +26,7 @@
 
 #include "Bench.h"
 #include "BenchStats.h" // shared instrumentation - see its own header
+#include "BenchWindow.h"
 #include "CpuFreq.h"
 #include "RttQuantiles.h"
 
@@ -45,6 +46,9 @@ static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 // tt_REORDER_SLOT_SIZE rounds up to a multiple of 8. This was a bare sizeof(...) + 16 = 116, which
 // core then addressed with a 120-byte stride - so the last slots of the array were past its end.
 #define BENCH_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(sizeof(struct BenchData) + 16)
+// The default warm-up must write every reorder slot at least once (BenchWindow.h): a first-lap round trip pays the
+// ring's first-touch page faults, ~16 us at p4 (p4_reorder_firsttouch.sh), and is not the steady state.
+_Static_assert(BENCH_WARMUP_ROUND_TRIPS >= BENCH_REORDER_SLOTS, "the default warm-up is shorter than one ring lap");
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -74,6 +78,40 @@ static const uint64_t response_wait_ns = 500ULL * 1000ULL * 1000ULL;
 
 static void ping(struct tt_Context* node, uint64_t time, void* param);
 
+// Warm-up and cool-down (BenchWindow.h): -W round trips, then -d seconds of measured ones, then -C round trips. Only
+// the measured round trips enter the RTT statistics; sent= and recv= stay the whole run's. Mirrored in the CycloneDDS
+// and FastDDS clients.
+enum bench_phase { PHASE_WARMUP, PHASE_MEASURED, PHASE_COOLDOWN };
+static uint32_t warmup_rtts = BENCH_WARMUP_ROUND_TRIPS;
+static uint32_t cooldown_rtts = BENCH_COOLDOWN_ROUND_TRIPS;
+static double edge_interval_s = BENCH_EDGE_INTERVAL_S;
+static enum bench_phase g_phase = PHASE_WARMUP;
+static uint64_t g_measure_end_ns = 0;
+static uint32_t warmup_sent = 0;
+static uint32_t cooldown_sent = 0;
+static uint64_t measured_sent = 0;
+static uint64_t measured_recv = 0;
+static bool awaiting_measured = false; // whether the ping being waited on is a measured one
+
+// The phase the next ping belongs to, moving on when the current one is complete.
+static enum bench_phase advance_phase(uint64_t now) {
+    if (g_phase == PHASE_WARMUP && warmup_sent >= warmup_rtts) {
+        g_phase = PHASE_MEASURED;
+        g_measure_end_ns = now + (uint64_t)(duration_s * (double)tt_SECOND);
+    }
+    if (g_phase == PHASE_MEASURED && now >= g_measure_end_ns) {
+        g_phase = PHASE_COOLDOWN;
+    }
+    return g_phase;
+}
+
+// The idle before the next ping: the edge interval inside warm-up and cool-down, the measured -i otherwise - so the
+// first measured ping, like every other, follows one -i of idling.
+static double next_interval_s(void) {
+    bool edge = (g_phase == PHASE_WARMUP && warmup_sent < warmup_rtts) || g_phase == PHASE_COOLDOWN;
+    return edge ? edge_interval_s : interval_s;
+}
+
 // CPU frequency around each round trip (2026-09-25). A tail excursion after the scheduler-driven poll
 // has two platform explanations besides the change itself: an ordinary loss recovery, or the ondemand
 // governor lowering the package clock once the client stopped spinning and a P-state change - made
@@ -95,6 +133,11 @@ static void pong_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
     uint64_t now = tt_get_ns();
     double rtt_ms = (double)(now - data->send_ns) / ns_per_ms;
     received++;
+    if (!awaiting_measured) {
+        tt_Context_schedule(g_node, now + (uint64_t)(next_interval_s() * (double)tt_SECOND), ping, NULL);
+        return; // a warm-up or cool-down round trip: counted in recv=, kept out of every statistic
+    }
+    measured_recv++;
     if (rtt_min_ms < 0.0 || rtt_ms < rtt_min_ms) {
         rtt_min_ms = rtt_ms;
     }
@@ -108,7 +151,7 @@ static void pong_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
     if (new_max) {
         cpu_mhz_at_rtt_max = BenchCpuFreq_last_mhz(&g_rtt_freq);
     }
-    tt_Context_schedule(g_node, now + (uint64_t)(interval_s * (double)tt_SECOND), ping, NULL);
+    tt_Context_schedule(g_node, now + (uint64_t)(next_interval_s() * (double)tt_SECOND), ping, NULL);
 }
 
 // No reply within the wait: give this ping up and send the next one an interval later, as the DDS clients do.
@@ -130,7 +173,7 @@ static void ping_timeout(struct tt_Context* node, uint64_t time, void* param) {
         return;
     }
     awaiting = 0;
-    tt_Context_schedule(node, time + (uint64_t)(interval_s * (double)tt_SECOND), ping, NULL);
+    tt_Context_schedule(node, time + (uint64_t)(next_interval_s() * (double)tt_SECOND), ping, NULL);
 }
 
 static void ping(struct tt_Context* node, uint64_t time, void* param) {
@@ -138,24 +181,30 @@ static void ping(struct tt_Context* node, uint64_t time, void* param) {
     if (g_interrupted) {
         return;
     }
+    enum bench_phase phase = advance_phase(tt_get_ns());
+    if (phase == PHASE_COOLDOWN && cooldown_sent >= cooldown_rtts) {
+        g_interrupted = 1; // the run ends after its cool-down, not at a fixed time
+        return;
+    }
     struct BenchData msg = {.seq = ++seq, .send_ns = tt_get_ns()};
     tt_ret_t ret = tt_Publisher_publish(g_pub, (struct tt_Data*)&msg);
     if (ret == tt_RET_OK) {
         transmitted++;
     }
+    if (phase == PHASE_WARMUP) {
+        warmup_sent++;
+    } else if (phase == PHASE_MEASURED) {
+        measured_sent++;
+    } else {
+        cooldown_sent++;
+    }
+    awaiting_measured = phase == PHASE_MEASURED;
     awaiting = msg.seq;
     awaiting_until_ns = time + response_wait_ns;
     if (!g_timeout_scheduled) {
         g_timeout_scheduled = true;
         tt_Context_schedule(node, awaiting_until_ns, ping_timeout, NULL);
     }
-}
-
-static void stop(struct tt_Context* node, uint64_t time, void* param) {
-    (void)node;
-    (void)time;
-    (void)param;
-    g_interrupted = 1;
 }
 
 int main(int argc, char** argv) {
@@ -167,7 +216,13 @@ int main(int argc, char** argv) {
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
-            duration_s = atof(argv[++i]);
+            duration_s = atof(argv[++i]); // the measured window, between warm-up and cool-down
+        } else if (strcmp(argv[i], "-W") == 0 && i + 1 < argc) {
+            warmup_rtts = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "-C") == 0 && i + 1 < argc) {
+            cooldown_rtts = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "-I") == 0 && i + 1 < argc) {
+            edge_interval_s = atof(argv[++i]);
         }
     }
 
@@ -238,8 +293,8 @@ int main(int argc, char** argv) {
     sub.reorder_slot_bytes = BENCH_REORDER_SLOT_BYTES;
 
     uint64_t start = tt_get_ns();
+    // No fixed stop: ping() ends the run once the cool-down is done.
     tt_Context_schedule(&node, start + (uint64_t)(discovery_margin_s * (double)tt_SECOND), ping, NULL);
-    tt_Context_schedule(&node, start + (uint64_t)((discovery_margin_s + duration_s) * (double)tt_SECOND), stop, NULL);
 
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
@@ -248,12 +303,13 @@ int main(int argc, char** argv) {
 
     uint64_t lost = transmitted - received;
     double loss_pct = transmitted > 0 ? (100.0 * (double)lost / (double)transmitted) : 0.0;
-    double avg = received > 0 ? rtt_sum_ms / (double)received : 0.0;
+    double avg = measured_recv > 0 ? rtt_sum_ms / (double)measured_recv : 0.0;
 
     printf("\n--- tickle reliable_latency statistics ---\n");
     printf("%lu sent, %lu received, %.0f%% loss\n", (unsigned long)transmitted, (unsigned long)received, loss_pct);
-    if (received > 0) {
-        printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", rtt_min_ms, avg, rtt_max_ms);
+    if (measured_recv > 0) {
+        printf("rtt min/avg/max = %.3f/%.3f/%.3f ms over %lu measured round trips\n", rtt_min_ms, avg, rtt_max_ms,
+               (unsigned long)measured_recv);
     }
     // The seam's own per-transport counts, for SHM_PLAN's S2 assertion (tx_udp must be 0 for a same-host pair once the
     // segment carries the shape under test). Read from the context rather than counted here, so one place counts.
@@ -273,6 +329,7 @@ int main(int argc, char** argv) {
            "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
            "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u retransmitted=%u gap_abandoned=%u "
            "doorbells_sent=%llu bells_rung=%llu sleeps=%lu "
+           "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f window=%s "
            "%s\n",
            (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms,
            BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq), BenchCpuFreq_max_mhz(&g_rtt_freq),
@@ -283,6 +340,10 @@ int main(int argc, char** argv) {
            // again before the second lands, and that is what these exist to show (S10, p4 against p3).
            (unsigned long long)node.segment_doorbells_sent, (unsigned long long)node.segment_bells_rung,
            (unsigned long)node.segment_sleep_generation,
+           // warmup= and cooldown= are the round trips each end SENT; measured= is the round trips whose RTT the
+           // statistics above are taken over. measured=0 is window=fail, never a latency.
+           warmup_sent, cooldown_sent, (unsigned long)measured_recv, (unsigned long)measured_sent, edge_interval_s,
+           measured_recv > 0 ? "ok" : "fail:no_measured_round_trip",
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

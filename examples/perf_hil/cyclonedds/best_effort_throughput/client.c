@@ -36,11 +36,15 @@
 #include <dds/dds.h>
 
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
+#include "../../tickle/common/BenchWindow.h"
 #include "../common.h"
 #include "Bench.h"
 
 static struct BenchStats g_bench_stats;
 static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
+// The measured window: -d seconds between a warm-up and a cool-down (BenchWindow.h).
+static struct BenchWindow g_window;
+static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -60,13 +64,18 @@ int main(int argc, char** argv) {
     bench_stats_begin(&g_bench_stats);
     double duration_s = 10.0;
     double interval_s = 0.0; // 0 = as fast as possible, matching perf_client.c's own default
+    BenchWindow_init(&g_window);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
+        } else {
+            (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
         }
     }
+    // -d is the measured window; the client sends for warm-up + -d + cool-down (BenchWindow.h).
+    double send_s = g_window.warmup_s + duration_s + g_window.cooldown_s;
 
     struct sigaction sa = {0};
     sa.sa_handler = handle_sigint;
@@ -94,12 +103,13 @@ int main(int argc, char** argv) {
     uint32_t seq = 0;
     uint64_t sent = 0;
     uint64_t start = now_ns();
-    uint64_t deadline = start + (uint64_t)(duration_s * 1e9);
+    uint64_t deadline = start + (uint64_t)(send_s * 1e9);
 
     while (!g_interrupted && now_ns() < deadline) {
         struct Bench msg = {.seq = ++seq, .send_ns = now_ns()};
         if (dds_write(writer, &msg) == DDS_RETCODE_OK) {
             sent++;
+            BenchWindow_add(&g_window, msg.send_ns);
         }
         if (interval_s > 0.0) {
             struct timespec pace = {.tv_sec = (time_t)interval_s,
@@ -112,8 +122,9 @@ int main(int argc, char** argv) {
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(struct Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f %s\n",
+           "send_mbps=%.3f %s %s\n",
            (unsigned long)sent, elapsed_s, mbps,
+           BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

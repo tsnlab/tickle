@@ -30,9 +30,13 @@
 
 #include "Bench.h"
 #include "BenchStats.h" // shared instrumentation - see its own header
+#include "BenchWindow.h"
 
 static struct BenchStats g_bench_stats;
 static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
+// The measured window: -d seconds between a warm-up and a cool-down (BenchWindow.h).
+static struct BenchWindow g_window;
+static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -66,6 +70,7 @@ static void send_one(struct tt_Context* node, uint64_t time, void* param) {
     tt_ret_t ret = tt_Publisher_publish(g_pub, (struct tt_Data*)&msg);
     if (ret == tt_RET_OK) {
         sent++;
+        BenchWindow_add(&g_window, msg.send_ns);
     }
     uint64_t next = interval_s > 0.0 ? time + (uint64_t)(interval_s * (double)tt_SECOND) : time;
     tt_Context_schedule(node, next, send_one, NULL);
@@ -75,13 +80,18 @@ int main(int argc, char** argv) {
     // Armed at the very top, before any middleware setup, so the counters cover discovery
     // too - identically for all three frameworks, which is what makes them comparable.
     bench_stats_begin(&g_bench_stats);
+    BenchWindow_init(&g_window);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = atof(argv[++i]);
+        } else {
+            (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
         }
     }
+    // -d is the measured window; the client sends for warm-up + -d + cool-down (BenchWindow.h).
+    double send_s = g_window.warmup_s + duration_s + g_window.cooldown_s;
 
     // real HIL link's own broadcast address - see best_effort_latency/client.c's own doc comment
     // for the real bug this avoids.
@@ -108,7 +118,7 @@ int main(int argc, char** argv) {
 
     g_start_ns = tt_get_ns();
     uint64_t send_start = g_start_ns + (uint64_t)(discovery_margin_s * (double)tt_SECOND);
-    g_deadline_ns = send_start + (uint64_t)(duration_s * (double)tt_SECOND);
+    g_deadline_ns = send_start + (uint64_t)(send_s * (double)tt_SECOND);
     tt_Context_schedule(&node, send_start, send_one, NULL);
 
     ret = tt_RET_OK;
@@ -116,7 +126,7 @@ int main(int argc, char** argv) {
         ret = tt_Context_poll(&node, -1);
     }
 
-    double elapsed_s = duration_s;
+    double elapsed_s = send_s; // the whole run, warm-up and cool-down included
     double mbps = elapsed_s > 0.0
                       ? ((double)sent * sizeof(struct BenchData) * bits_per_byte) / bits_per_megabit / elapsed_s
                       : 0.0;
@@ -150,8 +160,10 @@ int main(int argc, char** argv) {
     snprintf(bells, sizeof bells, "doorbells_sent=%llu bells_rung=%llu",
              (unsigned long long)node.segment_doorbells_sent, (unsigned long long)node.segment_bells_rung);
     printf("RESULT: framework=tickle scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f %s %s %s\n",
-           (unsigned long)sent, elapsed_s, mbps, rx_hint, bells,
+           "send_mbps=%.3f %s %s %s %s\n",
+           (unsigned long)sent, elapsed_s, mbps,
+           BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
+           rx_hint, bells,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

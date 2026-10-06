@@ -42,6 +42,12 @@ SCEN=${SCEN:-best_effort_throughput}
 SIZE=${SIZE:-p1}
 OFF_FLAG=${OFF_FLAG:--Dtt_SEGMENT_ENABLED=0}
 CLI_ARGS=${CLI_ARGS:-}   # forwarded from s6_transport_cells.sh so all three frameworks get the same client arguments
+# Warm-up and cool-down, to client and server alike (tickle/common/BenchWindow.h; s6_transport_cells.sh passes the
+# same value to all three frameworks). DUR is the measured window between them.
+case "$SCEN" in
+reliable_latency) WINDOW_ARGS=${WINDOW_ARGS:-"-W 4096 -C 4096 -I 0.001"} ;;
+*) WINDOW_ARGS=${WINDOW_ARGS:-"--warmup-s 2 --cooldown-s 2"} ;;
+esac
 # Build flags both arms carry, for measuring a cell at a geometry other than the compiled default - SHM_PLAN
 # 6e(a) does nothing at the default slot of one datagram, because a sample too large for a slot is exactly
 # what it refuses to send whole. Added to BOTH arms so the ON/OFF difference stays the segment itself.
@@ -56,6 +62,7 @@ say() { echo "$*" | tee -a "$OUT"; }
 note() { echo "$*" >>"$OUT"; echo "$*" >&2; }
 say "  BUILD_FLAGS='$BUILD_FLAGS'"
 say "=== S6 witness check $(date -Is) sha=$SHA scen=$SCEN size=$SIZE dur=$DUR reps=$REPS iface=lo host=$HOST ==="
+say "  WINDOW_ARGS='$WINDOW_ARGS'"
 
 srv_pid=""
 # INT before TERM, because the server only prints its RESULT line if it is allowed to finish. It installs a
@@ -100,7 +107,7 @@ run_one() { # run_one <arm>
     local name=$1 line
     kill_server
     srv_pid=$(sh_ "$HOST" "cd $SAVE/$name && rm -f /tmp/s6wit.pid
-(setsid sh -c 'echo \$\$ > /tmp/s6wit.pid; exec env BENCH_IFACE=lo $PIN_SERVER ./server -Q -d $((DUR + 40))' > /tmp/s6wit_server.log 2>&1 < /dev/null &); sleep 2; cat /tmp/s6wit.pid" </dev/null)
+(setsid sh -c 'echo \$\$ > /tmp/s6wit.pid; exec env BENCH_IFACE=lo $PIN_SERVER ./server -Q -d $((DUR + 40)) $WINDOW_ARGS' > /tmp/s6wit_server.log 2>&1 < /dev/null &); sleep 2; cat /tmp/s6wit.pid" </dev/null)
     sh_ "$HOST" "grep -q 'Node open' /tmp/s6wit_server.log" </dev/null || { say "    no server opened for arm=$name"; return 0; }
     # Kept in a file rather than piped straight into grep. Everything the client said that was not a RESULT
     # line used to go in the pipe's bin, so a diagnostic the publisher prints - and the publisher is the only
@@ -113,7 +120,7 @@ run_one() { # run_one <arm>
     # that is the state in which the server half was written the same afternoon with the same defect.
     # Two of the three consumers in this file have now been this shape. The output comes back whole.
     local clog
-    clog=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo $PIN_CLIENT ./client -Q -d $DUR $CLI_ARGS >/tmp/s6wit_client.log 2>&1; cat /tmp/s6wit_client.log" </dev/null)
+    clog=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo $PIN_CLIENT ./client -Q -d $DUR $CLI_ARGS $WINDOW_ARGS >/tmp/s6wit_client.log 2>&1; cat /tmp/s6wit_client.log" </dev/null)
     line=$(printf '%s\n' "$clog" | grep '^RESULT' | head -1)
     if [ -z "$line" ]; then
         say "    arm=$name: the client printed no RESULT line. What it did say:"
@@ -210,9 +217,19 @@ for arm in ("ON", "OFF"):
         print("  %d/%d reps DROPPED at the ring (shm_full_dropped=%s) - those are not throughput" %
               (len(dirty), len(rs), ", ".join("%.0f" % num(f, "shm_full_dropped") for f in dirty)))
     if clean:
-        mbps = [num(f, "send_mbps") for f in clean]
-        print("  send_mbps %.2f  (n=%d drop-free reps: %s)" %
-              (st.mean(mbps), len(clean), ", ".join("%.0f" % x for x in mbps)))
+        # The measured window's rate (2026-10-06): warm-up and cool-down excluded. send_mbps is the whole run's and
+        # is read only from a line that predates the window. A rep whose window is not ok gives no rate.
+        bad = [f for f in clean if f.get("window", "ok") != "ok"]
+        if bad:
+            print("  %d drop-free reps had window=%s - no rate taken from them" %
+                  (len(bad), ",".join(f.get("window", "?") for f in bad)))
+        clean = [f for f in clean if f.get("window", "ok") == "ok"]
+        mbps = [num(f, "win_send_mbps" if "win_send_mbps" in f else "send_mbps") for f in clean]
+        if mbps:
+            print("  win_send_mbps %.2f  (n=%d drop-free reps: %s)" %
+                  (st.mean(mbps), len(clean), ", ".join("%.0f" % x for x in mbps)))
+        else:
+            print("  win_send_mbps VOID: no drop-free rep measured a window")
         if len(clean) < 3:
             print("    NOTE: fewer than 3 drop-free reps, so this figure has no spread worth quoting.")
     else:

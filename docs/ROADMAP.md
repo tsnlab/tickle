@@ -10,9 +10,13 @@ The user's active list (2026-10-05), in order.
 0a. **Warm-up and cool-down for every framework** (the user, 2026-10-06): every cell discards an equal warm-up at
    the start and cool-down at the end for all frameworks before its statistics, so no figure is a start-up or
    teardown transient. Found by item 6: TickLE's same-host p4 latency (S10) was a first-lap figure (first-touch page
-   faults on the 11.6 MB reorder ring, ~16 us of its +20 us; `p4_reorder_firsttouch.sh`). Then re-measure S7-S10 and
-   the cross-host latency rows. Separately, in core: deliver in-order fragments from one hot buffer instead of the
-   reorder ring (the ring stays for out-of-order).
+   faults on the 11.6 MB reorder ring, ~16 us of its +20 us; `p4_reorder_firsttouch.sh`). **Implemented in the
+   benches, re-measurement pending:** every latency, best-effort and reliable throughput client and server of all
+   three frameworks takes the same window (`tickle/common/BenchWindow.h`, TESTING section 5 item 9);
+   `campaign_sweep.sh` and the S6 harnesses pass it to every framework and void a row whose `window=` is not ok.
+   Every published figure before it is whole-run. Next: re-measure S7-S10, the cross-host latency rows and the
+   campaign. Separately, in core: deliver in-order fragments from one hot buffer instead of the reorder ring (the
+   ring stays for out-of-order).
 0. **A fair testbed** (the user, 2026-10-05; ahead of everything below once rmw KEEP_ALL is closed): the published
    comparison must not rest on a setup tuned for TickLE. Found: the same-host cells (S1-S16, `s6_transport_cells.sh`,
    `s6_witness_check.sh`) pin each process to ONE core, which squeezes the multi-threaded DDS processes and suits

@@ -17,6 +17,7 @@
  * Brought up to the repository's C++ clang-tidy checks on 2026-09-25 (see harness_common.hpp); the
  * send loop, its pacing, its QoS, the teardown drain and the RESULT line are unchanged.
  */
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -38,7 +39,8 @@
 #include <fastrtps/types/TypesBase.h>
 
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
-#include "../../tickle/common/CpuPlace.h"   // shared with the TickLE harness - see its own header
+#include "../../tickle/common/BenchWindow.h"
+#include "../../tickle/common/CpuPlace.h" // shared with the TickLE harness - see its own header
 #include "../harness_common.hpp"
 #include "Bench.h"
 #include "BenchPubSubTypes.h"
@@ -53,6 +55,10 @@ namespace {
     constexpr time_t discovery_wait_s = 2;            // see the latency scenarios' own identical comment
     constexpr double ms_per_s = 1000.0;
     constexpr uint64_t cpu_place_period_ns = 100ULL * 1000ULL * 1000ULL; // 100ms
+
+    // The measured window: -d seconds between a warm-up and a cool-down (BenchWindow.h).
+    struct BenchWindow g_window;
+    std::array<char, BENCH_WINDOW_FIELDS_MAX> g_window_fields {};
 
     struct client_options {
         double duration_s = default_duration_s;
@@ -78,6 +84,7 @@ namespace {
 
     auto parse_options(int argc, char** argv) -> client_options {
         client_options opts;
+        BenchWindow_init(&g_window);
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "-K") == 0 && i + 1 < argc) {
                 opts.keep_last_depth = atoi(argv[++i]);
@@ -91,6 +98,8 @@ namespace {
                 opts.drain_s = atof(argv[++i]);
             } else if (strcmp(argv[i], "-N") == 0 && i + 1 < argc) {
                 opts.keepall_samples = static_cast<int32_t>(atoi(argv[++i]));
+            } else {
+                (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
             }
         }
         return opts;
@@ -145,6 +154,7 @@ namespace {
             BenchCpuPlace_sample(&cpu_place, harness::now_ns(), cpu_place_period_ns);
             if (writer->write(&msg)) {
                 result.sent++;
+                BenchWindow_add(&g_window, msg.send_ns());
             } else {
                 result.write_fail++;
             }
@@ -210,8 +220,9 @@ auto main(int argc, char** argv) -> int {
     struct BenchCpuPlace cpu_place;
     BenchCpuPlace_init(&cpu_place);
     const uint64_t start = harness::now_ns();
-    const send_result result =
-        send_until(writer, start + harness::seconds_to_ns(opts.duration_s), opts.interval_s, cpu_place);
+    // -d is the measured window; the client sends for warm-up + -d + cool-down (BenchWindow.h).
+    const double send_s = g_window.warmup_s + opts.duration_s + g_window.cooldown_s;
+    const send_result result = send_until(writer, start + harness::seconds_to_ns(send_s), opts.interval_s, cpu_place);
 
     const char* const drained = drain(writer, opts.drain_s);
 
@@ -221,11 +232,13 @@ auto main(int argc, char** argv) -> int {
     printf("RESULT: framework=fastdds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
            "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s drain_cap_s=%.1f cpu_main=%d "
            "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d keepall_samples=%d "
-           "transport_profile=%s %s\n",
+           "transport_profile=%s %s %s\n",
            static_cast<unsigned long>(result.sent), static_cast<unsigned long>(result.write_fail), elapsed_s, mbps,
            opts.max_blocking_ms, drained, opts.drain_s, BenchCpuPlace_main_cpu(&cpu_place),
            BenchCpuPlace_main_share(&cpu_place), cpu_place.migrations, opts.keep_last_depth > 0 ? 0 : 1,
            opts.keep_last_depth, static_cast<int>(opts.keepall_samples), harness::transport_profile(),
+           BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields.data(),
+                              g_window_fields.size()),
            harness::bench_fields(BENCH_ROLE_SENDER, result.sent));
 
     participant->delete_contained_entities();

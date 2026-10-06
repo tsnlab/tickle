@@ -16,6 +16,7 @@
  * Brought up to the repository's C++ clang-tidy checks on 2026-09-25 (see harness_common.hpp); the
  * receive loop, its loss accounting, its QoS and the RESULT line are unchanged.
  */
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +37,7 @@
 #include <fastdds/rtps/common/Time_t.h>
 
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
+#include "../../tickle/common/BenchWindow.h"
 #include "../harness_common.hpp"
 #include "Bench.h"
 #include "BenchPubSubTypes.h"
@@ -47,13 +49,22 @@ namespace {
     constexpr double default_safety_cap_s = 40.0;
     constexpr double safety_cap_buffer_s = 15.0;
 
+    // What arrived, windowed by the sender's own clock exactly as the client windows what it sent (BenchWindow.h).
+    struct BenchWindow g_window;
+    std::array<char, BENCH_WINDOW_FIELDS_MAX> g_window_fields {};
+
     auto parse_safety_cap(int argc, char** argv) -> double {
         double safety_cap_s = default_safety_cap_s;
+        BenchWindow_init(&g_window);
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
                 safety_cap_s = atof(argv[++i]);
+            } else {
+                (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
             }
         }
+        // The client sends for warm-up + -d + cool-down, so this side's backstop covers all three.
+        safety_cap_s += g_window.warmup_s + g_window.cooldown_s;
         // +15s buffer (2026-09-21, real bug found the hard way - see the identical fix on the TickLE
         // twin's own server.c for the full story): run_scenario.sh forwards the same -d to both
         // sides, but it means "the client's own send duration" there vs. "this side's own don't-hang-
@@ -74,6 +85,7 @@ namespace {
             while (reader->take_next_sample(&sample, &info) == ReturnCode_t::RETCODE_OK) {
                 if (info.valid_data) {
                     harness::count_sample(stats, sample.seq());
+                    BenchWindow_add(&g_window, sample.send_ns());
                 }
             }
         }
@@ -87,9 +99,12 @@ namespace {
         bench_stats_end(&harness::g_bench_stats);
 
         printf("RESULT: framework=fastdds scenario=best_effort_throughput role=server recv=%lu lost=%lu "
-               "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f %s transport_profile=%s\n",
+               "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f %s %s transport_profile=%s\n",
                static_cast<unsigned long>(stats.received), static_cast<unsigned long>(stats.lost), loss_pct, elapsed_s,
-               mbps, harness::bench_fields(BENCH_ROLE_RECEIVER, stats.received), harness::transport_profile());
+               mbps,
+               BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields.data(),
+                                  g_window_fields.size()),
+               harness::bench_fields(BENCH_ROLE_RECEIVER, stats.received), harness::transport_profile());
     }
 
 } // namespace

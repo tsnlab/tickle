@@ -25,10 +25,14 @@
 #include <dds/dds.h>
 
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
+#include "../../tickle/common/BenchWindow.h"
 #include "Bench.h"
 
 static struct BenchStats g_bench_stats;
 static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
+// What arrived, windowed by the sender's own clock exactly as the client windows what it sent (BenchWindow.h).
+static struct BenchWindow g_window;
+static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -59,6 +63,7 @@ int main(int argc, char** argv) {
     // the three frameworks by default; the campaign now passes all three the same number of samples,
     // and every RESULT line's keepall_samples= says which it was. The same letter in all three.
     int keepall_samples = 4000;
+    BenchWindow_init(&g_window);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-K") == 0 && i + 1 < argc) {
             keep_last_depth = atoi(argv[++i]);
@@ -66,8 +71,12 @@ int main(int argc, char** argv) {
             safety_cap_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-N") == 0 && i + 1 < argc) {
             keepall_samples = atoi(argv[++i]);
+        } else {
+            (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
         }
     }
+    // The client sends for warm-up + -d + cool-down, so this side's backstop covers all three.
+    safety_cap_s += g_window.warmup_s + g_window.cooldown_s;
     // +15s buffer - see best_effort_throughput/server.c's own doc comment (this same directory)
     // for the real bug this avoids.
     safety_cap_s += 15.0;
@@ -156,6 +165,7 @@ int main(int argc, char** argv) {
                     last_seq = seq;
                 }
                 received++;
+                BenchWindow_add(&g_window, batch[i].send_ns);
             }
             last_recv_ns = now_ns();
         }
@@ -169,9 +179,10 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
 
     printf("RESULT: framework=cyclonedds scenario=reliable_throughput role=server recv=%lu lost=%lu "
-           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f keep_all=%d keep_last_depth=%d keepall_samples=%d %s\n",
+           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f keep_all=%d keep_last_depth=%d keepall_samples=%d %s %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, elapsed_s, mbps, keep_last_depth > 0 ? 0 : 1,
            keep_last_depth, keepall_samples,
+           BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

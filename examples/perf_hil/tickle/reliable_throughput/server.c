@@ -41,9 +41,14 @@
 #define BENCH_FRAG_COUNT(node, field) 0UL
 #endif
 #include "BenchStats.h" // shared instrumentation - see its own header
+#include "BenchWindow.h"
 
 static struct BenchStats g_bench_stats;
 static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
+// What arrived, windowed by the sender's own clock exactly as the client windows what it sent (BenchWindow.h). Each
+// sample counts once, on its first arrival, into the bucket of the time it was first sent.
+static struct BenchWindow g_window;
+static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
 #include "../common/CpuFreq.h"
 #include "../common/CpuPlace.h"
 #include "../common/reliable_stats_print.h"
@@ -140,6 +145,7 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     }
     received_bitmap[idx / 8] |= (uint8_t)(1U << (idx % 8));
     received++;
+    BenchWindow_add(&g_window, data->send_ns);
     g_last_rx_ns = tt_get_ns();
     if (first_seq_seen == 0 || data->seq < first_seq_seen) {
         first_seq_seen = data->seq;
@@ -230,6 +236,8 @@ static void parse_args(int argc, char** argv, bool* durable, double* safety_cap_
             window_samples = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "-N") == 0 && i + 1 < argc) {
             keepall_samples = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else {
+            (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
         }
     }
     // -N without -w: the window KEEP_ALL's N samples need (keepall_samples' own comment above).
@@ -246,7 +254,10 @@ int main(int argc, char** argv) {
     bench_stats_begin(&g_bench_stats);
     bool durable = false; // -D, see sub.durable below
     double safety_cap_s = default_safety_cap_s;
+    BenchWindow_init(&g_window);
     parse_args(argc, argv, &durable, &safety_cap_s);
+    // The client sends for warm-up + -d + cool-down, so this side's backstop covers all three.
+    safety_cap_s += g_window.warmup_s + g_window.cooldown_s;
     // +15s buffer - see deadline_miss_detection/server.c's own doc comment for the real bug this
     // avoids (run_scenario.sh forwards the same -d to both sides, but it means "this side's own
     // send duration" on the client vs. "don't hang forever" here - taken verbatim, this side could
@@ -402,7 +413,7 @@ int main(int argc, char** argv) {
            "frag_duplicate=%lu "
            "cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d cpu_main_share=%.2f "
            "cpu_migrations=%u gap_abandoned=%u gap_evicted=%u retry_interval_cfg_ns=%llu recovery_srtt_ns=%u "
-           "recovery_rttvar_ns=%u rx_batch=%d rx_batch_calls=%llu rx_batch_datagrams=%llu rx_batch_full=%llu %s\n",
+           "recovery_rttvar_ns=%u rx_batch=%d rx_batch_calls=%llu rx_batch_datagrams=%llu rx_batch_full=%llu %s %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, (unsigned long)post_match_lost, post_match_loss_pct,
            prematch_window, first_seq_seen, window_samples > 0 ? window_samples : (uint32_t)tt_RELIABLE_BITMAP_BITS,
            keepall_samples, (unsigned)sub.reorder_slots, BENCH_FRAG_SLOTS, BENCH_FRAG_COUNT(node, frag_reassembled),
@@ -414,6 +425,7 @@ int main(int argc, char** argv) {
            first_writer->recovery_srtt_ns, first_writer->recovery_rttvar_ns, (int)tt_RX_BATCH,
            (unsigned long long)node.hal.rx_batch_calls, (unsigned long long)node.hal.rx_batch_datagrams,
            (unsigned long long)node.hal.rx_batch_full,
+           BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
     print_reliable_stats("server");

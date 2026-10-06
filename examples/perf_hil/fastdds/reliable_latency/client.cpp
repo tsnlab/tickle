@@ -45,6 +45,7 @@
 #include <fastdds/rtps/common/Time_t.h>
 
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
+#include "../../tickle/common/BenchWindow.h"
 #include "../../tickle/common/CpuFreq.h"
 #include "../../tickle/common/RttQuantiles.h"
 #include "../harness_common.hpp"
@@ -70,9 +71,15 @@ namespace {
     struct BenchCpuFreq g_rtt_freq;
     struct BenchRtt g_rtt;
 
+    // The whole run's counts (transmitted, received) and the measured window's (BenchWindow.h): only a measured round
+    // trip enters the RTT statistics.
     struct rtt_stats {
         uint64_t transmitted = 0;
         uint64_t received = 0;
+        uint64_t measured_sent = 0;
+        uint64_t measured_recv = 0;
+        uint32_t warmup_sent = 0;
+        uint32_t cooldown_sent = 0;
         double min_ms = -1.0;
         double max_ms = 0.0;
         double sum_ms = 0.0;
@@ -81,7 +88,10 @@ namespace {
 
     struct client_options {
         double interval_s = default_interval_s;
-        double duration_s = default_duration_s;
+        double duration_s = default_duration_s; // the measured window, between warm-up and cool-down
+        uint32_t warmup_rtts = BENCH_WARMUP_ROUND_TRIPS;
+        uint32_t cooldown_rtts = BENCH_COOLDOWN_ROUND_TRIPS;
+        double edge_interval_s = BENCH_EDGE_INTERVAL_S;
     };
 
     auto parse_options(int argc, char** argv) -> client_options {
@@ -91,13 +101,23 @@ namespace {
                 opts.interval_s = atof(argv[++i]);
             } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
                 opts.duration_s = atof(argv[++i]);
+            } else if (strcmp(argv[i], "-W") == 0 && i + 1 < argc) {
+                opts.warmup_rtts = static_cast<uint32_t>(strtoul(argv[++i], nullptr, 10));
+            } else if (strcmp(argv[i], "-C") == 0 && i + 1 < argc) {
+                opts.cooldown_rtts = static_cast<uint32_t>(strtoul(argv[++i], nullptr, 10));
+            } else if (strcmp(argv[i], "-I") == 0 && i + 1 < argc) {
+                opts.edge_interval_s = atof(argv[++i]);
             }
         }
         return opts;
     }
 
-    void record_rtt(rtt_stats& stats, double rtt_ms) {
+    void record_rtt(rtt_stats& stats, double rtt_ms, bool measured) {
         stats.received++;
+        if (!measured) {
+            return; // a warm-up or cool-down round trip: counted in recv=, kept out of every statistic
+        }
+        stats.measured_recv++;
         if (stats.min_ms < 0.0 || rtt_ms < stats.min_ms) {
             stats.min_ms = rtt_ms;
         }
@@ -129,12 +149,15 @@ namespace {
         return have_fresh;
     }
 
-    void ping_once(DataWriter* writer, DataReader* reader, uint32_t seq, rtt_stats& stats) {
+    void ping_once(DataWriter* writer, DataReader* reader, uint32_t seq, bool measured, rtt_stats& stats) {
         Bench req;
         req.seq(seq);
         req.send_ns(harness::now_ns());
         writer->write(&req);
         stats.transmitted++;
+        if (measured) {
+            stats.measured_sent++;
+        }
 
         const eprosima::fastrtps::Duration_t timeout {0, response_wait_ns};
         if (!reader->wait_for_unread_message(timeout)) {
@@ -142,23 +165,46 @@ namespace {
         }
         Bench resp;
         if (take_newest(reader, resp) && resp.seq() == req.seq()) {
-            record_rtt(stats, static_cast<double>(harness::now_ns() - resp.send_ns()) / harness::ns_per_ms);
+            record_rtt(stats, static_cast<double>(harness::now_ns() - resp.send_ns()) / harness::ns_per_ms, measured);
         }
     }
 
-    void report(const rtt_stats& stats) {
+    // Warm-up, measured window, cool-down (BenchWindow.h), paced exactly as the TickLE and CycloneDDS clients pace
+    // them: the edge interval between edge round trips, the measured -i before every measured ping including the
+    // first, and before the first cool-down ping.
+    void run_phases(DataWriter* writer, DataReader* reader, const client_options& opts, rtt_stats& stats) {
+        uint32_t seq = 0;
+        while (!harness::interrupted() && stats.warmup_sent < opts.warmup_rtts) {
+            ping_once(writer, reader, ++seq, false, stats);
+            stats.warmup_sent++;
+            harness::sleep_seconds(stats.warmup_sent < opts.warmup_rtts ? opts.edge_interval_s : opts.interval_s);
+        }
+        const uint64_t deadline = harness::now_ns() + harness::seconds_to_ns(opts.duration_s);
+        while (!harness::interrupted() && harness::now_ns() < deadline) {
+            ping_once(writer, reader, ++seq, true, stats);
+            harness::sleep_seconds(opts.interval_s);
+        }
+        while (!harness::interrupted() && stats.cooldown_sent < opts.cooldown_rtts) {
+            ping_once(writer, reader, ++seq, false, stats);
+            stats.cooldown_sent++;
+            harness::sleep_seconds(opts.edge_interval_s);
+        }
+    }
+
+    void report(const rtt_stats& stats, const client_options& opts) {
         const uint64_t lost = stats.transmitted - stats.received;
         const double loss_pct =
             stats.transmitted > 0
                 ? (harness::percent * static_cast<double>(lost) / static_cast<double>(stats.transmitted))
                 : 0.0;
-        const double avg = stats.received > 0 ? stats.sum_ms / static_cast<double>(stats.received) : 0.0;
+        const double avg = stats.measured_recv > 0 ? stats.sum_ms / static_cast<double>(stats.measured_recv) : 0.0;
 
         printf("\n--- fastdds reliable_latency statistics ---\n");
         printf("%lu sent, %lu received, %.0f%% loss\n", static_cast<unsigned long>(stats.transmitted),
                static_cast<unsigned long>(stats.received), loss_pct);
-        if (stats.received > 0) {
-            printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", stats.min_ms, avg, stats.max_ms);
+        if (stats.measured_recv > 0) {
+            printf("rtt min/avg/max = %.3f/%.3f/%.3f ms over %lu measured round trips\n", stats.min_ms, avg,
+                   stats.max_ms, static_cast<unsigned long>(stats.measured_recv));
         }
         bench_stats_end(&harness::g_bench_stats);
         // transport_profile= is the arm's identity, and until 2026-10-02 only the throughput client printed it.
@@ -168,12 +214,17 @@ namespace {
         // same way.
         printf("RESULT: framework=fastdds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.0f "
                "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
-               "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u transport_profile=%s %s\n",
+               "cpu_mhz_at_rtt_max=%.1f rtt_p50_ms=%.3f rtt_p99_ms=%.3f rtt_kept=%u "
+               "warmup=%u cooldown=%u measured=%lu measured_sent=%lu edge_interval_s=%.4f window=%s "
+               "transport_profile=%s %s\n",
                static_cast<unsigned long>(stats.transmitted), static_cast<unsigned long>(stats.received), loss_pct,
                stats.min_ms, avg, stats.max_ms, BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq),
                BenchCpuFreq_max_mhz(&g_rtt_freq), stats.cpu_mhz_at_max, BenchRtt_quantile(&g_rtt, BENCH_RTT_P50),
-               BenchRtt_quantile(&g_rtt, BENCH_RTT_P99), static_cast<unsigned>(g_rtt.count),
-               harness::transport_profile(), harness::bench_fields(BENCH_ROLE_SENDER, stats.transmitted));
+               BenchRtt_quantile(&g_rtt, BENCH_RTT_P99), static_cast<unsigned>(g_rtt.count), stats.warmup_sent,
+               stats.cooldown_sent, static_cast<unsigned long>(stats.measured_recv),
+               static_cast<unsigned long>(stats.measured_sent), opts.edge_interval_s,
+               stats.measured_recv > 0 ? "ok" : "fail:no_measured_round_trip", harness::transport_profile(),
+               harness::bench_fields(BENCH_ROLE_SENDER, stats.transmitted));
     }
 
 } // namespace
@@ -220,15 +271,9 @@ auto main(int argc, char** argv) -> int {
     nanosleep(&discovery_wait, nullptr);
 
     rtt_stats stats;
-    uint32_t seq = 0;
-    const uint64_t deadline = harness::now_ns() + harness::seconds_to_ns(opts.duration_s);
-    const uint64_t interval_ns = harness::seconds_to_ns(opts.interval_s);
-    while (!harness::interrupted() && harness::now_ns() < deadline) {
-        ping_once(writer, reader, ++seq, stats);
-        harness::sleep_ns(interval_ns);
-    }
+    run_phases(writer, reader, opts, stats);
 
-    report(stats);
+    report(stats, opts);
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

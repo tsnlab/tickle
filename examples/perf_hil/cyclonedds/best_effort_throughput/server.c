@@ -38,10 +38,14 @@
 #include <dds/dds.h>
 
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
+#include "../../tickle/common/BenchWindow.h"
 #include "Bench.h"
 
 static struct BenchStats g_bench_stats;
 static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
+// What arrived, windowed by the sender's own clock exactly as the client windows what it sent (BenchWindow.h).
+static struct BenchWindow g_window;
+static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -60,11 +64,16 @@ int main(int argc, char** argv) {
     // too - identically for all three frameworks, which is what makes them comparable.
     bench_stats_begin(&g_bench_stats);
     double safety_cap_s = 30.0;
+    BenchWindow_init(&g_window);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
+        } else {
+            (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
         }
     }
+    // The client sends for warm-up + -d + cool-down, so this side's backstop covers all three.
+    safety_cap_s += g_window.warmup_s + g_window.cooldown_s;
     // +15s buffer (2026-09-21, real bug found the hard way - see the identical fix on the TickLE
     // twin's own server.c for the full story): run_scenario.sh forwards the same -d to both
     // sides, but it means "the client's own send duration" there vs. "this side's own don't-hang-
@@ -125,6 +134,7 @@ int main(int argc, char** argv) {
             }
             last_recv_ns = now_ns();
             received++;
+            BenchWindow_add(&g_window, sample.send_ns);
         }
     }
 
@@ -136,8 +146,9 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
 
     printf("RESULT: framework=cyclonedds scenario=best_effort_throughput role=server recv=%lu lost=%lu "
-           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f %s\n",
+           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f %s %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, elapsed_s, mbps,
+           BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

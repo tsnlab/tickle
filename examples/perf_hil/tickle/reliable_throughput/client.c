@@ -39,9 +39,13 @@
 
 #include "Bench.h"
 #include "BenchStats.h" // shared instrumentation - see its own header
+#include "BenchWindow.h"
 
 static struct BenchStats g_bench_stats;
 static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
+// The measured window: -d seconds between a warm-up and a cool-down (BenchWindow.h).
+static struct BenchWindow g_window;
+static char g_window_fields[BENCH_WINDOW_FIELDS_MAX];
 #include "../common/CpuFreq.h"
 #include "../common/CpuPlace.h"
 #include "../common/reliable_stats_print.h"
@@ -284,6 +288,7 @@ static void send_one(struct tt_Context* node, uint64_t time, void* param) {
     tt_ret_t ret = tt_Publisher_publish(g_pub, (struct tt_Data*)&pending_msg);
     if (ret == tt_RET_OK) {
         sent++;
+        BenchWindow_add(&g_window, pending_msg.send_ns);
         have_pending = false;
     } else if (ret == tt_RET_WOULD_BLOCK && tt_get_ns() - pending_since_ns < max_blocking_ns_value()) {
         // Still inside the budget: come back to this same sample through the scheduler, which is
@@ -445,7 +450,8 @@ static void parse_args(int argc, char** argv) {
             keep_all = true;
         } else if (strcmp(argv[i], "-B") == 0 && i + 1 < argc) {
             max_blocking_ms = atof(argv[++i]);
-        } else if (i + 1 < argc && parse_keep_all_flag(argv[i], argv[i + 1])) {
+        } else if (!BenchWindow_parse_arg(&g_window, argc, argv, &i) && i + 1 < argc &&
+                   parse_keep_all_flag(argv[i], argv[i + 1])) {
             i++;
         }
     }
@@ -539,7 +545,10 @@ int main(int argc, char** argv) {
     // Armed at the very top, before any middleware setup, so the counters cover discovery
     // too - identically for all three frameworks, which is what makes them comparable.
     bench_stats_begin(&g_bench_stats);
+    BenchWindow_init(&g_window);
     parse_args(argc, argv);
+    // -d is the measured window; the client sends for warm-up + -d + cool-down (BenchWindow.h).
+    const double send_s = g_window.warmup_s + duration_s + g_window.cooldown_s;
     if (!resolve_reliable_depth()) {
         return 1;
     }
@@ -637,7 +646,7 @@ int main(int argc, char** argv) {
     BenchCpuFreq_init(&g_cpu_freq);
     BenchCpuPlace_init(&g_cpu_place);
     uint64_t send_start = tt_get_ns();
-    g_deadline_ns = send_start + (uint64_t)(duration_s * (double)tt_SECOND);
+    g_deadline_ns = send_start + (uint64_t)(send_s * (double)tt_SECOND);
     tt_Context_schedule(&node, send_start, send_one, NULL);
 
     ret = tt_RET_OK;
@@ -660,9 +669,9 @@ int main(int argc, char** argv) {
         g_writable = false; // nothing waits for room any more; the drain asks for acknowledgements itself
     }
 
-    double mbps = duration_s > 0.0
-                      ? ((double)sent * sizeof(struct BenchData) * bits_per_byte) / bits_per_megabit / duration_s
-                      : 0.0;
+    // The whole run, warm-up and cool-down included; win_send_mbps= is the measured window's.
+    double mbps =
+        send_s > 0.0 ? ((double)sent * sizeof(struct BenchData) * bits_per_byte) / bits_per_megabit / send_s : 0.0;
     // write_fail= and max_blocking_ms= are spelled exactly as the cyclonedds/fastdds harnesses
     // spell them, so one parser reads all three frameworks' RESULT lines (Phase 3 step 4).
     // retransmitted= is TickLE's own and is not compared across frameworks: it is the core counter
@@ -687,8 +696,8 @@ int main(int argc, char** argv) {
            "throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u drained=%s drain_cap_s=%.1f peer_acks_end=%u "
            "peer_acks_min=%u cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d "
            "cpu_main_share=%.2f cpu_migrations=%u retransmitted=%u arena_bytes=%u keepall_samples=%u "
-           "keepall_bound_samples=%u keep_all_wait=%s keep_all_retries=%llu %s\n",
-           (unsigned long)sent, (unsigned long)write_fail, duration_s, mbps, max_blocking_ms, keep_all ? 1 : 0,
+           "keepall_bound_samples=%u keep_all_wait=%s keep_all_retries=%llu %s %s\n",
+           (unsigned long)sent, (unsigned long)write_fail, send_s, mbps, max_blocking_ms, keep_all ? 1 : 0,
            durable ? 1 : 0, reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct,
            g_drain_fully_acked ? "acked" : "timeout", drain_s, count_peer_acks(&pub),
            g_peer_acks_min == UINT32_MAX ? 0 : g_peer_acks_min, BenchCpuFreq_mean_mhz(&g_cpu_freq),
@@ -696,6 +705,7 @@ int main(int argc, char** argv) {
            BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place), g_cpu_place.migrations,
            pub.retransmitted, pub_cache.arena_size, keepall_samples, keepall_bound_samples(&pub, &pub_cache),
            BENCH_KEEP_ALL_POLL ? "poll" : "event", (unsigned long long)keep_all_retries,
+           BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
     print_reliable_stats("client");

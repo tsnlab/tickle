@@ -16,6 +16,7 @@
  * Brought up to the repository's C++ clang-tidy checks on 2026-09-25 (see harness_common.hpp); the
  * receive loop, its lifetime rule, its loss accounting, its QoS and the RESULT line are unchanged.
  */
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +37,7 @@
 #include <fastdds/rtps/common/Time_t.h>
 
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
+#include "../../tickle/common/BenchWindow.h"
 #include "../harness_common.hpp"
 #include "Bench.h"
 #include "BenchPubSubTypes.h"
@@ -48,6 +50,10 @@ namespace {
     constexpr double safety_cap_buffer_s = 15.0;
     constexpr double idle_cap_s = 15.0;
     constexpr int32_t default_keepall_samples = 4000; // resource_limits - matches client.cpp, and -N
+
+    // What arrived, windowed by the sender's own clock exactly as the client windows what it sent (BenchWindow.h).
+    struct BenchWindow g_window;
+    std::array<char, BENCH_WINDOW_FIELDS_MAX> g_window_fields {};
 
     struct server_options {
         double safety_cap_s = default_safety_cap_s;
@@ -67,6 +73,7 @@ namespace {
 
     auto parse_options(int argc, char** argv) -> server_options {
         server_options opts;
+        BenchWindow_init(&g_window);
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "-K") == 0 && i + 1 < argc) {
                 opts.keep_last_depth = atoi(argv[++i]);
@@ -74,8 +81,12 @@ namespace {
                 opts.safety_cap_s = atof(argv[++i]);
             } else if (strcmp(argv[i], "-N") == 0 && i + 1 < argc) {
                 opts.keepall_samples = static_cast<int32_t>(atoi(argv[++i]));
+            } else {
+                (void)BenchWindow_parse_arg(&g_window, argc, argv, &i);
             }
         }
+        // The client sends for warm-up + -d + cool-down, so this side's backstop covers all three.
+        opts.safety_cap_s += g_window.warmup_s + g_window.cooldown_s;
         // +15s buffer - see best_effort_throughput/server.cpp's own doc comment (this same directory)
         // for the real bug this avoids.
         opts.safety_cap_s += safety_cap_buffer_s;
@@ -123,6 +134,7 @@ namespace {
             while (reader->take_next_sample(&sample, &info) == ReturnCode_t::RETCODE_OK) {
                 if (info.valid_data) {
                     harness::count_sample(stats, sample.seq());
+                    BenchWindow_add(&g_window, sample.send_ns());
                 }
             }
         }
@@ -168,10 +180,13 @@ auto main(int argc, char** argv) -> int {
 
     printf("RESULT: framework=fastdds scenario=reliable_throughput role=server recv=%lu lost=%lu "
            "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f keep_all=%d keep_last_depth=%d keepall_samples=%d "
-           "transport_profile=%s %s\n",
+           "transport_profile=%s %s %s\n",
            static_cast<unsigned long>(stats.received), static_cast<unsigned long>(stats.lost), loss_pct, elapsed_s,
            mbps, opts.keep_last_depth > 0 ? 0 : 1, opts.keep_last_depth, static_cast<int>(opts.keepall_samples),
-           harness::transport_profile(), harness::bench_fields(BENCH_ROLE_RECEIVER, stats.received));
+           harness::transport_profile(),
+           BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields.data(),
+                              g_window_fields.size()),
+           harness::bench_fields(BENCH_ROLE_RECEIVER, stats.received));
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);
