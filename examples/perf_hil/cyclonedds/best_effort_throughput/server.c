@@ -129,8 +129,14 @@ int main(int argc, char** argv) {
         if (rc <= 0) {
             continue;
         }
-        dds_return_t n = dds_take(reader, samples, infos, 1, 1);
-        if (n > 0 && infos[0].valid_data) {
+        // Everything waiting is taken per wake (2026-10-06), as the FastDDS bench's take_next_sample() loop does: this
+        // took one sample per waitset wake, so the reader fell behind its own history - a defect of our bench code,
+        // not of CycloneDDS (TESTING.md section 5).
+        dds_return_t n = 0;
+        while ((n = dds_take(reader, samples, infos, 1, 1)) > 0) {
+            if (!infos[0].valid_data) {
+                continue;
+            }
             if (first) {
                 first = false;
                 first_recv_ns = now_ns();

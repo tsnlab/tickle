@@ -200,7 +200,13 @@ a single thread that lands there runs slower - but nobody runs software pinned, 
 table for it.
 
 1. **A result is only worth publishing if a vendor cannot dismiss it.** A lead that comes from the test setup is not
-   a lead. When a setting is in doubt, choose the one that favours the other side.
+   a lead. When a setting is in doubt, first take the DDS default (the products' shipped default outranks every
+   other choice, the user, 2026-10-06), and only where there is none, the one that favours the other side. So the
+   BEST_EFFORT cells give every framework KEEP_LAST 1 explicitly (`-K 1`), the DDS default, rather than a deeper
+   history; TickLE's BEST_EFFORT subscriber keeps no history at all and hands each sample to its callback as it
+   arrives, which is what KEEP_LAST 1 with a reader that takes at once does. The bench code we write is held to the
+   same rule: a vendor's bench must use its API the way its documentation does (CycloneDDS's BEST_EFFORT bench took
+   one sample per wake until 2026-10-06; it now takes everything waiting, as the Fast DDS bench does).
 2. **Run software the way its users run it.** The OS scheduler places threads, kernel settings are the
    distribution's, every product keeps its shipped defaults for everything that is not a QoS policy. Nothing is
    pinned, tuned or prepared for the measurement outside the run (item 9's warm-up is part of every run, identical
