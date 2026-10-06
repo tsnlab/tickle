@@ -186,6 +186,22 @@ struct tt_hal {
     // tt_hal that was only zeroed - test_poll_signal.c builds one that way - does not poll standard input, which is
     // what a plain fd field of 0 would be. In tt_receive()'s ppoll set always, as fd - 1: ppoll ignores -1.
     int bell_fd_plus1;
+    // tt_receive()'s wait set kept in the kernel (epoll), stored PLUS ONE for the same reason as bell_fd_plus1: 0 means
+    // none, and tt_receive() then builds a ppoll() set per call as it always did. ppoll() registers on and then leaves
+    // the wait queue of every descriptor in its set on every call - four of them with the segment - which is work per
+    // sleep for a set that never changes; epoll registers each once (hal_linux.c, "The wait set").
+    int epoll_fd_plus1;
+#if tt_SEGMENT_ENABLED
+    // The bell in that set is edge-triggered, so a ring needs no read() to stop it being reported: a pipe reports
+    // every write to an epoll that watches it, empty or not, which tt_segment_bell_create() checks on the running
+    // kernel before relying on it (bell_edge_works()). The bytes rings leave behind are read only when they could
+    // otherwise fill the pipe: every bell_drain_every sleep generations (struct tt_Context.segment_sleep_generation),
+    // derived from the pipe's capacity and the most writers that can ring one generation - not a tuned interval.
+    // 0: the kernel failed the check, or there is no epoll, and every ring is read as it always was.
+    uint32_t bell_drain_every;
+    uint32_t bell_drained_at; // the sleep generation at the last read of the bell
+    uint64_t bell_drains;     // reads of the bell, for the test that a ring costs none (bell_wake_check.c)
+#endif
     // Which socket gets first refusal on the next read, alternating. Without it, preferring one
     // socket whenever both are ready is not merely a delay: under a sustained stream on the
     // preferred socket the other is never read at all. That matters most exactly where it is

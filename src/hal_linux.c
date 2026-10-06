@@ -32,6 +32,7 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -499,12 +500,72 @@ static bool uring_setup(struct tt_Context* node);
 static void uring_close(struct tt_Context* node);
 #endif
 
+// The wait set (ROADMAP "Now" 4, 2026-10-06). A same-host reader at a low rate sleeps and is woken once per sample,
+// and ppoll() made every one of those sleeps register on, and then leave, the wait queue of each descriptor in its set
+// - both sockets, the wake eventfd and the bell - and ask each for its state: perf on the PC put that machinery at
+// about a third of a reader's ppoll() outside the sleep itself. The set never changes between sleeps, so it is kept in
+// the kernel, registered once, and a sleep is one epoll_pwait2(). Sockets and the eventfd stay level-triggered, so
+// what tt_receive() reports is exactly what ppoll() reported; the bell is edge-triggered (tt_segment_bell_create()).
+//
+// epoll_pwait2() because it is the only epoll wait that takes a timespec: epoll_wait()'s millisecond int would round
+// every sub-millisecond wait up, the defect ppoll() was chosen to avoid. It is Linux 5.11 and glibc 2.35; on anything
+// older, or when the kernel refuses, there is no set and tt_receive() uses ppoll() as before.
+#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 35) // NOLINT(misc-include-cleaner) - <features.h>, via every libc header
+#define TT_HAL_EPOLL 1
+#else
+#define TT_HAL_EPOLL 0
+#endif
+
+// What a wait reports, one bit per member of the set - in epoll_event.data.u32 as registered, and built from revents
+// on the ppoll() path, so the code after the wait reads one thing either way.
+#define RX_READY_WELL_KNOWN 1U
+#define RX_READY_WAKE 2U
+#define RX_READY_DATA 4U
+#define RX_READY_BELL 8U
+
+#if TT_HAL_EPOLL
+static bool wait_set_add(int epoll_fd, int member, uint32_t events, uint32_t tag) {
+    struct epoll_event event = {.events = events, .data = {.u32 = tag}};
+    return epoll_ctl(epoll_fd, EPOLL_CTL_ADD, member, &event) == 0;
+}
+#endif
+
+static void wait_set_setup(struct tt_Context* node) {
+#if TT_HAL_EPOLL
+    int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (epoll_fd < 0) {
+        TT_LOG_WARNING("epoll unavailable (%s) - every wait will build its poll set again", strerror(errno));
+        return;
+    }
+    struct epoll_event probe;
+    const struct timespec now = {0, 0};
+    // The zero-timeout wait first: ENOSYS from a kernel older than 5.11 is refused here, not on the first real wait.
+    if (epoll_pwait2(epoll_fd, &probe, 1, &now, NULL) < 0 ||
+        !wait_set_add(epoll_fd, node->hal.sock, EPOLLIN, RX_READY_WELL_KNOWN) ||
+        !wait_set_add(epoll_fd, node->hal.wake_fd, EPOLLIN, RX_READY_WAKE) ||
+        !wait_set_add(epoll_fd, node->hal.data_sock, EPOLLIN, RX_READY_DATA)) {
+        TT_LOG_WARNING("epoll_pwait2 unavailable (%s) - every wait will build its poll set again", strerror(errno));
+        (void)close(epoll_fd);
+        return;
+    }
+    node->hal.epoll_fd_plus1 = epoll_fd + 1;
+#else
+    (void)node;
+#endif
+}
+
 tt_ret_t tt_bind(struct tt_Context* node) {
     // Set before anything below can fail into tt_close(): -1 says "nothing to close here yet",
     // the same convention node->hal.sock itself relies on implicitly (every failure that reaches
     // tt_close() below happens after sock was already created successfully).
     node->hal.wake_fd = -1;
-    node->hal.bell_fd_plus1 = 0; // no segment yet, so no doorbell (tt_segment_bell_create())
+    node->hal.bell_fd_plus1 = 0;  // no segment yet, so no doorbell (tt_segment_bell_create())
+    node->hal.epoll_fd_plus1 = 0; // none yet: tt_close() after a failed bind has nothing to close
+#if tt_SEGMENT_ENABLED
+    node->hal.bell_drain_every = 0;
+    node->hal.bell_drained_at = 0;
+    node->hal.bell_drains = 0;
+#endif
     node->hal.data_sock = -1;
 #if tt_HAL_IO_URING
     node->hal.uring_fd = -1; // tt_close() after a failed bind must not close what was never opened
@@ -637,6 +698,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
+    wait_set_setup(node); // without it tt_receive() builds a ppoll() set per call, as it always did
 
 #if tt_HAL_IO_URING
     if (!uring_setup(node) && tt_HAL_RX_HINT == tt_RX_HINT_URING) {
@@ -670,6 +732,10 @@ void tt_close(struct tt_Context* node) {
         node->hal.bell_fd_plus1 = 0;
     }
 #endif
+    if (node->hal.epoll_fd_plus1 > 0) {
+        (void)close(node->hal.epoll_fd_plus1 - 1);
+        node->hal.epoll_fd_plus1 = 0;
+    }
     if (node->hal.wake_fd >= 0 && close(node->hal.wake_fd) < 0) {
         TT_LOG_ERROR("Cannot close wake eventfd: %s", strerror(errno));
     }
@@ -822,7 +888,6 @@ int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* data
 // tt_receive()'s wait set: the two sockets, the wake eventfd, and - with the segment - its doorbell FIFO.
 #if tt_SEGMENT_ENABLED
 #define RX_WAIT_FDS 4
-#define RX_WAIT_BELL 3
 #else
 #define RX_WAIT_FDS 3
 #endif
@@ -932,8 +997,58 @@ static int32_t rx_fill(struct tt_Context* node, int socket_fd, void* buf, size_t
 }
 
 #if tt_SEGMENT_ENABLED
-static void bell_drain(struct tt_Context* node);
+static void bell_rung(struct tt_Context* node);
 #endif
+
+// One wait on tt_receive()'s set: ppoll()'s return convention (ready count, 0 on timeout, < 0 with errno), and in
+// *ready the RX_READY_* bits of what is readable. From the kept set when there is one (wait_set_setup()), otherwise
+// from a ppoll() set built for this call, as every wait was until 2026-10-06.
+static int rx_wait(struct tt_Context* node, const struct timespec* timeout_ts, uint32_t* ready) {
+    *ready = 0;
+#if TT_HAL_EPOLL
+    if (node->hal.epoll_fd_plus1 > 0) {
+        struct epoll_event events[RX_WAIT_FDS];
+        int count = epoll_pwait2(node->hal.epoll_fd_plus1 - 1, events, RX_WAIT_FDS, timeout_ts, NULL);
+        for (int i = 0; i < count; i++) {
+            // A descriptor reported only for an error or a hangup counts towards the return value, as it did with
+            // ppoll(), and is read like one: the read says what the error was.
+            if ((events[i].events & EPOLLIN) != 0) {
+                *ready |= events[i].data.u32;
+            }
+        }
+        return count;
+    }
+#endif
+    // struct pollfd/POLLIN/ppoll() live in a glibc-private header; <poll.h> (included above)
+    // is the correct public header.
+    // NOLINTNEXTLINE(misc-include-cleaner)
+    struct pollfd pfd[RX_WAIT_FDS] = {
+        {.fd = node->hal.sock, .events = POLLIN, .revents = 0},      // NOLINT(misc-include-cleaner)
+        {.fd = node->hal.wake_fd, .events = POLLIN, .revents = 0},   // NOLINT(misc-include-cleaner)
+        {.fd = node->hal.data_sock, .events = POLLIN, .revents = 0}, // NOLINT(misc-include-cleaner)
+#if tt_SEGMENT_ENABLED
+        {.fd = node->hal.bell_fd_plus1 - 1, .events = POLLIN, .revents = 0}, // NOLINT(misc-include-cleaner) -1: ignored
+#endif
+    };
+    // sigmask=NULL: no signal-mask swap needed, only ppoll()'s own real (not
+    // millisecond-rounded) timeout resolution is what's wanted here.
+    // NOLINTNEXTLINE(misc-include-cleaner)
+    int count = ppoll(pfd, RX_WAIT_FDS, timeout_ts, NULL);
+    static const uint32_t tags[RX_WAIT_FDS] = {
+        RX_READY_WELL_KNOWN,
+        RX_READY_WAKE,
+        RX_READY_DATA,
+#if tt_SEGMENT_ENABLED
+        RX_READY_BELL,
+#endif
+    };
+    for (int i = 0; count > 0 && i < RX_WAIT_FDS; i++) {
+        if ((pfd[i].revents & POLLIN) != 0) { // NOLINT(misc-include-cleaner)
+            *ready |= tags[i];
+        }
+    }
+    return count;
+}
 
 int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     // What the last batch read comes first, and without a wait: holding it behind ppoll() would delay
@@ -972,24 +1087,9 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
             timeout_ts_ptr = &timeout_ts;
         }
 
-        // struct pollfd/POLLIN/ppoll() live in a glibc-private header; <poll.h> (included above)
-        // is the correct public header.
-        // NOLINTNEXTLINE(misc-include-cleaner)
-        struct pollfd pfd[RX_WAIT_FDS] = {
-            {.fd = node->hal.sock, .events = POLLIN, .revents = 0},      // NOLINT(misc-include-cleaner)
-            {.fd = node->hal.wake_fd, .events = POLLIN, .revents = 0},   // NOLINT(misc-include-cleaner)
-            {.fd = node->hal.data_sock, .events = POLLIN, .revents = 0}, // NOLINT(misc-include-cleaner)
-#if tt_SEGMENT_ENABLED
-            {.fd = node->hal.bell_fd_plus1 - 1,
-             .events = POLLIN,
-             .revents = 0}, // NOLINT(misc-include-cleaner) - -1: ignored
-#endif
-        };
-        // sigmask=NULL: no signal-mask swap needed, only ppoll()'s own real (not
-        // millisecond-rounded) timeout resolution is what's wanted here.
-        // NOLINTNEXTLINE(misc-include-cleaner)
-        int poll_ret = ppoll(pfd, RX_WAIT_FDS, timeout_ts_ptr, NULL);
-        if (poll_ret > 0 && ((pfd[0].revents | pfd[2].revents) & POLLIN) != 0) { // NOLINT(misc-include-cleaner)
+        uint32_t ready = 0;
+        int poll_ret = rx_wait(node, timeout_ts_ptr, &ready);
+        if ((ready & (RX_READY_WELL_KNOWN | RX_READY_DATA)) != 0) {
             TT_TRACE(tt_TRACE_RX_WAKE);
         }
         if (poll_ret == 0) {
@@ -1002,26 +1102,31 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
             }
             return -2; // I/O error
         }
-        if (pfd[1].revents & POLLIN) { // NOLINT(misc-include-cleaner)
+#if tt_SEGMENT_ENABLED
+        // Before the interrupt below, which returns: an edge-triggered bell is reported once, and a ring it reports
+        // must be counted towards the bell's next read (bell_rung()) whichever way this wait ends. What the ring
+        // means needs no handling on that path - core drains the segment before it sleeps again, whatever woke it.
+        if ((ready & RX_READY_BELL) != 0) {
+            bell_rung(node);
+        }
+#endif
+        if ((ready & RX_READY_WAKE) != 0) {
             // tt_wake_signal() - drain the counter (its value carries no meaning) and report the
             // interrupt. If the real socket also happens to be ready this same call, it's still
-            // readable (poll() is level-triggered) and gets picked up on the very next call - no
+            // readable (both waits are level-triggered for the sockets) and gets picked up on the very next call - no
             // data loss, just one extra round trip.
             uint64_t discard;
             (void)read(node->hal.wake_fd, &discard, sizeof(discard));
             return -3; // Interrupted
         }
 #if tt_SEGMENT_ENABLED
-        if ((pfd[RX_WAIT_BELL].revents & POLLIN) != 0) { // NOLINT(misc-include-cleaner)
-            bell_drain(node);
-            if (((pfd[0].revents | pfd[2].revents) & POLLIN) == 0) { // NOLINT(misc-include-cleaner)
-                // Only the bell: a record is in the segment and neither socket has anything, so the drain that
-                // follows must not ask them (the empty recvmmsg per wake-up the UDP doorbell cost).
-                node->hal.rx_idle = TT_RX_IDLE_WELL_KNOWN | TT_RX_IDLE_DATA;
-                *ip = 0;
-                *port = 0;
-                return 0; // a rung bell is a zero-length datagram to core, which is what a doorbell always was
-            }
+        if (ready == RX_READY_BELL) {
+            // Only the bell: a record is in the segment and neither socket has anything, so the drain that
+            // follows must not ask them (the empty recvmmsg per wake-up the UDP doorbell cost).
+            node->hal.rx_idle = TT_RX_IDLE_WELL_KNOWN | TT_RX_IDLE_DATA;
+            *ip = 0;
+            *port = 0;
+            return 0; // a rung bell is a zero-length datagram to core, which is what a doorbell always was
         }
 #endif
         // Broadcasts arrive on the well-known socket and unicast on this node's own data socket.
@@ -1030,9 +1135,9 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
         // other is never read at all, and the path that starves would be RELIABLE recovery, whose
         // ACKNACKs come back as unicast while a Publisher above tt_UNICAST_PEER_THRESHOLD is
         // broadcasting its data. Alternating bounds the wait at one datagram either way.
-        bool well_known_ready = (pfd[0].revents & POLLIN) != 0; // NOLINT(misc-include-cleaner)
-        bool data_ready = (pfd[2].revents & POLLIN) != 0;       // NOLINT(misc-include-cleaner)
-        // What the drain after this read may skip: a socket ppoll() did not report ready (tt_try_receive()).
+        bool well_known_ready = (ready & RX_READY_WELL_KNOWN) != 0;
+        bool data_ready = (ready & RX_READY_DATA) != 0;
+        // What the drain after this read may skip: a socket the wait did not report ready (tt_try_receive()).
         node->hal.rx_idle =
             (uint8_t)((well_known_ready ? 0U : TT_RX_IDLE_WELL_KNOWN) | (data_ready ? 0U : TT_RX_IDLE_DATA));
 #if TT_RX_FIXED_PREFERENCE
@@ -1440,12 +1545,88 @@ void tt_segment_unlink(const char* path) {
     (void)unlink(path);
 }
 
+#define BELL_DRAIN_BYTES 64 // rings read per call: any size empties the pipe, a larger one in fewer reads
+
+#if TT_HAL_EPOLL
+// Whether this kernel reports EVERY write to a pipe to an edge-triggered epoll, the second one included, while the
+// first is still unread. Linux has done so since 5.14 (and since 5.16 only for a pipe somebody polls, which this one
+// is); 5.5 to 5.13 reported a write only into an empty pipe, and a bell that is never read would then ring exactly
+// once. Asked of the running kernel rather than assumed from a version, on a scratch epoll so the context's own set
+// sees none of it. The bell is the owner's own, open read-write, so both ends are at hand; it is left empty.
+static bool bell_edge_works(int bell) {
+    int probe = epoll_create1(EPOLL_CLOEXEC);
+    if (probe < 0) {
+        return false;
+    }
+    bool works = false;
+    struct epoll_event event = {.events = EPOLLIN | EPOLLET, .data = {.u32 = RX_READY_BELL}};
+    if (epoll_ctl(probe, EPOLL_CTL_ADD, bell, &event) == 0) {
+        const uint8_t one = 1;
+        const struct timespec now = {0, 0};
+        int reported = 0;
+        for (int ring = 0; ring < 2; ring++) {
+            if (write(bell, &one, sizeof(one)) == (ssize_t)sizeof(one) &&
+                epoll_pwait2(probe, &event, 1, &now, NULL) == 1) {
+                reported++;
+            }
+        }
+        works = reported == 2;
+    }
+    (void)close(probe);
+    uint8_t discard[BELL_DRAIN_BYTES];
+    while (read(bell, discard, sizeof(discard)) > 0) {
+    }
+    return works;
+}
+#endif
+
+// Puts the bell in the context's wait set: edge-triggered when the kernel reports every ring (bell_edge_works()), so
+// a ring costs the reader no read(); level-triggered and read on every ring otherwise. Without a set, tt_receive()'s
+// ppoll() carries it, level-triggered, as before.
+//
+// How often an edge-triggered bell is read, and why that is not a tuned interval: every writer rings a reader at most
+// once per sleep generation (struct tt_SegmentPeer.doorbell_generation), and a context has at most tt_MAX_CONTEXT_IDS
+// peers, so G generations leave at most G x tt_MAX_CONTEXT_IDS bytes - plus one generation's worth from rings already
+// on their way when the bell is read, and one for the generation being slept in. Reading it every
+// capacity / (4 x tt_MAX_CONTEXT_IDS) generations keeps that under half the pipe's own capacity, read from the pipe,
+// on any hardware: 64 generations at Linux's default 64 KiB. A full pipe would refuse a ring - a lost wakeup - so the
+// bound is on the worst case, not on what is typical.
+static void bell_join_wait_set(struct tt_Context* node, int bell) {
+    node->hal.bell_drain_every = 0;
+#if TT_HAL_EPOLL
+    if (node->hal.epoll_fd_plus1 == 0) {
+        return;
+    }
+    int capacity = fcntl(bell, F_GETPIPE_SZ);
+    uint32_t every = capacity > 0 ? (uint32_t)capacity / (4U * (uint32_t)tt_MAX_CONTEXT_IDS) : 0U;
+    bool edge = every > 0 && bell_edge_works(bell);
+    struct epoll_event event = {.events = EPOLLIN | (edge ? (uint32_t)EPOLLET : 0U), .data = {.u32 = RX_READY_BELL}};
+    if (epoll_ctl(node->hal.epoll_fd_plus1 - 1, EPOLL_CTL_ADD, bell, &event) != 0) {
+        // Not in the set, so no wait would ever see it: give the set up and let ppoll() carry all four.
+        TT_LOG_WARNING("Cannot add the segment doorbell to the wait set (%s) - waiting with ppoll()", strerror(errno));
+        (void)close(node->hal.epoll_fd_plus1 - 1);
+        node->hal.epoll_fd_plus1 = 0;
+        return;
+    }
+    if (edge) {
+        node->hal.bell_drain_every = every;
+        node->hal.bell_drained_at = node->segment_sleep_generation;
+    } else {
+        TT_LOG_WARNING("This kernel does not report every ring of an unread doorbell - reading it on every ring");
+    }
+#else
+    (void)node;
+    (void)bell;
+#endif
+}
+
 // The doorbell FIFO (hal.h). Its name is the segment's plus a suffix, built by core, so the two cannot drift.
 //
 // The owner opens its own FIFO read-write rather than read-only: a FIFO with no writer reports POLLHUP to a reader
 // for as long as nobody has it open for writing, which would turn every wait into a busy loop between peers. Holding
-// both ends keeps it quiet. Non-blocking both ways - a reader must never sleep in read(), and a writer finding the
-// pipe full has nothing to do: a full pipe is a bell already rung.
+// both ends keeps it quiet. Non-blocking both ways - a reader must never sleep in read(), and a writer never waits on
+// a full pipe. A full pipe refuses the ring: level-triggered that is a bell already rung, edge-triggered it would be a
+// wake-up lost, which is why an edge-triggered bell is read before it can fill (bell_join_wait_set()).
 int32_t tt_segment_bell_create(struct tt_Context* node, const char* path) {
     (void)unlink(path); // a bell left by a dead context of this name is replaced, as its segment is
     if (mkfifo(path, SEGMENT_MODE) != 0) {
@@ -1461,11 +1642,18 @@ int32_t tt_segment_bell_create(struct tt_Context* node, const char* path) {
         return -1;
     }
     node->hal.bell_fd_plus1 = bell + 1;
+    bell_join_wait_set(node, bell);
     return 0;
 }
 
 void tt_segment_bell_destroy(struct tt_Context* node, const char* path) {
     if (node->hal.bell_fd_plus1 > 0) {
+#if TT_HAL_EPOLL
+        if (node->hal.epoll_fd_plus1 > 0) {
+            (void)epoll_ctl(node->hal.epoll_fd_plus1 - 1, EPOLL_CTL_DEL, node->hal.bell_fd_plus1 - 1, NULL);
+        }
+#endif
+        node->hal.bell_drain_every = 0;
         (void)close(node->hal.bell_fd_plus1 - 1);
         node->hal.bell_fd_plus1 = 0;
     }
@@ -1498,13 +1686,28 @@ void tt_segment_bell_close(int32_t bell) {
     (void)close(bell);
 }
 
-// Empties the bell so a level-triggered ppoll() stops reporting it. Rings carry no content: how many were written
+// Empties the bell so a level-triggered wait stops reporting it. Rings carry no content: how many were written
 // does not matter, only that the reader is now awake and about to drain the segment.
-#define BELL_DRAIN_BYTES 64 // rings read per call: any size empties the pipe, a larger one in fewer reads
 
 static void bell_drain(struct tt_Context* node) {
     uint8_t discard[BELL_DRAIN_BYTES];
     while (read(node->hal.bell_fd_plus1 - 1, discard, sizeof(discard)) == (ssize_t)sizeof(discard)) {
+    }
+    node->hal.bell_drains++;
+}
+
+// A ring the wait reported. Level-triggered, it must be read now or every later wait returns at once. Edge-triggered
+// (bell_join_wait_set()), the report was the whole of it, and the bytes rings leave are read only when enough sleep
+// generations have passed that they could approach the pipe's capacity.
+static void bell_rung(struct tt_Context* node) {
+    if (node->hal.bell_drain_every == 0) {
+        bell_drain(node);
+        return;
+    }
+    uint32_t generation = node->segment_sleep_generation;
+    if (generation - node->hal.bell_drained_at >= node->hal.bell_drain_every) {
+        bell_drain(node);
+        node->hal.bell_drained_at = generation;
     }
 }
 #endif
