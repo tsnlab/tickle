@@ -17,25 +17,32 @@ The user's active list (2026-10-05), in order.
    comparison must not rest on a setup tuned for TickLE. Found: the same-host cells (S1-S16, `s6_transport_cells.sh`,
    `s6_witness_check.sh`) pin each process to ONE core, which squeezes the multi-threaded DDS processes and suits
    single-threaded TickLE; the cross-host cells pin every framework to cores 1-3 (symmetric, but not how software is
-   run). Pinning began because Pi core 0 takes the interrupts. Re-measure the headline tables with no pinning, the
-   OS scheduling every framework, and publish the pinned figures only as a labelled note. Then audit the rest of the
-   rig the same way: socket buffer sizes, CPU governor, IRQ affinity, vendor profiles (FastDDS XML, CycloneDDS
-   URI, iceoryx), build flags. P1-P4 stay as they are: each measures something real (the user, 2026-10-05).
-   Audited 2026-10-05: socket buffers (all three capped at the rig's 212,992 B; if `rmem_max` is ever raised,
-   FastDDS's XML must raise its own too), governor (`ondemand` for all; a `performance` arm needs the user's sudo),
-   IRQs (all on CPU0 for all), vendor profiles (neutral; CycloneDDS's shared memory is opt-in and enabled for it)
-   are even. Fixed: the latency clients now pace alike (TickLE's sent on a fixed period and idled one round trip
-   less) and print median and p99 beside the mean; the campaign rotates the frameworks' order; rmw_tickle is
-   built at the vendors' `-O2` instead of `-O3` (`rmw_crosshost_rtt.sh`; `rmw_keepall_rig.sh` next); versions
-   are in RESULTS section 3. Open: (a) every framework's KEEP_ALL bound in the campaign is derived from TickLE's
-   512 KiB budget (`campaign_sweep.sh` common_args) - identical, but chosen from TickLE's side; an arm with the
-   vendors' own defaults (CycloneDDS unlimited, FastDDS 5000) should sit beside it; (b) `s6_transport_cells.sh`
-   runs each framework's repetitions back to back, not interleaved.
-1. **Find the p4 same-host latency gap**: p4's round trip is ~21 us longer than p3's, but only after the processes
-   idle (rig: +6 us at 0.5 ms ping spacing, +20 us at 5 ms; CycloneDDS 0-2 us). Ruled out so far: an extra wake
-   (p4 rings the same doorbells per round trip as p3, `p4_wake_count.sh`), and the doorbell sitting between the two
-   fragments (`93504234` moved it after the batch; the gap stayed +21 us at 5 ms, falsified by its own rule). Next:
-   per-stage timestamps on the rig. (`p4_interval_rig.sh`; RESULTS S10)
+   run). Pinning began because Pi core 0 takes the interrupts. Re-measure the headline tables with no pinning, the OS
+   scheduling every framework, and publish the pinned figures only as a labelled note. Then audit the rest of the rig
+   the same way: socket buffer sizes, CPU governor, IRQ affinity, vendor profiles (FastDDS XML, CycloneDDS URI,
+   iceoryx), build flags. P1-P4 stay as they are: each measures something real (the user, 2026-10-05). Audited
+   2026-10-05: socket buffers (all three capped at the rig's 212,992 B; if `rmem_max` is ever raised, FastDDS's XML must
+   raise its own too), governor (`ondemand` for all, the distribution's default; no `performance` arm, the user's
+   decision 2026-10-06), IRQs (all on CPU0 for all), vendor profiles (neutral; CycloneDDS's shared memory is opt-in and
+   enabled for it) are even. Fixed: the latency clients now pace alike (TickLE's sent on a fixed period and idled one
+   round trip less) and print median and p99 beside the mean; the campaign rotates the frameworks' order; rmw_tickle is
+   built at the vendors' `-O2` instead of `-O3` (`rmw_crosshost_rtt.sh`; `rmw_keepall_rig.sh` next); versions are in
+   RESULTS section 3. Settled (the user, 2026-10-06): KEEP_ALL is bounded in samples for DDS and in bytes for TickLE, at
+   equal conditions - the native campaign gives DDS `N` samples and TickLE (N + 1) x its record bytes, and voids a row
+   whose realized bound differs (`campaign_sweep.sh` common_args, qos_identity_void). Open: (a) the rmw rows (RESULTS
+   72-75) still run each rmw at its own default (rmw_tickle 512 KiB, Fast DDS 5,000 samples, CycloneDDS unlimited); give
+   them the same rule - Fast DDS `max_samples` = N through its XML, CycloneDDS's equivalent if rmw_cyclonedds passes
+   one, rmw_tickle `RMW_TICKLE_KEEP_ALL_BYTES` = N x sample bytes - and re-measure; (b) `s6_transport_cells.sh` runs
+   each framework's repetitions back to back, not interleaved.
+1. **The p4 same-host latency gap - found 2026-10-06**: not idling but first-touch page faults. A RELIABLE subscriber
+   stores every fragment in reorder slot `seq_no % reorder_slots` before copying it out, even in order; the bench's ring
+   is 4096 slots x 2840 B (11.6 MB, untouched .bss), so each p4 round trip writes 5.7 KB of new memory per process for
+   the first lap (~2048 samples): ~16 us of the +20 us (~4.2 extra faults per round trip), the rest ~5 us of steady
+   fragment-path cost. Prefaulting removed it (+22 -> +6 us); a long run at 5 ms fell to +6 us untreated
+   (`experiments/p4_reorder_firsttouch.sh`, H-RING SUPPORTED,
+   `~/rig_results_safe/p4_reorder_firsttouch_c1ebf43e_20261006-163432.txt`). Next, in core: deliver in-order fragments
+   from one hot per-subscriber buffer (`accept_reliable_fragment()`), the ring only for out-of-order; and item 0a's
+   warm-up for the figures (RESULTS S10).
 2. **Fill COMPARISON 1a's empty cells**: CPU and RSS for all three frameworks on every same-host cell (CycloneDDS
    including iox-roudi), and the vendors' DELIVERED rates on the same-host BEST_EFFORT rows. The rows compare send
    rates today, and FastDDS's KEEP_LAST 1 reader took 154 of 3.1M samples. (COMPARISON 1a notes)
