@@ -43,9 +43,8 @@ Principles that shape everything below:
   With nothing scheduled it waits indefinitely: an idle node does not wake up.
 - Waiting uses `ppoll()` with the timeout as an argument (never `SO_RCVTIMEO`), over the well-known socket, the
   data socket, an `eventfd` for wake-ups and, when present, the segment doorbell FIFO.
-- Between due scheduler entries a busy poll peeks at the socket, without waiting, once the time since it last looked
-  reaches `tt_RX_CHECK_RATIO` (8) times what an empty peek measures here, and never later than `tt_RECEIVE_TIMEOUT`:
-  a max-rate publisher cannot starve ACKNACK processing, and empty peeks take about 1/9 of a busy loop on any platform.
+- At most `tt_SCHEDULER_IO_INTERLEAVE` (8) due scheduler entries run back to back before a non-blocking receive
+  check, so a max-rate publisher cannot starve ACKNACK processing.
 - A high-rate publisher must call `tt_Context_poll(ctx, 0)` between sends, not block.
 
 **Threading.** With `tt_THREAD_SAFE=1` (default) every public `tt_*` call may come from any thread, concurrently with
@@ -381,15 +380,12 @@ Compiled in by default on Linux (`tt_SEGMENT_ENABLED`), out on FreeRTOS.
 - A context builds its segment when the first same-host peer appears in discovery (or when it delivers to itself),
   and releases it when the liveliness timeout removes the last one. A host with no same-host peers pays nothing.
 - `tt_segment_create()` unlinks any stale file first, so a dead owner's records are never inherited; teardown unlinks.
-- A writer re-asks a name after a time, not a count of sends: when absent, `tt_CONTEXT_TX_INTERVAL` (1 ms) after the
-  first miss, doubling per miss up to `tt_CONTEXT_UPDATE_INTERVAL` (1 s), and at once when discovery hears a same-host
-  peer; when attached, every `tt_CONTEXT_UPDATE_INTERVAL`. A peer that binds late becomes reachable and a replaced
-  owner is noticed within those times at any send rate. Until 2026-10-06 they were 256 and 4096 sends (four minutes
-  and over an hour at 1 Hz). The deadlines are read from the clock the poll or a publish already took
-  (`tx_clock_ns`), so a send reads no clock for them.
+- A writer re-asks a name every `tt_SEGMENT_ATTACH_RETRY_SENDS` (256) sends when absent and every
+  `tt_SEGMENT_REVALIDATE_SENDS` (4096) when attached, so a peer that binds late becomes reachable and a replaced
+  owner is noticed. (A time-based version, `c73a22e7`, was reverted on 2026-10-06: ROADMAP 5a.)
 - A reader that takes nothing for `tt_SEGMENT_DEAD_READER_NS` (one summary interval of `tt_LIVELINESS_SILENCE_NS`, 1 s;
   a static_assert keeps it below that silence) while records wait is given up; the writer uses UDP
-  for `tt_CONTEXT_UPDATE_INTERVAL` before it asks again.
+  until the next recheck.
 - A writer that dies between claim and publish wedges the head; the owner warns after `tt_SEGMENT_STALL_PASSES`.
 
 **One path per peer, and drop on full.**
@@ -514,7 +510,7 @@ All are compile-time `-D` overrides unless noted. Times in nanoseconds.
 | `tt_SERVER_CACHE_ENTRY_LENGTH`, `tt_CLIENT_CACHE_LENGTH` | 2 x buffer | 8 | inline storage (rmw attaches its own) |
 | `tt_MAX_SCHEDULER_LENGTH` | 128 | | scheduler entries |
 | `tt_SCHED_INBOX_LENGTH` | 32 | | cross-thread timer inbox |
-| `tt_RX_CHECK_RATIO` | 8 | | busy-loop scheduler time per unit of empty receive check |
+| `tt_SCHEDULER_IO_INTERLEAVE` | 8 | | due entries before an I/O check |
 | `tt_RECEIVE_TIMEOUT` | 100 us | | poll slice some callers pass |
 | `tt_RX_BATCH` | 32 (1 if buffer > control) | | datagrams per `recvmmsg()` |
 | `tt_RX_CLOCK_REFRESH` | 16 | | datagrams per clock read |

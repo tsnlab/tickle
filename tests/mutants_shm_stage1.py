@@ -21,14 +21,14 @@ MUTANTS = [
     (
         "negative attach caching",
         "src/tickle.c",
-        "        note_attach(node, verdict);\n        remember_absent(entry, ip, port, now);\n",
+        "        note_attach(node, verdict);\n        remember_absent(entry, ip, port);\n",
         "        note_attach(node, verdict);\n",
         "test_a_peer_with_no_segment_is_asked_once_not_per_datagram",
     ),
     (
         "revalidation of an attached segment",
         "src/tickle.c",
-        "        if (same_owner && now < entry->recheck_at_ns) {",
+        "        if (same_owner && entry->recheck_in > 0) {",
         "        if (same_owner) {",
         "test_a_segment_left_by_a_dead_owner_is_reclaimed",
     ),
@@ -206,75 +206,6 @@ MUTANTS = [
         "    if (header->slots == 0 || (header->slots & (header->slots - 1U)) != 0 || header->slot_bytes == 0) {",
         "    if (header->slots == 0 || (header->slots & (header->slots - 1U)) != 0) {",
         "test_a_segment_with_another_geometry_is_refused",
-    ),
-    # The cache's deadlines are times since 2026-10-06 (ROADMAP.md 5a): each direction of each comparison, the
-    # backoff, the dead reader's long gap, and the clock readings the send path is handed.
-    (
-        "a cached \"no\" expiring at its deadline",
-        "src/tickle.c",
-        "        } else if (now < entry->recheck_at_ns) {",
-        "        } else if (true) {",
-        "test_a_peer_with_no_segment_is_asked_once_not_per_datagram",
-    ),
-    (
-        "a cached \"no\" holding until its deadline",
-        "src/tickle.c",
-        "        } else if (now < entry->recheck_at_ns) {",
-        "        } else if (false) {",
-        "test_a_peer_with_no_segment_is_asked_once_not_per_datagram",
-    ),
-    (
-        "an attached segment held until its revalidation",
-        "src/tickle.c",
-        "        if (same_owner && now < entry->recheck_at_ns) {",
-        "        if (false) {",
-        "test_a_segment_left_by_a_dead_owner_is_reclaimed",
-    ),
-    (
-        "the backoff doubling the gap after each miss",
-        "src/tickle.c",
-        "    const uint64_t doubled = entry->absent_gap_ns * 2U;",
-        "    const uint64_t doubled = entry->absent_gap_ns;",
-        "test_a_peer_with_no_segment_is_asked_once_not_per_datagram",
-    ),
-    (
-        "a dead reader's give-up holding the longest gap",
-        "src/tickle.c",
-        "            entry->recheck_at_ns = now + (uint64_t)tt_CONTEXT_UPDATE_INTERVAL;\n"
-        "            note_attach(node, tt_SEGMENT_REFUSED);",
-        "            note_attach(node, tt_SEGMENT_REFUSED);",
-        "test_a_writer_gives_up_on_a_ring_nobody_drains",
-    ),
-    (
-        "a same-host announce restarting the backoff",
-        "src/tickle.c",
-        "        entry->recheck_at_ns = 0;\n        entry->absent_gap_ns = 0;\n",
-        "        entry->recheck_at_ns = 0;\n",
-        "test_a_same_host_announce_restarts_the_backoff",
-    ),
-    (
-        "a publish leaving its clock reading to the send",
-        "src/tickle.c",
-        "    tx_clock_store(node, stamped_ns); // the send below may need \"now\" (send_clock()): this reading, not another\n"
-        "    data_header->timestamp = timestamp_to_wire(stamped_ns);\n"
-        "    data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity\n\n"
-        "    // DataBody",
-        "    data_header->timestamp = timestamp_to_wire(stamped_ns);\n"
-        "    data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity\n\n"
-        "    // DataBody",
-        "test_a_publish_brings_its_clock_reading_to_the_send",
-    ),
-    (
-        "a zero-copy publish leaving its clock reading to the send",
-        "src/tickle.c",
-        "    tx_clock_store(node, stamped_ns); // the send below may need \"now\" (send_clock()): this reading, not another\n"
-        "    data_header->timestamp = timestamp_to_wire(stamped_ns);\n"
-        "    data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity\n\n"
-        "    uint8_t peer_count",
-        "    data_header->timestamp = timestamp_to_wire(stamped_ns);\n"
-        "    data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity\n\n"
-        "    uint8_t peer_count",
-        "test_a_publish_brings_its_clock_reading_to_the_send",
     ),
 ]
 

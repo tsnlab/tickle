@@ -93,12 +93,6 @@ int32_t test_mock_try_receive_len = 0;          // ... of this length, whatever 
 uint64_t test_mock_try_receive_advance_ns = 0;  // ... each this much later than the one before
 int test_mock_socket_reads_under_lock = 0;      // tt_try_receive() calls past the backlog - a read of the
                                                 // socket, on a real HAL - made holding the node's state lock
-// What an empty read costs: tt_try_receive() finding nothing lets this much time pass, as a recvmmsg() that
-// returns EAGAIN does on a real HAL. 0 (the default) = free, which no real read is.
-uint64_t test_mock_try_receive_empty_advance_ns = 0;
-// Optional: called at the start of every tt_try_receive(), before any time passes - for a test about when the
-// poll loop looks at the socket. NULL (the default) = not called.
-void (*test_mock_try_receive_hook)(void) = NULL;
 #else
 extern uint64_t test_mock_now;
 extern int32_t test_mock_node_id;
@@ -128,8 +122,6 @@ extern int test_mock_try_receive_remaining;
 extern int32_t test_mock_try_receive_len;
 extern uint64_t test_mock_try_receive_advance_ns;
 extern int test_mock_socket_reads_under_lock;
-extern uint64_t test_mock_try_receive_empty_advance_ns;
-extern void (*test_mock_try_receive_hook)(void);
 #endif
 
 // Call at the start of each test case so one test's overrides can't leak into the next.
@@ -162,8 +154,6 @@ static inline void test_mock_reset(void) {
     test_mock_try_receive_len = 0;
     test_mock_try_receive_advance_ns = 0;
     test_mock_socket_reads_under_lock = 0;
-    test_mock_try_receive_empty_advance_ns = 0;
-    test_mock_try_receive_hook = NULL;
 }
 
 // A datagram as sent, in the classic form a test's decoder reads: one in the single-submessage form
@@ -485,9 +475,6 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
 
     *ip = 0;
     *port = 0;
-    if (test_mock_try_receive_hook != NULL) {
-        test_mock_try_receive_hook();
-    }
 
     // By default the mock feeds at most the one datagram test_mock_receive_return describes, via tt_receive()
     // above - tt_Context_poll()'s drain loop then immediately sees "nothing more waiting" here and stops. A test
@@ -500,7 +487,6 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
     if (__atomic_load_n(&node->state_owner, __ATOMIC_RELAXED) == tt_thread_self()) {
         test_mock_socket_reads_under_lock++;
     }
-    test_mock_now += test_mock_try_receive_empty_advance_ns;
     return -1;
 }
 

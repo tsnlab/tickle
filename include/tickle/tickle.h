@@ -606,16 +606,6 @@ struct tt_Context {
     // (OPTIMIZATION_PLAN.md 11, D1). Raw nanoseconds, beside poller_thread: the poll writes that line anyway, and a
     // division per poll cost a sender polling once a sample ~3 ns (WIRE_PLAN.md 8). Only the poller touches it.
     uint64_t rx_clock_ns;
-    // The latest clock reading the poll or a publish took, for the send path (send_clock(), tickle.c): the segment
-    // cache's deadlines are times, and a send must not read the clock for them. Unlike rx_clock_ns it is not
-    // cleared when the poll returns - a stale reading only makes a recheck late - and a publishing thread reads
-    // what the poller wrote, so it is __atomic (relaxed).
-    uint64_t tx_clock_ns;
-    // When a busy poll next looks at the socket between scheduler entries (tt_RX_CHECK_RATIO, config.h): the
-    // time the poll last finished looking - a peek or a wait - and what an empty peek costs here, a moving
-    // average of the loop's own clock readings (1/8 weight to the newest). Only the poller touches them.
-    uint64_t rx_checked_ns;
-    uint64_t rx_check_cost_ns;
     uint32_t state_depth; // how many times the owner has taken it; only the owner reads or writes it
     struct tt_LockStats state_lock_stats;
     // The scheduler inbox: tt_Context_schedule() from a thread that does not hold the state lock puts its entry
@@ -772,17 +762,12 @@ struct tt_Context {
         // throughput and doubled CPU per sample when it shipped. `missing` says this (ip, port) was
         // asked about and had nothing for us.
         bool missing;
-        // When this entry is asked about again, whichever way it was answered, by the send path's clock
-        // (send_clock(), tickle.c). A "no" must expire so a peer that binds later becomes reachable. A "yes"
-        // must expire too, and that is less obvious: an owner that was killed leaves its region mapped, intact,
-        // with the same incarnation in it, so nothing *inside* the mapping can ever say it is orphaned - only
-        // asking the name again can, and a peer that never asks writes into a ring no one drains. A time, not
-        // a count of sends (until 2026-10-06), so neither delay stretches as the sender slows down.
-        uint64_t recheck_at_ns;
-        // How long the last "no" was kept: each miss in a row doubles it, from tt_CONTEXT_TX_INTERVAL up to
-        // tt_CONTEXT_UPDATE_INTERVAL (absent_gap(), tickle.c). 0 after an attach, or when discovery says the
-        // peer is on this host (note_same_host_peer()).
-        uint64_t absent_gap_ns;
+        // Sends before this entry is asked about again, whichever way it was answered. A "no" must
+        // expire so a peer that binds later becomes reachable. A "yes" must expire too, and that is
+        // less obvious: an owner that was killed leaves its region mapped, intact, with the same
+        // incarnation in it, so nothing *inside* the mapping can ever say it is orphaned - only
+        // asking the name again can, and a peer that never asks writes into a ring no one drains.
+        uint32_t recheck_in;
         // When we last managed to put anything in this peer's ring, or 0 if we have just managed it.
         // A reader that has taken nothing for tt_SEGMENT_DEAD_READER_NS, while we have had records
         // for it the whole time, has stopped; one that is merely behind still frees a slot now and

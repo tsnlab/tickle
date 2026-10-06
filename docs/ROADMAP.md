@@ -73,20 +73,15 @@ The user's active list (2026-10-05), in order.
    (`test_heartbeat_piggyback_default`); k = 16 is still the sweep's choice and is in README.md. On the rig a
    same-host peer's retry drops from 10 ms to about 1 ms, so the four attempts span ~4 ms instead of 40 ms: the
    M5 discovery cell under loss should be re-run before its figures are re-quoted.
-   Done: `tt_SCHEDULER_IO_INTERLEAVE` (8 entries) is now `tt_RX_CHECK_RATIO`, a timed receive check - the budget is
-   the ratio times the measured cost of an empty peek, capped at `tt_RECEIVE_TIMEOUT` (`test_rx_check_budget`); a rig
-   A/B against the count is still owed before its figures are re-quoted.
-   Done 2026-10-06: the three counts whose period scaled with the rate are times. `TT_RX_IDLE_RECHECK` (64 datagrams)
-   is `TT_RX_IDLE_RECHECK_NS` = `tt_RECEIVE_TIMEOUT` by the poll's own clock (`rx_clock_ns`): a skipped socket is
-   asked again after the same bound the poll puts on scheduler work (`test_poll_signal`, both directions).
-   `tt_SEGMENT_ATTACH_RETRY_SENDS` (256) is a backoff from `tt_CONTEXT_TX_INTERVAL` doubling to
-   `tt_CONTEXT_UPDATE_INTERVAL`, restarted by a same-host announce, and a dead reader's give-up holds the full
-   interval; `tt_SEGMENT_REVALIDATE_SENDS` (4096) is `tt_CONTEXT_UPDATE_INTERVAL` - at 1 Hz they were four minutes
-   and over an hour. The send path reads no clock for them: the poll and every publish leave their reading in
-   `tx_clock_ns` (`test_transport_seam`, `test_poll_wait`). Both names now stop the build if set. A rig A/B against
-   the counts is owed before same-host or max-rate figures are re-quoted. `seam_attach_cost.sh`,
-   `segment_attach_hint.sh` and `s6_latency_driver.sh` still pass `-Dtt_SEGMENT_ATTACH_RETRY_SENDS` for an arm and
-   no longer build that arm; use the parent commit as the control instead.
+   **Reverted 2026-10-06** after a rig A/B (TickLE only, A B B A, `campaign_ab_chain.sh`, then a 10-against-10
+   confirmation of the WORSE cells, both at 2 x SE): `20f89a7a` (`tt_SCHEDULER_IO_INTERLEAVE` -> a timed receive check,
+   `tt_RX_CHECK_RATIO`) cost c6 (P4, 5% loss) +0.8% wire bytes per sample (t 5.1, more retransmissions) and +2.0%
+   client CPU (t 2.3); `c73a22e7` (`TT_RX_IDLE_RECHECK`, `tt_SEGMENT_ATTACH_RETRY_SENDS`, `_REVALIDATE_SENDS` -> times)
+   cost c10 (P1 latency) +3.1% RTT (t 5.8) and ~5 KB RSS. Both replicated, so both are reverted and the constants
+   are back. Results: `/tmp/ab_rxcheck_compare.txt`, `/tmp/ab_counts2time_compare.txt`, `/tmp/abc_rxcheck_compare.txt`,
+   `/tmp/abc_counts2time_compare.txt` (copied to `~/rig_results_safe/ab_hotpath_2026-10-06/`). To redo: one change
+   per commit (the three counts separately), each with its own A/B on the cells it can touch, before it lands. The
+   designs and their tests are in the reverted commits.
    Done 2026-10-05: the RPC retry bounds are srtt-relative (`tt_CALL_RETRY_MAX_SRTT_MULTIPLE`, per-retry doubling;
    `tt_CALL_RETRY_INTERVAL` is now only the seed and `_MAX` is gone), and the server's response cache lives as long
    as the client's schedule it can know plus the retry gaps it has measured (`tt_SERVER_CACHE_GAP_MULTIPLE`;

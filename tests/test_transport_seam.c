@@ -99,13 +99,6 @@ static void init_node_topic_pub(struct tt_Context* node, struct tt_Topic* topic,
     node->endpoints[0] = (struct tt_Endpoint*)pub;
 }
 
-// Moves the send path's clock (tt_Context.tx_clock_ns, the reading the poll and every publish leave for
-// send_clock()) and the mock clock with it: the segment cache's deadlines are times.
-static void send_clock_at(struct tt_Context* node, uint64_t now) {
-    test_mock_now = now;
-    __atomic_store_n(&node->tx_clock_ns, now, __ATOMIC_RELAXED);
-}
-
 // Every datagram the mock was handed is counted, and counted as UDP. The mock's own count is the
 // control: without it "tx_datagrams went up by five" would be consistent with five datagrams, with
 // fifty, or with none actually reaching the transport.
@@ -251,8 +244,7 @@ static void test_reset_zeroes_the_per_transport_counters(void) {
     for (int id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
         EXPECT_TRUE(node.segment_peers[id].mapping == NULL);
         EXPECT_TRUE(!node.segment_peers[id].missing);
-        EXPECT_EQ_U64(0, node.segment_peers[id].recheck_at_ns);
-        EXPECT_EQ_U64(0, node.segment_peers[id].absent_gap_ns);
+        EXPECT_EQ_U32(0, node.segment_peers[id].recheck_in);
         EXPECT_EQ_U32(0, (uint32_t)node.segment_peers[id].last_progress_ns);
     }
 #endif
@@ -705,89 +697,6 @@ static void test_segment_bytes_equal_what_udp_would_have_sent(void) {
     test_mock_segments_free();
 }
 
-// The deadlines above are read from the send path's clock, which a send must not read for itself
-// (tt_Context.tx_clock_ns, send_clock()). A publish reads the clock anyway, for its timestamp, and
-// must leave that reading behind for the send it makes - or a context that publishes from its own
-// thread, between polls, would go on comparing against whatever the last poll saw and never re-ask.
-// The clock here was last stamped a whole retry gap ago and is not touched again by hand: only the
-// publish can move it.
-static void test_a_publish_brings_its_clock_reading_to_the_send(void) {
-    test_mock_reset();
-    test_mock_segments_free();
-
-    struct tt_Context node;
-    struct tt_Topic topic;
-    struct tt_Publisher pub;
-    init_node_topic_pub(&node, &topic, &pub);
-    node.hal.own_ip = PEER_IP;
-    node.hal.own_port = PEER_PORT;
-    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        pub.peers[i].context_id = tt_CONTEXT_ID_INVALID;
-    }
-    pub.peers[0].context_id = OWNER_ID; // a unicast peer with no segment anywhere
-    pub.peers[0].ip = OWNER_IP;
-    pub.peers[0].port = OWNER_PORT;
-
-    const uint64_t start = tt_SECOND;
-    send_clock_at(&node, start); // the last poll's reading
-    uint32_t value = 1;
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
-    EXPECT_EQ_INT(1, test_mock_segment_attach_calls);
-
-    test_mock_now = start + tt_CONTEXT_TX_INTERVAL; // time passes; no poll runs to say so
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
-    EXPECT_EQ_U64(test_mock_now, node.tx_clock_ns);
-    EXPECT_EQ_INT(2, test_mock_segment_attach_calls); // asked again, by the publish's own reading
-
-    // The zero-copy publish reads its own clock for its own timestamp, and must leave it the same way. The
-    // second miss is kept twice as long, so the next ask is due 2 x tt_CONTEXT_TX_INTERVAL later.
-    test_mock_now += 2U * tt_CONTEXT_TX_INTERVAL;
-    uint8_t body[ZEROCOPY_BODY] = {0};
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)publish_zerocopy(&pub, body, (uint32_t)sizeof(body)));
-    EXPECT_EQ_U64(test_mock_now, node.tx_clock_ns);
-    EXPECT_EQ_INT(3, test_mock_segment_attach_calls);
-
-    test_mock_segments_free();
-}
-
-// Discovery hearing from a peer at our own address cuts a cached "no" short (note_same_host_peer()), and it
-// restarts the backoff too: that peer is the one about to build a segment - the startup race - so a miss right
-// after is kept tt_CONTEXT_TX_INTERVAL, not the second it may have grown to while the peer was away.
-static void test_a_same_host_announce_restarts_the_backoff(void) {
-    test_mock_reset();
-    test_mock_segments_free();
-
-    struct tt_Context node;
-    struct tt_Topic topic;
-    struct tt_Publisher pub;
-    init_node_topic_pub(&node, &topic, &pub);
-    node.id = OWNER_ID;
-    node.hal.own_ip = OWNER_IP;
-    node.hal.own_port = OWNER_PORT;
-    uint32_t own_ip = 0;
-    uint16_t own_port = 0;
-    tt_own_address(&node, &own_ip, &own_port);
-
-    // A peer at our own address with no segment yet, missed until the backoff has run out.
-    send_clock_at(&node, tt_SECOND);
-    EXPECT_TRUE(peer_segment(&node, PEER_CONTEXT_ID, own_ip, PEER_PORT) == NULL);
-    for (int miss = 0; miss < 16; miss++) {
-        send_clock_at(&node, node.segment_peers[PEER_CONTEXT_ID].recheck_at_ns);
-        EXPECT_TRUE(peer_segment(&node, PEER_CONTEXT_ID, own_ip, PEER_PORT) == NULL);
-    }
-    EXPECT_EQ_U64(tt_CONTEXT_UPDATE_INTERVAL, node.segment_peers[PEER_CONTEXT_ID].absent_gap_ns);
-    int asked = test_mock_segment_attach_calls;
-
-    // Its announce: asked at once, and the miss that follows is kept the shortest gap again.
-    note_same_host_peer(&node, PEER_CONTEXT_ID, own_ip);
-    EXPECT_TRUE(peer_segment(&node, PEER_CONTEXT_ID, own_ip, PEER_PORT) == NULL);
-    EXPECT_EQ_INT(asked + 1, test_mock_segment_attach_calls);
-    EXPECT_EQ_U64(test_mock_now + tt_CONTEXT_TX_INTERVAL, node.segment_peers[PEER_CONTEXT_ID].recheck_at_ns);
-
-    release_segments(&node);
-    test_mock_segments_free();
-}
-
 // SHM_PLAN 6a item 3, the anti-bypass test: a datagram that must be refused is refused identically
 // over the segment. The point is not that the segment validates anything itself - it is that a
 // segment arrival goes through the SAME acceptance path, so a datagram cannot reach an application
@@ -960,12 +869,6 @@ static void test_received_datagram_is_counted_as_udp(void) {
 // and every functional test passed while it was there. The control arm is the same peer once a
 // segment exists for it, where one attach must serve every later datagram - so the test
 // distinguishes "asks once" from "never asks".
-//
-// Since 2026-10-06 the cache is kept for a TIME (ROADMAP.md 5a): it was 256 sends, which held a late
-// binder off shared memory for four minutes at 1 Hz and re-asked a remote peer a thousand times a
-// second at max rate. So the sends here come in bursts far past 256 with the clock standing still,
-// and the clock is then moved by hand - the send path's reading, tt_Context.tx_clock_ns, which the
-// poll and every publish keep, and the mock clock with it (send_clock_at()).
 static void test_a_peer_with_no_segment_is_asked_once_not_per_datagram(void) {
     test_mock_reset();
     test_mock_segments_free();
@@ -978,9 +881,7 @@ static void test_a_peer_with_no_segment_is_asked_once_not_per_datagram(void) {
     node.hal.own_port = PEER_PORT;
 
     // No segment exists at the owner's address, which is every peer on another host.
-    const uint64_t start = tt_SECOND; // any reading
-    send_clock_at(&node, start);
-    const int sends = 10000; // forty times the old count of 256: a burst at a standing clock asks once
+    const int sends = 64; // well inside tt_SEGMENT_ATTACH_RETRY_SENDS, so one ask must cover them all
     for (int i = 0; i < sends; i++) {
         EXPECT_TRUE(peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT) == NULL);
     }
@@ -989,32 +890,12 @@ static void test_a_peer_with_no_segment_is_asked_once_not_per_datagram(void) {
     // and the per-datagram count is segment_unattached_to_udp, which the caller keeps.
     EXPECT_EQ_U32(1, node.segment_attach[tt_SEGMENT_ABSENT]);
 
-    // And it is not permanent. tt_CONTEXT_TX_INTERVAL later the question is asked again by ONE send,
-    // which is what makes a peer that binds later reachable at any rate rather than after N datagrams.
-    send_clock_at(&node, start + tt_CONTEXT_TX_INTERVAL - 1U);
-    (void)peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT);
-    EXPECT_EQ_INT(1, test_mock_segment_attach_calls); // not a nanosecond early
-    send_clock_at(&node, start + tt_CONTEXT_TX_INTERVAL);
-    (void)peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT);
-    EXPECT_EQ_INT(2, test_mock_segment_attach_calls);
-
-    // A second miss in a row is kept twice as long, so a peer that never has a segment - every peer on
-    // another host - stops costing an open() a millisecond ...
-    const uint64_t second_miss = start + tt_CONTEXT_TX_INTERVAL;
-    send_clock_at(&node, second_miss + (2U * tt_CONTEXT_TX_INTERVAL) - 1U);
-    (void)peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT);
-    EXPECT_EQ_INT(2, test_mock_segment_attach_calls);
-    send_clock_at(&node, second_miss + (2U * tt_CONTEXT_TX_INTERVAL));
-    (void)peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT);
-    EXPECT_EQ_INT(3, test_mock_segment_attach_calls);
-    // ... and settles at one a tt_CONTEXT_UPDATE_INTERVAL, asked at each deadline as it falls due.
-    for (int miss = 0; miss < 16; miss++) {
-        send_clock_at(&node, node.segment_peers[OWNER_ID].recheck_at_ns);
+    // And it is not permanent. Past the countdown the question is asked again, which is what makes
+    // a peer that binds later reachable rather than written off.
+    for (uint32_t i = 0; i < tt_SEGMENT_ATTACH_RETRY_SENDS; i++) {
         (void)peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT);
     }
-    EXPECT_EQ_INT(3 + 16, test_mock_segment_attach_calls);
-    EXPECT_EQ_U64(tt_CONTEXT_UPDATE_INTERVAL, node.segment_peers[OWNER_ID].absent_gap_ns);
-    EXPECT_EQ_U64(test_mock_now + tt_CONTEXT_UPDATE_INTERVAL, node.segment_peers[OWNER_ID].recheck_at_ns);
+    EXPECT_EQ_INT(2, test_mock_segment_attach_calls);
 
     // A different address behind the same context id is asked about at once - the cached "no" was
     // about a peer that is not this one.
@@ -1315,8 +1196,6 @@ static void test_a_segment_left_by_a_dead_owner_is_reclaimed(void) {
     init_node_topic_pub(&writer, &writer_topic, &writer_pub);
     writer.hal.own_ip = PEER_IP;
     writer.hal.own_port = PEER_PORT;
-    const uint64_t attached_at = tt_SECOND; // any reading of the send path's clock
-    send_clock_at(&writer, attached_at);
     struct tt_SegmentHeader* old_mapping = peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT);
     EXPECT_TRUE(old_mapping != NULL);
     EXPECT_TRUE(segment_write(old_mapping, "orphan", 7, NULL, 0, PEER_IP, PEER_PORT, 1));
@@ -1354,17 +1233,12 @@ static void test_a_segment_left_by_a_dead_owner_is_reclaimed(void) {
     EXPECT_TRUE(peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT) == old_mapping);
 
     // What closes the window is asking the name again, which is the only question that has a
-    // different answer now. tt_CONTEXT_UPDATE_INTERVAL after the attach the entry is dropped and
-    // re-attached, by the first send after it however few came before, and the file at that name is the
-    // successor's. It was 4096 sends: over an hour of writing into the orphan at 1 Hz. And not sooner,
-    // however many sends come first - at a standing clock, 10000 of them, past the old count.
-    for (int i = 0; i < 10000; i++) {
-        EXPECT_TRUE(peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT) == old_mapping);
+    // different answer now. Past tt_SEGMENT_REVALIDATE_SENDS the entry is dropped and re-attached,
+    // and the file at that name is the successor's.
+    struct tt_SegmentHeader* new_mapping = old_mapping;
+    for (uint32_t i = 0; i < tt_SEGMENT_REVALIDATE_SENDS; i++) {
+        new_mapping = peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT);
     }
-    send_clock_at(&writer, attached_at + tt_CONTEXT_UPDATE_INTERVAL - 1U);
-    EXPECT_TRUE(peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT) == old_mapping);
-    send_clock_at(&writer, attached_at + tt_CONTEXT_UPDATE_INTERVAL);
-    struct tt_SegmentHeader* new_mapping = peer_segment(&writer, OWNER_ID, OWNER_IP, OWNER_PORT);
     EXPECT_TRUE(new_mapping != NULL);
     EXPECT_TRUE(new_mapping != old_mapping);
     EXPECT_TRUE(new_mapping == reborn.own_segment);
@@ -1436,13 +1310,6 @@ static void test_a_writer_gives_up_on_a_ring_nobody_drains(void) {
     // reorder anything for, so the peer becomes UNATTACHED and its datagrams go by UDP again. That
     // is the difference between a reader that is behind and a reader that is gone.
     EXPECT_TRUE(to_udp > 0);
-    // And it stays on UDP for a whole tt_CONTEXT_UPDATE_INTERVAL before asking again. The file is still
-    // there and healthy, so a re-ask a millisecond later - the first gap of an ordinary "no" - would
-    // re-attach the same dead ring and drop for another tt_SEGMENT_DEAD_READER_NS. The loop is long
-    // enough to fill the ring, reach the give-up and spend that whole interval on UDP.
-    const uint64_t ms = 1000000ULL;
-    EXPECT_TRUE(sends >= tt_SEGMENT_SLOTS + (tt_SEGMENT_DEAD_READER_NS / ms) + (tt_CONTEXT_UPDATE_INTERVAL / ms));
-    EXPECT_TRUE(to_udp >= (uint32_t)(tt_CONTEXT_UPDATE_INTERVAL / ms) - 1U);
     EXPECT_EQ_U32(tt_SEGMENT_SLOTS, (uint32_t)writer.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
     EXPECT_EQ_U32(sends - tt_SEGMENT_SLOTS - (uint32_t)writer.segment_full_dropped, to_udp);
     // Given up rather than retried for ever. Asserted as an EVENT that happened, not as the state at
@@ -2434,8 +2301,6 @@ int main(void) {
     test_every_udp_datagram_has_a_named_reason();
     test_a_datagram_crosses_a_segment();
     test_segment_bytes_equal_what_udp_would_have_sent();
-    test_a_publish_brings_its_clock_reading_to_the_send();
-    test_a_same_host_announce_restarts_the_backoff();
     test_a_refused_datagram_is_refused_over_the_segment_too();
     test_received_datagram_is_counted_as_udp();
     test_a_peer_with_no_segment_is_asked_once_not_per_datagram();

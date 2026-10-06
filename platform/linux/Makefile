@@ -209,9 +209,8 @@ test: config-renames $(TEST_BINS)
 # defined must pass, so a header that fails for another reason cannot pass this check for the wrong one.
 CONFIG_RENAMED = tt_NODE_CYCLE tt_NODE_UPDATE_INTERVAL tt_NODE_TX_INTERVAL tt_NODE_MAX_LEASE_NS tt_NODE_ID_INVALID \
                  tt_NODE_ID_BROADCAST _tt_NODE_ADDRESS _tt_NODE_PORT _tt_NODE_BROADCAST
-# Settings removed outright, the same way: tt_SERVER_PENDING_ENTRY_LENGTH sized a copy no longer kept;
-# tt_SCHEDULER_IO_INTERLEAVE counted entries where tt_RX_CHECK_RATIO now times them.
-CONFIG_REMOVED = tt_SERVER_PENDING_ENTRY_LENGTH tt_SCHEDULER_IO_INTERLEAVE
+# Settings removed outright, the same way: tt_SERVER_PENDING_ENTRY_LENGTH sized a copy no longer kept.
+CONFIG_REMOVED = tt_SERVER_PENDING_ENTRY_LENGTH
 config-renames:
 	@printf '#include <tickle/config.h>\nint main(void){return 0;}\n' > /tmp/tt_cfg_$$$$.c; \
 	 fail=0; \

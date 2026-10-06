@@ -363,20 +363,17 @@
 #ifndef tt_RECEIVE_TIMEOUT
 #define tt_RECEIVE_TIMEOUT (100 * tt_MICROSECOND) // nanosecond
 #endif
-// How much scheduler work a busy tt_Context_poll() runs per unit of time spent looking at the socket and finding
-// nothing. The poll prefers an already-due scheduler entry to tt_receive(), so an entry that is always due (a
-// max-rate publisher's send loop) would leave its ACKNACKs unheard; between entries the loop therefore peeks,
-// without waiting, once the time since it last looked reaches this ratio times what an empty peek costs - a
-// moving average of its own clock readings - and never later than tt_RECEIVE_TIMEOUT (rx_check_budget(),
-// tickle.c). Empty peeks then take about 1/(ratio + 1) of a busy loop on any platform: a look the io_uring hint
-// answers from memory comes after nearly every entry, a recvmmsg() that finds nothing after a run of them. A
-// dimensionless share, not a fitted value: raise it to spend less on empty reads, lower it to hear sooner.
-// It replaces tt_SCHEDULER_IO_INTERLEAVE (2026-10-05), a count of entries whose period scaled with the hardware.
-#ifndef tt_RX_CHECK_RATIO
-#define tt_RX_CHECK_RATIO 8
-#endif
-#ifdef tt_SCHEDULER_IO_INTERLEAVE
-#error "tt_SCHEDULER_IO_INTERLEAVE was removed: the receive check is timed, see tt_RX_CHECK_RATIO (ROADMAP.md 5a)"
+// EXPERIMENTAL (branch experiment/poll-loop-io-interleave, rmw_tickle/PLAN.md's own "Further
+// latency research" section) - tt_Context_poll()'s own inner loop favors an already-due scheduler
+// entry over ever calling tt_receive(), with no cap on how many may run consecutively before an
+// I/O check happens. A continuously-rescheduling task (e.g. a max-rate Publisher's own send loop,
+// interval_s=0) can then starve tt_receive() for a whole call's own tt_RECEIVE_TIMEOUT budget,
+// meaning ACKNACK responsiveness ends up bounded by how rarely the scheduler queue goes idle, not
+// by real network RTT. This bounds how many scheduler entries may run back-to-back before a
+// forced, non-blocking tt_try_receive() peek is squeezed in between them - unvalidated on real HIL
+// yet, this specific value (8) is a first guess, not yet tuned.
+#ifndef tt_SCHEDULER_IO_INTERLEAVE
+#define tt_SCHEDULER_IO_INTERLEAVE 8
 #endif
 // Whether TickLE core may be called from more than one thread (2026-09-25). 1: every public tt_*
 // function is safe to call from any thread, concurrently with tt_Context_poll() on another - see
@@ -541,21 +538,24 @@
 #define tt_SEGMENT_STALL_PASSES 1000
 #endif
 
-// How long a writer keeps its answer about a peer's segment before asking /dev/shm again - not a
-// tunable of its own any more. A "no" is kept tt_CONTEXT_TX_INTERVAL after the first miss, doubling
-// with each miss in a row up to tt_CONTEXT_UPDATE_INTERVAL: asking per datagram cost ~87,000 failed
-// open() calls a second per sender and halved cross-host throughput, and the answer must not become
-// permanent either, since a peer that binds after we first sent to it has to become attachable. A
-// "yes" is kept tt_CONTEXT_UPDATE_INTERVAL: an owner killed between one datagram and the next leaves
-// its region mapped and unchanged, incarnation included, so only re-attaching by name finds the
-// successor's file. Both were counts of sends until 2026-10-06 (256 and 4096), so their delays grew as
-// the sender slowed - a successor written to after 4096 datagrams, over an hour at 1 Hz (ROADMAP.md 5a,
-// absent_gap() and peer_segment() in tickle.c).
-#ifdef tt_SEGMENT_ATTACH_RETRY_SENDS
-#error "tt_SEGMENT_ATTACH_RETRY_SENDS was removed: a missing segment is re-asked after a time (ROADMAP.md 5a)"
+// Sends to a peer with no segment before asking /dev/shm about it again. The answer for a peer on
+// another host never changes, so asking per datagram is pure cost - measured at roughly 87,000
+// failed open() calls a second per sender, which halved cross-host throughput. It must not become
+// permanent either: a peer that binds after we first sent to it, or that restarts, has to become
+// attachable. 256 sends costs about 0.4% of the failed calls and bounds the delay at 256 datagrams,
+// which on a link busy enough for the cost to matter is well under a millisecond.
+#ifndef tt_SEGMENT_ATTACH_RETRY_SENDS
+#define tt_SEGMENT_ATTACH_RETRY_SENDS 256
 #endif
-#ifdef tt_SEGMENT_REVALIDATE_SENDS
-#error "tt_SEGMENT_REVALIDATE_SENDS was removed: an attached segment is re-asked every tt_CONTEXT_UPDATE_INTERVAL"
+
+// Sends over an attached segment before the peer asks the name again. This is not paranoia about
+// the mapping going bad: an owner killed between one datagram and the next leaves its region mapped
+// and unchanged, incarnation included, so re-reading the header can never reveal it. Re-attaching
+// by name can - the file is either gone or has been replaced by the successor's. Larger than the
+// negative interval because a working segment is the common case and this costs an open() and a
+// remap, not just an open().
+#ifndef tt_SEGMENT_REVALIDATE_SENDS
+#define tt_SEGMENT_REVALIDATE_SENDS 4096
 #endif
 
 // How long a reader may take nothing at all from its ring, while we have records for it, before the
