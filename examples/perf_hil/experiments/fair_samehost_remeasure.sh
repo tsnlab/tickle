@@ -19,11 +19,29 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # release it, and a KEEP_ALL campaign queued meanwhile took it between two cells; the next cell then waited out
 # rig_lock's 1800 s and was lost (exit 75). With the lock held, the inner calls see RIG_LOCK_HELD_HIL=1 and skip theirs.
 export RIG_LOCK_SCOPE=hil
-if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
 SHA=${SHA:?set SHA to a pushed commit}
 FRAMEWORKS=${FRAMEWORKS:-"tickle fastdds cyclonedds"}
 REPS=${REPS:-3}
 CELLS=${CELLS:-"best_effort_throughput:p2 best_effort_throughput:p3 best_effort_throughput:p4 reliable_throughput:p2 reliable_throughput:p3 reliable_throughput:p4 reliable_latency:p2 reliable_latency:p3 reliable_latency:p4"}
+if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then
+    # Preflight (rig_preflight.sh, 2026-10-06): every cell below, every framework, same-host as s6 runs them, on this
+    # PC before the lock is taken - once for the whole run; the inner s6 calls get PREFLIGHT=0. PREFLIGHT=0 skips it.
+    if [ "${PREFLIGHT:-1}" != 0 ]; then
+        pf_specs=()
+        for cell in $CELLS; do
+            cli=""
+            [ "${cell%%:*}" = reliable_latency ] && cli="-i 0.005"
+            pf_specs+=("$cell:N0:$cli:-Q")
+        done
+        if ! SHA=$SHA PREFLIGHT_TOPO=samens FWS="$FRAMEWORKS" \
+            "$REPO/examples/perf_hil/experiments/rig_preflight.sh" "${pf_specs[@]}"; then
+            echo "REFUSING TO TAKE THE RIG: rig_preflight.sh failed (above). PREFLIGHT=0 overrides." >&2
+            exit 1
+        fi
+    fi
+    export PREFLIGHT=0
+    exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"
+fi
 OUTB=${OUTB:-$HOME/rig_results_safe/fair_samehost_${SHA}_$(date +%Y%m%d-%H%M%S)}
 LOG="$OUTB.driver.log"
 : >"$LOG"

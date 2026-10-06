@@ -55,7 +55,23 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 ANALYSE_ONLY=${S6_ANALYSE_ONLY:-0}
 if [ "$ANALYSE_ONLY" != 1 ]; then
     export RIG_LOCK_SCOPE=hil
-    if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
+    if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then
+        # Preflight (rig_preflight.sh, 2026-10-06): this cell's shape, every framework, both processes in one private
+        # namespace sharing a private /dev/shm, checked on this PC BEFORE the lock is taken. PREFLIGHT=0 skips it; a
+        # caller holding the lock (fair_samehost_remeasure.sh) preflights all its cells itself, before taking it.
+        if [ "${PREFLIGHT:-1}" != 0 ]; then
+            SHA=${SHA:-$(git -C "$REPO" rev-parse --short HEAD)}
+            export SHA
+            if ! PREFLIGHT_TOPO=samens FWS="${FRAMEWORKS:-tickle fastdds cyclonedds}" \
+                "$REPO/examples/perf_hil/experiments/rig_preflight.sh" \
+                "${SCEN:-reliable_throughput}:${SIZE:-p1}:N0:${CLI_ARGS:-}:-Q"; then
+                echo "REFUSING TO TAKE THE RIG: rig_preflight.sh failed (above). PREFLIGHT=0 overrides." >&2
+                exit 1
+            fi
+        fi
+        export PREFLIGHT=0
+        exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"
+    fi
     export RIG_LOCK_HELD_HIL=1   # so the tickle cell's own harness does not take the lock again
 fi
 

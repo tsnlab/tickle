@@ -65,54 +65,6 @@ RPI_CLIENT=10.1.1.214
 RPI_SERVER=10.1.1.213
 HOSTS=("$RPI_CLIENT" "$RPI_SERVER")
 
-if [ "$DRY_RUN" != 1 ] && [ "${RIG_LOCK_HELD_HIL:-${RIG_LOCK_HELD:-0}}" != "1" ]; then
-    OUT="$OUT" exec "$PH/rig_lock.sh" "${BASH_SOURCE[0]}" "$@"
-fi
-: > "$OUT"
-say() { echo "$*" | tee -a "$OUT"; }
-ssh_h() { ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
-
-# --- network conditions (OPTIMIZATION_PLAN.md section 6) --------------------------------------
-# Applied on the client's eth0, which is also the measured and the data interface. reorder needs a
-# delay to have anything to reorder against, hence N3's 1ms.
-# `tc qdisc del root` legitimately fails when there is nothing to delete, so its exit status cannot
-# be the check - which is why it was `|| true`, and why a real failure (no NOPASSWD for tc, the same
-# shape as the sudo/tcpdump hole of 2026-09-24) would have left netem in place silently and shaped
-# every later measurement on this rig, including CI's. The qdisc is read back instead.
-tc_netem_present() { ssh_h "$RPI_CLIENT" "tc qdisc show dev eth0" 2>/dev/null | grep -q netem; }
-tc_apply() {
-    case "$1" in
-        N0) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc del dev eth0 root" >/dev/null 2>&1 || true
-            if tc_netem_present; then
-                echo "FATAL: netem still on $RPI_CLIENT eth0 after del - the rig is left shaped" >&2
-                ssh_h "$RPI_CLIENT" "tc qdisc show dev eth0" >&2 || true
-                return 1
-            fi ;;
-        N1) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem loss 5%" ;;
-        N2) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay 10ms 2ms" ;;
-        N3) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay 1ms reorder 5% 50%" ;;
-        *)  echo "unknown network condition $1" >&2; return 1 ;;
-    esac
-}
-tc_describe() {
-    case "$1" in
-        N0) echo "none" ;; N1) echo "loss 5%" ;;
-        N2) echo "delay 10ms jitter 2ms" ;; N3) echo "delay 1ms reorder 5%" ;;
-    esac
-}
-trap 'tc_apply N0 || echo "RIG LEFT SHAPED - clear it before any further measurement" >&2' EXIT
-
-# The EXIT trap covers a normal exit and SIGTERM (verified by driving a copy: SIGTERM ran the trap,
-# SIGKILL did not, because SIGKILL cannot be caught). So a SIGKILLed run leaves netem behind, and
-# the only place that can be caught is the start of the next one. Refusing is deliberate: silently
-# clearing it would hide that some earlier run died holding the rig shaped.
-if [ "$DRY_RUN" != 1 ] && tc_netem_present; then
-    say "REFUSING TO START: $RPI_CLIENT eth0 already has netem on it, so N0 would not be 'no shaping'."
-    ssh_h "$RPI_CLIENT" "tc qdisc show dev eth0" | tee -a "$OUT"
-    say "A previous run was probably SIGKILLed. Clear it and re-run:"
-    say "  ssh -i $SSH_KEY ci@$RPI_CLIENT 'sudo -n tc qdisc del dev eth0 root'"
-    exit 1
-fi
 
 # --- the matrix (OPTIMIZATION_PLAN.md section 7) ------------------------------------------------
 # shape|payload|qos|network|scenario|tickle_extra_args
@@ -157,10 +109,6 @@ needed_variants() {
     done | sort -u
 }
 
-say "=== campaign sweep, $(date -Is), OPTIMIZATION_PLAN.md rev 4 ==="
-say "repo $(git -C "$REPO" rev-parse --short "${SHA:-origin/main}"), ${REPS} reps, -d ${DUR}, out $OUT"
-say "warm-up/cool-down: throughput ${WARMUP_S}s/${COOLDOWN_S}s, latency ${WARMUP_RTTS}/${COOLDOWN_RTTS} round trips ${EDGE_INTERVAL_S}s apart"
-say ""
 # CELLS="1 5 3 4 6" runs only those combinations (1-based, in MATRIX order), keeping each cell's
 # number so its label still matches the published c-numbers. Added 2026-09-26 to re-establish c6
 # (p4 under loss) - VOID in the original campaign - without re-running all twelve.
@@ -170,6 +118,115 @@ if [ -n "${CELLS:-}" ]; then
     read -ra CELL_NUMS <<<"$CELLS"
     MATRIX=("${kept[@]}")
 fi
+
+# --- identical QoS for all three (COMPARISON.md 4.4) --------------------------------------------
+# KEEP_ALL's bound in samples per payload shape: min(2048, floor(512 KiB / sample bytes)), which is
+# what TickLE's shipped 512 KiB budget allows, so TickLE barely moves and the vendors are brought to
+# the same count. Every framework's RESULT line reports it as keepall_samples=.
+keepall_samples_for() {
+    case "$1" in
+        p1) echo 2048 ;;
+        p2) echo 405 ;;
+        p3) echo 368 ;;
+        p4) echo 187 ;;
+        *) echo "" ;;
+    esac
+}
+common_args() { # $1 scenario, $2 payload, $3 qos
+    case "$1:$3" in
+        reliable_throughput:Q0) echo "-N $(keepall_samples_for "$2") -B 100" ;;
+        reliable_throughput:Q2) echo "-K 64 -B 100" ;;
+        *) echo "" ;;
+    esac
+}
+# --- preflight, before the rig lock (rig_preflight.sh, 2026-10-06) -------------------------------
+# Every cell shape above, run for a few seconds on this PC between two private network namespaces, each RESULT line
+# checked, BEFORE the lock is taken: a harness bug then costs a minute here instead of a rig session, and a broken
+# harness never holds the rig. PREFLIGHT=0 skips it. A caller that runs this script several times (campaign_ab_chain,
+# fair_crosshost_remeasure) preflights once itself and passes PREFLIGHT=0. Under a lock someone else already holds it
+# is skipped with a note: running it there would spend the very rig time it exists to save.
+# PREFLIGHT_CELLS_ONLY=1 prints the cell specs rig_preflight.sh takes, one per line, and exits.
+preflight_specs() {
+    local spec shape payload qos net scenario extra
+    for spec in "${MATRIX[@]}"; do
+        IFS='|' read -r shape payload qos net scenario extra <<<"$spec"
+        echo "$scenario:$payload:$net:$(common_args "$scenario" "$payload" "$qos"):$extra"
+    done
+}
+if [ "${PREFLIGHT_CELLS_ONLY:-0}" = 1 ]; then
+    preflight_specs
+    exit 0
+fi
+if [ "$DRY_RUN" != 1 ] && [ "${RIG_LOCK_HELD_HIL:-${RIG_LOCK_HELD:-0}}" != "1" ]; then
+    # Resolved once, here, so the preflight checks the very commit the rig is about to build.
+    SHA="${SHA:-$(git -C "$REPO" rev-parse origin/main)}"
+    export SHA
+    if [ "${PREFLIGHT:-1}" != 0 ]; then
+        mapfile -t pf_specs < <(preflight_specs)
+        if ! FWS="$FWS" "$HERE/rig_preflight.sh" "${pf_specs[@]}"; then
+            echo "REFUSING TO TAKE THE RIG: rig_preflight.sh failed for $SHA (above). PREFLIGHT=0 overrides." >&2
+            exit 1
+        fi
+    fi
+    PREFLIGHT=0 OUT="$OUT" exec "$PH/rig_lock.sh" "${BASH_SOURCE[0]}" "$@"
+fi
+if [ "$DRY_RUN" != 1 ] && [ "${PREFLIGHT:-1}" != 0 ]; then
+    echo "NOTE: no preflight - the rig lock was already held when this started; the caller must preflight before it" >&2
+fi
+: > "$OUT"
+say() { echo "$*" | tee -a "$OUT"; }
+ssh_h() { ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
+
+# --- network conditions (OPTIMIZATION_PLAN.md section 6) --------------------------------------
+# Applied on the client's eth0, which is also the measured and the data interface. reorder needs a
+# delay to have anything to reorder against, hence N3's 1ms.
+# `tc qdisc del root` legitimately fails when there is nothing to delete, so its exit status cannot
+# be the check - which is why it was `|| true`, and why a real failure (no NOPASSWD for tc, the same
+# shape as the sudo/tcpdump hole of 2026-09-24) would have left netem in place silently and shaped
+# every later measurement on this rig, including CI's. The qdisc is read back instead.
+tc_netem_present() { ssh_h "$RPI_CLIENT" "tc qdisc show dev eth0" 2>/dev/null | grep -q netem; }
+tc_apply() {
+    case "$1" in
+        N0) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc del dev eth0 root" >/dev/null 2>&1 || true
+            if tc_netem_present; then
+                echo "FATAL: netem still on $RPI_CLIENT eth0 after del - the rig is left shaped" >&2
+                ssh_h "$RPI_CLIENT" "tc qdisc show dev eth0" >&2 || true
+                return 1
+            fi ;;
+        N1) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem loss 5%" ;;
+        N2) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay 10ms 2ms" ;;
+        N3) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay 1ms reorder 5% 50%" ;;
+        *)  echo "unknown network condition $1" >&2; return 1 ;;
+    esac
+}
+tc_describe() {
+    case "$1" in
+        N0) echo "none" ;; N1) echo "loss 5%" ;;
+        N2) echo "delay 10ms jitter 2ms" ;; N3) echo "delay 1ms reorder 5%" ;;
+    esac
+}
+# Not under DRY_RUN (2026-10-06): the trap ssh'es to the rig and deletes its root qdisc, and a dry run holds no lock -
+# so a DRY_RUN=1 started while another campaign ran a loss cell would have removed that cell's netem mid-run.
+if [ "$DRY_RUN" != 1 ]; then
+    trap 'tc_apply N0 || echo "RIG LEFT SHAPED - clear it before any further measurement" >&2' EXIT
+fi
+
+# The EXIT trap covers a normal exit and SIGTERM (verified by driving a copy: SIGTERM ran the trap,
+# SIGKILL did not, because SIGKILL cannot be caught). So a SIGKILLed run leaves netem behind, and
+# the only place that can be caught is the start of the next one. Refusing is deliberate: silently
+# clearing it would hide that some earlier run died holding the rig shaped.
+if [ "$DRY_RUN" != 1 ] && tc_netem_present; then
+    say "REFUSING TO START: $RPI_CLIENT eth0 already has netem on it, so N0 would not be 'no shaping'."
+    ssh_h "$RPI_CLIENT" "tc qdisc show dev eth0" | tee -a "$OUT"
+    say "A previous run was probably SIGKILLed. Clear it and re-run:"
+    say "  ssh -i $SSH_KEY ci@$RPI_CLIENT 'sudo -n tc qdisc del dev eth0 root'"
+    exit 1
+fi
+
+say "=== campaign sweep, $(date -Is), OPTIMIZATION_PLAN.md rev 4 ==="
+say "repo $(git -C "$REPO" rev-parse --short "${SHA:-origin/main}"), ${REPS} reps, -d ${DUR}, out $OUT"
+say "warm-up/cool-down: throughput ${WARMUP_S}s/${COOLDOWN_S}s, latency ${WARMUP_RTTS}/${COOLDOWN_RTTS} round trips ${EDGE_INTERVAL_S}s apart"
+say ""
 say "FASTDDS_PROFILE=${FASTDDS_PROFILE:-fastdds_eth0_only.xml}"
 say "TICKLE_P4_PATH=${TICKLE_P4_PATH:-frag} (p4 TickLE rows must report sample_path=${TICKLE_P4_PATH:-frag}; p1-p3 datagram)"
 say "--- plan: ${#MATRIX[@]} combinations x 3 frameworks x ${REPS} reps = $(( ${#MATRIX[@]} * 3 * REPS )) runs ---"
@@ -256,26 +313,6 @@ wait_rig_quiet() {
     echo "$left"
 }
 
-# --- identical QoS for all three (COMPARISON.md 4.4) --------------------------------------------
-# KEEP_ALL's bound in samples per payload shape: min(2048, floor(512 KiB / sample bytes)), which is
-# what TickLE's shipped 512 KiB budget allows, so TickLE barely moves and the vendors are brought to
-# the same count. Every framework's RESULT line reports it as keepall_samples=.
-keepall_samples_for() {
-    case "$1" in
-        p1) echo 2048 ;;
-        p2) echo 405 ;;
-        p3) echo 368 ;;
-        p4) echo 187 ;;
-        *) echo "" ;;
-    esac
-}
-common_args() { # $1 scenario, $2 payload, $3 qos
-    case "$1:$3" in
-        reliable_throughput:Q0) echo "-N $(keepall_samples_for "$2") -B 100" ;;
-        reliable_throughput:Q2) echo "-K 64 -B 100" ;;
-        *) echo "" ;;
-    esac
-}
 # Did this row run with the QoS common_args() asked for? Returns a VOID reason, or nothing.
 # case patterns only: a grep that matches nothing inside $(...) ends the sweep silently under
 # set -euo pipefail, which is how this script died at c8 on 2026-09-26.

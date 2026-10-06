@@ -18,8 +18,20 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # The rig lock is taken once for the whole run, so a job queued meanwhile cannot cut in between campaigns.
 export RIG_LOCK_SCOPE=hil
-if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
 SHA=${SHA:?set SHA to a pushed commit}
+if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then
+    # Preflight (rig_preflight.sh, 2026-10-06): every campaign cell, every framework, on this PC before the lock is
+    # taken - once for the whole run; the four campaigns get PREFLIGHT=0. PREFLIGHT=0 skips it.
+    if [ "${PREFLIGHT:-1}" != 0 ]; then
+        mapfile -t pf_specs < <(PREFLIGHT_CELLS_ONLY=1 "$REPO/examples/perf_hil/experiments/campaign_sweep.sh")
+        if ! SHA=$SHA "$REPO/examples/perf_hil/experiments/rig_preflight.sh" "${pf_specs[@]}"; then
+            echo "REFUSING TO TAKE THE RIG: rig_preflight.sh failed (above). PREFLIGHT=0 overrides." >&2
+            exit 1
+        fi
+    fi
+    export PREFLIGHT=0
+    exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"
+fi
 OUTB=${OUTB:-$HOME/rig_results_safe/fair_crosshost_${SHA}_$(date +%Y%m%d-%H%M%S)}
 LOG="$OUTB.driver.log"
 : >"$LOG"
