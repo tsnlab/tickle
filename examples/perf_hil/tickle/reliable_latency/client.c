@@ -112,10 +112,22 @@ static void pong_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
 }
 
 // No reply within the wait: give this ping up and send the next one an interval later, as the DDS clients do.
+// ONE timeout entry exists at a time (2026-10-06): the first version scheduled one per ping and never cancelled it, so
+// at any spacing under ~4 ms the 500 ms timers filled the scheduler (tt_MAX_SCHEDULER_LENGTH), tt_Context_schedule()
+// refused the next ping, and the client stopped after ~124 round trips. An entry that finds the current ping not yet
+// due moves itself to that ping's deadline instead.
+static bool g_timeout_scheduled = false;
+
 static void ping_timeout(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
-    if (awaiting == 0 || time < awaiting_until_ns) {
-        return; // answered in time, or this is an earlier ping's timer: the current ping is not due yet
+    g_timeout_scheduled = false;
+    if (awaiting == 0) {
+        return; // answered in time; the next ping arms its own wait
+    }
+    if (time < awaiting_until_ns) {
+        g_timeout_scheduled = true; // a later ping than the one this entry was set for: follow it
+        tt_Context_schedule(node, awaiting_until_ns, ping_timeout, NULL);
+        return;
     }
     awaiting = 0;
     tt_Context_schedule(node, time + (uint64_t)(interval_s * (double)tt_SECOND), ping, NULL);
@@ -133,7 +145,10 @@ static void ping(struct tt_Context* node, uint64_t time, void* param) {
     }
     awaiting = msg.seq;
     awaiting_until_ns = time + response_wait_ns;
-    tt_Context_schedule(node, awaiting_until_ns, ping_timeout, NULL);
+    if (!g_timeout_scheduled) {
+        g_timeout_scheduled = true;
+        tt_Context_schedule(node, awaiting_until_ns, ping_timeout, NULL);
+    }
 }
 
 static void stop(struct tt_Context* node, uint64_t time, void* param) {
