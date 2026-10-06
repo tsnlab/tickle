@@ -41,8 +41,10 @@ Principles that shape everything below:
 - `timeout = 0`: one non-blocking pass - run what is due, process what is already received.
 - `timeout < 0`: wait until the next scheduler entry is due, a datagram arrives, or `tt_Context_interrupt()`.
   With nothing scheduled it waits indefinitely: an idle node does not wake up.
-- Waiting uses `ppoll()` with the timeout as an argument (never `SO_RCVTIMEO`), over the well-known socket, the
-  data socket, an `eventfd` for wake-ups and, when present, the segment doorbell FIFO.
+- Waiting uses `epoll_pwait2()` with the timeout as a timespec (never `SO_RCVTIMEO`), over the well-known socket,
+  the data socket, an `eventfd` for wake-ups and, when present, the segment doorbell FIFO. The set is registered
+  once, so a sleep no longer joins and leaves four wait queues; `ppoll()` over the same four is the fallback when
+  epoll or Linux 5.11 is missing.
 - At most `tt_SCHEDULER_IO_INTERLEAVE` (8) due scheduler entries run back to back before a non-blocking receive
   check, so a max-rate publisher cannot starve ACKNACK processing.
 - A high-rate publisher must call `tt_Context_poll(ctx, 0)` between sends, not block.
@@ -410,8 +412,13 @@ Compiled in by default on Linux (`tt_SEGMENT_ENABLED`), out on FreeRTOS.
   A busy reader is never asleep, so a loaded ring costs no doorbells; a reader that goes back to sleep with records
   unread is rung again; a dead reader is rung once, not per datagram.
 - The bell is a named FIFO beside the segment (`<segment>.bell`, `tt_SEGMENT_BELL_FIFO=1`), opened by writers on
-  attach, rung with a one-byte non-blocking write, and part of the owner's existing `ppoll()` set. A peer without one
-  is rung with a zero-length UDP datagram (never a valid TickLE datagram).
+  attach, rung with a one-byte non-blocking write, and part of the owner's wait set. A peer without one is rung with
+  a zero-length UDP datagram (never a valid TickLE datagram).
+- In the epoll set the bell is edge-triggered, so a ring costs the reader no `read()`. The pipe's bytes are read
+  every capacity / (4 x `tt_MAX_CONTEXT_IDS`) sleep generations (64 at 64 KiB): each peer rings a generation at
+  most once, so that keeps the pipe under half full, and a full pipe would refuse a ring. The kernel is asked at
+  bell creation whether it reports every write to an unread pipe (Linux 5.14+); if not, the bell is
+  level-triggered and read on every ring, as before.
 - Measured on `e17b4e6f`: 1.42x p3 BEST_EFFORT throughput over the UDP doorbell, and the same-host p2 round trip now
   34% faster than the kernel path (0.030 vs 0.046 ms at 200/s). Details in [RESULTS.md](RESULTS.md).
 

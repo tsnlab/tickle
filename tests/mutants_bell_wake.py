@@ -42,6 +42,24 @@ MUTANTS = [
         "        if (sleeping != peer->doorbell_generation) {",
         "        if (peer->doorbell_generation == 0) {",
     ),
+    (
+        "the edge-triggered bell ever being read (its pipe fills and refuses every ring)",
+        "src/hal_linux.c",
+        "    if (generation - node->hal.bell_drained_at >= node->hal.bell_drain_every) {",
+        "    if (false) {",
+    ),
+    (
+        "the bell read before it can fill (read at twice the pipe's capacity in generations)",
+        "src/hal_linux.c",
+        "    uint32_t every = capacity > 0 ? (uint32_t)capacity / (4U * (uint32_t)tt_MAX_CONTEXT_IDS) : 0U;",
+        "    uint32_t every = capacity > 0 ? (uint32_t)capacity * 2U : 0U;",
+    ),
+    (
+        "the bell joining the wait set at all",
+        "src/hal_linux.c",
+        "    if (epoll_ctl(node->hal.epoll_fd_plus1 - 1, EPOLL_CTL_ADD, bell, &event) != 0) {",
+        "    if (false) {",
+    ),
 ]
 
 

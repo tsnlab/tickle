@@ -12,7 +12,9 @@
 // The race it exists for: a reader says it is about to sleep (reader_waiting), drains its ring once more, and sleeps;
 // a writer publishes a record, then reads reader_waiting, and rings if it is set. Take away the second drain, or let
 // either side do its two steps in the other order, and a record can land in the gap with nobody coming for it - the
-// reader sleeps on top of it until something else wakes it.
+// reader sleeps on top of it until something else wakes it. The bell adds its own ways to lose one: a bell outside the
+// wait set is a ring nobody hears, and an edge-triggered bell that is never read fills its pipe (hal_linux.c,
+// bell_join_wait_set()).
 //
 // How it hits the race rather than hoping to: a ping-pong across two processes in which only the reader ever sleeps.
 //   parent (the reader under test) publishes a ping from inside the callback that took the last pong, then goes back
@@ -29,10 +31,20 @@
 // first version of this check, counting round trips over 10 ms, saw once in 100,000 against a protocol that lost one
 // on every unlucky round trip.
 //
+// ROUND_TRIPS is past the default pipe's 64 KiB, in rings, so an edge-triggered bell that is never read would be full
+// by the end; the bytes left in it are checked against half its capacity. That is checked directly rather than
+// through a lost wake-up because on this kernel a ring refused by a full pipe still wakes the reader: pipe_write()
+// issues its wake-up after a failed non-blocking write as well. That is not a promise, so the bell is never allowed to
+// fill, and this is the check that it is not.
+//
 // It also proves it exercised what it claims (each a FAIL if not, never a pass): the parent slept and was rung through
-// the FIFO for most round trips, its records came through the segment, and the child watched them.
+// the FIFO for most round trips, its records came through the segment, the child watched them, and - when the kernel
+// let the bell be edge-triggered - the bell was read far fewer times than it was rung.
 //
 // Exit 0 pass, 1 fail, 3 setup failed. Usage: bell_wake_check [round_trips]
+// NOLINTNEXTLINE(bugprone-reserved-identifier, readability-identifier-naming) - F_GETPIPE_SZ
+#define _GNU_SOURCE
+#include <fcntl.h>
 #include <inttypes.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -42,10 +54,12 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <tickle/config.h>
 #include <tickle/hal.h>
+#include <tickle/hal_linux.h>
 #include <tickle/tickle.h>
 
 #include "UInt64.h"
@@ -240,12 +254,19 @@ static enum check_exit verdict(const struct tt_Context* node) {
     uint64_t sleeps = node->segment_sleep_generation;
     uint64_t rung = node->segment_doorbells_received;
     uint64_t via_shm = node->rx_datagrams_by_transport[tt_TRANSPORT_SHM];
+    int unread = -1;
+    int capacity = -1;
+    if (node->hal.bell_fd_plus1 > 0) {
+        (void)ioctl(node->hal.bell_fd_plus1 - 1, FIONREAD, &unread); // NOLINT(misc-include-cleaner)
+        capacity = fcntl(node->hal.bell_fd_plus1 - 1, F_GETPIPE_SZ);
+    }
     printf("bell_wake_check: %" PRIu64 " round trips (worst %.3f ms), %" PRIu64 " watched by the writer, %" PRIu64
            " wake-ups lost, %" PRIu64 " never consumed; parent slept %" PRIu64 " times, woken by the bell %" PRIu64
-           " times; %" PRIu64 " records through the segment; the writer rang %" PRIu64 " times, %" PRIu64
-           " through the FIFO\n",
+           " times, read it %" PRIu64 " times (every %u generations, %d of %d bytes left); %" PRIu64
+           " records through the segment; the writer rang %" PRIu64 " times, %" PRIu64 " through the FIFO\n",
            g_measured, (double)g_worst_ns / NS_PER_MS, g_report->watched, g_report->lost, g_report->stuck, sleeps, rung,
-           via_shm, g_report->doorbells_sent, g_report->bells_rung);
+           node->hal.bell_drains, (unsigned)node->hal.bell_drain_every, unread, capacity, via_shm,
+           g_report->doorbells_sent, g_report->bells_rung);
     if (g_measured < g_target) {
         printf("bell_wake_check: FAIL - only %" PRIu64 " of %u round trips completed\n", g_measured, g_target);
         return CHECK_FAIL;
@@ -276,7 +297,18 @@ static enum check_exit verdict(const struct tt_Context* node) {
                g_target);
         return CHECK_FAIL;
     }
-    printf("bell_wake_check: PASS\n");
+    if (node->hal.bell_drain_every > 0) {
+        if (node->hal.bell_drains * 8U > rung) {
+            printf("bell_wake_check: FAIL - an edge-triggered bell was read %" PRIu64 " times for %" PRIu64 " rings\n",
+                   node->hal.bell_drains, rung);
+            return CHECK_FAIL;
+        }
+        if (unread < 0 || capacity <= 0 || unread > capacity / 2) {
+            printf("bell_wake_check: FAIL - the edge-triggered bell holds %d unread bytes of %d\n", unread, capacity);
+            return CHECK_FAIL;
+        }
+    }
+    printf("bell_wake_check: PASS (%s bell)\n", node->hal.bell_drain_every > 0 ? "edge-triggered" : "level-triggered");
     return CHECK_PASS;
 }
 
