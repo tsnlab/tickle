@@ -266,6 +266,7 @@ All are in `examples/perf_hil/experiments/`. Each one's header holds its pre-reg
 | `wire_inventory.sh` | What TickLE puts on the wire, by submessage kind |
 | `netem_counter_check.sh` | Does the tx counter include packets netem dropped? |
 | `rmw_crosshost_rtt.sh` | Cross-host rmw round trip against FastDDS, CycloneDDS and zenoh |
+| `rmw_samehost.sh` | The rmw comparison on one Pi: RTT (block, poll) and perf_test delivered rate, each rmw on its shipped same-host transport, witnessed; read with `rmw_samehost_summary.py` |
 | `rmw_memory_footprint.sh` | Memory of a default `rclcpp::Node` under each rmw |
 | `idle_cpu_arm.sh` | What an idle node costs in CPU |
 | `rmw_lease86_rig_chain.sh` | Template for an rmw-layer A-B-B-A on the rig |
