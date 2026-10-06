@@ -2953,6 +2953,51 @@ static void test_unknown_policy_still_terminates_on_eviction(void) {
     EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
 }
 
+// A Heartbeat that asks for an answer (FINAL clear: tt_Publisher_request_ack(), which is what a refused KEEP_ALL
+// Publisher sends every retry interval through keep_all_resolicit()) is answered at once, also while this reader
+// has a gap open and its own retry timer armed. It used to be answered only when there was no gap - the gap case
+// went to maybe_arm_acknack_retry(), which sends only when no timer is armed - so a stopped Publisher's requests
+// were ignored and the repair waited for the reader's timer. That timer is srtt + 4 * rttvar up to 64 * srtt: on
+// the rig (2026-10-07, 5% loss, Array1k and Array4k) it was ~130 ms, the publisher gives up at 100 ms, and two of
+// six lossy runs ended in "blocked 100ms ... gave up" with nothing lost.
+//
+// Control: a FINAL Heartbeat revealing the same gap stays paced by the timer - nothing is sent for it - so the
+// answer is the request's, not every Heartbeat's (piggybacked ones ride every 64th sample at full rate).
+static void test_heartbeat_requesting_an_answer_is_answered_while_a_gap_is_open(void) {
+    test_mock_reset();
+    test_mock_now = 10 * tt_MILLISECOND;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 3, 300, 3); // 2 lost: the gap opens, one ACKNACK goes, the timer is armed
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_TRUE(proxy->acknack_scheduled);
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+
+    // Control: a FINAL Heartbeat over the same range, before the timer is due - paced, nothing sent.
+    int sends_before = test_mock_send_to_call_count;
+    tail = write_heartbeat(&node, ENDPOINT_ID, 1, 3, tt_HEARTBEAT_FLAG_FINAL);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(sends_before, test_mock_send_to_call_count);
+
+    // The request: answered now, with the timer still armed and not yet due.
+    tail = write_heartbeat(&node, ENDPOINT_ID, 1, 3, 0);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(sends_before + 1, test_mock_send_to_call_count);
+    EXPECT_TRUE(proxy->acknack_scheduled); // the timer keeps running; the answer did not replace it
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);   // and the gap is still the one being asked for
+}
+
 #ifdef tt_RELIABLE_STATS
 // Phase 3 step 4 follow-up - a KEEP_ALL Publisher becomes writable again for two very different
 // reasons, and writable_no_peers is what tells them apart. Acks arriving is KEEP_ALL working; the
@@ -4346,6 +4391,7 @@ int main(void) {
     test_keep_all_solicitation_reopens_on_acknack();
     test_keep_all_refused_publisher_resolicits_by_itself();
     test_unknown_policy_still_terminates_on_eviction();
+    test_heartbeat_requesting_an_answer_is_answered_while_a_gap_is_open();
     test_keep_all_writable_callback_fires_once();
     test_keep_all_unblocks_when_last_subscriber_leaves();
     test_keep_all_refuses_when_bytes_bind_before_count();

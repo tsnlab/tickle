@@ -11359,12 +11359,17 @@ static void inform_subscriber_of_heartbeat(struct tt_Context* node, struct tt_En
     // bit() sees) so a Heartbeat that both reveals a real gap *and* explicitly requests a response
     // sends exactly one ACKNACK (maybe_arm_acknack_retry()'s own), not two.
     bool had_gap = highest_relevant_bit(proxy) >= 0;
+    bool timer_was_armed = proxy->acknack_scheduled;
     maybe_arm_acknack_retry(node, proxy);
-    if (!had_gap && !(ctx->flags & tt_HEARTBEAT_FLAG_FINAL)) {
-        // Healthy (no gap) but tt_Publisher_request_ack() explicitly asked anyway - the only way a
-        // Publisher ever learns a healthy Subscriber has fully caught up (see maybe_arm_acknack_
-        // retry()'s own "a healthy stream needs no ACKNACK at all" comment for why nothing above
-        // already sent one).
+    if (!(ctx->flags & tt_HEARTBEAT_FLAG_FINAL) && (!had_gap || timer_was_armed)) {
+        // tt_Publisher_request_ack() explicitly asked, and nothing above answered. Two cases:
+        // - healthy (no gap): the only way a Publisher ever learns a healthy Subscriber has fully caught up (see
+        //   maybe_arm_acknack_retry()'s own "a healthy stream needs no ACKNACK at all" comment);
+        // - a gap with the retry timer already armed: maybe_arm_acknack_retry() sends only when it arms, so the
+        //   request went unanswered until the timer fired. A refused KEEP_ALL Publisher sends nothing but these
+        //   requests (keep_all_resolicit()), and the timer is srtt + 4 * rttvar up to 64 * srtt - ~130 ms on the
+        //   rig under 5% loss, past rmw_tickle's 100 ms publish bound (2026-10-07: 2 of 6 lossy runs gave up).
+        // The timer is left as it is: it still paces this reader's own re-requests.
         send_acknack(node, proxy);
     }
 }
