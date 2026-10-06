@@ -68,6 +68,13 @@ The user's active list (2026-10-05), in order.
    clock 25%, memcpy 28%, segment indices 12% (now on their own cache lines, `e0873623`). Next: let
    `tt_Publisher_publish()` called from a scheduled callback reuse the time the poll loop just read (one of the four
    clock reads), and copy once by encoding into the slot.
+   Encode into the slot (branch `ab/encode-in-slot`, 1552a504): rig A/B 2026-10-07 (`ab_samehost.sh`,
+   `~/rig_results_safe/ab_samehost_encode_in_slot_20261007-003950.*`) VOID by its own rule: the primary, same-host
+   p3 BEST_EFFORT publisher CPU per sample, fell 13.7% (0.799 -> 0.689 us, t -62; the PC had shown +12%, from x86's
+   `rep movsq`), but the registered control, p4, moved too (CPU -1.5%, delivered +1.5%) - the change splits
+   segment_write() into claim and publish, which p4's fragment path also uses, so p4 was not a control it cannot
+   touch. Re-run with a control it really cannot reach (or the A-to-A drift of the A B B A blocks), pre-registered
+   anew; not landed until then.
 4. **Reduce the reader wake cost** (~3.1 us of system time per wake) without tuned spin values: each wake is paid
    per sample at low rates. (COMPARISON 2.2c; SHM_PLAN 7 q1)
 5. **rmw_tickle KEEP_ALL on the rig**: the first run lost ~5% of samples under 5% loss in every build. Six causes
