@@ -199,12 +199,13 @@ struct tt_hal {
     uint8_t rx_idle;
 #define TT_RX_IDLE_WELL_KNOWN 1U
 #define TT_RX_IDLE_DATA 2U
-    // Datagrams returned while any rx_idle bit was set. A skipped socket is asked again every
-    // TT_RX_IDLE_RECHECK of them, because "skipped until the next wait" assumed a drain session ends: a
-    // socket refilled faster than it is read - a max-rate broadcaster's own looped-back datagrams on the
-    // well-known one - kept one session going for a whole 20 s run, and the data socket carrying every
-    // discovery reply and ACKNACK was never read again (2026-10-05, rmw KEEP_ALL on the rig).
-    uint8_t rx_idle_returns;
+    // When the first datagram was returned while an rx_idle bit was set, by the running poll's clock (0: none
+    // yet). A skipped socket is asked again once TT_RX_IDLE_RECHECK_NS has passed since, because "skipped until
+    // the next wait" assumed a drain session ends: a socket refilled faster than it is read - a max-rate
+    // broadcaster's own looped-back datagrams on the well-known one - kept one session going for a whole 20 s
+    // run, and the data socket carrying every discovery reply and ACKNACK was never read again (2026-10-05, rmw
+    // KEEP_ALL on the rig). A time, not a count of datagrams, so the bound does not stretch with the hardware.
+    uint64_t rx_idle_since_ns;
     // Datagrams the last recvmmsg() read beyond the one it returned, handed out before any further wait
     // or read (rx_next of rx_count), all from one socket (rx_from_data). A pending datagram is always
     // returned before ppoll() is entered, so batching never holds one back behind a wait.

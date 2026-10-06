@@ -99,6 +99,8 @@ The user's active list (2026-10-05), in order.
    `/tmp/abc_counts2time_compare.txt` (copied to `~/rig_results_safe/ab_hotpath_2026-10-06/`). To redo: one change
    per commit (the three counts separately), each with its own A/B on the cells it can touch, before it lands. The
    designs and their tests are in the reverted commits.
+   Being rebuilt one change per commit, each A/B'd alone before it lands: (1) `TT_RX_IDLE_RECHECK` (64 datagrams) ->
+   `TT_RX_IDLE_RECHECK_NS` = `tt_RECEIVE_TIMEOUT` by the poll's own clock (`test_poll_signal`, `rx_idle_check`).
    Done 2026-10-05: the RPC retry bounds are srtt-relative (`tt_CALL_RETRY_MAX_SRTT_MULTIPLE`, per-retry doubling;
    `tt_CALL_RETRY_INTERVAL` is now only the seed and `_MAX` is gone), and the server's response cache lives as long
    as the client's schedule it can know plus the retry gaps it has measured (`tt_SERVER_CACHE_GAP_MULTIPLE`;
