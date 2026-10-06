@@ -3284,8 +3284,8 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
 static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no);
 // RELIABLE in-order delivery - release any samples this Subscriber is holding for a writer that
 // has gone away, so its slots do not stay occupied for a stream that will never resume.
-static void release_reorder_slots_for_writer(struct tt_Subscriber* sub, uint8_t node_id, uint32_t entity_id,
-                                             bool match_any_entity);
+static void release_reorder_slots_for_writer(struct tt_Context* node, struct tt_Subscriber* sub, uint8_t node_id,
+                                             uint32_t entity_id, bool match_any_entity);
 // Releases held samples the watermark has passed. Declared up here because acknack_retry()'s
 // give-up moves the watermark too, and it is defined long before the delivery code.
 static void drain_reorder(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy);
@@ -3477,6 +3477,18 @@ static void reset_node_state(struct tt_Context* node) {
         node->frag_slots[i].done = false;
     }
     node->frag_clock = 0;
+    node->frag_fast_sub = NULL;
+    node->frag_fast_timestamp = 0;
+    node->frag_fast_entity_id = 0;
+    node->frag_fast_seq_no = 0;
+    node->frag_fast_length = 0;
+    node->frag_fast_first_length = 0;
+    node->frag_fast_cont_length = 0;
+    node->frag_fast_context_id = 0;
+    node->frag_fast_count = 0;
+    node->frag_fast_placed = 0;
+    node->frag_fast_is_native = false;
+    node->frag_fast_via_data_port = false;
     node->frag_reassembled = 0;
     node->frag_abandoned = 0;
     node->frag_dropped = 0;
@@ -6614,6 +6626,11 @@ static tt_ret_t subscriber_destroy_locked(struct tt_Subscriber* sub) {
     }
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
     struct tt_Context* node = sub->node;
+#if tt_FRAG_ENABLED
+    if (node->frag_fast_sub == sub) {
+        node->frag_fast_sub = NULL; // its part-assembled sample goes with it, as its reorder buffer does
+    }
+#endif
 
     // Cancel every outstanding per-writer acknack_retry before this Subscriber's own writers[]
     // table (each entry's own schedule param) goes away - same reasoning as tt_Client_destroy()'s
@@ -8144,7 +8161,7 @@ static void forget_writer_proxies_for_endpoint(struct tt_Context* node, uint32_t
             // Freeing the slots matters more than the samples - a dead writer's held samples
             // would otherwise occupy the buffer for the lifetime of the Subscriber, and the only
             // symptom would be reorder_overflow rising on the writers that are still alive.
-            release_reorder_slots_for_writer(sub, node_id, entity_id, match_any_entity);
+            release_reorder_slots_for_writer(node, sub, node_id, entity_id, match_any_entity);
             RSTAT_INC(proxies_dropped_liveliness);
         }
     }
@@ -9442,6 +9459,79 @@ static uint32_t reorder_payload_capacity(const struct tt_Subscriber* sub) {
     return (uint32_t)reorder_stride(sub) - (uint32_t)sizeof(struct tt_ReorderSlot);
 }
 
+#if tt_FRAG_ENABLED
+// The in-order fast path's way back to the reorder buffer (struct tt_Context.frag_fast_sub). Moves the
+// fragments already put together in frag_scratch into their own reorder slots, exactly as the ordinary path
+// would have stored them, and points the writer's reorder_cursor at the sample's start so the next drain
+// walks them. Called before anything that would disturb the sample: another use of frag_scratch, a store
+// into its Subscriber's reorder buffer, or a watermark move the fast path did not make.
+//
+// It cannot fail, and it has to be unable to: these fragments are acknowledged, and an acknowledged
+// fragment is never sent again. The sample's Subscriber had nothing held when the sample started
+// (frag_fast_take()), and every store into its buffer since moved this sample out first - so every slot
+// it needs is free, and frag_fast_take() checked each fragment against the slot size before taking it.
+static void frag_fast_spill(struct tt_Context* node) {
+    struct tt_Subscriber* sub = node->frag_fast_sub;
+    if (sub == NULL) {
+        return;
+    }
+    node->frag_fast_sub = NULL;
+    const uint8_t* bytes = node->frag_scratch + 4;
+    uint32_t offset = 0;
+    for (uint32_t index = 0; index < node->frag_fast_placed; index++) {
+        uint32_t length = index == 0 ? node->frag_fast_first_length : node->frag_fast_cont_length;
+        uint32_t seq_no = node->frag_fast_seq_no + index;
+        struct tt_ReorderSlot* slot =
+            reorder_writer_slot(sub, node->frag_fast_context_id, node->frag_fast_entity_id, seq_no);
+        if (slot->occupied) {
+            // Unreachable by the argument above. If it is ever reached the sample is short one fragment
+            // below the watermark, which the drain abandons and counts - never delivered torn.
+            TT_LOG_ERROR("Subscriber %u: reorder slot for fragment seq_no %u already taken - its sample is lost",
+                         sub->endpoint.id, seq_no);
+            offset += length;
+            continue;
+        }
+        slot->seq_no = seq_no;
+        slot->timestamp = index == 0 ? node->frag_fast_timestamp : 0;
+        slot->entity_id = node->frag_fast_entity_id;
+        slot->context_id = node->frag_fast_context_id;
+        slot->length = (uint16_t)length;
+        slot->is_native = node->frag_fast_is_native;
+        slot->via_data_port = node->frag_fast_via_data_port;
+        slot->frag_index = (uint8_t)index;
+        slot->frag_count = node->frag_fast_count;
+        slot->occupied = true;
+        _tt_memcpy(reorder_slot_payload(slot), bytes + offset, length);
+        offset += length;
+        sub->reorder_held++;
+        if (sub->reorder_held > sub->reorder_held_peak) {
+            sub->reorder_held_peak = sub->reorder_held;
+        }
+    }
+    struct tt_WriterProxy* proxy = find_writer_proxy(sub, node->frag_fast_context_id, node->frag_fast_entity_id);
+    if (proxy != NULL) {
+        proxy->reorder_cursor = node->frag_fast_seq_no;
+    }
+}
+
+// Whether the fast path holds part of a sample of this Subscriber's (from any writer, when proxy is NULL).
+static bool frag_fast_holds(const struct tt_Context* node, const struct tt_Subscriber* sub,
+                            const struct tt_WriterProxy* proxy) {
+    return node->frag_fast_sub == sub && (proxy == NULL || (node->frag_fast_context_id == proxy->context_id &&
+                                                            node->frag_fast_entity_id == proxy->entity_id));
+}
+
+// Before a drain: the watermark moved under a sample the fast path holds part of - a gap given up on, or a DATA
+// where a fragment was expected (recorded before the drain) - so it can no longer complete there. In the buffer,
+// the drain deals with it.
+static void frag_fast_spill_if_overtaken(struct tt_Context* node, const struct tt_Subscriber* sub,
+                                         const struct tt_WriterProxy* proxy) {
+    if (frag_fast_holds(node, sub, proxy) && proxy->ack_seq_no != node->frag_fast_seq_no + node->frag_fast_placed) {
+        frag_fast_spill(node);
+    }
+}
+#endif
+
 // Hold a sample that arrived ahead of a gap, or - if it cannot be held - un-receive it so the
 // ordinary ACKNACK exchange fetches it again later.
 //
@@ -9452,6 +9542,11 @@ static uint32_t reorder_payload_capacity(const struct tt_Subscriber* sub) {
 // is the one outcome a RELIABLE reader must never produce.
 static void hold_for_reorder(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                              struct data_delivery_ctx* ctx, bool is_native) {
+#if tt_FRAG_ENABLED
+    if (frag_fast_holds(node, sub, NULL)) {
+        frag_fast_spill(node); // this buffer is about to hold something, and it must be empty for that
+    }
+#endif
     uint32_t length = ctx->tail - ctx->head;
     uint32_t capacity = reorder_payload_capacity(sub);
 
@@ -9525,8 +9620,17 @@ static void hold_for_reorder(struct tt_Context* node, struct tt_Subscriber* sub,
     }
 }
 
-static void release_reorder_slots_for_writer(struct tt_Subscriber* sub, uint8_t node_id, uint32_t entity_id,
-                                             bool match_any_entity) {
+static void release_reorder_slots_for_writer(struct tt_Context* node, struct tt_Subscriber* sub, uint8_t node_id,
+                                             uint32_t entity_id, bool match_any_entity) {
+#if tt_FRAG_ENABLED
+    if (node->frag_fast_sub == sub && node->frag_fast_context_id == node_id &&
+        (match_any_entity || node->frag_fast_entity_id == entity_id)) {
+        node->frag_fast_sub = NULL; // the fast path's part of a sample, abandoned like a held one
+        sub->reorder_abandoned += node->frag_fast_placed;
+    }
+#else
+    (void)node;
+#endif
     if (reorder_payload_capacity(sub) == 0) {
         return;
     }
@@ -9639,6 +9743,7 @@ static bool drain_fragmented_sample(struct tt_Context* node, struct tt_Subscribe
     }
 
     *consumed = count;
+    frag_fast_spill(node); // the scratch is about to be overwritten; whatever it holds goes to its own buffer
     uint8_t* out = node->frag_scratch + 4;
     bool fits = total <= sizeof(node->frag_scratch) - 8;
     uint64_t timestamp = first->timestamp;
@@ -9666,6 +9771,9 @@ static bool drain_fragmented_sample(struct tt_Context* node, struct tt_Subscribe
 
 static void drain_reorder_with(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                                struct data_delivery_ctx* arriving, bool is_native) {
+#if tt_FRAG_ENABLED
+    frag_fast_spill_if_overtaken(node, sub, proxy);
+#endif
     uint32_t ack = proxy->ack_seq_no;
     uint32_t stop = ack; // where the next drain starts: ack, unless a sample in order is not whole yet
     bool arriving_done = (arriving == NULL);
@@ -11450,6 +11558,9 @@ static bool frag_pool_has(const struct tt_Context* node, uint8_t source, uint32_
 // taken by another writer's datagram; the caller then leaves it unrecorded, so it is asked for again.
 static bool reorder_store_fragment(struct tt_Context* node, struct tt_Subscriber* sub,
                                    const struct data_delivery_ctx* ctx, bool is_native) {
+    if (frag_fast_holds(node, sub, NULL)) {
+        frag_fast_spill(node); // the fast path's sample needs this buffer empty to be moved into it
+    }
     uint32_t length = ctx->tail - ctx->head;
     if (reorder_payload_capacity(sub) < length) {
         return false;
@@ -11476,6 +11587,75 @@ static bool reorder_store_fragment(struct tt_Context* node, struct tt_Subscriber
     return true;
 }
 
+// The in-order fast path (2026-10-06). A fragment that is the next datagram its writer's tracking expects,
+// of a sample whose earlier fragments all came the same way, is put together in the node's frag_scratch and
+// the sample delivered from there when its last fragment lands - without touching the reorder buffer, which
+// the ordinary path writes every fragment into first. At the bench's 4096 slots of 2840 bytes that buffer is
+// 11.6 MB, and each in-order sample wrote 5.7 KB of it that had never been touched: first-touch page faults
+// on every sample of the first lap, and cold lines after. A DATA in order never touched it either.
+//
+// One sample at a time per node, since frag_scratch is one per node. It takes a sample only when its
+// Subscriber holds nothing at all, the scratch is free, and a slot could have taken each fragment (so
+// frag_fast_spill() can always hand it over). Anything else - a second writer, a second Subscriber of the
+// same writer, a fragment out of order - goes the ordinary way, and moves this sample there first if it
+// would disturb it. False: not taken, and the caller stores it as before.
+static bool frag_fast_take(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
+                           const struct data_delivery_ctx* ctx, bool is_native) {
+    uint32_t length = ctx->tail - ctx->head;
+    uint32_t index = ctx->frag_index;
+    // In order: the next datagram the writer's tracking expects. While a sample is in the scratch the
+    // watermark moves only as its fragments arrive (anything else moves it out first), so for a continuation
+    // this also says it is the next fragment of that sample - given that its index is the next one.
+    if (ctx->seq_no != proxy->ack_seq_no || reorder_payload_capacity(sub) < length) {
+        return false;
+    }
+    if (index == 0) {
+        if (node->frag_fast_sub != NULL || sub->reorder_held != 0) {
+            return false;
+        }
+        node->frag_fast_context_id = ctx->header->source;
+        node->frag_fast_entity_id = ctx->entity_id;
+        node->frag_fast_seq_no = ctx->seq_no;
+        node->frag_fast_count = ctx->frag_count;
+        node->frag_fast_timestamp = ctx->timestamp;
+        node->frag_fast_is_native = is_native;
+        node->frag_fast_via_data_port = node->rx_via_data_port;
+        node->frag_fast_first_length = (uint16_t)length;
+        node->frag_fast_cont_length = 0;
+        node->frag_fast_length = 0;
+        node->frag_fast_placed = 0;
+    } else if (!frag_fast_holds(node, sub, proxy) || index != node->frag_fast_placed ||
+               ctx->frag_count != node->frag_fast_count ||
+               // every continuation but the last is one size, which is what lets frag_fast_spill() cut them apart
+               (index > 1 && index + 1U != node->frag_fast_count && length != node->frag_fast_cont_length)) {
+        return false;
+    }
+    if (node->frag_fast_length + length > sizeof(node->frag_scratch) - 8) {
+        return false; // only from a sender past tt_MAX_SAMPLE_LENGTH; the ordinary path drops its sample
+    }
+    _tt_memcpy(node->frag_scratch + 4 + node->frag_fast_length, ctx->buffer + ctx->head, length);
+    node->frag_fast_sub = sub;
+    // Always new: the writer is tracked and this is its watermark, which nothing has received yet.
+    (void)update_reliable_ack(node, sub, ctx->seq_no, ctx->header->source, ctx->entity_id, ctx->sender_ip,
+                              ctx->sender_port);
+    if (index == 1) {
+        node->frag_fast_cont_length = (uint16_t)length;
+    }
+    node->frag_fast_length += length;
+    node->frag_fast_placed++;
+    if (node->frag_fast_placed < node->frag_fast_count) {
+        return true;
+    }
+    node->frag_fast_sub = NULL;
+    node->frag_reassembled++;
+    deliver_in_order(node, sub, proxy, node->frag_fast_seq_no, node->frag_fast_timestamp, node->frag_scratch + 4,
+                     node->frag_fast_length, node->frag_fast_is_native, node->frag_fast_via_data_port, NULL);
+    // Nothing is held, so this is where a drain would leave the cursor. Left behind, the first drain after a run
+    // of fast samples would walk a window of cold slot headers to find nothing.
+    proxy->reorder_cursor = proxy->ack_seq_no;
+    return true;
+}
+
 // One fragment for a RELIABLE Subscriber, under its own seq_no (DATAFRAG_PLAN.md section 13): recorded in
 // the writer's tracking exactly as a DATA is, so the ordinary ACKNACK names it if it goes missing and the
 // writer resends that datagram alone.
@@ -11496,6 +11676,9 @@ static void accept_reliable_fragment(struct tt_Context* node, struct tt_Subscrib
         if (ctx->seq_no < proxy->ack_seq_no ||
             (offset < proxy_window_bits(proxy) && bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset))) {
             node->frag_duplicate++; // already here, or already past
+            return;
+        }
+        if (frag_fast_take(node, sub, proxy, ctx, is_native)) {
             return;
         }
     }

@@ -887,6 +887,25 @@ struct tt_Context {
     // at the moment the last one is in order - filled and delivered in one step, so one per node serves
     // every Subscriber. 8-aligned, with the payload placed at +4, as rx_buffer places a DATA's CDR.
     tt_ALIGNAS(8) uint8_t frag_scratch[tt_MAX_SAMPLE_LENGTH + 8];
+    // The in-order fast path (2026-10-06): a RELIABLE Subscriber's fragmented sample arriving in order is
+    // put together in frag_scratch as its fragments arrive, never touching the reorder buffer - which held
+    // every fragment first, and at the bench's 11.6 MB of untouched slots cost first-touch page faults on
+    // every sample of the first lap. frag_fast_sub is the one Subscriber whose sample frag_scratch holds,
+    // NULL when idle. Anything that would disturb it - another use of frag_scratch, a store into that
+    // Subscriber's reorder buffer, or the watermark moving under it - first moves the fragments already
+    // placed into their own reorder slots (frag_fast_spill(), tickle.c), which are free by construction.
+    struct tt_Subscriber* frag_fast_sub;
+    uint64_t frag_fast_timestamp;
+    uint32_t frag_fast_entity_id;
+    uint32_t frag_fast_seq_no;       // the sample's first datagram
+    uint32_t frag_fast_length;       // payload bytes placed so far
+    uint16_t frag_fast_first_length; // payload bytes of fragment 0
+    uint16_t frag_fast_cont_length;  // payload bytes of every non-last continuation, 0 until fragment 1
+    uint8_t frag_fast_context_id;
+    uint8_t frag_fast_count;
+    uint8_t frag_fast_placed; // fragments 0..placed-1 are in frag_scratch
+    bool frag_fast_is_native;
+    bool frag_fast_via_data_port;
     // Fragments of a sample already reassembled (struct tt_FragSlot.done) - the rest of a retransmission
     // that another fragment already completed. Not a loss; counted so it is not mistaken for one.
     uint64_t frag_duplicate;

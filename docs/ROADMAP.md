@@ -47,9 +47,9 @@ The user's active list (2026-10-05), in order.
    the first lap (~2048 samples): ~16 us of the +20 us (~4.2 extra faults per round trip), the rest ~5 us of steady
    fragment-path cost. Prefaulting removed it (+22 -> +6 us); a long run at 5 ms fell to +6 us untreated
    (`experiments/p4_reorder_firsttouch.sh`, H-RING SUPPORTED,
-   `~/rig_results_safe/p4_reorder_firsttouch_c1ebf43e_20261006-163432.txt`). Next, in core: deliver in-order fragments
-   from one hot per-subscriber buffer (`accept_reliable_fragment()`), the ring only for out-of-order; and item 0a's
-   warm-up for the figures (RESULTS S10).
+   `~/rig_results_safe/p4_reorder_firsttouch_c1ebf43e_20261006-163432.txt`). In core since 2026-10-06: in-order fragments
+   are put together in the node's `frag_scratch` (`frag_fast_take()`), the ring only for out-of-order - to be A/B'd
+   on the rig (`experiments/p4_fastpath_pc.sh` is the PC check); and item 0a's warm-up for the figures (RESULTS S10).
 2. **Fill COMPARISON 1a's empty cells**: CPU and RSS for all three frameworks on every same-host cell (CycloneDDS
    including iox-roudi), and the vendors' DELIVERED rates on the same-host BEST_EFFORT rows. The rows compare send
    rates today, and FastDDS's KEEP_LAST 1 reader took 154 of 3.1M samples. (COMPARISON 1a notes)

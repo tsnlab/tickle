@@ -1123,6 +1123,702 @@ static void test_reliable_two_writers_interleaved(void) {
     EXPECT_EQ_U32(0, sub.reorder_overflow);
 }
 
+// --- RELIABLE receiver: the in-order fast path (2026-10-06) -----------------------------------------
+//
+// A fragment used to be stored in its reorder slot even in order, so every sample wrote its whole payload
+// into the reorder buffer before being copied out again - at the bench's 11.6 MB buffer, first-touch page
+// faults on every sample of the first lap. In order, a sample is now put together in the node's
+// frag_scratch and never touches the buffer; anything else falls back to it. The buffer's bytes are the
+// instrument: a snapshot taken before a sample must be what is there after it.
+
+static uint64_t reorder_snapshot[sizeof(test_reorder) / sizeof(uint64_t)];
+
+static void snapshot_reorder(void) {
+    memcpy(reorder_snapshot, test_reorder, sizeof(test_reorder));
+}
+
+static bool reorder_untouched(void) {
+    return memcmp(reorder_snapshot, test_reorder, sizeof(test_reorder)) == 0;
+}
+
+// The writer's first sample, which goes through the buffer: it is what creates the WriterProxy, and with
+// no tracking yet there is no "next expected" for the fast path to compare with.
+static void first_contact_sample(uint32_t len) {
+    init_pair(len);
+    make_receiver_reliable(true);
+    publish_captured();
+    for (int d = 0; d < datagram_count; d++) {
+        deliver(d);
+    }
+    expect_delivered_once(len);
+    delivered_count = 0;
+    sample_seed = expected_seed = 9; // the next sample's bytes differ, so a stale copy cannot pass
+}
+
+static uint32_t last_delivered_seq;
+static bool delivered_ascending;
+static void ordered_on_data(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
+    (void)s;
+    (void)time;
+    (void)data;
+    delivered_ascending = delivered_ascending && (delivered_count == 0 || seq_no > (uint16_t)last_delivered_seq);
+    last_delivered_seq = seq_no;
+    delivered_count++;
+}
+
+static void test_reliable_in_order_sample_never_touches_the_reorder_buffer(void) {
+    first_contact_sample(4000);
+    for (int round = 0; round < 3; round++) {
+        delivered_count = 0;
+        snapshot_reorder();
+        publish_captured();
+        EXPECT_EQ_INT(3, datagram_count);
+        for (int d = 0; d < 3; d++) {
+            deliver(d);
+        }
+        expect_delivered_once(4000);
+        EXPECT_TRUE(reorder_untouched()); // not one byte of the buffer written
+        EXPECT_EQ_U32(0, sub.reorder_held);
+        EXPECT_EQ_U32(7 + (3 * (uint32_t)round), sender_proxy()->ack_seq_no);      // every datagram acknowledged
+        EXPECT_EQ_U32(sender_proxy()->ack_seq_no, sender_proxy()->reorder_cursor); // the cursor kept up with it
+        EXPECT_TRUE(receiver.frag_fast_sub == NULL);                               // and the scratch released
+    }
+}
+
+static void test_reliable_out_of_order_fragments_still_deliver_through_the_buffer(void) {
+    static const int orders[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+    for (int o = 0; o < 6; o++) {
+        first_contact_sample(4000);
+        snapshot_reorder();
+        publish_captured();
+        for (int k = 0; k < 3; k++) {
+            deliver(orders[o][k]);
+        }
+        expect_delivered_once(4000);
+        EXPECT_EQ_U32(7, sender_proxy()->ack_seq_no);
+        EXPECT_EQ_U32(0, sub.reorder_held);
+        EXPECT_TRUE(receiver.frag_fast_sub == NULL);
+        // Control for the test above: only the in-order arrival leaves the buffer as it was.
+        EXPECT_TRUE(reorder_untouched() == (o == 0));
+    }
+}
+
+static void test_reliable_fast_path_interrupted_by_a_lost_fragment(void) {
+    // Four datagrams (5000 bytes). Fragments 0 and 1 arrive in order and are put together in the scratch;
+    // 2 is lost and 3 arrives ahead of it - the first two must move into the buffer, since they are
+    // acknowledged and will never be sent again. The retransmission of 2 then completes the sample: once,
+    // intact, in order with the samples around it. And the next sample takes the fast path again.
+    first_contact_sample(5000);
+    sub.callback = ordered_on_data;
+    delivered_ascending = true;
+    publish_captured();
+    EXPECT_EQ_INT(4, datagram_count);
+    deliver(0);
+    deliver(1);
+    // A Heartbeat in between drains this writer with the sample part-way through: the drain moves the
+    // reorder_cursor up to the watermark, past the sample's start, where the move into the buffer must
+    // bring it back - or the next drain starts after the fragments it moved in.
+    drain_reorder(&receiver, &sub, sender_proxy());
+    EXPECT_TRUE(receiver.frag_fast_sub == &sub); // control: the interruption interrupts something
+    deliver(3);
+    EXPECT_EQ_INT(0, delivered_count);
+    EXPECT_TRUE(receiver.frag_fast_sub == NULL);
+    EXPECT_EQ_U32(3, sub.reorder_held); // 0 and 1 moved in, 3 stored
+    struct tt_WriterProxy* proxy = sender_proxy();
+    EXPECT_EQ_U32(7, proxy->ack_seq_no); // stuck at the lost datagram
+    deliver(2);                          // its retransmission
+    expect_delivered_once(5000);
+    deliver(2); // and a duplicate of it, and of the rest
+    deliver(1);
+    deliver(3);
+    EXPECT_EQ_INT(1, delivered_count);
+    EXPECT_EQ_U32(0, sub.reorder_held);
+    EXPECT_EQ_U32(0, sub.reorder_abandoned);
+    EXPECT_EQ_U32(9, proxy->ack_seq_no);
+
+    snapshot_reorder();
+    publish_captured();
+    for (int d = 0; d < 4; d++) {
+        deliver(d);
+    }
+    EXPECT_EQ_INT(2, delivered_count);
+    EXPECT_TRUE(delivered_intact);
+    EXPECT_TRUE(delivered_ascending);
+    EXPECT_TRUE(reorder_untouched()); // the fast path again
+}
+
+static void test_reliable_fast_path_sample_given_up_on_is_never_delivered_torn(void) {
+    // The watermark moves under a sample the scratch holds part of - the writer declares the rest gone.
+    // The partial sample must be dropped and counted, never delivered, and the scratch freed.
+    first_contact_sample(5000);
+    publish_captured(); // seq_no 5..8
+    deliver(0);
+    deliver(1);
+    EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+    struct tt_WriterProxy* proxy = sender_proxy();
+    advance_past_unavailable(proxy, 9);
+    drain_reorder(&receiver, &sub, proxy);
+    EXPECT_EQ_INT(0, delivered_count);
+    EXPECT_TRUE(receiver.frag_fast_sub == NULL);
+    EXPECT_EQ_U32(0, sub.reorder_held);
+    EXPECT_EQ_U32(2, sub.reorder_abandoned);
+    publish_captured(); // control: the stream carries on
+    for (int d = 0; d < 4; d++) {
+        deliver(d);
+    }
+    expect_delivered_once(5000);
+}
+
+// Captures one sample of `writer` into its own copy, so two writers' datagrams can be interleaved.
+struct captured_sample {
+    uint8_t bytes[4][tt_MAX_BUFFER_LENGTH * 2];
+    uint32_t len[4];
+    int count;
+};
+
+static void capture_sample(struct tt_Publisher* writer, struct captured_sample* out) {
+    start_capture();
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(writer, (struct tt_Data*)&sample_len));
+    test_mock_send_hook = NULL;
+    EXPECT_TRUE(datagram_count <= 4);
+    out->count = datagram_count;
+    for (int d = 0; d < datagram_count && d < 4; d++) {
+        memcpy(out->bytes[d], datagrams[d], datagram_len[d]);
+        out->len[d] = datagram_len[d];
+    }
+}
+
+static void test_reliable_two_writers_interleaved_after_first_contact(void) {
+    // Two writers, both tracked, their in-order fragments interleaved datagram by datagram, three samples
+    // each. The scratch can hold one sample at a time; the other writer's must not corrupt it, and every
+    // sample of both must arrive once and intact.
+    init_pair(4000);
+    make_receiver_reliable(true);
+    static struct tt_Context second;
+    static struct tt_Publisher second_pub;
+    init_bare_node(&second, 3);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&second, &second_pub, &sender_topic, ENDPOINT_NAME));
+    static struct captured_sample one;
+    static struct captured_sample two;
+    int expected = 0;
+    for (int round = 0; round < 3; round++) {
+        sample_seed = expected_seed = (uint8_t)(20 + round);
+        capture_sample(&pub, &one);
+        capture_sample(&second_pub, &two);
+        EXPECT_EQ_INT(3, one.count);
+        EXPECT_EQ_INT(3, two.count);
+        for (int d = 0; d < 3; d++) {
+            EXPECT_TRUE(process_packet(&receiver, one.bytes[d], 0, one.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+            EXPECT_TRUE(process_packet(&receiver, two.bytes[d], 0, two.len[d], SENDER_IP + 2, PORT, tt_TRANSPORT_UDP));
+        }
+        expected += 2;
+        EXPECT_EQ_INT(expected, delivered_count);
+        EXPECT_TRUE(delivered_intact);
+        EXPECT_EQ_U32(4000, delivered_len);
+    }
+    EXPECT_EQ_U32(0, sub.reorder_held);
+    EXPECT_EQ_U32(0, sub.reorder_overflow);
+    EXPECT_EQ_U32(0, sub.reorder_abandoned);
+    EXPECT_TRUE(receiver.frag_fast_sub == NULL);
+    // Control: the same two writers one after the other, each sample whole before the next starts, take
+    // the fast path and leave the buffer alone.
+    snapshot_reorder();
+    capture_sample(&pub, &one);
+    capture_sample(&second_pub, &two);
+    for (int d = 0; d < 3; d++) {
+        EXPECT_TRUE(process_packet(&receiver, one.bytes[d], 0, one.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    for (int d = 0; d < 3; d++) {
+        EXPECT_TRUE(process_packet(&receiver, two.bytes[d], 0, two.len[d], SENDER_IP + 2, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_EQ_INT(expected + 2, delivered_count);
+    EXPECT_TRUE(delivered_intact);
+    EXPECT_TRUE(reorder_untouched());
+}
+
+// A second Subscriber of the same endpoint, on a topic of its own so that what it decodes is checked apart
+// from what the first one does: the two share frag_scratch, and one corrupting the other's sample would
+// otherwise be hidden by whichever decoded last.
+static struct tt_Topic second_topic;
+static struct tt_Subscriber sub2;
+static uint64_t reorder2[TEST_REORDER_SLOTS * TEST_REORDER_SLOT_BYTES / sizeof(uint64_t)];
+static int second_delivered;
+static bool second_intact;
+
+static int32_t second_checking_decode(struct tt_Data* data, const uint8_t* payload, uint32_t len, bool native) {
+    (void)data;
+    (void)native;
+    second_delivered++;
+    second_intact = len == sample_len;
+    for (uint32_t i = 0; i < sample_len && i < len && second_intact; i++) {
+        second_intact = payload[i] == pattern(i, expected_seed);
+    }
+    return 0;
+}
+
+// The first Subscriber's own verdict, kept apart in the same way.
+static int first_delivered;
+static bool first_intact;
+static int32_t first_checking_decode(struct tt_Data* data, const uint8_t* payload, uint32_t len, bool native) {
+    (void)data;
+    (void)native;
+    first_delivered++;
+    first_intact = len == sample_len;
+    for (uint32_t i = 0; i < sample_len && i < len && first_intact; i++) {
+        first_intact = payload[i] == pattern(i, expected_seed);
+    }
+    return 0;
+}
+
+static void add_second_subscriber(void) {
+    second_topic = receiver_topic;
+    second_topic.data_decode = second_checking_decode;
+    receiver_topic.data_decode = first_checking_decode;
+    memset(&sub2, 0, sizeof(sub2));
+    memset(reorder2, 0, sizeof(reorder2));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub2, &second_topic, ENDPOINT_NAME, on_data));
+    sub2.reliable = true;
+    sub2.reorder_storage = reorder2;
+    sub2.reorder_slots = TEST_REORDER_SLOTS;
+    sub2.reorder_slot_bytes = TEST_REORDER_SLOT_BYTES;
+    first_delivered = second_delivered = 0;
+}
+
+static void test_reliable_two_subscribers_share_the_scratch(void) {
+    // frag_scratch is one per node, and one datagram goes to every Subscriber tracking its writer - so two
+    // Subscribers of one writer take each fragment in turn. Only one can hold its sample in the scratch;
+    // the other must not overwrite it, and both must get every sample intact, once.
+    init_pair(4000);
+    make_receiver_reliable(true);
+    add_second_subscriber();
+    publish_captured(); // first contact for both
+    for (int d = 0; d < 3; d++) {
+        deliver(d);
+    }
+    EXPECT_EQ_INT(1, first_delivered);
+    EXPECT_EQ_INT(1, second_delivered);
+    snapshot_reorder();
+    for (int round = 0; round < 3; round++) {
+        sample_seed = expected_seed = (uint8_t)(40 + round);
+        publish_captured();
+        for (int d = 0; d < 3; d++) {
+            deliver(d);
+        }
+        EXPECT_EQ_INT(2 + round, first_delivered);
+        EXPECT_EQ_INT(2 + round, second_delivered);
+        EXPECT_TRUE(first_intact);
+        EXPECT_TRUE(second_intact);
+    }
+    // The first Subscriber took the fast path every time: the second one's stores never moved it out.
+    EXPECT_TRUE(reorder_untouched());
+    EXPECT_EQ_U32(0, sub.reorder_held);
+    EXPECT_EQ_U32(0, sub2.reorder_held);
+    EXPECT_TRUE(receiver.frag_fast_sub == NULL);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub2));
+}
+
+static void test_reliable_buffer_delivery_does_not_overwrite_the_fast_path(void) {
+    // The second Subscriber misses a sample X (no room for it, so it is left unrecorded) that the first one
+    // takes. The first then starts the next sample Y in the scratch, and X's retransmission completes X for
+    // the second one out of its buffer - put together in the same scratch. Y must survive that.
+    init_pair(4000);
+    make_receiver_reliable(true);
+    add_second_subscriber();
+    publish_captured(); // seq_no 1..3: first contact for both
+    for (int d = 0; d < 3; d++) {
+        deliver(d);
+    }
+    sample_seed = expected_seed = 50;
+    static struct captured_sample x;
+    capture_sample(&pub, &x); // seq_no 4..6
+    sub2.reorder_storage = NULL;
+    for (int d = 0; d < 3; d++) {
+        EXPECT_TRUE(process_packet(&receiver, x.bytes[d], 0, x.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_EQ_INT(2, first_delivered);
+    EXPECT_EQ_INT(1, second_delivered);
+    EXPECT_EQ_U32(4, find_writer_proxy(&sub2, SENDER_ID, pub.endpoint.entity_id)->ack_seq_no); // X unrecorded
+    sub2.reorder_storage = reorder2;
+
+    sample_seed = 60;
+    static struct captured_sample y;
+    capture_sample(&pub, &y); // seq_no 7..9
+    EXPECT_TRUE(process_packet(&receiver, y.bytes[0], 0, y.len[0], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    EXPECT_TRUE(receiver.frag_fast_sub == &sub); // control: Y really is in the scratch
+    for (int d = 0; d < 3; d++) {                // X again, as the writer resends it to the second one
+        EXPECT_TRUE(process_packet(&receiver, x.bytes[d], 0, x.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_EQ_INT(2, second_delivered);
+    EXPECT_TRUE(second_intact); // X, intact
+    expected_seed = 60;
+    for (int d = 1; d < 3; d++) {
+        EXPECT_TRUE(process_packet(&receiver, y.bytes[d], 0, y.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_EQ_INT(3, first_delivered);
+    EXPECT_TRUE(first_intact); // Y, intact for the first one
+    EXPECT_EQ_INT(3, second_delivered);
+    EXPECT_TRUE(second_intact);
+    EXPECT_EQ_U32(0, sub.reorder_held);
+    EXPECT_EQ_U32(0, sub2.reorder_held);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub2));
+}
+
+static void test_reliable_fast_path_does_not_overtake_a_lost_sample(void) {
+    // Sample X is lost whole, and nothing is held: the next sample's first fragment is not in order, and
+    // must wait for X rather than be put together and delivered ahead of it.
+    first_contact_sample(4000);
+    sub.callback = ordered_on_data;
+    delivered_ascending = true;
+    static struct captured_sample x;
+    capture_sample(&pub, &x); // seq_no 4..6, lost for now
+    publish_captured();       // seq_no 7..9
+    for (int d = 0; d < 3; d++) {
+        deliver(d);
+    }
+    EXPECT_EQ_INT(0, delivered_count);
+    for (int d = 0; d < 3; d++) {
+        EXPECT_TRUE(process_packet(&receiver, x.bytes[d], 0, x.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
+    }
+    EXPECT_EQ_INT(2, delivered_count);
+    EXPECT_TRUE(delivered_ascending);
+    EXPECT_TRUE(delivered_intact);
+}
+
+static void test_reliable_fast_path_needs_room_in_the_buffer(void) {
+    // The fast path takes a fragment only where the buffer could hold it, since it may have to move it there.
+    // With slots too small for a fragment, nothing is acknowledged - the same as the buffer path.
+    first_contact_sample(4000);
+    sub.reorder_slot_bytes = (uint16_t)tt_REORDER_SLOT_SIZE(1000);
+    publish_captured(); // seq_no 4..6
+    for (int d = 0; d < 3; d++) {
+        deliver(d);
+    }
+    EXPECT_EQ_INT(0, delivered_count);
+    EXPECT_EQ_U32(4, sender_proxy()->ack_seq_no);
+    EXPECT_TRUE(receiver.frag_fast_sub == NULL);
+    sub.reorder_slot_bytes = TEST_REORDER_SLOT_BYTES; // control: with room, the same datagrams deliver
+    for (int d = 0; d < 3; d++) {
+        deliver(d);
+    }
+    expect_delivered_once(4000);
+}
+
+static size_t frag_header_offset(void) {
+    return sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader);
+}
+
+static void set_cont_seq_no(int d, uint32_t seq_no) {
+    memcpy(&datagrams[d][frag_header_offset() + offsetof(struct tt_FragContHeader, seq_no)], &seq_no, sizeof(seq_no));
+}
+
+static void test_reliable_fast_path_refuses_what_does_not_belong_to_its_sample(void) {
+    // A continuation in order by seq_no that names another place in the sample, or another count, is not
+    // this sample's next fragment. The buffer path refuses such a sample; the fast path must too.
+    // Datagram 2, in order, claiming to be the last (index 3): a size check cannot catch it - the last
+    // fragment may be any size.
+    first_contact_sample(5000); // 4 datagrams
+    publish_captured();         // seq_no 5..8
+    set_cont_field(2, offsetof(struct tt_FragContHeader, frag_index), 3);
+    for (int d = 0; d < 4; d++) {
+        deliver(d);
+    }
+    EXPECT_EQ_INT(0, delivered_count);
+    EXPECT_TRUE(receiver.frag_fast_sub == NULL);
+
+    first_contact_sample(5000);
+    publish_captured();
+    deliver(0);
+    set_cont_field(1, offsetof(struct tt_FragContHeader, frag_count), 3);
+    for (int d = 1; d < 4; d++) {
+        deliver(d);
+    }
+    EXPECT_EQ_INT(0, delivered_count);
+    EXPECT_TRUE(receiver.frag_fast_sub == NULL);
+
+    // A non-last continuation shorter than the one before it: what the buffer path delivers is every
+    // fragment as it came, 8 bytes short - and moving the fast path's part into the buffer must not change
+    // that, which it would if it cut the fragments apart at the wrong places.
+    first_contact_sample(6500); // 5 datagrams
+    publish_captured();         // seq_no 6..10
+    EXPECT_EQ_INT(5, datagram_count);
+    datagram_len[2] -= 8;
+    uint16_t submessage_length = 0;
+    memcpy(&submessage_length, &datagrams[2][sizeof(struct tt_Header) + 2], sizeof(submessage_length));
+    submessage_length = (uint16_t)(submessage_length - 8);
+    memcpy(&datagrams[2][sizeof(struct tt_Header) + 2], &submessage_length, sizeof(submessage_length));
+    deliver(0);
+    deliver(1);
+    deliver(2);
+    deliver(4); // 3 is late
+    deliver(3);
+    EXPECT_EQ_INT(1, delivered_count);
+    EXPECT_EQ_U32(6500 - 8, delivered_len);
+
+    // More continuations than frag_scratch can hold, from a sender that claims 64 fragments: refused before
+    // anything is written past the scratch, and nothing delivered.
+    first_contact_sample(4000);
+    publish_captured(); // seq_no 4..6
+    uint32_t first = 4;
+    datagrams[0][frag_header_offset() + offsetof(struct tt_FragFirstHeader, frag_count)] = 64;
+    deliver(0);
+    for (uint32_t index = 1; index < 14; index++) {
+        set_cont_field(1, offsetof(struct tt_FragContHeader, frag_count), 64);
+        set_cont_field(1, offsetof(struct tt_FragContHeader, frag_index), (uint8_t)index);
+        set_cont_seq_no(1, first + index);
+        deliver(1);
+    }
+    EXPECT_TRUE(receiver.frag_fast_sub == NULL);
+    EXPECT_EQ_INT(0, delivered_count);
+}
+
+// The second writer of the collision tests: another node, the same topic, DATA-sized samples.
+static struct tt_Context collide_ctx;
+static struct tt_Publisher collide_pub;
+static uint8_t collide_gap[tt_MAX_BUFFER_LENGTH * 2]; // its seq_no 2, kept back to open a gap
+static uint32_t collide_gap_len;
+static uint8_t collide_hit[tt_MAX_BUFFER_LENGTH * 2]; // its seq_no that lands on the first writer's slot
+static uint32_t collide_hit_len;
+
+// The first writer tracked, at seq_no 5 next (4 datagrams a sample); the second writer tracked too, and one
+// of its DATA captured whose reorder slot is the one the first writer's seq_no 5 maps to.
+static void collision_setup(void) {
+    first_contact_sample(5000); // seq_no 1..4
+    init_bare_node(&collide_ctx, 3);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&collide_ctx, &collide_pub, &sender_topic, ENDPOINT_NAME));
+    sample_len = 100;
+    struct tt_ReorderSlot* target = reorder_writer_slot(&sub, SENDER_ID, pub.endpoint.entity_id, 5);
+    bool found = false;
+    for (uint32_t n = 1; n < 200 && !found; n++) {
+        start_capture();
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&collide_pub, (struct tt_Data*)&sample_len));
+        test_mock_send_hook = NULL;
+        EXPECT_EQ_INT(1, datagram_count);
+        uint32_t seq_no = 0;
+        memcpy(&seq_no, &datagrams[0][frag_header_offset() + offsetof(struct tt_DataHeader, seq_no)], sizeof(seq_no));
+        if (seq_no == 1) {
+            EXPECT_TRUE(process_packet(&receiver, datagrams[0], 0, datagram_len[0], SENDER_IP + 2, PORT,
+                                       tt_TRANSPORT_UDP)); // its first contact
+        } else if (seq_no == 2) {
+            memcpy(collide_gap, datagrams[0], datagram_len[0]);
+            collide_gap_len = datagram_len[0];
+        } else if (reorder_writer_slot(&sub, 3, collide_pub.endpoint.entity_id, seq_no) == target) {
+            memcpy(collide_hit, datagrams[0], datagram_len[0]);
+            collide_hit_len = datagram_len[0];
+            found = true;
+        }
+    }
+    EXPECT_TRUE(found);
+    delivered_count = 0;
+    sample_len = 5000;
+}
+
+static struct tt_WriterProxy* collide_proxy(void) {
+    return find_writer_proxy(&sub, 3, collide_pub.endpoint.entity_id);
+}
+
+static void deliver_collide_hit(void) {
+    EXPECT_TRUE(process_packet(&receiver, collide_hit, 0, collide_hit_len, SENDER_IP + 2, PORT, tt_TRANSPORT_UDP));
+}
+
+static void test_reliable_fast_path_moves_out_before_another_writer_is_held(void) {
+    // The first writer's sample is part-way through the scratch when the second writer's DATA arrives ahead
+    // of a gap and is held - in the very slot the first writer's sample would move into. The move must
+    // come first, so that it cannot fail: that DATA is then the one refused (and asked for again), and the
+    // first writer's sample, interrupted by a loss of its own, is still delivered.
+    collision_setup();
+    publish_captured(); // the first writer's seq_no 5..8
+    deliver(0);
+    deliver(1);
+    EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+    deliver_collide_hit();
+    deliver(3); // 2 is late
+    deliver(2);
+    EXPECT_EQ_INT(1, delivered_count);
+    EXPECT_TRUE(delivered_intact);
+    EXPECT_EQ_U32(5000, delivered_len);
+    EXPECT_EQ_U32(0, sub.reorder_abandoned);
+}
+
+static void test_reliable_fast_path_waits_while_anything_is_held(void) {
+    // The second writer has a DATA held in the slot the first writer's next sample maps to. The first
+    // writer's sample must not start in the scratch: with that slot taken it could not be moved out, and an
+    // interruption would lose it. It goes the buffer's way - its first datagram refused until the slot frees.
+    collision_setup();
+    deliver_collide_hit(); // held behind the second writer's gap
+    EXPECT_EQ_U32(1, sub.reorder_held);
+    publish_captured(); // the first writer's seq_no 5..8
+    deliver(0);
+    deliver(1);
+    deliver(3); // 2 is late
+    deliver(2);
+    EXPECT_EQ_INT(0, delivered_count);
+    struct tt_WriterProxy* other = collide_proxy();
+    uint32_t hit_seq_no = 0;
+    memcpy(&hit_seq_no, &collide_hit[frag_header_offset() + offsetof(struct tt_DataHeader, seq_no)],
+           sizeof(hit_seq_no));
+    advance_past_unavailable(other, hit_seq_no); // the second writer's gap given up: its held DATA goes
+    sample_len = 100;
+    drain_reorder(&receiver, &sub, other);
+    EXPECT_EQ_INT(1, delivered_count);
+    sample_len = 5000;
+    deliver(0); // the first writer's resend of what was refused
+    EXPECT_EQ_INT(2, delivered_count);
+    EXPECT_TRUE(delivered_intact);
+    EXPECT_EQ_U32(5000, delivered_len);
+    EXPECT_EQ_U32(0, sub.reorder_held);
+}
+
+static void test_reliable_fast_path_survives_another_writers_drain(void) {
+    // A Heartbeat from another writer drains that writer's part of the buffer. It has nothing to do with the
+    // sample in the scratch, which must stay there.
+    collision_setup();
+    snapshot_reorder();
+    publish_captured(); // seq_no 5..8
+    deliver(0);
+    drain_reorder(&receiver, &sub, collide_proxy());
+    EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+    deliver(1);
+    drain_reorder(&receiver, &sub, sender_proxy()); // and its own writer's, with the watermark where it was
+    EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+    for (int d = 2; d < 4; d++) {
+        deliver(d);
+    }
+    expect_delivered_once(5000);
+    EXPECT_TRUE(reorder_untouched());
+}
+
+static void test_reliable_fast_path_ignores_another_subscribers_hold(void) {
+    // A DATA held by a Subscriber of another topic does not concern the sample in the scratch either.
+    first_contact_sample(5000);
+    static struct tt_Topic other_topic;
+    static struct tt_Topic other_sender_topic;
+    static struct tt_Subscriber other_sub;
+    other_topic = receiver_topic;
+    other_topic.name = "other_topic";
+    other_sender_topic = sender_topic;
+    other_sender_topic.name = "other_topic";
+    memset(&other_sub, 0, sizeof(other_sub));
+    memset(reorder2, 0, sizeof(reorder2));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &other_sub, &other_topic, ENDPOINT_NAME, on_data));
+    other_sub.reliable = true;
+    other_sub.reorder_storage = reorder2;
+    other_sub.reorder_slots = TEST_REORDER_SLOTS;
+    other_sub.reorder_slot_bytes = TEST_REORDER_SLOT_BYTES;
+    init_bare_node(&collide_ctx, 3);
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Context_create_publisher(&collide_ctx, &collide_pub, &other_sender_topic, ENDPOINT_NAME));
+    sample_len = 100;
+    static struct captured_sample data;
+    for (int n = 0; n < 3; n++) { // seq_no 1 delivered, 2 lost, 3 held behind it
+        capture_sample(&collide_pub, &data);
+        if (n != 1) {
+            EXPECT_TRUE(
+                process_packet(&receiver, data.bytes[0], 0, data.len[0], SENDER_IP + 2, PORT, tt_TRANSPORT_UDP));
+        }
+        if (n == 0) {
+            sample_len = 5000;
+            snapshot_reorder();
+            publish_captured(); // the first topic's seq_no 5..8, its first datagram before the held DATA
+            deliver(0);
+            sample_len = 100;
+        }
+    }
+    EXPECT_EQ_U32(1, other_sub.reorder_held);
+    EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+    sample_len = 5000;
+    delivered_count = 0;
+    for (int d = 1; d < 4; d++) {
+        deliver(d);
+    }
+    expect_delivered_once(5000);
+    EXPECT_TRUE(reorder_untouched());
+    EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&other_sub));
+}
+
+static void test_reliable_fast_path_keeps_the_reorder_cursor_with_the_watermark(void) {
+    // More in-order samples than the tracking window is wide, then one out of order. The drain walks from
+    // reorder_cursor at most a window, so a cursor left where the fast path began would never reach it.
+    first_contact_sample(4000);
+    for (int n = 0; n < 100; n++) {
+        publish_captured();
+        for (int d = 0; d < 3; d++) {
+            deliver(d);
+        }
+    }
+    EXPECT_EQ_INT(100, delivered_count);
+    publish_captured();
+    deliver(0);
+    deliver(2);
+    deliver(1);
+    EXPECT_EQ_INT(101, delivered_count);
+    EXPECT_EQ_U32(0, sub.reorder_held);
+}
+
+static void test_reliable_fast_path_follows_its_writer_and_subscriber_out(void) {
+    // A writer forgotten (its node gone, or the endpoint) takes the part of its sample in the scratch with
+    // it, counted as abandoned like a held one; another writer forgotten leaves it alone. A Subscriber
+    // destroyed leaves no pointer to itself behind.
+    static struct tt_Publisher sibling_pub; // another writer on the first writer's own node
+    for (int arm = 0; arm < 4; arm++) {
+        first_contact_sample(5000);
+        uint32_t entity = pub.endpoint.entity_id;
+        // arm 0: a writer on another node; arm 1: another writer on the same node - each tracked, so that
+        // forgetting it really reaches the Subscriber.
+        struct tt_Publisher* other = NULL;
+        uint32_t other_ip = SENDER_IP;
+        if (arm == 0) {
+            init_bare_node(&collide_ctx, 3);
+            EXPECT_EQ_INT(tt_RET_OK,
+                          tt_Context_create_publisher(&collide_ctx, &collide_pub, &sender_topic, ENDPOINT_NAME));
+            other = &collide_pub;
+            other_ip = SENDER_IP + 2;
+        } else if (arm == 1) {
+            EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &sibling_pub, &sender_topic, ENDPOINT_NAME));
+            EXPECT_TRUE(sibling_pub.endpoint.entity_id != entity);
+            other = &sibling_pub;
+        }
+        if (other != NULL) {
+            static struct captured_sample data;
+            sample_len = 100;
+            capture_sample(other, &data);
+            EXPECT_TRUE(process_packet(&receiver, data.bytes[0], 0, data.len[0], other_ip, PORT, tt_TRANSPORT_UDP));
+            EXPECT_TRUE(find_writer_proxy(&sub, other == &collide_pub ? 3 : SENDER_ID, other->endpoint.entity_id) !=
+                        NULL);
+            sample_len = 5000;
+            delivered_count = 0;
+        }
+        publish_captured(); // seq_no 5..8
+        deliver(0);
+        deliver(1);
+        EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+        if (arm == 0) {
+            forget_writer_proxies_for_endpoint(&receiver, sub.endpoint.id, 3, 0, true); // another node
+        } else if (arm == 1) {
+            forget_writer_proxies_for_endpoint(&receiver, sub.endpoint.id, SENDER_ID, sibling_pub.endpoint.entity_id,
+                                               false);
+        } else if (arm == 2) {
+            forget_writer_proxies_for_endpoint(&receiver, sub.endpoint.id, SENDER_ID, entity, false);
+        } else {
+            forget_writer_proxies_for_endpoint(&receiver, sub.endpoint.id, SENDER_ID, 0, true);
+        }
+        if (arm < 2) {
+            EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+            deliver(2);
+            deliver(3);
+            expect_delivered_once(5000);
+        } else {
+            EXPECT_TRUE(receiver.frag_fast_sub == NULL);
+            EXPECT_EQ_U32(2, sub.reorder_abandoned);
+        }
+    }
+    first_contact_sample(5000);
+    publish_captured();
+    deliver(0);
+    EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub));
+    EXPECT_TRUE(receiver.frag_fast_sub == NULL);
+}
+
 static void test_keep_last_evicts_whole_samples(void) {
     // Depth counts seq_no - datagrams - and eviction takes a whole sample, never leaving a continuation
     // without its first datagram at the old end of the cache.
@@ -1254,6 +1950,22 @@ int main(void) {
     test_reliable_sample_given_up_on_is_never_delivered_torn();
     test_reliable_fragment_without_room_is_left_unrecorded();
     test_reliable_two_writers_interleaved();
+    test_reliable_in_order_sample_never_touches_the_reorder_buffer();
+    test_reliable_out_of_order_fragments_still_deliver_through_the_buffer();
+    test_reliable_fast_path_interrupted_by_a_lost_fragment();
+    test_reliable_fast_path_sample_given_up_on_is_never_delivered_torn();
+    test_reliable_two_writers_interleaved_after_first_contact();
+    test_reliable_two_subscribers_share_the_scratch();
+    test_reliable_buffer_delivery_does_not_overwrite_the_fast_path();
+    test_reliable_fast_path_does_not_overtake_a_lost_sample();
+    test_reliable_fast_path_needs_room_in_the_buffer();
+    test_reliable_fast_path_refuses_what_does_not_belong_to_its_sample();
+    test_reliable_fast_path_moves_out_before_another_writer_is_held();
+    test_reliable_fast_path_waits_while_anything_is_held();
+    test_reliable_fast_path_survives_another_writers_drain();
+    test_reliable_fast_path_ignores_another_subscribers_hold();
+    test_reliable_fast_path_keeps_the_reorder_cursor_with_the_watermark();
+    test_reliable_fast_path_follows_its_writer_and_subscriber_out();
     test_keep_last_evicts_whole_samples();
     test_sample_depth_bounds_keep_last_in_samples();
     test_keep_all_counts_every_datagram();

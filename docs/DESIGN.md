@@ -301,8 +301,12 @@ Anything batched ahead is flushed first. Retransmissions send cached fragments u
 
 **Receiver.**
 
-- RELIABLE: fragments go into the subscriber's reorder buffer (offset per writer) and are recorded as received only
-  once stored. A complete in-order sample is reassembled in `frag_scratch`. A sample that can never be whole is
+- RELIABLE: a fragment in order (its seq_no is the writer's watermark, the subscriber holds nothing) is put
+  together in the node's `frag_scratch` and the sample delivered from there, never touching the reorder buffer - one
+  sample at a time per node (`frag_fast_take()`). Any other fragment goes into the subscriber's reorder buffer (offset
+  per writer), and anything that would disturb the sample in the scratch - a store into that subscriber's buffer,
+  another use of the scratch, its watermark moving - first moves its fragments into their slots, which are free by
+  construction. Either way a fragment is recorded as received only once kept. A sample that can never be whole is
   dropped and counted (`reorder_abandoned`); a torn sample is never delivered.
 - BEST_EFFORT: a pool of `tt_FRAG_REASSEMBLY_SLOTS` (8) keyed by (source, entity_id, sample seq_no). When full, a
   completed slot is reused first, then the oldest reassembly is abandoned. Duplicates, abandons and contradictions
