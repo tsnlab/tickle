@@ -261,10 +261,14 @@ $(OBJ)/tests/test_transport_seam: $(TEST_DIR)/test_transport_seam.c $(SRC)/encod
 	$(CC) $(CPPFLAGS) $(DEPFLAGS) $(CFLAGS) -MM -MP -MT $@ -MF $@.d $<
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
 
+# Its own tree, rebuilt from clean every time: the binary `make test` leaves in $(OBJ) is up to date by make's
+# reckoning and built without -fsanitize, so reusing that tree would run an uninstrumented binary. This used to be a
+# `make clean` of every tree, which also made it unsafe to run beside `make test` (check-gates runs them in parallel).
+TSAN_OBJ = obj/tsan
 tsan:
-	$(MAKE) clean
-	$(MAKE) $(OBJ)/tests/test_thread_safety CFLAGS='-O1 -g -Wall -Wextra -fsanitize=thread'
-	TSAN_OPTIONS=halt_on_error=1 ./$(OBJ)/tests/test_thread_safety
+	rm -rf $(TSAN_OBJ)
+	$(MAKE) OBJ=$(TSAN_OBJ) $(TSAN_OBJ)/tests/test_thread_safety CFLAGS='-O1 -g -Wall -Wextra -fsanitize=thread'
+	TSAN_OPTIONS=halt_on_error=1 ./$(TSAN_OBJ)/tests/test_thread_safety
 
 # Line and branch coverage of src/ by the unit tests - tracked, not enforced (no threshold fails anything; see
 # rmw_tickle/rmw_tickle/QUALITY_DECLARATION.md, 4.iii). The same `make test`, built with --coverage into its own

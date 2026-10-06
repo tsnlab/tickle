@@ -7,8 +7,8 @@
 # `&&` turned a failure into silence. A gate whose answer nobody reads is the failure mode this
 # repository keeps re-deriving (CLAUDE.md's rule 3, and lint_rmw.sh's own header).
 #
-# So: it never hides output from a failing gate, it says PASS or FAIL for each, and it exits
-# non-zero if any failed. A gate that cannot run (no clang-tidy, no ROS) reports SKIP and does not
+# So: it never hides output from a failing gate (the end of its log is printed, and every row's whole
+# log is kept in the directory it names), it says PASS or FAIL for each, and it exits non-zero if any failed. A gate that cannot run (no clang-tidy, no ROS) reports SKIP and does not
 # pass silently.
 #
 # What it does NOT cover, because it needs a runner: the conformance suite, the interface-package
@@ -57,126 +57,143 @@ fi
 failed=0
 results=()
 
-# run_gate <name> <command...>; run_advisory_gate is the same but never fails the run.
-run_gate() {
-    local name="$1"
-    shift
-    printf '== %s\n' "$name"
-    if "$@"; then
-        results+=("PASS  $name")
-    else
-        results+=("FAIL  $name")
-        failed=1
-    fi
+# --- How the rows run (2026-10-06) ------------------------------------------------------------------------------------
+# Every row is started at once, each writing a log of its own, and the verdicts are read afterwards in the fixed order
+# of the launches below - so the table has the same rows, names and order it had when they ran one after another, and
+# the exit status means what it always did. Run serially the rows took 10-20 minutes.
+#
+# They can run together because no two write the same tree. lint-rmw builds in $REPO/build; the rmw suite in a base of
+# its own under its workspace, with a netns named after its own PID; test-typesupport under build/pytest_basetemp;
+# `make test` in platform/linux/obj/debug and `make tsan` in obj/tsan (until 2026-10-06 tsan began with a `make clean`
+# of every tree, which would have deleted the unit tests' binaries while they ran); the FreeRTOS build in a mktemp
+# directory; the sweep writes nothing. A new row that writes a tree another row also uses must not simply be launched:
+# give it a directory of its own, or make the two one command that runs them in order.
+
+LOGDIR="$(mktemp -d "${TMPDIR:-/tmp}/tickle-gates.XXXXXX")" || exit 1
+ids=()
+declare -A NAME KIND
+
+# launch <id> <kind> <name> <command...>: start a row in the background, its output in $LOGDIR/<id>.log and
+# "<exit> <seconds>" in $LOGDIR/<id>.rc. <kind> says how the exit status is read once it finishes.
+launch() {
+    local id="$1" kind="$2" name="$3"
+    shift 3
+    ids+=("$id")
+    NAME[$id]="$name"
+    KIND[$id]="$kind"
+    (
+        start=$(date +%s)
+        "$@" >"$LOGDIR/$id.log" 2>&1 </dev/null
+        rc=$?
+        echo "$rc $(($(date +%s) - start))" >"$LOGDIR/$id.rc"
+    ) &
 }
 
-run_lint_gate() {
-    local name="$1"
-    shift
-    if [ "$lint_is_advisory" = 0 ]; then
-        run_gate "$name" "$@"
-        return
-    fi
-    printf '== %s (advisory)\n' "$name"
-    if "$@"; then
-        results+=("PASS  $name (advisory, clang-tidy ${tidy_major:-?})")
-    else
-        results+=("ADVS  $name -- findings under clang-tidy ${tidy_major:-?}, which is not CI's $CI_CLANG_MAJOR")
-    fi
+# preskip <id> <name> <reason>: a row that cannot run here, decided before launching anything.
+preskip() {
+    ids+=("$1")
+    NAME[$1]="$2"
+    KIND[$1]=skip
+    printf 'SKIP  %s -- %s\n' "$2" "$3" >"$LOGDIR/$1.row"
 }
 
-skip_gate() {
-    results+=("SKIP  $name -- $1")
-}
+lint_kind=gate
+[ "$lint_is_advisory" = 1 ] && lint_kind=lint
 
-run_lint_gate "lint (clang-format + clang-tidy)" make lint "${lint_vars[@]}"
-run_gate "lint-shell" make lint-shell
-run_gate "check-doc-shas" make check-doc-shas
-run_gate "check-rig-lock" make check-rig-lock
-run_gate "check-bench-shapes" make check-bench-shapes
-run_gate "check-unsupported-list" make check-unsupported-list
-run_gate "check-context-reset" make check-context-reset
-run_gate "check-results-provenance" make check-results-provenance
-run_gate "test (unit)" make test
-run_gate "tsan (thread safety)" make tsan
-run_gate "test-typesupport (pytest)" make test-typesupport
+wall_start=$(date +%s)
+launch lint "$lint_kind" "lint (clang-format + clang-tidy)" make lint "${lint_vars[@]}"
+launch shell gate "lint-shell" make lint-shell
+launch docshas gate "check-doc-shas" make check-doc-shas
+launch riglock gate "check-rig-lock" make check-rig-lock
+launch bench gate "check-bench-shapes" make check-bench-shapes
+launch unsup gate "check-unsupported-list" make check-unsupported-list
+launch ctxreset gate "check-context-reset" make check-context-reset
+launch prov gate "check-results-provenance" make check-results-provenance
+launch unit gate "test (unit)" make test
+launch tsan gate "tsan (thread safety)" make tsan
+launch pytest gate "test-typesupport (pytest)" make test-typesupport
 # CI lints the FreeRTOS HAL files on their own with include-cleaner on; `make -C platform/freertos lint`
 # does not (see lint-headers-ci there). Needs the FreeRTOS/lwIP submodules.
 if [ -f third_party/FreeRTOS-Kernel/include/FreeRTOS.h ]; then
-    run_lint_gate "lint-freertos-hal (as CI)" make -C platform/freertos lint-headers-ci "${lint_vars[@]}"
+    launch frhal "$lint_kind" "lint-freertos-hal (as CI)" make -C platform/freertos lint-headers-ci "${lint_vars[@]}"
 else
-    name="lint-freertos-hal (as CI)"
-    skip_gate "FreeRTOS/lwIP submodules not checked out"
+    preskip frhal "lint-freertos-hal (as CI)" "FreeRTOS/lwIP submodules not checked out"
 fi
-name="lint-rmw"
 if [ -z "$(find /opt/ros -maxdepth 2 -name setup.bash -print -quit 2>/dev/null)" ]; then
-    skip_gate "no ROS installation to build rmw_tickle's compile database"
+    preskip lintrmw "lint-rmw" "no ROS installation to build rmw_tickle's compile database"
 else
-    run_lint_gate "lint-rmw" make lint-rmw "${lint_vars[@]}"
+    launch lintrmw "$lint_kind" "lint-rmw" make lint-rmw "${lint_vars[@]}"
 fi
-
 # CI's "Check all" runs rmw_tickle's own ctest suite and this script did not: on 2026-10-02 every
 # gate above reported PASS on a commit that broke test_type_checks, and main stayed red for three
 # commits. The script reports WHY it could not run separately from a failure, because "I could not
 # look" must not read as "it passed".
-name="rmw suite (as CI)"
-printf '== %s\n' "$name"
-./.github/scripts/run_rmw_suite.sh
-rmw_suite_rc=$?
-case "$rmw_suite_rc" in
-    0) results+=("PASS  $name") ;;
-    77) skip_gate "no ROS workspace with TickLE typesupport interfaces (set RMW_TEST_WS, or build_ros2_interfaces.sh)" ;;
-    78) skip_gate "no ROS installation" ;;
-    79) skip_gate "no provable private netns (needs passwordless 'ip') - the suite did NOT run" ;;
-    80)
-        # The build came from some other checkout. Not a SKIP: the environment is fine and the gate
-        # would otherwise report on code nobody asked about, which is the defect it was built to stop.
-        results+=("FAIL  $name - NOT THIS CHECKOUT: the build is not provably from $REPO")
-        failed=1
-        ;;
-    *)
-        results+=("FAIL  $name")
-        failed=1
-        ;;
-esac
-
+launch rmw rmw "rmw suite (as CI)" ./.github/scripts/run_rmw_suite.sh
 # Every gate above builds ONE configuration. On 2026-10-03 a commit passed 13 of 13 here and broke
 # -Dtt_SEGMENT_ENABLED=0, which CI builds in four jobs (two of them FreeRTOS, which also compiles the
 # segment out). The rig found it in nine seconds. This sweeps the configurations with -fsyntax-only, so it
 # writes no object and cannot disturb a build beside it. Same three-state vocabulary as the gate above: a
 # sweep that could not run says so rather than passing quietly.
-name="build configs (syntax)"
-printf '== %s\n' "$name"
-./.github/scripts/sweep_build_configs.sh
-sweep_rc=$?
-case "$sweep_rc" in
-    0) results+=("PASS  $name") ;;
-    77) skip_gate "no C compiler to sweep with - the configurations were NOT checked" ;;
-    *)
-        results+=("FAIL  $name")
-        failed=1
-        ;;
-esac
-
+launch sweep sweep "build configs (syntax)" ./.github/scripts/sweep_build_configs.sh
 # Every gate above compiles for this host, and the sweep above never links. On 2026-10-06 a 64-bit relaxed
 # atomic store linked on x86-64 and failed only in CI's "Build - FreeRTOS RISC-V": RV32 lowers it to
 # __atomic_store_8, which picolibc does not provide. This is that build, from scratch, when the cross
 # compiler is here - and a loud SKIP with how to install it when it is not.
-name="build freertos (link, as CI)"
-printf '== %s\n' "$name"
-./.github/scripts/build_freertos.sh
-freertos_rc=$?
-case "$freertos_rc" in
-    0) results+=("PASS  $name") ;;
-    77) skip_gate "NO RISC-V CROSS COMPILER - the FreeRTOS link was NOT checked; install: sudo apt-get install gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf picolibc-riscv64-unknown-elf" ;;
-    78) skip_gate "FreeRTOS/lwIP submodules not checked out - the FreeRTOS link was NOT checked; git submodule update --init" ;;
-    *)
-        results+=("FAIL  $name")
-        failed=1
-        ;;
-esac
+launch freertos freertos "build freertos (link, as CI)" ./.github/scripts/build_freertos.sh
+wait
+wall=$(($(date +%s) - wall_start))
+
+# verdict <id> <exit>: the table row for a finished row, by its kind.
+verdict() {
+    local id="$1" rc="$2" name="${NAME[$1]}"
+    case "${KIND[$id]}:$rc" in
+        gate:0 | rmw:0 | sweep:0 | freertos:0) echo "PASS  $name" ;;
+        lint:0) echo "PASS  $name (advisory, clang-tidy ${tidy_major:-?})" ;;
+        lint:*) echo "ADVS  $name -- findings under clang-tidy ${tidy_major:-?}, which is not CI's $CI_CLANG_MAJOR" ;;
+        rmw:77) echo "SKIP  $name -- no ROS workspace with TickLE typesupport interfaces (set RMW_TEST_WS, or build_ros2_interfaces.sh)" ;;
+        rmw:78) echo "SKIP  $name -- no ROS installation" ;;
+        rmw:79) echo "SKIP  $name -- no provable private netns (needs passwordless 'ip') - the suite did NOT run" ;;
+        # The build came from some other checkout. Not a SKIP: the environment is fine and the gate
+        # would otherwise report on code nobody asked about, which is the defect it was built to stop.
+        rmw:80) echo "FAIL  $name - NOT THIS CHECKOUT: the build is not provably from $REPO" ;;
+        sweep:77) echo "SKIP  $name -- no C compiler to sweep with - the configurations were NOT checked" ;;
+        freertos:77) echo "SKIP  $name -- NO RISC-V CROSS COMPILER - the FreeRTOS link was NOT checked; install: sudo apt-get install gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf picolibc-riscv64-unknown-elf" ;;
+        freertos:78) echo "SKIP  $name -- FreeRTOS/lwIP submodules not checked out - the FreeRTOS link was NOT checked; git submodule update --init" ;;
+        *) echo "FAIL  $name" ;;
+    esac
+}
+
+# One section per row, in the table's order: a header with the exit status and time, and the end of the log of any
+# row that did not pass - the whole log is in $LOGDIR. A row that left no exit status did not finish, and fails.
+TAIL_LINES=60
+for id in "${ids[@]}"; do
+    name="${NAME[$id]}"
+    if [ -f "$LOGDIR/$id.row" ]; then
+        row=$(cat "$LOGDIR/$id.row")
+        printf '== %s: not run\n' "$name"
+        results+=("$row")
+        continue
+    fi
+    if ! read -r rc secs <"$LOGDIR/$id.rc" 2>/dev/null; then
+        rc="none"
+        secs="?"
+    fi
+    row=$(verdict "$id" "$rc")
+    printf '== %s (exit %s, %ss)\n' "$name" "$rc" "$secs"
+    case "$row" in
+        PASS*) ;;
+        *)
+            echo "--- last $TAIL_LINES lines of $LOGDIR/$id.log"
+            tail -n "$TAIL_LINES" "$LOGDIR/$id.log" 2>/dev/null || echo "(no log)"
+            echo "---"
+            ;;
+    esac
+    case "$row" in FAIL*) failed=1 ;; esac
+    results+=("$row")
+done
 
 echo
+echo "== all rows finished in ${wall}s; every row's full output: $LOGDIR"
 echo "== gates"
 printf '%s\n' "${results[@]}"
 # What this script does NOT run, said every time rather than left to be discovered. On 2026-09-29 both CI workflows
