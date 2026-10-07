@@ -2954,9 +2954,11 @@ static void test_unknown_policy_still_terminates_on_eviction(void) {
 }
 
 // Opens the gap the two tests below share: seq_no 1 arrives, 3 arrives, 2 is lost - one ACKNACK names 2 and the retry
-// timer is armed. The estimate is set first, so the window a repair is taken to be in flight (srtt, 200 us) and the
-// timer (srtt + 4 * rttvar, 4.2 ms) are far apart and each test can stand between them.
+// timer is armed. The estimates are set first, so the window a repair is taken to be in flight (the transit's srtt +
+// the 100 us granularity, 200 us) and the timer (the recovery srtt + 4 * rttvar, 4.2 ms) are far apart and each test
+// can stand between them.
 #define GAP_TEST_SRTT_NS (200 * tt_MICROSECOND)
+#define GAP_TEST_TRANSIT_NS (GAP_TEST_SRTT_NS - tt_RELIABLE_RETRY_GRANULARITY)
 static struct tt_WriterProxy* open_gap_at_two(struct tt_Context* node, struct tt_Subscriber* sub,
                                               struct tt_Header* header) {
     uint32_t tail = write_data(node, 1, 100, 1);
@@ -2965,6 +2967,8 @@ static struct tt_WriterProxy* open_gap_at_two(struct tt_Context* node, struct tt
     EXPECT_TRUE(proxy != NULL);
     proxy->recovery_srtt_ns = GAP_TEST_SRTT_NS;
     proxy->recovery_rttvar_ns = tt_MILLISECOND;
+    proxy->transit_srtt_ns = GAP_TEST_TRANSIT_NS;
+    proxy->transit_rttvar_ns = 0;
     tail = write_data(node, 3, 300, 3);
     EXPECT_TRUE(process_data(node, header, node->rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_TRUE(proxy->acknack_scheduled);
@@ -3115,6 +3119,82 @@ static void test_heartbeat_requesting_an_answer_names_an_overdue_repair_alone(vo
     acknack = last_sent_acknack();
     EXPECT_TRUE(acknack != NULL);
     EXPECT_EQ_U32(0, (uint32_t)acknack->bitmap_words);
+}
+
+// The window an answer leaves out is the repair transit (request to the repair's arrival), timed from the OLDEST
+// remembered request that named the repaired sample. 2 is asked for at 10 ms by the ACKNACK that opened the gap and,
+// once overdue, again by an answer at 10.3 ms; its repair arrives at 10.5 ms. Timed from the answer the sample would
+// be 200 us and the window would shrink toward asking for repairs in flight again; from the first request it is 500 us.
+// Control: a copy not addressed to this node (an original that was only late) gives no sample.
+static void test_repair_transit_is_timed_from_the_oldest_request(void) {
+    test_mock_reset();
+    test_mock_now = 10 * tt_MILLISECOND;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    struct tt_Header header;
+    init_header(&header);
+    struct tt_WriterProxy* proxy = open_gap_at_two(&node, &sub, &header);
+    proxy->transit_srtt_ns = 0; // no estimate yet: the window is tt_RELIABLE_RETRY_INITIAL until the first sample
+    proxy->transit_rttvar_ns = 0;
+
+    test_mock_now += 300 * tt_MICROSECOND; // inside tt_RELIABLE_RETRY_INITIAL: the request for 2 is in flight
+    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 1, 3, 0);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    const struct tt_AckNackHeader* acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_EQ_U32(0, (uint32_t)acknack->bitmap_words); // a pure acknowledgement
+
+    test_mock_now += tt_MILLISECOND; // 1.3 ms: overdue, and named again
+    tail = write_heartbeat(&node, ENDPOINT_ID, 1, 3, 0);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_TRUE(acknack->bitmap_words == 1 && acknack->bitmap[0] == 0x1ULL);
+
+    // Control: the original, late and not addressed to this node - delivered, but no transit sample.
+    test_mock_now += 200 * tt_MICROSECOND;
+    tail = write_data(&node, 2, 200, 2);
+    node.rx_targeted = false;
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(0, proxy->transit_srtt_ns);
+    EXPECT_EQ_U32(4, proxy->ack_seq_no);
+
+    // The same again with a repair: 4 lost behind 5, asked for at once by the gap-opening ACKNACK, asked for again by
+    // an answer once overdue, and its repair arrives 1.5 ms after the first request.
+    tail = write_data(&node, 5, 500, 5);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    test_mock_now += 1100 * tt_MICROSECOND;
+    tail = write_heartbeat(&node, ENDPOINT_ID, 1, 5, 0);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_TRUE(acknack->bitmap_words == 1 && acknack->bitmap[0] == 0x1ULL); // seq_no 4
+    test_mock_now += 400 * tt_MICROSECOND;
+    tail = write_data(&node, 4, 400, 4);
+    node.rx_targeted = true;
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    node.rx_targeted = false;
+    EXPECT_EQ_U32(1500 * tt_MICROSECOND, proxy->transit_srtt_ns);
+    EXPECT_EQ_U32(6, proxy->ack_seq_no);
+
+    // A repair of 7 (6 and 7 lost behind 8) 100 us after the request is a sample; a second copy of it later is not:
+    // 7 is no longer missing, and the copy says nothing about how long a repair takes.
+    tail = write_data(&node, 8, 800, 8);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    test_mock_now += 100 * tt_MICROSECOND;
+    tail = write_data(&node, 7, 700, 7);
+    node.rx_targeted = true;
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(((7U * 1500U) + 100U) * tt_MICROSECOND / 8U, proxy->transit_srtt_ns);
+    test_mock_now += 800 * tt_MICROSECOND;
+    tail = write_data(&node, 7, 700, 7);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    node.rx_targeted = false;
+    EXPECT_EQ_U32(((7U * 1500U) + 100U) * tt_MICROSECOND / 8U, proxy->transit_srtt_ns);
 }
 
 #ifdef tt_RELIABLE_STATS
@@ -4513,6 +4593,7 @@ int main(void) {
     test_heartbeat_requesting_an_answer_is_answered_while_a_gap_is_open();
     test_heartbeat_requesting_an_answer_does_not_rerequest_a_repair_in_flight();
     test_heartbeat_requesting_an_answer_names_an_overdue_repair_alone();
+    test_repair_transit_is_timed_from_the_oldest_request();
     test_keep_all_writable_callback_fires_once();
     test_keep_all_unblocks_when_last_subscriber_leaves();
     test_keep_all_refuses_when_bytes_bind_before_count();
