@@ -210,7 +210,9 @@ static struct ring_cost count_ring_syscalls(bool owner_gone) {
             deliver = WSTOPSIG(status); // a signal stop, not a syscall one
             continue;
         }
-        struct __ptrace_syscall_info info;
+        // Zeroed although the kernel fills it: MemorySanitizer does not model PTRACE_GET_SYSCALL_INFO and otherwise
+        // reports every read of it.
+        struct __ptrace_syscall_info info = {0};
         // NOLINTNEXTLINE(performance-no-int-to-ptr) - ptrace()'s convention, as above
         if (ptrace(PTRACE_GET_SYSCALL_INFO, child, (void*)sizeof(info), &info) <= 0 ||
             info.op != PTRACE_SYSCALL_INFO_ENTRY) {

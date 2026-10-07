@@ -4113,6 +4113,14 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
         pub->departed_acks[i].entity_id = 0;
         pub->departed_acks[i].at_ns = 0;
     }
+    // The ring's cursor, which forget_peer_ack() uses as an index before it reduces it modulo tt_DEPARTED_ACKS: left
+    // as found, the first departure wrote 16 bytes at departed_acks[garbage], up to 4 KB past the array - into this
+    // Publisher's own fields after it (departed_next = 8 overwrites batch and keep_all) or past it. Found 2026-10-08
+    // by MemorySanitizer, after CI's gcc 13 left an 8 there on the stack of a test and a liveliness assertion sent
+    // one datagram too many (tests/test_create_defaults.c, test_peer_discovery.c).
+    pub->departed_next = 0;
+    pub->keep_all_unmatched_until_ns = 0; // 0 = the pre-match window not yet opened (keep_all_room_before_match())
+    pub->cache_grow = NULL;               // the caller's hook, set after creation (rmw_tickle's g10)
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
     if (result != tt_RET_OK) {

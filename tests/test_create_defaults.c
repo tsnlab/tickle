@@ -107,6 +107,26 @@ static void test_publisher_defaults_override_garbage(void) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         EXPECT_EQ_INT(tt_CONTEXT_ID_INVALID, pub.peers[i].context_id);
     }
+    // 2026-10-08: the departed-ack ring's cursor, the pre-match window and the grow hook were left as found.
+    EXPECT_EQ_INT(0, pub.departed_next);
+    EXPECT_TRUE(pub.keep_all_unmatched_until_ns == 0);
+    EXPECT_TRUE(pub.cache_grow == NULL);
+}
+
+// What the cursor did when left as found: forget_peer_ack() indexed departed_acks[] with it before reducing it, so the
+// first departure was written up to 4 KB past the array. CI's gcc 13 left an 8 there, which wrote over `batch` and
+// `keep_all` and made test_peer_discovery's liveliness assertion send one datagram too many. The first departure must
+// land in slot 0 and leave the fields after the array alone.
+static void test_the_first_departure_lands_inside_the_ring(void) {
+    init();
+    static struct tt_Publisher pub;
+    memset(&pub, 0, sizeof(pub));
+    pub.departed_next = tt_DEPARTED_ACKS; // one past the end: the 8 CI's stack held
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub, &topic, "ep"));
+    forget_peer_ack(&pub, 7, 0, true);
+    EXPECT_EQ_INT(7, pub.departed_acks[0].context_id);
+    EXPECT_EQ_INT(1, pub.departed_next);
+    EXPECT_TRUE(!pub.batch && !pub.keep_all);
 }
 
 static void test_subscriber_defaults_override_garbage(void) {
@@ -126,6 +146,7 @@ static void test_subscriber_defaults_override_garbage(void) {
 
 int main(void) {
     test_publisher_defaults_override_garbage();
+    test_the_first_departure_lands_inside_the_ring();
     test_subscriber_defaults_override_garbage();
 
     if (test_result() != 0) {

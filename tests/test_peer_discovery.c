@@ -1277,6 +1277,10 @@ static void test_a_manual_lease_is_not_kept_by_other_topics_data(void) {
     duo_start(&one, &two);
     struct tt_Publisher manual;
     struct tt_Publisher automatic;
+    // What CI's gcc 13 left on this stack (2026-10-08): with tt_Publisher.departed_next not set by creation, the
+    // first departure wrote past departed_acks[] over `batch`, and the assertion below sent one datagram too many.
+    memset(&manual, tt_DEPARTED_ACKS, sizeof(manual));
+    memset(&automatic, tt_DEPARTED_ACKS, sizeof(automatic));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &manual, &live_topic_a, "live_ep"));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&one, &automatic, &live_topic_b, "live_ep"));
     manual.liveliness_manual = true;
