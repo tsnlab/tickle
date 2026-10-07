@@ -3453,6 +3453,11 @@ static void reset_node_state(struct tt_Context* node) {
     node->rx_malformed_drops = 0;
     node->rx_shm_only_on_socket = 0;
     node->rx_span_absorbed = 0;
+    node->rx_shm_skipped_superseded = 0;
+    node->segment_plan_base = 0;
+    node->segment_plan_count = 0;
+    memset(node->segment_plan_skip, 0, sizeof(node->segment_plan_skip));
+    memset(node->segment_skipping, 0, sizeof(node->segment_skipping));
     node->version_mismatch_drops = 0;
     // The span of the record currently being processed. 1 is its resting value, not a zero: a
     // datagram that carries no span consumes one seq_no, and process_datagram_locked() re-states it
@@ -4088,6 +4093,10 @@ static tt_ret_t node_create_subscriber_locked(struct tt_Context* node, struct tt
     sub->seq_no = 0;
     sub->accept_callback = NULL; // g13 - accept everything, which is what every caller did before it existed
     sub->accept_callback_param = NULL;
+    sub->keep_last_depth = 0; // never skip: what every caller written before the segment drain could skip expects
+    sub->superseded = 0;
+    sub->superseded_pending = 0;
+    sub->delivering_superseded = 0;
     sub->accept_declines = 0;
     sub->rxo_drops = 0;
     sub->delivered = 0;
@@ -6621,14 +6630,14 @@ static void report_delivery_counters(const struct tt_Subscriber* sub, uint32_t e
     TT_LOG_INFO("Subscriber %u delivery: delivered=%lu out_of_order=%lu timestamp_not_newer=%lu "
                 "writer_switches=%lu via_socket_flips=%lu out_of_order_discarded=%lu rxo_drops=%lu "
                 "reorder_held_peak=%lu reorder_delivered=%lu reorder_overflow=%lu reorder_abandoned=%lu "
-                "gap_abandoned=%lu gap_evicted=%lu",
+                "gap_abandoned=%lu gap_evicted=%lu superseded=%lu",
                 endpoint_id, (unsigned long)sub->delivered, (unsigned long)sub->out_of_order,
                 (unsigned long)sub->timestamp_not_newer, (unsigned long)sub->writer_switches,
                 (unsigned long)sub->via_socket_flips, (unsigned long)sub->out_of_order_discarded,
                 (unsigned long)sub->rxo_drops, (unsigned long)sub->reorder_held_peak,
                 (unsigned long)sub->reorder_delivered, (unsigned long)sub->reorder_overflow,
                 (unsigned long)sub->reorder_abandoned, (unsigned long)sub->gap_abandoned,
-                (unsigned long)sub->gap_evicted);
+                (unsigned long)sub->gap_evicted, (unsigned long)sub->superseded);
 }
 
 static tt_ret_t subscriber_destroy_locked(struct tt_Subscriber* sub) {
@@ -6883,6 +6892,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->ack_seq_no = 1;
             proxy->reorder_cursor = 1;
             proxy->highest_delivered = 0;
+            proxy->superseded_pending = 0;
             proxy->sub = sub; // before anything that reads the window width through the proxy
             // Phase 3 - whether this writer promises KEEP_ALL, from whatever its last announce
             // said (a later announce refreshes it via update_writer_proxies_keep_all()). Unknown
@@ -8158,6 +8168,9 @@ static void forget_writer_proxies_for_endpoint(struct tt_Context* node, uint32_t
             }
             proxy->context_id = tt_CONTEXT_ID_INVALID; // frees the slot; a restart re-runs first contact
             proxy->entity_id = 0;
+            sub->superseded_pending -= proxy->superseded_pending < sub->superseded_pending ? proxy->superseded_pending
+                                                                                           : sub->superseded_pending;
+            proxy->superseded_pending = 0;
             proxy->ack_seq_no = 1;
             proxy->reorder_cursor = 1;
             proxy->highest_delivered = 0;
@@ -9216,6 +9229,18 @@ static void record_delivery_order(struct tt_Context* node, struct tt_Subscriber*
     sub->last_timestamp = timestamp;
     sub->last_via_data_port = via_data_port;
     sub->delivered++;
+    // The samples of this writer the segment drain passed over just before this one, handed over with it. Looked up
+    // only when there are any, so a Subscriber that never skips pays one compare.
+    sub->delivering_superseded = 0;
+    if (sub->superseded_pending != 0) {
+        struct tt_WriterProxy* proxy = find_writer_proxy(sub, source, entity_id);
+        if (proxy != NULL && proxy->superseded_pending != 0) {
+            sub->delivering_superseded = proxy->superseded_pending;
+            sub->superseded_pending -= proxy->superseded_pending < sub->superseded_pending ? proxy->superseded_pending
+                                                                                           : sub->superseded_pending;
+            proxy->superseded_pending = 0;
+        }
+    }
 }
 
 // TT_ORDERING_DISABLED - an experiment arm that restores pre-2026-09-24 delivery, off by default
@@ -12202,6 +12227,21 @@ static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t he
 static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
                                         enum tt_Transport transport, uint16_t seq_span);
 
+// One datagram counted as received, by transport and by socket - process_datagram_locked()'s counting, and the segment
+// drain's for a record it passes over unread, so the totals agree whichever way a record was dealt with.
+static void count_arrival(struct tt_Context* node, enum tt_Transport transport) {
+    node->rx_datagrams++;
+    // The receive half of the seam (SHM_PLAN.md stage 0). One place, because there is one place a
+    // datagram enters core - and stage 1's segment arrivals will be counted here too rather than
+    // beside it, so the two transports are never counted by two different rules.
+    node->rx_datagrams_by_transport[transport]++;
+    if (node->rx_via_data_port) {
+        node->rx_via_data_datagrams++;
+    } else {
+        node->rx_via_well_known_datagrams++;
+    }
+}
+
 // Whether anything is outstanding in this context's own ring, published or claimed - drain_own_segment()'s own
 // lock-free first look; both indices are free-running and equal means nothing is. Always false without a segment.
 //
@@ -12298,6 +12338,504 @@ static void note_head_stall(struct tt_Context* node) {
     }
 }
 
+// Releases slot `index` back to the writers without reading it - segment_read()'s release, in its order: the slot
+// is marked free one lap ahead before read_index moves past it.
+static void segment_release(struct tt_SegmentHeader* header, uint32_t index) {
+    struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)segment_slot(header, index);
+    __atomic_store_n(&slot_header->sequence, index + header->slots, __ATOMIC_RELEASE);
+    __atomic_store_n(&header->read_index, index + 1U, __ATOMIC_RELEASE);
+}
+
+// SKIP TO NEWEST. Under overload a KEEP_LAST Subscriber's backlog in the ring is mostly samples its history will
+// overwrite before anyone takes them: at BEST_EFFORT KEEP_LAST 1 the drain decoded and delivered 29.7M samples into
+// rmw_tickle's queue and the application took 1.23M, so nearly all of the subscriber's CPU went into samples nobody
+// saw. Reading only the first record per poll (origin/ab/drain-one-sample) cut the waste but read the ring in
+// order, so the application saw samples ~1.4 ms old instead of the newest - which defeats KEEP_LAST.
+//
+// So the drain looks at the backlog first, header by header, and passes over a sample when its writer already has
+// `keep_last_depth` newer complete samples queued behind it. What it never passes over:
+//   - anything that is not one DATA, FRAG_FIRST or FRAG_CONT of user data (control, announces, batches);
+//   - a sample of an endpoint with a KEEP_ALL Subscriber, or with any Subscriber whose depth is 0;
+//   - a fragmented sample not wholly in the backlog - a partial one is never counted as newer, never skipped;
+//   - anything from a writer whose records are not in strictly rising seq_no order in the backlog (a retransmit
+//     among them): "newer" is read off the seq_no, so where it does not rise the drain does not judge.
+// A RELIABLE Subscriber's skipped sample is recorded as received - its watermark moves past it exactly as if it
+// had been delivered and then superseded - so the writer is acknowledged it and nothing asks for it again; and only
+// a sample that is next in order for every RELIABLE Subscriber of it is skipped, so no gap is ever made out of it.
+enum segment_record_kind { SEGMENT_RECORD_OTHER, SEGMENT_RECORD_WHOLE, SEGMENT_RECORD_FIRST, SEGMENT_RECORD_CONT };
+
+struct segment_record {
+    enum segment_record_kind kind;
+    uint8_t source;
+    uint8_t frag_index;
+    uint8_t frag_count;
+    uint16_t span;
+    uint32_t endpoint_id; // WHOLE and FIRST only: a continuation does not name its endpoint
+    uint32_t entity_id;
+    uint32_t seq_no; // the record's own
+    uint32_t sender_ip;
+    uint16_t sender_port;
+};
+
+// Enough of a record to read its headers: the classic header with its submessage header, then the largest of the
+// sample headers.
+#define SEGMENT_RECORD_PEEK \
+    (sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragFirstHeader))
+
+// A record's framing, read from the copy of its first bytes: its header (in the classic form either way), the one
+// submessage's type, and where that submessage's body starts and ends. False when it is not one submessage this
+// context would process - a batch, another receiver's, a foreign magic or version, or our own.
+struct segment_framing {
+    struct tt_Header header;
+    uint8_t type;
+    uint32_t head;     // where the body starts
+    uint32_t body_end; // where it ends
+};
+
+static bool segment_peek_framing(const struct tt_Context* node, const uint8_t* peek, uint32_t peeked, uint32_t length,
+                                 struct segment_framing* out) {
+    if (peek[0] == tt_SINGLE_MARKER_LE || peek[0] == tt_SINGLE_MARKER_BE) {
+        const struct tt_SingleHeader* single = (const struct tt_SingleHeader*)peek;
+        out->header.magic_value = single->marker == native_single_marker() ? NATIVE_MAGIC_VALUE : REVERSE_MAGIC_VALUE;
+        out->header.version = single->version;
+        out->header.source = single->source;
+        out->type = single->type;
+        out->head = sizeof(struct tt_SingleHeader);
+        out->body_end = length;
+    } else {
+        if (peeked < sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader)) {
+            return false;
+        }
+        memcpy(&out->header, peek, sizeof(out->header));
+        if (!tt_is_native_endian(&out->header) && !tt_is_reverse_endian(&out->header)) {
+            return false;
+        }
+        const struct tt_SubmessageHeader* submessage =
+            (const struct tt_SubmessageHeader*)(peek + sizeof(struct tt_Header));
+        uint32_t sub_length = rd16(&out->header, submessage->length);
+        // Exactly one submessage, addressed to everyone or to us: a batch is read the ordinary way.
+        if (sub_length < sizeof(struct tt_SubmessageHeader) || sizeof(struct tt_Header) + sub_length > length ||
+            length - (sizeof(struct tt_Header) + sub_length) >= sizeof(struct tt_SubmessageHeader) ||
+            (submessage->receiver != tt_SUBMESSAGE_ID_ALL && submessage->receiver != node->id)) {
+            return false;
+        }
+        out->type = submessage->type;
+        out->head = sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader);
+        out->body_end = sizeof(struct tt_Header) + sub_length;
+    }
+    return out->header.version == tt_VERSION && out->header.source != node->id && out->body_end > out->head;
+}
+
+// A whole DATA's header: user data only, never an announce.
+static void segment_peek_data(struct tt_Header* header, const uint8_t* body, struct segment_record* rec) {
+    const struct tt_DataHeader* data = (const struct tt_DataHeader*)body;
+    rec->endpoint_id = rd32(header, data->endpoint_id);
+    rec->entity_id = rd32(header, data->entity_id);
+    rec->seq_no = rd32(header, data->seq_no);
+    if (rec->endpoint_id != tt_DISCOVERY_ENDPOINT_ID && rec->entity_id != tt_DISCOVERY_ENTITY_ID) {
+        rec->kind = SEGMENT_RECORD_WHOLE;
+    }
+}
+
+#if tt_FRAG_ENABLED
+static bool frag_shape_valid(uint32_t index, uint32_t count) {
+    return count >= 2 && count <= tt_FRAG_MAX_COUNT && index < count;
+}
+
+static void segment_peek_first(struct tt_Header* header, const uint8_t* body, struct segment_record* rec) {
+    const struct tt_FragFirstHeader* first = (const struct tt_FragFirstHeader*)body;
+    rec->endpoint_id = rd32(header, first->data.endpoint_id);
+    rec->entity_id = rd32(header, first->data.entity_id);
+    rec->seq_no = rd32(header, first->data.seq_no);
+    rec->frag_count = first->frag_count;
+    rec->span = 1; // each fragment is its own seq_no
+    if (rec->entity_id != tt_DISCOVERY_ENTITY_ID && frag_shape_valid(0, rec->frag_count)) {
+        rec->kind = SEGMENT_RECORD_FIRST;
+    }
+}
+
+static void segment_peek_cont(struct tt_Header* header, const uint8_t* body, struct segment_record* rec) {
+    const struct tt_FragContHeader* cont = (const struct tt_FragContHeader*)body;
+    rec->entity_id = rd32(header, cont->entity_id);
+    rec->seq_no = rd32(header, cont->seq_no);
+    rec->frag_index = cont->frag_index;
+    rec->frag_count = cont->frag_count;
+    rec->span = 1;
+    if (rec->entity_id != tt_DISCOVERY_ENTITY_ID && rec->frag_index != 0 &&
+        frag_shape_valid(rec->frag_index, rec->frag_count)) {
+        rec->kind = SEGMENT_RECORD_CONT;
+    }
+}
+#endif
+
+// What record `index` of the ring is, from its headers alone: no payload is copied or decoded. Anything this does
+// not recognise as one sample record is OTHER, which the drain reads the ordinary way.
+static void segment_peek_record(const struct tt_Context* node, struct tt_SegmentHeader* ring, uint32_t index,
+                                struct segment_record* rec) {
+    memset(rec, 0, sizeof(*rec));
+    rec->kind = SEGMENT_RECORD_OTHER;
+    const struct tt_SegmentSlot* slot_header = (const struct tt_SegmentSlot*)segment_slot(ring, index);
+    uint32_t length = slot_header->length;
+    if (length > ring->slot_bytes || length < sizeof(struct tt_SingleHeader)) {
+        return;
+    }
+    // A copy of the headers, so every check below reads the bytes the decision is made on.
+    tt_ALIGNAS(8) uint8_t peek[SEGMENT_RECORD_PEEK];
+    uint32_t peeked = length < (uint32_t)sizeof(peek) ? length : (uint32_t)sizeof(peek);
+    memcpy(peek, (const uint8_t*)slot_header + sizeof(*slot_header), peeked);
+    struct segment_framing framing;
+    if (!segment_peek_framing(node, peek, peeked, length, &framing)) {
+        return;
+    }
+#if tt_DISCOVERY_OPTIONS
+    if (_tt_CONFIG.discovery_range != tt_DISCOVERY_RANGE_SUBNET && !sender_in_range(slot_header->sender_ip)) {
+        return;
+    }
+#endif
+    rec->source = framing.header.source;
+    rec->sender_ip = slot_header->sender_ip;
+    rec->sender_port = slot_header->sender_port;
+    uint16_t span = slot_header->seq_span;
+    rec->span = (span >= 1 && span <= tt_FRAG_MAX_COUNT) ? span : 1;
+    // A sample header must lie wholly in the copy and leave a payload after it.
+    uint32_t body = framing.body_end - framing.head;
+    uint32_t in_copy = peeked > framing.head ? peeked - framing.head : 0;
+    const uint8_t* sample_header = peek + framing.head;
+    if (framing.type == tt_SUBMESSAGE_TYPE_DATA && body >= sizeof(struct tt_DataHeader) &&
+        in_copy >= sizeof(struct tt_DataHeader)) {
+        segment_peek_data(&framing.header, sample_header, rec);
+    }
+#if tt_FRAG_ENABLED
+    if (framing.type == tt_SUBMESSAGE_TYPE_FRAG_FIRST && body > sizeof(struct tt_FragFirstHeader) &&
+        in_copy >= sizeof(struct tt_FragFirstHeader)) {
+        segment_peek_first(&framing.header, sample_header, rec);
+    }
+    if (framing.type == tt_SUBMESSAGE_TYPE_FRAG_CONT && body > sizeof(struct tt_FragContHeader) &&
+        in_copy >= sizeof(struct tt_FragContHeader)) {
+        segment_peek_cont(&framing.header, sample_header, rec);
+    }
+#endif
+}
+
+// The depth the drain may rely on for an endpoint: the deepest of its Subscribers' KEEP_LAST depths, or 0 - never
+// skip - when it has none, or any one of them keeps everything.
+struct keep_last_depth_ctx {
+    uint32_t depth;
+    bool any;
+    bool keeps_all;
+};
+
+static void visit_keep_last_depth(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+    UNUSED(node);
+    struct keep_last_depth_ctx* ctx = (struct keep_last_depth_ctx*)ctx_ptr;
+    const struct tt_Subscriber* sub = (const struct tt_Subscriber*)endpoint;
+    ctx->any = true;
+    if (sub->keep_last_depth == 0) {
+        ctx->keeps_all = true;
+    } else if (sub->keep_last_depth > ctx->depth) {
+        ctx->depth = sub->keep_last_depth;
+    }
+}
+
+static uint32_t keep_last_depth_of(struct tt_Context* node, uint32_t endpoint_id) {
+    struct keep_last_depth_ctx ctx = {0, false, false};
+    for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id, visit_keep_last_depth, &ctx);
+    return (ctx.any && !ctx.keeps_all) ? ctx.depth : 0;
+}
+
+// One writer's records in the backlog, as the plan walks it from the newest back.
+#define SEGMENT_PLAN_WRITERS 8U
+struct segment_plan_writer {
+    uint32_t entity_id;
+    uint32_t endpoint_id;
+    uint32_t depth;
+    uint32_t newer_complete; // complete samples of this writer later in the backlog than the walk has reached
+    uint32_t lowest_seq_no;  // the lowest record seq_no later in the backlog
+    uint32_t run_seq_no;     // the seq_no the next fragment of the sample being collected must carry
+    uint8_t source;
+    uint8_t run_count;      // 0: no sample being collected
+    uint8_t run_next_index; // the fragment index expected next, walking back
+    bool depth_known;
+    bool disordered; // a seq_no that did not fall walking back: nothing earlier of this writer is judged
+};
+
+static bool seq_before(uint32_t a, uint32_t b) {
+    return (int32_t)(a - b) < 0;
+}
+
+static struct segment_plan_writer* plan_writer(struct segment_plan_writer* writers, uint32_t* writer_count,
+                                               const struct segment_record* rec) {
+    for (uint32_t idx = 0; idx < *writer_count; idx++) {
+        if (writers[idx].source == rec->source && writers[idx].entity_id == rec->entity_id) {
+            return &writers[idx];
+        }
+    }
+    if (*writer_count == SEGMENT_PLAN_WRITERS) {
+        return NULL; // a writer the table cannot follow is read the ordinary way, all of it
+    }
+    struct segment_plan_writer* writer = &writers[(*writer_count)++];
+    memset(writer, 0, sizeof(*writer));
+    writer->source = rec->source;
+    writer->entity_id = rec->entity_id;
+    writer->lowest_seq_no = rec->seq_no + 1U;
+    return writer;
+}
+
+// Whether `rec`, met walking back, completes a sample of `writer`: a whole record always does; a FRAG_FIRST does
+// when every continuation of its sample was met just before (later in the ring). A continuation never does - it
+// extends the run being collected, or ends it.
+static bool plan_completes_sample(struct segment_plan_writer* writer, const struct segment_record* rec) {
+    if (rec->kind == SEGMENT_RECORD_CONT) {
+        if (rec->frag_index + 1U == rec->frag_count) {
+            writer->run_count = rec->frag_count; // a sample's last fragment: collect it from here back
+        } else if (writer->run_count != rec->frag_count || rec->frag_index != writer->run_next_index ||
+                   rec->seq_no != writer->run_seq_no) {
+            writer->run_count = 0;
+            return false;
+        }
+        writer->run_next_index = (uint8_t)(rec->frag_index - 1U);
+        writer->run_seq_no = rec->seq_no - 1U;
+        return false;
+    }
+    bool complete =
+        rec->kind == SEGMENT_RECORD_WHOLE ||
+        (writer->run_count == rec->frag_count && writer->run_next_index == 0 && writer->run_seq_no == rec->seq_no);
+    writer->run_count = 0;
+    return complete;
+}
+
+// How many records from `read_index` on are published now, up to `limit`: a claimed slot not yet written ends it.
+static uint32_t segment_published_run(struct tt_SegmentHeader* ring, uint32_t read_index, uint32_t limit) {
+    uint32_t count = 0;
+    while (count < limit) {
+        const struct tt_SegmentSlot* slot_header = (const struct tt_SegmentSlot*)segment_slot(ring, read_index + count);
+        if (__atomic_load_n(&slot_header->sequence, __ATOMIC_ACQUIRE) != read_index + count + 1U) {
+            break;
+        }
+        count++;
+    }
+    return count;
+}
+
+// Decides, for the records from `read_index` on that are published now, which ones are superseded, and sets their
+// bits in segment_plan_skip. Walks from the newest back so that "how many complete samples of this writer are
+// newer" is a running count. Under the state lock: it reads the endpoint table.
+static void plan_segment_skips(struct tt_Context* node, uint32_t read_index) {
+    struct tt_SegmentHeader* ring = node->own_segment;
+    node->segment_plan_base = read_index;
+    node->segment_plan_count = 0;
+    uint32_t limit = ring->slots < (uint32_t)tt_SEGMENT_SLOTS ? ring->slots : (uint32_t)tt_SEGMENT_SLOTS;
+    uint32_t outstanding = __atomic_load_n(&ring->write_index, __ATOMIC_ACQUIRE) - read_index;
+    if (outstanding < 2) {
+        return; // one record cannot be superseded by anything
+    }
+    uint32_t count = segment_published_run(ring, read_index, outstanding < limit ? outstanding : limit);
+    node->segment_plan_count = count;
+    memset(node->segment_plan_skip, 0, (count + BITS_IN_1BYTE - 1U) / BITS_IN_1BYTE);
+
+    struct segment_plan_writer writers[SEGMENT_PLAN_WRITERS];
+    uint32_t writer_count = 0;
+    for (uint32_t i = count; i-- > 0;) {
+        struct segment_record rec;
+        segment_peek_record(node, ring, read_index + i, &rec);
+        if (rec.kind == SEGMENT_RECORD_OTHER) {
+            continue;
+        }
+        struct segment_plan_writer* writer = plan_writer(writers, &writer_count, &rec);
+        if (writer == NULL) {
+            continue;
+        }
+        if (!seq_before(rec.seq_no, writer->lowest_seq_no)) {
+            writer->disordered = true;
+        }
+        writer->lowest_seq_no = rec.seq_no;
+        if (!plan_completes_sample(writer, &rec)) {
+            continue; // part of a sample is never newer than anything, and never skipped
+        }
+        if (!writer->depth_known || writer->endpoint_id != rec.endpoint_id) {
+            writer->endpoint_id = rec.endpoint_id;
+            writer->depth = keep_last_depth_of(node, rec.endpoint_id);
+            writer->depth_known = true;
+        }
+        if (!writer->disordered && writer->depth != 0 && writer->newer_complete >= writer->depth) {
+            node->segment_plan_skip[i / BITS_IN_1BYTE] |= (uint8_t)(1U << (i % BITS_IN_1BYTE));
+        }
+        if (writer->newer_complete < UINT32_MAX) {
+            writer->newer_complete++;
+        }
+    }
+}
+
+// Whether a superseded sample can be passed over now without disturbing any Subscriber of it. The plan judged it by
+// depth; this asks what only the moment of reading knows: every RELIABLE Subscriber must have it as the very next
+// seq_no and hold nothing out of order, so skipping it moves a watermark and makes no gap.
+struct segment_skip_ctx {
+    const struct segment_record* rec;
+    bool allowed;
+    bool any;
+};
+
+static void visit_skip_allowed(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+    struct segment_skip_ctx* ctx = (struct segment_skip_ctx*)ctx_ptr;
+    struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+    if (subscriber_incompatible_with_publisher(node, sub, ctx->rec->source, ctx->rec->endpoint_id)) {
+        return; // it drops this writer's samples whatever happens here
+    }
+    ctx->any = true;
+    if (sub->keep_last_depth == 0) {
+        ctx->allowed = false;
+        return;
+    }
+    if (sub->reliable && !TT_ORDERING_DISABLED) {
+        struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->rec->source, ctx->rec->entity_id);
+        if (proxy == NULL || proxy->ack_seq_no != ctx->rec->seq_no || sub->reorder_held != 0) {
+            ctx->allowed = false;
+        }
+#if tt_FRAG_ENABLED
+        if (node->frag_fast_sub == sub) {
+            ctx->allowed = false; // part of a sample is being put together for it
+        }
+#endif
+    }
+}
+
+// Records a skipped record with every Subscriber of it: a RELIABLE one counts its seq_no(s) received, exactly as an
+// arrival would, and releases whatever that puts in order. A BEST_EFFORT one has nothing to record - the newer
+// sample it is about to get moves its watermark.
+struct segment_superseded_ctx {
+    const struct segment_record* rec;
+    bool count_sample;
+};
+
+static void visit_superseded(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+    struct segment_superseded_ctx* ctx = (struct segment_superseded_ctx*)ctx_ptr;
+    const struct segment_record* rec = ctx->rec;
+    struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+    if (subscriber_incompatible_with_publisher(node, sub, rec->source, rec->endpoint_id)) {
+        return;
+    }
+    if (ctx->count_sample) {
+        sub->superseded++;
+        struct tt_WriterProxy* writer = find_or_create_writer_proxy(sub, rec->source, rec->entity_id, NULL);
+        if (writer != NULL) {
+            writer->superseded_pending++;
+            sub->superseded_pending++;
+        }
+    }
+    if (!sub->reliable || TT_ORDERING_DISABLED) {
+        return;
+    }
+    node->rx_seq_span = rec->span;
+    node->rx_targeted = false;
+    (void)update_reliable_ack(node, sub, rec->seq_no, rec->source, rec->entity_id, rec->sender_ip, rec->sender_port);
+    struct tt_WriterProxy* proxy = find_writer_proxy(sub, rec->source, rec->entity_id);
+    if (proxy != NULL) {
+        drain_reorder(node, sub, proxy);
+    }
+}
+
+static void skip_superseded_record(struct tt_Context* node, const struct segment_record* rec, bool count_sample,
+                                   uint32_t index) {
+    struct segment_superseded_ctx ctx = {rec, count_sample};
+    for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, rec->endpoint_id, visit_superseded, &ctx);
+    node->rx_seq_span = 1;
+    if (count_sample) {
+        node->rx_shm_skipped_superseded++;
+    }
+    count_arrival(node, tt_TRANSPORT_SHM); // received, like any record; only not read
+    segment_release(node->own_segment, index);
+}
+
+static bool segment_skipping_any(const struct tt_Context* node) {
+    for (uint32_t k = 0; k < tt_SEGMENT_SKIPPING_SAMPLES; k++) {
+        if (node->segment_skipping[k].count != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A continuation of a sample whose FRAG_FIRST was skipped goes with it. True when `rec` was one (and is gone).
+static bool skip_continuation(struct tt_Context* node, struct segment_record* rec, uint32_t index) {
+    for (uint32_t k = 0; k < tt_SEGMENT_SKIPPING_SAMPLES; k++) {
+        struct tt_SegmentSkippedSample* sample = &node->segment_skipping[k];
+        if (sample->count == 0 || sample->source != rec->source || sample->entity_id != rec->entity_id) {
+            continue;
+        }
+        if (sample->next_seq_no != rec->seq_no || sample->next_index != rec->frag_index ||
+            sample->count != rec->frag_count) {
+            sample->count = 0; // not the sample it was following; cannot happen to a sample planned whole
+            return false;
+        }
+        rec->endpoint_id = sample->endpoint_id;
+        sample->next_seq_no++;
+        sample->next_index++;
+        if (sample->next_index == sample->count) {
+            sample->count = 0;
+        }
+        skip_superseded_record(node, rec, false, index);
+        return true;
+    }
+    return false;
+}
+
+// Starts following a skipped FRAG_FIRST's continuations. False when there is no room to, and then the sample is
+// read whole rather than skipped in part.
+static bool follow_skipped_sample(struct tt_Context* node, const struct segment_record* rec) {
+    for (uint32_t k = 0; k < tt_SEGMENT_SKIPPING_SAMPLES; k++) {
+        struct tt_SegmentSkippedSample* sample = &node->segment_skipping[k];
+        if (sample->count == 0) {
+            sample->source = rec->source;
+            sample->entity_id = rec->entity_id;
+            sample->endpoint_id = rec->endpoint_id;
+            sample->next_seq_no = rec->seq_no + 1U;
+            sample->next_index = 1;
+            sample->count = rec->frag_count;
+            return true;
+        }
+    }
+    return false;
+}
+
+// The record at the head of the ring, passed over if it is superseded: true when it was (and is gone from the ring),
+// false when it is to be read the ordinary way. Under the state lock.
+static bool segment_skip_head(struct tt_Context* node) {
+    struct tt_SegmentHeader* ring = node->own_segment;
+    uint32_t index = __atomic_load_n(&ring->read_index, __ATOMIC_RELAXED);
+    if (index - node->segment_plan_base >= node->segment_plan_count) {
+        plan_segment_skips(node, index);
+    }
+    uint32_t offset = index - node->segment_plan_base;
+    bool planned = offset < node->segment_plan_count &&
+                   (node->segment_plan_skip[offset / BITS_IN_1BYTE] & (uint8_t)(1U << (offset % BITS_IN_1BYTE))) != 0;
+    bool skipping = segment_skipping_any(node);
+    if (!planned && !skipping) {
+        return false;
+    }
+    const struct tt_SegmentSlot* slot_header = (const struct tt_SegmentSlot*)segment_slot(ring, index);
+    if (__atomic_load_n(&slot_header->sequence, __ATOMIC_ACQUIRE) != index + 1U) {
+        return false; // not published: segment_read() says so and counts the stall
+    }
+    struct segment_record rec;
+    segment_peek_record(node, ring, index, &rec);
+    if (rec.kind == SEGMENT_RECORD_CONT && skipping && skip_continuation(node, &rec, index)) {
+        return true;
+    }
+    if (!planned || (rec.kind != SEGMENT_RECORD_WHOLE && rec.kind != SEGMENT_RECORD_FIRST)) {
+        return false;
+    }
+    struct segment_skip_ctx allowed = {&rec, true, false};
+    for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, rec.endpoint_id, visit_skip_allowed, &allowed);
+    if (!allowed.allowed || !allowed.any) {
+        return false;
+    }
+    if (rec.kind == SEGMENT_RECORD_FIRST && !follow_skipped_sample(node, &rec)) {
+        return false;
+    }
+    skip_superseded_record(node, &rec, true, index);
+    return true;
+}
+
 // Returns how many records it delivered, and through `emptied` whether the ring is now empty. The
 // caller must not read the socket while it is not: the socket is drained to exhaustion (drain_rx)
 // while this used to stop after 64 records, so the ring ran permanently behind - and a single
@@ -12350,6 +12888,11 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
             uint32_t sender_ip = 0;
             uint16_t sender_port = 0;
             uint16_t seq_span = 1;
+            if (segment_skip_head(node)) {
+                node->segment_head_stall_passes = 0;
+                taken++;
+                continue;
+            }
             if (!segment_read(node->own_segment, node->rx_buffer, (uint32_t)sizeof(node->rx_buffer), &len, &sender_ip,
                               &sender_port, &seq_span)) {
                 note_head_stall(node); // empty, or a head nobody is coming back for - the two look alike
@@ -12369,12 +12912,14 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
         delivered += taken;
         drained += taken;
         if (ran_dry) {
+            node->segment_plan_count = 0; // a plan is made and spent inside one drain
             return delivered;
         }
     }
     // The bound was reached with records still there. Bounded rather than unbounded so one busy peer
     // cannot hold the caller inside this function; `emptied` is how the caller learns not to read the
     // socket yet.
+    node->segment_plan_count = 0;
     *emptied = false;
     return delivered;
 }
@@ -12407,16 +12952,7 @@ static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, ui
     }
 #endif
     node->rx_tail = (uint32_t)len;
-    node->rx_datagrams++;
-    // The receive half of the seam (SHM_PLAN.md stage 0). One place, because there is one place a
-    // datagram enters core - and stage 1's segment arrivals will be counted here too rather than
-    // beside it, so the two transports are never counted by two different rules.
-    node->rx_datagrams_by_transport[transport]++;
-    if (node->rx_via_data_port) {
-        node->rx_via_data_datagrams++;
-    } else {
-        node->rx_via_well_known_datagrams++;
-    }
+    count_arrival(node, transport);
 
     TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
                  (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
@@ -12923,7 +13459,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
     // from tx_datagrams is looking at a counting defect and not at a transport story.
     TT_LOG_INFO("Node %u traffic: tx_datagrams=%lu rx_datagrams=%lu rx_self_sent=%lu rx_self_sent_data=%lu "
                 "rx_self_sent_data_unicast=%lu rx_via_data=%lu rx_via_well_known=%lu tx_dropped_oversize=%lu "
-                "tx_udp=%lu tx_shm=%lu rx_udp=%lu rx_shm=%lu "
+                "tx_udp=%lu tx_shm=%lu rx_udp=%lu rx_shm=%lu rx_shm_skipped_superseded=%lu "
                 // Why each UDP datagram went that way, on the same line as the totals. Without it a
                 // split like tx_udp=6694744 tx_shm=6746571 says only "half and half" and the next
                 // question - which half, and why - needs another run. It cost one on 2026-09-29.
@@ -12947,12 +13483,13 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned long)node->tx_datagrams_by_transport[tt_TRANSPORT_SHM],
                 (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_UDP],
                 (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_SHM],
-                (unsigned long)node->segment_broadcast_to_udp, (unsigned long)node->segment_oversized_to_udp,
-                (unsigned long)node->segment_unattached_to_udp, (unsigned long)node->segment_full_dropped,
-                (unsigned long)node->segment_attach[tt_SEGMENT_REFUSED], (unsigned long)node->segment_doorbells_sent,
-                (unsigned long)node->segment_bells_rung, (unsigned long)node->segment_doorbells_received,
-                (unsigned long)node->segments_created, (unsigned long)node->segments_released,
-                node->same_host_peer_count, (unsigned long)node->rx_drain_ring_turns);
+                (unsigned long)node->rx_shm_skipped_superseded, (unsigned long)node->segment_broadcast_to_udp,
+                (unsigned long)node->segment_oversized_to_udp, (unsigned long)node->segment_unattached_to_udp,
+                (unsigned long)node->segment_full_dropped, (unsigned long)node->segment_attach[tt_SEGMENT_REFUSED],
+                (unsigned long)node->segment_doorbells_sent, (unsigned long)node->segment_bells_rung,
+                (unsigned long)node->segment_doorbells_received, (unsigned long)node->segments_created,
+                (unsigned long)node->segments_released, node->same_host_peer_count,
+                (unsigned long)node->rx_drain_ring_turns);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads

@@ -122,6 +122,7 @@ struct BenchStats {
     uint64_t head_stalls;        // head claimed but not yet published - a race, not a stall (see below)
     uint64_t stall_warnings;     // the head stayed claimed for tt_SEGMENT_STALL_PASSES: a REAL stall
     uint64_t shm_only_on_socket; // a segment-only record arrived from the network
+    uint64_t skipped_superseded; // samples the drain passed over: a KEEP_LAST reader had newer ones queued
     int shm_diag_valid;          // likewise for bench_stats_set_shm_diagnostics()
     char iface[32];
 };
@@ -398,13 +399,17 @@ static inline void bench_stats_set_attach(struct BenchStats* stats, const uint32
 //                       is the instrument for it.
 //   shm_only_on_socket  a record that only something with write access to a segment could have
 //                       built, arriving from the network instead.
+//   skipped_superseded  samples the segment drain passed over unread because a KEEP_LAST Subscriber already had
+//                       its depth of newer ones queued behind them. Zero for every native bench Subscriber (they
+//                       keep depth 0); non-zero here means a sample was passed over that nothing asked to skip.
 static inline void bench_stats_set_shm_diagnostics(struct BenchStats* stats, uint64_t span_absorbed,
                                                    uint64_t head_stalls, uint64_t stall_warnings,
-                                                   uint64_t shm_only_on_socket) {
+                                                   uint64_t shm_only_on_socket, uint64_t skipped_superseded) {
     stats->span_absorbed = span_absorbed;
     stats->head_stalls = head_stalls;
     stats->stall_warnings = stall_warnings;
     stats->shm_only_on_socket = shm_only_on_socket;
+    stats->skipped_superseded = skipped_superseded;
     stats->shm_diag_valid = 1;
 }
 
@@ -567,7 +572,7 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     char by_thread[512];
     char fail[80];
     char transport[96];
-    char shmdiag[224];
+    char shmdiag[288];
     char fallbacks[320];
 
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
@@ -602,8 +607,9 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     if (stats->shm_diag_valid != 0) {
         snprintf(shmdiag, sizeof(shmdiag),
                  " rx_span_absorbed=%" PRIu64 " segment_head_stalls=%" PRIu64 " segment_stall_warnings=%" PRIu64
-                 " rx_shm_only_on_socket=%" PRIu64,
-                 stats->span_absorbed, stats->head_stalls, stats->stall_warnings, stats->shm_only_on_socket);
+                 " rx_shm_only_on_socket=%" PRIu64 " rx_shm_skipped_superseded=%" PRIu64,
+                 stats->span_absorbed, stats->head_stalls, stats->stall_warnings, stats->shm_only_on_socket,
+                 stats->skipped_superseded);
     }
     // Against the WINDOW's getrusage delta, not against cpu_s. getrusage(RUSAGE_SELF) is cumulative for the whole
     // process, while sched_cpu_ns is a begin-to-end delta, so subtracting one from the other counts every cycle spent

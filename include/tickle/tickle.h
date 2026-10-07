@@ -581,6 +581,29 @@ struct tt_Context {
     // loss counter zero, and no samples. If records are arriving over shared memory and this stays
     // at zero, the span is not reaching the reader, whatever the writer thinks it put in the slot.
     uint64_t rx_span_absorbed;
+    // Samples the segment drain passed over unread because a KEEP_LAST Subscriber already had `keep_last_depth`
+    // newer complete samples of the same writer waiting behind them in the ring (plan_segment_skips(), tickle.c).
+    // One per sample, however many records it took. Each one was going to be delivered into a history that would
+    // have overwritten it before anyone took it; the counter is what says the drain chose not to pay for that,
+    // rather than the samples having been lost.
+    uint64_t rx_shm_skipped_superseded;
+    // The drain's plan for the records it is about to read: segment_plan_count records from segment_plan_base,
+    // a bit set for each one that is superseded. Valid only inside one drain_own_segment() call.
+    uint32_t segment_plan_base;
+    uint32_t segment_plan_count;
+    uint8_t segment_plan_skip[(tt_SEGMENT_SLOTS / 8) + 1]; // one bit per slot, rounded up
+    // Fragmented samples whose FRAG_FIRST the drain skipped and whose continuations are still to be read: each
+    // continuation that belongs to one is skipped with it, so a skipped sample never leaves a fragment to be
+    // reassembled on its own. Survives between drains (a sample can straddle the drain's bound); count == 0 is free.
+#define tt_SEGMENT_SKIPPING_SAMPLES 4
+    struct tt_SegmentSkippedSample {
+        uint32_t entity_id;
+        uint32_t endpoint_id;
+        uint32_t next_seq_no; // the seq_no the next continuation of this sample carries
+        uint8_t source;
+        uint8_t next_index;
+        uint8_t count;
+    } segment_skipping[tt_SEGMENT_SKIPPING_SAMPLES];
 #if tt_LOCAL_DELIVERY
     // (g9, config.h's tt_LOCAL_DELIVERY) Where a published sample's bytes wait while this context's own Subscribers
     // take it: sending reuses tx_buffer. Owned here rather than on the publishing thread's stack, which a sample of
@@ -1888,6 +1911,9 @@ struct tt_Subscriber;
 struct tt_WriterProxy {
     uint8_t context_id;
     uint32_t entity_id;
+    // Samples of this writer the segment drain passed over as superseded since the last one delivered from it
+    // (tt_Subscriber.keep_last_depth). Handed to the Subscriber at the next delivery as delivering_superseded.
+    uint32_t superseded_pending;
     // Address an outstanding-gap ACKNACK retry (acknack_retry(), tickle.c) resends to - the most
     // recent reliable DATA/Heartbeat sender for this specific writer, since a scheduled retry
     // fires outside process_packet()'s own call stack and so no longer has that packet's own
@@ -2097,6 +2123,19 @@ struct tt_Subscriber { // extends endpoint
     // Diagnostic counter, not protocol state: how many arriving samples accept_callback has
     // declined. Same reasoning as rxo_drops just below - the decline is otherwise silent.
     uint32_t accept_declines;
+
+    // KEEP_LAST depth this Subscriber's history keeps, as the segment drain may rely on it: when the ring holds more
+    // than this many complete samples of one writer, the older ones would only be delivered to be overwritten, and
+    // the drain passes over them without reading them (counted in `superseded`, and in the context's
+    // rx_shm_skipped_superseded). 0 - the default - never skips anything, and is what KEEP_ALL must be.
+    uint16_t keep_last_depth;
+    uint32_t superseded;
+    // Superseded samples not yet handed over (the sum of the writers' superseded_pending), and - valid inside the
+    // callback only, like tt_Subscriber_delivering_writer() - how many samples of the delivering writer were passed
+    // over just before this one. A layer that counts lost samples from sequence gaps subtracts it: those samples
+    // were received and replaced by newer ones, which KEEP_LAST allows, not lost.
+    uint32_t superseded_pending;
+    uint32_t delivering_superseded;
 
     // QoS roadmap #5 (RELIABILITY) / Phase 2 (rmw_tickle/PLAN.md) - how wide a gap this Subscriber
     // can track per matched Publisher, i.e. how far ahead of its own oldest missing sample it may
