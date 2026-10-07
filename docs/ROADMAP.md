@@ -84,8 +84,12 @@ The user's active list (2026-10-05), in order.
    and user time 33%; VOID by its control and not landed. Round 2 (2026-10-07, C' = C + a claim wait bounded by the
    reader's own measured sleep cost, `ab/wake-epoll2` 56ccb264; `~/rig_results_safe/ab_samehost_reader_wake2_*`):
    against the fence alone, latency still -20% (RTT p50 30 -> 24 us) and system time per sleep -17..-21%, but
-   max-rate BEST_EFFORT p3 CPU per sample +13.4% (t 59) - WORSE, not landed; against C it is 20% better. Next: find
-   the remaining max-rate cost.
+   max-rate BEST_EFFORT p3 CPU per sample +13.4% (t 59) - WORSE, not landed; against C it is 20% better. Round 3
+   (2026-10-07, C'', `ab/wake-epoll3` against `021e6314`, A B B A x 5 reps;
+   `~/rig_results_safe/ab_samehost_reader_wake3_20261007-104246.summary.txt`): IMPROVED 7/7, controls held - RTT
+   p50 29 -> 23 us (-20%), system time per sleep -22..-29%, max-rate BEST_EFFORT p3 CPU per sample 1.595 -> 1.316
+   us (-17.5%). Not landed yet: on a PC placement with a ~260 ns cache-line round trip between the two cores, max-rate
+   CPU per sample is +53%. Next: a guard that makes the watch pay for itself (being written).
 5. **rmw_tickle KEEP_ALL on the rig**: the first run lost ~5% of samples under 5% loss in every build. Six causes
    found and fixed on 2026-10-05: a busy socket starved the data socket (`b6de8a4d`); an endpoint was announced
    before its QoS was final (`155eecb7`); a publisher could not learn its reader except from an announce lost in

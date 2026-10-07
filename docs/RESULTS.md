@@ -71,19 +71,13 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
 
 ### Same-host notes
 
-- **Why FastDDS delivered ~0% in S1d-S3d** (an exceptional figure, so its reading is spelled out). Its publisher sent
-  ~5.5M samples in 9 s and its subscriber took 105-284 of them, in every rep and at every size. Our bench is not the
-  cause as far as we can see: both sides run the same explicit KEEP_LAST 1, BEST_EFFORT, Fast DDS 2.14's default
-  resource limits, and data-sharing matched (its listener thread was busy). The likely cause is Fast DDS's
-  data-sharing design, read from its 2.14.6 sources: the subscriber reads the samples out of the **publisher's own
-  history pool**, which at KEEP_LAST 1 holds two payloads (depth + one extra). At ~620k samples/s the publisher reuses
-  each payload within microseconds, and the subscriber silently discards every sample it finds overwritten while or
-  after reading it (the warnings that say so are below Fast DDS's default log level). That is KEEP_LAST 1 doing what
-  it says - keep only the newest - with a reader that cannot keep up with a max-rate writer; TickLE's segment instead
-  queues up to 512 datagrams in the subscriber's own ring, which is transport buffering, not history. The run's "OFF"
-  arm was not a kernel-path control for Fast DDS: data-sharing is a QoS, not a transport, so the eth0-only profile did
-  not turn it off (s6 marked that pair VOID). **Not yet confirmed by a run**: `experiments/fastdds_be_delivery.sh`
-  (queued) compares KEEP_LAST 1 with depth 64, data-sharing off, a slowed publisher, and Fast DDS's own discard count.
+- **FastDDS delivers ~0% in S1d-S3d.** At BEST_EFFORT KEEP_LAST 1 (the DDS default; data-sharing on, as shipped)
+  its publisher sent ~5.5M samples in 9 s and its subscriber took 105-284 of them, in every rep and at every size.
+  Re-run 2026-10-07 (`experiments/fastdds_be_delivery.sh` at `5ac23fbc`, p3, 3 reps;
+  `~/rig_results_safe/fastdds_be_delivery_5ac23fbc_20261007-103007.*`): reproduced, 250 of 5.50M delivered
+  (0.0046%); with the publisher slowed to 2.1% of that rate (148 Mbps) it delivered 100%, so the loss is a
+  rate-dependent overrun. Whether the writer's two-payload history pool is the cause was not decided: the depth-64
+  arm and the arm counting Fast DDS's own discards were VOID (2 of 3 usable reps). TickLE, the control, delivered 100%.
 - **2026-10-06 re-measure** (`9f919c8b`): S10 fell from 0.052 to **0.036 ms** - the old figure was a first-lap one,
   ~16 us of first-touch page faults on the reliable reorder ring before warm-up was excluded (ROADMAP Now 1). The
   BEST_EFFORT rows now also show what was delivered (S1d-S3d): at KEEP_LAST 1, the DDS default, FastDDS's reader took
@@ -149,9 +143,9 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
 | 2 | RTT max (tail) | P1 76 B | ✅ **0.298** | 0.604 | ❌ 10.761 | 0.336 † | – | A |
 | 3 | RTT mean | P2 1292 B | ✅ **0.231** | ❌ 0.316 | 0.273 | 0.246 † | – | A |
 | 4 | RTT max (tail) | P2 1292 B | ✅ **0.356** | 0.622 | ❌ 0.830 | 0.372 † | – | A |
-| 5 | RTT mean | +10 ms netem | ⚪ 10.3 | ⚪ 10.4 | ⚪ 10.4 | 10.07 | – | A |
-| 6 | RTT max (tail) | +10 ms netem | ✅ **12.2** | 12.3 | ❌ 41.2 | 12.15 | – | A |
-| 6a | RTT mean | P3 1424 B | ✅ **0.237** | ❌ 0.346 | 0.337 | 0.248 † | – | A |
+| 5 | RTT mean | +10 ms netem | ⚪ 10.1 | ⚪ 10.3 | ⚪ 10.3 | 10.07 | – | A |
+| 6 | RTT max (tail) | +10 ms netem | ✅ **12.1** | ❌ 12.3 | 12.2 | 12.15 | – | A |
+| 6a | RTT mean | P3 1424 B | ✅ **0.235** | ❌ 0.344 | 0.288 | 0.248 † | – | A |
 | 6b | RTT mean | P4 2800 B | ✅ **0.249** | ❌ 0.348 | 0.293 | 0.402 † | – | A |
 | | **[Throughput](#throughput)** (Mbps) | | | | |  | – | |
 | 7 | RELIABLE | P1 76 B | ✅ **101** | ❌ 29.6 | 50.9 | 236.8 † | – | A |
@@ -273,7 +267,14 @@ Rows 1, 3 and 6b were re-measured on 2026-10-07 with the equal warm-up and cool-
 `~/rig_results_safe/crosshost_latency_warm_f40a2adf_20261007-035608.txt`; p50 / p99 ms there: P1 0.207 / 0.239, 0.282 / 0.324, 0.255 / 0.296; P2 0.228 / 0.261, 0.312 / 0.363, 0.270 / 0.308;
 P4 0.248 / 0.271, 0.346 / 0.378, 0.289 / 0.330). The same run could not refresh rows 5-6 (10 ms netem: TickLE's
 4,096-round-trip warm-up outran the cell's timeout) or 6a (TickLE's server outlived its run and the leftover guard
-voided it) - harness defects, being fixed; those rows keep their `3ae721aa` figures.
+voided it) - harness defects, being fixed. Rows 5, 6 and 6a were then re-measured with both fixed (`campaign_sweep.sh`
+CELLS 12 16, `9b5491e6`, unpinned; `~/rig_results_safe/crosshost_latency_warm2_9b5491e6_20261007-101404.txt`; 3
+reps, every one `window=ok`). Cell 16 (P3) ended both edges on the count and measured 100 round trips per rep; cell 12
+(10 ms netem) ended both on the 20 s bound (~1,760-1,780 round trips) and measured 91 per rep, every framework alike,
+so its p99 is the maximum. p50 / p99 ms, TickLE, FastDDS, CycloneDDS: +10 ms 10.06 / 12.13, 10.48 / 12.27, 10.37 /
+12.24; P3 0.233 / 0.251, 0.342 / 0.386, 0.284 / 0.314. Client CPU (cpu_s / Msample): 38.5, 146, 57.4 and 36.9,
+113, 61.0. Row 5 stays unscored (the ranges overlap as well); row 6's tail is a WIN outside the reps' ranges (TickLE
+12.11-12.21, CycloneDDS 12.22-12.25, FastDDS 12.23-12.29); CycloneDDS's former 41.2 ms tail did not recur.
 Rows 1-6b. `reliable_latency`, one ping in flight, 100 round trips per rep, median of 3; tails (rows 2, 4, 6) are
 the median of the reps' maxima. Every client now paces alike (the next ping one interval after the reply) and
 prints the median and p99 too: at P1 they are TickLE 0.207 / 0.243, FastDDS 0.286 / 0.475, CycloneDDS 0.255 / 0.303
