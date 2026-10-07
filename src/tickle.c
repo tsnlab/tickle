@@ -12598,12 +12598,20 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
     // Published before the wait, and then one more drain: a record written before the flag became
     // visible to its writer has no doorbell coming for it, so the only way not to sleep on top of it
     // is to look once more after saying we are about to sleep.
+    //
+    // What this drain takes is handed back HERE, as the drain at the top of node_poll() hands back its own. It used
+    // to "go round the loop", but the loop has no drain of its own: the next pass came straight back to this wait,
+    // found the ring empty, and slept with the record already delivered to its Subscriber - until the budget or the
+    // next scheduler entry. On the rig that was a 500 ms round trip about once a second in every rmw_tickle block
+    // cell (the ping's own deadline; rmw_samehost 7e6fe171, 2026-10-07), and the poll cell that lost every reply
+    // after one of them (test_transport_seam.c, test_a_record_found_by_the_last_drain_before_sleeping_ends_the_poll).
     segment_reader_waiting(node, true);
     bool emptied_before_wait = true;
     if (drain_own_segment(node, &emptied_before_wait) > 0 || !emptied_before_wait) {
         segment_reader_waiting(node, false);
         wait_until_store(node, 0);
-        return false; // something is there: go round the loop and hand it back rather than waiting
+        *result = tt_RET_OK; // data is data: hand it back rather than waiting
+        return true;
     }
 #endif
     int32_t len = tt_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);

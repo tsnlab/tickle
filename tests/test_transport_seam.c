@@ -1699,6 +1699,88 @@ static void test_a_batch_is_rung_for_once_after_its_last_record(void) {
     test_mock_segments_free();
 }
 
+// A record that lands between the poll's first drain and the moment its owner says it is asleep has no doorbell
+// coming: the writer read reader_waiting as 0. The drain poll_wait_io() takes after setting the flag is what finds
+// it - and that drain must END the poll, as the one at the top of node_poll() does. It used to go round the loop
+// instead, into tt_receive() with the record already handed to its Subscriber, so the caller learned of it only when
+// the wait ran out. On the rig that was every rmw_tickle block-wait RTT cell of 2026-10-07: a reply delivered into
+// the rmw queue and found 500 ms later, at the ping's own deadline, about once a second (rmw_samehost
+// 7e6fe171). The scheduler entry below stands in for the peer: it writes while the owner is awake, between the two
+// drains, exactly where the race puts it.
+static struct tt_Context* g_late_writer;
+static uint8_t g_late_owner_id;
+static uint32_t g_late_owner_ip;
+static uint16_t g_late_owner_port;
+static int g_late_writes;
+
+static void write_between_the_drains(struct tt_Context* node, uint64_t time, void* param) {
+    (void)node;
+    (void)time;
+    (void)param;
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = PEER_CONTEXT_ID;
+    enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
+    if (segment_deliver(g_late_writer, g_late_owner_id, g_late_owner_ip, g_late_owner_port, &header, sizeof(header),
+                        NULL, 0, &reason)) {
+        g_late_writes++;
+    }
+}
+
+static void test_a_record_found_by_the_last_drain_before_sleeping_ends_the_poll(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+    test_mock_receive_advances_clock = true; // a wait with nothing arriving lets its whole length pass
+
+    struct tt_Context owner;
+    struct tt_Topic owner_topic;
+    struct tt_Publisher owner_pub;
+    init_node_topic_pub(&owner, &owner_topic, &owner_pub);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+
+    struct tt_Context writer;
+    struct tt_Topic writer_topic;
+    struct tt_Publisher writer_pub;
+    init_node_topic_pub(&writer, &writer_topic, &writer_pub);
+    writer.hal.own_ip = PEER_IP;
+    writer.hal.own_port = PEER_PORT;
+    g_late_writer = &writer;
+    g_late_owner_id = OWNER_ID;
+    g_late_owner_ip = OWNER_IP;
+    g_late_owner_port = OWNER_PORT;
+    g_late_writes = 0;
+
+    const int64_t budget = 500 * (int64_t)tt_MILLISECOND; // what the ping's spin_once() passes
+    test_mock_now = 10 * tt_MILLISECOND;
+    const uint64_t start = test_mock_now;
+    EXPECT_TRUE(tt_Context_schedule(&owner, start, write_between_the_drains, NULL));
+
+    tt_ret_t polled = tt_Context_poll(&owner, budget);
+
+    // The arm's treatment: the record was written, without a doorbell, and the poll took it.
+    EXPECT_EQ_INT(1, g_late_writes);
+    EXPECT_EQ_U32(0, (uint32_t)writer.segment_doorbells_sent);
+    EXPECT_EQ_U32(1, (uint32_t)owner.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    // The outcome: handed back at once, not after the budget.
+    EXPECT_EQ_INT(tt_RET_OK, polled);
+    EXPECT_TRUE(test_mock_now - start < (uint64_t)budget);
+    EXPECT_EQ_INT(0, test_mock_receive_call_count); // it never went to sleep on top of what it had
+    if (test_mock_now - start >= (uint64_t)budget) {
+        printf("  the poll held a delivered record for %llu ms\n",
+               (unsigned long long)((test_mock_now - start) / tt_MILLISECOND));
+    }
+
+    g_late_writer = NULL;
+    test_mock_segments_free();
+}
+
 // ---------------------------------------------------------------------------------------------
 // Lazy segment creation (SHM_PLAN stage 1, option B).
 //
@@ -2312,6 +2394,7 @@ int main(void) {
     test_the_drain_empties_the_ring_or_says_it_did_not();
     test_a_sleeping_reader_is_rung_and_a_busy_one_is_not();
     test_a_batch_is_rung_for_once_after_its_last_record();
+    test_a_record_found_by_the_last_drain_before_sleeping_ends_the_poll();
     test_a_context_alone_on_its_host_builds_no_segment();
     test_a_same_host_peer_appearing_builds_the_segment();
     test_a_peer_on_another_host_builds_nothing();
