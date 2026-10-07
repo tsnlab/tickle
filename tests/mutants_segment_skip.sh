@@ -29,7 +29,7 @@ EOF
 
 cp "$BACKUP" "$SRC"
 printf '%-28s %s\n' "control" "$(run)"
-mutate "no-skip" "            if (segment_skip_head(node)) {" "            if (false && segment_skip_head(node)) {"
+mutate "no-skip" "            node->segment_plan_skip[i / BITS_IN_1BYTE] |= (uint8_t)(1U << (i % BITS_IN_1BYTE));" "            (void)0;"
 mutate "no-depth-check" "writer->depth != 0 && writer->newer_complete >= writer->depth" "writer->depth != 0"
 mutate "partial-counts-complete" "        rec->kind == SEGMENT_RECORD_WHOLE ||" "        true ||"
 mutate "reliable-no-ack" "    (void)update_reliable_ack(node, sub, rec->seq_no, rec->source, rec->entity_id, rec->sender_ip, rec->sender_port);" "    (void)0;"
@@ -47,3 +47,4 @@ open(p, "w").write(s.replace(old, "    if (false) {\n        ctx->allowed = fals
 EOF
 printf '%-28s %s\n' "keep-all-not-honoured(both)" "$(run)"
 mutate "no-continuation-skip" "    if (rec.kind == SEGMENT_RECORD_CONT && skipping && skip_continuation(node, &rec, index)) {" "    if (false) {"
+mutate "no-hand-back" "        if (node->rx_keep_last_delivered != node->segment_plan_mark) {" "        if (false) {"
