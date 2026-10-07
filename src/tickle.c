@@ -13495,6 +13495,21 @@ static uint32_t segment_published_run(struct tt_SegmentHeader* ring, uint32_t re
     return count;
 }
 
+// Whether any Subscriber of this context could have a sample skipped. None is the common case - every native
+// Subscriber, KEEP_ALL, and a context with no Subscriber at all - and then the plan reads no record. Without this check
+// the plan peeked at every record's headers for nothing, and the first PC run read the native best_effort_throughput
+// p3 reader slower than main's (1379 vs 1633 k/s, n=2 and n=1: a signal, not a figure).
+static bool any_keep_last_subscriber(const struct tt_Context* node) {
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        const struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER &&
+            ((const struct tt_Subscriber*)endpoint)->keep_last_depth != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Decides, for the records from `read_index` on that are published now, which ones are superseded, and sets their
 // bits in segment_plan_skip. Walks from the newest back so that "how many complete samples of this writer are
 // newer" is a running count. Under the state lock: it reads the endpoint table.
@@ -13506,6 +13521,12 @@ static void plan_segment_skips(struct tt_Context* node, uint32_t read_index) {
     uint32_t outstanding = __atomic_load_n(&ring->write_index, __ATOMIC_ACQUIRE) - read_index;
     if (outstanding < 2) {
         return; // one record cannot be superseded by anything
+    }
+    if (!any_keep_last_subscriber(node)) {
+        // A plan with nothing to skip: as many records as are outstanding, read the ordinary way, no header read.
+        node->segment_plan_count = outstanding < limit ? outstanding : limit;
+        memset(node->segment_plan_skip, 0, (node->segment_plan_count + BITS_IN_1BYTE - 1U) / BITS_IN_1BYTE);
+        return;
     }
     uint32_t count = segment_published_run(ring, read_index, outstanding < limit ? outstanding : limit);
     node->segment_plan_count = count;
