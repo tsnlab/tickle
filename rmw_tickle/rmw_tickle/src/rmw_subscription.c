@@ -203,7 +203,12 @@ static uint64_t messages_lost_before(rmw_tickle_subscriber_t* sub_impl, uint64_t
         return 0; // late, or a duplicate
     }
     entry->last_psn = psn;
-    return psn - last - 1;
+    // Samples core's segment drain passed over because newer ones were already queued behind them
+    // (tt_Subscriber.keep_last_depth) left this gap too. They were received and superseded, which KEEP_LAST
+    // allows, and are not lost.
+    uint64_t gap = psn - last - 1;
+    uint64_t superseded = sub_impl->tickle_subscriber.delivering_superseded;
+    return gap > superseded ? gap - superseded : 0;
 }
 
 static void count_messages_lost(rmw_tickle_subscriber_t* sub_impl, uint64_t psn) {
@@ -216,6 +221,16 @@ static void count_messages_lost(rmw_tickle_subscriber_t* sub_impl, uint64_t psn)
     atomic_fetch_add(&sub_impl->message_lost.unread_count, count);
     wake_wait_cond(sub_impl->node->context_impl);
     rmw_tickle_callback_slot_notify(&sub_impl->message_lost.callback, (size_t)count); // (g2)
+}
+
+// The depth core's segment drain may rely on (tt_Subscriber.keep_last_depth). KEEP_LAST: the queue keeps the newest
+// queue_limit samples and overwrites the rest, so a sample with that many newer ones queued behind it in the ring would
+// only be decoded to be overwritten, and the drain passes over it. KEEP_ALL: 0, which never skips anything.
+static uint16_t keep_last_depth_for(const rmw_tickle_subscriber_t* sub_impl) {
+    if (sub_impl->keep_all) {
+        return 0;
+    }
+    return (uint16_t)(sub_impl->queue_limit > UINT16_MAX ? UINT16_MAX : sub_impl->queue_limit);
 }
 
 // How many samples one subscription's queue holds. KEEP_LAST takes qos_profile->depth, which is
@@ -777,6 +792,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     // on the path changed.
     sub_impl->tickle_subscriber.accept_callback = sub_impl->keep_all ? subscriber_accept : NULL;
     sub_impl->tickle_subscriber.accept_callback_param = sub_impl;
+    sub_impl->tickle_subscriber.keep_last_depth = keep_last_depth_for(sub_impl);
     sub_impl->tickle_subscriber.reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
 
     // QoS roadmap #1 (RxO matching, Milestone 31) - see tt_Subscriber.durable's own doc comment
