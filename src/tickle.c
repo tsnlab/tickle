@@ -3459,6 +3459,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->segment_plan_mark = 0;
     node->rx_keep_last_delivered = 0;
     memset(node->segment_plan_skip, 0, sizeof(node->segment_plan_skip));
+    memset(&node->segment_plan_run, 0, sizeof(node->segment_plan_run));
     memset(node->segment_skipping, 0, sizeof(node->segment_skipping));
     node->version_mismatch_drops = 0;
     // The span of the record currently being processed. 1 is its resting value, not a zero: a
@@ -12234,17 +12235,21 @@ static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, ui
 
 // One datagram counted as received, by transport and by socket - process_datagram_locked()'s counting, and the segment
 // drain's for a record it passes over unread, so the totals agree whichever way a record was dealt with.
-static void count_arrival(struct tt_Context* node, enum tt_Transport transport) {
-    node->rx_datagrams++;
+static void count_arrivals(struct tt_Context* node, enum tt_Transport transport, uint32_t datagrams) {
+    node->rx_datagrams += datagrams;
     // The receive half of the seam (SHM_PLAN.md stage 0). One place, because there is one place a
     // datagram enters core - and stage 1's segment arrivals will be counted here too rather than
     // beside it, so the two transports are never counted by two different rules.
-    node->rx_datagrams_by_transport[transport]++;
+    node->rx_datagrams_by_transport[transport] += datagrams;
     if (node->rx_via_data_port) {
-        node->rx_via_data_datagrams++;
+        node->rx_via_data_datagrams += datagrams;
     } else {
-        node->rx_via_well_known_datagrams++;
+        node->rx_via_well_known_datagrams += datagrams;
     }
+}
+
+static void count_arrival(struct tt_Context* node, enum tt_Transport transport) {
+    count_arrivals(node, transport, 1);
 }
 
 // Whether anything is outstanding in this context's own ring, published or claimed - drain_own_segment()'s own
@@ -12349,6 +12354,17 @@ static void segment_release(struct tt_SegmentHeader* header, uint32_t index) {
     struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)segment_slot(header, index);
     __atomic_store_n(&slot_header->sequence, index + header->slots, __ATOMIC_RELEASE);
     __atomic_store_n(&header->read_index, index + 1U, __ATOMIC_RELEASE);
+}
+
+// segment_release() of `count` slots from `index` on, with read_index moved once, past the last. A writer reads
+// read_index only to see whether the ring is full, so one that looks between the stores sees it fuller than it is,
+// never emptier; each slot is free for it only once its own sequence says so.
+static void segment_release_run(struct tt_SegmentHeader* header, uint32_t index, uint32_t count) {
+    for (uint32_t k = 0; k < count; k++) {
+        struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)segment_slot(header, index + k);
+        __atomic_store_n(&slot_header->sequence, index + k + header->slots, __ATOMIC_RELEASE);
+    }
+    __atomic_store_n(&header->read_index, index + count, __ATOMIC_RELEASE);
 }
 
 // SKIP TO NEWEST. Under overload a KEEP_LAST Subscriber's backlog in the ring is mostly samples its history will
@@ -12637,6 +12653,43 @@ static bool any_keep_last_subscriber(const struct tt_Context* node) {
     return false;
 }
 
+// One record of the plan's walk, met walking back: whether it is superseded. `rec` is what its headers say.
+static bool plan_segment_record(struct tt_Context* node, uint32_t index, struct segment_plan_writer* writers,
+                                uint32_t* writer_count, struct segment_record* rec) {
+    segment_peek_record(node, node->own_segment, index, rec);
+    if (rec->kind == SEGMENT_RECORD_OTHER) {
+        return false;
+    }
+    struct segment_plan_writer* writer = plan_writer(writers, writer_count, rec);
+    if (writer == NULL) {
+        return false;
+    }
+    if (!seq_before(rec->seq_no, writer->lowest_seq_no)) {
+        writer->disordered = true;
+    }
+    writer->lowest_seq_no = rec->seq_no;
+    if (!plan_completes_sample(writer, rec)) {
+        return false; // part of a sample is never newer than anything, and never skipped
+    }
+    if (!writer->depth_known || writer->endpoint_id != rec->endpoint_id) {
+        writer->endpoint_id = rec->endpoint_id;
+        writer->depth = keep_last_depth_of(node, rec->endpoint_id);
+        writer->depth_known = true;
+    }
+    bool skip = !writer->disordered && writer->depth != 0 && writer->newer_complete >= writer->depth;
+    if (writer->newer_complete < UINT32_MAX) {
+        writer->newer_complete++;
+    }
+    return skip;
+}
+
+// Whether `rec` belongs to the run being collected: the same writer's samples of the same endpoint, which one
+// permission check and one accounting can stand for.
+static bool plan_run_extends(const struct tt_SegmentPlanRun* run, const struct segment_record* rec) {
+    return run->count != 0 && run->source == rec->source && run->entity_id == rec->entity_id &&
+           run->endpoint_id == rec->endpoint_id;
+}
+
 // Decides, for the records from `read_index` on that are published now, which ones are superseded, and sets their
 // bits in segment_plan_skip. Walks from the newest back so that "how many complete samples of this writer are
 // newer" is a running count. Under the state lock: it reads the endpoint table.
@@ -12644,6 +12697,7 @@ static void plan_segment_skips(struct tt_Context* node, uint32_t read_index) {
     struct tt_SegmentHeader* ring = node->own_segment;
     node->segment_plan_base = read_index;
     node->segment_plan_count = 0;
+    node->segment_plan_run.count = 0;
     uint32_t limit = ring->slots < (uint32_t)tt_SEGMENT_SLOTS ? ring->slots : (uint32_t)tt_SEGMENT_SLOTS;
     uint32_t outstanding = __atomic_load_n(&ring->write_index, __ATOMIC_ACQUIRE) - read_index;
     if (outstanding < 2) {
@@ -12661,33 +12715,25 @@ static void plan_segment_skips(struct tt_Context* node, uint32_t read_index) {
 
     struct segment_plan_writer writers[SEGMENT_PLAN_WRITERS];
     uint32_t writer_count = 0;
+    struct tt_SegmentPlanRun* run = &node->segment_plan_run;
     for (uint32_t i = count; i-- > 0;) {
         struct segment_record rec;
-        segment_peek_record(node, ring, read_index + i, &rec);
-        if (rec.kind == SEGMENT_RECORD_OTHER) {
-            continue;
-        }
-        struct segment_plan_writer* writer = plan_writer(writers, &writer_count, &rec);
-        if (writer == NULL) {
-            continue;
-        }
-        if (!seq_before(rec.seq_no, writer->lowest_seq_no)) {
-            writer->disordered = true;
-        }
-        writer->lowest_seq_no = rec.seq_no;
-        if (!plan_completes_sample(writer, &rec)) {
-            continue; // part of a sample is never newer than anything, and never skipped
-        }
-        if (!writer->depth_known || writer->endpoint_id != rec.endpoint_id) {
-            writer->endpoint_id = rec.endpoint_id;
-            writer->depth = keep_last_depth_of(node, rec.endpoint_id);
-            writer->depth_known = true;
-        }
-        if (!writer->disordered && writer->depth != 0 && writer->newer_complete >= writer->depth) {
+        bool skip = plan_segment_record(node, read_index + i, writers, &writer_count, &rec);
+        if (skip) {
             node->segment_plan_skip[i / BITS_IN_1BYTE] |= (uint8_t)(1U << (i % BITS_IN_1BYTE));
         }
-        if (writer->newer_complete < UINT32_MAX) {
-            writer->newer_complete++;
+        // The run of superseded whole samples of one writer that ends at record i; once the walk reaches record 0
+        // it is the plan's leading run. Anything else met on the way ends it.
+        if (skip && rec.kind == SEGMENT_RECORD_WHOLE) {
+            if (!plan_run_extends(run, &rec)) {
+                run->source = rec.source;
+                run->entity_id = rec.entity_id;
+                run->endpoint_id = rec.endpoint_id;
+                run->count = 0;
+            }
+            run->count++;
+        } else {
+            run->count = 0;
         }
     }
 }
@@ -12699,6 +12745,7 @@ struct segment_skip_ctx {
     const struct segment_record* rec;
     bool allowed;
     bool any;
+    bool reliable; // a RELIABLE Subscriber of it, whose watermark each skipped seq_no must move one by one
 };
 
 static void visit_skip_allowed(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
@@ -12713,6 +12760,7 @@ static void visit_skip_allowed(struct tt_Context* node, struct tt_Endpoint* endp
         return;
     }
     if (sub->reliable && !TT_ORDERING_DISABLED) {
+        ctx->reliable = true;
         struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->rec->source, ctx->rec->entity_id);
         if (proxy == NULL || proxy->ack_seq_no != ctx->rec->seq_no || sub->reorder_held != 0) {
             ctx->allowed = false;
@@ -12725,12 +12773,13 @@ static void visit_skip_allowed(struct tt_Context* node, struct tt_Endpoint* endp
     }
 }
 
-// Records a skipped record with every Subscriber of it: a RELIABLE one counts its seq_no(s) received, exactly as an
-// arrival would, and releases whatever that puts in order. A BEST_EFFORT one has nothing to record - the newer
-// sample it is about to get moves its watermark.
+// Records skipped samples with every Subscriber of them: a RELIABLE one counts the record's seq_no(s) received,
+// exactly as an arrival would, and releases whatever that puts in order. A BEST_EFFORT one has nothing to record -
+// the newer sample it is about to get moves its watermark. `samples` is how many whole samples of the writer this
+// is (0 for a continuation of one already counted); the RELIABLE half runs only for one record at a time.
 struct segment_superseded_ctx {
     const struct segment_record* rec;
-    bool count_sample;
+    uint32_t samples;
 };
 
 static void visit_superseded(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
@@ -12740,12 +12789,12 @@ static void visit_superseded(struct tt_Context* node, struct tt_Endpoint* endpoi
     if (subscriber_incompatible_with_publisher(node, sub, rec->source, rec->endpoint_id)) {
         return;
     }
-    if (ctx->count_sample) {
-        sub->superseded++;
+    if (ctx->samples != 0) {
+        sub->superseded += ctx->samples;
         struct tt_WriterProxy* writer = find_or_create_writer_proxy(sub, rec->source, rec->entity_id, NULL);
         if (writer != NULL) {
-            writer->superseded_pending++;
-            sub->superseded_pending++;
+            writer->superseded_pending += ctx->samples;
+            sub->superseded_pending += ctx->samples;
         }
     }
     if (!sub->reliable || TT_ORDERING_DISABLED) {
@@ -12762,7 +12811,7 @@ static void visit_superseded(struct tt_Context* node, struct tt_Endpoint* endpoi
 
 static void skip_superseded_record(struct tt_Context* node, const struct segment_record* rec, bool count_sample,
                                    uint32_t index) {
-    struct segment_superseded_ctx ctx = {rec, count_sample};
+    struct segment_superseded_ctx ctx = {rec, count_sample ? 1U : 0U};
     for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, rec->endpoint_id, visit_superseded, &ctx);
     node->rx_seq_span = 1;
     if (count_sample) {
@@ -12770,6 +12819,40 @@ static void skip_superseded_record(struct tt_Context* node, const struct segment
     }
     count_arrival(node, tt_TRANSPORT_SHM); // received, like any record; only not read
     segment_release(node->own_segment, index);
+}
+
+// The plan's leading run, passed over whole: `segment_plan_run.count` superseded samples of one writer, each one
+// record, at the head of the ring. Done record by record, every one of them cost a fresh look at its headers, two
+// walks of the endpoint's Subscribers and two releases before the drain reached the sample it hands over - and that
+// sample waited for all of it, so it was that much older when it was taken. On the PC (rmw Array1k BEST_EFFORT
+// KEEP_LAST 1, -r 0, examples/perf_hil/experiments/skip_age_pc.sh) 5.1 records were passed over at 92 ns each before
+// every delivered sample, which waited 1.07 us inside the drain before its decode began, and the age perf_test reads
+// rose above main's (3.36 against 2.97 us); the rig's backlog is deeper (11.6 records per delivered sample). Judged,
+// counted and released together they cost 17 ns each, the wait is 0.53 us and the age 2.80 us. Only where no RELIABLE
+// Subscriber is in it: a RELIABLE watermark moves one seq_no at a time, and the record-by-record path does that.
+// Returns how many records went; 0 leaves the head to the record-by-record path.
+static uint32_t segment_skip_run(struct tt_Context* node, uint32_t index) {
+    struct tt_SegmentPlanRun* run = &node->segment_plan_run;
+    uint32_t count = run->count;
+    run->count = 0; // spent, whatever is decided: the record-by-record path judges what is left
+    struct segment_record rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.kind = SEGMENT_RECORD_WHOLE;
+    rec.source = run->source;
+    rec.entity_id = run->entity_id;
+    rec.endpoint_id = run->endpoint_id;
+    rec.span = 1;
+    struct segment_skip_ctx allowed = {&rec, true, false, false};
+    for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, rec.endpoint_id, visit_skip_allowed, &allowed);
+    if (!allowed.allowed || !allowed.any || allowed.reliable) {
+        return 0;
+    }
+    struct segment_superseded_ctx ctx = {&rec, count};
+    for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, rec.endpoint_id, visit_superseded, &ctx);
+    node->rx_shm_skipped_superseded += count;
+    count_arrivals(node, tt_TRANSPORT_SHM, count); // received, like any record; only not read
+    segment_release_run(node->own_segment, index, count);
+    return count;
 }
 
 static bool segment_skipping_any(const struct tt_Context* node) {
@@ -12835,7 +12918,9 @@ enum segment_head { SEGMENT_HEAD_READ, SEGMENT_HEAD_SKIPPED, SEGMENT_HEAD_HAND_B
 // without this): 7.6M samples delivered into the rmw queue for 1.7M taken. So once a plan's records have handed a
 // KEEP_LAST Subscriber a sample, the drain returns and the next poll plans afresh - newest again, and taken. A drain
 // that handed nothing to a KEEP_LAST Subscriber (KEEP_ALL, control, every native bench reader) is not stopped.
-static enum segment_head segment_skip_head(struct tt_Context* node) {
+//
+// `passed` is how many records a SKIPPED head took out of the ring: one, or the plan's whole leading run.
+static enum segment_head segment_skip_head(struct tt_Context* node, uint32_t* passed) {
     struct tt_SegmentHeader* ring = node->own_segment;
     uint32_t index = __atomic_load_n(&ring->read_index, __ATOMIC_RELAXED);
     if (index - node->segment_plan_base >= node->segment_plan_count) {
@@ -12851,6 +12936,14 @@ static enum segment_head segment_skip_head(struct tt_Context* node) {
     if (!planned && !skipping) {
         return SEGMENT_HEAD_READ;
     }
+    *passed = 1;
+    if (offset == 0 && node->segment_plan_run.count != 0 && !skipping) {
+        uint32_t count = segment_skip_run(node, index);
+        if (count != 0) {
+            *passed = count;
+            return SEGMENT_HEAD_SKIPPED;
+        }
+    }
     const struct tt_SegmentSlot* slot_header = (const struct tt_SegmentSlot*)segment_slot(ring, index);
     if (__atomic_load_n(&slot_header->sequence, __ATOMIC_ACQUIRE) != index + 1U) {
         return SEGMENT_HEAD_READ; // not published: segment_read() says so and counts the stall
@@ -12863,7 +12956,7 @@ static enum segment_head segment_skip_head(struct tt_Context* node) {
     if (!planned || (rec.kind != SEGMENT_RECORD_WHOLE && rec.kind != SEGMENT_RECORD_FIRST)) {
         return SEGMENT_HEAD_READ;
     }
-    struct segment_skip_ctx allowed = {&rec, true, false};
+    struct segment_skip_ctx allowed = {&rec, true, false, false};
     for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, rec.endpoint_id, visit_skip_allowed, &allowed);
     if (!allowed.allowed || !allowed.any) {
         return SEGMENT_HEAD_READ;
@@ -12929,14 +13022,15 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
             uint32_t sender_ip = 0;
             uint16_t sender_port = 0;
             uint16_t seq_span = 1;
-            enum segment_head head = segment_skip_head(node);
+            uint32_t passed = 0;
+            enum segment_head head = segment_skip_head(node, &passed);
             if (head == SEGMENT_HEAD_HAND_BACK) {
                 hand_back = true;
                 break;
             }
             if (head == SEGMENT_HEAD_SKIPPED) {
                 node->segment_head_stall_passes = 0;
-                taken++;
+                taken += passed;
                 continue;
             }
             if (!segment_read(node->own_segment, node->rx_buffer, (uint32_t)sizeof(node->rx_buffer), &len, &sender_ip,

@@ -462,8 +462,63 @@ static void test_a_keep_all_drain_is_not_handed_back(void) {
     rig_down();
 }
 
+// The plan's leading run (segment_skip_run(), tickle.c): a backlog of N samples of one writer for a KEEP_LAST 1
+// reader plans its first N - 1 records as one run, which the drain passes over together before it reads the newest.
+// Its accounting is the record-by-record one: the same counts test_keep_last_1_takes_only_the_newest() reads.
+static void test_one_writers_backlog_is_one_leading_run(void) {
+    rig_up(false, 1, -1);
+    enum { N = 6 };
+    for (uint32_t i = 0; i < N; i++) {
+        publish(&rig.pub_a, 1000 + i);
+    }
+    state_lock(&rig.owner);
+    plan_segment_skips(&rig.owner, 0);
+    state_unlock(&rig.owner);
+    EXPECT_EQ_U32(N, rig.owner.segment_plan_count);
+    EXPECT_EQ_U32(N - 1, rig.owner.segment_plan_run.count);
+    EXPECT_EQ_U32(TOPIC_A_ID, rig.owner.segment_plan_run.endpoint_id);
+    EXPECT_EQ_U32(rig.pub_a.endpoint.entity_id, rig.owner.segment_plan_run.entity_id);
+    rig.owner.segment_plan_count = 0; // the drain plans for itself
+    drain_all();
+    EXPECT_EQ_U32(1, seen_a.count);
+    EXPECT_EQ_U32(1000 + N - 1, seen_a.values[0]);
+    EXPECT_EQ_U64(N - 1, rig.owner.rx_shm_skipped_superseded);
+    EXPECT_EQ_U32(N - 1, rig.sub_a.superseded);
+    EXPECT_EQ_U32(N - 1, rig.sub_a.delivering_superseded);
+    EXPECT_EQ_U64(N, rig.owner.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    EXPECT_EQ_U32(N, rig.owner.own_segment->read_index);
+    for (uint32_t i = 0; i < N; i++) { // every slot handed back to the writers, one lap ahead
+        const struct tt_SegmentSlot* slot = (const struct tt_SegmentSlot*)segment_slot(rig.owner.own_segment, i);
+        EXPECT_EQ_U32(i + rig.owner.own_segment->slots, slot->sequence);
+    }
+    rig_down();
+}
+
+// Two KEEP_LAST 1 writers interleaved: a run is one writer's, so neither writer's skipped samples are counted as the
+// other's. Each Subscriber gets its newest and is told of exactly its own N - 1 passed over.
+static void test_interleaved_writers_are_counted_apart(void) {
+    rig_up(false, 1, 1);
+    enum { N = 5 };
+    for (uint32_t i = 0; i < N; i++) {
+        publish(&rig.pub_a, 1100 + i);
+        publish(&rig.pub_b, 1200 + i);
+    }
+    drain_all();
+    EXPECT_EQ_U32(1, seen_a.count);
+    EXPECT_EQ_U32(1100 + N - 1, seen_a.values[0]);
+    EXPECT_EQ_U32(1, seen_b.count);
+    EXPECT_EQ_U32(1200 + N - 1, seen_b.values[0]);
+    EXPECT_EQ_U32(N - 1, rig.sub_a.superseded);
+    EXPECT_EQ_U32(N - 1, rig.sub_b.superseded);
+    EXPECT_EQ_U64(2ULL * (N - 1), rig.owner.rx_shm_skipped_superseded);
+    EXPECT_EQ_U64(2ULL * N, rig.owner.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    rig_down();
+}
+
 int main(void) {
     test_keep_last_1_takes_only_the_newest();
+    test_one_writers_backlog_is_one_leading_run();
+    test_interleaved_writers_are_counted_apart();
     test_keep_last_2_takes_the_newest_two();
     test_keep_all_takes_everything_in_order();
     test_a_mixed_backlog_keeps_the_keep_all_topic_complete();
