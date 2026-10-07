@@ -44,6 +44,8 @@ struct tt_ReliableStats {
     uint64_t acknack_immediate;          // ACKNACK send attempts from maybe_arm_acknack_retry()
     uint64_t acknack_timer;              // ACKNACK send attempts from the acknack_retry() timer
     uint64_t acknack_new_gap;            // Phase 1-a: narrow ACKNACK attempts for a gap opened while armed
+    uint64_t ack_request_answered;       // Heartbeats asking for an answer, gap open, timer armed: naming some
+    uint64_t ack_request_in_flight;      // ...answered with a pure ack: all open requested within srtt
     uint64_t acknack_sent;               // ...of which actually encoded and flushed
     uint64_t acknack_bits_sent;          // total "please resend" bits across those ACKNACKs
     uint64_t acknack_bytes_sent;         // Phase 2: their total wire size (fixed header + words sent)
