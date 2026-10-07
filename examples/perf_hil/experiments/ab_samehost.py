@@ -28,6 +28,14 @@ first block, so an edit afterwards is visible.
               block means spread 0.18% where three reps predict 0.10%, so a rep-level SE reads ordinary block-to-block
               drift as a move. A sentinel whose ON or OFF client sha256 differs between blocks VOIDs; a block without
               its sentinel run is NO VERDICT.
+  CONTROL_SE_FLOOR  "" (default: the rule above, unchanged) or "reps": the sentinel's SE is never taken below what
+              its repetitions give - a block mean carries at least sd_r^2 / n of its own reps' noise (sd_r pooled
+              within blocks), so a block SD below sd_r / sqrt(n) is chance, and with df = 3 that chance is common
+              (ab_drain 2026-10-07 19:50: block SD 0.596 where the reps give 2.67, t +9.29 on a +0.29% shift; on the
+              floor t +2.07). When the floor binds, t uses it at df = reps - blocks. Minimal detectable drift on
+              best_effort_throughput p3 client.win_send_mbps@OFF (rep SD 0.24%, Bonferroni 4 at df 12, 80% power):
+              0.54% at REPS=3, 0.38% at REPS=6, before any block-level spread. Recorded in the pre-registration only
+              when set, so a pre-registration without it is byte-identical to one written before this option.
   SECONDARY   "cell:metric,..."   printed and flagged at plain 2 x SE; never decide.
   TREATMENT   "cell:ARMS:expr;..." checked on EVERY recorded repetition of the ON arm of those arms, e.g.
               "best_effort_throughput:p3:B:client_traffic.shm_encoded_in_slot>0;
@@ -386,6 +394,14 @@ def build_prereg(env):
         pre["sentinel"] = sentinel
         pre["sentinel_cells"] = [c["key"] for c in cells if any(i["cell"] == c["key"] for i in control)]
         pre["t_control"] = bonferroni_t(k_c, len(blocks(pre)) - len(arms))
+    floor = env.get("CONTROL_SE_FLOOR", "").strip()
+    if floor:
+        # Absent unless asked for, so a pre-registration written without it is byte-identical to before.
+        if floor != "reps":
+            raise Refused(f"CONTROL_SE_FLOOR={floor!r}: the only floor is 'reps'")
+        if not sentinel:
+            raise Refused("CONTROL_SE_FLOOR=reps reads the sentinel's block means: it needs a SENTINEL")
+        pre["control_se_floor"] = floor
     return pre
 
 
@@ -410,6 +426,11 @@ def describe(pre):
         out.append(f"  CONTROL (a move either way VOIDs), measured on SENTINEL {pre['sentinel']} in every block and "
                    f"judged on its block means: k = {pre['k_control']}, df = {len(blocks(pre)) - len(pre['arms'])}, "
                    f"|t| > {pre['t_control']:.2f}")
+        if pre.get("control_se_floor") == "reps":
+            out.append("    SE FLOOR (CONTROL_SE_FLOOR=reps): a block mean's SE is never taken below what its own "
+                       "repetitions give (pooled within-block SD / sqrt(n)); when the floor binds, df = reps - blocks "
+                       f"and |t| > {bonferroni_t(pre['k_control'], len(blocks(pre)) * (pre['reps'] - 1)):.2f} "
+                       f"at REPS={pre['reps']}")
     else:
         out.append(f"  CONTROL (a move either way VOIDs): k = {pre['k_control']}, |t| > {pre['z_control']:.2f}")
     out += [f"    {i['cell']}  {i['name']}" for i in pre["control"]]
@@ -567,7 +588,7 @@ def sentinel_control(pre, extra, item, x, y):
     per_block = extra["sentinel"].get(item["cell"], {})
     bins = extra["sentinel_bin"].get(item["cell"], {})
     order = blocks(pre)
-    means, by_arm, missing = {}, {a: [] for a in order}, []
+    means, by_arm, missing, reps_of = {}, {a: [] for a in order}, [], {}
     for n, arm in enumerate(order, 1):
         got = per_block.get(n)
         vals = []
@@ -581,6 +602,7 @@ def sentinel_control(pre, extra, item, x, y):
             missing.append(n)
             continue
         means[n] = sum(vals) / len(vals)
+        reps_of[n] = vals
         by_arm[arm].append(means[n])
     shown = " ".join(f"b{n}{order[n - 1]} {v:.5g}" for n, v in sorted(means.items()))
     head = f"  CONTROL   %-10s {item['cell']:36s} {item['name']:36s} sentinel {pre['sentinel'][:8]} blocks: {shown}"
@@ -596,11 +618,34 @@ def sentinel_control(pre, extra, item, x, y):
     sd = math.sqrt(ss / df) if df > 0 else float("nan")
     mx, my = statistics.fmean(by_arm[x]), statistics.fmean(by_arm[y])
     se = sd * math.sqrt(1 / len(by_arm[x]) + 1 / len(by_arm[y]))
+    threshold, floor_note = pre["t_control"], ""
+    if pre.get("control_se_floor") == "reps":
+        # The SE FLOOR. A block mean carries at least its own repetitions' noise, sd_r^2 / n, so the block-level SD
+        # (df = blocks - arms = 3) can only come out below sd_r / sqrt(n) by chance - and then t is inflated by that
+        # chance. ab_drain 2026-10-07 19:50: block SD 0.596 where its reps give 2.67 (chi-square lower tail 1.5%), and
+        # the sentinel's +0.29% read t +9.29; on the floor, t +2.07. When the floor binds the SE is the reps' own,
+        # with their df (reps - blocks, pooled within blocks), never the 3 of the blocks.
+        groups = [v for v in reps_of.values() if len(v) > 1]
+        df_r = sum(len(v) - 1 for v in groups)
+        if df_r > 0:
+            sd_r = math.sqrt(sum((v - statistics.fmean(g)) ** 2 for g in groups for v in g) / df_r)
+            blocks_x = [n for n, arm in enumerate(order, 1) if arm == x]
+            blocks_y = [n for n, arm in enumerate(order, 1) if arm == y]
+            var_f = sum(sd_r ** 2 / len(reps_of[n]) for n in blocks_x) / len(blocks_x) ** 2 + \
+                sum(sd_r ** 2 / len(reps_of[n]) for n in blocks_y) / len(blocks_y) ** 2
+            se_f = math.sqrt(var_f)
+            if se_f > se:
+                floor_note = f", floor binds: SE {se_f:.3g} from rep SD {sd_r:.3g} (df {df_r}) over block SE {se:.3g}"
+                se, threshold = se_f, bonferroni_t(pre["k_control"], df_r)
+            else:
+                floor_note = f", floor {se_f:.3g} below block SE {se:.3g}"
+        else:
+            floor_note = ", floor: no block has 2 reps"
     t = (mx - my) / se if se else (0.0 if mx == my else math.copysign(math.inf, mx - my))
-    moved = abs(t) > pre["t_control"]
+    moved = abs(t) > threshold
     pct = 100 * (mx - my) / my if my else float("nan")
     return (head % ("MOVED" if moved else "held") + f"  {x}-{y} {mx - my:+.4g} ({pct:+.2f}%), block SD {sd:.3g}, "
-            f"t {t:+.2f} (|t| > {pre['t_control']:.2f} moves)"), ("MOVED" if moved else "held")
+            f"t {t:+.2f} (|t| > {threshold:.2f} moves){floor_note}"), ("MOVED" if moved else "held")
 
 
 def values(data, arm, item):
@@ -838,9 +883,19 @@ def selftest():
             ("rebuilt", [14000, 14012, 13995, 14006], {3: "deadbeefdeadbeef"}, (), "VOID",
              "the sentinel's ON client differs in block 3: not one instrument"),
             ("gap", [14000, 14012, 13995, 14006], None, (3,), "NO VERDICT", "block 3 has no sentinel run"),
+            # ab_drain 2026-10-07 19:50 in miniature: block means that agree within each arm far better than their
+            # own reps (+-7) allow, and a +0.06% shift between the arms. The block SD (0.7, df 2) reads it MOVED;
+            # the floor (rep SD 9.9 / sqrt 2) holds it. A 3% shift must still move on the floor.
+            ("tight", [14000, 14008, 14009, 14001], None, (), "VOID",
+             "block SD 0.7 against reps of +-7: the block-level t reads a 0.06% shift as a move"),
+            ("tight-floor", [14000, 14008, 14009, 14001], None, (), "PASS",
+             "the same with CONTROL_SE_FLOOR=reps: on the reps' own SE the 0.06% shift holds", "reps"),
+            ("moved-floor", [14000, 14420, 14430, 14010], None, (), "VOID",
+             "a 3% shift with CONTROL_SE_FLOOR=reps: the floor does not hide a real drift", "reps"),
         ]
-        for sub, means, bins, skip, want, why in sentinel_cases:
-            env = dict(FIXTURE_ENV, A=FIXTURE_SHAS["a"], B=FIXTURE_SHAS["g"], SENTINEL=FIXTURE_SHAS["a"])
+        for sub, means, bins, skip, want, why, *floor in sentinel_cases:
+            env = dict(FIXTURE_ENV, A=FIXTURE_SHAS["a"], B=FIXTURE_SHAS["g"], SENTINEL=FIXTURE_SHAS["a"],
+                       CONTROL_SE_FLOOR=floor[0] if floor else "")
             env["TREATMENT"] = env["TREATMENT"].replace("{BC}", "B")
             pre = build_prereg(env)
             buf = io.StringIO()

@@ -43,7 +43,7 @@ TAG=${TAG:?TAG=<name> (letters, digits, . _ -)}
 case "$TAG" in *[!A-Za-z0-9._-]*) echo "TAG='$TAG': letters, digits, . _ - only" >&2; exit 2 ;; esac
 export TAG REPS="${REPS:-5}" DUR="${DUR:-10}" CELLS="${CELLS:-}" PRIMARY="${PRIMARY:-}" CONTROL="${CONTROL:-}" \
     SECONDARY="${SECONDARY:-}" TREATMENT="${TREATMENT:-}" DERIVED="${DERIVED:-}" COMPARE="${COMPARE:-}" \
-    SENTINEL="${SENTINEL:-}"
+    SENTINEL="${SENTINEL:-}" CONTROL_SE_FLOOR="${CONTROL_SE_FLOOR:-}"
 export RIG_LOCK_SCOPE=hil
 
 if [ -z "${OUTB:-}" ]; then

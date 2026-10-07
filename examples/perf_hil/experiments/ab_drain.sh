@@ -73,6 +73,9 @@
 #   C=<sha> setsid nohup examples/perf_hil/experiments/ab_drain.sh > ~/rig_results_safe/ab_drain_launch.log 2>&1 < /dev/null &
 #   env: A B C S6_REPS(3) S6_DUR(10) STEP1(1) RMW_REPS(3, step 1) RMW_PHASES("A C C A C A A C") S3_REPS(1)
 #        TREATMENT_C_COUNTER PREFLIGHT(1) PC_ONLY(0) RIG_LOCK_WAIT(21600)
+#        S6_CONTROL_SE_FLOOR("" = the block-level rule above; "reps" = ab_samehost.py CONTROL_SE_FLOOR: the sentinel's
+#        SE never below its own reps' - the second run, 2026-10-07 19:50, VOIDed on a block SD of 0.03% where its
+#        reps give 0.14%, t +9.29 on a +0.29% shift that reads t +2.07 on the floor; detects >= 0.54% at S6_REPS=3)
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 X=$REPO/examples/perf_hil/experiments
@@ -112,7 +115,7 @@ S6_TREATMENT="*:B,C:client_traffic.rx_drain_ring_turns+server_traffic.rx_drain_r
 s6_env() { # the environment ab_samehost.py's pre-registration is built from - identical before and under the lock
     env TAG=ab_drain A="$A" B="$B" C="$C" CELLS="$S6_CELLS" PRIMARY="$S6_PRIMARY" CONTROL="$S6_CONTROL" \
         TREATMENT="$S6_TREATMENT" SECONDARY="" DERIVED="" COMPARE="B-A,C-B" REPS="$S6_REPS" DUR="$S6_DUR" \
-        SENTINEL="$A" "$@"
+        SENTINEL="$A" CONTROL_SE_FLOOR="${S6_CONTROL_SE_FLOOR:-}" "$@"
 }
 
 ROLE=outer
