@@ -24,7 +24,10 @@
 # Usage (A/B/C may be any ref the PC can resolve; they are fixed to full SHAs, which must be on origin):
 #   A=origin/main B=<sha> [C=<sha>] TAG=<name> CELLS="scen:size:extra args;..." PRIMARY="cell:metric,..." \
 #   CONTROL="cell:metric,..." TREATMENT="cell:ARMS:expr;..." [SECONDARY=...] [DERIVED="name=expr;..."] \
-#   [COMPARE="B-A,C-A"] [REPS=5] [DUR=10] examples/perf_hil/experiments/ab_samehost.sh
+#   [COMPARE="B-A,C-A"] [SENTINEL=<ref>] [REPS=5] [DUR=10] examples/perf_hil/experiments/ab_samehost.sh
+#   SENTINEL: the CONTROL cells are run at this commit (usually A) in every block, after the block's own cells, and
+#   the controls are read from those runs only (ab_samehost.py's header: a control the change cannot compile into,
+#   judged on block means).
 #   PREREG_ONLY=1 ...           resolve, refuse or print the pre-registration and the estimate, then stop
 #   ab_samehost.sh --selftest    the reading shown to decide on ab_samehost_fixture.txt (no host, no lock)
 # Launch detached (setsid nohup ... < /dev/null &); the deliverables are
@@ -39,13 +42,14 @@ fi
 TAG=${TAG:?TAG=<name> (letters, digits, . _ -)}
 case "$TAG" in *[!A-Za-z0-9._-]*) echo "TAG='$TAG': letters, digits, . _ - only" >&2; exit 2 ;; esac
 export TAG REPS="${REPS:-5}" DUR="${DUR:-10}" CELLS="${CELLS:-}" PRIMARY="${PRIMARY:-}" CONTROL="${CONTROL:-}" \
-    SECONDARY="${SECONDARY:-}" TREATMENT="${TREATMENT:-}" DERIVED="${DERIVED:-}" COMPARE="${COMPARE:-}"
+    SECONDARY="${SECONDARY:-}" TREATMENT="${TREATMENT:-}" DERIVED="${DERIVED:-}" COMPARE="${COMPARE:-}" \
+    SENTINEL="${SENTINEL:-}"
 export RIG_LOCK_SCOPE=hil
 
 if [ -z "${OUTB:-}" ]; then
     # Fixed here, before the lock, so the run measures the commits named at launch even if a branch moves meanwhile.
     git -C "$REPO" fetch -q origin || { echo "REFUSED: git fetch origin failed" >&2; exit 2; }
-    for v in A B C; do
+    for v in A B C SENTINEL; do
         ref=${!v:-}
         [ -z "$ref" ] && continue
         full=$(git -C "$REPO" rev-parse --verify -q "$ref^{commit}") || { echo "REFUSED: $v=$ref does not resolve" >&2; exit 2; }
@@ -65,6 +69,9 @@ if [ -z "${OUTB:-}" ]; then
 fi
 mapfile -t CELL_LINES < <(python3 "$X/ab_samehost.py" cells "$OUTB.prereg.json")
 BLOCKS=$(printf '%s\n' "${CELL_LINES[@]}" | sed -n 's/^BLOCKS|//p')
+# SENTINEL|scen|size|extra|slug|sha: the control cells, run at the sentinel's commit in every block (ab_samehost.py).
+mapfile -t SENT_LINES < <(printf '%s\n' "${CELL_LINES[@]}" | sed -n 's/^SENTINEL|//p')
+mapfile -t CELL_LINES < <(printf '%s\n' "${CELL_LINES[@]}" | grep -v '^SENTINEL|')
 [ -n "$BLOCKS" ] || { echo "REFUSED: no cell list from $OUTB.prereg.json" >&2; exit 2; }
 SHAS=$(for v in A B C; do [ -n "${!v:-}" ] && echo "${!v}"; done)
 
@@ -74,8 +81,10 @@ if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then
     # ~30 s of build and setup per s6 call, and each repetition runs the ON and the OFF arm for about DUR + 16 s each
     # (warm-up/cool-down, server stop, ssh) - calibrated on ab_frag_fastpath's latency cells, 2026-10-06 (4.5 min per
     # cell at REPS=5 DUR=10).
-    est=$((nblk * ncell * (30 + REPS * 2 * (DUR + 16)) / 60))
-    echo "ESTIMATE: $nblk blocks x $ncell cells x REPS=$REPS at DUR=$DUR s -> about $est min on the rig, plus the lock wait"
+    nsent=${#SENT_LINES[@]}
+    est=$((nblk * (ncell + nsent) * (30 + REPS * 2 * (DUR + 16)) / 60))
+    echo "ESTIMATE: $nblk blocks x ($ncell cells + $nsent sentinel) x REPS=$REPS at DUR=$DUR s -> about $est min on the" \
+        "rig, plus the lock wait"
     if [ "${PREREG_ONLY:-0}" = 1 ]; then
         echo "PREREG_ONLY=1: pre-registration written to $OUTB.prereg.json; nothing run, no lock taken"
         exit 0
@@ -87,7 +96,7 @@ if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then
             IFS='|' read -r scen size extra _ <<<"$l"
             specs+=("$scen:$size:N0:$extra:-Q")
         done
-        for sha in $SHAS; do
+        for sha in $(for s in $SHAS ${SENTINEL:-}; do echo "$s"; done | sort -u); do
             echo "--- preflight ${sha:0:8} on this PC ($(date +%T))"
             if ! SHA=$sha PREFLIGHT_TOPO=samens FWS=tickle "$X/rig_preflight.sh" "${specs[@]}" \
                 >"$OUTB.preflight_${sha:0:8}.log" 2>&1; then
@@ -112,7 +121,7 @@ fi
 rm -f "$OUTB.prereg.check.json"
 say "=== ab_samehost $(date -Is) TAG=$TAG blocks: $BLOCKS REPS=$REPS DUR=$DUR ==="
 say "    prereg sha256 $(sha256sum "$OUTB.prereg.json" | cut -c1-64)  ($OUTB.prereg.json)"
-for v in A B C; do [ -n "${!v:-}" ] && say "    $v=${!v}"; done
+for v in A B C SENTINEL; do [ -n "${!v:-}" ] && say "    $v=${!v}"; done
 n=0
 for L in $BLOCKS; do
     n=$((n + 1))
@@ -130,6 +139,19 @@ for L in $BLOCKS; do
         rc=$?
         cnt=$(grep -c '^ *arm=ON RESULT: .*framework=tickle' "$out" 2>/dev/null)
         say "    exit $rc, ${cnt:-no output file, so no} arm=ON RESULT lines (client and server)"
+        # A cell that produced nothing says why in its own file; said here too, so the log does not read "exit 0".
+        [ "${cnt:-0}" = 0 ] && say "    CELL FAILED: $(grep -m2 -E 'FAILED to run|FATAL|error:' "$out" "$out.log" 2>/dev/null | tr '\n' ' ')"
+    done
+    for l in "${SENT_LINES[@]}"; do
+        IFS='|' read -r scen size extra slug ssha <<<"$l"
+        out="$OUTB.b${n}_${sha:0:8}_sentinel${ssha:0:8}_${slug}.txt"
+        say "--- block $n arm $L sentinel ${ssha:0:8} $scen $size '$extra' ($(date +%T))"
+        FRAMEWORKS=tickle SCEN=$scen SIZE=$size DUR=$DUR REPS=$REPS SHA=$ssha CLI_ARGS="$extra" OUT="$out" PREFLIGHT=0 \
+            "$X/s6_transport_cells.sh" >"$out.log" 2>&1
+        rc=$?
+        cnt=$(grep -c '^ *arm=ON RESULT: .*framework=tickle' "$out" 2>/dev/null)
+        say "    exit $rc, ${cnt:-no output file, so no} arm=ON RESULT lines (client and server)"
+        [ "${cnt:-0}" = 0 ] && say "    CELL FAILED: $(grep -m2 -E 'FAILED to run|FATAL|error:' "$out" "$out.log" 2>/dev/null | tr '\n' ' ')"
     done
 done
 python3 "$X/ab_samehost.py" summary "$OUTB.prereg.json" "$OUTB" >"$OUTB.summary.txt" 2>&1

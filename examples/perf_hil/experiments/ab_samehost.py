@@ -12,6 +12,22 @@ first block, so an edit afterwards is visible.
   PRIMARY     "cell:metric,..."   the ONLY metrics that decide. Required.
   CONTROL     "cell:metric,..."   metrics the change cannot touch. Required: a campaign without a control has nothing
               to tell a drift of the Pi from the change. A control that moves (two-sided) VOIDs the comparison.
+              Read from the arms' own runs, a control is only as untouched as its binary: a control whose client
+              differs between the two arms (the change compiles into the segment-less build too - a struct field, a
+              printf) gets a note saying so. ab_drain 2026-10-07: B's OFF client differed from A's (4c15ffd0 vs
+              643c407f), and its 0.33% OFF send-rate move VOIDed B-A.
+  SENTINEL    a full commit SHA (the driver resolves refs; usually A's). Then every CONTROL is measured on the
+              SENTINEL's build instead of the arm's: the driver runs each control cell at SENTINEL in EVERY block,
+              beside that block's arm cells (files b<n>_<armsha8>_sentinel<sha8>_<slug>.txt). The same bytes in every
+              block, so the change provably cannot touch it, and its mean over X's blocks minus its mean over Y's
+              blocks is exactly the drift the mirrored block order failed to cancel in X - Y. Judged at block level:
+              t = that difference / (SD of the sentinel's block means, pooled within each arm's blocks, x
+              sqrt(1/nX + 1/nY)), against the Student t threshold (df = blocks - arms) at the Bonferroni level over
+              controls x comparisons (pooled over all blocks it would contain the shift it tests for). Block
+              level because repetitions within a block share the block's state: on 2026-10-07 the OFF send rate's
+              block means spread 0.18% where three reps predict 0.10%, so a rep-level SE reads ordinary block-to-block
+              drift as a move. A sentinel whose ON or OFF client sha256 differs between blocks VOIDs; a block without
+              its sentinel run is NO VERDICT.
   SECONDARY   "cell:metric,..."   printed and flagged at plain 2 x SE; never decide.
   TREATMENT   "cell:ARMS:expr;..." checked on EVERY recorded repetition of the ON arm of those arms, e.g.
               "best_effort_throughput:p3:B:client_traffic.shm_encoded_in_slot>0;
@@ -56,7 +72,8 @@ HOW EACH COMPARISON IS READ (implemented in summary(), not only here):
 
 Usage:
   ab_samehost.py prereg OUT.json      validate the environment, print and write the pre-registration
-  ab_samehost.py cells PREREG.json    the driver's cell list: scen|size|extra|slug (extra args may not contain |)
+  ab_samehost.py cells PREREG.json    the driver's cell list: scen|size|extra|slug (extra args may not contain |),
+                                      then BLOCKS|A B ..., and SENTINEL|scen|size|extra|slug|sha per sentinel cell
   ab_samehost.py summary PREREG.json PREFIX     read PREFIX.b<n>_<sha8>_<slug>.txt and print the verdicts
   ab_samehost.py selftest             the reading shown to decide on ab_samehost_fixture.txt
 """
@@ -64,13 +81,15 @@ import ast
 import contextlib
 import io
 import json
+import math
 import os
 import re
+import statistics
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ab_compare import bonferroni_z, judge, stats  # noqa: E402
+from ab_compare import bonferroni_t, bonferroni_z, judge, stats  # noqa: E402
 
 ROLES = ("client", "server", "proc", "delivery", "client_traffic", "server_traffic", "derived")
 METRIC = re.compile(r"^(?P<role>[a-z_]+)\.(?P<field>[A-Za-z_]\w*)(?P<off>@OFF)?(?:/(?P<dir>hi|lo))?$")
@@ -354,10 +373,20 @@ def build_prereg(env):
     if reps < 2:
         raise Refused("REPS < 2 gives no SE within a block")
     k_p, k_c = len(primary) * len(compare), len(control) * len(compare)
-    return {"arms": arms, "cells": cells, "derived": derived, "primary": primary, "control": control,
-            "secondary": secondary, "treatment": treatment, "compare": compare, "reps": reps,
-            "dur": dur, "k_primary": k_p, "z_primary": bonferroni_z(k_p), "k_control": k_c,
-            "z_control": bonferroni_z(k_c), "tag": env.get("TAG", "")}
+    pre = {"arms": arms, "cells": cells, "derived": derived, "primary": primary, "control": control,
+           "secondary": secondary, "treatment": treatment, "compare": compare, "reps": reps,
+           "dur": dur, "k_primary": k_p, "z_primary": bonferroni_z(k_p), "k_control": k_c,
+           "z_control": bonferroni_z(k_c), "tag": env.get("TAG", "")}
+    sentinel = env.get("SENTINEL", "").strip()
+    if sentinel:
+        if not re.fullmatch(r"[0-9a-f]{40}", sentinel):
+            raise Refused(f"SENTINEL={sentinel!r} is not a full commit SHA (the driver resolves refs before this)")
+        if any(i["role"] == "derived" for i in control):
+            raise Refused("CONTROL with SENTINEL: a derived figure is not read from the sentinel's runs")
+        pre["sentinel"] = sentinel
+        pre["sentinel_cells"] = [c["key"] for c in cells if any(i["cell"] == c["key"] for i in control)]
+        pre["t_control"] = bonferroni_t(k_c, len(blocks(pre)) - len(arms))
+    return pre
 
 
 def blocks(pre):
@@ -377,13 +406,19 @@ def describe(pre):
     out.append(f"  comparisons: {', '.join(x + '-' + y for x, y in pre['compare'])}")
     out.append(f"  PRIMARY (decide): k = {pre['k_primary']}, Bonferroni |t| > {pre['z_primary']:.2f}")
     out += [f"    {i['cell']}  {i['name']}  ({'higher' if i['hi'] else 'lower'} is better)" for i in pre["primary"]]
-    out.append(f"  CONTROL (a move either way VOIDs): k = {pre['k_control']}, |t| > {pre['z_control']:.2f}")
+    if pre.get("sentinel"):
+        out.append(f"  CONTROL (a move either way VOIDs), measured on SENTINEL {pre['sentinel']} in every block and "
+                   f"judged on its block means: k = {pre['k_control']}, df = {len(blocks(pre)) - len(pre['arms'])}, "
+                   f"|t| > {pre['t_control']:.2f}")
+    else:
+        out.append(f"  CONTROL (a move either way VOIDs): k = {pre['k_control']}, |t| > {pre['z_control']:.2f}")
     out += [f"    {i['cell']}  {i['name']}" for i in pre["control"]]
     out.append("  SECONDARY (never decide, flagged at 2 x SE):")
     out += [f"    {i['cell']}  {i['name']}" for i in pre["secondary"]] or ["    (none)"]
     out.append("  TREATMENT (every recorded ON repetition; a failure VOIDs the arm, an absent field is NO VERDICT):")
     out += [f"    arms {','.join(t['arms'])}  {', '.join(t['cells'])}:  {t['expr']}" for t in pre["treatment"]]
-    out.append("  RULES: VOID (treatment failed / same client binary in a primary's cell / control moved) > "
+    out.append("  RULES: VOID (treatment failed / same client binary in a primary's cell / control moved / the "
+               "sentinel not one binary) > "
                "NO VERDICT (n < 2 in an arm, "
                "or a treatment not checkable) > WORSE > IMPROVED > PASS; a repetition counts only with window=ok.")
     return "\n".join(out)
@@ -392,14 +427,19 @@ def describe(pre):
 # ------------------------------------------------------------------------------------------------- reading data
 LINE = re.compile(r"^\s*arm=(ON|OFF) (RESULT:|PROC:|server-delivery|client-traffic|server-traffic)(.*)$")
 HEADER = re.compile(r"=== S6 transport cells .* sha=(\S+) scen=(\S+) size=(\S+)")
-BUILT = re.compile(r"arm ON \(extra='[^']*'\) built, client sha256=([0-9a-f]+)")
+BUILT = re.compile(r"arm (ON|OFF) \(extra='[^']*'\) built, client sha256=([0-9a-f]+)")
+# A cell that failed says so in its file (s6_transport_cells.sh / s6_witness_check.sh); the first such line is kept so
+# an arm with no repetitions reads as "its cells failed: <why>", not as "its treatment could not be checked".
+FAILED = re.compile(r"FAILED to run|FATAL|BUILD_FAILED|error:")
 ROLE_OF = {"PROC:": "proc", "server-delivery": "delivery", "client-traffic": "client_traffic",
            "server-traffic": "server_traffic"}
 
 
-def read_file(path, sha, cell):
-    """-> (reps by arm tag, client sha256 or None, problem or None)."""
+def read_file(path, sha, cell, info=None):
+    """-> (reps by arm tag, ON client sha256 or None, problem or None). `info`, if given, gets "ON"/"OFF": each arm's
+    client sha256, and "why": the first two lines saying the cell failed to build or run."""
     reps, cur, binary, header = {"ON": [], "OFF": []}, {}, None, None
+    info = {} if info is None else info
     with open(path, encoding="utf-8", errors="replace") as fh:
         for text in fh:
             if header is None:
@@ -409,8 +449,12 @@ def read_file(path, sha, cell):
                     continue
             b = BUILT.search(text)
             if b:
-                binary = b[1]
+                info[b[1]] = b[2]
+                if b[1] == "ON":
+                    binary = b[2]
                 continue
+            if info.get("why", "").count(" | ") < 1 and FAILED.search(text):
+                info["why"] = (info["why"] + " | " if "why" in info else "") + text.strip()
             m = LINE.match(text.rstrip("\n"))
             if not m:
                 continue
@@ -433,8 +477,29 @@ def read_file(path, sha, cell):
     return reps, binary, None
 
 
+def windowed(pre, reps):
+    """The repetitions with window=ok (derived figures added), and how many were dropped."""
+    got, dropped = {"ON": [], "OFF": []}, 0
+    for tag in got:
+        for r in reps[tag]:
+            if r["client"].get("window") == "ok":
+                for name, expr in pre["derived"].items():
+                    try:
+                        r.setdefault("derived", {})[name] = str(evaluate(expr, r))
+                    except Absent:
+                        pass
+                got[tag].append(r)
+            else:
+                dropped += 1
+    return got, dropped
+
+
 def load(pre, prefix):
+    """-> data[(arm, cell)] = {"ON": reps, "OFF": reps}, ON client binaries per (arm, cell), notes, and extra:
+    "off" OFF client binaries per (arm, cell), "failed" per arm the files that held no repetition and why,
+    "sentinel" per cell {block number: (arm, {"ON": reps, "OFF": reps})} and "sentinel_bin" per cell {"ON"/"OFF": set}."""
     data, binaries, notes = {}, {}, []
+    extra = {"off": {}, "failed": {}, "sentinel": {}, "sentinel_bin": {}}
     folder, base = os.path.split(prefix)
     names = sorted(os.listdir(folder or "."))
     for a, sha in pre["arms"].items():
@@ -445,29 +510,97 @@ def load(pre, prefix):
             got = {"ON": [], "OFF": []}
             dropped = refused = 0
             for n in files:
-                reps, binary, problem = read_file(os.path.join(folder, n), sha, cell)
+                info = {}
+                reps, binary, problem = read_file(os.path.join(folder, n), sha, cell, info)
                 if problem:
                     notes.append(f"IDENTITY FAILED, not read: {n}: {problem}")
                     refused += 1
                     continue
                 if binary:
                     binaries.setdefault((a, cell["key"]), set()).add(binary)
+                if "OFF" in info:
+                    extra["off"].setdefault((a, cell["key"]), set()).add(info["OFF"])
+                if not reps["ON"] and not reps["OFF"]:
+                    extra["failed"].setdefault(a, []).append(f"{n}: {info.get('why', 'no RESULT line, no reason given')}")
+                w, d = windowed(pre, reps)
+                dropped += d
                 for tag in got:
-                    for r in reps[tag]:
-                        if r["client"].get("window") == "ok":
-                            for name, expr in pre["derived"].items():
-                                try:
-                                    r.setdefault("derived", {})[name] = str(evaluate(expr, r))
-                                except Absent:
-                                    pass
-                            got[tag].append(r)
-                        else:
-                            dropped += 1
+                    got[tag] += w[tag]
             notes.append(f"arm {a} {cell['key']}: {len(files) - refused} file(s) read, ON n={len(got['ON'])} "
                          f"OFF n={len(got['OFF'])}"
                          + (f", {dropped} repetition(s) dropped (window not ok)" if dropped else ""))
             data[(a, cell["key"])] = got
-    return data, binaries, notes
+    for a, why in extra["failed"].items():
+        notes.append(f"arm {a}: {len(why)} file(s) with no repetition at all - the cell failed; first: {why[0]}")
+    if pre.get("sentinel"):
+        s = pre["sentinel"]
+        letter = {sha[:8]: a for a, sha in pre["arms"].items()}
+        for cell in (c for c in pre["cells"] if c["key"] in pre["sentinel_cells"]):
+            pat = re.compile(re.escape(base) + r"\.b(\d+)_([0-9a-f]{8})_sentinel" + re.escape(s[:8]) + "_"
+                             + re.escape(cell["slug"]) + r"\.txt$")
+            per_block, bins = {}, {"ON": set(), "OFF": set()}
+            for n in names:
+                m = pat.match(n)
+                if not m or m[2] not in letter:
+                    continue
+                info = {}
+                reps, _, problem = read_file(os.path.join(folder, n), s, cell, info)
+                if problem:
+                    notes.append(f"IDENTITY FAILED, not read: {n}: {problem}")
+                    continue
+                for tag in bins:
+                    if tag in info:
+                        bins[tag].add(info[tag])
+                w, d = windowed(pre, reps)
+                per_block[int(m[1])] = (letter[m[2]], w)
+                notes.append(f"sentinel {s[:8]} {cell['key']} block {m[1]} (arm {letter[m[2]]}): ON n={len(w['ON'])} "
+                             f"OFF n={len(w['OFF'])}" + (f", {d} dropped (window not ok)" if d else "")
+                             + (f" - {info.get('why', 'no reason given')}" if not reps["ON"] and not reps["OFF"] else ""))
+            extra["sentinel"][cell["key"]] = per_block
+            extra["sentinel_bin"][cell["key"]] = bins
+    return data, binaries, notes, extra
+
+
+def sentinel_control(pre, extra, item, x, y):
+    """The sentinel's drift between X's and Y's blocks, at block level -> (line, verdict) with verdict one of
+    "held", "MOVED", "missing", "NOT ONE BINARY"."""
+    per_block = extra["sentinel"].get(item["cell"], {})
+    bins = extra["sentinel_bin"].get(item["cell"], {})
+    order = blocks(pre)
+    means, by_arm, missing = {}, {a: [] for a in order}, []
+    for n, arm in enumerate(order, 1):
+        got = per_block.get(n)
+        vals = []
+        if got and got[0] == arm:
+            for r in got[1][item["arm"]]:
+                try:
+                    vals.append(value(r, item["role"], item["field"]))
+                except Absent:
+                    pass
+        if not vals:
+            missing.append(n)
+            continue
+        means[n] = sum(vals) / len(vals)
+        by_arm[arm].append(means[n])
+    shown = " ".join(f"b{n}{order[n - 1]} {v:.5g}" for n, v in sorted(means.items()))
+    head = f"  CONTROL   %-10s {item['cell']:36s} {item['name']:36s} sentinel {pre['sentinel'][:8]} blocks: {shown}"
+    if len(bins.get(item["arm"], ())) > 1:
+        return head % "NOT ONE" + f"  client sha256 {sorted(bins[item['arm']])}", "NOT ONE BINARY"
+    if missing:
+        return head % "missing" + f"  (no sentinel value in block(s) {missing})", "missing"
+    # The block-to-block spread is pooled WITHIN each arm's blocks (df = blocks - arms): the spread over all blocks
+    # would contain the very shift between arms being tested, and could never call it (the self-test's "moved" case
+    # read held at t 1.7 that way).
+    df = len(order) - len(by_arm)
+    ss = sum((v - statistics.fmean(vs)) ** 2 for vs in by_arm.values() for v in vs)
+    sd = math.sqrt(ss / df) if df > 0 else float("nan")
+    mx, my = statistics.fmean(by_arm[x]), statistics.fmean(by_arm[y])
+    se = sd * math.sqrt(1 / len(by_arm[x]) + 1 / len(by_arm[y]))
+    t = (mx - my) / se if se else (0.0 if mx == my else math.copysign(math.inf, mx - my))
+    moved = abs(t) > pre["t_control"]
+    pct = 100 * (mx - my) / my if my else float("nan")
+    return (head % ("MOVED" if moved else "held") + f"  {x}-{y} {mx - my:+.4g} ({pct:+.2f}%), block SD {sd:.3g}, "
+            f"t {t:+.2f} (|t| > {pre['t_control']:.2f} moves)"), ("MOVED" if moved else "held")
 
 
 def values(data, arm, item):
@@ -485,7 +618,7 @@ def fmt(s):
 
 
 def summary(pre, prefix):
-    data, binaries, notes = load(pre, prefix)
+    data, binaries, notes, extra = load(pre, prefix)
     print(describe(pre))
     print("=== DATA ===")
     for n in notes:
@@ -526,6 +659,9 @@ def summary(pre, prefix):
         void, blind = [], []
         if t_fail & {x, y}:
             void.append(f"treatment failed in arm(s) {','.join(sorted(t_fail & {x, y}))}")
+        for a in sorted({x, y} & set(extra["failed"])):
+            if not any(data[(a, c["key"])]["ON"] for c in pre["cells"]):
+                blind.append(f"arm {a} has no repetition in any cell - its cells failed ({extra['failed'][a][0]})")
         if t_blind & {x, y}:
             blind.append(f"treatment could not be checked in arm(s) {','.join(sorted(t_blind & {x, y}))}")
         for cell in pre["cells"]:
@@ -539,6 +675,24 @@ def summary(pre, prefix):
                 print(f"  note: {cell['key']}: both arms built client sha256 {min(same)} - byte-identical, so any move "
                       "there is the Pi's, not the change's")
         for item in pre["control"]:
+            if pre.get("sentinel"):
+                line, how = sentinel_control(pre, extra, item, x, y)
+                print(line)
+                if how == "missing":
+                    blind.append(f"control {item['cell']} {item['name']}: a block has no sentinel run")
+                elif how == "NOT ONE BINARY":
+                    void.append(f"control {item['cell']} {item['name']}: the sentinel built different clients in "
+                                "different blocks - not one instrument")
+                elif how == "MOVED":
+                    void.append(f"control {item['cell']} {item['name']} (sentinel) moved beyond "
+                                f"|t| > {pre['t_control']:.2f}")
+                continue
+            own = binaries if item["arm"] == "ON" else extra["off"]
+            bx, by = own.get((x, item["cell"]), set()), own.get((y, item["cell"]), set())
+            if bx and by and not bx & by:
+                print(f"  note: control {item['cell']} {item['name']}: the two arms built different {item['arm']} "
+                      f"clients ({y} {','.join(sorted(by))}, {x} {','.join(sorted(bx))}) - the change compiles into "
+                      "it, so it is not provably untouched (a SENTINEL is)")
             a, b = stats(values(data, y, item)), stats(values(data, x, item))
             if not a or not b or a[2] < 2 or b[2] < 2:
                 blind.append(f"control {item['cell']} {item['name']} has n < 2 in an arm")
@@ -652,6 +806,55 @@ def selftest():
                 print(f"       {ln}")
             if not ok:
                 print(buf.getvalue())
+        # The SENTINEL: A's build run in every block (A B B A) for the control cell, written here rather than in the
+        # fixture because only its block means matter. Each case must be decided by the sentinel alone: arms a/g
+        # read PASS without it (the first case above).
+        def sentinel_files(sub, means, bins=None, skip=()):
+            os.makedirs(os.path.join(tmp, sub), exist_ok=True)
+            for n, (arm, mean) in enumerate(zip("ABBA", means), 1):
+                if n in skip:
+                    continue
+                arm_sha = FIXTURE_SHAS["a" if arm == "A" else "g"]
+                on = (bins or {}).get(n, "aaaaaaaaaaaaaaaa")
+                with open(os.path.join(tmp, sub, f"fx.b{n}_{arm_sha[:8]}_sentinel{FIXTURE_SHAS['a'][:8]}_"
+                                       "best_effort_throughput_p4.txt"), "w", encoding="utf-8") as fh:
+                    fh.write(f"=== S6 transport cells 2026-10-07T00:00:00+09:00 sha={FIXTURE_SHAS['a']} "
+                             "scen=best_effort_throughput size=p4 dur=10s reps=2 host=10.1.1.214 iface=lo ===\n"
+                             f"    arm ON (extra='') built, client sha256={on}\n"
+                             "    arm OFF (extra=' -Dtt_SEGMENT_ENABLED=0') built, client sha256=0aaaaaaaaaaaaaaa\n")
+                    for d in (-7.0, 7.0):
+                        fh.write("  arm=ON RESULT: framework=tickle scenario=best_effort_throughput role=client "
+                                 f"sent=2000000 win_send_mbps={mean + d} window=ok cpu_s_per_Msample=2.0\n")
+            for name, lines in files.items():
+                with open(os.path.join(tmp, sub, f"fx.{name}"), "w", encoding="utf-8") as fh:
+                    fh.writelines(lines)
+            return os.path.join(tmp, sub, "fx")
+
+        sentinel_cases = [
+            ("held", [14000, 14012, 13995, 14006], None, (), "PASS",
+             "block means within 0.1% (block SD 9 within the arms): the sentinel holds"),
+            ("moved", [14000, 14420, 14430, 14010], None, (), "VOID",
+             "the sentinel is 3% higher in B's blocks than in A's: drift the A B B A order did not cancel"),
+            ("rebuilt", [14000, 14012, 13995, 14006], {3: "deadbeefdeadbeef"}, (), "VOID",
+             "the sentinel's ON client differs in block 3: not one instrument"),
+            ("gap", [14000, 14012, 13995, 14006], None, (3,), "NO VERDICT", "block 3 has no sentinel run"),
+        ]
+        for sub, means, bins, skip, want, why in sentinel_cases:
+            env = dict(FIXTURE_ENV, A=FIXTURE_SHAS["a"], B=FIXTURE_SHAS["g"], SENTINEL=FIXTURE_SHAS["a"])
+            env["TREATMENT"] = env["TREATMENT"].replace("{BC}", "B")
+            pre = build_prereg(env)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                summary(pre, sentinel_files(sub, means, bins, skip))
+            got = re.search(r"^OVERALL: (VOID|NO VERDICT|WORSE|IMPROVED|PASS)", buf.getvalue(), re.M)[1]
+            ok = got == want
+            failures += not ok
+            print(f"{'ok  ' if ok else 'FAIL'} sentinel {sub:8s} want {want:10s} got {got:10s} - {why}")
+            for ln in buf.getvalue().splitlines():
+                if ln.startswith(("VERDICT", "  CONTROL")):
+                    print(f"       {ln.strip()[:220]}")
+            if not ok:
+                print(buf.getvalue())
         # The refusals: a pre-registration that cannot be read must stop the run, not be read leniently.
         bad = [
             (dict(FIXTURE_ENV, PRIMARY=""), "no primary"),
@@ -691,6 +894,10 @@ def main(argv):
             for c in pre["cells"]:
                 print(f"{c['scen']}|{c['size']}|{c['extra']}|{c['slug']}")
             print("BLOCKS|" + " ".join(blocks(pre)))
+            if pre.get("sentinel"):
+                for c in pre["cells"]:
+                    if c["key"] in pre["sentinel_cells"]:
+                        print(f"SENTINEL|{c['scen']}|{c['size']}|{c['extra']}|{c['slug']}|{pre['sentinel']}")
             return 0
         if len(argv) == 4 and argv[1] == "summary":
             with open(argv[2], encoding="utf-8") as fh:

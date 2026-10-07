@@ -81,6 +81,34 @@ def bonferroni_z(k):
     return statistics.NormalDist().inv_cdf(1 - FAMILY_ALPHA / k / 2)
 
 
+def student_t_cdf(x, df):
+    """P(T <= x) for Student's t with df degrees of freedom (Simpson's rule on the density; no scipy on the rig)."""
+    if x < 0:
+        return 1.0 - student_t_cdf(-x, df)
+    c = math.exp(math.lgamma((df + 1) / 2) - math.lgamma(df / 2)) / math.sqrt(df * math.pi)
+    steps = 4000
+    h = x / steps
+    acc = 0.0
+    for i in range(steps + 1):
+        w = 1 if i in (0, steps) else (4 if i % 2 else 2)
+        acc += w * (1 + (i * h) ** 2 / df) ** (-(df + 1) / 2)
+    return 0.5 + c * acc * h / 3
+
+
+def bonferroni_t(k, df):
+    """bonferroni_z for a statistic with df degrees of freedom: the two-sided Student t threshold at FAMILY_ALPHA / k.
+    With few units (blocks, phases) the normal threshold is far too small: at df = 5 and k = 1 it is 2.65, not 2."""
+    p = 1 - FAMILY_ALPHA / max(k, 1) / 2
+    lo, hi = 0.0, 1000.0
+    for _ in range(100):
+        mid = (lo + hi) / 2
+        if student_t_cdf(mid, df) < p:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
 def parse_primary(spec):
     """'a,c6:server.b' -> [(cell_or_None, metric)]; raises ValueError on an empty item."""
     items = []

@@ -424,7 +424,7 @@ def main():
                     print(f"{'/'.join(key[:3])} {arm:10} r{r['rep']} delivered {r['rate']:,.0f}/s (sent "
                           f"{r['sent_rate']:,.0f}/s) over {r['seconds']} s  lost {r['lost']}  cpu {r['cpu']:.2f} us/"
                           f"sample{' (router ' + format(r['cpu_router'], '.2f') + ')' if r['cpu_router'] else ''}"
-                          f"  rss pub/sub {r['rss_pub']:.0f}/{r['rss_sub']:.0f} kB  lat {r['lat']:.3f} ms "
+                          f"  rss pub/sub {r['rss_pub']:.0f}/{r['rss_sub']:.0f} kB  lat {r['lat']:.3f} ms (lat_us {1000 * r['lat']:.3f}) "
                           f"{'REFUSED ' if r['refused'] else ''}{wit}")
     if voids:
         print("\nVOID runs:")

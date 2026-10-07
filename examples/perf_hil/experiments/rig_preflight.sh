@@ -180,6 +180,17 @@ else
     if [ -n "${FULL_SHA:-}" ]; then
         git -C "$REPO" archive "$FULL_SHA" | tar -x -C "$SRC" || { echo "PREFLIGHT FAIL: git archive $FULL_SHA" >&2; exit 1; }
         say "=== rig preflight $(date -Is): commit $FULL_SHA, topology $TOPO, FWS='$FWS' ==="
+        # The bench header the rig will compile this commit with (s6_witness_check.sh applies the same rule): the
+        # driver's copy when it is this commit's or a later version, else the commit's own. Built that way here too,
+        # so a commit that does not compile against what the rig gives it fails before the lock (ab_drain arm C,
+        # 2026-10-07: passed here on its own header, failed every rig build on the driver's older one).
+        ih=$("$REPO/examples/perf_hil/experiments/instrument_header.sh" "$REPO" "$FULL_SHA") ||
+            { echo "PREFLIGHT FAIL: instrument header: $ih" >&2; exit 1; }
+        if [ "${ih%% *}" = driver ]; then
+            cp "$REPO/examples/perf_hil/tickle/common/BenchStats.h" "$SRC/examples/perf_hil/tickle/common/BenchStats.h" ||
+                exit 1
+        fi
+        say "    instrument: BenchStats.h = $ih"
     else
         (cd "$REPO" && git ls-files -z | tar --null -T - -cf - 2>/dev/null) | tar -x -C "$SRC" 2>/dev/null
         say "=== rig preflight $(date -Is): $REPO working tree (tracked files), topology $TOPO, FWS='$FWS' ==="
