@@ -766,9 +766,9 @@ struct tt_Context {
     // tt_SEGMENT_ENCODE_IN_SLOT). Each is also one of tx_shm. The arm's own report of its treatment: an A/B whose
     // treated arm shows 0 here measured the two-copy path twice.
     uint64_t segment_encoded_in_slot;
-    // drain_rx() passes ended because the own ring held a record while the socket still had data or had not been
-    // asked (the ring-turn rule). The A/B witness that the rule ran: a doorbell-woken reader ends its first pass
-    // this way, so any same-host cell with a sleeping reader counts it, and a build without the rule prints none.
+    // drain_rx() passes ended because the own ring held a record after tt_RX_CLOCK_REFRESH datagrams of one drain (the
+    // ring-turn rule: a socket that never empties cannot starve the ring). A drain that empties the socket sooner never
+    // asks, so 0 is the common case; a build without the rule prints no such field.
     uint64_t rx_drain_ring_turns;
     // How many times this context built its own segment and gave it up again, and how many peers it
     // currently believes share its host. Out here with the other counters rather than behind

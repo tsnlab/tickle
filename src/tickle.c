@@ -12703,7 +12703,7 @@ static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, ui
 // Whether anything is outstanding in this context's own ring, published or claimed - drain_own_segment()'s own
 // lock-free first look; both indices are free-running and equal means nothing is. Always false without a segment.
 //
-// It ends drain_rx(), once per pass (one datagram or one chunk). The socket is read to exhaustion, and a socket
+// drain_rx() asks it of a long pass only (ring_takes_its_turn()). The socket is read to exhaustion, and a socket
 // refilled as fast as it is read is never exhausted - then nothing in the ring was read for as long as the stream
 // lasted. On the rig a max-rate publisher's own broadcasts kept its socket full for a whole run, and the
 // subscriber's announce, waiting in its segment, was never read (test_transport_seam.c,
@@ -12719,9 +12719,13 @@ static bool segment_has_records(const struct tt_Context* node) {
 #endif
 }
 
-// segment_has_records() as drain_rx() asks it, counting each pass it ends (rx_drain_ring_turns): the A/B witness that
-// the ring-turn rule ran. A doorbell-woken reader's drain finds the record the bell was rung for, so a same-host run
-// with a sleeping reader counts it; without a segment it is always false and never counts.
+// segment_has_records() as drain_rx() asks it, counting each pass it ends (rx_drain_ring_turns, the A/B witness).
+// Asked only where drain_rx() refreshes its clock, every tt_RX_CLOCK_REFRESH datagrams of one drain: the point the
+// drain already treats as "this pass is long", so a drain that empties the socket sooner - every drain of a doorbell,
+// an ACKNACK or a heartbeat - reads nothing of the ring's header. Asked every pass (56565720), the two loads of a line
+// the writers keep writing cost best_effort_throughput p4 0.5% of its receive rate and its writer 0.5% CPU per sample
+// on the rig (ab_samehost_ringturn3_20261007-235731). A record now waits at most tt_RX_CLOCK_REFRESH datagrams (and the
+// rest of a chunk) behind a socket that never empties - the bound the drain's timestamps already accept.
 static bool ring_takes_its_turn(struct tt_Context* node) {
     if (!segment_has_records(node)) {
         return false;
@@ -13305,6 +13309,39 @@ static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, ui
     return tt_RET_OK;
 }
 
+// One datagram more of a drain_rx() pass: every tt_RX_CLOCK_REFRESH of them the receive clock is read again, so a long
+// drain keeps its stamps within microseconds (D1). True when it was - the drain's "this pass is long" point, where
+// drain_rx() also looks at the ring (ring_takes_its_turn()).
+static inline bool drain_clock_tick(struct tt_Context* node, uint32_t* since_clock) {
+    if (++*since_clock <= tt_RX_CLOCK_REFRESH) {
+        return false;
+    }
+    node->rx_clock_ns = tt_get_ns();
+    *since_clock = 1;
+    return true;
+}
+
+// D4: datagrams the HAL already holds are processed under one lock, up to tt_RX_LOCK_CHUNK of them - a publishing
+// thread waits at most one chunk (OPTIMIZATION_PLAN.md 11.4). *long_pass is set when the clock was read again.
+static tt_ret_t drain_rx_chunk(struct tt_Context* node, uint32_t* since_clock, bool* long_pass) {
+    tt_ret_t result = tt_RET_OK;
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    state_lock(node);
+    for (uint32_t taken = 0; taken < tt_RX_LOCK_CHUNK && result == tt_RET_OK && tt_rx_buffered(node) > 0; taken++) {
+        int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+        if (len < 0) {
+            break;
+        }
+        if (drain_clock_tick(node, since_clock)) {
+            *long_pass = true;
+        }
+        result = process_datagram_locked(node, len, ip, port, tt_TRANSPORT_UDP, 1);
+    }
+    state_unlock(node);
+    return result;
+}
+
 // After tt_receive() hands tt_Context_poll() the first datagram, pull whatever else the kernel
 // already has buffered without another poll() per packet - a saturated receiver otherwise pays
 // poll()+recvfrom() per packet instead of one poll() per drain. Best-effort: stops on the first
@@ -13315,41 +13352,29 @@ static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
     }
 
     uint32_t since_clock = 1; // the first datagram was stamped with the reading its caller took
-    while (!ring_takes_its_turn(node)) {
-        uint32_t ip = 0;
-        uint16_t port = 0;
+    while (true) {
+        bool long_pass = false; // the clock was read again: tt_RX_CLOCK_REFRESH more datagrams in this drain
         tt_ret_t result = tt_RET_OK;
         if (tt_rx_buffered(node) == 0) {
             // The next receive may read the socket: outside the lock, one datagram, as before D4.
+            uint32_t ip = 0;
+            uint16_t port = 0;
             int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
             if (len < 0) {
                 break; // -1 nothing waiting, -2 I/O error - either way, done draining
             }
-            if (++since_clock > tt_RX_CLOCK_REFRESH) {
-                node->rx_clock_ns = tt_get_ns(); // a long drain keeps its stamps within microseconds (D1)
-                since_clock = 1;
-            }
+            long_pass = drain_clock_tick(node, &since_clock);
             result = process_datagram(node, len, ip, port, tt_TRANSPORT_UDP);
         } else {
-            // D4: datagrams the HAL already holds are processed under one lock, up to tt_RX_LOCK_CHUNK of them -
-            // a publishing thread waits at most one chunk (OPTIMIZATION_PLAN.md 11.4).
-            state_lock(node);
-            for (uint32_t taken = 0; taken < tt_RX_LOCK_CHUNK && result == tt_RET_OK && tt_rx_buffered(node) > 0;
-                 taken++) {
-                int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
-                if (len < 0) {
-                    break;
-                }
-                if (++since_clock > tt_RX_CLOCK_REFRESH) {
-                    node->rx_clock_ns = tt_get_ns();
-                    since_clock = 1;
-                }
-                result = process_datagram_locked(node, len, ip, port, tt_TRANSPORT_UDP, 1);
-            }
-            state_unlock(node);
+            result = drain_rx_chunk(node, &since_clock, &long_pass);
         }
         if (result != tt_RET_OK) {
             return result;
+        }
+        // A socket that never empties must not starve the ring: a long pass ends when a record waits there, and the
+        // poll that follows drains the ring first (ring_takes_its_turn()).
+        if (long_pass && ring_takes_its_turn(node)) {
+            break;
         }
     }
 
