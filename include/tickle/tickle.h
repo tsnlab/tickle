@@ -725,6 +725,10 @@ struct tt_Context {
     uint32_t segment_slot_ceiling; // the largest slot_bytes of any peer segment attached (record_size_limit()) // of
                                    // segment_doorbells_sent, the ones rung through the FIFO rather than UDP
     uint64_t segment_doorbells_received;
+    // drain_rx() passes ended because the own ring held a record while the socket still had data or had not been
+    // asked (the ring-turn rule). The A/B witness that the rule ran: a doorbell-woken reader ends its first pass
+    // this way, so any same-host cell with a sleeping reader counts it, and a build without the rule prints none.
+    uint64_t rx_drain_ring_turns;
     // How many times this context built its own segment and gave it up again, and how many peers it
     // currently believes share its host. Out here with the other counters rather than behind
     // tt_SEGMENT_ENABLED because the traffic line that prints them is compiled either way; they stay

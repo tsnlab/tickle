@@ -1841,6 +1841,8 @@ static void test_a_socket_that_never_empties_does_not_starve_the_ring(void) {
     // The socket drain stopped near where the record appeared - a chunk at most past it - not at the backlog's end.
     EXPECT_TRUE(test_mock_try_receive_remaining > BACKLOG - WRITE_AT - (int)tt_RX_LOCK_CHUNK - 1);
     EXPECT_EQ_U32(0, (uint32_t)owner.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    // The A/B witness counted it: the pass that ended for the ring, and only that one.
+    EXPECT_EQ_U32(1, (uint32_t)owner.rx_drain_ring_turns);
 
     // And the next poll takes the record before any more of the socket.
     int left = test_mock_try_receive_remaining;
