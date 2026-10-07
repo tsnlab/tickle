@@ -43,6 +43,8 @@ struct _tt_Config _tt_CONFIG = {
 
 // Defaults: a quiet node - no incoming packets, sends "succeed", clock starts at 0.
 uint64_t test_mock_now = 0;
+uint64_t test_mock_cpu_ns = 0;        // the polling thread's CPU clock (tt_thread_cpu_ns()), set as test_mock_now is
+uint64_t test_mock_clock_step_ns = 0; // every clock read lets this much time pass: a spin on the clock ends
 int32_t test_mock_node_id = 1;
 tt_ret_t test_mock_bind_return = tt_RET_OK;
 int32_t test_mock_receive_return = -1;
@@ -95,6 +97,8 @@ int test_mock_socket_reads_under_lock = 0;      // tt_try_receive() calls past t
                                                 // socket, on a real HAL - made holding the node's state lock
 #else
 extern uint64_t test_mock_now;
+extern uint64_t test_mock_cpu_ns;
+extern uint64_t test_mock_clock_step_ns;
 extern int32_t test_mock_node_id;
 extern tt_ret_t test_mock_bind_return;
 extern int32_t test_mock_receive_return;
@@ -127,6 +131,8 @@ extern int test_mock_socket_reads_under_lock;
 // Call at the start of each test case so one test's overrides can't leak into the next.
 static inline void test_mock_reset(void) {
     test_mock_now = 0;
+    test_mock_cpu_ns = 0;
+    test_mock_clock_step_ns = 0;
     test_mock_node_id = 1;
     test_mock_bind_return = tt_RET_OK;
     test_mock_receive_return = -1;
@@ -209,6 +215,7 @@ static void test_mock_capture_send(const void* buf, size_t len) {
 
 // These replace the real platform HAL symbols (normally hal_linux.c) in a test binary.
 uint64_t tt_get_ns(void) {
+    test_mock_now += test_mock_clock_step_ns;
     return test_mock_now;
 }
 
@@ -608,6 +615,9 @@ void tt_segment_bell_ring(int32_t bell) {
 }
 void tt_segment_bell_close(int32_t bell) {
     (void)bell;
+}
+uint64_t tt_thread_cpu_ns(void) {
+    return test_mock_cpu_ns;
 }
 
 void tt_segment_unlink(const char* path) {

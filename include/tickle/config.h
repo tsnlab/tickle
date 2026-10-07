@@ -523,6 +523,15 @@
 #ifndef tt_SEGMENT_DRAIN_PER_POLL
 #define tt_SEGMENT_DRAIN_PER_POLL (tt_SEGMENT_SLOTS * 4)
 #endif
+// The most epochs (one ring's worth of records each) a reader spends in the mode it measured cheaper before it
+// measures the other again (segment_epoch_turn(), tickle.c), and the window of epochs - and of sleeps - its means are
+// over. Not fitted to any measurement: it bounds what re-measuring costs - two epochs in the dearer mode (the one
+// that settles and the one measured) per this many, so at most 2/514 of the difference between the two - against how
+// long a change in that difference (the host moving a vCPU, a writer slowing) goes unnoticed: 512 epochs of 512
+// records is 0.2 s at 1.3 M records/s. At 64 the re-measures alone cost the PC's ~260 ns pair 3% (2026-10-07).
+#ifndef tt_SEGMENT_PROBE_EVERY_MAX
+#define tt_SEGMENT_PROBE_EVERY_MAX 512
+#endif
 
 // Consecutive drain passes with the head of the ring claimed but never published, before the owner
 // says so. A publish takes a memcpy, so a handful of passes over a claimed head is ordinary

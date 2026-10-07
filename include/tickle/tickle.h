@@ -725,10 +725,11 @@ struct tt_Context {
     uint32_t segment_slot_ceiling; // the largest slot_bytes of any peer segment attached (record_size_limit()) // of
                                    // segment_doorbells_sent, the ones rung through the FIFO rather than UDP
     uint64_t segment_doorbells_received;
-    // The shortest sleep taken on a record already claimed and ended by its doorbell, decision to resume: the least
-    // a sleep has cost this reader, with no idle time in it (segment_resumed()), and how long it may wait for a record
-    // instead (segment_await_claim(), segment_await_next()). 0 until the first. Polling thread only.
+    // The mean of the recent sleeps taken on a record already claimed and ended by its doorbell, decision to resume:
+    // what a sleep costs this reader, with no idle time in it (segment_resumed()), and how long it may wait for a
+    // record instead (segment_await_claim(), segment_await_next()). 0 until the first. Polling thread only.
     uint64_t segment_sleep_cost_ns;
+    uint32_t segment_sleep_cost_n;  // how many sleeps that mean is over (halved at tt_SEGMENT_PROBE_EVERY_MAX)
     uint8_t segment_sleep_on_claim; // the sleep being entered is one of those: set by poll_wait_io(), read on resume
     // How many times this context's own ring was waited on without announcing a sleep, and how many of those waits
     // ended with the record published - the rest slept as before.
@@ -742,6 +743,25 @@ struct tt_Context {
     // How many times an empty ring was watched for the next claim instead of slept on, and how many a claim ended.
     uint64_t segment_watches;
     uint64_t segment_watch_hits;
+    // Whether the two waits above pay for themselves (segment_epoch_turn()): what the pair spent per record - the
+    // writers' time per record, read from their pace, plus this thread's CPU time per record - in epochs of one ring's
+    // worth of records with the waits on, and with them off. The mode measured cheaper is used, and the other is
+    // measured again after segment_probe_every epochs. Polling thread only.
+    uint8_t segment_watching;       // the mode of the current epoch: 1 waits (claim and watch), 0 sleeps as before
+    uint8_t segment_preferred;      // the mode measured cheaper; the current epoch differs from it only when probing
+    uint8_t segment_epoch_settling; // the current epoch is the first in its mode, and is not measured
+    uint32_t segment_epoch_index;
+    uint64_t segment_epoch_ns;      // 0: no epoch begun - the first decision on the polling thread begins one
+    uint64_t segment_epoch_cpu_ns;  // the polling thread's CPU clock at the epoch's start
+    uintptr_t segment_epoch_thread; // and that thread (poller_thread): another's CPU clock measures nothing
+    // Per mode (index: segment_watching), over its recent epochs: how many, their mean cost per record in ns, and the
+    // sum of squared deviations from it (Welford), for the standard error the choice is tested against.
+    uint32_t segment_cost_n[2];
+    uint64_t segment_cost_mean_ns[2];
+    uint64_t segment_cost_m2[2];
+    uint32_t segment_probe_every; // epochs in the preferred mode between two of the other, doubling to a bound
+    uint32_t segment_probe_in;    // epochs left until the next probe
+    uint64_t segment_epochs[2];   // epochs measured, by mode
     // How many times this context built its own segment and gave it up again, and how many peers it
     // currently believes share its host. Out here with the other counters rather than behind
     // tt_SEGMENT_ENABLED because the traffic line that prints them is compiled either way; they stay

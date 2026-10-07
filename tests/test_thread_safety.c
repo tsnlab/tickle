@@ -303,6 +303,9 @@ void tt_segment_bell_ring(int32_t bell) {
 void tt_segment_bell_close(int32_t bell) {
     (void)bell;
 }
+uint64_t tt_thread_cpu_ns(void) {
+    return 0;
+}
 
 void tt_segment_unlink(const char* path) {
     pthread_mutex_lock(&tsan_segments_lock);

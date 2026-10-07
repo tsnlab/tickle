@@ -1686,6 +1686,15 @@ void tt_segment_bell_close(int32_t bell) {
     (void)close(bell);
 }
 
+uint64_t tt_thread_cpu_ns(void) {
+    struct timespec ts;
+    // NOLINTNEXTLINE(misc-include-cleaner)
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) {
+        return 0;
+    }
+    return ((uint64_t)ts.tv_sec * SEC_NS) + (uint64_t)ts.tv_nsec;
+}
+
 // Empties the bell so a level-triggered wait stops reporting it. Rings carry no content: how many were written
 // does not matter, only that the reader is now awake and about to drain the segment.
 
