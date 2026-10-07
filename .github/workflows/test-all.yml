@@ -47,7 +47,7 @@ jobs:
     # have not tested Ubuntu 26 and are not asserting anything about it either way. Move to
     # ubuntu-26.04 deliberately, as its own change, with its own CI run to look at.
     runs-on: ubuntu-24.04
-    timeout-minutes: 20 # explicit per-tier build+test steps + dashboard publish
+    timeout-minutes: 35 # per-tier steps + dashboard; the job ran 16-19.4 min on 2026-10-07 and one run was cancelled at 20
     permissions:
       contents: write # the "Publish dashboard" step below pushes to gh-pages (main only)
 
