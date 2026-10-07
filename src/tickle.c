@@ -1016,17 +1016,20 @@ static void create_own_segment(struct tt_Context* node) {
     for (uint32_t index = 0; index < header->slots; index++) {
         ((struct tt_SegmentSlot*)segment_slot(header, index))->sequence = index;
     }
-    __atomic_store_n(&header->magic, tt_SEGMENT_MAGIC, __ATOMIC_RELEASE);
-    node->own_segment = header;
-    node->segments_created++;
 #if tt_SEGMENT_BELL_FIFO
-    // The bell after the segment, so a writer that finds the bell finds a segment behind it. Without one, peers
-    // ring over UDP - slower, and still correct.
+    // The bell before the magic: a writer opens the bell once, right after it has checked the magic (attach), so a
+    // bell created after the magic missed every writer that attached in between, and each of them rang this context
+    // over UDP for as long as it stayed attached - slower, still correct, and what failed bell_wake_check in CI on
+    // 2026-10-07 (2,323 of 59,759 rings over UDP). A writer cannot find the bell without the segment anyway: it only
+    // looks for it after the magic. Without a bell, peers ring over UDP.
     char bell[tt_SEGMENT_PATH_LENGTH];
     if (bell_name(bell, sizeof(bell), own_ip, own_port, node->id) >= 0) {
         (void)tt_segment_bell_create(node, bell);
     }
 #endif
+    __atomic_store_n(&header->magic, tt_SEGMENT_MAGIC, __ATOMIC_RELEASE);
+    node->own_segment = header;
+    node->segments_created++;
 }
 
 // Whether this context has a segment for peers to write into, building it if a same-host peer has
