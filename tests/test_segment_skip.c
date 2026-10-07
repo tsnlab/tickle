@@ -88,11 +88,21 @@ static void record(struct seen* seen, const struct tt_Data* data) {
     }
     seen->count++;
 }
+// A writer that keeps writing while the reader drains: when set, A's first delivery publishes one more sample.
+static struct tt_Publisher* publish_during_delivery;
+static uint32_t publish_during_delivery_value;
+
 static void callback_a(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
     (void)subscriber;
     (void)time;
     (void)seq_no;
     record(&seen_a, data);
+    if (publish_during_delivery != NULL) {
+        struct tt_Publisher* pub = publish_during_delivery;
+        publish_during_delivery = NULL;
+        test_mock_now += 1000000;
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(pub, (struct tt_Data*)&publish_during_delivery_value));
+    }
 }
 static void callback_b(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
     (void)subscriber;
@@ -410,6 +420,48 @@ static void test_reliable_keep_last_skips_whole_fragmented_samples(void) {
     rig_down();
 }
 
+// The writer publishes a newer sample while the drain is delivering. Planning again in the same poll would deliver it
+// too, overwriting in the reader's history the sample just handed over before anyone took it (7.6M delivered into the
+// rmw queue for 1.7M taken, measured without this). The drain hands back after the plan that delivered, and the next
+// poll takes the newer one.
+static void test_the_drain_hands_back_after_delivering_the_newest(void) {
+    rig_up(false, 1, -1);
+    for (uint32_t i = 0; i < 4; i++) {
+        publish(&rig.pub_a, 900 + i);
+    }
+    publish_during_delivery = &rig.pub_a;
+    publish_during_delivery_value = 904;
+    bool emptied = true;
+    EXPECT_TRUE(drain_own_segment(&rig.owner, &emptied) > 0);
+    EXPECT_EQ_U32(1, seen_a.count);
+    EXPECT_EQ_U32(903, seen_a.values[0]);
+    EXPECT_TRUE(!emptied); // 904 is waiting, and the caller is told so
+    EXPECT_EQ_U32(4, rig.owner.own_segment->read_index);
+
+    (void)drain_own_segment(&rig.owner, &emptied);
+    EXPECT_EQ_U32(2, seen_a.count);
+    EXPECT_EQ_U32(904, seen_a.values[1]);
+    EXPECT_TRUE(emptied);
+    rig_down();
+}
+
+// The control: a KEEP_ALL reader's drain is not stopped by a delivery - the same writer, the same mid-drain publish,
+// and one poll takes all five in order.
+static void test_a_keep_all_drain_is_not_handed_back(void) {
+    rig_up(false, 0, -1);
+    for (uint32_t i = 0; i < 4; i++) {
+        publish(&rig.pub_a, 950 + i);
+    }
+    publish_during_delivery = &rig.pub_a;
+    publish_during_delivery_value = 954;
+    bool emptied = false;
+    (void)drain_own_segment(&rig.owner, &emptied);
+    EXPECT_EQ_U32(5, seen_a.count);
+    EXPECT_EQ_U32(954, seen_a.values[4]);
+    EXPECT_TRUE(emptied);
+    rig_down();
+}
+
 int main(void) {
     test_keep_last_1_takes_only_the_newest();
     test_keep_last_2_takes_the_newest_two();
@@ -418,6 +470,8 @@ int main(void) {
     test_a_partial_fragmented_sample_is_not_skipped();
     test_reliable_keep_last_does_not_nack_skipped_samples();
     test_reliable_keep_last_skips_whole_fragmented_samples();
+    test_the_drain_hands_back_after_delivering_the_newest();
+    test_a_keep_all_drain_is_not_handed_back();
 
     printf("test_segment_skip: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();

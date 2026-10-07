@@ -3456,6 +3456,8 @@ static void reset_node_state(struct tt_Context* node) {
     node->rx_shm_skipped_superseded = 0;
     node->segment_plan_base = 0;
     node->segment_plan_count = 0;
+    node->segment_plan_mark = 0;
+    node->rx_keep_last_delivered = 0;
     memset(node->segment_plan_skip, 0, sizeof(node->segment_plan_skip));
     memset(node->segment_skipping, 0, sizeof(node->segment_skipping));
     node->version_mismatch_drops = 0;
@@ -9191,7 +9193,7 @@ struct data_delivery_ctx {
 // compared against.
 static void record_delivery_order(struct tt_Context* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                   uint64_t timestamp, uint8_t source, uint32_t entity_id, bool via_data_port) {
-    (void)node; // the arrival socket is passed in, not read off the node - see tt_ReorderSlot.via_data_port
+    // The arrival socket is passed in, not read off the node - see tt_ReorderSlot.via_data_port.
     bool first = (sub->delivered == 0);
     bool same_writer = !first && sub->last_source == source && sub->last_entity_id == entity_id;
     // seq_no counts per writer, so it means nothing across a switch of speaker.
@@ -9229,6 +9231,9 @@ static void record_delivery_order(struct tt_Context* node, struct tt_Subscriber*
     sub->last_timestamp = timestamp;
     sub->last_via_data_port = via_data_port;
     sub->delivered++;
+    if (sub->keep_last_depth != 0) {
+        node->rx_keep_last_delivered++; // the segment drain's cue to hand back (segment_skip_head())
+    }
     // The samples of this writer the segment drain passed over just before this one, handed over with it. Looked up
     // only when there are any, so a Subscriber that never skips pays one compare.
     sub->delivering_superseded = 0;
@@ -12797,12 +12802,25 @@ static bool follow_skipped_sample(struct tt_Context* node, const struct segment_
     return false;
 }
 
-// The record at the head of the ring, passed over if it is superseded: true when it was (and is gone from the ring),
-// false when it is to be read the ordinary way. Under the state lock.
-static bool segment_skip_head(struct tt_Context* node) {
+enum segment_head { SEGMENT_HEAD_READ, SEGMENT_HEAD_SKIPPED, SEGMENT_HEAD_HAND_BACK };
+
+// The record at the head of the ring: SKIPPED when it was superseded and is gone from the ring, READ when it is to be
+// read the ordinary way, HAND_BACK when the drain should return first. Under the state lock.
+//
+// HAND_BACK is the other half of skip-to-newest. A plan covers the records published when it was made, and hands a
+// KEEP_LAST reader the newest of them; a writer faster than the reader has published more by the time that plan is
+// spent, and planning again would hand the same reader a still newer sample in the same poll - overwriting, in its
+// history, the one just delivered before anyone took it. Measured on the PC (rmw Array1k BEST_EFFORT KEEP_LAST 1,
+// without this): 7.6M samples delivered into the rmw queue for 1.7M taken. So once a plan's records have handed a
+// KEEP_LAST Subscriber a sample, the drain returns and the next poll plans afresh - newest again, and taken. A drain
+// that handed nothing to a KEEP_LAST Subscriber (KEEP_ALL, control, every native bench reader) is not stopped.
+static enum segment_head segment_skip_head(struct tt_Context* node) {
     struct tt_SegmentHeader* ring = node->own_segment;
     uint32_t index = __atomic_load_n(&ring->read_index, __ATOMIC_RELAXED);
     if (index - node->segment_plan_base >= node->segment_plan_count) {
+        if (node->rx_keep_last_delivered != node->segment_plan_mark) {
+            return SEGMENT_HEAD_HAND_BACK;
+        }
         plan_segment_skips(node, index);
     }
     uint32_t offset = index - node->segment_plan_base;
@@ -12810,30 +12828,30 @@ static bool segment_skip_head(struct tt_Context* node) {
                    (node->segment_plan_skip[offset / BITS_IN_1BYTE] & (uint8_t)(1U << (offset % BITS_IN_1BYTE))) != 0;
     bool skipping = segment_skipping_any(node);
     if (!planned && !skipping) {
-        return false;
+        return SEGMENT_HEAD_READ;
     }
     const struct tt_SegmentSlot* slot_header = (const struct tt_SegmentSlot*)segment_slot(ring, index);
     if (__atomic_load_n(&slot_header->sequence, __ATOMIC_ACQUIRE) != index + 1U) {
-        return false; // not published: segment_read() says so and counts the stall
+        return SEGMENT_HEAD_READ; // not published: segment_read() says so and counts the stall
     }
     struct segment_record rec;
     segment_peek_record(node, ring, index, &rec);
     if (rec.kind == SEGMENT_RECORD_CONT && skipping && skip_continuation(node, &rec, index)) {
-        return true;
+        return SEGMENT_HEAD_SKIPPED;
     }
     if (!planned || (rec.kind != SEGMENT_RECORD_WHOLE && rec.kind != SEGMENT_RECORD_FIRST)) {
-        return false;
+        return SEGMENT_HEAD_READ;
     }
     struct segment_skip_ctx allowed = {&rec, true, false};
     for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, rec.endpoint_id, visit_skip_allowed, &allowed);
     if (!allowed.allowed || !allowed.any) {
-        return false;
+        return SEGMENT_HEAD_READ;
     }
     if (rec.kind == SEGMENT_RECORD_FIRST && !follow_skipped_sample(node, &rec)) {
-        return false;
+        return SEGMENT_HEAD_READ;
     }
     skip_superseded_record(node, &rec, true, index);
-    return true;
+    return SEGMENT_HEAD_SKIPPED;
 }
 
 // Returns how many records it delivered, and through `emptied` whether the ring is now empty. The
@@ -12869,6 +12887,8 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
 
     uint32_t delivered = 0;
     uint32_t drained = 0;
+    bool hand_back = false;
+    node->segment_plan_mark = node->rx_keep_last_delivered; // read by segment_skip_head() between plans
     while (drained < tt_SEGMENT_DRAIN_PER_POLL) {
         // The state lock, in chunks, exactly as drain_rx() takes it for the socket. It is required:
         // process_datagram_locked() says so in its name and every field a datagram touches is under
@@ -12888,7 +12908,12 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
             uint32_t sender_ip = 0;
             uint16_t sender_port = 0;
             uint16_t seq_span = 1;
-            if (segment_skip_head(node)) {
+            enum segment_head head = segment_skip_head(node);
+            if (head == SEGMENT_HEAD_HAND_BACK) {
+                hand_back = true;
+                break;
+            }
+            if (head == SEGMENT_HEAD_SKIPPED) {
                 node->segment_head_stall_passes = 0;
                 taken++;
                 continue;
@@ -12911,8 +12936,11 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
         state_unlock(node);
         delivered += taken;
         drained += taken;
-        if (ran_dry) {
+        if (ran_dry || hand_back) {
             node->segment_plan_count = 0; // a plan is made and spent inside one drain
+            // Ran dry: emptied, even past a wedged head (nothing can be read past it). Handed back: whether the ring
+            // still holds records, so the caller does not read the socket ahead of them.
+            *emptied = ran_dry || !segment_has_records(node);
             return delivered;
         }
     }

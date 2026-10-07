@@ -591,6 +591,10 @@ struct tt_Context {
     // a bit set for each one that is superseded. Valid only inside one drain_own_segment() call.
     uint32_t segment_plan_base;
     uint32_t segment_plan_count;
+    // Samples handed to a Subscriber with keep_last_depth != 0, every path; and its value when the drain began. A
+    // plan whose records changed it is where the drain hands back to its caller (segment_skip_head(), tickle.c).
+    uint64_t rx_keep_last_delivered;
+    uint64_t segment_plan_mark;
     uint8_t segment_plan_skip[(tt_SEGMENT_SLOTS / 8) + 1]; // one bit per slot, rounded up
     // Fragmented samples whose FRAG_FIRST the drain skipped and whose continuations are still to be read: each
     // continuation that belongs to one is skipped with it, so a skipped sample never leaves a fragment to be
