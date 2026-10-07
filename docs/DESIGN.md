@@ -423,6 +423,13 @@ Compiled in by default on Linux (`tt_SEGMENT_ENABLED`), out on FreeRTOS.
   most once, so that keeps the pipe under half full, and a full pipe would refuse a ring. The kernel is asked at
   bell creation whether it reports every write to an unread pipe (Linux 5.14+); if not, the bell is
   level-triggered and read on every ring, as before.
+- Before announcing a sleep the reader may wait instead, at most what a sleep has cost it: for a head record still
+  being filled, and for the next record when records have been arriving faster than a sleep costs. Whether those
+  waits are on is measured, not assumed: per epoch of one ring's worth of records, the writers' pace plus the
+  reader's own CPU time per record, with the waits on and off; the cheaper mode is used (by more than 2 standard
+  errors) and the other re-measured at a doubling interval up to `tt_SEGMENT_PROBE_EVERY_MAX` epochs. Waiting keeps
+  the reader at its writer's heels, which saves doorbells and sleeps where moving a cache line between the two cores
+  is cheap (the rig's Pi 5) and slows the writer where it is not (PC vCPUs ~260 ns apart).
 - Measured on `e17b4e6f`: 1.42x p3 BEST_EFFORT throughput over the UDP doorbell, and the same-host p2 round trip now
   34% faster than the kernel path (0.030 vs 0.046 ms at 200/s). Details in [RESULTS.md](RESULTS.md).
 

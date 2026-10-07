@@ -1782,6 +1782,322 @@ static void test_a_record_found_by_the_last_drain_before_sleeping_ends_the_poll(
 }
 
 // ---------------------------------------------------------------------------------------------
+// Whether the reader's waits pay for themselves (segment_epoch_turn(), 2026-10-07).
+//
+// A reader that waits for its writer's next record instead of sleeping saves the sleep and the doorbell, and keeps the
+// pair moving the ring's cache lines between the two cores on every record. Which of the two costs more depends on the
+// machine: on the PC with the two vCPUs ~260 ns apart the waits cost the pair 45% more a record, on the rig's Pi 5
+// 17% less. The reader measures both modes - the writers' pace (wall time per record) plus its own CPU time per
+// record, over a ring's worth of records - and uses the cheaper. These tests drive whole epochs with the mock clocks
+// standing in for the two measurements, then look at what the next decision on an empty ring does.
+
+// One epoch: a ring's worth of records claimed and drained, `wall` ns a record of wall clock and `cpu` ns a record of
+// the polling thread's CPU clock, ended by the decision at the empty ring that follows. A record is a claim and a
+// drain, as segment_deliver() and drain_own_segment() move the two indices. Returns the mode the epoch ran in.
+static uint8_t run_epoch(struct tt_Context* owner, uint64_t wall, uint64_t cpu) {
+    struct tt_SegmentHeader* header = owner->own_segment;
+    const uint8_t mode = owner->segment_watching;
+    header->write_index += header->slots;
+    header->read_index += header->slots;
+    test_mock_now += wall * header->slots;
+    test_mock_cpu_ns += cpu * header->slots;
+    owner->segment_sleep_cost_ns = 0; // no sleep measured: the decision below sleeps at once, in either mode
+    bool took = false;
+    (void)segment_drained_instead_of_sleeping(owner, false, 0, test_mock_now, (int64_t)tt_SECOND, false, &took);
+    return mode;
+}
+
+// What the next decision does at an empty ring whose writer has been fast: true when it watched the ring.
+static bool watches_a_fast_empty_ring(struct tt_Context* owner) {
+    struct tt_SegmentHeader* header = owner->own_segment;
+    // Eight records claimed over the last 8 us while awake - one a microsecond - against a sleep measured at 20 us.
+    owner->segment_stretch_index = header->write_index - 8U;
+    owner->segment_stretch_ns = test_mock_now - (8U * tt_MICROSECOND);
+    owner->segment_sleep_cost_ns = 20U * tt_MICROSECOND;
+    const uint64_t watches = owner->segment_watches;
+    test_mock_clock_step_ns = 100; // the watch spins on the clock: let it run out
+    bool took = false;
+    (void)segment_drained_instead_of_sleeping(owner, false, 0, test_mock_now, (int64_t)tt_SECOND, false, &took);
+    test_mock_clock_step_ns = 0;
+    return owner->segment_watches > watches;
+}
+
+// What the next decision does at a head a writer has claimed and not published: true when it waited for it.
+static bool waits_for_a_claimed_head(struct tt_Context* owner) {
+    struct tt_SegmentHeader* header = owner->own_segment;
+    owner->segment_sleep_cost_ns = 20U * tt_MICROSECOND;
+    header->write_index++; // claimed: the head slot's sequence still says free
+    const uint64_t waits = owner->segment_claim_waits;
+    test_mock_clock_step_ns = 100;
+    bool took = false;
+    (void)segment_drained_instead_of_sleeping(owner, false, 0, test_mock_now, (int64_t)tt_SECOND, false, &took);
+    test_mock_clock_step_ns = 0;
+    header->write_index--; // the claim withdrawn, as if it never was: the ring is empty again
+    return owner->segment_claim_waits > waits;
+}
+
+static void make_owner(struct tt_Context* owner, struct tt_Topic* topic, struct tt_Publisher* pub) {
+    test_mock_reset();
+    test_mock_segments_free();
+    init_node_topic_pub(owner, topic, pub);
+    owner->id = OWNER_ID;
+    owner->entity_id_base = OWNER_INCARNATION;
+    owner->hal.own_ip = OWNER_IP;
+    owner->hal.own_port = OWNER_PORT;
+    owner->segment_probe_every = 1; // as reset_node_state() leaves it
+    test_mock_now = 10 * tt_MILLISECOND;
+    test_mock_cpu_ns = 1 * tt_MILLISECOND;
+    create_own_segment(owner);
+    EXPECT_TRUE(owner->own_segment != NULL);
+}
+
+// Costs per record in ns, wall (the writer's pace) and the reader's CPU, for each mode.
+struct pair_costs {
+    uint64_t sleeping_wall, sleeping_cpu, waiting_wall, waiting_cpu;
+};
+
+static uint32_t g_epoch_noise_seed = 12345; // run_epochs()'s jitter, so a test can draw several sequences
+
+// Runs `epochs` epochs, each costing what `costs` says for the mode it runs in, give or take a deterministic jitter of
+// up to `jitter` ns a record on each clock, and - in one epoch of eight, at random - `spike` ns a record more of wall
+// time: a slow wake-up, which on the PC is what spreads epochs (single ones rose by up to a third, never fell as far).
+// Returns how many ran waiting, and counts the changes of preference.
+static uint32_t run_epochs(struct tt_Context* owner, const struct pair_costs* costs, uint32_t epochs, uint64_t jitter,
+                           uint64_t spike, uint32_t* preference_changes) {
+    uint32_t waiting = 0;
+    uint32_t state = g_epoch_noise_seed;
+    uint8_t preferred = owner->segment_preferred;
+    for (uint32_t i = 0; i < epochs; i++) {
+        uint64_t noise_wall = 0;
+        uint64_t noise_cpu = 0;
+        if (jitter > 0) {
+            state = (state * 1103515245U) + 12345U;
+            noise_wall = (state >> 8) % (2 * jitter + 1);
+            state = (state * 1103515245U) + 12345U;
+            noise_cpu = (state >> 8) % (2 * jitter + 1);
+        }
+        state = (state * 1103515245U) + 12345U;
+        const uint64_t slow = ((state >> 16) % 8U) == 0 ? spike : 0;
+        const bool w = owner->segment_watching != 0;
+        const uint64_t wall = (w ? costs->waiting_wall : costs->sleeping_wall) + noise_wall - jitter + slow;
+        const uint64_t cpu = (w ? costs->waiting_cpu : costs->sleeping_cpu) + noise_cpu - jitter;
+        waiting += run_epoch(owner, wall, cpu);
+        if (owner->segment_preferred != preferred) {
+            preferred = owner->segment_preferred;
+            if (preference_changes != NULL) {
+                (*preference_changes)++;
+            }
+        }
+    }
+    return waiting;
+}
+
+// The PC with the two vCPUs ~260 ns apart (a6ef471d against main, best_effort_throughput p3 at max rate): waiting
+// slowed the writer from 0.75 to 1.00 us a record and the reader spun through all of it, where sleeping cost it
+// 0.64 us a record. The waits are a loss there, and must be declined: no watch, no claim wait, and the waiting mode
+// re-measured ever more rarely.
+static void test_the_waits_are_declined_where_they_cost_the_pair_more(void) {
+    struct tt_Context owner;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    make_owner(&owner, &topic, &pub);
+    const struct pair_costs costs = {750, 640, 1000, 1000};
+    const uint32_t epochs = 400;
+    const uint32_t waiting = run_epochs(&owner, &costs, epochs, 0, 0, NULL);
+
+    EXPECT_EQ_INT(0, owner.segment_preferred);
+    EXPECT_EQ_INT(0, owner.segment_watching);
+    EXPECT_TRUE(!watches_a_fast_empty_ring(&owner));
+    EXPECT_TRUE(!waits_for_a_claimed_head(&owner));
+    // Re-measured, but rarely: the interval doubles to tt_SEGMENT_PROBE_EVERY_MAX, so 400 epochs hold about a dozen in
+    // the waiting mode, each with a settling epoch before it. A re-measure every few epochs would be a third of them.
+    EXPECT_TRUE(owner.segment_epochs[1] >= 2);
+    EXPECT_TRUE(waiting * 10U < epochs);
+    if (waiting * 10U >= epochs) {
+        printf("  %u of %u epochs ran waiting\n", waiting, epochs);
+    }
+    test_mock_segments_free();
+}
+
+// The rig's Pi 5 (a6ef471d against main, same cell): the writer, no longer ringing, ran at 0.66 us a record instead
+// of 0.81, and the reader spent 0.65 us a record waiting where its sleeps had cost it 0.78. The waits pay there, and
+// must be taken.
+static void test_the_waits_are_taken_where_they_cost_the_pair_less(void) {
+    struct tt_Context owner;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    make_owner(&owner, &topic, &pub);
+    const struct pair_costs costs = {806, 777, 664, 651};
+    (void)run_epochs(&owner, &costs, 400, 0, 0, NULL);
+
+    EXPECT_EQ_INT(1, owner.segment_preferred);
+    EXPECT_EQ_INT(1, owner.segment_watching);
+    EXPECT_TRUE(watches_a_fast_empty_ring(&owner));
+    EXPECT_TRUE(waits_for_a_claimed_head(&owner));
+    test_mock_segments_free();
+}
+
+// The pair's cost is the writer's AND the reader's. A writer that runs faster while it is waited for (no doorbells)
+// with a reader that spins through all of it is a loss when the spinning outweighs the doorbells; and a reader whose
+// waits cost it less than its sleeps is a loss when its writer slows by more. Either half alone gets one of these
+// wrong.
+static void test_the_choice_weighs_both_the_writer_and_the_reader(void) {
+    struct tt_Context owner;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+
+    make_owner(&owner, &topic, &pub);
+    const struct pair_costs writer_faster = {1000, 300, 900, 900}; // 1300 sleeping against 1800 waiting
+    (void)run_epochs(&owner, &writer_faster, 200, 0, 0, NULL);
+    EXPECT_EQ_INT(0, owner.segment_preferred);
+    test_mock_segments_free();
+
+    make_owner(&owner, &topic, &pub);
+    const struct pair_costs reader_cheaper = {750, 640, 1000, 600}; // 1390 sleeping against 1600 waiting
+    (void)run_epochs(&owner, &reader_cheaper, 200, 0, 0, NULL);
+    EXPECT_EQ_INT(0, owner.segment_preferred);
+    test_mock_segments_free();
+}
+
+// One epoch is ~0.4 ms; on the PC a single slow wake-up moves one by a quarter, and single epochs of the two modes
+// overlapped at ~260 ns (sleeping 1269-1798 ns a record, p10-p90; waiting 1420-2060). Compared epoch against epoch,
+// the choice flipped every few epochs and the dearer mode ran a third of the time. Against the standard error of the
+// means it settles, and stays.
+static void test_a_noisy_epoch_does_not_turn_the_choice(void) {
+    const struct pair_costs costs = {730, 630, 870, 790}; // 1360 against 1660, as the medians were
+    const uint32_t epochs = 400;
+    uint32_t changes = 0;
+    uint32_t waiting = 0;
+    uint32_t sequences_turned = 0;
+    for (uint32_t seed = 1; seed <= 32; seed++) {
+        struct tt_Context owner;
+        struct tt_Topic topic;
+        struct tt_Publisher pub;
+        make_owner(&owner, &topic, &pub);
+        g_epoch_noise_seed = seed * 2654435761U;
+        uint32_t turned = 0;
+        waiting += run_epochs(&owner, &costs, epochs, 50, 600, &turned);
+        changes += turned;
+        sequences_turned += turned > 0 ? 1U : 0U;
+        EXPECT_EQ_INT(0, owner.segment_preferred);
+        test_mock_segments_free();
+    }
+    g_epoch_noise_seed = 12345;
+    // Over 32 sequences of 400 epochs, the waiting mode preferred in none, and run in under a tenth of the epochs.
+    EXPECT_EQ_INT(0, (int)sequences_turned);
+    EXPECT_TRUE(waiting * 10U < 32U * epochs);
+    if (sequences_turned > 0 || waiting * 10U >= 32U * epochs) {
+        printf("  %u changes of preference in %u of 32 sequences, %u of %u epochs waiting\n", changes, sequences_turned,
+               waiting, 32U * epochs);
+    }
+}
+
+// Runs epochs at `costs` until the context prefers `mode`, at most `limit`; returns how many it took (limit + 1:
+// never). Then on until the current epoch is in the preferred mode rather than a re-measure of the other.
+static uint32_t run_until_preferred(struct tt_Context* owner, const struct pair_costs* costs, uint8_t mode,
+                                    uint32_t limit) {
+    uint32_t taken = 0;
+    while (owner->segment_preferred != mode && taken <= limit) {
+        (void)run_epochs(owner, costs, 1, 0, 0, NULL);
+        taken++;
+    }
+    for (uint32_t i = 0; i < 4 && owner->segment_watching != owner->segment_preferred; i++) {
+        (void)run_epochs(owner, costs, 1, 0, 0, NULL);
+    }
+    return taken;
+}
+
+// The host moves vCPUs: a pair that was ~260 ns apart can be ~100 ns apart a second later, and the cheaper mode with
+// it. The mode not chosen is re-measured, and the choice follows the costs when they change - within sixteen of the
+// longest re-measure intervals (8,192 epochs at the default, 3 s at 1.3 M records a second). The slower direction is
+// towards the mode not chosen: its record is a few epochs spread over a long time, and needs the re-measures that no
+// longer confirm the choice to come closer together.
+static void test_the_choice_follows_a_change_in_the_costs(void) {
+    struct tt_Context owner;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    make_owner(&owner, &topic, &pub);
+    const struct pair_costs far = {750, 640, 1000, 1000};
+    const struct pair_costs near = {806, 777, 664, 651};
+    (void)run_epochs(&owner, &far, 400, 0, 0, NULL);
+    EXPECT_EQ_INT(0, owner.segment_preferred);
+    const uint32_t bound = 16U * tt_SEGMENT_PROBE_EVERY_MAX;
+    const uint32_t to_waiting = run_until_preferred(&owner, &near, 1, bound);
+    EXPECT_TRUE(to_waiting <= bound);
+    EXPECT_TRUE(watches_a_fast_empty_ring(&owner));
+    (void)run_epochs(&owner, &near, 400, 0, 0, NULL);
+    const uint32_t to_sleeping = run_until_preferred(&owner, &far, 0, bound);
+    EXPECT_TRUE(to_sleeping <= bound);
+    EXPECT_TRUE(!watches_a_fast_empty_ring(&owner));
+    printf("  the choice followed the costs in %u epochs to waiting, %u back to sleeping\n", to_waiting, to_sleeping);
+    test_mock_segments_free();
+}
+
+// The first epoch after a change of mode starts from what the other mode left: a reader that was sleeping has a
+// backlog to drain, and drains it without waiting for anything, so that epoch reads cheaper than the waiting mode
+// really is. It is not measured. Modelled here as the waiting mode's first epoch costing 0.8 us a record (the writer's
+// pace and the reader's drain, nothing waited for) against its 2.0 thereafter and sleeping's 1.39. Measured through,
+// every re-measure of the waits is that one cheap epoch, and the record of the waiting mode drifts below sleeping.
+static void test_the_first_epoch_after_a_change_is_not_measured(void) {
+    struct tt_Context owner;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    make_owner(&owner, &topic, &pub);
+    uint8_t last = owner.segment_watching;
+    uint32_t waiting_preferred_epochs = 0;
+    for (uint32_t i = 0; i < 4000; i++) {
+        const bool w = owner.segment_watching != 0;
+        const bool first = owner.segment_watching != last;
+        last = owner.segment_watching;
+        uint64_t wall = w ? 1000 : 750;
+        uint64_t cpu = w ? 1000 : 640;
+        if (w && first) {
+            wall = 500; // the backlog the sleeping mode left, drained without a wait
+            cpu = 300;
+        }
+        (void)run_epoch(&owner, wall, cpu);
+        waiting_preferred_epochs += owner.segment_preferred;
+    }
+    EXPECT_EQ_INT(0, owner.segment_preferred);
+    EXPECT_EQ_INT(0, (int)waiting_preferred_epochs);
+    test_mock_segments_free();
+}
+
+// What a sleep costs the reader - the bound on both waits - is the mean of its recent clean sleeps (taken on a claimed
+// record, ended by the doorbell), not the shortest. The shortest is a sleep that never blocked: the doorbell rang
+// between the announcement and the wait, which returned at once. On the PC with an -O0 writer one such 0.5 us
+// "sleep" among 8-18 us ones became the bound, below the writer's ~1 us gap, and the waits stopped paying for
+// anything (a6ef471d rebased, one run in five: 1.80 us a sample against 1.61).
+static void test_a_sleep_that_never_blocked_does_not_become_the_bound(void) {
+    struct tt_Context owner;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    make_owner(&owner, &topic, &pub);
+    const uint64_t blocked = 15U * tt_MICROSECOND;
+    const uint64_t unblocked = 500;
+    const uint64_t sleeps[] = {blocked, unblocked, blocked, blocked, unblocked, blocked, blocked, blocked};
+    for (size_t i = 0; i < sizeof(sleeps) / sizeof(sleeps[0]); i++) {
+        const uint64_t decided = test_mock_now;
+        test_mock_now += sleeps[i];
+        owner.rx_clock_ns = test_mock_now;   // what poll_wait_io() stamps on a wait that ended with a datagram
+        owner.segment_sleep_on_claim = 1;    // taken on a claimed record
+        segment_resumed(&owner, 0, decided); // ended by the doorbell: a zero-length datagram
+    }
+    // The mean of the eight: 6 x 15 us and 2 x 0.5 us, 11.4 us. The shortest would be 0.5 us.
+    EXPECT_TRUE(owner.segment_sleep_cost_ns > 10U * tt_MICROSECOND);
+    EXPECT_TRUE(owner.segment_sleep_cost_ns < blocked);
+    // A sleep that was not clean - not on a claimed record, or not ended by the doorbell - is not counted.
+    const uint64_t before = owner.segment_sleep_cost_ns;
+    const uint64_t decided = test_mock_now;
+    test_mock_now += unblocked;
+    owner.rx_clock_ns = test_mock_now;
+    owner.segment_sleep_on_claim = 0;
+    segment_resumed(&owner, 0, decided);
+    EXPECT_EQ_U32((uint32_t)before, (uint32_t)owner.segment_sleep_cost_ns);
+    test_mock_segments_free();
+}
+
+// ---------------------------------------------------------------------------------------------
 // Lazy segment creation (SHM_PLAN stage 1, option B).
 //
 // The segment used to be built at bind, which meant every context paid for a ring whether or not
@@ -2395,6 +2711,13 @@ int main(void) {
     test_a_sleeping_reader_is_rung_and_a_busy_one_is_not();
     test_a_batch_is_rung_for_once_after_its_last_record();
     test_a_record_found_by_the_last_drain_before_sleeping_ends_the_poll();
+    test_the_waits_are_declined_where_they_cost_the_pair_more();
+    test_the_waits_are_taken_where_they_cost_the_pair_less();
+    test_the_choice_weighs_both_the_writer_and_the_reader();
+    test_a_noisy_epoch_does_not_turn_the_choice();
+    test_the_choice_follows_a_change_in_the_costs();
+    test_the_first_epoch_after_a_change_is_not_measured();
+    test_a_sleep_that_never_blocked_does_not_become_the_bound();
     test_a_context_alone_on_its_host_builds_no_segment();
     test_a_same_host_peer_appearing_builds_the_segment();
     test_a_peer_on_another_host_builds_nothing();

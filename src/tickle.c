@@ -1032,6 +1032,7 @@ static void create_own_segment(struct tt_Context* node) {
     node->segments_created++;
     node->segment_stretch_index = 0; // a new ring counts from zero: no pace carries over from the last one
     node->segment_stretch_ns = tt_get_ns();
+    node->segment_epoch_ns = 0; // and no epoch: the polling thread begins one at its first decision
 }
 
 // Whether this context has a segment for peers to write into, building it if a same-host peer has
@@ -3449,6 +3450,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->segment_slot_ceiling = 0;
     node->segment_doorbells_received = 0;
     node->segment_sleep_cost_ns = 0;
+    node->segment_sleep_cost_n = 0;
     node->segment_sleep_on_claim = 0;
     node->segment_claim_waits = 0;
     node->segment_claim_waits_published = 0;
@@ -3457,6 +3459,23 @@ static void reset_node_state(struct tt_Context* node) {
     node->segment_stretch_index = 0;
     node->segment_watches = 0;
     node->segment_watch_hits = 0;
+    node->segment_watching = 0;
+    node->segment_preferred = 0;
+    node->segment_epoch_index = 0;
+    node->segment_epoch_ns = 0;
+    node->segment_epoch_cpu_ns = 0;
+    node->segment_epoch_thread = 0;
+    node->segment_epoch_settling = 0;
+    node->segment_cost_n[0] = 0;
+    node->segment_cost_n[1] = 0;
+    node->segment_cost_mean_ns[0] = 0;
+    node->segment_cost_mean_ns[1] = 0;
+    node->segment_cost_m2[0] = 0;
+    node->segment_cost_m2[1] = 0;
+    node->segment_probe_every = 1;
+    node->segment_probe_in = 0;
+    node->segment_epochs[0] = 0;
+    node->segment_epochs[1] = 0;
     // Counters that only ever increment, and therefore only ever reported whatever was on the
     // caller's stack. Found by the structural check Plan built after `segment_peers` shipped
     // uninitialised: this function is where a field is initialised, and the three below had been
@@ -12327,7 +12346,7 @@ static uint64_t segment_next_look(const struct tt_Context* node, uint64_t now, u
 // sample, and 0.01 with this wait (examples/perf_hil/experiments/be_wake_cost.sh). The record being filled is the one
 // thing a reader can be sure of: it is published within one copy, sooner than any doorbell could report it.
 //
-// How long: no longer than the cheapest sleep this reader has measured (segment_sleep_cost_ns), and never past the
+// How long: no longer than what a sleep costs this reader (segment_sleep_cost_ns), and never past the
 // poll's own deadline - the spin-then-block rule: wait at most what blocking would have cost, then block. It also
 // bounds the wait on a writer that was preempted, or died, between claim and publish; the reader then sleeps as it
 // always did. Only the head slot's sequence is read meanwhile, the word the publication writes; another thread's
@@ -12380,7 +12399,7 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied);
 // The criterion, both sides measured and neither tuned: the expected time to the next record - the records claimed
 // since the current awake stretch began (the last resume, or the last time the ring was found empty) over its length,
 // so time spent asleep is never in it and a burst after a long sleep does not pass for a fast writer - against the
-// least a sleep has cost (segment_sleep_cost_ns). Only when the next record is due sooner than a sleep would cost is
+// what a sleep costs (segment_sleep_cost_ns). Only when the next record is due sooner than a sleep would cost is
 // the ring watched, and then for at most that cost - the spin-then-block rule again - and never past the poll's
 // deadline. No record claimed while awake means nothing to expect, and the reader sleeps at once: a ping-pong's reader
 // wakes to the record it was rung for, answers, and goes back to sleep exactly as before. Only write_index is read
@@ -12397,8 +12416,9 @@ static bool segment_await_next(struct tt_Context* node, uint64_t now, uint64_t u
         return false; // nothing claimed while awake: nothing to expect, sleep
     }
     node->segment_gap_ns = awake_ns / arrivals;
-    if (budget == 0 || node->segment_gap_ns >= budget) {
-        return false; // the next record is not expected sooner than a sleep costs: sleep
+    if (node->segment_watching == 0 || budget == 0 || node->segment_gap_ns >= budget) {
+        return false; // waiting does not pay here (segment_epoch_turn()), or the next record is not expected sooner
+                      // than a sleep costs: sleep
     }
     if (until - now < budget) {
         budget = until - now;
@@ -12419,17 +12439,161 @@ static bool segment_await_next(struct tt_Context* node, uint64_t now, uint64_t u
     }
 }
 
+// Whether the two waits above pay for themselves - measured, not assumed (2026-10-07, round 4).
+//
+// Why: each wait is right by the reader's own account - it waits at most what a sleep has cost it - and still made the
+// pair dearer where moving a cache line between the two cores is slow. On the PC with the two vCPUs ~260 ns apart,
+// a6ef471d's same-host max-rate p3 pair cost 1.99 us of CPU a sample against main's 1.39: the waits keep the reader
+// at its writer's heels, so every record moves the head slot's line and write_index from the writer while it still
+// needs them. The writer slowed from 0.75 to 1.00 us a record, and the reader, waiting instead of sleeping, spent all
+// of that too. Where a line moves in ~100 ns the same waits cost about what they save, and on the rig's Pi 5 they
+// saved 17.5%: the writer, no longer ringing, got faster (0.81 -> 0.66 us a record). The reader cannot see what its
+// waits cost the writer except in the writer's pace, nor what sleeping costs itself except in its own CPU time, and
+// no rule built from one side's figures separates those three cases.
+//
+// So both are measured, in each mode, over epochs of one ring's worth of records (header->slots): wall time per
+// record, which is the writers' pace - for a writer never idle its CPU time per record, and for a paced one the same
+// in both modes, so it cancels - plus this thread's CPU time per record (tt_thread_cpu_ns(), read once an epoch).
+// The first epoch after a change of mode is not measured: it starts from what the other mode left (a backlog, a
+// writer still slowed). Each mode keeps the mean and variance of its recent epochs (segment_cost_record()), and the
+// preference moves only when the other mode is cheaper by more than twice the standard error of the difference - one
+// epoch is ~0.4 ms, and on the PC a single slow wake-up moves one by a quarter, so comparing single epochs flipped the
+// choice every few epochs and kept the dearer mode on for a third of them (measured at ~260 ns). The other mode is
+// measured again after segment_probe_every epochs: 1 at first, doubling after each re-measure that does not change
+// the choice, up to tt_SEGMENT_PROBE_EVERY_MAX, and back to 1 when the choice changes. Doubling whether or not the
+// re-measure was conclusive matters: re-measures are short and start from the other mode's state, so they read the
+// two modes closer together than they are (on the PC, 1.42 against 1.66 us a record at ~260 ns, where whole runs
+// differ by 1.35 against 2.0), and an interval that shrank while the two could not be told apart kept the dearer mode
+// on for a tenth of the epochs. A context starts sleeping, as it did before the waits existed,
+// and measures the waits second.
+//
+// Called at a decision on an empty-looking ring, so an epoch ends within one decision of its last record.
+
+// One epoch's cost per record into its mode's running mean and variance. Costs are clamped to 2^24 ns a record (60
+// records a second), far slower than any stream where the waits can be taken, so the squares fit.
+static void segment_cost_record(struct tt_Context* node, uint8_t mode, uint64_t cost_ns) {
+    const uint64_t cost = cost_ns < (1ULL << 24) ? cost_ns : (1ULL << 24);
+    const uint32_t count = ++node->segment_cost_n[mode];
+    const int64_t mean = (int64_t)node->segment_cost_mean_ns[mode];
+    const int64_t delta = (int64_t)cost - mean;
+    const int64_t next = mean + (delta / (int64_t)count);
+    node->segment_cost_mean_ns[mode] = (uint64_t)next;
+    const int64_t product = delta * ((int64_t)cost - next);
+    node->segment_cost_m2[mode] += product > 0 ? (uint64_t)product : 0U;
+}
+
+// -1 when `mode` costs less than the other by more than twice the standard error of the difference, +1 when
+// it costs more by that much, 0 when the two cannot be told apart yet (or either has fewer than two epochs).
+static int segment_cost_compare(const struct tt_Context* node, uint8_t mode) {
+    const uint8_t other = (uint8_t)(mode ^ 1U);
+    const uint64_t n_a = node->segment_cost_n[mode];
+    const uint64_t n_b = node->segment_cost_n[other];
+    if (n_a < 2 || n_b < 2) {
+        return 0;
+    }
+    const int64_t diff = (int64_t)node->segment_cost_mean_ns[mode] - (int64_t)node->segment_cost_mean_ns[other];
+    // The variance of each mean: m2 / (n - 1) / n.
+    const uint64_t se2 =
+        (node->segment_cost_m2[mode] / (n_a - 1U) / n_a) + (node->segment_cost_m2[other] / (n_b - 1U) / n_b);
+    const uint64_t magnitude = (uint64_t)(diff < 0 ? -diff : diff);
+    if (magnitude * magnitude <= 4U * se2) {
+        return 0;
+    }
+    return diff < 0 ? -1 : 1;
+}
+
+// Which mode the next epoch runs in, given the one just measured.
+static uint8_t segment_next_mode(struct tt_Context* node, uint8_t mode) {
+    const uint8_t other = (uint8_t)(mode ^ 1U);
+    if (node->segment_cost_n[mode] < 2) {
+        return mode; // not enough of this mode yet to tell its spread
+    }
+    if (node->segment_cost_n[other] < 2) {
+        return other; // nor of the other: measure it next
+    }
+    const uint8_t preferred = node->segment_preferred;
+    const int verdict = segment_cost_compare(node, (uint8_t)(preferred ^ 1U));
+    if (verdict < 0) {
+        node->segment_preferred = (uint8_t)(preferred ^ 1U); // the other mode is cheaper, beyond doubt
+        node->segment_probe_every = 1;
+        node->segment_probe_in = 1;
+        return node->segment_preferred;
+    }
+    if (mode != preferred) {
+        if (node->segment_probe_every < tt_SEGMENT_PROBE_EVERY_MAX) {
+            node->segment_probe_every *= 2; // a re-measure that did not change the choice: the next one later
+        }
+        node->segment_probe_in = node->segment_probe_every;
+        return preferred;
+    }
+    if (node->segment_probe_in > 0) {
+        node->segment_probe_in--;
+        return preferred;
+    }
+    return other; // time to measure the other mode again
+}
+
+static void segment_epoch_turn(struct tt_Context* node, uint64_t now, uint32_t read_index) {
+    const uint64_t cpu = tt_thread_cpu_ns();
+    const uintptr_t thread = __atomic_load_n(&node->poller_thread, __ATOMIC_RELAXED);
+    const uint32_t records = read_index - node->segment_epoch_index;
+    const uint8_t mode = node->segment_watching;
+    const bool settled = node->segment_epoch_settling == 0;
+    node->segment_epoch_settling = 0;
+    bool measured = false;
+    // Another polling thread's CPU clock, or a clock that went backwards (the wall clock stepped), measures nothing.
+    if (settled && node->segment_epoch_ns != 0 && records > 0 && thread == node->segment_epoch_thread &&
+        now > node->segment_epoch_ns && cpu >= node->segment_epoch_cpu_ns) {
+        const uint64_t spent = (now - node->segment_epoch_ns) + (cpu - node->segment_epoch_cpu_ns);
+        segment_cost_record(node, mode, spent / records);
+        node->segment_epochs[mode]++;
+        measured = true;
+        // The window: every tt_SEGMENT_PROBE_EVERY_MAX epochs, of either mode, the weight of both modes' past is
+        // halved, never below two epochs (one alone has no spread to test against). So the mode not chosen, measured
+        // about once in that many, keeps two or three epochs' weight and its next re-measure counts for a third of its
+        // record or more. Halved by the count of its own epochs instead, it kept a whole run's re-measures, and after
+        // the costs changed took over 30,000 epochs to follow them. Its wider standard error is the price: once the
+        // re-measures are rare, the choice moves only on a clear difference - which a change of placement is.
+        if ((node->segment_epochs[0] + node->segment_epochs[1]) % tt_SEGMENT_PROBE_EVERY_MAX == 0) {
+            for (uint8_t each = 0; each < 2; each++) {
+                if (node->segment_cost_n[each] >= 4) {
+                    node->segment_cost_n[each] /= 2U;
+                    node->segment_cost_m2[each] /= 2U;
+                }
+            }
+        }
+    }
+    node->segment_epoch_ns = now;
+    node->segment_epoch_cpu_ns = cpu;
+    node->segment_epoch_thread = thread;
+    node->segment_epoch_index = read_index;
+    if (!measured) {
+        return; // the next epoch runs in the same mode, and is measured
+    }
+    const uint8_t next = segment_next_mode(node, mode);
+    if (next != mode) {
+        node->segment_watching = next;
+        node->segment_epoch_settling = 1;
+    }
+}
+
 // poll_wait_io()'s first question at an empty-looking ring: is there something to drain instead of sleeping? A record
 // in the ring is drained, not slept on, one a writer is still filling is waited for - for a while - rather than
 // announced to (segment_await_claim()), and an empty ring is watched when the next record is due sooner than a sleep
-// would cost (segment_await_next()). Either way no writer is told to ring for it. True when it drained, watched a
-// record claimed or was interrupted; *took says whether it took a record.
+// would cost (segment_await_next()); the two waits only in an epoch where they pay (segment_epoch_turn()). Either way
+// no writer is told to ring for it. True when it drained, watched a record claimed or was interrupted; *took says
+// whether it took a record.
 static bool segment_drained_instead_of_sleeping(struct tt_Context* node, bool has_next, uint64_t next, uint64_t time,
                                                 int64_t timeout, bool until_next_event, bool* took) {
     *took = false;
     node->segment_sleep_on_claim = 0;
-    if (node->own_segment == NULL) {
+    const struct tt_SegmentHeader* header = node->own_segment;
+    if (header == NULL) {
         return false;
+    }
+    const uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_RELAXED); // ours to move
+    if (node->segment_epoch_ns == 0 || read_index - node->segment_epoch_index >= header->slots) {
+        segment_epoch_turn(node, time, read_index);
     }
     uint64_t deadline = has_next ? next : UINT64_MAX;
     if (!until_next_event && time + (uint64_t)timeout < deadline) {
@@ -12439,7 +12603,8 @@ static bool segment_drained_instead_of_sleeping(struct tt_Context* node, bool ha
         // Empty: true only when a record was claimed while watching - the caller goes round and finds it outstanding.
         return deadline > time && segment_await_next(node, time, deadline);
     }
-    if (segment_head_in_flight(node) && (deadline <= time || !segment_await_claim(node, time, deadline))) {
+    if (segment_head_in_flight(node) &&
+        (node->segment_watching == 0 || deadline <= time || !segment_await_claim(node, time, deadline))) {
         node->segment_sleep_on_claim = 1; // the one sleep whose length is all cost: segment_resumed() measures it
         return false;                     // the claim outlived what a sleep costs: sleep on it, and its writer rings
     }
@@ -12453,8 +12618,16 @@ static bool segment_drained_instead_of_sleeping(struct tt_Context* node, bool ha
 // mid-copy when the reader decided, and rings as soon as it publishes, so decision to resume is the copy's remainder,
 // the doorbell and the wake-up, with no idle time in it. Any other sleep lasts as long as nobody writes: the rig's
 // round 2 kept the shortest of all doorbell-ended sleeps, and a run whose first such sleep came while the peer was
-// still starting up and that never slept again after it was left with a 0.6 ms bound (seen on the PC). The shortest
-// clean one is kept (segment_sleep_cost_ns); until there is one, nothing is waited for.
+// still starting up and that never slept again after it was left with a 0.6 ms bound (seen on the PC). Until there is
+// one, nothing is waited for.
+//
+// The mean of the recent clean ones is kept (segment_sleep_cost_ns), not the shortest (2026-10-07, round 4). The
+// shortest is the one that never blocked - its doorbell rung between the announcement and the wait, so the wait
+// returned at once - and every clean sleep is another chance to draw one. On the PC with an -O0 writer the shortest
+// fell to 0.5-0.6 us in one run of five of a6ef471d (rebased) and in every run that also measured the sleeping mode
+// (segment_epoch_turn()), against 8.5-17.7 us in the others: below the writer's ~1 us gap, so the empty ring was
+// never watched, the claim waits ran out, and the writer rang 0.7 M times a run instead of 2.5 k (1.80 us a sample of
+// CPU against 1.61). The window is the last tt_SEGMENT_PROBE_EVERY_MAX sleeps or so, as for the epochs' costs.
 static void segment_resumed(struct tt_Context* node, int32_t len, uint64_t decided) {
     struct tt_SegmentHeader* header = node->own_segment;
     const bool clean = node->segment_sleep_on_claim != 0;
@@ -12470,10 +12643,13 @@ static void segment_resumed(struct tt_Context* node, int32_t len, uint64_t decid
     if (len != 0 || !clean) {
         return;
     }
-    uint64_t cost = resumed - decided;
-    if (node->segment_sleep_cost_ns == 0 || cost < node->segment_sleep_cost_ns) {
-        node->segment_sleep_cost_ns = cost;
+    const uint64_t cost = resumed - decided;
+    if (node->segment_sleep_cost_n >= tt_SEGMENT_PROBE_EVERY_MAX) {
+        node->segment_sleep_cost_n /= 2U;
     }
+    const uint32_t count = ++node->segment_sleep_cost_n;
+    const int64_t mean = (int64_t)node->segment_sleep_cost_ns;
+    node->segment_sleep_cost_ns = (uint64_t)(mean + (((int64_t)cost - mean) / (int64_t)count));
 }
 
 static void note_head_stall(struct tt_Context* node) {
@@ -13157,7 +13333,11 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         // How often a record a writer was still filling was waited for instead of slept on, how often it came
         // in time, and the bound (segment_await_claim()). A wait that seldom ends in a record is time spent
         // for nothing; only the two counts together say whether it pays.
-        "shm_claim_waits=%lu shm_claim_waits_published=%lu shm_sleep_cost_ns=%lu shm_watches=%lu shm_watch_hits=%lu",
+        "shm_claim_waits=%lu shm_claim_waits_published=%lu shm_sleep_cost_ns=%lu shm_watches=%lu shm_watch_hits=%lu "
+        // Whether waiting paid (segment_epoch_turn()): epochs measured in each mode, the recent mean cost per record
+        // of each in ns (0: never measured), and the mode preferred at exit (1: waiting).
+        "shm_epochs_sleeping=%lu shm_epochs_waiting=%lu shm_cost_sleeping_ns=%lu shm_cost_waiting_ns=%lu "
+        "shm_waiting_preferred=%u",
         node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
         (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
         (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -13172,7 +13352,10 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned long)node->segment_doorbells_received, (unsigned long)node->segments_created,
         (unsigned long)node->segments_released, node->same_host_peer_count, (unsigned long)node->segment_claim_waits,
         (unsigned long)node->segment_claim_waits_published, (unsigned long)node->segment_sleep_cost_ns,
-        (unsigned long)node->segment_watches, (unsigned long)node->segment_watch_hits);
+        (unsigned long)node->segment_watches, (unsigned long)node->segment_watch_hits,
+        (unsigned long)node->segment_epochs[0], (unsigned long)node->segment_epochs[1],
+        (unsigned long)node->segment_cost_mean_ns[0], (unsigned long)node->segment_cost_mean_ns[1],
+        (unsigned)node->segment_preferred);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads

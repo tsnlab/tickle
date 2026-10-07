@@ -222,6 +222,10 @@ void tt_segment_bell_destroy(struct tt_Context* node, const char* path);
 int32_t tt_segment_bell_open(const char* path);
 void tt_segment_bell_ring(int32_t bell);
 void tt_segment_bell_close(int32_t bell);
+// CPU time the calling thread has used, in ns: what a reader's own share of a waiting mode costs
+// (segment_epoch_turn()). Read once per ring's worth of records, so it may be a system call. 0 where it cannot be
+// told, which leaves only the wall-clock half of the comparison.
+uint64_t tt_thread_cpu_ns(void);
 #endif
 // (g8) Whether ip:port - host order, as tt_receive() reports a sender - is `node`'s own data socket, which every
 // datagram it sends comes from.
