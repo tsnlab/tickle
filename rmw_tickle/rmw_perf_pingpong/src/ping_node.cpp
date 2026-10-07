@@ -372,6 +372,20 @@ namespace {
             std::chrono::nanoseconds(std::uniform_int_distribution<uint64_t>(0, cycle)(random)));
     }
 
+    // The reply callback's decision: only the reply to the ping in flight ends its wait. Returns 1 for any other (a
+    // reply that came after its own ping's deadline), which the caller counts and otherwise ignores, and 0 when taken.
+    template <typename T>
+    auto take_reply(const T& msg, uint64_t awaited_seq, T& reply_msg, uint64_t& reply_ns, std::atomic<bool>& got_reply)
+        -> uint64_t {
+        if (BenchTraits<T>::seq(msg) != awaited_seq) {
+            return 1;
+        }
+        reply_ns = now_ns();
+        reply_msg = msg;
+        got_reply = true;
+        return 0;
+    }
+
     template <typename T>
     auto run_ping(const rclcpp::Node::SharedPtr& node, double interval_s, double duration_s, bool reliable,
                   const wait_mode& wait, pingpong::stamp_log& stamps) -> int {
@@ -395,10 +409,15 @@ namespace {
         std::atomic<bool> got_reply {false};
         T reply_msg;
         uint64_t reply_ns = 0; // when the reply reached the callback - what --wait block measures to
+        // Only the reply to the ping in flight ends its wait. A reply that comes after its own ping's deadline used to
+        // be taken as the answer to the NEXT ping: that wait ended at once with the wrong seq, uncounted, and the
+        // next ping's real reply was then queued behind it - so one late reply made every later round trip "never
+        // came back" (rmw_samehost 7e6fe171, rtt_bench_reliable_poll_tickle_r3: 6,064 of 6,064 after one stall at
+        // 2.98 s). A late reply is counted and dropped, and the wait goes on for its own.
+        uint64_t awaited_seq = 0;
+        uint64_t stale_replies = 0;
         auto sub = node->create_subscription<T>("pong", qos, [&](const typename T::ConstSharedPtr& msg) -> void {
-            reply_ns = now_ns();
-            reply_msg = *msg;
-            got_reply = true;
+            stale_replies += take_reply<T>(*msg, awaited_seq, reply_msg, reply_ns, got_reply);
         });
 
         if (!wait_for_match(executor, pub, sub)) {
@@ -421,6 +440,7 @@ namespace {
         while (rclcpp::ok() && now_ns() < deadline) {
             T req;
             Traits::set_seq(req, ++seq);
+            awaited_seq = seq;
             const uint64_t prev_check = probe.last_check_ns.load(std::memory_order_relaxed);
             const uint64_t sent_at = now_ns();
             Traits::set_send_ns(req, sent_at);
@@ -453,6 +473,8 @@ namespace {
         }
 
         print_summary(rtt, transmitted, reliable, wait);
+        // Every reply that arrived after its ping's deadline: zero on a sound run, and the count of stalls when not.
+        std::printf("STALE: replies_after_deadline=%lu\n", static_cast<unsigned long>(stale_replies));
         print_loop_stats(loop, transmitted, wait);
         if (!wait.blocking) {
             if (jitter) {
