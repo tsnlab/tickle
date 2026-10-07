@@ -153,6 +153,22 @@
 #ifndef tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE
 #define tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE 64 // the ceiling, in multiples of srtt
 #endif
+// How many of its latest ACKNACK requests a reliable Subscriber remembers per writer (2026-10-07,
+// tt_WriterProxy.requests): what each named and when, so that an answer to the writer's own request leaves out
+// repairs still on their way, and so that a repair's transit time can be measured from the request it answers. 16
+// bytes each, in every writer proxy. Too few, and a request still in flight is forgotten and its repair asked for
+// again: at 5% loss and ~850 Mbps a gap opens every ~0.3 ms and a repair queued behind the writer's data takes 1-2 ms.
+// Measured on the PC (c6 shape, netem rate 1gbit + 5% loss, 2 reps): 8 sent 3061-3085 wire bytes a sample with 35-40k
+// duplicate fragments, 32 sent 3007-3021 with 21-25k, the same as the build without the answer (3009-3019, 19-23k).
+// 8 on FreeRTOS, where a writer proxy's 128 bytes is the cost that matters and the rates that overflow it are not
+// reached; a shorter history only re-requests some repairs early, it never loses one.
+#ifndef tt_RELIABLE_REQUEST_HISTORY
+#if defined(TT_PLATFORM_FREERTOS)
+#define tt_RELIABLE_REQUEST_HISTORY 8
+#else
+#define tt_RELIABLE_REQUEST_HISTORY 32
+#endif
+#endif
 // Phase 3 (rmw_tickle/PLAN.md) - how often a Subscriber logs that a KEEP_ALL gap is still stuck.
 // KEEP_ALL switches off the tt_RELIABLE_RETRY give-up, so without this a genuinely unrecoverable
 // gap would retry silently forever; rate-limited by time, not retry count, so the cadence stays
@@ -1023,6 +1039,8 @@ static_assert(tt_RELIABLE_BITMAP_BITS % tt_RELIABLE_BITMAP_WORD_BITS == 0,
               "tt_RELIABLE_BITMAP_BITS must be a whole number of words");
 static_assert(tt_RELIABLE_BITMAP_MAX_BITS % tt_RELIABLE_BITMAP_WORD_BITS == 0,
               "tt_RELIABLE_BITMAP_MAX_BITS must be a whole number of words");
+static_assert(tt_RELIABLE_REQUEST_HISTORY >= 1 && tt_RELIABLE_REQUEST_HISTORY <= 255,
+              "a Subscriber remembers at least one request, and its ring index is a uint8_t");
 static_assert(tt_RELIABLE_BITMAP_MAX_BITS >= tt_RELIABLE_BITMAP_BITS,
               "tt_RELIABLE_BITMAP_MAX_BITS is the ceiling for tt_RELIABLE_BITMAP_BITS");
 static_assert(tt_ENDPOINT_INDEX_SIZE >= tt_MAX_ENDPOINT_COUNT, "the endpoint index must have room for every endpoint");

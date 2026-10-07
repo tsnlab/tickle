@@ -1918,6 +1918,14 @@ struct tt_Subscriber;
 // window for it to apply in. Documented rather than changed, at the user's own direction
 // (2026-09-23): closing it means establishing the baseline at match time via discovery rather than
 // from the first packet, which reopens Milestone 60's VOLATILE semantics for a handful of samples.
+// One ACKNACK request a reliable Subscriber remembers (tt_WriterProxy.requests): when it went out, and the first and
+// last seq_no it named. sent_ns 0 = an empty slot.
+struct tt_RepairRequest {
+    uint64_t sent_ns;
+    uint32_t first_seq_no;
+    uint32_t last_seq_no;
+};
+
 struct tt_WriterProxy {
     uint8_t context_id;
     uint32_t entity_id;
@@ -2038,16 +2046,19 @@ struct tt_WriterProxy {
     uint32_t recovery_rttvar_ns;
     uint32_t probe_seq_no;
     uint64_t probe_ns;
-    // When this reader last named which open positions in an ACKNACK (2026-10-07), so that an answer to the writer's
-    // own request (answer_ack_request(), tickle.c) can leave out repairs still on their way: naming a sample whose
-    // repair is in flight had it sent twice - c6, 5% loss, +11% wire bytes a sample. full_request_ns is the latest
-    // ACKNACK that named the watermark, which names every open position up to full_requested_through with it;
-    // request_ns is the latest that named anything, and requested_through the highest seq_no named by any request
-    // since the one before it was srtt old. 0 = nothing requested yet.
-    uint64_t full_request_ns;
-    uint64_t request_ns;
-    uint32_t full_requested_through;
-    uint32_t requested_through;
+    // This reader's latest ACKNACK requests to this writer (2026-10-07): when each went out and the first and last
+    // seq_no it named, a ring of tt_RELIABLE_REQUEST_HISTORY (config.h), request_next the slot the next one takes,
+    // sent_ns 0 an empty slot. answer_ack_request() (tickle.c) leaves out what a request younger than the repair
+    // transit time named - naming a repair in flight had the writer send it twice: c6, 5% loss, +11% wire bytes a
+    // sample with f3451cd8, +6.5% with an srtt window (d603d369), because a repair queued behind the writer's data
+    // takes longer than srtt.
+    struct tt_RepairRequest requests[tt_RELIABLE_REQUEST_HISTORY];
+    uint8_t request_next;
+    // Repair transit, RFC 6298-style like recovery_srtt_ns but timed from the OLDEST remembered request naming a
+    // repaired sample to that repair's arrival - the time a requested repair actually takes, writer queue included,
+    // and not the whole recovery (which counts lost repairs and a bounded reader's declines too). 0/0 = no sample.
+    uint32_t transit_srtt_ns;
+    uint32_t transit_rttvar_ns;
     // Back-pointer to the owning Subscriber - this entry's own stable address (never moves once
     // claimed; embedded in struct tt_Subscriber.writers[], which lives as long as the Subscriber
     // itself) is what acknack_retry() is scheduled against (tt_Context_schedule(..., acknack_retry,
