@@ -109,12 +109,21 @@ rmw_cell() { # rmw_cell <out> <arm> <msg> <qos>
 }
 
 native_cell() { # native_cell <out> <arm> <scenario> <size>
-    local out=$1 dir=$BASE/src_$2/examples/perf_hil/tickle/$3_$4
+    local out=$1 dir=$BASE/src_$2/examples/perf_hil/tickle/$3_$4 srv_args cli_args
+    # The edges s6_transport_cells.sh uses, on both sides. A latency client pings once a second unless told -i, so
+    # without it -d 5 is five round trips (the first launch of this script measured exactly that, and was stopped).
+    if [ "$3" = reliable_latency ]; then
+        srv_args="-d $DUR_NATIVE -W 4096 -C 4096 -I 0.001"
+        cli_args="$srv_args -i 0.001"
+    else
+        srv_args="-d $DUR_NATIVE --warmup-s 2 --cooldown-s 2"
+        cli_args=$srv_args
+    fi
     mkdir -p "$out"
     # shellcheck disable=SC2024 # the logs are ours, not root's
     sudo -n ip netns exec "$NS" env -i PATH="$PATH" BENCH_IFACE=eth0 bash -c \
-        'mount -t tmpfs -o size=512m tmpfs /dev/shm && { "$0/server" -Q -d $(($1 + 4)) >"$2/srv.log" 2>&1 & s=$!; sleep 1; "$0/client" -Q -d "$1" >"$2/cli.log" 2>&1; wait $s; }; chown -R "$3" "$2"' \
-        "$dir" "$DUR_NATIVE" "$out" "$(id -u):$(id -g)"
+        'mount -t tmpfs -o size=512m tmpfs /dev/shm && { "$0/server" -Q $1 >"$3/srv.log" 2>&1 & s=$!; sleep 1; "$0/client" -Q $2 >"$3/cli.log" 2>&1; wait $s; }; chown -R "$4" "$3"' \
+        "$dir" "$srv_args" "$cli_args" "$out" "$(id -u):$(id -g)"
 }
 
 ARMS=(main one skip)

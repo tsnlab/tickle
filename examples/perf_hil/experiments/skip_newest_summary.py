@@ -84,6 +84,8 @@ def native_run(d, scen):
         recv = int(srv["recv"])
         return dict(value=recv / float(cli["elapsed_s"]), cpu_us=float(srv["sched_cpu_s"]) / max(recv, 1) * 1e6,
                     skipped=skipped, worse_if="lower")
+    if int(cli.get("measured", "0")) < 1000:
+        return None  # sample count before value: a handful of round trips is not a latency figure
     return dict(value=float(cli["rtt_avg_ms"]) * 1e3, cpu_us=float("nan"), skipped=skipped, worse_if="higher")
 
 
@@ -158,7 +160,7 @@ def main():
             for d in sorted(runs.glob(f"nat_{scen}_{size}_{arm}_r*")):
                 r = native_run(d, scen)
                 if r is None:
-                    void.append(f"{d.name}: no RESULT line")
+                    void.append(f"{d.name}: no RESULT line, or fewer than 1000 measured round trips")
                     continue
                 if arm == "skip" and r["skipped"] != 0:
                     void.append(f"{d.name}: skipped={r['skipped']} where every Subscriber keeps depth 0")
