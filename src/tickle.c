@@ -696,13 +696,18 @@ static size_t segment_bytes(uint32_t slots, uint32_t slot_bytes) {
 //
 // Safe because a slot is not published until the release store of `sequence` below: a reader cannot see a
 // half-written record whether it was written in one memcpy or two.
-static bool segment_write(struct tt_SegmentHeader* header, const void* hdr, uint32_t hdr_len, const void* body,
-                          uint32_t body_len, uint32_t sender_ip, uint16_t sender_port, uint16_t seq_span) {
-    const uint32_t len = hdr_len + body_len;
-    if (len > header->slot_bytes) {
-        return false;
-    }
+//
+// Split into a claim and a publish (SHM_PLAN 6e(b), 2026-10-06) so that a publisher can encode a sample straight
+// into the slot between the two, rather than into tx_buffer and then copying it here. THE RULE THAT SPLIT CREATES:
+// a claimed slot must be published, whatever happens in between. The ring has many writers, so a claim cannot be
+// taken back - write_index has already moved past it and another writer may have claimed the next one - and the
+// single reader takes records in index order, so an index claimed and never published stops the segment for every
+// writer (segment_head_stalls). A writer with nothing to put in it publishes a zero-length record, which the reader
+// releases like any other and the receive path drops before parsing (process_datagram_locked(): len 0 is a doorbell).
 
+// Claims the next slot of `header`, or NULL when the ring is full - the oldest slot still in flight, or the slot at
+// the claimed index not yet released by the reader. `*claimed` is the index won, which segment_publish() needs.
+static struct tt_SegmentSlot* segment_claim(struct tt_SegmentHeader* header, uint32_t* claimed_out) {
     // Claim an index. Many peers write into one context's segment, so this is a compare-and-exchange
     // rather than a load and a store: two writers that both read the same index would both fill the
     // same slot, losing one record and writing the other twice, with nothing to report it.
@@ -711,7 +716,7 @@ static bool segment_write(struct tt_SegmentHeader* header, const void* hdr, uint
     for (;;) {
         uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_ACQUIRE);
         if (claimed - read_index >= header->slots) {
-            return false; // full: the oldest slot is still in flight and is not ours to reuse
+            return NULL; // full: the oldest slot is still in flight and is not ours to reuse
         }
         slot_header = (struct tt_SegmentSlot*)segment_slot(header, claimed);
         // The slot must also be free by its own reckoning. A reader releases a slot by setting its
@@ -719,7 +724,7 @@ static bool segment_write(struct tt_SegmentHeader* header, const void* hdr, uint
         // the index alone cannot, since the reader moves read_index before any particular slot is
         // reusable in a multi-writer ring.
         if (__atomic_load_n(&slot_header->sequence, __ATOMIC_ACQUIRE) != claimed) {
-            return false;
+            return NULL;
         }
         if (__atomic_compare_exchange_n(&header->write_index, &claimed, claimed + 1U, true, __ATOMIC_ACQ_REL,
                                         __ATOMIC_RELAXED)) {
@@ -727,12 +732,18 @@ static bool segment_write(struct tt_SegmentHeader* header, const void* hdr, uint
         }
         // Lost the race: __atomic_compare_exchange_n has reloaded `claimed` with the current value.
     }
+    *claimed_out = claimed;
+    return slot_header;
+}
 
-    uint8_t* slot = (uint8_t*)slot_header;
-    memcpy(slot + sizeof(*slot_header), hdr, hdr_len);
-    if (body_len != 0) {
-        memcpy(slot + sizeof(*slot_header) + hdr_len, body, body_len);
-    }
+// The payload of a claimed slot, where the record is written before segment_publish().
+static uint8_t* segment_slot_payload(struct tt_SegmentSlot* slot_header) {
+    return (uint8_t*)slot_header + sizeof(*slot_header);
+}
+
+// Publishes a slot segment_claim() returned, its `len` payload bytes already written. len 0 is the harmless record.
+static void segment_publish(struct tt_SegmentSlot* slot_header, uint32_t claimed, uint32_t len, uint32_t sender_ip,
+                            uint16_t sender_port, uint16_t seq_span) {
     slot_header->length = len;
     slot_header->sender_ip = sender_ip;
     slot_header->sender_port = sender_port;
@@ -745,6 +756,25 @@ static bool segment_write(struct tt_SegmentHeader* header, const void* hdr, uint
     // takes this slot exactly when it sees claimed + 1 here, so a writer that finished later than a
     // writer with a higher index cannot make the reader read an unwritten slot.
     __atomic_store_n(&slot_header->sequence, claimed + 1U, __ATOMIC_RELEASE);
+}
+
+static bool segment_write(struct tt_SegmentHeader* header, const void* hdr, uint32_t hdr_len, const void* body,
+                          uint32_t body_len, uint32_t sender_ip, uint16_t sender_port, uint16_t seq_span) {
+    const uint32_t len = hdr_len + body_len;
+    if (len > header->slot_bytes) {
+        return false;
+    }
+    uint32_t claimed = 0;
+    struct tt_SegmentSlot* slot_header = segment_claim(header, &claimed);
+    if (slot_header == NULL) {
+        return false;
+    }
+    uint8_t* payload = segment_slot_payload(slot_header);
+    memcpy(payload, hdr, hdr_len);
+    if (body_len != 0) {
+        memcpy(payload + hdr_len, body, body_len);
+    }
+    segment_publish(slot_header, claimed, len, sender_ip, sender_port, seq_span);
     return true;
 }
 
@@ -1319,6 +1349,18 @@ static void segment_ring_if_asleep(struct tt_Context* node, uint8_t context_id, 
     }
 }
 
+// What follows a record published into a peer's segment, whichever way it was written: counted, and the reader rung.
+static void segment_note_written(struct tt_Context* node, uint8_t context_id, struct tt_SegmentHeader* segment,
+                                 uint32_t ip, uint16_t port, bool ring_now) {
+    // A slot taken means we made progress, not that the reader did - so the reader's own clock is
+    // left alone here and only the refusal path touches it.
+    node->segment_peers[context_id].last_progress_ns = 0;
+    count_tx(node, tt_TRANSPORT_SHM, 1);
+    if (ring_now) {
+        segment_ring_if_asleep(node, context_id, segment, ip, port);
+    }
+}
+
 static bool segment_deliver_ringing(struct tt_Context* node, uint8_t context_id, uint32_t ip, uint16_t port,
                                     const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                                     enum udp_reason* reason, bool ring_now) {
@@ -1382,13 +1424,7 @@ static bool segment_deliver_ringing(struct tt_Context* node, uint8_t context_id,
         }
         return true; // handled: by dropping it, which is the ordered thing to do
     }
-    // A slot taken means we made progress, not that the reader did - so the reader's own clock is
-    // left alone here and only the refusal path touches it.
-    node->segment_peers[context_id].last_progress_ns = 0;
-    count_tx(node, tt_TRANSPORT_SHM, 1);
-    if (ring_now) {
-        segment_ring_if_asleep(node, context_id, segment, ip, port);
-    }
+    segment_note_written(node, context_id, segment, ip, port, ring_now);
     return true;
 }
 
@@ -3521,6 +3557,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->segment_probe_in = 0;
     node->segment_epochs[0] = 0;
     node->segment_epochs[1] = 0;
+    node->segment_encoded_in_slot = 0;
     // Counters that only ever increment, and therefore only ever reported whatever was on the
     // caller's stack. Found by the structural check Plan built after `segment_peers` shipped
     // uninitialised: this function is where a field is initialised, and the three below had been
@@ -5965,6 +6002,150 @@ static bool end_encode_sample(struct tt_Context* node, struct tt_SubmessageHeade
 }
 
 static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pub);
+#if tt_SEGMENT_ENABLED && tt_SEGMENT_ENCODE_IN_SLOT
+// SHM_PLAN 6e(b), "encode into the slot": the one destination this publish has, when it would go as a DATA alone in its
+// datagram to a single same-host peer - the only shape whose bytes in the slot are a function of this sample alone.
+// False for anything else, and the staging path below then runs exactly as it did before 6e(b):
+//   batch                a batching publisher leaves the send to node_flush(), with whatever else is in tx_buffer.
+//   tx_buffer not empty  something is already waiting ahead of this DATA and would share its datagram.
+//   summary skip armed   flush_tx() may send a summary just ahead of the datagram (note_reached_armed()).
+//   piggyback due        a Heartbeat rides behind this DATA in the same datagram (piggyback_due()).
+//   match point owed     a match Heartbeat goes ahead of this DATA (put_match_heartbeat(), first_owed_seq_no).
+//   local subscribers    deliver_locally() wants its own copy of the CDR (g9) - left to the path that makes one.
+//   not one peer's slot  a broadcast, several destinations, or one whose segment we hold nothing of.
+// Only the conditions no later step would refuse are asked here; each is one a test removes (test_encode_in_slot.c).
+// The segment itself is not looked up here: peer_segment() counts down its revalidation on every call, and this is
+// asked before the cheaper size checks that can still send the publish down the staging path.
+static bool encode_in_slot_destination(struct tt_Publisher* pub, uint32_t old_tx_tail, struct tx_destination* out) {
+    struct tt_Context* node = pub->node;
+    // An unempty tx_buffer is refused by unicast_destinations_for() below, as it refuses a whole record for it.
+    if (pub->batch || node->summary_skip_armed || pub->match_heartbeat_pending) {
+        return false;
+    }
+    if (pub->reliable_cache != NULL && pub->heartbeat_piggyback_every != 0 &&
+        pub->heartbeat_piggyback_count + 1U >= pub->heartbeat_piggyback_every) {
+        return false;
+    }
+#if tt_LOCAL_DELIVERY
+    if (pub->local_subscriber_count != 0) {
+        return false;
+    }
+#endif
+    // No peers is a broadcast, and a broadcast's one destination has no context id: peer_segment() answers NULL for
+    // it, which is where it is refused rather than here as well.
+    const struct tt_Peer* peers = NULL;
+    uint8_t peer_count = unicast_destinations_for(node, pub, old_tx_tail, true, &peers);
+    struct tx_destination destinations[TX_MAX_DESTINATIONS];
+    if (tx_destinations(peers, peer_count, destinations) != 1) {
+        return false;
+    }
+    *out = destinations[0];
+    return true;
+}
+
+// The two-copy path, for comparison, encodes into tx_buffer as tt_Header + submessage header + DataHeader + CDR, pads
+// it in end_encode(), and flush_tx() turns the first two headers into a tt_SingleHeader (to_single_form()) before
+// segment_write() copies the rest into the slot. This writes the same record where that copy would have put it: the
+// submessage header first, because check_and_cache_sample() retains the record in that form, and the single header
+// over it once the cache has its copy. tests/test_encode_in_slot.c holds the slot to the two-copy path's bytes.
+//
+// A CLAIMED SLOT IS ALWAYS PUBLISHED (segment_claim()). Everything that can refuse this publish without a failure -
+// a sample that would fragment or not fit the slot, KEEP_ALL's arena bound, a full ring - is asked before the claim,
+// and answers by returning false, so the staging path handles it exactly as before: a full ring drops the sample and
+// counts it there, never reroutes it. KEEP_ALL's encoded-sample checks depend only on the sample's length for a
+// sample that goes as one datagram, which is why they can be asked before anything is encoded. What can still fail
+// after the claim - the topic's encoder, or the cache refusing the record - publishes a zero-length record into the
+// slot and returns the error the staging path would have returned, having sent nothing and advanced nothing.
+//
+// WHAT IT SAVES IS NOT THE COPY'S BYTES BUT ONE L1-TO-L1 PASS. The expensive part of the old segment_write() memcpy is
+// taking the slot's lines from the reader's cache, and that cost does not go away: it moves into the topic's encoder,
+// which now writes those lines. So the result depends on how the encoder writes. On the PC (2026-10-06, p3 same-host
+// best-effort, 6 interleaved reps, a PC figure only) the bench's generated encoder, whose 1412-byte array copy gcc
+// inlines as `rep movsq`, made the publisher 12% slower per sample (user 0.511 -> 0.570 us, 19% fewer instructions,
+// 10% more cycles); the same code with that copy left to glibc's memcpy made it 10% faster (0.462 -> 0.414 us).
+// tt_SEGMENT_ENCODE_IN_SLOT=0 is the control arm; the rig A/B decides.
+static bool try_publish_into_slot(struct tt_Publisher* pub, struct tt_Data* data, uint32_t old_tx_tail,
+                                  tt_ret_t* result) {
+    struct tx_destination dest;
+    if (!encode_in_slot_destination(pub, old_tx_tail, &dest)) {
+        return false;
+    }
+    struct tt_Context* node = pub->node;
+    int32_t cdr_len = pub->topic->data_encode_size(data);
+    if (cdr_len < 0) {
+        return false; // the staging path reports it; a length too large for a datagram is refused just below
+    }
+    const uint32_t framing = (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader));
+    const uint32_t raw_len = framing + (uint32_t)cdr_len;
+    const uint32_t record_len = ROUNDUP(raw_len);
+    // One datagram on the wire, so one seq_no - a sample that fragments, or goes as a whole record wider than a
+    // datagram, stays with the staging path. tx_buffer is at least twice that (tt_TX_BUFFER_LENGTH), so the staging
+    // path could always have encoded what passes here.
+    if (sizeof(struct tt_Header) + record_len > FRAG_WHOLE_DATA_LIMIT) {
+        return false;
+    }
+    struct tt_SubmessageHeader probe = {tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL, 0};
+    if (keep_all_refused_record_bytes(pub, node, &probe, raw_len, FRAG_WHOLE_DATA_LIMIT) != 0) {
+        return false; // the staging path refuses it and records what was refused
+    }
+    struct tt_SegmentHeader* segment = peer_segment(node, dest.context_id, dest.ip, dest.port);
+    if (segment == NULL || record_len > segment->slot_bytes) {
+        return false;
+    }
+    // Everything that need not be in the slot is computed before the claim. Between the claim and the publish the
+    // reader stops at this slot - it takes records in index order - so that window is kept to the encode itself.
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(node, &own_ip, &own_port);
+    const uint32_t timestamp = timestamp_to_wire(tt_get_ns());
+    uint32_t claimed = 0;
+    struct tt_SegmentSlot* slot = segment_claim(segment, &claimed);
+    if (slot == NULL) {
+        return false; // full: the staging path drops it and counts it, as it always has
+    }
+
+    // The slot is ours from here, and every return below publishes it.
+    uint8_t* record = segment_slot_payload(slot);
+    struct tt_SubmessageHeader* submessage_header = (struct tt_SubmessageHeader*)record;
+    *submessage_header = probe; // as start_encode() leaves it: the length is end_encode()'s, and the cache copies 0
+    struct tt_DataHeader* data_header = (struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader));
+    data_header->endpoint_id = pub->endpoint.id;
+    data_header->seq_no = pub->seq_no + 1;
+    data_header->timestamp = timestamp;
+    data_header->entity_id = pub->endpoint.entity_id;
+    int32_t encoded_len = pub->topic->data_encode(data, record + framing, (uint32_t)cdr_len);
+    TT_TRACE(tt_TRACE_ENCODED);
+    // The padding, zeroed as end_encode() zeroes it - before the cache's copy here, which only makes it tidier.
+    memset(record + raw_len, 0, record_len - raw_len);
+    if (encoded_len < 0 || !check_and_cache_sample(node, pub, submessage_header, raw_len, FRAG_WHOLE_DATA_LIMIT)) {
+        segment_publish(slot, claimed, 0, own_ip, own_port, 1); // the harmless record: nothing to read, span unused
+        *result = tt_RET_PROTOCOL_ERROR;
+        return true;
+    }
+    pub->blocked_record_bytes = 0;
+    pub->blocked_datagrams = 0;
+    (void)piggyback_due(pub, true); // its cadence counts this publish; encode_in_slot_destination() ruled out a firing
+
+    struct tt_SingleHeader single = {native_single_marker(), tt_VERSION, node->id, tt_SUBMESSAGE_TYPE_DATA};
+    _tt_memcpy(record, &single, sizeof(single));
+    segment_publish(slot, claimed, record_len, own_ip, own_port, 1);
+#ifdef tt_RELIABLE_STATS
+    g_rstats.datagrams++; // flush_tx()'s accounting for the one DATA this datagram carries
+    g_rstats.datagrams_with_data++;
+    g_rstats.data_in_datagrams++;
+    if (g_rstats.max_data_per_datagram < 1) {
+        g_rstats.max_data_per_datagram = 1;
+    }
+#endif
+    node->segment_encoded_in_slot++;
+    segment_note_written(node, dest.context_id, segment, dest.ip, dest.port, true);
+
+    pub->seq_no += 1;
+    maybe_solicit_ack_at_watermark(pub);
+    *result = tt_RET_OK;
+    return true;
+}
+#endif
 
 static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Data* data) {
     if (pub == NULL || data == NULL || pub->node == NULL || pub->topic == NULL ||
@@ -6009,6 +6190,11 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     if (try_publish_zerocopy(pub, data, old_tx_tail, &zerocopy_result)) {
         return zerocopy_result;
     }
+#if tt_SEGMENT_ENABLED && tt_SEGMENT_ENCODE_IN_SLOT
+    if (try_publish_into_slot(pub, data, old_tx_tail, &zerocopy_result)) {
+        return zerocopy_result;
+    }
+#endif
 
     // A match Heartbeat ahead of the DATA while a Subscriber is still owed one (tt_PeerAck.first_owed_seq_no).
     // old_tx_tail stays where this publish began - the unicast decision and every rollback are about the whole
@@ -13608,7 +13794,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         // Whether waiting paid (segment_epoch_turn()): epochs measured in each mode, the recent mean cost per record
         // of each in ns (0: never measured), and the mode preferred at exit (1: waiting).
         "shm_epochs_sleeping=%lu shm_epochs_waiting=%lu shm_cost_sleeping_ns=%lu shm_cost_waiting_ns=%lu "
-        "shm_waiting_preferred=%u",
+        "shm_waiting_preferred=%u shm_encoded_in_slot=%lu",
         node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
         (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
         (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -13626,7 +13812,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned long)node->segment_watches, (unsigned long)node->segment_watch_hits,
         (unsigned long)node->segment_epochs[0], (unsigned long)node->segment_epochs[1],
         (unsigned long)node->segment_cost_mean_ns[0], (unsigned long)node->segment_cost_mean_ns[1],
-        (unsigned)node->segment_preferred);
+        (unsigned)node->segment_preferred, (unsigned long)node->segment_encoded_in_slot);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads
