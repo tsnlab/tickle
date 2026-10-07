@@ -1781,6 +1781,79 @@ static void test_a_record_found_by_the_last_drain_before_sleeping_ends_the_poll(
     test_mock_segments_free();
 }
 
+// A socket that never empties must not keep the ring from being read. drain_rx() reads the socket until it says
+// nothing is waiting, and a sustained stream never says so: on the rig a max-rate publisher's own pre-match
+// broadcasts came back to its well-known socket faster than it could read them, so its poll thread stayed inside one
+// drain for the whole run, and the subscriber's directed announce - written into the publisher's segment, with no
+// doorbell, since the publisher never slept - was never read. The publisher never learned its subscriber and sent
+// all 20 s by UDP broadcast (rmw_samehost 7e6fe171, tput_Array4k_*_tickle_r2: tx_shm share 0.000, rx_shm=0 against
+// the subscriber's segment writes). A record waiting in the ring ends the socket drain; the next poll reads the ring
+// first, as it always does.
+static int g_flood_reads;
+static int g_flood_write_at;
+
+static void write_during_the_flood(void) {
+    if (++g_flood_reads == g_flood_write_at) {
+        write_between_the_drains(NULL, 0, NULL);
+    }
+}
+
+static void test_a_socket_that_never_empties_does_not_starve_the_ring(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context owner;
+    struct tt_Topic owner_topic;
+    struct tt_Publisher owner_pub;
+    init_node_topic_pub(&owner, &owner_topic, &owner_pub);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+
+    struct tt_Context writer;
+    struct tt_Topic writer_topic;
+    struct tt_Publisher writer_pub;
+    init_node_topic_pub(&writer, &writer_topic, &writer_pub);
+    writer.hal.own_ip = PEER_IP;
+    writer.hal.own_port = PEER_PORT;
+    g_late_writer = &writer;
+    g_late_owner_id = OWNER_ID;
+    g_late_owner_ip = OWNER_IP;
+    g_late_owner_port = OWNER_PORT;
+    g_late_writes = 0;
+
+    // The flood: one datagram wakes the wait, and a backlog behind it far longer than the drain should ever take
+    // in one go. Its bytes are nothing core can parse, which costs a malformed-drop count and nothing else.
+    enum { BACKLOG = 400, WRITE_AT = 5 };
+    test_mock_receive_return = 16;
+    test_mock_try_receive_len = 16;
+    test_mock_try_receive_remaining = BACKLOG;
+    g_flood_reads = 0;
+    g_flood_write_at = WRITE_AT;
+    test_mock_try_receive_hook = write_during_the_flood;
+
+    tt_ret_t polled = tt_Context_poll(&owner, 500 * (int64_t)tt_MILLISECOND);
+    EXPECT_EQ_INT(tt_RET_OK, polled);
+    EXPECT_EQ_INT(1, g_late_writes); // the treatment: the record went in mid-drain
+    // The socket drain stopped near where the record appeared - a chunk at most past it - not at the backlog's end.
+    EXPECT_TRUE(test_mock_try_receive_remaining > BACKLOG - WRITE_AT - (int)tt_RX_LOCK_CHUNK - 1);
+    EXPECT_EQ_U32(0, (uint32_t)owner.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+
+    // And the next poll takes the record before any more of the socket.
+    int left = test_mock_try_receive_remaining;
+    polled = tt_Context_poll(&owner, 500 * (int64_t)tt_MILLISECOND);
+    EXPECT_EQ_INT(tt_RET_OK, polled);
+    EXPECT_EQ_U32(1, (uint32_t)owner.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    EXPECT_EQ_INT(left, test_mock_try_receive_remaining);
+
+    test_mock_try_receive_hook = NULL;
+    g_late_writer = NULL;
+    test_mock_segments_free();
+}
+
 // ---------------------------------------------------------------------------------------------
 // Whether the reader's waits pay for themselves (segment_epoch_turn(), 2026-10-07).
 //
@@ -2718,6 +2791,7 @@ int main(void) {
     test_the_choice_follows_a_change_in_the_costs();
     test_the_first_epoch_after_a_change_is_not_measured();
     test_a_sleep_that_never_blocked_does_not_become_the_bound();
+    test_a_socket_that_never_empties_does_not_starve_the_ring();
     test_a_context_alone_on_its_host_builds_no_segment();
     test_a_same_host_peer_appearing_builds_the_segment();
     test_a_peer_on_another_host_builds_nothing();

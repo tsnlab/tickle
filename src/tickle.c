@@ -12699,6 +12699,25 @@ static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t he
 static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
                                         enum tt_Transport transport, uint16_t seq_span);
 
+// Whether anything is outstanding in this context's own ring, published or claimed - drain_own_segment()'s own
+// lock-free first look; both indices are free-running and equal means nothing is. Always false without a segment.
+//
+// It ends drain_rx(), once per pass (one datagram or one chunk). The socket is read to exhaustion, and a socket
+// refilled as fast as it is read is never exhausted - then nothing in the ring was read for as long as the stream
+// lasted. On the rig a max-rate publisher's own broadcasts kept its socket full for a whole run, and the
+// subscriber's announce, waiting in its segment, was never read (test_transport_seam.c,
+// test_a_socket_that_never_empties_does_not_starve_the_ring). The poll that follows drains the ring first.
+static bool segment_has_records(const struct tt_Context* node) {
+#if tt_SEGMENT_ENABLED
+    const struct tt_SegmentHeader* header = node->own_segment;
+    return header != NULL && __atomic_load_n(&header->write_index, __ATOMIC_ACQUIRE) !=
+                                 __atomic_load_n(&header->read_index, __ATOMIC_RELAXED);
+#else
+    UNUSED(node);
+    return false;
+#endif
+}
+
 // rx_buffer itself needs no lock - only the one poller touches it (struct tt_Context.poller_active) - but
 // everything a datagram updates does, so each one is processed under the state lock.
 #if tt_SEGMENT_ENABLED
@@ -13284,7 +13303,7 @@ static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
     }
 
     uint32_t since_clock = 1; // the first datagram was stamped with the reading its caller took
-    while (true) {
+    while (!segment_has_records(node)) {
         uint32_t ip = 0;
         uint16_t port = 0;
         tt_ret_t result = tt_RET_OK;
