@@ -1473,6 +1473,14 @@ struct tt_PeerAck {
     // (tt_UpdateEntity.tracking_words), in 64-bit words; 0 = the protocol default.
     // tt_Publisher_unacked_bound() takes the minimum across matched Subscribers.
     uint16_t tracking_words;
+    // The writer owns the match point (2026-10-07). For a VOLATILE Subscriber matched by its announce: the first
+    // sample this Publisher owes it, pub->seq_no + 1 at the match, as an RTPS ReaderProxy starts from the changes
+    // after matching; 0 otherwise. While match_heartbeats_left is non-zero, each publish puts a Heartbeat whose
+    // last_seq_no is first_owed_seq_no - 1 ahead of its DATA, in the same datagram, so the Subscriber's first contact
+    // is that Heartbeat whichever sample is lost - and its baseline the owed sample, not the first one to arrive.
+    // Cleared by the Subscriber's ack passing first_owed_seq_no, or after tt_MATCH_HEARTBEATS publishes.
+    uint32_t first_owed_seq_no;
+    uint8_t match_heartbeats_left;
 };
 
 struct tt_Publisher { // extends endpoint
@@ -1605,6 +1613,8 @@ struct tt_Publisher { // extends endpoint
     // The same for the count bound: how many datagrams - each its own seq_no - a sample refused for its
     // fragment count needed (DATAFRAG_PLAN.md section 13), 0 when none was. Cleared with the above.
     uint16_t blocked_datagrams;
+    // Some peer_acks[] entry still has match_heartbeats_left (tt_PeerAck.first_owed_seq_no): one test per publish.
+    bool match_heartbeat_pending;
     bool writable_pending;
 
     // NULL (tt_Context_create_publisher()'s own default): no retained-sample storage at all - both

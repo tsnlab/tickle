@@ -2238,6 +2238,8 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
             pub->peer_acks[i].entity_id = entity_id;
             pub->peer_acks[i].ack_seq_no = 0;
             pub->peer_acks[i].tracking_words = 0; // set by the caller from the announce
+            pub->peer_acks[i].first_owed_seq_no = 0;
+            pub->peer_acks[i].match_heartbeats_left = 0;
             return &pub->peer_acks[i];
         }
     }
@@ -2265,6 +2267,8 @@ static void forget_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t 
         pub->peer_acks[i].context_id = tt_CONTEXT_ID_INVALID;
         pub->peer_acks[i].entity_id = 0;
         pub->peer_acks[i].ack_seq_no = 0;
+        pub->peer_acks[i].first_owed_seq_no = 0;
+        pub->peer_acks[i].match_heartbeats_left = 0;
     }
 }
 
@@ -2284,6 +2288,45 @@ static void record_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t 
     if (seq_no > ack->ack_seq_no) {
         ack->ack_seq_no = seq_no;
     }
+    if (ack->ack_seq_no > ack->first_owed_seq_no) {
+        ack->match_heartbeats_left = 0; // it has the owed sample: its baseline is at or below it
+    }
+}
+
+// The writer owns the match point (tt_PeerAck.first_owed_seq_no, 2026-10-07). A VOLATILE Subscriber's writer proxy
+// took its baseline from the first DATA to arrive, so when the first sample written after the match was lost on the
+// wire, the next one became the baseline: the lost one was never asked for, and the next ack released it at a
+// KEEP_ALL writer (p1 under 5% loss, ~4% of runs, first_seq=2). Only this side knows when it matched that Subscriber,
+// so it says so: the next tt_MATCH_HEARTBEATS publishes carry a Heartbeat ahead of their DATA whose last_seq_no + 1 is
+// the owed sample - the baseline a VOLATILE Subscriber already takes from a first-contact Heartbeat
+// (inform_subscriber_of_heartbeat()). Not for a DURABLE one, which starts at the oldest retained sample anyway.
+#define tt_MATCH_HEARTBEATS 8
+
+static void arm_match_heartbeat(struct tt_Publisher* pub, struct tt_PeerAck* ack) {
+    ack->first_owed_seq_no = pub->seq_no + 1;
+    ack->match_heartbeats_left = tt_MATCH_HEARTBEATS;
+    pub->match_heartbeat_pending = true;
+}
+
+// The lowest first_owed_seq_no among the entries still owed a match Heartbeat, each counted down by one; 0 when
+// none is. The lowest, because one datagram goes to every peer: a Subscriber matched later than another then starts
+// at the earlier match point - over-delivering what was written between the two matches, never losing.
+static uint32_t take_match_heartbeat(struct tt_Publisher* pub) {
+    uint32_t owed = 0;
+    bool still_pending = false;
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        struct tt_PeerAck* ack = &pub->peer_acks[i];
+        if (ack->context_id == tt_CONTEXT_ID_INVALID || ack->match_heartbeats_left == 0) {
+            continue;
+        }
+        if (owed == 0 || ack->first_owed_seq_no < owed) {
+            owed = ack->first_owed_seq_no;
+        }
+        ack->match_heartbeats_left--;
+        still_pending |= ack->match_heartbeats_left != 0;
+    }
+    pub->match_heartbeat_pending = still_pending;
+    return owed;
 }
 
 // forget_peer()'s own Publisher-specific counterpart - a separate function rather than teaching
@@ -4061,7 +4104,10 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
         pub->peer_acks[i].entity_id = 0;
         pub->peer_acks[i].ack_seq_no = 0;
         pub->peer_acks[i].tracking_words = 0;
+        pub->peer_acks[i].first_owed_seq_no = 0;
+        pub->peer_acks[i].match_heartbeats_left = 0;
     }
+    pub->match_heartbeat_pending = false;
     for (int i = 0; i < tt_DEPARTED_ACKS; i++) {
         pub->departed_acks[i].context_id = tt_CONTEXT_ID_INVALID;
         pub->departed_acks[i].entity_id = 0;
@@ -5918,6 +5964,8 @@ static bool end_encode_sample(struct tt_Context* node, struct tt_SubmessageHeade
     return true;
 }
 
+static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pub);
+
 static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Data* data) {
     if (pub == NULL || data == NULL || pub->node == NULL || pub->topic == NULL ||
         pub->topic->data_encode_size == NULL || pub->topic->data_encode == NULL) {
@@ -5961,6 +6009,14 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     if (try_publish_zerocopy(pub, data, old_tx_tail, &zerocopy_result)) {
         return zerocopy_result;
     }
+
+    // A match Heartbeat ahead of the DATA while a Subscriber is still owed one (tt_PeerAck.first_owed_seq_no).
+    // old_tx_tail stays where this publish began - the unicast decision and every rollback are about the whole
+    // datagram - and data_tail is where the sample itself starts, which its length is measured from.
+    if (pub->match_heartbeat_pending) {
+        put_match_heartbeat(node, pub);
+    }
+    uint32_t data_tail = node->tx_tail;
 
     // Header and SubmessageHeader
     struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL);
@@ -6016,7 +6072,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 #endif
 
     // The halves of KEEP_ALL's promise that need the encoded sample (2026-09-25, 2026-09-26).
-    if (keep_all_refuses_encoded(pub, node, node->tx_tail - old_tx_tail, submessage_header, FRAG_WHOLE_DATA_LIMIT)) {
+    if (keep_all_refuses_encoded(pub, node, node->tx_tail - data_tail, submessage_header, FRAG_WHOLE_DATA_LIMIT)) {
         rollback(node, old_tx_tail);
         pub->writable_pending = true;
         RSTAT_INC(publish_refused);
@@ -6029,7 +6085,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // inside the cache from tx_tail. 6e's encoder step writes into a slot, where "distance to tx_buffer's
     // current end" is a difference between two unrelated addresses. Raw: the cache rounds it, and the
     // fragment path's padding needs it unrounded.
-    uint32_t record_len = node->tx_tail - old_tx_tail;
+    uint32_t record_len = node->tx_tail - data_tail;
     // The size a sample may reach before it has to be split. One datagram's worth today, for every path;
     // SHM_PLAN 6e(a) raises it to the destination's slot when every destination is a same-host peer whose
     // segment is already attached, which is the only case where an unfragmented record - larger than the
@@ -6172,8 +6228,9 @@ static uint32_t reliable_cache_oldest_seq_no(struct tt_ReliableCache* cache) {
 // Publisher_publish() for. peers/peer_count follow end_encode()'s own convention directly (NULL/0
 // broadcasts). flags is tt_HEARTBEAT_FLAG_FINAL or 0 - see its own doc comment (tickle.h); every
 // caller before tt_Publisher_request_ack() existed always passed tt_HEARTBEAT_FLAG_FINAL.
-static void encode_and_send_heartbeat(struct tt_Context* node, struct tt_Publisher* pub, uint32_t first_seq_no,
-                                      const struct tt_Peer* peers, uint8_t peer_count, uint8_t flags) {
+static void encode_heartbeat_range(struct tt_Context* node, struct tt_Publisher* pub, uint32_t first_seq_no,
+                                   uint32_t last_seq_no, bool is_flush, const struct tt_Peer* peers, uint8_t peer_count,
+                                   uint8_t flags) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     uint32_t old_tx_tail = node->tx_tail;
 
@@ -6190,16 +6247,62 @@ static void encode_and_send_heartbeat(struct tt_Context* node, struct tt_Publish
     }
     heartbeat_header->endpoint_id = endpoint->id;
     heartbeat_header->first_available_seq_no = first_seq_no;
-    heartbeat_header->last_seq_no = pub->seq_no;
+    heartbeat_header->last_seq_no = last_seq_no;
     heartbeat_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
     heartbeat_header->flags = flags;
     heartbeat_header->reserved[0] = 0;
     heartbeat_header->reserved[1] = 0;
     heartbeat_header->reserved[2] = 0;
 
-    if (!end_encode(node, submessage_header, true, peers, peer_count)) {
+    if (!end_encode(node, submessage_header, is_flush, peers, peer_count)) {
         rollback(node, old_tx_tail);
     }
+}
+
+static void encode_and_send_heartbeat(struct tt_Context* node, struct tt_Publisher* pub, uint32_t first_seq_no,
+                                      const struct tt_Peer* peers, uint8_t peer_count, uint8_t flags) {
+    encode_heartbeat_range(node, pub, first_seq_no, pub->seq_no, true, peers, peer_count, flags);
+}
+
+// Whether any of this Publisher's peers has an attached segment (SHM_PLAN 6e): a record bound only for segments may
+// be larger than a datagram, and only one alone in tx_buffer is granted that (end_encode()), so the match Heartbeat
+// goes as its own datagram there rather than ahead of the DATA.
+static bool any_peer_on_segment(const struct tt_Context* node, const struct tt_Publisher* pub) {
+#if tt_SEGMENT_ENABLED
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (pub->peers[i].context_id != tt_CONTEXT_ID_INVALID &&
+            node->segment_peers[pub->peers[i].context_id].mapping != NULL) {
+            return true;
+        }
+    }
+#else
+    UNUSED(node);
+    UNUSED(pub);
+#endif
+    return false;
+}
+
+// The match Heartbeat (tt_PeerAck.first_owed_seq_no) for the publish about to be encoded: left in tx_buffer, so the
+// DATA's own flush carries both in one datagram to the DATA's own peers and a Subscriber cannot receive the DATA
+// without it. Only where that holds - an unbatched publish into an empty buffer, to the unicast peers the DATA will
+// go to; otherwise it goes now as its own datagram, as the periodic Heartbeat does (send_heartbeat()). A fragmented
+// sample flushes it ahead of its fragments (send_tail_as_fragments()).
+static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pub) {
+    uint32_t owed = take_match_heartbeat(pub);
+    if (owed == 0) {
+        return;
+    }
+    uint32_t oldest = reliable_cache_oldest_seq_no(pub->reliable_cache);
+    uint32_t first = oldest != 0 ? oldest : owed;
+    uint8_t count = count_peers(pub->peers);
+    bool empty = node->tx_tail == sizeof(struct tt_Header);
+    bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && empty;
+    if (unicast && !pub->batch && !any_peer_on_segment(node, pub)) {
+        encode_heartbeat_range(node, pub, first, owed - 1, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);
+        return;
+    }
+    encode_heartbeat_range(node, pub, first, owed - 1, true, unicast ? pub->peers : NULL, unicast ? count : 0,
+                           tt_HEARTBEAT_FLAG_FINAL);
 }
 
 // QoS roadmap #5 (RELIABILITY) follow-up - runs once per pub->heartbeat_period_ns (armed by tt_
@@ -8902,11 +9005,15 @@ static void register_subscriber_peer_on_publisher(struct tt_Context* node, struc
     // pair) instead of matching a Subscriber whose acks could never be counted - under Phase 3's
     // KEEP_ALL blocking that would unblock a writer early, i.e. silent loss.
     if (pub->reliable && ctx->entity_id != 0) {
+        bool newly_matched = find_peer_ack(pub, ctx->header->source, ctx->entity_id) == NULL;
         struct tt_PeerAck* ack = claim_peer_ack(pub, ctx->header->source, ctx->entity_id);
         if (ack == NULL) {
             TT_LOG_WARNING("Ack table full (%d entries) - not matching Subscriber %08x on node %d", tt_MAX_ACK_ENTRIES,
                            ctx->entity_id, ctx->header->source);
             return;
+        }
+        if (newly_matched && requested_reliable && !requested_durable) {
+            arm_match_heartbeat(pub, ack); // the match point - see tt_PeerAck.first_owed_seq_no
         }
         // Phase 2 - remember how wide a gap this Subscriber can still ask about, so
         // tt_Publisher_unacked_bound() (Phase 3's KEEP_ALL bound) is the minimum across them.
