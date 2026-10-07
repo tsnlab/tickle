@@ -762,10 +762,6 @@ struct tt_Context {
     uint32_t segment_probe_every; // epochs in the preferred mode between two of the other, doubling to a bound
     uint32_t segment_probe_in;    // epochs left until the next probe
     uint64_t segment_epochs[2];   // epochs measured, by mode
-    // Samples encoded straight into a peer's slot rather than into tx_buffer and then copied (SHM_PLAN 6e(b),
-    // tt_SEGMENT_ENCODE_IN_SLOT). Each is also one of tx_shm. The arm's own report of its treatment: an A/B whose
-    // treated arm shows 0 here measured the two-copy path twice.
-    uint64_t segment_encoded_in_slot;
     // How many times this context built its own segment and gave it up again, and how many peers it
     // currently believes share its host. Out here with the other counters rather than behind
     // tt_SEGMENT_ENABLED because the traffic line that prints them is compiled either way; they stay

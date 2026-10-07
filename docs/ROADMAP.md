@@ -78,7 +78,9 @@ The user's active list (2026-10-05), in order.
    build of p3 in every block; `~/rig_results_safe/ab_samehost_encode_in_slot2_20261007-221008.summary.txt`): IMPROVED -
    p3 publisher CPU per sample 0.722 -> 0.608 us (-15.8%, t -68), sentinel held (-0.08%); p1 / p2 / reliable p3
    publisher CPU -13 / -16 / -8%, receive rate +14 / +17 / +9%; p4 (fragments, never in the slot) and p2 latency
-   held. Landed (`01ff88fe`). Next: the poll loop's clock reuse.
+   held. Landed (`01ff88fe`) and reverted the same night: CI's unit tests (gcc 13) fail on it -
+   `test_peer_discovery.c:1299`, one datagram more after `tt_Publisher_assert_liveliness()`; cause being found. Next
+   after that: the poll loop's clock reuse.
 4. **Reduce the reader wake cost** (~3.1 us of system time per wake) without tuned spin values: each wake is paid
    per sample at low rates. (COMPARISON 2.2c; SHM_PLAN 7 q1)
    Rig A/B 2026-10-07 (`ab_samehost.sh`, three arms, `~/rig_results_safe/ab_samehost_reader_wake_20261007-021122.*`):

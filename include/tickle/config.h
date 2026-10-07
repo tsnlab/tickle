@@ -534,13 +534,6 @@
 #ifndef tt_SEGMENT_SLOT_BYTES
 #define tt_SEGMENT_SLOT_BYTES tt_CONTROL_MAX_LENGTH
 #endif
-// SHM_PLAN 6e(b): a publish whose one destination is an attached same-host segment encodes the sample straight into
-// the claimed slot instead of into tx_buffer and then copying it into the slot - one copy of the sample fewer. The
-// slot receives the same bytes either way (tests/test_encode_in_slot.c). 0 keeps the two-copy path, which is what an
-// A/B of the change builds as its control arm; it has no effect where tt_SEGMENT_ENABLED is 0.
-#ifndef tt_SEGMENT_ENCODE_IN_SLOT
-#define tt_SEGMENT_ENCODE_IN_SLOT 1
-#endif
 // Most records taken from a segment in one poll, so a writer that keeps its ring full cannot starve
 // the socket - the poll returns and comes back, which is the fairness the socket drain already has.
 #ifndef tt_SEGMENT_DRAIN_PER_POLL
