@@ -3288,6 +3288,7 @@ static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_n
 static void send_acknack(struct tt_Context* node, struct tt_WriterProxy* proxy);
 static void advance_ack_seq_no(struct tt_WriterProxy* proxy);
 static void maybe_arm_acknack_retry(struct tt_Context* node, struct tt_WriterProxy* proxy);
+static void answer_ack_request(struct tt_Context* node, struct tt_WriterProxy* proxy);
 static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
                                 uint16_t sender_port);
@@ -6908,6 +6909,10 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->recovery_rttvar_ns = 0;
             proxy->probe_seq_no = 0;
             proxy->probe_ns = 0;
+            proxy->request_ns = 0;
+            proxy->requested_through = 0;
+            proxy->full_request_ns = 0;
+            proxy->full_requested_through = 0;
             if (out_created != NULL) {
                 *out_created = true;
             }
@@ -6950,10 +6955,48 @@ static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
     return highest;
 }
 
+// How long a repair this reader asked for is taken to be on its way: the recovery estimate (request to arrival,
+// tt_WriterProxy.recovery_srtt_ns), or tt_RELIABLE_RETRY_INITIAL before there is one. srtt and not the retry
+// interval, which adds 4 * rttvar to stay clear of premature retries: this window only decides what an answer to the
+// writer's own request leaves out, and an answer that waits for the timer is the 130 ms stall f3451cd8 removed.
+static bool requested_within_srtt(const struct tt_WriterProxy* proxy, uint64_t request_ns, uint64_t now) {
+    uint64_t in_flight =
+        proxy->recovery_srtt_ns != 0 ? (uint64_t)proxy->recovery_srtt_ns : (uint64_t)tt_RELIABLE_RETRY_INITIAL;
+    return request_ns != 0 && now - request_ns < in_flight;
+}
+
+// An ACKNACK just went out naming positions up to `through` (an absolute seq_no), and the watermark too if
+// `names_watermark`. See tt_WriterProxy.request_ns.
+static void note_requested(struct tt_WriterProxy* proxy, bool names_watermark, uint32_t through, uint64_t now) {
+    now = now != 0 ? now : 1U;
+    if (names_watermark) {
+        proxy->full_request_ns = now;
+        proxy->full_requested_through = through;
+    }
+    if (!requested_within_srtt(proxy, proxy->request_ns, now) || through > proxy->requested_through) {
+        proxy->requested_through = through;
+    }
+    proxy->request_ns = now;
+}
+
+// The bits of bitmap word `word` that lie in positions low..high (both inclusive); 0 when none do, or low > high.
+static uint64_t bitmap_range_in_word(int word, int low, int high) {
+    int base = word * tt_RELIABLE_BITMAP_WORD_BITS;
+    int first = low > base ? low - base : 0;
+    int last = high - base < tt_RELIABLE_BITMAP_WORD_BITS - 1 ? high - base : tt_RELIABLE_BITMAP_WORD_BITS - 1;
+    if (low > high || first > last) {
+        return 0;
+    }
+    uint64_t upto_last = last == tt_RELIABLE_BITMAP_WORD_BITS - 1 ? ~0ULL : (1ULL << (last + 1)) - 1;
+    return upto_last & ~((1ULL << first) - 1);
+}
+
 // Requests (ACKNACK "please resend" bits) only positions low_bit..high_bit relative to ack_seq_no,
-// further masked to what's still missing in received_bitmap. send_acknack() below is the usual
+// further masked to what's still missing in received_bitmap, less skip_low..skip_high (none when skip_low >
+// skip_high: answer_ack_request() leaves out repairs still on their way). send_acknack() below is the usual
 // full-range form; update_reliable_ack() uses a narrow range for Phase 1-a's per-new-gap NACK.
-static void send_acknack_range(struct tt_Context* node, struct tt_WriterProxy* proxy, int low_bit, int high_bit) {
+static void send_acknack_skipping(struct tt_Context* node, struct tt_WriterProxy* proxy, int low_bit, int high_bit,
+                                  int skip_low, int skip_high) {
     struct tt_Subscriber* sub = proxy->sub;
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
     struct tt_Peer target = {proxy->context_id, proxy->sender_ip, proxy->sender_port};
@@ -7004,9 +7047,14 @@ static void send_acknack_range(struct tt_Context* node, struct tt_WriterProxy* p
     bitmap_low_mask(below_low_mask, words, low_bit - 1);
     acknack_header->bitmap_words = wire_words;
     acknack_header->reserved = 0;
+    bool names_any = false;
     for (uint16_t word = 0; word < wire_words; word++) {
-        acknack_header->bitmap[word] = ~proxy->received_bitmap[word] & request_mask[word] & ~below_low_mask[word];
+        uint64_t request = ~proxy->received_bitmap[word] & request_mask[word] & ~below_low_mask[word] &
+                           ~bitmap_range_in_word(word, skip_low, skip_high);
+        acknack_header->bitmap[word] = request;
+        names_any |= request != 0;
     }
+    bool names_watermark = wire_words > 0 && (acknack_header->bitmap[0] & 1U) != 0;
     // Milestone 47 - the *target* Publisher's own entity_id, learned from whichever WriterProxy
     // this ACKNACK answers - see struct tt_AckNackHeader.entity_id's own doc comment (tickle.h).
     acknack_header->entity_id = proxy->entity_id;
@@ -7031,8 +7079,11 @@ static void send_acknack_range(struct tt_Context* node, struct tt_WriterProxy* p
     }
     // Only a request that names the watermark itself can time its recovery: a narrow request for a
     // newly opened gap further ahead (low_bit > 0) does not ask for ack_seq_no at all.
-    if (low_bit == 0 && high_bit >= 0) {
+    if (names_watermark) {
         note_watermark_requested(proxy, tt_get_ns());
+    }
+    if (names_any) {
+        note_requested(proxy, names_watermark, proxy->ack_seq_no + (uint32_t)high_bit, tt_get_ns());
     }
 #ifdef tt_RELIABLE_STATS
     {
@@ -7051,6 +7102,10 @@ static void send_acknack_range(struct tt_Context* node, struct tt_WriterProxy* p
         }
     }
 #endif
+}
+
+static void send_acknack_range(struct tt_Context* node, struct tt_WriterProxy* proxy, int low_bit, int high_bit) {
+    send_acknack_skipping(node, proxy, low_bit, high_bit, 1, 0);
 }
 
 static void send_acknack(struct tt_Context* node, struct tt_WriterProxy* proxy) {
@@ -11328,17 +11383,66 @@ static void inform_subscriber_of_heartbeat(struct tt_Context* node, struct tt_En
     bool had_gap = highest_relevant_bit(proxy) >= 0;
     bool timer_was_armed = proxy->acknack_scheduled;
     maybe_arm_acknack_retry(node, proxy);
-    if (!(ctx->flags & tt_HEARTBEAT_FLAG_FINAL) && (!had_gap || timer_was_armed)) {
-        // tt_Publisher_request_ack() explicitly asked, and nothing above answered. Two cases:
-        // - healthy (no gap): the only way a Publisher ever learns a healthy Subscriber has fully caught up (see
-        //   maybe_arm_acknack_retry()'s own "a healthy stream needs no ACKNACK at all" comment);
-        // - a gap with the retry timer already armed: maybe_arm_acknack_retry() sends only when it arms, so the
-        //   request went unanswered until the timer fired. A refused KEEP_ALL Publisher sends nothing but these
-        //   requests (keep_all_resolicit()), and the timer is srtt + 4 * rttvar up to 64 * srtt - ~130 ms on the
-        //   rig under 5% loss, past rmw_tickle's 100 ms publish bound (2026-10-07: 2 of 6 lossy runs gave up).
-        // The timer is left as it is: it still paces this reader's own re-requests.
-        send_acknack(node, proxy);
+    if (ctx->flags & tt_HEARTBEAT_FLAG_FINAL) {
+        return;
     }
+    if (!had_gap) {
+        // Healthy, but tt_Publisher_request_ack() explicitly asked anyway - the only way a Publisher ever learns a
+        // healthy Subscriber has fully caught up (see maybe_arm_acknack_retry()'s own "a healthy stream needs no
+        // ACKNACK at all" comment for why nothing above already sent one).
+        send_acknack(node, proxy);
+    } else if (timer_was_armed) {
+        answer_ack_request(node, proxy);
+    }
+}
+
+// A Heartbeat that asks for an answer (FINAL clear) reached a reader with a gap open and its retry timer armed - which
+// maybe_arm_acknack_retry() does not answer: it sends only when it arms. Left unanswered, a refused KEEP_ALL Publisher,
+// which sends nothing but these requests (keep_all_resolicit()), waited for the reader's timer: srtt + 4 * rttvar up
+// to 64 * srtt, ~130 ms on the rig under 5% loss and past rmw_tickle's 100 ms publish bound (2026-10-07, f3451cd8).
+//
+// Answered, but leaving out what a request of the last srtt named: those repairs are on their way. The full answer
+// f3451cd8 sent named them again - the cross-host A/B measured c6 (P4 KEEP_ALL, 5% loss) at +11.2% wire bytes a sample
+// and -4.1% send rate. What is open sits in three runs above the watermark, and when each was last named is known:
+//   [ack_seq_no, full_requested_through]          at full_request_ns - a request naming the watermark names every
+//                                                  open position up to its high bit;
+//   (full_requested_through, requested_through]   since then, at request_ns at the latest - narrow ones for new gaps;
+//   above requested_through                        never - a gap this Heartbeat revealed.
+// A run named within srtt is skipped; one named longer ago is overdue (a repair was lost) and named again, which is
+// what the timer would do 4 * rttvar later. Nothing left to name, the answer is a pure acknowledgement: the writer
+// still learns how far this reader has got and may ask again at once. The timer is left as it is.
+static void answer_ack_request(struct tt_Context* node, struct tt_WriterProxy* proxy) {
+    int high_bit = highest_relevant_bit(proxy);
+    if (high_bit < 0) {
+        return; // no gap after all - the caller's had_gap says otherwise only if this were called without one
+    }
+    uint64_t now = tt_get_ns();
+    int64_t ack = proxy->ack_seq_no;
+    // Each run's last position as a bit relative to ack_seq_no; negative when it lies wholly below the watermark.
+    int64_t full_end = proxy->full_request_ns != 0 ? (int64_t)proxy->full_requested_through - ack : -1;
+    int64_t named_end = proxy->request_ns != 0 ? (int64_t)proxy->requested_through - ack : -1;
+    full_end = full_end > high_bit ? high_bit : full_end;
+    named_end = named_end > high_bit ? high_bit : named_end;
+    named_end = named_end < full_end ? full_end : named_end;
+    bool full_in_flight = full_end >= 0 && requested_within_srtt(proxy, proxy->full_request_ns, now);
+    bool narrow_in_flight = named_end > full_end && requested_within_srtt(proxy, proxy->request_ns, now);
+
+    int64_t skip_low = 1; // skip_low > skip_high: nothing skipped
+    int64_t skip_high = 0;
+    if (full_in_flight) {
+        skip_low = 0;
+        skip_high = narrow_in_flight ? named_end : full_end;
+    } else if (narrow_in_flight) {
+        skip_low = full_end + 1 > 0 ? full_end + 1 : 0;
+        skip_high = named_end;
+    }
+    if (skip_low == 0 && skip_high >= high_bit) {
+        RSTAT_INC(ack_request_in_flight);
+        send_acknack_range(node, proxy, 0, -1);
+        return;
+    }
+    RSTAT_INC(ack_request_answered);
+    send_acknack_skipping(node, proxy, 0, high_bit, (int)skip_low, (int)skip_high);
 }
 
 // QoS roadmap #5 (RELIABILITY) follow-up - process_submessage()'s own new HEARTBEAT case. See

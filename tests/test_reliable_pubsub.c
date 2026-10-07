@@ -2953,13 +2953,32 @@ static void test_unknown_policy_still_terminates_on_eviction(void) {
     EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
 }
 
+// Opens the gap the two tests below share: seq_no 1 arrives, 3 arrives, 2 is lost - one ACKNACK names 2 and the retry
+// timer is armed. The estimate is set first, so the window a repair is taken to be in flight (srtt, 200 us) and the
+// timer (srtt + 4 * rttvar, 4.2 ms) are far apart and each test can stand between them.
+#define GAP_TEST_SRTT_NS (200 * tt_MICROSECOND)
+static struct tt_WriterProxy* open_gap_at_two(struct tt_Context* node, struct tt_Subscriber* sub,
+                                              struct tt_Header* header) {
+    uint32_t tail = write_data(node, 1, 100, 1);
+    EXPECT_TRUE(process_data(node, header, node->rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(sub);
+    EXPECT_TRUE(proxy != NULL);
+    proxy->recovery_srtt_ns = GAP_TEST_SRTT_NS;
+    proxy->recovery_rttvar_ns = tt_MILLISECOND;
+    tail = write_data(node, 3, 300, 3);
+    EXPECT_TRUE(process_data(node, header, node->rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(proxy->acknack_scheduled);
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+    return proxy;
+}
+
 // A Heartbeat that asks for an answer (FINAL clear: tt_Publisher_request_ack(), which is what a refused KEEP_ALL
-// Publisher sends every retry interval through keep_all_resolicit()) is answered at once, also while this reader
-// has a gap open and its own retry timer armed. It used to be answered only when there was no gap - the gap case
-// went to maybe_arm_acknack_retry(), which sends only when no timer is armed - so a stopped Publisher's requests
-// were ignored and the repair waited for the reader's timer. That timer is srtt + 4 * rttvar up to 64 * srtt: on
-// the rig (2026-10-07, 5% loss, Array1k and Array4k) it was ~130 ms, the publisher gives up at 100 ms, and two of
-// six lossy runs ended in "blocked 100ms ... gave up" with nothing lost.
+// Publisher sends every retry interval through keep_all_resolicit()) is answered while this reader has a gap open
+// and its own retry timer armed, once the request for that gap is older than srtt. It used to be answered only when
+// there was no gap - the gap case went to maybe_arm_acknack_retry(), which sends only when no timer is armed - so a
+// stopped Publisher's requests were ignored and the repair waited for the reader's timer. That timer is srtt + 4 *
+// rttvar up to 64 * srtt: on the rig (2026-10-07, 5% loss, Array1k and Array4k) it was ~130 ms, the publisher gives
+// up at 100 ms, and two of six lossy runs ended in "blocked 100ms ... gave up" with nothing lost.
 //
 // Control: a FINAL Heartbeat revealing the same gap stays paced by the timer - nothing is sent for it - so the
 // answer is the request's, not every Heartbeat's (piggybacked ones ride every 64th sample at full rate).
@@ -2972,30 +2991,130 @@ static void test_heartbeat_requesting_an_answer_is_answered_while_a_gap_is_open(
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
-
     struct tt_Header header;
     init_header(&header);
-    uint32_t tail = write_data(&node, 1, 100, 1);
-    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    tail = write_data(&node, 3, 300, 3); // 2 lost: the gap opens, one ACKNACK goes, the timer is armed
-    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
-    EXPECT_TRUE(proxy != NULL);
-    EXPECT_TRUE(proxy->acknack_scheduled);
-    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+    struct tt_WriterProxy* proxy = open_gap_at_two(&node, &sub, &header);
 
-    // Control: a FINAL Heartbeat over the same range, before the timer is due - paced, nothing sent.
+    // Past srtt since 2 was asked for, well before the timer is due: the repair is overdue.
+    test_mock_now += GAP_TEST_SRTT_NS;
+
+    // Control: a FINAL Heartbeat over the same range - paced, nothing sent.
     int sends_before = test_mock_send_to_call_count;
-    tail = write_heartbeat(&node, ENDPOINT_ID, 1, 3, tt_HEARTBEAT_FLAG_FINAL);
+    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 1, 3, tt_HEARTBEAT_FLAG_FINAL);
     EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_INT(sends_before, test_mock_send_to_call_count);
 
-    // The request: answered now, with the timer still armed and not yet due.
+    // The request: answered now, naming 2 again, with the timer still armed and not yet due.
     tail = write_heartbeat(&node, ENDPOINT_ID, 1, 3, 0);
     EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_INT(sends_before + 1, test_mock_send_to_call_count);
+    const struct tt_AckNackHeader* acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_EQ_U32(2, acknack->seq_no);
+    EXPECT_TRUE(acknack->bitmap_words == 1 && acknack->bitmap[0] == 0x1ULL); // seq_no 2
     EXPECT_TRUE(proxy->acknack_scheduled); // the timer keeps running; the answer did not replace it
     EXPECT_EQ_U32(2, proxy->ack_seq_no);   // and the gap is still the one being asked for
+}
+
+// The same request, inside srtt of the ACKNACK that named 2: that repair is on its way, and an answer naming it again
+// had the writer send it twice (f3451cd8's cross-host A/B: c6, P4 KEEP_ALL at 5% loss, +11.2% wire bytes a sample,
+// -4.1% send rate). Nothing new to name, the answer is a pure acknowledgement (it names nothing); a Heartbeat revealing
+// samples past 3 is answered with those alone; and once srtt has passed since the last request, the answer names
+// everything still open.
+static void test_heartbeat_requesting_an_answer_does_not_rerequest_a_repair_in_flight(void) {
+    test_mock_reset();
+    test_mock_now = 10 * tt_MILLISECOND;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    struct tt_Header header;
+    init_header(&header);
+    struct tt_WriterProxy* proxy = open_gap_at_two(&node, &sub, &header);
+    int sends_before = test_mock_send_to_call_count;
+
+    // Half of srtt later: 2 was asked for and nothing past 3 exists - answered, naming nothing.
+    test_mock_now += GAP_TEST_SRTT_NS / 2;
+    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 1, 3, 0);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(sends_before + 1, test_mock_send_to_call_count);
+    const struct tt_AckNackHeader* acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_EQ_U32(2, acknack->seq_no);
+    EXPECT_EQ_U32(0, (uint32_t)acknack->bitmap_words);
+
+    // The writer has published 4 and 5 since: named, and 2 is not.
+    tail = write_heartbeat(&node, ENDPOINT_ID, 1, 5, 0);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(sends_before + 2, test_mock_send_to_call_count);
+    acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_EQ_U32(2, acknack->seq_no);
+    EXPECT_TRUE(acknack->bitmap_words == 1 && acknack->bitmap[0] == 0xCULL); // bits 2, 3 = seq_no 4, 5
+
+    // Asked again at once: 2, 4 and 5 are all in flight now - naming nothing.
+    tail = write_heartbeat(&node, ENDPOINT_ID, 1, 5, 0);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(sends_before + 3, test_mock_send_to_call_count);
+    acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_EQ_U32(0, (uint32_t)acknack->bitmap_words);
+
+    // srtt after the last request, the timer still not due: every open position is overdue and named.
+    test_mock_now += GAP_TEST_SRTT_NS;
+    tail = write_heartbeat(&node, ENDPOINT_ID, 1, 5, 0);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(sends_before + 4, test_mock_send_to_call_count);
+    acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_TRUE(acknack->bitmap_words == 1 && acknack->bitmap[0] == 0xDULL); // seq_no 2, 4, 5 (3 arrived)
+    EXPECT_TRUE(proxy->acknack_scheduled);
+}
+
+// Each run of open positions is judged by when it was last named. 2 is asked for by the ACKNACK that opened the gap; 4
+// and 5 by a narrow one 150 us later. 250 us in, the request for 2 is overdue - its repair was lost - and the one for
+// 4 and 5 is not: the answer names 2 alone. A single "last request" time would see the narrow one, call everything in
+// flight and leave 2 to the timer, which is what a stream with gaps opening faster than srtt always looks like.
+static void test_heartbeat_requesting_an_answer_names_an_overdue_repair_alone(void) {
+    test_mock_reset();
+    test_mock_now = 10 * tt_MILLISECOND;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    struct tt_Header header;
+    init_header(&header);
+    struct tt_WriterProxy* proxy = open_gap_at_two(&node, &sub, &header);
+
+    test_mock_now += 150 * tt_MICROSECOND;
+    uint32_t tail = write_data(&node, 6, 600, 6); // 4 and 5 lost: a narrow ACKNACK names them alone
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    const struct tt_AckNackHeader* acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_TRUE(acknack->bitmap_words == 1 && acknack->bitmap[0] == 0xCULL); // seq_no 4, 5
+    int sends_before = test_mock_send_to_call_count;
+
+    test_mock_now += 100 * tt_MICROSECOND;
+    tail = write_heartbeat(&node, ENDPOINT_ID, 1, 6, 0);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(sends_before + 1, test_mock_send_to_call_count);
+    acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_EQ_U32(2, acknack->seq_no);
+    EXPECT_TRUE(acknack->bitmap_words == 1 && acknack->bitmap[0] == 0x1ULL); // seq_no 2, not 4 or 5
+    EXPECT_TRUE(proxy->acknack_scheduled);
+
+    // Asked again at once: 2 has just been named too - everything open is in flight, a pure acknowledgement.
+    tail = write_heartbeat(&node, ENDPOINT_ID, 1, 6, 0);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(sends_before + 2, test_mock_send_to_call_count);
+    acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_EQ_U32(0, (uint32_t)acknack->bitmap_words);
 }
 
 #ifdef tt_RELIABLE_STATS
@@ -4392,6 +4511,8 @@ int main(void) {
     test_keep_all_refused_publisher_resolicits_by_itself();
     test_unknown_policy_still_terminates_on_eviction();
     test_heartbeat_requesting_an_answer_is_answered_while_a_gap_is_open();
+    test_heartbeat_requesting_an_answer_does_not_rerequest_a_repair_in_flight();
+    test_heartbeat_requesting_an_answer_names_an_overdue_repair_alone();
     test_keep_all_writable_callback_fires_once();
     test_keep_all_unblocks_when_last_subscriber_leaves();
     test_keep_all_refuses_when_bytes_bind_before_count();

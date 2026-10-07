@@ -2001,6 +2001,16 @@ struct tt_WriterProxy {
     uint32_t recovery_rttvar_ns;
     uint32_t probe_seq_no;
     uint64_t probe_ns;
+    // When this reader last named which open positions in an ACKNACK (2026-10-07), so that an answer to the writer's
+    // own request (answer_ack_request(), tickle.c) can leave out repairs still on their way: naming a sample whose
+    // repair is in flight had it sent twice - c6, 5% loss, +11% wire bytes a sample. full_request_ns is the latest
+    // ACKNACK that named the watermark, which names every open position up to full_requested_through with it;
+    // request_ns is the latest that named anything, and requested_through the highest seq_no named by any request
+    // since the one before it was srtt old. 0 = nothing requested yet.
+    uint64_t full_request_ns;
+    uint64_t request_ns;
+    uint32_t full_requested_through;
+    uint32_t requested_through;
     // Back-pointer to the owning Subscriber - this entry's own stable address (never moves once
     // claimed; embedded in struct tt_Subscriber.writers[], which lives as long as the Subscriber
     // itself) is what acknack_retry() is scheduled against (tt_Context_schedule(..., acknack_retry,
