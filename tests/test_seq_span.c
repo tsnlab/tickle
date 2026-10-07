@@ -453,6 +453,108 @@ static void test_a_whole_record_advances_the_reader_by_its_span(void) {
     test_mock_segments_free();
 }
 
+// The segment drain hands each delivered sample back before it reads the next record. It used to read up to
+// tt_SEGMENT_DRAIN_PER_POLL records per poll, and under rmw_tickle that is the executor's own thread: every record
+// past the first was delivered into a KEEP_LAST queue that the executor had not yet taken from, overwriting the
+// sample before it, so the thread spent its time receiving samples nobody would see. On the rig (rmw_samehost
+// 7e6fe171, BEST_EFFORT KEEP_LAST 1 at -r 0) core delivered 29.7M samples into the rmw queue and perf_test took
+// 1.23M, one per wait, 24 records drained per wait: 61.6k/s against CycloneDDS's 70.5k over loopback UDP. Stopping
+// at the first delivery leaves the excess in the ring, where a full ring refuses it at the writer for nothing.
+static void test_a_drain_hands_back_each_sample_before_reading_the_next(void) {
+    struct tt_Context owner;
+    struct tt_Context sender;
+    struct tt_Topic topic;
+    struct tt_Topic owner_topic;
+    struct tt_Publisher pub;
+    struct tt_Subscriber sub;
+
+    memset(&owner, 0, sizeof(owner));
+    node_init_locks(&owner);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    owner.tx_tail = sizeof(struct tt_Header);
+    owner.tx_size = sizeof(owner.tx_buffer);
+    // Wide slots from the start, not widened afterwards. create_own_segment() sizes the mapping and
+    // seeds every slot's sequence using the stride it was built with, so moving slot_bytes later
+    // leaves slot 0 valid and every slot after it pointing at a sequence that will never match -
+    // a ring of one. The test above never noticed because it writes a single record; this one
+    // writes two, and the second silently never reached the segment.
+    // (valid_slot_bytes() caps the runtime knob at one datagram until 6e(b); this is whitebox and
+    // sets the field create_own_segment() actually reads, same as that test's own comment says.)
+    const uint32_t saved_slot_bytes = _tt_CONFIG.segment_slot_bytes;
+    _tt_CONFIG.segment_slot_bytes = 4096;
+    create_own_segment(&owner);
+    _tt_CONFIG.segment_slot_bytes = saved_slot_bytes;
+    EXPECT_TRUE(owner.own_segment != NULL);
+    EXPECT_EQ_U32(4096, owner.own_segment->slot_bytes);
+
+    memset(&owner_topic, 0, sizeof(owner_topic));
+    owner_topic.name = "span_topic";
+    owner_topic.data_size = sizeof(uint32_t);
+    owner_topic.data_encode_size = big_encode_size;
+    owner_topic.data_encode = big_encode;
+    owner_topic.data_decode = span_decode;
+    owner_topic.data_free = big_free;
+
+    memset(&sub, 0, sizeof(sub));
+    sub.endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
+    sub.endpoint.id = ENDPOINT_ID;
+    sub.node = &owner;
+    sub.topic = &owner_topic;
+    sub.callback = span_callback;
+    sub.reliable = true;
+    sub.reorder_storage = span_reorder_storage;
+    sub.reorder_slots = SPAN_REORDER_SLOTS;
+    sub.reorder_slot_bytes = SPAN_REORDER_SLOT_BYTES;
+    memset(span_reorder_storage, 0, sizeof(span_reorder_storage));
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        sub.writers[i].context_id = tt_CONTEXT_ID_INVALID;
+    }
+    owner.endpoint_count = 1;
+    owner.endpoints[0] = (struct tt_Endpoint*)&sub;
+
+    init_sender(&sender, &topic, &pub);
+    pub.reliable = true;
+    pub.peers[0].context_id = OWNER_ID;
+    pub.peers[0].ip = OWNER_IP;
+    pub.peers[0].port = OWNER_PORT;
+    EXPECT_TRUE(peer_segment(&sender, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
+    // Read from the owner's real header, not set here: the limit the publisher uses and the ring
+    // the reader drains are now the same geometry.
+    EXPECT_EQ_U32(4096, whole_record_limit_for(&sender, pub.peers, 1));
+
+    span_callback_count = 0;
+
+    // Three samples in the ring before the reader looks.
+    enum { SAMPLES_QUEUED = 3 };
+    for (uint32_t i = 0; i < SAMPLES_QUEUED; i++) {
+        test_mock_now += 1000000; // each newer than the last, or the reader discards it for its timestamp
+        uint32_t value = 20 + i;
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+
+    // One sample per drain, and the drain says the ring is not empty, so its caller returns rather than reading the
+    // socket past what is still queued.
+    for (uint32_t i = 1; i <= SAMPLES_QUEUED; i++) {
+        bool emptied = true;
+        uint32_t taken = drain_own_segment(&owner, &emptied);
+        EXPECT_EQ_U32(1, taken);
+        EXPECT_EQ_U32(i, span_callback_count);
+        EXPECT_EQ_U64(i, owner.rx_samples_delivered);
+        EXPECT_TRUE(emptied == (i == SAMPLES_QUEUED));
+    }
+    // Control: with nothing left the drain finds nothing and says so.
+    bool emptied = false;
+    EXPECT_EQ_U32(0, drain_own_segment(&owner, &emptied));
+    EXPECT_TRUE(emptied);
+
+    release_segments(&sender);
+    release_own_segment(&owner);
+    test_mock_segments_free();
+}
+
 // The other path, and the one the test above does not reach. A sample too wide for the
 // destination's slot goes as fragments, and frag_write_header() gives fragment i the base seq_no
 // plus i - so each fragment genuinely occupies one seq position and its span is 1. The sample's
@@ -565,6 +667,7 @@ int main(void) {
     test_a_span_outside_the_wire_bound_is_refused();
     test_a_whole_record_advances_the_reader_by_its_span();
     test_each_fragment_carries_its_own_seq_position();
+    test_a_drain_hands_back_each_sample_before_reading_the_next();
 
     printf("test_seq_span: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();

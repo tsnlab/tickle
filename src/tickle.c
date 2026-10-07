@@ -3450,6 +3450,7 @@ static void reset_node_state(struct tt_Context* node) {
     // node delivered nothing - "how many datagrams did we throw away, and why" - so answering that
     // from garbage is worse than not answering it.
     node->rx_malformed_drops = 0;
+    node->rx_samples_delivered = 0;
     node->rx_shm_only_on_socket = 0;
     node->rx_span_absorbed = 0;
     node->version_mismatch_drops = 0;
@@ -9215,6 +9216,7 @@ static void record_delivery_order(struct tt_Context* node, struct tt_Subscriber*
     sub->last_timestamp = timestamp;
     sub->last_via_data_port = via_data_port;
     sub->delivered++;
+    node->rx_samples_delivered++;
 }
 
 // TT_ORDERING_DISABLED - an experiment arm that restores pre-2026-09-24 delivery, off by default
@@ -12333,6 +12335,7 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
         state_lock(node);
         uint32_t taken = 0;
         bool ran_dry = false;
+        bool handed_one = false;
         while (taken < tt_RX_LOCK_CHUNK && drained + taken < tt_SEGMENT_DRAIN_PER_POLL) {
             uint32_t len = 0;
             uint32_t sender_ip = 0;
@@ -12351,12 +12354,21 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
             // where a peer lives from the address its announce arrived on.
             // The span travels with the record, not with the peer: the same writer's next record
             // may be a different size and consume a different number of seq_nos.
+            const uint64_t samples_before = node->rx_samples_delivered;
             (void)process_datagram_locked(node, (int32_t)len, sender_ip, sender_port, tt_TRANSPORT_SHM, seq_span);
+            handed_one = node->rx_samples_delivered != samples_before;
+            if (handed_one) {
+                break;
+            }
         }
         state_unlock(node);
         delivered += taken;
         drained += taken;
         if (ran_dry) {
+            return delivered;
+        }
+        if (handed_one) {
+            *emptied = !segment_has_records(node);
             return delivered;
         }
     }

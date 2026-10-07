@@ -569,6 +569,9 @@ struct tt_Context {
     // that a rolling upgrade produces, which is worth telling apart from an attack or a corrupt link.
     uint64_t rx_malformed_drops;
     uint64_t version_mismatch_drops;
+    // Samples handed to a Subscriber, every path (record_delivery_order()). The segment drain reads it to stop at
+    // the first record that delivered one, so a poll hands each sample back before reading the next.
+    uint64_t rx_samples_delivered;
     // The named subset that is not a version skew or a corrupt link but a record that could only have
     // been built by something with write access to a segment, arriving from the network instead
     // (tt_SUBMESSAGE_TYPE_SHM_DATA). Counted apart because an upgrade produces the one and nothing
