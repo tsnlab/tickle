@@ -1030,6 +1030,8 @@ static void create_own_segment(struct tt_Context* node) {
     __atomic_store_n(&header->magic, tt_SEGMENT_MAGIC, __ATOMIC_RELEASE);
     node->own_segment = header;
     node->segments_created++;
+    node->segment_stretch_index = 0; // a new ring counts from zero: no pace carries over from the last one
+    node->segment_stretch_ns = tt_get_ns();
 }
 
 // Whether this context has a segment for peers to write into, building it if a same-host peer has
@@ -3447,8 +3449,14 @@ static void reset_node_state(struct tt_Context* node) {
     node->segment_slot_ceiling = 0;
     node->segment_doorbells_received = 0;
     node->segment_sleep_cost_ns = 0;
+    node->segment_sleep_on_claim = 0;
     node->segment_claim_waits = 0;
     node->segment_claim_waits_published = 0;
+    node->segment_gap_ns = 0;
+    node->segment_stretch_ns = 0;
+    node->segment_stretch_index = 0;
+    node->segment_watches = 0;
+    node->segment_watch_hits = 0;
     // Counters that only ever increment, and therefore only ever reported whatever was on the
     // caller's stack. Found by the structural check Plan built after `segment_peers` shipped
     // uninitialised: this function is where a field is initialised, and the three below had been
@@ -12286,6 +12294,25 @@ static inline void spin_wait_hint(void) {
 #endif
 }
 
+// When a wait for a writer should next look at the ring. A wait that reads the ring's shared words on every turn
+// takes their cache lines from the writer that is about to write them, and the writer stalls for each one: on the
+// PC with the two vCPUs ~260 ns apart, a reader that polled the head slot and write_index continuously while
+// following its writer record by record doubled the writer's time per sample. So the wait looks once per writer
+// gap (segment_gap_ns, measured while awake; segment_await_next()) and spins on the clock alone in between, which
+// costs the writer nothing. Without a gap measured yet it looks on every turn. Never past `give_up`.
+static uint64_t segment_next_look(const struct tt_Context* node, uint64_t now, uint64_t give_up) {
+    uint64_t look = now + node->segment_gap_ns;
+    if (look > give_up) {
+        look = give_up;
+    }
+    uint64_t clock = tt_get_ns();
+    while (clock < look) {
+        spin_wait_hint();
+        clock = tt_get_ns();
+    }
+    return clock;
+}
+
 // Waits, without announcing a sleep, for the record at the head of the ring that a writer has claimed and not yet
 // published (2026-10-07). True when it was published - the caller goes round and drains it - and false when the wait
 // gave up: the caller then sleeps on it exactly as before, and the writer rings when it publishes.
@@ -12306,11 +12333,12 @@ static inline void spin_wait_hint(void) {
 // always did. Only the head slot's sequence is read meanwhile, the word the publication writes; another thread's
 // scheduler entry ends the wait too.
 //
-// What it costs: a reader that keeps finding its writer mid-copy follows it record by record instead of sleeping
-// through a batch, and both then keep pulling the ring's lines from each other. Where moving a line between the two
-// cores is cheap that is free - the PC at ~100 ns a round trip, user + system time per sample equal to the old
-// sleep's within 1% - and where it is dear it is not: at ~260 ns (the PC's vCPUs on distant host cores) the pair cost
-// 20-30% more per sample than with the old sleep, whose slow return batched the ring.
+// What it costs, with segment_await_next() beside it: a reader that waits instead of sleeping follows its writer
+// record by record instead of sleeping through a batch, and both keep pulling the ring's lines from each other. Where
+// moving a line between the two cores is cheap that is a gain - the PC at ~100 ns a round trip, 8% less user + system
+// time per sample than the old sleep, 25% less with a slower writer - and where it is dear it is not: at ~260 ns (the
+// PC's vCPUs on distant host cores) about 50% more, because the old sleep's slow return batched the ring. Looking at
+// the ring once per writer gap rather than continuously (segment_next_look()) halved that from 100%.
 static bool segment_await_claim(struct tt_Context* node, uint64_t now, uint64_t until) {
     uint64_t budget = node->segment_sleep_cost_ns;
     if (budget == 0) {
@@ -12324,7 +12352,7 @@ static bool segment_await_claim(struct tt_Context* node, uint64_t now, uint64_t 
     const struct tt_SegmentSlot* head = (const struct tt_SegmentSlot*)segment_slot(header, read_index);
     node->segment_claim_waits++;
     const uint64_t give_up = now + budget;
-    do {
+    for (uint64_t looked = now;; looked = segment_next_look(node, looked, give_up)) {
         if (__atomic_load_n(&head->sequence, __ATOMIC_ACQUIRE) == read_index + 1U) {
             node->segment_claim_waits_published++;
             return true;
@@ -12332,42 +12360,117 @@ static bool segment_await_claim(struct tt_Context* node, uint64_t now, uint64_t 
         if (__atomic_load_n(&node->sched_inbox_pending, __ATOMIC_SEQ_CST) != 0) {
             return true; // another thread scheduled an entry: go round and run it
         }
-        spin_wait_hint();
-    } while (tt_get_ns() < give_up);
-    return false;
+        if (looked >= give_up) {
+            return false;
+        }
+    }
 }
 
 static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied);
 
+// Waits, without announcing a sleep, for the next record to be claimed in an empty ring - only when the writers'
+// records have been arriving faster than a sleep costs (2026-10-07, round 3).
+//
+// Why: with a record being filled waited out (segment_await_claim()), the rig's same-host max-rate p3 pair still rang
+// 0.18 times a sample, every ring ending a real sleep: the reader, faster than its writer, also catches up between
+// two records, finds the ring empty with nothing claimed, sleeps, and is rung by the next record about one writer gap
+// later. A sleep there cost the reader ~2.4 us of system time and the writer a doorbell, ~1.4 us, to wait out a gap
+// of ~0.9 us.
+//
+// The criterion, both sides measured and neither tuned: the expected time to the next record - the records claimed
+// since the current awake stretch began (the last resume, or the last time the ring was found empty) over its length,
+// so time spent asleep is never in it and a burst after a long sleep does not pass for a fast writer - against the
+// least a sleep has cost (segment_sleep_cost_ns). Only when the next record is due sooner than a sleep would cost is
+// the ring watched, and then for at most that cost - the spin-then-block rule again - and never past the poll's
+// deadline. No record claimed while awake means nothing to expect, and the reader sleeps at once: a ping-pong's reader
+// wakes to the record it was rung for, answers, and goes back to sleep exactly as before. Only write_index is read
+// meanwhile, the word a claim moves.
+static bool segment_await_next(struct tt_Context* node, uint64_t now, uint64_t until) {
+    struct tt_SegmentHeader* header = node->own_segment;
+    const uint32_t claimed = __atomic_load_n(&header->write_index, __ATOMIC_ACQUIRE);
+    const uint32_t arrivals = claimed - node->segment_stretch_index;
+    const uint64_t awake_ns = now - node->segment_stretch_ns;
+    node->segment_stretch_ns = now; // the ring is empty: a new stretch starts here
+    node->segment_stretch_index = claimed;
+    uint64_t budget = node->segment_sleep_cost_ns;
+    if (arrivals == 0) {
+        return false; // nothing claimed while awake: nothing to expect, sleep
+    }
+    node->segment_gap_ns = awake_ns / arrivals;
+    if (budget == 0 || node->segment_gap_ns >= budget) {
+        return false; // the next record is not expected sooner than a sleep costs: sleep
+    }
+    if (until - now < budget) {
+        budget = until - now;
+    }
+    node->segment_watches++;
+    const uint64_t give_up = now + budget;
+    for (uint64_t looked = now;; looked = segment_next_look(node, looked, give_up)) {
+        if (__atomic_load_n(&header->write_index, __ATOMIC_ACQUIRE) != claimed) {
+            node->segment_watch_hits++;
+            return true;
+        }
+        if (__atomic_load_n(&node->sched_inbox_pending, __ATOMIC_SEQ_CST) != 0) {
+            return true; // another thread scheduled an entry: go round and run it
+        }
+        if (looked >= give_up) {
+            return false;
+        }
+    }
+}
+
 // poll_wait_io()'s first question at an empty-looking ring: is there something to drain instead of sleeping? A record
-// in the ring is drained, not slept on, and one a writer is still filling is waited for - for a while - rather than
-// announced to (segment_await_claim()). Either way no writer is told to ring for it. True when it drained or was
-// interrupted; *took says whether it took a record.
+// in the ring is drained, not slept on, one a writer is still filling is waited for - for a while - rather than
+// announced to (segment_await_claim()), and an empty ring is watched when the next record is due sooner than a sleep
+// would cost (segment_await_next()). Either way no writer is told to ring for it. True when it drained, watched a
+// record claimed or was interrupted; *took says whether it took a record.
 static bool segment_drained_instead_of_sleeping(struct tt_Context* node, bool has_next, uint64_t next, uint64_t time,
                                                 int64_t timeout, bool until_next_event, bool* took) {
     *took = false;
-    if (!segment_outstanding(node)) {
+    node->segment_sleep_on_claim = 0;
+    if (node->own_segment == NULL) {
         return false;
     }
     uint64_t deadline = has_next ? next : UINT64_MAX;
     if (!until_next_event && time + (uint64_t)timeout < deadline) {
         deadline = time + (uint64_t)timeout;
     }
+    if (!segment_outstanding(node)) {
+        // Empty: true only when a record was claimed while watching - the caller goes round and finds it outstanding.
+        return deadline > time && segment_await_next(node, time, deadline);
+    }
     if (segment_head_in_flight(node) && (deadline <= time || !segment_await_claim(node, time, deadline))) {
-        return false; // the claim outlived what a sleep costs: sleep on it, and its writer rings
+        node->segment_sleep_on_claim = 1; // the one sleep whose length is all cost: segment_resumed() measures it
+        return false;                     // the claim outlived what a sleep costs: sleep on it, and its writer rings
     }
     bool emptied = true;
     *took = drain_own_segment(node, &emptied) > 0;
     return true;
 }
 
-// A doorbell, and nothing else, ended this sleep (tt_receive()'s zero-length datagram): what choosing to sleep cost,
-// from `decided` to the resume, idle time included - so the shortest is the one kept (segment_sleep_cost_ns).
-static void segment_note_sleep_cost(struct tt_Context* node, int32_t len, uint64_t decided) {
-    if (len != 0) {
+// After a sleep: a new awake stretch (segment_await_next()), and what choosing to sleep cost - but only from a sleep
+// taken on a record already claimed, ended by its doorbell alone (tt_receive()'s zero-length datagram). Its writer was
+// mid-copy when the reader decided, and rings as soon as it publishes, so decision to resume is the copy's remainder,
+// the doorbell and the wake-up, with no idle time in it. Any other sleep lasts as long as nobody writes: the rig's
+// round 2 kept the shortest of all doorbell-ended sleeps, and a run whose first such sleep came while the peer was
+// still starting up and that never slept again after it was left with a 0.6 ms bound (seen on the PC). The shortest
+// clean one is kept (segment_sleep_cost_ns); until there is one, nothing is waited for.
+static void segment_resumed(struct tt_Context* node, int32_t len, uint64_t decided) {
+    struct tt_SegmentHeader* header = node->own_segment;
+    const bool clean = node->segment_sleep_on_claim != 0;
+    node->segment_sleep_on_claim = 0;
+    if (header == NULL) {
         return;
     }
-    uint64_t cost = node->rx_clock_ns - decided;
+    // A wait that timed out or was interrupted received nothing, and no clock was read after it: its stretch is
+    // counted from the decision, which only lengthens it - the pace it gives is, if anything, slower.
+    const uint64_t resumed = len >= 0 ? node->rx_clock_ns : decided;
+    node->segment_stretch_ns = resumed;
+    node->segment_stretch_index = __atomic_load_n(&header->write_index, __ATOMIC_ACQUIRE);
+    if (len != 0 || !clean) {
+        return;
+    }
+    uint64_t cost = resumed - decided;
     if (node->segment_sleep_cost_ns == 0 || cost < node->segment_sleep_cost_ns) {
         node->segment_sleep_cost_ns = cost;
     }
@@ -12694,7 +12797,7 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
             *result = tt_RET_OK;
             return true;
         }
-        return false; // nothing taken (another thread scheduled an entry): go round and run it
+        return false; // nothing taken (a claim watched, or an entry scheduled): go round and take it, or run it
     }
 #endif
 
@@ -12763,7 +12866,7 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
         node->rx_clock_ns = tt_get_ns(); // the wait may have been long: what arrived is stamped from here
     }
 #if tt_SEGMENT_ENABLED
-    segment_note_sleep_cost(node, len, time);
+    segment_resumed(node, len, time);
 #endif
 
     // A wait that ended with nothing received BEFORE the entry it was waiting for fell due was cut short
@@ -13032,43 +13135,44 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
     // tx_datagrams stays alongside deliberately rather than being replaced by the split: the two
     // are produced by the same seam and must agree, so a reader who sees tx_udp + tx_shm differ
     // from tx_datagrams is looking at a counting defect and not at a transport story.
-    TT_LOG_INFO("Node %u traffic: tx_datagrams=%lu rx_datagrams=%lu rx_self_sent=%lu rx_self_sent_data=%lu "
-                "rx_self_sent_data_unicast=%lu rx_via_data=%lu rx_via_well_known=%lu tx_dropped_oversize=%lu "
-                "tx_udp=%lu tx_shm=%lu rx_udp=%lu rx_shm=%lu "
-                // Why each UDP datagram went that way, on the same line as the totals. Without it a
-                // split like tx_udp=6694744 tx_shm=6746571 says only "half and half" and the next
-                // question - which half, and why - needs another run. It cost one on 2026-09-29.
-                "tx_udp_broadcast=%lu tx_udp_oversize=%lu tx_udp_unattached=%lu shm_full_dropped=%lu "
-                // How many peers this context gave up on, and how many doorbells it rang. The first
-                // is the only counter that rises ONLY when a reader was judged dead, and without it
-                // "the writer abandoned the corpse" cannot be told apart from the ordinary reasons
-                // tx_udp_unattached rises - which is a test that cannot fail, found as one.
-                "shm_gave_up=%lu shm_doorbells_sent=%lu shm_bells_rung=%lu shm_doorbells_received=%lu "
-                // Whether this context ever built a segment, and whether it still has one. With
-                // creation deferred until a same-host peer appears, tx_shm=0 has two entirely
-                // different meanings - "no peer could have used one" and "one could, and it broke" -
-                // and shm_segments_created is what separates them. A reader who sees created=0 on a
-                // run that expected shared memory should look at same_host_peers before the ring.
-                "shm_segments_created=%lu shm_segments_released=%lu shm_same_host_peers=%u "
-                // How often a record a writer was still filling was waited for instead of slept on, how often it came
-                // in time, and the bound (segment_await_claim()). A wait that seldom ends in a record is time spent
-                // for nothing; only the two counts together say whether it pays.
-                "shm_claim_waits=%lu shm_claim_waits_published=%lu shm_sleep_cost_ns=%lu",
-                node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
-                (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
-                (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
-                (unsigned long)node->rx_via_well_known_datagrams, (unsigned long)node->tx_dropped_oversize,
-                (unsigned long)node->tx_datagrams_by_transport[tt_TRANSPORT_UDP],
-                (unsigned long)node->tx_datagrams_by_transport[tt_TRANSPORT_SHM],
-                (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_UDP],
-                (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_SHM],
-                (unsigned long)node->segment_broadcast_to_udp, (unsigned long)node->segment_oversized_to_udp,
-                (unsigned long)node->segment_unattached_to_udp, (unsigned long)node->segment_full_dropped,
-                (unsigned long)node->segment_attach[tt_SEGMENT_REFUSED], (unsigned long)node->segment_doorbells_sent,
-                (unsigned long)node->segment_bells_rung, (unsigned long)node->segment_doorbells_received,
-                (unsigned long)node->segments_created, (unsigned long)node->segments_released,
-                node->same_host_peer_count, (unsigned long)node->segment_claim_waits,
-                (unsigned long)node->segment_claim_waits_published, (unsigned long)node->segment_sleep_cost_ns);
+    TT_LOG_INFO(
+        "Node %u traffic: tx_datagrams=%lu rx_datagrams=%lu rx_self_sent=%lu rx_self_sent_data=%lu "
+        "rx_self_sent_data_unicast=%lu rx_via_data=%lu rx_via_well_known=%lu tx_dropped_oversize=%lu "
+        "tx_udp=%lu tx_shm=%lu rx_udp=%lu rx_shm=%lu "
+        // Why each UDP datagram went that way, on the same line as the totals. Without it a
+        // split like tx_udp=6694744 tx_shm=6746571 says only "half and half" and the next
+        // question - which half, and why - needs another run. It cost one on 2026-09-29.
+        "tx_udp_broadcast=%lu tx_udp_oversize=%lu tx_udp_unattached=%lu shm_full_dropped=%lu "
+        // How many peers this context gave up on, and how many doorbells it rang. The first
+        // is the only counter that rises ONLY when a reader was judged dead, and without it
+        // "the writer abandoned the corpse" cannot be told apart from the ordinary reasons
+        // tx_udp_unattached rises - which is a test that cannot fail, found as one.
+        "shm_gave_up=%lu shm_doorbells_sent=%lu shm_bells_rung=%lu shm_doorbells_received=%lu "
+        // Whether this context ever built a segment, and whether it still has one. With
+        // creation deferred until a same-host peer appears, tx_shm=0 has two entirely
+        // different meanings - "no peer could have used one" and "one could, and it broke" -
+        // and shm_segments_created is what separates them. A reader who sees created=0 on a
+        // run that expected shared memory should look at same_host_peers before the ring.
+        "shm_segments_created=%lu shm_segments_released=%lu shm_same_host_peers=%u "
+        // How often a record a writer was still filling was waited for instead of slept on, how often it came
+        // in time, and the bound (segment_await_claim()). A wait that seldom ends in a record is time spent
+        // for nothing; only the two counts together say whether it pays.
+        "shm_claim_waits=%lu shm_claim_waits_published=%lu shm_sleep_cost_ns=%lu shm_watches=%lu shm_watch_hits=%lu",
+        node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
+        (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
+        (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
+        (unsigned long)node->rx_via_well_known_datagrams, (unsigned long)node->tx_dropped_oversize,
+        (unsigned long)node->tx_datagrams_by_transport[tt_TRANSPORT_UDP],
+        (unsigned long)node->tx_datagrams_by_transport[tt_TRANSPORT_SHM],
+        (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_UDP],
+        (unsigned long)node->rx_datagrams_by_transport[tt_TRANSPORT_SHM], (unsigned long)node->segment_broadcast_to_udp,
+        (unsigned long)node->segment_oversized_to_udp, (unsigned long)node->segment_unattached_to_udp,
+        (unsigned long)node->segment_full_dropped, (unsigned long)node->segment_attach[tt_SEGMENT_REFUSED],
+        (unsigned long)node->segment_doorbells_sent, (unsigned long)node->segment_bells_rung,
+        (unsigned long)node->segment_doorbells_received, (unsigned long)node->segments_created,
+        (unsigned long)node->segments_released, node->same_host_peer_count, (unsigned long)node->segment_claim_waits,
+        (unsigned long)node->segment_claim_waits_published, (unsigned long)node->segment_sleep_cost_ns,
+        (unsigned long)node->segment_watches, (unsigned long)node->segment_watch_hits);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads
