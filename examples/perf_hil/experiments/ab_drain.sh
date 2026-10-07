@@ -192,6 +192,7 @@ if [ "$ROLE" = outer ]; then
         specs=()
         while IFS='|' read -r scen size extra _; do
             [[ $scen == BLOCKS* ]] && continue
+            [[ $scen == SENTINEL* ]] && continue # the same cell at A's commit; A's own preflight covers it
             specs+=("$scen:$size:N0:$extra:-Q")
         done < <(python3 "$X/ab_samehost.py" cells "$OUTB.s6.prereg.json")
         for v in A B C; do
