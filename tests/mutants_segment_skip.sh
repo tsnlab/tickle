@@ -48,3 +48,13 @@ EOF
 printf '%-28s %s\n' "keep-all-not-honoured(both)" "$(run)"
 mutate "no-continuation-skip" "    if (rec.kind == SEGMENT_RECORD_CONT && skipping && skip_continuation(node, &rec, index)) {" "    if (false) {"
 mutate "no-hand-back" "        if (node->rx_keep_last_delivered != node->segment_plan_mark) {" "        if (false) {"
+# The plan's leading run (segment_skip_run()). Each mutant breaks one thing the run must keep from the record-by-record
+# path; the last removes the run altogether, which only makes the drain slower and must still pass.
+mutate "run-ignores-writer" "    return run->count != 0 && run->source == rec->source && run->entity_id == rec->entity_id &&" "    return run->count != 0 || run->source == rec->source && run->entity_id == rec->entity_id &&"
+# A RELIABLE Subscriber is refused the run twice: by allowed.reliable, and by visit_skip_allowed()'s seq_no check,
+# which the run's record (seq_no 0, it stands for many) can only pass once ack_seq_no wraps to 0. The test cannot
+# reach that, so removing the first alone passes. The first is kept so the run never rests on the wrap.
+mutate "run-takes-reliable(PASS ok)" "    if (!allowed.allowed || !allowed.any || allowed.reliable) {" "    if (!allowed.allowed || !allowed.any) {"
+mutate "run-counts-one" "    struct segment_superseded_ctx ctx = {&rec, count};" "    struct segment_superseded_ctx ctx = {&rec, 1U};"
+mutate "run-releases-one" "    segment_release_run(node->own_segment, index, count);" "    segment_release(node->own_segment, index + count - 1U);"
+mutate "no-run(PASS ok)" "    if (offset == 0 && node->segment_plan_run.count != 0 && !skipping) {" "    if (false) {"

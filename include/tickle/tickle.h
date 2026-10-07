@@ -596,6 +596,15 @@ struct tt_Context {
     uint64_t rx_keep_last_delivered;
     uint64_t segment_plan_mark;
     uint8_t segment_plan_skip[(tt_SEGMENT_SLOTS / 8) + 1]; // one bit per slot, rounded up
+    // The plan's leading run: its first `count` records are all superseded whole samples of one writer's endpoint,
+    // which the drain can pass over together - one permission check, one accounting, one release - before the
+    // sample it hands over is read (segment_skip_run(), tickle.c). count == 0: no such run, or it is spent.
+    struct tt_SegmentPlanRun {
+        uint32_t entity_id;
+        uint32_t endpoint_id;
+        uint32_t count;
+        uint8_t source;
+    } segment_plan_run;
     // Fragmented samples whose FRAG_FIRST the drain skipped and whose continuations are still to be read: each
     // continuation that belongs to one is skipped with it, so a skipped sample never leaves a fragment to be
     // reassembled on its own. Survives between drains (a sample can straddle the drain's bound); count == 0 is free.
