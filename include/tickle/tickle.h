@@ -725,14 +725,23 @@ struct tt_Context {
     uint32_t segment_slot_ceiling; // the largest slot_bytes of any peer segment attached (record_size_limit()) // of
                                    // segment_doorbells_sent, the ones rung through the FIFO rather than UDP
     uint64_t segment_doorbells_received;
-    // The shortest sleep a doorbell has ended, from the decision to sleep to the resume: the least sleeping has cost
-    // this reader, and how long it may wait for a record already claimed instead (segment_await_claim()). 0 until the
-    // first. Polling thread only.
+    // The shortest sleep taken on a record already claimed and ended by its doorbell, decision to resume: the least
+    // a sleep has cost this reader, with no idle time in it (segment_resumed()), and how long it may wait for a record
+    // instead (segment_await_claim(), segment_await_next()). 0 until the first. Polling thread only.
     uint64_t segment_sleep_cost_ns;
+    uint8_t segment_sleep_on_claim; // the sleep being entered is one of those: set by poll_wait_io(), read on resume
     // How many times this context's own ring was waited on without announcing a sleep, and how many of those waits
     // ended with the record published - the rest slept as before.
     uint64_t segment_claim_waits;
     uint64_t segment_claim_waits_published;
+    // The current awake stretch, for the writers' pace while this reader was awake (segment_await_next()): when it
+    // began - a resume, or the last time the ring was found empty - and the ring's write_index then.
+    uint64_t segment_stretch_ns;
+    uint64_t segment_gap_ns; // the writers' last measured gap between records while awake (segment_await_next())
+    uint32_t segment_stretch_index;
+    // How many times an empty ring was watched for the next claim instead of slept on, and how many a claim ended.
+    uint64_t segment_watches;
+    uint64_t segment_watch_hits;
     // How many times this context built its own segment and gave it up again, and how many peers it
     // currently believes share its host. Out here with the other counters rather than behind
     // tt_SEGMENT_ENABLED because the traffic line that prints them is compiled either way; they stay
