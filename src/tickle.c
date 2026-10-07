@@ -3558,6 +3558,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->segment_epochs[0] = 0;
     node->segment_epochs[1] = 0;
     node->segment_encoded_in_slot = 0;
+    node->rx_drain_ring_turns = 0;
     // Counters that only ever increment, and therefore only ever reported whatever was on the
     // caller's stack. Found by the structural check Plan built after `segment_peers` shipped
     // uninitialised: this function is where a field is initialised, and the three below had been
@@ -12718,6 +12719,17 @@ static bool segment_has_records(const struct tt_Context* node) {
 #endif
 }
 
+// segment_has_records() as drain_rx() asks it, counting each pass it ends (rx_drain_ring_turns): the A/B witness that
+// the ring-turn rule ran. A doorbell-woken reader's drain finds the record the bell was rung for, so a same-host run
+// with a sleeping reader counts it; without a segment it is always false and never counts.
+static bool ring_takes_its_turn(struct tt_Context* node) {
+    if (!segment_has_records(node)) {
+        return false;
+    }
+    node->rx_drain_ring_turns++;
+    return true;
+}
+
 // rx_buffer itself needs no lock - only the one poller touches it (struct tt_Context.poller_active) - but
 // everything a datagram updates does, so each one is processed under the state lock.
 #if tt_SEGMENT_ENABLED
@@ -13303,7 +13315,7 @@ static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
     }
 
     uint32_t since_clock = 1; // the first datagram was stamped with the reading its caller took
-    while (!segment_has_records(node)) {
+    while (!ring_takes_its_turn(node)) {
         uint32_t ip = 0;
         uint16_t port = 0;
         tt_ret_t result = tt_RET_OK;
@@ -13821,7 +13833,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         // Whether waiting paid (segment_epoch_turn()): epochs measured in each mode, the recent mean cost per record
         // of each in ns (0: never measured), and the mode preferred at exit (1: waiting).
         "shm_epochs_sleeping=%lu shm_epochs_waiting=%lu shm_cost_sleeping_ns=%lu shm_cost_waiting_ns=%lu "
-        "shm_waiting_preferred=%u shm_encoded_in_slot=%lu",
+        "shm_waiting_preferred=%u shm_encoded_in_slot=%lu rx_drain_ring_turns=%lu",
         node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
         (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
         (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -13839,7 +13851,8 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned long)node->segment_watches, (unsigned long)node->segment_watch_hits,
         (unsigned long)node->segment_epochs[0], (unsigned long)node->segment_epochs[1],
         (unsigned long)node->segment_cost_mean_ns[0], (unsigned long)node->segment_cost_mean_ns[1],
-        (unsigned)node->segment_preferred, (unsigned long)node->segment_encoded_in_slot);
+        (unsigned)node->segment_preferred, (unsigned long)node->segment_encoded_in_slot,
+        (unsigned long)node->rx_drain_ring_turns);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads
