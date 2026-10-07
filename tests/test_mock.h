@@ -87,12 +87,13 @@ bool test_mock_receive_advances_clock = false;
 // tt_receive() reports an interrupt, so the regression shows up as a failed assertion rather than a
 // hung test binary. 0 (the default) = no limit.
 int test_mock_receive_limit = 0;
-uint64_t test_mock_receive_data_advance_ns = 0; // a wait that ends with a datagram lets this much time pass
-int test_mock_try_receive_remaining = 0;        // tt_try_receive() hands back this many more datagrams ...
-int32_t test_mock_try_receive_len = 0;          // ... of this length, whatever the buffer holds ...
-uint64_t test_mock_try_receive_advance_ns = 0;  // ... each this much later than the one before
-int test_mock_socket_reads_under_lock = 0;      // tt_try_receive() calls past the backlog - a read of the
-                                                // socket, on a real HAL - made holding the node's state lock
+uint64_t test_mock_receive_data_advance_ns = 0;  // a wait that ends with a datagram lets this much time pass
+int test_mock_try_receive_remaining = 0;         // tt_try_receive() hands back this many more datagrams ...
+int32_t test_mock_try_receive_len = 0;           // ... of this length, whatever the buffer holds ...
+uint64_t test_mock_try_receive_advance_ns = 0;   // ... each this much later than the one before
+int test_mock_socket_reads_under_lock = 0;       // tt_try_receive() calls past the backlog - a read of the
+                                                 // socket, on a real HAL - made holding the node's state lock
+void (*test_mock_try_receive_hook)(void) = NULL; // called for each backlog datagram tt_try_receive() hands out
 #else
 extern uint64_t test_mock_now;
 extern int32_t test_mock_node_id;
@@ -122,6 +123,7 @@ extern int test_mock_try_receive_remaining;
 extern int32_t test_mock_try_receive_len;
 extern uint64_t test_mock_try_receive_advance_ns;
 extern int test_mock_socket_reads_under_lock;
+extern void (*test_mock_try_receive_hook)(void);
 #endif
 
 // Call at the start of each test case so one test's overrides can't leak into the next.
@@ -153,6 +155,7 @@ static inline void test_mock_reset(void) {
     test_mock_try_receive_remaining = 0;
     test_mock_try_receive_len = 0;
     test_mock_try_receive_advance_ns = 0;
+    test_mock_try_receive_hook = NULL;
     test_mock_socket_reads_under_lock = 0;
 }
 
@@ -482,6 +485,9 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
     if (test_mock_try_receive_remaining > 0) {
         test_mock_try_receive_remaining--;
         test_mock_now += test_mock_try_receive_advance_ns;
+        if (test_mock_try_receive_hook != NULL) {
+            test_mock_try_receive_hook();
+        }
         return test_mock_try_receive_len;
     }
     if (__atomic_load_n(&node->state_owner, __ATOMIC_RELAXED) == tt_thread_self()) {
