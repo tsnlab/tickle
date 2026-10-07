@@ -89,7 +89,7 @@ The user's active list (2026-10-05), in order.
    `~/rig_results_safe/ab_samehost_reader_wake3_20261007-104246.summary.txt`): IMPROVED 7/7, controls held - RTT
    p50 29 -> 23 us (-20%), system time per sleep -22..-29%, max-rate BEST_EFFORT p3 CPU per sample 1.595 -> 1.316
    us (-17.5%). Not landed yet: on a PC placement with a ~260 ns cache-line round trip between the two cores, max-rate
-   CPU per sample is +53%. Next: a guard that makes the watch pay for itself (being written).
+   CPU per sample is +53%. Round 4 (`ab/wake-epoll4`: C'' rebased + the watch taken only where it measures cheaper, per epoch; `~/rig_results_safe/ab_samehost_reader_wake4_20261007-134608.summary.txt`, against `f25747ae`): IMPROVED 7/7, controls held - RTT p50 29 -> 23 us (-20%), system time per sleep -24..-28%, max-rate p3 CPU per sample 1.614 -> 1.420 us (-12%). Landed (`8c1e6431`). Left: on the PC's ~260 ns placement max-rate CPU per sample is still +3.6% against main (1.381 vs 1.333 us; the epoll sleep rings 0.038 vs 0.029 times a sample).
 5. **rmw_tickle KEEP_ALL on the rig**: the first run lost ~5% of samples under 5% loss in every build. Six causes
    found and fixed on 2026-10-05: a busy socket starved the data socket (`b6de8a4d`); an endpoint was announced
    before its QoS was final (`155eecb7`); a publisher could not learn its reader except from an announce lost in
