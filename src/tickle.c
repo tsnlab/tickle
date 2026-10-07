@@ -12348,23 +12348,38 @@ static void note_head_stall(struct tt_Context* node) {
     }
 }
 
+// segment_release() of `count` slots from `index` on, with read_index moved once, past the last: the slots the drain
+// passes over without reading. A writer reads read_index only to see whether the ring is full, so one that looks
+// between the stores sees it fuller than it is, never emptier; each slot is free for it only once its own sequence
+// says so. read_index stays a release store for that: a writer that saw it move but not yet a slot's sequence would
+// refuse the slot and drop the datagram (segment_full_dropped).
+//
+// One release fence and plain stores for the sequences, not a release store each. The guarantee is the same -
+// whatever this reader did with a slot (the plan's look at its headers) happens before a writer that sees its new
+// sequence reuses it - and on x86 so is the code: both forms are plain moves there. On AArch64 a release store is an
+// STLR, an STLR is not seen before any store ahead of it, and the drain's next step - segment_read()'s acquire load of
+// the record it hands over, an LDAR - waits until every earlier STLR is seen. Each sequence is on a line the publisher
+// wrote, so the handed-over record waited for count + 1 ownership transfers, one after another: a cost that grows
+// with the backlog passed over, ~10 records per record read on the rig (rmw Array1k BEST_EFFORT KEEP_LAST 1, -r 0)
+// against ~4 on the PC. That is the likely rig-only part of skip-to-newest's extra sample age: on the rig 1fec27bb
+// read the delivered sample 0.63 us older than main; on the PC, at the rig's depth, -0.36 and +0.05 us (two runs).
+// Plain stores after the fence are taken in parallel, and the one STLR left waits for them together.
+// examples/perf_hil/experiments/skip_age_pc.sh EMU=1 runs the arms on the PC under a model of the AArch64 ordering
+// (skip_age_armorder.py): at depth 11-13 1fec27bb read the sample 1.10 us older than main and this 0.06 us (n=5).
+// The rig decides.
+static void segment_release_run(struct tt_SegmentHeader* header, uint32_t index, uint32_t count) {
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    for (uint32_t k = 0; k < count; k++) {
+        struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)segment_slot(header, index + k);
+        __atomic_store_n(&slot_header->sequence, index + k + header->slots, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(&header->read_index, index + count, __ATOMIC_RELEASE); // after every sequence above
+}
+
 // Releases slot `index` back to the writers without reading it - segment_read()'s release, in its order: the slot
 // is marked free one lap ahead before read_index moves past it.
 static void segment_release(struct tt_SegmentHeader* header, uint32_t index) {
-    struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)segment_slot(header, index);
-    __atomic_store_n(&slot_header->sequence, index + header->slots, __ATOMIC_RELEASE);
-    __atomic_store_n(&header->read_index, index + 1U, __ATOMIC_RELEASE);
-}
-
-// segment_release() of `count` slots from `index` on, with read_index moved once, past the last. A writer reads
-// read_index only to see whether the ring is full, so one that looks between the stores sees it fuller than it is,
-// never emptier; each slot is free for it only once its own sequence says so.
-static void segment_release_run(struct tt_SegmentHeader* header, uint32_t index, uint32_t count) {
-    for (uint32_t k = 0; k < count; k++) {
-        struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)segment_slot(header, index + k);
-        __atomic_store_n(&slot_header->sequence, index + k + header->slots, __ATOMIC_RELEASE);
-    }
-    __atomic_store_n(&header->read_index, index + count, __ATOMIC_RELEASE);
+    segment_release_run(header, index, 1);
 }
 
 // SKIP TO NEWEST. Under overload a KEEP_LAST Subscriber's backlog in the ring is mostly samples its history will
@@ -12626,15 +12641,21 @@ static bool plan_completes_sample(struct segment_plan_writer* writer, const stru
 }
 
 // How many records from `read_index` on are published now, up to `limit`: a claimed slot not yet written ends it.
+//
+// Plain loads and one acquire fence after them, not an acquire load each: the same guarantee for every header the
+// plan then reads. On AArch64 no load may start before an earlier LDAR completes, so the walk took one cross-core miss
+// after another, one per record of the backlog (segment_release_run() has the measurements); plain loads miss
+// together. x86 compiles both forms to plain moves.
 static uint32_t segment_published_run(struct tt_SegmentHeader* ring, uint32_t read_index, uint32_t limit) {
     uint32_t count = 0;
     while (count < limit) {
         const struct tt_SegmentSlot* slot_header = (const struct tt_SegmentSlot*)segment_slot(ring, read_index + count);
-        if (__atomic_load_n(&slot_header->sequence, __ATOMIC_ACQUIRE) != read_index + count + 1U) {
+        if (__atomic_load_n(&slot_header->sequence, __ATOMIC_RELAXED) != read_index + count + 1U) {
             break;
         }
         count++;
     }
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
     return count;
 }
 
