@@ -234,9 +234,20 @@ int main(void) {
 
     // Never asserted at all - must go LIVELINESS_LOST once its own lease elapses, entirely on its
     // own schedule (no external stall needed, unlike AUTOMATIC's own node-wide check above).
+    //
+    // The patience is the lease plus four ticks, as for recovery_timeout above and for the same reason. It used to
+    // be the lease plus ONE second, and that left 43 ms, every run: the watchdog checks once a tick
+    // (RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS), and its cadence is set by the unlock above - it was blocked on that
+    // lock and runs its check the moment it gets it, which is the moment this thread goes on to create the Publisher.
+    // So the checks land just after creation, at +0.95, +1.95, +2.96 s (45 ms short of the 3 s lease, not stale yet)
+    // and +3.96 s, which marks it - 43 ms inside a 4.0 s wait (measured 2026-10-08, 20 runs, the same to the
+    // millisecond on main and before the reader-wake round 4). A check 43 ms late under a loaded machine was the
+    // whole of the failure: 2 of 3 check-gates runs on 2026-10-08, never on a quiet one. A watchdog that is actually
+    // broken never fires and still fails here.
+    const uint64_t neglected_ns = manual_lease_ns + (4U * (uint64_t)tt_CONTEXT_UPDATE_INTERVAL);
     rmw_time_t neglected_timeout = {
-        .sec = (manual_lease_ns + tt_SECOND) / tt_SECOND, // +1s margin over the bare floor
-        .nsec = (manual_lease_ns + tt_SECOND) % tt_SECOND,
+        .sec = neglected_ns / tt_SECOND,
+        .nsec = neglected_ns % tt_SECOND,
     };
     void* neglected_events_storage[1] = {&neglected_lost_event};
     rmw_events_t neglected_events = {.event_count = 1, .events = neglected_events_storage};
