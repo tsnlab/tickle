@@ -208,8 +208,10 @@ The full tables are in [RESULTS.md](RESULTS.md).
   coverage table.
 - Messages above 64 KB (large-message stage 2: wider fragment index, 32-bit record length).
 - More than one outstanding request per client and per service.
-- Round-trip checks for the other introspection values (names, type names, GIDs, event counts, serialization format):
-  only QoS profiles are verified to be accepted back.
+- Round-trip checks for the introspection values: QoS profiles (`test_reported_qos`), and names, type names, counts,
+  `*_info_by_topic` rows, GIDs and the serialization format across two processes (`test_introspection_two_process`,
+  `test_gid_two_process`; no mismatch found) are done. Open: event counts across processes, and two writers of one
+  topic in one remote context, which the graph lists as one (core discovery keys on `endpoint_id`).
 - `*_info_by_service`: report two endpoints per entry, a real type hash, and remote QoS.
 - Shared-memory tests: the kill test (S5), the fair same-host comparison against both vendors (S6), a CI arm with the
   module on (S8), and both mixed-stream windows (S9).
