@@ -946,7 +946,12 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     pub_impl->rmw_publisher.data = pub_impl;
     pub_impl->rmw_publisher.topic_name = rcutils_strdup(topic_name, *allocator);
     pub_impl->rmw_publisher.options = *publisher_options;
-    pub_impl->rmw_publisher.can_loan_messages = false;
+    // Loaned messages (docs/RMW.md): a type whose wire bytes are its message. The mutex needs no init call, so no
+    // failure path below has anything more to undo.
+    pub_impl->loans = rmw_tickle_type_can_loan(callbacks);
+    // NOLINTNEXTLINE(misc-include-cleaner) - pthread_mutex_t: <pthread.h> above, via a glibc-private header
+    pub_impl->loan_mutex = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+    pub_impl->rmw_publisher.can_loan_messages = pub_impl->loans;
     // Phase 3 step 3 - resolved once here rather than per publish: getenv() on the hot path would
     // be both wasteful and a lie (the value can't change meaningfully mid-run anyway). Set for every
     // Publisher, not just KEEP_ALL ones, so publish_blocking()'s own diagnostics can quote it
@@ -1155,6 +1160,22 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     tt_Context_unlock(&pub_impl->node->context_impl->tickle_context);
 
     pthread_mutex_destroy(&pub_impl->publish_mutex); // Milestone 45 - see its own doc comment
+    // Loaned messages: every buffer this publisher made, lent out or not - one still with the application is its error
+    // (rmw.h: publish or return every loan before destroying the publisher), and invalid from now on.
+    size_t loans_held = 0;
+    for (size_t i = 0; i < pub_impl->loan_count; i++) {
+        loans_held += pub_impl->loan_out[i] ? 1U : 0U;
+        rmw_tickle_ros_message_destroy(pub_impl->callbacks, pub_impl->loan_buffers[i], &pub_impl->allocator);
+    }
+    if (loans_held > 0) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                               "publisher %s destroyed with %zu borrowed message(s) neither published nor "
+                               "returned",
+                               pub_impl->rmw_publisher.topic_name, loans_held);
+    }
+    pub_impl->allocator.deallocate((void*)pub_impl->loan_buffers, pub_impl->allocator.state);
+    pub_impl->allocator.deallocate(pub_impl->loan_out, pub_impl->allocator.state);
+    pthread_mutex_destroy(&pub_impl->loan_mutex);
     rmw_tickle_callback_slot_fini(&pub_impl->deadline_missed.callback);
     rmw_tickle_callback_slot_fini(&pub_impl->liveliness_lost.callback);
     rmw_tickle_callback_slot_fini(&pub_impl->offered_qos_incompatible.base.callback);
@@ -1537,51 +1558,168 @@ rmw_ret_t rmw_publisher_assert_liveliness(const rmw_publisher_t* publisher) {
     return RMW_RET_OK;
 }
 
-// Loaned (zero-copy) messages: rmw_publisher_t.can_loan_messages is always false (tt_Context_create_
-// publisher() never sets it true - no shared-memory/zero-copy transport exists), and unlike most
-// other not-yet-implemented rmw_*() extras, these three symbols still have to actually exist -
-// same reasoning as rmw_publisher_event_init() just above (an unresolved dlsym is fatal to
-// rmw_implementation's own dispatch, a returned RMW_RET_UNSUPPORTED is not). Found via test_rmw_
-// implementation's own TestPublisherUseLoan fixture, which calls all three expecting exactly this
-// return before GTEST_SKIP()-ing the rest of its own loan-specific test cases - a missing symbol
-// crashed that fixture's SetUp() outright (a NULL function pointer call) instead of failing a
-// single assertion.
-rmw_ret_t rmw_borrow_loaned_message(const rmw_publisher_t* publisher, const rosidl_message_type_support_t* type_support,
-                                    void** ros_message) {
-    (void)type_support;
-    RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
-    RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_message, RMW_RET_INVALID_ARGUMENT);
+// Loaned messages (docs/RMW.md, "Loaned messages"). A loaning publisher (can_loan_messages: the type's wire bytes are
+// its message, callbacks->inplace_bytes) lends buffers of its own, kept for the next borrow once published or returned:
+// rclcpp's LoanedMessage then builds the message in one of them instead of allocating, constructing and freeing a
+// message per publish. What a loan does NOT save is the publish's one copy: rmw_publish_loaned_message() encodes the
+// buffer into the ring slot (encode-in-slot) or tx_buffer exactly as rmw_publish() encodes a caller's message - for an
+// in-place type, field-wise copies of the bytes as they stand. Lending the ring slot itself would need a core API that
+// hands an application a claimed slot, and a claimed slot stops its reader until it is published (DESIGN.md 10);
+// core has none, so this does not pretend to.
+//
+// A new buffer is initialised as a new message is (ros_init for C++, zeroed for C); a kept one is lent as its previous
+// loan left it, since a loanable type holds nothing that needs constructing - no string, no sequence - and clearing
+// it would write as many bytes as the copy a loan exists to save. An application that relies on a field's default
+// must set it. A publisher that does not lend answers RMW_RET_UNSUPPORTED
+// (test_rmw_implementation's TestPublisherUseLoan expects it for a type it cannot loan).
+
+// The buffer index of `message` among this publisher's loans that are out, or loan_count. loan_mutex held.
+static size_t find_loan_out(const rmw_tickle_publisher_t* pub_impl, const void* message) {
+    size_t i = 0;
+    while (i < pub_impl->loan_count && (pub_impl->loan_buffers[i] != message || !pub_impl->loan_out[i])) {
+        i++;
+    }
+    return i;
+}
+
+// A buffer for one more loan: a kept one, or a new one while under RMW_TICKLE_PUBLISHER_LOANS_MAX. loan_mutex held.
+static void* lend_buffer(rmw_tickle_publisher_t* pub_impl) {
+    for (size_t i = 0; i < pub_impl->loan_count; i++) {
+        if (!pub_impl->loan_out[i]) {
+            pub_impl->loan_out[i] = true;
+            return pub_impl->loan_buffers[i];
+        }
+    }
+    if (pub_impl->loan_count == RMW_TICKLE_PUBLISHER_LOANS_MAX) {
+        return NULL;
+    }
+    if (NULL == pub_impl->loan_buffers) {
+        pub_impl->loan_buffers = (void**)pub_impl->allocator.zero_allocate(RMW_TICKLE_PUBLISHER_LOANS_MAX,
+                                                                           sizeof(void*), pub_impl->allocator.state);
+        pub_impl->loan_out = (bool*)pub_impl->allocator.zero_allocate(RMW_TICKLE_PUBLISHER_LOANS_MAX, sizeof(bool),
+                                                                      pub_impl->allocator.state);
+        if (NULL == pub_impl->loan_buffers || NULL == pub_impl->loan_out) {
+            pub_impl->allocator.deallocate((void*)pub_impl->loan_buffers, pub_impl->allocator.state);
+            pub_impl->allocator.deallocate(pub_impl->loan_out, pub_impl->allocator.state);
+            pub_impl->loan_buffers = NULL;
+            pub_impl->loan_out = NULL;
+            return NULL;
+        }
+    }
+    void* buffer = rmw_tickle_ros_message_create(pub_impl->callbacks, &pub_impl->allocator);
+    if (NULL == buffer) {
+        return NULL;
+    }
+    pub_impl->loan_buffers[pub_impl->loan_count] = buffer;
+    pub_impl->loan_out[pub_impl->loan_count] = true;
+    pub_impl->loan_count++;
+    return buffer;
+}
+
+// The checks every loan entry point shares; NULL with the error set, or the publisher.
+static rmw_tickle_publisher_t* loaning_publisher(const rmw_publisher_t* publisher, rmw_ret_t* ret) {
     if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
-        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+        *ret = RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+        return NULL;
     }
-    *ros_message = NULL;
-    RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
-    return RMW_RET_UNSUPPORTED;
+    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
+    if (!pub_impl->loans) {
+        RMW_SET_ERROR_MSG("rmw_tickle cannot loan this type: its wire bytes are not its message in memory");
+        *ret = RMW_RET_UNSUPPORTED;
+        return NULL;
+    }
+    return pub_impl;
+}
+
+rmw_ret_t rmw_borrow_loaned_message(const rmw_publisher_t* publisher, const rosidl_message_type_support_t* type_support,
+                                    void** ros_message) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(type_support, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_message, RMW_RET_INVALID_ARGUMENT);
+    rmw_ret_t ret = RMW_RET_OK;
+    rmw_tickle_publisher_t* pub_impl = loaning_publisher(publisher, &ret);
+    if (NULL == pub_impl) {
+        return ret;
+    }
+    if (NULL != *ros_message) {
+        RMW_SET_ERROR_MSG("*ros_message must be NULL");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+    // The type asked for must be the publisher's: a loan is sized and initialised for that one. The handle may come
+    // through another typesupport (rosidl_typesupport_cpp's dispatcher), so one that is not the very handle the
+    // publisher was created with is resolved, then compared by name. The resolution walks the dispatch chain and
+    // resets an rmw error on the way, which on every borrow cost more than the copy a loan saves (PC, 2026-10-08).
+    if (type_support != pub_impl->type_support) {
+        const rosidl_typesupport_tickle_c_message_callbacks_t* asked =
+            rmw_tickle_get_message_callbacks(type_support, "publisher", publisher->topic_name);
+        if (NULL == asked || NULL == asked->ros_type_name ||
+            0 != strcmp(asked->ros_type_name, pub_impl->callbacks->ros_type_name)) {
+            RMW_SET_ERROR_MSG("rmw_borrow_loaned_message: type_support is not this publisher's type");
+            return RMW_RET_INVALID_ARGUMENT;
+        }
+    }
+    pthread_mutex_lock(&pub_impl->loan_mutex);
+    void* buffer = lend_buffer(pub_impl);
+    pthread_mutex_unlock(&pub_impl->loan_mutex);
+    if (NULL == buffer) {
+        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING("rmw_tickle: %u messages are borrowed from this publisher already, or "
+                                             "allocating one more failed",
+                                             (unsigned)RMW_TICKLE_PUBLISHER_LOANS_MAX);
+        return RMW_RET_BAD_ALLOC;
+    }
+    *ros_message = buffer;
+    return RMW_RET_OK;
 }
 
 rmw_ret_t rmw_return_loaned_message_from_publisher(const rmw_publisher_t* publisher, void* loaned_message) {
-    (void)loaned_message;
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
-    if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
-        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
-        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(loaned_message, RMW_RET_INVALID_ARGUMENT);
+    rmw_ret_t ret = RMW_RET_OK;
+    rmw_tickle_publisher_t* pub_impl = loaning_publisher(publisher, &ret);
+    if (NULL == pub_impl) {
+        return ret;
     }
-    RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
-    return RMW_RET_UNSUPPORTED;
+    pthread_mutex_lock(&pub_impl->loan_mutex);
+    size_t i = find_loan_out(pub_impl, loaned_message);
+    bool found = i < pub_impl->loan_count;
+    if (found) {
+        pub_impl->loan_out[i] = false;
+    }
+    pthread_mutex_unlock(&pub_impl->loan_mutex);
+    if (!found) {
+        RMW_SET_ERROR_MSG("not a message borrowed from this publisher, or one already published or returned");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+    return RMW_RET_OK;
 }
 
 rmw_ret_t rmw_publish_loaned_message(const rmw_publisher_t* publisher, void* ros_message,
                                      rmw_publisher_allocation_t* allocation) {
-    (void)ros_message;
-    (void)allocation;
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
-    if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
-        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
-        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_message, RMW_RET_INVALID_ARGUMENT);
+    rmw_ret_t ret = RMW_RET_OK;
+    rmw_tickle_publisher_t* pub_impl = loaning_publisher(publisher, &ret);
+    if (NULL == pub_impl) {
+        return ret;
     }
-    RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
-    return RMW_RET_UNSUPPORTED;
+    pthread_mutex_lock(&pub_impl->loan_mutex);
+    bool found = find_loan_out(pub_impl, ros_message) < pub_impl->loan_count;
+    pthread_mutex_unlock(&pub_impl->loan_mutex);
+    if (!found) {
+        RMW_SET_ERROR_MSG("not a message borrowed from this publisher, or one already published or returned");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+    ret = rmw_publish(publisher, ros_message, allocation);
+    // The loan is the middleware's again whatever the publish said (rmw.h), and rclcpp never returns it after a
+    // failed one, so it is taken back here either way.
+    pthread_mutex_lock(&pub_impl->loan_mutex);
+    size_t i = find_loan_out(pub_impl, ros_message);
+    if (i < pub_impl->loan_count) {
+        pub_impl->loan_out[i] = false;
+    }
+    pthread_mutex_unlock(&pub_impl->loan_mutex);
+    return ret;
 }
 
 // How often rmw_publisher_wait_for_all_acked() below re-solicits (tt_Publisher_request_ack(),
