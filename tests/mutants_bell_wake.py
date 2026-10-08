@@ -19,11 +19,16 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "examples/perf_hil/experiments/bell_wake_netns.sh"
 BIN = ROOT / "platform/linux/bell_wake_check"
 
-# (name, file, text, replacement[, round trips]). The fence mutant's race is the rarest, and was rarer still from
-# cd09e895 on (0 lost wake-ups in 3.2 million round trips, against 1-6 in 400,000 before): bell_wake_check aims half its
-# pongs at the reader's announcement and clogs the writer's store buffer while it publishes them, and then lost the
+# (name, file, text, replacement[, round trips[, runs]]). The fence mutant's race is the rarest, and was rarer still
+# from cd09e895 on (0 lost wake-ups in 3.2 million round trips, against 1-6 in 400,000 before): bell_wake_check aims half
+# its pongs at the reader's announcement and clogs the writer's store buffer while it publishes them, and then lost the
 # first wake-up within 283-20,789 round trips in 40 runs of 40 on the PC. It still runs 400,000 for the margin; a run
 # stops at its first lost wake-up, so the margin costs a caught mutant nothing.
+# Since a called-off sleep keeps its generation (segment_sleep_called_off(), 2026-10-08) the reader no longer takes the
+# extra sleeps that a chain of stale rings gave it - 0.75 sleeps a round trip, every one ended by the bell, against
+# 0.77-0.81 with a tenth not - and the race has fewer announcements to land on: on the PC 9 runs of 30 kept the fence
+# mutant alive through 400,000 round trips, while the others lost a wake-up within 67-283,181. Runs are independent,
+# so the mutant gets up to six (all six surviving: ~0.1% at that rate) and is caught by the first that loses one.
 MUTANTS = [
     (
         "the writer's fence between publishing a record and reading reader_waiting (x86 store-buffer reordering)",
@@ -31,13 +36,14 @@ MUTANTS = [
         "    __atomic_thread_fence(__ATOMIC_SEQ_CST);\n    uint32_t sleeping = __atomic_load_n(&segment->reader_waiting",
         "    uint32_t sleeping = __atomic_load_n(&segment->reader_waiting",
         400000,
+        6,
     ),
     (
         "the reader's second drain, after it says it is about to sleep (the classic race)",
         "src/tickle.c",
         "    if (drain_own_segment(node, &emptied_before_wait) > 0 || !emptied_before_wait) {\n"
-        "        segment_reader_waiting(node, false);",
-        "    if (false) {\n        segment_reader_waiting(node, false);",
+        "        segment_sleep_called_off(node);",
+        "    if (false) {\n        segment_sleep_called_off(node);",
     ),
     (
         "the writer ringing each new sleep generation, not only the first it saw",
@@ -96,6 +102,7 @@ def main() -> int:
     for entry in MUTANTS:
         name, path, old, new = entry[:4]
         round_trips = entry[4] if len(entry) > 4 else 0
+        runs = entry[5] if len(entry) > 5 else 1
         target = ROOT / path
         original = target.read_text()
         if original.count(old) != 1:
@@ -106,7 +113,11 @@ def main() -> int:
             if not build():
                 print(f"FATAL: mutant '{name}' does not build")
                 return 1
-            code, said = run(round_trips)
+            for attempt in range(1, runs + 1):
+                code, said = run(round_trips)
+                if code != 0:
+                    break
+            said = f"run {attempt} of {runs}: {said}" if runs > 1 else said
         finally:
             target.write_text(original)
         caught = code == 1

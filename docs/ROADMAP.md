@@ -102,6 +102,16 @@ The user's active list (2026-10-05), in order.
    p50 29 -> 23 us (-20%), system time per sleep -22..-29%, max-rate BEST_EFFORT p3 CPU per sample 1.595 -> 1.316
    us (-17.5%). Not landed yet: on a PC placement with a ~260 ns cache-line round trip between the two cores, max-rate
    CPU per sample is +53%. Round 4 (`ab/wake-epoll4`: C'' rebased + the watch taken only where it measures cheaper, per epoch; `~/rig_results_safe/ab_samehost_reader_wake4_20261007-134608.summary.txt`, against `f25747ae`): IMPROVED 7/7, controls held - RTT p50 29 -> 23 us (-20%), system time per sleep -24..-28%, max-rate p3 CPU per sample 1.614 -> 1.420 us (-12%). Landed (`8c1e6431`). Left: on the PC's ~260 ns placement max-rate CPU per sample is still +3.6% against main (1.381 vs 1.333 us; the epoll sleep rings 0.038 vs 0.029 times a sample).
+   Cause (2026-10-08, PC, diagnostic counters): a sleep called off by the drain after its announcement had usually
+   been rung already, and with the edge-triggered bell - never read - that ring ended the next sleep at once, whose own
+   ring then landed after the reader woke: a chain of waits that each returned at once and each cost a ring. At ~260 ns
+   main announced 763 k sleeps a run against ebcb35b1's 290 k and rang 0.073 times a sample against 0.025; reading the
+   bell on every wake (the old way) took it to 0.029, ppoll to 0.037. Fix: a called-off sleep's generation is announced
+   again by the next sleep (`segment_sleep_called_off()`). PC, best_effort_throughput p3 max rate, CPU us per sample
+   (rings): ~260 ns ebcb35b1 1.343 (0.033), 8c1e6431 1.463 (0.043) -> with the fix 1.367 (0.028), main 1.655 (0.066)
+   -> 1.472 (0.033); ~100 ns main 1.204 -> 1.208, -O0 writer 1.548 -> 1.568 (n 4-10 an arm; each within 2 x SE);
+   reliable_latency RTT p50 unchanged (p3 29 us, p2 28 us). Main's remaining +0.13 us at ~260 ns is user time on both
+   sides from commits after 8c1e6431, not rings. Rig A/B still to do.
 5. **rmw_tickle KEEP_ALL on the rig**: the first run lost ~5% of samples under 5% loss in every build. Six causes
    found and fixed on 2026-10-05: a busy socket starved the data socket (`b6de8a4d`); an endpoint was announced
    before its QoS was final (`155eecb7`); a publisher could not learn its reader except from an announce lost in

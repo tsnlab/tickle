@@ -1616,6 +1616,78 @@ static void test_a_sleeping_reader_is_rung_and_a_busy_one_is_not(void) {
     test_mock_segments_free();
 }
 
+// A sleep called off by the drain after its announcement keeps its generation for the next sleep - once, and only
+// when no doorbell came in between (segment_sleep_called_off(), 2026-10-08). The writer that rang the called-off
+// generation does not ring it again: its ring is still pending and ends the next wait. Under a new generation it rang
+// again, and with the edge-triggered bell the second ring outlived the wait it was for and ended the one after - on
+// the PC's ~260 ns vCPU pair a chain that tripled the max-rate writer's rings (0.073 against 0.025 a sample).
+// The arms that must start a new generation are the ones where keeping it would lose a wake-up: the writer has rung
+// it and its ring was taken - by the wait that followed, or by a doorbell read in between.
+static void test_a_called_off_sleep_keeps_its_generation_once(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+
+    struct tt_Context owner;
+    struct tt_Topic owner_topic;
+    struct tt_Publisher owner_pub;
+    init_node_topic_pub(&owner, &owner_topic, &owner_pub);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+
+    struct tt_Context writer;
+    struct tt_Topic writer_topic;
+    struct tt_Publisher writer_pub;
+    init_node_topic_pub(&writer, &writer_topic, &writer_pub);
+    writer.hal.own_ip = PEER_IP;
+    writer.hal.own_port = PEER_PORT;
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = PEER_CONTEXT_ID;
+    enum udp_reason reason = UDP_BECAUSE_UNATTACHED;
+
+    // Announced, and the writer's record rings it - then the drain finds that record and the sleep is called off.
+    segment_reader_waiting(&owner, true);
+    EXPECT_EQ_U32(1, owner.own_segment->reader_waiting);
+    EXPECT_TRUE(segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason));
+    EXPECT_EQ_U32(1, (uint32_t)writer.segment_doorbells_sent);
+    segment_sleep_called_off(&owner);
+    EXPECT_EQ_U32(0, owner.own_segment->reader_waiting);
+
+    // The next sleep announces the same generation, and the writer, which rang it, does not ring again.
+    segment_reader_waiting(&owner, true);
+    EXPECT_EQ_U32(1, owner.own_segment->reader_waiting);
+    EXPECT_EQ_U32(1, (uint32_t)owner.segment_generations_kept);
+    EXPECT_TRUE(segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason));
+    EXPECT_EQ_U32(1, (uint32_t)writer.segment_doorbells_sent);
+
+    // Once: that sleep's wait may take the ring (here it ends without a doorbell counted, as an interrupted wait
+    // does), so the sleep after it is a new generation and is rung.
+    segment_reader_waiting(&owner, false);
+    segment_reader_waiting(&owner, true);
+    EXPECT_EQ_U32(2, owner.own_segment->reader_waiting);
+    EXPECT_TRUE(segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason));
+    EXPECT_EQ_U32(2, (uint32_t)writer.segment_doorbells_sent);
+
+    // Called off again, but a doorbell is read before the next sleep (a UDP doorbell taken by a socket read): the ring
+    // is gone, so a new generation, and the writer rings it.
+    segment_sleep_called_off(&owner);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)process_datagram(&owner, 0, PEER_IP, PEER_PORT, tt_TRANSPORT_UDP));
+    segment_reader_waiting(&owner, true);
+    EXPECT_EQ_U32(3, owner.own_segment->reader_waiting);
+    EXPECT_TRUE(segment_deliver(&writer, OWNER_ID, OWNER_IP, OWNER_PORT, &header, sizeof(header), NULL, 0, &reason));
+    EXPECT_EQ_U32(3, (uint32_t)writer.segment_doorbells_sent);
+    EXPECT_EQ_U32(1, (uint32_t)owner.segment_generations_kept);
+
+    test_mock_segments_free();
+}
+
 // A batch - the fragments of one sample - is rung for once, after its last record is in the ring (2026-10-05).
 // Ringing between fragments put the doorbell's write() and the wake-up it starts between the first fragment and the
 // second; after an idle period the rig's p4 round trip paid ~14 us for it that CycloneDDS's one-datagram p4 did not
@@ -2840,6 +2912,7 @@ int main(void) {
     test_a_writer_gives_up_on_a_ring_nobody_drains();
     test_the_drain_empties_the_ring_or_says_it_did_not();
     test_a_sleeping_reader_is_rung_and_a_busy_one_is_not();
+    test_a_called_off_sleep_keeps_its_generation_once();
     test_a_batch_is_rung_for_once_after_its_last_record();
     test_a_record_found_by_the_last_drain_before_sleeping_ends_the_poll();
     test_the_waits_are_declined_where_they_cost_the_pair_more();

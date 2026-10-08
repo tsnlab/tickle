@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Mutant sweep for the reader's choice of whether its waits pay (segment_epoch_turn(), src/tickle.c), and for
-what it takes a sleep to cost (segment_resumed()).
+what it takes a sleep to cost (segment_resumed()), and for the generation a called-off sleep keeps
+(segment_sleep_called_off()).
 
 Each entry breaks the choice in exactly one way and names the test in tests/test_transport_seam.c that must go red
 for it. A mutant the tests pass means they cannot see the thing they are named for. The unmutated tree runs first and
@@ -95,6 +96,22 @@ MUTANTS = [
         "    const bool settled = node->segment_epoch_settling == 0;",
         "    const bool settled = true;",
         "test_the_first_epoch_after_a_change_is_not_measured",
+    ),
+    # The generation a called-off sleep keeps (segment_sleep_called_off()): each of these loses a wake-up.
+    (
+        "a called-off sleep's generation kept for good, not only for the next sleep",
+        "src/tickle.c",
+        "        node->segment_generation_unspent = 0; // kept once at most: the wait that follows may take its ring",
+        "        // mutant",
+        "test_a_called_off_sleep_keeps_its_generation_once",
+    ),
+    (
+        "a called-off sleep's generation kept although a doorbell was read in between",
+        "src/tickle.c",
+        "        if (node->segment_generation_unspent != 0 &&\n"
+        "            node->segment_unspent_doorbells == node->segment_doorbells_received) {",
+        "        if (node->segment_generation_unspent != 0) {",
+        "test_a_called_off_sleep_keeps_its_generation_once",
     ),
 ]
 
