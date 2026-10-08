@@ -129,7 +129,34 @@ preflight_pc() {
         esac
     done
     local tickle_lib=$PF_TICKLE_INSTALL/rmw_tickle/lib/librmw_tickle.so
-    echo "warm_rt=256 cool_rt=256 min_measured=500 warm_s=1 cool_s=1 tickle_lib=$tickle_lib host=pc-netns" >"$out.runs/params.txt"
+    # The build must not predate this checkout's product code. It tests the harness, but a build older than a fix
+    # fails it on the bug that fix removed: every preflight from 2026-10-07 to 2026-10-09 loaded a librmw_tickle.so
+    # linked 2026-10-07 04:30 (~7f9f7c62, before 2901121e), and each failure was read as one of whatever SHA was
+    # being guarded. 30 interleaved reps of the tput cells per build on the PC (2026-10-09): tput Array1k RELIABLE died
+    # on "blocked 100ms ... gave up" 6 times on that build, 3 at 03585237, 0 at e521bbba. The check: the library's
+    # build time (CMake's install keeps the build's mtime) against the newest commit touching the code rmw_tickle is
+    # built from. A build of an older checkout made later passes, so this catches the stale install, not every wrong
+    # one. PF_ALLOW_STALE=1 runs it anyway, recorded as stale=1 in params.txt.
+    local lib_t head_t head_c stale=0
+    lib_t=$(stat -c %Y "$tickle_lib" 2>/dev/null) || { echo "PREFLIGHT FAIL: no $tickle_lib"; return 1; }
+    read -r head_c head_t < <(git -C "$REPO" log -1 --format='%h %ct' -- src include platform rmw_tickle/rmw_tickle \
+        rmw_tickle/rosidl_typesupport_tickle_c rmw_tickle/rosidl_typesupport_tickle_cpp)
+    if [ -z "${head_t:-}" ]; then
+        echo "PREFLIGHT FAIL: cannot read the newest product commit of $REPO (git log), so cannot tell a stale build"
+        return 1
+    fi
+    if [ "$lib_t" -lt "$head_t" ]; then
+        stale=1
+        echo "PREFLIGHT: $tickle_lib was built $(date -d "@$lib_t" '+%F %T'), before $head_c ($(date -d "@$head_t" \
+            '+%F %T')) changed the code it is built from at $REPO"
+        if [ "${PF_ALLOW_STALE:-0}" != 1 ]; then
+            echo "PREFLIGHT FAIL: stale rmw_tickle build - rebuild $PF_TICKLE_INSTALL, point PF_TICKLE_INSTALL at a" \
+                "current one, or PF_ALLOW_STALE=1 to run it anyway"
+            return 1
+        fi
+    fi
+    echo "warm_rt=256 cool_rt=256 min_measured=500 warm_s=1 cool_s=1 tickle_lib=$tickle_lib host=pc-netns" \
+        "tickle_lib_built=$lib_t product_head=$head_c product_head_t=$head_t stale=$stale" >"$out.runs/params.txt"
     ns=rmwsh_pf_$$
     sudo -n ip netns add "$ns" || { echo "PREFLIGHT FAIL: cannot create netns $ns"; return 1; }
     sudo -n ip -n "$ns" link set lo up multicast on

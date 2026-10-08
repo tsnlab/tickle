@@ -108,7 +108,9 @@ if [ "$ROLE" = outer ]; then
     echo "ESTIMATE: ~$((est / 60)) min on the rig ($nph phases, $sw commit switches), plus the lock wait" | tee -a "$LOG"
     if [ "${PREFLIGHT:-1}" != 0 ]; then
         echo "--- PC preflight $(date +%T): harness on ~/tickle/install (A-like: no loans may show)" | tee -a "$LOG"
-        ARMS="$RMW_ARMS" PREFLIGHT_ONLY=1 PREFLIGHT_OUT="$OUTB.pf_A" PF_CELLS="$PF_CELLS" "$X/rmw_samehost.sh" \
+        # An A-like build is older than this checkout on purpose, so rmw_samehost.sh's stale-build refusal is waived.
+        ARMS="$RMW_ARMS" PREFLIGHT_ONLY=1 PF_ALLOW_STALE=1 PREFLIGHT_OUT="$OUTB.pf_A" PF_CELLS="$PF_CELLS" \
+            "$X/rmw_samehost.sh" \
             >"$OUTB.pf_A.log" 2>&1 || {
             tail -20 "$OUTB.pf_A.log"
             echo "REFUSING TO TAKE THE RIG: the PC preflight (A-like build) failed ($OUTB.pf_A.log)" | tee -a "$LOG"

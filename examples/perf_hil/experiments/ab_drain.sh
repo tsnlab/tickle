@@ -183,7 +183,9 @@ if [ "$ROLE" = outer ]; then
         # defect fails both.
         for try in 1 2; do
             echo "--- PC preflight $(date +%T): rmw_samehost harness (rmw_tickle arm, private netns), try $try" | tee -a "$LOG"
-            ARMS=tickle PREFLIGHT_ONLY=1 PREFLIGHT_OUT="$OUTB.pf_rmw$try" "$X/rmw_samehost.sh" >"$OUTB.pf_rmw$try.log" 2>&1 &&
+            # PF_ALLOW_STALE=1: this check runs ~/tickle/install as it is (above), recorded as stale=1 when it is.
+            ARMS=tickle PREFLIGHT_ONLY=1 PF_ALLOW_STALE=1 PREFLIGHT_OUT="$OUTB.pf_rmw$try" "$X/rmw_samehost.sh" \
+                >"$OUTB.pf_rmw$try.log" 2>&1 &&
                 break
             grep -A4 '^VOID runs' "$OUTB.pf_rmw$try.log" | tee -a "$LOG"
             if [ "$try" = 2 ]; then
