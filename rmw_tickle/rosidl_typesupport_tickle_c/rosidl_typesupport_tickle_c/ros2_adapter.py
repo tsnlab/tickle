@@ -140,6 +140,97 @@ def _max_encoded_size_literal(struct):
     return str(bound)
 
 
+# Loaned messages (docs/RMW.md, "Loaned messages"): a type whose wire bytes ARE its ROS 2 C struct in memory.
+#
+# The wire is CDR-4 (layout.py): every scalar aligned to min(size, 4) from the start of its struct, no trailing
+# padding. A C compiler lays the ROS struct out with natural alignment (an 8-byte scalar on 8) and pads its end. The
+# two agree, field for field, only for some types - perf_test's Array1k (byte[1024], int64, uint64) does, since its
+# int64 lands on 1024 either way; geometry_msgs/Vector3 does; a uint32 followed by an int64 does not (wire 4, memory
+# 8). Where they agree on every offset, recursively, a received sample can be read where it lies and a message can
+# be sent as its own bytes, so rmw_tickle may lend it. Where they do not, it may not, and says so
+# (can_loan_messages false) rather than lending a converted copy and calling it a loan.
+#
+# Refused besides any offset mismatch: anything not fixed-size (strings, sequences - pointers on the ROS side), an
+# empty message (the ROS struct has a placeholder member the wire does not), and bool, whose byte on the wire is
+# only conventionally 0 or 1 - a C bool holding anything else is undefined behaviour, and a cast cannot normalise it.
+def _ros_natural_layout(struct):
+    """(natural size, natural alignment) of the ROS 2 C struct for `struct`, or None when some field's offset or a
+    nested array's stride differs from the wire's, or the struct holds something that cannot be read in place."""
+    if not struct.is_fixed_size or not struct.fields:
+        return None
+    wire_offset = 0
+    natural_offset = 0
+    natural_align = 1
+    for f in struct.fields:
+        if f.kind == "scalar" and f.scalar_type != "bool":
+            size = model.SCALAR_SIZE[f.scalar_type]
+            align = size
+        elif f.kind == "array" and f.array_mode == "fixed" and f.array_element_kind == "scalar":
+            if f.scalar_type == "bool":
+                return None
+            align = model.SCALAR_SIZE[f.scalar_type]
+            size = f.array_size * align
+        elif f.kind in ("nested", "array") and f.nested is not None and (f.kind == "nested" or f.array_mode == "fixed"):
+            inner = _ros_natural_layout(f.nested)
+            if inner is None:
+                return None
+            element_size, align = inner
+            if f.kind == "array":
+                wire_stride = layout.align_up(f.nested.wire_size, f.element_align)
+                if wire_stride != element_size:
+                    return None
+                size = f.array_size * element_size
+            else:
+                size = element_size
+        else:
+            return None
+        wire_offset = layout.align_up(wire_offset, f.wire_align)
+        natural_offset = layout.align_up(natural_offset, align)
+        if wire_offset != natural_offset:
+            return None
+        wire_offset += f.wire_size
+        natural_offset += size
+        natural_align = max(natural_align, align)
+    if wire_offset != struct.wire_size:
+        return None
+    return layout.align_up(natural_offset, natural_align), natural_align
+
+
+def _wire_leaves(struct, prefix, base):
+    """(member designator, wire offset) for every leaf the C compiler must place where the wire does, recursively;
+    a nested array contributes its first element's leaves and its second element's start (the stride)."""
+    leaves = []
+    offset = 0
+    for f in struct.fields:
+        offset = layout.align_up(offset, f.wire_align)
+        path = f"{prefix}{f.name}"
+        if f.kind == "nested":
+            leaves += _wire_leaves(f.nested, f"{path}.", base + offset)
+        elif f.kind == "array" and f.array_element_kind == "nested":
+            leaves += _wire_leaves(f.nested, f"{path}[0].", base + offset)
+            if f.array_size > 1:
+                leaves.append((f"{path}[1]", base + offset + layout.align_up(f.nested.wire_size, f.element_align)))
+        else:
+            leaves.append((path, base + offset))
+        offset += f.wire_size
+    return leaves
+
+
+def inplace_bytes_initializer(struct, ros_name):
+    """The .inplace_bytes initialiser: the type's wire size when its wire bytes are its ROS 2 C struct's first bytes in
+    memory (native order), else 0. _ros_natural_layout() picks the candidates; the expression emitted for one is the
+    C compiler's own offsetof()/sizeof() against the wire's offsets, so the claim holds on the ABI the package is built
+    for (an int64 is 4-aligned on i386) rather than on the one this generator assumes. A constant expression, so a
+    mismatch is 0 - no loans - and never a build failure."""
+    natural = _ros_natural_layout(struct)
+    if natural is None:
+        return "0"
+    terms = [f"sizeof(struct {ros_name}) == {natural[0]}"]
+    terms += [f"offsetof(struct {ros_name}, {path}) == {offset}" for path, offset in _wire_leaves(struct, "", 0)]
+    joined = " &&\n        ".join(terms)
+    return f"({joined})\n        ? {struct.wire_size} : 0"
+
+
 def ros2_struct_name(ros_pkg, ros_subfolder, ros_type_name):
     return f"{ros_pkg}__{ros_subfolder}__{ros_type_name}"
 
@@ -558,6 +649,9 @@ def render_type_support(struct, ros_name, tickle_header, adapter_header):
             # which leaks every string and sequence in it. rosidl's own __fini does it properly.
             # ros_init/ros_move stay NULL: zeroed storage is a valid C message and memcpy moves one.
             f"    .ros_fini = (void (*)(void*))&{ros_name}__fini,",
+            # Loaned messages: whether the wire bytes are this struct in memory (inplace_bytes_initializer()).
+            f"    .inplace_bytes = {inplace_bytes_initializer(struct, ros_name)},",
+            f"    .ros_struct_align = _Alignof(struct {ros_name}),",
             "};",
             "",
             "// .typesupport_identifier is set on first access below, not here - a plain (non-",
