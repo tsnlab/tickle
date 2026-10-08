@@ -169,6 +169,7 @@ The user's active list (2026-10-05), in order.
    `reserved` byte would close it, as a wire change.
 6. **Re-measure rmw same-host performance**: the rmw same-host rows predate the segment, FIFO and wake fixes.
    (COMPARISON 2.7; RMW_PERF_PLAN)
+   Done 2026-10-08 at `03585237` (`experiments/rmw_samehost.sh`, RESULTS.md rows R1-R21): WIN 50, DRAW 1, LOSE 1.
 7. **FreeRTOS: implement tt_rx_maybe_ready() with an lwIP netconn receive callback**: today only the Linux HAL has
    the receive hint. lwIP's socket layer hard-wires its own netconn callback (`DEFAULT_SOCKET_EVENTCB` in
    `sockets.c` is not configurable), so the callback needs the HAL on the netconn API: `netconn_new_with_callback()`
