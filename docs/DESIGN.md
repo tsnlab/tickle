@@ -334,7 +334,8 @@ Anything batched ahead is flushed first. Retransmissions send cached fragments u
   are counted (`frag_duplicate`, `frag_abandoned`, `frag_dropped`).
 - A node built without fragmentation skips types 8 and 9 silently.
 
-**Larger than 65507 B** samples and receive-buffer lending are not implemented yet (see [ROADMAP.md](ROADMAP.md)).
+**Larger than 65507 B** samples are not implemented yet (see [ROADMAP.md](ROADMAP.md)). A fragment-assembled sample
+cannot be lent (section 10, receive-buffer lending): it is retained by copying.
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
@@ -456,13 +457,64 @@ Compiled in by default on Linux (`tt_SEGMENT_ENABLED`), out on FreeRTOS.
 **What the ring cannot do.** It cannot serve as the RELIABLE retention cache: the memory belongs to the receiver and
 delivery frees the slot. Retention stays in the writer's own cache.
 
+**Receive-buffer lending (`tt_Sample_retain` / `tt_Sample_release`, SHM stage 2).** A subscriber callback may keep
+the sample it was handed beyond the callback, without copying it, until it gives it back.
+
+- **API.** Inside a Subscriber's callback, `tt_Sample_retain(sub, &sample)` fills a `struct tt_Sample` (the sample's
+  CDR as received: `payload`, `length`, `is_native_endian`, and an opaque non-zero `handle`) whose bytes stay valid
+  until `tt_Sample_release(ctx, &sample)`. A `data_decode_inplace` topic's `tt_Data*` aliases those bytes, so it stays
+  valid too. Outside a callback, or for another Subscriber than the one being called, retain is `tt_RET_ILLEGAL_STATUS`.
+- **What is lent.** Only bytes that sit in the datagram they arrived in:
+  - the segment path: the record's **ring slot**. With lending compiled in, the drain processes a record in its slot
+    instead of copying it out first (the copy stage 1 kept), and a retained slot is left unreleased - `read_index`
+    moves past it, its `sequence` does not - until `tt_Sample_release()` frees it with `index + slots`;
+  - the socket path: the **receive buffer**. The context's inline `rx_buffer` and a caller-attached pool
+    (`tt_Context_set_rx_pool()`, `tt_RX_POOL_BUFFER_BYTES` each, at most `tt_RX_POOL_MAX`) form one set; the socket
+    reads into one of them, and retaining a sample there hands the next datagram a free buffer instead. No pool, or
+    every buffer held: retain fails with `tt_RET_OUT_OF_BUFFER` and the caller copies, as it would have without
+    lending (`lend_exhausted`).
+  - Several samples of one datagram (a batch) may be retained; the slot or buffer goes back when the last is released.
+- **What is not lent: `tt_RET_UNSUPPORTED`, and the caller copies** (`lend_unlendable`). A sample assembled from
+  fragments (the best-effort reassembly slots, the RELIABLE `frag_scratch` fast path), one released from a reorder
+  buffer, and one delivered locally or from a backlog: each already sits in a copy core made into its own working
+  storage, so lending it would save only the application's copy and would pin storage the receive path needs
+  (`frag_scratch` is one per context). The test is the payload's address: lendable exactly when it lies in the
+  datagram being processed. Large samples get contiguous lendable storage with large-message stage 2.
+- **Handles.** At most `tt_SAMPLE_RETAIN_MAX` (16) samples are held per context, each in a handle-table entry whose
+  handle carries a generation. A release of handle 0, of a handle the table does not hold, or of one already released
+  is refused with `tt_RET_INVALID_ARGUMENT` and counted (`lend_bad_releases`); it never touches a slot or a buffer.
+  The table full is `tt_RET_OUT_OF_BUFFER`.
+- **Threads.** Retain runs on the delivering thread, under the state lock it already holds. Release may come from any
+  thread: it takes the state lock, so it never interleaves with the drain. A release of the record still being
+  processed (retain and release in one callback) leaves the slot to the drain, which frees it as usual.
+- **A held slot blocks only its own ring, one lap later.** Writers claim slots in index order, so the ring keeps
+  running past a held slot until a writer's claim reaches it again, one lap (`tt_SEGMENT_SLOTS` records) on; from
+  there that ring is full for every writer into it, with the existing full-ring behaviour: the datagram is dropped
+  and counted (`segment_full_dropped`, and the writer counts `segment_full_retained` when the slot it was refused is
+  one its reader has read and still holds), and after `tt_SEGMENT_DEAD_READER_NS` the writer falls back to UDP until
+  its next recheck. Other contexts' rings and every socket are unaffected. **So hold a slot for less than one lap of
+  the ring at the stream's rate** (512 slots at 100k records/s is 5 ms); a sample needed longer is copied, or the
+  ring sized for it. Skipping a held slot would need a new ring protocol (`tt_SEGMENT_VERSION`), which this stage
+  does not take.
+- **Skip-to-newest never frees a held slot.** The KEEP_LAST drain (above) releases only slots at or after
+  `read_index`; a held slot is behind it. Same for the stall check: a held slot is never the head.
+- **Lifetime.** The lazy segment release (last same-host peer gone) waits while a slot is held and runs on the
+  polling thread's next summary tick after the last release. `tt_Context_destroy()` invalidates every held sample: the
+  segment is unmapped and every handle is forgotten, so a later release is refused rather than written into unmapped
+  memory. Pool storage is the caller's and must outlive the context, like every other attached storage.
+- **No cost when off.** `tt_SAMPLE_LENDING` compiles it in (1 on Linux, 0 on FreeRTOS, where it works on the pool
+  alone: no segment). At 0 the receive path is byte-for-byte stage 1's. At 1 and unused it costs a pointer and
+  three stores per delivery, and saves the segment drain's copy of every record; its A/B against main is in
+  [RESULTS.md](RESULTS.md) once measured. Counters (`lend_*`, `shm_full_retained`) are on the traffic line.
+
 ## 11. Memory model
 
 - **Embedded storage** sized by macros: server response cache (`tt_SERVER_CACHE_ENTRY_LENGTH` x 64), client call
   cache, scheduler (`tt_MAX_SCHEDULER_LENGTH` 128), peer and ack tables, per-peer tables indexed by context id
   (`tt_MAX_CONTEXT_IDS` 256).
 - **Caller-attached storage** where the size depends on the use: a Publisher's `reliable_cache` (index + arena), a
-  Subscriber's tracking window and reorder buffer, `tt_Server_set_storage()` / `tt_Client_set_storage()`.
+  Subscriber's tracking window and reorder buffer, `tt_Server_set_storage()` / `tt_Client_set_storage()`, the
+  receive-buffer lending pool (`tt_Context_set_rx_pool()`).
   The caller allocates and frees; core holds pointers only.
 - rmw_tickle allocates with the application's `rcl` allocator, so a static-pool allocator keeps TickLE heap-free.
 
@@ -567,6 +619,9 @@ All are compile-time `-D` overrides unless noted. Times in nanoseconds.
 | `tt_SEGMENT_DRAIN_PER_POLL` | 4 x slots | | records drained per poll |
 | `tt_SEGMENT_DEAD_READER_NS` | silence x 2/7 (1 s) | | reader silence before falling back to UDP |
 | `tt_SEGMENT_STALL_PASSES` | 1000 | | wedged-head warning |
+| `tt_SAMPLE_LENDING` | 1 (0 FreeRTOS) | 1 | receive-buffer lending (`tt_Sample_retain`) |
+| `tt_SAMPLE_RETAIN_MAX` | 16 | | samples held at once per context |
+| `tt_RX_POOL_MAX` | 32 | | caller-attached receive buffers per context |
 | `tt_CONTEXT_ID_CLAIM` | 1 (0 FreeRTOS) | 1 | host-registry id claiming |
 | `tt_LOCAL_DELIVERY` | 0 | 1 | in-process delivery within a context |
 | `tt_DISCOVERY_OPTIONS` | 0 | 1 | discovery range and static peers |
