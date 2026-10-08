@@ -1137,6 +1137,10 @@ static void snapshot_reorder(void) {
     memcpy(reorder_snapshot, test_reorder, sizeof(test_reorder));
 }
 
+// A/B arm ab/frag-fastpath-off only: with the fast path switched off (FRAG_FAST_PATH_ENABLED, tickle.c) the
+// assertions about its own state cannot hold; every delivery assertion still runs.
+#define EXPECT_FAST_PATH(cond) EXPECT_TRUE(!FRAG_FAST_PATH_ENABLED || (cond))
+
 static bool reorder_untouched(void) {
     return memcmp(reorder_snapshot, test_reorder, sizeof(test_reorder)) == 0;
 }
@@ -1177,7 +1181,7 @@ static void test_reliable_in_order_sample_never_touches_the_reorder_buffer(void)
             deliver(d);
         }
         expect_delivered_once(4000);
-        EXPECT_TRUE(reorder_untouched()); // not one byte of the buffer written
+        EXPECT_FAST_PATH(reorder_untouched()); // not one byte of the buffer written
         EXPECT_EQ_U32(0, sub.reorder_held);
         EXPECT_EQ_U32(7 + (3 * (uint32_t)round), sender_proxy()->ack_seq_no);      // every datagram acknowledged
         EXPECT_EQ_U32(sender_proxy()->ack_seq_no, sender_proxy()->reorder_cursor); // the cursor kept up with it
@@ -1199,7 +1203,7 @@ static void test_reliable_out_of_order_fragments_still_deliver_through_the_buffe
         EXPECT_EQ_U32(0, sub.reorder_held);
         EXPECT_TRUE(receiver.frag_fast_sub == NULL);
         // Control for the test above: only the in-order arrival leaves the buffer as it was.
-        EXPECT_TRUE(reorder_untouched() == (o == 0));
+        EXPECT_FAST_PATH(reorder_untouched() == (o == 0));
     }
 }
 
@@ -1219,7 +1223,7 @@ static void test_reliable_fast_path_interrupted_by_a_lost_fragment(void) {
     // reorder_cursor up to the watermark, past the sample's start, where the move into the buffer must
     // bring it back - or the next drain starts after the fragments it moved in.
     drain_reorder(&receiver, &sub, sender_proxy());
-    EXPECT_TRUE(receiver.frag_fast_sub == &sub); // control: the interruption interrupts something
+    EXPECT_FAST_PATH(receiver.frag_fast_sub == &sub); // control: the interruption interrupts something
     deliver(3);
     EXPECT_EQ_INT(0, delivered_count);
     EXPECT_TRUE(receiver.frag_fast_sub == NULL);
@@ -1244,7 +1248,7 @@ static void test_reliable_fast_path_interrupted_by_a_lost_fragment(void) {
     EXPECT_EQ_INT(2, delivered_count);
     EXPECT_TRUE(delivered_intact);
     EXPECT_TRUE(delivered_ascending);
-    EXPECT_TRUE(reorder_untouched()); // the fast path again
+    EXPECT_FAST_PATH(reorder_untouched()); // the fast path again
 }
 
 static void test_reliable_fast_path_sample_given_up_on_is_never_delivered_torn(void) {
@@ -1254,7 +1258,7 @@ static void test_reliable_fast_path_sample_given_up_on_is_never_delivered_torn(v
     publish_captured(); // seq_no 5..8
     deliver(0);
     deliver(1);
-    EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+    EXPECT_FAST_PATH(receiver.frag_fast_sub == &sub);
     struct tt_WriterProxy* proxy = sender_proxy();
     advance_past_unavailable(proxy, 9);
     drain_reorder(&receiver, &sub, proxy);
@@ -1333,7 +1337,7 @@ static void test_reliable_two_writers_interleaved_after_first_contact(void) {
     }
     EXPECT_EQ_INT(expected + 2, delivered_count);
     EXPECT_TRUE(delivered_intact);
-    EXPECT_TRUE(reorder_untouched());
+    EXPECT_FAST_PATH(reorder_untouched());
 }
 
 // A second Subscriber of the same endpoint, on a topic of its own so that what it decodes is checked apart
@@ -1410,7 +1414,7 @@ static void test_reliable_two_subscribers_share_the_scratch(void) {
         EXPECT_TRUE(second_intact);
     }
     // The first Subscriber took the fast path every time: the second one's stores never moved it out.
-    EXPECT_TRUE(reorder_untouched());
+    EXPECT_FAST_PATH(reorder_untouched());
     EXPECT_EQ_U32(0, sub.reorder_held);
     EXPECT_EQ_U32(0, sub2.reorder_held);
     EXPECT_TRUE(receiver.frag_fast_sub == NULL);
@@ -1444,8 +1448,8 @@ static void test_reliable_buffer_delivery_does_not_overwrite_the_fast_path(void)
     static struct captured_sample y;
     capture_sample(&pub, &y); // seq_no 7..9
     EXPECT_TRUE(process_packet(&receiver, y.bytes[0], 0, y.len[0], SENDER_IP, PORT, tt_TRANSPORT_UDP));
-    EXPECT_TRUE(receiver.frag_fast_sub == &sub); // control: Y really is in the scratch
-    for (int d = 0; d < 3; d++) {                // X again, as the writer resends it to the second one
+    EXPECT_FAST_PATH(receiver.frag_fast_sub == &sub); // control: Y really is in the scratch
+    for (int d = 0; d < 3; d++) {                     // X again, as the writer resends it to the second one
         EXPECT_TRUE(process_packet(&receiver, x.bytes[d], 0, x.len[d], SENDER_IP, PORT, tt_TRANSPORT_UDP));
     }
     EXPECT_EQ_INT(2, second_delivered);
@@ -1629,7 +1633,7 @@ static void test_reliable_fast_path_moves_out_before_another_writer_is_held(void
     publish_captured(); // the first writer's seq_no 5..8
     deliver(0);
     deliver(1);
-    EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+    EXPECT_FAST_PATH(receiver.frag_fast_sub == &sub);
     deliver_collide_hit();
     deliver(3); // 2 is late
     deliver(2);
@@ -1676,15 +1680,15 @@ static void test_reliable_fast_path_survives_another_writers_drain(void) {
     publish_captured(); // seq_no 5..8
     deliver(0);
     drain_reorder(&receiver, &sub, collide_proxy());
-    EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+    EXPECT_FAST_PATH(receiver.frag_fast_sub == &sub);
     deliver(1);
     drain_reorder(&receiver, &sub, sender_proxy()); // and its own writer's, with the watermark where it was
-    EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+    EXPECT_FAST_PATH(receiver.frag_fast_sub == &sub);
     for (int d = 2; d < 4; d++) {
         deliver(d);
     }
     expect_delivered_once(5000);
-    EXPECT_TRUE(reorder_untouched());
+    EXPECT_FAST_PATH(reorder_untouched());
 }
 
 static void test_reliable_fast_path_ignores_another_subscribers_hold(void) {
@@ -1724,14 +1728,14 @@ static void test_reliable_fast_path_ignores_another_subscribers_hold(void) {
         }
     }
     EXPECT_EQ_U32(1, other_sub.reorder_held);
-    EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+    EXPECT_FAST_PATH(receiver.frag_fast_sub == &sub);
     sample_len = 5000;
     delivered_count = 0;
     for (int d = 1; d < 4; d++) {
         deliver(d);
     }
     expect_delivered_once(5000);
-    EXPECT_TRUE(reorder_untouched());
+    EXPECT_FAST_PATH(reorder_untouched());
     EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&other_sub));
 }
 
@@ -1790,7 +1794,7 @@ static void test_reliable_fast_path_follows_its_writer_and_subscriber_out(void) 
         publish_captured(); // seq_no 5..8
         deliver(0);
         deliver(1);
-        EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+        EXPECT_FAST_PATH(receiver.frag_fast_sub == &sub);
         if (arm == 0) {
             forget_writer_proxies_for_endpoint(&receiver, sub.endpoint.id, 3, 0, true); // another node
         } else if (arm == 1) {
@@ -1802,7 +1806,7 @@ static void test_reliable_fast_path_follows_its_writer_and_subscriber_out(void) 
             forget_writer_proxies_for_endpoint(&receiver, sub.endpoint.id, SENDER_ID, 0, true);
         }
         if (arm < 2) {
-            EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+            EXPECT_FAST_PATH(receiver.frag_fast_sub == &sub);
             deliver(2);
             deliver(3);
             expect_delivered_once(5000);
@@ -1814,7 +1818,7 @@ static void test_reliable_fast_path_follows_its_writer_and_subscriber_out(void) 
     first_contact_sample(5000);
     publish_captured();
     deliver(0);
-    EXPECT_TRUE(receiver.frag_fast_sub == &sub);
+    EXPECT_FAST_PATH(receiver.frag_fast_sub == &sub);
     EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub));
     EXPECT_TRUE(receiver.frag_fast_sub == NULL);
 }

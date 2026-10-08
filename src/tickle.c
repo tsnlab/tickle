@@ -12134,6 +12134,8 @@ static bool reorder_store_fragment(struct tt_Context* node, struct tt_Subscriber
     return true;
 }
 
+enum { FRAG_FAST_PATH_ENABLED = 0 }; // A/B arm only, never on main
+
 // The in-order fast path (2026-10-06). A fragment that is the next datagram its writer's tracking expects,
 // of a sample whose earlier fragments all came the same way, is put together in the node's frag_scratch and
 // the sample delivered from there when its last fragment lands - without touching the reorder buffer, which
@@ -12225,7 +12227,9 @@ static void accept_reliable_fragment(struct tt_Context* node, struct tt_Subscrib
             node->frag_duplicate++; // already here, or already past
             return;
         }
-        if (frag_fast_take(node, sub, proxy, ctx, is_native)) {
+        // A/B arm ab/frag-fastpath-off: the in-order fast path (bc398ed2) is never taken, so every fragment goes to
+        // the reorder buffer as before it; frag_fast_sub stays NULL and every spill check is a no-op.
+        if (FRAG_FAST_PATH_ENABLED && frag_fast_take(node, sub, proxy, ctx, is_native)) {
             return;
         }
     }
