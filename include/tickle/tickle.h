@@ -443,6 +443,13 @@ struct tt_Context {
     uint32_t entity_id_base;
     uint32_t next_entity_id;
 
+    // The seq_no of this context's next call, one counter across every Client on it. A CallRequest names its client
+    // only by (source context, service endpoint_id, seq_no), and every Client of one service in one context has the
+    // same endpoint_id, so a per-client counter gave two of them the same requests - the server answered them as one
+    // and the second never got an answer (2026-10-09). Drawn per call, seq_no tells them apart: the server's cache
+    // keys on it, and process_callresponse() hands the answer to the Client whose outstanding call it names.
+    uint16_t call_seq_no;
+
     // Per remote node (indexed by its node id), the last discovery announce we've acted on: its
     // generation (tt_DataHeader.seq_no of the announce, see tt_DISCOVERY_ENDPOINT_ID), and whether we've
     // seen it at all. Only these two facts are ever read back (dedup + first-contact detection - see
@@ -1205,9 +1212,6 @@ struct tt_Client { // extends endpoint
     struct tt_Service* service;
     tt_CLIENT_CALLBACK callback;
 
-    // transcation
-    uint16_t seq_no;
-
     // Cache: fixed-size backing storage for the one outstanding call (tt_Client_call refuses a
     // second call while one is already pending), so a call/retry cycle never has to malloc/free.
     tt_ALIGNAS(8) uint8_t cache_buf[tt_CLIENT_CACHE_LENGTH];
@@ -1216,7 +1220,7 @@ struct tt_Client { // extends endpoint
     uint8_t* cache_storage;
     uint32_t cache_length;
     struct tt_SubmessageHeader* cache; // NULL when idle, else points into cache_buf
-    uint64_t cache_time;               // Cache time
+    uint64_t cache_time;               // When the call was sent: read before the send (client_call_locked())
     uint32_t latency;        // Call latency estimate (srtt), ns: an EMA of accepted answers, doubled on a timeout
     uint32_t latency_var;    // Its mean deviation (rttvar), ns - RFC 6298's, as for the reliable retry
     bool latency_backed_off; // The last call timed out; the next accepted answer replaces the estimate

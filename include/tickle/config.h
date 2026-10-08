@@ -304,11 +304,13 @@
 // any answer could arrive.
 //
 // The first wait of a call is srtt + max(GRANULARITY, 4 * rttvar), and each retry of the same call waits twice the
-// one before (RFC 6298 5.5), each at most MAX_SRTT_MULTIPLE * srtt. The doubling is what the old floor was really
-// for: a call gives up after (count + 1) waits, so with a constant interval one fast answer shrank the budget of
-// every later call to a few round trips, and an answer slower than that timed out (CONTEXT_NODE_PLAN.md "Client
-// retry fix", 2026-09-27: 85 us measured gave 0.5 ms). Doubling makes the budget (2^(count+1) - 1) first waits -
-// 15 with the default count - so a retry can fire early without the call giving up early.
+// one before (RFC 6298 5.5), each at most MAX_SRTT_MULTIPLE * max(srtt, GRANULARITY). Of srtt alone (until
+// 2026-10-09) a same-host srtt of 1-2 us put that ceiling below G, and every wait was cut to it. The doubling is what
+// the old floor was really for: a call gives up after (count + 1) waits, so with a constant interval one fast answer
+// shrank the budget of every later call to a few round trips, and an answer slower than that timed out
+// (CONTEXT_NODE_PLAN.md "Client retry fix", 2026-09-27: 85 us measured gave 0.5 ms). Doubling makes the budget
+// (2^(count+1) - 1) first waits - 15 with the default count - so a retry can fire early without the call giving up
+// early.
 //
 // INTERVAL is the seed: the first wait until a client has its first answer, standing in for srtt. GRANULARITY 0
 // (the default) is twice the reliable retry's G - this context's measured timer lateness, or the fixed
@@ -337,7 +339,7 @@
 #define tt_CALL_RETRY_GRANULARITY 0 // nanosecond, 0 = twice the reliable retry's G (two hosts' lateness); else fixed
 #endif
 #ifndef tt_CALL_RETRY_MAX_SRTT_MULTIPLE
-#define tt_CALL_RETRY_MAX_SRTT_MULTIPLE 64 // a wait's ceiling, in multiples of srtt
+#define tt_CALL_RETRY_MAX_SRTT_MULTIPLE 64 // a wait's ceiling, in multiples of max(srtt, G)
 #endif
 #ifndef tt_CALL_DEADLINE_PER_SEND
 #define tt_CALL_DEADLINE_PER_SEND (250 * tt_MILLISECOND) // nanosecond - an auto call ends within (count + 1) x this

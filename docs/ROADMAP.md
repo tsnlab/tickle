@@ -281,9 +281,14 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
   two runs of 5 x 200,000 exchanges: 556 and 323 requests, 203 and 123 responses taken out of send order **across**
   the two clients, 0 within either, and 0 of either kind in the all-shm and all-UDP controls (2 x 2,000,000
   exchanges). So the two paths do reorder, between streams that have no order to keep; one outstanding call per
-  client keeps each stream in order by construction, and the runs confirm it. No product change. Left open: the first
-  run's mixed arm timed out 306 calls in 1,000,000 (the second 0; the controls 6 in 4,000,000), not yet explained.
-  (RMW_GAPS S9)
+  client keeps each stream in order by construction, and the runs confirm it. No product change for the reordering.
+  The first run's 306 timeouts in 1,000,000 were a client defect, not the path split, found and fixed the same night:
+  the call's round trip was timed from after the send returned, so a reply that came back while the send was preempted
+  measured ~200 ns, srtt collapsed, and the wait ceiling of 64 x srtt then cut every wait below G (a call gave up in
+  ~0.5 ms). Both arms show it; mixed more often. Same harness, PC, private netns, 029e9a85 against the fix: pinned to
+  one CPU, 3 x 40,000 calls per arm, 533 -> 3 timeouts (mixed) and 396 -> 1 (shm); unpinned, 6 x 200,000 mixed, 549
+  -> 40. Also fixed: two clients of ONE service in one context were answered as one (identical seq_nos; the second
+  never got an answer) - a call's seq_no now comes from the context. (RMW_GAPS S9)
 - **Received samples carry an all-zero publisher_gid**: tools cannot match a sample to its writer.
   (RMW_GAPS g14 generalisation)
 - **Run the rmw behaviour tests locally in the netns**: today they run only in CI. (RMW_GAPS "Known gap in the local

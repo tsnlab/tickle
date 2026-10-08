@@ -52,8 +52,10 @@
 #define SERVER_ID 71
 #define CLIENT_ID 72
 #define BROADCAST "127.255.255.255"
-// One service per client: core keeps one outstanding call per service and context (docs/RMW.md), and two clients of
-// one service in one context share the wire identity (endpoint_id, seq_no), so the server answers them as one.
+// One service per client. Until 2026-10-09 two clients of one service in one context sent identical requests (each
+// counted its own seq_no from 0) and the server answered them as one; a call's seq_no now comes from the context
+// (tt_Context.call_seq_no), and test_two_clients_one_service checks that shape. Two services are kept so the runs
+// stay comparable with the ones published.
 static const char* const service_names[] = {"window_a_0", "window_a_1"};
 #define CLIENTS 2
 #define LARGE_BYTES 3000U // past one slot (1472)

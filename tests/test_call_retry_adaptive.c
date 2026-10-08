@@ -16,8 +16,9 @@
 //
 // Since 2026-10-05 (ROADMAP "Now" 5a) the bounds are relative to the link, as 08e568af made them for the reliable
 // retry: srtt + max(tt_CALL_RETRY_GRANULARITY, 4 * rttvar), doubled at every retry of a call, at most
-// tt_CALL_RETRY_MAX_SRTT_MULTIPLE * srtt. The fixed 5 ms floor and 250 ms ceiling are gone; the per-call doubling is
-// what lets the floor go without the budget of a call shrinking to one fast answer.
+// tt_CALL_RETRY_MAX_SRTT_MULTIPLE * max(srtt, G) (of srtt alone until 2026-10-09). The fixed 5 ms floor and 250 ms
+// ceiling are gone; the per-call doubling is what lets the floor go without the budget of a call shrinking to one fast
+// answer.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -275,13 +276,56 @@ static void test_a_large_srtt_is_not_clamped_to_250ms(void) {
     EXPECT_EQ_U32(400 * MS, client.latency);
 }
 
-// The ceiling binds only for a pathological estimate - variance far beyond the mean - and is relative to srtt.
-// Killed by: the ceiling removed (the interval would be 100 us + 40 ms).
-static void test_the_ceiling_is_a_multiple_of_srtt(void) {
+// The ceiling binds only for a pathological estimate - variance far beyond the mean - and is relative to srtt, or to
+// G when G is the larger. Killed by: the ceiling removed (the interval would be 1 ms + 400 ms, and 100 us + 40 ms);
+// the ceiling of srtt alone put back (the second would be 64 x 100 us).
+static void test_the_ceiling_is_a_multiple_of_srtt_or_g(void) {
     setup(0);
-    client.latency = 100 * US;
+    client.latency = 1 * MS; // above G
+    client.latency_var = 100 * MS;
+    EXPECT_EQ_U64(1 * MS * tt_CALL_RETRY_MAX_SRTT_MULTIPLE, compute_retry_interval(&client, 0));
+    client.latency = 100 * US; // below G
     client.latency_var = 10 * MS;
-    EXPECT_EQ_U64(100 * US * tt_CALL_RETRY_MAX_SRTT_MULTIPLE, compute_retry_interval(&client, 0));
+    EXPECT_TRUE(100 * US < CALL_G);
+    EXPECT_EQ_U64(CALL_G * tt_CALL_RETRY_MAX_SRTT_MULTIPLE, compute_retry_interval(&client, 0));
+}
+
+// A same-host srtt of a microsecond or two: the first wait is still srtt + G, and each retry still doubles it, so a
+// call gives up after 15 first waits. With a ceiling of 64 x srtt (until 2026-10-09) it was 128 us, below G: every
+// wait was cut to it, and a call gave up within ~0.5 ms - one scheduler hiccup; service_window_a timed out hundreds
+// of calls a run that way. Killed by: the ceiling of srtt alone put back.
+static void test_a_same_host_srtt_keeps_g_and_the_doubling(void) {
+    setup(0);
+    client.latency = 2 * US;
+    client.latency_var = 0;
+    uint64_t first = compute_retry_interval(&client, 0);
+    EXPECT_EQ_U64((2 * US) + CALL_G, first);
+    EXPECT_EQ_U64(2 * first, compute_retry_interval(&client, 1));
+    EXPECT_EQ_U64(4 * first, compute_retry_interval(&client, 2));
+    uint64_t took = 0;
+    EXPECT_TRUE(!run_call(NEVER, &took));
+    EXPECT_EQ_U64(((2ULL << tt_CALL_RETRY_COUNT) - 1) * first, took);
+}
+
+// A send that takes a while - on Linux, a write that wakes the server on the same CPU and is preempted by it - must
+// not be left out of the round trip: the answer can be waiting before the send returns. Timed from after the send
+// (until 2026-10-09), a 60 us round trip whose send took 50 us measured 10 us, and on the dev PC srtt fell to ~200 ns.
+// Killed by: cache_time read after end_encode() again (the estimate would be 10 us).
+static uint64_t send_takes_ns;
+static void slow_send(const void* buf, size_t len) {
+    (void)buf;
+    (void)len;
+    test_mock_now += send_takes_ns;
+}
+static void test_the_round_trip_counts_from_before_the_send(void) {
+    setup(0);
+    send_takes_ns = 50 * US;
+    test_mock_send_hook = slow_send;
+    uint64_t took = 0;
+    EXPECT_TRUE(run_call(60 * US, &took));
+    test_mock_send_hook = NULL;
+    EXPECT_EQ_U64(60 * US, took);
+    EXPECT_EQ_U32(60 * US, client.latency);
 }
 
 // Each retry of one call waits twice the one before (RFC 6298 5.5), up to the ceiling, so a call's budget is
@@ -293,7 +337,8 @@ static void test_each_retry_of_a_call_waits_twice_as_long(void) {
     uint64_t first = compute_retry_interval(&client, 0);
     EXPECT_EQ_U64(2 * first, compute_retry_interval(&client, 1));
     EXPECT_EQ_U64(4 * first, compute_retry_interval(&client, 2));
-    EXPECT_EQ_U64(100 * US * tt_CALL_RETRY_MAX_SRTT_MULTIPLE, compute_retry_interval(&client, 10)); // the ceiling
+    uint64_t unit = 100 * US > CALL_G ? 100 * US : CALL_G;
+    EXPECT_EQ_U64(unit * tt_CALL_RETRY_MAX_SRTT_MULTIPLE, compute_retry_interval(&client, 10)); // the ceiling
     uint64_t took = 0;
     EXPECT_TRUE(!run_call(NEVER, &took));
     EXPECT_EQ_U64(((2ULL << tt_CALL_RETRY_COUNT) - 1) * first, took);
@@ -329,7 +374,9 @@ int main(void) {
     test_an_explicit_interval_is_used_as_given();
     test_a_small_srtt_retries_well_before_5ms();
     test_a_large_srtt_is_not_clamped_to_250ms();
-    test_the_ceiling_is_a_multiple_of_srtt();
+    test_the_ceiling_is_a_multiple_of_srtt_or_g();
+    test_a_same_host_srtt_keeps_g_and_the_doubling();
+    test_the_round_trip_counts_from_before_the_send();
     test_each_retry_of_a_call_waits_twice_as_long();
     test_the_seed_is_used_until_a_first_answer();
     test_an_unanswered_call_reports_failure_within_the_old_worst_case();

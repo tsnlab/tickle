@@ -263,10 +263,13 @@ KEEP_ALL writer would stop at its bound. So the writer solicits acks itself (a H
 
 ## 7. Services (RPC)
 
-- A Client has one outstanding call, cached for retry in `cache_buf` (or caller-attached storage).
+- A Client has one outstanding call, cached for retry in `cache_buf` (or caller-attached storage). A call's seq_no
+  comes from the context's one counter, so several Clients of one service in one context (same endpoint_id) send
+  distinct requests and each answer goes to the Client whose call it names (2026-10-09; before, they were answered as
+  one). The round trip is timed from before the send, not after it returns.
 - Retries: `call_retry_interval` if set, every time. Otherwise (auto) RFC 6298 over call-to-answer times, with bounds
   relative to srtt since 2026-10-05: the first wait is `srtt + max(G, 4 x rttvar)`, each
-  retry of the call waits twice the one before, each at most `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` (64) x srtt. The seed
+  retry of the call waits twice the one before, each at most `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` (64) x max(srtt, G). The seed
   `tt_CALL_RETRY_INTERVAL` (5 ms) stands in for srtt until a first answer. A call gives up after
   `(2^(count+1) - 1)` first waits (15), and never later than `(count + 1) x tt_CALL_DEADLINE_PER_SEND` (1 s, the old
   worst case): a wait past that is cut there. A timeout doubles srtt, up to that deadline; the next answer replaces
@@ -602,7 +605,7 @@ All are compile-time `-D` overrides unless noted. Times in nanoseconds.
 | `tt_MAX_RELIABLE_HISTORY` | 64 | | reference cache depth for examples |
 | `tt_CALL_RETRY_INTERVAL` | 5 ms | | RPC auto retry seed, until a first answer |
 | `tt_CALL_RETRY_GRANULARITY` | 0 (2 x G) | | two hosts' event lateness term; non-zero = fixed |
-| `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` | 64 | | a wait's ceiling in srtt |
+| `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` | 64 | | a wait's ceiling in max(srtt, G) |
 | `tt_CALL_DEADLINE_PER_SEND` | 250 ms | | auto call fails within (count + 1) x this (1 s) |
 | `tt_CALL_RETRY_COUNT` | 3 | | RPC retries |
 | `tt_SERVER_CACHE_GAP_MULTIPLE` | 4 | | answered-response cache, in observed retry gaps |

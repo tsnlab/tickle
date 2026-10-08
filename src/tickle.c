@@ -3628,6 +3628,7 @@ static void reset_node_state(struct tt_Context* node) {
     node->last_modified = 0;
     node->entity_id_base = 0; // real value assigned by tt_Context_create() itself, after this call
     node->next_entity_id = 0;
+    node->call_seq_no = 0;
 
     for (int i = 0; i < tt_MAX_CONTEXT_IDS; i++) {
         node->update_generation[i] = 0;
@@ -4117,7 +4118,6 @@ static tt_ret_t node_create_client_locked(struct tt_Context* node, struct tt_Cli
     client->node = node;
     client->service = service;
     client->callback = callback;
-    client->seq_no = 0;
     client->cache = NULL;
     client->cache_storage = NULL; // inline - see client_cache_area()
     client->cache_length = 0;
@@ -4738,8 +4738,8 @@ static uint64_t call_retry_window(uint64_t first, uint64_t ceiling, uint32_t wai
 }
 
 // The first wait of a call on the auto path, and the ceiling of each: srtt + max(G, 4 * rttvar) and
-// tt_CALL_RETRY_MAX_SRTT_MULTIPLE * srtt, with the seed tt_CALL_RETRY_INTERVAL standing in for srtt until a first
-// answer. See config.h for why the bounds are relative to srtt and why the one absolute term remains.
+// tt_CALL_RETRY_MAX_SRTT_MULTIPLE * max(srtt, G), with the seed tt_CALL_RETRY_INTERVAL standing in for srtt until a
+// first answer. See config.h for why the bounds are relative to srtt and why the one absolute term remains.
 static void call_retry_bounds(const struct tt_Client* client, uint64_t* first, uint64_t* ceiling) {
     if (client->latency == 0) {
         *first = (uint64_t)tt_CALL_RETRY_INTERVAL;
@@ -4753,7 +4753,12 @@ static void call_retry_bounds(const struct tt_Client* client, uint64_t* first, u
         spread = granularity;
     }
     *first = srtt + spread;
-    *ceiling = srtt * tt_CALL_RETRY_MAX_SRTT_MULTIPLE;
+    // A multiple of srtt or of G, whichever is larger. Of srtt alone, a same-host srtt of 1-2 us put the ceiling at
+    // 64-128 us, below G itself: every wait was cut to it, the doubling never happened, and a call gave up within
+    // ~0.5 ms - one scheduler hiccup (2026-10-09). The ceiling is there to bound a pathological variance term and a
+    // large retry count, not to undo the G the first wait is guaranteed.
+    uint64_t unit = srtt > granularity ? srtt : granularity;
+    *ceiling = unit * tt_CALL_RETRY_MAX_SRTT_MULTIPLE;
 }
 
 // The wait after a call's `retry`-th send (0: the call itself). An explicit call_retry_interval is used as given, every
@@ -4894,7 +4899,7 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
     }
 
     callrequest_header->endpoint_id = endpoint->id;
-    callrequest_header->seq_no = client->seq_no;
+    callrequest_header->seq_no = node->call_seq_no; // the context's, not the client's: struct tt_Context.call_seq_no
     callrequest_header->retry = 0;
     callrequest_header->reserved = 0;
 
@@ -4945,14 +4950,19 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
     uint8_t peer_count = count_peers(client->peers);
     bool unicast =
         peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD && old_tx_tail == sizeof(struct tt_Header);
+    // The round trip starts here, before the send, not when the send returns: a send that wakes a server on the same
+    // CPU is preempted by it, and the answer can be waiting before the send system call is back. Read after it, that
+    // call measured a round trip of ~200 ns, srtt collapsed below any real one, and the retry schedule built on it
+    // ended inside the next ordinary round trip - 306 timeouts in 1,000,000 calls (service_window_a, 2026-10-09).
+    uint64_t sent_at = tt_get_ns();
     if (!end_encode(node, submessage_header, true, unicast ? client->peers : NULL, unicast ? peer_count : 0)) {
         rollback(node, old_tx_tail);
         return tt_RET_IO_ERROR;
     }
 
     client->cache = cache;
-    client->cache_time = tt_get_ns();
-    client->seq_no++;
+    client->cache_time = sent_at;
+    node->call_seq_no++;
 
     if (!tt_Context_schedule(node, call_next_wake(client, 0, client->cache_time), call_retry, client)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
@@ -11448,13 +11458,36 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
     return true;
 }
 
-// Milestone 35 - deliberately still uses find_endpoint()'s single-match lookup, same reasoning as
-// process_callrequest()'s own doc comment: a CallResponse names its target Client only via the
-// service-name hash, so if more than one local Client now shares that name, which one actually
-// gets it is genuinely ambiguous at the wire level, not something to fix here. The client->cache
-// == NULL check just below already guards against corrupting an unrelated Client's own state if
-// this ever does pick the "wrong" one of several - the response is simply dropped as unexpected,
-// not misapplied.
+// The Client of this service whose outstanding call is `seq_no`, or NULL when none is: nothing outstanding (a
+// duplicate answer, or a late one after call_retry() gave up), or an answer to some earlier call. Several Clients of
+// one service in one context share the endpoint_id; the seq_no tells them apart, because it is drawn from the
+// context's one counter (struct tt_Context.call_seq_no). This took the first of them, find_endpoint()'s single match,
+// until 2026-10-09, and the answers to every other one were dropped as answers to someone else's call.
+static struct tt_Client* find_calling_client(struct tt_Context* node, uint32_t endpoint_id, uint16_t seq_no) {
+    if (!node->endpoint_index_valid) {
+        rebuild_endpoint_index(node);
+    }
+    uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
+    for (uint32_t probe = 0; probe < tt_ENDPOINT_INDEX_SIZE; probe++) {
+        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
+        if (endpoint == NULL) {
+            break;
+        }
+        if (endpoint->kind == tt_KIND_SERVICE_CLIENT && endpoint->id == endpoint_id) {
+            struct tt_Client* client = (struct tt_Client*)endpoint;
+            const struct tt_CallRequestHeader* outstanding =
+                client->cache != NULL ? (const struct tt_CallRequestHeader*)((const uint8_t*)client->cache +
+                                                                             sizeof(struct tt_SubmessageHeader))
+                                      : NULL;
+            if (outstanding != NULL && outstanding->seq_no == seq_no) {
+                return client;
+            }
+        }
+        slot = (slot + 1) & (tt_ENDPOINT_INDEX_SIZE - 1);
+    }
+    return NULL;
+}
+
 static bool process_callresponse(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                  uint32_t tail) {
     struct tt_CallResponseHeader* callresponse_header =
@@ -11473,27 +11506,14 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
     TT_LOG_DEBUG("  retry: %d", callresponse_header->retry);
     TT_LOG_DEBUG("  return_code: %d", callresponse_header->return_code);
 
-    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_SERVICE_CLIENT, endpoint_id);
-    if (endpoint == NULL) {
-        return true;
-    }
-
-    struct tt_Client* client = (struct tt_Client*)endpoint;
-
-    // Only the response to the call that's still outstanding counts. A duplicate (the server
+    // Only the response to a call that's still outstanding counts. A duplicate (the server
     // answered both the original request and a retry that crossed it on the wire) or a late one
     // (arriving after call_retry() already gave up, see its own client->callback(0, NULL)) would
     // otherwise invoke client->callback a second time and pollute the latency EMA with a stale
-    // cache_time. client->cache == NULL means nothing is outstanding; a seq_no mismatch means
-    // this is an answer to some earlier call.
-    if (client->cache == NULL) {
-        TT_LOG_DEBUG("CallResponse with no outstanding call, ignoring");
-        return true;
-    }
-    const struct tt_CallRequestHeader* cached_request =
-        (const struct tt_CallRequestHeader*)((const uint8_t*)client->cache + sizeof(struct tt_SubmessageHeader));
-    if (cached_request->seq_no != seq_no) {
-        TT_LOG_DEBUG("CallResponse seq_no %u != outstanding %u, ignoring", seq_no, cached_request->seq_no);
+    // cache_time.
+    struct tt_Client* client = find_calling_client(node, endpoint_id, seq_no);
+    if (client == NULL) {
+        TT_LOG_DEBUG("CallResponse seq_no %u answers no outstanding call, ignoring", seq_no);
         return true;
     }
 
