@@ -18,7 +18,7 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
   FastDDS 47.6% / 38.9%, CycloneDDS 5.5% / 1.6% (rows 16-17).
 - **Same host (shared memory):** TickLE leads every measured cell, unpinned, with warm-up excluded. At BEST_EFFORT
   KEEP_LAST 1 (the DDS default) TickLE delivered every sample at max rate, CycloneDDS about a fifth and FastDDS
-  almost none (S1d-S3d); TickLE's CPU per delivered RELIABLE sample is 2.1 us against 11.7 and 30.0 (S17).
+  almost none (S1d-S3d); TickLE's CPU per delivered RELIABLE sample is 1.7 us against 12.0 and 31.1 (S17).
 - **rmw layer:** rmw_tickle is first on every block-wait row and every poll-wait row except seven draws with
   CycloneDDS (rows 59, 62-67). It loses no row. Under RELIABLE + KEEP_ALL at 5% loss it delivers 39x (Array1k) and
   78x (Array4k) CycloneDDS's rate with no sample lost; FastDDS's write times out under its default 100 ms bound
@@ -32,37 +32,37 @@ Publisher and subscriber on **one** rig Pi, each framework on its own shared-mem
 by a witness that cannot be configured into agreeing (loopback packet count, and TickLE's own `tx_shm` share).
 Harness `experiments/s6_transport_cells.sh`, 3 repetitions per framework unless noted, throughput from drop-free
 repetitions only. **No process is pinned to a core** (TESTING.md section 5); S1-S10 (but S8) and S1d-S3d,
-S17-S19 are from `experiments/fair_samehost_remeasure.sh` on `9f919c8b` (2026-10-06;
-`~/rig_results_safe/fair_samehost_9f919c8b_20261006-204050.*`): every
+S17-S19 are from `experiments/fair_samehost_remeasure.sh` on `f128f686` (2026-10-08;
+`~/rig_results_safe/fair_samehost_f128f686_20261008-081131.*`, read by `fair_samehost_summary.py`): every
 framework drops the same warm-up and cool-down (4,096 round trips, 2 s), BEST_EFFORT runs KEEP_LAST 1 on all three,
 explicitly (the DDS default), and the pinned figures are a note below. **✅ = best, ❌ = worst** in the row.
 
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | build | details |
 |---|---|---|---|---|---|---|---|
 | | **Throughput, send Mbps** (higher is better) | | | | | | |
-| S1 | BEST_EFFORT, max rate | P2 1292 B | ✅ **13,555** | 6,341 | ❌ 4,463 | `9f919c8b` | [notes](#same-host-notes) |
-| S2 | BEST_EFFORT, max rate | P3 1424 B | ✅ **14,303** | 7,025 | ❌ 4,869 | `9f919c8b` | [notes](#same-host-notes) |
-| S3 | BEST_EFFORT, max rate | P4 2800 B | ✅ **22,613** | 13,000 | ❌ 8,889 | `9f919c8b` | [notes](#same-host-notes) |
-| S4 | RELIABLE | P2 1292 B | ✅ **10,146** | ❌ 916 | 2,244 | `9f919c8b` | [notes](#same-host-notes) |
-| S5 | RELIABLE | P3 1424 B | ✅ **10,556** | ❌ 1,101 | 2,453 | `9f919c8b` | [notes](#same-host-notes) |
-| S6 | RELIABLE | P4 2800 B | ✅ **12,333** | ❌ 2,099 | 4,537 | `9f919c8b` | [notes](#same-host-notes) |
+| S1 | BEST_EFFORT, max rate | P2 1292 B | ✅ **18,484** | 6,340 | ❌ 4,445 | `f128f686` | [notes](#same-host-notes) |
+| S2 | BEST_EFFORT, max rate | P3 1424 B | ✅ **19,716** ¶ | 6,994 | ❌ 4,897 | `f128f686` | [notes](#same-host-notes) |
+| S3 | BEST_EFFORT, max rate | P4 2800 B | ✅ **24,696** | 12,853 | ❌ 9,449 | `f128f686` | [notes](#same-host-notes) |
+| S4 | RELIABLE | P2 1292 B | ✅ **12,613** | ❌ 1,004 | 2,223 | `f128f686` | [notes](#same-host-notes) |
+| S5 | RELIABLE | P3 1424 B | ✅ **13,539** | ❌ 969 | 2,439 | `f128f686` | [notes](#same-host-notes) |
+| S6 | RELIABLE | P4 2800 B | ✅ **14,900** | ❌ 2,041 | 4,651 | `f128f686` | [notes](#same-host-notes) |
 | | **Delivered, receive Mbps** (higher is better; the subscriber's rate over the measured window) | | | | | | |
-| S1d | BEST_EFFORT, max rate, KEEP_LAST 1 | P2 1292 B | ✅ **13,555** (100%) | ❌ 0 (0%) | 938 (21%) | `9f919c8b` | [notes](#same-host-notes) |
-| S2d | BEST_EFFORT, max rate, KEEP_LAST 1 | P3 1424 B | ✅ **14,303** (100%) | ❌ 0 (0%) | 1,035 (21%) | `9f919c8b` | [notes](#same-host-notes) |
-| S3d | BEST_EFFORT, max rate, KEEP_LAST 1 | P4 2800 B | ✅ **22,613** (100%) | ❌ 1 (0%) | 1,844 (21%) | `9f919c8b` | [notes](#same-host-notes) |
+| S1d | BEST_EFFORT, max rate, KEEP_LAST 1 | P2 1292 B | ✅ **18,484** (100%) | ❌ 0 (0%) | 942 (21%) | `f128f686` | [notes](#same-host-notes) |
+| S2d | BEST_EFFORT, max rate, KEEP_LAST 1 | P3 1424 B | ✅ **19,716** ¶ (100%) | ❌ 0 (0%) | 1,032 (21%) | `f128f686` | [notes](#same-host-notes) |
+| S3d | BEST_EFFORT, max rate, KEEP_LAST 1 | P4 2800 B | ✅ **24,696** (100%) | ❌ 1 (0%) | 1,842 (19%) | `f128f686` | [notes](#same-host-notes) |
 | | **Latency, RTT mean ms** (lower is better; one ping in flight, 200/s unless noted) | | | | | | |
-| S7 | RTT | P2 1292 B | ✅ **0.031** | ❌ 0.106 | 0.069 | `9f919c8b` | [notes](#same-host-notes) |
+| S7 | RTT | P2 1292 B | ✅ **0.023** | ❌ 0.100 | 0.067 | `f128f686` | [notes](#same-host-notes) |
 | S8 | RTT, 20/s (60 s) | P2 1292 B | ✅ **0.032** | ❌ 0.197 | 0.071 | `e17b4e6f` | [notes](#same-host-notes) |
-| S9 | RTT | P3 1424 B | ✅ **0.031** | ❌ 0.095 | 0.068 | `9f919c8b` | [notes](#same-host-notes) |
-| S10 | RTT | P4 2800 B | ✅ **0.036** | ❌ 0.108 | 0.070 | `9f919c8b` | [notes](#same-host-notes) |
+| S9 | RTT | P3 1424 B | ✅ **0.023** | ❌ 0.101 | 0.066 | `f128f686` | [notes](#same-host-notes) |
+| S10 | RTT | P4 2800 B | ✅ **0.027** | ❌ 0.113 | 0.066 | `f128f686` | [notes](#same-host-notes) |
 | | **CPU** (lower is better) | | | | | | |
 | S11 | publisher, us per sample | BEST_EFFORT P4, max rate | ✅ **1.071** | ❌ 1.694 | – | `e17b4e6f` | [notes](#same-host-notes) |
 | S12 | client, us per round trip | RTT P2, 20/s | ✅ **66.0** | ❌ 136.7 | 102.1 | `e17b4e6f` | [notes](#same-host-notes) |
 | | **Memory** (lower is better) | | | | | | |
 | S13 | publisher peak RSS, MB | BEST_EFFORT P4 | ✅ **3.2** | ❌ 15.9 | – | `e17b4e6f` | [notes](#same-host-notes) |
-| S17 | client + server us per delivered sample | RELIABLE P3 | ✅ **2.13** | ❌ 29.96 | 11.74 | `9f919c8b` | [notes](#same-host-notes) |
-| S18 | client + server us per round trip | RTT P3, 200/s | ✅ **78.8** † | ❌ 174.6 | 98.8 ‡ | `9f919c8b` | [notes](#same-host-notes) |
-| S19 | client + server peak RSS, MB | RELIABLE P3 | ✅ **8.0** | 46.3 | ❌ 240.5 ‡ | `9f919c8b` | [notes](#same-host-notes) |
+| S17 | client + server us per delivered sample | RELIABLE P3 | ✅ **1.67** | ❌ 31.08 | 11.99 | `f128f686` | [notes](#same-host-notes) |
+| S18 | client + server us per round trip | RTT P3, 200/s | ✅ **42.3** | ❌ 171.3 | 97.7 ‡ | `f128f686` | [notes](#same-host-notes) |
+| S19 | client + server peak RSS, MB | RELIABLE P3 | ✅ **8.3** | 46.7 | ❌ 236.4 ‡ | `f128f686` | [notes](#same-host-notes) |
 | | **Mixed: one publisher, one subscriber on its host and one across the link** (delivered k samples/s, p2) | | | | | | |
 | S15 | BEST_EFFORT, each subscriber | local / remote | ✅ **90.7 / 90.7**, loss 0 | 53.1 / 54.6, loss 4-22% | – | `7f127d56` | [notes](#same-host-notes) |
 | S16 | RELIABLE, each subscriber | local / remote | ✅ **90.7 / 90.7** | 30.8 / 30.8 | – | `7f127d56` | [notes](#same-host-notes) |
@@ -78,14 +78,30 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
   (0.0046%); with the publisher slowed to 2.1% of that rate (148 Mbps) it delivered 100%, so the loss is a
   rate-dependent overrun. Whether the writer's two-payload history pool is the cause was not decided: the depth-64
   arm and the arm counting Fast DDS's own discards were VOID (2 of 3 usable reps). TickLE, the control, delivered 100%.
+  Reproduced again at `f128f686` (2026-10-08): `delivered_ratio=0.000` at p2, p3 and p4, 3 reps each (280-463
+  samples taken per rep).
+- **2026-10-08 re-measure** (`f128f686`, same harness, rules and order as `9f919c8b`; 3 reps per cell, every cell
+  n=3 except **¶ S2/S2d TickLE n=2**: one rep dropped 1 sample at a full ring and is excluded, as the rule says).
+  Every TickLE figure moved; was at `9f919c8b` -> now: S1 13,555 -> **18,484**, S2 14,303 -> **19,716**, S3 22,613
+  -> **24,696**, S4 10,146 -> **12,613**, S5 10,556 -> **13,539**, S6 12,333 -> **14,900** Mbps; S7 0.031 ->
+  **0.023**, S9 0.031 -> **0.023**, S10 0.036 -> **0.027** ms; S17 2.13 -> **1.67** us; S18 78.8 † -> **42.3** us
+  (this run's server no longer reads the CPU clock per echo, `8e98ba48`, so the † no longer applies); S19 8.0 ->
+  **8.3** MB. Between the two builds main gained the frag in-order fast path (`bc398ed2`), reader-wake round 4
+  (`8c1e6431`), encode-in-slot (`cd09e895`), the ring-turn starvation fix (`65b37569`) and the `departed_next` fix
+  (`6f4b87d4`). The vendor arms, which none of these touch, moved within -12..+10% (FastDDS S5, the widest;
+  CycloneDDS within 7%), against TickLE's +9..+36% and -25..-26% RTT; no row's leader or worst changed. Pinned
+  medians of the same session (TickLE / FastDDS / CycloneDDS): S1-S3 18,508 / 6,381 / 4,475, 19,530 / 6,999 / 4,947, 24,813 / 13,023 / 9,511; S4-S6 12,649 / 897 /
+  2,597, 13,453 / 977 / 2,880, 14,654 / 2,103 / 5,062; S7, S9, S10 0.023 / 0.097 / 0.061, 0.023 / 0.097 / 0.061,
+  0.027 / 0.100 / 0.062 ms. No leader changes pinned; TickLE's unpinned/pinned is 1.00-1.02x, CycloneDDS's
+  0.85-0.92x at S4-S6 and 1.07-1.10x RTT, FastDDS's 1.13x RTT at S10.
 - **2026-10-06 re-measure** (`9f919c8b`): S10 fell from 0.052 to **0.036 ms** - the old figure was a first-lap one,
   ~16 us of first-touch page faults on the reliable reorder ring before warm-up was excluded (ROADMAP Now 1). The
   BEST_EFFORT rows now also show what was delivered (S1d-S3d): at KEEP_LAST 1, the DDS default, FastDDS's reader took
   almost nothing at max rate and CycloneDDS's about a fifth (its bench now takes everything per wake), while TickLE
   delivered every sample. **‡ CycloneDDS includes iox-roudi**: its RSS adds 212 MB (206 MB of it shared memory) and
   its CPU 1.6 us per round trip. **† TickLE's latency server read the CPU clock on every echo in this run** (the
-  vendors' servers do not; fixed in `8e98ba48`), so S18's TickLE figure is overstated. Pinned medians of the same
-  session: S1-S3 13,512 / 6,329 / 4,478, 14,197 / 6,932 / 4,893, 22,322 / 12,519 / 9,385; S4-S6 10,062 / 909 / 2,649,
+  vendors' servers do not; fixed in `8e98ba48`), so S18's TickLE figure then (78.8) was overstated. Pinned medians
+  of the same session: S1-S3 13,512 / 6,329 / 4,478, 14,197 / 6,932 / 4,893, 22,322 / 12,519 / 9,385; S4-S6 10,062 / 909 / 2,649,
   10,631 / 987 / 2,842, 12,458 / 1,874 / 5,200; S7, S9, S10 0.030 / 0.098 / 0.061, 0.031 / 0.096 / 0.061, 0.036 /
   0.099 / 0.061 ms.
 - **Unpinned is the headline; pinned is this note** (2026-10-05, `fair_samehost_remeasure.sh`, `7fb6fabf`, each cell
@@ -109,7 +125,7 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
   a 1 ms timer (`8d1c3712`); before that, TickLE lost S4 and S6 to CycloneDDS.
 - **S11 and S13 compare against FastDDS only.** CycloneDDS's memory excludes iceoryx's `iox-roudi` daemon, which
   reserved 216 MB of shared memory before any application connected. TickLE's segment is in-process, no daemon.
-- **S10 is the narrowest lead (1.29x CycloneDDS):** a p4 sample is two datagrams and two slots on TickLE's path.
+- **S10 is the narrowest RTT lead** (2.5x CycloneDDS at `f128f686`; 1.29x when this was investigated): a p4 sample is two datagrams and two slots on TickLE's path.
   The extra time appears only after idling: p4 - p3 is +6 us at 0.5 ms ping spacing and +20 us at 5 ms, against
   CycloneDDS's 0-2 us (`experiments/p4_interval_rig.sh`, `6234e915`). Ruled out: an extra wake (p4 rings the same
   doorbells per round trip, `p4_wake_count.sh`) and the doorbell's place between the fragments (`93504234` moved it
