@@ -223,26 +223,39 @@ Array1k 0% from a writer-history one), with CycloneDDS as the control; (3) publi
 beside the defaults, labelled as such. (1) is done and (2) is ready to run: `experiments/fastdds_keepall_arms.sh`
 (profiles `fastdds/fastdds_keepall_F*.xml`, reading rules in `fastdds_keepall_arms_summary.py`), ~30 min of rig.
 
-### RESOURCE_LIMITS shaped like DDS (the user, 2026-10-05)
+### QoS reshaped like rmw (agreed with the user 2026-10-08; supersedes the two 2026-10-05 items)
 
-KEEP_ALL is bounded today by two process-wide byte budgets (`RMW_TICKLE_KEEP_ALL_BYTES`,
-`RMW_TICKLE_READER_KEEP_ALL_BYTES`), a per-publisher override, and fixed sample-count ceilings the user does not see
-(the tracking window, the index ring, the reader's 4,096). DDS bounds it per writer and per reader in samples
-(`max_samples`, `max_samples_per_instance`), checked against HISTORY at creation. Follow DDS's shape: a sample-count
-limit settable per publisher and per subscription, one visible bound rather than several, and the same consistency
-check. How (QoS extension, payload, both) is decided when the work starts. Comparison: docs/RMW.md, QoS,
-RESOURCE_LIMITS.
+Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's" (2026-10-05). Discussion material:
+`~/claude_reports/QOS_DDS_SCOPE_2026-10-08.ko.md`. Decided:
 
-### A core QoS API shaped like rmw's (the user, 2026-10-05)
-
-Core's QoS is fields set one by one on the endpoint (`reliable`, `durable`, `keep_all`, `deadline_duration_ns`,
-`lifespan_duration_ns`, `liveliness_lease_duration_ns`, `liveliness_manual`), and history is storage the caller
-sizes and attaches (`reliable_cache` with its index and arena; `capacity`, `depth` and `sample_depth`; the
-subscriber's `reorder_storage`). rmw and DDS take one QoS profile (history + depth, reliability, durability,
-deadline, lifespan, liveliness + lease) applied at creation. Give core a QoS profile struct shaped like
-`rmw_qos_profile_t`, applied at endpoint creation, with a helper that computes the storage a profile needs so the
-caller still owns the memory (no malloc in core). Keep the field API working meanwhile; `max_blocking_time` and the
-RESOURCE_LIMITS item above belong in the same profile.
+- **rmw's model, not DDS's entity scopes.** QoS is per endpoint (publisher, subscriber, client, server), as
+  `rmw_qos_profile_t`; context-wide settings are init options, as `rmw_init_options_t`. No Topic or group-level QoS.
+- **rmw's defaults** (`rmw_qos_profile_default`: RELIABLE, KEEP_LAST 10, VOLATILE, ...), as `tt_QOS_PROFILE_DEFAULT`
+  and the other rmw profile constants.
+- **`tt_Topic` becomes `tt_TypeSupport`**: the type name and its encode/decode/size functions only (its three unread
+  QoS fields go). The topic name is its own create argument, as in rmw: `create_publisher(ctx, pub, &type_support,
+  topic_name, &qos, ...)`; `endpoint_id` stays hash(type name, topic name). Services likewise; the retry settings move
+  off `tt_Service` (a type) onto the client and server.
+- **QoS is given at creation, as in rmw; the field-by-field API goes.**
+- **One flat `tt_QosProfile`**: the rmw fields first, same names and order (history, depth, reliability, durability,
+  deadline, lifespan, liveliness, liveliness_lease_duration), then TickLE's extensions as plain fields under a one-line
+  comment per rmw field they extend - no nested `_ext` structs. 0 in an extension field means "TickLE's computed
+  default", so a profile filled from rmw alone works. Ambiguous names get a short prefix (e.g. `call_retry_*`).
+  - reliability extensions: `max_blocking_ns` (today `RMW_TICKLE_MAX_BLOCKING_MS`), heartbeat period / piggyback,
+    ack solicitation period and watermark, the reader's tracking window, `call_retry_interval_ns` / `call_retry_count`.
+  - history extensions: `max_bytes` (the KEEP_ALL / KEEP_LAST byte budget; today `RMW_TICKLE_KEEP_ALL_BYTES` and the
+    cache arena), `reorder_slots`. How KEEP_ALL's sample-count bound (the old RESOURCE_LIMITS item) sits beside
+    `depth` and `max_bytes` is settled when the work starts.
+- **Not QoS goes in options structs**, as rmw's publisher / subscription options: `batch`, `accept_callback`
+  (closest: `content_filter_options`), local delivery (`ignore_local_publications`), the writable callback.
+- **Context settings in `tt_InitOptions`**, as `rmw_init_options_t`: domain id, discovery options (range, static
+  peers), later security; TickLE extensions: broadcast address, announce interval / lease, shared memory, io_uring -
+  today compile-time constants and `_tt_CONFIG`.
+- **Memory stays the caller's**: the reliable cache, reorder storage and service caches are passed in; a helper
+  computes the bytes a profile needs (no malloc in core, FreeRTOS included).
+- **Wire, API and struct changes are allowed** (`tt_VERSION` 12 if the announce must carry more for rmw's QoS
+  compatibility check, `rmw_qos_profile_check_compatible`'s rules). The wire rule still applies: no test may get worse.
+- Order: after the wired work, before Security; rmw_tickle then passes rmw's profile through nearly as is.
 
 ### Wired work (the user's order of 2026-09-29: finish wired, then Security, then wireless)
 

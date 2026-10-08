@@ -160,6 +160,12 @@ int main(void) {
         assert(RMW_RET_OK == rmw_take_request(service, &info, &got_request, &taken));
     }
     assert(taken && FIRST == got_request.first && SECOND == got_request.second);
+    // The request's writer_guid is the client that sent it, as the client itself reports its gid - until
+    // 2026-10-08 it was sixteen zero bytes on both sides, so a server could not tell its callers apart.
+    rmw_gid_t client_gid;
+    assert(RMW_RET_OK == rmw_get_gid_for_client(client, &client_gid));
+    assert(0 != memcmp(client_gid.data, (uint8_t[RMW_GID_STORAGE_SIZE]) {0}, RMW_GID_STORAGE_SIZE));
+    assert(0 == memcmp(info.request_id.writer_guid, client_gid.data, RMW_GID_STORAGE_SIZE));
 
     struct pair response = {.first = got_request.first + got_request.second, .second = MARK};
     assert(RMW_RET_OK == rmw_send_response(service, &info.request_id, &response));
@@ -171,6 +177,7 @@ int main(void) {
         assert(RMW_RET_OK == rmw_take_response(client, &info, &got_response, &taken));
     }
     assert(taken && FIRST + SECOND == got_response.first && MARK == got_response.second);
+    assert(0 == memcmp(info.request_id.writer_guid, client_gid.data, RMW_GID_STORAGE_SIZE)); // the same request
 
     assert(RMW_RET_OK == rmw_destroy_client(node, client));
     assert(RMW_RET_OK == rmw_destroy_service(node, service));

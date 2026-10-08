@@ -37,8 +37,8 @@ implementation's source on 2026-09-27, and updated as gaps closed.
 
 | Feature | Status | Note |
 |---|---|---|
-| Publish / subscribe, `rmw_take`, `rmw_take_with_info`, `rmw_take_sequence` | ✅ | `publisher_gid` in message info identifies the writer |
-| Services and clients | ✅ | **One outstanding request at a time** per client and per service. A second request is refused |
+| Publish / subscribe, `rmw_take`, `rmw_take_with_info`, `rmw_take_sequence` | ✅ | `publisher_gid` in message info equals the writer's own `rmw_get_gid_for_publisher` and its graph gid (`test_gid_two_process`) |
+| Services and clients | ✅ | **One outstanding request at a time** per client and per service. A second request is refused. `request_id.writer_guid` is the client's gid on both sides; zero on the server for a request that beats the client's announce, or when one context has two clients of the service |
 | Actions (`rclcpp_action`) | ✅ | Built from the implicit messages and services. CI runs Fibonacci across two processes |
 | Serialized messages (`rmw_publish/take_serialized_message*`, `rmw_serialize`) | ✅ | Served by the direct codec. `ros2 topic echo --raw` works. Format string is `"tickle"` |
 | `ros2 bag record` / `ros2 bag play` | ✅ | The acceptance test replayed 77 samples, the same as CycloneDDS |
@@ -74,7 +74,7 @@ implementation's source on 2026-09-27, and updated as gaps closed.
 | Graph | `struct tt_Discovery` (remote) + the context's endpoint table (local) | `rmw_graph.c` scans both. Any discovery change triggers the graph guard condition |
 | Events | core timers (`tt_Context_schedule`) and discovery data | `rmw_event.c`. LIVELINESS_LOST comes from a separate watchdog thread, so a hung poll thread is still detected |
 | Guard condition, wait set | none (rmw only) | An atomic flag plus the context's condvar. `rmw_wait` holds `wait_mutex` across check and wait, so no wakeup is lost |
-| GID | context id + per-instance `entity_id` | Unique per endpoint, for local and remote endpoints alike |
+| GID | context id + per-instance `entity_id` | Unique per endpoint, for local and remote endpoints alike. Known core gap: two writers of one topic in one remote context share an `endpoint_id`, and discovery keys on `(context_id, endpoint_id)`, so the graph lists one of them |
 | Typesupport | `tools/typesupport` CDR-4 codec | `rosidl_typesupport_tickle_c`/`_cpp`, registered as rosidl extensions and package-qualified so same-named types never collide |
 
 ### Threading
@@ -208,12 +208,17 @@ The full tables are in [RESULTS.md](RESULTS.md).
   coverage table.
 - Messages above 64 KB (large-message stage 2: wider fragment index, 32-bit record length).
 - More than one outstanding request per client and per service.
-- Round-trip checks for the other introspection values (names, type names, GIDs, event counts, serialization format):
-  only QoS profiles are verified to be accepted back.
+- Round-trip checks for the introspection values: QoS profiles (`test_reported_qos`), and names, type names, counts,
+  `*_info_by_topic` rows, GIDs and the serialization format across two processes (`test_introspection_two_process`,
+  `test_gid_two_process`; no mismatch found) are done. Open: event counts across processes, and two writers of one
+  topic in one remote context, which the graph lists as one (core discovery keys on `endpoint_id`).
 - `*_info_by_service`: report two endpoints per entry, a real type hash, and remote QoS.
 - Shared-memory tests: the kill test (S5), the fair same-host comparison against both vendors (S6), a CI arm with the
   module on (S8), and both mixed-stream windows (S9).
-- rmw behaviour tests (events, graph, QoS, the acceptance suite) run only in CI. No local gate covers them.
+- rmw behaviour tests still CI-only: the upstream conformance suite (`test_rmw_implementation`), the interface
+  workspace controls and the direct-codec identity harness. The ctest suite and `check_ros2_interfaces.sh`'s
+  pub/sub, rclcpp and action cases run locally in a private netns (`make test-rmw-behaviour`, and the
+  `rmw suite (as CI)` gate). The acceptance suite (`rmw_gap_acceptance.sh`) is run by hand.
 - A cross-vendor rmw throughput benchmark that can run across two hosts.
 - SROS2 security: parked until the user starts it.
 - Line and branch coverage tracking (none today; needed for a higher quality level).
