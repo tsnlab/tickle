@@ -140,6 +140,9 @@ static void init_header(struct tt_Header* header) {
 static uint32_t write_data(struct tt_Context* node, uint32_t seq_no, uint64_t timestamp, uint32_t value) {
     struct tt_DataHeader* data_header = (struct tt_DataHeader*)node->rx_buffer;
     data_header->endpoint_id = ENDPOINT_ID;
+    // From the writer the tests announce: discovery names a writer by its entity_id (2026-10-08), so DATA from an
+    // unannounced one would be the not-yet-discovered case, which delivers.
+    data_header->entity_id = ENTITY_ID_OF(ENDPOINT_ID);
     data_header->seq_no = seq_no;
     data_header->timestamp = timestamp;
 

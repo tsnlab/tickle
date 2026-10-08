@@ -14,7 +14,7 @@
 // remote half of the graph is served from discovery and the local half from the endpoint table - two code
 // paths, and only the remote one had the defects found so far (g14, the gid).
 //
-// A talker (forked child, its own rmw context) creates a node in a namespace with a publisher on a topic whose
+// A talker (forked child, its own rmw context) creates a node in a namespace with two publishers on a topic whose
 // name is rmw's maximum length, a subscription, a service and a client, and pipes the gids its rmw reports.
 // A listener (this process) that creates none of those requires, once discovery shows them:
 //
@@ -24,16 +24,18 @@
 //              accepted by rmw_validate_full_topic_name(), with exactly the one type it created - and the
 //              reported topic and type are accepted back by rmw_create_publisher() here;
 //   by node    the four *_names_and_types_by_node() calls for the remote node give the same names and types;
-//   counts     rmw_count_publishers/_subscribers/_services/_clients are 1 for what exists and 0 for the name
-//              of the other endpoint kind (the control: a count that ignores the kind cannot pass it);
-//   info       rmw_get_publishers_info_by_topic() / _subscriptions_ one row each, with the talker's node name,
-//              namespace, type, endpoint type and its own gid;
+//   counts     rmw_count_publishers/_subscribers/_services/_clients are what exists (2 publishers, 1 of the rest)
+//              and 0 for the name of the other endpoint kind (the control: a count that ignores the kind cannot
+//              pass it);
+//   info       rmw_get_publishers_info_by_topic() a row per publisher, _subscriptions_ one, each with the talker's
+//              node name, namespace, type, endpoint type and its own gid - the two publishers' gids both, once each;
 //   format     rmw_get_serialization_format() is the format rmw_take_serialized_message() hands over: what the
 //              remote talker published, taken serialized here, is accepted by rmw_deserialize(), gives back the
 //              message, and rmw_serialize() of that message reproduces the bytes.
 //
-// What it does not check: event counts (test_events.c and test_g3_events.c, in-process), and two writers of one
-// topic in one remote context, which the graph lists as one - a core discovery gap (test_gid_two_process.c).
+// The two publishers share one endpoint_id (topic and endpoint name); until 2026-10-08 core's discovery table keyed
+// on it and the graph listed one of them. What it does not check: event counts (test_events.c and test_g3_events.c,
+// in-process).
 
 #include <assert.h>
 #include <fcntl.h>
@@ -183,8 +185,10 @@ static rosidl_service_type_support_t service_handle = {.data = &service_callback
 
 static char long_topic[LONG_TOPIC_LENGTH + 1];
 
+#define PUBLISHERS 2 // of long_topic, in the one talker context
+
 struct talker_gids {
-    uint8_t publisher[RMW_GID_STORAGE_SIZE];
+    uint8_t publisher[PUBLISHERS][RMW_GID_STORAGE_SIZE];
     uint8_t subscription[RMW_GID_STORAGE_SIZE];
 };
 
@@ -220,16 +224,20 @@ static int run_talker(int gids_fd, int quit_fd) {
     rmw_subscription_options_t sub_options = rmw_get_default_subscription_options();
     rmw_qos_profile_t service_qos = rmw_qos_profile_services_default;
     rmw_publisher_t* pub = rmw_create_publisher(node, &message_handle, long_topic, &qos, &pub_options);
+    rmw_publisher_t* pub2 = rmw_create_publisher(node, &message_handle, long_topic, &qos, &pub_options);
     rmw_publisher_t* ser_pub = rmw_create_publisher(node, &message_handle, SER_TOPIC, &qos, &pub_options);
     rmw_subscription_t* sub = rmw_create_subscription(node, &message_handle, SUB_TOPIC, &qos, &sub_options);
     rmw_service_t* service = rmw_create_service(node, &service_handle, SERVICE, &service_qos);
     rmw_client_t* client = rmw_create_client(node, &service_handle, CLIENT_SERVICE, &service_qos);
-    assert(NULL != pub && NULL != ser_pub && NULL != sub && NULL != service && NULL != client);
+    assert(NULL != pub && NULL != pub2 && NULL != ser_pub && NULL != sub && NULL != service && NULL != client);
 
     struct talker_gids gids;
     rmw_gid_t gid;
     assert(RMW_RET_OK == rmw_get_gid_for_publisher(pub, &gid));
-    memcpy(gids.publisher, gid.data, RMW_GID_STORAGE_SIZE);
+    memcpy(gids.publisher[0], gid.data, RMW_GID_STORAGE_SIZE);
+    assert(RMW_RET_OK == rmw_get_gid_for_publisher(pub2, &gid));
+    memcpy(gids.publisher[1], gid.data, RMW_GID_STORAGE_SIZE);
+    assert(0 != memcmp(gids.publisher[0], gids.publisher[1], RMW_GID_STORAGE_SIZE));
     // rmw has no gid getter for a subscription. The graph encodes every endpoint as the publisher's gid is
     // encoded, (context id, entity_id), so that pair is read off this side's endpoint for the listener to compare.
     memset(gids.subscription, 0, sizeof(gids.subscription));
@@ -247,6 +255,7 @@ static int run_talker(int gids_fd, int quit_fd) {
         }
         struct pair message = {.first = tick, .second = ~tick};
         assert(RMW_RET_OK == rmw_publish(pub, &message, NULL));
+        assert(RMW_RET_OK == rmw_publish(pub2, &message, NULL));
         assert(RMW_RET_OK == rmw_publish(ser_pub, &message, NULL));
         sleep_poll();
     }
@@ -255,6 +264,7 @@ static int run_talker(int gids_fd, int quit_fd) {
     assert(RMW_RET_OK == rmw_destroy_service(node, service));
     assert(RMW_RET_OK == rmw_destroy_subscription(node, sub));
     assert(RMW_RET_OK == rmw_destroy_publisher(node, ser_pub));
+    assert(RMW_RET_OK == rmw_destroy_publisher(node, pub2));
     assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
     assert(RMW_RET_OK == rmw_destroy_node(node));
     fini_context(&options, &context);
@@ -268,9 +278,9 @@ static size_t count_of(rmw_ret_t (*counter)(const rmw_node_t*, const char*, size
     return count;
 }
 
-// Discovery has shown the talker's four endpoints.
+// Discovery has shown the talker's endpoints.
 static bool talker_discovered(const rmw_node_t* node) {
-    return 1 == count_of(rmw_count_publishers, node, long_topic) &&
+    return PUBLISHERS == count_of(rmw_count_publishers, node, long_topic) &&
            1 == count_of(rmw_count_subscribers, node, SUB_TOPIC) && 1 == count_of(rmw_count_services, node, SERVICE) &&
            1 == count_of(rmw_count_clients, node, CLIENT_SERVICE);
 }
@@ -383,19 +393,38 @@ static void check_counts(const rmw_node_t* node) {
     size_t clients_on_server = count_of(rmw_count_clients, node, SERVICE);
     printf("  counts: publishers %zu, subscribers %zu, services %zu, clients %zu; other kind %zu %zu %zu %zu\n", pubs,
            subs, servers, clients, pubs_on_sub, subs_on_pub, servers_on_client, clients_on_server);
-    assert(1 == pubs && 1 == subs && 1 == servers && 1 == clients);
+    assert(PUBLISHERS == pubs && 1 == subs && 1 == servers && 1 == clients);
     assert(0 == pubs_on_sub && 0 == subs_on_pub && 0 == servers_on_client && 0 == clients_on_server);
+}
+
+static void expect_endpoint_fields(const rmw_topic_endpoint_info_t* row, rmw_endpoint_type_t type) {
+    printf("  info: node %s ns %s type %s endpoint %d gid %02x%02x%02x%02x%02x...\n", row->node_name,
+           row->node_namespace, row->topic_type, (int)row->endpoint_type, row->endpoint_gid[0], row->endpoint_gid[1],
+           row->endpoint_gid[2], row->endpoint_gid[3], row->endpoint_gid[4]);
+    assert(0 == strcmp(row->node_name, TALKER_NODE) && 0 == strcmp(row->node_namespace, TALKER_NAMESPACE));
+    assert(0 == strcmp(row->topic_type, MESSAGE_TYPE) && type == row->endpoint_type);
+}
+
+// One row per talker publisher, each naming one of the talker's gids, no gid twice.
+static void expect_publisher_rows(const rmw_topic_endpoint_info_array_t* rows, const struct talker_gids* gids) {
+    assert(PUBLISHERS == rows->size);
+    bool listed[PUBLISHERS] = {false, false};
+    for (size_t i = 0; i < rows->size; i++) {
+        const rmw_topic_endpoint_info_t* row = &rows->info_array[i];
+        expect_endpoint_fields(row, RMW_ENDPOINT_PUBLISHER);
+        int which = 0 == memcmp(row->endpoint_gid, gids->publisher[0], RMW_GID_STORAGE_SIZE) ? 0 : 1;
+        assert(0 == memcmp(row->endpoint_gid, gids->publisher[which], RMW_GID_STORAGE_SIZE));
+        assert(!listed[which]);
+        listed[which] = true;
+    }
+    assert(listed[0] && listed[1]);
 }
 
 static void expect_endpoint_row(const rmw_topic_endpoint_info_array_t* rows, rmw_endpoint_type_t type,
                                 const uint8_t* gid) {
     assert(1 == rows->size);
     const rmw_topic_endpoint_info_t* row = &rows->info_array[0];
-    printf("  info: node %s ns %s type %s endpoint %d gid %02x%02x%02x%02x%02x...\n", row->node_name,
-           row->node_namespace, row->topic_type, (int)row->endpoint_type, row->endpoint_gid[0], row->endpoint_gid[1],
-           row->endpoint_gid[2], row->endpoint_gid[3], row->endpoint_gid[4]);
-    assert(0 == strcmp(row->node_name, TALKER_NODE) && 0 == strcmp(row->node_namespace, TALKER_NAMESPACE));
-    assert(0 == strcmp(row->topic_type, MESSAGE_TYPE) && type == row->endpoint_type);
+    expect_endpoint_fields(row, type);
     assert(0 == memcmp(row->endpoint_gid, gid, RMW_GID_STORAGE_SIZE));
 }
 
@@ -403,7 +432,7 @@ static void check_endpoint_info(rmw_node_t* node, const struct talker_gids* gids
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
     rmw_topic_endpoint_info_array_t rows = rmw_get_zero_initialized_topic_endpoint_info_array();
     assert(RMW_RET_OK == rmw_get_publishers_info_by_topic(node, &allocator, long_topic, false, &rows));
-    expect_endpoint_row(&rows, RMW_ENDPOINT_PUBLISHER, gids->publisher);
+    expect_publisher_rows(&rows, gids);
     assert(RMW_RET_OK == rmw_topic_endpoint_info_array_fini(&rows, &allocator));
     rows = rmw_get_zero_initialized_topic_endpoint_info_array();
     assert(RMW_RET_OK == rmw_get_subscriptions_info_by_topic(node, &allocator, SUB_TOPIC, false, &rows));

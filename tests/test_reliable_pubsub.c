@@ -2020,7 +2020,11 @@ static void run_first_contact_stream(bool writer_keep_all, int* sends_after_firs
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&node, &discovery, NULL, NULL));
-    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, 0x33330001, tt_KIND_TOPIC_PUBLISHER, 0,
+    // The writer the DATA below comes from - write_data() sends entity_id 0, as every writer in this file:
+    // discovery names a writer by its entity_id (2026-10-08), and announcing one writer while another sends
+    // would test a world no producer makes.
+    const uint32_t writer_entity_id = 0;
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, writer_entity_id, tt_KIND_TOPIC_PUBLISHER, 0,
                              (uint8_t)(tt_UPDATE_QOS_RELIABLE | (writer_keep_all ? tt_UPDATE_QOS_KEEP_ALL : 0)), 0, 0,
                              "type", "name");
 

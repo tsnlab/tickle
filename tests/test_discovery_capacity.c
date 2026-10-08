@@ -150,7 +150,8 @@ static void test_the_last_of_many_publishers_is_known_and_refused(void) {
     // The table knows the last publisher, so RxO, liveliness and KEEP_ALL have something to read.
     const struct tt_DiscoveredEntity* entity = tt_Discovery_find(&discovery, REMOTE_ID, pubs[last].endpoint.id);
     EXPECT_TRUE(entity != NULL);
-    EXPECT_TRUE(writer_announced_keep_all(&local, REMOTE_ID, pubs[last].endpoint.id) != tt_WRITER_KEEP_ALL_UNKNOWN);
+    EXPECT_TRUE(writer_announced_keep_all(&local, REMOTE_ID, pubs[last].endpoint.id, pubs[last].endpoint.entity_id) !=
+                tt_WRITER_KEEP_ALL_UNKNOWN);
 
     // Its DATA is refused as RxO-incompatible, not delivered.
     uint32_t value = 42;
