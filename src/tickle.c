@@ -7596,6 +7596,32 @@ static void note_repair_arrival(struct tt_WriterProxy* proxy, uint32_t seq_no, u
     rtt_estimate_fold(&proxy->transit_srtt_ns, &proxy->transit_rttvar_ns, now - oldest);
 }
 
+// A copy of seq_no arrived and this reader declined it (tt_Subscriber.accept_callback: a bounded KEEP_ALL queue with
+// nowhere to put it). Every request that named seq_no has had its answer - the repair came, it is not on its way - so
+// each remembered request naming it is forgotten. Kept, they did two things wrong (2026-10-09, rmw_samehost.sh's PC
+// preflight, tput Array1k RELIABLE KEEP_ALL on one host, no loss, perf_test's reader slower than the writer):
+//   - answer_ack_request() left the declined sample out of every answer for the whole repair-transit window, so the
+//     refused writer, asking about once a millisecond, was told "on its way" while the reader had room again: blocks
+//     of 23-40 ms carried 20-36 answers and one window of resends (~960 named bits) between them;
+//   - the copy finally kept was timed from the request before the decline (note_repair_arrival()), so the decline's
+//     wait went into the transit estimate, which widened the window, which lengthened the next wait. Past rmw_tickle's
+//     100 ms publish bound the writer gave up ("blocked 100ms ... gave up") with nothing lost.
+// Forgetting the whole remembered range can name again a repair of another sample in it that is still in flight - a
+// duplicate, only while this reader is declining.
+static void forget_requests_answered_by(struct tt_Subscriber* sub, uint8_t writer_node_id, uint32_t writer_entity_id,
+                                        uint32_t seq_no) {
+    struct tt_WriterProxy* proxy = sub->reliable ? find_writer_proxy(sub, writer_node_id, writer_entity_id) : NULL;
+    if (proxy == NULL) {
+        return; // BEST_EFFORT asks for nothing; a reliable reader with no proxy for this writer has asked for nothing
+    }
+    for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
+        struct tt_RepairRequest* request = &proxy->requests[slot];
+        if (request->sent_ns != 0 && seq_no >= request->first_seq_no && seq_no <= request->last_seq_no) {
+            request->sent_ns = 0;
+        }
+    }
+}
+
 // The bits of bitmap word `word` that lie in positions low..high (both inclusive); 0 when none do, or low > high.
 static uint64_t bitmap_range_in_word(int word, int low, int high) {
     int base = word * tt_RELIABLE_BITMAP_WORD_BITS;
@@ -10650,6 +10676,7 @@ static void deliver_data_to_subscriber(struct tt_Context* node, struct tt_Endpoi
     // that instant instead of reasoning about how narrow it is.
     if (sub->accept_callback != NULL && !sub->accept_callback(sub, ctx->seq_no, sub->accept_callback_param)) {
         sub->accept_declines++;
+        forget_requests_answered_by(sub, ctx->header->source, ctx->entity_id, ctx->seq_no);
         if (is_power_of_ten(sub->accept_declines)) {
             TT_LOG_WARNING("Subscriber %u declined sample %u from node %u (decline #%u): nowhere to put it. A "
                            "RELIABLE writer still holds it and will send it again, so nothing is lost yet - but a "

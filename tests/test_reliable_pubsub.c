@@ -4587,6 +4587,62 @@ static void test_g13_best_effort_decline_is_a_counted_drop(void) {
     EXPECT_EQ_U32(1, (uint32_t)sub.out_of_order_discarded);
 }
 
+// A repair this reader declined (its bounded KEEP_ALL queue full) is not on its way: it came. 2 is asked for at 10 ms
+// by the ACKNACK that opened the gap; its repair arrives 50 us later and is declined; 50 us after that the queue has
+// room and a refused writer asks for an answer. The request for 2 is still inside the 200 us repair-transit window, and
+// the answer left it out - a pure acknowledgement - so a stopped writer waited for the window, and the decline's wait
+// went into the transit estimate when the copy kept was timed from the 10 ms request, widening the window for the
+// next one. On the PC (rmw_samehost.sh's preflight, tput Array1k RELIABLE, one host, no loss) blocks of 23-40 ms
+// carried 20-36 such answers each, and past 100 ms the publisher gave up. The answer now names 2, and the copy kept
+// 30 us after that answer is timed from it, not from 10 ms.
+// Control: test_heartbeat_requesting_an_answer_does_not_rerequest_a_repair_in_flight - with no decline, the same
+// request inside the window is a pure acknowledgement. Mutant: drop forget_requests_answered_by()'s call - the answer
+// is a pure acknowledgement here (bitmap_words 0) and the transit sample is 130 us.
+static void test_a_declined_repair_is_named_again_and_timed_from_after_the_decline(void) {
+    test_mock_reset();
+    accept_hook_reset();
+    test_mock_now = 10 * tt_MILLISECOND;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.accept_callback = test_accept_hook;
+    struct tt_Header header;
+    init_header(&header);
+    struct tt_WriterProxy* proxy = open_gap_at_two(&node, &sub, &header);
+
+    test_mock_now += 50 * tt_MICROSECOND;
+    accept_hook_answer = false;
+    uint32_t tail = write_data(&node, 2, 200, 2);
+    node.rx_targeted = true;
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    node.rx_targeted = false;
+    EXPECT_EQ_U32(1, sub.accept_declines);
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+    EXPECT_EQ_U32(GAP_TEST_TRANSIT_NS, proxy->transit_srtt_ns); // a declined copy is no transit sample
+
+    test_mock_now += 50 * tt_MICROSECOND; // 100 us after the request: inside the window
+    accept_hook_answer = true;
+    int sends_before = test_mock_send_to_call_count;
+    tail = write_heartbeat(&node, ENDPOINT_ID, 1, 3, 0);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(sends_before + 1, test_mock_send_to_call_count);
+    const struct tt_AckNackHeader* acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_EQ_U32(2, acknack->seq_no);
+    EXPECT_TRUE(acknack->bitmap_words == 1 && acknack->bitmap[0] == 0x1ULL); // seq_no 2, named again
+
+    test_mock_now += 30 * tt_MICROSECOND;
+    tail = write_data(&node, 2, 200, 2);
+    node.rx_targeted = true;
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    node.rx_targeted = false;
+    EXPECT_EQ_U32(4, proxy->ack_seq_no); // 2 and 3 delivered
+    EXPECT_EQ_U32((uint32_t)(((7ULL * GAP_TEST_TRANSIT_NS) + (30ULL * tt_MICROSECOND)) / 8ULL), proxy->transit_srtt_ns);
+}
+
 int main(void) {
     test_keep_all_refuses_at_bound_and_unblocks_on_ack();
     test_keep_last_still_evicts_rather_than_refusing();
@@ -4679,6 +4735,7 @@ int main(void) {
     test_g13_accept_hook_that_always_accepts_changes_nothing();
     test_g13_a_declined_sample_survives_only_while_the_writer_holds_it();
     test_g13_best_effort_decline_is_a_counted_drop();
+    test_a_declined_repair_is_named_again_and_timed_from_after_the_decline();
 #ifdef tt_RELIABLE_STATS
     test_keep_all_writable_cause_is_distinguished();
     test_reliable_stats_subscriber_gap_accounting();
