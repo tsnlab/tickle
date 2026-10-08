@@ -17,13 +17,31 @@
 // bell_join_wait_set()).
 //
 // How it hits the race rather than hoping to: a ping-pong across two processes in which only the reader ever sleeps.
-//   parent (the reader under test) publishes a ping from inside the callback that took the last pong, then goes back
-//          to tt_Context_poll(-1), whose wait ends only on a ring, a datagram or a scheduler entry.
-//   child  (the writer) busy-polls, so it sees each ping within a microsecond or two, waits a random delay drawn
-//          uniformly from [0, the last ping-to-ping period], and publishes the pong into the parent's ring. The delay
-//          sweeps the pong across the parent's whole path from publishing its ping to being asleep, so the few hundred
-//          nanoseconds where a broken protocol loses the record are hit on a fixed fraction of round trips, on any
-//          hardware - the range is measured from the run, not set.
+//   parent (the reader under test) publishes a ping from inside the callback that took the last pong, waits a fixed
+//          PARENT_DELAY_NS, and goes back to tt_Context_poll(-1), whose wait ends only on a ring, a datagram or a
+//          scheduler entry. The fixed delay puts its announcement (reader_waiting) at a steady time after the ping.
+//   child  (the writer) busy-polls, so it sees each ping within a microsecond or two, and answers it one of two ways,
+//          alternately (child_ping()):
+//          late   - it waits until the parent has announced a sleep and then publishes, so the parent is asleep, or as
+//                   good as, and is rung: the half of the run that proves the bell wakes a sleeping reader.
+//          aimed  - it publishes at the announcement itself, after a delay that steps 20 ns earlier after each aimed
+//                   pong it rang for and 20 ns later after each one it did not. So it settles where half are rung -
+//                   where the writer's look at reader_waiting meets the reader's store to it - and a uniform jitter of
+//                   +-1 us spreads the pongs around that point. Every broken order loses the record there.
+//          Until 2026-10-08 the child drew its delay uniformly from [0, the last ping period], ~20 us. That caught the
+//          fence mutant (tests/mutants_bell_wake.py) 1-6 times in 400,000 round trips up to 8c1e6431, and 0 times in
+//          3.2 million from cd09e895 on, which encodes the sample straight into its slot between the claim and the
+//          publish instead of copying it there just before the publish.
+//   clog   a third thread of the child, on a CPU of its own, reads the writer's own stack lines while an aimed pong is
+//          out (clog_main()). The race the writer's fence closes needs the store that publishes the record to be
+//          still unwritten when the reader, having announced, reads the slot; the reader's path from its announcement
+//          to that read is a few hundred nanoseconds of -O0 code. The reading that fits both measurements: once the
+//          encode-in-slot write has pulled the slot's line in, the publishing store reaches the cache within a few
+//          cycles, and the race all but closes. With the clog, every store the writer makes after its claim, stack
+//          spills included, first has to take its line back, and x86 writes stores in order, so the publishing store
+//          waits behind them while the writer's unfenced load runs ahead. Measured on the PC: aimed pongs without the
+//          clog lost the fence mutant 0-5 wake-ups in 100,000 round trips; with it, 40 runs of 40 lost one within
+//          283-20,789 round trips. Off on fewer than three CPUs, where it would only compete with the two contexts.
 //
 // How it sees a lost wake-up without a clock: the child watches each pong until the parent consumes it, and reads the
 // parent's segment header while it does (watch_pong()). A round-trip threshold cannot do this job - core's own
@@ -38,14 +56,17 @@
 // fill, and this is the check that it is not.
 //
 // It also proves it exercised what it claims (each a FAIL if not, never a pass): the parent slept and was rung through
-// the FIFO for most round trips, its records came through the segment, the child watched them, and - when the kernel
-// let the bell be edge-triggered - the bell was read far fewer times than it was rung.
+// the FIFO for most round trips, its records came through the segment, the child watched them, the aimed pongs
+// straddled the announcement (between a quarter and three quarters rung), and - when the kernel let the bell be
+// edge-triggered - the bell was read far fewer times than it was rung. The run stops at the first lost wake-up.
 //
 // Exit 0 pass, 1 fail, 3 setup failed. Usage: bell_wake_check [round_trips]
 // NOLINTNEXTLINE(bugprone-reserved-identifier, readability-identifier-naming) - F_GETPIPE_SZ
 #define _GNU_SOURCE
 #include <fcntl.h>
 #include <inttypes.h>
+#include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -69,10 +90,18 @@
 #define SETUP_NS (10ULL * 1000ULL * 1000ULL * 1000ULL) // to the first pong: discovery and segment attach
 #define RUN_NS (30ULL * 1000ULL * 1000ULL * 1000ULL)   // the whole run, a backstop for a hang (healthy: ~3 s)
 #define NS_PER_MS 1e6
+#define NS_PER_US 1e3
 #define NS_PER_S 1000000000ULL
 #define REAP_TRIES 50 // the child is given REAP_TRIES x REAP_PAUSE_US to exit after the stop
 #define REAP_PAUSE_US 100000U
-#define STOP_VALUE UINT64_MAX // the ping that ends the child
+#define STOP_VALUE UINT64_MAX    // the ping that ends the child
+#define PARENT_DELAY_NS 10000ULL // from publishing a ping to going back to the poll: longer than the child's look
+#define LATE_LIMIT_NS 1000000ULL // a late pong waits at most this long for the parent's announcement
+#define AIM_STEP_NS 20           // the aim's step after each aimed pong
+#define AIM_JITTER_NS 1000U      // and the uniform spread around it
+#define CLOG_STACK_BYTES 2048U   // the writer's stack below child_ping()'s frame that the clog reads
+#define CLOG_LINE 64U
+#define CLOG_MIN_CPUS 3 // parent, child and clog each on a CPU of its own
 #define PARENT_ID 61
 #define CHILD_ID 62
 #define BROADCAST "127.255.255.255" // loopback only, as test_samehost.sh
@@ -85,9 +114,13 @@ enum check_exit { CHECK_PASS = 0, CHECK_FAIL = 1, CHECK_SETUP_FAILED = 3 };
 struct child_report {
     uint64_t doorbells_sent;
     uint64_t bells_rung;
-    uint64_t watched; // pongs whose consumption the child watched (watch_pong())
-    uint64_t lost;    // of those, a wake-up lost: see watch_pong()
-    uint64_t stuck;   // of those, not consumed within RUN_NS at all
+    uint64_t watched;     // pongs whose consumption the child watched (watch_pong())
+    uint64_t lost;        // of those, a wake-up lost: see watch_pong()
+    uint64_t stuck;       // of those, not consumed within RUN_NS at all
+    uint64_t aimed;       // pongs aimed at the parent's announcement (child_ping())
+    uint64_t aimed_rung;  // of those, the ones the writer rang for: it saw the announcement
+    int64_t aim_ns;       // where the aim settled, after the ping
+    uint32_t parent_done; // set by the parent when it stops polling: nothing the child still watches will be consumed
 };
 static struct child_report* g_report;
 
@@ -96,8 +129,46 @@ static struct child_report* g_report;
 static struct tt_Publisher g_child_pub;
 static struct tt_Context* g_child_node;
 static volatile bool g_child_stop = false;
-static uint64_t g_last_ping_ns = 0;
-static uint64_t g_period_ns = 0; // the last ping-to-ping period: the range the delay is drawn from
+static int64_t g_aim_ns = -1; // from seeing a ping to publishing its pong; -1 until the first late pong measures it
+
+// The CPUs the three are pinned to, or -1 for none (fewer than CLOG_MIN_CPUS allowed): the clog is then not started.
+static int g_parent_cpu = -1;
+static int g_child_cpu = -1;
+static int g_clog_cpu = -1;
+static const volatile uint8_t* volatile g_clog_lines = NULL; // what the clog reads; NULL while no aimed pong is out
+static volatile bool g_clog_stop = false;
+static volatile uint64_t g_clog_sink = 0; // what the clog read, kept so the reads are not optimized away
+
+static void pin_to(int cpu) {
+    if (cpu < 0) {
+        return;
+    }
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    (void)sched_setaffinity(0, sizeof set, &set); // this thread only; unpinned is slower to catch, never wrong
+}
+
+// The clog: reads CLOG_STACK_BYTES of the writer's stack, one load a line, for as long as an aimed pong is being
+// published, so each of the writer's stores there has to take its line back first (the header says why). Only reads,
+// and only the writer's own memory: nothing it does can change what the protocol does, only when its stores land.
+static void* clog_main(void* arg) {
+    (void)arg;
+    pin_to(g_clog_cpu);
+    uint64_t sink = 0;
+    while (!g_clog_stop) {
+        const volatile uint8_t* lines = __atomic_load_n(&g_clog_lines, __ATOMIC_ACQUIRE);
+        if (lines == NULL) {
+            (void)sched_yield();
+            continue;
+        }
+        for (uint32_t offset = 0; offset < CLOG_STACK_BYTES; offset += CLOG_LINE) {
+            sink += lines[offset];
+        }
+    }
+    g_clog_sink = sink;
+    return NULL;
+}
 
 // Watches the pong just published until the parent consumes it, and decides from the parent's own segment header -
 // not from a clock - whether a wake-up was lost on the way.
@@ -137,6 +208,9 @@ static void watch_pong(void) {
                    (double)(tt_get_ns() - start) / NS_PER_MS);
             return;
         }
+        if (__atomic_load_n(&g_report->parent_done, __ATOMIC_ACQUIRE) != 0) {
+            return; // the parent stopped - at a lost wake-up, or at the end - and will consume nothing more
+        }
         if (tt_get_ns() - start > RUN_NS) {
             g_report->stuck++;
             return;
@@ -153,14 +227,51 @@ static void child_ping(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t s
         return;
     }
     uint64_t now = tt_get_ns();
-    if (g_last_ping_ns != 0) {
-        g_period_ns = now - g_last_ping_ns;
-    }
-    g_last_ping_ns = now;
-    uint64_t delay = g_period_ns > 0 ? (uint64_t)random() % g_period_ns : 0;
-    while (tt_get_ns() - now < delay) {
-    }
     struct UInt64Data pong = {.data = data->data};
+    struct tt_SegmentHeader* header = g_child_node->segment_peers[PARENT_ID].mapping;
+    if (header != NULL && ((data->data & 1U) == 0 || g_aim_ns < 0)) {
+        // Late: after the parent announces a sleep it has not announced before. The generation it shows now may be one
+        // still standing from a pong its last drain took, inside whose callback this ping was published.
+        const uint32_t standing = __atomic_load_n(&header->reader_waiting, __ATOMIC_SEQ_CST);
+        uint64_t seen = now;
+        for (;;) {
+            uint32_t waiting = __atomic_load_n(&header->reader_waiting, __ATOMIC_SEQ_CST);
+            if ((waiting != 0 && waiting != standing) || seen - now > LATE_LIMIT_NS ||
+                __atomic_load_n(&g_report->parent_done, __ATOMIC_ACQUIRE) != 0) {
+                break;
+            }
+            seen = tt_get_ns();
+        }
+        // The first guess at the aim, from the first late pong that saw an announcement in time; the steps below find
+        // it from there. One that waited out LATE_LIMIT_NS saw none, and starting from there the aim took the whole run
+        // to walk down to the announcement at AIM_STEP_NS a pong.
+        if (g_aim_ns < 0 && seen - now <= 2U * PARENT_DELAY_NS) {
+            g_aim_ns = (int64_t)(seen - now);
+        }
+    } else if (header != NULL) {
+        // Aimed: at the announcement, with the clog on (the header).
+        volatile uint8_t frame = 0;
+        if (g_clog_cpu >= 0) {
+            __atomic_store_n(&g_clog_lines, (const volatile uint8_t*)&frame - CLOG_STACK_BYTES, __ATOMIC_RELEASE);
+        }
+        int64_t delay = g_aim_ns + (int64_t)((uint64_t)random() % (2U * AIM_JITTER_NS + 1U)) - (int64_t)AIM_JITTER_NS;
+        while ((int64_t)(tt_get_ns() - now) < delay) {
+        }
+        uint64_t rang_before = g_child_node->segment_doorbells_sent;
+        (void)tt_Publisher_publish(&g_child_pub, (struct tt_Data*)&pong);
+        bool rang = g_child_node->segment_doorbells_sent != rang_before;
+        __atomic_store_n(&g_clog_lines, NULL, __ATOMIC_RELEASE);
+        (void)frame;
+        g_aim_ns += rang ? -AIM_STEP_NS : AIM_STEP_NS;
+        if (g_aim_ns < 0) {
+            g_aim_ns = 0;
+        }
+        g_report->aimed++;
+        g_report->aimed_rung += rang ? 1U : 0U;
+        g_report->aim_ns = g_aim_ns;
+        watch_pong();
+        return;
+    }
     (void)tt_Publisher_publish(&g_child_pub, (struct tt_Data*)&pong);
     watch_pong();
 }
@@ -169,6 +280,9 @@ static int child_main(void) {
     _tt_CONFIG.broadcast = BROADCAST;
     _tt_CONFIG.context_id = CHILD_ID;
     srandom((unsigned)getpid());
+    pin_to(g_child_cpu);
+    pthread_t clog; // NOLINT(misc-include-cleaner) - <pthread.h> is included; the tool maps pthread_t elsewhere
+    bool clogging = g_clog_cpu >= 0 && pthread_create(&clog, NULL, clog_main, NULL) == 0;
     struct tt_Context node;
     if (tt_Context_create(&node) != tt_RET_OK) {
         return CHECK_SETUP_FAILED;
@@ -184,6 +298,10 @@ static int child_main(void) {
     while (!g_child_stop && tt_get_ns() - start < RUN_NS) {
         (void)tt_Context_poll(&node, 0); // never waits: the child must see each ping at once
     }
+    g_clog_stop = true;
+    if (clogging) {
+        (void)pthread_join(clog, NULL);
+    }
     tt_Context_destroy(&node);
     return CHECK_PASS;
 }
@@ -196,7 +314,6 @@ static uint64_t g_sent_ns = 0;  // when it was published
 static uint64_t g_measured = 0; // round trips completed since the first pong
 static uint64_t g_worst_ns = 0; // the longest
 static uint64_t g_first_pong_ns = 0;
-static uint64_t g_last_rtt_ns = 0; // the range the parent's own delay is drawn from
 static uint32_t g_target = ROUND_TRIPS;
 static bool g_done = false;
 
@@ -219,7 +336,6 @@ static void parent_pong(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t 
         g_first_pong_ns = now;
     } else {
         uint64_t rtt = now - g_sent_ns;
-        g_last_rtt_ns = rtt;
         g_measured++;
         if (rtt > g_worst_ns) {
             g_worst_ns = rtt;
@@ -230,13 +346,10 @@ static void parent_pong(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t 
         return;
     }
     parent_send(); // from inside the callback: the parent goes from here towards its sleep
-    // And not at once: a delay drawn uniformly from [0, the last round trip] before it does. The child cannot answer
-    // sooner than it takes to see the ping, and without this the parent was always past its window by then - the
-    // first version of this check, delaying only the child, hit the race 3 times in 100,000 against a protocol broken
-    // for every hit. With both sides delayed over the same measured range, the pong falls anywhere relative to the
-    // parent's path to sleep.
-    uint64_t delay = g_last_rtt_ns > 0 ? (uint64_t)random() % g_last_rtt_ns : 0;
-    while (tt_get_ns() - now < delay) {
+    // And not at once: the child cannot answer sooner than it takes to see the ping, and without a delay the parent
+    // was always past its window by then. Fixed, so that the announcement the child aims at comes at a steady time
+    // after the ping (the header).
+    while (tt_get_ns() - now < PARENT_DELAY_NS) {
     }
 }
 
@@ -263,18 +376,31 @@ static enum check_exit verdict(const struct tt_Context* node) {
     printf("bell_wake_check: %" PRIu64 " round trips (worst %.3f ms), %" PRIu64 " watched by the writer, %" PRIu64
            " wake-ups lost, %" PRIu64 " never consumed; parent slept %" PRIu64 " times, woken by the bell %" PRIu64
            " times, read it %" PRIu64 " times (every %u generations, %d of %d bytes left); %" PRIu64
-           " records through the segment; the writer rang %" PRIu64 " times, %" PRIu64 " through the FIFO\n",
+           " records through the segment; the writer rang %" PRIu64 " times, %" PRIu64 " through the FIFO; %" PRIu64
+           " pongs aimed at the announcement, %" PRIu64 " of them rung, aim %.3f us after the ping; clog %s\n",
            g_measured, (double)g_worst_ns / NS_PER_MS, g_report->watched, g_report->lost, g_report->stuck, sleeps, rung,
            node->hal.bell_drains, (unsigned)node->hal.bell_drain_every, unread, capacity, via_shm,
-           g_report->doorbells_sent, g_report->bells_rung);
-    if (g_measured < g_target) {
-        printf("bell_wake_check: FAIL - only %" PRIu64 " of %u round trips completed\n", g_measured, g_target);
-        return CHECK_FAIL;
-    }
+           g_report->doorbells_sent, g_report->bells_rung, g_report->aimed, g_report->aimed_rung,
+           (double)g_report->aim_ns / NS_PER_US, g_clog_cpu >= 0 ? "on" : "off (fewer than 3 CPUs)");
+    // A lost wake-up first: the run stops at the first one (parent_main()), so it is also why a run ends short.
     if (g_report->lost > 0 || g_report->stuck > 0) {
         printf("bell_wake_check: FAIL - %" PRIu64 " times the reader slept on a record nobody rang for, and %" PRIu64
                " records were never consumed\n",
                g_report->lost, g_report->stuck);
+        return CHECK_FAIL;
+    }
+    if (g_measured < g_target) {
+        printf("bell_wake_check: FAIL - only %" PRIu64 " of %u round trips completed\n", g_measured, g_target);
+        return CHECK_FAIL;
+    }
+    // The aim must straddle the announcement: rung for about half. All rung means every aimed pong came after it - a
+    // child that saw its pings too late to aim, or a parent whose delay no longer covers that - and none rung means
+    // every one came before it. Either way the race was not where the pongs were.
+    if (g_report->aimed < g_target / 4 || g_report->aimed_rung * 4U < g_report->aimed ||
+        g_report->aimed_rung * 4U > g_report->aimed * 3U) {
+        printf("bell_wake_check: FAIL - the aim did not straddle the announcement: %" PRIu64 " of %" PRIu64
+               " aimed pongs rung\n",
+               g_report->aimed_rung, g_report->aimed);
         return CHECK_FAIL;
     }
     // The run must have been the race it claims to be: a reader asleep, rung through the segment's bell, most times,
@@ -316,6 +442,7 @@ static int parent_main(pid_t child) {
     _tt_CONFIG.broadcast = BROADCAST;
     _tt_CONFIG.context_id = PARENT_ID;
     srandom((unsigned)getpid());
+    pin_to(g_parent_cpu);
     struct tt_Context node;
     if (tt_Context_create(&node) != tt_RET_OK) {
         return CHECK_SETUP_FAILED;
@@ -334,9 +461,14 @@ static int parent_main(pid_t child) {
         if ((g_first_pong_ns == 0 && now - start > SETUP_NS) || now - start > RUN_NS) {
             break;
         }
+        // One lost wake-up fails the run, and each costs the parent a watchdog period before anything wakes it.
+        if (__atomic_load_n(&g_report->lost, __ATOMIC_RELAXED) > 0) {
+            break;
+        }
         (void)tt_Context_poll(&node, -1);
     }
     // Stop the child: a few times, it is BEST_EFFORT, and it exits by itself at RUN_NS regardless.
+    __atomic_store_n(&g_report->parent_done, 1U, __ATOMIC_RELEASE);
     for (int i = 0; i < 3; i++) {
         struct UInt64Data stop = {.data = STOP_VALUE};
         (void)tt_Publisher_publish(&g_parent_pub, (struct tt_Data*)&stop);
@@ -388,6 +520,18 @@ int main(int argc, char** argv) {
         return CHECK_SETUP_FAILED;
     }
     memset(g_report, 0, sizeof *g_report);
+    // Three CPUs of those this process may use, in order: one each for the parent, the child and the clog.
+    cpu_set_t allowed;
+    CPU_ZERO(&allowed);
+    if (sched_getaffinity(0, sizeof allowed, &allowed) == 0 && CPU_COUNT(&allowed) >= CLOG_MIN_CPUS) {
+        int* const slots[CLOG_MIN_CPUS] = {&g_parent_cpu, &g_child_cpu, &g_clog_cpu};
+        int taken = 0;
+        for (int cpu = 0; cpu < CPU_SETSIZE && taken < CLOG_MIN_CPUS; cpu++) {
+            if (CPU_ISSET(cpu, &allowed)) {
+                *slots[taken++] = cpu;
+            }
+        }
+    }
     pid_t child = fork();
     if (child < 0) {
         perror("fork");

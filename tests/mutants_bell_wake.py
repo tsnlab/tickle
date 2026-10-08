@@ -19,8 +19,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "examples/perf_hil/experiments/bell_wake_netns.sh"
 BIN = ROOT / "platform/linux/bell_wake_check"
 
-# (name, file, text, replacement[, round trips]). The fence mutant's race is rarer - about 3.5 lost wake-ups per
-# 100,000 round trips on the PC it was found on - so it runs 400,000, where a run that sees none is e^-14 likely.
+# (name, file, text, replacement[, round trips]). The fence mutant's race is the rarest, and was rarer still from
+# cd09e895 on (0 lost wake-ups in 3.2 million round trips, against 1-6 in 400,000 before): bell_wake_check aims half its
+# pongs at the reader's announcement and clogs the writer's store buffer while it publishes them, and then lost the
+# first wake-up within 283-20,789 round trips in 40 runs of 40 on the PC. It still runs 400,000 for the margin; a run
+# stops at its first lost wake-up, so the margin costs a caught mutant nothing.
 MUTANTS = [
     (
         "the writer's fence between publishing a record and reading reader_waiting (x86 store-buffer reordering)",
