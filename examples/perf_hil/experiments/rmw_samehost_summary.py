@@ -23,7 +23,8 @@ Per run, VOID when (each one implemented in check_rtt / check_tput below):
     witness - tx_shm says segment while the interface bytes say the payload crossed the kernel (an instrument
     disagrees; named, not averaged).
 Not VOID, reported:
-  - a vendor's transport as the bytes witness reads it (shm / kernel / mixed); that is a finding about its default;
+  - a vendor's transport as the bytes witness reads it (shm / kernel / mixed); that is a finding about its default.
+    The witness is interface bytes per sample sent (tput) or per round trip (rtt), in units of 2 x payload;
   - tput RELIABLE: a publisher that ended on "failed to publish" is REFUSED (KEEP_ALL refusing under
     max_blocking_time); samples lost after the first delivered second are DELIVERY FAILED for a vendor (excluded
     from the cell and listed) and make every metric of that cell a LOSE for rmw_tickle (docs/TESTING.md section 4).
@@ -320,9 +321,17 @@ def check_tput(d, m, p, arm, msg, qos):
     first = next((i for i, r in enumerate(sub) if r.get("received", 0) > 0), None)
     lost = round(sum(r.get("lost", 0) for r in sub[first + 1:])) if first is not None else 0
     recv = sum(r.get("received", 0) for r in sub)
+    # The bytes witness is per sample PUBLISHED, not per sample received. Until 2026-10-09 it divided by the samples
+    # perf_test received, and at BEST_EFFORT KEEP_LAST 1 the subscriber takes as little as 0.2% of what is sent, so
+    # the 0.9% of datagrams rmw_tickle broadcasts before its peer is known (tx_udp 162,934 of 17,791,221) read as 0.90
+    # payloads per sample - "kernel" against a tx_shm share of 0.991, a VOID with both instruments right. A datagram
+    # crosses (or does not cross) the kernel whether or not the reader keeps it, so the denominator is what was sent.
+    # max(): perf_test may not print the publisher's last partial second, so a RELIABLE run's sent can trail recv.
+    sent = sum(r.get("sent", 0) for r in pub)
+    nsamp = max(sent, recv)
     nb, na = m.get("net_before"), m.get("net_after")
-    bps = (na["all_bytes"] - nb["all_bytes"]) / recv if nb and na and recv else None
-    pps = (na["all_pkts"] - nb["all_pkts"]) / recv if nb and na and recv else None
+    bps = (na["all_bytes"] - nb["all_bytes"]) / nsamp if nb and na and nsamp else None
+    pps = (na["all_pkts"] - nb["all_pkts"]) / nsamp if nb and na and nsamp else None
     ratio = bps / (2 * PAYLOAD[msg]) if bps is not None else None
     router_cpu = None
     if arm == "zenoh":
