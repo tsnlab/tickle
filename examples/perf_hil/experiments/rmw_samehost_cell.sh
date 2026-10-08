@@ -20,7 +20,7 @@
 # middleware, and the process starts in an empty directory, so Fast DDS cannot pick up a DEFAULT_FASTRTPS_PROFILES.xml
 # from its working directory. What each process actually received is read back from /proc/PID/environ.
 #
-# Inputs (environment): ARM (tickle|tickle_shipped|fastdds|cyclonedds|zenoh), TICKLE_BCAST (arm tickle), KIND (rtt|tput), MSG (rtt: bench|array1k; tput:
+# Inputs (environment): ARM (tickle|tickle_loans|tickle_shipped|fastdds|cyclonedds|zenoh), TICKLE_BCAST (arm tickle), KIND (rtt|tput), MSG (rtt: bench|array1k; tput:
 # Array1k|Array4k), QOS (best_effort|reliable), WAIT (rtt: block|poll), DUR (rtt: ping -d; tput: publisher
 # --max_runtime), RTT_I (ping -i), POLL_ARGS, CELL_DIR (created fresh), ROS_SETUP (setup.bash), OVERLAYS
 # (local_setup.bash files, in order), PINGPONG (directory of ping_node/pong_node), PERF_TEST, ZENOHD, DOMAIN,
@@ -53,13 +53,18 @@ for o in $OVERLAYS; do
     source "$o"
 done
 set -u
-for v in $(env | sed -n 's/^\(FASTRTPS_[A-Z_]*\|FASTDDS_[A-Z_]*\|RMW_FASTRTPS_[A-Z_]*\|CYCLONEDDS_[A-Z_]*\|ZENOH_[A-Z_]*\|TICKLE_[A-Z_]*\|RMW_TICKLE_[A-Z_]*\|ROS_LOCALHOST_ONLY\|ROS_AUTOMATIC_DISCOVERY_RANGE\|ROS_STATIC_PEERS\|SKIP_DEFAULT_XML_FILE\|LD_PRELOAD\)=.*/\1/p'); do
+for v in $(env | sed -n 's/^\(FASTRTPS_[A-Z_]*\|FASTDDS_[A-Z_]*\|RMW_FASTRTPS_[A-Z_]*\|CYCLONEDDS_[A-Z_]*\|ZENOH_[A-Z_]*\|TICKLE_[A-Z_]*\|RMW_TICKLE_[A-Z_]*\|ROS_LOCALHOST_ONLY\|ROS_AUTOMATIC_DISCOVERY_RANGE\|ROS_STATIC_PEERS\|ROS_DISABLE_LOANED_MESSAGES\|SKIP_DEFAULT_XML_FILE\|LD_PRELOAD\)=.*/\1/p'); do
     unset "$v"
 done
 case "$ARM" in
 # tickle: TICKLE_BROADCAST_ADDR names the link (TICKLE_BCAST), as every rig rmw harness sets it; without it rmw_tickle
 # cannot learn its own address, so it never sees a peer as same-host and never builds its segment (tickle_shipped).
 tickle) export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR="${TBCAST:?arm tickle needs TICKLE_BCAST}" ;;
+# tickle_loans: arm tickle with loaned takes opted into. rcl (jazzy and later) leaves a subscription's
+# disable_loaned_message true unless ROS_DISABLE_LOANED_MESSAGES=0, so without it rclcpp never takes a loan even from
+# an rmw whose can_loan_messages is set; and rclcpp's publish(const T &) never borrows one (ab_loans.sh's header).
+tickle_loans) export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR="${TBCAST:?arm tickle_loans needs TICKLE_BCAST}" \
+    ROS_DISABLE_LOANED_MESSAGES=0 ;;
 tickle_shipped) export RMW_IMPLEMENTATION=rmw_tickle ;;
 fastdds) export RMW_IMPLEMENTATION=rmw_fastrtps_cpp ;;
 cyclonedds) export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ;;
@@ -109,7 +114,7 @@ identity() { # identity <role>: the rmw libraries the process has mapped, and th
     local p
     p=$(pid_of "$1")
     meta "maps role=$1 libs=$(grep -o '/[^ ]*librmw_[a-z_]*\.so' "/proc/$p/maps" 2>/dev/null | sort -u | tr '\n' ',')"
-    meta "treat role=$1 env=$(tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -E '^(RMW_|FASTRTPS_|FASTDDS_|CYCLONEDDS_|ZENOH_|TICKLE_|ROS_DOMAIN_ID|ROS_LOCALHOST_ONLY|ROS_AUTOMATIC_DISCOVERY_RANGE|ROS_STATIC_PEERS|LD_PRELOAD)' | sort | tr '\n' ';' | tr ' ' '_')"
+    meta "treat role=$1 env=$(tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -E '^(RMW_|FASTRTPS_|FASTDDS_|CYCLONEDDS_|ZENOH_|TICKLE_|ROS_DOMAIN_ID|ROS_LOCALHOST_ONLY|ROS_AUTOMATIC_DISCOVERY_RANGE|ROS_STATIC_PEERS|ROS_DISABLE_LOANED_MESSAGES|LD_PRELOAD)' | sort | tr '\n' ';' | tr ' ' '_')"
 }
 stop() { # stop <role> <exe suffix>: SIGINT, so rmw_tickle prints its traffic line; KILL only after 10 s
     local p how=sigint

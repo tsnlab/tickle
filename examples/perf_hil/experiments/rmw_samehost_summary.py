@@ -46,13 +46,17 @@ import sys
 from pathlib import Path
 
 SCORED = ("fastdds", "cyclonedds")
+# tickle_loans (ab_loans.sh): arm tickle with ROS_DISABLE_LOANED_MESSAGES=0 - printed per run, never in the table.
 ARMS = ("tickle", "tickle_shipped", "fastdds", "cyclonedds", "zenoh")
-TICKLE_ARMS = ("tickle", "tickle_shipped")
-RMW = {"tickle": "rmw_tickle", "tickle_shipped": "rmw_tickle", "fastdds": "rmw_fastrtps_cpp", "cyclonedds": "rmw_cyclonedds_cpp",
-       "zenoh": "rmw_zenoh_cpp"}
+RUN_ARMS = ("tickle", "tickle_loans", "tickle_shipped", "fastdds", "cyclonedds", "zenoh")
+TICKLE_ARMS = ("tickle", "tickle_loans", "tickle_shipped")
+ON_SEGMENT_ARMS = ("tickle", "tickle_loans")  # the arms that set the link, so must run on their segment
+RMW = {"tickle": "rmw_tickle", "tickle_loans": "rmw_tickle", "tickle_shipped": "rmw_tickle",
+       "fastdds": "rmw_fastrtps_cpp", "cyclonedds": "rmw_cyclonedds_cpp", "zenoh": "rmw_zenoh_cpp"}
 # Serialized sample size, for the bytes witness only (a kernel-path sample is counted leaving and arriving on lo, so
 # it costs at least twice this on the interfaces). Approximate on purpose: the bands below are wide.
-PAYLOAD = {"bench": 80, "array1k": 1036, "Array1k": 1040, "Array4k": 4112}
+# RadarDetection is ab_loans.sh's control cell (not loanable): uint16 + Point + Vector3 + float64 + int64 + uint64.
+PAYLOAD = {"bench": 80, "array1k": 1036, "Array1k": 1040, "Array4k": 4112, "RadarDetection": 76}
 WITNESS_MIN_PAYLOAD = 512   # below this, headers dominate and bytes cannot tell the transports apart
 SHM_MAX, KERNEL_MIN = 0.25, 0.75
 TRAFFIC_RE = re.compile(r"traffic: .*?\btx_udp=(\d+) tx_shm=(\d+) rx_udp=(\d+) rx_shm=(\d+)")
@@ -134,7 +138,7 @@ def tickle_witness(why, arm, msg, share, ratio):
     if share is None:
         why.append("no rmw_tickle traffic line: could not look")
         return
-    if share < 0.5 and arm == "tickle":
+    if share < 0.5 and arm in ON_SEGMENT_ARMS:
         why.append(f"rmw_tickle tx_shm share {share:.3f}: not on its segment, so not this cell")
     decidable = PAYLOAD[msg] >= WITNESS_MIN_PAYLOAD and ratio is not None
     if decidable and share >= 0.5 and ratio >= KERNEL_MIN:
@@ -412,7 +416,7 @@ def main():
           f"excluded, tput {p['warm_s']}+{p['cool_s']} s excluded; min measured {p['min_measured']} ===")
     print("\n--- per run ---")
     for key, arms in sorted(cells.items()):
-        for arm in ARMS:
+        for arm in RUN_ARMS:
             for r in sorted(arms.get(arm, []), key=lambda r: r["rep"]):
                 share = "-" if r["share"] is None else f"{r['share']:.3f}"
                 wit = (f"witness {r['transport']} (bytes/sample {r['bps']:.0f}, pkts/sample {r['pps']:.2f}, "

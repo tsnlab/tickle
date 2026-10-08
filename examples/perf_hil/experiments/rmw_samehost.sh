@@ -109,6 +109,10 @@ if [ -z "${PF_PERF_WS:-}" ]; then
 fi
 PF_OVERLAYS=${PF_OVERLAYS:-"$HOME/tickle/install/local_setup.bash $PF_PERF_WS/local_setup.bash"}
 PF_PERF_TEST=${PF_PERF_TEST:-$PF_PERF_WS/performance_test/lib/performance_test/perf_test}
+# The install holding the preflight's rmw_tickle and rmw_perf_pingpong (ab_loans.sh points it at a build of its arm B,
+# whose typesupport differs from ~/tickle/install's), and the cells it runs (kind:msg:qos[:wait], space-separated).
+PF_TICKLE_INSTALL=${PF_TICKLE_INSTALL:-$HOME/tickle/install}
+PF_CELLS=${PF_CELLS:-"rtt:bench:reliable:block rtt:array1k:best_effort:poll tput:Array1k:reliable tput:Array4k:best_effort"}
 K=$HOME/.ssh/tickle_ci_ed25519
 STAMP=$(date +%Y%m%d-%H%M%S)
 
@@ -124,14 +128,15 @@ preflight_pc() {
         *) arms="$arms $a" ;;
         esac
     done
-    local tickle_lib=$HOME/tickle/install/rmw_tickle/lib/librmw_tickle.so
+    local tickle_lib=$PF_TICKLE_INSTALL/rmw_tickle/lib/librmw_tickle.so
     echo "warm_rt=256 cool_rt=256 min_measured=500 warm_s=1 cool_s=1 tickle_lib=$tickle_lib host=pc-netns" >"$out.runs/params.txt"
     ns=rmwsh_pf_$$
     sudo -n ip netns add "$ns" || { echo "PREFLIGHT FAIL: cannot create netns $ns"; return 1; }
     sudo -n ip -n "$ns" link set lo up multicast on
     sudo -n ip -n "$ns" route add default dev lo
-    # One cell of each code path: rtt block and poll, both QoS, both message sizes; tput both QoS and both topics.
-    cells="rtt:bench:reliable:block rtt:array1k:best_effort:poll tput:Array1k:reliable tput:Array4k:best_effort"
+    # By default one cell of each code path: rtt block and poll, both QoS, both message sizes; tput both QoS and both
+    # topics (PF_CELLS).
+    cells=$PF_CELLS
     for c in $cells; do
         IFS=: read -r kind msg qos wait <<<"$c"
         for a in $arms; do
@@ -143,7 +148,7 @@ preflight_pc() {
                 WAIT="${wait:-block}" DUR="$dur" RTT_I="$RTT_I" POLL_ARGS="$POLL_ARGS" CELL_DIR="$dir" DOMAIN="$DOMAIN" \
                 ROS_SETUP=/opt/ros/lyrical/setup.bash \
                 OVERLAYS="$PF_OVERLAYS" TICKLE_BCAST=127.255.255.255 \
-                PINGPONG="$HOME/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong" \
+                PINGPONG="$PF_TICKLE_INSTALL/rmw_perf_pingpong/lib/rmw_perf_pingpong" \
                 PERF_TEST="$PF_PERF_TEST" \
                 ZENOHD=/opt/ros/lyrical/lib/rmw_zenoh_cpp/rmw_zenohd OWNER="$(id -u):$(id -g)" \
                 bash -c 'mount -t tmpfs -o size=512m tmpfs /dev/shm && bash "$0"; rc=$?; chown -R "$OWNER" "$CELL_DIR"; exit $rc' "$CELL"
