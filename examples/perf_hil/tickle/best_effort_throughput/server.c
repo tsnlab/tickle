@@ -52,8 +52,90 @@ static uint64_t received = 0;
 static uint64_t lost = 0;
 static uint32_t last_seq = 0;
 
-static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
+// --keep lend|copy [--keep-depth N] (TickLE only; receive-buffer lending, docs/DESIGN.md section 10): the application
+// keeps every sample until N samples later, as one that hands samples to a worker or a queue does. `copy` keeps a copy
+// of each - what such an application does without lending; `lend` keeps it with tt_Sample_retain() and gives it back
+// with tt_Sample_release() N samples later, and copies only a sample that cannot be lent (lend_refused=). The two arms
+// differ in exactly the copy, which is what lending saves. Without --keep nothing is kept: the bench as it was.
+enum keep_mode { KEEP_NONE, KEEP_LEND, KEEP_COPY };
+#define KEEP_DEPTH_MAX 15 // below tt_SAMPLE_RETAIN_MAX: one entry stays free
+static enum keep_mode g_keep = KEEP_NONE;
+static int g_keep_depth = 8;
+static uint64_t g_kept;
+static uint64_t g_lend_ok;
+static uint64_t g_lend_refused;
+#if tt_SAMPLE_LENDING
+static struct tt_Sample g_lent[KEEP_DEPTH_MAX];
+// Socket-path lending needs a spare receive buffer per sample held, plus one for the next datagram.
+static uint64_t g_rx_pool[(size_t)(KEEP_DEPTH_MAX + 1) * tt_RX_POOL_BUFFER_BYTES / sizeof(uint64_t)];
+#endif
+static struct BenchData g_copies[KEEP_DEPTH_MAX];
+
+static void keep_sample(struct tt_Subscriber* sub, const struct BenchData* data) {
+    uint32_t slot = (uint32_t)(g_kept++ % (uint64_t)g_keep_depth);
+#if tt_SAMPLE_LENDING
+    if (g_keep == KEEP_LEND) {
+        if (g_lent[slot].handle != 0) {
+            (void)tt_Sample_release(sub->node, &g_lent[slot]); // the one kept N samples ago
+        }
+        if (tt_Sample_retain(sub, &g_lent[slot]) == tt_RET_OK) {
+            g_lend_ok++;
+            return;
+        }
+        g_lend_refused++;
+    }
+#else
     (void)sub;
+#endif
+    memcpy(&g_copies[slot], data, sizeof(*data));
+}
+
+static void release_kept(struct tt_Context* node) {
+#if tt_SAMPLE_LENDING
+    for (int i = 0; i < KEEP_DEPTH_MAX; i++) {
+        if (g_lent[i].handle != 0) {
+            (void)tt_Sample_release(node, &g_lent[i]);
+        }
+    }
+#else
+    (void)node;
+#endif
+}
+
+static const char* keep_name(void) {
+    switch (g_keep) {
+    case KEEP_LEND:
+        return "lend";
+    case KEEP_COPY:
+        return "copy";
+    default:
+        return "none";
+    }
+}
+
+static bool parse_keep_arg(int argc, char** argv, int* idx) {
+    if (*idx + 1 >= argc) {
+        return false;
+    }
+    if (strcmp(argv[*idx], "--keep") == 0) {
+        const char* mode = argv[++*idx];
+        g_keep = KEEP_NONE;
+        if (strcmp(mode, "lend") == 0) {
+            g_keep = KEEP_LEND;
+        } else if (strcmp(mode, "copy") == 0) {
+            g_keep = KEEP_COPY;
+        }
+        return true;
+    }
+    if (strcmp(argv[*idx], "--keep-depth") == 0) {
+        int depth = atoi(argv[++*idx]);
+        g_keep_depth = depth >= 1 && depth <= KEEP_DEPTH_MAX ? depth : g_keep_depth;
+        return true;
+    }
+    return false;
+}
+
+static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
     (void)timestamp;
     (void)seq_no;
     if (data->seq > last_seq + 1) {
@@ -62,6 +144,9 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     last_seq = data->seq;
     received++;
     BenchWindow_add(&g_window, data->send_ns);
+    if (g_keep != KEEP_NONE) {
+        keep_sample(sub, data);
+    }
 }
 
 static const double default_safety_cap_s = 40.0;
@@ -76,6 +161,8 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
+        } else if (parse_keep_arg(argc, argv, &i)) {
+            continue;
         } else if (!BenchWindow_parse_arg(&g_window, argc, argv, &i)) {
             (void)BenchHistory_parse_arg(&g_history, argc, argv, &i);
         }
@@ -110,6 +197,13 @@ int main(int argc, char** argv) {
         return ret;
     }
 
+#if tt_SAMPLE_LENDING
+    if (g_keep == KEEP_LEND && tt_Context_set_rx_pool(&node, g_rx_pool, (uint8_t)(g_keep_depth + 1)) != tt_RET_OK) {
+        printf("Cannot attach the receive pool\n");
+        return 1;
+    }
+#endif
+
     uint64_t deadline = tt_get_ns() + (uint64_t)(safety_cap_s * (double)tt_SECOND);
     // 500ms (nanoseconds), so the deadline/g_interrupted check re-runs.
     const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
@@ -138,14 +232,16 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
 
     printf("RESULT: framework=tickle scenario=best_effort_throughput role=server recv=%lu lost=%lu loss_pct=%.6f %s "
-           "history=none segment_slots=%d %s %s\n",
+           "history=none segment_slots=%d keep=%s keep_depth=%d kept=%lu lend_ok=%lu lend_refused=%lu %s %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct,
            BenchHistory_arg_field(g_history, g_history_field, sizeof g_history_field),
-           tt_SEGMENT_ENABLED ? (int)tt_SEGMENT_SLOTS : 0,
+           tt_SEGMENT_ENABLED ? (int)tt_SEGMENT_SLOTS : 0, keep_name(), g_keep == KEEP_NONE ? 0 : g_keep_depth,
+           (unsigned long)g_kept, (unsigned long)g_lend_ok, (unsigned long)g_lend_refused,
            BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 
+    release_kept(&node);
     tt_Context_destroy(&node);
     return 0;
 }
