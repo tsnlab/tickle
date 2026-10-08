@@ -275,8 +275,6 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
 - **FreeRTOS form of the segment** (HAL-provided rather than `shm_open`): it shapes the seam. (SHM_PLAN 7 q3)
 - **Stage 1 / S1 against the WIRE 10.4 floors** (CPU, RSS and size, p1-p4): the module's "no cost when off" is still
   owed. g15's uncounted zero-copy sends close with it. (SHM_PLAN 6b; RMW_GAPS S1/S3/g15; MODULE_PLAN 3)
-- **Refuse the shm-only submessage when it arrives on the socket, with a test**: stops injection from the network.
-  (SHM_PLAN 6e(a))
 - **S9 window A**: a service datagram too large for one path sends one leg over UDP and one in shm, and may
   reorder. It can be measured now. (RMW_GAPS S9)
 - **Received samples carry an all-zero publisher_gid**: tools cannot match a sample to its writer.

@@ -545,7 +545,10 @@ plaintext. Treat it as safe only on a controlled link.
 - rmw_tickle refuses to start when `ROS_SECURITY_ENFORCEMENT=Enforce` is requested, and logs once when security is
   enabled but permissive, so a user who asked for security never silently runs without it.
 - `SHM_DATA` (type 10) arriving on a socket is refused, so a shared-memory-only record cannot be injected from the
-  network.
+  network: counted (`rx_shm_only_on_socket`), never delivered, logged at the 1st, 10th, 100th ... refusal. The seq
+  span is read only from a segment slot. A zero-length datagram (the UDP doorbell) can be sent by anyone; it only
+  wakes the reader to drain its own ring, and can only make writers ring again, never suppress a ring.
+  `test_hostile_datagram` covers all three through the socket, with plain DATA as the control.
 - Hostile datagram lengths and ACKNACK word counts are bounds-checked before indexing.
 - The HIL CI never runs on `pull_request`, and the rig accounts are unprivileged.
 

@@ -12767,14 +12767,20 @@ static bool process_submessage(struct tt_Context* node, struct tt_Header* header
             // the socket it is an injection or a bug, never a rolling upgrade. Counted apart from version
             // skew for that reason, and dropped rather than returned as an error - the default case below
             // explains why a peer must never be able to end a local poll loop.
+            //
+            // Logged at the 1st, 10th, 100th ... refusal, like the RxO drop: this is untrusted input, and a log line
+            // per datagram would hand whoever can reach the port a way to fill the disk (and slow the poll loop with
+            // it). Until 2026-10-09 every refusal was logged.
             node->rx_shm_only_on_socket++;
             node->rx_malformed_drops++;
-            TT_LOG_WARNING("Shared-memory-only submessage type %u arrived over the socket from %u.%u.%u.%u:%u, "
-                           "refused",
-                           (unsigned)submessage_header->type, (unsigned)((sender_ip >> 24) & MASK_8BIT),
-                           (unsigned)((sender_ip >> 16) & MASK_8BIT),
-                           (unsigned)((sender_ip >> BITS_IN_1BYTE) & MASK_8BIT), (unsigned)(sender_ip & MASK_8BIT),
-                           (unsigned)sender_port);
+            if (node->rx_shm_only_on_socket <= UINT32_MAX && is_power_of_ten((uint32_t)node->rx_shm_only_on_socket)) {
+                TT_LOG_WARNING("Shared-memory-only submessage type %u arrived over the socket from %u.%u.%u.%u:%u, "
+                               "refused (refusal #%lu)",
+                               (unsigned)submessage_header->type, (unsigned)((sender_ip >> 24) & MASK_8BIT),
+                               (unsigned)((sender_ip >> 16) & MASK_8BIT),
+                               (unsigned)((sender_ip >> BITS_IN_1BYTE) & MASK_8BIT), (unsigned)(sender_ip & MASK_8BIT),
+                               (unsigned)sender_port, (unsigned long)node->rx_shm_only_on_socket);
+            }
             return true;
         }
         // A segment record of this type, which nothing produces yet - SHM_PLAN 6e's span step is what
