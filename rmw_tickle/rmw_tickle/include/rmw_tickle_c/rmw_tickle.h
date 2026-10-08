@@ -127,6 +127,10 @@ uint32_t rmw_tickle_message_slot_bytes(const rosidl_typesupport_tickle_c_message
 // _destroy: destroys and frees what _create returned (NULL is a no-op).
 // _move: hands src's contents to dst - dst must be a constructed message it may overwrite - and
 //   leaves src empty and reusable.
+// Loaned messages (docs/RMW.md): whether this type may be lent - its wire bytes are its message in memory
+// (callbacks->inplace_bytes) with an alignment the allocator meets - and RMW_TICKLE_LOANS is not "0".
+bool rmw_tickle_type_can_loan(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks);
+
 void* rmw_tickle_ros_message_create(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks,
                                     const rcutils_allocator_t* allocator);
 void rmw_tickle_ros_message_destroy(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks, void* ros_message,
@@ -278,6 +282,10 @@ struct rmw_tickle_context_impl_t {
     // entry point against it"). Lock order is unchanged: the node lock before wait_mutex, never the
     // reverse (publish_attempt(), rmw_publisher.c).
     struct tt_Context tickle_context;
+    // Loaned messages: the receive buffers attached to tickle_context for socket-path lending
+    // (RMW_TICKLE_LOAN_RX_POOL_BUFFERS, tt_Context_set_rx_pool()), when the first loaning subscription is created;
+    // freed after tt_Context_destroy(). NULL: none attached.
+    uint64_t* loan_rx_pool;
     pthread_t poll_thread; // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
     volatile bool poll_thread_running;
 
@@ -729,6 +737,15 @@ typedef struct rmw_tickle_publisher_t {
     // writes the ROS message straight into core's tx_buffer.
     void* publish_scratch_buf;
     pthread_mutex_t publish_mutex;
+
+    // Loaned messages (docs/RMW.md): rmw_publisher.can_loan_messages, as for a subscription. `loan_buffers` are
+    // message buffers this publisher made for rmw_borrow_loaned_message(), kept for the next borrow once published
+    // or returned; loan_out[i] says whether buffer i is with the application. Guarded by loan_mutex.
+    bool loans;
+    pthread_mutex_t loan_mutex;
+    void** loan_buffers;
+    bool* loan_out;
+    size_t loan_count;
     // The next message's publication sequence number (ROS's, rmw/types.h): this Publisher's own count of
     // messages, carried in the RMW_TICKLE_PSN_BYTES that rmw_tickle puts ahead of every message's CDR.
     // Core's seq_no cannot serve: it counts datagrams once messages fragment (DATAFRAG_PLAN.md section 13),
@@ -885,7 +902,32 @@ typedef struct rmw_tickle_queued_message_t {
     // bytes and the two ends of the pair match by construction rather than by being kept in step.
     uint8_t sender_node_id;
     uint32_t sender_entity_id;
+    // Loaned messages (docs/RMW.md): a sample core kept where it arrived (tt_Sample_retain()) instead of one decoded
+    // into a shell. `in_place` is the message itself, read where it lies - sample.payload past rmw_tickle's psn
+    // header - and ros_message is NULL; sample.handle is what tt_Sample_release() gives back. in_place NULL: an
+    // ordinary entry. Only a loaning subscription queues one.
+    const void* in_place;
+    struct tt_Sample sample;
 } rmw_tickle_queued_message_t;
+
+// One message a loaning subscription has handed out (rmw_take_loaned_message()) and not had back yet: the pointer
+// the application holds, and what backs it - a shell of the subscription's pool, or a retained sample.
+typedef struct rmw_tickle_subscription_loan_t {
+    const void* message;
+    void* shell;
+    struct tt_Sample sample;
+} rmw_tickle_subscription_loan_t;
+
+// Queue entries of one subscription that may hold a retained sample at once. Core holds tt_SAMPLE_RETAIN_MAX (16)
+// per context; a subscription that is never taken keeps this many, not all of them, and the rest of the context's
+// subscriptions go on lending.
+#define RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION 8U
+// Receive buffers rmw_tickle attaches for socket-path lending (tt_Context_set_rx_pool()), each tt_RX_POOL_BUFFER_BYTES
+// (64 KiB at the default tt_MAX_BUFFER_LENGTH, so 512 KiB): attached when the context's first loaning subscription is
+// created.
+#define RMW_TICKLE_LOAN_RX_POOL_BUFFERS 8U
+// Messages one publisher may have borrowed and not yet published or returned.
+#define RMW_TICKLE_PUBLISHER_LOANS_MAX 64U
 
 // TickLE specific subscriber data
 typedef struct rmw_tickle_subscriber_t {
@@ -1022,6 +1064,21 @@ typedef struct rmw_tickle_subscriber_t {
     // regardless of either side's QoS, carried through to source_timestamp below), so a
     // Subscription can enforce its own age floor with no coordination needed.
     uint64_t lifespan_ns;
+
+    // Loaned messages (docs/RMW.md, "Loaned messages"). `loans` is rmw_subscription.can_loan_messages: the type's
+    // wire bytes are its message in memory (callbacks->inplace_bytes) and RMW_TICKLE_LOANS is not 0. With
+    // `loan_ring_slots` (RMW_TICKLE_LOAN_RING_SLOTS=1) a sample that arrived through the shared-memory ring is kept
+    // in its slot too; otherwise only one in a receive buffer is, because a held slot stops its ring one lap later
+    // for every topic into this context, and a loan is held for as long as the application likes.
+    bool loans;
+    bool loan_ring_slots;
+    uint32_t retained_queued;                  // queue entries holding a retained sample; guarded by queue_mutex
+    rmw_tickle_subscription_loan_t* loans_out; // handed out, not returned; guarded by queue_mutex
+    size_t loans_out_count;
+    size_t loans_out_capacity;
+    // Counted under queue_mutex, read by tests and the bench: loans read where they arrived, loans of a decoded shell.
+    uint64_t loans_in_place;
+    uint64_t loans_copied;
 } rmw_tickle_subscriber_t;
 
 // The largest ROS_DOMAIN_ID rmw_tickle accepts: the DDS limit, which also keeps _tt_CONTEXT_PORT + id in range.

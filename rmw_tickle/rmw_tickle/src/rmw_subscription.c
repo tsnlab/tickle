@@ -18,6 +18,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>  // fprintf() - the loan line at rmw_destroy_subscription()
 #include <stdlib.h> // getenv()/strtoull() - resolve_reorder_slots()
 #include <string.h>
 
@@ -223,6 +224,34 @@ static void count_messages_lost(rmw_tickle_subscriber_t* sub_impl, uint64_t psn)
     rmw_tickle_callback_slot_notify(&sub_impl->message_lost.callback, (size_t)count); // (g2)
 }
 
+// Loaned messages (docs/RMW.md): decides whether this subscription lends, and attaches the context's socket-path
+// receive buffers the first time one does - under the node lock, so two creates cannot both attach. A pool that
+// cannot be allocated or attached leaves the subscription lending decoded shells only (every loan a copy), which is
+// still a loan; nothing fails.
+static bool setup_loans(rmw_tickle_subscriber_t* sub_impl) {
+    sub_impl->loans = rmw_tickle_type_can_loan(sub_impl->callbacks);
+    const char* ring = getenv("RMW_TICKLE_LOAN_RING_SLOTS");
+    sub_impl->loan_ring_slots = NULL != ring && 0 == strcmp(ring, "1");
+    if (!sub_impl->loans) {
+        return false;
+    }
+    rmw_tickle_context_impl_t* context_impl = sub_impl->node->context_impl;
+    tt_Context_lock(&context_impl->tickle_context);
+    if (NULL == context_impl->loan_rx_pool) {
+        size_t words = (size_t)RMW_TICKLE_LOAN_RX_POOL_BUFFERS * (tt_RX_POOL_BUFFER_BYTES / sizeof(uint64_t));
+        uint64_t* pool =
+            (uint64_t*)context_impl->allocator.zero_allocate(words, sizeof(uint64_t), context_impl->allocator.state);
+        if (NULL != pool && tt_RET_OK == tt_Context_set_rx_pool(&context_impl->tickle_context, pool,
+                                                                (uint8_t)RMW_TICKLE_LOAN_RX_POOL_BUFFERS)) {
+            context_impl->loan_rx_pool = pool;
+        } else {
+            context_impl->allocator.deallocate(pool, context_impl->allocator.state);
+        }
+    }
+    tt_Context_unlock(&context_impl->tickle_context);
+    return true;
+}
+
 // The depth core's segment drain may rely on (tt_Subscriber.keep_last_depth). KEEP_LAST: the queue keeps the newest
 // queue_limit samples and overwrites the rest, so a sample with that many newer ones queued behind it in the ring would
 // only be decoded to be overwritten, and the drain passes over it. KEEP_ALL: 0, which never skips anything.
@@ -284,6 +313,63 @@ static bool subscriber_accept(struct tt_Subscriber* subscriber, uint32_t seq_no,
     return room;
 }
 
+// Loaned messages (docs/RMW.md, "Loaned messages"): whether `payload` lies in one of the context's receive buffers -
+// its inline rx_buffer or the pool rmw_tickle attached - rather than in a ring slot or in storage core copied it into.
+static bool in_receive_buffer(const rmw_tickle_context_impl_t* context_impl, const uint8_t* payload) {
+    const uint8_t* inline_buffer = context_impl->tickle_context.rx_buffer;
+    if (payload >= inline_buffer && payload < inline_buffer + sizeof(context_impl->tickle_context.rx_buffer)) {
+        return true;
+    }
+    const uint8_t* pool = (const uint8_t*)context_impl->loan_rx_pool;
+    return NULL != pool && payload >= pool &&
+           payload < pool + ((size_t)RMW_TICKLE_LOAN_RX_POOL_BUFFERS * tt_RX_POOL_BUFFER_BYTES);
+}
+
+// Loaned messages: keeps the sample being delivered where it arrived, when its bytes there can be read as the message
+// itself - native byte order, exactly the type's in-place size, aligned for it - and fills *in_place, *sample and
+// *psn. False, having kept nothing: the caller decodes it into a shell as for any subscription. Runs on the
+// delivering thread, inside the callback, which is the only place core lets a sample be retained.
+//
+// A sample in a ring slot is kept only with loan_ring_slots: the slot stops its ring one lap later for every writer
+// into this context (DESIGN.md 10), and a loan lasts as long as the application holds it. A refusal from core -
+// a sample put together from fragments, released from a reorder buffer, delivered locally, or no handle or spare
+// buffer left - is the same false.
+static bool retain_in_place(rmw_tickle_subscriber_t* sub_impl, struct tt_Subscriber* tt_sub,
+                            const struct payload_view* view, uint64_t* psn, const void** in_place,
+                            struct tt_Sample* sample) {
+    if (!sub_impl->loans || !view->is_native) {
+        return false;
+    }
+    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = sub_impl->callbacks;
+    uint32_t header = rmw_tickle_psn_read(view->payload, view->length, view->is_native, psn);
+    if (0 == header || view->length - header != callbacks->inplace_bytes) {
+        return false;
+    }
+    const uint8_t* message = view->payload + header;
+    if (((uintptr_t)message & (callbacks->ros_struct_align - 1U)) != 0) {
+        return false;
+    }
+    if (!sub_impl->loan_ring_slots && !in_receive_buffer(sub_impl->node->context_impl, view->payload)) {
+        return false;
+    }
+    pthread_mutex_lock(&sub_impl->queue_mutex);
+    bool room = sub_impl->retained_queued < RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION;
+    pthread_mutex_unlock(&sub_impl->queue_mutex);
+    if (!room || tt_RET_OK != tt_Sample_retain(tt_sub, sample)) {
+        return false;
+    }
+    *in_place = message;
+    return true;
+}
+
+// Gives back a retained sample. Never with queue_mutex held: the release takes the node lock, and the poll thread
+// takes the two the other way round.
+static void release_sample(rmw_tickle_subscriber_t* sub_impl, struct tt_Sample* sample) {
+    if (0 != sample->handle) {
+        (void)tt_Sample_release(&sub_impl->node->context_impl->tickle_context, sample);
+    }
+}
+
 static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
     (void)seq_no; // core's: counts datagrams once messages fragment - the psn comes from rmw_tickle's own header
     TT_TRACE(tt_TRACE_DELIVER);
@@ -291,29 +377,36 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
         (rmw_tickle_subscriber_t*)((char*)tt_sub - offsetof(rmw_tickle_subscriber_t, tickle_subscriber));
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = sub_impl->callbacks;
     uint64_t publication_sequence_number = 0;
+    const void* in_place = NULL;
+    struct tt_Sample sample = {.payload = NULL, .length = 0, .handle = 0, .is_native_endian = true};
+    void* ros_message = NULL;
 
-    // Milestone 45 - reuse an already-zeroed shell from the pool instead of a fresh zero_allocate()
-    // when one's available (see shell_pool's own doc comment, rmw_tickle.h) - falls back to a real
-    // allocation exactly as before whenever the pool's empty (e.g. before any rmw_take() has ever
-    // returned one, or a sustained burst deeper than queue_capacity). Taken before the decode now,
-    // because the decode writes into it (LARGE_MESSAGE_PLAN.md stage 1).
-    pthread_mutex_lock(&sub_impl->queue_mutex);
-    void* ros_message = shell_pool_pop(sub_impl);
-    pthread_mutex_unlock(&sub_impl->queue_mutex);
-    if (NULL == ros_message) {
-        ros_message = rmw_tickle_ros_message_create(callbacks, &sub_impl->allocator);
-        if (NULL == ros_message) {
-            return; // Nothing more useful to do from inside a poll-thread callback - drop silently.
-        }
-    }
-
-    if (!decode_with_psn(sub_impl, (const struct payload_view*)data, &publication_sequence_number, ros_message)) {
-        // Not an rmw_tickle message, or its CDR does not decode: nothing to hand up. The shell goes
-        // back, zeroed on the way (shell_pool_push) - a half-written one must not be handed out.
+    // Loaned messages: a sample kept where it arrived needs no shell and no decode.
+    if (!retain_in_place(sub_impl, tt_sub, (const struct payload_view*)data, &publication_sequence_number, &in_place,
+                         &sample)) {
+        // Milestone 45 - reuse an already-zeroed shell from the pool instead of a fresh zero_allocate()
+        // when one's available (see shell_pool's own doc comment, rmw_tickle.h) - falls back to a real
+        // allocation exactly as before whenever the pool's empty (e.g. before any rmw_take() has ever
+        // returned one, or a sustained burst deeper than queue_capacity). Taken before the decode now,
+        // because the decode writes into it (LARGE_MESSAGE_PLAN.md stage 1).
         pthread_mutex_lock(&sub_impl->queue_mutex);
-        shell_pool_push(sub_impl, ros_message);
+        ros_message = shell_pool_pop(sub_impl);
         pthread_mutex_unlock(&sub_impl->queue_mutex);
-        return;
+        if (NULL == ros_message) {
+            ros_message = rmw_tickle_ros_message_create(callbacks, &sub_impl->allocator);
+            if (NULL == ros_message) {
+                return; // Nothing more useful to do from inside a poll-thread callback - drop silently.
+            }
+        }
+
+        if (!decode_with_psn(sub_impl, (const struct payload_view*)data, &publication_sequence_number, ros_message)) {
+            // Not an rmw_tickle message, or its CDR does not decode: nothing to hand up. The shell goes
+            // back, zeroed on the way (shell_pool_push) - a half-written one must not be handed out.
+            pthread_mutex_lock(&sub_impl->queue_mutex);
+            shell_pool_push(sub_impl, ros_message);
+            pthread_mutex_unlock(&sub_impl->queue_mutex);
+            return;
+        }
     }
     count_messages_lost(sub_impl, publication_sequence_number); // (g3) MESSAGE_LOST
     TT_TRACE(tt_TRACE_DECODED);
@@ -325,6 +418,7 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     // deadline_period_ns is 0 (unused in that case).
     sub_impl->last_activity_time = tt_get_ns();
 
+    struct tt_Sample evicted = {.payload = NULL, .length = 0, .handle = 0, .is_native_endian = true};
     pthread_mutex_lock(&sub_impl->queue_mutex);
     if (sub_impl->queue_count == sub_impl->queue_capacity) {
         if (sub_impl->keep_all) {
@@ -342,8 +436,11 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
             // out and not.
             sub_impl->keep_all_unconsulted_drops++;
             bool say_once = 1 == sub_impl->keep_all_unconsulted_drops;
-            shell_pool_push(sub_impl, ros_message);
+            if (NULL != ros_message) {
+                shell_pool_push(sub_impl, ros_message);
+            }
             pthread_mutex_unlock(&sub_impl->queue_mutex);
+            release_sample(sub_impl, &sample);
             if (say_once) {
                 RCUTILS_LOG_WARN_NAMED("rmw_tickle",
                                        "subscription %s: KEEP_ALL queue full at the enqueue, which means the accept "
@@ -356,12 +453,22 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
         // KEEP_LAST behavior - drop the oldest queued message to make room for this one, back into
         // the pool rather than freeing it outright (Milestone 45).
         rmw_tickle_queued_message_t* oldest = &sub_impl->queue[sub_impl->queue_head];
-        shell_pool_push(sub_impl, oldest->ros_message);
+        if (NULL != oldest->in_place) {
+            evicted = oldest->sample; // released below, once queue_mutex is
+            sub_impl->retained_queued--;
+        } else {
+            shell_pool_push(sub_impl, oldest->ros_message);
+        }
         sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
         sub_impl->queue_count--;
     }
     size_t tail_index = (sub_impl->queue_head + sub_impl->queue_count) % sub_impl->queue_capacity;
     sub_impl->queue[tail_index].ros_message = ros_message;
+    sub_impl->queue[tail_index].in_place = in_place;
+    sub_impl->queue[tail_index].sample = sample;
+    if (NULL != in_place) {
+        sub_impl->retained_queued++;
+    }
     sub_impl->queue[tail_index].source_timestamp =
         time; // publisher's own wire timestamp - see tickle.c's process_data()
     sub_impl->queue[tail_index].received_timestamp = tt_get_ns();
@@ -372,6 +479,7 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
                                     &sub_impl->queue[tail_index].sender_entity_id);
     sub_impl->queue_count++;
     pthread_mutex_unlock(&sub_impl->queue_mutex);
+    release_sample(sub_impl, &evicted);
 
     // Wake anyone blocked in rmw_wait() on this queue becoming non-empty - wake_wait_cond()'s own
     // doc comment explains why the broadcast must happen under wait_mutex even though queue_count
@@ -722,7 +830,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     sub_impl->rmw_subscription.data = sub_impl;
     sub_impl->rmw_subscription.topic_name = rcutils_strdup(topic_name, *allocator);
     sub_impl->rmw_subscription.options = *subscription_options;
-    sub_impl->rmw_subscription.can_loan_messages = false;
+    sub_impl->rmw_subscription.can_loan_messages = setup_loans(sub_impl);
     sub_impl->rmw_subscription.is_cft_enabled = false;
     if (NULL == sub_impl->rmw_subscription.topic_name) {
         RMW_SET_ERROR_MSG("failed to allocate topic_name");
@@ -886,13 +994,38 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
 
     // Drain anything still queued - rmw_take() never got to these. Freed directly, not pushed
     // through shell_pool_push() - the pool itself is about to be freed too, right below.
+    //
+    // Loaned messages: a queued sample kept where it arrived, and every loan the application has not returned, is given
+    // back to core here - the subscription is gone, so nothing could return it later. A loan still held is the
+    // application's error (rmw.h: return every loan before destroying the subscription); it is said, and its pointer is
+    // invalid from now on. No poll thread delivery can race this: tt_Subscriber_destroy() above ran under the node
+    // lock. The releases wait until queue_mutex is released (release_sample()).
+    struct tt_Sample queued_samples[RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION];
+    size_t queued_sample_count = 0;
     pthread_mutex_lock(&sub_impl->queue_mutex);
     while (sub_impl->queue_count > 0) {
-        rmw_tickle_ros_message_destroy(sub_impl->callbacks, sub_impl->queue[sub_impl->queue_head].ros_message,
-                                       &sub_impl->allocator);
+        rmw_tickle_queued_message_t* head = &sub_impl->queue[sub_impl->queue_head];
+        if (NULL != head->in_place) {
+            queued_samples[queued_sample_count++] = head->sample;
+        } else {
+            rmw_tickle_ros_message_destroy(sub_impl->callbacks, head->ros_message, &sub_impl->allocator);
+        }
         sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
         sub_impl->queue_count--;
     }
+    // One line per subscription that lent anything, so a measurement can say how many loans were read where they
+    // arrived (rmw_loan_bench.sh reads it).
+    if (sub_impl->loans_in_place + sub_impl->loans_copied > 0) {
+        (void)fprintf(stderr, "rmw_tickle: subscription %s loans_in_place=%llu loans_copied=%llu\n",
+                      sub_impl->rmw_subscription.topic_name, (unsigned long long)sub_impl->loans_in_place,
+                      (unsigned long long)sub_impl->loans_copied);
+    }
+    if (sub_impl->loans_out_count > 0) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle", "subscription %s destroyed with %zu loaned message(s) not returned",
+                               sub_impl->rmw_subscription.topic_name, sub_impl->loans_out_count);
+    }
+    size_t loans_held = sub_impl->loans_out_count;
+    sub_impl->loans_out_count = 0;
     // Milestone 45 - every shell currently sitting in shell_pool (as opposed to still queued,
     // drained just above, or out with an application that already called rmw_take()) also needs
     // freeing here - nothing else ever will.
@@ -901,6 +1034,17 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
                                        &sub_impl->allocator);
     }
     pthread_mutex_unlock(&sub_impl->queue_mutex);
+    for (size_t i = 0; i < queued_sample_count; i++) {
+        release_sample(sub_impl, &queued_samples[i]);
+    }
+    for (size_t i = 0; i < loans_held; i++) {
+        rmw_tickle_subscription_loan_t* loan = &sub_impl->loans_out[i];
+        if (NULL != loan->shell) {
+            rmw_tickle_ros_message_destroy(sub_impl->callbacks, loan->shell, &sub_impl->allocator);
+        } else {
+            release_sample(sub_impl, &loan->sample);
+        }
+    }
     pthread_mutex_destroy(&sub_impl->queue_mutex);
     rmw_tickle_callback_slot_fini(&sub_impl->on_new_message);
     rmw_tickle_callback_slot_fini(&sub_impl->deadline_missed.callback);
@@ -914,6 +1058,7 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     allocator.deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator.state);
     allocator.deallocate(sub_impl->queue, allocator.state);
     allocator.deallocate((void*)sub_impl->shell_pool, allocator.state); // Milestone 45
+    allocator.deallocate(sub_impl->loans_out, allocator.state);
     allocator.deallocate(sub_impl->decode_scratch, allocator.state);
     allocator.deallocate(sub_impl->tracking_bitmaps, allocator.state); // Phase 2 - the tracking window
     allocator.deallocate(sub_impl->owning_node_name, allocator.state);
@@ -944,27 +1089,57 @@ static void fill_message_info(const rmw_tickle_subscriber_t* sub_impl, const rmw
 
 // The head of the queue, or false when there is none. Shared by rmw_take_with_info() and (g1) the
 // serialized take - the QoS bookkeeping in it is the same for both, and a second copy would drift.
-static bool dequeue_one(rmw_tickle_subscriber_t* sub_impl, rmw_tickle_queued_message_t* entry) {
-    pthread_mutex_lock(&sub_impl->queue_mutex);
+//
+// An entry holding a retained sample (loaned messages) leaves the queue here like any other; the caller releases it
+// when done with its bytes. One that LIFESPAN drops is released here, after queue_mutex - there are at most
+// RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION of them in the queue.
+//
+// The work itself, with queue_mutex held: the samples LIFESPAN dropped go to `expired` (room for
+// RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION), for the caller to release once it has let the mutex go.
+static bool dequeue_locked(rmw_tickle_subscriber_t* sub_impl, rmw_tickle_queued_message_t* entry,
+                           struct tt_Sample* expired, size_t* expired_count) {
     // QoS roadmap #6 (LIFESPAN) - see rmw_tickle_subscriber_t.lifespan_ns's own doc comment. Drops
     // (not returns) any already-expired entries from the front before taking the real head - "as
     // if it had never been sent", same wording tickle.c's own reliable_cache-side skip uses. A
     // no-op loop when lifespan_ns == 0 (not requested).
     while (sub_impl->queue_count > 0 && sub_impl->lifespan_ns != 0 &&
            tt_get_ns() - sub_impl->queue[sub_impl->queue_head].source_timestamp >= sub_impl->lifespan_ns) {
-        shell_pool_push(sub_impl, sub_impl->queue[sub_impl->queue_head].ros_message); // Milestone 45
+        rmw_tickle_queued_message_t* head = &sub_impl->queue[sub_impl->queue_head];
+        if (NULL != head->in_place) {
+            expired[(*expired_count)++] = head->sample;
+            sub_impl->retained_queued--;
+        } else {
+            shell_pool_push(sub_impl, head->ros_message); // Milestone 45
+        }
         sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
         sub_impl->queue_count--;
     }
-    if (sub_impl->queue_count == 0) {
-        pthread_mutex_unlock(&sub_impl->queue_mutex);
-        return false;
+    bool found = sub_impl->queue_count > 0;
+    if (found) {
+        *entry = sub_impl->queue[sub_impl->queue_head];
+        sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
+        sub_impl->queue_count--;
+        if (NULL != entry->in_place) {
+            sub_impl->retained_queued--;
+        }
     }
-    *entry = sub_impl->queue[sub_impl->queue_head];
-    sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
-    sub_impl->queue_count--;
+    return found;
+}
+
+static void release_samples(rmw_tickle_subscriber_t* sub_impl, struct tt_Sample* samples, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        release_sample(sub_impl, &samples[i]);
+    }
+}
+
+static bool dequeue_one(rmw_tickle_subscriber_t* sub_impl, rmw_tickle_queued_message_t* entry) {
+    struct tt_Sample expired[RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION];
+    size_t expired_count = 0;
+    pthread_mutex_lock(&sub_impl->queue_mutex);
+    bool found = dequeue_locked(sub_impl, entry, expired, &expired_count);
     pthread_mutex_unlock(&sub_impl->queue_mutex);
-    return true;
+    release_samples(sub_impl, expired, expired_count);
+    return found;
 }
 
 rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_message, bool* taken,
@@ -1002,13 +1177,27 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
     //
     // A C++ message is moved instead (rmw_tickle_ros_message_move()), which replaces what the
     // caller's object held rather than leaking it.
-    rmw_tickle_ros_message_move(sub_impl->callbacks, ros_message, entry.ros_message);
-    // Milestone 45 - shell_pool's own doc comment (rmw_tickle.h): the shallow copy above already
-    // transferred every owned pointer field out of entry.ros_message, so shell_pool_push()'s own
-    // memset() is exactly what makes reusing this same buffer safe, not just freeing it faster.
-    pthread_mutex_lock(&sub_impl->queue_mutex);
-    shell_pool_push(sub_impl, entry.ros_message);
-    pthread_mutex_unlock(&sub_impl->queue_mutex);
+    //
+    // Loaned messages: an entry kept where it arrived is copied out - the one copy an ordinary take of it costs - with
+    // the same decoder (for an in-place type, field-wise copies), and released.
+    if (NULL != entry.in_place) {
+        int32_t decoded = sub_impl->callbacks->direct_decode(ros_message, (const uint8_t*)entry.in_place,
+                                                             (uint32_t)sub_impl->callbacks->inplace_bytes, true);
+        release_sample(sub_impl, &entry.sample);
+        if (decoded < 0) {
+            RMW_SET_ERROR_MSG("direct_decode() failed on a sample that was received whole");
+            *taken = false;
+            return RMW_RET_ERROR;
+        }
+    } else {
+        rmw_tickle_ros_message_move(sub_impl->callbacks, ros_message, entry.ros_message);
+        // Milestone 45 - shell_pool's own doc comment (rmw_tickle.h): the shallow copy above already
+        // transferred every owned pointer field out of entry.ros_message, so shell_pool_push()'s own
+        // memset() is exactly what makes reusing this same buffer safe, not just freeing it faster.
+        pthread_mutex_lock(&sub_impl->queue_mutex);
+        shell_pool_push(sub_impl, entry.ros_message);
+        pthread_mutex_unlock(&sub_impl->queue_mutex);
+    }
     *taken = true;
     TT_TRACE(tt_TRACE_TAKEN);
 
@@ -1141,14 +1330,18 @@ rmw_ret_t rmw_subscription_event_init(rmw_event_t* rmw_event, const rmw_subscrip
     }
 }
 
-// See rmw_publisher.c's own loaned-message stubs (rmw_borrow_loaned_message() et al.) doc comment
-// - same reasoning, subscription side. Found the same way: test_rmw_implementation's own
-// TestSubscriptionUseLoan fixture calls all three expecting RMW_RET_UNSUPPORTED before GTEST_
-// SKIP()-ing the rest of its own loan-specific cases; a missing symbol crashed that fixture's
-// SetUp() outright instead of failing a single assertion.
-rmw_ret_t rmw_take_loaned_message(const rmw_subscription_t* subscription, void** loaned_message, bool* taken,
-                                  rmw_subscription_allocation_t* allocation) {
-    (void)allocation;
+// Loaned messages (docs/RMW.md, "Loaned messages"). A loaning subscription (can_loan_messages: the type's wire bytes
+// are its message, callbacks->inplace_bytes) hands out the queued message itself instead of copying it into the
+// caller's: a sample core kept where it arrived (retain_in_place()) is lent as those bytes, read in place; any other is
+// lent as the shell it was decoded into. Either way the take copies nothing and allocates nothing - what the ordinary
+// take's copy into the caller's message, and rclcpp's allocation of that message, would have cost. Returned with
+// rmw_return_loaned_message_from_subscription(), which gives the sample back to core or the shell back to the pool.
+//
+// A subscription that does not lend answers RMW_RET_UNSUPPORTED, as rmw.h asks; rclcpp then never calls these
+// (it reads can_loan_messages first). test_rmw_implementation's TestSubscriptionUseLoan fixture expects that answer for
+// a type it cannot loan, and skips its loan cases on it.
+static rmw_ret_t take_loaned(const rmw_subscription_t* subscription, void** loaned_message, bool* taken,
+                             rmw_message_info_t* message_info) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(loaned_message, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(taken, RMW_RET_INVALID_ARGUMENT);
@@ -1156,39 +1349,108 @@ rmw_ret_t rmw_take_loaned_message(const rmw_subscription_t* subscription, void**
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
-    *loaned_message = NULL;
-    *taken = false;
-    RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
-    return RMW_RET_UNSUPPORTED;
+    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)subscription->data;
+    if (!sub_impl->loans) {
+        RMW_SET_ERROR_MSG("rmw_tickle cannot loan this type: its wire bytes are not its message in memory");
+        return RMW_RET_UNSUPPORTED;
+    }
+    if (NULL != *loaned_message) {
+        RMW_SET_ERROR_MSG("*loaned_message must be NULL");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+
+    // Room for the loan, the dequeue and the record of the loan under one hold of queue_mutex: a loaned take costs the
+    // ordinary take's one lock, not three.
+    struct tt_Sample expired[RMW_TICKLE_LOAN_RETAIN_PER_SUBSCRIPTION];
+    size_t expired_count = 0;
+    rmw_tickle_queued_message_t entry;
+    pthread_mutex_lock(&sub_impl->queue_mutex);
+    if (sub_impl->loans_out_count == sub_impl->loans_out_capacity) {
+        size_t capacity =
+            sub_impl->loans_out_capacity == 0 ? sub_impl->queue_capacity : sub_impl->loans_out_capacity * 2;
+        rmw_tickle_subscription_loan_t* grown = (rmw_tickle_subscription_loan_t*)sub_impl->allocator.reallocate(
+            sub_impl->loans_out, capacity * sizeof(*grown), sub_impl->allocator.state);
+        if (NULL == grown) {
+            pthread_mutex_unlock(&sub_impl->queue_mutex);
+            RMW_SET_ERROR_MSG("failed to allocate the loan table");
+            return RMW_RET_BAD_ALLOC;
+        }
+        sub_impl->loans_out = grown;
+        sub_impl->loans_out_capacity = capacity;
+    }
+    bool found = dequeue_locked(sub_impl, &entry, expired, &expired_count);
+    rmw_tickle_subscription_loan_t loan = {.message = NULL, .shell = NULL, .sample = {.handle = 0}};
+    if (found) {
+        loan.message = NULL != entry.in_place ? entry.in_place : entry.ros_message;
+        loan.shell = entry.ros_message;
+        loan.sample = entry.sample;
+        sub_impl->loans_out[sub_impl->loans_out_count++] = loan;
+        if (NULL != entry.in_place) {
+            sub_impl->loans_in_place++;
+        } else {
+            sub_impl->loans_copied++;
+        }
+    }
+    pthread_mutex_unlock(&sub_impl->queue_mutex);
+    release_samples(sub_impl, expired, expired_count);
+    if (!found) {
+        *taken = false;
+        return RMW_RET_OK;
+    }
+
+    *loaned_message = (void*)loan.message;
+    *taken = true;
+    TT_TRACE(tt_TRACE_TAKEN);
+    if (NULL != message_info) {
+        fill_message_info(sub_impl, &entry, message_info);
+    }
+    return RMW_RET_OK;
+}
+
+rmw_ret_t rmw_take_loaned_message(const rmw_subscription_t* subscription, void** loaned_message, bool* taken,
+                                  rmw_subscription_allocation_t* allocation) {
+    (void)allocation; // pre-allocated-message optimization, not implemented
+    return take_loaned(subscription, loaned_message, taken, NULL);
 }
 
 rmw_ret_t rmw_take_loaned_message_with_info(const rmw_subscription_t* subscription, void** loaned_message, bool* taken,
                                             rmw_message_info_t* message_info,
                                             rmw_subscription_allocation_t* allocation) {
-    (void)message_info;
-    (void)allocation;
-    RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
-    RCUTILS_CHECK_ARGUMENT_FOR_NULL(loaned_message, RMW_RET_INVALID_ARGUMENT);
-    RCUTILS_CHECK_ARGUMENT_FOR_NULL(taken, RMW_RET_INVALID_ARGUMENT);
-    if (!rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
-        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
-        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
-    }
-    *loaned_message = NULL;
-    *taken = false;
-    RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
-    return RMW_RET_UNSUPPORTED;
+    (void)allocation; // pre-allocated-message optimization, not implemented
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(message_info, RMW_RET_INVALID_ARGUMENT);
+    return take_loaned(subscription, loaned_message, taken, message_info);
 }
 
 rmw_ret_t rmw_return_loaned_message_from_subscription(const rmw_subscription_t* subscription, void* loaned_message) {
-    (void)loaned_message;
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(loaned_message, RMW_RET_INVALID_ARGUMENT);
     if (!rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
-    RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
-    return RMW_RET_UNSUPPORTED;
+    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)subscription->data;
+    if (!sub_impl->loans) {
+        RMW_SET_ERROR_MSG("rmw_tickle cannot loan this type: its wire bytes are not its message in memory");
+        return RMW_RET_UNSUPPORTED;
+    }
+    pthread_mutex_lock(&sub_impl->queue_mutex);
+    size_t i = 0;
+    while (i < sub_impl->loans_out_count && sub_impl->loans_out[i].message != loaned_message) {
+        i++;
+    }
+    if (i == sub_impl->loans_out_count) {
+        pthread_mutex_unlock(&sub_impl->queue_mutex);
+        RMW_SET_ERROR_MSG("not a message this subscription has loaned out, or one already returned");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+    rmw_tickle_subscription_loan_t loan = sub_impl->loans_out[i];
+    sub_impl->loans_out[i] = sub_impl->loans_out[--sub_impl->loans_out_count];
+    if (NULL != loan.shell) {
+        shell_pool_push(sub_impl, loan.shell);
+    }
+    pthread_mutex_unlock(&sub_impl->queue_mutex);
+    release_sample(sub_impl, &loan.sample);
+    return RMW_RET_OK;
 }
 
 static size_t messages_waiting(const void* entity) {
@@ -1250,6 +1512,28 @@ static rmw_ret_t take_serialized(const rmw_subscription_t* subscription, rmw_ser
     }
 
     rmw_ret_t result = RMW_RET_OK;
+    if (NULL != entry.in_place) {
+        // Loaned messages: the bytes kept are the CDR itself, in native order.
+        size_t bytes = callbacks->inplace_bytes;
+        if (serialized_message->buffer_capacity < bytes &&
+            rmw_serialized_message_resize(serialized_message, bytes) != RCUTILS_RET_OK) {
+            RMW_SET_ERROR_MSG("failed to resize serialized_message");
+            result = RMW_RET_BAD_ALLOC;
+        } else {
+            memcpy(serialized_message->buffer, entry.in_place, bytes);
+            serialized_message->buffer_length = bytes;
+        }
+        release_sample(sub_impl, &entry.sample);
+        if (RMW_RET_OK != result) {
+            *taken = false;
+            return result;
+        }
+        *taken = true;
+        if (NULL != message_info) {
+            fill_message_info(sub_impl, &entry, message_info);
+        }
+        return RMW_RET_OK;
+    }
     int32_t size = callbacks->direct_encode_size(entry.ros_message);
     if (size < 0) {
         RMW_SET_ERROR_MSG("direct_encode_size() failed on a message that was decoded from the wire");

@@ -17,8 +17,8 @@ Core design is in [DESIGN.md](DESIGN.md), measured results in [RESULTS.md](RESUL
 
 ## API coverage
 
-Of the 94 functions `rmw_implementation` dispatches on jazzy, `rmw_tickle` serves 77. The remaining 17 are 6 loaned-message
-functions (a gap) and 11 features TickLE has no counterpart for. Checked function by function against each
+Of the 94 functions `rmw_implementation` dispatches on jazzy, `rmw_tickle` serves 83. The remaining 11 are features
+TickLE has no counterpart for. Checked function by function against each
 implementation's source on 2026-09-27, and updated as gaps closed.
 
 | Area | functions | rmw_tickle | Fast DDS | CycloneDDS |
@@ -26,10 +26,10 @@ implementation's source on 2026-09-27, and updated as gaps closed.
 | Init/context, nodes, graph, publishers, subscriptions, services, waiting, QoS | 62 | 62 | 62 | 62 |
 | Serialization | 7 | 7 | 6 | 6 |
 | Events and on-new-data callbacks | 8 | 8 | 8 | 8 |
-| Loaned messages | 6 | **0 (gap)** | 6 (shared memory only) | 6 (shared memory only) |
+| Loaned messages | 6 | 6 (plain fixed-size types) | 6 (shared memory only) | 6 (shared memory only) |
 | Pre-allocation | 4 | – | – | – |
 | Content filter, network flow endpoints, dynamic messages | 7 | – | 7 | – |
-| **Fully supported** | **94** | **77** | **83** (+6 loans with shared memory) | **76** (+6 loans with shared memory) |
+| **Fully supported** | **94** | **83** | **83** (+6 loans with shared memory) | **76** (+6 loans with shared memory) |
 
 `rmw_get_serialized_message_size` is the one entry point `rmw_tickle` serves and neither vendor does.
 
@@ -52,7 +52,7 @@ implementation's source on 2026-09-27, and updated as gaps closed.
 | `ROS_AUTOMATIC_DISCOVERY_RANGE`, `ROS_STATIC_PEERS` | ✅ | Matches rmw_cyclonedds. `NOT_SET` refuses to create a node |
 | Messages up to 64 KB | ✅ | Samples go out in 1472-byte DATA_FRAG fragments. Service requests and responses are not fragmented; the OS fragments them at the IP layer |
 | Messages above 64 KB | ❌ | Planned (large-message stage 2) |
-| Loaned messages (`rmw_borrow_loaned_message` + 5) | ❌ | `can_loan_messages` is always false. Planned on top of shared-memory receive-buffer lending |
+| Loaned messages (`rmw_borrow_loaned_message` + 5) | ✅ | For types whose wire bytes are their message in memory (Array1k, `geometry_msgs/Pose`, `std_msgs/Float64`: 67 generated types of the shipped set); `can_loan_messages` is false for the rest. Where copies remain: [Loaned messages](#loaned-messages) |
 | SROS2 security | ❌ | `ROS_SECURITY_ENFORCEMENT=Enforce` makes `rmw_init` fail. In permissive mode it warns once that security is not applied. Parked until the user starts it |
 | Pre-allocation, content filters, network flow endpoints, dynamic messages | ➖ | Not supported, by design. `RMW_RET_UNSUPPORTED`, as CycloneDDS does |
 | `wstring` | ➖ | Not supported, by decision. Only `example_interfaces/msg/WString` is affected; use UTF-8 `string` |
@@ -86,6 +86,50 @@ implementation's source on 2026-09-27, and updated as gaps closed.
   polls the socket itself, so a message is received and handed back on the executor's own thread. The poll thread
   takes over only when no executor has waited for more than 10 ms.
 - A separate watchdog thread checks that the poll thread is still returning, and raises LIVELINESS_LOST if it stops.
+
+### Loaned messages
+
+**Which types.** A type lends when its wire bytes are its ROS message in memory: every field at the same offset in
+the CDR-4 wire form (8-byte scalars 4-aligned) as in the C struct (8-aligned), recursively, with no string, sequence or
+bool. The generator emits that as a compile-time expression of the C compiler's own `offsetof()`
+(`inplace_bytes` in the callbacks struct; the C++ shim keeps it only for a trivially copyable, standard-layout object of
+the same size). 67 of the types generated for the shipped interface set qualify (service and action parts
+included), among them Array1k, `builtin_interfaces/Time`, `geometry_msgs/Pose`, `Twist`
+and `Accel`; `std_msgs/Header` (a string) and anything with a sequence do not. **Interface packages must be rebuilt**:
+the callbacks struct grew two fields, and `rmw_tickle` refuses one of the old size by name.
+
+**Subscription.** `rmw_take_loaned_message` hands out the queued message itself, so a take copies nothing and
+allocates nothing (an ordinary `rmw_take` copies it into the caller's message, and rclcpp allocates that message):
+- a sample in a **receive buffer** (the socket path: another host, or before the ring attaches) is kept where it
+  arrived (`tt_Sample_retain`) and lent as those bytes. rmw_tickle attaches 8 receive buffers (`tt_Context_set_rx_pool`,
+  64 KiB each) when the context's first loaning subscription is created;
+- a sample from the **shared-memory ring** is decoded into a pooled shell, as for any subscription, and the shell is
+  lent: one copy, in the delivery. Keeping it in its ring slot instead (`RMW_TICKLE_LOAN_RING_SLOTS=1`) saves that copy
+  too, but a held slot stops its ring one lap later (512 records) for **every** topic into the context, for as long as
+  the application holds the loan (core DESIGN.md 10; `test_loaned_messages` held-pinned shows it: the ring refuses the
+  writer and its KEEP_ALL publish times out). So it is off by default, and a held loan blocks nothing (`held`: every
+  one of 1,600 flood samples delivered on another topic while three loans were held, 0 refusals);
+- at most 8 queued samples per subscription stay in a buffer (core holds 16 per context); the rest are decoded;
+- a byte-swapped sample, a fragmented, reorder-released or locally delivered one, or one not aligned for its type is
+  decoded, never lent as is. **Core's inline receive buffer sits 4 bytes off 8** in this build, so an Array1k that lands
+  there is copied: on the PC socket path 8 of 300 were read in place. Aligning `tt_Context.rx_buffer` to 8 is a
+  one-line core change, not made here.
+
+**Publisher.** `rmw_borrow_loaned_message` lends a buffer the publisher keeps (at most 64 out at once), so rclcpp
+builds the message there instead of allocating one. A new buffer is initialised as a new message is; a kept one is
+lent as its last loan left it (clearing it would write as many bytes as the copy a loan saves), so set every field,
+defaults included. `rmw_publish_loaned_message` then encodes it into the ring slot (encode-in-slot) or `tx_buffer`
+exactly as `rmw_publish` does: **one copy remains on the publish**. Lending the slot itself would need core to hand
+an application a claimed slot, and a claimed slot stops its reader until published; core has no such API.
+
+`RMW_TICKLE_LOANS=0` turns loans off (`can_loan_messages` false everywhere). rcl's `ROS_DISABLE_LOANED_MESSAGES=1`
+does the same from above.
+
+**Measured** (PC only, rmw level, Array1k at max rate, 8 reps, RESULTS.md "Loaned messages (PC)"): no difference the
+reading rule can see, in either direction, between loans and plain publish/take - the PC's own scatter (other jobs
+running) is wider than any effect. Medians: BEST_EFFORT with ring slots lent +8% delivered and -10% subscriber CPU per
+message, RELIABLE -5% and +6%; the default loan arm (decoded shells) within a few percent of plain take, its
+publisher's median CPU +10% (RELIABLE) and +33% (BEST_EFFORT). A rig A/B is what would decide it.
 
 ## QoS
 
@@ -168,6 +212,8 @@ says so when it does.
 | `RMW_TICKLE_CACHE_BYTES` | KEEP_LAST publisher cache budget | 1 MiB |
 | `RMW_TICKLE_KEEP_ALL_BYTES` / `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` | KEEP_ALL publisher budget, and the space reserved per sample | 512 KiB / 1472 B |
 | `RMW_TICKLE_REORDER_SLOTS` | out-of-order RELIABLE samples a subscription may hold | the tracking window |
+| `RMW_TICKLE_LOANS` | `0` turns loaned messages off | on |
+| `RMW_TICKLE_LOAN_RING_SLOTS` | `1` lends samples in their shared-memory ring slot; a held one then stops the ring a lap later | off |
 
 The two publisher storage budgets can also be set per publisher, with `rmw_tickle_publisher_payload_t`
 (`rmw_tickle_c/publisher_payload.h`) passed through `rmw_publisher_options_t.rmw_specific_publisher_payload`.
@@ -204,8 +250,9 @@ The full tables are in [RESULTS.md](RESULTS.md).
 
 ## Open items
 
-- Loaned messages (6 entry points), built on shared-memory receive-buffer lending. This is the last gap in the API
-  coverage table.
+- Loaned messages: core changes that would make more of them zero-copy - `tt_Context.rx_buffer` aligned to 8 (an
+  8-aligned type landing there is copied today), a ring that skips a held slot (so ring slots could be lent safely),
+  and a claimed-slot API for the publisher.
 - Messages above 64 KB (large-message stage 2: wider fragment index, 32-bit record length).
 - More than one outstanding request per client and per service.
 - Round-trip checks for the introspection values: QoS profiles (`test_reported_qos`), and names, type names, counts,
