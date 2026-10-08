@@ -515,6 +515,84 @@ static void test_interleaved_writers_are_counted_apart(void) {
     rig_down();
 }
 
+// Two writers of one topic in one context, offering different QoS (2026-10-09). The plan and the skip judge each
+// record's Subscribers by the writer that wrote it (the record's entity_id): `kept` offers a deadline the reader
+// accepts, `missed` one it refuses. Judged by the first publisher of the endpoint in the discovery table instead,
+// the pair are judged alike: with `missed` first, the reader is taken for incompatible with `kept` too, nothing of
+// `kept` is skipped and every one of its samples is delivered; with `kept` first, `missed`'s older samples are
+// skipped and counted as superseded for a writer whose samples it drops. Both orders, both backlog shapes: the
+// writers interleaved (record by record) and one after the other (the leading run, segment_skip_run()).
+#define REQUESTED_DEADLINE_NS (100ULL * tt_MILLISECOND)
+#define KEPT_DEADLINE_NS (50ULL * tt_MILLISECOND) // within what the reader requests
+#define MISSED_DEADLINE_NS 0ULL                   // infinite: looser than requested, so incompatible
+#define MISSED_ENTITY_ID 0x0badf00dU
+
+static struct tt_Discovery skip_discovery;
+static struct tt_Publisher pub_missed;
+
+static void announce_writer(const struct tt_Publisher* pub, uint64_t deadline_ns) {
+    upsert_discovered_entity(&rig.owner, rig.sender.id, pub->endpoint.id, pub->endpoint.entity_id,
+                             tt_KIND_TOPIC_PUBLISHER, 0, 0, deadline_ns, 0, "skip_topic", "skip_pub");
+}
+
+static void two_writers_of_one_topic(bool missed_first, bool interleaved) {
+    rig_up(false, 1, -1);
+    rig.sub_a.deadline_duration_ns = REQUESTED_DEADLINE_NS;
+    init_pub(&pub_missed, TOPIC_A_ID, false);
+    pub_missed.endpoint.entity_id = MISSED_ENTITY_ID;
+    rig.sender.endpoints[rig.sender.endpoint_count++] = (struct tt_Endpoint*)&pub_missed;
+    memset(&skip_discovery, 0, sizeof(skip_discovery));
+    rig.owner.discovery = &skip_discovery;
+    if (missed_first) {
+        announce_writer(&pub_missed, MISSED_DEADLINE_NS);
+        announce_writer(&rig.pub_a, KEPT_DEADLINE_NS);
+    } else {
+        announce_writer(&rig.pub_a, KEPT_DEADLINE_NS);
+        announce_writer(&pub_missed, MISSED_DEADLINE_NS);
+    }
+    EXPECT_TRUE(tt_Discovery_find_entity(&skip_discovery, rig.sender.id, TOPIC_A_ID, MISSED_ENTITY_ID) != NULL);
+    EXPECT_TRUE(tt_Discovery_find_entity(&skip_discovery, rig.sender.id, TOPIC_A_ID, rig.pub_a.endpoint.entity_id) !=
+                NULL);
+
+    enum { N = 4 };
+    if (interleaved) {
+        for (uint32_t i = 0; i < N; i++) {
+            publish(&rig.pub_a, 1300 + i);
+            publish(&pub_missed, 1400 + i);
+        }
+    } else {
+        for (uint32_t i = 0; i < N; i++) {
+            publish(&rig.pub_a, 1300 + i);
+        }
+        for (uint32_t i = 0; i < N; i++) {
+            publish(&pub_missed, 1400 + i);
+        }
+    }
+    EXPECT_EQ_U32(2 * N, rig.owner.own_segment->write_index); // all of it over shared memory
+    drain_all();
+
+    // Only the compatible writer's newest sample is delivered and its older ones are skipped; the refused writer's
+    // are read and dropped by RxO, none of them skipped or counted as passed over.
+    EXPECT_EQ_U32(1, seen_a.count);
+    EXPECT_EQ_U32(1300 + N - 1, seen_a.values[0]);
+    EXPECT_EQ_U64(N - 1, rig.owner.rx_shm_skipped_superseded);
+    EXPECT_EQ_U32(N - 1, rig.sub_a.superseded);
+    EXPECT_EQ_U32(N - 1, rig.sub_a.delivering_superseded);
+    EXPECT_EQ_U32(N, rig.sub_a.rxo_drops);
+    EXPECT_TRUE(find_writer_proxy(&rig.sub_a, rig.sender.id, MISSED_ENTITY_ID) == NULL);
+    EXPECT_EQ_U64(2ULL * N, rig.owner.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    EXPECT_EQ_U32(2 * N, rig.owner.own_segment->read_index);
+    rig.owner.discovery = NULL;
+    rig_down();
+}
+
+static void test_two_writers_of_one_topic_are_judged_apart(void) {
+    two_writers_of_one_topic(true, true);
+    two_writers_of_one_topic(false, true);
+    two_writers_of_one_topic(true, false);
+    two_writers_of_one_topic(false, false);
+}
+
 int main(void) {
     test_keep_last_1_takes_only_the_newest();
     test_one_writers_backlog_is_one_leading_run();
@@ -527,6 +605,7 @@ int main(void) {
     test_reliable_keep_last_skips_whole_fragmented_samples();
     test_the_drain_hands_back_after_delivering_the_newest();
     test_a_keep_all_drain_is_not_handed_back();
+    test_two_writers_of_one_topic_are_judged_apart();
 
     printf("test_segment_skip: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();

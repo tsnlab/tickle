@@ -9,7 +9,7 @@
  */
 
 // discovery_lookup_cost.c - what the per-sample discovery lookup costs (CONTEXT_NODE_PLAN.md 4b, 2026-09-27): every
-// received DATA runs subscriber_incompatible_with_publisher() for each matching subscriber, which finds the
+// received DATA runs subscriber_incompatible_with_writer() for each matching subscriber, which finds the
 // publisher's entry with tt_Discovery_find(). The table is filled with tt_MAX_DISCOVERED_ENTITIES - 1 entities of
 // other contexts first, the publisher's last, so it sits at the end; then the check is timed over CALLS calls, the
 // median of ROUNDS rounds. Also printed: the same with the publisher's entry first.
@@ -84,8 +84,10 @@ static double per_call_ns(void) {
     for (int round = 0; round < ROUNDS; round++) {
         uint64_t start = wall_ns();
         for (int call = 0; call < CALLS; call++) {
-            incompatible +=
-                subscriber_incompatible_with_publisher(&context, &sub, PUBLISHER_SOURCE, PUBLISHER_ENDPOINT) ? 1 : 0;
+            incompatible += subscriber_incompatible_with_writer(&context, &sub, PUBLISHER_SOURCE, PUBLISHER_ENDPOINT,
+                                                                ENTITY_ID_OF(PUBLISHER_ENDPOINT))
+                                ? 1
+                                : 0;
         }
         samples[round] = (double)(wall_ns() - start) / CALLS;
     }

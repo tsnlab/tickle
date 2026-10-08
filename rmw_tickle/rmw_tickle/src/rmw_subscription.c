@@ -905,7 +905,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
 
     // QoS roadmap #1 (RxO matching, Milestone 31) - see tt_Subscriber.durable's own doc comment
     // (tickle.h). Requesting TRANSIENT_LOCAL here is what actually activates process_data()'s own
-    // subscriber_incompatible_with_publisher() gate against a VOLATILE Publisher for a real ROS 2
+    // subscriber_incompatible_with_writer() gate against a VOLATILE Publisher for a real ROS 2
     // Subscription - without this, every rmw_tickle Subscription would keep tickle_subscriber.
     // durable at its zero_allocate() default (false) regardless of its own requested QoS, and the
     // new gate could never fire for rmw_tickle's own actual users.

@@ -372,7 +372,7 @@ static void micro(uint8_t reader, struct tt_Subscriber* sub, const struct tt_Pub
 
     start = now_ns();
     for (uint32_t i = 0; i < MICRO_ITERATIONS; i++) {
-        hits += subscriber_incompatible_with_publisher(node, sub, writer_node, endpoint_id);
+        hits += subscriber_incompatible_with_writer(node, sub, writer_node, endpoint_id, entity_id);
     }
     double rxo = (double)(now_ns() - start) / MICRO_ITERATIONS;
 

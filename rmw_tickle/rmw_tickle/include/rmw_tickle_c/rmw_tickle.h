@@ -491,7 +491,7 @@ typedef struct rmw_tickle_liveliness_changed_status_t {
 // RMW_EVENT_OFFERED_QOS_INCOMPATIBLE (rmw_tickle_publisher_t.offered_qos_incompatible below) /
 // RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE (rmw_tickle_subscriber_t.requested_qos_incompatible) -
 // Milestone 31/28(a)'s own explicitly-deferred observability follow-on: RxO matching itself
-// (tickle.c's own subscriber_incompatible_with_publisher()/decode_update_entities() gates) was
+// (tickle.c's own subscriber_incompatible_with_writer()/decode_update_entities() gates) was
 // already real - a mismatched pair simply, correctly never connects - but rclcpp had no way to
 // *observe* that it happened. `base`'s own total_count/unread_count are cumulative, the same
 // shape/threading as deadline_missed/liveliness_lost above; last_policy_kind is real rmw_qos_

@@ -9463,7 +9463,7 @@ static void register_subscriber_peer_on_publisher(struct tt_Context* node, struc
     // a remote Subscriber requesting a policy this local Publisher doesn't offer never becomes a
     // peer at all: no unicast optimization, no durability backlog, no discovery-triggered
     // Heartbeat - matching real DDS's own "an incompatible pair simply never connects" semantics.
-    // See process_data()'s own subscriber_incompatible_with_publisher() for this check's own
+    // See process_data()'s own subscriber_incompatible_with_writer() for this check's own
     // mirror image on the Subscriber side (the more consequential half, since it's what actually
     // stops broadcast DATA delivery too - this Publisher-side half alone only gates the unicast-
     // only enhancements, tickle.c's own doc comment on tt_UPDATE_QOS_RELIABLE/_DURABLE explains
@@ -9819,19 +9819,33 @@ static bool is_power_of_ten(uint32_t count) {
 // race, not a genuine incompatibility; giving the benefit of the doubt here is strictly better
 // than dropping a legitimately compatible pair's very first samples).
 //
-// subscriber_incompatible_with_writer() checks the writer that sent the sample (its entity_id): two writers of one
-// topic in one remote context can offer different QoS, and the first of them in the table answers for both here.
+// It checks the writer that sent the sample (its entity_id), never the endpoint's first publisher: two writers of one
+// topic in one context share the endpoint_id and can offer different QoS, and judged by the endpoint the first of
+// them in the table answers for both. That was the segment drain's skip until 2026-10-09 (subscriber_refuses_writer()).
 static bool writer_incompatible(struct tt_Subscriber* sub, const struct tt_DiscoveredEntity* publisher,
                                 uint8_t publisher_node_id, uint32_t publisher_endpoint_id);
+static bool writer_qos_incompatible(const struct tt_Subscriber* sub, const struct tt_DiscoveredEntity* publisher);
 
-static bool subscriber_incompatible_with_publisher(struct tt_Context* node, struct tt_Subscriber* sub,
-                                                   uint8_t publisher_node_id, uint32_t publisher_endpoint_id) {
-    if (node->discovery == NULL) {
+// The same judgement as subscriber_incompatible_with_writer() without counting or logging a drop: for the segment
+// drain's skip, which asks whether a Subscriber will drop a record, not drops it. Counted there, every record of a
+// refused writer that the plan met was counted as a drop once more than it was dropped.
+static bool subscriber_refuses_writer(const struct tt_Context* node, const struct tt_Subscriber* sub, uint8_t source,
+                                      uint32_t endpoint_id, uint32_t entity_id) {
+    return node->discovery != NULL &&
+           writer_qos_incompatible(sub, tt_Discovery_find_entity(node->discovery, source, endpoint_id, entity_id));
+}
+
+static bool writer_qos_incompatible(const struct tt_Subscriber* sub, const struct tt_DiscoveredEntity* publisher) {
+    if (publisher == NULL) {
         return false;
     }
-    return writer_incompatible(
-        sub, discovery_find_kind(node->discovery, publisher_node_id, publisher_endpoint_id, tt_KIND_TOPIC_PUBLISHER),
-        publisher_node_id, publisher_endpoint_id);
+    bool offered_reliable = (publisher->qos & tt_UPDATE_QOS_RELIABLE) != 0;
+    bool offered_durable = (publisher->qos & tt_UPDATE_QOS_DURABLE) != 0;
+    bool offered_manual = (publisher->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;
+    return (sub->reliable && !offered_reliable) || (sub->durable && !offered_durable) ||
+           deadline_liveliness_incompatible(sub->deadline_duration_ns, publisher->deadline_duration_ns,
+                                            sub->liveliness_manual, offered_manual, sub->liveliness_lease_duration_ns,
+                                            publisher->liveliness_lease_duration_ns);
 }
 
 static bool subscriber_incompatible_with_writer(struct tt_Context* node, struct tt_Subscriber* sub,
@@ -9847,19 +9861,12 @@ static bool subscriber_incompatible_with_writer(struct tt_Context* node, struct 
 
 static bool writer_incompatible(struct tt_Subscriber* sub, const struct tt_DiscoveredEntity* publisher,
                                 uint8_t publisher_node_id, uint32_t publisher_endpoint_id) {
-    if (publisher == NULL) {
+    if (!writer_qos_incompatible(sub, publisher)) {
         return false;
     }
     bool offered_reliable = (publisher->qos & tt_UPDATE_QOS_RELIABLE) != 0;
     bool offered_durable = (publisher->qos & tt_UPDATE_QOS_DURABLE) != 0;
     bool offered_manual = (publisher->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;
-    bool incompatible = (sub->reliable && !offered_reliable) || (sub->durable && !offered_durable) ||
-                        deadline_liveliness_incompatible(
-                            sub->deadline_duration_ns, publisher->deadline_duration_ns, sub->liveliness_manual,
-                            offered_manual, sub->liveliness_lease_duration_ns, publisher->liveliness_lease_duration_ns);
-    if (!incompatible) {
-        return false;
-    }
 
     // Logged, because the drop itself is silent by design and that silence is indistinguishable
     // from "nobody is publishing". Throttled to the 1st, 10th, 100th ... drop rather than rate-
@@ -10056,7 +10063,7 @@ static void deliver_payload(struct tt_Context* node, struct tt_Subscriber* sub, 
 // ---- (g9, config.h's tt_LOCAL_DELIVERY) samples between endpoints of one context.
 
 // Whether a local pair can never match: what the Subscriber requests and the Publisher does not offer, by the rule a
-// remote pair is held to (subscriber_incompatible_with_publisher()).
+// remote pair is held to (subscriber_incompatible_with_writer()).
 static bool local_pair_incompatible(const struct tt_Subscriber* sub, const struct tt_Publisher* pub) {
     return (sub->reliable && !pub->reliable) || (sub->durable && !pub->durable) ||
            deadline_liveliness_incompatible(sub->deadline_duration_ns, pub->deadline_duration_ns,
@@ -12051,7 +12058,7 @@ static void inform_subscriber_of_heartbeat(struct tt_Context* node, struct tt_En
         // Publisher's offered one - DDS's own RxO (Requested vs Offered) design philosophy applies
         // to DURABILITY exactly like every other RxO QoS policy (RELIABILITY, DEADLINE, LIVELINESS,
         // ...): the Offered side only gates compatibility (offered >= requested, already enforced
-        // by subscriber_incompatible_with_publisher()), the Requested side defines what the
+        // by subscriber_incompatible_with_writer()), the Requested side defines what the
         // Subscriber actually wants out of the match. A durable (TRANSIENT_LOCAL-equivalent)
         // Subscriber wants everything the Publisher still retains, so first_available_seq_no (the
         // oldest still-cached sample) is the right baseline. A volatile Subscriber explicitly does
@@ -14014,7 +14021,7 @@ struct segment_skip_ctx {
 static void visit_skip_allowed(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
     struct segment_skip_ctx* ctx = (struct segment_skip_ctx*)ctx_ptr;
     struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
-    if (subscriber_incompatible_with_publisher(node, sub, ctx->rec->source, ctx->rec->endpoint_id)) {
+    if (subscriber_refuses_writer(node, sub, ctx->rec->source, ctx->rec->endpoint_id, ctx->rec->entity_id)) {
         return; // it drops this writer's samples whatever happens here
     }
     ctx->any = true;
@@ -14049,7 +14056,7 @@ static void visit_superseded(struct tt_Context* node, struct tt_Endpoint* endpoi
     struct segment_superseded_ctx* ctx = (struct segment_superseded_ctx*)ctx_ptr;
     const struct segment_record* rec = ctx->rec;
     struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
-    if (subscriber_incompatible_with_publisher(node, sub, rec->source, rec->endpoint_id)) {
+    if (subscriber_refuses_writer(node, sub, rec->source, rec->endpoint_id, rec->entity_id)) {
         return;
     }
     if (ctx->samples != 0) {

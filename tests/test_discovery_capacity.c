@@ -10,7 +10,7 @@
 
 // What the discovery table's capacity decides beyond introspection (CONTEXT_NODE_PLAN.md 4a, 2026-09-27). A remote
 // context announces PUBLISHERS best-effort publishers; a reliable subscriber listens to the last of them, which a
-// table smaller than the announce drops. subscriber_incompatible_with_publisher() reads the table, and finding no
+// table smaller than the announce drops. subscriber_incompatible_with_writer() reads the table, and finding no
 // entry it lets the DATA through: RxO (reliable requested, best effort offered) is not enforced for that publisher.
 // Likewise the per-entity liveliness lease and the KEEP_ALL answer a reliable subscriber reads have nothing to read.
 //

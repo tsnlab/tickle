@@ -9,7 +9,7 @@
 # tickle_publisher.reliable/keep_all (and later deadline/lease) - with no lock held. If rmw_tickle's poll thread runs
 # announce_soon inside that window, the announce carries the publisher with qos 0; the subscriber records qos 0 in its
 # discovery table (upsert_discovered_entity()), and nothing re-announces the entity afterwards because setting a field
-# does not touch last_modified. Every DATA is then dropped by subscriber_incompatible_with_publisher().
+# does not touch last_modified. Every DATA is then dropped by subscriber_incompatible_with_writer().
 #
 # The window is normally microseconds (an allocation or two), so the natural rate is low. This harness widens it
 # WITHOUT touching production code: an LD_PRELOAD shim (built here from the C below) interposes the PLT calls

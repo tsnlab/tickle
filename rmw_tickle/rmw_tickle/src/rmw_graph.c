@@ -305,7 +305,7 @@ size_t rmw_tickle_count_not_alive_matching_locked(rmw_tickle_context_impl_t* con
 // RMW_EVENT_OFFERED_QOS_INCOMPATIBLE/RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE's own real DDS RxO
 // comparison, generalized to whichever side is "requesting" vs "offering" - true if a pairing
 // requesting these values can never be satisfied by one offering them. Mirrors tickle.c's own
-// subscriber_incompatible_with_publisher()/deadline_liveliness_incompatible() exactly (same
+// subscriber_incompatible_with_writer()/deadline_liveliness_incompatible() exactly (same
 // fields, same "requested but not offered" direction, same priority order when several mismatch -
 // real DDS's own wording only ever promises "one of the policies", not a specific one) - a
 // separate implementation, not a shared call, since TickLE core has no rmw_qos_profile_t concept

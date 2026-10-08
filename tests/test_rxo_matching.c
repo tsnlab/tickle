@@ -22,7 +22,7 @@
 // Whitebox: QoS roadmap #1 (RxO matching, Milestone 31, rmw_tickle/PLAN.md) - exercises both
 // halves decode_update_entities()'s own tt_KIND_TOPIC_SUBSCRIBER branch (Publisher-side: an
 // incompatible remote Subscriber never becomes a peer) and process_data()'s own subscriber_
-// incompatible_with_publisher() (Subscriber-side: an incompatible remote Publisher's DATA is
+// incompatible_with_writer() (Subscriber-side: an incompatible remote Publisher's DATA is
 // silently dropped, the more consequential half since it's what actually stops broadcast delivery
 // too) - all static, same "reach tickle.c's own statics" approach as test_reliable_pubsub.c/
 // test_durability_pubsub.c.
@@ -185,7 +185,7 @@ static uint32_t write_update_one_subscriber_with_qos(struct tt_Context* node, ui
     return write_update_one_subscriber_full(node, last_modified, endpoint_id, qos, 0, 0);
 }
 
-// --- Subscriber-side gate: process_data()'s own subscriber_incompatible_with_publisher() ---
+// --- Subscriber-side gate: process_data()'s own subscriber_incompatible_with_writer() ---
 
 // A Subscriber requesting RELIABLE must not receive DATA from a discovered Publisher that didn't
 // offer it - the consequential half of RxO matching (stops delivery outright, not just the

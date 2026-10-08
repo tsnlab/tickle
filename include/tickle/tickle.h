@@ -2361,7 +2361,7 @@ struct tt_Subscriber { // extends endpoint
     // subscriber()'s own default): this Subscriber accepts a VOLATILE Publisher, today's only
     // behavior. true: requires TRANSIENT_LOCAL - a discovered remote Publisher on this topic whose
     // own announced tt_UpdateEntity.qos doesn't offer tt_UPDATE_QOS_DURABLE is treated as
-    // incompatible (process_data()'s own subscriber_incompatible_with_publisher() check) and its
+    // incompatible (process_data()'s own subscriber_incompatible_with_writer() check) and its
     // DATA is silently never delivered to `callback`, matching real DDS's own "an incompatible
     // pair simply never connects" semantics rather than TickLE's previous "everything matches,
     // durability is just an extra a VOLATILE reader happens to also receive if offered" behavior.
@@ -2988,7 +2988,7 @@ struct tt_AnnounceHeader {
 // what that Publisher *offers* (tt_Publisher.reliable/.durable/.liveliness_manual); on a TOPIC_
 // SUBSCRIBER entity it's what that Subscriber *requests* (tt_Subscriber.reliable/.durable/
 // .liveliness_manual) - decode_update_entities()'s own tt_KIND_TOPIC_SUBSCRIBER branch and
-// process_data()'s own subscriber_incompatible_with_publisher() (both tickle.c) are what actually
+// process_data()'s own subscriber_incompatible_with_writer() (both tickle.c) are what actually
 // compare the two sides.
 #define tt_UPDATE_QOS_RELIABLE (1U << 0)
 #define tt_UPDATE_QOS_DURABLE (1U << 1)
