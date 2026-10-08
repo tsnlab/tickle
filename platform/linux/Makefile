@@ -265,6 +265,11 @@ $(OBJ)/tests/test_transport_seam: $(TEST_DIR)/test_transport_seam.c $(SRC)/encod
 	$(CC) $(CPPFLAGS) $(DEPFLAGS) $(CFLAGS) -MM -MP -MT $@ -MF $@.d $<
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
 
+# test_sample_lending.c releases a retained sample from a second thread, as a caller handing it to a worker would.
+$(OBJ)/tests/test_sample_lending: $(TEST_DIR)/test_sample_lending.c $(SRC)/encoding.c $(SRC)/log.c | $(OBJ)/tests
+	$(CC) $(CPPFLAGS) $(DEPFLAGS) $(CFLAGS) -MM -MP -MT $@ -MF $@.d $<
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
+
 # Its own tree, rebuilt from clean every time: the binary `make test` leaves in $(OBJ) is up to date by make's
 # reckoning and built without -fsanitize, so reusing that tree would run an uninstrumented binary. This used to be a
 # `make clean` of every tree, which also made it unsafe to run beside `make test` (check-gates runs them in parallel).

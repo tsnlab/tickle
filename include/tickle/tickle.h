@@ -358,6 +358,68 @@ enum tt_SegmentAttach {
     tt_SEGMENT_ATTACH_COUNT
 };
 
+// A delivered sample kept past its callback (receive-buffer lending, DESIGN.md section 10): tt_Sample_retain() fills
+// it, tt_Sample_release() gives it back. `payload` is the sample's CDR exactly as it arrived - what the topic's decode
+// functions are handed - and stays valid, unmoved and unchanged, until the release. `handle` is opaque and never 0.
+struct tt_Sample {
+    const uint8_t* payload;
+    uint32_t length;
+    uint32_t handle;
+    bool is_native_endian;
+};
+
+#if tt_SAMPLE_LENDING
+// Where a lent sample's bytes live. FREE also means "not lendable": the datagram being processed (if any) is not one
+// whose memory can be kept.
+enum tt_LendKind { tt_LEND_FREE = 0, tt_LEND_BUFFER = 1, tt_LEND_SLOT = 2 };
+
+// One retained sample. BUFFER: `index` is the receive buffer (0 the context's rx_buffer, k the pool's buffer k - 1).
+// SLOT: `index` is the record's ring index and `region` the segment header it was read from.
+struct tt_LendEntry {
+    const void* region;
+    uint32_t index;
+    uint32_t generation; // the handle's upper 24 bits: a released or reused entry no longer answers to an old handle
+    uint8_t kind;        // enum tt_LendKind
+};
+
+// The sample a Subscriber callback is being handed right now (deliver_payload(), tickle.c), on the delivering
+// thread's stack. A nested delivery (a callback that publishes locally) puts the outer one back when it returns.
+struct tt_LendDelivery {
+    const struct tt_Subscriber* sub;
+    const uint8_t* payload;
+    uint32_t length;
+    bool is_native;
+};
+
+struct tt_Lending {
+    const struct tt_LendDelivery* delivery; // NULL outside a Subscriber callback
+    // The datagram being processed, when its memory can be kept: [rx_base, rx_base + rx_length), in buffer or slot
+    // rx_index. rx_kind is FREE outside process_datagram_at() and for anything else.
+    const uint8_t* rx_base;
+    uint32_t rx_length;
+    uint32_t rx_index;
+    uint8_t rx_kind;
+    // The receive buffer the socket reads into next (0: rx_buffer). Changed only by a retain, on the polling thread.
+    uint8_t landing;
+    uint8_t pool_count; // buffers attached by tt_Context_set_rx_pool(), each tt_RX_POOL_BUFFER_BYTES
+    // The lazy release of the own segment (forget_same_host_peer()) was put off because a slot was held or a record
+    // was being read in place; the polling thread finishes it once neither is true.
+    bool segment_release_deferred;
+    uint8_t* pool;
+    uint32_t held;       // entries in use
+    uint32_t held_slots; // of which SLOT
+    struct tt_LendEntry entries[tt_SAMPLE_RETAIN_MAX];
+    // Counters, on the traffic line as lend_*. full_retained is the WRITER's: datagrams it dropped because the slot it
+    // was refused is one its reader has read and still holds (shm_full_retained; also in segment_full_dropped).
+    uint64_t retains;
+    uint64_t releases;
+    uint64_t unlendable;   // retain of a sample not in its datagram's memory: tt_RET_UNSUPPORTED
+    uint64_t exhausted;    // no handle entry, or no spare receive buffer: tt_RET_OUT_OF_BUFFER
+    uint64_t bad_releases; // handle 0, unknown, or already released: tt_RET_INVALID_ARGUMENT
+    uint64_t full_retained;
+};
+#endif
+
 struct tt_Context {
     uint8_t id;
     uint32_t endpoint_count;
@@ -1015,6 +1077,10 @@ struct tt_Context {
     struct tt_Node* nodes[tt_MAX_NODES];
     struct tt_Node default_node;
     char default_node_name[16];
+#if tt_SAMPLE_LENDING
+    // Receive-buffer lending (DESIGN.md section 10), last so that no field before it moves when it is compiled in.
+    struct tt_Lending lend;
+#endif
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s
@@ -2612,7 +2678,30 @@ static inline void tt_Subscriber_delivering_writer(const struct tt_Subscriber* s
 // creating it (rmw_tickle), so it is a call of its own rather than part of creation. A no-op for a Subscriber that is
 // not durable.
 void tt_Subscriber_deliver_local_backlog(struct tt_Subscriber* sub);
+
 #endif
+
+// Receive-buffer lending (DESIGN.md section 10). Called from inside `sub`'s own callback, keeps the sample being
+// delivered where it arrived - its ring slot, or its receive buffer - and fills *out; the bytes stay valid until
+// tt_Sample_release(). Returns:
+//   tt_RET_OK               kept, *out filled
+//   tt_RET_ILLEGAL_STATUS   not inside `sub`'s callback
+//   tt_RET_UNSUPPORTED      this sample cannot be lent - it was put together from fragments, released from a reorder
+//                           buffer, delivered locally, or the build has tt_SAMPLE_LENDING 0: copy it if it is needed
+//   tt_RET_OUT_OF_BUFFER    tt_SAMPLE_RETAIN_MAX samples are held already, or (socket path) no spare receive buffer
+//                           is attached or free (tt_Context_set_rx_pool()): copy it if it is needed
+//   tt_RET_INVALID_ARGUMENT NULL argument
+// A held ring slot stops its ring one lap later (tt_SEGMENT_SLOTS records): hold it for less than that.
+tt_ret_t tt_Sample_retain(struct tt_Subscriber* sub, struct tt_Sample* out);
+// Gives a retained sample back; from any thread. Clears *sample. tt_RET_INVALID_ARGUMENT, touching nothing, for a
+// handle this context does not hold - 0, unknown, or already released. Every held sample is forgotten by
+// tt_Context_destroy(), after which its bytes are no longer valid.
+tt_ret_t tt_Sample_release(struct tt_Context* node, struct tt_Sample* sample);
+// Receive buffers for socket-path lending: `count` (at most tt_RX_POOL_MAX) buffers of tt_RX_POOL_BUFFER_BYTES each,
+// 8-aligned, owned by the caller and kept until tt_Context_destroy(). A sample retained from the socket keeps its
+// buffer and the next datagram is received into a free one. NULL / 0 detaches. tt_RET_ILLEGAL_STATUS while a sample
+// is held in a receive buffer or the socket is reading into the pool; tt_RET_UNSUPPORTED with tt_SAMPLE_LENDING 0.
+tt_ret_t tt_Context_set_rx_pool(struct tt_Context* node, uint64_t* storage, uint8_t count);
 
 /**
  * @node node to poll
