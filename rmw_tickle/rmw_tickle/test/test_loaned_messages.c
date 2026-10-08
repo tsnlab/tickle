@@ -27,6 +27,14 @@
 //          arrive; the talker's ring refusals (segment_full_dropped) must stay 0;
 //   held-pinned  the same with ring slots lent: the positive control. The held loans then pin ring slots, and the
 //          talker's ring must refuse - if it did not, the check above could not see a held slot block a ring.
+//   held-small   held again, with the listener's KEEP_ALL queue cut to a few samples
+//   (RMW_TICKLE_READER_KEEP_ALL_BYTES),
+//          so the flood is declined over and over: every sample must still arrive, and the declines must have
+//          happened. A declined tail used to be asked for again only by a later Heartbeat or accepted sample, and
+//          the talker, done, sent neither: 1600 of 1618 arrived, the 18 past its last piggybacked Heartbeat never
+//          (2026-10-09; the held case failed the same way once in a gate run, 1141 of 1618). It catches the old
+//          code in about half its runs - whether the tail is declined is timing - and core's
+//          test_reliable_pubsub.c pins the mechanism deterministically.
 
 #include <assert.h>
 #include <fcntl.h>
@@ -390,8 +398,13 @@ static void check_take(rmw_node_t* node) {
 // ---------------------------------------------------------------------------------------------------------------
 // Two processes
 
-enum scenario { RING, UDP, PINNED, HELD, HELD_PINNED };
-static const char* const scenario_names[] = {"ring", "udp", "pinned", "held", "held-pinned"};
+enum scenario { RING, UDP, PINNED, HELD, HELD_PINNED, HELD_SMALL };
+static const char* const scenario_names[] = {"ring", "udp", "pinned", "held", "held-pinned", "held-small"};
+#define SMALL_QUEUE_BYTES "8000" // the held-small listener's KEEP_ALL budget: a handful of Array1k samples
+
+static bool is_held(enum scenario which) {
+    return HELD == which || HELD_PINNED == which || HELD_SMALL == which;
+}
 
 #define TOPIC_DATA "/loan_data"
 #define TOPIC_HELD "/loan_held"
@@ -483,7 +496,7 @@ static int talker(enum scenario which, int to_listener, int from_listener) {
     assert(0 == setenv("RMW_TICKLE_MAX_BLOCKING_MS", "300", 1));
     rmw_publisher_t* data = make_publisher(set.node, &array1k_handle, TOPIC_DATA, qos_of(true, true, 0));
     rmw_publisher_t* held = NULL;
-    if (HELD == which || HELD_PINNED == which) {
+    if (is_held(which)) {
         held = make_publisher(set.node, &array1k_handle, TOPIC_HELD, qos_of(true, true, 0));
         if (!wait_matched_subscriptions(held, 1)) {
             return 2;
@@ -625,7 +638,7 @@ static struct talker_report receive_until_reported(rmw_subscription_t* data,
 
 // What each case requires. The line printed after the checks is what the mutant sweep reads.
 static void check_case(enum scenario which, const struct tally* tally, const uint64_t* held_where,
-                       const struct talker_report* report, uint64_t want) {
+                       const struct talker_report* report, uint64_t want, uint64_t declines) {
     switch (which) {
     case RING:
         assert(want == tally->received && want == report->published);
@@ -648,6 +661,11 @@ static void check_case(enum scenario which, const struct tally* tally, const uin
         assert(report->published > FLOOD_SAMPLES && report->published == tally->received && 0 == report->failed);
         assert(0 == held_where[IN_RING]);          // so nothing pinned the ring...
         assert(0 == report->segment_full_dropped); // ...and it never refused the talker
+        break;
+    case HELD_SMALL:
+        // as held - and the queue did decline, or this case tested nothing the held case does not
+        assert(report->published > FLOOD_SAMPLES && report->published == tally->received && 0 == report->failed);
+        assert(declines > 0);
         break;
     case HELD_PINNED:
         // The control: with the held loans in ring slots, the ring must have refused the talker - which the case
@@ -688,8 +706,12 @@ static void run_two_process(enum scenario which) {
     struct endpoint_set set;
     open_set(&set, "loan_listener");
     rmw_tickle_context_impl_t* context_impl = ((rmw_tickle_node_t*)set.node->data)->context_impl;
-    bool held_case = HELD == which || HELD_PINNED == which;
+    bool held_case = is_held(which);
+    if (HELD_SMALL == which) {
+        assert(0 == setenv("RMW_TICKLE_READER_KEEP_ALL_BYTES", SMALL_QUEUE_BYTES, 1)); // read at subscription creation
+    }
     rmw_subscription_t* data = make_subscription(set.node, &array1k_handle, TOPIC_DATA, qos_of(true, true, 0));
+    assert(0 == unsetenv("RMW_TICKLE_READER_KEEP_ALL_BYTES"));
     rmw_subscription_t* held =
         held_case ? make_subscription(set.node, &array1k_handle, TOPIC_HELD, qos_of(true, true, 0)) : NULL;
     assert(data->can_loan_messages);
@@ -728,7 +750,11 @@ static void run_two_process(enum scenario which) {
     // counters the rmw keeps, and the two must agree.
     assert(tally.where[IN_RING] + tally.where[IN_RECEIVE_BUFFER] == sub_impl->loans_in_place);
     assert(tally.where[ELSEWHERE] == sub_impl->loans_copied);
-    check_case(which, &tally, held_where, &report, want);
+    tt_Context_lock(&context_impl->tickle_context);
+    uint64_t declines = sub_impl->tickle_subscriber.accept_declines;
+    tt_Context_unlock(&context_impl->tickle_context);
+    printf("%s: the listener's queue declined %llu samples\n", scenario_names[which], (unsigned long long)declines);
+    check_case(which, &tally, held_where, &report, want, declines);
     if (held_case) {
         for (size_t i = 0; i < HELD_LOANS; i++) {
             assert(RMW_RET_OK == rmw_return_loaned_message_from_subscription(held, held_loans[i]));
@@ -760,6 +786,7 @@ int main(void) {
     run_two_process(PINNED);
     run_two_process(HELD);
     run_two_process(HELD_PINNED);
+    run_two_process(HELD_SMALL);
     printf("test_loaned_messages: PASS\n");
     return 0;
 }

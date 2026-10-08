@@ -4525,6 +4525,187 @@ static void test_g13_a_declined_sample_survives_only_while_the_writer_holds_it(v
     EXPECT_EQ_INT(before + 1, subscriber_callback_count);
 }
 
+// A TAIL gap - every sample after the last accepted one missing, so nothing out of order is recorded and only the
+// Heartbeat says anything is missing - keeps being asked for until it is taken. acknack_retry() used to take an empty
+// received_bitmap for "a DATA arrival closed the gap" and stop, so such a gap got the one ACKNACK the Heartbeat
+// triggered: if its repair was declined (or lost), nothing asked again until the writer published or sent another
+// Heartbeat, and a writer that had stopped never did. rmw test_loaned_messages' held case failed that way in a gate
+// run (2026-10-09): its listener's KEEP_ALL queue was full while the talker's flood arrived, samples 1142..1618 were
+// declined, and 2 s later 1141 of 1618 had been received. Control: the same timer once the samples are taken sends
+// nothing and stops. Killed by: the empty-bitmap test put back in acknack_retry().
+static void test_g13_a_declined_tail_is_asked_for_until_it_is_taken(void) {
+    test_mock_reset();
+    accept_hook_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.accept_callback = test_accept_hook;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 1000, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+
+    // 2 and 3 are lost, and the writer's last Heartbeat says it has published 3. The queue is full from here.
+    accept_hook_answer = false;
+    int sends_before = test_mock_send_to_call_count;
+    tail = write_heartbeat(&node, ENDPOINT_ID, 1, 3, tt_HEARTBEAT_FLAG_FINAL);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(sends_before + 1, test_mock_send_to_call_count); // the one ACKNACK the Heartbeat triggers
+    EXPECT_TRUE(proxy->acknack_scheduled);
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+
+    // Its repairs arrive while the queue is full, and are declined; the writer then goes quiet.
+    for (uint32_t seq_no = 2; seq_no <= 3; seq_no++) {
+        tail = write_data(&node, seq_no, 1000ULL * seq_no, seq_no);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    }
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy))); // nothing out of order recorded
+
+    // The retry timer fires: the gap is still open, so it asks again and stays armed.
+    test_mock_now += tt_SECOND;
+    tt_Context_unschedule(&node, acknack_retry, proxy);
+    sends_before = test_mock_send_to_call_count;
+    acknack_retry(&node, test_mock_now, proxy);
+    EXPECT_EQ_INT(sends_before + 1, test_mock_send_to_call_count);
+    const struct tt_AckNackHeader* acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    if (acknack != NULL) {
+        EXPECT_EQ_U32(2, acknack->seq_no);
+    }
+    EXPECT_TRUE(proxy->acknack_scheduled);
+
+    // There is room now; the repairs are taken, in order.
+    accept_hook_answer = true;
+    for (uint32_t seq_no = 2; seq_no <= 3; seq_no++) {
+        tail = write_data(&node, seq_no, 1000ULL * seq_no, seq_no);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    }
+    EXPECT_EQ_INT(3, subscriber_callback_count);
+    EXPECT_EQ_U32(3, subscriber_callback_last_value);
+    EXPECT_EQ_U32(4, proxy->ack_seq_no);
+
+    // Control: nothing is missing now, so a timer that still fires sends nothing and stops.
+    if (proxy->acknack_scheduled) {
+        tt_Context_unschedule(&node, acknack_retry, proxy);
+        sends_before = test_mock_send_to_call_count;
+        acknack_retry(&node, test_mock_now, proxy);
+        EXPECT_EQ_INT(sends_before, test_mock_send_to_call_count);
+        EXPECT_TRUE(!proxy->acknack_scheduled);
+    }
+}
+
+// The same with NO Heartbeat after the declines - the samples a writer sends after its last piggybacked Heartbeat
+// (every 64th sample in rmw_tickle), when it then stops. The decline is the only sign they exist, so it counts as one:
+// it arms the retry timer without sending anything, and the timer asks for them. Before 2026-10-09 nothing asked,
+// ever, and test_loaned_messages' 18 samples past its last Heartbeat could not have arrived even with the empty-bitmap
+// test above fixed. Control: an accepted stream arms nothing. Killed by: note_declined() removed (no timer, nothing
+// asked); its timer replaced by an immediate ACKNACK (the decline sends).
+static void test_g13_a_declined_tail_no_heartbeat_announced_is_asked_for(void) {
+    test_mock_reset();
+    accept_hook_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.accept_callback = test_accept_hook;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 1000, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_TRUE(!proxy->acknack_scheduled); // the control: an accepted sample arms nothing
+
+    accept_hook_answer = false;
+    int sends_before = test_mock_send_to_call_count;
+    for (uint32_t seq_no = 2; seq_no <= 3; seq_no++) {
+        tail = write_data(&node, seq_no, 1000ULL * seq_no, seq_no);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    }
+    EXPECT_EQ_INT(sends_before, test_mock_send_to_call_count);               // a decline sends nothing...
+    EXPECT_TRUE(proxy->acknack_scheduled);                                   // ...but the timer is armed
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy))); // and nothing is recorded
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+
+    // The writer is silent from here. The timer asks for 2 and 3.
+    test_mock_now += tt_SECOND;
+    tt_Context_unschedule(&node, acknack_retry, proxy);
+    acknack_retry(&node, test_mock_now, proxy);
+    EXPECT_EQ_INT(sends_before + 1, test_mock_send_to_call_count);
+    const struct tt_AckNackHeader* acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    if (acknack != NULL) {
+        EXPECT_EQ_U32(2, acknack->seq_no);
+        EXPECT_TRUE(acknack->bitmap_words >= 1 && acknack->bitmap[0] == 0x3ULL); // 2 and 3
+    }
+
+    // The repairs arrive with room for them.
+    accept_hook_answer = true;
+    for (uint32_t seq_no = 2; seq_no <= 3; seq_no++) {
+        tail = write_data(&node, seq_no, 1000ULL * seq_no, seq_no);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    }
+    EXPECT_EQ_INT(3, subscriber_callback_count);
+    EXPECT_EQ_U32(4, proxy->ack_seq_no);
+    EXPECT_TRUE(!proxy->acknack_scheduled); // nothing left to ask for
+}
+
+// The decline's timer must not delay a gap found while it waits: sample 2 declined arms it, sample 3 then arrives with
+// room for it, and the gap at 2 is asked for at once - as it was before a decline armed anything, when the first gap
+// found armed the timer and sent. With a timer already armed it is update_reliable_ack()'s new-gap ACKNACK that asks.
+// Killed by: that ACKNACK removed (the gap would wait for the decline's timer).
+static void test_g13_a_gap_found_after_a_decline_is_asked_for_at_once(void) {
+    test_mock_reset();
+    accept_hook_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.accept_callback = test_accept_hook;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 1000, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+
+    accept_hook_answer = false;
+    int sends_before = test_mock_send_to_call_count;
+    tail = write_data(&node, 2, 2000, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(sends_before, test_mock_send_to_call_count);
+    EXPECT_TRUE(proxy->acknack_scheduled);
+
+    accept_hook_answer = true;
+    tail = write_data(&node, 3, 3000, 3);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(sends_before + 1, test_mock_send_to_call_count); // at once
+    const struct tt_AckNackHeader* acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    if (acknack != NULL) {
+        EXPECT_EQ_U32(2, acknack->seq_no);
+    }
+    EXPECT_TRUE(proxy->acknack_scheduled);
+}
+
 // g13 criterion 4: BEST_EFFORT. The same hook, and a different meaning - here a decline IS a drop.
 //
 // A BEST_EFFORT stream has no retransmission, so nothing brings a declined sample back. That is not
@@ -4734,6 +4915,9 @@ int main(void) {
     test_g13_accept_hook_a_decline_is_never_reported_with_a_gap_open();
     test_g13_accept_hook_that_always_accepts_changes_nothing();
     test_g13_a_declined_sample_survives_only_while_the_writer_holds_it();
+    test_g13_a_declined_tail_is_asked_for_until_it_is_taken();
+    test_g13_a_declined_tail_no_heartbeat_announced_is_asked_for();
+    test_g13_a_gap_found_after_a_decline_is_asked_for_at_once();
     test_g13_best_effort_decline_is_a_counted_drop();
     test_a_declined_repair_is_named_again_and_timed_from_after_the_decline();
 #ifdef tt_RELIABLE_STATS

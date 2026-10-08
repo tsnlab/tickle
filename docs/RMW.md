@@ -163,6 +163,8 @@ below.
   When the bound is reached both behave alike: a KEEP_ALL publisher blocks up to `RMW_TICKLE_MAX_BLOCKING_MS` (DDS:
   `max_blocking_time`) and then fails the publish with a timeout; a RELIABLE subscription declines new samples, so
   the writer holds and resends them (DDS: the sample is rejected and resent); a BEST_EFFORT one drops and counts them.
+  The subscription asks for what it declined on its retry timer, so a writer that has stopped publishing still gets
+  asked (since 2026-10-09; before, the samples declined after the writer's last Heartbeat were never asked for).
 - RxO matching covers RELIABILITY, DURABILITY, DEADLINE and LIVELINESS. An incompatible pair does not match, and both
   sides get an event.
 - `BEST_AVAILABLE` is resolved once, when the endpoint is created, against the endpoints already discovered.

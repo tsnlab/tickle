@@ -7886,8 +7886,13 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
 
     struct tt_WriterProxy* proxy = param;
 
-    if (bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy))) {
-        // A DATA arrival already closed the gap since this timer was armed.
+    if (highest_relevant_bit(proxy) < 0) {
+        // A DATA arrival already closed the gap since this timer was armed. By either signal, as
+        // maybe_arm_acknack_retry() reads it: an empty received_bitmap is not enough, because a gap only a Heartbeat
+        // reveals - a lost or declined tail, with nothing out of order recorded - has one. Testing the bitmap alone
+        // (until 2026-10-09) gave such a gap one ACKNACK and then stopped, and if its repair was lost or declined
+        // again, nothing asked until the writer sent something more; a writer that had stopped never did (rmw
+        // test_loaned_messages, held case).
         proxy->acknack_scheduled = false;
         return;
     }
@@ -10662,6 +10667,38 @@ static void drain_reorder(struct tt_Context* node, struct tt_Subscriber* sub, st
     drain_reorder_with(node, sub, proxy, NULL, false);
 }
 
+// A RELIABLE Subscriber just declined `ctx`'s sample (g13: nowhere to put it). Nothing about the sample is recorded -
+// that is what keeps it unacknowledged - but the writer evidently has published it, so it counts as announced, as a
+// Heartbeat would: the gap is then visible to highest_relevant_bit(), and the retry timer is armed - not fired, so
+// the decline itself sends nothing - to ask for it once its interval has passed (a gap found meanwhile is still asked
+// for at once, by update_reliable_ack()'s new-gap ACKNACK, as with any armed timer). Without this a declined sample was
+// asked for again only if a Heartbeat or a later accepted sample revealed it, and a writer that had stopped sent
+// neither: the samples declined after its last piggybacked Heartbeat were never asked for (rmw
+// test_loaned_messages' held case, 2026-10-09). No proxy yet means no baseline to measure a gap from; the writer's
+// first Heartbeat or accepted sample makes one.
+static void note_declined(struct tt_Context* node, struct tt_Subscriber* sub, const struct data_delivery_ctx* ctx) {
+    if (!sub->reliable) {
+        return; // BEST_EFFORT: a decline is a counted drop, nothing will send it again
+    }
+    struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);
+    if (proxy == NULL || ctx->seq_no < proxy->ack_seq_no) {
+        return;
+    }
+    if (ctx->seq_no > proxy->heartbeat_last_seq_no) {
+        proxy->heartbeat_last_seq_no = ctx->seq_no;
+    }
+    proxy->sender_ip = ctx->sender_ip;
+    proxy->sender_port = ctx->sender_port;
+    if (!proxy->acknack_scheduled) {
+        if (tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(node, proxy), acknack_retry, proxy)) {
+            proxy->acknack_scheduled = true;
+            proxy->retry = 0;
+        } else {
+            TT_LOG_ERROR("Cannot schedule acknack_retry");
+        }
+    }
+}
+
 static void deliver_data_to_subscriber(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
     struct data_delivery_ctx* ctx = (struct data_delivery_ctx*)ctx_ptr;
     struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
@@ -10694,6 +10731,7 @@ static void deliver_data_to_subscriber(struct tt_Context* node, struct tt_Endpoi
                            "means. A BEST_EFFORT stream has no retransmission, so there this sample is gone.",
                            sub->endpoint.id, ctx->seq_no, ctx->header->source, sub->accept_declines);
         }
+        note_declined(node, sub, ctx);
         return;
     }
 
