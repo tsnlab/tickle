@@ -165,6 +165,20 @@ uint32_t rmw_tickle_message_slot_bytes(const rosidl_typesupport_tickle_c_message
     return (uint32_t)RMW_TICKLE_ROUND_UP_8(bytes);
 }
 
+bool rmw_tickle_type_can_loan(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks) {
+    if (0 == callbacks->inplace_bytes || callbacks->inplace_bytes > callbacks->ros_struct_size ||
+        callbacks->inplace_bytes > (size_t)tt_MAX_BUFFER_LENGTH) {
+        return false; // not a type whose wire bytes are its message (a hand-written struct, or one that is not plain)
+    }
+    size_t align = callbacks->ros_struct_align;
+    // A loan's buffer comes from the allocator, which aligns for any scalar; a wider demand is not one it can meet.
+    if (0 == align || (align & (align - 1)) != 0 || align > _Alignof(max_align_t)) {
+        return false;
+    }
+    const char* env = getenv("RMW_TICKLE_LOANS");
+    return NULL == env || 0 != strcmp(env, "0");
+}
+
 void* rmw_tickle_ros_message_create(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks,
                                     const rcutils_allocator_t* allocator) {
     void* ros_message = allocator->zero_allocate(1, callbacks->ros_struct_size, allocator->state);

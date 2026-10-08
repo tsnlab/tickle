@@ -261,8 +261,9 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
 
 - **Receive-buffer lending** (`tt_Sample_retain`/`release`, SHM stage 2 / S7): most of the same-host win is
   here, and it is the machinery loans need. User-approved 2026-09-28. (PLAN "wired work" #2; SHM_PLAN 5; RMW_GAPS S7)
-- **Loaned messages** (`rmw_borrow_loaned_message` and five more): the last ❌ in the API table, 0 of 6 today.
-  (PLAN #3; COMPARISON 2.7a)
+- **Loaned messages**: done, 6 of 6, for types whose wire bytes are their message (RMW.md "Loaned messages"). What
+  would make more of it zero-copy is core's: `rx_buffer` aligned to 8, a ring that skips a held slot, a claimed-slot
+  publish. (PLAN #3; COMPARISON 2.7a)
 - **Large-message stage 2** (samples above 64 KB): user's staged-support decision. It reuses lending's machinery
   and is not yet pre-registered. (PLAN #4; LARGE_MESSAGE_PLAN)
 - **Introspection round-trip rows** (names, type names, GIDs, event counts, serialization format): only the QoS row

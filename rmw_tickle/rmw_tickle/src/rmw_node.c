@@ -473,6 +473,12 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
     }
 
     tt_Context_destroy(&context_impl->tickle_context);
+    // Loaned messages: the socket-path receive buffers, attached by the first loaning subscription. Only now, after
+    // the destroy: until it the socket may still have been reading into one.
+    if (NULL != context_impl->loan_rx_pool) {
+        context_impl->allocator.deallocate(context_impl->loan_rx_pool, context_impl->allocator.state);
+        context_impl->loan_rx_pool = NULL;
+    }
 }
 
 // For rmw_context_fini(): stops the shared TickLE node if nodes are still registered on this
