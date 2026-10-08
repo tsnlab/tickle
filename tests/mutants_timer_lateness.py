@@ -72,8 +72,8 @@ MUTANTS = [
     (
         "no floor",
         "src/tickle.c",
-        "    if (g < least) {\n        g = least;",
-        "    if (g < least && least == 0) {\n        g = least;",
+        "    if (granularity < least) {\n        granularity = least;",
+        "    if (granularity < least && least == 0) {\n        granularity = least;",
         "test_lateness_is_floored_at_the_timer_resolution",
     ),
     (
@@ -86,15 +86,15 @@ MUTANTS = [
     (
         "G the mean alone, without the deviation",
         "src/tickle.c",
-        "    uint64_t g = (uint64_t)node->timer_lateness_mean_ns + (4ULL * node->timer_lateness_var_ns);",
-        "    uint64_t g = (uint64_t)node->timer_lateness_mean_ns;",
+        "    uint64_t granularity = (uint64_t)node->timer_lateness_mean_ns + (4ULL * node->timer_lateness_var_ns);",
+        "    uint64_t granularity = (uint64_t)node->timer_lateness_mean_ns;",
         "test_a_jittering_timer_gives_more_than_its_mean",
     ),
     (
         "no cold start: G 0 until the first sample",
         "src/tickle.c",
-        "    return g != 0 ? (uint64_t)g : (uint64_t)tt_TIMER_LATENESS_INITIAL;",
-        "    return (uint64_t)g;",
+        "    return measured != 0 ? (uint64_t)measured : (uint64_t)tt_TIMER_LATENESS_INITIAL;",
+        "    return (uint64_t)measured;",
         "test_cold_start_is_the_old_constant",
     ),
     (

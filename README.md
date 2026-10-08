@@ -92,7 +92,10 @@ derive them for yours rather than copying ours. Constants are `-D` overrides at 
 | `RMW_TICKLE_HEARTBEATS_PER_WINDOW` | 16 | piggybacked Heartbeats per tracking window; the interval is window / this (64 at 1,024). Chosen by a rig sweep at max rate and 8% loss (every 64 left 0-1 window jumps a run, as a 1 ms periodic Heartbeat did); raise it if a reader still jumps its window under your loss. |
 
 Constants that stand in for a time or a rate are being replaced by algorithms (docs/ROADMAP.md, "Now" 5a) and are
-not listed here.
+not listed here. Already derived from what the running system measures, so there is nothing to tune:
+`tt_RELIABLE_RETRY_GRANULARITY` and `tt_CALL_RETRY_GRANULARITY`, the G of the retry timers' `srtt + max(G, 4 x
+rttvar)`, are the context's own measured timer lateness (and twice it for a call) since 2026-10-08 - set one non-zero
+only to fix G (docs/DESIGN.md, section 6).
 
 ## Run the examples
 

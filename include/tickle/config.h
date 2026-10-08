@@ -138,11 +138,11 @@
 // all recoveries are still in flight. A floor of "1 * srtt" cannot help, because the interval is never
 // below srtt anyway. G is not a link figure, as it is not in the RFC: it is how late this host actually runs a
 // timer - a property of the host. Since 2026-10-08 the context measures it rather than assuming it (DESIGN.md 6):
-// every timed wait in tt_Context_poll() that runs to its deadline is a sample of how late the wait returned, and G
-// is their RFC 6298 smoothing, mean + 4 x mean deviation, at least tt_timer_resolution_ns() (hal.h; one tick on
-// FreeRTOS). Before the first sample G is TIMER_LATENESS_INITIAL, the 100us constant G used to be, so a context
-// that has not slept yet behaves exactly as before. GRANULARITY 0 (the default) is the measured G; any other value
-// is a fixed G, used as given, for a build that wants one.
+// every wait in tt_Context_poll() for a retry timer that runs to its deadline, and no later than its own length past
+// it, is a sample of how late the wait returned, and G is their RFC 6298 smoothing, mean + 4 x mean deviation, at least
+// tt_timer_resolution_ns() (hal.h; one tick on FreeRTOS). Before the first sample G is TIMER_LATENESS_INITIAL, the
+// 100us constant G used to be, so a context that has not slept yet behaves exactly as before. GRANULARITY 0 (the
+// default) is the measured G; any other value is a fixed G, used as given, for a build that wants one.
 //
 // The ceiling is MAX_SRTT_MULTIPLE * srtt. With the interval at srtt + 4 * rttvar, it binds only when
 // rttvar reaches ~16x srtt - the pathological estimate the clamp exists for, not a healthy link. On the

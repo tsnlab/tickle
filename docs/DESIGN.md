@@ -217,8 +217,25 @@ endpoint count.
 - A gap is NACKed at once; unanswered requests are repeated by a per-proxy retry timer.
 - **Retry interval** (`tt_RELIABLE_RETRY_INTERVAL` 0 = dynamic, default): RFC 6298 form,
   `srtt + max(G, 4 x rttvar)` over request-to-recovery times, starting at `tt_RELIABLE_RETRY_INITIAL` (1 ms),
-  `G = tt_RELIABLE_RETRY_GRANULARITY` (100 us, host timer lateness), capped at
-  `tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE` (64) x srtt. Any non-zero value is used as given.
+  G the host's timer lateness (below), capped at `tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE` (64) x srtt. Any non-zero
+  value is used as given.
+- **G, measured** (since 2026-10-08; it was a fixed 100 us fitted to nothing): every wait in `tt_Context_poll()` for
+  a retry timer (`acknack_retry`, `call_retry`) that runs to its deadline is a sample of how late it returned (clock on
+  waking minus the deadline). A wait ended early by a datagram, a wake or a signal is not, and neither is a wait for
+  any other deadline: how late a wait ends depends on its length (Linux's poll timer slack is max(50 us, 0.1% of the
+  timeout)), so on the dev PC the context's 500 ms announce and budget waits came back ~520 us late against ~60 us for
+  1 ms waits. Nor is a wait that came back later than it was long: it never slept on the timer (a busy loop's
+  sub-microsecond wait reads the system call's ~0.5 us, which held G at 1-3 us under traffic and cost +0.03-0.07% wire
+  bytes a sample at c5/c6) or was preempted for longer than it lasted. Samples are smoothed with RFC
+  6298's gains (mean and mean deviation, 1/8 and 1/4) and G = mean + 4 x deviation: a lateness the timer seldom
+  exceeds, not its median. Floor: `tt_timer_resolution_ns()` (HAL; `clock_getres` on Linux, one tick on FreeRTOS).
+  Before the first sample G is `tt_TIMER_LATENESS_INITIAL` (100 us, the old constant), so a context whose retry timer
+  has not fired from a wait behaves as before. Per context, 32-bit, written only by the poller
+  (`timer_lateness_fold()`). `tt_RELIABLE_RETRY_GRANULARITY` 0 (default) is the measured G; non-zero is a fixed G.
+  On the dev PC (KVM, `granularity_pc.sh`, `a7259eef`): a 1 ms retry timer gives G ~64 us idle and ~71 us with every
+  core busy (its lateness p90 60-83 / 55-58 us); inside the c5/c6 shapes G ends anywhere from ~1 us (a busy loop's
+  retry waits of a few microseconds are on time) to ~180 us. The old 100 us also acted as a floor under 4 x rttvar:
+  without it c5 cost +0.04% wire bytes a sample (t 2.4, the fixed-G control -0.01%); c5 throughput and c6 held.
 - KEEP_LAST gives up a gap after `tt_RELIABLE_RETRY` (3) retries; KEEP_ALL never gives up and logs a stuck gap every
   `tt_RELIABLE_STUCK_WARN_INTERVAL` (5 s).
 - Early re-requests produce some duplicate repairs (about 0.2 per loss on veth). Suppressing them was measured to cut
@@ -248,12 +265,14 @@ KEEP_ALL writer would stop at its bound. So the writer solicits acks itself (a H
 
 - A Client has one outstanding call, cached for retry in `cache_buf` (or caller-attached storage).
 - Retries: `call_retry_interval` if set, every time. Otherwise (auto) RFC 6298 over call-to-answer times, with bounds
-  relative to srtt since 2026-10-05: the first wait is `srtt + max(tt_CALL_RETRY_GRANULARITY, 4 x rttvar)`, each
+  relative to srtt since 2026-10-05: the first wait is `srtt + max(G, 4 x rttvar)`, each
   retry of the call waits twice the one before, each at most `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` (64) x srtt. The seed
   `tt_CALL_RETRY_INTERVAL` (5 ms) stands in for srtt until a first answer. A call gives up after
   `(2^(count+1) - 1)` first waits (15), and never later than `(count + 1) x tt_CALL_DEADLINE_PER_SEND` (1 s, the old
   worst case): a wait past that is cut there. A timeout doubles srtt, up to that deadline; the next answer replaces
-  the estimate.
+  the estimate. A call's G is twice the reliable retry's (this host's measured lateness, section 6), standing in for
+  two late-running events - this host's timer and the server's dispatch - since the server's cannot be measured from
+  here; `tt_CALL_RETRY_GRANULARITY` non-zero fixes it.
 - A Server caches each answered response in one of `tt_MAX_SERVER_CACHE_COUNT` (64) slots, so a retried request gets
   the same answer without re-running the callback. It keeps it for the longer of the client's seed schedule (or the
   service's explicit `call_retry_interval x (count + 1)`) and `tt_SERVER_CACHE_GAP_MULTIPLE` (4) x the longest
@@ -515,13 +534,14 @@ All are compile-time `-D` overrides unless noted. Times in nanoseconds.
 | `tt_CONTEXT_MAX_LEASE_NS` | 10 s | | longest lease that holds a silent node |
 | `tt_RELIABLE_RETRY_INTERVAL` | 0 (dynamic) | | ACKNACK retry; non-zero = fixed |
 | `tt_RELIABLE_RETRY_INITIAL` | 1 ms | | dynamic start value |
-| `tt_RELIABLE_RETRY_GRANULARITY` | 100 us | | timer lateness term |
+| `tt_RELIABLE_RETRY_GRANULARITY` | 0 (measured) | | G, timer lateness term; non-zero = fixed |
+| `tt_TIMER_LATENESS_INITIAL` | 100 us | | measured G before its first sample |
 | `tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE` | 64 | | ceiling in srtt |
 | `tt_RELIABLE_RETRY` | 3 | | KEEP_LAST give-up |
 | `tt_RELIABLE_BITMAP_BITS` / `_MAX_BITS` | 256 / 4096 | | reader window default / ceiling |
 | `tt_MAX_RELIABLE_HISTORY` | 64 | | reference cache depth for examples |
 | `tt_CALL_RETRY_INTERVAL` | 5 ms | | RPC auto retry seed, until a first answer |
-| `tt_CALL_RETRY_GRANULARITY` | 200 us | | two hosts' event lateness term |
+| `tt_CALL_RETRY_GRANULARITY` | 0 (2 x G) | | two hosts' event lateness term; non-zero = fixed |
 | `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` | 64 | | a wait's ceiling in srtt |
 | `tt_CALL_DEADLINE_PER_SEND` | 250 ms | | auto call fails within (count + 1) x this (1 s) |
 | `tt_CALL_RETRY_COUNT` | 3 | | RPC retries |

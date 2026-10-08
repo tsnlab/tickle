@@ -661,12 +661,12 @@ struct tt_Context {
     uint32_t wait_until_hi;
     uint32_t wait_until_lo;
     // This context's own timer lateness (2026-10-08, DESIGN.md 6): how much later than the deadline it slept to a
-    // timed wait in tt_Context_poll() actually returned, smoothed as RFC 6298 smooths a round trip (mean and mean
-    // deviation, timer_lateness_fold() in tickle.c). Only the poller writes the two estimates. timer_lateness_ns is
-    // what both retry timers read as G, the term RFC 6298 calls the clock granularity: mean + 4 x deviation, at least
-    // timer_resolution_ns, and 0 until the first sample, which reads as the cold-start tt_TIMER_LATENESS_INITIAL. It is
-    // read from any thread through __atomic builtins, and 32 bits wide so that a 32-bit target needs no 64-bit
-    // atomic.
+    // wait in tt_Context_poll() for a retry timer actually returned, smoothed as RFC 6298 smooths a round trip (mean
+    // and mean deviation, timer_lateness_fold() in tickle.c). Only the poller writes the two estimates.
+    // timer_lateness_ns is what both retry timers read as G, the term RFC 6298 calls the clock granularity: mean + 4 x
+    // deviation, at least timer_resolution_ns, and 0 until the first sample, which reads as the cold-start
+    // tt_TIMER_LATENESS_INITIAL. It is read from any thread through __atomic builtins, and 32 bits wide so that a
+    // 32-bit target needs no 64-bit atomic.
     uint32_t timer_lateness_mean_ns;
     uint32_t timer_lateness_var_ns;
     uint32_t timer_lateness_ns;

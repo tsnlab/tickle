@@ -123,9 +123,13 @@ The user's active list (2026-10-05), in order.
    formula that produced it and how to recompute it on another platform. Start from the old constants audit
    (`git show 3c0c505b:examples/perf_hil/CONSTANTS_AUDIT.md`) and include config.h, hal_linux.h and rmw_tickle's
    RMW_TICKLE_* defaults.
-   Inventory done 2026-10-05; the fitted values that stay (c) are in README.md "Tuning for your platform". Still
-   to replace by an algorithm (a), most fitted and hottest first: `tt_RELIABLE_RETRY_GRANULARITY` 100 us and
-   `tt_CALL_RETRY_GRANULARITY` (2x it) (measure timer lateness).
+   Inventory done 2026-10-05; the fitted values that stay (c) are in README.md "Tuning for your platform".
+   Done 2026-10-08 on a branch, pending its rig A/B: the last fitted values, `tt_RELIABLE_RETRY_GRANULARITY` 100 us and
+   `tt_CALL_RETRY_GRANULARITY` (2x it), are (a): G is the context's own timer lateness, measured on the retry timers'
+   own waits that run to their deadline (DESIGN.md 6; `test_timer_lateness`,
+   `mutants_timer_lateness.py`). On the dev PC G is ~64 us idle and ~71 us under full load; against the fixed 100 us,
+   c5 (P1, 5% loss) wire bytes a sample +0.04% (t 2.4) and throughput held, c6 held (`granularity_pc.sh`). Rig A/B:
+   `~/rig_queue_granularity.sh`.
    Done 2026-10-06: the list-request retry is the round trip measured to that peer (smoothed, timed from a
    request's first send to its list being applied) plus `tt_CONTEXT_TX_INTERVAL`; `tt_DISCOVERY_REQUEST_RETRY`
    (10 ms) is only the seed before a peer is timed, and a near peer's request now moves the one retry entry earlier

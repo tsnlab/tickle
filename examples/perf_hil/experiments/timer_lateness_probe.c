@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <tickle/config.h> // _tt_CONFIG
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
@@ -38,6 +39,14 @@
 
 #define MAX_SAMPLES 200000
 #define PER_MILLE 1000U
+#define P50 500U
+#define P90 900U
+#define P99 990U
+#define P999 999U
+#define DEFAULT_PERIOD_US 1000UL
+#define DEFAULT_DURATION_S 5UL
+#define NS_PER_US 1000U
+#define NS_PER_S 1000000000ULL
 
 static uint64_t g_late[MAX_SAMPLES];
 static size_t g_count;
@@ -57,9 +66,9 @@ static uint64_t quantile(unsigned per_mille) {
 }
 
 int main(int argc, char** argv) {
-    unsigned long period_us = argc > 1 ? strtoul(argv[1], NULL, 10) : 1000UL;
-    unsigned long duration_s = argc > 2 ? strtoul(argv[2], NULL, 10) : 5UL;
-    const uint64_t period_ns = (uint64_t)period_us * 1000U;
+    unsigned long period_us = argc > 1 ? strtoul(argv[1], NULL, 10) : DEFAULT_PERIOD_US;
+    unsigned long duration_s = argc > 2 ? strtoul(argv[2], NULL, 10) : DEFAULT_DURATION_S;
+    const uint64_t period_ns = (uint64_t)period_us * NS_PER_US;
 
     static struct tt_Context node;
     static struct tt_Client idle_client; // cache NULL: call_retry() returns at once
@@ -69,7 +78,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "tt_Context_create failed\n");
         return 1;
     }
-    uint64_t end = tt_get_ns() + ((uint64_t)duration_s * 1000000000ULL);
+    uint64_t end = tt_get_ns() + ((uint64_t)duration_s * NS_PER_S);
     uint64_t due = tt_get_ns() + period_ns;
     (void)tt_Context_schedule(&node, due, call_retry, &idle_client);
     while (tt_get_ns() < end) {
@@ -88,8 +97,8 @@ int main(int argc, char** argv) {
     printf("PROBE period_us=%lu duration_s=%lu resolution_ns=%u g_ns=%u mean_ns=%u var_ns=%u entries=%zu "
            "late_p50_ns=%llu late_p90_ns=%llu late_p99_ns=%llu late_p999_ns=%llu late_max_ns=%llu\n",
            period_us, duration_s, node.timer_resolution_ns, node.timer_lateness_ns, node.timer_lateness_mean_ns,
-           node.timer_lateness_var_ns, g_count, (unsigned long long)quantile(500U), (unsigned long long)quantile(900U),
-           (unsigned long long)quantile(990U), (unsigned long long)quantile(999U),
+           node.timer_lateness_var_ns, g_count, (unsigned long long)quantile(P50), (unsigned long long)quantile(P90),
+           (unsigned long long)quantile(P99), (unsigned long long)quantile(P999),
            (unsigned long long)(g_count ? g_late[g_count - 1] : 0));
     tt_Context_destroy(&node);
     return 0;

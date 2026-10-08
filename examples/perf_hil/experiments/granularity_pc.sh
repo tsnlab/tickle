@@ -86,7 +86,10 @@ gcc -O2 -I"$P/include" -I"$P/src" -o "$WORK/probe" "$P/examples/perf_hil/experim
     "$P/src/hal_linux.c" "$P/src/encoding.c" "$P/src/log.c" -lpthread -lm >"$WORK/probe_build.log" 2>&1 ||
     { say "FATAL probe build"; tail -5 "$WORK/probe_build.log" | tee -a "$OUT"; exit 1; }
 
-sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || { say "FATAL netns"; exit 1; }
+if ! sudo -n ip netns add "$NS1" || ! sudo -n ip netns add "$NS2"; then
+    say "FATAL netns"
+    exit 1
+fi
 sudo -n ip link add granpc1 netns "$NS1" type veth peer name granpc2 netns "$NS2" || { say "FATAL veth"; exit 1; }
 sudo -n ip -n "$NS1" addr add 192.168.10.1/24 broadcast 192.168.10.255 dev granpc1
 sudo -n ip -n "$NS2" addr add 192.168.10.2/24 broadcast 192.168.10.255 dev granpc2

@@ -4527,19 +4527,20 @@ static bool is_retry_timer(void (*function)(struct tt_Context* node, uint64_t ti
 
 static void timer_lateness_fold(struct tt_Context* node, uint64_t lateness_ns) {
     rtt_estimate_fold(&node->timer_lateness_mean_ns, &node->timer_lateness_var_ns, lateness_ns);
-    uint64_t g = (uint64_t)node->timer_lateness_mean_ns + (4ULL * node->timer_lateness_var_ns);
+    uint64_t granularity = (uint64_t)node->timer_lateness_mean_ns + (4ULL * node->timer_lateness_var_ns);
     uint64_t least = node->timer_resolution_ns != 0 ? node->timer_resolution_ns : 1U;
-    if (g < least) {
-        g = least;
+    if (granularity < least) {
+        granularity = least;
     }
-    __atomic_store_n(&node->timer_lateness_ns, g > UINT32_MAX ? UINT32_MAX : (uint32_t)g, __ATOMIC_RELAXED);
+    __atomic_store_n(&node->timer_lateness_ns, granularity > UINT32_MAX ? UINT32_MAX : (uint32_t)granularity,
+                     __ATOMIC_RELAXED);
 }
 
 // The measured G, or tt_TIMER_LATENESS_INITIAL - the constant it replaced - until the first sample (or with no
 // context to ask, as a test's bare proxy has none).
 static uint64_t timer_lateness_ns(const struct tt_Context* node) {
-    uint32_t g = node != NULL ? __atomic_load_n(&node->timer_lateness_ns, __ATOMIC_RELAXED) : 0U;
-    return g != 0 ? (uint64_t)g : (uint64_t)tt_TIMER_LATENESS_INITIAL;
+    uint32_t measured = node != NULL ? __atomic_load_n(&node->timer_lateness_ns, __ATOMIC_RELAXED) : 0U;
+    return measured != 0 ? (uint64_t)measured : (uint64_t)tt_TIMER_LATENESS_INITIAL;
 }
 
 // The reliable retry's G: a fixed tt_RELIABLE_RETRY_GRANULARITY if the build sets one, else the measured lateness.

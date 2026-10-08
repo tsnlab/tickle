@@ -164,8 +164,8 @@ uint64_t tt_timer_resolution_ns(void) {
     if (clock_getres(CLOCK_REALTIME, &res) != 0) {
         return 1;
     }
-    uint64_t ns = ((uint64_t)res.tv_sec * SEC_NS) + (uint64_t)res.tv_nsec;
-    return ns != 0 ? ns : 1;
+    uint64_t resolution_ns = ((uint64_t)res.tv_sec * SEC_NS) + (uint64_t)res.tv_nsec;
+    return resolution_ns != 0 ? resolution_ns : 1;
 }
 
 int32_t tt_get_node_id(void) {
