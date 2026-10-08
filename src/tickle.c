@@ -3374,7 +3374,7 @@ static void clear_server_cache_slot(struct tt_Server* server, int slot);
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - see each definition's own comment.
 static void acknack_retry(struct tt_Context* node, uint64_t time, void* param);
 static uint16_t reliable_cache_depth(const struct tt_ReliableCache* cache);
-static uint64_t reliable_retry_interval(const struct tt_WriterProxy* proxy);
+static uint64_t reliable_retry_interval(const struct tt_Context* node, const struct tt_WriterProxy* proxy);
 static uint64_t reliable_retry_configured(void);
 static uint64_t reliable_retry_interval_publisher(void);
 static void note_watermark_requested(struct tt_WriterProxy* proxy, uint64_t now);
@@ -3434,6 +3434,13 @@ static void node_init_locks(struct tt_Context* node) {
     node->rx_clock_ns = 0;
     __atomic_store_n(&node->wait_until_hi, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_until_lo, 0, __ATOMIC_RELAXED);
+    // G (timer_lateness_fold()) starts cold, at tt_TIMER_LATENESS_INITIAL, and never falls below what this
+    // platform's waits can resolve. Here and not in reset_node_state(): it is the host's lateness, not the node's.
+    node->timer_lateness_mean_ns = 0;
+    node->timer_lateness_var_ns = 0;
+    __atomic_store_n(&node->timer_lateness_ns, 0, __ATOMIC_RELAXED);
+    uint64_t resolution = tt_timer_resolution_ns();
+    node->timer_resolution_ns = resolution > UINT32_MAX ? UINT32_MAX : (uint32_t)resolution;
 }
 
 // Whether any fragment of an announce from `source` is in progress, and forgetting them (see update_parts_complete()).
@@ -4489,6 +4496,51 @@ static void resend_call_request(struct tt_Context* node, struct tt_Client* clien
     }
 }
 
+// G, the one absolute term of both retry timers' RFC 6298 form, srtt + max(G, 4 x rttvar) (config.h, DESIGN.md 6
+// and 7): how late this host runs a timer. Measured since 2026-10-08 rather than assumed (it was a fixed 100 us).
+//
+// A sample is one timed wait in tt_Context_poll() that ran to the deadline it was given: the clock on waking minus
+// that deadline (poll_wait_io()). A wait that ended early - a datagram, a wake, a signal - says nothing about the
+// timer and is not one. The samples are folded as RFC 6298 folds round trips (rtt_estimate_fold(): mean and mean
+// deviation, gains 1/8 and 1/4), and G is mean + 4 x deviation: the lateness a timer seldom exceeds, not the
+// lateness it reaches half the time, which is what the retry needs, as srtt + 4 x rttvar is for the round trip.
+// Its floor is the finest step a wait can end on (tt_timer_resolution_ns()), so a mock clock or an exact timer
+// cannot drive it to 0. A wait cut short by a signal after its deadline is a genuine late wake and counts.
+static void timer_lateness_fold(struct tt_Context* node, uint64_t lateness_ns) {
+    rtt_estimate_fold(&node->timer_lateness_mean_ns, &node->timer_lateness_var_ns, lateness_ns);
+    uint64_t g = (uint64_t)node->timer_lateness_mean_ns + (4ULL * node->timer_lateness_var_ns);
+    uint64_t floor = node->timer_resolution_ns != 0 ? node->timer_resolution_ns : 1U;
+    if (g < floor) {
+        g = floor;
+    }
+    __atomic_store_n(&node->timer_lateness_ns, g > UINT32_MAX ? UINT32_MAX : (uint32_t)g, __ATOMIC_RELAXED);
+}
+
+// The measured G, or tt_TIMER_LATENESS_INITIAL - the constant it replaced - until the first sample (or with no
+// context to ask, as a test's bare proxy has none).
+static uint64_t timer_lateness_ns(const struct tt_Context* node) {
+    uint32_t g = node != NULL ? __atomic_load_n(&node->timer_lateness_ns, __ATOMIC_RELAXED) : 0U;
+    return g != 0 ? (uint64_t)g : (uint64_t)tt_TIMER_LATENESS_INITIAL;
+}
+
+// The reliable retry's G: a fixed tt_RELIABLE_RETRY_GRANULARITY if the build sets one, else the measured lateness.
+// The measured path takes the setting as a parameter for the same reason retry_interval_for() does: a test can reach
+// it in a build whose default is fixed.
+static uint64_t granularity_for(uint64_t configured, const struct tt_Context* node) {
+    return configured != 0 ? configured : timer_lateness_ns(node);
+}
+
+static uint64_t reliable_retry_granularity(const struct tt_Context* node) {
+    return granularity_for((uint64_t)tt_RELIABLE_RETRY_GRANULARITY, node);
+}
+
+// A call's G: a fixed tt_CALL_RETRY_GRANULARITY, else twice the reliable retry's - two late-running events in a
+// call's round trip (config.h), the server's stood in for by this host's own.
+static uint64_t call_retry_granularity(const struct tt_Context* node) {
+    uint64_t configured = (uint64_t)tt_CALL_RETRY_GRANULARITY;
+    return configured != 0 ? configured : 2U * reliable_retry_granularity(node);
+}
+
 // The sum of a call's waits: `waits` of them, the first `first` and each twice the one before, none above `ceiling`.
 // Saturates rather than wraps. The client's whole retry schedule - and, for a server, how long that client may still
 // be retrying (server_client_window()).
@@ -4517,8 +4569,9 @@ static void call_retry_bounds(const struct tt_Client* client, uint64_t* first, u
     }
     uint64_t srtt = client->latency;
     uint64_t spread = 4ULL * client->latency_var;
-    if (spread < (uint64_t)tt_CALL_RETRY_GRANULARITY) {
-        spread = (uint64_t)tt_CALL_RETRY_GRANULARITY;
+    uint64_t granularity = call_retry_granularity(client->node);
+    if (spread < granularity) {
+        spread = granularity;
     }
     *first = srtt + spread;
     *ceiling = srtt * tt_CALL_RETRY_MAX_SRTT_MULTIPLE;
@@ -7310,19 +7363,19 @@ static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
 }
 
 // How long a repair this reader asked for is taken to be on its way: the measured repair transit's srtt +
-// max(tt_RELIABLE_RETRY_GRANULARITY, 4 * rttvar) - the retry timer's own formula, on a sample that counts only the
+// max(G, 4 * rttvar) - the retry timer's own formula, on a sample that counts only the
 // transit - or tt_RELIABLE_RETRY_INITIAL before there is one. srtt alone (d603d369) was too short at c6 on the rig: a
 // repair queued behind ~850 Mbps of the writer's own data arrives with a spread as wide as its mean (rttvar ~ srtt),
 // and every one later than srtt was asked for again. The transit is not the recovery estimate the timer runs on,
 // which a lost repair or a bounded reader's declines lengthen: f3451cd8 was about a reader whose timer had grown to
 // ~130 ms while its writer, stopped and refused, would have answered within a round trip.
-static uint64_t repair_in_flight_ns(const struct tt_WriterProxy* proxy) {
+static uint64_t repair_in_flight_ns(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
     if (proxy->transit_srtt_ns == 0) {
         return (uint64_t)tt_RELIABLE_RETRY_INITIAL;
     }
     uint64_t spread = 4ULL * proxy->transit_rttvar_ns;
-    return (uint64_t)proxy->transit_srtt_ns +
-           (spread > (uint64_t)tt_RELIABLE_RETRY_GRANULARITY ? spread : (uint64_t)tt_RELIABLE_RETRY_GRANULARITY);
+    uint64_t granularity = reliable_retry_granularity(node);
+    return (uint64_t)proxy->transit_srtt_ns + (spread > granularity ? spread : granularity);
 }
 
 // An ACKNACK just went out naming seq_nos first..last (and possibly fewer in between). See tt_WriterProxy.requests.
@@ -7525,14 +7578,15 @@ static uint64_t reliable_retry_configured(void) {
 
 // One proxy's interval, given the configured value. A non-zero configured value is the caller's
 // explicit choice and wins outright. 0 derives it from this proxy's own recovery estimate (see
-// tt_WriterProxy.recovery_srtt_ns): srtt + max(tt_RELIABLE_RETRY_GRANULARITY, 4 * rttvar), at most
+// tt_WriterProxy.recovery_srtt_ns): srtt + max(G, 4 * rttvar) - G being `granularity`, the context's
+// reliable_retry_granularity() - at most
 // tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE * srtt, or tt_RELIABLE_RETRY_INITIAL until there is a first
 // sample. See config.h for why the bounds are relative to srtt and why the one absolute term remains.
 //
 // The configured value is a parameter rather than read here so the dynamic path can be exercised
 // by tests in a build whose default is fixed - otherwise the branch this whole feature is would be
 // untestable in the default build.
-static uint64_t retry_interval_for(uint64_t configured, const struct tt_WriterProxy* proxy) {
+static uint64_t retry_interval_for(uint64_t configured, uint64_t granularity, const struct tt_WriterProxy* proxy) {
     if (configured != 0) {
         return configured;
     }
@@ -7541,16 +7595,16 @@ static uint64_t retry_interval_for(uint64_t configured, const struct tt_WriterPr
     }
     uint64_t srtt = proxy->recovery_srtt_ns;
     uint64_t spread = 4ULL * proxy->recovery_rttvar_ns;
-    if (spread < (uint64_t)tt_RELIABLE_RETRY_GRANULARITY) {
-        spread = (uint64_t)tt_RELIABLE_RETRY_GRANULARITY;
+    if (spread < granularity) {
+        spread = granularity;
     }
     uint64_t interval = srtt + spread;
     uint64_t ceiling = srtt * (uint64_t)tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE;
     return interval > ceiling ? ceiling : interval;
 }
 
-static uint64_t reliable_retry_interval(const struct tt_WriterProxy* proxy) {
-    return retry_interval_for(reliable_retry_configured(), proxy);
+static uint64_t reliable_retry_interval(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
+    return retry_interval_for(reliable_retry_configured(), reliable_retry_granularity(node), proxy);
 }
 
 // A Publisher has no recovery estimate of its own - it is the Subscriber that times recoveries - so
@@ -7681,7 +7735,7 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
                        proxy->keep_all == tt_WRITER_KEEP_ALL_YES ? "KEEP_ALL" : "policy not yet known");
     }
 
-    if (!tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(proxy), acknack_retry, proxy)) {
+    if (!tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(node, proxy), acknack_retry, proxy)) {
         TT_LOG_ERROR("Cannot schedule acknack_retry");
         proxy->acknack_scheduled = false;
     }
@@ -7752,7 +7806,7 @@ static void maybe_arm_acknack_retry(struct tt_Context* node, struct tt_WriterPro
         RSTAT_INC(acknack_immediate);
         send_acknack(node, proxy);
         proxy->retry = 0;
-        if (tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(proxy), acknack_retry, proxy)) {
+        if (tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(node, proxy), acknack_retry, proxy)) {
             proxy->acknack_scheduled = true;
         } else {
             TT_LOG_ERROR("Cannot schedule acknack_retry");
@@ -11850,7 +11904,7 @@ static void answer_ack_request(struct tt_Context* node, struct tt_WriterProxy* p
         return; // no gap after all - the caller's had_gap says otherwise only if this were called without one
     }
     uint64_t now = tt_get_ns();
-    uint64_t window = repair_in_flight_ns(proxy);
+    uint64_t window = repair_in_flight_ns(node, proxy);
     struct acknack_skip skips[tt_RELIABLE_REQUEST_HISTORY];
     int skip_count = 0;
     for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
@@ -14266,8 +14320,16 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
 #endif
 
     wait_until_store(node, 0); // not waiting: an insert now is seen by the loop
+    uint64_t woke = 0;
     if (len >= 0) {
         node->rx_clock_ns = tt_get_ns(); // the wait may have been long: what arrived is stamped from here
+    } else if (len == -1) {
+        // Timed out. If it ran to its deadline, how late it returned is a sample of this host's timer lateness: G,
+        // the retry timers' granularity (timer_lateness_fold()). Earlier than the deadline is a wait cut short.
+        woke = tt_get_ns();
+        if (until != UINT64_MAX && woke >= until) {
+            timer_lateness_fold(node, woke - until);
+        }
     }
 #if tt_SEGMENT_ENABLED
     segment_resumed(node, len, time);
@@ -14276,7 +14338,7 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
     // A wait that ended with nothing received BEFORE the entry it was waiting for fell due was cut short
     // by a signal (the HALs report EINTR as a timeout). Hand control back rather than wait again: under
     // an indefinite wait that is what lets Ctrl-C reach the caller's loop.
-    if (until_next_event && len == -1 && !scheduler_entry_due(node, tt_get_ns())) {
+    if (until_next_event && len == -1 && !scheduler_entry_due(node, woke)) {
         *result = tt_RET_TIMEOUT;
         return true;
     }

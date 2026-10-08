@@ -45,6 +45,7 @@ struct _tt_Config _tt_CONFIG = {
 uint64_t test_mock_now = 0;
 uint64_t test_mock_cpu_ns = 0;        // the polling thread's CPU clock (tt_thread_cpu_ns()), set as test_mock_now is
 uint64_t test_mock_clock_step_ns = 0; // every clock read lets this much time pass: a spin on the clock ends
+uint64_t test_mock_timer_resolution_ns = 1; // what tt_timer_resolution_ns() reports: the floor of measured lateness
 int32_t test_mock_node_id = 1;
 tt_ret_t test_mock_bind_return = tt_RET_OK;
 int32_t test_mock_receive_return = -1;
@@ -85,6 +86,7 @@ int test_mock_wake_signal_call_count = 0;
 int64_t test_mock_receive_last_timeout = 0;
 int test_mock_receive_call_count = 0;
 bool test_mock_receive_advances_clock = false;
+uint64_t test_mock_receive_late_ns = 0; // ... and then this much more: how late the timer runs
 // A backstop for a test whose failure mode is a loop that never returns: past this many calls
 // tt_receive() reports an interrupt, so the regression shows up as a failed assertion rather than a
 // hung test binary. 0 (the default) = no limit.
@@ -100,6 +102,7 @@ void (*test_mock_try_receive_hook)(void) = NULL; // called for each backlog data
 extern uint64_t test_mock_now;
 extern uint64_t test_mock_cpu_ns;
 extern uint64_t test_mock_clock_step_ns;
+extern uint64_t test_mock_timer_resolution_ns;
 extern int32_t test_mock_node_id;
 extern tt_ret_t test_mock_bind_return;
 extern int32_t test_mock_receive_return;
@@ -121,6 +124,7 @@ extern int test_mock_wake_signal_call_count;
 extern int64_t test_mock_receive_last_timeout;
 extern int test_mock_receive_call_count;
 extern bool test_mock_receive_advances_clock;
+extern uint64_t test_mock_receive_late_ns;
 extern int test_mock_receive_limit;
 extern uint64_t test_mock_receive_data_advance_ns;
 extern int test_mock_try_receive_remaining;
@@ -135,6 +139,7 @@ static inline void test_mock_reset(void) {
     test_mock_now = 0;
     test_mock_cpu_ns = 0;
     test_mock_clock_step_ns = 0;
+    test_mock_timer_resolution_ns = 1;
     test_mock_node_id = 1;
     test_mock_bind_return = tt_RET_OK;
     test_mock_receive_return = -1;
@@ -156,6 +161,7 @@ static inline void test_mock_reset(void) {
     test_mock_receive_last_timeout = 0;
     test_mock_receive_call_count = 0;
     test_mock_receive_advances_clock = false;
+    test_mock_receive_late_ns = 0;
     test_mock_receive_limit = 0;
     test_mock_receive_data_advance_ns = 0;
     test_mock_try_receive_remaining = 0;
@@ -220,6 +226,10 @@ static void test_mock_capture_send(const void* buf, size_t len) {
 uint64_t tt_get_ns(void) {
     test_mock_now += test_mock_clock_step_ns;
     return test_mock_now;
+}
+
+uint64_t tt_timer_resolution_ns(void) {
+    return test_mock_timer_resolution_ns;
 }
 
 int32_t tt_get_node_id(void) {
@@ -379,7 +389,7 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
         return -3;
     }
     if (test_mock_receive_advances_clock && test_mock_receive_return == -1 && timeout > 0) {
-        test_mock_now += (uint64_t)timeout; // the whole wait elapsed with nothing arriving
+        test_mock_now += (uint64_t)timeout + test_mock_receive_late_ns; // the whole wait, and the timer's lateness
     }
     if (test_mock_receive_return >= 0) {
         test_mock_now += test_mock_receive_data_advance_ns;

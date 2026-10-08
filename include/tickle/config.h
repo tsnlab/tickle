@@ -136,9 +136,13 @@
 // RTTVAR). The G term is what the old floor was really for. On a steady link rttvar decays to zero and
 // srtt + 4 * rttvar converges on srtt itself: a retry at the MEAN recovery time, while about half of
 // all recoveries are still in flight. A floor of "1 * srtt" cannot help, because the interval is never
-// below srtt anyway. G stays absolute on purpose, and for a stated reason, as it does in the RFC: it is
-// how late this host actually runs a timer - a property of the host, not of the link. 100us is
-// provisional until the rig measures the p99 lateness of a scheduled entry; it is not a link figure.
+// below srtt anyway. G is not a link figure, as it is not in the RFC: it is how late this host actually runs a
+// timer - a property of the host. Since 2026-10-08 the context measures it rather than assuming it (DESIGN.md 6):
+// every timed wait in tt_Context_poll() that runs to its deadline is a sample of how late the wait returned, and G
+// is their RFC 6298 smoothing, mean + 4 x mean deviation, at least tt_timer_resolution_ns() (hal.h; one tick on
+// FreeRTOS). Before the first sample G is TIMER_LATENESS_INITIAL, the 100us constant G used to be, so a context
+// that has not slept yet behaves exactly as before. GRANULARITY 0 (the default) is the measured G; any other value
+// is a fixed G, used as given, for a build that wants one.
 //
 // The ceiling is MAX_SRTT_MULTIPLE * srtt. With the interval at srtt + 4 * rttvar, it binds only when
 // rttvar reaches ~16x srtt - the pathological estimate the clamp exists for, not a healthy link. On the
@@ -148,7 +152,10 @@
 #define tt_RELIABLE_RETRY_INITIAL (1 * tt_MILLISECOND) // nanosecond
 #endif
 #ifndef tt_RELIABLE_RETRY_GRANULARITY
-#define tt_RELIABLE_RETRY_GRANULARITY (100 * tt_MICROSECOND) // nanosecond - the host's timer lateness
+#define tt_RELIABLE_RETRY_GRANULARITY 0 // nanosecond, 0 = this context's measured timer lateness; else a fixed G
+#endif
+#ifndef tt_TIMER_LATENESS_INITIAL
+#define tt_TIMER_LATENESS_INITIAL (100 * tt_MICROSECOND) // nanosecond - the measured G before its first sample
 #endif
 #ifndef tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE
 #define tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE 64 // the ceiling, in multiples of srtt
@@ -303,10 +310,11 @@
 // retry fix", 2026-09-27: 85 us measured gave 0.5 ms). Doubling makes the budget (2^(count+1) - 1) first waits -
 // 15 with the default count - so a retry can fire early without the call giving up early.
 //
-// INTERVAL is the seed: the first wait until a client has its first answer, standing in for srtt. GRANULARITY is
-// twice the reliable retry's, because a call's round trip has two late-running events in it, not one: this host's
-// retry timer and the server's dispatch of the request. Both are host properties, not link ones, and provisional
-// as tt_RELIABLE_RETRY_GRANULARITY is.
+// INTERVAL is the seed: the first wait until a client has its first answer, standing in for srtt. GRANULARITY 0
+// (the default) is twice the reliable retry's G - this context's measured timer lateness, or the fixed
+// tt_RELIABLE_RETRY_GRANULARITY - because a call's round trip has two late-running events in it, not one: this
+// host's retry timer and the server's dispatch of the request. The server's lateness cannot be measured from here,
+// so this host's stands in for it. Any other value is a fixed G, used as given.
 //
 // A timed-out call doubles srtt (Karn's / TCP's backoff), so a server that became slower than the budget is reached
 // again; the next answer replaces the estimate outright.
@@ -326,7 +334,7 @@
 #define tt_CALL_RETRY_COUNT 3 // count
 #endif
 #ifndef tt_CALL_RETRY_GRANULARITY
-#define tt_CALL_RETRY_GRANULARITY (2 * tt_RELIABLE_RETRY_GRANULARITY) // nanosecond - two hosts' event lateness
+#define tt_CALL_RETRY_GRANULARITY 0 // nanosecond, 0 = twice the reliable retry's G (two hosts' lateness); else fixed
 #endif
 #ifndef tt_CALL_RETRY_MAX_SRTT_MULTIPLE
 #define tt_CALL_RETRY_MAX_SRTT_MULTIPLE 64 // a wait's ceiling, in multiples of srtt

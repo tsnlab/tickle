@@ -414,7 +414,8 @@ int main(int argc, char** argv) {
            "frag_duplicate=%lu "
            "cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d cpu_main_share=%.2f "
            "cpu_migrations=%u gap_abandoned=%u gap_evicted=%u retry_interval_cfg_ns=%llu recovery_srtt_ns=%u "
-           "recovery_rttvar_ns=%u rx_batch=%d rx_batch_calls=%llu rx_batch_datagrams=%llu rx_batch_full=%llu %s %s\n",
+           "recovery_rttvar_ns=%u timer_lateness_ns=%u timer_lateness_mean_ns=%u rx_batch=%d rx_batch_calls=%llu "
+           "rx_batch_datagrams=%llu rx_batch_full=%llu %s %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, (unsigned long)post_match_lost, post_match_loss_pct,
            prematch_window, first_seq_seen, window_samples > 0 ? window_samples : (uint32_t)tt_RELIABLE_BITMAP_BITS,
            keepall_samples, (unsigned)sub.reorder_slots, BENCH_FRAG_SLOTS, BENCH_FRAG_COUNT(node, frag_reassembled),
@@ -423,9 +424,9 @@ int main(int argc, char** argv) {
            BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq), g_cpu_freq.samples,
            BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place), g_cpu_place.migrations,
            sub.gap_abandoned, sub.gap_evicted, (unsigned long long)tt_reliable_retry_interval_configured(),
-           first_writer->recovery_srtt_ns, first_writer->recovery_rttvar_ns, (int)tt_RX_BATCH,
-           (unsigned long long)node.hal.rx_batch_calls, (unsigned long long)node.hal.rx_batch_datagrams,
-           (unsigned long long)node.hal.rx_batch_full,
+           first_writer->recovery_srtt_ns, first_writer->recovery_rttvar_ns, node.timer_lateness_ns,
+           node.timer_lateness_mean_ns, (int)tt_RX_BATCH, (unsigned long long)node.hal.rx_batch_calls,
+           (unsigned long long)node.hal.rx_batch_datagrams, (unsigned long long)node.hal.rx_batch_full,
            BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));

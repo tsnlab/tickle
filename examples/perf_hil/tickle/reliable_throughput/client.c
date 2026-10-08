@@ -697,7 +697,8 @@ int main(int argc, char** argv) {
            "throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u drained=%s drain_cap_s=%.1f peer_acks_end=%u "
            "peer_acks_min=%u cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d "
            "cpu_main_share=%.2f cpu_migrations=%u retransmitted=%u arena_bytes=%u keepall_samples=%u "
-           "keepall_bound_samples=%u keep_all_wait=%s keep_all_retries=%llu %s %s\n",
+           "keepall_bound_samples=%u keep_all_wait=%s keep_all_retries=%llu timer_lateness_ns=%u "
+           "timer_lateness_mean_ns=%u %s %s\n",
            (unsigned long)sent, (unsigned long)write_fail, send_s, mbps, max_blocking_ms, keep_all ? 1 : 0,
            durable ? 1 : 0, reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct,
            g_drain_fully_acked ? "acked" : "timeout", drain_s, count_peer_acks(&pub),
@@ -705,7 +706,8 @@ int main(int argc, char** argv) {
            BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq), g_cpu_freq.samples,
            BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place), g_cpu_place.migrations,
            pub.retransmitted, pub_cache.arena_size, keepall_samples, keepall_bound_samples(&pub, &pub_cache),
-           BENCH_KEEP_ALL_POLL ? "poll" : "event", (unsigned long long)keep_all_retries,
+           BENCH_KEEP_ALL_POLL ? "poll" : "event", (unsigned long long)keep_all_retries, node.timer_lateness_ns,
+           node.timer_lateness_mean_ns,
            BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
