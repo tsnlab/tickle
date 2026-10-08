@@ -83,7 +83,7 @@ static void test_lateness_converges_on_how_late_the_loop_wakes(void) {
 
     // And it follows the host: the same context, now 400 us late, moves to 400 us (the jump decays as any does).
     for (int i = 0; i < 3 * SETTLE_SAMPLES; i++) {
-        sleep_once(&node, 1 * MS, 400 * US);
+        sleep_once(&node, 5 * MS, 400 * US);
     }
     // Within the integer gains' rounding: a mean that climbs to X in 1/8 steps stops up to 7 ns short of it, with the
     // deviation left at that shortfall, so G ends at most 3 x 7 ns above X.
@@ -152,6 +152,19 @@ static void test_a_wait_cut_short_is_not_a_sample(void) {
     EXPECT_EQ_U32(0, node.timer_lateness_mean_ns);
 }
 
+// A wait shorter than the lateness already measured never slept long enough to show it - under traffic most waits
+// are fractions of a microsecond and read the system call's cost - so it is not a sample. Cold, G is 100 us: a 50 us
+// wait is passed over, a 200 us one counts.
+static void test_a_wait_shorter_than_g_is_not_a_sample(void) {
+    struct tt_Context node;
+    setup(&node);
+    sleep_once(&node, 50 * US, 1 * US);
+    EXPECT_EQ_U32(0, node.timer_lateness_mean_ns);
+    EXPECT_EQ_U64(100 * US, timer_lateness_ns(&node));
+    sleep_once(&node, 200 * US, 1 * US);
+    EXPECT_EQ_U32(1 * (uint32_t)US, node.timer_lateness_mean_ns);
+}
+
 // A positive-timeout poll's own budget is a deadline too: the wait that ends it is a sample.
 static void test_a_budget_wait_is_a_sample(void) {
     struct tt_Context node;
@@ -216,6 +229,7 @@ int main(void) {
     test_a_jittering_timer_gives_more_than_its_mean();
     test_lateness_is_floored_at_the_timer_resolution();
     test_a_wait_cut_short_is_not_a_sample();
+    test_a_wait_shorter_than_g_is_not_a_sample();
     test_a_budget_wait_is_a_sample();
     test_the_retry_intervals_use_the_measured_lateness();
     test_a_fixed_granularity_overrides_the_measurement();

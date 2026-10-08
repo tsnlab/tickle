@@ -71,6 +71,7 @@ int main(int argc, char** argv) {
 
     static struct tt_Context node;
     memset(&node, 0, sizeof(node));
+    _tt_CONFIG.broadcast = "192.168.10.255"; // the harnesses' link, as their servers and clients set it
     if (tt_Context_create(&node) != tt_RET_OK) {
         fprintf(stderr, "tt_Context_create failed\n");
         return 1;
