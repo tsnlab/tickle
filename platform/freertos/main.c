@@ -264,11 +264,12 @@ static void check_rx_hint(void) {
 // Every poll above that waited out its budget or a timer was a sample of how late this target's tick-driven waits
 // return. G's floor must be one RTOS tick (tt_timer_resolution_ns()), and a measured G (non-zero) is never below it.
 static void check_timer_lateness(void) {
-    uint32_t g = __atomic_load_n(&node.timer_lateness_ns, __ATOMIC_RELAXED);
-    printf("selftest: timer lateness G=%lu ns (0 = not measured yet) mean=%lu ns resolution=%lu ns\n", (unsigned long)g,
-           (unsigned long)node.timer_lateness_mean_ns, (unsigned long)node.timer_resolution_ns);
+    uint32_t granularity = __atomic_load_n(&node.timer_lateness_ns, __ATOMIC_RELAXED);
+    printf("selftest: timer lateness G=%lu ns (0 = not measured yet) mean=%lu ns resolution=%lu ns\n",
+           (unsigned long)granularity, (unsigned long)node.timer_lateness_mean_ns,
+           (unsigned long)node.timer_resolution_ns);
     check(node.timer_resolution_ns == (uint32_t)(tt_SECOND / configTICK_RATE_HZ), "G's floor is one RTOS tick");
-    check(g == 0 || g >= node.timer_resolution_ns, "a measured G is at least one tick");
+    check(granularity == 0 || granularity >= node.timer_resolution_ns, "a measured G is at least one tick");
 }
 
 static void tickle_selftest_task(void* param) {

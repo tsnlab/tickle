@@ -103,9 +103,9 @@ static void test_a_jittering_timer_gives_more_than_its_mean(void) {
     for (int i = 0; i < SETTLE_SAMPLES; i++) {
         sleep_once(&node, 1 * MS, (i % 2) == 0 ? 20 * US : 80 * US); // 50 us on average
     }
-    uint64_t g = timer_lateness_ns(&node);
-    EXPECT_TRUE(g > 80 * US); // above even the later wakes: 4 x a deviation of ~30 us over a mean of ~50
-    EXPECT_TRUE(g < 250 * US);
+    uint64_t granularity = timer_lateness_ns(&node);
+    EXPECT_TRUE(granularity > 80 * US); // above even the later wakes: 4 x a deviation of ~30 us over a mean of ~50
+    EXPECT_TRUE(granularity < 250 * US);
 }
 
 // An exact timer (lateness 0, as the mock's is by default) cannot drive G below the finest step a wait can end on -
