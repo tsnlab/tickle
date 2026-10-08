@@ -36,8 +36,8 @@ The user's active list (2026-10-05), in order.
    whose realized bound differs (`campaign_sweep.sh` common_args, qos_identity_void). Open: (a) the rmw rows (RESULTS
    72-75) still run each rmw at its own default (rmw_tickle 512 KiB, Fast DDS 5,000 samples, CycloneDDS unlimited); give
    them the same rule - Fast DDS `max_samples` = N through its XML, CycloneDDS's equivalent if rmw_cyclonedds passes
-   one, rmw_tickle `RMW_TICKLE_KEEP_ALL_BYTES` = N x sample bytes - and re-measure. Harness ready, not yet run:
-   `rmw_keepall_rig.sh` `EQUAL_BOUND=auto` (N = 492 for Array1k, 125 for Array4k; rmw_tickle (N + 1) x its 1,064 /
+   one, rmw_tickle `RMW_TICKLE_KEEP_ALL_BYTES` = N x sample bytes - and re-measure. Done 2026-10-08 at `29dff630`
+   (RESULTS rows 73 and 75, source `Ke`; 10 of 10 lossy runs clean): `rmw_keepall_rig.sh` `EQUAL_BOUND=auto` (N = 492 for Array1k, 125 for Array4k; rmw_tickle (N + 1) x its 1,064 /
    4,174-byte footprint, Fast DDS `max_samples` N; CycloneDDS cannot be bounded in samples without code - rmw_cyclonedds
    never sets resource_limits and its config has only byte watermarks - so its row stays default, labelled); (b)
    `s6_transport_cells.sh` runs each framework's repetitions back to back, not interleaved.
