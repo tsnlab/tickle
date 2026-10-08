@@ -295,9 +295,15 @@ static void check_borrow(rmw_node_t* node) {
     assert(BORROW_MARK == first->id);
     // Publishing it gives it back as well (nobody is listening; the publish itself succeeds).
     fill_array1k(first, 5);
+    // loans_published (the treatment witness of ab_loans.sh) counts loans published and nothing else: not a return,
+    // not a refused publish of a buffer that is not a loan.
+    const rmw_tickle_publisher_t* counted = (const rmw_tickle_publisher_t*)pub->data;
+    assert(0 == counted->loans_published);
     assert(RMW_RET_OK == rmw_publish_loaned_message(pub, first, NULL));
+    assert(1 == counted->loans_published);
     assert(RMW_RET_INVALID_ARGUMENT == rmw_publish_loaned_message(pub, first, NULL)); // published already
     rmw_reset_error();
+    assert(1 == counted->loans_published);
 
     // Bounded: RMW_TICKLE_PUBLISHER_LOANS_MAX out at once, then BAD_ALLOC, then fine again once one comes back.
     void* out[RMW_TICKLE_PUBLISHER_LOANS_MAX];
