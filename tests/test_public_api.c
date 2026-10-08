@@ -80,6 +80,7 @@ static void* const public_api[] = {
     (void*)tt_ReliableCache_grow,
     (void*)tt_Discovery_count,
     (void*)tt_Discovery_find,
+    (void*)tt_Discovery_find_entity,
     // Framing helpers tickle.h exposes
     (void*)tt_hash_id,
     (void*)tt_is_native_endian,

@@ -17,9 +17,9 @@
 //   1. every taken sample's message_info.publisher_gid equals the gid its writer's process reports, and
 //      rmw_compare_gids_equal() says so; and that it is UNEQUAL to the other writer's gid on that topic
 //      (the property that fails if every sample carries one constant gid, all zero or not);
-//   2. rmw_get_publishers_info_by_topic() reports that same gid for the remote writer, so a tool can match a
-//      sample to an endpoint it discovered through the graph (graph_matches() on why this is exact for the
-//      one-writer topic only);
+//   2. rmw_get_publishers_info_by_topic() reports that same gid for each remote writer, so a tool can match a
+//      sample to an endpoint it discovered through the graph - both writers of the shared topic, a row each
+//      (graph_matches());
 //   3. a taken request's request_id.writer_guid equals the talker's client gid (or is all zeros, for a request
 //      that beat the client's announce - never anything else), the response's names the same client, and
 //      rmw_get_clients_info_by_service() reports that gid too (lyrical and later; jazzy has no such call).
@@ -291,11 +291,10 @@ static size_t graph_writer_gids(rmw_node_t* node, const char* topic, uint8_t out
 // matched to an endpoint discovered through the graph. False while discovery has not shown them yet (samples
 // can arrive before the announce: a writer is claimed from its first ACKNACK).
 //
-// SOLO_TOPIC carries the exact check, one writer and one graph row. TOPIC's two writers come from one remote
-// context and share one endpoint_id (the topic-name hash), and core's discovery table keys an entity on
-// (context_id, endpoint_id) - upsert_discovered_entity() in the core - so they occupy ONE slot and the graph
-// lists one of them. That is a core defect, not an rmw one; until it is fixed the check here is the part that
-// holds either way: every gid the graph reports for TOPIC is one of the talker's two, never anything else.
+// SOLO_TOPIC has one writer and one graph row. TOPIC's two writers come from one remote context and share one
+// endpoint_id (the topic-name hash); the graph must list both, each under its own gid. Until 2026-10-08 core's
+// discovery table keyed an entity on (context_id, endpoint_id), so the second overwrote the first and the graph
+// listed one of them; it keys on the entity_id now (upsert_discovered_entity()).
 static bool graph_matches(rmw_node_t* node, const struct talker_gids* gids) {
     uint8_t solo[2][RMW_GID_STORAGE_SIZE];
     size_t n_solo = graph_writer_gids(node, SOLO_TOPIC, solo, 2);
@@ -303,19 +302,21 @@ static bool graph_matches(rmw_node_t* node, const struct talker_gids* gids) {
     uint8_t pair[WRITERS + 1][RMW_GID_STORAGE_SIZE];
     size_t n_pair = graph_writer_gids(node, TOPIC, pair, WRITERS + 1);
     assert(n_pair <= WRITERS); // never more endpoints than exist
-    bool complete = 1 == n_solo && n_pair >= 1;
+    bool complete = 1 == n_solo && WRITERS == n_pair;
     if (complete) {
         printf("graph: %zu publisher on %s, %zu on %s (%d exist)\n", n_solo, SOLO_TOPIC, n_pair, TOPIC, WRITERS);
         print_gid("  graph solo publisher gid:", solo[0]);
         assert(gids_equal(solo[0], gids->solo));
+        // Both writers, each once: a row per writer, and the two rows name the two gids the talker reported.
+        bool listed[WRITERS] = {false, false};
         for (size_t i = 0; i < n_pair; i++) {
             print_gid("  graph pair publisher gid:", pair[i]);
-            assert(gids_equal(pair[i], gids->writer[0]) || gids_equal(pair[i], gids->writer[1]));
+            int which = gids_equal(pair[i], gids->writer[0]) ? 0 : 1;
+            assert(gids_equal(pair[i], gids->writer[which]));
+            assert(!listed[which]);
+            listed[which] = true;
         }
-        if (n_pair < WRITERS) {
-            printf("  KNOWN CORE GAP: %zu of %d writers of %s in the graph (discovery keys on endpoint_id)\n", n_pair,
-                   WRITERS, TOPIC);
-        }
+        assert(listed[0] && listed[1]);
     }
 #ifdef HAVE_SERVICE_ENDPOINT_INFO
     rcutils_allocator_t allocator = rcutils_get_default_allocator();

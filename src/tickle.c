@@ -2511,6 +2511,19 @@ static void forget_publisher_peers_for_endpoint(struct tt_Context* node, uint32_
     }
 }
 
+// forget_publisher_peers_for_endpoint() for one remote Subscriber entity whose context hosts another of the topic:
+// the peer (the context's address) stays, the departed reader's ack entry goes.
+static void forget_publisher_acks_for_entity(struct tt_Context* node, uint32_t endpoint_id, uint8_t node_id,
+                                             uint32_t entity_id) {
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_PUBLISHER || endpoint->id != endpoint_id) {
+            continue;
+        }
+        forget_peer_ack((struct tt_Publisher*)endpoint, node_id, entity_id, /*match_any_entity=*/false);
+    }
+}
+
 // Clears the ack state of every local Publisher that `node_id` is no longer a matched peer of -
 // process_announce()'s own companion to forget_peers_from_source(..., preserve_ack=true), run once
 // decode_update_entities() has re-added whatever the fresh announce still lists (Phase 3
@@ -2563,6 +2576,8 @@ enum {
 static void refresh_liveliness_flags(struct tt_Context* node, uint8_t source);
 static void arm_liveliness_check(struct tt_Context* node, uint64_t due_ns);
 static void reschedule_summary_for_leases(struct tt_Context* node, uint64_t now);
+static const struct tt_DiscoveredEntity* discovery_find_kind(const struct tt_Discovery* discovery, uint8_t context_id,
+                                                             uint32_t endpoint_id, uint8_t kind);
 
 #if tt_DISCOVERY_INDEXED
 // The discovery table's index (struct tt_Discovery.index, CONTEXT_NODE_PLAN.md 4b): open addressing, linear probing.
@@ -2580,8 +2595,21 @@ static uint32_t discovery_hash(uint8_t context_id, uint32_t endpoint_id) {
     return hash & (tt_DISCOVERY_INDEX_SIZE - 1U);
 }
 
-// The slot holding (context_id, endpoint_id), or -1.
-static int32_t discovery_slot_of(const struct tt_Discovery* discovery, uint8_t context_id, uint32_t endpoint_id) {
+// The slot holding (context_id, endpoint_id) - with match_entity, the one whose entity_id is also `entity_id` - or
+// -1. Hashed on the endpoint, not the entity: every lookup on the receive path knows the endpoint, and the entities
+// of one endpoint on one context (two publishers of a topic in one process) share its probe chain. The index is never
+// deleted from, only rebuilt (tt_Discovery_reindex()), so no chain has a hole and the probe meets each of them before
+// the first empty entry.
+// A key for discovery_probe(): which of the entities of (context_id, endpoint_id) is wanted.
+struct discovery_key {
+    bool match_entity;
+    uint32_t entity_id;
+    bool match_kind;
+    uint8_t kind;
+};
+
+static int32_t discovery_probe(const struct tt_Discovery* discovery, uint8_t context_id, uint32_t endpoint_id,
+                               struct discovery_key key) {
     uint32_t position = discovery_hash(context_id, endpoint_id);
     for (uint32_t probe = 0; probe < tt_DISCOVERY_INDEX_SIZE; probe++) {
         uint16_t entry = discovery->index[position];
@@ -2589,12 +2617,30 @@ static int32_t discovery_slot_of(const struct tt_Discovery* discovery, uint8_t c
             return -1;
         }
         const struct tt_DiscoveredEntity* entity = &discovery->entities[entry - 1U];
-        if (entity->context_id == context_id && entity->endpoint_id == endpoint_id) {
+        if (entity->context_id == context_id && entity->endpoint_id == endpoint_id &&
+            (!key.match_entity || entity->entity_id == key.entity_id) &&
+            (!key.match_kind || entity->kind == key.kind)) {
             return (int32_t)(entry - 1U);
         }
         position = (position + 1U) & (tt_DISCOVERY_INDEX_SIZE - 1U);
     }
     return -1;
+}
+
+static int32_t discovery_slot_of(const struct tt_Discovery* discovery, uint8_t context_id, uint32_t endpoint_id) {
+    return discovery_probe(discovery, context_id, endpoint_id, (struct discovery_key) {0});
+}
+
+static int32_t discovery_kind_slot_of(const struct tt_Discovery* discovery, uint8_t context_id, uint32_t endpoint_id,
+                                      uint8_t kind) {
+    return discovery_probe(discovery, context_id, endpoint_id,
+                           (struct discovery_key) {.match_kind = true, .kind = kind});
+}
+
+static int32_t discovery_entity_slot_of(const struct tt_Discovery* discovery, uint8_t context_id, uint32_t endpoint_id,
+                                        uint32_t entity_id) {
+    return discovery_probe(discovery, context_id, endpoint_id,
+                           (struct discovery_key) {.match_entity = true, .entity_id = entity_id});
 }
 
 // Bounded, although at twice the table's size the index cannot fill while it holds only live keys: a probe that
@@ -2648,9 +2694,11 @@ static struct tt_DiscoveredEntity* discovery_free_slot(struct tt_Discovery* disc
 #endif
 // Records one remote entity into node->discovery (tt_Context_set_discovery(), rmw_tickle/PLAN.md's
 // Milestone 0(c)), refreshing its existing slot or claiming the first empty one, then fires the
-// appear/refresh callback. No-op (not even the callback) if no discovery cache is attached -
-// every caller below calls this unconditionally rather than checking node->discovery first, the
-// same way logging macros check their own level instead of every call site checking it.
+// appear/refresh callback. An entity is its (context_id, entity_id): two publishers of one topic in one
+// remote process share the endpoint_id, and keyed on that the second overwrote the first, so the graph
+// listed one of them and every count came out short (2026-10-08). No-op (not even the callback) if no discovery cache
+// is attached - every caller below calls this unconditionally rather than checking node->discovery first, the same way
+// logging macros check their own level instead of every call site checking it.
 static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, uint32_t endpoint_id, uint32_t entity_id,
                                      uint8_t kind, uint8_t node_index, uint8_t qos, uint64_t deadline_duration_ns,
                                      uint64_t liveliness_lease_duration_ns, const char* type, const char* name) {
@@ -2660,7 +2708,7 @@ static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, u
 
 #if tt_DISCOVERY_INDEXED
     struct tt_Discovery* discovery = node->discovery;
-    int32_t found = discovery_slot_of(discovery, node_id, endpoint_id);
+    int32_t found = discovery_entity_slot_of(discovery, node_id, endpoint_id, entity_id);
     struct tt_DiscoveredEntity* slot = found >= 0 ? &discovery->entities[found] : NULL;
     bool is_new = slot == NULL;
     bool reclaimed = false;
@@ -2669,7 +2717,8 @@ static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, u
     struct tt_DiscoveredEntity* entities = node->discovery->entities;
     struct tt_DiscoveredEntity* slot = NULL;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        if (entities[i].context_id == node_id && entities[i].endpoint_id == endpoint_id) {
+        if (entities[i].context_id == node_id && entities[i].endpoint_id == endpoint_id &&
+            entities[i].entity_id == entity_id) {
             slot = &entities[i];
             break;
         }
@@ -2714,10 +2763,9 @@ static void upsert_discovered_entity(struct tt_Context* node, uint8_t node_id, u
 
     slot->context_id = node_id;
     slot->endpoint_id = endpoint_id;
-    // Assigned on the re-announce path too, not only on first sight: a restarted publisher keeps its
-    // endpoint_id (same topic, same name) and gets a NEW entity_id, which is the whole reason the
-    // instance is identified by the latter. Writing it only when the slot is new would leave the gid
-    // naming the process that died.
+    // Part of the key: a restarted publisher keeps its endpoint_id (same topic, same name) and gets a NEW
+    // entity_id, and lands in a slot of its own - its predecessor's goes with the new announce generation
+    // (forget_discovered_entities_from_source()), which is what a restart announces.
     slot->entity_id = entity_id;
     slot->kind = kind;
     slot->node_index = node_index;
@@ -7362,11 +7410,14 @@ static void bitmap_low_mask(uint64_t* mask, uint16_t words, int highest) {
 // Phase 3 step 4 - returns UNKNOWN, not NO, when there is nothing to read: no discovery table
 // attached (it's opt-in) or nothing heard from that writer yet. The distinction is the whole point;
 // see tt_WriterProxy.keep_all's own doc comment for what assuming NO here cost.
-static enum tt_WriterKeepAll writer_announced_keep_all(struct tt_Context* node, uint8_t node_id, uint32_t endpoint_id) {
+static enum tt_WriterKeepAll writer_announced_keep_all(struct tt_Context* node, uint8_t node_id, uint32_t endpoint_id,
+                                                       uint32_t entity_id) {
     if (node == NULL || node->discovery == NULL) {
         return tt_WRITER_KEEP_ALL_UNKNOWN;
     }
-    const struct tt_DiscoveredEntity* writer = tt_Discovery_find(node->discovery, node_id, endpoint_id);
+    // This writer's own announce, not the first of its topic on that context: two writers there may differ.
+    const struct tt_DiscoveredEntity* writer =
+        tt_Discovery_find_entity(node->discovery, node_id, endpoint_id, entity_id);
     if (writer == NULL) {
         return tt_WRITER_KEEP_ALL_UNKNOWN;
     }
@@ -7429,7 +7480,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             // by the first DATA (or Heartbeat) that actually arrived, and its baseline is that
             // sample. Anything the writer published earlier is invisible from here - see struct
             // tt_WriterProxy's own doc comment (tickle.h) for the limitation that implies.
-            proxy->keep_all = writer_announced_keep_all(sub->node, node_id, ((struct tt_Endpoint*)sub)->id);
+            proxy->keep_all = writer_announced_keep_all(sub->node, node_id, ((struct tt_Endpoint*)sub)->id, entity_id);
             proxy->presence_acked = false;
             // Phase 2 - this slot's own window inside the Subscriber's tracking storage: the
             // caller-provided buffer when it gave one, otherwise the builtin default.
@@ -8893,21 +8944,42 @@ static void arm_liveliness_check(struct tt_Context* node, uint64_t due_ns) {
     }
 }
 
+// Whether `entity`'s context still has another live entity of its kind on its endpoint - a second subscriber of the
+// topic in that process. Scanned, not indexed: a lapse is rare.
+static bool sibling_alive(const struct tt_Context* node, const struct tt_DiscoveredEntity* entity) {
+    const struct tt_DiscoveredEntity* entities = node->discovery->entities;
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        const struct tt_DiscoveredEntity* other = &entities[i];
+        if (other != entity && other->alive && other->context_id == entity->context_id &&
+            other->endpoint_id == entity->endpoint_id && other->kind == entity->kind) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // A leased entity whose lease ran out while its node is still heard: tombstoned, and whatever this node
-// kept for it goes.
+// kept for it goes - for it alone, not for a sibling of its topic in the same process.
 static void lapse_entity(struct tt_Context* node, struct tt_DiscoveredEntity* entity) {
     entity->alive = false;
     // Phase 3 prerequisite (a), rmw_tickle/PLAN.md - a remote Subscriber presumed dead by its
     // own announced lease must also leave the matching local Publishers' peer/ack sets right
     // here, or under KEEP_ALL blocking a writer waiting on exactly that ack would stall. Narrow on
     // purpose: only the Publishers whose own endpoint id this entity matched, and only this node_id.
+    // A peer is a context, so it stays while a sibling subscriber there is alive; only this reader's ack entry goes.
+    bool one_entity = entity->entity_id != 0 && sibling_alive(node, entity);
     if (entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
-        forget_publisher_peers_for_endpoint(node, entity->endpoint_id, entity->context_id);
+        if (one_entity) {
+            forget_publisher_acks_for_entity(node, entity->endpoint_id, entity->context_id, entity->entity_id);
+        } else {
+            forget_publisher_peers_for_endpoint(node, entity->endpoint_id, entity->context_id);
+        }
     } else if (entity->kind == tt_KIND_TOPIC_PUBLISHER) {
         // Phase 3 - the mirror case: a remote *Publisher* past its own lease stops being
-        // something our Subscribers can still recover from, so its WriterProxy goes too.
-        forget_writer_proxies_for_endpoint(node, entity->endpoint_id, entity->context_id, /*entity_id=*/0,
-                                           /*match_any_entity=*/true);
+        // something our Subscribers can still recover from, so its WriterProxy goes too - its own, by entity_id
+        // (every one of that context only for a writer announced without one).
+        forget_writer_proxies_for_endpoint(node, entity->endpoint_id, entity->context_id, entity->entity_id,
+                                           /*match_any_entity=*/entity->entity_id == 0);
     }
     if (node->discovery_callback != NULL) {
         node->discovery_callback(node, entity->context_id, entity->endpoint_id, entity->kind, /*departed=*/true,
@@ -8944,15 +9016,16 @@ static void revive_lapsed_entities(struct tt_Context* node, uint8_t source, uint
 }
 
 // A MANUAL_BY_TOPIC Publisher's sign of life: its DATA, or its HEARTBEAT with tt_HEARTBEAT_FLAG_LIVELINESS.
-// Found by (source, endpoint_id) - the discovery table has no entity_id. Only looked up when `source` has
+// Found by (source, endpoint_id, entity_id): the writer that asserted, not every one of its topic on that context -
+// a sibling's DATA is no sign of this one's life. Only looked up when `source` has
 // such a Publisher (tt_LIVELINESS_SOURCE_MANUAL).
-static void note_manual_assertion(struct tt_Context* node, uint8_t source, uint32_t endpoint_id) {
+static void note_manual_assertion(struct tt_Context* node, uint8_t source, uint32_t endpoint_id, uint32_t entity_id) {
     if ((node->liveliness_flags[source] & tt_LIVELINESS_SOURCE_MANUAL) == 0 || node->discovery == NULL) {
         return;
     }
 #if tt_DISCOVERY_INDEXED
     // One entry per (source, endpoint_id), found through the index (CONTEXT_NODE_PLAN.md 4b) - this runs per DATA.
-    int32_t slot = discovery_slot_of(node->discovery, source, endpoint_id);
+    int32_t slot = discovery_entity_slot_of(node->discovery, source, endpoint_id, entity_id);
     if (slot < 0) {
         return;
     }
@@ -8971,7 +9044,8 @@ static void note_manual_assertion(struct tt_Context* node, uint8_t source, uint3
     bool revived = false;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
         struct tt_DiscoveredEntity* entity = &entities[i];
-        if (entity->context_id != source || entity->endpoint_id != endpoint_id || !entity_asserts_manually(entity)) {
+        if (entity->context_id != source || entity->endpoint_id != endpoint_id || entity->entity_id != entity_id ||
+            !entity_asserts_manually(entity)) {
             continue;
         }
         entity->last_asserted_ns = now;
@@ -9357,7 +9431,8 @@ static void claim_from_acknack(struct tt_Context* node, struct tt_Publisher* pub
         return;
     }
     if (node->discovery != NULL) {
-        const struct tt_DiscoveredEntity* seen = tt_Discovery_find(node->discovery, source, endpoint_id);
+        const struct tt_DiscoveredEntity* seen =
+            tt_Discovery_find_entity(node->discovery, source, endpoint_id, sender_entity_id);
         if (seen != NULL && !seen->alive) {
             return;
         }
@@ -9550,9 +9625,8 @@ static bool decode_update_entities(struct tt_Context* node, struct tt_Header* he
         // Recorded regardless of kind or whether a local endpoint matched above - discovery
         // (tt_Context_set_discovery()) lists every remote entity a node has heard of, not just ones
         // this node itself can talk to.
-        upsert_discovered_entity(node, header->source, endpoint_id, update_entity->entity_id, update_entity->kind,
-                                 node_index, update_entity->qos, deadline_duration_ns, liveliness_lease_duration_ns,
-                                 type, name);
+        upsert_discovered_entity(node, header->source, endpoint_id, remote_entity_id, update_entity->kind, node_index,
+                                 update_entity->qos, deadline_duration_ns, liveliness_lease_duration_ns, type, name);
     }
 
     return true;
@@ -9744,13 +9818,35 @@ static bool is_power_of_ten(uint32_t count) {
 // been discovered yet (DATA arriving before its own first announce - a narrow startup
 // race, not a genuine incompatibility; giving the benefit of the doubt here is strictly better
 // than dropping a legitimately compatible pair's very first samples).
+//
+// subscriber_incompatible_with_writer() checks the writer that sent the sample (its entity_id): two writers of one
+// topic in one remote context can offer different QoS, and the first of them in the table answers for both here.
+static bool writer_incompatible(struct tt_Subscriber* sub, const struct tt_DiscoveredEntity* publisher,
+                                uint8_t publisher_node_id, uint32_t publisher_endpoint_id);
+
 static bool subscriber_incompatible_with_publisher(struct tt_Context* node, struct tt_Subscriber* sub,
                                                    uint8_t publisher_node_id, uint32_t publisher_endpoint_id) {
     if (node->discovery == NULL) {
         return false;
     }
-    const struct tt_DiscoveredEntity* publisher =
-        tt_Discovery_find(node->discovery, publisher_node_id, publisher_endpoint_id);
+    return writer_incompatible(
+        sub, discovery_find_kind(node->discovery, publisher_node_id, publisher_endpoint_id, tt_KIND_TOPIC_PUBLISHER),
+        publisher_node_id, publisher_endpoint_id);
+}
+
+static bool subscriber_incompatible_with_writer(struct tt_Context* node, struct tt_Subscriber* sub,
+                                                uint8_t publisher_node_id, uint32_t publisher_endpoint_id,
+                                                uint32_t publisher_entity_id) {
+    if (node->discovery == NULL) {
+        return false;
+    }
+    return writer_incompatible(
+        sub, tt_Discovery_find_entity(node->discovery, publisher_node_id, publisher_endpoint_id, publisher_entity_id),
+        publisher_node_id, publisher_endpoint_id);
+}
+
+static bool writer_incompatible(struct tt_Subscriber* sub, const struct tt_DiscoveredEntity* publisher,
+                                uint8_t publisher_node_id, uint32_t publisher_endpoint_id) {
     if (publisher == NULL) {
         return false;
     }
@@ -10534,7 +10630,7 @@ static void deliver_data_to_subscriber(struct tt_Context* node, struct tt_Endpoi
     // before any reliable-tracking side effects too (update_reliable_ack() below), not just before
     // delivery - no point generating ACKNACKs a Publisher that could never honor them will never
     // answer (see this file's own pre-Milestone-31 history of exactly that silent-degradation bug).
-    if (subscriber_incompatible_with_publisher(node, sub, ctx->header->source, ctx->endpoint_id)) {
+    if (subscriber_incompatible_with_writer(node, sub, ctx->header->source, ctx->endpoint_id, ctx->entity_id)) {
         return;
     }
 
@@ -10664,7 +10760,7 @@ static bool process_data_for(struct tt_Context* node, struct tt_Header* header, 
         return process_announce(node, header, buffer, head, tail, sender_ip, sender_port, seq_no, 0, 1);
     }
 
-    note_manual_assertion(node, header->source, endpoint_id);
+    note_manual_assertion(node, header->source, endpoint_id, entity_id);
 
     TT_LOG_DEBUG("Data");
     TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
@@ -10717,8 +10813,20 @@ static int find_server_cache_slot(struct tt_Server* server, uint8_t receiver, ui
 // restarted client process, or a client re-created in one, announces a different one under the same context id.
 static uint32_t server_client_entity(const struct tt_Server* server, uint8_t receiver) {
     const struct tt_DiscoveredEntity* client =
-        server->node != NULL ? tt_Discovery_find(server->node->discovery, receiver, server->endpoint.id) : NULL;
-    return client != NULL && client->kind == tt_KIND_SERVICE_CLIENT ? client->entity_id : 0;
+        server->node != NULL
+            ? discovery_find_kind(server->node->discovery, receiver, server->endpoint.id, tt_KIND_SERVICE_CLIENT)
+            : NULL;
+    return client != NULL ? client->entity_id : 0;
+}
+
+// Whether discovery still knows `receiver`'s client `entity_id` of this service - one of them, when that context
+// hosts several clients of it, which share the endpoint_id and so cannot be told apart by it.
+static bool server_client_known(const struct tt_Server* server, uint8_t receiver, uint32_t entity_id) {
+    const struct tt_DiscoveredEntity* client =
+        server->node != NULL
+            ? tt_Discovery_find_entity(server->node->discovery, receiver, server->endpoint.id, entity_id)
+            : NULL;
+    return client != NULL && client->kind == tt_KIND_SERVICE_CLIENT;
 }
 
 // Whether slot `slot`'s response was cached for an earlier incarnation of the client now asking: discovery knew the
@@ -10729,8 +10837,7 @@ static bool server_cache_slot_is_stale(const struct tt_Server* server, int slot,
     if (cached_for == 0) {
         return false;
     }
-    uint32_t current = server_client_entity(server, receiver);
-    return current != 0 && current != cached_for;
+    return server_client_entity(server, receiver) != 0 && !server_client_known(server, receiver, cached_for);
 }
 
 static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
@@ -10812,7 +10919,6 @@ static void drop_cached_responses_from_source(struct tt_Context* node, uint8_t s
             continue;
         }
         struct tt_Server* server = (struct tt_Server*)endpoint;
-        uint32_t current = farewell ? 0 : server_client_entity(server, source);
         for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
             if (server->cache[i] == NULL && server->cache_sent_at[i] == 0) {
                 continue; // holds nothing
@@ -10820,7 +10926,8 @@ static void drop_cached_responses_from_source(struct tt_Context* node, uint8_t s
             if (((const struct tt_SubmessageHeader*)server_cache_entry(server, i))->receiver != source) {
                 continue;
             }
-            bool replaced = server->cache_client_entity[i] != 0 && current != server->cache_client_entity[i];
+            bool replaced = server->cache_client_entity[i] != 0 &&
+                            (farewell || !server_client_known(server, source, server->cache_client_entity[i]));
             if (farewell || replaced) {
                 clear_server_cache_slot(server, i);
             }
@@ -12107,7 +12214,7 @@ static bool process_heartbeat(struct tt_Context* node, struct tt_Header* header,
     TT_LOG_DEBUG("  last_seq_no: %u", last_seq_no);
 
     if ((flags & tt_HEARTBEAT_FLAG_LIVELINESS) != 0) {
-        note_manual_assertion(node, header->source, endpoint_id);
+        note_manual_assertion(node, header->source, endpoint_id, entity_id);
         return true; // an assertion only - see the flag's comment (tickle.h)
     }
     if (endpoint_id == tt_DISCOVERY_ENDPOINT_ID) {
@@ -12468,7 +12575,7 @@ static void route_fragment_to_subscriber(struct tt_Context* node, struct tt_Endp
     struct frag_route_ctx* route = (struct frag_route_ctx*)ctx_ptr;
     struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
     struct data_delivery_ctx* ctx = route->data;
-    if (subscriber_incompatible_with_publisher(node, sub, ctx->header->source, endpoint->id)) {
+    if (subscriber_incompatible_with_writer(node, sub, ctx->header->source, endpoint->id, ctx->entity_id)) {
         return;
     }
     if (!sub->reliable || TT_ORDERING_DISABLED) {
@@ -14785,6 +14892,46 @@ const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* d
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
         if (discovery->entities[i].context_id == context_id && discovery->entities[i].endpoint_id == endpoint_id) {
             return &discovery->entities[i];
+        }
+    }
+    return NULL;
+#endif
+}
+
+// The first entity of (context_id, endpoint_id) of `kind`: a publisher and a subscriber of one topic, or a client and
+// a server of one service, in one context share the endpoint_id, and tt_Discovery_find() may return either.
+static const struct tt_DiscoveredEntity* discovery_find_kind(const struct tt_Discovery* discovery, uint8_t context_id,
+                                                             uint32_t endpoint_id, uint8_t kind) {
+    if (discovery == NULL) {
+        return NULL;
+    }
+#if tt_DISCOVERY_INDEXED
+    int32_t slot = discovery_kind_slot_of(discovery, context_id, endpoint_id, kind);
+    return slot >= 0 ? &discovery->entities[slot] : NULL;
+#else
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        const struct tt_DiscoveredEntity* entity = &discovery->entities[i];
+        if (entity->context_id == context_id && entity->endpoint_id == endpoint_id && entity->kind == kind) {
+            return entity;
+        }
+    }
+    return NULL;
+#endif
+}
+
+const struct tt_DiscoveredEntity* tt_Discovery_find_entity(const struct tt_Discovery* discovery, uint8_t context_id,
+                                                           uint32_t endpoint_id, uint32_t entity_id) {
+    if (discovery == NULL) {
+        return NULL;
+    }
+#if tt_DISCOVERY_INDEXED
+    int32_t slot = discovery_entity_slot_of(discovery, context_id, endpoint_id, entity_id);
+    return slot >= 0 ? &discovery->entities[slot] : NULL;
+#else
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        const struct tt_DiscoveredEntity* entity = &discovery->entities[i];
+        if (entity->context_id == context_id && entity->endpoint_id == endpoint_id && entity->entity_id == entity_id) {
+            return entity;
         }
     }
     return NULL;

@@ -177,20 +177,61 @@ static void test_entity_id_is_kept_beside_endpoint_id(void) {
         EXPECT_TRUE(found->entity_id != found->endpoint_id);
     }
 
-    // A re-announce from a restarted publisher keeps endpoint_id and brings a NEW entity_id. The slot
-    // must follow the instance, or the gid goes on naming the process that died.
+    // A restarted publisher keeps endpoint_id and brings a NEW entity_id, in a new announce generation, which
+    // forgets what the source announced before (process_announce()). The table must follow the instance, or the
+    // gid goes on naming the process that died.
+    forget_discovered_entities_from_source(&context, 7);
     upsert_discovered_entity(&context, 7, 0x11112222, 0xABCD1234U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
     found = tt_Discovery_find(&discovery, 7, 0x11112222);
     EXPECT_TRUE(found != NULL);
     if (found != NULL) {
         EXPECT_EQ_U32(0xABCD1234U, found->entity_id);
     }
+    EXPECT_TRUE(tt_Discovery_find_entity(&discovery, 7, 0x11112222, ENTITY_ID_OF(0x11112222U)) == NULL);
+}
+
+// Two entities of one endpoint on one context (two publishers of a topic in one process, 2026-10-08) are two
+// entries, each found by its entity_id, among keys that collide with them in the index - the second does not
+// overwrite the first. A repeated announce of either refreshes its own entry, and adds none.
+static void test_two_entities_of_one_endpoint_are_two_entries(void) {
+    setup();
+    uint32_t endpoint = 0x5151U;
+#if tt_DISCOVERY_INDEXED
+    uint32_t bucket = discovery_hash(7, endpoint);
+    int colliders = 0;
+    for (uint32_t candidate = 1; colliders < 3; candidate++) {
+        if (candidate != endpoint && discovery_hash(7, candidate) == bucket) {
+            add(7, candidate); // ahead of and between the pair on the probe chain
+            colliders++;
+        }
+    }
+#endif
+    upsert_discovered_entity(&context, 7, endpoint, 0xA1U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
+    add(7, 0x6161U);
+    upsert_discovered_entity(&context, 7, endpoint, 0xA2U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
+    uint32_t before = tt_Discovery_count(&discovery);
+    upsert_discovered_entity(&context, 7, endpoint, 0xA1U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
+    upsert_discovered_entity(&context, 7, endpoint, 0xA2U, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, 0, "t", "e");
+    EXPECT_EQ_U32(before, tt_Discovery_count(&discovery));
+    const struct tt_DiscoveredEntity* first = tt_Discovery_find_entity(&discovery, 7, endpoint, 0xA1U);
+    const struct tt_DiscoveredEntity* second = tt_Discovery_find_entity(&discovery, 7, endpoint, 0xA2U);
+    EXPECT_TRUE(first != NULL && second != NULL && first != second);
+    EXPECT_TRUE(first != NULL && first->entity_id == 0xA1U);
+    EXPECT_TRUE(second != NULL && second->entity_id == 0xA2U);
+    EXPECT_TRUE(tt_Discovery_find_entity(&discovery, 7, endpoint, 0xA3U) == NULL);
+    EXPECT_TRUE(tt_Discovery_find_entity(&discovery, 8, endpoint, 0xA1U) == NULL);
+    int pair = 0;
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        pair += discovery.entities[i].context_id == 7 && discovery.entities[i].endpoint_id == endpoint ? 1 : 0;
+    }
+    EXPECT_EQ_INT(2, pair);
 }
 
 int main(void) {
     test_colliding_keys_are_found_and_forgotten();
     test_one_endpoint_id_from_many_sources();
     test_entity_id_is_kept_beside_endpoint_id();
+    test_two_entities_of_one_endpoint_are_two_entries();
     test_a_reclaimed_tombstone_changes_its_key_in_the_index();
     test_forget_and_readd_never_grows_the_index();
 

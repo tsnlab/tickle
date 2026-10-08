@@ -1129,7 +1129,7 @@ struct tt_DiscoveredEntity {
     // tt_Discovery_count() only counts alive entities (matching its own "topic list"-style
     // introspection use); tt_Discovery_find() returns a tombstoned entity too, unlike NULL for one
     // never seen at all - callers that care check .alive themselves. Reasserted (a later UPDATE
-    // from the same context_id/endpoint_id) flips this back to true, same slot, no separate "was a
+    // naming the same context_id/entity_id) flips this back to true, same slot, no separate "was a
     // tombstone" signal - the discovery callback's own existing "appeared, refreshed, or departed"
     // framing (tickle.h's own tt_DISCOVERY_CALLBACK doc comment) already covers a reassert as a
     // refresh, nothing new for a caller to handle. A slot search that finds no truly-empty slot
@@ -2787,8 +2787,10 @@ tt_ret_t tt_Context_set_discovery(struct tt_Context* node, struct tt_Discovery* 
 // "topic list"-style use (you wouldn't want a dead node's own topic still listed).
 uint32_t tt_Discovery_count(const struct tt_Discovery* discovery);
 
-// Looks up one specific remote entity by (context_id, endpoint_id), or NULL if it's not currently
-// known - never announced, or *normally* departed (an explicit farewell, or dropped from a fresh
+// Looks up a remote entity by (context_id, endpoint_id): the first one recorded when that context hosts several
+// endpoints of one topic or service (two publishers, or a publisher and a subscriber, share the endpoint_id), so it
+// answers "does that context have one", not "which one" - tt_Discovery_find_entity() names one. NULL if none is
+// currently known - never announced, or *normally* departed (an explicit farewell, or dropped from a fresh
 // announce). A presumed-dead entity (struct tt_DiscoveredEntity.alive's own doc comment) is still
 // returned, with .alive == false, not NULL - check that field to tell the two "not currently
 // alive" shapes apart. The returned pointer is only valid until the next UPDATE this node
@@ -2804,6 +2806,11 @@ static inline void tt_Discovery_reindex(struct tt_Discovery* discovery) {
 #endif
 const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* discovery, uint8_t context_id,
                                                     uint32_t endpoint_id);
+
+// The one remote entity (context_id, entity_id) names - its identity network-wide - looked up under its endpoint_id
+// (the table's index key). Otherwise as tt_Discovery_find(): NULL if not known, a tombstone returned with .alive false.
+const struct tt_DiscoveredEntity* tt_Discovery_find_entity(const struct tt_Discovery* discovery, uint8_t context_id,
+                                                           uint32_t endpoint_id, uint32_t entity_id);
 
 // QoS roadmap #3 (LIVELINESS) RxO, Milestone 62 (rmw_tickle/PLAN.md's own "DDS semantic-parity
 // backlog" row 3) - computes whether `entity` is alive right now, freshly, independent of its own
