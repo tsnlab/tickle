@@ -816,6 +816,74 @@ static bool segment_read(struct tt_SegmentHeader* header, void* buf, uint32_t si
     return usable;
 }
 
+#if tt_SAMPLE_LENDING
+// segment_read() without the copy (receive-buffer lending, DESIGN.md section 10): the head record, read where it lies
+// in its slot. False when the ring is empty or its head is unfinished; a record longer than a slot is released unread
+// and false returned, exactly as segment_read() treats one.
+//
+// read_index moves past the record here, before it is processed, exactly when segment_read() moved it: writers and
+// the ring's own watchers (bell_wake_check reads "consumed" off it) see the same index at the same moment as with
+// the copy. What keeps the slot is its sequence, left at "published": no writer claims it until segment_done() - or,
+// if a sample in it is retained, tt_Sample_release() - sets it one lap ahead.
+static bool segment_take(struct tt_SegmentHeader* header, uint8_t** record, uint32_t* index, uint32_t* len,
+                         uint32_t* sender_ip, uint16_t* sender_port, uint16_t* seq_span) {
+    uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_RELAXED); // ours to move
+    struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)segment_slot(header, read_index);
+    if (__atomic_load_n(&slot_header->sequence, __ATOMIC_ACQUIRE) != read_index + 1U) {
+        return false;
+    }
+    uint32_t length = slot_header->length;
+    if (length > header->slot_bytes) {
+        __atomic_store_n(&slot_header->sequence, read_index + header->slots, __ATOMIC_RELEASE);
+        __atomic_store_n(&header->read_index, read_index + 1U, __ATOMIC_RELEASE);
+        return false;
+    }
+    *record = (uint8_t*)slot_header + sizeof(*slot_header);
+    *index = read_index;
+    *len = length;
+    *sender_ip = slot_header->sender_ip;
+    *sender_port = slot_header->sender_port;
+    uint16_t span = slot_header->seq_span; // as segment_read(): 0 and out-of-range spans read as 1
+    *seq_span = (span >= 1 && span <= tt_FRAG_MAX_COUNT) ? span : 1;
+    __atomic_store_n(&header->read_index, read_index + 1U, __ATOMIC_RELEASE);
+    return true;
+}
+
+// Whether a retained sample still holds ring slot `index` of `region`.
+static bool lend_holds_slot(const struct tt_Context* node, const void* region, uint32_t index) {
+    for (uint32_t k = 0; k < tt_SAMPLE_RETAIN_MAX; k++) {
+        const struct tt_LendEntry* entry = &node->lend.entries[k];
+        if (entry->kind == tt_LEND_SLOT && entry->index == index && entry->region == region) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A record segment_take() handed out, processed: its slot goes back to the writers, after every read of it - unless
+// a sample in it was retained. The slot then keeps the sequence that says "published", which no writer claims, until
+// tt_Sample_release() frees it with index + slots (lend_release_slot()). Writers claim in index order, so the ring
+// runs on past it for one lap and is full from there for every writer (DESIGN.md).
+static void segment_done(struct tt_Context* node, struct tt_SegmentHeader* header, uint32_t index) {
+    if (node->lend.held_slots != 0 && lend_holds_slot(node, header, index)) {
+        return;
+    }
+    __atomic_store_n(&((struct tt_SegmentSlot*)segment_slot(header, index))->sequence, index + header->slots,
+                     __ATOMIC_RELEASE);
+}
+
+// Whether a writer's refusal by `header` is its reader holding a slot: the slot at write_index was published one lap
+// ago (sequence index - slots + 1), and the reader has read past it (the ring is not full by the indices). A racy
+// look, for a counter only; the writer reads the same three words to refuse.
+static bool segment_full_by_hold(struct tt_SegmentHeader* header) {
+    uint32_t claimed = __atomic_load_n(&header->write_index, __ATOMIC_RELAXED);
+    uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_ACQUIRE);
+    const struct tt_SegmentSlot* slot_header = (const struct tt_SegmentSlot*)segment_slot(header, claimed);
+    return claimed - read_index < header->slots &&
+           __atomic_load_n(&slot_header->sequence, __ATOMIC_ACQUIRE) == claimed - header->slots + 1U;
+}
+#endif
+
 // Counted where it happens rather than by the caller, so a new attach path cannot forget to - the
 // same reason the transport counts live in the seam and not at the twelve send sites.
 static void note_attach(struct tt_Context* node, enum tt_SegmentAttach reason) {
@@ -1096,6 +1164,9 @@ static void note_same_host_peer(struct tt_Context* node, uint8_t context_id, uin
         node->same_host_peer_count++;
     }
     ensure_own_segment(node);
+#if tt_SAMPLE_LENDING
+    node->lend.segment_release_deferred = false; // a same-host peer again: the segment is wanted after all
+#endif
     // And let a cached "no" about this peer expire now rather than in tt_SEGMENT_ATTACH_RETRY_SENDS
     // sends. Measured 2026-10-02 (COMPARISON 2.2c): in a same-host ping/pong every repetition read
     // shm_attach_absent=1, tx_udp_unattached=257, shm_attach_ok=1 - the first attach lost a race with
@@ -1257,9 +1328,34 @@ static void forget_same_host_peer(struct tt_Context* node, uint8_t context_id) {
     node->same_host_peer[context_id] = false;
     node->same_host_peer_count--;
     if (node->same_host_peer_count == 0 && !own_segment_attached_by_self(node)) {
+#if tt_SAMPLE_LENDING
+        // Not while a retained sample lives in it, nor under the record being read in place (a farewell processed
+        // from the ring ends here): the polling thread finishes it once neither is true (lend_finish_release()).
+        if (node->lend.held_slots != 0 || node->lend.rx_kind == tt_LEND_SLOT) {
+            node->lend.segment_release_deferred = true;
+            return;
+        }
+#endif
         release_own_segment(node);
     }
 }
+
+#if tt_SAMPLE_LENDING
+// The lazy release forget_same_host_peer() put off, if it is still due and nothing holds the segment now. On the
+// polling thread only: the drain reads own_segment without the lock (drain_own_segment()'s fast path), so it is never
+// unmapped from another thread - which is why tt_Sample_release() does not call this. True when it released.
+static bool lend_finish_release(struct tt_Context* node) {
+    if (!node->lend.segment_release_deferred || node->lend.held_slots != 0 || node->lend.rx_kind == tt_LEND_SLOT) {
+        return false;
+    }
+    node->lend.segment_release_deferred = false;
+    if (node->same_host_peer_count != 0 || own_segment_attached_by_self(node)) {
+        return false; // a peer came back meanwhile: the segment is wanted again
+    }
+    release_own_segment(node);
+    return true;
+}
+#endif
 
 #endif
 
@@ -1394,6 +1490,11 @@ static bool segment_deliver_ringing(struct tt_Context* node, uint8_t context_id,
         // same-host cell 97.6% of its traffic and 8x of its throughput. One logical stream, one
         // path. A full ring is a full queue, and a full queue drops.
         node->segment_full_dropped++;
+#if tt_SAMPLE_LENDING
+        if (segment_full_by_hold(segment)) {
+            node->lend.full_retained++;
+        }
+#endif
         // A ring that will not take anything, again and again, is how an owner that stopped draining
         // looks from here - there is no other signal, since a killed owner's region stays mapped and
         // valid. Given up past the streak, after which this peer is UNATTACHED and reached over UDP,
@@ -3680,6 +3781,10 @@ static void reset_node_state(struct tt_Context* node) {
     memset(node->rx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->rx_tail = 0;
     node->rx_size = tt_MAX_BUFFER_LENGTH * 2;
+#if tt_SAMPLE_LENDING
+    // No pool, nothing held, the socket reading into rx_buffer (landing 0), every counter zero.
+    memset(&node->lend, 0, sizeof(node->lend));
+#endif
 
     memset(node->scheduler, 0, sizeof(struct tt_TCB) * tt_MAX_SCHEDULER_LENGTH);
     node->scheduler_tail = 0;
@@ -8586,6 +8691,10 @@ static bool every_peer_reached(struct tt_Context* node) {
 
 static void node_update(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
+#if tt_SAMPLE_LENDING && tt_SEGMENT_ENABLED
+    // A segment release put off while a retained sample held a slot, finished on the polling thread (DESIGN.md 10).
+    (void)lend_finish_release(node);
+#endif
 
     // At the short-lease cadence (LIVELINESS_PLAN.md 10) a summary is skipped when the node's own traffic
     // has already reached every peer since the last one: under traffic the last sign of life is then the
@@ -9797,6 +9906,12 @@ static void deliver_payload(struct tt_Context* node, struct tt_Subscriber* sub, 
                             uint8_t source, uint32_t entity_id, const uint8_t* payload, uint32_t length, bool is_native,
                             bool via_data_port, bool* out_decode_failed) {
     struct tt_Topic* topic = sub->topic;
+#if tt_SAMPLE_LENDING
+    // What tt_Sample_retain() may keep, for the length of the callback: the payload, and whose callback it is. On this
+    // thread's stack, and the outer delivery put back afterwards - a callback may publish, and a local delivery nests.
+    struct tt_LendDelivery lend = {sub, payload, length, is_native};
+    const struct tt_LendDelivery* outer = node->lend.delivery;
+#endif
 
     // Zero-copy path: hand the callback a tt_Data* aliasing the payload directly, skipping the
     // decode-into-scratch copy and the matching data_free. Falls through to the copy path when
@@ -9807,7 +9922,13 @@ static void deliver_payload(struct tt_Context* node, struct tt_Subscriber* sub, 
             record_delivery_order(node, sub, seq_no, timestamp, source, entity_id, via_data_port);
             sub->delivering_source = source;
             sub->delivering_entity_id = entity_id;
+#if tt_SAMPLE_LENDING
+            node->lend.delivery = &lend;
+#endif
             sub->callback(sub, timestamp, (uint16_t)seq_no, inplace);
+#if tt_SAMPLE_LENDING
+            node->lend.delivery = outer;
+#endif
             return;
         }
     }
@@ -9825,7 +9946,13 @@ static void deliver_payload(struct tt_Context* node, struct tt_Subscriber* sub, 
     record_delivery_order(node, sub, seq_no, timestamp, source, entity_id, via_data_port);
     sub->delivering_source = source;
     sub->delivering_entity_id = entity_id;
+#if tt_SAMPLE_LENDING
+    node->lend.delivery = &lend;
+#endif
     sub->callback(sub, timestamp, (uint16_t)seq_no, (struct tt_Data*)data);
+#if tt_SAMPLE_LENDING
+    node->lend.delivery = outer;
+#endif
     topic->data_free((struct tt_Data*)data);
 }
 
@@ -12818,6 +12945,20 @@ static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t he
 static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
                                         enum tt_Transport transport, uint16_t seq_span);
 
+// Where the socket reads its next datagram: the context's rx_buffer, or - once a sample retained from it keeps it - a
+// free buffer of the lending pool (tt_Context_set_rx_pool()). Read on the polling thread only, which is also the only
+// thread that changes it (lend_retain_locked()).
+#if tt_SAMPLE_LENDING
+static uint8_t* lend_buffer(struct tt_Context* node, uint32_t number) {
+    return number == 0 ? node->rx_buffer : node->lend.pool + ((size_t)(number - 1U) * tt_RX_POOL_BUFFER_BYTES);
+}
+#define RX_LANDING(node) lend_buffer((node), (node)->lend.landing)
+static tt_ret_t process_datagram_at(struct tt_Context* node, uint8_t* buffer, int32_t len, uint32_t ip, uint16_t port,
+                                    enum tt_Transport transport, uint16_t seq_span, uint8_t kind, uint32_t index);
+#else
+#define RX_LANDING(node) ((node)->rx_buffer)
+#endif
+
 // One datagram counted as received, by transport and by socket - process_datagram_locked()'s counting, and the segment
 // drain's for a record it passes over unread, so the totals agree whichever way a record was dealt with.
 static void count_arrivals(struct tt_Context* node, enum tt_Transport transport, uint32_t datagrams) {
@@ -14048,8 +14189,17 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
                 taken += passed;
                 continue;
             }
+#if tt_SAMPLE_LENDING
+            // Read in place (DESIGN.md section 10, receive-buffer lending): the record is processed in its slot, which
+            // is released after - or kept, if a sample in it was retained.
+            struct tt_SegmentHeader* ring = node->own_segment;
+            uint8_t* record = NULL;
+            uint32_t index = 0;
+            if (!segment_take(ring, &record, &index, &len, &sender_ip, &sender_port, &seq_span)) {
+#else
             if (!segment_read(node->own_segment, node->rx_buffer, (uint32_t)sizeof(node->rx_buffer), &len, &sender_ip,
                               &sender_port, &seq_span)) {
+#endif
                 note_head_stall(node); // empty, or a head nobody is coming back for - the two look alike
                 ran_dry = true;
                 break;
@@ -14061,7 +14211,17 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
             // where a peer lives from the address its announce arrived on.
             // The span travels with the record, not with the peer: the same writer's next record
             // may be a different size and consume a different number of seq_nos.
+#if tt_SAMPLE_LENDING
+            (void)process_datagram_at(node, record, (int32_t)len, sender_ip, sender_port, tt_TRANSPORT_SHM, seq_span,
+                                      tt_LEND_SLOT, index);
+            segment_done(node, ring, index);
+            if (node->lend.segment_release_deferred && lend_finish_release(node)) {
+                ran_dry = true; // the record was the last same-host peer's farewell: there is no ring any more
+                break;
+            }
+#else
             (void)process_datagram_locked(node, (int32_t)len, sender_ip, sender_port, tt_TRANSPORT_SHM, seq_span);
+#endif
         }
         state_unlock(node);
         delivered += taken;
@@ -14094,8 +14254,38 @@ static tt_ret_t process_datagram(struct tt_Context* node, int32_t len, uint32_t 
     return result;
 }
 
+// The datagram of `len` bytes at `buffer` - the receive buffer the socket read it into, or (lending) the ring slot it
+// lies in - decoded and dispatched.
+static tt_ret_t process_datagram_in(struct tt_Context* node, uint8_t* buffer, int32_t len, uint32_t ip, uint16_t port,
+                                    enum tt_Transport transport, uint16_t seq_span);
+
+#if tt_SAMPLE_LENDING
+// process_datagram_in() with the datagram's memory recorded for tt_Sample_retain(): `kind` and `index` say where it
+// lives (tt_LEND_BUFFER and the buffer, tt_LEND_SLOT and the ring index), and only while it is being processed.
+static tt_ret_t process_datagram_at(struct tt_Context* node, uint8_t* buffer, int32_t len, uint32_t ip, uint16_t port,
+                                    enum tt_Transport transport, uint16_t seq_span, uint8_t kind, uint32_t index) {
+    node->lend.rx_base = buffer;
+    node->lend.rx_length = len > 0 ? (uint32_t)len : 0U;
+    node->lend.rx_index = index;
+    node->lend.rx_kind = kind;
+    tt_ret_t result = process_datagram_in(node, buffer, len, ip, port, transport, seq_span);
+    node->lend.rx_kind = tt_LEND_FREE;
+    return result;
+}
+#endif
+
 static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
                                         enum tt_Transport transport, uint16_t seq_span) {
+#if tt_SAMPLE_LENDING
+    return process_datagram_at(node, RX_LANDING(node), len, ip, port, transport, seq_span, tt_LEND_BUFFER,
+                               node->lend.landing);
+#else
+    return process_datagram_in(node, node->rx_buffer, len, ip, port, transport, seq_span);
+#endif
+}
+
+static tt_ret_t process_datagram_in(struct tt_Context* node, uint8_t* buffer, int32_t len, uint32_t ip, uint16_t port,
+                                    enum tt_Transport transport, uint16_t seq_span) {
     // Set here and nowhere else, so no arrival path can forget to and none inherits the last
     // record's span. Read, not consumed: one DATA can match several Subscribers and each needs it.
     node->rx_seq_span = (seq_span >= 1) ? seq_span : 1;
@@ -14121,7 +14311,7 @@ static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, ui
     // the port end a node with one UDP datagram: one v10 packet from a leftover process ended a v11 server on the
     // rig, twenty seconds into its run, and voided the measurement. An error return is for this node's own
     // failures - an encode that overflows, a socket that breaks - not for what a peer chose to send.
-    if (!process_packet(node, node->rx_buffer, 0, len, ip, port, transport)) {
+    if (!process_packet(node, buffer, 0, len, ip, port, transport)) {
         TT_LOG_ERROR("Cannot process packet");
         node->rx_malformed_drops++;
         return tt_RET_OK;
@@ -14150,7 +14340,7 @@ static tt_ret_t drain_rx_chunk(struct tt_Context* node, uint32_t* since_clock, b
     uint16_t port = 0;
     state_lock(node);
     for (uint32_t taken = 0; taken < tt_RX_LOCK_CHUNK && result == tt_RET_OK && tt_rx_buffered(node) > 0; taken++) {
-        int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+        int32_t len = tt_try_receive(node, RX_LANDING(node), tt_MAX_BUFFER_LENGTH, &ip, &port);
         if (len < 0) {
             break;
         }
@@ -14180,7 +14370,7 @@ static tt_ret_t drain_rx(struct tt_Context* node, tt_ret_t first_result) {
             // The next receive may read the socket: outside the lock, one datagram, as before D4.
             uint32_t ip = 0;
             uint16_t port = 0;
-            int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+            int32_t len = tt_try_receive(node, RX_LANDING(node), tt_MAX_BUFFER_LENGTH, &ip, &port);
             if (len < 0) {
                 break; // -1 nothing waiting, -2 I/O error - either way, done draining
             }
@@ -14256,7 +14446,7 @@ static tt_ret_t poll_once_nonblocking(struct tt_Context* node, uint64_t time) {
 
     uint32_t ip = 0;
     uint16_t port = 0;
-    int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+    int32_t len = tt_try_receive(node, RX_LANDING(node), tt_MAX_BUFFER_LENGTH, &ip, &port);
     if (len < 0) {
         return tt_RET_TIMEOUT;
     }
@@ -14376,7 +14566,7 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
     }
     node->segment_sleeps++;
 #endif
-    int32_t len = tt_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
+    int32_t len = tt_receive(node, RX_LANDING(node), tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
 #if tt_SEGMENT_ENABLED
     segment_reader_waiting(node, false);
 #endif
@@ -14443,7 +14633,7 @@ static bool busy_peek(struct tt_Context* node, tt_ret_t* result) {
     }
     uint32_t ip = 0;
     uint16_t port = 0;
-    int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+    int32_t len = tt_try_receive(node, RX_LANDING(node), tt_MAX_BUFFER_LENGTH, &ip, &port);
     if (len < 0) {
         return false;
     }
@@ -14630,6 +14820,213 @@ bool tt_Context_entity_alive(const struct tt_Context* node, const struct tt_Disc
     return result;
 }
 
+// ---- Receive-buffer lending (DESIGN.md section 10): tt_Sample_retain() / tt_Sample_release().
+#if tt_SAMPLE_LENDING
+// A handle is (generation << 8) | (entry + 1): the generation has the 24 bits above the entry's byte.
+#define LEND_GENERATION_MASK 0xFFFFFFU
+
+// Whether a retained sample still holds receive buffer `number`.
+static bool lend_holds_buffer(const struct tt_Context* node, uint32_t number) {
+    for (uint32_t k = 0; k < tt_SAMPLE_RETAIN_MAX; k++) {
+        const struct tt_LendEntry* entry = &node->lend.entries[k];
+        if (entry->kind == tt_LEND_BUFFER && entry->index == number) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A receive buffer no sample holds, other than `current` (the one the datagram being processed is in), or -1.
+static int32_t lend_spare_buffer(const struct tt_Context* node, uint32_t current) {
+    for (uint32_t number = 0; number <= node->lend.pool_count; number++) {
+        if (number != current && !lend_holds_buffer(node, number)) {
+            return (int32_t)number;
+        }
+    }
+    return -1;
+}
+
+static int32_t lend_free_entry(const struct tt_Context* node) {
+    for (uint32_t k = 0; k < tt_SAMPLE_RETAIN_MAX; k++) {
+        if (node->lend.entries[k].kind == tt_LEND_FREE) {
+            return (int32_t)k;
+        }
+    }
+    return -1;
+}
+
+static tt_ret_t lend_retain_locked(struct tt_Context* node, const struct tt_Subscriber* sub, struct tt_Sample* out) {
+    const struct tt_LendDelivery* delivery = node->lend.delivery;
+    if (delivery == NULL || delivery->sub != sub) {
+        return tt_RET_ILLEGAL_STATUS; // not inside this Subscriber's callback
+    }
+    // Lendable exactly when the payload lies in the datagram being processed: anything else is a copy core made into
+    // its own storage (reassembly, reorder buffer, local delivery) and is not handed out.
+    const uint8_t* base = node->lend.rx_base;
+    uint8_t kind = node->lend.rx_kind;
+    if (kind == tt_LEND_FREE || delivery->payload < base || delivery->length > node->lend.rx_length ||
+        (size_t)(delivery->payload - base) > node->lend.rx_length - delivery->length) {
+        node->lend.unlendable++;
+        return tt_RET_UNSUPPORTED;
+    }
+    int32_t entry_index = lend_free_entry(node);
+    if (entry_index < 0) {
+        node->lend.exhausted++;
+        return tt_RET_OUT_OF_BUFFER;
+    }
+    const void* region = NULL;
+    if (kind == tt_LEND_BUFFER) {
+        // The first sample kept in this buffer: the socket's next datagram needs another one to go to.
+        if (!lend_holds_buffer(node, node->lend.rx_index)) {
+            int32_t spare = lend_spare_buffer(node, node->lend.rx_index);
+            if (spare < 0) {
+                node->lend.exhausted++;
+                return tt_RET_OUT_OF_BUFFER;
+            }
+            node->lend.landing = (uint8_t)spare;
+        }
+    } else {
+#if tt_SEGMENT_ENABLED
+        region = node->own_segment;
+        node->lend.held_slots++;
+#endif
+    }
+    struct tt_LendEntry* entry = &node->lend.entries[entry_index];
+    entry->generation = (entry->generation + 1U) & LEND_GENERATION_MASK;
+    if (entry->generation == 0) {
+        entry->generation = 1;
+    }
+    entry->kind = kind;
+    entry->index = node->lend.rx_index;
+    entry->region = region;
+    node->lend.held++;
+    node->lend.retains++;
+    out->payload = delivery->payload;
+    out->length = delivery->length;
+    out->is_native_endian = delivery->is_native;
+    out->handle = (entry->generation << 8U) | ((uint32_t)entry_index + 1U);
+    return tt_RET_OK;
+}
+
+tt_ret_t tt_Sample_retain(struct tt_Subscriber* sub, struct tt_Sample* out) {
+    if (sub == NULL || out == NULL || sub->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    struct tt_Context* node = sub->node;
+    state_lock(node); // already held by the delivering thread, which is the only one that can succeed
+    tt_ret_t result = lend_retain_locked(node, sub, out);
+    state_unlock(node);
+    return result;
+}
+
+// A slot no retained sample holds any more goes back to the writers - unless it is the record the drain is still
+// processing (retained and released inside one callback): read_index is already past it, so a writer could claim it
+// while the rest of the record (a batch) is still being read. segment_done() frees that one, after.
+static void lend_release_slot(struct tt_Context* node, const struct tt_LendEntry* released) {
+#if tt_SEGMENT_ENABLED
+    struct tt_SegmentHeader* header = node->own_segment;
+    if (header == NULL || released->region != header) {
+        return; // not the segment it was read from: cannot happen while the release of a held one waits (DESIGN.md)
+    }
+    if (lend_holds_slot(node, header, released->index)) {
+        return; // another sample of the same record (a batch) still holds it
+    }
+    if (node->lend.rx_kind == tt_LEND_SLOT && node->lend.rx_index == released->index) {
+        return; // still being read
+    }
+    struct tt_SegmentSlot* slot_header = (struct tt_SegmentSlot*)segment_slot(header, released->index);
+    // Release, after every read the holder made of the record: a writer that sees this reuses the slot.
+    __atomic_store_n(&slot_header->sequence, released->index + header->slots, __ATOMIC_RELEASE);
+#else
+    UNUSED(node);
+    UNUSED(released);
+#endif
+}
+
+tt_ret_t tt_Sample_release(struct tt_Context* node, struct tt_Sample* sample) {
+    if (node == NULL || sample == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(node);
+    uint32_t handle = sample->handle;
+    uint32_t entry_index = (handle & 0xFFU) - 1U; // handle 0 wraps to a value past the table
+    struct tt_LendEntry* entry = entry_index < tt_SAMPLE_RETAIN_MAX ? &node->lend.entries[entry_index] : NULL;
+    if (entry == NULL || entry->kind == tt_LEND_FREE || entry->generation != (handle >> 8U)) {
+        node->lend.bad_releases++;
+        state_unlock(node);
+        return tt_RET_INVALID_ARGUMENT; // not held: never released twice, never something else's slot or buffer
+    }
+    struct tt_LendEntry released = *entry;
+    entry->kind = tt_LEND_FREE;
+    entry->region = NULL;
+    node->lend.held--;
+    node->lend.releases++;
+    if (released.kind == tt_LEND_SLOT) {
+        node->lend.held_slots--;
+        lend_release_slot(node, &released);
+    }
+    // A buffer needs nothing more: it is free once no entry names it, and the socket is pointed at a free one only
+    // when a retain needs it to move (lend_retain_locked()).
+    state_unlock(node);
+    sample->payload = NULL;
+    sample->length = 0;
+    sample->handle = 0;
+    return tt_RET_OK;
+}
+
+tt_ret_t tt_Context_set_rx_pool(struct tt_Context* node, uint64_t* storage, uint8_t count) {
+    if (node == NULL || (storage == NULL && count != 0) || count > tt_RX_POOL_MAX) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(node);
+    bool busy = node->lend.landing != 0;
+    for (uint32_t number = 1; number <= node->lend.pool_count && !busy; number++) {
+        busy = lend_holds_buffer(node, number);
+    }
+    if (busy) {
+        state_unlock(node);
+        return tt_RET_ILLEGAL_STATUS; // a sample or the socket is in the pool being replaced
+    }
+    node->lend.pool = (uint8_t*)storage;
+    node->lend.pool_count = storage == NULL ? 0 : count;
+    state_unlock(node);
+    return tt_RET_OK;
+}
+
+// Every retained sample forgotten, at tt_Context_destroy(): their bytes go with the context (the segment is unmapped
+// next), and a release that comes later must be refused rather than write into a slot that is no longer mapped.
+static void lend_forget_all(struct tt_Context* node) {
+    if (node->lend.held != 0) {
+        TT_LOG_WARNING("Context %u destroyed with %u retained sample(s) not released: their bytes are no longer valid",
+                       node->id, (unsigned)node->lend.held);
+    }
+    for (uint32_t k = 0; k < tt_SAMPLE_RETAIN_MAX; k++) {
+        node->lend.entries[k].kind = tt_LEND_FREE;
+        node->lend.entries[k].region = NULL;
+    }
+    node->lend.held = 0;
+    node->lend.held_slots = 0;
+    node->lend.landing = 0;
+    node->lend.segment_release_deferred = false;
+}
+#else
+tt_ret_t tt_Sample_retain(struct tt_Subscriber* sub, struct tt_Sample* out) {
+    return (sub == NULL || out == NULL) ? tt_RET_INVALID_ARGUMENT : tt_RET_UNSUPPORTED;
+}
+
+tt_ret_t tt_Sample_release(struct tt_Context* node, struct tt_Sample* sample) {
+    UNUSED(node);
+    UNUSED(sample);
+    return tt_RET_INVALID_ARGUMENT; // nothing can have been retained
+}
+
+tt_ret_t tt_Context_set_rx_pool(struct tt_Context* node, uint64_t* storage, uint8_t count) {
+    UNUSED(storage);
+    UNUSED(count);
+    return node == NULL ? tt_RET_INVALID_ARGUMENT : tt_RET_UNSUPPORTED;
+}
+#endif
+
 static tt_ret_t node_destroy_locked(struct tt_Context* node);
 
 tt_ret_t tt_Context_destroy(struct tt_Context* node) {
@@ -14645,6 +15042,12 @@ tt_ret_t tt_Context_destroy(struct tt_Context* node) {
     state_unlock(node);
     return result;
 }
+
+#if tt_SAMPLE_LENDING
+#define LEND_COUNT(node, field) ((node)->lend.field)
+#else
+#define LEND_COUNT(node, field) 0
+#endif
 
 static tt_ret_t node_destroy_locked(struct tt_Context* node) {
     // One line, at the one moment the whole run's traffic is known. Cheap enough to be
@@ -14695,7 +15098,11 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         // How often this reader announced a sleep (generations, and of the announcements those that kept a called-off
         // sleep's generation; segment_sleep_called_off()) and how often it then waited: the announcements less the
         // waits are the sleeps called off, each of which a writer has usually rung for nothing.
-        "shm_sleep_generations=%lu shm_generations_kept=%lu shm_sleeps=%lu",
+        "shm_sleep_generations=%lu shm_generations_kept=%lu shm_sleeps=%lu "
+        // Receive-buffer lending (DESIGN.md section 10): compiled in or not, and what it did. lending=1 with every
+        // count 0 is the treatment check of an A/B that measures it unused.
+        "lending=%u lend_retains=%lu lend_releases=%lu lend_unlendable=%lu lend_exhausted=%lu lend_bad_releases=%lu "
+        "lend_held=%lu shm_full_retained=%lu",
         node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
         (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
         (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -14716,7 +15123,11 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned long)node->segment_cost_mean_ns[0], (unsigned long)node->segment_cost_mean_ns[1],
         (unsigned)node->segment_preferred, (unsigned long)node->segment_encoded_in_slot,
         (unsigned long)node->rx_drain_ring_turns, (unsigned long)node->segment_sleep_generation,
-        (unsigned long)node->segment_generations_kept, (unsigned long)node->segment_sleeps);
+        (unsigned long)node->segment_generations_kept, (unsigned long)node->segment_sleeps, (unsigned)tt_SAMPLE_LENDING,
+        (unsigned long)LEND_COUNT(node, retains), (unsigned long)LEND_COUNT(node, releases),
+        (unsigned long)LEND_COUNT(node, unlendable), (unsigned long)LEND_COUNT(node, exhausted),
+        (unsigned long)LEND_COUNT(node, bad_releases), (unsigned long)LEND_COUNT(node, held),
+        (unsigned long)LEND_COUNT(node, full_retained));
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads
@@ -14782,6 +15193,9 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
     }
     __atomic_store_n(&node->sched_inbox_pending, 0, __ATOMIC_RELAXED);
 
+#if tt_SAMPLE_LENDING
+    lend_forget_all(node); // before the segment is unmapped: a later release must find nothing to write to
+#endif
 #if tt_SEGMENT_ENABLED
     // Before the socket goes: the segment is named from this context's address, and the
     // teardown below is the last point at which that name is still this context's.

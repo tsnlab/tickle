@@ -714,6 +714,28 @@
 #ifndef tt_LOCAL_DELIVERY
 #define tt_LOCAL_DELIVERY 0
 #endif
+// Receive-buffer lending (DESIGN.md section 10, "Receive-buffer lending"): tt_Sample_retain() keeps a delivered
+// sample in the ring slot or receive buffer it arrived in until tt_Sample_release(). 0 compiles it out and leaves the
+// receive path as it was before it existed - the segment drain then copies each record out of its slot, as stage 1
+// did. Off on FreeRTOS, where it would work on the receive-buffer pool alone (no segment): there the handle table is
+// RAM a target may not want, so it is a choice made with a -D.
+#ifndef tt_SAMPLE_LENDING
+#if defined(TT_PLATFORM_FREERTOS)
+#define tt_SAMPLE_LENDING 0
+#else
+#define tt_SAMPLE_LENDING 1
+#endif
+#endif
+// Samples one context may hold retained at once. A handle names its entry in its low byte.
+#ifndef tt_SAMPLE_RETAIN_MAX
+#define tt_SAMPLE_RETAIN_MAX 16
+#endif
+// Receive buffers a caller may attach for socket-path lending (tt_Context_set_rx_pool()), each
+// tt_RX_POOL_BUFFER_BYTES: one is needed for every receive buffer held, since the next datagram needs somewhere to go.
+#ifndef tt_RX_POOL_MAX
+#define tt_RX_POOL_MAX 32
+#endif
+#define tt_RX_POOL_BUFFER_BYTES ((((uint32_t)tt_MAX_BUFFER_LENGTH) + 7U) & ~7U)
 // (g6, rmw_tickle/RMW_GAPS_PLAN.md, 2026-09-28) How far a context may discover and be discovered - ROS 2's
 // ROS_AUTOMATIC_DISCOVERY_RANGE and ROS_STATIC_PEERS. 0, the default: the configured links only, as always. 1,
 // rmw_tickle's build: _tt_CONFIG.discovery_range limits it (tt_DISCOVERY_RANGE_* below), and a link marked `peer` is
@@ -1097,3 +1119,6 @@ static_assert((tt_DISCOVERY_INDEX_SIZE & (tt_DISCOVERY_INDEX_SIZE - 1)) == 0 &&
                   tt_DISCOVERY_INDEX_SIZE >= 2 * tt_MAX_DISCOVERED_ENTITIES && tt_MAX_DISCOVERED_ENTITIES < UINT16_MAX,
               "the discovery index is a power of two, at least twice the table, of uint16_t slot numbers");
 #endif
+static_assert(tt_SAMPLE_RETAIN_MAX >= 1 && tt_SAMPLE_RETAIN_MAX <= UINT8_MAX,
+              "a retained sample's handle names its entry in its low byte, 0 meaning none");
+static_assert(tt_RX_POOL_MAX >= 0 && tt_RX_POOL_MAX < UINT8_MAX, "a receive buffer is numbered in a uint8_t");

@@ -486,7 +486,12 @@ the sample it was handed beyond the callback, without copying it, until it gives
   The table full is `tt_RET_OUT_OF_BUFFER`.
 - **Threads.** Retain runs on the delivering thread, under the state lock it already holds. Release may come from any
   thread: it takes the state lock, so it never interleaves with the drain. A release of the record still being
-  processed (retain and release in one callback) leaves the slot to the drain, which frees it as usual.
+  processed (retain and release in one callback) leaves the slot to the drain, which frees it after the whole record
+  (a batch) is read. `read_index` moves past a record when it is taken, as with the copy; only the slot's `sequence`
+  waits.
+- **Read in place.** A record is processed from memory its writers can map. A writer never touches a published record
+  before its release; one that does is a same-user process with write access to the segment (its permissions), so
+  already trusted as much as the record's content.
 - **A held slot blocks only its own ring, one lap later.** Writers claim slots in index order, so the ring keeps
   running past a held slot until a writer's claim reaches it again, one lap (`tt_SEGMENT_SLOTS` records) on; from
   there that ring is full for every writer into it, with the existing full-ring behaviour: the datagram is dropped
@@ -503,8 +508,8 @@ the sample it was handed beyond the callback, without copying it, until it gives
   segment is unmapped and every handle is forgotten, so a later release is refused rather than written into unmapped
   memory. Pool storage is the caller's and must outlive the context, like every other attached storage.
 - **No cost when off.** `tt_SAMPLE_LENDING` compiles it in (1 on Linux, 0 on FreeRTOS, where it works on the pool
-  alone: no segment). At 0 the receive path is byte-for-byte stage 1's. At 1 and unused it costs a pointer and
-  three stores per delivery, and saves the segment drain's copy of every record; its A/B against main is in
+  alone: no segment). At 0 the receive path is stage 1's. At 1 and unused it costs a few stores per datagram and
+  per delivery, and saves the segment drain's copy of every record; its A/B against main is in
   [RESULTS.md](RESULTS.md) once measured. Counters (`lend_*`, `shm_full_retained`) are on the traffic line.
 
 ## 11. Memory model
