@@ -28,6 +28,14 @@ target_link_libraries(endpoint_memory
   ${std_msgs_TARGETS}
 )
 
+# The loaned-messages bench (../rmw_loan_bench.c, built and run by ../rmw_loan_bench.sh): here only so CI's lint has a
+# compile database entry for it, with the ROS and rmw_tickle flags it is built with - the core lint cannot parse it.
+add_executable(rmw_loan_bench ../rmw_loan_bench.c)
+target_link_libraries(rmw_loan_bench
+  rmw_tickle::rmw_tickle
+  rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
+)
+
 add_executable(conv_cost conv_cost.cpp)
 target_link_libraries(conv_cost
   rclcpp::rclcpp

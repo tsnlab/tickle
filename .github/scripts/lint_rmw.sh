@@ -95,6 +95,24 @@ check_c() {
     return 0
 }
 
+# check_c_db <package> <file>: a C file outside rmw_tickle that a ROS package builds (its own database entry required).
+# shellcheck disable=SC2329  # invoked through check_loan_bench() below
+check_c_db() {
+    local package="$1" f="$2" out
+    if ! grep -q "\"file\": \"$REPO/$f\"" "build/$package/compile_commands.json" 2>/dev/null; then
+        echo "$f: not in build/$package/compile_commands.json - clang-tidy would not parse it as built"
+        return 1
+    fi
+    out=$("$TIDY" -p "build/$package" "$f" 2>&1 | grep -E "$(basename "$f"):[0-9]+:[0-9]+: (warning|error)")
+    if [ -n "$out" ]; then
+        echo "$out"
+        return 1
+    fi
+    return 0
+}
+# shellcheck disable=SC2329  # invoked through start() below
+check_loan_bench() { check_c_db conv_cost "$1"; }
+
 # A tracked C++ file, against its own package's database, then compiled at C++17. Prints findings; non-zero if there
 # were any, and 3 if the file is one this machine cannot build (counted as not checked).
 # shellcheck disable=SC2329  # invoked through start() below
@@ -212,6 +230,11 @@ for f in "${cpp_files[@]}"; do
     start "$n" check_cpp "$f"
     n=$((n + 1))
 done
+# C outside rmw_tickle that needs ROS (2026-10-08): the loaned-messages bench, built in conv_cost for its database entry
+# and excluded from `make lint`, which has no ROS include path and stops at 'rcutils/allocator.h' file not found.
+files+=(examples/perf_hil/experiments/rmw_loan_bench.c)
+start "$n" check_loan_bench examples/perf_hil/experiments/rmw_loan_bench.c
+n=$((n + 1))
 wait
 
 fail=0
