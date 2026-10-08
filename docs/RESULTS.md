@@ -225,6 +225,38 @@ Rows not shown are WINs of the same shape: RTT p50 and p99 in every cell, CPU pe
 - At BEST_EFFORT max rate rmw_tickle's publisher sends ~1.8M samples/s and its KEEP_LAST 1 reader keeps the newest;
   CycloneDDS's publisher sends about what its reader takes (~70k/s). The delivered rate is the scored figure.
 
+### Loaned messages (PC)
+
+**A PC figure, not a rig one**, and rmw level, without rclcpp: `experiments/rmw_loan_bench.sh` (one publisher and one
+subscriber process in a private netns, an Array1k-shaped type, max rate, 6 s with 1 s dropped at each end, 8 reps,
+arms rotated; reading rules in its header, enforced by `rmw_loan_bench_summary.py`). Build: `ab/lending` `fe15102e`
+merged with `f837ae82` plus the loaned-messages change (`-O3` Release; the library's md5 is in the raw files), 2026-10-08 22:07;
+raw files `~/rmw_loans_ws/bench3/`. The PC was carrying other jobs (load 5-8). Arms: `copy` (RMW_TICKLE_LOANS=0,
+`rmw_publish`/`rmw_take`), `copy2` (the same again: the control), `loan` (borrow/publish_loaned, take_loaned/return:
+decoded shells), `loan_ring` (`RMW_TICKLE_LOAN_RING_SLOTS=1`: read in the ring slot). Medians [range]:
+
+| QoS | Arm | Delivered/s | Sub CPU us/msg | Pub CPU us/msg | Read in place |
+|---|---|---:|---:|---:|---:|
+| RELIABLE KEEP_ALL | copy | 1,151,275 [668,819-1,283,118] | 0.746 [0.692-0.809] | 0.816 [0.747-0.894] | - |
+| | copy2 | 1,163,035 [603,433-1,324,266] | 0.728 [0.681-0.803] | 0.794 [0.729-0.864] | - |
+| | loan | 988,960 [254,482-1,265,849] | 0.870 [0.684-1.212] | 0.900 [0.751-1.119] | 0 |
+| | loan_ring | 1,091,068 [467,783-1,463,842] | 0.790 [0.624-1.222] | 0.843 [0.659-1.015] | 0.36 |
+| BEST_EFFORT KEEP_LAST 1 | copy | 397,684 [325,241-462,234] | 2.476 [2.159-2.656] | 0.487 [0.328-0.606] | - |
+| | copy2 | 379,180 [280,488-457,952] | 2.569 [2.183-2.609] | 0.487 [0.330-0.648] | - |
+| | loan | 396,161 [345,223-461,996] | 2.470 [2.107-2.569] | 0.645 [0.394-0.710] | 0 |
+| | loan_ring | 429,417 [310,540-503,978] | 2.221 [1.964-2.511] | 0.424 [0.353-0.529] | 1.00 |
+
+- **Every comparison reads NO DIFFERENCE**: each arm's range overlaps `copy`'s. Two earlier 5-rep runs of the same
+  harness (`bench1`, before the first two fixes below, and `bench2`, before the third) read the same way, with
+  BEST_EFFORT `loan_ring` the one arm whose medians moved the same direction every time (+26%, +28%, +8% delivered;
+  -21%, -22%, -10% sub CPU). `bench1` read three BETTER verdicts (`loan_ring` delivered and sub CPU, `loan` sub CPU
+  by -2.9%) that neither later run repeated.
+- Fixed on the way, from those runs: a borrow resolved its type support through the dispatch chain (and reset an rmw
+  error) on every call; a loaned take held `queue_mutex` three times where a take holds it once; a kept publisher
+  buffer was cleared (1 KB written) on every borrow.
+- RELIABLE `loan_ring` reads only 36% in place: KEEP_ALL lets the queue run deep, and a subscription keeps at most 8
+  queued samples where they arrived (core holds 16 per context); the rest are decoded.
+
 ## 2. Cross-host (two Pis over the rig's link)
 
 **✅ = best, ❌ = worst** in the row. Lower is better for latency, CPU, memory and bandwidth; higher for throughput.
