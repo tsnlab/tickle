@@ -342,8 +342,13 @@ rmw_ret_t rmw_take_response(const rmw_client_t* client, rmw_service_info_t* requ
     *taken = true;
     memset(request_header, 0, sizeof(*request_header));
     request_header->request_id.sequence_number = seq;
-    // source_timestamp/received_timestamp/writer_guid left zeroed - no real timestamp/GID
-    // tracking on this path yet (matches rmw_publisher.c's own message_info gap).
+    // A request id names the request, and this client wrote it: its writer_guid is this client's own gid, the
+    // same one the server side reports for the request (rmw_service.c, rmw_take_request()), as DDS rmws do.
+    // source_timestamp/received_timestamp stay zero: a CallResponse carries no source time.
+    rmw_gid_t own_gid;
+    if (RMW_RET_OK == rmw_get_gid_for_client(client, &own_gid)) {
+        memcpy(request_header->request_id.writer_guid, own_gid.data, sizeof(request_header->request_id.writer_guid));
+    }
     return RMW_RET_OK;
 }
 

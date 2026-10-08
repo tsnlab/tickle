@@ -67,6 +67,47 @@
 // something went wrong server-side.
 #define RMW_TICKLE_SERVER_CALLBACK_ERROR ((int8_t)-1)
 
+// The gid of the client a request came from, in rmw_get_gid_for_client()'s layout, so that a server's
+// request_id.writer_guid compares equal to the gid the client's own process reports - or all zeros when that
+// cannot be told. A CallRequest names its source context and the service, not the client instance
+// (tt_CallRequestHeader carries the server's endpoint_id and a seq_no), so the client is found by what
+// the request does say: the one client of this service in that context, among this context's own
+// endpoints when the request is local and among the discovered ones otherwise. Two clients of one service
+// in one context cannot be told apart from the request, and naming either would be a gid that is
+// confidently wrong - the defect the topic side had until 2026-10-02 - so that case stays zero.
+// Called with the node lock held (server_callback()), which is what guards both tables.
+static void requester_gid_locked(const rmw_tickle_service_t* svc, uint8_t source, uint8_t gid[RMW_GID_STORAGE_SIZE]) {
+    memset(gid, 0, RMW_GID_STORAGE_SIZE);
+    rmw_tickle_context_impl_t* context_impl = svc->node->context_impl;
+    const char* service_name = svc->tickle_server.endpoint.name;
+    uint32_t matches = 0;
+    uint32_t entity_id = 0;
+    if (source == context_impl->tickle_context.id) {
+        for (uint32_t i = 0; i < context_impl->tickle_context.endpoint_count; ++i) {
+            const struct tt_Endpoint* endpoint = context_impl->tickle_context.endpoints[i];
+            if (endpoint->kind == tt_KIND_SERVICE_CLIENT && strcmp(endpoint->name, service_name) == 0) {
+                matches++;
+                entity_id = endpoint->entity_id;
+            }
+        }
+    } else {
+        uint64_t now = tt_get_ns();
+        for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
+            const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
+            if (entity->context_id == source && entity->kind == tt_KIND_SERVICE_CLIENT &&
+                strcmp(entity->name, service_name) == 0 &&
+                tt_Context_entity_alive(&context_impl->tickle_context, entity, now)) {
+                matches++;
+                entity_id = entity->entity_id;
+            }
+        }
+    }
+    if (1 == matches) {
+        gid[0] = source;
+        memcpy(&gid[1], &entity_id, sizeof(entity_id));
+    }
+}
+
 // Runs on the poll thread, the node lock already held (rmw_tickle.h's own threading
 // model). See this file's own module doc comment for the full deferred-response design.
 static int8_t server_callback(struct tt_Server* tt_server, struct tt_Request* request, struct tt_Response* response,
@@ -94,6 +135,7 @@ static int8_t server_callback(struct tt_Server* tt_server, struct tt_Request* re
 
     svc->current_sequence_id = ++svc->next_sequence_id;
     svc->pending_request_id = request_id;
+    requester_gid_locked(svc, request_id.receiver, svc->pending_writer_guid);
     svc->request_available = true;
     pthread_mutex_unlock(&svc->request_mutex);
 
@@ -327,6 +369,8 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
     // info() - see its doc comment there.
     rmw_tickle_ros_message_move(svc->request_callbacks, ros_request, svc->request_storage);
     int64_t seq = svc->current_sequence_id;
+    uint8_t writer_guid[RMW_GID_STORAGE_SIZE];
+    memcpy(writer_guid, svc->pending_writer_guid, sizeof(writer_guid));
     // Consumed - frees server_callback() to accept a new request (see its own module-doc-comment
     // note on why it now rejects a second one outright rather than the old blocking design's
     // "the poll thread physically can't receive one" side effect). rmw_send_response() still
@@ -338,8 +382,10 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
     *taken = true;
     memset(request_header, 0, sizeof(*request_header));
     request_header->request_id.sequence_number = seq;
-    // source_timestamp/received_timestamp/writer_guid left zeroed - no real timestamp/GID
-    // tracking on this path yet (matches rmw_publisher.c's own message_info gap).
+    // The requesting client's gid, as its own process reports it (requester_gid_locked()); zeros when the
+    // request cannot say which client sent it. source_timestamp/received_timestamp stay zero: a CallRequest
+    // carries no source time.
+    memcpy(request_header->request_id.writer_guid, writer_guid, sizeof(writer_guid));
     return RMW_RET_OK;
 }
 

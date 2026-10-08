@@ -1125,6 +1125,10 @@ typedef struct rmw_tickle_service_t {
     // one. Meaningless (and never read) once request_available goes false without a response
     // ever having been sent for it.
     tt_RequestId pending_request_id;
+    // The gid of the client that sent the pending request, in rmw_get_gid_for_client()'s layout, or all zeros
+    // when it cannot be told (rmw_service.c's requester_gid_locked()). server_callback() fills it under
+    // request_mutex, rmw_take_request() hands it out as request_id.writer_guid.
+    uint8_t pending_writer_guid[RMW_GID_STORAGE_SIZE];
     // ROS-shaped (request_callbacks->ros_struct_size bytes) - server_callback() converts TickLE's
     // own request (aliasing node->rx_buffer, same DESIGN.md "Strings" concern as rmw_subscription.
     // c's subscriber_callback()) into this *before* rmw_take_request() can see it.

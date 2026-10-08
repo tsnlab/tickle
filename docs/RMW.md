@@ -37,8 +37,8 @@ implementation's source on 2026-09-27, and updated as gaps closed.
 
 | Feature | Status | Note |
 |---|---|---|
-| Publish / subscribe, `rmw_take`, `rmw_take_with_info`, `rmw_take_sequence` | ✅ | `publisher_gid` in message info identifies the writer |
-| Services and clients | ✅ | **One outstanding request at a time** per client and per service. A second request is refused |
+| Publish / subscribe, `rmw_take`, `rmw_take_with_info`, `rmw_take_sequence` | ✅ | `publisher_gid` in message info equals the writer's own `rmw_get_gid_for_publisher` and its graph gid (`test_gid_two_process`) |
+| Services and clients | ✅ | **One outstanding request at a time** per client and per service. A second request is refused. `request_id.writer_guid` is the client's gid on both sides; zero on the server for a request that beats the client's announce, or when one context has two clients of the service |
 | Actions (`rclcpp_action`) | ✅ | Built from the implicit messages and services. CI runs Fibonacci across two processes |
 | Serialized messages (`rmw_publish/take_serialized_message*`, `rmw_serialize`) | ✅ | Served by the direct codec. `ros2 topic echo --raw` works. Format string is `"tickle"` |
 | `ros2 bag record` / `ros2 bag play` | ✅ | The acceptance test replayed 77 samples, the same as CycloneDDS |
@@ -74,7 +74,7 @@ implementation's source on 2026-09-27, and updated as gaps closed.
 | Graph | `struct tt_Discovery` (remote) + the context's endpoint table (local) | `rmw_graph.c` scans both. Any discovery change triggers the graph guard condition |
 | Events | core timers (`tt_Context_schedule`) and discovery data | `rmw_event.c`. LIVELINESS_LOST comes from a separate watchdog thread, so a hung poll thread is still detected |
 | Guard condition, wait set | none (rmw only) | An atomic flag plus the context's condvar. `rmw_wait` holds `wait_mutex` across check and wait, so no wakeup is lost |
-| GID | context id + per-instance `entity_id` | Unique per endpoint, for local and remote endpoints alike |
+| GID | context id + per-instance `entity_id` | Unique per endpoint, for local and remote endpoints alike. Known core gap: two writers of one topic in one remote context share an `endpoint_id`, and discovery keys on `(context_id, endpoint_id)`, so the graph lists one of them |
 | Typesupport | `tools/typesupport` CDR-4 codec | `rosidl_typesupport_tickle_c`/`_cpp`, registered as rosidl extensions and package-qualified so same-named types never collide |
 
 ### Threading
