@@ -15,7 +15,7 @@ Measured on two Raspberry Pis against FastDDS and CycloneDDS with the same QoS (
 | Same host, round trip p2 (1292 B), ms | **0.023** | 0.100 | 0.067 |
 | Same host, publisher CPU per sample (BEST_EFFORT p4) | **1.07 us** | 1.69 us | – |
 | Same host, publisher memory (BEST_EFFORT p4) | **3.2 MB** | 15.9 MB | – |
-| Cross host, native campaign (108 metric cells) | **97 wins**, 11 draws, 0 losses | | |
+| Cross host, native campaign (162 metric cells) | **151 wins**, 11 draws or ties, 0 losses | | |
 
 Read the caveats before quoting a row: the same-host BEST_EFFORT rows compare send rates, and the vendors' default
 readers deliver far less than they send on one host ([docs/RESULTS.md](docs/RESULTS.md), "Same host").

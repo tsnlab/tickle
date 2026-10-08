@@ -9,13 +9,15 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
 
 - **Cross-host (two Raspberry Pi 5s over 1 GbE):** TickLE is best in every scored row of latency, throughput, CPU,
   memory and bandwidth at P1-P4, with and without injected loss, under identical explicit QoS, against FastDDS both
-  as shipped and tuned, with no process pinned to a core. The campaign scored **WIN 136, DRAW/TIE 14, LOSE 0,
-  VOID 0** (`A`, 17 cells) and **WIN 18, TIE 2, LOSE 0** (`T`), at `3ae721aa`. Scored on the unrounded loss
-  (recomputed from each line's `lost`/`recv`), `A` is **WIN 137, DRAW/TIE 13**: cell 9's (KEEP_LAST 64) server
-  `loss_pct` was a DRAW only because FastDDS's 66 and 58 lost samples printed as `loss_pct=0.0`. The RESULT lines
-  have printed every scored field with enough digits since 2026-10-06 (`%.6f`; `cpu_s_per_MB` `%.9f`).
-- **The largest margin is RELIABLE under 5% loss:** TickLE keeps 93.2% (P1) and 91.6% (P4) of its throughput;
-  FastDDS 47.6% / 38.9%, CycloneDDS 5.5% / 1.6% (rows 16-17).
+  as shipped and tuned, with no process pinned to a core. The campaign at `09a0437d` (2026-10-08, every framework
+  dropping the same warm-up and cool-down) scored **WIN 151, DRAW/TIE 11, LOSE 0, VOID 0** (`A`, 17 cells, 162
+  metric-cells) and **WIN 20, TIE 2, LOSE 0** (`T`). On the 150 metric-cells both runs share (the windowed
+  delivered rate `server.recv_mbps` is new, a WIN in all 12 `A` cells and both `T` cells) it is WIN 139, DRAW/TIE
+  11, against WIN 136, DRAW/TIE 14 at `3ae721aa` (137 / 13 on the unrounded loss). All four changes are a
+  `server.loss_pct` verdict, where TickLE lost nothing in either run and only whether a vendor's range touched zero
+  moved (section 2, "Re-measure at `09a0437d`").
+- **The largest margin is RELIABLE under 5% loss:** TickLE keeps 86.9% (P1) and 91.6% (P4) of its throughput;
+  FastDDS 43.1% / 38.9%, CycloneDDS 4.8% / 1.6% (rows 16-17).
 - **Same host (shared memory):** TickLE leads every measured cell, unpinned, with warm-up excluded. At BEST_EFFORT
   KEEP_LAST 1 (the DDS default) TickLE delivered every sample at max rate, CycloneDDS about a fifth and FastDDS
   almost none (S1d-S3d); TickLE's CPU per delivered RELIABLE sample is 1.7 us against 12.0 and 31.1 (S17).
@@ -230,56 +232,56 @@ Rows not shown are WINs of the same shape: RTT p50 and p99 in every cell, CPU pe
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | zenoh-pico | rmw_zenoh | meas. |
 |---|---|---|---|---|---|---|---|---|
 | | **[Latency](#latency)** (ms) | | | | |  | – | |
-| 1 | RTT mean | P1 76 B | ✅ **0.209** | ❌ 0.285 | 0.260 | 0.221 † | – | A |
-| 2 | RTT max (tail) | P1 76 B | ✅ **0.298** | 0.604 | ❌ 10.761 | 0.336 † | – | A |
-| 3 | RTT mean | P2 1292 B | ✅ **0.231** | ❌ 0.316 | 0.273 | 0.246 † | – | A |
-| 4 | RTT max (tail) | P2 1292 B | ✅ **0.356** | 0.622 | ❌ 0.830 | 0.372 † | – | A |
-| 5 | RTT mean | +10 ms netem | ⚪ 10.1 | ⚪ 10.3 | ⚪ 10.3 | 10.07 | – | A |
-| 6 | RTT max (tail) | +10 ms netem | ✅ **12.1** | ❌ 12.3 | 12.2 | 12.15 | – | A |
-| 6a | RTT mean | P3 1424 B | ✅ **0.235** | ❌ 0.344 | 0.288 | 0.248 † | – | A |
-| 6b | RTT mean | P4 2800 B | ✅ **0.249** | ❌ 0.348 | 0.293 | 0.402 † | – | A |
+| 1 | RTT mean | P1 76 B | ✅ **0.206** | ❌ 0.290 | 0.257 | 0.221 † | – | A |
+| 2 | RTT max (tail) | P1 76 B | ✅ **0.252** | ❌ 0.342 | 0.296 | 0.336 † | – | A |
+| 3 | RTT mean | P2 1292 B | ✅ **0.231** | ❌ 0.315 | 0.275 | 0.246 † | – | A |
+| 4 | RTT max (tail) | P2 1292 B | ✅ **0.266** | ❌ 0.348 | 0.317 | 0.372 † | – | A |
+| 5 | RTT mean | +10 ms netem | ⚪ 10.11 | ⚪ 10.34 | ⚪ 10.19 | 10.07 | – | A |
+| 6 | RTT max (tail) | +10 ms netem | ✅ **12.20** | ❌ 12.26 | 12.24 | 12.15 | – | A |
+| 6a | RTT mean | P3 1424 B | ✅ **0.234** | ❌ 0.337 | 0.291 | 0.248 † | – | A |
+| 6b | RTT mean | P4 2800 B | ✅ **0.249** | ❌ 0.358 | 0.293 | 0.402 † | – | A |
 | | **[Throughput](#throughput)** (Mbps) | | | | |  | – | |
-| 7 | RELIABLE | P1 76 B | ✅ **101** | ❌ 29.6 | 50.9 | 236.8 † | – | A |
-| 8 | RELIABLE | P2 1292 B | ✅ **938** | ❌ 538 | 830 | ✗ † | – | A |
-| 9 | RELIABLE | P3 1424 B | ✅ **943** | ❌ 381 | 714 | ✗ † | – | T |
-| 10 | RELIABLE | P4 2800 B | ✅ **944** | ❌ 555 | 871 | ✗ † | – | T |
-| 11 | BEST_EFFORT | P1, max rate | ✅ **115** | ❌ 45.7 | 68.4 | 53.4 | – | A |
-| 11a | BEST_EFFORT | P2 1292 B, max rate | ✅ **938** | ❌ 715 | 913 | 867 | – | A |
-| 11b | BEST_EFFORT | P3 1424 B, max rate | ✅ **943** ‡ | ❌ 604 | 814 | ✅ **941** ‡ | – | A |
+| 7 | RELIABLE | P1 76 B | ✅ **107** | ❌ 28.1 | 52.2 | 236.8 † | – | A |
+| 8 | RELIABLE | P2 1292 B | ✅ **937** | ❌ 591 | 864 | ✗ † | – | A |
+| 9 | RELIABLE | P3 1424 B | ✅ **943** | ❌ 401 | 716 | ✗ † | – | T |
+| 10 | RELIABLE | P4 2800 B | ✅ **943** | ❌ 519 | 891 | ✗ † | – | T |
+| 11 | BEST_EFFORT | P1, max rate | ✅ **115** | ❌ 44.7 | 66.6 | 53.4 | – | A |
+| 11a | BEST_EFFORT | P2 1292 B, max rate | ✅ **938** | ❌ 740 | 911 | 867 | – | A |
+| 11b | BEST_EFFORT | P3 1424 B, max rate | ✅ **943** ‡ | ❌ 574 | 828 | ✅ **941** ‡ | – | A |
 | 11c | BEST_EFFORT | P4 2800 B, max rate | ✅ **944** ‡ | ❌ 915 | 938 | ✅ **945** ‡ | – | A |
-| 12 | RELIABLE KEEP_LAST 64 | P1 | ✅ **107** | ❌ 41.7 | 83.6 | – | – | A |
-| 13 | RELIABLE | P1, **5% loss** | ✅ **94.1** | 14.1 | ❌ 2.78 | ✗ † | – | A |
+| 12 | RELIABLE KEEP_LAST 64 | P1 | ✅ **117** | ❌ 38.0 | 75.1 | – | – | A |
+| 13 | RELIABLE | P1, **5% loss** | ✅ **93.0** | 12.1 | ❌ 2.49 | ✗ † | – | A |
 | 14 | RELIABLE | P4, **5% loss** | ✅ **865** | 216 | ❌ 14.3 | ✗ † | – | T |
-| 15 | RELIABLE | P1, 5% reorder | ✅ **100** | ❌ 32.6 | 52.7 | ✗ † | – | A |
-| 16 | retention under loss | P1: 5% loss / unshaped | ✅ **93.2%** | 47.6% | ❌ 5.5% | ✗ † | – | A |
+| 15 | RELIABLE | P1, 5% reorder | ✅ **95.2** | ❌ 28.9 | 60.7 | ✗ † | – | A |
+| 16 | retention under loss | P1: 5% loss / unshaped | ✅ **86.9%** | 43.1% | ❌ 4.8% | ✗ † | – | A |
 | 17 | retention under loss | P4: 5% loss / unshaped | ✅ **91.6%** | 38.9% | ❌ 1.6% | ✗ † | – | T |
 | | **[CPU](#cpu)** (cpu_s / Msample) | | | | |  | – | |
-| 18 | throughput, client | P1 76 B | ✅ **6.1** | ❌ 24.7 | 7.8 | 2.57 † | – | A |
-| 19 | throughput, server | P1 76 B | ✅ **2.8** | ❌ 27.1 | 13.2 | 1.42 † | – | A |
-| 20 | throughput, client | P2 1292 B | ✅ **6.6** | ❌ 22.6 | 8.8 | ✗ † | – | A |
-| 21 | throughput, server | P2 1292 B | ✅ **3.9** | ❌ 22.0 | 14.6 | ✗ † | – | A |
-| 22 | throughput, client | P4 2800 B | ✅ **12.7** | ❌ 43.6 | 14.3 | ✗ † | – | T |
-| 23 | throughput, server | P4 2800 B | ✅ **8.4** | ❌ 35.4 | 19.8 | ✗ † | – | T |
-| 24 | latency | P1 76 B | ✅ **159** | ❌ 377 | 226 | 121.1 | – | A |
-| 25 | latency | P2 1292 B | ✅ **156** | ❌ 376 | 224 | 144.6 | – | A |
-| 26 | throughput, client | P1, 5% loss | ✅ **6.6** | ❌ 27.9 | 13.9 | ✗ † | – | A |
+| 18 | throughput, client | P1 76 B | ✅ **5.7** | ❌ 24.3 | 7.8 | 2.57 † | – | A |
+| 19 | throughput, server | P1 76 B | ✅ **2.7** | ❌ 27.0 | 12.9 | 1.42 † | – | A |
+| 20 | throughput, client | P2 1292 B | ✅ **6.7** | ❌ 20.8 | 9.3 | ✗ † | – | A |
+| 21 | throughput, server | P2 1292 B | ✅ **3.8** | ❌ 21.0 | 14.6 | ✗ † | – | A |
+| 22 | throughput, client | P4 2800 B | ✅ **12.6** | ❌ 46.7 | 14.3 | ✗ † | – | T |
+| 23 | throughput, server | P4 2800 B | ✅ **7.6** | ❌ 35.7 | 20.1 | ✗ † | – | T |
+| 24 | latency | P1 76 B | ✅ **34.3** | ❌ 102 | 52.9 | 121.1 | – | A |
+| 25 | latency | P2 1292 B | ✅ **35.0** | ❌ 103 | 54.9 | 144.6 | – | A |
+| 26 | throughput, client | P1, 5% loss | ✅ **6.6** | ❌ 28.1 | 13.2 | ✗ † | – | A |
 | 27 | throughput, client | P4, 5% loss | ✅ **15.2** | ❌ 66.9 | 40.2 | ✗ † | – | T |
 | | **[Memory](#memory)** (peak RSS, KB) | | | | |  | – | |
-| 28 | throughput, client | P1 76 B | ✅ **2,048** | ❌ 15,911 | 5,359 | 2,127 † | – | A |
-| 29 | throughput, client | P2 1292 B | ✅ **2,336** | ❌ 15,063 | 6,407 | ✗ † | – | A |
-| 30 | throughput, client | P4 2800 B | ✅ **2,385** | ❌ 13,991 | 5,600 | ✗ † | – | T |
-| 31 | latency, client | P1 76 B | ✅ **1,807** | ❌ 14,377 | 4,848 | 2,135 | – | A |
-| 32 | throughput, server | P1 76 B | ✅ **1,949** | ❌ 14,708 | 6,281 | 2,127 † | – | A |
-| 33 | throughput, server | P4 2800 B | ✅ **2,971** | ❌ 14,237 | 4,939 | ✗ † | – | T |
+| 28 | throughput, client | P1 76 B | ✅ **2,087** | ❌ 15,947 | 5,407 | 2,127 † | – | A |
+| 29 | throughput, client | P2 1292 B | ✅ **2,371** | ❌ 15,100 | 6,373 | ✗ † | – | A |
+| 30 | throughput, client | P4 2800 B | ✅ **2,425** | ❌ 14,013 | 5,540 | ✗ † | – | T |
+| 31 | latency, client | P1 76 B | ✅ **1,813** | ❌ 14,379 | 4,916 | 2,135 | – | A |
+| 32 | throughput, server | P1 76 B | ✅ **2,057** | ❌ 14,756 | 6,991 | 2,127 † | – | A |
+| 33 | throughput, server | P4 2800 B | ✅ **1,987** | ❌ 14,264 | 4,948 | ✗ † | – | T |
 | 34 | throughput, server | P4, 5% loss | ✅ **2,968** | ❌ 14,351 | 6,011 | ✗ † | – | T |
 | | **[Bandwidth](#bandwidth)** (wire B / sample) | | | | |  | – | |
-| 35 | wire bytes | P1 76 B | ✅ **138** | ❌ 311 | 184 | 93.6 † | – | A |
+| 35 | wire bytes | P1 76 B | ✅ **138** | ❌ 312 | 183 | 93.6 † | – | A |
 | 36 | wire bytes | P2 1292 B | ✅ **1,355** | ❌ 1,503 | 1,397 | ✗ † | – | A |
 | 37 | wire bytes | P3 1424 B | ✅ **1,487** | ❌ 1,866 | 1,585 | ✗ † | – | T |
-| 38 | wire bytes | P4 2800 B | ✅ **2,920** | ❌ 3,462 | 2,950 | ✗ † | – | T |
-| 39 | wire bytes | P1, 5% loss | ✅ **143** | ❌ 290 | 193 | ✗ † | – | A |
+| 38 | wire bytes | P4 2800 B | ✅ **2,920** | ❌ 3,461 | 2,950 | ✗ † | – | T |
+| 39 | wire bytes | P1, 5% loss | ✅ **143** | ❌ 292 | 193 | ✗ † | – | A |
 | 40 | wire bytes | P4, 5% loss | ✅ **3,057** | ❌ 4,223 | 3,213 | ✗ † | – | T |
-| 41 | framing overhead | single datagram | ✅ **62.0** | ❌ 235.0 | 108.0 | 63.0 § | – | A |
+| 41 | framing overhead | single datagram | ✅ **62.0** | ❌ 236.0 | 107.0 | 63.0 § | – | A |
 | | **[QoS mechanics](#qos-mechanics)** | | | | |  | – | |
 | 42 | DURABILITY late join | durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | – | – | S |
 | 43 | HISTORY, within depth | burst | 160/160 | 160/160 | 160/160 | – | – | S |
@@ -342,8 +344,8 @@ Within a row all scored frameworks come from one session; across letters they do
 
 | meas. | source |
 |---|---|
-| `A` | aligned 17-cell native campaign (`campaign_sweep.sh`), 3 reps, medians, FastDDS as shipped, no pinning, frameworks' order rotated; `3ae721aa`, 2026-10-06 (`experiments/fair_crosshost_remeasure.sh`; `~/rig_results_safe/fair_crosshost_3ae721aa_20261006-080418.A_free.txt`). Until 2026-10-06 these rows were the pinned 12-cell campaign on `9dbffd40` (`results/cmp_A_9dbffd40_2026-09-29.txt`) and, for 6a-6b and 11a-11c, `G` |
-| `T` | P3/P4 cells with FastDDS `maxMessageSize` 1472 (fair-evaluation setting), same session and method as `A` (`...080418.T_free.txt`; cell 6 `fair_crosshost_3ae721aa_T6.T_free.txt`) |
+| `A` | aligned 17-cell native campaign (`campaign_sweep.sh`), 3 reps, FastDDS as shipped, no pinning, frameworks' order rotated, every framework dropping the same warm-up and cool-down (TESTING.md section 5 item 9); `09a0437d`, 2026-10-08 (`experiments/fair_crosshost_remeasure.sh`; `~/rig_results_safe/fair_crosshost_09a0437d_20261008-112506.A_free.txt`, rows from `fair_crosshost_rows.py`). Until 2026-10-08 these rows were the same campaign at `3ae721aa`, 2026-10-06, without the warm-up (`fair_crosshost_3ae721aa_20261006-080418.A_free.txt`), with rows 1, 3, 5, 6, 6a, 6b from the warm-up re-runs at `f40a2adf` and `9b5491e6`; until 2026-10-06 the pinned 12-cell campaign on `9dbffd40` (`results/cmp_A_9dbffd40_2026-09-29.txt`) and, for 6a-6b and 11a-11c, `G` |
+| `T` | P3/P4 cells with FastDDS `maxMessageSize` 1472 (fair-evaluation setting), same session and method as `A` (`...112506.T_free.txt`). Cell 6 (rows 14, 17, 27, 34, 40) was not in the `09a0437d` run and is still `3ae721aa` without the warm-up (`fair_crosshost_3ae721aa_T6.T_free.txt`; row 17's unshaped base is that session's cell 4, 944 / 555 / 871 Mbps) |
 | `G` | p1-p4 gap cells added 2026-09-30 (`results/cmp_p1p4_gap_99033118_2026-09-30.txt`, WIN 38 / DRAW 4 / LOSE 0) |
 | `S` | QoS-mechanics sweep 2026-09-24/25 (`experiments/comparison_resweep.sh` at `659013e9`) |
 | `L` | liveliness, `liveliness_l2.sh`, 2026-09-27, `0f220ba0`, 20 reps (`results/liveliness_l2e_2026-09-27.txt`) |
@@ -351,45 +353,101 @@ Within a row all scored frameworks come from one session; across letters they do
 | `J` | four-way rmw poll wait, random phase, RTT at callback, `934f90de`, 7 reps (`results/rmw_4way_poll*_cb_r7_*_2026-10-01.txt`) |
 | `K` | rmw RELIABLE + KEEP_ALL, apex `perf_test` at max rate across the link, 20 s, 3 reps, medians, `ae724688`, rmw_tickle built as the vendor debs are (CMake type None, `-g -O2`), 2026-10-06 (`experiments/rmw_keepall_rig.sh`; `~/rig_results_safe/rmw_keepall_rig_O2_20261006-123017.txt`). First measured at `a8c1cd83` with rmw_tickle at `-O3`: 87,977 / 65,051 / 27,421 / 26,483 |
 
+### Re-measure at `09a0437d`
+
+Every `A` and `T` row except `T` cell 6 comes from `experiments/fair_crosshost_remeasure.sh` at `09a0437d`
+(2026-10-08; `~/rig_results_safe/fair_crosshost_09a0437d_20261008-112506.{A_free,A_pinned,T_free,T_pinned}.txt`,
+driver log `...112506.driver.log`), the driver of the `3ae721aa` run, now with the equal warm-up and cool-down
+(TESTING.md section 5 item 9): throughput is scored over the window (`send_mbps` between 2 s edges; the whole-run rate
+is printed beside it and not scored), latency over 100 measured round trips between 4,096-round-trip edges. Samples
+before values: `A_free` has 153 RESULT lines, 151 `ok` and `window=ok`, every edge ended on its count except cell 12's
+(10 ms netem; both on the 20 s bound, 91 measured round trips per rep, every framework alike). The two VOIDs are FastDDS
+as shipped at P4 under 5% loss (cell 6, reps 2-3): its write timed out 86 times at the 100 ms blocking bound and the
+run was shorter than its two edges, so cell 6's FastDDS figures rest on one rep and the summary marks them provisional.
+`A_pinned` has the same shape (its VOIDs are the same cell's reps 1-2); `T_free` and `T_pinned` are 18 of 18 `ok`.
+
+Totals over the 150 metric-cells both runs score: WIN 136, DRAW/TIE 14 at `3ae721aa` -> WIN 139, DRAW/TIE 11 (the
+12 + 2 new `server.recv_mbps` cells, the delivered rate in the window, are all WINs, giving 151 / 11 and 20 / 2). Four
+verdicts moved, all `server.loss_pct`, where TickLE lost nothing in either run: cell 1 (P1) TIE -> DRAW (CycloneDDS
+and FastDDS lost a few samples in one rep each), cell 5 (P1, 5% loss) TIE -> WIN (FastDDS lost 0.002-0.016%), cell 9
+(KEEP_LAST 64) DRAW -> WIN (both vendors lost in every rep; at `3ae721aa` FastDDS's loss printed as 0.0, which the
+unrounded count already made a WIN), cell 6 (P4, 5% loss) DRAW -> WIN, provisional (one FastDDS rep). Pinned: WIN
+135, DRAW/TIE 15 -> WIN 149, DRAW/TIE 13 of 162.
+
+**TickLE's delta against the vendors' (the control).** Since `3ae721aa`, main gained on the cross-host path the
+Heartbeat answer bounded by the measured repair transit (`3355e94d`; its rig A/B gave cell 6 send +4.5%), the writer-owned
+VOLATILE match point (`da3029e0`), the in-order fragment fast path (`bc398ed2`) and the `departed_next` fix
+(`6f4b87d4`); the peer-table fix (`29dff630`) came after and is not in this build. The harness change (the window)
+applies to every framework alike, so a TickLE move counts only where it leaves the vendors' moves behind:
+
+- **Moved with the vendors, not a TickLE effect:** latency rows 1, 3, 6a, 6b against the warm-up re-runs
+  (TickLE -1.4% to +0%, FastDDS -2.0% to +2.9%, CycloneDDS -1.2% to +1.0%); P2-P4 throughput (TickLE at the link,
+  +-0.1%); P1 RELIABLE (row 7: TickLE +5.9%, FastDDS -5.1%, CycloneDDS +2.6%, all inside the reps' ranges, TickLE
+  93.6-114 against 93.2-115); P1 under loss and reorder (rows 13, 15: TickLE -1.2% / -4.8%, FastDDS -14% / -11%,
+  CycloneDDS -10% / +15%).
+- **TickLE alone moved, outside its own range:** P4 server CPU per sample (row 23) 8.36 -> 7.63 (-8.7%; reps
+  8.34-8.39 -> 7.58-7.67) while FastDDS and CycloneDDS moved +0.8% and +1.5%; P4 server peak RSS (row 33) 2,971 ->
+  1,987 KB (-33%) while both vendors moved +0.2%, and in all four P4 cells without loss (`A` and `T`, free and pinned).
+  Both are the receive side of in-order fragments, which `bc398ed2` now assembles in `frag_scratch` instead of the
+  reorder ring; under 5% loss, where fragments arrive out of order and still use the ring, the server stays at 3,035
+  KB (was 2,967). KEEP_LAST 64 (row 12) 107 -> 117 (+9.3%; reps 102-117 -> 116-118) while FastDDS and CycloneDDS
+  fell 8.9% and 10.2%. P4 under 5% loss with FastDDS as shipped (`A` cell 6, not a table row) TickLE 860 -> 891 Mbps
+  (+3.6%, reps 843-870 -> 889-893) while CycloneDDS fell 22%, the same direction and size as `3355e94d`'s A/B.
+- **TickLE moved against itself:** P1 server peak RSS (row 32) 1,949 -> 2,057 KB (+5.5%), within CycloneDDS's +11%
+  and FastDDS's +0.3%; P1-P4 client RSS +1.5% to +1.9% (rows 28-30) against the vendors' -1.1% to +0.9%. Retention at
+  P1 (row 16) 93.2% -> 86.9%, the quotient of row 7's rise and row 13's fall, both inside the ranges; the vendors'
+  retention fell by as much or more, relative to its own (47.6% -> 43.1%, 5.5% -> 4.8%).
+
 ### Latency
 
-Rows 1, 3 and 6b were re-measured on 2026-10-07 with the equal warm-up and cool-down every framework now drops
-(`campaign_sweep.sh` CELLS 10 11 17, `f40a2adf`, unpinned;
-`~/rig_results_safe/crosshost_latency_warm_f40a2adf_20261007-035608.txt`; p50 / p99 ms there: P1 0.207 / 0.239, 0.282 / 0.324, 0.255 / 0.296; P2 0.228 / 0.261, 0.312 / 0.363, 0.270 / 0.308;
-P4 0.248 / 0.271, 0.346 / 0.378, 0.289 / 0.330). The same run could not refresh rows 5-6 (10 ms netem: TickLE's
-4,096-round-trip warm-up outran the cell's timeout) or 6a (TickLE's server outlived its run and the leftover guard
-voided it) - harness defects, being fixed. Rows 5, 6 and 6a were then re-measured with both fixed (`campaign_sweep.sh`
-CELLS 12 16, `9b5491e6`, unpinned; `~/rig_results_safe/crosshost_latency_warm2_9b5491e6_20261007-101404.txt`; 3
-reps, every one `window=ok`). Cell 16 (P3) ended both edges on the count and measured 100 round trips per rep; cell 12
-(10 ms netem) ended both on the 20 s bound (~1,760-1,780 round trips) and measured 91 per rep, every framework alike,
-so its p99 is the maximum. p50 / p99 ms, TickLE, FastDDS, CycloneDDS: +10 ms 10.06 / 12.13, 10.48 / 12.27, 10.37 /
-12.24; P3 0.233 / 0.251, 0.342 / 0.386, 0.284 / 0.314. Client CPU (cpu_s / Msample): 38.5, 146, 57.4 and 36.9,
-113, 61.0. Row 5 stays unscored (the ranges overlap as well); row 6's tail is a WIN outside the reps' ranges (TickLE
-12.11-12.21, CycloneDDS 12.22-12.25, FastDDS 12.23-12.29); CycloneDDS's former 41.2 ms tail did not recur.
-Rows 1-6b. `reliable_latency`, one ping in flight, 100 round trips per rep, median of 3; tails (rows 2, 4, 6) are
-the median of the reps' maxima. Every client now paces alike (the next ping one interval after the reply) and
-prints the median and p99 too: at P1 they are TickLE 0.207 / 0.243, FastDDS 0.286 / 0.475, CycloneDDS 0.255 / 0.303
-ms, so row 2's CycloneDDS 10.8 ms is one round trip in a hundred, which pinning hid (0.72 ms pinned). All absolute RTTs were
-taken under the `ondemand` CPU governor, which adds about 10% (19-21 us); ordering and margins are unaffected because
-all frameworks ran under it in the same sessions. Row 5's mean is a draw by construction (10 ms netem swamps a 0.2 ms
-RTT); row 6's tail still separates. zenoh-pico's column here is its TCP arm.
+Rows 1-6b are from the `09a0437d` campaign: 100 measured round trips per rep (91 in cell 12), every rep
+`window=ok`, `reliable_latency` with one ping in flight, the mean of 3 reps (`campaign_summary.py`; this text said
+median until 2026-10-08, but the figures were always its mean); tails (rows 2, 4, 6) are the median of the reps'
+maxima, each rep's maximum over its measured round trips only. p50 / p99 ms, TickLE, FastDDS, CycloneDDS: P1 0.204 /
+0.227, 0.288 / 0.341, 0.253 / 0.288; P2 0.228 / 0.264, 0.311 / 0.345, 0.272 / 0.312; +10 ms 10.00 / 12.20, 10.38 /
+12.26, 10.03 / 12.24; P3 0.231 / 0.253, 0.334 / 0.373, 0.285 / 0.325; P4 0.247 / 0.271, 0.356 / 0.396, 0.289 / 0.334.
+Every tail is a WIN outside the reps' ranges (maxima, TickLE / CycloneDDS / FastDDS: P1 TickLE 0.241-0.263, CycloneDDS 0.288-0.308, FastDDS
+0.327-0.355; P2 0.258-0.308, 0.312-0.332, 0.345-0.367; +10 ms 12.18-12.20, 12.23-12.26, 12.24-12.28). Row 5 stays
+unscored (10 ms netem swamps a 0.2 ms RTT, and TickLE's 10.071-10.182 overlaps CycloneDDS's 10.175-10.196).
+
+History. At `3ae721aa` (no warm-up) rows 1-6b were 0.211 / 0.297 / 0.329, tails 0.298 / 0.604 / 10.761, 0.237 /
+0.322 / 0.281, tails 0.356 / 0.622 / 0.830, and so on; CycloneDDS's 10.8 ms P1 tail was one first-lap round trip in a
+hundred and has not recurred in any warm run. Rows 1, 3 and 6b were then re-measured with the warm-up (`f40a2adf`,
+2026-10-07, `~/rig_results_safe/crosshost_latency_warm_f40a2adf_20261007-035608.txt`: 0.209 / 0.285 / 0.260, 0.231 /
+0.316 / 0.273, 0.249 / 0.348 / 0.293) and rows 5, 6, 6a with the 20 s edge bound (`9b5491e6`,
+`~/rig_results_safe/crosshost_latency_warm2_9b5491e6_20261007-101404.txt`: 10.1 / 10.3 / 10.3, tail 12.1 / 12.3 /
+12.2, 0.235 / 0.344 / 0.288); the `09a0437d` run supersedes both under the same rules and agrees with them within the
+control (above). Rows 24-25 (CPU per round trip) were 159 / 377 / 226 and 156 / 376 / 224 at `3ae721aa`: the process's
+whole CPU over its 100 round trips, start-up included; it is now over all 8,292 round trips of a run, edges included,
+which is why every framework fell by 73-78%. All absolute RTTs were taken under the `ondemand` CPU governor, which adds
+about 10% (19-21 us); ordering and margins are unaffected because all frameworks ran under it in the same sessions.
+zenoh-pico's column here is its TCP arm.
 
 ### Throughput
 
-Rows 7-17. `send_mbps`, client, median of 3, RELIABLE + KEEP_ALL with `sent == recv` checked on every side.
+Rows 7-17. `send_mbps`, client, over the window between the 2 s edges, the mean of 3 (the text said median until
+2026-10-08; the figures were always `campaign_summary.py`'s mean), RELIABLE + KEEP_ALL with `sent == recv` checked on
+every side. The delivered rate in the same window (`server.recv_mbps`) is scored beside it and agrees within 1% for
+TickLE in every cell.
 11b and 11c are at the link ceiling (‡). **Row 11's FastDDS figure is a send rate it did not fully deliver:** FastDDS
 lost 15.5% of samples in that cell on a 2026-10-03 run and 22.2% in the QoS sweep. FastDDS as shipped
-(`maxMessageSize` 65,500) at the `T` cells, for reference: P3 533 Mbps and 1,677 B/sample; P4 786 Mbps, 3,101
-B/sample and 14,864 KB; P4 under 5% loss 9.9 Mbps, and it **did not deliver everything** within the drain cap (3,252
-of 3,439), because kernel IP reassembly fails under loss.
+(`maxMessageSize` 65,500) at the `T` cells, for reference (`A` cells 3, 4, 6 at `09a0437d`): P3 465 Mbps and 1,677
+B/sample; P4 734 Mbps, 3,102 B/sample and 14,932 KB; P4 under 5% loss its write timed out 85-86 times per run at the
+100 ms blocking bound, two of three runs ended shorter than their edges (VOID), and the one left sent 3.3 Mbps,
+because kernel IP reassembly fails under loss. (Earlier figures, pinned: 533 Mbps; 786 Mbps, 3,101 B/sample, 14,864
+KB; 9.9 Mbps with 3,252 of 3,439 delivered.)
 
-**Unpinned against pinned** (same session, `3ae721aa`; the pinned figures put each process on cores 1-3, away from the
-Pi's interrupt core). No verdict changes (pinned: WIN 135, DRAW/TIE 15, LOSE 0). Unpinning costs every framework at
-P1, most of all the two DDS: RELIABLE P1 (row 7) pinned is TickLE 115, FastDDS 41.1, CycloneDDS 93.5 Mbps (unpinned
-0.88x, 0.72x, 0.54x); BEST_EFFORT P1 (row 11) 120, 48.5, 71.2; KEEP_LAST (row 12) 118, 42.3, 89.8. P2-P4 are at or
-near the link and move by under 2%, except FastDDS RELIABLE P2-P4 (641, 433, 621 pinned). Retention under loss
-(rows 16-17) pinned: 88.7% / 92.2%, 32.1% / 34.0%, 3.2% / 1.6%. CPU per sample at P1 (rows 18-19) pinned: 5.31 / 2.50,
-18.9 / 19.3, 6.86 / 10.9. Raw files: `~/rig_results_safe/fair_crosshost_3ae721aa_*` (`A_pinned`, `T_pinned`).
+**Unpinned against pinned** (same session, `09a0437d`; the pinned figures put each process on cores 1-3, away from the
+Pi's interrupt core). Pinned scores WIN 149, DRAW/TIE 13, LOSE 0 of 162; the
+verdicts that differ are `server.loss_pct` in cells 1, 5 and 9 (whether a vendor's range touched zero) and row 5's
+draw, where pinned TickLE is no longer ahead of CycloneDDS (10.4 against 10.2 ms, ranges overlapping). Unpinning costs every
+framework at P1, most of all the two DDS: RELIABLE P1 (row 7) pinned is TickLE 114, FastDDS 37.7, CycloneDDS 89.4 Mbps
+(unpinned 0.94x, 0.75x, 0.58x); BEST_EFFORT P1 (row 11) 120, 45.3, 67.9; KEEP_LAST (row 12) 118, 40.0, 87.2. P2-P4
+TickLE is at the link either way and CycloneDDS moves by under 1% except at P3 (836 pinned against 716); FastDDS
+RELIABLE P2-P4 is 664, 442, 635 pinned. Retention at P1 (row 16) pinned: 88.6%, 30.5%, 3.0%. CPU per sample at P1
+(rows 18-19) pinned: 5.34 / 2.56, 19.5 / 19.4, 6.95 / 11.1. At `3ae721aa` (pinned WIN 135, DRAW/TIE 15) row 7 was
+115, 41.1, 93.5 pinned, and row 17 pinned 92.2%, 34.0%, 1.6% (cell 6 was not re-run). Raw files:
+`~/rig_results_safe/fair_crosshost_09a0437d_20261008-112506.{A,T}_pinned.txt`.
 
 ### RELIABLE under loss
 
@@ -400,7 +458,7 @@ is free, so that figure must not stand beside a recovered one.
 
 ### CPU
 
-Rows 18-27. `cpu_s_per_Msample`, median of 3. Absolute CPU seconds are never a verdict: every cell runs for a fixed
+Rows 18-27. `cpu_s_per_Msample`, mean of 3 (the text said median until 2026-10-08). Absolute CPU seconds are never a verdict: every cell runs for a fixed
 duration, so a framework that sends more burns more. TickLE figures from before 2026-09-26 were an `-O0` build;
 every row here asserts `core_build=release` on all sides.
 
@@ -410,7 +468,7 @@ Rows 28-34. Peak RSS. Two qualifiers travel with these rows: (1) it is *resident
 target without demand paging TickLE's declared static storage is the real figure. (2) Every framework is given the
 same KEEP_ALL bound in samples (`campaign_sweep.sh` common_args, derived from TickLE's 512 KiB budget: 405 / 368 /
 187 samples at P2 / P3 / P4). FastDDS's ~14 MB is its baseline, not held history: its latency cell, which holds one
-sample, peaks at 14,377 KB (row 31). (Until 2026-09-29 FastDDS held up to 4,000 samples, which inflated this margin.)
+sample, peaks at 14,379 KB (row 31). (Until 2026-09-29 FastDDS held up to 4,000 samples, which inflated this margin.)
 
 ### Bandwidth
 
