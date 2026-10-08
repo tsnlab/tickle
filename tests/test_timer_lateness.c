@@ -182,6 +182,18 @@ static void test_only_a_retry_timers_deadline_is_a_sample(void) {
     EXPECT_EQ_U32(60 * (uint32_t)US, node.timer_lateness_mean_ns);
 }
 
+// A wait that came back later than it was long never slept on the timer - a busy loop's sub-microsecond wait reads
+// the system call's cost, a preempted one the preemption - so it is not a sample: 60 us late on a 50 us wait is
+// passed over, on a 100 us wait it counts.
+static void test_a_wait_later_than_its_length_is_not_a_sample(void) {
+    struct tt_Context node;
+    setup(&node);
+    sleep_once(&node, 50 * US, 60 * US);
+    EXPECT_EQ_U32(0, node.timer_lateness_mean_ns);
+    sleep_once(&node, 100 * US, 60 * US);
+    EXPECT_EQ_U32(60 * (uint32_t)US, node.timer_lateness_mean_ns);
+}
+
 // Both retry timers G serves are the ones whose waits it samples: the reliable reader's ACKNACK retry and the call
 // retry the tests above sleep to. Nothing else is.
 static void test_the_acknack_retry_is_a_retry_timer(void) {
@@ -248,6 +260,7 @@ int main(void) {
     test_a_wait_cut_short_is_not_a_sample();
     test_only_a_retry_timers_deadline_is_a_sample();
     test_the_acknack_retry_is_a_retry_timer();
+    test_a_wait_later_than_its_length_is_not_a_sample();
     test_the_retry_intervals_use_the_measured_lateness();
     test_a_fixed_granularity_overrides_the_measurement();
     if (test_result() != 0) {

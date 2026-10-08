@@ -4506,7 +4506,13 @@ static void resend_call_request(struct tt_Context* node, struct tt_Client* clien
 // slack), so the context's own 500 ms announce and budget waits return ~520 us late on the dev PC where 1 ms waits
 // return ~60 us late, and they made G ~1.2 ms; and the sub-microsecond waits of a busy loop return ~0.5 us "late" -
 // the system call's cost - and drove G to ~1 us within three seconds of traffic (2026-10-08, c5 shape in netns). A
-// retry timer's own waits are the lateness the retry suffers, whatever the platform does with the others. The samples
+// retry timer's own waits are the lateness the retry suffers, whatever the platform does with the others.
+//
+// Of those, a wait that came back later than it was long is not one either. Under traffic the loop's wait for a
+// retry is mostly a fraction of a microsecond, which ends before the thread sleeps, and its ~0.5 us is the system
+// call's cost: those samples held G at 1-3 us throughout the c5 and c6 shapes, against ~60 us for the same timer
+// when the thread sleeps for it, and cost +0.03-0.07% wire bytes a sample (PC, 5 reps, t 5-8). A wait preempted
+// for longer than it lasted (the 2-3 ms p99.9 outliers seen on the dev PC) is passed over by the same rule. The samples
 // are folded as RFC 6298 folds round trips (rtt_estimate_fold(): mean and mean deviation, gains 1/8 and 1/4), and G is
 // mean + 4 x deviation: the lateness a timer seldom exceeds, not the lateness it reaches half the time, which is what
 // the retry needs, as srtt + 4 x rttvar is for the round trip. Its floor is the finest step a wait can end on
@@ -14340,9 +14346,10 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
     } else if (len == -1) {
         // Timed out. A wait for a retry timer that ran to its deadline is a sample of how late this host runs that
         // timer: G, the retry timers' granularity (timer_lateness_fold()). Earlier than the deadline is a wait cut
-        // short; a wait that ended at a budget or another entry's deadline says nothing about a retry timer's.
+        // short; a wait that ended at a budget or another entry's deadline says nothing about a retry timer's; and
+        // one that came back later than it was long never slept on a timer at all.
         woke = tt_get_ns();
-        if (retry_deadline && woke_for_scheduler && woke >= until) {
+        if (retry_deadline && woke_for_scheduler && woke >= until && woke <= until + (uint64_t)rest) {
             timer_lateness_fold(node, woke - until);
         }
     }
