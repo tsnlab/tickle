@@ -143,6 +143,17 @@ typedef struct rosidl_typesupport_tickle_c_message_callbacks_t {
     rosidl_typesupport_tickle_c_direct_encode_size_function direct_encode_size;
     rosidl_typesupport_tickle_c_direct_encode_function direct_encode;
     rosidl_typesupport_tickle_c_direct_decode_function direct_decode;
+
+    // Loaned messages (rmw_tickle docs/RMW.md, "Loaned messages"). Non-zero when this type's wire bytes, in the
+    // sender's byte order, are exactly the first inplace_bytes bytes of the ROS message in memory: every field at the
+    // same offset on the wire as in the struct, and nothing in it a pointer or a bool (ros2_adapter.py,
+    // _ros_natural_layout()). Such a message is decoded by pointing at it and encoded by copying it, so rmw_tickle may
+    // lend it (can_loan_messages). 0 for every other type, and for a C++ message whose object is not that same plain
+    // layout (rosidl_typesupport_tickle_cpp clears it). The generated value is the C compiler's own offsetof()
+    // against the wire's offsets, so it holds for the ABI the package was built for.
+    size_t inplace_bytes;
+    // alignof() the ROS message: where a received sample may be read in place, its bytes must start this aligned.
+    size_t ros_struct_align;
 } rosidl_typesupport_tickle_c_message_callbacks_t;
 
 #ifdef __cplusplus
