@@ -1063,6 +1063,8 @@ static void create_own_segment(struct tt_Context* node) {
     node->segment_stretch_index = 0; // a new ring counts from zero: no pace carries over from the last one
     node->segment_stretch_ns = tt_get_ns();
     node->segment_epoch_ns = 0; // and no epoch: the polling thread begins one at its first decision
+    // Nor a generation kept from a sleep called off on the last segment: a ring for it went to the last bell.
+    node->segment_generation_unspent = 0;
 }
 
 // Whether this context has a segment for peers to write into, building it if a same-host peer has
@@ -3546,6 +3548,10 @@ static void reset_node_state(struct tt_Context* node) {
     node->segment_sleep_generation = 0;
     node->segment_slot_ceiling = 0;
     node->segment_doorbells_received = 0;
+    node->segment_generation_unspent = 0;
+    node->segment_unspent_doorbells = 0;
+    node->segment_generations_kept = 0;
+    node->segment_sleeps = 0;
     node->segment_sleep_cost_ns = 0;
     node->segment_sleep_cost_n = 0;
     node->segment_sleep_on_claim = 0;
@@ -12896,11 +12902,18 @@ static void segment_reader_waiting(struct tt_Context* node, bool waiting) {
     }
     uint32_t value = 0;
     if (waiting) {
-        // A new generation for every sleep, and never 0, which means awake. Writers ring each one once.
-        node->segment_sleep_generation++;
-        if (node->segment_sleep_generation == 0) {
-            node->segment_sleep_generation = 1;
+        // A new generation for every sleep, and never 0, which means awake. Writers ring each one once - except right
+        // after a sleep that was called off (segment_sleep_called_off()), whose generation is announced again.
+        if (node->segment_generation_unspent != 0 &&
+            node->segment_unspent_doorbells == node->segment_doorbells_received) {
+            node->segment_generations_kept++;
+        } else {
+            node->segment_sleep_generation++;
+            if (node->segment_sleep_generation == 0) {
+                node->segment_sleep_generation = 1;
+            }
         }
+        node->segment_generation_unspent = 0; // kept once at most: the wait that follows may take its ring
         value = node->segment_sleep_generation;
     }
     __atomic_store_n(&node->own_segment->reader_waiting, value, __ATOMIC_SEQ_CST);
@@ -12910,6 +12923,33 @@ static void segment_reader_waiting(struct tt_Context* node, bool waiting) {
         // release store before one. x86's locked store and Arm64's ldar happen to; an RCpc acquire (ldapr) need not.
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
     }
+}
+
+// A sleep announced and then called off, because the drain after the announcement found a record (poll_wait_io()):
+// its generation is announced again by the next sleep rather than a new one (2026-10-08).
+//
+// Why: the record that calls a sleep off was published while the announcement stood, and its writer reads
+// reader_waiting right after publishing, so it has usually rung that generation already - for a reader that never
+// waited. With the edge-triggered bell (hal_linux.c) that ring stays pending until the next wait, which returns on it
+// at once; under a new generation its writer rings again as soon as it publishes, and that ring lands after the
+// reader has already woken - pending for the sleep after, and so on. One called-off sleep started a chain of waits
+// that each returned at once and each cost a ring. The old level-triggered bell was read on every wake, which
+// swallowed most rings landing during it and ended a chain within a wait or two. On the PC with the two vCPUs ~260
+// ns apart, max-rate best_effort_throughput p3 announced 2.6 times as often as with the old wait (763 k against
+// 290 k a run), 23% of the announcements were called off, and the writer rang 0.073 times a sample against 0.025.
+// With the generation kept, round 4 (8c1e6431) went from 1.463 to 1.367 us of CPU a sample there, against the old
+// wait's 1.343, and rang 0.028 times a sample against its 0.033.
+//
+// Announced again, the generation is one its writers have rung or will ring: a writer that rang it does not ring it
+// again, and its ring is still pending and ends the next wait - which is then the sleep it was for; one that has not
+// rings when it sees it, as for any sleep. What would make the ring gone is something taking it in between, so the
+// generation is kept only when no doorbell was received since it was called off (a UDP doorbell is a datagram, and
+// a socket read outside a wait can take it) and only once: the wait that follows may take its ring, and the sleep
+// after that is a new one. A new segment never inherits one (create_own_segment()).
+static void segment_sleep_called_off(struct tt_Context* node) {
+    segment_reader_waiting(node, false);
+    node->segment_generation_unspent = 1;
+    node->segment_unspent_doorbells = node->segment_doorbells_received;
 }
 
 // Whether anything is outstanding in this context's own ring - published and unread, or claimed and still being
@@ -14329,11 +14369,12 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
     segment_reader_waiting(node, true);
     bool emptied_before_wait = true;
     if (drain_own_segment(node, &emptied_before_wait) > 0 || !emptied_before_wait) {
-        segment_reader_waiting(node, false);
+        segment_sleep_called_off(node); // its generation is announced again by the next sleep
         wait_until_store(node, 0);
         *result = tt_RET_OK; // data is data: hand it back rather than waiting
         return true;
     }
+    node->segment_sleeps++;
 #endif
     int32_t len = tt_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
 #if tt_SEGMENT_ENABLED
@@ -14650,7 +14691,11 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         // Whether waiting paid (segment_epoch_turn()): epochs measured in each mode, the recent mean cost per record
         // of each in ns (0: never measured), and the mode preferred at exit (1: waiting).
         "shm_epochs_sleeping=%lu shm_epochs_waiting=%lu shm_cost_sleeping_ns=%lu shm_cost_waiting_ns=%lu "
-        "shm_waiting_preferred=%u shm_encoded_in_slot=%lu rx_drain_ring_turns=%lu",
+        "shm_waiting_preferred=%u shm_encoded_in_slot=%lu rx_drain_ring_turns=%lu "
+        // How often this reader announced a sleep (generations, and of the announcements those that kept a called-off
+        // sleep's generation; segment_sleep_called_off()) and how often it then waited: the announcements less the
+        // waits are the sleeps called off, each of which a writer has usually rung for nothing.
+        "shm_sleep_generations=%lu shm_generations_kept=%lu shm_sleeps=%lu",
         node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
         (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
         (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -14670,7 +14715,8 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned long)node->segment_epochs[0], (unsigned long)node->segment_epochs[1],
         (unsigned long)node->segment_cost_mean_ns[0], (unsigned long)node->segment_cost_mean_ns[1],
         (unsigned)node->segment_preferred, (unsigned long)node->segment_encoded_in_slot,
-        (unsigned long)node->rx_drain_ring_turns);
+        (unsigned long)node->rx_drain_ring_turns, (unsigned long)node->segment_sleep_generation,
+        (unsigned long)node->segment_generations_kept, (unsigned long)node->segment_sleeps);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads

@@ -772,6 +772,13 @@ struct tt_Context {
     uint32_t segment_slot_ceiling; // the largest slot_bytes of any peer segment attached (record_size_limit()) // of
                                    // segment_doorbells_sent, the ones rung through the FIFO rather than UDP
     uint64_t segment_doorbells_received;
+    // A sleep announced and then called off by the drain that follows the announcement (poll_wait_io()) keeps its
+    // generation for the next announcement, unless a doorbell arrived in between (segment_reader_waiting()): set when
+    // one is called off, with segment_doorbells_received at that moment. Polling thread only.
+    uint8_t segment_generation_unspent;
+    uint64_t segment_unspent_doorbells;
+    uint64_t segment_generations_kept; // announcements that kept the last generation instead of starting one
+    uint64_t segment_sleeps;           // waits entered after an announcement (the rest were called off)
     // The mean of the recent sleeps taken on a record already claimed and ended by its doorbell, decision to resume:
     // what a sleep costs this reader, with no idle time in it (segment_resumed()), and how long it may wait for a
     // record instead (segment_await_claim(), segment_await_next()). 0 until the first. Polling thread only.
