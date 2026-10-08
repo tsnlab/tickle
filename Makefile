@@ -9,7 +9,7 @@
 
 .DEFAULT_GOAL := all
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock check-bench-shapes check-unsupported-list check-context-reset check-results-provenance lint lint-rmw lint-shell test-typesupport clean test-linux test-freertos test-all \
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock check-bench-shapes check-unsupported-list check-context-reset check-results-provenance lint lint-rmw lint-shell test-typesupport test-rmw test-rmw-behaviour clean test-linux test-freertos test-all \
         install uninstall fuzz fuzz-corpus sanitize tsan regen coverage
 
 all library examples set_bool uint64 ping_pong perf test lint clean fuzz fuzz-corpus sanitize tsan coverage:
@@ -92,6 +92,16 @@ test-typesupport:
 # failing gate cannot be mistaken for a quiet one. See the script's own header for what it
 # deliberately does not cover.
 # DOCS_ONLY=1: only the rows that read documents, when every changed path is one (see the script's header).
+# rmw_tickle's own ctest suite, built from this checkout and run in a private netns - the gate table's
+# "rmw suite (as CI)" row, on its own. test-rmw-behaviour adds, in the same netns, the rmw behaviour checks CI's
+# "Check all" runs (check_ros2_interfaces.sh: std_msgs across two processes, a default rclcpp::Node, an action);
+# see the script's header for what stays CI-only. Needs a workspace with ifaces/ (RMW_TEST_WS, ~/rmw_accept_dev).
+test-rmw:
+	./.github/scripts/run_rmw_suite.sh
+
+test-rmw-behaviour:
+	./.github/scripts/run_rmw_suite.sh --behaviour
+
 check-gates:
 	./.github/scripts/check_gates.sh $(if $(filter 1,$(DOCS_ONLY)),--docs-only)
 

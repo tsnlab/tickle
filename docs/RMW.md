@@ -215,7 +215,10 @@ The full tables are in [RESULTS.md](RESULTS.md).
 - `*_info_by_service`: report two endpoints per entry, a real type hash, and remote QoS.
 - Shared-memory tests: the kill test (S5), the fair same-host comparison against both vendors (S6), a CI arm with the
   module on (S8), and both mixed-stream windows (S9).
-- rmw behaviour tests (events, graph, QoS, the acceptance suite) run only in CI. No local gate covers them.
+- rmw behaviour tests still CI-only: the upstream conformance suite (`test_rmw_implementation`), the interface
+  workspace controls and the direct-codec identity harness. The ctest suite and `check_ros2_interfaces.sh`'s
+  pub/sub, rclcpp and action cases run locally in a private netns (`make test-rmw-behaviour`, and the
+  `rmw suite (as CI)` gate). The acceptance suite (`rmw_gap_acceptance.sh`) is run by hand.
 - A cross-vendor rmw throughput benchmark that can run across two hosts.
 - SROS2 security: parked until the user starts it.
 - Line and branch coverage tracking (none today; needed for a higher quality level).

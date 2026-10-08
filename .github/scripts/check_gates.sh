@@ -203,8 +203,10 @@ fi
 # CI's "Check all" runs rmw_tickle's own ctest suite and this script did not: on 2026-10-02 every
 # gate above reported PASS on a commit that broke test_type_checks, and main stayed red for three
 # commits. The script reports WHY it could not run separately from a failure, because "I could not
-# look" must not read as "it passed".
-launch rmw rmw "rmw suite (as CI)" ./.github/scripts/run_rmw_suite.sh
+# look" must not read as "it passed". --behaviour (2026-10-08) adds the rmw behaviour checks "Check all" runs
+# after the suite - check_ros2_interfaces.sh's pub/sub, default rclcpp::Node and action cases - in the same netns
+# against the same build, ~80 s more on a row that finished well inside the table's wall time.
+launch rmw rmw "rmw suite (as CI)" ./.github/scripts/run_rmw_suite.sh --behaviour
 # Every gate above builds ONE configuration. On 2026-10-03 a commit passed 13 of 13 here and broke
 # -Dtt_SEGMENT_ENABLED=0, which CI builds in four jobs (two of them FreeRTOS, which also compiles the
 # segment out). The rig found it in nine seconds. This sweeps the configurations with -fsyntax-only, so it
@@ -284,8 +286,11 @@ cat <<'NOTCOVERED'
      make test-freertos   the FreeRTOS round trip under QEMU (the "build freertos" gate above only links it).
    It ran red all day on 2026-09-29 while this script reported every gate PASS. Run it before trusting a push:
      make test-linux
+     rmw conformance      test_rmw_implementation (patched jazzy clone), the interface controls and the
+                          direct-codec identity harness: CI's "Check all" only (run_rmw_suite.sh's header).
    (rmw_tickle's own suite WAS in this list until 2026-10-03; it is now the "rmw suite (as CI)" gate
-   above, which SKIPs with its reason when it cannot run rather than passing silently.)
+   above, which SKIPs with its reason when it cannot run rather than passing silently. Since 2026-10-08
+   it also runs check_ros2_interfaces.sh's pub/sub, rclcpp and action cases.)
 NOTCOVERED
 echo "   clang-tidy: ${TIDY:-$(command -v clang-tidy || echo none)} (version ${tidy_major:-?})"
 if [ "$lint_is_advisory" = 1 ]; then

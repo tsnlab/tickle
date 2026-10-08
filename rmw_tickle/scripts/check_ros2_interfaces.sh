@@ -27,6 +27,11 @@
 # built without rmw_tickle sourced, which has no TickLE typesupport, so that -A must then fail at
 # creating the action, with every other package still in place.
 #
+# RMW_TICKLE_PREFIX=INSTALL: test the rmw_tickle in INSTALL/lib, put first on AMENT_PREFIX_PATH after every setup
+# script this sources. Without it the first librmw_tickle.so on AMENT_PREFIX_PATH is tested, and a workspace's
+# setup.bash re-sources the underlays it was built on, which on a developer machine can hold other rmw_tickle builds
+# (make test-rmw-behaviour sets it to the checkout's own install).
+#
 # Loopback by default (TICKLE_BROADCAST_ADDR=127.255.255.255); set TICKLE_BROADCAST_ADDR yourself to
 # check over a real link. Exit 0 only when both types round-tripped AND both libraries were proved.
 set -euo pipefail
@@ -59,6 +64,14 @@ set +u
 . "$WORKSPACE/install/setup.bash"
 set -u
 
+# Called after each setup script, which may have put another rmw_tickle ahead of the one asked for.
+prefer_rmw_tickle_prefix() {
+    [ -n "${RMW_TICKLE_PREFIX:-}" ] || return 0
+    [ -f "$RMW_TICKLE_PREFIX/lib/librmw_tickle.so" ] || fail "no $RMW_TICKLE_PREFIX/lib/librmw_tickle.so (RMW_TICKLE_PREFIX)"
+    export AMENT_PREFIX_PATH="$RMW_TICKLE_PREFIX:$AMENT_PREFIX_PATH"
+}
+prefer_rmw_tickle_prefix
+
 rmw_lib=""
 IFS=: read -r -a prefixes <<<"${AMENT_PREFIX_PATH:-}"
 for prefix in "${prefixes[@]}"; do
@@ -68,6 +81,7 @@ for prefix in "${prefixes[@]}"; do
     fi
 done
 [ -n "$rmw_lib" ] || fail "librmw_tickle.so not found on AMENT_PREFIX_PATH - source rmw_tickle's install"
+echo "rmw_tickle under test: $rmw_lib"
 ts_lib="$WORKSPACE/install/std_msgs/lib/libstd_msgs__rosidl_typesupport_tickle_c.so"
 [ -f "$ts_lib" ] || fail "no $ts_lib - std_msgs was not built with TickLE typesupport"
 
@@ -93,6 +107,7 @@ if [ -n "$OVERLAY" ]; then
     # shellcheck disable=SC1091
     . "$OVERLAY/setup.bash"
     set -u
+    prefer_rmw_tickle_prefix
     echo "overlay: $OVERLAY"
 fi
 publisher=("$check" pub 10)

@@ -26,7 +26,18 @@
 # 0.2 s, compiled nothing, and ctest ran /home/semih/tickle-dev's code - and this row said PASS about a
 # checkout nobody had asked about. So each checkout now gets a build/install/log base of its own, keyed on
 # its path, and after the build the script asks the build itself which sources it compiled.
+#
+# --behaviour (make test-rmw-behaviour, 2026-10-08): after the suite, the rmw behaviour checks CI's "Check all" runs
+# and the suite does not, in the same netns against the same build - check_ros2_interfaces.sh as CI calls it: std_msgs
+# String and Header between two processes, the same from a default rclcpp::Node (-r), and an rclcpp_action Fibonacci
+# (-A), each against the workspace's ifaces/ and with RMW_TICKLE_PREFIX naming this checkout's install, so the chain
+# of underlays that workspace was built on cannot put another rmw_tickle ahead of it. NOT run here, still CI-only: the
+# upstream conformance suite (test_rmw_implementation, a patched jazzy clone this machine's ROS does not build), the
+# controls that need two more interface workspaces built, and the direct-codec identity harness.
 set -uo pipefail
+
+BEHAVIOUR=0
+[ "${1:-}" = "--behaviour" ] && BEHAVIOUR=1
 
 ROS_SETUP=$(find /opt/ros -maxdepth 2 -name setup.bash -print -quit 2>/dev/null)
 [ -n "$ROS_SETUP" ] || { echo "run_rmw_suite: no ROS installation under /opt/ros"; exit 78; }
@@ -142,4 +153,42 @@ if [ "$test_rc" -ne 0 ] || [ "$result_rc" -ne 0 ]; then
     exit 1
 fi
 echo "run_rmw_suite: all tests passed"
+[ "$BEHAVIOUR" = 1 ] || exit 0
+
+# One check_ros2_interfaces.sh run in the netns; its whole output is kept, and its last line is the verdict it prints
+# itself - a check that printed nothing has not passed.
+behaviour_failed=0
+behaviour() {
+    local label="$1"
+    shift
+    local out="$BASE/log/behaviour_${label}.log"
+    # shellcheck disable=SC2024  # the log is the invoking user's file, so the redirect deliberately stays outside sudo
+    sudo -n ip netns exec "$NS" sudo -n -u "$USER" bash -c "
+        set +u
+        source '$ROS_SETUP'
+        source '$WS/ifaces/install/setup.bash'
+        source '$INSTALL_BASE/setup.bash'
+        set -u
+        export RMW_TICKLE_PREFIX='$INSTALL_BASE/rmw_tickle'
+        '$SRC/scripts/check_ros2_interfaces.sh' -w '$WS/ifaces' $*
+    " >"$out" 2>&1
+    local rc=$?
+    local under_test
+    under_test=$(sed -n 's/^rmw_tickle under test: //p' "$out")
+    if [ "$rc" = 0 ] && grep -q '^check_ros2_interfaces: PASS' "$out" && [ "$under_test" = "$lib" ]; then
+        echo "run_rmw_suite: behaviour $label PASS (tested $under_test)"
+    else
+        tail -15 "$out"
+        echo "run_rmw_suite: behaviour $label FAILED (exit $rc, tested '${under_test:-not reported}', expected $lib; log $out)"
+        behaviour_failed=1
+    fi
+}
+behaviour pubsub
+behaviour rclcpp -r
+behaviour action -A
+if [ "$behaviour_failed" != 0 ]; then
+    echo "run_rmw_suite: behaviour checks FAILED"
+    exit 1
+fi
+echo "run_rmw_suite: all tests and behaviour checks passed"
 exit 0
