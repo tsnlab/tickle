@@ -409,6 +409,51 @@ static void test_farewell_from_one_source_leaves_other_peers_intact(void) {
     EXPECT_TRUE(found_node3);
 }
 
+// The send half of the test above, and the shape CI's interfaces check failed on (2026-10-06, 2026-10-08): the
+// Subscriber matched FIRST leaves while the one matched after it stays. Every send walks (peers, count_peers(peers))
+// as the first `count` slots, so the departure must not leave a hole in front of the survivor: before forget_peer()
+// compacted, slot 0 still held the departed node's address under no context id, the count was 1, and the publish
+// went to that address over UDP - the survivor got nothing for the rest of the run. Both departures are covered: a
+// farewell announce and a liveliness timeout (forget_peers_from_source() without preserve_ack).
+static void test_a_departed_first_peer_does_not_take_the_survivors_data(void) {
+    for (int departure = 0; departure < 2; departure++) {
+        test_mock_reset();
+
+        struct tt_Context node;
+        init_node(&node);
+        struct tt_Publisher pub;
+        init_publisher(&pub, &node);
+
+        struct tt_Header from2;
+        init_header(&from2, 2);
+        struct tt_Header from3;
+        init_header(&from3, 3);
+
+        uint32_t tail =
+            write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+        EXPECT_TRUE(process_data(&node, &from2, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+        tail = write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+        EXPECT_TRUE(process_data(&node, &from3, node.rx_buffer, 0, tail, 0xc0a80a03, 8383));
+        EXPECT_EQ_U32(2, (uint32_t)pub.peers[0].context_id); // control: the one leaving is in slot 0
+        EXPECT_EQ_U32(3, (uint32_t)pub.peers[1].context_id);
+
+        if (departure == 0) {
+            tail = write_update_no_entities(node.rx_buffer, 200);
+            EXPECT_TRUE(process_data(&node, &from2, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+        } else {
+            forget_peers_from_source(&node, 2, /*preserve_ack=*/false);
+        }
+        EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+
+        test_mock_reset();
+        node.tx_tail = sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader);
+        EXPECT_TRUE(flush_tx(&node, node.tx_tail, pub.peers, count_peers(pub.peers)));
+        EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+        EXPECT_EQ_U32(0xc0a80a03, test_mock_send_to_last_ip); // the survivor, not the departed node's address
+        EXPECT_EQ_U32(8383, (uint32_t)test_mock_send_to_last_port);
+    }
+}
+
 static int32_t fake_encode_size(struct tt_Data* data) {
     (void)data;
     return 4;
@@ -1537,6 +1582,7 @@ int main(void) {
     test_reply_skipped_when_tx_buffer_has_pending_content();
     test_source_dropping_endpoint_forgets_its_peer();
     test_farewell_from_one_source_leaves_other_peers_intact();
+    test_a_departed_first_peer_does_not_take_the_survivors_data();
     test_publisher_created_after_the_announce_learns_the_peer_from_its_resend();
     test_client_created_after_the_announce_learns_the_peer_from_its_resend();
     test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_ends();

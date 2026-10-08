@@ -2239,11 +2239,24 @@ static uint8_t count_peers(const struct tt_Peer* peers) {
     return count;
 }
 
+// Removes node_id from peers[] by closing the gap it leaves: every entry after it moves down one slot. The table
+// is kept DENSE - its live entries are exactly the first count_peers() slots - because every walk that sends to it
+// takes (peers, count_peers(peers)) and reads peers[0 .. count): link_destinations(), whole_record_limit_for(),
+// note_reached_armed(), the fragment and heartbeat sends. Clearing the slot in place, which this did until
+// 2026-10-08, left a hole those walks read as a peer: with A in slot 0 and B in slot 1, A's farewell made the
+// count 1 and every later send went to slot 0 - A's old address, under no context id, so over UDP to a port
+// nobody held, counted as a broadcast - and B was never sent anything again. CI's interfaces check failed on it
+// twice (2026-10-06, 2026-10-08): the C++ subscriber took its four samples and left, and the C subscriber matched
+// after it took nothing in 15 s. Order kept, so the peers that remain are addressed as before.
 static void forget_peer(struct tt_Peer* peers, uint8_t node_id) {
+    int kept = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (peers[i].context_id == node_id) {
-            peers[i].context_id = tt_CONTEXT_ID_INVALID;
+        if (peers[i].context_id != tt_CONTEXT_ID_INVALID && peers[i].context_id != node_id) {
+            peers[kept++] = peers[i];
         }
+    }
+    for (int i = kept; i < tt_MAX_PEER_COUNT; i++) {
+        peers[i] = (struct tt_Peer) {.context_id = tt_CONTEXT_ID_INVALID, .ip = 0, .port = 0};
     }
 }
 
@@ -2375,11 +2388,7 @@ static uint32_t take_match_heartbeat(struct tt_Publisher* pub) {
 // Phase 3's KEEP_ALL blocking waits on exactly that state, and any remote node changing any
 // unrelated endpoint re-announces. A genuine departure passes false and clears it.
 static void forget_publisher_peer(struct tt_Publisher* pub, uint8_t node_id, bool preserve_ack) {
-    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (pub->peers[i].context_id == node_id) {
-            pub->peers[i].context_id = tt_CONTEXT_ID_INVALID;
-        }
-    }
+    forget_peer(pub->peers, node_id); // compacting, so the table stays dense - see forget_peer()
     if (!preserve_ack) {
         forget_peer_ack(pub, node_id, 0, /*match_any_entity=*/true);
     }
@@ -6827,13 +6836,11 @@ tt_ret_t tt_Publisher_set_ack_solicit_period(struct tt_Publisher* pub, uint64_t 
 
 // See its own doc comment (tickle.h) for what this is for. Builds its own dense peer list from
 // pub->peers[] rather than passing pub->peers/count_peers(pub->peers) straight through the way
-// send_heartbeat()/tt_Publisher_publish() do - those two rely on peers[] having no gap before the
-// first count_peers() slots, which forget_publisher_peer() alone doesn't guarantee (it clears a
-// departed peer's node_id in place, not by compacting the array down) - a real, pre-existing gap
-// in that shared shortcut, unrelated to this function, flagged separately rather than fixed here.
-// Solicitation specifically must reach every *currently* matched peer correctly - unlike a
-// periodic announce, there's no "next period" for a missed one to be silently caught by - so this
-// one function is worth the extra O(tt_MAX_PEER_COUNT) filter to not depend on that assumption.
+// send_heartbeat()/tt_Publisher_publish() do. Those rely on peers[] having no gap before the first
+// count_peers() slots, which forget_peer() did not guarantee when this was written - it cleared a
+// departed peer in place - and the gap this comment flagged is what failed CI's interfaces check
+// (fixed 2026-10-08: forget_peer() compacts). The filter is kept: it costs O(tt_MAX_PEER_COUNT) on
+// a call that is not per sample, and solicitation must reach every matched peer.
 static tt_ret_t publisher_request_ack_locked(struct tt_Publisher* pub) {
     if (pub == NULL || pub->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
