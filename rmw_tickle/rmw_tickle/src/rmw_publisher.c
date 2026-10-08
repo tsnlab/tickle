@@ -18,6 +18,7 @@
 #include <stdatomic.h>
 #include <stddef.h> // offsetof - grow_on_need() (g10)
 #include <stdint.h>
+#include <stdio.h>  // fprintf() - the loan line at rmw_destroy_publisher()
 #include <stdlib.h> // getenv()/strtoull() - resolve_max_blocking_ns()
 #include <string.h>
 #include <time.h> // clock_gettime()/struct timespec/nanosleep() - rmw_publisher_wait_for_all_acked()
@@ -1167,6 +1168,13 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
         loans_held += pub_impl->loan_out[i] ? 1U : 0U;
         rmw_tickle_ros_message_destroy(pub_impl->callbacks, pub_impl->loan_buffers[i], &pub_impl->allocator);
     }
+    // One line per publisher that published a loan - rclcpp's publish(const T &) borrows one whenever
+    // can_loan_messages is set - so a measurement can tell the loaned publish path from the plain one (ab_loans.sh's
+    // treatment check reads it, with the subscription's loans_in_place / loans_copied line).
+    if (pub_impl->loans_published > 0) {
+        (void)fprintf(stderr, "rmw_tickle: publisher %s loans_published=%llu\n", pub_impl->rmw_publisher.topic_name,
+                      (unsigned long long)pub_impl->loans_published);
+    }
     if (loans_held > 0) {
         RCUTILS_LOG_WARN_NAMED("rmw_tickle",
                                "publisher %s destroyed with %zu borrowed message(s) neither published nor "
@@ -1718,6 +1726,7 @@ rmw_ret_t rmw_publish_loaned_message(const rmw_publisher_t* publisher, void* ros
     if (i < pub_impl->loan_count) {
         pub_impl->loan_out[i] = false;
     }
+    pub_impl->loans_published++;
     pthread_mutex_unlock(&pub_impl->loan_mutex);
     return ret;
 }
