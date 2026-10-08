@@ -6,7 +6,8 @@
 #
 # Usage: be_wake_cost.sh ARM_DIR [ARM_DIR ...]
 #   Each ARM_DIR holds a best_effort_throughput p3 client and server (examples/perf_hil/tickle/build.sh
-#   best_effort_throughput p3), copied there so a rebuild cannot change an arm under the run.
+#   best_effort_throughput p3), copied there so a rebuild cannot change an arm under the run. An optional ARM_DIR/
+#   server_args holds extra server arguments, one line (e.g. "--keep lend": receive-buffer lending, DESIGN.md 10).
 # Env: REPS (5), DUR (5 s measured, plus 2 s warm-up and 2 s cool-down), MODE (time | trace | record),
 #      PIN ("2 4": server and client CPUs; "" runs both unpinned), OUT (results file, outside any session directory).
 # This PC is a KVM guest with no cpuidle driver: waking a halted vCPU costs a VM exit and an IPI that a Pi's core does
@@ -45,7 +46,8 @@ sudo -n ip netns exec "$NS" ip link set bench0 up
 say() { echo "$*" | tee -a "$OUT"; }
 say "=== be_wake_cost $(date -Is) mode=$MODE reps=$REPS dur=$DUR pin='$PIN' ==="
 for arm in "$@"; do
-    say "arm $(basename "$arm") client $(sha256sum "$arm/client" | cut -c1-16) server $(sha256sum "$arm/server" | cut -c1-16)"
+    say "arm $(basename "$arm") client $(sha256sum "$arm/client" | cut -c1-16) server $(sha256sum "$arm/server" | cut -c1-16)" \
+        "server_args='$(cat "$arm/server_args" 2>/dev/null)'"
 done
 SYSCALLS="raw_syscalls:sys_enter,syscalls:sys_enter_ppoll,syscalls:sys_enter_epoll_pwait2,syscalls:sys_enter_read,syscalls:sys_enter_write,syscalls:sys_enter_io_uring_enter,syscalls:sys_enter_recvfrom,syscalls:sys_enter_recvmmsg,syscalls:sys_enter_futex"
 EVENTS=context-switches,cpu-migrations,task-clock
@@ -69,6 +71,10 @@ for rep in $(seq 1 "$reps"); do
     for arm in "$@"; do
         name=$(basename "$arm")
         d=$WORK/$name.$rep
+        SARGS=()
+        if [ -f "$arm/server_args" ]; then
+            read -r -a SARGS <"$arm/server_args"
+        fi
         mkdir -p "$d"
         rm -f "$d/srv.pid"
         if [ "$MODE" = record ]; then
@@ -82,7 +88,7 @@ for rep in $(seq 1 "$reps"); do
         # The server's PID is written by the shell that then execs it, checked by /proc/PID/exe before the signal.
         # shellcheck disable=SC2024,SC2016
         sudo -n ip netns exec "$NS" env BENCH_IFACE=lo "${SRVPERF[@]}" -- \
-            sh -c 'echo $$ > "$0"; exec "$@"' "$d/srv.pid" "${SPIN[@]}" "$arm/server" -Q -d $((DUR + 30)) "${WIN[@]}" \
+            sh -c 'echo $$ > "$0"; exec "$@"' "$d/srv.pid" "${SPIN[@]}" "$arm/server" -Q -d $((DUR + 30)) "${WIN[@]}" "${SARGS[@]}" \
             >"$d/srv.log" 2>&1 &
         srv=$!
         sleep 1
@@ -160,7 +166,9 @@ for arm in arms:
                    rings_per_sample=int(c.get('doorbells_sent', 0)) / sent,
                    cs_per_sample=(cp.get('context-switches', 0) + sp.get('context-switches', 0)) / sent,
                    migr_per_ksample=(cp.get('cpu-migrations', 0) + sp.get('cpu-migrations', 0)) * 1e3 / sent,
-                   head_stalls_per_sample=int(s.get('segment_head_stalls', 0)) / sent)
+                   head_stalls_per_sample=int(s.get('segment_head_stalls', 0)) / sent,
+                   srv_recv_mps=int(s.get('recv', 0)) / float(c['elapsed_s']) / 1e6,
+                   lent_per_sample=int(s.get('lend_ok', 0) or 0) / sent)
         if mode == 'trace':
             for k in sorted(set(cp) | set(sp)):
                 if k.startswith(('syscalls:', 'raw_syscalls:')):
