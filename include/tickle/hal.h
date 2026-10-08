@@ -116,6 +116,10 @@ struct tt_Header;
 // Network functions - every one of these is implemented per platform (src/hal_linux.c,
 // src/hal_freertos.c, .../tests/test_mock.h's mock) against this same contract.
 uint64_t tt_get_ns(void);
+// The finest step a timed wait in tt_receive() can end on, in ns, as tt_get_ns() can see it: the coarser of the
+// clock's resolution and the wait's own (one RTOS tick on FreeRTOS). The floor of the measured timer lateness that
+// the retry timers use as G (struct tt_Context.timer_lateness_ns). Never 0.
+uint64_t tt_timer_resolution_ns(void);
 int32_t tt_get_node_id(void);
 tt_ret_t tt_bind(struct tt_Context* node);
 void tt_close(struct tt_Context* node);

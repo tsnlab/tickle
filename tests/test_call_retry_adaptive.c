@@ -38,6 +38,9 @@
 #define MS 1000000ULL
 #define FAST (100 * US)
 #define SLOW (40 * MS)
+// A call's G before its context has measured any timer lateness: twice the cold-start tt_TIMER_LATENESS_INITIAL (or
+// a fixed tt_CALL_RETRY_GRANULARITY) - read from the context, so a test that let it measure would still agree.
+#define CALL_G call_retry_granularity(&node)
 
 static struct tt_Context node;
 static struct tt_Service service;
@@ -181,7 +184,7 @@ static void test_a_fast_answer_after_a_backoff_restores_the_interval(void) {
     }
     EXPECT_TRUE(compute_retry_interval(&client, 0) > 8 * before); // five doublings of the estimate
     EXPECT_TRUE(run_call(FAST, &took));                           // it answers again, fast
-    uint64_t spread = 4 * (FAST / 2) > tt_CALL_RETRY_GRANULARITY ? 4 * (FAST / 2) : tt_CALL_RETRY_GRANULARITY;
+    uint64_t spread = 4 * (FAST / 2) > CALL_G ? 4 * (FAST / 2) : CALL_G;
     EXPECT_EQ_U64(FAST + spread, compute_retry_interval(&client, 0));
 }
 
@@ -235,8 +238,8 @@ static void test_a_small_srtt_retries_well_before_5ms(void) {
         EXPECT_TRUE(run_call(FAST, &took));
     }
     EXPECT_EQ_U32(FAST, client.latency);
-    EXPECT_TRUE(4 * (uint64_t)client.latency_var < tt_CALL_RETRY_GRANULARITY); // steady: the G term is the spread
-    EXPECT_EQ_U64(FAST + tt_CALL_RETRY_GRANULARITY, compute_retry_interval(&client, 0));
+    EXPECT_TRUE(4 * (uint64_t)client.latency_var < CALL_G); // steady: the G term is the spread
+    EXPECT_EQ_U64(FAST + CALL_G, compute_retry_interval(&client, 0));
     // And the timer a call actually arms says the same.
     struct tt_Request request;
     uint64_t start = test_mock_now;
@@ -244,7 +247,7 @@ static void test_a_small_srtt_retries_well_before_5ms(void) {
     struct tt_TCB* due = peek_scheduler(&node);
     EXPECT_TRUE(due != NULL);
     if (due != NULL) {
-        EXPECT_EQ_U64(FAST + tt_CALL_RETRY_GRANULARITY, due->time - start);
+        EXPECT_EQ_U64(FAST + CALL_G, due->time - start);
         EXPECT_TRUE(due->time - start < tt_CALL_RETRY_INTERVAL / 10);
     }
 }
@@ -255,7 +258,7 @@ static void test_a_large_srtt_is_not_clamped_to_250ms(void) {
     setup(0);
     client.latency = 400 * MS;
     client.latency_var = 0;
-    EXPECT_EQ_U64((400 * MS) + tt_CALL_RETRY_GRANULARITY, compute_retry_interval(&client, 0));
+    EXPECT_EQ_U64((400 * MS) + CALL_G, compute_retry_interval(&client, 0));
     EXPECT_TRUE(compute_retry_interval(&client, 0) > 250 * MS);
     // End to end from a fresh client: the seed's schedule (75 ms) is too short for a 400 ms link, the backoff grows
     // it until an answer gets through, and from then on every call is answered with srtt at the measured 400 ms.

@@ -13,6 +13,12 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Added
 
+- **The retry timers' G is measured** (docs/ROADMAP.md "Now" 5a, docs/DESIGN.md section 6). G in
+  `srtt + max(G, 4 x rttvar)` was a fixed 100 us (`tt_RELIABLE_RETRY_GRANULARITY`; twice it for calls). It is now the
+  context's own timer lateness: mean + 4 x deviation of how late its waits for a retry timer return, floored at the new HAL call
+  `tt_timer_resolution_ns()`, starting from 100 us (`tt_TIMER_LATENESS_INITIAL`). Both constants default to 0
+  (measured); a non-zero value is a fixed G.
+
 - **rmw_tickle: the five event types it lacked, and lyrical's service endpoint queries** (rmw_tickle/RMW_GAPS_PLAN.md
   g3).
   - `PUBLICATION_MATCHED` / `SUBSCRIPTION_MATCHED` are raised on every match and unmatch, whether it comes from a

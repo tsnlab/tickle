@@ -1512,6 +1512,10 @@ static void test_gap_abandoned_counts_only_what_was_never_delivered(void) {
     EXPECT_EQ_U32(1, sub.gap_abandoned);
 }
 
+// G, the timer-lateness term, of a context that has not measured its own yet: the cold-start
+// tt_TIMER_LATENESS_INITIAL, or a fixed tt_RELIABLE_RETRY_GRANULARITY in a build that sets one.
+#define COLD_G reliable_retry_granularity(NULL)
+
 // Dynamic ACKNACK retry interval (tt_RELIABLE_RETRY_INTERVAL 0, the user's decision 2026-09-25).
 // These call retry_interval_for() with the configured value as an argument, so the dynamic path is
 // exercised here even though this build's default is the fixed 1ms - otherwise the branch the
@@ -1522,12 +1526,12 @@ static void test_gap_abandoned_counts_only_what_was_never_delivered(void) {
 static void test_retry_interval_explicit_value_wins(void) {
     struct tt_WriterProxy proxy;
     memset(&proxy, 0, sizeof(proxy));
-    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_INITIAL, retry_interval_for(0, &proxy));
+    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_INITIAL, retry_interval_for(0, COLD_G, &proxy));
 
     proxy.recovery_srtt_ns = 3000000; // an estimate that would otherwise give ~3ms+
     proxy.recovery_rttvar_ns = 100000;
-    EXPECT_EQ_U64(5 * tt_MILLISECOND, retry_interval_for(5 * tt_MILLISECOND, &proxy));
-    EXPECT_EQ_U64(3000000ULL + 400000ULL, retry_interval_for(0, &proxy)); // srtt + 4 * rttvar
+    EXPECT_EQ_U64(5 * tt_MILLISECOND, retry_interval_for(5 * tt_MILLISECOND, COLD_G, &proxy));
+    EXPECT_EQ_U64(3000000ULL + 400000ULL, retry_interval_for(0, COLD_G, &proxy)); // srtt + 4 * rttvar
 }
 
 // The estimate converges on a steady recovery time, its variance term counts when recoveries jitter,
@@ -1543,13 +1547,13 @@ static void test_retry_interval_estimate_converges_and_is_bounded(void) {
     EXPECT_EQ_U32(400000, proxy.recovery_srtt_ns);
     EXPECT_EQ_U32(0, proxy.recovery_rttvar_ns); // no jitter left to account for
     // Not 400us: a retry at the mean recovery time would fire while half the recoveries are in flight.
-    EXPECT_EQ_U64(400000 + (uint64_t)tt_RELIABLE_RETRY_GRANULARITY, retry_interval_for(0, &proxy));
+    EXPECT_EQ_U64(400000 + COLD_G, retry_interval_for(0, COLD_G, &proxy));
 
     memset(&proxy, 0, sizeof(proxy));
     for (int i = 0; i < 64; i++) {
         note_recovery_sample(&proxy, (i % 2) == 0 ? 200000 : 600000); // 400us on average, jittering
     }
-    uint64_t jittery = retry_interval_for(0, &proxy);
+    uint64_t jittery = retry_interval_for(0, COLD_G, &proxy);
     EXPECT_TRUE(jittery > 2 * (uint64_t)proxy.recovery_srtt_ns); // the variance term, not srtt alone
     EXPECT_TRUE(jittery < (uint64_t)proxy.recovery_srtt_ns * tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE);
 
@@ -1557,13 +1561,13 @@ static void test_retry_interval_estimate_converges_and_is_bounded(void) {
     // 10ms ceiling would have retried ten times before a single answer could arrive.
     memset(&proxy, 0, sizeof(proxy));
     note_recovery_sample(&proxy, 100 * tt_MILLISECOND);
-    EXPECT_EQ_U64(300 * tt_MILLISECOND, retry_interval_for(0, &proxy));
+    EXPECT_EQ_U64(300 * tt_MILLISECOND, retry_interval_for(0, COLD_G, &proxy));
 
     // The ceiling binds only for a pathological estimate - variance far beyond the mean.
     memset(&proxy, 0, sizeof(proxy));
     proxy.recovery_srtt_ns = 100000;             // 100us
     proxy.recovery_rttvar_ns = 10 * 1000 * 1000; // 10ms of "variance"
-    EXPECT_EQ_U64(100000ULL * tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE, retry_interval_for(0, &proxy));
+    EXPECT_EQ_U64(100000ULL * tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE, retry_interval_for(0, COLD_G, &proxy));
 }
 
 // End to end: the recovery is timed from the FIRST ACKNACK that named the watermark, a timer retry of
@@ -1604,8 +1608,8 @@ static void test_recovery_probe_times_from_the_first_request(void) {
     node.rx_targeted = false;
     EXPECT_EQ_U32(3000000, proxy->recovery_srtt_ns);
     EXPECT_EQ_U32(1500000, proxy->recovery_rttvar_ns);
-    EXPECT_EQ_U64(0, proxy->probe_ns);                                    // done, not re-timed
-    EXPECT_EQ_U64(3000000ULL + 6000000ULL, retry_interval_for(0, proxy)); // srtt + 4 * rttvar
+    EXPECT_EQ_U64(0, proxy->probe_ns);                                            // done, not re-timed
+    EXPECT_EQ_U64(3000000ULL + 6000000ULL, retry_interval_for(0, COLD_G, proxy)); // srtt + 4 * rttvar
 }
 
 // Karn's ambiguity. The requested sample can come back as the retransmission its ACKNACK caused, or as
@@ -1638,7 +1642,7 @@ static void test_recovery_probe_ignores_a_late_original(void) {
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(0, proxy->recovery_srtt_ns); // not a recovery: nothing learned
     EXPECT_EQ_U64(0, proxy->probe_ns);         // but the probe is over
-    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_INITIAL, retry_interval_for(0, proxy));
+    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_INITIAL, retry_interval_for(0, COLD_G, proxy));
 }
 
 // Only a request that names the watermark can time its recovery. A narrow request for a gap further
@@ -2958,7 +2962,7 @@ static void test_unknown_policy_still_terminates_on_eviction(void) {
 // the 100 us granularity, 200 us) and the timer (the recovery srtt + 4 * rttvar, 4.2 ms) are far apart and each test
 // can stand between them.
 #define GAP_TEST_SRTT_NS (200 * tt_MICROSECOND)
-#define GAP_TEST_TRANSIT_NS (GAP_TEST_SRTT_NS - tt_RELIABLE_RETRY_GRANULARITY)
+#define GAP_TEST_TRANSIT_NS (GAP_TEST_SRTT_NS - COLD_G)
 static struct tt_WriterProxy* open_gap_at_two(struct tt_Context* node, struct tt_Subscriber* sub,
                                               struct tt_Header* header) {
     uint32_t tail = write_data(node, 1, 100, 1);

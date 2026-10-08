@@ -90,6 +90,10 @@ uint64_t tt_get_ns(void) {
     return ((uint64_t)ts.tv_sec * NS_PER_S) + (uint64_t)ts.tv_nsec;
 }
 
+uint64_t tt_timer_resolution_ns(void) {
+    return 1;
+}
+
 int32_t tt_get_node_id(void) {
     return next_node_id;
 }

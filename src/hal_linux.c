@@ -155,6 +155,19 @@ uint64_t tt_get_ns(void) {
     return ((uint64_t)ts.tv_sec * SEC_NS) + ts.tv_nsec;
 }
 
+// clock_getres() of the clock tt_get_ns() reads. ppoll() and epoll_pwait2() wait on high-resolution timers, which
+// end no more finely than that clock can tell; how much LATER they end (the timer slack, the scheduler) is what the
+// context measures on top of this floor.
+uint64_t tt_timer_resolution_ns(void) {
+    struct timespec res;
+    // NOLINTNEXTLINE(misc-include-cleaner) - CLOCK_REALTIME, as tt_get_ns()
+    if (clock_getres(CLOCK_REALTIME, &res) != 0) {
+        return 1;
+    }
+    uint64_t resolution_ns = ((uint64_t)res.tv_sec * SEC_NS) + (uint64_t)res.tv_nsec;
+    return resolution_ns != 0 ? resolution_ns : 1;
+}
+
 int32_t tt_get_node_id(void) {
     // Get unique node ID in the network using IP address x.x.x.id
     uint32_t broadcast_ip = inet_addr(_tt_CONFIG.broadcast);

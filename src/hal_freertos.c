@@ -67,6 +67,17 @@ uint64_t tt_get_ns(void) {
     return *CLINT_MTIME * CLINT_NS_PER_TICK;
 }
 
+// A timed wait here ends on an RTOS tick (wait_ticks(), below) - or, in the socket build, on lwIP's select(), which
+// waits whole milliseconds - so that, not the CLINT's 100 ns, is the finest step its lateness can be told in.
+uint64_t tt_timer_resolution_ns(void) {
+#if tt_HAL_FREERTOS_NETCONN
+    uint64_t tick_ns = tt_SECOND / configTICK_RATE_HZ; // NOLINT(misc-include-cleaner) - see the FreeRTOS.h include
+#else
+    uint64_t tick_ns = tt_MILLISECOND;
+#endif
+    return tick_ns > CLINT_NS_PER_TICK ? tick_ns : CLINT_NS_PER_TICK;
+}
+
 int32_t tt_get_node_id(void) {
     // Unlike hal_linux.c (which enumerates every interface with getifaddrs() to find the one on
     // the broadcast network), this target has exactly one netif, brought up statically by
