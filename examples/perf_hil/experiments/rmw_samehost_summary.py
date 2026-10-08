@@ -28,9 +28,16 @@ Not VOID, reported:
     max_blocking_time); samples lost after the first delivered second are DELIVERY FAILED for a vendor (excluded
     from the cell and listed) and make every metric of that cell a LOSE for rmw_tickle (docs/TESTING.md section 4).
 Verdicts (rmw_tickle against the scored vendors, rmw_fastrtps_cpp and rmw_cyclonedds_cpp; rmw_zenoh_cpp is reference
-only and never scored): per metric, the mean over usable reps. WIN when rmw_tickle is better than every scored vendor
-that has 2 usable reps by more than twice the combined standard error; LOSE when any such vendor is better by more
-than that; otherwise DRAW. A cell where rmw_tickle has fewer than 2 usable reps is VOID.
+only and never scored): per metric, over usable reps, docs/TESTING.md section 4's win rule - the same range rule
+campaign_summary.py applies to the cross-host cells. WIN when rmw_tickle's reps' range lies entirely on the better
+side of the range of every scored vendor that has 2 usable reps; LOSE when any such vendor's range lies entirely on
+the better side of rmw_tickle's; otherwise (a range overlaps) DRAW. A cell where rmw_tickle has fewer than 2 usable
+reps is VOID.
+Until 2026-10-08 this was a 2 x combined-SE test on the means. It cannot call a lead a lead when one vendor's reps
+scatter: tput Array1k best_effort CPU per sample at 03585237, rmw_tickle 13.14 / 13.73 / 13.17 us against
+CycloneDDS 32.81-34.45 and FastDDS 171 / 1006 / 323, read DRAW because FastDDS's SE (about 256 us) put its 2 x SE
+bound above the 487 us gap, although rmw_tickle was below every rep of both vendors. Range non-overlap does not
+reward a vendor's scatter; a rmw_tickle range that touches a vendor's still reads DRAW.
 """
 import math
 import re
@@ -336,31 +343,26 @@ def check_tput(d, m, p, arm, msg, qos):
     return why, rec
 
 
-def mean_se(xs):
-    if len(xs) < 2:
-        return (xs[0] if xs else float("nan")), float("inf")
-    return statistics.mean(xs), statistics.stdev(xs) / math.sqrt(len(xs))
-
-
 def verdict(cell, metric, lower_better, tickle_lose_all):
+    """docs/TESTING.md section 4's win rule on the reps' ranges (module docstring)."""
     t = [r[metric] for r in cell.get("tickle", []) if r.get(metric) is not None]
     if len(t) < 2:
         return "VOID"
     if tickle_lose_all:
         return "LOSE(tickle delivery)"
-    mt, st = mean_se(t)
+    t_lo, t_hi = min(t), max(t)
     better_all, worse_any, compared = True, False, 0
     for v in SCORED:
         xs = [r[metric] for r in cell.get(v, []) if r.get(metric) is not None]
         if len(xs) < 2:
             continue
         compared += 1
-        mv, sv = mean_se(xs)
-        diff = (mv - mt) if lower_better else (mt - mv)   # > 0: tickle better
-        bound = 2 * math.sqrt(st ** 2 + sv ** 2)
-        if diff <= bound:
+        v_lo, v_hi = min(xs), max(xs)
+        tickle_clear = t_hi < v_lo if lower_better else t_lo > v_hi    # every tickle rep better than every vendor rep
+        vendor_clear = v_hi < t_lo if lower_better else v_lo > t_hi
+        if not tickle_clear:
             better_all = False
-        if -diff > bound:
+        if vendor_clear:
             worse_any = True
     if compared == 0:
         return "NO VENDOR"
@@ -436,8 +438,8 @@ def main():
         print(f"\nPREFLIGHT {'PASS' if not voids and n else 'FAIL'}: {n} usable runs, {len(voids)} VOID")
         sys.exit(0 if not voids and n else 1)
 
-    print("\n--- table (medians over usable reps; verdict: rmw_tickle (link set) vs FastDDS and CycloneDDS, 2 x SE; "
-          "rmw_tickle as shipped and zenoh are printed, not scored) ---")
+    print("\n--- table (medians over usable reps; verdict: rmw_tickle (link set) vs FastDDS and CycloneDDS, reps' "
+          "ranges must not overlap; rmw_tickle as shipped and zenoh are printed, not scored) ---")
     print("| cell | metric | rmw_tickle | rmw_tickle shipped | rmw_fastrtps_cpp | rmw_cyclonedds_cpp | "
           "rmw_zenoh_cpp (ref) | verdict |")
     print("|---|---|---|---|---|---|---|---|")

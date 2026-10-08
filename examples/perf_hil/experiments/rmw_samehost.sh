@@ -54,8 +54,10 @@
 #     MIN_MEASURED round trips or any unanswered one, a QoS echo that is not the cell's, rmw_tickle off its segment or
 #     its two instruments disagreeing, the zenoh router not listening.
 #   - Per cell and metric (RTT p50/p99/mean, CPU per round trip; delivered msg/s, CPU per delivered sample; peak RSS):
-#     WIN when rmw_tickle beats both scored vendors by more than 2 x the combined SE, LOSE when either beats it by
-#     that, DRAW otherwise; zenoh is printed and never scored. RELIABLE tput: a vendor that loses samples after the
+#     WIN when rmw_tickle's reps' range lies wholly on the better side of both scored vendors' ranges, LOSE when
+#     either vendor's range lies wholly on the better side of rmw_tickle's, DRAW when a range overlaps (docs/TESTING.md
+#     section 4's win rule; a 2 x SE test until 2026-10-08, which a vendor's scatter defeated); zenoh is printed and
+#     never scored. RELIABLE tput: a vendor that loses samples after the
 #     first delivered second is DELIVERY FAILED and excluded; rmw_tickle doing so LOSES every metric of that cell.
 #   - Expectation, and what would falsify it: the native same-host rows have TickLE ahead of both DDS on every cell
 #     (S1-S16). If rmw_tickle LOSES an RTT or delivered-rate cell to a vendor here, the cost is in the rmw layer, not
