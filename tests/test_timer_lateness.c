@@ -10,8 +10,9 @@
 
 // G, the timer-lateness term of both retry timers' srtt + max(G, 4 x rttvar) (2026-10-08, ROADMAP Now 5a; DESIGN.md
 // 6 and 7). It was the fixed 100 us tt_RELIABLE_RETRY_GRANULARITY, fitted to no measurement; the context now measures
-// how late its own timed waits return and smooths that as RFC 6298 smooths a round trip: G = mean + 4 x deviation, at
-// least tt_timer_resolution_ns(), and tt_TIMER_LATENESS_INITIAL (the old 100 us) until the first sample.
+// how late its own waits for a retry timer return and smooths that as RFC 6298 smooths a round trip: G = mean + 4 x
+// deviation, at least tt_timer_resolution_ns(), and tt_TIMER_LATENESS_INITIAL (the old 100 us) until the first
+// sample. The retry timer here is call_retry() on a client with no call outstanding, which does nothing.
 //
 // Through the mock HAL: with test_mock_receive_advances_clock a wait that times out lets its whole timeout pass, and
 // test_mock_receive_late_ns more - a timer that runs that late. So every expected value below is known exactly.
@@ -39,6 +40,9 @@ static void noop_entry(struct tt_Context* node, uint64_t time, void* param) {
     (void)param;
 }
 
+// A client with no call outstanding: call_retry() on it returns at once (its cache is NULL).
+static struct tt_Client idle_client;
+
 static void setup(struct tt_Context* node) {
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
@@ -46,10 +50,10 @@ static void setup(struct tt_Context* node) {
     test_mock_receive_advances_clock = true;
 }
 
-// One timed wait to an entry `ahead` from now, which the mock's timer ends `late` after its deadline.
+// One timed wait to a retry timer `ahead` from now, which the mock's timer ends `late` after its deadline.
 static void sleep_once(struct tt_Context* node, uint64_t ahead, uint64_t late) {
     test_mock_receive_late_ns = late;
-    EXPECT_TRUE(tt_Context_schedule(node, test_mock_now + ahead, noop_entry, NULL));
+    EXPECT_TRUE(tt_Context_schedule(node, test_mock_now + ahead, call_retry, &idle_client));
     EXPECT_EQ_INT(tt_RET_TIMEOUT, tt_Context_poll(node, -1));
 }
 
@@ -134,14 +138,14 @@ static void test_a_wait_cut_short_is_not_a_sample(void) {
     struct tt_Context node;
     setup(&node);
     test_mock_receive_advances_clock = false; // the wait returns at once: interrupted, nothing elapsed
-    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (1 * MS), noop_entry, NULL));
+    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (1 * MS), call_retry, &idle_client));
     (void)tt_Context_poll(&node, -1);
     EXPECT_EQ_U32(0, node.timer_lateness_mean_ns);
     EXPECT_EQ_U64(100 * US, timer_lateness_ns(&node));
 
     setup(&node);
     test_mock_receive_return = 0; // a datagram (a rung bell) ends the wait
-    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (1 * MS), noop_entry, NULL));
+    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (1 * MS), call_retry, &idle_client));
     (void)tt_Context_poll(&node, 2 * (int64_t)MS);
     EXPECT_EQ_U32(0, node.timer_lateness_mean_ns);
 
@@ -152,26 +156,39 @@ static void test_a_wait_cut_short_is_not_a_sample(void) {
     EXPECT_EQ_U32(0, node.timer_lateness_mean_ns);
 }
 
-// A wait shorter than the lateness already measured never slept long enough to show it - under traffic most waits
-// are fractions of a microsecond and read the system call's cost - so it is not a sample. Cold, G is 100 us: a 50 us
-// wait is passed over, a 200 us one counts.
-static void test_a_wait_shorter_than_g_is_not_a_sample(void) {
+// Only a retry timer's deadline is a sample. How late a wait ends depends on how long it was (Linux's poll timer
+// slack is 0.1% of the timeout), so the context's other deadlines - a 500 ms announce, a poll's budget - would measure
+// a lateness the retry never sees: an entry of another kind, and a budget that ends before the retry is due, are not
+// samples.
+static void test_only_a_retry_timers_deadline_is_a_sample(void) {
     struct tt_Context node;
     setup(&node);
-    sleep_once(&node, 50 * US, 1 * US);
+    test_mock_receive_late_ns = 500 * US;
+    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (1 * MS), noop_entry, NULL));
+    EXPECT_EQ_INT(tt_RET_TIMEOUT, tt_Context_poll(&node, -1));
     EXPECT_EQ_U32(0, node.timer_lateness_mean_ns);
-    EXPECT_EQ_U64(100 * US, timer_lateness_ns(&node));
-    sleep_once(&node, 200 * US, 1 * US);
-    EXPECT_EQ_U32(1 * (uint32_t)US, node.timer_lateness_mean_ns);
-}
 
-// A positive-timeout poll's own budget is a deadline too: the wait that ends it is a sample.
-static void test_a_budget_wait_is_a_sample(void) {
-    struct tt_Context node;
     setup(&node);
     test_mock_receive_late_ns = 60 * US;
-    (void)tt_Context_poll(&node, 1 * (int64_t)MS);
+    (void)tt_Context_poll(&node, 1 * (int64_t)MS); // nothing scheduled: the wait ends at the budget
+    EXPECT_EQ_U32(0, node.timer_lateness_mean_ns);
+    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (5 * MS), call_retry, &idle_client));
+    (void)tt_Context_poll(&node, 1 * (int64_t)MS); // the budget ends first
+    EXPECT_EQ_U32(0, node.timer_lateness_mean_ns);
+    EXPECT_EQ_U64(100 * US, timer_lateness_ns(&node));
+
+    // The control: the same wait for the retry timer is one, under a budget as without.
+    (void)tt_Context_poll(&node, 10 * (int64_t)MS);
     EXPECT_EQ_U32(60 * (uint32_t)US, node.timer_lateness_mean_ns);
+}
+
+// Both retry timers G serves are the ones whose waits it samples: the reliable reader's ACKNACK retry and the call
+// retry the tests above sleep to. Nothing else is.
+static void test_the_acknack_retry_is_a_retry_timer(void) {
+    EXPECT_TRUE(is_retry_timer(acknack_retry));
+    EXPECT_TRUE(is_retry_timer(call_retry));
+    EXPECT_TRUE(!is_retry_timer(noop_entry));
+    EXPECT_TRUE(!is_retry_timer(keep_all_resolicit)); // a Publisher's timer, which does not use G
 }
 
 // The retry timers use it: a reliable proxy with a steady 400 us recovery retries at 400 us + G, its repair-in-flight
@@ -229,8 +246,8 @@ int main(void) {
     test_a_jittering_timer_gives_more_than_its_mean();
     test_lateness_is_floored_at_the_timer_resolution();
     test_a_wait_cut_short_is_not_a_sample();
-    test_a_wait_shorter_than_g_is_not_a_sample();
-    test_a_budget_wait_is_a_sample();
+    test_only_a_retry_timers_deadline_is_a_sample();
+    test_the_acknack_retry_is_a_retry_timer();
     test_the_retry_intervals_use_the_measured_lateness();
     test_a_fixed_granularity_overrides_the_measurement();
     if (test_result() != 0) {

@@ -4499,17 +4499,26 @@ static void resend_call_request(struct tt_Context* node, struct tt_Client* clien
 // G, the one absolute term of both retry timers' RFC 6298 form, srtt + max(G, 4 x rttvar) (config.h, DESIGN.md 6
 // and 7): how late this host runs a timer. Measured since 2026-10-08 rather than assumed (it was a fixed 100 us).
 //
-// A sample is one timed wait in tt_Context_poll() that ran to the deadline it was given: the clock on waking minus
-// that deadline (poll_wait_io()). A wait that ended early - a datagram, a wake, a signal - says nothing about the
-// timer and is not one. Nor is a wait shorter than the G already measured: it ends before the thread is asleep, and
-// what it shows is the cost of the system call. Under traffic most waits are of that kind - on the dev PC, 155 of
-// one c5 run's 168 samples were waits of 0.0-0.8 us returning 0.4-1.2 us "late", which drove G from ~1 ms to ~1 us
-// in three seconds while the idle waits around the run were 515-550 us late (2026-10-08). The samples are folded as RFC
-// 6298 folds round trips (rtt_estimate_fold(): mean and mean deviation, gains 1/8 and 1/4), and G is mean + 4 x
-// deviation: the lateness a timer seldom exceeds, not the lateness it reaches half the time, which is what the retry
-// needs, as srtt + 4 x rttvar is for the round trip. Its floor is the finest step a wait can end on
+// A sample is one timed wait in tt_Context_poll() for a retry timer (is_retry_timer()) that ran to its deadline: the
+// clock on waking minus that deadline (poll_wait_io()). A wait that ended early - a datagram, a wake, a signal - says
+// nothing about the timer and is not one. Nor is a wait for any other deadline, because how late a wait ends depends
+// on how long it was: Linux lets poll()-family timeouts end up to max(50 us, 0.1% of the timeout) late (its timer
+// slack), so the context's own 500 ms announce and budget waits return ~520 us late on the dev PC where 1 ms waits
+// return ~60 us late, and they made G ~1.2 ms; and the sub-microsecond waits of a busy loop return ~0.5 us "late" -
+// the system call's cost - and drove G to ~1 us within three seconds of traffic (2026-10-08, c5 shape in netns). A
+// retry timer's own waits are the lateness the retry suffers, whatever the platform does with the others. The samples
+// are folded as RFC 6298 folds round trips (rtt_estimate_fold(): mean and mean deviation, gains 1/8 and 1/4), and G is
+// mean + 4 x deviation: the lateness a timer seldom exceeds, not the lateness it reaches half the time, which is what
+// the retry needs, as srtt + 4 x rttvar is for the round trip. Its floor is the finest step a wait can end on
 // (tt_timer_resolution_ns()), so a mock clock or an exact timer cannot drive it to 0. A wait cut short by a signal
 // after its deadline is a genuine late wake and counts.
+static void call_retry(struct tt_Context* node, uint64_t time, void* param);
+
+// The timers G is the granularity of: the reliable reader's ACKNACK retry and the client's call retry.
+static bool is_retry_timer(void (*function)(struct tt_Context* node, uint64_t time, void* param)) {
+    return function == acknack_retry || function == call_retry;
+}
+
 static void timer_lateness_fold(struct tt_Context* node, uint64_t lateness_ns) {
     rtt_estimate_fold(&node->timer_lateness_mean_ns, &node->timer_lateness_var_ns, lateness_ns);
     uint64_t g = (uint64_t)node->timer_lateness_mean_ns + (4ULL * node->timer_lateness_var_ns);
@@ -14275,6 +14284,7 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
     const struct tt_TCB* head = peek_scheduler(node);
     has_next = head != NULL;
     next = has_next ? head->time : next;
+    const bool retry_deadline = has_next && is_retry_timer(head->function); // G's samples (timer_lateness_fold())
     // An entry another thread scheduled since the loop's run_due_entry(), at a time no later than this
     // iteration's clock reading, is due: it saw no wait to wake, and the wait length below would be 0 or
     // negative - no timeout at all - or, under a budget, wrap past it. Go round the loop and run it.
@@ -14328,12 +14338,11 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
     if (len >= 0) {
         node->rx_clock_ns = tt_get_ns(); // the wait may have been long: what arrived is stamped from here
     } else if (len == -1) {
-        // Timed out. If it ran to its deadline, how late it returned is a sample of this host's timer lateness: G,
-        // the retry timers' granularity (timer_lateness_fold()). Earlier than the deadline is a wait cut short, and
-        // a wait shorter than the lateness already measured never slept long enough to show it. (An indefinite
-        // wait's until is UINT64_MAX, which no clock reading reaches.)
+        // Timed out. A wait for a retry timer that ran to its deadline is a sample of how late this host runs that
+        // timer: G, the retry timers' granularity (timer_lateness_fold()). Earlier than the deadline is a wait cut
+        // short; a wait that ended at a budget or another entry's deadline says nothing about a retry timer's.
         woke = tt_get_ns();
-        if (woke >= until && (uint64_t)rest >= timer_lateness_ns(node)) {
+        if (retry_deadline && woke_for_scheduler && woke >= until) {
             timer_lateness_fold(node, woke - until);
         }
     }
