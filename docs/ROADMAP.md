@@ -56,6 +56,11 @@ The user's active list (2026-10-05), in order.
    The first-lap arm was NOT realized - s6's own window arguments overrode `-W 0 -C 0` (every row says warmup=4096),
    so the rig has not yet confirmed the first-lap gain the PC showed (+16 -> +2 us); and the driver's parser missed
    the indented RESULT lines and printed NO VERDICT (re-read with the same rules).
+   **First lap confirmed 2026-10-08** (`ab_frag_fastpath.sh`, A = main `29dff630` with only the fast path switched off
+   (branch `ab/frag-fastpath-off`), B = `29dff630`, A B B A x 5;
+   `~/rig_results_safe/ab_frag_fastpath_6354ca54_29dff630_20261008-140933.*`): first lap p4 rtt p50 44 -> 26 us, p4 - p3
+   gap +21 -> +3 us (IMPROVED; p3 control 23 -> 23); warmed p4 29 -> 26 us (PASS); cross host 1 better, 3 held (PASS).
+   Done.
 2. **Fill COMPARISON 1a's empty cells**: CPU and RSS for all three frameworks on every same-host cell (CycloneDDS
    including iox-roudi), and the vendors' DELIVERED rates on the same-host BEST_EFFORT rows. The rows compare send
    rates today, and FastDDS's KEEP_LAST 1 reader took 154 of 3.1M samples. (COMPARISON 1a notes)
