@@ -29,6 +29,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
+#include <type_traits>
 #include <utility>
 
 #include "rosidl_runtime_c/message_type_support_struct.h"
@@ -155,6 +156,16 @@ ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
     auto & callbacks = ts::_@IDL_NAME@_callbacks;
     callbacks =
       *static_cast<const rosidl_typesupport_tickle_c_message_callbacks_t *>(tickle_c_handle->data);
+    // Loaned messages: the C struct's in-place layout carries over only to a C++ object that is the same plain
+    // bytes - trivially copyable (no std::string, no std::vector), standard layout, the same size and alignment.
+    // Same members in the same order with same-layout types (std::array<T, N> is T[N]) then sit where the C ones do.
+    using cpp_message = ts::_@IDL_NAME@_message;
+    if (!std::is_trivially_copyable<cpp_message>::value || !std::is_standard_layout<cpp_message>::value ||
+      sizeof(cpp_message) != callbacks.ros_struct_size || alignof(cpp_message) != callbacks.ros_struct_align)
+    {
+      callbacks.inplace_bytes = 0;
+    }
+    callbacks.ros_struct_align = alignof(cpp_message);
     callbacks.ros_struct_size = sizeof(ts::_@IDL_NAME@_message);
     callbacks.to_tickle = &ts::_@IDL_NAME@_to_tickle;
     callbacks.from_tickle = &ts::_@IDL_NAME@_from_tickle;
