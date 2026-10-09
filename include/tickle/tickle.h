@@ -369,10 +369,75 @@ struct tt_Sample {
     bool is_native_endian;
 };
 
+#if tt_LARGE_SAMPLES
+// Large-message stage 2 (DESIGN.md section 8): the caller's buffers, one per large sample. acquire returns `bytes` of
+// memory core may write and keep until it hands the pointer back to release, or NULL for "no room" - never a crash.
+// Core calls them with the context locked, from the publishing thread, the polling thread, or (release only) whichever
+// thread calls tt_Sample_release(); they must not call back into TickLE. rmw_tickle backs them with malloc() and a free
+// list; a core-only user can back them with a static pool. Set with tt_Context_set_large_buffers().
+typedef void* (*tt_LARGE_ACQUIRE)(void* user, uint32_t bytes);
+typedef void (*tt_LARGE_RELEASE)(void* user, void* buffer);
+
+// Where a large sample's bytes sit in its buffer, on both sides: the DataHeader 4 bytes in, the CDR right after it - at
+// 4 mod 8, as rx_buffer places a DATA's CDR, so a generated codec's aligned reads stay valid.
+#define tt_LARGE_HEADER_OFFSET 4U
+#define tt_LARGE_CDR_OFFSET (tt_LARGE_HEADER_OFFSET + tt_FRAG_DATA_HEADER_LENGTH)
+
+// One large sample being put back together (process_frag(), tickle.c): its fragments are copied to their offsets in an
+// acquired buffer as they land, in any order, and the sample is delivered from there - lent, when a Subscriber keeps
+// it. Keyed by (source, entity_id, the sample's seq_no) and, for a RELIABLE Subscriber, that Subscriber: a RELIABLE
+// one takes each fragment under its own seq_no and delivers in order, while best-effort ones share one assembly that
+// is handed to all of them once whole.
+struct tt_LargeAssembly {
+    uint64_t landed[tt_LARGE_MAX_FRAGMENTS / tt_RELIABLE_BITMAP_WORD_BITS]; // bit i: fragment i is in the buffer
+    uint8_t* buffer;                                                        // NULL: this entry is free
+    struct tt_Subscriber* sub; // the RELIABLE Subscriber it is for; NULL: best effort
+    uint64_t timestamp;        // from fragment 0, once it has landed
+    uint32_t capacity;         // bytes acquired
+    uint32_t entity_id;
+    uint32_t seq_no;      // the sample's: its fragment 0's
+    uint32_t endpoint_id; // from fragment 0
+    uint32_t received;    // fragments landed
+    uint32_t last_length; // payload bytes of the last fragment, 0 until it lands
+    uint32_t claimed;     // tt_LargeState.clock at the claim: the best-effort reassembly claimed longest ago goes first
+    uint16_t frag_count;
+    uint8_t source;
+    bool is_native;
+    bool via_data_port;
+};
+
+// A context's large-sample state (tt_Context.large).
+struct tt_LargeState {
+    tt_LARGE_ACQUIRE acquire;
+    tt_LARGE_RELEASE release;
+    void* user;
+    struct tt_LargeAssembly assemblies[tt_LARGE_ASSEMBLIES];
+    uint32_t clock;
+    // Counters, on the traffic line as large_*. reassembled: delivered whole. abandoned: given up whole or in part (a
+    // fragment lost for good, a newer sample needing the room, its writer gone). no_buffer: acquire said no - a
+    // best-effort sample is then lost, a RELIABLE fragment is left unrecorded and asked for again. dropped: fragments
+    // refused as malformed or inconsistent with their sample. duplicate: fragments already landed. published: large
+    // samples published. tail_abandoned: KEEP_LAST samples a newer publish replaced before all of them had gone - one
+    // still waiting behind a send in progress, or (the ring full) one being sent.
+    // window_too_small: KEEP_ALL publishes refused because a matched reader's window is narrower than the sample.
+    // send_waits: large sends that found the socket's send buffer full and continued later.
+    uint64_t reassembled;
+    uint64_t abandoned;
+    uint64_t no_buffer;
+    uint64_t dropped;
+    uint64_t duplicate;
+    uint64_t published;
+    uint64_t tail_abandoned;
+    uint64_t window_too_small;
+    uint64_t send_waits;
+};
+#endif
+
 #if tt_SAMPLE_LENDING
 // Where a lent sample's bytes live. FREE also means "not lendable": the datagram being processed (if any) is not one
-// whose memory can be kept.
-enum tt_LendKind { tt_LEND_FREE = 0, tt_LEND_BUFFER = 1, tt_LEND_SLOT = 2 };
+// whose memory can be kept. LARGE: a large sample's own buffer (`region`), handed back to the context's large release
+// once no entry names it.
+enum tt_LendKind { tt_LEND_FREE = 0, tt_LEND_BUFFER = 1, tt_LEND_SLOT = 2, tt_LEND_LARGE = 3 };
 
 // One retained sample. BUFFER: `index` is the receive buffer (0 the context's rx_buffer, k the pool's buffer k - 1).
 // SLOT: `index` is the record's ring index and `region` the segment header it was read from.
@@ -418,6 +483,9 @@ struct tt_Lending {
     uint64_t exhausted;    // no handle entry, or no spare receive buffer: tt_RET_OUT_OF_BUFFER
     uint64_t bad_releases; // handle 0, unknown, or already released: tt_RET_INVALID_ARGUMENT
     uint64_t full_retained;
+    // While rx_kind is LARGE: the large sample's own buffer, which a retain keeps (large-message stage 2). Last, so no
+    // field above moves.
+    uint8_t* rx_large;
 };
 #endif
 
@@ -1096,6 +1164,12 @@ struct tt_Context {
     // Receive-buffer lending (DESIGN.md section 10), last so that no field before it moves when it is compiled in.
     struct tt_Lending lend;
 #endif
+    // Large-sample fragments (types 11/12) a node built without stage 2 passed over (DESIGN.md section 8).
+    uint64_t frag_large_skipped;
+#if tt_LARGE_SAMPLES
+    // Large-message stage 2 (DESIGN.md section 8), after everything else for the same reason as lend.
+    struct tt_LargeState large;
+#endif
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s
@@ -1590,6 +1664,34 @@ struct tt_ReliableCache {
     struct tt_DurableDeliveryRecord durable_delivered[tt_MAX_PEER_COUNT];
 };
 
+#if tt_LARGE_SAMPLES
+// One large sample a Publisher holds by reference (tt_Publisher.large[], DESIGN.md section 8): sent from its buffer,
+// kept there for resends while `retained`, and handed back to the caller's release once every matched reader has
+// acknowledged it or it is evicted - or, for a Publisher that retains nothing, once its last fragment has gone.
+struct tt_LargeRecord {
+    uint8_t* buffer;  // DataHeader at tt_LARGE_HEADER_OFFSET, CDR at tt_LARGE_CDR_OFFSET; NULL: free
+    uint64_t sent_ns; // when it was published, for LIFESPAN
+    uint32_t seq_no;  // its first datagram's; it takes `count` of them. 0 while it waits as tt_Publisher.large_pending
+    uint32_t cdr_len; // padded to 4, as it is sent
+    uint16_t count;
+    bool retained; // kept for resends once sent: the Publisher has a reliable cache
+    bool sent;     // every fragment has gone to every destination once
+};
+
+// Where a Publisher's large send stands (tt_Publisher.large_cursor): a burst of thousands of datagrams outruns any
+// socket send buffer, so what does not fit is sent from tt_Context_poll() as the buffer drains.
+#define tt_LARGE_DESTINATIONS (tt_MAX_LINK_COUNT > tt_MAX_PEER_COUNT ? tt_MAX_LINK_COUNT : tt_MAX_PEER_COUNT)
+struct tt_LargeCursor {
+    struct tt_Peer dests[tt_LARGE_DESTINATIONS]; // ip 0: the broadcast address
+    uint64_t retry_ns;                           // the wait before the next try, doubled while one sends nothing
+    uint32_t seq_no;                             // the record being sent; 0: idle
+    uint16_t next_index;                         // its next fragment to the current destination
+    uint8_t next_dest;
+    uint8_t dest_count;
+    bool scheduled;
+};
+#endif
+
 struct tt_Publisher; // so the callback typedef below names this struct, not a prototype-scoped one
 
 // Phase 3 (rmw_tickle/PLAN.md) - tt_Publisher.writable_callback's own type: `pub` is the Publisher
@@ -1911,6 +2013,23 @@ struct tt_Publisher { // extends endpoint
     // liveliness() sending a HEARTBEAT with tt_HEARTBEAT_FLAG_LIVELINESS. That function sends nothing more
     // within a tt_LIVELINESS_LEASE_DIVISOR-th of the lease of this. 0: never.
     uint64_t liveliness_asserted_ns;
+#if tt_LARGE_SAMPLES
+    // Large-message stage 2 (DESIGN.md section 8), core-owned, last so that no field above moves. The large samples
+    // held by reference, oldest at large_head, in seq_no order; the send in progress; the newest sample published
+    // while a send was in progress, waiting for it without seq_nos yet - a newer one replaces it, KEEP_LAST, before
+    // anything of it has gone; and the datagram count of a large publish KEEP_ALL refused, which
+    // tt_Publisher_writable() answers about (0: none).
+    struct tt_LargeRecord large[tt_LARGE_RETAINED];
+    struct tt_LargeCursor large_cursor;
+    struct tt_LargeRecord large_pending;
+    // The end-of-sample HEARTBEAT asked again while a sent large sample stays unacknowledged (large_ack_chase(),
+    // tickle.c): armed, and the wait before the next ask.
+    uint64_t large_ack_wait_ns;
+    bool large_ack_armed;
+    uint8_t large_head;
+    uint8_t large_count;
+    uint16_t large_blocked;
+#endif
 };
 
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic Heartbeat announce - see
@@ -2186,6 +2305,12 @@ struct tt_WriterProxy {
     // Phase 3 - tt_get_ns() of the last "still waiting" warning for this writer, so a stuck
     // KEEP_ALL gap is visible in a log at a fixed cadence rather than per retry or never.
     uint64_t stuck_warned_ns;
+#if tt_LARGE_SAMPLES
+    // tt_get_ns() of the last fragment of a large sample recorded from this writer (large-message stage 2). While they
+    // keep arriving the writer is still sending, and may not answer an ACKNACK before the send ends: a retry then
+    // does not count against a KEEP_LAST writer's give-up budget (acknack_retry()).
+    uint64_t large_arrival_ns;
+#endif
     // Request-to-recovery estimate for the dynamic ACKNACK retry interval (tt_RELIABLE_RETRY_INTERVAL
     // 0, config.h), RFC 6298-style, in nanoseconds. Maintained in every build - so the estimate can
     // be read, and tested, whether or not it is steering the timer. 0/0 = no sample yet.
@@ -2544,6 +2669,11 @@ struct tt_Subscriber { // extends endpoint
     // of duplication buys a dependency that is visible at the line that depends on it.
     uint8_t delivering_source;
     uint32_t delivering_entity_id;
+#if tt_LARGE_SAMPLES
+    // Core-owned: the context's large assemblies (struct tt_LargeAssembly) held for this RELIABLE Subscriber - while
+    // any are, its drain looks for a large sample at each seq_no it walks (DESIGN.md section 8).
+    uint16_t large_held;
+#endif
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
@@ -2726,6 +2856,17 @@ tt_ret_t tt_Sample_release(struct tt_Context* node, struct tt_Sample* sample);
 // is held in a receive buffer or the socket is reading into the pool; tt_RET_UNSUPPORTED with tt_SAMPLE_LENDING 0.
 tt_ret_t tt_Context_set_rx_pool(struct tt_Context* node, uint64_t* storage, uint8_t count);
 
+#if tt_LARGE_SAMPLES
+// Large-message stage 2 (DESIGN.md section 8): the buffers samples above tt_MAX_SAMPLE_LENGTH are published from and
+// put back together in, one per sample (tt_LARGE_ACQUIRE above says what they must do). Without them a large publish
+// fails with tt_RET_TOO_LARGE and a large sample arriving is counted in large.no_buffer. A large sample delivered to a
+// Subscriber can be kept with tt_Sample_retain() past its callback; its buffer goes back to `release` at
+// tt_Sample_release(). Set it before creating endpoints; NULL acquire and release detach (only while nothing is held).
+// tt_RET_ILLEGAL_STATUS while a large buffer is out, tt_RET_INVALID_ARGUMENT for a NULL context or a half-set pair.
+tt_ret_t tt_Context_set_large_buffers(struct tt_Context* node, tt_LARGE_ACQUIRE acquire, tt_LARGE_RELEASE release,
+                                      void* user);
+#endif
+
 /**
  * @node node to poll
  * @timeout nanoseconds to wait, with two special values:
@@ -2883,7 +3024,9 @@ tt_ret_t tt_Context_destroy(struct tt_Context* node);
 // retired.
 // Bumped 10 -> 11 for CONTEXT_NODE_PLAN.md stage 3: an announce lists the context's nodes (tt_KIND_NODE entries), and
 // every entry carries its node's index in spare bits of kind and qos (tt_UPDATE_NODE_INDEX_* below).
-#define tt_VERSION 11
+// Bumped 11 -> 12 for large-message stage 2 (DESIGN.md section 8): two new submessage types, FRAG_FIRST_L and
+// FRAG_CONT_L, for samples above tt_MAX_SAMPLE_LENGTH. Every existing submessage is unchanged byte for byte.
+#define tt_VERSION 12
 
 struct tt_Header {
     union {
@@ -2952,6 +3095,14 @@ struct tt_SingleHeader {
 // 10, not 7: type 1 (UPDATE) and type 7 (UPDATE_PART) are retired and the comment above forbids
 // giving either a new meaning.
 #define tt_SUBMESSAGE_TYPE_SHM_DATA 10
+
+// A sample larger than tt_MAX_SAMPLE_LENGTH (large-message stage 2, DESIGN.md section 8, tt_VERSION 12): types 8 and 9
+// with frag_index and frag_count widened to 16 bits (struct tt_FragFirstLHeader, struct tt_FragContLHeader), so a
+// sample may take up to tt_LARGE_MAX_FRAGMENTS datagrams. Only ever sent for such a sample; everything within
+// tt_MAX_SAMPLE_LENGTH keeps types 8/9. 11 and 12, not 10, which tt_SUBMESSAGE_TYPE_SHM_DATA below reserves for good.
+// A node built without stage 2 skips both and counts them (tt_Context.frag_large_skipped).
+#define tt_SUBMESSAGE_TYPE_FRAG_FIRST_L 11
+#define tt_SUBMESSAGE_TYPE_FRAG_CONT_L 12
 
 struct tt_SubmessageHeader {
     uint8_t type;     // tt_SUBMESSAGE_TYPE_* above
@@ -3118,6 +3269,24 @@ struct tt_FragContHeader {
 // How much less CDR fragment 0 carries than a full continuation, for its longer header.
 #define tt_FRAG_FIRST_SHORTFALL (sizeof(struct tt_FragFirstHeader) - sizeof(struct tt_FragContHeader))
 
+// Large-message stage 2 (tt_SUBMESSAGE_TYPE_FRAG_FIRST_L/_CONT_L): the same two headers with a 16-bit index and count.
+// Fragment 0 of a large sample, 18 bytes.
+struct tt_FragFirstLHeader {
+    struct tt_DataHeader data;
+    uint16_t frag_count; // 2 .. tt_LARGE_MAX_FRAGMENTS
+} __attribute__((packed));
+
+// Fragments 1 .. frag_count - 1 of a large sample, 12 bytes.
+struct tt_FragContLHeader {
+    uint32_t entity_id;  // tt_DataHeader.entity_id of the sample
+    uint32_t seq_no;     // this datagram's own; the sample's is seq_no - frag_index
+    uint16_t frag_index; // 1 .. frag_count - 1
+    uint16_t frag_count; // the same in every fragment of a sample
+} __attribute__((packed));
+
+// How much less CDR a large sample's fragment 0 carries than its continuations: 6 bytes.
+#define tt_FRAG_FIRST_L_SHORTFALL (sizeof(struct tt_FragFirstLHeader) - sizeof(struct tt_FragContLHeader))
+
 // How many datagrams - and so seq_no - a sample of cdr_len encoded bytes takes: 1 when a DATA carries it
 // whole, else its fragment count (DATAFRAG_PLAN.md section 13). For sizing what counts seq_no - a reliable
 // cache's depth, a tracking window - in samples. Padded as a sample is sent. test_data_frag.c checks it
@@ -3129,6 +3298,14 @@ static inline uint32_t tt_sample_datagrams(uint32_t cdr_len) {
     if (framing + (uint32_t)sizeof(struct tt_DataHeader) + padded <= (uint32_t)tt_CONTROL_MAX_LENGTH) {
         return 1;
     }
+#if tt_LARGE_SAMPLES
+    if (cdr_len > (uint32_t)tt_MAX_SAMPLE_LENGTH) { // a large sample: FRAG_FIRST_L/_CONT_L (DESIGN.md section 8)
+        const uint32_t first_l =
+            (uint32_t)tt_CONTROL_MAX_LENGTH - framing - (uint32_t)sizeof(struct tt_FragFirstLHeader);
+        const uint32_t cont_l = (uint32_t)tt_CONTROL_MAX_LENGTH - framing - (uint32_t)sizeof(struct tt_FragContLHeader);
+        return 1 + ((padded - first_l + cont_l - 1) / cont_l);
+    }
+#endif
     const uint32_t first = (uint32_t)tt_CONTROL_MAX_LENGTH - framing - (uint32_t)sizeof(struct tt_FragFirstHeader);
     const uint32_t cont = (uint32_t)tt_CONTROL_MAX_LENGTH - framing - (uint32_t)sizeof(struct tt_FragContHeader);
     return 1 + ((padded - first + cont - 1) / cont);

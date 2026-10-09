@@ -47,7 +47,9 @@
 // narrower than the -w a reliable_throughput run is allowed to request (up to 4096), so any run
 // that asked for a wide window would have overflowed into the re-request fallback and measured
 // that instead of the protocol.
-#define BENCH_REORDER_SLOTS tt_RELIABLE_BITMAP_MAX_BITS
+// 4096: tt_RELIABLE_BITMAP_MAX_BITS until large-message stage 2 raised it to 8192 (docs/DESIGN.md section 8), pinned
+// so these cells stay the experiment they were - the same ring, warmed the same way.
+#define BENCH_REORDER_SLOTS 4096
 // tt_REORDER_SLOT_SIZE rounds up to a multiple of 8. This was a bare sizeof(...) + 16 = 116, which
 // core then addressed with a 120-byte stride - so the last slots of the array were past its end.
 #define BENCH_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(sizeof(struct BenchData) + 16)
