@@ -3584,6 +3584,12 @@ static bool run_due_entry(struct tt_Context* node, uint64_t now, bool* has_next,
 }
 
 static void node_update(struct tt_Context* node, uint64_t time, void* param);
+#if tt_LARGE_SAMPLES
+// Large-message stage 2 (DESIGN.md section 8) - see each definition's own comment.
+static void large_abandon_subscriber(struct tt_Context* node, const struct tt_Subscriber* sub);
+static void large_abandon_writer(struct tt_Context* node, const struct tt_Subscriber* sub, uint8_t source,
+                                 uint32_t entity_id, bool match_any_entity);
+#endif
 // Milestone 47 "goodbye" - see its own definition's doc comment.
 static void broadcast_goodbye(struct tt_Context* node);
 #if tt_LOCAL_DELIVERY
@@ -4546,6 +4552,9 @@ static tt_ret_t node_create_subscriber_locked(struct tt_Context* node, struct tt
     sub->last_entity_id = 0;
     sub->last_timestamp = 0;
     sub->last_via_data_port = false;
+#if tt_LARGE_SAMPLES
+    sub->large_held = 0;
+#endif
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         sub->writers[i].context_id = tt_CONTEXT_ID_INVALID; // all empty - see struct tt_WriterProxy
     }
@@ -8409,6 +8418,9 @@ static tt_ret_t subscriber_destroy_locked(struct tt_Subscriber* sub) {
         node->frag_fast_sub = NULL; // its part-assembled sample goes with it, as its reorder buffer does
     }
 #endif
+#if tt_LARGE_SAMPLES
+    large_abandon_subscriber(node, sub); // its large samples being put together, and their buffers
+#endif
 
     // Cancel every outstanding per-writer acknack_retry before this Subscriber's own writers[]
     // table (each entry's own schedule param) goes away - same reasoning as tt_Client_destroy()'s
@@ -9084,6 +9096,16 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
     // guess safe; without it this would need a grace period instead.
     proxy->retry++; // unconditionally now, so the stuck-gap warning below can report a real count
                     // in the two cases that never give up (it used to be short-circuited away)
+#if tt_LARGE_SAMPLES
+    // A large sample's fragments arrived within the last interval: the writer is still sending it and answers when the
+    // send ends, which for a 4 MB sample can be several of the reader's first, 1 ms, intervals - this retry is not one
+    // the writer has failed to answer. Seen on the PC: the first 4 MB sample under 5% loss, given up on every run.
+    // A writer that cannot resend answers with an eviction HEARTBEAT, so a stream of large samples cannot hold a gap
+    // open for ever this way.
+    if (proxy->large_arrival_ns != 0 && tt_get_ns() - proxy->large_arrival_ns < reliable_retry_interval(node, proxy)) {
+        proxy->retry--;
+    }
+#endif
     if (proxy->keep_all == tt_WRITER_KEEP_ALL_UNKNOWN && proxy->retry == tt_RELIABLE_RETRY + 1) {
         // Counted once per gap, at the point the bounded policy would have abandoned it, so this
         // reads directly against retry_giveups rather than tallying every later retry too.
@@ -11656,6 +11678,9 @@ static void release_reorder_slots_for_writer(struct tt_Context* node, struct tt_
 #else
     (void)node;
 #endif
+#if tt_LARGE_SAMPLES
+    large_abandon_writer(node, sub, node_id, entity_id, match_any_entity); // its large samples, held or shared
+#endif
     if (reorder_payload_capacity(sub) == 0) {
         return;
     }
@@ -11794,6 +11819,258 @@ static bool drain_fragmented_sample(struct tt_Context* node, struct tt_Subscribe
 }
 #endif
 
+#if tt_LARGE_SAMPLES
+// ---- Large-message stage 2: the reader's assemblies (DESIGN.md section 8, "Subscriber")
+// -------------------------------
+//
+// A large sample's fragments are copied to their offsets in a buffer the caller's large_acquire() hands over - in any
+// order, the index giving each its place - and never touch the reorder ring or frag_scratch. A RELIABLE Subscriber
+// records each fragment under its own seq_no once it is stored, exactly as it records a small one, and its drain
+// delivers the sample from the buffer when the watermark reaches it whole; best-effort Subscribers share one assembly
+// that is handed to all of them once complete. The callback's sample points into the buffer, which a Subscriber may
+// keep with tt_Sample_retain() (tt_LEND_LARGE); otherwise it goes back to the caller once delivered.
+
+// Fragments one word of tt_LargeAssembly.landed records.
+#define LARGE_WORD_BITS ((uint32_t)tt_RELIABLE_BITMAP_WORD_BITS)
+
+static bool large_has_landed(const struct tt_LargeAssembly* assembly, uint32_t index) {
+    return ((assembly->landed[index / LARGE_WORD_BITS] >> (index % LARGE_WORD_BITS)) & 1ULL) != 0;
+}
+
+// The lowest fragment not yet landed, frag_count when every one has.
+static uint32_t large_first_missing(const struct tt_LargeAssembly* assembly) {
+    uint32_t words = ((uint32_t)assembly->frag_count + LARGE_WORD_BITS - 1U) / LARGE_WORD_BITS;
+    for (uint32_t word = 0; word < words; word++) {
+        uint64_t missing = ~assembly->landed[word];
+        if (missing != 0) {
+            uint32_t index = (word * LARGE_WORD_BITS) + (uint32_t)__builtin_ctzll(missing);
+            return index < assembly->frag_count ? index : assembly->frag_count;
+        }
+    }
+    return assembly->frag_count;
+}
+
+// Whether a lent sample still holds this large buffer (tt_Sample_retain()).
+static bool large_lent(const struct tt_Context* node, const uint8_t* buffer) {
+#if tt_SAMPLE_LENDING
+    for (uint32_t k = 0; k < tt_SAMPLE_RETAIN_MAX; k++) {
+        if (node->lend.entries[k].kind == tt_LEND_LARGE && node->lend.entries[k].region == buffer) {
+            return true;
+        }
+    }
+#else
+    UNUSED(node);
+    UNUSED(buffer);
+#endif
+    return false;
+}
+
+// Frees an assembly. Its buffer goes back to the caller unless a lent sample still holds it, whose release then does.
+static void large_assembly_free(struct tt_Context* node, struct tt_LargeAssembly* assembly) {
+    if (!large_lent(node, assembly->buffer)) {
+        large_give_back(node, assembly->buffer);
+    }
+    if (assembly->sub != NULL && assembly->sub->large_held > 0) {
+        assembly->sub->large_held--;
+    }
+    assembly->buffer = NULL;
+    assembly->sub = NULL;
+}
+
+// A sample that can never be delivered whole: given up and counted, never delivered torn.
+static void large_assembly_abandon(struct tt_Context* node, struct tt_LargeAssembly* assembly) {
+    node->large.abandoned++;
+    if (assembly->sub != NULL) {
+        assembly->sub->reorder_abandoned += assembly->received;
+    }
+    large_assembly_free(node, assembly);
+}
+
+// Every assembly, at the context's destruction: its buffer back to the caller.
+static void large_release_assemblies(struct tt_Context* node) {
+    for (uint32_t i = 0; i < tt_LARGE_ASSEMBLIES; i++) {
+        if (node->large.assemblies[i].buffer != NULL) {
+            large_assembly_free(node, &node->large.assemblies[i]);
+        }
+    }
+}
+
+// The assembly collecting (source, entity_id, sample seq_no) - for `sub`, or the best-effort one when sub is NULL.
+static struct tt_LargeAssembly* large_assembly_find(struct tt_Context* node, const struct tt_Subscriber* sub,
+                                                    uint8_t source, uint32_t entity_id, uint32_t seq_no) {
+    for (uint32_t i = 0; i < tt_LARGE_ASSEMBLIES; i++) {
+        struct tt_LargeAssembly* assembly = &node->large.assemblies[i];
+        if (assembly->buffer != NULL && assembly->sub == sub && assembly->source == source &&
+            assembly->entity_id == entity_id && assembly->seq_no == seq_no) {
+            return assembly;
+        }
+    }
+    return NULL;
+}
+
+// Every assembly a writer's samples were being put together in, for one RELIABLE Subscriber (and, when that writer is
+// gone, the best-effort ones): abandoned with the writer (release_reorder_slots_for_writer()).
+static void large_abandon_writer(struct tt_Context* node, const struct tt_Subscriber* sub, uint8_t source,
+                                 uint32_t entity_id, bool match_any_entity) {
+    for (uint32_t i = 0; i < tt_LARGE_ASSEMBLIES; i++) {
+        struct tt_LargeAssembly* assembly = &node->large.assemblies[i];
+        if (assembly->buffer != NULL && (assembly->sub == sub || assembly->sub == NULL) && assembly->source == source &&
+            (match_any_entity || assembly->entity_id == entity_id)) {
+            large_assembly_abandon(node, assembly);
+        }
+    }
+}
+
+// Every assembly held for a Subscriber that is going away.
+static void large_abandon_subscriber(struct tt_Context* node, const struct tt_Subscriber* sub) {
+    for (uint32_t i = 0; i < tt_LARGE_ASSEMBLIES && sub->large_held != 0; i++) {
+        struct tt_LargeAssembly* assembly = &node->large.assemblies[i];
+        if (assembly->buffer != NULL && assembly->sub == sub) {
+            large_assembly_abandon(node, assembly);
+        }
+    }
+}
+
+#if tt_SAMPLE_LENDING
+// What the lending state said before a large sample's delivery, put back after it.
+struct large_lend_saved {
+    const uint8_t* base;
+    uint32_t length;
+    uint32_t index;
+    uint8_t kind;
+    uint8_t* large;
+};
+#endif
+
+// Delivers a whole RELIABLE assembly, in order, from its buffer - lendable for the length of the callback - and frees
+// it, or leaves its buffer to the lent sample that kept it.
+static void large_deliver_reliable(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
+                                   struct tt_LargeAssembly* assembly) {
+    uint32_t cdr_len = large_offset((uint32_t)assembly->frag_count - 1U) + assembly->last_length;
+#if tt_SAMPLE_LENDING
+    struct large_lend_saved saved = {node->lend.rx_base, node->lend.rx_length, node->lend.rx_index, node->lend.rx_kind,
+                                     node->lend.rx_large};
+    node->lend.rx_base = assembly->buffer + tt_LARGE_CDR_OFFSET;
+    node->lend.rx_length = cdr_len;
+    node->lend.rx_index = 0;
+    node->lend.rx_kind = tt_LEND_LARGE;
+    node->lend.rx_large = assembly->buffer;
+#endif
+    node->large.reassembled++;
+    deliver_in_order(node, sub, proxy, assembly->seq_no, assembly->timestamp, assembly->buffer + tt_LARGE_CDR_OFFSET,
+                     cdr_len, assembly->is_native, assembly->via_data_port, NULL);
+#if tt_SAMPLE_LENDING
+    node->lend.rx_base = saved.base;
+    node->lend.rx_length = saved.length;
+    node->lend.rx_index = saved.index;
+    node->lend.rx_kind = saved.kind;
+    node->lend.rx_large = saved.large;
+#endif
+    large_assembly_free(node, assembly);
+}
+
+// The drain (drain_reorder_with()) at seq_no, the next in order for proxy's writer: 0 when no large sample starts
+// there; 1 when one was dealt with - delivered whole, or abandoned because a fragment of it lies below the watermark
+// without having landed (a gap given up on) - with *consumed the seq_nos it covered; -1 to stop the drain there, the
+// sample not yet whole and its missing fragments still asked for.
+static int drain_large_sample(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
+                              uint32_t seq_no, uint32_t ack, uint32_t* consumed) {
+    struct tt_LargeAssembly* assembly = large_assembly_find(node, sub, proxy->context_id, proxy->entity_id, seq_no);
+    if (assembly == NULL) {
+        return 0;
+    }
+    uint32_t count = assembly->frag_count;
+    if (assembly->received == count) {
+        *consumed = count;
+        large_deliver_reliable(node, sub, proxy, assembly);
+        return 1;
+    }
+    uint32_t missing = large_first_missing(assembly);
+    if (seq_no + missing >= ack) {
+        return -1; // not here yet, and still asked for
+    }
+    *consumed = ack - seq_no < count ? ack - seq_no : count;
+    large_assembly_abandon(node, assembly);
+    return 1;
+}
+
+// After a drain: an assembly the cursor has passed whole was never delivered - its sample lay below a jump of the
+// watermark - and never will be.
+static void large_sweep_passed(struct tt_Context* node, const struct tt_Subscriber* sub,
+                               const struct tt_WriterProxy* proxy) {
+    for (uint32_t i = 0; i < tt_LARGE_ASSEMBLIES; i++) {
+        struct tt_LargeAssembly* assembly = &node->large.assemblies[i];
+        if (assembly->buffer != NULL && assembly->sub == sub && assembly->source == proxy->context_id &&
+            assembly->entity_id == proxy->entity_id &&
+            (int32_t)(assembly->seq_no + assembly->frag_count - proxy->reorder_cursor) <= 0) {
+            large_assembly_abandon(node, assembly);
+        }
+    }
+}
+#endif
+
+// The reorder ring at seq, in a drain: 0 when it holds nothing of this writer's there; 1 when what it held was dealt
+// with - delivered, or a fragmented sample delivered or given up - having covered *consumed seq_nos; -1 to stop the
+// drain there, a fragmented sample in order not being whole yet.
+static int drain_ring_at(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy, uint32_t seq,
+                         uint32_t ack, uint32_t* consumed) {
+    struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy->context_id, proxy->entity_id, seq);
+    if (!reorder_slot_holds(slot, proxy, seq)) {
+        return 0;
+    }
+#if tt_FRAG_ENABLED
+    if (slot->frag_count != 0) {
+        return drain_fragmented_sample(node, sub, proxy, seq, ack, consumed) ? 1 : -1;
+    }
+#else
+    UNUSED(ack);
+    *consumed = 1; // a DATA covers one seq_no
+#endif
+    slot->occupied = false;
+    sub->reorder_held--;
+    sub->reorder_delivered++;
+    deliver_in_order(node, sub, proxy, slot->seq_no, slot->timestamp, reorder_slot_payload(slot), slot->length,
+                     slot->is_native, slot->via_data_port, NULL);
+    return 1;
+}
+
+// The walk of drain_reorder_with(): every seq_no from the writer's reorder_cursor up to `ack` (capped at one window),
+// each delivered from wherever it lives - the arriving sample, the reorder ring (`ring`: it holds something) or a
+// large assembly (`large`: one is held for this Subscriber). Returns where the next drain starts.
+static uint32_t drain_reorder_walk(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
+                                   struct data_delivery_ctx* arriving, bool is_native, bool ring, bool large,
+                                   bool* arriving_done) {
+    uint32_t ack = proxy->ack_seq_no;
+    uint32_t cursor = proxy->reorder_cursor;
+    uint32_t window = proxy_window_bits(proxy);
+    uint32_t span = (ack - cursor > window) ? window : ack - cursor;
+    for (uint32_t step = 0; step < span; step++) {
+        uint32_t seq = cursor + step;
+        if (!*arriving_done && seq == arriving->seq_no) {
+            deliver_in_order(node, sub, proxy, arriving->seq_no, arriving->timestamp, arriving->buffer + arriving->head,
+                             arriving->tail - arriving->head, is_native, node->rx_via_data_port,
+                             &arriving->decode_failed);
+            *arriving_done = true;
+            continue;
+        }
+        uint32_t consumed = 1;
+        int found = 0;
+#if tt_LARGE_SAMPLES
+        found = large ? drain_large_sample(node, sub, proxy, seq, ack, &consumed) : 0;
+#else
+        UNUSED(large);
+#endif
+        if (found == 0 && ring) {
+            found = drain_ring_at(node, sub, proxy, seq, ack, &consumed);
+        }
+        if (found < 0) {
+            return seq;
+        }
+        step += consumed - 1;
+    }
+    return ack;
+}
+
 static void drain_reorder_with(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                                struct data_delivery_ctx* arriving, bool is_native) {
 #if tt_FRAG_ENABLED
@@ -11802,41 +12079,15 @@ static void drain_reorder_with(struct tt_Context* node, struct tt_Subscriber* su
     uint32_t ack = proxy->ack_seq_no;
     uint32_t stop = ack; // where the next drain starts: ack, unless a sample in order is not whole yet
     bool arriving_done = (arriving == NULL);
-
-    if (sub->reorder_held != 0 && reorder_payload_capacity(sub) != 0) {
-        uint32_t cursor = proxy->reorder_cursor;
-        uint32_t window = proxy_window_bits(proxy);
-        uint32_t span = (ack - cursor > window) ? window : ack - cursor;
-        for (uint32_t step = 0; step < span; step++) {
-            uint32_t seq = cursor + step;
-            if (!arriving_done && seq == arriving->seq_no) {
-                deliver_in_order(node, sub, proxy, arriving->seq_no, arriving->timestamp,
-                                 arriving->buffer + arriving->head, arriving->tail - arriving->head, is_native,
-                                 node->rx_via_data_port, &arriving->decode_failed);
-                arriving_done = true;
-                continue;
-            }
-            struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy->context_id, proxy->entity_id, seq);
-            if (!reorder_slot_holds(slot, proxy, seq)) {
-                continue;
-            }
-#if tt_FRAG_ENABLED
-            if (slot->frag_count != 0) {
-                uint32_t consumed = 1;
-                if (!drain_fragmented_sample(node, sub, proxy, seq, ack, &consumed)) {
-                    stop = seq;
-                    break;
-                }
-                step += consumed - 1;
-                continue;
-            }
+    bool ring = sub->reorder_held != 0 && reorder_payload_capacity(sub) != 0;
+#if tt_LARGE_SAMPLES
+    bool large = sub->large_held != 0; // a large sample held for this Subscriber is looked for at each seq_no walked
+#else
+    const bool large = false;
 #endif
-            slot->occupied = false;
-            sub->reorder_held--;
-            sub->reorder_delivered++;
-            deliver_in_order(node, sub, proxy, slot->seq_no, slot->timestamp, reorder_slot_payload(slot), slot->length,
-                             slot->is_native, slot->via_data_port, NULL);
-        }
+
+    if (ring || large) {
+        stop = drain_reorder_walk(node, sub, proxy, arriving, is_native, ring, large, &arriving_done);
     }
     if (!arriving_done) {
         if (stop == ack) {
@@ -11848,6 +12099,11 @@ static void drain_reorder_with(struct tt_Context* node, struct tt_Subscriber* su
         }
     }
     proxy->reorder_cursor = stop;
+#if tt_LARGE_SAMPLES
+    if (large && sub->large_held != 0) {
+        large_sweep_passed(node, sub, proxy);
+    }
+#endif
 }
 
 static void drain_reorder(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy) {
@@ -13977,11 +14233,401 @@ static bool deliver_user_fragment(struct tt_Context* node, struct tt_Header* hea
 }
 #endif
 
-// Types 11 and 12 (large-message stage 2, DESIGN.md section 8): passed over and counted, so a sender this node cannot
-// follow shows up as a number rather than as silence. The reader that delivers them comes with large-sample reception.
+#if tt_LARGE_SAMPLES
+// ---- Large-message stage 2: the reader's fragments (DESIGN.md section 8, "Subscriber")
+// --------------------------------
+
+// One large fragment, as process_frag() decoded it. data_header is FRAG_FIRST_L's, NULL for a continuation.
+struct large_fragment {
+    struct tt_Header* header;
+    const struct tt_DataHeader* data_header;
+    const uint8_t* payload;
+    uint32_t length;
+    uint32_t entity_id;
+    uint32_t seq_no; // this datagram's own; its sample's is seq_no - index
+    uint32_t index;
+    uint32_t count;
+    uint32_t sender_ip;
+    uint16_t sender_port;
+    bool best_effort_seen;
+};
+
+// How far a RELIABLE assembly lies ahead of its writer's watermark, 0 when the watermark is inside it or no tracking
+// is left - the one its writer's stream is waiting on, which must never be evicted.
+static uint32_t large_ahead(const struct tt_LargeAssembly* assembly) {
+    struct tt_WriterProxy* proxy = find_writer_proxy(assembly->sub, assembly->source, assembly->entity_id);
+    if (proxy == NULL || (int32_t)(assembly->seq_no - proxy->ack_seq_no) <= 0) {
+        return 0;
+    }
+    return assembly->seq_no - proxy->ack_seq_no;
+}
+
+// Un-records an evicted RELIABLE assembly's fragments, so the ordinary ACKNACK asks for them again: they lie ahead of
+// the watermark (large_ahead()), so none is acknowledged yet, and clearing a bit is what keeps that true.
+static void large_unrecord(const struct tt_LargeAssembly* assembly) {
+    struct tt_WriterProxy* proxy = find_writer_proxy(assembly->sub, assembly->source, assembly->entity_id);
+    if (proxy == NULL) {
+        return;
+    }
+    for (uint32_t index = 0; index < assembly->frag_count; index++) {
+        uint64_t offset = (uint64_t)(assembly->seq_no + index) - proxy->ack_seq_no;
+        if (large_has_landed(assembly, index) && offset < proxy_window_bits(proxy)) {
+            bitmap_clear_bit(proxy->received_bitmap, (uint32_t)offset);
+        }
+    }
+}
+
+// The entry to reuse when every assembly is busy. For a best-effort sample, the best-effort reassembly claimed longest
+// ago. For a RELIABLE one, a best-effort one first, else the RELIABLE assembly furthest ahead of its own watermark -
+// only if it is further ahead than this sample (`ahead`), so the sample a stream waits on always finds room and no
+// two samples can starve each other. NULL: none may go.
+static struct tt_LargeAssembly* large_victim(struct tt_Context* node, bool reliable, uint32_t ahead) {
+    struct tt_LargeAssembly* oldest_best_effort = NULL;
+    struct tt_LargeAssembly* furthest = NULL;
+    uint32_t furthest_ahead = ahead;
+    for (uint32_t i = 0; i < tt_LARGE_ASSEMBLIES; i++) {
+        struct tt_LargeAssembly* assembly = &node->large.assemblies[i];
+        if (assembly->sub == NULL) {
+            if (oldest_best_effort == NULL || (int32_t)(assembly->claimed - oldest_best_effort->claimed) < 0) {
+                oldest_best_effort = assembly;
+            }
+        } else if (reliable) {
+            uint32_t its_ahead = large_ahead(assembly);
+            if (its_ahead > furthest_ahead) {
+                furthest = assembly;
+                furthest_ahead = its_ahead;
+            }
+        }
+    }
+    if (oldest_best_effort != NULL) {
+        return oldest_best_effort;
+    }
+    if (furthest != NULL) {
+        large_unrecord(furthest);
+    }
+    return furthest;
+}
+
+// A new assembly for (source, entity_id, sample seq_no), of count fragments, with its buffer: frag_count x the full
+// fragment payload, enough for any sample of that count. NULL when there is no room or acquire said no - counted, and
+// the caller leaves a RELIABLE fragment unrecorded (it is asked for again: the reader's back-pressure) or drops a
+// best-effort sample.
+static struct tt_LargeAssembly* large_assembly_claim(struct tt_Context* node, struct tt_Subscriber* sub,
+                                                     const struct tt_WriterProxy* proxy, uint8_t source,
+                                                     uint32_t entity_id, uint32_t seq_no, uint32_t count) {
+    struct tt_LargeAssembly* assembly = NULL;
+    for (uint32_t i = 0; i < tt_LARGE_ASSEMBLIES && assembly == NULL; i++) {
+        if (node->large.assemblies[i].buffer == NULL) {
+            assembly = &node->large.assemblies[i];
+        }
+    }
+    if (assembly == NULL) {
+        uint32_t ahead = proxy != NULL && (int32_t)(seq_no - proxy->ack_seq_no) > 0 ? seq_no - proxy->ack_seq_no : 0;
+        assembly = large_victim(node, sub != NULL, ahead);
+        if (assembly == NULL) {
+            node->large.no_buffer++;
+            return NULL;
+        }
+        large_assembly_abandon(node, assembly);
+    }
+    uint32_t capacity = (uint32_t)tt_LARGE_CDR_OFFSET + (count * LARGE_CONT_PAYLOAD);
+    uint8_t* buffer = node->large.acquire != NULL ? (uint8_t*)node->large.acquire(node->large.user, capacity) : NULL;
+    if (buffer == NULL) {
+        node->large.no_buffer++;
+        return NULL;
+    }
+    memset(assembly->landed, 0, (((size_t)count + LARGE_WORD_BITS - 1U) / LARGE_WORD_BITS) * sizeof(uint64_t));
+    assembly->buffer = buffer;
+    assembly->sub = sub;
+    assembly->timestamp = 0;
+    assembly->capacity = capacity;
+    assembly->entity_id = entity_id;
+    assembly->seq_no = seq_no;
+    assembly->endpoint_id = 0;
+    assembly->received = 0;
+    assembly->last_length = 0;
+    assembly->claimed = node->large.clock++;
+    assembly->frag_count = (uint16_t)count;
+    assembly->source = source;
+    assembly->is_native = true;
+    assembly->via_data_port = false;
+    if (sub != NULL) {
+        sub->large_held++;
+    }
+    return assembly;
+}
+
+// Copies one fragment to its place. 1: stored; 0: already there; -1: it contradicts its sample (a length no fragment
+// at that index can have) and is refused. Every fragment but the last is full, so its index places it - the only
+// arithmetic between the wire and the buffer, and what L1's offset mutant has to break.
+static int large_place(struct tt_Context* node, struct tt_LargeAssembly* assembly,
+                       const struct large_fragment* fragment) {
+    uint32_t index = fragment->index;
+    if (large_has_landed(assembly, index)) {
+        return 0;
+    }
+    uint32_t last = (uint32_t)assembly->frag_count - 1U;
+    uint32_t full = index == 0 ? LARGE_FIRST_PAYLOAD : LARGE_CONT_PAYLOAD;
+    if (index != last ? fragment->length != full : fragment->length > full) {
+        return -1;
+    }
+    uint32_t offset = large_offset(index);
+    if ((uint32_t)tt_LARGE_CDR_OFFSET + offset + fragment->length > assembly->capacity) {
+        return -1;
+    }
+    _tt_memcpy(assembly->buffer + tt_LARGE_CDR_OFFSET + offset, fragment->payload, fragment->length);
+    assembly->landed[index / LARGE_WORD_BITS] |= 1ULL << (index % LARGE_WORD_BITS);
+    assembly->received++;
+    if (index == last) {
+        assembly->last_length = fragment->length;
+    }
+    if (fragment->data_header != NULL) {
+        // The sample's own header, kept where a DATA's would be ahead of its CDR - a best-effort delivery hands the
+        // buffer to process_data_for() as if the sample had arrived whole.
+        _tt_memcpy(assembly->buffer + tt_LARGE_HEADER_OFFSET, fragment->data_header, sizeof(struct tt_DataHeader));
+        assembly->endpoint_id = rd32(fragment->header, fragment->data_header->endpoint_id);
+        assembly->timestamp = timestamp_from_wire(node, rd32(fragment->header, fragment->data_header->timestamp));
+        assembly->is_native = tt_is_native_endian(fragment->header);
+        assembly->via_data_port = node->rx_via_data_port;
+    }
+    return 1;
+}
+
+// One fragment for a RELIABLE Subscriber: stored first, recorded second, as a small fragment is (a fragment recorded is
+// acknowledged, and an acknowledged fragment is never sent again). The drain then delivers the sample from its buffer
+// once the watermark reaches it whole.
+static void large_accept_reliable(struct tt_Context* node, struct tt_Subscriber* sub, struct large_fragment* fragment) {
+    uint8_t source = fragment->header->source;
+    struct tt_WriterProxy* proxy = find_writer_proxy(sub, source, fragment->entity_id);
+    if (proxy == NULL && fragment->index != 0) {
+        return; // first contact is a sample's fragment 0, as for a small one: this one is asked for again
+    }
+    if (proxy != NULL) {
+        uint64_t offset = (uint64_t)fragment->seq_no - proxy->ack_seq_no;
+        if (fragment->seq_no < proxy->ack_seq_no ||
+            (offset < proxy_window_bits(proxy) && bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset))) {
+            node->large.duplicate++; // already here, or already past
+            return;
+        }
+    }
+    uint32_t sample_seq_no = fragment->seq_no - fragment->index;
+    struct tt_LargeAssembly* assembly = large_assembly_find(node, sub, source, fragment->entity_id, sample_seq_no);
+    if (assembly == NULL) {
+        assembly = large_assembly_claim(node, sub, proxy, source, fragment->entity_id, sample_seq_no, fragment->count);
+        if (assembly == NULL) {
+            return; // no room: unrecorded, so asked for again
+        }
+    }
+    int placed = assembly->frag_count == fragment->count ? large_place(node, assembly, fragment) : -1;
+    if (placed <= 0) {
+        if (placed < 0) {
+            node->large.dropped++;
+        } else {
+            node->large.duplicate++;
+        }
+        if (assembly->received == 0) {
+            large_assembly_free(node, assembly);
+        }
+        return;
+    }
+    bool recorded = update_reliable_ack(node, sub, fragment->seq_no, source, fragment->entity_id, fragment->sender_ip,
+                                        fragment->sender_port);
+    proxy = find_writer_proxy(sub, source, fragment->entity_id);
+    if (proxy == NULL) {
+        large_assembly_abandon(node, assembly); // no tracking to order it by: the writer table is full
+        return;
+    }
+    if (recorded) {
+        proxy->large_arrival_ns = tt_get_ns();
+        drain_reorder(node, sub, proxy);
+    }
+}
+
+// Whether every best-effort Subscriber tracking this writer has already delivered something at or past this sample:
+// best-effort order discards it then (deliver_data_to_subscriber()), so a fragment of it - the late tail of a sample
+// already given up, or a duplicate - must not claim a buffer it could never fill usefully.
+static bool large_best_effort_stale(struct tt_Context* node, uint8_t source, uint32_t entity_id, uint32_t seq_no) {
+    bool any = false;
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER) {
+            continue;
+        }
+        struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+        if (sub->reliable && !TT_ORDERING_DISABLED) {
+            continue;
+        }
+        struct tt_WriterProxy* proxy = find_writer_proxy(sub, source, entity_id);
+        if (proxy == NULL || seq_no >= proxy->ack_seq_no) {
+            return false;
+        }
+        any = true;
+    }
+    return any;
+}
+
+// One fragment for the best-effort Subscribers: placed in the shared assembly, and once the sample is whole it goes to
+// process_data_for() from the buffer as a DATA carrying it would, lendable meanwhile. An older sample from the same
+// writer still incomplete then can never be delivered - best-effort order - and is abandoned.
+static void large_accept_best_effort(struct tt_Context* node, struct large_fragment* fragment) {
+    uint8_t source = fragment->header->source;
+    uint32_t sample_seq_no = fragment->seq_no - fragment->index;
+    struct tt_LargeAssembly* assembly = large_assembly_find(node, NULL, source, fragment->entity_id, sample_seq_no);
+    if (assembly == NULL) {
+        if (large_best_effort_stale(node, source, fragment->entity_id, sample_seq_no)) {
+            node->large.duplicate++;
+            return;
+        }
+        assembly = large_assembly_claim(node, NULL, NULL, source, fragment->entity_id, sample_seq_no, fragment->count);
+        if (assembly == NULL) {
+            return; // counted in no_buffer: this sample is lost, never delivered torn
+        }
+    }
+    int placed = assembly->frag_count == fragment->count ? large_place(node, assembly, fragment) : -1;
+    if (placed <= 0) {
+        if (placed < 0) {
+            node->large.dropped++;
+        } else {
+            node->large.duplicate++;
+        }
+        if (assembly->received == 0) {
+            large_assembly_free(node, assembly);
+        }
+        return;
+    }
+    if (assembly->received != assembly->frag_count) {
+        return;
+    }
+    uint32_t cdr_len = large_offset((uint32_t)assembly->frag_count - 1U) + assembly->last_length;
+    struct tt_Header header = *fragment->header;
+#if tt_SAMPLE_LENDING
+    struct large_lend_saved saved = {node->lend.rx_base, node->lend.rx_length, node->lend.rx_index, node->lend.rx_kind,
+                                     node->lend.rx_large};
+    node->lend.rx_base = assembly->buffer + tt_LARGE_CDR_OFFSET;
+    node->lend.rx_length = cdr_len;
+    node->lend.rx_index = 0;
+    node->lend.rx_kind = tt_LEND_LARGE;
+    node->lend.rx_large = assembly->buffer;
+#endif
+    node->large.reassembled++;
+    (void)process_data_for(node, &header, assembly->buffer, tt_LARGE_HEADER_OFFSET, tt_LARGE_CDR_OFFSET + cdr_len,
+                           fragment->sender_ip, fragment->sender_port, true);
+#if tt_SAMPLE_LENDING
+    node->lend.rx_base = saved.base;
+    node->lend.rx_length = saved.length;
+    node->lend.rx_index = saved.index;
+    node->lend.rx_kind = saved.kind;
+    node->lend.rx_large = saved.large;
+#endif
+    uint32_t delivered = assembly->seq_no;
+    large_assembly_free(node, assembly);
+    for (uint32_t i = 0; i < tt_LARGE_ASSEMBLIES; i++) {
+        struct tt_LargeAssembly* older = &node->large.assemblies[i];
+        if (older->buffer != NULL && older->sub == NULL && older->source == source &&
+            older->entity_id == fragment->entity_id && (int32_t)(older->seq_no - delivered) < 0) {
+            large_assembly_abandon(node, older);
+        }
+    }
+}
+
+// for_each_endpoint()'s visitor for a large fragment 0: a RELIABLE Subscriber takes it now, a best-effort one from the
+// shared assembly once whole.
+static void route_large_fragment(struct tt_Context* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+    struct large_fragment* fragment = (struct large_fragment*)ctx_ptr;
+    struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+    if (subscriber_incompatible_with_writer(node, sub, fragment->header->source, endpoint->id, fragment->entity_id)) {
+        return;
+    }
+    if (!sub->reliable || TT_ORDERING_DISABLED) {
+        fragment->best_effort_seen = true;
+        return;
+    }
+    large_accept_reliable(node, sub, fragment);
+}
+
+// One FRAG_FIRST_L or FRAG_CONT_L. Fragment 0 names its endpoint; a continuation goes to every Subscriber tracking its
+// writer - or, when none is, to the best-effort assembly if the node has a best-effort Subscriber - as a small
+// fragment does (deliver_user_fragment()).
+static bool deliver_large_fragment(struct tt_Context* node, struct large_fragment* fragment) {
+    if (fragment->count == 0 || fragment->count > tt_LARGE_MAX_FRAGMENTS || fragment->index >= fragment->count ||
+        fragment->length == 0) {
+        node->large.dropped++;
+        if (frag_log_due(node->large.dropped)) {
+            TT_LOG_ERROR("Illegal large fragment %u of %u (%u bytes, dropped #%lu)", fragment->index, fragment->count,
+                         fragment->length, (unsigned long)node->large.dropped);
+        }
+        return false;
+    }
+    if (fragment->data_header != NULL) {
+        for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, rd32(fragment->header, fragment->data_header->endpoint_id),
+                          route_large_fragment, fragment);
+    } else {
+        bool tracked = false;
+        bool any_best_effort = false;
+        for (uint32_t i = 0; i < node->endpoint_count; i++) {
+            struct tt_Endpoint* endpoint = node->endpoints[i];
+            if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER) {
+                continue;
+            }
+            struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+            any_best_effort = any_best_effort || !sub->reliable || TT_ORDERING_DISABLED;
+            if (find_writer_proxy(sub, fragment->header->source, fragment->entity_id) != NULL) {
+                tracked = true;
+                route_large_fragment(node, endpoint, fragment);
+            }
+        }
+        fragment->best_effort_seen = fragment->best_effort_seen || (!tracked && any_best_effort);
+    }
+    if (fragment->best_effort_seen || large_assembly_find(node, NULL, fragment->header->source, fragment->entity_id,
+                                                          fragment->seq_no - fragment->index) != NULL) {
+        large_accept_best_effort(node, fragment);
+    }
+    return true;
+}
+#endif
+
+// Types 11 and 12 (large-message stage 2): decoded and delivered, or - in a build without stage 2 - passed over and
+// counted, so a sender this node cannot follow shows up as a number rather than as silence. `buffer` is decoded through
+// (decode() takes it writable, as process_frag()'s does) only when stage 2 is built in.
 // NOLINTNEXTLINE(readability-non-const-parameter)
 static bool process_frag_large(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                uint32_t tail, uint8_t type, uint32_t sender_ip, uint16_t sender_port) {
+#if tt_LARGE_SAMPLES
+    struct large_fragment fragment = {header, NULL, NULL, 0, 0, 0, 0, 0, sender_ip, sender_port, false};
+    if (type == tt_SUBMESSAGE_TYPE_FRAG_FIRST_L) {
+        struct tt_FragFirstLHeader* first = decode(node, buffer, &head, tail, sizeof(struct tt_FragFirstLHeader));
+        if (first == NULL) {
+            TT_LOG_ERROR("Illegal FragFirstLHeader");
+            return false;
+        }
+        fragment.data_header = &first->data;
+        fragment.entity_id = rd32(header, first->data.entity_id);
+        fragment.seq_no = rd32(header, first->data.seq_no);
+        fragment.index = 0;
+        fragment.count = rd16(header, first->frag_count);
+    } else {
+        struct tt_FragContLHeader* cont = decode(node, buffer, &head, tail, sizeof(struct tt_FragContLHeader));
+        if (cont == NULL) {
+            TT_LOG_ERROR("Illegal FragContLHeader");
+            return false;
+        }
+        fragment.entity_id = rd32(header, cont->entity_id);
+        fragment.seq_no = rd32(header, cont->seq_no);
+        fragment.index = rd16(header, cont->frag_index);
+        fragment.count = rd16(header, cont->frag_count);
+        if (fragment.index == 0) {
+            node->large.dropped++; // fragment 0 is a FRAG_FIRST_L, never a continuation
+            return false;
+        }
+    }
+    if (fragment.entity_id == tt_DISCOVERY_ENTITY_ID) {
+        node->large.dropped++; // an announce never travels as a large sample
+        return false;
+    }
+    fragment.payload = buffer + head;
+    fragment.length = tail - head;
+    return deliver_large_fragment(node, &fragment);
+#else
     UNUSED(buffer);
     UNUSED(head);
     UNUSED(tail);
@@ -13994,6 +14640,7 @@ static bool process_frag_large(struct tt_Context* node, struct tt_Header* header
                        header->source, (unsigned long)node->frag_large_skipped);
     }
     return true;
+#endif
 }
 
 // One fragment, FRAG_FIRST or FRAG_CONT, from header->source. A discovery announce's fragment (its
@@ -16384,7 +17031,9 @@ static tt_ret_t lend_retain_locked(struct tt_Context* node, const struct tt_Subs
         return tt_RET_OUT_OF_BUFFER;
     }
     const void* region = NULL;
-    if (kind == tt_LEND_BUFFER) {
+    if (kind == tt_LEND_LARGE) {
+        region = node->lend.rx_large; // the large sample's own buffer: it is kept, nothing else has to move
+    } else if (kind == tt_LEND_BUFFER) {
         // The first sample kept in this buffer: the socket's next datagram needs another one to go to.
         if (!lend_holds_buffer(node, node->lend.rx_index)) {
             int32_t spare = lend_spare_buffer(node, node->lend.rx_index);
@@ -16474,6 +17123,14 @@ tt_ret_t tt_Sample_release(struct tt_Context* node, struct tt_Sample* sample) {
         node->lend.held_slots--;
         lend_release_slot(node, &released);
     }
+#if tt_LARGE_SAMPLES
+    // A large buffer goes back to the caller once no retained sample holds it - unless its delivery is still going on
+    // (retained and released inside one callback), after which its assembly frees it (large_assembly_free()).
+    if (released.kind == tt_LEND_LARGE && !large_lent(node, (const uint8_t*)released.region) &&
+        !(node->lend.rx_kind == tt_LEND_LARGE && node->lend.rx_large == released.region)) {
+        large_give_back(node, (uint8_t*)released.region);
+    }
+#endif
     // A buffer needs nothing more: it is free once no entry names it, and the socket is pointed at a free one only
     // when a retain needs it to move (lend_retain_locked()).
     state_unlock(node);
@@ -16510,6 +17167,17 @@ static void lend_forget_all(struct tt_Context* node) {
                        node->id, (unsigned)node->lend.held);
     }
     for (uint32_t k = 0; k < tt_SAMPLE_RETAIN_MAX; k++) {
+#if tt_LARGE_SAMPLES
+        // A retained large sample's buffer goes back to the caller, once: no release will come for it now.
+        struct tt_LendEntry* entry = &node->lend.entries[k];
+        if (entry->kind == tt_LEND_LARGE) {
+            const void* region = entry->region;
+            entry->kind = tt_LEND_FREE;
+            if (!large_lent(node, (const uint8_t*)region)) {
+                large_give_back(node, (uint8_t*)region);
+            }
+        }
+#endif
         node->lend.entries[k].kind = tt_LEND_FREE;
         node->lend.entries[k].region = NULL;
     }
@@ -16776,6 +17444,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned long)node->large.dropped, (unsigned long)node->large.duplicate,
                 (unsigned long)node->large.tail_abandoned, (unsigned long)node->large.window_too_small,
                 (unsigned long)node->large.send_waits);
+    large_release_assemblies(node); // every sample still being put together: its buffer back to the caller
 #endif
 #if tt_SEGMENT_ENABLED
     // Before the socket goes: the segment is named from this context's address, and the

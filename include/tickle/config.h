@@ -683,9 +683,12 @@
 // fragmentation, out on FreeRTOS (no buffer callbacks; the lwIP heap cannot hold a megabyte sample), where a node
 // only skips types 11/12 and counts them (frag_large_skipped). Samples within tt_MAX_SAMPLE_LENGTH are untouched by it,
 // on the wire and in memory.
-// Off by default until large-sample reception lands; -Dtt_LARGE_SAMPLES=1 builds the writer alone.
 #ifndef tt_LARGE_SAMPLES
+#if tt_FRAG_ENABLED && !defined(TT_PLATFORM_FREERTOS)
+#define tt_LARGE_SAMPLES 1
+#else
 #define tt_LARGE_SAMPLES 0
+#endif
 #endif
 // The most datagrams one large sample may take: the widest reader window, since all of a sample's datagrams must be
 // trackable at once by a RELIABLE reader (DESIGN.md section 8: 1,446 + 1,452 x 8,191 bytes at the default datagram).
