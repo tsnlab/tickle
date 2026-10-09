@@ -30,7 +30,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <linux/prctl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"
@@ -73,6 +75,12 @@ int main(void) {
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
     const size_t page = (size_t)sysconf(_SC_PAGESIZE);
 
+    // Transparent huge pages off for this process: with THP a write to one byte of this 2 MB block faults a whole
+    // huge page in, so mincore() cannot tell a touched page from an untouched one (CI's runners do this; 2026-10-09
+    // its control read more than 3 pages). What this test proves - the context's untouched pages stay out of memory -
+    // is about the allocation, and on a THP=always host the saving itself is smaller; that is a property of the host.
+    assert(0 == prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0));
+
     // Control 1: mincore() reports a page written in a zero_allocate()d block this size, and not the others.
     uint8_t* probe = (uint8_t*)allocator.zero_allocate(1, sizeof(rmw_tickle_context_impl_t), allocator.state);
     assert(NULL != probe);
@@ -80,7 +88,8 @@ int main(void) {
     size_t probe_pages = 0;
     size_t probe_in = 0;
     resident(probe, sizeof(rmw_tickle_context_impl_t), &probe_pages, &probe_in);
-    printf("control: a %zu-page zero_allocate()d block with one page written: %zu resident\n", probe_pages, probe_in);
+    fprintf(stderr, "control: a %zu-page zero_allocate()d block with one page written: %zu resident\n", probe_pages,
+            probe_in);
     assert(probe_pages > 500);
     assert(probe_in >= 1 && probe_in <= 3);
     allocator.deallocate(probe, allocator.state);
