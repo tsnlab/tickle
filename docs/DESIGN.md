@@ -682,6 +682,35 @@ the sample it was handed beyond the callback, without copying it, until it gives
   per delivery, and saves the segment drain's copy of every record; its A/B against main is in
   [RESULTS.md](RESULTS.md) once measured. Counters (`lend_*`, `shm_full_retained`) are on the traffic line.
 
+**Claimed-slot publish (`tt_Publisher_claim` / `_publish_claimed` / `_abandon_claim`, 2026-10-09).** The send half of
+zero-copy: a caller builds a sample's CDR in the subscriber's ring slot, and the publish copies nothing. It is
+encode-in-slot (`try_publish_into_slot()`) split at the encoder: the claim is everything before the encode, the
+publish everything after, and the caller's fill is the encode.
+
+- **API.** `tt_Publisher_claim(pub, capacity, &payload)` claims a slot with room for `capacity` CDR bytes; `payload`
+  is at 4 mod 8 (an 8-aligned struct behind a 4-byte prefix). `tt_Publisher_publish_claimed(pub, length)` sends the
+  first `length` bytes; `tt_Publisher_abandon_claim(pub)` gives the slot back. A claim that cannot be made says why:
+  `UNSUPPORTED` (no slot for this shape: not a lone DATA to one attached same-host peer - broadcast, several or remote
+  peers, local subscribers, batching, a Heartbeat due alongside, larger than a slot or a datagram), `OUT_OF_BUFFER`
+  (ring full), `WOULD_BLOCK` (KEEP_ALL), `ILLEGAL_STATUS` (one claim out already). Each means "publish ordinarily",
+  which then behaves as it always did.
+- **Rules.** One claim per publisher, and while it is out that publisher's ordinary publish is refused
+  (`ILLEGAL_STATUS`): the claim takes its seq_no at its publish, so a sample sent in between would sit behind it in
+  the ring with an earlier seq_no, and the reliable cache keeps seq order. A claimed slot stops its ring for every
+  writer until it is published or abandoned (the reader takes records in index order); hold it for the fill only.
+  KEEP_ALL is asked at the claim; nothing the claim holds back can unblock it later. Spent whatever the publish says.
+- **The destination is asked twice.** Discovery can move the peer, add a local subscriber or owe a match Heartbeat
+  between claim and publish. The publish asks the same rule again; if it no longer holds, the bytes are copied out of
+  the slot and published the ordinary way, and the slot goes back empty - the reader takes the empty record, then the
+  copy (`shm_claims_copied`).
+- **The mapping is pinned.** A peer mapping with a claim on it (`tt_SegmentPeer.claims`) is not unmapped by the
+  revalidation or the dead-reader rule while the caller writes into it; `tt_Publisher_destroy()` abandons an
+  outstanding claim, `tt_Context_destroy()` unmaps it (resolve claims first).
+- **RELIABLE** still copies the record into the writer's retention cache at the publish, as every publish does.
+- Counters `shm_claims_published`, `shm_claims_copied`, `shm_claims_abandoned` are on the traffic line.
+  `test_publish_claim` holds a claimed publish byte-identical to the encoder's (ring records, cache, seq_no) and checks
+  every rule; `tests/mutants_publish_claim.py` removes each step (18 mutants, all killed).
+
 ## 11. Memory model
 
 - **Embedded storage** sized by macros: server response cache (`tt_SERVER_CACHE_ENTRY_LENGTH` x 64), client call

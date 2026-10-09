@@ -262,8 +262,10 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
 ### Wired work (the user's order of 2026-09-29: finish wired, then Security, then wireless)
 
 - **True zero-copy loans need three core changes**: `rx_buffer` aligned to 8 bytes, a segment ring that skips held
-  slots (`tt_SEGMENT_VERSION` 5), and a claimed-slot publish API. Today's loans (done, below) are decoded shells and
-  in-ring reads, not zero-copy. (PLAN #3; COMPARISON 2.7a)
+  slots (`tt_SEGMENT_VERSION` 5), and a claimed-slot publish API. The first and the last are built on
+  ab/zero-copy-loans (2026-10-09: socket-path loans read in place 296 of 300 from 8; slot loans opt-in,
+  `RMW_TICKLE_LOAN_PUBLISH_SLOTS=1`, DESIGN.md 10 "Claimed-slot publish"), waiting for their rig A/B
+  (`~/rig_queue_zcl.sh`). The ring that skips held slots is still open. (PLAN #3; COMPARISON 2.7a)
 - **Large-message stage 2** (samples above 64 KB): user's staged-support decision. Designed and pre-registered
   2026-10-09 in [DESIGN.md](DESIGN.md) section 8, "Stage 2" (wire types 10/11 with a 16-bit fragment index, caller-
   acquired buffers lent to the app, a writer-owned same-host area; criteria L1-L4 and the falsifiers). The user approved

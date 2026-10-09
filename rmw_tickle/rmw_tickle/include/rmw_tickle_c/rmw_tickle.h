@@ -749,6 +749,13 @@ typedef struct rmw_tickle_publisher_t {
     // Loans published (rmw_publish_loaned_message() that found its loan), counted under loan_mutex; printed at
     // rmw_destroy_publisher() so a measurement can see that the publish path it timed was the loaned one.
     uint64_t loans_published;
+    // Loans built in the ring slot they are sent from (core's tt_Publisher_claim(), docs/RMW.md "Loaned messages"),
+    // with RMW_TICKLE_LOAN_PUBLISH_SLOTS=1 (off by default): whether this publisher lends slots, the message lent out
+    // of one (NULL when none - core holds one claim per publisher), and how many were published from one. Guarded by
+    // loan_mutex, as the buffers are.
+    bool loan_slots;
+    void* slot_loan;
+    uint64_t loans_in_slot;
     // The next message's publication sequence number (ROS's, rmw/types.h): this Publisher's own count of
     // messages, carried in the RMW_TICKLE_PSN_BYTES that rmw_tickle puts ahead of every message's CDR.
     // Core's seq_no cannot serve: it counts datagrams once messages fragment (DATAFRAG_PLAN.md section 13),

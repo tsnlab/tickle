@@ -27,6 +27,9 @@
 //          arrive; the talker's ring refusals (segment_full_dropped) must stay 0;
 //   held-pinned  the same with ring slots lent: the positive control. The held loans then pin ring slots, and the
 //          talker's ring must refuse - if it did not, the check above could not see a held slot block a ring.
+//   claimed  the ring again, the talker with RMW_TICKLE_LOAN_PUBLISH_SLOTS=1 and the listener with ring slots lent:
+//          the talker's loans are built in the listener's ring slots (core's tt_Publisher_claim()) and the listener's
+//          are read in those same slots - no copy on either side; the ring case is its control (no slot loans there);
 //   held-small   held again, with the listener's KEEP_ALL queue cut to a few samples
 //   (RMW_TICKLE_READER_KEEP_ALL_BYTES),
 //          so the flood is declined over and over: every sample must still arrive, and the declines must have
@@ -398,8 +401,8 @@ static void check_take(rmw_node_t* node) {
 // ---------------------------------------------------------------------------------------------------------------
 // Two processes
 
-enum scenario { RING, UDP, PINNED, HELD, HELD_PINNED, HELD_SMALL };
-static const char* const scenario_names[] = {"ring", "udp", "pinned", "held", "held-pinned", "held-small"};
+enum scenario { RING, UDP, PINNED, HELD, HELD_PINNED, HELD_SMALL, CLAIMED };
+static const char* const scenario_names[] = {"ring", "udp", "pinned", "held", "held-pinned", "held-small", "claimed"};
 #define SMALL_QUEUE_BYTES "8000" // the held-small listener's KEEP_ALL budget: a handful of Array1k samples
 
 static bool is_held(enum scenario which) {
@@ -415,6 +418,8 @@ struct talker_report {
     uint64_t segment_full_dropped;
     uint64_t published;
     uint64_t failed;
+    uint64_t loans_in_slot; // the data publisher's loans published from a claimed ring slot
+    uint64_t claims_copied; // claims whose destination changed before their publish (core's segment_claims_copied)
 };
 
 static bool wait_matched_subscriptions(rmw_publisher_t* pub, size_t want) {
@@ -491,10 +496,14 @@ static int talker(enum scenario which, int to_listener, int from_listener) {
     struct endpoint_set set;
     open_set(&set, "loan_talker");
     rmw_tickle_context_impl_t* context_impl = ((rmw_tickle_node_t*)set.node->data)->context_impl;
-    struct talker_report report = {0, 0, 0};
+    struct talker_report report = {0, 0, 0, 0, 0};
     // A KEEP_ALL publish blocked on a stopped ring gives up after this long (the control case is the one that blocks).
     assert(0 == setenv("RMW_TICKLE_MAX_BLOCKING_MS", "300", 1));
+    if (CLAIMED == which) {
+        assert(0 == setenv("RMW_TICKLE_LOAN_PUBLISH_SLOTS", "1", 1)); // read at publisher creation
+    }
     rmw_publisher_t* data = make_publisher(set.node, &array1k_handle, TOPIC_DATA, qos_of(true, true, 0));
+    assert(0 == unsetenv("RMW_TICKLE_LOAN_PUBLISH_SLOTS"));
     rmw_publisher_t* held = NULL;
     if (is_held(which)) {
         held = make_publisher(set.node, &array1k_handle, TOPIC_HELD, qos_of(true, true, 0));
@@ -521,7 +530,9 @@ static int talker(enum scenario which, int to_listener, int from_listener) {
     }
     tt_Context_lock(&context_impl->tickle_context);
     report.segment_full_dropped = context_impl->tickle_context.segment_full_dropped;
+    report.claims_copied = context_impl->tickle_context.segment_claims_copied;
     tt_Context_unlock(&context_impl->tickle_context);
+    report.loans_in_slot = ((rmw_tickle_publisher_t*)data->data)->loans_in_slot;
     if (sizeof(report) != (size_t)write(to_listener, &report, sizeof(report))) {
         return 4;
     }
@@ -616,7 +627,7 @@ static void take_held_loans(rmw_subscription_t* data, rmw_subscription_t* held,
 static struct talker_report receive_until_reported(rmw_subscription_t* data,
                                                    const rmw_tickle_context_impl_t* context_impl, int from_talker,
                                                    struct tally* tally) {
-    struct talker_report report = {0, 0, 0};
+    struct talker_report report = {0, 0, 0, 0, 0};
     bool reported = false;
     int after_report = 0;
     for (int i = 0; i < WAIT_POLLS * 3 && after_report < WAIT_POLLS / 5; i++) {
@@ -644,6 +655,13 @@ static void check_case(enum scenario which, const struct tally* tally, const uin
         assert(want == tally->received && want == report->published);
         assert(0 == tally->where[IN_RING]);          // ring slots are not lent by default
         assert(tally->where[ELSEWHERE] > want / 2U); // the ring carried most of them
+        assert(0 == report->loans_in_slot);          // nor are they borrowed into by default: claimed's control
+        break;
+    case CLAIMED:
+        // Built in the slot and read in the slot: most of them, once the ring attached (the first go over UDP).
+        assert(want == tally->received && want == report->published && 0 == report->failed);
+        assert(report->loans_in_slot > want / 2U);
+        assert(tally->where[IN_RING] > want / 2U);
         break;
     case UDP:
         assert(want == tally->received && want == report->published);
@@ -681,7 +699,7 @@ static void check_case(enum scenario which, const struct tally* tally, const uin
 }
 
 static void run_two_process(enum scenario which) {
-    bool pinned = PINNED == which || HELD_PINNED == which;
+    bool pinned = PINNED == which || HELD_PINNED == which || CLAIMED == which;
     if (pinned) {
         assert(0 == setenv("RMW_TICKLE_LOAN_RING_SLOTS", "1", 1));
     } else {
@@ -740,13 +758,14 @@ static void run_two_process(enum scenario which) {
     rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)data->data;
     printf("%s: received %llu of %llu published (%llu meant, %llu publishes failed); loans in ring %llu, in a receive "
            "buffer %llu, decoded %llu (in place %llu, copied %llu); held loans in ring %llu, in a buffer %llu, decoded "
-           "%llu; talker ring refusals %llu\n",
+           "%llu; talker ring refusals %llu; talker loans built in a slot %llu (copied out at publish %llu)\n",
            scenario_names[which], (unsigned long long)tally.received, (unsigned long long)report.published,
            (unsigned long long)want, (unsigned long long)report.failed, (unsigned long long)tally.where[IN_RING],
            (unsigned long long)tally.where[IN_RECEIVE_BUFFER], (unsigned long long)tally.where[ELSEWHERE],
            (unsigned long long)sub_impl->loans_in_place, (unsigned long long)sub_impl->loans_copied,
            (unsigned long long)held_where[IN_RING], (unsigned long long)held_where[IN_RECEIVE_BUFFER],
-           (unsigned long long)held_where[ELSEWHERE], (unsigned long long)report.segment_full_dropped);
+           (unsigned long long)held_where[ELSEWHERE], (unsigned long long)report.segment_full_dropped,
+           (unsigned long long)report.loans_in_slot, (unsigned long long)report.claims_copied);
     // Where the loans came from is the point of each case; `where` is decided by address, independently of the
     // counters the rmw keeps, and the two must agree.
     assert(tally.where[IN_RING] + tally.where[IN_RECEIVE_BUFFER] == sub_impl->loans_in_place);
@@ -788,6 +807,7 @@ int main(void) {
     run_two_process(HELD);
     run_two_process(HELD_PINNED);
     run_two_process(HELD_SMALL);
+    run_two_process(CLAIMED);
     printf("test_loaned_messages: PASS\n");
     return 0;
 }

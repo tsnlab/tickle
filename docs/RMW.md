@@ -120,8 +120,18 @@ allocates nothing (an ordinary `rmw_take` copies it into the caller's message, a
 builds the message there instead of allocating one. A new buffer is initialised as a new message is; a kept one is
 lent as its last loan left it (clearing it would write as many bytes as the copy a loan saves), so set every field,
 defaults included. `rmw_publish_loaned_message` then encodes it into the ring slot (encode-in-slot) or `tx_buffer`
-exactly as `rmw_publish` does: **one copy remains on the publish**. Lending the slot itself would need core to hand
-an application a claimed slot, and a claimed slot stops its reader until published; core has no such API.
+exactly as `rmw_publish` does: **one copy remains on the publish**.
+
+**Slot loans (`RMW_TICKLE_LOAN_PUBLISH_SLOTS=1`, off by default).** The borrow lends the subscriber's ring slot itself
+(core's `tt_Publisher_claim`, DESIGN.md 10), when the publisher sends to one same-host subscriber whose ring is
+attached, has no other loan out, and the slot holds the message aligned; otherwise a kept buffer, as above. The
+publish then writes the psn ahead of the message and sends the slot: **no copy on the publish** (BEST_EFFORT; RELIABLE
+still copies into its retention cache). With ring-slot takes (`RMW_TICKLE_LOAN_RING_SLOTS=1`) the subscriber reads it
+in that same slot: `test_loaned_messages` claimed, 286 of 300 built in a slot and 296 of 300 read in place, 0 copies
+between them. The slot is lent as the ring left it (another record's bytes): set every field. Off by default because
+**a claimed slot stops its ring** for every writer into that subscriber until it is published or returned, and
+because **while a slot loan is out, every other publish of that publisher fails** (`RMW_RET_ERROR`, core holds one
+claim per publisher and the claim's sequence number is taken at its publish): publish or return the loan first.
 
 `RMW_TICKLE_LOANS=0` turns loans off (`can_loan_messages` false everywhere). rcl's `ROS_DISABLE_LOANED_MESSAGES=1`
 does the same from above.

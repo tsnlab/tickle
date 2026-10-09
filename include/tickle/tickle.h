@@ -903,6 +903,11 @@ struct tt_Context {
     // tt_SEGMENT_ENCODE_IN_SLOT). Each is also one of tx_shm. The arm's own report of its treatment: an A/B whose
     // treated arm shows 0 here measured the two-copy path twice.
     uint64_t segment_encoded_in_slot;
+    // tt_Publisher_claim(): claims published where the application built them, claims whose sample had to be copied out
+    // of the slot at publish (its destination had changed), and claims abandoned (published empty).
+    uint64_t segment_claims_published;
+    uint64_t segment_claims_copied;
+    uint64_t segment_claims_abandoned;
     // drain_rx() passes ended because the own ring held a record after tt_RX_CLOCK_REFRESH datagrams of one drain (the
     // ring-turn rule: a socket that never empties cannot starve the ring). A drain that empties the socket sooner never
     // asks, so 0 is the common case; a build without the rule prints no such field.
@@ -938,6 +943,10 @@ struct tt_Context {
         uint32_t ip;
         uint16_t port;
         uint32_t incarnation; // what was in the header when we attached; a change means a new peer
+        // Slots of this mapping claimed by a publisher of ours and not yet published or abandoned
+        // (tt_Publisher_claim()): an application is writing into them, so nothing unmaps this region - not the
+        // revalidation, not the dead-reader rule - until it is 0 again.
+        uint8_t claims;
         // The negative answer, remembered. A peer on another host has no segment and never will,
         // and without this the question is asked again for every datagram - an open() that walks
         // /dev/shm and fails, about 87,000 times a second per sender, which halved cross-host
@@ -1672,6 +1681,14 @@ struct tt_Publisher { // extends endpoint
     // those pair with their own genuinely-16-bit wire counterparts (tt_CallRequestHeader.seq_no)
     // or are unused, not affected by this same bug.
     uint32_t seq_no;
+
+    // The ring slot tt_Publisher_claim() lent this Publisher's caller, NULL when none: in `claim_segment` (peer
+    // context `claim_context_id`), at ring index `claim_index`, with room for `claim_length` CDR bytes. One at a time.
+    struct tt_SegmentSlot* claim_slot;
+    struct tt_SegmentHeader* claim_segment;
+    uint32_t claim_index;
+    uint32_t claim_length;
+    uint8_t claim_context_id;
 
     // Known Subscribers matching this Publisher's topic, learned via UPDATE announces - see
     // tt_UNICAST_PEER_THRESHOLD.
@@ -2680,6 +2697,39 @@ tt_ret_t tt_Server_destroy(struct tt_Server* server);
 
 tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data);
 tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub);
+
+// Claimed-slot publish (DESIGN.md section 10, "Claimed-slot publish"): the caller builds a sample's CDR straight in the
+// same-host subscriber's ring slot, so the publish copies nothing. borrow -> fill -> publish, or abandon:
+//
+//   tt_Publisher_claim(pub, capacity, &payload) claims a slot with room for `capacity` CDR bytes; *payload is where
+//                                              they go, at 4 mod 8 (8-aligned after a 4-byte prefix). Returns
+//     tt_RET_OK               claimed: fill *payload, then tt_Publisher_publish_claimed() or
+//     tt_Publisher_abandon_claim() tt_RET_UNSUPPORTED      this publish has no slot to build in - not a lone DATA to
+//     one same-host peer whose ring
+//                             is attached (a broadcast, several or remote peers, local subscribers, batching, a sample
+//                             that would not fit a slot or a datagram, a Heartbeat due alongside): publish ordinarily
+//     tt_RET_OUT_OF_BUFFER    the ring is full: publish ordinarily, which drops and counts it as a full ring does
+//     tt_RET_WOULD_BLOCK      KEEP_ALL with nothing acknowledged to make room, as tt_Publisher_publish() would say
+//     tt_RET_ILLEGAL_STATUS   this Publisher holds a claim already
+//   tt_Publisher_publish_claimed(pub, length)  sends the first `length` bytes written: tt_Publisher_publish()'s
+//                                              results, and tt_RET_INVALID_ARGUMENT for a length over the capacity.
+//                                              The claim is spent whatever it returns. If the destination changed
+//                                              since the claim, the sample is copied out of the slot and published
+//                                              the ordinary way.
+//   tt_Publisher_abandon_claim(pub)            gives the slot back, sending nothing.
+//
+// The rules. ONE CLAIM PER PUBLISHER, and while it is held that Publisher's tt_Publisher_publish() is refused with
+// tt_RET_ILLEGAL_STATUS (the claim's seq_no is taken at its publish, so a sample published in between would land
+// behind it in the ring with an earlier seq_no). A CLAIMED SLOT STOPS ITS RING: the subscriber's context reads its
+// ring in order, so every writer into that context waits behind the claim, and a ring that fills meanwhile drops - hold
+// a claim for the time it takes to fill it, never across a wait. KEEP_ALL is checked at the claim, and nothing the
+// claim holds back can unblock it later. tt_Publisher_destroy() abandons an outstanding claim; tt_Context_destroy()
+// unmaps the slot, so a claim must be resolved before it. Callable from any thread, as tt_Publisher_publish() is; the
+// fill needs no lock. Without the segment (tt_SEGMENT_ENABLED or tt_SEGMENT_ENCODE_IN_SLOT 0) every claim is
+// tt_RET_UNSUPPORTED.
+tt_ret_t tt_Publisher_claim(struct tt_Publisher* pub, uint32_t capacity, uint8_t** payload);
+tt_ret_t tt_Publisher_publish_claimed(struct tt_Publisher* pub, uint32_t length);
+tt_ret_t tt_Publisher_abandon_claim(struct tt_Publisher* pub);
 
 tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
 
