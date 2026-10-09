@@ -139,7 +139,8 @@ netdev() { # one line: every interface's rx/tx packets and bytes, and lo's alone
 
 # The sampler: every SAMPLE_S, on CLOCK_MONOTONIC, each role's summed thread run time and VmHWM, and the interface
 # counters. Roles are read from $CELL_DIR/<role>.pid as they appear; a process that has exited stops being read and
-# keeps its last values. It ends when $CELL_DIR/sampler.stop exists.
+# keeps its last values. It ends when $CELL_DIR/sampler.stop exists. Each S line is followed by an F line with each
+# role's minor/major page faults and voluntary/involuntary context switches (the summary reads only S lines).
 cat >"$CELL_DIR/sampler.py" <<'PY'
 import os, sys, time
 d, period, roles = sys.argv[1], float(sys.argv[2]), sys.argv[3].split(",")
@@ -155,6 +156,20 @@ def hwm(pid):
             if line.startswith("VmHWM:"):
                 return int(line.split()[1])
     return 0
+def faults(pid):
+    # minflt/majflt of the whole process (/proc/PID/stat fields 10 and 12, after the comm's closing paren), then
+    # voluntary/involuntary context switches summed over its threads.
+    with open(f"/proc/{pid}/stat") as f:
+        v = f.read().rsplit(")", 1)[1].split()
+    vc = ic = 0
+    for t in os.listdir(f"/proc/{pid}/task"):
+        with open(f"/proc/{pid}/task/{t}/status") as f:
+            for line in f:
+                if line.startswith("voluntary_ctxt_switches:"):
+                    vc += int(line.split()[1])
+                elif line.startswith("nonvoluntary_ctxt_switches:"):
+                    ic += int(line.split()[1])
+    return f"{v[7]}/{v[9]}/{vc}/{ic}"
 def net():
     ap = ab = lp = lb = 0
     with open("/proc/net/dev") as f:
@@ -171,6 +186,7 @@ pids = {}
 while not os.path.exists(f"{d}/sampler.stop"):
     t = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
     fields = []
+    ffields = []
     for r in roles:
         if r not in pids:
             try:
@@ -180,10 +196,13 @@ while not os.path.exists(f"{d}/sampler.stop"):
                 continue
         try:
             fields.append(f"{r}={cpu(pids[r])}/{hwm(pids[r])}")
+            ffields.append(f"{r}={faults(pids[r])}")
         except (OSError, ValueError, IndexError):
             pass
     ap, ab, lp, lb = net()
     out.write(f"S {t} all_pkts={ap} all_bytes={ab} lo_pkts={lp} lo_bytes={lb} " + " ".join(fields) + "\n")
+    if ffields:
+        out.write(f"F {t} " + " ".join(ffields) + "\n")
     out.flush()
     time.sleep(period)
 out.close()
