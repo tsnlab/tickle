@@ -86,6 +86,18 @@ MUTANTS = [
         "test_a_busy_writer_is_waited_for_not_given_up",
     ),
     (
+        "a fixed-size type above a sample refused as a topic",
+        "    return valid_sample_size(size) || (size > 0 && size <= largest && decodes_in_place);",
+        "    return valid_sample_size(size);",
+        "test_a_fixed_size_type_above_a_sample_is_a_large_topic",
+    ),
+    (
+        "a fixed-size large type's copying Subscriber accepted",
+        "    return valid_sample_size(size) || (size > 0 && size <= largest && decodes_in_place);",
+        "    return valid_sample_size(size) || (size > 0 && size <= largest);",
+        "test_a_fixed_size_type_above_a_sample_is_a_large_topic",
+    ),
+    (
         "a sample wider than the window: WOULD_BLOCK, not TOO_LARGE",
         "    if (count > window) {\n        return tt_RET_TOO_LARGE;",
         "    if (count > window) {\n        return tt_RET_WOULD_BLOCK;",
