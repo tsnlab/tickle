@@ -4172,6 +4172,21 @@ static bool valid_sample_size(uint32_t size) {
     return size > 0 && size <= tt_MAX_SAMPLE_LENGTH;
 }
 
+// A topic's C struct (tt_Topic.data_size). With large samples (large-message stage 2) a type of fixed size above
+// tt_MAX_SAMPLE_LENGTH - a 1 MB array - is a topic like any other, up to the largest sample core can carry: one reader
+// window of datagrams, fragment 0 short by its header's extra bytes. Its Subscriber must decode in place
+// (data_decode_inplace): the copying decode puts the struct on the stack (deliver_payload()).
+static bool valid_topic_size(uint32_t size, bool decodes_in_place) {
+#if tt_LARGE_SAMPLES
+    const uint32_t cont = (uint32_t)(tt_CONTROL_MAX_LENGTH - FRAG_FRAMING_LENGTH - sizeof(struct tt_FragContLHeader));
+    const uint32_t largest = ((uint32_t)tt_LARGE_MAX_FRAGMENTS * cont) - (uint32_t)tt_FRAG_FIRST_L_SHORTFALL;
+    return valid_sample_size(size) || (size > 0 && size <= largest && decodes_in_place);
+#else
+    UNUSED(decodes_in_place);
+    return valid_sample_size(size);
+#endif
+}
+
 // A new local Publisher or Client learns its peers from remote announces (register_subscriber_peer_on_
 // publisher(), register_server_peer_on_client()) - but process_announce() skips the periodic resend of an
 // announce it has already acted on, and a remote node whose endpoints do not change resends the same one
@@ -4394,7 +4409,7 @@ tt_ret_t tt_Client_set_storage(struct tt_Client* client, uint8_t* cache_storage,
 static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Topic* topic,
                                              const char* endpoint_name, struct tt_Node* owner) {
     if (node == NULL || pub == NULL || topic == NULL || endpoint_name == NULL || topic->name == NULL ||
-        !valid_sample_size(topic->data_size) || topic->data_encode_size == NULL || topic->data_encode == NULL) {
+        !valid_topic_size(topic->data_size, true) || topic->data_encode_size == NULL || topic->data_encode == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
 
@@ -4499,8 +4514,8 @@ static tt_ret_t node_create_subscriber_locked(struct tt_Context* node, struct tt
                                               struct tt_Topic* topic, const char* endpoint_name,
                                               tt_SUBSCRIBER_CALLBACK callback, struct tt_Node* owner) {
     if (node == NULL || sub == NULL || topic == NULL || endpoint_name == NULL || callback == NULL ||
-        topic->name == NULL || !valid_sample_size(topic->data_size) || topic->data_decode == NULL ||
-        topic->data_free == NULL) {
+        topic->name == NULL || !valid_topic_size(topic->data_size, topic->data_decode_inplace != NULL) ||
+        topic->data_decode == NULL || topic->data_free == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
 
@@ -11286,6 +11301,18 @@ static void deliver_payload(struct tt_Context* node, struct tt_Subscriber* sub, 
         }
     }
 
+#if tt_LARGE_SAMPLES
+    if (topic->data_size > tt_MAX_SAMPLE_LENGTH) {
+        // A struct this large never goes on the stack (valid_topic_size()): an in-place decode that declined is a
+        // sample this Subscriber cannot take.
+        TT_LOG_ERROR("Cannot decode data for endpoint_id: %08x, seq_no: %u (in-place decode declined)",
+                     sub->endpoint.id, seq_no);
+        if (out_decode_failed != NULL) {
+            *out_decode_failed = true;
+        }
+        return;
+    }
+#endif
     uint8_t data[topic->data_size];
     int32_t decoded = topic->data_decode((struct tt_Data*)data, payload, length, is_native);
     if (decoded < 0) {

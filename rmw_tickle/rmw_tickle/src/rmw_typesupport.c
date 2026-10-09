@@ -101,6 +101,28 @@ bool rmw_tickle_check_callbacks_usable(const rosidl_typesupport_tickle_c_message
     return true;
 }
 
+bool rmw_tickle_check_topic_callbacks_usable(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks) {
+    if (callbacks->tickle_struct_size <= (size_t)tt_MAX_BUFFER_LENGTH) {
+        return rmw_tickle_check_callbacks_usable(callbacks);
+    }
+    // Large-message stage 2 (DESIGN.md section 8): a topic's message may be larger than a datagram - a fixed 1 MB
+    // array as much as an unbounded sequence - up to RMW_TICKLE_MAX_SAMPLE_BYTES. Services keep the datagram bound
+    // (rmw_tickle_check_callbacks_usable()). The generator-version check is the same.
+    if (0 != callbacks->tickle_max_buffer_length &&
+        (size_t)tt_MAX_BUFFER_LENGTH != callbacks->tickle_max_buffer_length) {
+        return rmw_tickle_check_callbacks_usable(callbacks); // sets its own error
+    }
+    size_t limit = (size_t)rmw_tickle_max_sample_bytes();
+    if (callbacks->tickle_struct_size > limit) {
+        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+            "type '%s' needs %zu bytes at its largest (every field at capacity), more than RMW_TICKLE_MAX_SAMPLE_BYTES "
+            "(%zu) - rmw_tickle cannot carry it; lower its capacities or raise RMW_TICKLE_MAX_SAMPLE_BYTES",
+            callbacks->ros_type_name, callbacks->tickle_struct_size, limit);
+        return false;
+    }
+    return true;
+}
+
 #define RMW_TICKLE_CACHE_BYTES_DEFAULT (1024ULL * 1024ULL)
 // 512 KiB: the same order as CycloneDDS's own default bound on what a reliable writer holds
 // unacknowledged - its WhcHigh watermark is 500 kB (read from the installed libddsc 11.0.1's own
