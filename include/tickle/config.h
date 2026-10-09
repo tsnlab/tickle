@@ -707,7 +707,7 @@
 // A RELIABLE writer sends a non-FINAL HEARTBEAT after the last fragment of each large sample, so a lost tail is asked
 // for one round trip later rather than at the next sample (DESIGN.md L3: removed if it does not pay). 0: none.
 #ifndef tt_LARGE_END_HEARTBEAT
-#define tt_LARGE_END_HEARTBEAT 1
+#define tt_LARGE_END_HEARTBEAT 0
 #endif
 // How long a large send blocked by a full socket send buffer waits before it tries again, at first and at most: the
 // wait doubles while a retry sends nothing.
