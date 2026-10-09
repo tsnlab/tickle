@@ -189,7 +189,8 @@ The user's active list (2026-10-05), in order.
 6. **Re-measure rmw same-host performance**: the rmw same-host rows predate the segment, FIFO and wake fixes.
    (COMPARISON 2.7; RMW_PERF_PLAN)
    Done 2026-10-08 at `03585237` (`experiments/rmw_samehost.sh`, RESULTS.md rows R1-R21): WIN 50, DRAW 1, LOSE 1.
-   Re-measured 2026-10-09 at `a7e02807`: WIN 46, DRAW 3, LOSE 3, every non-win a peak-RSS row (Wired work).
+   Re-measured 2026-10-09 at `a7e02807`: WIN 46, DRAW 3, LOSE 3, every non-win a peak-RSS row; and at `06dd78d8`
+   after `718220d8`: WIN 52 of 52.
 7. **FreeRTOS: implement tt_rx_maybe_ready() with an lwIP netconn receive callback**: today only the Linux HAL has
    the receive hint. lwIP's socket layer hard-wires its own netconn callback (`DEFAULT_SOCKET_EVENTCB` in
    `sockets.c` is not configurable), so the callback needs the HAL on the netconn API: `netconn_new_with_callback()`
@@ -271,8 +272,10 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
 - **A service server keeps one live answer per source context**: a retry from a second client of the same service
   in that context can re-run the server's callback. Found with S9 window A (below). (RMW_GAPS S9)
 - **rmw same-host peak-RSS rows**: at `a7e02807` all six non-wins of R1-R21 (DRAW 3, LOSE 3) are peak RSS,
-  rmw_tickle 0.1-0.6 MB above CycloneDDS, and its RTT-cell RSS rose 76-96 kB since `03585237`. The cause is being
-  investigated. (RESULTS "rmw layer, same host")
+  rmw_tickle 0.1-0.6 MB above CycloneDDS, and its RTT-cell RSS rose 76-96 kB since `03585237`.
+  Done 2026-10-09: `718220d8` zero-allocates the 2.2 MB context instead of allocate() + memset(), so untouched pages
+  never become resident (~1.75 MB less per process; `test_context_resident`, THP off for it in `50dbf111`). At
+  `06dd78d8` all 52 rows WIN, peak RSS 13.4-16.0 MB against CycloneDDS's 15.2-18.3 MB. (RESULTS "rmw layer, same host")
 - **FreeRTOS form of the segment** (HAL-provided rather than `shm_open`): it shapes the seam. The segment only:
   discovery stays UDP (decided below). (SHM_PLAN 7 q3)
 - **Stage 1 / S1 against the WIRE 10.4 floors** (CPU, RSS and size, p1-p4): the module's "no cost when off" is still

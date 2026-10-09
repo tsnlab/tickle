@@ -240,10 +240,11 @@ Build `934f90de`; raw files `examples/perf_hil/results/rmw_4way_block_934f90de_2
 
 - Every tie in rows 52-67 is with CycloneDDS, at the larger poll sleeps, where half a poll cycle of waiting dominates.
 - Only the rig's numbers count. The dev PC is used to check correctness, never to measure performance.
-- **Same host** (one rig Pi, each rmw on its shipped transport, build `a7e02807`, 2026-10-09, 3 reps): rmw_tickle
-  scores WIN 46, DRAW 3, LOSE 3 against both DDS rmws, e.g. RTT mean 36.9 us (Bench, RELIABLE, block) against 149.9
-  and 112.5, and 132,742 delivered Array1k samples/s at BEST_EFFORT KEEP_LAST 1 against 12,650 and 66,268. Every
-  non-win is peak RSS, 0.1-0.6 MB above CycloneDDS (cause under investigation). Rows R1-R21 in RESULTS.md.
+- **Same host** (one rig Pi, each rmw on its shipped transport, build `06dd78d8`, 2026-10-09, 3 reps): rmw_tickle
+  wins all 52 scored rows against both DDS rmws, e.g. RTT mean 40.0 us (Bench, RELIABLE, block) against 151.2 and
+  112.7, 140,875 delivered Array1k samples/s at BEST_EFFORT KEEP_LAST 1 against 17,483 and 70,331, and peak RSS
+  13.4-16.0 MB against CycloneDDS's 15.2-18.3 MB (since `718220d8`; at `a7e02807` six peak-RSS rows were DRAW or
+  LOSE). Rows R1-R21 in RESULTS.md.
 - A cross-host rmw throughput comparison exists only for RELIABLE + KEEP_ALL (rows 72-75).
 - The generated converters now cost what a `memcpy` costs: a 64 KB `Image` through `rmw_serialize` takes 3.6 us,
   against 2.6 us for Fast DDS and 21.2 us for CycloneDDS (PC, 2026-09-27).

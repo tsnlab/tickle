@@ -26,9 +26,9 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
   CycloneDDS (rows 59, 62-67). It loses no row. Under RELIABLE + KEEP_ALL at 5% loss, with the writers' KEEP_ALL bounds made
   equal, it delivers 41x (Array1k) and 78x (Array4k) CycloneDDS's rate with no sample lost; FastDDS's write times
   out under its default 100 ms bound and the run ends (rows 72-75).
-- **rmw layer, same host** (`a7e02807`, rows R1-R21): rmw_tickle scores WIN 46, DRAW 3, LOSE 3 against both DDS
-  rmws; every non-win is a peak-RSS row, rmw_tickle 0.1-0.6 MB above CycloneDDS (cause under investigation). At
-  BEST_EFFORT KEEP_LAST 1 max rate it delivers 133k Array1k samples/s against CycloneDDS's 66k and FastDDS's 13k.
+- **rmw layer, same host** (`06dd78d8`, rows R1-R21): rmw_tickle wins all 52 scored rows against both DDS rmws,
+  peak RSS included (13.4-16.0 MB against CycloneDDS's 15.2-18.3 MB, since `718220d8`). At BEST_EFFORT KEEP_LAST 1
+  max rate it delivers 141k Array1k samples/s against CycloneDDS's 70k and FastDDS's 17k.
 - **Not scored:** row 5 (netem dominates), rows 45-47 (all detect correctly), zenoh-pico (reference only).
 
 ## 1. Same host (shared memory)
@@ -181,63 +181,66 @@ the router. RTT: the `rmw_perf_pingpong` pair, 20 s at 1 ms, 4,096 round trips e
 `perf_test` at max rate, 20 s, 2 s excluded at each end, delivered samples counted at the subscriber; BEST_EFFORT is
 KEEP_LAST 1, RELIABLE is KEEP_ALL. Poll wait loops on `spin_some()` with 100 us sleeps, random phase. 3 reps per arm,
 medians; verdicts by the reps' ranges (TESTING.md section 4's win rule), from `rmw_samehost_summary.py`.
-**Build `a7e02807`** (2026-10-09; `experiments/rmw_samehost.sh`, rmw_tickle built as the jazzy debs are, `-g -O2`;
-`~/rig_results_safe/rmw_samehost_a7e02807_20261009-054624.{txt,runs}`; preflight 9 usable runs, 0 VOID; every cell
-n=3 for every arm). Since `03585237` it carries receive-buffer lending with the in-place segment drain (`0be14584`),
-discovery per entity (`33436ab3`) and the segment skip's RxO per writer (`cb83768e`), the request's client gid
-(`bf1378da`) and loaned messages (`7a321d26`, off unless the application borrows; the bench does not). The last
-column is rmw_tickle in the same harness at `03585237` (2026-10-08,
-`~/rig_results_safe/rmw_samehost_03585237_20261008-101135.txt`, published in `9082c560`), with its verdict where it
-was not a WIN. **Scored: WIN 46, DRAW 3, LOSE 3** of 52 (at `03585237`: WIN 50, DRAW 1, LOSE 1; at `f128f686`: WIN
-45, DRAW 1, LOSE 6). Every non-win is a peak-RSS row.
+**Build `06dd78d8`** (2026-10-09; `experiments/rmw_samehost.sh`, rmw_tickle built as the jazzy debs are, `-g -O2`;
+`~/rig_results_safe/rmw_samehost_06dd78d8_20261009-110918.{txt,runs}`; preflight 9 usable runs, 0 VOID, no rep refused;
+every cell n=3 for every arm). Since `a7e02807` it carries the zero-allocated context (`718220d8`, below), the
+RELIABLE reader's repeated ask for a declined tail (`783bb5d5`) and the Calls changes (`f4bea420`, `06dd78d8`). The
+last column is rmw_tickle in the same harness at `a7e02807` (2026-10-09,
+`~/rig_results_safe/rmw_samehost_a7e02807_20261009-054624.txt`), with its verdict where it was not a WIN.
+**Scored: WIN 52** of 52 (at `a7e02807`: WIN 46, DRAW 3, LOSE 3, every non-win a peak-RSS row; at `03585237`: WIN 50,
+DRAW 1, LOSE 1; at `f128f686`: WIN 45, DRAW 1, LOSE 6).
 
-| # | Metric | Cell | rmw_tickle | FastDDS | CycloneDDS | rmw_zenoh (ref) | verdict | rmw_tickle at `03585237` |
+| # | Metric | Cell | rmw_tickle | FastDDS | CycloneDDS | rmw_zenoh (ref) | verdict | rmw_tickle at `a7e02807` |
 |---|---|---|---|---|---|---|---|---|
 | | **RTT mean, us** (lower is better) | | | | | | | |
-| R1 | block wait (`spin()`) | Bench 64 B, BEST_EFFORT | **36.0** | 126.8 | 113.4 | 236.1 | WIN | 35.8 |
-| R2 | block wait | Bench 64 B, RELIABLE | **36.9** | 149.9 | 112.5 | 232.3 | WIN | 37.4 |
-| R3 | block wait | Array1k, BEST_EFFORT | **37.8** | 128.1 | 114.5 | 242.5 | WIN | 38.2 |
-| R4 | block wait | Array1k, RELIABLE | **38.5** | 151.9 | 115.4 | 241.6 | WIN | 38.6 |
-| R5 | poll wait, 100 us sleep | Bench 64 B, BEST_EFFORT | **149.1** | 190.4 | 184.4 | 289.1 | WIN | 149.1 |
-| R6 | poll wait, 100 us sleep | Bench 64 B, RELIABLE | **149.3** | 201.3 | 187.7 | 288.1 | WIN | 153.3 |
-| R7 | poll wait, 100 us sleep | Array1k, BEST_EFFORT | **150.2** | 194.2 | 184.3 | 296.8 | WIN | 150.0 |
-| R8 | poll wait, 100 us sleep | Array1k, RELIABLE | **150.9** | 202.2 | 187.2 | 294.4 | WIN | 150.8 |
+| R1 | block wait (`spin()`) | Bench 64 B, BEST_EFFORT | **35.8** | 121.4 | 111.6 | 234.2 | WIN | 36.0 |
+| R2 | block wait | Bench 64 B, RELIABLE | **40.0** | 151.2 | 112.7 | 236.3 | WIN | 36.9 |
+| R3 | block wait | Array1k, BEST_EFFORT | **38.3** | 129.8 | 111.5 | 242.5 | WIN | 37.8 |
+| R4 | block wait | Array1k, RELIABLE | **39.1** | 151.8 | 112.9 | 241.6 | WIN | 38.5 |
+| R5 | poll wait, 100 us sleep | Bench 64 B, BEST_EFFORT | **150.8** | 192.4 | 185.0 | 289.1 | WIN | 149.1 |
+| R6 | poll wait, 100 us sleep | Bench 64 B, RELIABLE | **151.4** | 201.2 | 189.4 | 288.3 | WIN | 149.3 |
+| R7 | poll wait, 100 us sleep | Array1k, BEST_EFFORT | **151.2** | 194.7 | 187.4 | 292.7 | WIN | 150.2 |
+| R8 | poll wait, 100 us sleep | Array1k, RELIABLE | **150.9** | 204.2 | 191.1 | 291.7 | WIN | 150.9 |
 | | **CPU, ping + pong, us per round trip** (lower is better) | | | | | | | |
-| R9 | block wait | Bench 64 B, RELIABLE | **63.3** | 254.2 | 151.0 | 339.8 | WIN | 64.4 |
-| R10 | block wait | Array1k, RELIABLE | **65.6** | 258.7 | 154.9 | 354.2 | WIN | 66.2 |
+| R9 | block wait | Bench 64 B, RELIABLE | **68.1** | 257.2 | 151.7 | 345.5 | WIN | 63.3 |
+| R10 | block wait | Array1k, RELIABLE | **66.5** | 258.9 | 152.6 | 353.1 | WIN | 65.6 |
 | | **Peak RSS, kB, larger of the two processes** (lower is better) | | | | | | | |
-| R11 | RTT | Bench 64 B, BEST_EFFORT, block | 15,236 | 26,244 | 15,240 | 22,504 | DRAW | 15,140 |
-| R12 | RTT | Bench 64 B, RELIABLE, block | 15,336 | 26,260 | **15,256** | 22,520 | LOSE | 15,260 (DRAW) |
-| R13 | throughput | Array1k, RELIABLE | 17,664 | 35,708 | **17,024** | 1,457,212 § | LOSE | 17,664 (LOSE) |
+| R11 | RTT | Bench 64 B, BEST_EFFORT, block | **13,480** | 26,260 | 15,248 | 22,496 | WIN | 15,236 (DRAW) |
+| R12 | RTT | Bench 64 B, RELIABLE, block | **13,572** | 26,264 | 15,248 | 22,464 | WIN | 15,336 (LOSE) |
+| R13 | throughput | Array1k, RELIABLE | **16,000** | 35,796 | 17,152 | 102,588 § | WIN | 17,664 (LOSE) |
 | | **Delivered msg/s** (higher is better) | | | | | | | |
-| R14 | max rate, KEEP_LAST 1 | Array1k, BEST_EFFORT | **132,742** | 12,650 | 66,268 | 59,483 | WIN | 150,010 |
-| R15 | max rate, KEEP_LAST 1 | Array4k, BEST_EFFORT | **79,181** | 4,471 | 60,542 | 49,934 | WIN | 81,716 |
-| R16 | max rate, KEEP_ALL | Array1k, RELIABLE | **166,111** | 2,464 | 60,838 | 97,661 | WIN | 176,050 |
-| R17 | max rate, KEEP_ALL | Array4k, RELIABLE | **147,538** | 16,808 | 46,779 | 92,535 | WIN | 146,182 |
+| R14 | max rate, KEEP_LAST 1 | Array1k, BEST_EFFORT | **140,875** | 17,483 | 70,331 | 61,210 | WIN | 132,742 |
+| R15 | max rate, KEEP_LAST 1 | Array4k, BEST_EFFORT | **83,041** | 4,143 | 60,768 | 45,689 | WIN | 79,181 |
+| R16 | max rate, KEEP_ALL | Array1k, RELIABLE | **187,946** | 2,313 | 64,246 | 110,940 | WIN | 166,111 |
+| R17 | max rate, KEEP_ALL | Array4k, RELIABLE | **155,622** | 17,469 | 49,669 | 88,786 | WIN | 147,538 |
 | | **CPU, pub + sub, us per delivered sample** (lower is better) | | | | | | | |
-| R18 | max rate | Array1k, BEST_EFFORT | **14.92** | 212.28 | 34.24 | 47.66 | WIN | 13.17 |
-| R19 | max rate | Array4k, BEST_EFFORT | **24.99** | 591.30 | 36.79 | 53.85 | WIN | 24.29 |
-| R20 | max rate | Array1k, RELIABLE | **7.10** | 592.12 | 36.12 | 22.34 | WIN | 6.72 |
-| R21 | max rate | Array4k, RELIABLE | **9.04** | 85.91 | 39.99 | 25.75 | WIN | 9.07 |
+| R18 | max rate | Array1k, BEST_EFFORT | **14.02** | 153.50 | 33.91 | 46.37 | WIN | 14.92 |
+| R19 | max rate | Array4k, BEST_EFFORT | **23.83** | 640.54 | 36.83 | 58.43 | WIN | 24.99 |
+| R20 | max rate | Array1k, RELIABLE | **6.35** | 641.91 | 35.28 | 21.19 | WIN | 7.10 |
+| R21 | max rate | Array4k, RELIABLE | **8.64** | 84.04 | 38.99 | 26.42 | WIN | 9.04 |
 
-Rows not shown: RTT p50 and p99 in every cell (WIN), CPU per round trip in the six other cells (WIN, 62.1-75.6 us
-against FastDDS 173-242 and CycloneDDS 149-157), and the nine other peak-RSS cells: WIN in six, **DRAW** in Array1k
-BEST_EFFORT block and Array1k RELIABLE block, **LOSE** in Bench 64 B RELIABLE poll (15,312-15,320 kB against
-CycloneDDS's 15,248-15,252).
+Rows not shown: RTT p50 and p99 in every cell (WIN), CPU per round trip in the six other cells (WIN, 61.8-78.1 us
+against FastDDS 170-245 and CycloneDDS 147-160), and the nine other peak-RSS cells (WIN, rmw_tickle 13,448-15,616 kB
+against CycloneDDS 15,240-18,344).
 
-- **The three LOSE and three DRAW rows are all peak RSS**, rmw_tickle 0.1-0.6 MB above CycloneDDS: R12 15,336-15,340
-  kB against 15,244-15,260 (+80 kB at the median), the Bench RELIABLE poll cell +68 kB, R13's subscriber 17,536-17,920
-  against 16,896-17,152 (+640 kB, 3.8%). In the RTT cells rmw_tickle's RSS rose by 76-96 kB since `03585237` (R11
-  15,140 -> 15,236, R12 15,260 -> 15,336) while CycloneDDS's stayed within 16 kB, which turned R11 from WIN to DRAW
-  and R12 from DRAW to LOSE. The cause is being investigated; nothing is concluded yet.
-- **R14 fell 150,010 -> 132,742 (-11.5%)** at the median, but its reps (126,187 / 132,742 / 148,978) overlap the
-  previous run's (144,773-150,312); the control, CycloneDDS in the same cell, moved -6.3% (70,703 -> 66,268). R16
-  moved -5.6% against CycloneDDS's -6.6%. In the loans A/B on the same rig the night before
-  (`~/rig_results_safe/ab_loans_20261009-011554.verdict.txt`, 8 phases) the default arm delivered medians of 146k-147k at
-  R14's cell.
-- **No FastDDS rep refused** in this run (at `03585237` its tput Array1k RELIABLE r2 ended on "failed to publish";
-  see † below). **§ rmw_zenoh's** Array1k RELIABLE subscriber peaked at 1.46 GB (123,624 kB at `03585237`); it is a
-  reference arm and not analysed further.
+- **The six peak-RSS non-wins of `a7e02807` are WINs** (R11-R13, and Array1k BEST_EFFORT block, Array1k RELIABLE
+  block, Bench RELIABLE poll): across all twelve cells rmw_tickle peaks at 13.4-16.0 MB against CycloneDDS's
+  15.2-18.3 MB. R11 15,236 -> 13,480 kB (-1,756), R12 15,336 -> 13,572 (-1,764), R13 17,664 -> 16,000 (-1,664); the
+  control, CycloneDDS in the same cells, moved +8, -8 and +128 kB. The cause is `718220d8`: rmw_init() took the 2.2 MB
+  context with allocate() and memset() it, which made every page resident for the life of the process.
+  zero_allocate() takes pages the kernel has already zeroed and writes none, so pages never touched (the 2048-entity
+  discovery table, most fragment slots) never become resident: ~1.75 MB less per process. `test_context_resident`
+  checks it with mincore() and fails with the memset() put back; `50dbf111` turns transparent huge pages off for that
+  test. **A host property:** where transparent huge pages are set to `always`, the kernel can back the context with
+  huge pages, which become resident whole, so the saving there is smaller. This run does not record the rig's mode.
+- **R2 and R9 rose** 36.9 -> 40.0 us and 63.3 -> 68.1 us per round trip (+8% each) at the median, while CycloneDDS in
+  the same cell moved +0.2 us and +0.7 us. R2's reps (39.1 / 40.0 / 41.0) overlap `a7e02807`'s (36.8 / 39.5 / 36.9);
+  R9's do not (67.8-70.2 against 63.0-67.2). R4, the Array1k RELIABLE block cell, moved +0.6 us. Not concluded.
+- **R14 rose 132,742 -> 140,875 (+6.1%)**, with the control, CycloneDDS in the same cell, also +6.1% (66,268 ->
+  70,331). R16 rose +13.1% (166,111 -> 187,946) against CycloneDDS's +5.6%.
+- **No FastDDS rep refused**, in this run or at `a7e02807` (at `03585237` its tput Array1k RELIABLE r2 ended on
+  "failed to publish"; see † below). **§ rmw_zenoh's** Array1k RELIABLE subscriber peaked at 103 MB (1.46 GB at
+  `a7e02807`, 123,624 kB at `03585237`); it is a reference arm and not analysed further.
 - **† (at `03585237`) FastDDS refused in tput Array1k RELIABLE r2:** its publisher ended on "failed to publish"
   (KEEP_ALL under the 100 ms `max_blocking_time`). Per the user's rule it was recorded as "does not run" in that
   rep (REFUSED, excluded, listed) and not analysed further; its R13, R16 and R20 were the median of its other two reps
