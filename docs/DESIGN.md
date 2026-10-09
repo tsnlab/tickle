@@ -566,6 +566,14 @@ Compiled in by default on Linux (`tt_SEGMENT_ENABLED`), out on FreeRTOS.
 - A context builds its segment when the first same-host peer appears in discovery (or when it delivers to itself),
   and releases it when the liveliness timeout removes the last one. A host with no same-host peers pays nothing.
 - `tt_segment_create()` unlinks any stale file first, so a dead owner's records are never inherited; teardown unlinks.
+- **A writer never uses a segment whose owner is dead.** The owner holds an exclusive `flock()` on its file for as long
+  as its region is mapped (the mapping holds the lock, so a crash releases it); `tt_segment_attach()` refuses a file
+  nobody holds (`tt_SEGMENT_ORPHANED`, `shm_attach_orphaned`) and the peer is reached over UDP until its owner builds
+  a new one. A killed context's file has a header that still names it, so before 2026-10-09 a writer asking in the
+  gap attached to it and wrote into a ring nobody drained (~2% of `test_loaned_messages` runs). One `flock()` per
+  attach and per revalidation, none per datagram. Writers do not unlink an orphan: `unlink()` cannot be made
+  conditional on which file the name holds, and a successor's file could go instead. The bell needs no check of its
+  own (it is opened only after the segment's), and the context-id registry already tests its holders' pids.
 - A writer re-asks a name every `tt_SEGMENT_ATTACH_RETRY_SENDS` (256) sends when absent and every
   `tt_SEGMENT_REVALIDATE_SENDS` (4096) when attached, so a peer that binds late becomes reachable and a replaced
   owner is noticed. (A time-based version, `c73a22e7`, was reverted on 2026-10-06: ROADMAP 5a.)

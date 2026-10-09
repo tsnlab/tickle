@@ -205,8 +205,15 @@ void* tt_segment_create(const char* path, size_t bytes);
 // *why carries an `enum tt_SegmentAttach` value (tickle.h) as a uint8_t rather than the enum
 // itself: this header is included by tickle.h and cannot include it back, and the alternative -
 // moving a transport type into config.h to break the cycle - would put it where nothing else of
-// its kind lives. Only tt_SEGMENT_ABSENT and tt_SEGMENT_REFUSED are produced here; the header
-// checks that produce the rest are core's, because they are the same on every platform.
+// its kind lives. Only tt_SEGMENT_ABSENT, tt_SEGMENT_REFUSED and tt_SEGMENT_ORPHANED are produced
+// here; the header checks that produce the rest are core's, because they are the same on every
+// platform.
+//
+// Ownership: a region whose owner has gone must be refused with tt_SEGMENT_ORPHANED, because its
+// header stays valid after the owner's death and nothing read through it can say otherwise. The
+// region tt_segment_create() returns is therefore marked as owned for as long as the creating
+// context maps it (Linux: an exclusive flock() held by the mapping), and attach asks before mapping.
+// A platform whose regions cannot outlive their owner (no named files) never produces it.
 void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why);
 void tt_segment_detach(void* mapping, size_t bytes);
 // Removes the name. The mapping survives in anyone who still holds it, which is why a reader checks

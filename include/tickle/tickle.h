@@ -355,6 +355,7 @@ enum tt_SegmentAttach {
     tt_SEGMENT_BAD_HEADER,  // magic or version wrong: not ours, or a version we cannot read
     tt_SEGMENT_WRONG_OWNER, // header's triple is not the peer we computed the name for: a collision
     tt_SEGMENT_STALE,       // right owner, different incarnation: the peer we knew has been replaced
+    tt_SEGMENT_ORPHANED,    // a file no live context owns: left by a dead one, a ring nobody drains
     tt_SEGMENT_ATTACH_COUNT
 };
 

@@ -63,6 +63,7 @@
 #if tt_CONTEXT_ID_CLAIM || tt_SEGMENT_ENABLED
 #include <fcntl.h> // open()
 
+#include <sys/file.h> // flock(): the registry's lock, and the segment owner's
 #include <sys/stat.h> // fchmod(), fstat()
 #endif
 
@@ -70,7 +71,6 @@
 #include <signal.h> // kill()
 #include <stdlib.h> // getenv()
 
-#include <sys/file.h>  // flock()
 #include <sys/types.h> // pid_t
 #endif
 
@@ -1493,14 +1493,55 @@ tt_ret_t tt_wake_signal(struct tt_Context* node) {
 // registry's #if and would make this module silently depend on that one being enabled.
 #define SEGMENT_MODE 0666
 
+// Whether a context still owns the segment file open as `segment_fd`: its owner holds an exclusive flock() on it for
+// as long as the region is mapped (tt_segment_create()), so a shared non-blocking attempt that SUCCEEDS means nobody
+// does - the owner died, or exited without unlinking - and the ring is one nobody will ever drain. Found 2026-10-09:
+// a writer attached to such a file, left by a killed process under the same (address, port, id), before the new
+// owner had built its own, and wrote into it while the two sides reported different segment ids (~2% of
+// test_loaned_messages runs). Nothing read through the mapping could tell: the header was valid and named the peer.
+//
+// Shared, so two writers asking at once do not refuse each other. What it took goes with the descriptor, which every
+// caller closes straight after. An error other than EWOULDBLOCK is "cannot tell", answered as alive: the check then
+// decides nothing, which is the behaviour before it existed.
+static bool segment_owner_gone(int segment_fd) {
+    return flock(segment_fd, LOCK_SH | LOCK_NB) == 0;
+}
+
 void* tt_segment_create(const char* path, size_t bytes) {
     // Unlinked first, so a segment left behind by a dead context of this name is replaced rather
     // than inherited. Anyone still holding the old mapping keeps it and sees the old incarnation,
     // which is precisely what lets them notice they are stale.
+    //
+    // A file that a LIVE context still owns is replaced too, as before, but said: it means two contexts share
+    // (address, port, id), which one data port per address should make impossible, and the one whose file this was
+    // keeps a ring its writers will leave at their next revalidation. Asked only here, once per segment built.
+    int previous_fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (previous_fd >= 0) {
+        if (!segment_owner_gone(previous_fd)) {
+            TT_LOG_WARNING("Replacing segment %s although a live context owns it - two contexts share its name", path);
+        }
+        (void)close(previous_fd);
+    }
     (void)unlink(path);
     int segment_fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, SEGMENT_MODE);
     if (segment_fd < 0) {
         TT_LOG_WARNING("Cannot create segment %s: %s", path, strerror(errno));
+        return NULL;
+    }
+    // The owner's mark, taken before the file has a size and so before it can carry a header a writer believes. A
+    // writer asks only once the size is right (tt_segment_attach()), so nothing else holds this file yet; blocking
+    // anyway, because the only lock anyone else ever takes on it is a momentary shared one.
+    //
+    // It is held by the MAPPING, not by this descriptor. A flock() belongs to the open file description, which lives
+    // until its last reference goes, and a MAP_SHARED mapping is one: the descriptor is closed below and the lock
+    // stays until tt_segment_detach() unmaps the region or the process ends, whichever way it ends. So "owned" means
+    // exactly "mapped by the context that built it", with no descriptor to keep and no HAL state to forget
+    // (tests/test_segment_owner.c checks both edges on the running kernel). A child forked without exec inherits the
+    // mapping and with it the lock; the dead-reader rule (tt_SEGMENT_DEAD_READER_NS) still covers that one.
+    if (flock(segment_fd, LOCK_EX) != 0) {
+        TT_LOG_WARNING("Cannot lock segment %s: %s", path, strerror(errno));
+        (void)close(segment_fd);
+        (void)unlink(path);
         return NULL;
     }
     if (ftruncate(segment_fd, (off_t)bytes) != 0) {
@@ -1535,6 +1576,15 @@ void* tt_segment_attach(const char* path, size_t bytes, uint8_t* why) {
     struct stat info;
     if (fstat(segment_fd, &info) != 0 || (size_t)info.st_size < bytes) {
         *why = (uint8_t)tt_SEGMENT_BAD_HEADER;
+        (void)close(segment_fd);
+        return NULL;
+    }
+    // A file nobody owns: refused before it is mapped, and not unlinked. Removing it by name could remove a
+    // successor's file instead - one created at this name between this check and the unlink - and nothing in
+    // unlink() can be made conditional on which file the name holds. The successor's own create replaces it.
+    // One flock() per attach and per revalidation (every tt_SEGMENT_REVALIDATE_SENDS sends), none per datagram.
+    if (segment_owner_gone(segment_fd)) {
+        *why = (uint8_t)tt_SEGMENT_ORPHANED;
         (void)close(segment_fd);
         return NULL;
     }

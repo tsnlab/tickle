@@ -511,8 +511,14 @@ static inline void note_reached(struct tt_Context* node, const struct tt_Peer* p
 //
 // Returns the length written, or a negative value if it would not fit - never a truncated name,
 // because a truncated name is a name two different peers could share.
+//
+// TT_SEGMENT_DIR is a test seam, not a setting: tests/test_segment_owner.c builds segments with the real HAL and a
+// real process death, and must not do that in the host's /dev/shm, which other users' contexts share.
+#ifndef TT_SEGMENT_DIR
+#define TT_SEGMENT_DIR "/dev/shm/"
+#endif
 static int32_t segment_name(char* buf, size_t size, uint32_t ip, uint16_t port, uint8_t context_id) {
-    int written = snprintf(buf, size, "/dev/shm/tickle-seg-%u.%u.%u.%u-%u-%u", (ip >> 24) & MASK_8BIT,
+    int written = snprintf(buf, size, TT_SEGMENT_DIR "tickle-seg-%u.%u.%u.%u-%u-%u", (ip >> 24) & MASK_8BIT,
                            (ip >> 16) & MASK_8BIT, (ip >> BITS_IN_1BYTE) & MASK_8BIT, ip & MASK_8BIT, port, context_id);
     return written > 0 && (size_t)written < size ? written : -1;
 }
@@ -15406,7 +15412,9 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         // Receive-buffer lending (DESIGN.md section 10): compiled in or not, and what it did. lending=1 with every
         // count 0 is the treatment check of an A/B that measures it unused.
         "lending=%u lend_retains=%lu lend_releases=%lu lend_unlendable=%lu lend_exhausted=%lu lend_bad_releases=%lu "
-        "lend_held=%lu shm_full_retained=%lu",
+        "lend_held=%lu shm_full_retained=%lu "
+        // Attaches refused because no live context owned the file: a dead one's segment, left in /dev/shm.
+        "shm_attach_orphaned=%lu",
         node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
         (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
         (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -15431,7 +15439,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned long)LEND_COUNT(node, retains), (unsigned long)LEND_COUNT(node, releases),
         (unsigned long)LEND_COUNT(node, unlendable), (unsigned long)LEND_COUNT(node, exhausted),
         (unsigned long)LEND_COUNT(node, bad_releases), (unsigned long)LEND_COUNT(node, held),
-        (unsigned long)LEND_COUNT(node, full_retained));
+        (unsigned long)LEND_COUNT(node, full_retained), (unsigned long)node->segment_attach[tt_SEGMENT_ORPHANED]);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads
