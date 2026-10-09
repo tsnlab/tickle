@@ -235,7 +235,12 @@ against CycloneDDS 15,240-18,344).
   huge pages, which become resident whole, so the saving there is smaller. This run does not record the rig's mode.
 - **R2 and R9 rose** 36.9 -> 40.0 us and 63.3 -> 68.1 us per round trip (+8% each) at the median, while CycloneDDS in
   the same cell moved +0.2 us and +0.7 us. R2's reps (39.1 / 40.0 / 41.0) overlap `a7e02807`'s (36.8 / 39.5 / 36.9);
-  R9's do not (67.8-70.2 against 63.0-67.2). R4, the Array1k RELIABLE block cell, moved +0.6 us. Not concluded.
+  R9's do not (67.8-70.2 against 63.0-67.2). R4, the Array1k RELIABLE block cell, moved +0.6 us. A
+  pre-registered rig A/B did not confirm it (2026-10-09, `ab_rmw_regress.sh` `957f851d`, `a7e02807` vs `06dd78d8`, phases
+  A B B A B A A B x 3 reps; `~/rig_results_safe/ab_rmw_regress_20261009-134229.verdict.txt`): RELIABLE RTT +0.78 us
+  (95% CI -0.9..+2.4, t 1.14), CPU +1.5 us/rt (-1.4..+4.3), BEST_EFFORT RTT -0.2 us, CycloneDDS control +0.14 us;
+  minor faults 0.018 per round trip in every phase, so `718220d8`'s lazy paging is not a cost. The cell has two states
+  (~36 and ~39-41 us) at both commits; the published +3.1 us lies outside the A/B's interval.
 - **R14 rose 132,742 -> 140,875 (+6.1%)**, with the control, CycloneDDS in the same cell, also +6.1% (66,268 ->
   70,331). R16 rose +13.1% (166,111 -> 187,946) against CycloneDDS's +5.6%.
 - **No FastDDS rep refused**, in this run or at `a7e02807` (at `03585237` its tput Array1k RELIABLE r2 ended on
