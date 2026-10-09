@@ -98,6 +98,10 @@ uint64_t test_mock_try_receive_advance_ns = 0;   // ... each this much later tha
 int test_mock_socket_reads_under_lock = 0;       // tt_try_receive() calls past the backlog - a read of the
                                                  // socket, on a real HAL - made holding the node's state lock
 void (*test_mock_try_receive_hook)(void) = NULL; // called for each backlog datagram tt_try_receive() hands out
+// tt_send_batch_nonblocking() (large-message stage 2): room left in the "send buffer", in datagrams - a batch beyond it
+// is cut short there, as a full socket buffer cuts MSG_DONTWAIT short. -1 (the default): unlimited. And its calls.
+int32_t test_mock_nonblocking_room = -1;
+int test_mock_nonblocking_calls = 0;
 #else
 extern uint64_t test_mock_now;
 extern uint64_t test_mock_cpu_ns;
@@ -132,6 +136,8 @@ extern int32_t test_mock_try_receive_len;
 extern uint64_t test_mock_try_receive_advance_ns;
 extern int test_mock_socket_reads_under_lock;
 extern void (*test_mock_try_receive_hook)(void);
+extern int32_t test_mock_nonblocking_room;
+extern int test_mock_nonblocking_calls;
 #endif
 
 // Call at the start of each test case so one test's overrides can't leak into the next.
@@ -169,6 +175,8 @@ static inline void test_mock_reset(void) {
     test_mock_try_receive_advance_ns = 0;
     test_mock_try_receive_hook = NULL;
     test_mock_socket_reads_under_lock = 0;
+    test_mock_nonblocking_room = -1;
+    test_mock_nonblocking_calls = 0;
 }
 
 // A datagram as sent, in the classic form a test's decoder reads: one in the single-submessage form
@@ -457,6 +465,26 @@ int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* data
         }
     }
     return (int32_t)count;
+}
+
+// As tt_send_batch(), cut short at test_mock_nonblocking_room datagrams when that is not -1 - a full send buffer.
+int32_t tt_send_batch_nonblocking(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+    test_mock_nonblocking_calls++;
+    uint32_t fits = count;
+    if (test_mock_nonblocking_room >= 0 && (uint32_t)test_mock_nonblocking_room < fits) {
+        fits = (uint32_t)test_mock_nonblocking_room;
+    }
+    if (fits == 0) {
+        return 0;
+    }
+    int32_t sent = tt_send_batch(node, datagrams, fits);
+    if (sent < 0) {
+        return sent;
+    }
+    if (test_mock_nonblocking_room >= 0) {
+        test_mock_nonblocking_room -= (int32_t)fits;
+    }
+    return (int32_t)fits;
 }
 
 // The mock's backlog counts as held: tt_try_receive() hands it out with nothing to wait for.

@@ -4381,6 +4381,16 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
     pub->departed_next = 0;
     pub->keep_all_unmatched_until_ns = 0; // 0 = the pre-match window not yet opened (keep_all_room_before_match())
     pub->cache_grow = NULL;               // the caller's hook, set after creation (rmw_tickle's g10)
+#if tt_LARGE_SAMPLES
+    memset(pub->large, 0, sizeof(pub->large)); // no large sample held, sent or waiting
+    memset(&pub->large_cursor, 0, sizeof(pub->large_cursor));
+    memset(&pub->large_pending, 0, sizeof(pub->large_pending));
+    pub->large_head = 0;
+    pub->large_count = 0;
+    pub->large_blocked = 0;
+    pub->large_ack_armed = false;
+    pub->large_ack_wait_ns = 0;
+#endif
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
     if (result != tt_RET_OK) {
@@ -5233,6 +5243,9 @@ static uint32_t keep_all_bound(const struct tt_Publisher* pub) {
 static bool reliable_cache_admits(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t length,
                                   uint32_t acked_through);
 static uint32_t keep_all_acked_through(const struct tt_Publisher* pub);
+#if tt_LARGE_SAMPLES
+static bool large_blocked_admitted(const struct tt_Publisher* pub);
+#endif
 
 // Whether a KEEP_ALL Publisher may accept one more sample: refused only when accepting it would
 // push the unacknowledged run past keep_all_bound(), i.e. would force cache_reliable_sample() to
@@ -5282,6 +5295,12 @@ static bool keep_all_writable(const struct tt_Publisher* pub) {
                                pub->blocked_record_bytes, acked_through)) {
         return false;
     }
+#if tt_LARGE_SAMPLES
+    // A large publish refused for its datagram count, or for a send still in progress (large_keep_all_admits()).
+    if (!large_blocked_admitted(pub)) {
+        return false;
+    }
+#endif
     return true;
 }
 
@@ -5819,6 +5838,8 @@ static void durable_delivered_upsert(struct tt_ReliableCache* cache, uint8_t nod
 }
 
 static uint32_t reliable_cache_oldest_seq_no(struct tt_ReliableCache* cache);
+// The oldest seq_no pub retains, in its cache or (large-message stage 2) as a large record: what a HEARTBEAT announces.
+static uint32_t publisher_oldest_seq_no(struct tt_Publisher* pub);
 static void encode_and_send_heartbeat(struct tt_Context* node, struct tt_Publisher* pub, uint32_t first_seq_no,
                                       const struct tt_Peer* peers, uint8_t peer_count, uint8_t flags);
 
@@ -6285,8 +6306,7 @@ static bool append_piggybacked_heartbeat(struct tt_Context* node, struct tt_Publ
                                          uint8_t peer_count) {
     pub->heartbeat_piggyback_count = 0;
     pub->retransmitted = 0;
-    encode_and_send_heartbeat(node, pub, reliable_cache_oldest_seq_no(pub->reliable_cache), peers, peer_count,
-                              tt_HEARTBEAT_FLAG_FINAL);
+    encode_and_send_heartbeat(node, pub, publisher_oldest_seq_no(pub), peers, peer_count, tt_HEARTBEAT_FLAG_FINAL);
     if (node->tx_tail != sizeof(struct tt_Header)) {
         return flush_tx(node, node->tx_tail, peers, peer_count);
     }
@@ -6467,6 +6487,754 @@ static bool try_publish_into_slot(struct tt_Publisher* pub, struct tt_Data* data
 }
 #endif
 
+static uint32_t publisher_unacked_bound_locked(const struct tt_Publisher* pub);
+
+#if !tt_LARGE_SAMPLES
+static uint32_t publisher_oldest_seq_no(struct tt_Publisher* pub) {
+    return reliable_cache_oldest_seq_no(pub->reliable_cache);
+}
+
+static uint32_t publisher_announced_last_seq_no(const struct tt_Publisher* pub) {
+    return pub->seq_no;
+}
+#endif
+
+#if tt_LARGE_SAMPLES
+// ---- Large-message stage 2: the writer (DESIGN.md section 8, "Stage 2")
+// -----------------------------------------------
+//
+// A sample above tt_MAX_SAMPLE_LENGTH is encoded once into a buffer the caller's large_acquire() hands over and sent
+// as FRAG_FIRST_L/FRAG_CONT_L straight from it - each datagram two iovecs, its framing and a slice of the buffer - so
+// it is never copied into tx_buffer or the reliable cache. Every datagram takes its own seq_no, as a small fragmented
+// sample's do. A Publisher with a reliable cache keeps the buffer by reference (tt_Publisher.large[]) for resends and
+// late joiners until every matched reader has acknowledged it or KEEP_LAST evicts it; one without lets it go once its
+// last fragment has left.
+
+// CDR bytes in a large sample's fragment 0 and in each full continuation: the control datagram less its classic
+// framing (the single-submessage form saves 4 bytes on the wire, not in the payload) and the fragment header.
+#define LARGE_FIRST_PAYLOAD \
+    ((uint32_t)(tt_CONTROL_MAX_LENGTH - FRAG_FRAMING_LENGTH - sizeof(struct tt_FragFirstLHeader)))
+#define LARGE_CONT_PAYLOAD ((uint32_t)(tt_CONTROL_MAX_LENGTH - FRAG_FRAMING_LENGTH - sizeof(struct tt_FragContLHeader)))
+_Static_assert(LARGE_FIRST_PAYLOAD + tt_FRAG_FIRST_L_SHORTFALL == LARGE_CONT_PAYLOAD,
+               "a large sample's fragment 0 must carry exactly tt_FRAG_FIRST_L_SHORTFALL fewer bytes");
+// The sizes DESIGN.md section 8 gives, spelled out: this is the check that the structs are what it says.
+// NOLINTNEXTLINE(readability-magic-numbers)
+_Static_assert(sizeof(struct tt_FragFirstLHeader) == 18 && sizeof(struct tt_FragContLHeader) == 12,
+               "the large fragment headers are 18 and 12 bytes on the wire (DESIGN.md section 8)");
+// The longest framing a large fragment has: tt_Header, the submessage header, and FRAG_FIRST_L's header.
+#define LARGE_FRAMING_MAX \
+    (sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragFirstLHeader))
+// Datagrams per send call: one sendmmsg() of up to this many, each its framing and a slice of the buffer.
+#define LARGE_BATCH 64U
+
+// How many datagrams a large sample of cdr_len (padded) CDR bytes takes, and where fragment `index` starts in its CDR
+// and how long it is. Every fragment but the last is full, so the index alone places it.
+static uint32_t large_count_for(uint32_t cdr_len) {
+    if (cdr_len <= LARGE_FIRST_PAYLOAD) {
+        return 1;
+    }
+    return 1 + ((cdr_len - LARGE_FIRST_PAYLOAD + LARGE_CONT_PAYLOAD - 1) / LARGE_CONT_PAYLOAD);
+}
+
+static uint32_t large_offset(uint32_t index) {
+    return index == 0 ? 0 : LARGE_FIRST_PAYLOAD + ((index - 1) * LARGE_CONT_PAYLOAD);
+}
+
+static uint32_t large_length(uint32_t index, uint32_t cdr_len) {
+    uint32_t offset = large_offset(index);
+    uint32_t full = index == 0 ? LARGE_FIRST_PAYLOAD : LARGE_CONT_PAYLOAD;
+    return cdr_len - offset < full ? cdr_len - offset : full;
+}
+
+// Builds fragment `index`'s framing at out - tt_Header, submessage header, fragment header - and returns its length.
+// *skip is where the datagram starts: 4 bytes in when it goes in the single-submessage form (addressed to everyone),
+// 0 when it is addressed to one node (a retransmission).
+static uint32_t large_write_framing(const struct tt_Context* node, uint8_t* out, const struct tt_DataHeader* data,
+                                    uint32_t index, uint32_t count, uint32_t payload_length, uint8_t receiver,
+                                    uint32_t* skip) {
+    struct tt_Header* header = (struct tt_Header*)out;
+    header->magic_value = NATIVE_MAGIC_VALUE;
+    header->version = tt_VERSION;
+    header->source = node->id;
+    struct tt_SubmessageHeader* submessage_header = (struct tt_SubmessageHeader*)(out + sizeof(struct tt_Header));
+    submessage_header->receiver = receiver;
+    uint32_t header_length;
+    if (index == 0) {
+        struct tt_FragFirstLHeader* first = (struct tt_FragFirstLHeader*)(submessage_header + 1);
+        _tt_memcpy(&first->data, data, sizeof(struct tt_DataHeader));
+        first->frag_count = (uint16_t)count;
+        submessage_header->type = tt_SUBMESSAGE_TYPE_FRAG_FIRST_L;
+        header_length = (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragFirstLHeader));
+    } else {
+        struct tt_FragContLHeader* cont = (struct tt_FragContLHeader*)(submessage_header + 1);
+        cont->entity_id = data->entity_id;
+        cont->seq_no = data->seq_no + index;
+        cont->frag_index = (uint16_t)index;
+        cont->frag_count = (uint16_t)count;
+        submessage_header->type = tt_SUBMESSAGE_TYPE_FRAG_CONT_L;
+        header_length = (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragContLHeader));
+    }
+    submessage_header->length = (uint16_t)(header_length + payload_length);
+    uint32_t framing_length = (uint32_t)sizeof(struct tt_Header) + header_length;
+    *skip = to_single_form(out, framing_length, payload_length);
+    return framing_length;
+}
+
+// The i-th oldest large record, and the record holding seq_no, or NULL.
+static struct tt_LargeRecord* large_record_at(struct tt_Publisher* pub, uint32_t i) {
+    return &pub->large[(pub->large_head + i) % tt_LARGE_RETAINED];
+}
+
+static struct tt_LargeRecord* large_find(struct tt_Publisher* pub, uint32_t seq_no) {
+    for (uint32_t i = 0; i < pub->large_count; i++) {
+        struct tt_LargeRecord* record = large_record_at(pub, i);
+        if (seq_no - record->seq_no < record->count) { // unsigned: false below the record as well as above it
+            return record;
+        }
+    }
+    return NULL;
+}
+
+static void large_give_back(struct tt_Context* node, uint8_t* buffer) {
+    if (buffer != NULL && node->large.release != NULL) {
+        node->large.release(node->large.user, buffer);
+    }
+}
+
+static void large_send_resume(struct tt_Context* node, uint64_t time, void* param);
+
+// The send in progress stops: its record is going away.
+static void large_cursor_stop(struct tt_Context* node, struct tt_Publisher* pub) {
+    struct tt_LargeCursor* cursor = &pub->large_cursor;
+    if (cursor->scheduled) {
+        tt_Context_unschedule(node, large_send_resume, pub);
+        cursor->scheduled = false;
+    }
+    cursor->seq_no = 0;
+}
+
+// Drops the oldest large record and hands its buffer back. A record still being sent loses its unsent tail.
+static void large_drop_oldest(struct tt_Context* node, struct tt_Publisher* pub) {
+    if (pub->large_count == 0) {
+        return;
+    }
+    struct tt_LargeRecord* record = large_record_at(pub, 0);
+    if (!record->sent) {
+        if (pub->large_cursor.seq_no == record->seq_no) {
+            large_cursor_stop(node, pub);
+        }
+        node->large.tail_abandoned++;
+    }
+    large_give_back(node, record->buffer);
+    record->buffer = NULL;
+    pub->large_head = (uint8_t)((pub->large_head + 1) % tt_LARGE_RETAINED);
+    pub->large_count--;
+}
+
+// Every large buffer this Publisher holds, handed back: at its destruction, or its context's.
+#if tt_LARGE_END_HEARTBEAT
+static void large_ack_chase(struct tt_Context* node, uint64_t time, void* param);
+#endif
+
+static void large_release_publisher(struct tt_Context* node, struct tt_Publisher* pub) {
+    large_cursor_stop(node, pub);
+#if tt_LARGE_END_HEARTBEAT
+    if (pub->large_ack_armed) {
+        tt_Context_unschedule(node, large_ack_chase, pub);
+        pub->large_ack_armed = false;
+    }
+#endif
+    while (pub->large_count != 0) {
+        large_drop_oldest(node, pub);
+    }
+    large_give_back(node, pub->large_pending.buffer);
+    pub->large_pending.buffer = NULL;
+}
+
+// The oldest seq_no a retained large record can still resend - not aged out of LIFESPAN - or 0 for none.
+static uint32_t large_first_resendable(struct tt_Publisher* pub) {
+    for (uint32_t i = 0; i < pub->large_count; i++) {
+        const struct tt_LargeRecord* record = large_record_at(pub, i);
+        if (record->retained &&
+            (pub->lifespan_duration_ns == 0 || tt_get_ns() - record->sent_ns < pub->lifespan_duration_ns)) {
+            return record->seq_no;
+        }
+    }
+    return 0;
+}
+
+// The oldest seq_no this Publisher retains, small or large, 0 for nothing: what a HEARTBEAT announces as available.
+static uint32_t publisher_oldest_seq_no(struct tt_Publisher* pub) {
+    uint32_t small = reliable_cache_oldest_seq_no(pub->reliable_cache);
+    for (uint32_t i = 0; i < pub->large_count; i++) {
+        const struct tt_LargeRecord* record = large_record_at(pub, i);
+        if (record->retained) {
+            return small == 0 || record->seq_no < small ? record->seq_no : small;
+        }
+    }
+    return small;
+}
+
+// The last seq_no a HEARTBEAT announces: the last one given out, less a large sample still going out and whatever was
+// committed behind it. Announced, the unsent part would read as a gap and be asked for; a KEEP_LAST reader asking for
+// datagrams that cannot be resent yet gives the sample up after its retries. DATA arriving reveals any real gap in it.
+static uint32_t publisher_announced_last_seq_no(const struct tt_Publisher* pub) {
+    for (uint32_t i = 0; i < pub->large_count; i++) {
+        const struct tt_LargeRecord* record = &pub->large[(pub->large_head + i) % tt_LARGE_RETAINED];
+        if (!record->sent) {
+            return record->seq_no - 1;
+        }
+    }
+    return pub->seq_no;
+}
+
+// A VOLATILE Publisher's large records every matched reader has acknowledged go back to the caller: nobody can ask for
+// them again, and a megabyte held per sample for nothing is the cost DESIGN.md section 8 refuses. A DURABLE one keeps
+// them for late joiners until evicted, as its small samples. Oldest first, never past the one still being sent.
+static void large_release_acked(struct tt_Context* node, struct tt_Publisher* pub) {
+    if (pub->durable || pub->large_count == 0 || !any_peer_ack_matched(pub)) {
+        return;
+    }
+    uint32_t acked = min_peer_ack_seq_no(pub); // every seq_no below this, by every matched reader
+    while (pub->large_count != 0) {
+        const struct tt_LargeRecord* record = large_record_at(pub, 0);
+        if (!record->sent || acked == 0 || record->seq_no + record->count > acked) {
+            return;
+        }
+        large_drop_oldest(node, pub);
+    }
+}
+
+// The destinations a large send goes to, decided as a publish decides them: the matched peers by unicast while there
+// are few enough, else the broadcast - per link (tx_destinations()).
+static void large_cursor_destinations(struct tt_Context* node, struct tt_Publisher* pub) {
+    struct tt_LargeCursor* cursor = &pub->large_cursor;
+    uint8_t count = count_peers(pub->peers);
+    bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD;
+    struct tx_destination destinations[TX_MAX_DESTINATIONS];
+    uint8_t destination_count = tx_destinations(unicast ? pub->peers : NULL, unicast ? count : 0, destinations);
+    note_reached(node, unicast ? pub->peers : NULL, unicast ? count : 0);
+    for (uint8_t i = 0; i < destination_count && i < tt_LARGE_DESTINATIONS; i++) {
+        cursor->dests[i].ip = destinations[i].ip;
+        cursor->dests[i].port = destinations[i].port;
+        cursor->dests[i].context_id = destinations[i].context_id;
+    }
+    cursor->dest_count = destination_count < tt_LARGE_DESTINATIONS ? destination_count : (uint8_t)tt_LARGE_DESTINATIONS;
+    cursor->next_dest = 0;
+    cursor->next_index = 0;
+}
+
+// One batch of fragments to one destination: through its same-host segment when it has one attached (which never
+// waits: a full ring drops, as it does for any record), else over UDP without waiting for send-buffer room. Returns how
+// many went, or -1 on an error other than a full buffer.
+static int32_t large_send_batch(struct tt_Context* node, const struct tt_OutDatagram* batch, uint32_t count,
+                                const struct tt_Peer* dest) {
+#if tt_SEGMENT_ENABLED
+    if (dest->context_id != tt_CONTEXT_ID_INVALID &&
+        peer_segment(node, dest->context_id, dest->ip, dest->port) != NULL) {
+        uint8_t context_ids[LARGE_BATCH];
+        for (uint32_t i = 0; i < count; i++) {
+            context_ids[i] = dest->context_id;
+        }
+        return seam_send_batch(node, batch, count, context_ids) < 0 ? -1 : (int32_t)count;
+    }
+#endif
+    int32_t sent = tt_send_batch_nonblocking(node, batch, count);
+    if (sent > 0) {
+        count_udp(node, dest->context_id == tt_CONTEXT_ID_INVALID ? UDP_BECAUSE_BROADCAST : UDP_BECAUSE_UNATTACHED,
+                  (uint32_t)sent);
+    }
+    return sent;
+}
+
+// Sends what the socket takes of `record`, from where the cursor stands, to each destination in turn. True when all of
+// it has gone; false when the send buffer filled, the cursor then standing at the first fragment that did not go.
+// *progress says whether anything went.
+static bool large_send_some(struct tt_Context* node, struct tt_Publisher* pub, const struct tt_LargeRecord* record,
+                            bool* progress) {
+    struct tt_LargeCursor* cursor = &pub->large_cursor;
+    const struct tt_DataHeader* data = (const struct tt_DataHeader*)(record->buffer + tt_LARGE_HEADER_OFFSET);
+    const uint8_t* cdr = record->buffer + tt_LARGE_CDR_OFFSET;
+    // Each fragment's own seq_no, as frag_write_header() gives a small sample's: each datagram's span is 1.
+    node->tx_seq_span = 1;
+    while (cursor->next_dest < cursor->dest_count) {
+        const struct tt_Peer* dest = &cursor->dests[cursor->next_dest];
+        while (cursor->next_index < record->count) {
+            uint32_t batch_count = record->count - cursor->next_index;
+            batch_count = batch_count < LARGE_BATCH ? batch_count : LARGE_BATCH;
+            uint8_t framings[LARGE_BATCH][LARGE_FRAMING_MAX];
+            struct tt_OutDatagram batch[LARGE_BATCH];
+            for (uint32_t k = 0; k < batch_count; k++) {
+                uint32_t index = cursor->next_index + k;
+                uint32_t length = large_length(index, record->cdr_len);
+                uint32_t skip = 0;
+                uint32_t framing_length = large_write_framing(node, framings[k], data, index, record->count, length,
+                                                              tt_SUBMESSAGE_ID_ALL, &skip);
+                batch[k] = (struct tt_OutDatagram) {
+                    framings[k] + skip, framing_length - skip, cdr + large_offset(index), length, dest->ip, dest->port};
+            }
+            int32_t sent = large_send_batch(node, batch, batch_count, dest);
+            if (sent < 0) {
+                // Not a full buffer: an error the socket will repeat. These datagrams are lost as the network loses
+                // them - a RELIABLE reader asks for them again - rather than holding the send for ever.
+                TT_LOG_WARNING("Cannot send large sample %u fragments %u.. to %u: %s", record->seq_no,
+                               (unsigned)cursor->next_index, (unsigned)dest->context_id, strerror(errno));
+                sent = (int32_t)batch_count;
+            }
+            if (sent > 0) {
+                *progress = true;
+            }
+            cursor->next_index = (uint16_t)(cursor->next_index + (uint32_t)sent);
+            if ((uint32_t)sent < batch_count) {
+                return false;
+            }
+        }
+        cursor->next_dest++;
+        cursor->next_index = 0;
+    }
+    return true;
+}
+
+static void encode_heartbeat_range(struct tt_Context* node, struct tt_Publisher* pub, uint32_t first_seq_no,
+                                   uint32_t last_seq_no, bool is_flush, const struct tt_Peer* peers, uint8_t peer_count,
+                                   uint8_t flags);
+
+// A RELIABLE large sample's last fragment has gone: a non-FINAL HEARTBEAT, so every reader answers with an ACKNACK at
+// once - one that names a lost tail, which nothing else would reveal until the next sample, and one that acknowledges
+// the sample, which lets a VOLATILE Publisher hand its buffer back (DESIGN.md section 8, "End-of-sample HEARTBEAT").
+// Whether a large sample that has gone out is still unacknowledged by a matched reader.
+static bool large_unacknowledged(const struct tt_Publisher* pub) {
+    if (!any_peer_ack_matched(pub)) {
+        return false; // nobody to wait for
+    }
+    uint32_t acked = min_peer_ack_seq_no(pub);
+    for (uint32_t i = 0; i < pub->large_count; i++) {
+        const struct tt_LargeRecord* record = &pub->large[(pub->large_head + i) % tt_LARGE_RETAINED];
+        if (record->retained && record->sent && record->seq_no + record->count > acked) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A non-FINAL HEARTBEAT over everything retained, to the matched peers while there are few enough (else broadcast):
+// every reader answers with an ACKNACK, naming what it lacks.
+static void large_send_end_heartbeat(struct tt_Context* node, struct tt_Publisher* pub) {
+    uint32_t first = publisher_oldest_seq_no(pub);
+    if (first == 0) {
+        return;
+    }
+    uint8_t count = count_peers(pub->peers);
+    bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && node->tx_tail == sizeof(struct tt_Header);
+    encode_heartbeat_range(node, pub, first, publisher_announced_last_seq_no(pub), true, unicast ? pub->peers : NULL,
+                           unicast ? count : 0, 0);
+}
+
+#if tt_LARGE_END_HEARTBEAT
+// The end-of-sample HEARTBEAT is one datagram and can be lost with the tail it is there to reveal - and for the last
+// sample of a burst nothing else would reveal it. So while a large sample stays unacknowledged the HEARTBEAT is sent
+// again, first one retry interval on, then at
+// twice the wait each time up to tt_LARGE_ACK_CHASE_MAX_NS, until every matched reader has acknowledged it.
+#define tt_LARGE_ACK_CHASE_MAX_NS (100ULL * tt_MILLISECOND)
+
+static void large_arm_ack_chase(struct tt_Context* node, struct tt_Publisher* pub, uint64_t wait_ns) {
+    if (pub->large_ack_armed) {
+        return;
+    }
+    if (tt_Context_schedule(node, tt_get_ns() + wait_ns, large_ack_chase, pub)) {
+        pub->large_ack_armed = true;
+        pub->large_ack_wait_ns = wait_ns;
+    }
+}
+
+static void large_ack_chase(struct tt_Context* node, uint64_t time, void* param) {
+    UNUSED(time);
+    struct tt_Publisher* pub = (struct tt_Publisher*)param;
+    pub->large_ack_armed = false;
+    if (!pub->reliable || !large_unacknowledged(pub)) {
+        return;
+    }
+    large_send_end_heartbeat(node, pub);
+    uint64_t wait = pub->large_ack_wait_ns * 2;
+    large_arm_ack_chase(node, pub, wait < tt_LARGE_ACK_CHASE_MAX_NS ? wait : tt_LARGE_ACK_CHASE_MAX_NS);
+}
+#endif
+
+static void large_end_heartbeat(struct tt_Context* node, struct tt_Publisher* pub) {
+#if tt_LARGE_END_HEARTBEAT
+    if (!pub->reliable) {
+        return;
+    }
+    large_send_end_heartbeat(node, pub);
+    if (pub->large_ack_armed) {
+        // A chase of an earlier sample may be waiting out a long backoff: this sample starts it again from one retry
+        // interval, or its own lost HEARTBEAT would be asked about only when that wait ends.
+        tt_Context_unschedule(node, large_ack_chase, pub);
+        pub->large_ack_armed = false;
+    }
+    large_arm_ack_chase(node, pub, ack_solicit_min_gap(pub));
+#else
+    UNUSED(node);
+    UNUSED(pub);
+#endif
+}
+
+static void large_commit(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord sample);
+
+// How many large records this Publisher keeps: tt_LARGE_RETAINED, or its KEEP_LAST depth in samples when smaller.
+static uint32_t large_ring_limit(const struct tt_Publisher* pub) {
+    uint32_t limit = tt_LARGE_RETAINED;
+    const struct tt_ReliableCache* cache = pub->reliable_cache;
+    if (!pub->keep_all && cache != NULL && cache->sample_depth != 0 && cache->sample_depth < limit) {
+        limit = cache->sample_depth;
+    }
+    return limit;
+}
+
+// The oldest record not yet sent, or NULL.
+static struct tt_LargeRecord* large_next_unsent(struct tt_Publisher* pub) {
+    for (uint32_t i = 0; i < pub->large_count; i++) {
+        struct tt_LargeRecord* record = large_record_at(pub, i);
+        if (!record->sent) {
+            return record;
+        }
+    }
+    return NULL;
+}
+
+// Sends large records, oldest unsent first, until all have gone or the socket's buffer is full - then it is called
+// again from tt_Context_poll() (large_send_resume()), sooner while sends make progress and up to
+// tt_LARGE_SEND_RETRY_MAX_NS later while they do not. A sample waiting behind the send (large_pending) is given its
+// seq_nos once everything before it has gone, and sent.
+// Points the cursor at the next record to send - committing the sample waiting behind the send first, once nothing
+// before it is left - or returns false when there is none.
+static bool large_cursor_next(struct tt_Context* node, struct tt_Publisher* pub) {
+    if (pub->large_pending.buffer != NULL && large_next_unsent(pub) == NULL) {
+        struct tt_LargeRecord pending = pub->large_pending;
+        pub->large_pending.buffer = NULL;
+        large_commit(node, pub, pending);
+    }
+    struct tt_LargeRecord* next = large_next_unsent(pub);
+    if (next == NULL) {
+        return false;
+    }
+    pub->large_cursor.seq_no = next->seq_no;
+    large_cursor_destinations(node, pub);
+    return true;
+}
+
+// The socket's send buffer is full: try again from tt_Context_poll() after the cursor's wait - reset while sends make
+// progress, doubled up to tt_LARGE_SEND_RETRY_MAX_NS while they do not.
+static void large_wait_for_room(struct tt_Context* node, struct tt_Publisher* pub, bool progress) {
+    struct tt_LargeCursor* cursor = &pub->large_cursor;
+    if (cursor->retry_ns == 0 || progress) {
+        cursor->retry_ns = tt_LARGE_SEND_RETRY_NS;
+    } else if (cursor->retry_ns < tt_LARGE_SEND_RETRY_MAX_NS) {
+        cursor->retry_ns *= 2;
+    }
+    if (cursor->scheduled) {
+        return;
+    }
+    if (tt_Context_schedule(node, tt_get_ns() + cursor->retry_ns, large_send_resume, pub)) {
+        cursor->scheduled = true;
+        node->large.send_waits++;
+    } else {
+        TT_LOG_ERROR("Cannot schedule large_send_resume");
+    }
+}
+
+// Every fragment of `record` has gone: a retained one gets its end-of-sample HEARTBEAT and the ring goes back within
+// the KEEP_LAST depth (a record committed during this send may have passed it by one); one nothing keeps goes now.
+static void large_record_sent(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord* record) {
+    pub->large_cursor.retry_ns = 0;
+    pub->large_cursor.seq_no = 0;
+    record->sent = true;
+    if (!record->retained) {
+        large_drop_oldest(node, pub); // the oldest record is the one just sent
+        return;
+    }
+    large_end_heartbeat(node, pub);
+    uint32_t limit = large_ring_limit(pub);
+    while (pub->large_count > limit && large_record_at(pub, 0)->sent) {
+        large_drop_oldest(node, pub);
+    }
+}
+
+static void large_pump(struct tt_Context* node, struct tt_Publisher* pub) {
+    struct tt_LargeCursor* cursor = &pub->large_cursor;
+    while (cursor->seq_no != 0 || large_cursor_next(node, pub)) {
+        struct tt_LargeRecord* record = large_find(pub, cursor->seq_no);
+        if (record == NULL) {
+            cursor->seq_no = 0; // evicted meanwhile
+            continue;
+        }
+        bool progress = false;
+        if (!large_send_some(node, pub, record, &progress)) {
+            large_wait_for_room(node, pub, progress);
+            return;
+        }
+        large_record_sent(node, pub, record);
+    }
+    large_release_acked(node, pub);
+    notify_writable_if_pending(pub); // a KEEP_ALL publish refused while a send was in progress may go now
+}
+
+static void large_send_resume(struct tt_Context* node, uint64_t time, void* param) {
+    UNUSED(time);
+    struct tt_Publisher* pub = (struct tt_Publisher*)param;
+    pub->large_cursor.scheduled = false;
+    large_pump(node, pub);
+}
+
+// What a retransmission of seq_no found: not a large sample's, resent, or gone (evicted, expired - the caller sends
+// the eviction HEARTBEAT).
+enum large_resend_result { LARGE_RESEND_NOT_LARGE, LARGE_RESEND_SENT, LARGE_RESEND_GONE };
+
+// Resends the one datagram of a large sample a reader asked for, addressed to it, straight from the record's buffer.
+// A datagram not yet sent the first time is left to the send in progress.
+static enum large_resend_result large_resend(struct tt_Context* node, struct tt_Publisher* pub, uint32_t seq_no,
+                                             const struct tt_Peer* target) {
+    struct tt_LargeRecord* record = large_find(pub, seq_no);
+    if (record == NULL) {
+        return LARGE_RESEND_NOT_LARGE;
+    }
+    if (!record->retained ||
+        (pub->lifespan_duration_ns != 0 && tt_get_ns() - record->sent_ns >= pub->lifespan_duration_ns)) {
+        return LARGE_RESEND_GONE;
+    }
+    uint32_t index = seq_no - record->seq_no;
+    // A datagram the send in progress has not reached yet arrives without being resent. One it has already sent - to
+    // the first destination, at least - was lost and is resent now: a sample can take longer to go out than a reader
+    // waits before it gives a KEEP_LAST writer up (seen on the PC: the first 4 MB sample under 5% loss, every time).
+    const struct tt_LargeCursor* cursor = &pub->large_cursor;
+    if (!record->sent && !(cursor->seq_no == record->seq_no && (cursor->next_dest > 0 || index < cursor->next_index))) {
+        return LARGE_RESEND_SENT;
+    }
+    uint32_t length = large_length(index, record->cdr_len);
+    uint8_t framing[LARGE_FRAMING_MAX];
+    uint32_t skip = 0;
+    uint32_t framing_length =
+        large_write_framing(node, framing, (const struct tt_DataHeader*)(record->buffer + tt_LARGE_HEADER_OFFSET),
+                            index, record->count, length, target->context_id, &skip);
+    struct tx_datagram dgram = {framing + skip, framing_length - skip,
+                                record->buffer + tt_LARGE_CDR_OFFSET + large_offset(index), length};
+    node->tx_seq_span = 1;
+    if (!send_datagram(node, &dgram, target, 1)) {
+        TT_LOG_WARNING("Cannot retransmit large sample seq_no %u now", seq_no);
+        RSTAT_INC(retransmit_tx_fail);
+        return LARGE_RESEND_SENT;
+    }
+    RSTAT_INC(retransmitted);
+    pub->retransmitted++;
+    return LARGE_RESEND_SENT;
+}
+
+// Every retained large record, oldest first, to a durable late joiner (deliver_durability_backlog()), each before the
+// first small sample with a higher seq_no. Sent now, and waiting for room: a backlog is rare and bounded by the ring.
+static void large_send_backlog_before(struct tt_Context* node, struct tt_Publisher* pub, uint32_t below, uint32_t* next,
+                                      const struct tt_Peer* target) {
+    for (; *next < pub->large_count; (*next)++) {
+        const struct tt_LargeRecord* record = large_record_at(pub, *next);
+        if (record->seq_no >= below) {
+            return;
+        }
+        if (!record->retained || !record->sent || // one still going out reaches it from the send, or as a resend
+
+            (pub->lifespan_duration_ns != 0 && tt_get_ns() - record->sent_ns >= pub->lifespan_duration_ns)) {
+            continue;
+        }
+        const struct tt_DataHeader* data = (const struct tt_DataHeader*)(record->buffer + tt_LARGE_HEADER_OFFSET);
+        node->tx_seq_span = 1;
+        for (uint32_t index = 0; index < record->count; index++) {
+            uint32_t length = large_length(index, record->cdr_len);
+            uint8_t framing[LARGE_FRAMING_MAX];
+            uint32_t skip = 0;
+            uint32_t framing_length =
+                large_write_framing(node, framing, data, index, record->count, length, tt_SUBMESSAGE_ID_ALL, &skip);
+            struct tx_datagram dgram = {framing + skip, framing_length - skip,
+                                        record->buffer + tt_LARGE_CDR_OFFSET + large_offset(index), length};
+            if (!send_datagram(node, &dgram, target, 1)) {
+                TT_LOG_WARNING("Cannot deliver durability backlog large seq_no %u", record->seq_no);
+                break;
+            }
+        }
+    }
+}
+
+// KEEP_ALL's two promises for a large sample of `count` datagrams (DESIGN.md section 8, "Flow control"): a matched
+// reader whose window is narrower than the sample can never admit it - tt_RET_TOO_LARGE, not an endless WOULD_BLOCK -
+// and otherwise the publish waits (tt_RET_WOULD_BLOCK) while a send is in progress, while the unacknowledged run with
+// it would pass the narrowest window, or while every large record is unacknowledged.
+static tt_ret_t large_keep_all_admits(const struct tt_Publisher* pub, uint32_t count) {
+    if (!any_peer_ack_matched(pub)) {
+        return pub->large_cursor.seq_no != 0 ? tt_RET_WOULD_BLOCK : tt_RET_OK;
+    }
+    uint32_t window = publisher_unacked_bound_locked(pub);
+    if (count > window) {
+        return tt_RET_TOO_LARGE;
+    }
+    if (pub->large_cursor.seq_no != 0) {
+        return tt_RET_WOULD_BLOCK;
+    }
+    uint32_t acked_through = keep_all_acked_through(pub);
+    if (pub->seq_no + count - acked_through > window) {
+        return tt_RET_WOULD_BLOCK;
+    }
+    if (pub->large_count >= tt_LARGE_RETAINED) {
+        const struct tt_LargeRecord* oldest = &pub->large[pub->large_head];
+        if (oldest->seq_no + oldest->count - 1 > acked_through) {
+            return tt_RET_WOULD_BLOCK;
+        }
+    }
+    return tt_RET_OK;
+}
+
+// Whether a KEEP_ALL large publish refused for its `large_blocked` datagrams would be admitted now: what
+// keep_all_writable() asks so that tt_Publisher_writable() and the writable callback answer about it.
+static bool large_blocked_admitted(const struct tt_Publisher* pub) {
+    return pub->large_blocked == 0 || large_keep_all_admits(pub, pub->large_blocked) == tt_RET_OK;
+}
+
+// Gives a large sample its seq_nos and a place in the ring, from which large_pump() sends it, and hands it to this
+// context's own Subscribers. Called when it is published with no send in progress, when the send it waited behind has
+// gone, or when a small sample is published while it waits - so seq_nos follow publish order. KEEP_LAST makes room by
+// evicting the oldest record, never one being sent: the ring holds one more than its depth until that has gone.
+static void large_commit(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord sample) {
+    uint32_t limit = large_ring_limit(pub);
+    while (pub->large_count != 0 && pub->large_count >= limit && large_record_at(pub, 0)->sent) {
+        large_drop_oldest(node, pub);
+    }
+    if (pub->large_count >= tt_LARGE_RETAINED) {
+        large_drop_oldest(node, pub); // the ring itself is full: the oldest goes even unsent, its tail abandoned
+    }
+    struct tt_DataHeader* header = (struct tt_DataHeader*)(sample.buffer + tt_LARGE_HEADER_OFFSET);
+    header->seq_no = pub->seq_no + 1;
+    sample.seq_no = pub->seq_no + 1;
+    sample.retained = pub->reliable_cache != NULL;
+    sample.sent = false;
+    pub->large[(pub->large_head + pub->large_count) % tt_LARGE_RETAINED] = sample;
+    pub->large_count++;
+    pub->seq_no += sample.count;
+#if tt_LOCAL_DELIVERY
+    if (pub->local_subscriber_count != 0) {
+        // The record is in the ring and unsent, so a callback that publishes again waits behind it or commits after it:
+        // nothing it does evicts the bytes being delivered here.
+        deliver_locally(node, pub, sample.buffer + tt_LARGE_CDR_OFFSET, sample.cdr_len, sample.seq_no, sample.sent_ns);
+    }
+#endif
+}
+
+// A small sample is about to be published while a large one waits behind a send: the large one takes its seq_nos
+// first, as it was published first.
+static void large_commit_pending(struct tt_Context* node, struct tt_Publisher* pub) {
+    struct tt_LargeRecord pending = pub->large_pending;
+    pub->large_pending.buffer = NULL;
+    large_commit(node, pub, pending);
+}
+
+// One large sample published (DESIGN.md section 8): encoded once into a buffer the caller's large_acquire() hands over,
+// then committed and sent (large_pump()) - or, while an earlier one is still being sent, left waiting behind it in
+// large_pending, where a newer sample replaces it before anything of it has gone (tail_abandoned). KEEP_ALL waits
+// instead (large_keep_all_admits()).
+static tt_ret_t publish_large(struct tt_Publisher* pub, struct tt_Data* data, uint32_t cdr_size) {
+    struct tt_Context* node = pub->node;
+    struct tt_LargeState* large = &node->large;
+    if (large->acquire == NULL || large->release == NULL) {
+        TT_LOG_ERROR("Sample of %u bytes is above tt_MAX_SAMPLE_LENGTH (%u) and this context has no large buffers "
+                     "(tt_Context_set_large_buffers()) - refused",
+                     cdr_size, (unsigned)tt_MAX_SAMPLE_LENGTH);
+        return tt_RET_TOO_LARGE;
+    }
+    uint32_t count = large_count_for(ROUNDUP(cdr_size));
+    if (count > tt_LARGE_MAX_FRAGMENTS) {
+        TT_LOG_ERROR("Sample of %u bytes needs %u datagrams, above tt_LARGE_MAX_FRAGMENTS (%u) - refused", cdr_size,
+                     count, (unsigned)tt_LARGE_MAX_FRAGMENTS);
+        return tt_RET_TOO_LARGE;
+    }
+    if (pub->keep_all && reliable_cache_depth(pub->reliable_cache) != 0) {
+        tt_ret_t admitted = large_keep_all_admits(pub, count);
+        if (admitted == tt_RET_TOO_LARGE) {
+            large->window_too_small++;
+            TT_LOG_WARNING("KEEP_ALL sample of %u datagrams is wider than a matched reader's window (%u) and can "
+                           "never be admitted - refused",
+                           count, publisher_unacked_bound_locked(pub));
+            return tt_RET_TOO_LARGE;
+        }
+        if (admitted != tt_RET_OK) {
+            pub->large_blocked = (uint16_t)count;
+            pub->writable_pending = true;
+            RSTAT_INC(publish_refused);
+            solicit_ack_throttled(pub);
+            arm_keep_all_resolicit(pub);
+            return admitted;
+        }
+    }
+    uint32_t padded = ROUNDUP(cdr_size);
+    uint8_t* buffer = (uint8_t*)large->acquire(large->user, (uint32_t)tt_LARGE_CDR_OFFSET + padded);
+    if (buffer == NULL) {
+        large->no_buffer++;
+        return tt_RET_OUT_OF_BUFFER;
+    }
+    int32_t encoded = pub->topic->data_encode(data, buffer + tt_LARGE_CDR_OFFSET, cdr_size);
+    TT_TRACE(tt_TRACE_ENCODED);
+    if (encoded < 0 || (uint32_t)encoded > cdr_size) {
+        large_give_back(node, buffer);
+        return tt_RET_PROTOCOL_ERROR;
+    }
+    padded = ROUNDUP((uint32_t)encoded);
+    memset(buffer + tt_LARGE_CDR_OFFSET + encoded, 0, padded - (uint32_t)encoded); // sent padded, as a fragment is
+    pub->large_blocked = 0;
+    large->published++;
+
+    uint64_t now = tt_get_ns();
+    struct tt_DataHeader* header = (struct tt_DataHeader*)(buffer + tt_LARGE_HEADER_OFFSET);
+    header->endpoint_id = pub->endpoint.id;
+    header->seq_no = 0; // given at large_commit()
+    header->timestamp = timestamp_to_wire(now);
+    header->entity_id = pub->endpoint.entity_id;
+    struct tt_LargeRecord sample = {buffer, now, 0, padded, (uint16_t)large_count_for(padded), false, false};
+    if (pub->large_cursor.seq_no != 0 || large_next_unsent(pub) != NULL) {
+        if (pub->large_pending.buffer != NULL) {
+            large_give_back(node, pub->large_pending.buffer); // the newer sample replaces it before any of it went
+            large->tail_abandoned++;
+        }
+        pub->large_pending = sample;
+        return tt_RET_OK;
+    }
+    large_commit(node, pub, sample);
+    large_pump(node, pub);
+    return tt_RET_OK;
+}
+
+// The staging path found a sample above tt_MAX_SAMPLE_LENGTH: it is not staged in tx_buffer at all. What this publish
+// left there ahead of its DATA - a match Heartbeat - and anything batched before it go first, as they would ahead of a
+// fragmented sample, to the peers the publish would have reached; then the large path takes the sample.
+static tt_ret_t publish_large_instead(struct tt_Publisher* pub, struct tt_Data* data, uint32_t cdr_size,
+                                      uint32_t old_tx_tail, uint32_t data_tail) {
+    struct tt_Context* node = pub->node;
+    rollback(node, data_tail);
+    if (node->tx_tail != sizeof(struct tt_Header)) {
+        uint8_t count = count_peers(pub->peers);
+        bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && old_tx_tail == sizeof(struct tt_Header);
+        (void)flush_tx(node, node->tx_tail, unicast ? pub->peers : NULL, unicast ? count : 0);
+    }
+    return publish_large(pub, data, cdr_size);
+}
+
+// A large sample waits behind a send in progress without seq_nos (large_pending): a small sample about to be
+// published must not overtake it, so the waiting one takes its seq_nos first. A large one replaces it instead
+// (publish_large()). Sized only while one waits, so a Publisher with none pays one test.
+static void large_before_small_publish(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Data* data) {
+    if (pub->large_pending.buffer == NULL) {
+        return;
+    }
+    int32_t size = pub->topic->data_encode_size(data);
+    if (size >= 0 && size <= tt_MAX_SAMPLE_LENGTH) {
+        large_commit_pending(node, pub);
+    }
+}
+#endif
+
 static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Data* data) {
     if (pub == NULL || data == NULL || pub->node == NULL || pub->topic == NULL ||
         pub->topic->data_encode_size == NULL || pub->topic->data_encode == NULL) {
@@ -6478,6 +7246,9 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     if (!pub->batch) {
         flush_pending_before_unicast(node, pub->peers);
     }
+#if tt_LARGE_SAMPLES
+    large_before_small_publish(node, pub, data);
+#endif
     uint32_t old_tx_tail = node->tx_tail;
 
     // Phase 3 (rmw_tickle/PLAN.md) - KEEP_ALL flow control: refuse rather than evict a sample
@@ -6545,6 +7316,11 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 
     // DataBody
     int32_t cdr_len = pub->topic->data_encode_size(data);
+#if tt_LARGE_SAMPLES
+    if (cdr_len > tt_MAX_SAMPLE_LENGTH) {
+        return publish_large_instead(pub, data, (uint32_t)cdr_len, old_tx_tail, data_tail);
+    }
+#endif
     if (cdr_len < 0 || cdr_len > tt_MAX_SAMPLE_LENGTH) {
         TT_LOG_ERROR("data_encode_size returned %d (out of range)", cdr_len);
         rollback(node, old_tx_tail);
@@ -6767,7 +7543,8 @@ static void encode_heartbeat_range(struct tt_Context* node, struct tt_Publisher*
 
 static void encode_and_send_heartbeat(struct tt_Context* node, struct tt_Publisher* pub, uint32_t first_seq_no,
                                       const struct tt_Peer* peers, uint8_t peer_count, uint8_t flags) {
-    encode_heartbeat_range(node, pub, first_seq_no, pub->seq_no, true, peers, peer_count, flags);
+    encode_heartbeat_range(node, pub, first_seq_no, publisher_announced_last_seq_no(pub), true, peers, peer_count,
+                           flags);
 }
 
 // Whether any of this Publisher's peers has an attached segment (SHM_PLAN 6e): a record bound only for segments may
@@ -6798,7 +7575,7 @@ static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pu
     if (owed == 0) {
         return;
     }
-    uint32_t oldest = reliable_cache_oldest_seq_no(pub->reliable_cache);
+    uint32_t oldest = publisher_oldest_seq_no(pub);
     uint32_t first = oldest != 0 ? oldest : owed;
     uint8_t count = count_peers(pub->peers);
     bool empty = node->tx_tail == sizeof(struct tt_Header);
@@ -6819,7 +7596,7 @@ static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pu
 // to announce, same "nothing retained yet" short-circuit deliver_durability_backlog() already has.
 static void send_heartbeat(struct tt_Context* node, uint64_t time, void* param) {
     struct tt_Publisher* pub = param;
-    uint32_t first_seq_no = reliable_cache_oldest_seq_no(pub->reliable_cache);
+    uint32_t first_seq_no = publisher_oldest_seq_no(pub);
     if (first_seq_no != 0) {
         // Same peer/broadcast decision tt_Publisher_publish() already makes for DATA.
         const struct tt_Peer* peers = NULL;
@@ -6873,7 +7650,7 @@ static void send_initial_heartbeat(struct tt_Context* node, struct tt_Publisher*
     if (!pub->reliable || pub->reliable_cache == NULL) {
         return;
     }
-    uint32_t first_seq_no = reliable_cache_oldest_seq_no(pub->reliable_cache);
+    uint32_t first_seq_no = publisher_oldest_seq_no(pub);
     if (first_seq_no == 0) {
         return;
     }
@@ -7150,7 +7927,7 @@ static tt_ret_t publisher_request_ack_locked(struct tt_Publisher* pub) {
         return tt_RET_OK; // nothing currently matched to ask
     }
 
-    uint32_t first_seq_no = reliable_cache_oldest_seq_no(pub->reliable_cache);
+    uint32_t first_seq_no = publisher_oldest_seq_no(pub);
     if (first_seq_no == 0) {
         return tt_RET_INVALID_ARGUMENT; // nothing published yet - see this function's own doc comment
     }
@@ -7214,6 +7991,9 @@ static tt_ret_t publisher_destroy_locked(struct tt_Publisher* pub) {
         tt_Context_unschedule(node, keep_all_resolicit, pub);
         pub->resolicit_armed = false;
     }
+#if tt_LARGE_SAMPLES
+    large_release_publisher(node, pub); // its send in progress stops, and every large buffer goes back
+#endif
 
     if (!remove_endpoint_from_node(node, endpoint)) {
         return tt_RET_IILEGAL_ENDPOINT_ID;
@@ -9452,6 +10232,9 @@ static void deliver_durability_backlog(struct tt_Context* node, struct tt_Publis
     // backlog in the order it was published). A slot that no longer holds its own seq_no is a
     // tombstone (evicted, or never cached because the sample was larger than the whole arena) and
     // is skipped, same as an empty slot always was.
+#if tt_LARGE_SAMPLES
+    uint32_t large_next = 0; // large records go in seq_no order among the small ones (large-message stage 2)
+#endif
     for (uint32_t seq_no = cache->oldest_seq_no; seq_no != 0 && seq_no <= cache->newest_seq_no; seq_no++) {
         struct tt_ReliableCacheIndex* cache_entry = reliable_cache_slot(cache, depth, seq_no);
         if (cache_entry->len == 0 || cache_entry->seq_no != seq_no) {
@@ -9463,10 +10246,16 @@ static void deliver_durability_backlog(struct tt_Context* node, struct tt_Publis
         if (reliable_cache_entry_expired(cache_entry, pub->lifespan_duration_ns)) {
             continue;
         }
+#if tt_LARGE_SAMPLES
+        large_send_backlog_before(node, pub, seq_no, &large_next, target);
+#endif
         if (!send_cached_record(node, cache->arena + cache_entry->offset, cache_entry->len, false, target)) {
             TT_LOG_WARNING("Cannot deliver durability backlog seq_no %u", cache_entry->seq_no);
         }
     }
+#if tt_LARGE_SAMPLES
+    large_send_backlog_before(node, pub, UINT32_MAX, &large_next, target);
+#endif
 }
 
 // Walks the entity_count UpdateEntity records following an UpdateHeader, advancing *head past
@@ -11737,13 +12526,32 @@ static struct tt_ReliableCacheIndex* find_resendable_cache_entry(struct tt_Relia
 static uint32_t reliable_cache_first_resendable_seq_no(const struct tt_Publisher* pub,
                                                        const struct tt_ReliableCache* cache, uint16_t depth) {
     uint32_t newest = cache->newest_seq_no;
+#if tt_LARGE_SAMPLES
+    // Large-message stage 2: a large record older than the cache's oldest is the answer; one newer is not, since the
+    // cache's oldest is older still. With nothing resendable, everything published - large samples' seq_nos too,
+    // which the cache never sees - is gone.
+    uint32_t large = pub->large_count != 0 ? large_first_resendable((struct tt_Publisher*)pub) : 0;
+#endif
     for (uint32_t seq_no = cache->oldest_seq_no; seq_no != 0 && seq_no <= newest; seq_no++) {
         const struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
+#if tt_LARGE_SAMPLES
+        if (large != 0 && large < seq_no) {
+            return large;
+        }
+#endif
         if (entry->len != 0 && entry->seq_no == seq_no &&
             !reliable_cache_entry_expired(entry, pub->lifespan_duration_ns)) {
             return seq_no;
         }
     }
+#if tt_LARGE_SAMPLES
+    if (large != 0) {
+        return large;
+    }
+    if (pub->seq_no > newest) {
+        return pub->seq_no + 1;
+    }
+#endif
     return newest + 1; // nothing resendable: everything published so far is gone
 }
 
@@ -11751,6 +12559,16 @@ static uint32_t reliable_cache_first_resendable_seq_no(const struct tt_Publisher
 // it's still resendable. Returns true if it's gone for good (see find_resendable_cache_entry()).
 static bool retransmit_one_sample(struct tt_Context* node, struct tt_Publisher* pub, struct tt_ReliableCache* cache,
                                   uint16_t depth, uint32_t missing_seq_no, const struct tt_Peer* target) {
+#if tt_LARGE_SAMPLES
+    // A datagram of a large sample is resent from the record's buffer (large-message stage 2); a seq_no no large record
+    // holds is the cache's, which knows whether it is gone.
+    if (pub->large_count != 0) {
+        enum large_resend_result large = large_resend(node, pub, missing_seq_no, target);
+        if (large != LARGE_RESEND_NOT_LARGE) {
+            return large == LARGE_RESEND_GONE;
+        }
+    }
+#endif
     bool gone = false;
     struct tt_ReliableCacheIndex* cache_entry =
         find_resendable_cache_entry(cache, depth, missing_seq_no, pub->lifespan_duration_ns, pub->keep_all, &gone);
@@ -12093,6 +12911,11 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
     // is RELIABILITY's own exclusive contract.
     claim_from_acknack(node, pub, header->source, endpoint_id, sender_entity_id, sender_ip, sender_port);
     record_peer_ack(pub, header->source, sender_entity_id, seq_no);
+#if tt_LARGE_SAMPLES
+    if (pub->large_count != 0) {
+        large_release_acked(node, pub); // a VOLATILE Publisher's large buffers, once every reader has them
+    }
+#endif
     pub->ack_solicit_outstanding = false; // answered: the next solicitation may go at once (solicit_ack_throttled())
     // Phase 3 - this ACKNACK may have freed room a refused publish was waiting on. Fired here, from
     // inside tt_Context_poll()'s own packet handling, so the callback runs on the node's thread like
@@ -15367,6 +16190,50 @@ tt_ret_t tt_Context_set_rx_pool(struct tt_Context* node, uint64_t* storage, uint
 }
 #endif
 
+#if tt_LARGE_SAMPLES
+// Whether any large buffer is out: held by a Publisher, being put together, or lent.
+static bool large_buffers_out(struct tt_Context* node) {
+    for (uint32_t i = 0; i < tt_LARGE_ASSEMBLIES; i++) {
+        if (node->large.assemblies[i].buffer != NULL) {
+            return true;
+        }
+    }
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        const struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_PUBLISHER &&
+            (((const struct tt_Publisher*)endpoint)->large_count != 0 ||
+             ((const struct tt_Publisher*)endpoint)->large_pending.buffer != NULL)) {
+            return true;
+        }
+    }
+#if tt_SAMPLE_LENDING
+    for (uint32_t k = 0; k < tt_SAMPLE_RETAIN_MAX; k++) {
+        if (node->lend.entries[k].kind == tt_LEND_LARGE) {
+            return true;
+        }
+    }
+#endif
+    return false;
+}
+
+tt_ret_t tt_Context_set_large_buffers(struct tt_Context* node, tt_LARGE_ACQUIRE acquire, tt_LARGE_RELEASE release,
+                                      void* user) {
+    if (node == NULL || (acquire == NULL) != (release == NULL)) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    state_lock(node);
+    if (large_buffers_out(node)) {
+        state_unlock(node);
+        return tt_RET_ILLEGAL_STATUS; // a buffer from the pair being replaced would go back to the wrong one
+    }
+    node->large.acquire = acquire;
+    node->large.release = release;
+    node->large.user = user;
+    state_unlock(node);
+    return tt_RET_OK;
+}
+#endif
+
 static tt_ret_t node_destroy_locked(struct tt_Context* node);
 
 tt_ret_t tt_Context_destroy(struct tt_Context* node) {
@@ -15498,6 +16365,11 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         if ((endpoint->kind & tt_KIND_SENDER) == tt_KIND_SENDER) {
             node->last_modified = time;
         }
+#if tt_LARGE_SAMPLES
+        if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
+            large_release_publisher(node, (struct tt_Publisher*)endpoint); // every large buffer back to the caller
+        }
+#endif
 
         // Both the client call cache and server response caches are fixed buffers now (no
         // malloc/free), so this just needs clearing. The scheduler entries referencing them are
@@ -15537,6 +16409,15 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
 
 #if tt_SAMPLE_LENDING
     lend_forget_all(node); // before the segment is unmapped: a later release must find nothing to write to
+#endif
+#if tt_LARGE_SAMPLES
+    TT_LOG_INFO("Node %u large: published=%lu reassembled=%lu abandoned=%lu no_buffer=%lu dropped=%lu duplicate=%lu "
+                "tail_abandoned=%lu window_too_small=%lu send_waits=%lu",
+                node->id, (unsigned long)node->large.published, (unsigned long)node->large.reassembled,
+                (unsigned long)node->large.abandoned, (unsigned long)node->large.no_buffer,
+                (unsigned long)node->large.dropped, (unsigned long)node->large.duplicate,
+                (unsigned long)node->large.tail_abandoned, (unsigned long)node->large.window_too_small,
+                (unsigned long)node->large.send_waits);
 #endif
 #if tt_SEGMENT_ENABLED
     // Before the socket goes: the segment is named from this context's address, and the

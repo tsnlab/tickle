@@ -836,6 +836,25 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
 // longer batch takes several, in order.
 #define TT_SEND_BATCH_CHUNK 64
 
+// The body of tt_send_batch() and tt_send_batch_nonblocking(): `flags` is 0 or MSG_DONTWAIT. Returns how many went;
+// with MSG_DONTWAIT a full send buffer ends the batch early instead of failing it.
+static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count,
+                                int flags);
+
+int32_t tt_send_batch_nonblocking(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+#if tt_DISCOVERY_OPTIONS
+    if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
+        return (int32_t)count; // (g6) see tt_send_batch()
+    }
+#endif
+#if tt_CONTEXT_ID_CLAIM
+    if (node->id_muted) {
+        return refuse_muted_send(node); // (g8) see refuse_muted_send()
+    }
+#endif
+    return send_batch_flags(node, datagrams, count, MSG_DONTWAIT);
+}
+
 int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
 #if tt_DISCOVERY_OPTIONS
     if (_tt_CONFIG.discovery_range == tt_DISCOVERY_RANGE_OFF) {
@@ -847,6 +866,12 @@ int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* data
         return refuse_muted_send(node); // (g8) see refuse_muted_send()
     }
 #endif
+    int32_t sent = send_batch_flags(node, datagrams, count, 0);
+    return sent == (int32_t)count ? sent : -1;
+}
+
+static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count,
+                                int flags) {
     uint32_t sent = 0;
     while (sent < count) {
         uint32_t chunk = count - sent < TT_SEND_BATCH_CHUNK ? count - sent : TT_SEND_BATCH_CHUNK;
@@ -876,11 +901,17 @@ int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* data
             }
         }
         TT_TRACE(tt_TRACE_TX_START);
-        int result = sendmmsg(node->hal.data_sock, msgs, chunk, 0);
+        int result = sendmmsg(node->hal.data_sock, msgs, chunk, flags);
         TT_TRACE(tt_TRACE_TX_DONE);
         if (result <= 0) {
+            // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers
+            if (flags != 0 && result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                return (int32_t)sent; // the send buffer is full: what went, went; the caller sends the rest later
+            }
             return -1; // errno says why; a 0 would otherwise loop forever
         }
+        // A short count (sendmmsg() stopped at a datagram that did not go) loops: the next call reports why - the
+        // error, or with MSG_DONTWAIT the EAGAIN of a full buffer, answered above.
         sent += (uint32_t)result;
     }
     return (int32_t)count;
