@@ -1327,6 +1327,13 @@ static rmw_ret_t publish_blocking(rmw_tickle_publisher_t* pub_impl, void* tickle
             } else if (tt_RET_ILLEGAL_STATUS == ret) {
                 RMW_SET_ERROR_MSG("rmw_tickle: a message borrowed from this publisher into a shared-memory slot "
                                   "(RMW_TICKLE_LOAN_PUBLISH_SLOTS=1) is still out - publish or return it first");
+            } else if (tt_RET_TOO_LARGE == ret || tt_RET_OUT_OF_BUFFER == ret) {
+                // Large-message stage 2 (DESIGN.md section 8): above RMW_TICKLE_MAX_SAMPLE_BYTES, which the context's
+                // large buffers refuse, or - KEEP_ALL - wider than a matched reader's window.
+                RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+                    "rmw_tickle: this %s is larger than RMW_TICKLE_MAX_SAMPLE_BYTES (%u bytes) allows, or than a "
+                    "matched KEEP_ALL reader can track - not sent",
+                    pub_impl->callbacks->ros_type_name, (unsigned)rmw_tickle_large_limit(pub_impl->node->context_impl));
             } else {
                 RMW_SET_ERROR_MSG("tt_Publisher_publish() failed");
             }
