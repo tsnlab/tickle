@@ -101,6 +101,11 @@ typedef enum tt_ret_t {
                                    // contract ("Threading", tickle.h): the two would share rx_buffer.
                                    // Nothing was done; the call is a caller bug, reported rather than
                                    // allowed to corrupt a datagram mid-decode.
+    tt_RET_TOO_LARGE = -17,        // A sample no publish of this one can ever carry (large-message stage 2, DESIGN.md
+                                   // section 8): above tt_LARGE_MAX_FRAGMENTS datagrams, above tt_MAX_SAMPLE_LENGTH
+                                   // with no large buffers set (tt_Context_set_large_buffers()), or - KEEP_ALL - more
+                                   // datagrams than a matched reader's window, which could never admit it. Not
+                                   // retryable, unlike tt_RET_WOULD_BLOCK.
 } tt_ret_t;
 
 struct tt_Context;
@@ -158,6 +163,10 @@ struct tt_OutDatagram {
 // - a sample's fragments, or one datagram to several peers - so that the number of system calls stops
 // following the number of datagrams.
 int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count);
+// tt_send_batch() without waiting for room in the socket's send buffer (large-message stage 2, DESIGN.md section 8):
+// returns how many of the `count` datagrams went, in order - fewer, possibly 0, when the buffer filled - or a negative
+// value on any other error. Core sends the rest later. Only a build with tt_LARGE_SAMPLES calls it.
+int32_t tt_send_batch_nonblocking(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count);
 /**
  * @timeout I/O timeout in nanoseconds, -1 for use default timeout value, 0 for no timeout
  * @return received bytes, -1 for timeout, -3 if woken by tt_wake_signal() rather than data,

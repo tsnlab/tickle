@@ -48,9 +48,10 @@
 #include <string.h>
 
 // Latency: round trips at each end. 4096 is TickLE's largest per-sample ring - BENCH_REORDER_SLOTS =
-// tt_RELIABLE_BITMAP_MAX_BITS reorder slots on each side - so the warm-up writes every slot at least once for any
-// shape (p4 takes two slots per sample, so it gets two laps' worth of seq_nos and one full lap of samples). The same
-// count for every framework, and the same at both ends, so whichever reading of "equal" a reader takes holds.
+// 4096 reorder slots on each side (core's window limit until stage 2; pinned in each scenario) - so the warm-up writes
+// every slot at least once for any shape (p4 takes two slots per sample, so it gets two laps' worth of seq_nos and one
+// full lap of samples). The same count for every framework, and the same at both ends, so whichever reading of "equal"
+// a reader takes holds.
 #define BENCH_WARMUP_ROUND_TRIPS 4096U
 #define BENCH_COOLDOWN_ROUND_TRIPS 4096U
 #define BENCH_EDGE_INTERVAL_S 0.001
