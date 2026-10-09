@@ -4101,6 +4101,26 @@ static void reprocess_known_announces(struct tt_Context* node) {
     }
 }
 
+// The smallest client_tag in 1..255 that no Client of service `endpoint_id` already in `node` holds, or 0 when all
+// are. Clients of one service in one context share the endpoint_id; the tag is what tells their CallRequests apart
+// at the server (tt_CallRequestHeader.client_tag), so it must differ among them - and only among them.
+static uint8_t free_client_tag(const struct tt_Context* node, uint32_t endpoint_id) {
+    uint32_t taken[8] = {0}; // a bit per tag value
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        const struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint != NULL && endpoint->kind == tt_KIND_SERVICE_CLIENT && endpoint->id == endpoint_id) {
+            uint8_t tag = ((const struct tt_Client*)endpoint)->client_tag;
+            taken[tag / 32] |= 1U << (tag % 32);
+        }
+    }
+    for (uint32_t tag = 1; tag <= UINT8_MAX; tag++) {
+        if ((taken[tag / 32] & (1U << (tag % 32))) == 0) {
+            return (uint8_t)tag;
+        }
+    }
+    return 0; // 255 Clients of this service already: this one shares the untold tag, as every Client once did
+}
+
 static tt_ret_t node_create_client_locked(struct tt_Context* node, struct tt_Client* client, struct tt_Service* service,
                                           const char* endpoint_name, tt_CLIENT_CALLBACK callback,
                                           struct tt_Node* owner) {
@@ -4125,6 +4145,7 @@ static tt_ret_t node_create_client_locked(struct tt_Context* node, struct tt_Cli
     client->latency = 0;
     client->latency_var = 0;
     client->latency_backed_off = false;
+    client->client_tag = free_client_tag(node, endpoint->id);
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         client->peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
@@ -4176,6 +4197,7 @@ static tt_ret_t node_create_server_locked(struct tt_Context* node, struct tt_Ser
         server->clean_scheduled[i] = false;
         server->cache_sent_at[i] = 0;
         server->cache_client_entity[i] = 0;
+        server->cache_client_tag[i] = 0;
         server->slot_state[i] = tt_SERVER_SLOT_EMPTY;
         server->pending_timeout_scheduled[i] = false;
     }
@@ -4678,6 +4700,7 @@ static void resend_call_request(struct tt_Context* node, struct tt_Client* clien
 // (tt_timer_resolution_ns()), so a mock clock or an exact timer cannot drive it to 0. A wait cut short by a signal
 // after its deadline is a genuine late wake and counts.
 static void call_retry(struct tt_Context* node, uint64_t time, void* param);
+static struct tt_Client* find_calling_client(struct tt_Context* node, uint32_t endpoint_id, uint16_t seq_no);
 
 // The timers G is the granularity of: the reliable reader's ACKNACK retry and the client's call retry.
 static bool is_retry_timer(void (*function)(struct tt_Context* node, uint64_t time, void* param)) {
@@ -4898,10 +4921,18 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
         return tt_RET_OUT_OF_BUFFER;
     }
 
+    // The context's counter, not the client's (struct tt_Context.call_seq_no), past any value another Client of this
+    // service here still has outstanding: the counter comes round after 65,536 calls, and an answer reaches its Client
+    // by seq_no alone (find_calling_client() - a CallResponse has no room for the client_tag), so two outstanding
+    // calls of one service in one context must never share one. At most one step per such Client.
+    uint16_t seq_no = node->call_seq_no;
+    while (find_calling_client(node, endpoint->id, seq_no) != NULL) {
+        seq_no++;
+    }
     callrequest_header->endpoint_id = endpoint->id;
-    callrequest_header->seq_no = node->call_seq_no; // the context's, not the client's: struct tt_Context.call_seq_no
+    callrequest_header->seq_no = seq_no;
     callrequest_header->retry = 0;
-    callrequest_header->reserved = 0;
+    callrequest_header->client_tag = client->client_tag; // which of the context's Clients of this service
 
     // CallRequestBody
     int32_t cdr_len = client->service->request_encode_size(request);
@@ -4962,7 +4993,7 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
 
     client->cache = cache;
     client->cache_time = sent_at;
-    node->call_seq_no++;
+    node->call_seq_no = (uint16_t)(seq_no + 1U);
 
     if (!tt_Context_schedule(node, call_next_wake(client, 0, client->cache_time), call_retry, client)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
@@ -10871,19 +10902,23 @@ static bool process_data(struct tt_Context* node, struct tt_Header* header, uint
     return process_data_for(node, header, buffer, head, tail, sender_ip, sender_port, false);
 }
 
-// Whether slot `slot`'s buffer names (receiver, seq_no). Meaningful while the slot holds a live entry (cache[slot])
-// or an expired one not yet reused (cache_sent_at[slot] != 0).
-static bool server_cache_slot_names(struct tt_Server* server, int slot, uint8_t receiver, uint16_t seq_no) {
+// Whether slot `slot` names the call (receiver, client_tag, seq_no). Meaningful while the slot holds a live entry
+// (cache[slot]) or an expired one not yet reused (cache_sent_at[slot] != 0). seq_no alone is unique per call within a
+// context (the context's one counter, struct tt_Context.call_seq_no) until it wraps; the tag keeps a wrapped seq_no
+// of another Client of that context from being answered with this one's response.
+static bool server_cache_slot_names(struct tt_Server* server, int slot, uint8_t receiver, uint8_t client_tag,
+                                    uint16_t seq_no) {
     const struct tt_SubmessageHeader* submessage_header =
         (const struct tt_SubmessageHeader*)server_cache_entry(server, slot);
     const struct tt_CallResponseHeader* callresponse_header =
         (const struct tt_CallResponseHeader*)((const uint8_t*)submessage_header + sizeof(struct tt_SubmessageHeader));
-    return submessage_header->receiver == receiver && callresponse_header->seq_no == seq_no;
+    return submessage_header->receiver == receiver && server->cache_client_tag[slot] == client_tag &&
+           callresponse_header->seq_no == seq_no;
 }
 
-static int find_server_cache_slot(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
+static int find_server_cache_slot(struct tt_Server* server, uint8_t receiver, uint8_t client_tag, uint16_t seq_no) {
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-        if (server->cache[i] != NULL && server_cache_slot_names(server, i, receiver, seq_no)) {
+        if (server->cache[i] != NULL && server_cache_slot_names(server, i, receiver, client_tag, seq_no)) {
             return i;
         }
     }
@@ -10922,8 +10957,9 @@ static bool server_cache_slot_is_stale(const struct tt_Server* server, int slot,
     return server_client_entity(server, receiver) != 0 && !server_client_known(server, receiver, cached_for);
 }
 
-static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
-    int slot = find_server_cache_slot(server, receiver, seq_no);
+static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, uint8_t receiver, uint8_t client_tag,
+                                                    uint16_t seq_no) {
+    int slot = find_server_cache_slot(server, receiver, client_tag, seq_no);
     return slot >= 0 ? server->cache[slot] : NULL;
 }
 
@@ -10987,6 +11023,7 @@ static void clear_server_cache_slot(struct tt_Server* server, int slot) {
     server->cache[slot] = NULL;
     server->cache_sent_at[slot] = 0; // the client moved on, or the slot is wanted: nothing to learn from it
     server->cache_client_entity[slot] = 0;
+    server->cache_client_tag[slot] = 0;
 }
 
 // A complete announce from `source` has just been applied. Every local Server drops the responses - live or expired
@@ -11046,11 +11083,12 @@ static void note_server_cache_hit(struct tt_Server* server, int slot) {
 // server kept it, and the gap says by how much. One such sample counts as at most twice the current lifetime, so a
 // stale match - a restarted client reusing the id, long after - raises it by a bounded step and not to whatever it
 // measured; a genuinely slow client gets there in a few misses.
-static void learn_from_expired_response(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
+static void learn_from_expired_response(struct tt_Server* server, uint8_t receiver, uint8_t client_tag,
+                                        uint16_t seq_no) {
     uint64_t now = tt_get_ns();
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         if (server->cache[i] != NULL || server->cache_sent_at[i] == 0 ||
-            !server_cache_slot_names(server, i, receiver, seq_no)) {
+            !server_cache_slot_names(server, i, receiver, client_tag, seq_no)) {
             continue;
         }
         if (now > server->cache_sent_at[i] && !server_cache_slot_is_stale(server, i, receiver)) {
@@ -11064,8 +11102,12 @@ static void learn_from_expired_response(struct tt_Server* server, uint8_t receiv
     }
 }
 
-static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeader* submessage_header,
-                             uint8_t receiver) {
+// Caches the response just encoded at `submessage_header` for the Client `client_tag` of context `receiver`. That
+// Client's previous answer goes: it calls again only once it has it (one outstanding call per Client). Another
+// Client's answer, from the same context or not, stays until it expires or is evicted - one live answer per calling
+// Client, the memory bound tt_MAX_SERVER_CACHE_COUNT (>= # of clients) was always sized by.
+static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeader* submessage_header, uint8_t receiver,
+                             uint8_t client_tag) {
     size_t length = ROUNDUP((uintptr_t)server->node->tx_buffer + server->node->tx_tail - (uintptr_t)submessage_header);
 
     // A slot that never held anything first, then the expired entry sent longest ago (it can still teach a gap, so
@@ -11075,7 +11117,8 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
     int expired_slot = -1;
     int oldest_live = -1;
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-        if (server->cache[i] != NULL && server->cache[i]->receiver == receiver) {
+        if (server->cache[i] != NULL && server->cache[i]->receiver == receiver &&
+            server->cache_client_tag[i] == client_tag) {
             clear_server_cache_slot(server, i);
         }
 
@@ -11123,6 +11166,7 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
 
     server->cache_sent_at[free_slot] = now;
     server->cache_client_entity[free_slot] = server_client_entity(server, receiver);
+    server->cache_client_tag[free_slot] = client_tag;
     server->cache[free_slot] = cache;
 
     return true;
@@ -11156,7 +11200,7 @@ static struct tt_SubmessageHeader* resend_cached_response(struct tt_Context* nod
 // the synchronous case, or from a pending slot's own stored fields in the deferred case, but this
 // function itself doesn't need to know which. `old_tx_tail` is this submessage's start, for
 // rolling back on a failure here.
-static struct tt_SubmessageHeader* encode_call_response(struct tt_Context* node, uint8_t receiver,
+static struct tt_SubmessageHeader* encode_call_response(struct tt_Context* node, uint8_t receiver, uint8_t client_tag,
                                                         struct tt_Server* server, uint16_t request_seq_no,
                                                         int8_t return_code, struct tt_Response* response,
                                                         uint32_t old_tx_tail) {
@@ -11205,7 +11249,7 @@ static struct tt_SubmessageHeader* encode_call_response(struct tt_Context* node,
 
     // Cache submessage header before flush. set_server_cache() already logs its own reason on
     // failure, so nothing to add here.
-    if (!set_server_cache(server, submessage_header, receiver)) {
+    if (!set_server_cache(server, submessage_header, receiver, client_tag)) {
         rollback(node, old_tx_tail);
         return NULL;
     }
@@ -11220,12 +11264,13 @@ static struct tt_SubmessageHeader* encode_call_response(struct tt_Context* node,
 // Only pending_request_id[] itself needs no atomic care to read here (only ever written by the
 // poll thread, in defer_call_response() below - tt_Server_send_response() never touches it) - the
 // slot_state[] load guarding it does, since that field is also written from another thread.
-static int find_pending_slot(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
+static int find_pending_slot(struct tt_Server* server, uint8_t receiver, uint8_t client_tag, uint16_t seq_no) {
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         if (__atomic_load_n(&server->slot_state[i], __ATOMIC_ACQUIRE) == tt_SERVER_SLOT_EMPTY) {
             continue;
         }
-        if (server->pending_request_id[i].receiver == receiver && server->pending_request_id[i].seq_no == seq_no) {
+        if (server->pending_request_id[i].receiver == receiver && server->pending_request_id[i].seq_no == seq_no &&
+            server->pending_client_tag[i] == client_tag) {
             return i;
         }
     }
@@ -11260,8 +11305,8 @@ static void pending_response_timeout(struct tt_Context* node, uint64_t time, voi
 // (inside process_callrequest()), so slot *allocation* itself needs no atomics - only the final
 // publish (the slot_state[] store that makes this slot visible to tt_Server_send_response() on
 // another thread) does.
-static bool defer_call_response(struct tt_Server* server, tt_RequestId request_id, uint32_t sender_ip,
-                                uint16_t sender_port) {
+static bool defer_call_response(struct tt_Server* server, tt_RequestId request_id, uint8_t client_tag,
+                                uint32_t sender_ip, uint16_t sender_port) {
     int slot = -1;
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         if (__atomic_load_n(&server->slot_state[i], __ATOMIC_RELAXED) == tt_SERVER_SLOT_EMPTY) {
@@ -11275,6 +11320,7 @@ static bool defer_call_response(struct tt_Server* server, tt_RequestId request_i
     }
 
     server->pending_request_id[slot] = request_id;
+    server->pending_client_tag[slot] = client_tag;
     server->pending_sender_ip[slot] = sender_ip;
     server->pending_sender_port[slot] = sender_port;
     server->pending_timeout_config[slot].server = server;
@@ -11348,7 +11394,8 @@ static void send_ready_slot(struct tt_Context* node, struct tt_Server* server, i
 
     uint32_t old_tx_tail = node->tx_tail;
     struct tt_SubmessageHeader* submessage_header =
-        encode_call_response(node, request_id.receiver, server, request_id.seq_no, return_code, response, old_tx_tail);
+        encode_call_response(node, request_id.receiver, server->pending_client_tag[slot], server, request_id.seq_no,
+                             return_code, response, old_tx_tail);
 
     // Reclaim the slot regardless of encode success - a failure here is already logged by
     // encode_call_response() itself, and retrying it from this same stale slot later would just fail
@@ -11389,6 +11436,7 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
 
     uint32_t endpoint_id = rd32(header, callrequest_header->endpoint_id);
     uint16_t seq_no = rd16(header, callrequest_header->seq_no);
+    uint8_t client_tag = callrequest_header->client_tag; // which Client of the source context; 0 from an older one
 
     TT_LOG_DEBUG("CallRequest");
     TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
@@ -11407,7 +11455,7 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
     // time - the real answer is already on its way, whenever tt_Server_send_response() gets
     // called. Checked before the cache lookup below since a deferred-then-answered request only
     // ever gets *cached* once tt_Server_send_response() has actually sent it.
-    if (find_pending_slot(server, header->source, seq_no) >= 0) {
+    if (find_pending_slot(server, header->source, client_tag, seq_no) >= 0) {
         TT_LOG_DEBUG("CallRequest retry for a still-deferred response, ignoring");
         return true;
     }
@@ -11417,7 +11465,7 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
     // the client - a restarted process reusing the context id, whose seq_no starts at 0 again. Discovery tells the two
     // apart where it can (server_cache_slot_is_stale()); a farewell drops the source's responses outright
     // (drop_cached_responses_from_source()).
-    int cached_slot = find_server_cache_slot(server, header->source, seq_no);
+    int cached_slot = find_server_cache_slot(server, header->source, client_tag, seq_no);
     if (cached_slot >= 0 && server_cache_slot_is_stale(server, cached_slot, header->source)) {
         TT_LOG_DEBUG("Cached response for node %d is from an earlier incarnation of its client - dropped",
                      header->source);
@@ -11427,7 +11475,7 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
     if (cached_slot >= 0) {
         note_server_cache_hit(server, cached_slot);
     } else if (callrequest_header->retry != 0) {
-        learn_from_expired_response(server, header->source, seq_no);
+        learn_from_expired_response(server, header->source, client_tag, seq_no);
     }
     struct tt_SubmessageHeader* cached = cached_slot >= 0 ? server->cache[cached_slot] : NULL;
     uint32_t old_tx_tail = node->tx_tail;
@@ -11460,10 +11508,10 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
         if (return_code == tt_CALL_DEFERRED) {
             // Nothing to encode/send yet - tt_Server_send_response() (any thread, any time up to
             // tt_SERVER_DEFERRED_RESPONSE_TIMEOUT from now) encodes and sends it.
-            return defer_call_response(server, request_id, sender_ip, sender_port);
+            return defer_call_response(server, request_id, client_tag, sender_ip, sender_port);
         }
 
-        submessage_header = encode_call_response(node, header->source, server, seq_no, return_code,
+        submessage_header = encode_call_response(node, header->source, client_tag, server, seq_no, return_code,
                                                  (struct tt_Response*)response, old_tx_tail);
         if (submessage_header == NULL) {
             return false;

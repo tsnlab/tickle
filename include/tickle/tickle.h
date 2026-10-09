@@ -447,7 +447,9 @@ struct tt_Context {
     // only by (source context, service endpoint_id, seq_no), and every Client of one service in one context has the
     // same endpoint_id, so a per-client counter gave two of them the same requests - the server answered them as one
     // and the second never got an answer (2026-10-09). Drawn per call, seq_no tells them apart: the server's cache
-    // keys on it, and process_callresponse() hands the answer to the Client whose outstanding call it names.
+    // keys on it, and process_callresponse() hands the answer to the Client whose outstanding call it names. A value
+    // another Client of the same service still has outstanding is skipped when the counter comes round to it
+    // (client_call_locked()); the server's cache also names the Client (tt_CallRequestHeader.client_tag).
     uint16_t call_seq_no;
 
     // Per remote node (indexed by its node id), the last discovery announce we've acted on: its
@@ -1224,6 +1226,10 @@ struct tt_Client { // extends endpoint
     uint32_t latency;        // Call latency estimate (srtt), ns: an EMA of accepted answers, doubled on a timeout
     uint32_t latency_var;    // Its mean deviation (rttvar), ns - RFC 6298's, as for the reliable retry
     bool latency_backed_off; // The last call timed out; the next accepted answer replaces the estimate
+    // Tells this Client from the context's other Clients of the same service, which share its endpoint_id: the
+    // smallest of 1..255 none of them holds, given at create, 0 when all are taken. Carried in every CallRequest
+    // (tt_CallRequestHeader.client_tag) so the server keeps an answer per Client, not per context.
+    uint8_t client_tag;
 
     // Known Servers matching this Client's service, learned via UPDATE announces - see
     // tt_UNICAST_PEER_THRESHOLD.
@@ -1288,6 +1294,12 @@ struct tt_Server { // extends endpoint
     // A request whose client discovery now knows under another entity_id comes from a new client - a restarted
     // process reusing the context id, whose seq_no starts at 0 again - and must not get this response.
     uint32_t cache_client_entity[tt_MAX_SERVER_CACHE_COUNT];
+    // Which Client of its context slot i's response is for (tt_CallRequestHeader.client_tag): an entry is named by
+    // (receiver, client_tag, seq_no), and a new answer replaces only its own Client's previous one - one live answer
+    // per calling Client, so a retry from one Client of a context still finds its answer after another Client of the
+    // same context was answered (before 2026-10-09 the second answer replaced the first and the retry re-ran the
+    // callback).
+    uint8_t cache_client_tag[tt_MAX_SERVER_CACHE_COUNT];
     // The longest recent gap, ns, between a response going out and the same client asking again - a decaying
     // maximum of what retries have shown this server. 0 until the first retry arrives.
     uint64_t client_retry_gap;
@@ -1307,6 +1319,7 @@ struct tt_Server { // extends endpoint
     // work correctly, unlike <stdatomic.h>'s own _Atomic(T) wrapper type.
     uint8_t slot_state[tt_MAX_SERVER_CACHE_COUNT]; // tt_SERVER_SLOT_EMPTY/_PENDING/_READY
     tt_RequestId pending_request_id[tt_MAX_SERVER_CACHE_COUNT];
+    uint8_t pending_client_tag[tt_MAX_SERVER_CACHE_COUNT];   // the request's client_tag, for its cache entry
     uint32_t pending_sender_ip[tt_MAX_SERVER_CACHE_COUNT];   // for the same unicast-the-response
     uint16_t pending_sender_port[tt_MAX_SERVER_CACHE_COUNT]; // optimization process_callrequest() uses
     int8_t pending_return_code[tt_MAX_SERVER_CACHE_COUNT];   // tt_Server_send_response()'s own return_code arg
@@ -3211,7 +3224,12 @@ struct tt_CallRequestHeader {
     uint32_t endpoint_id; // endpoint id for service server lookup
     uint16_t seq_no;      // sequence number
     uint8_t retry;        // retry count from client side
-    uint8_t reserved;     // pad 7 -> 8 so the CDR payload that follows starts 4-byte aligned
+    // Which Client of this service in the source context is calling (struct tt_Client.client_tag), 1..255; 0 =
+    // untold. It was a zero pad byte until 2026-10-09 and still pads 7 -> 8 so the CDR that follows starts 4-byte
+    // aligned. A server keeps one answer per (source, client_tag) for retries, so two Clients of one service in one
+    // context each keep theirs. An older sender writes 0 and gets the old one answer per source; an older server
+    // ignores the byte. No tt_VERSION change: neither direction misreads anything.
+    uint8_t client_tag;
     // CDR
 } __attribute__((packed));
 

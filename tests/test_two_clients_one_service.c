@@ -22,9 +22,12 @@
 // Mutants, each killed here: seq_no per Client again (both requests seq 0, one answer for two calls); the response
 // routed to find_endpoint()'s first match again (the second Client's answers dropped).
 //
-// Not covered, and still open: a context's two Clients share the server's one-live-answer-per-source cache
-// (set_server_cache() clears the source's previous answer), so a retry of one Client's call that arrives after the
-// other Client's call was answered runs the callback again, as one after the cache expired does.
+// Since 2026-10-09 also: the server caches one answer per calling Client - (source context, client_tag) - where it
+// used to keep one per source, so a retry of one Client's call that arrived after the other Client was answered ran
+// the callback again. Checked: the retry after the other Client moved on; a soak of interleaved calls with drops and
+// duplicates, each callback run exactly once; a seq_no of the other Client's that wrapped onto a cached one.
+// Mutants (tests/mutants_call_identity.py), each killed here: the tag not sent; the previous answer cleared per source
+// again; the tag left out of the cache lookup.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -102,10 +105,16 @@ static int wrong_answers; // an answer that is not this client's own outstanding
 
 static uint32_t expected_tag[CLIENTS];
 
+#define TRACKED_CALLS 1024
+static int runs[TRACKED_CALLS]; // callback runs per request tag, for the tags below TRACKED_CALLS
+
 static int8_t serve(struct tt_Server* srv, struct message* request, struct message* response, tt_RequestId request_id) {
     (void)srv;
     (void)request_id;
     served++;
+    if (request->tag < TRACKED_CALLS) {
+        runs[request->tag]++;
+    }
     response->tag = request->tag + ANSWER_OFFSET;
     return 0;
 }
@@ -173,6 +182,7 @@ static void setup(void) {
     memset(clients, 0, sizeof(clients));
     served = 0;
     wrong_answers = 0;
+    memset(runs, 0, sizeof(runs));
     for (int i = 0; i < CLIENTS; i++) {
         answers[i] = 0;
         last_answer[i] = 0;
@@ -250,10 +260,327 @@ static void test_the_second_client_alone_is_answered(void) {
     test_mock_send_hook = NULL;
 }
 
+// --- One answer cached per calling Client (2026-10-09) ---
+//
+// The server keeps one live answer per (source context, client_tag) and drops a Client's previous answer when that
+// Client calls again. Its cache expiry timers are never run here (the server context's scheduler is not driven), so
+// every retry below arrives while its answer would still be kept: a callback run twice for one call can only be the
+// eviction this tests, never an expiry.
+
+// The Clients are told apart on the wire.
+static void test_each_client_has_its_own_tag(void) {
+    setup();
+    EXPECT_TRUE(clients[0].client_tag != 0);
+    EXPECT_TRUE(clients[1].client_tag != 0);
+    EXPECT_TRUE(clients[0].client_tag != clients[1].client_tag);
+    requests.count = 0;
+    capturing = &requests;
+    struct message request = {7};
+    EXPECT_EQ_INT(tt_RET_OK, tt_Client_call(&clients[1], (struct tt_Request*)&request));
+    capturing = NULL;
+    EXPECT_EQ_INT(1, requests.count);
+    // A CallRequest is addressed to everyone, so it goes alone with the 4-byte tt_SingleHeader (tt_VERSION 10).
+    EXPECT_TRUE((requests.data[0][0] & tt_SINGLE_MARKER_FLAG) != 0);
+    const struct tt_CallRequestHeader* header =
+        (const struct tt_CallRequestHeader*)(requests.data[0] + sizeof(struct tt_SingleHeader));
+    EXPECT_EQ_INT(clients[1].client_tag, header->client_tag);
+    test_mock_send_hook = NULL;
+}
+
+// Client `i` calls with request tag `tag`; its CallRequest goes to whatever is capturing.
+static void call(int i, uint32_t tag) {
+    expected_tag[i] = tag;
+    struct message request = {tag};
+    EXPECT_EQ_INT(tt_RET_OK, tt_Client_call(&clients[i], (struct tt_Request*)&request));
+}
+
+// Runs the client context's earliest call retry, at its time (and anything due before it). False if no call is
+// waiting on one.
+static bool run_next_client_timer(void) {
+    uint64_t at = UINT64_MAX;
+    for (uint32_t k = 0; k < client_context.scheduler_tail; k++) {
+        const struct tt_TCB* entry = &client_context.scheduler[k];
+        if (entry->function == call_retry && entry->time < at) {
+            at = entry->time;
+        }
+    }
+    if (at == UINT64_MAX) {
+        return false;
+    }
+    if (at > test_mock_now) {
+        test_mock_now = at;
+    }
+    bool has_next = false;
+    uint64_t next = 0;
+    while (run_due_entry(&client_context, test_mock_now, &has_next, &next)) {
+    }
+    return true;
+}
+
+// Every datagram of `from`, in order.
+static void carry_all(const struct capture* from, struct tt_Context* to, uint32_t ip) {
+    for (int i = 0; i < from->count; i++) {
+        carry_one(from, i, to, ip);
+    }
+}
+
+// Whether datagram `k` of `from` is a CallResponse to the call `seq_no` (one addressed to its client's context, so
+// with the full tt_Header + tt_SubmessageHeader).
+static bool answers_call(const struct capture* from, int k, uint16_t seq_no) {
+    const uint8_t* data = from->data[k];
+    if (from->length[k] <
+            sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_CallResponseHeader) ||
+        (data[0] & tt_SINGLE_MARKER_FLAG) != 0) {
+        return false;
+    }
+    const struct tt_SubmessageHeader* submessage = (const struct tt_SubmessageHeader*)(data + sizeof(struct tt_Header));
+    const struct tt_CallResponseHeader* header =
+        (const struct tt_CallResponseHeader*)(data + sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
+    return submessage->type == tt_SUBMESSAGE_TYPE_CALLRESPONSE && header->seq_no == seq_no;
+}
+
+// How many answers the server holds live.
+static int live_answers(void) {
+    int live = 0;
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        live += server.cache[i] != NULL ? 1 : 0;
+    }
+    return live;
+}
+
+// Client `lost`'s answer is dropped, the other Client's is delivered and that Client calls twice more; then `lost`
+// retries. Its retry must be answered from the cache - the callback does not run again - with its own answer.
+static void test_a_retry_after_the_other_client_moved_on(int lost) {
+    setup();
+    int other = 1 - lost;
+    requests.count = 0;
+    capturing = &requests;
+    call(lost, 0);
+    call(other, 1);
+    capturing = &responses;
+    responses.count = 0;
+    for (int k = 0; k < requests.count; k++) {
+        carry_one(&requests, k, &server_context, CLIENT_IP);
+    }
+    capturing = NULL;
+    int dropped = 0;
+    for (int k = 0; k < responses.count; k++) { // only the other Client's answer arrives
+        if (answers_call(&responses, k, outstanding_seq_no(&clients[lost]))) {
+            dropped++;
+        } else {
+            carry_one(&responses, k, &client_context, SERVER_IP);
+        }
+    }
+    EXPECT_EQ_INT(1, dropped);
+    EXPECT_EQ_INT(0, answers[lost]);
+    EXPECT_EQ_INT(1, answers[other]);
+
+    for (uint32_t tag = 2; tag <= 3; tag++) { // the other Client moves on, twice
+        requests.count = 0;
+        capturing = &requests;
+        call(other, tag);
+        capturing = &responses;
+        responses.count = 0;
+        carry_all(&requests, &server_context, CLIENT_IP);
+        capturing = NULL;
+        carry_all(&responses, &client_context, SERVER_IP);
+    }
+    EXPECT_EQ_INT(3, answers[other]);
+    EXPECT_EQ_INT(4, served);
+    EXPECT_EQ_INT(CLIENTS, live_answers()); // one per Client: the other's two earlier answers went
+
+    requests.count = 0;
+    capturing = &requests;
+    EXPECT_TRUE(run_next_client_timer()); // the lost Client's retry
+    capturing = &responses;
+    responses.count = 0;
+    EXPECT_TRUE(requests.count >= 1);
+    carry_all(&requests, &server_context, CLIENT_IP);
+    capturing = NULL;
+    EXPECT_EQ_INT(4, served); // answered from the cache: the callback did not run again
+    EXPECT_EQ_INT(1, runs[0]);
+    carry_all(&responses, &client_context, SERVER_IP);
+    EXPECT_EQ_INT(1, answers[lost]);
+    EXPECT_EQ_U32(0 + ANSWER_OFFSET, last_answer[lost]);
+    EXPECT_TRUE(clients[lost].cache == NULL);
+    EXPECT_EQ_INT(0, wrong_answers);
+    test_mock_send_hook = NULL;
+}
+
+// A small deterministic generator: the same run every time.
+static uint32_t rng_state;
+static uint32_t rng(void) {
+    rng_state = (rng_state * 1103515245U) + 12345U;
+    return (rng_state >> 16) & 0x7fffU;
+}
+
+#define SOAK_CALLS_PER_CLIENT 200
+#define SOAK_DROP_PERCENT 25
+#define SOAK_DUPLICATE_PERCENT 10
+#define SOAK_RETRY_COUNT 20
+#define SOAK_RETRY_INTERVAL tt_MILLISECOND
+
+// Each idle Client with calls left starts one, at random.
+static void soak_start_calls(uint32_t issued[CLIENTS]) {
+    for (int i = 0; i < CLIENTS; i++) {
+        if (clients[i].cache == NULL && issued[i] < SOAK_CALLS_PER_CLIENT && (rng() % 2) == 0) {
+            call(i, (issued[i]++ * CLIENTS) + (uint32_t)i);
+        }
+    }
+}
+
+// The captured requests to the server, each dropped with SOAK_DROP_PERCENT or else doubled with
+// SOAK_DUPLICATE_PERCENT.
+static void soak_deliver_requests(void) {
+    for (int k = 0; k < requests.count; k++) {
+        if (rng() % 100 < SOAK_DROP_PERCENT) {
+            continue;
+        }
+        carry_one(&requests, k, &server_context, CLIENT_IP);
+        if (rng() % 100 < SOAK_DUPLICATE_PERCENT) {
+            carry_one(&requests, k, &server_context, CLIENT_IP);
+        }
+    }
+}
+
+// The captured responses to the clients, each dropped with SOAK_DROP_PERCENT.
+static void soak_deliver_responses(void) {
+    for (int k = 0; k < responses.count; k++) {
+        if (rng() % 100 >= SOAK_DROP_PERCENT) {
+            carry_one(&responses, k, &client_context, SERVER_IP);
+        }
+    }
+}
+
+// Every call made and none outstanding.
+static bool soak_done(const uint32_t issued[CLIENTS]) {
+    for (int i = 0; i < CLIENTS; i++) {
+        if (clients[i].cache != NULL || issued[i] < SOAK_CALLS_PER_CLIENT) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Both Clients call, interleaved; every datagram is dropped with SOAK_DROP_PERCENT and a request delivered twice with
+// SOAK_DUPLICATE_PERCENT; lost calls are retried by the Clients' own timers. Every call's callback runs exactly once,
+// each Client gets each of its own answers once, and the server never holds more than one live answer per Client.
+static void test_interleaved_calls_with_drops_run_each_callback_once(void) {
+    setup();
+    // A fixed retry interval, and enough sends that no call gives up at this loss (4 sends all fail 3.7% of the time
+    // at 25% each way; 21, never in practice): a timeout is the retry budget, not the cache, and counts as a wrong
+    // answer below. Fixed, because the mock clock jumps to whichever Client retries next, so a round trip measured
+    // here includes the other Client's waits, and the auto path backs off to its deadline within a few sends.
+    service.call_retry_count = SOAK_RETRY_COUNT;
+    service.call_retry_interval = SOAK_RETRY_INTERVAL;
+    rng_state = 20261009U;
+    uint32_t issued[CLIENTS] = {0};
+    int max_live = 0;
+    int retries = 0;
+    for (int step = 0; step < 100000 && !soak_done(issued); step++) {
+        requests.count = 0;
+        capturing = &requests;
+        soak_start_calls(issued);
+        bool idle = clients[0].cache == NULL && clients[1].cache == NULL;
+        if (requests.count == 0 && !idle) {
+            EXPECT_TRUE(run_next_client_timer()); // nothing new: let an outstanding call retry
+            retries++;
+        }
+        capturing = &responses;
+        responses.count = 0;
+        soak_deliver_requests();
+        capturing = NULL;
+        soak_deliver_responses();
+        int live = live_answers();
+        max_live = live > max_live ? live : max_live;
+    }
+    for (int i = 0; i < CLIENTS; i++) {
+        EXPECT_EQ_U32(SOAK_CALLS_PER_CLIENT, issued[i]);
+        EXPECT_EQ_INT(SOAK_CALLS_PER_CLIENT, answers[i]);
+        EXPECT_TRUE(clients[i].cache == NULL);
+    }
+    int twice = 0;
+    for (uint32_t tag = 0; tag < SOAK_CALLS_PER_CLIENT * CLIENTS; tag++) {
+        twice += runs[tag] > 1 ? 1 : 0;
+        EXPECT_TRUE(runs[tag] >= 1);
+    }
+    EXPECT_EQ_INT(0, twice);
+    EXPECT_EQ_INT(SOAK_CALLS_PER_CLIENT * CLIENTS, served);
+    EXPECT_EQ_INT(0, wrong_answers); // a timeout counts here too
+    EXPECT_TRUE(max_live <= CLIENTS);
+    EXPECT_TRUE(retries > 100); // the shape under test: many retries, interleaved with the other Client's calls
+    printf("soak: %d calls, %d retries, at most %d live answers\n", SOAK_CALLS_PER_CLIENT * CLIENTS, retries, max_live);
+    service.call_retry_count = 0;
+    service.call_retry_interval = 0;
+    test_mock_send_hook = NULL;
+}
+
+// The context's seq_no counter is 16 bits; client 1 makes 65,536 calls after client 0's one call (seq_no s), so the
+// counter comes round to s.
+// - Client 0 got its answer and is idle (`outstanding` false): the server still holds that answer, and client 1's call
+//   with seq_no s must run the callback and get its own answer, not client 0's - the server's lookup names the
+//   client_tag as well as the seq_no.
+// - Client 0's answer was lost (`outstanding` true): client 1 never takes s while client 0 is still waiting on it -
+//   an answer reaches its Client by seq_no alone - and client 0's retry is answered from the cache with its own.
+static void test_a_wrapped_seq_no(bool outstanding) {
+    setup();
+    requests.count = 0;
+    capturing = &requests;
+    call(0, 0);
+    uint16_t first_seq_no = outstanding_seq_no(&clients[0]);
+    capturing = &responses;
+    responses.count = 0;
+    carry_all(&requests, &server_context, CLIENT_IP);
+    capturing = NULL;
+    if (!outstanding) {
+        carry_all(&responses, &client_context, SERVER_IP);
+        EXPECT_EQ_INT(1, answers[0]);
+    }
+    int took_it = 0;
+    for (uint32_t k = 0; k <= UINT16_MAX; k++) {
+        requests.count = 0;
+        capturing = &requests;
+        call(1, TRACKED_CALLS + k);
+        took_it += outstanding_seq_no(&clients[1]) == first_seq_no ? 1 : 0;
+        capturing = &responses;
+        responses.count = 0;
+        carry_all(&requests, &server_context, CLIENT_IP);
+        capturing = NULL;
+        carry_all(&responses, &client_context, SERVER_IP);
+    }
+    // The shape under test: client 1's calls came round to client 0's seq_no, and took it only when it was free.
+    EXPECT_EQ_INT(outstanding ? 0 : 1, took_it);
+    EXPECT_EQ_INT(UINT16_MAX + 1, answers[1]);
+    EXPECT_EQ_INT(UINT16_MAX + 2, served); // client 0's call and each of client 1's, once
+    EXPECT_EQ_INT(0, wrong_answers);
+
+    if (outstanding) {
+        requests.count = 0;
+        capturing = &requests;
+        EXPECT_TRUE(run_next_client_timer()); // client 0's retry
+        capturing = &responses;
+        responses.count = 0;
+        carry_all(&requests, &server_context, CLIENT_IP);
+        capturing = NULL;
+        EXPECT_EQ_INT(UINT16_MAX + 2, served); // from the cache
+        carry_all(&responses, &client_context, SERVER_IP);
+    }
+    EXPECT_EQ_INT(1, answers[0]);
+    EXPECT_EQ_U32(ANSWER_OFFSET, last_answer[0]);
+    EXPECT_EQ_INT(0, wrong_answers);
+    test_mock_send_hook = NULL;
+}
+
 int main(void) {
     test_each_client_gets_its_own_answers(false);
     test_each_client_gets_its_own_answers(true);
     test_the_second_client_alone_is_answered();
+    test_each_client_has_its_own_tag();
+    test_a_retry_after_the_other_client_moved_on(0);
+    test_a_retry_after_the_other_client_moved_on(1);
+    test_interleaved_calls_with_drops_run_each_callback_once();
+    test_a_wrapped_seq_no(false);
+    test_a_wrapped_seq_no(true);
 
     if (test_result() != 0) {
         return 1;

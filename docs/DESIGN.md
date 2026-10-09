@@ -116,7 +116,7 @@ single:  tt_SingleHeader  marker 'k'/'t' | version | source | type
 | 1, 7 | *retired* (UPDATE, UPDATE_PART) | - | never reused |
 | 2 | `DATA` | `tt_DataHeader`: endpoint_id, seq_no, timestamp (u32 us), entity_id - 16 B | one sample in one datagram |
 | 3 | `ACKNACK` | endpoint_id, entity_id, sender_entity_id, seq_no, bitmap_words, bitmap[] - 20 + 8/word B | reader's cumulative ack + missing bitmap |
-| 4 | `CALLREQUEST` | endpoint_id, seq_no (u16), retry, reserved - 8 B | service request |
+| 4 | `CALLREQUEST` | endpoint_id, seq_no (u16), retry, client_tag - 8 B | service request; client_tag: which Client of its context (0 = untold) |
 | 5 | `CALLRESPONSE` | endpoint_id, seq_no, retry, return_code - 8 B | service response |
 | 6 | `HEARTBEAT` | endpoint_id, first_available_seq_no, last_seq_no, entity_id, flags - 20 B | writer's range; `tt_HEARTBEAT_FLAG_LIVELINESS` = manual liveliness assertion |
 | 8 | `FRAG_FIRST` | whole `tt_DataHeader` + frag_count - 17 B | first datagram of a fragmented sample |
@@ -266,7 +266,9 @@ KEEP_ALL writer would stop at its bound. So the writer solicits acks itself (a H
 - A Client has one outstanding call, cached for retry in `cache_buf` (or caller-attached storage). A call's seq_no
   comes from the context's one counter, so several Clients of one service in one context (same endpoint_id) send
   distinct requests and each answer goes to the Client whose call it names (2026-10-09; before, they were answered as
-  one). The round trip is timed from before the send, not after it returns.
+  one). When the counter comes round, a seq_no another Client of the service still waits on is skipped. Each Client
+  of a service in a context has its own `client_tag` (1..255), carried in the CallRequest's former pad byte. The
+  round trip is timed from before the send, not after it returns.
 - Retries: `call_retry_interval` if set, every time. Otherwise (auto) RFC 6298 over call-to-answer times, with bounds
   relative to srtt since 2026-10-05: the first wait is `srtt + max(G, 4 x rttvar)`, each
   retry of the call waits twice the one before, each at most `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` (64) x max(srtt, G). The seed
@@ -277,7 +279,10 @@ KEEP_ALL writer would stop at its bound. So the writer solicits acks itself (a H
   two late-running events - this host's timer and the server's dispatch - since the server's cannot be measured from
   here; `tt_CALL_RETRY_GRANULARITY` non-zero fixes it.
 - A Server caches each answered response in one of `tt_MAX_SERVER_CACHE_COUNT` (64) slots, so a retried request gets
-  the same answer without re-running the callback. It keeps it for the longer of the client's seed schedule (or the
+  the same answer without re-running the callback: one live answer per calling Client - (source context,
+  `client_tag`), looked up with the seq_no - replaced when that Client calls again (one per source context until
+  2026-10-09, so a retry after another Client of that context was answered re-ran the callback; a sender older than
+  the tag sends 0 and still gets that). It keeps it for the longer of the client's seed schedule (or the
   service's explicit `call_retry_interval x (count + 1)`) and `tt_SERVER_CACHE_GAP_MULTIPLE` (4) x the longest
   recent gap between a response and the same client's retry; each retry served re-arms it, and a retry after expiry
   teaches the server that client's gap. A response is dropped when its client turns out to be a new incarnation

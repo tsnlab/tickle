@@ -111,7 +111,7 @@ static uint32_t append_callrequest_header(uint8_t* buf, uint32_t offset, uint32_
     callrequest_header->endpoint_id = endpoint_id;
     callrequest_header->seq_no = seq_no;
     callrequest_header->retry = 0;
-    callrequest_header->reserved = 0;
+    callrequest_header->client_tag = 0;
     uint32_t body_offset = offset + sizeof(struct tt_CallRequestHeader);
     buf[body_offset] = 0xab; // 1-byte request body (service->request_size == 1)
     return body_offset + 1;

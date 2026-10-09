@@ -69,9 +69,9 @@ static void test_cache_round_trip(void) {
 
     struct tt_SubmessageHeader* original = write_fake_response(&node, 5, 0x1111, 42);
 
-    EXPECT_TRUE(set_server_cache(&server, original, 5));
+    EXPECT_TRUE(set_server_cache(&server, original, 5, 0));
 
-    struct tt_SubmessageHeader* cached = get_server_cache(&server, 5, 42);
+    struct tt_SubmessageHeader* cached = get_server_cache(&server, 5, 0, 42);
     EXPECT_TRUE(cached != NULL);
     EXPECT_TRUE(cached != original); // copied, not aliased
 
@@ -93,11 +93,11 @@ static void test_cache_evicts_old_entry_for_same_receiver(void) {
     struct tt_Server server;
     init_node_and_server(&node, &server);
 
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 42), 5));
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x2222, 99), 5));
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 42), 5, 0));
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x2222, 99), 5, 0));
 
-    EXPECT_TRUE(get_server_cache(&server, 5, 42) == NULL); // evicted
-    EXPECT_TRUE(get_server_cache(&server, 5, 99) != NULL); // the new one is there instead
+    EXPECT_TRUE(get_server_cache(&server, 5, 0, 42) == NULL); // evicted
+    EXPECT_TRUE(get_server_cache(&server, 5, 0, 99) != NULL); // the new one is there instead
 }
 
 // A different receiver's cache entry must be unaffected by another receiver's traffic.
@@ -108,11 +108,11 @@ static void test_cache_keeps_entries_for_different_receivers_independent(void) {
     struct tt_Server server;
     init_node_and_server(&node, &server);
 
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 1), 5));
-    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 6, 0x2222, 1), 6));
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 1), 5, 0));
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 6, 0x2222, 1), 6, 0));
 
-    EXPECT_TRUE(get_server_cache(&server, 5, 1) != NULL);
-    EXPECT_TRUE(get_server_cache(&server, 6, 1) != NULL);
+    EXPECT_TRUE(get_server_cache(&server, 5, 0, 1) != NULL);
+    EXPECT_TRUE(get_server_cache(&server, 6, 0, 1) != NULL);
 }
 
 int main(void) {

@@ -563,6 +563,15 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A server runs its callback once per call when one context has two Clients of the service** (2026-10-09). The
+  server kept one cached answer per source context, so a retry from one Client that arrived after the other Client
+  was answered ran the callback again. A CallRequest's pad byte now carries `client_tag` (which Client of its
+  context is calling, 1..255; 0 from an older sender), and the server keeps one answer per (context, client_tag) and
+  looks it up by (context, client_tag, seq_no). Compatible both ways without a `tt_VERSION` change: an older sender
+  writes 0 and gets the old behaviour, an older server ignores the byte. A Client also skips a seq_no another Client
+  of the service still waits on when the context's counter comes round. In a soak of 400 interleaved calls at 25%
+  loss, 70 callbacks ran twice before and none after.
+
 - **Two interface packages with a same-named message no longer share one codec** (RMW_GAPS_PLAN.md g12,
   2026-09-28). **Every interface package must be rebuilt**: the generated names change, so code naming
   `<Name>Data` on the ROS 2 path stops compiling rather than linking to the wrong thing.

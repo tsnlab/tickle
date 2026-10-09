@@ -110,8 +110,8 @@ static bool inside(const void* ptr, const uint8_t* area, size_t size) {
 
 static void test_zeroed_server_uses_inline_storage(void) {
     init_server();
-    EXPECT_TRUE(set_server_cache(&server, write_response(5, 1, 16), 5));
-    struct tt_SubmessageHeader* cached = get_server_cache(&server, 5, 1);
+    EXPECT_TRUE(set_server_cache(&server, write_response(5, 1, 16), 5, 0));
+    struct tt_SubmessageHeader* cached = get_server_cache(&server, 5, 0, 1);
     EXPECT_TRUE(cached != NULL && inside(cached, &server.cache_buf[0][0], sizeof(server.cache_buf)));
 }
 
@@ -120,14 +120,14 @@ static void test_attached_cache_holds_what_fits_and_sends_what_does_not(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Server_set_storage(&server, cache_area, ENTRY));
 
     // Fits: cached, in the caller's storage.
-    EXPECT_TRUE(set_server_cache(&server, write_response(5, 1, 16), 5));
-    struct tt_SubmessageHeader* cached = get_server_cache(&server, 5, 1);
+    EXPECT_TRUE(set_server_cache(&server, write_response(5, 1, 16), 5, 0));
+    struct tt_SubmessageHeader* cached = get_server_cache(&server, 5, 0, 1);
     EXPECT_TRUE(cached != NULL && inside(cached, cache_area, sizeof(cache_area)));
 
     // Larger than an entry: set_server_cache() still reports success, so the response is sent - and
     // nothing is cached for it. A retry will re-run the callback, as after a cache timeout.
-    EXPECT_TRUE(set_server_cache(&server, write_response(6, 1, 200), 6));
-    EXPECT_TRUE(get_server_cache(&server, 6, 1) == NULL);
+    EXPECT_TRUE(set_server_cache(&server, write_response(6, 1, 200), 6, 0));
+    EXPECT_TRUE(get_server_cache(&server, 6, 0, 1) == NULL);
 }
 
 static uint8_t sent[tt_MAX_BUFFER_LENGTH];
@@ -196,7 +196,7 @@ static void test_server_attach_refuses_what_cannot_work(void) {
     EXPECT_TRUE(server.cache_storage == NULL);
 
     // Swapping storage out from under a cached entry would leave it pointing at the old storage.
-    EXPECT_TRUE(set_server_cache(&server, write_response(5, 1, 16), 5));
+    EXPECT_TRUE(set_server_cache(&server, write_response(5, 1, 16), 5, 0));
     EXPECT_EQ_INT(tt_RET_ILLEGAL_STATUS, tt_Server_set_storage(&server, cache_area, ENTRY));
     clear_server_cache_slot(&server, 0);
     EXPECT_EQ_INT(tt_RET_OK, tt_Server_set_storage(&server, cache_area, ENTRY));

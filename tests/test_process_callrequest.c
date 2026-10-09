@@ -687,14 +687,14 @@ static void test_an_announce_without_the_client_drops_its_responses(void) {
     setup_with_discovery(&node, &service, &server);
     ask(&node, REMOTE_NODE_ID, 0, 0, test_mock_now);
     drop_cached_responses_from_source(&node, REMOTE_NODE_ID, false); // the same client re-announced: kept
-    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 0) != NULL);
+    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 0, 0) != NULL);
     announce_client(&node, 200);
     drop_cached_responses_from_source(&node, REMOTE_NODE_ID, false);
-    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 0) == NULL); // replaced
+    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 0, 0) == NULL); // replaced
     ask(&node, REMOTE_NODE_ID, 1, 0, test_mock_now + MS);
     announce_client(&node, 0);
     drop_cached_responses_from_source(&node, REMOTE_NODE_ID, false);
-    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 1) == NULL); // gone
+    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 0, 1) == NULL); // gone
 }
 
 // Without discovery the server cannot tell incarnations apart, but a farewell (tt_Context_destroy()'s announce
@@ -716,7 +716,7 @@ static void test_a_farewell_drops_the_sources_responses(void) {
     uint8_t farewell[sizeof(struct tt_AnnounceHeader)];
     memset(farewell, 0, sizeof(farewell)); // entity_count 0
     EXPECT_TRUE(process_announce(&node, &header, farewell, 0, sizeof(farewell), 0, 0, 7, 0, 1));
-    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 0) == NULL);
+    EXPECT_TRUE(get_server_cache(&server, REMOTE_NODE_ID, 0, 0) == NULL);
 
     ask(&node, REMOTE_NODE_ID, 0, 0, t0 + MS); // the next process under that id, its seq_no back at 0
     EXPECT_EQ_U32(2, (uint32_t)callback_count);
@@ -736,9 +736,9 @@ static void test_full_slots_evict_the_oldest_response(void) {
     uint8_t newcomer = (uint8_t)(10 + tt_MAX_SERVER_CACHE_COUNT);
     ask(&node, newcomer, 1, 0, t0 + MS);
     EXPECT_EQ_U32(tt_MAX_SERVER_CACHE_COUNT + 1, (uint32_t)test_mock_send_call_count);
-    EXPECT_TRUE(get_server_cache(&server, newcomer, 1) != NULL);
-    EXPECT_TRUE(get_server_cache(&server, 10, 1) == NULL); // the oldest went
-    EXPECT_TRUE(get_server_cache(&server, 11, 1) != NULL); // and only it
+    EXPECT_TRUE(get_server_cache(&server, newcomer, 0, 1) != NULL);
+    EXPECT_TRUE(get_server_cache(&server, 10, 0, 1) == NULL); // the oldest went
+    EXPECT_TRUE(get_server_cache(&server, 11, 0, 1) != NULL); // and only it
 }
 
 int main(void) {
