@@ -441,7 +441,10 @@ static void test_inconsistent_fragments_are_dropped_and_counted(void) {
 static void test_sample_above_the_limit_is_refused(void) {
     init_pair(tt_MAX_SAMPLE_LENGTH + 1);
     start_capture();
-    EXPECT_EQ_INT(tt_RET_PROTOCOL_ERROR, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    // Large-message stage 2 takes such a sample only from a context given large buffers
+    // (tt_Context_set_large_buffers(), test_large_sample.c); without them it is refused as one no publish can carry.
+    EXPECT_EQ_INT(tt_LARGE_SAMPLES ? tt_RET_TOO_LARGE : tt_RET_PROTOCOL_ERROR,
+                  tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
     EXPECT_EQ_INT(0, datagram_count);
     EXPECT_EQ_U32(0, pub.seq_no);
     EXPECT_EQ_U32(sizeof(struct tt_Header), sender.tx_tail);
