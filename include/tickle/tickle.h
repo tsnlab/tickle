@@ -110,7 +110,8 @@ struct tt_LockStats {
 //
 // bytes[] holds the sample exactly as a DATA submessage body would - DataHeader, then CDR - so a
 // completed slot is handed to process_data() as if it had arrived whole. 8-aligned, which puts the CDR
-// at 4 mod 8 as rx_buffer does and keeps generated codecs' aligned reads valid.
+// 16 bytes in, at 0 mod 8, and keeps generated codecs' 4-aligned reads valid (a reassembled sample is never lent,
+// so it need not match rx_buffer's 4 mod 8).
 //
 // Where a fragment goes follows from its index and the continuation payload size, which every
 // fragment but the last shares (fragment 0 carries 11 bytes fewer, for its longer header). That size
@@ -609,7 +610,12 @@ struct tt_Context {
     uint8_t summary_rides;
     uint32_t reached_nodes[tt_MAX_CONTEXT_IDS / 32];
 
-    tt_ALIGNAS(4) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
+    // 8-aligned, as every receive buffer lending hands out is (the rx pool's, tt_Context_set_rx_pool()): a DATA alone
+    // in its datagram - the single form, 4-byte header + 16-byte DataHeader - then has its payload at 4 mod 8, and what
+    // follows a 4-byte prefix there (rmw_tickle's psn) at 0 mod 8, aligned for a struct with 64-bit members, so a
+    // loaned take can read it in place (docs/RMW.md "Loaned messages"). It was 4-aligned and fell at 4 mod 8 in the
+    // rmw build, which put every such message off its alignment: 8 of 300 socket-path samples were read in place.
+    tt_ALIGNAS(8) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t rx_tail;
     uint32_t rx_size;
 

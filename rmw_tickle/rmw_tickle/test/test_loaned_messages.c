@@ -648,9 +648,10 @@ static void check_case(enum scenario which, const struct tally* tally, const uin
     case UDP:
         assert(want == tally->received && want == report->published);
         assert(0 == tally->where[IN_RING]);
-        // Read where they arrived - but only those that landed in a pool buffer: core's inline rx_buffer sits 4 bytes
-        // off 8 in this build, so an Array1k there is not aligned for its int64 and is copied (docs/RMW.md).
-        assert(tally->where[IN_RECEIVE_BUFFER] > 0);
+        // Read where they arrived, most of them: core's rx_buffer and the pool's buffers are 8-aligned, so an Array1k
+        // behind its psn is aligned for its int64 wherever it lands (docs/RMW.md). Before rx_buffer was, 8 of 300
+        // were - those that happened to land in a pool buffer.
+        assert(tally->where[IN_RECEIVE_BUFFER] > want / 2U);
         break;
     case PINNED:
         assert(want == tally->received && want == report->published);

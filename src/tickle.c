@@ -41,7 +41,12 @@ _Static_assert(offsetof(struct tt_Context, tx_buffer) % 4 == 0, "tx_buffer not 4
 // passing runtime check insufficient, which is how a guard comes to be sufficient by accident.
 _Static_assert(sizeof(struct tt_SegmentHeader) % 4 == 0, "tt_SegmentHeader must keep slots 4-aligned");
 _Static_assert(sizeof(struct tt_SegmentSlot) % 4 == 0, "tt_SegmentSlot must keep payloads 4-aligned");
-_Static_assert(offsetof(struct tt_Context, rx_buffer) % 4 == 0, "rx_buffer not 4-aligned in tt_Context");
+_Static_assert(offsetof(struct tt_Context, rx_buffer) % 8 == 0, "rx_buffer not 8-aligned in tt_Context");
+// What that 8-alignment is for (tickle.h, tt_Context.rx_buffer): a DATA alone in its datagram has its payload at 4 mod
+// 8 in every receive buffer, so a 4-byte prefix and then a struct with 64-bit members lands aligned for it.
+_Static_assert((sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader)) % 8 == 4,
+               "a single-form DATA's payload no longer lands at 4 mod 8 in an 8-aligned receive buffer");
+_Static_assert(tt_RX_POOL_BUFFER_BYTES % 8 == 0, "rx pool buffers must stay 8-aligned one after another");
 #undef TT_FRAMING_HDR
 #if tt_FRAG_ENABLED
 _Static_assert(sizeof(struct tt_DataHeader) == tt_FRAG_DATA_HEADER_LENGTH, "tt_FRAG_DATA_HEADER_LENGTH is stale");

@@ -111,9 +111,10 @@ allocates nothing (an ordinary `rmw_take` copies it into the caller's message, a
   one of 1,600 flood samples delivered on another topic while three loans were held, 0 refusals);
 - at most 8 queued samples per subscription stay in a buffer (core holds 16 per context); the rest are decoded;
 - a byte-swapped sample, a fragmented, reorder-released or locally delivered one, or one not aligned for its type is
-  decoded, never lent as is. **Core's inline receive buffer sits 4 bytes off 8** in this build, so an Array1k that lands
-  there is copied: on the PC socket path 8 of 300 were read in place. Aligning `tt_Context.rx_buffer` to 8 is a
-  one-line core change, not made here.
+  decoded, never lent as is. Every receive buffer is 8-aligned (core's `rx_buffer` since 2026-10-09), so a message
+  alone in its datagram lands aligned for 64-bit members: on the PC socket path 296 of 300 Array1k samples are read in
+  place, where 8 of 300 were while `rx_buffer` sat 4 bytes off 8. A sample sharing its datagram may still land off
+  its alignment and is decoded.
 
 **Publisher.** `rmw_borrow_loaned_message` lends a buffer the publisher keeps (at most 64 out at once), so rclcpp
 builds the message there instead of allocating one. A new buffer is initialised as a new message is; a kept one is

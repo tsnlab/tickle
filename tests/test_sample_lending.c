@@ -678,7 +678,47 @@ static void test_socket_buffer_is_reused_when_not_retained(void) {
     rig_down();
 }
 
+// A struct with a 64-bit member behind a 4-byte prefix - rmw_tickle's psn ahead of an Array1k - read in place from
+// wherever a socket datagram lands: the context's rx_buffer and a pool buffer. Both put a lone DATA's payload at 4 mod
+// 8, so the struct is aligned for its uint64_t. rx_buffer used to sit 4 bytes off that (tt_ALIGNAS(4)), and the rmw
+// layer then copied every such sample that landed there (docs/RMW.md "Loaned messages").
+struct wide_sample {
+    uint64_t stamp;
+    uint32_t value;
+    uint32_t pad;
+};
+static void test_a_socket_sample_is_aligned_for_a_64_bit_type(void) {
+    socket_rig_up();
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_set_rx_pool(&rig.owner, pool_storage, 2));
+    cb.mode = KEEP_EVERY;
+    socket_deliver(1900); // into rx_buffer, retained: the next goes to the pool's buffer
+    socket_deliver(1901);
+    EXPECT_EQ_U32(2, cb.kept_count);
+    const uint8_t* in_rx_buffer = cb.kept[0].sample.payload;
+    const uint8_t* in_pool = cb.kept[1].sample.payload;
+    EXPECT_TRUE(in_rx_buffer >= rig.owner.rx_buffer &&
+                in_rx_buffer < rig.owner.rx_buffer + sizeof(rig.owner.rx_buffer));
+    EXPECT_TRUE(in_pool >= (const uint8_t*)pool_storage &&
+                in_pool < (const uint8_t*)pool_storage + tt_RX_POOL_BUFFER_BYTES);
+    for (int k = 0; k < 2; k++) {
+        const uint8_t* payload = cb.kept[k].sample.payload;
+        EXPECT_EQ_U32(4, (uint32_t)((uintptr_t)payload % 8U));
+        EXPECT_EQ_U32(0, (uint32_t)((uintptr_t)(payload + sizeof(uint32_t)) % _Alignof(struct wide_sample)));
+        // What sits there is the sample's: value_encode() filled every byte after the first four with the value's low
+        // byte, so the struct's uint64_t reads as that byte eight times.
+        struct wide_sample wide;
+        memcpy(&wide, payload + sizeof(uint32_t), sizeof(wide));
+        uint8_t fill = (uint8_t)(cb.kept[k].value & 0xFFU);
+        uint64_t expected = 0;
+        memset(&expected, fill, sizeof(expected));
+        EXPECT_EQ_U64(expected, wide.stamp);
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&rig.owner, &cb.kept[k].sample));
+    }
+    rig_down();
+}
+
 int main(void) {
+    test_a_socket_sample_is_aligned_for_a_64_bit_type();
     test_a_retained_slot_survives_a_lap();
     test_unretained_records_are_released_as_read();
     test_a_held_slot_blocks_only_its_own_ring();

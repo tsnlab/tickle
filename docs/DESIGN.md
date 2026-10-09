@@ -640,7 +640,9 @@ the sample it was handed beyond the callback, without copying it, until it gives
     (`tt_Context_set_rx_pool()`, `tt_RX_POOL_BUFFER_BYTES` each, at most `tt_RX_POOL_MAX`) form one set; the socket
     reads into one of them, and retaining a sample there hands the next datagram a free buffer instead. No pool, or
     every buffer held: retain fails with `tt_RET_OUT_OF_BUFFER` and the caller copies, as it would have without
-    lending (`lend_exhausted`).
+    lending (`lend_exhausted`). Every one of them is 8-aligned, so a DATA alone in its datagram has its payload at
+    4 mod 8 and a struct with 64-bit members behind a 4-byte prefix (rmw_tickle's psn) lands aligned for it
+    (`test_sample_lending`, a 64-bit-aligned type read in place from `rx_buffer` and from the pool).
   - Several samples of one datagram (a batch) may be retained; the slot or buffer goes back when the last is released.
 - **What is not lent: `tt_RET_UNSUPPORTED`, and the caller copies** (`lend_unlendable`). A sample assembled from
   fragments (the best-effort reassembly slots, the RELIABLE `frag_scratch` fast path), one released from a reorder
