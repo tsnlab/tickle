@@ -547,6 +547,10 @@ Where it departs, and why:
 - **Fragment positions use the receiver's own geometry** (`tt_CONTROL_MAX_LENGTH`), as the sender's: a large sample
   between two nodes built with different control datagrams is dropped and counted (`large.dropped`), where the small
   path learns the sender's continuation size.
+- **A fixed-size type above a sample is a topic too** (perf_test's `Array1m`): core takes a C struct up to the
+  largest large sample when its Subscriber decodes in place, and rmw checks a topic type against
+  `RMW_TICKLE_MAX_SAMPLE_BYTES` rather than one datagram (services keep the datagram). Missed at first because the
+  PC evidence used `sensor_msgs/Image`, whose struct is small; the rig's first Array1m runs were all refused.
 - **rmw: a sequence count of 65,535 or more is the escape 0xFFFF and a uint32** (the direct codec). A count was a
   uint16, so an `Image` of 1 MB could not be encoded at all; every count below 65,535 keeps its two bytes, and no
   sample within 65,507 B can hold a longer sequence, so no small sample changes.

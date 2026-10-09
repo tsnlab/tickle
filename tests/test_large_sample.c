@@ -189,6 +189,17 @@ static void free_nothing(struct tt_Data* data) {
     (void)data;
 }
 
+// The in-place decode rmw_tickle gives every subscription: the payload itself is the sample.
+static struct tt_Data* checking_decode_inplace(const uint8_t* payload, uint32_t len, bool native) {
+    (void)checking_decode(NULL, payload, len, native);
+    return (struct tt_Data*)payload;
+}
+
+// The topics' C struct size: 8 (a size, as most tests use), or a fixed-size type above tt_MAX_SAMPLE_LENGTH -
+// perf_test's Array1m, 1 MB and its header - whose Subscriber then decodes in place, as rmw_tickle's does.
+#define ARRAY1M_STRUCT (1048576U + 16U)
+static uint32_t pair_struct_size = 8;
+
 static void on_data(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
     (void)time;
     (void)data;
@@ -251,7 +262,7 @@ static void init_pair(uint32_t len, enum pair_mode mode) {
     init_bare_node(&sender, SENDER_ID);
     memset(&sender_topic, 0, sizeof(sender_topic));
     sender_topic.name = TOPIC_NAME;
-    sender_topic.data_size = 8;
+    sender_topic.data_size = pair_struct_size;
     sender_topic.data_encode_size = sized_encode_size;
     sender_topic.data_encode = sized_encode;
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
@@ -260,8 +271,9 @@ static void init_pair(uint32_t len, enum pair_mode mode) {
     init_bare_node(&receiver, RECEIVER_ID);
     memset(&receiver_topic, 0, sizeof(receiver_topic));
     receiver_topic.name = TOPIC_NAME;
-    receiver_topic.data_size = 8;
+    receiver_topic.data_size = pair_struct_size;
     receiver_topic.data_decode = checking_decode;
+    receiver_topic.data_decode_inplace = pair_struct_size > tt_MAX_SAMPLE_LENGTH ? checking_decode_inplace : NULL;
     receiver_topic.data_free = free_nothing;
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub, &receiver_topic, ENDPOINT_NAME, on_data));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&receiver, test_acquire, test_release, &receiver_alloc));
@@ -570,6 +582,29 @@ static void round_trip(uint32_t size, enum pair_mode mode, bool reverse) {
     EXPECT_EQ_U64(1, receiver.large.reassembled);
     EXPECT_EQ_U64(0, receiver.large.dropped);
     EXPECT_EQ_U32(0, receiver_alloc.live); // delivered and not kept: the receiver's buffer went back
+}
+
+static void test_a_fixed_size_type_above_a_sample_is_a_large_topic(void) {
+    // A type whose C struct is above tt_MAX_SAMPLE_LENGTH - a fixed 1 MB array, perf_test's Array1m - is a topic like
+    // any other with large samples: its Publisher and in-place Subscriber are created and a sample goes through.
+    // Refused until 2026-10-09 (by core's topic check and rmw's), which voided every rig run of Array1m.
+    pair_struct_size = ARRAY1M_STRUCT;
+    round_trip(ONE_MB, BEST_EFFORT, false);
+    round_trip(ONE_MB, RELIABLE_KEEP_LAST, false);
+    // A Subscriber of it without an in-place decode is refused: the copying decode puts the struct on the stack.
+    struct tt_Topic copying = receiver_topic;
+    copying.data_decode_inplace = NULL;
+    static struct tt_Subscriber refused;
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT,
+                  tt_Context_create_subscriber(&receiver, &refused, &copying, "copying", on_data));
+    // Nor is any struct above the largest sample core can carry.
+    struct tt_Topic too_large = sender_topic;
+    too_large.data_size = 1446U + (1452U * (tt_LARGE_MAX_FRAGMENTS - 1U)) + 1U;
+    static struct tt_Publisher refused_pub;
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Context_create_publisher(&sender, &refused_pub, &too_large, "too_large"));
+    too_large.data_size--;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &refused_pub, &too_large, "largest"));
+    pair_struct_size = 8;
 }
 
 static void test_round_trip_at_every_boundary(void) {
@@ -971,6 +1006,7 @@ static void test_a_durable_writer_backs_a_late_joiner_with_its_large_samples(voi
 
 int main(void) {
     test_round_trip_at_every_boundary();
+    test_a_fixed_size_type_above_a_sample_is_a_large_topic();
     test_any_arrival_order_reassembles();
     test_an_inconsistent_fragment_is_dropped_and_counted();
     test_small_samples_keep_the_small_path();
