@@ -18,6 +18,7 @@
 // queued and fed to the receiver's process_packet() (and back), with loss when a test asks for it, on the mock clock.
 
 #define tt_MAX_BUFFER_LENGTH 65507
+#define tt_LARGE_SAMPLES 1 // as rmw_tickle builds core
 
 #include <pthread.h>
 #include <stdint.h>

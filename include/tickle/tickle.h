@@ -485,7 +485,9 @@ struct tt_Lending {
     uint64_t full_retained;
     // While rx_kind is LARGE: the large sample's own buffer, which a retain keeps (large-message stage 2). Last, so no
     // field above moves.
+#if tt_LARGE_SAMPLES
     uint8_t* rx_large;
+#endif
 };
 #endif
 

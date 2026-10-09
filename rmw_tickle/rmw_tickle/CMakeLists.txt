@@ -74,6 +74,9 @@ target_compile_definitions(rmw_tickle PUBLIC "tt_MAX_BUFFER_LENGTH=${rosidl_type
 # (tt_Server_set_storage()/tt_Client_set_storage(), rmw_service.c/rmw_client.c), so the inline
 # arrays are made as small as allowed - 8 bytes, the alignment unit.
 target_compile_definitions(rmw_tickle PUBLIC tt_SERVER_CACHE_ENTRY_LENGTH=8 tt_CLIENT_CACHE_LENGTH=8)
+# Large-message stage 2 (docs/DESIGN.md section 8): messages above 64 KB, up to RMW_TICKLE_MAX_SAMPLE_BYTES. Off in
+# core unless asked for, so a build that never carries one keeps the smaller window and no large-sample state.
+target_compile_definitions(rmw_tickle PUBLIC tt_LARGE_SAMPLES=1)
 # Nodes per context (CONTEXT_NODE_PLAN.md stage 2): every rmw node is a core node on the one shared context, and a
 # composed ROS 2 bringup (Nav2's, one container) holds 15-20 of them - core's default, 16, would refuse the rest.
 # 256 is the most a node's uint8_t index allows; the table costs 8 bytes per entry.

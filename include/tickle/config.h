@@ -293,15 +293,28 @@
 // perf_hil examples via their own flag) opts into a wider one per Subscriber by handing
 // tt_Context_create_subscriber()'s own caller-owned tracking buffer - see struct tt_Subscriber's own
 // window doc comment (tickle.h).
-// 8192 bits since large-message stage 2 (DESIGN.md section 8): one sample's datagrams must fit a reader's window, so
-// the window is what bounds the largest sample (about 11.3 MiB). Its ACKNACK, 28 + 1024 bytes, still fits one control
-// datagram. 4096 on FreeRTOS, which compiles stage 2 out and whose stack holds a window-sized array on the ACKNACK
-// path.
+// Large-message stage 2 (DESIGN.md section 8, "Stage 2"): samples above tt_MAX_SAMPLE_LENGTH, up to one reader window
+// of datagrams (tt_LARGE_MAX_FRAGMENTS, about 11.3 MiB). They go as FRAG_FIRST_L/FRAG_CONT_L (types 11 and 12) from a
+// buffer the caller's large_acquire() callback hands core per sample (tt_Context_set_large_buffers()), and are put
+// back together into another such buffer, which a Subscriber may keep with tt_Sample_retain(). OFF unless the build
+// asks for it: rmw_tickle does (its CMakeLists.txt). A build that does not keeps the footprint it had before stage 2,
+// but for one 8-byte counter in tt_Context - the 4096-bit window below, no large-sample state in any context,
+// Publisher or proxy, no stack array widened (the rig's L2 found +15..27 kB peak RSS in every P4 cell while it was on
+// wherever fragmentation was).
+// Needs tt_FRAG_ENABLED; never on FreeRTOS (no buffer callbacks; the lwIP heap cannot hold a megabyte sample). A build
+// without it skips types 11/12 and counts them (frag_large_skipped).
+#ifndef tt_LARGE_SAMPLES
+#define tt_LARGE_SAMPLES 0
+#endif
+// 8192 bits with large samples (DESIGN.md section 8): one sample's datagrams must fit a reader's window, so the window
+// is what bounds the largest sample (about 11.3 MiB). Its ACKNACK, 28 + 1024 bytes, still fits one control datagram.
+// 4096 otherwise, as before stage 2: every window-sized array - on the stack of the ACKNACK path, in a caller's
+// tracking buffer sized for the widest - stays the size it was.
 #ifndef tt_RELIABLE_BITMAP_MAX_BITS
-#if defined(TT_PLATFORM_FREERTOS)
-#define tt_RELIABLE_BITMAP_MAX_BITS 4096
-#else
+#if tt_LARGE_SAMPLES
 #define tt_RELIABLE_BITMAP_MAX_BITS 8192
+#else
+#define tt_RELIABLE_BITMAP_MAX_BITS 4096
 #endif
 #endif
 #define tt_RELIABLE_BITMAP_MAX_WORDS (tt_RELIABLE_BITMAP_MAX_BITS / tt_RELIABLE_BITMAP_WORD_BITS)
@@ -676,20 +689,7 @@
 #endif
 // Fragments one sample may be split into: the width of a reassembly slot's bitmap.
 #define tt_FRAG_MAX_COUNT 64
-// Large-message stage 2 (DESIGN.md section 8, "Stage 2"): samples above tt_MAX_SAMPLE_LENGTH, up to one reader window
-// of datagrams (tt_LARGE_MAX_FRAGMENTS, about 11.3 MiB). They go as FRAG_FIRST_L/FRAG_CONT_L (types 11 and 12) from a
-// buffer the caller's large_acquire() callback hands core per sample (tt_Context_set_large_buffers()), and are put
-// back together into another such buffer, which a Subscriber may keep with tt_Sample_retain(). Compiled in with
-// fragmentation, out on FreeRTOS (no buffer callbacks; the lwIP heap cannot hold a megabyte sample), where a node
-// only skips types 11/12 and counts them (frag_large_skipped). Samples within tt_MAX_SAMPLE_LENGTH are untouched by it,
-// on the wire and in memory.
-#ifndef tt_LARGE_SAMPLES
-#if tt_FRAG_ENABLED && !defined(TT_PLATFORM_FREERTOS)
-#define tt_LARGE_SAMPLES 1
-#else
-#define tt_LARGE_SAMPLES 0
-#endif
-#endif
+// tt_LARGE_SAMPLES itself is decided above, beside tt_RELIABLE_BITMAP_MAX_BITS, which it widens.
 // The most datagrams one large sample may take: the widest reader window, since all of a sample's datagrams must be
 // trackable at once by a RELIABLE reader (DESIGN.md section 8: 1,446 + 1,452 x 8,191 bytes at the default datagram).
 #define tt_LARGE_MAX_FRAGMENTS tt_RELIABLE_BITMAP_MAX_BITS
@@ -1155,6 +1155,9 @@ static_assert(!tt_FRAG_ENABLED || tt_MAX_SAMPLE_LENGTH + tt_FRAG_SUBMESSAGE_OVER
               "a fragmented sample is encoded as one submessage first, whose length is a uint16");
 static_assert(tt_FRAG_REASSEMBLY_SLOTS >= 1, "fragmentation needs at least one reassembly slot");
 static_assert(!tt_LARGE_SAMPLES || tt_FRAG_ENABLED, "large samples are sent as fragments: they need tt_FRAG_ENABLED");
+#if defined(TT_PLATFORM_FREERTOS)
+static_assert(!tt_LARGE_SAMPLES, "large samples are not supported on FreeRTOS");
+#endif
 static_assert(tt_LARGE_MAX_FRAGMENTS <= UINT16_MAX, "a large fragment's index and count are uint16_t on the wire");
 static_assert(tt_LARGE_RETAINED >= 1 && tt_LARGE_RETAINED <= UINT8_MAX, "a Publisher's large ring counts in a uint8_t");
 static_assert(tt_LARGE_ASSEMBLIES >= 1, "receiving large samples needs at least one assembly");

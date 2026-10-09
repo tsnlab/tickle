@@ -16685,9 +16685,7 @@ static tt_ret_t lend_retain_locked(struct tt_Context* node, const struct tt_Subs
         return tt_RET_OUT_OF_BUFFER;
     }
     const void* region = NULL;
-    if (kind == tt_LEND_LARGE) {
-        region = node->lend.rx_large; // the large sample's own buffer: it is kept, nothing else has to move
-    } else if (kind == tt_LEND_BUFFER) {
+    if (kind == tt_LEND_BUFFER) {
         // The first sample kept in this buffer: the socket's next datagram needs another one to go to.
         if (!lend_holds_buffer(node, node->lend.rx_index)) {
             int32_t spare = lend_spare_buffer(node, node->lend.rx_index);
@@ -16697,6 +16695,10 @@ static tt_ret_t lend_retain_locked(struct tt_Context* node, const struct tt_Subs
             }
             node->lend.landing = (uint8_t)spare;
         }
+#if tt_LARGE_SAMPLES
+    } else if (kind == tt_LEND_LARGE) {
+        region = node->lend.rx_large; // the large sample's own buffer: it is kept, nothing else has to move
+#endif
     } else {
 #if tt_SEGMENT_ENABLED
         region = node->own_segment;
