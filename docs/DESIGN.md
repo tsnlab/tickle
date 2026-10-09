@@ -342,10 +342,11 @@ Anything batched ahead is flushed first. Retransmissions send cached fragments u
   are counted (`frag_duplicate`, `frag_abandoned`, `frag_dropped`).
 - A node built without fragmentation skips types 8 and 9 silently.
 
-**Larger than 65507 B** samples are not implemented yet: the stage-2 design and its pre-registration follow. A
-fragment-assembled sample cannot be lent (section 10, receive-buffer lending): it is retained by copying.
+**Larger than 65507 B** (above `tt_MAX_SAMPLE_LENGTH`): stage 2 below - step A, the socket path, is implemented; step
+B, the same-host region, is not. A fragment-assembled small sample cannot be lent (section 10, receive-buffer lending):
+it is retained by copying. A large one is lent from its own buffer.
 
-### Stage 2: samples above 64 KB (designed 2026-10-09, not implemented, not approved)
+### Stage 2: samples above 64 KB (designed 2026-10-09; step A implemented 2026-10-09, step B not)
 
 The user's staged-support decision (2026-09-27, LARGE_MESSAGE_PLAN decision 1 "B"; stage 1 was the rmw direct codec
 and serialized messages). Target: rmw `sensor_msgs/Image` and `PointCloud2` of 1-8 MB (VGA rgb8 921,600 B, 720p rgb8
@@ -496,6 +497,59 @@ Incomplete TickLE delivery in a cell is a LOSE.
 `tt_SEGMENT_VERSION` 5). (2) Keep per-datagram seq_no for large samples (5,778 seq_nos and an 8192-bit window per
 8 MiB sample) - the design assumes yes. (3) The 8 MiB rmw default and the ~11.3 MiB ceiling. (4) I4 cross-host at
 15 Hz plus the I4s saturation cell, since 4 MB at 30 Hz exceeds the rig's link.
+
+#### Step A as built (2026-10-09), and where it departs from the above
+
+Built as designed: `tt_VERSION` 12; per-datagram seq_no; caller-acquired buffers (`tt_Context_set_large_buffers()`),
+encoded once and sent straight from (two iovecs a datagram, `sendmmsg()` of up to 64); the writer keeps the buffer by
+reference (`tt_Publisher.large[]`, `tt_LARGE_RETAINED` 16) and resends one datagram at a time from it; a per-Publisher
+send cursor resumed from `tt_Context_poll()`; a non-FINAL HEARTBEAT after each large sample's last fragment
+(`tt_LARGE_END_HEARTBEAT`); the reader copies each fragment to its offset in an acquired buffer
+(`tt_LARGE_ASSEMBLIES` 4), records it only once stored, delivers in order from there and lends it
+(`tt_LEND_LARGE`); KEEP_ALL refuses a sample wider than a matched reader's window with `tt_RET_TOO_LARGE`; the window is
+8192 bits (4096 on FreeRTOS, which compiles stage 2 out, `tt_LARGE_SAMPLES` 0, and counts `frag_large_skipped`); rmw
+defaults to 8 MiB (`RMW_TICKLE_MAX_SAMPLE_BYTES`) and gives a type without a size bound the widest window. Tests:
+`tests/test_large_sample.c` (L1.1, 1.3-1.7, each with its mutant in `tests/mutants_large_sample.py`),
+`tests/test_wire_identity_largemsg.c` and `tests/wire_identity_largemsg.sh` (L1.2), `tests/test_large_skip.c`.
+
+Where it departs, and why:
+
+- **Types 11 and 12, not 10 and 11.** 10 is `tt_SUBMESSAGE_TYPE_SHM_DATA`, reserved for good and refused from the
+  socket (tickle.h); giving it a second meaning is what that comment forbids.
+- **Every sample above `tt_MAX_SAMPLE_LENGTH` uses 11/12, not only those above 255 fragments.** Routing by fragment
+  count is ambiguous where the two paths meet: at rmw's 65,507 a sample of 65,508-66,877 B has the same 46 fragments
+  as one of 65,507, and the small receiver cannot hold it. By type, the receiver never guesses. Nothing that could be
+  sent before is affected - L1.2 holds - and samples of 64-370 KB pay 2 bytes a fragment they did not pay under types
+  8/9, samples that could not be sent at all before.
+- **KEEP_LAST does not abandon the tail of a sample being sent.** A publish while a send is in progress waits behind
+  it, without seq_nos yet (`tt_Publisher.large_pending`); a newer one replaces it before any of it has gone
+  (`large.tail_abandoned`). Abandoning the sample in flight, as designed, would deliver nothing at all in I4s - each
+  4 MB sample takes longer than the 33 ms to the next - where this delivers at the link's rate; and a waiting sample
+  that holds no seq_nos leaves no gap for readers to give up on. The falsification test for I4s still reads it.
+- **The writer releases a VOLATILE Publisher's large buffer once every matched reader has acknowledged it**; a DURABLE
+  one keeps it until KEEP_LAST evicts it (for late joiners).
+- **The send cursor resumes on a timer, not on socket writability**: 50 us after a full send buffer, doubling to 1 ms
+  while nothing goes (`tt_LARGE_SEND_RETRY_NS`, `_MAX_NS`). No HAL wait on POLLOUT was needed; one new HAL call,
+  `tt_send_batch_nonblocking()` (MSG_DONTWAIT), returns how many datagrams went.
+- **The end-of-sample HEARTBEAT is chased**: it is one datagram and can be lost with the tail it reveals, so while a
+  large sample stays unacknowledged it is resent, one retry interval on and doubling to 100 ms, restarted per sample.
+- **A sample that takes longer to go out than a reader waits is repaired while it goes**: a HEARTBEAT announces only
+  seq_nos already sent (an unsent tail would read as a gap), and a datagram asked for that has already gone is resent
+  at once instead of after the send. And a writer blocked in one long send reads no ACKNACK until it ends, so a
+  reader's retry while that sample's fragments are still arriving does not count against a KEEP_LAST writer's
+  budget (its first interval, before any recovery is timed, is 1 ms; a 4 MB send takes ~15). Without these a
+  KEEP_LAST reader gave up the first 4 MB sample under 5% loss on every PC run.
+- **Fragment positions use the receiver's own geometry** (`tt_CONTROL_MAX_LENGTH`), as the sender's: a large sample
+  between two nodes built with different control datagrams is dropped and counted (`large.dropped`), where the small
+  path learns the sender's continuation size.
+- **rmw: a sequence count of 65,535 or more is the escape 0xFFFF and a uint32** (the direct codec). A count was a
+  uint16, so an `Image` of 1 MB could not be encoded at all; every count below 65,535 keeps its two bytes, and no
+  sample within 65,507 B can hold a longer sequence, so no small sample changes.
+- **L3's by-reference row has no copy arm to A/B against**: copying a large sample into the cache arena would need
+  the arena to hold `depth` samples of up to 8 MiB each (80 MiB at the ROS default depth of 10) and the index one
+  record per datagram (57,780 at 8 MiB x 10), which is the memory stage 2 exists not to spend. The end-of-sample
+  HEARTBEAT row is runnable (`-Dtt_LARGE_END_HEARTBEAT=0`).
+- Not yet: large samples in a local durable backlog (`tt_Subscriber_deliver_local_backlog()`), and step B.
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
