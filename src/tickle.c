@@ -3913,6 +3913,11 @@ static void reset_node_state(struct tt_Context* node) {
     // No pool, nothing held, the socket reading into rx_buffer (landing 0), every counter zero.
     memset(&node->lend, 0, sizeof(node->lend));
 #endif
+    node->frag_large_skipped = 0;
+#if tt_LARGE_SAMPLES
+    // No buffer callbacks (tt_Context_set_large_buffers() sets them after creation), no assembly, every counter zero.
+    memset(&node->large, 0, sizeof(node->large));
+#endif
 
     memset(node->scheduler, 0, sizeof(struct tt_TCB) * tt_MAX_SCHEDULER_LENGTH);
     node->scheduler_tail = 0;
@@ -13149,6 +13154,25 @@ static bool deliver_user_fragment(struct tt_Context* node, struct tt_Header* hea
 }
 #endif
 
+// Types 11 and 12 (large-message stage 2, DESIGN.md section 8): passed over and counted, so a sender this node cannot
+// follow shows up as a number rather than as silence. The reader that delivers them comes with large-sample reception.
+// NOLINTNEXTLINE(readability-non-const-parameter)
+static bool process_frag_large(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                               uint32_t tail, uint8_t type, uint32_t sender_ip, uint16_t sender_port) {
+    UNUSED(buffer);
+    UNUSED(head);
+    UNUSED(tail);
+    UNUSED(type);
+    UNUSED(sender_ip);
+    UNUSED(sender_port);
+    node->frag_large_skipped++;
+    if (node->frag_large_skipped <= UINT32_MAX && is_power_of_ten((uint32_t)node->frag_large_skipped)) {
+        TT_LOG_WARNING("Large-sample fragment from node %u skipped: this build has no large-message support (#%lu)",
+                       header->source, (unsigned long)node->frag_large_skipped);
+    }
+    return true;
+}
+
 // One fragment, FRAG_FIRST or FRAG_CONT, from header->source. A discovery announce's fragment (its
 // entity_id is tt_DISCOVERY_ENTITY_ID) is whole entities and goes straight to process_announce(), in
 // every build; anything else is user data for the reassembly pool, which exists only when fragmentation
@@ -13254,6 +13278,12 @@ static bool process_submessage(struct tt_Context* node, struct tt_Header* header
     case tt_SUBMESSAGE_TYPE_FRAG_CONT:
         if (!self_sent) {
             process_frag(node, header, buffer, head, body_tail, submessage_header->type, sender_ip, sender_port);
+        }
+        return true;
+    case tt_SUBMESSAGE_TYPE_FRAG_FIRST_L:
+    case tt_SUBMESSAGE_TYPE_FRAG_CONT_L:
+        if (!self_sent) {
+            process_frag_large(node, header, buffer, head, body_tail, submessage_header->type, sender_ip, sender_port);
         }
         return true;
     case tt_SUBMESSAGE_TYPE_SHM_DATA:
