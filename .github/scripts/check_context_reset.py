@@ -72,6 +72,11 @@ SURVIVES_RESET = {
     "sched_inbox": "the CAS that claims a slot into WRITING; sched_inbox_state[] is the guard and node_init_locks() "
                    "does initialise that, so the payload never needs to be",
     "default_node_name": "the snprintf() one line before node->name is pointed at it",
+    # 2026-10-09, stage 1 / S1: zeroing all 14 KB at reset wrote every page of the table in a context that never
+    # attached anything. Same shape as sched_inbox: a guard array that IS reset, and a payload written before any read.
+    "segment_peers": "segment_peer(), which zeroes an entry the first time it is wanted; segment_peer_live[] is the "
+                     "guard, reset_node_state() does initialise that, and every read checks it "
+                     "(segment_peer_if_live(); tests/test_transport_seam.c's 0xAA reset test)",
     "rx_targeted": "process_data(), per datagram, before every read of it",
     # Not "believed" any more, and the first version of this entry named the WRONG MECHANISM - it said the gap logic
     # guarantees an incomplete sample is never delivered. The gap logic has nothing to do with it. cached_sample()

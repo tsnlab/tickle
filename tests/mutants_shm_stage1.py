@@ -35,7 +35,7 @@ MUTANTS = [
     (
         "a successful write restarting the dead-reader clock",
         "src/tickle.c",
-        "    node->segment_peers[context_id].last_progress_ns = 0;",
+        "    segment_peer(node, context_id)->last_progress_ns = 0;",
         "    // mutant: leave the dead-reader clock running through a success",
         "test_a_writer_gives_up_on_a_ring_nobody_drains",
     ),
@@ -112,15 +112,25 @@ MUTANTS = [
     (
         "resetting the segment state a caller did not zero",
         "src/tickle.c",
-        "    memset(node->segment_peers, 0, sizeof(node->segment_peers));",
-        "    // mutant: leave segment_peers as the caller left it",
+        "    memset(node->segment_peer_live, 0, sizeof(node->segment_peer_live));",
+        "    // mutant: leave segment_peer_live as the caller left it",
         "test_reset_zeroes_the_per_transport_counters",
+    ),
+    # Stage 1 / S1 (2026-10-09): the module on and unused must not write the 14 KB peer table at create. The mutant is
+    # the code before the change - the whole table zeroed at reset - so the test fails on exactly what was fixed.
+    (
+        "leaving the peer table unwritten until an entry is wanted",
+        "src/tickle.c",
+        "    memset(node->segment_peer_live, 0, sizeof(node->segment_peer_live));",
+        "    memset(node->segment_peers, 0, sizeof(node->segment_peers)); // mutant: the table zeroed at reset\n"
+        "    memset(node->segment_peer_live, 0, tt_MAX_CONTEXT_IDS);",
+        "test_a_context_whose_peers_are_all_remote_leaves_the_peer_table_unwritten",
     ),
     (
         "unmapping the own segment exactly once at teardown",
         "src/tickle.c",
-        "        if (mapping != NULL && mapping != own) {",
-        "        if (mapping != NULL) {",
+        "        if (entry->mapping != NULL && entry->mapping != own) {",
+        "        if (entry->mapping != NULL) {",
         "test_destroy_takes_the_segment_with_it",
     ),
     (

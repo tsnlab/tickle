@@ -278,8 +278,12 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
   `06dd78d8` all 52 rows WIN, peak RSS 13.4-16.0 MB against CycloneDDS's 15.2-18.3 MB. (RESULTS "rmw layer, same host")
 - **FreeRTOS form of the segment** (HAL-provided rather than `shm_open`): it shapes the seam. The segment only:
   discovery stays UDP (decided below). (SHM_PLAN 7 q3)
-- **Stage 1 / S1 against the WIRE 10.4 floors** (CPU, RSS and size, p1-p4): the module's "no cost when off" is still
-  owed. g15's uncounted zero-copy sends close with it. (SHM_PLAN 6b; RMW_GAPS S1/S3/g15; MODULE_PLAN 3)
+- **Stage 1 / S1 against the WIRE 10.4 floors** (CPU, RSS and size, p1-p4): measured on the PC 2026-10-09 and two
+  costs fixed; the CPU-time half is the rig's. Off: 560 B of fields left in the context, by inventory. Lending in and
+  unused: no cost shown. Segment on and unused: the publisher's +5.8-6.7% instructions is down to +1.7-3.1% (the
+  seam's per-datagram question and lost inlining remain), +25 KB of code, +15.4 KB of context. Details and the
+  remaining step in [DESIGN.md](DESIGN.md) section 10, "What the module costs where it is not used". g15 closed
+  end to end (`g15_zerocopy_e2e.sh`). (SHM_PLAN 6b; RMW_GAPS S1/S3/g15; MODULE_PLAN 3)
 
 Decided and done 2026-10-08/09:
 

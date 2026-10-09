@@ -982,6 +982,15 @@ struct tt_Context {
         // that the memset(0) every teardown path ends with means "none" rather than standard input. 0: ring over UDP.
         int32_t bell_fd_plus1;
     } segment_peers[tt_MAX_CONTEXT_IDS];
+    // Which segment_peers[] entries have been set up (nonzero), by context id. An entry is zeroed the first time it is
+    // wanted (segment_peer(), tickle.c), not at reset, and an entry whose flag is 0 is never read: it means "all zero".
+    // Pay as you go (stage 1 / S1, 2026-10-09): the table is 14 KB, and zeroing it at create wrote every page of it in
+    // every context, including one whose peers are all on other hosts and never attaches anything. Now a context
+    // writes only the entries of the peers it sends to, so in memory nothing had touched - rmw_tickle zero-allocates
+    // its context - the rest of the table never becomes resident (tests/test_transport_seam.c checks it with
+    // mincore()). One byte per id rather than a bitmap: two threads setting up two different ids then write two
+    // different bytes, never one shared word.
+    uint8_t segment_peer_live[tt_MAX_CONTEXT_IDS];
     struct tt_SegmentHeader* own_segment;
     // One bit per tt_WholeRefusal cause, so the reason a whole-record send was refused is stated once per
     // cause rather than per sample. Added 2026-10-03 after four rig campaigns inferred it from throughput,

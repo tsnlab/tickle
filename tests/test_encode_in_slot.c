@@ -106,7 +106,9 @@ static struct tt_SegmentHeader* ring(struct arm* arm) {
     return arm->owner.own_segment;
 }
 
-static void setup(struct arm* arm, enum mode mode) {
+// `attach`: whether the sender attaches to the owner's segment, as every arm here does except the one whose sender only
+// ever sends to a peer on another host - a context that never attached a segment.
+static void setup_with(struct arm* arm, enum mode mode, bool attach) {
     test_mock_reset();
     test_mock_now = CLOCK_START;
     memset(arm, 0, sizeof(*arm));
@@ -154,8 +156,14 @@ static void setup(struct arm* arm, enum mode mode) {
     pub->peers[0].context_id = OWNER_ID;
     pub->peers[0].ip = OWNER_IP;
     pub->peers[0].port = OWNER_PORT;
-    EXPECT_TRUE(peer_segment(node, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
+    if (attach) {
+        EXPECT_TRUE(peer_segment(node, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
+    }
     tt_reliable_stats_reset();
+}
+
+static void setup(struct arm* arm, enum mode mode) {
+    setup_with(arm, mode, true);
 }
 
 static void make_reliable(struct arm* arm, bool keep_all, uint32_t arena_size) {
@@ -505,8 +513,50 @@ static void test_what_stays_on_the_staging_path(void) {
     test_mock_segments_free();
 }
 
+// Stage 1 / S1 (2026-10-09): a publisher whose one peer is on another host must not pay for the slot path. It did -
+// try_publish_into_slot() ran its size and KEEP_ALL checks and its own peer_segment() for every publish before finding
+// no segment, then the staging path ran them again: +790 user instructions a sample measured on a p1-p4 RELIABLE
+// publisher (experiments/stage1_payg.sh). The instruction count is not a unit-test observable; this is: the second
+// peer_segment() per publish spent the "absent" answer's countdown twice as fast, so a peer on another host was asked
+// about in /dev/shm every tt_SEGMENT_ATTACH_RETRY_SENDS / 2 publishes instead of every tt_SEGMENT_ATTACH_RETRY_SENDS.
+// The control is the same publisher pointed back at the same-host owner, which must take the slot path - so the
+// remote arm's publisher was one the slot path would have accepted, and its refusal came from the destination.
+static void test_a_peer_on_another_host_costs_the_slot_path_nothing(void) {
+    struct arm* arm = &arms[ONE_COPY];
+    const uint32_t publishes = 4U * tt_SEGMENT_ATTACH_RETRY_SENDS;
+
+    setup(arm, ONE_COPY); // control: the owner's segment, attached
+    for (uint32_t i = 0; i < 8; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(arm, i + 1, 64));
+    }
+    EXPECT_EQ_U64(8, arm->sender.segment_encoded_in_slot);
+    teardown(arm);
+    test_mock_segments_free();
+
+    setup_with(arm, ONE_COPY, false);         // its only peer is on another host, so it has never attached a segment
+    arm->pub.peers[0].context_id = REMOTE_ID; // on another host: no segment by that name, now or later
+    arm->pub.peers[0].ip = REMOTE_IP;
+    arm->pub.peers[0].port = REMOTE_PORT;
+    const int attaches_before = test_mock_segment_attach_calls;
+    for (uint32_t i = 0; i < publishes; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(arm, i + 1, 64));
+    }
+    EXPECT_EQ_U64(0, arm->sender.segment_encoded_in_slot);
+    EXPECT_EQ_U64(publishes, arm->sender.tx_datagrams_by_transport[tt_TRANSPORT_UDP]); // every publish went, by UDP
+    const int asked = test_mock_segment_attach_calls - attaches_before;
+    EXPECT_TRUE(asked >= 1); // asked at all: the absent answer is what is being counted down
+    EXPECT_TRUE(asked <= (int)(publishes / tt_SEGMENT_ATTACH_RETRY_SENDS) + 1);
+    if (asked > (int)(publishes / tt_SEGMENT_ATTACH_RETRY_SENDS) + 1) {
+        printf("  asked about the remote peer %d times in %u publishes, want <= %u\n", asked, (unsigned)publishes,
+               (unsigned)(publishes / tt_SEGMENT_ATTACH_RETRY_SENDS) + 1U);
+    }
+    teardown(arm);
+    test_mock_segments_free();
+}
+
 int main(void) {
     test_best_effort_slots_match_the_two_copy_path();
+    test_a_peer_on_another_host_costs_the_slot_path_nothing();
     test_reliable_records_and_cache_match();
     test_keep_all_refusal_is_unchanged();
     test_a_failed_encode_publishes_a_harmless_record();
