@@ -152,6 +152,15 @@ preflight_pc() {
     # one. PF_ALLOW_STALE=1 runs it anyway, recorded as stale=1 in params.txt.
     local lib_t head_t head_c stale=0
     lib_t=$(stat -c %Y "$tickle_lib" 2>/dev/null) || { echo "PREFLIGHT FAIL: no $tickle_lib"; return 1; }
+    # A build without -DBUILD_SHARED_LIBS=ON installs the TickLE typesupports static-only, and every generated
+    # typesupport .so then fails to load ("no rmw_tickle typesupport ..."): every rmw_tickle cell fails on the build,
+    # not the harness. Isolated (colcon's default) or merged install layout.
+    if [ ! -f "$PF_TICKLE_INSTALL/rosidl_typesupport_tickle_cpp/lib/librosidl_typesupport_tickle_cpp.so" ] &&
+        [ ! -f "$PF_TICKLE_INSTALL/lib/librosidl_typesupport_tickle_cpp.so" ]; then
+        echo "PREFLIGHT FAIL: $PF_TICKLE_INSTALL has no librosidl_typesupport_tickle_cpp.so - a static-only build" \
+            "(no -DBUILD_SHARED_LIBS=ON); build one with pc_preflight_build.sh"
+        return 1
+    fi
     read -r head_c head_t < <(git -C "$REPO" log -1 --format='%h %ct' -- src include platform rmw_tickle/rmw_tickle \
         rmw_tickle/rosidl_typesupport_tickle_c rmw_tickle/rosidl_typesupport_tickle_cpp)
     if [ -z "${head_t:-}" ]; then
