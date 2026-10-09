@@ -115,6 +115,12 @@ if [ -z "${CELLS:-}" ]; then
 fi
 SUMMARY=${SUMMARY:-$REPO/examples/perf_hil/experiments/rmw_keepall_rig_summary.py}
 DOMAIN=${DOMAIN:-61}
+# QOS_ARGS and PUB_RATE (2026-10-09, large-message stage 2's L4 cells, docs/DESIGN.md section 8): perf_test's QoS flags
+# and the publisher's rate in Hz. The defaults are this script's own cell exactly - RELIABLE KEEP_ALL at max rate -
+# so every earlier invocation runs unchanged. ~/rig_queue_largemsg_A.sh sets "--reliable --keep_last --history_depth
+# 10" (ROS's default) or "--keep_last --history_depth 5" (sensor_data) and 30 or 15.
+QOS_ARGS=${QOS_ARGS:---reliable}
+PUB_RATE=${PUB_RATE:-0}
 OUT=${OUT:-$HOME/rig_results_safe/rmw_keepall_rig_$(date +%Y%m%d-%H%M%S)}
 if [ -n "$EQUAL_BOUND" ]; then DRY=${DRY:-1}; else DRY=${DRY:-0}; fi
 DRY_DUR=${DRY_DUR:-6}
@@ -375,13 +381,13 @@ wait_done() { # $1 host, $2 role, $3 deadline seconds
 
 run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher seconds, default $DUR]
     local arm=$1 topic=$2 loss=$3 rep=$4 stem="$1_$2_l$3_r$4" dir=${5:-$OUT.runs} dur=${6:-$DUR}
-    local common="-c ROS2 -t $topic --reliable --dds_domain_id $DOMAIN"
+    local common="-c ROS2 -t $topic $QOS_ARGS --dds_domain_id $DOMAIN"
     # Every arm, not only rmw_tickle's: rclcpp's type-description service needs a typesupport rmw_tickle does not
     # provide (its first run here died on it), and switching off an introspection service changes no data path.
     local rosargs="--ros-args --param start_type_description_service:=false"
     launch "$SERVER" sub "$arm" "$topic" "$common -p 0 -s 1 --expected_num_pubs 1 --max_runtime $((dur + 8)) $rosargs"
     sleep 2
-    launch "$CLIENT" pub "$arm" "$topic" "$common -r 0 -p 1 -s 0 --expected_num_subs 1 --max_runtime $dur $rosargs"
+    launch "$CLIENT" pub "$arm" "$topic" "$common -r $PUB_RATE -p 1 -s 0 --expected_num_subs 1 --max_runtime $dur $rosargs"
     local k1 k2
     k1=$(wait_done "$CLIENT" pub $((dur + 40)))
     k2=$(wait_done "$SERVER" sub 20)
