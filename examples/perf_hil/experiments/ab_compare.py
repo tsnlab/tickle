@@ -48,11 +48,15 @@ import sys
 from collections import OrderedDict
 
 sys.path.insert(0, __import__("os").path.dirname(__file__))
-from campaign_summary import DIRECTION, INSN_METRICS, parse  # noqa: E402
+from campaign_summary import AB_ONLY, DIRECTION, INSN_METRICS, parse  # noqa: E402
 import gate_v2  # noqa: E402
 
 GATE_V2_PRIMARY = ",".join(INSN_METRICS)
 GATE_V2_WITNESS = "cpu_s_per_Msample,send_mbps,recv_mbps,rtt_avg_ms"
+
+# Every metric a campaign A/B can judge, with its direction (True: higher is better): the vendor verdict's own, and the
+# latency tails kept for A/B use only. Gate v2 mode keeps its own set (DIRECTION and the instruction counts).
+CAMPAIGN_METRICS = {**DIRECTION, **AB_ONLY}
 
 # rmw rows: lower is better for all of them
 RMW_METRICS = ("rtt_avg_ms", "rtt_min_ms", "pong_cpu_ns", "pong_idle_cpu_ns", "ping_cpu_s", "pong_maxrss_kb",
@@ -207,11 +211,11 @@ def campaign(pa, pb, primary):
             print(f"{cell}: void A {len(fa['void'])} B {len(fb['void'])}")
         for metric in sorted(set(fa["vals"]) & set(fb["vals"])):
             name = metric.split(".", 1)[1]
-            if name not in DIRECTION:
+            if name not in CAMPAIGN_METRICS:
                 continue
             a, b = stats(fa["vals"][metric]), stats(fb["vals"][metric])
             if a and b:
-                rows.append((cell, metric, a, b, DIRECTION[name]))
+                rows.append((cell, metric, a, b, CAMPAIGN_METRICS[name]))
     return report(rows, primary)
 
 
