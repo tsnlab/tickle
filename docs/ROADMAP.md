@@ -264,8 +264,10 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
 - **Loaned messages**: done, 6 of 6, for types whose wire bytes are their message (RMW.md "Loaned messages"). What
   would make more of it zero-copy is core's: `rx_buffer` aligned to 8, a ring that skips a held slot, a claimed-slot
   publish. (PLAN #3; COMPARISON 2.7a)
-- **Large-message stage 2** (samples above 64 KB): user's staged-support decision. It reuses lending's machinery
-  and is not yet pre-registered. (PLAN #4; LARGE_MESSAGE_PLAN)
+- **Large-message stage 2** (samples above 64 KB): user's staged-support decision. Designed and pre-registered
+  2026-10-09 in [DESIGN.md](DESIGN.md) section 8, "Stage 2" (wire types 10/11 with a 16-bit fragment index, caller-
+  acquired buffers lent to the app, a writer-owned same-host area; criteria L1-L4 and the falsifiers). Waits on the
+  user's four open questions there, the wire change first. (PLAN #4; LARGE_MESSAGE_PLAN)
 - **Introspection round-trip rows** (names, type names, GIDs, event counts, serialization format): only the QoS row
   is done. (PLAN #6; RMW_GAPS g14 generalisation)
 - **Housekeeping**: delete the merged ablation branches `d4-state-lock-chunk-on-main` and `d5-inline-skip-gate`.

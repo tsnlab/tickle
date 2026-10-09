@@ -337,8 +337,160 @@ Anything batched ahead is flushed first. Retransmissions send cached fragments u
   are counted (`frag_duplicate`, `frag_abandoned`, `frag_dropped`).
 - A node built without fragmentation skips types 8 and 9 silently.
 
-**Larger than 65507 B** samples are not implemented yet (see [ROADMAP.md](ROADMAP.md)). A fragment-assembled sample
-cannot be lent (section 10, receive-buffer lending): it is retained by copying.
+**Larger than 65507 B** samples are not implemented yet: the stage-2 design and its pre-registration follow. A
+fragment-assembled sample cannot be lent (section 10, receive-buffer lending): it is retained by copying.
+
+### Stage 2: samples above 64 KB (designed 2026-10-09, not implemented, not approved)
+
+The user's staged-support decision (2026-09-27, LARGE_MESSAGE_PLAN decision 1 "B"; stage 1 was the rmw direct codec
+and serialized messages). Target: rmw `sensor_msgs/Image` and `PointCloud2` of 1-8 MB (VGA rgb8 921,600 B, 720p rgb8
+2.76 MB, 1080p rgb8 6.2 MB; a 64-beam lidar cloud about 3 MB). Unchanged: TickLE splits, never IP (section 8's
+97.4%), so no 65507-B datagrams and no jumbo datagrams; each datagram keeps its own seq_no (the user, 2026-09-26).
+
+**What bounds the size today, and what stage 2 moves.**
+
+| bound | today | stage 2 |
+|---|---|---|
+| fragment index and count on the wire | `uint8_t`: 255 fragments, ~370 KB | `uint16_t` in two new types (below): 65,535, ~95 MB |
+| `tt_FRAG_MAX_COUNT` | 64 (sized for 65507 B) | unchanged for small samples; large ones do not use the batch arrays it sizes |
+| staging: one submessage in `tx_buffer` (`uint16` length), `frag_scratch`, BE pool slots | `tt_MAX_SAMPLE_LENGTH` each, static | not used by large samples: caller-acquired buffers (below) |
+| reader window (RELIABLE): one sample's datagrams must fit it | `tt_RELIABLE_BITMAP_MAX_BITS` 4096 (~5.9 MB) | 8192 (~11.3 MB); its ACKNACK (1,052 B) still fits one control datagram, whose ceiling is 11,520 bits |
+| rmw per-field capacity (`Image` data 64,000 B) | refuses above it | not applied on the direct codec for a large sample |
+
+So the **maximum sample is about 11.3 MiB** (1,446 + 1,452 x 8,191 B), set by the window, and rmw defaults to 8 MiB
+(`RMW_TICKLE_MAX_SAMPLE_BYTES`, refused above it with an error naming the limit). Datagrams per sample: 1 MB 723,
+4 MB 2,889, 8 MiB 5,778.
+
+**Wire: two new submessage types, the next `tt_VERSION`.** `FRAG_FIRST_L` (type 10) and `FRAG_CONT_L` (type 11) are
+types 8 and 9 with `frag_index`/`frag_count` widened to 16 bits (CONT header 12 B, FIRST 18 B, shortfall 6). They are
+used only when a sample needs more than 255 fragments; every smaller sample keeps types 8/9 byte for byte. Widening
+8/9 instead would cost 2 B in every fragment of every 1.5-64 KB sample (0.14% of P3/P4's bytes) and break the wire
+rule. A node built without stage 2 skips 10/11 and counts them (`frag_large_skipped`).
+
+**Storage: caller-acquired, sized per sample, never static.** Core does not malloc, so a context takes a pair of
+callbacks, `large_acquire(user, bytes) -> void *` and `large_release(user, ptr)`. rmw backs them with `malloc` and a
+small free list; a core-only user backs them with a static pool. `NULL` from acquire is "no room", never a crash.
+
+- **Publisher.** `data_encode_size` gives the length; above 255 fragments core acquires a buffer, `data_encode`s into
+  it once, and sends its fragments straight from it: `sendmmsg()` of up to 64 datagrams, each two iovecs (its framing,
+  20 B or 26 B for fragment 0, and a slice of the buffer), so no copy into `tx_buffer`. The reliable cache **retains the buffer
+  by reference** (one index entry covering the sample's k seq_nos, like a segment record's `seq_span`), resends a lost
+  fragment by rebuilding its framing, and releases the buffer when every matched reader has acked it or KEEP_LAST
+  evicts it. BEST_EFFORT releases it when the last fragment is sent.
+- **Send cursor.** A 4 MB burst overruns any socket buffer (the rig caps it at 212,992 B). On `EAGAIN` core keeps a
+  per-Publisher cursor and sends the rest when the socket is writable, from `tt_Context_poll()`. A publish while
+  the cursor is busy: KEEP_ALL returns `tt_RET_WOULD_BLOCK`; KEEP_LAST abandons the older sample's unsent tail (its
+  seq_nos are announced gone by HEARTBEAT, as for an evicted sample) and counts `large_tail_abandoned`.
+- **End-of-sample HEARTBEAT.** A RELIABLE writer sends a non-FINAL HEARTBEAT after the last fragment of each large
+  sample (1 datagram in 723 at 1 MB), so a lost tail is NACKed one round trip later instead of waiting for the next
+  sample.
+- **Subscriber.** The first fragment that arrives (FIRST or CONT, both carry `frag_count`) acquires
+  `frag_count x 1452` bytes keyed by (source, entity_id, sample seq_no); each fragment is copied to its offset (the
+  index gives it), so order does not matter and the reorder ring and `frag_scratch` are not touched. A fragment is
+  recorded as received only once stored, as today. No buffer: RELIABLE leaves the fragments unrecorded (they are
+  NACKed later, which is the reader's back-pressure); BEST_EFFORT drops the sample and counts `large_no_buffer`;
+  a torn sample is never delivered. The reorder ring keeps holding only small datagrams, at its present size; a
+  wider window does not grow it (a small datagram beyond the ring is not recorded and gets repaired).
+- **Copies.** Publish: one encode (rmw's serialize). Receive over a socket: kernel to `rx_buffer`, then fragment to
+  the large buffer (one user copy), then rmw's decode. No copy beyond those.
+
+**Delivery without a copy: lending.** The callback's sample points into the large buffer. `tt_Sample_retain()`
+treats that address as lendable (section 10's test widens from "in the datagram being processed" to "or in a
+large buffer core acquired"), so `release` hands the buffer back to `large_release`; without a retain core releases
+it when the callback returns. It is not a ring slot, so a held large sample blocks nothing else. Counts against
+`tt_SAMPLE_RETAIN_MAX` like any other.
+
+**Same-host: a writer-owned sample area (step B).** The receiver's ring (768 KiB, 512 slots) cannot hold one 4 MB
+sample's 2,889 records, and drop-on-full would tear every BEST_EFFORT sample. So a large sample to same-host peers
+goes once into a **writer-owned shared region** (`/dev/shm/tickle-large-<ip>-<port>-<id>`, mapped read-only by
+readers), and each reader's ring gets one small descriptor record (offset, length, generation) whose `seq_span` is the
+sample's datagram count, so the seq space matches the socket path exactly. The reader lends straight from the region:
+publish is one encode, receive is zero core copies. Each area chunk carries a reader bitmask (by context id); a reader
+clears its bit on release, the writer reuses the chunk when the mask is clear, and liveliness clearing a dead peer
+clears its bit. Ring protocol unchanged; the region is new (`tt_SEGMENT_VERSION` 5). Until step B lands, large
+samples to an attached same-host peer go over the ring as fragments, which needs a ring of more than one sample, and
+the same-host cells are not published.
+
+**Flow control (KEEP_ALL).** The bound stays `min(cache depth, narrowest window)` in datagrams, and a sample is
+admitted only if all its datagrams fit. A matched reader whose window is below one sample's count can never admit it,
+so that publish fails with `tt_RET_TOO_LARGE` (counted `large_window_too_small`), not an endless `WOULD_BLOCK`. rmw
+gives a subscription of a type with an unbounded sequence the 8192-bit window (1 KiB per tracked writer) and raises
+its KEEP_ALL byte budgets to at least two max samples. Comparison cells keep the equal-bound rule (the user,
+2026-10-06): DDS N samples, TickLE (N + 1) x the sample's bytes.
+
+**Out of scope.** FreeRTOS: no buffer callbacks, the lwIP heap cannot hold a megabyte sample, so stage 2 compiles out
+(`tt_LARGE_SAMPLES` 0) and a FreeRTOS node only skips types 10/11 (it is rebuilt for the version bump all the same).
+Services above 64 KB (they are not fragmented at all). rmw loans of `Image` (its wire bytes are not its message).
+UDP GSO (it cannot give each segment its own header).
+
+#### Pre-registration (Plan, 2026-10-09, before any code)
+
+Implemented as checks in the tests and harnesses, not as prose. Every A/B runs `main` against `ab/large-stage2`, one
+change per commit, ABBA blocks, equal warm-up and cool-down (ROADMAP Now 0a), and reads by the 2 x SE rule.
+
+**L1. Correctness (Dev's tests; each with a mutant that must fail it).**
+
+1. Byte-exact round trip at 65,508 B, 255 and 256 fragments, 1 MB, 4 MB, 8 MiB, over socket and segment, RELIABLE and
+   BEST_EFFORT. Mutant: off-by-one in the 16-bit offset arithmetic.
+2. **Small samples untouched on the wire:** the datagrams of 64 B, 1,472 B and 64,000 B samples are byte-identical to
+   ones captured from the parent before the change (time fields masked; a parent-vs-parent capture is the control).
+   Mutant: always use types 10/11 - fails.
+3. RELIABLE KEEP_ALL at 5% `tc` loss in a netns: 100% of 1 MB and 4 MB samples, in order. Tail: drop each sample's last
+   fragment once; recovered in at most 2 retry intervals. Mutant: no end-of-sample HEARTBEAT - fails the tail bound.
+4. BEST_EFFORT with `large_acquire` returning NULL every third call: those samples counted, none delivered torn.
+5. A reader with a 4096-bit window and an 8 MiB sample: `tt_RET_TOO_LARGE`, no hang. Mutant: WOULD_BLOCK.
+6. `SO_SNDBUF` forced to 64 KiB: every 4 MB sample still delivered (the cursor). Mutant: cursor dropped - fails.
+7. Lending: retain a 4 MB sample, release it from another thread; its buffer is not reused before the release
+   (content check). Step B: a reader killed while holding a chunk; the writer reuses it after liveliness drops the
+   peer, not before.
+8. Every build configuration of the gates, `freertos link`, `make test-linux`, and the rmw suite in a netns.
+
+**L2. No cost below 64 KB (A/B, rig and PC netns).** P1-P4 latency, throughput, CPU and RSS, and the rmw rows 52-75:
+every metric held or better. Controls: a parent-vs-parent arm in the same session (its delta is the noise), and the
+vendor arms (rig drift). A WORSE metric outside the parent-vs-parent spread blocks landing.
+
+**L3. Each design choice earns its place (A/B within the branch).**
+
+- By-reference retention vs copying into the cache arena: publisher CPU per MB lower beyond 2 x SE, or the copy
+  (simpler) is kept.
+- Step B vs fragments through a ring sized for the sample: subscriber plus publisher CPU per same-host MB lower, and
+  latency median not worse. If not, step B is dropped and the ring path stays.
+- End-of-sample HEARTBEAT: 1 MB cross-host p99 latency at 5% loss lower; if not, removed.
+
+**L4. The vendor comparison** (rmw_tickle vs rmw_fastrtps_cpp and rmw_cyclonedds_cpp; each DDS at its default
+first, then the vendor-favouring setting as a labelled second arm: Fast DDS `maxMessageSize` 1472, CycloneDDS shared
+memory).
+
+| cell | size, rate | where | QoS |
+|---|---|---|---|
+| I1 | `Image` 512x512 rgba8 = 1,048,576 B, 30 Hz | same-host and cross-host | RELIABLE KEEP_LAST 10 (ROS default) and `sensor_data` (BEST_EFFORT KEEP_LAST 5) |
+| I4 | `Image` 1024x1024 rgba8 = 4,194,304 B, 30 Hz same-host, 15 Hz cross-host | same-host and cross-host | the same two |
+| I4s | 4 MB at 30 Hz cross-host (1.007 Gbps, above 1 GbE): a saturation cell | cross-host | `sensor_data` |
+| I1L | I1 cross-host under 5% `tc` loss | cross-host | RELIABLE |
+
+Read per cell: delivered rate (Hz and % of published), publish-to-take latency (median, p99), CPU of each process
+per delivered MB, peak RSS. Cross-host latency has a wire floor (about 8.9 ms at 1 MB, 35.5 ms at 4 MB on 1 GbE),
+reported beside it. Sample count first: 60 s of 30 Hz is 1,800 samples a run, 5 runs a cell; a delivery comparison
+uses the `(1 - p)^n` rule before it is read. A vendor that does not run is written "does not run" with its numbers.
+Incomplete TickLE delivery in a cell is a LOSE.
+
+**What would falsify the design.**
+
+- **Fragment-level repair does not scale:** I1L RELIABLE delivers less than Fast DDS, or its p99 is more than twice
+  Fast DDS's. Per-datagram seq_no then costs too much at 700+ fragments a sample, and the sample-level numbering the
+  user declined on 2026-09-26 comes back to the user as a question, with these numbers.
+- **The copy budget is wrong:** TickLE's subscriber CPU per MB cross-host is not below both DDS in I1. The design
+  assumes one user copy plus decode; if that does not beat them, the copy is not where the cost is and the receive
+  path (recvmmsg rows, scatter-gather; ROADMAP) comes first.
+- **Step B pays nothing:** L3's same-host A/B shows no CPU gain, so a second shared region is complexity without a
+  return.
+- **I4s:** the expected outcome is that every framework delivers below 30 Hz; TickLE delivering fewer complete samples
+  than the best DDS means the send cursor's KEEP_LAST abandonment loses whole samples a DDS keeps.
+
+**Open questions for the user.** (1) Approve the wire change: types 10/11 and the next `tt_VERSION` (and step B's
+`tt_SEGMENT_VERSION` 5). (2) Keep per-datagram seq_no for large samples (5,778 seq_nos and an 8192-bit window per
+8 MiB sample) - the design assumes yes. (3) The 8 MiB rmw default and the ~11.3 MiB ceiling. (4) I4 cross-host at
+15 Hz plus the I4s saturation cell, since 4 MB at 30 Hz exceeds the rig's link.
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
