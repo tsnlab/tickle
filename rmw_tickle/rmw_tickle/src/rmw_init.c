@@ -251,16 +251,17 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
     context->implementation_identifier = RMW_TICKLE_IDENTIFIER;
     context->options = *options;
 
-    // Allocate and initialize context implementation
-    rmw_tickle_context_impl_t* impl = (rmw_tickle_context_impl_t*)options->allocator.allocate(
-        sizeof(rmw_tickle_context_impl_t), options->allocator.state);
+    // The context implementation, zeroed by zero_allocate() rather than allocate() and memset(). It is 2.2 MB, most
+    // of it tables sized for the worst case (tt_Discovery's 2048 entities, the context's fragment slots and 64 KiB
+    // scratch buffers) that a process uses a few pages of. A block that size comes from mmap() already zero, and
+    // calloc() knows it and writes nothing, so a page becomes resident only when something writes to it; memset()
+    // wrote every page and kept all 2.2 MB resident for the process's life (rmw_rss_breakdown.sh, 2026-10-09).
+    rmw_tickle_context_impl_t* impl = (rmw_tickle_context_impl_t*)options->allocator.zero_allocate(
+        1, sizeof(rmw_tickle_context_impl_t), options->allocator.state);
     if (impl == NULL) {
         RMW_SET_ERROR_MSG("Failed to allocate context implementation");
         return RMW_RET_BAD_ALLOC;
     }
-
-    // Initialize the context implementation
-    memset(impl, 0, sizeof(rmw_tickle_context_impl_t));
     impl->allocator = options->allocator;
 
     if (pthread_mutex_init(&impl->wait_mutex, NULL) != 0) {
