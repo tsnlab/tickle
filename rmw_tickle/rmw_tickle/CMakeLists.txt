@@ -46,6 +46,7 @@ add_library(rmw_tickle
   src/rmw_event.c
   src/rmw_features.c
   src/rmw_unsupported.c
+  src/rmw_large.c
   # TickLE's own core (rmw_node.c's tt_Context_create()/_poll()/_interrupt()/_destroy() calls,
   # Milestone 2, are the first real use of it in this package - rmw_init.c only touched the
   # _tt_CONFIG global struct before this) - compiled straight in, same reason rosidl_typesupport_
