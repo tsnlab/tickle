@@ -134,8 +134,6 @@ def stats(xs):
 
 def main():
     d = pathlib.Path(sys.argv[1])
-    params = (d / "params.txt").read_text().split()
-    arms = next(p for p in params if p.startswith("arms=")) if any(p.startswith("arms=") for p in params) else None
     line = (d / "params.txt").read_text()
     arms = re.search(r"arms=(.*?) host=", line).group(1).split()
     builds = str(pathlib.Path.home() / "rmw_bisect_builds")
@@ -211,4 +209,5 @@ def main():
         print("  " + v)
 
 
-main()
+if __name__ == "__main__":
+    main()
