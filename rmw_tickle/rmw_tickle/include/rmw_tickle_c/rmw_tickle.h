@@ -85,6 +85,10 @@ rmw_tickle_get_message_callbacks(const rosidl_message_type_support_t* type_suppo
 //     says which type and by how much, rather than "tt_Context_create_publisher() failed".
 // Not applied to serialization, which puts nothing on the wire.
 bool rmw_tickle_check_callbacks_usable(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks);
+// The same for a topic's message (publishers and subscriptions), which large-message stage 2 lets exceed a datagram
+// up to RMW_TICKLE_MAX_SAMPLE_BYTES - a fixed 1 MB array as well as an unbounded sequence. Services keep the check
+// above.
+bool rmw_tickle_check_topic_callbacks_usable(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks);
 
 // How often an rmw_tickle client re-sends an unanswered request (rmw_client.c): often enough to
 // recover a lost request or response well within a human-scale service call, rare enough that a

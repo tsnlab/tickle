@@ -698,7 +698,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
 
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks =
         rmw_tickle_get_message_callbacks(type_support, "subscription", topic_name);
-    if (NULL == callbacks || !rmw_tickle_check_callbacks_usable(callbacks)) {
+    if (NULL == callbacks || !rmw_tickle_check_topic_callbacks_usable(callbacks)) {
         return NULL; // already set, and it names this endpoint
     }
 

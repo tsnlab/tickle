@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// rmw_tickle_check_callbacks_usable() (rmw_typesupport.c) at every entity creation: a type generated
+// rmw_tickle_check_callbacks_usable() and its topic form (rmw_typesupport.c) at every entity creation: a type generated
 // for a different tt_MAX_BUFFER_LENGTH, or whose TickLE struct outgrows one datagram, is refused
 // with an error naming the type and both numbers - not accepted, and not left to core's generic
 // "tt_Context_create_publisher() failed".
@@ -38,11 +38,15 @@
 #include "rmw/subscription_options.h"
 #include "rmw/time.h"
 #include "rmw/types.h"
+#include "rmw_tickle_c/rmw_tickle.h" // rmw_tickle_max_sample_bytes()
 #include "rosidl_runtime_c/message_type_support_struct.h"
 #include "rosidl_runtime_c/service_type_support_struct.h"
 #include "rosidl_typesupport_tickle_c/identifier.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
 #include "rosidl_typesupport_tickle_c/service_type_support.h"
+
+// perf_test's Array1m: a 1 MB byte array and its 16-byte header, as a C struct.
+#define ARRAY1M_STRUCT_SIZE ((size_t)1048576U + 16U)
 
 struct fake_msg {
     uint8_t value;
@@ -229,14 +233,26 @@ int main(void) {
     assert(2 <= create_all(node));
     msg_callbacks.struct_size = 0;
 
-    // A type whose TickLE struct outgrows one datagram is refused with its size, not core's
-    // generic failure.
-    msg_callbacks.tickle_struct_size = (size_t)tt_MAX_BUFFER_LENGTH + 1;
-    assert(NULL == rmw_create_publisher(node, &msg_handle, "/type_checks", &q, &pub_opts));
-    assert(error_mentions("more than one"));
-    msg_callbacks.tickle_struct_size = (size_t)tt_MAX_BUFFER_LENGTH; // exactly one datagram is fine
+    // A topic type whose TickLE struct outgrows one datagram - a fixed 1 MB array - is a large-message topic
+    // (DESIGN.md section 8, stage 2): accepted by publisher and subscription up to RMW_TICKLE_MAX_SAMPLE_BYTES, and
+    // refused above it with its size, not core's generic failure. Until 2026-10-09 it was refused at one datagram,
+    // which voided every rig run of perf_test's Array1m.
+    msg_callbacks.tickle_struct_size = (size_t)tt_MAX_BUFFER_LENGTH; // exactly one datagram: as before
     assert(2 <= create_all(node));
+    msg_callbacks.tickle_struct_size = ARRAY1M_STRUCT_SIZE; // perf_test's Array1m
+    rmw_publisher_t* large_pub = rmw_create_publisher(node, &msg_handle, "/type_checks", &q, &pub_opts);
+    assert(NULL != large_pub);
+    rmw_subscription_t* large_sub = rmw_create_subscription(node, &msg_handle, "/type_checks", &q, &sub_opts);
+    assert(NULL != large_sub);
+    assert(RMW_RET_OK == rmw_destroy_subscription(node, large_sub));
+    assert(RMW_RET_OK == rmw_destroy_publisher(node, large_pub));
+    msg_callbacks.tickle_struct_size = (size_t)rmw_tickle_max_sample_bytes() + 1;
+    assert(NULL == rmw_create_publisher(node, &msg_handle, "/type_checks", &q, &pub_opts));
+    assert(error_mentions("more than RMW_TICKLE_MAX_SAMPLE_BYTES"));
+    assert(NULL == rmw_create_subscription(node, &msg_handle, "/type_checks", &q, &sub_opts));
+    assert(error_mentions("more than RMW_TICKLE_MAX_SAMPLE_BYTES"));
     msg_callbacks.tickle_struct_size = sizeof(struct fake_msg);
+    // A service's struct keeps the datagram bound: services do not fragment.
     request_callbacks.tickle_struct_size = (size_t)tt_MAX_BUFFER_LENGTH + 1;
     assert(NULL == rmw_create_service(node, &service_handle, "/type_checks_srv", &q));
     assert(error_mentions("test_type_checks/srv/Fake_Request' needs"));
