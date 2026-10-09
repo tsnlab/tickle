@@ -507,7 +507,7 @@ send cursor resumed from `tt_Context_poll()`; a non-FINAL HEARTBEAT after each l
 (`tt_LARGE_END_HEARTBEAT`); the reader copies each fragment to its offset in an acquired buffer
 (`tt_LARGE_ASSEMBLIES` 4), records it only once stored, delivers in order from there and lends it
 (`tt_LEND_LARGE`); KEEP_ALL refuses a sample wider than a matched reader's window with `tt_RET_TOO_LARGE`; the window is
-8192 bits (4096 on FreeRTOS, which compiles stage 2 out, `tt_LARGE_SAMPLES` 0, and counts `frag_large_skipped`); rmw
+8192 bits with stage 2 compiled in; rmw_tickle compiles it in (`-Dtt_LARGE_SAMPLES=1`); rmw
 defaults to 8 MiB (`RMW_TICKLE_MAX_SAMPLE_BYTES`) and gives a type without a size bound the widest window. Tests:
 `tests/test_large_sample.c` (L1.1, 1.3-1.7, each with its mutant in `tests/mutants_large_sample.py`),
 `tests/test_wire_identity_largemsg.c` and `tests/wire_identity_largemsg.sh` (L1.2), `tests/test_large_skip.c`.
@@ -539,6 +539,11 @@ Where it departs, and why:
   reader's retry while that sample's fragments are still arriving does not count against a KEEP_LAST writer's
   budget (its first interval, before any recovery is timed, is 1 ms; a 4 MB send takes ~15). Without these a
   KEEP_LAST reader gave up the first 4 MB sample under 5% loss on every PC run.
+- **Stage 2 is compiled in only where it is asked for** (`tt_LARGE_SAMPLES`, default 0; rmw_tickle sets it). On
+  wherever fragmentation was, it cost every P4 cell on the rig +15..27 kB peak RSS (L2 stage 1, 2026-10-09): a
+  4.4 KB context, 680 B a Publisher, the 8192-bit window widening every window-sized array. Off, a build matches the
+  parent but for one 8-byte counter, and P4's RSS on the PC is the parent's to within 4 kB. A build without it skips
+  types 11/12 and counts them, as FreeRTOS does.
 - **Fragment positions use the receiver's own geometry** (`tt_CONTROL_MAX_LENGTH`), as the sender's: a large sample
   between two nodes built with different control datagrams is dropped and counted (`large.dropped`), where the small
   path learns the sender's continuation size.

@@ -12,7 +12,10 @@
 # ~/rig_queue_largemsg_A.sh repeats this with the vendor arms as controls; a PC row is an early warning only.
 #
 # Usage: small_sample_ab_pc.sh [PARENT] [REPS] [DURATION_S]   results to $OUT (default ~/largemsg_pc/small_ab.txt)
+# CORE_DEFINES: -D flags for both arms' core, default rmw_tickle's "-Dtt_LARGE_SAMPLES=1" (the parent ignores it);
+# CORE_DEFINES="" builds B as every other build does since large samples became opt-in, with main's footprint.
 set -u
+CORE_DEFINES=${CORE_DEFINES--Dtt_LARGE_SAMPLES=1}
 PARENT=${1:-a47b85e1}
 REPS=${2:-2}
 DURATION=${3:-10}
@@ -34,7 +37,8 @@ mkdir -p "$WORK"
 git -C "$TREE" worktree remove --force "$PARENT_TREE" > /dev/null 2>&1
 git -C "$TREE" worktree add --detach "$PARENT_TREE" "$PARENT" > /dev/null 2>&1 || { echo "cannot check out $PARENT"; exit 1; }
 build() { # tree out
-    cc -O2 -DNDEBUG -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_SEGMENT_ENABLED=0 -I"$1/include" -I"$1/src" -o "$2" \
+    # shellcheck disable=SC2086 # CORE_DEFINES is a list of -D flags
+    cc -O2 -DNDEBUG -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_SEGMENT_ENABLED=0 $CORE_DEFINES -I"$1/include" -I"$1/src" -o "$2" \
         "$HERE/large_sample_bench.c" "$1/src/tickle.c" "$1/src/encoding.c" "$1/src/log.c" "$1/src/hal_linux.c" \
         -lpthread -lm 2> "$2.build.log" || { cat "$2.build.log"; exit 1; }
 }
@@ -50,7 +54,7 @@ for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
 sudo -n ip -n "$NS1" link set lgab1 up
 sudo -n ip -n "$NS2" link set lgab2 up
 
-echo "=== small_sample_ab_pc $(date -Is) A=$PARENT B=$(git -C "$TREE" rev-parse --short HEAD)+worktree reps=$REPS ===" | tee -a "$OUT"
+echo "=== small_sample_ab_pc $(date -Is) A=$PARENT B=$(git -C "$TREE" rev-parse --short HEAD)+worktree reps=$REPS core_defines=[$CORE_DEFINES] ===" | tee -a "$OUT"
 block=0
 for arm in A B B A; do
     block=$((block + 1))
