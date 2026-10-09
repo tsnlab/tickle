@@ -45,7 +45,7 @@ trap cleanup EXIT
 mkdir -p "$WORK"
 sha=$(git -C "$TREE" rev-parse --short HEAD)
 dirty=$(git -C "$TREE" status --porcelain -- src include | wc -l)
-cc -O2 -DNDEBUG -Wall -Wextra -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_SEGMENT_ENABLED=0 -I"$TREE/include" -I"$TREE/src" \
+cc -O2 -DNDEBUG -Wall -Wextra -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0 -I"$TREE/include" -I"$TREE/src" \
     -o "$BIN" "$HERE/large_sample_bench.c" "$TREE/src/tickle.c" "$TREE/src/encoding.c" "$TREE/src/log.c" \
     "$TREE/src/hal_linux.c" -lpthread -lm || exit 1
 
