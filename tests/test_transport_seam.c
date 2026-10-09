@@ -33,7 +33,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
+#include <sys/mman.h>
+#include <sys/prctl.h>
 #include <tickle/tickle.h>
 
 #define TEST_COMMON_DEFINE_STORAGE
@@ -240,12 +243,21 @@ static void test_reset_zeroes_the_per_transport_counters(void) {
     // segfaulted at exit while this file stayed green - because every test here memsets its context
     // first, which is exactly what a real caller is not required to do. That is why this arm fills
     // the context with 0xAA and why it must keep doing so.
+    //
+    // Since 2026-10-09 the table itself is zeroed lazily, an entry the first time it is wanted (segment_peer()), so
+    // what reset must clear is segment_peer_live[]: an entry it says was never set up is never read, and the first
+    // segment_peer() of it hands back zeroes rather than the caller's 0xAA.
     EXPECT_TRUE(node.own_segment == NULL);
     for (int id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
-        EXPECT_TRUE(node.segment_peers[id].mapping == NULL);
-        EXPECT_TRUE(!node.segment_peers[id].missing);
-        EXPECT_EQ_U32(0, node.segment_peers[id].recheck_in);
-        EXPECT_EQ_U32(0, (uint32_t)node.segment_peers[id].last_progress_ns);
+        EXPECT_TRUE(segment_peer_if_live(&node, (uint8_t)id) == NULL);
+    }
+    for (int id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
+        const struct tt_SegmentPeer* entry = segment_peer(&node, (uint8_t)id);
+        EXPECT_TRUE(entry->mapping == NULL);
+        EXPECT_TRUE(!entry->missing);
+        EXPECT_EQ_U32(0, entry->recheck_in);
+        EXPECT_EQ_U32(0, (uint32_t)entry->last_progress_ns);
+        EXPECT_EQ_INT(0, entry->bell_fd_plus1);
     }
 #endif
 }
@@ -930,6 +942,111 @@ static void test_a_peer_with_no_segment_is_asked_once_not_per_datagram(void) {
 
     test_mock_segments_free();
 }
+
+#if tt_SEGMENT_ENABLED
+// Stage 1 / S1: the module compiled in and unused - every peer on another host - must cost nothing, and it cost the
+// 14 KB peer table in memory: reset zeroed all of it, so every page was written whether or not anything ever attached
+// (examples/perf_hil/experiments/stage1_payg.sh measured +15 KB of context per process). The property, asserted on the
+// bytes here and on residency in the test below: a context that only ever sends to a peer on another host writes that
+// peer's entry and leaves every other entry exactly as the caller's memory had it.
+//
+// The witness comes first, so a pass cannot mean "the path never ran": the attach was asked and answered absent, and
+// the peer's own entry was set up to cache that answer. The control is the 0xAA fill: a table zeroed at reset - the
+// code before this change, and this file's mutant - leaves no 0xAA anywhere and fails the count.
+static void test_a_context_whose_peers_are_all_remote_leaves_the_peer_table_unwritten(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+    struct tt_Context node;
+    memset(&node, 0xAA, sizeof(node));
+    node_init_locks(&node);
+    reset_node_state(&node);
+    node.id = 1;
+    node.hal.own_ip = PEER_IP;
+    node.hal.own_port = PEER_PORT;
+
+    for (uint32_t i = 0; i < 2 * tt_SEGMENT_ATTACH_RETRY_SENDS; i++) {
+        EXPECT_TRUE(peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT) == NULL);
+    }
+    EXPECT_TRUE(node.segment_attach[tt_SEGMENT_ABSENT] >= 2); // asked, answered, and asked again past the countdown
+    const struct tt_SegmentPeer* own_entry = segment_peer_if_live(&node, OWNER_ID);
+    EXPECT_TRUE(own_entry != NULL && own_entry->missing);
+
+    const uint8_t* table = (const uint8_t*)node.segment_peers;
+    const size_t entry_bytes = sizeof(node.segment_peers[0]);
+    size_t untouched = 0;
+    size_t untouched_in_peer = 0;
+    for (size_t i = 0; i < sizeof(node.segment_peers); i++) {
+        if (table[i] == 0xAA) {
+            untouched++;
+            untouched_in_peer += (i / entry_bytes == OWNER_ID) ? 1U : 0U;
+        }
+    }
+    EXPECT_EQ_U32((uint32_t)(entry_bytes * (tt_MAX_CONTEXT_IDS - 1)), (uint32_t)(untouched - untouched_in_peer));
+    EXPECT_TRUE(untouched_in_peer < entry_bytes); // and the one entry in use was set up, not read as garbage
+
+    release_segments(&node); // reads only the entry it set up: none of the 0xAA pointers reaches munmap
+    EXPECT_TRUE(segment_peer_if_live(&node, OWNER_ID) == NULL);
+    test_mock_segments_free();
+}
+#endif
+
+#if tt_SEGMENT_ENABLED
+// Pages wholly inside [start, start + len), and how many of them mincore() reports resident.
+static void resident_pages(const void* start, size_t len, size_t* pages, size_t* in_core) {
+    const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    const uint8_t* base = (const uint8_t*)start;
+    const size_t lead = (page - ((uintptr_t)base % page)) % page; // bytes up to the first page boundary
+    *pages = len >= lead + page ? (len - lead) / page : 0;
+    *in_core = 0;
+    unsigned char vec[64];
+    if (*pages == 0 || *pages > sizeof(vec) || mincore((void*)(base + lead), *pages * page, vec) != 0) {
+        return;
+    }
+    for (size_t i = 0; i < *pages; i++) {
+        *in_core += (size_t)(vec[i] & 1U);
+    }
+}
+
+// The same property as the test above, as resident memory rather than bytes: a context in memory the kernel zeroed and
+// nothing has touched - rmw_tickle's, which zero-allocates its context so untouched pages never become resident -
+// keeps the peer table's pages out of memory when its one peer is on another host. Zeroing the table at reset made
+// all of them resident. The control: mincore() sees the page that peer's own entry was written to.
+static void test_a_zero_allocated_context_keeps_the_peer_table_out_of_memory(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+    EXPECT_EQ_INT(0, prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0)); // a huge page would make one write fault in 2 MB
+    void* block = mmap(NULL, sizeof(struct tt_Context), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    EXPECT_TRUE(block != MAP_FAILED);
+    if (block == MAP_FAILED) {
+        return;
+    }
+    struct tt_Context* node = (struct tt_Context*)block;
+    node_init_locks(node);
+    reset_node_state(node);
+    node->id = 1;
+    node->hal.own_ip = PEER_IP;
+    node->hal.own_port = PEER_PORT;
+    for (uint32_t i = 0; i < 2 * tt_SEGMENT_ATTACH_RETRY_SENDS; i++) {
+        (void)peer_segment(node, OWNER_ID, OWNER_IP, OWNER_PORT);
+    }
+    size_t pages = 0;
+    size_t in_core = 0;
+    resident_pages(node->segment_peers, sizeof(node->segment_peers), &pages, &in_core);
+    size_t entry_pages = 0;
+    size_t entry_in_core = 0;
+    resident_pages((const uint8_t*)&node->segment_peers[OWNER_ID] -
+                       ((uintptr_t)&node->segment_peers[OWNER_ID] % (uintptr_t)sysconf(_SC_PAGESIZE)),
+                   (size_t)sysconf(_SC_PAGESIZE), &entry_pages, &entry_in_core);
+    printf("  peer table: %zu of %zu whole pages resident; the page holding the peer's entry: %zu of %zu\n", in_core,
+           pages, entry_in_core, entry_pages);
+    EXPECT_TRUE(pages >= 3);                   // the table spans pages for this to say anything
+    EXPECT_EQ_U32(1, (uint32_t)entry_in_core); // control: the written entry's page is seen
+    EXPECT_TRUE(in_core <= 1);                 // and nothing else of the table was brought in
+    release_segments(node);
+    EXPECT_EQ_INT(0, munmap(block, sizeof(struct tt_Context)));
+    test_mock_segments_free();
+}
+#endif
 
 // Item 6 of SHM_PLAN 6a: capacity exhaustion counted and warned about once, never silent - and the
 // warning has to say enough to tell the two causes apart. A ring that is too small for the offered
@@ -2888,6 +3005,10 @@ int main(void) {
     test_zerocopy_publish_is_counted_as_udp();
     test_batch_shape_is_counted_per_datagram();
     test_reset_zeroes_the_per_transport_counters();
+#if tt_SEGMENT_ENABLED
+    test_a_context_whose_peers_are_all_remote_leaves_the_peer_table_unwritten();
+    test_a_zero_allocated_context_keeps_the_peer_table_out_of_memory();
+#endif
     test_segment_name_separates_peers_that_differ();
     test_segment_header_catches_what_the_name_cannot();
     test_only_an_attached_same_host_peer_raises_the_whole_limit();

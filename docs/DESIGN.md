@@ -712,6 +712,36 @@ publish everything after, and the caller's fill is the encode.
   `test_publish_claim` holds a claimed publish byte-identical to the encoder's (ring records, cache, seq_no) and checks
   every rule; `tests/mutants_publish_claim.py` removes each step (19 mutants, all killed).
 
+**What the module costs where it is not used (stage 1 / S1, 2026-10-09).** A PC measurement, not a rig one:
+`examples/perf_hil/experiments/stage1_payg.sh` (reading rules in its header), RELIABLE KEEP_ALL p1-p4 between two
+private namespaces over a veth with a private `/dev/shm` each, so every datagram crosses the link; one commit
+(`2940410c` and the fix on it) built five ways, 5 rotated repetitions, five runs. CPU time and rate could not be
+resolved (load 14 on 16 cores; the alignment control alone moved CPU per sample 3-63%), so work is read as
+instructions per sample (perf, user + kernel) and memory as resident pages split into code, stack and the rest.
+
+- **Compiled out** (`tt_SEGMENT_ENABLED=0`, `tt_SAMPLE_LENDING=0`): 560 B of counters and drain-plan state stay in
+  `struct tt_Context` (60 fields, listed by the script), with their reset and the traffic line. No build that never
+  had the module exists to run against, so this is an inventory, not a measurement.
+- **Lending compiled in, unused**: +2.0 KB of library text, +480 B of context; instructions per sample within 0.8% on
+  both sides (inside the 1% floor) and no RSS difference that repeated.
+- **Segment and lending compiled in, every peer on another host**: +25 KB of library text (resident as +24 KB of
+  code) and +15.4 KB of context, resident in the bench because its context is on a stack gcc probes page by page.
+  The publisher paid +790-950 user instructions a sample (+5.8-6.7% of all its instructions at p1-p3): the
+  encode-in-slot path ran its destination, size and KEEP_ALL checks and a `peer_segment()` for every publish before
+  finding no segment, then the staging path ran them again, which also asked `/dev/shm` about the remote peer twice
+  as often. Fixed: a context that has never attached a segment declines the slot path in one load
+  (`segment_slot_ceiling == 0`); and the 14 KB peer table is zeroed an entry at a time on first use rather than at
+  reset, so in zero-allocated memory (rmw_tickle's context) the rest of it never becomes resident (mincore() test).
+  After the fix the publisher is 3.4-3.8% fewer instructions at p1-p3 (0.8% at p4) and the module still costs
+  +1.7-3.1% of its instructions (+290-440 user instructions a sample) and the subscriber +0.3-1.9%: the seam's
+  per-datagram segment question (`peer_segment()`, about 95 a datagram) and helpers gcc stops inlining once the slot
+  path gives them a second caller. Not removing that question needs `peer_segment()` to skip peers discovery has not
+  seen at our address, which also has to detach a peer that moves away; not done.
+- **g15** (RMW_GAPS): `publish_zerocopy()`'s datagrams are counted. The interface's own packet count equals `tx_udp`
+  on both zero-copy shapes, one datagram and two fragments, and removing either shape's count makes it differ
+  (`experiments/g15_zerocopy_e2e.sh`). The one HAL send still outside `tx_datagrams` is the zero-length UDP doorbell
+  to a peer without a FIFO bell, counted as `segment_doorbells_sent` minus `segment_bells_rung`.
+
 ## 11. Memory model
 
 - **Embedded storage** sized by macros: server response cache (`tt_SERVER_CACHE_ENTRY_LENGTH` x 64), client call

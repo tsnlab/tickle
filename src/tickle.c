@@ -905,6 +905,34 @@ static void note_attach(struct tt_Context* node, enum tt_SegmentAttach reason) {
 // A peer asked about and found to have no segment for us. Kept against the address it was asked
 // about, so the same id at a different address is asked about at once rather than inheriting this
 // answer, and with a countdown rather than a flag, so "no" is temporary by construction.
+// A peer's entry in segment_peers[], zeroed the first time it is wanted rather than at reset (tt_Context's
+// segment_peer_live[]). Every write to the table goes through here; every read of an entry that may never have been set
+// up goes through segment_peer_if_live(), which answers NULL - "all zero" - for it. So a context whose peers are all on
+// other hosts writes the entries of the peers it sends to and leaves the other pages of the 14 KB table untouched,
+// which zeroing the whole table at create did not (stage 1 / S1: the module on and unused must cost nothing).
+static struct tt_SegmentPeer* segment_peer(struct tt_Context* node, uint8_t context_id) {
+    struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
+    if (node->segment_peer_live[context_id] == 0) {
+        memset(entry, 0, sizeof(*entry));
+        node->segment_peer_live[context_id] = 1;
+    }
+    return entry;
+}
+
+static const struct tt_SegmentPeer* segment_peer_if_live(const struct tt_Context* node, uint8_t context_id) {
+    return node->segment_peer_live[context_id] != 0 ? &node->segment_peers[context_id] : NULL;
+}
+
+// An entry handed back: its bell closed, and the entry no longer set up, so it reads as zero from here on.
+static void segment_peer_clear(struct tt_Context* node, uint8_t context_id) {
+    if (node->segment_peer_live[context_id] == 0) {
+        return; // never set up: nothing in it, and its bytes are not ours to read
+    }
+    peer_bell_close(&node->segment_peers[context_id]);
+    memset(&node->segment_peers[context_id], 0, sizeof(node->segment_peers[context_id]));
+    node->segment_peer_live[context_id] = 0;
+}
+
 static void remember_absent(struct tt_SegmentPeer* entry, uint32_t ip, uint16_t port) {
     entry->mapping = NULL;
     entry->incarnation = 0;
@@ -1018,7 +1046,7 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
         // for a segment when it uses one, not because it started.
         ensure_own_segment(node);
     }
-    struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
+    struct tt_SegmentPeer* entry = segment_peer(node, context_id);
     if (entry->mapping == NULL && entry->missing) {
         if (entry->ip != ip || entry->port != port) {
             peer_bell_close(entry);
@@ -1219,9 +1247,12 @@ static void note_same_host_peer(struct tt_Context* node, uint8_t context_id, uin
     // builds a segment is re-asked once per announce interval, against the once-per-datagram open()
     // that cost half our cross-host throughput and motivated the cache. peer_segment() still compares
     // the address itself, so an entry cached for a different (ip, port) is reset there as before.
-    struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
-    if (entry->mapping == NULL && entry->missing) {
-        entry->recheck_in = 0;
+    // An entry never set up holds no answer to expire.
+    if (node->segment_peer_live[context_id] != 0) {
+        struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
+        if (entry->mapping == NULL && entry->missing) {
+            entry->recheck_in = 0;
+        }
     }
 }
 
@@ -1269,14 +1300,17 @@ static void release_segments(struct tt_Context* node) {
     // Peers' mappings are unmapped and never unlinked: those files belong to those peers and are
     // still being read by them. Only this context's own segment is this context's to remove - and it
     // is skipped here so it is unmapped exactly once, below.
+    // Only the entries ever set up: the rest were never written, and their bytes are whatever the caller's memory held.
     for (int id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
-        struct tt_SegmentHeader* mapping = node->segment_peers[id].mapping;
-        if (mapping != NULL && mapping != own) {
-            // The peer's own length, not ours: since the attach became two-step these can differ.
-            tt_segment_detach(mapping, node->segment_peers[id].mapped_bytes);
+        const struct tt_SegmentPeer* entry = segment_peer_if_live(node, (uint8_t)id);
+        if (entry == NULL) {
+            continue;
         }
-        peer_bell_close(&node->segment_peers[id]);
-        memset(&node->segment_peers[id], 0, sizeof(node->segment_peers[id]));
+        if (entry->mapping != NULL && entry->mapping != own) {
+            // The peer's own length, not ours: since the attach became two-step these can differ.
+            tt_segment_detach(entry->mapping, entry->mapped_bytes);
+        }
+        segment_peer_clear(node, (uint8_t)id);
     }
 
     if (own != NULL) {
@@ -1323,9 +1357,9 @@ static void release_own_segment(struct tt_Context* node) {
     // use-after-munmap of the kind release_segments() was written to avoid, and this is the function
     // that can now run while the context is still going.
     for (int id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
-        if (node->segment_peers[id].mapping == own) {
-            peer_bell_close(&node->segment_peers[id]);
-            memset(&node->segment_peers[id], 0, sizeof(node->segment_peers[id]));
+        const struct tt_SegmentPeer* entry = segment_peer_if_live(node, (uint8_t)id);
+        if (entry != NULL && entry->mapping == own) {
+            segment_peer_clear(node, (uint8_t)id);
         }
     }
     if (named) {
@@ -1345,7 +1379,8 @@ static bool own_segment_attached_by_self(const struct tt_Context* node) {
         return false;
     }
     for (int id = 0; id < tt_MAX_CONTEXT_IDS; id++) {
-        if (node->segment_peers[id].mapping == node->own_segment) {
+        const struct tt_SegmentPeer* entry = segment_peer_if_live(node, (uint8_t)id);
+        if (entry != NULL && entry->mapping == node->own_segment) {
             return true;
         }
     }
@@ -1467,7 +1502,7 @@ static void segment_ring_if_asleep(struct tt_Context* node, uint8_t context_id, 
     uint32_t sleeping = __atomic_load_n(&segment->reader_waiting, __ATOMIC_SEQ_CST);
     if (sleeping != 0) {
         // Once per sleep of the reader, not once per datagram (struct tt_SegmentPeer.doorbell_generation).
-        struct tt_SegmentPeer* peer = &node->segment_peers[context_id];
+        struct tt_SegmentPeer* peer = segment_peer(node, context_id);
         if (sleeping != peer->doorbell_generation) {
             peer->doorbell_generation = sleeping;
             if (peer->bell_fd_plus1 > 0) {
@@ -1486,7 +1521,7 @@ static void segment_note_written(struct tt_Context* node, uint8_t context_id, st
                                  uint32_t ip, uint16_t port, bool ring_now) {
     // A slot taken means we made progress, not that the reader did - so the reader's own clock is
     // left alone here and only the refusal path touches it.
-    node->segment_peers[context_id].last_progress_ns = 0;
+    segment_peer(node, context_id)->last_progress_ns = 0;
     count_tx(node, tt_TRANSPORT_SHM, 1);
     if (ring_now) {
         segment_ring_if_asleep(node, context_id, segment, ip, port);
@@ -1534,7 +1569,7 @@ static bool segment_deliver_ringing(struct tt_Context* node, uint8_t context_id,
         // valid. Given up past the streak, after which this peer is UNATTACHED and reached over UDP,
         // which is safe precisely because there is no longer a reader to deliver anything out of
         // order to. The next recheck attaches again if it was wrong.
-        struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
+        struct tt_SegmentPeer* entry = segment_peer(node, context_id);
         uint64_t now = tt_get_ns();
         if (entry->last_progress_ns == 0) {
             entry->last_progress_ns = now; // the first refusal since we last got something in
@@ -1644,7 +1679,7 @@ static int32_t seam_send_batch(struct tt_Context* node, const struct tt_OutDatag
         remaining[left++] = datagrams[i];
     }
     for (uint32_t written = 0; written < peers; written++) {
-        struct tt_SegmentPeer* peer = &node->segment_peers[rung_for[written]];
+        struct tt_SegmentPeer* peer = segment_peer(node, rung_for[written]);
         if (peer->mapping != NULL) { // a peer given up on during this batch has nobody left to wake
             segment_ring_if_asleep(node, rung_for[written], peer->mapping, peer->ip, peer->port);
         }
@@ -3709,7 +3744,11 @@ static void reset_node_state(struct tt_Context* node) {
     // the process at random. Every node in the integration suite segfaulted at exit, and no unit
     // test could see it: they memset their context before use, which is exactly what a real caller
     // is not required to do.
-    memset(node->segment_peers, 0, sizeof(node->segment_peers));
+    // Not the table itself: segment_peer_live[] says which entries were ever set up, and segment_peer() zeroes an entry
+    // the first time it is wanted. Zeroing all 14 KB here wrote every page of it in every context, including the ones
+    // that never attach anything (stage 1 / S1's "on but unused" cost). The hazard above is closed as before - no
+    // entry is read until it has been zeroed - only lazily.
+    memset(node->segment_peer_live, 0, sizeof(node->segment_peer_live));
     node->own_segment = NULL;
     node->whole_refusals_logged = 0;
     // The same reasoning one step further, and with more riding on it than on a counter: with the
@@ -5994,12 +6033,12 @@ static uint32_t whole_record_limit_for(struct tt_Context* node, const struct tt_
             continue;
         }
         seen++;
-        const struct tt_SegmentPeer* entry = &node->segment_peers[peers[i].context_id];
-        if (entry->mapping == NULL || entry->ip != peers[i].ip || entry->port != peers[i].port) {
+        const struct tt_SegmentPeer* entry = segment_peer_if_live(node, peers[i].context_id);
+        if (entry == NULL || entry->mapping == NULL || entry->ip != peers[i].ip || entry->port != peers[i].port) {
             // Said once per cause, because four rig campaigns were spent inferring why this refused from
             // throughput numbers that look identical whether the mechanism is absent or merely never granted.
             // An answer in the log costs one line and ends the guessing; reasoning about it cost a night.
-            if (entry->mapping == NULL) {
+            if (entry == NULL || entry->mapping == NULL) {
                 note_whole_refusal(node, tt_WHOLE_REFUSE_UNATTACHED, "a destination has no attached segment");
             } else {
                 note_whole_refusal(node, tt_WHOLE_REFUSE_ADDRESS, "a destination is at a different address");
@@ -6362,7 +6401,8 @@ static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pu
 //   not one peer's slot  a broadcast, several destinations, or one whose segment we hold nothing of.
 // Only the conditions no later step would refuse are asked here; each is one a test removes (test_encode_in_slot.c).
 // The segment itself is not looked up here: peer_segment() counts down its revalidation on every call, and this is
-// asked before the cheaper size checks that can still send the publish down the staging path.
+// asked before the cheaper size checks that can still send the publish down the staging path. Whether this context
+// has ever attached a segment at all is asked first, from segment_slot_ceiling, which counts nothing down.
 static bool encode_in_slot_destination(struct tt_Publisher* pub, uint32_t old_tx_tail, struct tx_destination* out) {
     struct tt_Context* node = pub->node;
     // An unempty tx_buffer is refused by unicast_destinations_for() below, as it refuses a whole record for it.
@@ -6378,6 +6418,17 @@ static bool encode_in_slot_destination(struct tt_Publisher* pub, uint32_t old_tx
         return false;
     }
 #endif
+    // A context that has never attached a peer's segment cannot publish into a slot - and one whose peers are all on
+    // other hosts never will. segment_slot_ceiling is raised by every attach and by nothing else, so 0 says exactly
+    // that, in one load. Asked first: the destination work below and try_publish_into_slot()'s size and KEEP_ALL checks
+    // otherwise ran for every publish and then ran again on the staging path. Stage 1 / S1, 2026-10-09
+    // (experiments/stage1_payg.sh): +790 user instructions a sample on a p1-p4 RELIABLE KEEP_ALL publisher whose one
+    // peer was on another host, against the same commit with the module compiled out. A context that has attached a
+    // segment asks the rest as before, and the first segment the staging path's own send attaches is used from the
+    // next publish on.
+    if (node->segment_slot_ceiling == 0) {
+        return false;
+    }
     // No peers is a broadcast, and a broadcast's one destination has no context id: peer_segment() answers NULL for
     // it, which is where it is refused rather than here as well.
     const struct tt_Peer* peers = NULL;
@@ -7057,8 +7108,11 @@ static void encode_and_send_heartbeat(struct tt_Context* node, struct tt_Publish
 static bool any_peer_on_segment(const struct tt_Context* node, const struct tt_Publisher* pub) {
 #if tt_SEGMENT_ENABLED
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (pub->peers[i].context_id != tt_CONTEXT_ID_INVALID &&
-            node->segment_peers[pub->peers[i].context_id].mapping != NULL) {
+        if (pub->peers[i].context_id == tt_CONTEXT_ID_INVALID) {
+            continue;
+        }
+        const struct tt_SegmentPeer* entry = segment_peer_if_live(node, pub->peers[i].context_id);
+        if (entry != NULL && entry->mapping != NULL) {
             return true;
         }
     }
