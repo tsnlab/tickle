@@ -30,6 +30,7 @@
 # "=== ALL_DONE ... rc=N" however the job ends):
 #   A=<sha> B=<sha> setsid nohup examples/perf_hil/experiments/ab_loans.sh > <log> 2>&1 < /dev/null &
 #   env: PHASES("A B B A B A A B") RTT_DUR(20) TPUT_DUR(20) PREFLIGHT(1) PC_ONLY(0) RIG_LOCK_WAIT(21600)
+#   AB_LOANS_MODE=zcl: both builds lend, B builds loans in the ring slot (ab_loans.py's MODE zcl, its rules).
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 X=$REPO/examples/perf_hil/experiments
@@ -42,7 +43,7 @@ for ph in $PHASES; do
     case "$ph" in A | B) ;; *) echo "REFUSED: PHASES='$PHASES': only A and B" >&2; exit 2 ;; esac
 done
 case " $PHASES " in *" A "*" B "* | *" B "*" A "*) ;; *) echo "REFUSED: PHASES='$PHASES' needs A and B" >&2; exit 2 ;; esac
-export RIG_LOCK_SCOPE=hil RIG_LOCK_WAIT=${RIG_LOCK_WAIT:-21600}
+export RIG_LOCK_SCOPE=hil RIG_LOCK_WAIT=${RIG_LOCK_WAIT:-21600} AB_LOANS_MODE=${AB_LOANS_MODE:-}
 RMW_ARMS="tickle tickle_loans"
 RTT_MSGS=array1k
 TPUT_TOPICS="Array1k Array4k RadarDetection"
@@ -97,7 +98,7 @@ if [ "$ROLE" = outer ]; then
         echo "=== ab_loans $(date -Is) on $(hostname) ==="
         echo "    A=$A"
         echo "    B=$B"
-        echo "    PHASES='$PHASES' RMW_ARMS='$RMW_ARMS' RTT_DUR=$RTT_DUR TPUT_DUR=$TPUT_DUR"
+        echo "    PHASES='$PHASES' RMW_ARMS='$RMW_ARMS' RTT_DUR=$RTT_DUR TPUT_DUR=$TPUT_DUR mode=${AB_LOANS_MODE:-loans}"
     } | tee -a "$LOG"
     python3 "$X/ab_loans.py" prereg >"$OUTB.prereg.txt" || exit 2
     # The estimate: a phase is a build on the Pi (a commit switch regenerates the interface packages' TickLE

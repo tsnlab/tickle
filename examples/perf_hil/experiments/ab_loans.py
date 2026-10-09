@@ -61,6 +61,23 @@ Expectation: D PASS (the default path is A's apart from the subscription queue's
 cpu/sample gain (a decoded shell lent instead of copied into the application's message). A D WORSE falsifies "B costs
 the default path nothing" and B does not land as is.
 
+MODE zcl (AB_LOANS_MODE=zcl; ab/zero-copy-loans, 2026-10-09). Both builds lend (main has had loans since 7a321d26), and
+B adds the 8-aligned rx_buffer and the claimed-slot publish (core's tt_Publisher_claim(); rmw_tickle's loans built in
+the ring slot with RMW_TICKLE_LOAN_PUBLISH_SLOTS=1). Arm tickle_loans then opts into every loan: loaned takes
+(ROS_DISABLE_LOANED_MESSAGES=0), loaned publishes in the ping/pong nodes (PINGPONG_LOANED_PUBLISH=1: they borrow and
+fill a loan where the rmw can lend the type; perf_test never borrows) and slot loans (RMW_TICKLE_LOAN_PUBLISH_SLOTS=1,
+which A's rmw ignores). So L asks: with every loan opted into, does B's zero-copy path beat A's one-copy loans? D
+asks what it always asks. The rules that change:
+  TREATMENT  every tickle_loans run: the three variables as above in every process; every tickle run: none of them.
+             A, any run: no loans_in_slot field (A's rmw cannot print one). B, tickle_loans, an rtt cell: loans_in_slot
+             > 0 in EVERY run (the ping and pong built their messages in the slots), or VOID; a tput cell: taken > 0,
+             as before. B, tickle: no loans_in_slot (slots are off by default), or VOID. The control cell: no loan
+             field at all, as before.
+  CONTROL 2  not applicable - A's tickle_loans arm borrows too, so it is no longer an arm the variable cannot touch -
+             and printed as such. Control 1 (RadarDetection, both arms) is unchanged and is the only control.
+Expectation in zcl: D PASS; L IMPROVED or PASS on the rtt cells' p50 (one 1 KB copy fewer per publish, both ends),
+PASS on tput (perf_test borrows nothing; its takes read in place as on main, the ring path decodes as on main).
+
 Usage:  ab_loans.py prereg | read A=OUT B=OUT ... | witness RUNS_DIR A|B | selftest
 Exit status: 0 D PASS/IMPROVED, 1 D WORSE, 3 NO VERDICT, 4 VOID, 2 usage.
 """
@@ -87,9 +104,12 @@ CONTROL = [(f"tput/{CONTROL_TOPIC}/{q}", m) for q in QOSES for m in ("delivered_
 HIGHER_BETTER = {"delivered_per_s"}
 WEAK_PCT = 10.0
 ENV_VAR = "ROS_DISABLE_LOANED_MESSAGES"
+ZCL = os.environ.get("AB_LOANS_MODE", "") == "zcl"
+# The variables arm tickle_loans sets in mode zcl, besides ENV_VAR, and the value it sets them to.
+ZCL_VARS = {"RMW_TICKLE_LOAN_PUBLISH_SLOTS": "1", "PINGPONG_LOANED_PUBLISH": "1"}
 
 RUN_LINE = re.compile(r"^(?P<kind>rtt|tput)/(?P<cell>\S+) (?P<arm>\S+)\s+r(?P<rep>\d+) (?P<rest>.*)$", re.M)
-LOAN_FIELDS = ("loans_in_place", "loans_copied", "loans_published")
+LOAN_FIELDS = ("loans_in_place", "loans_copied", "loans_published", "loans_in_slot")
 
 
 def runs(tail):
@@ -133,7 +153,7 @@ def loan_counts(run_dir):
     return sums
 
 
-def env_values(run_dir):
+def env_values(run_dir, var=ENV_VAR):
     """[the variable's value or None, per process the cell read], or None when there is no treat line."""
     try:
         meta = open(os.path.join(run_dir, "meta.txt"), errors="replace").read()
@@ -144,9 +164,20 @@ def env_values(run_dir):
         return None
     out = []
     for line in lines:
-        m = re.search(r"(?:^|;)" + ENV_VAR + r"=([^;]*)", line)
+        m = re.search(r"(?:^|;)" + var + r"=([^;]*)", line)
         out.append(m.group(1) if m else None)
     return out
+
+
+def zcl_env_problem(run_dir, arm):
+    """Mode zcl: the variables beside ENV_VAR as each process received them - None when as the arm sets them, else
+    what was wrong (a missing treat line is env_values()' None, reported by the caller already)."""
+    for var, want in ZCL_VARS.items():
+        got = env_values(run_dir, var) or []
+        expect = want if arm == "tickle_loans" else None
+        if any(v != expect for v in got):
+            return f"{var} as received {got}, want {expect} in every process"
+    return None
 
 
 def rmw_arm_of(stem):
@@ -154,20 +185,30 @@ def rmw_arm_of(stem):
     return m.group(1) if m else None
 
 
-def treatment_of_run(build, stem, counts, envs):
-    """(state ok|VOID|NO VERDICT|info, text) for one run of build A or B."""
+def treatment_of_run(build, stem, counts, envs, zcl_env=None):
+    """(state ok|VOID|NO VERDICT|info, text) for one run of build A or B. zcl_env: zcl_env_problem()'s answer."""
     arm = rmw_arm_of(stem)
     if counts is None or envs is None:
         return "NO VERDICT", "no logs or no treat line (could not look)"
     want_env = "0" if arm == "tickle_loans" else None
     if any(v != want_env for v in envs):
         return "VOID", f"{ENV_VAR} as received {envs}, want {want_env} in every process"
+    if ZCL and zcl_env:
+        return "VOID", zcl_env
     taken = counts.get("loans_in_place", 0) + counts.get("loans_copied", 0)
     published = counts.get("loans_published", 0)
+    in_slot = counts.get("loans_in_slot", 0)
     shown = (f"taken {taken} (in_place {counts.get('loans_in_place', 0)} copied {counts.get('loans_copied', 0)}) "
-             f"published {published}; env {envs}")
-    if build == "A" or f"_{CONTROL_TOPIC}_" in stem:
+             f"published {published}{f' in_slot {in_slot}' if ZCL else ''}; env {envs}")
+    if f"_{CONTROL_TOPIC}_" in stem or (build == "A" and not ZCL):
         return ("VOID" if counts else "ok"), f"{shown} (want no loan field)"
+    if ZCL:
+        if build == "A":
+            return ("VOID" if "loans_in_slot" in counts else "ok"), f"{shown} (want no loans_in_slot field)"
+        if arm == "tickle":
+            return ("VOID" if in_slot else "info"), f"{shown} (default path: want no slot loan)"
+        if stem.startswith("rtt_"):
+            return ("ok" if in_slot > 0 else "VOID"), f"{shown} (want in_slot > 0)"
     if arm == "tickle_loans":
         return ("ok" if taken > 0 else "VOID"), f"{shown} (want taken > 0)"
     return "info", f"{shown} (default path; information)"
@@ -219,7 +260,7 @@ def read(phases):
         for d in dirs:
             stem = os.path.basename(d)
             counts = loan_counts(d)
-            state, text = treatment_of_run(build, stem, counts, env_values(d))
+            state, text = treatment_of_run(build, stem, counts, env_values(d), zcl_env_problem(d, rmw_arm_of(stem)))
             if state == "info":
                 default_loans.append(bool(counts))
             print(f"  {'  ' if state in ('ok', 'info') else '!!'}treatment {build}{i} {stem}: {text}")
@@ -236,6 +277,7 @@ def read(phases):
           f"A phases, df {n_a - 1}, |t| > {t_c2:.2f}")
     print(f"B's default path (arm tickle) took or published loans in {sum(default_loans)} of {len(default_loans)} "
           "runs (expected 0: rcl disables loaned takes, rclcpp's publish(const T &) borrows none)")
+    print(f"mode {'zcl (both builds lend; B builds rtt loans in the slot)' if ZCL else 'loans (A lends nothing)'}")
 
     def judge(key, thresh, control):
         arm, cell, met = key
@@ -266,7 +308,7 @@ def read(phases):
         for cell, met in CONTROL:
             common.append(judge((arm, cell, met), t_c1, True))
     print("CONTROL 2 (A phases: tickle_loans against tickle, which the variable cannot touch under A):")
-    for cell, met in PRIMARY:
+    for cell, met in ([] if ZCL else PRIMARY):
         pairs = [(v["tickle"], v["tickle_loans"]) for v in a_pairs.get((cell, met), {}).values()
                  if "tickle" in v and "tickle_loans" in v]
         if len(pairs) < 2:
@@ -279,6 +321,8 @@ def read(phases):
         print(f"  {cell} {met}: tickle_loans - tickle {md:+.4g} ({100 * md / base if base else math.nan:+.2f}%) "
               f"t {t:+.2f}  -> {'MOVED (VOID)' if v == 'VOID' else 'held'}")
         common.append(v)
+    if ZCL:
+        print("  not applicable in mode zcl: A's tickle_loans arm borrows too (control 1 is the control)")
     result = {}
     for arm in RMW_ARMS:
         q = QUESTION[arm]
@@ -300,7 +344,7 @@ def witness(runs_dir, build):
     loaned = 0
     for d in dirs:
         stem = os.path.basename(d)
-        state, text = treatment_of_run(build, stem, loan_counts(d), env_values(d))
+        state, text = treatment_of_run(build, stem, loan_counts(d), env_values(d), zcl_env_problem(d, rmw_arm_of(stem)))
         ok &= state in ("ok", "info")
         loaned += 1 if (build == "B" and rmw_arm_of(stem) == "tickle_loans" and state == "ok"
                         and f"_{CONTROL_TOPIC}_" not in stem) else 0
@@ -314,12 +358,13 @@ def witness(runs_dir, build):
 
 
 def selftest():
-    """The guards answer, not the defaults: synthetic phases in a temporary directory."""
+    """The guards answer, not the defaults: synthetic phases in a temporary directory, in both modes."""
+    global ZCL
     import tempfile
-    ok = True
     results = []
     with tempfile.TemporaryDirectory() as tmp:
-        def phase(name, build, base, factor=1.0, loans=True, a_loans=False, env_ok=True, ctl_loans=False):
+        def phase(name, build, base, factor=1.0, loans=True, a_loans=False, env_ok=True, ctl_loans=False,
+                  slots=True, a_slots=False):
             out = os.path.join(tmp, name)
             lines = ["=== runs done", "--- per run ---"]
             for arm in RMW_ARMS:
@@ -330,14 +375,20 @@ def selftest():
                     d = f"{out}.runs/{stem}"
                     os.makedirs(d, exist_ok=True)
                     env = f"{ENV_VAR}=0;" if arm == "tickle_loans" and env_ok else ""
+                    if ZCL and arm == "tickle_loans":
+                        env += "".join(f"{k}={v};" for k, v in ZCL_VARS.items())
                     with open(f"{d}/meta.txt", "w") as f:
                         f.write(f"treat role=sub env=RMW_IMPLEMENTATION=rmw_tickle;{env}\n")
                     lend = ((build == "B" and arm == "tickle_loans" and loans and not ctl) or
-                            (build == "A" and a_loans) or (ctl and ctl_loans and build == "B"))
+                            (build == "A" and a_loans and not ctl) or (ctl and ctl_loans and build == "B"))
                     with open(f"{d}/sub.log", "w") as f:
                         f.write("Node 1 traffic: tx_datagrams=1\n")
                         if lend:
                             f.write("rmw_tickle: subscription /t loans_in_place=0 loans_copied=5\n")
+                        if ZCL and kind == "rtt" and arm == "tickle_loans" and not ctl:
+                            slot = (build == "B" and slots) or (build == "A" and a_slots)
+                            f.write(f"rmw_tickle: publisher /t loans_published=5 loans_in_slot={5 if slot else 0}\n"
+                                    if slot else "rmw_tickle: publisher /t loans_published=5\n")
                     sc = base if ctl else base * factor
                     if met == "p50_us":
                         lines.append(f"{key} {arm:10} r1 n=9000 p50 {100 * sc:.1f} p99 1 mean 1 us  cpu 1 us/rt")
@@ -358,16 +409,33 @@ def selftest():
             ("variable not received", {"B": {"env_ok": False}}, ("VOID", "VOID")),
             ("control cell lends", {"B": {"ctl_loans": True}}, ("VOID", "VOID")),
         ]
-        for n, (label, mods, want) in enumerate(cases):
-            ph = []
-            for i, b in enumerate("ABBABAAB"):
-                base = jit[i] * (1.02 if mods.get("Bctl") and b == "B" else 1.0)
-                ph.append(phase(f"c{n}_{i}", b, base, **mods.get(b, {})))
-            got = read(ph)
-            results.append(f"{label}: {got} (want {want})")
-            ok &= got == want
+        zcl_cases = [
+            ("zcl: same", {}, ("PASS", "PASS")),
+            ("zcl: A lends (loans_published, no slot field)", {"A": {"a_loans": True}}, ("PASS", "PASS")),
+            ("zcl: B builds no rtt loan in a slot", {"B": {"slots": False}}, ("VOID", "VOID")),
+            ("zcl: A shows a slot loan", {"A": {"a_slots": True}}, ("VOID", "VOID")),
+            ("zcl: B 2% worse", {"B": {"factor": 1.02}}, ("WORSE", "WORSE")),
+            ("zcl: variable not received", {"B": {"env_ok": False}}, ("VOID", "VOID")),
+        ]
+        saved = ZCL
+        for zcl, table in ((False, cases), (True, zcl_cases)):
+            ZCL = zcl
+            run_cases(table, phase, jit, results)
+        ZCL = saved
+    ok = all(r.endswith("OK") for r in results)
     print("SELFTEST " + ("PASS" if ok else "FAIL") + ":\n  " + "\n  ".join(results))
     return 0 if ok else 1
+
+
+def run_cases(cases, phase, jit, results):
+    """One selftest table: each case's phases A B B A B A A B, read, and compared with what it must give."""
+    for n, (label, mods, want) in enumerate(cases):
+        ph = []
+        for i, b in enumerate("ABBABAAB"):
+            base = jit[i] * (1.02 if mods.get("Bctl") and b == "B" else 1.0)
+            ph.append(phase(f"{'z' if ZCL else 'c'}{n}_{i}", b, base, **mods.get(b, {})))
+        got = read(ph)
+        results.append(f"{label}: {got} (want {want}) {'OK' if got == want else 'MISMATCH'}")
 
 
 def main(argv):

@@ -53,7 +53,7 @@ for o in $OVERLAYS; do
     source "$o"
 done
 set -u
-for v in $(env | sed -n 's/^\(FASTRTPS_[A-Z_]*\|FASTDDS_[A-Z_]*\|RMW_FASTRTPS_[A-Z_]*\|CYCLONEDDS_[A-Z_]*\|ZENOH_[A-Z_]*\|TICKLE_[A-Z_]*\|RMW_TICKLE_[A-Z_]*\|ROS_LOCALHOST_ONLY\|ROS_AUTOMATIC_DISCOVERY_RANGE\|ROS_STATIC_PEERS\|ROS_DISABLE_LOANED_MESSAGES\|SKIP_DEFAULT_XML_FILE\|LD_PRELOAD\)=.*/\1/p'); do
+for v in $(env | sed -n 's/^\(FASTRTPS_[A-Z_]*\|FASTDDS_[A-Z_]*\|RMW_FASTRTPS_[A-Z_]*\|CYCLONEDDS_[A-Z_]*\|ZENOH_[A-Z_]*\|TICKLE_[A-Z_]*\|RMW_TICKLE_[A-Z_]*\|PINGPONG_[A-Z_]*\|ROS_LOCALHOST_ONLY\|ROS_AUTOMATIC_DISCOVERY_RANGE\|ROS_STATIC_PEERS\|ROS_DISABLE_LOANED_MESSAGES\|SKIP_DEFAULT_XML_FILE\|LD_PRELOAD\)=.*/\1/p'); do
     unset "$v"
 done
 case "$ARM" in
@@ -63,8 +63,11 @@ tickle) export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR="${TBCAST:?ar
 # tickle_loans: arm tickle with loaned takes opted into. rcl (jazzy and later) leaves a subscription's
 # disable_loaned_message true unless ROS_DISABLE_LOANED_MESSAGES=0, so without it rclcpp never takes a loan even from
 # an rmw whose can_loan_messages is set; and rclcpp's publish(const T &) never borrows one (ab_loans.sh's header).
+# Since 2026-10-09 it opts into the publish side too: the ping/pong nodes publish through a loan
+# (PINGPONG_LOANED_PUBLISH=1; perf_test never borrows), built in the ring slot where rmw_tickle can
+# (RMW_TICKLE_LOAN_PUBLISH_SLOTS=1, docs/RMW.md "Loaned messages"; a build without it ignores both).
 tickle_loans) export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR="${TBCAST:?arm tickle_loans needs TICKLE_BCAST}" \
-    ROS_DISABLE_LOANED_MESSAGES=0 ;;
+    ROS_DISABLE_LOANED_MESSAGES=0 PINGPONG_LOANED_PUBLISH=1 RMW_TICKLE_LOAN_PUBLISH_SLOTS=1 ;;
 tickle_shipped) export RMW_IMPLEMENTATION=rmw_tickle ;;
 fastdds) export RMW_IMPLEMENTATION=rmw_fastrtps_cpp ;;
 cyclonedds) export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ;;
@@ -114,7 +117,7 @@ identity() { # identity <role>: the rmw libraries the process has mapped, and th
     local p
     p=$(pid_of "$1")
     meta "maps role=$1 libs=$(grep -o '/[^ ]*librmw_[a-z_]*\.so' "/proc/$p/maps" 2>/dev/null | sort -u | tr '\n' ',')"
-    meta "treat role=$1 env=$(tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -E '^(RMW_|FASTRTPS_|FASTDDS_|CYCLONEDDS_|ZENOH_|TICKLE_|ROS_DOMAIN_ID|ROS_LOCALHOST_ONLY|ROS_AUTOMATIC_DISCOVERY_RANGE|ROS_STATIC_PEERS|ROS_DISABLE_LOANED_MESSAGES|LD_PRELOAD)' | sort | tr '\n' ';' | tr ' ' '_')"
+    meta "treat role=$1 env=$(tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -E '^(RMW_|FASTRTPS_|FASTDDS_|CYCLONEDDS_|ZENOH_|TICKLE_|PINGPONG_|ROS_DOMAIN_ID|ROS_LOCALHOST_ONLY|ROS_AUTOMATIC_DISCOVERY_RANGE|ROS_STATIC_PEERS|ROS_DISABLE_LOANED_MESSAGES|LD_PRELOAD)' | sort | tr '\n' ';' | tr ' ' '_')"
 }
 stop() { # stop <role> <exe suffix>: SIGINT, so rmw_tickle prints its traffic line; KILL only after 10 s
     local p how=sigint

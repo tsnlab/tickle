@@ -45,10 +45,11 @@ namespace {
         }
 
         auto pub = node->create_publisher<T>("pong", qos);
-        auto sub =
-            node->create_subscription<T>("ping", qos, [pub, &stamps](const typename T::ConstSharedPtr& msg) -> void {
+        const bool loaned = pingpong::loaned_publish_wanted();
+        auto sub = node->create_subscription<T>(
+            "ping", qos, [pub, loaned, &stamps](const typename T::ConstSharedPtr& msg) -> void {
                 const uint64_t callback_ns = pingpong::now_ns();
-                pub->publish(*msg);
+                pingpong::publish<T>(pub, *msg, loaned);
                 pingpong::stamp_log_add(stamps, pingpong::BenchTraits<T>::seq(*msg), callback_ns, pingpong::now_ns());
             });
 

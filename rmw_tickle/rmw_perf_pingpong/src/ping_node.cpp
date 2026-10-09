@@ -278,6 +278,7 @@ namespace {
                          const wait_mode& wait, pingpong::stamp_log& stamps) -> int {
         using Traits = BenchTraits<T>;
         auto pub = node->create_publisher<T>("ping", qos);
+        const bool loaned = pingpong::loaned_publish_wanted();
         reply_slot slot;
         bool took_reply = false; // the poll thread's own: a reply came in this cycle's spin_some()
         auto sub = node->create_subscription<T>("pong", qos, [&](const typename T::ConstSharedPtr& msg) -> void {
@@ -321,7 +322,7 @@ namespace {
                 const uint64_t sent_at = now_ns();
                 Traits::set_send_ns(req, sent_at);
                 pingpong::phase_on_send(probe, prev_check, sent_at);
-                pub->publish(req);
+                pingpong::publish<T>(pub, req, loaned);
                 transmitted++;
                 {
                     std::unique_lock<std::mutex> lock(slot.mutex);
@@ -405,6 +406,7 @@ namespace {
         }
 
         auto pub = node->create_publisher<T>("ping", qos);
+        const bool loaned = pingpong::loaned_publish_wanted();
 
         std::atomic<bool> got_reply {false};
         T reply_msg;
@@ -448,7 +450,7 @@ namespace {
                 pingpong::phase_on_send(probe, prev_check, sent_at);
             }
             got_reply = false;
-            pub->publish(req);
+            pingpong::publish<T>(pub, req, loaned);
             transmitted++;
             if (jitter) {
                 jitter_pause(loop, wait, random);

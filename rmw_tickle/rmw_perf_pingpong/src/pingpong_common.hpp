@@ -7,9 +7,13 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <ctime>
+#include <utility>
 #include <vector>
 
+#include "rclcpp/publisher.hpp"
 #include "rmw_perf_pingpong/msg/array1k.hpp"
 #include "rmw_perf_pingpong/msg/bench.hpp"
 #include "rmw_perf_pingpong/msg/struct16.hpp"
@@ -17,6 +21,25 @@
 namespace pingpong {
 
     constexpr uint64_t stamp_ns_per_s = 1000000000ULL;
+
+    // PINGPONG_LOANED_PUBLISH=1 (ab_loans.sh's arm tickle_loans): publish through a loan - borrow_loaned_message(),
+    // the message filled in the middleware's memory, publish(LoanedMessage &&) - wherever the rmw can lend the type,
+    // as an application that opts into loans does; publish(const T &) otherwise. Read once, at start.
+    inline auto loaned_publish_wanted() -> bool {
+        const char* value = std::getenv("PINGPONG_LOANED_PUBLISH");
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    }
+
+    template <typename T>
+    auto publish(const typename rclcpp::Publisher<T>::SharedPtr& pub, const T& msg, bool loaned) -> void {
+        if (loaned && pub->can_loan_messages()) {
+            auto loan = pub->borrow_loaned_message();
+            loan.get() = msg; // the application's fill: every field, as rmw_tickle's loan contract asks
+            pub->publish(std::move(loan));
+            return;
+        }
+        pub->publish(msg);
+    }
 
     // CLOCK_MONOTONIC, in ns - what send_ns in the message and every --stamps value are.
     inline auto now_ns() -> uint64_t {
