@@ -31,6 +31,8 @@ CONFIGS=(
     "-Dtt_SEGMENT_SLOT_BYTES=4096"                  # whole_record_refusal.sh and the s6 slot arms
     "-Dtt_LOCAL_DELIVERY=1"                         # rmw_tickle
     "-Dtt_CONTEXT_ID_CLAIM=1"                       # rmw_tickle
+    "-Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1" # rmw_tickle (large samples); test_large_sample.c
+    "-Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0" # large_sample_pc.sh: socket only
 )
 
 rc=0

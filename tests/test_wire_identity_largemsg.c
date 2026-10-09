@@ -19,6 +19,7 @@
 // writes what it captured instead of comparing it, so the parent's capture comes from this exact procedure.
 
 #define tt_MAX_BUFFER_LENGTH 65507
+#define tt_LARGE_SAMPLES 1 // as rmw_tickle builds core; the parent has no such option
 
 #include <stdint.h>
 #include <stdio.h>
@@ -86,7 +87,7 @@ static int32_t sized_encode(struct tt_Data* data, uint8_t* payload, uint32_t len
     return (int32_t)len;
 }
 
-#if defined(tt_LARGE_SAMPLES) && tt_LARGE_SAMPLES
+#if defined(tt_SUBMESSAGE_TYPE_FRAG_FIRST_L) && tt_LARGE_SAMPLES // this tree, built as rmw builds it - not the parent
 // Large buffers are set on the tree that has them, as rmw_tickle sets them: L1.2 is about a build that can send large
 // samples sending small ones exactly as before.
 static void* test_acquire(void* user, uint32_t bytes) {
@@ -122,7 +123,7 @@ static void publish_three(bool reliable) {
     topic.data_encode_size = sized_encode_size;
     topic.data_encode = sized_encode;
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pub, &topic, "wire"));
-#if defined(tt_LARGE_SAMPLES) && tt_LARGE_SAMPLES
+#if defined(tt_SUBMESSAGE_TYPE_FRAG_FIRST_L) && tt_LARGE_SAMPLES // this tree, built as rmw builds it - not the parent
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&node, test_acquire, test_release, NULL));
 #endif
     if (reliable) {
