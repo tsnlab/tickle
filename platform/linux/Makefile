@@ -270,6 +270,11 @@ $(OBJ)/tests/test_sample_lending: $(TEST_DIR)/test_sample_lending.c $(SRC)/encod
 	$(CC) $(CPPFLAGS) $(DEPFLAGS) $(CFLAGS) -MM -MP -MT $@ -MF $@.d $<
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
 
+# test_large_sample.c releases a retained large sample from a second thread too.
+$(OBJ)/tests/test_large_sample: $(TEST_DIR)/test_large_sample.c $(SRC)/encoding.c $(SRC)/log.c | $(OBJ)/tests
+	$(CC) $(CPPFLAGS) $(DEPFLAGS) $(CFLAGS) -MM -MP -MT $@ -MF $@.d $<
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
+
 # Its own tree, rebuilt from clean every time: the binary `make test` leaves in $(OBJ) is up to date by make's
 # reckoning and built without -fsanitize, so reusing that tree would run an uninstrumented binary. This used to be a
 # `make clean` of every tree, which also made it unsafe to run beside `make test` (check-gates runs them in parallel).
