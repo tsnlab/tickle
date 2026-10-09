@@ -556,6 +556,43 @@ static void test_client_created_after_the_announce_learns_the_peer_from_its_rese
     EXPECT_EQ_U32(1, (uint32_t)count_peers(client.peers));
 }
 
+// Two Publishers created one after the other, both after the remote Subscriber was announced, with no announce in
+// between: both still learn it from the resend. Marking the announce "not acted on" used to invert the stored
+// generation, and the second creation inverted it back to the real one - so the resend read as a duplicate, and
+// neither Publisher ever matched (2026-10-09: rmw test_loaned_messages' held cases, whose talker creates two
+// publishers, failed about 1 run in 10 under load, the talker never matching the listener's subscription in 10 s).
+static void test_two_publishers_created_after_the_announce_both_learn_the_peer(void) {
+    struct tt_Context node;
+    init_node(&node);
+    struct tt_Topic topic = {.name = "late_topic",
+                             .data_size = 4,
+                             .data_encode_size = fake_encode_size,
+                             .data_encode = fake_encode};
+    const uint32_t endpoint_id = tt_hash_id("late_topic", "late_pub");
+
+    struct tt_Header header;
+    init_header(&header, REMOTE_NODE_ID);
+    uint32_t tail = write_update_one_entity(node.rx_buffer, 100, endpoint_id, tt_KIND_TOPIC_SUBSCRIBER, "t", "sub");
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282)); // no Publisher yet
+
+    struct tt_Publisher first;
+    struct tt_Publisher second;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &first, &topic, "late_pub"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &second, &topic, "late_pub"));
+    EXPECT_EQ_U32(0, (uint32_t)count_peers(first.peers)); // control: nothing is learned at creation itself
+    EXPECT_EQ_U32(0, (uint32_t)count_peers(second.peers));
+    // The summary path asks for the list as well: the announce is not taken as applied there either.
+    EXPECT_TRUE(!discovery_generation_applied(&node, REMOTE_NODE_ID, 100));
+
+    tail = write_update_one_entity(node.rx_buffer, 100, endpoint_id, tt_KIND_TOPIC_SUBSCRIBER, "t", "sub");
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282)); // the same resend
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(first.peers));
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(second.peers));
+    // ...and once applied, it is a plain duplicate again, on both paths.
+    EXPECT_EQ_U32(100, node.update_generation[REMOTE_NODE_ID]);
+    EXPECT_TRUE(discovery_generation_applied(&node, REMOTE_NODE_ID, 100));
+}
+
 // --- Two nodes exchanging announces for real (2026-09-26) -----------------------------------------------
 // Every datagram either node sends is delivered to the other: broadcast on the well-known socket, unicast on
 // the data socket (rx_via_data_port), as hal_linux.c reports them.
@@ -1585,6 +1622,7 @@ int main(void) {
     test_a_departed_first_peer_does_not_take_the_survivors_data();
     test_publisher_created_after_the_announce_learns_the_peer_from_its_resend();
     test_client_created_after_the_announce_learns_the_peer_from_its_resend();
+    test_two_publishers_created_after_the_announce_both_learn_the_peer();
     test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_ends();
     test_steady_state_is_summaries_that_keep_the_peer_alive();
     test_a_missed_change_is_pulled_on_the_next_summary();

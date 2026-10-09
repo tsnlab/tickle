@@ -3633,6 +3633,7 @@ static void reset_node_state(struct tt_Context* node) {
     for (int i = 0; i < tt_MAX_CONTEXT_IDS; i++) {
         node->update_generation[i] = 0;
         node->update_seen[i] = false;
+        node->update_reprocess[i] = false;
         node->update_last_seen[i] = 0;
         node->update_part_generation[i] = 0;
         memset(node->update_part_received[i], 0, sizeof(node->update_part_received[i]));
@@ -4089,14 +4090,19 @@ static bool valid_sample_size(uint32_t size) {
 // would be: its Publisher broadcast every sample. Seen on the rig (2026-09-26): 4 of 7 rmw_tickle ping
 // runs registered no peer in 10 s and broadcast all 100 pings, the other 3 unicast from the first second.
 //
-// Marks every remote node's last acted-on announce as not acted on - the stored generation inverted,
-// which can never equal the real one - so its next periodic resend, within tt_CONTEXT_UPDATE_INTERVAL, is
-// decoded in full and matched against the new endpoint. update_seen[] is left alone: this is not a first
-// contact, and nothing is replied. A partial announce in progress is unaffected.
+// Marks every remote node's last acted-on announce as not acted on (update_reprocess[]), so its next periodic
+// resend, within tt_CONTEXT_UPDATE_INTERVAL, is decoded in full and matched against the new endpoint. update_seen[] is
+// left alone: this is not a first contact, and nothing is replied. A partial announce in progress is unaffected.
+//
+// A flag, set however many endpoints are created before that resend. Until 2026-10-09 the mark was the stored
+// generation inverted, and a second Publisher or Client created before the resend inverted it back to the real
+// generation: the resend then read as a duplicate and neither endpoint ever learned its peer - in rmw, a talker that
+// creates two publishers after its listener's subscriptions were announced never matched them (test_loaned_messages,
+// the held cases, about 1 run in 10 under load).
 static void reprocess_known_announces(struct tt_Context* node) {
     for (int i = 0; i < tt_MAX_CONTEXT_IDS; i++) {
         if (node->update_seen[i]) {
-            node->update_generation[i] = ~node->update_generation[i];
+            node->update_reprocess[i] = true;
         }
     }
 }
@@ -9175,6 +9181,7 @@ static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t 
 #endif
     tombstone_discovered_entities_from_source(node, source);
     node->update_seen[source] = false;
+    node->update_reprocess[source] = false;
     node->update_generation[source] = 0;
     node->update_last_seen[source] = 0;
     node->traffic_last_seen[source] = 0;
@@ -9768,6 +9775,8 @@ static void drop_cached_responses_from_source(struct tt_Context* node, uint8_t s
 
 static void note_discovery_round_trip(struct tt_Context* node, uint8_t source, uint32_t generation);
 
+static bool discovery_generation_applied(const struct tt_Context* node, uint8_t source, uint32_t generation);
+
 static bool process_announce(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                              uint32_t tail, uint32_t sender_ip, uint16_t sender_port, uint32_t generation,
                              uint8_t frag_index, uint8_t frag_count) {
@@ -9794,7 +9803,7 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
     TT_LOG_DEBUG("  fragment: %u of %u", frag_index, frag_count);
     TT_LOG_DEBUG("  entity_count: %u", announce->entity_count);
 
-    if (node->update_seen[source] && node->update_generation[source] == generation) {
+    if (discovery_generation_applied(node, source, generation)) {
         return true; // the periodic resend of the announce we last acted on
     }
 
@@ -9845,6 +9854,7 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
     note_discovery_round_trip(node, source, generation);
     node->update_generation[source] = generation;
     node->update_seen[source] = true;
+    node->update_reprocess[source] = false;
     // A changed announce that came by broadcast is answered too (2026-09-26): the node that changed may
     // have just created an endpoint that matches one of ours, and until it hears our announce it cannot
     // match it - a Publisher of its would broadcast every sample for up to tt_CONTEXT_UPDATE_INTERVAL. Only a
@@ -11840,7 +11850,8 @@ static void send_discovery_request(struct tt_Context* node, uint8_t source, uint
 }
 
 static bool discovery_generation_applied(const struct tt_Context* node, uint8_t source, uint32_t generation) {
-    return node->update_seen[source] && node->update_generation[source] == generation;
+    return node->update_seen[source] && !node->update_reprocess[source] &&
+           node->update_generation[source] == generation;
 }
 
 static void discovery_request_retry(struct tt_Context* node, uint64_t time, void* param);

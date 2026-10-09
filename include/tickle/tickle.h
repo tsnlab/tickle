@@ -458,6 +458,11 @@ struct tt_Context {
     // process_announce()), so there's no need to keep a copy of the whole variable-length announce.
     uint32_t update_generation[tt_MAX_CONTEXT_IDS];
     bool update_seen[tt_MAX_CONTEXT_IDS];
+    // Per remote node, that its last acted-on announce must be acted on again: a local Publisher or Client was
+    // created since, and learns its peers only from an announce (reprocess_known_announces(), tickle.c). A flag,
+    // so marking twice is marking once; it was the stored generation inverted, which a second creation inverted
+    // back (2026-10-09).
+    bool update_reprocess[tt_MAX_CONTEXT_IDS];
     // Per remote node, an announce arriving in fragments that is not complete yet: its generation, how
     // many fragments it has, and which have arrived (bit i = fragment i; 0 = none in progress). Once
     // every bit is set the announce is complete and moves into update_generation[]/update_seen[] above,
