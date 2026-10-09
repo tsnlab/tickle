@@ -19,6 +19,11 @@
   <buildtool_depend>rosidl_default_generators</buildtool_depend>
 
   <depend>rclcpp</depend>
+  <!-- rosidl_generate_interfaces() generates a typesupport for every one in the build environment, and colcon puts
+       only declared dependencies there: without these, built in the same colcon run as the TickLE typesupports this
+       package was configured beside them and silently got none (no TickLE typesupport for ping/pong). -->
+  <depend>rosidl_typesupport_tickle_c</depend>
+  <depend>rosidl_typesupport_tickle_cpp</depend>
 
   <exec_depend>rosidl_default_runtime</exec_depend>
 
