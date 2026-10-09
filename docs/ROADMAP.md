@@ -265,8 +265,9 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
   in-ring reads, not zero-copy. (PLAN #3; COMPARISON 2.7a)
 - **Large-message stage 2** (samples above 64 KB): user's staged-support decision. Designed and pre-registered
   2026-10-09 in [DESIGN.md](DESIGN.md) section 8, "Stage 2" (wire types 10/11 with a 16-bit fragment index, caller-
-  acquired buffers lent to the app, a writer-owned same-host area; criteria L1-L4 and the falsifiers). Waits on the
-  user's four open questions there, the wire change first. (PLAN #4; LARGE_MESSAGE_PLAN)
+  acquired buffers lent to the app, a writer-owned same-host area; criteria L1-L4 and the falsifiers). The user approved
+  all four open questions on 2026-10-09 (the wire change, per-datagram seq_no, 8 MiB default / ~11.3 MiB ceiling,
+  4 MB cross-host at 15 Hz); implementation started. (PLAN #4; LARGE_MESSAGE_PLAN)
 - **A service server keeps one live answer per source context**: a retry from a second client of the same service
   in that context can re-run the server's callback. Found with S9 window A (below). (RMW_GAPS S9)
 - **rmw same-host peak-RSS rows**: at `a7e02807` all six non-wins of R1-R21 (DRAW 3, LOSE 3) are peak RSS,

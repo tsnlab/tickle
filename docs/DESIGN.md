@@ -487,7 +487,7 @@ Incomplete TickLE delivery in a cell is a LOSE.
 - **I4s:** the expected outcome is that every framework delivers below 30 Hz; TickLE delivering fewer complete samples
   than the best DDS means the send cursor's KEEP_LAST abandonment loses whole samples a DDS keeps.
 
-**Open questions for the user.** (1) Approve the wire change: types 10/11 and the next `tt_VERSION` (and step B's
+**Decided by the user 2026-10-09 (all four approved).** (1) The wire change: types 10/11 and the next `tt_VERSION` (and step B's
 `tt_SEGMENT_VERSION` 5). (2) Keep per-datagram seq_no for large samples (5,778 seq_nos and an 8192-bit window per
 8 MiB sample) - the design assumes yes. (3) The 8 MiB rmw default and the ~11.3 MiB ceiling. (4) I4 cross-host at
 15 Hz plus the I4s saturation cell, since 4 MB at 30 Hz exceeds the rig's link.
