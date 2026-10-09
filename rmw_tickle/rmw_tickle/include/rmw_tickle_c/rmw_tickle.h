@@ -199,6 +199,8 @@ rmw_qos_profile_t rmw_tickle_resolve_best_available(const rmw_qos_profile_t* req
 // needs rmw_tickle_guard_condition_t to already be complete (it embeds one), so the two are
 // declared in this order rather than the other way around.
 typedef struct rmw_tickle_context_impl_t rmw_tickle_context_impl_t;
+// Large-message stage 2's buffer pool (rmw_large.c), opaque here.
+struct rmw_tickle_large_pool;
 
 // Forward reference only (pointer field in rmw_tickle_context_impl_t's own nodes[] registry below,
 // and every rmw_tickle_publisher_t/_subscriber_t/_client_t/_service_t's own .node) - rmw_tickle_
@@ -286,6 +288,9 @@ struct rmw_tickle_context_impl_t {
     // (RMW_TICKLE_LOAN_RX_POOL_BUFFERS, tt_Context_set_rx_pool()), when the first loaning subscription is created;
     // freed after tt_Context_destroy(). NULL: none attached.
     uint64_t* loan_rx_pool;
+    // Large-message stage 2 (DESIGN.md section 8): the buffers core publishes and receives samples above
+    // tt_MAX_SAMPLE_LENGTH in (rmw_large.c), attached after tt_Context_create() and freed after tt_Context_destroy().
+    struct rmw_tickle_large_pool* large_pool;
     pthread_t poll_thread; // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
     volatile bool poll_thread_running;
 
@@ -1217,6 +1222,22 @@ typedef struct rmw_tickle_wait_set_t {
     rmw_tickle_context_impl_t* context_impl;
     rcutils_allocator_t allocator;
 } rmw_tickle_wait_set_t;
+
+// Large-message stage 2 (DESIGN.md section 8, rmw_large.c). The largest message rmw_tickle publishes or receives,
+// RMW_TICKLE_MAX_SAMPLE_BYTES: 8 MiB unless set, never above core's ceiling of one reader window of datagrams (about
+// 11.3 MiB). A publish of a larger message fails with an error naming the limit.
+#define RMW_TICKLE_MAX_SAMPLE_BYTES_DEFAULT (8U * 1024U * 1024U)
+uint32_t rmw_tickle_max_sample_bytes(void);
+// The context's large buffers (malloc() with a small free list), set on its tt_Context: false when they could not be.
+bool rmw_tickle_large_attach(rmw_tickle_context_impl_t* context_impl);
+// Frees them - after tt_Context_destroy(), which hands every one back first.
+void rmw_tickle_large_detach(rmw_tickle_context_impl_t* context_impl);
+// The limit the context's buffers enforce, for an error message; 0 before rmw_tickle_large_attach().
+uint32_t rmw_tickle_large_limit(const rmw_tickle_context_impl_t* context_impl);
+// The RELIABLE tracking window, in 64-bit words, a subscription of this type gets: RMW_TICKLE_TRACKING_WORDS, or for
+// a type with no bound on its size - one whose sample can be large - the widest window core allows, since all of one
+// large sample's datagrams must fit it (DESIGN.md section 8: 8192 bits, 1 KiB per tracked writer).
+uint16_t rmw_tickle_tracking_words_for(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks);
 
 #ifdef __cplusplus
 }

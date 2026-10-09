@@ -379,6 +379,12 @@ static rmw_ret_t start_shared_tickle_node(rmw_tickle_context_impl_t* context_imp
         tt_Context_destroy(&context_impl->tickle_context);
         return RMW_RET_ERROR;
     }
+    // Large-message stage 2 (DESIGN.md section 8): the buffers samples above tt_MAX_SAMPLE_LENGTH go in (rmw_large.c).
+    if (!rmw_tickle_large_attach(context_impl)) {
+        RMW_SET_ERROR_MSG("failed to set up the large-sample buffers");
+        tt_Context_destroy(&context_impl->tickle_context);
+        return RMW_RET_ERROR;
+    }
 
     // Set before either thread starts - watchdog_thread_main() must never see a stale zero-
     // initialized value and immediately mistake node startup itself for a hang (tt_get_ns() - 0 is
@@ -400,6 +406,7 @@ static rmw_ret_t start_shared_tickle_node(rmw_tickle_context_impl_t* context_imp
         RMW_SET_ERROR_MSG("failed to start poll thread");
         context_impl->poll_thread_running = false;
         tt_Context_destroy(&context_impl->tickle_context);
+        rmw_tickle_large_detach(context_impl);
         return RMW_RET_ERROR;
     }
 
@@ -473,6 +480,7 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
     }
 
     tt_Context_destroy(&context_impl->tickle_context);
+    rmw_tickle_large_detach(context_impl); // after the destroy, which hands every large buffer back to the pool
     // Loaned messages: the socket-path receive buffers, attached by the first loaning subscription. Only now, after
     // the destroy: until it the socket may still have been reading into one.
     if (NULL != context_impl->loan_rx_pool) {

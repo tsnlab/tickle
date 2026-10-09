@@ -23,6 +23,7 @@
 // at a time where every other sequence is one memcpy - and it is asserted here for the same reason:
 // a wrong element loop would still agree with itself.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -30,8 +31,10 @@
 #include <string>
 #include <vector>
 
+#include "rosidl_typesupport_tickle_c_tests/msg/dc_elem.hpp"
 #include "rosidl_typesupport_tickle_c_tests/msg/dc_inner.hpp"
 #include "rosidl_typesupport_tickle_c_tests/msg/dc_nested.hpp"
+#include "rosidl_typesupport_tickle_c_tests__msg__DcElem__rosidl_typesupport_tickle_cpp.hpp"
 #include "rosidl_typesupport_tickle_c_tests__msg__DcInner__rosidl_typesupport_tickle_cpp.hpp"
 #include "rosidl_typesupport_tickle_c_tests__msg__DcNested__rosidl_typesupport_tickle_cpp.hpp"
 
@@ -118,12 +121,57 @@ namespace {
         check(decoded.flags == message.flags, "and every bool comes back as it went");
     }
 
+    // Large-message stage 2 (docs/DESIGN.md section 8): a sequence of 65,535 elements or more has its count sent as
+    // 0xFFFF and a uint32, where every shorter one keeps its two bytes - so the encoded size grows by exactly 4 bytes
+    // of escape (plus the element) at 65,535 and by the elements alone after it. Before, such a message was refused.
+    // The counts either side of the escape, and one well past it.
+    constexpr size_t below_escape = 65534;
+    constexpr size_t at_escape = 65535;
+    constexpr size_t past_escape = 70000;
+    constexpr int32_t element_bytes = 8; // float64
+    constexpr int32_t escape_bytes = 4;  // the uint32 after 0xFFFF
+    constexpr double element_step = 0.5;
+
+    auto test_a_long_sequence_counts_past_16_bits() -> void {
+        namespace ts = rosidl_typesupport_tickle_c_tests::msg::rosidl_typesupport_tickle_cpp;
+        const std::array<size_t, 3> counts = {below_escape, at_escape, past_escape};
+        std::array<int32_t, 3> sizes = {0, 0, 0};
+        for (size_t k = 0; k < counts.size(); k++) {
+            rosidl_typesupport_tickle_c_tests::msg::DcElem message;
+            message.name = "n";
+            message.label = "l";
+            message.values.resize(counts.at(k));
+            for (size_t i = 0; i < counts.at(k); i++) {
+                message.values[i] = static_cast<double>(i) * element_step;
+            }
+            int32_t const sized = ts::direct_encode_size(message);
+            check(sized > 0, "a sequence of 65,534 or more elements has a size");
+            if (sized <= 0) {
+                return;
+            }
+            sizes.at(k) = sized;
+            std::vector<uint64_t> buffer((static_cast<size_t>(sized) / sizeof(uint64_t)) + 2, 0);
+            auto* payload = reinterpret_cast<uint8_t*>(buffer.data());
+            int32_t const size = ts::direct_encode(message, payload, static_cast<uint32_t>(sized));
+            check(size == sized, "and encodes to exactly that size");
+            rosidl_typesupport_tickle_c_tests::msg::DcElem decoded;
+            decoded.values = {element_step, element_step}; // a shell that already holds something
+            check(ts::direct_decode(decoded, payload, static_cast<uint32_t>(sized), true) == sized, "the bytes decode");
+            check(decoded.values == message.values, "and every element comes back as it went");
+        }
+        check(sizes[1] - sizes[0] == element_bytes + escape_bytes,
+              "at 65,535 the count grows by the 4-byte escape, once");
+        check(sizes[2] - sizes[1] == static_cast<int32_t>(past_escape - at_escape) * element_bytes,
+              "after it only the elements add bytes");
+    }
+
 } // namespace
 
 auto main() -> int {
     test_a_string_ends_at_its_first_nul();
     test_a_bounded_string_is_refused_above_its_bound();
     test_a_bool_sequence_round_trips();
+    test_a_long_sequence_counts_past_16_bits();
     if (failures != 0) {
         std::printf("test_direct_codec_cpp: %d failure(s)\n", failures);
         return 1;

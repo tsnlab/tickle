@@ -281,19 +281,33 @@ def emit_string_helpers():
 # --- per field ----------------------------------------------------------------------------------
 
 
+# A sequence count is a uint16. Large-message stage 2 (DESIGN.md section 8) needs more - an Image of 1 MB is a
+# uint8[] of 1,048,576 - so a count of 65,535 or more goes as the escape 0xFFFF followed by the count as a uint32. Every
+# count below 65,535 keeps its two bytes exactly: a sample within tt_MAX_SAMPLE_LENGTH (65,507) cannot hold a
+# sequence of 65,535 elements of any type, so no sample that could be sent before is encoded differently now.
+COUNT_ESCAPE = 0xFFFF
+
+
 def _count_encode(f, count_expr):
     bound = array_bound(f)
     lines = [f"size_t count = {count_expr};"]
     if bound is not None and mutant() != "no_bound_check":
         lines.append(f"if (count > {bound}U) {{ return -2; }}")
     lines += [
-        "if (count > 65535U) { return -2; }",
-        "if ((size_t)encoded + 2 > len) { return -1; }",
-        "{",
+        "if (count > UINT32_MAX) { return -2; }",
+        f"if (count < {COUNT_ESCAPE}U) {{",
+        "    if ((size_t)encoded + 2 > len) { return -1; }",
         "    uint16_t count16 = (uint16_t)count;",
         "    memcpy(payload + encoded, &count16, 2);",
+        "    encoded += 2;",
+        "} else {",
+        "    if ((size_t)encoded + 6 > len) { return -1; }",
+        f"    uint16_t escape = {COUNT_ESCAPE}U;",
+        "    uint32_t count32 = (uint32_t)count;",
+        "    memcpy(payload + encoded, &escape, 2);",
+        "    memcpy(payload + encoded + 2, &count32, 4);",
+        "    encoded += 6;",
         "}",
-        "encoded += 2;",
     ]
     return lines
 
@@ -302,9 +316,16 @@ def _count_decode(f):
     bound = array_bound(f)
     lines = [
         "if ((size_t)decoded + 2 > len) { return -1; }",
-        "uint16_t count;",
-        "memcpy(&count, payload + decoded, 2);",
-        "if (!is_native_endian) { count = __builtin_bswap16(count); }",
+        "uint16_t count16;",
+        "memcpy(&count16, payload + decoded, 2);",
+        "if (!is_native_endian) { count16 = __builtin_bswap16(count16); }",
+        "uint32_t count = count16;",
+        f"if (count16 == {COUNT_ESCAPE}U) {{",
+        "    if ((size_t)decoded + 6 > len) { return -1; }",
+        "    memcpy(&count, payload + decoded + 2, 4);",
+        "    if (!is_native_endian) { count = __builtin_bswap32(count); }",
+        "    decoded += 4;",
+        "}",
     ]
     if bound is not None and mutant() != "no_bound_check":
         lines.append(f"if (count > {bound}U) {{ return -2; }}")
@@ -317,7 +338,7 @@ def _count_size(f, count_expr):
     lines = [f"size_t count = {count_expr};"]
     if bound is not None and mutant() != "no_bound_check":
         lines.append(f"if (count > {bound}U) {{ return -2; }}")
-    lines += ["if (count > 65535U) { return -2; }", "size += 2;"]
+    lines += ["if (count > UINT32_MAX) { return -2; }", f"size += count < {COUNT_ESCAPE}U ? 2 : 6;"]
     return lines
 
 

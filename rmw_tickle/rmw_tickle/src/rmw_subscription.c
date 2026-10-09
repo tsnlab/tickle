@@ -761,9 +761,11 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     }
 
     // Phase 2 - the RELIABLE tracking window (see rmw_tickle_subscriber_t.tracking_bitmaps):
-    // RMW_TICKLE_TRACKING_WORDS words per tracked writer, tt_MAX_PEER_COUNT of them.
+    // RMW_TICKLE_TRACKING_WORDS words per tracked writer, tt_MAX_PEER_COUNT of them - or, for a type whose samples can
+    // be large, the widest window (large-message stage 2, rmw_tickle_tracking_words_for()).
     sub_impl->tracking_bitmaps = (uint64_t*)allocator->zero_allocate(
-        (size_t)tt_MAX_PEER_COUNT * RMW_TICKLE_TRACKING_WORDS, sizeof(uint64_t), allocator->state);
+        (size_t)tt_MAX_PEER_COUNT * rmw_tickle_tracking_words_for(sub_impl->callbacks), sizeof(uint64_t),
+        allocator->state);
     if (NULL == sub_impl->tracking_bitmaps) {
         RMW_SET_ERROR_MSG("failed to allocate subscriber tracking bitmaps");
         allocator->deallocate(sub_impl->queue, allocator->state);
@@ -880,7 +882,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     // the documented default, and leaving it unset handed non-zeroed callers a garbage pointer), so
     // attaching it before create would now be discarded exactly like reorder_storage was.
     sub_impl->tickle_subscriber.tracking_bitmaps = sub_impl->tracking_bitmaps;
-    sub_impl->tickle_subscriber.tracking_words = RMW_TICKLE_TRACKING_WORDS;
+    sub_impl->tickle_subscriber.tracking_words = rmw_tickle_tracking_words_for(sub_impl->callbacks);
     sub_impl->tickle_subscriber.reorder_storage = sub_impl->reorder_storage;
     sub_impl->tickle_subscriber.reorder_slots = reorder_slots;
     sub_impl->tickle_subscriber.reorder_slot_bytes = reorder_slot_bytes;
