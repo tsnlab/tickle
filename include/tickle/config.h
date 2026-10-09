@@ -293,8 +293,16 @@
 // perf_hil examples via their own flag) opts into a wider one per Subscriber by handing
 // tt_Context_create_subscriber()'s own caller-owned tracking buffer - see struct tt_Subscriber's own
 // window doc comment (tickle.h).
+// 8192 bits since large-message stage 2 (DESIGN.md section 8): one sample's datagrams must fit a reader's window, so
+// the window is what bounds the largest sample (about 11.3 MiB). Its ACKNACK, 28 + 1024 bytes, still fits one control
+// datagram. 4096 on FreeRTOS, which compiles stage 2 out and whose stack holds a window-sized array on the ACKNACK
+// path.
 #ifndef tt_RELIABLE_BITMAP_MAX_BITS
+#if defined(TT_PLATFORM_FREERTOS)
 #define tt_RELIABLE_BITMAP_MAX_BITS 4096
+#else
+#define tt_RELIABLE_BITMAP_MAX_BITS 8192
+#endif
 #endif
 #define tt_RELIABLE_BITMAP_MAX_WORDS (tt_RELIABLE_BITMAP_MAX_BITS / tt_RELIABLE_BITMAP_WORD_BITS)
 // A Client's retries (struct tt_Service.call_retry_interval 0, the auto path) - the same RFC 6298 estimator as the
@@ -668,6 +676,44 @@
 #endif
 // Fragments one sample may be split into: the width of a reassembly slot's bitmap.
 #define tt_FRAG_MAX_COUNT 64
+// Large-message stage 2 (DESIGN.md section 8, "Stage 2"): samples above tt_MAX_SAMPLE_LENGTH, up to one reader window
+// of datagrams (tt_LARGE_MAX_FRAGMENTS, about 11.3 MiB). They go as FRAG_FIRST_L/FRAG_CONT_L (types 11 and 12) from a
+// buffer the caller's large_acquire() callback hands core per sample (tt_Context_set_large_buffers()), and are put
+// back together into another such buffer, which a Subscriber may keep with tt_Sample_retain(). Compiled in with
+// fragmentation, out on FreeRTOS (no buffer callbacks; the lwIP heap cannot hold a megabyte sample), where a node
+// only skips types 11/12 and counts them (frag_large_skipped). Samples within tt_MAX_SAMPLE_LENGTH are untouched by it,
+// on the wire and in memory.
+// Off by default until large-sample reception lands; -Dtt_LARGE_SAMPLES=1 builds the writer alone.
+#ifndef tt_LARGE_SAMPLES
+#define tt_LARGE_SAMPLES 0
+#endif
+// The most datagrams one large sample may take: the widest reader window, since all of a sample's datagrams must be
+// trackable at once by a RELIABLE reader (DESIGN.md section 8: 1,446 + 1,452 x 8,191 bytes at the default datagram).
+#define tt_LARGE_MAX_FRAGMENTS tt_RELIABLE_BITMAP_MAX_BITS
+// Large samples a Publisher keeps by reference at once - being sent, or retained for resends and late joiners. Its
+// KEEP_LAST depth bounds it further in samples (tt_ReliableCache.sample_depth); a KEEP_ALL Publisher whose every record
+// is unacknowledged refuses the next large publish (tt_RET_WOULD_BLOCK).
+#ifndef tt_LARGE_RETAINED
+#define tt_LARGE_RETAINED 16
+#endif
+// Large samples a context can be putting together at once, across every writer and Subscriber. Each holds one
+// acquired buffer and a window-sized bitmap (1 KiB) of the fragments landed.
+#ifndef tt_LARGE_ASSEMBLIES
+#define tt_LARGE_ASSEMBLIES 4
+#endif
+// A RELIABLE writer sends a non-FINAL HEARTBEAT after the last fragment of each large sample, so a lost tail is asked
+// for one round trip later rather than at the next sample (DESIGN.md L3: removed if it does not pay). 0: none.
+#ifndef tt_LARGE_END_HEARTBEAT
+#define tt_LARGE_END_HEARTBEAT 1
+#endif
+// How long a large send blocked by a full socket send buffer waits before it tries again, at first and at most: the
+// wait doubles while a retry sends nothing.
+#ifndef tt_LARGE_SEND_RETRY_NS
+#define tt_LARGE_SEND_RETRY_NS 50000ULL
+#endif
+#ifndef tt_LARGE_SEND_RETRY_MAX_NS
+#define tt_LARGE_SEND_RETRY_MAX_NS 1000000ULL
+#endif
 // tx_buffer: room for a full batch plus one submessage overshooting it, which is what end_encode()'s
 // deferral needs - and, with fragmentation, room for a whole sample behind a batch that is still pending,
 // because the sample is encoded in one piece and only split as it is sent.
@@ -1105,6 +1151,10 @@ static_assert(tt_MAX_SAMPLE_LENGTH >= tt_MAX_BUFFER_LENGTH,
 static_assert(!tt_FRAG_ENABLED || tt_MAX_SAMPLE_LENGTH + tt_FRAG_SUBMESSAGE_OVERHEAD <= UINT16_MAX,
               "a fragmented sample is encoded as one submessage first, whose length is a uint16");
 static_assert(tt_FRAG_REASSEMBLY_SLOTS >= 1, "fragmentation needs at least one reassembly slot");
+static_assert(!tt_LARGE_SAMPLES || tt_FRAG_ENABLED, "large samples are sent as fragments: they need tt_FRAG_ENABLED");
+static_assert(tt_LARGE_MAX_FRAGMENTS <= UINT16_MAX, "a large fragment's index and count are uint16_t on the wire");
+static_assert(tt_LARGE_RETAINED >= 1 && tt_LARGE_RETAINED <= UINT8_MAX, "a Publisher's large ring counts in a uint8_t");
+static_assert(tt_LARGE_ASSEMBLIES >= 1, "receiving large samples needs at least one assembly");
 static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
               "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");
 static_assert(tt_MAX_CONTEXT_IDS % 32 == 0, "reached_nodes[] packs the per-peer bits 32 to a word");
