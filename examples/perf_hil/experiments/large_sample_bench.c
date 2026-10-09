@@ -65,6 +65,7 @@
 #define PERCENT_99 99U
 #define PERCENT 100U
 #define SMALL_TRACKING_WORDS 16U
+#define BITS_PER_WORD 64U
 #define MISSING_NAMED 10U
 
 static uint32_t sample_size = DEFAULT_SIZE;
@@ -352,6 +353,17 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
         // so a small-sample A/B against a parent with a narrower maximum compares the same window.
         sub.tracking_words =
             sample_size > tt_MAX_SAMPLE_LENGTH ? (uint16_t)tt_RELIABLE_BITMAP_MAX_WORDS : SMALL_TRACKING_WORDS;
+        // A RELIABLE Subscriber of a sample that fragments holds each fragment in a reorder slot until the sample is
+        // whole (tickle.h, tt_Subscriber.reorder_storage) - without one nothing fragmented is ever delivered. One
+        // window of slots of one control datagram each, as rmw_tickle sizes it. A large sample does not use them.
+        if (sample_size <= tt_MAX_SAMPLE_LENGTH) {
+            size_t slot_bytes = (sizeof(struct tt_ReorderSlot) + tt_CONTROL_MAX_LENGTH + sizeof(uint64_t) - 1) &
+                                ~(sizeof(uint64_t) - 1);
+            uint16_t slots = (uint16_t)(SMALL_TRACKING_WORDS * BITS_PER_WORD);
+            sub.reorder_storage = (uint64_t*)calloc(slots, slot_bytes);
+            sub.reorder_slots = sub.reorder_storage != NULL ? slots : 0;
+            sub.reorder_slot_bytes = (uint16_t)slot_bytes;
+        }
     }
     long peak_rss_kb = 0;
     double cpu_before = cpu_ms(&peak_rss_kb);
