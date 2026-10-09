@@ -30,8 +30,8 @@ trap 'sudo -n ip netns del "$NS" 2>/dev/null; echo "=== rmw_rtt_bisect ended rc=
 mkdir -p "$OUT" || exit 1
 arms=()
 for s in "$@"; do
-    d=$(ls -d "$BISECT_BUILDS/$s"* 2>/dev/null | head -1)
-    [ -n "$d" ] && [ -f "$d/BUILD_OK" ] || { echo "REFUSED: no complete build of $s in $BISECT_BUILDS"; rc=2; exit; }
+    d=$(find "$BISECT_BUILDS" -maxdepth 1 -name "$s*" -print -quit 2>/dev/null)
+    if [ -z "$d" ] || [ ! -f "$d/BUILD_OK" ]; then echo "REFUSED: no complete build of $s in $BISECT_BUILDS"; rc=2; exit; fi
     arms+=("$s")
 done
 runarms=("${arms[0]}_ctl" "${arms[@]}")
@@ -50,7 +50,7 @@ for rep in $(seq 1 "$REPS"); do
         IFS=: read -r msg qos <<<"$c"
         for a in "${order[@]}"; do
             sha=${a%_ctl}
-            d=$(ls -d "$BISECT_BUILDS/$sha"* | head -1)
+            d=$(find "$BISECT_BUILDS" -maxdepth 1 -name "$sha*" -print -quit)
             dir="$OUT/rtt_${msg}_${qos}_block_${a}_r$rep"
             sudo -n ip netns add "$NS" || { echo "cannot create netns"; rc=3; exit; }
             sudo -n ip -n "$NS" link set lo up multicast on

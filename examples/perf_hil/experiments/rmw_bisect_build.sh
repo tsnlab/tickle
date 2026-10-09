@@ -17,7 +17,7 @@ SHA=$(git -C "$REPO" rev-parse --verify -q "${1:?usage: rmw_bisect_build.sh <com
 D=$BISECT_BUILDS/${SHA:0:12}
 trap 'echo "RMW_BISECT_BUILD rc=$rc sha=${SHA:0:12} $(date -Is)"' EXIT
 [ -f "$D/BUILD_OK" ] && { echo "complete build exists: $D"; rc=0; exit; }
-rm -rf "${D:?}" && mkdir -p "$D/src" || { rc=3; exit; }
+if ! { rm -rf "${D:?}" && mkdir -p "$D/src"; }; then rc=3; exit; fi
 git -C "$REPO" archive "$SHA" | tar -x -C "$D/src" || { rc=5; exit; }
 export PYTHONPATH=$D/src/tools/typesupport${PYTHONPATH:+:$PYTHONPATH}
 set +u
