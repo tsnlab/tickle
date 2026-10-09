@@ -113,7 +113,9 @@ if [ -z "${PF_TICKLE_INSTALL:-}" ] || [ -z "${PF_PERF_WS:-}" ]; then
 fi
 PF_TICKLE_INSTALL=${PF_TICKLE_INSTALL:-}
 PF_PERF_WS=${PF_PERF_WS:-}
-PF_OVERLAYS=${PF_OVERLAYS:-"$HOME/tickle/install/local_setup.bash $PF_PERF_WS/local_setup.bash"}
+# The overlays the cells source: the same two installs (until 2026-10-09 this named ~/tickle/install even when
+# PF_TICKLE_INSTALL pointed elsewhere, so the cells' environment and the library checked here could differ).
+PF_OVERLAYS=${PF_OVERLAYS:-"$PF_TICKLE_INSTALL/local_setup.bash $PF_PERF_WS/local_setup.bash"}
 PF_PERF_TEST=${PF_PERF_TEST:-$PF_PERF_WS/performance_test/lib/performance_test/perf_test}
 # The cells the preflight runs (kind:msg:qos[:wait], space-separated).
 PF_CELLS=${PF_CELLS:-"rtt:bench:reliable:block rtt:array1k:best_effort:poll tput:Array1k:reliable tput:Array4k:best_effort"}
