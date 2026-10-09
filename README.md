@@ -10,9 +10,9 @@ Measured on two Raspberry Pis against FastDDS and CycloneDDS with the same QoS (
 
 | | TickLE | FastDDS | CycloneDDS |
 |---|---:|---:|---:|
-| Same host, BEST_EFFORT p4 (2800 B), send Mbps | **24,696** | 12,853 | 9,449 |
-| Same host, RELIABLE p4, send Mbps | **14,900** | 2,041 | 4,651 |
-| Same host, round trip p2 (1292 B), ms | **0.023** | 0.100 | 0.067 |
+| Same host, BEST_EFFORT p4 (2800 B), send Mbps | **25,137** | 12,832 | 9,333 |
+| Same host, RELIABLE p4, send Mbps | **14,917** | 1,924 | 4,542 |
+| Same host, round trip p2 (1292 B), ms | **0.023** | 0.107 | 0.074 |
 | Same host, publisher CPU per sample (BEST_EFFORT p4) | **1.07 us** | 1.69 us | – |
 | Same host, publisher memory (BEST_EFFORT p4) | **3.2 MB** | 15.9 MB | – |
 | Cross host, native campaign (162 metric cells) | **151 wins**, 11 draws or ties, 0 losses | | |

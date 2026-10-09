@@ -189,6 +189,7 @@ The user's active list (2026-10-05), in order.
 6. **Re-measure rmw same-host performance**: the rmw same-host rows predate the segment, FIFO and wake fixes.
    (COMPARISON 2.7; RMW_PERF_PLAN)
    Done 2026-10-08 at `03585237` (`experiments/rmw_samehost.sh`, RESULTS.md rows R1-R21): WIN 50, DRAW 1, LOSE 1.
+   Re-measured 2026-10-09 at `a7e02807`: WIN 46, DRAW 3, LOSE 3, every non-win a peak-RSS row (Wired work).
 7. **FreeRTOS: implement tt_rx_maybe_ready() with an lwIP netconn receive callback**: today only the Linux HAL has
    the receive hint. lwIP's socket layer hard-wires its own netconn callback (`DEFAULT_SOCKET_EVENTCB` in
    `sockets.c` is not configurable), so the callback needs the HAL on the netconn API: `netconn_new_with_callback()`
@@ -259,25 +260,49 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
 
 ### Wired work (the user's order of 2026-09-29: finish wired, then Security, then wireless)
 
-- **Receive-buffer lending** (`tt_Sample_retain`/`release`, SHM stage 2 / S7): most of the same-host win is
-  here, and it is the machinery loans need. User-approved 2026-09-28. (PLAN "wired work" #2; SHM_PLAN 5; RMW_GAPS S7)
-- **Loaned messages**: done, 6 of 6, for types whose wire bytes are their message (RMW.md "Loaned messages"). What
-  would make more of it zero-copy is core's: `rx_buffer` aligned to 8, a ring that skips a held slot, a claimed-slot
-  publish. (PLAN #3; COMPARISON 2.7a)
+- **True zero-copy loans need three core changes**: `rx_buffer` aligned to 8 bytes, a segment ring that skips held
+  slots (`tt_SEGMENT_VERSION` 5), and a claimed-slot publish API. Today's loans (done, below) are decoded shells and
+  in-ring reads, not zero-copy. (PLAN #3; COMPARISON 2.7a)
 - **Large-message stage 2** (samples above 64 KB): user's staged-support decision. Designed and pre-registered
   2026-10-09 in [DESIGN.md](DESIGN.md) section 8, "Stage 2" (wire types 10/11 with a 16-bit fragment index, caller-
   acquired buffers lent to the app, a writer-owned same-host area; criteria L1-L4 and the falsifiers). Waits on the
   user's four open questions there, the wire change first. (PLAN #4; LARGE_MESSAGE_PLAN)
-- **Introspection round-trip rows** (names, type names, GIDs, event counts, serialization format): only the QoS row
-  is done. (PLAN #6; RMW_GAPS g14 generalisation)
-- **Housekeeping**: delete the merged ablation branches `d4-state-lock-chunk-on-main` and `d5-inline-skip-gate`.
-  Nothing blocks this since WIRE 10.5. (PLAN #8; WIRE_PLAN 10.5)
-- **Same-host discovery**: keep UDP for discovery, or move it into the segment? Moving it means no network stack
-  on embedded. (SHM_PLAN 7 q2)
-- **FreeRTOS form of the segment** (HAL-provided rather than `shm_open`): it shapes the seam. (SHM_PLAN 7 q3)
+- **A service server keeps one live answer per source context**: a retry from a second client of the same service
+  in that context can re-run the server's callback. Found with S9 window A (below). (RMW_GAPS S9)
+- **rmw same-host peak-RSS rows**: at `a7e02807` all six non-wins of R1-R21 (DRAW 3, LOSE 3) are peak RSS,
+  rmw_tickle 0.1-0.6 MB above CycloneDDS, and its RTT-cell RSS rose 76-96 kB since `03585237`. The cause is being
+  investigated. (RESULTS "rmw layer, same host")
+- **FreeRTOS form of the segment** (HAL-provided rather than `shm_open`): it shapes the seam. The segment only:
+  discovery stays UDP (decided below). (SHM_PLAN 7 q3)
 - **Stage 1 / S1 against the WIRE 10.4 floors** (CPU, RSS and size, p1-p4): the module's "no cost when off" is still
   owed. g15's uncounted zero-copy sends close with it. (SHM_PLAN 6b; RMW_GAPS S1/S3/g15; MODULE_PLAN 3)
-- **S9 window A, measured 2026-10-09 on the PC** (`service_window_a.sh`, private netns, core at
+
+Decided and done 2026-10-08/09:
+
+- **Same-host discovery: decided by the user 2026-10-09** - discovery stays UDP on both Linux and FreeRTOS; there is
+  no segment-based discovery. (SHM_PLAN 7 q2)
+- **Receive-buffer lending** (`tt_Sample_retain`/`release`, SHM stage 2 / S7): done - design `03a68c63` (DESIGN
+  10), code with the in-place segment drain `0be14584`, bench arm `9d924607`. Rig A/B
+  (`~/rig_results_safe/ab_samehost_lending_20261008-211707.summary.txt`): IMPROVED 12 of 15, 3 held, none worse;
+  BEST_EFFORT p3 delivered +12.1% and CPU per sample -9.9%, RELIABLE p3 +8.6%; the sentinel held. (PLAN "wired
+  work" #2; SHM_PLAN 5; RMW_GAPS S7)
+- **Loaned messages**: done, 6 of 6, for types whose wire bytes are their message (RMW.md "Loaned messages") -
+  `a8cbe2a2` (typesupport `inplace_bytes`), `7a321d26`, `7b1e10b2` (PC bench), `e521bbba` (loans counted). Rig A/B
+  (`~/rig_results_safe/ab_loans_20261009-011554.verdict.txt`): shipped defaults PASS, loans opted into IMPROVED
+  (Array4k RELIABLE delivered +14.3%, CPU -10.3%). The zero-copy follow-up is open above.
+- **Introspection round-trip rows** (names, type names, GIDs, event counts, serialization format): done - a request
+  names its client and a two-process test matches every gid (`bf1378da`), the introspection round trip across two
+  processes found no mismatch (`91b1988b`). This also closes **received samples' publisher_gid**, now tested across
+  two processes. (PLAN #6; RMW_GAPS g14 generalisation)
+- **Discovery per entity** (`33436ab3`): two writers of one topic in one context are two entities in the graph and
+  in the RxO check; the segment skip judges a record's own writer for RxO (`cb83768e`).
+- **Refuse the shm-only submessage on the socket** (`ac9394d5`): tested through the socket, refusals logged by powers
+  of ten. (SHM_PLAN 6e(a))
+- **Run the rmw behaviour tests locally in the netns** (`f837ae82`): the gates run the checks CI runs. (RMW_GAPS
+  "Known gap in the local gates")
+- **Housekeeping**: the merged ablation branches `d4-state-lock-chunk-on-main` and `d5-inline-skip-gate` are
+  deleted from origin. (PLAN #8; WIRE_PLAN 10.5)
+- **S9 window A, measured 2026-10-09 on the PC** (`029e9a85`; `service_window_a.sh`, private netns, core at
   tt_MAX_BUFFER_LENGTH=65507 as rmw_tickle builds it; the core default makes a service datagram fit a slot, and the
   window cannot be reached). Two clients of two services in one context, one at 3000 B (UDP), one at 64 B (shm),
   two runs of 5 x 200,000 exchanges: 556 and 323 requests, 203 and 123 responses taken out of send order **across**
@@ -287,14 +312,10 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
   The first run's 306 timeouts in 1,000,000 were a client defect, not the path split, found and fixed the same night:
   the call's round trip was timed from after the send returned, so a reply that came back while the send was preempted
   measured ~200 ns, srtt collapsed, and the wait ceiling of 64 x srtt then cut every wait below G (a call gave up in
-  ~0.5 ms). Both arms show it; mixed more often. Same harness, PC, private netns, 029e9a85 against the fix: pinned to
+  ~0.5 ms). Both arms show it; mixed more often. Same harness, PC, private netns, `029e9a85` against the fix: pinned to
   one CPU, 3 x 40,000 calls per arm, 533 -> 3 timeouts (mixed) and 396 -> 1 (shm); unpinned, 6 x 200,000 mixed, 549
   -> 40. Also fixed: two clients of ONE service in one context were answered as one (identical seq_nos; the second
   never got an answer) - a call's seq_no now comes from the context. (RMW_GAPS S9)
-- **Received samples carry an all-zero publisher_gid**: tools cannot match a sample to its writer.
-  (RMW_GAPS g14 generalisation)
-- **Run the rmw behaviour tests locally in the netns**: today they run only in CI. (RMW_GAPS "Known gap in the local
-  gates")
 
 ### rmw latency and correctness
 

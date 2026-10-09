@@ -20,14 +20,15 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
   FastDDS 43.1% / 38.9%, CycloneDDS 4.8% / 1.6% (rows 16-17).
 - **Same host (shared memory):** TickLE leads every measured cell, unpinned, with warm-up excluded. At BEST_EFFORT
   KEEP_LAST 1 (the DDS default) TickLE delivered every sample at max rate, CycloneDDS about a fifth and FastDDS
-  almost none (S1d-S3d); TickLE's CPU per delivered RELIABLE sample is 1.7 us against 12.0 and 31.1 (S17).
+  almost none (S1d-S3d); TickLE's CPU per delivered RELIABLE sample is 1.5 us against 12.0 and 31.7 (S17,
+  `e521bbba`).
 - **rmw layer:** rmw_tickle is first on every block-wait row and every poll-wait row except seven draws with
   CycloneDDS (rows 59, 62-67). It loses no row. Under RELIABLE + KEEP_ALL at 5% loss, with the writers' KEEP_ALL bounds made
   equal, it delivers 41x (Array1k) and 78x (Array4k) CycloneDDS's rate with no sample lost; FastDDS's write times
   out under its default 100 ms bound and the run ends (rows 72-75).
-- **rmw layer, same host** (`03585237`, rows R1-R21): rmw_tickle scores WIN 50, DRAW 1, LOSE 1 against both DDS
-  rmws; the LOSE is ~3% more peak RSS than CycloneDDS at Array1k RELIABLE. At BEST_EFFORT KEEP_LAST 1 max rate it
-  delivers 150k Array1k samples/s against CycloneDDS's 71k and FastDDS's 8k.
+- **rmw layer, same host** (`a7e02807`, rows R1-R21): rmw_tickle scores WIN 46, DRAW 3, LOSE 3 against both DDS
+  rmws; every non-win is a peak-RSS row, rmw_tickle 0.1-0.6 MB above CycloneDDS (cause under investigation). At
+  BEST_EFFORT KEEP_LAST 1 max rate it delivers 133k Array1k samples/s against CycloneDDS's 66k and FastDDS's 13k.
 - **Not scored:** row 5 (netem dominates), rows 45-47 (all detect correctly), zenoh-pico (reference only).
 
 ## 1. Same host (shared memory)
@@ -37,37 +38,37 @@ Publisher and subscriber on **one** rig Pi, each framework on its own shared-mem
 by a witness that cannot be configured into agreeing (loopback packet count, and TickLE's own `tx_shm` share).
 Harness `experiments/s6_transport_cells.sh`, 3 repetitions per framework unless noted, throughput from drop-free
 repetitions only. **No process is pinned to a core** (TESTING.md section 5); S1-S10 (but S8) and S1d-S3d,
-S17-S19 are from `experiments/fair_samehost_remeasure.sh` on `f128f686` (2026-10-08;
-`~/rig_results_safe/fair_samehost_f128f686_20261008-081131.*`, read by `fair_samehost_summary.py`): every
+S17-S19 are from `experiments/fair_samehost_remeasure.sh` on `e521bbba` (2026-10-09;
+`~/rig_results_safe/fair_samehost_e521bbba_20261009-033254.*`, read by `fair_samehost_summary.py`): every
 framework drops the same warm-up and cool-down (4,096 round trips, 2 s), BEST_EFFORT runs KEEP_LAST 1 on all three,
 explicitly (the DDS default), and the pinned figures are a note below. **✅ = best, ❌ = worst** in the row.
 
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | build | details |
 |---|---|---|---|---|---|---|---|
 | | **Throughput, send Mbps** (higher is better) | | | | | | |
-| S1 | BEST_EFFORT, max rate | P2 1292 B | ✅ **18,484** | 6,340 | ❌ 4,445 | `f128f686` | [notes](#same-host-notes) |
-| S2 | BEST_EFFORT, max rate | P3 1424 B | ✅ **19,716** ¶ | 6,994 | ❌ 4,897 | `f128f686` | [notes](#same-host-notes) |
-| S3 | BEST_EFFORT, max rate | P4 2800 B | ✅ **24,696** | 12,853 | ❌ 9,449 | `f128f686` | [notes](#same-host-notes) |
-| S4 | RELIABLE | P2 1292 B | ✅ **12,613** | ❌ 1,004 | 2,223 | `f128f686` | [notes](#same-host-notes) |
-| S5 | RELIABLE | P3 1424 B | ✅ **13,539** | ❌ 969 | 2,439 | `f128f686` | [notes](#same-host-notes) |
-| S6 | RELIABLE | P4 2800 B | ✅ **14,900** | ❌ 2,041 | 4,651 | `f128f686` | [notes](#same-host-notes) |
+| S1 | BEST_EFFORT, max rate | P2 1292 B | ✅ **20,867** | 6,370 | ❌ 4,439 | `e521bbba` | [notes](#same-host-notes) |
+| S2 | BEST_EFFORT, max rate | P3 1424 B | ✅ **21,982** | 7,006 | ❌ 4,882 | `e521bbba` | [notes](#same-host-notes) |
+| S3 | BEST_EFFORT, max rate | P4 2800 B | ✅ **25,137** ¶ | 12,832 | ❌ 9,333 | `e521bbba` | [notes](#same-host-notes) |
+| S4 | RELIABLE | P2 1292 B | ✅ **13,764** | ❌ 1,012 | 2,165 | `e521bbba` | [notes](#same-host-notes) |
+| S5 | RELIABLE | P3 1424 B | ✅ **14,771** | ❌ 980 | 2,414 | `e521bbba` | [notes](#same-host-notes) |
+| S6 | RELIABLE | P4 2800 B | ✅ **14,917** | ❌ 1,924 | 4,542 | `e521bbba` | [notes](#same-host-notes) |
 | | **Delivered, receive Mbps** (higher is better; the subscriber's rate over the measured window) | | | | | | |
-| S1d | BEST_EFFORT, max rate, KEEP_LAST 1 | P2 1292 B | ✅ **18,484** (100%) | ❌ 0 (0%) | 942 (21%) | `f128f686` | [notes](#same-host-notes) |
-| S2d | BEST_EFFORT, max rate, KEEP_LAST 1 | P3 1424 B | ✅ **19,716** ¶ (100%) | ❌ 0 (0%) | 1,032 (21%) | `f128f686` | [notes](#same-host-notes) |
-| S3d | BEST_EFFORT, max rate, KEEP_LAST 1 | P4 2800 B | ✅ **24,696** (100%) | ❌ 1 (0%) | 1,842 (19%) | `f128f686` | [notes](#same-host-notes) |
+| S1d | BEST_EFFORT, max rate, KEEP_LAST 1 | P2 1292 B | ✅ **20,867** (100%) | ❌ 0 (0%) | 934 (21%) | `e521bbba` | [notes](#same-host-notes) |
+| S2d | BEST_EFFORT, max rate, KEEP_LAST 1 | P3 1424 B | ✅ **21,982** (100%) | ❌ 0 (0%) | 1,029 (21%) | `e521bbba` | [notes](#same-host-notes) |
+| S3d | BEST_EFFORT, max rate, KEEP_LAST 1 | P4 2800 B | ✅ **25,137** ¶ (100%) | ❌ 1 (0%) | 1,854 (20%) | `e521bbba` | [notes](#same-host-notes) |
 | | **Latency, RTT mean ms** (lower is better; one ping in flight, 200/s unless noted) | | | | | | |
-| S7 | RTT | P2 1292 B | ✅ **0.023** | ❌ 0.100 | 0.067 | `f128f686` | [notes](#same-host-notes) |
+| S7 | RTT | P2 1292 B | ✅ **0.023** | ❌ 0.107 | 0.074 | `e521bbba` | [notes](#same-host-notes) |
 | S8 | RTT, 20/s (60 s) | P2 1292 B | ✅ **0.032** | ❌ 0.197 | 0.071 | `e17b4e6f` | [notes](#same-host-notes) |
-| S9 | RTT | P3 1424 B | ✅ **0.023** | ❌ 0.101 | 0.066 | `f128f686` | [notes](#same-host-notes) |
-| S10 | RTT | P4 2800 B | ✅ **0.027** | ❌ 0.113 | 0.066 | `f128f686` | [notes](#same-host-notes) |
+| S9 | RTT | P3 1424 B | ✅ **0.023** | ❌ 0.110 | 0.067 | `e521bbba` | [notes](#same-host-notes) |
+| S10 | RTT | P4 2800 B | ✅ **0.027** | ❌ 0.100 | 0.069 | `e521bbba` | [notes](#same-host-notes) |
 | | **CPU** (lower is better) | | | | | | |
 | S11 | publisher, us per sample | BEST_EFFORT P4, max rate | ✅ **1.071** | ❌ 1.694 | – | `e17b4e6f` | [notes](#same-host-notes) |
 | S12 | client, us per round trip | RTT P2, 20/s | ✅ **66.0** | ❌ 136.7 | 102.1 | `e17b4e6f` | [notes](#same-host-notes) |
 | | **Memory** (lower is better) | | | | | | |
 | S13 | publisher peak RSS, MB | BEST_EFFORT P4 | ✅ **3.2** | ❌ 15.9 | – | `e17b4e6f` | [notes](#same-host-notes) |
-| S17 | client + server us per delivered sample | RELIABLE P3 | ✅ **1.67** | ❌ 31.08 | 11.99 | `f128f686` | [notes](#same-host-notes) |
-| S18 | client + server us per round trip | RTT P3, 200/s | ✅ **42.3** | ❌ 171.3 | 97.7 ‡ | `f128f686` | [notes](#same-host-notes) |
-| S19 | client + server peak RSS, MB | RELIABLE P3 | ✅ **8.3** | 46.7 | ❌ 236.4 ‡ | `f128f686` | [notes](#same-host-notes) |
+| S17 | client + server us per delivered sample | RELIABLE P3 | ✅ **1.53** | ❌ 31.65 | 12.04 | `e521bbba` | [notes](#same-host-notes) |
+| S18 | client + server us per round trip | RTT P3, 200/s | ✅ **41.9** | ❌ 167.9 | 96.6 ‡ | `e521bbba` | [notes](#same-host-notes) |
+| S19 | client + server peak RSS, MB | RELIABLE P3 | ✅ **8.5** | 46.9 | ❌ 239.2 ‡ | `e521bbba` | [notes](#same-host-notes) |
 | | **Mixed: one publisher, one subscriber on its host and one across the link** (delivered k samples/s, p2) | | | | | | |
 | S15 | BEST_EFFORT, each subscriber | local / remote | ✅ **90.7 / 90.7**, loss 0 | 53.1 / 54.6, loss 4-22% | – | `7f127d56` | [notes](#same-host-notes) |
 | S16 | RELIABLE, each subscriber | local / remote | ✅ **90.7 / 90.7** | 30.8 / 30.8 | – | `7f127d56` | [notes](#same-host-notes) |
@@ -84,9 +85,27 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
   rate-dependent overrun. Whether the writer's two-payload history pool is the cause was not decided: the depth-64
   arm and the arm counting Fast DDS's own discards were VOID (2 of 3 usable reps). TickLE, the control, delivered 100%.
   Reproduced again at `f128f686` (2026-10-08): `delivered_ratio=0.000` at p2, p3 and p4, 3 reps each (280-463
-  samples taken per rep).
+  samples taken per rep). And at `e521bbba` (2026-10-09): `delivered_ratio=0.000` at p2, p3 and p4, 3 reps each.
+- **2026-10-09 re-measure** (`e521bbba`, same harness, rules and order as `f128f686`; 3 reps per cell, every cell
+  n=3 except **¶ S3/S3d TickLE n=2**: one rep dropped at a full ring and is excluded, as the rule says; S2/S2d are
+  n=3 again). Was at `f128f686` -> now: S1 18,484 -> **20,867** (+12.9%), S2 19,716 -> **21,982** (+11.5%), S3
+  24,696 -> **25,137** (+1.8%), S4 12,613 -> **13,764** (+9.1%), S5 13,539 -> **14,771** (+9.1%), S6 14,900 ->
+  **14,917** (+0.1%) Mbps; S7 0.023 -> **0.023**, S9 0.023 -> **0.023**, S10 0.027 -> **0.027** ms (-0.8%, -1.0%,
+  +2.4% unrounded); S17 1.67 -> **1.53** us (-8.5%); S18 42.3 -> **41.9** us (-0.8%); S19 8.3 -> **8.5** MB (+2.4%).
+  Between the two builds main gained receive-buffer lending with the in-place segment drain (`0be14584`; its rig A/B,
+  `~/rig_results_safe/ab_samehost_lending_20261008-211707.summary.txt`, read +12.1% delivered at BEST_EFFORT p3 and
+  +8.6% RELIABLE p3, IMPROVED 12 of 15, none worse), skip-to-newest for KEEP_LAST readers (`17c825f3`, `03585237`),
+  the reader-wake generation fix (`e6226bbf`), the retry granularity G (`33b2cdfc`), `forget_peer`'s gap fix
+  (`29dff630`) and discovery per entity (`33436ab3`); loaned messages (`7a321d26`) are rmw only and not on this path.
+  The S2 and S5 gains match the lending A/B's p3 figures. The vendor arms, which none of these touch, moved within
+  -6..+1% on throughput (FastDDS S6 the widest) and -12..+10% on RTT (FastDDS S10 -11.6%, CycloneDDS S7 +10.4%),
+  against TickLE's +0..+13% on throughput and -1..+2% on RTT; no row's leader or worst changed. Pinned medians of
+  the same session (TickLE / FastDDS / CycloneDDS): S1-S3 20,715 / 6,385 / 4,510, 21,893 / 6,746 / 4,932, 25,103 / 13,008 / 9,478; S4-S6 13,700 / 899
+  / 2,673, 14,811 / 977 / 2,876, 14,778 / 1,876 / 5,209; S7, S9, S10 0.023 / 0.098 / 0.062, 0.023 / 0.099 / 0.061,
+  0.027 / 0.098 / 0.063 ms. No leader changes pinned; TickLE's unpinned/pinned is 1.00-1.02x, CycloneDDS's
+  0.81-0.87x at S4-S6 and 1.10-1.20x RTT, FastDDS's 1.13x at S4 and 1.10-1.11x RTT at S7, S9.
 - **2026-10-08 re-measure** (`f128f686`, same harness, rules and order as `9f919c8b`; 3 reps per cell, every cell
-  n=3 except **¶ S2/S2d TickLE n=2**: one rep dropped 1 sample at a full ring and is excluded, as the rule says).
+  n=3 except **S2/S2d TickLE n=2**: one rep dropped 1 sample at a full ring and is excluded, as the rule says).
   Every TickLE figure moved; was at `9f919c8b` -> now: S1 13,555 -> **18,484**, S2 14,303 -> **19,716**, S3 22,613
   -> **24,696**, S4 10,146 -> **12,613**, S5 10,556 -> **13,539**, S6 12,333 -> **14,900** Mbps; S7 0.031 ->
   **0.023**, S9 0.031 -> **0.023**, S10 0.036 -> **0.027** ms; S17 2.13 -> **1.67** us; S18 78.8 † -> **42.3** us
@@ -130,7 +149,7 @@ explicitly (the DDS default), and the pinned figures are a note below. **✅ = b
   a 1 ms timer (`8d1c3712`); before that, TickLE lost S4 and S6 to CycloneDDS.
 - **S11 and S13 compare against FastDDS only.** CycloneDDS's memory excludes iceoryx's `iox-roudi` daemon, which
   reserved 216 MB of shared memory before any application connected. TickLE's segment is in-process, no daemon.
-- **S10 is the narrowest RTT lead** (2.5x CycloneDDS at `f128f686`; 1.29x when this was investigated): a p4 sample is two datagrams and two slots on TickLE's path.
+- **S10 is the narrowest RTT lead** (2.5x CycloneDDS at `f128f686` and `e521bbba`; 1.29x when this was investigated): a p4 sample is two datagrams and two slots on TickLE's path.
   The extra time appears only after idling: p4 - p3 is +6 us at 0.5 ms ping spacing and +20 us at 5 ms, against
   CycloneDDS's 0-2 us (`experiments/p4_interval_rig.sh`, `6234e915`). Ruled out: an extra wake (p4 rings the same
   doorbells per round trip, `p4_wake_count.sh`) and the doorbell's place between the fragments (`93504234` moved it
@@ -162,55 +181,74 @@ the router. RTT: the `rmw_perf_pingpong` pair, 20 s at 1 ms, 4,096 round trips e
 `perf_test` at max rate, 20 s, 2 s excluded at each end, delivered samples counted at the subscriber; BEST_EFFORT is
 KEEP_LAST 1, RELIABLE is KEEP_ALL. Poll wait loops on `spin_some()` with 100 us sleeps, random phase. 3 reps per arm,
 medians; verdicts by the reps' ranges (TESTING.md section 4's win rule), from `rmw_samehost_summary.py`.
-**Build `03585237`** (2026-10-08; `experiments/rmw_samehost.sh`, rmw_tickle built as the jazzy debs are, `-g -O2`;
-`~/rig_results_safe/rmw_samehost_03585237_20261008-101135.{txt,runs}`). It carries the stall fix (`cba66e30`),
-reader-wake round 4 (`8c1e6431`), encode-in-slot (`cd09e895`), the ring-turn fix (`65b37569`) and skip-to-newest
-(`17c825f3`, ordered once per pass in `03585237`). The last column is rmw_tickle in the same harness at `f128f686`
-(the same morning, before skip-to-newest; `~/rig_results_safe/rmw_samehost_f128f686_20261008-065726.txt`).
-**Scored: WIN 50, DRAW 1, LOSE 1** of 52 (at `f128f686`: WIN 45, DRAW 1, LOSE 6).
+**Build `a7e02807`** (2026-10-09; `experiments/rmw_samehost.sh`, rmw_tickle built as the jazzy debs are, `-g -O2`;
+`~/rig_results_safe/rmw_samehost_a7e02807_20261009-054624.{txt,runs}`; preflight 9 usable runs, 0 VOID; every cell
+n=3 for every arm). Since `03585237` it carries receive-buffer lending with the in-place segment drain (`0be14584`),
+discovery per entity (`33436ab3`) and the segment skip's RxO per writer (`cb83768e`), the request's client gid
+(`bf1378da`) and loaned messages (`7a321d26`, off unless the application borrows; the bench does not). The last
+column is rmw_tickle in the same harness at `03585237` (2026-10-08,
+`~/rig_results_safe/rmw_samehost_03585237_20261008-101135.txt`, published in `9082c560`), with its verdict where it
+was not a WIN. **Scored: WIN 46, DRAW 3, LOSE 3** of 52 (at `03585237`: WIN 50, DRAW 1, LOSE 1; at `f128f686`: WIN
+45, DRAW 1, LOSE 6). Every non-win is a peak-RSS row.
 
-| # | Metric | Cell | rmw_tickle | FastDDS | CycloneDDS | rmw_zenoh (ref) | verdict | rmw_tickle at `f128f686` |
+| # | Metric | Cell | rmw_tickle | FastDDS | CycloneDDS | rmw_zenoh (ref) | verdict | rmw_tickle at `03585237` |
 |---|---|---|---|---|---|---|---|---|
 | | **RTT mean, us** (lower is better) | | | | | | | |
-| R1 | block wait (`spin()`) | Bench 64 B, BEST_EFFORT | **35.8** | 132.1 | 110.7 | 236.7 | WIN | 35.9 |
-| R2 | block wait | Bench 64 B, RELIABLE | **37.4** | 150.5 | 111.7 | 232.0 | WIN | 37.6 |
-| R3 | block wait | Array1k, BEST_EFFORT | **38.2** | 130.7 | 115.4 | 243.9 | WIN | 37.1 |
-| R4 | block wait | Array1k, RELIABLE | **38.6** | 153.4 | 114.7 | 242.6 | WIN | 39.3 |
-| R5 | poll wait, 100 us sleep | Bench 64 B, BEST_EFFORT | **149.1** | 192.3 | 183.6 | 287.5 | WIN | 150.0 |
-| R6 | poll wait, 100 us sleep | Bench 64 B, RELIABLE | **153.3** | 200.9 | 186.8 | 289.4 | WIN | 151.7 |
-| R7 | poll wait, 100 us sleep | Array1k, BEST_EFFORT | **150.0** | 193.9 | 184.5 | 294.1 | WIN | 151.0 |
-| R8 | poll wait, 100 us sleep | Array1k, RELIABLE | **150.8** | 203.1 | 188.0 | 296.4 | WIN | 151.5 |
+| R1 | block wait (`spin()`) | Bench 64 B, BEST_EFFORT | **36.0** | 126.8 | 113.4 | 236.1 | WIN | 35.8 |
+| R2 | block wait | Bench 64 B, RELIABLE | **36.9** | 149.9 | 112.5 | 232.3 | WIN | 37.4 |
+| R3 | block wait | Array1k, BEST_EFFORT | **37.8** | 128.1 | 114.5 | 242.5 | WIN | 38.2 |
+| R4 | block wait | Array1k, RELIABLE | **38.5** | 151.9 | 115.4 | 241.6 | WIN | 38.6 |
+| R5 | poll wait, 100 us sleep | Bench 64 B, BEST_EFFORT | **149.1** | 190.4 | 184.4 | 289.1 | WIN | 149.1 |
+| R6 | poll wait, 100 us sleep | Bench 64 B, RELIABLE | **149.3** | 201.3 | 187.7 | 288.1 | WIN | 153.3 |
+| R7 | poll wait, 100 us sleep | Array1k, BEST_EFFORT | **150.2** | 194.2 | 184.3 | 296.8 | WIN | 150.0 |
+| R8 | poll wait, 100 us sleep | Array1k, RELIABLE | **150.9** | 202.2 | 187.2 | 294.4 | WIN | 150.8 |
 | | **CPU, ping + pong, us per round trip** (lower is better) | | | | | | | |
-| R9 | block wait | Bench 64 B, RELIABLE | **64.4** | 256.2 | 150.4 | 339.8 | WIN | 64.4 |
-| R10 | block wait | Array1k, RELIABLE | **66.2** | 261.9 | 154.4 | 354.5 | WIN | 67.5 |
+| R9 | block wait | Bench 64 B, RELIABLE | **63.3** | 254.2 | 151.0 | 339.8 | WIN | 64.4 |
+| R10 | block wait | Array1k, RELIABLE | **65.6** | 258.7 | 154.9 | 354.2 | WIN | 66.2 |
 | | **Peak RSS, kB, larger of the two processes** (lower is better) | | | | | | | |
-| R11 | RTT | Bench 64 B, BEST_EFFORT, block | **15,140** | 26,252 | 15,248 | 22,496 | WIN | 15,136 |
-| R12 | RTT | Bench 64 B, RELIABLE, block | 15,260 | 26,260 | 15,240 | 22,500 | DRAW | 15,260 (LOSE) |
-| R13 | throughput | Array1k, RELIABLE | 17,664 | 35,814 † | **17,152** | 123,624 | LOSE | 17,536 (LOSE) |
+| R11 | RTT | Bench 64 B, BEST_EFFORT, block | 15,236 | 26,244 | 15,240 | 22,504 | DRAW | 15,140 |
+| R12 | RTT | Bench 64 B, RELIABLE, block | 15,336 | 26,260 | **15,256** | 22,520 | LOSE | 15,260 (DRAW) |
+| R13 | throughput | Array1k, RELIABLE | 17,664 | 35,708 | **17,024** | 1,457,212 § | LOSE | 17,664 (LOSE) |
 | | **Delivered msg/s** (higher is better) | | | | | | | |
-| R14 | max rate, KEEP_LAST 1 | Array1k, BEST_EFFORT | **150,010** | 8,283 | 70,703 | 62,935 | WIN | 42,033 (LOSE) |
-| R15 | max rate, KEEP_LAST 1 | Array4k, BEST_EFFORT | **81,716** | 3,835 | 60,939 | 50,419 | WIN | 15,824 (LOSE) |
-| R16 | max rate, KEEP_ALL | Array1k, RELIABLE | **176,050** | 2,488 † | 65,110 | 107,879 | WIN | 181,017 |
-| R17 | max rate, KEEP_ALL | Array4k, RELIABLE | **146,182** | 16,846 | 48,222 | 93,512 | WIN | 148,682 |
+| R14 | max rate, KEEP_LAST 1 | Array1k, BEST_EFFORT | **132,742** | 12,650 | 66,268 | 59,483 | WIN | 150,010 |
+| R15 | max rate, KEEP_LAST 1 | Array4k, BEST_EFFORT | **79,181** | 4,471 | 60,542 | 49,934 | WIN | 81,716 |
+| R16 | max rate, KEEP_ALL | Array1k, RELIABLE | **166,111** | 2,464 | 60,838 | 97,661 | WIN | 176,050 |
+| R17 | max rate, KEEP_ALL | Array4k, RELIABLE | **147,538** | 16,808 | 46,779 | 92,535 | WIN | 146,182 |
 | | **CPU, pub + sub, us per delivered sample** (lower is better) | | | | | | | |
-| R18 | max rate | Array1k, BEST_EFFORT | **13.17** | 323.24 | 33.40 | 45.03 | WIN | 46.98 (LOSE) |
-| R19 | max rate | Array4k, BEST_EFFORT | **24.29** | 690.34 | 36.66 | 53.17 | WIN | 125.51 (LOSE) |
-| R20 | max rate | Array1k, RELIABLE | **6.72** | 594.44 † | 34.93 | 21.15 | WIN | 6.54 |
-| R21 | max rate | Array4k, RELIABLE | **9.07** | 85.74 | 39.09 | 25.75 | WIN | 9.02 |
+| R18 | max rate | Array1k, BEST_EFFORT | **14.92** | 212.28 | 34.24 | 47.66 | WIN | 13.17 |
+| R19 | max rate | Array4k, BEST_EFFORT | **24.99** | 591.30 | 36.79 | 53.85 | WIN | 24.29 |
+| R20 | max rate | Array1k, RELIABLE | **7.10** | 592.12 | 36.12 | 22.34 | WIN | 6.72 |
+| R21 | max rate | Array4k, RELIABLE | **9.04** | 85.91 | 39.99 | 25.75 | WIN | 9.07 |
 
-Rows not shown are WINs of the same shape: RTT p50 and p99 in every cell, CPU per round trip in the six other cells
-(61.8-79.7 us against FastDDS 172-241 and CycloneDDS 146-160), and the nine other peak-RSS cells.
+Rows not shown: RTT p50 and p99 in every cell (WIN), CPU per round trip in the six other cells (WIN, 62.1-75.6 us
+against FastDDS 173-242 and CycloneDDS 149-157), and the nine other peak-RSS cells: WIN in six, **DRAW** in Array1k
+BEST_EFFORT block and Array1k RELIABLE block, **LOSE** in Bench 64 B RELIABLE poll (15,312-15,320 kB against
+CycloneDDS's 15,248-15,252).
 
-- **† FastDDS refused in tput Array1k RELIABLE r2:** its publisher ended on "failed to publish" (KEEP_ALL under the
-  100 ms `max_blocking_time`). Per the user's rule it is recorded as "does not run" in that rep - REFUSED, excluded,
-  listed - and not analysed further; R13, R16 and R20 are the median of its other two reps (n=2).
+- **The three LOSE and three DRAW rows are all peak RSS**, rmw_tickle 0.1-0.6 MB above CycloneDDS: R12 15,336-15,340
+  kB against 15,244-15,260 (+80 kB at the median), the Bench RELIABLE poll cell +68 kB, R13's subscriber 17,536-17,920
+  against 16,896-17,152 (+640 kB, 3.8%). In the RTT cells rmw_tickle's RSS rose by 76-96 kB since `03585237` (R11
+  15,140 -> 15,236, R12 15,260 -> 15,336) while CycloneDDS's stayed within 16 kB, which turned R11 from WIN to DRAW
+  and R12 from DRAW to LOSE. The cause is being investigated; nothing is concluded yet.
+- **R14 fell 150,010 -> 132,742 (-11.5%)** at the median, but its reps (126,187 / 132,742 / 148,978) overlap the
+  previous run's (144,773-150,312); the control, CycloneDDS in the same cell, moved -6.3% (70,703 -> 66,268). R16
+  moved -5.6% against CycloneDDS's -6.6%. In the loans A/B on the same rig the night before
+  (`~/rig_results_safe/ab_loans_20261009-011554.verdict.txt`, 8 phases) the default arm delivered medians of 146k-147k at
+  R14's cell.
+- **No FastDDS rep refused** in this run (at `03585237` its tput Array1k RELIABLE r2 ended on "failed to publish";
+  see † below). **§ rmw_zenoh's** Array1k RELIABLE subscriber peaked at 1.46 GB (123,624 kB at `03585237`); it is a
+  reference arm and not analysed further.
+- **† (at `03585237`) FastDDS refused in tput Array1k RELIABLE r2:** its publisher ended on "failed to publish"
+  (KEEP_ALL under the 100 ms `max_blocking_time`). Per the user's rule it was recorded as "does not run" in that
+  rep (REFUSED, excluded, listed) and not analysed further; its R13, R16 and R20 were the median of its other two reps
+  (n=2).
 - **R18 was scored DRAW** until 2026-10-08 by the harness's former 2 x SE rule, although rmw_tickle's reps (13.14 /
   13.73 / 13.17 us) are below every rep of CycloneDDS (32.81-34.45) and FastDDS (171 / 1,006 / 323): FastDDS's
   scatter made the bound wider than the gap. Scored by the reps' ranges, as TESTING.md section 4 says, it is a WIN;
-  no other verdict in this run or at `f128f686` changes.
-- **R12 and R13 are right as scored.** R12: rmw_tickle 15,252-15,260 kB against CycloneDDS 15,232-15,264, the
-  ranges overlap, a DRAW (20 kB apart at the median). R13: rmw_tickle's subscriber 17,536-17,792 kB
-  against CycloneDDS's 16,896-17,152, no overlap, a LOSE of ~512 kB (3%).
+  no other verdict in the `03585237` run or at `f128f686` changes.
+- **At `03585237`, R12 and R13 were right as scored.** R12: rmw_tickle 15,252-15,260 kB against CycloneDDS
+  15,232-15,264, the ranges overlap, a DRAW (20 kB apart at the median). R13: rmw_tickle's subscriber 17,536-17,792
+  kB against CycloneDDS's 16,896-17,152, no overlap, a LOSE of ~512 kB (3%).
 - **Accepted cost of skip-to-newest** (the user, 2026-10-08). A KEEP_LAST 1 reader that falls behind now takes the
   newest sample rather than draining in order, which gives R14/R15 their x3.6 / x5.2 over `f128f686` (in the rig A/B
   `~/rig_results_safe/ab_drain_20261008-021000.*`, phases A C C A C A A C: x2.3 at Array1k, x4.9 at Array4k). It
