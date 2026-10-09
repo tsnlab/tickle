@@ -68,6 +68,10 @@ DIRECTION = {
 # cpu_s_per_Msample and cpu_s_per_MB are the normalised forms and stay verdict metrics; they are
 # what section 2's "less CPU than both DDS vendors" has to mean in a fixed-duration test.
 INFORMATIONAL = ("utime_s", "stime_s", "whole_send_mbps", "whole_recv_mbps")
+# Kept for A/B comparisons of TickLE against itself (ab_compare.py), never for a vendor verdict here: the latency
+# tails. Lower is better. Absent until 2026-10-09, so a pre-registered rtt_p99_ms primary matched nothing and the
+# large-message L2 (stage 1) ended in NO VERDICT on it.
+AB_ONLY = {"rtt_p50_ms": False, "rtt_p99_ms": False}
 # wire_packets_per_sample is deliberately NOT in DIRECTION. It is the boundary GATE, not a metric to
 # win: at P1/P2 all three are meant to read 1.0, and calling an intended three-way equality a draw
 # (or worse, a win) would be a verdict on the test design rather than on TickLE. The controlled test
@@ -151,7 +155,7 @@ def parse(path):
                     fw["delivery"][k] = float(v)
                 if k in POLICY:
                     fw["policy"][k] = v
-                if k in DIRECTION or k in INFORMATIONAL or k in ("sample_bytes", GATE_METRIC):
+                if k in DIRECTION or k in INFORMATIONAL or k in AB_ONLY or k in ("sample_bytes", GATE_METRIC):
                     try:
                         fw["vals"].setdefault(f"{role}.{k}", []).append(float(v))
                     except ValueError:
