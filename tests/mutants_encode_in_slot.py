@@ -17,6 +17,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = ROOT / "platform/linux/obj/debug/tests/test_encode_in_slot"
 
 MUTANTS = [
+    # Stage 1 / S1 (2026-10-09): a destination with no segment declined before the slot path's checks, not after.
+    (
+        "declining in a context that never attached a segment, before the checks",
+        "src/tickle.c",
+        "    if (node->segment_slot_ceiling == 0) {\n        return false;\n    }\n    // No peers is a broadcast",
+        "    // No peers is a broadcast",
+        "test_a_peer_on_another_host_costs_the_slot_path_nothing",
+    ),
     (
         "declining a batching publisher",
         "src/tickle.c",
@@ -48,8 +56,8 @@ MUTANTS = [
     (
         "declining for a local Subscriber",
         "src/tickle.c",
-        "    if (pub->local_subscriber_count != 0) {\n        return false;\n    }\n#endif\n    // No peers",
-        "    if (false) {\n        return false;\n    }\n#endif\n    // No peers",
+        "    if (pub->local_subscriber_count != 0) {\n        return false;\n    }\n#endif\n    // A context that has never",
+        "    if (false) {\n        return false;\n    }\n#endif\n    // A context that has never",
         "test_what_stays_on_the_staging_path",
     ),
     (
