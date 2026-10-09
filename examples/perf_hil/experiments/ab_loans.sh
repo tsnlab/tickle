@@ -48,6 +48,12 @@ RTT_MSGS=array1k
 TPUT_TOPICS="Array1k Array4k RadarDetection"
 PF_CELLS="rtt:array1k:reliable:block rtt:array1k:best_effort:poll tput:Array1k:best_effort tput:Array4k:reliable \
 tput:RadarDetection:best_effort"
+PF_A_TICKLE_INSTALL=${PF_A_TICKLE_INSTALL:-$HOME/tickle/install}
+if [ -z "${PF_A_PERF_WS:-}" ]; then # rmw_samehost.sh's default before it built HEAD (2026-10-09)
+    PF_A_PERF_WS=$HOME/rmw_perf_ws/install
+    [ -x /tmp/keepall_evict/perf/install/performance_test/lib/performance_test/perf_test ] &&
+        PF_A_PERF_WS=/tmp/keepall_evict/perf/install
+fi
 PF_B_HOME=${PF_B_HOME:-$HOME/rmw_loans_ab}
 PF_B_TICKLE_INSTALL=${PF_B_TICKLE_INSTALL:-$PF_B_HOME/rmw/install}
 PF_B_OVERLAYS=${PF_B_OVERLAYS:-"$HOME/rmw_loans_ws/rmw/install/local_setup.bash \
@@ -108,9 +114,10 @@ if [ "$ROLE" = outer ]; then
     echo "ESTIMATE: ~$((est / 60)) min on the rig ($nph phases, $sw commit switches), plus the lock wait" | tee -a "$LOG"
     if [ "${PREFLIGHT:-1}" != 0 ]; then
         echo "--- PC preflight $(date +%T): harness on ~/tickle/install (A-like: no loans may show)" | tee -a "$LOG"
-        # An A-like build is older than this checkout on purpose, so rmw_samehost.sh's stale-build refusal is waived.
+        # An A-like build is older than this checkout on purpose, so rmw_samehost.sh's stale-build refusal is waived,
+        # and it is named here: rmw_samehost.sh's own default is a build of HEAD, which has loans since 7a321d26.
         ARMS="$RMW_ARMS" PREFLIGHT_ONLY=1 PF_ALLOW_STALE=1 PREFLIGHT_OUT="$OUTB.pf_A" PF_CELLS="$PF_CELLS" \
-            "$X/rmw_samehost.sh" \
+            PF_TICKLE_INSTALL="$PF_A_TICKLE_INSTALL" PF_PERF_WS="$PF_A_PERF_WS" "$X/rmw_samehost.sh" \
             >"$OUTB.pf_A.log" 2>&1 || {
             tail -20 "$OUTB.pf_A.log"
             echo "REFUSING TO TAKE THE RIG: the PC preflight (A-like build) failed ($OUTB.pf_A.log)" | tee -a "$LOG"

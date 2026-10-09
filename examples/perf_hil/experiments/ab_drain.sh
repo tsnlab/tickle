@@ -177,14 +177,14 @@ if [ "$ROLE" = outer ]; then
     echo "ESTIMATE: rmw steps 1+3 ~$((rmw_s / 60)) min (10.1.1.213), native A/B ~$((s6_s / 60)) min (10.1.1.214)," \
         "total ~$(((rmw_s + s6_s) / 60)) min on the rig, plus the lock wait" | tee -a "$LOG"
     if [ "${PREFLIGHT:-1}" != 0 ]; then
-        # It runs ~/tickle/install's rmw_tickle, not an arm (rmw_samehost.sh's header), and that build may predate B:
-        # then tput Array4k best_effort can lose the announce race B fixes and VOID on its instrument cross-check (PC,
+        # It runs rmw_samehost.sh's default PC build - pc_preflight_build.sh's build of this checkout's HEAD, refused
+        # when there is none - not an arm (rmw_samehost.sh's header). Until 2026-10-09 it ran ~/tickle/install as it
+        # was (PF_ALLOW_STALE=1), and that build may predate B: then tput Array4k best_effort can lose the announce race B fixes and VOID on its instrument cross-check (PC,
         # 2026-10-07: 1 of 3 runs, "tx_shm share 0.977 but bytes witness 0.97"). One retry, both logged; a harness
         # defect fails both.
         for try in 1 2; do
             echo "--- PC preflight $(date +%T): rmw_samehost harness (rmw_tickle arm, private netns), try $try" | tee -a "$LOG"
-            # PF_ALLOW_STALE=1: this check runs ~/tickle/install as it is (above), recorded as stale=1 when it is.
-            ARMS=tickle PREFLIGHT_ONLY=1 PF_ALLOW_STALE=1 PREFLIGHT_OUT="$OUTB.pf_rmw$try" "$X/rmw_samehost.sh" \
+            ARMS=tickle PREFLIGHT_ONLY=1 PREFLIGHT_OUT="$OUTB.pf_rmw$try" "$X/rmw_samehost.sh" \
                 >"$OUTB.pf_rmw$try.log" 2>&1 &&
                 break
             grep -A4 '^VOID runs' "$OUTB.pf_rmw$try.log" | tee -a "$LOG"
