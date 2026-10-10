@@ -109,6 +109,11 @@ allocates nothing (an ordinary `rmw_take` copies it into the caller's message, a
   the application holds the loan (core DESIGN.md 10; `test_loaned_messages` held-pinned shows it: the ring refuses the
   writer and its KEEP_ALL publish times out). So it is off by default, and a held loan blocks nothing (`held`: every
   one of 1,600 flood samples delivered on another topic while three loans were held, 0 refusals);
+- a sample **larger than a datagram** (a type up to `RMW_TICKLE_MAX_SAMPLE_BYTES`, e.g. perf_test's Array4m) is
+  lent where core put it together, its own large buffer (core DESIGN.md 8), which holds up nothing else; the
+  publisher's borrow stays limited to types within a datagram. Before 2026-10-11 such a type did not lend: a 4 MB
+  sample was decoded into a shell in the delivery and copied again by the take, two copies after its last fragment
+  where a DDS makes one. Now a loaned take copies nothing and an ordinary take once (`test_large_loans`);
 - at most 8 queued samples per subscription stay in a buffer (core holds 16 per context); the rest are decoded;
 - a byte-swapped sample, a fragmented, reorder-released or locally delivered one, or one not aligned for its type is
   decoded, never lent as is. Every receive buffer is 8-aligned (core's `rx_buffer` since 2026-10-09), so a message

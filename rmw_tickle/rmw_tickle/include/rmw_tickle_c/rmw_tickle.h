@@ -134,6 +134,11 @@ uint32_t rmw_tickle_message_slot_bytes(const rosidl_typesupport_tickle_c_message
 // Loaned messages (docs/RMW.md): whether this type may be lent - its wire bytes are its message in memory
 // (callbacks->inplace_bytes) with an alignment the allocator meets - and RMW_TICKLE_LOANS is not "0".
 bool rmw_tickle_type_can_loan(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks);
+// The same for a subscription, which also lends a type larger than a datagram, up to rmw_tickle_max_sample_bytes(): its
+// sample is put together in a large buffer of its own (core DESIGN.md section 8), which core lends without holding up
+// anything else, so the take need not copy it out (docs/RMW.md, "Loaned messages"). A publisher's borrow stays within a
+// datagram: it lends buffers it keeps, at most 64 of them.
+bool rmw_tickle_type_can_loan_take(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks);
 
 void* rmw_tickle_ros_message_create(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks,
                                     const rcutils_allocator_t* allocator);

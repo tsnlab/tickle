@@ -187,9 +187,10 @@ uint32_t rmw_tickle_message_slot_bytes(const rosidl_typesupport_tickle_c_message
     return (uint32_t)RMW_TICKLE_ROUND_UP_8(bytes);
 }
 
-bool rmw_tickle_type_can_loan(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks) {
+// Whether a type of at most `largest` wire bytes lends (rmw_tickle_type_can_loan(), _take()).
+static bool type_can_loan_within(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks, size_t largest) {
     if (0 == callbacks->inplace_bytes || callbacks->inplace_bytes > callbacks->ros_struct_size ||
-        callbacks->inplace_bytes > (size_t)tt_MAX_BUFFER_LENGTH) {
+        callbacks->inplace_bytes > largest) {
         return false; // not a type whose wire bytes are its message (a hand-written struct, or one that is not plain)
     }
     size_t align = callbacks->ros_struct_align;
@@ -199,6 +200,14 @@ bool rmw_tickle_type_can_loan(const rosidl_typesupport_tickle_c_message_callback
     }
     const char* env = getenv("RMW_TICKLE_LOANS");
     return NULL == env || 0 != strcmp(env, "0");
+}
+
+bool rmw_tickle_type_can_loan(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks) {
+    return type_can_loan_within(callbacks, (size_t)tt_MAX_BUFFER_LENGTH);
+}
+
+bool rmw_tickle_type_can_loan_take(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks) {
+    return type_can_loan_within(callbacks, (size_t)rmw_tickle_max_sample_bytes());
 }
 
 void* rmw_tickle_ros_message_create(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks,
