@@ -73,6 +73,12 @@ EXEC_POLL_ARMS=${EXEC_POLL_ARMS:--}
 PHASE=${PHASE:-}
 RTT_AT=${RTT_AT:-}
 RMW_LIST=${RMW_LIST:-rmw_tickle rmw_fastrtps_cpp rmw_cyclonedds_cpp}
+# QOSES (2026-10-10, ~/rig_queue_largemsg_A4.sh): the QoS cells, best_effort and/or reliable. Unset, both, in that
+# order, exactly as before; QOSES=best_effort re-runs one cell without the other.
+QOSES=${QOSES:-"best_effort reliable"}
+for q in $QOSES; do
+    case "$q" in best_effort | reliable) ;; *) echo "QOSES takes best_effort and/or reliable, not '$q'" >&2; exit 64 ;; esac
+done
 # IDLE_S=10 (2026-09-27, RMW_PERF_PLAN 8.6's idle-CPU criterion): the pong idles IDLE_S s before the ping starts
 # instead of 4, and the row gains pong_idle_cpu_ns / pong_idle_ms - the summed schedstat run time of every pong
 # thread from 1 s after launch (start-up excluded) to the ping's start, and that window's length on the Pi's clock.
@@ -113,7 +119,7 @@ test -f \$HOME/rmw_variants/$v/install/rmw_tickle/lib/librmw_tickle.so"
 done
 TRACE=${TRACE:-0}
 if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
-say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS, executor-poll arms: $EXEC_POLL_ARMS, phase: ${PHASE:-locked}, rtt at: ${RTT_AT:-loop}, idle: ${IDLE_S:-4} s, rmws: $RMW_LIST ==="
+say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS, executor-poll arms: $EXEC_POLL_ARMS, phase: ${PHASE:-locked}, rtt at: ${RTT_AT:-loop}, idle: ${IDLE_S:-4} s, rmws: $RMW_LIST, qoses: $QOSES ==="
 
 CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
 FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
@@ -522,7 +528,7 @@ for rep in $(seq 1 "$REPS"); do
         fi
     fi
     for msg in $MSGS; do
-        qoses="best_effort reliable"; [ "$TRACE" = 1 ] && qoses=best_effort
+        qoses=$QOSES; [ "$TRACE" = 1 ] && qoses=best_effort
         for qos in $qoses; do
             RMWS="$RMW_LIST"
             if [ -n "$TICKLE_VARIANTS" ]; then
