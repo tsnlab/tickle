@@ -6,7 +6,8 @@
 #
 # NOT a rig figure. It answers two mechanism questions, for the design in DESIGN.md section 8 ("Saturation").
 #
-# HOW TO READ IT, written before the first run (2026-10-11) and enforced by the summary at the end:
+# HOW TO READ IT, written before the first run (2026-10-11) and enforced by the summary at the end (R0-R5 read the
+# 1,472-byte cells only, R6-R8 the IP-mode ones):
 #   R0 CONTROL  mmsg, spin 0: lost = 0 in every rep. Otherwise the setup loses on its own and the run is VOID.
 #   R1 WITNESS  every rep: lost (the receiver's seq gaps) = socket_drops (the kernel's count for that socket), within
 #               1%. A gap the socket did not count was lost elsewhere (veth, tbf) and the socket hypothesis is
@@ -19,6 +20,12 @@
 #               spin is not happening where R3 assumes and R3's PASS says nothing (VOID).
 #   R5 MECHANISM coop (IORING_SETUP_COOP_TASKRUN, completions only on kernel entry) at 5 ms: expected to lose as mmsg
 #               does. Informational: it says the drain is the task work forced by the wake-up, not the ring itself.
+#   R6 IP CONTROL mmsg 65,507 B, spin 0: lost = 0 and reasm_fails = 0 in every rep, else the IP-mode rows are VOID.
+#   R7 IP REPRO  mmsg 65,507 B loses at some spin <= 10 ms, and every lost datagram is in socket_drops or reasm_fails.
+#   R8 IP FIX    uring 64 x 65,600 B at each spin where mmsg lost: 0 lost in at least 2 of 3 reps and in total at most
+#                1% of what mmsg lost there - FEASIBLE; otherwise FALSIFIED. Looser than R3 because R3's first run
+#                showed a background loss of 24-391 datagrams in single reps that mmsg had too (2026-10-11, f234f08e).
+#                Must-fail: uring with 4 buffers at 5 ms loses.
 #
 # Usage: rx_drain_pc.sh [REPS] [SECONDS]     results appended to $OUT (default ~/largemsg_pc/rx_drain.txt)
 # Needs passwordless `sudo ip` and `tc`.
@@ -53,17 +60,17 @@ sudo -n ip netns exec "$NS1" tc qdisc add dev rxd1 root tbf rate 1gbit burst 256
 
 echo "=== rx_drain_pc $(date -Is) $(uname -r) $(grep -m1 "^CONFIG_HZ=" "/boot/config-$(uname -r)" 2>/dev/null) reps=$REPS seconds=$SECONDS_RUN tree=${TREE_SHA:-$(git -C "$HERE" rev-parse --short HEAD)} ===" | tee -a "$OUT"
 
-# cell MODE SPIN_US BUFS
+# cell MODE SPIN_US BUFS [DGRAM PER BUF_SIZE]
 cell() {
-    local mode=$1 spin=$2 bufs=$3 rep
+    local mode=$1 spin=$2 bufs=$3 dgram=${4:-1472} per=${5:-2889} buf_size=${6:-2048} rep
     for rep in $(seq 1 "$REPS"); do
         local sublog=$WORK/rxd_sub.log publog=$WORK/rxd_pub.log
         # shellcheck disable=SC2024
-        sudo -n ip netns exec "$NS2" "$BIN" recv "$PORT" "$SECONDS_RUN" "$mode" "$spin" 2889 "$bufs" >"$sublog" 2>&1 &
+        sudo -n ip netns exec "$NS2" "$BIN" recv "$PORT" "$SECONDS_RUN" "$mode" "$spin" "$per" "$bufs" "$buf_size" >"$sublog" 2>&1 &
         local sub_pid=$!
         sleep 0.5
         # shellcheck disable=SC2024
-        sudo -n ip netns exec "$NS1" "$BIN" send 192.168.77.2 "$PORT" "$((SECONDS_RUN + 1))" >"$publog" 2>&1
+        sudo -n ip netns exec "$NS1" "$BIN" send 192.168.77.2 "$PORT" "$((SECONDS_RUN + 1))" "$dgram" >"$publog" 2>&1
         wait "$sub_pid"
         local s p
         s=$(grep -m1 '^RESULT:' "$sublog" | sed 's/^RESULT: //')
@@ -72,7 +79,7 @@ cell() {
             echo "CELL mode=$mode spin_us=$spin bufs=$bufs rep=$rep VOID: no RESULT ($(tail -1 "$sublog"))" | tee -a "$OUT"
             continue
         fi
-        echo "CELL rep=$rep $s | $p" | tee -a "$OUT"
+        echo "CELL rep=$rep dgram=$dgram $s | $p" | tee -a "$OUT"
     done
 }
 
@@ -85,6 +92,15 @@ done
 cell uring 5000 128
 cell coop 3000 4096
 cell coop 5000 4096
+# IP mode (added 2026-10-11, before its first run, for Dev's hybrid design): 65,507-byte datagrams the kernel
+# fragments and reassembles, 64 a 4 MB sample, read into 64 buffers of 65,600 bytes (the same ~4 MB as 2,048 x 2 KB).
+if [ "${IP_MODE:-1}" = 1 ]; then
+    for spin in 0 3000 5000 10000; do
+        cell mmsg "$spin" 0 65507 64 65600
+        cell uring "$spin" 64 65507 64 65600
+    done
+    cell uring 5000 4 65507 64 65600
+fi
 echo "=== runs done $(date -Is); tc $(sudo -n ip netns exec "$NS1" tc -s qdisc show dev rxd1 | tr '\n' ' ') ===" | tee -a "$OUT"
 
 # The reading, from this run's CELL lines only.
@@ -94,6 +110,8 @@ rows = []
 for line in sys.stdin:
     kv = dict(re.findall(r"(\w+)=(\S+)", line.split("|")[0]))
     rows.append({k: (v if k == "mode" else int(v)) for k, v in kv.items()})
+ip_rows = [r for r in rows if r.get("dgram", 1472) != 1472]
+rows = [r for r in rows if r.get("dgram", 1472) == 1472]
 def cells(mode, spin=None, bufs=None):
     return [r for r in rows if r["mode"] == mode and (spin is None or r["spin_us"] == spin) and (bufs is None or r["bufs"] == bufs)]
 verdict = {}
@@ -117,6 +135,29 @@ for mode, spin, bufs in sorted({(r["mode"], r["spin_us"], r["bufs"]) for r in ro
     print("SUMMARY %-5s spin %5d us bufs %4d: received %s lost %s socket_drops %s cpu_user+sys ms %s" % (mode, spin, bufs,
           [r["received"] for r in rs], [r["lost"] for r in rs], [r["socket_drops"] for r in rs],
           [r["cpu_user_ms"] + r["cpu_sys_ms"] for r in rs]))
+def ipc(mode, spin=None, bufs=None):
+    return [r for r in ip_rows if r["mode"] == mode and (spin is None or r["spin_us"] == spin) and (bufs is None or r["bufs"] == bufs)]
+if ip_rows:
+    c0 = ipc("mmsg", 0)
+    verdict["R6"] = "PASS" if c0 and all(r["lost"] == 0 and r["reasm_fails"] == 0 for r in c0) else "VOID"
+    lossy_ip = sorted({r["spin_us"] for r in ipc("mmsg") if r["lost"] > 0})
+    unexplained = [r for r in ip_rows if r["lost"] > r["socket_drops"] + r["reasm_fails"]]
+    verdict["R7"] = ("REPRODUCED at spin %s us" % lossy_ip if lossy_ip else "NOT REPRODUCED") + (
+        "; %d reps with loss neither the socket nor reassembly counted" % len(unexplained) if unexplained else "; every loss counted")
+    ok = bool(lossy_ip)
+    for sp in lossy_ip:
+        u = ipc("uring", sp, 64)
+        m = sum(r["lost"] for r in ipc("mmsg", sp))
+        if len([r for r in u if r["lost"] == 0]) < 2 or sum(r["lost"] for r in u) > m / 100:
+            ok = False
+    mf = ipc("uring", 5000, 4)
+    mf_ok = bool(mf) and all(r["lost"] > 0 for r in mf)
+    verdict["R8"] = ("FEASIBLE" if ok else "FALSIFIED" if lossy_ip else "NO READING") + ("" if mf_ok else " (VOID: 4 buffers did not lose)")
+    for mode, spin, bufs in sorted({(r["mode"], r["spin_us"], r["bufs"]) for r in ip_rows}):
+        rs = ipc(mode, spin, bufs)
+        print("SUMMARY IP %-5s spin %5d us bufs %4d: received %s lost %s socket_drops %s reasm_fails %s cpu ms %s" % (mode, spin, bufs,
+              [r["received"] for r in rs], [r["lost"] for r in rs], [r["socket_drops"] for r in rs],
+              [r["reasm_fails"] for r in rs], [r["cpu_user_ms"] + r["cpu_sys_ms"] for r in rs]))
 for k in sorted(verdict):
     print("VERDICT %s %s" % (k, verdict[k]))
 if verdict["R0"] != "PASS" or verdict["R4"] != "PASS":
