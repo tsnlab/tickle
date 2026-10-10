@@ -10,7 +10,8 @@
 // network namespaces joined by a veth pair. Built against core with rmw's datagram (tt_MAX_BUFFER_LENGTH 65507), the
 // one build that compiles receive offload in.
 //
-//   udp_offload_check send IP PORT BROADCAST   tt_send_batch() of the fixed patterns below to IP:PORT, then "UEND"
+//   udp_offload_check send IP PORT BROADCAST [REPEAT]   tt_send_batch() of the fixed patterns below to IP:PORT,
+//                                              REPEAT times over (1), then "UEND"
 //   udp_offload_check plain PORT                a plain socket, no UDP_GRO: one line per datagram the wire delivered
 //   udp_offload_check hal PORT BROADCAST        a context's well-known socket on PORT, read with tt_receive()
 //
@@ -45,12 +46,21 @@
 #define HEADER_LEN 12U      // magic (4), pattern (4), index (4)
 #define SPLIT_AT 16U        // head/body split of a two-piece datagram
 #define END_LEN 4U          // "UEND"
+#define SEND_REPEAT_ARG 5   // argv index of send's optional REPEAT
 #define BATCH 64U           // fragments per tt_send_batch() call, as core sends a large sample
 #define MAX_RUN 128U        // datagrams in the largest single call below
 #define PAUSE_NS 20000000L  // between patterns: the receiver drains
 #define IDLE_POLLS 50       // 100 ms waits without a datagram before a receiver gives up (5 s)
 #define WAIT_NS 100000000LL // 100 ms
 #define NS_PER_US 1000LL
+// The flapping build's receiver is slower than the sender on pattern 3 (udp_offload_check.sh, arm E): 1.5 ms per
+// datagram, 45 ms for its 30 against 20 ms pauses between patterns, so pattern 4's merged runs are already queued when
+// receive offload, quiet after pattern 3's last small datagrams, turns to go back to plain reads - the moment its
+// switch must not read one of them without the option on. It catches up on patterns 4 and 5 and goes back in the
+// pause before the next pass.
+#ifndef CHECK_READ_DELAY_NS
+#define CHECK_READ_DELAY_NS 0L
+#endif
 #define RCVBUF (8 << 20)    // root in the namespace: SO_RCVBUFFORCE
 #define CHECK_CONTEXT_ID 61 // any valid id; the two contexts here never discover each other
 #define WIRE_MAX 1472U      // the most any datagram may carry (DESIGN.md section 8: no IP fragmentation)
@@ -60,11 +70,19 @@
 #define FILL_OFFSET_MUL 7U
 
 static const char k_magic[MAGIC_LEN] = {'U', 'O', 'F', 'T'};
+// Pattern 1's datagrams begin as a large sample's fragment does (a single-form header naming FRAG_CONT_L), because that
+// is what turns receive offload on (hal_linux.c, "When receive offload is on"); the other patterns are small traffic.
+static const char k_frag_magic[MAGIC_LEN] = {tt_SINGLE_MARKER_LE, 'U', 'O', tt_SUBMESSAGE_TYPE_FRAG_CONT_L};
+static const char* magic_of(uint32_t number) {
+    return number == 0 ? k_frag_magic : k_magic;
+}
 
 // The patterns, each a list of datagram sizes sent in the calls given. Chosen for what each makes gso_run() decide:
 //   1 a 1 MB large sample: 722 x 1468 (4 + 12 + 1452, the FRAG_CONT_L datagram) and a short last one, in calls of 64
 //   2 full 1472-byte datagrams, 88 in one call (two runs of 44, the 65507-byte bound)
 //   3 mixed sizes in one call: runs end at a size change; 1002 is 2 mod 4 (copied by receive offload), 1468 4 mod 8
+//     - and it ends on three growing sizes, never a run: three small reads in a row, after which receive offload turns
+//     to go back to plain reads (arm E) while pattern 4's runs may already be queued merged
 //   4 head only (body_len 0) datagrams
 //   5 alternating destinations (PORT, PORT + 1): never a run; only PORT's half is received
 struct pattern {
@@ -78,11 +96,11 @@ struct pattern {
 static const struct pattern k_patterns[] = {
     {723, {1468}, 1, BATCH, false, false},
     {88, {1472}, 1, 88, false, false},
-    {29,
-     {1000, 1000, 1000, 1472, 200, 200, 200, 200,  200,  1002, 1002, 1002, 1002, 13, 1468,
-      1468, 1468, 1472, 1472, 64,  64,  64,  1472, 1472, 1472, 1472, 1472, 300,  100},
-     29,
-     29,
+    {30,
+     {1000, 1000, 1000, 1472, 200, 200, 200, 200,  200,  1002, 1002, 1002, 1002, 13,  1468,
+      1468, 1468, 1472, 1472, 64,  64,  64,  1472, 1472, 1472, 1472, 1472, 100,  300, 700},
+     30,
+     30,
      false,
      false},
     {64, {600}, 1, 64, true, false},
@@ -100,7 +118,7 @@ static uint32_t pattern_size(uint32_t p, uint32_t i) {
 }
 
 static void fill(uint8_t* out, uint32_t p, uint32_t i, uint32_t size) {
-    memcpy(out, k_magic, MAGIC_LEN);
+    memcpy(out, magic_of(p), MAGIC_LEN);
     memcpy(out + MAGIC_LEN, &p, sizeof(p));
     memcpy(out + MAGIC_LEN + sizeof(p), &i, sizeof(i));
     for (uint32_t k = HEADER_LEN; k < size; k++) {
@@ -150,14 +168,15 @@ static void build_call(struct tt_OutDatagram* out, uint32_t number, uint32_t fir
     }
 }
 
-static int run_send(uint32_t ip, uint16_t port, const char* broadcast) {
+static int run_send(uint32_t ip, uint16_t port, const char* broadcast, uint32_t repeat) {
     // The sender's well-known port is not the receivers': its own announces must not reach the hal receiver.
     if (!context_up(broadcast, (uint16_t)(port + 2))) {
         fprintf(stderr, "cannot create the context\n");
         return 2;
     }
     uint32_t sent = 0;
-    for (uint32_t number = 0; number < PATTERN_COUNT; number++) {
+    for (uint32_t pass = 0; pass < repeat * PATTERN_COUNT; pass++) {
+        const uint32_t number = pass % PATTERN_COUNT;
         const struct pattern* pat = &k_patterns[number];
         for (uint32_t first = 0; first < pat->count; first += pat->call) {
             struct tt_OutDatagram out[MAX_RUN];
@@ -185,12 +204,15 @@ static bool record(const uint8_t* data, uint32_t len, uint32_t* records, uint32_
         *ended = true;
         return true;
     }
-    if (len < HEADER_LEN || memcmp(data, k_magic, MAGIC_LEN) != 0) {
-        return true; // not ours (an announce)
-    }
     uint32_t number = 0;
     uint32_t index = 0;
+    if (len < HEADER_LEN) {
+        return true; // not ours
+    }
     memcpy(&number, data + MAGIC_LEN, sizeof(number));
+    if (number >= PATTERN_COUNT || memcmp(data, magic_of(number), MAGIC_LEN) != 0) {
+        return true; // not ours (an announce)
+    }
     memcpy(&index, data + MAGIC_LEN + sizeof(number), sizeof(index));
     *largest = len > *largest ? len : *largest;
     (*records)++;
@@ -263,6 +285,14 @@ static int run_hal(uint16_t port, const char* broadcast) {
             continue;
         }
         idle = 0;
+        uint32_t number = PATTERN_COUNT;
+        if (got >= (int32_t)HEADER_LEN) {
+            memcpy(&number, g_rx + g_node.rx_offset + MAGIC_LEN, sizeof(number));
+        }
+        if (CHECK_READ_DELAY_NS > 0 && number == 2) {
+            struct timespec delay = {0, CHECK_READ_DELAY_NS};
+            nanosleep(&delay, NULL);
+        }
         if (g_node.rx_offset % 4U != 0) {
             misaligned++;
             good = false;
@@ -270,10 +300,11 @@ static int run_hal(uint16_t port, const char* broadcast) {
         good = record(g_rx + g_node.rx_offset, (uint32_t)got, &records, &largest, &ended) && good;
     }
     printf("RESULT: role=hal datagrams=%u largest=%u ended=%d misaligned=%u udp_offload=%u gro_reads=%lu "
-           "gro_merged=%lu gro_copied=%lu gro_off8=%lu\n",
+           "gro_merged=%lu gro_copied=%lu gro_off8=%lu gro_enables=%lu gro_aborts=%lu gro_commits=%lu\n",
            records, largest, ended, misaligned, (unsigned)g_node.udp_offload, (unsigned long)g_node.udp_gro_reads,
            (unsigned long)g_node.udp_gro_merged, (unsigned long)g_node.udp_gro_copied,
-           (unsigned long)g_node.udp_gro_off8);
+           (unsigned long)g_node.udp_gro_off8, (unsigned long)g_node.hal.gro_enables,
+           (unsigned long)g_node.hal.gro_aborts, (unsigned long)g_node.hal.gro_commits);
     tt_Context_destroy(&g_node);
     return good ? 0 : 1;
 }
@@ -284,7 +315,8 @@ int main(int argc, char** argv) {
         if (inet_pton(AF_INET, argv[2], &dest) != 1) {
             return 2;
         }
-        return run_send(ntohl(dest.s_addr), (uint16_t)atoi(argv[3]), argv[4]);
+        return run_send(ntohl(dest.s_addr), (uint16_t)atoi(argv[3]), argv[4],
+                        argc > SEND_REPEAT_ARG ? (uint32_t)atoi(argv[SEND_REPEAT_ARG]) : 1U);
     }
     if (argc >= 3 && strcmp(argv[1], "plain") == 0) {
         return run_plain((uint16_t)atoi(argv[2]));
