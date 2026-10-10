@@ -246,10 +246,15 @@ enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT }
 // Longest segment path this build can form: "/dev/shm/tickle-seg-255.255.255.255-65535-255" and a NUL.
 #define tt_SEGMENT_PATH_LENGTH 64
 
+// tt_SegmentHeader.features: what the owner takes beyond the ring protocol. A bit nobody sets is 0 in every segment a
+// build before it created (the field was `reserved`, written 0), so a feature needs no version bump.
+// LARGE_REF: the owner takes tt_SUBMESSAGE_TYPE_LARGE_REF descriptors (large-message step B, DESIGN.md section 8).
+#define tt_SEGMENT_FEATURE_LARGE_REF 1U
+
 struct tt_SegmentHeader {
     uint32_t magic;
     uint16_t version;
-    uint16_t reserved;
+    uint16_t features; // tt_SEGMENT_FEATURE_* above; written once, at creation
     uint32_t owner_ip; // the three fields the reader computed the name from, echoed back to be checked
     uint16_t owner_port;
     uint8_t owner_context_id;
@@ -408,6 +413,72 @@ struct tt_LargeAssembly {
     bool via_data_port;
 };
 
+#if tt_LARGE_SHM
+// A Publisher's shared region (large-message step B, DESIGN.md section 8): tt_LargeRegionHeader, then one
+// tt_LargeChunkEntry per chunk, then the chunks, each tt_LARGE_HEADER_OFFSET + the DataHeader + CDR as a large buffer
+// is. The writer encodes into a chunk; a same-host reader maps the region by name, takes the sample in place, and
+// clears its bit in the chunk's `readers` when nothing of it references the chunk any longer.
+#define tt_LARGE_REGION_MAGIC 0x544b4c47U // "TKLG"
+#define tt_LARGE_REGION_VERSION 1
+// The chunk for a largest sample of `max_cdr` CDR bytes, and the mapping of `chunks` such chunks: what a caller sizes
+// tt_Publisher_set_large_region() with. Chunks start 64-aligned, so the CDR is at 4 mod 8 as in a receive buffer.
+#define tt_LARGE_CHUNK_BYTES(max_cdr) \
+    (((((uint32_t)tt_LARGE_CDR_OFFSET + (uint32_t)(max_cdr) + 3U) & ~3U) + 63U) & ~63U)
+#define tt_LARGE_REGION_DATA_OFFSET(chunks) ((((size_t)(chunks) + 1U) * 64U + 4095U) & ~(size_t)4095U)
+#define tt_LARGE_REGION_BYTES(chunks, chunk_bytes) \
+    (tt_LARGE_REGION_DATA_OFFSET(chunks) + ((size_t)(chunks) * (size_t)(chunk_bytes)))
+
+struct tt_LargeRegionHeader {
+    uint32_t magic;
+    uint16_t version;
+    uint8_t owner_context_id;
+    uint8_t reserved;
+    uint32_t owner_ip; // the fields a reader computed the name from, echoed back to be checked
+    uint16_t owner_port;
+    uint16_t reserved2;
+    uint32_t entity_id;
+    uint32_t incarnation; // per creation: a descriptor of a region since recreated under the same name is refused
+    uint32_t chunks;
+    uint32_t chunk_bytes;
+    uint8_t pad[32];
+};
+
+// One chunk's shared state. generation: bumped by the writer before each reuse, so a descriptor of an earlier
+// sample is refused. readers: bit c set while context id c may read the chunk - by the writer before the descriptor
+// goes into c's ring, cleared by c (or by the writer when the descriptor was dropped, or when liveliness removes c).
+// Accessed with __atomic builtins, as the ring indices are.
+struct tt_LargeChunkEntry {
+    uint32_t generation;
+    uint32_t reserved;
+    uint64_t readers[tt_MAX_CONTEXT_IDS / 64];
+    uint8_t pad[64 - 8 - (tt_MAX_CONTEXT_IDS / 8)];
+};
+
+// The writer's private half (tt_Publisher.large_region).
+struct tt_LargeRegion {
+    uint8_t* mapping; // NULL: not created (yet)
+    size_t bytes;
+    uint64_t held;   // bit i: a record of this Publisher holds chunk i
+    uint32_t chunks; // 0: no region set (tt_Publisher_set_large_region())
+    uint32_t chunk_bytes;
+    uint32_t incarnation;
+    bool failed;                       // creation failed once: not tried again, the Publisher sends fragments
+    char path[tt_SEGMENT_PATH_LENGTH]; // its name, kept for the unlink
+};
+
+// A writer's region a reading context has mapped (tt_LargeState.peer_regions).
+struct tt_LargePeerRegion {
+    uint8_t* mapping; // NULL: free
+    size_t bytes;
+    uint32_t ip;
+    uint32_t entity_id;
+    uint32_t incarnation;
+    uint32_t used; // tt_LargeState.clock at its last use
+    uint16_t port;
+    uint8_t source;
+};
+#endif
+
 // A context's large-sample state (tt_Context.large).
 struct tt_LargeState {
     tt_LARGE_ACQUIRE acquire;
@@ -432,6 +503,19 @@ struct tt_LargeState {
     uint64_t tail_abandoned;
     uint64_t window_too_small;
     uint64_t send_waits;
+#if tt_LARGE_SHM
+    // Step B (DESIGN.md section 8). The writers' regions this context has mapped, and the counters, on the traffic line
+    // as large_ref_*: sent / received descriptors; refused: received and not taken (a stale generation, the bit not
+    // set, a region that cannot be mapped or does not match); dropped: a full ring took no descriptor; region_full:
+    // a same-host large publish that found no free chunk and went as fragments.
+    struct tt_LargePeerRegion peer_regions[tt_LARGE_PEER_REGIONS];
+    const uint8_t* ref_processing; // the chunk of the descriptor being processed: referenced until it is done
+    uint64_t ref_sent;
+    uint64_t ref_received;
+    uint64_t ref_refused;
+    uint64_t ref_dropped;
+    uint64_t region_full;
+#endif
 };
 #endif
 
@@ -1694,6 +1778,7 @@ struct tt_ReliableCache {
 };
 
 #if tt_LARGE_SAMPLES
+
 // One large sample a Publisher holds by reference (tt_Publisher.large[], DESIGN.md section 8): sent from its buffer,
 // kept there for resends while `retained`, and handed back to the caller's release once every matched reader has
 // acknowledged it or it is evicted - or, for a Publisher that retains nothing, once its last fragment has gone.
@@ -1705,6 +1790,9 @@ struct tt_LargeRecord {
     uint16_t count;
     bool retained; // kept for resends once sent: the Publisher has a reliable cache
     bool sent;     // every fragment has gone to every destination once
+#if tt_LARGE_SHM
+    uint8_t chunk; // 1 + the region chunk `buffer` is in; 0: a caller's buffer
+#endif
 };
 
 // Where a Publisher's large send stands (tt_Publisher.large_cursor): a burst of thousands of datagrams outruns any
@@ -2066,6 +2154,9 @@ struct tt_Publisher { // extends endpoint
     uint8_t large_head;
     uint8_t large_count;
     uint16_t large_blocked;
+#if tt_LARGE_SHM
+    struct tt_LargeRegion large_region; // step B: this Publisher's shared region (tt_Publisher_set_large_region())
+#endif
 #endif
 };
 
@@ -2941,6 +3032,17 @@ tt_ret_t tt_Context_set_rx_pool(struct tt_Context* node, uint64_t* storage, uint
 // tt_RET_ILLEGAL_STATUS while a large buffer is out, tt_RET_INVALID_ARGUMENT for a NULL context or a half-set pair.
 tt_ret_t tt_Context_set_large_buffers(struct tt_Context* node, tt_LARGE_ACQUIRE acquire, tt_LARGE_RELEASE release,
                                       void* user);
+#if tt_LARGE_SHM
+// Large-message step B (DESIGN.md section 8, "Step B"): gives this Publisher a shared region of `chunks` chunks of
+// `chunk_bytes` (size them with tt_LARGE_CHUNK_BYTES() for the largest sample, and tt_LARGE_REGION_BYTES() is the
+// mapping), so its large samples reach same-host readers that take descriptors in place instead of as fragments
+// through their rings. Nothing is created until the first large publish to such a reader; the region is created
+// through the HAL, as the segment is, because readers in other processes map it by name, and is unlinked when the
+// Publisher or its context is destroyed. 0 chunks: none (the default). tt_RET_INVALID_ARGUMENT for more than
+// tt_LARGE_REGION_CHUNKS_MAX chunks or a chunk below tt_LARGE_CHUNK_BYTES(tt_MAX_SAMPLE_LENGTH + 1);
+// tt_RET_ILLEGAL_STATUS once the region exists.
+tt_ret_t tt_Publisher_set_large_region(struct tt_Publisher* pub, uint32_t chunks, uint32_t chunk_bytes);
+#endif
 #endif
 
 /**
@@ -3179,6 +3281,12 @@ struct tt_SingleHeader {
 // A node built without stage 2 skips both and counts them (tt_Context.frag_large_skipped).
 #define tt_SUBMESSAGE_TYPE_FRAG_FIRST_L 11
 #define tt_SUBMESSAGE_TYPE_FRAG_CONT_L 12
+// A large sample handed to a same-host reader in place (large-message step B, DESIGN.md section 8): the record names a
+// chunk of the writer's shared region (struct tt_LargeRefHeader) and covers the sample's datagram count in seq_nos
+// (the slot's seq_span). Only ever written into a segment whose owner advertises tt_SEGMENT_FEATURE_LARGE_REF; from a
+// socket it is refused and counted, as tt_SUBMESSAGE_TYPE_SHM_DATA is - it names memory, which only something with
+// write access to this host's shared memory may do. Nothing of it crosses the network, so tt_VERSION is unchanged.
+#define tt_SUBMESSAGE_TYPE_LARGE_REF 13
 
 struct tt_SubmessageHeader {
     uint8_t type;     // tt_SUBMESSAGE_TYPE_* above
@@ -3350,6 +3458,18 @@ struct tt_FragContHeader {
 struct tt_FragFirstLHeader {
     struct tt_DataHeader data;
     uint16_t frag_count; // 2 .. tt_LARGE_MAX_FRAGMENTS
+} __attribute__((packed));
+
+// The body of a tt_SUBMESSAGE_TYPE_LARGE_REF record, 34 bytes: the sample's header, and where its bytes are - the
+// writer's region (named from the record's sender address, the source and data.entity_id) of this incarnation, its
+// chunk `chunk` while that chunk's generation is `generation`.
+struct tt_LargeRefHeader {
+    struct tt_DataHeader data;
+    uint32_t incarnation;
+    uint32_t generation;
+    uint32_t cdr_len;    // padded to 4, as the fragments would carry it
+    uint16_t chunk;      // 0 .. chunks - 1
+    uint16_t frag_count; // the datagrams the sample takes on the socket path: the record's seq_span
 } __attribute__((packed));
 
 // Fragments 1 .. frag_count - 1 of a large sample, 12 bytes.

@@ -717,6 +717,21 @@
 #ifndef tt_LARGE_SEND_RETRY_MAX_NS
 #define tt_LARGE_SEND_RETRY_MAX_NS 1000000ULL
 #endif
+// Large-message step B (DESIGN.md section 8, "Step B"): a same-host large sample goes through a chunk of its
+// Publisher's shared region and one descriptor record per reader, not as fragments through the reader's ring. Needs
+// both halves it joins; FreeRTOS and the core default build have neither.
+#define tt_LARGE_SHM (tt_LARGE_SAMPLES && tt_SEGMENT_ENABLED)
+// Chunks one Publisher's region may have: the writer's own hold on them is one uint64_t.
+#define tt_LARGE_REGION_CHUNKS_MAX 64
+// Chunks beyond the Publisher's retained depth that tt_LARGE_REGION_SPARE suggests (rmw_tickle uses it): one being
+// sent, one waiting behind it, one a reader's callback still holds.
+#ifndef tt_LARGE_REGION_SPARE
+#define tt_LARGE_REGION_SPARE 3
+#endif
+// Writers' regions a reading context keeps mapped at once; the least recently used one nothing references goes first.
+#ifndef tt_LARGE_PEER_REGIONS
+#define tt_LARGE_PEER_REGIONS 8
+#endif
 // tx_buffer: room for a full batch plus one submessage overshooting it, which is what end_encode()'s
 // deferral needs - and, with fragmentation, room for a whole sample behind a batch that is still pending,
 // because the sample is encoded in one piece and only split as it is sent.
@@ -1161,6 +1176,7 @@ static_assert(!tt_LARGE_SAMPLES, "large samples are not supported on FreeRTOS");
 static_assert(tt_LARGE_MAX_FRAGMENTS <= UINT16_MAX, "a large fragment's index and count are uint16_t on the wire");
 static_assert(tt_LARGE_RETAINED >= 1 && tt_LARGE_RETAINED <= UINT8_MAX, "a Publisher's large ring counts in a uint8_t");
 static_assert(tt_LARGE_ASSEMBLIES >= 1, "receiving large samples needs at least one assembly");
+static_assert(tt_LARGE_PEER_REGIONS >= 1, "taking same-host large samples needs one mapped region at least");
 static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
               "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");
 static_assert(tt_MAX_CONTEXT_IDS % 32 == 0, "reached_nodes[] packs the per-peer bits 32 to a word");
