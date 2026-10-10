@@ -1,0 +1,12 @@
+arm=cyclonedds kind=tput msg=Array4k qos=reliable wait=block dur=20 rtt_i=0.001 poll_args=--poll-sleep-us_100_--phase_jitter_--rtt-at_callback domain=79 host=tickle-testbed-rpi-0 tickle_bcast=192.168.10.255
+leftovers=0 roudi_procs=0
+launch role=sub pid=930716 t_mono_ns=2431386504221915
+maps role=sub libs=/opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so,/opt/ros/jazzy/lib/librmw_dds_common.so,/opt/ros/jazzy/lib/librmw_dds_common__rosidl_generator_c.so,/opt/ros/jazzy/lib/librmw_dds_common__rosidl_typesupport_cpp.so,/opt/ros/jazzy/lib/librmw_dds_common__rosidl_typesupport_introspection_cpp.so,/opt/ros/jazzy/lib/librmw_implementation.so,
+treat role=sub env=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp;ROS_DOMAIN_ID=79;
+net_before all_pkts=7570747588 all_bytes=5192118878331 lo_pkts=215420234 lo_bytes=1101196599660
+launch role=pub pid=930754 t_mono_ns=2431388681865092
+maps role=pub libs=/opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so,/opt/ros/jazzy/lib/librmw_dds_common.so,/opt/ros/jazzy/lib/librmw_dds_common__rosidl_generator_c.so,/opt/ros/jazzy/lib/librmw_dds_common__rosidl_typesupport_cpp.so,/opt/ros/jazzy/lib/librmw_dds_common__rosidl_typesupport_introspection_cpp.so,/opt/ros/jazzy/lib/librmw_implementation.so,
+treat role=pub env=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp;ROS_DOMAIN_ID=79;
+net_after all_pkts=7572891313 all_bytes=5200923308704 lo_pkts=217563860 lo_bytes=1110001018486
+leftovers_after=0
+done=1

@@ -1,0 +1,51 @@
+Experiment id: 75338842-29cf-4918-b676-e2862cb285d6
+Performance Test Version: 5b1035d-dirty
+Logfile name: 
+Communication mean: ROS2
+RMW Implementation: rmw_tickle
+DDS domain id: 79
+QOS: Reliability: RELIABLE Durability: VOLATILE History kind: KEEP_ALL History depth: 1000 Sync. pub/sub: 0
+Publishing rate: 0
+Topic name: Array1k
+Maximum runtime (sec): 20
+Number of publishers: 1
+Number of subscribers: 0
+Memory check enabled: 0
+Use single participant: 0
+With security: 0
+Roundtrip Mode: NONE
+Ignore seconds from beginning: 0
+
+[2026-10-09 11:32:13] [INFO] Context id 2 is held by another context on this host; this one takes 254
+[2026-10-09 11:32:13] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 4194304) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-10-09 11:32:13] [WARNING] Data socket receive buffer is 425984 bytes (asked 4194304) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-10-09 11:32:13] [INFO] Node open at 8361
+---EXPERIMENT-START---
+T_experiment,	T_loop,	received,	sent,	lost,	relative_loss,	data_received,	latency_min (ms),	latency_max (ms),	latency_mean (ms),	latency_variance (ms),	pub_loop_res_min (ms),	pub_loop_res_max (ms),	pub_loop_res_mean (ms),	pub_loop_res_variance (ms),	sub_loop_res_min (ms),	sub_loop_res_max (ms),	sub_loop_res_mean (ms),	sub_loop_res_variance (ms),	ru_utime,	ru_stime,	ru_maxrss,	ru_ixrss,	ru_idrss,	ru_isrss,	ru_minflt,	ru_majflt,	ru_nswap,	ru_inblock,	ru_oublock,	ru_msgsnd,	ru_msgrcv,	ru_nsignals,	ru_nvcsw,	ru_nivcsw,	cpu_usage (%),	
+[INFO] [1791513133.011766898] [rmw_tickle]: heartbeat piggyback armed: every 64 samples
+[2026-10-09 11:32:13] [INFO] Whole-record send refused: no known unicast peer, so this publish broadcasts
+[2026-10-09 11:32:13] [INFO] Publisher peer registered: node 2 at 192.168.10.2:34287 for endpoint 4030703361
+1.000061,		1.000061,		0,		178050,		0,		0.00,		0,		inf,		-inf,		0,		0,		-1000,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		0.1793,		0.04218,		14556,		0,		0,		0,		3499,		0,		0,		0,		16,		0,		0,		0,		3243,		7,		5,		
+2.000258,		1.000063,		0,		179676,		0,		0.00,		0,		inf,		-inf,		0,		0,		-1998,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		0.3388,		0.07088,		14556,		0,		0,		0,		5055,		0,		0,		0,		16,		0,		0,		0,		6433,		10,		4.75,		
+3.000452,		1.000061,		0,		179281,		0,		0.00,		0,		inf,		-inf,		0,		0,		-3000,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		0.5129,		0.08974,		14576,		0,		0,		0,		6573,		0,		0,		0,		24,		0,		0,		0,		9576,		15,		4.75,		
+4.000635,		1.000061,		0,		179823,		0,		0.00,		0,		inf,		-inf,		0,		0,		-4001,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		0.6793,		0.1144,		14588,		0,		0,		0,		8117,		0,		0,		0,		24,		0,		0,		0,		12759,		15,		4.75,		
+5.000808,		1.000061,		0,		178514,		0,		0.00,		0,		inf,		-inf,		0,		0,		-5002,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		0.8472,		0.135,		14588,		0,		0,		0,		9591,		0,		0,		0,		32,		0,		0,		0,		15965,		15,		4.75,		
+6.001000,		1.000061,		0,		179583,		0,		0.00,		0,		inf,		-inf,		0,		0,		-6002,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		1.009,		0.1629,		14588,		0,		0,		0,		11056,		0,		0,		0,		32,		0,		0,		0,		19134,		15,		4.75,		
+7.001185,		1.000063,		0,		178814,		0,		0.00,		0,		inf,		-inf,		0,		0,		-7002,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		1.177,		0.1861,		14604,		0,		0,		0,		12529,		0,		0,		0,		32,		0,		0,		0,		22337,		17,		4.75,		
+8.001373,		1.000063,		0,		179006,		0,		0.00,		0,		inf,		-inf,		0,		0,		-8001,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		1.338,		0.2164,		14604,		0,		0,		0,		14004,		0,		0,		0,		40,		0,		0,		0,		25579,		17,		4.75,		
+9.001581,		1.000069,		0,		179137,		0,		0.00,		0,		inf,		-inf,		0,		0,		-9003,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		1.508,		0.2381,		14604,		0,		0,		0,		15521,		0,		0,		0,		40,		0,		0,		0,		28768,		18,		4.75,		
+10.001773,		1.000062,		0,		179374,		0,		0.00,		0,		inf,		-inf,		0,		0,		-1e+04,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		1.685,		0.2528,		14604,		0,		0,		0,		17128,		0,		0,		0,		40,		0,		0,		0,		31961,		18,		5,		
+11.001987,		1.000066,		0,		179721,		0,		0.00,		0,		inf,		-inf,		0,		0,		-1.1e+04,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		1.849,		0.2802,		14604,		0,		0,		0,		18741,		0,		0,		0,		48,		0,		0,		0,		35142,		22,		4.703,		
+12.002168,		1.000062,		0,		179007,		0,		0.00,		0,		inf,		-inf,		0,		0,		-1.2e+04,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		2.02,		0.3011,		14604,		0,		0,		0,		20364,		0,		0,		0,		48,		0,		0,		0,		38344,		23,		5,		
+13.002353,		1.000072,		0,		179234,		0,		0.00,		0,		inf,		-inf,		0,		0,		-1.3e+04,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		2.183,		0.3302,		14604,		0,		0,		0,		21928,		0,		0,		0,		48,		0,		0,		0,		41522,		24,		4.75,		
+14.002570,		1.000062,		0,		179720,		0,		0.00,		0,		inf,		-inf,		0,		0,		-1.4e+04,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		2.347,		0.3575,		14604,		0,		0,		0,		23446,		0,		0,		0,		56,		0,		0,		0,		44716,		27,		4.5,		
+15.002756,		1.000061,		0,		180194,		0,		0.00,		0,		inf,		-inf,		0,		0,		-1.501e+04,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		2.514,		0.3841,		14624,		0,		0,		0,		24987,		0,		0,		0,		56,		0,		0,		0,		47957,		27,		5,		
+16.002893,		1.000017,		0,		179903,		0,		0.00,		0,		inf,		-inf,		0,		0,		-1.601e+04,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		2.686,		0.4044,		14624,		0,		0,		0,		26464,		0,		0,		0,		56,		0,		0,		0,		51181,		28,		4.75,		
+17.003078,		1.000061,		0,		179234,		0,		0.00,		0,		inf,		-inf,		0,		0,		-1.7e+04,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		2.85,		0.4295,		14624,		0,		0,		0,		27931,		0,		0,		0,		56,		0,		0,		0,		54358,		28,		4.5,		
+18.003267,		1.000060,		0,		179258,		0,		0.00,		0,		inf,		-inf,		0,		0,		-1.8e+04,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		3.007,		0.4626,		14624,		0,		0,		0,		29431,		0,		0,		0,		56,		0,		0,		0,		57570,		28,		5,		
+19.003473,		1.000062,		0,		178906,		0,		0.00,		0,		inf,		-inf,		0,		0,		-1.901e+04,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		3.168,		0.493,		14624,		0,		0,		0,		30897,		0,		0,		0,		64,		0,		0,		0,		60814,		29,		4.75,		
+20.003658,		1.000060,		0,		178395,		0,		0.00,		0,		inf,		-inf,		0,		0,		-2.001e+04,		9.223e+12,		4.612e+12,		2.127e+22,		inf,		-inf,		0,		0,		3.333,		0.5176,		14624,		0,		0,		0,		32362,		0,		0,		0,		64,		0,		0,		0,		63985,		30,		4.75,		
+Maximum runtime reached. Exiting.
+[2026-10-09 11:32:33] [INFO] Subscriber 1943128324 delivery: delivered=0 out_of_order=0 timestamp_not_newer=0 writer_switches=0 via_socket_flips=0 out_of_order_discarded=0 rxo_drops=0 reorder_held_peak=0 reorder_delivered=0 reorder_overflow=0 reorder_abandoned=0 gap_abandoned=0 gap_evicted=0 superseded=0
+rmw_tickle: executor_poll=1 executor_poll_waits=0 executor_handovers=0 park_wakes=0 discovery_dropped=0 nodes_kept_at_destroy=0 id_muted_drops=0 cache_depth_shortfalls=0 rx_malformed_drops=0 version_mismatch_drops=0
+[2026-10-09 11:32:33] [INFO] Node 254 traffic: tx_datagrams=3791864 rx_datagrams=21838 rx_self_sent=28 rx_self_sent_data=12 rx_self_sent_data_unicast=0 rx_via_data=4 rx_via_well_known=21834 tx_dropped_oversize=0 tx_udp=29 tx_shm=3791835 rx_udp=36 rx_shm=21802 rx_shm_skipped_superseded=0 tx_udp_broadcast=28 tx_udp_oversize=0 tx_udp_unattached=1 shm_full_dropped=0 shm_gave_up=0 shm_doorbells_sent=2 shm_bells_rung=2 shm_doorbells_received=7835 shm_segments_created=1 shm_segments_released=0 shm_same_host_peers=1 shm_claim_waits=0 shm_claim_waits_published=0 shm_sleep_cost_ns=0 shm_watches=0 shm_watch_hits=0 shm_epochs_sleeping=29 shm_epochs_waiting=5 shm_cost_sleeping_ns=937135 shm_cost_waiting_ns=938818 shm_waiting_preferred=0 shm_encoded_in_slot=3529470 rx_drain_ring_turns=0 shm_sleep_generations=44728 shm_generations_kept=2 shm_sleeps=44738 lending=1 lend_retains=0 lend_releases=0 lend_unlendable=0 lend_exhausted=0 lend_bad_releases=0 lend_held=0 shm_full_retained=0

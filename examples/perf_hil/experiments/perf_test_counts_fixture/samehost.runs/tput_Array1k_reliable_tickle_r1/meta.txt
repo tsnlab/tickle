@@ -1,0 +1,12 @@
+arm=tickle kind=tput msg=Array1k qos=reliable wait=block dur=20 rtt_i=0.001 poll_args=--poll-sleep-us_100_--phase_jitter_--rtt-at_callback domain=79 host=tickle-testbed-rpi-0 tickle_bcast=192.168.10.255
+leftovers=0 roudi_procs=0
+launch role=sub pid=924576 t_mono_ns=2431239377775512
+maps role=sub libs=/home/ci/tickle/install/rmw_tickle/lib/librmw_tickle.so,/opt/ros/jazzy/lib/librmw_implementation.so,
+treat role=sub env=RMW_IMPLEMENTATION=rmw_tickle;ROS_DOMAIN_ID=79;TICKLE_BROADCAST_ADDR=192.168.10.255;
+net_before all_pkts=7570411049 all_bytes=5176506174016 lo_pkts=215084994 lo_bytes=1085584400264
+launch role=pub pid=924608 t_mono_ns=2431241550608327
+maps role=pub libs=/home/ci/tickle/install/rmw_tickle/lib/librmw_tickle.so,/opt/ros/jazzy/lib/librmw_implementation.so,
+treat role=pub env=RMW_IMPLEMENTATION=rmw_tickle;ROS_DOMAIN_ID=79;TICKLE_BROADCAST_ADDR=192.168.10.255;
+net_after all_pkts=7570411145 all_bytes=5176506196736 lo_pkts=215085004 lo_bytes=1085584401936
+leftovers_after=0
+done=1

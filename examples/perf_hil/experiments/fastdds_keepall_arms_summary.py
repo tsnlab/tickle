@@ -48,7 +48,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rmw_keepall_rig_summary import ERROR_MARKERS, INDEX_RE, loaded, loss_split, mean_se, rows  # noqa: E402
+from rmw_keepall_rig_summary import (ERROR_MARKERS, INDEX_RE, loaded, loss_split, mean_se, rows,  # noqa: E402
+                                     sample_bytes, whole_counts)
 
 STALL_FRACTION = 0.10
 HB_STALL_MAX_ROWS = 4
@@ -181,14 +182,16 @@ def load(runs):
         errors = [mk for mk in ERROR_MARKERS if mk in ptext]
         errors += ["publisher killed at deadline"] if pkilled != "no" else []
         steady = live[2:-1] if len(live) > 4 else live
-        lost_all, prematch, lost = loss_split(sub)
+        # Whole counts (rmw_keepall_rig_summary.py, COUNTS): perf_test's received/sent/lost columns are per-second rates.
+        lost_all, prematch, lost = loss_split(sub, sample_bytes(topic))
+        whole_counts(pub)
         n_stall, longest = stalls(sub)
         rec = dict(stem=stem, arm=arm, topic=topic, loss=int(loss), rep=int(rep), refused=refused, errors=errors,
                    pub_ok=not pub_why, ok=not pub_why and not sub_why and not (errors and not refused),
                    rate=statistics.mean(r["received"] for r in steady) if steady else float("nan"),
                    lat=statistics.mean(r["latency_mean (ms)"] for r in steady) if steady else float("nan"),
                    lost=lost, prematch=prematch, lost_all=lost_all, stall_rows=n_stall, longest_stall=longest,
-                   seconds=len(live), sent=int(sum(r.get("sent", 0) for r in pub)))
+                   seconds=len(live), sent=sum(r["n_sent"] for r in pub))
         if pub_why or sub_why:
             voids.append(f"{stem}: " + "; ".join(pub_why + sub_why))
         out.append(rec)

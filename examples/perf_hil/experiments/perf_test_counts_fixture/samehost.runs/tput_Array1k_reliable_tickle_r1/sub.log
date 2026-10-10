@@ -1,0 +1,62 @@
+Experiment id: 6931db85-b1e1-41e0-b26e-4f03da1f4248
+Performance Test Version: 5b1035d-dirty
+Logfile name: 
+Communication mean: ROS2
+RMW Implementation: rmw_tickle
+DDS domain id: 79
+QOS: Reliability: RELIABLE Durability: VOLATILE History kind: KEEP_ALL History depth: 1000 Sync. pub/sub: 0
+Publishing rate: 1000
+Topic name: Array1k
+Maximum runtime (sec): 26
+Number of publishers: 0
+Number of subscribers: 1
+Memory check enabled: 0
+Use single participant: 0
+With security: 0
+Roundtrip Mode: NONE
+Ignore seconds from beginning: 0
+
+[2026-10-09 11:32:10] [WARNING] Well-known socket receive buffer is 425984 bytes (asked 4194304) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-10-09 11:32:10] [WARNING] Data socket receive buffer is 425984 bytes (asked 4194304) - fewer than 16 datagrams of 65507 bytes; raise net.core.rmem_max to let it grow
+[2026-10-09 11:32:10] [INFO] Node open at 8361
+---EXPERIMENT-START---
+T_experiment,	T_loop,	received,	sent,	lost,	relative_loss,	data_received,	latency_min (ms),	latency_max (ms),	latency_mean (ms),	latency_variance (ms),	pub_loop_res_min (ms),	pub_loop_res_max (ms),	pub_loop_res_mean (ms),	pub_loop_res_variance (ms),	sub_loop_res_min (ms),	sub_loop_res_max (ms),	sub_loop_res_mean (ms),	sub_loop_res_variance (ms),	ru_utime,	ru_stime,	ru_maxrss,	ru_ixrss,	ru_idrss,	ru_isrss,	ru_minflt,	ru_majflt,	ru_nswap,	ru_inblock,	ru_oublock,	ru_msgsnd,	ru_msgrcv,	ru_nsignals,	ru_nvcsw,	ru_nivcsw,	cpu_usage (%),	
+1.002072,		1.002071,		0,		0,		0,		nan,		0,		inf,		-inf,		0,		nan,		inf,		-inf,		0,		0,		0,		0,		0,		0,		0.01675,		0.01687,		12800,		0,		0,		0,		1450,		0,		0,		0,		16,		0,		0,		0,		86,		9,		0,		
+2.003231,		1.000995,		0,		0,		0,		nan,		0,		inf,		-inf,		0,		nan,		inf,		-inf,		0,		0,		0,		0,		0,		0,		0.01808,		0.01713,		12800,		0,		0,		0,		1450,		0,		0,		0,		16,		0,		0,		0,		121,		9,		0,		
+[2026-10-09 11:32:13] [INFO] Writer proxy created: node 254 entity 3748566953 for endpoint 4030703361
+[2026-10-09 11:32:13] [WARNING] Subscriber 4030703361 declined sample 489 from node 254 (decline #1): nowhere to put it. A RELIABLE writer still holds it and will send it again, so nothing is lost yet - but a reader that never accepts stalls its writers, which is what a no-overwrite history means. A BEST_EFFORT stream has no retransmission, so there this sample is gone.
+[2026-10-09 11:32:13] [WARNING] Subscriber 4030703361 declined sample 498 from node 254 (decline #10): nowhere to put it. A RELIABLE writer still holds it and will send it again, so nothing is lost yet - but a reader that never accepts stalls its writers, which is what a no-overwrite history means. A BEST_EFFORT stream has no retransmission, so there this sample is gone.
+[2026-10-09 11:32:13] [WARNING] Subscriber 4030703361 declined sample 588 from node 254 (decline #100): nowhere to put it. A RELIABLE writer still holds it and will send it again, so nothing is lost yet - but a reader that never accepts stalls its writers, which is what a no-overwrite history means. A BEST_EFFORT stream has no retransmission, so there this sample is gone.
+[2026-10-09 11:32:13] [WARNING] Subscriber 4030703361 declined sample 11779 from node 254 (decline #1000): nowhere to put it. A RELIABLE writer still holds it and will send it again, so nothing is lost yet - but a reader that never accepts stalls its writers, which is what a no-overwrite history means. A BEST_EFFORT stream has no retransmission, so there this sample is gone.
+3.003407,		1.000063,		146661,		0,		0,		nan,		152528046,		0.0172,		5.854,		3.7,		0.000357,		inf,		-inf,		0,		0,		0,		0,		0,		0,		0.6058,		0.2595,		16000,		0,		0,		0,		2080,		0,		0,		0,		16,		0,		0,		0,		145,		43,		20.75,		
+[2026-10-09 11:32:14] [WARNING] Subscriber 4030703361 declined sample 187424 from node 254 (decline #10000): nowhere to put it. A RELIABLE writer still holds it and will send it again, so nothing is lost yet - but a reader that never accepts stalls its writers, which is what a no-overwrite history means. A BEST_EFFORT stream has no retransmission, so there this sample is gone.
+4.003748,		1.000233,		180021,		0,		0,		nan,		187221876,		2.583,		5.485,		3.657,		0.0003313,		inf,		-inf,		0,		0,		0,		0,		0,		0,		1.297,		0.5685,		16000,		0,		0,		0,		2080,		0,		0,		0,		16,		0,		0,		0,		166,		84,		25,		
+5.003976,		1.000067,		179134,		0,		0,		nan,		186299588,		0.3486,		6.588,		3.65,		0.0003509,		inf,		-inf,		0,		0,		0,		0,		0,		0,		2.002,		0.8625,		16000,		0,		0,		0,		2080,		0,		0,		0,		32,		0,		0,		0,		188,		125,		25.25,		
+6.004160,		1.000064,		179950,		0,		0,		nan,		187148282,		0.07461,		5.658,		3.647,		0.000345,		inf,		-inf,		0,		0,		0,		0,		0,		0,		2.7,		1.165,		16000,		0,		0,		0,		2084,		0,		0,		0,		32,		0,		0,		0,		209,		168,		24.5,		
+7.004341,		1.000063,		178774,		0,		0,		nan,		185925540,		2.404,		5.394,		3.679,		0.0003371,		inf,		-inf,		0,		0,		0,		0,		0,		0,		3.416,		1.449,		16000,		0,		0,		0,		2094,		0,		0,		0,		32,		0,		0,		0,		230,		218,		25,		
+8.004697,		1.000236,		179307,		0,		0,		nan,		186480036,		2.576,		5.484,		3.669,		0.0003338,		inf,		-inf,		0,		0,		0,		0,		0,		0,		4.121,		1.744,		16000,		0,		0,		0,		2094,		0,		0,		0,		32,		0,		0,		0,		251,		254,		25.25,		
+9.005169,		1.000343,		178782,		0,		0,		nan,		185933467,		2.577,		5.712,		3.678,		0.0003385,		inf,		-inf,		0,		0,		0,		0,		0,		0,		4.831,		2.035,		16000,		0,		0,		0,		2094,		0,		0,		0,		32,		0,		0,		0,		272,		297,		25,		
+10.005496,		1.000198,		179328,		0,		0,		nan,		186501141,		2.552,		5.474,		3.666,		0.0003336,		inf,		-inf,		0,		0,		0,		0,		0,		0,		5.553,		2.313,		16000,		0,		0,		0,		2104,		0,		0,		0,		32,		0,		0,		0,		294,		331,		25,		
+11.005699,		1.000072,		178853,		0,		0,		nan,		186007657,		2.59,		5.66,		3.676,		0.0003376,		inf,		-inf,		0,		0,		0,		0,		0,		0,		6.275,		2.591,		16000,		0,		0,		0,		2108,		0,		0,		0,		40,		0,		0,		0,		368,		368,		25,		
+12.005898,		1.000074,		179315,		0,		0,		nan,		186488570,		2.541,		5.507,		3.667,		0.0003356,		inf,		-inf,		0,		0,		0,		0,		0,		0,		6.974,		2.893,		16000,		0,		0,		0,		2108,		0,		0,		0,		40,		0,		0,		0,		389,		415,		25,		
+13.006108,		1.000068,		179649,		0,		0,		nan,		186835933,		2.59,		5.501,		3.661,		0.0003317,		inf,		-inf,		0,		0,		0,		0,		0,		0,		7.674,		3.194,		16000,		0,		0,		0,		2108,		0,		0,		0,		40,		0,		0,		0,		410,		459,		25,		
+[2026-10-09 11:32:23] [WARNING] Subscriber 4030703361 declined sample 1943256 from node 254 (decline #100000): nowhere to put it. A RELIABLE writer still holds it and will send it again, so nothing is lost yet - but a reader that never accepts stalls its writers, which is what a no-overwrite history means. A BEST_EFFORT stream has no retransmission, so there this sample is gone.
+14.006310,		1.000067,		178860,		0,		0,		nan,		186014694,		2.563,		5.404,		3.673,		0.0003355,		inf,		-inf,		0,		0,		0,		0,		0,		0,		8.363,		3.504,		16000,		0,		0,		0,		2122,		0,		0,		0,		40,		0,		0,		0,		431,		500,		25,		
+15.006495,		1.000066,		179662,		0,		0,		nan,		186849361,		2.562,		5.486,		3.659,		0.0003316,		inf,		-inf,		0,		0,		0,		0,		0,		0,		9.06,		3.807,		16000,		0,		0,		0,		2122,		0,		0,		0,		40,		0,		0,		0,		453,		539,		25,		
+16.006683,		1.000065,		179574,		0,		0,		nan,		186757639,		2.576,		5.46,		3.66,		0.0003338,		inf,		-inf,		0,		0,		0,		0,		0,		0,		9.748,		4.119,		16000,		0,		0,		0,		2122,		0,		0,		0,		48,		0,		0,		0,		474,		572,		24.75,		
+17.006870,		1.000068,		179893,		0,		0,		nan,		187089259,		2.567,		5.448,		3.654,		0.0003302,		inf,		-inf,		0,		0,		0,		0,		0,		0,		10.45,		4.417,		16000,		0,		0,		0,		2122,		0,		0,		0,		48,		0,		0,		0,		551,		619,		25.25,		
+18.007061,		1.000070,		180051,		0,		0,		nan,		187253496,		0.06996,		5.406,		3.64,		0.000354,		inf,		-inf,		0,		0,		0,		0,		0,		0,		11.17,		4.695,		16000,		0,		0,		0,		2136,		0,		0,		0,		48,		0,		0,		0,		572,		654,		25,		
+19.007267,		1.000067,		179436,		0,		0,		nan,		186614101,		2.554,		5.482,		3.664,		0.000334,		inf,		-inf,		0,		0,		0,		0,		0,		0,		11.89,		4.979,		16000,		0,		0,		0,		2136,		0,		0,		0,		48,		0,		0,		0,		593,		697,		24.75,		
+20.007454,		1.000067,		179701,		0,		0,		nan,		186889107,		2.57,		5.407,		3.659,		0.0003313,		inf,		-inf,		0,		0,		0,		0,		0,		0,		12.62,		5.245,		16000,		0,		0,		0,		2136,		0,		0,		0,		48,		0,		0,		0,		615,		736,		25.25,		
+21.007669,		1.000067,		178681,		0,		0,		nan,		185829151,		0.0675,		5.494,		3.673,		0.0003536,		inf,		-inf,		0,		0,		0,		0,		0,		0,		13.32,		5.546,		16000,		0,		0,		0,		2139,		0,		0,		0,		64,		0,		0,		0,		636,		780,		25,		
+22.007866,		1.000069,		178270,		0,		0,		nan,		185400907,		2.569,		5.488,		3.686,		0.000343,		inf,		-inf,		0,		0,		0,		0,		0,		0,		14.03,		5.839,		16000,		0,		0,		0,		2150,		0,		0,		0,		64,		0,		0,		0,		657,		825,		25,		
+23.079912,		1.071922,		30633,		0,		0,		nan,		31859165,		2.667,		5.355,		3.672,		0.0003331,		inf,		-inf,		0,		0,		0,		0,		0,		0,		14.22,		5.894,		16000,		0,		0,		0,		2150,		0,		0,		0,		64,		0,		0,		0,		696,		845,		5.607,		
+24.081093,		1.001092,		0,		0,		0,		nan,		0,		inf,		-inf,		0,		nan,		inf,		-inf,		0,		0,		0,		0,		0,		0,		14.22,		5.894,		16000,		0,		0,		0,		2150,		0,		0,		0,		64,		0,		0,		0,		729,		845,		0.25,		
+25.082209,		1.000999,		0,		0,		0,		nan,		0,		inf,		-inf,		0,		nan,		inf,		-inf,		0,		0,		0,		0,		0,		0,		14.22,		5.895,		16000,		0,		0,		0,		2150,		0,		0,		0,		64,		0,		0,		0,		763,		845,		0,		
+[2026-10-09 11:32:36] [WARNING] Node 254 presumed dead (silent for 3500 ms, liveliness deferred 0 times so far)
+26.083328,		1.001004,		0,		0,		0,		nan,		0,		inf,		-inf,		0,		nan,		inf,		-inf,		0,		0,		0,		0,		0,		0,		14.22,		5.896,		16000,		0,		0,		0,		2150,		0,		0,		0,		72,		0,		0,		0,		797,		845,		0,		
+Maximum runtime reached. Exiting.
+[2026-10-09 11:32:37] [INFO] Subscriber 4030703361 delivery: delivered=3585513 out_of_order=0 timestamp_not_newer=0 writer_switches=0 via_socket_flips=2 out_of_order_discarded=0 rxo_drops=0 reorder_held_peak=490 reorder_delivered=36456 reorder_overflow=0 reorder_abandoned=0 gap_abandoned=0 gap_evicted=0 superseded=0
+[2026-10-09 11:32:37] [INFO] Subscriber 1943128324 delivery: delivered=0 out_of_order=0 timestamp_not_newer=0 writer_switches=0 via_socket_flips=0 out_of_order_discarded=0 rxo_drops=0 reorder_held_peak=0 reorder_delivered=0 reorder_overflow=0 reorder_abandoned=0 gap_abandoned=0 gap_evicted=0 superseded=0
+rmw_tickle: executor_poll=1 executor_poll_waits=3585575 executor_handovers=1 park_wakes=1 discovery_dropped=0 nodes_kept_at_destroy=0 id_muted_drops=0 cache_depth_shortfalls=0 rx_malformed_drops=0 version_mismatch_drops=0
+[2026-10-09 11:32:37] [INFO] Node 2 traffic: tx_datagrams=21826 rx_datagrams=3791879 rx_self_sent=14 rx_self_sent_data=0 rx_self_sent_data_unicast=0 rx_via_data=403965 rx_via_well_known=3387914 tx_dropped_oversize=0 tx_udp=20 tx_shm=21806 rx_udp=44 rx_shm=3791835 rx_shm_skipped_superseded=0 tx_udp_broadcast=16 tx_udp_oversize=0 tx_udp_unattached=4 shm_full_dropped=0 shm_gave_up=0 shm_doorbells_sent=7835 shm_bells_rung=7835 shm_doorbells_received=2 shm_segments_created=1 shm_segments_released=1 shm_same_host_peers=0 shm_claim_waits=0 shm_claim_waits_published=0 shm_sleep_cost_ns=0 shm_watches=0 shm_watch_hits=0 shm_epochs_sleeping=2 shm_epochs_waiting=2 shm_cost_sleeping_ns=10542 shm_cost_waiting_ns=10568 shm_waiting_preferred=0 shm_encoded_in_slot=0 rx_drain_ring_turns=0 shm_sleep_generations=58 shm_generations_kept=0 shm_sleeps=109 lending=1 lend_retains=8 lend_releases=8 lend_unlendable=0 lend_exhausted=0 lend_bad_releases=0 lend_held=0 shm_full_retained=0

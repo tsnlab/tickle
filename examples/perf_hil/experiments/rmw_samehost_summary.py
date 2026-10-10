@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Reads rmw_samehost.sh's runs and applies the reading rules written in its header (repeated here, as code).
 
-Usage: rmw_samehost_summary.py <OUT.runs dir> [--preflight]
+Usage: rmw_samehost_summary.py <OUT.runs dir> [--preflight] | --selftest [MODULE]
+  --selftest  read perf_test_counts_fixture/samehost.runs (two runs of 06dd78d8, 2026-10-09) with MODULE's
+              check_tput (default this file) and exit 1 unless the counts and rates are right; with the
+              pre-2026-10-10 reader it fails.
 
 <runs>/params.txt (written by the driver before the first run) fixes the window and the thresholds; every
 <runs>/<stem>/ is one run left by rmw_samehost_cell.sh. With --preflight the exit status says whether every run was
@@ -39,12 +42,20 @@ scatter: tput Array1k best_effort CPU per sample at 03585237, rmw_tickle 13.14 /
 CycloneDDS 32.81-34.45 and FastDDS 171 / 1006 / 323, read DRAW because FastDDS's SE (about 256 us) put its 2 x SE
 bound above the 487 us gap, although rmw_tickle was below every rep of both vendors. Range non-overlap does not
 reward a vendor's scatter; a rmw_tickle range that touches a vendor's still reads DRAW.
+Counts (corrected 2026-10-10): perf_test's received/sent/lost columns are per-second rates, floor(count / D)
+(rmw_keepall_rig_summary.py, COUNTS). Until then tput summed them and divided by the summed T_loop, which is not the
+time they were counted over (T_loop includes the wait for the subscriber's lock; D does not): delivered msg/s read low
+by 0.01% for rmw_tickle and by up to 0.69% for a vendor, and CPU per sample high by as much. Whole counts over the
+summed D give the rate, the CPU is over the rows' wall time, and lost is whole (still able to hide one per row).
 """
 import math
 import re
 import statistics
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rmw_keepall_rig_summary import sample_bytes, whole_counts  # noqa: E402
 
 SCORED = ("fastdds", "cyclonedds")
 # tickle_loans (ab_loans.sh): arm tickle with ROS_DISABLE_LOANED_MESSAGES=0 - printed per run, never in the table.
@@ -284,6 +295,12 @@ def windowed(rows, offset, lo, hi):
     return rows[first:last + 1], (cpu(rows[first - 1]) if first > 0 else 0.0, cpu(rows[last]))
 
 
+def wall(rows, win):
+    """Wall time (s) of a windowed() CPU reading: from the row before the window's first to its last, as stamped."""
+    i = next(k for k, r in enumerate(rows) if r is win[0])
+    return win[-1]["T_experiment"] - (rows[i - 1]["T_experiment"] if i > 0 else 0.0)
+
+
 def check_tput(d, m, p, arm, msg, qos):
     why = []
     sub, stext = perf_rows(d / "sub.log")
@@ -312,22 +329,27 @@ def check_tput(d, m, p, arm, msg, qos):
         why.append("the subscriber's log has fewer than 3 rows in the sender window")
         return why, None
     pwin, pcpu = windowed(pub, 0.0, warm, dur - cool)
-    rate = sum(r["received"] for r in swin) / sum(r["T_loop"] for r in swin)
-    sent_rate = (sum(r["sent"] for r in pwin) / sum(r["T_loop"] for r in pwin)) if pwin else float("nan")
-    sub_cpu_s = (scpu[1] - scpu[0]) / sum(r["T_loop"] for r in swin)
-    pub_cpu_s = ((pcpu[1] - pcpu[0]) / sum(r["T_loop"] for r in pwin)) if pwin else float("nan")
+    # perf_test's received/sent/lost columns are per-second RATES, floor(count / D) (rmw_keepall_rig_summary.py,
+    # COUNTS). Until 2026-10-10 they were summed as counts and divided by the summed T_loop, which is not the time they
+    # were counted over: whole counts over the summed D are the rate, and the CPU window is the rows' wall time.
+    whole_counts(sub, sample_bytes(msg))
+    whole_counts(pub)
+    rate = sum(r["n_received"] for r in swin) / sum(r["D"] for r in swin)
+    sent_rate = (sum(r["n_sent"] for r in pwin) / sum(r["D"] for r in pwin)) if pwin else float("nan")
+    sub_cpu_s = (scpu[1] - scpu[0]) / wall(sub, swin)
+    pub_cpu_s = ((pcpu[1] - pcpu[0]) / wall(pub, pwin)) if pwin else float("nan")
     cpu = (sub_cpu_s + pub_cpu_s) / rate * 1e6 if rate else float("nan")
     # Loss after the first delivered second (the pre-match gap is not loss; rmw_keepall_rig_summary.py).
-    first = next((i for i, r in enumerate(sub) if r.get("received", 0) > 0), None)
-    lost = round(sum(r.get("lost", 0) for r in sub[first + 1:])) if first is not None else 0
-    recv = sum(r.get("received", 0) for r in sub)
+    first = next((i for i, r in enumerate(sub) if r["n_received"] > 0), None)
+    lost = sum(r["n_lost"] for r in sub[first + 1:]) if first is not None else 0
+    recv = sum(r["n_received"] for r in sub)
     # The bytes witness is per sample PUBLISHED, not per sample received. Until 2026-10-09 it divided by the samples
     # perf_test received, and at BEST_EFFORT KEEP_LAST 1 the subscriber takes as little as 0.2% of what is sent, so
     # the 0.9% of datagrams rmw_tickle broadcasts before its peer is known (tx_udp 162,934 of 17,791,221) read as 0.90
     # payloads per sample - "kernel" against a tx_shm share of 0.991, a VOID with both instruments right. A datagram
     # crosses (or does not cross) the kernel whether or not the reader keeps it, so the denominator is what was sent.
     # max(): perf_test may not print the publisher's last partial second, so a RELIABLE run's sent can trail recv.
-    sent = sum(r.get("sent", 0) for r in pub)
+    sent = sum(r["n_sent"] for r in pub)
     nsamp = max(sent, recv)
     nb, na = m.get("net_before"), m.get("net_after")
     bps = (na["all_bytes"] - nb["all_bytes"]) / nsamp if nb and na and nsamp else None
@@ -351,7 +373,7 @@ def check_tput(d, m, p, arm, msg, qos):
     rss_sub = sub[-1]["ru_maxrss"] if sub else 0
     rec = dict(rate=rate, sent_rate=sent_rate, cpu=cpu + (router_cpu or 0.0), cpu_router=router_cpu,
                rss=max(rss_pub, rss_sub), rss_pub=rss_pub, rss_sub=rss_sub, lost=lost, refused=refused,
-               seconds=len(swin), bps=bps, pps=pps, ratio=ratio, transport=transport(ratio), share=share,
+               sent=sent, recv=recv, seconds=len(swin), bps=bps, pps=pps, ratio=ratio, transport=transport(ratio), share=share,
                lat=statistics.mean([r["latency_mean (ms)"] for r in swin if r["received"] > 0] or [float("nan")]))
     return why, rec
 
@@ -492,5 +514,51 @@ def main():
             print(f"|  | {e} | | | | | | |")
 
 
+def selftest(module):
+    """The fixture (perf_test_counts_fixture/samehost.runs: two tput runs of 06dd78d8) must read as below, or exit 1.
+
+    Truth from outside perf_test's rate columns: rmw_tickle's subscriber prints its own delivered= count; and a
+    lossless RELIABLE KEEP_ALL CycloneDDS run delivers, over the sender window, the rate its publisher sends (a
+    KEEP_ALL writer cannot run ahead of its reader by more than its history). The 12 RELIABLE cyclonedds runs of
+    06dd78d8 and a7e02807 read -0.02% to +0.40% by whole counts and -0.59% to -0.04% by the summed columns; this
+    one is the -0.59%.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("summary_under_test", module)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    fx = Path(__file__).resolve().parent / "perf_test_counts_fixture" / "samehost.runs"
+    p = mod.params(fx)
+    fails = []
+
+    def check(what, ok):
+        print(f"  {'ok  ' if ok else 'FAIL'} {what}")
+        if not ok:
+            fails.append(what)
+
+    print(f"reading {fx} with {module}")
+    d = fx / "tput_Array1k_reliable_tickle_r1"
+    why, rec = mod.check_tput(d, mod.read_meta(d), p, "tickle", "Array1k", "reliable")
+    text = (d / "sub.log").read_text(errors="replace")
+    delivered = max(int(x) for x in re.findall(r"delivery: delivered=(\d+)", text))
+    floored = sum(r["received"] for r in perf_rows(d / "sub.log")[0])
+    check(f"control: the floored received rows sum to {floored:.0f}, short of rmw_tickle's delivered={delivered}",
+          floored < delivered - 100)
+    check(f"tickle: usable ({'; '.join(why) or 'no VOID'})", not why and rec is not None)
+    recv = (rec or {}).get("recv")
+    check(f"tickle: recv {recv} within 3 of rmw_tickle's delivered={delivered}, lost {(rec or {}).get('lost')}",
+          recv is not None and abs(recv - delivered) <= 3 and rec["lost"] == 0)
+    d = fx / "tput_Array4k_reliable_cyclonedds_r1"
+    why, rec = mod.check_tput(d, mod.read_meta(d), p, "cyclonedds", "Array4k", "reliable")
+    check(f"cyclonedds: usable ({'; '.join(why) or 'no VOID'})", not why and rec is not None)
+    ratio = rec["rate"] / rec["sent_rate"] if rec else float("nan")
+    check(f"cyclonedds: delivered {rec['rate']:,.0f}/s against sent {rec['sent_rate']:,.0f}/s = {ratio:.5f}, within "
+          "0.3% (lossless KEEP_ALL)", abs(ratio - 1) < 0.003)
+    print(f"selftest: {'PASS' if not fails else 'FAIL (' + str(len(fails)) + ')'}")
+    return 1 if fails else 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--selftest"]:
+        sys.exit(selftest(Path(sys.argv[2]) if len(sys.argv) > 2 else Path(__file__).resolve()))
     main()

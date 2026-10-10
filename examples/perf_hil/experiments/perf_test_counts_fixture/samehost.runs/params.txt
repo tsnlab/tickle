@@ -1,0 +1,1 @@
+warm_rt=4096 cool_rt=4096 min_measured=2000 warm_s=2 cool_s=2 tickle_lib=/home/ci/tickle/install/rmw_tickle/lib/librmw_tickle.so host=10.1.1.213

@@ -170,10 +170,12 @@ done
 set_loss 0 > /dev/null
 say "=== runs done ==="
 
-python3 - "$OUT" <<'PY'
+python3 - "$OUT" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" <<'PY'
 import re, sys
 from pathlib import Path
 out = Path(sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+from rmw_keepall_rig_summary import sample_bytes, whole_counts  # noqa: E402
 
 def perf_rows(text):
     lines = text.splitlines()
@@ -191,8 +193,10 @@ def perf_rows(text):
                 pass
     return rows
 
-def col(rows, name):
-    return int(sum(r.get(name, 0) for r in rows))
+def col(rows, name, size=None):
+    # perf_test's received/sent/lost columns are per-second rates, floor(count / D): whole counts per row
+    # (rmw_keepall_rig_summary.py, COUNTS), summed.
+    return sum(r["n_" + name] for r in whole_counts(rows, size))
 
 results = []
 for line in (out / "index.txt").read_text().splitlines():
@@ -213,7 +217,9 @@ for line in (out / "index.txt").read_text().splitlines():
         void.append("delivered=0")
     sent = col(perf_rows(pub), "sent")
     srows = perf_rows(sub)
-    recv, lost = col(srows, "received"), col(srows, "lost")
+    topic = re.search(r"_(Array\w+)_l", stem)
+    size = sample_bytes(topic.group(1)) if topic else None
+    recv, lost = col(srows, "received", size), col(srows, "lost", size)
     failed = "failed to publish" in pub
     dbg = {}
     for txt in (pub, sub):

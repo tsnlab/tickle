@@ -1,7 +1,22 @@
 #!/usr/bin/env python3
 """Reads rmw_keepall_rig.sh's runs and applies the reading rules written in its header.
 
-Usage: rmw_keepall_rig_summary.py <OUT.runs dir> <DUR>
+Usage: rmw_keepall_rig_summary.py <OUT.runs dir> <DUR> | --selftest [SCRIPT]
+  --selftest  read perf_test_counts_fixture/keepall.runs (real Ke runs, 2026-10-08) with SCRIPT (default this file)
+              and exit 1 unless its whole counts are right (COUNTS below); with the pre-2026-10-10 reader it fails.
+
+COUNTS (corrected 2026-10-10). perf_test's received, sent and lost columns are NOT counts: sync_reset()
+(data_runner.hpp) writes floor(count / D), D the time since the previous sync, so each row is a per-second rate. The
+data_received column is floor(count x sizeof(msg) / D) (sizeof: payload + 16 B, sample_bytes()). Until 2026-10-10
+this reader summed the rate columns as counts, which under-counts by the floor and by D - 1 per row: 0.02-0.11%
+for rmw_tickle, and up to 3.6% for CycloneDDS at 5% loss, whose subscriber rows run at D up to 1.10 (Ke's
+cyclonedds Array1k r1 read sent 36,236, recv 34,974 with lost 0; whole counts give 36,260 and 36,260). That
+overstated CPU per sample by the same fraction and made a lossless run look 1,262 samples short. whole_counts()
+rebuilds them: D from the row stamps (span()), received from data_received (rmw_tickle's own delivered= counter
+agrees within 2 of 1.5M per run), sent and lost as the lower end of [v x D, (v + 1) x D). The lost column can still
+hide one sample per row at D > 1: a "lost 0" from perf_test alone means at most one per row, and rmw_tickle's
+gap_evicted / gap_abandoned counters are the witness that settles it. Rates were per-second figures all along
+(the steady mean of the column, now of count / D: +0.5/s, the floor).
 
 Loss (2026-10-06): perf_test counts every id below the first one it receives as lost (its previous id starts at 0),
 and --expected_num_subs is compiled out in the rig's build, so whatever the publisher sent before the match showed
@@ -10,7 +25,7 @@ as loss for every arm. loss_split() therefore reports three figures from the sub
   prematch   the first delivered second's count: first received id - 1, plus any gap inside that same second
              (perf_test's rows cannot separate the two; under RELIABLE a later gap is a delivery defect anyway);
   lost       every row after that one - the loss the verdicts use.
-The three are perf_test's per-second figures (count / T_loop, T_loop ~1.00 s) summed, so lost_all == prematch + lost.
+The three are whole counts (COUNTS above), so lost_all == prematch + lost.
 
 EQUAL_BOUND (rmw_keepall_rig.sh's header): when <runs>/bounds.txt exists, every run is also VOID unless its
 publisher received the bound recorded for its topic, read from /proc/PID/environ at 2 s (the .treat file):
@@ -58,13 +73,59 @@ def rows(path):
     return out, text
 
 
-def loss_split(sub):
-    """(lost_all, prematch, lost_after) from the subscriber's rows; see the module docstring."""
-    lost_all = round(sum(r.get("lost", 0) for r in sub))
-    first = next((i for i, r in enumerate(sub) if r.get("received", 0) > 0), None)
+def sample_bytes(topic):
+    """sizeof() of perf_test's ROS 2 message, which its data_received column counts: ArrayNk / ArrayNm is N KiB / MiB
+    of payload plus the int64 time and uint64 id fields (Array1k 1,040 B, Array4k 4,112 B). None for another type."""
+    m = re.match(r"Array(\d+)([km])$", topic or "")
+    if not m:
+        return None
+    return int(m.group(1)) * (1024 if m.group(2) == "k" else 1048576) + 16
+
+
+def span(rs, i):
+    """D for row i: the time its counts were taken over (module docstring, COUNTS).
+
+    sync_reset() stamps `now` before it takes the runner's lock; the row's T_loop runs from the loop's start, through
+    sleep(1) and that lock wait, to after the sync, and T_experiment is stamped after the sync. So between two
+    syncs D_i = (T_experiment_i - T_experiment_{i-1}) - T_loop_i + T_loop_{i-1}, exact up to the difference of two
+    sleep(1) overshoots. Row 0 has no previous stamp; its T_loop stands in (it is a pre-match row in every run read).
+    """
+    if i == 0:
+        return rs[0].get("T_loop", 1.0)
+    d = rs[i]["T_experiment"] - rs[i - 1]["T_experiment"] - rs[i]["T_loop"] + rs[i - 1]["T_loop"]
+    return d if d > 0 else rs[i].get("T_loop", 1.0)
+
+
+def whole_counts(rs, size=None):
+    """Turn perf_test's per-row RATE columns back into whole counts, in place, once (module docstring, COUNTS).
+
+    Row i's received, sent and lost are floor(n_i / D_i). received comes back from data_received, which is
+    floor(n_i x size / D_i) and so fine enough to give n_i to the sample (checked against rmw_tickle's own
+    delivered= counter: within 2 of 1.5M per run, selftest); sent and lost have no byte column, so n_<key> is the
+    lower end of [v x D, (v + 1) x D) and nhi_<key> its upper end - a row reading lost 0 at D > 1 may hide one.
+    """
+    if rs and "D" in rs[0]:
+        return rs
+    for i, r in enumerate(rs):
+        d = span(rs, i)
+        for key in ("sent", "lost", "received"):
+            v = r.get(key, 0)
+            r["n_" + key] = math.ceil(v * d - 1e-9) if v > 0 else 0
+            r["nhi_" + key] = math.ceil((v + 1) * d - 1e-9) - 1
+        if size and r.get("data_received", 0) > 0:
+            r["n_received"] = r["nhi_received"] = round(r["data_received"] * d / size)
+        r["D"] = d
+    return rs
+
+
+def loss_split(sub, size=None):
+    """(lost_all, prematch, lost_after) from the subscriber's rows, whole counts; see the module docstring."""
+    whole_counts(sub, size)
+    lost_all = sum(r["n_lost"] for r in sub)
+    first = next((i for i, r in enumerate(sub) if r["n_received"] > 0), None)
     if first is None:
         return lost_all, 0, lost_all
-    prematch = round(sum(r.get("lost", 0) for r in sub[:first + 1]))
+    prematch = sum(r["n_lost"] for r in sub[:first + 1])
     return lost_all, prematch, lost_all - prematch
 
 
@@ -198,7 +259,10 @@ def main():
             why.append(f"publisher did not load {want} (maps: {pmaps.strip() or 'none'})")
         if not loaded(want, smaps):
             why.append(f"subscriber did not load {want} (maps: {smaps.strip() or 'none'})")
-        live = [r for r in sub if r.get("received", 0) > 0]
+        size = sample_bytes(topic)
+        whole_counts(sub, size)
+        whole_counts(pub)
+        live = [r for r in sub if r["n_received"] > 0]
         if not live:
             why.append("subscriber received nothing")
         bound_label = ""
@@ -210,10 +274,10 @@ def main():
             voids.append(f"{stem}: " + "; ".join(why))
             continue
         steady = live[2:-1] if len(live) > 4 else live
-        rate = statistics.mean(r["received"] for r in steady)
-        lost_all, prematch, lost = loss_split(sub)
-        sent = int(sum(r.get("sent", 0) for r in pub))
-        recv = int(sum(r.get("received", 0) for r in sub))
+        rate = statistics.mean(r["n_received"] / r["D"] for r in steady)
+        lost_all, prematch, lost = loss_split(sub, size)
+        sent = sum(r["n_sent"] for r in pub)
+        recv = sum(r["n_received"] for r in sub)
         errors = [mk for mk in ERROR_MARKERS if mk in ptext]
         errors += ["publisher killed at deadline"] if pkilled != "no" else []
         cpu_pub = (pub[-1]["ru_utime"] + pub[-1]["ru_stime"]) / sent * 1e6 if pub and sent else float("nan")
@@ -315,5 +379,57 @@ def main():
               "the rmw layer at max rate here")
 
 
+def selftest(script):
+    """The fixture (perf_test_counts_fixture/keepall.runs: three Ke runs, 2026-10-08) must read as below, or exit 1.
+
+    Truth that does not come from perf_test's rate columns: rmw_tickle's subscriber prints its own delivered= count.
+    For CycloneDDS, the balance: a RELIABLE KEEP_ALL run with nothing published before the match and no id gap leaves
+    published - received = what was in flight when the publisher exited, a handful at ~350-1,750/s (whole counts give
+    0 or -5 in all ten of Ke's cyclonedds runs; the floored sums gave 148-1,262). The control: the fixture holds the
+    artefact - the floored received rows sum short.
+    """
+    import subprocess
+    fx = Path(__file__).resolve().parent / "perf_test_counts_fixture" / "keepall.runs"
+    out = subprocess.run([sys.executable, str(script), str(fx), "20"], capture_output=True, text=True).stdout
+    fails = []
+
+    def check(what, ok):
+        print(f"  {'ok  ' if ok else 'FAIL'} {what}")
+        if not ok:
+            fails.append(what)
+
+    got = {}
+    for line in out.splitlines():
+        m = re.match(r"(Array\w+)\s+l(\d+)\s+(\S+)\s+r(\d+) rate\s+([\d.]+)/s\s+sent\s+(\d+)\s+recv\s+(\d+)\s+lost\s+(\d+)"
+                     r" \(pre-match\s+(\d+)", line)
+        if m:
+            got[f"{m.group(3)}_{m.group(1)}_l{m.group(2)}_r{m.group(4)}"] = dict(
+                rate=float(m.group(5)), sent=int(m.group(6)), recv=int(m.group(7)), lost=int(m.group(8)),
+                prematch=int(m.group(9)))
+    print(f"reading {fx} with {script}")
+    check(f"three runs read ({sorted(got)})", len(got) == 3)
+    stem = "tickle@head_Array1k_l5_r1"
+    sub, text = rows(fx / f"{stem}_sub.log")
+    delivered = max(int(x) for x in re.findall(r"delivery: delivered=(\d+)", text))
+    floored = sum(r["received"] for r in sub)
+    check(f"control: the floored received rows sum to {floored:.0f}, short of rmw_tickle's delivered={delivered}",
+          floored < delivered - 100)
+    r = got.get(stem, {})
+    check(f"{stem}: recv {r.get('recv')} within 3 of rmw_tickle's delivered={delivered}, lost 0",
+          r and abs(r["recv"] - delivered) <= 3 and r["lost"] == 0)
+    for stem in ("cyclonedds_Array1k_l5_r1", "cyclonedds_Array4k_l5_r2"):
+        r = got.get(stem, {})
+        check(f"{stem}: lossless KEEP_ALL - sent {r.get('sent')} recv {r.get('recv')} within 5, lost 0, pre-match 0",
+              r and abs(r["sent"] - r["recv"]) <= 5 and r["lost"] == 0 and r["prematch"] == 0)
+        sub, _ = rows(fx / f"{stem}_sub.log")
+        column = statistics.mean(x["received"] for x in [x for x in sub if x["received"] > 0][2:-1])
+        check(f"{stem}: rate {r.get('rate')} within 1/s of the steady mean of perf_test's column ({column:.1f}): "
+              "rates were never the error", r and abs(r["rate"] - column) <= 1.0)
+    print(f"selftest: {'PASS' if not fails else 'FAIL (' + str(len(fails)) + ')'}")
+    return 1 if fails else 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--selftest"]:
+        sys.exit(selftest(Path(sys.argv[2]) if len(sys.argv) > 2 else Path(__file__).resolve()))
     main()
