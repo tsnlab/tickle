@@ -8216,6 +8216,23 @@ static bool large_ref_send(struct tt_Context* node, struct tt_Publisher* pub, co
     return true;
 }
 
+// Liveliness has removed context `context_id`: its bit is cleared in every chunk of every region this context's
+// Publishers own, so what it held is free again. Never before: a reader that is only slow keeps its chunks.
+static void large_region_forget_reader(struct tt_Context* node, uint8_t context_id) {
+    uint64_t bit = large_reader_bit(context_id);
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_PUBLISHER) {
+            continue;
+        }
+        struct tt_LargeRegion* region = &((struct tt_Publisher*)endpoint)->large_region;
+        for (uint32_t chunk = 0; region->mapping != NULL && chunk < region->chunks; chunk++) {
+            uint64_t* word = &large_chunk_entry(region->mapping, chunk)->readers[context_id / 64U];
+            __atomic_fetch_and(word, ~bit, __ATOMIC_RELEASE);
+        }
+    }
+}
+
 tt_ret_t tt_Publisher_set_large_region(struct tt_Publisher* pub, uint32_t chunks, uint32_t chunk_bytes) {
     if (pub == NULL || pub->node == NULL || chunks > tt_LARGE_REGION_CHUNKS_MAX ||
         (chunks != 0 && chunk_bytes < tt_LARGE_CHUNK_BYTES(tt_MAX_SAMPLE_LENGTH + 1U)) ||
@@ -12810,6 +12827,9 @@ static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t 
     // cost of that choice is holding a segment slightly longer than necessary; the cost of the other
     // one would be dropping it while somebody was writing to it.
     forget_same_host_peer(node, source);
+#endif
+#if tt_LARGE_SHM
+    large_region_forget_reader(node, source); // what it held in this context's regions is free again (step B)
 #endif
     tombstone_discovered_entities_from_source(node, source);
     node->update_seen[source] = false;

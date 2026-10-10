@@ -85,6 +85,12 @@ MUTANTS = [
         "test_a_stale_descriptor_is_refused",
     ),
     (
+        "B1.6 liveliness removal leaves the dead reader's bits",
+        "    large_region_forget_reader(node, source); // what it held in this context's regions is free again (step B)\n",
+        "",
+        "test_a_dead_readers_chunk_is_freed_by_liveliness_not_before",
+    ),
+    (
         "B1.7 the owner's feature bit ignored",
         "    return segment != NULL && (segment->features & tt_SEGMENT_FEATURE_LARGE_REF) != 0 ? segment : NULL;",
         "    return segment;",
