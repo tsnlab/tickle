@@ -3884,6 +3884,12 @@ static void reset_node_state(struct tt_Context* node) {
     node->rx_self_sent_data = 0;
     node->rx_self_sent_data_unicast = 0;
     node->rx_via_data_port = false;
+    node->rx_offset = 0;
+    node->udp_offload = 0; // tt_bind() sets what the HAL turned on
+    node->udp_gro_reads = 0;
+    node->udp_gro_merged = 0;
+    node->udp_gro_copied = 0;
+    node->udp_gro_off8 = 0;
     node->rx_via_data_datagrams = 0;
     node->rx_via_well_known_datagrams = 0;
 #if tt_FRAG_ENABLED
@@ -16464,11 +16470,14 @@ static tt_ret_t process_datagram_at(struct tt_Context* node, uint8_t* buffer, in
 
 static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
                                         enum tt_Transport transport, uint16_t seq_span) {
+    // A socket datagram lies where the HAL says in the buffer it was read into (struct tt_Context.rx_offset: UDP_GRO
+    // hands several out of one read in place); a segment record (no lending) is always at the start.
+    const uint32_t offset = transport == tt_TRANSPORT_UDP ? node->rx_offset : 0U;
 #if tt_SAMPLE_LENDING
-    return process_datagram_at(node, RX_LANDING(node), len, ip, port, transport, seq_span, tt_LEND_BUFFER,
+    return process_datagram_at(node, RX_LANDING(node) + offset, len, ip, port, transport, seq_span, tt_LEND_BUFFER,
                                node->lend.landing);
 #else
-    return process_datagram_in(node, node->rx_buffer, len, ip, port, transport, seq_span);
+    return process_datagram_in(node, node->rx_buffer + offset, len, ip, port, transport, seq_span);
 #endif
 }
 
@@ -17219,7 +17228,8 @@ tt_ret_t tt_Context_set_rx_pool(struct tt_Context* node, uint64_t* storage, uint
         return tt_RET_INVALID_ARGUMENT;
     }
     state_lock(node);
-    bool busy = node->lend.landing != 0;
+    // tt_rx_buffered(): datagrams the HAL read and has not handed out yet may still lie in a pool buffer (UDP_GRO).
+    bool busy = node->lend.landing != 0 || tt_rx_buffered(node) > 0;
     for (uint32_t number = 1; number <= node->lend.pool_count && !busy; number++) {
         busy = lend_holds_buffer(node, number);
     }
@@ -17401,7 +17411,9 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         // Attaches refused because no live context owned the file: a dead one's segment, left in /dev/shm.
         "shm_attach_orphaned=%lu "
         // Claimed-slot publishes (tt_Publisher_claim()): built in place, copied out at publish, abandoned.
-        "shm_claims_published=%lu shm_claims_copied=%lu shm_claims_abandoned=%lu",
+        "shm_claims_published=%lu shm_claims_copied=%lu shm_claims_abandoned=%lu "
+        // UDP offload (struct tt_Context.udp_offload): what the HAL turned on, and what receive offload merged.
+        "udp_offload=%u gro_reads=%lu gro_merged=%lu gro_copied=%lu gro_off8=%lu",
         node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
         (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
         (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -17428,7 +17440,8 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned long)LEND_COUNT(node, bad_releases), (unsigned long)LEND_COUNT(node, held),
         (unsigned long)LEND_COUNT(node, full_retained), (unsigned long)node->segment_attach[tt_SEGMENT_ORPHANED],
         (unsigned long)node->segment_claims_published, (unsigned long)node->segment_claims_copied,
-        (unsigned long)node->segment_claims_abandoned);
+        (unsigned long)node->segment_claims_abandoned, (unsigned)node->udp_offload, (unsigned long)node->udp_gro_reads,
+        (unsigned long)node->udp_gro_merged, (unsigned long)node->udp_gro_copied, (unsigned long)node->udp_gro_off8);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads
