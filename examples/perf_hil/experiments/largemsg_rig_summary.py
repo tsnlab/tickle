@@ -1,21 +1,37 @@
 #!/usr/bin/env python3
 """Large-message step A on the rig: the L3 and L4 readings of rmw_keepall_rig.sh runs (docs/DESIGN.md section 8).
 
-Usage: largemsg_rig_summary.py <OUT.runs> <DUR> [--l3] [--preflight]
+Usage: largemsg_rig_summary.py <OUT.runs> <DUR> [--l3] [--preflight] | --selftest
   (default) L4, the vendor cells; rmw_keepall_rig.sh calls it this way when SUMMARY names it.
   --l3      L3, the end-of-sample HEARTBEAT: tickle@head (B) against tickle@pre (B without it, PRE_SHA = the -nohb
             branch), with the same arms at 0% loss as the control.
   --preflight  also apply the PC preflight's rule (rmw_keepall_rig.sh PC_PREFLIGHT=1) and exit 1 when it fails: no
             VOID run; every cross-host tickle run delivered something; with the probe, every cross-host run that
             delivered has a usable clock and both probes within 200 us of 0 (one host: the probe's own control).
+  --selftest   read largemsg_rig_fixture/ (A4's raw runs) and exit 1 unless every reading there is the expected one.
 Written 2026-10-10 for ~/rig_queue_largemsg_A4.sh before its run. Every rule below is enforced in this code.
 
-WHAT A RUN GIVES (perf_test's per-second rows; received, sent and lost are whole counts per row):
-  delivered   samples received, rate_hz (mean over the steady seconds), lost = perf_test's id gaps after the first
-              delivered second (the match split as rmw_keepall_rig_summary.py does), delivered_pct = received /
-              (received + lost), and end_gap = published - pre-match - received - lost: the samples after the last
-              one delivered (the publisher exits with ~0.4 s in flight). A run is INCOMPLETE when lost > 0, end_gap is
-              more than one second of samples (a stall), or it received nothing.
+WHAT A RUN GIVES (perf_test's per-second rows):
+  counts      perf_test's received, sent and lost columns are NOT counts: sync_reset() (data_runner.hpp) writes
+              floor(count / D), D the time since the previous sync, and D is the previous row's T_loop (the sync waits
+              on the subscriber's lock and that wait moves the next loop). At D > 1 every row loses up to one sample,
+              and at 15 Hz 4 MB the subscriber's rows run at D = 1.066: A4's s3b/s3c summed 842 sent and 804-832
+              received of 902 published, and every arm, vendors included, read "incomplete" with lost 0. Corrected
+              2026-10-10 (whole_counts): received = data_received x D / size (bytes, exact: today's runs give
+              tickle's own 902 published, 902 reassembled back to the sample); sent and lost have no byte column, so
+              the interval [r x D, (r + 1) x D) - exact for the publisher (D = 1.00007), one sample wide for the
+              subscriber's lost (a row reading lost 0 at D = 1.066 may hide one).
+  delivered   samples received, rate_hz (mean of count / D over the steady seconds); prematch = the first delivered
+              row's id gap (ids start at 1: published before the match, which no subscriber could receive); id_gaps =
+              the id gaps after it, at least; unaccounted = published - prematch (upper end) - received, i.e. what the
+              subscriber could have received and did not. The publisher exits at its max_runtime right after its
+              last publish and the subscriber runs on for seconds, so only what is on the wire at that exit is lost
+              to the run: END_ALLOW = 2 samples of it are allowed (every arm in A4's s2/s3 left 0 or 1; tickle's
+              counters there: 902 published, 901 reassembled at most one short). lost = max(id_gaps, unaccounted -
+              END_ALLOW, 0), end_gap = unaccounted - lost, delivered_pct = received / (received + lost). A run is
+              INCOMPLETE when lost > 0 or it received nothing. The balance sees a hole perf_test's lost column hides
+              (selftest case 2), but not one of END_ALLOW + 1 samples or fewer: perf_test's output cannot tell that
+              from the wire at exit plus the prematch's one-sample width.
   latency     perf_test stamps with the publisher's system_clock and takes the latency on the subscriber's. Two
               readings, both from the steady seconds (the first 2 delivered seconds and the last 1 dropped, the same
               warm-up and cool-down for every arm):
@@ -35,7 +51,8 @@ WHAT A RUN GIVES (perf_test's per-second rows; received, sent and lost are whole
                 fragment's repair adds, and it is L3's metric.
   CPU         getrusage of each process over its steady seconds (cumulative utime + stime, last steady row less the
               row before the first), in ms per MB (1e6 B): the subscriber's per MB delivered, the publisher's per MB
-              published. RSS: each process's peak ru_maxrss, kB.
+              published, both from the whole counts (the floored columns overstated it by up to 7%, unequally across
+              arms, since each run's D differs). RSS: each process's peak ru_maxrss, kB.
   VOID        only identity: the subscriber's maps do not show the arm's rmw library (for tickle the exact path), or
               the publisher's neither do nor does its log name the rmw. A run that received nothing is NOT void: it
               delivered 0%.
@@ -52,7 +69,8 @@ L4 READING (per cell; the cell is named from topic, rate, loss, QoS and SAMEHOST
     is better than every rmw_tickle rep, DRAW otherwise (docs/TESTING.md section 4's range rule). Latency metrics use
     only reps with a usable clock; fewer than 2 on either side: "no clock". tickle@pre (L3's arm) is printed, never
     scored.
-  - DESIGN.md's falsification checks, printed as HOLDS / FALSIFIED / NOT READ (with why):
+  - DESIGN.md's falsification checks, printed as HOLDS / FALSIFIED / NOT READ (with why), and for a cell none of
+    them names (I4, any same-host cell) an "F- <cell>: no falsification check" line, so no cell prints nothing:
     F1 I1L: rmw_tickle's median delivered_pct below any Fast DDS arm's, or its median p99_lb above twice that arm's.
     F2 I1 cross-host (each QoS): rmw_tickle's median subscriber CPU per MB not below every DDS arm that runs.
     F3 I4s: rmw_tickle's median delivered samples below the best DDS arm's.
@@ -79,6 +97,7 @@ from rmw_keepall_rig_summary import INDEX_RE, loaded, rows  # noqa: E402
 SIZES = {"Array1k": 1024, "Array4k": 4096, "Array16k": 16384, "Array64k": 65536, "Array256k": 262144,
          "Array1m": 1048576, "Array2m": 2097152, "Array4m": 4194304, "Array8m": 8388608}
 WARM, COOL = 2, 1
+END_ALLOW = 2  # samples that may be on the wire when the publisher exits (module docstring)
 VENDORS = ("fastdds", "fastdds@mms1472", "cyclonedds")
 SUBJECT = "tickle@head"
 
@@ -138,9 +157,28 @@ def clock_model(runs, stem, samehost):
 
 
 def counts(r, key):
-    # perf_test's received/sent/lost columns are whole counts per row (they read 29, 30, 31 at 30 Hz with T_loop 1.03);
-    # data_received is not used, since it is scaled.
-    return r.get(key, 0)
+    """Row r's whole count of key ("received", "sent", "lost"), set by whole_counts(); see the module docstring."""
+    return r.get("n_" + key, 0)
+
+
+def whole_counts(rs, size):
+    """Turn perf_test's per-row RATE columns back into whole counts, in place (module docstring, WHAT A RUN GIVES).
+
+    Row k's received, sent and lost are floor(n_k / D_k), D_k the time since the previous row's sync, which is the
+    previous row's T_loop (the sync waits on the subscriber's lock; that wait lands in T_loop and moves the next
+    loop's start). data_received is floor(n_k * size / D_k) bytes, fine enough to give n_k back exactly; sent and lost
+    carry no such column, so they get the interval [r*D, (r+1)*D): n_<key> its lower end, nhi_<key> its upper end.
+    """
+    for i, r in enumerate(rs):
+        d = rs[i - 1].get("T_loop", 1.0) if i else r.get("T_loop", 1.0)
+        for key in ("sent", "lost", "received"):
+            v = r.get(key, 0)
+            r["n_" + key] = math.ceil(v * d - 1e-9) if v > 0 else 0
+            r["nhi_" + key] = math.ceil((v + 1) * d - 1e-9) - 1
+        if size and r.get("data_received", 0) > 0:
+            r["n_received"] = r["nhi_received"] = round(r["data_received"] * d / size)
+        r["D"] = d
+    return rs
 
 
 def cpu(r):
@@ -179,32 +217,40 @@ def run_record(runs, stem, fields, samehost, rate, wire=True):
     if why:
         return rec
     size = SIZES.get(topic, 0)
-    recv = round(sum(counts(r, "received") for r in sub))
-    sent = round(sum(counts(r, "sent") for r in pub))
-    first = next((i for i, r in enumerate(sub) if r.get("received", 0) > 0), None)
-    lost_all = round(sum(counts(r, "lost") for r in sub))
-    prematch = round(sum(counts(r, "lost") for r in sub[:first + 1])) if first is not None else 0
-    lost = lost_all - prematch if first is not None else 0
-    # Samples published after the last one delivered are not id gaps: the publisher exits at its max_runtime with its
-    # last ~0.4 s in flight (A3's L3 runs: 8-14 of 1,742 at 30 Hz, every arm). Counted apart as end_gap; one second's
-    # worth is allowed, more is a stall and counts as incomplete delivery.
-    end_gap = sent - prematch - recv - lost
-    allow = rate if rate > 0 else 100
-    rec.update(recv=recv, sent=sent, lost=lost, prematch=prematch, end_gap=end_gap,
+    whole_counts(sub, size)
+    whole_counts(pub, 0)
+    recv = sum(counts(r, "received") for r in sub)
+    sent = sum(counts(r, "sent") for r in pub)
+    first = next((i for i, r in enumerate(sub) if counts(r, "received") > 0), None)
+    if first is None:
+        prematch = prematch_hi = id_gaps = 0
+    else:
+        # Before the first delivered row there are no ids to gap; the first delivered row's id gap is what was
+        # published before the match (ids start at 1), which this subscriber could never have received.
+        prematch = counts(sub[first], "lost")
+        prematch_hi = sub[first]["nhi_lost"]
+        id_gaps = sum(counts(r, "lost") for r in sub[first + 1:])
+    # What was published after the match and never delivered, at least (the prematch at its upper end). The publisher
+    # exits at its max_runtime right after its last publish while the subscriber runs on; what was on the wire then is
+    # not a loss: END_ALLOW samples of it are allowed (module docstring), anything beyond is lost.
+    unaccounted = sent - prematch_hi - recv
+    lost = max(id_gaps, unaccounted - END_ALLOW, 0)
+    end_gap = unaccounted - lost
+    rec.update(recv=recv, sent=sent, lost=lost, prematch=prematch, end_gap=end_gap, id_gaps=id_gaps,
                delivered_pct=(100.0 * recv / (recv + lost) if recv + lost > 0 else 0.0),
-               incomplete=lost > 0 or end_gap > allow or recv == 0,
+               incomplete=lost > 0 or recv == 0,
                refused="failed to publish" in ptext,
                errors=[m for m in ("terminate", "exception", "Segmentation", "Aborted") if m in ptext + stext])
-    ss, before = steady_window(sub, "received")
+    ss, before = steady_window(sub, "n_received")
     rec["seconds"] = len(ss)
-    rec["rate_hz"] = st.mean(counts(r, "received") for r in ss) if ss else 0.0
+    rec["rate_hz"] = st.mean(counts(r, "received") / r["D"] for r in ss) if ss else 0.0
     # CPU per MB and RSS
     if ss and before is not None and size:
         mb = sum(counts(r, "received") for r in ss) * size / 1e6
         rec["cpu_sub"] = (cpu(ss[-1]) - cpu(before)) * 1e3 / mb if mb else float("nan")
     else:
         rec["cpu_sub"] = float("nan")
-    ps, pbefore = steady_window(pub, "sent")
+    ps, pbefore = steady_window(pub, "n_sent")
     if ps and pbefore is not None and size:
         mb = sum(counts(r, "sent") for r in ps) * size / 1e6
         rec["cpu_pub"] = (cpu(ps[-1]) - cpu(pbefore)) * 1e3 / mb if mb else float("nan")
@@ -244,6 +290,12 @@ def run_record(runs, stem, fields, samehost, rate, wire=True):
     tx = re.findall(r"tx_shm=(\d+)", ptext)
     ux = re.findall(r"tx_udp=(\d+)", ptext)
     rec["witness"] = f"tx_shm={tx[-1]} tx_udp={ux[-1]}" if tx and ux else ""
+    # rmw_tickle's own count of whole samples, printed beside perf_test's (never deciding: the rule is the same for
+    # every arm, and a vendor has no such counter).
+    lp = re.findall(r"large: published=(\d+)", ptext)
+    lr = re.findall(r"large: published=\d+ reassembled=(\d+)", stext)
+    if lp and lr:
+        rec["witness"] += f" large published={lp[-1]} reassembled={lr[-1]}"
     return rec
 
 
@@ -378,6 +430,7 @@ def l4(recs, meta, samehost):
             print(f"  {label:30} {cols}   {verdict}")
         print("  (median over usable reps [reps counted]; scored against: " + (", ".join(scored) or "none") + ")")
         # falsification
+        n_before = len(falsif)
         tick = usable.get(SUBJECT, [])
         fdds = [a for a in ("fastdds", "fastdds@mms1472") if a in usable and status.get(a) != "does not run"]
         if name == "I1L" and qos == "reliable" and not samehost:
@@ -416,8 +469,12 @@ def l4(recs, meta, samehost):
                 tr, br = med(r["recv"] for r in tick), med(r["recv"] for r in usable[best])
                 falsif.append(f"F3 {title}: {'FALSIFIED' if tr < br else 'HOLDS'} (rmw_tickle {tr:.0f} complete "
                               f"samples, best DDS {best} {br:.0f})")
+        if len(falsif) == n_before:
+            # Said, not left out: an empty line here once read as a missing verdict (A4's s3b/s3c).
+            falsif.append(f"F- {title}: no falsification check - DESIGN.md section 8 L4 names F1 for I1L reliable, "
+                          "F2 for I1 cross-host and F3 for I4s; this cell is read by the range rule above only")
     print("\n=== DESIGN.md falsification checks in these runs ===")
-    print("\n".join(falsif) if falsif else "(none of F1-F3's cells is in these runs)")
+    print("\n".join(falsif) if falsif else "(no cell in these runs)")
 
 
 def welch(a, b):
@@ -472,7 +529,101 @@ def l3(recs):
                   f"(t {t5:+.2f}, {r5:.2f}x); DESIGN.md L3: 'if not, removed'")
 
 
+def punch_holes(log, size, k):
+    """Remove one sample from each of k subscriber rows of a perf_test log, leaving its lost column at 0 - the hole a
+    floored lost column hides at D > 1 (selftest case 2)."""
+    lines = log.read_text().splitlines()
+    start = lines.index("---EXPERIMENT-START---") + 2
+    prev_tloop, done = None, 0
+    for i in range(start, len(lines)):
+        cells = lines[i].split(",")
+        if len(cells) < 8 or not re.match(r"^[0-9.]+$", cells[0].strip()):
+            continue
+        tloop = float(cells[1])
+        d = prev_tloop if prev_tloop is not None else tloop
+        prev_tloop = tloop
+        n = round(float(cells[6]) * d / size)
+        if done < k and n >= 2 and i > start + 10 and i % 7 == 0:
+            cells[2] = f"\t\t{math.floor((n - 1) / d)}"
+            cells[6] = f"\t\t{math.floor((n - 1) * size / d)}"
+            lines[i] = ",".join(cells)
+            done += 1
+    log.write_text("\n".join(lines) + "\n")
+    return done
+
+
+def selftest():
+    """The fixture (largemsg_rig_fixture/, A4's raw runs, 2026-10-10) must give these readings, or exit 1."""
+    import contextlib
+    import io
+    import shutil
+    import tempfile
+    fx = Path(__file__).resolve().parent / "largemsg_rig_fixture"
+    fails = []
+
+    def read(runs):
+        meta, samehost, recs = load(runs)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            l4(recs, meta, samehost)
+        return {(r["arm"], r["rep"]): r for r in recs}, out.getvalue()
+
+    def check(what, ok):
+        print(f"  {'ok  ' if ok else 'FAIL'} {what}")
+        if not ok:
+            fails.append(what)
+
+    # 1. s3b (Array4m 15 Hz reliable): every arm delivered every sample it could. The control: the fixture holds the
+    #    artefact - perf_test's floored received rows sum short of the 902 published.
+    print("case 1: s3b as recorded - complete, and scored")
+    recs, out = read(fx / "s3b.runs")
+    raw = sum(r["received"] for r in rows(fx / "s3b.runs" / "tickle@head_Array4m_l0_r1_sub.log")[0])
+    check(f"control: the floored rows sum to {raw:.0f}, short of 902 (the artefact is in the fixture)", raw < 890)
+    for key in sorted(recs):
+        r = recs[key]
+        check(f"{key[0]} r{key[1]}: sent {r['sent']} recv {r['recv']} lost {r['lost']} -> complete",
+              r["sent"] == 902 and r["recv"] == 902 and not r["incomplete"])
+    check("no LOSE for incomplete delivery", "delivered incompletely" not in out)
+    check("an F- line for the I4 cell", re.search(r"^F- I4 Array4m 15 Hz reliable cross-host", out, re.M) is not None)
+    # 2. The same runs with five one-sample holes in tickle r1's rows, the lost column left at 0.
+    print("case 2: s3b with five one-sample holes perf_test's lost column does not show - LOSE")
+    with tempfile.TemporaryDirectory() as tmp:
+        t = Path(tmp) / "s3b.runs"
+        shutil.copytree(fx / "s3b.runs", t)
+        n = punch_holes(t / "tickle@head_Array4m_l0_r1_sub.log", SIZES["Array4m"], 5)
+        recs, out = read(t)
+        r = recs[("tickle@head", 1)]
+        check(f"{n} holes punched, lost column still 0 in every row",
+              n == 5 and all(x["lost"] == 0 for x in rows(t / "tickle@head_Array4m_l0_r1_sub.log")[0]))
+        check(f"tickle r1: recv {r['recv']} lost {r['lost']} -> incomplete", r["recv"] == 897 and r["incomplete"])
+        check("the cell scores LOSE", "LOSE (rmw_tickle delivered incompletely)" in out)
+    # 3. s3a's I4s (Array4m 30 Hz sensor_data, real KEEP_LAST drops): F3 on whole counts, which tickle's own counters
+    #    confirm (1661 and 1669 reassembled).
+    print("case 3: s3a I4s as recorded - real drops, F3 on whole counts")
+    recs, out = read(fx / "s3a.runs")
+    t1, t2 = recs[("tickle@head", 1)], recs[("tickle@head", 2)]
+    check(f"tickle recv {t1['recv']}, {t2['recv']} = its reassembled 1661, 1669",
+          (t1["recv"], t2["recv"]) == (1661, 1669))
+    f3 = r"^F3 I4s .*: FALSIFIED \(rmw_tickle 1665 complete samples, best DDS cyclonedds 1700\)"
+    check("F3 FALSIFIED on whole counts", re.search(f3, out, re.M) is not None)
+    # 4. The same real drops in a cell that is not the saturation cell (the meta relabelled 15 Hz -> I4): LOSE.
+    print("case 4: s3a's real drops read as an I4 cell - LOSE")
+    with tempfile.TemporaryDirectory() as tmp:
+        t = Path(tmp) / "s3a.runs"
+        shutil.copytree(fx / "s3a.runs", t)
+        meta = (t / "meta.txt").read_text().replace("pub_rate=30", "pub_rate=15")
+        (t / "meta.txt").write_text(meta)
+        recs, out = read(t)
+        check("tickle r1, r2 incomplete with lost > 100",
+              all(recs[("tickle@head", k)]["incomplete"] and recs[("tickle@head", k)]["lost"] > 100 for k in (1, 2)))
+        check("the cell scores LOSE", "LOSE (rmw_tickle delivered incompletely)" in out)
+    print(f"selftest: {'PASS' if not fails else 'FAIL (' + str(len(fails)) + ')'}")
+    return 1 if fails else 0
+
+
 def main():
+    if sys.argv[1:2] == ["--selftest"]:
+        sys.exit(selftest())
     runs = Path(sys.argv[1])  # argv[2] (DUR) is rmw_keepall_rig.sh's calling convention; the rows carry the time
     meta, samehost, recs = load(runs)
     print(f"runs {runs}: qos [{meta.get('qos_args', '?')}] rate {meta.get('pub_rate', '?')} Hz samehost "
