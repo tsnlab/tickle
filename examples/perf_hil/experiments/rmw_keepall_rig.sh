@@ -132,6 +132,11 @@
 #                    PF_VARIANT_<name> (an install dir holding rmw_tickle for arm tickle@<name>). It tests this script,
 #                    the launcher, the probe and the summary on the same code path as the rig, not the rig's build.
 #   meta.txt         the run's QoS flags, rate, SAMEHOST, CLOCK_PROBE, DUR and DRY, for the summary.
+#
+# Added 2026-10-11 for the lend A/B (~/rig_queue_largemsg_lend.sh; docs/RMW.md "Loaned messages"):
+#   tickle@loans  tickle@head's own librmw_tickle.so with ROS_DISABLE_LOANED_MESSAGES=0, so rclcpp takes loans where
+#                 the rmw offers them (a labelled second arm: tickle@head runs rcl's default). Cross-host default mode
+#                 only. Its treatment is read by largemsg_lend_ab.py from the subscriber's loans_in_place line.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
@@ -417,6 +422,8 @@ env_for() {
     fi
     case "$1" in
         tickle@head) echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@loans) echo "export ROS_DISABLE_LOANED_MESSAGES=0 RMW_IMPLEMENTATION=rmw_tickle"
+            echo "export TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@*) echo "source $(variant_install "${1#tickle@}")/local_setup.bash"
             echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         fastdds) echo "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp FASTRTPS_DEFAULT_PROFILES_FILE=$FDDS_PROFILE" ;;
@@ -429,7 +436,7 @@ env_for() {
 }
 lib_for() {
     case "$1" in
-        tickle@head) echo "$HEAD_LIB" ;;
+        tickle@head | tickle@loans) echo "$HEAD_LIB" ;;
         tickle@*) echo "$(variant_install "${1#tickle@}")/rmw_tickle/lib/librmw_tickle.so" ;;
         fastdds | fastdds@*) echo "librmw_fastrtps_cpp.so" ;;
         cyclonedds) echo "librmw_cyclonedds_cpp.so" ;;
