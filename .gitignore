@@ -82,6 +82,7 @@
 /platform/linux/perf_server
 /platform/linux/rx_hint_check
 /platform/linux/rx_idle_check
+/platform/linux/udp_offload_check
 /platform/linux/bell_wake_check
 
 # clang-tidy's compilation database, when generated locally (e.g. `bear -- make all`, as

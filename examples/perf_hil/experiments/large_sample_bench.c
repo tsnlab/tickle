@@ -273,6 +273,11 @@ static void print_large(const struct tt_Context* node) {
 #else
     printf(" tx_datagrams=%lu rx_datagrams=%lu", (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams);
 #endif
+    // UDP offload (hal_linux.c): the treatment check of udp_offload_pc.sh's arms - what the HAL turned on and did.
+    printf(" udp_offload=%u gso_sends=%lu gso_datagrams=%lu gro_reads=%lu gro_merged=%lu gro_copied=%lu gro_off8=%lu",
+           (unsigned)node->udp_offload, (unsigned long)node->udp_gso_sends, (unsigned long)node->udp_gso_datagrams,
+           (unsigned long)node->udp_gro_reads, (unsigned long)node->udp_gro_merged, (unsigned long)node->udp_gro_copied,
+           (unsigned long)node->udp_gro_off8);
 }
 
 // The realized hybrid treatment (DESIGN.md section 8, pre-registration: "each arm prints its realized treatment").
