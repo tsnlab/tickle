@@ -474,7 +474,7 @@ else
 fi
 
 # UDP offload (udp_offload_check.sh): the same datagrams on the wire and in core with it on as off. Its own namespaces.
-make udp_offload_check
+make udp_offload_check udp_offload_check_flap
 if ./udp_offload_check.sh; then
     SUMMARY="$SUMMARY
 udp offload: PASS"

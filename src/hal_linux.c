@@ -583,7 +583,7 @@ static void wait_set_setup(struct tt_Context* node) {
 //     decodes it instead, the copy the HAL would otherwise have made here for every such segment, loaned or not.
 //     Measured on the PC (1 MB samples): copying them was half of every merged datagram, 54150 of 108450. Off in
 //     builds whose buffer cannot hold a merged read (TT_HAL_UDP_GRO, hal_linux.h). A kernel that refuses the option
-//     leaves every read as it was.
+//     leaves every read as it was. On only while large samples arrive: see "When receive offload is on", below.
 //   - send, UDP_SEGMENT (tt_send_batch()): see send_batch_flags().
 // Rig probe 2026-10-10 (experiments/rx_gro_probe_rig.sh, Pi 5 x2, 1472 B): receiver 3.99 ms/MB with recvfrom(), 3.40
 // with UDP_GRO; sender 4.76 plain, 4.19 with UDP_SEGMENT. TT_UDP_OFFLOAD=0 in the environment turns both off, for the
@@ -616,10 +616,57 @@ static void gso_setup(struct tt_Context* node) {
 #if TT_HAL_UDP_GRO
 #define TT_UDP_OFFLOAD_GRO 1U // struct tt_Context.udp_offload
 
-// Asks both sockets to accept merged datagrams. Refused (ENOPROTOOPT before Linux 5.0) is not an error: reads stay as
-// they were. Either socket may be refused alone; reads take the cmsg path then, and the refused one reports no size.
+// When receive offload is on (2026-10-10). A read with UDP_GRO costs more than one without it whether or not anything
+// was merged - recvmsg() with a control buffer in place of recvfrom(), and the kernel's GRO paths for the socket: +2.3%
+// receiver instructions per MB for a stream of 1 KB samples on the PC, which never form a run. So the sockets read as
+// they always did (TT_GRO_PLAIN) until a large sample's fragment (FRAG_FIRST_L/FRAG_CONT_L, a single-form datagram -
+// byte 0 the marker, byte 3 the type) arrives, and go back after TT_GRO_QUIET_READS reads with neither a merged read
+// nor such a fragment. A stream of small samples never turns it on.
+//
+// Going back is the delicate half. Turning UDP_GRO off does not split what is already queued merged, and a merged
+// datagram read with the option off comes back as one block with no size: core would take a run for one datagram
+// (measured: two 10-datagram runs queued, the option turned off, two 10000-byte reads and no cmsg). What arrives after
+// the switch is split by the kernel - a socket that no longer accepts merged datagrams has them cut at enqueue. So the
+// switch is made only across a moment the queues are seen empty, past the instant the option went off:
+//   1. TT_GRO_ON, quiet long enough, at a tt_receive() about to wait - every read before it found the queues empty:
+//      the option goes off on both sockets, and the state is TT_GRO_SETTLING until TT_GRO_SETTLE_NS later.
+//   2. Any read while settling turns the option back on first (TT_GRO_ON again: aborted), so nothing that may be
+//      merged is ever read without the cmsg that sizes it.
+//   3. At the deadline (tt_receive() shortens its wait to reach it), both queues empty (SIOCINQ 0): TT_GRO_PLAIN,
+//      committed. Anything queued then may have been merged before the option went off: aborted.
+// TT_GRO_SETTLE_NS covers a datagram the kernel had already tested against the option when it went off and had not yet
+// queued: the two are a few hundred instructions apart in one section run with bottom halves off, well under a
+// microsecond; 100 us is two orders beyond it (tt_RECEIVE_TIMEOUT, the poll loop's own slice). Only a reader whose
+// traffic never pauses that long stays on - an aborted settle is tried again after half the quiet reads.
+//
+// TT_GRO_QUIET_READS: switching back costs four setsockopt() calls and two ioctl() calls, and turning it on again two
+// more; after 128 reads of small traffic those are under 5% of the calls they save (and an abort's retry after 64,
+// under 10%). It counts reads of small datagrams
+// only - every datagram of a large sample is a fragment, and resets it - so it is derived from the switch's cost, not
+// from any testbed. Both overridable for udp_offload_check's flapping arm.
+#define TT_GRO_PLAIN 0U
+#define TT_GRO_ON 1U
+#define TT_GRO_SETTLING 2U
+#ifndef TT_GRO_QUIET_READS
+#define TT_GRO_QUIET_READS 128U
+#endif
+#ifndef TT_GRO_SETTLE_NS
+#define TT_GRO_SETTLE_NS 100000ULL
+#endif
+
+// UDP_GRO on or off on both sockets. False if either refused.
+static bool gro_option(struct tt_Context* node, int value) {
+    bool well_known = setsockopt(node->hal.sock, SOL_UDP, UDP_GRO, &value, sizeof(value)) == 0;
+    bool data = setsockopt(node->hal.data_sock, SOL_UDP, UDP_GRO, &value, sizeof(value)) == 0;
+    return well_known && data;
+}
+
+// Whether the kernel takes UDP_GRO on both sockets (ENOPROTOOPT before Linux 5.0: not an error, reads stay as they
+// were). Asked once and left off: it goes on only for large samples (above).
 static void gro_setup(struct tt_Context* node) {
-    node->hal.gro_on = false;
+    node->hal.gro_allowed = false;
+    node->hal.gro_state = TT_GRO_PLAIN;
+    node->hal.gro_quiet = 0;
     node->hal.gro_left = 0;
     node->hal.gro_next = 0;
     node->hal.gro_end = 0;
@@ -627,16 +674,78 @@ static void gro_setup(struct tt_Context* node) {
     if (!udp_offload_allowed()) {
         return;
     }
-    int one = 1;
-    bool well_known = setsockopt(node->hal.sock, SOL_UDP, UDP_GRO, &one, sizeof(one)) == 0;
-    bool data = setsockopt(node->hal.data_sock, SOL_UDP, UDP_GRO, &one, sizeof(one)) == 0;
-    if (!well_known || !data) {
-        TT_LOG_DEBUG("UDP_GRO refused on the %s socket(s): %s - reads stay one datagram each",
-                     well_known ? "data" : (data ? "well-known" : "both"), strerror(errno));
+    if (!gro_option(node, 1)) {
+        TT_LOG_DEBUG("UDP_GRO refused (%s) - reads stay one datagram each", strerror(errno));
+        (void)gro_option(node, 0);
+        return;
     }
-    node->hal.gro_on = well_known || data;
-    if (node->hal.gro_on) {
-        node->udp_offload |= TT_UDP_OFFLOAD_GRO;
+    (void)gro_option(node, 0);
+    node->hal.gro_allowed = true;
+    node->udp_offload |= TT_UDP_OFFLOAD_GRO;
+}
+
+// A large sample's fragment, by its single-form framing (tt_SingleHeader).
+static bool gro_large_fragment(const uint8_t* datagram, int32_t len) {
+    return len >= (int32_t)sizeof(struct tt_SingleHeader) &&
+           (datagram[0] == tt_SINGLE_MARKER_LE || datagram[0] == tt_SINGLE_MARKER_BE) &&
+           (datagram[3] == tt_SUBMESSAGE_TYPE_FRAG_FIRST_L || datagram[3] == tt_SUBMESSAGE_TYPE_FRAG_CONT_L);
+}
+
+// The option back on, from TT_GRO_PLAIN (a large fragment came) or TT_GRO_SETTLING (aborted). A refusal now - which
+// the check at bind did not see - leaves the sockets as they are and receive offload off for good.
+static void gro_turn_on(struct tt_Context* node) {
+    if (!gro_option(node, 1)) {
+        (void)gro_option(node, 0);
+        node->hal.gro_allowed = false;
+        node->hal.gro_state = TT_GRO_PLAIN;
+        node->udp_offload &= (uint8_t)~TT_UDP_OFFLOAD_GRO;
+        return;
+    }
+    if (node->hal.gro_state == TT_GRO_SETTLING) {
+        // Aborted: try again after half the quiet reads, not all of them - what arrived may be small traffic still,
+        // and a merged read or a large fragment resets the count anyway.
+        node->hal.gro_aborts++;
+        node->hal.gro_quiet = TT_GRO_QUIET_READS / 2U;
+    } else {
+        node->hal.gro_enables++;
+        node->hal.gro_quiet = 0;
+    }
+    node->hal.gro_state = TT_GRO_ON;
+}
+
+// Step 1 of going back (above): at a tt_receive() about to wait, with nothing of a merged read left to hand out.
+static void gro_maybe_settle(struct tt_Context* node) {
+    if (node->hal.gro_state != TT_GRO_ON || node->hal.gro_quiet < TT_GRO_QUIET_READS) {
+        return;
+    }
+    (void)gro_option(node, 0);
+    node->hal.gro_state = TT_GRO_SETTLING;
+    node->hal.gro_settle_at_ns = tt_get_ns() + TT_GRO_SETTLE_NS;
+}
+
+static bool gro_queue_empty(int socket_fd) {
+    int queued = 0;
+    // NOLINTNEXTLINE(misc-include-cleaner) - SIOCINQ is FIONREAD, from <sys/ioctl.h>
+    return ioctl(socket_fd, FIONREAD, &queued) == 0 && queued == 0;
+}
+
+// Step 3: the deadline reached - by tt_get_ns(), or by a wait that ran to it (whose clock may end it a little before
+// tt_get_ns() agrees) - commit if both queues are empty, otherwise abort.
+static void gro_settle_end(struct tt_Context* node) {
+    if (node->hal.gro_state != TT_GRO_SETTLING) {
+        return;
+    }
+    if (gro_queue_empty(node->hal.sock) && gro_queue_empty(node->hal.data_sock)) {
+        node->hal.gro_state = TT_GRO_PLAIN;
+        node->hal.gro_commits++;
+        return;
+    }
+    gro_turn_on(node);
+}
+
+static void gro_settle_decide(struct tt_Context* node) {
+    if (node->hal.gro_state == TT_GRO_SETTLING && tt_get_ns() >= node->hal.gro_settle_at_ns) {
+        gro_settle_end(node);
     }
 }
 
@@ -753,7 +862,11 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.rx_batch_full = 0;
     node->hal.gso_on = false; // gso_setup(), once the data socket exists
 #if TT_HAL_UDP_GRO
-    node->hal.gro_on = false; // gro_setup(), once both sockets exist
+    node->hal.gro_allowed = false; // gro_setup(), once both sockets exist
+    node->hal.gro_state = TT_GRO_PLAIN;
+    node->hal.gro_enables = 0;
+    node->hal.gro_aborts = 0;
+    node->hal.gro_commits = 0;
     node->hal.gro_left = 0;
 #endif
 
@@ -1261,8 +1374,16 @@ static int32_t rx_read_one(struct tt_Context* node, int socket_fd, void* buf, si
                            uint16_t* port) {
     node->rx_via_data_port = (socket_fd == node->hal.data_sock);
 #if TT_HAL_UDP_GRO
-    if (node->hal.gro_on) {
-        return gro_read(node, socket_fd, buf, len, ip, port);
+    if (node->hal.gro_state != TT_GRO_PLAIN) {
+        if (node->hal.gro_state == TT_GRO_SETTLING) {
+            gro_turn_on(node); // step 2: never read what may be merged without the option on
+        }
+        int32_t got = gro_read(node, socket_fd, buf, len, ip, port);
+        if (got >= 0) {
+            bool busy = node->hal.gro_left > 0 || gro_large_fragment((const uint8_t*)buf, got);
+            node->hal.gro_quiet = busy ? 0 : node->hal.gro_quiet + 1;
+        }
+        return got;
     }
 #endif
     struct sockaddr_in addr;
@@ -1274,6 +1395,11 @@ static int32_t rx_read_one(struct tt_Context* node, int socket_fd, void* buf, si
     }
     *ip = ntohl(addr.sin_addr.s_addr);
     *port = ntohs(addr.sin_port);
+#if TT_HAL_UDP_GRO
+    if (node->hal.gro_allowed && gro_large_fragment((const uint8_t*)buf, ret)) {
+        gro_turn_on(node); // the rest of this sample may come merged
+    }
+#endif
     return ret;
 }
 
@@ -1378,6 +1504,45 @@ static int rx_wait(struct tt_Context* node, const struct timespec* timeout_ts, u
     return count;
 }
 
+// rx_wait() for `timeout` ns, 0 meaning no limit: this function's contract (hal.h) is "0 for no timeout", and a NULL
+// timespec is the wait's own way to say it. While receive offload is settling, the wait first runs only to the
+// settle's deadline, where gro_settle_decide() is made, and then for what is left of `timeout`.
+static int rx_wait_ns(struct tt_Context* node, int64_t timeout, uint32_t* ready) {
+    struct timespec timeout_ts;
+    if (timeout <= 0) {
+        return rx_wait(node, NULL, ready);
+    }
+    timeout_ts.tv_sec = (time_t)(timeout / SEC_NS);
+    timeout_ts.tv_nsec = (long)(timeout % SEC_NS);
+    return rx_wait(node, &timeout_ts, ready);
+}
+
+static int rx_wait_for(struct tt_Context* node, int64_t timeout, uint32_t* ready) {
+#if TT_HAL_UDP_GRO
+    if (node->hal.gro_state == TT_GRO_SETTLING) {
+        const uint64_t start = tt_get_ns();
+        const int64_t to_deadline = (int64_t)(node->hal.gro_settle_at_ns - start);
+        if (to_deadline > 0 && (timeout <= 0 || to_deadline < timeout)) {
+            int ret = rx_wait_ns(node, to_deadline, ready);
+            if (ret != 0) {
+                return ret; // woken before the deadline: whatever it was, a read will abort the settle
+            }
+            if (timeout > 0) {
+                timeout -= (int64_t)(tt_get_ns() - start);
+                if (timeout <= 0) {
+                    gro_settle_end(node);
+                    return 0;
+                }
+            }
+            gro_settle_end(node);
+        } else {
+            gro_settle_decide(node);
+        }
+    }
+#endif
+    return rx_wait_ns(node, timeout, ready);
+}
+
 int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     node->rx_offset = 0; // at the start of buf unless a merged read hands one out in place
     // What the last batch read comes first, and without a wait: holding it behind ppoll() would delay
@@ -1394,6 +1559,9 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     }
     node->hal.rx_idle = 0; // a timeout or an interrupt leaves no readiness to go on
     node->hal.rx_idle_since_ns = 0;
+#if TT_HAL_UDP_GRO
+    gro_maybe_settle(node); // about to wait: what came before was read
+#endif
     // Wait for readability with ppoll() instead of arming SO_RCVTIMEO via setsockopt() before
     // every recvfrom(): the timeout here changes on nearly every call (it tracks whatever
     // scheduled event is due next), and re-arming a socket option that often is pure overhead -
@@ -1411,19 +1579,8 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     // the next direct caller.
     int read_fd = node->hal.sock;
     {
-        struct timespec* timeout_ts_ptr = NULL;
-        struct timespec timeout_ts;
-        if (timeout > 0) {
-            // This function's contract (see hal.h) is "0 for no timeout", i.e. block until data
-            // arrives - timeout_ts_ptr staying NULL is ppoll()'s own way to say exactly that, no
-            // special-cased sentinel value needed (unlike poll()'s own timeout=-1 convention).
-            timeout_ts.tv_sec = (time_t)(timeout / SEC_NS);
-            timeout_ts.tv_nsec = (long)(timeout % SEC_NS);
-            timeout_ts_ptr = &timeout_ts;
-        }
-
         uint32_t ready = 0;
-        int poll_ret = rx_wait(node, timeout_ts_ptr, &ready);
+        int poll_ret = rx_wait_for(node, timeout, &ready);
         if ((ready & (RX_READY_WELL_KNOWN | RX_READY_DATA)) != 0) {
             TT_TRACE(tt_TRACE_RX_WAKE);
         }
@@ -1556,6 +1713,7 @@ static void rx_idle_count_return(struct tt_Context* node) {
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     node->rx_offset = 0;
 #if TT_HAL_UDP_GRO
+    gro_settle_decide(node); // a settle past its deadline is decided before anything is read
     int32_t merged = gro_take_pending(node, (uint8_t*)buf, len, ip, port);
     if (merged >= 0) {
         rx_idle_count_return(node);

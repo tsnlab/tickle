@@ -263,10 +263,19 @@ struct tt_hal {
     bool gso_on;
 #if TT_HAL_UDP_GRO
     // The last merged read (UDP_GRO): gro_end bytes in gro_base, cut every gro_segment bytes (the last cut may be
-    // shorter), handed out from gro_next; gro_left segments still to go, all from one sender on one socket. gro_on:
-    // the sockets were asked to merge (tt_bind()), so reads take recvmsg() with a control buffer for the size.
-    bool gro_on;
+    // shorter), handed out from gro_next; gro_left segments still to go, all from one sender on one socket.
+    // gro_allowed: the kernel takes UDP_GRO (tt_bind()). gro_state: TT_GRO_PLAIN, _ON or _SETTLING (hal_linux.c, "When
+    // receive offload is on") - reads take recvmsg() with a control buffer for the size unless plain. gro_quiet: reads
+    // since the last merged read or large fragment; gro_settle_at_ns: a settle's deadline. gro_enables/aborts/commits:
+    // switches to on from plain, settles aborted, settles committed back to plain.
+    bool gro_allowed;
+    uint8_t gro_state;
     bool gro_from_data;
+    uint32_t gro_quiet;
+    uint64_t gro_settle_at_ns;
+    uint64_t gro_enables;
+    uint64_t gro_aborts;
+    uint64_t gro_commits;
     uint16_t gro_left;
     uint16_t gro_port;
     uint32_t gro_ip;
