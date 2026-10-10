@@ -43,7 +43,7 @@
 #include <tickle/tickle.h>
 
 #define MAGIC_LEN 4U
-#define HEADER_LEN 12U      // magic (4), pattern (4), index (4)
+#define HEADER_LEN 12U      // magic (4), pattern (4: its number << 8, and the low byte FULL_TYPE_AT), index (4)
 #define SPLIT_AT 16U        // head/body split of a two-piece datagram
 #define END_LEN 4U          // "UEND"
 #define SEND_REPEAT_ARG 5   // argv index of send's optional REPEAT
@@ -73,18 +73,32 @@ static const char k_magic[MAGIC_LEN] = {'U', 'O', 'F', 'T'};
 // Pattern 1's datagrams begin as a large sample's fragment does (a single-form header naming FRAG_CONT_L), because that
 // is what turns receive offload on (hal_linux.c, "When receive offload is on"); the other patterns are small traffic.
 static const char k_frag_magic[MAGIC_LEN] = {tt_SINGLE_MARKER_LE, 'U', 'O', tt_SUBMESSAGE_TYPE_FRAG_CONT_L};
+// Pattern 7's begin as a large fragment retransmitted to one node does: the full form, the magic "KT" and then the
+// submessage header, whose type is byte 4 - the low byte of the pattern word (HEADER_LEN), FRAG_CONT_L for this
+// pattern and 0 for every other.
+static const char k_full_magic[MAGIC_LEN] = {'K', 'T', 'U', 'O'};
+#define FULL_PATTERN 6U
 static const char* magic_of(uint32_t number) {
-    return number == 0 ? k_frag_magic : k_magic;
+    return number == 0 || number == 5 ? k_frag_magic : number == FULL_PATTERN ? k_full_magic : k_magic;
+}
+static uint32_t pattern_word(uint32_t number) {
+    return (number << 8) | (number == FULL_PATTERN ? (uint32_t)tt_SUBMESSAGE_TYPE_FRAG_CONT_L : 0U);
 }
 
-// The patterns, each a list of datagram sizes sent in the calls given. Chosen for what each makes gso_run() decide:
+// The patterns, each a list of datagram sizes sent in the calls given. Chosen for what each makes gso_run() decide -
+// which since 2026-10-11 sends a run of large fragments only (hal_linux.c, "Which runs go as one"), so patterns 2-5,
+// small traffic, never form one (udp_offload_check.sh checks the count) and reach the receiver one datagram each:
 //   1 a 1 MB large sample: 722 x 1468 (4 + 12 + 1452, the FRAG_CONT_L datagram) and a short last one, in calls of 64
-//   2 full 1472-byte datagrams, 88 in one call (two runs of 44, the 65507-byte bound)
-//   3 mixed sizes in one call: runs end at a size change; 1002 is 2 mod 4 (copied by receive offload), 1468 4 mod 8
-//     - and it ends on three growing sizes, never a run: three small reads in a row, after which receive offload turns
-//     to go back to plain reads (arm E) while pattern 4's runs may already be queued merged
+//     (runs of 44, the 65507-byte bound, and 20; the last call one run of 19)
+//   2 full 1472-byte datagrams, 88 in one call: same size, same destination, but not fragments - no run
+//   3 mixed sizes in one call; 1002 is 2 mod 4 (copied by receive offload), 1468 4 mod 8 - and it ends on three
+//     growing sizes: three small reads in a row, after which receive offload turns to go back to plain reads (arm E)
+//     while pattern 4's datagrams may already be queued
 //   4 head only (body_len 0) datagrams
-//   5 alternating destinations (PORT, PORT + 1): never a run; only PORT's half is received
+//   5 alternating destinations (PORT, PORT + 1); only PORT's half is received
+//   6 large fragments of mixed sizes in one call: a run ends at a longer one, takes a shorter one as its last - runs of
+//     5, 2, 3, 7, 2, 3, 2 (the second cycle continues the first one's last run)
+//   7 large fragments in the full form (a retransmission to one node), 20 in one call: one run
 struct pattern {
     uint32_t count;
     uint32_t sizes[32]; // repeated cyclically when count is larger
@@ -105,7 +119,13 @@ static const struct pattern k_patterns[] = {
      false},
     {64, {600}, 1, 64, true, false},
     {40, {1472}, 1, 40, false, true},
+    {24, {1468, 1468, 1468, 1468, 1000, 1000, 1000, 1468, 1468, 404, 1468, 1468}, 12, 24, false, false},
+    {20, {1468}, 1, 20, false, false},
 };
+// The datagrams a sender with send offload puts in runs, per pass, and the runs: pattern 1's 723 in 11 x 2 + 1, pattern
+// 6's 24 in 7, pattern 7's 20 in 1.
+#define GSO_DATAGRAMS_PER_PASS (723U + 24U + 20U)
+#define GSO_SENDS_PER_PASS (23U + 7U + 1U)
 #define PATTERN_COUNT (sizeof(k_patterns) / sizeof(k_patterns[0]))
 #define LARGE_LAST 404U // pattern 1's last datagram
 
@@ -119,7 +139,8 @@ static uint32_t pattern_size(uint32_t p, uint32_t i) {
 
 static void fill(uint8_t* out, uint32_t p, uint32_t i, uint32_t size) {
     memcpy(out, magic_of(p), MAGIC_LEN);
-    memcpy(out + MAGIC_LEN, &p, sizeof(p));
+    const uint32_t word = pattern_word(p);
+    memcpy(out + MAGIC_LEN, &word, sizeof(word));
     memcpy(out + MAGIC_LEN + sizeof(p), &i, sizeof(i));
     for (uint32_t k = HEADER_LEN; k < size; k++) {
         out[k] = (uint8_t)((i * FILL_INDEX_MUL) + (k * FILL_OFFSET_MUL) + p);
@@ -192,8 +213,10 @@ static int run_send(uint32_t ip, uint16_t port, const char* broadcast, uint32_t 
     }
     struct tt_OutDatagram end = {.head = "UEND", .head_len = END_LEN, .ip = ip, .port = port};
     (void)tt_send_batch(&g_node, &end, 1);
-    printf("RESULT: role=send datagrams=%u udp_offload=%u gso_sends=%lu gso_datagrams=%lu\n", sent,
-           (unsigned)g_node.udp_offload, (unsigned long)g_node.udp_gso_sends, (unsigned long)g_node.udp_gso_datagrams);
+    printf("RESULT: role=send datagrams=%u udp_offload=%u gso_sends=%lu gso_datagrams=%lu gso_sends_expected=%u "
+           "gso_datagrams_expected=%u\n",
+           sent, (unsigned)g_node.udp_offload, (unsigned long)g_node.udp_gso_sends,
+           (unsigned long)g_node.udp_gso_datagrams, GSO_SENDS_PER_PASS * repeat, GSO_DATAGRAMS_PER_PASS * repeat);
     tt_Context_destroy(&g_node);
     return 0;
 }
@@ -210,6 +233,7 @@ static bool record(const uint8_t* data, uint32_t len, uint32_t* records, uint32_
         return true; // not ours
     }
     memcpy(&number, data + MAGIC_LEN, sizeof(number));
+    number >>= 8;
     if (number >= PATTERN_COUNT || memcmp(data, magic_of(number), MAGIC_LEN) != 0) {
         return true; // not ours (an announce)
     }
@@ -288,6 +312,7 @@ static int run_hal(uint16_t port, const char* broadcast) {
         uint32_t number = PATTERN_COUNT;
         if (got >= (int32_t)HEADER_LEN) {
             memcpy(&number, g_rx + g_node.rx_offset + MAGIC_LEN, sizeof(number));
+            number >>= 8;
         }
         if (CHECK_READ_DELAY_NS > 0 && number == 2) {
             struct timespec delay = {0, CHECK_READ_DELAY_NS};
