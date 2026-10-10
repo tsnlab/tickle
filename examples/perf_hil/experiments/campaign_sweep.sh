@@ -233,6 +233,19 @@ say "warm-up/cool-down: throughput ${WARMUP_S}s/${COOLDOWN_S}s, latency ${WARMUP
 say ""
 say "FASTDDS_PROFILE=${FASTDDS_PROFILE:-fastdds_eth0_only.xml}"
 say "TICKLE_P4_PATH=${TICKLE_P4_PATH:-frag} (p4 TickLE rows must report sample_path=${TICKLE_P4_PATH:-frag}; p1-p3 datagram)"
+# TICKLE_EXTRA_CFLAGS (2026-10-10): compiler flags for TickLE's core and bench on the rig (build.sh's knob of the same
+# name), for a PLACEMENT CONTROL - e.g. -falign-functions=64 given to campaign_ab_chain.sh, which then builds both arms
+# under the same flag. largemsgL_l2x read client CPU +2% at p2/p3 between two builds whose executed instructions are
+# equal on x86 (perf) and on aarch64 (qemu, exact; largemsg_insn_ab.sh): a gap that a neutral layout flag removes or
+# reverses is placement, not work (WIRE 10.4). Only [A-Za-z0-9=_ -] is accepted, so the value survives the ssh line.
+TICKLE_EXTRA_CFLAGS="${TICKLE_EXTRA_CFLAGS:-}"
+case "$TICKLE_EXTRA_CFLAGS" in
+*[!A-Za-z0-9=_\ -]*)
+    echo "TICKLE_EXTRA_CFLAGS may hold only [A-Za-z0-9=_ -]: '$TICKLE_EXTRA_CFLAGS'" >&2
+    exit 1
+    ;;
+esac
+say "TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (TickLE core and bench; empty: the plain build)"
 say "--- plan: ${#MATRIX[@]} combinations x 3 frameworks x ${REPS} reps = $(( ${#MATRIX[@]} * 3 * REPS )) runs ---"
 i=0
 for spec in "${MATRIX[@]}"; do
@@ -266,7 +279,7 @@ cd examples/perf_hil
 for v in $VARIANTS; do
   scen=\${v%_p[0-9]}; size=\${v##*_}
   for fw in $FWS; do
-    (cd \$fw && TICKLE_P4_PATH=${TICKLE_P4_PATH:-frag} ./build.sh \$scen \$size >/tmp/campaign_build_\${fw}_\$v.log 2>&1) \
+    (cd \$fw && TICKLE_P4_PATH=${TICKLE_P4_PATH:-frag} TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' ./build.sh \$scen \$size >/tmp/campaign_build_\${fw}_\$v.log 2>&1) \
       || { echo \"BUILD FAILED: \$fw \$scen \$size\"; tail -8 /tmp/campaign_build_\${fw}_\$v.log; exit 1; }
   done
 done
