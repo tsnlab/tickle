@@ -473,6 +473,18 @@ else
     status=1
 fi
 
+# UDP offload (udp_offload_check.sh): the same datagrams on the wire and in core with it on as off. Its own namespaces.
+make udp_offload_check
+if ./udp_offload_check.sh; then
+    SUMMARY="$SUMMARY
+udp offload: PASS"
+else
+    echo "udp offload: FAIL"
+    SUMMARY="$SUMMARY
+udp offload: FAIL"
+    status=1
+fi
+
 echo
 echo "=== Summary ==="
 if [ "$status" -eq 0 ]; then
