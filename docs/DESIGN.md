@@ -163,7 +163,10 @@ psn, single header; 11 nodes in the announce.
   back into exactly those datagrams, so the wire is unchanged (`platform/linux/udp_offload_check.sh` proves it). In a
   build whose buffer holds a merged read (65507, rmw_tickle's), `UDP_GRO` on both sockets lets one read return a run,
   handed to core one datagram at a time in place (`tt_Context.rx_offset`, 4-aligned; at 4 mod 8 - every other 1468 B
-  large fragment - a loaned take decodes instead of reading in place). Refused by the kernel or after `EIO`: off.
+  large fragment - a loaned take decodes instead of reading in place). `UDP_GRO` is on only from a large sample's
+  fragment until 128 reads without one (a GRO read costs more even unmerged: +2.3% at 1 KB), and goes off only across
+  a moment both queues are seen empty, so no merged read is ever taken without its size (`hal_linux.c`, "When receive
+  offload is on"; arm E of the check). Refused by the kernel or after `EIO`: off.
   `TT_UDP_OFFLOAD=0` in the environment turns both off (the A/B control). Traffic line: `udp_offload`, `gro_*`,
   `gso_*`.
 
