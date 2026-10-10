@@ -55,6 +55,20 @@ esac
 # 6e(a) does nothing at the default slot of one datagram, because a sample too large for a slot is exactly
 # what it refuses to send whole. Added to BOTH arms so the ON/OFF difference stays the segment itself.
 BUILD_FLAGS=${BUILD_FLAGS:-}
+# TICKLE_EXTRA_CFLAGS (2026-10-11): compiler flags for TickLE's core and bench in BOTH arms, the knob of the same name in
+# tickle/build.sh - a placement control (-falign-functions=64) compiles the same code differently without changing what
+# it computes. Added to every arm's build after BUILD_FLAGS. Each arm's build runs under `bash -x`, its log is copied
+# back beside $OUT (.build_<arm>.log), and build_flags_check.sh must find the flags in that log - in the bench's compile
+# lines and in the core prefix it linked - or the arm is FATAL and nothing is measured. The verified line
+#   arm <ARM> TICKLE_EXTRA_CFLAGS='<flags>' reached core and bench (...)
+# is what ab_samehost.sh checks each cell against; with no flags it says '' and has proved the plain prefix.
+TICKLE_EXTRA_CFLAGS="${TICKLE_EXTRA_CFLAGS:-}"
+case "$TICKLE_EXTRA_CFLAGS$BUILD_FLAGS" in
+*[!A-Za-z0-9=_\ .-]*)
+    echo "BUILD_FLAGS/TICKLE_EXTRA_CFLAGS may hold only [A-Za-z0-9=_ .-]: '$BUILD_FLAGS' '$TICKLE_EXTRA_CFLAGS'" >&2
+    exit 2
+    ;;
+esac
 OUT=${OUT:-/tmp/s6_witness.txt}
 HOST=10.1.1.214          # both roles on the client Pi
 K=$HOME/.ssh/tickle_ci_ed25519
@@ -64,6 +78,7 @@ sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=10 "ci@$1" "${@:2}"; }
 say() { echo "$*" | tee -a "$OUT"; }
 note() { echo "$*" >>"$OUT"; echo "$*" >&2; }
 say "  BUILD_FLAGS='$BUILD_FLAGS'"
+say "  TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (TickLE core and bench, both arms; empty: the plain build)"
 say "=== S6 witness check $(date -Is) sha=$SHA scen=$SCEN size=$SIZE dur=$DUR reps=$REPS iface=lo host=$HOST ==="
 say "  WINDOW_ARGS='$WINDOW_ARGS'"
 say "  HISTORY_ARGS='$HISTORY_ARGS'"
@@ -94,8 +109,11 @@ trap kill_server EXIT
 INSTRUMENT=$("$REPO/examples/perf_hil/experiments/instrument_header.sh" "$REPO" "$SHA") ||
     { note "FATAL instrument header: $INSTRUMENT"; exit 1; }
 say "  instrument: BenchStats.h = $INSTRUMENT"
-build_arm() { # build_arm <arm> <extra-cflags>
-    local name=$1 extra=$2 out
+build_arm() { # build_arm <arm> <extra-cflags>; prints the client's sha256 and nothing else on stdout
+    local name=$1 extra out words verified
+    # Whitespace-normalised, so an arm with no flags passes '' (the plain prefix) and not ' ' (a prefix named _x_).
+    read -ra words <<<"$2 $TICKLE_EXTRA_CFLAGS"
+    extra="${words[*]}"
     if [ "${INSTRUMENT%% *}" = driver ]; then
         sh_ "$HOST" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
 cat > examples/perf_hil/tickle/common/BenchStats.h" <"$REPO/examples/perf_hil/tickle/common/BenchStats.h" >/dev/null 2>&1 || { note "FATAL checkout/instrument copy failed"; return 1; }
@@ -109,12 +127,22 @@ cat > examples/perf_hil/tickle/common/BenchStats.h" <"$REPO/examples/perf_hil/ti
     # through BUILD_FLAGS instead is refused by build.sh on purpose, because then the RESULT line's
     # datagram_bytes= label would report 1472 for a build that is not: "datagram_bytes= would misreport
     # this build". That guard is right, so the fix is to forward the variable it wants.
-    out=$(sh_ "$HOST" "set -e; cd ~/tickle/examples/perf_hil/tickle && TICKLE_EXTRA_CFLAGS='$extra' TICKLE_DATAGRAM_BYTES='${TICKLE_DATAGRAM_BYTES:-}' TICKLE_RELIABLE_STATS='${TICKLE_RELIABLE_STATS:-}' TICKLE_FRAG_SLOTS='${TICKLE_FRAG_SLOTS:-}' ./build.sh $SCEN $SIZE > /tmp/s6wit_build.log 2>&1 || { echo BUILD_FAILED; grep -m5 -e 'error:' /tmp/s6wit_build.log; tail -5 /tmp/s6wit_build.log; exit 0; }
+    out=$(sh_ "$HOST" "set -e; cd ~/tickle/examples/perf_hil/tickle && TICKLE_EXTRA_CFLAGS='$extra' TICKLE_DATAGRAM_BYTES='${TICKLE_DATAGRAM_BYTES:-}' TICKLE_RELIABLE_STATS='${TICKLE_RELIABLE_STATS:-}' TICKLE_FRAG_SLOTS='${TICKLE_FRAG_SLOTS:-}' bash -x ./build.sh $SCEN $SIZE > /tmp/s6wit_build.log 2>&1 || { echo BUILD_FAILED; grep -m5 -e 'error:' /tmp/s6wit_build.log; tail -5 /tmp/s6wit_build.log; exit 0; }
 mkdir -p $SAVE/$name && cp ${SCEN}_${SIZE}/client ${SCEN}_${SIZE}/server $SAVE/$name/ && sha256sum $SAVE/$name/client | cut -c1-16" </dev/null 2>&1)
     case "$out" in *BUILD_FAILED*|*error:*|*"No such file"*) note "FATAL build failed for $name:"; note "$out"; return 1;; esac
     out=$(printf '%s' "$out" | tail -1)
     case "$out" in [0-9a-f][0-9a-f]*) ;; *) note "FATAL no sha256 for $name: $out"; return 1;; esac
-    say "  arm $name (extra='$extra') built, client sha256=$out"
+    # The build's own record of its flags, kept beside $OUT and read here rather than trusted (build_flags_check.sh).
+    sh_ "$HOST" "cat /tmp/s6wit_build.log" </dev/null >"$OUT.build_$name.log" 2>/dev/null
+    if ! verified=$("$REPO/examples/perf_hil/experiments/build_flags_check.sh" "$OUT.build_$name.log" "$extra"); then
+        note "FATAL build flags: arm $name's build log does not show extra='$extra': $verified ($OUT.build_$name.log)"
+        return 1
+    fi
+    # To $OUT and stderr, never stdout: this function's stdout is the sha256 the caller compares. These lines used to
+    # go through say(), whose tee put them on stdout too, so sha_on and sha_off each held a whole line naming its arm
+    # and the identical-binary check below could never fire (the s6 files of 2026-10-10 read "built: ON=  arm ON ...").
+    note "  arm $name (extra='$extra') built, client sha256=$out"
+    note "  arm $name TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' reached core and bench ($verified)"
     echo "$out"
 }
 

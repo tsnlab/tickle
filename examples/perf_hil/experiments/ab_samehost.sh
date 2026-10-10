@@ -24,7 +24,10 @@
 # Usage (A/B/C may be any ref the PC can resolve; they are fixed to full SHAs, which must be on origin):
 #   A=origin/main B=<sha> [C=<sha>] TAG=<name> CELLS="scen:size:extra args;..." PRIMARY="cell:metric,..." \
 #   CONTROL="cell:metric,..." TREATMENT="cell:ARMS:expr;..." [SECONDARY=...] [DERIVED="name=expr;..."] \
-#   [COMPARE="B-A,C-A"] [SENTINEL=<ref>] [REPS=5] [DUR=10] examples/perf_hil/experiments/ab_samehost.sh
+#   [COMPARE="B-A,C-A"] [SENTINEL=<ref>] [REPS=5] [DUR=10] [TICKLE_EXTRA_CFLAGS=<flags>] \
+#   examples/perf_hil/experiments/ab_samehost.sh
+#   TICKLE_EXTRA_CFLAGS: compiler flags for every arm's (and the sentinel's) TickLE core and bench, checked per cell
+#   against the build's own log (below, where it is read).
 #   SENTINEL: the CONTROL cells are run at this commit (usually A) in every block, after the block's own cells, and
 #   the controls are read from those runs only (ab_samehost.py's header: a control the change cannot compile into,
 #   judged on block means).
@@ -45,6 +48,18 @@ export TAG REPS="${REPS:-5}" DUR="${DUR:-10}" CELLS="${CELLS:-}" PRIMARY="${PRIM
     SECONDARY="${SECONDARY:-}" TREATMENT="${TREATMENT:-}" DERIVED="${DERIVED:-}" COMPARE="${COMPARE:-}" \
     SENTINEL="${SENTINEL:-}" CONTROL_SE_FLOOR="${CONTROL_SE_FLOOR:-}"
 export RIG_LOCK_SCOPE=hil
+# TICKLE_EXTRA_CFLAGS (2026-10-11): compiler flags for the TickLE core and bench of EVERY arm and the sentinel (a
+# placement control: -falign-functions=64 compiles the same code differently without changing what it computes).
+# s6_transport_cells.sh -> s6_witness_check.sh builds each cell under `bash -x` and checks the flags in that build's own
+# log (build_flags_check.sh); this driver then refuses to go on past a cell whose file does not carry, for both its ON
+# and OFF arm, the line "arm <ARM> TICKLE_EXTRA_CFLAGS='<flags>' reached core and bench" - an arm must report its
+# treatment, and empty is checked too (the plain prefix). Recorded in the pre-registration when not empty.
+read -ra _cf <<<"${TICKLE_EXTRA_CFLAGS:-}"
+TICKLE_EXTRA_CFLAGS="${_cf[*]}"
+case "$TICKLE_EXTRA_CFLAGS" in
+*[!A-Za-z0-9=_\ .-]*) echo "TICKLE_EXTRA_CFLAGS may hold only [A-Za-z0-9=_ .-]: '$TICKLE_EXTRA_CFLAGS'" >&2; exit 2 ;;
+esac
+export TICKLE_EXTRA_CFLAGS
 
 if [ -z "${OUTB:-}" ]; then
     # Fixed here, before the lock, so the run measures the commits named at launch even if a branch moves meanwhile.
@@ -122,6 +137,27 @@ rm -f "$OUTB.prereg.check.json"
 say "=== ab_samehost $(date -Is) TAG=$TAG blocks: $BLOCKS REPS=$REPS DUR=$DUR ==="
 say "    prereg sha256 $(sha256sum "$OUTB.prereg.json" | cut -c1-64)  ($OUTB.prereg.json)"
 for v in A B C SENTINEL; do [ -n "${!v:-}" ] && say "    $v=${!v}"; done
+say "    TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (TickLE core and bench, every arm and the sentinel; empty: the plain build)"
+# flags_reached <cell file> <cnt>: stop the run (exit 4, VOID) when a cell that measured anything does not show, for both
+# of its arms, that its build was given TICKLE_EXTRA_CFLAGS (s6_witness_check.sh's verified line), or when its build was
+# refused for not showing them. A cell that failed for another reason is left to the summary (NO VERDICT), as before.
+flags_reached() {
+    local f=$1 c=$2 arm
+    if grep -q 'FATAL build flags' "$f" 2>/dev/null; then
+        say "VOID: $f - a build did not show TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS': $(grep -m1 'FATAL build flags' "$f")"
+        say "    refusing to measure further arms that may not carry the treatment"
+        exit 4
+    fi
+    [ "${c:-0}" = 0 ] && return 0
+    for arm in ON OFF; do
+        if ! grep -qF "  arm $arm TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' reached core and bench (" "$f"; then
+            say "VOID: $f measured, but its $arm arm's build does not echo TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS'"
+            say "    an arm must report its treatment; refusing to read this run as the arms it was asked for"
+            exit 4
+        fi
+    done
+    say "    build flags: ON and OFF show TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS'; ON $(grep -m1 -F "  arm ON TICKLE_EXTRA_CFLAGS=" "$f" | sed 's/.*reached core and bench //')"
+}
 n=0
 for L in $BLOCKS; do
     n=$((n + 1))
@@ -135,23 +171,25 @@ for L in $BLOCKS; do
         # WINDOW_ARGS after CLI_ARGS, so a -W/-C given here is overridden (ab_frag_fastpath.sh, 2026-10-06). Set
         # WINDOW_ARGS in the environment for a whole run instead.
         FRAMEWORKS=tickle SCEN=$scen SIZE=$size DUR=$DUR REPS=$REPS SHA=$sha CLI_ARGS="$extra" OUT="$out" PREFLIGHT=0 \
-            "$X/s6_transport_cells.sh" >"$out.log" 2>&1
+            TICKLE_EXTRA_CFLAGS="$TICKLE_EXTRA_CFLAGS" "$X/s6_transport_cells.sh" >"$out.log" 2>&1
         rc=$?
         cnt=$(grep -c '^ *arm=ON RESULT: .*framework=tickle' "$out" 2>/dev/null)
         say "    exit $rc, ${cnt:-no output file, so no} arm=ON RESULT lines (client and server)"
         # A cell that produced nothing says why in its own file; said here too, so the log does not read "exit 0".
         [ "${cnt:-0}" = 0 ] && say "    CELL FAILED: $(grep -m2 -E 'FAILED to run|FATAL|error:' "$out" "$out.log" 2>/dev/null | tr '\n' ' ')"
+        flags_reached "$out" "$cnt"
     done
     for l in "${SENT_LINES[@]}"; do
         IFS='|' read -r scen size extra slug ssha <<<"$l"
         out="$OUTB.b${n}_${sha:0:8}_sentinel${ssha:0:8}_${slug}.txt"
         say "--- block $n arm $L sentinel ${ssha:0:8} $scen $size '$extra' ($(date +%T))"
         FRAMEWORKS=tickle SCEN=$scen SIZE=$size DUR=$DUR REPS=$REPS SHA=$ssha CLI_ARGS="$extra" OUT="$out" PREFLIGHT=0 \
-            "$X/s6_transport_cells.sh" >"$out.log" 2>&1
+            TICKLE_EXTRA_CFLAGS="$TICKLE_EXTRA_CFLAGS" "$X/s6_transport_cells.sh" >"$out.log" 2>&1
         rc=$?
         cnt=$(grep -c '^ *arm=ON RESULT: .*framework=tickle' "$out" 2>/dev/null)
         say "    exit $rc, ${cnt:-no output file, so no} arm=ON RESULT lines (client and server)"
         [ "${cnt:-0}" = 0 ] && say "    CELL FAILED: $(grep -m2 -E 'FAILED to run|FATAL|error:' "$out" "$out.log" 2>/dev/null | tr '\n' ' ')"
+        flags_reached "$out" "$cnt"
     done
 done
 python3 "$X/ab_samehost.py" summary "$OUTB.prereg.json" "$OUTB" >"$OUTB.summary.txt" 2>&1

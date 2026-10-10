@@ -135,6 +135,10 @@ reliable_latency) WINDOW_ARGS=${WINDOW_ARGS:-"-W 4096 -C 4096 -I 0.001"} ;;
 esac
 # Forwarded to the tickle cell, which is the only one whose geometry we compile.
 BUILD_FLAGS=${BUILD_FLAGS:-}
+# TICKLE_EXTRA_CFLAGS (2026-10-11): tickle/build.sh's knob for the tickle cell's core and bench, both arms (a placement
+# control). Forwarded by name, not folded into BUILD_FLAGS, so s6_witness_check.sh can say it and check it reached the
+# build; the vendor cells are not compiled by us and ignore it.
+TICKLE_EXTRA_CFLAGS=${TICKLE_EXTRA_CFLAGS:-}
 SIZE=${SIZE:-p1}
 SHA=${SHA:-$(git -C "$REPO" rev-parse --short HEAD)}
 OUT=${OUT:-$HOME/rig_results_safe/s6_transport_cells.txt}
@@ -212,6 +216,7 @@ else
 say "=== S6 transport cells $(date -Is) sha=$SHA scen=$SCEN size=$SIZE dur=${DUR}s reps=$REPS host=$HOST iface=lo ==="
 say "    frameworks: $FRAMEWORKS"
 say "    window (every framework, client and server): $WINDOW_ARGS"
+say "    TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (the tickle cell's core and bench, both arms; empty: the plain build)"
 [ "$SCEN" = best_effort_throughput ] &&
     say "    BEST_EFFORT history (every framework, client and server): ${HISTORY_ARGS:-none passed, so each product runs its default} (${WANT_HISTORY})"
 fi
@@ -221,7 +226,7 @@ run_tickle_cell() {
     local sub="$OUT.tickle"
     say "### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ==="
     if ! OUT="$sub" DUR="$DUR" SCEN="$SCEN" SIZE="$SIZE" CLI_ARGS="$CLI_ARGS" WINDOW_ARGS="$WINDOW_ARGS" BUILD_FLAGS="$BUILD_FLAGS" \
-         HISTORY_ARGS="$HISTORY_ARGS" \
+         HISTORY_ARGS="$HISTORY_ARGS" TICKLE_EXTRA_CFLAGS="$TICKLE_EXTRA_CFLAGS" \
          TICKLE_DATAGRAM_BYTES="${TICKLE_DATAGRAM_BYTES:-}" TICKLE_RELIABLE_STATS="${TICKLE_RELIABLE_STATS:-}" \
          TICKLE_FRAG_SLOTS="${TICKLE_FRAG_SLOTS:-}" \
          "$REPO/examples/perf_hil/experiments/s6_witness_check.sh" "$SHA" "$REPS" >/dev/null 2>&1; then
