@@ -13,14 +13,15 @@ Written 2026-10-10 for ~/rig_queue_largemsg_A4.sh before its run. Every rule bel
 
 WHAT A RUN GIVES (perf_test's per-second rows):
   counts      perf_test's received, sent and lost columns are NOT counts: sync_reset() (data_runner.hpp) writes
-              floor(count / D), D the time since the previous sync, and D is the previous row's T_loop (the sync waits
-              on the subscriber's lock and that wait moves the next loop). At D > 1 every row loses up to one sample,
-              and at 15 Hz 4 MB the subscriber's rows run at D = 1.066: A4's s3b/s3c summed 842 sent and 804-832
-              received of 902 published, and every arm, vendors included, read "incomplete" with lost 0. Corrected
-              2026-10-10 (whole_counts): received = data_received x D / size (bytes, exact: today's runs give
-              tickle's own 902 published, 902 reassembled back to the sample); sent and lost have no byte column, so
-              the interval [r x D, (r + 1) x D) - exact for the publisher (D = 1.00007), one sample wide for the
-              subscriber's lost (a row reading lost 0 at D = 1.066 may hide one).
+              floor(count / D), D the time since the previous sync: D_i = dT_experiment_i - T_loop_i + T_loop_{i-1}
+              (the sync waits on the subscriber's lock and that wait moves the next loop; whole_counts() and span()
+              in rmw_keepall_rig_summary.py, shared with every perf_test reader). At D > 1 every row loses up to one
+              sample, and at 15 Hz 4 MB the subscriber's rows run at D = 1.066: A4's s3b/s3c summed 842 sent and
+              804-832 received of 902 published, and every arm, vendors included, read "incomplete" with lost 0.
+              Corrected 2026-10-10 (whole_counts): received = data_received x D / sizeof(msg) (payload + 16 B; exact:
+              A4's runs give tickle's own 902 published, 902 reassembled back to the sample); sent and lost have no
+              byte column, so the interval [r x D, (r + 1) x D) - exact for the publisher (D = 1.00007), one sample
+              wide for the subscriber's lost (a row reading lost 0 at D = 1.066 may hide one).
   delivered   samples received, rate_hz (mean of count / D over the steady seconds); prematch = the first delivered
               row's id gap (ids start at 1: published before the match, which no subscriber could receive); id_gaps =
               the id gaps after it, at least; unaccounted = published - prematch (upper end) - received, i.e. what the
@@ -92,7 +93,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rmw_keepall_rig_summary import INDEX_RE, loaded, rows  # noqa: E402
+from rmw_keepall_rig_summary import INDEX_RE, loaded, rows, sample_bytes, whole_counts  # noqa: E402
 
 SIZES = {"Array1k": 1024, "Array4k": 4096, "Array16k": 16384, "Array64k": 65536, "Array256k": 262144,
          "Array1m": 1048576, "Array2m": 2097152, "Array4m": 4194304, "Array8m": 8388608}
@@ -161,26 +162,6 @@ def counts(r, key):
     return r.get("n_" + key, 0)
 
 
-def whole_counts(rs, size):
-    """Turn perf_test's per-row RATE columns back into whole counts, in place (module docstring, WHAT A RUN GIVES).
-
-    Row k's received, sent and lost are floor(n_k / D_k), D_k the time since the previous row's sync, which is the
-    previous row's T_loop (the sync waits on the subscriber's lock; that wait lands in T_loop and moves the next
-    loop's start). data_received is floor(n_k * size / D_k) bytes, fine enough to give n_k back exactly; sent and lost
-    carry no such column, so they get the interval [r*D, (r+1)*D): n_<key> its lower end, nhi_<key> its upper end.
-    """
-    for i, r in enumerate(rs):
-        d = rs[i - 1].get("T_loop", 1.0) if i else r.get("T_loop", 1.0)
-        for key in ("sent", "lost", "received"):
-            v = r.get(key, 0)
-            r["n_" + key] = math.ceil(v * d - 1e-9) if v > 0 else 0
-            r["nhi_" + key] = math.ceil((v + 1) * d - 1e-9) - 1
-        if size and r.get("data_received", 0) > 0:
-            r["n_received"] = r["nhi_received"] = round(r["data_received"] * d / size)
-        r["D"] = d
-    return rs
-
-
 def cpu(r):
     return r.get("ru_utime", 0.0) + r.get("ru_stime", 0.0)
 
@@ -217,8 +198,8 @@ def run_record(runs, stem, fields, samehost, rate, wire=True):
     if why:
         return rec
     size = SIZES.get(topic, 0)
-    whole_counts(sub, size)
-    whole_counts(pub, 0)
+    whole_counts(sub, sample_bytes(topic))
+    whole_counts(pub)
     recv = sum(counts(r, "received") for r in sub)
     sent = sum(counts(r, "sent") for r in pub)
     first = next((i for i, r in enumerate(sub) if counts(r, "received") > 0), None)
