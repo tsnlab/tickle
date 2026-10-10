@@ -325,6 +325,11 @@ struct tt_hal {
 #endif
 };
 
+// Datagrams the kernel has dropped at this context's two receive sockets because their receive buffers were full
+// (SO_MEMINFO), 0 when it cannot say. Also said at tt_close(), on the "Node N rx:" line.
+struct tt_Context;
+uint32_t tt_hal_rx_socket_drops(const struct tt_Context* node);
+
 #if tt_CONTEXT_ID_CLAIM
 // (g8) The host registry behind tt_claim_context_id(), as plain functions of a file, so they can be tested alone:
 // tt_MAX_CONTEXT_IDS int32_t pids, indexed by id, read and written under flock(). A pid that is not alive
