@@ -28,7 +28,7 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
   out under its default 100 ms bound and the run ends (rows 72-75).
 - **rmw layer, same host** (`06dd78d8`, rows R1-R21): rmw_tickle wins all 52 scored rows against both DDS rmws,
   peak RSS included (13.4-16.0 MB against CycloneDDS's 15.2-18.3 MB, since `718220d8`). At BEST_EFFORT KEEP_LAST 1
-  max rate it delivers 141k Array1k samples/s against CycloneDDS's 70k and FastDDS's 17k.
+  max rate it delivers 141k Array1k samples/s against CycloneDDS's 70k and FastDDS's 18k.
 - **rmw large messages** (step A, Array1m and Array4m cross-host, "rmw large messages"): rmw_tickle wins every metric
   at 5% loss, where Fast DDS as shipped delivers nothing and CycloneDDS ~3%, and has the smallest subscriber in every
   cell; at 0% loss it loses CPU per MB to the two vendors that send 64 KB datagrams fragmented by the kernel.
@@ -212,15 +212,15 @@ DRAW 1, LOSE 1; at `f128f686`: WIN 45, DRAW 1, LOSE 6).
 | R12 | RTT | Bench 64 B, RELIABLE, block | **13,572** | 26,264 | 15,248 | 22,464 | WIN | 15,336 (LOSE) |
 | R13 | throughput | Array1k, RELIABLE | **16,000** | 35,796 | 17,152 | 102,588 § | WIN | 17,664 (LOSE) |
 | | **Delivered msg/s** (higher is better) | | | | | | | |
-| R14 | max rate, KEEP_LAST 1 | Array1k, BEST_EFFORT | **140,875** | 17,483 | 70,331 | 61,210 | WIN | 132,742 |
-| R15 | max rate, KEEP_LAST 1 | Array4k, BEST_EFFORT | **83,041** | 4,143 | 60,768 | 45,689 | WIN | 79,181 |
-| R16 | max rate, KEEP_ALL | Array1k, RELIABLE | **187,946** | 2,313 | 64,246 | 110,940 | WIN | 166,111 |
-| R17 | max rate, KEEP_ALL | Array4k, RELIABLE | **155,622** | 17,469 | 49,669 | 88,786 | WIN | 147,538 |
+| R14 | max rate, KEEP_LAST 1 | Array1k, BEST_EFFORT | **140,885** | 17,547 | 70,420 | 61,560 | WIN | 132,752 |
+| R15 | max rate, KEEP_LAST 1 | Array4k, BEST_EFFORT | **83,048** | 4,171 | 60,818 | 45,879 | WIN | 79,187 |
+| R16 | max rate, KEEP_ALL | Array1k, RELIABLE | **187,965** | 2,322 | 64,522 | 110,992 | WIN | 166,128 |
+| R17 | max rate, KEEP_ALL | Array4k, RELIABLE | **155,635** | 17,507 | 49,904 | 88,879 | WIN | 147,550 |
 | | **CPU, pub + sub, us per delivered sample** (lower is better) | | | | | | | |
-| R18 | max rate | Array1k, BEST_EFFORT | **14.02** | 153.50 | 33.91 | 46.37 | WIN | 14.92 |
-| R19 | max rate | Array4k, BEST_EFFORT | **23.83** | 640.54 | 36.83 | 58.43 | WIN | 24.99 |
-| R20 | max rate | Array1k, RELIABLE | **6.35** | 641.91 | 35.28 | 21.19 | WIN | 7.10 |
-| R21 | max rate | Array4k, RELIABLE | **8.64** | 84.04 | 38.99 | 26.42 | WIN | 9.04 |
+| R18 | max rate | Array1k, BEST_EFFORT | **14.02** | 152.93 | 33.80 | 46.09 | WIN | 14.92 |
+| R19 | max rate | Array4k, BEST_EFFORT | **23.83** | 636.13 | 36.79 | 58.17 | WIN | 24.98 |
+| R20 | max rate | Array1k, RELIABLE | **6.35** | 639.34 | 35.12 | 21.17 | WIN | 7.09 |
+| R21 | max rate | Array4k, RELIABLE | **8.64** | 83.84 | 38.72 | 26.40 | WIN | 9.04 |
 
 Rows not shown: RTT p50 and p99 in every cell (WIN), CPU per round trip in the six other cells (WIN, 61.8-78.1 us
 against FastDDS 170-245 and CycloneDDS 147-160), and the nine other peak-RSS cells (WIN, rmw_tickle 13,448-15,616 kB
@@ -244,8 +244,13 @@ against CycloneDDS 15,240-18,344).
   (95% CI -0.9..+2.4, t 1.14), CPU +1.5 us/rt (-1.4..+4.3), BEST_EFFORT RTT -0.2 us, CycloneDDS control +0.14 us;
   minor faults 0.018 per round trip in every phase, so `718220d8`'s lazy paging is not a cost. The cell has two states
   (~36 and ~39-41 us) at both commits; the published +3.1 us lies outside the A/B's interval.
-- **R14 rose 132,742 -> 140,875 (+6.1%)**, with the control, CycloneDDS in the same cell, also +6.1% (66,268 ->
-  70,331). R16 rose +13.1% (166,111 -> 187,946) against CycloneDDS's +5.6%.
+- **R14 rose 132,752 -> 140,885 (+6.1%)**, with the control, CycloneDDS in the same cell, +6.2% (66,291 ->
+  70,420). R16 rose +13.1% (166,128 -> 187,965) against CycloneDDS's +5.5% (61,166 -> 64,522). Both compare rmw_tickle
+  at `a7e02807` with `06dd78d8`, two builds; the reader correction below moved neither by more than 0.02%.
+- **Corrected 2026-10-10: R14-R21 and the `a7e02807` column.** `perf_test`'s received, sent and lost columns are
+  floor(count / D) per row, not counts; the reader summed them (and divided by the summed T_loop). Corrected by the
+  whole-count reader (`rmw_samehost_summary.py`, `whole_counts()`) on the same raw runs; no verdict changes. rmw_tickle
+  moved by under 0.02%, the vendors by up to 0.7% (e.g. R14 CycloneDDS 70,331 -> 70,420, R16 FastDDS 2,313 -> 2,322).
 - **No FastDDS rep refused**, in this run or at `a7e02807` (at `03585237` its tput Array1k RELIABLE r2 ended on
   "failed to publish"; see † below). **§ rmw_zenoh's** Array1k RELIABLE subscriber peaked at 103 MB (1.46 GB at
   `a7e02807`, 123,624 kB at `03585237`); it is a reference arm and not analysed further.
@@ -395,10 +400,10 @@ decoded shells), `loan_ring` (`RMW_TICKLE_LOAN_RING_SLOTS=1`: read in the ring s
 | 69 | peak RSS, pong process (KB) | Bench, block, BEST_EFFORT | ✅ **13,216** | 23,632 | 14,532 | – | ❌ 70,484 | W |
 | 70 | pong CPU, whole run (ms) | Bench, block, BEST_EFFORT | ✅ **37.4** | 57.7 | 43.5 | – | ❌ 91.8 | W |
 | 71 | pong CPU, whole run (ms) | Bench, block, RELIABLE | ✅ **37.2** | 60.4 | 48.5 | – | ❌ 94.1 | W |
-| 72 | delivered msg/s, KEEP_ALL, max rate | Array1k, 0% loss | ✅ **90,849** | ❌ 30,919 | 84,445 | – | – | K |
-| 73 | delivered msg/s, KEEP_ALL, max rate | Array1k, 5% loss | ✅ **74,128** | ✗ refused | ❌ 1,807 | – | – | Ke |
+| 72 | delivered msg/s, KEEP_ALL, max rate | Array1k, 0% loss | ✅ **90,850** | ❌ 30,919 | 84,446 | – | – | K |
+| 73 | delivered msg/s, KEEP_ALL, max rate | Array1k, 5% loss | ✅ **74,129** | ✗ refused | ❌ 1,808 | – | – | Ke |
 | 74 | delivered msg/s, KEEP_ALL, max rate | Array4k, 0% loss | ✅ ‡ **27,434** | ✅ ‡ 27,917 | ✅ ‡ 27,204 | – | – | K |
-| 75 | delivered msg/s, KEEP_ALL, max rate | Array4k, 5% loss | ✅ **26,897** | ✗ refused | ❌ 346 | – | – | Ke |
+| 75 | delivered msg/s, KEEP_ALL, max rate | Array4k, 5% loss | ✅ **26,897** | ✗ refused | ❌ 347 | – | – | Ke |
 
 ### Legend
 
@@ -432,7 +437,7 @@ Within a row all scored frameworks come from one session; across letters they do
 | `L` | liveliness, `liveliness_l2.sh`, 2026-09-27, `0f220ba0`, 20 reps (`results/liveliness_l2e_2026-09-27.txt`) |
 | `W` | four-way rmw block wait, `934f90de`, 3 reps (`results/rmw_4way_block_934f90de_2026-09-30.txt`) |
 | `J` | four-way rmw poll wait, random phase, RTT at callback, `934f90de`, 7 reps (`results/rmw_4way_poll*_cb_r7_*_2026-10-01.txt`) |
-| `Ke` | rmw RELIABLE + KEEP_ALL at equal KEEP_ALL bounds, as `K` but 5 reps, frameworks interleaved, 5% loss only, main `29dff630`, 2026-10-08 (`experiments/rmw_keepall_rig.sh` `EQUAL_BOUND=auto`; `~/rig_results_safe/rmw_keepall_equal_main_29dff630_20261008-134901.{txt,runs,launch.log}`). Until 2026-10-08 rows 73 and 75 were `K`: 70,126 / 1,784 and 26,486 / 339, each rmw at its own default bound |
+| `Ke` | rmw RELIABLE + KEEP_ALL at equal KEEP_ALL bounds, as `K` but 5 reps, frameworks interleaved, 5% loss only, main `29dff630`, 2026-10-08 (`experiments/rmw_keepall_rig.sh` `EQUAL_BOUND=auto`; `~/rig_results_safe/rmw_keepall_equal_main_29dff630_20261008-134901.{txt,runs,launch.log}`). Until 2026-10-08 rows 73 and 75 were `K`: 70,127 / 1,784 and 26,486 / 340, each rmw at its own default bound |
 | `K` | rmw RELIABLE + KEEP_ALL, apex `perf_test` at max rate across the link, 20 s, 3 reps, medians, `ae724688`, rmw_tickle built as the vendor debs are (CMake type None, `-g -O2`), 2026-10-06 (`experiments/rmw_keepall_rig.sh`; `~/rig_results_safe/rmw_keepall_rig_O2_20261006-123017.txt`). First measured at `a8c1cd83` with rmw_tickle at `-O3`: 87,977 / 65,051 / 27,421 / 26,483 |
 
 ### Re-measure at `09a0437d`
@@ -584,16 +589,16 @@ publisher for 100 ms by default (`max_blocking_time`; ROS 2 QoS has no field for
   N samples (Array1k N = 492, Array4k N = 125): rmw_tickle `RMW_TICKLE_KEEP_ALL_BYTES` = (N + 1) x its per-sample
   footprint (524,552 B / 1,064 B; 525,924 B / 4,174 B), Fast DDS `max_samples` = N through its XML. CycloneDDS cannot
   be bounded in samples (rmw_cyclonedds never sets resource_limits), so it runs at its default, **not equal**, as
-  recorded. Medians of 5 reps (range): rmw_tickle 74,128/s (71,324-76,949) and 26,897/s (26,850-27,075), CycloneDDS
-  1,807/s (1,727-2,022) and 346/s (322-368). CPU per sample, publisher / subscriber, median: rmw_tickle 13.9 / 11.5 us
-  (Array1k) and 31.7 / 24.1 us (Array4k), CycloneDDS 26.6 / 45.6 and 70.3 / 182.4 us. rmw_tickle: no loss and no
+  recorded. Medians of 5 reps (range): rmw_tickle 74,129/s (71,324-76,950) and 26,897/s (26,851-27,076), CycloneDDS
+  1,808/s (1,728-2,023) and 347/s (323-368). CPU per sample, publisher / subscriber, median: rmw_tickle 13.9 / 11.5 us
+  (Array1k) and 31.7 / 24.1 us (Array4k), CycloneDDS 26.5 / 44.0 and 70.1 / 176.4 us. rmw_tickle: no loss and no
   publisher error in any of its 10 runs. Fast DDS's publisher ended on "cannot publish data" in all 10 runs; the
   harness counts 2 Array1k runs as refused and voids the other 8 because the publisher was gone before 2 s, when its
   treatment is read from `/proc` (the launcher's environment shows the profile was set). It does not run these cells.
   The 0% loss rows 72 and 74 were not re-measured at equal bounds beyond the run's 6 s, one-rep dry run.
 - **History: the first equal-bound runs (2026-10-07) failed rmw_tickle.** At main `f40a2adf`
   (`~/rig_results_safe/rmw_keepall_equal_20261007-044904.txt`, 3 reps) rmw_tickle's publisher ended in 2 of its 6
-  lossy runs (one per topic) with no sample lost; its usable medians were 71,279 and 26,371/s. Cause: a reader ignored
+  lossy runs (one per topic) with no sample lost; its usable medians were 71,279 and 26,372/s. Cause: a reader ignored
   a heartbeat's request for an answer while its own retry for an open gap was armed. Fixed by `2901121e` (answer a heartbeat that asks, also
   with a retry armed), `e3236048` and `3355e94d` (the answer leaves out repairs still in transit, limited by the
   measured repair transit); the `Ke` run at `29dff630` includes them.
@@ -611,7 +616,7 @@ publisher for 100 ms by default (`max_blocking_time`; ROS 2 QoS has no field for
   its oldest sample stayed unacknowledged for over 5 s however often it asked. Only a 50,000-sample writer history
   (F3) kept the runs alive, because it never filled in 20 s: it then delivered **760 msg/s at Array1k (9.0 s
   latency) and 109 msg/s at Array4k**, against CycloneDDS's 1,949 and 346 in the same session and rmw_tickle's
-  65,051 and 26,483 at `a8c1cd83` (rows 73, 75 now read 74,128 and 26,897 at equal bounds). So with a normal configuration Fast
+  65,051 and 26,483 at `a8c1cd83` (rows 73, 75 now read 74,129 and 26,897 at equal bounds). So with a normal configuration Fast
   DDS does not run this cell: under 5% loss at max rate its publisher ends, and the one setting that keeps it alive
   delivers 760 / 109 msg/s. That is recorded as the result; the cause inside Fast DDS is not pursued.
 - **Corrected 2026-10-06: FastDDS at 0% loss is not an incomplete delivery.** This note said it "delivered 22-28%
@@ -622,6 +627,12 @@ publisher for 100 ms by default (`max_blocking_time`; ROS 2 QoS has no field for
   not touch, so FastDDS is scored in rows 72 and 74. CycloneDDS's "lost ~106k" in two Array1k 5% runs is the same
   artefact. At Array1k FastDDS's rate is steady at ~16k/s with ~320 ms latency (its full 5,000-sample history
   draining at that rate); Array4k is at the link's ceiling for all three (‡).
+- **Corrected 2026-10-10: rows 72-75 and these notes.** `perf_test`'s received, sent and lost columns are
+  floor(count / D) per row, not counts; the reader summed them. Corrected by the whole-count reader
+  (`rmw_keepall_rig_summary.py`, `whole_counts()`) on the same raw runs; no verdict changes. Rates moved by under 1/s
+  (row 72 rmw_tickle 90,849 -> 90,850, CycloneDDS 84,445 -> 84,446; row 73 74,128 -> 74,129, CycloneDDS 1,807 ->
+  1,808; row 75 CycloneDDS 346 -> 347); CycloneDDS's subscriber CPU per sample at 5% loss fell 3-4% (45.6 -> 44.0,
+  182.4 -> 176.4 us).
 - rmw_tickle is built at the vendors' level (`-g -O2`, no `NDEBUG`) and lost no sample in any of its 12 runs. At 0%
   loss one of FastDDS's three Array1k runs also ended on a write timeout; row 72 is the median of the other two.
 
