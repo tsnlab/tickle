@@ -1035,8 +1035,14 @@ static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t co
 }
 
 // Counts a claim made (+1) or resolved (-1) on the mapping of peer `context_id` (peer_segment() above).
+// Through the set-up guard (segment_peer_if_live()): a claim is made only on an entry peer_segment() set up, and an
+// entry handed back since (segment_peer_clear()) holds no claim to resolve.
 static void segment_claims_note(struct tt_Context* node, uint8_t context_id, int delta) {
-    node->segment_peers[context_id].claims = (uint8_t)(node->segment_peers[context_id].claims + delta);
+    if (segment_peer_if_live(node, context_id) == NULL) {
+        return;
+    }
+    struct tt_SegmentPeer* entry = segment_peer(node, context_id);
+    entry->claims = (uint8_t)(entry->claims + delta);
 }
 
 static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, uint8_t context_id, uint32_t ip,
