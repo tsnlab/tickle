@@ -565,9 +565,11 @@ struct tt_LargeState {
     // Step B (DESIGN.md section 8). The writers' regions this context has mapped, and the counters, on the traffic line
     // as large_ref_*: sent / received descriptors; refused: received and not taken (a stale generation, the bit not
     // set, a region that cannot be mapped or does not match); dropped: a full ring took no descriptor; region_full:
-    // a same-host large publish that found no free chunk and went as fragments.
+    // a same-host large publish that found no free chunk and went as fragments. acknack_serial counts ACKNACKs
+    // retransmitted from, so a descriptor is resent once per ACKNACK however many of its seq_nos it names.
     struct tt_LargePeerRegion peer_regions[tt_LARGE_PEER_REGIONS];
     const uint8_t* ref_processing; // the chunk of the descriptor being processed: referenced until it is done
+    uint32_t acknack_serial;
     uint64_t ref_sent;
     uint64_t ref_received;
     uint64_t ref_refused;
@@ -2020,7 +2022,8 @@ struct tt_LargeRecord {
     bool sent;        // every fragment has gone to every destination once
     uint32_t encoded; // CDR bytes encoded so far: cdr_len, but while its publish encodes it a send call at a time
 #if tt_LARGE_SHM
-    uint8_t chunk; // 1 + the region chunk `buffer` is in; 0: a caller's buffer
+    uint8_t chunk;       // 1 + the region chunk `buffer` is in; 0: a caller's buffer
+    uint32_t ref_resent; // tt_LargeState.acknack_serial of the ACKNACK that last had its descriptor resent
 #endif
 };
 

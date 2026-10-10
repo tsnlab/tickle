@@ -508,6 +508,42 @@ static void test_the_bit_waits_for_every_subscriber(void) {
     rig_down();
 }
 
+// ---- B1.4: a dropped descriptor ----
+
+// Fills the owner's ring with harmless empty records, leaving `room` slots.
+static void fill_ring(uint32_t room) {
+    while (ring()->write_index - ring()->read_index < ring()->slots - room) {
+        EXPECT_TRUE(segment_write(ring(), NULL, 0, NULL, 0, SENDER_IP, SENDER_PORT, 1));
+    }
+}
+
+static void test_a_dropped_descriptor_frees_its_bit_and_is_resent_whole(void) {
+    rig_up(RIG_RELIABLE, 3, FOUR_MB);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(1, FOUR_MB)); // the reader knows the writer
+    drain();
+    pump(5);
+    EXPECT_EQ_U32(1, seen_reliable.count);
+    fill_ring(0);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(2, FOUR_MB));
+    uint8_t chunk = newest_chunk();
+    EXPECT_EQ_U64(1, sender.large.ref_dropped);
+    EXPECT_TRUE(chunk != 0 && !owner_bit_set(chunk - 1U)); // nobody will read it for that descriptor
+    drain();                                               // the empty records go; nothing of the sample was there
+    EXPECT_EQ_U32(1, seen_reliable.count);
+    uint64_t sent = sender.large.ref_sent;
+    uint32_t before = ring()->write_index;
+    pump(400); // the end-of-sample HEARTBEAT is chased, the reader asks, the writer answers
+    EXPECT_EQ_U32(2, seen_reliable.count);
+    EXPECT_EQ_U32(2, seen_reliable.ids[1]);
+    EXPECT_TRUE(sender.large.ref_sent > sent);
+    EXPECT_EQ_U32(0, seen_reliable.torn);
+    EXPECT_EQ_U32(0, fragment_records(before, ring()->write_index)); // the answer was a descriptor, not 2,889 records
+    EXPECT_TRUE(sender.large.ref_sent >= 1);
+    printf("test_large_region: a dropped 4 MB descriptor recovered by %lu resent descriptor(s), %u ring records\n",
+           (unsigned long)(sender.large.ref_sent - sent), (unsigned)(ring()->write_index - before));
+    rig_down();
+}
+
 // ---- B1.5: stale descriptors are refused ----
 
 static void test_a_stale_descriptor_is_refused(void) {
@@ -621,6 +657,7 @@ int main(void) {
     test_round_trip_one_record_per_sample();
     test_a_retained_chunk_is_not_reused();
     test_the_bit_waits_for_every_subscriber();
+    test_a_dropped_descriptor_frees_its_bit_and_is_resent_whole();
     test_a_stale_descriptor_is_refused();
     test_a_reader_without_the_feature_gets_fragments();
     test_a_descriptor_from_a_socket_is_refused();
