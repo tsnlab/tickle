@@ -18,6 +18,11 @@
 #   C  send offload on, the veth's UDP segmentation on - a run crosses the veth whole, as a NIC would cut it after the
 #      host - receiver through the HAL with receive offload on: runs arrive merged and are handed out one at a time.
 #   D  as C with TT_UDP_OFFLOAD=0 at the receiver: the kernel cuts the run for a socket without UDP_GRO.
+#   E  as C, the patterns sent REPEAT times, read by a build that leaves receive offload after 2 quiet reads
+#      (TT_GRO_QUIET_READS=2, udp_offload_check_flap): it goes on at every large-fragment pattern and back to plain
+#      reads in the pauses, so every switch - and its race with merged datagrams still queued - is crossed many times.
+#      A merged datagram read with the option off would come back as one block of several datagrams: a size no
+#      pattern has, which the receiver fails on.
 #
 # The rules, enforced below (written before the first run):
 #   - every arm's list of datagrams (pattern, index, size, hash, in order) is B's, line for line;
@@ -25,11 +30,15 @@
 #   - A and B: the receiver's ingress counted the same packets and bytes to the test port (tc u32, not tcpdump), and
 #     no IP fragment at all (MF set) - so offload changed nothing on the wire;
 #   - treatment: A and C sent with gso_sends > 0, B none; C merged (gro_merged > 0), D did not (gro_reads = 0).
+#   - E: its list is the control's REPEAT times over; it merged, and went back to plain (gro_commits) and on again
+#     (gro_enables) at least REPEAT - 1 times each.
 # Exit 0 pass, 1 fail, 2 could not run.
 set -u
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 BIN=$HERE/udp_offload_check
-EXPECTED=924 # 723 + 88 + 29 + 64 + 20 (pattern 5 sends half its 40 to a port nobody reads)
+FLAP=$HERE/udp_offload_check_flap
+REPEAT=10
+EXPECTED=925 # 723 + 88 + 30 + 64 + 20 (pattern 5 sends half its 40 to a port nobody reads)
 PORT=7461
 NS1=uoc-tx-$$
 NS2=uoc-rx-$$
@@ -46,8 +55,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-[ -x "$BIN" ] || {
-    echo "udp_offload_check: build it first (make -C platform/linux udp_offload_check)" >&2
+[ -x "$BIN" ] && [ -x "$FLAP" ] || {
+    echo "udp_offload_check: build it first (make -C platform/linux udp_offload_check udp_offload_check_flap)" >&2
     exit 2
 }
 sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 2
@@ -76,9 +85,11 @@ die() {
     fail=1
 }
 
-# arm NAME SENDER_OFFLOAD RECEIVER(plain|hal) RECEIVER_OFFLOAD VETH_SEGMENTATION(on|off)
+# arm NAME SENDER_OFFLOAD RECEIVER(plain|hal) RECEIVER_OFFLOAD VETH_SEGMENTATION(on|off) [RECEIVER_BINARY REPEAT]
 arm() {
     name=$1
+    rx_bin=${6:-$BIN}
+    repeat=${7:-1}
     sudo -n ip netns exec "$NS1" ethtool -K uoc1 tx-udp-segmentation "$5" >/dev/null 2>&1 || {
         echo "udp_offload_check: cannot set tx-udp-segmentation $5 on the veth" >&2
         exit 2
@@ -90,13 +101,13 @@ arm() {
     if [ "$3" = plain ]; then
         sudo -n ip netns exec "$NS2" env TT_UDP_OFFLOAD="$4" "$BIN" plain "$PORT" >"$WORK/$name.rx" 2>"$WORK/$name.rx.err" &
     else
-        sudo -n ip netns exec "$NS2" env TT_UDP_OFFLOAD="$4" "$BIN" hal "$PORT" "$BCAST" >"$WORK/$name.rx" \
+        sudo -n ip netns exec "$NS2" env TT_UDP_OFFLOAD="$4" "$rx_bin" hal "$PORT" "$BCAST" >"$WORK/$name.rx" \
             2>"$WORK/$name.rx.err" &
     fi
     rx=$!
     sleep 0.5
     # shellcheck disable=SC2024
-    sudo -n ip netns exec "$NS1" env TT_UDP_OFFLOAD="$2" "$BIN" send "$NET.2" "$PORT" "$BCAST" >"$WORK/$name.tx" \
+    sudo -n ip netns exec "$NS1" env TT_UDP_OFFLOAD="$2" "$BIN" send "$NET.2" "$PORT" "$BCAST" "$repeat" >"$WORK/$name.tx" \
         2>"$WORK/$name.tx.err"
     tx_rc=$?
     wait "$rx"
@@ -122,6 +133,7 @@ arm B 0 plain 0 off
 arm A 1 plain 0 off
 arm C 1 hal 1 on
 arm D 1 hal 0 on
+arm E 1 hal 1 on "$FLAP" "$REPEAT"
 
 n=$(wc -l <"$WORK/B.list")
 [ "$n" -eq "$EXPECTED" ] || die "control B received $n of $EXPECTED test datagrams - the setup is broken, nothing else holds"
@@ -141,9 +153,17 @@ done
 [ "$(field gso_sends "$WORK/C.tx")" -gt 0 ] 2>/dev/null || die "C: no UDP_SEGMENT send"
 [ "$(field gro_merged "$WORK/C.rx")" -gt 0 ] 2>/dev/null || die "C: nothing merged - receive offload was not exercised"
 [ "$(field gro_reads "$WORK/D.rx")" = 0 ] || die "D: merged with TT_UDP_OFFLOAD=0"
+for _ in $(seq 1 "$REPEAT"); do cat "$WORK/B.list"; done >"$WORK/B.repeat"
+cmp -s "$WORK/B.repeat" "$WORK/E.list" ||
+    die "E's datagrams differ from the control's x$REPEAT: $(diff "$WORK/B.repeat" "$WORK/E.list" | head -3 | tr '\n' ' ')"
+[ "$(field gro_merged "$WORK/E.rx")" -gt 0 ] 2>/dev/null || die "E: nothing merged"
+[ "$(field gro_commits "$WORK/E.rx")" -ge $((REPEAT - 1)) ] 2>/dev/null ||
+    die "E: went back to plain reads $(field gro_commits "$WORK/E.rx") times, not $((REPEAT - 1)) - the switch was not crossed"
+[ "$(field gro_enables "$WORK/E.rx")" -ge $((REPEAT - 1)) ] 2>/dev/null ||
+    die "E: turned receive offload on $(field gro_enables "$WORK/E.rx") times, not $((REPEAT - 1))"
 
 if [ "$fail" -ne 0 ]; then
     exit 1
 fi
-echo "udp_offload_check: PASS - $EXPECTED datagrams identical in all four arms, wire identical with send offload, no fragments"
+echo "udp_offload_check: PASS - $EXPECTED datagrams identical in all arms (E: $REPEAT passes, $(field gro_commits "$WORK/E.rx") switches back), wire identical with send offload, no fragments"
 exit 0
