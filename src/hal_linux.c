@@ -600,8 +600,8 @@ static bool udp_offload_allowed(void) {
 // which IP would then fragment. getsockopt(UDP_SEGMENT) exists from the same release, so it is the check.
 static void gso_setup(struct tt_Context* node) {
     node->hal.gso_on = false;
-    if (!udp_offload_allowed()) {
-        return;
+    if (!TT_HAL_UDP_GSO || !udp_offload_allowed()) {
+        return; // a build without large samples never sends a run (hal_linux.h TT_HAL_UDP_GSO)
     }
     int size = 0;
     socklen_t size_len = sizeof(size);
@@ -1127,14 +1127,41 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
 #define TT_GSO_MAX_SEGMENTS 64U
 #define TT_GSO_MAX_BYTES 65507U
 
+// Which runs go as one (2026-10-11): a large sample's fragments (FRAG_FIRST_L/FRAG_CONT_L) only. The first rig A/B
+// (Pi 5 x2, a5747a85 against f3c948ba, ~/rig_results_safe/udpoffload_l2x_compare.txt) sent every run of same-size
+// datagrams so, and core's p4 sample - two DATA_FRAG datagrams, a run of 2 - came out worse: the publisher's CPU per
+// sample +3.5% at throughput (c4), +3.2% best effort (c15); and at latency (c17) 3% of pings unanswered within the
+// client's 500 ms with no datagram lost (each side read every datagram the other sent, nothing was retransmitted) and
+// up to 475 ms late: runs that left the host only when something else was sent after them. Not an instruction cost:
+// on the PC a run of 2 takes fewer instructions as one message than as two (experiments/gso_run_cost.sh: break-even
+// 1.4 datagrams, the Pi's NIC as the veth, segmenting in software). Where it paid on the rig was the 1 MB sample, runs
+// of 44 (publisher -19%, subscriber -10.5%). So a run is made of large fragments and nothing else - what the rig
+// showed paying - and a build without large samples sends none (TT_HAL_UDP_GSO).
+// A large fragment by its framing (tickle.c large_write_framing()): the single form (addressed to everyone - byte 0
+// the marker, byte 3 the type) or the full one (a retransmission to one node - the magic, then the submessage header's
+// type at byte 4).
+static bool gso_type_large(uint8_t type) {
+    return type == tt_SUBMESSAGE_TYPE_FRAG_FIRST_L || type == tt_SUBMESSAGE_TYPE_FRAG_CONT_L;
+}
+static bool gso_large_fragment(const struct tt_OutDatagram* datagram) {
+    const uint8_t* head = (const uint8_t*)datagram->head;
+    if (datagram->head_len >= sizeof(struct tt_SingleHeader) &&
+        (head[0] == tt_SINGLE_MARKER_LE || head[0] == tt_SINGLE_MARKER_BE)) {
+        return gso_type_large(head[3]);
+    }
+    return datagram->head_len >= sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) &&
+           ((head[0] == 'K' && head[1] == 'T') || (head[0] == 'T' && head[1] == 'K')) &&
+           gso_type_large(head[sizeof(struct tt_Header)]);
+}
+
 // How many datagrams from `first` (of `available`) go as one UDP_SEGMENT send, which the kernel - or the NIC - cuts
-// back into datagrams of the first one's length: the same destination, the same length but the last (which may be
-// shorter and ends the run), none empty and none longer than tt_CONTROL_MAX_LENGTH. Each cut is then exactly the
-// datagram core built, so the wire carries what it carried without offload, and no datagram of more than 1472 bytes
-// (the IP fragmentation DESIGN.md section 8 keeps out) can come from a run. 1 when nothing can follow.
+// back into datagrams of the first one's length: large fragments (above), the same destination, the same length but
+// the last (which may be shorter and ends the run), none empty and none longer than tt_CONTROL_MAX_LENGTH. Each cut is
+// then exactly the datagram core built, so the wire carries what it carried without offload, and no datagram of more
+// than 1472 bytes (the IP fragmentation DESIGN.md section 8 keeps out) can come from a run. 1 when nothing can follow.
 static uint32_t gso_run(const struct tt_OutDatagram* first, uint32_t available) {
     const size_t size = first->head_len + first->body_len;
-    if (size == 0 || size > tt_CONTROL_MAX_LENGTH) {
+    if (size == 0 || size > tt_CONTROL_MAX_LENGTH || available < 2 || !gso_large_fragment(first)) {
         return 1;
     }
     uint32_t run = 1;
@@ -1143,7 +1170,7 @@ static uint32_t gso_run(const struct tt_OutDatagram* first, uint32_t available) 
         const struct tt_OutDatagram* next = &first[run];
         const size_t length = next->head_len + next->body_len;
         if (next->ip != first->ip || (first->ip != 0 && next->port != first->port) || length == 0 || length > size ||
-            total + length > TT_GSO_MAX_BYTES) {
+            total + length > TT_GSO_MAX_BYTES || !gso_large_fragment(next)) {
             break;
         }
         total += length;
@@ -1282,7 +1309,7 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
             const struct tt_OutDatagram* first = &datagrams[sent + placed];
             uint32_t room = count - sent - placed;
             room = room < TT_SEND_CALL_DATAGRAMS - placed ? room : TT_SEND_CALL_DATAGRAMS - placed;
-            uint32_t run = node->hal.gso_on ? gso_run(first, room) : 1U;
+            uint32_t run = TT_HAL_UDP_GSO && node->hal.gso_on ? gso_run(first, room) : 1U;
             send_message_setup(node, &msgs[messages], &iov[(size_t)2U * placed], &addrs[messages], &control[messages],
                                first, run);
             carried[messages++] = (uint8_t)run;
