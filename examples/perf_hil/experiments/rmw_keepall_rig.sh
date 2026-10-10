@@ -108,6 +108,18 @@
 #                    PF_VARIANT_<name> (an install dir holding rmw_tickle for arm tickle@<name>). It tests this script,
 #                    the launcher, the probe and the summary on the same code path as the rig, not the rig's build.
 #   meta.txt         the run's QoS flags, rate, SAMEHOST, CLOCK_PROBE, DUR and DRY, for the summary.
+#
+# Added 2026-10-10 for the UDP offload A/B (~/rig_queue_udp_offload.sh; hal_linux.c "UDP offload"):
+#   tickle@nooffload  tickle@head's own librmw_tickle.so with TT_UDP_OFFLOAD=0 in its environment: no UDP_GRO, no
+#                     UDP_SEGMENT - the control the change cannot touch beyond its switch. tickle@head runs with
+#                     TT_UDP_OFFLOAD unset. Both are named in meta.txt (udp_offload_arms=).
+#   The treatment, checked after every tickle run from the traffic lines core prints at context destroy (udp_offload=,
+#   gso_sends=, gro_merged=, on both Pis) into <runs>/offload.txt. HOW TO READ IT, enforced here (written before the
+#   first run): tickle@nooffload is VOID unless both ends printed a traffic line and every one shows udp_offload=0,
+#   gso_sends=0 and gro_merged=0; tickle@head on Array1m is VOID unless both ends printed one, the publisher's
+#   gso_sends > 0 and the subscriber's gro_merged > 0 (a treatment that never acted is not a treatment). A line no
+#   end printed is VOID too - "could not look" is not "off". A VOID run's RUN line is moved from index.txt to
+#   index_offload_void.txt, so no summary averages it, and listed in the log. Other arms and topics: printed only.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
@@ -134,8 +146,8 @@ if [ -n "$EQUAL_BOUND" ]; then
         *) echo "EQUAL_BOUND must be auto or a sample count 1..9999, not '$EQUAL_BOUND'" >&2; exit 64 ;; esac
     ARMS=${ARMS:-"tickle@head fastdds cyclonedds"}
     for a in $ARMS; do
-        case "$a" in tickle@head | fastdds | cyclonedds) ;;
-            *) echo "EQUAL_BOUND runs tickle@head, fastdds and cyclonedds only, not $a" >&2; exit 64 ;; esac
+        case "$a" in tickle@head | tickle@nooffload | fastdds | cyclonedds) ;;
+            *) echo "EQUAL_BOUND runs tickle@head(/nooffload), fastdds and cyclonedds only, not $a" >&2; exit 64 ;; esac
     done
 fi
 # The N campaign_sweep.sh's rule gives at the rig's build, quoted in the documents: a different computed N stops the
@@ -231,6 +243,11 @@ say "qos [$QOS_ARGS] rate $PUB_RATE Hz; samehost $SAMEHOST; clock probe $CLOCK_P
     "(client $CLIENT, server $SERVER)"
 printf 'qos_args=%s\npub_rate=%s\nsamehost=%s\nclock_probe=%s\ndur=%s\ndry=%s\npc_preflight=%s\n' "$QOS_ARGS" \
     "$PUB_RATE" "$SAMEHOST" "$CLOCK_PROBE" "$DUR" "$DRY" "$PC_PREFLIGHT" > "$OUT.runs/meta.txt"
+case " $ARMS " in *" tickle@nooffload "*)
+    echo "udp_offload_arms=tickle@head:TT_UDP_OFFLOAD-unset tickle@nooffload:TT_UDP_OFFLOAD=0(head's binary)" \
+        >> "$OUT.runs/meta.txt"
+    say "udp offload A/B: tickle@nooffload = tickle@head's librmw_tickle.so with TT_UDP_OFFLOAD=0" ;;
+esac
 [ "$HAS_TICKLE" = 1 ] || SKIP_BUILD=1
 # The pre/ack variants to build: only those ARMS names (the default ARMS names both, as before).
 # Where each tickle build is installed: on the Pis ~/tickle/install and ~/rmw_variants/<name>/install; in the PC
@@ -317,7 +334,8 @@ env_for() {
         echo "unset FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE RMW_FASTRTPS_USE_QOS_FROM_XML"
         echo "unset RMW_FASTRTPS_PUBLICATION_MODE CYCLONEDDS_URI"
         case "$1" in
-            tickle@head) echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+            tickle@head) echo "unset TT_UDP_OFFLOAD; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+            tickle@nooffload) echo "export TT_UDP_OFFLOAD=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
             tickle@*) echo "source $(variant_install "${1#tickle@}")/local_setup.bash"
                 echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
             fastdds) echo "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp" ;;
@@ -328,7 +346,9 @@ env_for() {
     fi
     if [ -n "$EQUAL_BOUND" ]; then # $2 = topic: the bound is per topic (header, EQUAL_BOUND)
         case "$1" in
-            tickle@head) echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255"
+            tickle@head) echo "unset TT_UDP_OFFLOAD; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255"
+                echo "export RMW_TICKLE_KEEP_ALL_BYTES=${EQ_BYTES[$2]}" ;;
+            tickle@nooffload) echo "export TT_UDP_OFFLOAD=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255"
                 echo "export RMW_TICKLE_KEEP_ALL_BYTES=${EQ_BYTES[$2]}" ;;
             fastdds) echo "unset RMW_FASTRTPS_USE_QOS_FROM_XML RMW_FASTRTPS_PUBLICATION_MODE FASTDDS_DEFAULT_PROFILES_FILE"
                 echo "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp FASTRTPS_DEFAULT_PROFILES_FILE=/tmp/ka_fdds_eq${EQ_N[$2]}.xml" ;;
@@ -338,7 +358,8 @@ env_for() {
         return 0
     fi
     case "$1" in
-        tickle@head) echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@head) echo "unset TT_UDP_OFFLOAD; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@nooffload) echo "export TT_UDP_OFFLOAD=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@*) echo "source $(variant_install "${1#tickle@}")/local_setup.bash"
             echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         fastdds) echo "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp FASTRTPS_DEFAULT_PROFILES_FILE=$FDDS_PROFILE" ;;
@@ -351,7 +372,7 @@ env_for() {
 }
 lib_for() {
     case "$1" in
-        tickle@head) echo "$HEAD_LIB" ;;
+        tickle@head | tickle@nooffload) echo "$HEAD_LIB" ;;
         tickle@*) echo "$(variant_install "${1#tickle@}")/rmw_tickle/lib/librmw_tickle.so" ;;
         fastdds | fastdds@*) echo "librmw_fastrtps_cpp.so" ;;
         cyclonedds) echo "librmw_cyclonedds_cpp.so" ;;
@@ -379,7 +400,7 @@ for i in 1 2 3 4 5 6 7 8 9 10; do [ -s /tmp/ka_$role.pid ] && break; sleep 0.2; 
 p=$(cat /tmp/ka_$role.pid)
 # The treatment as perf_test received it: the exported middleware variables (what exec hands on), and the profile
 # file they name with its hash, read now and again from the process itself at 2 s if it is still alive.
-treat() { grep -E "^(RMW_|FASTRTPS_|FASTDDS_|CYCLONEDDS_URI|ROS_DOMAIN_ID|SKIP_DEFAULT_XML_FILE)" | sort
+treat() { grep -E "^(RMW_|FASTRTPS_|FASTDDS_|CYCLONEDDS_URI|ROS_DOMAIN_ID|SKIP_DEFAULT_XML_FILE|TT_UDP_OFFLOAD)" | sort
     f=$(sed -n "s/^FASTRTPS_DEFAULT_PROFILES_FILE=//p" "$1"); [ -n "$f" ] && echo "profile_sha256=$(sha256sum < "$f" | cut -c1-64) $f"; }
 env > /tmp/ka_$role.envall; { echo "[launcher env]"; treat /tmp/ka_$role.envall < /tmp/ka_$role.envall; } > /tmp/ka_$role.treat
 ( sleep 2; grep -o "/[^ ]*librmw_[a-z_]*\.so" /proc/$p/maps 2>/dev/null | sort -u > /tmp/ka_$role.maps
@@ -536,6 +557,39 @@ run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher second
     ms=$(sh_ "$SERVER" "cat /tmp/ka_sub.maps 2>/dev/null" </dev/null | tr '\n' ' ')
     echo "RUN $stem pub_maps=[$mp] sub_maps=[$ms] pub_killed=${k1:-no} sub_killed=${k2:-no} want=$(lib_for "$arm")" \
         >> "$dir/index.txt"
+    offload_check "$arm" "$topic" "$stem" "$dir"
+}
+
+# The UDP offload treatment of one run (header, tickle@nooffload): the sum of a counter over a log's traffic lines, or
+# "absent" when the log has none.
+traffic_sum() { # $1 log, $2 field
+    grep -o "traffic: .*" "$1" 2>/dev/null | grep -o " $2=[0-9]*" | cut -d= -f2 |
+        awk 'BEGIN { n = 0; s = 0 } { n++; s += $1 } END { if (n == 0) print "absent"; else print s }'
+}
+offload_check() { # arm topic stem dir
+    local arm=$1 topic=$2 stem=$3 dir=$4 why=""
+    case "$arm" in tickle@*) ;; *) return 0 ;; esac
+    local pl="$dir/${stem}_pub.log" sl="$dir/${stem}_sub.log"
+    local po pg so sg
+    po=$(traffic_sum "$pl" udp_offload); pg=$(traffic_sum "$pl" gso_sends)
+    so=$(traffic_sum "$sl" udp_offload); sg=$(traffic_sum "$sl" gro_merged)
+    local line="OFFLOAD $stem pub_udp_offload=$po pub_gso_sends=$pg sub_udp_offload=$so sub_gro_merged=$sg"
+    case "$arm" in
+        tickle@nooffload)
+            for v in "$po" "$pg" "$so" "$sg"; do [ "$v" = 0 ] || why="offload not off (or not reported)"; done ;;
+        tickle@head)
+            if [ "$topic" = Array1m ]; then
+                [ "$pg" != absent ] && [ "$pg" -gt 0 ] || why="publisher sent no UDP_SEGMENT run"
+                [ "$sg" != absent ] && [ "$sg" -gt 0 ] || why="${why:+$why; }subscriber merged nothing"
+            fi ;;
+    esac
+    if [ -n "$why" ]; then
+        line="$line VOID: $why"
+        grep "^RUN $stem " "$dir/index.txt" >> "$dir/index_offload_void.txt"
+        grep -v "^RUN $stem " "$dir/index.txt" > "$dir/index.txt.tmp" && mv "$dir/index.txt.tmp" "$dir/index.txt"
+    fi
+    echo "$line" >> "$dir/offload.txt"
+    say "  $line"
 }
 
 # ---- dry run, same lock (DRY=1; the default under EQUAL_BOUND): every arm once per topic, DRY_DUR s at 0% loss, read
@@ -549,6 +603,9 @@ if [ "$DRY" = 1 ]; then
     done
     python3 "$SUMMARY" "$OUT.dry" "$DRY_DUR" --dry | tee -a "$SUM"
     if [ "${PIPESTATUS[0]}" != 0 ]; then say "DRY RUN FAILED - not running (runs in $OUT.dry)"; exit 1; fi
+    if [ -s "$OUT.dry/index_offload_void.txt" ]; then
+        say "DRY RUN FAILED - UDP offload treatment VOID (offload.txt in $OUT.dry)"; exit 1
+    fi
     say "--- dry run clean ---"
 fi
 
@@ -570,5 +627,9 @@ for loss in $cell_losses; do
 done
 set_loss 0
 say "=== runs done $(date -Is); tc restored ==="
+if [ -s "$OUT.runs/index_offload_void.txt" ]; then
+    say "UDP offload treatment: $(grep -c '' "$OUT.runs/index_offload_void.txt") run(s) VOID, left out of the summary" \
+        "(index_offload_void.txt, offload.txt)"
+fi
 
 python3 "$SUMMARY" "$OUT.runs" "$DUR" | tee -a "$SUM"
