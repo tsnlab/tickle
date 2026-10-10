@@ -29,6 +29,9 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
 - **rmw layer, same host** (`06dd78d8`, rows R1-R21): rmw_tickle wins all 52 scored rows against both DDS rmws,
   peak RSS included (13.4-16.0 MB against CycloneDDS's 15.2-18.3 MB, since `718220d8`). At BEST_EFFORT KEEP_LAST 1
   max rate it delivers 141k Array1k samples/s against CycloneDDS's 70k and FastDDS's 17k.
+- **rmw large messages** (step A, Array1m and Array4m cross-host, "rmw large messages"): rmw_tickle wins every metric
+  at 5% loss, where Fast DDS as shipped delivers nothing and CycloneDDS ~3%, and has the smallest subscriber in every
+  cell; at 0% loss it loses CPU per MB to the two vendors that send 64 KB datagrams fragmented by the kernel.
 - **Not scored:** row 5 (netem dominates), rows 45-47 (all detect correctly), zenoh-pico (reference only).
 
 ## 1. Same host (shared memory)
@@ -622,8 +625,49 @@ publisher for 100 ms by default (`max_blocking_time`; ROS 2 QoS has no field for
 - rmw_tickle is built at the vendors' level (`-g -O2`, no `NDEBUG`) and lost no sample in any of its 12 runs. At 0%
   loss one of FastDDS's three Array1k runs also ended on a write timeout; row 72 is the median of the other two.
 
+### rmw large messages (L4, cross-host)
+
+Large-message stage 2 step A (DESIGN.md section 8): samples above 65,507 B, sent in TickLE's own 1,472-byte
+fragments. apex `perf_test` publisher on one Pi 5, subscriber on the other, 5 reps of 60 s per arm, arms interleaved,
+medians. rmw_tickle is the step A build of branch `ab/largemsg-a2` (the sha is in each file's header), built `-g -O2`
+on both Pis as the vendors; each arm identified by `/proc/PID/maps`. Latency is one-way, corrected by a clock probe
+before and after every run; p99 is a lower bound from the per-second maxima. CPU is ms per MB delivered (subscriber)
+or published (publisher); RSS is the subscriber's peak. Read by `experiments/largemsg_rig_summary.py` (whole sample
+counts, since `perf_test`'s rate columns are floor(count / D)) from
+`~/rig_results_safe/largemsgA4_{s2_rel1m_20261010-125430,s3a_20261010-140102,s3b_20261010-145247,s3c_20261010-152057}.txt`
+and their `.runs/`. Letters: rmw_tickle against Fast DDS as shipped / Fast DDS with `maxMessageSize` 1472 / CycloneDDS
+(W win, L lose, D draw by the range rule; – not scored).
+
+| cell | QoS, rate | delivered % | latency med / p99 ms | CPU sub / pub ms/MB | RSS kB | delivered | latency | CPU sub | CPU pub | RSS |
+|---|---|---:|---:|---:|---:|:-:|:-:|:-:|:-:|:-:|
+| I1 Array1m | RELIABLE KL10, 30 Hz | 100 | 9.66 / 9.78 | 5.57 / 4.46 | 18,116 | DDD | LWW | LWL | LWD | WWW |
+| I1L Array1m, 5% loss | RELIABLE KL10, 30 Hz | 100 | 11.68 / 24.21 | 5.84 / 5.17 | 20,264 | –W– | –W– | –W– | –W– | –W– |
+| I1 Array1m | BEST_EFFORT KL5, 30 Hz | 100 | 9.61 / 9.73 | 5.13 / 4.51 | 18,164 | DDD | LWD | LWL | LWL | WWW |
+| I4s Array4m (saturating) | BEST_EFFORT KL5, 30 Hz | 92.3 | 57.1 / 73.6 | 3.91 / 4.04 | 37,612 | LWL | LLL | LWL | LWL | WWW |
+| I4 Array4m | RELIABLE KL10, 15 Hz | 100 | 38.69 / 38.83 | 5.00 / 4.48 | 33,684 | DDD | LWL | LWL | LWL | WWW |
+| I4 Array4m | BEST_EFFORT KL5, 15 Hz | 100 | 38.68 / 38.79 | 4.76 / 4.44 | 37,768 | DDD | LWD | LWL | LWL | WWW |
+
+- **Under loss TickLE wins every metric.** At 5% loss Fast DDS as shipped delivered nothing in all 5 runs (it does
+  not run the cell) and CycloneDDS about 3% (incomplete, not scored); Fast DDS at 1472 delivered all of it at 57.7 /
+  83.0 ms against TickLE's 11.68 / 24.21 ms.
+- **Memory:** the subscriber is the smallest in every cell. The publisher is too in four of six; at 4 MB best effort
+  CycloneDDS's publisher is smaller (28,556 and 28,536 kB against 33,280 and 29,184).
+- **CPU per MB is lost at 0% loss to Fast DDS as shipped and to CycloneDDS**, because they send 64 KB datagrams that
+  the kernel splits (OS IP fragmentation, which TickLE does not use: it failed 97.4% of reassemblies at 5% loss,
+  section 8 of DESIGN.md). Against Fast DDS with 1472-byte datagrams, the same datagram size as TickLE's, TickLE wins
+  CPU in every cell. Median latency at 0% loss is behind Fast DDS as shipped by 0.15-0.19 ms at 1 MB and 1.2 ms at
+  4 MB (37.5 ms; CycloneDDS 38.6).
+- **I4s, Array4m best effort at 30 Hz, saturates the link and TickLE loses it:** it published all 1,802 samples and
+  delivered 1,655-1,679 complete, CycloneDDS 1,699-1,700 of the ~1,700 its publisher sent. DESIGN.md's F3 is
+  falsified.
+- **Same host is not published.** In step A a 4 MB best-effort sample delivers ~0% same-host: its ~2,900 fragments do
+  not fit the receiver's 512 x 1,472 B ring. Step B, a writer-owned same-host area, is to fix it.
+
 ### Where TickLE does not come first
 
+- **rmw large messages at 0% loss** (L4 above): CPU per MB behind Fast DDS as shipped and CycloneDDS in every cell,
+  median latency behind Fast DDS as shipped (0.15-0.19 ms at 1 MB, 1.2 ms at 4 MB), and the saturating 4 MB cell I4s
+  lost.
 - **Poll-wait rows 59 and 62-67 are draws with CycloneDDS**, not wins. In row 67 CycloneDDS's median is lower (0.380
   against 0.391 ms), within the spread. At 100 and 200 us half a poll cycle of waiting, the same for every rmw,
   dominates, so the margin is small.
