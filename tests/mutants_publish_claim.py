@@ -20,7 +20,7 @@ MUTANTS = [
     (
         "peer_segment() keeping a claimed mapping",
         "src/tickle.c",
-        "    if (entry->claims != 0) {\n        const bool same_owner =",
+        "    if (entry != NULL && entry->claims != 0) {\n        const bool same_owner =",
         "    if (false) {\n        const bool same_owner =",
         "test_a_claimed_mapping_stays_mapped",
     ),

@@ -42,7 +42,7 @@ MUTANTS = [
     (
         "giving up on a ring nobody drains",
         "src/tickle.c",
-        "        if (now - entry->last_progress_ns >= tt_SEGMENT_DEAD_READER_NS) {",
+        "        if (now - entry->last_progress_ns >= tt_SEGMENT_DEAD_READER_NS && entry->claims == 0) {",
         "        if (false) {",
         "test_a_writer_gives_up_on_a_ring_nobody_drains",
     ),
@@ -216,6 +216,16 @@ MUTANTS = [
         "    if (header->slots == 0 || (header->slots & (header->slots - 1U)) != 0 || header->slot_bytes == 0) {",
         "    if (header->slots == 0 || (header->slots & (header->slots - 1U)) != 0) {",
         "test_a_segment_with_another_geometry_is_refused",
+    ),
+    # 324f6ced's claim pin met 97893bb1's lazy peer table: read raw, an entry never set up held a garbage pin and the
+    # attach was skipped for good in any context whose memory nobody had zeroed.
+    (
+        "reading the claim pin only through the set-up guard",
+        "src/tickle.c",
+        "    const struct tt_SegmentPeer* entry = segment_peer_if_live(node, context_id);\n"
+        "    if (entry != NULL && entry->claims != 0) {",
+        "    const struct tt_SegmentPeer* entry = &node->segment_peers[context_id];\n    if (entry->claims != 0) {",
+        "test_a_context_in_unzeroed_memory_attaches_a_same_host_peer",
     ),
 ]
 
