@@ -18,7 +18,12 @@
 # PREFLIGHT (rig_preflight.sh, 2026-10-06): before the first block, BOTH commits are run through the campaign's cell
 # shapes on this PC in private network namespaces, and the chain refuses to start if either fails - it never takes the
 # rig with a broken harness. The blocks then get PREFLIGHT=0. PREFLIGHT=0 here skips it.
-cd /home/semih/tickle || exit 1
+# This script's own checkout, not /home/semih/tickle (2026-10-10): the chain used to cd there, so a queue that checked
+# out a harness commit in a runner directory ran the SHARED checkout's campaign_sweep.sh instead. placement_P asked for
+# TICKLE_EXTRA_CFLAGS=-falign-functions=64 that way, and the shared sweep did not forward it: both arms built plain, and
+# the run read as a placement control that had not been applied. campaign_sweep.sh now says the flags it forwards on
+# its own log line (TICKLE_EXTRA_CFLAGS=...), which is the record an arm's treatment is checked against.
+cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
 A=${A:?A=<sha> the parent}; B=${B:?B=<sha> the change}; TAG=${TAG:?TAG=<name>}; REPS=${REPS:-3}
 PRIMARY=${PRIMARY:-}
 export RIG_LOCK_WAIT=36000
@@ -39,6 +44,14 @@ n=0
 for sha in "$A" "$B" "$B" "$A"; do
     n=$((n + 1))
     SHA=$sha FWS=tickle REPS=$REPS OUT=/tmp/${TAG}_b${n}_${sha:0:8}.txt $X/campaign_sweep.sh > "/tmp/${TAG}_b${n}_${sha:0:8}.log" 2>&1
+    # The build flags are a treatment: the block's own log must echo the value this chain was given, or the chain stops
+    # here rather than read two arms built some other way as the arms it was asked for.
+    if ! grep -qxF "TICKLE_EXTRA_CFLAGS='${TICKLE_EXTRA_CFLAGS:-}' (TickLE core and bench; empty: the plain build)" \
+        "/tmp/${TAG}_b${n}_${sha:0:8}.log"; then
+        echo "=== chain VOID $(date -Is): block $n's log does not echo TICKLE_EXTRA_CFLAGS='${TICKLE_EXTRA_CFLAGS:-}' ===" |
+            tee "/tmp/${TAG}.done" "/tmp/${TAG}_compare.txt"
+        exit 1
+    fi
 done
 cat "/tmp/${TAG}_b1_${A:0:8}.txt" "/tmp/${TAG}_b4_${A:0:8}.txt" > "/tmp/${TAG}_A.txt"
 cat "/tmp/${TAG}_b2_${B:0:8}.txt" "/tmp/${TAG}_b3_${B:0:8}.txt" > "/tmp/${TAG}_B.txt"
