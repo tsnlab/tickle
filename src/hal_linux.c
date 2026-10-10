@@ -47,8 +47,9 @@
 #if tt_HAL_IO_URING           // after hal_linux.h, which derives it from tt_HAL_RX_HINT
 // __NR_io_uring_*: <sys/syscall.h> is the portable spelling; the number itself lives in an architecture's own header
 // (asm/unistd_64.h on x86-64, asm-generic/unistd.h on arm64), which include-cleaner would have us name instead.
-#include <linux/io_uring.h> // tt_rx_maybe_ready()
-#include <sys/syscall.h>    // NOLINT(misc-include-cleaner)
+#include <linux/io_uring.h>  // tt_rx_maybe_ready()
+#include <linux/sock_diag.h> // SK_MEMINFO_*: socket_drops()
+#include <sys/syscall.h>     // NOLINT(misc-include-cleaner)
 #endif
 #include <tickle/tickle.h>
 #include <tickle/trace.h>
@@ -291,6 +292,29 @@ static void report_receive_buffer(int sock, const char* which) {
     } else {
         TT_LOG_DEBUG("%s socket receive buffer is %d bytes (asked %d)", which, granted, (int)tt_SOCKET_BUFFER_SIZE);
     }
+}
+
+// Datagrams the kernel dropped at one socket because its receive buffer was full (SO_MEMINFO's SK_MEMINFO_DROPS, Linux
+// 4.6), or 0 when it cannot say. The only witness of where a datagram the sender sent and the receiver never read was
+// lost: rig cell I4s (RESULTS L4) lost 14-38 4 MB samples a run on the subscriber's side, with nothing in the run that
+// could say whether the socket, the NIC or the wire took them.
+static uint32_t socket_drops(int sock) {
+    if (sock < 0) {
+        return 0;
+    }
+    uint32_t info[SK_MEMINFO_VARS];
+    socklen_t length = sizeof(info);
+    memset(info, 0, sizeof(info));
+    // NOLINTNEXTLINE(misc-include-cleaner) - SO_MEMINFO: same glibc-private header as the setsockopt() calls below
+    if (getsockopt(sock, SOL_SOCKET, SO_MEMINFO, (void*)info, &length) < 0 ||
+        length < (socklen_t)(sizeof(uint32_t) * (SK_MEMINFO_DROPS + 1))) {
+        return 0;
+    }
+    return info[SK_MEMINFO_DROPS];
+}
+
+uint32_t tt_hal_rx_socket_drops(const struct tt_Context* node) {
+    return socket_drops(node->hal.sock) + socket_drops(node->hal.data_sock);
 }
 
 #if tt_CONTEXT_ID_CLAIM
@@ -723,6 +747,10 @@ tt_ret_t tt_bind(struct tt_Context* node) {
 }
 
 void tt_close(struct tt_Context* node) {
+    // Read while both sockets are still open: what the kernel dropped at each, beside core's traffic line.
+    TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u", node->id,
+                (unsigned)tt_hal_rx_socket_drops(node), (unsigned)socket_drops(node->hal.sock),
+                (unsigned)socket_drops(node->hal.data_sock));
 #if tt_CONTEXT_ID_CLAIM
     release_claimed_id(node);
 #endif
