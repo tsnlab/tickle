@@ -48,16 +48,18 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 
-#define DGRAM 1472U
+#define DGRAM_MAX 65507U
 #define BATCH 64U
 #define SOCK_BUF 212992
-#define BUF_SIZE 2048U
 #define BGID 7U
 #define NS_PER_S 1000000000ULL
 #define NS_PER_US 1000ULL
 #define DEFAULT_PER 2889U
 #define DEFAULT_BUFS 4096U
 #define TAIL_S 1ULL
+
+static uint32_t dgram = 1472U;    // datagram length: 1472 (TickLE's fragments) or up to 65507 (IP fragmentation)
+static uint32_t buf_size = 2048U; // a provided buffer: the kernel's header, then the datagram
 
 static uint64_t now_ns(void) {
     struct timespec ts;
@@ -87,11 +89,11 @@ static int do_send(const char* ip, int port, double seconds) {
     int fd = udp_socket();
     struct sockaddr_in to = {.sin_family = AF_INET, .sin_port = htons((uint16_t)port)};
     inet_pton(AF_INET, ip, &to.sin_addr);
-    static uint8_t payload[BATCH][DGRAM];
+    static uint8_t payload[BATCH][DGRAM_MAX];
     struct iovec iov[BATCH];
     struct mmsghdr msgs[BATCH];
     for (uint32_t i = 0; i < BATCH; i++) {
-        iov[i] = (struct iovec) {payload[i], DGRAM};
+        iov[i] = (struct iovec) {payload[i], dgram};
         memset(&msgs[i], 0, sizeof(msgs[i]));
         msgs[i].msg_hdr.msg_name = &to;
         msgs[i].msg_hdr.msg_namelen = sizeof(to);
@@ -102,7 +104,7 @@ static int do_send(const char* ip, int port, double seconds) {
     // drops nothing the receiver would count as lost.
     uint64_t zero = 0;
     memcpy(payload[0], &zero, sizeof(zero));
-    (void)sendto(fd, payload[0], DGRAM, 0, (struct sockaddr*)&to, sizeof(to));
+    (void)sendto(fd, payload[0], dgram, 0, (struct sockaddr*)&to, sizeof(to));
     struct timespec pause = {0, 200000000};
     nanosleep(&pause, NULL);
     uint64_t seq = 1;
@@ -191,11 +193,11 @@ static bool rx_done(const struct rx_state* st, uint64_t first_ns, double seconds
 }
 
 static void recv_mmsg(int fd, struct rx_state* st, double seconds) {
-    static uint8_t bufs[BATCH][DGRAM];
+    static uint8_t bufs[BATCH][DGRAM_MAX];
     struct iovec iov[BATCH];
     struct mmsghdr msgs[BATCH];
     for (uint32_t i = 0; i < BATCH; i++) {
-        iov[i] = (struct iovec) {bufs[i], DGRAM};
+        iov[i] = (struct iovec) {bufs[i], DGRAM_MAX};
         memset(&msgs[i], 0, sizeof(msgs[i]));
         msgs[i].msg_hdr.msg_iov = &iov[i];
         msgs[i].msg_hdr.msg_iovlen = 1;
@@ -266,7 +268,7 @@ static void uring_init(struct uring* u, uint32_t flags, uint32_t nbufs) {
     size_t ring_len = nbufs * sizeof(struct io_uring_buf);
     u->br = mmap(NULL, ring_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
     u->buffers =
-        mmap(NULL, (size_t)nbufs * BUF_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
+        mmap(NULL, (size_t)nbufs * buf_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
     if (u->br == MAP_FAILED || u->buffers == MAP_FAILED) {
         perror("mmap buffers");
         exit(1);
@@ -283,8 +285,8 @@ static void uring_init(struct uring* u, uint32_t flags, uint32_t nbufs) {
     u->br_mask = nbufs - 1;
     for (uint32_t i = 0; i < nbufs; i++) {
         struct io_uring_buf* b = &u->br->bufs[i];
-        b->addr = (uint64_t)(uintptr_t)(u->buffers + ((size_t)i * BUF_SIZE));
-        b->len = BUF_SIZE;
+        b->addr = (uint64_t)(uintptr_t)(u->buffers + ((size_t)i * buf_size));
+        b->len = buf_size;
         b->bid = (uint16_t)i;
     }
     __atomic_store_n(&u->br->tail, (uint16_t)nbufs, __ATOMIC_RELEASE);
@@ -294,8 +296,8 @@ static uint16_t br_tail_local;
 
 static void buf_recycle(struct uring* u, uint16_t bid) {
     struct io_uring_buf* b = &u->br->bufs[br_tail_local & u->br_mask];
-    b->addr = (uint64_t)(uintptr_t)(u->buffers + ((size_t)bid * BUF_SIZE));
-    b->len = BUF_SIZE;
+    b->addr = (uint64_t)(uintptr_t)(u->buffers + ((size_t)bid * buf_size));
+    b->len = buf_size;
     b->bid = bid;
     br_tail_local++;
 }
@@ -353,12 +355,12 @@ static void recv_uring(int fd, struct rx_state* st, double seconds, uint32_t fla
                 continue;
             }
             uint16_t bid = (uint16_t)(cqe->flags >> IORING_CQE_BUFFER_SHIFT);
-            const uint8_t* buf = u.buffers + ((size_t)bid * BUF_SIZE);
+            const uint8_t* buf = u.buffers + ((size_t)bid * buf_size);
             const struct io_uring_recvmsg_out* out = (const struct io_uring_recvmsg_out*)buf;
             if (st->received == 0) {
                 first = now_ns();
             }
-            uint32_t len = out->payloadlen < BUF_SIZE - sizeof(*out) ? out->payloadlen : 0;
+            uint32_t len = out->payloadlen < buf_size - sizeof(*out) ? out->payloadlen : 0;
             got(st, buf + sizeof(*out), len);
             buf_recycle(&u, bid);
             // Hand the buffer back now, as a datagram's processing ends, not after the batch: a spin inside got()
@@ -374,12 +376,48 @@ static void recv_uring(int fd, struct rx_state* st, double seconds, uint32_t fla
     }
 }
 
+// This namespace's IP reassembly failures and timeouts (/proc/net/snmp, the "Ip:" rows): a datagram above the MTU that
+// the kernel could not put together never reaches a socket, so neither lost nor socket_drops would name it alone.
+static void ip_reasm(uint64_t* fails, uint64_t* timeouts) {
+    FILE* snmp = fopen("/proc/net/snmp", "r");
+    if (snmp == NULL) {
+        return;
+    }
+    char names[1024];
+    char values[1024];
+    while (fgets(names, sizeof(names), snmp) != NULL) {
+        if (strncmp(names, "Ip:", 3) != 0 || fgets(values, sizeof(values), snmp) == NULL) {
+            continue;
+        }
+        char* name_save = NULL;
+        char* value_save = NULL;
+        char* name = strtok_r(names, " \n", &name_save);
+        char* value = strtok_r(values, " \n", &value_save);
+        while (name != NULL && value != NULL) {
+            if (strcmp(name, "ReasmFails") == 0) {
+                *fails = strtoull(value, NULL, 10);
+            } else if (strcmp(name, "ReasmTimeout") == 0) {
+                *timeouts = strtoull(value, NULL, 10);
+            }
+            name = strtok_r(NULL, " \n", &name_save);
+            value = strtok_r(NULL, " \n", &value_save);
+        }
+        break;
+    }
+    fclose(snmp);
+}
+
 int main(int argc, char** argv) {
     if (argc >= 5 && strcmp(argv[1], "send") == 0) {
+        if (argc > 5) {
+            dgram = (uint32_t)strtoul(argv[5], NULL, 10);
+        }
         return do_send(argv[2], atoi(argv[3]), atof(argv[4]));
     }
     if (argc < 6 || strcmp(argv[1], "recv") != 0) {
-        fprintf(stderr, "usage: %s send IP PORT SECONDS | recv PORT SECONDS mmsg|uring|coop SPIN_US [PER] [BUFS]\n",
+        fprintf(stderr,
+                "usage: %s send IP PORT SECONDS [SIZE] | recv PORT SECONDS mmsg|uring|coop SPIN_US [PER] [BUFS] "
+                "[BUF_SIZE]\n",
                 argv[0]);
         return 2;
     }
@@ -390,6 +428,12 @@ int main(int argc, char** argv) {
     st.spin = strtoull(argv[5], NULL, 10);
     st.per = argc > 6 ? (uint32_t)strtoul(argv[6], NULL, 10) : DEFAULT_PER;
     uint32_t nbufs = argc > 7 ? (uint32_t)strtoul(argv[7], NULL, 10) : DEFAULT_BUFS;
+    if (argc > 8) {
+        buf_size = (uint32_t)strtoul(argv[8], NULL, 10);
+    }
+    uint64_t reasm_fails = 0;
+    uint64_t reasm_timeout = 0;
+    ip_reasm(&reasm_fails, &reasm_timeout);
     if (strcmp(mode, "mmsg") == 0) {
         nbufs = 0;
         recv_mmsg(fd, &st, seconds);
@@ -405,10 +449,14 @@ int main(int argc, char** argv) {
     uint32_t drops = socket_drops(fd, &rcvbuf);
     struct rusage ru;
     getrusage(RUSAGE_SELF, &ru);
-    printf("RESULT: mode=%s spin_us=%llu per=%u bufs=%u received=%llu lost=%llu socket_drops=%u rcvbuf=%u rearms=%llu "
-           "cpu_user_ms=%ld cpu_sys_ms=%ld\n",
-           mode, (unsigned long long)st.spin, st.per, nbufs, (unsigned long long)st.received,
+    uint64_t fails_after = 0;
+    uint64_t timeout_after = 0;
+    ip_reasm(&fails_after, &timeout_after);
+    printf("RESULT: mode=%s spin_us=%llu per=%u bufs=%u buf_size=%u received=%llu lost=%llu socket_drops=%u rcvbuf=%u "
+           "rearms=%llu reasm_fails=%llu reasm_timeout=%llu cpu_user_ms=%ld cpu_sys_ms=%ld\n",
+           mode, (unsigned long long)st.spin, st.per, nbufs, buf_size, (unsigned long long)st.received,
            (unsigned long long)st.lost, drops, rcvbuf, (unsigned long long)rearms,
+           (unsigned long long)(fails_after - reasm_fails), (unsigned long long)(timeout_after - reasm_timeout),
            (long)(ru.ru_utime.tv_sec * 1000 + ru.ru_utime.tv_usec / 1000),
            (long)(ru.ru_stime.tv_sec * 1000 + ru.ru_stime.tv_usec / 1000));
     return 0;
