@@ -86,12 +86,48 @@
 #     HEAD_SHA=<sha> OUT="$OUT" examples/perf_hil/experiments/rmw_keepall_rig.sh > "$OUT.launch.log" 2>&1 < /dev/null &
 # DURATION: build 2-5 min (head only; 2 min incremental on 2026-10-06), dry run 6 runs x ~20 s = 2 min, then 3 arms x
 #   4 cells x 3 reps = 36 runs at ~32 s (measured 2026-10-06) = ~19 min: estimate 30 min, analyse an overrun at 45.
+#
+# Added 2026-10-10 for ~/rig_queue_largemsg_A4.sh (large-message step A, L3 and L4; docs/DESIGN.md section 8). Each is
+# off unless set, so every earlier invocation runs unchanged:
+#   fastdds@mms1472  Fast DDS with fastdds/fastdds_eth0_only_mms1472.xml (eth0 only, maxMessageSize 1472: the design's
+#                    vendor-favouring second arm). A3's queue named fastdds_keepall_F1472.xml, which never existed, and
+#                    skipped the arm without failing.
+#   CLOCK_PROBE=1    clock_offset_probe.py between the two Pis over eth0, before and after every run, into
+#                    <stem>_clock.txt; the launcher also records each perf_test's start (<stem>_<role>.start, wall ns).
+#                    perf_test's cross-host latency is subscriber clock minus publisher clock; the summary
+#                    (largemsg_rig_summary.py) subtracts the measured offset, interpolated in time, to put it on one clock.
+#   SAMEHOST=1       publisher and subscriber both on the client Pi. Every vendor at its shipped same-host default (DDS
+#                    default first, docs/TESTING.md section 5): no Fast DDS profile (its SHM transport on), no
+#                    CYCLONEDDS_URI; rmw_tickle with TICKLE_BROADCAST_ADDR, as rmw_samehost.sh's scored arm. fastdds@<F>
+#                    arms, EQUAL_BOUND and lossy cells are refused (a profile is a cross-host treatment; tc acts on
+#                    eth0, which a same-host sample never crosses). One clock: no probe.
+#   PC_PREFLIGHT=1   no rig and no lock: "client" and "server" are two private network namespaces joined by a veth named
+#                    eth0 in each (192.168.10.2 and .3, broadcast .255, a default route), every Pi command runs in its
+#                    namespace as this user, files are copied instead of scp'd, nothing is built, and the stack is the
+#                    PC's: PF_TICKLE_INSTALL / PF_PERF_WS (pc_preflight_build.sh's install and perf/install) and
+#                    PF_VARIANT_<name> (an install dir holding rmw_tickle for arm tickle@<name>). It tests this script,
+#                    the launcher, the probe and the summary on the same code path as the rig, not the rig's build.
+#   meta.txt         the run's QoS flags, rate, SAMEHOST, CLOCK_PROBE, DUR and DRY, for the summary.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
-if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
+PC_PREFLIGHT=${PC_PREFLIGHT:-0}
+if [ "$PC_PREFLIGHT" != 1 ] && [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then
+    exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"
+fi
 
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
+SAMEHOST=${SAMEHOST:-0}; CLOCK_PROBE=${CLOCK_PROBE:-0}; PROBE_PORT=${PROBE_PORT:-39117}
+if [ "$PC_PREFLIGHT" = 1 ]; then
+    : "${PF_TICKLE_INSTALL:?PC_PREFLIGHT needs PF_TICKLE_INSTALL (pc_preflight_build.sh)}"
+    : "${PF_PERF_WS:?PC_PREFLIGHT needs PF_PERF_WS (pc_preflight_build.sh)}"
+    CLIENT=ka_pfc_$$; SERVER=ka_pfs_$$; SKIP_BUILD=1
+fi
+[ "$SAMEHOST" = 1 ] && SERVER=$CLIENT
+# Each distinct host once: under SAMEHOST the client is the server, and two builds or copies at once on one Pi would
+# write the same tree.
+HOSTS=("$CLIENT")
+[ "$SERVER" = "$CLIENT" ] || HOSTS+=("$SERVER")
 EQUAL_BOUND=${EQUAL_BOUND:-}
 if [ -n "$EQUAL_BOUND" ]; then
     case "$EQUAL_BOUND" in auto | [1-9] | [1-9][0-9] | [1-9][0-9][0-9] | [1-9][0-9][0-9][0-9]) ;;
@@ -106,12 +142,21 @@ fi
 # run (the typesupport or core's sizing changed, and the quoted figure would be stale).
 EXPECTED_N="Array1k:492 Array4k:125"
 ARMS=${ARMS:-"tickle@pre tickle@ack tickle@head fastdds cyclonedds"}
+if [ "$SAMEHOST" = 1 ]; then
+    [ -z "$EQUAL_BOUND" ] || { echo "SAMEHOST does not run EQUAL_BOUND" >&2; exit 64; }
+    for a in $ARMS; do
+        case "$a" in fastdds@*) echo "SAMEHOST runs every vendor at its shipped default, not $a" >&2; exit 64 ;; esac
+    done
+fi
 HAS_TICKLE=0; case " $ARMS " in *" tickle@"*) HAS_TICKLE=1 ;; esac
 if [ "$HAS_TICKLE" = 1 ]; then HEAD_SHA=${HEAD_SHA:?set HEAD_SHA to a pushed commit}; else HEAD_SHA=${HEAD_SHA:-none}; fi
 PRE_SHA=${PRE_SHA:-674f0dcb}; ACK_SHA=${ACK_SHA:-8d1c3712}
 REPS=${REPS:-3}; DUR=${DUR:-20}; TOPICS=${TOPICS:-"Array1k Array4k"}; LOSSES=${LOSSES:-"0 5"}
 if [ -z "${CELLS:-}" ]; then
     CELLS=""; for l in $LOSSES; do for t in $TOPICS; do CELLS="$CELLS $t:$l"; done; done
+fi
+if [ "$SAMEHOST" = 1 ]; then
+    for c in $CELLS; do [ "${c#*:}" = 0 ] || { echo "SAMEHOST cells are lossless, not $c" >&2; exit 64; }; done
 fi
 SUMMARY=${SUMMARY:-$REPO/examples/perf_hil/experiments/rmw_keepall_rig_summary.py}
 DOMAIN=${DOMAIN:-61}
@@ -127,34 +172,80 @@ DRY_DUR=${DRY_DUR:-6}
 mkdir -p "$OUT.runs"
 [ "$DRY" = 1 ] && mkdir -p "$OUT.dry"
 SUM="$OUT.txt"
-sh_() { local h=$1; shift; ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=10 "ci@$h" "$@"; }
+sh_() {
+    local h=$1; shift
+    if [ "$PC_PREFLIGHT" = 1 ]; then # the "host" is a namespace on this PC; the command runs there as this user
+        sudo -n ip netns exec "$h" sudo -n -u "$USER" bash -c "$*"
+    else
+        ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=10 "ci@$h" "$@"
+    fi
+}
+fetch_() { # host remote-path local-path
+    if [ "$PC_PREFLIGHT" = 1 ]; then cp "$2" "$3" 2>/dev/null; else scp -q -i "$K" -o BatchMode=yes "ci@$1:$2" "$3" 2>/dev/null; fi
+}
 say() { echo "$*" | tee -a "$SUM"; }
+PC_VETH=ka$$
+pc_netns_up() {
+    local ns ip peer
+    sudo -n ip netns add "$CLIENT" && sudo -n ip netns add "ka_pfs_$$" || return 1
+    sudo -n ip link add "${PC_VETH}c" type veth peer name "${PC_VETH}s" || return 1
+    for ns in "$CLIENT" "ka_pfs_$$"; do
+        case "$ns" in "$CLIENT") peer=${PC_VETH}c ip=192.168.10.2 ;; *) peer=${PC_VETH}s ip=192.168.10.3 ;; esac
+        sudo -n ip link set "$peer" netns "$ns" && sudo -n ip -n "$ns" link set "$peer" name eth0 &&
+            sudo -n ip -n "$ns" addr add "$ip/24" brd 192.168.10.255 dev eth0 && sudo -n ip -n "$ns" link set lo up &&
+            sudo -n ip -n "$ns" link set eth0 up && sudo -n ip -n "$ns" route add default dev eth0 || return 1
+    done
+}
+pc_netns_down() {
+    sudo -n ip netns del "$CLIENT" 2>/dev/null
+    sudo -n ip netns del "ka_pfs_$$" 2>/dev/null
+    return 0
+}
 
 set_loss() {
+    if [ "$PC_PREFLIGHT" = 1 ]; then # tc as root through ip netns exec (sudo -n permits ip; a nested sudo tc does not)
+        if [ "$1" = 0 ]; then sudo -n ip netns exec "$CLIENT" tc qdisc del dev eth0 root >/dev/null 2>&1 || true
+        else sudo -n ip netns exec "$CLIENT" tc qdisc replace dev eth0 root netem loss "$1%"; fi
+        return
+    fi
     if [ "$1" = 0 ]; then sh_ "$CLIENT" "sudo -n tc qdisc del dev eth0 root" </dev/null >/dev/null 2>&1 || true
     else sh_ "$CLIENT" "sudo -n tc qdisc replace dev eth0 root netem loss $1%" </dev/null; fi
 }
 cleanup() {
     set_loss 0
-    for h in "$CLIENT" "$SERVER"; do
+    for h in "${HOSTS[@]}"; do
         # shellcheck disable=SC2016 # expanded on the Pi, not here
         sh_ "$h" 'for f in /tmp/ka_*.pid; do [ -f "$f" ] || continue; p=$(cat "$f");
             case "$(readlink /proc/$p/exe 2>/dev/null)" in */perf_test) kill -INT "$p";; esac; rm -f "$f"; done' \
             </dev/null >/dev/null 2>&1
     done
+    if [ "$PC_PREFLIGHT" = 1 ]; then sleep 2; pc_netns_down; fi
 }
 trap cleanup EXIT
+if [ "$PC_PREFLIGHT" = 1 ]; then pc_netns_up || { echo "PC preflight: cannot build the namespaces"; exit 1; }; fi
 
 say "=== rmw KEEP_ALL on the rig, $(date -Is): head $HEAD_SHA, ack $ACK_SHA, pre $PRE_SHA, $REPS reps, ${DUR}s," \
     "cells:$CELLS, arms: $ARMS, out $OUT ==="
 [ -n "$EQUAL_BOUND" ] && say "EQUAL_BOUND=$EQUAL_BOUND: every KEEP_ALL writer bounded alike (see the header); dry run $DRY"
+say "qos [$QOS_ARGS] rate $PUB_RATE Hz; samehost $SAMEHOST; clock probe $CLOCK_PROBE; pc preflight $PC_PREFLIGHT" \
+    "(client $CLIENT, server $SERVER)"
+printf 'qos_args=%s\npub_rate=%s\nsamehost=%s\nclock_probe=%s\ndur=%s\ndry=%s\npc_preflight=%s\n' "$QOS_ARGS" \
+    "$PUB_RATE" "$SAMEHOST" "$CLOCK_PROBE" "$DUR" "$DRY" "$PC_PREFLIGHT" > "$OUT.runs/meta.txt"
 [ "$HAS_TICKLE" = 1 ] || SKIP_BUILD=1
 # The pre/ack variants to build: only those ARMS names (the default ARMS names both, as before).
+# Where each tickle build is installed: on the Pis ~/tickle/install and ~/rmw_variants/<name>/install; in the PC
+# preflight the PC's builds (header, PC_PREFLIGHT).
+head_install() { if [ "$PC_PREFLIGHT" = 1 ]; then echo "$PF_TICKLE_INSTALL"; else echo /home/ci/tickle/install; fi; }
+variant_install() { # $1 variant name
+    if [ "$PC_PREFLIGHT" = 1 ]; then local v="PF_VARIANT_$1"; echo "${!v:?PC_PREFLIGHT needs $v for arm tickle@$1}"
+    else echo "/home/ci/rmw_variants/$1/install"; fi
+}
+HEAD_LIB="$(head_install)/rmw_tickle/lib/librmw_tickle.so"
 VARIANT_SPECS=""; VARIANT_LIBS=""; N_TICKLE_LIBS=1
 for v in pre:$PRE_SHA ack:$ACK_SHA; do
     case " $ARMS " in *" tickle@${v%%:*} "*)
         VARIANT_SPECS="$VARIANT_SPECS $v"
-        VARIANT_LIBS="$VARIANT_LIBS /home/ci/rmw_variants/${v%%:*}/install/rmw_tickle/lib/librmw_tickle.so"
+        VARIANT_LIBS="$VARIANT_LIBS $(variant_install "${v%%:*}")/rmw_tickle/lib/librmw_tickle.so"
         N_TICKLE_LIBS=$((N_TICKLE_LIBS + 1)) ;;
     esac
 done
@@ -167,7 +258,7 @@ RMW_TICKLE_BUILD="-DCMAKE_BUILD_TYPE=None '-DCMAKE_C_FLAGS=-g -O2' '-DCMAKE_CXX_
 if [ "${SKIP_BUILD:-0}" != 1 ]; then
 say "--- building on both Pis ---"
 pids=()
-for h in "$CLIENT" "$SERVER"; do
+for h in "${HOSTS[@]}"; do
     sh_ "$h" "set -e
 cd ~/tickle && git fetch -q origin && git reset -q --hard $HEAD_SHA && git clean -fdqx -e install -e build -e log
 export PYTHONPATH=\$HOME/tickle/tools/typesupport\${PYTHONPATH:+:\$PYTHONPATH}
@@ -202,21 +293,39 @@ fi
 
 # The tickle binaries (head and each variant ARMS names; all three by default) must differ, on each Pi, or the arms
 # are one binary under several names.
-[ "$HAS_TICKLE" = 1 ] && for h in "$CLIENT" "$SERVER"; do
-    n=$(sh_ "$h" "sha256sum \$HOME/tickle/install/rmw_tickle/lib/librmw_tickle.so $VARIANT_LIBS | awk '{print \$1}' | sort -u | wc -l" </dev/null)
+[ "$HAS_TICKLE" = 1 ] && for h in "${HOSTS[@]}"; do
+    n=$(sh_ "$h" "sha256sum $HEAD_LIB $VARIANT_LIBS | awk '{print \$1}' | sort -u | wc -l" </dev/null)
     if [ "$n" != "$N_TICKLE_LIBS" ]; then say "VOID OVERALL: $h has $n distinct librmw_tickle.so, not $N_TICKLE_LIBS"; exit 1; fi
 done
 [ "$HAS_TICKLE" = 1 ] && say "identity: $N_TICKLE_LIBS distinct librmw_tickle.so on both Pis"
 
 CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General></Domain></CycloneDDS>'
 FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
+[ "$PC_PREFLIGHT" = 1 ] && FDDS_PROFILE=$REPO/examples/perf_hil/fastdds/fastdds_eth0_only.xml
 # Overlays are sourced with local_setup.bash only: a setup.bash re-sources its build-time underlays, which moves
 # /opt/ros/jazzy back in front of rmw_perf_ws and loads interface packages without TickLE typesupport.
 # shellcheck disable=SC2016 # expanded on the Pi, not here
 BASE='set +u; source /opt/ros/jazzy/setup.bash; source $HOME/tickle/install/local_setup.bash
 source $HOME/rmw_perf_ws/install/local_setup.bash'
+if [ "$PC_PREFLIGHT" = 1 ]; then
+    BASE="set +u; source /opt/ros/lyrical/setup.bash; source $PF_TICKLE_INSTALL/local_setup.bash
+source $PF_PERF_WS/local_setup.bash; export KA_PERF_TEST=$PF_PERF_WS/performance_test/lib/performance_test/perf_test"
+fi
 env_for() {
     echo "$BASE"
+    if [ "$SAMEHOST" = 1 ]; then # every vendor at its shipped same-host default (header, SAMEHOST)
+        echo "unset FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE RMW_FASTRTPS_USE_QOS_FROM_XML"
+        echo "unset RMW_FASTRTPS_PUBLICATION_MODE CYCLONEDDS_URI"
+        case "$1" in
+            tickle@head) echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+            tickle@*) echo "source $(variant_install "${1#tickle@}")/local_setup.bash"
+                echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+            fastdds) echo "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp" ;;
+            cyclonedds) echo "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp" ;;
+        esac
+        echo "export ROS_DOMAIN_ID=$DOMAIN"
+        return 0
+    fi
     if [ -n "$EQUAL_BOUND" ]; then # $2 = topic: the bound is per topic (header, EQUAL_BOUND)
         case "$1" in
             tickle@head) echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255"
@@ -230,7 +339,7 @@ env_for() {
     fi
     case "$1" in
         tickle@head) echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
-        tickle@*) echo "source \$HOME/rmw_variants/${1#tickle@}/install/local_setup.bash"
+        tickle@*) echo "source $(variant_install "${1#tickle@}")/local_setup.bash"
             echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         fastdds) echo "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp FASTRTPS_DEFAULT_PROFILES_FILE=$FDDS_PROFILE" ;;
         # The QoS arms: the profile is the only treatment, so nothing else that steers rmw_fastrtps may leak in.
@@ -242,8 +351,8 @@ env_for() {
 }
 lib_for() {
     case "$1" in
-        tickle@head) echo "/home/ci/tickle/install/rmw_tickle/lib/librmw_tickle.so" ;;
-        tickle@*) echo "/home/ci/rmw_variants/${1#tickle@}/install/rmw_tickle/lib/librmw_tickle.so" ;;
+        tickle@head) echo "$HEAD_LIB" ;;
+        tickle@*) echo "$(variant_install "${1#tickle@}")/rmw_tickle/lib/librmw_tickle.so" ;;
         fastdds | fastdds@*) echo "librmw_fastrtps_cpp.so" ;;
         cyclonedds) echo "librmw_cyclonedds_cpp.so" ;;
     esac
@@ -251,6 +360,7 @@ lib_for() {
 fdds_src() { # the profile in THIS checkout behind arm fastdds@<F>
     case "$1" in
         F0) echo "$REPO/examples/perf_hil/fastdds/fastdds_eth0_only.xml" ;;
+        mms1472) echo "$REPO/examples/perf_hil/fastdds/fastdds_eth0_only_mms1472.xml" ;;
         *) echo "$REPO/examples/perf_hil/fastdds/fastdds_keepall_$1.xml" ;;
     esac
 }
@@ -261,8 +371,9 @@ fdds_src() { # the profile in THIS checkout behind arm fastdds@<F>
 LAUNCHER='#!/bin/bash
 role=$1; envfile=$2; shift 2
 source "$envfile"
-PT=$HOME/rmw_perf_ws/install/performance_test/lib/performance_test/perf_test
-rm -f /tmp/ka_$role.log /tmp/ka_$role.maps /tmp/ka_$role.pid /tmp/ka_$role.treat
+PT=${KA_PERF_TEST:-$HOME/rmw_perf_ws/install/performance_test/lib/performance_test/perf_test}
+rm -f /tmp/ka_$role.log /tmp/ka_$role.maps /tmp/ka_$role.pid /tmp/ka_$role.treat /tmp/ka_$role.start
+date +%s%N > /tmp/ka_$role.start
 setsid nohup bash -c "echo \$\$ > /tmp/ka_$role.pid; exec \"\$0\" \"\$@\"" "$PT" "$@" > /tmp/ka_$role.log 2>&1 < /dev/null &
 for i in 1 2 3 4 5 6 7 8 9 10; do [ -s /tmp/ka_$role.pid ] && break; sleep 0.2; done
 p=$(cat /tmp/ka_$role.pid)
@@ -334,7 +445,7 @@ if [ -n "$EQUAL_BOUND" ]; then
             xmllint --noout --schema "$XSD" "$prof" 2>&1 | tee -a "$SUM"
             [ "${PIPESTATUS[0]}" = 0 ] || { say "REFUSED: $prof does not validate against the rig's XSD"; exit 1; }
             fsha=$(sha256sum < "$prof" | cut -c1-64)
-            for h in "$CLIENT" "$SERVER"; do
+            for h in "${HOSTS[@]}"; do
                 sh_ "$h" "cat > /tmp/ka_fdds_eq$n.xml" < "$prof" || { say "profile copy failed"; exit 1; }
                 pi_sha=$(sh_ "$h" "sha256sum < /tmp/ka_fdds_eq$n.xml" </dev/null | cut -c1-64)
                 [ "$pi_sha" = "$fsha" ] || { say "profile eq$n on $h hashes $pi_sha, not $fsha"; exit 1; }
@@ -348,7 +459,7 @@ if [ -n "$EQUAL_BOUND" ]; then
     [ "$DRY" = 1 ] && cp "$OUT.runs/bounds.txt" "$OUT.dry/bounds.txt"
 fi
 
-for h in "$CLIENT" "$SERVER"; do
+for h in "${HOSTS[@]}"; do
     printf '%s' "$LAUNCHER" | sh_ "$h" "cat > /tmp/ka_launch.sh && chmod +x /tmp/ka_launch.sh" || { say "launcher copy failed"; exit 1; }
     for arm in $ARMS; do
         for t in $CELL_TOPICS; do
@@ -370,6 +481,27 @@ for h in "$CLIENT" "$SERVER"; do
     done
 done
 
+# CLOCK_PROBE (header): the probe on both hosts, and the server's test-link address it is asked on.
+SERVER_IP=""
+if [ "$CLOCK_PROBE" = 1 ] && [ "$SAMEHOST" != 1 ]; then
+    for h in "${HOSTS[@]}"; do
+        sh_ "$h" "cat > /tmp/ka_probe.py" < "$REPO/examples/perf_hil/experiments/clock_offset_probe.py" \
+            || { say "probe copy failed"; exit 1; }
+    done
+    SERVER_IP=$(sh_ "$SERVER" "ip -4 -o addr show dev eth0" </dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+    [ -n "$SERVER_IP" ] || { say "REFUSED: no IPv4 address on $SERVER's eth0 for the clock probe"; exit 1; }
+    say "clock probe: $CLIENT -> $SERVER_IP:$PROBE_PORT over eth0, before and after every run"
+fi
+clock_probe() { # $1 file, $2 label: one PROBE line (clock_offset_probe.py query), or "PROBE ok=0 ..." when it failed
+    [ -n "$SERVER_IP" ] || return 0
+    sh_ "$SERVER" "setsid nohup python3 /tmp/ka_probe.py serve --bind $SERVER_IP --port $PROBE_PORT --idle 3 --max 20 \
+        > /tmp/ka_probe_srv.log 2>&1 < /dev/null &" </dev/null
+    sleep 0.5
+    local line
+    line=$(sh_ "$CLIENT" "python3 /tmp/ka_probe.py query --server $SERVER_IP --port $PROBE_PORT --count 64" </dev/null)
+    echo "$2 ${line:-PROBE ok=0 no output}" >> "$1"
+}
+
 launch() { # host role arm topic args...
     local h=$1 role=$2 arm=$3 topic=$4; shift 4
     sh_ "$h" "/tmp/ka_launch.sh $role /tmp/ka_env_${arm/@/_}_$topic.sh $*" </dev/null
@@ -382,6 +514,7 @@ wait_done() { # $1 host, $2 role, $3 deadline seconds
 run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher seconds, default $DUR]
     local arm=$1 topic=$2 loss=$3 rep=$4 stem="$1_$2_l$3_r$4" dir=${5:-$OUT.runs} dur=${6:-$DUR}
     local common="-c ROS2 -t $topic $QOS_ARGS --dds_domain_id $DOMAIN"
+    clock_probe "$dir/${stem}_clock.txt" before
     # Every arm, not only rmw_tickle's: rclcpp's type-description service needs a typesupport rmw_tickle does not
     # provide (its first run here died on it), and switching off an introspection service changes no data path.
     local rosargs="--ros-args --param start_type_description_service:=false"
@@ -391,8 +524,11 @@ run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher second
     local k1 k2
     k1=$(wait_done "$CLIENT" pub $((dur + 40)))
     k2=$(wait_done "$SERVER" sub 20)
-    scp -q -i "$K" -o BatchMode=yes "ci@$CLIENT:/tmp/ka_pub.log" "$dir/${stem}_pub.log" 2>/dev/null
-    scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/ka_sub.log" "$dir/${stem}_sub.log" 2>/dev/null
+    clock_probe "$dir/${stem}_clock.txt" after
+    fetch_ "$CLIENT" /tmp/ka_pub.log "$dir/${stem}_pub.log"
+    fetch_ "$SERVER" /tmp/ka_sub.log "$dir/${stem}_sub.log"
+    fetch_ "$CLIENT" /tmp/ka_pub.start "$dir/${stem}_pub.start"
+    fetch_ "$SERVER" /tmp/ka_sub.start "$dir/${stem}_sub.start"
     sh_ "$CLIENT" "cat /tmp/ka_pub.treat 2>/dev/null" </dev/null > "$dir/${stem}_pub.treat"
     sh_ "$SERVER" "cat /tmp/ka_sub.treat 2>/dev/null" </dev/null > "$dir/${stem}_sub.treat"
     local mp ms
