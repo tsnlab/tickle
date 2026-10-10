@@ -43,6 +43,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PH="$(cd "$HERE/.." && pwd)"
 REPO="$(cd "$PH/../.." && pwd)"
+# shellcheck source=gate_v2_lib.sh
+. "$HERE/gate_v2_lib.sh"
 REPS="${REPS:-3}"
 DUR="${DUR:-5}"
 # Warm-up and cool-down, identical for every framework (the user, 2026-10-06; TESTING.md section 5; the defaults and
@@ -238,7 +240,11 @@ say "TICKLE_P4_PATH=${TICKLE_P4_PATH:-frag} (p4 TickLE rows must report sample_p
 # under the same flag. largemsgL_l2x read client CPU +2% at p2/p3 between two builds whose executed instructions are
 # equal on x86 (perf) and on aarch64 (qemu, exact; largemsg_insn_ab.sh): a gap that a neutral layout flag removes or
 # reverses is placement, not work (WIRE 10.4). Only [A-Za-z0-9=_ -] is accepted, so the value survives the ssh line.
-TICKLE_EXTRA_CFLAGS="${TICKLE_EXTRA_CFLAGS:-}"
+# Since gate v2 (A1, 2026-10-11) the default is the layout-stable build, TICKLE_LAYOUT_CFLAGS (gate_v2_lib.sh): every
+# TickLE build this campaign publishes or an A/B decides from. TICKLE_EXTRA_CFLAGS= (set, empty) is the plain build.
+# Every TickLE build runs under `bash -x` and its log is read back by build_flags_check.sh (below, after the builds): a
+# build that does not show these flags on its compile lines stops the campaign before it measures anything.
+layout_cflags_default
 case "$TICKLE_EXTRA_CFLAGS" in
 *[!A-Za-z0-9=_\ -]*)
     echo "TICKLE_EXTRA_CFLAGS may hold only [A-Za-z0-9=_ -]: '$TICKLE_EXTRA_CFLAGS'" >&2
@@ -279,7 +285,8 @@ cd examples/perf_hil
 for v in $VARIANTS; do
   scen=\${v%_p[0-9]}; size=\${v##*_}
   for fw in $FWS; do
-    (cd \$fw && TICKLE_P4_PATH=${TICKLE_P4_PATH:-frag} TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' ./build.sh \$scen \$size >/tmp/campaign_build_\${fw}_\$v.log 2>&1) \
+    x=; [ \$fw = tickle ] && x='bash -x'
+    (cd \$fw && TICKLE_P4_PATH=${TICKLE_P4_PATH:-frag} TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' \$x ./build.sh \$scen \$size >/tmp/campaign_build_\${fw}_\$v.log 2>&1) \
       || { echo \"BUILD FAILED: \$fw \$scen \$size\"; tail -8 /tmp/campaign_build_\${fw}_\$v.log; exit 1; }
   done
 done
@@ -304,6 +311,24 @@ for host in "${HOSTS[@]}"; do
 done
 [ -z "$missing" ] || { say "MISSING BINARIES after a build that reported success: $missing"; exit 1; }
 say "all $(( $(wc -w <<<"$VARIANTS") * 3 * 2 )) binaries present on both rpis"
+# The TickLE builds' own record of their flags (gate v2 A1): each traced build log is copied back beside $OUT and read by
+# build_flags_check.sh - the flags on the bench's compile lines and in the core prefix it linked. A build that does not
+# show TICKLE_EXTRA_CFLAGS stops the campaign here; one "build flags verified" line per host and variant is the record
+# campaign_ab_chain.sh checks every block against. The compiler and its default alignments are recorded with them.
+case " $FWS " in *" tickle "*)
+    for host in "${HOSTS[@]}"; do
+        say "compiler on $host: $(ssh_h "$host" 'gcc --version | head -1; gcc -O2 -Q --help=optimizers | grep -E "falign-(functions|loops|jumps)=" | tr -s " \t" " "' 2>&1 | tr '\n' ';')"
+        for v in $VARIANTS; do
+            blog="$OUT.build_${host##*.}_$v.log"
+            ssh_h "$host" "cat /tmp/campaign_build_tickle_$v.log" >"$blog" 2>/dev/null || true
+            if ! verified=$("$HERE/build_flags_check.sh" "$blog" "$TICKLE_EXTRA_CFLAGS"); then
+                say "FATAL build flags: $host $v does not show TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS': $verified ($blog). Not running."
+                exit 1
+            fi
+            say "build flags verified: $host $v TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' ($verified)"
+        done
+    done ;;
+esac
 say "client at $(ssh_h "$RPI_CLIENT" 'git -C ~/tickle rev-parse --short HEAD'), server at $(ssh_h "$RPI_SERVER" 'git -C ~/tickle rev-parse --short HEAD')"
 
 # --- leftover guard: identify by /proc/PID/exe, never by a name pattern (CLAUDE.md rule 3) ------

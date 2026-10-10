@@ -23,7 +23,15 @@
 # TICKLE_EXTRA_CFLAGS=-falign-functions=64 that way, and the shared sweep did not forward it: both arms built plain, and
 # the run read as a placement control that had not been applied. campaign_sweep.sh now says the flags it forwards on
 # its own log line (TICKLE_EXTRA_CFLAGS=...), which is the record an arm's treatment is checked against.
+#
+# GATE V2 A1 (2026-10-11): both arms are built layout-stable - TICKLE_EXTRA_CFLAGS defaults to TICKLE_LAYOUT_CFLAGS
+# (gate_v2_lib.sh, -falign-functions=64) when unset, and is exported to every block. A block counts only if its log
+# echoes that value AND carries a "build flags verified" line for every TickLE build (campaign_sweep.sh reads each
+# build's own traced log with build_flags_check.sh); otherwise the chain stops VOID.
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
+# shellcheck source=gate_v2_lib.sh
+. ./examples/perf_hil/experiments/gate_v2_lib.sh
+layout_cflags_default
 A=${A:?A=<sha> the parent}; B=${B:?B=<sha> the change}; TAG=${TAG:?TAG=<name>}; REPS=${REPS:-3}
 PRIMARY=${PRIMARY:-}
 export RIG_LOCK_WAIT=36000
@@ -46,9 +54,17 @@ for sha in "$A" "$B" "$B" "$A"; do
     SHA=$sha FWS=tickle REPS=$REPS OUT=/tmp/${TAG}_b${n}_${sha:0:8}.txt $X/campaign_sweep.sh > "/tmp/${TAG}_b${n}_${sha:0:8}.log" 2>&1
     # The build flags are a treatment: the block's own log must echo the value this chain was given, or the chain stops
     # here rather than read two arms built some other way as the arms it was asked for.
-    if ! grep -qxF "TICKLE_EXTRA_CFLAGS='${TICKLE_EXTRA_CFLAGS:-}' (TickLE core and bench; empty: the plain build)" \
-        "/tmp/${TAG}_b${n}_${sha:0:8}.log"; then
-        echo "=== chain VOID $(date -Is): block $n's log does not echo TICKLE_EXTRA_CFLAGS='${TICKLE_EXTRA_CFLAGS:-}' ===" |
+    blk="/tmp/${TAG}_b${n}_${sha:0:8}.log"
+    if ! grep -qxF "TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (TickLE core and bench; empty: the plain build)" "$blk"; then
+        echo "=== chain VOID $(date -Is): block $n's log does not echo TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' ===" |
+            tee "/tmp/${TAG}.done" "/tmp/${TAG}_compare.txt"
+        exit 1
+    fi
+    # One verified line per host and variant: the block's variant list times the two Pis.
+    nvar=$(sed -n 's/^--- variants to build: \(.*\) ---$/\1/p' "$blk" | wc -w)
+    nver=$(grep -cF "TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (" <(grep '^build flags verified: ' "$blk"))
+    if [ "$nvar" -eq 0 ] || [ "$nver" -ne $((2 * nvar)) ]; then
+        echo "=== chain VOID $(date -Is): block $n has $nver 'build flags verified' lines for $nvar variants on 2 Pis ===" |
             tee "/tmp/${TAG}.done" "/tmp/${TAG}_compare.txt"
         exit 1
     fi
