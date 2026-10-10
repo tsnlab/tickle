@@ -402,6 +402,11 @@ def build_prereg(env):
         if not sentinel:
             raise Refused("CONTROL_SE_FLOOR=reps reads the sentinel's block means: it needs a SENTINEL")
         pre["control_se_floor"] = floor
+    cflags = " ".join(env.get("TICKLE_EXTRA_CFLAGS", "").split())
+    if cflags:
+        # The build treatment of every arm and the sentinel (ab_samehost.sh checks each cell's build showed it).
+        # Absent when empty, so a plain pre-registration is byte-identical to one written before this option.
+        pre["extra_cflags"] = cflags
     return pre
 
 
@@ -415,6 +420,8 @@ def describe(pre):
     for a, sha in pre["arms"].items():
         out.append(f"  arm {a} = {sha}")
     out.append(f"  blocks: {' '.join(blocks(pre))}, REPS={pre['reps']} per block and cell, DUR={pre['dur']} s")
+    out.append(f"  build: TICKLE_EXTRA_CFLAGS='{pre.get('extra_cflags', '')}' on the TickLE core and bench of every arm"
+               " and the sentinel (empty: the plain build)")
     out.append("  cells:")
     out += [f"    {c['key']}" for c in pre["cells"]]
     for name, expr in pre["derived"].items():
