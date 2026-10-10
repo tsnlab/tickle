@@ -41,7 +41,7 @@
 #include <tickle/log.h> // TT_LOG_NONE
 #include <tickle/tickle.h>
 
-#include "log.h" // tt_current_log_level
+#include "../../../src/log.h" // tt_current_log_level
 
 #define TEST_MOCK_DEFINE_STORAGE
 #include "../../../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: update_reliable_ack() is static
