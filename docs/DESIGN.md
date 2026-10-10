@@ -412,15 +412,11 @@ it when the callback returns. It is not a ring slot, so a held large sample bloc
 `tt_SAMPLE_RETAIN_MAX` like any other.
 
 **Same-host: a writer-owned sample area (step B).** The receiver's ring (768 KiB, 512 slots) cannot hold one 4 MB
-sample's 2,889 records, and drop-on-full would tear every BEST_EFFORT sample. So a large sample to same-host peers
-goes once into a **writer-owned shared region** (`/dev/shm/tickle-large-<ip>-<port>-<id>`, mapped read-only by
-readers), and each reader's ring gets one small descriptor record (offset, length, generation) whose `seq_span` is the
-sample's datagram count, so the seq space matches the socket path exactly. The reader lends straight from the region:
-publish is one encode, receive is zero core copies. Each area chunk carries a reader bitmask (by context id); a reader
-clears its bit on release, the writer reuses the chunk when the mask is clear, and liveliness clearing a dead peer
-clears its bit. Ring protocol unchanged; the region is new (`tt_SEGMENT_VERSION` 5). Until step B lands, large
-samples to an attached same-host peer go over the ring as fragments, which needs a ring of more than one sample, and
-the same-host cells are not published.
+sample's 2,889 records, and drop-on-full tears every BEST_EFFORT sample (rig A4 stage 4: Array4m best effort delivered
+0.06%, 1,796 samples abandoned). So a large sample to a same-host peer is encoded once into a chunk of a
+**Publisher-owned shared region**, and each reader's ring gets one small descriptor record whose `seq_span` is the
+sample's datagram count; the reader takes the sample in place and gives the chunk back. Designed in full below,
+"Step B: the same-host large path".
 
 **Flow control (KEEP_ALL).** The bound stays `min(cache depth, narrowest window)` in datagrams, and a sample is
 admitted only if all its datagrams fit. A matched reader whose window is below one sample's count can never admit it,
@@ -568,7 +564,141 @@ Where it departs, and why:
   sample first, as an ordinary publish does. A large sample's delivery sets the lending state to LARGE, which hid from
   the ring's release rule that the last fragment's slot was still being read: a departure handled in that callback
   unmapped the ring under the drain. The kind it replaced is kept (`lend.rx_outer_kind`).
-- Not yet: large samples in a local durable backlog (`tt_Subscriber_deliver_local_backlog()`), and step B.
+- Not yet: large samples in a local durable backlog (`tt_Subscriber_deliver_local_backlog()`); step B is designed below.
+
+#### Step B: the same-host large path (designed 2026-10-11, before any code)
+
+**The problem, measured.** Rig A4 stage 4 (`~/rig_results_safe/largemsgA4_s4a_samehost_*`, `_s4b_*`, head
+`dc056907`): same-host Array4m BEST_EFFORT KEEP_LAST 5 delivered 0.06% (`shm_full_dropped` ~1.79 M, 1,796 samples
+abandoned), and Array1m best effort lost 4 samples in one run. RELIABLE KEEP_LAST 10 delivered 100% of both, but its
+subscriber CPU per MB (1.95-2.06 ms at 1 MB, 1.75-1.79 ms at 4 MB) and its median latency (1.66 / 7.7 ms) lose to Fast
+DDS as shipped (1.72-1.82 ms/MB, 1.03 ms; 0.85-0.88 ms/MB, 4.0 ms), whose data-sharing hands the sample over in shared
+memory. Every one of TickLE's 723 or 2,889 records a sample is a claim, a copy into the slot, a drain step and a copy
+out into the assembly.
+
+**The shape.** The writer encodes the sample once into a chunk of a shared region it owns; each same-host reader gets
+one ring record naming the chunk; the reader delivers the sample from the chunk and gives the chunk back by clearing
+its bit. Publish is one encode (as now, into shared memory instead of the heap), receive is zero core copies (rmw then
+decodes from the chunk, as it decodes from the large buffer today). The seq space is the socket path's exactly: the
+record's `seq_span` is the sample's datagram count, so a reader that meets the same sample over UDP fragments and over
+a descriptor numbers it identically.
+
+**The region: per Publisher, opt-in, sized by the caller.**
+
+- `tt_Publisher_set_large_region(pub, chunks, chunk_bytes)` before the Publisher's first large publish;
+  `tt_LARGE_CHUNK_BYTES(max_cdr)` gives the chunk for a largest sample (the large-buffer layout, DataHeader at
+  `tt_LARGE_HEADER_OFFSET`, CDR at `tt_LARGE_CDR_OFFSET`, rounded to 64) and `tt_LARGE_REGION_BYTES(chunks,
+  chunk_bytes)` the whole mapping. Not set: no region, and a same-host large sample goes as step A's fragments.
+- Per Publisher, not per context, because the two sizes are a Publisher's: its type's largest sample and its depth.
+  rmw sets `chunks = min(depth, tt_LARGE_RETAINED) + tt_LARGE_REGION_SPARE` (3: one being sent, one waiting behind it,
+  one held by a reader's callback) and `chunk_bytes` from the type's bound, else `RMW_TICKLE_MAX_SAMPLE_BYTES`.
+- The memory cannot be the caller's own allocation: a reader in another process has to map it by name. So, like the
+  segment, core creates it through the HAL (`tt_segment_create()`: created fresh, owner's `flock()` held by the
+  mapping, refused as an orphan once the owner is gone) at the Publisher's first large publish to a same-host peer
+  that takes descriptors, named `/dev/shm/tickle-large-<ip>-<port>-<context id>-<entity id>`, and unlinked when the
+  Publisher or its context is destroyed. The caller's helper sizes it; nothing is reserved before it is used, and
+  tmpfs makes a page resident only when written, so a 1 MB sample in an 8 MiB chunk costs 1 MB.
+- Layout: a 64-byte header (magic `TKLG`, `tt_LARGE_REGION_VERSION` 1, the owner's ip, port, context id and entity
+  id, a per-creation `incarnation`, `chunks`, `chunk_bytes`), a 64-byte entry per chunk (`generation`, and `readers`:
+  one bit per context id, 256 bits), then the chunks, each 64-aligned so the CDR lands at 4 mod 8 as in a receive
+  buffer.
+
+**Writer.**
+
+- A chunk is free when the writer holds no record in it and its `readers` mask reads 0 (acquire). The lowest free
+  chunk is taken, so the resident set stays at the chunks in use at once; its `generation` is bumped before the
+  encode. None free: KEEP_LAST evicts its oldest sent record (which frees the chunk only if no reader holds it) and
+  looks again; still none, the sample takes a caller buffer and goes as fragments (`large.region_full`).
+- The chunk is the record's buffer, so everything step A does with a buffer - retention by reference, resends,
+  release on acknowledgement or KEEP_LAST eviction, remote destinations sent as fragments from it - is unchanged.
+- Per destination, in the send: a peer whose segment is attached and advertises descriptors gets one
+  `LARGE_REF` record instead of the fragments - its bit set first, then the record published (the slot's release
+  store orders the two). A full ring drops the record as it drops any (`segment_full_dropped`), and the writer
+  clears the bit it set (`large.ref_dropped`). Any other destination gets step A's fragments.
+- A NACK into a sample held in a chunk, from a peer that takes descriptors, resends the descriptor once per
+  ACKNACK instead of the datagrams named: the descriptor covers them all.
+- **Dead reader.** When liveliness removes a peer (or a different peer appears behind its context id), the writer
+  clears that context id's bit in every chunk it owns. Not before: a reader that is only slow keeps its chunks.
+
+**Reader.**
+
+- `tt_SUBMESSAGE_TYPE_LARGE_REF` (13) is accepted only from the segment, refused from a socket and counted
+  (`rx_shm_only_on_socket`), as SHM_DATA is: it names memory, which only something with write access to the host's
+  shared memory may do. It carries the `tt_DataHeader`, the region's incarnation, the chunk, its generation, the
+  CDR length and the datagram count. No `tt_VERSION` change: nothing new crosses the network.
+- The reader maps the writer's region by name (from the record's sender address, its source and the entity id),
+  checks header, owner and incarnation, keeps the mapping in a table of `tt_LARGE_PEER_REGIONS` (8) entries, and
+  evicts the least recently used one that nothing references. Each descriptor is then checked against the chunk:
+  index in range, length within the chunk, `generation` equal, and its own bit set. A descriptor that fails is
+  dropped and counted by reason (`large.ref_refused`); a RELIABLE reader asks for it again.
+- RELIABLE Subscribers: an assembly whose buffer is the chunk, already whole, is recorded under the record's span and
+  delivered by the ordinary drain when in order - so a descriptor behind a gap waits for the gap, as a step A sample
+  does, without a copy. Best-effort Subscribers: delivered at once, as a whole large sample is today. Either way the
+  callback's sample is lent as `tt_LEND_LARGE` (`tt_Sample_retain()` works unchanged).
+- The bit is cleared when nothing of this context references the chunk any longer: no assembly, no lent sample and
+  no delivery in progress. Several Subscribers of one context share the one bit.
+- The segment drain's KEEP_LAST skip planner treats a descriptor as OTHER and never passes over one, so no skipped
+  record can leave a bit set.
+
+**Compatibility and cost.** The segment header's reserved `uint16_t` becomes `features`; bit 0 says "this owner takes
+descriptors". Every build since segment version 5 wrote 0 there, so a reader that does not take them (FreeRTOS, a
+core build without `tt_LARGE_SAMPLES`) is sent fragments as before and no version bump is needed. Compiled in only
+with both `tt_LARGE_SAMPLES` and `tt_SEGMENT_ENABLED` (`tt_LARGE_SHM`); FreeRTOS and the core default build are
+byte-for-byte unaffected. No threads: the reader's release from another thread takes the state lock, as every
+release does.
+
+**Accepted limits.** A reader that cannot map the region at all leaves its bit set in that chunk until liveliness
+removes it; the writer then runs on fewer chunks and, with none, falls back to fragments. A peer removed by liveliness
+while still alive can have a chunk reused under a sample it is reading - the same trust the segment's dead-reader rule
+already places in liveliness. A sample larger than `chunk_bytes` goes as fragments (`large.region_full`).
+
+#### Step B pre-registration (2026-10-11, before any code)
+
+**B1. Correctness (unit tests with mutants that must fail them; `tests/test_large_region.c`).**
+
+1. Byte-exact same-host round trip at 65,508 B, 1 MB, 4 MB, 8 MiB, RELIABLE and BEST_EFFORT: one ring record per
+   sample per reader, the reader's watermark at the socket path's seq_no, zero fragments in the ring.
+   Mutants: span 1 instead of the count; descriptor offset off by one chunk.
+2. The chunk is not reused while any reader bit is set: a reader retains a 4 MB sample, the writer publishes past
+   it, the retained sample stays intact; on release the chunk is taken again. Mutant: reuse ignoring `readers`.
+3. Two Subscribers in one reader context, one RELIABLE, one best effort: the bit is cleared only after both are done.
+   Mutant: clear on the first delivery.
+4. A descriptor dropped on a full ring: the writer clears the bit; RELIABLE recovers the sample by a resent descriptor,
+   not fragments. Mutants: no clear on drop; resend as fragments (ring records counted).
+5. Stale descriptors refused: generation changed, bit not set, incarnation of a recreated region. Mutant: no
+   generation check.
+6. Dead reader: a reader context killed holding a chunk; the writer does not reuse it before liveliness removes the
+   peer, and does after (L1.7's step B half). Mutant: no clear on removal.
+7. A reader without the feature bit gets fragments, byte-identical to step A's. A `LARGE_REF` from a socket is
+   refused and counted.
+8. Region exhausted (all chunks held): KEEP_LAST evicts, else falls back to fragments, counted; no hang, no torn
+   sample.
+9. Every gate configuration, `freertos link`, `make test-linux`, `make test-samehost`, `make test-freertos` and the
+   rmw behaviour suite in a netns.
+
+**B2. Rig, same host (the L4 cells; Plan's harness `rmw_keepall_rig.sh` with `samehost 1`).** Cells Array1m and
+Array4m at 30 Hz, RELIABLE KEEP_LAST 10 and BEST_EFFORT KEEP_LAST 5, 60 s, 5 repetitions, interleaved and rotated.
+Arms: `tickle@stepB`, `tickle@main` (step A), rmw_fastrtps_cpp and rmw_cyclonedds_cpp at their defaults, then the
+vendor-favouring labelled arms. **Control the change cannot touch:** Array60k same-host RELIABLE (below 64 KB, no
+step B code on its path): `stepB - main` there must lie within the parent-vs-parent spread (2 x SE), and the vendor
+arms must match their A4 stage 4 values within 2 x SE; otherwise the session is void, not read.
+
+Read per cell: delivered % (5 runs x ~1,742 samples = ~8,700: a loss above 0.035% shows with 95% probability),
+latency median and p99, CPU per delivered MB of each process, peak RSS of each. The region's pages are shared, so
+they count in both processes' RSS; reported as measured.
+
+| criterion | pass | consequence if not |
+|---|---|---|
+| B2.1 BE Array4m and Array1m delivered | >= 99.9% (from 0.06% / 99.8%) | step B is broken; fixed before anything else |
+| B2.2 RELIABLE delivered | 100% | a LOSE (incomplete-delivery rule) |
+| B2.3 sub + pub CPU per MB vs `tickle@main`, RELIABLE cells | lower beyond 2 x SE | **L3: step B is dropped, the ring path stays** |
+| B2.4 latency median vs `tickle@main` | not worse beyond 2 x SE | L3 fails likewise |
+| B2.5 vs each DDS: delivered, latency med/p99, CPU/MB pub and sub, peak RSS | WIN/DRAW/LOSE per metric by 2 x SE | published as is in RESULTS L4 same-host |
+| B2.6 peak RSS vs `tickle@main` | not above it by more than one sample | a LOSE to report, not a block |
+
+**What would falsify the design.** B2.3 failing (the copies were not where the same-host cost is); or the subscriber's
+CPU per MB not below Fast DDS's data-sharing in the RELIABLE 4 MB cell, which would mean the remaining cost is rmw's
+decode and the next step is rmw loans of fixed-size types, not core.
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
