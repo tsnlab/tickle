@@ -1119,12 +1119,15 @@ struct tt_Context {
     // receive offload (UDP_GRO) in use, bit 1 send offload (UDP_SEGMENT). gro_reads: reads that returned several
     // datagrams at once; gro_merged: the datagrams those carried; gro_copied: of those, the ones not handed out in
     // place (a segment off its 4-alignment, or the landing buffer moved by a retain); gro_off8: handed out in place at
-    // 4 mod 8, where a lone DATA's payload is not where a loaned take reads it in place. 0 on a HAL without them.
+    // 4 mod 8, where a lone DATA's payload is not where a loaned take reads it in place. gso_sends: UDP_SEGMENT sends;
+    // gso_datagrams: the datagrams they carried. 0 on a HAL without them.
     uint8_t udp_offload;
     uint64_t udp_gro_reads;
     uint64_t udp_gro_merged;
     uint64_t udp_gro_copied;
     uint64_t udp_gro_off8;
+    uint64_t udp_gso_sends;
+    uint64_t udp_gso_datagrams;
     // Whether the submessage being processed right now was addressed to this node by id, rather than to
     // everyone (tt_SUBMESSAGE_ID_ALL). A retransmission is addressed to the node that asked for it
     // (retransmit_one_sample()), so this is how a reliable Subscriber tells the sample its ACKNACK

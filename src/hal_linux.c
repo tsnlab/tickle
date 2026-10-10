@@ -588,12 +588,32 @@ static void wait_set_setup(struct tt_Context* node) {
 // Rig probe 2026-10-10 (experiments/rx_gro_probe_rig.sh, Pi 5 x2, 1472 B): receiver 3.99 ms/MB with recvfrom(), 3.40
 // with UDP_GRO; sender 4.76 plain, 4.19 with UDP_SEGMENT. TT_UDP_OFFLOAD=0 in the environment turns both off, for the
 // A/B control: the same binary, every datagram sent and read one at a time as before.
-#if TT_HAL_UDP_GRO
 static bool udp_offload_allowed(void) {
     const char* setting = getenv("TT_UDP_OFFLOAD");
     return setting == NULL || strcmp(setting, "0") != 0;
 }
 
+#define TT_UDP_OFFLOAD_GSO 2U // struct tt_Context.udp_offload
+
+// Send offload is decided per send (send_batch_flags()); here only whether the kernel knows UDP_SEGMENT at all. It
+// must: a kernel before 4.18 ignores a SOL_UDP cmsg it does not know and would send the whole run as one datagram,
+// which IP would then fragment. getsockopt(UDP_SEGMENT) exists from the same release, so it is the check.
+static void gso_setup(struct tt_Context* node) {
+    node->hal.gso_on = false;
+    if (!udp_offload_allowed()) {
+        return;
+    }
+    int size = 0;
+    socklen_t size_len = sizeof(size);
+    if (getsockopt(node->hal.data_sock, SOL_UDP, UDP_SEGMENT, &size, &size_len) != 0) {
+        TT_LOG_DEBUG("UDP_SEGMENT unknown to this kernel (%s) - every datagram is sent alone", strerror(errno));
+        return;
+    }
+    node->hal.gso_on = true;
+    node->udp_offload |= TT_UDP_OFFLOAD_GSO;
+}
+
+#if TT_HAL_UDP_GRO
 #define TT_UDP_OFFLOAD_GRO 1U // struct tt_Context.udp_offload
 
 // Asks both sockets to accept merged datagrams. Refused (ENOPROTOOPT before Linux 5.0) is not an error: reads stay as
@@ -731,6 +751,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.rx_batch_calls = 0;
     node->hal.rx_batch_datagrams = 0;
     node->hal.rx_batch_full = 0;
+    node->hal.gso_on = false; // gso_setup(), once the data socket exists
 #if TT_HAL_UDP_GRO
     node->hal.gro_on = false; // gro_setup(), once both sockets exist
     node->hal.gro_left = 0;
@@ -859,6 +880,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
 #if TT_HAL_UDP_GRO
     gro_setup(node);
 #endif
+    gso_setup(node);
 
 #if tt_HAL_IO_URING
     if (!uring_setup(node) && tt_HAL_RX_HINT == tt_RX_HINT_URING) {
@@ -982,9 +1004,58 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
     return (int32_t)sendmsg(node->hal.data_sock, &msg, 0);
 }
 
-// Datagrams per sendmmsg() call. A sample's fragments (at most tt_FRAG_MAX_COUNT) always fit one call; a
-// longer batch takes several, in order.
+// Messages per sendmmsg() call, and datagrams: a message is one datagram, or with UDP_SEGMENT a run of them
+// (gso_run()). A sample's fragments (at most tt_FRAG_MAX_COUNT) always fit one call; a longer batch takes several, in
+// order. Without send offload a call carries 64 datagrams, as it always did.
 #define TT_SEND_BATCH_CHUNK 64
+#define TT_SEND_CALL_DATAGRAMS 128
+// The kernel's bounds on one UDP_SEGMENT send: UDP_MAX_SEGMENTS (64 before Linux 6.9, 128 after - the lower one), and
+// the payload of the one IPv4 UDP datagram it is cut from.
+#define TT_GSO_MAX_SEGMENTS 64U
+#define TT_GSO_MAX_BYTES 65507U
+
+// How many datagrams from `first` (of `available`) go as one UDP_SEGMENT send, which the kernel - or the NIC - cuts
+// back into datagrams of the first one's length: the same destination, the same length but the last (which may be
+// shorter and ends the run), none empty and none longer than tt_CONTROL_MAX_LENGTH. Each cut is then exactly the
+// datagram core built, so the wire carries what it carried without offload, and no datagram of more than 1472 bytes
+// (the IP fragmentation DESIGN.md section 8 keeps out) can come from a run. 1 when nothing can follow.
+static uint32_t gso_run(const struct tt_OutDatagram* first, uint32_t available) {
+    const size_t size = first->head_len + first->body_len;
+    if (size == 0 || size > tt_CONTROL_MAX_LENGTH) {
+        return 1;
+    }
+    uint32_t run = 1;
+    size_t total = size;
+    while (run < available && run < TT_GSO_MAX_SEGMENTS) {
+        const struct tt_OutDatagram* next = &first[run];
+        const size_t length = next->head_len + next->body_len;
+        if (next->ip != first->ip || (first->ip != 0 && next->port != first->port) || length == 0 || length > size ||
+            total + length > TT_GSO_MAX_BYTES) {
+            break;
+        }
+        total += length;
+        run++;
+        if (length < size) {
+            break; // only the last may be short
+        }
+    }
+    return run;
+}
+
+// A UDP_SEGMENT send refused for what it is rather than for what it carries: EIO, no checksum offload on the route's
+// device; EINVAL, a segment longer than the route's MTU allows; the others, a kernel or socket without it. Send offload
+// goes off for the context, once, and the run goes again datagram by datagram.
+static bool gso_refused(struct tt_Context* node, int err) {
+    // NOLINTNEXTLINE(misc-include-cleaner) - the errno values: glibc-private headers
+    if (err != EIO && err != EINVAL && err != ENOPROTOOPT && err != EOPNOTSUPP) {
+        return false;
+    }
+    TT_LOG_WARNING("UDP_SEGMENT refused (%s) - send offload off for context %u, every datagram sent alone",
+                   strerror(err), node->id);
+    node->hal.gso_on = false;
+    node->udp_offload &= (uint8_t)~TT_UDP_OFFLOAD_GSO;
+    return true;
+}
 
 // The body of tt_send_batch() and tt_send_batch_nonblocking(): `flags` is 0 or MSG_DONTWAIT. Returns how many went;
 // with MSG_DONTWAIT a full send buffer ends the batch early instead of failing it.
@@ -1020,49 +1091,107 @@ int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* data
     return sent == (int32_t)count ? sent : -1;
 }
 
+// One message of a sendmmsg() call: `run` datagrams from `first`, their pieces in `iov` (room for two each), to their
+// destination (`addr`, unless broadcast), with the UDP_SEGMENT cmsg in `control` when run > 1.
+union gso_control {
+    char bytes[CMSG_SPACE(sizeof(uint16_t))];
+    struct cmsghdr align; // NOLINT(misc-include-cleaner) - <sys/socket.h>
+};
+// NOLINTNEXTLINE(misc-include-cleaner) - struct iovec: see <sys/uio.h>'s own include comment
+static void send_message_setup(struct tt_Context* node, struct mmsghdr* msg, struct iovec* iov,
+                               struct sockaddr_in* addr, union gso_control* control, const struct tt_OutDatagram* first,
+                               uint32_t run) {
+    memset(msg, 0, sizeof(*msg));
+    size_t pieces = 0;
+    for (uint32_t k = 0; k < run; k++) {
+        iov[pieces].iov_base = (void*)first[k].head;
+        iov[pieces++].iov_len = first[k].head_len;
+        if (first[k].body_len != 0) {
+            iov[pieces].iov_base = (void*)first[k].body;
+            iov[pieces++].iov_len = first[k].body_len;
+        }
+    }
+    msg->msg_hdr.msg_iov = iov;
+    msg->msg_hdr.msg_iovlen = pieces;
+    if (first->ip != 0) {
+        memset(addr, 0, sizeof(*addr));
+        addr->sin_family = AF_INET;
+        addr->sin_addr.s_addr = htonl(first->ip);
+        addr->sin_port = htons(first->port);
+        msg->msg_hdr.msg_name = addr;
+        msg->msg_hdr.msg_namelen = sizeof(*addr);
+    } else {
+        msg->msg_hdr.msg_name = &node->hal.broadcast_addr;
+        msg->msg_hdr.msg_namelen = sizeof(node->hal.broadcast_addr);
+    }
+    if (run > 1) {
+        const uint16_t segment = (uint16_t)(first->head_len + first->body_len); // <= tt_CONTROL_MAX_LENGTH: gso_run()
+        msg->msg_hdr.msg_control = control->bytes;
+        msg->msg_hdr.msg_controllen = sizeof(control->bytes);
+        // NOLINTNEXTLINE(misc-include-cleaner) - CMSG_*: <sys/socket.h>
+        struct cmsghdr* header = CMSG_FIRSTHDR(&msg->msg_hdr);
+        header->cmsg_level = SOL_UDP;
+        header->cmsg_type = UDP_SEGMENT;
+        header->cmsg_len = CMSG_LEN(sizeof(segment));
+        memcpy(CMSG_DATA(header), &segment, sizeof(segment));
+    }
+}
+
+// The datagrams the first `messages` messages of a call carried (`carried`, per message), counting the runs among them.
+static uint32_t gso_count_sent(struct tt_Context* node, const uint8_t* carried, int messages) {
+    uint32_t datagrams = 0;
+    for (int i = 0; i < messages; i++) {
+        datagrams += carried[i];
+        if (carried[i] > 1) {
+            node->udp_gso_sends++;
+            node->udp_gso_datagrams += carried[i];
+        }
+    }
+    return datagrams;
+}
+
+// Send offload (UDP offload, above tt_bind()): a run of datagrams gso_run() accepts goes as one message, which the
+// kernel cuts up below the socket layer - on the PC in software just before the device, on a NIC with UDP segmentation
+// in hardware. One sendmmsg() carries runs and single datagrams alike, so a batch costs the calls it did before.
 static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count,
                                 int flags) {
     uint32_t sent = 0;
     while (sent < count) {
-        uint32_t chunk = count - sent < TT_SEND_BATCH_CHUNK ? count - sent : TT_SEND_BATCH_CHUNK;
         struct mmsghdr msgs[TT_SEND_BATCH_CHUNK];
         // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
-        struct iovec iov[TT_SEND_BATCH_CHUNK][2];
+        struct iovec iov[2 * TT_SEND_CALL_DATAGRAMS];
         struct sockaddr_in addrs[TT_SEND_BATCH_CHUNK];
-        memset(msgs, 0, sizeof(msgs[0]) * chunk);
-        for (uint32_t i = 0; i < chunk; i++) {
-            const struct tt_OutDatagram* datagram = &datagrams[sent + i];
-            iov[i][0].iov_base = (void*)datagram->head;
-            iov[i][0].iov_len = datagram->head_len;
-            iov[i][1].iov_base = (void*)datagram->body;
-            iov[i][1].iov_len = datagram->body_len;
-            msgs[i].msg_hdr.msg_iov = iov[i];
-            msgs[i].msg_hdr.msg_iovlen = datagram->body_len != 0 ? 2 : 1;
-            if (datagram->ip != 0) {
-                memset(&addrs[i], 0, sizeof(addrs[i]));
-                addrs[i].sin_family = AF_INET;
-                addrs[i].sin_addr.s_addr = htonl(datagram->ip);
-                addrs[i].sin_port = htons(datagram->port);
-                msgs[i].msg_hdr.msg_name = &addrs[i];
-                msgs[i].msg_hdr.msg_namelen = sizeof(addrs[i]);
-            } else {
-                msgs[i].msg_hdr.msg_name = &node->hal.broadcast_addr;
-                msgs[i].msg_hdr.msg_namelen = sizeof(node->hal.broadcast_addr);
-            }
+        union gso_control control[TT_SEND_BATCH_CHUNK];
+        uint8_t carried[TT_SEND_BATCH_CHUNK]; // datagrams in each message
+        uint32_t messages = 0;
+        uint32_t placed = 0; // datagrams in this call
+        while (messages < TT_SEND_BATCH_CHUNK && sent + placed < count && placed < TT_SEND_CALL_DATAGRAMS) {
+            const struct tt_OutDatagram* first = &datagrams[sent + placed];
+            uint32_t room = count - sent - placed;
+            room = room < TT_SEND_CALL_DATAGRAMS - placed ? room : TT_SEND_CALL_DATAGRAMS - placed;
+            uint32_t run = node->hal.gso_on ? gso_run(first, room) : 1U;
+            send_message_setup(node, &msgs[messages], &iov[(size_t)2U * placed], &addrs[messages], &control[messages],
+                               first, run);
+            carried[messages++] = (uint8_t)run;
+            placed += run;
         }
         TT_TRACE(tt_TRACE_TX_START);
-        int result = sendmmsg(node->hal.data_sock, msgs, chunk, flags);
+        int result = sendmmsg(node->hal.data_sock, msgs, messages, flags);
         TT_TRACE(tt_TRACE_TX_DONE);
         if (result <= 0) {
+            int err = errno;
             // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers
-            if (flags != 0 && result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (flags != 0 && result < 0 && (err == EAGAIN || err == EWOULDBLOCK)) {
                 return (int32_t)sent; // the send buffer is full: what went, went; the caller sends the rest later
+            }
+            if (result < 0 && carried[0] > 1 && gso_refused(node, err)) {
+                continue; // nothing of this call went: again from the same datagram, one at a time
             }
             return -1; // errno says why; a 0 would otherwise loop forever
         }
-        // A short count (sendmmsg() stopped at a datagram that did not go) loops: the next call reports why - the
+        // A short count (sendmmsg() stopped at a message that did not go) loops: the next call reports why - the
         // error, or with MSG_DONTWAIT the EAGAIN of a full buffer, answered above.
-        sent += (uint32_t)result;
+        sent += gso_count_sent(node, carried, result);
     }
     return (int32_t)count;
 }
