@@ -258,6 +258,9 @@ struct tt_hal {
     uint64_t rx_batch_calls;
     uint64_t rx_batch_datagrams;
     uint64_t rx_batch_full;
+    // Send offload (hal_linux.c "UDP offload"): runs of same-size datagrams to one destination go as one UDP_SEGMENT
+    // send. Off with TT_UDP_OFFLOAD=0, on a kernel without it, and after the first refusal (no checksum offload).
+    bool gso_on;
 #if TT_HAL_UDP_GRO
     // The last merged read (UDP_GRO): gro_end bytes in gro_base, cut every gro_segment bytes (the last cut may be
     // shorter), handed out from gro_next; gro_left segments still to go, all from one sender on one socket. gro_on:
