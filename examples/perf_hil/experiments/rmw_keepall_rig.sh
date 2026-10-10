@@ -113,6 +113,10 @@
 #   tickle@nooffload  tickle@head's own librmw_tickle.so with TT_UDP_OFFLOAD=0 in its environment: no UDP_GRO, no
 #                     UDP_SEGMENT - the control the change cannot touch beyond its switch. tickle@head runs with
 #                     TT_UDP_OFFLOAD unset. Both are named in meta.txt (udp_offload_arms=).
+# Added 2026-10-11 for the lend A/B (~/rig_queue_largemsg_lend.sh; docs/RMW.md "Loaned messages"):
+#   tickle@loans  tickle@head's own librmw_tickle.so with ROS_DISABLE_LOANED_MESSAGES=0, so rclcpp takes loans where
+#                 the rmw offers them (a labelled second arm: tickle@head runs rcl's default). Cross-host default mode
+#                 only. Its treatment is read by largemsg_lend_ab.py from the subscriber's loans_in_place line.
 #   The treatment, checked after every tickle run from the traffic lines core prints at context destroy (udp_offload=,
 #   gso_sends=, gro_merged=, on both Pis) into <runs>/offload.txt. HOW TO READ IT, enforced here (written before the
 #   first run): tickle@nooffload is VOID unless both ends printed a traffic line and every one shows udp_offload=0,
@@ -360,6 +364,8 @@ env_for() {
     case "$1" in
         tickle@head) echo "unset TT_UDP_OFFLOAD; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@nooffload) echo "export TT_UDP_OFFLOAD=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@loans) echo "unset TT_UDP_OFFLOAD; export ROS_DISABLE_LOANED_MESSAGES=0 RMW_IMPLEMENTATION=rmw_tickle"
+            echo "export TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@*) echo "source $(variant_install "${1#tickle@}")/local_setup.bash"
             echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         fastdds) echo "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp FASTRTPS_DEFAULT_PROFILES_FILE=$FDDS_PROFILE" ;;
@@ -372,7 +378,7 @@ env_for() {
 }
 lib_for() {
     case "$1" in
-        tickle@head | tickle@nooffload) echo "$HEAD_LIB" ;;
+        tickle@head | tickle@nooffload | tickle@loans) echo "$HEAD_LIB" ;;
         tickle@*) echo "$(variant_install "${1#tickle@}")/rmw_tickle/lib/librmw_tickle.so" ;;
         fastdds | fastdds@*) echo "librmw_fastrtps_cpp.so" ;;
         cyclonedds) echo "librmw_cyclonedds_cpp.so" ;;
