@@ -253,7 +253,7 @@ Build `934f90de`; raw files `examples/perf_hil/results/rmw_4way_block_934f90de_2
 - Only the rig's numbers count. The dev PC is used to check correctness, never to measure performance.
 - **Same host** (one rig Pi, each rmw on its shipped transport, build `06dd78d8`, 2026-10-09, 3 reps): rmw_tickle
   wins all 52 scored rows against both DDS rmws, e.g. RTT mean 40.0 us (Bench, RELIABLE, block) against 151.2 and
-  112.7, 140,875 delivered Array1k samples/s at BEST_EFFORT KEEP_LAST 1 against 17,483 and 70,331, and peak RSS
+  112.7, 140,885 delivered Array1k samples/s at BEST_EFFORT KEEP_LAST 1 against 17,547 and 70,420, and peak RSS
   13.4-16.0 MB against CycloneDDS's 15.2-18.3 MB (since `718220d8`; at `a7e02807` six peak-RSS rows were DRAW or
   LOSE). Rows R1-R21 in RESULTS.md.
 - A cross-host rmw throughput comparison exists only for RELIABLE + KEEP_ALL (rows 72-75).
