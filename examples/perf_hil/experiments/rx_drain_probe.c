@@ -29,23 +29,24 @@
 //   ended, ENOBUFS) cpu_user_ms cpu_sys_ms. The reading rules are in rx_drain_pc.sh, which runs it, and its summary.
 
 #define _GNU_SOURCE
-#include <arpa/inet.h>
 #include <errno.h>
-#include <linux/io_uring.h>
-#include <linux/sock_diag.h> // SK_MEMINFO_*
-#include <netinet/in.h>
 #include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include <arpa/inet.h>
+#include <linux/io_uring.h>
+#include <linux/sock_diag.h> // SK_MEMINFO_*
+#include <netinet/in.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
-#include <time.h>
-#include <unistd.h>
 
 #define DGRAM 1472U
 #define BATCH 64U
@@ -122,7 +123,8 @@ static int do_send(const char* ip, int port, double seconds) {
     return 0;
 }
 
-// --- receiving: what every mode shares --------------------------------------------------------------------------------
+// --- receiving: what every mode shares
+// --------------------------------------------------------------------------------
 
 struct rx_state {
     uint64_t received;
@@ -167,7 +169,6 @@ static uint32_t socket_drops(int fd, uint32_t* rcvbuf) {
     *rcvbuf = info[SK_MEMINFO_RCVBUF];
     return info[SK_MEMINFO_DROPS];
 }
-
 
 static int bound_socket(int port) {
     int fd = udp_socket();
@@ -215,7 +216,8 @@ static void recv_mmsg(int fd, struct rx_state* st, double seconds) {
     }
 }
 
-// --- io_uring, raw syscalls as hal_linux.c does it --------------------------------------------------------------------
+// --- io_uring, raw syscalls as hal_linux.c does it
+// --------------------------------------------------------------------
 
 struct uring {
     int fd;
@@ -263,8 +265,8 @@ static void uring_init(struct uring* u, uint32_t flags, uint32_t nbufs) {
     u->nbufs = nbufs; // a power of two
     size_t ring_len = nbufs * sizeof(struct io_uring_buf);
     u->br = mmap(NULL, ring_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
-    u->buffers = mmap(NULL, (size_t)nbufs * BUF_SIZE, PROT_READ | PROT_WRITE,
-                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
+    u->buffers =
+        mmap(NULL, (size_t)nbufs * BUF_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
     if (u->br == MAP_FAILED || u->buffers == MAP_FAILED) {
         perror("mmap buffers");
         exit(1);
