@@ -4743,6 +4743,8 @@ static void reset_node_state(struct tt_Context* node) {
     node->udp_gro_merged = 0;
     node->udp_gro_copied = 0;
     node->udp_gro_off8 = 0;
+    node->udp_gso_sends = 0;
+    node->udp_gso_datagrams = 0;
     node->rx_via_data_datagrams = 0;
     node->rx_via_well_known_datagrams = 0;
 #if tt_FRAG_ENABLED
@@ -19456,8 +19458,9 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         // The switch from UDP to a segment (tt_SEGMENT_SPAN_FENCE): fences this writer sent, and fences met at the head
         // of this context's own ring - passed on their datagram, or given up at the deadline.
         "shm_fences_sent=%lu shm_fences_passed=%lu shm_fences_expired=%lu "
-        // UDP offload (struct tt_Context.udp_offload): what the HAL turned on, and what receive offload merged.
-        "udp_offload=%u gro_reads=%lu gro_merged=%lu gro_copied=%lu gro_off8=%lu",
+        // UDP offload (struct tt_Context.udp_offload): what the HAL turned on, what receive offload merged, and what
+        // send offload carried.
+        "udp_offload=%u gro_reads=%lu gro_merged=%lu gro_copied=%lu gro_off8=%lu gso_sends=%lu gso_datagrams=%lu",
         node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
         (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
         (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -19487,7 +19490,8 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned long)node->segment_claims_abandoned, (unsigned long)node->segment_fences_sent,
         (unsigned long)node->segment_fences_passed, (unsigned long)node->segment_fences_expired,
         (unsigned)node->udp_offload, (unsigned long)node->udp_gro_reads, (unsigned long)node->udp_gro_merged,
-        (unsigned long)node->udp_gro_copied, (unsigned long)node->udp_gro_off8);
+        (unsigned long)node->udp_gro_copied, (unsigned long)node->udp_gro_off8, (unsigned long)node->udp_gso_sends,
+        (unsigned long)node->udp_gso_datagrams);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads
