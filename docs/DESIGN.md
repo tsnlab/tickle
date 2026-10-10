@@ -158,9 +158,13 @@ psn, single header; 11 nodes in the announce.
   A server answers unicast to the request's source.
 - Several datagrams ready at once (a sample's fragments, one datagram to several peers) go in one
   `tt_send_batch()` = one `sendmmsg()`.
-- **UDP offload (Linux HAL).** In that call a run of same-size datagrams (the last may be shorter) to one destination,
-  each at most 1472 B, goes as one `UDP_SEGMENT` message (at most 64 datagrams / 65507 B); the kernel or NIC cuts it
-  back into exactly those datagrams, so the wire is unchanged (`platform/linux/udp_offload_check.sh` proves it). In a
+- **UDP offload (Linux HAL).** In that call a run of a large sample's fragments (`FRAG_FIRST_L`/`FRAG_CONT_L`, same
+  size but the last) to one destination, each at most 1472 B, goes as one `UDP_SEGMENT` message (at most 64 datagrams
+  / 65507 B); the kernel or NIC cuts it back into exactly those datagrams, so the wire is unchanged
+  (`platform/linux/udp_offload_check.sh` proves it). Large fragments only, and compiled out without `tt_LARGE_SAMPLES`:
+  on the rig (Pi 5) core p4's run of two `DATA_FRAG` datagrams cost +3.5% publisher CPU per sample and left 3% of
+  latency pings late past 500 ms, though on the PC it takes fewer instructions (`gso_run_cost.sh`); 1 MB samples' runs
+  of 44 paid (publisher -19%). In a
   build whose buffer holds a merged read (65507, rmw_tickle's), `UDP_GRO` on both sockets lets one read return a run,
   handed to core one datagram at a time in place (`tt_Context.rx_offset`, 4-aligned; at 4 mod 8 - every other 1468 B
   large fragment - a loaned take decodes instead of reading in place). `UDP_GRO` is on only from a large sample's

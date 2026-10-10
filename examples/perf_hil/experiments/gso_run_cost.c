@@ -4,12 +4,13 @@
 // cannot cut a run itself (tx-udp-segmentation off), so the kernel segments each run in software before the device -
 // what the Pi 5's macb does (tx-udp-segmentation: off [fixed], ~/rig_results_safe/gro_probe_20261010-173941.txt).
 //
-// The model it feeds (hal_linux.c, TT_GSO_MIN_SEGMENTS): cost(plain, n) = n x p and cost(gso, n) = F + n x s, so a
-// run pays only once n > F / (p - s). The fixed part F (building the large skb, the segmentation entry, the segment
-// list) and the per-datagram parts p and s are read off the straight lines through the n sweep, not tuned to a rig.
+// The model it feeds (hal_linux.c, "Which runs go as one"): cost(plain, n) = n x p + c and cost(gso, n) = n x s + F,
+// so a run pays once n > (F - c) / (p - s). The fixed parts and the per-datagram parts are read off the straight
+// lines through the n sweep, not tuned to a rig.
 //
 // Usage: gso_run_cost <dst ip> <port> <datagram bytes> <runs per n> n1 [n2 ...]
-// Prints one line per n: "n=<n> mode=<plain|gso> runs=<r> insns_per_datagram=<x> insns_per_run=<y>".
+// Prints two lines per n: "n=<n> mode=<plain|gso> runs=<r> insns_per_datagram=<x> insns_per_run=<y>".
+// NOLINTNEXTLINE(bugprone-reserved-identifier, readability-identifier-naming)
 #define _GNU_SOURCE
 #include <stdint.h>
 #include <stdio.h>
@@ -24,13 +25,21 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
-#include <sys/uio.h>
 
 #ifndef UDP_SEGMENT
 #define UDP_SEGMENT 103
 #endif
 
 #define MAX_RUN 64
+#define WIRE_MAX 1472          // never more on the wire (DESIGN.md section 8)
+#define GSO_MAX_BYTES 65507    // one IPv4 UDP datagram's payload, which a run is cut from
+#define WARMUP_RUNS 200        // route, neighbour, socket memory: outside the count
+#define SNDBUF_BYTES (4 << 20) // so a sweep never waits on the send buffer
+#define FILL_BYTE 0xa5
+#define FIRST_N_ARG 5
+#define ARG_PORT 2
+#define ARG_SIZE 3
+#define ARG_RUNS 4
 
 static int counter_open(void) {
     struct perf_event_attr attr;
@@ -44,49 +53,51 @@ static int counter_open(void) {
     return (int)syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0);
 }
 
-static uint64_t counter_read(int fd) {
+static uint64_t counter_read(int counter) {
     uint64_t value = 0;
-    if (read(fd, &value, sizeof(value)) != (ssize_t)sizeof(value)) {
+    if (read(counter, &value, sizeof(value)) != (ssize_t)sizeof(value)) {
         return 0;
     }
     return value;
 }
 
-// One run of n datagrams: n messages (plain) or one message with the UDP_SEGMENT cmsg (gso). -1 on a send error.
-static int send_run(int sock, const struct sockaddr_in* dst, uint8_t (*payload)[1472], size_t size, int n, int gso) {
+static uint8_t g_payload[MAX_RUN][WIRE_MAX];
+
+// One run of `count` datagrams: `count` messages (plain) or one message with the UDP_SEGMENT cmsg (gso). -1 on error.
+static int send_run(int sock, const struct sockaddr_in* dst, size_t size, int count, int gso) {
     struct mmsghdr msgs[MAX_RUN];
-    struct iovec iov[MAX_RUN];
+    struct iovec iov[MAX_RUN]; // NOLINT(misc-include-cleaner) - struct iovec: <sys/socket.h> brings <sys/uio.h>'s
     union {
         char bytes[CMSG_SPACE(sizeof(uint16_t))];
         struct cmsghdr align;
     } control;
     memset(msgs, 0, sizeof(msgs));
-    for (int k = 0; k < n; k++) {
-        iov[k].iov_base = payload[k];
+    for (int k = 0; k < count; k++) {
+        iov[k].iov_base = g_payload[k];
         iov[k].iov_len = size;
     }
     if (!gso) {
-        for (int k = 0; k < n; k++) {
+        for (int k = 0; k < count; k++) {
             msgs[k].msg_hdr.msg_name = (void*)dst;
             msgs[k].msg_hdr.msg_namelen = sizeof(*dst);
             msgs[k].msg_hdr.msg_iov = &iov[k];
             msgs[k].msg_hdr.msg_iovlen = 1;
         }
         int sent = 0;
-        while (sent < n) {
-            int r = sendmmsg(sock, msgs + sent, (unsigned)(n - sent), 0);
-            if (r <= 0) {
+        while (sent < count) {
+            int result = sendmmsg(sock, msgs + sent, (unsigned)(count - sent), 0);
+            if (result <= 0) {
                 return -1;
             }
-            sent += r;
+            sent += result;
         }
         return 0;
     }
     msgs[0].msg_hdr.msg_name = (void*)dst;
     msgs[0].msg_hdr.msg_namelen = sizeof(*dst);
     msgs[0].msg_hdr.msg_iov = iov;
-    msgs[0].msg_hdr.msg_iovlen = (size_t)n;
-    if (n > 1) {
+    msgs[0].msg_hdr.msg_iovlen = (size_t)count;
+    if (count > 1) {
         uint16_t segment = (uint16_t)size;
         msgs[0].msg_hdr.msg_control = control.bytes;
         msgs[0].msg_hdr.msg_controllen = sizeof(control.bytes);
@@ -99,65 +110,67 @@ static int send_run(int sock, const struct sockaddr_in* dst, uint8_t (*payload)[
     return sendmmsg(sock, msgs, 1, 0) == 1 ? 0 : -1;
 }
 
+// Both modes for one run length: a warm-up, then `runs` runs inside the counter. 0, or 1 on a send error.
+static int measure(int sock, int counter, const struct sockaddr_in* dst, size_t size, long runs, int count) {
+    for (int gso = 0; gso <= 1; gso++) {
+        for (long run = 0; run < WARMUP_RUNS + runs; run++) {
+            if (run == WARMUP_RUNS) {
+                ioctl(counter, PERF_EVENT_IOC_RESET, 0);
+                ioctl(counter, PERF_EVENT_IOC_ENABLE, 0);
+            }
+            if (send_run(sock, dst, size, count, gso) != 0) {
+                perror("send");
+                return 1;
+            }
+        }
+        ioctl(counter, PERF_EVENT_IOC_DISABLE, 0);
+        uint64_t insns = counter_read(counter);
+        printf("n=%d mode=%s runs=%ld insns_per_datagram=%.1f insns_per_run=%.1f\n", count, gso ? "gso" : "plain", runs,
+               (double)insns / (double)(runs * count), (double)insns / (double)runs);
+        fflush(stdout);
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
-    if (argc < 6) {
+    if (argc <= FIRST_N_ARG) {
         fprintf(stderr, "usage: %s <dst ip> <port> <datagram bytes> <runs per n> n1 [n2 ...]\n", argv[0]);
         return 2;
     }
     struct sockaddr_in dst;
     memset(&dst, 0, sizeof(dst));
     dst.sin_family = AF_INET;
-    dst.sin_port = htons((uint16_t)atoi(argv[2]));
+    dst.sin_port = htons((uint16_t)atoi(argv[ARG_PORT]));
     if (inet_pton(AF_INET, argv[1], &dst.sin_addr) != 1) {
         fprintf(stderr, "bad address %s\n", argv[1]);
         return 2;
     }
-    size_t size = (size_t)atoi(argv[3]);
-    long runs = atol(argv[4]);
-    if (size == 0 || size > 1472 || runs <= 0) {
-        fprintf(stderr, "datagram bytes 1..1472 (never more on the wire), runs > 0\n");
+    size_t size = (size_t)atoi(argv[ARG_SIZE]);
+    long runs = atol(argv[ARG_RUNS]);
+    if (size == 0 || size > WIRE_MAX || runs <= 0) {
+        fprintf(stderr, "datagram bytes 1..%d (never more on the wire), runs > 0\n", WIRE_MAX);
         return 2;
     }
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    int sndbuf = 4 << 20;
+    int sndbuf = SNDBUF_BYTES;
+    // NOLINTNEXTLINE(misc-include-cleaner) - SOL_SOCKET, SO_SNDBUF: <sys/socket.h>'s glibc-private headers
     (void)setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-    static uint8_t payload[MAX_RUN][1472];
-    memset(payload, 0xa5, sizeof(payload));
-    int fd = counter_open();
-    if (fd < 0) {
+    memset(g_payload, FILL_BYTE, sizeof(g_payload));
+    int counter = counter_open();
+    if (counter < 0) {
         perror("perf_event_open");
         return 1;
     }
-    for (int a = 5; a < argc; a++) {
-        int n = atoi(argv[a]);
-        if (n < 1 || n > MAX_RUN || (size_t)n * size > 65507) {
-            fprintf(stderr, "skipping n=%d\n", n);
+    int failed = 0;
+    for (int arg = FIRST_N_ARG; arg < argc && !failed; arg++) {
+        int count = atoi(argv[arg]);
+        if (count < 1 || count > MAX_RUN || (size_t)count * size > GSO_MAX_BYTES) {
+            fprintf(stderr, "skipping n=%d\n", count);
             continue;
         }
-        for (int gso = 0; gso <= 1; gso++) {
-            // A short warm-up (route, neighbour, socket memory) outside the count.
-            for (long r = 0; r < 200; r++) {
-                if (send_run(sock, &dst, payload, size, n, gso) != 0) {
-                    perror("send");
-                    return 1;
-                }
-            }
-            ioctl(fd, PERF_EVENT_IOC_RESET, 0);
-            ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
-            for (long r = 0; r < runs; r++) {
-                if (send_run(sock, &dst, payload, size, n, gso) != 0) {
-                    perror("send");
-                    return 1;
-                }
-            }
-            ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-            uint64_t insns = counter_read(fd);
-            printf("n=%d mode=%s runs=%ld insns_per_datagram=%.1f insns_per_run=%.1f\n", n, gso ? "gso" : "plain", runs,
-                   (double)insns / (double)(runs * n), (double)insns / (double)runs);
-            fflush(stdout);
-        }
+        failed = measure(sock, counter, &dst, size, runs, count);
     }
-    close(fd);
+    close(counter);
     close(sock);
-    return 0;
+    return failed;
 }

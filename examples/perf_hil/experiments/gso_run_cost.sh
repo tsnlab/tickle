@@ -5,11 +5,12 @@
 # Pi 5, whose macb has it "off [fixed]"). The receiving end drops everything at tc ingress, so no socket or process
 # there adds to the count, and what is left of the receive path is the same per datagram in both modes.
 #
-# WHAT IT DECIDES (hal_linux.c TT_GSO_MIN_SEGMENTS, written before the run): per rep, straight lines through
-# insns_per_run against n for each mode, n >= 2: plain = p x n + c, gso = s x n + F. Break-even n* = (F - c) / (p - s).
-# The rule takes the smallest integer n with gso below plain by more than the A/A spread (rep-to-rep range of plain),
-# and checks it against the fit. A run below it goes as plain messages. FALSIFIED (no rule from here) if p <= s, or if
-# the gso line does not cross the plain one inside 2..64.
+# WHAT IT DECIDES (written before the run): whether a minimum run length for UDP_SEGMENT can be derived from the
+# instructions a run costs. Straight lines through the medians of insns_per_run against n for each mode, n >= 2:
+# plain = p x n + c, gso = s x n + F; break-even n* = (F - c) / (p - s), and the smallest n measured cheaper than plain
+# by more than the A/A spread (rep-to-rep range of plain). FALSIFIED (no break-even) if p <= s. If n* <= 2, a run of 2
+# is already cheaper in instructions, and a cost the rig sees at n = 2 is not an instruction cost - no minimum length
+# can be derived from here (the outcome of 2026-10-11: n* 1.36; hal_linux.c "Which runs go as one").
 #
 # Instructions, not time, and never a published figure: it says where the fixed cost of a run is paid back, which
 # depends on the code path (the same kernel functions run on the Pi's aarch64), not on clock or cache.
