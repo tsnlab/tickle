@@ -123,8 +123,8 @@ MUTANTS = [
     ),
     (
         "a lent buffer handed back when the callback returns",
-        "    if (!large_lent(node, assembly->buffer)) {\n        large_give_back(node, assembly->buffer);",
-        "    if (true) {\n        large_give_back(node, assembly->buffer);",
+        "    if (!large_lent(node, buffer)) {\n        large_give_back(node, buffer);",
+        "    if (true) {\n        large_give_back(node, buffer);",
         "test_a_retained_large_sample_outlives_the_next_one",
     ),
     (
@@ -135,7 +135,8 @@ MUTANTS = [
     ),
     (
         "a waiting KEEP_LAST sample sent rather than replaced",
-        "        if (pub->large_pending.buffer != NULL) {\n            large_give_back(node, pub->large_pending.buffer);",
+        "        if (pub->large_pending.buffer != NULL) {\n            // the newer sample replaces it before any of it went\n"
+        "            large_record_give_back(node, pub, pub->large_pending.buffer, LARGE_RECORD_CHUNK(&pub->large_pending));",
         "        if (pub->large_pending.buffer != NULL) {\n            large_commit_pending(node, pub);\n"
         "            large_give_back(node, NULL);",
         "test_keep_last_replaces_a_sample_waiting_behind_a_send",
