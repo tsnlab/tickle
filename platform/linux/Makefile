@@ -199,6 +199,13 @@ rx_idle_check: rx_idle_check.c libtickle.a
 bell_wake_check: bell_wake_check.c $(ROOT)/examples/uint64/UInt64.c libtickle.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ bell_wake_check.c $(ROOT)/examples/uint64/UInt64.c $(LDLIBS)
 
+# UDP offload against the real HAL (udp_offload_check.c): core built as rmw_tickle builds it - the 65507-byte datagram,
+# large samples - because that is the one build receive offload is compiled into. Run by test.sh (test-linux).
+UDP_OFFLOAD_CHECK_DEFS = -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1
+udp_offload_check: udp_offload_check.c $(HAL_SRC) $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(UDP_OFFLOAD_CHECK_DEFS) $(LDFLAGS) -o $@ udp_offload_check.c $(HAL_SRC) \
+	    $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
+
 test-samehost: examples refuse_io_uring.so rx_hint_check rx_idle_check bell_wake_check
 	./test_samehost.sh
 
@@ -548,5 +555,5 @@ clean:
 	# currently selected, so switching BUILD_TYPE and running `clean` doesn't leave the
 	# other mode's stale cache behind.
 	rm -rf obj/*/
-	rm -f libtickle.a refuse_io_uring.so rx_hint_check rx_idle_check bell_wake_check
+	rm -f libtickle.a refuse_io_uring.so rx_hint_check rx_idle_check bell_wake_check udp_offload_check
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))
