@@ -229,11 +229,14 @@ static void count_messages_lost(rmw_tickle_subscriber_t* sub_impl, uint64_t psn)
 // cannot be allocated or attached leaves the subscription lending decoded shells only (every loan a copy), which is
 // still a loan; nothing fails.
 static bool setup_loans(rmw_tickle_subscriber_t* sub_impl) {
-    sub_impl->loans = rmw_tickle_type_can_loan(sub_impl->callbacks);
+    sub_impl->loans = rmw_tickle_type_can_loan_take(sub_impl->callbacks);
     const char* ring = getenv("RMW_TICKLE_LOAN_RING_SLOTS");
     sub_impl->loan_ring_slots = NULL != ring && 0 == strcmp(ring, "1");
     if (!sub_impl->loans) {
         return false;
+    }
+    if (sub_impl->callbacks->inplace_bytes > (size_t)tt_MAX_SAMPLE_LENGTH) {
+        return true; // every sample of it arrives in a large buffer of its own: the receive buffers would go unused
     }
     rmw_tickle_context_impl_t* context_impl = sub_impl->node->context_impl;
     tt_Context_lock(&context_impl->tickle_context);
@@ -331,9 +334,12 @@ static bool in_receive_buffer(const rmw_tickle_context_impl_t* context_impl, con
 // delivering thread, inside the callback, which is the only place core lets a sample be retained.
 //
 // A sample in a ring slot is kept only with loan_ring_slots: the slot stops its ring one lap later for every writer
-// into this context (DESIGN.md 10), and a loan lasts as long as the application holds it. A refusal from core -
-// a sample put together from fragments, released from a reorder buffer, delivered locally, or no handle or spare
-// buffer left - is the same false.
+// into this context (DESIGN.md 10), and a loan lasts as long as the application holds it. A sample longer than any
+// datagram was put together in a large buffer of its own (core DESIGN.md section 8), never a ring slot, and keeping
+// it holds up nothing else; without that, a 4 MB sample was decoded into a shell here and copied again by the take -
+// two copies after its last fragment where a DDS makes one. A refusal from core - a sample put together from small
+// fragments, released from a reorder buffer, delivered locally, or no handle or spare buffer left - is the same
+// false.
 static bool retain_in_place(rmw_tickle_subscriber_t* sub_impl, struct tt_Subscriber* tt_sub,
                             const struct payload_view* view, uint64_t* psn, const void** in_place,
                             struct tt_Sample* sample) {
@@ -349,7 +355,8 @@ static bool retain_in_place(rmw_tickle_subscriber_t* sub_impl, struct tt_Subscri
     if (((uintptr_t)message & (callbacks->ros_struct_align - 1U)) != 0) {
         return false;
     }
-    if (!sub_impl->loan_ring_slots && !in_receive_buffer(sub_impl->node->context_impl, view->payload)) {
+    if (!sub_impl->loan_ring_slots && view->length <= (uint32_t)tt_MAX_SAMPLE_LENGTH &&
+        !in_receive_buffer(sub_impl->node->context_impl, view->payload)) {
         return false;
     }
     pthread_mutex_lock(&sub_impl->queue_mutex);
