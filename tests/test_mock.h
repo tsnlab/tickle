@@ -568,6 +568,9 @@ int test_mock_segment_attaches = 0;
 // see that at all.
 int test_mock_segment_attach_calls = 0;
 int test_mock_segment_double_detaches = 0;
+// Detaches of a region the mock never handed out: on Linux, an munmap() of whatever the pointer held - an entry read
+// before it was set up (segment_peer()) is how one happens.
+int test_mock_segment_stray_detaches = 0;
 // Unlinks, so that "the segment was released" can be asserted on the file being taken away and not
 // only on a pointer going NULL. Lazy release has to do both, and a release that forgot the unlink
 // would leave a file in /dev/shm for good while every pointer assertion still passed.
@@ -638,6 +641,7 @@ void tt_segment_detach(void* mapping, size_t bytes) {
             return;
         }
     }
+    test_mock_segment_stray_detaches++;
 }
 
 // No doorbell FIFO in the mock: peers ring over (mock) UDP, as with a platform that has none.
@@ -685,6 +689,7 @@ static void test_mock_segments_free(void) {
     test_mock_segment_attaches = 0;
     test_mock_segment_attach_calls = 0;
     test_mock_segment_double_detaches = 0;
+    test_mock_segment_stray_detaches = 0;
     test_mock_segment_unlinks = 0;
 }
 #endif
