@@ -1117,6 +1117,11 @@ struct tt_Context {
     // brought back from the original that was merely late - see note_recovery_sample(). Set per
     // submessage on the poll thread, under the state lock.
     bool rx_targeted;
+    // Large-sample fragments (types 11/12) a node built without stage 2 passed over (DESIGN.md section 8), saturating.
+    // A uint32_t in the padding after rx_targeted rather than a uint64_t at the end, so that a default build's struct
+    // tt_Context keeps the size it had before stage 2 (a rig control, stepA_perf_rig.sh: the benches hold this struct
+    // on main()'s stack, so its size alone moves every deeper frame against it).
+    uint32_t frag_large_skipped;
     // Of rx_self_sent, the ones carrying a DATA submessage rather than only an announce.
     uint64_t rx_self_sent_data;
     // Of those, the ones that arrived as unicast - addressed to this node's own data port rather
@@ -1193,8 +1198,6 @@ struct tt_Context {
     // Receive-buffer lending (DESIGN.md section 10), last so that no field before it moves when it is compiled in.
     struct tt_Lending lend;
 #endif
-    // Large-sample fragments (types 11/12) a node built without stage 2 passed over (DESIGN.md section 8).
-    uint64_t frag_large_skipped;
 #if tt_LARGE_SAMPLES
     // Large-message stage 2 (DESIGN.md section 8), after everything else for the same reason as lend.
     struct tt_LargeState large;

@@ -11,6 +11,7 @@
 // A node built without large-message stage 2 (core defaults, as FreeRTOS builds it) passes a large sample's fragments
 // over and counts them (DESIGN.md section 8: frag_large_skipped), and the rest of the datagram stream carries on.
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -24,6 +25,12 @@
 #include "test_mock.h"
 
 _Static_assert(!tt_LARGE_SAMPLES, "this test is about a build without stage 2");
+// The counter sits in the padding after rx_targeted (tickle.h), so stage 2 left a default build's struct tt_Context the
+// size it was: moved back to a field of its own, this fails.
+_Static_assert(offsetof(struct tt_Context, frag_large_skipped) > offsetof(struct tt_Context, rx_targeted) &&
+                   offsetof(struct tt_Context, frag_large_skipped) + sizeof(uint32_t) <=
+                       offsetof(struct tt_Context, rx_self_sent_data),
+               "frag_large_skipped is no longer in the padding after rx_targeted");
 
 static struct tt_Context node;
 static int delivered;
@@ -102,6 +109,14 @@ static void test_large_fragments_are_skipped_and_counted(void) {
     EXPECT_EQ_U64(2, node.frag_large_skipped);
     EXPECT_EQ_INT(0, delivered);
     EXPECT_EQ_U64(0, node.rx_malformed_drops); // passed over, not refused as malformed
+
+    // Saturating, not wrapping: a uint32_t that wrapped to 0 would read as "nothing skipped".
+    node.frag_large_skipped = UINT32_MAX - 1;
+    EXPECT_TRUE(process_packet(&node, bytes, 0, len, 0x0a000001, 8282, tt_TRANSPORT_UDP));
+    EXPECT_EQ_U64(UINT32_MAX, node.frag_large_skipped);
+    EXPECT_TRUE(process_packet(&node, bytes, 0, len, 0x0a000001, 8282, tt_TRANSPORT_UDP));
+    EXPECT_EQ_U64(UINT32_MAX, node.frag_large_skipped);
+    EXPECT_EQ_INT(0, delivered);
 
     // Control: a small DATA from the same node right after is delivered - nothing stopped.
     struct {

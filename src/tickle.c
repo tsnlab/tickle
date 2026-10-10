@@ -14706,8 +14706,10 @@ static bool process_frag_large(struct tt_Context* node, struct tt_Header* header
     UNUSED(type);
     UNUSED(sender_ip);
     UNUSED(sender_port);
-    node->frag_large_skipped++;
-    if (node->frag_large_skipped <= UINT32_MAX && is_power_of_ten((uint32_t)node->frag_large_skipped)) {
+    if (node->frag_large_skipped < UINT32_MAX) {
+        node->frag_large_skipped++;
+    }
+    if (is_power_of_ten(node->frag_large_skipped)) {
         TT_LOG_WARNING("Large-sample fragment from node %u skipped: this build has no large-message support (#%lu)",
                        header->source, (unsigned long)node->frag_large_skipped);
     }
