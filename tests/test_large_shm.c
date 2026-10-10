@@ -171,16 +171,28 @@ static struct tt_Topic owner_topic;
 static struct tt_Publisher pub;
 static struct tt_Subscriber sub;
 
-static void rig_up(void) {
+// `dirty`: both contexts start as 0xAA, as memory a caller hands tt_Context_create() need not be zeroed, and are set up
+// by reset_node_state() as creation does - so a field the reset leaves for first use (segment_peers[], set up by
+// segment_peer() and read only through segment_peer_if_live()) still holds 0xAA when the large path first meets it.
+static void rig_up_with(bool dirty) {
     test_mock_reset();
     test_mock_now = 100ULL * tt_SECOND;
     memset(&cb, 0, sizeof(cb));
     memset(&sender_alloc, 0, sizeof(sender_alloc));
     memset(&owner_alloc, 0, sizeof(owner_alloc));
-    memset(&owner, 0, sizeof(owner));
-    memset(&sender, 0, sizeof(sender));
+    memset(&owner, dirty ? 0xAA : 0, sizeof(owner));
+    memset(&sender, dirty ? 0xAA : 0, sizeof(sender));
     memset(&pub, 0, sizeof(pub));
     memset(&sub, 0, sizeof(sub));
+    if (dirty) {
+        node_init_locks(&owner);
+        reset_node_state(&owner);
+        node_init_locks(&sender);
+        reset_node_state(&sender);
+        // What creation's claim_initial_id() sets after the reset; it binds the HAL's registry, so not called here.
+        owner.id_muted = false;
+        sender.id_muted = false;
+    }
 
     node_init_locks(&owner);
     owner.id = OWNER_ID;
@@ -240,6 +252,10 @@ static void rig_up(void) {
     pub.peers[0].port = OWNER_PORT;
     sender.endpoints[sender.endpoint_count++] = (struct tt_Endpoint*)&pub;
     EXPECT_TRUE(peer_segment(&sender, OWNER_ID, OWNER_IP, OWNER_PORT) != NULL);
+}
+
+static void rig_up(void) {
+    rig_up_with(false);
 }
 
 static void rig_down(void) {
@@ -413,12 +429,73 @@ static void test_a_departure_inside_a_large_delivery_keeps_the_ring_until_read(v
     rig_down();
 }
 
+// ---- a context in memory that was not zeroed ----
+
+// The whole same-host large transfer, claim and lending included, from two contexts that started as 0xAA: the sender's
+// peer table entry for the owner and the owner's for the sender are first met by the large path, the claim pin and
+// the lending state. Every one must be read through its set-up guard; one read raw sees 0xAA - a mapping pointer that
+// the attach or the teardown unmaps (on Linux, part of the process), a claim count of 170 that keeps the mapping
+// pinned, a "missing" answer that sends the fragments over UDP instead. The control is the same run from zeroed
+// contexts: the mock's segment bookkeeping (detaches of a region it never handed out, double detaches of its own) must
+// read the same in both, so what the mock's sharing of one region between owner and attacher adds is not counted.
+struct transfer_witness {
+    int stray_detaches;
+    int double_detaches;
+};
+
+static struct transfer_witness large_same_host_transfer(bool dirty) {
+    rig_up_with(dirty);
+    EXPECT_TRUE(segment_peer_if_live(&sender, REMOTE_ID) == NULL); // the reset left the rest of the table unset
+    EXPECT_EQ_U32(0, sender.segment_peers[OWNER_ID].claims);       // set up by rig_up's peer_segment(): zeroed
+    cb.retain = true;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(1, LARGE_BYTES));
+    uint32_t count = large_count_for(ROUNDUP(LARGE_BYTES));
+    EXPECT_EQ_U32(count, ring()->write_index); // every fragment through the ring, none over UDP
+    EXPECT_EQ_U64(count, sender.tx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+    drain();
+    EXPECT_EQ_U32(1, cb.seen);
+    EXPECT_EQ_U32(LARGE_BYTES, cb.lengths[0]);
+    EXPECT_EQ_U64(1, owner.large.reassembled);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)cb.retain_result);
+    EXPECT_TRUE(intact(cb.held.payload, 1, LARGE_BYTES));
+
+    uint8_t* payload = NULL; // a claim and its pin on the same entry
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&pub, SMALL_BYTES, &payload));
+    EXPECT_EQ_U32(1, sender.segment_peers[OWNER_ID].claims);
+    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)publish(2, LARGE_BYTES));
+    fill(payload, 3, SMALL_BYTES);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish_claimed(&pub, SMALL_BYTES));
+    EXPECT_EQ_U32(0, sender.segment_peers[OWNER_ID].claims);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(4, LARGE_BYTES));
+    drain();
+    EXPECT_EQ_U32(3, cb.seen);
+    EXPECT_EQ_U32(SMALL_BYTES, cb.lengths[1]);
+    EXPECT_EQ_U32(LARGE_BYTES, cb.lengths[2]);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&owner, &cb.held));
+    large_release_publisher(&sender, &pub);
+    large_release_assemblies(&owner);
+    release_segments(&sender);
+    release_own_segment(&owner);
+    // Read before test_mock_segments_free() zeroes them.
+    struct transfer_witness witness = {test_mock_segment_stray_detaches, test_mock_segment_double_detaches};
+    test_mock_segments_free();
+    return witness;
+}
+
+static void test_a_large_same_host_transfer_from_unzeroed_contexts(void) {
+    struct transfer_witness clean = large_same_host_transfer(false);
+    struct transfer_witness dirty = large_same_host_transfer(true);
+    EXPECT_EQ_INT(clean.stray_detaches, dirty.stray_detaches); // no 0xAA "mapping" unmapped, at attach or teardown
+    EXPECT_EQ_INT(clean.double_detaches, dirty.double_detaches);
+}
+
 int main(void) {
     test_a_large_publish_behind_a_claim_is_refused_before_it_acquires();
     test_a_claim_of_a_large_sample_is_unsupported();
     test_a_claimed_publish_follows_a_waiting_large_sample();
     test_a_large_sample_from_the_ring_is_lent_from_its_own_buffer();
     test_a_departure_inside_a_large_delivery_keeps_the_ring_until_read();
+    test_a_large_same_host_transfer_from_unzeroed_contexts();
     printf("test_large_shm: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();
 }
