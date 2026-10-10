@@ -23,7 +23,8 @@
 // "gso" sends with UDP_SEGMENT instead: one send of up to 44 datagrams, which the kernel splits into separate
 // 1472-byte UDP datagrams (not IP fragments).
 //
-// Output: one RESULT line - datagrams, bytes, receive calls, wake-ups, datagrams per call.
+// Output: one RESULT line - datagrams, bytes, receive calls, wake-ups, datagrams per call, the largest datagram
+// taken, and getrusage CPU per MB.
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -38,6 +39,7 @@
 #include <netinet/in.h>
 #include <netinet/udp.h>
 #include <sys/epoll.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 
 #ifndef UDP_SEGMENT
@@ -57,6 +59,15 @@
 #define RATE_HZ 30U
 #define NS 1000000000ULL
 #define SOCKBUF (4 * 1024 * 1024)
+
+// This process's user and system CPU so far, in ms (getrusage). Softirq work the kernel did on this process's behalf
+// while another task ran is not in it: rx_gro_probe_rig.sh reads the host's /proc/stat for that.
+static void cpu_ms(double* user_ms, double* sys_ms) {
+    struct rusage usage;
+    getrusage(RUSAGE_SELF, &usage);
+    *user_ms = ((double)usage.ru_utime.tv_sec * 1e3) + ((double)usage.ru_utime.tv_usec / 1e3);
+    *sys_ms = ((double)usage.ru_stime.tv_sec * 1e3) + ((double)usage.ru_stime.tv_usec / 1e3);
+}
 
 static uint64_t now_ns(void) {
     struct timespec ts;
@@ -140,14 +151,22 @@ static int run_send(const char* ip, int port, double seconds, int gso) {
         }
         next += NS / RATE_HZ;
     }
-    printf("RESULT: role=send gso=%d datagrams=%lu calls=%lu eagain=%lu\n", gso, (unsigned long)sent,
-           (unsigned long)calls, (unsigned long)eagain);
+    double user_ms = 0;
+    double sys_ms = 0;
+    cpu_ms(&user_ms, &sys_ms);
+    double mb = (double)sent * DGRAM / 1e6;
+    printf("RESULT: role=send gso=%d datagrams=%lu calls=%lu eagain=%lu user_ms=%.1f sys_ms=%.1f cpu_ms_per_mb=%.4f\n",
+           gso, (unsigned long)sent, (unsigned long)calls, (unsigned long)eagain, user_ms, sys_ms,
+           mb > 0 ? (user_ms + sys_ms) / mb : 0.0);
     return 0;
 }
 
 static uint64_t datagrams;
 static uint64_t bytes;
 static uint32_t cursor;
+static uint32_t max_len;    // the largest datagram (GRO: segment) taken - the wire size as the receiver sees it
+static uint64_t oversize;   // datagrams or segments above DGRAM: must be 0
+static uint64_t data_calls; // receive calls that returned at least one datagram
 
 static void take(const uint8_t* data, uint32_t len) {
     if (cursor + len > sizeof(sample)) {
@@ -157,6 +176,8 @@ static void take(const uint8_t* data, uint32_t len) {
     cursor = (cursor + len) % SAMPLE_BYTES;
     datagrams++;
     bytes += len;
+    max_len = len > max_len ? len : max_len;
+    oversize += len > DGRAM ? 1U : 0U;
 }
 
 static int run_recv(int port, double seconds, const char* mode) {
@@ -210,7 +231,11 @@ static int run_recv(int port, double seconds, const char* mode) {
                 if (got <= 0) {
                     break;
                 }
+                data_calls++;
                 for (int i = 0; i < got; i++) {
+                    if ((msgs[i].msg_hdr.msg_flags & MSG_TRUNC) != 0) {
+                        oversize++; // a datagram larger than its 1472-byte slot
+                    }
                     take(slots[i], msgs[i].msg_len);
                 }
                 if ((uint32_t)got < MMSG) {
@@ -236,6 +261,7 @@ static int run_recv(int port, double seconds, const char* mode) {
                         memcpy(&seg, CMSG_DATA(cm), sizeof(seg));
                     }
                 }
+                data_calls++;
                 if (seg < len) {
                     gro_merged++;
                 }
@@ -249,13 +275,23 @@ static int run_recv(int port, double seconds, const char* mode) {
                 if (len <= 0) {
                     break;
                 }
+                data_calls++;
                 take(buf, (uint32_t)len);
             }
         }
     }
-    printf("RESULT: role=recv mode=%s datagrams=%lu bytes=%lu calls=%lu wakes=%lu per_call=%.2f gro_merged_calls=%lu\n",
-           mode, (unsigned long)datagrams, (unsigned long)bytes, (unsigned long)calls, (unsigned long)wakes,
-           calls > 0 ? (double)datagrams / (double)calls : 0.0, (unsigned long)gro_merged);
+    double user_ms = 0;
+    double sys_ms = 0;
+    cpu_ms(&user_ms, &sys_ms);
+    double mb = (double)bytes / 1e6;
+    // per_call counts every receive call, the empty one that ends a drain included; per_recv only those that returned
+    // data - "datagrams per recvmsg", the figure the GRO decision reads.
+    printf("RESULT: role=recv mode=%s datagrams=%lu bytes=%lu calls=%lu data_calls=%lu wakes=%lu per_call=%.2f "
+           "per_recv=%.2f gro_merged_calls=%lu max_len=%u oversize=%lu user_ms=%.1f sys_ms=%.1f cpu_ms_per_mb=%.4f\n",
+           mode, (unsigned long)datagrams, (unsigned long)bytes, (unsigned long)calls, (unsigned long)data_calls,
+           (unsigned long)wakes, calls > 0 ? (double)datagrams / (double)calls : 0.0,
+           data_calls > 0 ? (double)datagrams / (double)data_calls : 0.0, (unsigned long)gro_merged, max_len,
+           (unsigned long)oversize, user_ms, sys_ms, mb > 0 ? (user_ms + sys_ms) / mb : 0.0);
     return 0;
 }
 
