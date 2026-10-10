@@ -342,11 +342,16 @@ Anything batched ahead is flushed first. Retransmissions send cached fragments u
   are counted (`frag_duplicate`, `frag_abandoned`, `frag_dropped`).
 - A node built without fragmentation skips types 8 and 9 silently.
 
-**Larger than 65507 B** (above `tt_MAX_SAMPLE_LENGTH`): stage 2 below - step A, the socket path, is implemented; step
+**Larger than 65507 B** (above `tt_MAX_SAMPLE_LENGTH`): stage 2 below - step A, the socket path, is on main; step
 B, the same-host region, is not. A fragment-assembled small sample cannot be lent (section 10, receive-buffer lending):
 it is retained by copying. A large one is lent from its own buffer.
 
-### Stage 2: samples above 64 KB (designed 2026-10-09; step A implemented 2026-10-09, step B not)
+### Stage 2: samples above 64 KB (designed 2026-10-09; step A on main 2026-10-10, step B not)
+
+**Status (2026-10-10).** Step A landed on main with the zero-copy loans (section 10): a claim never covers a large
+sample (`UNSUPPORTED`), a claimed publish commits a large sample waiting behind a send first, and a large sample is lent
+from its own 8-aligned buffer (`tests/test_large_shm.c`). Its L4 cross-host rows are RESULTS.md "rmw large messages".
+Same-host large samples still go through the 512-slot ring and do not fit (step B).
 
 The user's staged-support decision (2026-09-27, LARGE_MESSAGE_PLAN decision 1 "B"; stage 1 was the rmw direct codec
 and serialized messages). Target: rmw `sensor_msgs/Image` and `PointCloud2` of 1-8 MB (VGA rgb8 921,600 B, 720p rgb8
@@ -558,6 +563,11 @@ Where it departs, and why:
   the arena to hold `depth` samples of up to 8 MiB each (80 MiB at the ROS default depth of 10) and the index one
   record per datagram (57,780 at 8 MiB x 10), which is the memory stage 2 exists not to spend. The end-of-sample
   HEARTBEAT row is runnable (`-Dtt_LARGE_END_HEARTBEAT=0`).
+- **Interactions with the claimed-slot publish and lending, found when the two branches met (2026-10-10).** A claimed
+  publish took its seq_no ahead of a large sample still waiting behind a send (`large_pending`); it now commits that
+  sample first, as an ordinary publish does. A large sample's delivery sets the lending state to LARGE, which hid from
+  the ring's release rule that the last fragment's slot was still being read: a departure handled in that callback
+  unmapped the ring under the drain. The kind it replaced is kept (`lend.rx_outer_kind`).
 - Not yet: large samples in a local durable backlog (`tt_Subscriber_deliver_local_backlog()`), and step B.
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
