@@ -205,16 +205,6 @@ static bool bitmap_equals_u64(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], u
     return true;
 }
 
-// Sets received_bitmap's own word 0 to `low`, zeroing every other word - the test-side equivalent
-// of bitmap_set_bit()/bitmap_clear() combined, for tests that pre-seed proxy state directly rather
-// than driving it through a real ACKNACK/DATA packet.
-static void bitmap_set_u64(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint64_t low) {
-    bitmap[0] = low;
-    for (int w = 1; w < tt_RELIABLE_BITMAP_WORDS; w++) {
-        bitmap[w] = 0;
-    }
-}
-
 // tt_Publisher_publish() on a Publisher with reliable_cache set must snapshot every sample into
 // the ring, and once more than `depth` samples have gone out, only the most recent `depth`
 // (KEEP_LAST) must remain - the oldest ones evicted, same eviction shape as
@@ -925,7 +915,7 @@ static void test_acknack_retry_give_up_does_not_bulk_skip(void) {
     // the old tt_MAX_RELIABLE_HISTORY-deep guess, still inside the tracking window.
     const uint32_t far_seq = tt_MAX_RELIABLE_HISTORY + 6;
     _Static_assert(tt_MAX_RELIABLE_HISTORY + 6 < tt_RELIABLE_BITMAP_BITS, "far_seq must fit the tracking window");
-    bitmap_set_bit(proxy->received_bitmap, far_seq - 1);
+    proxy_mark_received(proxy, far_seq - 1);
     proxy->sender_ip = TEST_SENDER_IP;
     proxy->sender_port = TEST_SENDER_PORT;
     proxy->acknack_scheduled = true;
@@ -959,8 +949,7 @@ static void test_acknack_retry_exhausted_gives_up(void) {
     EXPECT_TRUE(proxy != NULL);
     proxy->keep_all = tt_WRITER_KEEP_ALL_NO; // an ordinary writer whose announce has been seen
     proxy->ack_seq_no = 5;
-    bitmap_set_u64(proxy->received_bitmap,
-                   2ULL); // seq_no 5 still missing, seq_no 6 already received (bit j: ack_seq_no + j)
+    proxy_mark_received(proxy, 1); // seq_no 5 still missing, seq_no 6 already received (bit j: ack_seq_no + j)
     proxy->sender_ip = TEST_SENDER_IP;
     proxy->sender_port = TEST_SENDER_PORT;
     proxy->acknack_scheduled = true;
@@ -1426,7 +1415,7 @@ static void test_acknack_names_every_gap_across_a_wide_window(void) {
             is_gap |= gaps[i] == bit;
         }
         if (!is_gap) {
-            bitmap_set_bit(proxy->received_bitmap, bit);
+            proxy_mark_received(proxy, bit);
         }
     }
 
@@ -1664,7 +1653,7 @@ static void test_recovery_probe_only_times_the_watermark(void) {
     proxy->sender_ip = TEST_SENDER_IP;
     proxy->sender_port = TEST_SENDER_PORT;
     proxy->ack_seq_no = 5;
-    bitmap_set_bit(proxy->received_bitmap, 8); // something arrived ahead, so there is a range to ask about
+    proxy_mark_received(proxy, 8); // something arrived ahead, so there is a range to ask about
 
     test_mock_now = 7 * tt_MILLISECOND;
     send_acknack_range(&node, proxy, 3, 8); // narrow: positions 3..8 only, not the watermark
@@ -2937,7 +2926,7 @@ static void test_unknown_policy_still_terminates_on_eviction(void) {
     proxy->ack_seq_no = 5;
     proxy->sender_ip = TEST_SENDER_IP;
     proxy->sender_port = TEST_SENDER_PORT;
-    bitmap_set_bit(proxy->received_bitmap, 2); // seq_no 7 arrived; 5 and 6 are missing
+    proxy_mark_received(proxy, 2); // seq_no 7 arrived; 5 and 6 are missing
     proxy->acknack_scheduled = true;
 
     // Retries far past the bounded budget without ever advancing - which is the intended behavior
@@ -3716,7 +3705,7 @@ static void test_keep_all_subscriber_never_gives_up(void) {
     proxy->keep_all = tt_WRITER_KEEP_ALL_YES; // as its announce said
     proxy->sender_ip = TEST_SENDER_IP;
     proxy->sender_port = TEST_SENDER_PORT;
-    bitmap_set_bit(proxy->received_bitmap, 4); // seq_no 5 arrived; 1..4 are missing
+    proxy_mark_received(proxy, 4); // seq_no 5 arrived; 1..4 are missing
     proxy->acknack_scheduled = true;
 
     for (int i = 0; i < tt_RELIABLE_RETRY * 5; i++) { // far past the give-up budget

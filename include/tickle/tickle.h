@@ -2152,6 +2152,12 @@ struct tt_WriterProxy {
     // sized per Subscriber: core stays embedded-first at tt_RELIABLE_BITMAP_BITS, a Linux-class
     // caller opts into more. Set when this slot is claimed (find_or_create_writer_proxy()).
     uint64_t* received_bitmap;
+    // How many words of received_bitmap are in use: word received_words - 1 is the highest nonzero
+    // one, and every word above it is zero (0: nothing set). Lets the per-DATA watermark advance and
+    // the "highest bit set" scan cost O(words in use) instead of O(window width), so in the common
+    // in-order case, where nothing is set, both are free. Kept exact by tickle.c's proxy_*_received()
+    // helpers, the only code that sets a bit or moves the bitmap.
+    uint16_t received_words;
     // How many ACKNACK retries have been sent for the *current* outstanding gap against this
     // writer - reset to 0 when a new gap first opens, capped at tt_RELIABLE_RETRY (mirrors
     // call_retry()'s own client->service->call_retry_count check) before this Subscriber gives up

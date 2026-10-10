@@ -548,7 +548,7 @@ static void test_lease_expiry_drops_writer_proxy_on_subscriber(void) {
     EXPECT_TRUE(proxy != NULL);
     proxy->keep_all = tt_WRITER_KEEP_ALL_YES; // no give-up: only liveliness can end this
     proxy->ack_seq_no = 7;
-    bitmap_set_bit(proxy->received_bitmap, 3); // a gap it is still chasing
+    proxy_mark_received(proxy, 3); // a gap it is still chasing
     proxy->acknack_scheduled = true;
     EXPECT_TRUE(tt_Context_schedule(&node, 1000, acknack_retry, proxy));
 
