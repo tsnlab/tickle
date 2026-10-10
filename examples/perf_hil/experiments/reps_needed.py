@@ -20,10 +20,18 @@ campaign_ab_chain.sh REPS per block is half of it, rounded up.
 
 Not wired into anything (the user's instruction): read the table, then choose REPS and PRIMARY yourself.
 
-Usage: reps_needed.py [--delta 1,3] [--power 0.8] [--fw tickle] [--metrics name,...] [--cap 100] FILE...
+--rmw-rows (2026-10-10, ~/rig_queue_largemsg_A4.sh): the FILEs are rmw_crosshost_rtt.sh outputs instead, one block
+each, and the metrics are its rows' rtt_avg_ms (in us) and CPU us per round trip ((pong_cpu_ns + ping utime + stime) /
+sent, the reading rmw_rtt_ab_compare.py judges); a cell is msg/qos/wait, --fw names the rmw (rmw_tickle by default,
+or 'all'). A row that is not 'ok', lost anything or names another framework is skipped, as the comparison voids it.
+--z replaces the 2 x SE threshold, e.g. with the Bonferroni z the comparison will use.
+
+Usage: reps_needed.py [--delta 1,3] [--power 0.8] [--fw tickle] [--metrics name,...] [--cap 100] [--z 2]
+                      [--rmw-rows] FILE...
 """
 import argparse
 import math
+import re
 import statistics
 import sys
 from collections import OrderedDict
@@ -32,6 +40,36 @@ sys.path.insert(0, __import__("os").path.dirname(__file__))
 from campaign_summary import DIRECTION, parse  # noqa: E402
 
 Z_SE = 2.0
+
+
+RMW_ROW = re.compile(r"^(\S+) (\S+) (\S+) rep(\d+)(?: wait=(\S+))? \| (\S+) \|(.*)$")
+
+
+def parse_rmw_rows(path, fw):
+    """rmw_crosshost_rtt.sh's rows as {(cell, rmw, metric): [values]} for one file (block)."""
+    out = OrderedDict()
+    with open(path, errors="replace") as f:
+        for line in f:
+            m = RMW_ROW.match(line.rstrip("\n"))
+            if not m:
+                continue
+            rmw, msg, qos, _rep, wait, status, rest = m.groups()
+            fields = dict(re.findall(r"(\w+)=(\S+)", rest))
+            if fw != "all" and rmw != fw:
+                continue
+            if status != "ok" or fields.get("loss_pct") != "0" or fields.get("framework") != rmw:
+                continue
+            try:
+                sent = float(fields["sent"])
+                rtt = float(fields["rtt_avg_ms"]) * 1e3
+                cpu = (float(fields["pong_cpu_ns"]) / 1e3
+                       + (float(fields["ping_utime_s"]) + float(fields["ping_stime_s"])) * 1e6) / sent
+            except (KeyError, ValueError, ZeroDivisionError):
+                continue
+            cell = f"{msg}/{qos}/{wait or 'poll'}"
+            out.setdefault((cell, rmw, "rtt_avg_us"), []).append(rtt)
+            out.setdefault((cell, rmw, "cpu_us_per_rt"), []).append(cpu)
+    return out
 
 
 def z_for_power(power):
@@ -52,10 +90,10 @@ def pooled(per_file):
     return statistics.fmean(allv), math.sqrt(num / df), len(allv), int(df)
 
 
-def reps(cv, delta, zp):
+def reps(cv, delta, zp, z_se=Z_SE):
     if cv == 0:
         return 2
-    return max(2, math.ceil(2 * (Z_SE + zp) ** 2 * cv * cv / (delta * delta)))
+    return max(2, math.ceil(2 * (z_se + zp) ** 2 * cv * cv / (delta * delta)))
 
 
 def main():
@@ -66,14 +104,24 @@ def main():
     ap.add_argument("--fw", default="tickle", help="framework, or 'all'")
     ap.add_argument("--metrics", default="", help="only these metric names (e.g. send_mbps,rtt_avg_ms)")
     ap.add_argument("--cap", type=int, default=1000, help="print >cap instead of larger counts")
+    ap.add_argument("--z", type=float, default=Z_SE, help="the |t| threshold the comparison uses (default 2)")
+    ap.add_argument("--rmw-rows", action="store_true", help="FILEs are rmw_crosshost_rtt.sh outputs (docstring)")
     args = ap.parse_args()
+    z_se = args.z
     deltas = [float(d) / 100 for d in args.delta.split(",") if d.strip()]
     zp = z_for_power(args.power)
     only = {m.strip() for m in args.metrics.split(",") if m.strip()}
 
     # (cell, fw, metric) -> [values of file 1, values of file 2, ...]
     data = OrderedDict()
-    for path in args.files:
+    if args.rmw_rows:
+        fw = "rmw_tickle" if args.fw == "tickle" else args.fw
+        for path in args.files:
+            for (cell, rmw, metric), vals in parse_rmw_rows(path, fw).items():
+                if only and metric not in only:
+                    continue
+                data.setdefault((cell, rmw, metric), []).append(vals)
+    for path in [] if args.rmw_rows else args.files:
         for key, fws in parse(path).items():
             cell = "c%d %s %s %s %s" % key
             for fw, d in fws.items():
@@ -89,7 +137,7 @@ def main():
         return f">{args.cap}" if n > args.cap else str(n)
 
     dcols = "".join(f"  n@{d * 100:g}%" for d in deltas)
-    print(f"reps per ARM for a relative change at |t| > {Z_SE:g} with {args.power:.0%} power, from "
+    print(f"reps per ARM for a relative change at |t| > {z_se:g} with {args.power:.0%} power, from "
           f"{len(args.files)} file(s); SD pooled within files")
     # df = the degrees of freedom behind the pooled SD. At df 2 (one file of 3 reps) the SD itself is uncertain by a
     # factor of ~2 either way, and n goes with its square: treat those rows as an order of magnitude, not a count.
@@ -106,7 +154,7 @@ def main():
                   "relative change to detect)")
             continue
         cv = sd / abs(mean)
-        need = [reps(cv, d, zp) for d in deltas]
+        need = [reps(cv, d, zp, z_se) for d in deltas]
         print(f"{cell:34s} {fw:10s} {metric:30s} {df:4d} {mean:12.4g} {sd:10.4g} {cv * 100:6.2f}"
               + "".join(f"  {fmt(x):>{len(f'  n@{d * 100:g}%') - 2}}" for x, d in zip(need, deltas)))
         cur = per_cell.setdefault((cell, fw), [(0, "")] * len(deltas))
