@@ -7426,6 +7426,22 @@ static enum large_resend_result large_resend(struct tt_Context* node, struct tt_
     if (!record->sent && !(cursor->seq_no == record->seq_no && (cursor->next_dest > 0 || index < cursor->next_index))) {
         return LARGE_RESEND_SENT;
     }
+#if tt_LARGE_SHM
+    // A reader that took the sample's descriptor asks for all of its seq_nos at once: one descriptor answers them all,
+    // once per ACKNACK (step B). Fragments through its ring would be what step B exists to avoid.
+    if (record->chunk != 0 && large_ref_segment(node, target) != NULL) {
+        if (record->ref_resent == node->large.acknack_serial) {
+            return LARGE_RESEND_SENT;
+        }
+        record->ref_resent = node->large.acknack_serial;
+        if (large_ref_send(node, pub, record, target, target->context_id)) {
+            RSTAT_INC(retransmitted);
+            pub->retransmitted++;
+            return LARGE_RESEND_SENT;
+        }
+        record->ref_resent = node->large.acknack_serial - 1U; // not taken after all: its datagrams go below
+    }
+#endif
     uint32_t length = large_length(index, record->cdr_len);
     uint8_t framing[LARGE_FRAMING_MAX];
     uint32_t skip = 0;
@@ -13645,6 +13661,9 @@ static void retransmit_reliable_samples(struct tt_Context* node, struct tt_Publi
     g_rstats.bits_requested += rstat_popcount_bitmap(bitmap, words);
 #endif
     bool any_gone = false;
+#if tt_LARGE_SHM
+    node->large.acknack_serial++; // a descriptor is resent once per ACKNACK (large_resend())
+#endif
     // Phase 2 - `words` is whatever the requester actually sent (validated by the caller), and the
     // inner loop walks set bits only, so a window widened to tt_RELIABLE_BITMAP_MAX_BITS costs
     // nothing here unless the gaps really are that spread out: O(words + set bits), never

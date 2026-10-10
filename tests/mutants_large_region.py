@@ -55,6 +55,18 @@ MUTANTS = [
         "test_the_bit_waits_for_every_subscriber",
     ),
     (
+        "B1.4 no clear of the bit when the descriptor was dropped",
+        "            __atomic_fetch_and(word, ~bit, __ATOMIC_RELEASE); // nobody will read it for this descriptor",
+        "            (void)word;",
+        "test_a_dropped_descriptor_frees_its_bit_and_is_resent_whole",
+    ),
+    (
+        "B1.4 a NACK answered with fragments, not the descriptor",
+        "    if (record->chunk != 0 && large_ref_segment(node, target) != NULL) {\n        if (record->ref_resent",
+        "    if (false) {\n        if (record->ref_resent",
+        "test_a_dropped_descriptor_frees_its_bit_and_is_resent_whole",
+    ),
+    (
         "B1.5 no generation check",
         " ||\n        __atomic_load_n(&entry->generation, __ATOMIC_ACQUIRE) != generation) {",
         ") {",
