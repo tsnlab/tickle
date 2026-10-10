@@ -12,7 +12,7 @@
 #   off   TT_UDP_OFFLOAD=0: every datagram sent and read one at a time - the code before the change, by switch.
 #   on    offload on.
 #   off2  off again: the A/A noise control. on-vs-off is read against off2-vs-off, never against a bare figure.
-#   small_off / small_on  1 KB samples, one datagram each, never a run: offload cannot apply, so its on/off delta must
+#   small_off / small_on (/ small_off2, its A/A)  1 KB samples, one datagram each, never a run: offload cannot apply, so its on/off delta must
 #         stay within the A/A one - a control the change provably cannot touch (bar the recvmsg() in place of
 #         recvfrom() on the receive side, which is what this arm measures).
 # Two veth settings, as a NIC can have:
@@ -123,14 +123,15 @@ run() {
         "latency_median_us=$(field latency_median_us "$s") latency_p99_us=$(field latency_p99_us "$s")" | tee -a "$OUT"
 }
 
-ARMS=(off on off2 small_off small_on)
+# ARMS="..." runs a subset (e.g. "small_off small_on small_off2", the 1 KB control with its own A/A).
+read -r -a ARMS <<<"${ARMS:-off on off2 small_off small_on}"
 for rep in $(seq 1 "$REPS"); do
     for k in $(seq 0 $((${#ARMS[@]} - 1))); do
         arm=${ARMS[$(((k + rep) % ${#ARMS[@]}))]}
         case $arm in
         off | off2) run "$arm" 0 1048576 30 ;;
         on) run "$arm" 1 1048576 30 ;;
-        small_off) run "$arm" 0 1024 1000 ;;
+        small_off | small_off2) run "$arm" 0 1024 1000 ;;
         small_on) run "$arm" 1 1024 1000 ;;
         esac
     done
