@@ -79,7 +79,10 @@ static const char k_frag_magic[MAGIC_LEN] = {tt_SINGLE_MARKER_LE, 'U', 'O', tt_S
 static const char k_full_magic[MAGIC_LEN] = {'K', 'T', 'U', 'O'};
 #define FULL_PATTERN 6U
 static const char* magic_of(uint32_t number) {
-    return number == 0 || number == 5 ? k_frag_magic : number == FULL_PATTERN ? k_full_magic : k_magic;
+    if (number == 0 || number == 5) {
+        return k_frag_magic;
+    }
+    return number == FULL_PATTERN ? k_full_magic : k_magic;
 }
 static uint32_t pattern_word(uint32_t number) {
     return (number << 8) | (number == FULL_PATTERN ? (uint32_t)tt_SUBMESSAGE_TYPE_FRAG_CONT_L : 0U);
