@@ -79,7 +79,7 @@ for arm in A B C; do
     done
 done
 
-sudo -n ip netns add "$NSA" && sudo -n ip netns add "$NSB" || { say "FATAL netns"; exit 1; }
+if ! sudo -n ip netns add "$NSA" || ! sudo -n ip netns add "$NSB"; then say "FATAL netns"; exit 1; fi
 sudo -n ip link add uocv1 netns "$NSA" type veth peer name uocv2 netns "$NSB" || { say "FATAL veth"; exit 1; }
 sudo -n ip -n "$NSA" addr add 192.168.10.1/24 brd + dev uocv1
 sudo -n ip -n "$NSB" addr add 192.168.10.2/24 brd + dev uocv2
@@ -96,9 +96,9 @@ run_cell() { # rep cell arm
     [ "$arm" = A2 ] && bin_arm=A
     local bin="$WORK/bin_${bin_arm}_$cell" args
     args=$(args_of "$cell")
-    # shellcheck disable=SC2016,SC2086,SC2024 # inner sh's $1/$@; args split on purpose; logs are ours
     # The server's own PID, written by the shell that then becomes it (exec), so it is stopped by PID, never by name.
     rm -f "$WORK/srv.pid"
+    # shellcheck disable=SC2016,SC2086,SC2024 # inner sh's $1/$@; args split on purpose; logs are ours
     sudo -n ip netns exec "$NSB" sh -c 'mount -t tmpfs -o size=256m tmpfs /dev/shm && cd "$1" && echo $$ > "$2" && shift 2 && exec "$@"' \
         sh "$bin" "$WORK/srv.pid" env BENCH_IFACE=uocv2 ./server $args >"$WORK/srv.log" 2>&1 </dev/null &
     local srv=$!
