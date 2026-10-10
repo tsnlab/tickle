@@ -373,6 +373,7 @@ struct tt_Sample {
 #if tt_LARGE_SAMPLES
 // Large-message stage 2 (DESIGN.md section 8): the caller's buffers, one per large sample. acquire returns `bytes` of
 // memory core may write and keep until it hands the pointer back to release, or NULL for "no room" - never a crash.
+// 8-aligned, as every receive buffer is (tt_Context.rx_buffer): a sample lent from it then reads in place.
 // Core calls them with the context locked, from the publishing thread, the polling thread, or (release only) whichever
 // thread calls tt_Sample_release(); they must not call back into TickLE. rmw_tickle backs them with malloc() and a free
 // list; a core-only user can back them with a static pool. Set with tt_Context_set_large_buffers().
@@ -484,10 +485,12 @@ struct tt_Lending {
     uint64_t exhausted;    // no handle entry, or no spare receive buffer: tt_RET_OUT_OF_BUFFER
     uint64_t bad_releases; // handle 0, unknown, or already released: tt_RET_INVALID_ARGUMENT
     uint64_t full_retained;
-    // While rx_kind is LARGE: the large sample's own buffer, which a retain keeps (large-message stage 2). Last, so no
-    // field above moves.
+    // While rx_kind is LARGE: the large sample's own buffer, which a retain keeps (large-message stage 2), and the kind
+    // the datagram being processed had before the delivery replaced it - SLOT while the last fragment's record is still
+    // being read from the ring, which must stay mapped under it. Last, so no field above moves.
 #if tt_LARGE_SAMPLES
     uint8_t* rx_large;
+    uint8_t rx_outer_kind;
 #endif
 };
 #endif

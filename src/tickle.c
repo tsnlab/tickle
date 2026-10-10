@@ -47,6 +47,10 @@ _Static_assert(offsetof(struct tt_Context, rx_buffer) % 8 == 0, "rx_buffer not 8
 _Static_assert((sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader)) % 8 == 4,
                "a single-form DATA's payload no longer lands at 4 mod 8 in an 8-aligned receive buffer");
 _Static_assert(tt_RX_POOL_BUFFER_BYTES % 8 == 0, "rx pool buffers must stay 8-aligned one after another");
+#if tt_LARGE_SAMPLES
+// The same rule for a large sample, lent from its own 8-aligned buffer (tt_LARGE_ACQUIRE): its CDR at 4 mod 8 there.
+_Static_assert(tt_LARGE_CDR_OFFSET % 8 == 4, "a large sample's CDR no longer lands at 4 mod 8 in its buffer");
+#endif
 #undef TT_FRAMING_HDR
 #if tt_FRAG_ENABLED
 _Static_assert(sizeof(struct tt_DataHeader) == tt_FRAG_DATA_HEADER_LENGTH, "tt_FRAG_DATA_HEADER_LENGTH is stale");
@@ -1392,6 +1396,20 @@ static bool own_segment_attached_by_self(const struct tt_Context* node) {
 // Discovery's departing edge. The segment goes when the last peer that could open it has gone - and
 // not while this context is still using it to deliver to itself, which is a separate claim on it that
 // no departure can settle.
+#if tt_SAMPLE_LENDING
+// Whether a record is being read in place from this context's own ring: the datagram being processed is a slot's -
+// also while a large sample whose last fragment that record carries is being delivered, when rx_kind says LARGE for
+// the callback's sake (large_lend_saved below).
+static bool lend_reading_slot(const struct tt_Context* node) {
+#if tt_LARGE_SAMPLES
+    if (node->lend.rx_kind == tt_LEND_LARGE && node->lend.rx_outer_kind == tt_LEND_SLOT) {
+        return true;
+    }
+#endif
+    return node->lend.rx_kind == tt_LEND_SLOT;
+}
+#endif
+
 static void forget_same_host_peer(struct tt_Context* node, uint8_t context_id) {
     if (context_id == tt_CONTEXT_ID_INVALID || !node->same_host_peer[context_id]) {
         return;
@@ -1402,7 +1420,7 @@ static void forget_same_host_peer(struct tt_Context* node, uint8_t context_id) {
 #if tt_SAMPLE_LENDING
         // Not while a retained sample lives in it, nor under the record being read in place (a farewell processed
         // from the ring ends here): the polling thread finishes it once neither is true (lend_finish_release()).
-        if (node->lend.held_slots != 0 || node->lend.rx_kind == tt_LEND_SLOT) {
+        if (node->lend.held_slots != 0 || lend_reading_slot(node)) {
             node->lend.segment_release_deferred = true;
             return;
         }
@@ -1416,7 +1434,7 @@ static void forget_same_host_peer(struct tt_Context* node, uint8_t context_id) {
 // polling thread only: the drain reads own_segment without the lock (drain_own_segment()'s fast path), so it is never
 // unmapped from another thread - which is why tt_Sample_release() does not call this. True when it released.
 static bool lend_finish_release(struct tt_Context* node) {
-    if (!node->lend.segment_release_deferred || node->lend.held_slots != 0 || node->lend.rx_kind == tt_LEND_SLOT) {
+    if (!node->lend.segment_release_deferred || node->lend.held_slots != 0 || lend_reading_slot(node)) {
         return false;
     }
     node->lend.segment_release_deferred = false;
@@ -7344,16 +7362,24 @@ static void large_before_small_publish(struct tt_Context* node, struct tt_Publis
 }
 #endif
 
-static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Data* data) {
+// What refuses a publish before anything is looked at: a malformed call, or a claim out.
+static tt_ret_t publish_refused_outright(const struct tt_Publisher* pub, const struct tt_Data* data) {
     if (pub == NULL || data == NULL || pub->node == NULL || pub->topic == NULL ||
         pub->topic->data_encode_size == NULL || pub->topic->data_encode == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
-
     if (pub->claim_slot != NULL) {
         // tt_Publisher_claim()'s rule: the claim takes its seq_no when it is published, so a sample sent now would land
         // behind it in the ring with an earlier one.
         return tt_RET_ILLEGAL_STATUS;
+    }
+    return tt_RET_OK;
+}
+
+static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Data* data) {
+    tt_ret_t refused = publish_refused_outright(pub, data);
+    if (refused != tt_RET_OK) {
+        return refused;
     }
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     struct tt_Context* node = pub->node;
@@ -7716,6 +7742,14 @@ static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint3
         peer_segment(node, dest.context_id, dest.ip, dest.port) != pub->claim_segment) {
         return publish_claim_by_copy(pub, length);
     }
+#if tt_LARGE_SAMPLES
+    // A large sample published before this one may still wait behind a send in progress, without seq_nos yet: it takes
+    // them first, as it does ahead of an ordinary small publish (large_before_small_publish()), or this sample would
+    // take an earlier seq_no than one published before it.
+    if (pub->large_pending.buffer != NULL) {
+        large_commit_pending(node, pub);
+    }
+#endif
     const uint32_t raw_len = CLAIM_FRAMING + length;
     const uint32_t record_len = ROUNDUP(raw_len);
     uint32_t own_ip = 0;
@@ -11965,6 +11999,7 @@ struct large_lend_saved {
     uint32_t length;
     uint32_t index;
     uint8_t kind;
+    uint8_t outer_kind;
     uint8_t* large;
 };
 #endif
@@ -11975,11 +12010,12 @@ static void large_deliver_reliable(struct tt_Context* node, struct tt_Subscriber
                                    struct tt_LargeAssembly* assembly) {
     uint32_t cdr_len = large_offset((uint32_t)assembly->frag_count - 1U) + assembly->last_length;
 #if tt_SAMPLE_LENDING
-    struct large_lend_saved saved = {node->lend.rx_base, node->lend.rx_length, node->lend.rx_index, node->lend.rx_kind,
-                                     node->lend.rx_large};
+    struct large_lend_saved saved = {node->lend.rx_base, node->lend.rx_length,     node->lend.rx_index,
+                                     node->lend.rx_kind, node->lend.rx_outer_kind, node->lend.rx_large};
     node->lend.rx_base = assembly->buffer + tt_LARGE_CDR_OFFSET;
     node->lend.rx_length = cdr_len;
     node->lend.rx_index = 0;
+    node->lend.rx_outer_kind = saved.kind;
     node->lend.rx_kind = tt_LEND_LARGE;
     node->lend.rx_large = assembly->buffer;
 #endif
@@ -11991,6 +12027,7 @@ static void large_deliver_reliable(struct tt_Context* node, struct tt_Subscriber
     node->lend.rx_length = saved.length;
     node->lend.rx_index = saved.index;
     node->lend.rx_kind = saved.kind;
+    node->lend.rx_outer_kind = saved.outer_kind;
     node->lend.rx_large = saved.large;
 #endif
     large_assembly_free(node, assembly);
@@ -14528,11 +14565,12 @@ static void large_accept_best_effort(struct tt_Context* node, struct large_fragm
     uint32_t cdr_len = large_offset((uint32_t)assembly->frag_count - 1U) + assembly->last_length;
     struct tt_Header header = *fragment->header;
 #if tt_SAMPLE_LENDING
-    struct large_lend_saved saved = {node->lend.rx_base, node->lend.rx_length, node->lend.rx_index, node->lend.rx_kind,
-                                     node->lend.rx_large};
+    struct large_lend_saved saved = {node->lend.rx_base, node->lend.rx_length,     node->lend.rx_index,
+                                     node->lend.rx_kind, node->lend.rx_outer_kind, node->lend.rx_large};
     node->lend.rx_base = assembly->buffer + tt_LARGE_CDR_OFFSET;
     node->lend.rx_length = cdr_len;
     node->lend.rx_index = 0;
+    node->lend.rx_outer_kind = saved.kind;
     node->lend.rx_kind = tt_LEND_LARGE;
     node->lend.rx_large = assembly->buffer;
 #endif
@@ -14544,6 +14582,7 @@ static void large_accept_best_effort(struct tt_Context* node, struct large_fragm
     node->lend.rx_length = saved.length;
     node->lend.rx_index = saved.index;
     node->lend.rx_kind = saved.kind;
+    node->lend.rx_outer_kind = saved.outer_kind;
     node->lend.rx_large = saved.large;
 #endif
     uint32_t delivered = assembly->seq_no;
