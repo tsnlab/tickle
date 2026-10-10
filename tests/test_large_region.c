@@ -582,6 +582,29 @@ static void test_a_stale_descriptor_is_refused(void) {
     rig_down();
 }
 
+// ---- B1.6: a dead reader's chunks ----
+
+static void test_a_dead_readers_chunk_is_freed_by_liveliness_not_before(void) {
+    rig_up(RIG_BEST_EFFORT, 2, ONE_MB);
+    seen_best_effort.retain = true; // the reader holds chunk 0 and then dies holding it
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(1, ONE_MB));
+    drain();
+    EXPECT_TRUE(owner_bit_set(0));
+    for (uint32_t id = 2; id <= 4; id++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(id, ONE_MB));
+        drain();
+    }
+    EXPECT_EQ_U32(4, seen_best_effort.count);
+    EXPECT_EQ_U64(3, sender.large.ref_sent - 1U); // chunk 1 every time
+    EXPECT_TRUE(owner_bit_set(0));                // not before: only slow, as far as the writer can tell
+    EXPECT_TRUE(intact(seen_best_effort.held.payload, 1, ONE_MB));
+    presume_node_dead(&sender, OWNER_ID, 5ULL * tt_SECOND);
+    EXPECT_TRUE(!(owner_bit_set(0))); // after: free again
+    EXPECT_TRUE(large_chunk_unread(pub.large_region.mapping, 0));
+    lend_forget_all(&owner);
+    rig_down();
+}
+
 // ---- B1.7: a reader without the feature, and a descriptor from a socket ----
 
 static void test_a_reader_without_the_feature_gets_fragments(void) {
@@ -659,6 +682,7 @@ int main(void) {
     test_the_bit_waits_for_every_subscriber();
     test_a_dropped_descriptor_frees_its_bit_and_is_resent_whole();
     test_a_stale_descriptor_is_refused();
+    test_a_dead_readers_chunk_is_freed_by_liveliness_not_before();
     test_a_reader_without_the_feature_gets_fragments();
     test_a_descriptor_from_a_socket_is_refused();
     test_an_exhausted_region_falls_back_to_fragments();
