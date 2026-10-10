@@ -25,6 +25,7 @@
 #include <stddef.h> // offsetof
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h> // getenv(): TT_UDP_OFFLOAD
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -32,6 +33,7 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <netinet/udp.h> // SOL_UDP, UDP_GRO, UDP_SEGMENT
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
@@ -69,7 +71,6 @@
 
 #if tt_CONTEXT_ID_CLAIM
 #include <signal.h> // kill()
-#include <stdlib.h> // getenv()
 
 #include <sys/types.h> // pid_t
 #endif
@@ -567,6 +568,144 @@ static void wait_set_setup(struct tt_Context* node) {
 #endif
 }
 
+// UDP offload (2026-10-10). A large sample is hundreds of 1472-byte datagrams to one destination, and every one of them
+// paid the socket layer once on each side. The kernel can pay it once per run instead, without anything on the wire
+// changing:
+//   - receive, UDP_GRO: same-flow datagrams that arrive together are handed over in one read, back to back, with their
+//     size in a cmsg (all the same size but the last). They are given to core one at a time, in the buffer they were
+//     read into (struct tt_Context.rx_offset), so a merged read costs core no copy. Alignment: segment k starts at
+//     k x size. Core's codec needs 4 (CDR-4), so a size that is not a multiple of 4 has every segment but the first
+//     copied to the start of the buffer (gro_copied). Receive-buffer lending wants 8 (03737b57: a lone DATA's payload
+//     at 4 mod 8), which a size of 4 mod 8 gives only every other segment - and that is the main case: a large
+//     sample's fragment datagram is 1468 B (4 framing + 12 FRAG_CONT_L + 1452). Those odd segments are still handed
+//     out in place (gro_off8), because what being off 8 costs is narrow: a fragment is copied into its assembly
+//     either way, and a lone DATA there is still correct, only no longer readable in place by a loaned take - rmw
+//     decodes it instead, the copy the HAL would otherwise have made here for every such segment, loaned or not.
+//     Measured on the PC (1 MB samples): copying them was half of every merged datagram, 54150 of 108450. Off in
+//     builds whose buffer cannot hold a merged read (TT_HAL_UDP_GRO, hal_linux.h). A kernel that refuses the option
+//     leaves every read as it was.
+//   - send, UDP_SEGMENT (tt_send_batch()): see send_batch_flags().
+// Rig probe 2026-10-10 (experiments/rx_gro_probe_rig.sh, Pi 5 x2, 1472 B): receiver 3.99 ms/MB with recvfrom(), 3.40
+// with UDP_GRO; sender 4.76 plain, 4.19 with UDP_SEGMENT. TT_UDP_OFFLOAD=0 in the environment turns both off, for the
+// A/B control: the same binary, every datagram sent and read one at a time as before.
+#if TT_HAL_UDP_GRO
+static bool udp_offload_allowed(void) {
+    const char* setting = getenv("TT_UDP_OFFLOAD");
+    return setting == NULL || strcmp(setting, "0") != 0;
+}
+
+#define TT_UDP_OFFLOAD_GRO 1U // struct tt_Context.udp_offload
+
+// Asks both sockets to accept merged datagrams. Refused (ENOPROTOOPT before Linux 5.0) is not an error: reads stay as
+// they were. Either socket may be refused alone; reads take the cmsg path then, and the refused one reports no size.
+static void gro_setup(struct tt_Context* node) {
+    node->hal.gro_on = false;
+    node->hal.gro_left = 0;
+    node->hal.gro_next = 0;
+    node->hal.gro_end = 0;
+    node->hal.gro_base = NULL;
+    if (!udp_offload_allowed()) {
+        return;
+    }
+    int one = 1;
+    bool well_known = setsockopt(node->hal.sock, SOL_UDP, UDP_GRO, &one, sizeof(one)) == 0;
+    bool data = setsockopt(node->hal.data_sock, SOL_UDP, UDP_GRO, &one, sizeof(one)) == 0;
+    if (!well_known || !data) {
+        TT_LOG_DEBUG("UDP_GRO refused on the %s socket(s): %s - reads stay one datagram each",
+                     well_known ? "data" : (data ? "well-known" : "both"), strerror(errno));
+    }
+    node->hal.gro_on = well_known || data;
+    if (node->hal.gro_on) {
+        node->udp_offload |= TT_UDP_OFFLOAD_GRO;
+    }
+}
+
+// Hands out the next datagram of the last merged read, or -1 when none is left. In place when `buf` is still the
+// buffer it was read into and the datagram starts 4-aligned there (UDP offload, above, for 8); copied to the start of
+// `buf` otherwise. That overwrites only datagrams already handed out: the next one starts at least one segment in. And
+// a buffer core has moved off (a sample in it was retained, tt_Sample_retain()) is only read from.
+static int32_t gro_take_pending(struct tt_Context* node, uint8_t* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    struct tt_hal* hal = &node->hal;
+    if (hal->gro_left == 0) {
+        return -1;
+    }
+    uint32_t offset = hal->gro_next;
+    uint32_t size = hal->gro_end - offset < hal->gro_segment ? hal->gro_end - offset : hal->gro_segment;
+    hal->gro_next = offset + size;
+    hal->gro_left--;
+    if (buf == hal->gro_base && offset % 4U == 0) {
+        node->rx_offset = offset;
+        if (offset % 8U != 0) {
+            node->udp_gro_off8++;
+        }
+    } else {
+        size = size < len ? size : (uint32_t)len;
+        memcpy(buf, hal->gro_base + offset, size);
+        node->udp_gro_copied++;
+    }
+    *ip = hal->gro_ip;
+    *port = hal->gro_port;
+    node->rx_via_data_port = hal->gro_from_data;
+    TT_TRACE(tt_TRACE_RX_DATAGRAM);
+    return (int32_t)size;
+}
+
+// rx_read_one() with UDP_GRO: recvmsg() with room for the segment size. A merged read returns its first datagram and
+// keeps the rest for gro_take_pending().
+static int32_t gro_read(struct tt_Context* node, int socket_fd, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    struct tt_hal* hal = &node->hal;
+    struct sockaddr_in addr;
+    // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
+    struct iovec iov = {.iov_base = buf, .iov_len = len};
+    union {
+        char bytes[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr align; // NOLINT(misc-include-cleaner) - <sys/socket.h>
+    } control;
+    struct msghdr msg = {0};
+    msg.msg_name = &addr;
+    msg.msg_namelen = sizeof(addr);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.bytes;
+    msg.msg_controllen = sizeof(control.bytes);
+    ssize_t got = recvmsg(socket_fd, &msg, MSG_DONTWAIT);
+    if (got < 0) {
+        // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers
+        return (errno == EAGAIN || errno == EWOULDBLOCK) ? -1 : -2;
+    }
+    *ip = ntohl(addr.sin_addr.s_addr);
+    *port = ntohs(addr.sin_port);
+    int segment = 0;
+    // NOLINTNEXTLINE(misc-include-cleaner) - CMSG_*: <sys/socket.h>
+    for (struct cmsghdr* cm = CMSG_FIRSTHDR(&msg); cm != NULL; cm = CMSG_NXTHDR(&msg, cm)) {
+        if (cm->cmsg_level == SOL_UDP && cm->cmsg_type == UDP_GRO) {
+            memcpy(&segment, CMSG_DATA(cm), sizeof(segment));
+        }
+    }
+    if (segment <= 0 || got <= segment) {
+        return (int32_t)got; // one datagram
+    }
+    uint32_t end = (uint32_t)got;
+    // NOLINTNEXTLINE(misc-include-cleaner) - MSG_TRUNC: <sys/socket.h>
+    if ((msg.msg_flags & MSG_TRUNC) != 0) {
+        // Larger than the buffer, which TT_HAL_UDP_GRO's size rule excludes: the cut datagram is dropped, as loss.
+        end -= end % (uint32_t)segment;
+    }
+    uint32_t count = (end + (uint32_t)segment - 1U) / (uint32_t)segment;
+    node->udp_gro_reads++;
+    node->udp_gro_merged += count;
+    hal->gro_base = (uint8_t*)buf;
+    hal->gro_segment = (uint32_t)segment;
+    hal->gro_next = (uint32_t)segment;
+    hal->gro_end = end;
+    hal->gro_left = (uint16_t)(count - 1U);
+    hal->gro_ip = *ip;
+    hal->gro_port = *port;
+    hal->gro_from_data = (socket_fd == hal->data_sock);
+    return segment;
+}
+#endif
+
 tt_ret_t tt_bind(struct tt_Context* node) {
     // Set before anything below can fail into tt_close(): -1 says "nothing to close here yet",
     // the same convention node->hal.sock itself relies on implicitly (every failure that reaches
@@ -592,6 +731,10 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.rx_batch_calls = 0;
     node->hal.rx_batch_datagrams = 0;
     node->hal.rx_batch_full = 0;
+#if TT_HAL_UDP_GRO
+    node->hal.gro_on = false; // gro_setup(), once both sockets exist
+    node->hal.gro_left = 0;
+#endif
 
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
@@ -713,6 +856,10 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     }
     wait_set_setup(node); // without it tt_receive() builds a ppoll() set per call, as it always did
 
+#if TT_HAL_UDP_GRO
+    gro_setup(node);
+#endif
+
 #if tt_HAL_IO_URING
     if (!uring_setup(node) && tt_HAL_RX_HINT == tt_RX_HINT_URING) {
         tt_close(node); // the reason was logged by uring_refused()
@@ -731,6 +878,9 @@ void tt_close(struct tt_Context* node) {
 #endif
     node->hal.rx_count = 0; // anything a batch still held belonged to the sockets closed below
     node->hal.rx_next = 0;
+#if TT_HAL_UDP_GRO
+    node->hal.gro_left = 0; // and so did anything a merged read still held
+#endif
     if (node->hal.data_sock >= 0 && close(node->hal.data_sock) < 0) {
         TT_LOG_WARNING("Cannot close data socket: %s", strerror(errno));
     }
@@ -981,6 +1131,11 @@ static void rx_headers_setup(struct tt_hal* hal) {
 static int32_t rx_read_one(struct tt_Context* node, int socket_fd, void* buf, size_t len, uint32_t* ip,
                            uint16_t* port) {
     node->rx_via_data_port = (socket_fd == node->hal.data_sock);
+#if TT_HAL_UDP_GRO
+    if (node->hal.gro_on) {
+        return gro_read(node, socket_fd, buf, len, ip, port);
+    }
+#endif
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
     int32_t ret = (int32_t)recvfrom(socket_fd, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
@@ -1095,8 +1250,15 @@ static int rx_wait(struct tt_Context* node, const struct timespec* timeout_ts, u
 }
 
 int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
+    node->rx_offset = 0; // at the start of buf unless a merged read hands one out in place
     // What the last batch read comes first, and without a wait: holding it behind ppoll() would delay
     // datagrams that have already arrived.
+#if TT_HAL_UDP_GRO
+    int32_t merged = gro_take_pending(node, (uint8_t*)buf, len, ip, port);
+    if (merged >= 0) {
+        return merged;
+    }
+#endif
     int32_t pending = rx_take_pending(node, buf, len, ip, port);
     if (pending >= 0) {
         return pending;
@@ -1237,7 +1399,11 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
 // socket is idle this answers without a syscall, and clears the bits so the next drain - one not preceded by a wait,
 // like a non-blocking poll - asks both again.
 uint32_t tt_rx_buffered(const struct tt_Context* node) {
-    return node->hal.rx_next < node->hal.rx_count ? (uint32_t)(node->hal.rx_count - node->hal.rx_next) : 0U;
+    uint32_t held = node->hal.rx_next < node->hal.rx_count ? (uint32_t)(node->hal.rx_count - node->hal.rx_next) : 0U;
+#if TT_HAL_UDP_GRO
+    held += node->hal.gro_left; // a merged read's datagrams, handed out without a system call too
+#endif
+    return held;
 }
 
 // Notes a datagram returned while a socket is being skipped, and asks every socket again once TT_RX_IDLE_RECHECK_NS
@@ -1259,6 +1425,14 @@ static void rx_idle_count_return(struct tt_Context* node) {
 }
 
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    node->rx_offset = 0;
+#if TT_HAL_UDP_GRO
+    int32_t merged = gro_take_pending(node, (uint8_t*)buf, len, ip, port);
+    if (merged >= 0) {
+        rx_idle_count_return(node);
+        return merged;
+    }
+#endif
     int32_t pending = rx_take_pending(node, buf, len, ip, port);
     if (pending >= 0) {
         rx_idle_count_return(node);

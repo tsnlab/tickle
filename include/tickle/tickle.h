@@ -1111,6 +1111,20 @@ struct tt_Context {
     // here rather than in a tt_receive() out-parameter so the HAL contract in hal.h stays as it
     // is; both backends set it, and nothing outside the self-sent accounting reads it.
     bool rx_via_data_port;
+    // Set by the HAL on each socket receive, like rx_via_data_port: where in the buffer core passed the datagram
+    // begins. 0 except on a HAL that reads several datagrams into that buffer at once and hands each out where it lies
+    // (Linux UDP_GRO, hal_linux.c "UDP offload"); then a multiple of 4, and of 8 unless counted in udp_gro_off8.
+    uint32_t rx_offset;
+    // UDP offload (hal_linux.c "UDP offload"), set and counted by the HAL, on the traffic line. udp_offload: bit 0
+    // receive offload (UDP_GRO) in use, bit 1 send offload (UDP_SEGMENT). gro_reads: reads that returned several
+    // datagrams at once; gro_merged: the datagrams those carried; gro_copied: of those, the ones not handed out in
+    // place (a segment off its 4-alignment, or the landing buffer moved by a retain); gro_off8: handed out in place at
+    // 4 mod 8, where a lone DATA's payload is not where a loaned take reads it in place. 0 on a HAL without them.
+    uint8_t udp_offload;
+    uint64_t udp_gro_reads;
+    uint64_t udp_gro_merged;
+    uint64_t udp_gro_copied;
+    uint64_t udp_gro_off8;
     // Whether the submessage being processed right now was addressed to this node by id, rather than to
     // everyone (tt_SUBMESSAGE_ID_ALL). A retransmission is addressed to the node that asked for it
     // (retransmit_one_sample()), so this is how a reliable Subscriber tells the sample its ACKNACK

@@ -40,6 +40,20 @@
 #endif
 #endif
 
+// UDP receive offload (hal_linux.c "UDP offload"): UDP_GRO on both sockets, so the kernel may hand several same-flow
+// datagrams over in one read, which the HAL then gives core one at a time where they lie. Derived, not a setting:
+//   - the receive buffer must hold the largest merged read, ~64 KB, or the kernel truncates it - so only a build whose
+//     datagram is that large (rmw_tickle's 65507); core's default 1472 never merges;
+//   - one read per call (tt_RX_BATCH 1, that build's default): recvmmsg() would need a 64 KB slot per datagram;
+//   - nothing else may write the receive buffer while segments of a read are still to be handed out: without lending,
+//     the segment drain copies its records into rx_buffer, so a segment build without lending goes without.
+// The environment variable TT_UDP_OFFLOAD=0 turns it off at tt_bind() (the A/B control), as it does send offload.
+#if tt_MAX_BUFFER_LENGTH >= 65507 && tt_RX_BATCH == 1 && (tt_SAMPLE_LENDING || !tt_SEGMENT_ENABLED)
+#define TT_HAL_UDP_GRO 1
+#else
+#define TT_HAL_UDP_GRO 0
+#endif
+
 // glibc's struct mmsghdr, which it declares only under _GNU_SOURCE - a define this public header cannot
 // require of everything that includes it. hal_linux.c checks the two layouts are the same.
 struct tt_mmsghdr {
@@ -244,6 +258,20 @@ struct tt_hal {
     uint64_t rx_batch_calls;
     uint64_t rx_batch_datagrams;
     uint64_t rx_batch_full;
+#if TT_HAL_UDP_GRO
+    // The last merged read (UDP_GRO): gro_end bytes in gro_base, cut every gro_segment bytes (the last cut may be
+    // shorter), handed out from gro_next; gro_left segments still to go, all from one sender on one socket. gro_on:
+    // the sockets were asked to merge (tt_bind()), so reads take recvmsg() with a control buffer for the size.
+    bool gro_on;
+    bool gro_from_data;
+    uint16_t gro_left;
+    uint16_t gro_port;
+    uint32_t gro_ip;
+    uint32_t gro_segment;
+    uint32_t gro_next;
+    uint32_t gro_end;
+    uint8_t* gro_base;
+#endif
 #if tt_HAL_IO_URING
     // tt_rx_maybe_ready() (hal_linux.c): an io_uring whose only job is one-shot POLLIN on the two receive sockets, so
     // a busy loop learns that a datagram arrived from a completion in shared memory rather than by asking the kernel.
