@@ -30,6 +30,8 @@
 #   - A and B: the receiver's ingress counted the same packets and bytes to the test port (tc u32, not tcpdump), and
 #     no IP fragment at all (MF set) - so offload changed nothing on the wire;
 #   - treatment: A and C sent with gso_sends > 0, B none; C merged (gro_merged > 0), D did not (gro_reads = 0).
+#   - which runs (2026-10-11, large fragments only): A, C and E sent exactly the runs the sender expects of its
+#     patterns (gso_sends/gso_datagrams = *_expected) - every large-fragment run, and nothing of the small patterns.
 #   - E: its list is the control's REPEAT times over; it merged, and went back to plain (gro_commits) and on again
 #     (gro_enables) at least REPEAT - 1 times each.
 # Exit 0 pass, 1 fail, 2 could not run.
@@ -38,7 +40,7 @@ HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 BIN=$HERE/udp_offload_check
 FLAP=$HERE/udp_offload_check_flap
 REPEAT=10
-EXPECTED=925 # 723 + 88 + 30 + 64 + 20 (pattern 5 sends half its 40 to a port nobody reads)
+EXPECTED=969 # 723 + 88 + 30 + 64 + 20 + 24 + 20 (pattern 5 sends half its 40 to a port nobody reads)
 PORT=7461
 NS1=uoc-tx-$$
 NS2=uoc-rx-$$
@@ -151,6 +153,12 @@ done
 [ "$(field gso_sends "$WORK/B.tx")" = 0 ] || die "control B sent with UDP_SEGMENT"
 [ "$(field gso_sends "$WORK/A.tx")" -gt 0 ] 2>/dev/null || die "A: no UDP_SEGMENT send - the treatment was not applied"
 [ "$(field gso_sends "$WORK/C.tx")" -gt 0 ] 2>/dev/null || die "C: no UDP_SEGMENT send"
+for a in A C E; do
+    for f in gso_sends gso_datagrams; do
+        [ "$(field $f "$WORK/$a.tx")" = "$(field ${f}_expected "$WORK/$a.tx")" ] ||
+            die "$a: $f=$(field $f "$WORK/$a.tx"), expected $(field ${f}_expected "$WORK/$a.tx") - runs other than large fragments"
+    done
+done
 [ "$(field gro_merged "$WORK/C.rx")" -gt 0 ] 2>/dev/null || die "C: nothing merged - receive offload was not exercised"
 [ "$(field gro_reads "$WORK/D.rx")" = 0 ] || die "D: merged with TT_UDP_OFFLOAD=0"
 for _ in $(seq 1 "$REPEAT"); do cat "$WORK/B.list"; done >"$WORK/B.repeat"

@@ -54,6 +54,15 @@
 #define TT_HAL_UDP_GRO 0
 #endif
 
+// UDP send offload (hal_linux.c send_batch_flags()): UDP_SEGMENT for runs of a large sample's fragments
+// (FRAG_FIRST_L/FRAG_CONT_L) only, so only in a build that has large samples (rmw_tickle's). Core's DATA_FRAG runs are
+// two or three datagrams, where the rig measured it costing more, not less (hal_linux.c, "Which runs go as one").
+#if tt_LARGE_SAMPLES
+#define TT_HAL_UDP_GSO 1
+#else
+#define TT_HAL_UDP_GSO 0
+#endif
+
 // glibc's struct mmsghdr, which it declares only under _GNU_SOURCE - a define this public header cannot
 // require of everything that includes it. hal_linux.c checks the two layouts are the same.
 struct tt_mmsghdr {
