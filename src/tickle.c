@@ -7802,6 +7802,50 @@ static void bitmap_low_mask(uint64_t* mask, uint16_t words, int highest) {
     }
 }
 
+// struct tt_WriterProxy.received_words (tickle.h): how many words of received_bitmap, from word 0
+// up to and including the highest nonzero one, are in use. Everything that sets a bit or moves the
+// bitmap down goes through these helpers (a lone bitmap_clear_bit() is followed by
+// proxy_trim_received()), so the count stays exact, and what the per-DATA work costs scales with the
+// words in use rather than the window: on the in-order path nothing is set, and the watermark's
+// realigning shift and maybe_arm_acknack_retry()'s highest-bit scan do no work at all (a 1 MB
+// RELIABLE sample is ~700 datagrams, and at 16-64 words each paid a full shift and a full scan).
+static void proxy_mark_received(struct tt_WriterProxy* proxy, uint32_t offset) {
+    bitmap_set_bit(proxy->received_bitmap, offset);
+    uint16_t word = (uint16_t)(offset / tt_RELIABLE_BITMAP_WORD_BITS);
+    if (word >= proxy->received_words) {
+        proxy->received_words = (uint16_t)(word + 1U);
+    }
+}
+
+static void proxy_clear_received(struct tt_WriterProxy* proxy) {
+    bitmap_clear(proxy->received_bitmap, proxy_words(proxy));
+    proxy->received_words = 0;
+}
+
+// Lowers the count past any top word a clear or a shift emptied.
+static void proxy_trim_received(struct tt_WriterProxy* proxy) {
+    uint16_t words = proxy->received_words;
+    while (words != 0 && proxy->received_bitmap[words - 1] == 0) {
+        words--;
+    }
+    proxy->received_words = words;
+}
+
+// bitmap_shift_right_one() over the words in use only - the words above them are zero, and a zero
+// word shifted right stays zero and carries nothing down.
+static void proxy_shift_received_one(struct tt_WriterProxy* proxy) {
+    if (proxy->received_words == 0) {
+        return; // nothing set: the shift would move zeros
+    }
+    bitmap_shift_right_one(proxy->received_bitmap, proxy->received_words);
+    proxy_trim_received(proxy);
+}
+
+// bitmap_highest_bit() of received_bitmap, starting at the words in use instead of the top of the window.
+static int proxy_highest_received(const struct tt_WriterProxy* proxy) {
+    return bitmap_highest_bit(proxy->received_bitmap, proxy->received_words);
+}
+
 // Phase 3 (rmw_tickle/PLAN.md) - did this remote writer's own last announce set
 // tt_UPDATE_QOS_KEEP_ALL? Read once, when a WriterProxy is claimed; an announce arriving later
 // refreshes the cached answer directly (update_writer_proxies_keep_all()).
@@ -7885,7 +7929,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             // caller-provided buffer when it gave one, otherwise the builtin default.
             uint64_t* tracking = sub->tracking_bitmaps != NULL ? sub->tracking_bitmaps : sub->builtin_tracking;
             proxy->received_bitmap = tracking + ((size_t)i * subscriber_tracking_words(sub));
-            bitmap_clear(proxy->received_bitmap, proxy_words(proxy));
+            proxy_clear_received(proxy);
             proxy->retry = 0;
             proxy->acknack_scheduled = false;
             proxy->heartbeat_last_seq_no = 0;
@@ -7931,7 +7975,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
 // (whether there's anything to do at all) - both need the same widened answer, not just received_
 // bitmap's own. -1 if neither signal has anything to report.
 static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
-    int highest = bitmap_highest_bit(proxy->received_bitmap, proxy_words(proxy));
+    int highest = proxy_highest_received(proxy);
     if (proxy->heartbeat_last_seq_no >= proxy->ack_seq_no) {
         uint64_t hb_offset = (uint64_t)proxy->heartbeat_last_seq_no - proxy->ack_seq_no;
         uint32_t window_bits = proxy_window_bits(proxy);
@@ -8375,9 +8419,9 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
 // single isolated loss.
 static void advance_ack_seq_no(struct tt_WriterProxy* proxy) {
     proxy->ack_seq_no++;
-    bitmap_shift_right_one(proxy->received_bitmap, proxy_words(proxy));
+    proxy_shift_received_one(proxy);
     while (bitmap_lowest_bit_set(proxy->received_bitmap)) { // absorb whatever out-of-order run already follows it
-        bitmap_shift_right_one(proxy->received_bitmap, proxy_words(proxy));
+        proxy_shift_received_one(proxy);
         proxy->ack_seq_no++;
     }
     proxy->retry = 0;
@@ -8465,7 +8509,7 @@ static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
         proxy->sub->gap_abandoned += span - received_in_first(proxy, span);
     }
     proxy->ack_seq_no = seq_no;
-    bitmap_clear(proxy->received_bitmap, proxy_words(proxy));
+    proxy_clear_received(proxy);
     advance_ack_seq_no(proxy);
 }
 
@@ -8499,7 +8543,7 @@ static uint32_t absorb_seq_span(struct tt_WriterProxy* proxy, uint32_t first_off
             break; // past the window - the ordinary watermark machinery reaches it by itself
         }
         if (!bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset)) {
-            bitmap_set_bit(proxy->received_bitmap, (uint32_t)offset);
+            proxy_mark_received(proxy, (uint32_t)offset);
             absorbed++;
         }
     }
@@ -8511,12 +8555,12 @@ static bool record_out_of_order_arrival(struct tt_WriterProxy* proxy, uint32_t o
         RSTAT_INC(duplicates);
         return false; // already received this one out of order before - a duplicate
     }
-    int prev_highest = bitmap_highest_bit(proxy->received_bitmap, proxy_words(proxy));
+    int prev_highest = proxy_highest_received(proxy);
     if ((int)offset > prev_highest + 1) {
         new_gap->low_bit = prev_highest + 1;
         new_gap->high_bit = (int)offset - 1;
     }
-    bitmap_set_bit(proxy->received_bitmap, offset);
+    proxy_mark_received(proxy, offset);
     return true;
 }
 
@@ -8527,7 +8571,7 @@ static bool record_out_of_order_arrival(struct tt_WriterProxy* proxy, uint32_t o
 // received_bitmap means "received(ack_seq_no + j)", and ack_seq_no itself is always still missing.
 static void rstat_on_arrival(const struct tt_WriterProxy* proxy, uint32_t seq_no) {
     uint64_t offset = (uint64_t)seq_no - proxy->ack_seq_no;
-    int prev_highest = bitmap_highest_bit(proxy->received_bitmap, proxy_words(proxy));
+    int prev_highest = proxy_highest_received(proxy);
     if (offset == 0) {
         if (prev_highest >= 0) {
             rstat_recovered(seq_no); // head of a tracked gap - something above it already arrived
@@ -9292,7 +9336,7 @@ static void forget_writer_proxies_for_endpoint(struct tt_Context* node, uint32_t
             proxy->retry = 0;
             proxy->keep_all = false;
             if (proxy->received_bitmap != NULL) {
-                bitmap_clear(proxy->received_bitmap, proxy_words(proxy));
+                proxy_clear_received(proxy);
             }
             // Anything still held for this writer is never going to be delivered: what it was
             // waiting for was a gap this writer alone could have filled, and this writer is gone.
@@ -10848,6 +10892,7 @@ static void hold_for_reorder(struct tt_Context* node, struct tt_Subscriber* sub,
     uint64_t offset = (uint64_t)ctx->seq_no - proxy->ack_seq_no;
     if (offset < proxy_window_bits(proxy)) {
         bitmap_clear_bit(proxy->received_bitmap, (uint32_t)offset);
+        proxy_trim_received(proxy);
     }
 }
 
@@ -12511,12 +12556,13 @@ static void advance_past_unavailable(struct tt_WriterProxy* proxy, uint32_t firs
 #endif
     if (skipped < proxy_window_bits(proxy)) {
         bitmap_shift_right(proxy->received_bitmap, proxy_words(proxy), skipped);
+        proxy_trim_received(proxy);
     } else {
-        bitmap_clear(proxy->received_bitmap, proxy_words(proxy));
+        proxy_clear_received(proxy);
     }
     proxy->ack_seq_no = first_available_seq_no;
     while (bitmap_lowest_bit_set(proxy->received_bitmap)) { // absorb whatever's already confirmed right after it
-        bitmap_shift_right_one(proxy->received_bitmap, proxy_words(proxy));
+        proxy_shift_received_one(proxy);
         proxy->ack_seq_no++;
     }
     proxy->retry = 0;
@@ -12573,7 +12619,7 @@ static void inform_subscriber_of_heartbeat(struct tt_Context* node, struct tt_En
         // ACKNACK-request it (highest_relevant_bit() sees heartbeat_last_seq_no == ack_seq_no as
         // offset 0, "needs attention") - an off-by-one leak of exactly the newest pre-match sample.
         proxy->ack_seq_no = sub->durable ? ctx->first_available_seq_no : ctx->last_seq_no + 1;
-        bitmap_clear(proxy->received_bitmap, proxy_words(proxy));
+        proxy_clear_received(proxy);
     } else {
         advance_past_unavailable(proxy, ctx->first_available_seq_no);
     }
