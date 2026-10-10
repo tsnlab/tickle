@@ -158,6 +158,14 @@ psn, single header; 11 nodes in the announce.
   A server answers unicast to the request's source.
 - Several datagrams ready at once (a sample's fragments, one datagram to several peers) go in one
   `tt_send_batch()` = one `sendmmsg()`.
+- **UDP offload (Linux HAL).** In that call a run of same-size datagrams (the last may be shorter) to one destination,
+  each at most 1472 B, goes as one `UDP_SEGMENT` message (at most 64 datagrams / 65507 B); the kernel or NIC cuts it
+  back into exactly those datagrams, so the wire is unchanged (`platform/linux/udp_offload_check.sh` proves it). In a
+  build whose buffer holds a merged read (65507, rmw_tickle's), `UDP_GRO` on both sockets lets one read return a run,
+  handed to core one datagram at a time in place (`tt_Context.rx_offset`, 4-aligned; at 4 mod 8 - every other 1468 B
+  large fragment - a loaned take decodes instead of reading in place). Refused by the kernel or after `EIO`: off.
+  `TT_UDP_OFFLOAD=0` in the environment turns both off (the A/B control). Traffic line: `udp_offload`, `gro_*`,
+  `gso_*`.
 
 ## 5. Discovery
 
