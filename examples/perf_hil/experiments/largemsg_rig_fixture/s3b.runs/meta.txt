@@ -1,0 +1,7 @@
+qos_args=--reliable --keep_last --history_depth 10
+pub_rate=15
+samehost=0
+clock_probe=1
+dur=60
+dry=0
+pc_preflight=0

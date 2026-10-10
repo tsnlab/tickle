@@ -1,0 +1,2 @@
+before PROBE ok=1 wall_ns=1791612138494769408 offset_ns=8989061 delay_min_ns=206839 delay_used_max_ns=208913 theta_spread_ns=3371 used=16 n=64
+after PROBE ok=0 n=0 of 64 replies
