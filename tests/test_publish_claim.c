@@ -15,9 +15,9 @@
 // comparison runs one scenario twice from identical state - once with tt_Publisher_publish() (whose encoder writes the
 // same slot, try_publish_into_slot()) and once with claim, fill, publish_claimed - and compares every ring record, the
 // reliable cache, seq_no and the counters. Then the rules: one claim per publisher, no other publish behind it, the
-// ring stopped at the claim until it is published, abandon and destroy giving the slot back empty, the mapping pinned
-// while claimed, the shapes and states that refuse a claim (and say which), and the claim whose destination changed
-// before its publish, which is copied out and sent the ordinary way, in ring order.
+// ring stopped at the claim until it is published, abandon and both destroys giving the slot back empty, the mapping
+// pinned while claimed, the shapes and states that refuse a claim (and say which), and the claim whose destination
+// changed before its publish, which is copied out and sent the ordinary way, in ring order.
 #define tt_LOCAL_DELIVERY 1 // rmw_tickle's setting, so the local-subscriber refusal is compiled and tested
 
 #include <stdint.h>
@@ -528,6 +528,73 @@ static void test_a_changed_destination_is_published_by_copy(void) {
     teardown(arm);
 }
 
+// Whether `p` lies in a mock region its last user has detached - a page a real munmap has taken away.
+static bool in_detached_region(const void* p) {
+    for (int i = 0; i < TEST_MOCK_MAX_SEGMENTS; i++) {
+        const uint8_t* region = (const uint8_t*)test_mock_segments[i].region;
+        if (region != NULL && (const uint8_t*)p >= region && (const uint8_t*)p < region + test_mock_segments[i].bytes) {
+            return test_mock_segments[i].detached;
+        }
+    }
+    return false;
+}
+
+// tt_Context_destroy() with a claim still out resolves it before the mapping goes: the slot is given back as the
+// empty record, so the subscriber's ring runs on past it for the other writers, and the Publisher holds nothing that
+// points into the unmapped region - a later abandon or destroy is refused and writes nowhere. The control: the same
+// teardown with nothing claimed, where the other writer's record is the first the reader takes.
+static void destroy_sender_behind_another_writer(struct arm* arm, bool claim) {
+    setup(arm);
+    uint8_t* payload = NULL;
+    if (claim) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&arm->pub, 64, &payload));
+    }
+    uint8_t other[8] = {0};
+    EXPECT_TRUE(segment_write(ring(arm), other, sizeof(other), NULL, 0, REMOTE_IP, REMOTE_PORT, 1));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Context_destroy(&arm->sender));
+    EXPECT_TRUE(in_detached_region(ring(arm))); // the teardown did unmap the peer mapping (the mock's record of it)
+}
+static void expect_the_other_writer_read(struct arm* arm) {
+    uint8_t buf[tt_CONTROL_MAX_LENGTH];
+    uint32_t len = 99;
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    uint16_t span = 0;
+    EXPECT_TRUE(segment_read(ring(arm), buf, sizeof(buf), &len, &ip, &port, &span));
+    EXPECT_EQ_U32(8, len);
+    EXPECT_EQ_U32(REMOTE_IP, ip);
+}
+static void test_context_destroy_resolves_an_outstanding_claim(void) {
+    struct arm* arm = &arms[CLAIMED];
+
+    destroy_sender_behind_another_writer(arm, false); // the control: nothing claimed
+    expect_the_other_writer_read(arm);
+    teardown(arm);
+
+    destroy_sender_behind_another_writer(arm, true);
+    EXPECT_EQ_U32(1, slot_at(arm, 0)->sequence); // the claimed slot published before the unmap...
+    EXPECT_EQ_U32(0, slot_at(arm, 0)->length);   // ...as the empty record
+    EXPECT_EQ_U64(1, arm->sender.segment_claims_abandoned);
+    EXPECT_TRUE(arm->pub.claim_slot == NULL);
+    EXPECT_TRUE(arm->pub.claim_slot == NULL || !in_detached_region(arm->pub.claim_slot));
+    uint8_t buf[tt_CONTROL_MAX_LENGTH];
+    uint32_t len = 99;
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    uint16_t span = 0;
+    EXPECT_TRUE(segment_read(ring(arm), buf, sizeof(buf), &len, &ip, &port, &span));
+    EXPECT_EQ_U32(0, len);             // the given-back claim, which the reader drops...
+    expect_the_other_writer_read(arm); // ...and the ring runs on behind it
+
+    // Later calls on the Publisher find nothing claimed and write nowhere.
+    const uint32_t sequence = slot_at(arm, 0)->sequence;
+    EXPECT_EQ_INT((int)tt_RET_ILLEGAL_STATUS, (int)tt_Publisher_abandon_claim(&arm->pub));
+    EXPECT_EQ_U32(sequence, slot_at(arm, 0)->sequence);
+    EXPECT_EQ_U32(0, arm->sender.segment_peers[OWNER_ID].claims);
+    EXPECT_EQ_U64(1, arm->sender.segment_claims_abandoned);
+    teardown(arm);
+}
+
 int main(void) {
     test_a_claimed_publish_writes_what_the_encoder_writes();
     test_reliable_claims_cache_what_the_encoder_caches();
@@ -539,6 +606,7 @@ int main(void) {
     test_what_cannot_be_claimed();
     test_full_ring_and_keep_all();
     test_a_changed_destination_is_published_by_copy();
+    test_context_destroy_resolves_an_outstanding_claim();
     printf("test_publish_claim: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();
 }

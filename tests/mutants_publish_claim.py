@@ -154,6 +154,13 @@ MUTANTS = [
         "",
         "test_abandon_and_destroy_give_the_slot_back",
     ),
+    (
+        "context teardown abandoning a claim",
+        "src/tickle.c",
+        "            (void)publisher_abandon_claim_locked((struct tt_Publisher*)endpoint);\n",
+        "",
+        "test_context_destroy_resolves_an_outstanding_claim",
+    ),
 ]
 
 def build_and_run():

@@ -15763,6 +15763,14 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
             node->last_modified = time;
         }
 
+        // A claim still out (tt_Publisher_claim()) is given back here, while its slot is still mapped:
+        // release_segments() below unmaps it, after which the claimed index would stop the peer's ring for good and
+        // a later abandon or tt_Publisher_destroy() would write into a page that is gone.
+        if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER && ((struct tt_Publisher*)endpoint)->claim_slot != NULL) {
+            TT_LOG_WARNING("Context %u destroyed with a claimed slot outstanding: abandoned", node->id);
+            (void)publisher_abandon_claim_locked((struct tt_Publisher*)endpoint);
+        }
+
         // Both the client call cache and server response caches are fixed buffers now (no
         // malloc/free), so this just needs clearing. The scheduler entries referencing them are
         // about to be wiped wholesale below anyway, so there's no need to unschedule them

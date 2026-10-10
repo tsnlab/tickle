@@ -2723,10 +2723,10 @@ tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub);
 // behind it in the ring with an earlier seq_no). A CLAIMED SLOT STOPS ITS RING: the subscriber's context reads its
 // ring in order, so every writer into that context waits behind the claim, and a ring that fills meanwhile drops - hold
 // a claim for the time it takes to fill it, never across a wait. KEEP_ALL is checked at the claim, and nothing the
-// claim holds back can unblock it later. tt_Publisher_destroy() abandons an outstanding claim; tt_Context_destroy()
-// unmaps the slot, so a claim must be resolved before it. Callable from any thread, as tt_Publisher_publish() is; the
-// fill needs no lock. Without the segment (tt_SEGMENT_ENABLED or tt_SEGMENT_ENCODE_IN_SLOT 0) every claim is
-// tt_RET_UNSUPPORTED.
+// claim holds back can unblock it later. tt_Publisher_destroy() and tt_Context_destroy() abandon an outstanding
+// claim; after tt_Context_destroy() the slot is unmapped and its payload pointer is no longer valid. Callable from
+// any thread, as tt_Publisher_publish() is; the fill needs no lock. Without the segment (tt_SEGMENT_ENABLED or
+// tt_SEGMENT_ENCODE_IN_SLOT 0) every claim is tt_RET_UNSUPPORTED.
 tt_ret_t tt_Publisher_claim(struct tt_Publisher* pub, uint32_t capacity, uint8_t** payload);
 tt_ret_t tt_Publisher_publish_claimed(struct tt_Publisher* pub, uint32_t length);
 tt_ret_t tt_Publisher_abandon_claim(struct tt_Publisher* pub);

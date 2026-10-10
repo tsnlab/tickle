@@ -705,11 +705,12 @@ publish everything after, and the caller's fill is the encode.
   copy (`shm_claims_copied`).
 - **The mapping is pinned.** A peer mapping with a claim on it (`tt_SegmentPeer.claims`) is not unmapped by the
   revalidation or the dead-reader rule while the caller writes into it; `tt_Publisher_destroy()` abandons an
-  outstanding claim, `tt_Context_destroy()` unmaps it (resolve claims first).
+  outstanding claim, and so does `tt_Context_destroy()`, before it unmaps the mapping - otherwise the claimed index
+  stops the peer's ring for good and a later abandon writes into the unmapped page.
 - **RELIABLE** still copies the record into the writer's retention cache at the publish, as every publish does.
 - Counters `shm_claims_published`, `shm_claims_copied`, `shm_claims_abandoned` are on the traffic line.
   `test_publish_claim` holds a claimed publish byte-identical to the encoder's (ring records, cache, seq_no) and checks
-  every rule; `tests/mutants_publish_claim.py` removes each step (18 mutants, all killed).
+  every rule; `tests/mutants_publish_claim.py` removes each step (19 mutants, all killed).
 
 ## 11. Memory model
 
