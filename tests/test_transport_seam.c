@@ -988,6 +988,47 @@ static void test_a_context_whose_peers_are_all_remote_leaves_the_peer_table_unwr
     EXPECT_TRUE(segment_peer_if_live(&node, OWNER_ID) == NULL);
     test_mock_segments_free();
 }
+
+// The same-host twin of the test above, and the defect it found when the claimed-slot publish (324f6ced) met the lazy
+// peer table (97893bb1): peer_segment() read the entry's `claims` pin straight from segment_peers[], before
+// segment_peer() had ever zeroed it. In memory nobody zeroed - a real caller is not required to - the pin read as
+// nonzero, so peer_segment() took the "a claim holds this mapping" branch, never reached the attach, and the entry was
+// never set up: the peer was unreachable over shared memory for the life of the context (and had the garbage address
+// matched, the garbage mapping pointer would have been dereferenced). A zeroed context hides it, which is why every
+// other test here passed. The witness is the attach itself: asked once, as a two-step probe and map, and answered.
+static void test_a_context_in_unzeroed_memory_attaches_a_same_host_peer(void) {
+    test_mock_reset();
+    test_mock_segments_free();
+    struct tt_Context owner;
+    struct tt_Topic owner_topic;
+    struct tt_Publisher owner_pub;
+    init_node_topic_pub(&owner, &owner_topic, &owner_pub);
+    owner.id = OWNER_ID;
+    owner.entity_id_base = OWNER_INCARNATION;
+    owner.hal.own_ip = OWNER_IP;
+    owner.hal.own_port = OWNER_PORT;
+    create_own_segment(&owner);
+    EXPECT_TRUE(owner.own_segment != NULL);
+
+    struct tt_Context node;
+    memset(&node, 0xAA, sizeof(node));
+    node_init_locks(&node);
+    reset_node_state(&node);
+    node.id = 1;
+    node.hal.own_ip = PEER_IP;
+    node.hal.own_port = PEER_PORT;
+
+    for (int i = 0; i < 8; i++) {
+        EXPECT_TRUE(peer_segment(&node, OWNER_ID, OWNER_IP, OWNER_PORT) == owner.own_segment);
+    }
+    EXPECT_EQ_INT(2, test_mock_segment_attach_calls); // asked once (probe + map), not skipped and not per call
+    EXPECT_EQ_U32(1, node.segment_attach[tt_SEGMENT_ATTACHED]);
+    const struct tt_SegmentPeer* entry = segment_peer_if_live(&node, OWNER_ID);
+    EXPECT_TRUE(entry != NULL && entry->claims == 0 && entry->mapping == owner.own_segment);
+
+    release_segments(&node);
+    test_mock_segments_free();
+}
 #endif
 
 #if tt_SEGMENT_ENABLED
@@ -3007,6 +3048,7 @@ int main(void) {
     test_reset_zeroes_the_per_transport_counters();
 #if tt_SEGMENT_ENABLED
     test_a_context_whose_peers_are_all_remote_leaves_the_peer_table_unwritten();
+    test_a_context_in_unzeroed_memory_attaches_a_same_host_peer();
     test_a_zero_allocated_context_keeps_the_peer_table_out_of_memory();
 #endif
     test_segment_name_separates_peers_that_differ();

@@ -1017,10 +1017,12 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
 // A peer's mapping, attached or revalidated as it falls due (peer_segment_resolve()) - except while a publisher of ours
 // holds a claimed slot in it (tt_Publisher_claim()): an application is writing into that slot, so the mapping is not
 // unmapped under it, and the revalidation waits until the claims are resolved. A different peer behind the id meanwhile
-// gets NULL, as an unattached one does.
+// gets NULL, as an unattached one does. The pin is read through segment_peer_if_live(): an entry never set up holds
+// no claim, and its bytes are whatever the caller's memory held - read raw, a nonzero garbage pin skipped the attach
+// for good and could dereference a garbage mapping (tests/test_transport_seam.c, the unzeroed-memory attach test).
 static struct tt_SegmentHeader* peer_segment(struct tt_Context* node, uint8_t context_id, uint32_t ip, uint16_t port) {
-    const struct tt_SegmentPeer* entry = &node->segment_peers[context_id];
-    if (entry->claims != 0) {
+    const struct tt_SegmentPeer* entry = segment_peer_if_live(node, context_id);
+    if (entry != NULL && entry->claims != 0) {
         const bool same_owner =
             entry->ip == ip && entry->port == port && entry->mapping->incarnation == entry->incarnation;
         return same_owner ? entry->mapping : NULL;
