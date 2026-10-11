@@ -1217,6 +1217,11 @@ struct _tt_Config {
     // The largest datagram accepted from IP reassembly (_tt_IP_REASSEMBLY_MAX: Linux 65507, FreeRTOS 0); 0 = none.
     // Advertised capped by tt_MAX_BUFFER_LENGTH.
     uint16_t ip_reassembly_max;
+    // 1: the reader advertises its configured ceiling whatever its loss and load - no reassembly-memory cap (DESIGN.md
+    // section 8, "BEST_EFFORT"). For a benchmark arm only: a writer's forced IP is n_max, the reader's advertisement,
+    // so without this a forced-IP arm at 1% loss runs at the cap's one unit and is the MTU arm. The kernel's reassembly
+    // memory is then unprotected; the ReasmFails withdrawal still applies. 0 (the default): capped.
+    uint8_t reassembly_cap_off;
 };
 
 extern struct _tt_Config _tt_CONFIG;

@@ -587,6 +587,7 @@ struct tt_HybridState {
     bool tick_runs;
     bool reasm_failures_read;
     bool withdrawn; // advertising one unit because the kernel's reassembly failed while runs arrived
+    bool cap_off;   // _tt_CONFIG.reassembly_cap_off as tt_Context_create() read it: no memory cap (a benchmark arm)
     // Counters, on the traffic line as hybrid_*. runs: run datagrams sent; run_units: units in them; mtu_units: units
     // of multi-unit samples sent alone in their first transmission (tails included); n_hist: n chosen per sample and
     // destination; cap_changes: changes of the advertised ceiling; withdrawals: times the kernel's failures withdrew

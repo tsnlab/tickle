@@ -4658,6 +4658,7 @@ static void reset_node_state(struct tt_Context* node) {
     memset(&node->hybrid, 0, sizeof(node->hybrid));
     node->hybrid.advertised = node->ip_reassembly_max;
     node->hybrid.rx_capable = hybrid_units_within(node->ip_reassembly_max, false) >= 2U;
+    node->hybrid.cap_off = _tt_CONFIG.reassembly_cap_off != 0;
     if (!tt_ip_reassembly_limits(&node->hybrid.frag_high_thresh, &node->hybrid.frag_time_s) ||
         node->hybrid.frag_time_s == 0) {
         node->hybrid.frag_high_thresh = tt_HYBRID_IPFRAG_HIGH_THRESH;
@@ -11312,7 +11313,12 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
         hybrid->withdrawn = false;
     }
     uint32_t n_max = hybrid_units_within(node->ip_reassembly_max, false);
-    uint32_t cap = hybrid->withdrawn ? 1U : hybrid_reader_cap(node, now - hybrid->tick_ns, n_max);
+    uint32_t cap = n_max;
+    if (hybrid->withdrawn) {
+        cap = 1U;
+    } else if (!hybrid->cap_off) {
+        cap = hybrid_reader_cap(node, now - hybrid->tick_ns, n_max);
+    }
     uint16_t bytes = hybrid_cap_bytes(node, cap, n_max);
     hybrid->tick_ns = now;
     hybrid->tick_units = 0;
