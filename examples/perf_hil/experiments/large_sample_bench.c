@@ -244,9 +244,11 @@ static void print_hybrid(const struct tt_Context* node, const struct tt_Publishe
     for (int i = 0; i < tt_HYBRID_N_BUCKETS; i++) {
         printf("%s%lu", i == 0 ? "" : "/", (unsigned long)hybrid->n_hist[i]);
     }
-    printf(" hybrid_tx_fit=%u/%u hybrid_tx_checks=%u/%u hybrid_rx_fit=%u/%u hybrid_rx_checks=%u/%u",
+    printf(" hybrid_tx_fit=%u/%u hybrid_tx_checks=%u/%u hybrid_tx_cpu_pct=%u hybrid_rx_fit=%u/%u hybrid_rx_checks=%u/%u"
+           " hybrid_rx_cpu_pct=%u",
            hybrid->tx_fit.datagram_ns, hybrid->tx_fit.frame_ns, hybrid->tx_fit.accepted, hybrid->tx_fit.rejected,
-           hybrid->rx_fit.datagram_ns, hybrid->rx_fit.frame_ns, hybrid->rx_fit.accepted, hybrid->rx_fit.rejected);
+           hybrid->tx_fit.cpu_share_pct, hybrid->rx_fit.datagram_ns, hybrid->rx_fit.frame_ns, hybrid->rx_fit.accepted,
+           hybrid->rx_fit.rejected, hybrid->rx_fit.cpu_share_pct);
     printf(" hybrid_advertised=%u hybrid_cap_changes=%lu hybrid_withdrawals=%lu hybrid_rx_loss=%u/%u",
            (unsigned)hybrid->advertised, (unsigned long)hybrid->cap_changes, (unsigned long)hybrid->withdrawals,
            hybrid->rx_loss.events, hybrid->rx_loss.frames);
