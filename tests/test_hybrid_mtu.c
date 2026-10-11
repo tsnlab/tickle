@@ -141,7 +141,7 @@ static void test_runs_are_skipped(void) {
     run_l.header.zero = 0;
     len = datagram(bytes, tt_SUBMESSAGE_TYPE_FRAG_RUN_L, &run_l, sizeof(run_l));
     EXPECT_TRUE(process_packet(&node, bytes, 0, len, 0x0a000001, 8282, tt_TRANSPORT_UDP));
-    EXPECT_EQ_U64(1, node.frag_large_skipped); // 13 counted, as 11/12 are; 14 passed over as 8/9 are
+    EXPECT_EQ_U64(1, node.frag_large_skipped); // FRAG_RUN_L counted, as 11/12 are; FRAG_RUN passed over
     EXPECT_EQ_U64(0, node.rx_malformed_drops); // passed over, not refused as malformed
     EXPECT_EQ_INT(0, delivered);
 
