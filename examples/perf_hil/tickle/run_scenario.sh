@@ -80,6 +80,7 @@ CLIENT_PID_FILE="/tmp/tickle_${SCENARIO}_client.pid"
 # framework runs under an instrument the others do not. The recorded PID is then perf's, and the bench its child -
 # stop_remote signals the child and waits for perf to write its counts.
 # shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../experiments" && pwd)/gate_v2_lib.sh"
 INSN_COUNT="${INSN_COUNT:-0}"
 SERVER_INSN="/tmp/tickle_${SCENARIO}_server.insn"

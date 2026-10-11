@@ -28,8 +28,16 @@ Every other metric is printed as "secondary", still flagged at plain 2 x SE so a
 never contributes to the verdict. Without --primary the whole table is printed and the verdict line reads
 "NO VERDICT: no primary metrics pre-registered". Exit status: 0 PASS, 1 WORSE, 3 NO VERDICT, 2 usage.
 
+GATE V2 (the user, 2026-10-11; rules in gate_v2.py's header, implemented there): with --placement P.txt, the output of
+the placement arm A' (A rebuilt with TICKLE_PLACEMENT_CFLAGS, in the same chain), the campaign is read by gate v2:
+  --primary defaults to "insn_u_per_sample,insn_k_per_sample" (executed instructions per sample, every role and cell);
+  --witness defaults to "cpu_s_per_Msample,send_mbps,recv_mbps,rtt_avg_ms" (CPU, rate, latency: they still decide);
+  one Bonferroni threshold over primary + witness; a comparison is WORSE only beyond it AND beyond |P - A|.
+Without --placement the reading is the one above (gate v1), kept so older chains still read as they were read.
+
 Usage:
   ab_compare.py campaign A.txt B.txt [--primary SPEC]       campaign_sweep.sh outputs (TickLE rows)
+  ab_compare.py campaign A.txt B.txt --placement P.txt [--primary SPEC] [--witness SPEC]     gate v2
   ab_compare.py rmw --a A1.txt [A2.txt ...] --b B1.txt [...] [--primary SPEC]
                                               rmw_crosshost_rtt.sh outputs; several files per arm are pooled
 """
@@ -40,7 +48,11 @@ import sys
 from collections import OrderedDict
 
 sys.path.insert(0, __import__("os").path.dirname(__file__))
-from campaign_summary import DIRECTION, parse  # noqa: E402
+from campaign_summary import DIRECTION, INSN_METRICS, parse  # noqa: E402
+import gate_v2  # noqa: E402
+
+GATE_V2_PRIMARY = ",".join(INSN_METRICS)
+GATE_V2_WITNESS = "cpu_s_per_Msample,send_mbps,recv_mbps,rtt_avg_ms"
 
 # rmw rows: lower is better for all of them
 RMW_METRICS = ("rtt_avg_ms", "rtt_min_ms", "pong_cpu_ns", "pong_idle_cpu_ns", "ping_cpu_s", "pong_maxrss_kb",
@@ -203,6 +215,45 @@ def campaign(pa, pb, primary):
     return report(rows, primary)
 
 
+def campaign_v2(pa, pb, pp, primary, witness):
+    """Gate v2 (gate_v2.py): A, B and the placement arm P, every metric in DIRECTION and the instruction counts."""
+    ca, cb, cp = parse(pa), parse(pb), parse(pp)
+    pitems = parse_primary(primary or GATE_V2_PRIMARY)
+    witems = parse_primary(GATE_V2_WITNESS if witness is None else witness)
+    rows, seen = [], set()
+    for key in ca:
+        fa, fb = ca[key].get("tickle"), cb.get(key, {}).get("tickle")
+        if not fa or not fb:
+            if key not in cb:
+                print(f"cell {key} missing in B")
+            continue
+        fp = cp.get(key, {}).get("tickle")
+        cell = "c%d %s %s %s %s" % key
+        if fa["void"] or fb["void"] or (fp and fp["void"]):
+            print(f"{cell}: void A {len(fa['void'])} B {len(fb['void'])} P {len(fp['void']) if fp else '-'}")
+        for metric in sorted(set(fa["vals"]) & set(fb["vals"])):
+            name = metric.split(".", 1)[1]
+            if name not in DIRECTION and name not in INSN_METRICS:
+                continue
+            a, b = stats(fa["vals"][metric]), stats(fb["vals"][metric])
+            if not (a and b):
+                continue
+            p = stats(fp["vals"].get(metric, [])) if fp else None
+            fam = "secondary"
+            if any(selects(it, cell, metric) for it in pitems):
+                fam = "primary"
+                seen.update(it for it in pitems if selects(it, cell, metric))
+            elif any(selects(it, cell, metric) for it in witems):
+                fam = "witness"
+                seen.update(it for it in witems if selects(it, cell, metric))
+            hi = DIRECTION.get(name, False)
+            rows.append({"cell": cell, "metric": metric, "family": fam, "a": a, "b": b, "p": p, "hi_better": hi})
+    for it in pitems + witems:
+        if it not in seen:
+            rows.append({"family": "unmatched", "metric": (f"c{it[0]}:" if it[0] else "") + it[1]})
+    return gate_v2.report(rows, title=f"A {pa}  B {pb}  P {pp}")
+
+
 def rmw_parse(paths):
     cells, voids = OrderedDict(), 0
     for path in paths:
@@ -240,19 +291,24 @@ def rmw(pa, pb, primary):
 
 def main(argv):
     args = list(argv[1:])
-    primary = ""
-    if "--primary" in args:
-        i = args.index("--primary")
-        if i + 1 >= len(args):
-            print(__doc__)
-            return 2
-        primary = args[i + 1]
-        del args[i:i + 2]
+    opt = {"--primary": "", "--witness": None, "--placement": None}
+    for name in opt:
+        if name in args:
+            i = args.index(name)
+            if i + 1 >= len(args):
+                print(__doc__)
+                return 2
+            opt[name] = args[i + 1]
+            del args[i:i + 2]
+    primary = opt["--primary"]
     try:
         parse_primary(primary)
+        parse_primary(opt["--witness"] or "")
     except ValueError as err:
         print(err)
         return 2
+    if len(args) == 3 and args[0] == "campaign" and opt["--placement"]:
+        return campaign_v2(args[1], args[2], opt["--placement"], primary, opt["--witness"])
     if len(args) == 3 and args[0] == "campaign":
         return campaign(args[1], args[2], primary)
     if len(args) > 3 and args[0] == "rmw" and "--a" in args and "--b" in args:

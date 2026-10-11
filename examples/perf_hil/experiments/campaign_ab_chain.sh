@@ -28,17 +28,49 @@
 # (gate_v2_lib.sh, -falign-functions=64) when unset, and is exported to every block. A block counts only if its log
 # echoes that value AND carries a "build flags verified" line for every TickLE build (campaign_sweep.sh reads each
 # build's own traced log with build_flags_check.sh); otherwise the chain stops VOID.
+#
+# GATE V2 A2/A3 (2026-10-11; the reading is gate_v2.py's header, applied by ab_compare.py campaign --placement):
+#   - three arms in mirrored blocks A P B B P A: P (A') is A's commit built with P_EXTRA_CFLAGS (default
+#     TICKLE_PLACEMENT_CFLAGS, -falign-functions=128) - every function moved by a multiple of 64 bytes, nothing else -
+#     and |P - A| is each metric's placement floor; B is built with B_EXTRA_CFLAGS (default: A's flags), which only the
+#     gate's own validation sets (B = A's commit under another alignment: a placement-only "change");
+#   - every TickLE process is counted (campaign_sweep.sh INSN_COUNT=1): PRIMARY defaults to executed instructions per
+#     sample, user and kernel, every role and cell; WITNESS defaults to cpu_s_per_Msample, send_mbps, recv_mbps,
+#     rtt_avg_ms. Both decide; a WORSE must exceed the Bonferroni t threshold AND the placement floor.
+#   PRIMARY= / WITNESS= narrow them (same item syntax as above). GATE=v1 runs the old A B B A chain read by the old rule
+#   (--primary required), for repeating a chain run before 2026-10-11.
+#   Outputs: /tmp/${TAG}_b<n>_<arm>_<sha8>.{txt,log}, /tmp/${TAG}_{A,P,B}.txt, /tmp/${TAG}_compare.txt, /tmp/${TAG}.done.
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
 # shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
 . ./examples/perf_hil/experiments/gate_v2_lib.sh
 layout_cflags_default
 A=${A:?A=<sha> the parent}; B=${B:?B=<sha> the change}; TAG=${TAG:?TAG=<name>}; REPS=${REPS:-3}
 PRIMARY=${PRIMARY:-}
+GATE=${GATE:-v2}
+P_EXTRA_CFLAGS=${P_EXTRA_CFLAGS-$TICKLE_PLACEMENT_CFLAGS}
+B_EXTRA_CFLAGS=${B_EXTRA_CFLAGS-$TICKLE_EXTRA_CFLAGS}
+case "$GATE" in
+v2) ARMS="A P B B P A" ;;
+v1) ARMS="A B B A" ;;
+*) echo "GATE must be v2 or v1" >&2; exit 2 ;;
+esac
 export RIG_LOCK_WAIT=36000
 X=./examples/perf_hil/experiments
+flags_of() { case "$1" in A) echo "$TICKLE_EXTRA_CFLAGS" ;; P) echo "$P_EXTRA_CFLAGS" ;; B) echo "$B_EXTRA_CFLAGS" ;; esac; }
+sha_of() { case "$1" in A | P) echo "$A" ;; B) echo "$B" ;; esac; }
+for arm in A P B; do
+    case "$(flags_of $arm)" in *[!A-Za-z0-9=_\ -]*) echo "arm $arm flags may hold only [A-Za-z0-9=_ -]" >&2; exit 2 ;; esac
+done
+if [ "$GATE" = v2 ] && [ "$P_EXTRA_CFLAGS" = "$TICKLE_EXTRA_CFLAGS" ]; then
+    echo "REFUSED: P_EXTRA_CFLAGS equals A's flags ('$TICKLE_EXTRA_CFLAGS'), so P would not perturb placement" >&2
+    exit 2
+fi
+echo "=== campaign_ab_chain $(date -Is) GATE=$GATE TAG=$TAG A=$A B=$B REPS=$REPS blocks: $ARMS" \
+    "flags A='$TICKLE_EXTRA_CFLAGS' P='$P_EXTRA_CFLAGS' B='$B_EXTRA_CFLAGS' harness=$(git rev-parse --short HEAD) ==="
 if [ "${PREFLIGHT:-1}" != 0 ]; then
     mapfile -t pf_specs < <(PREFLIGHT_CELLS_ONLY=1 FWS=tickle $X/campaign_sweep.sh)
-    for sha in "$A" "$B"; do
+    for sha in $(printf '%s\n' "$A" "$B" | sort -u); do
         if ! SHA=$sha FWS=tickle $X/rig_preflight.sh "${pf_specs[@]}" > "/tmp/${TAG}_preflight_${sha:0:8}.log" 2>&1; then
             tail -25 "/tmp/${TAG}_preflight_${sha:0:8}.log"
             echo "=== chain REFUSED $(date -Is): preflight failed for $sha, see /tmp/${TAG}_preflight_${sha:0:8}.log ===" |
@@ -49,27 +81,41 @@ if [ "${PREFLIGHT:-1}" != 0 ]; then
 fi
 export PREFLIGHT=0
 n=0
-for sha in "$A" "$B" "$B" "$A"; do
+for arm in $ARMS; do
     n=$((n + 1))
-    SHA=$sha FWS=tickle REPS=$REPS OUT=/tmp/${TAG}_b${n}_${sha:0:8}.txt $X/campaign_sweep.sh > "/tmp/${TAG}_b${n}_${sha:0:8}.log" 2>&1
-    # The build flags are a treatment: the block's own log must echo the value this chain was given, or the chain stops
-    # here rather than read two arms built some other way as the arms it was asked for.
-    blk="/tmp/${TAG}_b${n}_${sha:0:8}.log"
-    if ! grep -qxF "TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (TickLE core and bench; empty: the plain build)" "$blk"; then
-        echo "=== chain VOID $(date -Is): block $n's log does not echo TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' ===" |
+    sha=$(sha_of "$arm")
+    fl=$(flags_of "$arm")
+    stem="/tmp/${TAG}_b${n}_${arm}_${sha:0:8}"
+    echo "--- block $n arm $arm ${sha:0:8} TICKLE_EXTRA_CFLAGS='$fl' $(date -Is)"
+    TICKLE_EXTRA_CFLAGS=$fl SHA=$sha FWS=tickle REPS=$REPS OUT=$stem.txt $X/campaign_sweep.sh > "$stem.log" 2>&1
+    # The build flags are a treatment: the block's own log must echo the value this arm was given, or the chain stops
+    # here rather than read arms built some other way as the arms it was asked for.
+    if ! grep -qxF "TICKLE_EXTRA_CFLAGS='$fl' (TickLE core and bench; empty: the plain build)" "$stem.log"; then
+        echo "=== chain VOID $(date -Is): block $n ($arm)'s log does not echo TICKLE_EXTRA_CFLAGS='$fl' ===" |
             tee "/tmp/${TAG}.done" "/tmp/${TAG}_compare.txt"
         exit 1
     fi
     # One verified line per host and variant: the block's variant list times the two Pis.
-    nvar=$(sed -n 's/^--- variants to build: \(.*\) ---$/\1/p' "$blk" | wc -w)
-    nver=$(grep -cF "TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (" <(grep '^build flags verified: ' "$blk"))
+    nvar=$(sed -n 's/^--- variants to build: \(.*\) ---$/\1/p' "$stem.log" | wc -w)
+    nver=$(grep -cF "TICKLE_EXTRA_CFLAGS='$fl' (" <(grep '^build flags verified: ' "$stem.log"))
     if [ "$nvar" -eq 0 ] || [ "$nver" -ne $((2 * nvar)) ]; then
-        echo "=== chain VOID $(date -Is): block $n has $nver 'build flags verified' lines for $nvar variants on 2 Pis ===" |
+        echo "=== chain VOID $(date -Is): block $n ($arm) has $nver 'build flags verified' lines for $nvar variants on 2 Pis ===" |
             tee "/tmp/${TAG}.done" "/tmp/${TAG}_compare.txt"
         exit 1
     fi
+    if [ "$GATE" = v2 ] && ! grep -qx 'INSN_COUNT=1 (perf stat instructions:u/k on every TickLE process; 1 only with FWS=tickle)' \
+        "$stem.log"; then
+        echo "=== chain VOID $(date -Is): block $n ($arm) did not count instructions (no INSN_COUNT=1 line) ===" |
+            tee "/tmp/${TAG}.done" "/tmp/${TAG}_compare.txt"
+        exit 1
+    fi
+    cat "$stem.txt" >>"/tmp/${TAG}_${arm}.new"
 done
-cat "/tmp/${TAG}_b1_${A:0:8}.txt" "/tmp/${TAG}_b4_${A:0:8}.txt" > "/tmp/${TAG}_A.txt"
-cat "/tmp/${TAG}_b2_${B:0:8}.txt" "/tmp/${TAG}_b3_${B:0:8}.txt" > "/tmp/${TAG}_B.txt"
-python3 $X/ab_compare.py campaign "/tmp/${TAG}_A.txt" "/tmp/${TAG}_B.txt" --primary "$PRIMARY" > "/tmp/${TAG}_compare.txt"
+for arm in A P B; do [ -f "/tmp/${TAG}_${arm}.new" ] && mv "/tmp/${TAG}_${arm}.new" "/tmp/${TAG}_${arm}.txt"; done
+if [ "$GATE" = v2 ]; then
+    python3 $X/ab_compare.py campaign "/tmp/${TAG}_A.txt" "/tmp/${TAG}_B.txt" --placement "/tmp/${TAG}_P.txt" \
+        --primary "$PRIMARY" ${WITNESS+--witness "$WITNESS"} > "/tmp/${TAG}_compare.txt"
+else
+    python3 $X/ab_compare.py campaign "/tmp/${TAG}_A.txt" "/tmp/${TAG}_B.txt" --primary "$PRIMARY" > "/tmp/${TAG}_compare.txt"
+fi
 echo "=== chain done $(date -Is): $(grep -E '^(VERDICT|NO VERDICT)' "/tmp/${TAG}_compare.txt" | head -1) ===" > "/tmp/${TAG}.done"

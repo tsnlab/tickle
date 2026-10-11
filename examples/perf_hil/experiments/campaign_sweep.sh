@@ -44,6 +44,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PH="$(cd "$HERE/.." && pwd)"
 REPO="$(cd "$PH/../.." && pwd)"
 # shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
 . "$HERE/gate_v2_lib.sh"
 REPS="${REPS:-3}"
 DUR="${DUR:-5}"

@@ -17,7 +17,13 @@
 #     not). Appended to the process's RESULT line as insn_u=<n> insn_k=<n> insn=ok, or insn=fail:<why>; the readers
 #     divide by the process's samples (sent, recv) or the round trips (latency) and decide on that first. Counting mode
 #     only (no sampling), so the instrument costs both arms the same PMU save/restore per context switch.
+# A3  TICKLE_PLACEMENT_CFLAGS: arm P (A') - A's commit rebuilt with every function moved by a multiple of 64 bytes and
+#     nothing else changed (layout_flags_cost.sh: F128 vs F64 - the same instruction sequences, 0 in-function changes
+#     under perturbation). It perturbs exactly what A1 cannot fix and what a real change moves under A1: the address bits
+#     above 6 (i-cache set, i-TLB page, branch predictor index). |P - A| is each metric's placement floor (gate_v2.py).
 TICKLE_LAYOUT_CFLAGS="-falign-functions=64"
+# shellcheck disable=SC2034 # read by the scripts that source this file
+TICKLE_PLACEMENT_CFLAGS="-falign-functions=128"
 INSN_EVENTS="instructions:u,instructions:k"
 
 # layout_cflags_default: sets TICKLE_EXTRA_CFLAGS to TICKLE_LAYOUT_CFLAGS when it is UNSET; a set value (also empty)
