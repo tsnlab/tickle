@@ -432,6 +432,10 @@ struct tt_LargeState {
     uint64_t tail_abandoned;
     uint64_t window_too_small;
     uint64_t send_waits;
+    // encoded_by_range: samples encoded a send call at a time (tt_DATA_ENCODE_RANGE) - an A/B arm's treatment check.
+    // encode_failed: samples whose ranged encode and data_encode both failed after some of it had gone - dropped.
+    uint64_t encoded_by_range;
+    uint64_t encode_failed;
 };
 #endif
 
@@ -1720,8 +1724,9 @@ struct tt_LargeRecord {
     uint32_t seq_no;  // its first datagram's; it takes `count` of them. 0 while it waits as tt_Publisher.large_pending
     uint32_t cdr_len; // padded to 4, as it is sent
     uint16_t count;
-    bool retained; // kept for resends once sent: the Publisher has a reliable cache
-    bool sent;     // every fragment has gone to every destination once
+    bool retained;    // kept for resends once sent: the Publisher has a reliable cache
+    bool sent;        // every fragment has gone to every destination once
+    uint32_t encoded; // CDR bytes encoded so far: cdr_len, but while its publish encodes it a send call at a time
 };
 
 // Where a Publisher's large send stands (tt_Publisher.large_cursor): a burst of thousands of datagrams outruns any
@@ -2079,6 +2084,11 @@ struct tt_Publisher { // extends endpoint
     // The end-of-sample HEARTBEAT asked again while a sent large sample stays unacknowledged (large_ack_chase(),
     // tickle.c): armed, and the wait before the next ask.
     uint64_t large_ack_wait_ns;
+    // The caller's sample while its publish encodes it a send call at a time (tt_DATA_ENCODE_RANGE): the record whose
+    // buffer it goes into, and its exact unpadded CDR length. NULL outside that publish call.
+    struct tt_Data* large_source;
+    const uint8_t* large_source_buffer;
+    uint32_t large_source_size;
     bool large_ack_armed;
     uint8_t large_head;
     uint8_t large_count;
@@ -2738,6 +2748,15 @@ typedef int32_t (*tt_DATA_ENCODE)(struct tt_Data* data, uint8_t* payload, const 
 // via one sendmsg() with no staging copy. Return -1 to decline (fall back to data_encode). Only
 // definable for a topic whose in-memory layout already is its own native-endian wire form.
 typedef int32_t (*tt_DATA_ENCODE_INPLACE)(struct tt_Data* data, const uint8_t** payload_out);
+// Optional ranged encode, used only for a sample above tt_MAX_SAMPLE_LENGTH (DESIGN.md section 8, "Encoding while
+// sending"): writes bytes [offset, offset + len) of the CDR data_encode would write, at `payload` (where byte `offset`
+// goes), and returns len. Core then encodes a large sample a send call at a time, just ahead of the datagrams that
+// carry it, instead of all of it before the first leaves; every range is asked for within the one publish call, in
+// order, the ranges together covering [0, size) once. A topic that sets it promises that data_encode_size is the exact
+// length and that the bytes are data_encode's. Return -1 to decline: core encodes what is left with data_encode, and
+// if that fails too before anything was sent the publish fails as it would without this; after, the sample is
+// dropped, never sent torn (large_encode_failed). Trivial for a topic whose memory is its wire form (a memcpy).
+typedef int32_t (*tt_DATA_ENCODE_RANGE)(struct tt_Data* data, uint8_t* payload, uint32_t offset, uint32_t len);
 typedef int32_t (*tt_DATA_DECODE)(struct tt_Data* data, const uint8_t* payload, const uint32_t len,
                                   bool is_native_endian);
 typedef void (*tt_DATA_FREE)(struct tt_Data* data);
@@ -2765,6 +2784,7 @@ struct tt_Topic {
     uint16_t history_depth;
     uint32_t deadline_duration;
     uint32_t lifespan_duration;
+    tt_DATA_ENCODE_RANGE data_encode_range; // optional, see typedef; last, so no positional initializer moves
 };
 
 uint32_t tt_hash_id(const char* type, const char* name);

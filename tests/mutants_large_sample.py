@@ -129,8 +129,8 @@ MUTANTS = [
     ),
     (
         "a small sample overtakes a waiting large one",
-        "        large_commit_pending(node, pub);\n",
-        "",
+        "    if (size >= 0 && size <= tt_MAX_SAMPLE_LENGTH) {\n        large_commit_pending(node, pub);\n",
+        "    if (size >= 0 && size <= tt_MAX_SAMPLE_LENGTH) {\n",
         "test_a_small_sample_never_overtakes_a_waiting_large_one",
     ),
     (
@@ -151,6 +151,62 @@ MUTANTS = [
         "    large_send_backlog_before(node, pub, UINT32_MAX, &large_next, target);\n",
         "",
         "test_a_durable_writer_backs_a_late_joiner_with_its_large_samples",
+    ),
+    # Encoding while sending (DESIGN.md section 8): a topic's ranged encode, a send call at a time.
+    (
+        "the sample encoded whole after its first range",
+        "    if (encoded == 0) {\n        int32_t whole",
+        "    if (true) {\n        int32_t whole",
+        "test_each_range_is_encoded_just_before_its_datagrams_leave",
+    ),
+    (
+        "all of it encoded at the first send call",
+        "large_end_of(record, cursor->next_index + batch_count - 1))",
+        "record->cdr_len)",
+        "test_each_range_is_encoded_just_before_its_datagrams_leave",
+    ),
+    (
+        "a send call goes before its range is encoded",
+        "            if (!large_encode_through(pub, record, large_end_of(record, cursor->next_index + batch_count - 1))) {",
+        "            if (false) {",
+        "test_encoding_while_sending_leaves_the_wire_byte_identical",
+    ),
+    (
+        "the rest left unencoded when the send buffer fills",
+        "                if (!large_encode_through(pub, record, record->cdr_len)) {\n                    *failed = true;\n"
+        "                    return true;\n                }\n                return false;",
+        "                return false;",
+        "test_a_full_send_buffer_retains_the_whole_encoded_sample",
+    ),
+    (
+        "a declined range not made up by data_encode",
+        "            encoded = pub->topic->data_encode(pub->large_source, cdr, size);",
+        "            encoded = -1;",
+        "test_encoding_while_sending_leaves_the_wire_byte_identical (decline part-way)",
+    ),
+    (
+        "the padding of a sample encoded by range left as it was",
+        "        memset(cdr + pad_from, 0, end - pad_from); // sent padded, as a fragment is",
+        "        (void)pad_from;",
+        "test_encoding_while_sending_leaves_the_wire_byte_identical (1 MB + 3)",
+    ),
+    (
+        "a failed range ignored: the send goes on",
+        "                *failed = true;\n                return true;\n            }\n            uint8_t framings",
+        "            }\n            uint8_t framings",
+        "test_a_sample_that_cannot_be_finished_is_dropped_never_torn",
+    ),
+    (
+        "an unfinished sample kept and served to repairs",
+        "        if (failed) {\n            large_drop_unfinished(node, pub, record);\n            continue;\n        }\n",
+        "",
+        "test_a_sample_that_cannot_be_finished_is_dropped_never_torn",
+    ),
+    (
+        "a sample waiting behind a send encoded by range",
+        "    if (pub->topic->data_encode_range == NULL || !sending_now) {",
+        "    if (pub->topic->data_encode_range == NULL) {",
+        "test_a_sample_waiting_behind_a_send_is_encoded_whole",
     ),
 ]
 

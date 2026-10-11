@@ -132,10 +132,50 @@ static int32_t sized_encode_size(struct tt_Data* data) {
     return (int32_t)sample_len;
 }
 
+// data_encode fails while this is set (the ranged-encode failure tests): what a type that cannot encode does.
+static bool whole_encode_fails;
+
 static int32_t sized_encode(struct tt_Data* data, uint8_t* payload, uint32_t len) {
     (void)data;
+    if (whole_encode_fails) {
+        return -1;
+    }
     for (uint32_t i = 0; i < len; i++) {
         payload[i] = pattern(i, sample_seed);
+    }
+    return (int32_t)len;
+}
+
+// --- the ranged encode (DESIGN.md section 8, "Encoding while sending")
+// ------------------------------------------------ On for the sender's topic while `ranged` is: sized_encode's bytes, a
+// range at a time. Each call is logged with how many datagrams the sender had sent by then and whether the send buffer
+// was full. Every range reaching past `range_decline_at` is declined.
+
+static bool ranged;
+static uint32_t range_decline_at = UINT32_MAX;
+struct range_call {
+    uint32_t offset;
+    uint32_t length;
+    uint64_t sent_before;
+    bool buffer_full;
+};
+#define RANGE_CALLS_MAX 4096U
+static struct range_call range_calls[RANGE_CALLS_MAX];
+static uint32_t range_call_count;
+static uint64_t sender_datagrams(void);
+
+static int32_t sized_encode_range(struct tt_Data* data, uint8_t* payload, uint32_t offset, uint32_t len) {
+    (void)data;
+    if (range_call_count < RANGE_CALLS_MAX) {
+        range_calls[range_call_count] =
+            (struct range_call) {offset, len, sender_datagrams(), test_mock_nonblocking_room == 0};
+    }
+    range_call_count++;
+    if (offset + len > range_decline_at) {
+        return -1;
+    }
+    for (uint32_t i = 0; i < len; i++) {
+        payload[i] = pattern(offset + i, sample_seed);
     }
     return (int32_t)len;
 }
@@ -265,6 +305,10 @@ static void init_pair(uint32_t len, enum pair_mode mode) {
     sender_topic.data_size = pair_struct_size;
     sender_topic.data_encode_size = sized_encode_size;
     sender_topic.data_encode = sized_encode;
+    sender_topic.data_encode_range = ranged ? sized_encode_range : NULL;
+    range_call_count = 0;
+    range_decline_at = UINT32_MAX;
+    whole_encode_fails = false;
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&sender, test_acquire, test_release, &sender_alloc));
 
@@ -382,6 +426,10 @@ static void sim_capture(const void* buf, size_t len) {
     memcpy(d->bytes, buf, len);
     sim_tail++;
     sim_sent[sim_acting]++;
+}
+
+static uint64_t sender_datagrams(void) {
+    return sim_sent[SENDER_ID];
 }
 
 static bool sim_lost(void) {
@@ -1004,7 +1052,249 @@ static void test_a_durable_writer_backs_a_late_joiner_with_its_large_samples(voi
     EXPECT_EQ_INT(0, delivered_torn);
 }
 
-int main(void) {
+// --- Encoding while sending (DESIGN.md section 8): the wire, the order, the retained copy, a range that fails -------
+
+// Every datagram the sender sent in a run, in order: the queue keeps them after delivery.
+struct sender_stream {
+    uint8_t* bytes;
+    uint32_t* lens;
+    uint32_t count;
+    size_t total;
+};
+
+static void capture_sender(struct sender_stream* out) {
+    EXPECT_TRUE(sim_tail < SIM_QUEUE); // nothing overwritten
+    out->count = 0;
+    out->total = 0;
+    out->lens = (uint32_t*)malloc(sizeof(uint32_t) * SIM_QUEUE);
+    out->bytes = (uint8_t*)malloc((size_t)SIM_DATAGRAM_MAX * SIM_QUEUE);
+    if (out->lens == NULL || out->bytes == NULL) {
+        return;
+    }
+    for (uint32_t i = 0; i < sim_tail && i < SIM_QUEUE; i++) {
+        if (sim_queue[i].from == SENDER_ID) {
+            out->lens[out->count++] = sim_queue[i].len;
+            memcpy(out->bytes + out->total, sim_queue[i].bytes, sim_queue[i].len);
+            out->total += sim_queue[i].len;
+        }
+    }
+}
+
+static void stream_free(struct sender_stream* stream) {
+    free(stream->bytes);
+    free(stream->lens);
+}
+
+// Two samples of `size` (seeds 1 and 2) through the pair, with `room` datagrams of send buffer a step (0: unlimited)
+// and `loss` per mille both ways, run until both are delivered; the sender's datagrams captured. `decline_at` and
+// `whole_fails` set the ranged encode's failure points for the run.
+static void run_and_capture(uint32_t size, enum pair_mode mode, uint32_t room, uint32_t loss, bool use_ranges,
+                            uint32_t decline_at, struct sender_stream* out) {
+    ranged = use_ranges;
+    init_pair(size, mode);
+    range_decline_at = decline_at;
+    sim_start(loss);
+    sim_room_per_step = room;
+    for (int i = 0; i < 2; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 1), 10 * tt_SECOND));
+        sim_settle(i + 1, 10 * tt_SECOND);
+    }
+    EXPECT_EQ_INT(2, delivered_count);
+    EXPECT_EQ_INT(0, delivered_torn);
+    capture_sender(out);
+    ranged = false;
+}
+
+static bool streams_equal(const struct sender_stream* a, const struct sender_stream* b) {
+    return a->count == b->count && a->total == b->total && memcmp(a->lens, b->lens, sizeof(uint32_t) * a->count) == 0 &&
+           memcmp(a->bytes, b->bytes, a->total) == 0;
+}
+
+static void expect_same_wire(uint32_t size, enum pair_mode mode, uint32_t room, uint32_t loss, uint32_t decline_at) {
+    struct sender_stream whole;
+    struct sender_stream by_range;
+    run_and_capture(size, mode, room, loss, false, UINT32_MAX, &whole);
+    uint64_t whole_waits = sender.large.send_waits;
+    run_and_capture(size, mode, room, loss, true, decline_at, &by_range);
+    EXPECT_TRUE(range_call_count >= 1); // the ranged encode was asked: the arm really had it
+    EXPECT_TRUE(whole.count > 2U * tt_sample_datagrams(size) - 1U);
+    EXPECT_TRUE(streams_equal(&whole, &by_range));
+    EXPECT_EQ_U64(whole_waits, sender.large.send_waits); // and the sends were cut short where they were before
+    EXPECT_EQ_U64(decline_at == 0 ? 0 : 2, sender.large.encoded_by_range);
+    if (!streams_equal(&whole, &by_range)) {
+        printf("test_large_sample: wire differs at %u B mode %d room %u loss %u decline %u: %u vs %u datagrams\n", size,
+               (int)mode, room, loss, decline_at, whole.count, by_range.count);
+    }
+    stream_free(&whole);
+    stream_free(&by_range);
+}
+
+static void test_encoding_while_sending_leaves_the_wire_byte_identical(void) {
+    // Every datagram the sender sends - fragments, HEARTBEATs and repairs - is the same byte for byte, in the same
+    // order, whether the sample was encoded whole first or a send call at a time: with the socket taking everything,
+    // with a send buffer of 44 datagrams (so most of each sample goes from the cursor, from the retained buffer), and
+    // RELIABLE at 5% loss (repairs from the retained buffer). The control is the arm without a ranged encode; time
+    // fields come from the mock clock, so they match only if the two runs behave alike.
+    static const uint32_t sizes[] = {65508, SIZE_256_FRAGMENTS, ONE_MB + 3, FOUR_MB};
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        expect_same_wire(sizes[i], BEST_EFFORT, 0, 0, UINT32_MAX);
+        expect_same_wire(sizes[i], RELIABLE_KEEP_LAST, 0, 0, UINT32_MAX);
+        expect_same_wire(sizes[i], RELIABLE_KEEP_ALL, 65536 / 1472, 0, UINT32_MAX);
+    }
+    expect_same_wire(ONE_MB, RELIABLE_KEEP_LAST, 65536 / 1472, 50, UINT32_MAX);
+    expect_same_wire(FOUR_MB, BEST_EFFORT, 65536 / 1472, 0, UINT32_MAX);
+    // A topic that declines from the first range is encoded whole; one that declines part-way is finished by
+    // data_encode - the same bytes either way.
+    expect_same_wire(ONE_MB, RELIABLE_KEEP_LAST, 0, 0, 0);
+    expect_same_wire(ONE_MB, RELIABLE_KEEP_LAST, 0, 0, 200000);
+    expect_same_wire(ONE_MB, BEST_EFFORT, 65536 / 1472, 0, 200000);
+}
+
+static void test_each_range_is_encoded_just_before_its_datagrams_leave(void) {
+    // The point of it: the first datagram leaves after one fragment's encoding, and each later range is encoded just
+    // before the send call that carries it - never more than one call (LARGE_BATCH datagrams) ahead of what has gone.
+    // The ranges cover the sample once, in order. Mutants: the sample encoded whole at the first range, or all of it
+    // at the first send call - each fails the "just before" bound.
+    ranged = true;
+    init_pair(FOUR_MB, BEST_EFFORT);
+    sim_start(0);
+    sample_seed = 1;
+    sim_acting = SENDER_ID;
+    uint64_t before = sim_sent[SENDER_ID];
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    sim_drain();
+    ranged = false;
+    sim_settle(1, tt_SECOND);
+    EXPECT_EQ_INT(1, delivered_count);
+    EXPECT_EQ_INT(0, delivered_torn);
+    uint32_t count = tt_sample_datagrams(FOUR_MB);
+    EXPECT_TRUE(range_call_count > count / LARGE_BATCH); // one per send call, and the first fragment's
+    EXPECT_TRUE(range_call_count < RANGE_CALLS_MAX);
+    if (range_call_count < 2 || range_call_count >= RANGE_CALLS_MAX) {
+        return;
+    }
+    EXPECT_EQ_U32(0, range_calls[0].offset);
+    EXPECT_EQ_U32(LARGE_FIRST_PAYLOAD, range_calls[0].length);
+    EXPECT_EQ_U64(before, range_calls[0].sent_before);
+    uint32_t end = 0;
+    uint32_t ahead_most = 0;
+    for (uint32_t i = 0; i < range_call_count; i++) {
+        EXPECT_EQ_U32(end, range_calls[i].offset); // contiguous, once each
+        end = range_calls[i].offset + range_calls[i].length;
+        uint32_t sent = (uint32_t)(range_calls[i].sent_before - before);
+        uint32_t covered = sent >= count ? FOUR_MB : large_offset(sent); // bytes already on their way
+        uint32_t ahead = end - covered;
+        ahead_most = ahead > ahead_most ? ahead : ahead_most;
+    }
+    EXPECT_EQ_U32(FOUR_MB, end);
+    EXPECT_EQ_U64(1, sender.large.encoded_by_range); // the treatment check an A/B reads
+    EXPECT_TRUE(ahead_most <= LARGE_BATCH * LARGE_CONT_PAYLOAD);
+    EXPECT_TRUE(range_calls[range_call_count - 1].sent_before - before >=
+                count - LARGE_BATCH); // the last, near the end
+    printf(
+        "test_large_sample: 4 MB encoded in %u ranges, at most %u B ahead of the datagrams sent; the first send call "
+        "went after %u B of %u\n",
+        range_call_count, ahead_most, range_calls[0].length + range_calls[1].length, FOUR_MB);
+}
+
+static void test_a_full_send_buffer_retains_the_whole_encoded_sample(void) {
+    // A send buffer of 44 datagrams: the publish returns with most of a 4 MB sample unsent. Its record must already be
+    // the whole encoded sample - the caller's sample is not ours after the call - so the rest is encoded the moment the
+    // buffer fills (while it drains), and resends under 5% loss come from it. The caller then reuses its sample (a new
+    // seed), and the reader still gets the published one, whole. Mutant: the rest left unencoded when the buffer fills
+    // - the record is not whole when the publish returns, and the reader gets a torn sample.
+    ranged = true;
+    init_pair(FOUR_MB, RELIABLE_KEEP_LAST);
+    sim_start(50);
+    sim_room_per_step = 65536 / 1472;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    ranged = false;
+    EXPECT_EQ_U32(1, pub.large_count);
+    const struct tt_LargeRecord* record = large_record_at(&pub, 0);
+    EXPECT_TRUE(!record->sent); // still going out
+    EXPECT_EQ_U32(record->cdr_len, record->encoded);
+    EXPECT_TRUE(payload_intact(record->buffer + tt_LARGE_CDR_OFFSET, record->cdr_len, FOUR_MB));
+    bool encoded_while_full = false;
+    for (uint32_t i = 0; i < range_call_count && i < RANGE_CALLS_MAX; i++) {
+        encoded_while_full = encoded_while_full || range_calls[i].buffer_full;
+    }
+    EXPECT_TRUE(encoded_while_full);
+    uint32_t calls = range_call_count;
+    sample_seed = 77; // the caller's sample changes
+    sim_settle(1, 10 * tt_SECOND);
+    EXPECT_EQ_INT(1, delivered_count);
+    EXPECT_EQ_INT(0, delivered_torn);
+    EXPECT_EQ_INT(1, delivered_seeds[0]);
+    EXPECT_EQ_U32(calls, range_call_count);  // nothing encoded after the publish returned
+    EXPECT_TRUE(sim_dropped[SENDER_ID] > 0); // and there were repairs to make
+}
+
+static void test_a_sample_waiting_behind_a_send_is_encoded_whole(void) {
+    // A sample published while another is going out is not sent within its publish, so it is encoded whole there; only
+    // the first was encoded by range. Both arrive whole and in order.
+    ranged = true;
+    init_pair(ONE_MB, RELIABLE_KEEP_LAST);
+    sim_start(0);
+    sim_room_per_step = 64;
+    sim_acting = SENDER_ID;
+    test_mock_nonblocking_room = 64;
+    sample_seed = 1;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    uint32_t first_calls = range_call_count;
+    sample_seed = 2;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len)); // waits behind the first
+    ranged = false;
+    EXPECT_TRUE(first_calls >= 2);
+    EXPECT_EQ_U32(first_calls, range_call_count);
+    EXPECT_EQ_U64(1, sender.large.encoded_by_range); // the waiting one was not
+    sim_drain();
+    sim_settle(2, tt_SECOND);
+    EXPECT_EQ_INT(2, delivered_count);
+    EXPECT_EQ_INT(0, delivered_torn);
+    EXPECT_EQ_INT(1, delivered_seeds[0]);
+    EXPECT_EQ_INT(2, delivered_seeds[1]);
+}
+
+static void unfinished_sample_is_dropped(enum pair_mode mode, uint32_t room) {
+    ranged = true;
+    init_pair(ONE_MB, mode);
+    sim_start(0);
+    sim_room_per_step = room;
+    range_decline_at = 200000;
+    whole_encode_fails = true;
+    EXPECT_EQ_INT(tt_RET_PROTOCOL_ERROR, sim_publish(1, tt_SECOND));
+    EXPECT_EQ_U64(1, sender.large.encode_failed);
+    EXPECT_EQ_U32(0, pub.large_count);
+    EXPECT_EQ_U32(0, sender_alloc.live);  // its buffer went back
+    EXPECT_TRUE(sim_sent[SENDER_ID] > 0); // part of it had gone
+    range_decline_at = UINT32_MAX;
+    whole_encode_fails = false;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(2, tt_SECOND));
+    ranged = false;
+    sim_settle(1, 10 * tt_SECOND);
+    for (int i = 0; i < 20; i++) { // and long enough for every repair of the dropped one to be asked for and refused
+        if (!sim_step()) {
+            break;
+        }
+    }
+    EXPECT_EQ_INT(1, delivered_count);
+    EXPECT_EQ_INT(0, delivered_torn);
+    EXPECT_EQ_INT(2, delivered_seeds[0]);
+}
+
+static void test_a_sample_that_cannot_be_finished_is_dropped_never_torn(void) {
+    // The ranged encode fails part-way and data_encode cannot make it up: what went cannot be recalled, so the rest is
+    // not sent, the record goes (its buffer back), the publish says so, and no reader ever delivers the torn sample -
+    // the next one arrives whole. Mutants: the failure ignored (the send goes on with bytes never encoded), or the
+    // record kept and served to repairs - each delivers a torn sample.
+    unfinished_sample_is_dropped(BEST_EFFORT, 0);
+    unfinished_sample_is_dropped(RELIABLE_KEEP_LAST, 0);
+    unfinished_sample_is_dropped(RELIABLE_KEEP_LAST, 65536 / 1472);
+}
+
+// Every test above, with and without the ranged encode on the sender's topic: what each checks of the large path -
+// round trips, loss, the cursor, KEEP_LAST, retention, lending - holds with the sample encoded while it is sent.
+static void run_path_tests(void) {
     test_round_trip_at_every_boundary();
     test_a_fixed_size_type_above_a_sample_is_a_large_topic();
     test_any_arrival_order_reassembles();
@@ -1023,6 +1313,19 @@ int main(void) {
     test_a_retained_large_sample_outlives_the_next_one();
     test_a_volatile_writer_hands_acknowledged_buffers_back();
     test_a_durable_writer_backs_a_late_joiner_with_its_large_samples();
+}
+
+int main(void) {
+    ranged = false;
+    run_path_tests();
+    ranged = true;
+    run_path_tests();
+    ranged = false;
+    test_encoding_while_sending_leaves_the_wire_byte_identical();
+    test_each_range_is_encoded_just_before_its_datagrams_leave();
+    test_a_full_send_buffer_retains_the_whole_encoded_sample();
+    test_a_sample_waiting_behind_a_send_is_encoded_whole();
+    test_a_sample_that_cannot_be_finished_is_dropped_never_torn();
 
     allocator_reset(&sender_alloc);
     allocator_reset(&receiver_alloc);
