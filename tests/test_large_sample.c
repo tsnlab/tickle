@@ -53,7 +53,8 @@
 // --- the caller's buffers: one allocator per context, with a failure switch and a reuse list -------------------------
 
 struct test_allocator {
-    uint32_t acquires;
+    uint32_t acquires; // every call, including the ones answered NULL
+    uint32_t granted;  // the calls that handed a buffer out: at teardown, exactly as many as `releases`
     uint32_t releases;
     uint32_t live;
     uint32_t fail_every; // 0: never; N: every Nth acquire answers NULL
@@ -83,6 +84,7 @@ static void* test_acquire(void* user, uint32_t bytes) {
         if (stored_size(buffer) >= bytes) {
             alloc->reuse[i] = alloc->reuse[--alloc->reuse_count];
             memset(buffer, 0xA5, bytes); // whatever was there before is gone
+            alloc->granted++;
             alloc->live++;
             return buffer;
         }
@@ -93,6 +95,7 @@ static void* test_acquire(void* user, uint32_t bytes) {
     }
     memcpy(block, &bytes, sizeof(bytes));
     memset(block + 16, 0xA5, bytes);
+    alloc->granted++;
     alloc->live++;
     return block + 16;
 }
@@ -115,6 +118,18 @@ static void allocator_reset(struct test_allocator* alloc) {
         free(alloc->reuse[i] - 16);
     }
     memset(alloc, 0, sizeof(*alloc));
+}
+
+// Every buffer a context was handed must come back by the time it is destroyed: the core's release paths - a sample
+// delivered, an assembly abandoned, a Publisher or context destroyed - account for every one, and LeakSanitizer
+// reports whatever does not. Checked per allocator so a failure names the side that kept one.
+static void expect_books_balance(const char* side, const struct test_allocator* alloc) {
+    if (alloc->granted != alloc->releases) {
+        printf("test_large_sample: %s allocator granted %u buffers and got %u back\n", side, (unsigned)alloc->granted,
+               (unsigned)alloc->releases);
+    }
+    EXPECT_EQ_U32(alloc->granted, alloc->releases);
+    EXPECT_EQ_U32(0, alloc->live);
 }
 
 // --- the sample: a sized, patterned payload whose first byte is its seed
@@ -241,10 +256,28 @@ static void init_bare_node(struct tt_Context* node, uint8_t id) {
 
 enum pair_mode { BEST_EFFORT, RELIABLE_KEEP_LAST, RELIABLE_KEEP_ALL };
 
+static bool pair_up; // init_pair() made the two contexts and teardown_pair() has not yet destroyed them
+
+// Destroys both contexts as a user would, then checks that every large buffer either one acquired was released: an
+// assembly still being put together and a sample a Publisher still holds go back at the context's destruction
+// (node_destroy_locked()). Each test's pair is torn down before the next is made, and the last one in main().
+static void teardown_pair(void) {
+    if (!pair_up) {
+        return;
+    }
+    pair_up = false;
+    test_mock_send_hook = NULL; // the farewell announces go nowhere: no test reads them
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_destroy(&sender));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_destroy(&receiver));
+    expect_books_balance("sender", &sender_alloc);
+    expect_books_balance("receiver", &receiver_alloc);
+}
+
 // A Publisher and a Subscriber of one topic, each in its own context with its own large buffers. RELIABLE modes give
 // the Publisher a cache and the Subscriber the wide window, and pre-match the reader on the writer with that window,
 // as its announce would.
 static void init_pair(uint32_t len, enum pair_mode mode) {
+    teardown_pair();
     test_mock_reset();
     sample_len = len;
     sample_seed = 1;
@@ -299,6 +332,7 @@ static void init_pair(uint32_t len, enum pair_mode mode) {
             ack->tracking_words = WIDE_WORDS;
         }
     }
+    pair_up = true;
 }
 
 // --- the link: a queue of datagrams both ways, with loss
@@ -1023,6 +1057,7 @@ int main(void) {
     test_a_retained_large_sample_outlives_the_next_one();
     test_a_volatile_writer_hands_acknowledged_buffers_back();
     test_a_durable_writer_backs_a_late_joiner_with_its_large_samples();
+    teardown_pair();
 
     allocator_reset(&sender_alloc);
     allocator_reset(&receiver_alloc);

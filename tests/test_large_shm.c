@@ -79,6 +79,17 @@ static void test_release(void* user, void* buffer) {
     free((uint8_t*)buffer - 16);
 }
 
+// Every buffer acquired was released by the time a rig comes down: a retained sample by its tt_Sample_release(), the
+// rest by the core's own release paths. LeakSanitizer reports what this misses; this names the side that kept one.
+static void expect_books_balance(const char* side, const struct allocator* alloc) {
+    if (alloc->acquires != alloc->releases) {
+        printf("test_large_shm: %s allocator handed out %u buffers and got %u back\n", side, (unsigned)alloc->acquires,
+               (unsigned)alloc->releases);
+    }
+    EXPECT_EQ_U32(alloc->acquires, alloc->releases);
+    EXPECT_EQ_U32(0, alloc->live);
+}
+
 // --- the sample ---------------------------------------------------------------------------------------------------
 
 struct sample {
@@ -264,6 +275,8 @@ static void rig_down(void) {
     release_segments(&sender);
     release_own_segment(&owner);
     test_mock_segments_free();
+    expect_books_balance("sender", &sender_alloc);
+    expect_books_balance("owner", &owner_alloc);
 }
 
 static struct tt_SegmentHeader* ring(void) {
@@ -458,6 +471,9 @@ static struct transfer_witness large_same_host_transfer(bool dirty) {
     EXPECT_EQ_U64(1, owner.large.reassembled);
     EXPECT_EQ_INT((int)tt_RET_OK, (int)cb.retain_result);
     EXPECT_TRUE(intact(cb.held.payload, 1, LARGE_BYTES));
+    // Kept out through what follows, in a handle of its own: the next large delivery retains into cb.held, and a
+    // handle overwritten is a buffer no release will ever reach - LeakSanitizer's finding when sample 4 took this one.
+    struct tt_Sample first = cb.held;
 
     uint8_t* payload = NULL; // a claim and its pin on the same entry
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&pub, SMALL_BYTES, &payload));
@@ -471,6 +487,8 @@ static struct transfer_witness large_same_host_transfer(bool dirty) {
     EXPECT_EQ_U32(3, cb.seen);
     EXPECT_EQ_U32(SMALL_BYTES, cb.lengths[1]);
     EXPECT_EQ_U32(LARGE_BYTES, cb.lengths[2]);
+    EXPECT_TRUE(intact(first.payload, 1, LARGE_BYTES)); // still its own bytes while held
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&owner, &first));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&owner, &cb.held));
     large_release_publisher(&sender, &pub);
     large_release_assemblies(&owner);
@@ -479,6 +497,8 @@ static struct transfer_witness large_same_host_transfer(bool dirty) {
     // Read before test_mock_segments_free() zeroes them.
     struct transfer_witness witness = {test_mock_segment_stray_detaches, test_mock_segment_double_detaches};
     test_mock_segments_free();
+    expect_books_balance("sender", &sender_alloc);
+    expect_books_balance("owner", &owner_alloc);
     return witness;
 }
 
