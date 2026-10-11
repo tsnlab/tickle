@@ -14922,6 +14922,136 @@ static bool process_frag_large(struct tt_Context* node, struct tt_Header* header
 #endif
 }
 
+// ---- Hybrid transport: receiving runs (DESIGN.md section 8, "Hybrid transport", step 2) --------------------------
+//
+// A run is run_count consecutive units of one sample in one datagram (tt_SUBMESSAGE_TYPE_FRAG_RUN_L,
+// tt_SUBMESSAGE_TYPE_FRAG_RUN). It is validated whole against its header, then handed on unit by unit to the path an
+// MTU fragment of its type pair takes - the large assembly for 13, frag_scratch / the reorder slots / the BE pool for
+// 14 - each unit under its own seq_no and index, so it is stored, recorded in the ACK bitmap, deduplicated against
+// units already held and repaired exactly as that fragment would be. Nothing is staged: a unit is copied once, from
+// the receive buffer to where the fragment path keeps it (a large sample's lendable assembly buffer). Only the
+// sample's first unit carries the DataHeader onward, as FRAG_FIRST does; every other unit goes as a continuation.
+
+#if tt_FRAG_ENABLED
+// What the two run types share: the counts against each other and the type's ceiling, the reserved field, and the
+// seq_no range of the sample the units belong to. A run never holds a sample's last unit (it always goes alone, as an
+// MTU fragment), which is also what lets a small run's unit size be derived from its length.
+static bool run_header_valid(uint32_t entity_id, uint32_t seq_no, uint32_t index, uint32_t count, uint32_t run_count,
+                             uint32_t zero, uint32_t max_count) {
+    if (zero != 0 || entity_id == tt_DISCOVERY_ENTITY_ID || count > max_count || run_count == 0) {
+        return false;
+    }
+    if (index + run_count >= count) {
+        return false; // the last unit, or past it
+    }
+    // The sample is named by seq_no - index, a seq_no from 1, and its count units must not wrap.
+    return seq_no > index && seq_no - index <= UINT32_MAX - (count - 1U);
+}
+
+// A run refused whole: counted once, in the counter of its type pair, and logged at the 1st, 10th, 100th ...
+static void run_refused(uint64_t* counter, const char* what, uint32_t index, uint32_t count, uint32_t run_count,
+                        uint32_t length) {
+    (*counter)++;
+    if (frag_log_due(*counter)) {
+        TT_LOG_WARNING("Illegal %s: units %u+%u of %u (%u bytes) - dropped (#%lu)", what, index, run_count, count,
+                       length, (unsigned long)*counter);
+    }
+}
+
+// Type 14: a run of a sample on 8/9. The unit size is the sender's continuation payload, as the fragment path learns
+// it, and follows from the length: run_count units, the first tt_FRAG_FIRST_SHORTFALL shorter when it is unit 0.
+static bool process_frag_run(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                             uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
+    struct tt_FragRunHeader* run = decode(node, buffer, &head, tail, sizeof(struct tt_FragRunHeader));
+    if (run == NULL) {
+        run_refused(&node->frag_dropped, "FragRunHeader", 0, 0, 0, tail - head);
+        return false;
+    }
+    uint32_t entity_id = rd32(header, run->data.entity_id);
+    uint32_t seq_no = rd32(header, run->data.seq_no);
+    uint32_t index = run->frag_index;
+    uint32_t count = run->frag_count;
+    uint32_t run_count = run->run_count;
+    uint32_t length = tail - head;
+    uint32_t span = index == 0 ? length + (uint32_t)tt_FRAG_FIRST_SHORTFALL : length;
+    if (!run_header_valid(entity_id, seq_no, index, count, run_count, run->zero, tt_FRAG_MAX_COUNT) ||
+        span % run_count != 0 || span / run_count <= tt_FRAG_FIRST_SHORTFALL) {
+        run_refused(&node->frag_dropped, "run", index, count, run_count, length);
+        return false;
+    }
+    uint32_t unit = span / run_count;
+    uint32_t unit_head = head;
+    for (uint32_t i = 0; i < run_count; i++) {
+        uint32_t unit_index = index + i;
+        uint32_t unit_length = unit_index == 0 ? unit - (uint32_t)tt_FRAG_FIRST_SHORTFALL : unit;
+        (void)deliver_user_fragment(node, header, buffer, unit_head, unit_head + unit_length,
+                                    unit_index == 0 ? &run->data : NULL, entity_id, seq_no + i, unit_index, count,
+                                    sender_ip, sender_port);
+        unit_head += unit_length;
+    }
+    return true;
+}
+#endif
+
+// Type 13: a run of a large sample. Its units have the receiver's own geometry, as a large fragment's do (DESIGN.md
+// section 8, step A), so the length must be exactly theirs. A build without stage 2 passes it over and counts it, as it
+// does types 11/12.
+// NOLINTNEXTLINE(readability-non-const-parameter)
+static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                                   uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
+#if tt_LARGE_SAMPLES
+    struct tt_FragRunLHeader* run = decode(node, buffer, &head, tail, sizeof(struct tt_FragRunLHeader));
+    if (run == NULL) {
+        run_refused(&node->large.dropped, "FragRunLHeader", 0, 0, 0, tail - head);
+        return false;
+    }
+    uint32_t entity_id = rd32(header, run->data.entity_id);
+    uint32_t seq_no = rd32(header, run->data.seq_no);
+    uint32_t index = rd16(header, run->frag_index);
+    uint32_t count = rd16(header, run->frag_count);
+    uint32_t run_count = rd16(header, run->run_count);
+    uint32_t length = tail - head;
+    if (!run_header_valid(entity_id, seq_no, index, count, run_count, rd16(header, run->zero),
+                          tt_LARGE_MAX_FRAGMENTS) ||
+        length != (run_count * LARGE_CONT_PAYLOAD) - (index == 0 ? (uint32_t)tt_FRAG_FIRST_L_SHORTFALL : 0U)) {
+        run_refused(&node->large.dropped, "large run", index, count, run_count, length);
+        return false;
+    }
+    const uint8_t* payload = buffer + head;
+    for (uint32_t i = 0; i < run_count; i++) {
+        uint32_t unit_index = index + i;
+        struct large_fragment fragment = {
+            .header = header,
+            .data_header = unit_index == 0 ? &run->data : NULL,
+            .payload = payload,
+            .length = unit_index == 0 ? LARGE_FIRST_PAYLOAD : LARGE_CONT_PAYLOAD,
+            .entity_id = entity_id,
+            .seq_no = seq_no + i,
+            .index = unit_index,
+            .count = count,
+            .sender_ip = sender_ip,
+            .sender_port = sender_port,
+            .best_effort_seen = false,
+        };
+        (void)deliver_large_fragment(node, &fragment);
+        payload += fragment.length;
+    }
+    return true;
+#else
+    UNUSED(buffer);
+    UNUSED(head);
+    UNUSED(tail);
+    UNUSED(sender_ip);
+    UNUSED(sender_port);
+    node->frag_large_skipped++;
+    if (node->frag_large_skipped <= UINT32_MAX && is_power_of_ten((uint32_t)node->frag_large_skipped)) {
+        TT_LOG_WARNING("Large-sample run from node %u skipped: this build has no large-message support (#%lu)",
+                       header->source, (unsigned long)node->frag_large_skipped);
+    }
+    return true;
+#endif
+}
+
 // One fragment, FRAG_FIRST or FRAG_CONT, from header->source. A discovery announce's fragment (its
 // entity_id is tt_DISCOVERY_ENTITY_ID) is whole entities and goes straight to process_announce(), in
 // every build; anything else is user data for the reassembly pool, which exists only when fragmentation
@@ -15036,11 +15166,18 @@ static bool process_submessage(struct tt_Context* node, struct tt_Header* header
         }
         return true;
     case tt_SUBMESSAGE_TYPE_FRAG_RUN_L:
+        if (!self_sent) {
+            process_frag_run_large(node, header, buffer, head, body_tail, sender_ip, sender_port);
+        }
+        return true;
     case tt_SUBMESSAGE_TYPE_FRAG_RUN:
-        // Hybrid transport runs (DESIGN.md section 8, step 1): defined, not received yet. Passed over and counted like
-        // a large fragment a build cannot follow, so a sender ahead of this node shows up as a number. Nothing sends
-        // one.
-        node->frag_large_skipped++;
+#if tt_FRAG_ENABLED
+        if (!self_sent) {
+            process_frag_run(node, header, buffer, head, body_tail, sender_ip, sender_port);
+        }
+#else
+        TT_LOG_DEBUG("Run skipped: built without fragmentation"); // as types 8/9 are
+#endif
         return true;
     case tt_SUBMESSAGE_TYPE_SHM_DATA:
         if (transport != tt_TRANSPORT_SHM) {
