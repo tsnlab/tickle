@@ -201,9 +201,10 @@ rx_hint_check: rx_hint_check.c libtickle.a
 rx_idle_check: rx_idle_check.c libtickle.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
-# A receive socket's drops, as the kernel counts them (rx_drain_check.c says why they are counted).
-rx_drain_check: rx_drain_check.c libtickle.a
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
+# A receive socket's drops, as the kernel counts them, and the drain that keeps them at 0 (rx_drain_check.c). Built
+# from the sources with rmw's datagram and large samples on, as rmw_tickle is, since the drain exists only there.
+rx_drain_check: rx_drain_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle/*.h)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -o $@ rx_drain_check.c $(SRC_FILES) -lm -lpthread
 
 # No lost wake-up between a same-host writer and a sleeping reader (bell_wake_check.c says how it forces the race).
 bell_wake_check: bell_wake_check.c $(ROOT)/examples/uint64/UInt64.c libtickle.a
