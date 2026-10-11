@@ -39,6 +39,10 @@ struct _tt_Config _tt_CONFIG = {
     .port = _tt_CONTEXT_PORT,
     .broadcast = _tt_CONTEXT_BROADCAST,
     .context_id = tt_CONTEXT_ID_INVALID, // unused by the mock HAL (test_mock_node_id drives it instead)
+#ifdef tt_LARGE_FRAGMENTATION_AUTO // a tree from before tt_VERSION 13 has neither (tests/wire_identity_largemsg.sh)
+    .large_fragmentation = tt_LARGE_FRAGMENTATION_AUTO,
+    .ip_reassembly_max = _tt_IP_REASSEMBLY_MAX,
+#endif
 };
 
 // Defaults: a quiet node - no incoming packets, sends "succeed", clock starts at 0.

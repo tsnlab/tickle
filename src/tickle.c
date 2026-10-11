@@ -3709,6 +3709,12 @@ static void update_parts_clear(struct tt_Context* node, uint8_t source) {
     memset(node->update_part_received[source], 0, sizeof(node->update_part_received[source]));
 }
 
+// What a context advertises as its IP reassembly ceiling (tt_AnnounceHeader.ip_reassembly_max): its setting, capped by
+// the receive buffer - a datagram larger than that could not be received whole whatever the kernel reassembled.
+static uint16_t advertised_ip_reassembly_max(uint32_t setting) {
+    return (uint16_t)(setting < (uint32_t)tt_MAX_BUFFER_LENGTH ? setting : (uint32_t)tt_MAX_BUFFER_LENGTH);
+}
+
 static void reset_node_state(struct tt_Context* node) {
     node->id = tt_CONTEXT_ID_INVALID;
 #if tt_LOCAL_DELIVERY
@@ -3873,6 +3879,13 @@ static void reset_node_state(struct tt_Context* node) {
     // being dropped is suppressed. version_mismatch_drops still counts it, but a counter is what you
     // read once you suspect something and the log line is what tells you to suspect.
     memset(node->version_mismatch_logged, 0, sizeof(node->version_mismatch_logged));
+    node->large_fragmentation = _tt_CONFIG.large_fragmentation == tt_LARGE_FRAGMENTATION_INHERIT
+                                    ? (uint8_t)tt_LARGE_FRAGMENTATION_AUTO
+                                    : _tt_CONFIG.large_fragmentation;
+    node->ip_reassembly_max = advertised_ip_reassembly_max(_tt_CONFIG.ip_reassembly_max);
+#if tt_FRAG_ENABLED
+    memset(node->peer_ip_reassembly_max, 0, sizeof(node->peer_ip_reassembly_max));
+#endif
 #if tt_DISCOVERY_OPTIONS
     node->rx_out_of_range = 0; // the field itself only exists under this flag, as does every read of it
 #endif
@@ -4444,7 +4457,9 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
     pub->node = node;
     pub->topic = topic;
     pub->seq_no = 0;
-    pub->batch = false;                 // see tickle.h's own doc comment on this field for why this is the default
+    pub->batch = false; // see tickle.h's own doc comment on this field for why this is the default
+    pub->large_fragmentation = tt_LARGE_FRAGMENTATION_INHERIT; // the context's (DESIGN.md section 8)
+    pub->ip_datagram_max = 0;                                  // inherit: each peer's advertisement
     pub->reliable_cache = NULL;         // no retained-sample storage by default - see its own doc comment
     pub->reliable = false;              // best-effort by default - see tt_Publisher.reliable's own doc comment
     pub->durable = false;               // volatile by default - see tt_Publisher.durable's own doc comment
@@ -9800,6 +9815,14 @@ static void fill_announce_header(const struct tt_Context* node, struct tt_DataHe
     data_header->entity_id = tt_DISCOVERY_ENTITY_ID;
 }
 
+// The hybrid transport's fields of this node's announce (tt_VERSION 13): the reassembly ceiling it accepts, and its
+// receive costs - 0, not measured, until the cost fit exists. Every fragment of an announce carries them.
+static void fill_announce_capability(const struct tt_Context* node, struct tt_AnnounceHeader* announce) {
+    announce->ip_reassembly_max = node->ip_reassembly_max;
+    announce->cost_datagram_ns = 0;
+    announce->cost_frame_ns = 0;
+}
+
 // Sends this node's announce as the part_count (>= 2) fragments plan_update_parts() laid out, each
 // flushed as its own datagram to the same destination the single announce would have gone to. Split at
 // entity boundaries rather than by bytes: every fragment is FRAG_FIRST/FRAG_CONT framing, its own
@@ -9845,6 +9868,7 @@ static bool send_update_parts(struct tt_Context* node, struct tt_Endpoint* const
             return false;
         }
         announce->entity_count = (uint8_t)entity_count;
+        fill_announce_capability(node, announce);
         if (!end_encode(node, submessage_header, true, peers, peer_count)) {
             rollback(node, old_tx_tail);
             return false;
@@ -9884,6 +9908,7 @@ static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer*
     }
     fill_announce_header(node, data_header);
     announce->entity_count = 0;
+    fill_announce_capability(node, announce);
 
     struct tt_Endpoint* endpoints[tt_MAX_ENDPOINT_COUNT + tt_MAX_NODES];
     uint32_t endpoint_count = node->endpoint_count;
@@ -10401,6 +10426,9 @@ static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t 
     node->traffic_last_seen[source] = 0;
     update_parts_clear(node, source);
     node->liveliness_flags[source] = 0;
+#if tt_FRAG_ENABLED
+    node->peer_ip_reassembly_max[source] = 0; // a node heard again is not trusted to reassemble until it says so
+#endif
 }
 
 // The node-level half of check_liveliness(): presumes dead each remote node silent past its limit, and
@@ -11020,11 +11048,19 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
         TT_LOG_ERROR("Illegal announce fragment %u of %u", frag_index, frag_count);
         return false;
     }
+#if tt_FRAG_ENABLED
+    // Every announce and fragment carries it, and a change of it is a new generation; recorded before the generation
+    // check all the same, so the record is the latest the source said whatever this node has applied.
+    node->peer_ip_reassembly_max[source] = rd16(header, announce->ip_reassembly_max);
+#endif
 
     TT_LOG_DEBUG("Announce");
     TT_LOG_DEBUG("  generation: %u", generation);
     TT_LOG_DEBUG("  fragment: %u of %u", frag_index, frag_count);
     TT_LOG_DEBUG("  entity_count: %u", announce->entity_count);
+    TT_LOG_DEBUG("  ip_reassembly_max: %u, cost_datagram_ns: %u, cost_frame_ns: %u",
+                 (unsigned)rd16(header, announce->ip_reassembly_max),
+                 (unsigned)rd16(header, announce->cost_datagram_ns), (unsigned)rd16(header, announce->cost_frame_ns));
 
     if (discovery_generation_applied(node, source, generation)) {
         return true; // the periodic resend of the announce we last acted on
@@ -14827,6 +14863,13 @@ static bool process_submessage(struct tt_Context* node, struct tt_Header* header
         if (!self_sent) {
             process_frag_large(node, header, buffer, head, body_tail, submessage_header->type, sender_ip, sender_port);
         }
+        return true;
+    case tt_SUBMESSAGE_TYPE_FRAG_RUN_L:
+    case tt_SUBMESSAGE_TYPE_FRAG_RUN:
+        // Hybrid transport runs (DESIGN.md section 8, step 1): defined, not received yet. Passed over and counted like
+        // a large fragment a build cannot follow, so a sender ahead of this node shows up as a number. Nothing sends
+        // one.
+        node->frag_large_skipped++;
         return true;
     case tt_SUBMESSAGE_TYPE_SHM_DATA:
         if (transport != tt_TRANSPORT_SHM) {
