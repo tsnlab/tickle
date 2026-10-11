@@ -586,6 +586,19 @@ static struct test_mock_segment* test_mock_find_segment(const char* path) {
     return NULL;
 }
 
+// Page-aligned and zeroed, as the mmap() of a fresh file is. calloc() gives only 16 bytes, and the header requires
+// tt_SEGMENT_CACHE_LINE (its indices sit on their own lines), so a calloc'd region was a misaligned header that only
+// the allocator's luck kept UBSan from reporting. aligned_alloc() wants a multiple of the alignment.
+static void* test_mock_segment_region(size_t bytes) {
+    const size_t page = 4096;
+    const size_t rounded = (bytes + page - 1U) & ~(page - 1U);
+    void* region = aligned_alloc(page, rounded);
+    if (region != NULL) {
+        memset(region, 0, rounded);
+    }
+    return region;
+}
+
 void* tt_segment_create(const char* path, size_t bytes) {
     struct test_mock_segment* existing = test_mock_find_segment(path);
     if (existing != NULL) {
@@ -593,7 +606,7 @@ void* tt_segment_create(const char* path, size_t bytes) {
     }
     for (int i = 0; i < TEST_MOCK_MAX_SEGMENTS; i++) {
         if (test_mock_segments[i].region == NULL) {
-            test_mock_segments[i].region = calloc(1, bytes);
+            test_mock_segments[i].region = test_mock_segment_region(bytes);
             if (test_mock_segments[i].region == NULL) {
                 return NULL;
             }

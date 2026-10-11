@@ -364,9 +364,11 @@ $(OBJ)/fuzz:
 
 # Re-run the unit tests under AddressSanitizer + UndefinedBehaviorSanitizer. Catches
 # use-after-free / out-of-bounds / UB the plain run misses (e.g. a decoder reading past its datagram).
+# -fno-sanitize-recover: UBSan only reports by default and the test exits 0, so until 2026-10-11 nineteen
+# misaligned-segment reports scrolled past a green target. Now the first one aborts the test that hit it.
 sanitize:
 	$(MAKE) clean
-	$(MAKE) test CFLAGS='-O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer'
+	$(MAKE) test CFLAGS='-O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer'
 
 # Excludes, and why each needs its own lint pass instead (see platform/freertos/Makefile's own
 # `lint` target) rather than just being swept in here with everything else:

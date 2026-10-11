@@ -239,6 +239,18 @@ static struct {
 } tsan_segments[TEST_TSAN_MAX_SEGMENTS];
 static pthread_mutex_t tsan_segments_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// Page-aligned and zeroed, as the mmap() of a fresh file is: the header requires tt_SEGMENT_CACHE_LINE alignment,
+// which calloc()'s 16 bytes does not give. aligned_alloc() wants a multiple of the alignment.
+static void* tsan_segment_region(size_t bytes) {
+    const size_t page = 4096;
+    const size_t rounded = (bytes + page - 1U) & ~(page - 1U);
+    void* region = aligned_alloc(page, rounded);
+    if (region != NULL) {
+        memset(region, 0, rounded);
+    }
+    return region;
+}
+
 void* tt_segment_create(const char* path, size_t bytes) {
     void* region = NULL;
     pthread_mutex_lock(&tsan_segments_lock);
@@ -249,7 +261,7 @@ void* tt_segment_create(const char* path, size_t bytes) {
     }
     for (int i = 0; i < TEST_TSAN_MAX_SEGMENTS; i++) {
         if (tsan_segments[i].region == NULL) {
-            tsan_segments[i].region = calloc(1, bytes);
+            tsan_segments[i].region = tsan_segment_region(bytes);
             if (tsan_segments[i].region != NULL) {
                 snprintf(tsan_segments[i].path, sizeof(tsan_segments[i].path), "%s", path);
                 tsan_segments[i].bytes = bytes;

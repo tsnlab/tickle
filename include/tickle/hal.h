@@ -205,7 +205,8 @@ uint8_t tt_claim_context_id(struct tt_Context* node, uint8_t preferred, const ui
 // one of the same name is replaced, because a segment left by a dead context of the same name is
 // exactly what the header's incarnation exists to detect and there is no reason to inherit it.
 // Returns NULL on failure, which is not fatal: the context simply has no segment and its peers
-// reach it over UDP.
+// reach it over UDP. Both create and attach return a region aligned to at least tt_SEGMENT_CACHE_LINE
+// (struct tt_SegmentHeader requires it); a page-aligned mapping satisfies this.
 void* tt_segment_create(const char* path, size_t bytes);
 // tt_segment_attach(): map a peer's existing region read/write. Does not create. `bytes` is what
 // the caller expects; a region smaller than that is refused, since the caller is about to index

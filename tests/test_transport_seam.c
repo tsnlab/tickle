@@ -358,7 +358,10 @@ static void test_segment_header_catches_what_the_name_cannot(void) {
 
 // A segment laid out in ordinary memory. The ring is the same code whether the pages came from
 // shm_open or from the stack, and everything worth asserting about it is reachable here - which is
-// why the ring lives in core and only the mapping is the HAL's.
+// why the ring lives in core and only the mapping is the HAL's. The storage must be aligned as a
+// mapping is: the header's indices sit on their own cache lines, so the struct requires
+// tt_SEGMENT_CACHE_LINE alignment, and a plain uint8_t array (byte-aligned) made every ring access
+// here undefined behaviour - UBSan reported it under `make sanitize` until 2026-10-11.
 static struct tt_SegmentHeader* make_ring(void* storage, uint32_t slots, uint32_t slot_bytes) {
     struct tt_SegmentHeader* header = storage;
     memset(storage, 0, segment_bytes(slots, slot_bytes));
@@ -378,7 +381,7 @@ static struct tt_SegmentHeader* make_ring(void* storage, uint32_t slots, uint32_
 }
 
 static void test_ring_round_trips_a_datagram(void) {
-    uint8_t storage[4096];
+    tt_ALIGNAS(tt_SEGMENT_CACHE_LINE) uint8_t storage[4096];
     struct tt_SegmentHeader* ring = make_ring(storage, RING_SLOTS, RING_SLOT_BYTES);
 
     uint8_t out[RING_SLOT_BYTES];
@@ -405,7 +408,7 @@ static void test_ring_round_trips_a_datagram(void) {
 // not overwrite. Asserted by reading the queue back afterwards, not by the return value alone -
 // a writer that returned false AND overwrote would pass a check of the boolean.
 static void test_full_ring_refuses_rather_than_overwriting(void) {
-    uint8_t storage[4096];
+    tt_ALIGNAS(tt_SEGMENT_CACHE_LINE) uint8_t storage[4096];
     struct tt_SegmentHeader* ring = make_ring(storage, RING_SLOTS, RING_SLOT_BYTES);
 
     for (uint32_t i = 0; i < RING_SLOTS; i++) {
@@ -439,7 +442,7 @@ static void test_full_ring_refuses_rather_than_overwriting(void) {
 
 // Free-running indices, so the ring keeps working past the point where they wrap the slot count.
 static void test_ring_survives_many_wraps(void) {
-    uint8_t storage[4096];
+    tt_ALIGNAS(tt_SEGMENT_CACHE_LINE) uint8_t storage[4096];
     struct tt_SegmentHeader* ring = make_ring(storage, RING_SLOTS, RING_SLOT_BYTES);
 
     for (uint32_t i = 0; i < RING_SLOTS * 10U; i++) {
@@ -460,7 +463,7 @@ static void test_ring_survives_many_wraps(void) {
 // A length the slot could not hold means the segment is not what it claims. The slot is released so
 // the ring cannot wedge, and nothing of the payload is handed up.
 static void test_impossible_length_is_refused_and_does_not_wedge(void) {
-    uint8_t storage[4096];
+    tt_ALIGNAS(tt_SEGMENT_CACHE_LINE) uint8_t storage[4096];
     struct tt_SegmentHeader* ring = make_ring(storage, RING_SLOTS, RING_SLOT_BYTES);
 
     EXPECT_TRUE(segment_write(ring, "good", 5, NULL, 0, OWNER_IP, OWNER_PORT, 1));
@@ -790,8 +793,9 @@ static void* contend_writer(void* raw) {
 }
 
 static void test_two_writers_contend_for_one_segment(void) {
-    static uint8_t storage[sizeof(struct tt_SegmentHeader) +
-                           ((size_t)CONTEND_SLOTS * (sizeof(struct tt_SegmentSlot) + CONTEND_BYTES))];
+    static tt_ALIGNAS(tt_SEGMENT_CACHE_LINE)
+        uint8_t storage[sizeof(struct tt_SegmentHeader) +
+                        ((size_t)CONTEND_SLOTS * (sizeof(struct tt_SegmentSlot) + CONTEND_BYTES))];
     struct tt_SegmentHeader* ring = make_ring(storage, CONTEND_SLOTS, CONTEND_BYTES);
 
     struct contend_arg a = {ring, 0, 0, 0};
@@ -1097,7 +1101,7 @@ static void test_a_zero_allocated_context_keeps_the_peer_table_out_of_memory(voi
 // create_own_segment(). Plan asked for this case specifically, and it is not hypothetical: the
 // seeding loop exists because zeroed memory leaves slot 0 claimable and every other slot not.
 static void test_capacity_exhaustion_is_counted_and_warned_once(void) {
-    uint8_t storage[4096];
+    tt_ALIGNAS(tt_SEGMENT_CACHE_LINE) uint8_t storage[4096];
 
     // Arm A, seeded as create_own_segment() seeds it: the ring holds as many records as it has
     // slots before it refuses.
@@ -1113,7 +1117,7 @@ static void test_capacity_exhaustion_is_counted_and_warned_once(void) {
 
     // Arm B, the ring of one: the same ring with the seeding left out, which is what zeroed shared
     // memory gives. It takes exactly one record and is full for ever after.
-    uint8_t unseeded_storage[4096];
+    tt_ALIGNAS(tt_SEGMENT_CACHE_LINE) uint8_t unseeded_storage[4096];
     struct tt_SegmentHeader* unseeded = make_ring(unseeded_storage, RING_SLOTS, RING_SLOT_BYTES);
     for (uint32_t index = 0; index < RING_SLOTS; index++) {
         ((struct tt_SegmentSlot*)segment_slot(unseeded, index))->sequence = 0; // as calloc left it
