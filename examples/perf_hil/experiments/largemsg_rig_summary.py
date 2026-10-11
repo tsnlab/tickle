@@ -184,7 +184,9 @@ def p99_lb(maxima, n_samples):
 
 def run_record(runs, stem, fields, samehost, rate, wire=True):
     pmaps, smaps, _pk, _sk, want = fields
-    arm, topic, loss, rep = re.match(r"(.+?)_(Array\w+|Struct\w+)_l(\d+)_r(\d+)$", stem).groups()
+    # The loss is a percentage, fractional for the hybrid transport's cells (0.01, 0.1): kept an int when it is one.
+    arm, topic, loss_text, rep = re.match(r"(.+?)_(Array\w+|Struct\w+)_l([\d.]+)_r(\d+)$", stem).groups()
+    loss = int(float(loss_text)) if float(loss_text).is_integer() else float(loss_text)
     sub, stext = rows(runs / f"{stem}_sub.log")
     pub, ptext = rows(runs / f"{stem}_pub.log")
     why = []
@@ -194,7 +196,7 @@ def run_record(runs, stem, fields, samehost, rate, wire=True):
         why.append(f"publisher did not load {want} (maps: {pmaps.strip() or 'none'})")
     if not loaded(want, smaps):
         why.append(f"subscriber did not load {want} (maps: {smaps.strip() or 'none'})")
-    rec = dict(arm=arm, topic=topic, loss=int(loss), rep=int(rep), void="; ".join(why))
+    rec = dict(arm=arm, topic=topic, loss=loss, rep=int(rep), void="; ".join(why))
     if why:
         return rec
     size = SIZES.get(topic, 0)
