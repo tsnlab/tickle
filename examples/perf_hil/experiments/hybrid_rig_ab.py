@@ -49,8 +49,29 @@ RULES (enforced below)
              FALSIFIED (the design, docs/DESIGN.md "What would falsify the design") when AUTO LOSEs to mtu at 0.01% or
              0.1% on either metric, when AUTO's p99 LOSEs to mtu at any loss, or when the reader's cap collapsed in an
              AUTO run at 0.01% (collapses > 0 on its "hybrid:" line: the collapse test fired on frame loss).
+
+UDP OFFLOAD (added 2026-10-11 at the user's instruction, "apply GRO/GSO too if they help"; written before any run)
+  Arms: tickle@nooffload (AUTO, TT_UDP_OFFLOAD=0) beside tickle@head in every 0% invocation and in the loss cells;
+  tickle@mtunooff (forced MTU, TT_UDP_OFFLOAD=0) beside tickle@mtu in the loss cells. Same binary; the switch is the
+  only difference. TREATMENT: an arm with offload off is VOID unless every traffic line of both ends shows
+  udp_offload=0, gso_sends=0, gro_merged=0; tickle@mtu (forced MTU, offload on) is VOID unless its publisher sent
+  with UDP_SEGMENT (gso_sends > 0) and its subscriber merged (gro_merged > 0). AUTO arms' counters are printed.
+  COMPARISON (offload on minus off, per cell): d and SE Welch; the floor is the A/A pair's |mean(aa) - mean(head)| in a
+  loss cell, the vendors' max-min in a 0% cell; BETTER iff d < -2 SE and -d > floor (for delivered %, the sign
+  flipped), WORSE symmetric. Metrics: pub and sub CPU ms/MB, wire bytes per delivered unit, p99, delivered %.
+  DECISION (--offload, over every invocation of the queue):
+    WHERE IT APPLIES - MTU-mode traffic: forced MTU at 1% (tickle@mtu vs tickle@mtunooff) and AUTO at 1%
+    (tickle@head vs tickle@nooffload, its MTU repairs and n = 1 samples).
+    KEEP-ON      in both comparisons where it applies, pub or sub CPU per MB BETTER and nothing WORSE (CPU, wire bytes,
+                 p99, delivered %), AND in every 0% and 0.01% AUTO comparison nothing WORSE.
+    DROP         anything WORSE where it applies: it harms the traffic it is for - removed from the branch.
+    DEFAULT-OFF  otherwise (no gain where it applies, or a WORSE only in a 0% / 0.01% AUTO cell): it ships with
+                 TT_UDP_OFFLOAD defaulting to 0.
+    NO VERDICT   fewer than 3 usable runs in an arm a comparison needs.
+
 Exit 0 when the reading is complete (whatever it says), 2 when VOID or NO VERDICT anywhere, 1 on a missing input.
 Usage: hybrid_rig_ab.py --zero|--loss OUT   (OUT.runs/ must exist)
+       hybrid_rig_ab.py --offload OUT [OUT ...]   (every 0% and loss invocation of the queue)
 """
 import math
 import re
@@ -64,7 +85,11 @@ from largemsg_rig_summary import load  # noqa: E402
 UNITS = {"Array1m": 723, "Array4m": 2889}  # tt_sample_datagrams() of the sample's CDR (tests/test_hybrid_send.c)
 N_BUCKETS = ("1", "2-3", "4-7", "8-15", "16-31", "32-44", "45")
 VENDORS = ("fastdds", "cyclonedds")
-MODE_OF = {"tickle@head": "auto", "tickle@aa": "auto", "tickle@mtu": "mtu", "tickle@ip": "ip"}
+MODE_OF = {"tickle@head": "auto", "tickle@aa": "auto", "tickle@mtu": "mtu", "tickle@ip": "ip",
+           "tickle@nooffload": "auto", "tickle@mtunooff": "mtu"}
+OFFLOAD_OFF = ("tickle@nooffload", "tickle@mtunooff")
+OFFLOAD_PAIRS = (("tickle@head", "tickle@nooffload"), ("tickle@mtu", "tickle@mtunooff"))
+TRAFFIC_RE = re.compile(r"traffic: .*?udp_offload=(\d+) gro_reads=\d+ gro_merged=(\d+) .*?gso_sends=(\d+)")
 HYBRID_RE = re.compile(r"hybrid: runs=(\d+) run_units=(\d+) mtu_units=(\d+) n_hist=([\d/]+) advertised=(\d+) "
                        r"cap=(\d+) cap_off=(\d) collapses=(\d+) probes=(\d+) path_failures=(\d+)")
 RMW_RE = re.compile(r"hybrid transport: large_fragmentation=(\w+) reassembly_cap=(\w+)")
@@ -126,9 +151,20 @@ def net_of(path):
     return delta("rx_bytes"), delta("udp_rcvbuf_errors"), delta("ip_reasm_fails")
 
 
-def treatment(runs, r, zero):
+def offload_of(path):
+    """(udp_offload, gro_merged, gso_sends) summed over a log's traffic lines, or None when it has none."""
+    if not path.exists():
+        return None
+    lines = TRAFFIC_RE.findall(path.read_text(errors="replace"))
+    if not lines:
+        return None
+    return (max(int(x[0]) for x in lines), sum(int(x[1]) for x in lines), sum(int(x[2]) for x in lines))
+
+
+def treatment(runs, r):
     """(why VOID or "", what was realized) for one TickLE run."""
     arm = r["arm"]
+    zero = r["loss"] == 0
     p_rmw, p_core = hybrid_of(runs / f"{stem_of(r)}_pub.log")
     s_rmw, s_core = hybrid_of(runs / f"{stem_of(r)}_sub.log")
     if arm == "tickle@pre":
@@ -159,6 +195,14 @@ def treatment(runs, r, zero):
             return "forced IP arm whose n is not 45 throughout", seen
     if want == "auto" and zero and not (p_core["runs"] > 0 and mb == len(hist) - 1):
         return "AUTO at 0% loss whose median n is not n_max", seen
+    p_off, s_off = offload_of(runs / f"{stem_of(r)}_pub.log"), offload_of(runs / f"{stem_of(r)}_sub.log")
+    if p_off is None or s_off is None:
+        return "no traffic line (UDP offload counters) on both sides", seen
+    seen += f" offload pub {p_off[0]} gso_sends={p_off[2]} sub {s_off[0]} gro_merged={s_off[1]}"
+    if arm in OFFLOAD_OFF and (p_off != (0, 0, 0) or s_off != (0, 0, 0)):
+        return "offload not off", seen
+    if arm == "tickle@mtu" and not (p_off[2] > 0 and s_off[1] > 0):
+        return "forced MTU with offload on, but no UDP_SEGMENT send or no merged read", seen
     return "", seen
 
 
@@ -180,21 +224,17 @@ def range_rule(head, other):
     return "DRAW"
 
 
-def main():
-    if len(sys.argv) != 3 or sys.argv[1] not in ("--zero", "--loss"):
-        print(__doc__)
-        return 1
-    zero = sys.argv[1] == "--zero"
-    out = Path(sys.argv[2])
+def read_invocation(out, quiet=False):
+    """(meta, usable runs by cell and arm, cells LOSE on delivery) of one rmw_keepall_rig.sh invocation, or an exit
+    status: 1 missing, 2 VOID overall."""
     runs = Path(f"{out}.runs")
     if not (runs / "index.txt").exists():
         print(f"MISSING: {runs}/index.txt")
         return 1
     meta, _samehost, recs = load(runs)
     reliable = "--reliable" in meta.get("qos_args", "")
-    incomplete = False
-    print(f"=== hybrid rig A/B ({'0% cell' if zero else 'loss cells'}): {runs}, qos [{meta.get('qos_args')}] "
-          f"rate {meta.get('pub_rate')} Hz ===")
+    if not quiet:
+        print(f"=== hybrid rig A/B: {runs}, qos [{meta.get('qos_args')}] rate {meta.get('pub_rate')} Hz ===")
     # ---- per run: VOID, treatment, net ----------------------------------------------------------------------------
     usable = {}
     for r in sorted(recs, key=lambda r: (r["topic"], r["loss"], r["arm"], r["rep"])):
@@ -204,21 +244,26 @@ def main():
         r["wire_per_unit"] = (rx / (r["recv"] * units) if rx is not None and units and r.get("recv") else float("nan"))
         why, seen = ("", "")
         if r["arm"].startswith("tickle@"):
-            why, seen = treatment(runs, r, zero)
+            why, seen = treatment(runs, r)
         if r["void"] or why:
-            print(f"VOID {stem_of(r)}: {r['void'] or why} {seen}")
+            if not quiet:
+                print(f"VOID {stem_of(r)}: {r['void'] or why} {seen}")
             if r["arm"] == "tickle@pre" and why:
                 print("VOID overall: tickle@pre is not main")
                 return 2
             continue
-        print(f"RUN {stem_of(r)} recv {r['recv']} lost {r['lost']} delivered {r['delivered_pct']:.2f}% "
-              f"cpu pub {r['cpu_pub']:.3f} sub {r['cpu_sub']:.3f} ms/MB lat med {r['lat_med']:.2f} p99>= "
-              f"{r['p99_lb']:.2f} ms wire/unit {r['wire_per_unit']:.1f} B rcvbuf_errors {rcvbuf} reasm_fails {reasm} "
-              f"| {seen}")
+        if not quiet:
+                print(f"RUN {stem_of(r)} recv {r['recv']} lost {r['lost']} delivered {r['delivered_pct']:.2f}% "
+                  f"cpu pub {r['cpu_pub']:.3f} sub {r['cpu_sub']:.3f} ms/MB lat med {r['lat_med']:.2f} p99>= "
+                  f"{r['p99_lb']:.2f} ms wire/unit {r['wire_per_unit']:.1f} B rcvbuf_errors {rcvbuf} "
+                  f"reasm_fails {reasm} "
+                  f"| {seen}")
         usable.setdefault((r["topic"], r["loss"]), {}).setdefault(r["arm"], []).append(r)
     # ---- RcvbufErrors per arm (reported) -----------------------------------------------------------------------------
     for cell, arms in sorted(usable.items()):
         for arm, rs in sorted(arms.items()):
+            if quiet:
+                break
             errs = [x["rcvbuf"] for x in rs if x["rcvbuf"] is not None]
             print(f"RCVBUF {cell[0]} l{cell[1]} {arm}: RcvbufErrors {sum(errs)} over {len(errs)} runs "
                   f"(per run {', '.join(map(str, errs)) or '-'})")
@@ -230,7 +275,93 @@ def main():
                 bad = [x for x in rs if arm.startswith("tickle@") and (x["lost"] > 0 or x["delivered_pct"] < 100.0)]
                 if bad:
                     lose.add((cell, arm))
-                    print(f"DELIVERY {cell[0]} l{cell[1]} {arm}: LOSE - {len(bad)} run(s) below 100% or with loss")
+                    if not quiet:
+                        print(f"DELIVERY {cell[0]} l{cell[1]} {arm}: LOSE - {len(bad)} run(s) below 100% or with loss")
+    return meta, usable, lose
+
+
+def compare(on, off, metric, floor):
+    """BETTER / WORSE / HELD for offload on against off, or None with fewer than 3 usable runs either side."""
+    a, b = fin(x[metric] for x in on), fin(x[metric] for x in off)
+    if len(a) < 3 or len(b) < 3:
+        return None, 0.0, 0.0
+    d, se = welch(a, b)
+    if metric == "delivered_pct":
+        d = -d  # more delivered is better
+    if d < -2 * se and -d > floor:
+        return "BETTER", d, se
+    if d > 2 * se and d > floor:
+        return "WORSE", d, se
+    return "HELD", d, se
+
+
+def offload_decision(outs):
+    applies, elsewhere, incomplete = [], [], False
+    for out in outs:
+        got = read_invocation(out, quiet=True)
+        if isinstance(got, int):
+            return got
+        _meta, usable, lose = got
+        for cell, arms in sorted(usable.items()):
+            topic, loss = cell
+            for on_arm, off_arm in OFFLOAD_PAIRS:
+                on, off = arms.get(on_arm, []), arms.get(off_arm, [])
+                if not on and not off:
+                    continue
+                where = "applies" if float(loss) >= 1 else "elsewhere"
+                if float(loss) == 0.1 or (where == "elsewhere" and on_arm != "tickle@head"):
+                    continue  # not in the pre-registration: printed by --loss, not deciding
+                for metric in ("cpu_pub", "cpu_sub", "wire_per_unit", "p99_lb", "delivered_pct"):
+                    if loss == 0:
+                        spans = [max(v) - min(v) for v in (fin(x[metric] for x in arms.get(a, [])) for a in VENDORS)
+                                 if v]
+                        floor = max(spans) if spans else 0.0
+                    else:
+                        h, a = fin(x[metric] for x in arms.get("tickle@head", [])), \
+                            fin(x[metric] for x in arms.get("tickle@aa", []))
+                        floor = abs(statistics.mean(a) - statistics.mean(h)) if h and a else 0.0
+                    word, d, se = compare(on, off, metric, floor)
+                    if (cell, on_arm) in lose and metric == "delivered_pct":
+                        word = "WORSE" if (cell, off_arm) not in lose else word
+                    if word is None:
+                        print(f"OFFLOAD {topic} l{loss} {on_arm} vs {off_arm} {metric}: NO VERDICT")
+                        incomplete = True
+                        continue
+                    print(f"OFFLOAD {topic} l{loss} {on_arm} vs {off_arm} {metric}: {word} d {d:+.3f} SE {se:.3f} "
+                          f"floor {floor:.3f} ({where})")
+                    (applies if where == "applies" else elsewhere).append((on_arm, metric, word))
+    if incomplete:
+        print("OFFLOAD DECISION: NO VERDICT")
+        return 2
+    pairs = {a for a, _m, _w in applies}
+    if any(w == "WORSE" for _a, _m, w in applies):
+        decision = "DROP - WORSE where it applies"
+    elif len(pairs) == 2 and all(
+            any(m in ("cpu_pub", "cpu_sub") and w == "BETTER" for a2, m, w in applies if a2 == a) for a in pairs) \
+            and not any(w == "WORSE" for _a, _m, w in elsewhere):
+        decision = "KEEP-ON"
+    elif len(pairs) < 2:
+        print("OFFLOAD DECISION: NO VERDICT (a comparison where it applies is missing)")
+        return 2
+    else:
+        decision = "DEFAULT-OFF - no CPU gain where it applies, or a WORSE in a 0% / 0.01% AUTO cell"
+    print(f"OFFLOAD DECISION: {decision}")
+    return 0
+
+
+def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "--offload":
+        return offload_decision([Path(x) for x in sys.argv[2:]])
+    if len(sys.argv) != 3 or sys.argv[1] not in ("--zero", "--loss"):
+        print(__doc__)
+        return 1
+    zero = sys.argv[1] == "--zero"
+    got = read_invocation(Path(sys.argv[2]))
+    if isinstance(got, int):
+        return got
+    _meta, usable, lose = got
+    runs = Path(f"{sys.argv[2]}.runs")
+    incomplete = False
     verdicts = []
     for cell, arms in sorted(usable.items()):
         topic, loss = cell
@@ -291,7 +422,7 @@ def main():
                 results[(metric, forced)] = res
                 print(f"LOSS {topic} l{loss} {metric} AUTO vs {forced}: {res} - d {d:+.3f} SE {se:.3f} "
                       f"floor {floor:.3f} (AUTO {statistics.mean(h):.3f}, {forced} {statistics.mean(f):.3f})")
-        hists = [treatment(runs, x, False)[1] for x in head]
+        hists = [treatment(runs, x)[1] for x in head]
         print(f"  AUTO's realized n at l{loss}: " + "; ".join(s.split(' reader')[0] for s in hists))
         want_mtu = ("DRAW", "WIN") if float(loss) >= 1 else ("WIN",)
         complete = len(results) == 4
