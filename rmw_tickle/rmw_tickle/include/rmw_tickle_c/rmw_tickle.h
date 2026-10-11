@@ -1254,6 +1254,14 @@ uint32_t rmw_tickle_large_limit(const rmw_tickle_context_impl_t* context_impl);
 // a type with no bound on its size - one whose sample can be large - the widest window core allows, since all of one
 // large sample's datagrams must fit it (DESIGN.md section 8: 8192 bits, 1 KiB per tracked writer).
 uint16_t rmw_tickle_tracking_words_for(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks);
+// Large-message step B (DESIGN.md section 8): gives a publisher of a type whose message can be large a shared region -
+// chunks for its retained depth (at most tt_LARGE_RETAINED) plus tt_LARGE_REGION_SPARE, each for the type's largest
+// message, or RMW_TICKLE_MAX_SAMPLE_BYTES for a type without a bound. Nothing is created until a large message goes to
+// a same-host subscriber. RMW_TICKLE_LARGE_REGION=0 turns it off (every same-host large message then goes as
+// fragments through the subscriber's ring, as before step B). Call with the context locked.
+void rmw_tickle_large_region_attach(struct tt_Publisher* pub,
+                                    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks, size_t depth,
+                                    bool keep_all);
 
 #ifdef __cplusplus
 }

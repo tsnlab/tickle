@@ -1108,6 +1108,11 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         return NULL;
     }
 
+    // Large-message step B (docs/DESIGN.md section 8): a type whose message can be large gets a shared region, so its
+    // same-host subscribers take each message in place instead of as fragments through their rings.
+    rmw_tickle_large_region_attach(&pub_impl->tickle_publisher, pub_impl->callbacks, qos_profile->depth,
+                                   RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history);
+
     // QoS roadmap #2 (DEADLINE) - see rmw_tickle_publisher_t.deadline_period_ns's own doc comment.
     // rmw_qos.c already accepted any finite qos.deadline; RMW_QOS_DEADLINE_DEFAULT ({0,0}) leaves
     // deadline_period_ns at its zero_allocate() default (0 = not requested, no cost).
