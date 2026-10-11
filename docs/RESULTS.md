@@ -675,10 +675,13 @@ and their `.runs/`. Letters: rmw_tickle against Fast DDS as shipped / Fast DDS w
   framing that IP fragments do not carry) against 4,366,590 B for Fast DDS's 64 KB datagrams, 35.45 against 34.93 ms
   at 1 Gb/s; the UDP header is the price of sending in MTU units. The other 0.67-0.70 ms is off the wire: Fast DDS
   and CycloneDDS both spend 2.53-2.60 ms there, TickLE 3.23-3.24. That is one extra 4 MB copy: rmw_tickle decoded the
-  sample into a shell in the delivery and copied it again in the take, where a DDS deserialises once. Send offload
-  does not move latency (I1 RELIABLE, `udpoffload2_s1_rel1m_20261011-050150.txt`: 9.70 ms with it, 9.67 without,
-  the parent 9.68). The fix lends a large
-  sample where core assembled it (RMW.md, "Loaned messages"); its rig A/B is pending.
+  sample into a shell in the delivery and copied it again in the take, where a DDS deserialises once. The fix lends a
+  large sample where core assembled it (RMW.md, "Loaned messages"). Its rig A/B (`largemsg_lend_ab.py`, I4 5 reps,
+  `largemsgLend_s1_20261011-100430.txt` RELIABLE, `largemsgLend_s2_20261011-103836.txt` best effort): median latency
+  -0.88/-0.87 ms with an ordinary take, -2.26/-2.23 ms where rclcpp takes the loan (`ROS_DISABLE_LOANED_MESSAGES=0`),
+  no WORSE; against Fast DDS as shipped +0.40/+0.36 ms ordinary, -0.98/-1.00 ms loaned. Measured on branch
+  ab/largemsg-latency at ba324d3b against its parent 11cb21e8, both with the UDP offload commits of ab/udp-offload-v2;
+  landed without UDP offload and not re-measured.
 - **I4s, Array4m best effort at 30 Hz, saturates the link and TickLE loses it:** it published all 1,802 samples and
   delivered 1,655-1,679 complete, CycloneDDS 1,699-1,700 of the ~1,700 its publisher sent. DESIGN.md's F3 is
   falsified.
