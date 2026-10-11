@@ -1504,18 +1504,18 @@ static void test_reliable_repairs_are_mtu_units_only(void) {
 // watched nothing is read.
 static void test_nacks_are_read_for_the_watch(void) {
     init_one(ONE_MB, FULL_CEILING, true);
-    struct tt_PeerAck* ack = &pub.peer_acks[0];
+    struct tt_PeerWatch* watch = &pub.peer_watch[0];
     uint32_t entity = readers[0].sub.endpoint.entity_id;
     hybrid_note_nacks(&pub, reader_id(0), entity, 100, (const uint64_t[]) {1}, 1);
-    EXPECT_EQ_U32(0, ack->nack_high); // nothing watched
+    EXPECT_EQ_U32(0, watch->nack_high); // nothing watched
     hybrid_note_exposure(&pub, reader_id(0), 45, 300, 100, 299);
     uint64_t bitmap[2] = {(1ULL << 45U) - 1U, 0}; // 100..144: one run of 45
     hybrid_note_nacks(&pub, reader_id(0), entity, 100, bitmap, 2);
-    EXPECT_EQ_U32(144, ack->nack_high);
-    EXPECT_EQ_U32(45, ack->watch_nacked);
+    EXPECT_EQ_U32(144, watch->nack_high);
+    EXPECT_EQ_U32(45, watch->watch_nacked);
     hybrid_note_nacks(&pub, reader_id(0), entity, 100, bitmap, 2); // again: re-NACKs
-    EXPECT_EQ_U32(45, ack->watch_nacked);
-    EXPECT_EQ_U32(144, ack->nack_high);
+    EXPECT_EQ_U32(45, watch->watch_nacked);
+    EXPECT_EQ_U32(144, watch->nack_high);
 }
 
 // Readers of one RELIABLE writer by unicast, one advertising 0: it gets MTU units, the other the cost model's n.
@@ -1528,8 +1528,8 @@ static void test_mixed_reliable_readers_each_get_their_own_n(void) {
     sim_acting = SENDER_ID;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
     // Before any ACKNACK: the reader sent runs watches the sample for a failed path; the one sent MTU units does not.
-    EXPECT_EQ_U32(723, pub.peer_acks[0].watch_count);
-    EXPECT_EQ_U32(0, pub.peer_acks[1].watch_count);
+    EXPECT_EQ_U32(723, pub.peer_watch[0].watch_count);
+    EXPECT_EQ_U32(0, pub.peer_watch[1].watch_count);
     sim_drain();
     sim_settle(2, tt_SECOND);
     EXPECT_EQ_U32(182, sent.to_reader[0]); // 181 runs of up to 4, and the tail
@@ -1576,8 +1576,8 @@ static void test_reliable_through_a_path_that_drops_fragments(void) {
     sim_settle(s, 5 * tt_SECOND);
     s++;
     EXPECT_EQ_U32(45, sent.max_n); // the sample that meets the filter
-    EXPECT_TRUE(pub.peer_acks[0].path_failed_ns != 0);
-    EXPECT_EQ_U32(1, pub.peer_acks[0].path_failures);
+    EXPECT_TRUE(pub.peer_watch[0].path_failed_ns != 0);
+    EXPECT_EQ_U32(1, pub.peer_watch[0].path_failures);
     for (int k = 0; k < 5; k++, s++) {
         memset(&sent, 0, sizeof(sent));
         EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
@@ -1593,7 +1593,7 @@ static void test_reliable_through_a_path_that_drops_fragments(void) {
     s++;
     EXPECT_EQ_U32(1, sent.runs);
     EXPECT_EQ_U32(723 - sent.run_units, sent.mtu); // the run of n units, the rest MTU
-    EXPECT_EQ_U32(2, pub.peer_acks[0].path_failures);
+    EXPECT_EQ_U32(2, pub.peer_watch[0].path_failures);
     memset(&sent, 0, sizeof(sent));
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
     sim_settle(s, 5 * tt_SECOND);
@@ -1612,7 +1612,7 @@ static void test_reliable_through_a_path_that_drops_fragments(void) {
     sim_settle(s, 5 * tt_SECOND);
     s++;
     EXPECT_TRUE(sent.runs > 1);
-    EXPECT_EQ_U64(0, pub.peer_acks[0].path_failed_ns);
+    EXPECT_EQ_U64(0, pub.peer_watch[0].path_failed_ns);
     expect_intact(0, s - 1);
     hybrid_test_forced_p = -1.0;
     EXPECT_TRUE(readers[0].in_order);
@@ -1622,26 +1622,26 @@ static void test_reliable_through_a_path_that_drops_fragments(void) {
 // and its tail. Every run unit NACKed with the tail too is loss, not a failed path; without the tail it is.
 static void test_a_failed_path_needs_the_tail_through(void) {
     init_one(ONE_MB, FULL_CEILING, true);
-    struct tt_PeerAck* ack = &pub.peer_acks[0];
+    struct tt_PeerWatch* watch = &pub.peer_watch[0];
     uint32_t entity = readers[0].sub.endpoint.entity_id;
     hybrid_note_exposure(&pub, reader_id(0), 45, 100, 1000, 99);
-    EXPECT_EQ_U32(3, ack->watch_runs);
+    EXPECT_EQ_U32(3, watch->watch_runs);
     uint64_t bitmap[2] = {~0ULL, (1ULL << 36U) - 1U}; // 1000..1099: every run unit and the tail
     hybrid_note_nacks(&pub, reader_id(0), entity, 1000, bitmap, 2);
-    EXPECT_EQ_U32(0, ack->path_failures);
+    EXPECT_EQ_U32(0, watch->path_failures);
     hybrid_note_exposure(&pub, reader_id(0), 45, 100, 2000, 99);
     bitmap[1] = (1ULL << 35U) - 1U; // 2000..2098: the runs, not the tail
     hybrid_note_nacks(&pub, reader_id(0), entity, 2000, bitmap, 2);
-    EXPECT_EQ_U32(1, ack->path_failures);
-    EXPECT_TRUE(ack->path_failed_ns != 0);
+    EXPECT_EQ_U32(1, watch->path_failures);
+    EXPECT_TRUE(watch->path_failed_ns != 0);
     // A sample one of whose runs got through: no judgement.
-    ack->path_failed_ns = 0;
-    ack->all_lost_streak = 0;
+    watch->path_failed_ns = 0;
+    watch->all_lost_streak = 0;
     hybrid_note_exposure(&pub, reader_id(0), 45, 100, 3000, 99);
     bitmap[0] = 0;
     bitmap[1] = (1ULL << 35U) - 1U; // 3064..3098 only
     hybrid_note_nacks(&pub, reader_id(0), entity, 3000, bitmap, 2);
-    EXPECT_EQ_U32(1, ack->path_failures);
+    EXPECT_EQ_U32(1, watch->path_failures);
 }
 
 // Real frame loss is not a failed path: at 5% frame loss AUTO runs n by the cost model, its runs are lost now and then
@@ -1654,7 +1654,7 @@ static void test_frame_loss_is_not_a_failed_path(void) {
         EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
         sim_settle(s, 5 * tt_SECOND);
     }
-    EXPECT_EQ_U32(0, pub.peer_acks[0].path_failures);
+    EXPECT_EQ_U32(0, pub.peer_watch[0].path_failures);
     expect_intact(0, 40);
     init_one(3500, FULL_CEILING, true);
     pub.large_fragmentation = tt_LARGE_FRAGMENTATION_AUTO;
@@ -1663,10 +1663,10 @@ static void test_frame_loss_is_not_a_failed_path(void) {
     sim_drop_fragmented = true;
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
     sim_settle(1, 5 * tt_SECOND);
-    EXPECT_EQ_U32(0, pub.peer_acks[0].path_failures); // one sample, one run: not yet
+    EXPECT_EQ_U32(0, pub.peer_watch[0].path_failures); // one sample, one run: not yet
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(2));
     sim_settle(2, 5 * tt_SECOND);
-    EXPECT_EQ_U32(1, pub.peer_acks[0].path_failures); // the second in a row
+    EXPECT_EQ_U32(1, pub.peer_watch[0].path_failures); // the second in a row
     memset(&sent, 0, sizeof(sent));
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(3));
     sim_settle(3, 5 * tt_SECOND);

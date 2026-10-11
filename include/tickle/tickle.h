@@ -650,15 +650,6 @@ struct tt_Context {
     // rather than once per packet. At max rate an unfiltered log line per rejected packet would be
     // its own denial of service.
     uint8_t version_mismatch_logged[tt_MAX_CONTEXT_IDS];
-    // Hybrid transport (DESIGN.md section 8): this context's settings as tt_Context_create() read them from _tt_CONFIG,
-    // and what its announce advertises - the reassembly ceiling capped by the receive buffer.
-    uint8_t large_fragmentation; // tt_LARGE_FRAGMENTATION_AUTO, _MTU or _IP
-    uint16_t ip_reassembly_max;  // advertised in tt_AnnounceHeader.ip_reassembly_max
-#if tt_FRAG_ENABLED
-    // Per remote node, the reassembly ceiling its latest announce advertised (0 = none, or not heard: n = 1 either
-    // way). Recorded only; the sender does not read it yet.
-    uint16_t peer_ip_reassembly_max[tt_MAX_CONTEXT_IDS];
-#endif
     // Per remote node (indexed the same way), the wall-clock time (tt_get_ns()) its most recent
     // UPDATE announce was received - unlike update_last_modified[] above, this moves on *every*
     // announce, including one whose content is unchanged from the last one acted on. Liveliness
@@ -1220,23 +1211,6 @@ struct tt_Context {
     // here rather than in a tt_receive() out-parameter so the HAL contract in hal.h stays as it
     // is; both backends set it, and nothing outside the self-sent accounting reads it.
     bool rx_via_data_port;
-    // Set by the HAL on each socket receive, like rx_via_data_port: where in the buffer core passed the datagram
-    // begins. 0 except on a HAL that reads several datagrams into that buffer at once and hands each out where it lies
-    // (Linux UDP_GRO, hal_linux.c "UDP offload"); then a multiple of 4, and of 8 unless counted in udp_gro_off8.
-    uint32_t rx_offset;
-    // UDP offload (hal_linux.c "UDP offload"), set and counted by the HAL, on the traffic line. udp_offload: bit 0
-    // receive offload (UDP_GRO) in use, bit 1 send offload (UDP_SEGMENT). gro_reads: reads that returned several
-    // datagrams at once; gro_merged: the datagrams those carried; gro_copied: of those, the ones not handed out in
-    // place (a segment off its 4-alignment, or the landing buffer moved by a retain); gro_off8: handed out in place at
-    // 4 mod 8, where a lone DATA's payload is not where a loaned take reads it in place. gso_sends: UDP_SEGMENT sends;
-    // gso_datagrams: the datagrams they carried. 0 on a HAL without them.
-    uint8_t udp_offload;
-    uint64_t udp_gro_reads;
-    uint64_t udp_gro_merged;
-    uint64_t udp_gro_copied;
-    uint64_t udp_gro_off8;
-    uint64_t udp_gso_sends;
-    uint64_t udp_gso_datagrams;
     // Whether the submessage being processed right now was addressed to this node by id, rather than to
     // everyone (tt_SUBMESSAGE_ID_ALL). A retransmission is addressed to the node that asked for it
     // (retransmit_one_sample()), so this is how a reliable Subscriber tells the sample its ACKNACK
@@ -1329,6 +1303,37 @@ struct tt_Context {
     // Hybrid transport (DESIGN.md section 8), last for the same reason.
     struct tt_HybridState hybrid;
 #endif
+    // Everything below came with the hybrid transport and UDP offload (tt_VERSION 13) and sits after every older field,
+    // so that no field the steady-state paths read moved: in the middle of the struct these moved every later field
+    // and aarch64 reached some with an extra instruction (gate v2 on the rig, 2026-10-12; the segment fence, 8de4100d).
+    //
+    // Hybrid transport (DESIGN.md section 8): this context's settings as tt_Context_create() read them from _tt_CONFIG,
+    // and what its announce advertises - the reassembly ceiling capped by the receive buffer.
+    uint8_t large_fragmentation; // tt_LARGE_FRAGMENTATION_AUTO, _MTU or _IP
+    uint16_t ip_reassembly_max;  // advertised in tt_AnnounceHeader.ip_reassembly_max
+#if tt_FRAG_ENABLED
+    // Per remote node, the reassembly ceiling its latest announce advertised (0 = none, or not heard: n = 1 either
+    // way).
+    uint16_t peer_ip_reassembly_max[tt_MAX_CONTEXT_IDS];
+#endif
+    // Set by the HAL on each socket receive, like rx_via_data_port: where in the buffer core passed the datagram
+    // begins. 0 except on a HAL that reads several datagrams into that buffer at once and hands each out where it lies
+    // (Linux UDP_GRO, hal_linux.c "UDP offload"); then a multiple of 4, and of 8 unless counted in udp_gro_off8. Read
+    // by core only in a build with that HAL (hal_linux.h TT_HAL_UDP_GRO).
+    uint32_t rx_offset;
+    // UDP offload (hal_linux.c "UDP offload"), set and counted by the HAL, on the traffic line. udp_offload: bit 0
+    // receive offload (UDP_GRO) in use, bit 1 send offload (UDP_SEGMENT). gro_reads: reads that returned several
+    // datagrams at once; gro_merged: the datagrams those carried; gro_copied: of those, the ones not handed out in
+    // place (a segment off its 4-alignment, or the landing buffer moved by a retain); gro_off8: handed out in place at
+    // 4 mod 8, where a lone DATA's payload is not where a loaned take reads it in place. gso_sends: UDP_SEGMENT sends;
+    // gso_datagrams: the datagrams they carried. 0 on a HAL without them.
+    uint8_t udp_offload;
+    uint64_t udp_gro_reads;
+    uint64_t udp_gro_merged;
+    uint64_t udp_gro_copied;
+    uint64_t udp_gro_off8;
+    uint64_t udp_gso_sends;
+    uint64_t udp_gso_datagrams;
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s
@@ -1898,9 +1903,13 @@ struct tt_PeerAck {
     // Cleared by the Subscriber's ack passing first_owed_seq_no, or after tt_MATCH_HEARTBEATS publishes.
     uint32_t first_owed_seq_no;
     uint8_t match_heartbeats_left;
+};
+
 #if tt_HYBRID_TRANSPORT
-    // Hybrid transport (DESIGN.md section 8): nack_high, the highest seq_no this reader has NACKed, above which a NACK
-    // is a first one.
+// The hybrid transport's watch of one reader (DESIGN.md section 8), the tt_PeerAck at the same index in the
+// Publisher's peer_acks[] (tt_Publisher.peer_watch[]).
+struct tt_PeerWatch {
+    // nack_high, the highest seq_no this reader has NACKed, above which a NACK is a first one.
     uint32_t nack_high;
     // Its fragment path (hybrid_watch_judge(), tickle.c): the latest sample sent to it in runs, watched - units
     // [watch_base, watch_base + watch_run_units) in watch_runs runs, of watch_count; how many of those units it
@@ -1917,8 +1926,8 @@ struct tt_PeerAck {
     bool watch_tail_nacked;
     bool watch_all_lost;
     bool watch_probe; // the watched sample re-probed a failed path
-#endif
 };
+#endif
 
 struct tt_Publisher { // extends endpoint
     struct tt_Endpoint endpoint;
@@ -2008,12 +2017,6 @@ struct tt_Publisher { // extends endpoint
     // latency. Set directly on the struct any time after tt_Context_create_publisher() returns it -
     // same "caller-owned, plain field access" convention as peers[]/seq_no above.
     bool batch;
-    // Hybrid transport (DESIGN.md section 8): this Publisher's override of the context's large_fragmentation
-    // (tt_LARGE_FRAGMENTATION_INHERIT, the default, takes the context's), and of the largest run datagram, in bytes
-    // (0, the default: inherit, i.e. what each peer advertises). The sender takes the more conservative of its own
-    // setting and each peer's advertisement. Plain fields, set after tt_Context_create_publisher() like `batch`.
-    uint8_t large_fragmentation;
-    uint16_t ip_datagram_max;
 
     // QoS roadmap #5 / Phase 3 (rmw_tickle/PLAN.md) - DDS HISTORY KEEP_ALL: never evict a sample no
     // matched Subscriber has acknowledged yet; refuse the write instead (tt_Publisher_publish()
@@ -2232,6 +2235,21 @@ struct tt_Publisher { // extends endpoint
     uint8_t large_head;
     uint8_t large_count;
     uint16_t large_blocked;
+#endif
+    // Hybrid transport (DESIGN.md section 8), after every older field so that none of them moved (tt_Context's end
+    // says why). This Publisher's override of the context's large_fragmentation (tt_LARGE_FRAGMENTATION_INHERIT, the
+    // default, takes the context's), and of the largest run datagram, in bytes (0, the default: inherit, i.e. what
+    // each peer advertises). The sender takes the more conservative of its own setting and each peer's advertisement.
+    // Plain fields, set after tt_Context_create_publisher() like `batch`.
+    uint8_t large_fragmentation;
+    uint16_t ip_datagram_max;
+#if tt_HYBRID_TRANSPORT
+    // Each peer_acks[] entry's fragment-path watch, at the same index (struct tt_PeerWatch): kept apart so that
+    // struct tt_PeerAck, which every ACKNACK and heartbeat reads, keeps its size and peer_acks[] its stride.
+    struct tt_PeerWatch peer_watch[tt_MAX_ACK_ENTRIES];
+    // Some peer_watch[] entry has watched a sample sent in runs: only then does an ACKNACK look its NACKs over for the
+    // watch, so a Publisher that never sends a run pays one test an ACKNACK, not a peer_acks[] search.
+    bool watching;
 #endif
 };
 
