@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Mutant sweep for large-message stage 2, step A (DESIGN.md section 8, "Stage 2", pre-registration L1).
 
-Each entry breaks exactly one thing the stage-2 code relies on and names the test in tests/test_large_sample.c that
-must go red for it - the mutants the pre-registration names (an off-by-one in the 16-bit offset arithmetic, no
+Each entry breaks exactly one thing the stage-2 code relies on and names the test that must go red for it - in
+tests/test_large_sample.c unless the entry names another test binary - the mutants the pre-registration names (an off-by-one in the 16-bit offset arithmetic, no
 end-of-sample HEARTBEAT, WOULD_BLOCK where a sample can never fit, the send cursor dropped, a torn sample delivered, a
 lent buffer reused before its release), and a few more for conditions the tests claim to cover. A mutant that still
 passes means either the test does not test what its name says, or the condition decides nothing and should not be in
@@ -21,7 +21,8 @@ import os
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-BIN = ROOT / "platform/linux/obj/debug/tests/test_large_sample"
+TESTS = ROOT / "platform/linux/obj/debug/tests"
+DEFAULT_BINARY = "test_large_sample"
 SRC = "src/tickle.c"
 
 MUTANTS = [
@@ -129,9 +130,17 @@ MUTANTS = [
     ),
     (
         "a small sample overtakes a waiting large one",
-        "        large_commit_pending(node, pub);\n",
-        "",
+        "    if (size >= 0 && size <= tt_MAX_SAMPLE_LENGTH) {\n        large_commit_pending(node, pub);\n",
+        "    if (size >= 0 && size <= tt_MAX_SAMPLE_LENGTH) {\n",
         "test_a_small_sample_never_overtakes_a_waiting_large_one",
+    ),
+    (
+        "a claimed publish overtakes a waiting large sample",
+        "    if (pub->large_pending.buffer != NULL) {\n        large_commit_pending(node, pub);\n    }\n#endif\n"
+        "    const uint32_t raw_len = CLAIM_FRAMING + length;",
+        "#endif\n    const uint32_t raw_len = CLAIM_FRAMING + length;",
+        "test_a_claimed_publish_follows_a_waiting_large_sample",
+        "test_large_shm",
     ),
     (
         "a waiting KEEP_LAST sample sent rather than replaced",
@@ -156,16 +165,17 @@ MUTANTS = [
 ]
 
 
-def build_and_run():
+def build_and_run(binary):
+    path = TESTS / binary
     build = subprocess.run(
-        ["make", "-s", "-C", str(ROOT / "platform/linux"), str(BIN.relative_to(ROOT / "platform/linux"))],
+        ["make", "-s", "-C", str(ROOT / "platform/linux"), str(path.relative_to(ROOT / "platform/linux"))],
         capture_output=True, text=True, cwd=ROOT / "platform/linux",
     )
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-2000:]
     try:
         # The binary takes about a second; a mutant that makes a simulation spin is cut off at a minute.
-        run = subprocess.run([str(BIN)], capture_output=True, text=True, timeout=60)
+        run = subprocess.run([str(path)], capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired as hung:
         # A mutant that loops forever is killed, and said to be: without the bound the first one hung the sweep with
         # the mutant still applied to src/tickle.c (tests/mutants_frag_fast_path.py).
@@ -175,8 +185,8 @@ def build_and_run():
     return ("PASS" if run.returncode == 0 else "FAIL"), run.stdout + run.stderr
 
 
-def failing_lines(output):
-    return [line for line in output.splitlines() if "test_large_sample.c:" in line][:3]
+def failing_lines(output, binary):
+    return [line for line in output.splitlines() if f"{binary}.c:" in line][:3]
 
 
 def main():
@@ -193,15 +203,18 @@ def main():
     signal.signal(signal.SIGTERM, lambda _s, _f: sys.exit(1))
     failures = 0
     try:
-        verdict, output = build_and_run()
-        print(f"[control]  unmutated                                              -> {verdict}")
-        if verdict != "PASS":
-            print(output[-2000:])
-            print("control did not pass; the sweep cannot decide anything")
-            return 1
+        # Every binary a mutant is judged by must pass unmutated, or its mutants cannot be told from its own failures.
+        for binary in sorted({entry[4] if len(entry) > 4 else DEFAULT_BINARY for entry in MUTANTS}):
+            verdict, output = build_and_run(binary)
+            print(f"[control]  unmutated {binary:44s} -> {verdict}")
+            if verdict != "PASS":
+                print(output[-2000:])
+                print("control did not pass; the sweep cannot decide anything")
+                return 1
 
         only = os.environ.get("MUTANTS", "")
-        for name, old, new, test in MUTANTS:
+        for name, old, new, test, *rest in MUTANTS:
+            binary = rest[0] if rest else DEFAULT_BINARY
             if only and only not in name:
                 continue
             path = ROOT / SRC
@@ -212,12 +225,12 @@ def main():
                 failures += 1
                 continue
             path.write_text(text.replace(old, new))
-            verdict, output = build_and_run()
+            verdict, output = build_and_run(binary)
             restore()
             ok = verdict in ("FAIL", "CRASH", "HANG")
             failures += 0 if ok else 1
-            print(f"[{'ok' if ok else 'SURVIVED':8s}] {name:55s} -> {verdict} (guard: {test})", flush=True)
-            for line in failing_lines(output) if ok else []:
+            print(f"[{'ok' if ok else 'SURVIVED':8s}] {name:55s} -> {verdict} (guard: {binary}: {test})", flush=True)
+            for line in failing_lines(output, binary) if ok else []:
                 print(f"           {line}")
             if not ok:
                 print(output[-1500:])

@@ -818,10 +818,34 @@ static void test_a_full_send_buffer_delays_the_sample_never_loses_it(void) {
     EXPECT_TRUE(test_mock_nonblocking_calls > samples);
 }
 
+// Runs the protocol until `want` samples have been delivered, as sim_settle() does, and answers how long after its
+// send ended - its last datagram gone the first time - the last of them was: 0 when it was whole by then.
+static uint64_t sim_settle_after_send(int want, uint64_t budget) {
+    uint64_t since = test_mock_now;
+    uint64_t send_end = 0;
+    bool ended = false;
+    while (delivered_count < want && test_mock_now - since < budget) {
+        if (!ended && !sim_writer_sending()) {
+            ended = true;
+            send_end = test_mock_now;
+        }
+        if (!sim_step()) {
+            break;
+        }
+    }
+    if (delivered_count < want || want < 1 || want > 64 || !ended) {
+        return 0; // not delivered (the caller's count says so), or whole before its send was seen to end
+    }
+    return delivered_at[want - 1] - send_end;
+}
+
 static void test_a_lost_datagram_is_resent_while_its_sample_is_still_going_out(void) {
     // A send buffer of 8 datagrams: a 4 MB sample takes hundreds of retry intervals to go out, and a fragment lost on
-    // the way is asked for long before the sample's last one leaves. It is resent at once; left to the end of the
-    // send, a KEEP_LAST writer's reader gives the sample up after its retries (the first sample on the PC, every run).
+    // the way is asked for long before the sample's last one leaves. It is resent at once, so the sample is whole when
+    // its send ends, but for what was lost in the last retry interval or two. Left to the end of the send, every loss
+    // is recovered after it: delivered and not given up - the reader does not count its retries while fragments keep
+    // arriving (test_a_busy_writer_is_waited_for_not_given_up) - but 15 and 227 ms after the send ended rather than at
+    // it (measured 2026-10-11). Mutant: no resend before the send ends - fails the bound.
     init_pair(1000, RELIABLE_KEEP_LAST);
     sim_start(0);
     // The reader learns the writer is KEEP_LAST - which gives up on a gap after its retries - as an announce would tell
@@ -837,13 +861,19 @@ static void test_a_lost_datagram_is_resent_while_its_sample_is_still_going_out(v
     sim_loss_per_mille = 50;
     sim_room_per_step = 8;
     const int samples = 3; // the small one and two large ones
+    uint64_t slowest = 0;
     for (int i = 1; i < samples; i++) {
         EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 1), tt_SECOND));
-        sim_settle(i + 1, 2 * tt_SECOND);
+        uint64_t after = sim_settle_after_send(i + 1, 2 * tt_SECOND);
+        slowest = after > slowest ? after : slowest;
     }
     EXPECT_EQ_INT(samples, delivered_count);
     EXPECT_EQ_INT(0, delivered_torn);
     EXPECT_EQ_U32(0, sub.gap_abandoned);
+    printf("test_large_sample: 4 MB at 5%% loss through 8 datagrams of send buffer - whole %.2f ms after its send "
+           "ended\n",
+           (double)slowest / 1e6);
+    EXPECT_TRUE(slowest <= 2 * TEST_RETRY_INTERVAL);
 }
 
 static void test_a_busy_writer_is_waited_for_not_given_up(void) {
