@@ -572,12 +572,17 @@ Where it departs, and why:
   unmapped the ring under the drain. The kind it replaced is kept (`lend.rx_outer_kind`).
 - Not yet: large samples in a local durable backlog (`tt_Subscriber_deliver_local_backlog()`), and step B.
 
-### Hybrid transport for multi-datagram samples (designed 2026-10-11; step 1 built)
+### Hybrid transport for multi-datagram samples (designed 2026-10-11; steps 1 and 2 built)
 
 **Status.** Step 1 (below) is built: `tt_VERSION` 13, `_tt_CONFIG.large_fragmentation` and `.ip_reassembly_max`, the
 Publisher's `large_fragmentation` and `ip_datagram_max`, the three announce fields (the cost fields always 0), and the
-per-peer record `tt_Context.peer_ip_reassembly_max[]` (fragmenting builds only). Types 13/14 are defined and passed over
-(`frag_large_skipped`). Not yet built: the cost and loss counters, receiving runs, sending them.
+per-peer record `tt_Context.peer_ip_reassembly_max[]` (fragmenting builds only). Step 2 is built: a run is validated
+whole (counts, reserved field, seq_no range, length; refused and counted once in `frag_dropped` / `large.dropped`) and
+then handed to the fragment path unit by unit, each under its own seq_no, so 13 lands in the lendable large assembly
+and 14 in `frag_scratch`, a reorder slot or the BE pool, with no staging copy. A run never holds a sample's last unit,
+which is what lets a type-14 receiver derive the sender's unit size from the length. Tests: `tests/test_hybrid_runs.c`,
+`tests/mutants_hybrid_transport.py`, and a real IP-fragmented receive in a netns
+(`examples/perf_hil/experiments/hybrid_run_rx.sh`). Not yet built: the cost and loss counters, sending runs.
 
 **The decision.** The user lifted the IP fragmentation park on 2026-10-11 and generalised it the same day: each
 writer chooses, per peer, how many MTU fragments go into one IP-fragmented UDP datagram, from a cost model and the

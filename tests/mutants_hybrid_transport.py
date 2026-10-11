@@ -21,6 +21,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 TESTS = ROOT / "platform/linux/obj/debug/tests"
 CAPABILITY = "test_hybrid_capability"
 MTU = "test_hybrid_mtu"
+RUNS = "test_hybrid_runs"
 
 # (name, file, old, new, test binary that must fail)
 MUTANTS = [
@@ -86,6 +87,154 @@ MUTANTS = [
         "    pub->large_fragmentation = tt_LARGE_FRAGMENTATION_INHERIT; // the context's",
         "    pub->large_fragmentation = tt_LARGE_FRAGMENTATION_MTU; // the context's",
         CAPABILITY,
+    ),
+    # Step 2: receiving runs. One mutant per validation condition, each of which has its own malformed row.
+    (
+        "run: reserved field not checked",
+        "src/tickle.c",
+        "    if (zero != 0 || entity_id == tt_DISCOVERY_ENTITY_ID || count > max_count || run_count == 0) {",
+        "    if (entity_id == tt_DISCOVERY_ENTITY_ID || count > max_count || run_count == 0) {",
+        RUNS,
+    ),
+    (
+        "run: an announce's entity accepted",
+        "src/tickle.c",
+        "    if (zero != 0 || entity_id == tt_DISCOVERY_ENTITY_ID || count > max_count || run_count == 0) {",
+        "    if (zero != 0 || count > max_count || run_count == 0) {",
+        RUNS,
+    ),
+    (
+        "run: count not checked against the type's ceiling",
+        "src/tickle.c",
+        "    if (zero != 0 || entity_id == tt_DISCOVERY_ENTITY_ID || count > max_count || run_count == 0) {",
+        "    if (zero != 0 || entity_id == tt_DISCOVERY_ENTITY_ID || run_count == 0) {",
+        RUNS,
+    ),
+    (
+        "run: run_count 0 accepted",
+        "src/tickle.c",
+        "    if (zero != 0 || entity_id == tt_DISCOVERY_ENTITY_ID || count > max_count || run_count == 0) {",
+        "    if (zero != 0 || entity_id == tt_DISCOVERY_ENTITY_ID || count > max_count) {",
+        RUNS,
+    ),
+    (
+        "run: the last unit accepted in a run",
+        "src/tickle.c",
+        "    if (index + run_count >= count) {",
+        "    if (index + run_count > count) {",
+        RUNS,
+    ),
+    (
+        "run: units past the count accepted",
+        "src/tickle.c",
+        "    if (index + run_count >= count) {",
+        "    if (index >= count) {",
+        RUNS,
+    ),
+    (
+        "run: a sample seq_no of 0 accepted",
+        "src/tickle.c",
+        "    return seq_no > index && seq_no - index <= UINT32_MAX - (count - 1U);",
+        "    return seq_no - index <= UINT32_MAX - (count - 1U);",
+        RUNS,
+    ),
+    (
+        "run: a sample whose units wrap accepted",
+        "src/tickle.c",
+        "    return seq_no > index && seq_no - index <= UINT32_MAX - (count - 1U);",
+        "    return seq_no > index;",
+        RUNS,
+    ),
+    (
+        "small run: length not a whole number of units",
+        "src/tickle.c",
+        "        span % run_count != 0 || span / run_count <= tt_FRAG_FIRST_SHORTFALL) {",
+        "        span / run_count <= tt_FRAG_FIRST_SHORTFALL) {",
+        RUNS,
+    ),
+    (
+        "small run: units no longer than unit 0's shortfall",
+        "src/tickle.c",
+        "        span % run_count != 0 || span / run_count <= tt_FRAG_FIRST_SHORTFALL) {",
+        "        span % run_count != 0) {",
+        RUNS,
+    ),
+    (
+        "large run: length not checked",
+        "src/tickle.c",
+        "        length != (run_count * LARGE_CONT_PAYLOAD) - (index == 0 ? (uint32_t)tt_FRAG_FIRST_L_SHORTFALL : 0U)) {",
+        "        false) {",
+        RUNS,
+    ),
+    (
+        "small run: a unit sliced one byte off",
+        "src/tickle.c",
+        "        unit_head += unit_length;\n",
+        "        unit_head += unit_length + (i == 1U ? 1U : 0U);\n",
+        RUNS,
+    ),
+    (
+        "small run: unit 0 sliced a whole unit long",
+        "src/tickle.c",
+        "        uint32_t unit_length = unit_index == 0 ? unit - (uint32_t)tt_FRAG_FIRST_SHORTFALL : unit;",
+        "        uint32_t unit_length = unit;",
+        RUNS,
+    ),
+    (
+        "large run: offset off by unit 0's shortfall",
+        "src/tickle.c",
+        "        payload += fragment.length;\n",
+        "        payload += LARGE_CONT_PAYLOAD;\n",
+        RUNS,
+    ),
+    (
+        "small run: every unit passed on as first contact",
+        "src/tickle.c",
+        "                                    unit_index == 0 ? &run->data : NULL, entity_id, seq_no + i,",
+        "                                    &run->data, entity_id, seq_no + i,",
+        RUNS,
+    ),
+    (
+        "small run: units recorded under the run's first seq_no",
+        "src/tickle.c",
+        "? &run->data : NULL, entity_id, seq_no + i, unit_index, count,",
+        "? &run->data : NULL, entity_id, seq_no, unit_index, count,",
+        RUNS,
+    ),
+    (
+        "large run: units recorded under the run's first seq_no",
+        "src/tickle.c",
+        "            .seq_no = seq_no + i,",
+        "            .seq_no = seq_no,",
+        RUNS,
+    ),
+    (
+        "small run: a node's own run received",
+        "src/tickle.c",
+        "        if (!self_sent) {\n            process_frag_run(node,",
+        "        if (true) {\n            process_frag_run(node,",
+        RUNS,
+    ),
+    (
+        "small run: not received at all",
+        "src/tickle.c",
+        "            process_frag_run(node, header, buffer, head, body_tail, sender_ip, sender_port);\n",
+        "",
+        RUNS,
+    ),
+    (
+        "large run: not received at all",
+        "src/tickle.c",
+        "            process_frag_run_large(node, header, buffer, head, body_tail, sender_ip, sender_port);\n",
+        "",
+        RUNS,
+    ),
+    (
+        "small run: skipped silently in a build without fragmentation, as 8/9 - counted instead",
+        "src/tickle.c",
+        '        TT_LOG_DEBUG("Run skipped: built without fragmentation"); // as types 8/9 are\n',
+        '        node->frag_large_skipped++;\n',
+        MTU,
     ),
 ]
 
