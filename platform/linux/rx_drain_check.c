@@ -254,20 +254,20 @@ static bool send_segmented(int sender, int socket_fd, uint32_t first) {
     msg.msg_iovlen = 1;
     msg.msg_control = control.bytes;
     msg.msg_controllen = CMSG_SPACE(sizeof(uint16_t)); // NOLINT(misc-include-cleaner) - CMSG_*: <sys/socket.h>
-    struct cmsghdr* cm = CMSG_FIRSTHDR(&msg);          // NOLINT(misc-include-cleaner)
-    cm->cmsg_level = SOL_UDP;
-    cm->cmsg_type = UDP_SEGMENT;
-    cm->cmsg_len = CMSG_LEN(sizeof(uint16_t)); // NOLINT(misc-include-cleaner)
+    struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);        // NOLINT(misc-include-cleaner)
+    cmsg->cmsg_level = SOL_UDP;
+    cmsg->cmsg_type = UDP_SEGMENT;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(uint16_t)); // NOLINT(misc-include-cleaner)
     uint16_t segment = PAYLOAD_BYTES;
-    memcpy(CMSG_DATA(cm), &segment, sizeof segment); // NOLINT(misc-include-cleaner)
+    memcpy(CMSG_DATA(cmsg), &segment, sizeof segment); // NOLINT(misc-include-cleaner)
     return sendmsg(sender, &msg, 0) == (ssize_t)sizeof payload;
 }
 
 // 6. merged
 static enum check_exit check_merged(struct tt_Context* node, int sender) {
     usleep(HOLDOFF_PAST_US);
-    int on = 1;
-    if (setsockopt(node->hal.data_sock, SOL_UDP, UDP_GRO, &on, sizeof on) != 0) {
+    int enable = 1;
+    if (setsockopt(node->hal.data_sock, SOL_UDP, UDP_GRO, &enable, sizeof enable) != 0) {
         printf("rx_drain_check: PASS - merged: not run, this kernel refuses UDP_GRO\n");
         return CHECK_PASS;
     }

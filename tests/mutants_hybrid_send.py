@@ -462,8 +462,8 @@ MUTANTS = [
     (
         "reader: a lost body read as arrived runs",
         "src/tickle.c",
-        "                hybrid_rx_run(hybrid, writer, size, true);",
-        "                hybrid_rx_run(hybrid, writer, size, false);",
+        "        hybrid_rx_run(&node->hybrid, writer, size, true);",
+        "        hybrid_rx_run(&node->hybrid, writer, size, false);",
         SEND,
     ),
     (
@@ -805,8 +805,8 @@ MUTANTS = [
     (
         "reader: a run dropped by the receiver still a lost run",
         "src/tickle.c",
-        "                if (hybrid_rx_receiver_lost(node, 1) != 0) {\n                    continue;\n                }",
-        "                (void)hybrid_rx_receiver_lost(node, 1);",
+        "        if (hybrid_rx_receiver_lost(node, 1) != 0) {\n            continue;\n        }",
+        "        (void)hybrid_rx_receiver_lost(node, 1);",
         SEND,
     ),
     (

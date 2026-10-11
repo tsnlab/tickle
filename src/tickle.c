@@ -2428,6 +2428,24 @@ static void hybrid_rx_receiver_age(struct tt_Context* node) {
     hybrid->rx_drop_credit[0] = 0;
 }
 
+// Units [from, body_end) of the body, sent in runs of the writer's layout_n (at least 2) and never came: each run lost,
+// unless a receiver drop is put against it.
+static void hybrid_rx_gap_runs(struct tt_Context* node, struct tt_HybridRxWriter* writer, uint32_t from,
+                               uint32_t body_end) {
+    uint32_t tail = (uint32_t)writer->count - 1U;
+    uint32_t layout = writer->layout_n;
+    for (uint32_t start = (from / layout) * layout; start < body_end; start += layout) {
+        uint32_t size = tail - start < layout ? tail - start : layout;
+        if (hybrid_rx_receiver_lost(node, 1) != 0) {
+            continue;
+        }
+        hybrid_rx_run(&node->hybrid, writer, size, true);
+        uint32_t first = start > from ? start : from;
+        uint32_t last = start + size < body_end ? start + size : body_end;
+        writer->body_lost += last - first;
+    }
+}
+
 // Units [from, end) of the writer's current sample were sent and never came (end <= count): what they were sent as.
 // A run is one datagram and an MTU unit one; those put down to receiver drops are left out (above).
 static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* writer, uint32_t from, uint32_t end) {
@@ -2438,16 +2456,7 @@ static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* wri
     if (from < body_end) {
         uint32_t layout = writer->layout_n;
         if (layout >= 2U) {
-            for (uint32_t start = (from / layout) * layout; start < body_end; start += layout) {
-                uint32_t size = tail - start < layout ? tail - start : layout;
-                if (hybrid_rx_receiver_lost(node, 1) != 0) {
-                    continue;
-                }
-                hybrid_rx_run(hybrid, writer, size, true);
-                uint32_t first = start > from ? start : from;
-                uint32_t last = start + size < body_end ? start + size : body_end;
-                writer->body_lost += last - first;
-            }
+            hybrid_rx_gap_runs(node, writer, from, body_end);
         } else if (layout == 1U) {
             uint32_t lost = (body_end - from) - hybrid_rx_receiver_lost(node, body_end - from);
             if (lost != 0) {

@@ -302,6 +302,7 @@ static unsigned bench_socket_drops(int sock) {
     uint32_t info[SK_MEMINFO_VARS];
     socklen_t length = sizeof(info);
     memset(info, 0, sizeof(info));
+    // NOLINTNEXTLINE(misc-include-cleaner) - SOL_SOCKET, SO_MEMINFO: glibc-private headers behind <sys/socket.h>
     if (sock < 0 || getsockopt(sock, SOL_SOCKET, SO_MEMINFO, (void*)info, &length) < 0 ||
         length < (socklen_t)(sizeof(uint32_t) * (SK_MEMINFO_DROPS + 1))) {
         return 0;

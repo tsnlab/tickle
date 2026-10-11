@@ -1528,6 +1528,7 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
 #endif
 #define DRAIN_HEADER ((uint32_t)(sizeof(struct io_uring_recvmsg_out) + sizeof(struct sockaddr_in)) + DRAIN_CONTROL)
 #define DRAIN_ASKED_BYTES 256U // drain_describe()'s line
+#define DRAIN_REARM_SHARE 8U   // an overrun's recvmsg goes again once 1/8 of the buffers is back (drain_rearm_now())
 
 static void drain_release(struct tt_hal* hal) {
     if (hal->drain_buffers != NULL) {
@@ -1830,7 +1831,8 @@ static void drain_rearm_now(struct tt_hal* hal) {
         return;
     }
     drain_look(hal);
-    if (hal->drain_rearm == 0 || hal->drain_returned < (hal->drain_count + 7U) / 8U) {
+    if (hal->drain_rearm == 0 ||
+        hal->drain_returned < (hal->drain_count + DRAIN_REARM_SHARE - 1U) / DRAIN_REARM_SHARE) {
         return;
     }
     uint32_t added = 0;
@@ -1930,15 +1932,38 @@ static uint32_t drain_gro_segment(const uint8_t* buffer, const struct io_uring_r
 }
 #endif
 
+#if TT_HAL_UDP_GRO
+// A completion that holds a merged read (UDP_GRO's size in its control area, and more than one datagram of it): its
+// datagrams are handed out one at a time from this buffer, before the next completion. False for one datagram.
+static bool drain_split_begin(struct tt_Context* node, uint16_t bid, const uint8_t* buffer,
+                              const struct io_uring_recvmsg_out* out, uint32_t ip, uint16_t port) {
+    struct tt_hal* hal = &node->hal;
+    uint32_t segment = drain_gro_segment(buffer, out);
+    if (segment == 0 || out->payloadlen <= segment) {
+        return false;
+    }
+    hal->drain_merged++;
+    hal->drain_split_bid = bid;
+    hal->drain_split_segment = segment;
+    hal->drain_split_next = 0;
+    hal->drain_split_end = out->payloadlen;
+    hal->drain_split_left = (uint16_t)((out->payloadlen + segment - 1U) / segment);
+    hal->drain_split_ip = ip;
+    hal->drain_split_port = port;
+    hal->drain_split_from_data = node->rx_via_data_port;
+    return true;
+}
+#endif
+
 static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct tt_hal* hal = &node->hal;
     const struct io_uring_cqe* cqes = (const struct io_uring_cqe*)hal->drain_cqes;
-    for (;;) {
 #if TT_HAL_UDP_GRO
-        if (hal->drain_split_left != 0) {
-            return drain_take_split(node, buf, len, ip, port);
-        }
+    if (hal->drain_split_left != 0) {
+        return drain_take_split(node, buf, len, ip, port); // a merged read's next; nothing else starts one meanwhile
+    }
 #endif
+    for (;;) {
         while (hal->drain_pending != 0) {
             uint32_t head = *hal->drain_cq_head;
             const struct io_uring_cqe* cqe = &cqes[head & *hal->drain_cq_mask];
@@ -1969,18 +1994,7 @@ static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, u
             *port = ntohs(from.sin_port);
             node->rx_via_data_port = (user_data & 1U) != 0;
 #if TT_HAL_UDP_GRO
-            uint32_t segment = drain_gro_segment(buffer, out);
-            if (segment != 0 && out->payloadlen > segment) {
-                // A merged read: its datagrams one at a time, from this buffer, before the next completion.
-                hal->drain_merged++;
-                hal->drain_split_bid = bid;
-                hal->drain_split_segment = segment;
-                hal->drain_split_next = 0;
-                hal->drain_split_end = out->payloadlen;
-                hal->drain_split_left = (uint16_t)((out->payloadlen + segment - 1U) / segment);
-                hal->drain_split_ip = *ip;
-                hal->drain_split_port = *port;
-                hal->drain_split_from_data = node->rx_via_data_port;
+            if (drain_split_begin(node, bid, buffer, out, *ip, *port)) {
                 return drain_take_split(node, buf, len, ip, port);
             }
 #endif
