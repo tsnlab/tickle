@@ -605,10 +605,11 @@ its seq_nos read as gone to a reader that asks, so a torn sample is never delive
 with and without the ranged encode (`tests/test_large_sample.c`, against the arm without it; the whole step-A suite
 also runs in both modes). Small samples never use it.
 
-**Larger datagrams.** The unit is "the bytes the next send call carries", not a fragment: should a send call ever
-carry runs of larger units (the hybrid transport, branch ab/hybrid-step34, not on main), a run encodes through its
-last unit before its `sendmmsg()`, exactly as a batch of MTU fragments does. Nothing in the design assumes MTU
-datagrams.
+**Larger datagrams.** The unit is "the bytes the next send call carries", not a fragment. With the hybrid transport
+(below, `ab/hybrid-land`) a send call of runs encodes through the last unit of its last run before its `sendmmsg()`,
+exactly as a batch of MTU fragments does; the tail, alone in its own call, is encoded just before it; MTU repairs read
+the record, whole by the time the publish returns. The wire is byte-identical with and without the ranged encode in
+runs too, and a sample received in runs is lent from the assembly it was put together in (`tests/test_hybrid_send.c`).
 
 **Pre-registration (2026-10-11, before any measurement).**
 

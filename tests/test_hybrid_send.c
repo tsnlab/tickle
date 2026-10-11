@@ -73,6 +73,35 @@ static void free_nothing(struct tt_Data* data) {
     (void)data;
 }
 
+// --- the ranged encode (DESIGN.md section 8, "Encoding while sending") -----------------------------------------------
+// On the writer's topic while `ranged` is set: sized_encode's bytes, a range at a time. Each call is logged with the
+// units the writer had put on the wire by then and whether its send buffer was full.
+
+static bool ranged;
+struct range_call {
+    uint32_t offset;
+    uint32_t length;
+    uint32_t units_before; // units sent (first transmissions, in runs and alone) when the range was asked for
+    bool buffer_full;
+};
+#define RANGE_CALLS_MAX 256U
+static struct range_call range_calls[RANGE_CALLS_MAX];
+static uint32_t range_call_count;
+static uint32_t units_sent(void);
+
+static int32_t sized_encode_range(struct tt_Data* data, uint8_t* payload, uint32_t offset, uint32_t len) {
+    (void)data;
+    if (range_call_count < RANGE_CALLS_MAX) {
+        range_calls[range_call_count] =
+            (struct range_call) {offset, len, units_sent(), test_mock_nonblocking_room == 0};
+    }
+    range_call_count++;
+    for (uint32_t i = 0; i < len; i++) {
+        payload[i] = pattern(offset + i, sample_seed);
+    }
+    return (int32_t)len;
+}
+
 // --- the readers -----------------------------------------------------------------------------------------------------
 
 struct reader {
@@ -85,6 +114,12 @@ struct reader {
     uint32_t last_seq;
     bool in_order;
     bool present;
+    bool retain_next;          // the next delivery is kept with tt_Sample_retain()
+    struct tt_Sample held;     // what it kept
+    tt_ret_t retain_result;    // and what tt_Sample_retain() answered
+    uint8_t lend_kind;         // the context's lend kind while that delivery's callback ran
+    const uint8_t* decoded_at; // the payload the decode was handed, last delivery
+    uint8_t* granted[8];       // the large buffers this reader's context was handed, most recent first
 };
 
 static struct reader readers[READERS];
@@ -105,6 +140,7 @@ static int32_t checking_decode(struct tt_Data* data, const uint8_t* payload, uin
         intact = payload[i] == pattern(i, sample_seed);
     }
     decoding->torn += intact ? 0 : 1;
+    decoding->decoded_at = payload;
     return 0;
 }
 
@@ -116,13 +152,27 @@ static void on_data(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, str
             readers[i].delivered++;
             readers[i].in_order = readers[i].in_order && seq_no != readers[i].last_seq;
             readers[i].last_seq = seq_no;
+            if (readers[i].retain_next) {
+                readers[i].retain_next = false;
+#if tt_SAMPLE_LENDING
+                readers[i].lend_kind = readers[i].ctx.lend.rx_kind;
+#endif
+                readers[i].retain_result = tt_Sample_retain(s, &readers[i].held);
+            }
         }
     }
 }
 
+// `user` is the reader whose context asks (NULL: the writer's): each reader keeps the buffers it was handed, so a lent
+// sample can be traced to the assembly it was put together in.
 static void* test_acquire(void* user, uint32_t bytes) {
-    (void)user;
-    return malloc(bytes);
+    uint8_t* buffer = (uint8_t*)malloc(bytes);
+    struct reader* r = (struct reader*)user;
+    if (r != NULL && buffer != NULL) {
+        memmove(&r->granted[1], &r->granted[0], sizeof(r->granted) - sizeof(r->granted[0]));
+        r->granted[0] = buffer;
+    }
+    return buffer;
 }
 
 static void test_release(void* user, void* buffer) {
@@ -173,6 +223,8 @@ static void init_set(uint32_t len, int count, const uint32_t* ceilings, bool rel
     sender_topic.data_size = 8;
     sender_topic.data_encode_size = sized_encode_size;
     sender_topic.data_encode = sized_encode;
+    sender_topic.data_encode_range = ranged ? sized_encode_range : NULL;
+    range_call_count = 0;
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&sender, test_acquire, test_release, NULL));
     if (reliable) {
@@ -195,6 +247,12 @@ static void init_set(uint32_t len, int count, const uint32_t* ceilings, bool rel
         r->torn = 0;
         r->last_seq = 0;
         r->in_order = true;
+        r->retain_next = false;
+        memset(&r->held, 0, sizeof(r->held));
+        r->retain_result = tt_RET_OK;
+        r->lend_kind = 0;
+        r->decoded_at = NULL;
+        memset(r->granted, 0, sizeof(r->granted));
         init_bare_node(&r->ctx, reader_id(i));
         memset(&r->topic, 0, sizeof(r->topic));
         r->topic.name = TOPIC_NAME;
@@ -202,7 +260,7 @@ static void init_set(uint32_t len, int count, const uint32_t* ceilings, bool rel
         r->topic.data_decode = checking_decode;
         r->topic.data_free = free_nothing;
         EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&r->ctx, &r->sub, &r->topic, ENDPOINT_NAME, on_data));
-        EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&r->ctx, test_acquire, test_release, NULL));
+        EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&r->ctx, test_acquire, test_release, r));
         pub.peers[i] = (struct tt_Peer) {reader_id(i), r->ip, PORT};
         sender.peer_ip_reassembly_max[reader_id(i)] = (uint16_t)ceilings[i];
         if (reliable) {
@@ -276,6 +334,14 @@ struct sent_stats {
     uint32_t frames_dropped;
 };
 static struct sent_stats sent;
+// Every datagram the writer sent, in order, folded into one FNV-1a hash with their count and bytes: two arms that sent
+// the same datagrams byte for byte agree on all three.
+struct wire_digest {
+    uint64_t hash;
+    uint32_t datagrams;
+    uint64_t bytes;
+};
+static struct wire_digest wire;
 #define SEEN_MAX 65536U
 static uint8_t seen_unit[SEEN_MAX]; // by seq_no: a unit already sent once (to anyone)
 
@@ -382,7 +448,17 @@ static void sim_capture(const void* buf, size_t len) {
     sim_tail++;
     if (sim_acting == SENDER_ID) {
         note_sent(d->bytes, d->len, d->to_ip);
+        for (size_t i = 0; i < len; i++) {
+            wire.hash = (wire.hash ^ d->bytes[i]) * 0x100000001b3ULL;
+        }
+        wire.hash = (wire.hash ^ d->to_ip) * 0x100000001b3ULL;
+        wire.datagrams++;
+        wire.bytes += len;
     }
+}
+
+static uint32_t units_sent(void) {
+    return sent.run_units + sent.mtu;
 }
 
 static bool sim_frame_lost(void) {
@@ -510,6 +586,7 @@ static void sim_start(uint32_t frame_loss_ppm) {
     sim_reasm_held = 0;
     sim_reasm_refused = 0;
     memset(&sent, 0, sizeof(sent));
+    wire = (struct wire_digest) {0xcbf29ce484222325ULL, 0, 0};
     memset(seen_unit, 0, sizeof(seen_unit));
     test_mock_send_hook = sim_capture;
     test_mock_now = tt_SECOND;
@@ -1633,6 +1710,195 @@ static void test_the_objective_reads_the_posterior_mean(void) {
     EXPECT_EQ_U32(45, hybrid_n_star(loss_estimate_mean(&estimate), HYBRID_UNIT, HYBRID_UNIT_HEADER, 45));
 }
 
+// --- runs meet encoding while sending and the lent large sample (DESIGN.md section 8) -------------------------------
+
+// One arm of a writer and its readers: `samples` samples of `len`, each run until every reader has it, the send buffer
+// refilled to `room` datagrams before each publish and step (-1: unlimited).
+struct arm {
+    uint32_t len;
+    int readers;
+    const uint32_t* ceilings;
+    bool reliable;
+    uint8_t mode;
+    uint32_t loss_ppm;
+    int32_t room;
+    uint8_t samples;
+};
+
+static struct wire_digest run_arm(const struct arm* arm, bool use_ranges) {
+    ranged = use_ranges;
+    _tt_CONFIG.reassembly_cap_off = arm->mode == tt_LARGE_FRAGMENTATION_IP ? 1 : 0; // a forced arm's reader
+    init_set(arm->len, arm->readers, arm->ceilings, arm->reliable);
+    _tt_CONFIG.reassembly_cap_off = 0;
+    ranged = false;
+    pub.large_fragmentation = arm->mode;
+    sim_start(arm->loss_ppm);
+    for (uint8_t s = 1; s <= arm->samples; s++) {
+        test_mock_nonblocking_room = arm->room;
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
+        uint64_t since = test_mock_now;
+        while (total_delivered() < (int)s * arm->readers && test_mock_now - since < 5U * tt_SECOND) {
+            test_mock_nonblocking_room = arm->room;
+            if (!sim_step()) {
+                test_mock_now += tt_MILLISECOND;
+            }
+        }
+    }
+    test_mock_nonblocking_room = -1;
+    for (int i = 0; i < arm->readers; i++) {
+        expect_intact(i, arm->samples);
+    }
+    return wire;
+}
+
+// Every datagram the writer sends - runs, the MTU tail, HEARTBEATs and MTU repairs - is the same byte for byte, to the
+// same address, in the same order, whether the sample was encoded whole first or a send call at a time: in runs of 45
+// to one reader (4 MB, 64 runs a call), with a send buffer of three datagrams, RELIABLE in forced IP at 1% frame loss
+// (the repairs come from the encoded record), and to two readers by unicast where one takes MTU units and the other
+// runs, in both orders (the first destination's send calls encode). The control is the arm without a ranged encode;
+// time fields come from the mock clock, so they match only if the two arms behave alike. And the ranged arm really was
+// one: each sample encoded by range, and the arm sent runs.
+static void test_runs_with_a_ranged_encode_leave_the_wire_byte_identical(void) {
+    static const uint32_t one_full[] = {FULL_CEILING};
+    static const uint32_t mtu_then_runs[] = {0, FULL_CEILING};
+    static const uint32_t runs_then_mtu[] = {FULL_CEILING, 0};
+    const struct arm arms[] = {
+        {FOUR_MB, 1, one_full, false, tt_LARGE_FRAGMENTATION_AUTO, 0, -1, 2},
+        {ONE_MB, 1, one_full, false, tt_LARGE_FRAGMENTATION_AUTO, 0, 3, 2},
+        {ONE_MB, 1, one_full, true, tt_LARGE_FRAGMENTATION_IP, 10000, -1, 3},
+        {ONE_MB, 2, mtu_then_runs, false, tt_LARGE_FRAGMENTATION_AUTO, 0, -1, 2},
+        {ONE_MB, 2, runs_then_mtu, false, tt_LARGE_FRAGMENTATION_AUTO, 0, -1, 2},
+    };
+    for (size_t i = 0; i < sizeof(arms) / sizeof(arms[0]); i++) {
+        struct wire_digest whole = run_arm(&arms[i], false);
+        EXPECT_EQ_U64(0, sender.large.encoded_by_range); // the control has no ranged encode
+        struct wire_digest by_range = run_arm(&arms[i], true);
+        EXPECT_EQ_U64(arms[i].samples, sender.large.encoded_by_range);
+        EXPECT_TRUE(range_call_count >= 2U * arms[i].samples);
+        EXPECT_TRUE(sent.runs + sent.repair_runs > 0); // to a second reader, a run of units already sent counts so
+        EXPECT_EQ_U32(whole.datagrams, by_range.datagrams);
+        EXPECT_EQ_U64(whole.bytes, by_range.bytes);
+        EXPECT_EQ_U64(whole.hash, by_range.hash);
+        if (whole.hash != by_range.hash) {
+            printf("test_hybrid_send: arm %zu wire differs: %u vs %u datagrams\n", i, whole.datagrams,
+                   by_range.datagrams);
+        }
+        if (arms[i].reliable) {
+            EXPECT_TRUE(sent.repairs > 0); // there were repairs, and none was a run
+            EXPECT_EQ_U32(0, sent.repair_runs);
+        }
+    }
+}
+
+// The point of encoding while sending, with runs: each send call's bytes are encoded just before that call - through
+// the last unit of its last run, no further - and the tail, alone in a call of its own, just before it. 4 MB to one
+// reader is fragment 0 at the publish, then 64 runs of 45 (one call), a run of 8 (a second) and the tail (a third).
+// Mutants: runs sent without encoding (torn delivery), or the whole sample encoded at the first call (the second range
+// ends at 4 MB).
+static void test_each_run_call_is_encoded_just_before_it_goes(void) {
+    ranged = true;
+    init_one(FOUR_MB, FULL_CEILING, false);
+    ranged = false;
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+    sim_settle(1, tt_SECOND);
+    expect_intact(0, 1);
+    EXPECT_EQ_U32(66, sent.runs + sent.mtu);
+    EXPECT_EQ_U64(1, sender.large.encoded_by_range);
+    EXPECT_EQ_U32(4, range_call_count);
+    if (range_call_count != 4) {
+        return;
+    }
+    static const uint32_t units_before[] = {0, 0, 64U * 45U, (64U * 45U) + 8U};
+    uint32_t end = 0;
+    for (uint32_t i = 0; i < 4; i++) {
+        EXPECT_EQ_U32(end, range_calls[i].offset); // contiguous, once each
+        EXPECT_EQ_U32(units_before[i], range_calls[i].units_before);
+        end = range_calls[i].offset + range_calls[i].length;
+        uint32_t want = FOUR_MB;
+        if (i == 0) {
+            want = LARGE_FIRST_PAYLOAD;
+        } else if (i < 3) {
+            want = large_offset(units_before[i + 1]);
+        }
+        EXPECT_EQ_U32(want, end); // through the last unit the call carries
+    }
+    // A send buffer of three datagrams: the first call takes three runs, and the rest is encoded at once, while the
+    // buffer drains - so when the publish returns its record is the whole sample, and nothing is encoded after it.
+    ranged = true;
+    init_one(FOUR_MB, FULL_CEILING, false);
+    ranged = false;
+    sim_start(0);
+    test_mock_nonblocking_room = 3;
+    sim_acting = SENDER_ID;
+    sample_seed = 2;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    EXPECT_EQ_U32(3, range_call_count);
+    EXPECT_TRUE(range_calls[2].buffer_full);
+    EXPECT_EQ_U32(FOUR_MB, range_calls[2].offset + range_calls[2].length);
+    const struct tt_LargeRecord* record = large_record_at(&pub, 0);
+    EXPECT_TRUE(!record->sent);
+    EXPECT_EQ_U32(record->cdr_len, record->encoded);
+    sim_drain();
+    for (int step = 0; step < 2000 && total_delivered() < 1; step++) {
+        test_mock_nonblocking_room = 3;
+        if (!sim_step()) {
+            test_mock_now += tt_MILLISECOND;
+        }
+    }
+    test_mock_nonblocking_room = -1;
+    expect_intact(0, 1);
+    EXPECT_EQ_U32(3, range_call_count);
+}
+
+// A sample that came in runs is lent where it was put together (the rmw subscription's 4 MB lend): the callback runs
+// with the large lend kind, tt_Sample_retain() keeps the very bytes the decode was handed, and they are the reader's
+// own assembly buffer, at the CDR offset - no copy between the runs and the lent sample. The next sample does not
+// touch it, and it is released. RELIABLE at 1% frame loss too, so units arrive both in runs and as MTU repairs into the
+// one buffer. The control is the forced-MTU arm (n = 1), which is lent the same way.
+static void test_a_sample_received_in_runs_is_lent_in_place(void) {
+#if tt_SAMPLE_LENDING
+    static const uint8_t modes[] = {tt_LARGE_FRAGMENTATION_IP, tt_LARGE_FRAGMENTATION_MTU};
+    for (size_t m = 0; m < 2; m++) {
+        for (int reliable = 0; reliable < 2; reliable++) {
+            _tt_CONFIG.reassembly_cap_off = 1;
+            init_one(ONE_MB, FULL_CEILING, reliable != 0);
+            _tt_CONFIG.reassembly_cap_off = 0;
+            pub.large_fragmentation = modes[m];
+            sim_start(reliable != 0 ? 10000 : 0);
+            struct reader* r = &readers[0];
+            r->retain_next = true;
+            EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+            sim_settle(1, 5 * tt_SECOND);
+            expect_intact(0, 1);
+            EXPECT_EQ_U32(modes[m] == tt_LARGE_FRAGMENTATION_IP ? 1U : 0U, sent.runs > 0 ? 1U : 0U);
+            if (reliable != 0) {
+                EXPECT_TRUE(sent.repairs > 0);
+            }
+            EXPECT_EQ_INT(tt_RET_OK, r->retain_result);
+            EXPECT_EQ_INT(tt_LEND_LARGE, r->lend_kind);
+            EXPECT_TRUE(r->held.payload != NULL && r->held.payload == r->decoded_at);
+            EXPECT_EQ_U32(ROUNDUP(ONE_MB), r->held.length);
+            bool in_assembly = false;
+            for (size_t k = 0; k < sizeof(r->granted) / sizeof(r->granted[0]); k++) {
+                in_assembly =
+                    in_assembly || (r->granted[k] != NULL && r->held.payload == r->granted[k] + tt_LARGE_CDR_OFFSET);
+            }
+            EXPECT_TRUE(in_assembly);
+            EXPECT_EQ_INT(tt_RET_OK, sim_publish(2)); // a second sample, assembled while the first is held
+            sim_settle(2, 5 * tt_SECOND);
+            expect_intact(0, 2);
+            bool kept = r->held.payload != NULL;
+            for (uint32_t i = 0; kept && i < ONE_MB; i++) {
+                kept = r->held.payload[i] == pattern(i, 1);
+            }
+            EXPECT_TRUE(kept);
+            EXPECT_EQ_INT(tt_RET_OK, tt_Sample_release(&r->ctx, &r->held));
+        }
+    }
+#endif
+}
+
 int main(void) {
     test_small_sample_goes_as_one_run_and_its_tail();
     test_large_samples_go_in_runs_of_n_max();
@@ -1670,6 +1936,9 @@ int main(void) {
     test_a_failed_path_needs_the_tail_through();
     test_the_objective_is_wire_bytes();
     test_the_objective_reads_the_posterior_mean();
+    test_runs_with_a_ranged_encode_leave_the_wire_byte_identical();
+    test_each_run_call_is_encoded_just_before_it_goes();
+    test_a_sample_received_in_runs_is_lent_in_place();
     free(sim_queue);
     if (test_result() != 0) {
         return 1;
