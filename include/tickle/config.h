@@ -786,6 +786,12 @@
 #ifndef tt_HYBRID_SCALE_MIN_EVENTS
 #define tt_HYBRID_SCALE_MIN_EVENTS 10U
 #endif
+// Rule (e) on the reader's side: every run of a sample lost with its tail through is a path that drops IP fragments
+// when frame loss alone would do that - over this sample and the writer's all-lost ones just before - with less than
+// this chance.
+#ifndef tt_HYBRID_PATH_ALPHA
+#define tt_HYBRID_PATH_ALPHA 1e-6
+#endif
 // Samples a node can be reassembling at once, from any mix of senders. When all are busy and a fragment
 // of another sample arrives, the reassembly started longest ago is abandoned and counted
 // (tt_Context.frag_abandoned) - never dropped silently, since a silent drop here looks exactly like loss.
