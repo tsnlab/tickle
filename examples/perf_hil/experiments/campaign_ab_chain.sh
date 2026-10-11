@@ -29,7 +29,7 @@
 # echoes that value AND carries a "build flags verified" line for every TickLE build (campaign_sweep.sh reads each
 # build's own traced log with build_flags_check.sh); otherwise the chain stops VOID.
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
-# shellcheck source=gate_v2_lib.sh
+# shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
 . ./examples/perf_hil/experiments/gate_v2_lib.sh
 layout_cflags_default
 A=${A:?A=<sha> the parent}; B=${B:?B=<sha> the change}; TAG=${TAG:?TAG=<name>}; REPS=${REPS:-3}

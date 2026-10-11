@@ -74,16 +74,47 @@ PIN=${PIN:-}
 # the next rows across c12 and c16.
 SERVER_PID_FILE="/tmp/tickle_${SCENARIO}_server.pid"
 CLIENT_PID_FILE="/tmp/tickle_${SCENARIO}_client.pid"
+# INSN_COUNT=1 (gate v2 A2, 2026-10-11; experiments/gate_v2_lib.sh): each process runs under perf stat counting its
+# own instructions:u and instructions:k, and its RESULT line gets insn_u= insn_k= insn=ok (or insn=fail:<why>) appended.
+# For TickLE-vs-TickLE A/Bs, where both arms carry the same instrument; a cross-vendor campaign leaves it off, so no
+# framework runs under an instrument the others do not. The recorded PID is then perf's, and the bench its child -
+# stop_remote signals the child and waits for perf to write its counts.
+# shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../experiments" && pwd)/gate_v2_lib.sh"
+INSN_COUNT="${INSN_COUNT:-0}"
+SERVER_INSN="/tmp/tickle_${SCENARIO}_server.insn"
+CLIENT_INSN="/tmp/tickle_${SCENARIO}_client.insn"
+SERVER_PRE="" CLIENT_PRE=""
+if [ "$INSN_COUNT" = 1 ]; then
+    SERVER_PRE=$(insn_prefix "$SERVER_INSN")
+    CLIENT_PRE=$(insn_prefix "$CLIENT_INSN")
+fi
 # stop_remote <host> <pid file> <binary>: SIGINT (each bench's own clean exit, which prints its RESULT line), wait up
-# to 10 s for it to go, then SIGKILL. Does nothing if the PID is no longer that binary.
+# to 10 s for it to go, then SIGKILL. Does nothing if neither the PID nor its child is that binary. When the PID is
+# perf's (INSN_COUNT=1), waits up to 5 s more for perf itself to exit, so its counts are written.
 stop_remote() {
     # shellcheck disable=SC2029 # $2, $3 and $REMOTE_DIR are expanded here on purpose; \$p on the rpi
     ssh_run "$1" "p=\$(cat '$2' 2>/dev/null) || exit 0
-        is_it() { case \$(readlink /proc/\$p/exe 2>/dev/null) in */$REMOTE_DIR/$3) return 0 ;; esac; return 1; }
-        is_it || exit 0
-        kill -INT \$p
-        for _ in \$(seq 1 100); do is_it || exit 0; sleep 0.1; done
-        kill -KILL \$p && echo \"$3 \$p ignored SIGINT for 10 s: SIGKILL\" >&2" || true
+        $(remote_child_of_perf)
+        t=\$(child_exe \$p '*/$REMOTE_DIR/$3') || exit 0
+        is_it() { case \$(readlink /proc/\$t/exe 2>/dev/null) in */$REMOTE_DIR/$3) return 0 ;; esac; return 1; }
+        kill -INT \$t
+        gone=0
+        for _ in \$(seq 1 100); do is_it || { gone=1; break; }; sleep 0.1; done
+        [ \$gone = 1 ] || { kill -KILL \$t && echo \"$3 \$t ignored SIGINT for 10 s: SIGKILL\" >&2; }
+        if [ \$t != \$p ]; then for _ in \$(seq 1 50); do [ -d /proc/\$p ] || break; sleep 0.1; done; fi" || true
+}
+# with_insn <host> <insn file>: appends the process's counts to each RESULT line on stdin (INSN_COUNT=1 only).
+with_insn() {
+    if [ "$INSN_COUNT" != 1 ]; then
+        cat
+        return 0
+    fi
+    local counts fields
+    # shellcheck disable=SC2029 # $2 is expanded here on purpose
+    counts=$(ssh_run "$1" "cat '$2' 2>/dev/null; rm -f '$2'" || true)
+    fields=$(insn_fields "$counts")
+    sed "s/\$/ $fields/"
 }
 # shellcheck disable=SC2329 # invoked by the EXIT trap below
 stop_both() {
@@ -94,9 +125,10 @@ trap stop_both EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 
-ssh_run "$RPI_SERVER" "cd ~/$REMOTE_DIR; nohup $PIN ./server $CLIENT_ARGS > /tmp/tickle_${SCENARIO}_server.log 2>&1 < /dev/null & echo \$! > $SERVER_PID_FILE"
+ssh_run "$RPI_SERVER" "rm -f $SERVER_INSN; cd ~/$REMOTE_DIR; nohup $PIN $SERVER_PRE ./server $CLIENT_ARGS > /tmp/tickle_${SCENARIO}_server.log 2>&1 < /dev/null & echo \$! > $SERVER_PID_FILE"
 sleep "$PRE_CLIENT_SLEEP"
-ssh_run "$RPI_CLIENT" "cd ~/$REMOTE_DIR && echo \$\$ > $CLIENT_PID_FILE && exec $PIN ./client $CLIENT_ARGS" | grep '^RESULT:'
+client_out=$(ssh_run "$RPI_CLIENT" "rm -f $CLIENT_INSN; cd ~/$REMOTE_DIR && echo \$\$ > $CLIENT_PID_FILE && exec $PIN $CLIENT_PRE ./client $CLIENT_ARGS" | grep '^RESULT:')
+with_insn "$RPI_CLIENT" "$CLIENT_INSN" <<<"$client_out"
 # SIGINT the server right after the client finishes, then read its log - not just a fixed sleep
 # (2026-09-21, real bug found the hard way): some scenarios' own server.c only prints its own
 # RESULT line once interrupted or once its own (possibly much longer than the client's) internal
@@ -104,4 +136,5 @@ ssh_run "$RPI_CLIENT" "cd ~/$REMOTE_DIR && echo \$\$ > $CLIENT_PID_FILE && exec 
 # example. A bare `sleep 1; cat log` raced that and found no RESULT line yet, and `pipefail` then
 # aborted the whole script (the real symptom this fixes) before ever reaching the stop below.
 stop_remote "$RPI_SERVER" "$SERVER_PID_FILE" server
-ssh_run "$RPI_SERVER" "cat /tmp/tickle_${SCENARIO}_server.log" | grep '^RESULT:'
+server_out=$(ssh_run "$RPI_SERVER" "cat /tmp/tickle_${SCENARIO}_server.log" | grep '^RESULT:')
+with_insn "$RPI_SERVER" "$SERVER_INSN" <<<"$server_out"

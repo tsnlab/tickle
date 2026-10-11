@@ -87,6 +87,13 @@ BEST_EFFORT_QOS = "Q1"
 KEEP_LAST_QOS = "Q2"   # RELIABLE + KEEP_LAST 64 (campaign_sweep.sh matrix)
 
 GATE_METRIC = "wire_role_packets_per_sample"
+# Gate v2 A2 (2026-10-11): executed instructions per sample, per process, from the insn_u=/insn_k= fields
+# tickle/run_scenario.sh appends under INSN_COUNT=1 (perf stat over the process's whole life). Lower is better. The
+# divisor is the process's own samples - the client's sent=, the server's recv= - or, for a line that has neither (the
+# latency server), the client's sent= of the same row, which on a latency cell counts every round trip including the
+# warm-up and cool-down edges, exactly the round trips the counted process served. Never in DIRECTION: the cross-vendor
+# verdicts must not read a metric only TickLE carries; ab_compare.py reads INSN_METRICS.
+INSN_METRICS = {"insn_u_per_sample": "insn_u", "insn_k_per_sample": "insn_k"}
 GATE_ROLE = "client"
 ONE_DATAGRAM_MAX = 1.5   # below this is one datagram per sample
 TWO_DATAGRAM_MIN = 2.0   # at or above this is two
@@ -129,6 +136,8 @@ def parse(path):
             fw["void"].append(m["verdict"])
             continue
         # Split the concatenated RESULT lines back into their roles before reading any number.
+        insn = []  # (role, {insn_u, insn_k}, own divisor or None), resolved once the client's sent= is known
+        row_sent = None
         for chunk in re.split(r"(?=role=)", m["fields"]):
             role_m = re.match(r"role=(\w+)", chunk)
             role = role_m.group(1) if role_m else "client"
@@ -146,6 +155,12 @@ def parse(path):
                     renamed.append((k[len("win_"):], v))
                 else:
                     renamed.append((k, v))
+            own = dict(renamed)
+            counts = {k: own[k] for k in INSN_METRICS.values() if k in own}
+            if counts:
+                insn.append((role, counts, own.get("sent") if role == "client" else own.get("recv")))
+            if role == "client" and "sent" in own:
+                row_sent = own["sent"]
             for k, v in renamed:
                 if k in ("sent", "recv"):
                     fw["delivery"][k] = float(v)
@@ -156,6 +171,16 @@ def parse(path):
                         fw["vals"].setdefault(f"{role}.{k}", []).append(float(v))
                     except ValueError:
                         pass
+        for role, counts, div in insn:
+            try:
+                d = float(div if div is not None else row_sent)
+            except (TypeError, ValueError):
+                continue
+            if d <= 0:
+                continue
+            for metric, field in INSN_METRICS.items():
+                if field in counts:
+                    fw["vals"].setdefault(f"{role}.{metric}", []).append(float(counts[field]) / d)
     return cells
 
 

@@ -43,7 +43,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PH="$(cd "$HERE/.." && pwd)"
 REPO="$(cd "$PH/../.." && pwd)"
-# shellcheck source=gate_v2_lib.sh
+# shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
 . "$HERE/gate_v2_lib.sh"
 REPS="${REPS:-3}"
 DUR="${DUR:-5}"
@@ -63,6 +63,17 @@ EDGE_MAX_S="${EDGE_MAX_S:-20}"
 # FWS limits the frameworks (2026-09-27): "tickle" alone for a TickLE-only A/B such as WIRE_PLAN's bundle against its
 # parent, where the vendors do not change. The default is all three.
 FWS="${FWS:-tickle cyclonedds fastdds}"
+# INSN_COUNT (gate v2 A2, 2026-10-11): every TickLE process runs under perf stat and its RESULT line carries insn_u=
+# insn_k= insn=ok (tickle/run_scenario.sh), the primary metric of a TickLE-vs-TickLE A/B. Default 1 when FWS is tickle
+# alone, 0 otherwise; refused with a vendor in FWS, so no framework runs under an instrument the others do not.
+if [ -z "${INSN_COUNT:-}" ]; then
+    if [ "$FWS" = tickle ]; then INSN_COUNT=1; else INSN_COUNT=0; fi
+fi
+case "$INSN_COUNT:$FWS" in
+1:tickle | 0:*) ;;
+*) echo "INSN_COUNT=$INSN_COUNT with FWS='$FWS': instruction counting is for FWS=tickle only (and 0 or 1)" >&2; exit 1 ;;
+esac
+export INSN_COUNT
 DRY_RUN="${DRY_RUN:-0}"
 OUT="${OUT:-/tmp/tickle_campaign_$(date +%Y%m%d-%H%M%S).txt}"
 
@@ -252,6 +263,7 @@ case "$TICKLE_EXTRA_CFLAGS" in
     ;;
 esac
 say "TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (TickLE core and bench; empty: the plain build)"
+say "INSN_COUNT=$INSN_COUNT (perf stat instructions:u/k on every TickLE process; 1 only with FWS=tickle)"
 say "--- plan: ${#MATRIX[@]} combinations x 3 frameworks x ${REPS} reps = $(( ${#MATRIX[@]} * 3 * REPS )) runs ---"
 i=0
 for spec in "${MATRIX[@]}"; do
@@ -436,12 +448,20 @@ cell() {
     [ -n "$common" ] && args="$common $args"
     # TickLE's extra args select KEEP_ALL; the DDS harnesses have it as their default (section 5).
     [ "$fw" = tickle ] && [ -n "$extra" ] && args="$extra $args"
-    local res
+    local res raw nlines ninsn
     # shellcheck disable=SC2086 # $args is deliberately word-split into the harness's argv
-    res=$(cd "$PH/$fw" && timeout 180 ./run_scenario.sh "${scenario}_${payload}" $args 2>/dev/null \
-        | grep '^RESULT:' | tr '\n' ' ' | sed -E 's/RESULT: framework=[a-z]+ scenario=[a-z_0-9]+ //g' || true)
+    raw=$(cd "$PH/$fw" && timeout 180 ./run_scenario.sh "${scenario}_${payload}" $args 2>/dev/null | grep '^RESULT:' || true)
+    res=$(tr '\n' ' ' <<<"$raw" | sed -E 's/RESULT: framework=[a-z]+ scenario=[a-z_0-9]+ //g; s/ +$//' || true)
     local verdict=ok
     [ -n "$res" ] || verdict="VOID(no RESULT line)"
+    # Gate v2 A2: under INSN_COUNT=1 every TickLE RESULT line (client and server) must carry its counts. A line without
+    # them could not be counted, and is VOID rather than a row the primary metric silently skips.
+    if [ "$fw" = tickle ] && [ "$INSN_COUNT" = 1 ] && [ -n "$res" ]; then
+        nlines=$(grep -c '^RESULT:' <<<"$raw" || true)
+        ninsn=$(grep -o ' insn=ok' <<<"$raw" | wc -l || true)
+        [ "$nlines" -ge 2 ] && [ "$ninsn" = "$nlines" ] ||
+            verdict="VOID(insn:$ninsn/${nlines}_lines_counted:$(grep -oE 'insn=fail:[a-z_]+' <<<"$raw" | head -1 || true))"
+    fi
     [ "$left" = none ] || verdict="VOID(leftover $left)"
     # Every TickLE figure published before 2026-09-26 was an -O0 core against -O2 DDS packages.
     # A TickLE row that does not state core_build=release is void, not assumed.
