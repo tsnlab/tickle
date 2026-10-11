@@ -157,7 +157,6 @@ static uint8_t reader_id(int i) {
 // reader the wide window, pre-matched on the writer as its announce would.
 static void init_set(uint32_t len, int count, const uint32_t* ceilings, bool reliable) {
     test_mock_reset();
-    test_mock_hybrid_reset();
     sample_len = len;
     sample_seed = 1;
     for (int i = 0; i < READERS; i++) {
@@ -243,6 +242,19 @@ static uint8_t sim_acting;
 static uint32_t sim_frame_loss_ppm; // per frame: a datagram of f frames is lost when any of them is
 static uint32_t sim_rng;
 static bool sim_drop_fragmented; // the tc filter: every datagram IP had to fragment is dropped
+// The reader host's IP reassembly, modelled as the kernel's (the PC experiment's reading of it): a fragmented datagram
+// that lost a frame holds its arrived frames' truesize for the queue lifetime; while what is held exceeds the
+// threshold, every fragmented datagram is dropped whole on arrival. 0 bytes: not modelled (no squeeze).
+#define SIM_REASM_HELD 262144U
+#define SIM_TRUESIZE 2048U
+static uint64_t sim_reasm_threshold;
+static uint64_t sim_reasm_lifetime;
+static uint64_t sim_reasm_until[SIM_REASM_HELD];
+static uint32_t sim_reasm_bytes[SIM_REASM_HELD];
+static uint32_t sim_reasm_head;
+static uint32_t sim_reasm_tail;
+static uint64_t sim_reasm_held;
+static uint32_t sim_reasm_refused; // fragmented datagrams dropped for want of memory
 
 // What the writer sent, by kind: first transmissions and repairs, and the largest repair.
 struct sent_stats {
@@ -375,17 +387,39 @@ static bool sim_frame_lost(void) {
     return draw < sim_frame_loss_ppm;
 }
 
+// The modelled reassembly memory at the current time: what has expired is let go.
+static void sim_reasm_expire(void) {
+    while (sim_reasm_head != sim_reasm_tail && sim_reasm_until[sim_reasm_head % SIM_REASM_HELD] <= test_mock_now) {
+        sim_reasm_held -= sim_reasm_bytes[sim_reasm_head % SIM_REASM_HELD];
+        sim_reasm_head++;
+    }
+}
+
 static bool sim_lost(const struct sim_datagram* d) {
     uint32_t frames = (d->len + 8U + FRAME_PAYLOAD - 1U) / FRAME_PAYLOAD;
     if (sim_drop_fragmented && frames > 1U && d->from == SENDER_ID) {
         sent.frames_dropped += frames;
         return true;
     }
-    bool lost = false;
-    for (uint32_t i = 0; i < frames; i++) {
-        lost = sim_frame_lost() || lost; // every frame drawn, so the stream of draws does not depend on n
+    if (sim_reasm_threshold != 0 && frames > 1U) {
+        sim_reasm_expire();
+        if (sim_reasm_held > sim_reasm_threshold) {
+            sim_reasm_refused++;
+            return true;
+        }
     }
-    return lost;
+    uint32_t arrived = 0;
+    for (uint32_t i = 0; i < frames; i++) {
+        arrived += sim_frame_lost() ? 0U : 1U; // every frame drawn, so the stream of draws does not depend on n
+    }
+    if (sim_reasm_threshold != 0 && frames > 1U && arrived < frames && arrived > 0 &&
+        sim_reasm_tail - sim_reasm_head < SIM_REASM_HELD) {
+        sim_reasm_until[sim_reasm_tail % SIM_REASM_HELD] = test_mock_now + sim_reasm_lifetime;
+        sim_reasm_bytes[sim_reasm_tail % SIM_REASM_HELD] = arrived * SIM_TRUESIZE;
+        sim_reasm_held += (uint64_t)arrived * SIM_TRUESIZE;
+        sim_reasm_tail++;
+    }
+    return arrived < frames;
 }
 
 static void sim_deliver(struct sim_datagram* d) {
@@ -466,6 +500,11 @@ static void sim_start(uint32_t frame_loss_ppm) {
     sim_frame_loss_ppm = frame_loss_ppm;
     sim_rng = 11;
     sim_drop_fragmented = false;
+    sim_reasm_threshold = 0;
+    sim_reasm_lifetime = 30U * tt_SECOND;
+    sim_reasm_head = sim_reasm_tail = 0;
+    sim_reasm_held = 0;
+    sim_reasm_refused = 0;
     memset(&sent, 0, sizeof(sent));
     memset(seen_unit, 0, sizeof(seen_unit));
     test_mock_send_hook = sim_capture;
@@ -725,73 +764,236 @@ static void test_reliable_auto_starts_at_mtu(void) {
     expect_intact(0, 2);
 }
 
-// --- the reader's cap (DESIGN.md section 8, "BEST_EFFORT") -----------------------------------------------------------
+// --- the reader's cap: the control law (DESIGN.md section 8, "The objective and the control law", decision 3) -------
 
 #define ONE_MB_UNITS 723U
-#define F16_UNITS 12U
+#define R_30MBS (ONE_MB_UNITS * 30.0) // 1 MB at 30 Hz, in units a second
 
-// The cap at U units a second (one second's worth received) and a forced p.
-static uint32_t cap_at(struct tt_Context* node, uint32_t units_per_s, double p) {
-    node->hybrid.tick_units = units_per_s;
-    hybrid_test_forced_p = p;
-    uint32_t cap = hybrid_reader_cap(node, tt_SECOND, 45);
-    hybrid_test_forced_p = -1.0;
-    return cap;
-}
-
-// DESIGN.md's own examples, at the kernel's defaults (4 MB, 30 s, 2 KiB a fragment): 1 MB at 30 Hz gives 31 at 0.01%,
-// 3 at 0.1%, 1 at 1%; 16 KB at 100 Hz gives 5 at 1% and 1 at 5%. Nothing received: n_max.
-static void test_the_reader_cap_is_the_designs(void) {
+// A reader for the control law on its own (n_max 45): its MTU baseline `events` lost of `frames`.
+static struct tt_HybridState* law_reader(uint32_t events, uint32_t frames) {
     init_one(SMALL_LEN, FULL_CEILING, false);
-    struct tt_Context* node = &readers[0].ctx;
-    EXPECT_TRUE(node->hybrid.rx_capable);
-    EXPECT_EQ_U32(4194304, node->hybrid.frag_high_thresh);
-    EXPECT_EQ_U32(30, node->hybrid.frag_time_s);
-    EXPECT_EQ_U32(31, cap_at(node, ONE_MB_UNITS * 30U, 0.0001));
-    EXPECT_EQ_U32(3, cap_at(node, ONE_MB_UNITS * 30U, 0.001));
-    EXPECT_EQ_U32(1, cap_at(node, ONE_MB_UNITS * 30U, 0.01));
-    EXPECT_EQ_U32(5, cap_at(node, F16_UNITS * 100U, 0.01));
-    EXPECT_EQ_U32(1, cap_at(node, F16_UNITS * 100U, 0.05));
-    EXPECT_EQ_U32(45, cap_at(node, 0, 0.5));
-    // A smaller threshold caps lower: a quarter of it at 0.01% gives 7.
-    node->hybrid.frag_high_thresh = 4194304U / 4U;
-    EXPECT_EQ_U32(7, cap_at(node, ONE_MB_UNITS * 30U, 0.0001));
-    // Quantised as advertised: 31 -> 16 units, 3 -> 2, 1 -> 1, n_max -> the configured ceiling.
-    EXPECT_EQ_U32(28U + (16U * 1454U), hybrid_cap_bytes(node, 31, 45));
-    EXPECT_EQ_U32(28U + (2U * 1454U), hybrid_cap_bytes(node, 3, 45));
-    EXPECT_EQ_U32(28U + 1454U, hybrid_cap_bytes(node, 1, 45));
-    EXPECT_EQ_U32(FULL_CEILING, hybrid_cap_bytes(node, 45, 45));
-    // ... and each reads back as exactly that many units of either type pair.
-    EXPECT_EQ_U32(16, hybrid_units_within(hybrid_cap_bytes(node, 31, 45), false));
-    EXPECT_EQ_U32(16, hybrid_units_within(hybrid_cap_bytes(node, 31, 45), true));
-    EXPECT_EQ_U32(1, hybrid_units_within(hybrid_cap_bytes(node, 1, 45), true));
+    struct tt_HybridState* hybrid = &readers[0].ctx.hybrid;
+    hybrid->mtu_loss = (struct tt_LossEstimate) {events, frames};
+    return hybrid;
 }
 
-// The limits come from the HAL at create, the kernel's defaults where they cannot be read; a context whose ceiling
-// holds one unit (a core-default build) keeps no cap at all.
-static void test_the_reader_reads_the_kernels_limits(void) {
-    test_mock_reset();
-    test_mock_hybrid_reset();
-    static struct tt_Context node;
-    test_mock_reasm_high_thresh = 1000000;
-    test_mock_reasm_time_s = 7;
-    init_bare_node(&node, 9);
-    EXPECT_EQ_U32(1000000, node.hybrid.frag_high_thresh);
-    EXPECT_EQ_U32(7, node.hybrid.frag_time_s);
-    test_mock_reasm_limits_readable = false;
-    init_bare_node(&node, 9);
-    EXPECT_EQ_U32(tt_HYBRID_IPFRAG_HIGH_THRESH, node.hybrid.frag_high_thresh);
-    EXPECT_EQ_U32(tt_HYBRID_IPFRAG_TIME_S, node.hybrid.frag_time_s);
-    uint16_t setting = _tt_CONFIG.ip_reassembly_max;
-    _tt_CONFIG.ip_reassembly_max = 1472;
-    init_bare_node(&node, 9);
-    EXPECT_TRUE(!node.hybrid.rx_capable);
-    node.hybrid.tick_units = 100000;
-    hybrid_reader_tick(&node, tt_SECOND);
-    hybrid_reader_tick(&node, 3 * tt_SECOND);
-    EXPECT_EQ_U32(1472, node.hybrid.advertised); // unchanged: nothing to cap
-    EXPECT_EQ_INT(0, test_mock_reasm_failure_reads);
-    _tt_CONFIG.ip_reassembly_max = setting;
+// One decision at `now` over a window of `sent` runs of n, `lost` of them lost, R units a second.
+static void law_window(struct tt_HybridState* hybrid, uint64_t now, uint32_t run_n, uint32_t sent, uint32_t lost,
+                       double units_per_s) {
+    hybrid->window = (struct tt_RunWindow) {sent, lost, sent * run_n};
+    hybrid->window_n = run_n;
+    hybrid_control(hybrid, now, units_per_s, 45);
+}
+
+// The test as pre-defined: frame loss as (1 - p)^n predicts is no collapse; the PC's collapse (30 MB/s, 0.1%, n = 8:
+// q 0.46) is one; against L0 at p_mtu's upper bound (0.136%: L0 1.08% at n = 8, 10.8 runs of 1,000) 25 lost is
+// significant and 20 is not; a significant excess under 2 L0 is not a collapse; and nothing is decided without enough
+// runs, losses, or an MTU baseline. A clean window loses no more than R L0.
+static void test_the_collapse_test_is_the_designs(void) {
+    struct tt_LossEstimate mtu = {30, 30000}; // p_mtu 0.1%
+    struct tt_RunWindow consistent = {1000, 8, 8000};
+    EXPECT_TRUE(!hybrid_collapsed(&consistent, &mtu));
+    EXPECT_TRUE(hybrid_clean(&consistent, &mtu));
+    struct tt_RunWindow pc = {1000, 540, 8000};
+    EXPECT_TRUE(hybrid_collapsed(&pc, &mtu));
+    EXPECT_TRUE(!hybrid_clean(&pc, &mtu));
+    struct tt_RunWindow excess = {1000, 25, 8000};
+    EXPECT_TRUE(hybrid_collapsed(&excess, &mtu));
+    EXPECT_TRUE(!hybrid_clean(&excess, &mtu));
+    struct tt_RunWindow within = {1000, 20, 8000};
+    EXPECT_TRUE(!hybrid_collapsed(&within, &mtu));
+    EXPECT_TRUE(!hybrid_clean(&within, &mtu)); // neither: the window gathers more
+    // Significant (z near 6) but only 1.2x L0 on a vast exposure: not far below (1 - p)^n.
+    struct tt_LossEstimate vast = {10000, 10000000};
+    struct tt_RunWindow slight = {125000, 1200, 1000000};
+    EXPECT_TRUE(!hybrid_collapsed(&slight, &vast));
+    struct tt_RunWindow few_runs = {15, 15, 120};
+    EXPECT_TRUE(!hybrid_collapsed(&few_runs, &mtu));
+    EXPECT_TRUE(!hybrid_clean(&few_runs, &mtu));
+    struct tt_RunWindow few_lost = {100, 3, 800};
+    struct tt_LossEstimate none_lost = {0, 30000};
+    EXPECT_TRUE(!hybrid_collapsed(&few_lost, &none_lost));
+    struct tt_LossEstimate no_baseline = {0, 0};
+    EXPECT_TRUE(!hybrid_collapsed(&pc, &no_baseline));
+    // A fragment path refusing every run on a young baseline (200 tails, none lost: p_hi 1.5%, L0 49% at n = 45) is a
+    // collapse all the same - the run-level test does not need the many MTU units a per-frame comparison would.
+    struct tt_LossEstimate young = {0, 200};
+    struct tt_RunWindow refused = {510, 510, 510U * 45U};
+    EXPECT_TRUE(hybrid_collapsed(&refused, &young));
+    // Twice L0 on that baseline (L0 11.4% at n = 8) but on 20 runs: not significant (z 1.6).
+    struct tt_RunWindow small = {20, 5, 160};
+    EXPECT_TRUE(!hybrid_collapsed(&small, &young));
+}
+
+// A reader starts at two units and doubles per clean window (slow start) to n_max. A collapse at 45 with the PC's
+// survival there (30 MB/s, 0.1%: q 0.08 against 0.96) remembers the collapse point the survival shows, 45 q / q0 = 3.8
+// -> 4, not the 45 the growth overshot to, and drops the cap at once to drop(4) = 3. A mild collapse (q 0.62 at 45:
+// the PC's 0.01%) remembers 30 and drops to 0.7 x 30 = 21.
+static void test_slow_start_and_the_drop_on_a_collapse(void) {
+    struct tt_HybridState* hybrid = law_reader(30, 30000);
+    EXPECT_EQ_U32(2, hybrid->cap);
+    EXPECT_EQ_U32(28U + (2U * 1454U), hybrid->advertised);
+    EXPECT_EQ_U32(30 * tt_SECOND, hybrid->lifetime_ns);
+    uint64_t t = 10 * tt_SECOND;
+    static const uint32_t caps[] = {4, 8, 16, 32, 45, 45};
+    for (size_t i = 0; i < sizeof(caps) / sizeof(caps[0]); i++) {
+        law_window(hybrid, t += tt_SECOND, hybrid->cap, 100, 0, R_30MBS);
+        EXPECT_EQ_U32(caps[i], hybrid->cap);
+    }
+    law_window(hybrid, t += tt_SECOND, 45, 1000, 920, R_30MBS);
+    EXPECT_EQ_U64(1, hybrid->collapses);
+    EXPECT_EQ_U32(4, hybrid->n_fail);
+    EXPECT_EQ_U32(3, hybrid->cap);
+    EXPECT_EQ_U32(0, hybrid->window.sent); // decided: the window starts again
+    // The drop rule on its own: 0.7 n, n - 1 when that is less of a drop.
+    EXPECT_EQ_U32(21, hybrid_drop(30));
+    EXPECT_EQ_U32(3, hybrid_drop(4));
+    EXPECT_EQ_U32(2, hybrid_drop(3));
+    EXPECT_EQ_U32(1, hybrid_drop(2));
+    hybrid = law_reader(30, 30000);
+    hybrid->cap = 45;
+    law_window(hybrid, t, 45, 1000, 380, R_30MBS);
+    EXPECT_EQ_U32(30, hybrid->n_fail);
+    EXPECT_EQ_U32(21, hybrid->cap);
+}
+
+// After a collapse (ceiling 30, cap 21) the reader holds for tau - windows then are about the full memory draining,
+// not the cap, and are dropped whatever they show - then grows fast, half the way a tick, to the plateau 29, and
+// stays there: no probe before 2 tau. At 2 tau it probes above the ceiling (1.25 x 30 -> 38) and judges the probe over
+// a whole tau; a collapse during it keeps the ceiling, drops again, and doubles the wait.
+static void test_the_hold_and_the_timed_probe(void) {
+    struct tt_HybridState* hybrid = law_reader(30, 30000);
+    hybrid->cap = 45;
+    uint64_t t0 = 100 * tt_SECOND;
+    law_window(hybrid, t0, 45, 1000, 380, R_30MBS);
+    EXPECT_EQ_U32(21, hybrid->cap);
+    EXPECT_EQ_U64(t0 + (30 * tt_SECOND), hybrid->hold_until_ns);
+    EXPECT_EQ_U64(t0 + (60 * tt_SECOND), hybrid->probe_at_ns);
+    uint64_t t = t0;
+    for (int i = 0; i < 29; i++) {
+        law_window(hybrid, t += tt_SECOND, 21, 1000, 900, R_30MBS); // the memory still full: not judged
+    }
+    EXPECT_EQ_U64(1, hybrid->collapses);
+    EXPECT_EQ_U32(21, hybrid->cap);
+    hybrid_control(hybrid, t0 + (30 * tt_SECOND), R_30MBS, 45); // and not kept: the hold's last window is gone
+    EXPECT_EQ_U64(1, hybrid->collapses);
+    t = t0 + (29 * tt_SECOND);
+    static const uint32_t caps[] = {25, 27, 28, 29, 29};
+    for (size_t i = 0; i < sizeof(caps) / sizeof(caps[0]); i++) {
+        law_window(hybrid, t += tt_SECOND, hybrid->cap, 100, 0, R_30MBS);
+        EXPECT_EQ_U32(caps[i], hybrid->cap);
+    }
+    while (t < t0 + (59 * tt_SECOND)) {
+        law_window(hybrid, t += tt_SECOND, hybrid->cap, 100, 0, R_30MBS);
+        EXPECT_EQ_U32(29, hybrid->cap); // no probe before 2 tau
+    }
+    EXPECT_EQ_U64(0, hybrid->probes);
+    law_window(hybrid, t = t0 + (60 * tt_SECOND), 29, 100, 0, R_30MBS);
+    EXPECT_EQ_U64(1, hybrid->probes);
+    EXPECT_EQ_U32(38, hybrid->cap);
+    law_window(hybrid, t += 10 * tt_SECOND, 38, 100, 0, R_30MBS); // clean, but not a whole tau yet
+    EXPECT_EQ_U32(38, hybrid->cap);
+    EXPECT_EQ_U32(30, hybrid->n_fail);
+    law_window(hybrid, t += tt_SECOND, 38, 1000, 150, R_30MBS); // collapses: survival says 34, the ceiling stands
+    EXPECT_EQ_U64(1, hybrid->probe_failures);
+    EXPECT_EQ_U32(30, hybrid->n_fail);
+    EXPECT_EQ_U32(21, hybrid->cap);
+    EXPECT_EQ_U32(1, hybrid->backoff);
+    EXPECT_EQ_U64(t + (120 * tt_SECOND), hybrid->probe_at_ns); // 2 tau, doubled
+}
+
+// A probe that stays clean for a whole tau moves the ceiling up a step (1.25 x the probed n); past n_max there is no
+// ceiling left, and the cap grows as at the start.
+static void test_a_probe_that_holds_moves_the_ceiling_up(void) {
+    struct tt_HybridState* hybrid = law_reader(30, 30000);
+    hybrid->cap = 16;
+    uint64_t t0 = 100 * tt_SECOND;
+    law_window(hybrid, t0, 16, 1000, 390, R_30MBS); // q 0.61 at 16: ceiling 10, cap 7
+    EXPECT_EQ_U32(10, hybrid->n_fail);
+    EXPECT_EQ_U32(7, hybrid->cap);
+    uint64_t t = t0 + (30 * tt_SECOND);
+    while (t < t0 + (60 * tt_SECOND)) {
+        law_window(hybrid, t += tt_SECOND, hybrid->cap, 100, 0, R_30MBS);
+    }
+    EXPECT_EQ_U32(13, hybrid->cap); // the probe: 1.25 x 10 -> 13
+    while (t < t0 + (90 * tt_SECOND)) {
+        law_window(hybrid, t += tt_SECOND, hybrid->cap, 100, 0, R_30MBS);
+    }
+    EXPECT_EQ_U32(17, hybrid->n_fail); // held for tau: the ceiling moves up to 1.25 x 13 -> 17
+    EXPECT_EQ_U32(0, hybrid->backoff);
+    law_window(hybrid, t += tt_SECOND, hybrid->cap, 100, 0, R_30MBS);
+    EXPECT_EQ_U32(15, hybrid->cap); // and the cap grows towards its plateau, 16
+    hybrid->n_fail = 40;
+    hybrid->cap = 39;
+    hybrid->probe_at_ns = 0;
+    law_window(hybrid, t += tt_SECOND, 39, 100, 0, R_30MBS);
+    EXPECT_EQ_U32(45, hybrid->cap); // a probe at 1.25 x 40 is n_max
+    law_window(hybrid, t += 31 * tt_SECOND, 45, 100, 0, R_30MBS);
+    EXPECT_EQ_U32(0, hybrid->n_fail); // no ceiling left
+}
+
+// The ceiling moves with R p (decision 3c): with R halved for three ticks in a row the remembered ceiling doubles and a
+// probe is allowed at once; two such ticks and a normal one do nothing; R doubled for three ticks halves it and the cap
+// with it. p_mtu here rests on 30 events, so it is read as measured.
+static void test_the_ceiling_scales_with_r_p(void) {
+    struct tt_HybridState* hybrid = law_reader(30, 30000);
+    hybrid->cap = 16;
+    uint64_t t = 100 * tt_SECOND;
+    law_window(hybrid, t, 16, 1000, 390, R_30MBS); // ceiling 10, cap 7, anchored at R
+    EXPECT_EQ_U32(10, hybrid->n_fail);
+    t += 31 * tt_SECOND; // past the hold
+    law_window(hybrid, t += tt_SECOND, 7, 10, 0, R_30MBS / 2.0);
+    law_window(hybrid, t += tt_SECOND, 7, 10, 0, R_30MBS / 2.0);
+    law_window(hybrid, t += tt_SECOND, 7, 10, 0, R_30MBS); // the streak broken
+    law_window(hybrid, t += tt_SECOND, 7, 10, 0, R_30MBS / 2.0);
+    law_window(hybrid, t += tt_SECOND, 7, 10, 0, R_30MBS / 2.0);
+    EXPECT_EQ_U64(0, hybrid->rescales);
+    EXPECT_EQ_U32(10, hybrid->n_fail);
+    law_window(hybrid, t += tt_SECOND, 7, 10, 0, R_30MBS / 2.0); // the third in a row
+    EXPECT_EQ_U64(1, hybrid->rescales);
+    EXPECT_EQ_U32(20, hybrid->n_fail);
+    EXPECT_EQ_U64(t, hybrid->probe_at_ns); // a probe allowed at once
+    law_window(hybrid, t += tt_SECOND, 7, 100, 0, R_30MBS / 2.0);
+    EXPECT_EQ_U32(13, hybrid->cap); // and the cap grows towards the new plateau, 19
+    for (int i = 0; i < 3; i++) {
+        law_window(hybrid, t += tt_SECOND, 13, 10, 0, R_30MBS); // R back up: R p twice the new anchor
+    }
+    EXPECT_EQ_U64(2, hybrid->rescales);
+    EXPECT_EQ_U32(10, hybrid->n_fail);
+    EXPECT_EQ_U32(9, hybrid->cap); // held under the plateau at once
+}
+
+// The law runs once per announce interval: a tick sooner decides nothing, the next one a full interval on does.
+static void test_the_law_runs_once_an_interval(void) {
+    struct tt_HybridState* hybrid = law_reader(30, 30000);
+    struct tt_Context* node = &readers[0].ctx;
+    hybrid_reader_tick(node, 10 * tt_SECOND);
+    hybrid->window = (struct tt_RunWindow) {100, 0, 200};
+    hybrid->window_n = 2;
+    hybrid_reader_tick(node, (10 * tt_SECOND) + (tt_SECOND / 2U));
+    EXPECT_EQ_U32(2, hybrid->cap);
+    hybrid_reader_tick(node, 11 * tt_SECOND);
+    EXPECT_EQ_U32(4, hybrid->cap);
+}
+
+// tau = min(30 s, 65536 / D_s), D_s a source's runs a second over every writer of it, the longest over the sources;
+// unchanged by a tick without runs.
+static void test_tau_from_the_writers_run_rates(void) {
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    struct tt_HybridState* hybrid = &readers[0].ctx.hybrid;
+    hybrid->rx_writers[0] = (struct tt_HybridRxWriter) {.entity_id = 1, .sample = 5, .tick_runs = 4096, .source = 7};
+    hybrid->rx_writers[1] = (struct tt_HybridRxWriter) {.entity_id = 2, .sample = 5, .tick_runs = 4096, .source = 7};
+    hybrid_measure_lifetime(hybrid, tt_SECOND);
+    EXPECT_EQ_U64(8 * tt_SECOND, hybrid->lifetime_ns); // 8,192 a second from source 7: its IP ID wraps in 8 s
+    hybrid->rx_writers[2] = (struct tt_HybridRxWriter) {.entity_id = 3, .sample = 5, .tick_runs = 100, .source = 9};
+    hybrid->rx_writers[0].tick_runs = 4096;
+    hybrid->rx_writers[1].tick_runs = 4096;
+    hybrid_measure_lifetime(hybrid, tt_SECOND);
+    EXPECT_EQ_U64(30 * tt_SECOND, hybrid->lifetime_ns); // source 9 sends 100 a second: its queues live the full 30 s
+    EXPECT_EQ_U32(0, hybrid->rx_writers[0].tick_runs);
+    hybrid->lifetime_ns = 5 * tt_SECOND;
+    hybrid_measure_lifetime(hybrid, tt_SECOND);
+    EXPECT_EQ_U64(5 * tt_SECOND, hybrid->lifetime_ns); // no runs: unchanged
 }
 
 // What the reader rebuilds of what was sent (DESIGN.md section 8, "What the reader measures"): a run says the writer's
@@ -805,6 +1007,7 @@ static void test_the_reader_rebuilds_what_was_sent(void) {
     hybrid_rx_note(node, SENDER_ID, 7, 100, 0, 100, 45, true); // units 0-44: a full run of 45
     EXPECT_EQ_U32(45, hybrid->rx_loss.frames);
     EXPECT_EQ_U32(1, hybrid->window.sent);
+    EXPECT_EQ_U32(45, hybrid->window_n); // the largest run in the window: the n a collapse is read at
     EXPECT_EQ_U32(0, hybrid->window.lost);
     EXPECT_EQ_U32(45, hybrid->rx_writers[0].layout_n);
     hybrid_rx_note(node, SENDER_ID, 7, 100, 90, 100, 9, true); // 45-89 lost: one run of 45
@@ -917,113 +1120,119 @@ static void tick_readers(uint64_t now) {
 }
 
 // A reader whose cap is switched off (a benchmark arm, _tt_CONFIG.reassembly_cap_off) advertises its configured ceiling
-// whatever its loss and load, and is not withdrawn by the kernel's failures either.
+// whatever its windows show, and the control law never runs on it.
 static void test_a_reader_with_the_cap_off_advertises_its_ceiling(void) {
     _tt_CONFIG.reassembly_cap_off = 1;
     init_one(LARGE_LEN, FULL_CEILING, false);
     _tt_CONFIG.reassembly_cap_off = 0;
     struct tt_Context* node = &readers[0].ctx;
     EXPECT_TRUE(node->hybrid.cap_off);
+    EXPECT_EQ_U32(45, node->hybrid.cap);
+    EXPECT_EQ_U32(FULL_CEILING, node->hybrid.advertised);
     sim_start(0);
     uint64_t t = test_mock_now;
     tick_readers(t);
-    hybrid_test_forced_p = 0.05;
-    node->hybrid.tick_units = 100000;
-    tick_readers(t += tt_SECOND);
-    EXPECT_EQ_U32(FULL_CEILING, node->hybrid.advertised); // capped, it would be one unit
-    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
-    test_mock_reasm_failures = 3;
+    node->hybrid.mtu_loss = (struct tt_LossEstimate) {0, 30000};
+    node->hybrid.window = (struct tt_RunWindow) {1000, 1000, 45000}; // a collapse, were it judged
+    node->hybrid.window_n = 45;
     tick_readers(t += tt_SECOND);
     EXPECT_EQ_U32(FULL_CEILING, node->hybrid.advertised);
-    EXPECT_TRUE(!node->hybrid.withdrawn);
-    hybrid_test_forced_p = -1.0;
+    EXPECT_EQ_U64(0, node->hybrid.collapses);
     init_one(LARGE_LEN, FULL_CEILING, false);
     EXPECT_TRUE(!readers[0].ctx.hybrid.cap_off); // the default
+    EXPECT_EQ_U32(2, readers[0].ctx.hybrid.cap);
 }
 
-// Best effort through a path that drops every IP fragment (the tc filter): the runs are lost, only the tails arrive;
-// the reader's gaps raise its p, its cap falls to one unit at the next tick, the writer learns it from the announce
-// and sends MTU units - and samples arrive again. Then the filter goes and the cap comes back as clean frames build up.
-static void test_a_path_that_drops_fragments_brings_n_to_one(void) {
-    init_one(LARGE_LEN, FULL_CEILING, false);
-    readers[0].ctx.ip_reassembly_max = FULL_CEILING;
-    sim_start(0);
-    sim_drop_fragmented = true;
-    uint64_t start = test_mock_now;
-    tick_readers(start);
+// Publishes for `seconds` at `hz` - `hz` samples a second, evenly spaced - and ticks the readers on every second
+// boundary, so that each tick sees exactly one second of traffic. Returns the largest n the writer sent.
+static uint32_t sim_stream(uint32_t seconds, uint32_t hz, uint8_t* seed) {
+    uint32_t largest = 0;
+    for (uint32_t second = 0; second < seconds; second++) {
+        uint64_t start = test_mock_now;
+        for (uint32_t s = 0; s < hz; s++) {
+            memset(seen_unit, 0, sizeof(seen_unit)); // seq_nos pass SEEN_MAX: a unit is new to its own sample
+            test_mock_now = start + ((uint64_t)s * (tt_SECOND / hz));
+            sent.max_n = 0;
+            EXPECT_EQ_INT(tt_RET_OK, sim_publish((*seed)++));
+            largest = sent.max_n > largest ? sent.max_n : largest;
+        }
+        tick_readers(start + tt_SECOND);
+        test_mock_now = start + tt_SECOND;
+    }
+    return largest;
+}
+
+// Plain frame loss never moves the cap (decision 3d): best effort 16 KB samples (12 units) at 100 Hz through 1% frame
+// loss for 30 s - a run of 11 is lost a tenth of the time, as (1 - p)^n says - grow the cap from 2 to n_max with no
+// collapse, and every sample that arrives is whole.
+static void test_frame_loss_never_moves_the_cap(void) {
+    init_one(16384, FULL_CEILING, false);
+    sim_start(10000);
+    tick_readers(test_mock_now);
     uint8_t seed = 1;
-    for (; seed <= 30; seed++) { // one second at 30 Hz
-        EXPECT_EQ_INT(tt_RET_OK, sim_publish(seed));
-        test_mock_now += 33 * tt_MILLISECOND;
-    }
-    EXPECT_EQ_INT(0, readers[0].delivered);
-    EXPECT_TRUE(sent.runs > 0);
-    uint64_t generation = readers[0].ctx.last_modified;
-    tick_readers(start + (tt_SECOND / 2U)); // within the announce interval: nothing yet
-    EXPECT_EQ_U32(FULL_CEILING, readers[0].ctx.hybrid.advertised);
-    tick_readers(start + tt_SECOND);
-    EXPECT_TRUE(readers[0].ctx.last_modified != generation); // a new generation: a peer that missed it pulls it
-    EXPECT_EQ_U32(28U + 1454U, readers[0].ctx.hybrid.advertised);
-    EXPECT_EQ_U64(1, readers[0].ctx.hybrid.cap_changes);
-    EXPECT_EQ_U32(28U + 1454U, sender.peer_ip_reassembly_max[reader_id(0)]); // learnt from the ordinary announce
-    uint32_t runs_before = sent.runs;
-    for (; seed <= 40; seed++) {
-        EXPECT_EQ_INT(tt_RET_OK, sim_publish(seed));
-        test_mock_now += 33 * tt_MILLISECOND;
-    }
-    EXPECT_EQ_U32(runs_before, sent.runs);
-    EXPECT_EQ_INT(10, readers[0].delivered);
+    (void)sim_stream(30, 100, &seed);
+    struct tt_HybridState* hybrid = &readers[0].ctx.hybrid;
+    EXPECT_EQ_U64(0, hybrid->collapses);
+    EXPECT_EQ_U32(45, hybrid->cap);
+    EXPECT_EQ_U32(11, sent.max_n); // the writer follows: one run of 11 and the tail
+    EXPECT_TRUE(hybrid->rx_writers[0].runs.lost > 0);
     EXPECT_EQ_INT(0, readers[0].torn);
+    EXPECT_TRUE(readers[0].delivered > 2400 && readers[0].delivered < 3000);
 }
 
-// The withdrawal (DESIGN.md section 8): the host's ReasmFails rising while runs arrive advertises one unit whatever p
-// says; it is re-derived once the counters have been still for 2T. Rising without runs arriving withdraws nothing, nor
-// does a counter that cannot be read.
-static void test_reassembly_failures_withdraw_the_ceiling(void) {
-    init_one(LARGE_LEN, FULL_CEILING, false);
-    struct tt_Context* node = &readers[0].ctx;
-    test_mock_reasm_time_s = 30;
-    sim_start(0);
-    uint64_t t = test_mock_now;
-    tick_readers(t);              // the baseline reading
-    test_mock_reasm_failures = 5; // something else's failures, and no run arriving
-    tick_readers(t += tt_SECOND);
-    EXPECT_TRUE(!node->hybrid.withdrawn);
-    EXPECT_EQ_U32(FULL_CEILING, node->hybrid.advertised);
-    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1)); // runs arrive ...
-    test_mock_reasm_failures = 9;             // ... and the failures rise
-    tick_readers(t += tt_SECOND);
-    EXPECT_TRUE(node->hybrid.withdrawn);
-    EXPECT_EQ_U64(1, node->hybrid.withdrawals);
-    EXPECT_EQ_U32(28U + 1454U, node->hybrid.advertised);
-    EXPECT_EQ_U32(28U + 1454U, sender.peer_ip_reassembly_max[reader_id(0)]);
-    tick_readers(t += 30 * tt_SECOND); // still for 30 s: not yet 2T
-    EXPECT_TRUE(node->hybrid.withdrawn);
-    test_mock_reasm_failures = 10; // moved again: the 2T starts over
-    tick_readers(t += 20 * tt_SECOND);
-    EXPECT_TRUE(node->hybrid.withdrawn);
-    tick_readers(t += 59 * tt_SECOND);
-    EXPECT_TRUE(node->hybrid.withdrawn);
-    tick_readers(t += 2 * tt_SECOND); // 61 s still
-    EXPECT_TRUE(!node->hybrid.withdrawn);
-    EXPECT_EQ_U32(FULL_CEILING, node->hybrid.advertised);
-    EXPECT_EQ_U32(FULL_CEILING, sender.peer_ip_reassembly_max[reader_id(0)]);
-    // Unreadable: nothing withdrawn, whatever arrives - and the first reading after is a baseline, not a rise.
-    test_mock_reasm_failures_readable = false;
-    EXPECT_EQ_INT(tt_RET_OK, sim_publish(2));
-    tick_readers(t += tt_SECOND);
-    EXPECT_TRUE(!node->hybrid.withdrawn);
-    init_one(LARGE_LEN, FULL_CEILING, false);
-    node = &readers[0].ctx;
-    sim_start(0);
-    t = test_mock_now;
-    test_mock_reasm_failures_readable = false;
-    tick_readers(t);
-    test_mock_reasm_failures_readable = true;
-    test_mock_reasm_failures = 50;
-    EXPECT_EQ_INT(tt_RET_OK, sim_publish(3));
-    tick_readers(t += tt_SECOND);
-    EXPECT_TRUE(!node->hybrid.withdrawn);
+// The reassembly squeeze, end to end (decision 3): best effort 1 MB at 30 Hz through 0.1% frame loss, the reader host's
+// reassembly modelled as the kernel's (4 MB, 30 s). The cap grows from 2 by slow start; the incomplete reassemblies of
+// the runs frame loss breaks fill the memory and every run is refused - the collapse is detected (after the refusals
+// began, never before), the cap drops at once to drop(n_fail), and the writer follows at its next sample. No probe
+// before 2 tau; at 2 tau one probe. Then the rate halves, and within the scaling's three ticks the remembered ceiling
+// doubles and a probe is allowed at once.
+static void test_a_reassembly_squeeze_end_to_end(void) {
+    init_one(ONE_MB, FULL_CEILING, false);
+    sim_start(1000);
+    sim_reasm_threshold = 4194304U;
+    sim_reasm_lifetime = 30U * tt_SECOND;
+    struct tt_HybridState* hybrid = &readers[0].ctx.hybrid;
+    tick_readers(test_mock_now);
+    uint8_t seed = 1;
+    uint32_t seconds = 0;
+    uint32_t largest = 0;
+    uint32_t refused_before = 0;
+    uint64_t generation = 0;
+    while (hybrid->collapses == 0 && seconds < 40) {
+        refused_before = sim_reasm_refused;
+        generation = readers[0].ctx.last_modified;
+        uint32_t n = sim_stream(1, 30, &seed);
+        largest = n > largest ? n : largest;
+        seconds++;
+    }
+    EXPECT_EQ_U64(1, hybrid->collapses);
+    EXPECT_TRUE(seconds < 30);
+    EXPECT_TRUE(refused_before > 0); // the memory was full before the collapse was called: not frame loss
+    EXPECT_EQ_U32(45, largest);      // slow start reached n_max first
+    uint64_t collapsed_at = test_mock_now;
+    uint32_t n_fail = hybrid->n_fail;
+    EXPECT_TRUE(n_fail >= 2 && n_fail < 45);
+    EXPECT_EQ_U32(hybrid_drop(n_fail), hybrid->cap);
+    EXPECT_TRUE(readers[0].ctx.last_modified != generation); // a new generation: a peer that missed it pulls it
+    EXPECT_EQ_U32(hybrid->cap, hybrid_units_within(sender.peer_ip_reassembly_max[reader_id(0)], true));
+    uint32_t after = sim_stream(1, 30, &seed);
+    EXPECT_TRUE(after <= hybrid->cap); // the writer follows at once
+    // No probe before 2 tau: the cap stays at or under the plateau, n_fail - 1.
+    uint32_t plateau = n_fail - 1U > 1U ? n_fail - 1U : 1U;
+    while (test_mock_now < collapsed_at + (59 * tt_SECOND)) {
+        (void)sim_stream(1, 30, &seed);
+        EXPECT_TRUE(hybrid->cap <= plateau);
+    }
+    EXPECT_EQ_U64(0, hybrid->probes);
+    (void)sim_stream(2, 30, &seed);
+    EXPECT_EQ_U64(1, hybrid->probes);
+    // The rate halves: R p halves, and within three ticks the ceiling doubles and a probe is allowed at once.
+    uint64_t rescales = hybrid->rescales;
+    uint32_t ceiling = hybrid->n_fail;
+    (void)sim_stream(4, 15, &seed);
+    EXPECT_EQ_U64(rescales + 1U, hybrid->rescales);
+    EXPECT_TRUE(hybrid->n_fail == 0 || hybrid->n_fail == 2U * ceiling);
+    EXPECT_EQ_INT(0, readers[0].torn);
 }
 
 // --- step 4: RELIABLE runs with MTU repairs -------------------------------------------------------------------------
@@ -1067,10 +1276,10 @@ static void test_n_follows_p(void) {
     hybrid_test_forced_p = -1.0;
 }
 
-// AUTO from nothing measured, end to end: the first 1 MB samples go as MTU units until the reader's first tick a full
-// interval after its start (sample 60), whose announce carries the p it measured (its posterior mean, 1 / N at no
-// loss); the writer's n follows each re-announce (a factor of 2 in p) and reaches 45 once the reader has seen about
-// 115,000 clean frames, ~6 s at 30 Hz.
+// AUTO from nothing measured, end to end: the first 1 MB samples go as MTU units until the reader's first tick
+// (sample 30), whose announce carries the p it measured (its posterior mean, 1 / N at no loss); the writer's n follows
+// each re-announce (a factor of 2 in p) under the reader's cap, which doubles per clean tick from 2 (slow start), and
+// reaches 45 once the reader has seen about 115,000 clean frames, ~6 s at 30 Hz.
 static void test_reliable_auto_leaves_mtu_as_clean_frames_accumulate(void) {
     init_one(ONE_MB, FULL_CEILING, true);
     sim_start(0);
@@ -1081,7 +1290,7 @@ static void test_reliable_auto_leaves_mtu_as_clean_frames_accumulate(void) {
     for (uint32_t s = 1; s <= 300; s++) {
         memset(&sent, 0, sizeof(sent));
         memset(seen_unit, 0, sizeof(seen_unit)); // seq_nos pass SEEN_MAX here: a unit is new to its own sample
-        test_mock_now = t + ((uint64_t)s * 33U * tt_MILLISECOND);
+        test_mock_now = t + ((uint64_t)s * 34U * tt_MILLISECOND); // 30 a tick, just over a second
         EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)s));
         sim_settle((int)s, tt_SECOND);
         first_runs_at = first_runs_at == 0 && sent.runs != 0 ? s : first_runs_at;
@@ -1091,7 +1300,7 @@ static void test_reliable_auto_leaves_mtu_as_clean_frames_accumulate(void) {
             tick_readers(test_mock_now);
         }
     }
-    EXPECT_EQ_U32(61, first_runs_at); // after the first tick's announce
+    EXPECT_EQ_U32(31, first_runs_at); // after the first tick's announce
     EXPECT_EQ_U32(45, last_n);
     EXPECT_TRUE(readers[0].ctx.hybrid.advertised_loss != 0);
     EXPECT_EQ_U32(readers[0].ctx.hybrid.advertised_loss, sender.hybrid.peer_loss_p[reader_id(0)]);
@@ -1103,7 +1312,10 @@ static void test_reliable_auto_leaves_mtu_as_clean_frames_accumulate(void) {
 // resent, no repair datagram is above one frame. Forced IP (n = 45 throughout) and AUTO, 1% and 5% frame loss, small
 // and large samples.
 static void reliable_under_loss(uint32_t len, uint8_t mode, uint32_t loss_ppm, uint8_t samples) {
+    _tt_CONFIG.reassembly_cap_off = mode == tt_LARGE_FRAGMENTATION_IP ? 1 : 0; // a forced arm's reader, as on the rig
     init_one(len, FULL_CEILING, true);
+    _tt_CONFIG.reassembly_cap_off = 0;
+
     pub.large_fragmentation = mode;
     sim_start(loss_ppm);
     for (uint8_t s = 1; s <= samples; s++) {
@@ -1343,14 +1555,19 @@ int main(void) {
     test_a_full_send_buffer_resumes_runs_where_they_stopped();
     test_best_effort_loss_never_tears();
     test_reliable_auto_starts_at_mtu();
-    test_the_reader_cap_is_the_designs();
-    test_the_reader_reads_the_kernels_limits();
+    test_the_collapse_test_is_the_designs();
+    test_slow_start_and_the_drop_on_a_collapse();
+    test_the_hold_and_the_timed_probe();
+    test_a_probe_that_holds_moves_the_ceiling_up();
+    test_the_ceiling_scales_with_r_p();
+    test_tau_from_the_writers_run_rates();
+    test_the_law_runs_once_an_interval();
     test_the_reader_rebuilds_what_was_sent();
     test_the_loss_code_rounds_up();
     test_a_reader_with_the_cap_off_advertises_its_ceiling();
     test_the_loss_bound_is_the_poisson_upper_limit();
-    test_a_path_that_drops_fragments_brings_n_to_one();
-    test_reassembly_failures_withdraw_the_ceiling();
+    test_frame_loss_never_moves_the_cap();
+    test_a_reassembly_squeeze_end_to_end();
     test_n_follows_p();
     test_reliable_auto_leaves_mtu_as_clean_frames_accumulate();
     test_reliable_repairs_are_mtu_units_only();

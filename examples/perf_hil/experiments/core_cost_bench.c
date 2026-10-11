@@ -114,22 +114,6 @@ int32_t tt_link_mtu(uint32_t addr) {
     return -1;
 }
 
-#if tt_HYBRID_TRANSPORT
-// The hybrid transport's HAL calls (hal.h), in a build with fragmentation: nothing to read here, so nothing measured.
-// NOLINTNEXTLINE(readability-non-const-parameter) - hal.h's signature: a HAL that can read them writes through these
-bool tt_ip_reassembly_limits(uint32_t* high_thresh, uint32_t* time_s) {
-    (void)high_thresh;
-    (void)time_s;
-    return false;
-}
-
-// NOLINTNEXTLINE(readability-non-const-parameter) - as above
-bool tt_ip_reassembly_failures(uint64_t* failures) {
-    (void)failures;
-    return false;
-}
-#endif
-
 tt_ret_t tt_bind(struct tt_Context* node) {
     (void)node;
     return tt_RET_OK;
