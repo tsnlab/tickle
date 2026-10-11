@@ -10,6 +10,10 @@ clear, the shift and the highest-bit scan limited to it - and must be killed by 
         every ACKNACK hashed - the old-vs-new equivalence itself.
 A mutant both oracles pass means the condition decides nothing, or the tests do not test it.
 
+Both oracles run at both window sizes - the default build (4,096 bits) and -Dtt_LARGE_SAMPLES=1 (8,192 bits, as
+rmw_tickle builds core; platform/linux/Makefile's LARGE_DEFINES) - and a mutant counts as killed only when it dies at
+each size on its own. Killed at one size alone would leave the other window's fast path with no test shown to catch it.
+
 Not swept: proxy_clear_received() at a WriterProxy's creation. The slot's count is already 0 there - forgetting a
 writer (forget_writer_proxies_for_endpoint()) clears it with the bitmap - so dropping that reset is an equivalent mutant. Nor jump_ack_baseline()'s proxy_clear_received(): the
 advance_ack_seq_no() right after it shifts and trims, which brings a stale count back to 0 before anything reads it
@@ -18,7 +22,8 @@ advance_ack_seq_no() right after it shifts and trims, which brings a stale count
 Four kills are of the count's exactness alone, which only the unit oracle checks: the clear's reset and the three
 trims. Without them the count stays too high, which costs work but changes no output, so the trace diff passes them.
 
-Run from anywhere: python3 tests/mutants_ack_bitmap.py [BASE]. Restores src/tickle.c whatever happens.
+Run from anywhere: python3 tests/mutants_ack_bitmap.py [BASE]. Restores src/tickle.c whatever happens. ~2 min per
+size for the controls plus 25-60 s per mutant and size.
 """
 import pathlib
 import shutil
@@ -28,7 +33,12 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-BIN = ROOT / "platform/linux/obj/debug/tests/test_ack_bitmap_diff"
+LINUX = ROOT / "platform/linux"
+# size -> (unit test binary, ack_bitmap_differential.sh's flags). make test builds and runs both binaries.
+SIZES = {
+    "default": (LINUX / "obj/debug/tests/test_ack_bitmap_diff", []),
+    "large": (LINUX / "obj/debug/tests-large/test_ack_bitmap_diff", ["--large"]),
+}
 SRC = "src/tickle.c"
 BASE = sys.argv[1] if len(sys.argv) > 1 else "origin/main"
 
@@ -103,15 +113,14 @@ MUTANTS = [
 ]
 
 
-def run_unit():
-    build = subprocess.run(
-        ["make", "-s", "-C", str(ROOT / "platform/linux"), str(BIN.relative_to(ROOT / "platform/linux"))],
-        capture_output=True, text=True,
-    )
+def run_unit(size):
+    binary = SIZES[size][0]
+    build = subprocess.run(["make", "-s", "-C", str(LINUX), str(binary.relative_to(LINUX))], capture_output=True,
+                           text=True)
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-1500:]
     try:
-        run = subprocess.run([str(BIN)], capture_output=True, text=True, timeout=30)  # ~2 s unmutated
+        run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)  # 3-5 s unmutated
     except subprocess.TimeoutExpired:
         return "HANG", ""
     if run.returncode < 0:
@@ -119,10 +128,10 @@ def run_unit():
     return ("PASS" if run.returncode == 0 else "FAIL"), run.stderr[-1000:]
 
 
-def run_diff():
+def run_diff(size):
     try:
-        run = subprocess.run([str(ROOT / "tests/ack_bitmap_differential.sh"), BASE], capture_output=True, text=True,
-                             timeout=300)
+        run = subprocess.run([str(ROOT / "tests/ack_bitmap_differential.sh"), *SIZES[size][1], BASE],
+                             capture_output=True, text=True, timeout=300)
     except subprocess.TimeoutExpired:
         return "HANG", ""
     # The script's own last line on stdout, not its exit status: "DIFF_EXIT=2" is "could not decide", not a kill.
@@ -146,13 +155,14 @@ def main():
     problems = 0
     killed = 0
     try:
-        unit, unit_out = run_unit()
-        diff, diff_out = run_diff()
-        print(f"[control ] unmutated                                       unit {unit:6s} diff {diff}")
-        if unit != "PASS" or diff != "PASS":
-            print(unit_out, diff_out)
-            print("control did not pass; the sweep cannot decide anything")
-            return 1
+        for size in SIZES:
+            unit, unit_out = run_unit(size)
+            diff, diff_out = run_diff(size)
+            print(f"[control ] unmutated, {size:7s}                              unit {unit:6s} diff {diff}", flush=True)
+            if unit != "PASS" or diff != "PASS":
+                print(unit_out, diff_out)
+                print(f"control did not pass at the {size} size; the sweep cannot decide anything")
+                return 1
         for name, old, new in MUTANTS:
             path = ROOT / SRC
             text = path.read_text()
@@ -163,21 +173,27 @@ def main():
                 continue
             path.write_text(text.replace(old, new))
             path.touch()
-            unit, unit_out = run_unit()
-            diff, diff_out = run_diff()
+            dead_at = []
+            for size in SIZES:
+                unit, unit_out = run_unit(size)
+                # A mutant that hangs or crashes the unit test does the same to the traced build, and the differential
+                # would only wait out its own 120 s timeout to say so: ~6 min per such mutant on 2026-10-11.
+                diff, diff_out = ("SKIPPED", "") if unit in ("HANG", "CRASH") else run_diff(size)
+                dead = unit in ("FAIL", "CRASH", "HANG") or diff == "FAIL"
+                undecided = unit == "BUILD_FAILED" or diff in ("UNDECIDED", "NO_VERDICT", "HANG")
+                dead_at.append(dead)
+                tag = "killed" if dead else ("UNDECID" if undecided else "SURVIVED")
+                print(f"[{tag:8s}] {name:46s} {size:7s} unit {unit:6s} diff {diff}", flush=True)
+                if not dead:
+                    print(unit_out[-800:], diff_out[-800:])
             restore()
-            dead = unit in ("FAIL", "CRASH", "HANG") or diff == "FAIL"
-            undecided = unit == "BUILD_FAILED" or diff in ("UNDECIDED", "NO_VERDICT", "HANG")
-            killed += 1 if dead else 0
-            problems += 0 if dead else 1
-            tag = "killed" if dead else ("UNDECID" if undecided else "SURVIVED")
-            print(f"[{tag:8s}] {name:55s} unit {unit:6s} diff {diff}", flush=True)
-            if not dead:
-                print(unit_out[-800:], diff_out[-800:])
+            killed += 1 if all(dead_at) else 0
+            problems += 0 if all(dead_at) else 1
     finally:
         restore()
         shutil.rmtree(backup, ignore_errors=True)
-    print(f"mutant sweep: {killed}/{len(MUTANTS)} killed", "" if problems == 0 else f"- {problems} problem(s)")
+    print(f"mutant sweep: {killed}/{len(MUTANTS)} killed at both sizes",
+          "" if problems == 0 else f"- {problems} problem(s)")
     return 1 if problems else 0
 
 

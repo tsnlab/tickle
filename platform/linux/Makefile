@@ -124,8 +124,14 @@ OBJ_DIRS = $(call dir_for,$(SRC)) $(call dir_for,$(ROOT)/examples/linux/common) 
 TEST_DIR = $(ROOT)/tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/test_*.c)
 TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/tests/%,$(TEST_SRCS))
+# Unit tests whose subject changes size with the build, run again as rmw_tickle builds core (a 65507-byte datagram,
+# large samples): -Dtt_LARGE_SAMPLES=1 doubles the reliable receive bitmap to 8,192 bits, and test_ack_bitmap_diff.c
+# failed its wrap control at that window on the fixed seed (2026-10-11) - a test defect, present at the default window
+# on other seeds too, which only this build showed. Their own tree, so the default binaries beside them stay as they are.
+LARGE_DEFINES = -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1
+LARGE_TEST_BINS = $(OBJ)/tests-large/test_ack_bitmap_diff
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test config-renames test-samehost headers-cpp lint lint-shell clean fuzz fuzz-corpus sanitize tsan coverage
+.PHONY: all library examples set_bool uint64 ping_pong perf test config-renames print-large-defines test-samehost headers-cpp lint lint-shell clean fuzz fuzz-corpus sanitize tsan coverage
 
 all:
 	$(MAKE) library
@@ -199,11 +205,15 @@ rx_idle_check: rx_idle_check.c libtickle.a
 bell_wake_check: bell_wake_check.c $(ROOT)/examples/uint64/UInt64.c libtickle.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ bell_wake_check.c $(ROOT)/examples/uint64/UInt64.c $(LDLIBS)
 
+# tests/ack_bitmap_differential.sh --large reads the defines from here rather than keeping a copy of its own.
+print-large-defines:
+	@echo '$(LARGE_DEFINES)'
+
 test-samehost: examples refuse_io_uring.so rx_hint_check rx_idle_check bell_wake_check
 	./test_samehost.sh
 
-test: config-renames $(TEST_BINS)
-	@for bin in $(TEST_BINS); do \
+test: config-renames $(TEST_BINS) $(LARGE_TEST_BINS)
+	@for bin in $(TEST_BINS) $(LARGE_TEST_BINS); do \
 	    echo "-- $$bin --"; \
 	    ./$$bin || exit 1; \
 	done
@@ -247,6 +257,12 @@ $(OBJ)/tests/%: $(TEST_DIR)/%.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c |
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lm
 
 -include $(TEST_BINS:=.d)
+
+$(OBJ)/tests-large/%: $(TEST_DIR)/%.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c | $(OBJ)/tests-large
+	$(CC) $(CPPFLAGS) $(LARGE_DEFINES) $(CFLAGS) -MM -MP -MT $@ -MF $@.d $<
+	$(CC) $(CPPFLAGS) $(LARGE_DEFINES) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lm
+
+-include $(LARGE_TEST_BINS:=.d)
 
 # The one unit test that links tickle.c as its own translation unit instead of #including it: it drives
 # core through the public API from several threads at once and brings its own thread-safe HAL (see the
@@ -312,7 +328,7 @@ coverage:
 	    s["line_percent"], s["line_covered"], s["line_total"], \
 	    s["branch_percent"], s["branch_covered"], s["branch_total"], len(s["files"])))' $(COV_REPORT)/summary.json
 
-$(OBJ)/tests:
+$(OBJ)/tests $(OBJ)/tests-large:
 	mkdir -p $@
 
 # Coverage-guided fuzzing of the packet parser - the untrusted-input boundary. Needs clang.

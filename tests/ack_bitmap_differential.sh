@@ -11,10 +11,24 @@
 # scenario table adds up to) and the trace saw ACKNACKs at all, so an empty or truncated run cannot
 # read as "no difference".
 #
-# Usage: tests/ack_bitmap_differential.sh [BASE]   (from anywhere; prints DIFF_EXIT=0 on equal traces)
+# --large builds both sides as rmw_tickle builds core (platform/linux/Makefile's LARGE_DEFINES: large samples, whose
+# window is 8,192 bits rather than 4,096), the configuration `make test` also runs the unit test in.
+#
+# Usage: tests/ack_bitmap_differential.sh [--large] [BASE]   (from anywhere; prints DIFF_EXIT=0 on equal traces)
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+DEFINES=()
+if [ "${1:-}" = "--large" ]; then
+    shift
+    read -r -a DEFINES <<<"$(make -s --no-print-directory -C "$ROOT/platform/linux" print-large-defines)"
+    if [ "${#DEFINES[@]}" -eq 0 ]; then
+        echo "--large: platform/linux/Makefile gave no LARGE_DEFINES - cannot decide"
+        echo "DIFF_EXIT=2"
+        exit 2
+    fi
+    echo "built with ${DEFINES[*]}"
+fi
 BASE=${1:-origin/main}
 CC=${CC:-cc}
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/ack_bitmap_diff.XXXXXX")
@@ -24,7 +38,7 @@ build() { # build <tree-root> <out>
     local tree=$1 out=$2
     mkdir -p "$tree/tests"
     cp "$ROOT/tests/test_ack_bitmap_diff.c" "$ROOT/tests/test_common.h" "$ROOT/tests/test_mock.h" "$tree/tests/"
-    "$CC" -O1 -g -w -DACK_DIFF_TRACE_ONLY -I"$tree/include" -I"$tree/src" -o "$out" \
+    "$CC" -O1 -g -w -DACK_DIFF_TRACE_ONLY ${DEFINES[@]+"${DEFINES[@]}"} -I"$tree/include" -I"$tree/src" -o "$out" \
         "$tree/tests/test_ack_bitmap_diff.c" "$tree/src/encoding.c" "$tree/src/log.c" -lm
 }
 
@@ -63,6 +77,18 @@ if [ "$old_lines" != "$expected" ] || [ "$new_lines" != "$expected" ] || [ "$old
     echo "DIFF_EXIT=2"
     exit 2
 fi
+# The treatment, read from what ran rather than from the flag: the widest window each trace exercised. A --large run
+# that built the default window would otherwise compare two 4,096-bit runs and call the large one checked.
+want_words=$([ "${#DEFINES[@]}" -gt 0 ] && echo 128 || echo 64)
+for side in old new; do
+    widest=$(awk '{split($1, f, "/"); w = substr(f[2], 2) + 0; if (w > m) m = w} END {print m + 0}' "$WORK/$side.trace")
+    if [ "$widest" != "$want_words" ]; then
+        echo "the $side trace's widest window is $widest words, not $want_words - cannot decide"
+        echo "DIFF_EXIT=2"
+        exit 2
+    fi
+done
+echo "widest window: $want_words words in both traces"
 if diff -q "$WORK/old.trace" "$WORK/new.trace" > /dev/null; then
     echo "traces identical"
     echo "DIFF_EXIT=0"

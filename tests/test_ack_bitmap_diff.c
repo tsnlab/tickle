@@ -214,7 +214,10 @@ static uint32_t rnd(uint32_t n) {
     return n == 0 ? 0 : (uint32_t)(rng_state % n);
 }
 
-#define LOST_MAX 4096
+// One entry per seq_no the window can hold: lose_up_to() records a whole window's holes, and under KEEP_ALL a hole
+// it could not record is never repaired (no give-up advances past it), so the watermark would stall for good. A fixed
+// 4,096 did exactly that at -Dtt_LARGE_SAMPLES=1's 8,192-bit window: wrap/w128/all never wrapped.
+#define LOST_MAX MAX_BITS
 static uint32_t lost[LOST_MAX];
 static int lost_count;
 
@@ -389,6 +392,14 @@ static struct step choose(struct run* r, enum op_kind kind, struct tt_WriterProx
     case OP_REPAIR:
         s.op = "repair";
         s.seq = lost_count > 0 ? lost[rnd((uint32_t)lost_count)] : r->next - 1;
+        // Under KEEP_ALL half the repairs answer the watermark's own hole, the first seq_no an ACKNACK asks for, which
+        // such a writer still holds. A pick from the lost list alone lands on it once in a window's worth of holes, and
+        // with no give-up to move past it, at 4,096 and 8,192 bits the stream stalled below the wrap it was named for
+        // (wrap/w64/all on most seeds, wrap/w128/all on the fixed one). Not under KEEP_LAST: its writer may no longer
+        // hold the sample, and repairing the watermark there starved the give-ups that path's control asks for.
+        if (r->keep_all == tt_WRITER_KEEP_ALL_YES && lost_count > 0 && model.ack != r->next && rnd(2) == 0) {
+            s.seq = model.ack;
+        }
         break;
     case OP_DUP: {
         s.op = "dup";
@@ -407,7 +418,14 @@ static struct step choose(struct run* r, enum op_kind kind, struct tt_WriterProx
         if (s.seq >= r->next) {
             r->next = s.seq + 1;
         }
-        lost_count = 0;
+        // A jump abandons the window's holes, so they leave the lost list - but only one that lands: near 2^32 the
+        // target wraps below the watermark, which update_reliable_ack() (and the model) compare unsigned and take as a
+        // late sample. Clearing the list then forgot holes nothing would ever repair, and under KEEP_ALL - no give-up -
+        // the watermark stalled for good: at 4,096 and 8,192 bits the target always wraps, and wrap/w128/all never
+        // wrapped.
+        if (s.seq >= model.ack) {
+            lost_count = 0;
+        }
         break;
     case OP_RETRY:
         fire_retry(r, proxy, &s);
@@ -511,7 +529,10 @@ static const struct scenario scenarios[] = {
     {"window_edges", 1, 3000, 30, 2, 20, 4, 25, 0, 6, 0, 0, 1, false, true, false, true, true},
     {"jumps", 1, 2000, 40, 5, 10, 5, 10, 5, 5, 0, 0, 3, false, false, true, true, false},
     {"heartbeat", 1, 3000, 40, 8, 10, 4, 10, 0, 6, 6, 3, 2, false, false, false, true, true},
-    {"wrap", 0xffffff00U, 3000, 40, 6, 10, 5, 8, 2, 6, 2, 2, 2, false, false, false, false, false},
+    // 12,000 steps: once the sender has wrapped, everything it sends is below the watermark by update_reliable_ack()'s
+    // unsigned compare, and a KEEP_LAST stream at 4,096 or 8,192 bits then crosses 2^32 one give-up at a time. At 3,000
+    // it failed to wrap on 3 (4,096) and 9 (8,192) of 30 other seeds; at 12,000 on none.
+    {"wrap", 0xffffff00U, 12000, 40, 6, 10, 5, 8, 2, 6, 2, 2, 2, false, false, false, false, false},
     {"random", 1, 6000, 20, 10, 15, 10, 15, 2, 10, 5, 5, 4, false, true, true, true, true},
 };
 
