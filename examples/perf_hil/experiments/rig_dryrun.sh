@@ -3,7 +3,7 @@
 # Written 2026-10-11 for gate v2, whose harness changes (perf stat around every bench, flags verified per build, a
 # placement arm) are in the ssh command lines themselves - the part rig_preflight.sh does not run.
 #
-# HOW. A stand-in `ssh` first on PATH maps the rig's hosts to two private network namespaces:
+# HOW. A stand-in `ssh` (and `scp`; rsync is refused) first on PATH maps the rig's hosts to two private network namespaces:
 #   10.1.1.214 (rpi#1, client) -> <id>c       10.1.1.213 (rpi#2, server) -> <id>s
 # joined by a veth pair named eth0 in each (192.168.10.1/24 and .2/24, broadcast 192.168.10.255, the address the TickLE
 # benches send to), each with lo up and a default route. Every "remote" command runs as this user (setpriv from the
@@ -91,11 +91,94 @@ esac
 # shellcheck disable=SC2016 # \$1.. are the inner sh's
 exec sudo -n ip netns exec "\$ns" sh -c 'mount --bind "\$1" /dev/shm || exit 255; shift; exec "\$@"' sh "$D/shm_\$h" \\
     setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups \\
-    env HOME="$D/home_\$h" PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" LANG=C bash -c "\$cmd"
+    env HOME="$D/home_\$h" PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" LANG=C bash -c "cd ~ || exit 255; \$cmd"
 EOF
 chmod +x "$D/bin/ssh"
+# The stand-in scp: [user@]<host>:<path> of a mapped host is that stand-in's file - an absolute path is this PC's (the
+# namespaces share its filesystem; only /dev/shm is per host), a relative or ~/ one is under the stand-in's home. Any
+# other host is refused and the real scp is never run: before this, a dry run's scp copied from the real Pis.
+# Plain copies only (no -r).
+cat >"$D/bin/scp" <<EOF
+#!/usr/bin/env bash
+args=()
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+    -i | -o | -P | -l | -F) shift 2 ;;
+    -r) echo "rig_dryrun scp: -r is not supported" >&2; exit 255 ;;
+    -*) shift ;;
+    *) args+=("\$1"); shift ;;
+    esac
+done
+map() { # map <arg>: the local path an scp argument names
+    case "\$1" in *:*) ;; *) printf '%s' "\$1"; return 0 ;; esac
+    local t=\${1%%:*} p=\${1#*:} h
+    case "\${t#*@}" in
+    10.1.1.214) h=c ;;
+    10.1.1.213) h=s ;;
+    *) echo "rig_dryrun scp: refusing unmapped host \$t" >&2; return 1 ;;
+    esac
+    case "\$p" in
+    /*) printf '%s' "\$p" ;;
+    "~/"*) printf '%s' "$D/home_\$h/\${p#\~/}" ;;
+    *) printf '%s' "$D/home_\$h/\$p" ;;
+    esac
+}
+[ \${#args[@]} -ge 2 ] || { echo "rig_dryrun scp: want <src>... <dst>" >&2; exit 255; }
+out=()
+for a in "\${args[@]}"; do m=\$(map "\$a") || exit 255; out+=("\$m"); done
+exec cp -- "\${out[@]}"
+EOF
+chmod +x "$D/bin/scp"
+# rsync is not stood in: refused outright, so a harness that grows one cannot reach the rig from a dry run.
+printf '%s\n' '#!/bin/sh' 'echo "rig_dryrun: rsync is not stood in; refusing" >&2' 'exit 255' >"$D/bin/rsync"
+chmod +x "$D/bin/rsync"
+printf '%s\n' '#!/bin/sh' 'echo "rig_dryrun: sftp is not stood in; refusing" >&2' 'exit 255' >"$D/bin/sftp"
+chmod +x "$D/bin/sftp"
+# Every remote-access tool a harness can name must resolve to a stand-in, or nothing runs.
+for t in ssh scp sftp rsync; do
+    got=$(PATH="$D/bin:$PATH" command -v "$t")
+    [ "$got" = "$D/bin/$t" ] || { echo "rig_dryrun: '$t' resolves to '$got', not the stand-in; refusing" >&2; exit 2; }
+done
 echo "rig_dryrun: hosts 10.1.1.214 -> $NSC, 10.1.1.213 -> $NSS; stand-in homes under $D" >&2
-PATH="$D/bin:$PATH" RIG_LOCK_HELD_HIL=1 RIG_LOCK_HELD=1 "$@"
+PATH="$D/bin:$PATH" RIG_LOCK_HELD_HIL=1 RIG_LOCK_HELD=1 "$@" &
+cmd_pid=$!
+# THE WATCHDOG. A stand-in on PATH does not stop a tool that execs the real client by path (scp runs /usr/bin/ssh
+# itself, which is how a dry run once read the real Pis). So while the command runs, every 0.1 s: any process whose
+# /proc exe is a real ssh/scp/sftp/rsync, in THIS PC's network namespace (one inside a stand-in's namespace cannot reach
+# 10.1.1.x), and descended from the command, is recorded and killed, and the dry run fails (exit 97) however the
+# command ends. Sampling can miss a client that lives under 0.1 s; an ssh session to a Pi does not.
+REAL_LOG=$D/real_remote_access.log
+: >"$REAL_LOG"
+my_net=$(readlink /proc/self/ns/net)
+descends() { # descends <pid>: is <pid> the command or below it?
+    local p=$1 n=0
+    while [ "$p" -gt 1 ] && [ "$n" -lt 64 ]; do
+        [ "$p" = "$cmd_pid" ] && return 0
+        p=$(awk '/^PPid:/ { print $2 }' "/proc/$p/status" 2>/dev/null) || return 1
+        [ -n "$p" ] || return 1
+        n=$((n + 1))
+    done
+    return 1
+}
+while [ -d "/proc/$cmd_pid" ] && [ "$(awk '/^State:/ { print $2 }' "/proc/$cmd_pid/status" 2>/dev/null)" != Z ]; do
+    for e in /proc/[0-9]*/exe; do
+        x=$(readlink "$e" 2>/dev/null) || continue
+        case "$x" in /usr/bin/ssh | /usr/bin/scp | /usr/bin/sftp | /usr/bin/rsync) ;; *) continue ;; esac
+        p=${e#/proc/}
+        p=${p%/exe}
+        [ "$(readlink "/proc/$p/ns/net" 2>/dev/null)" = "$my_net" ] || continue
+        descends "$p" || continue
+        echo "$(date -Is) pid $p $x: $(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null)" >>"$REAL_LOG"
+        [ "$(readlink "/proc/$p/exe" 2>/dev/null)" = "$x" ] && kill -KILL "$p" 2>/dev/null
+    done
+    sleep 0.1
+done
+wait "$cmd_pid"
 rc=$?
 echo "rig_dryrun: command exited $rc" >&2
+if [ -s "$REAL_LOG" ]; then
+    echo "rig_dryrun: FAILED - the command ran a real remote client from this PC's network (killed):" >&2
+    sed 's/^/    /' "$REAL_LOG" >&2
+    exit 97
+fi
 exit "$rc"
