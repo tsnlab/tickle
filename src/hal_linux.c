@@ -324,6 +324,14 @@ uint32_t tt_hal_rx_socket_drops(const struct tt_Context* node) {
     return socket_drops(node->hal.sock) + socket_drops(node->hal.data_sock);
 }
 
+uint32_t tt_rx_receiver_drops(const struct tt_Context* node) {
+#if tt_RX_DRAIN
+    return tt_hal_rx_socket_drops(node) + (uint32_t)node->hal.drain_truncated;
+#else
+    return tt_hal_rx_socket_drops(node);
+#endif
+}
+
 #if tt_CONTEXT_ID_CLAIM
 // ---- (g8, config.h's tt_CONTEXT_ID_CLAIM) context ids of their own for several contexts on one host.
 
@@ -910,6 +918,10 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.drain_overruns = 0;
     node->hal.drain_ring = tt_RX_DRAIN_RING_NONE;
     node->hal.drain_group = 0;
+#if TT_HAL_UDP_GRO
+    node->hal.drain_split_left = 0;
+    node->hal.drain_merged = 0;
+#endif
 #endif
 #if tt_HAL_IO_URING
     node->hal.uring_fd = -1; // tt_close() after a failed bind must not close what was never opened
@@ -1067,8 +1079,8 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     return tt_RET_OK;
 }
 
-static void drain_stop(struct tt_Context* node);
 #if tt_RX_DRAIN
+static void drain_stop(struct tt_Context* node);
 static void drain_release(struct tt_hal* hal);
 
 static const char* drain_ring_name(uint8_t ring) {
@@ -1089,14 +1101,21 @@ void tt_close(struct tt_Context* node) {
     // Read while both sockets are still open: what the kernel dropped at each, beside core's traffic line.
 #if tt_RX_DRAIN
     drain_stop(node);
+#if TT_HAL_UDP_GRO
+    const unsigned long drain_merged = (unsigned long)node->hal.drain_merged;
+#else
+    const unsigned long drain_merged = 0;
+#endif
     TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=%d drain_starts=%lu "
-                "drain_datagrams=%lu drain_truncated=%lu drain_overruns=%lu drain_buffers=%u x %u drain_ring=%s",
+                "drain_datagrams=%lu drain_truncated=%lu drain_overruns=%lu drain_buffers=%u x %u drain_ring=%s "
+                "drain_merged=%lu",
                 node->id, (unsigned)tt_hal_rx_socket_drops(node), (unsigned)socket_drops(node->hal.sock),
                 (unsigned)socket_drops(node->hal.data_sock), node->hal.drain_fd == -2 ? -1 : 1,
                 (unsigned long)node->hal.drain_starts, (unsigned long)node->hal.drain_datagrams,
                 (unsigned long)node->hal.drain_truncated, (unsigned long)node->hal.drain_overruns,
                 (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_count : 0U),
-                (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_size : 0U), drain_ring_name(node->hal.drain_ring));
+                (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_size : 0U), drain_ring_name(node->hal.drain_ring),
+                drain_merged);
     drain_release(&node->hal); // before the sockets: its requests go with its ring
 #else
     TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=0", node->id,
@@ -1468,6 +1487,21 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
 //
 // Its own ring, apart from tt_rx_maybe_ready()'s: that one is four entries of one-shot polls, and this one needs a
 // completion entry per buffer.
+//
+// The drain and receive offload (UDP_GRO, "When receive offload is on" above). Who reads when: the drain reads the
+// sockets only between tt_rx_drain_start() and the drain_stop() that rx_take_drained() makes once it holds nothing;
+// core reads them (gro_read(), rx_read_one()) only outside that, and only core's own reads move the receive-offload
+// state - a datagram handed out from the drain neither turns UDP_GRO on nor counts towards turning it off, and a settle
+// is not decided while a drain runs or holds datagrams (drain_active()). So the option stays what it was when the
+// drain started, and the drain takes what that option makes: its recvmsg asks for UDP_GRO's segment-size cmsg as
+// gro_read() does, and a completion that holds a merged read is handed out one datagram at a time, in order, before
+// the next completion (drain_split_*). Unless the sockets read plain, its buffers hold a merged read whole
+// (tt_rx_drain_start()), so nothing merged is ever cut.
+//
+// Its buffers' length (tt_rx_drain_start()): the longest datagram core says may arrive, and core asks for the
+// reassembly ceiling this context advertises (tickle.c large_rx_drain()) - a hybrid run is one IP-reassembled
+// datagram of up to 65,507 bytes, and no writer sends one longer than the ceiling it was told. A run cut by the drain
+// would be lost to a receiver that could have taken it (drain_truncated, which must stay 0).
 #define DRAIN_SOCKETS 2U
 #define DRAIN_RECV 0x5243560000000000ULL    // user_data of a recvmsg, | the socket's index (0 well-known, 1 data)
 #define DRAIN_CANCEL 0x43414e0000000000ULL  // user_data of a cancellation
@@ -1479,7 +1513,14 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
 #define DRAIN_STOP_TRIES 100          // waits of DRAIN_STOP_WAIT_NS for both recvmsgs to end
 #define DRAIN_STOP_WAIT_NS 10000000LL // 10 ms
 #define DRAIN_ALIGN 64U               // a buffer's length is a multiple of this
-#define DRAIN_HEADER ((uint32_t)(sizeof(struct io_uring_recvmsg_out) + sizeof(struct sockaddr_in)))
+// What a buffer holds before the datagram: the completion's own header, the sender's address and, where receive
+// offload is compiled, room for UDP_GRO's segment-size cmsg (the multishot layout reserves both whether used or not).
+#if TT_HAL_UDP_GRO
+#define DRAIN_CONTROL ((uint32_t)CMSG_SPACE(sizeof(int))) // NOLINT(misc-include-cleaner) - <sys/socket.h>
+#else
+#define DRAIN_CONTROL 0U
+#endif
+#define DRAIN_HEADER ((uint32_t)(sizeof(struct io_uring_recvmsg_out) + sizeof(struct sockaddr_in)) + DRAIN_CONTROL)
 #define DRAIN_ASKED_BYTES 256U // drain_describe()'s line
 
 static void drain_release(struct tt_hal* hal) {
@@ -1680,6 +1721,7 @@ static bool drain_setup(struct tt_hal* hal, uint32_t size, uint32_t count) {
     }
     memset(&hal->drain_msghdr, 0, sizeof(hal->drain_msghdr));
     hal->drain_msghdr.msg_namelen = sizeof(struct sockaddr_in);
+    hal->drain_msghdr.msg_controllen = DRAIN_CONTROL;
     return true;
 }
 
@@ -1785,10 +1827,58 @@ static void drain_stop(struct tt_Context* node) {
 
 // Hands out the oldest datagram a drain took, as rx_take_pending() does a batch's, or -1 when none is waiting. One
 // longer than a buffer arrived cut short: it is dropped, counted, and no drain starts for tt_RX_DRAIN_HOLDOFF_NS.
+#if TT_HAL_UDP_GRO
+// The next datagram of a merged read the drain took (drain_split_*), copied to `buf`; its buffer goes back with the
+// last one.
+static int32_t drain_take_split(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    struct tt_hal* hal = &node->hal;
+    uint32_t offset = hal->drain_split_next;
+    uint32_t size = hal->drain_split_end - offset < hal->drain_split_segment ? hal->drain_split_end - offset
+                                                                             : hal->drain_split_segment;
+    const uint8_t* payload = hal->drain_buffers + ((size_t)hal->drain_split_bid * hal->drain_size) + DRAIN_HEADER;
+    size_t copy = (size_t)size < len ? (size_t)size : len;
+    memcpy(buf, payload + offset, copy);
+    hal->drain_split_next = offset + size;
+    hal->drain_split_left--;
+    if (hal->drain_split_left == 0) {
+        drain_give_back(hal, hal->drain_split_bid);
+    }
+    *ip = hal->drain_split_ip;
+    *port = hal->drain_split_port;
+    node->rx_via_data_port = hal->drain_split_from_data;
+    hal->drain_datagrams++;
+    TT_TRACE(tt_TRACE_RX_DATAGRAM);
+    return (int32_t)copy;
+}
+
+// UDP_GRO's segment size in a drained completion's control area, 0 when there is none (a datagram read alone).
+static uint32_t drain_gro_segment(const uint8_t* buffer, const struct io_uring_recvmsg_out* out) {
+    if (out->controllen == 0) {
+        return 0;
+    }
+    struct msghdr control = {0};
+    control.msg_control = (void*)(buffer + sizeof(*out) + sizeof(struct sockaddr_in));
+    control.msg_controllen = out->controllen;
+    int segment = 0;
+    // NOLINTNEXTLINE(misc-include-cleaner) - CMSG_*: <sys/socket.h>
+    for (struct cmsghdr* cm = CMSG_FIRSTHDR(&control); cm != NULL; cm = CMSG_NXTHDR(&control, cm)) {
+        if (cm->cmsg_level == SOL_UDP && cm->cmsg_type == UDP_GRO) {
+            memcpy(&segment, CMSG_DATA(cm), sizeof(segment));
+        }
+    }
+    return segment > 0 ? (uint32_t)segment : 0U;
+}
+#endif
+
 static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct tt_hal* hal = &node->hal;
     const struct io_uring_cqe* cqes = (const struct io_uring_cqe*)hal->drain_cqes;
     for (;;) {
+#if TT_HAL_UDP_GRO
+        if (hal->drain_split_left != 0) {
+            return drain_take_split(node, buf, len, ip, port);
+        }
+#endif
         while (hal->drain_pending != 0) {
             uint32_t head = *hal->drain_cq_head;
             const struct io_uring_cqe* cqe = &cqes[head & *hal->drain_cq_mask];
@@ -1815,12 +1905,28 @@ static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, u
             }
             struct sockaddr_in from;
             memcpy(&from, buffer + sizeof(*out), sizeof(from));
-            size_t copy = (size_t)out->payloadlen < len ? (size_t)out->payloadlen : len;
-            memcpy(buf, payload, copy);
-            drain_give_back(hal, bid);
             *ip = ntohl(from.sin_addr.s_addr);
             *port = ntohs(from.sin_port);
             node->rx_via_data_port = (user_data & 1U) != 0;
+#if TT_HAL_UDP_GRO
+            uint32_t segment = drain_gro_segment(buffer, out);
+            if (segment != 0 && out->payloadlen > segment) {
+                // A merged read: its datagrams one at a time, from this buffer, before the next completion.
+                hal->drain_merged++;
+                hal->drain_split_bid = bid;
+                hal->drain_split_segment = segment;
+                hal->drain_split_next = 0;
+                hal->drain_split_end = out->payloadlen;
+                hal->drain_split_left = (uint16_t)((out->payloadlen + segment - 1U) / segment);
+                hal->drain_split_ip = *ip;
+                hal->drain_split_port = *port;
+                hal->drain_split_from_data = node->rx_via_data_port;
+                return drain_take_split(node, buf, len, ip, port);
+            }
+#endif
+            size_t copy = (size_t)out->payloadlen < len ? (size_t)out->payloadlen : len;
+            memcpy(buf, payload, copy);
+            drain_give_back(hal, bid);
             hal->drain_datagrams++;
             TT_TRACE(tt_TRACE_RX_DATAGRAM);
             return (int32_t)copy;
@@ -1840,6 +1946,8 @@ static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, u
     }
 }
 
+static uint32_t drain_held(const struct tt_Context* node);
+
 bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
     struct tt_hal* hal = &node->hal;
     if (hal->drain_running) {
@@ -1849,9 +1957,16 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
         (hal->drain_holdoff_until != 0 && tt_get_ns() < hal->drain_holdoff_until)) {
         return false;
     }
+#if TT_HAL_UDP_GRO
+    // Unless the sockets read plain, a read may be a merged one, up to the receive buffer core reads merged reads into
+    // (TT_GRO_SETTLING too: what was queued before the option went off may be merged). Plain, nothing queued is.
+    if (hal->gro_state != TT_GRO_PLAIN && datagram_bytes < (uint32_t)tt_MAX_BUFFER_LENGTH) {
+        datagram_bytes = (uint32_t)tt_MAX_BUFFER_LENGTH;
+    }
+#endif
     uint32_t size = ((datagram_bytes + DRAIN_HEADER + DRAIN_ALIGN - 1U) / DRAIN_ALIGN) * DRAIN_ALIGN;
     if (hal->drain_fd >= 0 && size > hal->drain_size) {
-        if (hal->drain_pending != 0) {
+        if (drain_held(node) != 0) {
             return false; // longer datagrams than the buffers hold: rebuilt once what they took is handed out
         }
         drain_release(hal);
@@ -1870,7 +1985,7 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
         // Classic buffers an earlier drain took are not given back one by one (drain_give_back()): all of them are
         // handed over again here, which is right only while none is held. Issued in order and inline, before the
         // recvmsgs: what is left of the last provision is removed (ENOENT the first time), then every buffer provided.
-        if (hal->drain_pending != 0) {
+        if (drain_held(node) != 0) {
             return false;
         }
         struct io_uring_sqe* sqe = drain_sqe(hal, &added);
@@ -1913,17 +2028,24 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
 }
 
 static uint32_t drain_held(const struct tt_Context* node) {
+#if TT_HAL_UDP_GRO
+    return node->hal.drain_pending + node->hal.drain_split_left;
+#else
     return node->hal.drain_pending;
+#endif
 }
+
+#if TT_HAL_UDP_GRO
+// A drain running, or holding what it took: receive offload's state stays as it is ("The drain and receive offload").
+static bool drain_active(const struct tt_Context* node) {
+    return node->hal.drain_running || drain_held(node) != 0;
+}
+#endif
 #else
 bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
     (void)node;
     (void)datagram_bytes;
     return false;
-}
-
-static void drain_stop(struct tt_Context* node) {
-    (void)node;
 }
 
 // NOLINTNEXTLINE(readability-non-const-parameter) - the drain's own version writes them
@@ -1940,6 +2062,13 @@ static uint32_t drain_held(const struct tt_Context* node) {
     (void)node;
     return 0;
 }
+
+#if TT_HAL_UDP_GRO
+static bool drain_active(const struct tt_Context* node) {
+    (void)node;
+    return false;
+}
+#endif
 #endif
 
 // Hands out the next datagram the last recvmmsg() read and held back, or -1 when none is waiting.
@@ -2331,7 +2460,9 @@ static void rx_idle_count_return(struct tt_Context* node) {
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     node->rx_offset = 0;
 #if TT_HAL_UDP_GRO
-    gro_settle_decide(node); // a settle past its deadline is decided before anything is read
+    if (!drain_active(node)) {
+        gro_settle_decide(node); // a settle past its deadline is decided before anything is read
+    }
     int32_t merged = gro_take_pending(node, (uint8_t*)buf, len, ip, port);
     if (merged >= 0) {
         rx_idle_count_return(node);

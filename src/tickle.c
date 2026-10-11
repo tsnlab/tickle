@@ -2384,9 +2384,54 @@ static void hybrid_rx_mtu(struct tt_HybridState* hybrid, uint32_t units, uint32_
     loss_estimate_observe(&hybrid->mtu_loss, units, lost);
 }
 
+// Receiver drops are not path loss. A datagram the receiving host took off the wire and then dropped - its socket's
+// receive buffer full while core was busy elsewhere, or cut by the HAL's own buffers - is a receiver that fell behind,
+// not a path that loses frames. Counted as loss it would raise p and lose runs in the window, and n would fall for a
+// fault that a smaller n does not cure: a run is the cheapest way to get the same bytes through a busy receiver (one
+// datagram, one socket-buffer charge, one wake-up), so the rig's 4 MB cells held n at 4-31 where the link was clean
+// (2026-10-12, RcvbufErrors 58-148 a run). So the HAL's count of them (tt_rx_receiver_drops()) is put against the gaps
+// the reader sees: a lost datagram is put down to a receiver drop while drops are on hand that no earlier gap took,
+// and then reaches neither p, p_mtu, the run window nor rule (e). It counts receiver_lost, beside the HAL's own
+// socket_drops on the "Node N rx:" line. A drop is always counted before its gap is seen - the datagram that shows the
+// gap arrived after the dropped one - so none is missed; one not matched within two announce intervals (a small
+// datagram's, or a gap not seen yet) is let go, so a burst of drops cannot hide a later path loss for long. The count
+// is read only when no drop is on hand, so a lossy path costs one read per gap and a clean one none.
+// Returns how many of `datagrams` lost datagrams are put down to receiver drops (each takes one drop).
+static uint32_t hybrid_rx_receiver_lost(struct tt_Context* node, uint32_t datagrams) {
+    struct tt_HybridState* hybrid = &node->hybrid;
+    if (hybrid->rx_drop_credit[0] + hybrid->rx_drop_credit[1] < datagrams) {
+        uint32_t drops = tt_rx_receiver_drops(node);
+        uint32_t fresh = drops - hybrid->rx_drops_seen; // a count that only grows: modulo 2^32 is still right
+        hybrid->rx_drops_seen = drops;
+        hybrid->receiver_drops += fresh;
+        hybrid->rx_drop_credit[0] += fresh;
+    }
+    uint32_t taken = 0;
+    for (int age = 1; age >= 0 && taken < datagrams; age--) {
+        uint32_t take =
+            hybrid->rx_drop_credit[age] < datagrams - taken ? hybrid->rx_drop_credit[age] : datagrams - taken;
+        hybrid->rx_drop_credit[age] -= take;
+        taken += take;
+    }
+    hybrid->receiver_lost += taken;
+    return taken;
+}
+
+// At each announce interval: the drops seen so far age by one interval, and the ones a full interval old go.
+static void hybrid_rx_receiver_age(struct tt_Context* node) {
+    struct tt_HybridState* hybrid = &node->hybrid;
+    uint32_t drops = tt_rx_receiver_drops(node);
+    uint32_t fresh = drops - hybrid->rx_drops_seen;
+    hybrid->rx_drops_seen = drops;
+    hybrid->receiver_drops += fresh;
+    hybrid->rx_drop_credit[1] = hybrid->rx_drop_credit[0] + fresh;
+    hybrid->rx_drop_credit[0] = 0;
+}
+
 // Units [from, end) of the writer's current sample were sent and never came (end <= count): what they were sent as.
-static void hybrid_rx_gap(struct tt_HybridState* hybrid, struct tt_HybridRxWriter* writer, uint32_t from,
-                          uint32_t end) {
+// A run is one datagram and an MTU unit one; those put down to receiver drops are left out (above).
+static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* writer, uint32_t from, uint32_t end) {
+    struct tt_HybridState* hybrid = &node->hybrid;
     uint32_t tail = (uint32_t)writer->count - 1U;
     uint32_t body_end = end < tail ? end : tail;
     hybrid->tick_units += end - from;
@@ -2395,18 +2440,26 @@ static void hybrid_rx_gap(struct tt_HybridState* hybrid, struct tt_HybridRxWrite
         if (layout >= 2U) {
             for (uint32_t start = (from / layout) * layout; start < body_end; start += layout) {
                 uint32_t size = tail - start < layout ? tail - start : layout;
+                if (hybrid_rx_receiver_lost(node, 1) != 0) {
+                    continue;
+                }
                 hybrid_rx_run(hybrid, writer, size, true);
+                uint32_t first = start > from ? start : from;
+                uint32_t last = start + size < body_end ? start + size : body_end;
+                writer->body_lost += last - first;
             }
-            writer->body_lost += body_end - from;
         } else if (layout == 1U) {
-            hybrid_rx_mtu(hybrid, body_end - from, body_end - from);
-        } else {
+            uint32_t lost = (body_end - from) - hybrid_rx_receiver_lost(node, body_end - from);
+            if (lost != 0) {
+                hybrid_rx_mtu(hybrid, lost, lost);
+            }
+        } else if (hybrid_rx_receiver_lost(node, 1) == 0) {
             // Sent as what is not known yet (no run of this writer's seen): one event on its units, in p only.
             loss_estimate_observe(&hybrid->rx_loss, body_end - from, 1);
             writer->body_lost += body_end - from;
         }
     }
-    if (end > tail && from <= tail) {
+    if (end > tail && from <= tail && hybrid_rx_receiver_lost(node, 1) == 0) {
         hybrid_rx_mtu(hybrid, 1, 1); // the tail, always an MTU unit
     }
 }
@@ -2498,7 +2551,7 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
     }
     if ((int32_t)(sample - writer->sample) > 0) {
         if (writer->next < writer->count) {
-            hybrid_rx_gap(hybrid, writer, writer->next, writer->count); // the writer's last sample ended short
+            hybrid_rx_gap(node, writer, writer->next, writer->count); // the writer's last sample ended short
         }
         writer->sample = sample;
         writer->count = (uint16_t)count;
@@ -2510,7 +2563,7 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
     }
     uint32_t tail = count - 1U;
     if (index > writer->next) {
-        hybrid_rx_gap(hybrid, writer, writer->next, index);
+        hybrid_rx_gap(node, writer, writer->next, index);
     }
     hybrid->tick_units += (index + units) - (index > writer->next ? index : writer->next);
     if (run) {
@@ -11428,6 +11481,7 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
     uint64_t elapsed = now - hybrid->tick_ns;
     double units_per_s = (double)hybrid->tick_units * (double)tt_SECOND / (double)elapsed;
     hybrid_measure_lifetime(hybrid, elapsed);
+    hybrid_rx_receiver_age(node);
     hybrid->ticks++;
     uint32_t n_max = hybrid_units_within(node->ip_reassembly_max, false);
     if (hybrid->path_until_ns != 0 && now >= hybrid->path_until_ns) {
@@ -13472,8 +13526,14 @@ struct large_lend_saved {
 // milliseconds), or returned from tt_Context_poll() to the application - while large samples are arriving: the HAL
 // keeps the sockets drained meanwhile, so the next sample, which a saturated link delivers at line rate, is not
 // dropped by the socket's capped receive buffer (RESULTS L4 cell I4s; tt_rx_drain_start()). The next read ends it.
+//
+// The longest datagram that may come meanwhile sizes the HAL's buffers: a large sample's MTU fragment is a control
+// datagram, and a hybrid run (DESIGN.md section 8) is one IP-reassembled datagram as long as the reassembly ceiling
+// this context advertises allows - no writer sends a longer one, and a shorter buffer would cut it (drain_truncated).
 static void large_rx_drain(struct tt_Context* node) {
-    (void)tt_rx_drain_start(node, tt_CONTROL_MAX_LENGTH); // a large sample's fragments are control datagrams
+    uint32_t longest = node->ip_reassembly_max > (uint32_t)tt_CONTROL_MAX_LENGTH ? (uint32_t)node->ip_reassembly_max
+                                                                                 : (uint32_t)tt_CONTROL_MAX_LENGTH;
+    (void)tt_rx_drain_start(node, longest);
 }
 
 // Delivers a whole RELIABLE assembly, in order, from its buffer - lendable for the length of the callback - and frees
@@ -19184,7 +19244,8 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
     // the n it chose per sample and destination (n_hist: 1, 2-3, 4-7, 8-15, 16-31, 32 to n_max - 1, n_max), and as a
     // reader the ceiling it advertised last and the control law's decisions. A rig arm reads it; there is no other.
     TT_LOG_INFO("Node %u hybrid: runs=%lu run_units=%lu mtu_units=%lu n_hist=%lu/%lu/%lu/%lu/%lu/%lu/%lu "
-                "advertised=%u cap=%u cap_off=%u collapses=%lu probes=%lu path_failures=%lu",
+                "advertised=%u cap=%u cap_off=%u collapses=%lu probes=%lu path_failures=%lu receiver_drops=%lu "
+                "receiver_lost=%lu",
                 node->id, (unsigned long)node->hybrid.runs, (unsigned long)node->hybrid.run_units,
                 (unsigned long)node->hybrid.mtu_units, (unsigned long)node->hybrid.n_hist[0],
                 (unsigned long)node->hybrid.n_hist[1], (unsigned long)node->hybrid.n_hist[2],
@@ -19192,7 +19253,8 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned long)node->hybrid.n_hist[5], (unsigned long)node->hybrid.n_hist[6],
                 (unsigned)node->hybrid.advertised, (unsigned)node->hybrid.cap, node->hybrid.cap_off ? 1U : 0U,
                 (unsigned long)node->hybrid.collapses, (unsigned long)node->hybrid.probes,
-                (unsigned long)node->hybrid.path_failures);
+                (unsigned long)node->hybrid.path_failures, (unsigned long)node->hybrid.receiver_drops,
+                (unsigned long)node->hybrid.receiver_lost);
 #endif
 #if tt_SEGMENT_ENABLED
     // Before the socket goes: the segment is named from this context's address, and the

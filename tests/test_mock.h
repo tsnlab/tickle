@@ -108,6 +108,8 @@ void (*test_mock_try_receive_hook)(void) = NULL; // called for each backlog data
 // is cut short there, as a full socket buffer cuts MSG_DONTWAIT short. -1 (the default): unlimited. And its calls.
 int32_t test_mock_nonblocking_room = -1;
 int test_mock_nonblocking_calls = 0;
+uint32_t test_mock_receiver_drops = 0; // tt_rx_receiver_drops(): datagrams the "receiver" lost, a count that grows
+uint32_t test_mock_drain_bytes = 0;    // the datagram length core last asked tt_rx_drain_start() to drain
 #else
 extern uint64_t test_mock_now;
 extern uint64_t test_mock_cpu_ns;
@@ -143,6 +145,8 @@ extern int32_t test_mock_try_receive_len;
 extern uint64_t test_mock_try_receive_advance_ns;
 extern int test_mock_socket_reads_under_lock;
 extern void (*test_mock_try_receive_hook)(void);
+extern uint32_t test_mock_receiver_drops;
+extern uint32_t test_mock_drain_bytes;
 extern int32_t test_mock_nonblocking_room;
 extern int test_mock_nonblocking_calls;
 #endif
@@ -185,6 +189,8 @@ static inline void test_mock_reset(void) {
     test_mock_socket_reads_under_lock = 0;
     test_mock_nonblocking_room = -1;
     test_mock_nonblocking_calls = 0;
+    test_mock_receiver_drops = 0;
+    test_mock_drain_bytes = 0;
 }
 
 // A datagram as sent, in the classic form a test's decoder reads: one in the single-submessage form
@@ -530,8 +536,14 @@ bool tt_rx_maybe_ready(struct tt_Context* node) {
 // Nothing to drain: the mock hands out its backlog whenever asked (rx_drain_check.c tests the Linux HAL's).
 bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
     (void)node;
-    (void)datagram_bytes;
+    test_mock_drain_bytes = datagram_bytes;
     return false;
+}
+
+// The receiver drops a test says the HAL counted (test_mock_receiver_drops, every context alike).
+uint32_t tt_rx_receiver_drops(const struct tt_Context* node) {
+    (void)node;
+    return test_mock_receiver_drops;
 }
 
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {

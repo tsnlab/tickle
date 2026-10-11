@@ -289,6 +289,13 @@ bool tt_rx_maybe_ready(struct tt_Context* node);
 // HAL without the means returns false and nothing changes.
 bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes);
 
+// Datagrams that reached this context's host and were lost on the receiving side - dropped by a full receive socket,
+// or cut by the HAL's own buffers - since the context was bound: a count that only grows, 0 from a HAL that cannot
+// say. Not path loss: a receiver that fell behind. Core reads it to keep such drops out of the loss the hybrid
+// transport's control law sees (tickle.c, "Receiver drops are not path loss").
+uint32_t tt_rx_receiver_drops(const struct tt_Context* node);
+#define tt_HAL_RECEIVER_DROPS 1 // a tree with tt_rx_receiver_drops() (a harness built against older trees asks)
+
 // Wakes a concurrent tt_receive() blocked on this node (from any thread, including this one - a
 // self-signal), making it return -3 immediately instead of waiting out the rest of its timeout.
 // Safe to call whether or not a call is currently blocked; if none is, the signal is simply

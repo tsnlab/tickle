@@ -790,3 +790,8 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
     (void)datagram_bytes;
     return false; // lwIP's buffers are the stack's own: nothing to drain them into
 }
+
+uint32_t tt_rx_receiver_drops(const struct tt_Context* node) {
+    (void)node;
+    return 0; // not counted per connection here: every loss reads as path loss, as before
+}
