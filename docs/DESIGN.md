@@ -844,7 +844,7 @@ the floor at any loss (the repair tail of lost runs is what the objective has to
 
 #### The revision as built (`ab/hybrid-network-objective`, 2026-10-11)
 
-Built as written above, on `eae490e9`, one change per commit: the objective (the CPU cost model, its fit and
+Built as written above, on `a240fe3c`, one change per commit: the objective (the CPU cost model, its fit and
 `tt_process_cpu_ns()` removed), the reader's measurements and `loss_p`, the control law (the kernel reads
 `tt_ip_reassembly_limits()` / `tt_ip_reassembly_failures()` and the `ReasmFails` withdrawal removed: core reads no
 `/proc` and no sysctl), rule (e) on the reader's side. Where it departs from the first text of this revision, the text

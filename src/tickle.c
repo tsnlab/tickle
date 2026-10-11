@@ -8009,72 +8009,85 @@ static bool large_send_runs(struct tt_Context* node, struct tt_Publisher* pub, s
 }
 #endif
 
-// Sends what the socket takes of `record`, from where the cursor stands, to each destination in turn. True when all of
-// it has gone; false when the send buffer filled, the cursor then standing at the first fragment that did not go.
-// *progress says whether anything went. A record its publish is still encoding is encoded a send call ahead of its
-// first destination (large_encode_through()); if that fails, *failed is set and true returned with the rest unsent.
-static bool large_send_some(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord* record,
-                            bool* progress, bool* failed) {
+// large_send_some() for a destination this sample goes to in MTU units: true when all of it has gone to the cursor's
+// destination. A record its publish is still encoding is encoded through the last fragment a send call carries just
+// before that call (large_encode_through()); if that fails, *failed is set and true returned.
+static bool large_send_mtu(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord* record,
+                           bool* progress, bool* failed) {
     struct tt_LargeCursor* cursor = &pub->large_cursor;
+    const struct tt_Peer* dest = &cursor->dests[cursor->next_dest];
     const struct tt_DataHeader* data = (const struct tt_DataHeader*)(record->buffer + tt_LARGE_HEADER_OFFSET);
     const uint8_t* cdr = record->buffer + tt_LARGE_CDR_OFFSET;
-    // Each fragment's own seq_no, as frag_write_header() gives a small sample's: each datagram's span is 1.
-    node->tx_seq_span = 1;
-    while (cursor->next_dest < cursor->dest_count) {
-        const struct tt_Peer* dest = &cursor->dests[cursor->next_dest];
-#if tt_HYBRID_TRANSPORT
-        if (cursor->run_n[cursor->next_dest] >= 2U) {
-            if (!large_send_runs(node, pub, record, cursor->run_n[cursor->next_dest],
-                                 cursor->run_until[cursor->next_dest], progress, failed)) {
-                return false;
-            }
-            if (*failed) {
-                return true;
-            }
-            cursor->next_dest++;
-            cursor->next_index = 0;
-            continue;
+    while (cursor->next_index < record->count) {
+        uint32_t batch_count = record->count - cursor->next_index;
+        batch_count = batch_count < LARGE_BATCH ? batch_count : LARGE_BATCH;
+        if (!large_encode_through(pub, record, large_end_of(record, cursor->next_index + batch_count - 1))) {
+            *failed = true;
+            return true;
         }
-#endif
-        while (cursor->next_index < record->count) {
-            uint32_t batch_count = record->count - cursor->next_index;
-            batch_count = batch_count < LARGE_BATCH ? batch_count : LARGE_BATCH;
-            if (!large_encode_through(pub, record, large_end_of(record, cursor->next_index + batch_count - 1))) {
+        uint8_t framings[LARGE_BATCH][LARGE_FRAMING_MAX];
+        struct tt_OutDatagram batch[LARGE_BATCH];
+        for (uint32_t k = 0; k < batch_count; k++) {
+            uint32_t index = cursor->next_index + k;
+            uint32_t length = large_length(index, record->cdr_len);
+            uint32_t skip = 0;
+            uint32_t framing_length =
+                large_write_framing(node, framings[k], data, index, record->count, length, tt_SUBMESSAGE_ID_ALL, &skip);
+            batch[k] = (struct tt_OutDatagram) {
+                framings[k] + skip, framing_length - skip, cdr + large_offset(index), length, dest->ip, dest->port};
+        }
+        int32_t sent = large_send_batch(node, batch, batch_count, dest);
+        if (sent < 0) {
+            // Not a full buffer: an error the socket will repeat. These datagrams are lost as the network loses
+            // them - a RELIABLE reader asks for them again - rather than holding the send for ever.
+            TT_LOG_WARNING("Cannot send large sample %u fragments %u.. to %u: %s", record->seq_no,
+                           (unsigned)cursor->next_index, (unsigned)dest->context_id, strerror(errno));
+            sent = (int32_t)batch_count;
+        }
+        if (sent > 0) {
+            *progress = true;
+        }
+        cursor->next_index = (uint16_t)(cursor->next_index + (uint32_t)sent);
+        if ((uint32_t)sent < batch_count) {
+            // The send buffer is full, and holds more wire time than the rest of the sample takes to encode: the
+            // rest is encoded now, while it drains, rather than a send call at a time with a retry after each.
+            if (!large_encode_through(pub, record, record->cdr_len)) {
                 *failed = true;
                 return true;
             }
-            uint8_t framings[LARGE_BATCH][LARGE_FRAMING_MAX];
-            struct tt_OutDatagram batch[LARGE_BATCH];
-            for (uint32_t k = 0; k < batch_count; k++) {
-                uint32_t index = cursor->next_index + k;
-                uint32_t length = large_length(index, record->cdr_len);
-                uint32_t skip = 0;
-                uint32_t framing_length = large_write_framing(node, framings[k], data, index, record->count, length,
-                                                              tt_SUBMESSAGE_ID_ALL, &skip);
-                batch[k] = (struct tt_OutDatagram) {
-                    framings[k] + skip, framing_length - skip, cdr + large_offset(index), length, dest->ip, dest->port};
-            }
-            int32_t sent = large_send_batch(node, batch, batch_count, dest);
-            if (sent < 0) {
-                // Not a full buffer: an error the socket will repeat. These datagrams are lost as the network loses
-                // them - a RELIABLE reader asks for them again - rather than holding the send for ever.
-                TT_LOG_WARNING("Cannot send large sample %u fragments %u.. to %u: %s", record->seq_no,
-                               (unsigned)cursor->next_index, (unsigned)dest->context_id, strerror(errno));
-                sent = (int32_t)batch_count;
-            }
-            if (sent > 0) {
-                *progress = true;
-            }
-            cursor->next_index = (uint16_t)(cursor->next_index + (uint32_t)sent);
-            if ((uint32_t)sent < batch_count) {
-                // The send buffer is full, and holds more wire time than the rest of the sample takes to encode: the
-                // rest is encoded now, while it drains, rather than a send call at a time with a retry after each.
-                if (!large_encode_through(pub, record, record->cdr_len)) {
-                    *failed = true;
-                    return true;
-                }
-                return false;
-            }
+            return false;
+        }
+    }
+    return true;
+}
+
+// Sends what the socket takes of `record`, from where the cursor stands, to each destination in turn - in runs to a
+// destination whose n is 2 or more (hybrid transport), in MTU units otherwise. True when all of it has gone; false
+// when the send buffer filled, the cursor then standing at the first unit that did not go. *progress says whether
+// anything went. A record its publish is still encoding is encoded a send call ahead of its first destination
+// (large_encode_through()); if that fails, *failed is set and true returned with the rest unsent.
+static bool large_send_some(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord* record,
+                            bool* progress, bool* failed) {
+    struct tt_LargeCursor* cursor = &pub->large_cursor;
+    // Each fragment's own seq_no, as frag_write_header() gives a small sample's: each datagram's span is 1.
+    node->tx_seq_span = 1;
+    while (cursor->next_dest < cursor->dest_count) {
+        bool done = false;
+#if tt_HYBRID_TRANSPORT
+        if (cursor->run_n[cursor->next_dest] >= 2U) {
+            done = large_send_runs(node, pub, record, cursor->run_n[cursor->next_dest],
+                                   cursor->run_until[cursor->next_dest], progress, failed);
+        } else {
+            done = large_send_mtu(node, pub, record, progress, failed);
+        }
+#else
+        done = large_send_mtu(node, pub, record, progress, failed);
+#endif
+        if (!done) {
+            return false;
+        }
+        if (*failed) {
+            return true;
         }
         cursor->next_dest++;
         cursor->next_index = 0;

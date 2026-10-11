@@ -169,7 +169,7 @@ static void* test_acquire(void* user, uint32_t bytes) {
     uint8_t* buffer = (uint8_t*)malloc(bytes);
     struct reader* r = (struct reader*)user;
     if (r != NULL && buffer != NULL) {
-        memmove(&r->granted[1], &r->granted[0], sizeof(r->granted) - sizeof(r->granted[0]));
+        memmove((void*)&r->granted[1], (const void*)&r->granted[0], sizeof(r->granted) - sizeof(r->granted[0]));
         r->granted[0] = buffer;
     }
     return buffer;
@@ -252,7 +252,7 @@ static void init_set(uint32_t len, int count, const uint32_t* ceilings, bool rel
         r->retain_result = tt_RET_OK;
         r->lend_kind = 0;
         r->decoded_at = NULL;
-        memset(r->granted, 0, sizeof(r->granted));
+        memset((void*)r->granted, 0, sizeof(r->granted));
         init_bare_node(&r->ctx, reader_id(i));
         memset(&r->topic, 0, sizeof(r->topic));
         r->topic.name = TOPIC_NAME;
