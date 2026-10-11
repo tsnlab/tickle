@@ -36,6 +36,9 @@
 #   - socket drops, per stall cell: the sum over reps of B (and of Boff) must not exceed the larger of A's and A2's
 #     sums, and must be 0 where both are 0; otherwise the line says DROPS. Every other cell must drop nothing in any
 #     arm (a drop there is printed). Stall cells are read for drops only, not for the hypothesis's instructions.
+#     If A or A2 drops in a cell without a stall, the setup drops on its own (a loaded PC preempts the reader as a stall
+#     would - 2026-10-11, load ~7-18): the drop reading is VOID, said so, and left out of the hypothesis, which then
+#     stands on the other metrics only and says that its drop half is unread.
 #   - the hypothesis (TREATMENT=defer): rel1m and rel4m wakes BETTER and instructions BETTER, latency median not WORSE,
 #     small SAME on every metric, and no DROPS. Falsified when rel1m wakes or instructions are not BETTER, or a stall
 #     cell DROPS.
@@ -115,7 +118,10 @@ rcvbuf_errors() { # the subscriber namespace's Udp RcvbufErrors
 run_cell() { # rep cell arm
     local rep=$1 cell=$2 arm=$3 bin_arm=$3 size rate rel stall env_sub=""
     [ "$arm" = A2 ] && bin_arm=A
-    [ "$arm" = Boff ] && bin_arm=B && env_sub="TT_RX_DEFER=0 TT_RX_DIRECT=0"
+    # Boff switches off only the treatment, so it is A's behaviour in B's binary: TREATMENT=direct runs on a base that
+    # has the deferral, which Boff keeps (2026-10-11: the first direct run switched both off, and its Boff was void).
+    [ "$arm" = Boff ] && bin_arm=B && env_sub="TT_RX_DEFER=0"
+    [ "$arm" = Boff ] && [ "$TREATMENT" = direct ] && env_sub="TT_RX_DIRECT=0"
     [ "$arm" = B ] && [ "$TREATMENT" = direct ] && env_sub="TT_RX_DIRECT=1" # off by default
     read -r size rate rel stall <<<"$(args_of "$cell")"
     [ "$rel" = - ] && rel=""
@@ -183,10 +189,12 @@ for line in open(path):
         continue
     defers, direct = int(f.get("rx_defers", 0)), int(f.get("direct_placed", 0))
     large = cell != "small"
+    # Only the treatment's own counter is the check: a direct A/B's base has the deferral in every arm.
+    treated = defers if treatment == "defer" else direct
     if arm in ("A", "A2", "Boff") or not large:
-        ok = defers == 0 and direct == 0
+        ok = treated == 0
     else:
-        ok = defers > 0 if treatment == "defer" else direct > 0
+        ok = treated > 0
     if not ok:
         voids.append(f"VOID_treatment rep={rep} cell={cell} arm={arm} rx_defers={defers} direct_placed={direct}")
         continue
@@ -218,10 +226,14 @@ for cell in ("rel1m", "rel4m", "small"):
               f"B {med['B']:14.1f} ({100*(med['B']-a)/a:+.2f}%) Boff {med['Boff']:14.1f} ({100*(med['Boff']-a)/a:+.2f}%) "
               f"tol {100*tol/a:.2f}% -> B {verdicts[(cell, metric)]}{note}")
 drop_ok = True
+drop_void = False
 for (cell, arm), d in sorted(drops.items()):
     if not cell.startswith("stall") and sum(d) != 0:
         print(f"DROPS {cell} {arm}: {d} (a cell without a stall must drop nothing)")
         drop_ok = False
+        drop_void = drop_void or arm in ("A", "A2")
+if drop_void:
+    print("DROPS VOID: the control (A/A2) dropped without a stall - this setup drops on its own; drops not read")
 for cell in ("stall1m", "stall4m"):
     s = {a: sum(drops.get((cell, a), [])) for a in ("A", "A2", "B", "Boff")}
     if not all(drops.get((cell, a)) for a in s):
@@ -232,6 +244,8 @@ for cell in ("stall1m", "stall4m"):
     print(f"{cell:7} drops (sum over reps) A {s['A']} A2 {s['A2']} B {s['B']} Boff {s['Boff']} -> "
           f"{'DROPS (' + ','.join(bad) + ')' if bad else 'no more than A'}")
     drop_ok = drop_ok and not bad
+if drop_void:
+    drop_ok = True  # unread, not passed: the HYPOTHESIS line says so
 def v(cell, metric):
     return verdicts.get((cell, metric), "NO READING")
 if treatment == "defer":
@@ -240,6 +254,7 @@ else:
     held = all(v(c, "insns") == "BETTER" and v(c, "wakes") != "WORSE" and v(c, "lat") != "WORSE" for c in ("rel1m", "rel4m"))
 held = held and drop_ok and all(v("small", m) == "SAME" for m in ("insns", "wakes", "lat"))
 falsified = v("rel1m", "insns") != "BETTER" or (treatment == "defer" and v("rel1m", "wakes") != "BETTER") or not drop_ok
-print(f"HYPOTHESIS ({treatment}): {'HELD' if held else 'NOT HELD'}{' - FALSIFIED (rel1m)' if falsified else ''}")
+note = " (drops VOID: unread)" if drop_void else ""
+print(f"HYPOTHESIS ({treatment}): {'HELD' if held else 'NOT HELD'}{' - FALSIFIED' if falsified else ''}{note}")
 PYEOF
 say "=== rx_defer_pc done $(date -Is) out=$OUT ==="
