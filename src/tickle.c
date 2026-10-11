@@ -756,21 +756,30 @@ static uint8_t* segment_slot_payload(struct tt_SegmentSlot* slot_header) {
     return (uint8_t*)slot_header + sizeof(*slot_header);
 }
 
-// Publishes a slot segment_claim() returned, its `len` payload bytes already written. len 0 is the harmless record.
-static void segment_publish(struct tt_SegmentSlot* slot_header, uint32_t claimed, uint32_t len, uint32_t sender_ip,
-                            uint16_t sender_port, uint16_t seq_span) {
+// Publishes a slot segment_claim() returned with `span_field` stored as given: segment_publish() for a datagram, or a
+// fence (segment_fence()).
+static void segment_publish_as(struct tt_SegmentSlot* slot_header, uint32_t claimed, uint32_t len, uint32_t sender_ip,
+                               uint16_t sender_port, uint16_t span_field) {
     slot_header->length = len;
     slot_header->sender_ip = sender_ip;
     slot_header->sender_port = sender_port;
-    // The publisher's number, not recomputed here. Checked against a bound with its own source of
-    // truth: a span above tt_FRAG_MAX_COUNT is a record the network form could not have carried at all,
-    // since frag_count counts the same datagrams in a uint8_t. Out of range means the value did not come
-    // from the arithmetic that should have produced it, so take the one that is always safe.
-    slot_header->seq_span = (seq_span >= 1 && seq_span <= tt_FRAG_MAX_COUNT) ? seq_span : 1;
+    slot_header->seq_span = span_field;
     // Release: everything above must be visible before the sequence that publishes it. The reader
     // takes this slot exactly when it sees claimed + 1 here, so a writer that finished later than a
     // writer with a higher index cannot make the reader read an unwritten slot.
     __atomic_store_n(&slot_header->sequence, claimed + 1U, __ATOMIC_RELEASE);
+}
+
+// Publishes a slot segment_claim() returned, its `len` payload bytes already written. len 0 is the harmless record.
+static void segment_publish(struct tt_SegmentSlot* slot_header, uint32_t claimed, uint32_t len, uint32_t sender_ip,
+                            uint16_t sender_port, uint16_t seq_span) {
+    // The publisher's number, not recomputed here. Checked against a bound with its own source of
+    // truth: a span above tt_FRAG_MAX_COUNT is a record the network form could not have carried at all,
+    // since frag_count counts the same datagrams in a uint8_t. Out of range means the value did not come
+    // from the arithmetic that should have produced it, so take the one that is always safe - which also means no
+    // datagram can be published as a fence.
+    segment_publish_as(slot_header, claimed, len, sender_ip, sender_port,
+                       (seq_span >= 1 && seq_span <= tt_FRAG_MAX_COUNT) ? seq_span : 1);
 }
 
 static bool segment_write(struct tt_SegmentHeader* header, const void* hdr, uint32_t hdr_len, const void* body,
@@ -807,6 +816,19 @@ static bool segment_read(struct tt_SegmentHeader* header, void* buf, uint32_t si
         return false; // empty, or the writer that claimed this slot has not finished with it
     }
 
+    // "0 means 1", the field's own convention (tt_SegmentSlot.seq_span), and a writer from
+    // before version 3 leaves zeroes here. Anything above the wire bound is a slot that does
+    // not agree with the protocol, and is read as 1 rather than trusted: believing it would
+    // skip the reader's watermark past seq_nos that do exist. The one exception is a fence, which is not read here at
+    // all: it stays at the head, and the drain finds it there (note_head_stall()). Tested inside the range
+    // check's own failing branch, so a datagram's record pays nothing for it.
+    uint16_t span = slot_header->seq_span;
+    if (span - 1U >= tt_FRAG_MAX_COUNT) {
+        if (span == tt_SEGMENT_SPAN_FENCE) {
+            return false;
+        }
+        span = 1;
+    }
     uint8_t* slot = (uint8_t*)slot_header;
     uint32_t length = slot_header->length;
     bool usable = length <= header->slot_bytes && length <= size;
@@ -815,12 +837,7 @@ static bool segment_read(struct tt_SegmentHeader* header, void* buf, uint32_t si
         *len = length;
         *sender_ip = slot_header->sender_ip;
         *sender_port = slot_header->sender_port;
-        // "0 means 1", the field's own convention (tt_SegmentSlot.seq_span), and a writer from
-        // before version 3 leaves zeroes here. Anything above the wire bound is a slot that does
-        // not agree with the protocol, and is read as 1 rather than trusted: believing it would
-        // skip the reader's watermark past seq_nos that do exist.
-        uint16_t span = slot_header->seq_span;
-        *seq_span = (span >= 1 && span <= tt_FRAG_MAX_COUNT) ? span : 1;
+        *seq_span = span;
     }
     // Released either way, so a record this mapping could not hold cannot wedge the ring. The slot
     // is marked free for the writer one lap ahead, and only then does read_index move - a writer
@@ -853,13 +870,19 @@ static bool segment_take(struct tt_SegmentHeader* header, uint8_t** record, uint
         __atomic_store_n(&header->read_index, read_index + 1U, __ATOMIC_RELEASE);
         return false;
     }
+    uint16_t span = slot_header->seq_span; // as segment_read(): 0 and out-of-range spans read as 1, a fence stays
+    if (span - 1U >= tt_FRAG_MAX_COUNT) {
+        if (span == tt_SEGMENT_SPAN_FENCE) {
+            return false;
+        }
+        span = 1;
+    }
     *record = (uint8_t*)slot_header + sizeof(*slot_header);
     *index = read_index;
     *len = length;
     *sender_ip = slot_header->sender_ip;
     *sender_port = slot_header->sender_port;
-    uint16_t span = slot_header->seq_span; // as segment_read(): 0 and out-of-range spans read as 1
-    *seq_span = (span >= 1 && span <= tt_FRAG_MAX_COUNT) ? span : 1;
+    *seq_span = span;
     __atomic_store_n(&header->read_index, read_index + 1U, __ATOMIC_RELEASE);
     return true;
 }
@@ -1045,6 +1068,55 @@ static void segment_claims_note(struct tt_Context* node, uint8_t context_id, int
     entry->claims = (uint8_t)(entry->claims + delta);
 }
 
+// The switch from UDP to a peer's segment, made lossless (DESIGN.md section 10). Until this attach, what this context
+// sent the peer went over UDP, to the peer's data socket, and may still be queued there; from the next datagram on it
+// goes into the ring, and the owner drains the ring BEFORE its socket (drain_own_segment()). Unfenced, the owner
+// delivered the first ring record and then discarded the queued UDP datagrams as older: 1-224 BEST_EFFORT samples a run
+// in test_thread_safety's stress, its segment_unattached_to_udp at 54-133 against about 2 otherwise (2026-10-11).
+//
+// So the first thing this writer puts in the ring is a fence, after sending the same three bytes to the same socket,
+// behind everything it sent there. The owner does not read past the fence until it has read the datagram
+// (note_head_stall()). The two may meet in either order: an owner that read the datagram first remembers it
+// (tt_Context.segment_fences_seen). A failed send writes no record - there is nothing to wait for - and a ring with no
+// room for the record refuses the attach: the next datagram goes over UDP, as it would have, and the attach is asked
+// again after tt_SEGMENT_ATTACH_RETRY_SENDS. Only an attach that follows UDP pays for this, never a datagram.
+static bool segment_fence(struct tt_Context* node, struct tt_SegmentHeader* header, uint32_t ip, uint16_t port) {
+    node->segment_fence_generation++;
+    const uint8_t fence[tt_SEGMENT_FENCE_LENGTH] = {tt_SEGMENT_FENCE_MARKER, node->id, node->segment_fence_generation};
+    if (tt_send_to(node, fence, sizeof(fence), ip, port) < 0) {
+        return true; // nothing reached the socket after the datagrams already there, so there is nothing to fence
+    }
+    node->segment_fences_sent++;
+    uint32_t claimed = 0;
+    struct tt_SegmentSlot* slot = segment_claim(header, &claimed);
+    if (slot == NULL) {
+        return false;
+    }
+    memcpy(segment_slot_payload(slot), fence, sizeof(fence));
+    uint32_t own_ip = 0;
+    uint16_t own_port = 0;
+    tt_own_address(node, &own_ip, &own_port);
+    segment_publish_as(slot, claimed, (uint32_t)sizeof(fence), own_ip, own_port, (uint16_t)tt_SEGMENT_SPAN_FENCE);
+    return true;
+}
+
+// A mapping just attached for `entry`, fenced if the attach follows datagrams that went to this peer over UDP
+// (segment_fence()): `entry` still holds the absent answer for this same address - every send since it took the socket,
+// the one that got the answer included - or a dead-reader give-up, which leaves the same answer behind. Not the first
+// attach to an address, which follows no unicast to it, and not a revalidation of the mapping being written to: both
+// left `entry` zeroed. NULL, with *verdict REFUSED, when the ring has no room for the fence - no switch yet.
+static struct tt_SegmentHeader* segment_attach_fenced(struct tt_Context* node, const struct tt_SegmentPeer* entry,
+                                                      struct tt_SegmentHeader* header, size_t bytes, uint32_t ip,
+                                                      uint16_t port, enum tt_SegmentAttach* verdict) {
+    const bool after_udp = entry->missing && entry->ip == ip && entry->port == port;
+    if (header == NULL || !after_udp || segment_fence(node, header, ip, port)) {
+        return header;
+    }
+    tt_segment_detach(header, bytes);
+    *verdict = tt_SEGMENT_REFUSED;
+    return NULL;
+}
+
 static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, uint8_t context_id, uint32_t ip,
                                                      uint16_t port) {
     if (context_id == tt_CONTEXT_ID_INVALID) {
@@ -1120,6 +1192,7 @@ static struct tt_SegmentHeader* peer_segment_resolve(struct tt_Context* node, ui
     size_t bytes = 0;
     enum tt_SegmentAttach verdict = tt_SEGMENT_ABSENT;
     struct tt_SegmentHeader* header = attach_peer_segment(path, ip, port, context_id, &bytes, &verdict);
+    header = segment_attach_fenced(node, entry, header, bytes, ip, port, &verdict);
     if (header == NULL) {
         note_attach(node, verdict);
         remember_absent(entry, ip, port);
@@ -3804,6 +3877,13 @@ static void reset_node_state(struct tt_Context* node) {
     node->segment_sleep_generation = 0;
     node->segment_slot_ceiling = 0;
     node->segment_doorbells_received = 0;
+    node->segment_fence_generation = 0;
+    node->segment_fences_sent = 0;
+    memset(node->segment_fences_seen, 0, sizeof(node->segment_fences_seen));
+    node->segment_fences_seen_next = 0;
+    node->segment_fence_deadline_ns = 0;
+    node->segment_fences_passed = 0;
+    node->segment_fences_expired = 0;
     node->segment_generation_unspent = 0;
     node->segment_unspent_doorbells = 0;
     node->segment_generations_kept = 0;
@@ -15656,7 +15736,9 @@ static bool segment_drained_instead_of_sleeping(struct tt_Context* node, bool ha
     }
     bool emptied = true;
     *took = drain_own_segment(node, &emptied) > 0;
-    return true;
+    // A fence held at the head waits for the socket, which only the sleep below reads: going round would come back
+    // here and drain the same fence until its deadline, with its datagram unread. poll_wait_io() bounds that sleep.
+    return *took || node->segment_fence_deadline_ns == 0;
 }
 
 // After a sleep: a new awake stretch (segment_await_next()), and what choosing to sleep cost - but only from a sleep
@@ -15698,13 +15780,25 @@ static void segment_resumed(struct tt_Context* node, int32_t len, uint64_t decid
     node->segment_sleep_cost_ns = (uint64_t)(mean + (((int64_t)cost - mean) / (int64_t)count));
 }
 
-static void note_head_stall(struct tt_Context* node) {
+static bool segment_fence_at_head(struct tt_Context* node, struct tt_SegmentHeader* header, uint32_t index);
+
+// The drain found nothing it could read at the head: an empty ring, a head claimed and not yet published, or a fence
+// (tt_SEGMENT_SPAN_FENCE), which segment_read() and segment_take() leave where it is. True when the head was a fence
+// now passed, and the drain reads on; false when the drain stops here - and a fence still held stops it exactly as an
+// empty ring does, so its caller reads the socket next, which is what the fence is waiting for.
+static bool note_head_stall(struct tt_Context* node) {
     struct tt_SegmentHeader* header = node->own_segment;
     uint32_t write_index = __atomic_load_n(&header->write_index, __ATOMIC_ACQUIRE);
     uint32_t read_index = __atomic_load_n(&header->read_index, __ATOMIC_RELAXED); // the owner's own
     if (write_index == read_index) {
         node->segment_head_stall_passes = 0; // nothing outstanding: the ring is genuinely empty
-        return;
+        return false;
+    }
+    const struct tt_SegmentSlot* head = (const struct tt_SegmentSlot*)segment_slot(header, read_index);
+    if (__atomic_load_n(&head->sequence, __ATOMIC_ACQUIRE) == read_index + 1U &&
+        head->seq_span == tt_SEGMENT_SPAN_FENCE) {
+        node->segment_head_stall_passes = 0; // published: not a stall, whatever it waits for
+        return segment_fence_at_head(node, header, read_index);
     }
     node->segment_head_stalls++;
     node->segment_head_stall_passes++;
@@ -15715,6 +15809,7 @@ static void note_head_stall(struct tt_Context* node) {
                        "falls back to UDP from here, which is correct but will look like a sizing problem.",
                        (unsigned)(read_index & (header->slots - 1U)), (unsigned)node->segment_head_stall_passes);
     }
+    return false;
 }
 
 // segment_release() of `count` slots from `index` on, with read_index moved once, past the last: the slots the drain
@@ -15749,6 +15844,52 @@ static void segment_release_run(struct tt_SegmentHeader* header, uint32_t index,
 // is marked free one lap ahead before read_index moves past it.
 static void segment_release(struct tt_SegmentHeader* header, uint32_t index) {
     segment_release_run(header, index, 1);
+}
+
+// A fence's identity, as both its record and its datagram carry it: the writer's context id and fence generation.
+// Plus one, so that 0 is an empty entry of segment_fences_seen[].
+static uint32_t segment_fence_key(const uint8_t* fence) {
+    return ((((uint32_t)fence[1]) << BITS_IN_1BYTE) | fence[2]) + 1U;
+}
+
+// A fence datagram out of the socket (process_datagram_in()). Remembered rather than matched against the head: the
+// fence it pairs with may not be in the ring yet, or may sit behind another writer's.
+static void segment_fence_arrived(struct tt_Context* node, const uint8_t* fence) {
+    node->segment_fences_seen[node->segment_fences_seen_next] = segment_fence_key(fence);
+    node->segment_fences_seen_next = (uint8_t)((node->segment_fences_seen_next + 1U) % tt_SEGMENT_FENCES_SEEN);
+}
+
+// The fence at the head of the ring, at `index`: passed - released, and true - once its datagram has come out of the
+// socket, or once tt_SEGMENT_FENCE_HOLD_NS has gone by without it; held - false - until then. A record marked as a
+// fence that is not one this build writes has nothing to wait for and is passed at once, so no writer can wedge the
+// ring with one.
+static bool segment_fence_at_head(struct tt_Context* node, struct tt_SegmentHeader* header, uint32_t index) {
+    const struct tt_SegmentSlot* slot = (const struct tt_SegmentSlot*)segment_slot(header, index);
+    const uint8_t* fence = (const uint8_t*)slot + sizeof(*slot);
+    bool seen = slot->length != tt_SEGMENT_FENCE_LENGTH || fence[0] != (uint8_t)tt_SEGMENT_FENCE_MARKER;
+    const uint32_t key = seen ? 0 : segment_fence_key(fence);
+    for (uint32_t k = 0; k < tt_SEGMENT_FENCES_SEEN && !seen; k++) {
+        if (node->segment_fences_seen[k] == key) {
+            node->segment_fences_seen[k] = 0;
+            seen = true;
+        }
+    }
+    if (seen) {
+        node->segment_fences_passed++;
+    } else {
+        const uint64_t now = tt_get_ns();
+        if (node->segment_fence_deadline_ns == 0) {
+            node->segment_fence_deadline_ns = now + tt_SEGMENT_FENCE_HOLD_NS;
+            return false;
+        }
+        if (now < node->segment_fence_deadline_ns) {
+            return false;
+        }
+        node->segment_fences_expired++;
+    }
+    node->segment_fence_deadline_ns = 0;
+    segment_release(header, index);
+    return true;
 }
 
 // SKIP TO NEWEST. Under overload a KEEP_LAST Subscriber's backlog in the ring is mostly samples its history will
@@ -16407,7 +16548,7 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
         state_lock(node);
         uint32_t taken = 0;
         bool ran_dry = false;
-        while (taken < tt_RX_LOCK_CHUNK && drained + taken < tt_SEGMENT_DRAIN_PER_POLL) {
+        while (taken < tt_RX_LOCK_CHUNK && drained + taken < tt_SEGMENT_DRAIN_PER_POLL && !ran_dry) {
             uint32_t len = 0;
             uint32_t sender_ip = 0;
             uint16_t sender_port = 0;
@@ -16434,9 +16575,10 @@ static uint32_t drain_own_segment(struct tt_Context* node, bool* emptied) {
             if (!segment_read(node->own_segment, node->rx_buffer, (uint32_t)sizeof(node->rx_buffer), &len, &sender_ip,
                               &sender_port, &seq_span)) {
 #endif
-                note_head_stall(node); // empty, or a head nobody is coming back for - the two look alike
-                ran_dry = true;
-                break;
+                // Empty, or a head nobody is coming back for - the two look alike - or a fence: held, which stops the
+                // drain here as an empty ring does, or passed, and the drain reads on.
+                ran_dry = !note_head_stall(node);
+                continue;
             }
             node->segment_head_stall_passes = 0; // something was read, so the head is moving
             taken++;
@@ -16527,10 +16669,17 @@ static tt_ret_t process_datagram_in(struct tt_Context* node, uint8_t* buffer, in
     // A doorbell: somebody put a record in this context's segment while it was asleep on this socket,
     // and rang. There is nothing to parse - waking up was the message - and it is dropped here,
     // before the magic check, because a zero-length datagram would otherwise be logged as a malformed
-    // one every time the module did its job.
-    if (len == 0) {
-        node->segment_doorbells_received++;
-        return tt_RET_OK;
+    // one every time the module did its job. A fence (tt_SEGMENT_FENCE_LENGTH) is the other datagram shorter than any
+    // TickLE header, and one comparison asks for both.
+    if (len < (int32_t)sizeof(struct tt_SingleHeader)) {
+        if (len == 0) {
+            node->segment_doorbells_received++;
+            return tt_RET_OK;
+        }
+        if (len == tt_SEGMENT_FENCE_LENGTH && buffer[0] == (uint8_t)tt_SEGMENT_FENCE_MARKER) {
+            segment_fence_arrived(node, buffer);
+            return tt_RET_OK;
+        }
     }
 #endif
     node->rx_tail = (uint32_t)len;
@@ -16718,6 +16867,23 @@ static int64_t poll_wait_length(bool has_next, uint64_t next, uint64_t time, int
     return timeout;
 }
 
+#if tt_SEGMENT_ENABLED
+// A sleep taken while a fence is held at the head (segment_fence_at_head()) is for the fence's datagram, and ends by
+// the fence's deadline if the datagram never comes, so the records behind it are not held past it. Woken "for the
+// scheduler", so the loop goes round to the drain that passes it rather than ending the poll.
+static void segment_fence_bounds_sleep(const struct tt_Context* node, int64_t* rest, bool* woke_for_scheduler) {
+    if (node->segment_fence_deadline_ns == 0) {
+        return;
+    }
+    const uint64_t now = tt_get_ns();
+    const int64_t left = node->segment_fence_deadline_ns > now ? (int64_t)(node->segment_fence_deadline_ns - now) : 1;
+    if (*rest <= 0 || *rest > left) {
+        *rest = left;
+        *woke_for_scheduler = true;
+    }
+}
+#endif
+
 // tt_Context_poll()'s I/O step, when nothing is due: wait for a datagram, the next entry or an interrupt.
 // Returns true with *result set when the poll should end.
 static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, uint64_t time, int64_t timeout,
@@ -16799,6 +16965,7 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
         return true;
     }
     node->segment_sleeps++;
+    segment_fence_bounds_sleep(node, &rest, &woke_for_scheduler);
 #endif
     int32_t len = tt_receive(node, RX_LANDING(node), tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
 #if tt_SEGMENT_ENABLED
@@ -17447,7 +17614,10 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         // Attaches refused because no live context owned the file: a dead one's segment, left in /dev/shm.
         "shm_attach_orphaned=%lu "
         // Claimed-slot publishes (tt_Publisher_claim()): built in place, copied out at publish, abandoned.
-        "shm_claims_published=%lu shm_claims_copied=%lu shm_claims_abandoned=%lu",
+        "shm_claims_published=%lu shm_claims_copied=%lu shm_claims_abandoned=%lu "
+        // The switch from UDP to a segment (tt_SEGMENT_SPAN_FENCE): fences this writer sent, and fences met at the head
+        // of this context's own ring - passed on their datagram, or given up at the deadline.
+        "shm_fences_sent=%lu shm_fences_passed=%lu shm_fences_expired=%lu",
         node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
         (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
         (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -17474,7 +17644,8 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned long)LEND_COUNT(node, bad_releases), (unsigned long)LEND_COUNT(node, held),
         (unsigned long)LEND_COUNT(node, full_retained), (unsigned long)node->segment_attach[tt_SEGMENT_ORPHANED],
         (unsigned long)node->segment_claims_published, (unsigned long)node->segment_claims_copied,
-        (unsigned long)node->segment_claims_abandoned);
+        (unsigned long)node->segment_claims_abandoned, (unsigned long)node->segment_fences_sent,
+        (unsigned long)node->segment_fences_passed, (unsigned long)node->segment_fences_expired);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads

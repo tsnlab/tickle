@@ -572,6 +572,20 @@
 #ifndef tt_SEGMENT_ENCODE_IN_SLOT
 #define tt_SEGMENT_ENCODE_IN_SLOT 1
 #endif
+// The switch from UDP to a peer's segment (tt_SEGMENT_SPAN_FENCE, tickle.h). How long an owner keeps a fence at the
+// head of its ring waiting for the fence's datagram, reading its socket meanwhile. The datagram is sent before the
+// record is written, and on one host a datagram is queued at the receiving socket within the sender's own sendto()
+// unless the kernel defers its receive processing, so it is normally there by the time the owner meets the record; the
+// deadline is for one that never comes - dropped by a full socket buffer, or a writer whose send failed - and bounds
+// what the ring is held for then. Records of every writer wait behind a held fence, so it is kept short.
+#ifndef tt_SEGMENT_FENCE_HOLD_NS
+#define tt_SEGMENT_FENCE_HOLD_NS 1000000ULL
+#endif
+// Fence datagrams an owner remembers having read, for a fence it meets in its ring after reading the datagram - or
+// while another writer's fence holds the head. One per writer switching at once is enough; the oldest is overwritten.
+#ifndef tt_SEGMENT_FENCES_SEEN
+#define tt_SEGMENT_FENCES_SEEN 8
+#endif
 // Most records taken from a segment in one poll, so a writer that keeps its ring full cannot starve
 // the socket - the poll returns and comes back, which is the fairness the socket drain already has.
 #ifndef tt_SEGMENT_DRAIN_PER_POLL
