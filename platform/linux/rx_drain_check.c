@@ -21,9 +21,12 @@
 //                goes on taking while it holds datagrams, and stops - before any socket read - only once it holds none.
 //   4. cut     - a datagram longer than a drain buffer is dropped and counted (drain_truncated), and no drain starts
 //                until tt_RX_DRAIN_HOLDOFF_NS has passed, so the same datagram sent again is read whole.
-//   5. sized   - asked for 65,507-byte datagrams, the drain rebuilds its buffers for them, and a burst of them through
-//   the
-//                smallest socket buffer arrives whole.
+//   5. sized   - asked for 65,507-byte datagrams, the drain rebuilds its buffers for them, and a burst of them
+//                through the smallest socket buffer arrives whole.
+//   6. ring    - the buffers reached the kernel the way TT_EXPECT_DRAIN_RING says, when it is set: test_samehost.sh
+//                runs this under refuse_pbuf_ring.so, which holds every IORING_REGISTER_PBUF_RING to Linux 6.8's
+//                rules and can refuse it as the rig's Pi 5s did (6.8.0-1064-raspi, EINVAL), so checks 3-5 also run
+//                over the kernel's own ring and over classic provided buffers.
 // The drain's task work runs here on this thread's own sendto() returns; rx_drain_pc.sh is the check that it runs
 // while a thread is busy in user space. Exit 0 pass, 1 fail, 2 no drain (io_uring refused, or a kernel before 6.0),
 // 3 setup failed.
@@ -39,6 +42,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h> // getenv()
 #include <string.h>
 #include <unistd.h>
 
@@ -238,6 +242,22 @@ static int read_all(struct tt_Context* node) {
     return mine;
 }
 
+// 6. ring - how the buffers reached the kernel. TT_EXPECT_DRAIN_RING (user, kernel or classic) is what
+// test_samehost.sh's passes under tests/support/refuse_pbuf_ring.so must have fallen back to; unset, any is fine.
+static enum check_exit check_ring(const struct tt_Context* node) {
+    static const char* const names[] = {"none", "user", "kernel", "classic"};
+    uint8_t ring = node->hal.drain_ring;
+    const char* got = ring < sizeof(names) / sizeof(names[0]) ? names[ring] : "?";
+    const char* want = getenv("TT_EXPECT_DRAIN_RING");
+    if (ring == tt_RX_DRAIN_RING_NONE || (want != NULL && strcmp(want, got) != 0)) {
+        printf("rx_drain_check: FAIL - ring: the buffers went by %s, must be %s\n", got,
+               want != NULL ? want : "any but none");
+        return CHECK_FAIL;
+    }
+    printf("rx_drain_check: PASS - ring: every check above ran with the buffers handed over as %s\n", got);
+    return CHECK_PASS;
+}
+
 int main(void) {
     _tt_CONFIG.broadcast = "127.255.255.255";
     _tt_CONFIG.context_id = CHECK_CONTEXT_ID;
@@ -297,6 +317,9 @@ int main(void) {
     }
     if (result == CHECK_PASS) {
         result = check_sized(&node, sender);
+    }
+    if (result == CHECK_PASS) {
+        result = check_ring(&node);
     }
 
 out:
