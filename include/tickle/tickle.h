@@ -237,7 +237,20 @@ enum tt_Transport { tt_TRANSPORT_UDP = 0, tt_TRANSPORT_SHM, tt_TRANSPORT_COUNT }
 // once per generation rather than once per read_index. A new writer with an old owner would see the generation stuck
 // at 1 and ring once ever, so the bump - refused attach, UDP between the two - is again the whole compatibility story.
 // 5 since 2026-10-05: write_index, read_index and reader_waiting each on a cache line of their own, which moves them.
-#define tt_SEGMENT_VERSION 5
+// 6 since 2026-10-11: a slot may hold a FENCE (tt_SEGMENT_SPAN_FENCE below), which is not a datagram. An owner of
+// version 5 would read one as a zero-length doorbell and pass it at once, so the switch it guards would lose samples
+// again with nothing to show for it; the refused attach keeps two such builds on UDP instead.
+#define tt_SEGMENT_VERSION 6
+// The seq_span of a FENCE record (DESIGN.md section 10, "The switch from UDP"). A writer that has been reaching a peer
+// over UDP and attaches to its segment sends that peer a fence datagram over UDP and puts this record in the ring
+// before its first datagram there; the owner does not read past the record until the datagram has come out of its
+// socket, so the UDP datagrams queued ahead of it are delivered before the ring records behind it. Outside
+// [1, tt_FRAG_MAX_COUNT], so the drain's existing range check on the span is the only test a record pays for it.
+#define tt_SEGMENT_SPAN_FENCE 0x8000U
+// The fence, on both carriers: the marker, the writer's context id and its fence generation. Three bytes, shorter
+// than any TickLE datagram, so a receiver tells it from one before the magic check, as it does the doorbell.
+#define tt_SEGMENT_FENCE_LENGTH 3
+#define tt_SEGMENT_FENCE_MARKER 'f'
 // The line size the segment header pads its shared indices to. 64 on the rig's Cortex-A76 and on x86-64; a target with
 // a larger line still works, only with the false sharing this exists to remove.
 #ifndef tt_SEGMENT_CACHE_LINE
@@ -932,6 +945,20 @@ struct tt_Context {
     uint32_t segment_slot_ceiling; // the largest slot_bytes of any peer segment attached (record_size_limit()) // of
                                    // segment_doorbells_sent, the ones rung through the FIFO rather than UDP
     uint64_t segment_doorbells_received;
+    // The switch from UDP to a peer's segment (tt_SEGMENT_SPAN_FENCE). Writer side: the generation of the last fence
+    // this context sent, and how many it sent. Owner side: fence datagrams that came out of the socket, as
+    // (id << 8 | generation) + 1 so that 0 is an empty entry, the next entry to overwrite, and while a fence is at the
+    // head of the ring with its datagram not yet seen, when the owner stops waiting for it (0: no fence held). Polling
+    // thread only, except the generation, which is under the state lock with every send.
+    uint8_t segment_fence_generation;
+    uint64_t segment_fences_sent;
+    uint32_t segment_fences_seen[tt_SEGMENT_FENCES_SEEN];
+    uint8_t segment_fences_seen_next;
+    uint64_t segment_fence_deadline_ns;
+    // Fences met at the head of the ring: passed once their datagram had been read, or given up on at the deadline
+    // (tt_SEGMENT_FENCE_HOLD_NS) - a datagram lost, or a writer whose send failed after it wrote the record.
+    uint64_t segment_fences_passed;
+    uint64_t segment_fences_expired;
     // A sleep announced and then called off by the drain that follows the announcement (poll_wait_io()) keeps its
     // generation for the next announcement, unless a doorbell arrived in between (segment_reader_waiting()): set when
     // one is called off, with segment_doorbells_received at that moment. Polling thread only.

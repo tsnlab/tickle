@@ -678,7 +678,7 @@ Compiled in by default on Linux (`tt_SEGMENT_ENABLED`), out on FreeRTOS.
 - **One segment per receiving context**, owned and read by it, written by every same-host peer that sends to it
   (many writers, one reader). Named `/dev/shm/tickle-seg-<ip>-<port>-<context id>` from what discovery already
   knows; the address separates network namespaces, which share `/dev/shm`.
-- **The header is the authority, not the name.** It carries magic, `tt_SEGMENT_VERSION` (4), the owner's
+- **The header is the authority, not the name.** It carries magic, `tt_SEGMENT_VERSION` (6), the owner's
   (ip, port, id), a per-launch `incarnation`, and the ring geometry (`slots`, `slot_bytes`). A writer maps the header,
   validates it, then maps the whole region with the owner's geometry. Any mismatch falls back to UDP, counted by reason.
 - **Fixed-size slots**, a power of two, indexed with a mask. Each slot has a 16-byte header (`length`, sender address
@@ -726,6 +726,23 @@ Compiled in by default on Linux (`tt_SEGMENT_ENABLED`), out on FreeRTOS.
 - UDP still carries broadcasts, datagrams larger than a slot (service messages in rmw builds), and traffic before the
   attach succeeds. Every UDP send is counted by reason: `tx_udp = broadcast + oversize + unattached`.
 - The reader drains at most `tt_SEGMENT_DRAIN_PER_POLL` records per poll so the sockets are not starved.
+
+**The switch from UDP is fenced.** A writer that reached a peer over UDP (its segment absent or still being built,
+or given up on) and then attaches has datagrams still queued in the peer's socket, and the reader drains its ring
+first: it delivered the first ring record and discarded the queued BEST_EFFORT samples as older (1-224 a run in
+`test_thread_safety`, 2026-10-11). So:
+
+- On that attach the writer sends a 3-byte fence (marker, context id, generation) to the peer's data socket, behind
+  everything it sent there, and puts the same bytes in the ring as a record with `seq_span = tt_SEGMENT_SPAN_FENCE`
+  before its first datagram there (`tt_SEGMENT_VERSION` 6). A revalidation, or a first attach, sends none.
+- The reader does not read past a fence until the fence's datagram has come out of its socket; until then the drain
+  stops there as on an empty ring, so the socket is read next. A datagram read first is remembered
+  (`tt_SEGMENT_FENCES_SEEN`). One never seen is given up at `tt_SEGMENT_FENCE_HOLD_NS` (1 ms), which also bounds a
+  sleep taken while a fence is held. Counted as `shm_fences_sent`, `shm_fences_passed`, `shm_fences_expired`.
+- The fence is tested inside the span range check's failing branch and on the drain's stall path, so a datagram's
+  record costs nothing for it; only an attach that follows UDP does. `tests/test_segment_switch.c` stages the switch
+  deterministically (an attach refused until released, a mock clock): the core before the fence delivered 50 of 307,
+  discarding the 257 that went over UDP; with it, 307 of 307.
 
 **Doorbell: a FIFO, rung once per reader sleep.**
 
