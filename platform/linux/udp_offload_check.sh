@@ -8,7 +8,8 @@
 # Software Foundation. A proprietary license is also available on request - see README.md.
 
 # UDP offload through the real Linux HAL (udp_offload_check.c): the wire carries the same datagrams with offload on as
-# with it off, none above 1472 bytes, and core is handed every one of them whole. Two private network namespaces and a
+# with it off, none above 1472 bytes but pattern 8's hybrid-transport runs (each one IP-fragmented datagram, sent as
+# such with offload on as off), and core is handed every one of them whole. Two private network namespaces and a
 # veth pair; needs passwordless `sudo ip` (ethtool and tc run inside the namespaces through `ip netns exec`).
 #
 # Arms, each one run of the sender's fixed patterns (udp_offload_check.c):
@@ -26,9 +27,12 @@
 #
 # The rules, enforced below (written before the first run):
 #   - every arm's list of datagrams (pattern, index, size, hash, in order) is B's, line for line;
-#   - B has every test datagram (EXPECTED) and the largest is 1472;
-#   - A and B: the receiver's ingress counted the same packets and bytes to the test port (tc u32, not tcpdump), and
-#     no IP fragment at all (MF set) - so offload changed nothing on the wire;
+#   - B has every test datagram (EXPECTED) and the largest is a run (RUN_SIZE, pattern 8);
+#   - A and B: the receiver's ingress counted the same packets and bytes to the test port (tc u32, not tcpdump; whole
+#     datagrams only, so a run's fragments are not among them), and exactly the IP fragments of pattern 8's runs (MF
+#     set: RUN_MF_FRAGMENTS) - so offload changed nothing on the wire and never fragmented an MTU datagram;
+#   - runs under receive offload (2026-10-11, the hybrid transport): C read runs while UDP_GRO was on (runs_gro_on > 0),
+#     and each came whole - a run merged by GRO would be cut at the cmsg's segment size and C's list would differ.
 #   - treatment: A and C sent with gso_sends > 0, B none; C merged (gro_merged > 0), D did not (gro_reads = 0).
 #   - which runs (2026-10-11, large fragments only): A, C and E sent exactly the runs the sender expects of its
 #     patterns (gso_sends/gso_datagrams = *_expected) - every large-fragment run, and nothing of the small patterns.
@@ -40,7 +44,10 @@ HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 BIN=$HERE/udp_offload_check
 FLAP=$HERE/udp_offload_check_flap
 REPEAT=10
-EXPECTED=969 # 723 + 88 + 30 + 64 + 20 + 24 + 20 (pattern 5 sends half its 40 to a port nobody reads)
+EXPECTED=993 # 723 + 88 + 30 + 64 + 20 + 24 + 20 + 24 (pattern 5 sends half its 40 to a port nobody reads)
+RUNS=10                 # pattern 8's run datagrams
+RUN_SIZE=65372          # each: 65380 B of UDP in 45 IP fragments of 1480, the first 44 with MF set
+RUN_MF_FRAGMENTS=440
 PORT=7461
 NS1=uoc-tx-$$
 NS2=uoc-rx-$$
@@ -73,7 +80,7 @@ sudo -n ip netns exec "$NS2" tc qdisc add dev uoc2 ingress || exit 2
 sudo -n ip netns exec "$NS2" tc filter add dev uoc2 parent ffff: protocol ip prio 1 u32 match u16 0x2000 0x2000 at 6 \
     action ok || exit 2
 sudo -n ip netns exec "$NS2" tc filter add dev uoc2 parent ffff: protocol ip prio 2 u32 match ip protocol 17 0xff \
-    match ip dport "$PORT" 0xffff action ok || exit 2
+    match u16 0 0x1fff at 6 match ip dport "$PORT" 0xffff action ok || exit 2
 
 # "packets bytes" counted by the filter at PRIO since the last call (tc -s keeps totals; the caller subtracts).
 counted() {
@@ -139,7 +146,8 @@ arm E 1 hal 1 on "$FLAP" "$REPEAT"
 
 n=$(wc -l <"$WORK/B.list")
 [ "$n" -eq "$EXPECTED" ] || die "control B received $n of $EXPECTED test datagrams - the setup is broken, nothing else holds"
-[ "$(field largest "$WORK/B.rx")" = 1472 ] || die "control B: largest datagram $(field largest "$WORK/B.rx"), not 1472"
+[ "$(field largest "$WORK/B.rx")" = "$RUN_SIZE" ] ||
+    die "control B: largest datagram $(field largest "$WORK/B.rx"), not a run's $RUN_SIZE"
 for a in A C D; do
     cmp -s "$WORK/B.list" "$WORK/$a.list" || die "$a's datagrams differ from the control's: $(diff "$WORK/B.list" "$WORK/$a.list" | head -3 | tr '\n' ' ')"
 done
@@ -147,8 +155,10 @@ done
 {
     [ "$A_packets" -eq "$B_packets" ] && [ "$A_bytes" -eq "$B_bytes" ] ||
         die "wire: A put $A_packets packets / $A_bytes bytes on the veth to the test port, the control $B_packets / $B_bytes"
-    [ "$B_packets" -eq $((EXPECTED + 1)) ] || die "wire: the control counted $B_packets packets, not $((EXPECTED + 1))"
-    [ "$A_frags" -eq 0 ] && [ "$B_frags" -eq 0 ] || die "wire: IP fragments seen (A $A_frags, control $B_frags)"
+    [ "$B_packets" -eq $((EXPECTED + 1 - RUNS)) ] ||
+        die "wire: the control counted $B_packets whole datagrams, not $((EXPECTED + 1 - RUNS))"
+    [ "$A_frags" -eq "$RUN_MF_FRAGMENTS" ] && [ "$B_frags" -eq "$RUN_MF_FRAGMENTS" ] ||
+        die "wire: IP fragments A $A_frags, control $B_frags - not the runs' $RUN_MF_FRAGMENTS"
 }
 [ "$(field gso_sends "$WORK/B.tx")" = 0 ] || die "control B sent with UDP_SEGMENT"
 [ "$(field gso_sends "$WORK/A.tx")" -gt 0 ] 2>/dev/null || die "A: no UDP_SEGMENT send - the treatment was not applied"
@@ -160,6 +170,8 @@ for a in A C E; do
     done
 done
 [ "$(field gro_merged "$WORK/C.rx")" -gt 0 ] 2>/dev/null || die "C: nothing merged - receive offload was not exercised"
+[ "$(field runs_gro_on "$WORK/C.rx")" -gt 0 ] 2>/dev/null ||
+    die "C: no run read while UDP_GRO was on - the runs-under-GRO case was not tested"
 [ "$(field gro_reads "$WORK/D.rx")" = 0 ] || die "D: merged with TT_UDP_OFFLOAD=0"
 for _ in $(seq 1 "$REPEAT"); do cat "$WORK/B.list"; done >"$WORK/B.repeat"
 cmp -s "$WORK/B.repeat" "$WORK/E.list" ||
@@ -173,5 +185,5 @@ cmp -s "$WORK/B.repeat" "$WORK/E.list" ||
 if [ "$fail" -ne 0 ]; then
     exit 1
 fi
-echo "udp_offload_check: PASS - $EXPECTED datagrams identical in all arms (E: $REPEAT passes, $(field gro_commits "$WORK/E.rx") switches back), wire identical with send offload, no fragments"
+echo "udp_offload_check: PASS - $EXPECTED datagrams identical in all arms (E: $REPEAT passes, $(field gro_commits "$WORK/E.rx") switches back), wire identical with send offload, IP fragments only the runs', runs whole under GRO"
 exit 0

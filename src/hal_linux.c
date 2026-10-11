@@ -686,11 +686,31 @@ static void gro_setup(struct tt_Context* node) {
     node->udp_offload |= TT_UDP_OFFLOAD_GRO;
 }
 
-// A large sample's fragment, by its single-form framing (tt_SingleHeader).
+// A large sample's MTU-mode fragment, by its single-form framing (tt_SingleHeader): FRAG_FIRST_L, or FRAG_CONT_L but
+// the sample's last unit. With the hybrid transport (DESIGN.md section 8) a sample sent in runs ends on one MTU
+// fragment, its last unit alone, and nothing can merge with it - the runs before it are each one IP-reassembled
+// datagram, which the kernel's GRO never sees (IPv4 fragments bypass it; udp_offload_check.sh pattern 8 shows it). So
+// that tail neither turns receive offload on nor keeps it on: only MTU-mode traffic - a sample sent at n = 1, MTU
+// repairs - does, and an AUTO stream of runs reads plain.
 static bool gro_large_fragment(const uint8_t* datagram, int32_t len) {
-    return len >= (int32_t)sizeof(struct tt_SingleHeader) &&
-           (datagram[0] == tt_SINGLE_MARKER_LE || datagram[0] == tt_SINGLE_MARKER_BE) &&
-           (datagram[3] == tt_SUBMESSAGE_TYPE_FRAG_FIRST_L || datagram[3] == tt_SUBMESSAGE_TYPE_FRAG_CONT_L);
+    if (len < (int32_t)sizeof(struct tt_SingleHeader) ||
+        (datagram[0] != tt_SINGLE_MARKER_LE && datagram[0] != tt_SINGLE_MARKER_BE)) {
+        return false;
+    }
+    if (datagram[3] == tt_SUBMESSAGE_TYPE_FRAG_FIRST_L) {
+        return true;
+    }
+    const uint32_t index_at = sizeof(struct tt_SingleHeader) + offsetof(struct tt_FragContLHeader, frag_index);
+    const uint32_t count_at = sizeof(struct tt_SingleHeader) + offsetof(struct tt_FragContLHeader, frag_count);
+    if (datagram[3] != tt_SUBMESSAGE_TYPE_FRAG_CONT_L || len < (int32_t)(count_at + sizeof(uint16_t))) {
+        return false;
+    }
+    const bool little = datagram[0] == tt_SINGLE_MARKER_LE;
+    const uint32_t index = little ? (uint32_t)datagram[index_at] | ((uint32_t)datagram[index_at + 1U] << 8U)
+                                  : ((uint32_t)datagram[index_at] << 8U) | (uint32_t)datagram[index_at + 1U];
+    const uint32_t count = little ? (uint32_t)datagram[count_at] | ((uint32_t)datagram[count_at + 1U] << 8U)
+                                  : ((uint32_t)datagram[count_at] << 8U) | (uint32_t)datagram[count_at + 1U];
+    return index + 1U != count; // the last unit alone merges with nothing
 }
 
 // The option back on, from TT_GRO_PLAIN (a large fragment came) or TT_GRO_SETTLING (aborted). A refusal now - which
