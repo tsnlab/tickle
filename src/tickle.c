@@ -2099,12 +2099,13 @@ static uint32_t hybrid_peer_n_max(struct tt_Context* node, const struct tt_Publi
 }
 
 static uint32_t hybrid_reliable_n(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
-                                  uint32_t n_max);
+                                  uint32_t n_max, bool* one_run);
 
 // The n for one peer: 1 for MTU; n_max for IP and for best effort (AUTO: delivery does not depend on n, so the largest
 // the reader allows, which already holds its reassembly-memory cap); RELIABLE AUTO's from the cost model.
+// *one_run: the sample re-probes a fragment path judged failed, with one run and the rest as MTU units.
 static uint32_t hybrid_peer_n(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id, uint32_t ip,
-                              uint16_t port, bool large, uint32_t* n_max_out) {
+                              uint16_t port, bool large, uint32_t* n_max_out, bool* one_run) {
     uint32_t n_max = hybrid_peer_n_max(node, pub, context_id, ip, port, large);
     *n_max_out = n_max;
     uint32_t mode = hybrid_mode(node, pub);
@@ -2114,16 +2115,17 @@ static uint32_t hybrid_peer_n(struct tt_Context* node, const struct tt_Publisher
     if (mode == tt_LARGE_FRAGMENTATION_IP || !pub->reliable) {
         return n_max;
     }
-    return hybrid_reliable_n(node, pub, context_id, n_max);
+    return hybrid_reliable_n(node, pub, context_id, n_max, one_run);
 }
 
 // The n a datagram to one destination goes with: that peer's, or by broadcast (no single peer) the minimum over the
-// Publisher's matched peers - 1 with none.
+// Publisher's matched peers - 1 with none. *one_run: some peer it reaches is being re-probed.
 static uint32_t hybrid_destination_n(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
-                                     uint32_t ip, uint16_t port, bool large) {
+                                     uint32_t ip, uint16_t port, bool large, bool* one_run) {
     uint32_t n_max = 1U;
+    *one_run = false;
     if (context_id != tt_CONTEXT_ID_INVALID) {
-        return hybrid_peer_n(node, pub, context_id, ip, port, large, &n_max);
+        return hybrid_peer_n(node, pub, context_id, ip, port, large, &n_max, one_run);
     }
     uint32_t smallest = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
@@ -2131,29 +2133,39 @@ static uint32_t hybrid_destination_n(struct tt_Context* node, const struct tt_Pu
         if (peer->context_id == tt_CONTEXT_ID_INVALID) {
             continue;
         }
-        uint32_t run_n = hybrid_peer_n(node, pub, peer->context_id, peer->ip, peer->port, large, &n_max);
+        bool probing = false;
+        uint32_t run_n = hybrid_peer_n(node, pub, peer->context_id, peer->ip, peer->port, large, &n_max, &probing);
         smallest = smallest == 0 || run_n < smallest ? run_n : smallest;
+        *one_run = *one_run || probing;
     }
     return smallest == 0 ? 1U : smallest;
 }
 
-static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t run_n, uint32_t count);
+static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t run_n, uint32_t count,
+                                 uint32_t base, uint32_t run_units);
+
+// The units of a `count`-unit sample that go in runs of run_n: all but the tail, or - re-probing - only the first run.
+static uint32_t hybrid_run_until(uint32_t run_n, uint32_t count, bool one_run) {
+    if (run_n < 2U) {
+        return 0;
+    }
+    return one_run && run_n < count - 1U ? run_n : count - 1U;
+}
 
 // A sample's first transmission to one destination, counted: the histogram of n, what went in runs and alone, and -
 // RELIABLE - its frames as the exposure of each reader it reaches, whatever its n: a reader whose cap holds it at one
 // unit still NACKs, and its losses must fall on its frames, or its p reads several times too high.
 static void hybrid_note_sent(struct tt_Context* node, struct tt_Publisher* pub, uint8_t context_id, uint32_t run_n,
-                             uint32_t count) {
+                             uint32_t count, uint32_t base, uint32_t run_until) {
     struct tt_HybridState* hybrid = &node->hybrid;
     hybrid->n_hist[hybrid_bucket(run_n)]++;
-    if (run_n < 2U) {
-        hybrid->mtu_units += count;
-    } else {
-        hybrid->runs += ((count - 2U) / run_n) + 1U; // units [0, count - 1) in runs of n, the last one shorter
-        hybrid->run_units += count - 1U;
-        hybrid->mtu_units++; // the tail
+    if (run_until != 0) {
+        hybrid->runs += ((run_until - 1U) / run_n) + 1U; // units [0, run_until) in runs of n, the last one shorter
+        hybrid->run_units += run_until;
     }
-    hybrid_note_exposure(pub, context_id, run_n, count); // a best-effort Publisher has no reader entries to expose
+    hybrid->mtu_units += count - run_until; // the tail, and a probe's units after its run
+    // A best-effort Publisher has no reader entries to expose.
+    hybrid_note_exposure(pub, context_id, run_n, count, base, run_until);
 }
 
 static void cost_fit_observe(struct tt_CostFit* fit, uint32_t datagrams, uint32_t frames, uint64_t elapsed_ns,
@@ -2199,27 +2211,37 @@ static struct tt_OutDatagram hybrid_small_run(uint8_t* out, const struct tt_Cont
                                     dest->port};
 }
 
-// A sample on 8/9 to one destination in runs of n: units [0, count - 1) as runs in one call, then the last unit alone
-// (`tail`, its MTU fragment as send_fragments() built it) in a second.
+// A sample on 8/9 to one destination in runs of n: units [0, run_until) as runs, then any up to the last as their MTU
+// fragments (a re-probe), in one call; then the last unit alone in a second. `units` are the sample's MTU fragments as
+// send_fragments() built them.
 static bool hybrid_send_small_runs(struct tt_Context* node, const struct tt_DataHeader* data_header, const uint8_t* cdr,
-                                   uint32_t count, uint32_t run_n, const struct tt_OutDatagram* tail,
-                                   const struct tx_destination* dest) {
+                                   uint32_t count, uint32_t run_n, uint32_t run_until,
+                                   const struct tt_OutDatagram* units, const struct tx_destination* dest) {
     uint8_t framings[HYBRID_MAX_RUNS][HYBRID_RUN_FRAMING];
-    struct tt_OutDatagram runs[HYBRID_MAX_RUNS];
-    uint8_t context_ids[HYBRID_MAX_RUNS];
+    struct tt_OutDatagram runs[tt_FRAG_MAX_COUNT];
+    uint8_t context_ids[tt_FRAG_MAX_COUNT];
     uint32_t run_count = 0;
     uint32_t frames = 0;
-    for (uint32_t start = 0; start + 1U < count; start += run_n) {
-        uint32_t units = count - 1U - start < run_n ? count - 1U - start : run_n;
-        runs[run_count] = hybrid_small_run(framings[run_count], node, data_header, cdr, start, units, count, dest);
+    uint32_t start = 0;
+    for (; start < run_until; start += run_n) {
+        uint32_t span = run_until - start < run_n ? run_until - start : run_n;
+        runs[run_count] = hybrid_small_run(framings[run_count], node, data_header, cdr, start, span, count, dest);
         frames += hybrid_frames(runs[run_count].head_len + runs[run_count].body_len);
+        context_ids[run_count] = dest->context_id;
+        run_count++;
+    }
+    for (; start + 1U < count; start++) {
+        runs[run_count] = units[start];
+        runs[run_count].ip = dest->ip;
+        runs[run_count].port = dest->port;
+        frames++;
         context_ids[run_count] = dest->context_id;
         run_count++;
     }
     if (hybrid_send_batch(node, runs, run_count, context_ids, frames) < 0) {
         return false;
     }
-    struct tt_OutDatagram last = *tail;
+    struct tt_OutDatagram last = units[count - 1U];
     last.ip = dest->ip;
     last.port = dest->port;
     return hybrid_send_batch(node, &last, 1, &dest->context_id, 1) >= 0;
@@ -2525,14 +2547,23 @@ static void hybrid_costs(const struct tt_Context* node, uint8_t context_id, doub
 // RELIABLE AUTO's n for one peer: the cost model at the most pessimistic p among that node's readers of this Publisher
 // (1 for none), over 1..n_max.
 static uint32_t hybrid_reliable_n(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
-                                  uint32_t n_max) {
+                                  uint32_t n_max, bool* one_run) {
     double p = -1.0;
+    uint64_t now = 0;
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
         const struct tt_PeerAck* ack = &pub->peer_acks[i];
-        if (ack->context_id == context_id) {
-            double peer_p = loss_estimate_p(&ack->loss);
-            p = peer_p > p ? peer_p : p;
+        if (ack->context_id != context_id) {
+            continue;
         }
+        if (ack->path_failed_ns != 0) { // its fragment path failed (hybrid_note_nacks()): MTU, or a re-probe
+            now = now != 0 ? now : tt_get_ns();
+            if (now - ack->path_failed_ns < tt_HYBRID_PATH_CLEAN_NS) {
+                return 1U;
+            }
+            *one_run = true;
+        }
+        double peer_p = loss_estimate_p(&ack->loss);
+        p = peer_p > p ? peer_p : p;
     }
     if (p < 0.0) {
         return 1U;
@@ -2545,14 +2576,76 @@ static uint32_t hybrid_reliable_n(struct tt_Context* node, const struct tt_Publi
 
 // A RELIABLE sample's first transmission went to `context_id` (tt_CONTEXT_ID_INVALID: the broadcast, every reader) in
 // runs of n: its frames are each such reader's exposure, and n is what a range of its first NACKs is divided by.
-static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t run_n, uint32_t count) {
+//
+// It also starts watching the sample for a failed fragment path: run_until units [base, base + run_until) went in runs.
+// Whether the last sample watched lost every one of its runs is known by now (its NACKs came back): if not, the streak
+// of such samples ends, and a re-probe that got through clears the reader's failed path.
+static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t run_n, uint32_t count,
+                                 uint32_t base, uint32_t run_units) {
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
         struct tt_PeerAck* ack = &pub->peer_acks[i];
-        if (ack->context_id != tt_CONTEXT_ID_INVALID &&
-            (context_id == tt_CONTEXT_ID_INVALID || ack->context_id == context_id)) {
-            loss_estimate_observe(&ack->loss, count, 0);
-            ack->run_n = (uint8_t)run_n;
+        if (ack->context_id == tt_CONTEXT_ID_INVALID ||
+            (context_id != tt_CONTEXT_ID_INVALID && ack->context_id != context_id)) {
+            continue;
         }
+        loss_estimate_observe(&ack->loss, count, 0);
+        ack->run_n = (uint8_t)run_n;
+        if (run_units == 0) {
+            continue;
+        }
+        if (ack->watch_count != 0 && !ack->watch_all_lost) {
+            ack->all_lost_streak = 0;
+            if (ack->watch_probe) {
+                ack->path_failed_ns = 0; // the re-probe's run arrived: the path takes fragments again
+            }
+        }
+        ack->watch_base = base;
+        ack->watch_count = (uint16_t)count;
+        ack->watch_run_units = (uint16_t)run_units;
+        ack->watch_nacked = 0;
+        ack->watch_runs = (uint8_t)(((run_units - 1U) / run_n) + 1U);
+        ack->watch_tail_nacked = false;
+        ack->watch_all_lost = false;
+        ack->watch_probe = ack->path_failed_ns != 0;
+    }
+}
+
+// A fragment path that drops every IP fragment (a firewall, a tc filter) loses every run whole while the same sample's
+// MTU units - its last unit, which always goes alone, and every repair - get through. That is no frame loss p: a lost
+// run is one event on n frames, so p would read near 1/n, and n would fall 45, 17, 11, 8 ... 2 over 25 samples, every
+// one repaired whole. So it is judged on its own: a watched sample all of whose runs were first-NACKed while its tail
+// was not - two runs or more, or a second sample in a row, or a re-probe - marks the reader's path failed. Its n is
+// then 1 until tt_HYBRID_PATH_CLEAN_NS have passed, when the next sample re-probes with one run and the rest as MTU
+// units: through, and the path is clear; lost, and it is failed again. Under real frame loss at the n the cost model
+// picks, L(n) is small and every run of a sample lost with its tail through is L(n)^runs - not a frame-loss reading.
+static void hybrid_watch_nack(struct tt_PeerAck* ack, uint32_t seq_no) {
+    if (ack->watch_count == 0 || seq_no - ack->watch_base >= ack->watch_count) {
+        return;
+    }
+    if (seq_no - ack->watch_base < ack->watch_run_units) {
+        ack->watch_nacked++;
+    } else if (seq_no - ack->watch_base == ack->watch_count - 1U) {
+        ack->watch_tail_nacked = true;
+    }
+}
+
+static void hybrid_watch_judge(struct tt_PeerAck* ack) {
+    if (ack->watch_count == 0 || ack->watch_all_lost || ack->watch_tail_nacked ||
+        ack->watch_nacked != ack->watch_run_units) {
+        return;
+    }
+    ack->watch_all_lost = true;
+    ack->all_lost_streak = ack->all_lost_streak < UINT8_MAX ? (uint8_t)(ack->all_lost_streak + 1U) : UINT8_MAX;
+    if (ack->watch_runs >= 2U || ack->all_lost_streak >= 2U || ack->watch_probe) {
+        if (ack->path_failed_ns == 0) {
+            TT_LOG_WARNING("Hybrid transport: every run to node %u lost whole while its MTU units arrived - its path "
+                           "drops IP fragments; MTU units only, re-probed in %u s",
+                           ack->context_id, (unsigned)(tt_HYBRID_PATH_CLEAN_NS / tt_SECOND));
+        }
+        uint64_t now = tt_get_ns();
+        ack->path_failed_ns = now != 0 ? now : 1U; // 0 means "not failed"
+        ack->path_failures++;
+        ack->all_lost_streak = 0; // spent: a re-probe is judged as one, by watch_probe
     }
 }
 
@@ -2583,6 +2676,7 @@ static void hybrid_note_nacks(struct tt_Publisher* pub, uint8_t node_id, uint32_
             if (seq_no <= ack->nack_high) {
                 continue; // a re-NACK
             }
+            hybrid_watch_nack(ack, seq_no);
             if (range != 0 && seq_no == previous + 1U) {
                 range++;
             } else {
@@ -2596,6 +2690,16 @@ static void hybrid_note_nacks(struct tt_Publisher* pub, uint8_t node_id, uint32_
     events += (range + run_n - 1U) / run_n;
     ack->nack_high = high;
     loss_estimate_observe(&ack->loss, 0, events);
+    hybrid_watch_judge(ack);
+    if (ack->watch_count != 0 && !ack->watch_all_lost && (int32_t)(base - (ack->watch_base + ack->watch_count)) >= 0) {
+        // The reader holds the whole watched sample, and not every run of it was lost: the streak ends, and a
+        // re-probe that got through clears the path before the next sample chooses its n.
+        ack->all_lost_streak = 0;
+        if (ack->watch_probe) {
+            ack->path_failed_ns = 0;
+        }
+        ack->watch_count = 0;
+    }
 }
 #endif
 
@@ -2660,11 +2764,13 @@ static bool send_fragments(struct tt_Context* node, struct tt_Publisher* pub, co
 #if tt_HYBRID_TRANSPORT
         // Runs only in a first transmission (a Publisher's: a repair or a backlog passes none), of three units or more.
         if (pub != NULL && count >= 3U) {
+            bool one_run = false;
             uint32_t run_n = hybrid_destination_n(node, pub, destinations[dest].context_id, destinations[dest].ip,
-                                                  destinations[dest].port, false);
-            hybrid_note_sent(node, pub, destinations[dest].context_id, run_n, count);
+                                                  destinations[dest].port, false, &one_run);
+            uint32_t run_until = hybrid_run_until(run_n, count, one_run);
+            hybrid_note_sent(node, pub, destinations[dest].context_id, run_n, count, data_header->seq_no, run_until);
             if (run_n >= 2U) {
-                if (!hybrid_send_small_runs(node, data_header, cdr, count, run_n, &batch[count - 1U],
+                if (!hybrid_send_small_runs(node, data_header, cdr, count, run_n, run_until, batch,
                                             &destinations[dest])) {
                     return false;
                 }
@@ -3101,6 +3207,10 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
             pub->peer_acks[i].loss = (struct tt_LossEstimate) {0, 0}; // nothing measured: n starts at 1
             pub->peer_acks[i].nack_high = 0;
             pub->peer_acks[i].run_n = 1;
+            pub->peer_acks[i].watch_count = 0; // no sample watched: the fragment path presumed fine
+            pub->peer_acks[i].all_lost_streak = 0;
+            pub->peer_acks[i].path_failed_ns = 0;
+            pub->peer_acks[i].path_failures = 0;
 #endif
             return &pub->peer_acks[i];
         }
@@ -7501,10 +7611,13 @@ static void large_cursor_destinations(struct tt_Context* node, struct tt_Publish
         cursor->dests[i].port = destinations[i].port;
         cursor->dests[i].context_id = destinations[i].context_id;
 #if tt_HYBRID_TRANSPORT
-        uint32_t run_n =
-            hybrid_destination_n(node, pub, destinations[i].context_id, destinations[i].ip, destinations[i].port, true);
+        bool one_run = false;
+        uint32_t run_n = hybrid_destination_n(node, pub, destinations[i].context_id, destinations[i].ip,
+                                              destinations[i].port, true, &one_run);
         cursor->run_n[i] = (uint8_t)run_n;
-        hybrid_note_sent(node, pub, destinations[i].context_id, run_n, record->count);
+        cursor->run_until[i] = (uint16_t)hybrid_run_until(run_n, record->count, one_run);
+        hybrid_note_sent(node, pub, destinations[i].context_id, run_n, record->count, record->seq_no,
+                         cursor->run_until[i]);
 #endif
     }
     cursor->dest_count = destination_count < tt_LARGE_DESTINATIONS ? destination_count : (uint8_t)tt_LARGE_DESTINATIONS;
@@ -7592,8 +7705,9 @@ static uint32_t large_end_of(const struct tt_LargeRecord* record, uint32_t last)
 // of its own, as its MTU fragment. units[k] is how many units datagram k carries, so a call cut short by a full send
 // buffer moves the cursor by exactly what went.
 static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_LargeRecord* record, uint32_t run_n,
-                                 uint32_t next, const struct tt_Peer* dest, uint8_t (*framings)[HYBRID_RUN_L_FRAMING],
-                                 struct tt_OutDatagram* batch, uint32_t* units, uint32_t* frames) {
+                                 uint32_t run_until, uint32_t next, const struct tt_Peer* dest,
+                                 uint8_t (*framings)[HYBRID_RUN_L_FRAMING], struct tt_OutDatagram* batch,
+                                 uint32_t* units, uint32_t* frames) {
     const struct tt_DataHeader* data = (const struct tt_DataHeader*)(record->buffer + tt_LARGE_HEADER_OFFSET);
     const uint8_t* cdr = record->buffer + tt_LARGE_CDR_OFFSET;
     uint32_t last = (uint32_t)record->count - 1U;
@@ -7611,7 +7725,19 @@ static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_
     }
     uint32_t k = 0;
     for (; k < LARGE_BATCH && next < last; k++) {
-        uint32_t run = last - next < run_n ? last - next : run_n;
+        if (next >= run_until) { // a re-probe's units after its one run: each its MTU fragment
+            uint32_t length = large_length(next, record->cdr_len);
+            uint32_t skip = 0;
+            uint32_t framing_length =
+                large_write_framing(node, framings[k], data, next, record->count, length, tt_SUBMESSAGE_ID_ALL, &skip);
+            batch[k] = (struct tt_OutDatagram) {
+                framings[k] + skip, framing_length - skip, cdr + large_offset(next), length, dest->ip, dest->port};
+            units[k] = 1;
+            *frames += 1;
+            next++;
+            continue;
+        }
+        uint32_t run = run_until - next < run_n ? run_until - next : run_n;
         uint8_t* out = framings[k];
         struct tt_Header* header = (struct tt_Header*)out;
         header->magic_value = NATIVE_MAGIC_VALUE;
@@ -7644,7 +7770,7 @@ static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_
 // record its publish is still encoding is encoded through the last unit a send call carries just before that call, as
 // a batch of MTU fragments is (large_encode_through()); if that fails, *failed is set and true returned.
 static bool large_send_runs(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord* record,
-                            uint32_t run_n, bool* progress, bool* failed) {
+                            uint32_t run_n, uint32_t run_until, bool* progress, bool* failed) {
     struct tt_LargeCursor* cursor = &pub->large_cursor;
     const struct tt_Peer* dest = &cursor->dests[cursor->next_dest];
     while (cursor->next_index < record->count) {
@@ -7653,7 +7779,7 @@ static bool large_send_runs(struct tt_Context* node, struct tt_Publisher* pub, s
         uint32_t units[LARGE_BATCH];
         uint32_t frames = 0;
         uint32_t batch_count =
-            large_build_runs(node, record, run_n, cursor->next_index, dest, framings, batch, units, &frames);
+            large_build_runs(node, record, run_n, run_until, cursor->next_index, dest, framings, batch, units, &frames);
         uint32_t call_units = 0;
         for (uint32_t k = 0; k < batch_count; k++) {
             call_units += units[k];
@@ -7714,7 +7840,8 @@ static bool large_send_some(struct tt_Context* node, struct tt_Publisher* pub, s
         const struct tt_Peer* dest = &cursor->dests[cursor->next_dest];
 #if tt_HYBRID_TRANSPORT
         if (cursor->run_n[cursor->next_dest] >= 2U) {
-            if (!large_send_runs(node, pub, record, cursor->run_n[cursor->next_dest], progress, failed)) {
+            if (!large_send_runs(node, pub, record, cursor->run_n[cursor->next_dest],
+                                 cursor->run_until[cursor->next_dest], progress, failed)) {
                 return false;
             }
             if (*failed) {

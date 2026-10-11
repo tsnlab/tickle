@@ -872,12 +872,16 @@ Where it departs, and why:
 - **I1L1 as pre-registered cannot be won at the kernel's defaults.** At 1 MB, 30 Hz, 1% the reader's cap is 1, so AUTO
   is the MTU arm (on the veth: 211 of 240 samples at `n` = 1) and "AUTO WINs against forced MTU" can only DRAW. The cap
   allows `n` = 8 (`C(n)`'s choice) at `ipfrag_time` 1 s, or at about 1/30 of the rate. A decision for the campaign.
-- **`n` does not reach 1 within one sample on a path that drops every IP fragment.** A lost run is one event on `n`
-  frames, which reads "every run lost" as frame loss near 1/n: from 45 the unit test goes 45, 17, 11, 8 ... 2 over 25
-  samples, and on the veth (fragments dropped at the reader) RELIABLE delivered every sample, all repairs MTU, at 84 of
-  240 samples' rate and ~20x the CPU. Best effort on such a path is caught only by the reader's cap and the withdrawal.
-  Left to the time-varying estimator (ROADMAP, Later): estimating the run loss rate and inverting it would give
-  `p` = 1 at once.
+- **A path that drops every IP fragment is judged as such, not as loss.** By `p` alone it never reached 1: a lost run is
+  one event on `n` frames, so "every run lost" read as frame loss near 1/n, n fell 45, 17, 11, 8 ... 2 over 25 samples,
+  and on the veth RELIABLE ran at 84 of 240 samples' rate and ~20x the CPU. So the writer watches each sample it sends
+  a reader in runs: every run first-NACKed while the tail (always an MTU unit) was not is a failed path - on a sample
+  of two runs or more, a second single-run sample in a row, or a re-probe - and that reader gets MTU units only for
+  `tt_HYBRID_PATH_CLEAN_NS` (60 s, the withdrawal's 2T), then one sample re-probes with a single run: through clears it,
+  lost fails it again. Under frame loss at the `n` C(n) picks, every run of a sample lost with the tail through is
+  L(n)^runs - not seen in 40 samples at 5%. veth, tc filter dropping every fragment, 4 interleaved reps: AUTO sent one
+  sample in runs and 239 as MTU, 240 of 240 delivered at 30 Hz, CPU 3.95 / 2.83 ms/MB (pub / sub) against forced MTU's
+  3.94 / 2.81 and 3.72 / 2.63 (its A/A twin, 6-7% apart).
 - **PC evidence, not rig figures** (`hybrid_pc_ab.sh`, veth, 5 reps, A/A floor 1-3.5%): instructions per MB against
   the parent at 0% - 1 MB pub -14.1% / sub -11.2% (BE), -14.3% / -9.4% (RELIABLE); 4 MB -12.2% / -16.4% (BE), -12.5% /
   -8.7% (RELIABLE). Two results against the expectation: 4 MB best effort delivered 88.4% of samples against the
