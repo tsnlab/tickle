@@ -516,6 +516,13 @@ bool tt_rx_maybe_ready(struct tt_Context* node) {
     return true;
 }
 
+// Nothing to drain: the mock hands out its backlog whenever asked (rx_drain_check.c tests the Linux HAL's).
+bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
+    (void)node;
+    (void)datagram_bytes;
+    return false;
+}
+
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     (void)node;
     (void)buf;

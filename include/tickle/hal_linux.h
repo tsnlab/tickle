@@ -155,6 +155,35 @@ static inline void tt_thread_yield(void) {
 #endif
 #define tt_HAL_IO_URING (tt_HAL_RX_HINT != tt_RX_HINT_READ)
 
+// tt_rx_drain_start() (hal.h, hal_linux.c "The drain"): while core is away from the receive sockets, an io_uring
+// multishot recvmsg on each copies what arrives into buffers of the HAL's own, which the kernel fills whenever this
+// thread is interrupted or enters it - so a receive buffer capped by net.core.rmem_max overflows only if the thread
+// does not run at all. Each buffer holds one datagram of the length core expects (a 1,472-byte fragment, or a
+// 65,507-byte datagram the kernel reassembled), and there are as many as tt_RX_DRAIN_BYTES holds, at most
+// tt_RX_DRAIN_BUFFERS: 2,048 x 2 KB or 64 x 64 KB at the defaults, about 25 ms and 33 ms of a saturated 1 GbE link.
+// Allocated at the first drain, plus a completion ring of two entries per buffer. Core asks for it only while large
+// samples are arriving, so it is compiled where they are (tt_LARGE_SAMPLES) and io_uring is (tt_HAL_IO_URING); 0 leaves
+// it out. A datagram longer than a buffer (a service message above it) is lost while a drain runs, counted
+// (drain_truncated), and no drain starts for tt_RX_DRAIN_HOLDOFF_NS after it, so the caller's retry is read whole.
+#ifndef tt_RX_DRAIN
+#define tt_RX_DRAIN (tt_HAL_IO_URING && tt_LARGE_SAMPLES)
+#endif
+#ifndef tt_RX_DRAIN_BYTES
+#define tt_RX_DRAIN_BYTES (4352U * 1024U) // 2,048 x 1,536 or 64 x 65,600, the two lengths core asks for
+#endif
+#ifndef tt_RX_DRAIN_BUFFERS
+#define tt_RX_DRAIN_BUFFERS 2048 // a power of two, at most 32768 (an io_uring buffer ring's limit)
+#endif
+#ifndef tt_RX_DRAIN_HOLDOFF_NS
+#define tt_RX_DRAIN_HOLDOFF_NS 100000000ULL // 100 ms
+#endif
+#if tt_RX_DRAIN && !tt_HAL_IO_URING
+#error "tt_RX_DRAIN needs io_uring (tt_HAL_RX_HINT other than tt_RX_HINT_READ)"
+#endif
+#if tt_RX_DRAIN && ((tt_RX_DRAIN_BUFFERS & (tt_RX_DRAIN_BUFFERS - 1)) != 0 || tt_RX_DRAIN_BUFFERS > 32768)
+#error "tt_RX_DRAIN_BUFFERS must be a power of two, at most 32768 (an io_uring buffer ring's limit)"
+#endif
+
 struct tt_hal {
     // The well-known port (_tt_CONFIG.port), shared with every other node on this host via
     // SO_REUSEADDR. Broadcasts are addressed here, so this is how a node is reached before anyone
@@ -266,6 +295,43 @@ struct tt_hal {
     void* uring_cqes;
     uint64_t uring_arms;    // poll submissions, each one io_uring_enter() - the cost side of the trade
     uint64_t uring_skipped; // tt_rx_maybe_ready() answers of "no", each one a read that was not made
+#endif
+#if tt_RX_DRAIN
+    // The drain (tt_rx_drain_start(), hal_linux.c): its own io_uring, set up at the first start (drain_fd -1 before,
+    // -2 when the kernel refused it), drain_count buffers of drain_size bytes, and their ring. drain_armed: bit 0 the
+    // well-known socket's multishot recvmsg, bit 1 the data socket's, in flight. drain_running: started and not yet
+    // stopped. drain_pending: datagrams taken and not yet handed out; drain_scan: how far the completion ring has
+    // been looked at for them (its head, ours to move, is the next to hand out).
+    int drain_fd;
+    uint32_t drain_size;
+    uint32_t drain_count;
+    uint32_t drain_scan;
+    bool drain_running;
+    uint8_t drain_armed;
+    uint16_t drain_buf_tail;
+    uint32_t drain_pending;
+    uint64_t drain_holdoff_until;
+    void* drain_ring_map;
+    size_t drain_ring_map_len;
+    void* drain_sqes;
+    size_t drain_sqes_len;
+    size_t drain_buf_ring_len;
+    uint32_t* drain_sq_tail;
+    uint32_t* drain_sq_mask;
+    uint32_t* drain_sq_array;
+    uint32_t* drain_cq_head;
+    uint32_t* drain_cq_tail;
+    uint32_t* drain_cq_mask;
+    void* drain_cqes;
+    void* drain_buf_ring; // struct io_uring_buf_ring
+    uint8_t* drain_buffers;
+    struct msghdr drain_msghdr; // multishot recvmsg's layout: the sender's address, no control
+    // starts: drains begun. datagrams: handed out from one. truncated: longer than a buffer, lost. overruns: a
+    // multishot that ended for want of a buffer, after which the socket's own buffer took over.
+    uint64_t drain_starts;
+    uint64_t drain_datagrams;
+    uint64_t drain_truncated;
+    uint64_t drain_overruns;
 #endif
 #if tt_CONTEXT_ID_CLAIM
     // (g8) The data socket's own address, host order, read back after tt_bind() (the link's address when the socket

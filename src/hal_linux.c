@@ -40,7 +40,8 @@
 // real (portable, POSIX-specified) home, so it flags both this include and the struct itself as
 // if neither provided/needed the other; this is the correct, portable header regardless (see
 // readv(2)/writev(2)/sendmsg(2)).
-#include <sys/uio.h> // NOLINT(misc-include-cleaner)
+#include <linux/sock_diag.h> // SK_MEMINFO_*: socket_drops()
+#include <sys/uio.h>         // NOLINT(misc-include-cleaner)
 #include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/hal_linux.h> // tt_RX_BATCH, struct tt_mmsghdr
@@ -604,6 +605,17 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.bell_drains = 0;
 #endif
     node->hal.data_sock = -1;
+#if tt_RX_DRAIN
+    node->hal.drain_fd = -1; // set up at the first drain (drain_setup())
+    node->hal.drain_running = false;
+    node->hal.drain_armed = 0;
+    node->hal.drain_pending = 0;
+    node->hal.drain_holdoff_until = 0;
+    node->hal.drain_starts = 0;
+    node->hal.drain_datagrams = 0;
+    node->hal.drain_truncated = 0;
+    node->hal.drain_overruns = 0;
+#endif
 #if tt_HAL_IO_URING
     node->hal.uring_fd = -1; // tt_close() after a failed bind must not close what was never opened
 #endif
@@ -746,11 +758,29 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     return tt_RET_OK;
 }
 
+static void drain_stop(struct tt_Context* node);
+#if tt_RX_DRAIN
+static void drain_release(struct tt_hal* hal);
+#endif
+
 void tt_close(struct tt_Context* node) {
     // Read while both sockets are still open: what the kernel dropped at each, beside core's traffic line.
-    TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u", node->id,
+#if tt_RX_DRAIN
+    drain_stop(node);
+    TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=%d drain_starts=%lu "
+                "drain_datagrams=%lu drain_truncated=%lu drain_overruns=%lu drain_buffers=%u x %u",
+                node->id, (unsigned)tt_hal_rx_socket_drops(node), (unsigned)socket_drops(node->hal.sock),
+                (unsigned)socket_drops(node->hal.data_sock), node->hal.drain_fd == -2 ? -1 : 1,
+                (unsigned long)node->hal.drain_starts, (unsigned long)node->hal.drain_datagrams,
+                (unsigned long)node->hal.drain_truncated, (unsigned long)node->hal.drain_overruns,
+                (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_count : 0U),
+                (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_size : 0U));
+    drain_release(&node->hal); // before the sockets: its requests go with its ring
+#else
+    TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=0", node->id,
                 (unsigned)tt_hal_rx_socket_drops(node), (unsigned)socket_drops(node->hal.sock),
                 (unsigned)socket_drops(node->hal.data_sock));
+#endif
 #if tt_CONTEXT_ID_CLAIM
     release_claimed_id(node);
 #endif
@@ -964,6 +994,370 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
 #define RX_WAIT_FDS 3
 #endif
 
+#if tt_RX_DRAIN
+// ---- The drain (tt_rx_drain_start(), hal.h)
+// --------------------------------------------------------------------------
+//
+// While core is away from the sockets - in a callback, or returned to the application - an io_uring multishot recvmsg
+// on each socket takes every datagram that arrives into a buffer of a ring this HAL provides. The kernel does the copy
+// as task work of the thread that started it, which runs whenever that thread is interrupted or enters the kernel, so
+// a thread busy in user space for milliseconds still has its socket emptied (rx_drain_pc.sh: a 5 ms or 10 ms stop per
+// 4 MB sample lost 0 datagrams over a saturated link, against 7% and 18% without). The next tt_receive() or
+// tt_try_receive() cancels it (drain_stop()) and hands out what it took (rx_take_drained()), oldest first, before
+// it reads a socket again: everything it took left the socket before anything still there, so order is kept.
+//
+// Its own ring, apart from tt_rx_maybe_ready()'s: that one is four entries of one-shot polls, and this one needs a
+// completion entry per buffer.
+#define DRAIN_SOCKETS 2U
+#define DRAIN_RECV 0x5243560000000000ULL   // user_data of a recvmsg, | the socket's index (0 well-known, 1 data)
+#define DRAIN_CANCEL 0x43414e0000000000ULL // user_data of a cancellation
+#define DRAIN_GROUP 1U
+#define DRAIN_ENTRIES 4U
+#define DRAIN_STOP_TRIES 100          // waits of DRAIN_STOP_WAIT_NS for both recvmsgs to end
+#define DRAIN_STOP_WAIT_NS 10000000LL // 10 ms
+#define DRAIN_ALIGN 64U               // a buffer's length is a multiple of this
+#define DRAIN_HEADER ((uint32_t)(sizeof(struct io_uring_recvmsg_out) + sizeof(struct sockaddr_in)))
+
+static void drain_release(struct tt_hal* hal) {
+    if (hal->drain_buffers != NULL) {
+        (void)munmap(hal->drain_buffers, (size_t)hal->drain_count * hal->drain_size);
+    }
+    if (hal->drain_buf_ring != NULL) {
+        (void)munmap(hal->drain_buf_ring, hal->drain_buf_ring_len);
+    }
+    if (hal->drain_sqes != NULL) {
+        (void)munmap(hal->drain_sqes, hal->drain_sqes_len);
+    }
+    if (hal->drain_ring_map != NULL) {
+        (void)munmap(hal->drain_ring_map, hal->drain_ring_map_len);
+    }
+    if (hal->drain_fd >= 0) {
+        (void)close(hal->drain_fd); // with the ring go its requests and the registered buffer ring
+    }
+    hal->drain_buffers = NULL;
+    hal->drain_buf_ring = NULL;
+    hal->drain_sqes = NULL;
+    hal->drain_ring_map = NULL;
+    hal->drain_fd = -1;
+    hal->drain_running = false;
+    hal->drain_armed = 0;
+    hal->drain_pending = 0;
+}
+
+// Said once per process: why large samples on a saturated link may lose what the socket's buffer cannot hold.
+static void drain_refused(struct tt_hal* hal, const char* step, int err) {
+    static bool told = false;
+    if (!told) {
+        told = true;
+        TT_LOG_WARNING("Receive drain unavailable (%s: %s) - while a callback runs, a burst larger than the socket's "
+                       "receive buffer is dropped. See README.md, \"io_uring\".",
+                       step, strerror(err));
+    }
+    drain_release(hal);
+    hal->drain_fd = -2;
+}
+
+// Puts buffer `bid` back on the ring for the kernel to fill. A ring entry is written field by field, never whole: the
+// ring's tail lives in the first entry's last field.
+static void drain_give_back(struct tt_hal* hal, uint16_t bid) {
+    struct io_uring_buf_ring* ring = (struct io_uring_buf_ring*)hal->drain_buf_ring;
+    struct io_uring_buf* entry = &ring->bufs[hal->drain_buf_tail & (hal->drain_count - 1U)];
+    entry->addr = (uint64_t)(uintptr_t)(hal->drain_buffers + ((size_t)bid * hal->drain_size));
+    entry->len = hal->drain_size;
+    entry->bid = bid;
+    hal->drain_buf_tail++;
+    __atomic_store_n(&ring->tail, hal->drain_buf_tail, __ATOMIC_RELEASE);
+}
+
+// The ring and drain_count buffers of drain_size bytes, registered as one buffer group. False, having said why once
+// and given everything back, when the kernel refuses any of it (no io_uring, Linux < 5.19 for the buffer ring).
+static bool drain_setup(struct tt_hal* hal, uint32_t size, uint32_t count) {
+    struct io_uring_params params;
+    memset(&params, 0, sizeof(params));
+    params.flags = IORING_SETUP_CQSIZE; // a completion per buffer and room for the ends and cancellations
+    params.cq_entries = 2U * count;
+    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
+    int ring_fd = (int)syscall(__NR_io_uring_setup, DRAIN_ENTRIES, &params);
+    if (ring_fd < 0) {
+        drain_refused(hal, "io_uring_setup", errno);
+        return false;
+    }
+    hal->drain_fd = ring_fd;
+    hal->drain_size = size;
+    hal->drain_count = count;
+    if ((params.features & IORING_FEAT_SINGLE_MMAP) == 0) {
+        drain_refused(hal, "IORING_FEAT_SINGLE_MMAP", EOPNOTSUPP); // Linux < 5.4, which has no buffer ring either
+        return false;
+    }
+    size_t sq_len = params.sq_off.array + (params.sq_entries * sizeof(uint32_t));
+    size_t cq_len = params.cq_off.cqes + (params.cq_entries * sizeof(struct io_uring_cqe));
+    hal->drain_ring_map_len = sq_len > cq_len ? sq_len : cq_len;
+    void* map = mmap(NULL, hal->drain_ring_map_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_fd,
+                     IORING_OFF_SQ_RING);
+    if (map == MAP_FAILED) {
+        drain_refused(hal, "mmap ring", errno);
+        return false;
+    }
+    hal->drain_ring_map = map;
+    hal->drain_sqes_len = params.sq_entries * sizeof(struct io_uring_sqe);
+    void* sqes =
+        mmap(NULL, hal->drain_sqes_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_fd, IORING_OFF_SQES);
+    if (sqes == MAP_FAILED) {
+        drain_refused(hal, "mmap SQEs", errno);
+        return false;
+    }
+    hal->drain_sqes = sqes;
+    uint8_t* base = (uint8_t*)map;
+    hal->drain_sq_tail = (uint32_t*)(base + params.sq_off.tail);
+    hal->drain_sq_mask = (uint32_t*)(base + params.sq_off.ring_mask);
+    hal->drain_sq_array = (uint32_t*)(base + params.sq_off.array);
+    hal->drain_cq_head = (uint32_t*)(base + params.cq_off.head);
+    hal->drain_cq_tail = (uint32_t*)(base + params.cq_off.tail);
+    hal->drain_cq_mask = (uint32_t*)(base + params.cq_off.ring_mask);
+    hal->drain_cqes = base + params.cq_off.cqes;
+    hal->drain_scan = *hal->drain_cq_head;
+
+    hal->drain_buf_ring_len = (size_t)count * sizeof(struct io_uring_buf);
+    void* buf_ring =
+        mmap(NULL, hal->drain_buf_ring_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
+    void* buffers = mmap(NULL, (size_t)count * size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    hal->drain_buf_ring = buf_ring == MAP_FAILED ? NULL : buf_ring;
+    hal->drain_buffers = buffers == MAP_FAILED ? NULL : (uint8_t*)buffers;
+    if (hal->drain_buf_ring == NULL || hal->drain_buffers == NULL) {
+        drain_refused(hal, "mmap buffers", ENOMEM);
+        return false;
+    }
+    struct io_uring_buf_reg reg;
+    memset(&reg, 0, sizeof(reg));
+    reg.ring_addr = (uint64_t)(uintptr_t)buf_ring;
+    reg.ring_entries = count;
+    reg.bgid = DRAIN_GROUP;
+    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
+    if (syscall(__NR_io_uring_register, ring_fd, IORING_REGISTER_PBUF_RING, &reg, 1) < 0) {
+        drain_refused(hal, "IORING_REGISTER_PBUF_RING", errno);
+        return false;
+    }
+    hal->drain_buf_tail = 0;
+    for (uint32_t bid = 0; bid < count; bid++) {
+        drain_give_back(hal, (uint16_t)bid);
+    }
+    memset(&hal->drain_msghdr, 0, sizeof(hal->drain_msghdr));
+    hal->drain_msghdr.msg_namelen = sizeof(struct sockaddr_in);
+    return true;
+}
+
+// Queues one submission; the caller submits them all with one io_uring_enter().
+static struct io_uring_sqe* drain_sqe(struct tt_hal* hal, uint32_t* added) {
+    uint32_t tail = *hal->drain_sq_tail + *added;
+    uint32_t index = tail & *hal->drain_sq_mask;
+    struct io_uring_sqe* sqe = &((struct io_uring_sqe*)hal->drain_sqes)[index];
+    memset(sqe, 0, sizeof(*sqe));
+    hal->drain_sq_array[index] = index;
+    (*added)++;
+    return sqe;
+}
+
+static bool drain_submit(struct tt_hal* hal, uint32_t added) {
+    __atomic_store_n(hal->drain_sq_tail, *hal->drain_sq_tail + added, __ATOMIC_RELEASE);
+    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
+    return syscall(__NR_io_uring_enter, hal->drain_fd, added, 0U, 0U, NULL, 0) >= 0;
+}
+
+// The datagram a completion took, or NULL for one that took none (an end, a cancellation, an error).
+static bool drain_holds_datagram(const struct io_uring_cqe* cqe) {
+    return (cqe->user_data & ~(uint64_t)(DRAIN_SOCKETS - 1U)) == DRAIN_RECV && cqe->res >= 0 &&
+           (cqe->flags & IORING_CQE_F_BUFFER) != 0;
+}
+
+// Looks at the completions that came since the last look: one with a datagram is pending, one without
+// IORING_CQE_F_MORE ends its socket's recvmsg - for want of a buffer (an overrun: the socket's own buffer takes over),
+// cancelled, or refused by a kernel without multishot recvmsg (Linux < 6.0), which turns the drain off for good.
+static void drain_look(struct tt_hal* hal) {
+    uint32_t tail = __atomic_load_n(hal->drain_cq_tail, __ATOMIC_ACQUIRE);
+    const struct io_uring_cqe* cqes = (const struct io_uring_cqe*)hal->drain_cqes;
+    for (; hal->drain_scan != tail; hal->drain_scan++) {
+        const struct io_uring_cqe* cqe = &cqes[hal->drain_scan & *hal->drain_cq_mask];
+        if ((cqe->user_data & ~(uint64_t)(DRAIN_SOCKETS - 1U)) != DRAIN_RECV) {
+            continue;
+        }
+        if (drain_holds_datagram(cqe)) {
+            hal->drain_pending++;
+        }
+        if ((cqe->flags & IORING_CQE_F_MORE) == 0) {
+            hal->drain_armed &= (uint8_t)~(1U << (cqe->user_data & (DRAIN_SOCKETS - 1U)));
+            if (cqe->res == -ENOBUFS) {
+                hal->drain_overruns++;
+            } else if (cqe->res == -EINVAL || cqe->res == -EOPNOTSUPP) {
+                hal->drain_holdoff_until = UINT64_MAX; // this kernel cannot do it: never again
+            }
+        }
+    }
+}
+
+// Ends a running drain: each recvmsg still in flight is cancelled and waited for, so nothing is taken from a socket
+// after this returns. What it took stays in the completion ring for rx_take_drained().
+static void drain_stop(struct tt_Context* node) {
+    struct tt_hal* hal = &node->hal;
+    if (!hal->drain_running) {
+        return;
+    }
+    hal->drain_running = false;
+    drain_look(hal);
+    uint32_t added = 0;
+    for (uint32_t i = 0; i < DRAIN_SOCKETS; i++) {
+        if ((hal->drain_armed & (1U << i)) != 0) {
+            struct io_uring_sqe* sqe = drain_sqe(hal, &added);
+            sqe->opcode = IORING_OP_ASYNC_CANCEL;
+            sqe->addr = DRAIN_RECV | i;
+            sqe->user_data = DRAIN_CANCEL;
+        }
+    }
+    if (added != 0 && !drain_submit(hal, added)) {
+        TT_LOG_ERROR("Cannot cancel the receive drain: %s - turned off", strerror(errno));
+        drain_refused(hal, "cancel", errno);
+        return;
+    }
+    for (int tries = 0; hal->drain_armed != 0 && tries < DRAIN_STOP_TRIES; tries++) {
+        struct __kernel_timespec wait = {0, DRAIN_STOP_WAIT_NS};
+        struct io_uring_getevents_arg arg;
+        memset(&arg, 0, sizeof(arg));
+        arg.ts = (uint64_t)(uintptr_t)&wait;
+        // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
+        (void)syscall(__NR_io_uring_enter, hal->drain_fd, 0U, 1U, IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG, &arg,
+                      sizeof(arg));
+        drain_look(hal);
+    }
+    if (hal->drain_armed != 0) {
+        // A recvmsg that will not end could still take a datagram after a read of its socket, out of order. Rather
+        // than that, the drain goes: what it holds is lost with it.
+        TT_LOG_ERROR("Receive drain did not stop within %d ms - turned off", (int)(DRAIN_STOP_TRIES * 10));
+        drain_refused(hal, "stop", ETIMEDOUT);
+    }
+}
+
+// Hands out the oldest datagram a drain took, as rx_take_pending() does a batch's, or -1 when none is waiting. One
+// longer than a buffer arrived cut short: it is dropped, counted, and no drain starts for tt_RX_DRAIN_HOLDOFF_NS.
+static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    struct tt_hal* hal = &node->hal;
+    const struct io_uring_cqe* cqes = (const struct io_uring_cqe*)hal->drain_cqes;
+    while (hal->drain_pending != 0) {
+        uint32_t head = *hal->drain_cq_head;
+        const struct io_uring_cqe* cqe = &cqes[head & *hal->drain_cq_mask];
+        bool holds = drain_holds_datagram(cqe);
+        uint64_t user_data = cqe->user_data;
+        uint32_t flags = cqe->flags;
+        uint32_t written = (uint32_t)cqe->res;
+        __atomic_store_n(hal->drain_cq_head, head + 1U, __ATOMIC_RELEASE);
+        if (!holds) {
+            continue;
+        }
+        hal->drain_pending--;
+        uint16_t bid = (uint16_t)(flags >> IORING_CQE_BUFFER_SHIFT);
+        const uint8_t* buffer = hal->drain_buffers + ((size_t)bid * hal->drain_size);
+        const struct io_uring_recvmsg_out* out = (const struct io_uring_recvmsg_out*)buffer;
+        const uint8_t* payload = buffer + DRAIN_HEADER;
+        // NOLINTNEXTLINE(misc-include-cleaner) - MSG_TRUNC: <sys/socket.h>
+        if ((out->flags & MSG_TRUNC) != 0 || written < DRAIN_HEADER || out->payloadlen > written - DRAIN_HEADER) {
+            hal->drain_truncated++;
+            hal->drain_holdoff_until = tt_get_ns() + tt_RX_DRAIN_HOLDOFF_NS;
+            drain_give_back(hal, bid);
+            continue;
+        }
+        struct sockaddr_in from;
+        memcpy(&from, buffer + sizeof(*out), sizeof(from));
+        size_t copy = (size_t)out->payloadlen < len ? (size_t)out->payloadlen : len;
+        memcpy(buf, payload, copy);
+        drain_give_back(hal, bid);
+        *ip = ntohl(from.sin_addr.s_addr);
+        *port = ntohs(from.sin_port);
+        node->rx_via_data_port = (user_data & 1U) != 0;
+        hal->drain_datagrams++;
+        TT_TRACE(tt_TRACE_RX_DATAGRAM);
+        return (int32_t)copy;
+    }
+    return -1;
+}
+
+bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
+    struct tt_hal* hal = &node->hal;
+    if (hal->drain_running) {
+        return true;
+    }
+    if (hal->drain_fd == -2 || datagram_bytes == 0 ||
+        (hal->drain_holdoff_until != 0 && tt_get_ns() < hal->drain_holdoff_until)) {
+        return false;
+    }
+    uint32_t size = ((datagram_bytes + DRAIN_HEADER + DRAIN_ALIGN - 1U) / DRAIN_ALIGN) * DRAIN_ALIGN;
+    if (hal->drain_fd >= 0 && size > hal->drain_size) {
+        if (hal->drain_pending != 0) {
+            return false; // longer datagrams than the buffers hold: rebuilt once what they took is handed out
+        }
+        drain_release(hal);
+    }
+    if (hal->drain_fd < 0) {
+        uint32_t count = tt_RX_DRAIN_BUFFERS;
+        while (count > 1U && (uint64_t)count * size > tt_RX_DRAIN_BYTES) {
+            count /= 2U;
+        }
+        if (!drain_setup(hal, size, count)) {
+            return false;
+        }
+    }
+    const int fds[DRAIN_SOCKETS] = {hal->sock, hal->data_sock};
+    uint32_t added = 0;
+    uint8_t armed = 0;
+    for (uint32_t i = 0; i < DRAIN_SOCKETS; i++) {
+        if (fds[i] < 0) {
+            continue;
+        }
+        struct io_uring_sqe* sqe = drain_sqe(hal, &added);
+        sqe->opcode = IORING_OP_RECVMSG;
+        sqe->fd = fds[i];
+        sqe->addr = (uint64_t)(uintptr_t)&hal->drain_msghdr;
+        sqe->ioprio = IORING_RECV_MULTISHOT;
+        sqe->flags = IOSQE_BUFFER_SELECT;
+        sqe->buf_group = DRAIN_GROUP;
+        sqe->user_data = DRAIN_RECV | i;
+        armed |= (uint8_t)(1U << i);
+    }
+    if (added == 0 || !drain_submit(hal, added)) {
+        return false;
+    }
+    hal->drain_armed = armed;
+    hal->drain_running = true;
+    hal->drain_starts++;
+    return true;
+}
+
+static uint32_t drain_held(const struct tt_Context* node) {
+    return node->hal.drain_pending;
+}
+#else
+bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
+    (void)node;
+    (void)datagram_bytes;
+    return false;
+}
+
+static void drain_stop(struct tt_Context* node) {
+    (void)node;
+}
+
+static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    (void)node;
+    (void)buf;
+    (void)len;
+    (void)ip;
+    (void)port;
+    return -1;
+}
+
+static uint32_t drain_held(const struct tt_Context* node) {
+    (void)node;
+    return 0;
+}
+#endif
+
 // Hands out the next datagram the last recvmmsg() read and held back, or -1 when none is waiting.
 static int32_t rx_take_pending(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct tt_hal* hal = &node->hal;
@@ -1124,8 +1518,13 @@ static int rx_wait(struct tt_Context* node, const struct timespec* timeout_ts, u
 
 int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     // What the last batch read comes first, and without a wait: holding it behind ppoll() would delay
-    // datagrams that have already arrived.
+    // datagrams that have already arrived. Then what a drain took while core was away, which left the sockets after
+    // the batch and before anything still in them.
+    drain_stop(node);
     int32_t pending = rx_take_pending(node, buf, len, ip, port);
+    if (pending < 0) {
+        pending = rx_take_drained(node, buf, len, ip, port);
+    }
     if (pending >= 0) {
         return pending;
     }
@@ -1265,7 +1664,8 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
 // socket is idle this answers without a syscall, and clears the bits so the next drain - one not preceded by a wait,
 // like a non-blocking poll - asks both again.
 uint32_t tt_rx_buffered(const struct tt_Context* node) {
-    return node->hal.rx_next < node->hal.rx_count ? (uint32_t)(node->hal.rx_count - node->hal.rx_next) : 0U;
+    return (node->hal.rx_next < node->hal.rx_count ? (uint32_t)(node->hal.rx_count - node->hal.rx_next) : 0U) +
+           drain_held(node);
 }
 
 // Notes a datagram returned while a socket is being skipped, and asks every socket again once TT_RX_IDLE_RECHECK_NS
@@ -1287,7 +1687,11 @@ static void rx_idle_count_return(struct tt_Context* node) {
 }
 
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    drain_stop(node);
     int32_t pending = rx_take_pending(node, buf, len, ip, port);
+    if (pending < 0) {
+        pending = rx_take_drained(node, buf, len, ip, port);
+    }
     if (pending >= 0) {
         rx_idle_count_return(node);
         return pending;
@@ -1508,6 +1912,11 @@ static void uring_arm(struct tt_hal* hal, uint8_t bits) {
 
 bool tt_rx_maybe_ready(struct tt_Context* node) {
     struct tt_hal* hal = &node->hal;
+#if tt_RX_DRAIN
+    if (hal->drain_running) {
+        return true; // what it took is known only once it stops, which the read does
+    }
+#endif
     if (hal->uring_fd < 0 || tt_rx_buffered(node) != 0) {
         return true;
     }

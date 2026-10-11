@@ -278,6 +278,16 @@ uint32_t tt_rx_buffered(const struct tt_Context* node);
 // HAL with no cheaper way to know returns true, which is exactly the behaviour before this function existed.
 bool tt_rx_maybe_ready(struct tt_Context* node);
 
+// Keeps the receive sockets drained while core is away from them - in a callback that takes milliseconds (an rmw
+// decode of a 4 MB sample), or returned to the application - so that what arrives meanwhile on a saturated link is not
+// dropped by a receive buffer the system caps (net.core.rmem_max: 425,984 bytes on the rig, two milliseconds of 1 GbE;
+// RESULTS L4 cell I4s lost 14-38 samples a run there). The next tt_receive() or tt_try_receive() ends it and hands
+// out what it took, in arrival order, before reading the sockets again. `datagram_bytes` is the longest datagram core
+// expects meanwhile (a fragment's 1,472, or a 65,507-byte one the kernel reassembles), which sizes the HAL's buffers.
+// Core asks for it only while large samples are arriving (tickle.c, large_rx_drain()). True when it is draining; a
+// HAL without the means returns false and nothing changes.
+bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes);
+
 // Wakes a concurrent tt_receive() blocked on this node (from any thread, including this one - a
 // self-signal), making it return -3 immediately instead of waiting out the rest of its timeout.
 // Safe to call whether or not a call is currently blocked; if none is, the signal is simply

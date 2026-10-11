@@ -782,3 +782,9 @@ uint32_t tt_rx_buffered(const struct tt_Context* node) {
     (void)node;
     return 0; // every receive here asks the stack; nothing is held back
 }
+
+bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
+    (void)node;
+    (void)datagram_bytes;
+    return false; // lwIP's buffers are the stack's own: nothing to drain them into
+}
