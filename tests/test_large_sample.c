@@ -746,17 +746,18 @@ static void reliable_under_loss(uint32_t size, int samples) {
            (unsigned long)sim_dropped[SENDER_ID], (unsigned long)sim_sent[SENDER_ID]);
 }
 
-// One run of `samples` 1 MB samples, RELIABLE KEEP_ALL at 5% loss, from a writer whose first seq_no is `first`.
+// One run of `samples` 1 MB samples at `loss` per mille, from a writer whose first seq_no is `first`.
 struct wrap_run {
     int delivered;
     bool in_order;
     uint64_t sent[3];
     uint32_t sender_live; // large buffers the writer still holds once settled
+    uint32_t abandoned;   // what the reader gave up: gap_abandoned + gap_evicted, and assemblies abandoned
 };
 
-static struct wrap_run large_run_from(uint32_t first, int samples) {
-    init_pair(ONE_MB, RELIABLE_KEEP_ALL);
-    sim_start(50);
+static struct wrap_run large_run_from(uint32_t first, int samples, enum pair_mode mode, uint32_t loss) {
+    init_pair(ONE_MB, mode);
+    sim_start(loss);
     pub.seq_no = first - 1U;
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
         pub.peer_acks[i].ack_seq_no = first; // matched before the move: where its history now begins
@@ -768,34 +769,106 @@ static struct wrap_run large_run_from(uint32_t first, int samples) {
     uint64_t quiet_by = test_mock_now + tt_SECOND; // the last acknowledgements, and what they hand back
     while (test_mock_now < quiet_by && sim_step()) {
     }
-    struct wrap_run run = {delivered_count, in_order && delivered_torn == 0, {0, 0, 0}, sender_alloc.live};
+    struct wrap_run run = {delivered_count,
+                           in_order && delivered_torn == 0,
+                           {0, 0, 0},
+                           sender_alloc.live,
+                           sub.gap_abandoned + sub.gap_evicted + (uint32_t)receiver.large.abandoned};
     memcpy(run.sent, sim_sent, sizeof(run.sent));
     for (int i = 0; i < samples && i < 64; i++) {
-        run.in_order = run.in_order && delivered_seeds[i] == i + 1;
+        run.in_order = run.in_order && (i >= delivered_count || delivered_seeds[i] == i + 1 || mode == BEST_EFFORT);
     }
     return run;
 }
 
-static void test_large_samples_cross_2_32_as_if_they_had_not(void) {
-    // A large sample takes one seq_no a datagram and the writer's records are keyed by their first: starting 2 x 723
-    // datagrams short of 2^32, the third 1 MB sample's first seq_no is 0 - once the "no send in progress" and "no
-    // large record" value - and the fourth straddles nothing but follows it. Against the same run from seq_no 1: every
-    // sample, once, in order, the same datagrams each way, and the acknowledged buffers handed back alike.
-    struct wrap_run control = large_run_from(1, 5);
-    struct wrap_run wrap = large_run_from(0U - (2U * tt_sample_datagrams(ONE_MB)), 5);
-    EXPECT_EQ_INT(5, control.delivered);
-    EXPECT_TRUE(control.in_order);
+static void expect_large_wrap(const char* name, int samples, enum pair_mode mode, uint32_t loss, bool all_delivered) {
+    // Starting 2 x 723 datagrams short of 2^32, the third 1 MB sample's first seq_no is 0 - once both "no send in
+    // progress" (large_cursor.seq_no) and "no large record". Against the same run from seq_no 1: as many samples, in
+    // order, the same datagrams each way, the same given up, and the acknowledged buffers handed back alike.
+    struct wrap_run control = large_run_from(1, samples, mode, loss);
+    struct wrap_run wrap = large_run_from(0U - (2U * tt_sample_datagrams(ONE_MB)), samples, mode, loss);
+    EXPECT_TRUE(pub.seq_no < 0x80000000U); // treatment: the writer's seq_no passed 2^32
     EXPECT_EQ_INT(control.delivered, wrap.delivered);
-    EXPECT_TRUE(wrap.in_order);
+    EXPECT_TRUE(control.in_order && wrap.in_order);
     EXPECT_EQ_U64(control.sent[SENDER_ID], wrap.sent[SENDER_ID]);
     EXPECT_EQ_U64(control.sent[RECEIVER_ID], wrap.sent[RECEIVER_ID]);
     EXPECT_EQ_U32(control.sender_live, wrap.sender_live);
-    EXPECT_TRUE(pub.seq_no < 0x80000000U); // treatment: the writer's seq_no passed 2^32
-    printf("test_large_sample: 5 x 1 MB across 2^32 - %d delivered, %lu/%lu datagrams (control %lu/%lu), %u buffers "
-           "held (control %u)\n",
-           wrap.delivered, (unsigned long)wrap.sent[SENDER_ID], (unsigned long)wrap.sent[RECEIVER_ID],
-           (unsigned long)control.sent[SENDER_ID], (unsigned long)control.sent[RECEIVER_ID], wrap.sender_live,
-           control.sender_live);
+    EXPECT_EQ_U32(control.abandoned, wrap.abandoned);
+    if (all_delivered) {
+        EXPECT_EQ_INT(samples, wrap.delivered);
+    }
+    printf("test_large_sample: %s, %d x 1 MB across 2^32 - %d delivered, %lu/%lu datagrams (control %d, %lu/%lu), "
+           "%u buffers held, %u given up (control %u, %u)\n",
+           name, samples, wrap.delivered, (unsigned long)wrap.sent[SENDER_ID], (unsigned long)wrap.sent[RECEIVER_ID],
+           control.delivered, (unsigned long)control.sent[SENDER_ID], (unsigned long)control.sent[RECEIVER_ID],
+           wrap.sender_live, wrap.abandoned, control.sender_live, control.abandoned);
+}
+
+static void test_large_samples_cross_2_32_as_if_they_had_not(void) {
+    expect_large_wrap("RELIABLE KEEP_ALL 5% loss", 5, RELIABLE_KEEP_ALL, 50, true);
+    expect_large_wrap("RELIABLE KEEP_LAST 5% loss", 5, RELIABLE_KEEP_LAST, 50, false);
+    expect_large_wrap("BEST_EFFORT lossless", 5, BEST_EFFORT, 0, true);
+}
+
+static void test_best_effort_abandons_older_samples_across_2_32(void) {
+    // BEST_EFFORT: the second sample's last fragment is lost, so it never completes, and the third - starting at
+    // seq_no 0, past 2^32 - abandons it when it does (large_accept_best_effort()): best-effort order never delivers the
+    // older one now. Against the same from seq_no 1: as many delivered and abandoned, the receiver holding as many
+    // buffers.
+    uint64_t abandoned[2];
+    uint32_t live[2];
+    for (int control = 0; control < 2; control++) {
+        init_pair(ONE_MB, BEST_EFFORT);
+        sim_start(0);
+        pub.seq_no = (control != 0 ? 1U : 0U - (2U * tt_sample_datagrams(ONE_MB))) - 1U;
+        for (int i = 0; i < 4; i++) {
+            sim_drop_tails = i == 1;
+            EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 1), tt_SECOND));
+        }
+        sim_drop_tails = false;
+        sim_settle(3, tt_SECOND);
+        abandoned[control] = receiver.large.abandoned;
+        live[control] = receiver_alloc.live;
+        EXPECT_EQ_INT(3, delivered_count);
+    }
+    EXPECT_TRUE(abandoned[1] > 0); // control: the older ones were abandoned at all
+    EXPECT_EQ_U64(abandoned[1], abandoned[0]);
+    EXPECT_EQ_U32(live[1], live[0]);
+}
+
+static void test_a_durable_backlog_of_large_samples_across_2_32(void) {
+    // Three 1 MB samples nobody heard, the third starting at seq_no 0, then a DURABLE late joiner: the backlog walks
+    // the retained run - small cache and large records - through 2^32 (large_send_backlog_before()). The control is
+    // the same from seq_no 1.
+    for (int control = 0; control < 2; control++) {
+        init_pair(ONE_MB, RELIABLE_KEEP_LAST);
+        pub.durable = true;
+        sim_start(0);
+        uint32_t first = control != 0 ? 1U : 0U - (2U * tt_sample_datagrams(ONE_MB));
+        pub.seq_no = first - 1U;
+        sim_acting = SENDER_ID;
+        for (int i = 0; i < 3; i++) {
+            sample_seed = (uint8_t)(i + 1);
+            EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+            sim_head = sim_tail; // nobody heard it
+        }
+        sub.durable = true;
+        struct tt_Peer late = {RECEIVER_ID, RECEIVER_IP, PORT};
+        // The initial Heartbeat first, so the reader's baseline is the writer's oldest before any backlog arrives. A
+        // match sends it after the backlog; a DURABLE reader whose first contact is the backlog of a writer far past
+        // seq_no 1 then loses the first sample - from 100000 as from here, wrap or not (reported apart).
+        send_initial_heartbeat(&sender, &pub, &late);
+        sim_drain();
+        sim_head = sim_tail;
+        deliver_durability_backlog(&sender, &pub, &late);
+        EXPECT_EQ_U32(3U * tt_sample_datagrams(ONE_MB), sim_tail - sim_head);
+        sim_drain();
+        sim_settle(3, tt_SECOND);
+        printf("test_large_sample: durable backlog of 3 x 1 MB from %u: %d delivered, %d torn\n", first,
+               delivered_count, delivered_torn);
+        EXPECT_EQ_INT(3, delivered_count);
+        EXPECT_EQ_INT(0, delivered_torn);
+    }
 }
 
 static void test_reliable_keep_all_at_5_percent_loss(void) {
@@ -1092,6 +1165,8 @@ static void test_a_durable_writer_backs_a_late_joiner_with_its_large_samples(voi
 
 int main(void) {
     test_large_samples_cross_2_32_as_if_they_had_not();
+    test_a_durable_backlog_of_large_samples_across_2_32();
+    test_best_effort_abandons_older_samples_across_2_32();
     test_round_trip_at_every_boundary();
     test_a_fixed_size_type_above_a_sample_is_a_large_topic();
     test_any_arrival_order_reassembles();
