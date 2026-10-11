@@ -63,7 +63,9 @@ def wilson(k: int, m: int, z: float = 1.96) -> tuple[float, float]:
     d = 1 + z * z / m
     c = (ph + z * z / (2 * m)) / d
     h = z * math.sqrt(ph * (1 - ph) / m + z * z / (4 * m * m)) / d
-    return max(0.0, c - h), min(1.0, c + h)
+    # The closed form rounds hi to 0.99999999... when k = m (and lo above 0 when k = 0), which put pred = 1 outside the
+    # interval of a cell that lost nothing (first main-run analysis, 2026-10-11). Pin the exact ends.
+    return (0.0 if k == 0 else max(0.0, c - h)), (1.0 if k == m else min(1.0, c + h))
 
 
 def plan(hi_rate: float) -> None:
