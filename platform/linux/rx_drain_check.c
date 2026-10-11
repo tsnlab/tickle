@@ -27,6 +27,15 @@
 // The drain's task work runs here on this thread's own sendto() returns; rx_drain_pc.sh is the check that it runs
 // while a thread is busy in user space. Exit 0 pass, 1 fail, 2 no drain (io_uring refused, or a kernel before 6.0),
 // 3 setup failed.
+
+// Built as rmw_tickle is (platform/linux/Makefile passes the same), so a lint of this file alone sees the drain too.
+#ifndef tt_MAX_BUFFER_LENGTH
+#define tt_MAX_BUFFER_LENGTH 65507
+#endif
+#ifndef tt_LARGE_SAMPLES
+#define tt_LARGE_SAMPLES 1
+#endif
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -102,14 +111,13 @@ static bool read_in_order(struct tt_Context* node, size_t bytes, uint32_t first,
     return in_order && *arrived == count;
 }
 
-// 3, 4 and 5; the data socket's buffer is already at its smallest.
-static enum check_exit check_drain(struct tt_Context* node, int sender) {
+// 3. drain; the data socket's buffer is already at its smallest.
+static enum check_exit check_drained_burst(struct tt_Context* node, int sender) {
     uint32_t drops = tt_hal_rx_socket_drops(node);
     if (!tt_rx_drain_start(node, tt_CONTROL_MAX_LENGTH)) {
         printf("rx_drain_check: NO DRAIN - tt_rx_drain_start() refused (io_uring refused, or Linux < 6.0)\n");
         return CHECK_NO_DRAIN;
     }
-    // 3. drain
     if (!send_numbered(sender, node->hal.data_sock, 0, BURST, PAYLOAD_BYTES)) {
         printf("rx_drain_check: SETUP FAILED - could not send the drained burst\n");
         return CHECK_SETUP_FAILED;
@@ -133,8 +141,12 @@ static enum check_exit check_drain(struct tt_Context* node, int sender) {
     printf("rx_drain_check: PASS - drain: %d datagrams through the smallest buffer, %lu of them from the drain, all in "
            "order, the %d sent after the first read last, no socket drop\n",
            BURST + LATE, (unsigned long)node->hal.drain_datagrams, LATE);
+    return CHECK_PASS;
+}
 
-    // 4. cut
+// 4. cut
+static enum check_exit check_cut(struct tt_Context* node, int sender) {
+    uint32_t index = 0;
     uint64_t cut_before = node->hal.drain_truncated;
     if (!tt_rx_drain_start(node, tt_CONTROL_MAX_LENGTH) ||
         !send_numbered(sender, node->hal.data_sock, 0, 1, CUT_BYTES)) {
@@ -159,10 +171,13 @@ static enum check_exit check_drain(struct tt_Context* node, int sender) {
     printf("rx_drain_check: PASS - cut: a %d-byte datagram was dropped and counted while draining, and its retry read "
            "whole during the hold-off\n",
            CUT_BYTES);
+    return CHECK_PASS;
+}
 
-    // 5. sized
+// 5. sized
+static enum check_exit check_sized(struct tt_Context* node, int sender) {
     usleep(HOLDOFF_PAST_US);
-    drops = tt_hal_rx_socket_drops(node);
+    uint32_t drops = tt_hal_rx_socket_drops(node);
     if (!tt_rx_drain_start(node, tt_MAX_BUFFER_LENGTH)) {
         printf("rx_drain_check: FAIL - sized: no drain for %d-byte datagrams after the hold-off\n",
                (int)tt_MAX_BUFFER_LENGTH);
@@ -173,7 +188,8 @@ static enum check_exit check_drain(struct tt_Context* node, int sender) {
         return CHECK_SETUP_FAILED;
     }
     usleep(LOOPBACK_SETTLE_US);
-    in_order = read_in_order(node, BIG_BYTES, 0, BIG_BURST, &arrived);
+    int arrived = 0;
+    bool in_order = read_in_order(node, BIG_BYTES, 0, BIG_BURST, &arrived);
     if (!in_order || tt_hal_rx_socket_drops(node) != drops || node->hal.drain_size < BIG_BYTES) {
         printf(
             "rx_drain_check: FAIL - sized: %d of %d big datagrams in order: %s, socket drops %u -> %u, buffers of %u "
@@ -255,6 +271,7 @@ int main(void) {
 
     // 2. drops
     int smallest = 1; // the kernel raises it to its minimum
+    // NOLINTNEXTLINE(misc-include-cleaner) - SOL_SOCKET/SO_RCVBUF: <sys/socket.h>, included above
     if (setsockopt(node.hal.data_sock, SOL_SOCKET, SO_RCVBUF, &smallest, sizeof smallest) != 0 ||
         !send_burst(sender, node.hal.data_sock, BURST)) {
         printf("rx_drain_check: SETUP FAILED - could not shrink the buffer or send the burst\n");
@@ -274,7 +291,13 @@ int main(void) {
     }
     printf("rx_drain_check: PASS - drops: %d of %d arrived through the smallest buffer and the count is the other %u\n",
            arrived, BURST, (unsigned)dropped);
-    result = check_drain(&node, sender);
+    result = check_drained_burst(&node, sender);
+    if (result == CHECK_PASS) {
+        result = check_cut(&node, sender);
+    }
+    if (result == CHECK_PASS) {
+        result = check_sized(&node, sender);
+    }
 
 out:
     if (sender >= 0) {
