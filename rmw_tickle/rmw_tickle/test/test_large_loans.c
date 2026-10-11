@@ -41,7 +41,6 @@
 
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"
-#include "rmw/error_handling.h"
 #include "rmw/init.h"
 #include "rmw/init_options.h"
 #include "rmw/publisher_options.h"
@@ -55,7 +54,7 @@
 #include "rosidl_typesupport_tickle_c/identifier.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
 
-#define ARRAY1M_BYTES (1024U * 1024U)
+#define ARRAY1M_BYTES ((size_t)1024 * 1024)
 #define SAMPLES 20U
 #define DEPTH 10U
 #define PACE_US 20000L // between publishes: a 1 MB sample is 723 datagrams, and every one must be taken
@@ -134,8 +133,8 @@ static bool intact(const struct array1m* message) {
     return message->time == (int64_t)(message->id * TIME_PER_ID);
 }
 
-static void sleep_us(long us) {
-    struct timespec interval = {.tv_sec = 0, .tv_nsec = us * NS_PER_US};
+static void sleep_us(long micros) {
+    struct timespec interval = {.tv_sec = 0, .tv_nsec = micros * NS_PER_US};
     nanosleep(&interval, NULL);
 }
 
