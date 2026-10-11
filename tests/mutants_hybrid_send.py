@@ -34,10 +34,10 @@ MUTANTS = [
     (
         "small runs: the last unit inside a run",
         "src/tickle.c",
-        "    for (uint32_t start = 0; start + 1U < count; start += n) {\n"
-        "        uint32_t units = count - 1U - start < n ? count - 1U - start : n;",
-        "    for (uint32_t start = 0; start < count; start += n) {\n"
-        "        uint32_t units = count - start < n ? count - start : n;",
+        "    for (uint32_t start = 0; start + 1U < count; start += run_n) {\n"
+        "        uint32_t units = count - 1U - start < run_n ? count - 1U - start : run_n;",
+        "    for (uint32_t start = 0; start < count; start += run_n) {\n"
+        "        uint32_t units = count - start < run_n ? count - start : run_n;",
         SEND,
     ),
     (
@@ -57,9 +57,9 @@ MUTANTS = [
     (
         "large runs: the last unit inside a run",
         "src/tickle.c",
-        "    for (; k < LARGE_BATCH && next < last; k++) {\n        uint32_t run = last - next < n ? last - next : n;",
+        "    for (; k < LARGE_BATCH && next < last; k++) {\n        uint32_t run = last - next < run_n ? last - next : run_n;",
         "    for (; k < LARGE_BATCH && next <= last; k++) {\n"
-        "        uint32_t run = last + 1U - next < n ? last + 1U - next : n;",
+        "        uint32_t run = last + 1U - next < run_n ? last + 1U - next : run_n;",
         SEND,
     ),
     (
@@ -122,8 +122,8 @@ MUTANTS = [
     (
         "broadcast: the largest n over the peers, not the smallest",
         "src/tickle.c",
-        "        smallest = smallest == 0 || n < smallest ? n : smallest;",
-        "        smallest = smallest == 0 || n > smallest ? n : smallest;",
+        "        smallest = smallest == 0 || run_n < smallest ? run_n : smallest;",
+        "        smallest = smallest == 0 || run_n > smallest ? run_n : smallest;",
         SEND,
     ),
     (
@@ -151,15 +151,15 @@ MUTANTS = [
     (
         "cost model: the datagram cost not shared over the run",
         "src/tickle.c",
-        "        double cost = (c_d / (double)n) + c_f + ((1.0 - clean) * repair);",
+        "        double cost = (c_d / (double)run_n) + c_f + ((1.0 - clean) * repair);",
         "        double cost = c_d + c_f + ((1.0 - clean) * repair);",
         SEND,
     ),
     (
         "cost model: a lost run's repairs not counted",
         "src/tickle.c",
-        "        double cost = (c_d / (double)n) + c_f + ((1.0 - clean) * repair);",
-        "        double cost = (c_d / (double)n) + c_f;",
+        "        double cost = (c_d / (double)run_n) + c_f + ((1.0 - clean) * repair);",
+        "        double cost = (c_d / (double)run_n) + c_f;",
         SEND,
     ),
     (
@@ -186,14 +186,14 @@ MUTANTS = [
     (
         "exposure: the frames sent not counted",
         "src/tickle.c",
-        "            loss_estimate_observe(&ack->loss, count, 0);\n            ack->run_n = (uint8_t)n;",
-        "            ack->run_n = (uint8_t)n;",
+        "            loss_estimate_observe(&ack->loss, count, 0);\n            ack->run_n = (uint8_t)run_n;",
+        "            ack->run_n = (uint8_t)run_n;",
         SEND,
     ),
     (
         "exposure: n not recorded",
         "src/tickle.c",
-        "            loss_estimate_observe(&ack->loss, count, 0);\n            ack->run_n = (uint8_t)n;",
+        "            loss_estimate_observe(&ack->loss, count, 0);\n            ack->run_n = (uint8_t)run_n;",
         "            loss_estimate_observe(&ack->loss, count, 0);",
         SEND,
     ),
@@ -221,8 +221,8 @@ MUTANTS = [
     (
         "nacks: a range's runs rounded down",
         "src/tickle.c",
-        "    events += (range + n - 1U) / n;\n    ack->nack_high = high;",
-        "    events += range / n;\n    ack->nack_high = high;",
+        "    events += (range + run_n - 1U) / run_n;\n    ack->nack_high = high;",
+        "    events += range / run_n;\n    ack->nack_high = high;",
         SEND,
     ),
     (
@@ -271,7 +271,7 @@ MUTANTS = [
     (
         "fit: unweighted",
         "src/tickle.c",
-        "    double weight = frames != 0 ? 1.0 / (f * f) : 1.0;",
+        "    double weight = frames != 0 ? 1.0 / (frs * frs) : 1.0;",
         "    double weight = 1.0;",
         SEND,
     ),
@@ -447,8 +447,8 @@ MUTANTS = [
     (
         "bound: Wilson-Hilferty without its skew term",
         "src/tickle.c",
-        "    double cube = 1.0 - (1.0 / (9.0 * k1)) + (LOSS_BOUND_Z / (3.0 * root));",
-        "    double cube = 1.0 + (LOSS_BOUND_Z / (3.0 * root));",
+        "    double cube = 1.0 - (1.0 / (LOSS_WH_SKEW * shifted)) + (LOSS_BOUND_Z / (LOSS_WH_SPREAD * hybrid_sqrt(shifted)));",
+        "    double cube = 1.0 + (LOSS_BOUND_Z / (LOSS_WH_SPREAD * hybrid_sqrt(shifted)));",
         SEND,
     ),
     (

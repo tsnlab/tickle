@@ -2056,13 +2056,13 @@ static uint32_t hybrid_units_within(uint32_t ceiling, bool large) {
 }
 
 // The bucket of tt_HybridState.n_hist that n falls in: 1, 2-3, 4-7, 8-15, 16-31, 32 up to n_max - 1, n_max.
-static uint32_t hybrid_bucket(uint32_t n) {
-    if (n >= (uint32_t)tt_HYBRID_N_MAX) {
+static uint32_t hybrid_bucket(uint32_t run_n) {
+    if (run_n >= (uint32_t)tt_HYBRID_N_MAX) {
         return tt_HYBRID_N_BUCKETS - 1U;
     }
     uint32_t bucket = 0;
-    while (n > 1U && bucket < tt_HYBRID_N_BUCKETS - 2U) {
-        n >>= 1U;
+    while (run_n > 1U && bucket < tt_HYBRID_N_BUCKETS - 2U) {
+        run_n >>= 1U;
         bucket++;
     }
     return bucket;
@@ -2131,29 +2131,29 @@ static uint32_t hybrid_destination_n(struct tt_Context* node, const struct tt_Pu
         if (peer->context_id == tt_CONTEXT_ID_INVALID) {
             continue;
         }
-        uint32_t n = hybrid_peer_n(node, pub, peer->context_id, peer->ip, peer->port, large, &n_max);
-        smallest = smallest == 0 || n < smallest ? n : smallest;
+        uint32_t run_n = hybrid_peer_n(node, pub, peer->context_id, peer->ip, peer->port, large, &n_max);
+        smallest = smallest == 0 || run_n < smallest ? run_n : smallest;
     }
     return smallest == 0 ? 1U : smallest;
 }
 
-static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t n, uint32_t count);
+static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t run_n, uint32_t count);
 
 // A sample's first transmission to one destination, counted: the histogram of n, what went in runs and alone, and -
 // RELIABLE - its frames as the exposure of each reader it reaches, whatever its n: a reader whose cap holds it at one
 // unit still NACKs, and its losses must fall on its frames, or its p reads several times too high.
-static void hybrid_note_sent(struct tt_Context* node, struct tt_Publisher* pub, uint8_t context_id, uint32_t n,
+static void hybrid_note_sent(struct tt_Context* node, struct tt_Publisher* pub, uint8_t context_id, uint32_t run_n,
                              uint32_t count) {
     struct tt_HybridState* hybrid = &node->hybrid;
-    hybrid->n_hist[hybrid_bucket(n)]++;
-    if (n < 2U) {
+    hybrid->n_hist[hybrid_bucket(run_n)]++;
+    if (run_n < 2U) {
         hybrid->mtu_units += count;
     } else {
-        hybrid->runs += ((count - 2U) / n) + 1U; // units [0, count - 1) in runs of n, the last one shorter
+        hybrid->runs += ((count - 2U) / run_n) + 1U; // units [0, count - 1) in runs of n, the last one shorter
         hybrid->run_units += count - 1U;
         hybrid->mtu_units++; // the tail
     }
-    hybrid_note_exposure(pub, context_id, n, count); // a best-effort Publisher has no reader entries to expose
+    hybrid_note_exposure(pub, context_id, run_n, count); // a best-effort Publisher has no reader entries to expose
 }
 
 static void cost_fit_observe(struct tt_CostFit* fit, uint32_t datagrams, uint32_t frames, uint64_t elapsed_ns);
@@ -2201,15 +2201,15 @@ static struct tt_OutDatagram hybrid_small_run(uint8_t* out, const struct tt_Cont
 // A sample on 8/9 to one destination in runs of n: units [0, count - 1) as runs in one call, then the last unit alone
 // (`tail`, its MTU fragment as send_fragments() built it) in a second.
 static bool hybrid_send_small_runs(struct tt_Context* node, const struct tt_DataHeader* data_header, const uint8_t* cdr,
-                                   uint32_t count, uint32_t n, const struct tt_OutDatagram* tail,
+                                   uint32_t count, uint32_t run_n, const struct tt_OutDatagram* tail,
                                    const struct tx_destination* dest) {
     uint8_t framings[HYBRID_MAX_RUNS][HYBRID_RUN_FRAMING];
     struct tt_OutDatagram runs[HYBRID_MAX_RUNS];
     uint8_t context_ids[HYBRID_MAX_RUNS];
     uint32_t run_count = 0;
     uint32_t frames = 0;
-    for (uint32_t start = 0; start + 1U < count; start += n) {
-        uint32_t units = count - 1U - start < n ? count - 1U - start : n;
+    for (uint32_t start = 0; start + 1U < count; start += run_n) {
+        uint32_t units = count - 1U - start < run_n ? count - 1U - start : run_n;
         runs[run_count] = hybrid_small_run(framings[run_count], node, data_header, cdr, start, units, count, dest);
         frames += hybrid_frames(runs[run_count].head_len + runs[run_count].body_len);
         context_ids[run_count] = dest->context_id;
@@ -2249,20 +2249,28 @@ static void loss_estimate_observe(struct tt_LossEstimate* estimate, uint32_t fra
 // 2k + 2 degrees of freedom), the Wilson-Hilferty approximation above, which is within 0.3% there.
 #define LOSS_BOUND_EXACT 11U
 #define LOSS_BOUND_Z 1.6449 // the one-sided 95% normal quantile
-#define LOSS_SQRT_STEPS 24  // from k1 itself to double precision for any k1 below 2^32
+#define LOSS_SQRT_STEPS 24  // from the value itself to double precision for any value below 2^32
+#define HYBRID_HALF 0.5     // Newton's step for a square root, rounding, and halving a window's sums
+#define LOSS_WH_SKEW 9.0    // Wilson-Hilferty: (k + 1)(1 - 1 / (9 (k + 1)) + z / (3 sqrt(k + 1)))^3
+#define LOSS_WH_SPREAD 3.0
+
+// The square root of a positive value by Newton's method: core links no libm.
+static double hybrid_sqrt(double value) {
+    double root = value;
+    for (int i = 0; i < LOSS_SQRT_STEPS; i++) {
+        root = HYBRID_HALF * (root + (value / root));
+    }
+    return root;
+}
 static double loss_poisson_upper(uint32_t events) {
     static const double exact[LOSS_BOUND_EXACT] = {2.996,  4.744,  6.296,  7.754,  9.154, 10.513,
                                                    11.842, 13.148, 14.435, 15.705, 16.962};
     if (events < LOSS_BOUND_EXACT) {
         return exact[events];
     }
-    double k1 = (double)events + 1.0;
-    double root = k1; // sqrt(k1) by Newton's method: core links no libm
-    for (int i = 0; i < LOSS_SQRT_STEPS; i++) {
-        root = 0.5 * (root + (k1 / root));
-    }
-    double cube = 1.0 - (1.0 / (9.0 * k1)) + (LOSS_BOUND_Z / (3.0 * root));
-    return k1 * cube * cube * cube;
+    double shifted = (double)events + 1.0;
+    double cube = 1.0 - (1.0 / (LOSS_WH_SKEW * shifted)) + (LOSS_BOUND_Z / (LOSS_WH_SPREAD * hybrid_sqrt(shifted)));
+    return shifted * cube * cube * cube;
 }
 
 // p: the upper bound of the loss rate per frame, in [0, 1].
@@ -2355,14 +2363,10 @@ static double cost_fit_share_se(const struct tt_CostFit* fit, double c_d, double
     double residual = fit->s_tt - (c_d * fit->s_dt) - (c_f * fit->s_ft);
     double variance = (residual > 0.0 ? residual : 0.0) / (fit->calls - HYBRID_FIT_PARAMETERS);
     double sum = c_d + c_f;
-    double gradient =
-        ((c_f * c_f * fit->s_ff) + (2.0 * c_f * c_d * fit->s_df) + (c_d * c_d * fit->s_dd)) / (sum * sum * sum * sum);
+    double cross = c_f * c_d * fit->s_df; // the off-diagonal term, twice in the quadratic form
+    double gradient = ((c_f * c_f * fit->s_ff) + cross + cross + (c_d * c_d * fit->s_dd)) / (sum * sum * sum * sum);
     double share_variance = variance * gradient / det;
-    double se = share_variance; // sqrt by Newton's method, as loss_poisson_upper(): core links no libm
-    for (int i = 0; i < LOSS_SQRT_STEPS && share_variance > 0.0; i++) {
-        se = 0.5 * (se + (share_variance / se));
-    }
-    return share_variance > 0.0 ? se : 0.0;
+    return share_variance > 0.0 ? hybrid_sqrt(share_variance) : 0.0;
 }
 
 // Judges the fit over the check window just closed: the costs it gives, or 0 for "not measured".
@@ -2379,8 +2383,8 @@ static void cost_fit_check(struct tt_CostFit* fit, uint64_t cpu_ns) {
         used = predicted * tt_HYBRID_FIT_CPU_FACTOR >= measured && predicted <= measured * tt_HYBRID_FIT_CPU_FACTOR;
     }
     if (used) {
-        fit->datagram_ns = c_d < (double)UINT16_MAX ? (uint32_t)(c_d + 0.5) : UINT16_MAX;
-        fit->frame_ns = c_f < (double)UINT16_MAX ? (uint32_t)(c_f + 0.5) : UINT16_MAX;
+        fit->datagram_ns = c_d < (double)UINT16_MAX ? (uint32_t)(c_d + HYBRID_HALF) : UINT16_MAX;
+        fit->frame_ns = c_f < (double)UINT16_MAX ? (uint32_t)(c_f + HYBRID_HALF) : UINT16_MAX;
         fit->accepted++;
     } else {
         fit->datagram_ns = 0;
@@ -2395,30 +2399,30 @@ static void cost_fit_check(struct tt_CostFit* fit, uint64_t cpu_ns) {
 
 // One timed call of `datagrams` datagrams and `frames` frames that took `elapsed_ns`.
 static void cost_fit_observe(struct tt_CostFit* fit, uint32_t datagrams, uint32_t frames, uint64_t elapsed_ns) {
-    double d = (double)datagrams;
-    double f = (double)frames;
-    double t = (double)elapsed_ns;
-    double weight = frames != 0 ? 1.0 / (f * f) : 1.0;
-    fit->s_dd += weight * d * d;
-    fit->s_df += weight * d * f;
-    fit->s_ff += weight * f * f;
-    fit->s_dt += weight * d * t;
-    fit->s_ft += weight * f * t;
-    fit->s_tt += weight * t * t;
+    double dgs = (double)datagrams;
+    double frs = (double)frames;
+    double took = (double)elapsed_ns;
+    double weight = frames != 0 ? 1.0 / (frs * frs) : 1.0;
+    fit->s_dd += weight * dgs * dgs;
+    fit->s_df += weight * dgs * frs;
+    fit->s_ff += weight * frs * frs;
+    fit->s_dt += weight * dgs * took;
+    fit->s_ft += weight * frs * took;
+    fit->s_tt += weight * took * took;
     fit->calls += 1.0;
-    fit->frames += f;
+    fit->frames += frs;
     if (fit->frames >= (double)tt_HYBRID_WINDOW_FRAMES) {
-        fit->s_dd /= 2.0;
-        fit->s_df /= 2.0;
-        fit->s_ff /= 2.0;
-        fit->s_dt /= 2.0;
-        fit->s_ft /= 2.0;
-        fit->s_tt /= 2.0;
-        fit->calls /= 2.0;
-        fit->frames /= 2.0;
+        fit->s_dd *= HYBRID_HALF;
+        fit->s_df *= HYBRID_HALF;
+        fit->s_ff *= HYBRID_HALF;
+        fit->s_dt *= HYBRID_HALF;
+        fit->s_ft *= HYBRID_HALF;
+        fit->s_tt *= HYBRID_HALF;
+        fit->calls *= HYBRID_HALF;
+        fit->frames *= HYBRID_HALF;
     }
-    fit->check_d += d;
-    fit->check_f += f;
+    fit->check_d += dgs;
+    fit->check_f += frs;
     fit->check_frames += frames;
     if (fit->check_cpu_ns == 0) {
         fit->check_cpu_ns = tt_process_cpu_ns(); // the first window opens with the first call
@@ -2463,12 +2467,12 @@ static uint32_t hybrid_n_star(double p, double c_d, double c_f, uint32_t n_max) 
     double clean = 1.0;
     double best = 0.0;
     uint32_t best_n = 1;
-    for (uint32_t n = 1; n <= n_max; n++) {
+    for (uint32_t run_n = 1; run_n <= n_max; run_n++) {
         clean *= 1.0 - p;
-        double cost = (c_d / (double)n) + c_f + ((1.0 - clean) * repair);
-        if (n == 1U || cost < best) {
+        double cost = (c_d / (double)run_n) + c_f + ((1.0 - clean) * repair);
+        if (run_n == 1U || cost < best) {
             best = cost;
-            best_n = n;
+            best_n = run_n;
         }
     }
     return best_n;
@@ -2512,13 +2516,13 @@ static uint32_t hybrid_reliable_n(struct tt_Context* node, const struct tt_Publi
 
 // A RELIABLE sample's first transmission went to `context_id` (tt_CONTEXT_ID_INVALID: the broadcast, every reader) in
 // runs of n: its frames are each such reader's exposure, and n is what a range of its first NACKs is divided by.
-static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t n, uint32_t count) {
+static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t run_n, uint32_t count) {
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
         struct tt_PeerAck* ack = &pub->peer_acks[i];
         if (ack->context_id != tt_CONTEXT_ID_INVALID &&
             (context_id == tt_CONTEXT_ID_INVALID || ack->context_id == context_id)) {
             loss_estimate_observe(&ack->loss, count, 0);
-            ack->run_n = (uint8_t)n;
+            ack->run_n = (uint8_t)run_n;
         }
     }
 }
@@ -2536,7 +2540,7 @@ static void hybrid_note_nacks(struct tt_Publisher* pub, uint8_t node_id, uint32_
     if (ack == NULL || ack->loss.frames == 0) {
         return; // nothing sent to it in multi-unit samples yet
     }
-    uint32_t n = ack->run_n != 0 ? ack->run_n : 1U;
+    uint32_t run_n = ack->run_n != 0 ? ack->run_n : 1U;
     uint32_t events = 0;
     uint32_t range = 0;
     uint32_t previous = 0;
@@ -2553,14 +2557,14 @@ static void hybrid_note_nacks(struct tt_Publisher* pub, uint8_t node_id, uint32_
             if (range != 0 && seq_no == previous + 1U) {
                 range++;
             } else {
-                events += (range + n - 1U) / n;
+                events += (range + run_n - 1U) / run_n;
                 range = 1;
             }
             previous = seq_no;
             high = seq_no;
         }
     }
-    events += (range + n - 1U) / n;
+    events += (range + run_n - 1U) / run_n;
     ack->nack_high = high;
     loss_estimate_observe(&ack->loss, 0, events);
 }
@@ -2627,11 +2631,11 @@ static bool send_fragments(struct tt_Context* node, struct tt_Publisher* pub, co
 #if tt_HYBRID_TRANSPORT
         // Runs only in a first transmission (a Publisher's: a repair or a backlog passes none), of three units or more.
         if (pub != NULL && count >= 3U) {
-            uint32_t n = hybrid_destination_n(node, pub, destinations[dest].context_id, destinations[dest].ip,
-                                              destinations[dest].port, false);
-            hybrid_note_sent(node, pub, destinations[dest].context_id, n, count);
-            if (n >= 2U) {
-                if (!hybrid_send_small_runs(node, data_header, cdr, count, n, &batch[count - 1U],
+            uint32_t run_n = hybrid_destination_n(node, pub, destinations[dest].context_id, destinations[dest].ip,
+                                                  destinations[dest].port, false);
+            hybrid_note_sent(node, pub, destinations[dest].context_id, run_n, count);
+            if (run_n >= 2U) {
+                if (!hybrid_send_small_runs(node, data_header, cdr, count, run_n, &batch[count - 1U],
                                             &destinations[dest])) {
                     return false;
                 }
@@ -7468,10 +7472,10 @@ static void large_cursor_destinations(struct tt_Context* node, struct tt_Publish
         cursor->dests[i].port = destinations[i].port;
         cursor->dests[i].context_id = destinations[i].context_id;
 #if tt_HYBRID_TRANSPORT
-        uint32_t n =
+        uint32_t run_n =
             hybrid_destination_n(node, pub, destinations[i].context_id, destinations[i].ip, destinations[i].port, true);
-        cursor->run_n[i] = (uint8_t)n;
-        hybrid_note_sent(node, pub, destinations[i].context_id, n, record->count);
+        cursor->run_n[i] = (uint8_t)run_n;
+        hybrid_note_sent(node, pub, destinations[i].context_id, run_n, record->count);
 #endif
     }
     cursor->dest_count = destination_count < tt_LARGE_DESTINATIONS ? destination_count : (uint8_t)tt_LARGE_DESTINATIONS;
@@ -7507,7 +7511,7 @@ static int32_t large_send_batch(struct tt_Context* node, const struct tt_OutData
 // the cursor stands at, up to LARGE_BATCH runs of n units, never the last unit - which, reached, goes alone, in a call
 // of its own, as its MTU fragment. units[k] is how many units datagram k carries, so a call cut short by a full send
 // buffer moves the cursor by exactly what went.
-static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_LargeRecord* record, uint32_t n,
+static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_LargeRecord* record, uint32_t run_n,
                                  uint32_t next, const struct tt_Peer* dest, uint8_t (*framings)[HYBRID_RUN_L_FRAMING],
                                  struct tt_OutDatagram* batch, uint32_t* units, uint32_t* frames) {
     const struct tt_DataHeader* data = (const struct tt_DataHeader*)(record->buffer + tt_LARGE_HEADER_OFFSET);
@@ -7527,7 +7531,7 @@ static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_
     }
     uint32_t k = 0;
     for (; k < LARGE_BATCH && next < last; k++) {
-        uint32_t run = last - next < n ? last - next : n;
+        uint32_t run = last - next < run_n ? last - next : run_n;
         uint8_t* out = framings[k];
         struct tt_Header* header = (struct tt_Header*)out;
         header->magic_value = NATIVE_MAGIC_VALUE;
@@ -7556,12 +7560,9 @@ static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_
     return k;
 }
 
-static int32_t large_send_batch(struct tt_Context* node, const struct tt_OutDatagram* batch, uint32_t count,
-                                const struct tt_Peer* dest);
-
 // large_send_some() for a destination this sample goes to in runs of n: true when all of it has gone to `dest`.
 static bool large_send_runs(struct tt_Context* node, struct tt_Publisher* pub, const struct tt_LargeRecord* record,
-                            uint32_t n, bool* progress) {
+                            uint32_t run_n, bool* progress) {
     struct tt_LargeCursor* cursor = &pub->large_cursor;
     const struct tt_Peer* dest = &cursor->dests[cursor->next_dest];
     while (cursor->next_index < record->count) {
@@ -7570,7 +7571,7 @@ static bool large_send_runs(struct tt_Context* node, struct tt_Publisher* pub, c
         uint32_t units[LARGE_BATCH];
         uint32_t frames = 0;
         uint32_t batch_count =
-            large_build_runs(node, record, n, cursor->next_index, dest, framings, batch, units, &frames);
+            large_build_runs(node, record, run_n, cursor->next_index, dest, framings, batch, units, &frames);
         uint64_t start = tt_get_ns();
         int32_t sent = large_send_batch(node, batch, batch_count, dest);
         if (sent > 0) {
@@ -10799,12 +10800,12 @@ static uint32_t hybrid_reader_cap(const struct tt_Context* node, uint64_t elapse
     double p = loss_estimate_p(&hybrid->rx_loss);
     double clean = 1.0;
     uint32_t cap = 1;
-    for (uint32_t n = 1; n <= n_max; n++) {
+    for (uint32_t run_n = 1; run_n <= n_max; run_n++) {
         clean *= 1.0 - p;
         if (1.0 - clean > budget) {
             break;
         }
-        cap = n;
+        cap = run_n;
     }
     return cap;
 }
