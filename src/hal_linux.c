@@ -48,9 +48,11 @@
 #if tt_HAL_IO_URING           // after hal_linux.h, which derives it from tt_HAL_RX_HINT
 // __NR_io_uring_*: <sys/syscall.h> is the portable spelling; the number itself lives in an architecture's own header
 // (asm/unistd_64.h on x86-64, asm-generic/unistd.h on arm64), which include-cleaner would have us name instead.
-#include <linux/io_uring.h>  // tt_rx_maybe_ready()
-#include <linux/sock_diag.h> // SK_MEMINFO_*: socket_drops()
-#include <sys/syscall.h>     // NOLINT(misc-include-cleaner)
+#include <linux/io_uring.h> // tt_rx_maybe_ready()
+#include <sys/syscall.h>    // NOLINT(misc-include-cleaner)
+#if tt_RX_DRAIN
+#include <linux/time_types.h> // __kernel_timespec: the drain's stop wait
+#endif
 #endif
 #include <tickle/tickle.h>
 #include <tickle/trace.h>
@@ -1358,6 +1360,7 @@ static void drain_stop(struct tt_Context* node) {
     (void)node;
 }
 
+// NOLINTNEXTLINE(readability-non-const-parameter) - the drain's own version writes them
 static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     (void)node;
     (void)buf;
