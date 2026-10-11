@@ -15337,7 +15337,7 @@ static bool segment_outstanding(const struct tt_Context* node) {
 
 // Whether the head of this context's own ring is claimed by a writer that has not published it yet.
 static bool segment_head_in_flight(const struct tt_Context* node) {
-    const struct tt_SegmentHeader* header = node->own_segment;
+    struct tt_SegmentHeader* header = node->own_segment; // not const: segment_slot() takes the writable header
     if (header == NULL) {
         return false;
     }
