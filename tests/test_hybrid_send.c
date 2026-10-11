@@ -1223,10 +1223,13 @@ static void test_receiver_drops_are_not_path_loss(void) {
     hybrid_rx_note(node, SENDER_ID, 8, 50, 6, 10, 1, false); // 4 and 5 missing
     EXPECT_EQ_U32(2, hybrid->mtu_loss.events);
     EXPECT_EQ_U64(2, hybrid->receiver_lost);
-    // A missing tail covered by a drop.
+    // A missing tail, alone, covered by a drop: no MTU loss.
+    hybrid_rx_note(node, SENDER_ID, 8, 50, 7, 10, 1, false);
+    hybrid_rx_note(node, SENDER_ID, 8, 50, 8, 10, 1, false);
     test_mock_receiver_drops = 3;
-    hybrid_rx_note(node, SENDER_ID, 8, 60, 0, 10, 1, false); // sample 50 ended short: 7-9, its tail among them
+    hybrid_rx_note(node, SENDER_ID, 8, 60, 0, 10, 1, false); // sample 50 ended short of its tail, 9
     EXPECT_EQ_U64(3, hybrid->receiver_lost);
+    EXPECT_EQ_U32(2, hybrid->mtu_loss.events);
     // Drops age out: seen at one tick, kept through the next interval, gone at the one after.
     test_mock_receiver_drops = 8;
     hybrid_rx_receiver_age(node);
