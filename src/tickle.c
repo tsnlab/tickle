@@ -6880,11 +6880,64 @@ static int32_t large_send_batch(struct tt_Context* node, const struct tt_OutData
     return sent;
 }
 
+// Encoding while sending (DESIGN.md section 8): a topic with a ranged encode has its large sample encoded a send call
+// at a time, each range just before the datagrams that carry it, so the first datagram leaves after one call's worth
+// of encoding rather than the whole sample's. Every range is encoded within the publish call (the caller's sample is
+// valid only there): what the send has not reached when the socket's buffer fills is encoded then, while it drains,
+// and the publish returns with the record holding the whole encoded sample, as without it.
+
+// Whether `record` is the one its publish is still encoding.
+static bool large_encoding(const struct tt_Publisher* pub, const struct tt_LargeRecord* record) {
+    return pub->large_source != NULL && pub->large_source_buffer == record->buffer && record->encoded < record->cdr_len;
+}
+
+// Encodes `record`'s CDR through byte `end` (at most cdr_len, the padded length) from the caller's sample, zeroing the
+// padding as data_encode's path does. A range the topic declines or fails is made up by data_encode of the whole
+// sample: the same bytes, by tt_DATA_ENCODE_RANGE's contract, so what already went is unchanged. False when that fails
+// too: the sample cannot be finished and must not be sent on.
+static bool large_encode_through(struct tt_Publisher* pub, struct tt_LargeRecord* record, uint32_t end) {
+    if (!large_encoding(pub, record) || end <= record->encoded) {
+        return true;
+    }
+    end = end < record->cdr_len ? end : record->cdr_len;
+    uint8_t* cdr = record->buffer + tt_LARGE_CDR_OFFSET;
+    uint32_t size = pub->large_source_size;
+    uint32_t stop = end < size ? end : size;
+    if (record->encoded < stop) {
+        uint32_t length = stop - record->encoded;
+        int32_t encoded =
+            pub->topic->data_encode_range(pub->large_source, cdr + record->encoded, record->encoded, length);
+        if (encoded != (int32_t)length) {
+            encoded = pub->topic->data_encode(pub->large_source, cdr, size);
+            if (encoded != (int32_t)size) {
+                return false;
+            }
+            stop = size;
+            end = record->cdr_len;
+        }
+    }
+    uint32_t pad_from = record->encoded > stop ? record->encoded : stop;
+    if (end > pad_from) {
+        memset(cdr + pad_from, 0, end - pad_from); // sent padded, as a fragment is
+    }
+    record->encoded = end;
+    if (end == record->cdr_len) {
+        TT_TRACE(tt_TRACE_ENCODED);
+    }
+    return true;
+}
+
+// The CDR byte that ends fragment `last` of `record`.
+static uint32_t large_end_of(const struct tt_LargeRecord* record, uint32_t last) {
+    return large_offset(last) + large_length(last, record->cdr_len);
+}
+
 // Sends what the socket takes of `record`, from where the cursor stands, to each destination in turn. True when all of
 // it has gone; false when the send buffer filled, the cursor then standing at the first fragment that did not go.
-// *progress says whether anything went.
-static bool large_send_some(struct tt_Context* node, struct tt_Publisher* pub, const struct tt_LargeRecord* record,
-                            bool* progress) {
+// *progress says whether anything went. A record its publish is still encoding is encoded a send call ahead of its
+// first destination (large_encode_through()); if that fails, *failed is set and true returned with the rest unsent.
+static bool large_send_some(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord* record,
+                            bool* progress, bool* failed) {
     struct tt_LargeCursor* cursor = &pub->large_cursor;
     const struct tt_DataHeader* data = (const struct tt_DataHeader*)(record->buffer + tt_LARGE_HEADER_OFFSET);
     const uint8_t* cdr = record->buffer + tt_LARGE_CDR_OFFSET;
@@ -6895,6 +6948,10 @@ static bool large_send_some(struct tt_Context* node, struct tt_Publisher* pub, c
         while (cursor->next_index < record->count) {
             uint32_t batch_count = record->count - cursor->next_index;
             batch_count = batch_count < LARGE_BATCH ? batch_count : LARGE_BATCH;
+            if (!large_encode_through(pub, record, large_end_of(record, cursor->next_index + batch_count - 1))) {
+                *failed = true;
+                return true;
+            }
             uint8_t framings[LARGE_BATCH][LARGE_FRAMING_MAX];
             struct tt_OutDatagram batch[LARGE_BATCH];
             for (uint32_t k = 0; k < batch_count; k++) {
@@ -6919,6 +6976,12 @@ static bool large_send_some(struct tt_Context* node, struct tt_Publisher* pub, c
             }
             cursor->next_index = (uint16_t)(cursor->next_index + (uint32_t)sent);
             if ((uint32_t)sent < batch_count) {
+                // The send buffer is full, and holds more wire time than the rest of the sample takes to encode: the
+                // rest is encoded now, while it drains, rather than a send call at a time with a retry after each.
+                if (!large_encode_through(pub, record, record->cdr_len)) {
+                    *failed = true;
+                    return true;
+                }
                 return false;
             }
         }
@@ -7093,6 +7156,20 @@ static void large_record_sent(struct tt_Context* node, struct tt_Publisher* pub,
     }
 }
 
+// A sample its publish could not finish encoding after some of it had gone (large_encode_through()): it is the newest
+// record - the publish committed it with nothing waiting - and it goes, unsent rest and all. Its seq_nos read as gone
+// to a reader asking for them, as an evicted sample's do; a torn sample is never delivered.
+static void large_drop_unfinished(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord* record) {
+    TT_LOG_ERROR("Large sample seq_no %u could not be encoded after it began to go - dropped", record->seq_no);
+    node->large.encode_failed++;
+    pub->large_source = NULL;
+    large_cursor_stop(node, pub);
+    pub->large_cursor.retry_ns = 0;
+    large_give_back(node, record->buffer);
+    *record = (struct tt_LargeRecord) {0};
+    pub->large_count--;
+}
+
 static void large_pump(struct tt_Context* node, struct tt_Publisher* pub) {
     struct tt_LargeCursor* cursor = &pub->large_cursor;
     while (cursor->seq_no != 0 || large_cursor_next(node, pub)) {
@@ -7102,9 +7179,14 @@ static void large_pump(struct tt_Context* node, struct tt_Publisher* pub) {
             continue;
         }
         bool progress = false;
-        if (!large_send_some(node, pub, record, &progress)) {
+        bool failed = false;
+        if (!large_send_some(node, pub, record, &progress, &failed)) {
             large_wait_for_room(node, pub, progress);
             return;
+        }
+        if (failed) {
+            large_drop_unfinished(node, pub, record);
+            continue;
         }
         large_record_sent(node, pub, record);
     }
@@ -7265,6 +7347,30 @@ static void large_commit_pending(struct tt_Context* node, struct tt_Publisher* p
     large_commit(node, pub, pending);
 }
 
+// Whether this publish encodes its sample a send call at a time (DESIGN.md section 8, "Encoding while sending"): the
+// topic has a ranged encode, the sample goes out now - one waiting behind a send is encoded whole, as it is not sent
+// within this call - and no Subscriber of this context takes it in-process, which needs it whole at once.
+static bool large_interleaves(const struct tt_Publisher* pub, bool sending_now) {
+    if (pub->topic->data_encode_range == NULL || !sending_now) {
+        return false;
+    }
+#if tt_LOCAL_DELIVERY
+    if (pub->local_subscriber_count != 0) {
+        return false;
+    }
+#endif
+    return true;
+}
+
+// The first fragment's bytes, through the topic's ranged encode (a large sample is longer than they are): how many,
+// or 0 when the topic declined, so the sample is encoded whole as without it - before anything has gone.
+static uint32_t large_encode_first(struct tt_Publisher* pub, struct tt_Data* data, uint8_t* cdr) {
+    if (pub->topic->data_encode_range(data, cdr, 0, LARGE_FIRST_PAYLOAD) != (int32_t)LARGE_FIRST_PAYLOAD) {
+        return 0;
+    }
+    return LARGE_FIRST_PAYLOAD;
+}
+
 // One large sample published (DESIGN.md section 8): encoded once into a buffer the caller's large_acquire() hands over,
 // then committed and sent (large_pump()) - or, while an earlier one is still being sent, left waiting behind it in
 // large_pending, where a newer sample replaces it before anything of it has gone (tail_abandoned). KEEP_ALL waits
@@ -7308,14 +7414,23 @@ static tt_ret_t publish_large(struct tt_Publisher* pub, struct tt_Data* data, ui
         large->no_buffer++;
         return tt_RET_OUT_OF_BUFFER;
     }
-    int32_t encoded = pub->topic->data_encode(data, buffer + tt_LARGE_CDR_OFFSET, cdr_size);
-    TT_TRACE(tt_TRACE_ENCODED);
-    if (encoded < 0 || (uint32_t)encoded > cdr_size) {
-        large_give_back(node, buffer);
-        return tt_RET_PROTOCOL_ERROR;
+    bool sending_now = pub->large_cursor.seq_no == 0 && large_next_unsent(pub) == NULL;
+    uint32_t encoded = 0;
+    if (large_interleaves(pub, sending_now)) {
+        encoded = large_encode_first(pub, data, buffer + tt_LARGE_CDR_OFFSET);
+        large->encoded_by_range += encoded != 0 ? 1U : 0U;
     }
-    padded = ROUNDUP((uint32_t)encoded);
-    memset(buffer + tt_LARGE_CDR_OFFSET + encoded, 0, padded - (uint32_t)encoded); // sent padded, as a fragment is
+    if (encoded == 0) {
+        int32_t whole = pub->topic->data_encode(data, buffer + tt_LARGE_CDR_OFFSET, cdr_size);
+        TT_TRACE(tt_TRACE_ENCODED);
+        if (whole < 0 || (uint32_t)whole > cdr_size) {
+            large_give_back(node, buffer);
+            return tt_RET_PROTOCOL_ERROR;
+        }
+        padded = ROUNDUP((uint32_t)whole);
+        memset(buffer + tt_LARGE_CDR_OFFSET + whole, 0, padded - (uint32_t)whole); // sent padded, as a fragment is
+        encoded = padded;
+    }
     pub->large_blocked = 0;
     large->published++;
 
@@ -7325,8 +7440,8 @@ static tt_ret_t publish_large(struct tt_Publisher* pub, struct tt_Data* data, ui
     header->seq_no = 0; // given at large_commit()
     header->timestamp = timestamp_to_wire(now);
     header->entity_id = pub->endpoint.entity_id;
-    struct tt_LargeRecord sample = {buffer, now, 0, padded, (uint16_t)large_count_for(padded), false, false};
-    if (pub->large_cursor.seq_no != 0 || large_next_unsent(pub) != NULL) {
+    struct tt_LargeRecord sample = {buffer, now, 0, padded, (uint16_t)large_count_for(padded), false, false, encoded};
+    if (!sending_now) {
         if (pub->large_pending.buffer != NULL) {
             large_give_back(node, pub->large_pending.buffer); // the newer sample replaces it before any of it went
             large->tail_abandoned++;
@@ -7335,8 +7450,18 @@ static tt_ret_t publish_large(struct tt_Publisher* pub, struct tt_Data* data, ui
         return tt_RET_OK;
     }
     large_commit(node, pub, sample);
+    if (encoded < padded) {
+        pub->large_source = data;
+        pub->large_source_buffer = buffer;
+        pub->large_source_size = cdr_size;
+    }
+    // The send encodes the rest as it goes: every datagram's bytes before it leaves, and all that is left the moment
+    // the socket's buffer fills - so by the time it returns the record holds the whole sample.
+    uint64_t failed = large->encode_failed;
     large_pump(node, pub);
-    return tt_RET_OK;
+    pub->large_source = NULL;
+    pub->large_source_buffer = NULL;
+    return large->encode_failed == failed ? tt_RET_OK : tt_RET_PROTOCOL_ERROR; // dropped part-sent: as data_encode's
 }
 
 // The staging path found a sample above tt_MAX_SAMPLE_LENGTH: it is not staged in tx_buffer at all. What this publish
@@ -17558,12 +17683,13 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
 #endif
 #if tt_LARGE_SAMPLES
     TT_LOG_INFO("Node %u large: published=%lu reassembled=%lu abandoned=%lu no_buffer=%lu dropped=%lu duplicate=%lu "
-                "tail_abandoned=%lu window_too_small=%lu send_waits=%lu",
+                "tail_abandoned=%lu window_too_small=%lu send_waits=%lu encoded_by_range=%lu encode_failed=%lu",
                 node->id, (unsigned long)node->large.published, (unsigned long)node->large.reassembled,
                 (unsigned long)node->large.abandoned, (unsigned long)node->large.no_buffer,
                 (unsigned long)node->large.dropped, (unsigned long)node->large.duplicate,
                 (unsigned long)node->large.tail_abandoned, (unsigned long)node->large.window_too_small,
-                (unsigned long)node->large.send_waits);
+                (unsigned long)node->large.send_waits, (unsigned long)node->large.encoded_by_range,
+                (unsigned long)node->large.encode_failed);
     large_release_assemblies(node); // every sample still being put together: its buffer back to the caller
 #endif
 #if tt_SEGMENT_ENABLED
