@@ -1025,6 +1025,28 @@ latency against DDS, ~57 ms against 37.5, is the latency session's). W5 the cont
 socket was not where the samples went, or the polling thread is not running when they arrive (a preempted thread),
 and the next candidate is a kernel-side reader (io_uring SQPOLL) - which spends a core.
 
+**The drain with the hybrid transport** (2026-10-12, `ab/hybrid-drain`: the drain's commits on `ab/hybrid-land`). The
+rig run of `ab/hybrid-land` alone at 4 MB and 0% loss overflowed the subscriber's socket (RcvbufErrors 58-148 a
+best-effort run), and its RELIABLE runs were VOID: AUTO's n stayed at 4-31, not 45, because the reader counted the
+socket's drops as path loss. Three rules join the two:
+- **Buffer length.** A run is one IP-reassembled datagram of up to 65,507 bytes, so core asks the drain for the
+  reassembly ceiling it advertises (`large_rx_drain()`), never a fragment's length: a run is never cut
+  (`drain_truncated` stays 0). A reader that advertises no ceiling asks for a fragment's. The cost: an MTU-mode stream
+  into a run-capable reader has 64 buffers of 64 KB, not 2,048 of 2 KB - unless receive offload packs it (next).
+- **Receive offload.** Only core's own socket reads move UDP_GRO's state, and a settle is not decided while a drain
+  runs or holds datagrams; so the option stays as the drain found it. Its recvmsg asks for UDP_GRO's size cmsg and
+  hands a merged read out one datagram at a time, in order; unless the sockets read plain its buffers hold a merged
+  read whole (`hal_linux.c`, "The drain and receive offload"; `rx_drain_check` 6).
+- **Receiver drops are not path loss.** A datagram dropped by the receiving host - a full socket, or cut by the drain -
+  is a receiver that fell behind; a smaller n does not cure it. The HAL's count of them (`tt_rx_receiver_drops()`,
+  hal.h) is put against the gaps the reader sees, one drop per lost datagram; those gaps reach neither p, p_mtu, the
+  run window nor rule (e), and are counted apart (`hybrid: receiver_drops= receiver_lost=`). A drop is counted before
+  its gap is seen, so none is missed; one unmatched for two announce intervals is let go. Not covered: the writer's
+  RELIABLE failed-path watch reads NACKs, which a receiver drop causes too; it needs every run of a sample lost with its
+  tail through, which a drained socket does not produce. Tests: `test_hybrid_send` (the attribution, and RELIABLE 1 MB
+  with every tenth run dropped at the socket - n reaches 45 counted, stays below uncounted), `mutants_hybrid_send.py`;
+  the PC A/B is `experiments/hybrid_drain_pc.sh`.
+
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
 **RxO matching.** Each endpoint announces its QoS in its `tt_UpdateEntity` (`qos` bits for reliable, durable, manual
