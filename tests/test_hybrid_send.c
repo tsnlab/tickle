@@ -521,6 +521,8 @@ static void test_small_sample_goes_as_one_run_and_its_tail(void) {
     EXPECT_EQ_U64(5, sender.hybrid.run_units);
     EXPECT_EQ_U64(1, sender.hybrid.mtu_units);
     EXPECT_EQ_U64(1, sender.hybrid.n_hist[tt_HYBRID_N_BUCKETS - 1]); // n as chosen: n_max, whatever the sample holds
+    EXPECT_EQ_U32(6, readers[0].ctx.hybrid.rx_loss.frames);          // the run's units and the tail, no gap
+    EXPECT_EQ_U32(0, readers[0].ctx.hybrid.rx_loss.events);
 }
 
 // 100,000 B is 69 units on 11/12: runs of 45 and 23, then the tail; 1 MB 18 datagrams, 4 MB 66 (DESIGN.md section 8).
@@ -537,6 +539,9 @@ static void large_be_round_trip(uint32_t len, uint32_t datagrams) {
     expect_intact(0, 1);
     EXPECT_EQ_U64(1, readers[0].ctx.large.reassembled);
     EXPECT_EQ_U64(0, readers[0].ctx.large.dropped);
+    // The reader saw every unit, runs included, and no gap.
+    EXPECT_EQ_U32(tt_sample_datagrams(len), readers[0].ctx.hybrid.rx_loss.frames);
+    EXPECT_EQ_U32(0, readers[0].ctx.hybrid.rx_loss.events);
 }
 
 static void test_large_samples_go_in_runs_of_n_max(void) {
@@ -862,7 +867,7 @@ static void tick_readers(uint64_t now) {
 }
 
 // A reader whose cap is switched off (a benchmark arm, _tt_CONFIG.reassembly_cap_off) advertises its configured ceiling
-// whatever its loss and load - and is still withdrawn by the kernel's failures.
+// whatever its loss and load, and is not withdrawn by the kernel's failures either.
 static void test_a_reader_with_the_cap_off_advertises_its_ceiling(void) {
     _tt_CONFIG.reassembly_cap_off = 1;
     init_one(LARGE_LEN, FULL_CEILING, false);
@@ -872,7 +877,6 @@ static void test_a_reader_with_the_cap_off_advertises_its_ceiling(void) {
     sim_start(0);
     uint64_t t = test_mock_now;
     tick_readers(t);
-    node->hybrid.tick_runs = true;
     hybrid_test_forced_p = 0.05;
     node->hybrid.tick_units = 100000;
     tick_readers(t += tt_SECOND);
@@ -880,7 +884,8 @@ static void test_a_reader_with_the_cap_off_advertises_its_ceiling(void) {
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
     test_mock_reasm_failures = 3;
     tick_readers(t += tt_SECOND);
-    EXPECT_EQ_U32(28U + 1454U, node->hybrid.advertised);
+    EXPECT_EQ_U32(FULL_CEILING, node->hybrid.advertised);
+    EXPECT_TRUE(!node->hybrid.withdrawn);
     hybrid_test_forced_p = -1.0;
     init_one(LARGE_LEN, FULL_CEILING, false);
     EXPECT_TRUE(!readers[0].ctx.hybrid.cap_off); // the default
