@@ -524,6 +524,8 @@ struct tt_HybridRxWriter {
     uint32_t tick_runs;       // its runs since the last tick, arrived or lost
     uint16_t count;
     uint16_t next;
+    double path_odds;   // rule (e): the chance frame loss alone lost every run of its last all-lost samples
+    uint32_t run_tick;  // the reader's tick (+1) at which a run of this writer's last got through; 0: none yet
     uint16_t body_lost; // units of the current sample before its tail found lost
     uint8_t source;
     uint8_t layout_n;
@@ -546,6 +548,13 @@ struct tt_HybridState {
     uint16_t advertised_loss; // the loss_p this context's announce carries now
     uint64_t tick_ns;         // the last cap tick; 0: none yet
     uint32_t tick_units;
+    uint32_t ticks; // cap ticks so far
+    // Rule (e) on the reader's side: one unit until path_until_ns (0: not failed), then path_cap again as a re-probe;
+    // the wait doubles per failed re-probe.
+    uint64_t path_until_ns;
+    uint32_t path_cap;
+    uint8_t path_backoff;
+    bool path_probe;
     // The control law (DESIGN.md section 8, decision 3): the cap in units; the remembered ceiling n_fail (0: none); the
     // hold after a collapse, the earliest next probe and the probe in progress
     // (0: none); tau, the reassembly-queue lifetime; R and p at the anchor of the ceiling's scaling, and the ticks in a
@@ -578,6 +587,7 @@ struct tt_HybridState {
     uint64_t probes;
     uint64_t probe_failures;
     uint64_t rescales;
+    uint64_t path_failures; // rule (e): a writer's every run lost with its tail through, on a path that took none
 };
 #endif
 

@@ -1056,6 +1056,29 @@ static void test_the_reader_rebuilds_what_was_sent(void) {
     EXPECT_EQ_U32(20, loss->events);
 }
 
+// Rule (e) on the reader's side needs frame loss to be no excuse: a writer none of whose runs ever arrived loses the
+// one run of a 3-unit sample with its tail through - at p_mtu near 50% that is what frame loss does (L0 0.79): nothing;
+// at p_mtu near 0, the same sample twice is (L0 2e-6 a sample): one unit at once.
+static void test_the_path_rule_needs_frame_loss_to_be_no_excuse(void) {
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    struct tt_Context* node = &readers[0].ctx;
+    struct tt_HybridState* hybrid = &node->hybrid;
+    hybrid->mtu_loss = (struct tt_LossEstimate) {500, 1000};
+    for (uint32_t s = 0; s < 8; s++) {
+        hybrid_rx_note(node, SENDER_ID, 7, 100U + (3U * s), 2, 3, 1, false); // the tail of a sample whose run was lost
+    }
+    EXPECT_EQ_U64(0, hybrid->path_failures);
+    EXPECT_EQ_U32(2, hybrid->cap);
+    hybrid->mtu_loss = (struct tt_LossEstimate) {0, 3000000};
+    hybrid_rx_note(node, SENDER_ID, 8, 200, 2, 3, 1, false); // another writer, met at a tail: no gap yet
+    hybrid_rx_note(node, SENDER_ID, 8, 203, 2, 3, 1, false);
+    EXPECT_EQ_U64(0, hybrid->path_failures); // once is still 2e-6
+    hybrid_rx_note(node, SENDER_ID, 8, 206, 2, 3, 1, false);
+    EXPECT_EQ_U64(1, hybrid->path_failures);
+    EXPECT_EQ_U32(1, hybrid->cap);
+    EXPECT_EQ_U32(2, hybrid->path_cap);
+}
+
 // p on the wire (tickle.h's loss_p): rounded up, never below what was measured and within 1/256 of it above; 0 for no
 // estimate and anything from 1/2, read back as 1.
 static void test_the_loss_code_rounds_up(void) {
@@ -1155,6 +1178,11 @@ static uint32_t sim_stream(uint32_t seconds, uint32_t hz, uint8_t* seed) {
             sent.max_n = 0;
             EXPECT_EQ_INT(tt_RET_OK, sim_publish((*seed)++));
             largest = sent.max_n > largest ? sent.max_n : largest;
+            for (int i = 0; i < READERS; i++) { // what a reader sent at once (an announce) goes at its next flush
+                if (readers[i].present) {
+                    sim_run_due(&readers[i].ctx);
+                }
+            }
         }
         tick_readers(start + tt_SECOND);
         test_mock_now = start + tt_SECOND;
@@ -1178,6 +1206,43 @@ static void test_frame_loss_never_moves_the_cap(void) {
     EXPECT_TRUE(hybrid->rx_writers[0].runs.lost > 0);
     EXPECT_EQ_INT(0, readers[0].torn);
     EXPECT_TRUE(readers[0].delivered > 2400 && readers[0].delivered < 3000);
+}
+
+// Best effort through a path that drops every IP fragment from the start (the tc filter; rule (e) on the reader's
+// side): no run of the writer's ever gets through, only the tails. Within a few samples the reader judges the path,
+// advertises one unit at once, the writer follows and samples arrive again. After 2 tau the cap it had comes back as a
+// re-probe: the filter still there, the next sample fails it at once and the wait doubles; the filter gone, runs arrive
+// and it stays. A collapse it is not: the control law's ceiling is untouched.
+static void test_a_path_that_drops_fragments_brings_n_to_one(void) {
+    init_one(ONE_MB, FULL_CEILING, false);
+    sim_start(0);
+    sim_drop_fragmented = true;
+    tick_readers(test_mock_now);
+    struct tt_HybridState* hybrid = &readers[0].ctx.hybrid;
+    uint8_t seed = 1;
+    (void)sim_stream(1, 30, &seed);
+    EXPECT_EQ_U64(1, hybrid->path_failures);
+    EXPECT_EQ_U32(1, hybrid->cap);
+    EXPECT_EQ_U32(1, hybrid_units_within(sender.peer_ip_reassembly_max[reader_id(0)], true)); // announced at once
+    EXPECT_TRUE(readers[0].delivered >= 20 && readers[0].delivered < 30);                     // all but the first few
+    EXPECT_EQ_U64(0, hybrid->collapses);
+    int delivered = readers[0].delivered;
+    uint32_t runs = sent.runs;
+    (void)sim_stream(58, 30, &seed);
+    EXPECT_EQ_U32(runs, sent.runs);                             // MTU units only until the re-probe
+    EXPECT_EQ_INT(delivered + (58 * 30), readers[0].delivered); // every sample, as MTU units
+    (void)sim_stream(3, 30, &seed);                             // 2 tau: the re-probe, failed by its first sample
+    EXPECT_EQ_U64(2, hybrid->path_failures);
+    EXPECT_EQ_U32(1, hybrid->cap);
+    EXPECT_EQ_U32(1, hybrid->path_backoff);
+    sim_drop_fragmented = false;
+    (void)sim_stream(122, 30, &seed); // 4 tau: the next re-probe gets through
+    EXPECT_EQ_U64(2, hybrid->path_failures);
+    EXPECT_TRUE(hybrid->cap >= 2U);
+    EXPECT_EQ_U32(0, hybrid->path_backoff);
+    EXPECT_TRUE(sent.runs > runs);
+    EXPECT_EQ_U64(0, hybrid->collapses);
+    EXPECT_EQ_INT(0, readers[0].torn);
 }
 
 // The reassembly squeeze, end to end (decision 3): best effort 1 MB at 30 Hz through 0.1% frame loss, the reader host's
@@ -1207,8 +1272,9 @@ static void test_a_reassembly_squeeze_end_to_end(void) {
     }
     EXPECT_EQ_U64(1, hybrid->collapses);
     EXPECT_TRUE(seconds < 30);
-    EXPECT_TRUE(refused_before > 0); // the memory was full before the collapse was called: not frame loss
-    EXPECT_EQ_U32(45, largest);      // slow start reached n_max first
+    EXPECT_TRUE(refused_before > 0);         // the memory was full before the collapse was called: not frame loss
+    EXPECT_EQ_U64(0, hybrid->path_failures); // runs had got through: the memory's, not the path's
+    EXPECT_EQ_U32(45, largest);              // slow start reached n_max first
     uint64_t collapsed_at = test_mock_now;
     uint32_t n_fail = hybrid->n_fail;
     EXPECT_TRUE(n_fail >= 2 && n_fail < 45);
@@ -1564,9 +1630,11 @@ int main(void) {
     test_the_law_runs_once_an_interval();
     test_the_reader_rebuilds_what_was_sent();
     test_the_loss_code_rounds_up();
+    test_the_path_rule_needs_frame_loss_to_be_no_excuse();
     test_a_reader_with_the_cap_off_advertises_its_ceiling();
     test_the_loss_bound_is_the_poisson_upper_limit();
     test_frame_loss_never_moves_the_cap();
+    test_a_path_that_drops_fragments_brings_n_to_one();
     test_a_reassembly_squeeze_end_to_end();
     test_n_follows_p();
     test_reliable_auto_leaves_mtu_as_clean_frames_accumulate();
