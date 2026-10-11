@@ -77,12 +77,48 @@ HOW EACH COMPARISON IS READ (implemented in summary(), not only here):
   A repetition counts only if its client line says window=ok, and only from a file whose header names the arm's
   SHA and the cell's scenario and size. OVERALL is the strongest of VOID > NO VERDICT > WORSE > IMPROVED > PASS.
   Exit status: 0 PASS/IMPROVED, 1 WORSE, 3 NO VERDICT, 4 VOID, 2 refused/usage.
+  The rule above is GATE=v1: a pre-registration without a "gate" field (every one written before 2026-10-11) is read
+  by it, unchanged, and GATE=v1 still writes one.
+
+GATE V2 (the default since 2026-10-11, the user's decision; gate_v2.py's header is the shared reading, TESTING.md 6.1).
+Written before any gate v2 same-host run; every rule here is implemented below, not only stated.
+  ARMS        A, B [, C] and P = A' - A's commit rebuilt with P_EXTRA_CFLAGS (default TICKLE_PLACEMENT_CFLAGS,
+              -falign-functions=128, gate_v2_lib.sh): every function moved by a multiple of 64 bytes, the same code.
+              Each arm has its own build flags, recorded in the pre-registration: A (and the sentinel)
+              TICKLE_EXTRA_CFLAGS (default TICKLE_LAYOUT_CFLAGS, -falign-functions=64, A1), B and C
+              B_/C_EXTRA_CFLAGS (default A's), P P_EXTRA_CFLAGS. REFUSED: P's flags equal to A's (P would not perturb anything), and two of A/B/C with the
+              same commit AND the same flags. B may be A's commit with other flags: a placement-only "change", the
+              gate's own validation. Blocks mirrored A P B B P A (A P B C C B P A). Files carry the arm letter:
+              PREFIX.b<n>_<arm>_<sha8>_<slug>.txt, sentinel PREFIX.b<n>_<arm>_<sha8>_sentinel<sha8>_<slug>.txt.
+              A file is read only if its build shows, for its ON and its OFF arm, exactly its arm's flags (the
+              "arm ON|OFF TICKLE_EXTRA_CFLAGS='...' reached core and bench" lines of s6_witness_check.sh).
+  COUNTS      every process runs under perf stat (INSN_COUNT=1): a repetition counts only if its client AND its server
+              RESULT line say insn=ok; one that does not is VOID - excluded from every metric, never read as zero - and
+              is listed. Per repetition: <role>.insn_u_per_sample and <role>.insn_k_per_sample = the process's
+              whole-life instructions over its own samples (client sent=, server recv=) or, for a line with neither
+              (the latency server), the client's sent= - every round trip including the warm-up and cool-down edges, the ones the
+              counted process served (campaign_summary.py parse()).
+  PRIMARY     executed instructions: default every cell x client, server x insn_u_per_sample, insn_k_per_sample (ON
+              arm); PRIMARY= narrows it to items of those fields only (role.insn_u_per_sample[@OFF]).
+  WITNESS     required: the metrics that decided under v1 (rtt_p50_ms, cpu, rates). They still decide, net of the floor.
+  THRESHOLD   k = (primary + witness) x comparisons; |t| beyond the two-sided Student t at 0.0455 / k with Welch's df
+              (gate_v2.threshold / welch_df), t over repetitions pooled from both of an arm's blocks.
+  FLOOR       per (cell, metric) |mean(P) - mean(A)| (gate_v2.judge): WORSE (better) needs the bad (good) direction,
+              |t| beyond the threshold AND |X - Y| beyond the floor; beyond the threshold inside the floor is
+              held(placement-sized). P vs A is printed per deciding item (never deciding), with a NOTE when an
+              instruction count moves with placement.
+  VERDICT     VOID (v1's reasons; also P and A built one client binary in a primary's cell) > NO VERDICT (v1's; also a
+              primary or witness with n < 2 in X, Y - an item that selects nothing, which is how "no counts" reads - or
+              no P arm with n >= 2: a floor not measured is not zero) > WORSE > IMPROVED > PASS.
+  CONTROL, SENTINEL, TREATMENT, SECONDARY, DERIVED: as v1; P is an arm for TREATMENT "*" and for the sentinel's blocks.
 
 Usage:
   ab_samehost.py prereg OUT.json      validate the environment, print and write the pre-registration
   ab_samehost.py cells PREREG.json    the driver's cell list: scen|size|extra|slug (extra args may not contain |),
-                                      then BLOCKS|A B ..., and SENTINEL|scen|size|extra|slug|sha per sentinel cell
-  ab_samehost.py summary PREREG.json PREFIX     read PREFIX.b<n>_<sha8>_<slug>.txt and print the verdicts
+                                      then BLOCKS|A B ..., SENTINEL|scen|size|extra|slug|sha per sentinel cell,
+                                      ARM|letter|sha|file token|flags per arm and GATE|v1 or v2
+  ab_samehost.py summary PREREG.json PREFIX     read PREFIX.b<n>_<sha8>_<slug>.txt (v2: b<n>_<arm>_<sha8>_...)
+                                      and print the verdicts
   ab_samehost.py selftest             the reading shown to decide on ab_samehost_fixture.txt
 """
 import ast
@@ -97,6 +133,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gate_v2  # noqa: E402
 from ab_compare import bonferroni_t, bonferroni_z, judge, stats  # noqa: E402
 
 ROLES = ("client", "server", "proc", "delivery", "client_traffic", "server_traffic", "derived")
@@ -104,10 +141,11 @@ METRIC = re.compile(r"^(?P<role>[a-z_]+)\.(?P<field>[A-Za-z_]\w*)(?P<off>@OFF)?(
 # Which way is better, for names whose direction is not a matter of opinion. Anything else needs /hi or /lo.
 HI = {"send_mbps", "recv_mbps", "win_send_mbps", "win_recv_mbps", "delivered", "recv", "win_recv", "win_sent",
       "sent", "measured"}
-LO_PREFIX = ("rtt_", "cpu_s", "sched_cpu", "utime", "stime", "loss_pct", "lost", "shm_full_dropped",
+LO_PREFIX = ("insn_", "rtt_", "cpu_s", "sched_cpu", "utime", "stime", "loss_pct", "lost", "shm_full_dropped",
              "retransmitted", "gap_abandoned", "peak_rss", "vmhwm", "wire_bytes_per_sample", "segment_head_stalls")
 VERDICT_ORDER = ("VOID", "NO VERDICT", "WORSE", "IMPROVED", "PASS")
 EXIT = {"PASS": 0, "IMPROVED": 0, "WORSE": 1, "NO VERDICT": 3, "VOID": 4}
+INSN_FIELDS = gate_v2.INSN_METRICS   # insn_u_per_sample, insn_k_per_sample
 
 
 class Refused(Exception):
@@ -333,8 +371,31 @@ def build_prereg(env):
             arms[letter] = sha
     if "A" not in arms or "B" not in arms:
         raise Refused("A and B are required")
-    if len(set(arms.values())) != len(arms):
-        raise Refused("two arms name the same commit")
+    gate = (env.get("GATE", "") or "v2").strip()
+    if gate not in ("v1", "v2"):
+        raise Refused(f"GATE={gate!r}: v2 (the default, gate_v2.py) or v1 (the reading before 2026-10-11)")
+    flags = None
+    if gate == "v1":
+        if len(set(arms.values())) != len(arms):
+            raise Refused("two arms name the same commit")
+    else:
+        # Each arm's build treatment (ab_samehost.sh exports every one of them; B and C default to A's here too).
+        flags = {"A": " ".join(env.get("TICKLE_EXTRA_CFLAGS", "").split())}
+        for a in arms:
+            if a != "A":
+                flags[a] = " ".join(env[f"{a}_EXTRA_CFLAGS"].split()) if f"{a}_EXTRA_CFLAGS" in env else flags["A"]
+        if "P_EXTRA_CFLAGS" not in env:
+            raise Refused("GATE=v2: P_EXTRA_CFLAGS, the placement arm's flags, is not set (ab_samehost.sh sets it)")
+        flags["P"] = " ".join(env["P_EXTRA_CFLAGS"].split())
+        if flags["P"] == flags["A"]:
+            raise Refused(f"P_EXTRA_CFLAGS equals A's flags ({flags['A']!r}): P would not perturb placement, so its "
+                          "floor would measure nothing")
+        seen = {}
+        for a in sorted(arms):
+            if (arms[a], flags[a]) in seen:
+                raise Refused(f"arms {seen[(arms[a], flags[a])]} and {a} are the same commit with the same flags")
+            seen[(arms[a], flags[a])] = a
+        arms["P"] = arms["A"]
     cells = parse_cells(env.get("CELLS", ""))
     derived = {}
     for raw in env.get("DERIVED", "").split(";"):
@@ -344,7 +405,22 @@ def build_prereg(env):
         if not sep or not re.fullmatch(r"[A-Za-z_]\w*", name.strip()):
             raise Refused(f"DERIVED item {raw!r}: want name=expr")
         derived[name.strip()] = check_expr(expr, {}, f"DERIVED {name.strip()}", allow_derived=False)
-    primary = parse_items(env.get("PRIMARY", ""), cells, derived, "PRIMARY", True)
+    witness = []
+    if gate == "v1":
+        primary = parse_items(env.get("PRIMARY", ""), cells, derived, "PRIMARY", True)
+    else:
+        # Gate v2: the primary is executed instructions - every cell, both processes, user and kernel, unless narrowed.
+        spec = env.get("PRIMARY", "").strip() or \
+            ",".join(f"*:{r}.{f}" for r in ("client", "server") for f in INSN_FIELDS)
+        primary = parse_items(spec, cells, derived, "PRIMARY", True)
+        for i in primary:
+            if i["field"] not in INSN_FIELDS or i["role"] not in ("client", "server"):
+                raise Refused(f"PRIMARY {i['cell']} {i['name']}: under GATE=v2 the primary is executed instructions "
+                              f"(client|server.{'|'.join(INSN_FIELDS)}); latency, CPU and rates go in WITNESS")
+        witness = parse_items(env.get("WITNESS", ""), cells, derived, "WITNESS", True)
+        if not witness:
+            raise Refused("WITNESS is empty: under GATE=v2 name the latency/CPU/rate metrics that still decide (what "
+                          "PRIMARY named under v1)")
     control = parse_items(env.get("CONTROL", ""), cells, derived, "CONTROL", False)
     secondary = parse_items(env.get("SECONDARY", ""), cells, derived, "SECONDARY", False)
     if not primary:
@@ -368,11 +444,11 @@ def build_prereg(env):
     if not treatment:
         raise Refused("TREATMENT is empty: name a field that shows each arm got what it was meant to")
     compare = []
-    spec = env.get("COMPARE", "") or ",".join(f"{a}-A" for a in sorted(arms) if a != "A")
+    spec = env.get("COMPARE", "") or ",".join(f"{a}-A" for a in sorted(arms) if a not in ("A", "P"))
     for raw in spec.split(","):
-        m = re.fullmatch(r"\s*([ABC])-([ABC])\s*", raw)
-        if not m or m[1] == m[2] or m[1] not in arms or m[2] not in arms:
-            raise Refused(f"COMPARE item {raw!r}: want X-Y with X, Y two different arms")
+        m = re.fullmatch(r"\s*([ABCP])-([ABCP])\s*", raw)
+        if not m or m[1] == m[2] or m[1] not in arms or m[2] not in arms or "P" in (m[1], m[2]):
+            raise Refused(f"COMPARE item {raw!r}: want X-Y with X, Y two different arms of A, B, C (P is the floor)")
         compare.append([m[1], m[2]])
     try:
         reps, dur = int(env.get("REPS", "5")), int(env.get("DUR", "10"))
@@ -385,6 +461,12 @@ def build_prereg(env):
            "secondary": secondary, "treatment": treatment, "compare": compare, "reps": reps,
            "dur": dur, "k_primary": k_p, "z_primary": bonferroni_z(k_p), "k_control": k_c,
            "z_control": bonferroni_z(k_c), "tag": env.get("TAG", "")}
+    if gate == "v2":
+        # Absent under v1, so a v1 pre-registration is byte-identical to one written before gate v2.
+        del pre["z_primary"]
+        pre.update({"gate": "v2", "flags": flags, "witness": witness, "insn_count": 1,
+                    "k_deciding": (len(primary) + len(witness)) * len(compare)})
+        pre["blocks"] = blocks(pre)
     sentinel = env.get("SENTINEL", "").strip()
     if sentinel:
         if not re.fullmatch(r"[0-9a-f]{40}", sentinel):
@@ -403,7 +485,7 @@ def build_prereg(env):
             raise Refused("CONTROL_SE_FLOOR=reps reads the sentinel's block means: it needs a SENTINEL")
         pre["control_se_floor"] = floor
     cflags = " ".join(env.get("TICKLE_EXTRA_CFLAGS", "").split())
-    if cflags:
+    if cflags and gate == "v1":
         # The build treatment of every arm and the sentinel (ab_samehost.sh checks each cell's build showed it).
         # Absent when empty, so a plain pre-registration is byte-identical to one written before this option.
         pre["extra_cflags"] = cflags
@@ -411,24 +493,60 @@ def build_prereg(env):
 
 
 def blocks(pre):
-    order = sorted(pre["arms"])
+    """The block order: v1 A B B A (A B C C B A); v2 A P B B P A (A P B C C B P A)."""
+    if pre.get("gate") == "v2":
+        order = ["A", "P"] + sorted(a for a in pre["arms"] if a not in ("A", "P"))
+    else:
+        order = sorted(pre["arms"])
     return order + order[::-1]
 
 
+def token(pre, arm):
+    """An arm's part of its file names: v1 the commit's sha8; v2 <arm>_<sha8> (P is A's commit, and B may be too)."""
+    sha8 = pre["arms"][arm][:8]
+    return f"{arm}_{sha8}" if pre.get("gate") == "v2" else sha8
+
+
+def arm_flags(pre, arm):
+    """The build flags an arm was registered with (v1: one value for every arm)."""
+    return pre["flags"][arm] if pre.get("gate") == "v2" else pre.get("extra_cflags", "")
+
+
 def describe(pre):
+    v2 = pre.get("gate") == "v2"
     out = ["=== PRE-REGISTRATION (written before any run; summary() reads only this) ==="]
+    out.append("  GATE v2 (gate_v2.py): instructions decide, and every WORSE must exceed the placement floor |P - A|"
+               if v2 else "  GATE v1 (the reading before 2026-10-11)")
     for a, sha in pre["arms"].items():
-        out.append(f"  arm {a} = {sha}")
+        line = f"  arm {a} = {sha}"
+        if v2:
+            line += f"  flags '{pre['flags'][a]}'" + ("  (A's commit: the placement arm)" if a == "P" else "")
+        out.append(line)
     out.append(f"  blocks: {' '.join(blocks(pre))}, REPS={pre['reps']} per block and cell, DUR={pre['dur']} s")
-    out.append(f"  build: TICKLE_EXTRA_CFLAGS='{pre.get('extra_cflags', '')}' on the TickLE core and bench of every arm"
-               " and the sentinel (empty: the plain build)")
+    if v2:
+        out.append(f"  build: each arm's flags above on its TickLE core and bench, the sentinel's A's "
+                   f"('{pre['flags']['A']}'); every process counted (perf stat instructions:u/k)")
+    else:
+        out.append(f"  build: TICKLE_EXTRA_CFLAGS='{pre.get('extra_cflags', '')}' on the TickLE core and bench of every"
+                   " arm and the sentinel (empty: the plain build)")
     out.append("  cells:")
     out += [f"    {c['key']}" for c in pre["cells"]]
     for name, expr in pre["derived"].items():
         out.append(f"  derived.{name} = {expr}")
     out.append(f"  comparisons: {', '.join(x + '-' + y for x, y in pre['compare'])}")
-    out.append(f"  PRIMARY (decide): k = {pre['k_primary']}, Bonferroni |t| > {pre['z_primary']:.2f}")
-    out += [f"    {i['cell']}  {i['name']}  ({'higher' if i['hi'] else 'lower'} is better)" for i in pre["primary"]]
+    if v2:
+        k, df = pre["k_deciding"], 4 * pre["reps"] - 2
+        thr = gate_v2.threshold(k, df)
+        out.append(f"  PRIMARY + WITNESS (decide): k = {k} ({len(pre['primary'])} + {len(pre['witness'])} per "
+                   f"comparison); |t| > the two-sided Student t at {gate_v2.FAMILY_ALPHA}/{k}, Welch df ({thr:.2f} at "
+                   f"df {df}), AND |X - Y| > the placement floor |P - A| of the same cell and metric")
+        out.append("  PRIMARY (executed instructions per sample, per round trip on a latency cell; lower is better):")
+        out += [f"    {i['cell']}  {i['name']}" for i in pre["primary"]]
+        out.append("  WITNESS (still decide, net of the floor):")
+        out += [f"    {i['cell']}  {i['name']}  ({'higher' if i['hi'] else 'lower'} is better)" for i in pre["witness"]]
+    else:
+        out.append(f"  PRIMARY (decide): k = {pre['k_primary']}, Bonferroni |t| > {pre['z_primary']:.2f}")
+        out += [f"    {i['cell']}  {i['name']}  ({'higher' if i['hi'] else 'lower'} is better)" for i in pre["primary"]]
     if pre.get("sentinel"):
         out.append(f"  CONTROL (a move either way VOIDs), measured on SENTINEL {pre['sentinel']} in every block and "
                    f"judged on its block means: k = {pre['k_control']}, df = {len(blocks(pre)) - len(pre['arms'])}, "
@@ -449,6 +567,12 @@ def describe(pre):
                "sentinel not one binary) > "
                "NO VERDICT (n < 2 in an arm, "
                "or a treatment not checkable) > WORSE > IMPROVED > PASS; a repetition counts only with window=ok.")
+    if v2:
+        out.append("  GATE v2 RULES: a repetition counts only with insn=ok on its client AND server lines (else VOID, "
+                   "excluded and listed); a file only if its ON and OFF builds show its arm's flags; VOID also when P "
+                   "and A built one client in a primary's cell; NO VERDICT also when a deciding item has n < 2 in an "
+                   "arm or no P arm (n >= 2); WORSE / better only beyond the threshold AND the floor, else "
+                   "held(placement-sized).")
     return "\n".join(out)
 
 
@@ -456,6 +580,8 @@ def describe(pre):
 LINE = re.compile(r"^\s*arm=(ON|OFF) (RESULT:|PROC:|server-delivery|client-traffic|server-traffic)(.*)$")
 HEADER = re.compile(r"=== S6 transport cells .* sha=(\S+) scen=(\S+) size=(\S+)")
 BUILT = re.compile(r"arm (ON|OFF) \(extra='[^']*'\) built, client sha256=([0-9a-f]+)")
+# s6_witness_check.sh's record that build_flags_check.sh found an arm's TICKLE_EXTRA_CFLAGS in that build's own log.
+FLAGS = re.compile(r"arm (ON|OFF) TICKLE_EXTRA_CFLAGS='([^']*)' reached core and bench")
 # A cell that failed says so in its file (s6_transport_cells.sh / s6_witness_check.sh); the first such line is kept so
 # an arm with no repetitions reads as "its cells failed: <why>", not as "its treatment could not be checked".
 FAILED = re.compile(r"FAILED to run|FATAL|BUILD_FAILED|error:")
@@ -481,6 +607,10 @@ def read_file(path, sha, cell, info=None):
                 if b[1] == "ON":
                     binary = b[2]
                 continue
+            fl = FLAGS.search(text)
+            if fl:
+                info.setdefault("flags", {})[fl[1]] = fl[2]
+                continue
             if info.get("why", "").count(" | ") < 1 and FAILED.search(text):
                 info["why"] = (info["why"] + " | " if "why" in info else "") + text.strip()
             m = LINE.match(text.rstrip("\n"))
@@ -505,21 +635,63 @@ def read_file(path, sha, cell, info=None):
     return reps, binary, None
 
 
-def windowed(pre, reps):
-    """The repetitions with window=ok (derived figures added), and how many were dropped."""
-    got, dropped = {"ON": [], "OFF": []}, 0
+def add_insn(rep):
+    """Gate v2 A2: <role>.insn_u_per_sample / insn_k_per_sample on a repetition whose line says insn=ok - the process's
+    whole-life count over its own samples (client sent=, server recv=) or, for a line with neither (the latency
+    server), the client's sent= (every round trip, edges included), as campaign_summary.py parse()."""
+    client = rep.get("client", {})
+    for role in ("client", "server"):
+        line = rep.get(role)
+        if not line or line.get("insn") != "ok":
+            continue
+        div = line.get("sent" if role == "client" else "recv", client.get("sent"))
+        try:
+            d = float(div)
+            counts = {f: float(line[f]) for f in ("insn_u", "insn_k")}
+        except (TypeError, ValueError, KeyError):
+            continue
+        if d > 0:
+            line["insn_u_per_sample"] = str(counts["insn_u"] / d)
+            line["insn_k_per_sample"] = str(counts["insn_k"] / d)
+
+
+def counted(rep):
+    """Gate v2: a repetition counts only if its client AND its server line carry insn=ok."""
+    return all(rep.get(role, {}).get("insn") == "ok" for role in ("client", "server"))
+
+
+def windowed(pre, reps, need_counts=False):
+    """The repetitions with window=ok (derived figures and instruction rates added), how many were dropped, and how many
+    were VOID for having no instruction counts (only when need_counts: gate v2's arms, not its sentinel)."""
+    got, dropped, uncounted = {"ON": [], "OFF": []}, 0, 0
     for tag in got:
         for r in reps[tag]:
-            if r["client"].get("window") == "ok":
-                for name, expr in pre["derived"].items():
-                    try:
-                        r.setdefault("derived", {})[name] = str(evaluate(expr, r))
-                    except Absent:
-                        pass
-                got[tag].append(r)
-            else:
+            if r["client"].get("window") != "ok":
                 dropped += 1
-    return got, dropped
+                continue
+            if need_counts and not counted(r):
+                uncounted += 1
+                continue
+            add_insn(r)
+            for name, expr in pre["derived"].items():
+                try:
+                    r.setdefault("derived", {})[name] = str(evaluate(expr, r))
+                except Absent:
+                    pass
+            got[tag].append(r)
+    return got, dropped, uncounted
+
+
+def flags_problem(info, want, who):
+    """Gate v2: None if the file's ON and OFF builds both showed exactly `want`, else why not (an arm must report its
+    treatment: a file whose build does not show its arm's flags is not that arm)."""
+    got = info.get("flags", {})
+    for tag in ("ON", "OFF"):
+        if tag not in got:
+            return f"its {tag} build does not show its TICKLE_EXTRA_CFLAGS at all ({who} expects '{want}')"
+        if " ".join(got[tag].split()) != want:
+            return f"its {tag} build shows TICKLE_EXTRA_CFLAGS='{got[tag]}', not {who}'s '{want}'"
+    return None
 
 
 def load(pre, prefix):
@@ -530,16 +702,19 @@ def load(pre, prefix):
     extra = {"off": {}, "failed": {}, "sentinel": {}, "sentinel_bin": {}}
     folder, base = os.path.split(prefix)
     names = sorted(os.listdir(folder or "."))
+    v2 = pre.get("gate") == "v2"
     for a, sha in pre["arms"].items():
         for cell in pre["cells"]:
-            pat = re.compile(re.escape(base) + r"\.b(\d+)_" + re.escape(sha[:8]) + "_" + re.escape(cell["slug"])
+            pat = re.compile(re.escape(base) + r"\.b(\d+)_" + re.escape(token(pre, a)) + "_" + re.escape(cell["slug"])
                              + r"\.txt$")
             files = [n for n in names if pat.match(n)]
             got = {"ON": [], "OFF": []}
-            dropped = refused = 0
+            dropped = refused = uncounted = 0
             for n in files:
                 info = {}
                 reps, binary, problem = read_file(os.path.join(folder, n), sha, cell, info)
+                if not problem and v2:
+                    problem = flags_problem(info, arm_flags(pre, a), a)
                 if problem:
                     notes.append(f"IDENTITY FAILED, not read: {n}: {problem}")
                     refused += 1
@@ -550,21 +725,25 @@ def load(pre, prefix):
                     extra["off"].setdefault((a, cell["key"]), set()).add(info["OFF"])
                 if not reps["ON"] and not reps["OFF"]:
                     extra["failed"].setdefault(a, []).append(f"{n}: {info.get('why', 'no RESULT line, no reason given')}")
-                w, d = windowed(pre, reps)
+                w, d, u = windowed(pre, reps, need_counts=v2)
                 dropped += d
+                uncounted += u
                 for tag in got:
                     got[tag] += w[tag]
             notes.append(f"arm {a} {cell['key']}: {len(files) - refused} file(s) read, ON n={len(got['ON'])} "
                          f"OFF n={len(got['OFF'])}"
-                         + (f", {dropped} repetition(s) dropped (window not ok)" if dropped else ""))
+                         + (f", {dropped} repetition(s) dropped (window not ok)" if dropped else "")
+                         + (f", {uncounted} repetition(s) VOID (no insn=ok on the client or server line: not counted, "
+                            "so not read)" if uncounted else ""))
             data[(a, cell["key"])] = got
     for a, why in extra["failed"].items():
         notes.append(f"arm {a}: {len(why)} file(s) with no repetition at all - the cell failed; first: {why[0]}")
     if pre.get("sentinel"):
         s = pre["sentinel"]
-        letter = {sha[:8]: a for a, sha in pre["arms"].items()}
+        # v1 names a block's arm by its sha8; v2 by <arm>_<sha8>, since P (and maybe B) is A's commit.
+        letter = {token(pre, a): a for a in pre["arms"]}
         for cell in (c for c in pre["cells"] if c["key"] in pre["sentinel_cells"]):
-            pat = re.compile(re.escape(base) + r"\.b(\d+)_([0-9a-f]{8})_sentinel" + re.escape(s[:8]) + "_"
+            pat = re.compile(re.escape(base) + r"\.b(\d+)_((?:[A-Z]_)?[0-9a-f]{8})_sentinel" + re.escape(s[:8]) + "_"
                              + re.escape(cell["slug"]) + r"\.txt$")
             per_block, bins = {}, {"ON": set(), "OFF": set()}
             for n in names:
@@ -573,13 +752,15 @@ def load(pre, prefix):
                     continue
                 info = {}
                 reps, _, problem = read_file(os.path.join(folder, n), s, cell, info)
+                if not problem and v2:
+                    problem = flags_problem(info, arm_flags(pre, "A"), "the sentinel (A's flags)")
                 if problem:
                     notes.append(f"IDENTITY FAILED, not read: {n}: {problem}")
                     continue
                 for tag in bins:
                     if tag in info:
                         bins[tag].add(info[tag])
-                w, d = windowed(pre, reps)
+                w, d, _ = windowed(pre, reps)
                 per_block[int(m[1])] = (letter[m[2]], w)
                 notes.append(f"sentinel {s[:8]} {cell['key']} block {m[1]} (arm {letter[m[2]]}): ON n={len(w['ON'])} "
                              f"OFF n={len(w['OFF'])}" + (f", {d} dropped (window not ok)" if d else "")
@@ -669,7 +850,57 @@ def fmt(s):
     return f"{s[0]:12.5g} (se {s[1]:.3g}, n{s[2]})" if s else f"{'-':>12s} (n0)"
 
 
+def deciding_v2(pre, data, x, y, blind):
+    """Gate v2's deciding comparisons of X against Y (gate_v2.py's rule, here per comparison, with k over all of them):
+    prints PRIMARY and WITNESS rows, then P vs A per deciding item; appends to `blind` each item that selects nothing
+    and each without a floor. -> counts {"IMPROVED", "PASS", "WORSE", "sized"}."""
+    k = pre["k_deciding"]
+    counts = {"IMPROVED": 0, "PASS": 0, "WORSE": 0, "sized": 0}
+    rows = []
+    for fam, items in (("PRIMARY", pre["primary"]), ("WITNESS", pre["witness"])):
+        for item in items:
+            a, b = gate_v2.stats(values(data, y, item)), gate_v2.stats(values(data, x, item))
+            pv = values(data, "P", item)
+            p = gate_v2.stats(pv) if len(pv) >= 2 else None
+            if not a or not b or a[2] < 2 or b[2] < 2:
+                blind.append(f"{fam.lower()} {item['cell']} {item['name']} has n < 2 in an arm - a pre-registered item "
+                             "that selects nothing (no counts read as this)")
+                print(f"  {fam:9s} {'missing':22s} {item['cell']:36s} {item['name']:28s} {y} {fmt(a)}  {x} {fmt(b)}")
+                continue
+            thr = gate_v2.threshold(k, gate_v2.welch_df(a, b))
+            diff, t, floor, v = gate_v2.judge(a, b, p, item["hi"], thr)
+            if floor is None:
+                blind.append(f"{fam.lower()} {item['cell']} {item['name']}: no placement arm P (n >= 2), so no floor "
+                             "was measured - a floor not measured is not zero")
+            elif v == "WORSE":
+                counts["WORSE"] += 1
+            elif v == "better":
+                counts["IMPROVED"] += 1
+            else:
+                counts["PASS"] += 1
+                counts["sized"] += v != "held"
+            pct = 100 * diff / a[0] if a[0] else float("nan")
+            fl = f"  floor {floor:.4g} ({100 * floor / a[0]:.2f}%)" if floor is not None and a[0] else "  floor -"
+            print(f"  {fam:9s} {v:22s} {item['cell']:36s} {item['name']:28s} {y} {fmt(a)}  {x} {fmt(b)}  {pct:+6.2f}%  "
+                  f"t {t:+.2f} (> {thr:.2f}){fl}")
+            if p:
+                rows.append((fam, item, a, p))
+    # P vs A, per deciding item: how large placement alone is this session (never deciding).
+    for fam, item, a, p in rows:
+        thr = gate_v2.threshold(k, gate_v2.welch_df(a, p))
+        diff, t = gate_v2.tstat(a, p)
+        moved = abs(t) > thr
+        pct = 100 * diff / a[0] if a[0] else float("nan")
+        print(f"  PLACEMENT P vs A {'beyond' if moved else 'within':6s}     {item['cell']:36s} {item['name']:28s} "
+              f"A {fmt(a)}  P {fmt(p)}  {pct:+6.2f}%  t {t:+.2f} (> {thr:.2f})")
+        if moved and fam == "PRIMARY":
+            print(f"  NOTE: {item['cell']} {item['name']} moved between A and P beyond the threshold: instructions do "
+                  "not move with placement, so this is run-to-run variation in the work; its floor is that wide")
+    return counts
+
+
 def summary(pre, prefix):
+    v2 = pre.get("gate") == "v2"
     data, binaries, notes, extra = load(pre, prefix)
     print(describe(pre))
     print("=== DATA ===")
@@ -709,13 +940,14 @@ def summary(pre, prefix):
     for x, y in pre["compare"]:
         print(f"=== {x} vs {y}: {x}={pre['arms'][x][:8]} against {y}={pre['arms'][y][:8]} ===")
         void, blind = [], []
-        if t_fail & {x, y}:
-            void.append(f"treatment failed in arm(s) {','.join(sorted(t_fail & {x, y}))}")
-        for a in sorted({x, y} & set(extra["failed"])):
+        involved = {x, y, "P"} if v2 else {x, y}   # under v2, P's floor is part of every comparison
+        if t_fail & involved:
+            void.append(f"treatment failed in arm(s) {','.join(sorted(t_fail & involved))}")
+        for a in sorted(involved & set(extra["failed"])):
             if not any(data[(a, c["key"])]["ON"] for c in pre["cells"]):
                 blind.append(f"arm {a} has no repetition in any cell - its cells failed ({extra['failed'][a][0]})")
-        if t_blind & {x, y}:
-            blind.append(f"treatment could not be checked in arm(s) {','.join(sorted(t_blind & {x, y}))}")
+        if t_blind & involved:
+            blind.append(f"treatment could not be checked in arm(s) {','.join(sorted(t_blind & involved))}")
         for cell in pre["cells"]:
             same = binaries.get((x, cell["key"]), set()) & binaries.get((y, cell["key"]), set())
             if not same:
@@ -726,6 +958,12 @@ def summary(pre, prefix):
             else:
                 print(f"  note: {cell['key']}: both arms built client sha256 {min(same)} - byte-identical, so any move "
                       "there is the Pi's, not the change's")
+        if v2:
+            for cell in pre["cells"]:
+                same = binaries.get(("P", cell["key"]), set()) & binaries.get(("A", cell["key"]), set())
+                if same and any(i["cell"] == cell["key"] for i in pre["primary"]):
+                    void.append(f"{cell['key']}: P and A built one client sha256 {min(same)} - P's flags never "
+                                "reached the compiler, so its floor measures nothing")
         for item in pre["control"]:
             if pre.get("sentinel"):
                 line, how = sentinel_control(pre, extra, item, x, y)
@@ -757,7 +995,11 @@ def summary(pre, prefix):
             if moved:
                 void.append(f"control {item['cell']} {item['name']} moved (t {t:+.2f}, |t| > {pre['z_control']:.2f})")
         counts = {"IMPROVED": 0, "PASS": 0, "WORSE": 0}
-        for kind, items, z in (("PRIMARY", pre["primary"], pre["z_primary"]), ("secondary", pre["secondary"], 2.0)):
+        if v2:
+            counts = deciding_v2(pre, data, x, y, blind)
+        families = (("secondary", pre["secondary"], 2.0),) if v2 else \
+            (("PRIMARY", pre["primary"], pre.get("z_primary")), ("secondary", pre["secondary"], 2.0))
+        for kind, items, z in families:
             for item in items:
                 a, b = stats(values(data, y, item)), stats(values(data, x, item))
                 if not a or not b or a[2] < 2 or b[2] < 2:
@@ -780,11 +1022,18 @@ def summary(pre, prefix):
         elif blind:
             verdict = "NO VERDICT"
             why = "; ".join(blind)
+        elif counts["WORSE"] and v2:
+            verdict = "WORSE"
+            why = (f"{counts['WORSE']} of {len(pre['primary']) + len(pre['witness'])} deciding comparison(s) beyond "
+                   "the threshold AND the placement floor")
         elif counts["WORSE"]:
             verdict = "WORSE"
             why = f"{counts['WORSE']} of {len(pre['primary'])} primary beyond |t| > {pre['z_primary']:.2f}"
         elif counts["IMPROVED"]:
             verdict, why = "IMPROVED", f"{counts['IMPROVED']} better, {counts['PASS']} held, none worse"
+        elif v2:
+            verdict, why = "PASS", (f"all {counts['PASS']} deciding comparison(s) held ({counts.get('sized', 0)} "
+                                    "beyond the threshold but inside the placement floor)")
         else:
             verdict, why = "PASS", f"all {counts['PASS']} primary held at |t| <= {pre['z_primary']:.2f}"
         print(f"VERDICT {x}-{y}: {verdict} ({why})")
@@ -806,7 +1055,7 @@ FIXTURE_ENV = {
                  "best_effort_throughput:p3:A:absent_as(client_traffic.shm_encoded_in_slot,0)==0;"
                  "*:*:client.bells_rung==client.doorbells_sent",
     "DERIVED": "stime_per_sleep_us=1e6*(client.stime_s+proc.stime_s)/(client.sleeps+server.sleeps)",
-    "REPS": "4", "TAG": "selftest",
+    "REPS": "4", "TAG": "selftest", "GATE": "v1",
 }
 # (arms, expected OVERALL, why) - each line of the fixture's README is one of these.
 FIXTURE_CASES = [
@@ -937,8 +1186,173 @@ def selftest():
                 failures += 1
             except Refused as err:
                 print(f"ok   refused ({why}): {err}")
+    failures += selftest_v2()
     print(f"SELFTEST {'PASSED' if failures == 0 else f'FAILED ({failures})'}")
     return 1 if failures else 0
+
+
+# ------------------------------------------------------------------------------------------- gate v2 self-test
+# Gate v2's cases are generated, not stored in ab_samehost_fixture.txt: they are decided by means and spreads over six
+# blocks of three arms, which a hand-written file would only spell out. The rows are the shape s6_witness_check.sh
+# wrote in the dry run of 2026-10-11 (rig_dryrun.sh, reliable_latency p2, both arms counted): per round trip about
+# 8,100 user / 49,000 kernel instructions in the client and 5,500 / 38,000 in the server (x86, meaningless as values).
+# Noise per repetition: instructions 0.1%, rtt_p50 1%, utime 2% (the p1 control's rtt: a fixed +-0.5%); three
+# repetitions per block, so n = 6 per arm.
+V2_SHAS = {"a": "a" * 40, "b": "b" * 40}
+V2_FLAGS = {"layout": "-falign-functions=64", "placement": "-falign-functions=128"}
+V2_ENV = {
+    "GATE": "v2", "CELLS": "reliable_latency:p1:-i 0.005;reliable_latency:p2:-i 0.005",
+    "WITNESS": "reliable_latency:p2:-i 0.005:client.rtt_p50_ms,reliable_latency:p2:-i 0.005:client.utime_s",
+    "CONTROL": "reliable_latency:p1:-i 0.005:client.rtt_p50_ms", "TREATMENT": "*:*:client.sent>0",
+    "REPS": "3", "TAG": "selftest_v2", "TICKLE_EXTRA_CFLAGS": V2_FLAGS["layout"],
+    "P_EXTRA_CFLAGS": V2_FLAGS["placement"],
+}
+V2_BASE = {("client", "insn_u"): 8100, ("client", "insn_k"): 49000, ("server", "insn_u"): 5500,
+           ("server", "insn_k"): 38000, ("client", "rtt_p50_ms"): 0.071, ("client", "utime_s"): 0.30}
+V2_NOISE = {"insn_u": 0.001, "insn_k": 0.001, "rtt_p50_ms": 0.01, "utime_s": 0.02}
+# (name, arm settings, env changes, expected OVERALL, why). Per arm: shift {field: factor} on the p2 cell, "counts"
+# False for insn=fail:no_output on every line, "bad_rep" for one p2 repetition per block without counts and with a 50%
+# higher rtt (VOID, so excluded: read, it would turn the witness WORSE), "absent" for no files at all, "flags" for the
+# flags its files show (default: the arm's own), "sha" for its commit.
+V2_CASES = [
+    ("aa", {}, {}, "PASS", "A/A: B is another commit with the same behaviour"),
+    ("insn", {"B": {"shift": {"insn_u": 1.05}}}, {}, "WORSE", "B executes 5% more user instructions per round trip"),
+    ("placed", {"B": {"shift": {"rtt_p50_ms": 1.03, "utime_s": 1.03}},
+                "P": {"shift": {"rtt_p50_ms": 1.05, "utime_s": 1.05}}}, {}, "PASS",
+     "B's rtt and CPU +3%, which P (A rebuilt at -falign-functions=128) shows too (+5%): placement-sized, held"),
+    ("unplaced", {"B": {"shift": {"rtt_p50_ms": 1.03, "utime_s": 1.03}}}, {}, "WORSE",
+     "the same +3% with P unmoved: beyond the threshold and the floor"),
+    ("nocounts", {a: {"counts": False} for a in "APB"}, {}, "NO VERDICT",
+     "no instruction counts: every repetition is VOID, every item selects nothing"),
+    ("noP", {"P": {"absent": True}}, {}, "NO VERDICT", "no P arm: no floor was measured"),
+    ("Pflags", {"P": {"flags": V2_FLAGS["layout"]}}, {}, "NO VERDICT",
+     "P's files show A's flags: refused by identity, so no floor"),
+    ("badrep", {"B": {"bad_rep": True}}, {}, "PASS",
+     "one uncounted repetition per block in B with rtt +50%: VOID and excluded, not read"),
+    # B = A's commit under another alignment: its placement effect (+3%) is inside P's (+5%). With B's flags equal to
+    # P's the two are one build, |B - A| and |P - A| are two draws of one effect, and B reads WORSE about half the time
+    # whenever that effect is beyond the threshold - the floor bounds placement by ONE sample of it.
+    ("placeonly", {"B": {"flags": "-falign-functions=256", "shift": {"rtt_p50_ms": 1.03}},
+                   "P": {"shift": {"rtt_p50_ms": 1.05}}},
+     {"B": "a" * 40, "B_EXTRA_CFLAGS": "-falign-functions=256"}, "PASS",
+     "the gate's own validation shape: B = A's commit at -falign-functions=256, a placement-only change inside P's"),
+    ("sentinel", {}, {"SENTINEL": "a" * 40}, "PASS", "with a SENTINEL (A's build in every block): held"),
+    ("sentinel-moved", {"S": {"moved": True}}, {"SENTINEL": "a" * 40}, "VOID",
+     "the sentinel's p1 rtt is 5% higher in B's blocks than in A's and P's"),
+]
+
+
+def v2_files(folder, pre, arms_spec):
+    """Writes the s6 files of one gate v2 case for `pre` into folder/fx.*; returns the prefix."""
+    import hashlib
+    import random
+    os.makedirs(folder, exist_ok=True)
+    prefix = os.path.join(folder, "fx")
+    sent = 10200
+
+    def binary(*key):
+        return hashlib.sha256(repr(key).encode()).hexdigest()[:16]
+
+    def header(sha, flags, cell, reps):
+        return (f"=== S6 transport cells 2026-10-11T00:00:00+09:00 sha={sha} scen={cell['scen']} size={cell['size']} "
+                f"dur=10s reps={reps} host=10.1.1.214 iface=lo ===\n"
+                f"    arm ON (extra='{flags}') built, client sha256={binary(sha, flags, 'ON', cell['key'])}\n"
+                f"    arm ON TICKLE_EXTRA_CFLAGS='{flags}' reached core and bench (fixture)\n"
+                f"    arm OFF (extra='-Dtt_SEGMENT_ENABLED=0 {flags}') built, client sha256="
+                f"{binary(sha, flags, 'OFF', cell['key'])}\n"
+                f"    arm OFF TICKLE_EXTRA_CFLAGS='{flags}' reached core and bench (fixture)\n")
+
+    def rep_lines(rng, cell, r, shift, counts, rtt_factor=1.0):
+        out = []
+        for tag in ("ON", "OFF"):
+            v = {}
+            for (role, field), base in V2_BASE.items():
+                f = shift.get(field, 1.0) if cell["size"] == "p2" else 1.0
+                base = base * (1.1 if tag == "OFF" else 1.0) * (0.9 if cell["size"] == "p1" else 1.0)
+                # The control cell's rtt spreads by a fixed -0.5/0/+0.5% per repetition, so v1's rep-level control
+                # rule (2 x SE at k = 1, a false move about one run in twelve at n = 6) cannot decide a gate v2 case by
+                # chance.
+                dev = (r % 3 - 1) * 0.005 if (cell["size"], field) == ("p1", "rtt_p50_ms") else \
+                    rng.gauss(0, V2_NOISE[field])
+                v[(role, field)] = base * f * (1 + dev)
+            v[("client", "rtt_p50_ms")] *= rtt_factor
+
+            def ins(role):
+                if not counts:
+                    return " insn=fail:no_output"
+                return (f" insn_u={round(v[(role, 'insn_u')] * sent)} insn_k={round(v[(role, 'insn_k')] * sent)}"
+                        " insn=ok")
+            out.append(f"  arm={tag} RESULT: framework=tickle scenario=reliable_latency sent={sent} recv={sent} "
+                       f"rtt_p50_ms={v[('client', 'rtt_p50_ms')]:.6f} window=ok utime_s={v[('client', 'utime_s')]:.5f}"
+                       f"{ins('client')}\n")
+            out.append(f"  arm={tag} RESULT: framework=tickle scenario=reliable_latency role=server sleeps=1"
+                       f"{ins('server')}\n")
+        return out
+
+    for n, arm in enumerate(blocks(pre), 1):
+        spec = arms_spec.get(arm, {})
+        if spec.get("absent"):
+            continue
+        sha, flags = pre["arms"][arm], spec.get("flags", arm_flags(pre, arm))
+        for cell in pre["cells"]:
+            rng = random.Random(f"{os.path.basename(folder)}|{n}|{arm}|{cell['key']}")
+            lines = [header(sha, flags, cell, pre["reps"])]
+            for r in range(pre["reps"]):
+                bad = spec.get("bad_rep") and r == 0 and cell["size"] == "p2"
+                lines += rep_lines(rng, cell, r, spec.get("shift", {}), spec.get("counts", True) and not bad,
+                                   1.5 if bad else 1.0)
+            with open(f"{prefix}.b{n}_{token(pre, arm)}_{cell['slug']}.txt", "w", encoding="utf-8") as fh:
+                fh.writelines(lines)
+        if pre.get("sentinel"):
+            s = pre["sentinel"]
+            for cell in (c for c in pre["cells"] if c["key"] in pre["sentinel_cells"]):
+                rng = random.Random(f"{os.path.basename(folder)}|{n}|sentinel|{cell['key']}")
+                moved = arms_spec.get("S", {}).get("moved") and arm == "B"
+                lines = [header(s, arm_flags(pre, "A"), cell, pre["reps"])]
+                for r in range(pre["reps"]):
+                    lines += rep_lines(rng, cell, r, {}, True, 1.05 if moved else 1.0)
+                with open(f"{prefix}.b{n}_{token(pre, arm)}_sentinel{s[:8]}_{cell['slug']}.txt", "w",
+                          encoding="utf-8") as fh:
+                    fh.writelines(lines)
+    return prefix
+
+
+def selftest_v2():
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, arms_spec, env_changes, want, why in V2_CASES:
+            env = dict(V2_ENV, A=V2_SHAS["a"], B=V2_SHAS["b"]) | env_changes
+            pre = build_prereg(env)
+            prefix = v2_files(os.path.join(tmp, name), pre, arms_spec)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                summary(pre, prefix)
+            got = re.search(r"^OVERALL: (VOID|NO VERDICT|WORSE|IMPROVED|PASS)", buf.getvalue(), re.M)[1]
+            ok = got == want
+            failures += not ok
+            print(f"{'ok  ' if ok else 'FAIL'} v2 {name:14s} want {want:10s} got {got:10s} - {why}")
+            for ln in buf.getvalue().splitlines():
+                if ln.startswith("VERDICT") or "WORSE" in ln[:40] or "placement-sized" in ln or "VOID (" in ln:
+                    print(f"       {ln.strip()[:230]}")
+            if not ok:
+                print(buf.getvalue())
+        bad = [
+            (dict(V2_ENV, P_EXTRA_CFLAGS=V2_FLAGS["layout"]), "P's flags equal A's"),
+            (dict(V2_ENV, PRIMARY="reliable_latency:p2:-i 0.005:client.rtt_p50_ms"), "a v1 primary under v2"),
+            (dict(V2_ENV, WITNESS=""), "no witness"),
+            (dict(V2_ENV, COMPARE="P-A"), "P compared as a change"),
+            ({k: v for k, v in V2_ENV.items() if k != "P_EXTRA_CFLAGS"}, "no P flags"),
+            (dict(V2_ENV, B=V2_SHAS["a"]), "B = A's commit with A's flags"),
+        ]
+        for env, why in bad:
+            env = dict({"A": V2_SHAS["a"], "B": V2_SHAS["b"]}, **env)
+            try:
+                build_prereg(env)
+                print(f"FAIL v2 refusal not raised: {why}")
+                failures += 1
+            except Refused as err:
+                print(f"ok   v2 refused ({why}): {err}")
+    return failures
 
 
 def main(argv):
@@ -956,6 +1370,10 @@ def main(argv):
             for c in pre["cells"]:
                 print(f"{c['scen']}|{c['size']}|{c['extra']}|{c['slug']}")
             print("BLOCKS|" + " ".join(blocks(pre)))
+            # ARM|<letter>|<sha>|<file token>|<flags>: what the driver builds each block's arm from (flags last).
+            for a in dict.fromkeys(blocks(pre)):
+                print(f"ARM|{a}|{pre['arms'][a]}|{token(pre, a)}|{arm_flags(pre, a)}")
+            print(f"GATE|{pre.get('gate', 'v1')}")
             if pre.get("sentinel"):
                 for c in pre["cells"]:
                     if c["key"] in pre["sentinel_cells"]:
