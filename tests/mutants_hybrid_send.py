@@ -163,10 +163,10 @@ MUTANTS = [
         SEND,
     ),
     (
-        "cost model: the receiver's costs left out",
+        "cost model: the receiver's default costs left out",
         "src/tickle.c",
-        "    *c_d = (double)tt_HYBRID_TX_DATAGRAM_NS + (double)tt_HYBRID_RX_DATAGRAM_NS;",
-        "    *c_d = (double)tt_HYBRID_TX_DATAGRAM_NS;",
+        "                                                                   : tt_HYBRID_RX_DATAGRAM_NS;",
+        "                                                                   : 0U;",
         SEND,
     ),
     (
@@ -272,6 +272,154 @@ MUTANTS = [
         "src/tickle.c",
         "        hybrid_note_nacks(pub, header->source, sender_entity_id, seq_no, bitmap, bitmap_words);",
         "",
+        SEND,
+    ),
+    # --- measuring c_d and c_f ---
+    (
+        "fit: c_d solved with the wrong cross term",
+        "src/tickle.c",
+        "    *c_d = ((fit->s_dt * fit->s_ff) - (fit->s_ft * fit->s_df)) / det;",
+        "    *c_d = ((fit->s_dt * fit->s_ff) + (fit->s_ft * fit->s_df)) / det;",
+        SEND,
+    ),
+    (
+        "fit: c_f solved with the wrong cross term",
+        "src/tickle.c",
+        "    *c_f = ((fit->s_ft * fit->s_dd) - (fit->s_dt * fit->s_df)) / det;",
+        "    *c_f = ((fit->s_ft * fit->s_dd) + (fit->s_dt * fit->s_df)) / det;",
+        SEND,
+    ),
+    (
+        "fit: costs not both positive",
+        "src/tickle.c",
+        "    bool used = fit->calls >= tt_HYBRID_FIT_MIN_CALLS && c_d > 0.0 && c_f > 0.0 &&",
+        "    bool used = fit->calls >= tt_HYBRID_FIT_MIN_CALLS && c_f > 0.0 &&",
+        SEND,
+    ),
+    (
+        "fit: unweighted",
+        "src/tickle.c",
+        "    double weight = frames != 0 ? 1.0 / (f * f) : 1.0;",
+        "    double weight = 1.0;",
+        SEND,
+    ),
+    (
+        "fit: used with fewer than the minimum calls",
+        "src/tickle.c",
+        "fit->calls >= tt_HYBRID_FIT_MIN_CALLS &&",
+        "fit->calls >= 3.0 &&",
+        SEND,
+    ),
+    (
+        "fit: the share's error not judged",
+        "src/tickle.c",
+        "                cost_fit_share_se(fit, c_d, c_f) < tt_HYBRID_FIT_MAX_SHARE_SE;",
+        "                true;",
+        SEND,
+    ),
+    (
+        "fit: a prediction above twice the CPU time accepted",
+        "src/tickle.c",
+        " && predicted <= measured * tt_HYBRID_FIT_CPU_FACTOR;",
+        ";",
+        SEND,
+    ),
+    (
+        "fit: a prediction below half the CPU time accepted",
+        "src/tickle.c",
+        "        used = predicted * tt_HYBRID_FIT_CPU_FACTOR >= measured && predicted",
+        "        used = predicted",
+        SEND,
+    ),
+    (
+        "fit: a rejected fit keeps its last costs",
+        "src/tickle.c",
+        "        fit->datagram_ns = 0;\n        fit->frame_ns = 0;\n        fit->rejected++;",
+        "        fit->rejected++;",
+        SEND,
+    ),
+    (
+        "fit: the sums never halve",
+        "src/tickle.c",
+        "    if (fit->frames >= (double)tt_HYBRID_WINDOW_FRAMES) {",
+        "    if (false) {",
+        SEND,
+    ),
+    (
+        "fit: the first window opened at the CPU clock's 0",
+        "src/tickle.c",
+        "        fit->check_cpu_ns = tt_process_cpu_ns(); // the first window opens with the first call",
+        "        fit->check_cpu_ns = 1; // the first window opens with the first call",
+        SEND,
+    ),
+    (
+        "timing: run sends not observed",
+        "src/tickle.c",
+        "        cost_fit_observe(&node->hybrid.tx_fit, count, frames, tt_get_ns() - start);",
+        "",
+        SEND,
+    ),
+    (
+        "timing: large run sends not observed",
+        "src/tickle.c",
+        "            cost_fit_observe(&node->hybrid.tx_fit, (uint32_t)sent, sent_frames, tt_get_ns() - start);",
+        "",
+        SEND,
+    ),
+    (
+        "timing: received datagrams not observed",
+        "src/tickle.c",
+        "        cost_fit_observe(&node->hybrid.rx_fit, 1, hybrid_frames(node->rx_tail), tt_get_ns() - start);",
+        "",
+        SEND,
+    ),
+    (
+        "costs: the sender's fit ignored",
+        "src/tickle.c",
+        "    uint32_t tx_d = hybrid->tx_fit.datagram_ns != 0 ? hybrid->tx_fit.datagram_ns : tt_HYBRID_TX_DATAGRAM_NS;",
+        "    uint32_t tx_d = tt_HYBRID_TX_DATAGRAM_NS;",
+        SEND,
+    ),
+    (
+        "costs: the reader's advertised costs ignored",
+        "src/tickle.c",
+        "    *c_d = (double)tx_d + (double)rx_d;",
+        "    *c_d = (double)tx_d + (double)tt_HYBRID_RX_DATAGRAM_NS;",
+        SEND,
+    ),
+    (
+        "costs: not recorded from the announce",
+        "src/tickle.c",
+        "    node->hybrid.peer_cost_datagram_ns[source] = rd16(header, announce->cost_datagram_ns);",
+        "",
+        SEND,
+    ),
+    (
+        "costs: kept across a presumed death",
+        "src/tickle.c",
+        "    node->hybrid.peer_cost_datagram_ns[source] = 0;\n    node->hybrid.peer_cost_frame_ns[source] = 0;",
+        "",
+        SEND,
+    ),
+    (
+        "costs: the announce carries none",
+        "src/tickle.c",
+        "    announce->cost_datagram_ns = node->hybrid.advertised_cost_datagram_ns; // this reader's measured costs, 0: none",
+        "    announce->cost_datagram_ns = 0; // this reader's measured costs, 0: none",
+        SEND,
+    ),
+    (
+        "costs: every small change announced",
+        "src/tickle.c",
+        "    return delta > (advertised >> HYBRID_COST_MOVE_SHIFT);",
+        "    return delta > 0;",
+        SEND,
+    ),
+    (
+        "costs: a change never announced",
+        "src/tickle.c",
+        "    return delta > (advertised >> HYBRID_COST_MOVE_SHIFT);",
+        "    return false;",
         SEND,
     ),
     # --- the reader's pooled loss and cap ---
@@ -435,10 +583,12 @@ MUTANTS = [
     (
         "withdrawal: a large run's receipt not noted",
         "src/tickle.c",
-        "    const uint8_t* payload = buffer + head;\n#if tt_HYBRID_TRANSPORT\n    if (node->hybrid.rx_capable) {\n"
+        "    const uint8_t* payload = buffer + head;\n#if tt_HYBRID_TRANSPORT\n    uint64_t rx_start = hybrid_rx_start(node);\n"
+        "    if (node->hybrid.rx_capable) {\n"
         "        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);\n"
         "        node->hybrid.tick_runs = true;",
-        "    const uint8_t* payload = buffer + head;\n#if tt_HYBRID_TRANSPORT\n    if (node->hybrid.rx_capable) {\n"
+        "    const uint8_t* payload = buffer + head;\n#if tt_HYBRID_TRANSPORT\n    uint64_t rx_start = hybrid_rx_start(node);\n"
+        "    if (node->hybrid.rx_capable) {\n"
         "        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);",
         SEND,
     ),

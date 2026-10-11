@@ -397,6 +397,7 @@ static void sim_deliver(struct sim_datagram* d) {
                     memcpy(copy, d->bytes, d->len);
                     sim_acting = readers[i].ctx.id;
                     decoding = &readers[i];
+                    readers[i].ctx.rx_tail = d->len; // as process_datagram_in() sets it
                     process_packet(&readers[i].ctx, copy, 0, d->len, SENDER_IP, PORT, tt_TRANSPORT_UDP);
                 }
             }
@@ -1148,6 +1149,212 @@ static void test_reliable_through_a_path_that_drops_fragments(void) {
     EXPECT_TRUE(readers[0].in_order);
 }
 
+// --- step 5: measuring c_d and c_f
+// ------------------------------------------------------------------------------------
+
+static uint32_t noise_state = 1;
+
+// A deterministic +-5% factor.
+static double noise(void) {
+    noise_state = (noise_state * 1103515245U) + 12345U;
+    return 0.95 + (0.1 * (double)((noise_state >> 8) % 1000U) / 1000.0);
+}
+
+// Feeds `fit` calls alternating between runs (17 datagrams, 723 frames) and tails (1, 1) costing c_d and c_f ns, with
+// the process's CPU clock moving by `cpu_factor` times what the calls took.
+static void feed_fit(struct tt_CostFit* fit, double c_d, double c_f, uint32_t calls, double cpu_factor) {
+    for (uint32_t i = 0; i < calls; i++) {
+        uint32_t d = (i % 2U) == 0 ? 17U : 1U;
+        uint32_t f = (i % 2U) == 0 ? 723U : 1U;
+        double t = ((c_d * d) + (c_f * f)) * noise();
+        test_mock_process_cpu_ns += (uint64_t)(t * cpu_factor);
+        cost_fit_observe(fit, d, f, (uint64_t)t);
+    }
+}
+
+static bool near(uint32_t value, double expected) {
+    return (double)value > expected * 0.97 && (double)value < expected * 1.03;
+}
+
+// The fit recovers the costs it is fed, within noise, and is used once its checks pass.
+static void test_the_cost_fit_recovers_the_costs(void) {
+    test_mock_hybrid_reset();
+    test_mock_process_cpu_ns = tt_SECOND;
+    struct tt_CostFit fit;
+    memset(&fit, 0, sizeof(fit));
+    feed_fit(&fit, 5000.0, 2000.0, 400, 1.0);
+    EXPECT_TRUE(fit.accepted > 0);
+    EXPECT_EQ_U32(2, fit.rejected); // the first two checks: fewer than 64 calls
+    EXPECT_TRUE(near(fit.datagram_ns, 5000.0));
+    EXPECT_TRUE(near(fit.frame_ns, 2000.0));
+    // The process spending 1.9 times what the calls took still agrees; 2.5 times does not, nor 0.4.
+    feed_fit(&fit, 5000.0, 2000.0, 100, 1.9);
+    EXPECT_TRUE(fit.datagram_ns != 0);
+    uint32_t rejected = fit.rejected;
+    feed_fit(&fit, 5000.0, 2000.0, 100, 2.5);
+    EXPECT_TRUE(fit.rejected > rejected);
+    EXPECT_EQ_U32(0, fit.datagram_ns);
+    feed_fit(&fit, 5000.0, 2000.0, 100, 1.0);
+    EXPECT_TRUE(fit.datagram_ns != 0);
+    feed_fit(&fit, 5000.0, 2000.0, 100, 0.4);
+    EXPECT_EQ_U32(0, fit.datagram_ns);
+    // The first window opens at the CPU clock as it reads at the first call: a fit whose first check already has enough
+    // calls (small ones: 2 datagrams of 40 frames, and tails) is used at once.
+    memset(&fit, 0, sizeof(fit));
+    test_mock_process_cpu_ns = 50ULL * tt_SECOND;
+    for (uint32_t i = 0; i < 420; i++) { // 8,610 frames: one check, at 8,192
+        uint32_t d = (i % 2U) == 0 ? 2U : 1U;
+        uint32_t f = (i % 2U) == 0 ? 40U : 1U;
+        double t = ((5000.0 * d) + (2000.0 * f)) * noise();
+        test_mock_process_cpu_ns += (uint64_t)t;
+        cost_fit_observe(&fit, d, f, (uint64_t)t);
+    }
+    EXPECT_EQ_U32(1, fit.accepted);
+    EXPECT_EQ_U32(0, fit.rejected);
+    // A negative cost, however well fitted, is not used.
+    memset(&fit, 0, sizeof(fit));
+    feed_fit(&fit, -200.0, 2000.0, 400, 1.0);
+    EXPECT_EQ_U32(0, fit.accepted);
+}
+
+// Rejected: the process's CPU time unreadable; no variation in d / f; fewer than 64 calls; a share it cannot pin down.
+static void test_the_cost_fit_is_used_only_when_it_holds(void) {
+    test_mock_hybrid_reset();
+    struct tt_CostFit fit;
+    memset(&fit, 0, sizeof(fit));
+    test_mock_process_cpu_ns = 0;
+    feed_fit(&fit, 5000.0, 2000.0, 400, 0.0); // the CPU clock reads 0 throughout: no window ever closes
+    EXPECT_EQ_U32(0, fit.accepted);
+    EXPECT_EQ_U32(0, fit.datagram_ns);
+    memset(&fit, 0, sizeof(fit));
+    test_mock_process_cpu_ns = tt_SECOND;
+    for (uint32_t i = 0; i < 20000; i++) { // every call one MTU datagram: c_d and c_f cannot be told apart
+        test_mock_process_cpu_ns += 7000;
+        cost_fit_observe(&fit, 1, 1, 7000);
+    }
+    EXPECT_TRUE(fit.rejected > 0);
+    EXPECT_EQ_U32(0, fit.accepted);
+    memset(&fit, 0, sizeof(fit));
+    for (uint32_t i = 0; i < 30; i++) { // 30 calls of 723 frames: checked at 8192 frames with too few calls
+        uint32_t d = (i % 2U) == 0 ? 17U : 16U;
+        test_mock_process_cpu_ns += (5000U * d) + (2000U * 723U);
+        cost_fit_observe(&fit, d, 723, (5000U * d) + (2000U * 723U));
+    }
+    EXPECT_TRUE(fit.rejected > 0);
+    EXPECT_EQ_U32(0, fit.accepted);
+    memset(&fit, 0, sizeof(fit));
+    for (uint32_t i = 0; i < 2000; i++) { // times unrelated to d and f
+        uint32_t d = (i % 2U) == 0 ? 17U : 1U;
+        uint32_t f = (i % 2U) == 0 ? 723U : 1U;
+        uint64_t t = (uint64_t)(400000.0 * noise() * noise() * noise() * noise() * noise() * noise());
+        t = (i % 3U) == 0 ? t * 20U : t;
+        test_mock_process_cpu_ns += t;
+        cost_fit_observe(&fit, d, f, t);
+    }
+    EXPECT_EQ_U32(0, fit.accepted);
+    // Positive costs, the CPU time agreeing - but calls of nearly one d / f (17 / 723 and 16 / 700, no tails) cannot
+    // tell c_d from c_f: the share's error rejects.
+    memset(&fit, 0, sizeof(fit));
+    noise_state = 3;
+    for (uint32_t i = 0; i < 400; i++) {
+        uint32_t d = (i % 2U) == 0 ? 17U : 16U;
+        uint32_t f = (i % 2U) == 0 ? 723U : 700U;
+        double t = ((5000.0 * d) + (2000.0 * f)) * noise();
+        test_mock_process_cpu_ns += (uint64_t)t;
+        cost_fit_observe(&fit, d, f, (uint64_t)t);
+    }
+    {
+        double c_d = 0.0;
+        double c_f = 0.0;
+        cost_fit_solve(&fit, &c_d, &c_f);
+        EXPECT_TRUE(c_d > 0.0 && c_f > 0.0);
+        EXPECT_TRUE(cost_fit_share_se(&fit, c_d, c_f) >= tt_HYBRID_FIT_MAX_SHARE_SE);
+    }
+    EXPECT_EQ_U32(0, fit.accepted);
+    // The sums halve at the window: calls stay bounded.
+    EXPECT_TRUE(fit.calls < 2000.0);
+    EXPECT_TRUE(fit.frames < (double)tt_HYBRID_WINDOW_FRAMES);
+}
+
+// The costs a writer uses: the platform defaults, its own fit's once accepted, a reader's advertised ones - and n
+// follows them: a reader whose frames cost a hundred times its datagrams wants no runs at 1% loss.
+static void test_the_writer_uses_the_measured_costs(void) {
+    init_one(ONE_MB, FULL_CEILING, true);
+    double c_d = 0.0;
+    double c_f = 0.0;
+    hybrid_costs(&sender, reader_id(0), &c_d, &c_f);
+    EXPECT_TRUE(c_d == 11850.0 && c_f == 8800.0);
+    sender.hybrid.tx_fit.datagram_ns = 1000;
+    sender.hybrid.tx_fit.frame_ns = 3000;
+    hybrid_costs(&sender, reader_id(0), &c_d, &c_f);
+    EXPECT_TRUE(c_d == 6600.0 && c_f == 6200.0);
+    sender.hybrid.peer_cost_datagram_ns[reader_id(0)] = 2000;
+    sender.hybrid.peer_cost_frame_ns[reader_id(0)] = 500;
+    hybrid_costs(&sender, reader_id(0), &c_d, &c_f);
+    EXPECT_TRUE(c_d == 3000.0 && c_f == 3500.0);
+    hybrid_test_forced_p = 0.01;
+    sender.hybrid.tx_fit.datagram_ns = 100;
+    sender.hybrid.tx_fit.frame_ns = 10000;
+    sender.hybrid.peer_cost_datagram_ns[reader_id(0)] = 100;
+    sender.hybrid.peer_cost_frame_ns[reader_id(0)] = 10000;
+    EXPECT_EQ_U32(1, hybrid_reliable_n(&sender, &pub, reader_id(0), 45));
+    hybrid_test_forced_p = -1.0;
+}
+
+// A reader's accepted receive costs go out in its announce, and the writer records them; a change of less than an
+// eighth is not announced again, a larger one is; a peer presumed dead is forgotten.
+static void test_the_reader_advertises_its_costs(void) {
+    init_one(LARGE_LEN, FULL_CEILING, false);
+    struct tt_Context* node = &readers[0].ctx;
+    sim_start(0);
+    uint64_t t = test_mock_now;
+    tick_readers(t);
+    node->hybrid.rx_fit.datagram_ns = 4000;
+    node->hybrid.rx_fit.frame_ns = 1000;
+    tick_readers(t += tt_SECOND);
+    EXPECT_EQ_U32(4000, sender.hybrid.peer_cost_datagram_ns[reader_id(0)]);
+    EXPECT_EQ_U32(1000, sender.hybrid.peer_cost_frame_ns[reader_id(0)]);
+    node->hybrid.rx_fit.datagram_ns = 4400; // +10%
+    tick_readers(t += tt_SECOND);
+    EXPECT_EQ_U32(4000, node->hybrid.advertised_cost_datagram_ns);
+    node->hybrid.rx_fit.frame_ns = 1200; // +20%
+    tick_readers(t += tt_SECOND);
+    EXPECT_EQ_U32(4400, sender.hybrid.peer_cost_datagram_ns[reader_id(0)]);
+    EXPECT_EQ_U32(1200, sender.hybrid.peer_cost_frame_ns[reader_id(0)]);
+    node->hybrid.rx_fit.datagram_ns = 0; // rejected: "not measured" again
+    node->hybrid.rx_fit.frame_ns = 0;
+    tick_readers(t += tt_SECOND);
+    EXPECT_EQ_U32(0, sender.hybrid.peer_cost_datagram_ns[reader_id(0)]);
+    node->hybrid.rx_fit.datagram_ns = 4000;
+    node->hybrid.rx_fit.frame_ns = 1000;
+    tick_readers(t += tt_SECOND);
+    EXPECT_EQ_U32(4000, sender.hybrid.peer_cost_datagram_ns[reader_id(0)]);
+    presume_node_dead(&sender, reader_id(0), t);
+    EXPECT_EQ_U32(0, sender.hybrid.peer_cost_datagram_ns[reader_id(0)]);
+    EXPECT_EQ_U32(0, sender.hybrid.peer_cost_frame_ns[reader_id(0)]);
+}
+
+// The live timing: every send call of a sample's runs and its tail is one observation of the sender's fit, every
+// fragment-path datagram one of the reader's.
+static void test_send_calls_and_received_datagrams_are_timed(void) {
+    init_one(ONE_MB, FULL_CEILING, false);
+    sim_start(0);
+    test_mock_clock_step_ns = 1000;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+    sim_settle(1, tt_SECOND);
+    EXPECT_TRUE(sender.hybrid.tx_fit.calls == 2.0); // 17 runs in one call, the tail in another
+    EXPECT_TRUE(sender.hybrid.tx_fit.frames == 723.0);
+    EXPECT_TRUE(readers[0].ctx.hybrid.rx_fit.calls == 18.0);
+    EXPECT_TRUE(readers[0].ctx.hybrid.rx_fit.frames == 723.0);
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    sim_start(0);
+    test_mock_clock_step_ns = 1000;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+    EXPECT_TRUE(sender.hybrid.tx_fit.calls == 2.0);
+    EXPECT_TRUE(readers[0].ctx.hybrid.rx_fit.calls == 2.0);
+    test_mock_clock_step_ns = 0;
+}
+
 int main(void) {
     test_small_sample_goes_as_one_run_and_its_tail();
     test_large_samples_go_in_runs_of_n_max();
@@ -1172,6 +1379,11 @@ int main(void) {
     test_mixed_reliable_readers_each_get_their_own_n();
     test_keep_all_bounds_are_unchanged();
     test_reliable_through_a_path_that_drops_fragments();
+    test_the_cost_fit_recovers_the_costs();
+    test_the_cost_fit_is_used_only_when_it_holds();
+    test_the_writer_uses_the_measured_costs();
+    test_the_reader_advertises_its_costs();
+    test_send_calls_and_received_datagrams_are_timed();
     free(sim_queue);
     if (test_result() != 0) {
         return 1;

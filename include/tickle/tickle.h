@@ -533,11 +533,43 @@ struct tt_HybridRxWriter {
     uint8_t source;
 };
 
+// A least-squares fit t = c_d d + c_f f over timed calls of d datagrams and f frames taking t ns (DESIGN.md section 8,
+// "Measuring c_d and c_f"): the running sums, halved with `frames` at tt_HYBRID_WINDOW_FRAMES, and the check window
+// over which the fit's prediction is compared with the process's CPU time (tt_process_cpu_ns()).
+struct tt_CostFit {
+    double s_dd;
+    double s_df;
+    double s_ff;
+    double s_dt;
+    double s_ft;
+    double s_tt;
+    double calls;
+    double frames;
+    double check_d; // datagrams and frames timed since the check window opened
+    double check_f;
+    uint64_t check_cpu_ns; // tt_process_cpu_ns() when it opened; 0: not yet
+    uint32_t check_frames;
+    // The last check's result: the costs used, in ns, or 0 for "not measured" (the platform default applies). And how
+    // many checks passed and failed, on the traffic line.
+    uint32_t datagram_ns;
+    uint32_t frame_ns;
+    uint32_t accepted;
+    uint32_t rejected;
+};
+
 // Buckets of the n histogram: 1, 2-3, 4-7, 8-15, 16-31, 32 up to tt_HYBRID_N_MAX - 1, and tt_HYBRID_N_MAX.
 #define tt_HYBRID_N_BUCKETS 7
 
 // A context's hybrid-transport state (tt_Context.hybrid).
 struct tt_HybridState {
+    // The costs this context measures as a sender and as a receiver (the receiver's advertised in its announce), and
+    // what each peer's latest announce advertised (0: not measured) - a writer adds a reader's to its own.
+    struct tt_CostFit tx_fit;
+    struct tt_CostFit rx_fit;
+    uint16_t peer_cost_datagram_ns[tt_MAX_CONTEXT_IDS];
+    uint16_t peer_cost_frame_ns[tt_MAX_CONTEXT_IDS];
+    uint16_t advertised_cost_datagram_ns; // what this context's announce carries now
+    uint16_t advertised_cost_frame_ns;
     // The reader (DESIGN.md section 8, "BEST_EFFORT"): its pooled loss over every writer's units, the units received
     // since the last cap tick (U) and whether a run was among them, the kernel's reassembly limits as read at create
     // (its defaults where unreadable), and the failure counters as last read.
