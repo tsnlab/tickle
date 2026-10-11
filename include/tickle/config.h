@@ -742,6 +742,21 @@
 #ifndef tt_HYBRID_RX_FRAME_NS
 #define tt_HYBRID_RX_FRAME_NS 3200
 #endif
+// When a measured cost fit is used (DESIGN.md section 8, "Error bounds"): at least this many calls in it, the standard
+// error of the share c_d / (c_d + c_f) below this, and its prediction within this factor of the process's CPU time over
+// the check window - judged every tt_HYBRID_FIT_CHECK_FRAMES frames.
+#ifndef tt_HYBRID_FIT_MIN_CALLS
+#define tt_HYBRID_FIT_MIN_CALLS 64
+#endif
+#ifndef tt_HYBRID_FIT_MAX_SHARE_SE
+#define tt_HYBRID_FIT_MAX_SHARE_SE 0.1
+#endif
+#ifndef tt_HYBRID_FIT_CPU_FACTOR
+#define tt_HYBRID_FIT_CPU_FACTOR 2.0
+#endif
+#ifndef tt_HYBRID_FIT_CHECK_FRAMES
+#define tt_HYBRID_FIT_CHECK_FRAMES 8192U
+#endif
 // The kernel's truesize of one held IP fragment, which user space cannot see (t_u in the reader's cap, DESIGN.md
 // section 8, "BEST_EFFORT").
 #ifndef tt_HYBRID_FRAGMENT_TRUESIZE
