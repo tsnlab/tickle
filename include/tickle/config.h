@@ -829,12 +829,6 @@
 #ifndef tt_LARGE_SEND_RETRY_MAX_NS
 #define tt_LARGE_SEND_RETRY_MAX_NS 1000000ULL
 #endif
-// How long after the last large fragment arrived core still asks the HAL to drain the receive sockets whenever it
-// leaves them - before a large sample's callback, and when tt_Context_poll() returns (tt_rx_drain_start(), hal.h). A
-// stream's next sample normally comes well within it; a context that stopped receiving large samples stops draining.
-#ifndef tt_LARGE_RX_DRAIN_LINGER_NS
-#define tt_LARGE_RX_DRAIN_LINGER_NS 1000000000ULL // 1 s
-#endif
 // tx_buffer: room for a full batch plus one submessage overshooting it, which is what end_encode()'s
 // deferral needs - and, with fragmentation, room for a whole sample behind a batch that is still pending,
 // because the sample is encoded in one piece and only split as it is sent.

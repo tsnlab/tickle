@@ -16102,7 +16102,6 @@ static bool deliver_large_fragment(struct tt_Context* node, struct large_fragmen
         }
         return false;
     }
-    node->large.rx_last_ns = rx_now(node);
     if (fragment->data_header != NULL) {
         for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, rd32(fragment->header, fragment->data_header->endpoint_id),
                           route_large_fragment, fragment);
@@ -18446,10 +18445,16 @@ tt_ret_t tt_Context_poll(struct tt_Context* node, int64_t timeout) {
         return tt_RET_BUSY;
     }
     __atomic_store_n(&node->poller_thread, tt_thread_self(), __ATOMIC_RELAXED); // NOLINT(misc-include-cleaner)
+#if tt_LARGE_SAMPLES
+    const uint64_t reassembled = node->large.reassembled;
+#endif
     tt_ret_t result = node_poll(node, timeout);
 #if tt_LARGE_SAMPLES
-    if (node->large.rx_last_ns != 0 && tt_get_ns() - node->large.rx_last_ns < tt_LARGE_RX_DRAIN_LINGER_NS) {
-        large_rx_drain(node); // back to the application, which may take milliseconds over the sample just delivered
+    // Back to the application with a large sample just delivered, which it may take milliseconds over (rmw copies it
+    // into the caller's message). Only then: a poll that delivered nothing hands back to a caller that polls again at
+    // once, and a drain started and stopped on every such return cost ~50,000 starts a second on the PC.
+    if (node->large.reassembled != reassembled) {
+        large_rx_drain(node);
     }
 #endif
     node->rx_clock_ns = 0; // outside a poll a receive reads the clock itself

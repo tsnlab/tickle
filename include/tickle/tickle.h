@@ -415,9 +415,6 @@ struct tt_LargeState {
     void* user;
     struct tt_LargeAssembly assemblies[tt_LARGE_ASSEMBLIES];
     uint32_t clock;
-    // When the last large fragment arrived (0: never): while it is recent, the receive sockets are drained whenever
-    // core is away from them (large_rx_drain(), tt_rx_drain_start()).
-    uint64_t rx_last_ns;
     // Counters, on the traffic line as large_*. reassembled: delivered whole. abandoned: given up whole or in part (a
     // fragment lost for good, a newer sample needing the room, its writer gone). no_buffer: acquire said no - a
     // best-effort sample is then lost, a RELIABLE fragment is left unrecorded and asked for again. dropped: fragments
