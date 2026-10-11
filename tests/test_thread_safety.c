@@ -1073,12 +1073,32 @@ int main(void) {
     for (int i = 0; i <= NODE_COUNT; i++) {
         harness_drops += harness_dropped[i];
     }
-    printf("harness: %u of %u samples delivered, harness dropped %lu datagram(s), segment dropped %lu\n",
-           delivered_total, produced, (unsigned long)harness_drops,
-           (unsigned long)(node_a.segment_full_dropped + node_b.segment_full_dropped));
+    //
+    // The third place a sample can go is the reader's own BEST_EFFORT ordering rule, which discards a sample no
+    // newer than one already delivered and counts it in out_of_order_discarded. Left out of this sum until
+    // 2026-10-11, and that was the "loss with no mechanism" the gate reported then: a sample arriving behind a
+    // newer one is what A's switch from UDP to B's segment produces. A sends over UDP while B's segment is absent or
+    // still being built (attach ABSENT or BAD_HEADER, rechecked only after tt_SEGMENT_ATTACH_RETRY_SENDS sends), then
+    // writes to the ring; B drains the ring ahead of the UDP datagrams still queued, and those arrive old. Measured
+    // over 240 runs under 4x parallel load: 9 of 240 failed without this term; with it, every run with no
+    // datagram dropped had delivered + discarded equal to produced exactly (190 runs), and the 50 with drops never
+    // summed below it.
+    uint64_t reorder_discards = 0;
+    for (int t = 0; t < PUBLISHER_THREADS; t++) {
+        reorder_discards += subscribers[t].out_of_order_discarded;
+    }
+    const uint64_t segment_drops = node_a.segment_full_dropped + node_b.segment_full_dropped;
+    printf("harness: %u of %u samples delivered, harness dropped %lu datagram(s), segment dropped %lu, "
+           "discarded as out of order %lu\n",
+           delivered_total, produced, (unsigned long)harness_drops, (unsigned long)segment_drops,
+           (unsigned long)reorder_discards);
     EXPECT_TRUE(delivered_total <= produced);
-    if (delivered_total < produced) {
-        EXPECT_TRUE(harness_drops > 0 || (node_a.segment_full_dropped + node_b.segment_full_dropped) > 0);
+    if (harness_drops == 0 && segment_drops == 0) {
+        // No datagram was dropped, so every sample was either handed up or discarded as out of order - an
+        // equality, whatever the packing of samples into datagrams.
+        EXPECT_TRUE((uint64_t)delivered_total + reorder_discards == produced);
+    } else if (delivered_total < produced) {
+        EXPECT_TRUE(harness_drops > 0 || segment_drops > 0 || reorder_discards > 0);
     }
 
     uint32_t wrong_runs = 0;
