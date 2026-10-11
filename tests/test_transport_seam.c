@@ -364,6 +364,8 @@ static void test_segment_header_catches_what_the_name_cannot(void) {
 // here undefined behaviour - UBSan reported it under `make sanitize` until 2026-10-11.
 static struct tt_SegmentHeader* make_ring(void* storage, uint32_t slots, uint32_t slot_bytes) {
     struct tt_SegmentHeader* header = storage;
+    // A mapping is page-aligned; a fixture that is not would only fail under UBSan without this.
+    EXPECT_EQ_INT(0, (int)((uintptr_t)storage % _Alignof(struct tt_SegmentHeader)));
     memset(storage, 0, segment_bytes(slots, slot_bytes));
     header->magic = tt_SEGMENT_MAGIC;
     header->version = tt_SEGMENT_VERSION;
