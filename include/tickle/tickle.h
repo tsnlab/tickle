@@ -567,10 +567,9 @@ struct tt_HybridState {
     uint16_t advertised;    // the ceiling every announce now carries (tt_AnnounceHeader.ip_reassembly_max)
     uint8_t rx_writer_next; // the entry the next new writer replaces
     bool rx_capable;        // this context's ceiling allows runs at all: only then is any of this kept
-    bool tick_runs;
     bool reasm_failures_read;
     bool withdrawn; // advertising one unit because the kernel's reassembly failed while runs arrived
-    bool cap_off;   // _tt_CONFIG.reassembly_cap_off as tt_Context_create() read it: no memory cap (a benchmark arm)
+    bool cap_off;   // _tt_CONFIG.reassembly_cap_off as create read it: no cap, no withdrawal (a benchmark arm)
     // Counters, on the traffic line as hybrid_*. runs: run datagrams sent; run_units: units in them; mtu_units: units
     // of multi-unit samples sent alone in their first transmission (tails included); n_hist: n chosen per sample and
     // destination; cap_changes: changes of the advertised ceiling; withdrawals: times the kernel's failures withdrew

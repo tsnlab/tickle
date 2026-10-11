@@ -1205,8 +1205,10 @@ struct _tt_Config {
     uint16_t ip_reassembly_max;
     // 1: the reader advertises its configured ceiling whatever its loss and load - no reassembly-memory cap (DESIGN.md
     // section 8, "BEST_EFFORT"). For a benchmark arm only: a writer's forced IP is n_max, the reader's advertisement,
-    // so without this a forced-IP arm at 1% loss runs at the cap's one unit and is the MTU arm. The kernel's reassembly
-    // memory is then unprotected; the ReasmFails withdrawal still applies. 0 (the default): capped.
+    // so without this a forced-IP arm at 1% loss runs at the cap's one unit and is the MTU arm. Nor is it withdrawn on
+    // the kernel's reassembly failures: at 1 MB, 30 Hz and 1% the incomplete reassemblies pass ipfrag_high_thresh
+    // within the first second on a veth, and the withdrawal then made the forced arm MTU too. The kernel's reassembly
+    // memory is unprotected - which is what such an arm measures. 0 (the default): capped and withdrawn.
     uint8_t reassembly_cap_off;
 };
 

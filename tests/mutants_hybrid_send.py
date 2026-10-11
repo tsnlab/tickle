@@ -538,10 +538,17 @@ MUTANTS = [
         SEND,
     ),
     (
-        "withdrawal: without runs arriving",
+        "withdrawal: with nothing arriving",
         "src/tickle.c",
-        "            if (hybrid->tick_runs && !hybrid->withdrawn) {",
-        "            if (!hybrid->withdrawn) {",
+        "            bool runs_possible = hybrid->tick_units != 0 && hybrid_units_within(hybrid->advertised, false) >= 2U;",
+        "            bool runs_possible = true;",
+        SEND,
+    ),
+    (
+        "withdrawal: of a cap-off reader",
+        "src/tickle.c",
+        "            if (runs_possible && !hybrid->withdrawn && !hybrid->cap_off) {",
+        "            if (runs_possible && !hybrid->withdrawn) {",
         SEND,
     ),
     (
@@ -567,15 +574,17 @@ MUTANTS = [
         SEND,
     ),
     (
-        "withdrawal: a large run's receipt not noted",
+        "reader: a small run's units not noted",
         "src/tickle.c",
-        "    const uint8_t* payload = buffer + head;\n#if tt_HYBRID_TRANSPORT\n    uint64_t rx_start = hybrid_rx_start(node);\n"
-        "    if (node->hybrid.rx_capable) {\n"
-        "        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);\n"
-        "        node->hybrid.tick_runs = true;",
-        "    const uint8_t* payload = buffer + head;\n#if tt_HYBRID_TRANSPORT\n    uint64_t rx_start = hybrid_rx_start(node);\n"
-        "    if (node->hybrid.rx_capable) {\n"
-        "        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);",
+        "    if (node->hybrid.rx_capable) {\n        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);\n    }\n#endif\n    for (uint32_t i = 0; i < run_count; i++) {\n        uint32_t unit_index = index + i;\n        uint32_t unit_length",
+        "    if (false) {\n    }\n#endif\n    for (uint32_t i = 0; i < run_count; i++) {\n        uint32_t unit_index = index + i;\n        uint32_t unit_length",
+        SEND,
+    ),
+    (
+        "reader: a large run's units not noted",
+        "src/tickle.c",
+        "    if (node->hybrid.rx_capable) {\n        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);\n    }\n#endif\n    for (uint32_t i = 0; i < run_count; i++) {\n        uint32_t unit_index = index + i;\n        struct large_fragment",
+        "    if (false) {\n    }\n#endif\n    for (uint32_t i = 0; i < run_count; i++) {\n        uint32_t unit_index = index + i;\n        struct large_fragment",
         SEND,
     ),
 ]
