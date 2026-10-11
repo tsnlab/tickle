@@ -85,9 +85,7 @@ def main():
         runs[key] = dict(pub=ipub / mb, sub=isub / mb, sub_delivered=isub / delivered_mb if delivered_mb else
                          float("nan"), share=int(sub["delivered"]) / max(1, int(pub["published"])),
                          p50=float(sub.get("latency_median_us", "nan")), p99=float(sub.get("latency_p99_us", "nan")),
-                         hist=pub.get("hybrid_n_hist", "-"), txfit=pub.get("hybrid_tx_fit", "-"),
-                         txchecks=pub.get("hybrid_tx_checks", "-"), rxfit=sub.get("hybrid_rx_fit", "-"),
-                         rxchecks=sub.get("hybrid_rx_checks", "-"), cap=sub.get("hybrid_advertised", "-"))
+                         hist=pub.get("hybrid_n_hist", "-"), cap=sub.get("hybrid_advertised", "-"))
         if meta["arm"] not in (ref, twin) and meta["loss"] == "0" and "hybrid_n_hist" in pub:
             buckets = [int(x) for x in pub["hybrid_n_hist"].split("/")]
             hist_hits.setdefault(meta["cell"], []).append(buckets[N_MAX_BUCKET] > 0)
@@ -130,14 +128,13 @@ def main():
                 p99 = mean_se([x["p99"] for x in arm_runs])[0]
                 print(f"{cell:<11} {proc:<8} {arm:<10} {ref_mean / 1e6:>10.2f}M  {d:+7.2%} {se:7.2%} {floor:7.2%}"
                       f"   {verdict:<8} {share:9.3f} {p50:7.0f} {p99:7.0f}")
-    print("realized treatment (last rep of each arm): cell arm n_hist tx_fit(checks) rx_fit(checks) sub_advertised")
+    print("realized treatment (last rep of each arm): cell arm n_hist sub_advertised")
     for cell in cells:
         for arm in arms:
             reps = sorted(k[2] for k in runs if k[0] == cell and k[1] == arm)
             if reps:
                 x = runs[(cell, arm, reps[-1])]
-                print(f"  {cell:<11} {arm:<10} {x['hist']:<22} {x['txfit']}({x['txchecks']}) "
-                      f"{x['rxfit']}({x['rxchecks']}) {x['cap']}")
+                print(f"  {cell:<11} {arm:<10} {x['hist']:<22} {x['cap']}")
     if overall_void:
         print("OVERALL VOID: " + "; ".join(overall_void))
     else:

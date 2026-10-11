@@ -516,46 +516,11 @@ struct tt_HybridRxWriter {
     uint8_t source;
 };
 
-// A least-squares fit t = c_d d + c_f f over timed calls of d datagrams and f frames taking t ns (DESIGN.md section 8,
-// "Measuring c_d and c_f"): the running sums, halved with `frames` at tt_HYBRID_WINDOW_FRAMES, and the check window
-// over which the fit's prediction is compared with the process's CPU time (tt_process_cpu_ns()).
-struct tt_CostFit {
-    double s_dd;
-    double s_df;
-    double s_ff;
-    double s_dt;
-    double s_ft;
-    double s_tt;
-    double calls;
-    double frames;
-    double check_d; // datagrams and frames timed since the check window opened
-    double check_f;
-    uint64_t check_cpu_ns; // tt_process_cpu_ns() when it opened; 0: not yet
-    uint32_t check_frames;
-    // The last check's result: the costs used, in ns, or 0 for "not measured" (the platform default applies). And how
-    // many checks passed and failed, on the traffic line.
-    uint32_t datagram_ns;
-    uint32_t frame_ns;
-    uint32_t accepted;
-    uint32_t rejected;
-    uint32_t cpu_share_pct; // the last judged fit's prediction as a share of the process's CPU time, in %
-    bool logged;            // its refusal for disagreeing with that CPU time has been logged
-};
-
 // Buckets of the n histogram: 1, 2-3, 4-7, 8-15, 16-31, 32 up to tt_HYBRID_N_MAX - 1, and tt_HYBRID_N_MAX.
 #define tt_HYBRID_N_BUCKETS 7
 
 // A context's hybrid-transport state (tt_Context.hybrid).
 struct tt_HybridState {
-    // The costs this context measures as a sender and as a receiver (the receiver's advertised in its announce), and
-    // what each peer's latest announce advertised (0: not measured) - a writer adds a reader's to its own.
-    struct tt_CostFit tx_fit;
-    struct tt_CostFit rx_fit;
-    uint16_t peer_cost_datagram_ns[tt_MAX_CONTEXT_IDS];
-    uint16_t peer_cost_frame_ns[tt_MAX_CONTEXT_IDS];
-    uint16_t advertised_cost_datagram_ns; // what this context's announce carries now
-    uint16_t advertised_cost_frame_ns;
-    uint64_t rx_reassembled; // samples reassembled when the datagram being timed began (hybrid_rx_start())
     // The reader (DESIGN.md section 8, "BEST_EFFORT"): its pooled loss over every writer's units, the units received
     // since the last cap tick (U) and whether a run was among them, the kernel's reassembly limits as read at create
     // (its defaults where unreadable), and the failure counters as last read.
@@ -3234,9 +3199,9 @@ tt_ret_t tt_Context_destroy(struct tt_Context* node);
 // every entry carries its node's index in spare bits of kind and qos (tt_UPDATE_NODE_INDEX_* below).
 // Bumped 11 -> 12 for large-message stage 2 (DESIGN.md section 8): two new submessage types, FRAG_FIRST_L and
 // FRAG_CONT_L, for samples above tt_MAX_SAMPLE_LENGTH. Every existing submessage is unchanged byte for byte.
-// Bumped 12 -> 13 for the hybrid transport (DESIGN.md section 8): tt_AnnounceHeader gained the reassembly ceiling and
-// the two cost fields, and two run types, FRAG_RUN_L and FRAG_RUN, carry several fragments in one IP-fragmented
-// datagram. Types 2, 8, 9, 11 and 12 are unchanged byte for byte.
+// Bumped 12 -> 13 for the hybrid transport (DESIGN.md section 8): tt_AnnounceHeader gained the reassembly ceiling, the
+// reader's frame loss and 2 reserved bytes, and two run types, FRAG_RUN_L and FRAG_RUN, carry several fragments in one
+// IP-fragmented datagram. Types 2, 8, 9, 11 and 12 are unchanged byte for byte.
 #define tt_VERSION 13
 
 struct tt_Header {
@@ -3375,10 +3340,11 @@ struct tt_AnnounceHeader {
     // reassembly, in bytes, as a ceiling on the runs a writer may send it; 0 = none (n = 1). Its setting
     // (_tt_CONFIG.ip_reassembly_max) capped by its receive buffer (tt_MAX_BUFFER_LENGTH).
     uint16_t ip_reassembly_max;
-    // The receiver's measured costs per datagram and per frame, in nanoseconds, which a writer adds to its own when it
-    // chooses n; 0 = not measured (always, until the cost fit exists).
-    uint16_t cost_datagram_ns;
-    uint16_t cost_frame_ns;
+    // The frame loss this context measures as a reader, the p a writer's n is chosen with (DESIGN.md section 8): 0 = no
+    // estimate, read as 1; else the exponent e in the high byte and the mantissa m in the low, p = (256 + m) / 2^(e +
+    // 9).
+    uint16_t loss_p;
+    uint16_t reserved; // zero
     /* Dynamically allocated
     struct tt_UpdateEntity entities[];
     */
