@@ -244,9 +244,14 @@ static void print_hybrid(const struct tt_Context* node, const struct tt_Publishe
     for (int i = 0; i < tt_HYBRID_N_BUCKETS; i++) {
         printf("%s%lu", i == 0 ? "" : "/", (unsigned long)hybrid->n_hist[i]);
     }
-    printf(" hybrid_advertised=%u hybrid_cap_changes=%lu hybrid_withdrawals=%lu hybrid_rx_loss=%u/%u",
-           (unsigned)hybrid->advertised, (unsigned long)hybrid->cap_changes, (unsigned long)hybrid->withdrawals,
-           hybrid->rx_loss.events, hybrid->rx_loss.frames);
+    printf(" hybrid_advertised=%u hybrid_cap=%u hybrid_n_fail=%u hybrid_cap_changes=%lu hybrid_collapses=%lu"
+           " hybrid_probes=%lu hybrid_probe_failures=%lu hybrid_rescales=%lu hybrid_lifetime_s=%.1f"
+           " hybrid_rx_loss=%u/%u hybrid_window=%u/%u",
+           (unsigned)hybrid->advertised, (unsigned)hybrid->cap, (unsigned)hybrid->n_fail,
+           (unsigned long)hybrid->cap_changes, (unsigned long)hybrid->collapses, (unsigned long)hybrid->probes,
+           (unsigned long)hybrid->probe_failures, (unsigned long)hybrid->rescales,
+           (double)hybrid->lifetime_ns / (double)tt_SECOND, hybrid->rx_loss.events, hybrid->rx_loss.frames,
+           hybrid->window.lost, hybrid->window.sent);
     printf(" hybrid_mtu_loss=%u/%u hybrid_advertised_loss=0x%04x", hybrid->mtu_loss.events, hybrid->mtu_loss.frames,
            (unsigned)hybrid->advertised_loss);
     if (pub != NULL) {

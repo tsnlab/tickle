@@ -727,22 +727,64 @@
 #ifndef tt_HYBRID_WINDOW_FRAMES
 #define tt_HYBRID_WINDOW_FRAMES (1UL << 20)
 #endif
-// The kernel's truesize of one held IP fragment, which user space cannot see (t_u in the reader's cap, DESIGN.md
-// section 8, "BEST_EFFORT").
-#ifndef tt_HYBRID_FRAGMENT_TRUESIZE
-#define tt_HYBRID_FRAGMENT_TRUESIZE 2048
+// The reader's control law (DESIGN.md section 8, "The objective and the control law"). The reassembly-queue lifetime
+// tau is at most this - the kernel's default ipfrag_time, which TickLE cannot read, and the longest it keeps an
+// incomplete reassembly - and less when a writer's IP ID wraps sooner (65,536 of its fragmented datagrams).
+#ifndef tt_HYBRID_QUEUE_LIFETIME_NS
+#define tt_HYBRID_QUEUE_LIFETIME_NS (30ULL * tt_SECOND)
 #endif
 // How long a RELIABLE writer sends a reader MTU units only after judging its path to drop IP fragments, before it
-// re-probes with one run: the withdrawal's 2T at the kernel's default ipfrag_time (DESIGN.md section 8).
+// re-probes with one run: 2 tau at the default lifetime.
 #ifndef tt_HYBRID_PATH_CLEAN_NS
-#define tt_HYBRID_PATH_CLEAN_NS (60ULL * tt_SECOND)
+#define tt_HYBRID_PATH_CLEAN_NS (2ULL * tt_HYBRID_QUEUE_LIFETIME_NS)
 #endif
-// The kernel's reassembly limits where they cannot be read: its own defaults, 4 MB and 30 s.
-#ifndef tt_HYBRID_IPFRAG_HIGH_THRESH
-#define tt_HYBRID_IPFRAG_HIGH_THRESH 4194304
+// The collapse test: at least this many runs in the window, this many of them lost, z at least this (one-sided 0.1%)
+// against the run loss frame loss alone allows (L0), and at least this many times L0 lost. A window with neither a
+// collapse nor a clean verdict gathers more, up to tt_HYBRID_WINDOW_MAX_RUNS.
+#ifndef tt_HYBRID_COLLAPSE_MIN_RUNS
+#define tt_HYBRID_COLLAPSE_MIN_RUNS 16U
 #endif
-#ifndef tt_HYBRID_IPFRAG_TIME_S
-#define tt_HYBRID_IPFRAG_TIME_S 30
+#ifndef tt_HYBRID_COLLAPSE_MIN_LOST
+#define tt_HYBRID_COLLAPSE_MIN_LOST 4U
+#endif
+#ifndef tt_HYBRID_COLLAPSE_Z
+#define tt_HYBRID_COLLAPSE_Z 3.09
+#endif
+#ifndef tt_HYBRID_COLLAPSE_RATIO
+#define tt_HYBRID_COLLAPSE_RATIO 2.0
+#endif
+#ifndef tt_HYBRID_WINDOW_MAX_RUNS
+#define tt_HYBRID_WINDOW_MAX_RUNS 1024U
+#endif
+// On a collapse the cap drops at once to this share of the ceiling, rounded (n_fail - 1 for n_fail up to 5).
+#ifndef tt_HYBRID_DROP
+#define tt_HYBRID_DROP 0.7
+#endif
+// The cap a reader starts at, doubled per clean window until the first collapse (slow start).
+#ifndef tt_HYBRID_SLOW_START
+#define tt_HYBRID_SLOW_START 2U
+#endif
+// A probe goes this far above the ceiling; the probe wait, 2 tau, doubles per failed probe up to 2^this.
+#ifndef tt_HYBRID_PROBE_STEP
+#define tt_HYBRID_PROBE_STEP 1.25
+#endif
+#ifndef tt_HYBRID_PROBE_BACKOFF_MAX
+#define tt_HYBRID_PROBE_BACKOFF_MAX 3U
+#endif
+// The ceiling scales with 1 / (R p) once R p has fallen (or risen) by this factor - about half - from its anchor for
+// this many ticks in a row, by at most tt_HYBRID_SCALE_MAX at a time; p moves it only once p_mtu rests on this many
+// events.
+#ifndef tt_HYBRID_SCALE_AT
+#define tt_HYBRID_SCALE_AT 1.9
+#endif
+#ifndef tt_HYBRID_SCALE_TICKS
+#define tt_HYBRID_SCALE_TICKS 3
+#endif
+#ifndef tt_HYBRID_SCALE_MAX
+#define tt_HYBRID_SCALE_MAX 4.0
+#endif
+#ifndef tt_HYBRID_SCALE_MIN_EVENTS
+#define tt_HYBRID_SCALE_MIN_EVENTS 10U
 #endif
 // Samples a node can be reassembling at once, from any mix of senders. When all are busy and a fragment
 // of another sample arrives, the reassembly started longest ago is abandoned and counted
@@ -1178,12 +1220,10 @@ struct _tt_Config {
     // The largest datagram accepted from IP reassembly (_tt_IP_REASSEMBLY_MAX: Linux 65507, FreeRTOS 0); 0 = none.
     // Advertised capped by tt_MAX_BUFFER_LENGTH.
     uint16_t ip_reassembly_max;
-    // 1: the reader advertises its configured ceiling whatever its loss and load - no reassembly-memory cap (DESIGN.md
-    // section 8, "BEST_EFFORT"). For a benchmark arm only: a writer's forced IP is n_max, the reader's advertisement,
-    // so without this a forced-IP arm at 1% loss runs at the cap's one unit and is the MTU arm. Nor is it withdrawn on
-    // the kernel's reassembly failures: at 1 MB, 30 Hz and 1% the incomplete reassemblies pass ipfrag_high_thresh
-    // within the first second on a veth, and the withdrawal then made the forced arm MTU too. The kernel's reassembly
-    // memory is unprotected - which is what such an arm measures. 0 (the default): capped and withdrawn.
+    // 1: the reader advertises its configured ceiling whatever its windows show - no control law, no cap (DESIGN.md
+    // section 8, "The objective and the control law"). For a benchmark arm only: a writer's forced IP is n_max, the
+    // reader's advertisement, so with a cap a forced-IP arm runs at the cap and is not the arm it claims. The kernel's
+    // reassembly memory is unprotected - which is what such an arm measures. 0 (the default): capped.
     uint8_t reassembly_cap_off;
 };
 

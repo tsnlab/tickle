@@ -2375,9 +2375,7 @@ static void hybrid_rx_run(struct tt_HybridState* hybrid, struct tt_HybridRxWrite
     run_window_observe(&writer->runs, size, lost);
     loss_estimate_observe(&hybrid->rx_loss, size, lost ? 1U : 0U);
     writer->tick_runs++;
-    if (!lost && size > hybrid->window_top) {
-        hybrid->window_top = (uint8_t)(size < UINT8_MAX ? size : UINT8_MAX);
-    }
+    hybrid->window_n = size > hybrid->window_n ? size : hybrid->window_n;
 }
 
 // `units` MTU units of `writer`'s, `lost` of them lost: p and p_mtu.
@@ -2453,8 +2451,8 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
     }
     hybrid->tick_units += (index + units) - (index > writer->next ? index : writer->next);
     if (run) {
-        if (index + units < tail || (index == 0 && writer->layout_n == 0)) {
-            writer->layout_n = (uint8_t)units; // a full run says n; a sample's only run says at least it
+        if (index + units < tail || index == 0) {
+            writer->layout_n = (uint8_t)units; // a full run says n, and so does a sample's first: its only one is n
         }
         hybrid_rx_run(hybrid, writer, units, false);
     } else {
@@ -4271,6 +4269,9 @@ static bool run_due_entry(struct tt_Context* node, uint64_t now, bool* has_next,
 }
 
 static void node_update(struct tt_Context* node, uint64_t time, void* param);
+#if tt_HYBRID_TRANSPORT
+static void hybrid_reader_start(struct tt_Context* node);
+#endif
 #if tt_LARGE_SAMPLES
 // Large-message stage 2 (DESIGN.md section 8) - see each definition's own comment.
 static void large_abandon_subscriber(struct tt_Context* node, const struct tt_Subscriber* sub);
@@ -4625,17 +4626,10 @@ static void reset_node_state(struct tt_Context* node) {
     memset(&node->large, 0, sizeof(node->large));
 #endif
 #if tt_HYBRID_TRANSPORT
-    // Nothing heard, every counter zero. The announce advertises the configured ceiling until the reader's cap says
-    // otherwise, and the cap is kept only where the ceiling allows a run at all - not on a core-default build.
+    // Nothing heard, every counter zero. The announce advertises the reader's slow-start cap, and a cap is kept only
+    // where the ceiling allows a run at all - not on a core-default build, which advertises its ceiling as it is.
     memset(&node->hybrid, 0, sizeof(node->hybrid));
-    node->hybrid.advertised = node->ip_reassembly_max;
-    node->hybrid.rx_capable = hybrid_units_within(node->ip_reassembly_max, false) >= 2U;
-    node->hybrid.cap_off = _tt_CONFIG.reassembly_cap_off != 0;
-    if (!tt_ip_reassembly_limits(&node->hybrid.frag_high_thresh, &node->hybrid.frag_time_s) ||
-        node->hybrid.frag_time_s == 0) {
-        node->hybrid.frag_high_thresh = tt_HYBRID_IPFRAG_HIGH_THRESH;
-        node->hybrid.frag_time_s = tt_HYBRID_IPFRAG_TIME_S;
-    }
+    hybrid_reader_start(node);
 #endif
 
     memset(node->scheduler, 0, sizeof(struct tt_TCB) * tt_MAX_SCHEDULER_LENGTH);
@@ -10866,42 +10860,266 @@ static bool every_peer_reached(struct tt_Context* node) {
 }
 
 #if tt_HYBRID_TRANSPORT
-// The largest n whose run loss L(n) = 1 - (1 - p)^n keeps this reader's incomplete reassemblies within half the
-// kernel's threshold at the units a second it received over the last `elapsed_ns`; n_max when nothing arrived, at
-// least 1.
-static uint32_t hybrid_reader_cap(const struct tt_Context* node, uint64_t elapsed_ns, uint32_t n_max) {
-    const struct tt_HybridState* hybrid = &node->hybrid;
-    if (hybrid->tick_units == 0 || elapsed_ns == 0) {
-        return n_max;
-    }
-    double units_per_s = (double)hybrid->tick_units * (double)tt_SECOND / (double)elapsed_ns;
-    double held_per_loss = units_per_s * (double)hybrid->frag_time_s * (double)tt_HYBRID_FRAGMENT_TRUESIZE;
-    double budget = (double)hybrid->frag_high_thresh / held_per_loss; // L(n) may reach this
-    double p = loss_estimate_p(&hybrid->rx_loss);
-    double clean = 1.0;
-    uint32_t cap = 1;
-    for (uint32_t run_n = 1; run_n <= n_max; run_n++) {
-        clean *= 1.0 - p;
-        if (1.0 - clean > budget) {
-            break;
-        }
-        cap = run_n;
-    }
-    return cap;
-}
+// ---- The reader's cap: the control law (DESIGN.md section 8, "The objective and the control law", decision 3)
+// ---------
+//
+// Reassembly memory is the host's, shared by every writer to it, so the reader owns the cap and advertises it. Once per
+// announce interval it judges the runs since its last decision against its MTU units: a collapse - runs lost far beyond
+// what the frame loss predicts - drops the cap at once to drop(n_fail) and holds for the queue lifetime tau while the
+// full memory drains; a clean window grows it (doubling until the first collapse, then half the remaining distance to
+// the plateau n_fail - 1 a tick); above the plateau it probes only rarely, on time (2 tau, doubling per failed probe);
+// and the remembered ceiling moves with R p, the rate at which incomplete reassemblies are made. Plain frame loss never
+// moves it. Nothing here reads the kernel: tau is derived from what the reader sees (its writers' run rates).
 
-// What the announce carries for a cap of `cap` units: the configured ceiling at n_max, else the largest of 1, 2, 4, 8,
-// 16 and 32 units within the cap, as bytes that hold exactly that many units of either type pair.
+#define HYBRID_IP_ID_SPACE 65536.0 // an incomplete reassembly ends when its writer's IP ID comes round again
+
+// How many units of either type pair `cap` units are, as the announce's ceiling: the configured one when the cap is
+// n_max, else framing plus `cap` units of 8/9, which reads back as `cap` units of either pair.
 static uint16_t hybrid_cap_bytes(const struct tt_Context* node, uint32_t cap, uint32_t n_max) {
     if (cap >= n_max) {
         return node->ip_reassembly_max;
     }
-    uint32_t quantised = 1;
-    while (quantised * 2U <= cap) {
-        quantised *= 2U;
-    }
-    uint32_t bytes = HYBRID_RUN_L_WIRE_FRAMING + (quantised * HYBRID_UNIT);
+    uint32_t bytes = HYBRID_RUN_L_WIRE_FRAMING + (cap * HYBRID_UNIT);
     return (uint16_t)(bytes < node->ip_reassembly_max ? bytes : node->ip_reassembly_max);
+}
+
+// The smallest whole number not below a positive value.
+static uint32_t hybrid_ceil(double value) {
+    uint32_t whole = (uint32_t)value;
+    return (double)whole < value ? whole + 1U : whole;
+}
+
+// The drop on a collapse at n: to 0.7 n at once, rounded - which for n up to 5 is n - 1.
+static uint32_t hybrid_drop(uint32_t n_fail) {
+    uint32_t dropped = (uint32_t)(((double)n_fail * tt_HYBRID_DROP) + HYBRID_HALF);
+    return dropped > 1U ? dropped : 1U;
+}
+
+// The run loss frame loss alone allows a window, L0 = 1 - (1 - p_hi)^s, s the window's mean run size and p_hi p_mtu's
+// one-sided 95% upper bound: what "q(n) = (1 - p)^n" predicts at the most loss the MTU units allow. 1 with no MTU
+// baseline at all.
+static double hybrid_baseline_run_loss(const struct tt_RunWindow* window, const struct tt_LossEstimate* mtu) {
+    double size = window->sent != 0 ? (double)window->frames / (double)window->sent : 1.0;
+    double p_hi = loss_estimate_p(mtu);
+    double clean = 1.0;
+    for (uint32_t i = 0; i < (uint32_t)size; i++) {
+        clean *= 1.0 - p_hi;
+    }
+    double part = size - (double)(uint32_t)size; // a mean size between two whole ones
+    clean *= 1.0 - (p_hi * part);
+    return 1.0 - clean;
+}
+
+// The collapse test, pre-defined (DESIGN.md section 8, "The collapse test"): of R runs in the window X were lost,
+// against L0 above. A collapse is X far beyond R L0 - z = (X - R L0 - 0.5) / sqrt(R L0 (1 - L0)) of at least
+// tt_HYBRID_COLLAPSE_Z (one-sided; binomial runs at the baseline's upper side, so an underestimated p errs towards "no
+// collapse") - and far in size too: X / R at least tt_HYBRID_COLLAPSE_RATIO x L0, with at least
+// tt_HYBRID_COLLAPSE_MIN_LOST runs lost of tt_HYBRID_COLLAPSE_MIN_RUNS. Without an MTU baseline L0 is 1: no decision.
+static bool hybrid_collapsed(const struct tt_RunWindow* window, const struct tt_LossEstimate* mtu) {
+    if (window->sent < tt_HYBRID_COLLAPSE_MIN_RUNS || window->lost < tt_HYBRID_COLLAPSE_MIN_LOST) {
+        return false;
+    }
+    double runs = (double)window->sent;
+    double lost = (double)window->lost;
+    double baseline = hybrid_baseline_run_loss(window, mtu);
+    double variance = runs * baseline * (1.0 - baseline);
+    if (variance <= 0.0) {
+        return false;
+    }
+    double z = (lost - (runs * baseline) - HYBRID_HALF) / hybrid_sqrt(variance);
+    return z >= tt_HYBRID_COLLAPSE_Z && lost >= tt_HYBRID_COLLAPSE_RATIO * baseline * runs;
+}
+
+// A clean window: enough runs, and no more of them lost than frame loss alone allows (R L0).
+static bool hybrid_clean(const struct tt_RunWindow* window, const struct tt_LossEstimate* mtu) {
+    return window->sent >= tt_HYBRID_COLLAPSE_MIN_RUNS &&
+           (double)window->lost <= hybrid_baseline_run_loss(window, mtu) * (double)window->sent;
+}
+
+// p as the ceiling's scaling reads it: p_mtu's point estimate once it rests on tt_HYBRID_SCALE_MIN_EVENTS events, 0
+// before (too few events to say where p is, or that it moved).
+static double hybrid_scale_p(const struct tt_HybridState* hybrid) {
+    if (hybrid->mtu_loss.events >= tt_HYBRID_SCALE_MIN_EVENTS) {
+        return (double)hybrid->mtu_loss.events / (double)hybrid->mtu_loss.frames;
+    }
+    return 0.0;
+}
+
+// The queue lifetime tau from the runs a second each writer sent in the last `elapsed_ns`: min(30 s, 65536 / D_s), the
+// longest over the sources that sent runs; unchanged when none did.
+static void hybrid_measure_lifetime(struct tt_HybridState* hybrid, uint64_t elapsed_ns) {
+    uint64_t longest = 0;
+    for (uint32_t i = 0; i < tt_HYBRID_RX_WRITERS; i++) {
+        struct tt_HybridRxWriter* writer = &hybrid->rx_writers[i];
+        if (writer->tick_runs == 0) {
+            continue;
+        }
+        uint32_t runs = 0; // every entry of this writer's source: the IP ID is the host's, not the topic's
+        for (uint32_t j = 0; j < tt_HYBRID_RX_WRITERS; j++) {
+            if (hybrid->rx_writers[j].sample != 0 && hybrid->rx_writers[j].source == writer->source) {
+                runs += hybrid->rx_writers[j].tick_runs;
+            }
+        }
+        double wrap_ns = HYBRID_IP_ID_SPACE * (double)elapsed_ns / (double)runs;
+        uint64_t lifetime =
+            wrap_ns < (double)tt_HYBRID_QUEUE_LIFETIME_NS ? (uint64_t)wrap_ns : tt_HYBRID_QUEUE_LIFETIME_NS;
+        longest = lifetime > longest ? lifetime : longest;
+    }
+    for (uint32_t i = 0; i < tt_HYBRID_RX_WRITERS; i++) {
+        hybrid->rx_writers[i].tick_runs = 0;
+    }
+    if (longest != 0) {
+        hybrid->lifetime_ns = longest;
+    }
+}
+
+// A collapse in the window: the ceiling it shows, the drop, the hold and the next probe.
+static void hybrid_collapse(struct tt_HybridState* hybrid, uint64_t now, double units_per_s) {
+    uint32_t run_n = hybrid->window_n > 1U ? hybrid->window_n : 2U;
+    // The kernel admits about the share that keeps its memory at the threshold, and the memory offered grows as n:
+    // the survival measured says where the collapse began, n q / q0 - not the cap a fast growth overshot to.
+    double p_mtu =
+        hybrid->mtu_loss.frames != 0 ? (double)hybrid->mtu_loss.events / (double)hybrid->mtu_loss.frames : 0.0;
+    double clean = 1.0;
+    for (uint32_t i = 0; i < run_n; i++) {
+        clean *= 1.0 - p_mtu;
+    }
+    double survived = 1.0 - ((double)hybrid->window.lost / (double)hybrid->window.sent);
+    uint32_t n_fail = hybrid_ceil((double)run_n * survived / clean);
+    n_fail = n_fail < run_n ? n_fail : run_n;
+    if (hybrid->n_fail != 0 && hybrid->n_fail < n_fail) {
+        n_fail = hybrid->n_fail; // a failed probe above it: the ceiling stands
+    }
+    n_fail = n_fail > 1U ? n_fail : 2U; // a ceiling of 1 would leave nothing to grow back to
+    if (hybrid->probe_since_ns != 0) {
+        hybrid->probe_failures++;
+        hybrid->backoff = hybrid->backoff < tt_HYBRID_PROBE_BACKOFF_MAX ? (uint8_t)(hybrid->backoff + 1U)
+                                                                        : (uint8_t)tt_HYBRID_PROBE_BACKOFF_MAX;
+    }
+    hybrid->n_fail = n_fail;
+    hybrid->cap = hybrid_drop(n_fail);
+    hybrid->anchor_r = units_per_s;
+    hybrid->anchor_p = hybrid_scale_p(hybrid);
+    hybrid->scale_streak = 0;
+    hybrid->hold_until_ns = now + hybrid->lifetime_ns;
+    hybrid->probe_at_ns = now + ((2U * hybrid->lifetime_ns) << hybrid->backoff);
+    hybrid->probe_since_ns = 0;
+    hybrid->collapses++;
+    TT_LOG_WARNING("Hybrid transport: runs collapsed at n = %u (%u of %u lost, p_mtu %.2g): ceiling %u, cap %u, "
+                   "held %u s",
+                   (unsigned)run_n, (unsigned)hybrid->window.lost, (unsigned)hybrid->window.sent, p_mtu,
+                   (unsigned)n_fail, (unsigned)hybrid->cap, (unsigned)(hybrid->lifetime_ns / tt_SECOND));
+}
+
+// A clean window: grow - doubling before any collapse, then half the way to the plateau n_fail - 1 - or, at the
+// plateau and on time, probe above the ceiling; a probe that has stayed clean for tau moves the ceiling up a step.
+static void hybrid_grow(struct tt_HybridState* hybrid, uint64_t now, uint32_t n_max) {
+    if (hybrid->probe_since_ns != 0) {
+        if (now - hybrid->probe_since_ns < hybrid->lifetime_ns) {
+            return; // a probe is judged over a whole lifetime: the memory it fills takes that long to show
+        }
+        hybrid->probe_since_ns = 0;
+        hybrid->backoff = 0;
+        uint32_t step = hybrid_ceil((double)hybrid->cap * tt_HYBRID_PROBE_STEP);
+        hybrid->n_fail = step > hybrid->cap ? step : hybrid->cap + 1U;
+        hybrid->n_fail = hybrid->n_fail > n_max ? 0U : hybrid->n_fail; // past n_max: no ceiling left
+        hybrid->probe_at_ns = now + (2U * hybrid->lifetime_ns);
+        return;
+    }
+    if (hybrid->n_fail == 0) {
+        hybrid->cap = hybrid->cap * 2U < n_max ? hybrid->cap * 2U : n_max;
+        return;
+    }
+    uint32_t plateau = hybrid->n_fail - 1U < n_max ? hybrid->n_fail - 1U : n_max;
+    plateau = plateau > 1U ? plateau : 1U;
+    if (hybrid->cap < plateau) {
+        hybrid->cap += (plateau - hybrid->cap + 1U) / 2U;
+        return;
+    }
+    if (now >= hybrid->probe_at_ns) {
+        uint32_t probe = hybrid_ceil((double)hybrid->n_fail * tt_HYBRID_PROBE_STEP);
+        probe = probe > hybrid->n_fail ? probe : hybrid->n_fail + 1U;
+        hybrid->cap = probe < n_max ? probe : n_max;
+        hybrid->probe_since_ns = now;
+        hybrid->probes++;
+    }
+}
+
+// The ceiling moves with R p (decision 3c): R p fallen to about half or less of its value at the anchor (by
+// tt_HYBRID_SCALE_AT) for tt_HYBRID_SCALE_TICKS ticks in a row scales n_fail up in proportion (at most
+// tt_HYBRID_SCALE_MAX) and allows a probe at once; risen as much, down, and the cap with it. p enters only where it was
+// measured both at the anchor and now; otherwise R alone moves it.
+static void hybrid_scale(struct tt_HybridState* hybrid, uint64_t now, double units_per_s, uint32_t n_max) {
+    if (hybrid->n_fail == 0 || hybrid->anchor_r <= 0.0 || units_per_s <= 0.0) {
+        hybrid->scale_streak = 0;
+        return;
+    }
+    double p = hybrid_scale_p(hybrid);
+    double factor = hybrid->anchor_r / units_per_s;
+    if (p > 0.0 && hybrid->anchor_p > 0.0) {
+        factor *= hybrid->anchor_p / p;
+    }
+    factor = factor < tt_HYBRID_SCALE_MAX ? factor : tt_HYBRID_SCALE_MAX;
+    factor = factor > 1.0 / tt_HYBRID_SCALE_MAX ? factor : 1.0 / tt_HYBRID_SCALE_MAX;
+    if (factor >= tt_HYBRID_SCALE_AT) {
+        hybrid->scale_streak = hybrid->scale_streak > 0 ? (int8_t)(hybrid->scale_streak + 1) : 1;
+    } else if (factor <= 1.0 / tt_HYBRID_SCALE_AT) {
+        hybrid->scale_streak = hybrid->scale_streak < 0 ? (int8_t)(hybrid->scale_streak - 1) : -1;
+    } else {
+        hybrid->scale_streak = 0;
+    }
+    if (hybrid->scale_streak < tt_HYBRID_SCALE_TICKS && hybrid->scale_streak > -tt_HYBRID_SCALE_TICKS) {
+        return;
+    }
+    uint32_t scaled = (uint32_t)(((double)hybrid->n_fail * factor) + HYBRID_HALF);
+    scaled = scaled > 2U ? scaled : 2U;
+    hybrid->anchor_r = units_per_s;
+    hybrid->anchor_p = p;
+    hybrid->scale_streak = 0;
+    hybrid->rescales++;
+    if (factor > 1.0) {
+        hybrid->n_fail = scaled > n_max ? 0U : scaled; // past n_max: no ceiling left
+        hybrid->probe_at_ns = now;
+        return;
+    }
+    hybrid->n_fail = scaled;
+    uint32_t plateau = scaled - 1U;
+    hybrid->cap = hybrid->cap < plateau ? hybrid->cap : plateau;
+}
+
+// One decision of the control law over the window since the last one.
+static void hybrid_control(struct tt_HybridState* hybrid, uint64_t now, double units_per_s, uint32_t n_max) {
+    if (now < hybrid->hold_until_ns) {
+        hybrid->window = (struct tt_RunWindow) {0}; // the full memory drains: nothing in it is about the cap now
+        hybrid->window_n = 0;
+        return;
+    }
+    hybrid_scale(hybrid, now, units_per_s, n_max);
+    bool decided = true;
+    if (hybrid_collapsed(&hybrid->window, &hybrid->mtu_loss)) {
+        hybrid_collapse(hybrid, now, units_per_s);
+    } else if (hybrid_clean(&hybrid->window, &hybrid->mtu_loss) || hybrid->cap < 2U) {
+        // A cap of one unit allows no run, so no window can ever be clean there: time alone moves it on - to its probe.
+        hybrid_grow(hybrid, now, n_max);
+    } else {
+        decided = hybrid->window.sent >= tt_HYBRID_WINDOW_MAX_RUNS; // undecided: gather more, up to a bound
+    }
+    if (decided) {
+        hybrid->window = (struct tt_RunWindow) {0};
+        hybrid->window_n = 0;
+    }
+}
+
+// The reader's starting point: the slow-start cap (or no cap at all for a benchmark arm's reader), tau at its 30 s
+// default until runs say otherwise.
+static void hybrid_reader_start(struct tt_Context* node) {
+    struct tt_HybridState* hybrid = &node->hybrid;
+    uint32_t n_max = hybrid_units_within(node->ip_reassembly_max, false);
+    hybrid->rx_capable = n_max >= 2U;
+    hybrid->cap_off = _tt_CONFIG.reassembly_cap_off != 0;
+    hybrid->cap = hybrid->cap_off || n_max < tt_HYBRID_SLOW_START ? n_max : tt_HYBRID_SLOW_START;
+    hybrid->lifetime_ns = tt_HYBRID_QUEUE_LIFETIME_NS;
+    hybrid->advertised = hybrid->rx_capable ? hybrid_cap_bytes(node, hybrid->cap, n_max) : node->ip_reassembly_max;
 }
 
 // Whether the p a reader measures has moved far enough from what its announce carries to announce it again: by a factor
@@ -10914,9 +11132,8 @@ static bool hybrid_loss_moved(uint16_t measured, uint16_t advertised) {
     return (measured >> 8U) != (advertised >> 8U);
 }
 
-// Once per announce interval (node_update()): the reader's cap from its pooled loss and the units it received, or one
-// unit while withdrawn - the host's reassembly failures rose while runs were arriving, and have not been still for 2T
-// since. A changed ceiling is a new generation, announced at once, so writers learn it from the ordinary announce.
+// Once per announce interval (node_update()): R and tau from the interval's traffic, one decision of the control law,
+// and the cap and p announced when they changed - a new generation, so writers learn them from the ordinary announce.
 static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
     struct tt_HybridState* hybrid = &node->hybrid;
     if (!hybrid->rx_capable) {
@@ -10924,41 +11141,19 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
     }
     if (hybrid->tick_ns == 0) {
         hybrid->tick_ns = now;
-        hybrid->reasm_failures_read = tt_ip_reassembly_failures(&hybrid->reasm_failures);
         return;
     }
     if (now - hybrid->tick_ns < tt_CONTEXT_UPDATE_INTERVAL) {
         return;
     }
-    uint64_t failures = 0;
-    if (tt_ip_reassembly_failures(&failures)) {
-        if (hybrid->reasm_failures_read && failures > hybrid->reasm_failures) {
-            // "While runs are arriving", as this reader can see it: units came, and its advertisement allowed runs.
-            // A run that lost a fragment never reaches the process at all, so the receipt of whole runs cannot be the
-            // test - on a path that drops later fragments none ever arrives (hybrid_send_netns.sh, BE_WITHDRAWAL).
-            bool runs_possible = hybrid->tick_units != 0 && hybrid_units_within(hybrid->advertised, false) >= 2U;
-            if (runs_possible && !hybrid->withdrawn && !hybrid->cap_off) {
-                hybrid->withdrawn = true;
-                hybrid->withdrawals++;
-                TT_LOG_WARNING("IP reassembly failures rose while runs could arrive: advertising one unit (#%lu)",
-                               (unsigned long)hybrid->withdrawals);
-            }
-            hybrid->still_since_ns = now;
-        }
-        hybrid->reasm_failures = failures;
-        hybrid->reasm_failures_read = true;
-    }
-    if (hybrid->withdrawn && now - hybrid->still_since_ns >= 2ULL * hybrid->frag_time_s * tt_SECOND) {
-        hybrid->withdrawn = false;
-    }
+    uint64_t elapsed = now - hybrid->tick_ns;
+    double units_per_s = (double)hybrid->tick_units * (double)tt_SECOND / (double)elapsed;
+    hybrid_measure_lifetime(hybrid, elapsed);
     uint32_t n_max = hybrid_units_within(node->ip_reassembly_max, false);
-    uint32_t cap = n_max;
-    if (hybrid->withdrawn) {
-        cap = 1U;
-    } else if (!hybrid->cap_off) {
-        cap = hybrid_reader_cap(node, now - hybrid->tick_ns, n_max);
+    if (!hybrid->cap_off) {
+        hybrid_control(hybrid, now, units_per_s, n_max);
     }
-    uint16_t bytes = hybrid_cap_bytes(node, cap, n_max);
+    uint16_t bytes = hybrid_cap_bytes(node, hybrid->cap, n_max);
     hybrid->tick_ns = now;
     hybrid->tick_units = 0;
     uint16_t loss = hybrid_loss_code(loss_estimate_mean(&hybrid->rx_loss));

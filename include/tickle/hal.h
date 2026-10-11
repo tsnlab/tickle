@@ -286,14 +286,3 @@ bool tt_rx_maybe_ready(struct tt_Context* node);
 // tt_receive() waits on, or a loopback UDP socket in its select() with tt_HAL_FREERTOS_NETCONN=0).
 // tt_Context_interrupt() (tickle.h) is the public entry point that calls this.
 tt_ret_t tt_wake_signal(struct tt_Context* node);
-
-#if tt_HYBRID_TRANSPORT
-// Hybrid transport (DESIGN.md section 8), built where the platform reassembles IP (config.h's tt_HYBRID_TRANSPORT).
-// The kernel's IP reassembly limits as this context's network namespace has them: the memory incomplete reassemblies
-// may hold before every fragmented datagram on the host is dropped (net.ipv4.ipfrag_high_thresh, bytes) and how long
-// one is kept (net.ipv4.ipfrag_time, seconds). Read once at create. False when they cannot be read.
-bool tt_ip_reassembly_limits(uint32_t* high_thresh, uint32_t* time_s);
-// The host's failed reassemblies so far, ReasmFails plus ReasmTimeout (/proc/net/snmp on Linux), read once per
-// announce interval. False when they cannot be read, which never withdraws anything.
-bool tt_ip_reassembly_failures(uint64_t* failures);
-#endif

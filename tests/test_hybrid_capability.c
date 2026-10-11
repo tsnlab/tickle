@@ -62,12 +62,16 @@ static struct tt_Context freertos_node;
 static struct tt_Context receiver;
 
 // A context as tt_Context_create() leaves its state - reset_node_state() reads _tt_CONFIG - without a socket.
+// The reader's cap is switched off (as a forced arm's reader) so that what a node advertises is its configured ceiling,
+// which is what these tests carry from end to end; test_the_capped_reader_advertises_its_cap is the default.
 static void init_node(struct tt_Context* node, uint8_t id, uint16_t ip_reassembly_max) {
     uint16_t saved = _tt_CONFIG.ip_reassembly_max;
     _tt_CONFIG.ip_reassembly_max = ip_reassembly_max;
+    _tt_CONFIG.reassembly_cap_off = 1;
     memset(node, 0, sizeof(*node));
     node_init_locks(node);
     reset_node_state(node);
+    _tt_CONFIG.reassembly_cap_off = 0;
     _tt_CONFIG.ip_reassembly_max = saved;
     node->id = id;
     node->tx_tail = sizeof(struct tt_Header);
@@ -298,8 +302,29 @@ static void test_version_mismatch(void) {
     EXPECT_EQ_U32(65507, receiver.peer_ip_reassembly_max[LINUX_ID]);
 }
 
+// By default a reader advertises its control law's cap, starting at the slow-start two units (DESIGN.md section 8), as
+// bytes that read back as two units of either type pair; a node whose ceiling holds one unit keeps no cap and
+// advertises its ceiling as it is.
+static void test_the_capped_reader_advertises_its_cap(void) {
+    test_mock_reset();
+    uint16_t saved = _tt_CONFIG.ip_reassembly_max;
+    _tt_CONFIG.ip_reassembly_max = 65507;
+    memset(&receiver, 0, sizeof(receiver));
+    node_init_locks(&receiver);
+    reset_node_state(&receiver);
+    EXPECT_EQ_U32(2, receiver.hybrid.cap);
+    EXPECT_EQ_U32(2, hybrid_units_within(receiver.hybrid.advertised, false));
+    EXPECT_EQ_U32(2, hybrid_units_within(receiver.hybrid.advertised, true));
+    _tt_CONFIG.ip_reassembly_max = 1472;
+    reset_node_state(&receiver);
+    EXPECT_TRUE(!receiver.hybrid.rx_capable);
+    EXPECT_EQ_U32(1472, receiver.hybrid.advertised);
+    _tt_CONFIG.ip_reassembly_max = saved;
+}
+
 int main(void) {
     tt_current_log_level = TT_LOG_NONE;
+    test_the_capped_reader_advertises_its_cap();
     test_settings_and_defaults();
     test_capability_round_trip_mixed_peers();
     test_fragmented_announce_carries_it();
