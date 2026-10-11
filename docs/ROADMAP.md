@@ -275,6 +275,11 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
   send 64 KB datagrams the kernel fragments). Next: **step B**, the same-host large path (a 4 MB best-effort sample
   does not fit the 512-slot ring and delivers ~0% same-host); then the CPU candidates - a UDP GSO/GRO probe (pending on
   the rig) and the ACK bitmap fast path (branch `ab/ack-bitmap-fastpath`). (PLAN #4; LARGE_MESSAGE_PLAN)
+- **Hybrid transport for large samples** (the user lifted the IP fragmentation park for them, 2026-10-11): IP-fragmented
+  64 KB datagrams while a peer's path is clean, MTU fragments as soon as loss is seen, repairs always MTU;
+  `tt_InitOptions.large_fragmentation` AUTO (Linux) / MTU (FreeRTOS), an advertised reassembly capability, type 13
+  and `tt_VERSION` 13. Designed and pre-registered in [DESIGN.md](DESIGN.md) section 8, "Hybrid transport"; six
+  steps, each A/B'd. Target: the 0% loss CPU per MB that step A loses to Fast DDS and CycloneDDS.
 - **A service server keeps one live answer per source context**: a retry from a second client of the same service
   in that context can re-run the server's callback. Found with S9 window A (below). (RMW_GAPS S9)
 - **rmw same-host peak-RSS rows**: at `a7e02807` all six non-wins of R1-R21 (DRAW 3, LOSE 3) are peak RSS,
@@ -377,8 +382,9 @@ Decided and done 2026-10-08/09:
   the user starts it, and it comes before wireless. (SECURITY_PLAN; MODULE_PLAN 0/4; SHM_PLAN 7 q4)
 - **WIRELESS_PLAN** (W1 correlated loss + delay, W2 Wi-Fi, W3 internet, relay, congestion control): queued behind
   Security. (WIRELESS_PLAN; PLAN "Priority")
-- **OS IP fragmentation under loss**: deferred by the user. The sources record DATA_FRAG as the answer since
-  2026-09-26. (COMPARISON to-do 15; DATAFRAG_PLAN header)
+- **OS IP fragmentation for samples up to 64 KB**: still deferred by the user (DATA_FRAG is the answer since
+  2026-09-26). For samples above 64 KB the park was lifted on 2026-10-11: Wired work, "Hybrid transport".
+  (COMPARISON to-do 15; DATAFRAG_PLAN header)
 - **zenoh-pico p2-p4 reliable cells stay not measurable**: zenoh-pico does not repair loss. Never quote the
   rate-limited figure. (ZENOH_PICO_PLAN 1; COMPARISON 4.4a)
 - **O(1) `find_resendable_cache_entry()`**: a deep cache makes loss worse. Pending the user's go-ahead.
