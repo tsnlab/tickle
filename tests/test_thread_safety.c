@@ -1134,6 +1134,14 @@ int main(void) {
            (unsigned long)node_a.rx_datagrams_by_transport[tt_TRANSPORT_SHM],
            (unsigned long)node_b.tx_datagrams_by_transport[tt_TRANSPORT_SHM],
            (unsigned long)node_b.rx_datagrams_by_transport[tt_TRANSPORT_SHM]);
+#ifdef tt_SEGMENT_SPAN_FENCE
+    // The switch from UDP to the segment (tt_SEGMENT_SPAN_FENCE): what the discards above were, before it. Printed so
+    // a run can say whether its switch happened at all (examples/perf_hil/experiments/fence_stress_ab.sh reads it).
+    printf("segment fences: a sent=%lu, b sent=%lu, a passed=%lu expired=%lu, b passed=%lu expired=%lu\n",
+           (unsigned long)node_a.segment_fences_sent, (unsigned long)node_b.segment_fences_sent,
+           (unsigned long)node_a.segment_fences_passed, (unsigned long)node_a.segment_fences_expired,
+           (unsigned long)node_b.segment_fences_passed, (unsigned long)node_b.segment_fences_expired);
+#endif
 #endif
 
 #ifndef CONTROL_BUILD

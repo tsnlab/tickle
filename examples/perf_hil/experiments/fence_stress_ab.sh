@@ -4,13 +4,14 @@
 # rig, no lock, no network: the test brings its own in-memory HAL, so nothing reaches a socket or /dev/shm.
 #
 # What is counted per run: the samples B's subscribers discarded as out of order (the harness: line), and, from the
-# reader's traffic line, the fences it met (shm_fences_passed + shm_fences_expired; B arm only).
+# "segment fences:" line, the fences either context's ring met, passed or expired (arm B only).
 #
 # PRE-REGISTERED READING, enforced below:
 #   VOID  arm A has no run with a discard: this load did not reproduce the defect, so B's zero would mean nothing.
 #         (Measured before the fence: 9 of 240 runs at 4x parallel load. At p = 9/240 the chance that 600 runs see
 #         none is (1 - p)^600 ~ 1e-10, so RUNS=600 cannot void by chance.)
-#   VOID  arm B has no run in which the reader met a fence: the switch the fence exists for never happened there.
+#   VOID  arm B has no run in which a ring met a fence: the switch the fence exists for never happened there.
+#         (Run 1, 2026-10-11, read this from a log line test_thread_safety never prints, and voided correctly.)
 #   FAIL  arm B has any run with a discard.
 #   PASS  otherwise.
 # Test failures (no "all tests passed") are counted per arm and printed; they do not decide, since the stress has other
@@ -67,9 +68,11 @@ loop() { # $1 arm, $2 loop index
         rc=$?
         passed=$(grep -c 'test_thread_safety: all tests passed' <<<"$out")
         disc=$(grep -a '^harness:' <<<"$out" | sed -n 's/.*discarded as out of order \([0-9]*\).*/\1/p')
-        # The reader is node 2; its fence counters exist only in arm B's build.
-        fences=$(grep -a 'Node 2 traffic:' <<<"$out" | sed -n 's/.*shm_fences_passed=\([0-9]*\) shm_fences_expired=\([0-9]*\).*/\1 \2/p' |
-            awk '{print $1 + $2}')
+        # Fences met by either context's ring (both publish to the other), from the summary test_thread_safety prints
+        # in a build that has them (arm B only).
+        fences=$(grep -a '^segment fences:' <<<"$out" |
+            sed -n 's/.*a passed=\([0-9]*\) expired=\([0-9]*\), b passed=\([0-9]*\) expired=\([0-9]*\).*/\1 \2 \3 \4/p' |
+            awk '{print $1 + $2 + $3 + $4}')
         echo "$arm $run $rc $passed ${disc:-NA} ${fences:-NA}"
     done
 }
