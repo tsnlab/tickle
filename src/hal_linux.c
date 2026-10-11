@@ -1795,6 +1795,15 @@ static void drain_look(struct tt_hal* hal) {
             }
         }
     }
+    // Completions without a datagram at the head - ends, cancellations, provisions - are let go at once. Left there,
+    // the ring never looks empty, so drain_stop()'s wait for the next completion returned at once, its tries ran out in
+    // microseconds and the drain was turned off (the PC preflight under rmw_tickle, 2026-10-12, once re-arms made such
+    // completions common). A datagram's completion stays until it is handed out, and those behind it with it.
+    uint32_t head = *hal->drain_cq_head;
+    while (head != hal->drain_scan && !drain_holds_datagram(&cqes[head & *hal->drain_cq_mask])) {
+        head++;
+    }
+    __atomic_store_n(hal->drain_cq_head, head, __ATOMIC_RELEASE);
 }
 
 // Queues a multishot recvmsg on each socket in `sockets` (bit 0 the well-known one, bit 1 the data one) that is open;
@@ -1868,7 +1877,10 @@ static void drain_stop(struct tt_Context* node) {
         drain_refused(hal, "cancel", errno);
         return;
     }
-    for (int tries = 0; hal->drain_armed != 0 && tries < DRAIN_STOP_TRIES; tries++) {
+    // Until both recvmsgs have ended, by the clock: a wait returns at once while a datagram's completion is still held
+    // (drain_look() lets the others go), so a count of waits would not be a time.
+    const uint64_t deadline = tt_get_ns() + ((uint64_t)DRAIN_STOP_TRIES * (uint64_t)DRAIN_STOP_WAIT_NS);
+    while (hal->drain_armed != 0 && tt_get_ns() < deadline) {
         struct __kernel_timespec wait = {0, DRAIN_STOP_WAIT_NS};
         struct io_uring_getevents_arg arg;
         memset(&arg, 0, sizeof(arg));
