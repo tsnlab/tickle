@@ -505,15 +505,28 @@ struct tt_LossEstimate {
     uint32_t frames;
 };
 
-// What a reader knows of one writer's unit stream, for its pooled loss estimate: the sample it is receiving and the
-// next unit expected of it. A unit beyond `next` is a gap - one event - and every unit counts as exposure once.
+// Runs sent to a reader, arrived or lost, and their frames (units): q(n) as the reader measures it (DESIGN.md section
+// 8, "What the reader measures"). Pooled since the reader's last decision, and per writer; a writer's halves with its
+// frames at tt_HYBRID_WINDOW_FRAMES.
+struct tt_RunWindow {
+    uint32_t sent;
+    uint32_t lost;
+    uint32_t frames;
+};
+
+// What a reader knows of one writer's unit stream: the sample it is receiving and the next unit expected of it - a unit
+// beyond `next` is a gap - and how the writer lays a sample out (layout_n: its n, 1 for MTU units, 0 not yet seen).
 #define tt_HYBRID_RX_WRITERS 8
 struct tt_HybridRxWriter {
     uint32_t entity_id;
-    uint32_t sample; // the sample's first seq_no; 0: unused
+    uint32_t sample;          // the sample's first seq_no; 0: unused
+    struct tt_RunWindow runs; // this writer's q
+    uint32_t tick_runs;       // its runs since the last tick, arrived or lost
     uint16_t count;
     uint16_t next;
+    uint16_t body_lost; // units of the current sample before its tail found lost
     uint8_t source;
+    uint8_t layout_n;
 };
 
 // Buckets of the n histogram: 1, 2-3, 4-7, 8-15, 16-31, 32 up to tt_HYBRID_N_MAX - 1, and tt_HYBRID_N_MAX.
@@ -521,19 +534,26 @@ struct tt_HybridRxWriter {
 
 // A context's hybrid-transport state (tt_Context.hybrid).
 struct tt_HybridState {
-    // The reader (DESIGN.md section 8, "BEST_EFFORT"): its pooled loss over every writer's units, the units received
-    // since the last cap tick (U) and whether a run was among them, the kernel's reassembly limits as read at create
-    // (its defaults where unreadable), and the failure counters as last read.
+    // The reader (DESIGN.md section 8, "What the reader measures"): p over every frame of every writer, p_mtu over MTU
+    // units only, the pooled run window since its last decision and the largest run that arrived in it, and the units
+    // sent to it since the last tick (R), arrived or not. The kernel's reassembly limits as read at create (its
+    // defaults where unreadable), and the failure counters as last read.
     struct tt_LossEstimate rx_loss;
+    struct tt_LossEstimate mtu_loss;
+    struct tt_RunWindow window;
     struct tt_HybridRxWriter rx_writers[tt_HYBRID_RX_WRITERS];
-    uint64_t tick_ns;        // the last cap tick; 0: none yet
-    uint64_t still_since_ns; // while withdrawn: when the failure counters last moved
+    // The writer: the p each reader node's latest announce reported (tt_AnnounceHeader.loss_p; 0: none, read as 1).
+    uint16_t peer_loss_p[tt_MAX_CONTEXT_IDS];
+    uint16_t advertised_loss; // the loss_p this context's announce carries now
+    uint64_t tick_ns;         // the last cap tick; 0: none yet
+    uint64_t still_since_ns;  // while withdrawn: when the failure counters last moved
     uint64_t reasm_failures;
     uint32_t tick_units;
     uint32_t frag_high_thresh; // bytes
     uint32_t frag_time_s;
     uint16_t advertised;    // the ceiling every announce now carries (tt_AnnounceHeader.ip_reassembly_max)
     uint8_t rx_writer_next; // the entry the next new writer replaces
+    uint8_t window_top;     // the largest run that arrived in the window
     bool rx_capable;        // this context's ceiling allows runs at all: only then is any of this kept
     bool reasm_failures_read;
     bool withdrawn; // advertising one unit because the kernel's reassembly failed while runs arrived
@@ -1837,13 +1857,9 @@ struct tt_PeerAck {
     uint32_t first_owed_seq_no;
     uint8_t match_heartbeats_left;
 #if tt_HYBRID_TRANSPORT
-    // Hybrid transport (DESIGN.md section 8): this reader's loss as the writer counts it from its ACKNACKs - the first
-    // NACK of a unit, a lost run one event on its n frames - over the frames of the first transmissions sent to it.
-    // nack_high: the highest seq_no it has NACKed, above which a NACK is a first one; run_n: the n of its latest first
-    // transmission, which says how many runs a range of first NACKs was.
-    struct tt_LossEstimate loss;
+    // Hybrid transport (DESIGN.md section 8): nack_high, the highest seq_no this reader has NACKed, above which a NACK
+    // is a first one.
     uint32_t nack_high;
-    uint8_t run_n;
     // Its fragment path (hybrid_watch_judge(), tickle.c): the latest sample sent to it in runs, watched - units
     // [watch_base, watch_base + watch_run_units) in watch_runs runs, of watch_count; how many of those units it
     // first-NACKed, and whether it NACKed the tail. all_lost_streak: samples in a row that lost every run with the tail

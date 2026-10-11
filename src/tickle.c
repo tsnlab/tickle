@@ -2289,6 +2289,45 @@ static double loss_estimate_p(const struct tt_LossEstimate* estimate) {
     return p < 1.0 ? p : 1.0;
 }
 
+// p in the announce's loss_p (tickle.h): 0 is no estimate, read as 1; else exponent e (high byte) and mantissa m (low
+// byte), p = (256 + m) / 2^(e + 9), rounded up so that a writer never reads less loss than the reader measured. Above
+// 1/2 there is nothing to tell apart (n is 1 from 1%), so 0.
+#define HYBRID_LOSS_MANTISSA 256.0
+#define HYBRID_LOSS_EXPONENT_MAX 255U
+static uint16_t hybrid_loss_code(double p) {
+    if (!(p < HYBRID_HALF) || p <= 0.0) {
+        return 0; // p >= 1/2, or NaN: read as 1. p = 0 never comes from an estimate (its mean is never 0)
+    }
+    uint32_t exponent = 0;
+    double scaled = p;
+    while (scaled < HYBRID_HALF && exponent < HYBRID_LOSS_EXPONENT_MAX) {
+        scaled *= 2.0;
+        exponent++;
+    }
+    double mantissa = ((scaled * 2.0) - 1.0) * HYBRID_LOSS_MANTISSA; // [0, 256)
+    uint32_t rounded = (uint32_t)mantissa;
+    rounded += (double)rounded < mantissa ? 1U : 0U;
+    if (rounded >= (uint32_t)HYBRID_LOSS_MANTISSA) { // rounded up to the next power of two
+        rounded = 0;
+        exponent--;
+    }
+    if (exponent == 0) {
+        return 0;
+    }
+    return (uint16_t)((exponent << 8U) | rounded);
+}
+
+static double hybrid_loss_decode(uint16_t code) {
+    if (code == 0) {
+        return 1.0;
+    }
+    double p = (HYBRID_LOSS_MANTISSA + (double)(code & 0xFFU)) / (2.0 * HYBRID_LOSS_MANTISSA);
+    for (uint32_t exponent = code >> 8U; exponent > 0; exponent--) {
+        p *= HYBRID_HALF;
+    }
+    return p;
+}
+
 // p for the objective: the mean of its posterior, (events + 1) / frames (a flat prior, Poisson events). Cost(n) is
 // close to linear in p where n is chosen (1 - q(n) ~ n p), so the n that minimises the expected wire bytes is the one
 // Cost(n) gives at the posterior mean - not at a bound, which at no events (3 / N) would hold n below n_max at 0% loss
@@ -2306,20 +2345,77 @@ static double loss_estimate_mean(const struct tt_LossEstimate* estimate) {
     return p < 1.0 ? p : 1.0;
 }
 
-// ---- The reader's side: its pooled loss and the cap on what it advertises (DESIGN.md section 8, "BEST_EFFORT") ------
+// ---- The reader's side: what it measures of its own reception (DESIGN.md section 8, "What the reader measures")
+// ------
 //
-// A reader receiving U units a second in runs holds about H(n) = U T t_u L(n) / 2 bytes of incomplete reassemblies, T
-// the kernel's ipfrag_time and t_u one held fragment's truesize. The cap keeps H within half the kernel's threshold:
-// n_cap is the largest n with L(n) <= threshold / (U T t_u), p being this reader's own pooled estimate - its gaps over
-// its exposure, across every writer, because the memory is pooled. It is advertised quantised (1, 2, 4, 8, 16, 32 or
-// n_max units) once per announce interval, and a RELIABLE writer's n is held under it too.
+// From each fragment-path datagram - writer, sample, first unit, unit count, and whether it is a run - the reader
+// rebuilds what was sent: units [0, k - 1) in runs of the writer's n (learned from a full run; an MTU unit at or past
+// the next expected position says MTU), unit k - 1 alone. A unit past the next expected leaves a gap, which is loss: a
+// missing MTU unit one event on one frame, a missing run one event on its frames and one lost run. A unit below it is a
+// repair and counts for nothing. Three estimates come of it, behind the same small interface as p's: p over every frame
+// (advertised: what a writer's Cost(n) reads), p_mtu over MTU units only (the baseline reassembly cannot touch), and
+// the run window - runs sent and lost, with their frames - pooled since the last decision and per writer. R (units a
+// second) and each writer's runs a second (for the queue lifetime) are counted with them.
+
+// One run of `size` units sent, lost or not.
+static void run_window_observe(struct tt_RunWindow* window, uint32_t size, bool lost) {
+    window->sent++;
+    window->lost += lost ? 1U : 0U;
+    window->frames += size;
+    if (window->frames >= (uint32_t)tt_HYBRID_WINDOW_FRAMES) {
+        window->sent /= 2U;
+        window->lost /= 2U;
+        window->frames /= 2U;
+    }
+}
+
+// A run of `size` units of `writer`'s, arrived or lost: the pooled window, the writer's own, p, and the run rate.
+static void hybrid_rx_run(struct tt_HybridState* hybrid, struct tt_HybridRxWriter* writer, uint32_t size, bool lost) {
+    run_window_observe(&hybrid->window, size, lost);
+    run_window_observe(&writer->runs, size, lost);
+    loss_estimate_observe(&hybrid->rx_loss, size, lost ? 1U : 0U);
+    writer->tick_runs++;
+    if (!lost && size > hybrid->window_top) {
+        hybrid->window_top = (uint8_t)(size < UINT8_MAX ? size : UINT8_MAX);
+    }
+}
+
+// `units` MTU units of `writer`'s, `lost` of them lost: p and p_mtu.
+static void hybrid_rx_mtu(struct tt_HybridState* hybrid, uint32_t units, uint32_t lost) {
+    loss_estimate_observe(&hybrid->rx_loss, units, lost);
+    loss_estimate_observe(&hybrid->mtu_loss, units, lost);
+}
+
+// Units [from, to) of the writer's current sample were sent and never came (to <= count): what they were sent as.
+static void hybrid_rx_gap(struct tt_HybridState* hybrid, struct tt_HybridRxWriter* writer, uint32_t from, uint32_t to) {
+    uint32_t tail = (uint32_t)writer->count - 1U;
+    uint32_t body_end = to < tail ? to : tail;
+    hybrid->tick_units += to - from;
+    if (from < body_end) {
+        uint32_t layout = writer->layout_n;
+        if (layout >= 2U) {
+            for (uint32_t start = (from / layout) * layout; start < body_end; start += layout) {
+                uint32_t size = tail - start < layout ? tail - start : layout;
+                hybrid_rx_run(hybrid, writer, size, true);
+            }
+            writer->body_lost += body_end - from;
+        } else if (layout == 1U) {
+            hybrid_rx_mtu(hybrid, body_end - from, body_end - from);
+        } else {
+            // Sent as what is not known yet (no run of this writer's seen): one event on its units, in p only.
+            loss_estimate_observe(&hybrid->rx_loss, body_end - from, 1);
+            writer->body_lost += body_end - from;
+        }
+    }
+    if (to > tail && from <= tail) {
+        hybrid_rx_mtu(hybrid, 1, 1); // the tail, always an MTU unit
+    }
+}
 
 // One datagram's units of a sample (source, entity_id, first seq_no `sample`, `count` units) arrived: units
-// [index, index + units). A unit beyond the next one expected of that writer's sample is a gap, one event; a sample
-// abandoned short of its end is one more, counted when the writer's next sample starts. Every unit is exposure once;
-// a repair, below what was expected, is neither.
+// [index, index + units), as a run or as one MTU unit.
 static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t entity_id, uint32_t sample, uint32_t index,
-                           uint32_t count, uint32_t units) {
+                           uint32_t count, uint32_t units, bool run) {
     struct tt_HybridState* hybrid = &node->hybrid;
     struct tt_HybridRxWriter* writer = NULL;
     for (uint32_t i = 0; i < tt_HYBRID_RX_WRITERS && writer == NULL; i++) {
@@ -2329,26 +2425,44 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
         }
     }
     if (writer == NULL) {
+        // First met, possibly mid-sample: what came before is not known to have been sent to it.
         writer = &hybrid->rx_writers[hybrid->rx_writer_next];
         hybrid->rx_writer_next = (uint8_t)((hybrid->rx_writer_next + 1U) % tt_HYBRID_RX_WRITERS);
-        *writer = (struct tt_HybridRxWriter) {entity_id, sample, (uint16_t)count, (uint16_t)index, source};
+        *writer = (struct tt_HybridRxWriter) {0};
+        writer->entity_id = entity_id;
+        writer->sample = sample;
+        writer->count = (uint16_t)count;
+        writer->next = (uint16_t)index;
+        writer->source = source;
     }
     if ((int32_t)(sample - writer->sample) > 0) {
         if (writer->next < writer->count) {
-            loss_estimate_observe(&hybrid->rx_loss, writer->count - writer->next, 1); // its tail never came
-            hybrid->tick_units += writer->count - writer->next;
+            hybrid_rx_gap(hybrid, writer, writer->next, writer->count); // the writer's last sample ended short
         }
         writer->sample = sample;
         writer->count = (uint16_t)count;
         writer->next = 0;
+        writer->body_lost = 0;
     }
     if (sample != writer->sample || index + units <= writer->next) {
         return; // an older sample's unit, or a repair
     }
-    // The units this datagram adds, and any it skipped - sent and lost - are exposure; a skip is one event. They are
-    // also U, the units a second sent to this reader: what IP had to reassemble, arrived or not.
-    loss_estimate_observe(&hybrid->rx_loss, (index + units) - writer->next, index > writer->next ? 1U : 0U);
-    hybrid->tick_units += (index + units) - writer->next;
+    uint32_t tail = count - 1U;
+    if (index > writer->next) {
+        hybrid_rx_gap(hybrid, writer, writer->next, index);
+    }
+    hybrid->tick_units += (index + units) - (index > writer->next ? index : writer->next);
+    if (run) {
+        if (index + units < tail || (index == 0 && writer->layout_n == 0)) {
+            writer->layout_n = (uint8_t)units; // a full run says n; a sample's only run says at least it
+        }
+        hybrid_rx_run(hybrid, writer, units, false);
+    } else {
+        if (index < tail) {
+            writer->layout_n = 1; // an MTU unit where a run could have gone: the writer sends MTU units here
+        }
+        hybrid_rx_mtu(hybrid, 1, 0);
+    }
     writer->next = (uint16_t)(index + units);
 }
 
@@ -2383,11 +2497,22 @@ static uint32_t hybrid_n_star(double p, double unit, double header, uint32_t n_m
     return best_n;
 }
 
-// RELIABLE AUTO's n for one peer: the cost model at the most pessimistic p among that node's readers of this Publisher
-// (1 for none), over 1..n_max.
+// The frame loss a reader node reported in its latest announce (DESIGN.md section 8, "What the reader measures"): 1
+// when it reported none.
+static double hybrid_peer_p(const struct tt_Context* node, uint8_t context_id) {
+#ifdef TT_HYBRID_TEST_SEAM
+    if (hybrid_test_forced_p >= 0.0) {
+        return hybrid_test_forced_p;
+    }
+#endif
+    return hybrid_loss_decode(node->hybrid.peer_loss_p[context_id]);
+}
+
+// RELIABLE AUTO's n for one peer: the objective at the p that node reports, over 1..n_max - 1 when this Publisher has
+// no reader there, and 1 while its path is judged to drop IP fragments (a re-probe after).
 static uint32_t hybrid_reliable_n(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
                                   uint32_t n_max, bool* one_run) {
-    double p = -1.0;
+    bool reader = false;
     uint64_t now = 0;
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
         const struct tt_PeerAck* ack = &pub->peer_acks[i];
@@ -2401,20 +2526,17 @@ static uint32_t hybrid_reliable_n(struct tt_Context* node, const struct tt_Publi
             }
             *one_run = true;
         }
-        double peer_p = loss_estimate_mean(&ack->loss);
-        p = peer_p > p ? peer_p : p;
+        reader = true;
     }
-    if (p < 0.0) {
+    if (!reader) {
         return 1U;
     }
-    UNUSED(node);
-    return hybrid_n_star(p, (double)HYBRID_UNIT, (double)HYBRID_UNIT_HEADER, n_max);
+    return hybrid_n_star(hybrid_peer_p(node, context_id), (double)HYBRID_UNIT, (double)HYBRID_UNIT_HEADER, n_max);
 }
 
 // A RELIABLE sample's first transmission went to `context_id` (tt_CONTEXT_ID_INVALID: the broadcast, every reader) in
-// runs of n: its frames are each such reader's exposure, and n is what a range of its first NACKs is divided by.
-//
-// It also starts watching the sample for a failed fragment path: run_until units [base, base + run_until) went in runs.
+// runs of n: it starts watching the sample for a failed fragment path - run_until units [base, base + run_until) went
+// in runs.
 // Whether the last sample watched lost every one of its runs is known by now (its NACKs came back): if not, the streak
 // of such samples ends, and a re-probe that got through clears the reader's failed path.
 static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t run_n, uint32_t count,
@@ -2425,8 +2547,6 @@ static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, u
             (context_id != tt_CONTEXT_ID_INVALID && ack->context_id != context_id)) {
             continue;
         }
-        loss_estimate_observe(&ack->loss, count, 0);
-        ack->run_n = (uint8_t)run_n;
         if (run_units == 0) {
             continue;
         }
@@ -2486,23 +2606,15 @@ static void hybrid_watch_judge(struct tt_PeerAck* ack) {
     }
 }
 
-// One ACKNACK's NACKs, as loss events of the reader that sent it (DESIGN.md section 8, "Events over exposure"): above
-// the highest seq_no it NACKed before, a NACK is a first one, and each contiguous range of them is a lost run of the
-// reader's latest n each - ceil(length / n) events on the frames its first transmission counted. A re-NACK is not
-// counted, and a repair is no exposure: the doc's "each re-NACK of a repair" read p four times too high on a veth at 1%
-// (38 events a 1 MB sample against 9), because repairs queued behind a large sample's runs are NACKed again while still
-// in flight, and no reading of the ACKNACK alone tells that from a lost repair. What is left estimates the loss of
-// first transmissions, which is what n is chosen for.
+// One ACKNACK's NACKs, read for the failed-path watch: above the highest seq_no the reader NACKed before, a NACK is a
+// first one. A re-NACK is not: repairs queued behind a large sample's runs are NACKed again while still in flight. The
+// loss n is chosen by is the reader's own (its announce), not counted here.
 static void hybrid_note_nacks(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id, uint32_t base,
                               const uint64_t* bitmap, uint16_t words) {
     struct tt_PeerAck* ack = find_peer_ack(pub, node_id, entity_id);
-    if (ack == NULL || ack->loss.frames == 0) {
-        return; // nothing sent to it in multi-unit samples yet
+    if (ack == NULL || ack->watch_count == 0) {
+        return; // no sample sent to it in runs is being watched
     }
-    uint32_t run_n = ack->run_n != 0 ? ack->run_n : 1U;
-    uint32_t events = 0;
-    uint32_t range = 0;
-    uint32_t previous = 0;
     uint32_t high = ack->nack_high;
     for (uint16_t word_idx = 0; word_idx < words; word_idx++) {
         uint64_t word = bitmap[word_idx];
@@ -2514,19 +2626,10 @@ static void hybrid_note_nacks(struct tt_Publisher* pub, uint8_t node_id, uint32_
                 continue; // a re-NACK
             }
             hybrid_watch_nack(ack, seq_no);
-            if (range != 0 && seq_no == previous + 1U) {
-                range++;
-            } else {
-                events += (range + run_n - 1U) / run_n;
-                range = 1;
-            }
-            previous = seq_no;
             high = seq_no;
         }
     }
-    events += (range + run_n - 1U) / run_n;
     ack->nack_high = high;
-    loss_estimate_observe(&ack->loss, 0, events);
     hybrid_watch_judge(ack);
     if (ack->watch_count != 0 && !ack->watch_all_lost && (int32_t)(base - (ack->watch_base + ack->watch_count)) >= 0) {
         // The reader holds the whole watched sample, and not every run of it was lost: the streak ends, and a
@@ -3041,9 +3144,7 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
             pub->peer_acks[i].first_owed_seq_no = 0;
             pub->peer_acks[i].match_heartbeats_left = 0;
 #if tt_HYBRID_TRANSPORT
-            pub->peer_acks[i].loss = (struct tt_LossEstimate) {0, 0}; // nothing measured: n starts at 1
             pub->peer_acks[i].nack_high = 0;
-            pub->peer_acks[i].run_n = 1;
             pub->peer_acks[i].watch_count = 0; // no sample watched: the fragment path presumed fine
             pub->peer_acks[i].all_lost_streak = 0;
             pub->peer_acks[i].path_failed_ns = 0;
@@ -10522,7 +10623,11 @@ static void fill_announce_capability(const struct tt_Context* node, struct tt_An
 #else
     announce->ip_reassembly_max = node->ip_reassembly_max;
 #endif
+#if tt_HYBRID_TRANSPORT
+    announce->loss_p = node->hybrid.advertised_loss;
+#else
     announce->loss_p = 0;
+#endif
     announce->reserved = 0;
 }
 
@@ -10799,6 +10904,16 @@ static uint16_t hybrid_cap_bytes(const struct tt_Context* node, uint32_t cap, ui
     return (uint16_t)(bytes < node->ip_reassembly_max ? bytes : node->ip_reassembly_max);
 }
 
+// Whether the p a reader measures has moved far enough from what its announce carries to announce it again: by a factor
+// of 2 either way (its exponent), or to or from "no estimate". Cost(n) is flat at its minimum: n* goes as 1 / sqrt(p),
+// so a factor of 2 in p is a factor of 1.4 in n.
+static bool hybrid_loss_moved(uint16_t measured, uint16_t advertised) {
+    if (measured == 0 || advertised == 0) {
+        return measured != advertised;
+    }
+    return (measured >> 8U) != (advertised >> 8U);
+}
+
 // Once per announce interval (node_update()): the reader's cap from its pooled loss and the units it received, or one
 // unit while withdrawn - the host's reassembly failures rose while runs were arriving, and have not been still for 2T
 // since. A changed ceiling is a new generation, announced at once, so writers learn it from the ordinary announce.
@@ -10846,10 +10961,17 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
     uint16_t bytes = hybrid_cap_bytes(node, cap, n_max);
     hybrid->tick_ns = now;
     hybrid->tick_units = 0;
-    if (bytes == hybrid->advertised) {
+    uint16_t loss = hybrid_loss_code(loss_estimate_mean(&hybrid->rx_loss));
+    bool loss_moved = hybrid_loss_moved(loss, hybrid->advertised_loss);
+    if (bytes == hybrid->advertised && !loss_moved) {
         return;
     }
-    hybrid->cap_changes++;
+    if (loss_moved) {
+        hybrid->advertised_loss = loss;
+    }
+    if (bytes != hybrid->advertised) {
+        hybrid->cap_changes++;
+    }
     hybrid->advertised = bytes;
     node->last_modified = now > node->last_modified ? now : node->last_modified + 1U;
     build_and_send_update(node, NULL, 0);
@@ -11230,6 +11352,9 @@ static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t 
     node->liveliness_flags[source] = 0;
 #if tt_FRAG_ENABLED
     node->peer_ip_reassembly_max[source] = 0; // a node heard again is not trusted to reassemble until it says so
+#if tt_HYBRID_TRANSPORT
+    node->hybrid.peer_loss_p[source] = 0; // nor its loss known
+#endif
 #endif
 }
 
@@ -11854,6 +11979,9 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
     // Every announce and fragment carries it, and a change of it is a new generation; recorded before the generation
     // check all the same, so the record is the latest the source said whatever this node has applied.
     node->peer_ip_reassembly_max[source] = rd16(header, announce->ip_reassembly_max);
+#if tt_HYBRID_TRANSPORT
+    node->hybrid.peer_loss_p[source] = rd16(header, announce->loss_p);
+#endif
 #endif
 
     TT_LOG_DEBUG("Announce");
@@ -15541,7 +15669,7 @@ static bool process_frag_large(struct tt_Context* node, struct tt_Header* header
 #if tt_HYBRID_TRANSPORT
     if (node->hybrid.rx_capable && fragment.index < fragment.count) {
         hybrid_rx_note(node, header->source, fragment.entity_id, fragment.seq_no - fragment.index, fragment.index,
-                       fragment.count, 1);
+                       fragment.count, 1, false);
     }
 #endif
     return deliver_large_fragment(node, &fragment);
@@ -15623,7 +15751,7 @@ static bool process_frag_run(struct tt_Context* node, struct tt_Header* header, 
     uint32_t unit_head = head;
 #if tt_HYBRID_TRANSPORT
     if (node->hybrid.rx_capable) {
-        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);
+        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count, true);
     }
 #endif
     for (uint32_t i = 0; i < run_count; i++) {
@@ -15665,7 +15793,7 @@ static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* he
     const uint8_t* payload = buffer + head;
 #if tt_HYBRID_TRANSPORT
     if (node->hybrid.rx_capable) {
-        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);
+        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count, true);
     }
 #endif
     for (uint32_t i = 0; i < run_count; i++) {
@@ -15747,7 +15875,7 @@ static bool process_frag(struct tt_Context* node, struct tt_Header* header, uint
     }
 #if tt_HYBRID_TRANSPORT
     if (node->hybrid.rx_capable && index < count) {
-        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, 1);
+        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, 1, false);
     }
 #endif
 #if tt_FRAG_ENABLED

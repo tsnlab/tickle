@@ -215,6 +215,17 @@ static void test_capability_round_trip_mixed_peers(void) {
     // A node presumed dead is not trusted to reassemble when it comes back until it says so again.
     presume_node_dead(&receiver, LINUX_ID, tt_SECOND);
     EXPECT_EQ_U32(0, receiver.peer_ip_reassembly_max[LINUX_ID]);
+
+    // The frame loss a node measures as a reader rides the same announce, is recorded from it, and is forgotten with
+    // the rest when the node is presumed dead.
+    linux_node.hybrid.advertised_loss = hybrid_loss_code(0.001);
+    EXPECT_EQ_U32(1, announce(&linux_node));
+    memcpy(&wire, captured[0] + announce_header_at(0), sizeof(wire));
+    EXPECT_EQ_U32(hybrid_loss_code(0.001), wire.loss_p);
+    EXPECT_TRUE(deliver(0, LINUX_ID));
+    EXPECT_EQ_U32(hybrid_loss_code(0.001), receiver.hybrid.peer_loss_p[LINUX_ID]);
+    presume_node_dead(&receiver, LINUX_ID, tt_SECOND);
+    EXPECT_EQ_U32(0, receiver.hybrid.peer_loss_p[LINUX_ID]);
 }
 
 // An announce in fragments: every fragment carries the figure, and the first one alone records it.
