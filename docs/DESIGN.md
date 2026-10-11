@@ -570,6 +570,58 @@ Where it departs, and why:
   unmapped the ring under the drain. The kind it replaced is kept (`lend.rx_outer_kind`).
 - Not yet: large samples in a local durable backlog (`tt_Subscriber_deliver_local_backlog()`), and step B.
 
+### Encoding while sending (2026-10-11, `ab/interleave-encode`)
+
+**Why.** A large publish encoded the whole sample into its buffer and only then sent the first fragment: about 0.7 ms
+on a Pi 5 for 4 MB (one copy of it), on the latency path of every sample. Fast DDS pays the same (it serialises
+before it sends). Nothing needs the whole sample before the first fragment goes, so the encode is moved alongside
+the sends.
+
+**API.** `tt_Topic.data_encode_range(data, payload, offset, len)` (optional, `tt_DATA_ENCODE_RANGE`): writes bytes
+`[offset, offset + len)` of what `data_encode` writes. A topic that sets it promises that `data_encode_size` is exact
+and that the bytes are `data_encode`'s. Trivial where the wire bytes already sit in memory: rmw_tickle offers it for a
+serialized message and for a type whose wire bytes are its message (`inplace_bytes`, the loanable types: perf_test's
+`Array*`), as the psn header plus a `memcpy`; every other type declines and is encoded whole, as before.
+
+**Sender.** Core asks for fragment 0's bytes before committing the sample (a decline there is today's path, untouched).
+Then each send call - up to `LARGE_BATCH` (64) datagrams to the first destination - first encodes through the last
+byte it carries. Later destinations, resends and the durable backlog read what is already encoded. Every range is
+asked for within the publish call, because the caller's sample is valid only there:
+
+- when the socket's send buffer fills (`EAGAIN`), the rest is encoded at once, while the buffer drains (it holds
+  ~1.7 ms of 1 GbE, more than the ~0.7 ms of encoding), not a send call at a time with a retry after each;
+- so when the publish returns, the record is the whole encoded sample: retention, KEEP_LAST eviction, resends, the
+  VOLATILE release and LIFESPAN are exactly as before.
+
+Encoded whole, as before, when the sample is not sent within its publish (it waits behind a send in progress,
+`large_pending`) or when this context's own Subscribers take it in-process (`tt_LOCAL_DELIVERY`), which needs it
+whole at once. A range declined after part of the sample has gone is made up by `data_encode` of the whole sample
+(the same bytes by the contract, so what went is unchanged). If that fails too, the sample is dropped - the rest is
+never sent, its buffer goes back, the publish returns `tt_RET_PROTOCOL_ERROR`, `large.encode_failed` counts it - and
+its seq_nos read as gone to a reader that asks, so a torn sample is never delivered.
+
+**The wire does not change.** Every datagram - fragments, HEARTBEATs, repairs - is byte-identical, in the same order,
+with and without the ranged encode (`tests/test_large_sample.c`, against the arm without it; the whole step-A suite
+also runs in both modes). Small samples never use it.
+
+**Hybrid runs (section 8's hybrid design).** The unit is "the bytes the next send call carries", not a fragment:
+a run of `n` units encodes through its last unit before its `sendmmsg()`, exactly as a batch of MTU fragments does.
+Nothing in the design assumes MTU datagrams.
+
+**Pre-registration (2026-10-11, before any measurement).**
+
+- *PC* (`experiments/interleave_encode_pc.sh`, read by `interleave_encode_ab.py`): veth + netem 1 Gbit/s, arms parent
+  / head without a ranged encode (the control: the change cannot touch that path) / head with it, ABBA. The 4 MB
+  latency median must improve beyond the floor by at least half a cold 4 MiB memcpy measured on the same PC; latency
+  p99 and publisher and subscriber CPU per MB not worse. Not a published figure.
+- *Rig* (I4, `Array4m` 4,194,304 B, 15 Hz cross-host, RELIABLE KEEP_LAST 10 and BEST_EFFORT KEEP_LAST 5): arms
+  `tickle@head`, `tickle@pre` (the parent), `fastdds`, `cyclonedds`, by `largemsg_lend_ab.py`'s method (Welch 2 x SE
+  and the vendors' drift). Head vs pre: latency median BETTER by at least 0.35 ms (half the 0.7 ms moved) in both
+  cells; p99, CPU per MB (both sides) and peak RSS not WORSE; delivery 100% in RELIABLE. Head vs Fast DDS as shipped:
+  latency median read by the range rule and printed with the prediction (WIN or DRAW in both cells). Falsified if
+  either cell's median is not BETTER: then the first fragment's wait was hidden by the wire queue and the 0.7 ms is not
+  on the latency path. Core P1-P4: no regression by the instruction-count gate (no small sample takes this path).
+
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
 **RxO matching.** Each endpoint announces its QoS in its `tt_UpdateEntity` (`qos` bits for reliable, durable, manual
