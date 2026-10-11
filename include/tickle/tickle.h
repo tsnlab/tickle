@@ -1804,13 +1804,12 @@ struct tt_Publisher { // extends endpoint
     // 32-bit capacity - at TickLE's own real max throughput (~150-190K msg/s), reliable_
     // throughput's own 8-second max-rate runs wrap more than 20 times *per run*, reusing already-
     // delivered sequence numbers mid-stream and corrupting RELIABLE ack tracking/DURABILITY
-    // backlog indexing for the rest of that run. At uint32_t width the same wraparound is still
-    // structurally possible, just past ~6.3 continuous hours at that same real max rate - not
-    // specially handled here, the same "an edge case far enough out not to need explicit handling
-    // yet" pragmatism this file already applies elsewhere (e.g. struct tt_Context.entity_id_base's
-    // own doc comment). Distinct from struct tt_Client.seq_no/struct tt_Subscriber.seq_no below -
-    // those pair with their own genuinely-16-bit wire counterparts (tt_CallRequestHeader.seq_no)
-    // or are unused, not affected by this same bug.
+    // backlog indexing for the rest of that run. At uint32_t width the same wraparound comes past
+    // ~6.3 continuous hours at that same real max rate, and is handled (2026-10-11): it wraps to 0
+    // and goes on, every comparison of two seq_no is serial (seq_delta(), tickle.c), nothing reads
+    // seq_no 0 as "none", and the cache and reorder rings stay contiguous across it. Distinct from struct
+    // tt_Client.seq_no/struct tt_Subscriber.seq_no below - those pair with their own genuinely-16-bit wire counterparts
+    // (tt_CallRequestHeader.seq_no) or are unused, not affected by this same bug.
     uint32_t seq_no;
 
     // The ring slot tt_Publisher_claim() lent this Publisher's caller, NULL when none: in `claim_segment` (peer
@@ -2273,10 +2272,12 @@ struct tt_WriterProxy {
     uint32_t sender_ip;
     uint16_t sender_port;
     // Cumulative-ack watermark: the next wire seq_no not yet confirmed delivered to this
-    // Subscriber's own `callback` for this specific Publisher - every seq_no < ack_seq_no has
-    // been. Set to 1 when this entry is first claimed (find_or_create_writer_proxy(), tickle.c)
-    // since a Publisher's own seq_no starts posting from 1, never 0 (tt_Publisher_publish()'s
-    // data_header->seq_no = pub->seq_no + 1).
+    // Subscriber's own `callback` for this specific Publisher - every seq_no serially before
+    // ack_seq_no has been (seq_delta(), tickle.c). Set to 1 when this entry is first claimed
+    // (find_or_create_writer_proxy(), tickle.c), where a Publisher's own seq_no starts posting
+    // (tt_Publisher_publish()'s data_header->seq_no = pub->seq_no + 1) - a default, which first
+    // contact replaces with this writer's own baseline (update_reliable_ack(),
+    // inform_subscriber_of_heartbeat()).
     uint32_t ack_seq_no;
     // bit j set: sample (ack_seq_no + j) has already been received out of order, ahead of the
     // cumulative watermark - matches tt_AckNackHeader's own "bit j: seq_no + j" wire convention
