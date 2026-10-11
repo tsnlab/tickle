@@ -39,11 +39,15 @@ RPI_CLIENT="${RPI_CLIENT:-10.1.1.214}"
 RPI_SERVER="${RPI_SERVER:-10.1.1.213}"
 REMOTE_DIR="tickle/examples/perf_hil/tickle/$SCENARIO"
 
+# -n (2026-10-11): no remote command here reads stdin, and ssh without -n reads it anyway. with_insn fetched the counts
+# with an ssh inside `... <<<"$client_out"`, so ssh swallowed the RESULT line the sed after it was to print, and gate
+# v2's first rig chains (X1-X3) read every run as "no RESULT line". rig_dryrun.sh's stand-in ssh now drains stdin as
+# the real client does, so a dry run fails on this too.
 ssh_run() {
     local host="$1"
     shift
     # shellcheck disable=SC2029
-    ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=5 "ci@$host" "$@"
+    ssh -n -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=5 "ci@$host" "$@"
 }
 
 # Pinned away from CPU0 (2026-09-23, measured). Both Pis handle eth0's interrupt, IRQ 108,

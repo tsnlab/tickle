@@ -87,7 +87,18 @@ for arm in $ARMS; do
     fl=$(flags_of "$arm")
     stem="/tmp/${TAG}_b${n}_${arm}_${sha:0:8}"
     echo "--- block $n arm $arm ${sha:0:8} TICKLE_EXTRA_CFLAGS='$fl' $(date -Is)"
-    TICKLE_EXTRA_CFLAGS=$fl SHA=$sha FWS=tickle REPS=$REPS OUT=$stem.txt $X/campaign_sweep.sh > "$stem.log" 2>&1
+    # Block 1 fails fast (2026-10-11): if its first cell gives no RESULT line, the harness measures nothing on this rig
+    # and the chain stops with the reason, instead of running six blocks of "VOID(no RESULT line)" (gate v2's first
+    # chains, X1-X3, ~2 h of rig time). Later blocks run every cell: one void there is a row, not a broken harness.
+    ff=0
+    [ "$n" = 1 ] && ff=1
+    TICKLE_EXTRA_CFLAGS=$fl SHA=$sha FWS=tickle REPS=$REPS OUT=$stem.txt FAIL_FAST_FIRST_CELL=$ff \
+        $X/campaign_sweep.sh > "$stem.log" 2>&1
+    if grep -q '^FAIL FAST: ' "$stem.log"; then
+        echo "=== chain VOID $(date -Is): block $n ($arm) stopped at once - $(grep -m1 '^FAIL FAST: ' "$stem.log" | cut -c12-) ===" |
+            tee "/tmp/${TAG}.done" "/tmp/${TAG}_compare.txt"
+        exit 1
+    fi
     # The build flags are a treatment: the block's own log must echo the value this arm was given, or the chain stops
     # here rather than read arms built some other way as the arms it was asked for.
     if ! grep -qxF "TICKLE_EXTRA_CFLAGS='$fl' (TickLE core and bench; empty: the plain build)" "$stem.log"; then

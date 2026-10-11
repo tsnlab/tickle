@@ -81,9 +81,17 @@ mkdir -p "$D/bin"
 cat >"$D/bin/ssh" <<EOF
 #!/usr/bin/env bash
 # The stand-in ssh of rig_dryrun.sh: options are skipped, user@host picks the namespace, the rest is the command.
+# STDIN AS THE REAL CLIENT TREATS IT (2026-10-11). Real ssh reads its stdin and forwards it to the remote command whether
+# or not that command reads it, so whatever was on the caller's stdin is gone when ssh returns - unless -n gave it
+# /dev/null. Gate v2's first rig runs lost every RESULT line that way (run_scenario.sh's with_insn fetched the counts
+# with an ssh inside \`... <<<"\$client_out"\`, which ate the line the next sed was to print), and this stand-in, which
+# left unread stdin in place, passed the same harness. So: the remote command gets the stdin (an \`sh -s\` still reads
+# its script), and whatever it leaves is drained before the stand-in returns.
+nostdin=0
 while [ \$# -gt 0 ]; do
     case "\$1" in
     -i | -o | -p | -l | -F) shift 2 ;;
+    -n) nostdin=1; shift ;;
     -*) shift ;;
     *) break ;;
     esac
@@ -96,11 +104,19 @@ case "\${target#*@}" in
 *) echo "rig_dryrun ssh: refusing unmapped host \$target" >&2; exit 255 ;;
 esac
 cmd="\$*"
+[ "\$nostdin" = 1 ] && exec </dev/null
+# drain: what the remote command left on stdin is consumed, as the real client consumes it. Only input already there
+# (a here-string, a file, a closed pipe) - a pipe whose writer is still open and silent is left alone after 1 s at most.
+drain() {
+    [ "\$nostdin" = 1 ] && return 0
+    if read -r -t 0; then timeout 1 cat >/dev/null; fi 2>/dev/null
+    return 0
+}
 # A whole command of the form "sudo -n tc <args>" (how the harnesses shape the client's eth0; the Pis allow it, this PC
 # does not) runs tc as the namespace's root, which reaches that namespace's eth0 and nothing else.
 case "\$cmd" in
 "sudo -n tc "*[\\;\\&\\|\\\`\\$\\<\\>]*) ;;
-"sudo -n tc "*) read -ra a <<<"\${cmd#sudo -n }"; exec sudo -n ip netns exec "\$ns" "\${a[@]}" ;;
+"sudo -n tc "*) read -ra a <<<"\${cmd#sudo -n }"; sudo -n ip netns exec "\$ns" "\${a[@]}"; rc=\$?; drain; exit \$rc ;;
 esac
 # shellcheck disable=SC2016 # \$1.. are the inner sh's
 home="$D/home_\$h" pre=""
@@ -114,9 +130,12 @@ mkdir -p $PIH && mount --bind \"\$home\" $PIH || exit 255
 "
     home=$PIH
 fi
-exec sudo -n ip netns exec "\$ns" sh -c "\$pre"'mount --bind "\$1" /dev/shm || exit 255; shift; exec "\$@"' sh "$D/shm_\$h" \\
+sudo -n ip netns exec "\$ns" sh -c "\$pre"'mount --bind "\$1" /dev/shm || exit 255; shift; exec "\$@"' sh "$D/shm_\$h" \\
     setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups \\
     env HOME="\$home" PYTHONUSERBASE="$HOME/.local" PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" LANG=C bash -c "cd ~ || exit 255; \$cmd"
+rc=\$?
+drain
+exit \$rc
 EOF
 chmod +x "$D/bin/ssh"
 # The stand-in scp: [user@]<host>:<path> of a mapped host is that stand-in's file - an absolute path is this PC's (the

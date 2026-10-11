@@ -77,6 +77,13 @@ esac
 export INSN_COUNT
 DRY_RUN="${DRY_RUN:-0}"
 OUT="${OUT:-/tmp/tickle_campaign_$(date +%Y%m%d-%H%M%S).txt}"
+# FAIL_FAST_FIRST_CELL=1 (2026-10-11): if the sweep's first cell gives no RESULT line at all, it stops there with a
+# "FAIL FAST:" line carrying the tail of run_scenario.sh's stderr (kept in $OUT.cell_stderr, the last cell's), instead
+# of running every other cell into the same VOID. Gate v2's first chains ran 3 x 6 blocks of "VOID(no RESULT line)" that
+# way. campaign_ab_chain.sh sets it on its first block. Default 0: a cross-vendor campaign's first cell may be a vendor
+# that does not run, which is a finding, not a broken harness.
+FAIL_FAST_FIRST_CELL="${FAIL_FAST_FIRST_CELL:-0}"
+CELLS_RUN=0
 
 SSH_KEY="$HOME/.ssh/tickle_ci_ed25519"
 RPI_CLIENT=10.1.1.214
@@ -451,7 +458,7 @@ cell() {
     [ "$fw" = tickle ] && [ -n "$extra" ] && args="$extra $args"
     local res raw nlines ninsn
     # shellcheck disable=SC2086 # $args is deliberately word-split into the harness's argv
-    raw=$(cd "$PH/$fw" && timeout 180 ./run_scenario.sh "${scenario}_${payload}" $args 2>/dev/null | grep '^RESULT:' || true)
+    raw=$(cd "$PH/$fw" && timeout 180 ./run_scenario.sh "${scenario}_${payload}" $args 2>"$OUT.cell_stderr" | grep '^RESULT:' || true)
     res=$(tr '\n' ' ' <<<"$raw" | sed -E 's/RESULT: framework=[a-z]+ scenario=[a-z_0-9]+ //g; s/ +$//' || true)
     local verdict=ok
     [ -n "$res" ] || verdict="VOID(no RESULT line)"
@@ -517,6 +524,12 @@ cell() {
         *) [ -n "$res" ] && verdict="VOID(no instrument= field)" ;; esac
     say "$(printf 'c%-2s %s %-2s %-2s %-22s %-10s rep%s | %s | %s' \
         "$num" "$shape" "$payload" "$qos" "$(tc_describe "$net")" "$fw" "$rep" "$verdict" "${res:-none}")"
+    if [ "$FAIL_FAST_FIRST_CELL" = 1 ] && [ "$CELLS_RUN" = 0 ] && [ -z "$res" ]; then
+        say "FAIL FAST: the first cell (c$num $fw rep$rep) gave no RESULT line; not running the rest." \
+            "run_scenario.sh stderr (tail): $(tail -5 "$OUT.cell_stderr" 2>/dev/null | tr '\n' ' ' | cut -c1-600)"
+        exit 3
+    fi
+    CELLS_RUN=$((CELLS_RUN + 1))
 }
 
 say ""
