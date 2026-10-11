@@ -670,6 +670,15 @@ and their `.runs/`. Letters: rmw_tickle against Fast DDS as shipped / Fast DDS w
   section 8 of DESIGN.md). Against Fast DDS with 1472-byte datagrams, the same datagram size as TickLE's, TickLE wins
   CPU in every cell. Median latency at 0% loss is behind Fast DDS as shipped by 0.15-0.19 ms at 1 MB and 1.2 ms at
   4 MB (37.5 ms; CycloneDDS 38.6).
+- **Where the 1.2 ms at 4 MB goes** (`experiments/largemsg_wire_budget.py` on the I4 rows, 2026-10-11): 0.52 ms is
+  wire - one sample is 4,431,228 B of frames for TickLE (2,889 datagrams; per frame 8 B of UDP header and 16 B of
+  framing that IP fragments do not carry) against 4,366,590 B for Fast DDS's 64 KB datagrams, 35.45 against 34.93 ms
+  at 1 Gb/s; the UDP header is the price of sending in MTU units. The other 0.67-0.70 ms is off the wire: Fast DDS
+  and CycloneDDS both spend 2.53-2.60 ms there, TickLE 3.23-3.24. That is one extra 4 MB copy: rmw_tickle decoded the
+  sample into a shell in the delivery and copied it again in the take, where a DDS deserialises once. Send offload
+  does not move latency (I1 RELIABLE, `udpoffload2_s1_rel1m_20261011-050150.txt`: 9.70 ms with it, 9.67 without,
+  the parent 9.68). The fix lends a large
+  sample where core assembled it (RMW.md, "Loaned messages"); its rig A/B is pending.
 - **I4s, Array4m best effort at 30 Hz, saturates the link and TickLE loses it:** it published all 1,802 samples and
   delivered 1,655-1,679 complete, CycloneDDS 1,699-1,700 of the ~1,700 its publisher sent. DESIGN.md's F3 is
   falsified.
