@@ -2301,10 +2301,10 @@ static uint16_t hybrid_loss_code(double p) {
     uint32_t exponent = 0;
     double scaled = p;
     while (scaled < HYBRID_HALF && exponent < HYBRID_LOSS_EXPONENT_MAX) {
-        scaled *= 2.0;
+        scaled += scaled;
         exponent++;
     }
-    double mantissa = ((scaled * 2.0) - 1.0) * HYBRID_LOSS_MANTISSA; // [0, 256)
+    double mantissa = ((scaled + scaled) - 1.0) * HYBRID_LOSS_MANTISSA; // [0, 256)
     uint32_t rounded = (uint32_t)mantissa;
     rounded += (double)rounded < mantissa ? 1U : 0U;
     if (rounded >= (uint32_t)HYBRID_LOSS_MANTISSA) { // rounded up to the next power of two
@@ -2321,7 +2321,7 @@ static double hybrid_loss_decode(uint16_t code) {
     if (code == 0) {
         return 1.0;
     }
-    double p = (HYBRID_LOSS_MANTISSA + (double)(code & 0xFFU)) / (2.0 * HYBRID_LOSS_MANTISSA);
+    double p = (HYBRID_LOSS_MANTISSA + (double)(code & 0xFFU)) / (HYBRID_LOSS_MANTISSA + HYBRID_LOSS_MANTISSA);
     for (uint32_t exponent = code >> 8U; exponent > 0; exponent--) {
         p *= HYBRID_HALF;
     }
@@ -2384,11 +2384,12 @@ static void hybrid_rx_mtu(struct tt_HybridState* hybrid, uint32_t units, uint32_
     loss_estimate_observe(&hybrid->mtu_loss, units, lost);
 }
 
-// Units [from, to) of the writer's current sample were sent and never came (to <= count): what they were sent as.
-static void hybrid_rx_gap(struct tt_HybridState* hybrid, struct tt_HybridRxWriter* writer, uint32_t from, uint32_t to) {
+// Units [from, end) of the writer's current sample were sent and never came (end <= count): what they were sent as.
+static void hybrid_rx_gap(struct tt_HybridState* hybrid, struct tt_HybridRxWriter* writer, uint32_t from,
+                          uint32_t end) {
     uint32_t tail = (uint32_t)writer->count - 1U;
-    uint32_t body_end = to < tail ? to : tail;
-    hybrid->tick_units += to - from;
+    uint32_t body_end = end < tail ? end : tail;
+    hybrid->tick_units += end - from;
     if (from < body_end) {
         uint32_t layout = writer->layout_n;
         if (layout >= 2U) {
@@ -2405,7 +2406,7 @@ static void hybrid_rx_gap(struct tt_HybridState* hybrid, struct tt_HybridRxWrite
             writer->body_lost += body_end - from;
         }
     }
-    if (to > tail && from <= tail) {
+    if (end > tail && from <= tail) {
         hybrid_rx_mtu(hybrid, 1, 1); // the tail, always an MTU unit
     }
 }
@@ -2436,7 +2437,10 @@ static void hybrid_rx_judge_path(struct tt_Context* node, struct tt_HybridRxWrit
         return;
     }
     // Not known yet (no run of this writer's has arrived): the largest the cap allows, the likeliest to be lost whole.
-    uint32_t layout = writer->layout_n >= 2U ? writer->layout_n : (hybrid->cap < body ? hybrid->cap : body);
+    uint32_t layout = hybrid->cap < body ? hybrid->cap : body;
+    if (writer->layout_n >= 2U) {
+        layout = writer->layout_n;
+    }
     uint32_t runs = (body + layout - 1U) / layout;
     double p_hi = loss_estimate_p(&hybrid->mtu_loss);
     double clean = 1.0;
@@ -10989,8 +10993,8 @@ static bool hybrid_collapsed(const struct tt_RunWindow* window, const struct tt_
     if (variance <= 0.0) {
         return false;
     }
-    double z = (lost - (runs * baseline) - HYBRID_HALF) / hybrid_sqrt(variance);
-    return z >= tt_HYBRID_COLLAPSE_Z && lost >= tt_HYBRID_COLLAPSE_RATIO * baseline * runs;
+    double score = (lost - (runs * baseline) - HYBRID_HALF) / hybrid_sqrt(variance);
+    return score >= tt_HYBRID_COLLAPSE_Z && lost >= tt_HYBRID_COLLAPSE_RATIO * baseline * runs;
 }
 
 // A clean window: enough runs, and no more of them lost than frame loss alone allows (R L0).
@@ -11127,9 +11131,9 @@ static void hybrid_scale(struct tt_HybridState* hybrid, uint64_t now, double uni
     factor = factor < tt_HYBRID_SCALE_MAX ? factor : tt_HYBRID_SCALE_MAX;
     factor = factor > 1.0 / tt_HYBRID_SCALE_MAX ? factor : 1.0 / tt_HYBRID_SCALE_MAX;
     if (factor >= tt_HYBRID_SCALE_AT) {
-        hybrid->scale_streak = hybrid->scale_streak > 0 ? (int8_t)(hybrid->scale_streak + 1) : 1;
+        hybrid->scale_streak = hybrid->scale_streak > 0 ? hybrid->scale_streak + 1 : 1;
     } else if (factor <= 1.0 / tt_HYBRID_SCALE_AT) {
-        hybrid->scale_streak = hybrid->scale_streak < 0 ? (int8_t)(hybrid->scale_streak - 1) : -1;
+        hybrid->scale_streak = hybrid->scale_streak < 0 ? hybrid->scale_streak - 1 : -1;
     } else {
         hybrid->scale_streak = 0;
     }
