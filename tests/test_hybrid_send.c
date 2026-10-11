@@ -92,6 +92,10 @@ static struct reader* decoding; // the reader whose callback is running
 
 #define WIDE_WORDS (tt_RELIABLE_BITMAP_MAX_BITS / 64)
 static uint64_t tracking[READERS][tt_MAX_PEER_COUNT * WIDE_WORDS];
+// A RELIABLE reader of a sample on 8/9 holds fragments that come out of order in its reorder buffer.
+#define REORDER_SLOTS 128
+#define REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(1472)
+static uint64_t reorder[READERS][REORDER_SLOTS * REORDER_SLOT_BYTES / sizeof(uint64_t)];
 
 static int32_t checking_decode(struct tt_Data* data, const uint8_t* payload, uint32_t len, bool native) {
     (void)data;
@@ -203,10 +207,15 @@ static void init_set(uint32_t len, int count, const uint32_t* ceilings, bool rel
             memset(tracking[i], 0, sizeof(tracking[i]));
             r->sub.tracking_bitmaps = tracking[i];
             r->sub.tracking_words = WIDE_WORDS;
+            memset(reorder[i], 0, sizeof(reorder[i]));
+            r->sub.reorder_storage = reorder[i];
+            r->sub.reorder_slots = REORDER_SLOTS;
+            r->sub.reorder_slot_bytes = REORDER_SLOT_BYTES;
             struct tt_PeerAck* ack = claim_peer_ack(&pub, reader_id(i), r->sub.endpoint.entity_id);
             EXPECT_TRUE(ack != NULL);
             if (ack != NULL) {
                 ack->tracking_words = WIDE_WORDS;
+                arm_match_heartbeat(&pub, ack); // as its announce would: the first sample's baseline (match point)
             }
         }
     }
@@ -251,7 +260,7 @@ struct sent_stats {
     uint32_t frames_dropped;
 };
 static struct sent_stats sent;
-#define SEEN_MAX 8192U
+#define SEEN_MAX 65536U
 static uint8_t seen_unit[SEEN_MAX]; // by seq_no: a unit already sent once (to anyone)
 
 static uint8_t datagram_type(const uint8_t* bytes, const uint8_t** body) {
@@ -936,6 +945,209 @@ static void test_reassembly_failures_withdraw_the_ceiling(void) {
     EXPECT_TRUE(!node->hybrid.withdrawn);
 }
 
+// --- step 4: RELIABLE runs with MTU repairs -------------------------------------------------------------------------
+
+// n follows p (forced through the test seam), by the cost model at the platform default costs - DESIGN.md's table
+// (45, 25, 11, 8, 4 at 0, 0.1, 0.5, 1 and 5% for a share of 0.6; the default share, 0.574, gives 24 at 0.1%) - and is
+// never above what the reader allows.
+static void test_n_follows_p(void) {
+    init_one(ONE_MB, FULL_CEILING, true);
+    static const double ps[] = {0.0, 0.0001, 0.001, 0.005, 0.01, 0.05, 0.2, 0.5, 1.0};
+    static const uint32_t ns[] = {45, 45, 24, 11, 8, 4, 2, 1, 1};
+    for (size_t i = 0; i < sizeof(ps) / sizeof(ps[0]); i++) {
+        hybrid_test_forced_p = ps[i];
+        EXPECT_EQ_U32(ns[i], hybrid_reliable_n(&sender, &pub, reader_id(0), 45));
+        EXPECT_EQ_U32(ns[i] < 2U ? ns[i] : 2U, hybrid_reliable_n(&sender, &pub, reader_id(0), 2));
+    }
+    // A node with no reader of this Publisher: 1.
+    hybrid_test_forced_p = 0.0;
+    EXPECT_EQ_U32(1, hybrid_reliable_n(&sender, &pub, 77, 45));
+    // Two readers on one node: the most pessimistic one's p decides - 10 events in 1,000 frames (bound 1.7%: 6), not
+    // none in 100,000 (45).
+    hybrid_test_forced_p = -1.0;
+    struct tt_PeerAck* second = claim_peer_ack(&pub, reader_id(0), 0x51515151U);
+    EXPECT_TRUE(second != NULL);
+    if (second != NULL) {
+        pub.peer_acks[0].loss = (struct tt_LossEstimate) {0, 100000};
+        second->loss = (struct tt_LossEstimate) {10, 1000};
+        EXPECT_EQ_U32(6, hybrid_reliable_n(&sender, &pub, reader_id(0), 45));
+        second->loss = (struct tt_LossEstimate) {0, 100000};
+        pub.peer_acks[0].loss = (struct tt_LossEstimate) {10, 1000};
+        EXPECT_EQ_U32(6, hybrid_reliable_n(&sender, &pub, reader_id(0), 45));
+        forget_peer_ack(&pub, reader_id(0), 0x51515151U, false);
+        pub.peer_acks[0].loss = (struct tt_LossEstimate) {0, 0};
+    }
+    // And the sample goes in runs of that n: 1% -> 8.
+    hybrid_test_forced_p = 0.01;
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+    sim_settle(1, tt_SECOND);
+    EXPECT_EQ_U32(8, sent.max_n);
+    EXPECT_EQ_U32(91, sent.runs); // 722 units in runs of 8: 90 and one of 2
+    EXPECT_EQ_U32(8, pub.peer_acks[0].run_n);
+    expect_intact(0, 1);
+    hybrid_test_forced_p = -1.0;
+}
+
+// AUTO from nothing measured: the first 1 MB sample goes as MTU units, the second in runs of 12 (723 clean frames: p's
+// bound 3/723), and n reaches 45 near 11,000 clean frames - the rule of three leaving MTU on its own.
+static void test_reliable_auto_leaves_mtu_as_clean_frames_accumulate(void) {
+    init_one(ONE_MB, FULL_CEILING, true);
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+    sim_settle(1, tt_SECOND);
+    EXPECT_EQ_U32(0, sent.runs);
+    EXPECT_EQ_U32(723, pub.peer_acks[0].loss.frames);
+    memset(&sent, 0, sizeof(sent));
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(2));
+    sim_settle(2, tt_SECOND);
+    EXPECT_EQ_U32(12, sent.max_n);
+    for (uint8_t s = 3; s <= 17; s++) {
+        memset(&sent, 0, sizeof(sent));
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
+        sim_settle(s, tt_SECOND);
+    }
+    EXPECT_EQ_U32(45, sent.max_n);
+    expect_intact(0, 17);
+    EXPECT_TRUE(readers[0].in_order);
+}
+
+// Under frame loss, RELIABLE delivers every sample whole and in order, and every repair is an MTU unit - no run is ever
+// resent, no repair datagram is above one frame. Forced IP (n = 45 throughout) and AUTO, 1% and 5% frame loss, small
+// and large samples.
+static void reliable_under_loss(uint32_t len, uint8_t mode, uint32_t loss_ppm, uint8_t samples) {
+    init_one(len, FULL_CEILING, true);
+    pub.large_fragmentation = mode;
+    sim_start(loss_ppm);
+    for (uint8_t s = 1; s <= samples; s++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
+        sim_settle(s, 5 * tt_SECOND);
+    }
+    expect_intact(0, samples);
+    EXPECT_TRUE(readers[0].in_order);
+    EXPECT_EQ_U32(0, sent.repair_runs);
+    EXPECT_TRUE(sent.repairs > 0);
+    EXPECT_TRUE(sent.repair_largest <= tt_CONTROL_MAX_LENGTH);
+    if (mode == tt_LARGE_FRAGMENTATION_IP) {
+        EXPECT_TRUE(sent.runs > 0);
+    }
+}
+
+static void test_reliable_repairs_are_mtu_units_only(void) {
+    reliable_under_loss(ONE_MB, tt_LARGE_FRAGMENTATION_IP, 10000, 8);
+    reliable_under_loss(ONE_MB, tt_LARGE_FRAGMENTATION_IP, 50000, 4);
+    reliable_under_loss(ONE_MB, tt_LARGE_FRAGMENTATION_AUTO, 10000, 8);
+    reliable_under_loss(SMALL_LEN * 4U, tt_LARGE_FRAGMENTATION_IP, 50000, 40); // 23 units on 8/9
+    reliable_under_loss(SMALL_LEN * 4U, tt_LARGE_FRAGMENTATION_AUTO, 10000, 40);
+}
+
+// The writer's count of a reader's loss: a contiguous range of first NACKs is ceil(length / n) lost runs; a re-NACK of
+// a repair is one event, but only a retry interval after that reader's last NACK; every NACKed unit is one frame of
+// exposure (its MTU repair).
+static void test_nacks_count_lost_runs_and_lost_repairs(void) {
+    init_one(ONE_MB, FULL_CEILING, true);
+    test_mock_now = 5 * tt_SECOND; // well after the never-NACKed reader's nack_ns of 0
+    struct tt_PeerAck* ack = &pub.peer_acks[0];
+    uint32_t entity = readers[0].sub.endpoint.entity_id;
+    ack->loss = (struct tt_LossEstimate) {0, 0};
+    hybrid_note_nacks(&pub, reader_id(0), entity, 100, (const uint64_t[]) {1}, 1);
+    EXPECT_EQ_U32(0, ack->loss.frames); // never exposed: nothing it says is counted
+    ack->loss.frames = 1000;
+    ack->run_n = 45;
+    uint64_t bitmap[2] = {0, 0};
+    bitmap[0] = (1ULL << 45U) - 1U; // 100..144: one run of 45
+    hybrid_note_nacks(&pub, reader_id(0), entity, 100, bitmap, 2);
+    EXPECT_EQ_U32(1, ack->loss.events);
+    EXPECT_EQ_U32(1045, ack->loss.frames);
+    EXPECT_EQ_U32(144, ack->nack_high);
+    bitmap[0] = ~0ULL;       // 200..263: 64 in a row - two runs
+    bitmap[1] = 1ULL << 10U; // and 274 alone - a third
+    hybrid_note_nacks(&pub, reader_id(0), entity, 200, bitmap, 2);
+    EXPECT_EQ_U32(4, ack->loss.events);
+    EXPECT_EQ_U32(274, ack->nack_high);
+    // Re-NACKs of repairs at once: the ACKNACK crossed them in flight, no event; a retry interval on, each one is.
+    bitmap[0] = 0x7; // 200..202 again
+    bitmap[1] = 0;
+    hybrid_note_nacks(&pub, reader_id(0), entity, 200, bitmap, 1);
+    EXPECT_EQ_U32(4, ack->loss.events);
+    test_mock_now += reliable_retry_interval_publisher();
+    hybrid_note_nacks(&pub, reader_id(0), entity, 200, bitmap, 1);
+    EXPECT_EQ_U32(7, ack->loss.events);
+    // MTU (n = 1): every unit of a range is its own event.
+    ack->run_n = 1;
+    bitmap[0] = 0xF; // 300..303
+    hybrid_note_nacks(&pub, reader_id(0), entity, 300, bitmap, 1);
+    EXPECT_EQ_U32(11, ack->loss.events);
+}
+
+// Readers of one RELIABLE writer by unicast, one advertising 0: it gets MTU units, the other the cost model's n.
+static void test_mixed_reliable_readers_each_get_their_own_n(void) {
+    static const uint32_t ceilings[] = {FULL_CEILING, 0};
+    init_set(ONE_MB, 2, ceilings, true);
+    hybrid_test_forced_p = 0.01;
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+    sim_settle(2, tt_SECOND);
+    EXPECT_EQ_U32(92, sent.to_reader[0]); // 91 runs of up to 8, and the tail
+    EXPECT_EQ_U32(723, sent.to_reader[1]);
+    EXPECT_EQ_U32(723, pub.peer_acks[0].loss.frames); // exposure for the reader that could take runs ...
+    EXPECT_EQ_U32(0, pub.peer_acks[1].loss.frames);   // ... none for the one that cannot
+    expect_intact(0, 1);
+    expect_intact(1, 1);
+    hybrid_test_forced_p = -1.0;
+}
+
+// KEEP_ALL's bound is in units whatever goes in runs: a reader whose window is narrower than the sample still makes it
+// tt_RET_TOO_LARGE, as with MTU fragments.
+static void test_keep_all_bounds_are_unchanged(void) {
+    init_one(4U * ONE_MB, FULL_CEILING, true);
+    pub.keep_all = true;
+    pub.large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
+    pub.peer_acks[0].tracking_words = 32; // 2048 bits: narrower than 4 MB's 2,889 units
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_TOO_LARGE, sim_publish(1));
+    EXPECT_EQ_U32(0, sent.runs);
+    pub.peer_acks[0].tracking_words = WIDE_WORDS;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(2));
+    sim_settle(1, tt_SECOND);
+    expect_intact(0, 1);
+    EXPECT_EQ_U32(66, sent.runs + sent.mtu);
+}
+
+// A path that drops every IP fragment, met after n has reached 45: every run is lost and repaired as MTU units, so
+// delivery stays whole and in order, and n falls as the NACKed runs raise p - 45, 18, 11, 8 on the first four samples.
+// It does not reach 1 within one sample, as DESIGN.md expects, nor within 25: a lost run is one event on n frames,
+// which reads a path that loses every run as a frame loss near 1/n, and the clean history holds the bound down. The
+// trajectory is printed; the time-varying estimator (ROADMAP, Later) is where this belongs.
+static void test_reliable_through_a_path_that_drops_fragments(void) {
+    init_one(ONE_MB, FULL_CEILING, true);
+    sim_start(0);
+    uint8_t s = 1;
+    for (; s <= 17; s++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
+        sim_settle(s, tt_SECOND);
+    }
+    EXPECT_EQ_U32(45, sent.max_n);
+    sim_drop_fragmented = true;
+    static const uint32_t expected_n[] = {45, 18, 11, 8};
+    printf("test_hybrid_send: fragments dropped after n = 45; n per sample:");
+    for (uint32_t k = 0; k < 25; k++, s++) {
+        memset(&sent, 0, sizeof(sent));
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
+        sim_settle(s, 5 * tt_SECOND);
+        printf(" %u", sent.max_n);
+        if (k < sizeof(expected_n) / sizeof(expected_n[0])) {
+            EXPECT_EQ_U32(expected_n[k], sent.max_n);
+        }
+        EXPECT_EQ_U32(0, sent.repair_runs);
+        EXPECT_TRUE(sent.repair_largest <= tt_CONTROL_MAX_LENGTH);
+    }
+    printf("\n");
+    EXPECT_TRUE(sent.max_n >= 2U); // still not 1 after 25 samples: the finding, kept visible
+    expect_intact(0, s - 1);
+    EXPECT_TRUE(readers[0].in_order);
+}
+
 int main(void) {
     test_small_sample_goes_as_one_run_and_its_tail();
     test_large_samples_go_in_runs_of_n_max();
@@ -953,6 +1165,13 @@ int main(void) {
     test_the_loss_bound_is_the_poisson_upper_limit();
     test_a_path_that_drops_fragments_brings_n_to_one();
     test_reassembly_failures_withdraw_the_ceiling();
+    test_n_follows_p();
+    test_reliable_auto_leaves_mtu_as_clean_frames_accumulate();
+    test_reliable_repairs_are_mtu_units_only();
+    test_nacks_count_lost_runs_and_lost_repairs();
+    test_mixed_reliable_readers_each_get_their_own_n();
+    test_keep_all_bounds_are_unchanged();
+    test_reliable_through_a_path_that_drops_fragments();
     free(sim_queue);
     if (test_result() != 0) {
         return 1;
