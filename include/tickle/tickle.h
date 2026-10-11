@@ -2394,6 +2394,11 @@ struct tt_WriterProxy {
     // buffer per sample. Kept equal to ack_seq_no at every point a sample can be held, so a held
     // sample always lies in [reorder_cursor, reorder_cursor + window) - the range drain walks.
     uint32_t reorder_cursor;
+    // Where this writer's held seq_no sit in the reorder ring past 2^32 (reorder_writer_slot(), tickle.c): the ring
+    // shift, in slots, for seq_no reorder_pivot - a seq_no near the watermark, taken at first contact and moved onto
+    // the watermark every 2^30 - so the slots stay contiguous where seq_no + the writer's salt passes 2^32.
+    uint32_t reorder_pivot;
+    uint16_t reorder_shift;
     // RELIABLE strict order - the highest sequence number from this writer handed to the
     // application, meaningful once delivered_any is set (0 is an ordinary seq_no past 2^32). Distinct from ack_seq_no
     // on purpose: the watermark moves past an abandoned range WITHOUT delivering it (jump_ack_baseline()), so after a
