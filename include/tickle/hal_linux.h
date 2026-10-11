@@ -392,6 +392,11 @@ struct tt_hal {
     uint64_t drain_datagrams;
     uint64_t drain_truncated;
     uint64_t drain_overruns;
+    // drain_rearm: the sockets whose recvmsg an overrun ended while the drain runs, submitted again once an eighth of
+    // the buffers is back (drain_returned: given back since the overrun was seen; drain_rearms: the submissions).
+    uint8_t drain_rearm;
+    uint32_t drain_returned;
+    uint64_t drain_rearms;
 #if TT_HAL_UDP_GRO
     // A merged read the drain took (UDP_GRO, hal_linux.c "The drain and receive offload"): buffer drain_split_bid,
     // cut every drain_split_segment bytes from drain_split_next to drain_split_end, drain_split_left segments still to
