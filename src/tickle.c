@@ -2033,15 +2033,12 @@ static uint8_t count_peers(const struct tt_Peer* peers);
 // A run's classic framing, built before it is put in the single form: tt_Header, the submessage header, its own.
 #define HYBRID_RUN_FRAMING (FRAG_FRAMING_LENGTH + sizeof(struct tt_FragRunHeader))
 #define HYBRID_RUN_L_FRAMING (FRAG_FRAMING_LENGTH + sizeof(struct tt_FragRunLHeader))
-// The frames IP sends a UDP payload as: each frame carries the control datagram plus the UDP header.
+// The UDP header, which a run's units share and each MTU unit pays.
 #define HYBRID_UDP_HEADER 8U
-#define HYBRID_FRAME_PAYLOAD ((uint32_t)tt_CONTROL_MAX_LENGTH + HYBRID_UDP_HEADER)
+// h of the objective: what a full MTU unit's datagram adds to its payload on the wire - its framing and the UDP header.
+#define HYBRID_UNIT_HEADER ((uint32_t)tt_CONTROL_MAX_LENGTH - HYBRID_UNIT + HYBRID_UDP_HEADER)
 // Runs one sample on 8/9 can need: units [0, k - 1) in runs of at least 2.
 #define HYBRID_MAX_RUNS ((tt_FRAG_MAX_COUNT / 2) + 1)
-
-static uint32_t hybrid_frames(uint32_t udp_payload) {
-    return (udp_payload + HYBRID_UDP_HEADER + HYBRID_FRAME_PAYLOAD - 1U) / HYBRID_FRAME_PAYLOAD;
-}
 
 // How many units of one type pair a datagram of at most `ceiling` bytes holds as a run - n_max: at least 1, at most
 // tt_HYBRID_N_MAX.
@@ -2168,21 +2165,6 @@ static void hybrid_note_sent(struct tt_Context* node, struct tt_Publisher* pub, 
     hybrid_note_exposure(pub, context_id, run_n, count, base, run_until);
 }
 
-static void cost_fit_observe(struct tt_CostFit* fit, uint32_t datagrams, uint32_t frames, uint64_t elapsed_ns,
-                             const char* role);
-
-// One send call of a sample's first transmission in runs, `frames` frames in its datagrams, timed for the sender's cost
-// fit: one clock read before the send and one after.
-static int32_t hybrid_send_batch(struct tt_Context* node, const struct tt_OutDatagram* batch, uint32_t count,
-                                 const uint8_t* context_ids, uint32_t frames) {
-    uint64_t start = tt_get_ns();
-    int32_t sent = seam_send_batch(node, batch, count, context_ids);
-    if (sent >= 0) {
-        cost_fit_observe(&node->hybrid.tx_fit, count, frames, tt_get_ns() - start, "send");
-    }
-    return sent;
-}
-
 // Builds the run of `units` units of a sample on 8/9 starting at unit `start`: its framing at out, its payload in place
 // in the sample's CDR. Returns the datagram, in the single form, to ip/port.
 static struct tt_OutDatagram hybrid_small_run(uint8_t* out, const struct tt_Context* node,
@@ -2221,12 +2203,10 @@ static bool hybrid_send_small_runs(struct tt_Context* node, const struct tt_Data
     struct tt_OutDatagram runs[tt_FRAG_MAX_COUNT];
     uint8_t context_ids[tt_FRAG_MAX_COUNT];
     uint32_t run_count = 0;
-    uint32_t frames = 0;
     uint32_t start = 0;
     for (; start < run_until; start += run_n) {
         uint32_t span = run_until - start < run_n ? run_until - start : run_n;
         runs[run_count] = hybrid_small_run(framings[run_count], node, data_header, cdr, start, span, count, dest);
-        frames += hybrid_frames(runs[run_count].head_len + runs[run_count].body_len);
         context_ids[run_count] = dest->context_id;
         run_count++;
     }
@@ -2234,17 +2214,16 @@ static bool hybrid_send_small_runs(struct tt_Context* node, const struct tt_Data
         runs[run_count] = units[start];
         runs[run_count].ip = dest->ip;
         runs[run_count].port = dest->port;
-        frames++;
         context_ids[run_count] = dest->context_id;
         run_count++;
     }
-    if (hybrid_send_batch(node, runs, run_count, context_ids, frames) < 0) {
+    if (seam_send_batch(node, runs, run_count, context_ids) < 0) {
         return false;
     }
     struct tt_OutDatagram last = units[count - 1U];
     last.ip = dest->ip;
     last.port = dest->port;
-    return hybrid_send_batch(node, &last, 1, &dest->context_id, 1) >= 0;
+    return seam_send_batch(node, &last, 1, &dest->context_id) >= 0;
 }
 
 // ---- The loss estimate (DESIGN.md section 8, "Estimating p") ------------------------------------------------------
@@ -2310,6 +2289,23 @@ static double loss_estimate_p(const struct tt_LossEstimate* estimate) {
     return p < 1.0 ? p : 1.0;
 }
 
+// p for the objective: the mean of its posterior, (events + 1) / frames (a flat prior, Poisson events). Cost(n) is
+// close to linear in p where n is chosen (1 - q(n) ~ n p), so the n that minimises the expected wire bytes is the one
+// Cost(n) gives at the posterior mean - not at a bound, which at no events (3 / N) would hold n below n_max at 0% loss
+// for as long as the window lasts. 1 with no exposure.
+static double loss_estimate_mean(const struct tt_LossEstimate* estimate) {
+#ifdef TT_HYBRID_TEST_SEAM
+    if (hybrid_test_forced_p >= 0.0) {
+        return hybrid_test_forced_p;
+    }
+#endif
+    if (estimate->frames == 0) {
+        return 1.0;
+    }
+    double p = ((double)estimate->events + 1.0) / (double)estimate->frames;
+    return p < 1.0 ? p : 1.0;
+}
+
 // ---- The reader's side: its pooled loss and the cap on what it advertises (DESIGN.md section 8, "BEST_EFFORT") ------
 //
 // A reader receiving U units a second in runs holds about H(n) = U T t_u L(n) / 2 bytes of incomplete reassemblies, T
@@ -2356,192 +2352,35 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
     writer->next = (uint16_t)(index + units);
 }
 
-// ---- Measuring c_d and c_f (DESIGN.md section 8, "Measuring c_d and c_f") -------------------------------------------
-//
-// Each timed call - a send call of a sample's first transmission on the sender, a fragment-path datagram from the start
-// of its processing to the end of its copy on the receiver - is one observation of t = c_d d + c_f f. Six running sums
-// give the least-squares fit and its error; all halve with the frame count at tt_HYBRID_WINDOW_FRAMES. The squares are
-// weighted by 1 / f^2, so each call counts by its relative error: a call's time varies in proportion to its size, and
-// unweighted, the noise of a 45-frame run call buried c_d - which only the one-frame tails measure - so that the
-// share's error read 0.13 at 5% noise where the weighted fit's reads 0.005. Every tt_HYBRID_FIT_CHECK_FRAMES frames the
-// fit is judged: used only with at least tt_HYBRID_FIT_MIN_CALLS calls, both costs positive, the standard error of the
-// share c_d / (c_d + c_f) under tt_HYBRID_FIT_MAX_SHARE_SE, and its prediction for the calls of that window within a
-// factor of tt_HYBRID_FIT_CPU_FACTOR of the process's own CPU time over it. Otherwise the platform default applies.
-// Thread-timed calls miss softirq work done elsewhere, so both terms read low; the CPU check is what catches a fit that
-// sees too little of the cost.
-
-#define HYBRID_FIT_PARAMETERS 2.0
-
-// The fit's two costs from its sums. Sums that do not determine them (no variation in d / f) give NaN or infinities,
-// which no check below accepts.
-static void cost_fit_solve(const struct tt_CostFit* fit, double* c_d, double* c_f) {
-    double det = (fit->s_dd * fit->s_ff) - (fit->s_df * fit->s_df);
-    *c_d = ((fit->s_dt * fit->s_ff) - (fit->s_ft * fit->s_df)) / det;
-    *c_f = ((fit->s_ft * fit->s_dd) - (fit->s_dt * fit->s_df)) / det;
-}
-
-// The standard error of the share c_d / (c_d + c_f), by the delta method from the fit's covariance.
-static double cost_fit_share_se(const struct tt_CostFit* fit, double c_d, double c_f) {
-    double det = (fit->s_dd * fit->s_ff) - (fit->s_df * fit->s_df);
-    double residual = fit->s_tt - (c_d * fit->s_dt) - (c_f * fit->s_ft);
-    double variance = (residual > 0.0 ? residual : 0.0) / (fit->calls - HYBRID_FIT_PARAMETERS);
-    double sum = c_d + c_f;
-    double cross = c_f * c_d * fit->s_df; // the off-diagonal term, twice in the quadratic form
-    double gradient = ((c_f * c_f * fit->s_ff) + cross + cross + (c_d * c_d * fit->s_dd)) / (sum * sum * sum * sum);
-    double share_variance = variance * gradient / det;
-    return share_variance > 0.0 ? hybrid_sqrt(share_variance) : 0.0;
-}
-
-// Judges the fit over the check window just closed: the costs it gives, or 0 for "not measured".
-#define HYBRID_PERCENT 100.0
-static void cost_fit_check(struct tt_CostFit* fit, uint64_t cpu_ns, const char* role) {
-    double c_d = 0.0;
-    double c_f = 0.0;
-    cost_fit_solve(fit, &c_d, &c_f);
-    bool used = fit->calls >= tt_HYBRID_FIT_MIN_CALLS && c_d > 0.0 && c_f > 0.0 &&
-                cost_fit_share_se(fit, c_d, c_f) < tt_HYBRID_FIT_MAX_SHARE_SE;
-    if (used) {
-        // An unreadable CPU clock (0) or one that did not move makes `measured` 0 or negative: never agreed with.
-        double predicted = (c_d * fit->check_d) + (c_f * fit->check_f);
-        double measured = (double)cpu_ns - (double)fit->check_cpu_ns;
-        used = predicted * tt_HYBRID_FIT_CPU_FACTOR >= measured && predicted <= measured * tt_HYBRID_FIT_CPU_FACTOR;
-        fit->cpu_share_pct = measured > 0.0 ? (uint32_t)(predicted * HYBRID_PERCENT / measured) : 0U;
-        if (!used && !fit->logged) {
-            // Said once: a fit that measures well and still is not the process's cost. The receiver's is, by
-            // construction (DESIGN.md section 8, "Steps 3 to 5 as built"): it times processing, not the receive.
-            fit->logged = true;
-            TT_LOG_INFO(
-                "Hybrid transport: %s cost fit not used - c_d %.0f ns, c_f %.0f ns predict %u%% of the process's "
-                "CPU time; the platform default applies",
-                role, c_d, c_f, (unsigned)fit->cpu_share_pct);
-        }
-    }
-    if (used) {
-        fit->datagram_ns = c_d < (double)UINT16_MAX ? (uint32_t)(c_d + HYBRID_HALF) : UINT16_MAX;
-        fit->frame_ns = c_f < (double)UINT16_MAX ? (uint32_t)(c_f + HYBRID_HALF) : UINT16_MAX;
-        fit->accepted++;
-    } else {
-        fit->datagram_ns = 0;
-        fit->frame_ns = 0;
-        fit->rejected++;
-    }
-    fit->check_cpu_ns = cpu_ns;
-    fit->check_d = 0.0;
-    fit->check_f = 0.0;
-    fit->check_frames = 0;
-}
-
-// One timed call of `datagrams` datagrams and `frames` frames that took `elapsed_ns`.
-static void cost_fit_observe(struct tt_CostFit* fit, uint32_t datagrams, uint32_t frames, uint64_t elapsed_ns,
-                             const char* role) {
-    double dgs = (double)datagrams;
-    double frs = (double)frames;
-    double took = (double)elapsed_ns;
-    double weight = frames != 0 ? 1.0 / (frs * frs) : 1.0;
-    fit->s_dd += weight * dgs * dgs;
-    fit->s_df += weight * dgs * frs;
-    fit->s_ff += weight * frs * frs;
-    fit->s_dt += weight * dgs * took;
-    fit->s_ft += weight * frs * took;
-    fit->s_tt += weight * took * took;
-    fit->calls += 1.0;
-    fit->frames += frs;
-    if (fit->frames >= (double)tt_HYBRID_WINDOW_FRAMES) {
-        fit->s_dd *= HYBRID_HALF;
-        fit->s_df *= HYBRID_HALF;
-        fit->s_ff *= HYBRID_HALF;
-        fit->s_dt *= HYBRID_HALF;
-        fit->s_ft *= HYBRID_HALF;
-        fit->s_tt *= HYBRID_HALF;
-        fit->calls *= HYBRID_HALF;
-        fit->frames *= HYBRID_HALF;
-    }
-    fit->check_d += dgs;
-    fit->check_f += frs;
-    fit->check_frames += frames;
-    if (fit->check_cpu_ns == 0) {
-        fit->check_cpu_ns = tt_process_cpu_ns(); // the first window opens with the first call
-        fit->check_frames = 0;
-        fit->check_d = 0.0;
-        fit->check_f = 0.0;
-    } else if (fit->check_frames >= tt_HYBRID_FIT_CHECK_FRAMES) {
-        cost_fit_check(fit, tt_process_cpu_ns(), role);
-    }
-}
-
-// Samples this context has put back together from fragments, small or large.
-static uint64_t hybrid_reassembled(const struct tt_Context* node) {
-#if tt_LARGE_SAMPLES
-    return node->frag_reassembled + node->large.reassembled;
-#else
-    return node->frag_reassembled;
-#endif
-}
-
-// A fragment-path datagram's processing starts (the receiver's fit): its clock reading, or 0 where nothing is kept.
-static uint64_t hybrid_rx_start(struct tt_Context* node) {
-    if (!node->hybrid.rx_capable) {
-        return 0;
-    }
-    node->hybrid.rx_reassembled = hybrid_reassembled(node);
-    return tt_get_ns();
-}
-
-// ... and ends, its units copied where they go. A datagram that completed a sample is not an observation: its time
-// holds the sample's delivery - the subscriber's decode and callback - which is neither c_d nor c_f. Counted in, every
-// sample's last unit read as one frame costing a whole delivery, and the fit gave c_d 128 us and c_f -5.6 us on a
-// veth (0 of 10 checks accepted).
-static void hybrid_rx_done(struct tt_Context* node, uint64_t start) {
-    if (start != 0 && hybrid_reassembled(node) == node->hybrid.rx_reassembled) {
-        cost_fit_observe(&node->hybrid.rx_fit, 1, hybrid_frames(node->rx_tail), tt_get_ns() - start, "receive");
-    }
-}
-
-// ---- RELIABLE: the cost model (DESIGN.md section 8, "Choosing n (RELIABLE)") ---------------------------------------
+// ---- RELIABLE: the objective (DESIGN.md section 8, "The objective and the control law") ---------------------------
 
 static struct tt_PeerAck* find_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id);
-//
-// A run of n units costs c_d + n c_f and is lost with probability L(n) = 1 - (1 - p)^n; repairs are always MTU units,
-// each c_d + c_f and 1 / (1 - p) tries. The expected cost per delivered unit is
-//   C(n) = c_d / n + c_f + L(n) (c_d + c_f) / (1 - p),
-// minimised exactly over 1..n_max (n_max already under the reader's cap: the memory is the same). c_d and c_f are the
-// sender's and the receiver's summed; p is that reader's loss as this writer counts it from its ACKNACKs. With no
-// exposure p is 1 and n is 1: n leaves MTU as clean frames accumulate, reaching 45 near 10,000 of them.
-static uint32_t hybrid_n_star(double p, double c_d, double c_f, uint32_t n_max) {
+
+// Wire bytes per delivered unit with runs of n, repairs as MTU units:
+//   Cost(n) = (u + h / n) + (1 - q(n)) (u + h),  q(n) = (1 - p)^n,
+// u the unit payload and h the bytes an MTU unit adds to it (its TickLE framing and the UDP header) - what a run of n
+// shares among its units. Minimised exactly over 1..n_max (n_max already under the reader's cap). CPU and memory are
+// not in it (the user, 2026-10-11). With no estimate p is 1 and n is 1: n leaves MTU as clean frames accumulate.
+static uint32_t hybrid_n_star(double p, double unit, double header, uint32_t n_max) {
     if (p <= 0.0) {
         return n_max;
     }
     if (p >= 1.0) {
         return 1U;
     }
-    double repair = (c_d + c_f) / (1.0 - p);
+    double whole = unit + header;
     double clean = 1.0;
     double best = 0.0;
     uint32_t best_n = 1;
     for (uint32_t run_n = 1; run_n <= n_max; run_n++) {
         clean *= 1.0 - p;
-        double cost = (c_d / (double)run_n) + c_f + ((1.0 - clean) * repair);
+        double cost = unit + (header / (double)run_n) + ((1.0 - clean) * whole);
         if (run_n == 1U || cost < best) {
             best = cost;
             best_n = run_n;
         }
     }
     return best_n;
-}
-
-// The costs of a datagram and a frame to one peer, sender's and receiver's summed: this context's sending costs as its
-// fit measured them, and the reader's receiving costs as its announce advertised them - each the platform default where
-// not measured.
-static void hybrid_costs(const struct tt_Context* node, uint8_t context_id, double* c_d, double* c_f) {
-    const struct tt_HybridState* hybrid = &node->hybrid;
-    uint32_t tx_d = hybrid->tx_fit.datagram_ns != 0 ? hybrid->tx_fit.datagram_ns : tt_HYBRID_TX_DATAGRAM_NS;
-    uint32_t tx_f = hybrid->tx_fit.datagram_ns != 0 ? hybrid->tx_fit.frame_ns : tt_HYBRID_TX_FRAME_NS;
-    uint32_t rx_d = hybrid->peer_cost_datagram_ns[context_id] != 0 ? hybrid->peer_cost_datagram_ns[context_id]
-                                                                   : tt_HYBRID_RX_DATAGRAM_NS;
-    uint32_t rx_f =
-        hybrid->peer_cost_datagram_ns[context_id] != 0 ? hybrid->peer_cost_frame_ns[context_id] : tt_HYBRID_RX_FRAME_NS;
-    *c_d = (double)tx_d + (double)rx_d;
-    *c_f = (double)tx_f + (double)rx_f;
 }
 
 // RELIABLE AUTO's n for one peer: the cost model at the most pessimistic p among that node's readers of this Publisher
@@ -2562,16 +2401,14 @@ static uint32_t hybrid_reliable_n(struct tt_Context* node, const struct tt_Publi
             }
             *one_run = true;
         }
-        double peer_p = loss_estimate_p(&ack->loss);
+        double peer_p = loss_estimate_mean(&ack->loss);
         p = peer_p > p ? peer_p : p;
     }
     if (p < 0.0) {
         return 1U;
     }
-    double c_d = 0.0;
-    double c_f = 0.0;
-    hybrid_costs(node, context_id, &c_d, &c_f);
-    return hybrid_n_star(p, c_d, c_f, n_max);
+    UNUSED(node);
+    return hybrid_n_star(p, (double)HYBRID_UNIT, (double)HYBRID_UNIT_HEADER, n_max);
 }
 
 // A RELIABLE sample's first transmission went to `context_id` (tt_CONTEXT_ID_INVALID: the broadcast, every reader) in
@@ -7707,11 +7544,10 @@ static uint32_t large_end_of(const struct tt_LargeRecord* record, uint32_t last)
 static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_LargeRecord* record, uint32_t run_n,
                                  uint32_t run_until, uint32_t next, const struct tt_Peer* dest,
                                  uint8_t (*framings)[HYBRID_RUN_L_FRAMING], struct tt_OutDatagram* batch,
-                                 uint32_t* units, uint32_t* frames) {
+                                 uint32_t* units) {
     const struct tt_DataHeader* data = (const struct tt_DataHeader*)(record->buffer + tt_LARGE_HEADER_OFFSET);
     const uint8_t* cdr = record->buffer + tt_LARGE_CDR_OFFSET;
     uint32_t last = (uint32_t)record->count - 1U;
-    *frames = 0;
     if (next == last) {
         uint32_t length = large_length(last, record->cdr_len);
         uint32_t skip = 0;
@@ -7720,7 +7556,6 @@ static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_
         batch[0] = (struct tt_OutDatagram) {
             framings[0] + skip, framing_length - skip, cdr + large_offset(last), length, dest->ip, dest->port};
         units[0] = 1;
-        *frames = 1;
         return 1;
     }
     uint32_t k = 0;
@@ -7733,7 +7568,6 @@ static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_
             batch[k] = (struct tt_OutDatagram) {
                 framings[k] + skip, framing_length - skip, cdr + large_offset(next), length, dest->ip, dest->port};
             units[k] = 1;
-            *frames += 1;
             next++;
             continue;
         }
@@ -7760,7 +7594,6 @@ static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_
         batch[k] = (struct tt_OutDatagram) {
             out + skip, (uint32_t)HYBRID_RUN_L_FRAMING - skip, cdr + offset, length, dest->ip, dest->port};
         units[k] = run;
-        *frames += hybrid_frames(batch[k].head_len + length);
         next += run;
     }
     return k;
@@ -7777,9 +7610,8 @@ static bool large_send_runs(struct tt_Context* node, struct tt_Publisher* pub, s
         uint8_t framings[LARGE_BATCH][HYBRID_RUN_L_FRAMING];
         struct tt_OutDatagram batch[LARGE_BATCH];
         uint32_t units[LARGE_BATCH];
-        uint32_t frames = 0;
         uint32_t batch_count =
-            large_build_runs(node, record, run_n, run_until, cursor->next_index, dest, framings, batch, units, &frames);
+            large_build_runs(node, record, run_n, run_until, cursor->next_index, dest, framings, batch, units);
         uint32_t call_units = 0;
         for (uint32_t k = 0; k < batch_count; k++) {
             call_units += units[k];
@@ -7788,15 +7620,7 @@ static bool large_send_runs(struct tt_Context* node, struct tt_Publisher* pub, s
             *failed = true;
             return true;
         }
-        uint64_t start = tt_get_ns();
         int32_t sent = large_send_batch(node, batch, batch_count, dest);
-        if (sent > 0) {
-            uint32_t sent_frames = 0;
-            for (int32_t k = 0; k < sent; k++) {
-                sent_frames += hybrid_frames(batch[k].head_len + batch[k].body_len);
-            }
-            cost_fit_observe(&node->hybrid.tx_fit, (uint32_t)sent, sent_frames, tt_get_ns() - start, "send");
-        }
         if (sent < 0) {
             // As for MTU fragments: an error the socket will repeat, so these units are lost as the network loses
             // them, and a RELIABLE reader asks for them again (as MTU units).
@@ -10876,21 +10700,16 @@ static void fill_announce_header(const struct tt_Context* node, struct tt_DataHe
     data_header->entity_id = tt_DISCOVERY_ENTITY_ID;
 }
 
-// The hybrid transport's fields of this node's announce (tt_VERSION 13): the reassembly ceiling it accepts, and its
-// receive costs - 0, not measured, until the cost fit exists. Every fragment of an announce carries them.
+// The hybrid transport's fields of this node's announce (tt_VERSION 13): the reassembly ceiling it accepts, and the
+// frame loss it measures as a reader (0: no estimate). Every fragment of an announce carries them.
 static void fill_announce_capability(const struct tt_Context* node, struct tt_AnnounceHeader* announce) {
 #if tt_HYBRID_TRANSPORT
     announce->ip_reassembly_max = node->hybrid.advertised; // the ceiling under the reader's cap (DESIGN.md section 8)
 #else
     announce->ip_reassembly_max = node->ip_reassembly_max;
 #endif
-#if tt_HYBRID_TRANSPORT
-    announce->cost_datagram_ns = node->hybrid.advertised_cost_datagram_ns; // this reader's measured costs, 0: none
-    announce->cost_frame_ns = node->hybrid.advertised_cost_frame_ns;
-#else
-    announce->cost_datagram_ns = 0;
-    announce->cost_frame_ns = 0;
-#endif
+    announce->loss_p = 0;
+    announce->reserved = 0;
 }
 
 // Sends this node's announce as the part_count (>= 2) fragments plan_update_parts() laid out, each
@@ -11166,15 +10985,6 @@ static uint16_t hybrid_cap_bytes(const struct tt_Context* node, uint32_t cap, ui
     return (uint16_t)(bytes < node->ip_reassembly_max ? bytes : node->ip_reassembly_max);
 }
 
-// Whether a measured cost differs enough from what the announce carries to announce it again: by more than an eighth
-// (which includes becoming measured, and going back to "not measured") - the cost model is flat at its minimum, and a
-// share wrong by a factor of 2 costs at most 6%.
-#define HYBRID_COST_MOVE_SHIFT 3U
-static bool hybrid_costs_moved(uint32_t measured, uint32_t advertised) {
-    uint32_t delta = measured > advertised ? measured - advertised : advertised - measured;
-    return delta > (advertised >> HYBRID_COST_MOVE_SHIFT);
-}
-
 // Once per announce interval (node_update()): the reader's cap from its pooled loss and the units it received, or one
 // unit while withdrawn - the host's reassembly failures rose while runs were arriving, and have not been still for 2T
 // since. A changed ceiling is a new generation, announced at once, so writers learn it from the ordinary announce.
@@ -11222,18 +11032,10 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
     uint16_t bytes = hybrid_cap_bytes(node, cap, n_max);
     hybrid->tick_ns = now;
     hybrid->tick_units = 0;
-    bool costs_moved = hybrid_costs_moved(hybrid->rx_fit.datagram_ns, hybrid->advertised_cost_datagram_ns) ||
-                       hybrid_costs_moved(hybrid->rx_fit.frame_ns, hybrid->advertised_cost_frame_ns);
-    if (bytes == hybrid->advertised && !costs_moved) {
+    if (bytes == hybrid->advertised) {
         return;
     }
-    if (costs_moved) {
-        hybrid->advertised_cost_datagram_ns = (uint16_t)hybrid->rx_fit.datagram_ns;
-        hybrid->advertised_cost_frame_ns = (uint16_t)hybrid->rx_fit.frame_ns;
-    }
-    if (bytes != hybrid->advertised) {
-        hybrid->cap_changes++;
-    }
+    hybrid->cap_changes++;
     hybrid->advertised = bytes;
     node->last_modified = now > node->last_modified ? now : node->last_modified + 1U;
     build_and_send_update(node, NULL, 0);
@@ -11614,10 +11416,6 @@ static void presume_node_dead(struct tt_Context* node, uint8_t source, uint64_t 
     node->liveliness_flags[source] = 0;
 #if tt_FRAG_ENABLED
     node->peer_ip_reassembly_max[source] = 0; // a node heard again is not trusted to reassemble until it says so
-#if tt_HYBRID_TRANSPORT
-    node->hybrid.peer_cost_datagram_ns[source] = 0;
-    node->hybrid.peer_cost_frame_ns[source] = 0;
-#endif
 #endif
 }
 
@@ -12242,19 +12040,14 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
     // Every announce and fragment carries it, and a change of it is a new generation; recorded before the generation
     // check all the same, so the record is the latest the source said whatever this node has applied.
     node->peer_ip_reassembly_max[source] = rd16(header, announce->ip_reassembly_max);
-#if tt_HYBRID_TRANSPORT
-    node->hybrid.peer_cost_datagram_ns[source] = rd16(header, announce->cost_datagram_ns);
-    node->hybrid.peer_cost_frame_ns[source] = rd16(header, announce->cost_frame_ns);
-#endif
 #endif
 
     TT_LOG_DEBUG("Announce");
     TT_LOG_DEBUG("  generation: %u", generation);
     TT_LOG_DEBUG("  fragment: %u of %u", frag_index, frag_count);
     TT_LOG_DEBUG("  entity_count: %u", announce->entity_count);
-    TT_LOG_DEBUG("  ip_reassembly_max: %u, cost_datagram_ns: %u, cost_frame_ns: %u",
-                 (unsigned)rd16(header, announce->ip_reassembly_max),
-                 (unsigned)rd16(header, announce->cost_datagram_ns), (unsigned)rd16(header, announce->cost_frame_ns));
+    TT_LOG_DEBUG("  ip_reassembly_max: %u, loss_p: 0x%04x", (unsigned)rd16(header, announce->ip_reassembly_max),
+                 (unsigned)rd16(header, announce->loss_p));
 
     if (discovery_generation_applied(node, source, generation)) {
         return true; // the periodic resend of the announce we last acted on
@@ -15934,17 +15727,12 @@ static bool process_frag_large(struct tt_Context* node, struct tt_Header* header
     fragment.payload = buffer + head;
     fragment.length = tail - head;
 #if tt_HYBRID_TRANSPORT
-    uint64_t rx_start = hybrid_rx_start(node);
     if (node->hybrid.rx_capable && fragment.index < fragment.count) {
         hybrid_rx_note(node, header->source, fragment.entity_id, fragment.seq_no - fragment.index, fragment.index,
                        fragment.count, 1);
     }
-    bool delivered = deliver_large_fragment(node, &fragment);
-    hybrid_rx_done(node, rx_start);
-    return delivered;
-#else
-    return deliver_large_fragment(node, &fragment);
 #endif
+    return deliver_large_fragment(node, &fragment);
 #else
     UNUSED(buffer);
     UNUSED(head);
@@ -16022,7 +15810,6 @@ static bool process_frag_run(struct tt_Context* node, struct tt_Header* header, 
     uint32_t unit = span / run_count;
     uint32_t unit_head = head;
 #if tt_HYBRID_TRANSPORT
-    uint64_t rx_start = hybrid_rx_start(node);
     if (node->hybrid.rx_capable) {
         hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);
     }
@@ -16035,9 +15822,6 @@ static bool process_frag_run(struct tt_Context* node, struct tt_Header* header, 
                                     sender_ip, sender_port);
         unit_head += unit_length;
     }
-#if tt_HYBRID_TRANSPORT
-    hybrid_rx_done(node, rx_start);
-#endif
     return true;
 }
 #endif
@@ -16068,7 +15852,6 @@ static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* he
     }
     const uint8_t* payload = buffer + head;
 #if tt_HYBRID_TRANSPORT
-    uint64_t rx_start = hybrid_rx_start(node);
     if (node->hybrid.rx_capable) {
         hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);
     }
@@ -16091,9 +15874,6 @@ static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* he
         (void)deliver_large_fragment(node, &fragment);
         payload += fragment.length;
     }
-#if tt_HYBRID_TRANSPORT
-    hybrid_rx_done(node, rx_start);
-#endif
     return true;
 #else
     UNUSED(buffer);
@@ -16154,15 +15934,11 @@ static bool process_frag(struct tt_Context* node, struct tt_Header* header, uint
                                 (uint8_t)count);
     }
 #if tt_HYBRID_TRANSPORT
-    uint64_t rx_start = hybrid_rx_start(node);
     if (node->hybrid.rx_capable && index < count) {
         hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, 1);
     }
-    bool delivered = deliver_user_fragment(node, header, buffer, head, tail, data_header, entity_id, seq_no, index,
-                                           count, sender_ip, sender_port);
-    hybrid_rx_done(node, rx_start);
-    return delivered;
-#elif tt_FRAG_ENABLED
+#endif
+#if tt_FRAG_ENABLED
     return deliver_user_fragment(node, header, buffer, head, tail, data_header, entity_id, seq_no, index, count,
                                  sender_ip, sender_port);
 #else

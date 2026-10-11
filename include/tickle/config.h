@@ -721,41 +721,11 @@
 #ifndef tt_HYBRID_N_MAX
 #define tt_HYBRID_N_MAX 45
 #endif
-// The loss estimates (and the cost fits) halve their sums whenever their window reaches this many frames (2^17).
+// The loss estimates halve their sums whenever their window reaches this many frames (2^20, 1.5 GB of units). At 0%
+// loss the objective reaches n_max at about 115,000 clean frames (p's posterior mean 1 / N); a window of 2^17 halved
+// back below that and held n between 34 and 45 at 0% loss for good.
 #ifndef tt_HYBRID_WINDOW_FRAMES
-#define tt_HYBRID_WINDOW_FRAMES (1UL << 17)
-#endif
-// The platform default of the cost model until a context has measured its own (DESIGN.md section 8, "Measuring c_d and
-// c_f"): nanoseconds per datagram and per frame, the sender's and the receiver's. Derived from the rig, not a profile:
-// Fast DDS's two datagram sizes there (RESULTS "rmw large messages": 64 KB datagrams 2.35 ms/MB subscriber and 4.09
-// publisher, 1472-B datagrams 6.26 and 8.44; 712 frames a MB against 16 and 712 datagrams) give c_d 5.6 us and c_f 3.2
-// us on the subscriber, 6.25 and 5.6 on the publisher - c_d 57% of a 1472-B datagram's cost, both sides summed.
-#ifndef tt_HYBRID_TX_DATAGRAM_NS
-#define tt_HYBRID_TX_DATAGRAM_NS 6250
-#endif
-#ifndef tt_HYBRID_TX_FRAME_NS
-#define tt_HYBRID_TX_FRAME_NS 5600
-#endif
-#ifndef tt_HYBRID_RX_DATAGRAM_NS
-#define tt_HYBRID_RX_DATAGRAM_NS 5600
-#endif
-#ifndef tt_HYBRID_RX_FRAME_NS
-#define tt_HYBRID_RX_FRAME_NS 3200
-#endif
-// When a measured cost fit is used (DESIGN.md section 8, "Error bounds"): at least this many calls in it, the standard
-// error of the share c_d / (c_d + c_f) below this, and its prediction within this factor of the process's CPU time over
-// the check window - judged every tt_HYBRID_FIT_CHECK_FRAMES frames.
-#ifndef tt_HYBRID_FIT_MIN_CALLS
-#define tt_HYBRID_FIT_MIN_CALLS 64
-#endif
-#ifndef tt_HYBRID_FIT_MAX_SHARE_SE
-#define tt_HYBRID_FIT_MAX_SHARE_SE 0.1
-#endif
-#ifndef tt_HYBRID_FIT_CPU_FACTOR
-#define tt_HYBRID_FIT_CPU_FACTOR 2.0
-#endif
-#ifndef tt_HYBRID_FIT_CHECK_FRAMES
-#define tt_HYBRID_FIT_CHECK_FRAMES 8192U
+#define tt_HYBRID_WINDOW_FRAMES (1UL << 20)
 #endif
 // The kernel's truesize of one held IP fragment, which user space cannot see (t_u in the reader's cap, DESIGN.md
 // section 8, "BEST_EFFORT").

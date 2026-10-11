@@ -724,17 +724,12 @@ static void test_mock_segments_free(void) {
 // Hybrid transport's HAL calls (hal.h): the kernel's reassembly limits and its failure count, each settable, and
 // whether it can be read at all.
 #ifdef TEST_MOCK_DEFINE_STORAGE
-uint64_t test_mock_process_cpu_ns = 0; // tt_process_cpu_ns(): 0 reads as "cannot be told"
 bool test_mock_reasm_limits_readable = true;
 uint32_t test_mock_reasm_high_thresh = 4194304; // the kernel's defaults: 4 MB and 30 s
 uint32_t test_mock_reasm_time_s = 30;
 bool test_mock_reasm_failures_readable = true;
 uint64_t test_mock_reasm_failures = 0;
 int test_mock_reasm_failure_reads = 0;
-
-uint64_t tt_process_cpu_ns(void) {
-    return test_mock_process_cpu_ns;
-}
 
 bool tt_ip_reassembly_limits(uint32_t* high_thresh, uint32_t* time_s) {
     if (!test_mock_reasm_limits_readable) {
@@ -755,7 +750,6 @@ bool tt_ip_reassembly_failures(uint64_t* failures) {
 }
 
 static inline void test_mock_hybrid_reset(void) {
-    test_mock_process_cpu_ns = 0;
     test_mock_reasm_limits_readable = true;
     test_mock_reasm_high_thresh = 4194304;
     test_mock_reasm_time_s = 30;
@@ -764,7 +758,6 @@ static inline void test_mock_hybrid_reset(void) {
     test_mock_reasm_failure_reads = 0;
 }
 #else
-extern uint64_t test_mock_process_cpu_ns;
 extern bool test_mock_reasm_limits_readable;
 extern uint32_t test_mock_reasm_high_thresh;
 extern uint32_t test_mock_reasm_time_s;

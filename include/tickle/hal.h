@@ -290,9 +290,6 @@ tt_ret_t tt_wake_signal(struct tt_Context* node);
 
 #if tt_HYBRID_TRANSPORT
 // Hybrid transport (DESIGN.md section 8), built where the platform reassembles IP (config.h's tt_HYBRID_TRANSPORT).
-// CPU time the whole process has used, user and system, in ns (getrusage() on Linux): what the cost fit's prediction
-// is checked against. 0 where it cannot be told, which rejects the fit and leaves the platform default.
-uint64_t tt_process_cpu_ns(void);
 // The kernel's IP reassembly limits as this context's network namespace has them: the memory incomplete reassemblies
 // may hold before every fragmented datagram on the host is dropped (net.ipv4.ipfrag_high_thresh, bytes) and how long
 // one is kept (net.ipv4.ipfrag_time, seconds). Read once at create. False when they cannot be read.

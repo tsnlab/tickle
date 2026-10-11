@@ -35,7 +35,6 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
-#include <sys/resource.h> // NOLINT(misc-include-cleaner) - getrusage(): tt_process_cpu_ns()
 #include <sys/socket.h>
 // struct iovec (tt_send_iov, below) - clang-tidy's IWYU mapping doesn't know this glibc symbol's
 // real (portable, POSIX-specified) home, so it flags both this include and the struct itself as
@@ -1819,17 +1818,6 @@ static void bell_rung(struct tt_Context* node) {
 #endif
 
 #if tt_HYBRID_TRANSPORT
-#define US_NS 1000ULL
-
-uint64_t tt_process_cpu_ns(void) {
-    struct rusage usage;                       // NOLINT(misc-include-cleaner) - struct rusage: a glibc-private header
-    if (getrusage(RUSAGE_SELF, &usage) != 0) { // NOLINT(misc-include-cleaner) - RUSAGE_SELF: as above
-        return 0;
-    }
-    return ((uint64_t)usage.ru_utime.tv_sec * SEC_NS) + ((uint64_t)usage.ru_utime.tv_usec * US_NS) +
-           ((uint64_t)usage.ru_stime.tv_sec * SEC_NS) + ((uint64_t)usage.ru_stime.tv_usec * US_NS);
-}
-
 // One unsigned number from a /proc/sys file.
 static bool read_sysctl_u32(const char* path, uint32_t* value) {
     FILE* file = fopen(path, "r");
