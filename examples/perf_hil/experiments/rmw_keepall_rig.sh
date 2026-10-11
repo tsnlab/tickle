@@ -86,8 +86,35 @@
 #     HEAD_SHA=<sha> OUT="$OUT" examples/perf_hil/experiments/rmw_keepall_rig.sh > "$OUT.launch.log" 2>&1 < /dev/null &
 # DURATION: build 2-5 min (head only; 2 min incremental on 2026-10-06), dry run 6 runs x ~20 s = 2 min, then 3 arms x
 #   4 cells x 3 reps = 36 runs at ~32 s (measured 2026-10-06) = ~19 min: estimate 30 min, analyse an overrun at 45.
+#
+# GATE V2 (the user's decision of 2026-10-11; gate_v2_lib.sh, gate_v2.py, TESTING.md 6.1):
+#   A1  every build here is layout-stable: TICKLE_EXTRA_CFLAGS (default TICKLE_LAYOUT_CFLAGS, -falign-functions=64, when
+#       unset; set and empty = the plain build) is appended to CMAKE_C_FLAGS and CMAKE_CXX_FLAGS of both stages and of
+#       every variant - rmw_tickle with the TickLE core it compiles in (tickle.c, encoding.c, log.c, hal_linux.c), the two
+#       TickLE typesupports, and builtin_interfaces, rcl_interfaces and performance_test, whose TickLE typesupport
+#       libraries compile encoding.c and log.c in (performance_test's are the measured messages' serialisers). Each
+#       build is configured with -DCMAKE_EXPORT_COMPILE_COMMANDS=ON; its compile_commands.json is copied back to
+#       $OUT.runs/build_<host>_<build>.json and read by rmw_build_flags_check.py (every unit carries every flag word, the
+#       last -falign-functions= is ours, the units it must have compiled are there). One "build flags verified:" line per
+#       Pi and build, listed on "--- builds to verify: ... ---"; otherwise nothing is measured. Each Pi's gcc version and
+#       default -falign-* values are recorded with them. Also with SKIP_BUILD=1. Note: performance_test is rebuilt from
+#       scratch whenever the flags change between invocations (an A P B B P A chain: four times).
+#   A2  INSN_COUNT=1 (the default when every arm is tickle@*; refused with a vendor arm, which would then run under an
+#       instrument whose per-context-switch cost depends on each framework's threads - TESTING.md section 5, item 4):
+#       each perf_test runs under `perf stat -x, -e instructions:u,instructions:k` (insn_prefix), and the RUN line in
+#       index.txt gets pub_insn_u= pub_insn_k= pub_insn=ok sub_insn_u= sub_insn_k= sub_insn=ok (insn_fields), or
+#       <role>_insn=fail:<why>, which the summary makes VOID. Whole-life counts; the readers divide by the publisher's
+#       sent and the subscriber's received whole counts. The launcher writes perf_test's own PID (perf's child, by
+#       /proc exe) to /tmp/ka_<role>.pid, so the maps, environ, deadline and cleanup all act on perf_test, and perf's
+#       PID to /tmp/ka_<role>.perfpid, which run_one waits on before it reads the counts.
+#   A3  one SHA and flag set per invocation; rmw_gate_v2_chain.sh HARNESS=keepall runs ARMS=tickle@head as the mirrored
+#       blocks A P B B P A and rmw_gate_v2.py reads them by gate v2.
+# ROS_SETUP (default /opt/ros/jazzy/setup.bash) and PI_HOME (default /home/ci): only for rig_dryrun.sh on a PC.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$REPO/examples/perf_hil/experiments/gate_v2_lib.sh"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
 
@@ -116,6 +143,19 @@ fi
 SUMMARY=${SUMMARY:-$REPO/examples/perf_hil/experiments/rmw_keepall_rig_summary.py}
 DOMAIN=${DOMAIN:-61}
 OUT=${OUT:-$HOME/rig_results_safe/rmw_keepall_rig_$(date +%Y%m%d-%H%M%S)}
+ROS_SETUP=${ROS_SETUP:-/opt/ros/jazzy/setup.bash}
+PI_HOME=${PI_HOME:-/home/ci}
+# Gate v2 A1 and A2 (header).
+layout_cflags_default
+case "$TICKLE_EXTRA_CFLAGS" in *[!A-Za-z0-9=_\ -]*)
+    echo "TICKLE_EXTRA_CFLAGS may hold only [A-Za-z0-9=_ -]: '$TICKLE_EXTRA_CFLAGS'" >&2; exit 64 ;; esac
+ONLY_TICKLE=1; for a in $ARMS; do case "$a" in tickle@*) ;; *) ONLY_TICKLE=0 ;; esac; done
+if [ "$ONLY_TICKLE" = 1 ]; then INSN_COUNT=${INSN_COUNT:-1}; else INSN_COUNT=${INSN_COUNT:-0}; fi
+case "$INSN_COUNT" in 0 | 1) ;; *) echo "INSN_COUNT must be 0 or 1" >&2; exit 64 ;; esac
+if [ "$INSN_COUNT" = 1 ] && [ "$ONLY_TICKLE" != 1 ]; then
+    echo "REFUSED: INSN_COUNT=1 with a vendor arm in ARMS='$ARMS' (no framework runs under an instrument the others do not)" >&2
+    exit 64
+fi
 if [ -n "$EQUAL_BOUND" ]; then DRY=${DRY:-1}; else DRY=${DRY:-0}; fi
 DRY_DUR=${DRY_DUR:-6}
 mkdir -p "$OUT.runs"
@@ -142,13 +182,15 @@ trap cleanup EXIT
 say "=== rmw KEEP_ALL on the rig, $(date -Is): head $HEAD_SHA, ack $ACK_SHA, pre $PRE_SHA, $REPS reps, ${DUR}s," \
     "cells:$CELLS, arms: $ARMS, out $OUT ==="
 [ -n "$EQUAL_BOUND" ] && say "EQUAL_BOUND=$EQUAL_BOUND: every KEEP_ALL writer bounded alike (see the header); dry run $DRY"
+say "TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (every rmw_tickle, TickLE typesupport, interface and performance_test unit; empty: the plain build)"
+say "INSN_COUNT=$INSN_COUNT (perf stat instructions:u/k on every perf_test; 1 only with tickle arms alone)"
 [ "$HAS_TICKLE" = 1 ] || SKIP_BUILD=1
 # The pre/ack variants to build: only those ARMS names (the default ARMS names both, as before).
 VARIANT_SPECS=""; VARIANT_LIBS=""; N_TICKLE_LIBS=1
 for v in pre:$PRE_SHA ack:$ACK_SHA; do
     case " $ARMS " in *" tickle@${v%%:*} "*)
         VARIANT_SPECS="$VARIANT_SPECS $v"
-        VARIANT_LIBS="$VARIANT_LIBS /home/ci/rmw_variants/${v%%:*}/install/rmw_tickle/lib/librmw_tickle.so"
+        VARIANT_LIBS="$VARIANT_LIBS $PI_HOME/rmw_variants/${v%%:*}/install/rmw_tickle/lib/librmw_tickle.so"
         N_TICKLE_LIBS=$((N_TICKLE_LIBS + 1)) ;;
     esac
 done
@@ -157,7 +199,9 @@ done
 # rmw_tickle is built the way the vendor rmws it is compared with were (fairness audit, 2026-10-05): the jazzy debs
 # export their CMake targets as "-none" - CMAKE_BUILD_TYPE None, Debian's -O2, no NDEBUG - while this built rmw_tickle
 # as Release, -O3 -DNDEBUG. -g -O2 is the level they share. perf_test is one binary for every arm and stays Release.
-RMW_TICKLE_BUILD="-DCMAKE_BUILD_TYPE=None '-DCMAKE_C_FLAGS=-g -O2' '-DCMAKE_CXX_FLAGS=-g -O2'"
+# Gate v2 A1 (header): the layout flags on the end of every build's C and C++ flags, and each build's compile commands.
+RMW_TICKLE_BUILD="-DCMAKE_BUILD_TYPE=None '-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS' '-DCMAKE_CXX_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS' -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+LAYOUT_BUILD="'-DCMAKE_C_FLAGS=$TICKLE_EXTRA_CFLAGS' '-DCMAKE_CXX_FLAGS=$TICKLE_EXTRA_CFLAGS' -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
 if [ "${SKIP_BUILD:-0}" != 1 ]; then
 say "--- building on both Pis ---"
 pids=()
@@ -165,14 +209,14 @@ for h in "$CLIENT" "$SERVER"; do
     sh_ "$h" "set -e
 cd ~/tickle && git fetch -q origin && git reset -q --hard $HEAD_SHA && git clean -fdqx -e install -e build -e log
 export PYTHONPATH=\$HOME/tickle/tools/typesupport\${PYTHONPATH:+:\$PYTHONPATH}
-set +u; source /opt/ros/jazzy/setup.bash; set -u
+set +u; source $ROS_SETUP; set -u
 colcon build --packages-select rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_tickle \
   --cmake-args -DBUILD_SHARED_LIBS=ON $RMW_TICKLE_BUILD > /tmp/ka_build1.log 2>&1 \
   || { echo \"STAGE 1 FAILED on \$(hostname)\"; tail -25 /tmp/ka_build1.log; exit 1; }
 set +u; source \$HOME/tickle/install/setup.bash; set -u
 # The interface packages' TickLE bindings are regenerated with this generator: perf_test's were from 2026-09-20.
 colcon build --base-paths \$HOME/rmw_perf_ws --build-base \$HOME/rmw_perf_ws/build --install-base \$HOME/rmw_perf_ws/install \
-  --packages-select builtin_interfaces rcl_interfaces performance_test --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  --packages-select builtin_interfaces rcl_interfaces performance_test --cmake-args -DCMAKE_BUILD_TYPE=Release $LAYOUT_BUILD \
   --cmake-force-configure > /tmp/ka_build2.log 2>&1 \
   || { echo \"STAGE 2 FAILED on \$(hostname)\"; tail -25 /tmp/ka_build2.log; exit 1; }
 rm -rf \$HOME/rmw_variants; git worktree prune
@@ -202,12 +246,44 @@ fi
 done
 [ "$HAS_TICKLE" = 1 ] && say "identity: $N_TICKLE_LIBS distinct librmw_tickle.so on both Pis"
 
+# Gate v2 A1 (header): each build's own record of what its compiler was given, from its compile_commands.json. A build
+# that does not show TICKLE_EXTRA_CFLAGS on every unit, or lacks a unit it must have compiled, stops the run here.
+if [ "$HAS_TICKLE" = 1 ]; then
+    BUILDS="rmw_tickle:tickle/build/rmw_tickle ts_c:tickle/build/rosidl_typesupport_tickle_c"
+    BUILDS="$BUILDS ts_cpp:tickle/build/rosidl_typesupport_tickle_cpp builtin_interfaces:rmw_perf_ws/build/builtin_interfaces"
+    BUILDS="$BUILDS rcl_interfaces:rmw_perf_ws/build/rcl_interfaces performance_test:rmw_perf_ws/build/performance_test"
+    for v in $VARIANT_SPECS; do BUILDS="$BUILDS variant_${v%%:*}:rmw_variants/${v%%:*}/build/rmw_tickle"; done
+    needs_of() {
+        case "$1" in
+        rmw_tickle | variant_*) echo "--need /rmw_tickle/src/rmw_node.c --need /src/tickle.c --need /src/encoding.c --need /src/log.c --need /src/hal_linux.c" ;;
+        ts_c | ts_cpp) echo "--need /src/identifier.c" ;;
+        builtin_interfaces | rcl_interfaces | performance_test) echo "--need /src/encoding.c --need /src/log.c" ;;
+        esac
+    }
+    say "--- builds to verify: $(for b in $BUILDS; do printf '%s ' "${b%%:*}"; done)---"
+    for h in "$CLIENT" "$SERVER"; do
+        # shellcheck disable=SC2016 # expanded on the Pi
+        say "compiler on $h: $(sh_ "$h" 'gcc --version | head -1; gcc -O2 -Q --help=optimizers | grep -E "falign-(functions|loops|jumps)=" | tr -s " \t" " "' </dev/null 2>&1 | tr '\n' ';')"
+        for b in $BUILDS; do
+            name=${b%%:*}
+            json="$OUT.runs/build_${h##*.}_$name.json"
+            sh_ "$h" "cat \$HOME/${b#*:}/compile_commands.json" </dev/null >"$json" 2>/dev/null || true
+            # shellcheck disable=SC2046 # needs_of's words are separate arguments on purpose
+            if ! verified=$(python3 "$REPO/examples/perf_hil/experiments/rmw_build_flags_check.py" "$json" "$TICKLE_EXTRA_CFLAGS" $(needs_of "$name")); then
+                say "FATAL build flags: $h $name does not show TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS': $verified ($json). Not running."
+                exit 1
+            fi
+            say "build flags verified: $h $name TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' ($verified)"
+        done
+    done
+fi
+
 CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General></Domain></CycloneDDS>'
-FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
+FDDS_PROFILE=$PI_HOME/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
 # Overlays are sourced with local_setup.bash only: a setup.bash re-sources its build-time underlays, which moves
 # /opt/ros/jazzy back in front of rmw_perf_ws and loads interface packages without TickLE typesupport.
 # shellcheck disable=SC2016 # expanded on the Pi, not here
-BASE='set +u; source /opt/ros/jazzy/setup.bash; source $HOME/tickle/install/local_setup.bash
+BASE='set +u; source '$ROS_SETUP'; source $HOME/tickle/install/local_setup.bash
 source $HOME/rmw_perf_ws/install/local_setup.bash'
 env_for() {
     echo "$BASE"
@@ -236,8 +312,8 @@ env_for() {
 }
 lib_for() {
     case "$1" in
-        tickle@head) echo "/home/ci/tickle/install/rmw_tickle/lib/librmw_tickle.so" ;;
-        tickle@*) echo "/home/ci/rmw_variants/${1#tickle@}/install/rmw_tickle/lib/librmw_tickle.so" ;;
+        tickle@head) echo "$PI_HOME/tickle/install/rmw_tickle/lib/librmw_tickle.so" ;;
+        tickle@*) echo "$PI_HOME/rmw_variants/${1#tickle@}/install/rmw_tickle/lib/librmw_tickle.so" ;;
         fastdds | fastdds@*) echo "librmw_fastrtps_cpp.so" ;;
         cyclonedds) echo "librmw_cyclonedds_cpp.so" ;;
     esac
@@ -251,15 +327,24 @@ fdds_src() { # the profile in THIS checkout behind arm fastdds@<F>
 
 # The launcher on each Pi: perf_test detached, its PID written by itself just before exec (so it is perf_test's own,
 # never found by a pattern), and 2 s later (before a refused write can end it) the rmw libraries its /proc/PID/maps shows.
+# Gate v2 A2 (header): with KA_PRE (the insn_prefix words) the exec'd process is perf, and perf_test its child - found by
+# /proc exe (child_exe) and written to /tmp/ka_<role>.pid, perf's own PID to /tmp/ka_<role>.perfpid. If no perf_test
+# child shows within 3 s, perf's PID stands in: the deadline still works, and the maps check voids the run.
 # shellcheck disable=SC2016 # expanded on the Pi, not here
 LAUNCHER='#!/bin/bash
 role=$1; envfile=$2; shift 2
 source "$envfile"
+'"$(remote_child_of_perf)"'
 PT=$HOME/rmw_perf_ws/install/performance_test/lib/performance_test/perf_test
-rm -f /tmp/ka_$role.log /tmp/ka_$role.maps /tmp/ka_$role.pid /tmp/ka_$role.treat
-setsid nohup bash -c "echo \$\$ > /tmp/ka_$role.pid; exec \"\$0\" \"\$@\"" "$PT" "$@" > /tmp/ka_$role.log 2>&1 < /dev/null &
-for i in 1 2 3 4 5 6 7 8 9 10; do [ -s /tmp/ka_$role.pid ] && break; sleep 0.2; done
-p=$(cat /tmp/ka_$role.pid)
+rm -f /tmp/ka_$role.log /tmp/ka_$role.maps /tmp/ka_$role.pid /tmp/ka_$role.treat /tmp/ka_$role.lpid /tmp/ka_$role.perfpid /tmp/ka_$role.insn
+setsid nohup bash -c "echo \$\$ > /tmp/ka_$role.lpid; exec ${KA_PRE:-} \"\$0\" \"\$@\"" "$PT" "$@" > /tmp/ka_$role.log 2>&1 < /dev/null &
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -s /tmp/ka_$role.lpid ] && break; sleep 0.2; done
+p=$(cat /tmp/ka_$role.lpid)
+if [ -n "${KA_PRE:-}" ]; then
+  echo "$p" > /tmp/ka_$role.perfpid
+  for i in $(seq 1 30); do q=$(child_exe "$p" "*/perf_test") && { p=$q; break; }; sleep 0.1; done
+fi
+echo "$p" > /tmp/ka_$role.pid
 # The treatment as perf_test received it: the exported middleware variables (what exec hands on), and the profile
 # file they name with its hash, read now and again from the process itself at 2 s if it is still alive.
 treat() { grep -E "^(RMW_|FASTRTPS_|FASTDDS_|CYCLONEDDS_URI|ROS_DOMAIN_ID|SKIP_DEFAULT_XML_FILE)" | sort
@@ -279,8 +364,8 @@ kv() { grep -oE "(^| )$1=[0-9]+" <<<"$2" | head -1 | cut -d= -f2; } # $1 key, $2
 if [ -n "$EQUAL_BOUND" ]; then
     say "--- EQUAL_BOUND $EQUAL_BOUND: bounds per topic, from $CLIENT's build (typesupport, rmw_tickle.h, core) ---"
     command -v xmllint > /dev/null || { say "REFUSED: no xmllint on this PC to validate the Fast DDS profile"; exit 1; }
-    TS_DIR=/home/ci/rmw_perf_ws/build/performance_test/rosidl_typesupport_tickle_c/performance_test/msg
-    RT_H=/home/ci/tickle/rmw_tickle/rmw_tickle/include/rmw_tickle_c/rmw_tickle.h
+    TS_DIR=$PI_HOME/rmw_perf_ws/build/performance_test/rosidl_typesupport_tickle_c/performance_test/msg
+    RT_H=$PI_HOME/tickle/rmw_tickle/rmw_tickle/include/rmw_tickle_c/rmw_tickle.h
     XSD="$OUT.runs/fastRTPS_profiles.xsd"
     scp -q -i "$K" -o BatchMode=yes "ci@$CLIENT:/opt/ros/jazzy/share/fastRTPS_profiles.xsd" "$XSD" \
         || { say "REFUSED: cannot fetch the rig's fastRTPS_profiles.xsd"; exit 1; }
@@ -365,8 +450,15 @@ for h in "$CLIENT" "$SERVER"; do
 done
 
 launch() { # host role arm topic args...
-    local h=$1 role=$2 arm=$3 topic=$4; shift 4
-    sh_ "$h" "/tmp/ka_launch.sh $role /tmp/ka_env_${arm/@/_}_$topic.sh $*" </dev/null
+    local h=$1 role=$2 arm=$3 topic=$4 pre=""; shift 4
+    [ "$INSN_COUNT" = 1 ] && pre=$(insn_prefix "/tmp/ka_$role.insn")
+    sh_ "$h" "KA_PRE='$pre' /tmp/ka_launch.sh $role /tmp/ka_env_${arm/@/_}_$topic.sh $*" </dev/null
+}
+# insn_of <host> <role>: that role's counts as RUN-line fields (gate v2 A2), once perf itself has exited (up to 5 s).
+insn_of() {
+    local c
+    c=$(sh_ "$1" "p=\$(cat /tmp/ka_$2.perfpid 2>/dev/null); for i in \$(seq 1 50); do { [ -n \"\$p\" ] && [ -d /proc/\$p ]; } || break; sleep 0.1; done; cat /tmp/ka_$2.insn 2>/dev/null" </dev/null || true)
+    insn_fields "$c" | sed "s/insn/$2_insn/g"
 }
 wait_done() { # $1 host, $2 role, $3 deadline seconds
     sh_ "$1" "p=\$(cat /tmp/ka_$2.pid); for i in \$(seq 1 $3); do [ -d /proc/\$p ] || exit 0; sleep 1; done;
@@ -392,7 +484,9 @@ run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher second
     local mp ms
     mp=$(sh_ "$CLIENT" "cat /tmp/ka_pub.maps 2>/dev/null" </dev/null | tr '\n' ' ')
     ms=$(sh_ "$SERVER" "cat /tmp/ka_sub.maps 2>/dev/null" </dev/null | tr '\n' ' ')
-    echo "RUN $stem pub_maps=[$mp] sub_maps=[$ms] pub_killed=${k1:-no} sub_killed=${k2:-no} want=$(lib_for "$arm")" \
+    local insn=""
+    [ "$INSN_COUNT" = 1 ] && insn=" $(insn_of "$CLIENT" pub) $(insn_of "$SERVER" sub)"
+    echo "RUN $stem pub_maps=[$mp] sub_maps=[$ms] pub_killed=${k1:-no} sub_killed=${k2:-no} want=$(lib_for "$arm")$insn" \
         >> "$dir/index.txt"
 }
 

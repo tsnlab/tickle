@@ -235,15 +235,39 @@ def mean_se(xs):
     return statistics.mean(xs), statistics.stdev(xs) / math.sqrt(len(xs))
 
 
-def main():
-    runs, dur = Path(sys.argv[1]), int(sys.argv[2])
-    dry = "--dry" in sys.argv[3:]
+INSN_RE = re.compile(r"\b(pub|sub)_insn(?:_(u|k)=(\d+)|=(\S+))")
+
+
+def insn_of(line):
+    """Gate v2 A2 fields of a RUN line: {role: {"u": n, "k": n, "status": "ok" | "fail:<why>"}}; {} when not counted."""
+    out = {}
+    for role, uk, n, status in INSN_RE.findall(line):
+        d = out.setdefault(role, {})
+        if uk:
+            d[uk] = int(n)
+        else:
+            d["status"] = status
+    return out
+
+
+def insn_text(r):
+    """'  insn/sample pub u/k ... sub u/k ...' for a counted run, '' otherwise."""
+    if "pub_insn_u_per_sample" not in r:
+        return ""
+    return (f"  insn/sample pub {r['pub_insn_u_per_sample']:.0f}u {r['pub_insn_k_per_sample']:.0f}k"
+            f" sub {r['sub_insn_u_per_sample']:.0f}u {r['sub_insn_k_per_sample']:.0f}k")
+
+
+def read_runs(runs):
+    """Every run of one <OUT.runs> directory, read by the header's rules: (index, cells, voids, failures, bounds).
+    cells: (topic, loss) -> arm -> [per-rep dict]. Shared with rmw_gate_v2.py, so the gate reads runs as this does."""
     bounds = load_bounds(runs)
-    index = {}
+    index, lines = {}, {}
     for line in (runs / "index.txt").read_text().splitlines():
         m = re.match(INDEX_RE, line)
         if m:
             index[m.group(1)] = m.groups()[1:]
+            lines[m.group(1)] = line
 
     cells = {}  # (topic, loss) -> arm -> list of per-rep dicts
     voids, failures = [], []
@@ -270,6 +294,13 @@ def main():
             bad, bound_label = bound_check(arm, topic, bounds, runs / f"{stem}_pub.treat", ptext)
             if bad:
                 why.append("bound: " + bad)
+        # Gate v2 A2: a counted run (any insn field on its RUN line) needs both processes' counts, or it is VOID.
+        insn = insn_of(lines[stem])
+        if insn:
+            for role in ("pub", "sub"):
+                d = insn.get(role, {})
+                if d.get("status") != "ok" or not d.get("u") or not d.get("k"):
+                    why.append(f"insn: {role}_insn={d.get('status', 'absent')}")
         if why:
             voids.append(f"{stem}: " + "; ".join(why))
             continue
@@ -286,9 +317,22 @@ def main():
         rec = dict(rep=int(rep), refused=refused, rate=rate, lost=lost, lost_all=lost_all, prematch=prematch,
                    sent=sent, recv=recv, errors=errors,
                    cpu_pub=cpu_pub, cpu_sub=cpu_sub, lat=lat, seconds=len(live), bound=bound_label)
+        # Gate v2 A2: whole-life instructions per sample - the publisher's over its sent, the subscriber's over its
+        # received whole counts (module docstring, COUNTS).
+        for role, div in (("pub", sent), ("sub", recv)):
+            if insn and div:
+                rec[f"{role}_insn_u_per_sample"] = insn[role]["u"] / div
+                rec[f"{role}_insn_k_per_sample"] = insn[role]["k"] / div
         cells.setdefault((topic, int(loss)), {}).setdefault(arm, []).append(rec)
         if arm in ("tickle@ack", "tickle@head") and (lost or errors):
             failures.append(f"{stem}: lost={lost} errors={errors}")
+    return index, cells, voids, failures, bounds
+
+
+def main():
+    runs, dur = Path(sys.argv[1]), int(sys.argv[2])
+    dry = "--dry" in sys.argv[3:]
+    index, cells, voids, failures, bounds = read_runs(runs)
 
     print()
     print(f"=== per run, {dur} s publisher runtime (delivered msgs/s over steady seconds; CPU us per sample; "
@@ -301,7 +345,8 @@ def main():
                       f"{r['lost_all']:7})  cpu pub {r['cpu_pub']:6.2f} sub {r['cpu_sub']:6.2f}  "
                       f"lat {r['lat']:.3f} ms  {'REFUSED after ' + str(r['seconds']) + ' s ' if r['refused'] else ''}"
                       f"{('ERR ' + ','.join(r['errors'])) if r['errors'] else ''}"
-                      f"{('  bound ' + r['bound']) if r['bound'] else ''}")
+                      f"{('  bound ' + r['bound']) if r['bound'] else ''}"
+                      f"{insn_text(r)}")
 
     if voids:
         print("\nVOID runs:")
