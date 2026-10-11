@@ -8025,9 +8025,14 @@ static void large_give_back(struct tt_Context* node, uint8_t* buffer) {
 // the fragments. The chunk is the record's buffer: retention, resends, release and the fragments to every other
 // destination are step A's, from it. A chunk is free when no record holds it and no reader's bit is set.
 
-static_assert(sizeof(struct tt_LargeRegionHeader) == 64 && sizeof(struct tt_LargeChunkEntry) == 64,
+// The region's header and each chunk entry: tt_LARGE_REGION_DATA_OFFSET counts them at this size. And the bits of one
+// word of a readers mask, or of the Publisher's hold.
+#define LARGE_REGION_ENTRY_BYTES 64U
+#define LARGE_MASK_WORD_BITS 64U
+static_assert(sizeof(struct tt_LargeRegionHeader) == LARGE_REGION_ENTRY_BYTES &&
+                  sizeof(struct tt_LargeChunkEntry) == LARGE_REGION_ENTRY_BYTES,
               "the region's header and chunk entries are 64 bytes each: tt_LARGE_REGION_DATA_OFFSET counts them so");
-static_assert(tt_LARGE_REGION_CHUNKS_MAX <= 64, "a Publisher's hold on its chunks is one uint64_t");
+static_assert(tt_LARGE_REGION_CHUNKS_MAX <= LARGE_MASK_WORD_BITS, "a Publisher's hold on its chunks is one uint64_t");
 static_assert(tt_LARGE_MAX_FRAGMENTS <= UINT16_MAX, "a descriptor's span is the slot's uint16_t seq_span");
 
 static struct tt_LargeChunkEntry* large_chunk_entry(uint8_t* mapping, uint32_t chunk) {
@@ -8049,14 +8054,14 @@ static int32_t large_region_name(char* buf, size_t size, uint32_t ip, uint16_t p
 }
 
 static uint64_t large_reader_bit(uint8_t context_id) {
-    return 1ULL << (context_id % 64U);
+    return 1ULL << (context_id % LARGE_MASK_WORD_BITS);
 }
 
 // Whether no reader holds `chunk`: every word of its readers mask reads 0, with acquire, so a reader's last reads of
 // the chunk happen before the writer's next encode into it.
 static bool large_chunk_unread(uint8_t* mapping, uint32_t chunk) {
     struct tt_LargeChunkEntry* entry = large_chunk_entry(mapping, chunk);
-    for (uint32_t word = 0; word < tt_MAX_CONTEXT_IDS / 64U; word++) {
+    for (uint32_t word = 0; word < tt_MAX_CONTEXT_IDS / LARGE_MASK_WORD_BITS; word++) {
         if (__atomic_load_n(&entry->readers[word], __ATOMIC_ACQUIRE) != 0) {
             return false;
         }
@@ -8176,7 +8181,7 @@ static bool large_ref_send(struct tt_Context* node, struct tt_Publisher* pub, co
     }
     struct tt_LargeChunkEntry* entry = large_chunk_entry(pub->large_region.mapping, record->chunk - 1U);
     uint64_t bit = large_reader_bit(dest->context_id);
-    uint64_t* word = &entry->readers[dest->context_id / 64U];
+    uint64_t* word = &entry->readers[dest->context_id / LARGE_MASK_WORD_BITS];
     // Relaxed: the slot's release store that publishes the record orders this before the reader's acquire of it.
     uint64_t before = __atomic_fetch_or(word, bit, __ATOMIC_RELAXED);
 
@@ -8227,16 +8232,21 @@ static void large_region_forget_reader(struct tt_Context* node, uint8_t context_
         }
         struct tt_LargeRegion* region = &((struct tt_Publisher*)endpoint)->large_region;
         for (uint32_t chunk = 0; region->mapping != NULL && chunk < region->chunks; chunk++) {
-            uint64_t* word = &large_chunk_entry(region->mapping, chunk)->readers[context_id / 64U];
+            uint64_t* word = &large_chunk_entry(region->mapping, chunk)->readers[context_id / LARGE_MASK_WORD_BITS];
             __atomic_fetch_and(word, ~bit, __ATOMIC_RELEASE);
         }
     }
 }
 
+// An ACKNACK is being answered: a descriptor is resent once in it, however many of its sample's seq_nos it names.
+static void large_note_acknack(struct tt_Context* node) {
+    node->large.acknack_serial++;
+}
+
 tt_ret_t tt_Publisher_set_large_region(struct tt_Publisher* pub, uint32_t chunks, uint32_t chunk_bytes) {
     if (pub == NULL || pub->node == NULL || chunks > tt_LARGE_REGION_CHUNKS_MAX ||
         (chunks != 0 && chunk_bytes < tt_LARGE_CHUNK_BYTES(tt_MAX_SAMPLE_LENGTH + 1U)) ||
-        (chunks != 0 && (chunk_bytes % 64U) != 0)) {
+        (chunks != 0 && (chunk_bytes % LARGE_REGION_ENTRY_BYTES) != 0)) {
         return tt_RET_INVALID_ARGUMENT;
     }
     state_lock(pub->node);
@@ -15920,7 +15930,7 @@ static void retransmit_reliable_samples(struct tt_Context* node, struct tt_Publi
 #endif
     bool any_gone = false;
 #if tt_LARGE_SHM
-    node->large.acknack_serial++; // a descriptor is resent once per ACKNACK (large_resend())
+    large_note_acknack(node); // a descriptor is resent once per ACKNACK (large_resend())
 #endif
     // Phase 2 - `words` is whatever the requester actually sent (validated by the caller), and the
     // inner loop walks set bits only, so a window widened to tt_RELIABLE_BITMAP_MAX_BITS costs
@@ -17529,7 +17539,7 @@ static bool large_region_header_matches(const struct tt_LargeRegionHeader* heade
            header->version == tt_LARGE_REGION_VERSION && header->owner_context_id == source && header->owner_ip == ip &&
            header->owner_port == port && header->entity_id == entity_id && header->incarnation == incarnation &&
            header->chunks >= 1 && header->chunks <= tt_LARGE_REGION_CHUNKS_MAX &&
-           header->chunk_bytes >= tt_LARGE_CDR_OFFSET && (header->chunk_bytes % 64U) == 0;
+           header->chunk_bytes >= tt_LARGE_CDR_OFFSET && (header->chunk_bytes % LARGE_REGION_ENTRY_BYTES) == 0;
 }
 
 // The writer's region a descriptor names, mapped now if it is not yet: by name, header checked on a probe of the
@@ -17607,7 +17617,7 @@ static uint8_t* large_ref_chunk(const struct tt_Context* node, const struct tt_L
     struct tt_LargeChunkEntry* entry = large_chunk_entry(region->mapping, chunk);
     // The bit first: set, the writer cannot reuse the chunk (it does only once every bit is clear), so a generation
     // that matches after it says the bytes are this sample's for as long as the bit stays set.
-    uint64_t word = __atomic_load_n(&entry->readers[node->id / 64U], __ATOMIC_ACQUIRE);
+    uint64_t word = __atomic_load_n(&entry->readers[node->id / LARGE_MASK_WORD_BITS], __ATOMIC_ACQUIRE);
     if ((word & large_reader_bit(node->id)) == 0 ||
         __atomic_load_n(&entry->generation, __ATOMIC_ACQUIRE) != generation) {
         return NULL;
@@ -17628,7 +17638,7 @@ static bool large_ref_give_back(struct tt_Context* node, const uint8_t* buffer) 
     const struct tt_LargeRegionHeader* header = (const struct tt_LargeRegionHeader*)region->mapping;
     size_t offset = (size_t)(buffer - region->mapping) - tt_LARGE_REGION_DATA_OFFSET(header->chunks);
     uint32_t chunk = (uint32_t)(offset / header->chunk_bytes);
-    uint64_t* word = &large_chunk_entry(region->mapping, chunk)->readers[node->id / 64U];
+    uint64_t* word = &large_chunk_entry(region->mapping, chunk)->readers[node->id / LARGE_MASK_WORD_BITS];
     __atomic_fetch_and(word, ~large_reader_bit(node->id), __ATOMIC_RELEASE); // reads of it happen before this
     return true;
 }

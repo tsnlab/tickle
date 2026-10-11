@@ -612,8 +612,8 @@ Where it departs, and why:
 
 #### Step B: the same-host large path (designed 2026-10-11, before any code)
 
-**The problem, measured.** Rig A4 stage 4 (`~/rig_results_safe/largemsgA4_s4a_samehost_*`, `_s4b_*`, head
-`dc056907`): same-host Array4m BEST_EFFORT KEEP_LAST 5 delivered 0.06% (`shm_full_dropped` ~1.79 M, 1,796 samples
+**The problem, measured.** Rig A4 stage 4 (`~/rig_results_safe/largemsgA4_s4a_samehost_*`, `_s4b_*`, the
+step A build as rigged on 2026-10-10): same-host Array4m BEST_EFFORT KEEP_LAST 5 delivered 0.06% (`shm_full_dropped` ~1.79 M, 1,796 samples
 abandoned), and Array1m best effort lost 4 samples in one run. RELIABLE KEEP_LAST 10 delivered 100% of both, but its
 subscriber CPU per MB (1.95-2.06 ms at 1 MB, 1.75-1.79 ms at 4 MB) and its median latency (1.66 / 7.7 ms) lose to Fast
 DDS as shipped (1.72-1.82 ms/MB, 1.03 ms; 0.85-0.88 ms/MB, 4.0 ms), whose data-sharing hands the sample over in shared
