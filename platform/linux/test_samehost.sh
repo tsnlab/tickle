@@ -149,7 +149,21 @@ fi
 # A busy socket must not starve an idle-marked one (rx_idle_check.c): exit 0 only, a setup failure is a failure here.
 "$HERE/rx_idle_check" || { echo "same-host test: FAIL - rx_idle_check" >&2; exit 1; }
 # A receive socket's drops are the kernel's count (rx_drain_check.c): exit 0 only, a setup failure is a failure here.
-"$HERE/rx_drain_check" || { echo "same-host test: FAIL - rx_drain_check" >&2; exit 1; }
+"$HERE/rx_drain_check" >"$SUB_LOG" 2>&1 || { cat "$SUB_LOG" >&2; echo "same-host test: FAIL - rx_drain_check" >&2; exit 1; }
+cat "$SUB_LOG"
+# The same under Linux 6.8's rules for a buffer ring (tests/support/refuse_pbuf_ring.c): first the rules alone, which
+# must leave the ring the pass above used (else what the drain asks for breaks them), then refusing what the rig's
+# Pi 5s refused (6.8.0-1064-raspi, EINVAL) and then every ring: the drain must still drain, by the next way.
+DRAIN_RING=$(sed -n 's/^rx_drain_check: PASS - ring: .* handed over as \([a-z]*\)$/\1/p' "$SUB_LOG")
+PBUF_SHIM="$HERE/refuse_pbuf_ring.so"
+[ -f "$PBUF_SHIM" ] || { echo "same-host test: $PBUF_SHIM missing (make test-samehost builds it)" >&2; exit 1; }
+[ -n "$DRAIN_RING" ] || { echo "same-host test: FAIL - rx_drain_check printed no ring line" >&2; exit 1; }
+for refuse in rules:"$DRAIN_RING" user:kernel all:classic; do
+    if [ "${refuse%%:*}" = rules ]; then mode=; else mode=${refuse%%:*}; fi
+    TT_REFUSE_PBUF_RING=$mode TT_EXPECT_DRAIN_RING=${refuse#*:} LD_PRELOAD="$PBUF_SHIM" "$HERE/rx_drain_check" \
+        >"$SUB_LOG" 2>&1 || { cat "$SUB_LOG" >&2; echo "same-host test: FAIL - rx_drain_check, buffer ring ${refuse%%:*}" >&2; exit 1; }
+    grep '^rx_drain_check: PASS - ring' "$SUB_LOG" | sed "s/^/[${refuse%%:*}] /"
+done
 
 # No lost wake-up between a same-host writer and a sleeping reader (bell_wake_check.c). Its two contexts talk over
 # loopback only, as this script's own pair does. Exit 0 only, a setup failure is a failure here; its own lines are

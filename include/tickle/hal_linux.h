@@ -177,6 +177,13 @@ static inline void tt_thread_yield(void) {
 #ifndef tt_RX_DRAIN_HOLDOFF_NS
 #define tt_RX_DRAIN_HOLDOFF_NS 100000000ULL // 100 ms
 #endif
+// How a drain's buffers were registered (struct tt_hal's drain_ring, the "Node N rx:" line's drain_ring=). The HAL
+// tries them in this order and keeps the first the kernel accepts: Linux 6.8 kernels have been seen to refuse the
+// first.
+#define tt_RX_DRAIN_RING_NONE 0U    // not set up yet, or refused
+#define tt_RX_DRAIN_RING_USER 1U    // IORING_REGISTER_PBUF_RING over memory this process mapped (Linux 5.19)
+#define tt_RX_DRAIN_RING_KERNEL 2U  // the same with IOU_PBUF_RING_MMAP: the kernel's memory, mapped here (Linux 6.4)
+#define tt_RX_DRAIN_RING_CLASSIC 3U // IORING_OP_PROVIDE_BUFFERS, all of them again at each drain start (Linux 5.7)
 #if tt_RX_DRAIN && !tt_HAL_IO_URING
 #error "tt_RX_DRAIN needs io_uring (tt_HAL_RX_HINT other than tt_RX_HINT_READ)"
 #endif
@@ -323,7 +330,11 @@ struct tt_hal {
     uint32_t* drain_cq_tail;
     uint32_t* drain_cq_mask;
     void* drain_cqes;
-    void* drain_buf_ring; // struct io_uring_buf_ring
+    void* drain_buf_ring; // struct io_uring_buf_ring; NULL with classic provided buffers
+    // How the buffers reach the kernel (tt_RX_DRAIN_RING_*), and their buffer group: a ring this process maps, one
+    // the kernel maps (IOU_PBUF_RING_MMAP), or classic provided buffers handed over again at every drain start.
+    uint8_t drain_ring;
+    uint16_t drain_group;
     uint8_t* drain_buffers;
     struct msghdr drain_msghdr; // multishot recvmsg's layout: the sender's address, no control
     // starts: drains begun. datagrams: handed out from one. truncated: longer than a buffer, lost. overruns: a
