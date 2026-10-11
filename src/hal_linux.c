@@ -1516,7 +1516,7 @@ static bool drain_setup(struct tt_hal* hal, uint32_t size, uint32_t count) {
     struct io_uring_params params;
     memset(&params, 0, sizeof(params));
     params.flags = IORING_SETUP_CQSIZE; // a completion per buffer and room for the ends and cancellations
-    params.cq_entries = 2U * count;
+    params.cq_entries = 2U * count > 2U * DRAIN_ENTRIES ? 2U * count : 2U * DRAIN_ENTRIES; // never below the SQ's
     // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
     int ring_fd = (int)syscall(__NR_io_uring_setup, DRAIN_ENTRIES, &params);
     if (ring_fd < 0) {
