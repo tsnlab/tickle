@@ -430,6 +430,21 @@ small free list; a core-only user backs them with a static pool. `NULL` from acq
   wider window does not grow it (a small datagram beyond the ring is not recorded and gets repaired).
 - **Copies.** Publish: one encode (rmw's serialize). Receive over a socket: kernel to `rx_buffer`, then fragment to
   the large buffer (one user copy), then rmw's decode. No copy beyond those.
+- **Receiving in place** (2026-10-11, Linux HAL with `UDP_GRO` compiled in, `TT_RX_DIRECT=0` off). After each fragment
+  lands, core hints where the next unlanded run belongs (`large_direct_aim()`). The run is at most 64 fragments, and
+  the HAL caps each read at one more than the last read returned. The next read is one `recvmsg()` whose iovec puts
+  each expected datagram's 16-byte framing into the HAL and its payload at its offset in the assembly. The rest goes
+  to `rx_buffer`; the iovec totals the buffer's length, so no read is cut. Every datagram is checked
+  (`tt_rx_direct_expected()`: sample, index, count, source, length, not landed) before any is handed out. From the
+  first mismatch on (a resend in the full form, another sample, another size, out of order) the read is put back
+  together as an ordinary merged read. Core then gets the framing alone, with the payload in `rx_split_payload`, and a
+  fragment found in place lands without the user copy. The hint is withdrawn when its assembly is freed. Fragments the
+  HAL still holds for it are then dropped (resent if RELIABLE). A buffer freed by another thread during a read outside
+  the lock is released by the poll thread after the read.
+  PC result (`rx_defer_pc.sh TREATMENT=direct`): fewer user cycles, but more kernel cycles and instructions. On x86 the
+  kernel copies with `rep movsb`, so a read cut into many iovec pieces costs more than the user copy it saves. It
+  stays off the default until the rig (ARM) says otherwise. For one 64 KB datagram per read (IP-mode large samples,
+  being designed), one iovec piece saves a 64 KB copy per read.
 
 **Delivery without a copy: lending.** The callback's sample points into the large buffer. `tt_Sample_retain()`
 treats that address as lendable (section 10's test widens from "in the datagram being processed" to "or in a

@@ -427,6 +427,13 @@ struct tt_LargeState {
     const struct tt_LargeAssembly* wait_last;
     uint32_t wait_claimed;
     uint32_t fastest_ns;
+    // Receiving in place (large_direct_aim(), tickle.c): the assembly the HAL's hint points into, its claim, and the
+    // index of the hint's first fragment; direct NULL when no hint is out. parked: a hinted assembly's buffer freed
+    // while the poll thread read outside the lock, released by it after the read (large_direct_park()).
+    const struct tt_LargeAssembly* direct;
+    uint32_t direct_claimed;
+    uint32_t direct_first;
+    uint8_t* parked;
     // Counters, on the traffic line as large_*. reassembled: delivered whole. abandoned: given up whole or in part (a
     // fragment lost for good, a newer sample needing the room, its writer gone). no_buffer: acquire said no - a
     // best-effort sample is then lost, a RELIABLE fragment is left unrecorded and asked for again. dropped: fragments
@@ -1148,6 +1155,30 @@ struct tt_Context {
     uint32_t rx_defer_budget;
     uint64_t rx_defer_ns;
     uint64_t rx_defers;
+    // Receiving a large sample's fragments straight into its assembly (DESIGN.md section 8, "Receiving in place").
+    // Core's hint, kept by large_direct_aim() (tickle.c): rx_direct_dest, where the payload of the next fragment it
+    // expects belongs; rx_direct_units, how many fragments from that one on it expects back to back, each payload
+    // right after the last in the assembly (0: no hint); rx_direct_header and rx_direct_payload, each one's framing
+    // and full payload bytes. rx_direct_busy: set by core around a read it makes outside the state lock, so a thread
+    // freeing the hinted assembly meanwhile leaves its buffer for the poll thread to release (large_direct_park()).
+    // rx_direct_cancel: set by core when it frees the hinted assembly, so the HAL hands out no fragment still read
+    // into it. The HAL's per-datagram answer: rx_split_payload, non-NULL when the datagram's payload was read to
+    // there, apart from its framing - the datagram core is handed is then its framing alone - and rx_split_len, that
+    // payload's length. Counted: rx_direct_reads (reads aimed by a hint), rx_direct_split (fragments read in place),
+    // rx_direct_gathered (fragments read by a hint that did not match it, copied back together), rx_direct_placed
+    // (fragments core found already in place: no copy).
+    uint8_t* rx_direct_dest;
+    uint32_t rx_direct_units;
+    uint16_t rx_direct_header;
+    uint16_t rx_direct_payload;
+    uint32_t rx_direct_busy;
+    bool rx_direct_cancel;
+    const uint8_t* rx_split_payload;
+    uint32_t rx_split_len;
+    uint64_t rx_direct_reads;
+    uint64_t rx_direct_split;
+    uint64_t rx_direct_gathered;
+    uint64_t rx_direct_placed;
     // Whether the submessage being processed right now was addressed to this node by id, rather than to
     // everyone (tt_SUBMESSAGE_ID_ALL). A retransmission is addressed to the node that asked for it
     // (retransmit_one_sample()), so this is how a reliable Subscriber tells the sample its ACKNACK

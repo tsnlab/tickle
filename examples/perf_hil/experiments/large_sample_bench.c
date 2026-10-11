@@ -236,6 +236,11 @@ static void print_large(const struct tt_Context* node) {
 #ifdef TT_HAL_RX_DEFER // a core from before it (an A/B's base arm, built with this bench) has neither field
     printf(" rx_defer_budget=%u rx_defers=%lu", (unsigned)node->rx_defer_budget, (unsigned long)node->rx_defers);
 #endif
+#ifdef TT_HAL_RX_DIRECT // fragments read in place (hal_linux.c direct_read()): rx_defer_pc.sh's TREATMENT=direct check
+    printf(" direct_reads=%lu direct_split=%lu direct_gathered=%lu direct_placed=%lu",
+           (unsigned long)node->rx_direct_reads, (unsigned long)node->rx_direct_split,
+           (unsigned long)node->rx_direct_gathered, (unsigned long)node->rx_direct_placed);
+#endif
 }
 
 static char default_broadcast[] = "192.168.10.255"; // the rig's link, as every bench uses it

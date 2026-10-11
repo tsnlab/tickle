@@ -913,6 +913,218 @@ static bool rx_defer(struct tt_Context* node, int64_t* timeout_io) {
 }
 #endif
 
+#if TT_HAL_RX_DIRECT
+// Reading a large sample's fragments straight into their assembly (2026-10-11; core's large_direct_aim(), DESIGN.md
+// section 8 "Receiving in place"). Core says where the next fragments it expects belong; the read is then one
+// recvmsg() whose iovec takes each expected datagram's framing into direct_headers[k] and its payload to its offset in
+// the assembly, and anything past them into the receive buffer as usual. That works because a merged read (UDP_GRO) is
+// its datagrams back to back, each exactly the segment size but the last: with the expected size, datagram k is unit k.
+// Every datagram so read is asked of core (tt_rx_direct_expected()) before any is handed out; from the first that is
+// not the one expected - another sample's, a retransmission in the full form, a different size - the read is put back
+// together in the receive buffer (gathered, counted) and handed out as an ordinary merged read. So core sees either a
+// fragment whose payload already is where it belongs, or the datagram as it would have without the hint.
+//
+// The iovec adds up to the receive buffer's length, so no read is cut shorter than without the hint. A merged read is
+// at most the buffer, so the run is at most as many fragments as fit in it (44 at 65507 B) and TT_RX_DIRECT_UNITS.
+//
+// Off unless TT_RX_DIRECT=1 (2026-10-11): on the PC it cost more kernel instructions and cycles than the user copy it
+// saved (x86 copies to a socket reader with rep movsb, so many iovec pieces cost more than one long copy); the rig,
+// whose kernel copies in a loop, decides whether it is on by default.
+#define DIRECT_FRAMING_ALIGN 8U // where a fragment's framing is handed out: as any datagram's start
+static void direct_setup(struct tt_Context* node) {
+    const char* setting = getenv("TT_RX_DIRECT");
+    node->hal.direct_allowed = setting != NULL && strcmp(setting, "1") == 0;
+    node->hal.direct_split = 0;
+    node->hal.direct_next = 0;
+    node->hal.direct_last = 0;
+}
+
+// Puts the read back together from unit `from` on: the stream the kernel wrote - unit k's framing and payload for
+// every k, then the rest in buf - becomes contiguous at the start of buf, as a read without the hint would have left
+// it, and is handed out as a merged read of `segment`-byte datagrams. The rest moves up first, to where it belongs
+// after the units, which are then copied in below it.
+static void direct_gather(struct tt_Context* node, uint8_t* buf, uint32_t got, uint32_t units, uint32_t from,
+                          uint32_t segment) {
+    struct tt_hal* hal = &node->hal;
+    const uint32_t header = hal->direct_header;
+    const uint32_t payload = hal->direct_payload;
+    const uint32_t unit = header + payload;
+    const uint32_t aimed = units * unit;
+    const uint32_t tail = got > aimed ? got - aimed : 0U;
+    const uint32_t base = from * unit;
+    if (tail > 0U) {
+        memmove(buf + (aimed - base), buf, tail);
+    }
+    for (uint32_t k = from; k < units && k * unit < got; k++) {
+        uint8_t* out = buf + ((size_t)(k - from) * unit);
+        uint32_t left = got - (k * unit);
+        memcpy(out, hal->direct_headers[k], left < header ? left : header);
+        if (left > header) {
+            uint32_t bytes = left - header < payload ? left - header : payload;
+            memcpy(out + header, hal->direct_dest + ((size_t)k * payload), bytes);
+        }
+        node->rx_direct_gathered++;
+    }
+    const uint32_t bytes = got - base;
+    hal->gro_base = buf;
+    hal->gro_segment = segment;
+    hal->gro_next = 0;
+    hal->gro_end = bytes;
+    hal->gro_left = (uint16_t)((bytes + segment - 1U) / segment);
+}
+
+// How many of a read's `count` datagrams of `size` bytes (the last may be shorter), from the first, are the fragments
+// core expects - read as aimed, because datagram k is unit k when every one before it was a whole unit.
+static uint32_t direct_matched(struct tt_Context* node, uint32_t got, uint32_t size, uint32_t count, uint32_t units) {
+    struct tt_hal* hal = &node->hal;
+    const uint32_t header = hal->direct_header;
+    uint32_t split = 0;
+    while (split < count && split < units) {
+        uint32_t bytes = split + 1U == count ? got - (split * size) : size;
+        if (bytes < header || !tt_rx_direct_expected(node, split, hal->direct_headers[split], bytes - header)) {
+            break;
+        }
+        hal->direct_len[split] = (uint16_t)(bytes - header);
+        split++;
+    }
+    return split;
+}
+
+// rx_read_one() with a hint: `units` fragments expected, the first's payload at `dest`.
+static int32_t direct_read(struct tt_Context* node, int socket_fd, uint8_t* buf, size_t len, uint8_t* dest,
+                           uint32_t units, uint32_t* ip, uint16_t* port) {
+    struct tt_hal* hal = &node->hal;
+    const uint32_t header = node->rx_direct_header;
+    const uint32_t payload = node->rx_direct_payload;
+    const uint32_t unit = header + payload;
+    if (units > TT_RX_DIRECT_UNITS) {
+        units = TT_RX_DIRECT_UNITS;
+    }
+    if (units > (uint32_t)len / unit) {
+        units = (uint32_t)len / unit;
+    }
+    if (units > (uint32_t)hal->direct_last + 1U) {
+        units = (uint32_t)hal->direct_last + 1U;
+    }
+    hal->direct_header = (uint16_t)header;
+    hal->direct_payload = (uint16_t)payload;
+    hal->direct_dest = dest;
+    // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
+    struct iovec iov[(2 * TT_RX_DIRECT_UNITS) + 1];
+    for (size_t k = 0; k < units; k++) {
+        iov[2 * k] = (struct iovec) {.iov_base = hal->direct_headers[k], .iov_len = header};
+        iov[(2 * k) + 1] = (struct iovec) {.iov_base = dest + (k * payload), .iov_len = payload};
+    }
+    iov[(size_t)2 * units] = (struct iovec) {.iov_base = buf, .iov_len = len - ((size_t)units * unit)};
+    struct sockaddr_in addr;
+    union {
+        char bytes[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr align; // NOLINT(misc-include-cleaner) - <sys/socket.h>
+    } control;
+    struct msghdr msg = {0};
+    msg.msg_name = &addr;
+    msg.msg_namelen = sizeof(addr);
+    msg.msg_iov = iov;
+    msg.msg_iovlen = (2 * units) + 1U;
+    msg.msg_control = control.bytes;
+    msg.msg_controllen = sizeof(control.bytes);
+    node->rx_direct_cancel = false; // a cancel is for fragments read before this one
+    ssize_t read = recvmsg(socket_fd, &msg, MSG_DONTWAIT);
+    if (read < 0) {
+        // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers
+        return (errno == EAGAIN || errno == EWOULDBLOCK) ? -1 : -2;
+    }
+    node->rx_direct_reads++;
+    *ip = ntohl(addr.sin_addr.s_addr);
+    *port = ntohs(addr.sin_port);
+    hal->gro_ip = *ip;
+    hal->gro_port = *port;
+    hal->gro_from_data = (socket_fd == hal->data_sock);
+    int segment = 0;
+    // NOLINTNEXTLINE(misc-include-cleaner) - CMSG_*: <sys/socket.h>
+    for (struct cmsghdr* cm = CMSG_FIRSTHDR(&msg); cm != NULL; cm = CMSG_NXTHDR(&msg, cm)) {
+        if (cm->cmsg_level == SOL_UDP && cm->cmsg_type == UDP_GRO) {
+            memcpy(&segment, CMSG_DATA(cm), sizeof(segment));
+        }
+    }
+    uint32_t got = (uint32_t)read;
+    hal->direct_split = 0;
+    hal->direct_next = 0;
+    hal->gro_left = 0;
+    if (got == 0U) {
+        return 0; // a zero-length datagram (a doorbell over UDP): nothing was read into anything
+    }
+    const bool merged = segment > 0 && got > (uint32_t)segment;
+    const uint32_t size = merged ? (uint32_t)segment : got;
+    // NOLINTNEXTLINE(misc-include-cleaner) - MSG_TRUNC: <sys/socket.h>
+    if (merged && (msg.msg_flags & MSG_TRUNC) != 0) {
+        got -= got % size; // the cut datagram is dropped, as gro_read() drops it
+    }
+    const uint32_t count = (got + size - 1U) / size;
+    hal->direct_last = (uint16_t)count;
+    if (merged) {
+        node->udp_gro_reads++;
+        node->udp_gro_merged += count;
+    }
+    uint32_t split = size <= unit && (!merged || size == unit) ? direct_matched(node, got, size, count, units) : 0U;
+    hal->direct_split = (uint16_t)split;
+    if (split < count) {
+        direct_gather(node, buf, got, units, split, size);
+    }
+    node->rx_direct_split += split;
+    return 1;
+}
+
+// Hands out the next fragment the last aimed read took in place: its framing, as the datagram (at the end of what buf
+// holds of the read, or at its start if buf is no longer the buffer it was read into), and its payload in
+// rx_split_payload. -1 when none is left - or core has freed the assembly they were read into (rx_direct_cancel):
+// those are then lost, as a datagram lost on the wire, and a RELIABLE writer resends them.
+static int32_t direct_take_pending(struct tt_Context* node, uint8_t* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    struct tt_hal* hal = &node->hal;
+    if (hal->direct_next >= hal->direct_split) {
+        return -1;
+    }
+    if (node->rx_direct_cancel) {
+        hal->direct_next = hal->direct_split;
+        return -1;
+    }
+    uint16_t k = hal->direct_next++;
+    uint32_t offset = 0;
+    if (buf == hal->gro_base && hal->gro_left > 0U) {
+        // Past what the read left there, which is still to be handed out, 8-aligned as a datagram's start.
+        offset = (hal->gro_end + (DIRECT_FRAMING_ALIGN - 1U)) & ~(DIRECT_FRAMING_ALIGN - 1U);
+    }
+    if (offset + hal->direct_header > len) {
+        offset = 0; // cannot happen: a unit read in place leaves a unit's room
+    }
+    memcpy(buf + offset, hal->direct_headers[k], hal->direct_header);
+    node->rx_offset = offset;
+    node->rx_split_payload = hal->direct_dest + ((size_t)k * hal->direct_payload);
+    node->rx_split_len = hal->direct_len[k];
+    *ip = hal->gro_ip;
+    *port = hal->gro_port;
+    node->rx_via_data_port = hal->gro_from_data;
+    TT_TRACE(tt_TRACE_RX_DATAGRAM);
+    return (int32_t)hal->direct_header;
+}
+
+// rx_read_one()'s aimed read, when core has a hint out and the read can take one: the first datagram it yields.
+static int32_t direct_try(struct tt_Context* node, int socket_fd, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    uint8_t* dest = node->rx_direct_dest; // before the units: see large_direct_withdraw() (tickle.c)
+    uint32_t units = __atomic_load_n(&node->rx_direct_units, __ATOMIC_SEQ_CST);
+    if (!node->hal.direct_allowed || units == 0U || dest == NULL || node->rx_direct_header > 32U ||
+        (size_t)node->rx_direct_header + node->rx_direct_payload > len) {
+        return -4; // no aimed read: an ordinary one
+    }
+    int32_t got = direct_read(node, socket_fd, (uint8_t*)buf, len, dest, units, ip, port);
+    if (got <= 0) {
+        return got; // -1 nothing, -2 an error, 0 a zero-length datagram
+    }
+    int32_t first = direct_take_pending(node, (uint8_t*)buf, len, ip, port);
+    return first >= 0 ? first : gro_take_pending(node, (uint8_t*)buf, len, ip, port);
+}
+#endif
+
 tt_ret_t tt_bind(struct tt_Context* node) {
     // Set before anything below can fail into tt_close(): -1 says "nothing to close here yet",
     // the same convention node->hal.sock itself relies on implicitly (every failure that reaches
@@ -1072,6 +1284,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
 #if TT_HAL_UDP_GRO
     gro_setup(node);
 #endif
+#if TT_HAL_RX_DIRECT
+    direct_setup(node);
+#endif
     gso_setup(node);
 #if TT_HAL_RX_DEFER
     rx_defer_setup(node);
@@ -1097,6 +1312,10 @@ void tt_close(struct tt_Context* node) {
     node->hal.rx_next = 0;
 #if TT_HAL_UDP_GRO
     node->hal.gro_left = 0; // and so did anything a merged read still held
+#endif
+#if TT_HAL_RX_DIRECT
+    node->hal.direct_split = 0;
+    node->hal.direct_next = 0;
 #endif
     if (node->hal.data_sock >= 0 && close(node->hal.data_sock) < 0) {
         TT_LOG_WARNING("Cannot close data socket: %s", strerror(errno));
@@ -1486,6 +1705,18 @@ static void rx_headers_setup(struct tt_hal* hal) {
 static int32_t rx_read_one(struct tt_Context* node, int socket_fd, void* buf, size_t len, uint32_t* ip,
                            uint16_t* port) {
     node->rx_via_data_port = (socket_fd == node->hal.data_sock);
+#if TT_HAL_RX_DIRECT
+    if (node->hal.gro_allowed && node->hal.gro_state != TT_GRO_ON && node->rx_direct_units > 0U) {
+        gro_turn_on(node); // a hint is out only while a large sample arrives; and step 2 when settling
+    }
+    int32_t aimed = direct_try(node, socket_fd, buf, len, ip, port);
+    if (aimed != -4) {
+        if (aimed >= 0) {
+            node->hal.gro_quiet = 0;
+        }
+        return aimed;
+    }
+#endif
 #if TT_HAL_UDP_GRO
     if (node->hal.gro_state != TT_GRO_PLAIN) {
         if (node->hal.gro_state == TT_GRO_SETTLING) {
@@ -1657,7 +1888,14 @@ static int rx_wait_for(struct tt_Context* node, int64_t timeout, uint32_t* ready
 }
 
 int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
-    node->rx_offset = 0; // at the start of buf unless a merged read hands one out in place
+    node->rx_offset = 0;           // at the start of buf unless a merged read hands one out in place
+    node->rx_split_payload = NULL; // the datagram is whole unless an aimed read hands out a fragment read in place
+#if TT_HAL_RX_DIRECT
+    int32_t split = direct_take_pending(node, (uint8_t*)buf, len, ip, port);
+    if (split >= 0) {
+        return split;
+    }
+#endif
     // What the last batch read comes first, and without a wait: holding it behind ppoll() would delay
     // datagrams that have already arrived.
 #if TT_HAL_UDP_GRO
@@ -1807,6 +2045,9 @@ uint32_t tt_rx_buffered(const struct tt_Context* node) {
 #if TT_HAL_UDP_GRO
     held += node->hal.gro_left; // a merged read's datagrams, handed out without a system call too
 #endif
+#if TT_HAL_RX_DIRECT
+    held += (uint32_t)(node->hal.direct_split - node->hal.direct_next); // an aimed read's, read in place
+#endif
     return held;
 }
 
@@ -1830,6 +2071,14 @@ static void rx_idle_count_return(struct tt_Context* node) {
 
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     node->rx_offset = 0;
+    node->rx_split_payload = NULL;
+#if TT_HAL_RX_DIRECT
+    int32_t split = direct_take_pending(node, (uint8_t*)buf, len, ip, port);
+    if (split >= 0) {
+        rx_idle_count_return(node);
+        return split;
+    }
+#endif
 #if TT_HAL_UDP_GRO
     gro_settle_decide(node); // a settle past its deadline is decided before anything is read
     int32_t merged = gro_take_pending(node, (uint8_t*)buf, len, ip, port);

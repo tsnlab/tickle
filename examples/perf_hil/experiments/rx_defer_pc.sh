@@ -2,7 +2,7 @@
 # rx_defer_pc.sh - receive-path A/B for large samples on this PC: the subscriber's instructions, wakes and latency per MB
 # delivered, base (A) against a candidate (B), with an A/A control (A2: A's binary again) and the candidate's own
 # switch-off (Boff: B's binary with TT_RX_DEFER=0 and TT_RX_DIRECT=0 at the subscriber - what the code costs while
-# it does nothing). Two private namespaces joined by a veth pair; large_sample_bench.c at both ends, built as
+# it does nothing). Receiving in place is off by default, so TREATMENT=direct runs B with TT_RX_DIRECT=1. Two private namespaces joined by a veth pair; large_sample_bench.c at both ends, built as
 # largemsg_cpu_profile.sh builds it (rmw's datagram, large samples, no segment: the namespaces share /dev/shm).
 #
 # The rig's arrival pattern, reproduced: on the Pis a 1 MB sample's datagrams arrive at line rate and the NIC raises
@@ -116,6 +116,7 @@ run_cell() { # rep cell arm
     local rep=$1 cell=$2 arm=$3 bin_arm=$3 size rate rel stall env_sub=""
     [ "$arm" = A2 ] && bin_arm=A
     [ "$arm" = Boff ] && bin_arm=B && env_sub="TT_RX_DEFER=0 TT_RX_DIRECT=0"
+    [ "$arm" = B ] && [ "$TREATMENT" = direct ] && env_sub="TT_RX_DIRECT=1" # off by default
     read -r size rate rel stall <<<"$(args_of "$cell")"
     [ "$rel" = - ] && rel=""
     local bin="$WORK/bench_$bin_arm" drops_before

@@ -212,6 +212,10 @@ udp_offload_check: udp_offload_check.c $(HAL_SRC) $(SRC)/tickle.c $(SRC)/encodin
 rx_defer_check: rx_defer_check.c $(HAL_SRC) $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(UDP_OFFLOAD_CHECK_DEFS) $(LDFLAGS) -o $@ rx_defer_check.c $(HAL_SRC) \
 	    $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
+# The HAL's read in place against crafted reads (rx_direct_hal_check.c), built as above; run by rx_direct_check.sh.
+rx_direct_hal_check: rx_direct_hal_check.c $(HAL_SRC) $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(UDP_OFFLOAD_CHECK_DEFS) $(LDFLAGS) -o $@ rx_direct_hal_check.c $(HAL_SRC) \
+	    $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
 refuse_epoll.so: ../../tests/support/refuse_epoll.c
 	$(CC) -shared -fPIC -O2 -o $@ $<
 LARGE_BENCH = $(ROOT)/examples/perf_hil/experiments/large_sample_bench.c
@@ -574,5 +578,5 @@ clean:
 	# currently selected, so switching BUILD_TYPE and running `clean` doesn't leave the
 	# other mode's stale cache behind.
 	rm -rf obj/*/
-	rm -f libtickle.a refuse_io_uring.so rx_hint_check rx_idle_check bell_wake_check udp_offload_check udp_offload_check_flap rx_defer_check refuse_epoll.so large_sample_bench
+	rm -f libtickle.a refuse_io_uring.so rx_hint_check rx_idle_check bell_wake_check udp_offload_check udp_offload_check_flap rx_defer_check refuse_epoll.so large_sample_bench rx_direct_hal_check
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))

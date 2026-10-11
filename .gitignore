@@ -87,6 +87,7 @@
 /platform/linux/rx_defer_check
 /platform/linux/refuse_epoll.so
 /platform/linux/large_sample_bench
+/platform/linux/rx_direct_hal_check
 /platform/linux/bell_wake_check
 
 # clang-tidy's compilation database, when generated locally (e.g. `bear -- make all`, as

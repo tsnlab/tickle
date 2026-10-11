@@ -63,6 +63,16 @@
 #define TT_HAL_UDP_GSO 0
 #endif
 
+// Reading a large sample's fragments straight into their assembly (hal_linux.c direct_read(), struct
+// tt_Context.rx_direct_*): a build with both receive offload's reads (one datagram buffer that holds a merged read) and
+// large samples - rmw_tickle's. TT_RX_DIRECT=0 in the environment turns it off at tt_bind() (the A/B control).
+#if TT_HAL_UDP_GRO && tt_LARGE_SAMPLES
+#define TT_HAL_RX_DIRECT 1
+#define TT_RX_DIRECT_UNITS 64 // the most fragments one read is aimed at: UDP_GRO's most segments
+#else
+#define TT_HAL_RX_DIRECT 0
+#endif
+
 // Deferred waits while a large sample arrives (hal_linux.c rx_defer(), struct tt_Context.rx_defer_ns): only core with
 // large samples ever asks for one. TT_RX_DEFER=0 in the environment turns it off at tt_bind() (the A/B control).
 #if tt_LARGE_SAMPLES
@@ -304,6 +314,21 @@ struct tt_hal {
     uint32_t gro_next;
     uint32_t gro_end;
     uint8_t* gro_base;
+#endif
+#if TT_HAL_RX_DIRECT
+    // The last read aimed by core's hint (direct_read()): direct_split fragments read apart - framing in
+    // direct_headers[k], payload of direct_len[k] bytes at direct_dest + k x direct_payload - handed out from
+    // direct_next, all from one sender (gro_ip/gro_port) on one socket (gro_from_data); whatever followed them, or did
+    // not match, put back together as a merged read (gro_*). direct_allowed: not turned off by TT_RX_DIRECT=0.
+    bool direct_allowed;
+    uint16_t direct_last; // datagrams the last aimed read returned: the next is aimed at one more
+    uint16_t direct_split;
+    uint16_t direct_next;
+    uint16_t direct_payload;
+    uint16_t direct_header;
+    uint8_t* direct_dest;
+    uint16_t direct_len[TT_RX_DIRECT_UNITS];
+    uint8_t direct_headers[TT_RX_DIRECT_UNITS][32]; // rx_direct_header bytes each; 32 holds any framing core hints
 #endif
 #if tt_HAL_IO_URING
     // tt_rx_maybe_ready() (hal_linux.c): an io_uring whose only job is one-shot POLLIN on the two receive sockets, so

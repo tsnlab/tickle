@@ -497,6 +497,18 @@ rx defer: FAIL"
     status=1
 fi
 
+# Large-sample fragments read in place (rx_direct_check.sh): crafted reads, then end to end with every byte checked.
+make rx_direct_hal_check large_sample_bench
+if ./rx_direct_check.sh; then
+    SUMMARY="$SUMMARY
+rx direct: PASS"
+else
+    echo "rx direct: FAIL"
+    SUMMARY="$SUMMARY
+rx direct: FAIL"
+    status=1
+fi
+
 echo
 echo "=== Summary ==="
 if [ "$status" -eq 0 ]; then

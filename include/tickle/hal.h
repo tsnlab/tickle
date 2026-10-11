@@ -271,6 +271,13 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
 // (OPTIMIZATION_PLAN.md 11.4, D4).
 uint32_t tt_rx_buffered(const struct tt_Context* node);
 
+// For a HAL that reads a large sample's fragments straight into their assembly (struct tt_Context.rx_direct_*):
+// whether the framing `header` (rx_direct_header bytes, as read off the wire) with `payload_len` payload bytes after it
+// is the fragment core's hint expects in place `unit` of the run - its sample, its index, its count, its source, a
+// length that fragment can have, and not yet landed. Asked of every fragment of a read before any of them is handed
+// out, so a read that did not go as hinted is put back together before core touches the assembly. Implemented by core.
+bool tt_rx_direct_expected(const struct tt_Context* node, uint32_t unit, const uint8_t* header, uint32_t payload_len);
+
 // Could a non-blocking read find anything? Asked by a poll loop that is busy running scheduled work and wants to
 // check its sockets without paying a system call to learn that nothing came (2026-10-04: a max-rate segment
 // publisher spent a third of its system time on empty reads). true means "may be": the caller then reads with
