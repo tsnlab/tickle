@@ -604,9 +604,10 @@ its seq_nos read as gone to a reader that asks, so a torn sample is never delive
 with and without the ranged encode (`tests/test_large_sample.c`, against the arm without it; the whole step-A suite
 also runs in both modes). Small samples never use it.
 
-**Hybrid runs (section 8's hybrid design).** The unit is "the bytes the next send call carries", not a fragment:
-a run of `n` units encodes through its last unit before its `sendmmsg()`, exactly as a batch of MTU fragments does.
-Nothing in the design assumes MTU datagrams.
+**Larger datagrams.** The unit is "the bytes the next send call carries", not a fragment: should a send call ever
+carry runs of larger units (the hybrid transport, branch ab/hybrid-step34, not on main), a run encodes through its
+last unit before its `sendmmsg()`, exactly as a batch of MTU fragments does. Nothing in the design assumes MTU
+datagrams.
 
 **Pre-registration (2026-10-11, before any measurement).**
 
@@ -621,6 +622,14 @@ Nothing in the design assumes MTU datagrams.
   latency median read by the range rule and printed with the prediction (WIN or DRAW in both cells). Falsified if
   either cell's median is not BETTER: then the first fragment's wait was hidden by the wire queue and the 0.7 ms is not
   on the latency path. Core P1-P4: no regression by the instruction-count gate (no small sample takes this path).
+
+**Result (rig, 2026-10-11).** Head vs pre, 5 reps per cell (`interleave_encode_rig_ab.py`;
+`interleaveEnc_s1_20261011-123551` RELIABLE, `interleaveEnc_s2_20261011-130353` best effort): latency median -0.81 and
+-0.84 ms, both BETTER beyond the 0.35 ms threshold, nothing WORSE, delivery 100%; against Fast DDS as shipped -0.46 and
+-0.45 ms (WIN). The core p1-p4 cross-host campaign (A B B A, `interleaveEnc_l2x_compare.txt`): all 46 primary
+comparisons held, none WORSE (its verdict line reads NO VERDICT only because `rtt_p99_ms` matched no cell). Measured on
+branch ab/interleave-encode at 5130e3ae against its parent ba324d3b, both carrying the UDP offload commits of
+ab/udp-offload-v2 (parent 11cb21e8); landed without UDP offload, not re-measured.
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
