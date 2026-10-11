@@ -156,6 +156,10 @@ static uint8_t reader_id(int i) {
 // The writer, and `count` readers whose announces advertised `ceilings`; RELIABLE gives the writer a cache and each
 // reader the wide window, pre-matched on the writer as its announce would.
 static void init_set(uint32_t len, int count, const uint32_t* ceilings, bool reliable) {
+    if (sender.large.release != NULL) {
+        large_release_publisher(&sender,
+                                &pub); // what the last set's writer still holds goes back (sanitize's leak check)
+    }
     test_mock_reset();
     sample_len = len;
     sample_seed = 1;
@@ -587,6 +591,13 @@ static void test_large_samples_go_in_runs_of_n_max(void) {
     large_be_round_trip(LARGE_LEN, 3);
     large_be_round_trip(ONE_MB, 18);
     large_be_round_trip(FOUR_MB, 66);
+    // The tail in a send call of its own: 1 MB's 17 runs in one call (up to 64 a call), its tail in a second.
+    init_one(ONE_MB, FULL_CEILING, false);
+    sim_start(0);
+    int calls = test_mock_send_batch_call_count;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(4));
+    EXPECT_EQ_INT(2, test_mock_send_batch_call_count - calls);
+    expect_intact(0, 1);
 }
 
 // Runs only from three units: a two-unit sample is its two MTU fragments, as before; three are a run of two and the
@@ -1430,7 +1441,13 @@ static void test_mixed_reliable_readers_each_get_their_own_n(void) {
     init_set(ONE_MB, 2, ceilings, true);
     hybrid_test_forced_p = 0.001;
     sim_start(0);
-    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+    sample_seed = 1;
+    sim_acting = SENDER_ID;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    // Before any ACKNACK: the reader sent runs watches the sample for a failed path; the one sent MTU units does not.
+    EXPECT_EQ_U32(723, pub.peer_acks[0].watch_count);
+    EXPECT_EQ_U32(0, pub.peer_acks[1].watch_count);
+    sim_drain();
     sim_settle(2, tt_SECOND);
     EXPECT_EQ_U32(182, sent.to_reader[0]); // 181 runs of up to 4, and the tail
     EXPECT_EQ_U32(723, sent.to_reader[1]);
