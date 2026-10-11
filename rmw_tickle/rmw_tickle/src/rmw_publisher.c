@@ -636,6 +636,35 @@ static void arm_heartbeat_piggyback(rmw_tickle_publisher_t* pub_impl) {
     }
 }
 
+// The hybrid transport's model check (docs/DESIGN.md section 8, I1L1's forced n): RMW_TICKLE_RUN_UNITS=N in 1..45 makes
+// this publisher send runs of exactly N large units - forced IP with its own ip_datagram_max at N units (the run's 28
+// bytes of framing and N x 1,452) - so long as the reader's advertisement allows N (its reader runs with
+// RMW_TICKLE_REASSEMBLY_CAP_OFF=1). Unset: the context's setting. The log line is load-bearing, as the heartbeat's.
+#define RMW_TICKLE_RUN_FRAMING 28U
+#define RMW_TICKLE_LARGE_UNIT 1452U
+#define RMW_TICKLE_RUN_UNITS_MAX 45U
+static void arm_run_units(rmw_tickle_publisher_t* pub_impl) {
+#if tt_HYBRID_TRANSPORT
+    const char* env = getenv("RMW_TICKLE_RUN_UNITS");
+    if (NULL == env || '\0' == env[0]) {
+        return;
+    }
+    char* end = NULL;
+    unsigned long long units = strtoull(env, &end, 10);
+    if (end == env || (end != NULL && '\0' != *end) || units < 1U || units > RMW_TICKLE_RUN_UNITS_MAX) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle", "RMW_TICKLE_RUN_UNITS='%s' is not 1..%u; ignored", env,
+                               (unsigned)RMW_TICKLE_RUN_UNITS_MAX);
+        return;
+    }
+    pub_impl->tickle_publisher.large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
+    pub_impl->tickle_publisher.ip_datagram_max =
+        (uint16_t)(RMW_TICKLE_RUN_FRAMING + ((uint32_t)units * RMW_TICKLE_LARGE_UNIT));
+    RCUTILS_LOG_INFO_NAMED("rmw_tickle", "hybrid transport: runs of %u units", (unsigned)units);
+#else
+    (void)pub_impl;
+#endif
+}
+
 // (LARGE_MESSAGE_PLAN.md stage 1) The direct codec where the type has one - the ROS message goes
 // straight into core's tx_buffer, with no TickLE struct in between and so no per-publisher buffer.
 // The fallback is the struct path, for a callbacks struct without it.
@@ -1142,6 +1171,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // tt_Context_create_publisher() and setup_reliable_cache(). Configuration set before the object it
     // configures is fully built is exactly how the reorder buffer shipped disconnected (9747c1ea).
     arm_heartbeat_piggyback(pub_impl);
+    arm_run_units(pub_impl);
 
     uint64_t heartbeat_ns = resolve_heartbeat_period_ns();
     if (heartbeat_ns != 0 && pub_impl->tickle_publisher.reliable_cache != NULL) {

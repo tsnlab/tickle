@@ -189,6 +189,38 @@ rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_
     return RMW_RET_OK;
 }
 
+// The hybrid transport's settings (docs/DESIGN.md section 8), for benchmark arms: they are context settings, not QoS,
+// and ROS has no field for them, so they come from the environment like TICKLE_BROADCAST_ADDR. Unset, core's defaults
+// stand (AUTO, the reader's reassembly-memory cap on).
+//   RMW_TICKLE_LARGE_FRAGMENTATION  auto | mtu | ip    how a writer puts a multi-datagram sample's units on the wire
+//   RMW_TICKLE_REASSEMBLY_CAP_OFF   1                  a reader advertises its ceiling uncapped (a forced arm's reader)
+// The log line is load-bearing: a rig arm is VOID unless it shows the treatment it asked for.
+static void configure_hybrid_transport(void) {
+#if tt_HYBRID_TRANSPORT
+    const char* mode = getenv("RMW_TICKLE_LARGE_FRAGMENTATION");
+    if (mode != NULL && mode[0] != '\0') {
+        if (strcmp(mode, "mtu") == 0) {
+            _tt_CONFIG.large_fragmentation = tt_LARGE_FRAGMENTATION_MTU;
+        } else if (strcmp(mode, "ip") == 0) {
+            _tt_CONFIG.large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
+        } else if (strcmp(mode, "auto") == 0) {
+            _tt_CONFIG.large_fragmentation = tt_LARGE_FRAGMENTATION_AUTO;
+        } else {
+            RCUTILS_LOG_WARN_NAMED("rmw_tickle", "RMW_TICKLE_LARGE_FRAGMENTATION='%s' is not auto, mtu or ip; ignored",
+                                   mode);
+        }
+    }
+    const char* cap_off = getenv("RMW_TICKLE_REASSEMBLY_CAP_OFF");
+    _tt_CONFIG.reassembly_cap_off = (uint8_t)(cap_off != NULL && strcmp(cap_off, "1") == 0 ? 1 : 0);
+    static const char* const names[] = {"auto", "auto", "mtu", "ip"};
+    RCUTILS_LOG_INFO_NAMED(
+        "rmw_tickle", "hybrid transport: large_fragmentation=%s reassembly_cap=%s",
+        names[_tt_CONFIG.large_fragmentation <= tt_LARGE_FRAGMENTATION_IP ? _tt_CONFIG.large_fragmentation
+                                                                          : tt_LARGE_FRAGMENTATION_AUTO],
+        _tt_CONFIG.reassembly_cap_off != 0 ? "off" : "on");
+#endif
+}
+
 rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const context) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(options, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(context, RMW_RET_INVALID_ARGUMENT);
@@ -338,6 +370,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
     if (node_id != NULL) {
         _tt_CONFIG.context_id = atoi(node_id);
     }
+    configure_hybrid_transport();
 
     configure_discovery(impl, &options->discovery_options);
     return RMW_RET_OK;
