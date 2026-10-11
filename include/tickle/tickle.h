@@ -1823,7 +1823,8 @@ struct tt_LargeCursor {
     uint8_t dest_count;
     bool scheduled;
 #if tt_HYBRID_TRANSPORT
-    uint8_t run_n[tt_LARGE_DESTINATIONS]; // units per datagram to each destination, fixed for the sample (1: MTU)
+    uint8_t run_n[tt_LARGE_DESTINATIONS];      // units per datagram to each destination, fixed for the sample (1: MTU)
+    uint16_t run_until[tt_LARGE_DESTINATIONS]; // units [0, run_until) go in runs; a re-probe sends only its first
 #endif
 };
 #endif
@@ -1878,6 +1879,21 @@ struct tt_PeerAck {
     struct tt_LossEstimate loss;
     uint32_t nack_high;
     uint8_t run_n;
+    // Its fragment path (hybrid_watch_judge(), tickle.c): the latest sample sent to it in runs, watched - units
+    // [watch_base, watch_base + watch_run_units) in watch_runs runs, of watch_count; how many of those units it
+    // first-NACKed, and whether it NACKed the tail. all_lost_streak: samples in a row that lost every run with the tail
+    // through. path_failed_ns: when its path was judged to drop IP fragments (0: it was not); path_failures: how often.
+    uint64_t path_failed_ns;
+    uint32_t watch_base;
+    uint32_t path_failures;
+    uint16_t watch_count;
+    uint16_t watch_run_units;
+    uint16_t watch_nacked;
+    uint8_t watch_runs;
+    uint8_t all_lost_streak;
+    bool watch_tail_nacked;
+    bool watch_all_lost;
+    bool watch_probe; // the watched sample re-probed a failed path
 #endif
 };
 

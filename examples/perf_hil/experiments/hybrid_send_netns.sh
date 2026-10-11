@@ -24,9 +24,10 @@
 #   Mixed by unicast (two readers, one advertising 0, -X 0): the 0 reader's capture holds no run and no fragmented
 #     frame; the other's holds runs. Broadcast (three readers, above the unicast threshold of 2) with one advertising 0:
 #     no run to anyone; with all three default: runs, by broadcast.
-#   A u32 filter dropping every IP fragment at the reader: RELIABLE KEEP_ALL still delivers everything (MTU repairs);
-#     the writer tried runs (n histogram buckets 2-32 non-zero) and never reached n_max (bucket 45 zero): every lost
-#     run raised p.
+#   A u32 filter dropping every IP fragment at the reader: RELIABLE KEEP_ALL still delivers everything (MTU repairs),
+#     and the writer judges the path failed on the first sample whose runs are all lost while its tail arrives: at most
+#     two samples go with n >= 2 (n histogram buckets 2..45). REL_1MB_FRAGDROP_MTU (forced MTU, twice: the A/A pair) is
+#     the arm whose rate and CPU it must match.
 #   Withdrawal: non-first fragments dropped at the reader and ipfrag_time 2 s there, so every run's first fragment
 #     times out in the kernel: best effort AUTO must record withdrawals >= 1 at the reader (ReasmFails rose while runs
 #     arrived) and deliveries must resume (delivered > 0) once it advertises one unit.
@@ -123,7 +124,7 @@ shaping() {
 }
 
 # cell NAME READERS SIZE RATE LOSS FILTER "PUB_FLAGS" "SUB_FLAGS_1|SUB_FLAGS_2|SUB_FLAGS_3" CHECKS
-# CHECKS (space separated): reliable best_effort runs no_runs repairs_mtu n_reaches_max n_all_max n_capped mixed0
+# CHECKS (space separated): reliable best_effort runs no_runs repairs_mtu n_reaches_max n_all_max fail_fast mixed0
 #   withdrawal
 cell() {
     local name=$1 count=$2 size=$3 rate=$4 loss=$5 filter=$6 pub_flags=$7 sub_flags=$8 checks=$9
@@ -214,12 +215,11 @@ cell() {
         below=$(echo "$hist" | awk -F/ '{print $1+$2+$3+$4+$5+$6}')
         [ "${below:-1}" != 0 ] && { [ "$verdict" = PASS ] && verdict=VOID; why="$why n_hist=$hist:not_all_n_max"; } ;;
     esac
-    case " $checks " in *" n_capped "*)
-        # It tried runs (buckets 2..32) and never reached n_max (the last bucket): every lost run raised p.
-        local middle
-        middle=$(echo "$hist" | awk -F/ '{print $2+$3+$4+$5+$6}')
-        [ "${middle:-0}" = 0 ] && { verdict=FAIL; why="$why n_hist=$hist:never_tried_runs"; }
-        [ "${hist##*/}" != 0 ] && { verdict=FAIL; why="$why n_hist=$hist:reached_n_max"; } ;;
+    case " $checks " in *" fail_fast "*)
+        # The path is judged failed on the first sample whose runs are all lost: at most two samples with n >= 2.
+        local tried
+        tried=$(echo "$hist" | awk -F/ '{print $2+$3+$4+$5+$6+$7}')
+        [ "${tried:-99}" -gt 2 ] && { verdict=FAIL; why="$why n_hist=$hist:more_than_2_samples_in_runs"; } ;;
     esac
     echo "$name: $verdict${why:+ ($why)} | pub: ${publine#RESULT: }" | tee -a "$OUT"
 }
@@ -238,7 +238,9 @@ want REL_1MB_IP_5 && cell REL_1MB_IP_5 1 $M 30 5 none "-R -A -F ip" "-R -C" "rel
 want REL_4MB_AUTO_1 && cell REL_4MB_AUTO_1 1 $F 15 1 none "-R -A -F auto" "-R" "reliable repairs_mtu"
 want REL_4MB_IP_5 && cell REL_4MB_IP_5 1 $F 15 5 none "-R -A -F ip" "-R -C" "reliable runs repairs_mtu n_all_max"
 want REL_16K_IP_5 && cell REL_16K_IP_5 1 16384 100 5 none "-R -A -F ip" "-R -C" "reliable runs repairs_mtu n_all_max"
-want REL_1MB_FRAGDROP && cell REL_1MB_FRAGDROP 1 $M 30 0 frags "-R -A -F auto" "-R" "reliable repairs_mtu n_capped"
+want REL_1MB_FRAGDROP && cell REL_1MB_FRAGDROP 1 $M 30 0 frags "-R -A -F auto" "-R" "reliable fail_fast"
+want REL_1MB_FRAGDROP_MTU && cell REL_1MB_FRAGDROP_MTU 1 $M 30 0 frags "-R -A -F mtu" "-R" "reliable no_runs"
+want REL_1MB_FRAGDROP_MTU2 && cell REL_1MB_FRAGDROP_MTU2 1 $M 30 0 frags "-R -A -F mtu" "-R" "reliable no_runs"
 want MIXED_UNICAST && cell MIXED_UNICAST 2 $M 30 0 none "-R -A -F ip" "-R -C|-R -X 0" "reliable mixed0"
 want MIXED_BROADCAST && cell MIXED_BROADCAST 3 $M 30 0 none "-F auto" "|-X 0|" "best_effort no_runs"
 want BROADCAST_RUNS && cell BROADCAST_RUNS 3 $M 30 0 none "-F auto" "||" "best_effort runs"

@@ -34,10 +34,8 @@ MUTANTS = [
     (
         "small runs: the last unit inside a run",
         "src/tickle.c",
-        "    for (uint32_t start = 0; start + 1U < count; start += run_n) {\n"
-        "        uint32_t units = count - 1U - start < run_n ? count - 1U - start : run_n;",
-        "    for (uint32_t start = 0; start < count; start += run_n) {\n"
-        "        uint32_t units = count - start < run_n ? count - start : run_n;",
+        "    return one_run && run_n < count - 1U ? run_n : count - 1U;",
+        "    return one_run && run_n < count - 1U ? run_n : count;",
         SEND,
     ),
     (
@@ -57,9 +55,8 @@ MUTANTS = [
     (
         "large runs: the last unit inside a run",
         "src/tickle.c",
-        "    for (; k < LARGE_BATCH && next < last; k++) {\n        uint32_t run = last - next < run_n ? last - next : run_n;",
-        "    for (; k < LARGE_BATCH && next <= last; k++) {\n"
-        "        uint32_t run = last + 1U - next < run_n ? last + 1U - next : run_n;",
+        "    for (; k < LARGE_BATCH && next < last; k++) {\n        if (next >= run_until) {",
+        "    for (; k < LARGE_BATCH && next <= last; k++) {\n        if (next >= run_until) {",
         SEND,
     ),
     (
@@ -129,14 +126,14 @@ MUTANTS = [
     (
         "unicast: every destination given the broadcast's minimum",
         "src/tickle.c",
-        "    uint32_t n_max = 1U;\n    if (context_id != tt_CONTEXT_ID_INVALID) {",
-        "    uint32_t n_max = 1U;\n    if (false) {",
+        "    *one_run = false;\n    if (context_id != tt_CONTEXT_ID_INVALID) {",
+        "    *one_run = false;\n    if (false) {",
         SEND,
     ),
     (
         "counters: a run's units not counted",
         "src/tickle.c",
-        "        hybrid->run_units += count - 1U;",
+        "        hybrid->run_units += run_until;",
         "",
         SEND,
     ),
@@ -172,8 +169,8 @@ MUTANTS = [
     (
         "reliable n: the most optimistic reader's p",
         "src/tickle.c",
-        "            p = peer_p > p ? peer_p : p;",
-        "            p = p < 0.0 || peer_p < p ? peer_p : p;",
+        "        p = peer_p > p ? peer_p : p;",
+        "        p = p < 0.0 || peer_p < p ? peer_p : p;",
         SEND,
     ),
     (
@@ -186,22 +183,22 @@ MUTANTS = [
     (
         "exposure: the frames sent not counted",
         "src/tickle.c",
-        "            loss_estimate_observe(&ack->loss, count, 0);\n            ack->run_n = (uint8_t)run_n;",
-        "            ack->run_n = (uint8_t)run_n;",
+        "        loss_estimate_observe(&ack->loss, count, 0);\n        ack->run_n = (uint8_t)run_n;",
+        "        ack->run_n = (uint8_t)run_n;",
         SEND,
     ),
     (
         "exposure: n not recorded",
         "src/tickle.c",
-        "            loss_estimate_observe(&ack->loss, count, 0);\n            ack->run_n = (uint8_t)run_n;",
-        "            loss_estimate_observe(&ack->loss, count, 0);",
+        "        loss_estimate_observe(&ack->loss, count, 0);\n        ack->run_n = (uint8_t)run_n;",
+        "        loss_estimate_observe(&ack->loss, count, 0);",
         SEND,
     ),
     (
         "exposure: given to every reader, not the one sent to",
         "src/tickle.c",
-        "            (context_id == tt_CONTEXT_ID_INVALID || ack->context_id == context_id)) {",
-        "            (context_id == tt_CONTEXT_ID_INVALID || true)) {",
+        "            (context_id != tt_CONTEXT_ID_INVALID && ack->context_id != context_id)) {",
+        "            (context_id != tt_CONTEXT_ID_INVALID && false)) {",
         SEND,
     ),
     (
@@ -327,14 +324,14 @@ MUTANTS = [
     (
         "timing: run sends not observed",
         "src/tickle.c",
-        "        cost_fit_observe(&node->hybrid.tx_fit, count, frames, tt_get_ns() - start);",
+        "        cost_fit_observe(&node->hybrid.tx_fit, count, frames, tt_get_ns() - start, \"send\");",
         "",
         SEND,
     ),
     (
         "timing: large run sends not observed",
         "src/tickle.c",
-        "            cost_fit_observe(&node->hybrid.tx_fit, (uint32_t)sent, sent_frames, tt_get_ns() - start);",
+        "            cost_fit_observe(&node->hybrid.tx_fit, (uint32_t)sent, sent_frames, tt_get_ns() - start, \"send\");",
         "",
         SEND,
     ),
@@ -355,7 +352,7 @@ MUTANTS = [
     (
         "timing: received datagrams not observed",
         "src/tickle.c",
-        "        cost_fit_observe(&node->hybrid.rx_fit, 1, hybrid_frames(node->rx_tail), tt_get_ns() - start);",
+        "        cost_fit_observe(&node->hybrid.rx_fit, 1, hybrid_frames(node->rx_tail), tt_get_ns() - start, \"receive\");",
         "",
         SEND,
     ),
@@ -406,6 +403,70 @@ MUTANTS = [
         "src/tickle.c",
         "    return delta > (advertised >> HYBRID_COST_MOVE_SHIFT);",
         "    return false;",
+        SEND,
+    ),
+    # --- a fragment path that drops every IP fragment ---
+    (
+        "path: judged failed with the tail lost too",
+        "src/tickle.c",
+        "    if (ack->watch_count == 0 || ack->watch_all_lost || ack->watch_tail_nacked ||",
+        "    if (ack->watch_count == 0 || ack->watch_all_lost ||",
+        SEND,
+    ),
+    (
+        "path: judged failed with a run through",
+        "src/tickle.c",
+        "        ack->watch_nacked != ack->watch_run_units) {",
+        "        ack->watch_nacked == 0) {",
+        SEND,
+    ),
+    (
+        "path: one multi-run sample not enough",
+        "src/tickle.c",
+        "    if (ack->watch_runs >= 2U || ack->all_lost_streak >= 2U || ack->watch_probe) {",
+        "    if (ack->all_lost_streak >= 2U || ack->watch_probe) {",
+        SEND,
+    ),
+    (
+        "path: one single-run sample enough",
+        "src/tickle.c",
+        "    if (ack->watch_runs >= 2U || ack->all_lost_streak >= 2U || ack->watch_probe) {",
+        "    if (ack->watch_runs >= 1U || ack->all_lost_streak >= 2U || ack->watch_probe) {",
+        SEND,
+    ),
+    (
+        "path: a lost re-probe not judged at once",
+        "src/tickle.c",
+        "    if (ack->watch_runs >= 2U || ack->all_lost_streak >= 2U || ack->watch_probe) {",
+        "    if (ack->watch_runs >= 2U || ack->all_lost_streak >= 2U) {",
+        SEND,
+    ),
+    (
+        "path: no MTU period after the judgement",
+        "src/tickle.c",
+        "            if (now - ack->path_failed_ns < tt_HYBRID_PATH_CLEAN_NS) {\n                return 1U;\n            }",
+        "",
+        SEND,
+    ),
+    (
+        "path: re-probed with every run",
+        "src/tickle.c",
+        "            *one_run = true;\n        }",
+        "        }",
+        SEND,
+    ),
+    (
+        "path: a re-probe that got through not cleared",
+        "src/tickle.c",
+        "        if (ack->watch_probe) {\n            ack->path_failed_ns = 0;\n        }\n        ack->watch_count = 0;",
+        "        ack->watch_count = 0;",
+        SEND,
+    ),
+    (
+        "path: the tail not told from the runs",
+        "src/tickle.c",
+        "    } else if (seq_no - ack->watch_base == ack->watch_count - 1U) {",
+        "    } else if (false) {",
         SEND,
     ),
     # --- the reader's pooled loss and cap ---
