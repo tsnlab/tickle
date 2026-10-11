@@ -495,6 +495,22 @@ struct tt_Lending {
 };
 #endif
 
+#if tt_HYBRID_TRANSPORT
+// Buckets of the n histogram: 1, 2-3, 4-7, 8-15, 16-31, 32 up to tt_HYBRID_N_MAX - 1, and tt_HYBRID_N_MAX.
+#define tt_HYBRID_N_BUCKETS 7
+
+// A context's hybrid-transport state (tt_Context.hybrid).
+struct tt_HybridState {
+    // Counters, on the traffic line as hybrid_*. runs: run datagrams sent; run_units: units in them; mtu_units: units
+    // of multi-unit samples sent alone in their first transmission (tails included); n_hist: n chosen per sample and
+    // destination.
+    uint64_t runs;
+    uint64_t run_units;
+    uint64_t mtu_units;
+    uint64_t n_hist[tt_HYBRID_N_BUCKETS];
+};
+#endif
+
 struct tt_Context {
     uint8_t id;
     uint32_t endpoint_count;
@@ -1208,6 +1224,10 @@ struct tt_Context {
     // Large-message stage 2 (DESIGN.md section 8), after everything else for the same reason as lend.
     struct tt_LargeState large;
 #endif
+#if tt_HYBRID_TRANSPORT
+    // Hybrid transport (DESIGN.md section 8), last for the same reason.
+    struct tt_HybridState hybrid;
+#endif
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s
@@ -1727,6 +1747,9 @@ struct tt_LargeCursor {
     uint8_t next_dest;
     uint8_t dest_count;
     bool scheduled;
+#if tt_HYBRID_TRANSPORT
+    uint8_t run_n[tt_LARGE_DESTINATIONS]; // units per datagram to each destination, fixed for the sample (1: MTU)
+#endif
 };
 #endif
 

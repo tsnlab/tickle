@@ -387,6 +387,19 @@ static void test_a_claimed_publish_follows_a_waiting_large_sample(void) {
 // A large sample whose fragments came through the ring is lent from its own buffer: the CDR at 4 mod 8 there, as in
 // every receive buffer (tt_Context.rx_buffer), no ring slot held for it - the ring reads on - and its buffer kept
 // until the release, when it goes back to the context's large release.
+// Hybrid transport (DESIGN.md section 8): a same-host peer reached through its segment gets MTU units whatever its
+// announce allows - a run is no record for a ring slot, and half a sample over the ring and half over UDP would race.
+static void test_a_segment_peer_gets_mtu_units_whatever_it_advertises(void) {
+    rig_up();
+    sender.peer_ip_reassembly_max[OWNER_ID] = 65507;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(1, LARGE_BYTES));
+    EXPECT_EQ_U32(large_count_for(ROUNDUP(LARGE_BYTES)), ring()->write_index); // every unit a record of its own
+    EXPECT_EQ_U64(0, sender.hybrid.runs);
+    drain();
+    EXPECT_EQ_U32(1, cb.seen);
+    rig_down();
+}
+
 static void test_a_large_sample_from_the_ring_is_lent_from_its_own_buffer(void) {
     rig_up();
     cb.retain = true;
@@ -494,6 +507,7 @@ int main(void) {
     test_a_claim_of_a_large_sample_is_unsupported();
     test_a_claimed_publish_follows_a_waiting_large_sample();
     test_a_large_sample_from_the_ring_is_lent_from_its_own_buffer();
+    test_a_segment_peer_gets_mtu_units_whatever_it_advertises();
     test_a_departure_inside_a_large_delivery_keeps_the_ring_until_read();
     test_a_large_same_host_transfer_from_unzeroed_contexts();
     printf("test_large_shm: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
