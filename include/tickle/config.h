@@ -715,6 +715,26 @@
 #define tt_FRAG_ENABLED 0
 #endif
 #endif
+
+// Hybrid transport's sending half (DESIGN.md section 8, "Hybrid transport", steps 3 to 5): runs sent, n chosen per
+// peer from its advertised ceiling, the measured loss and the cost model, and the reader's reassembly-memory cap and
+// withdrawal. Built where fragmentation is and the platform reassembles IP. Off on FreeRTOS, which advertises 0, is
+// sent MTU fragments only and sends only MTU fragments itself. A build without it still receives runs (step 2),
+// advertises its configured ceiling unchanged and sends MTU fragments, as before tt_VERSION 13.
+#ifndef tt_HYBRID_TRANSPORT
+#if tt_FRAG_ENABLED && !defined(TT_PLATFORM_FREERTOS)
+#define tt_HYBRID_TRANSPORT 1
+#else
+#define tt_HYBRID_TRANSPORT 0
+#endif
+#endif
+#if tt_HYBRID_TRANSPORT && !tt_FRAG_ENABLED
+#error "tt_HYBRID_TRANSPORT needs fragmentation (tt_FRAG_ENABLED)"
+#endif
+// The most units one run may carry: 45 MTU units fill a 65,372-byte UDP payload, which IP sends as 45 frames.
+#ifndef tt_HYBRID_N_MAX
+#define tt_HYBRID_N_MAX 45
+#endif
 // Samples a node can be reassembling at once, from any mix of senders. When all are busy and a fragment
 // of another sample arrives, the reassembly started longest ago is abandoned and counted
 // (tt_Context.frag_abandoned) - never dropped silently, since a silent drop here looks exactly like loss.

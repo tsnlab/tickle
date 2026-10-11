@@ -2095,6 +2095,209 @@ static uint32_t frag_write_header(uint8_t* out, const struct tt_DataHeader* data
     return header_length;
 }
 
+#if tt_HYBRID_TRANSPORT
+// ---- Hybrid transport: choosing n and sending runs (DESIGN.md section 8, "Hybrid transport") ---------------------
+//
+// A multi-datagram sample is k units, each with its own seq_no. To a peer whose announce allows it, units [0, k - 1)
+// go in runs of n consecutive units per UDP datagram (FRAG_RUN, FRAG_RUN_L), which IP fragments into about n frames,
+// and the last unit alone as an ordinary MTU fragment, in a send call of its own; runs only when k >= 3. n is chosen
+// per sample and per destination and fixed within the sample. It is 1 (MTU) for an undiscovered peer, one advertising
+// no room for two units, a same-host peer reached through its segment, and an addressed send (a repair or a backlog:
+// repairs are always MTU units). By broadcast it is the minimum over the matched peers. Every received unit, whether it
+// came in a run or alone, is stored, acknowledged and repaired as an MTU unit.
+
+static uint8_t count_peers(const struct tt_Peer* peers);
+
+// Bytes a run's framing takes on the wire (the single-submessage form), and one full unit, per type pair.
+#define HYBRID_RUN_WIRE_FRAMING ((uint32_t)(sizeof(struct tt_SingleHeader) + sizeof(struct tt_FragRunHeader)))
+#define HYBRID_RUN_L_WIRE_FRAMING ((uint32_t)(sizeof(struct tt_SingleHeader) + sizeof(struct tt_FragRunLHeader)))
+#define HYBRID_UNIT ((uint32_t)FRAG_CONT_PAYLOAD)
+#define HYBRID_UNIT_L ((uint32_t)(tt_CONTROL_MAX_LENGTH - FRAG_FRAMING_LENGTH - sizeof(struct tt_FragContLHeader)))
+// A run's classic framing, built before it is put in the single form: tt_Header, the submessage header, its own.
+#define HYBRID_RUN_FRAMING (FRAG_FRAMING_LENGTH + sizeof(struct tt_FragRunHeader))
+#define HYBRID_RUN_L_FRAMING (FRAG_FRAMING_LENGTH + sizeof(struct tt_FragRunLHeader))
+// The frames IP sends a UDP payload as: each frame carries the control datagram plus the UDP header.
+#define HYBRID_UDP_HEADER 8U
+#define HYBRID_FRAME_PAYLOAD ((uint32_t)tt_CONTROL_MAX_LENGTH + HYBRID_UDP_HEADER)
+// Runs one sample on 8/9 can need: units [0, k - 1) in runs of at least 2.
+#define HYBRID_MAX_RUNS ((tt_FRAG_MAX_COUNT / 2) + 1)
+
+static uint32_t hybrid_frames(uint32_t udp_payload) {
+    return (udp_payload + HYBRID_UDP_HEADER + HYBRID_FRAME_PAYLOAD - 1U) / HYBRID_FRAME_PAYLOAD;
+}
+
+// How many units of one type pair a datagram of at most `ceiling` bytes holds as a run - n_max: at least 1, at most
+// tt_HYBRID_N_MAX.
+static uint32_t hybrid_units_within(uint32_t ceiling, bool large) {
+    uint32_t framing = large ? HYBRID_RUN_L_WIRE_FRAMING : HYBRID_RUN_WIRE_FRAMING;
+    uint32_t unit = large ? HYBRID_UNIT_L : HYBRID_UNIT;
+    uint32_t units = ceiling > framing ? (ceiling - framing) / unit : 0U;
+    if (units < 1U) {
+        return 1U;
+    }
+    return units > (uint32_t)tt_HYBRID_N_MAX ? (uint32_t)tt_HYBRID_N_MAX : units;
+}
+
+// The bucket of tt_HybridState.n_hist that n falls in: 1, 2-3, 4-7, 8-15, 16-31, 32 up to n_max - 1, n_max.
+static uint32_t hybrid_bucket(uint32_t n) {
+    if (n >= (uint32_t)tt_HYBRID_N_MAX) {
+        return tt_HYBRID_N_BUCKETS - 1U;
+    }
+    uint32_t bucket = 0;
+    while (n > 1U && bucket < tt_HYBRID_N_BUCKETS - 2U) {
+        n >>= 1U;
+        bucket++;
+    }
+    return bucket;
+}
+
+// The mode a Publisher sends with: its own, or its context's when it inherits.
+static uint32_t hybrid_mode(const struct tt_Context* node, const struct tt_Publisher* pub) {
+    return pub->large_fragmentation != tt_LARGE_FRAGMENTATION_INHERIT ? pub->large_fragmentation
+                                                                      : node->large_fragmentation;
+}
+
+// What one peer allows, n_max, for a sample of one type pair: the smaller of its advertised ceiling and this
+// Publisher's own (ip_datagram_max, 0 = no limit of its own). 1 for a peer not heard from, one advertising 0 or less
+// than two units, and a same-host peer whose segment the send goes through.
+static uint32_t hybrid_peer_n_max(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
+                                  uint32_t ip, uint16_t port, bool large) {
+    if (context_id == tt_CONTEXT_ID_INVALID) {
+        return 1U;
+    }
+    uint32_t ceiling = node->peer_ip_reassembly_max[context_id];
+    if (pub->ip_datagram_max != 0 && pub->ip_datagram_max < ceiling) {
+        ceiling = pub->ip_datagram_max;
+    }
+    uint32_t n_max = hybrid_units_within(ceiling, large);
+#if tt_SEGMENT_ENABLED
+    if (n_max > 1U && peer_segment(node, context_id, ip, port) != NULL) {
+        return 1U; // a run is no record for a ring slot; the segment takes MTU units
+    }
+#else
+    UNUSED(ip);
+    UNUSED(port);
+#endif
+    return n_max;
+}
+
+// The n for one peer: 1 for MTU; n_max for IP and for best effort (AUTO: delivery does not depend on n, so the largest
+// the reader allows, which already holds its reassembly-memory cap). RELIABLE AUTO stays at MTU until the cost model
+// chooses for it (step 4).
+static uint32_t hybrid_peer_n(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id, uint32_t ip,
+                              uint16_t port, bool large, uint32_t* n_max_out) {
+    uint32_t n_max = hybrid_peer_n_max(node, pub, context_id, ip, port, large);
+    *n_max_out = n_max;
+    uint32_t mode = hybrid_mode(node, pub);
+    if (n_max < 2U || mode == tt_LARGE_FRAGMENTATION_MTU) {
+        return 1U;
+    }
+    if (mode == tt_LARGE_FRAGMENTATION_IP || !pub->reliable) {
+        return n_max;
+    }
+    return 1U;
+}
+
+// The n a datagram to one destination goes with: that peer's, or by broadcast (no single peer) the minimum over the
+// Publisher's matched peers - 1 with none. *capable: some peer it reaches could take runs (n_max >= 2), so its frames
+// count as exposure for the loss estimate even while n is 1.
+static uint32_t hybrid_destination_n(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
+                                     uint32_t ip, uint16_t port, bool large, bool* capable) {
+    uint32_t n_max = 1U;
+    if (context_id != tt_CONTEXT_ID_INVALID) {
+        uint32_t n = hybrid_peer_n(node, pub, context_id, ip, port, large, &n_max);
+        *capable = n_max >= 2U;
+        return n;
+    }
+    uint32_t smallest = 0;
+    *capable = false;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        const struct tt_Peer* peer = &pub->peers[i];
+        if (peer->context_id == tt_CONTEXT_ID_INVALID) {
+            continue;
+        }
+        uint32_t n = hybrid_peer_n(node, pub, peer->context_id, peer->ip, peer->port, large, &n_max);
+        *capable = *capable || n_max >= 2U;
+        smallest = smallest == 0 || n < smallest ? n : smallest;
+    }
+    return smallest == 0 ? 1U : smallest;
+}
+
+// A sample's first transmission to one destination, counted: the histogram of n, and what went in runs and alone.
+static void hybrid_note_sent(struct tt_Context* node, uint32_t n, uint32_t count) {
+    struct tt_HybridState* hybrid = &node->hybrid;
+    hybrid->n_hist[hybrid_bucket(n)]++;
+    if (n < 2U) {
+        hybrid->mtu_units += count;
+    } else {
+        hybrid->runs += ((count - 2U) / n) + 1U; // units [0, count - 1) in runs of n, the last one shorter
+        hybrid->run_units += count - 1U;
+        hybrid->mtu_units++; // the tail
+    }
+}
+
+// One send call of a sample's first transmission, `frames` frames in its datagrams.
+static int32_t hybrid_send_batch(struct tt_Context* node, const struct tt_OutDatagram* batch, uint32_t count,
+                                 const uint8_t* context_ids, uint32_t frames) {
+    UNUSED(frames); // the sender's cost fit reads it (step 5)
+    return seam_send_batch(node, batch, count, context_ids);
+}
+
+// Builds the run of `units` units of a sample on 8/9 starting at unit `start`: its framing at out, its payload in place
+// in the sample's CDR. Returns the datagram, in the single form, to ip/port.
+static struct tt_OutDatagram hybrid_small_run(uint8_t* out, const struct tt_Context* node,
+                                              const struct tt_DataHeader* data_header, const uint8_t* cdr,
+                                              uint32_t start, uint32_t units, uint32_t count,
+                                              const struct tx_destination* dest) {
+    struct tt_Header* header = (struct tt_Header*)out;
+    header->magic_value = NATIVE_MAGIC_VALUE;
+    header->version = tt_VERSION;
+    header->source = node->id;
+    struct tt_SubmessageHeader* submessage = (struct tt_SubmessageHeader*)(out + sizeof(struct tt_Header));
+    struct tt_FragRunHeader* run = (struct tt_FragRunHeader*)(submessage + 1);
+    _tt_memcpy(&run->data, data_header, sizeof(struct tt_DataHeader));
+    run->data.seq_no = data_header->seq_no + start; // the first unit's own
+    run->frag_index = (uint8_t)start;
+    run->frag_count = (uint8_t)count;
+    run->run_count = (uint8_t)units;
+    run->zero = 0;
+    uint32_t offset = frag_payload_offset(start);
+    uint32_t length = frag_payload_offset(start + units) - offset; // every unit of a run is full: it is never the last
+    submessage->type = tt_SUBMESSAGE_TYPE_FRAG_RUN;
+    submessage->receiver = tt_SUBMESSAGE_ID_ALL;
+    submessage->length = (uint16_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragRunHeader) + length);
+    uint32_t skip = to_single_form(out, (uint32_t)HYBRID_RUN_FRAMING, length);
+    return (struct tt_OutDatagram) {out + skip, (uint32_t)HYBRID_RUN_FRAMING - skip, cdr + offset, length, dest->ip,
+                                    dest->port};
+}
+
+// A sample on 8/9 to one destination in runs of n: units [0, count - 1) as runs in one call, then the last unit alone
+// (`tail`, its MTU fragment as send_fragments() built it) in a second.
+static bool hybrid_send_small_runs(struct tt_Context* node, const struct tt_DataHeader* data_header, const uint8_t* cdr,
+                                   uint32_t count, uint32_t n, const struct tt_OutDatagram* tail,
+                                   const struct tx_destination* dest) {
+    uint8_t framings[HYBRID_MAX_RUNS][HYBRID_RUN_FRAMING];
+    struct tt_OutDatagram runs[HYBRID_MAX_RUNS];
+    uint8_t context_ids[HYBRID_MAX_RUNS];
+    uint32_t run_count = 0;
+    uint32_t frames = 0;
+    for (uint32_t start = 0; start + 1U < count; start += n) {
+        uint32_t units = count - 1U - start < n ? count - 1U - start : n;
+        runs[run_count] = hybrid_small_run(framings[run_count], node, data_header, cdr, start, units, count, dest);
+        frames += hybrid_frames(runs[run_count].head_len + runs[run_count].body_len);
+        context_ids[run_count] = dest->context_id;
+        run_count++;
+    }
+    if (hybrid_send_batch(node, runs, run_count, context_ids, frames) < 0) {
+        return false;
+    }
+    struct tt_OutDatagram last = *tail;
+    last.ip = dest->ip;
+    last.port = dest->port;
+    return hybrid_send_batch(node, &last, 1, &dest->context_id, 1) >= 0;
+}
+#endif
+
 // Sends one sample as fragments, each its own datagram, to the destinations a flush would use
 // (tx_destinations()). The CDR is read from where it lies - tx_buffer or the caller's own memory - and
 // only the framing is built here, once for every destination. Only for a sample that no DATA could
@@ -2104,8 +2307,12 @@ static uint32_t frag_write_header(uint8_t* out, const struct tt_DataHeader* data
 // which is what returns a fragmented sample to the single send system call it cost before it had to be
 // fragmented (DATAFRAG_PLAN.md 6.5, step 3). Destination by destination, so each receiver gets a sample's
 // fragments back to back.
-static bool send_fragments(struct tt_Context* node, const struct tt_DataHeader* data_header, const uint8_t* cdr,
-                           uint32_t cdr_len, const struct tt_Peer* peers, uint8_t peer_count, uint8_t receiver) {
+//
+// `pub` is the Publisher whose sample this is when this is its first transmission, which may then go as runs
+// (hybrid transport, DESIGN.md section 8); NULL for a retransmission or a backlog, which are always MTU units.
+static bool send_fragments(struct tt_Context* node, const struct tt_Publisher* pub,
+                           const struct tt_DataHeader* data_header, const uint8_t* cdr, uint32_t cdr_len,
+                           const struct tt_Peer* peers, uint8_t peer_count, uint8_t receiver) {
     if (cdr_len <= FRAG_FIRST_PAYLOAD || cdr_len > FRAG_MAX_CDR) {
         TT_LOG_ERROR("Sample of %u bytes cannot be sent as fragments", cdr_len);
         node->tx_dropped_oversize++;
@@ -2145,7 +2352,28 @@ static bool send_fragments(struct tt_Context* node, const struct tt_DataHeader* 
     note_reached(node, peers, peer_count);
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
     uint8_t destination_count = tx_destinations(peers, peer_count, destinations);
+#if !tt_HYBRID_TRANSPORT
+    UNUSED(pub);
+#endif
     for (uint8_t dest = 0; dest < destination_count; dest++) {
+#if tt_HYBRID_TRANSPORT
+        // Runs only in a first transmission (a Publisher's: a repair or a backlog passes none), of three units or more.
+        if (pub != NULL && count >= 3U) {
+            bool capable = false;
+            uint32_t n = hybrid_destination_n(node, pub, destinations[dest].context_id, destinations[dest].ip,
+                                              destinations[dest].port, false, &capable);
+            if (capable) {
+                hybrid_note_sent(node, n, count);
+            }
+            if (n >= 2U) {
+                if (!hybrid_send_small_runs(node, data_header, cdr, count, n, &batch[count - 1U],
+                                            &destinations[dest])) {
+                    return false;
+                }
+                continue;
+            }
+        }
+#endif
         // Every fragment of this sample goes to the same destination, so the batch's peer ids are
         // uniform - unlike send_datagram()'s batch, where one datagram goes to several peers.
         uint8_t fragment_context_ids[TX_MAX_BATCH];
@@ -2175,8 +2403,9 @@ static uint32_t sample_cdr_length(const struct tt_Context* node, const struct tt
 // Padded as end_encode() would pad it, so that the fragments of the original and of a retransmission
 // cut from the cached record (which is padded) always agree on the sample's length, and so on how many
 // fragments it has.
-static bool send_tail_as_fragments(struct tt_Context* node, struct tt_SubmessageHeader* submessage_header,
-                                   const struct tt_Peer* peers, uint8_t peer_count) {
+static bool send_tail_as_fragments(struct tt_Context* node, const struct tt_Publisher* pub,
+                                   struct tt_SubmessageHeader* submessage_header, const struct tt_Peer* peers,
+                                   uint8_t peer_count) {
     uint32_t base = (uint32_t)((uint8_t*)submessage_header - node->tx_buffer);
     uint32_t length = node->tx_tail - base;
     memset(node->tx_buffer + node->tx_tail, 0, ROUNDUP(length) - length);
@@ -2192,7 +2421,7 @@ static bool send_tail_as_fragments(struct tt_Context* node, struct tt_Submessage
         base = sizeof(struct tt_Header);
     }
     const uint8_t* record = node->tx_buffer + base;
-    bool sent = send_fragments(node, (const struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader)),
+    bool sent = send_fragments(node, pub, (const struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader)),
                                record + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader),
                                length - (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)),
                                peers, peer_count, tt_SUBMESSAGE_ID_ALL);
@@ -4070,6 +4299,9 @@ static void reset_node_state(struct tt_Context* node) {
     // No buffer callbacks (tt_Context_set_large_buffers() sets them after creation), no assembly, every counter zero.
     memset(&node->large, 0, sizeof(node->large));
 #endif
+#if tt_HYBRID_TRANSPORT
+    memset(&node->hybrid, 0, sizeof(node->hybrid)); // every counter zero
+#endif
 
     memset(node->scheduler, 0, sizeof(struct tt_TCB) * tt_MAX_SCHEDULER_LENGTH);
     node->scheduler_tail = 0;
@@ -5414,8 +5646,8 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 #if tt_FRAG_ENABLED
     if (sizeof(framing) + body_len > FRAG_WHOLE_DATA_LIMIT) {
         bool unicast = peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD;
-        if (!send_fragments(node, data_header, body, body_len, unicast ? pub->peers : NULL, unicast ? peer_count : 0,
-                            tt_SUBMESSAGE_ID_ALL)) {
+        if (!send_fragments(node, pub, data_header, body, body_len, unicast ? pub->peers : NULL,
+                            unicast ? peer_count : 0, tt_SUBMESSAGE_ID_ALL)) {
             return tt_RET_IO_ERROR;
         }
         pub->seq_no += frag_count_for(body_len); // one seq_no per datagram
@@ -6645,9 +6877,9 @@ static bool append_piggybacked_heartbeat(struct tt_Context* node, struct tt_Publ
 // end_encode() for the DATA submessage at submessage_header, or - when no datagram can carry it and
 // fragmentation is compiled in - its fragments, sent at once whatever is_flush says, since a fragment
 // never shares a datagram. Rolls back to old_tx_tail on failure where that is still meaningful.
-static bool end_encode_sample(struct tt_Context* node, struct tt_SubmessageHeader* submessage_header, bool is_flush,
-                              const struct tt_Peer* peers, uint8_t peer_count, uint32_t old_tx_tail,
-                              uint32_t record_len) {
+static bool end_encode_sample(struct tt_Context* node, const struct tt_Publisher* pub,
+                              struct tt_SubmessageHeader* submessage_header, bool is_flush, const struct tt_Peer* peers,
+                              uint8_t peer_count, uint32_t old_tx_tail, uint32_t record_len) {
 #if tt_FRAG_ENABLED
     // The length the encode produced, passed rather than reached for - the last site that still derived it
     // as "the distance from this submessage to tx_buffer's current end". record_length_checked() stopped
@@ -6658,10 +6890,11 @@ static bool end_encode_sample(struct tt_Context* node, struct tt_SubmessageHeade
     size_t length = record_len;
     if (sizeof(struct tt_Header) + ROUNDUP(length) >
         record_size_limit(node, FRAG_WHOLE_DATA_LIMIT, peers, peer_count)) {
-        return send_tail_as_fragments(node, submessage_header, peers, peer_count);
+        return send_tail_as_fragments(node, pub, submessage_header, peers, peer_count);
     }
 #else
     UNUSED(record_len); // the fragmentation decision is the only reader, and it is compiled out
+    UNUSED(pub);
 #endif
     if (!end_encode(node, submessage_header, is_flush, peers, peer_count)) {
         rollback(node, old_tx_tail);
@@ -7052,18 +7285,32 @@ static void large_release_acked(struct tt_Context* node, struct tt_Publisher* pu
 }
 
 // The destinations a large send goes to, decided as a publish decides them: the matched peers by unicast while there
-// are few enough, else the broadcast - per link (tx_destinations()).
-static void large_cursor_destinations(struct tt_Context* node, struct tt_Publisher* pub) {
+// are few enough, else the broadcast - per link (tx_destinations()). And with the hybrid transport, the n each one gets
+// for this sample (DESIGN.md section 8): its own by unicast, the minimum over the matched peers by broadcast.
+static void large_cursor_destinations(struct tt_Context* node, struct tt_Publisher* pub,
+                                      const struct tt_LargeRecord* record) {
     struct tt_LargeCursor* cursor = &pub->large_cursor;
     uint8_t count = count_peers(pub->peers);
     bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD;
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
     uint8_t destination_count = tx_destinations(unicast ? pub->peers : NULL, unicast ? count : 0, destinations);
     note_reached(node, unicast ? pub->peers : NULL, unicast ? count : 0);
+#if !tt_HYBRID_TRANSPORT
+    UNUSED(record);
+#endif
     for (uint8_t i = 0; i < destination_count && i < tt_LARGE_DESTINATIONS; i++) {
         cursor->dests[i].ip = destinations[i].ip;
         cursor->dests[i].port = destinations[i].port;
         cursor->dests[i].context_id = destinations[i].context_id;
+#if tt_HYBRID_TRANSPORT
+        bool capable = false;
+        uint32_t n = hybrid_destination_n(node, pub, destinations[i].context_id, destinations[i].ip,
+                                          destinations[i].port, true, &capable);
+        cursor->run_n[i] = (uint8_t)n;
+        if (capable) {
+            hybrid_note_sent(node, n, record->count);
+        }
+#endif
     }
     cursor->dest_count = destination_count < tt_LARGE_DESTINATIONS ? destination_count : (uint8_t)tt_LARGE_DESTINATIONS;
     cursor->next_dest = 0;
@@ -7144,6 +7391,113 @@ static bool large_encode_through(struct tt_Publisher* pub, struct tt_LargeRecord
 static uint32_t large_end_of(const struct tt_LargeRecord* record, uint32_t last) {
     return large_offset(last) + large_length(last, record->cdr_len);
 }
+#if tt_HYBRID_TRANSPORT
+// The next send call of a large sample to `dest` in runs of n (hybrid transport, DESIGN.md section 8): from the unit
+// the cursor stands at, up to LARGE_BATCH runs of n units, never the last unit - which, reached, goes alone, in a call
+// of its own, as its MTU fragment. units[k] is how many units datagram k carries, so a call cut short by a full send
+// buffer moves the cursor by exactly what went.
+static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_LargeRecord* record, uint32_t n,
+                                 uint32_t next, const struct tt_Peer* dest, uint8_t (*framings)[HYBRID_RUN_L_FRAMING],
+                                 struct tt_OutDatagram* batch, uint32_t* units, uint32_t* frames) {
+    const struct tt_DataHeader* data = (const struct tt_DataHeader*)(record->buffer + tt_LARGE_HEADER_OFFSET);
+    const uint8_t* cdr = record->buffer + tt_LARGE_CDR_OFFSET;
+    uint32_t last = (uint32_t)record->count - 1U;
+    *frames = 0;
+    if (next == last) {
+        uint32_t length = large_length(last, record->cdr_len);
+        uint32_t skip = 0;
+        uint32_t framing_length =
+            large_write_framing(node, framings[0], data, last, record->count, length, tt_SUBMESSAGE_ID_ALL, &skip);
+        batch[0] = (struct tt_OutDatagram) {
+            framings[0] + skip, framing_length - skip, cdr + large_offset(last), length, dest->ip, dest->port};
+        units[0] = 1;
+        *frames = 1;
+        return 1;
+    }
+    uint32_t k = 0;
+    for (; k < LARGE_BATCH && next < last; k++) {
+        uint32_t run = last - next < n ? last - next : n;
+        uint8_t* out = framings[k];
+        struct tt_Header* header = (struct tt_Header*)out;
+        header->magic_value = NATIVE_MAGIC_VALUE;
+        header->version = tt_VERSION;
+        header->source = node->id;
+        struct tt_SubmessageHeader* submessage = (struct tt_SubmessageHeader*)(out + sizeof(struct tt_Header));
+        struct tt_FragRunLHeader* header_l = (struct tt_FragRunLHeader*)(submessage + 1);
+        _tt_memcpy(&header_l->data, data, sizeof(struct tt_DataHeader));
+        header_l->data.seq_no = data->seq_no + next; // the first unit's own
+        header_l->frag_index = (uint16_t)next;
+        header_l->frag_count = record->count;
+        header_l->run_count = (uint16_t)run;
+        header_l->zero = 0;
+        uint32_t offset = large_offset(next);
+        uint32_t length = large_offset(next + run) - offset; // full units: a run never holds the last
+        submessage->type = tt_SUBMESSAGE_TYPE_FRAG_RUN_L;
+        submessage->receiver = tt_SUBMESSAGE_ID_ALL;
+        submessage->length = (uint16_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragRunLHeader) + length);
+        uint32_t skip = to_single_form(out, (uint32_t)HYBRID_RUN_L_FRAMING, length);
+        batch[k] = (struct tt_OutDatagram) {
+            out + skip, (uint32_t)HYBRID_RUN_L_FRAMING - skip, cdr + offset, length, dest->ip, dest->port};
+        units[k] = run;
+        *frames += hybrid_frames(batch[k].head_len + length);
+        next += run;
+    }
+    return k;
+}
+
+static int32_t large_send_batch(struct tt_Context* node, const struct tt_OutDatagram* batch, uint32_t count,
+                                const struct tt_Peer* dest);
+
+// large_send_some() for a destination this sample goes to in runs of n: true when all of it has gone to `dest`. A
+// record its publish is still encoding is encoded through the last unit a send call carries just before that call, as
+// a batch of MTU fragments is (large_encode_through()); if that fails, *failed is set and true returned.
+static bool large_send_runs(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord* record,
+                            uint32_t n, bool* progress, bool* failed) {
+    struct tt_LargeCursor* cursor = &pub->large_cursor;
+    const struct tt_Peer* dest = &cursor->dests[cursor->next_dest];
+    while (cursor->next_index < record->count) {
+        uint8_t framings[LARGE_BATCH][HYBRID_RUN_L_FRAMING];
+        struct tt_OutDatagram batch[LARGE_BATCH];
+        uint32_t units[LARGE_BATCH];
+        uint32_t frames = 0;
+        uint32_t batch_count =
+            large_build_runs(node, record, n, cursor->next_index, dest, framings, batch, units, &frames);
+        uint32_t call_units = 0;
+        for (uint32_t k = 0; k < batch_count; k++) {
+            call_units += units[k];
+        }
+        if (!large_encode_through(pub, record, large_end_of(record, cursor->next_index + call_units - 1U))) {
+            *failed = true;
+            return true;
+        }
+        int32_t sent = large_send_batch(node, batch, batch_count, dest);
+        if (sent < 0) {
+            // As for MTU fragments: an error the socket will repeat, so these units are lost as the network loses
+            // them, and a RELIABLE reader asks for them again (as MTU units).
+            TT_LOG_WARNING("Cannot send large sample %u runs from unit %u to %u: %s", record->seq_no,
+                           (unsigned)cursor->next_index, (unsigned)dest->context_id, strerror(errno));
+            sent = (int32_t)batch_count;
+        }
+        if (sent > 0) {
+            *progress = true;
+        }
+        uint32_t moved = 0;
+        for (int32_t k = 0; k < sent; k++) {
+            moved += units[k];
+        }
+        cursor->next_index = (uint16_t)(cursor->next_index + moved);
+        if ((uint32_t)sent < batch_count) {
+            // As large_send_some(): the rest is encoded while the full send buffer drains.
+            if (!large_encode_through(pub, record, record->cdr_len)) {
+                *failed = true;
+                return true;
+            }
+            return false;
+        }
+    }
+    return true;
+}
+#endif
 
 // Sends what the socket takes of `record`, from where the cursor stands, to each destination in turn. True when all of
 // it has gone; false when the send buffer filled, the cursor then standing at the first fragment that did not go.
@@ -7158,6 +7512,19 @@ static bool large_send_some(struct tt_Context* node, struct tt_Publisher* pub, s
     node->tx_seq_span = 1;
     while (cursor->next_dest < cursor->dest_count) {
         const struct tt_Peer* dest = &cursor->dests[cursor->next_dest];
+#if tt_HYBRID_TRANSPORT
+        if (cursor->run_n[cursor->next_dest] >= 2U) {
+            if (!large_send_runs(node, pub, record, cursor->run_n[cursor->next_dest], progress, failed)) {
+                return false;
+            }
+            if (*failed) {
+                return true;
+            }
+            cursor->next_dest++;
+            cursor->next_index = 0;
+            continue;
+        }
+#endif
         while (cursor->next_index < record->count) {
             uint32_t batch_count = record->count - cursor->next_index;
             batch_count = batch_count < LARGE_BATCH ? batch_count : LARGE_BATCH;
@@ -7329,7 +7696,7 @@ static bool large_cursor_next(struct tt_Context* node, struct tt_Publisher* pub)
     }
     pub->large_cursor.seq_no = next->seq_no;
     pub->large_cursor.active = true;
-    large_cursor_destinations(node, pub);
+    large_cursor_destinations(node, pub, next);
     return true;
 }
 
@@ -7910,7 +8277,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // about to add. set_tx_tail() returns it to 1 when the buffer empties, so it cannot ride out on a
     // later record; segment_write() checks it against tt_FRAG_MAX_COUNT rather than trusting it.
     node->tx_seq_span = (uint16_t)seq_span;
-    if (!end_encode_sample(node, submessage_header, is_flush && !piggyback, peers, peer_count, old_tx_tail,
+    if (!end_encode_sample(node, pub, submessage_header, is_flush && !piggyback, peers, peer_count, old_tx_tail,
                            record_len)) {
         return tt_RET_IO_ERROR;
     }
@@ -11078,7 +11445,7 @@ static bool send_cached_record(struct tt_Context* node, const uint8_t* record, u
     if (sizeof(struct tt_Header) + ROUNDUP(len) > record_size_limit(node, tt_MAX_BUFFER_LENGTH, target, 1)) {
         const struct tt_DataHeader* cached = (const struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader));
         uint32_t head_len = (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader));
-        return send_fragments(node, cached, record + head_len, len - head_len, target, 1,
+        return send_fragments(node, NULL, cached, record + head_len, len - head_len, target, 1,
                               addressed ? target->context_id : tt_SUBMESSAGE_ID_ALL);
     }
 #endif
