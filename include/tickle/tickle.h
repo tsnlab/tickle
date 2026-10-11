@@ -1712,9 +1712,12 @@ struct tt_ReliableCache {
     // sample_depth of them - an eviction for bytes inside the depth, because the Publisher's cache_grow could not
     // make room (or it has none). A caller reports it; core only counts.
     uint32_t depth_shortfalls;
-    uint32_t oldest_seq_no; // oldest retained sample, 0 = nothing retained (the arena is empty)
+    uint32_t oldest_seq_no; // oldest retained sample, while any_retained
     uint32_t newest_seq_no; // newest sample handed to cache_reliable_sample(), cached or not
     uint32_t tail;          // arena offset just past the newest retained record
+    // Whether anything is retained: oldest_seq_no means something only then. A flag rather than oldest_seq_no 0, which
+    // past 2^32 is an ordinary seq_no (zero-initialised: nothing retained).
+    bool any_retained;
     // Only ever consulted when tt_Publisher.durable is set (register_subscriber_peer_on_
     // publisher(), tickle.c) - costs a best-effort or reliable-only Publisher nothing beyond the
     // unused array slots themselves, no extra allocation or opt-in flag needed. Same capacity as
@@ -1733,7 +1736,8 @@ struct tt_ReliableCache {
 struct tt_LargeRecord {
     uint8_t* buffer;  // DataHeader at tt_LARGE_HEADER_OFFSET, CDR at tt_LARGE_CDR_OFFSET; NULL: free
     uint64_t sent_ns; // when it was published, for LIFESPAN
-    uint32_t seq_no;  // its first datagram's; it takes `count` of them. 0 while it waits as tt_Publisher.large_pending
+    uint32_t seq_no;  // its first datagram's; it takes `count` of them. Given at commit, not while it waits as
+                      // tt_Publisher.large_pending
     uint32_t cdr_len; // padded to 4, as it is sent
     uint16_t count;
     bool retained;    // kept for resends once sent: the Publisher has a reliable cache
@@ -1747,11 +1751,12 @@ struct tt_LargeRecord {
 struct tt_LargeCursor {
     struct tt_Peer dests[tt_LARGE_DESTINATIONS]; // ip 0: the broadcast address
     uint64_t retry_ns;                           // the wait before the next try, doubled while one sends nothing
-    uint32_t seq_no;                             // the record being sent; 0: idle
+    uint32_t seq_no;                             // the record being sent, while active
     uint16_t next_index;                         // its next fragment to the current destination
     uint8_t next_dest;
     uint8_t dest_count;
     bool scheduled;
+    bool active; // a record is being sent (seq_no names it); 0 is an ordinary seq_no past 2^32
 };
 #endif
 
@@ -1784,7 +1789,12 @@ struct tt_PeerAck {
     // one process are otherwise indistinguishable and the faster one's ack would speak for both -
     // silent loss under Phase 3's KEEP_ALL blocking.
     uint32_t entity_id;
+    // Every seq_no below this is acknowledged. Until the Subscriber's first ACKNACK (acked false) it is where the
+    // Publisher's retained history began when it matched - the oldest sample it held, or the next one - so a silent
+    // Subscriber counts as having acknowledged nothing it could still ask for. Compared serially (seq_no wrap past
+    // 2^32), never against 0 as "none".
     uint32_t ack_seq_no;
+    bool acked; // an ACKNACK from this Subscriber has been recorded
     // Phase 2 - the RELIABLE tracking window this Subscriber announced
     // (tt_UpdateEntity.tracking_words), in 64-bit words; 0 = the protocol default.
     // tt_Publisher_unacked_bound() takes the minimum across matched Subscribers.
@@ -2042,6 +2052,7 @@ struct tt_Publisher { // extends endpoint
     bool ack_solicit_outstanding;
     // seq_no when the last solicitation was sent: the watermark path asks again only a threshold of new seq_nos on.
     uint32_t ack_solicit_seq_no;
+    bool ack_solicited; // ack_solicit_seq_no holds a solicitation's seq_no (0 is an ordinary seq_no)
     // keep_all_resolicit() is in the scheduler for this Publisher. Core-private.
     bool resolicit_armed;
 
@@ -2208,8 +2219,9 @@ bool tt_Publisher_writable(const struct tt_Publisher* pub);
 
 // The lowest cumulative ack across every currently-matched peer - "every seq_no below this has
 // been acknowledged by all of them". 0 when no peer is matched, or when any matched peer has yet
-// to send its first ACKNACK (tt_PeerAck.ack_seq_no's own "unknown" value), so a caller measuring
-// how far ahead it has run must treat 0 as "nothing confirmed yet", not "confirmed up to 0".
+// to send its first ACKNACK (tt_PeerAck.acked), so a caller measuring how far ahead it has run must
+// treat 0 as "nothing confirmed yet", not "confirmed up to 0" - once in 2^32 seq_no, when the
+// acknowledgement really is 0, that reads as nothing confirmed for as long as it stays there.
 //
 // The supported way to read peer_acks[] from outside core, alongside
 // tt_Publisher_is_acked_by_all_peers() above: that table is keyed by context_id, not index-aligned

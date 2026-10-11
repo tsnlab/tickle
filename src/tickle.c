@@ -2541,6 +2541,20 @@ static void forget_peer(struct tt_Peer* peers, uint8_t node_id) {
     }
 }
 
+// The oldest seq_no pub retains, in its cache or (large-message stage 2) as a large record, in *oldest: what a
+// HEARTBEAT announces. False when nothing is retained.
+static bool publisher_oldest_seq_no(const struct tt_Publisher* pub, uint32_t* oldest);
+
+// Where pub's acknowledgeable history begins: the oldest seq_no it retains, or the next it will give when it retains
+// nothing. A Subscriber that has acknowledged nothing yet is counted as acknowledged up to here
+// (tt_PeerAck.ack_seq_no): the samples before it are gone and nobody can ask for them, and seq_no wrap past 2^32, so
+// "nothing" cannot be 0.
+static uint32_t publisher_unacked_from(const struct tt_Publisher* pub) {
+    uint32_t oldest = pub->seq_no + 1U;
+    (void)publisher_oldest_seq_no(pub, &oldest);
+    return oldest;
+}
+
 // One remote Subscriber entity's own entry in pub->peer_acks[] (keyed by (node_id, entity_id) -
 // see that field's own doc comment, tickle.h), or NULL if this Publisher isn't tracking it.
 static struct tt_PeerAck* find_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id) {
@@ -2566,7 +2580,8 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
         if (pub->peer_acks[i].context_id == tt_CONTEXT_ID_INVALID) {
             pub->peer_acks[i].context_id = node_id;
             pub->peer_acks[i].entity_id = entity_id;
-            pub->peer_acks[i].ack_seq_no = 0;
+            pub->peer_acks[i].ack_seq_no = publisher_unacked_from(pub);
+            pub->peer_acks[i].acked = false;
             pub->peer_acks[i].tracking_words = 0; // set by the caller from the announce
             pub->peer_acks[i].first_owed_seq_no = 0;
             pub->peer_acks[i].match_heartbeats_left = 0;
@@ -2597,6 +2612,7 @@ static void forget_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t 
         pub->peer_acks[i].context_id = tt_CONTEXT_ID_INVALID;
         pub->peer_acks[i].entity_id = 0;
         pub->peer_acks[i].ack_seq_no = 0;
+        pub->peer_acks[i].acked = false;
         pub->peer_acks[i].first_owed_seq_no = 0;
         pub->peer_acks[i].match_heartbeats_left = 0;
     }
@@ -2615,10 +2631,11 @@ static void record_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t 
     if (ack == NULL) {
         return;
     }
-    if (seq_no > ack->ack_seq_no) {
+    ack->acked = true;
+    if (seq_delta(seq_no, ack->ack_seq_no) > 0) {
         ack->ack_seq_no = seq_no;
     }
-    if (ack->ack_seq_no > ack->first_owed_seq_no) {
+    if (ack->match_heartbeats_left != 0 && seq_delta(ack->ack_seq_no, ack->first_owed_seq_no) > 0) {
         ack->match_heartbeats_left = 0; // it has the owed sample: its baseline is at or below it
     }
 }
@@ -2638,25 +2655,26 @@ static void arm_match_heartbeat(struct tt_Publisher* pub, struct tt_PeerAck* ack
     pub->match_heartbeat_pending = true;
 }
 
-// The lowest first_owed_seq_no among the entries still owed a match Heartbeat, each counted down by one; 0 when
+// The lowest first_owed_seq_no among the entries still owed a match Heartbeat, each counted down by one; false when
 // none is. The lowest, because one datagram goes to every peer: a Subscriber matched later than another then starts
 // at the earlier match point - over-delivering what was written between the two matches, never losing.
-static uint32_t take_match_heartbeat(struct tt_Publisher* pub) {
-    uint32_t owed = 0;
+static bool take_match_heartbeat(struct tt_Publisher* pub, uint32_t* owed) {
+    bool any = false;
     bool still_pending = false;
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
         struct tt_PeerAck* ack = &pub->peer_acks[i];
         if (ack->context_id == tt_CONTEXT_ID_INVALID || ack->match_heartbeats_left == 0) {
             continue;
         }
-        if (owed == 0 || ack->first_owed_seq_no < owed) {
-            owed = ack->first_owed_seq_no;
+        if (!any || seq_delta(ack->first_owed_seq_no, *owed) < 0) {
+            *owed = ack->first_owed_seq_no;
+            any = true;
         }
         ack->match_heartbeats_left--;
         still_pending |= ack->match_heartbeats_left != 0;
     }
     pub->match_heartbeat_pending = still_pending;
-    return owed;
+    return any;
 }
 
 // forget_peer()'s own Publisher-specific counterpart - a separate function rather than teaching
@@ -4548,6 +4566,7 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
     pub->last_ack_solicit_ns = 0;
     pub->ack_solicit_outstanding = false;
     pub->ack_solicit_seq_no = 0;
+    pub->ack_solicited = false;
     pub->resolicit_armed = false;
     // Every field an announce or the reliability path reads, not only the ones above: these
     // used to be left as found, and a caller whose struct was not already zero (a stack or reused
@@ -5415,8 +5434,9 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 // QoS roadmap #5 (RELIABILITY/RELIABLE) / #4 (DURABILITY/TRANSIENT_LOCAL) - snapshot the
 // just-encoded DATA submessage (header through CDR) into the ring before end_encode() below, same
 // Phase 3 prerequisite (d), rmw_tickle/PLAN.md - the lowest cumulative ack across every currently
-// matched peer, i.e. how far *all* of them have got. 0 when any matched peer has never sent an
-// ACKNACK (or none are matched), matching tt_PeerAck.ack_seq_no's own "unknown" convention.
+// matched peer, i.e. how far *all* of them have got, serially (seq_delta()). A matched peer that has never sent an
+// ACKNACK counts at its tt_PeerAck.ack_seq_no from the match, where the Publisher's history began; with none
+// matched, the Publisher's own history start (publisher_unacked_from()) - nothing acknowledged either way.
 static uint32_t min_peer_ack_seq_no(const struct tt_Publisher* pub) {
     uint32_t lowest = 0;
     bool first = true;
@@ -5431,12 +5451,12 @@ static uint32_t min_peer_ack_seq_no(const struct tt_Publisher* pub) {
         // from laundering const through a uintptr_t cast (clang-tidy performance-no-int-to-ptr,
         // a real CI failure on main before d0263b4).
         uint32_t value = pub->peer_acks[i].ack_seq_no;
-        if (first || value < lowest) {
+        if (first || seq_delta(value, lowest) < 0) {
             lowest = value;
             first = false;
         }
     }
-    return lowest;
+    return first ? publisher_unacked_from(pub) : lowest;
 }
 
 // Phase 3 (rmw_tickle/PLAN.md) - how many samples this Publisher may hold unacknowledged: its own
@@ -5571,6 +5591,7 @@ static void solicit_ack_throttled(struct tt_Publisher* pub) {
     }
     pub->ack_solicit_outstanding = true;
     pub->ack_solicit_seq_no = pub->seq_no; // where the watermark path counts the next half-window from
+    pub->ack_solicited = true;
     pub->last_ack_solicit_ns = now;
     RSTAT_INC(ack_solicit_sent);
     (void)tt_Publisher_request_ack(pub);
@@ -5646,9 +5667,8 @@ static void maybe_solicit_ack_at_watermark(struct tt_Publisher* pub) {
         return;
     }
 
-    uint32_t min_ack = min_peer_ack_seq_no(pub);
-    uint32_t acked_through = min_ack > 0 ? min_ack - 1 : 0; // ack_seq_no means "everything below it"
-    uint32_t unacked = pub->seq_no > acked_through ? pub->seq_no - acked_through : 0;
+    uint32_t acked_through = min_peer_ack_seq_no(pub) - 1U; // ack_seq_no means "everything below it"
+    uint32_t unacked = seq_delta(pub->seq_no, acked_through) > 0 ? pub->seq_no - acked_through : 0;
     if (unacked < threshold) {
         return;
     }
@@ -5656,7 +5676,7 @@ static void maybe_solicit_ack_at_watermark(struct tt_Publisher* pub) {
     // (solicit_ack_throttled()), but on a link whose round trip is shorter than the retry interval that alone asks
     // more often than before: the cross-host A/B measured 1.6x the ACKNACKs per sample and +2% CPU on cells that
     // never blocked. Counting data instead of time bounds it at two per window whatever the round trip.
-    if (pub->ack_solicit_seq_no != 0 && pub->seq_no - pub->ack_solicit_seq_no < threshold) {
+    if (pub->ack_solicited && pub->seq_no - pub->ack_solicit_seq_no < threshold) {
         return;
     }
 
@@ -5701,7 +5721,8 @@ static void reliable_cache_evict_one(struct tt_ReliableCache* cache, uint16_t de
 // Whether the retained record under seq_no is a fragment continuing a sample rather than starting one.
 static bool reliable_cache_record_continues(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t seq_no) {
 #if tt_FRAG_ENABLED
-    if (seq_no == 0 || cache->oldest_seq_no == 0 || seq_no < cache->oldest_seq_no || seq_no > cache->newest_seq_no) {
+    if (!cache->any_retained || seq_delta(seq_no, cache->oldest_seq_no) < 0 ||
+        seq_delta(seq_no, cache->newest_seq_no) > 0) {
         return false;
     }
     const struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
@@ -5718,7 +5739,7 @@ static bool reliable_cache_record_continues(const struct tt_ReliableCache* cache
 // Whether the oldest retained record is a fragment continuing a sample rather than starting one.
 static bool reliable_cache_oldest_continues(const struct tt_ReliableCache* cache, uint16_t depth) {
 #if tt_FRAG_ENABLED
-    if (cache->oldest_seq_no == 0) {
+    if (!cache->any_retained) {
         return false;
     }
     const struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, cache->oldest_seq_no);
@@ -5739,13 +5760,12 @@ static bool reliable_cache_oldest_continues(const struct tt_ReliableCache* cache
 // reader's ack and the one after it (experiments/rmw_keepall_evict_repro.sh). Every KEEP_ALL check that decides
 // whether something may be evicted asks this instead of min_ack - 1.
 static uint32_t keep_all_acked_through(const struct tt_Publisher* pub) {
-    uint32_t min_ack = min_peer_ack_seq_no(pub);
-    uint32_t acked_through = min_ack > 0 ? min_ack - 1 : 0; // ack_seq_no means "everything below it"
+    uint32_t acked_through = min_peer_ack_seq_no(pub) - 1U; // ack_seq_no means "everything below it"
 #if tt_FRAG_ENABLED
     const struct tt_ReliableCache* cache = pub->reliable_cache;
     uint16_t depth = reliable_cache_depth(cache);
-    while (acked_through != 0 && cache != NULL && depth != 0 &&
-           reliable_cache_record_continues(cache, depth, acked_through + 1)) {
+    // Bounded by the sample's first record, which does not continue anything - or by the retained range's start.
+    while (cache != NULL && depth != 0 && reliable_cache_record_continues(cache, depth, acked_through + 1)) {
         acked_through--; // the first unacknowledged record continues a sample: none of that sample is evictable
     }
 #endif
@@ -5772,7 +5792,7 @@ static bool reliable_cache_record_starts_sample(const struct tt_ReliableCache* c
 }
 
 static void reliable_cache_evict_one(struct tt_ReliableCache* cache, uint16_t depth) {
-    if (cache->oldest_seq_no == 0) {
+    if (!cache->any_retained) {
         return;
     }
     struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, cache->oldest_seq_no);
@@ -5783,8 +5803,8 @@ static void reliable_cache_evict_one(struct tt_ReliableCache* cache, uint16_t de
         entry->len = 0; // tombstone: the bytes are gone, the slot may still be named by an ACKNACK
     }
     if (cache->oldest_seq_no == cache->newest_seq_no) {
-        cache->oldest_seq_no = 0; // nothing retained any more; newest_seq_no stays (it's "last
-        cache->tail = 0;          // published", what first_resendable falls back to)
+        cache->any_retained = false; // nothing retained any more; newest_seq_no stays (it's "last
+        cache->tail = 0;             // published", what first_resendable falls back to)
         cache->retained_samples = 0;
         return;
     }
@@ -5795,9 +5815,9 @@ static void reliable_cache_evict_one(struct tt_ReliableCache* cache, uint16_t de
 // An oversized (never-cached) sample leaves a tombstone that may end up at the oldest end of the
 // range; drop those so "oldest retained" always names real bytes.
 static void reliable_cache_drop_leading_tombstones(struct tt_ReliableCache* cache, uint16_t depth) {
-    while (cache->oldest_seq_no != 0 && !reliable_cache_slot_live(cache, depth, cache->oldest_seq_no)) {
+    while (cache->any_retained && !reliable_cache_slot_live(cache, depth, cache->oldest_seq_no)) {
         if (cache->oldest_seq_no == cache->newest_seq_no) {
-            cache->oldest_seq_no = 0;
+            cache->any_retained = false;
             cache->tail = 0;
             cache->retained_samples = 0;
             return;
@@ -5853,7 +5873,7 @@ static uint32_t reliable_cache_offset_in(uint32_t arena_size, bool empty, uint32
 }
 
 static uint32_t reliable_cache_write_offset(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t length) {
-    bool empty = cache->oldest_seq_no == 0;
+    bool empty = !cache->any_retained;
     uint32_t head = empty ? 0 : reliable_cache_slot(cache, depth, cache->oldest_seq_no)->offset;
     return reliable_cache_offset_in(cache->arena_size, empty, head, cache->tail, length);
 }
@@ -5873,29 +5893,30 @@ static bool reliable_cache_admits(const struct tt_ReliableCache* cache, uint16_t
                      // nothing - a different loss (it can never be retransmitted), reported by
                      // not_cached_oversize, and not one refusing the publish forever would fix
     }
+    bool retained = cache->any_retained;
     uint32_t oldest = cache->oldest_seq_no;
     uint32_t tail = cache->tail;
     for (;;) {
-        if (oldest == 0) {
+        if (!retained) {
             return true; // nothing retained: the whole arena is free
         }
         uint32_t head = reliable_cache_slot(cache, depth, oldest)->offset;
         if (reliable_cache_offset_in(cache->arena_size, false, head, tail, length) != UINT32_MAX) {
             return true;
         }
-        if (oldest > acked_through) {
+        if (seq_delta(oldest, acked_through) > 0) {
             return false; // the next eviction would take a sample nobody has acknowledged
         }
         // What reliable_cache_evict_oldest() would do next, without doing it.
         if (oldest == cache->newest_seq_no) {
-            oldest = 0;
+            retained = false;
             tail = 0;
             continue;
         }
         oldest++;
-        while (oldest != 0 && !reliable_cache_slot_live(cache, depth, oldest)) {
+        while (retained && !reliable_cache_slot_live(cache, depth, oldest)) {
             if (oldest == cache->newest_seq_no) {
-                oldest = 0;
+                retained = false;
                 tail = 0;
                 break;
             }
@@ -5929,7 +5950,7 @@ static uint8_t* reliable_cache_reserve(struct tt_ReliableCache* cache, uint32_t 
     // Index room first, regardless of whether the bytes will fit below: this sample's own slot,
     // (seq_no - 1) % depth, is currently held by the sample exactly `depth` back, which KEEP_LAST
     // evicts to make room - the count bound, DDS's own HISTORY.depth.
-    while (cache->oldest_seq_no != 0 && seq_no - cache->oldest_seq_no + 1 > depth) {
+    while (cache->any_retained && seq_no - cache->oldest_seq_no + 1 > depth) {
         RSTAT_INC(evicted_by_count);
         reliable_cache_evict_oldest(cache, depth);
     }
@@ -5972,8 +5993,9 @@ static uint8_t* reliable_cache_reserve(struct tt_ReliableCache* cache, uint32_t 
     entry->offset = offset;
     entry->len = (uint16_t)length;
     cache->tail = offset + footprint;
-    if (cache->oldest_seq_no == 0) {
+    if (!cache->any_retained) {
         cache->oldest_seq_no = seq_no;
+        cache->any_retained = true;
     }
     return cache->arena + offset;
 }
@@ -5982,7 +6004,7 @@ static uint8_t* reliable_cache_reserve(struct tt_ReliableCache* cache, uint32_t 
 // oldest first. Called before a sample's first record is reserved; a no-op when sample_depth is 0.
 static void reliable_cache_admit_sample(struct tt_ReliableCache* cache) {
     uint16_t depth = reliable_cache_depth(cache);
-    while (depth != 0 && cache->sample_depth != 0 && cache->oldest_seq_no != 0 &&
+    while (depth != 0 && cache->sample_depth != 0 && cache->any_retained &&
            cache->retained_samples >= cache->sample_depth) {
         RSTAT_INC(evicted_by_count);
         reliable_cache_evict_oldest(cache, depth);
@@ -6048,9 +6070,7 @@ static void durable_delivered_upsert(struct tt_ReliableCache* cache, uint8_t nod
     }
 }
 
-static uint32_t reliable_cache_oldest_seq_no(struct tt_ReliableCache* cache);
-// The oldest seq_no pub retains, in its cache or (large-message stage 2) as a large record: what a HEARTBEAT announces.
-static uint32_t publisher_oldest_seq_no(struct tt_Publisher* pub);
+static bool reliable_cache_oldest_seq_no(const struct tt_ReliableCache* cache, uint32_t* oldest);
 static void encode_and_send_heartbeat(struct tt_Context* node, struct tt_Publisher* pub, uint32_t first_seq_no,
                                       const struct tt_Peer* peers, uint8_t peer_count, uint8_t flags);
 
@@ -6325,7 +6345,6 @@ static bool keep_all_refuses_encoded(struct tt_Publisher* pub, const struct tt_C
                                      const struct tt_SubmessageHeader* submessage_header, uint32_t whole_limit) {
     uint32_t datagrams = sample_datagram_count(node, submessage_header, encoded_len, whole_limit);
     if (datagrams > 1 && pub->keep_all && reliable_cache_depth(pub->reliable_cache) != 0 && any_peer_ack_matched(pub)) {
-        uint32_t min_ack = min_peer_ack_seq_no(pub);
         uint32_t acked_through = keep_all_acked_through(pub);
         if (pub->seq_no + datagrams - acked_through > keep_all_bound(pub)) {
             pub->blocked_datagrams = (uint16_t)datagrams;
@@ -6401,12 +6420,13 @@ static bool reliable_cache_keeps_depth(const struct tt_ReliableCache* cache, uin
         return false;
     }
     uint16_t depth = reliable_cache_depth(cache);
+    bool retained = cache->any_retained;
     uint32_t oldest = cache->oldest_seq_no;
     uint32_t tail = cache->tail;
-    if (oldest != 0 && cache->retained_samples >= cache->sample_depth) {
+    if (retained && cache->retained_samples >= cache->sample_depth) {
         do { // the oldest sample, every record of it, goes by count
             if (oldest == cache->newest_seq_no) {
-                oldest = 0;
+                retained = false;
                 tail = 0;
                 break;
             }
@@ -6414,7 +6434,7 @@ static bool reliable_cache_keeps_depth(const struct tt_ReliableCache* cache, uin
         } while (!reliable_cache_slot_live(cache, depth, oldest) ||
                  !reliable_cache_record_starts_sample(cache, reliable_cache_slot(cache, depth, oldest)));
     }
-    if (oldest == 0) {
+    if (!retained) {
         return true; // nothing left retained: the whole arena is free
     }
     uint32_t head = reliable_cache_slot(cache, depth, oldest)->offset;
@@ -6517,7 +6537,9 @@ static bool append_piggybacked_heartbeat(struct tt_Context* node, struct tt_Publ
                                          uint8_t peer_count) {
     pub->heartbeat_piggyback_count = 0;
     pub->retransmitted = 0;
-    encode_and_send_heartbeat(node, pub, publisher_oldest_seq_no(pub), peers, peer_count, tt_HEARTBEAT_FLAG_FINAL);
+    // Nothing retained (the sample just sent was too large to keep): the next seq_no is the first available, as the
+    // eviction Heartbeat says (reliable_cache_first_resendable_seq_no()). Not 0, which past 2^32 is a seq_no.
+    encode_and_send_heartbeat(node, pub, publisher_unacked_from(pub), peers, peer_count, tt_HEARTBEAT_FLAG_FINAL);
     if (node->tx_tail != sizeof(struct tt_Header)) {
         return flush_tx(node, node->tx_tail, peers, peer_count);
     }
@@ -6713,8 +6735,8 @@ static bool try_publish_into_slot(struct tt_Publisher* pub, struct tt_Data* data
 static uint32_t publisher_unacked_bound_locked(const struct tt_Publisher* pub);
 
 #if !tt_LARGE_SAMPLES
-static uint32_t publisher_oldest_seq_no(struct tt_Publisher* pub) {
-    return reliable_cache_oldest_seq_no(pub->reliable_cache);
+static bool publisher_oldest_seq_no(const struct tt_Publisher* pub, uint32_t* oldest) {
+    return reliable_cache_oldest_seq_no(pub->reliable_cache, oldest);
 }
 
 static uint32_t publisher_announced_last_seq_no(const struct tt_Publisher* pub) {
@@ -6833,7 +6855,7 @@ static void large_cursor_stop(struct tt_Context* node, struct tt_Publisher* pub)
         tt_Context_unschedule(node, large_send_resume, pub);
         cursor->scheduled = false;
     }
-    cursor->seq_no = 0;
+    cursor->active = false;
 }
 
 // Drops the oldest large record and hands its buffer back. A record still being sent loses its unsent tail.
@@ -6843,7 +6865,7 @@ static void large_drop_oldest(struct tt_Context* node, struct tt_Publisher* pub)
     }
     struct tt_LargeRecord* record = large_record_at(pub, 0);
     if (!record->sent) {
-        if (pub->large_cursor.seq_no == record->seq_no) {
+        if (pub->large_cursor.active && pub->large_cursor.seq_no == record->seq_no) {
             large_cursor_stop(node, pub);
         }
         node->large.tail_abandoned++;
@@ -6874,28 +6896,33 @@ static void large_release_publisher(struct tt_Context* node, struct tt_Publisher
     pub->large_pending.buffer = NULL;
 }
 
-// The oldest seq_no a retained large record can still resend - not aged out of LIFESPAN - or 0 for none.
-static uint32_t large_first_resendable(struct tt_Publisher* pub) {
+// The oldest seq_no a retained large record can still resend - not aged out of LIFESPAN - in *seq_no; false for none.
+static bool large_first_resendable(const struct tt_Publisher* pub, uint32_t* seq_no) {
     for (uint32_t i = 0; i < pub->large_count; i++) {
-        const struct tt_LargeRecord* record = large_record_at(pub, i);
+        const struct tt_LargeRecord* record = &pub->large[(pub->large_head + i) % tt_LARGE_RETAINED];
         if (record->retained &&
             (pub->lifespan_duration_ns == 0 || tt_get_ns() - record->sent_ns < pub->lifespan_duration_ns)) {
-            return record->seq_no;
+            *seq_no = record->seq_no;
+            return true;
         }
     }
-    return 0;
+    return false;
 }
 
-// The oldest seq_no this Publisher retains, small or large, 0 for nothing: what a HEARTBEAT announces as available.
-static uint32_t publisher_oldest_seq_no(struct tt_Publisher* pub) {
-    uint32_t small = reliable_cache_oldest_seq_no(pub->reliable_cache);
+// The oldest seq_no this Publisher retains, small or large, in *oldest; false for nothing: what a HEARTBEAT announces
+// as available.
+static bool publisher_oldest_seq_no(const struct tt_Publisher* pub, uint32_t* oldest) {
+    uint32_t small = 0;
+    bool any_small = reliable_cache_oldest_seq_no(pub->reliable_cache, &small);
     for (uint32_t i = 0; i < pub->large_count; i++) {
-        const struct tt_LargeRecord* record = large_record_at(pub, i);
+        const struct tt_LargeRecord* record = &pub->large[(pub->large_head + i) % tt_LARGE_RETAINED];
         if (record->retained) {
-            return small == 0 || record->seq_no < small ? record->seq_no : small;
+            *oldest = !any_small || seq_delta(record->seq_no, small) < 0 ? record->seq_no : small;
+            return true;
         }
     }
-    return small;
+    *oldest = small;
+    return any_small;
 }
 
 // The last seq_no a HEARTBEAT announces: the last one given out, less a large sample still going out and whatever was
@@ -6921,7 +6948,7 @@ static void large_release_acked(struct tt_Context* node, struct tt_Publisher* pu
     uint32_t acked = min_peer_ack_seq_no(pub); // every seq_no below this, by every matched reader
     while (pub->large_count != 0) {
         const struct tt_LargeRecord* record = large_record_at(pub, 0);
-        if (!record->sent || acked == 0 || record->seq_no + record->count > acked) {
+        if (!record->sent || seq_delta(record->seq_no + record->count, acked) > 0) {
             return;
         }
         large_drop_oldest(node, pub);
@@ -7096,7 +7123,7 @@ static bool large_unacknowledged(const struct tt_Publisher* pub) {
     uint32_t acked = min_peer_ack_seq_no(pub);
     for (uint32_t i = 0; i < pub->large_count; i++) {
         const struct tt_LargeRecord* record = &pub->large[(pub->large_head + i) % tt_LARGE_RETAINED];
-        if (record->retained && record->sent && record->seq_no + record->count > acked) {
+        if (record->retained && record->sent && seq_delta(record->seq_no + record->count, acked) > 0) {
             return true;
         }
     }
@@ -7106,8 +7133,8 @@ static bool large_unacknowledged(const struct tt_Publisher* pub) {
 // A non-FINAL HEARTBEAT over everything retained, to the matched peers while there are few enough (else broadcast):
 // every reader answers with an ACKNACK, naming what it lacks.
 static void large_send_end_heartbeat(struct tt_Context* node, struct tt_Publisher* pub) {
-    uint32_t first = publisher_oldest_seq_no(pub);
-    if (first == 0) {
+    uint32_t first = 0;
+    if (!publisher_oldest_seq_no(pub, &first)) {
         return;
     }
     uint8_t count = count_peers(pub->peers);
@@ -7205,6 +7232,7 @@ static bool large_cursor_next(struct tt_Context* node, struct tt_Publisher* pub)
         return false;
     }
     pub->large_cursor.seq_no = next->seq_no;
+    pub->large_cursor.active = true;
     large_cursor_destinations(node, pub);
     return true;
 }
@@ -7233,7 +7261,7 @@ static void large_wait_for_room(struct tt_Context* node, struct tt_Publisher* pu
 // the KEEP_LAST depth (a record committed during this send may have passed it by one); one nothing keeps goes now.
 static void large_record_sent(struct tt_Context* node, struct tt_Publisher* pub, struct tt_LargeRecord* record) {
     pub->large_cursor.retry_ns = 0;
-    pub->large_cursor.seq_no = 0;
+    pub->large_cursor.active = false;
     record->sent = true;
     if (!record->retained) {
         large_drop_oldest(node, pub); // the oldest record is the one just sent
@@ -7262,10 +7290,10 @@ static void large_drop_unfinished(struct tt_Context* node, struct tt_Publisher* 
 
 static void large_pump(struct tt_Context* node, struct tt_Publisher* pub) {
     struct tt_LargeCursor* cursor = &pub->large_cursor;
-    while (cursor->seq_no != 0 || large_cursor_next(node, pub)) {
+    while (cursor->active || large_cursor_next(node, pub)) {
         struct tt_LargeRecord* record = large_find(pub, cursor->seq_no);
         if (record == NULL) {
-            cursor->seq_no = 0; // evicted meanwhile
+            cursor->active = false; // evicted meanwhile
             continue;
         }
         bool progress = false;
@@ -7312,7 +7340,8 @@ static enum large_resend_result large_resend(struct tt_Context* node, struct tt_
     // the first destination, at least - was lost and is resent now: a sample can take longer to go out than a reader
     // waits before it gives a KEEP_LAST writer up (seen on the PC: the first 4 MB sample under 5% loss, every time).
     const struct tt_LargeCursor* cursor = &pub->large_cursor;
-    if (!record->sent && !(cursor->seq_no == record->seq_no && (cursor->next_dest > 0 || index < cursor->next_index))) {
+    if (!record->sent && !(cursor->active && cursor->seq_no == record->seq_no &&
+                           (cursor->next_dest > 0 || index < cursor->next_index))) {
         return LARGE_RESEND_SENT;
     }
     uint32_t length = large_length(index, record->cdr_len);
@@ -7335,12 +7364,13 @@ static enum large_resend_result large_resend(struct tt_Context* node, struct tt_
 }
 
 // Every retained large record, oldest first, to a durable late joiner (deliver_durability_backlog()), each before the
-// first small sample with a higher seq_no. Sent now, and waiting for room: a backlog is rare and bounded by the ring.
-static void large_send_backlog_before(struct tt_Context* node, struct tt_Publisher* pub, uint32_t below, uint32_t* next,
-                                      const struct tt_Peer* target) {
+// first small sample with a higher seq_no - or, with every_one, the rest whatever their seq_no (no seq_no is above them
+// all: seq_no wrap past 2^32). Sent now, and waiting for room: a backlog is rare and bounded by the ring.
+static void large_send_backlog_before(struct tt_Context* node, struct tt_Publisher* pub, uint32_t below, bool every_one,
+                                      uint32_t* next, const struct tt_Peer* target) {
     for (; *next < pub->large_count; (*next)++) {
         const struct tt_LargeRecord* record = large_record_at(pub, *next);
-        if (record->seq_no >= below) {
+        if (!every_one && seq_delta(record->seq_no, below) >= 0) {
             return;
         }
         if (!record->retained || !record->sent || // one still going out reaches it from the send, or as a resend
@@ -7372,13 +7402,13 @@ static void large_send_backlog_before(struct tt_Context* node, struct tt_Publish
 // it would pass the narrowest window, or while every large record is unacknowledged.
 static tt_ret_t large_keep_all_admits(const struct tt_Publisher* pub, uint32_t count) {
     if (!any_peer_ack_matched(pub)) {
-        return pub->large_cursor.seq_no != 0 ? tt_RET_WOULD_BLOCK : tt_RET_OK;
+        return pub->large_cursor.active ? tt_RET_WOULD_BLOCK : tt_RET_OK;
     }
     uint32_t window = publisher_unacked_bound_locked(pub);
     if (count > window) {
         return tt_RET_TOO_LARGE;
     }
-    if (pub->large_cursor.seq_no != 0) {
+    if (pub->large_cursor.active) {
         return tt_RET_WOULD_BLOCK;
     }
     uint32_t acked_through = keep_all_acked_through(pub);
@@ -7387,7 +7417,7 @@ static tt_ret_t large_keep_all_admits(const struct tt_Publisher* pub, uint32_t c
     }
     if (pub->large_count >= tt_LARGE_RETAINED) {
         const struct tt_LargeRecord* oldest = &pub->large[pub->large_head];
-        if (oldest->seq_no + oldest->count - 1 > acked_through) {
+        if (seq_delta(oldest->seq_no + oldest->count - 1U, acked_through) > 0) {
             return tt_RET_WOULD_BLOCK;
         }
     }
@@ -7504,7 +7534,7 @@ static tt_ret_t publish_large(struct tt_Publisher* pub, struct tt_Data* data, ui
         large->no_buffer++;
         return tt_RET_OUT_OF_BUFFER;
     }
-    bool sending_now = pub->large_cursor.seq_no == 0 && large_next_unsent(pub) == NULL;
+    bool sending_now = !pub->large_cursor.active && large_next_unsent(pub) == NULL;
     uint32_t encoded = 0;
     if (large_interleaves(pub, sending_now)) {
         encoded = large_encode_first(pub, data, buffer + tt_LARGE_CDR_OFFSET);
@@ -8107,18 +8137,17 @@ tt_ret_t tt_Publisher_assert_liveliness(struct tt_Publisher* pub) {
     return tt_RET_OK;
 }
 
-// Oldest still-retained seq_no in cache, or 0 if nothing is retained yet (seq_no 0 never occurs on
-// the wire - tt_Publisher_publish()'s own data_header->seq_no = pub->seq_no + 1, starting from 1 -
-// so it doubles as "empty" here). Shared by send_heartbeat()'s own periodic announce and send_
+// Oldest still-retained seq_no in cache, in *oldest; false if nothing is retained yet. Not 0 for "empty": seq_no 0
+// does occur on the wire, once a writer passes 2^32. Shared by send_heartbeat()'s own periodic announce and send_
 // initial_heartbeat()'s own discovery-triggered one-off, below.
-static uint32_t reliable_cache_oldest_seq_no(struct tt_ReliableCache* cache) {
-    if (reliable_cache_depth(cache) == 0) {
-        return 0; // not set up - same "nothing retained" return this already uses for a genuinely
-                  // empty cache, see this function's own doc comment
+static bool reliable_cache_oldest_seq_no(const struct tt_ReliableCache* cache, uint32_t* oldest) {
+    if (reliable_cache_depth(cache) == 0 || !cache->any_retained) {
+        return false; // not set up, or nothing retained
     }
-    // B1 - a plain field read now (0 when nothing is retained), where this used to be an O(depth)
-    // scan over every slot on every periodic/initial/request_ack Heartbeat.
-    return cache->oldest_seq_no;
+    // B1 - a plain field read now, where this used to be an O(depth) scan over every slot on every
+    // periodic/initial/request_ack Heartbeat.
+    *oldest = cache->oldest_seq_no;
+    return true;
 }
 
 // Encodes and sends one Heartbeat submessage announcing [first_seq_no, pub->seq_no] to the given
@@ -8192,12 +8221,12 @@ static bool any_peer_on_segment(const struct tt_Context* node, const struct tt_P
 // go to; otherwise it goes now as its own datagram, as the periodic Heartbeat does (send_heartbeat()). A fragmented
 // sample flushes it ahead of its fragments (send_tail_as_fragments()).
 static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pub) {
-    uint32_t owed = take_match_heartbeat(pub);
-    if (owed == 0) {
+    uint32_t owed = 0;
+    if (!take_match_heartbeat(pub, &owed)) {
         return;
     }
-    uint32_t oldest = publisher_oldest_seq_no(pub);
-    uint32_t first = oldest != 0 ? oldest : owed;
+    uint32_t first = owed;
+    (void)publisher_oldest_seq_no(pub, &first); // the oldest retained, or the owed one when nothing is
     uint8_t count = count_peers(pub->peers);
     bool empty = node->tx_tail == sizeof(struct tt_Header);
     bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && empty;
@@ -8217,8 +8246,8 @@ static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pu
 // to announce, same "nothing retained yet" short-circuit deliver_durability_backlog() already has.
 static void send_heartbeat(struct tt_Context* node, uint64_t time, void* param) {
     struct tt_Publisher* pub = param;
-    uint32_t first_seq_no = publisher_oldest_seq_no(pub);
-    if (first_seq_no != 0) {
+    uint32_t first_seq_no = 0;
+    if (publisher_oldest_seq_no(pub, &first_seq_no)) {
         // Same peer/broadcast decision tt_Publisher_publish() already makes for DATA.
         const struct tt_Peer* peers = NULL;
         uint8_t peer_count = 0;
@@ -8271,8 +8300,8 @@ static void send_initial_heartbeat(struct tt_Context* node, struct tt_Publisher*
     if (!pub->reliable || pub->reliable_cache == NULL) {
         return;
     }
-    uint32_t first_seq_no = publisher_oldest_seq_no(pub);
-    if (first_seq_no == 0) {
+    uint32_t first_seq_no = 0;
+    if (!publisher_oldest_seq_no(pub, &first_seq_no)) {
         return;
     }
     encode_and_send_heartbeat(node, pub, first_seq_no, target, 1, tt_HEARTBEAT_FLAG_FINAL);
@@ -8325,7 +8354,17 @@ uint64_t tt_reliable_retry_interval_configured(void) {
 }
 
 static uint32_t publisher_min_acked_seq_no_locked(const struct tt_Publisher* pub) {
-    return min_peer_ack_seq_no(pub);
+    bool any = false;
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        if (pub->peer_acks[i].context_id == tt_CONTEXT_ID_INVALID) {
+            continue;
+        }
+        if (!pub->peer_acks[i].acked) {
+            return 0; // tt_Publisher_min_acked_seq_no()'s "nothing confirmed yet"
+        }
+        any = true;
+    }
+    return any ? min_peer_ack_seq_no(pub) : 0;
 }
 
 uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub) {
@@ -8366,7 +8405,7 @@ static bool publisher_is_acked_by_all_peers_locked(const struct tt_Publisher* pu
         if (pub->peer_acks[i].context_id == tt_CONTEXT_ID_INVALID) {
             continue;
         }
-        if (pub->peer_acks[i].ack_seq_no <= seq_no) {
+        if (!pub->peer_acks[i].acked || seq_delta(pub->peer_acks[i].ack_seq_no, seq_no) <= 0) {
             return false; // never acked anything, or not this far yet
         }
     }
@@ -8427,8 +8466,8 @@ tt_ret_t tt_ReliableCache_grow(struct tt_ReliableCache* cache, uint8_t* new_aren
     // runs with a gap between them, and the wrap fragment at the end is dead space this recovers.
     // Only offsets change - each sample keeps its slot, because depth does not change.
     uint32_t offset = 0;
-    if (cache->oldest_seq_no != 0) {
-        for (uint32_t seq_no = cache->oldest_seq_no; seq_no != 0 && seq_no <= cache->newest_seq_no; seq_no++) {
+    if (cache->any_retained) {
+        for (uint32_t seq_no = cache->oldest_seq_no; seq_delta(seq_no, cache->newest_seq_no) <= 0; seq_no++) {
             struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
             if (entry->len == 0 || entry->seq_no != seq_no) {
                 continue; // a tombstone, or a slot already taken over by a later sample
@@ -8443,7 +8482,7 @@ tt_ret_t tt_ReliableCache_grow(struct tt_ReliableCache* cache, uint8_t* new_aren
     cache->arena_size = new_arena_size;
     cache->tail = offset;
     if (offset == 0) {
-        cache->oldest_seq_no = 0; // everything retained turned out to be a tombstone
+        cache->any_retained = false; // everything retained turned out to be a tombstone
         cache->retained_samples = 0;
     }
     return tt_RET_OK;
@@ -8548,8 +8587,8 @@ static tt_ret_t publisher_request_ack_locked(struct tt_Publisher* pub) {
         return tt_RET_OK; // nothing currently matched to ask
     }
 
-    uint32_t first_seq_no = publisher_oldest_seq_no(pub);
-    if (first_seq_no == 0) {
+    uint32_t first_seq_no = 0;
+    if (!publisher_oldest_seq_no(pub, &first_seq_no)) {
         return tt_RET_INVALID_ARGUMENT; // nothing published yet - see this function's own doc comment
     }
 
@@ -10940,7 +10979,8 @@ static void deliver_durability_backlog(struct tt_Context* node, struct tt_Publis
 #if tt_LARGE_SAMPLES
     uint32_t large_next = 0; // large records go in seq_no order among the small ones (large-message stage 2)
 #endif
-    for (uint32_t seq_no = cache->oldest_seq_no; seq_no != 0 && seq_no <= cache->newest_seq_no; seq_no++) {
+    for (uint32_t seq_no = cache->oldest_seq_no; cache->any_retained && seq_delta(seq_no, cache->newest_seq_no) <= 0;
+         seq_no++) {
         struct tt_ReliableCacheIndex* cache_entry = reliable_cache_slot(cache, depth, seq_no);
         if (cache_entry->len == 0 || cache_entry->seq_no != seq_no) {
             continue;
@@ -10952,14 +10992,14 @@ static void deliver_durability_backlog(struct tt_Context* node, struct tt_Publis
             continue;
         }
 #if tt_LARGE_SAMPLES
-        large_send_backlog_before(node, pub, seq_no, &large_next, target);
+        large_send_backlog_before(node, pub, seq_no, false, &large_next, target);
 #endif
         if (!send_cached_record(node, cache->arena + cache_entry->offset, cache_entry->len, false, target)) {
             TT_LOG_WARNING("Cannot deliver durability backlog seq_no %u", cache_entry->seq_no);
         }
     }
 #if tt_LARGE_SAMPLES
-    large_send_backlog_before(node, pub, UINT32_MAX, &large_next, target);
+    large_send_backlog_before(node, pub, 0, true, &large_next, target);
 #endif
 }
 
@@ -11765,7 +11805,7 @@ static void deliver_backlog_from(struct tt_Context* node, struct tt_Endpoint* en
         return;
     }
     uint8_t* whole = node->local_scratch; // a fragmented sample gathered, under the context's lock
-    for (uint32_t seq_no = cache->oldest_seq_no; seq_no != 0 && seq_no <= cache->newest_seq_no;) {
+    for (uint32_t seq_no = cache->oldest_seq_no; cache->any_retained && seq_delta(seq_no, cache->newest_seq_no) <= 0;) {
         const uint8_t* payload = NULL;
         uint32_t length = 0;
         uint64_t sent_us = 0;
@@ -13491,12 +13531,13 @@ static uint32_t reliable_cache_first_resendable_seq_no(const struct tt_Publisher
     // Large-message stage 2: a large record older than the cache's oldest is the answer; one newer is not, since the
     // cache's oldest is older still. With nothing resendable, everything published - large samples' seq_nos too,
     // which the cache never sees - is gone.
-    uint32_t large = pub->large_count != 0 ? large_first_resendable((struct tt_Publisher*)pub) : 0;
+    uint32_t large = 0;
+    bool any_large = pub->large_count != 0 && large_first_resendable(pub, &large);
 #endif
-    for (uint32_t seq_no = cache->oldest_seq_no; seq_no != 0 && seq_no <= newest; seq_no++) {
+    for (uint32_t seq_no = cache->oldest_seq_no; cache->any_retained && seq_delta(seq_no, newest) <= 0; seq_no++) {
         const struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
 #if tt_LARGE_SAMPLES
-        if (large != 0 && large < seq_no) {
+        if (any_large && seq_delta(large, seq_no) < 0) {
             return large;
         }
 #endif
@@ -13506,10 +13547,10 @@ static uint32_t reliable_cache_first_resendable_seq_no(const struct tt_Publisher
         }
     }
 #if tt_LARGE_SAMPLES
-    if (large != 0) {
+    if (any_large) {
         return large;
     }
-    if (pub->seq_no > newest) {
+    if (seq_delta(pub->seq_no, newest) > 0) {
         return pub->seq_no + 1;
     }
 #endif

@@ -375,7 +375,7 @@ static void test_a_claimed_publish_follows_a_waiting_large_sample(void) {
     pub.peers[1].port = REMOTE_PORT;
     test_mock_nonblocking_room = 0;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(1, LARGE_BYTES));
-    EXPECT_TRUE(pub.large_cursor.seq_no != 0); // in progress: the remote peer's share has not gone
+    EXPECT_TRUE(pub.large_cursor.active); // in progress: the remote peer's share has not gone
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(2, LARGE_BYTES));
     EXPECT_TRUE(pub.large_pending.buffer != NULL); // waiting behind it, no seq_nos yet
     uint32_t count = large_count_for(ROUNDUP(LARGE_BYTES));

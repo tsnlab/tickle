@@ -170,7 +170,10 @@ static uint64_t monotonic_ms(void) {
 static void attach_stalled_peer(rmw_tickle_publisher_t* pub_impl) {
     pub_impl->tickle_publisher.peer_acks[0].context_id = FAKE_PEER_NODE_ID;
     pub_impl->tickle_publisher.peer_acks[0].entity_id = FAKE_PEER_ENTITY_ID;
-    pub_impl->tickle_publisher.peer_acks[0].ack_seq_no = 0;
+    // Nothing acknowledged, as a Subscriber matched before the first publish stands (claim_peer_ack()): at the seq_no
+    // the Publisher's history begins, 1. Not 0, which core compares serially and would read as everything acknowledged.
+    pub_impl->tickle_publisher.peer_acks[0].ack_seq_no = 1;
+    pub_impl->tickle_publisher.peer_acks[0].acked = false;
     pub_impl->tickle_publisher.peer_acks[0].tracking_words = RMW_TICKLE_TRACKING_WORDS;
 }
 
