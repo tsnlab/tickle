@@ -245,6 +245,14 @@ enum pair_mode { BEST_EFFORT, RELIABLE_KEEP_LAST, RELIABLE_KEEP_ALL };
 // the Publisher a cache and the Subscriber the wide window, and pre-match the reader on the writer with that window,
 // as its announce would.
 static void init_pair(uint32_t len, enum pair_mode mode) {
+    // What the last pair still holds - a writer's retained samples, a reader's unfinished assemblies - goes back to its
+    // allocator first, so that resetting it frees them (make sanitize's leak check).
+    if (sender.large.release != NULL) {
+        large_release_publisher(&sender, &pub);
+    }
+    if (receiver.large.release != NULL) {
+        large_release_assemblies(&receiver);
+    }
     test_mock_reset();
     sample_len = len;
     sample_seed = 1;

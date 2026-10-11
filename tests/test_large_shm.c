@@ -471,6 +471,7 @@ static struct transfer_witness large_same_host_transfer(bool dirty) {
     EXPECT_EQ_U64(1, owner.large.reassembled);
     EXPECT_EQ_INT((int)tt_RET_OK, (int)cb.retain_result);
     EXPECT_TRUE(intact(cb.held.payload, 1, LARGE_BYTES));
+    cb.retain = false; // sample 1 stays held to the end; a later retain would overwrite cb.held and leak it
 
     uint8_t* payload = NULL; // a claim and its pin on the same entry
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_claim(&pub, SMALL_BYTES, &payload));
