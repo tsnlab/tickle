@@ -1443,9 +1443,10 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
 // on each socket takes every datagram that arrives into a buffer of a ring this HAL provides. The kernel does the copy
 // as task work of the thread that started it, which runs whenever that thread is interrupted or enters the kernel, so
 // a thread busy in user space for milliseconds still has its socket emptied (rx_drain_pc.sh: a 5 ms or 10 ms stop per
-// 4 MB sample lost 0 datagrams over a saturated link, against 7% and 18% without). The next tt_receive() or
-// tt_try_receive() cancels it (drain_stop()) and hands out what it took (rx_take_drained()), oldest first, before
-// it reads a socket again: everything it took left the socket before anything still there, so order is kept.
+// 4 MB sample lost 0 datagrams over a saturated link, against 7% and 18% without). tt_receive() and tt_try_receive()
+// hand out what it took (rx_take_drained()), oldest first, while it goes on taking, and cancel it (drain_stop()) once
+// it holds nothing, before they read a socket again: everything it took left the socket before anything still there,
+// so order is kept.
 //
 // Its own ring, apart from tt_rx_maybe_ready()'s: that one is four entries of one-shot polls, and this one needs a
 // completion entry per buffer.
@@ -1681,42 +1682,56 @@ static void drain_stop(struct tt_Context* node) {
 static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct tt_hal* hal = &node->hal;
     const struct io_uring_cqe* cqes = (const struct io_uring_cqe*)hal->drain_cqes;
-    while (hal->drain_pending != 0) {
-        uint32_t head = *hal->drain_cq_head;
-        const struct io_uring_cqe* cqe = &cqes[head & *hal->drain_cq_mask];
-        bool holds = drain_holds_datagram(cqe);
-        uint64_t user_data = cqe->user_data;
-        uint32_t flags = cqe->flags;
-        uint32_t written = (uint32_t)cqe->res;
-        __atomic_store_n(hal->drain_cq_head, head + 1U, __ATOMIC_RELEASE);
-        if (!holds) {
-            continue;
-        }
-        hal->drain_pending--;
-        uint16_t bid = (uint16_t)(flags >> IORING_CQE_BUFFER_SHIFT);
-        const uint8_t* buffer = hal->drain_buffers + ((size_t)bid * hal->drain_size);
-        const struct io_uring_recvmsg_out* out = (const struct io_uring_recvmsg_out*)buffer;
-        const uint8_t* payload = buffer + DRAIN_HEADER;
-        // NOLINTNEXTLINE(misc-include-cleaner) - MSG_TRUNC: <sys/socket.h>
-        if ((out->flags & MSG_TRUNC) != 0 || written < DRAIN_HEADER || out->payloadlen > written - DRAIN_HEADER) {
-            hal->drain_truncated++;
-            hal->drain_holdoff_until = tt_get_ns() + tt_RX_DRAIN_HOLDOFF_NS;
+    for (;;) {
+        while (hal->drain_pending != 0) {
+            uint32_t head = *hal->drain_cq_head;
+            const struct io_uring_cqe* cqe = &cqes[head & *hal->drain_cq_mask];
+            bool holds = drain_holds_datagram(cqe);
+            uint64_t user_data = cqe->user_data;
+            uint32_t flags = cqe->flags;
+            uint32_t written = (uint32_t)cqe->res;
+            __atomic_store_n(hal->drain_cq_head, head + 1U, __ATOMIC_RELEASE);
+            if (!holds) {
+                continue;
+            }
+            hal->drain_pending--;
+            uint16_t bid = (uint16_t)(flags >> IORING_CQE_BUFFER_SHIFT);
+            const uint8_t* buffer = hal->drain_buffers + ((size_t)bid * hal->drain_size);
+            const struct io_uring_recvmsg_out* out = (const struct io_uring_recvmsg_out*)buffer;
+            const uint8_t* payload = buffer + DRAIN_HEADER;
+            // NOLINTNEXTLINE(misc-include-cleaner) - MSG_TRUNC: <sys/socket.h>
+            if ((out->flags & MSG_TRUNC) != 0 || written < DRAIN_HEADER || out->payloadlen > written - DRAIN_HEADER) {
+                hal->drain_truncated++;
+                hal->drain_holdoff_until = tt_get_ns() + tt_RX_DRAIN_HOLDOFF_NS;
+                drain_give_back(hal, bid);
+                drain_stop(node); // and the retry this datagram's sender will make is read from the socket, whole
+                continue;
+            }
+            struct sockaddr_in from;
+            memcpy(&from, buffer + sizeof(*out), sizeof(from));
+            size_t copy = (size_t)out->payloadlen < len ? (size_t)out->payloadlen : len;
+            memcpy(buf, payload, copy);
             drain_give_back(hal, bid);
-            continue;
+            *ip = ntohl(from.sin_addr.s_addr);
+            *port = ntohs(from.sin_port);
+            node->rx_via_data_port = (user_data & 1U) != 0;
+            hal->drain_datagrams++;
+            TT_TRACE(tt_TRACE_RX_DATAGRAM);
+            return (int32_t)copy;
         }
-        struct sockaddr_in from;
-        memcpy(&from, buffer + sizeof(*out), sizeof(from));
-        size_t copy = (size_t)out->payloadlen < len ? (size_t)out->payloadlen : len;
-        memcpy(buf, payload, copy);
-        drain_give_back(hal, bid);
-        *ip = ntohl(from.sin_addr.s_addr);
-        *port = ntohs(from.sin_port);
-        node->rx_via_data_port = (user_data & 1U) != 0;
-        hal->drain_datagrams++;
-        TT_TRACE(tt_TRACE_RX_DATAGRAM);
-        return (int32_t)copy;
+        // Nothing held. A running drain may have taken more since it was last looked at; when it has not, it stops
+        // here, and whatever it took while stopping is handed out before the caller reads a socket.
+        if (!hal->drain_running) {
+            return -1;
+        }
+        drain_look(hal);
+        if (hal->drain_pending == 0) {
+            drain_stop(node);
+            if (hal->drain_pending == 0) {
+                return -1;
+            }
+        }
     }
-    return -1;
 }
 
 bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
@@ -2018,8 +2033,7 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     node->rx_offset = 0; // at the start of buf unless a merged read hands one out in place
     // What the last batch read comes first, and without a wait: holding it behind ppoll() would delay
     // datagrams that have already arrived. Then what a drain took while core was away, which left the sockets after
-    // the batch and before anything still in them.
-    drain_stop(node);
+    // the batch and before anything still in them; it keeps draining while it holds any (rx_take_drained()).
 #if TT_HAL_UDP_GRO
     int32_t merged = gro_take_pending(node, (uint8_t*)buf, len, ip, port);
     if (merged >= 0) {
@@ -2188,7 +2202,6 @@ static void rx_idle_count_return(struct tt_Context* node) {
 
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     node->rx_offset = 0;
-    drain_stop(node);
 #if TT_HAL_UDP_GRO
     gro_settle_decide(node); // a settle past its deadline is decided before anything is read
     int32_t merged = gro_take_pending(node, (uint8_t*)buf, len, ip, port);
