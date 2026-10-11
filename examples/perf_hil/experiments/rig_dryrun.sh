@@ -10,6 +10,7 @@
 # namespace's root shell), with HOME = a stand-in Pi home holding `tickle`, a clone of this repository whose origin is
 # this repository's own object store (so `git fetch origin && git reset --hard <sha>` works for any local commit), and
 # /dev/shm bound to that host's own directory (so the two hosts do not share segments, and one host's processes do).
+# PYTHONUSERBASE stays this user's ~/.local: its empy 3 is what the Pis' ROS has, where this PC's system empy is 4.
 # `sudo -n tc` inside a command shapes that namespace's eth0 only. RIG_LOCK_HELD_HIL=1 is set: the real lock is never
 # taken or waited on, and the stand-in ssh refuses any host it does not map - it never execs the real ssh.
 #
@@ -20,11 +21,23 @@
 #            examples/perf_hil/experiments/campaign_sweep.sh
 #   DRYRUN_HOME=<dir> keeps (or reuses) the stand-in Pi homes and logs under <dir> (default: a fresh mktemp dir,
 #   removed at exit unless DRYRUN_KEEP=1). Needs passwordless `sudo -n ip`.
+#   DRYRUN_PI_HOME=/home/<name> (e.g. /home/ci, the rig's): each stand-in's home is ALSO seen at that path by its own
+#   remote commands (HOME is it), as on the Pis - for harnesses that name the Pi home in their command lines (the rmw
+#   harnesses' PI_HOME). Done in the remote command's private mount namespace: a tmpfs over /home holding a bind of
+#   every entry of the real /home plus <name> -> that host's stand-in home. scp maps the path back. Default: unset,
+#   HOME is the stand-in directory itself.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 [ "$#" -gt 0 ] || { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 COMMON=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir) || exit 2
+PIH=${DRYRUN_PI_HOME:-}
+case "$PIH" in
+"") ;;
+/home/[A-Za-z0-9_]*) case "${PIH#/home/}" in *[!A-Za-z0-9_.-]*) echo "DRYRUN_PI_HOME must be /home/<name>" >&2; exit 2 ;; esac
+    [ -e "$PIH" ] && { echo "DRYRUN_PI_HOME=$PIH exists on this PC; refusing to shadow it" >&2; exit 2; } ;;
+*) echo "DRYRUN_PI_HOME must be /home/<name>, not '$PIH'" >&2; exit 2 ;;
+esac
 if [ -n "${DRYRUN_HOME:-}" ]; then
     D=$DRYRUN_HOME
     mkdir -p "$D" || exit 2
@@ -35,6 +48,7 @@ ID=rd$$
 NSC=${ID}c NSS=${ID}s
 # shellcheck disable=SC2329 # invoked by the EXIT trap
 cleanup() {
+    [ -n "$PIH" ] && sudo -n ip netns exec "$NSC" rmdir "/tmp/.rig_dryrun_home_$ID" 2>/dev/null
     sudo -n ip netns del "$NSC" 2>/dev/null
     sudo -n ip netns del "$NSS" 2>/dev/null
     if [ -z "${DRYRUN_HOME:-}" ] && [ "${DRYRUN_KEEP:-0}" != 1 ]; then rm -rf "$D"; fi
@@ -89,9 +103,20 @@ case "\$cmd" in
 "sudo -n tc "*) read -ra a <<<"\${cmd#sudo -n }"; exec sudo -n ip netns exec "\$ns" "\${a[@]}" ;;
 esac
 # shellcheck disable=SC2016 # \$1.. are the inner sh's
-exec sudo -n ip netns exec "\$ns" sh -c 'mount --bind "\$1" /dev/shm || exit 255; shift; exec "\$@"' sh "$D/shm_\$h" \\
+home="$D/home_\$h" pre=""
+if [ -n "$PIH" ]; then
+    # In this command's own mount namespace: /home becomes a tmpfs holding every real /home entry (bound back through a
+    # staging bind) and $PIH bound to this host's stand-in home. Nothing outside the namespace sees it.
+    st=/tmp/.rig_dryrun_home_$ID
+    pre="mkdir -p \$st && mount --rbind /home \$st && mount -t tmpfs -o mode=755 tmpfs /home &&
+for e in \$st/* \$st/.[!.]*; do [ -e \"\\\$e\" ] || continue; n=\\\${e##*/}; mkdir -p \"/home/\\\$n\" && mount --rbind \"\\\$e\" \"/home/\\\$n\" || exit 255; done &&
+mkdir -p $PIH && mount --bind \"\$home\" $PIH || exit 255
+"
+    home=$PIH
+fi
+exec sudo -n ip netns exec "\$ns" sh -c "\$pre"'mount --bind "\$1" /dev/shm || exit 255; shift; exec "\$@"' sh "$D/shm_\$h" \\
     setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups \\
-    env HOME="$D/home_\$h" PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" LANG=C bash -c "cd ~ || exit 255; \$cmd"
+    env HOME="\$home" PYTHONUSERBASE="$HOME/.local" PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" LANG=C bash -c "cd ~ || exit 255; \$cmd"
 EOF
 chmod +x "$D/bin/ssh"
 # The stand-in scp: [user@]<host>:<path> of a mapped host is that stand-in's file - an absolute path is this PC's (the
@@ -118,6 +143,7 @@ map() { # map <arg>: the local path an scp argument names
     *) echo "rig_dryrun scp: refusing unmapped host \$t" >&2; return 1 ;;
     esac
     case "\$p" in
+    ${PIH:-/nonexistent-pi-home}/*) printf '%s' "$D/home_\$h/\${p#${PIH:-/nonexistent-pi-home}/}" ;;
     /*) printf '%s' "\$p" ;;
     "~/"*) printf '%s' "$D/home_\$h/\${p#\~/}" ;;
     *) printf '%s' "$D/home_\$h/\$p" ;;
