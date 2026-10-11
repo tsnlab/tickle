@@ -624,17 +624,22 @@ which is 45 IP fragments.
    (not yet on main). Not in the ACKNACK: best effort has none, and the cap and `p` are the reader's, not a pair's.
 3. *The control law* (ideas from TCP CUBIC and BBR, not halving), run by the reader once per announce interval:
    - (a) It remembers `n_fail`, the `n` at which runs collapsed - `q(n)` far below `(1 - p)^n` by the test below - and
-     on a collapse drops the cap at once to `drop(n_fail) = max(1, min(n_fail - 1, round(0.7 n_fail)))`.
+     on a collapse drops the cap at once to `drop(n_fail) = max(1, round(0.7 n_fail))`, which is `n_fail - 1` up to 5.
    - (b) It re-probes above the remembered ceiling only rarely, on time: `2 tau` after the collapse (doubling per
      failed probe, to `16 tau`), `tau` the reassembly-queue lifetime. Between, it grows back towards the ceiling fast
      (half the remaining distance a tick) and plateaus at `n_fail - 1`. A probe holds `ceil(1.25 n_fail)` for `tau`:
-     clean, and the ceiling moves up to the probed `n`; collapsed, and it is a collapse like any other.
+     clean, and the ceiling moves up a step (`ceil(1.25 x` the probed `n)`, none past `n_max`); collapsed, and it is a
+     collapse like any other, the old ceiling standing if lower. A cap of one unit allows no run and so no window: time
+     alone moves it on, to its probe.
    - (c) The collapse point scales as `1 / (R p)` (`R` the units a second reaching the reader). When `R p` has fallen
-     to half or less of its value at the collapse (three ticks in a row), `n_fail` scales up in proportion and a probe
-     is allowed at once; when it has doubled, `n_fail` scales down and the cap with it.
+     to about half (by 1.9x or more) of its value at the anchor for three ticks in a row, `n_fail` scales up in
+     proportion (at most 4x; past `n_max`, no ceiling) and a probe is allowed at once; when it has doubled, `n_fail`
+     scales down and the cap with it. `p` enters only once `p_mtu` rests on 10 events at both ends; until then `R` alone
+     moves it.
    - (d) Plain frame loss consistent with `(1 - p)^n` never moves the cap; only excess whole-run loss does.
    - (e) The fragment-path rule stays: every run of a sample lost while its tail arrived is a path that drops IP
-     fragments, and `n` goes to 1 at once (writer side for RELIABLE, as built; reader side for every writer, new).
+     fragments, and `n` goes to 1 at once - writer side for RELIABLE, as built; reader side for every writer, new
+     (below).
    The estimator stays behind the small interface `loss_estimate_observe()` / `loss_estimate_p()` and the run-survival
    window beside it; a time-varying estimator (ROADMAP, Later) replaces them and nothing else.
 
@@ -645,27 +650,43 @@ leaves a gap, which is loss; a unit below it is a repair and counts for nothing.
 
 - `p_mtu`: lost over sent MTU units (tails, `n = 1` samples) - the frame-loss baseline, which reassembly cannot touch.
 - `p` (advertised): every frame is exposure; a lost MTU unit is one event on one frame, a lost run one event on its
-  `n` frames. Read as the one-sided 95% Poisson upper bound (3 / N at no events), so `n` leaves 1 as clean frames
-  accumulate. Under a collapse it reads high, which only shortens a RELIABLE writer's `n`.
+  `n` frames. Read as its posterior mean, `(events + 1) / frames` (a flat prior): `Cost(n)` is close to linear in `p`
+  where `n` is chosen (`1 - q(n) ~ n p`), so that is the `n` of least expected wire bytes, and `n` leaves 1 as clean
+  frames accumulate (`n_max` at about 115,000). A 95% bound (3 / N at no events) would hold `n` below `n_max` at 0%
+  loss for as long as the window lasts. The window halves at 2^20 frames, not 2^17, for the same reason. Under a
+  collapse `p` reads high, which only shortens a RELIABLE writer's `n`.
 - `q(n)`: runs arrived over runs sent, with their sizes, in the window since the last decision; per writer as well
   (printed, and read by rule (e)).
 - `R`: units a second in multi-unit samples, arrived or inferred lost; `D_s`: run datagrams a second from each source.
 
-**The collapse test (pre-defined).** Over a window of at least 16 runs: `X` runs lost, `F` frames in the runs sent;
-`E` lost MTU units over `N` sent (the `p_mtu` estimate). With no excess, run losses and MTU losses are both Poisson in
-the same `p` per frame (a lost run's probability `1 - (1 - p)^s <= s p`, so the approximation errs towards "no
-collapse"), and `X` given `T = X + E` is binomial with `f = F / (F + N)`. A collapse is `z = (X - T f - 0.5) /
-sqrt(T f (1 - f)) >= 3.09` (one-sided 0.1%) with `X >= 4` and `X / F >= 2 (E + 1) / N`. Without MTU exposure there is
-no baseline and no decision. A window is *clean* when it has 16 runs and `X / F` is within `p_mtu`'s 95% upper bound;
-only a clean window grows the cap.
+**The collapse test (pre-defined).** Over a window of `R` runs (at least 16) with `X` lost: `L0 = 1 - (1 - p_hi)^s`,
+`s` the window's mean run size and `p_hi` the one-sided 95% upper bound of `p_mtu` - the most run loss frame loss
+alone allows. A collapse is `z = (X - R L0 - 0.5) / sqrt(R L0 (1 - L0)) >= 3.09` (one-sided 0.1%; binomial runs at
+the baseline's upper side, so an underestimated `p` errs towards "no collapse") with `X >= 4` and `X >= 2 R L0` - far
+below `(1 - p)^n`, not merely below it. Without an MTU baseline `L0` is 1 and nothing is decided. A window is *clean*
+when it has 16 runs and `X <= R L0`; only a clean window grows the cap, and a window that is neither gathers more (up
+to 1,024 runs). The test is at the run level, not per frame, because a 1 MB sample has one MTU unit (its tail) for 17
+runs: a per-frame comparison of the two loss rates could not tell a fragment path refusing every run from 2% frame
+loss until hundreds of tails had come, where the run-level test calls it within seconds.
 
 **The remembered ceiling is the collapse point, not the overshoot.** Reassembly memory fills over up to `tau`, so a
 cap grown in a few ticks can be far past the collapse point when it shows. The kernel then admits about the share of
 datagrams that keeps it at its threshold, and the memory offered grows as `n` (at fixed `R` and `p`), so the measured
 survival says where the collapse began: `n_c ~= n q / q0`. On the PC (below): 30 MB/s, 0.1%: `n` = 8, 16, 45 give 3.7,
 2.7, 3.6 and `n = 4` held; 30 MB/s, 1%: 0.3 to 0.4 and `n = 2` held; 3 MB/s, 1%: 3.0 to 3.2 and `n = 4` held;
-30 MB/s, 0.01%: 28 and `n = 16` held. So `n_fail = max(n_good + 1, min(n, ceil(n q / q0)))`, `n_good` the cap of the
-last clean window, and the cap starts small (2) and doubles per clean window until the first collapse (slow start).
+30 MB/s, 0.01%: 28 and `n = 16` held. So `n_fail = max(2, min(n, ceil(n q / q0)))`, and the cap starts small (2) and
+doubles per clean window until the first collapse (slow start). Right after the memory fills, before the kernel admits
+anything again, `q` reads near 0 and the ceiling 2: the estimate errs low, and the probes climb back (on the PC at
+30 MB/s and 0.1%: ceiling 2, probe 3 at `2 tau`, ceiling 4, probe 5).
+
+**Rule (e) on the reader's side.** A writer's sample that arrives to its tail with every run of its body lost is a
+path that drops IP fragments when two things hold: frame loss alone would do that with less than `1e-6`
+(`L0^runs` over the writer's streak of such samples, `L0` at `p_hi`, the layout `n` the writer's or, not known yet, the
+cap), and no run of that writer has got through for `tau`. Runs that did mean a path that passes fragments, and their
+loss now is the reassembly memory's - which the window's test judges - so a squeeze is never taken for a firewall.
+Then: one unit at once, announced at once (not at the next tick), the law frozen, and after `2 tau` (doubling while it
+fails) the cap it had again as a re-probe, judged by the next such sample. A cap change makes every writer's layout
+unknown again, since the writer lays its samples out anew under it.
 
 **The queue lifetime `tau`.** On the PC an incomplete reassembly lived `min(ipfrag_time, 65536 / datagram rate)`: the
 IP ID wraps and the next datagram with its ID ends it. TickLE cannot read `ipfrag_time`, so `tau = min(30 s, 65536 /
@@ -758,8 +779,40 @@ the floor at any loss (the repair tail of lost runs is what the objective has to
 4. RELIABLE runs with MTU repairs, forced `n`.
 5. AUTO: as revised - `Cost(n)` on the reader's `p`, the reader's `p` / `p_mtu` / `q(n)`, the collapse test and the
    control law, both halves of rule (e). Tests: a simulated link with a modelled reassembly memory (a squeeze provokes
-   the collapse), and a netns with `netem` loss and a real squeeze (high rate, several writers); each rule with a mutant.
+   the collapse), and a netns with `netem` loss and a real squeeze (a high rate); each rule with a mutant.
 6. The rig campaign above, then RESULTS.
+
+#### The revision as built (`ab/hybrid-network-objective`, 2026-10-11)
+
+Built as written above, on `eae490e9`, one change per commit: the objective (the CPU cost model, its fit and
+`tt_process_cpu_ns()` removed), the reader's measurements and `loss_p`, the control law (the kernel reads
+`tt_ip_reassembly_limits()` / `tt_ip_reassembly_failures()` and the `ReasmFails` withdrawal removed: core reads no
+`/proc` and no sysctl), rule (e) on the reader's side. Where it departs from the first text of this revision, the text
+above now says what was built: `p` read as its posterior mean (a bound held `n` below `n_max` at 0%), the collapse
+test at the run level (a per-frame comparison had no power with one tail per 17 runs), the remembered ceiling without
+a floor at the last clean cap (the floor made the overshoot the ceiling), a one-unit cap moving on time, and rule (e)
+told from a squeeze by whether that writer's runs got through within `tau`.
+
+- *Tests.* `tests/test_hybrid_send.c`: the objective's table, the reader's rebuilding of what was sent, the loss code,
+  the collapse test's cases, the law unit by unit (slow start, the drop, the hold, the timed probe and its backoff, a
+  probe that holds, scaling with `R p`, `tau`), and on a simulated link with the kernel's reassembly modelled (4 MB,
+  30 s): frame loss at 1% never moving the cap, a fragment-dropping path brought to one unit and re-probed, a squeeze
+  detected, dropped, not probed before `2 tau` and rescaled when the rate halves. `tests/mutants_hybrid_send.py`:
+  110 mutants, one per rule; 109 caught in the final sweep and the one that survived (the path's re-probe restoring
+  its cap) caught since by its own test.
+- *Real IP reassembly* (`hybrid_send_netns.sh`, PC, veth, the kernel's defaults, `hybrid_law_log.py` reading the
+  reader's log by rules written before the run): best effort 1 MB at 30 Hz through 0.1% loss collapsed at `n = 45`
+  (504 of 510 runs lost), the cap went at once to 1 (ceiling 2: the transient reading), the first probe came at
+  `2 tau` = 60 s and held, then 5; with the rate halved at 55 s the ceiling went 6 -> 12 (R p fell 2.0x). A filter
+  dropping every IP fragment was judged after 4 samples, 356 of 360 delivered as MTU units. 0%: best effort doubled
+  2 -> 45 in 5 s, RELIABLE reached 45 in 6 s. The whole suite, 19 cells: 18 PASS; REL_4MB_IP_5 (forced IP, cap off -
+  not the law) lost sample 0 once (179 of 180) and passed in two reruns.
+- *What it does not settle.* The transient ceiling reads low (2 where the PC's steady state says 4 to 6) and the
+  probes climb back at `2 tau` steps; RELIABLE at the pre-registered losses chooses `n*` (13, 4, 1) at or below the
+  PC's collapse points, so the law guards best effort and forced arms more than it moves RELIABLE AUTO. Per-writer
+  `q` is measured and printed, and read only by rule (e). The rig campaign (step 6) is not run.
+- *Found on the way.* `make sanitize` failed at the parent on three tests' own leaks (retained large buffers at a
+  test's re-initialisation; 4.2 MB, 16.8 MB, 71 KB); fixed in the tests.
 #### Steps 3 to 5 as built (2026-10-11), and where they depart
 
 Superseded the same day by the revision above: the CPU cost model and its run-time fit, the receiver's advertised
