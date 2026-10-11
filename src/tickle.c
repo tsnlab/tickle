@@ -2239,7 +2239,8 @@ static void hybrid_note_sent(struct tt_Context* node, struct tt_Publisher* pub, 
     hybrid_note_exposure(pub, context_id, run_n, count); // a best-effort Publisher has no reader entries to expose
 }
 
-static void cost_fit_observe(struct tt_CostFit* fit, uint32_t datagrams, uint32_t frames, uint64_t elapsed_ns);
+static void cost_fit_observe(struct tt_CostFit* fit, uint32_t datagrams, uint32_t frames, uint64_t elapsed_ns,
+                             const char* role);
 
 // One send call of a sample's first transmission in runs, `frames` frames in its datagrams, timed for the sender's cost
 // fit: one clock read before the send and one after.
@@ -2248,7 +2249,7 @@ static int32_t hybrid_send_batch(struct tt_Context* node, const struct tt_OutDat
     uint64_t start = tt_get_ns();
     int32_t sent = seam_send_batch(node, batch, count, context_ids);
     if (sent >= 0) {
-        cost_fit_observe(&node->hybrid.tx_fit, count, frames, tt_get_ns() - start);
+        cost_fit_observe(&node->hybrid.tx_fit, count, frames, tt_get_ns() - start, "send");
     }
     return sent;
 }
@@ -2453,7 +2454,8 @@ static double cost_fit_share_se(const struct tt_CostFit* fit, double c_d, double
 }
 
 // Judges the fit over the check window just closed: the costs it gives, or 0 for "not measured".
-static void cost_fit_check(struct tt_CostFit* fit, uint64_t cpu_ns) {
+#define HYBRID_PERCENT 100.0
+static void cost_fit_check(struct tt_CostFit* fit, uint64_t cpu_ns, const char* role) {
     double c_d = 0.0;
     double c_f = 0.0;
     cost_fit_solve(fit, &c_d, &c_f);
@@ -2464,6 +2466,16 @@ static void cost_fit_check(struct tt_CostFit* fit, uint64_t cpu_ns) {
         double predicted = (c_d * fit->check_d) + (c_f * fit->check_f);
         double measured = (double)cpu_ns - (double)fit->check_cpu_ns;
         used = predicted * tt_HYBRID_FIT_CPU_FACTOR >= measured && predicted <= measured * tt_HYBRID_FIT_CPU_FACTOR;
+        fit->cpu_share_pct = measured > 0.0 ? (uint32_t)(predicted * HYBRID_PERCENT / measured) : 0U;
+        if (!used && !fit->logged) {
+            // Said once: a fit that measures well and still is not the process's cost. The receiver's is, by
+            // construction (DESIGN.md section 8, "Steps 3 to 5 as built"): it times processing, not the receive.
+            fit->logged = true;
+            TT_LOG_INFO(
+                "Hybrid transport: %s cost fit not used - c_d %.0f ns, c_f %.0f ns predict %u%% of the process's "
+                "CPU time; the platform default applies",
+                role, c_d, c_f, (unsigned)fit->cpu_share_pct);
+        }
     }
     if (used) {
         fit->datagram_ns = c_d < (double)UINT16_MAX ? (uint32_t)(c_d + HYBRID_HALF) : UINT16_MAX;
@@ -2481,7 +2493,8 @@ static void cost_fit_check(struct tt_CostFit* fit, uint64_t cpu_ns) {
 }
 
 // One timed call of `datagrams` datagrams and `frames` frames that took `elapsed_ns`.
-static void cost_fit_observe(struct tt_CostFit* fit, uint32_t datagrams, uint32_t frames, uint64_t elapsed_ns) {
+static void cost_fit_observe(struct tt_CostFit* fit, uint32_t datagrams, uint32_t frames, uint64_t elapsed_ns,
+                             const char* role) {
     double dgs = (double)datagrams;
     double frs = (double)frames;
     double took = (double)elapsed_ns;
@@ -2513,19 +2526,35 @@ static void cost_fit_observe(struct tt_CostFit* fit, uint32_t datagrams, uint32_
         fit->check_d = 0.0;
         fit->check_f = 0.0;
     } else if (fit->check_frames >= tt_HYBRID_FIT_CHECK_FRAMES) {
-        cost_fit_check(fit, tt_process_cpu_ns());
+        cost_fit_check(fit, tt_process_cpu_ns(), role);
     }
 }
 
-// A fragment-path datagram's processing starts (the receiver's fit): its clock reading, or 0 where nothing is kept.
-static uint64_t hybrid_rx_start(const struct tt_Context* node) {
-    return node->hybrid.rx_capable ? tt_get_ns() : 0;
+// Samples this context has put back together from fragments, small or large.
+static uint64_t hybrid_reassembled(const struct tt_Context* node) {
+#if tt_LARGE_SAMPLES
+    return node->frag_reassembled + node->large.reassembled;
+#else
+    return node->frag_reassembled;
+#endif
 }
 
-// ... and ends, its units copied where they go.
+// A fragment-path datagram's processing starts (the receiver's fit): its clock reading, or 0 where nothing is kept.
+static uint64_t hybrid_rx_start(struct tt_Context* node) {
+    if (!node->hybrid.rx_capable) {
+        return 0;
+    }
+    node->hybrid.rx_reassembled = hybrid_reassembled(node);
+    return tt_get_ns();
+}
+
+// ... and ends, its units copied where they go. A datagram that completed a sample is not an observation: its time
+// holds the sample's delivery - the subscriber's decode and callback - which is neither c_d nor c_f. Counted in, every
+// sample's last unit read as one frame costing a whole delivery, and the fit gave c_d 128 us and c_f -5.6 us on a
+// veth (0 of 10 checks accepted).
 static void hybrid_rx_done(struct tt_Context* node, uint64_t start) {
-    if (start != 0) {
-        cost_fit_observe(&node->hybrid.rx_fit, 1, hybrid_frames(node->rx_tail), tt_get_ns() - start);
+    if (start != 0 && hybrid_reassembled(node) == node->hybrid.rx_reassembled) {
+        cost_fit_observe(&node->hybrid.rx_fit, 1, hybrid_frames(node->rx_tail), tt_get_ns() - start, "receive");
     }
 }
 
@@ -7838,7 +7867,7 @@ static bool large_send_runs(struct tt_Context* node, struct tt_Publisher* pub, s
             for (int32_t k = 0; k < sent; k++) {
                 sent_frames += hybrid_frames(batch[k].head_len + batch[k].body_len);
             }
-            cost_fit_observe(&node->hybrid.tx_fit, (uint32_t)sent, sent_frames, tt_get_ns() - start);
+            cost_fit_observe(&node->hybrid.tx_fit, (uint32_t)sent, sent_frames, tt_get_ns() - start, "send");
         }
         if (sent < 0) {
             // As for MTU fragments: an error the socket will repeat, so these units are lost as the network loses

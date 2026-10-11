@@ -857,9 +857,15 @@ Where it departs, and why:
 - **The withdrawal fires while runs could arrive** (units came, and the advertisement allowed runs), not on whole runs
   received: a run that lost a fragment never reaches the process, so on the path the withdrawal is for it never fired.
 - **The cost fit weights each call by 1 / f^2** (its relative error). Unweighted, a 45-frame call's noise buried c_d,
-  which only the one-frame tails measure: share error 0.13 at 5% noise against 0.005. The receiver times a datagram
-  from the start of its processing, not the receive call (recvmmsg() has none per datagram), so the kernel's copy is
-  outside it; the CPU check judges that.
+  which only the one-frame tails measure: share error 0.13 at 5% noise against 0.005.
+- **The receiver advertises the platform default, and says why.** Its fit times a datagram from the start of its
+  processing, not the receive call (recvmmsg() has none per datagram), and leaves out the datagram that completes a
+  sample (its time is the delivery: counted in, every sample's tail read as one frame costing a decode and a callback,
+  and the fit gave c_d 128 us and c_f -5.6 us). What remains is consistent (veth, 1 MB RELIABLE at 1%: c_d 0.8 us, c_f
+  0.56 us, share error 0.01) and still only 27% of the process's CPU time - the receive system calls, the kernel's copy
+  and softirq reassembly are outside it - so the 2x check refuses it every time, logs that once ("receive cost fit not
+  used ... predict 27% of the process's CPU time"), and the announce carries 0: the writer uses tt_HYBRID_RX_*. The
+  sender's fit, timed around the send call that does the kernel's work, passes.
 - **A forced arm's reader needs `reassembly_cap_off`** (no cap, no withdrawal): forced IP is `n_max`, the reader's
   advertisement, which holds the cap. At 1 MB, 30 Hz and 1% that cap is 1 (this section's own figure), and on a veth the
   incomplete reassemblies passed `ipfrag_high_thresh` within a second, so the withdrawal made a forced arm MTU too.
@@ -877,7 +883,7 @@ Where it departs, and why:
   -8.7% (RELIABLE). Two results against the expectation: 4 MB best effort delivered 88.4% of samples against the
   parent's 97.8% (66 reassembled datagrams a sample overrun the receive buffer, which neither `p` nor `ReasmFails`
   sees), and 4 MB RELIABLE at 1% cost +1.6% pub / +1.8% sub (n mostly 1 under the cap, with ramps that lose runs).
-  The sender's fit was accepted on the PC (c_d 3.7-6.0 us, c_f 1.5-1.8 us); the receiver's never (0 of 15-32 checks).
+  The sender's fit was accepted on the PC (c_d 3.7-6.0 us, c_f 1.5-1.8 us); the receiver's never (above).
   Core P1-P3 binaries are bit-identical to the parent's (fragmentation compiles out); P4's instructions held.
 - **GSO is not combined with runs** (`ab/udp-offload-v2` sends FRAG_L batches with `UDP_SEGMENT`): a run is one
   datagram that IP fragments, the opposite of segmentation; the two meet only in that a sample's MTU units (n = 1, the

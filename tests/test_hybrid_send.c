@@ -1199,7 +1199,7 @@ static void feed_fit(struct tt_CostFit* fit, double c_d, double c_f, uint32_t ca
         uint32_t f = (i % 2U) == 0 ? 723U : 1U;
         double t = ((c_d * d) + (c_f * f)) * noise();
         test_mock_process_cpu_ns += (uint64_t)(t * cpu_factor);
-        cost_fit_observe(fit, d, f, (uint64_t)t);
+        cost_fit_observe(fit, d, f, (uint64_t)t, "test");
     }
 }
 
@@ -1225,6 +1225,8 @@ static void test_the_cost_fit_recovers_the_costs(void) {
     feed_fit(&fit, 5000.0, 2000.0, 100, 2.5);
     EXPECT_TRUE(fit.rejected > rejected);
     EXPECT_EQ_U32(0, fit.datagram_ns);
+    EXPECT_TRUE(fit.cpu_share_pct >= 38U && fit.cpu_share_pct <= 42U); // the prediction is 40% of the CPU time
+    EXPECT_TRUE(fit.logged);
     feed_fit(&fit, 5000.0, 2000.0, 100, 1.0);
     EXPECT_TRUE(fit.datagram_ns != 0);
     feed_fit(&fit, 5000.0, 2000.0, 100, 0.4);
@@ -1238,7 +1240,7 @@ static void test_the_cost_fit_recovers_the_costs(void) {
         uint32_t f = (i % 2U) == 0 ? 40U : 1U;
         double t = ((5000.0 * d) + (2000.0 * f)) * noise();
         test_mock_process_cpu_ns += (uint64_t)t;
-        cost_fit_observe(&fit, d, f, (uint64_t)t);
+        cost_fit_observe(&fit, d, f, (uint64_t)t, "test");
     }
     EXPECT_EQ_U32(1, fit.accepted);
     EXPECT_EQ_U32(0, fit.rejected);
@@ -1261,7 +1263,7 @@ static void test_the_cost_fit_is_used_only_when_it_holds(void) {
     test_mock_process_cpu_ns = tt_SECOND;
     for (uint32_t i = 0; i < 20000; i++) { // every call one MTU datagram: c_d and c_f cannot be told apart
         test_mock_process_cpu_ns += 7000;
-        cost_fit_observe(&fit, 1, 1, 7000);
+        cost_fit_observe(&fit, 1, 1, 7000, "test");
     }
     EXPECT_TRUE(fit.rejected > 0);
     EXPECT_EQ_U32(0, fit.accepted);
@@ -1269,7 +1271,7 @@ static void test_the_cost_fit_is_used_only_when_it_holds(void) {
     for (uint32_t i = 0; i < 30; i++) { // 30 calls of 723 frames: checked at 8192 frames with too few calls
         uint32_t d = (i % 2U) == 0 ? 17U : 16U;
         test_mock_process_cpu_ns += (5000U * d) + (2000U * 723U);
-        cost_fit_observe(&fit, d, 723, (5000U * d) + (2000U * 723U));
+        cost_fit_observe(&fit, d, 723, (5000U * d) + (2000U * 723U), "test");
     }
     EXPECT_TRUE(fit.rejected > 0);
     EXPECT_EQ_U32(0, fit.accepted);
@@ -1280,7 +1282,7 @@ static void test_the_cost_fit_is_used_only_when_it_holds(void) {
         uint64_t t = (uint64_t)(400000.0 * noise() * noise() * noise() * noise() * noise() * noise());
         t = (i % 3U) == 0 ? t * 20U : t;
         test_mock_process_cpu_ns += t;
-        cost_fit_observe(&fit, d, f, t);
+        cost_fit_observe(&fit, d, f, t, "test");
     }
     EXPECT_EQ_U32(0, fit.accepted);
     // Positive costs, the CPU time agreeing - but calls of nearly one d / f (17 / 723 and 16 / 700, no tails) cannot
@@ -1292,7 +1294,7 @@ static void test_the_cost_fit_is_used_only_when_it_holds(void) {
         uint32_t f = (i % 2U) == 0 ? 723U : 700U;
         double t = ((5000.0 * d) + (2000.0 * f)) * noise();
         test_mock_process_cpu_ns += (uint64_t)t;
-        cost_fit_observe(&fit, d, f, (uint64_t)t);
+        cost_fit_observe(&fit, d, f, (uint64_t)t, "test");
     }
     {
         double c_d = 0.0;
@@ -1366,7 +1368,7 @@ static void test_the_reader_advertises_its_costs(void) {
 }
 
 // The live timing: every send call of a sample's runs and its tail is one observation of the sender's fit, every
-// fragment-path datagram one of the reader's.
+// fragment-path datagram one of the reader's but the one that completes a sample (its time is the delivery's).
 static void test_send_calls_and_received_datagrams_are_timed(void) {
     init_one(ONE_MB, FULL_CEILING, false);
     sim_start(0);
@@ -1375,14 +1377,15 @@ static void test_send_calls_and_received_datagrams_are_timed(void) {
     sim_settle(1, tt_SECOND);
     EXPECT_TRUE(sender.hybrid.tx_fit.calls == 2.0); // 17 runs in one call, the tail in another
     EXPECT_TRUE(sender.hybrid.tx_fit.frames == 723.0);
-    EXPECT_TRUE(readers[0].ctx.hybrid.rx_fit.calls == 18.0);
-    EXPECT_TRUE(readers[0].ctx.hybrid.rx_fit.frames == 723.0);
+    // The reader: every run, not the tail - the datagram that completes a sample carries its delivery.
+    EXPECT_TRUE(readers[0].ctx.hybrid.rx_fit.calls == 17.0);
+    EXPECT_TRUE(readers[0].ctx.hybrid.rx_fit.frames == 722.0);
     init_one(SMALL_LEN, FULL_CEILING, false);
     sim_start(0);
     test_mock_clock_step_ns = 1000;
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
     EXPECT_TRUE(sender.hybrid.tx_fit.calls == 2.0);
-    EXPECT_TRUE(readers[0].ctx.hybrid.rx_fit.calls == 2.0);
+    EXPECT_TRUE(readers[0].ctx.hybrid.rx_fit.calls == 1.0);
     test_mock_clock_step_ns = 0;
 }
 
