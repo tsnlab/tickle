@@ -640,8 +640,10 @@ publisher for 100 ms by default (`max_blocking_time`; ROS 2 QoS has no field for
 
 Large-message stage 2 step A (DESIGN.md section 8): samples above 65,507 B, sent in TickLE's own 1,472-byte
 fragments. apex `perf_test` publisher on one Pi 5, subscriber on the other, 5 reps of 60 s per arm, arms interleaved,
-medians. rmw_tickle is the step A build of branch `ab/largemsg-a2` (the sha is in each file's header), built `-g -O2`
-on both Pis as the vendors; each arm identified by `/proc/PID/maps`. Latency is one-way, corrected by a clock probe
+medians. rmw_tickle is the large-message step A build as measured: branch ab/largemsg-a2 at dc056907 (the head sha is in
+each file's header); it landed from ab/largemsg-land a5747a85, which adds the claimed-slot and lending interaction
+fixes and was not re-measured here. Built `-g -O2` on both Pis as the vendors; each arm identified by
+`/proc/PID/maps`. Latency is one-way, corrected by a clock probe
 before and after every run; p99 is a lower bound from the per-second maxima. CPU is ms per MB delivered (subscriber)
 or published (publisher); RSS is the subscriber's peak. Read by `experiments/largemsg_rig_summary.py` (whole sample
 counts, since `perf_test`'s rate columns are floor(count / D)) from
