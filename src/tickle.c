@@ -2493,6 +2493,64 @@ static void hybrid_rx_gap(struct tt_HybridState* hybrid, struct tt_HybridRxWrite
     }
 }
 
+static void hybrid_announce(struct tt_Context* node, uint64_t now);
+
+// Rule (e) on the reader's side (DESIGN.md section 8): a writer's sample has arrived to its tail and every run of its
+// body was lost. A path that drops IP fragments (a firewall, a tc filter) when frame loss alone would do that with less
+// than tt_HYBRID_PATH_ALPHA - L0^runs over this sample and the writer's all-lost samples just before it, L0 at p_mtu's
+// upper bound - and no run of this writer has got through for tau: runs that did are a path that passes fragments, and
+// their loss now is the reassembly memory's, which the control law's window judges. Then one unit at once, announced
+// now, and after 2 tau (doubling while it keeps failing) the cap it had again, judged by the next such sample: any of
+// its body through clears it.
+static void hybrid_rx_judge_path(struct tt_Context* node, struct tt_HybridRxWriter* writer) {
+    struct tt_HybridState* hybrid = &node->hybrid;
+    uint32_t body = (uint32_t)writer->count - 1U;
+    if (writer->body_lost < body) {
+        writer->path_odds = 1.0; // something of the body came: not every run was lost
+        if (hybrid->path_probe) {
+            hybrid->path_probe = false;
+            hybrid->path_backoff = 0;
+        }
+        return;
+    }
+    uint32_t lifetime_ticks = (uint32_t)(hybrid->lifetime_ns / tt_CONTEXT_UPDATE_INTERVAL);
+    bool runs_got_through = writer->run_tick != 0 && hybrid->ticks + 1U - writer->run_tick <= lifetime_ticks;
+    if (body < 2U || hybrid->cap < 2U || hybrid->cap_off || hybrid->path_until_ns != 0 || runs_got_through) {
+        return;
+    }
+    // Not known yet (no run of this writer's has arrived): the largest the cap allows, the likeliest to be lost whole.
+    uint32_t layout = writer->layout_n >= 2U ? writer->layout_n : (hybrid->cap < body ? hybrid->cap : body);
+    uint32_t runs = (body + layout - 1U) / layout;
+    double p_hi = loss_estimate_p(&hybrid->mtu_loss);
+    double clean = 1.0;
+    for (uint32_t i = 0; i < layout; i++) {
+        clean *= 1.0 - p_hi;
+    }
+    for (uint32_t i = 0; i < runs && writer->path_odds >= tt_HYBRID_PATH_ALPHA; i++) {
+        writer->path_odds *= 1.0 - clean;
+    }
+    if (writer->path_odds >= tt_HYBRID_PATH_ALPHA) {
+        return;
+    }
+    writer->path_odds = 1.0;
+    if (hybrid->path_probe) {
+        hybrid->path_backoff = hybrid->path_backoff < tt_HYBRID_PROBE_BACKOFF_MAX
+                                   ? (uint8_t)(hybrid->path_backoff + 1U)
+                                   : (uint8_t)tt_HYBRID_PROBE_BACKOFF_MAX;
+    } else {
+        hybrid->path_cap = hybrid->cap;
+    }
+    hybrid->path_probe = false;
+    hybrid->cap = 1;
+    uint64_t now = tt_get_ns();
+    hybrid->path_until_ns = now + ((2U * hybrid->lifetime_ns) << hybrid->path_backoff);
+    hybrid->path_failures++;
+    TT_LOG_WARNING("Hybrid transport: every run from node %u lost with its tail through - its path drops IP fragments; "
+                   "one unit, re-probed in %u s",
+                   (unsigned)writer->source, (unsigned)((hybrid->path_until_ns - now) / tt_SECOND));
+    hybrid_announce(node, now);
+}
+
 // One datagram's units of a sample (source, entity_id, first seq_no `sample`, `count` units) arrived: units
 // [index, index + units), as a run or as one MTU unit.
 static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t entity_id, uint32_t sample, uint32_t index,
@@ -2515,6 +2573,7 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
         writer->count = (uint16_t)count;
         writer->next = (uint16_t)index;
         writer->source = source;
+        writer->path_odds = 1.0;
     }
     if ((int32_t)(sample - writer->sample) > 0) {
         if (writer->next < writer->count) {
@@ -2538,6 +2597,7 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
             writer->layout_n = (uint8_t)units; // a full run says n, and so does a sample's first: its only one is n
         }
         hybrid_rx_run(hybrid, writer, units, false);
+        writer->run_tick = hybrid->ticks + 1U; // a run of this writer's got through (0: none yet)
     } else {
         if (index < tail) {
             writer->layout_n = 1; // an MTU unit where a run could have gone: the writer sends MTU units here
@@ -2545,6 +2605,9 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
         hybrid_rx_mtu(hybrid, 1, 0);
     }
     writer->next = (uint16_t)(index + units);
+    if (!run && index == tail) {
+        hybrid_rx_judge_path(node, writer);
+    }
 }
 
 // ---- RELIABLE: the objective (DESIGN.md section 8, "The objective and the control law") ---------------------------
@@ -11596,13 +11659,28 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
     uint64_t elapsed = now - hybrid->tick_ns;
     double units_per_s = (double)hybrid->tick_units * (double)tt_SECOND / (double)elapsed;
     hybrid_measure_lifetime(hybrid, elapsed);
+    hybrid->ticks++;
     uint32_t n_max = hybrid_units_within(node->ip_reassembly_max, false);
-    if (!hybrid->cap_off) {
-        hybrid_control(hybrid, now, units_per_s, n_max);
+    if (hybrid->path_until_ns != 0 && now >= hybrid->path_until_ns) {
+        hybrid->cap = hybrid->path_cap; // rule (e)'s re-probe: the cap it had, judged by the next sample to its tail
+        hybrid->path_until_ns = 0;
+        hybrid->path_probe = true;
     }
-    uint16_t bytes = hybrid_cap_bytes(node, hybrid->cap, n_max);
+    if (!hybrid->cap_off && hybrid->path_until_ns == 0) {
+        hybrid_control(hybrid, now, units_per_s, n_max);
+    } else {
+        hybrid->window = (struct tt_RunWindow) {0}; // one unit while the path drops fragments: nothing to judge
+        hybrid->window_n = 0;
+    }
     hybrid->tick_ns = now;
     hybrid->tick_units = 0;
+    hybrid_announce(node, now);
+}
+
+// Announces the cap and p when either changed: a new generation, so writers learn them from the ordinary announce.
+static void hybrid_announce(struct tt_Context* node, uint64_t now) {
+    struct tt_HybridState* hybrid = &node->hybrid;
+    uint16_t bytes = hybrid_cap_bytes(node, hybrid->cap, hybrid_units_within(node->ip_reassembly_max, false));
     uint16_t loss = hybrid_loss_code(loss_estimate_mean(&hybrid->rx_loss));
     bool loss_moved = hybrid_loss_moved(loss, hybrid->advertised_loss);
     if (bytes == hybrid->advertised && !loss_moved) {
@@ -11613,6 +11691,9 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
     }
     if (bytes != hybrid->advertised) {
         hybrid->cap_changes++;
+        for (uint32_t i = 0; i < tt_HYBRID_RX_WRITERS; i++) {
+            hybrid->rx_writers[i].layout_n = 0; // every writer lays its samples out anew under the new cap
+        }
     }
     hybrid->advertised = bytes;
     node->last_modified = now > node->last_modified ? now : node->last_modified + 1U;
