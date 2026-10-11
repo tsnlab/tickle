@@ -25,8 +25,39 @@
 #     wins the same round trip), and that is where the next optimisation looks.
 #   - reliable and best_effort should read within noise of each other for every rmw, as before.
 #   - Any row with loss, a missing RESULT, or a failed identity check is VOID, not averaged in.
+#
+# GATE V2 (the user's decision of 2026-10-11; gate_v2_lib.sh, gate_v2.py, TESTING.md 6.1):
+#   A1  every TickLE unit this script builds is layout-stable: TICKLE_EXTRA_CFLAGS (default TICKLE_LAYOUT_CFLAGS,
+#       -falign-functions=64, when unset; set and empty = the plain build) is appended to CMAKE_C_FLAGS and
+#       CMAKE_CXX_FLAGS of all three colcon stages - rmw_tickle with the TickLE core it compiles into its .so (tickle.c,
+#       encoding.c, log.c, hal_linux.c) and the two TickLE typesupports; builtin_interfaces and rcl_interfaces, whose
+#       TickLE typesupport libraries compile encoding.c and log.c in; rmw_perf_pingpong, whose own messages do the same.
+#       Every stage is configured with -DCMAKE_EXPORT_COMPILE_COMMANDS=ON, each build's compile_commands.json is copied
+#       back to $OUT.build_<host>_<build>.json and read by rmw_build_flags_check.py: every unit must carry every flag
+#       word (last -falign-functions= wins), and the units named there must be present. One "build flags verified:" line
+#       per Pi and build (the builds are listed on a "--- builds to verify: ... ---" line), else nothing is measured.
+#       Each Pi's gcc version and its default -falign-* values are recorded beside them. Also with SKIP_BUILD=1.
+#   A2  INSN_COUNT=1 (the default when RMW_LIST is rmw_tickle alone and TICKLE_VARIANTS is empty; refused with any other
+#       rmw): ping and pong each run under `perf stat -x, -e instructions:u,instructions:k` (insn_prefix), and the row
+#       gets ping_insn_u= ping_insn_k= ping_insn=ok and pong_insn_u= pong_insn_k= pong_insn=ok (insn_fields), or
+#       <role>_insn=fail:<why>, which makes the row VOID(insn...). Counted only when the run is rmw_tickle-only: the
+#       instrument costs a PMU save/restore per context switch, and the vendors run more threads and switch more, so
+#       counting every rmw "identically" would not be neutral (TESTING.md section 5, item 4) - the published
+#       cross-vendor rows stay uncounted. Each process is counted over its whole life (start-up, discovery, the idle
+#       wait, every round trip, shutdown); the reader divides by the ping's sent= (every round trip). A launch's $! is
+#       then perf's: the pong's PID used for its maps, CPU, idle reading and SIGINT is perf's child whose /proc exe is
+#       pong_node (gate_v2_lib.sh child_exe), the ping's is found by parentage below timeout and time; after the pong
+#       is stopped the script waits for perf itself to exit, so its counts are written. Not with TRACE=1 or a sysstamp
+#       arm (strace would wrap perf; LD_PRELOAD would load into perf as well).
+#   A3  this script measures one SHA and one flag set per invocation; rmw_gate_v2_chain.sh runs it as the mirrored
+#       blocks A P B B P A and rmw_gate_v2.py reads them by gate v2.
+# ROS_SETUP (default /opt/ros/jazzy/setup.bash) and PI_HOME (default /home/ci, the Pis' home as an absolute path, which the
+# identity checks compare /proc/PID/maps against): only for rig_dryrun.sh on a PC with another distro and other homes.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$REPO/examples/perf_hil/experiments/gate_v2_lib.sh"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
@@ -101,7 +132,27 @@ variant_args() {
 # export their CMake targets as "-none" - CMAKE_BUILD_TYPE None, Debian's -O2, no NDEBUG - while this built rmw_tickle
 # as Release, -O3 -DNDEBUG. -g -O2 is the level they share; the packages' hardening and LTO flags are not repeated,
 # since stripped binaries do not say which the build farm used.
-RMW_TICKLE_BUILD="-DCMAKE_BUILD_TYPE=None '-DCMAKE_C_FLAGS=-g -O2' '-DCMAKE_CXX_FLAGS=-g -O2'"
+# Gate v2 A1 (header): the layout flags go on the end of every stage's C and C++ flags.
+layout_cflags_default
+case "$TICKLE_EXTRA_CFLAGS" in *[!A-Za-z0-9=_\ -]*)
+    echo "TICKLE_EXTRA_CFLAGS may hold only [A-Za-z0-9=_ -]: '$TICKLE_EXTRA_CFLAGS'" >&2; exit 64 ;; esac
+LAYOUT_BUILD="'-DCMAKE_C_FLAGS=$TICKLE_EXTRA_CFLAGS' '-DCMAKE_CXX_FLAGS=$TICKLE_EXTRA_CFLAGS' -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+RMW_TICKLE_BUILD="-DCMAKE_BUILD_TYPE=None '-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS' '-DCMAKE_CXX_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS' -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+ROS_SETUP=${ROS_SETUP:-/opt/ros/jazzy/setup.bash}
+PI_HOME=${PI_HOME:-/home/ci}
+# Gate v2 A2 (header): counted only when rmw_tickle runs alone.
+if [ "$RMW_LIST" = rmw_tickle ] && [ -z "$TICKLE_VARIANTS" ]; then INSN_COUNT=${INSN_COUNT:-1}; else INSN_COUNT=${INSN_COUNT:-0}; fi
+case "$INSN_COUNT" in 0 | 1) ;; *) echo "INSN_COUNT must be 0 or 1" >&2; exit 64 ;; esac
+if [ "$INSN_COUNT" = 1 ]; then
+    if [ "$RMW_LIST" != rmw_tickle ] || [ -n "$TICKLE_VARIANTS" ]; then
+        echo "REFUSED: INSN_COUNT=1 needs RMW_LIST=rmw_tickle and no TICKLE_VARIANTS (no rmw runs under an instrument the others do not)" >&2
+        exit 64
+    fi
+    case " ${TRACE:-0} $SYSSTAMP_ARMS " in *" 1 "* | *" on "*)
+        echo "REFUSED: INSN_COUNT=1 with TRACE=1 or a sysstamp arm (strace would wrap perf; LD_PRELOAD would load into perf)" >&2
+        exit 64 ;;
+    esac
+fi
 VBUILD=""
 for v in $TICKLE_VARIANTS; do
     [ "$v" = default ] && continue
@@ -114,10 +165,12 @@ done
 TRACE=${TRACE:-0}
 if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
 say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS, executor-poll arms: $EXEC_POLL_ARMS, phase: ${PHASE:-locked}, rtt at: ${RTT_AT:-loop}, idle: ${IDLE_S:-4} s, rmws: $RMW_LIST ==="
+say "TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (every rmw_tickle, TickLE typesupport, interface and pingpong unit; empty: the plain build)"
+say "INSN_COUNT=$INSN_COUNT (perf stat instructions:u/k on the ping and the pong; 1 only with RMW_LIST=rmw_tickle)"
 
 CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
-FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
-ENV_BASE="set +u; source /opt/ros/jazzy/setup.bash; [ -f \$HOME/rmw_perf_ws/install/setup.bash ] && source \$HOME/rmw_perf_ws/install/setup.bash; source \$HOME/tickle/install/setup.bash; set -u; export ROS_DOMAIN_ID=$DOMAIN"
+FDDS_PROFILE=$PI_HOME/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
+ENV_BASE="set +u; source $ROS_SETUP; [ -f \$HOME/rmw_perf_ws/install/setup.bash ] && source \$HOME/rmw_perf_ws/install/setup.bash; source \$HOME/tickle/install/setup.bash; set -u; export ROS_DOMAIN_ID=$DOMAIN"
 env_for() {
     local base="${1%@*}" v="default"
     case "$1" in *@*) v="${1#*@}" ;; esac
@@ -139,11 +192,11 @@ env_for() {
 }
 lib_for() {
     case "$1" in
-        rmw_tickle@default) echo "/home/ci/tickle/install/rmw_tickle/lib/librmw_tickle.so"; return ;;
-        rmw_tickle@*) echo "/home/ci/rmw_variants/${1#*@}/install/rmw_tickle/lib/librmw_tickle.so"; return ;;
+        rmw_tickle@default) echo "$PI_HOME/tickle/install/rmw_tickle/lib/librmw_tickle.so"; return ;;
+        rmw_tickle@*) echo "$PI_HOME/rmw_variants/${1#*@}/install/rmw_tickle/lib/librmw_tickle.so"; return ;;
     esac
     case "$1" in
-        rmw_tickle) echo "/home/ci/tickle/install/rmw_tickle/lib/librmw_tickle.so" ;;
+        rmw_tickle) echo "$PI_HOME/tickle/install/rmw_tickle/lib/librmw_tickle.so" ;;
         rmw_fastrtps_cpp) echo "/librmw_fastrtps_cpp.so" ;;
         rmw_cyclonedds_cpp) echo "/librmw_cyclonedds_cpp.so" ;;
         rmw_zenoh_cpp) echo "/librmw_zenoh_cpp.so" ;;
@@ -176,16 +229,16 @@ cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdq
 # the rig's system Python refuses pip (PEP 668), and an installed copy goes stale while the source moves
 # on - which has already made a regression check here test the wrong code.
 export PYTHONPATH=\$HOME/tickle/tools/typesupport\${PYTHONPATH:+:\$PYTHONPATH}
-set +u; source /opt/ros/jazzy/setup.bash; set -u
+set +u; source $ROS_SETUP; set -u
 colcon build --packages-select rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_tickle \
   --cmake-args -DBUILD_SHARED_LIBS=ON $RMW_TICKLE_BUILD > /tmp/rmwx_build1.log 2>&1 \
   || { echo \"STAGE 1 BUILD FAILED on \$(hostname)\"; tail -25 /tmp/rmwx_build1.log; exit 1; }
 set +u; source \$HOME/tickle/install/setup.bash; set -u
 colcon build --base-paths \$HOME/rmw_perf_ws --build-base \$HOME/rmw_perf_ws/build --install-base \$HOME/rmw_perf_ws/install \
-  --packages-select builtin_interfaces rcl_interfaces --cmake-args -DCMAKE_BUILD_TYPE=Release --cmake-force-configure > /tmp/rmwx_build2.log 2>&1 \
+  --packages-select builtin_interfaces rcl_interfaces --cmake-args -DCMAKE_BUILD_TYPE=Release $LAYOUT_BUILD --cmake-force-configure > /tmp/rmwx_build2.log 2>&1 \
   || { echo \"STAGE 2 BUILD FAILED on \$(hostname)\"; tail -25 /tmp/rmwx_build2.log; exit 1; }
 set +u; source \$HOME/rmw_perf_ws/install/setup.bash; source \$HOME/tickle/install/setup.bash; set -u
-colcon build --packages-select rmw_perf_pingpong --cmake-args -DCMAKE_BUILD_TYPE=Release > /tmp/rmwx_build3.log 2>&1 \
+colcon build --packages-select rmw_perf_pingpong --cmake-args -DCMAKE_BUILD_TYPE=Release $LAYOUT_BUILD > /tmp/rmwx_build3.log 2>&1 \
   || { echo \"STAGE 3 BUILD FAILED on \$(hostname)\"; tail -25 /tmp/rmwx_build3.log; exit 1; }
 test -f \$HOME/tickle/install/rmw_tickle/lib/librmw_tickle.so
 test -x \$HOME/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong/ping_node
@@ -201,13 +254,49 @@ for h in "$CLIENT" "$SERVER"; do
 done
 [ "$bad" = 0 ] || { say "BUILD FAILED - not running"; exit 1; }
 fi
+# Gate v2 A1 (header): each build's own record of what its compiler was given, read back here from its
+# compile_commands.json - not from the variable. Any build that does not show TICKLE_EXTRA_CFLAGS on every unit, or lacks
+# a unit it must have compiled (needs_of), stops the run before anything is measured. Recorded with them: each Pi's gcc
+# and its default alignments, and how many of librmw_tickle.so's text symbols the realized binary has 64- and
+# 128-byte aligned (information only; start-up symbols from the crt objects are not ours and are not aligned).
+BUILDS="rmw_tickle:tickle/build/rmw_tickle ts_c:tickle/build/rosidl_typesupport_tickle_c ts_cpp:tickle/build/rosidl_typesupport_tickle_cpp"
+BUILDS="$BUILDS builtin_interfaces:rmw_perf_ws/build/builtin_interfaces rcl_interfaces:rmw_perf_ws/build/rcl_interfaces"
+BUILDS="$BUILDS rmw_perf_pingpong:tickle/build/rmw_perf_pingpong"
+for v in $TICKLE_VARIANTS; do [ "$v" = default ] || BUILDS="$BUILDS variant_$v:rmw_variants/$v/build/rmw_tickle"; done
+needs_of() {
+    case "$1" in
+    rmw_tickle | variant_*) echo "--need /rmw_tickle/src/rmw_node.c --need /src/tickle.c --need /src/encoding.c --need /src/log.c --need /src/hal_linux.c" ;;
+    ts_c | ts_cpp) echo "--need /src/identifier.c" ;;
+    builtin_interfaces | rcl_interfaces) echo "--need /src/encoding.c --need /src/log.c" ;;
+    rmw_perf_pingpong) echo "--need /src/ping_node.cpp --need /src/pong_node.cpp --need /src/encoding.c" ;;
+    esac
+}
+say "--- builds to verify: $(for b in $BUILDS; do printf '%s ' "${b%%:*}"; done)---"
+for h in "$CLIENT" "$SERVER"; do
+    # shellcheck disable=SC2016 # expanded on the Pi
+    say "compiler on $h: $(sh_ "$h" 'gcc --version | head -1; gcc -O2 -Q --help=optimizers | grep -E "falign-(functions|loops|jumps)=" | tr -s " \t" " "' 2>&1 | tr '\n' ';')"
+    for b in $BUILDS; do
+        name=${b%%:*}
+        json="$OUT.build_${h##*.}_$name.json"
+        sh_ "$h" "cat \$HOME/${b#*:}/compile_commands.json" >"$json" 2>/dev/null || true
+        # shellcheck disable=SC2046 # needs_of's words are separate arguments on purpose
+        if ! verified=$(python3 "$REPO/examples/perf_hil/experiments/rmw_build_flags_check.py" "$json" "$TICKLE_EXTRA_CFLAGS" $(needs_of "$name")); then
+            say "FATAL build flags: $h $name does not show TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS': $verified ($json). Not running."
+            exit 1
+        fi
+        say "build flags verified: $h $name TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' ($verified)"
+    done
+    # The address's last two hex digits decide both (no strtonum: the Pis' awk may be mawk).
+    # shellcheck disable=SC2016 # expanded on the Pi
+    say "librmw_tickle.so on $h: $(sh_ "$h" 'nm --defined-only $HOME/tickle/install/rmw_tickle/lib/librmw_tickle.so | awk '\''$2 ~ /^[tT]$/ { n++; t = tolower(substr($1, length($1) - 1)); if (t ~ /^[048c]0$/) a64++; if (t ~ /^[08]0$/) a128++ } END { printf "%d text symbols, %d 64-byte aligned, %d 128-byte aligned", n, a64, a128 }'\''' 2>&1)"
+done
 # One application, the rmw chosen at run time (2026-09-27, the user's question): ping_node and pong_node are built
 # once per session and run unchanged for every rmw; RMW_IMPLEMENTATION alone selects the rmw, which
 # rmw_implementation loads dynamically. Recorded here: each binary's sha256 on both Pis, and that neither links any
 # rmw implementation itself (ldd shows the generic librmw.so / librmw_implementation.so only). A binary linking an
 # implementation directly stops the run.
 for h in "$CLIENT" "$SERVER"; do
-    ident=$(sh_ "$h" "cd /home/ci/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong && sha256sum ping_node pong_node | awk '{printf \"%s=%s \", \$2, substr(\$1,1,16)}'; for b in ping_node pong_node; do ldd \$b | grep -oE 'librmw_(tickle|fastrtps_cpp|cyclonedds_cpp|fastrtps_shared_cpp|dds_common)[^ ]*' | sed \"s/^/\$b-links-/\"; done" 2>&1)
+    ident=$(sh_ "$h" "cd $PI_HOME/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong && sha256sum ping_node pong_node | awk '{printf \"%s=%s \", \$2, substr(\$1,1,16)}'; for b in ping_node pong_node; do ldd \$b | grep -oE 'librmw_(tickle|fastrtps_cpp|cyclonedds_cpp|fastrtps_shared_cpp|dds_common)[^ ]*' | sed \"s/^/\$b-links-/\"; done" 2>&1)
     say "--- binaries on $h: $ident ---"
     case "$ident" in *-links-*) say "an application binary links an rmw implementation directly - not running"; exit 1 ;; esac
 done
@@ -346,7 +435,7 @@ clock_offset() { # prints client=<ns> server=<ns>, REALTIME - MONOTONIC on each 
     done
 }
 
-BIN=/home/ci/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong
+BIN=$PI_HOME/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong
 one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     local rmw="$1" msg="$2" qos="$3" rep="$4" flag="" env pongpid maps res verdict=ok
     [ "$qos" = reliable ] && flag="--reliable"
@@ -367,7 +456,21 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     if [ "$CAPTURE" = 1 ]; then cap_start "$stem"; off0=$(clock_offset); fi
     local dumpenv=""
     case "$rmw" in rmw_tickle*) dumpenv="export RMW_TICKLE_TRACE_FILE=/tmp/rmwx_dump.txt; rm -f /tmp/rmwx_dump.txt;" ;; esac
-    pongpid=$(sh_ "$SERVER" "$env; $dumpenv $sstenv $stamprm nohup taskset -c 1-3 $pre $BIN/pong_node $flag $stampflag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
+    # Gate v2 A2 (header): under perf stat the launch's $! is perf's; the pong is perf's child, found by /proc exe
+    # (child_exe) and used for everything below - maps, CPU, idle, bpftrace, SIGINT. perf's own PID is kept to wait on.
+    local pongperf="" pongrm="" pingrm="" pingpre="" insn_void=""
+    if [ "$INSN_COUNT" = 1 ]; then
+        pre=$(insn_prefix /tmp/rmwx_pong.insn)
+        pingpre=$(insn_prefix /tmp/rmwx_ping.insn)
+        pongrm="rm -f /tmp/rmwx_pong.insn;" pingrm="rm -f /tmp/rmwx_ping.insn;"
+    fi
+    pongpid=$(sh_ "$SERVER" "$env; $dumpenv $sstenv $stamprm $pongrm nohup taskset -c 1-3 $pre $BIN/pong_node $flag $stampflag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
+    if [ "$INSN_COUNT" = 1 ]; then
+        pongperf=$pongpid
+        pongpid=$(sh_ "$SERVER" "$(remote_child_of_perf)
+for i in \$(seq 1 30); do child_exe $pongperf '$BIN/pong_node' && exit 0; sleep 0.1; done; exit 1" || true)
+        if [ -z "$pongpid" ]; then pongpid=$pongperf; insn_void="VOID(insn: no pong_node under perf $pongperf)"; fi
+    fi
     local idle=""
     if [ -n "$IDLE_S" ] && [ "$TRACE" != 1 ]; then
         local rd="cat /proc/$pongpid/task/*/schedstat 2>/dev/null | awk -v t=\$(date +%s%N) '{s+=\$1} END{print s+0, t}'"
@@ -415,7 +518,8 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     # PINGMAPS (2026-09-27): the rmw library the ping actually loaded, read from its /proc/PID/maps 2 s into the run by
     # a reader pinned to core 0 (the ping runs on 1-3). Its PID is found by parentage from the launch's own $! (timeout
     # -> time -> ping_node, taskset having exec'd) and verified by /proc/PID/exe - never by name.
-    res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log >/tmp/rmwx_ping.out & tp=\$!; pp=; for i in \$(seq 1 50); do for c in \$(cat /proc/\$tp/task/\$tp/children 2>/dev/null); do for g in \$c \$(cat /proc/\$c/task/\$c/children 2>/dev/null); do [ \"\$(readlink /proc/\$g/exe 2>/dev/null)\" = $BIN/ping_node ] && pp=\$g; done; done; [ -n \"\$pp\" ] && break; sleep 0.1; done; sleep 2; echo PINGMAPS: \$(taskset -c 0 grep -o '/[^ ]*librmw_[a-z_]*\\.so' /proc/\$pp/maps 2>/dev/null | sort -u | tr '\\n' ' ') >/tmp/rmwx_ping_maps.txt; wait \$tp; cat /tmp/rmwx_ping.out /tmp/rmwx_ping_time.txt /tmp/rmwx_ping_maps.txt" | grep -E '^RESULT:|^LOOP:|^PHASE:|^ping_utime_s|^PINGMAPS:' | tr '\n' ' ' || true)
+    # Under perf stat (INSN_COUNT=1) the chain is timeout -> time -> perf (taskset exec'd) -> ping_node: one level deeper.
+    res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm $pingrm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $pingpre $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log >/tmp/rmwx_ping.out & tp=\$!; pp=; for i in \$(seq 1 50); do for c in \$(cat /proc/\$tp/task/\$tp/children 2>/dev/null); do for g in \$c \$(cat /proc/\$c/task/\$c/children 2>/dev/null); do for q in \$g \$(cat /proc/\$g/task/\$g/children 2>/dev/null); do [ \"\$(readlink /proc/\$q/exe 2>/dev/null)\" = $BIN/ping_node ] && pp=\$q; done; done; done; [ -n \"\$pp\" ] && break; sleep 0.1; done; sleep 2; echo PINGMAPS: \$(taskset -c 0 grep -o '/[^ ]*librmw_[a-z_]*\\.so' /proc/\$pp/maps 2>/dev/null | sort -u | tr '\\n' ' ') >/tmp/rmwx_ping_maps.txt; wait \$tp; cat /tmp/rmwx_ping.out /tmp/rmwx_ping_time.txt /tmp/rmwx_ping_maps.txt" | grep -E '^RESULT:|^LOOP:|^PHASE:|^ping_utime_s|^PINGMAPS:' | tr '\n' ' ' || true)
     res="$res $procs${idle:+ $idle}"
     if [ "$BPF" = on ]; then
         sh_ "$SERVER" "[ \"\$(readlink /proc/$bpfpid/exe)\" = /usr/bin/timeout ] && kill -TERM $bpfpid; for i in \$(seq 1 20); do [ -d /proc/$bpfpid ] || break; sleep 0.5; done" || true
@@ -430,6 +534,16 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     res="$res $pongcpu"
     sh_ "$SERVER" "[ -d /proc/$pongpid ] && [ \"\$(readlink /proc/$pongpid/exe)\" = $BIN/pong_node ] && kill -INT $pongpid" >/dev/null 2>&1 || true
     sleep 1
+    if [ "$INSN_COUNT" = 1 ]; then
+        # perf writes its counts when its child has gone: wait up to 5 s for perf itself, then read both processes'.
+        local pongc pingc pingf pongf
+        pongc=$(sh_ "$SERVER" "for i in \$(seq 1 50); do [ -d /proc/$pongperf ] || break; sleep 0.1; done; cat /tmp/rmwx_pong.insn 2>/dev/null; rm -f /tmp/rmwx_pong.insn" || true)
+        pingc=$(sh_ "$CLIENT" "cat /tmp/rmwx_ping.insn 2>/dev/null; rm -f /tmp/rmwx_ping.insn" || true)
+        pingf=$(insn_fields "$pingc" | sed 's/insn/ping_insn/g')
+        pongf=$(insn_fields "$pongc" | sed 's/insn/pong_insn/g')
+        res="$res $pingf $pongf"
+        case "$pingf $pongf" in *"ping_insn=ok "*"pong_insn=ok") ;; *) [ -n "$insn_void" ] || insn_void="VOID(insn: $pingf $pongf)" ;; esac
+    fi
     if [ "$SST" = on ] || [ "$STAMPS" = 1 ]; then
         # the pong writes its sysstamp records and its stamps as it exits, so wait for it to be gone (up to 5 s)
         sh_ "$SERVER" "for i in 1 2 3 4 5 6 7 8 9 10; do [ -d /proc/$pongpid ] || break; sleep 0.5; done" || true
@@ -500,6 +614,8 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
         grep -q "rmw_tickle: executor_poll=$([ "$EP" = on ] && echo 1 || echo 0) " "$OUT.logs/${stem}_ping.log" 2>/dev/null \
             || { [ "$verdict" = ok ] && verdict="VOID(executor_poll=$EP not confirmed by the ping)"; } ;;
     esac
+    # Gate v2 A2: a counted row without both counts is VOID - "could not look" is never "no work".
+    if [ -n "$insn_void" ] && [ "$verdict" = ok ]; then verdict=$insn_void; fi
     say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${BPFSTEM:+ bpf=on}${EPSTEM:+ execpoll=$EP}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
     if [ "$TRACE" = 1 ]; then
         sleep 1; mkdir -p "$OUT.traces"
