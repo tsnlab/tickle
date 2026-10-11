@@ -172,7 +172,11 @@ psn, single header; 11 nodes in the announce.
   a moment both queues are seen empty, so no merged read is ever taken without its size (`hal_linux.c`, "When receive
   offload is on"; arm E of the check). Refused by the kernel or after `EIO`: off.
   `TT_UDP_OFFLOAD=0` in the environment turns both off (the A/B control). Traffic line: `udp_offload`, `gro_*`,
-  `gso_*`.
+  `gso_*`. With the hybrid transport (section 8) both apply to MTU-mode traffic only: a run (`FRAG_RUN_L`) is one
+  IP-fragmented datagram, never a `UDP_SEGMENT` run and never merged by GRO (IPv4 fragments bypass the kernel's GRO;
+  the check's pattern 8 reads runs whole with `UDP_GRO` on), and a sample's lone MTU tail after its runs neither turns
+  `UDP_GRO` on nor keeps it on - so an AUTO stream of runs reads plain. Whether offload is kept on by default is
+  decided by the rig A/B (`~/rig_queue_hybrid.sh`, stage 4).
 
 ## 5. Discovery
 
@@ -952,9 +956,8 @@ Where it departs, and why:
   sees), and 4 MB RELIABLE at 1% cost +1.6% pub / +1.8% sub (n mostly 1 under the cap, with ramps that lose runs).
   The sender's fit was accepted on the PC (c_d 3.7-6.0 us, c_f 1.5-1.8 us); the receiver's never (above).
   Core P1-P3 binaries are bit-identical to the parent's (fragmentation compiles out); P4's instructions held.
-- **GSO is not combined with runs** (`ab/udp-offload-v2` sends FRAG_L batches with `UDP_SEGMENT`): a run is one
-  datagram that IP fragments, the opposite of segmentation; the two meet only in that a sample's MTU units (n = 1, the
-  tail, repairs) can still go by GSO when that branch lands.
+- **GSO is not combined with runs**: a run is one datagram that IP fragments, the opposite of segmentation; the two
+  meet only in that a sample's MTU units (n = 1, repairs) go by GSO (section 4, landed with this on `ab/hybrid-land`).
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
