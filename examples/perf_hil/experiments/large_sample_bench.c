@@ -290,10 +290,12 @@ static void print_hybrid(const struct tt_Context* node, const struct tt_Publishe
     printf(" hybrid_advertised=%u hybrid_cap_changes=%lu hybrid_withdrawals=%lu hybrid_rx_loss=%u/%u",
            (unsigned)hybrid->advertised, (unsigned long)hybrid->cap_changes, (unsigned long)hybrid->withdrawals,
            hybrid->rx_loss.events, hybrid->rx_loss.frames);
+    printf(" hybrid_mtu_loss=%u/%u hybrid_advertised_loss=0x%04x", hybrid->mtu_loss.events, hybrid->mtu_loss.frames,
+           (unsigned)hybrid->advertised_loss);
     if (pub != NULL) {
         for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
             if (pub->peer_acks[i].context_id != tt_CONTEXT_ID_INVALID) {
-                printf(" hybrid_peer_loss=%u/%u", pub->peer_acks[i].loss.events, pub->peer_acks[i].loss.frames);
+                printf(" hybrid_peer_loss_p=0x%04x", (unsigned)hybrid->peer_loss_p[pub->peer_acks[i].context_id]);
                 break;
             }
         }
