@@ -137,6 +137,19 @@
 #   tickle@loans  tickle@head's own librmw_tickle.so with ROS_DISABLE_LOANED_MESSAGES=0, so rclcpp takes loans where
 #                 the rmw offers them (a labelled second arm: tickle@head runs rcl's default). Cross-host default mode
 #                 only. Its treatment is read by largemsg_lend_ab.py from the subscriber's loans_in_place line.
+#
+# Added 2026-10-11 for the hybrid transport's rig A/B (~/rig_queue_hybrid.sh; docs/DESIGN.md section 8, "Hybrid
+# transport", pre-registration). Cross-host default mode only; each is tickle@head's own librmw_tickle.so with the
+# environment rmw_tickle reads at init (rmw_init.c configure_hybrid_transport()), on publisher and subscriber alike:
+#   tickle@aa     tickle@head again under a second name: the A/A arm whose spread is the floor
+#   tickle@mtu    RMW_TICKLE_LARGE_FRAGMENTATION=mtu: forced MTU units (n = 1)
+#   tickle@ip     RMW_TICKLE_LARGE_FRAGMENTATION=ip RMW_TICKLE_REASSEMBLY_CAP_OFF=1: forced IP (n = n_max = 45), the
+#                 reader advertising its ceiling uncapped
+#   Each arm's realized treatment is read by hybrid_rig_ab.py from rmw_tickle's "hybrid transport:" line and core's
+#   "hybrid:" counters at context destroy (runs, n histogram); there is no other record.
+#   <stem>_net.txt   every run, every arm: each host's eth0 rx/tx bytes and /proc/net/snmp's Udp RcvbufErrors,
+#                    InErrors, SndbufErrors and Ip ReasmFails/ReasmOKs, before the subscriber starts and after both
+#                    ended (ka_net.sh). The reader's eth0 rx bytes are the wire bytes; RcvbufErrors is reported per arm.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
@@ -424,6 +437,11 @@ env_for() {
         tickle@head) echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@loans) echo "export ROS_DISABLE_LOANED_MESSAGES=0 RMW_IMPLEMENTATION=rmw_tickle"
             echo "export TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@aa) echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@mtu) echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255"
+            echo "export RMW_TICKLE_LARGE_FRAGMENTATION=mtu" ;;
+        tickle@ip) echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255"
+            echo "export RMW_TICKLE_LARGE_FRAGMENTATION=ip RMW_TICKLE_REASSEMBLY_CAP_OFF=1" ;;
         tickle@*) echo "source $(variant_install "${1#tickle@}")/local_setup.bash"
             echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         fastdds) echo "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp FASTRTPS_DEFAULT_PROFILES_FILE=$FDDS_PROFILE" ;;
@@ -436,7 +454,7 @@ env_for() {
 }
 lib_for() {
     case "$1" in
-        tickle@head | tickle@loans) echo "$HEAD_LIB" ;;
+        tickle@head | tickle@loans | tickle@aa | tickle@mtu | tickle@ip) echo "$HEAD_LIB" ;;
         tickle@*) echo "$(variant_install "${1#tickle@}")/rmw_tickle/lib/librmw_tickle.so" ;;
         fastdds | fastdds@*) echo "librmw_fastrtps_cpp.so" ;;
         cyclonedds) echo "librmw_cyclonedds_cpp.so" ;;
@@ -481,6 +499,16 @@ env > /tmp/ka_$role.envall; { echo "[launcher env]"; treat /tmp/ka_$role.envall 
     echo "[/proc/$p/environ]"; treat /tmp/ka_$role.envproc < /tmp/ka_$role.envproc
   else echo "[/proc/$p/environ] unreadable: perf_test ended before 2 s"; fi >> /tmp/ka_$role.treat
   rm -f /tmp/ka_$role.envall /tmp/ka_$role.envproc ) > /dev/null 2>&1 < /dev/null &
+'
+# ka_net.sh (header): one line of this host's eth0 byte counters and its UDP/IP error counters.
+# shellcheck disable=SC2016 # expanded on the host, not here
+NETSNAP='#!/bin/bash
+d=/sys/class/net/eth0/statistics
+awk -v rx="$(cat $d/rx_bytes 2>/dev/null)" -v tx="$(cat $d/tx_bytes 2>/dev/null)" '"'"'
+/^Udp:/ { u++; for (i = 2; i <= NF; i++) { if (u == 1) uh[i] = $i; else uv[uh[i]] = $i } }
+/^Ip:/ { p++; for (i = 2; i <= NF; i++) { if (p == 1) ph[i] = $i; else pv[ph[i]] = $i } }
+END { printf "rx_bytes=%s tx_bytes=%s udp_rcvbuf_errors=%s udp_in_errors=%s udp_sndbuf_errors=%s ip_reasm_fails=%s ip_reasm_oks=%s\n",
+      rx, tx, uv["RcvbufErrors"], uv["InErrors"], uv["SndbufErrors"], pv["ReasmFails"], pv["ReasmOKs"] }'"'"' /proc/net/snmp
 '
 CELL_TOPICS=$(for c in $CELLS; do echo "${c%%:*}"; done | awk '!seen[$0]++')
 
@@ -555,6 +583,7 @@ fi
 
 for h in "${HOSTS[@]}"; do
     printf '%s' "$LAUNCHER" | sh_ "$h" "cat > /tmp/ka_launch.sh && chmod +x /tmp/ka_launch.sh" || { say "launcher copy failed"; exit 1; }
+    printf '%s' "$NETSNAP" | sh_ "$h" "cat > /tmp/ka_net.sh && chmod +x /tmp/ka_net.sh" || { say "net helper copy failed"; exit 1; }
     for arm in $ARMS; do
         for t in $CELL_TOPICS; do
             env_for "$arm" "$t" | sh_ "$h" "cat > /tmp/ka_env_${arm/@/_}_$t.sh" || { say "env copy failed"; exit 1; }
@@ -596,6 +625,13 @@ clock_probe() { # $1 file, $2 label: one PROBE line (clock_offset_probe.py query
     echo "$2 ${line:-PROBE ok=0 no output}" >> "$1"
 }
 
+net_snap() { # $1 file, $2 label: one line per host (header, <stem>_net.txt); "unread" when the helper said nothing
+    local line
+    line=$(sh_ "$CLIENT" "/tmp/ka_net.sh" </dev/null 2>/dev/null)
+    echo "$2 client ${line:-unread}" >> "$1"
+    line=$(sh_ "$SERVER" "/tmp/ka_net.sh" </dev/null 2>/dev/null)
+    echo "$2 server ${line:-unread}" >> "$1"
+}
 launch() { # host role arm topic args...
     local h=$1 role=$2 arm=$3 topic=$4 pre=""; shift 4
     [ "$INSN_COUNT" = 1 ] && pre=$(insn_prefix "/tmp/ka_$role.insn")
@@ -616,6 +652,7 @@ run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher second
     local arm=$1 topic=$2 loss=$3 rep=$4 stem="$1_$2_l$3_r$4" dir=${5:-$OUT.runs} dur=${6:-$DUR}
     local common="-c ROS2 -t $topic $QOS_ARGS --dds_domain_id $DOMAIN"
     clock_probe "$dir/${stem}_clock.txt" before
+    net_snap "$dir/${stem}_net.txt" before
     # Every arm, not only rmw_tickle's: rclcpp's type-description service needs a typesupport rmw_tickle does not
     # provide (its first run here died on it), and switching off an introspection service changes no data path.
     local rosargs="--ros-args --param start_type_description_service:=false"
@@ -625,6 +662,7 @@ run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher second
     local k1 k2
     k1=$(wait_done "$CLIENT" pub $((dur + 40)))
     k2=$(wait_done "$SERVER" sub 20)
+    net_snap "$dir/${stem}_net.txt" after
     clock_probe "$dir/${stem}_clock.txt" after
     fetch_ "$CLIENT" /tmp/ka_pub.log "$dir/${stem}_pub.log"
     fetch_ "$SERVER" /tmp/ka_sub.log "$dir/${stem}_sub.log"
