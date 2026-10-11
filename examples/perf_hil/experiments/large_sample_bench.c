@@ -13,14 +13,16 @@
 // them). One binary, two roles:
 //
 //   large_sample_bench pub -s BYTES -r HZ -d SECONDS [-R] [-A] [-M [-G]] [-b BROADCAST] [-F auto|mtu|ip] [-n UNITS]
+//                          [-H S]
 //   large_sample_bench sub -s BYTES -d SECONDS [-R] [-b BROADCAST] [-X BYTES] [-C]
 //
 // Hybrid transport (DESIGN.md section 8), in a tree that has it: -F sets the context's large_fragmentation, -n forces
 // runs of exactly UNITS units (IP, with the Publisher's ip_datagram_max at UNITS large units: the model check's fixed
 // n), -X the subscriber's advertised reassembly ceiling (0: a FreeRTOS-like peer that takes no run), -C its reassembly
-// memory cap off (_tt_CONFIG.reassembly_cap_off: a forced arm's reader, so forced IP is n_max). Each RESULT line
-// then carries the realized treatment: runs and units sent in them and alone, the histogram of n, each cost fit
-// (c_d/c_f or 0/0 for the default, with its accepted/rejected checks), the advertised ceiling and the loss counts.
+// memory cap off (_tt_CONFIG.reassembly_cap_off: a forced arm's reader, so forced IP is n_max), -H halves the publish
+// rate after S seconds (the control law's scaling with R). Each RESULT line then carries the realized treatment: runs
+// and units sent in them and alone, the histogram of n, the reader's cap, ceiling and the control law's decisions
+// (collapses, probes, rescales, path failures), and the loss counts.
 //
 // -M (pub): the sample is a message already in memory - filled before the publish, its send time stamped just before
 // it - and encoding it is a memcpy, as rmw_tickle's is for a type whose wire bytes are its message (perf_test's
@@ -287,6 +289,7 @@ static void print_hybrid(const struct tt_Context* node, const struct tt_Publishe
     for (int i = 0; i < tt_HYBRID_N_BUCKETS; i++) {
         printf("%s%lu", i == 0 ? "" : "/", (unsigned long)hybrid->n_hist[i]);
     }
+    printf(" hybrid_path_failures=%lu", (unsigned long)hybrid->path_failures);
     printf(" hybrid_advertised=%u hybrid_cap=%u hybrid_n_fail=%u hybrid_cap_changes=%lu hybrid_collapses=%lu"
            " hybrid_probes=%lu hybrid_probe_failures=%lu hybrid_rescales=%lu hybrid_lifetime_s=%.1f"
            " hybrid_rx_loss=%u/%u hybrid_window=%u/%u",
@@ -322,23 +325,34 @@ struct options {
     bool ranged;
     double rate_hz;
     double duration_s;
-    char* broadcast;     // as _tt_CONFIG.broadcast takes it
-    int fragmentation;   // -F: tt_LARGE_FRAGMENTATION_*, or -1 for the default
-    uint32_t run_units;  // -n: runs of exactly this many units; 0: as the mode chooses
-    long reassembly_max; // -X: the advertised ceiling; -1: the default
-    bool cap_off;        // -C: the reader advertises its ceiling uncapped (a forced-n arm's reader)
+    char* broadcast;      // as _tt_CONFIG.broadcast takes it
+    int fragmentation;    // -F: tt_LARGE_FRAGMENTATION_*, or -1 for the default
+    uint32_t run_units;   // -n: runs of exactly this many units; 0: as the mode chooses
+    long reassembly_max;  // -X: the advertised ceiling; -1: the default
+    bool cap_off;         // -C: the reader advertises its ceiling uncapped (a forced-n arm's reader)
+    double halve_after_s; // -H: the rate halves after this many seconds; 0: never
 };
 
 static bool parse_options(int argc, char** argv, struct options* opts) {
     if (argc < 2 || (strcmp(argv[1], "pub") != 0 && strcmp(argv[1], "sub") != 0)) {
         return false;
     }
-    *opts =
-        (struct options) {strcmp(argv[1], "pub") == 0, false, false, false, false, DEFAULT_RATE_HZ, DEFAULT_DURATION_S,
-                          default_broadcast,           -1,    0,     -1,    false};
+    *opts = (struct options) {strcmp(argv[1], "pub") == 0,
+                              false,
+                              false,
+                              false,
+                              false,
+                              DEFAULT_RATE_HZ,
+                              DEFAULT_DURATION_S,
+                              default_broadcast,
+                              -1,
+                              0,
+                              -1,
+                              false,
+                              0.0};
     int opt;
     optind = 2; // NOLINT(misc-include-cleaner) - see <unistd.h> above
-    while ((opt = getopt(argc, argv, "s:r:d:RAMGb:F:n:X:C")) != -1) { // NOLINT(misc-include-cleaner)
+    while ((opt = getopt(argc, argv, "s:r:d:RAMGb:F:n:X:CH:")) != -1) { // NOLINT(misc-include-cleaner)
         switch (opt) {
         case 's':
             sample_size = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
@@ -363,6 +377,9 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
             break;
         case 'b':
             opts->broadcast = optarg; // NOLINT(misc-include-cleaner)
+            break;
+        case 'H':
+            opts->halve_after_s = strtod(optarg, NULL); // NOLINT(misc-include-cleaner)
             break;
 #if BENCH_HYBRID
         case 'F':
@@ -441,6 +458,7 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
 #endif
     poll_for(node, DISCOVERY_NS);
     uint64_t period = (uint64_t)((double)NS_PER_S / opts->rate_hz);
+    double halve_after_s = opts->halve_after_s;
     uint64_t begin = now_ns();
     uint64_t next = begin;
     uint32_t published = 0;
@@ -467,6 +485,11 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
             published++;
         } else {
             fprintf(stderr, "publish failed: %d\n", ret);
+        }
+        if (halve_after_s > 0.0 && (double)(now - begin) / (double)NS_PER_S >= halve_after_s) {
+            period *= 2U;
+            fprintf(stderr, "RATE_HALVED after %u samples\n", published);
+            halve_after_s = 0.0; // once
         }
         next += period;
     }
@@ -556,7 +579,7 @@ int main(int argc, char** argv) {
     if (!parse_options(argc, argv, &opts)) {
         fprintf(stderr,
                 "usage: %s pub|sub -s BYTES [-r HZ] -d SECONDS [-R] [-A] [-M [-G]] [-b BROADCAST] [-F auto|mtu|ip] "
-                "[-n UNITS] [-X BYTES] [-C]\n",
+                "[-n UNITS] [-X BYTES] [-C] [-H S]\n",
                 argv[0]);
         return 2;
     }

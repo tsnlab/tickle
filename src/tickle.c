@@ -11552,6 +11552,8 @@ static void hybrid_grow(struct tt_HybridState* hybrid, uint64_t now, uint32_t n_
         hybrid->cap = probe < n_max ? probe : n_max;
         hybrid->probe_since_ns = now;
         hybrid->probes++;
+        TT_LOG_INFO("Hybrid transport: probing n = %u above the ceiling %u", (unsigned)hybrid->cap,
+                    (unsigned)hybrid->n_fail);
     }
 }
 
@@ -11583,6 +11585,9 @@ static void hybrid_scale(struct tt_HybridState* hybrid, uint64_t now, double uni
     }
     uint32_t scaled = (uint32_t)(((double)hybrid->n_fail * factor) + HYBRID_HALF);
     scaled = scaled > 2U ? scaled : 2U;
+    TT_LOG_INFO("Hybrid transport: R p %s %.1fx since the collapse - the ceiling %u -> %u",
+                factor > 1.0 ? "fell" : "rose", factor > 1.0 ? factor : 1.0 / factor, (unsigned)hybrid->n_fail,
+                (unsigned)scaled);
     hybrid->anchor_r = units_per_s;
     hybrid->anchor_p = p;
     hybrid->scale_streak = 0;
