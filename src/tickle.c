@@ -13468,6 +13468,14 @@ struct large_lend_saved {
 };
 #endif
 
+// Core is about to be away from the receive sockets - in a large sample's callback (rmw decodes a 4 MB sample there,
+// milliseconds), or returned from tt_Context_poll() to the application - while large samples are arriving: the HAL
+// keeps the sockets drained meanwhile, so the next sample, which a saturated link delivers at line rate, is not
+// dropped by the socket's capped receive buffer (RESULTS L4 cell I4s; tt_rx_drain_start()). The next read ends it.
+static void large_rx_drain(struct tt_Context* node) {
+    (void)tt_rx_drain_start(node, tt_CONTROL_MAX_LENGTH); // a large sample's fragments are control datagrams
+}
+
 // Delivers a whole RELIABLE assembly, in order, from its buffer - lendable for the length of the callback - and frees
 // it, or leaves its buffer to the lent sample that kept it.
 static void large_deliver_reliable(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
@@ -13484,6 +13492,7 @@ static void large_deliver_reliable(struct tt_Context* node, struct tt_Subscriber
     node->lend.rx_large = assembly->buffer;
 #endif
     node->large.reassembled++;
+    large_rx_drain(node);
     deliver_in_order(node, sub, proxy, assembly->seq_no, assembly->timestamp, assembly->buffer + tt_LARGE_CDR_OFFSET,
                      cdr_len, assembly->is_native, assembly->via_data_port, NULL);
 #if tt_SAMPLE_LENDING
@@ -16043,6 +16052,7 @@ static void large_accept_best_effort(struct tt_Context* node, struct large_fragm
     node->lend.rx_large = assembly->buffer;
 #endif
     node->large.reassembled++;
+    large_rx_drain(node);
     (void)process_data_for(node, &header, assembly->buffer, tt_LARGE_HEADER_OFFSET, tt_LARGE_CDR_OFFSET + cdr_len,
                            fragment->sender_ip, fragment->sender_port, true);
 #if tt_SAMPLE_LENDING
@@ -16092,6 +16102,7 @@ static bool deliver_large_fragment(struct tt_Context* node, struct large_fragmen
         }
         return false;
     }
+    node->large.rx_last_ns = rx_now(node);
     if (fragment->data_header != NULL) {
         for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, rd32(fragment->header, fragment->data_header->endpoint_id),
                           route_large_fragment, fragment);
@@ -18436,6 +18447,11 @@ tt_ret_t tt_Context_poll(struct tt_Context* node, int64_t timeout) {
     }
     __atomic_store_n(&node->poller_thread, tt_thread_self(), __ATOMIC_RELAXED); // NOLINT(misc-include-cleaner)
     tt_ret_t result = node_poll(node, timeout);
+#if tt_LARGE_SAMPLES
+    if (node->large.rx_last_ns != 0 && tt_get_ns() - node->large.rx_last_ns < tt_LARGE_RX_DRAIN_LINGER_NS) {
+        large_rx_drain(node); // back to the application, which may take milliseconds over the sample just delivered
+    }
+#endif
     node->rx_clock_ns = 0; // outside a poll a receive reads the clock itself
     __atomic_store_n(&node->poller_thread, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->poller_active, 0, __ATOMIC_RELEASE);
