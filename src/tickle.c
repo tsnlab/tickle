@@ -2296,6 +2296,107 @@ static bool hybrid_send_small_runs(struct tt_Context* node, const struct tt_Data
     last.port = dest->port;
     return hybrid_send_batch(node, &last, 1, &dest->context_id, 1) >= 0;
 }
+
+// ---- The loss estimate (DESIGN.md section 8, "Estimating p") ------------------------------------------------------
+//
+// Events over exposure in frames, read as the one-sided 95% Poisson upper limit of the events over the frames - 3 / N
+// at zero events, the rule of three - never as the point estimate: overestimating p costs a slightly short n on a flat
+// curve, underestimating it loses runs that each cost n repairs. With no exposure the bound is 1, which is n = 1. These
+// three functions are the whole interface; a time-varying estimator (ROADMAP, Later) replaces them and nothing else.
+
+#ifdef TT_HYBRID_TEST_SEAM
+// Tests force p through this (>= 0), so that "n follows p" is tested without staging thousands of frames.
+static double hybrid_test_forced_p = -1.0;
+#endif
+
+static void loss_estimate_observe(struct tt_LossEstimate* estimate, uint32_t frames, uint32_t events) {
+    estimate->frames += frames;
+    estimate->events += events;
+    if (estimate->frames >= (uint32_t)tt_HYBRID_WINDOW_FRAMES) {
+        estimate->frames /= 2U;
+        estimate->events /= 2U;
+    }
+}
+
+// The one-sided 95% upper limit of a Poisson mean given k events: exact for k < 11 (half the chi-square quantile with
+// 2k + 2 degrees of freedom), the Wilson-Hilferty approximation above, which is within 0.3% there.
+#define LOSS_BOUND_EXACT 11U
+#define LOSS_BOUND_Z 1.6449 // the one-sided 95% normal quantile
+#define LOSS_SQRT_STEPS 24  // from k1 itself to double precision for any k1 below 2^32
+static double loss_poisson_upper(uint32_t events) {
+    static const double exact[LOSS_BOUND_EXACT] = {2.996,  4.744,  6.296,  7.754,  9.154, 10.513,
+                                                   11.842, 13.148, 14.435, 15.705, 16.962};
+    if (events < LOSS_BOUND_EXACT) {
+        return exact[events];
+    }
+    double k1 = (double)events + 1.0;
+    double root = k1; // sqrt(k1) by Newton's method: core links no libm
+    for (int i = 0; i < LOSS_SQRT_STEPS; i++) {
+        root = 0.5 * (root + (k1 / root));
+    }
+    double cube = 1.0 - (1.0 / (9.0 * k1)) + (LOSS_BOUND_Z / (3.0 * root));
+    return k1 * cube * cube * cube;
+}
+
+// p: the upper bound of the loss rate per frame, in [0, 1].
+static double loss_estimate_p(const struct tt_LossEstimate* estimate) {
+#ifdef TT_HYBRID_TEST_SEAM
+    if (hybrid_test_forced_p >= 0.0) {
+        return hybrid_test_forced_p;
+    }
+#endif
+    if (estimate->frames == 0) {
+        return 1.0;
+    }
+    double p = loss_poisson_upper(estimate->events) / (double)estimate->frames;
+    return p < 1.0 ? p : 1.0;
+}
+
+// ---- The reader's side: its pooled loss and the cap on what it advertises (DESIGN.md section 8, "BEST_EFFORT") ------
+//
+// A reader receiving U units a second in runs holds about H(n) = U T t_u L(n) / 2 bytes of incomplete reassemblies, T
+// the kernel's ipfrag_time and t_u one held fragment's truesize. The cap keeps H within half the kernel's threshold:
+// n_cap is the largest n with L(n) <= threshold / (U T t_u), p being this reader's own pooled estimate - its gaps over
+// its exposure, across every writer, because the memory is pooled. It is advertised quantised (1, 2, 4, 8, 16, 32 or
+// n_max units) once per announce interval, and a RELIABLE writer's n is held under it too.
+
+// One datagram's units of a sample (source, entity_id, first seq_no `sample`, `count` units) arrived: units
+// [index, index + units). A unit beyond the next one expected of that writer's sample is a gap, one event; a sample
+// abandoned short of its end is one more, counted when the writer's next sample starts. Every unit is exposure once;
+// a repair, below what was expected, is neither.
+static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t entity_id, uint32_t sample, uint32_t index,
+                           uint32_t count, uint32_t units) {
+    struct tt_HybridState* hybrid = &node->hybrid;
+    struct tt_HybridRxWriter* writer = NULL;
+    for (uint32_t i = 0; i < tt_HYBRID_RX_WRITERS && writer == NULL; i++) {
+        struct tt_HybridRxWriter* entry = &hybrid->rx_writers[i];
+        if (entry->sample != 0 && entry->source == source && entry->entity_id == entity_id) {
+            writer = entry;
+        }
+    }
+    if (writer == NULL) {
+        writer = &hybrid->rx_writers[hybrid->rx_writer_next];
+        hybrid->rx_writer_next = (uint8_t)((hybrid->rx_writer_next + 1U) % tt_HYBRID_RX_WRITERS);
+        *writer = (struct tt_HybridRxWriter) {entity_id, sample, (uint16_t)count, (uint16_t)index, source};
+    }
+    if ((int32_t)(sample - writer->sample) > 0) {
+        if (writer->next < writer->count) {
+            loss_estimate_observe(&hybrid->rx_loss, writer->count - writer->next, 1); // its tail never came
+            hybrid->tick_units += writer->count - writer->next;
+        }
+        writer->sample = sample;
+        writer->count = (uint16_t)count;
+        writer->next = 0;
+    }
+    if (sample != writer->sample || index + units <= writer->next) {
+        return; // an older sample's unit, or a repair
+    }
+    // The units this datagram adds, and any it skipped - sent and lost - are exposure; a skip is one event. They are
+    // also U, the units a second sent to this reader: what IP had to reassemble, arrived or not.
+    loss_estimate_observe(&hybrid->rx_loss, (index + units) - writer->next, index > writer->next ? 1U : 0U);
+    hybrid->tick_units += (index + units) - writer->next;
+    writer->next = (uint16_t)(index + units);
+}
 #endif
 
 // Sends one sample as fragments, each its own datagram, to the destinations a flush would use
@@ -4300,7 +4401,16 @@ static void reset_node_state(struct tt_Context* node) {
     memset(&node->large, 0, sizeof(node->large));
 #endif
 #if tt_HYBRID_TRANSPORT
-    memset(&node->hybrid, 0, sizeof(node->hybrid)); // every counter zero
+    // Nothing heard, every counter zero. The announce advertises the configured ceiling until the reader's cap says
+    // otherwise, and the cap is kept only where the ceiling allows a run at all - not on a core-default build.
+    memset(&node->hybrid, 0, sizeof(node->hybrid));
+    node->hybrid.advertised = node->ip_reassembly_max;
+    node->hybrid.rx_capable = hybrid_units_within(node->ip_reassembly_max, false) >= 2U;
+    if (!tt_ip_reassembly_limits(&node->hybrid.frag_high_thresh, &node->hybrid.frag_time_s) ||
+        node->hybrid.frag_time_s == 0) {
+        node->hybrid.frag_high_thresh = tt_HYBRID_IPFRAG_HIGH_THRESH;
+        node->hybrid.frag_time_s = tt_HYBRID_IPFRAG_TIME_S;
+    }
 #endif
 
     memset(node->scheduler, 0, sizeof(struct tt_TCB) * tt_MAX_SCHEDULER_LENGTH);
@@ -10615,7 +10725,11 @@ static void fill_announce_header(const struct tt_Context* node, struct tt_DataHe
 // The hybrid transport's fields of this node's announce (tt_VERSION 13): the reassembly ceiling it accepts, and its
 // receive costs - 0, not measured, until the cost fit exists. Every fragment of an announce carries them.
 static void fill_announce_capability(const struct tt_Context* node, struct tt_AnnounceHeader* announce) {
+#if tt_HYBRID_TRANSPORT
+    announce->ip_reassembly_max = node->hybrid.advertised; // the ceiling under the reader's cap (DESIGN.md section 8)
+#else
     announce->ip_reassembly_max = node->ip_reassembly_max;
+#endif
     announce->cost_datagram_ns = 0;
     announce->cost_frame_ns = 0;
 }
@@ -10854,8 +10968,99 @@ static bool every_peer_reached(struct tt_Context* node) {
     return any_peer;
 }
 
+#if tt_HYBRID_TRANSPORT
+// The largest n whose run loss L(n) = 1 - (1 - p)^n keeps this reader's incomplete reassemblies within half the
+// kernel's threshold at the units a second it received over the last `elapsed_ns`; n_max when nothing arrived, at
+// least 1.
+static uint32_t hybrid_reader_cap(const struct tt_Context* node, uint64_t elapsed_ns, uint32_t n_max) {
+    const struct tt_HybridState* hybrid = &node->hybrid;
+    if (hybrid->tick_units == 0 || elapsed_ns == 0) {
+        return n_max;
+    }
+    double units_per_s = (double)hybrid->tick_units * (double)tt_SECOND / (double)elapsed_ns;
+    double held_per_loss = units_per_s * (double)hybrid->frag_time_s * (double)tt_HYBRID_FRAGMENT_TRUESIZE;
+    double budget = (double)hybrid->frag_high_thresh / held_per_loss; // L(n) may reach this
+    double p = loss_estimate_p(&hybrid->rx_loss);
+    double clean = 1.0;
+    uint32_t cap = 1;
+    for (uint32_t n = 1; n <= n_max; n++) {
+        clean *= 1.0 - p;
+        if (1.0 - clean > budget) {
+            break;
+        }
+        cap = n;
+    }
+    return cap;
+}
+
+// What the announce carries for a cap of `cap` units: the configured ceiling at n_max, else the largest of 1, 2, 4, 8,
+// 16 and 32 units within the cap, as bytes that hold exactly that many units of either type pair.
+static uint16_t hybrid_cap_bytes(const struct tt_Context* node, uint32_t cap, uint32_t n_max) {
+    if (cap >= n_max) {
+        return node->ip_reassembly_max;
+    }
+    uint32_t quantised = 1;
+    while (quantised * 2U <= cap) {
+        quantised *= 2U;
+    }
+    uint32_t bytes = HYBRID_RUN_L_WIRE_FRAMING + (quantised * HYBRID_UNIT);
+    return (uint16_t)(bytes < node->ip_reassembly_max ? bytes : node->ip_reassembly_max);
+}
+
+// Once per announce interval (node_update()): the reader's cap from its pooled loss and the units it received, or one
+// unit while withdrawn - the host's reassembly failures rose while runs were arriving, and have not been still for 2T
+// since. A changed ceiling is a new generation, announced at once, so writers learn it from the ordinary announce.
+static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
+    struct tt_HybridState* hybrid = &node->hybrid;
+    if (!hybrid->rx_capable) {
+        return;
+    }
+    if (hybrid->tick_ns == 0) {
+        hybrid->tick_ns = now;
+        hybrid->reasm_failures_read = tt_ip_reassembly_failures(&hybrid->reasm_failures);
+        return;
+    }
+    if (now - hybrid->tick_ns < tt_CONTEXT_UPDATE_INTERVAL) {
+        return;
+    }
+    uint64_t failures = 0;
+    if (tt_ip_reassembly_failures(&failures)) {
+        if (hybrid->reasm_failures_read && failures > hybrid->reasm_failures) {
+            if (hybrid->tick_runs && !hybrid->withdrawn) {
+                hybrid->withdrawn = true;
+                hybrid->withdrawals++;
+                TT_LOG_WARNING("IP reassembly failures rose while runs arrived: advertising one unit (#%lu)",
+                               (unsigned long)hybrid->withdrawals);
+            }
+            hybrid->still_since_ns = now;
+        }
+        hybrid->reasm_failures = failures;
+        hybrid->reasm_failures_read = true;
+    }
+    if (hybrid->withdrawn && now - hybrid->still_since_ns >= 2ULL * hybrid->frag_time_s * tt_SECOND) {
+        hybrid->withdrawn = false;
+    }
+    uint32_t n_max = hybrid_units_within(node->ip_reassembly_max, false);
+    uint32_t cap = hybrid->withdrawn ? 1U : hybrid_reader_cap(node, now - hybrid->tick_ns, n_max);
+    uint16_t bytes = hybrid_cap_bytes(node, cap, n_max);
+    hybrid->tick_ns = now;
+    hybrid->tick_units = 0;
+    hybrid->tick_runs = false;
+    if (bytes == hybrid->advertised) {
+        return;
+    }
+    hybrid->advertised = bytes;
+    hybrid->cap_changes++;
+    node->last_modified = now > node->last_modified ? now : node->last_modified + 1U;
+    build_and_send_update(node, NULL, 0);
+}
+#endif
+
 static void node_update(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
+#if tt_HYBRID_TRANSPORT
+    hybrid_reader_tick(node, time);
+#endif
 #if tt_SAMPLE_LENDING && tt_SEGMENT_ENABLED
     // A segment release put off while a retained sample held a slot, finished on the polling thread (DESIGN.md 10).
     (void)lend_finish_release(node);
@@ -15596,6 +15801,12 @@ static bool process_frag_large(struct tt_Context* node, struct tt_Header* header
     }
     fragment.payload = buffer + head;
     fragment.length = tail - head;
+#if tt_HYBRID_TRANSPORT
+    if (node->hybrid.rx_capable && fragment.index < fragment.count) {
+        hybrid_rx_note(node, header->source, fragment.entity_id, fragment.seq_no - fragment.index, fragment.index,
+                       fragment.count, 1);
+    }
+#endif
     return deliver_large_fragment(node, &fragment);
 #else
     UNUSED(buffer);
@@ -15673,6 +15884,12 @@ static bool process_frag_run(struct tt_Context* node, struct tt_Header* header, 
     }
     uint32_t unit = span / run_count;
     uint32_t unit_head = head;
+#if tt_HYBRID_TRANSPORT
+    if (node->hybrid.rx_capable) {
+        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);
+        node->hybrid.tick_runs = true;
+    }
+#endif
     for (uint32_t i = 0; i < run_count; i++) {
         uint32_t unit_index = index + i;
         uint32_t unit_length = unit_index == 0 ? unit - (uint32_t)tt_FRAG_FIRST_SHORTFALL : unit;
@@ -15710,6 +15927,12 @@ static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* he
         return false;
     }
     const uint8_t* payload = buffer + head;
+#if tt_HYBRID_TRANSPORT
+    if (node->hybrid.rx_capable) {
+        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);
+        node->hybrid.tick_runs = true;
+    }
+#endif
     for (uint32_t i = 0; i < run_count; i++) {
         uint32_t unit_index = index + i;
         struct large_fragment fragment = {
@@ -15787,6 +16010,11 @@ static bool process_frag(struct tt_Context* node, struct tt_Header* header, uint
         return process_announce(node, header, buffer, head, tail, sender_ip, sender_port, seq_no, (uint8_t)index,
                                 (uint8_t)count);
     }
+#if tt_HYBRID_TRANSPORT
+    if (node->hybrid.rx_capable && index < count) {
+        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, 1);
+    }
+#endif
 #if tt_FRAG_ENABLED
     return deliver_user_fragment(node, header, buffer, head, tail, data_header, entity_id, seq_no, index, count,
                                  sender_ip, sender_port);

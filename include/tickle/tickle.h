@@ -513,18 +513,58 @@ struct tt_Lending {
 #endif
 
 #if tt_HYBRID_TRANSPORT
+// Hybrid transport (DESIGN.md section 8, "Estimating p"): a loss rate as events over exposure, in frames. A lost MTU
+// unit is one event on one frame, a lost run one event on its n frames. Both halve whenever `frames` reaches
+// tt_HYBRID_WINDOW_FRAMES. Read only through loss_estimate_p() (tickle.c), its one-sided 95% upper bound: the one
+// interface a later estimator (time-varying loss, ROADMAP Later) replaces.
+struct tt_LossEstimate {
+    uint32_t events;
+    uint32_t frames;
+};
+
+// What a reader knows of one writer's unit stream, for its pooled loss estimate: the sample it is receiving and the
+// next unit expected of it. A unit beyond `next` is a gap - one event - and every unit counts as exposure once.
+#define tt_HYBRID_RX_WRITERS 8
+struct tt_HybridRxWriter {
+    uint32_t entity_id;
+    uint32_t sample; // the sample's first seq_no; 0: unused
+    uint16_t count;
+    uint16_t next;
+    uint8_t source;
+};
+
 // Buckets of the n histogram: 1, 2-3, 4-7, 8-15, 16-31, 32 up to tt_HYBRID_N_MAX - 1, and tt_HYBRID_N_MAX.
 #define tt_HYBRID_N_BUCKETS 7
 
 // A context's hybrid-transport state (tt_Context.hybrid).
 struct tt_HybridState {
+    // The reader (DESIGN.md section 8, "BEST_EFFORT"): its pooled loss over every writer's units, the units received
+    // since the last cap tick (U) and whether a run was among them, the kernel's reassembly limits as read at create
+    // (its defaults where unreadable), and the failure counters as last read.
+    struct tt_LossEstimate rx_loss;
+    struct tt_HybridRxWriter rx_writers[tt_HYBRID_RX_WRITERS];
+    uint64_t tick_ns;        // the last cap tick; 0: none yet
+    uint64_t still_since_ns; // while withdrawn: when the failure counters last moved
+    uint64_t reasm_failures;
+    uint32_t tick_units;
+    uint32_t frag_high_thresh; // bytes
+    uint32_t frag_time_s;
+    uint16_t advertised;    // the ceiling every announce now carries (tt_AnnounceHeader.ip_reassembly_max)
+    uint8_t rx_writer_next; // the entry the next new writer replaces
+    bool rx_capable;        // this context's ceiling allows runs at all: only then is any of this kept
+    bool tick_runs;
+    bool reasm_failures_read;
+    bool withdrawn; // advertising one unit because the kernel's reassembly failed while runs arrived
     // Counters, on the traffic line as hybrid_*. runs: run datagrams sent; run_units: units in them; mtu_units: units
     // of multi-unit samples sent alone in their first transmission (tails included); n_hist: n chosen per sample and
-    // destination.
+    // destination; cap_changes: changes of the advertised ceiling; withdrawals: times the kernel's failures withdrew
+    // it.
     uint64_t runs;
     uint64_t run_units;
     uint64_t mtu_units;
     uint64_t n_hist[tt_HYBRID_N_BUCKETS];
+    uint64_t cap_changes;
+    uint64_t withdrawals;
 };
 #endif
 

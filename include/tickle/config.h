@@ -735,6 +735,22 @@
 #ifndef tt_HYBRID_N_MAX
 #define tt_HYBRID_N_MAX 45
 #endif
+// The loss estimates (and the cost fits) halve their sums whenever their window reaches this many frames (2^17).
+#ifndef tt_HYBRID_WINDOW_FRAMES
+#define tt_HYBRID_WINDOW_FRAMES (1UL << 17)
+#endif
+// The kernel's truesize of one held IP fragment, which user space cannot see (t_u in the reader's cap, DESIGN.md
+// section 8, "BEST_EFFORT").
+#ifndef tt_HYBRID_FRAGMENT_TRUESIZE
+#define tt_HYBRID_FRAGMENT_TRUESIZE 2048
+#endif
+// The kernel's reassembly limits where they cannot be read: its own defaults, 4 MB and 30 s.
+#ifndef tt_HYBRID_IPFRAG_HIGH_THRESH
+#define tt_HYBRID_IPFRAG_HIGH_THRESH 4194304
+#endif
+#ifndef tt_HYBRID_IPFRAG_TIME_S
+#define tt_HYBRID_IPFRAG_TIME_S 30
+#endif
 // Samples a node can be reassembling at once, from any mix of senders. When all are busy and a fragment
 // of another sample arrives, the reassembly started longest ago is abandoned and counted
 // (tt_Context.frag_abandoned) - never dropped silently, since a silent drop here looks exactly like loss.
