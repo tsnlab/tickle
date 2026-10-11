@@ -631,19 +631,12 @@ datagrams.
 comparisons held, none WORSE (its verdict line reads NO VERDICT only because `rtt_p99_ms` matched no cell). Measured on
 branch ab/interleave-encode at 5130e3ae against its parent ba324d3b, both carrying the UDP offload commits of
 ab/udp-offload-v2 (parent 11cb21e8); landed without UDP offload, not re-measured.
-### Hybrid transport for multi-datagram samples (designed 2026-10-11; steps 1 to 5 built, the rig campaign not run)
+### Hybrid transport for multi-datagram samples (designed 2026-10-11, revised the same day; the rig campaign not run)
 
-**Status.** Step 1 (below) is built: `tt_VERSION` 13, `_tt_CONFIG.large_fragmentation` and `.ip_reassembly_max`, the
-Publisher's `large_fragmentation` and `ip_datagram_max`, the three announce fields (the cost fields always 0), and the
-per-peer record `tt_Context.peer_ip_reassembly_max[]` (fragmenting builds only). Step 2 is built: a run is validated
-whole (counts, reserved field, seq_no range, length; refused and counted once in `frag_dropped` / `large.dropped`) and
-then handed to the fragment path unit by unit, each under its own seq_no, so `FRAG_RUN_L` lands in the lendable large
-assembly and `FRAG_RUN` in `frag_scratch`, a reorder slot or the BE pool, with no staging copy. A run never holds a sample's last unit,
-which is what lets a type-14 receiver derive the sender's unit size from the length. Tests: `tests/test_hybrid_runs.c`,
-`tests/mutants_hybrid_transport.py`, and a real IP-fragmented receive in a netns
-(`examples/perf_hil/experiments/hybrid_run_rx.sh`). Steps 3 to 5 are built (`tt_HYBRID_TRANSPORT`, off on FreeRTOS):
-sending runs, RELIABLE AUTO's `C(n)`, the loss bound, the cost fit, the reader's cap and withdrawal - as below, with
-the departures listed under "Steps 3 to 5 as built". Not run: the rig campaign (step 6).
+**Status.** Steps 1 to 5 are built on `ab/hybrid-step34` (below and "Steps 3 to 5 as built"). The user's second set of
+decisions (2026-10-11, "The objective and the control law" below) replaced step 5's CPU cost model, its run-time cost
+fit and the reader's kernel-derived cap: n now minimises **wire bytes per delivered unit**, and every input is
+something TickLE measures itself. Built on `ab/hybrid-network-objective`; not run on the rig (step 6).
 
 **The decision.** The user lifted the IP fragmentation park on 2026-10-11 and generalised it the same day: each
 writer chooses, per peer, how many MTU fragments go into one IP-fragmented UDP datagram, from a cost model and the
@@ -662,24 +655,92 @@ each unit with its own seq_no. So "every datagram takes its own seq_no" becomes 
 fragment. `n_max = min(45, floor(peer's advertised reassembly bytes / unit))`. 45 units fill a 65,372-B UDP payload,
 which is 45 IP fragments.
 
-**Choosing n (RELIABLE).** Two costs, summed over sender and receiver. `c_d` is the cost per datagram: syscall, wake,
-the kernel's per-socket and per-skb work. `c_f` is the cost per frame: copies, checksum, wire. `p` is the frame loss
-rate to that peer. A run costs `c_d + n c_f`, and it is lost with probability `L(n) = 1 - (1 - p)^n`. Repairs are
-always MTU units, each `c_d + c_f` and needing `1 / (1 - p)` tries. The expected cost per delivered unit is
+**The objective and the control law (the user, 2026-10-11, second set).**
 
-`C(n) = c_d / n + c_f + L(n) (c_d + c_f) / (1 - p)`  (NACK and HEARTBEAT traffic neglected).
+1. *Network only.* `n` minimises the wire bytes per delivered unit and the repair-latency tail; CPU and memory are not
+   in the objective, and the run-time measurement of per-datagram and per-frame CPU costs (`c_d`, `c_f`, their fit
+   and its `getrusage()` check) is removed. RELIABLE, repairs as MTU units:
 
-For small `p`, `C(n) ~= c_d / n + c_f + n p (c_d + c_f)`, so `n* ~= sqrt(c_d / (p (c_d + c_f)))`. The writer
-minimises the exact `C(n)` over the integers `1..n_max`: 45 evaluations, run only when `p` or the costs change. At
-`p = 0`, `C` falls with `n`, so `n = n_max`.
+   `Cost(n) = (u + h / n) + (1 - q(n)) (u + h)` per delivered unit, `q(n) = (1 - p)^n`,
 
-| frame loss `p` | 0 | 0.1% | 0.5% | 1% | 5% |
-|---|---:|---:|---:|---:|---:|
-| `n` with `c_d` 60% of `c_d + c_f` | 45 | 25 | 11 | 8 | 4 |
+   `u` the unit payload (1,454 B on 8/9) and `h` the bytes an MTU unit adds to it (TickLE framing and UDP, 26 B). For
+   small `p`, `n* ~= sqrt(h / (p (u + h)))`; the writer takes the exact minimum over `1..n_max`:
 
-The 60% is derived from the rig, not from a profile: Fast DDS's pair above gives about 712 frames per MB at both
-sizes, against 712 and 16 datagrams. That makes `c_d` about 64% of a 1472-B datagram's cost on the subscriber and
-53% on the publisher. It is the Linux default until the context has measured its own (below).
+   | frame loss `p` | 0 | 0.001% | 0.01% | 0.1% | 0.5% | 1% |
+   |---|---:|---:|---:|---:|---:|---:|
+   | `n*` | 45 | 42 | 13 | 4 | 2 | 1 |
+   | `Cost(n*) / u` | 1.0004 | 1.0009 | 1.0027 | 1.0085 | 1.0191 | 1.0281 |
+   | `Cost(1) / u`, `Cost(45) / u` | 1.0179, 1.0004 | 1.0179, 1.0009 | 1.0180, 1.0050 | 1.0189, 1.0452 | 1.0230, 1.2059 | 1.0281, 1.3707 |
+
+   BEST_EFFORT: while `q(n) = (1 - p)^n` a sample arrives with probability `(1 - p)^k` whatever `n`, so best effort
+   uses the largest `n` whose `q(n)` is not worse than the MTU baseline predicts - the reader's cap below, which is
+   exactly that.
+2. *Only what TickLE collects itself.* The reader measures, from its own reception, the frame loss `p` and the run
+   survival `q(n)`, per writer and in total; no `/proc`, no sysctl. The reader owns the cap - reassembly memory is the
+   host's, shared by every writer to it - and advertises it in `ip_reassembly_max`. The writer takes `n <= cap`
+   minimising `Cost(n)` with the `p` that reader reports. **How `p` reaches the writer:** in the announce, in the
+   2-byte field the removed receive costs used (`loss_p`, below), so the wire keeps its size and `tt_VERSION` stays 13
+   (not yet on main). Not in the ACKNACK: best effort has none, and the cap and `p` are the reader's, not a pair's.
+3. *The control law* (ideas from TCP CUBIC and BBR, not halving), run by the reader once per announce interval:
+   - (a) It remembers `n_fail`, the `n` at which runs collapsed - `q(n)` far below `(1 - p)^n` by the test below - and
+     on a collapse drops the cap at once to `drop(n_fail) = max(1, min(n_fail - 1, round(0.7 n_fail)))`.
+   - (b) It re-probes above the remembered ceiling only rarely, on time: `2 tau` after the collapse (doubling per
+     failed probe, to `16 tau`), `tau` the reassembly-queue lifetime. Between, it grows back towards the ceiling fast
+     (half the remaining distance a tick) and plateaus at `n_fail - 1`. A probe holds `ceil(1.25 n_fail)` for `tau`:
+     clean, and the ceiling moves up to the probed `n`; collapsed, and it is a collapse like any other.
+   - (c) The collapse point scales as `1 / (R p)` (`R` the units a second reaching the reader). When `R p` has fallen
+     to half or less of its value at the collapse (three ticks in a row), `n_fail` scales up in proportion and a probe
+     is allowed at once; when it has doubled, `n_fail` scales down and the cap with it.
+   - (d) Plain frame loss consistent with `(1 - p)^n` never moves the cap; only excess whole-run loss does.
+   - (e) The fragment-path rule stays: every run of a sample lost while its tail arrived is a path that drops IP
+     fragments, and `n` goes to 1 at once (writer side for RELIABLE, as built; reader side for every writer, new).
+   The estimator stays behind the small interface `loss_estimate_observe()` / `loss_estimate_p()` and the run-survival
+   window beside it; a time-varying estimator (ROADMAP, Later) replaces them and nothing else.
+
+**What the reader measures.** From each fragment-path datagram - writer, sample, first unit, unit count, and whether
+it is a run - the reader rebuilds what was sent: units `[0, k - 1)` in runs of the writer's `n` (learned from a full
+run; an MTU unit at or past the next expected position says MTU), unit `k - 1` alone. A unit past the next expected
+leaves a gap, which is loss; a unit below it is a repair and counts for nothing.
+
+- `p_mtu`: lost over sent MTU units (tails, `n = 1` samples) - the frame-loss baseline, which reassembly cannot touch.
+- `p` (advertised): every frame is exposure; a lost MTU unit is one event on one frame, a lost run one event on its
+  `n` frames. Read as the one-sided 95% Poisson upper bound (3 / N at no events), so `n` leaves 1 as clean frames
+  accumulate. Under a collapse it reads high, which only shortens a RELIABLE writer's `n`.
+- `q(n)`: runs arrived over runs sent, with their sizes, in the window since the last decision; per writer as well
+  (printed, and read by rule (e)).
+- `R`: units a second in multi-unit samples, arrived or inferred lost; `D_s`: run datagrams a second from each source.
+
+**The collapse test (pre-defined).** Over a window of at least 16 runs: `X` runs lost, `F` frames in the runs sent;
+`E` lost MTU units over `N` sent (the `p_mtu` estimate). With no excess, run losses and MTU losses are both Poisson in
+the same `p` per frame (a lost run's probability `1 - (1 - p)^s <= s p`, so the approximation errs towards "no
+collapse"), and `X` given `T = X + E` is binomial with `f = F / (F + N)`. A collapse is `z = (X - T f - 0.5) /
+sqrt(T f (1 - f)) >= 3.09` (one-sided 0.1%) with `X >= 4` and `X / F >= 2 (E + 1) / N`. Without MTU exposure there is
+no baseline and no decision. A window is *clean* when it has 16 runs and `X / F` is within `p_mtu`'s 95% upper bound;
+only a clean window grows the cap.
+
+**The remembered ceiling is the collapse point, not the overshoot.** Reassembly memory fills over up to `tau`, so a
+cap grown in a few ticks can be far past the collapse point when it shows. The kernel then admits about the share of
+datagrams that keeps it at its threshold, and the memory offered grows as `n` (at fixed `R` and `p`), so the measured
+survival says where the collapse began: `n_c ~= n q / q0`. On the PC (below): 30 MB/s, 0.1%: `n` = 8, 16, 45 give 3.7,
+2.7, 3.6 and `n = 4` held; 30 MB/s, 1%: 0.3 to 0.4 and `n = 2` held; 3 MB/s, 1%: 3.0 to 3.2 and `n = 4` held;
+30 MB/s, 0.01%: 28 and `n = 16` held. So `n_fail = max(n_good + 1, min(n, ceil(n q / q0)))`, `n_good` the cap of the
+last clean window, and the cap starts small (2) and doubles per clean window until the first collapse (slow start).
+
+**The queue lifetime `tau`.** On the PC an incomplete reassembly lived `min(ipfrag_time, 65536 / datagram rate)`: the
+IP ID wraps and the next datagram with its ID ends it. TickLE cannot read `ipfrag_time`, so `tau = min(30 s, 65536 /
+D_s)`, the longest over the sources sending runs, and 30 s (the kernel's default, the longest it keeps one) when none
+is. Every wait - the hold after a collapse (`tau`, during which the full memory drains and no further collapse is
+judged), the probe wait, the writer's re-probe of a failed path (`tt_HYBRID_PATH_CLEAN_NS`, 60 s = 2 x 30 s) - is
+derived from it.
+
+**Evidence.** Linux PC, two private netns over a veth, netem loss, the kernel's default sysctls (branch
+`exp/frag-reasm-model`, commit 29d9a2d1, not on this branch;
+`~/rig_results_safe/frag_reasm_model_20261011_full/results.txt`, no TickLE): `q(n)` matches `(1 - p)^n` while the
+incomplete reassemblies stay under `ipfrag_high_thresh` (4 MB) - every 3 MB/s cell up to the predicted 4 MB - and
+collapses beyond it (30 MB/s, 0.1%, `n = 8`: `q` 0.46 against 0.99; `n = 45`: 0.08); the measured argmin of the wire
+cost is 45, 8 and 1 at 0.01%, 0.1% and 1% (3 MB/s); a fragment-dropping filter delivers 0 of 4,149 runs and every MTU
+unit. FreeRTOS on QEMU (branch `exp/freertos-frag-q`, commit 31bf7d93): lwIP holds 8 pbufs of reassembly for 15 s, so
+any loss makes `n >= 4` useless - it advertises 0.
 
 **Settings (not QoS: delivery semantics do not change, and rmw has no such field).** Until `tt_InitOptions` exists
 (ROADMAP "QoS reshaped like rmw", `f6b7d102`), the context settings live in `_tt_CONFIG` and move with the rest.
@@ -688,64 +749,14 @@ sizes, against 712 and 16 datagrams. That makes `c_d` about 64% of a 1472-B data
 |---|---|---|---|
 | `large_fragmentation` | `tt_InitOptions` | `AUTO` (computes `n`), `MTU` (`n = 1`), `IP` (`n = n_max`) | `AUTO` |
 | `ip_reassembly_max` | `tt_InitOptions`, advertised as a ceiling | largest datagram accepted from IP reassembly; 0 = none | Linux 65,507; FreeRTOS 0 |
+| `reassembly_cap_off` | `_tt_CONFIG` | 1: advertise the ceiling uncapped (a forced arm's reader) | 0 |
 | `large_fragmentation`, `ip_datagram_max` | publisher options | override, or inherit (0) | inherit |
 
 The sender takes the more conservative of its own setting and each peer's advertisement. An undiscovered peer gets
 `n = 1`, and so does a peer advertising 0. What a context advertises is also capped by its own receive buffer, so a
 core-default build (1472 B) advertises 1 unit and never receives a run. FreeRTOS gets `n = 1` from the same rule:
-lwIP reassembly is small (`IP_REASS_MAX_PBUFS`) and RAM-hungry, so it advertises 0. With no syscall boundary its
-`c_d` is small anyway, and `c_d (1 - 1/n)` is all a run could save it.
-
-**Measuring c_d and c_f.** These are measured like G (section 6), not taken from the testbed.
-
-- *Sender:* each multi-datagram send call is timed: one clock read before and one after `sendmmsg()`, against its
-  `d` datagrams and `f` frames. A least-squares fit `t = c_d d + c_f f` runs over a window: five running sums, all
-  halved whenever the window reaches 2^17 frames. The MTU tail of each sample (below) goes in its own call, so `d / f`
-  always varies and the fit stays identifiable.
-- *Receiver:* each datagram of a fragmented sample is timed the same way, from the receive call to the end of its copy
-  into the assembly. The two results are advertised as `cost_datagram_ns` and `cost_frame_ns` (0 = not measured).
-  The writer adds them to its own.
-- *Error bounds.* Thread-timed calls miss softirq work done elsewhere (NIC processing and IP reassembly on the
-  receiver), so both terms read low. A fit is used only when there are at least 64 calls, the standard error of the
-  share `c_d / (c_d + c_f)` is under 0.1, and its predicted CPU per MB agrees within a factor of 2 with the context's
-  own `getrusage()` over the same window. Otherwise the platform default applies.
-- *Sensitivity.* `n*` goes as the square root of the share, and `C` is flat at its minimum: missing the optimum by
-  a factor `(1 + e)` costs `e^2 / (2 (1 + e))` of the loss-dependent part. A share wrong by a factor of 2 in either
-  direction costs at most 6% of that part.
-
-**Estimating p, and switching.** There is no state machine and no hysteresis: `n` is recomputed for each sample from
-the current estimate, and fixed within a sample.
-
-- *Events over exposure.* A lost MTU unit is one event on one frame; a lost run is one event on `n` frames (it may
-  hide more, a small bias because `n p` stays small at `n*`). Both counts are halved at 2^17 frames, like the cost fit.
-  RELIABLE writers count per ack entry, from ACKNACKs: the first NACK of a seq_no, plus each re-NACK of a repair.
-- *Upper bound, not point estimate.* `p` is the one-sided 95% Poisson upper limit of the event count over the
-  exposure (3 / N at zero events: the rule of three). The two errors are asymmetric: overestimating `p` gives a
-  slightly short `n` on a flat curve, while underestimating it loses runs that each cost `n` repairs. Leaving `n = 1`
-  falls out of the bound: after `N` clean frames, `n* ~= sqrt(0.6 N / 3)`, which reaches 45 at about 10,000 frames
-  (15 MB). A firewall or a path that drops fragments loses every run, so `p` rises and `n` goes to 1 within a sample.
-  The end-of-sample HEARTBEAT is an MTU datagram, and it draws the NACK.
-- Time-varying loss and delay are not modelled yet (ROADMAP, Later).
-
-**BEST_EFFORT.** Delivery does not depend on `n`, since any lost frame loses the sample (`(1 - p)^k` either way), and
-`C(n) = c_d / n + c_f`. So BE uses the largest `n` the reader allows. What bounds it is the kernel's reassembly memory.
-`net.ipv4.ipfrag_high_thresh` (4 MB per namespace) caps incomplete reassemblies, each kept for up to `ipfrag_time`
-(30 s); above the cap every fragmented datagram on the host is dropped, other programs' included.
-
-- *Reader cap.* A reader receiving `U` units a second in runs holds about `H(n) = U T t_u L(n) / 2` bytes of
-  incomplete reassemblies. Here `T` is `ipfrag_time`, `t_u` is the truesize of one held fragment (2 KiB default; user
-  space cannot see it), and half a run arrives before the loss on average. The cap keeps `H` within half the
-  threshold, `B = ipfrag_high_thresh / 2`: `n_cap` = the largest `n` with `L(n) <= 2B / (U T t_u)`, at least 1. The
-  HAL reads both sysctls at start; `p` is the reader's own pooled estimate (its gaps over exposure), because the memory
-  is pooled. Examples: 1 MB at 30 Hz gives `n_cap` 31 at 0.01% loss, 3 at 0.1%, 1 at 1%. A 16 KB sample at 100 Hz
-  gives 5 at 1% and 1 at 5%.
-- The reader advertises `n_cap` (as `ip_reassembly_max`, quantised to 1, 2, 4, 8, 16, 32 or `n_max` units), at most
-  once per announce interval. A RELIABLE writer's `n` is `min(n*, n_cap)`, since the memory is the same.
-- *Withdrawal is kept only for what `p` does not see.* If the host's `ReasmFails` / `ReasmTimeout` rise while runs are
-  arriving (a new HAL call reads `/proc/net/snmp` once per announce interval; unsupported on FreeRTOS), the reader
-  advertises 1 unit. It re-derives the cap once the counters have been still for `2 T`. This catches reassembly memory
-  exhausted by something else, and receive-buffer overflow of reassembled datagrams (charged at their fragments'
-  truesize against `SO_RCVBUF`, 212,992 B on the rig).
+lwIP reassembly is small (`IP_REASS_MAX_PBUFS`) and RAM-hungry, so it advertises 0 and builds without the hybrid
+sender.
 
 **Wire (`tt_VERSION` 13).** Types 2, 8, 9, 11 and 12 are unchanged. Two run types, one per geometry, so that a repair
 is byte for byte the MTU fragment of its pair (renumbered 13/14 -> 14/15 on 2026-10-11 because large-message step
@@ -762,74 +773,57 @@ B took 13 for `LARGE_REF`):
 - **The last unit of a sample always goes as an MTU fragment**: units `[0, k - 1)` go in runs of `n` (the last run
   shorter), unit `k - 1` alone, and runs are used only when `k >= 3`. At `n` = 45: 1 MB is 18 datagrams instead of
   723, 4 MB 66 instead of 2,889, 16 KB 2 instead of 12. Every sample so ends in a datagram that needs no reassembly,
-  which tells a BE reader its runs were lost and gives the cost fit its variation.
-- **Announce:** `tt_AnnounceHeader` gains `uint16_t ip_reassembly_max` (the current cap in bytes),
-  `uint16_t cost_datagram_ns` and `uint16_t cost_frame_ns`. A change is a new generation, so writers learn it from
-  the ordinary announce.
+  which tells a reader its runs were lost and gives it the frame-loss baseline.
+- **Announce:** `tt_AnnounceHeader` gains `uint16_t ip_reassembly_max` (the cap in bytes: framing plus `cap` units
+  of 8/9, which reads back as `cap` units of either pair), `uint16_t loss_p` (the reader's `p`: 0 = no estimate, read
+  as 1; else exponent `e` in the high byte and mantissa `m` in the low, `p = (256 + m) / 2^(e + 9)`, rounded up) and
+  2 B reserved, zero. A change of the cap, or of `p` by a factor of 2, is a new generation, at most once per announce
+  interval, so writers learn it from the ordinary announce.
 - Several readers: by unicast (up to the link's threshold) each peer gets its own `n` from the one buffer. By
   broadcast, one transmission uses the minimum `n` over the matched peers. Repairs keep the existing addressing.
   Discovery stays broadcast and MTU-sized.
 - A node without stage 2 skips 14 and counts it (`frag_large_skipped`); a node without fragmentation skips 15 as it
   skips 8/9.
 
-**Predictions** (rig, cross-host).
-
-- 0% loss, L4 cells (`n` = 45): subscriber 2.0-2.5 ms/MB, publisher 2.2-2.8 ms/MB, median latency at Fast DDS's.
-- 1% loss: the model's transport cost per unit with share 0.6 is 1.01 at `n = 1`, 0.78 at `n = 45`, and 0.55 at
-  `n` = 8. At 1% every 1 MB sample needs a repair in every arm (`0.99^723` = 0.07% arrive clean), so p99 should be
-  the same within the floor. The forced-`n_max` arm repairs 45-unit ranges and should have the worst p99.
-- 5% loss: `n` = 4 for RELIABLE, cost below MTU's, delivery 100%. BE at high rate drops to `n_cap` = 1.
-
-#### Pre-registration (2026-10-11, before any code)
+#### Pre-registration (rewritten 2026-10-11 with the decisions above, before the revised code)
 
 **Method.** Every A/B runs the parent on main against `ab/hybrid-<step>`, in ABBA blocks with equal warm-up and
 cool-down, and with an A/A (parent vs parent) arm in the same session whose spread is **the floor**. A score is WIN
 when better than the reference by more than the floor, DRAW within it, LOSE otherwise. Each arm prints its realized
-treatment: the histogram of `n` sent per peer, units sent as MTU, the fitted `c_d` and `c_f` (or "default"),
-`p` and `n_cap`. An AUTO arm at 0% loss whose median `n` is not `n_max` is VOID, and so is a forced arm whose `n`
-differs from the one forced.
+treatment: the histogram of `n` sent per peer, units sent as MTU, the reader's `p`, `p_mtu`, `q(n)`, cap, `n_fail`,
+collapses and probes. An AUTO arm at 0% loss whose median `n` is not `n_max` is VOID, and so is a forced arm whose `n`
+differs from the one forced. Wire bytes per delivered unit are counted at the reader's interface (`tcpdump`, every
+frame of every datagram and repair), p99 is publish-to-take latency.
 
-| cell (cross-host) | criterion |
+| cell (cross-host, 1 MB RELIABLE at 30 Hz unless said) | criterion |
 |---|---|
-| I1, I4 RELIABLE and BEST_EFFORT, 0% loss | subscriber CPU/MB WIN or DRAW against `min(Fast DDS shipped, Fast DDS 1472, CycloneDDS)`; publisher CPU/MB WIN against the same; latency median and p99 not worse than Fast DDS shipped beyond the floor; delivered 100% |
-| I4s (saturating) | CPU as above; complete samples delivered not fewer than the parent's beyond the floor; latency read, not scored (it is queue length) |
-| I1L, 5% loss, RELIABLE | delivered 100%; p99 not worse than the parent's beyond the floor (expected parent 15.9 ms with the UDP offload branch; 24.21 ms at step A) |
-| I1L1, 1% loss, RELIABLE (new), arms AUTO, forced `MTU`, forced `IP` | AUTO WINs CPU/MB (sub and pub) against both forced arms; AUTO's p99 not worse than either beyond the floor; delivered 100% in all three |
-| I1L1 model check (not scored) | forced `n` in {1, 4, 8, 16, 45}: the measured CPU/MB minimum lies within `[n*/2, 2 n*]` of the `n*` the arm's own fit predicts |
-| F16, `Array16k` (16 KB, 12 units on 8/9) RELIABLE and BEST_EFFORT, 100 Hz, 0% and 1% loss (new) | 0%: CPU/MB WIN against the parent and WIN or DRAW against `min(vendors)`, latency median and p99 not worse than the parent beyond the floor; 1%: RELIABLE delivered 100% and CPU/MB not worse than the parent, BE delivered not fewer than the parent's |
-| core P1-P4, rmw small-message rows 52-75 | no regression by the instruction-count gate with its placement floor; single-datagram samples byte-identical to the parent's but for the version byte and the announce fields |
+| 0% | CPU per MB (pub and sub) against Fast DDS and CycloneDDS - the cell step A lost; delivered 100% |
+| 0.01% | AUTO beats forced MTU (`n = 1`) and forced IP (`n = 45`, which collapses: `q` 0.62 on the PC at 30 MB/s) on wire bytes per delivered unit and on p99 |
+| 0.1% | AUTO, `n` about 4 to 8, beats both forced arms on the same two |
+| 1% | AUTO DRAW or better against forced MTU, WIN against forced IP, on the same two |
+| core P1-P4 | no regression by the gate-v2 instruction counts |
 | FreeRTOS | `freertos link` passes; it advertises 0, and nothing is sent to it as type 14 or 15 |
 
-**What would falsify the design.**
-
-- **The datagram count was not the cost**: at `n_max` the zero-loss subscriber CPU stays above `min(vendors)` beyond
-  the floor. The receive copy is then where the time goes, and the receive path comes first.
-- **The cost model is wrong**: AUTO does not beat both forced arms at 1%, or the model check's minimum lies outside
-  `[n*/2, 2 n*]`. Then `C(n)` misses a term (the repair round trip, reassembly in softirq), and AUTO falls back to the
-  binary rule of the first draft (`n_max` while clean, 1 on any loss).
-- **The measurement cannot be trusted**: the fit is rejected (standard error or the `getrusage()` check) in most runs
-  on Linux. Then the default is all there is, and the share is a constant to state, not a measurement.
-- **The reassembly cap does not hold**: `ReasmFails` rises in a BE cell at 1% while `n_cap` > 1, i.e. `t_u` or the
-  model of held bytes is wrong.
+**What would falsify the design.** AUTO loses to forced MTU at 0.01% or 0.1% (the gain is not worth the probing); the
+cap collapses at 0% or at 0.01% with one writer (the collapse test fires on frame loss); a collapse is not detected
+within `tau` of the memory filling (`q` stays below 0.5 for more than 30 s); or AUTO's p99 exceeds forced MTU's beyond
+the floor at any loss (the repair tail of lost runs is what the objective has to bound).
 
 **Steps** (each its own `ab/` commit and A/B, with the small-message rows on every one).
 
-1. Option plumbing and the announce fields, `tt_VERSION` 13, types 14/15 defined and skipped, the cost and loss
-   counters measured and printed without being used. No behaviour change: wire identity against the parent with the
-   version and announce fields masked (parent vs parent as the control).
-2. Receive runs (14 into the large assembly, 15 into scratch, reorder slots or BE pool). Tests: hand-built runs out
-   of order, a run overlapping units already stored; mutant: off-by-one in the run offset.
-3. Send runs with a forced `n` (`MTU`, `IP`, or a fixed `n` for the model check), BE first: full runs plus the MTU
-   tail. Rig A/B I1, I4, I4s BE and F16 BE.
-4. RELIABLE runs with MTU repairs, forced `n`. netns with `tc netem` loss: 100% delivered, and a capture shows no
-   repair datagram above 1,472 B. Rig A/B I1, I4 RELIABLE, I1L, F16.
-5. AUTO: `C(n)` with the measured costs, the `p` bound, the reader's `n_cap`, and the `ReasmFails` withdrawal. netns
-   tests: loss switched on and off (`n` follows the bound), fragments dropped by a `tc` u32 match on the IP fragment
-   offset (`n` = 1 within one sample), a mocked HAL counter for the `ReasmFails` path, and mixed peers (one advertising
-   0) by unicast (each its own `n`) and broadcast (the minimum). A FreeRTOS-configured build skips 14/15.
-6. The rig campaign above, including I1L1's three arms and the model check, then RESULTS.
-
+1. Option plumbing and the announce fields, `tt_VERSION` 13, types 14/15 defined and skipped.
+2. Receive runs (14 into the large assembly, 15 into scratch, reorder slots or BE pool).
+3. Send runs with a forced `n` (`MTU`, `IP`, or a fixed `n`), BE first: full runs plus the MTU tail.
+4. RELIABLE runs with MTU repairs, forced `n`.
+5. AUTO: as revised - `Cost(n)` on the reader's `p`, the reader's `p` / `p_mtu` / `q(n)`, the collapse test and the
+   control law, both halves of rule (e). Tests: a simulated link with a modelled reassembly memory (a squeeze provokes
+   the collapse), and a netns with `netem` loss and a real squeeze (high rate, several writers); each rule with a mutant.
+6. The rig campaign above, then RESULTS.
 #### Steps 3 to 5 as built (2026-10-11), and where they depart
+
+Superseded the same day by the revision above: the CPU cost model and its run-time fit, the receiver's advertised
+costs, the writer's NACK-counted `p`, the cap from `ipfrag_high_thresh` and the `ReasmFails` withdrawal. The bullets on
+them below are the record of why they were tried and what they showed.
 
 Built as designed: runs of `n` units from three units up, the last unit alone in a send call of its own; `n` per sample
 and destination (by unicast each peer's, by broadcast the minimum over the matched peers), 1 for an undiscovered peer,
