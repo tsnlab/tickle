@@ -1837,12 +1837,12 @@ static bool read_sysctl_u32(const char* path, uint32_t* value) {
         return false;
     }
     unsigned long read = 0;
-    bool ok = fscanf(file, "%lu", &read) == 1 && read <= UINT32_MAX;
+    bool parsed = fscanf(file, "%lu", &read) == 1 && read <= UINT32_MAX;
     (void)fclose(file);
-    if (ok) {
+    if (parsed) {
         *value = (uint32_t)read;
     }
-    return ok;
+    return parsed;
 }
 
 bool tt_ip_reassembly_limits(uint32_t* high_thresh, uint32_t* time_s) {
