@@ -102,6 +102,16 @@ uint32_t tt_trace_read(struct tt_TraceStamp* out, uint32_t max) {
 }
 #endif
 
+// How far seq_no a lies after seq_no b: negative when it lies before. A writer's seq_no is a 32-bit counter, and past
+// 2^32 it wraps to 0 and goes on - so `a < b` on the raw values is wrong for any pair either side of the wrap: a reader
+// whose watermark had not yet wrapped read every new sample of a wrapped writer as late (late_below_ack) and got across
+// only by repairs and give-ups. Every comparison of two seq_no is made through this instead, serial-number arithmetic
+// in RFC 1982's sense: right while the two lie within 2^31 of each other, which every pair compared here does - they
+// lie within one tracking window, cache depth or Heartbeat range of each other. seq_no 0 is an ordinary seq_no.
+static int32_t seq_delta(uint32_t a, uint32_t b) {
+    return (int32_t)(a - b);
+}
+
 // RELIABLE recovery instrumentation - see include/tickle/reliable_stats.h. Everything below is
 // compiled out (RSTAT_* expand to nothing) unless built with -Dtt_RELIABLE_STATS.
 #ifdef tt_RELIABLE_STATS
@@ -8764,6 +8774,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->ack_seq_no = 1;
             proxy->reorder_cursor = 1;
             proxy->highest_delivered = 0;
+            proxy->delivered_any = false;
             proxy->superseded_pending = 0;
             proxy->sub = sub; // before anything that reads the window width through the proxy
             // Phase 3 - whether this writer promises KEEP_ALL, from whatever its last announce
@@ -8828,8 +8839,8 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
 // bitmap's own. -1 if neither signal has anything to report.
 static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
     int highest = proxy_highest_received(proxy);
-    if (proxy->heartbeat_last_seq_no >= proxy->ack_seq_no) {
-        uint64_t hb_offset = (uint64_t)proxy->heartbeat_last_seq_no - proxy->ack_seq_no;
+    if (seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no) >= 0) {
+        uint32_t hb_offset = proxy->heartbeat_last_seq_no - proxy->ack_seq_no;
         uint32_t window_bits = proxy_window_bits(proxy);
         int hb_highest = hb_offset < window_bits ? (int)hb_offset : (int)window_bits - 1;
         if (hb_highest > highest) {
@@ -8872,7 +8883,7 @@ static void note_requested(struct tt_WriterProxy* proxy, uint32_t first_seq_no, 
 // late re-request instead.
 static void note_repair_arrival(struct tt_WriterProxy* proxy, uint32_t seq_no, uint64_t now) {
     bool missing =
-        seq_no == proxy->ack_seq_no || ((uint64_t)seq_no - proxy->ack_seq_no < proxy_window_bits(proxy) &&
+        seq_no == proxy->ack_seq_no || (seq_no - proxy->ack_seq_no < proxy_window_bits(proxy) &&
                                         !bitmap_test_bit(proxy->received_bitmap, seq_no - proxy->ack_seq_no));
     if (!missing) {
         return; // a second copy of something already here: it says nothing about the request it answers
@@ -8880,8 +8891,8 @@ static void note_repair_arrival(struct tt_WriterProxy* proxy, uint32_t seq_no, u
     uint64_t oldest = 0;
     for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
         const struct tt_RepairRequest* request = &proxy->requests[slot];
-        if (request->sent_ns != 0 && seq_no >= request->first_seq_no && seq_no <= request->last_seq_no &&
-            (oldest == 0 || request->sent_ns < oldest)) {
+        if (request->sent_ns != 0 && seq_delta(seq_no, request->first_seq_no) >= 0 &&
+            seq_delta(seq_no, request->last_seq_no) <= 0 && (oldest == 0 || request->sent_ns < oldest)) {
             oldest = request->sent_ns;
         }
     }
@@ -8911,7 +8922,8 @@ static void forget_requests_answered_by(struct tt_Subscriber* sub, uint8_t write
     }
     for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
         struct tt_RepairRequest* request = &proxy->requests[slot];
-        if (request->sent_ns != 0 && seq_no >= request->first_seq_no && seq_no <= request->last_seq_no) {
+        if (request->sent_ns != 0 && seq_delta(seq_no, request->first_seq_no) >= 0 &&
+            seq_delta(seq_no, request->last_seq_no) <= 0) {
             request->sent_ns = 0;
         }
     }
@@ -9259,6 +9271,17 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
     }
 }
 
+// Moves the watermark to ack_seq_no other than by an in-order step: a baseline taken, a jump, or an advance past
+// samples gone. A heartbeat_last_seq_no already behind the old watermark meant nothing there and goes just behind the
+// new one; left where it was, a move of 2^31 or more past it - a writer near 2^32 met by the proxy's default baseline
+// of 1 - would make it read as ahead of the new watermark (seq_delta()) and ask for samples nobody announced.
+static void proxy_move_ack(struct tt_WriterProxy* proxy, uint32_t ack_seq_no) {
+    if (seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no) < 0) {
+        proxy->heartbeat_last_seq_no = ack_seq_no - 1U;
+    }
+    proxy->ack_seq_no = ack_seq_no;
+}
+
 // Confirms proxy->ack_seq_no itself (whether just received, or - acknack_retry()'s own call site
 // - given up on after too many retries) and advances past it, keeping received_bitmap correctly
 // realigned: bit j always means "received(ack_seq_no + j)", matching tt_AckNackHeader's own wire
@@ -9296,6 +9319,11 @@ static void advance_ack_seq_no(struct tt_WriterProxy* proxy) {
 // if one isn't already running. Splitting this out means a give-up no longer leaves a remaining,
 // different gap waiting on the next DATA arrival before anything asks for it again.
 static void maybe_arm_acknack_retry(struct tt_Context* node, struct tt_WriterProxy* proxy) {
+    // A heartbeat_last_seq_no the watermark has passed says nothing any more. Kept just behind the watermark, it cannot
+    // fall 2^31 behind on a stream no Heartbeat refreshes and then read as far ahead (seq_delta()).
+    if (seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no) < 0) {
+        proxy->heartbeat_last_seq_no = proxy->ack_seq_no - 1U;
+    }
     if (highest_relevant_bit(proxy) < 0) {
         // No outstanding gap by either signal (received_bitmap or the last Heartbeat) - a healthy
         // stream needs no ACKNACK at all.
@@ -9360,17 +9388,17 @@ static uint32_t received_in_first(const struct tt_WriterProxy* proxy, uint32_t s
 
 static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
 #ifdef tt_RELIABLE_STATS
-    if (seq_no > proxy->ack_seq_no) {
-        uint64_t span = (uint64_t)seq_no - proxy->ack_seq_no;
+    if (seq_delta(seq_no, proxy->ack_seq_no) > 0) {
+        uint64_t span = seq_no - proxy->ack_seq_no;
         uint64_t received = rstat_popcount_bitmap(proxy->received_bitmap, proxy_words(proxy));
         g_rstats.jump_abandoned_seq += span > received ? span - received : 0;
     }
 #endif
-    if (seq_no > proxy->ack_seq_no) {
+    if (seq_delta(seq_no, proxy->ack_seq_no) > 0) {
         uint32_t span = seq_no - proxy->ack_seq_no;
         proxy->sub->gap_abandoned += span - received_in_first(proxy, span);
     }
-    proxy->ack_seq_no = seq_no;
+    proxy_move_ack(proxy, seq_no);
     proxy_clear_received(proxy);
     advance_ack_seq_no(proxy);
 }
@@ -9432,7 +9460,7 @@ static bool record_out_of_order_arrival(struct tt_WriterProxy* proxy, uint32_t o
 // as recovered; landing above it opens a gap for every position skipped in between. Bit j of
 // received_bitmap means "received(ack_seq_no + j)", and ack_seq_no itself is always still missing.
 static void rstat_on_arrival(const struct tt_WriterProxy* proxy, uint32_t seq_no) {
-    uint64_t offset = (uint64_t)seq_no - proxy->ack_seq_no;
+    uint32_t offset = seq_no - proxy->ack_seq_no;
     int prev_highest = proxy_highest_received(proxy);
     if (offset == 0) {
         if (prev_highest >= 0) {
@@ -9572,7 +9600,7 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         // spurious request - and it cannot hang, because a Publisher that no longer holds the
         // range answers with Phase 1-c's eviction Heartbeat and advance_past_unavailable() skips
         // exactly what is genuinely gone. tests/test_reliable_pubsub.c pins that termination.
-        proxy->ack_seq_no = seq_no;
+        proxy_move_ack(proxy, seq_no);
         proxy->reorder_cursor = seq_no;
     }
     if (first_contact && (proxy->keep_all == tt_WRITER_KEEP_ALL_YES ||
@@ -9580,7 +9608,11 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         ack_writer_presence(node, sub, proxy);
     }
 
-    if (seq_no < proxy->ack_seq_no) {
+    // A DURABLE reader's first contact by DATA leaves ack_seq_no at the proxy's default of 1, which is no baseline of
+    // this writer's (see above): a sample seq_delta() places before it - a writer past 2^31 - is not late, but as far
+    // ahead as it lies unsigned, as it was before seq_no compared serially, and jumps the baseline below.
+    bool baseline_is_default = first_contact && sub->durable;
+    if (!baseline_is_default && seq_delta(seq_no, proxy->ack_seq_no) < 0) {
         RSTAT_INC(late_below_ack);
         return true; // old relative to the ack watermark, but NOT reliable evidence of "already
                      // delivered" once jump_ack_baseline() has ever fired for this proxy - see this
@@ -9626,14 +9658,14 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         // over, instead of ever letting it actually resolve. Skipping only belongs where it's
         // known to be right: the Publisher's own eviction Heartbeat (advance_past_unavailable()),
         // or acknack_retry()'s give-up after ack_seq_no's fair tt_RELIABLE_RETRY attempts.
-        uint64_t offset = (uint64_t)seq_no - proxy->ack_seq_no;
+        uint32_t offset = seq_no - proxy->ack_seq_no;
         if (offset < proxy_window_bits(proxy)) {
-            is_new = record_out_of_order_arrival(proxy, (uint32_t)offset, &new_gap);
+            is_new = record_out_of_order_arrival(proxy, offset, &new_gap);
             // After, not before, and this is the half that differs from the in-order case: the gap
             // report above is computed against the highest bit set so far, so absorbing the span
             // first would hide the real gap below this arrival and the reader would never ask for
             // what it genuinely lost.
-            node->rx_span_absorbed += absorb_seq_span(proxy, (uint32_t)offset, node->rx_seq_span);
+            node->rx_span_absorbed += absorb_seq_span(proxy, offset, node->rx_seq_span);
         } else {
             // Unlike the "far ahead but still inside the tracking window" case this function's
             // own comment above warns against fast-forwarding on, an offset this wide (>=
@@ -10194,6 +10226,7 @@ static void forget_writer_proxies_for_endpoint(struct tt_Context* node, uint32_t
             proxy->ack_seq_no = 1;
             proxy->reorder_cursor = 1;
             proxy->highest_delivered = 0;
+            proxy->delivered_any = false;
             proxy->heartbeat_last_seq_no = 0;
             proxy->retry = 0;
             proxy->keep_all = false;
@@ -11284,7 +11317,7 @@ static void record_delivery_order(struct tt_Context* node, struct tt_Subscriber*
     bool first = (sub->delivered == 0);
     bool same_writer = !first && sub->last_source == source && sub->last_entity_id == entity_id;
     // seq_no counts per writer, so it means nothing across a switch of speaker.
-    bool seq_back = same_writer && seq_no <= sub->last_seq_no;
+    bool seq_back = same_writer && seq_delta(seq_no, sub->last_seq_no) <= 0;
     // Strictly older: since tt_VERSION 10 timestamps have microsecond precision, and two samples in one
     // microsecond are not out of order.
     bool time_back = !first && timestamp < sub->last_timestamp;
@@ -11772,9 +11805,9 @@ static void hold_for_reorder(struct tt_Context* node, struct tt_Subscriber* sub,
                            sub->reorder_overflow);
         }
     }
-    uint64_t offset = (uint64_t)ctx->seq_no - proxy->ack_seq_no;
+    uint32_t offset = ctx->seq_no - proxy->ack_seq_no; // a sample behind the watermark lies 2^31 or more ahead
     if (offset < proxy_window_bits(proxy)) {
-        bitmap_clear_bit(proxy->received_bitmap, (uint32_t)offset);
+        bitmap_clear_bit(proxy->received_bitmap, offset);
         proxy_trim_received(proxy);
     }
 }
@@ -11822,13 +11855,14 @@ static void release_reorder_slots_for_writer(struct tt_Context* node, struct tt_
 static void deliver_in_order(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                              uint32_t seq_no, uint64_t timestamp, const uint8_t* payload, uint32_t length,
                              bool is_native, bool via_data_port, bool* out_decode_failed) {
-    if (proxy->highest_delivered != 0 && seq_no <= proxy->highest_delivered) {
+    if (proxy->delivered_any && seq_delta(seq_no, proxy->highest_delivered) <= 0) {
         // A step backwards: the application already has something later from this writer. Only
         // reachable after a gap was abandoned and a sample from it turned up anyway.
         sub->out_of_order_discarded++;
         return;
     }
     proxy->highest_delivered = seq_no;
+    proxy->delivered_any = true;
     deliver_payload(node, sub, seq_no, timestamp, proxy->context_id, proxy->entity_id, payload, length, is_native,
                     via_data_port, out_decode_failed);
 }
@@ -11888,7 +11922,7 @@ static bool drain_fragmented_sample(struct tt_Context* node, struct tt_Subscribe
             total += slot->length;
             continue;
         }
-        if (seq_no + index >= ack) {
+        if (seq_delta(seq_no + index, ack) >= 0) {
             return false; // not here yet, and still asked for
         }
         // Given up on below the watermark: this sample can never be whole.
@@ -12101,7 +12135,7 @@ static int drain_large_sample(struct tt_Context* node, struct tt_Subscriber* sub
         return 1;
     }
     uint32_t missing = large_first_missing(assembly);
-    if (seq_no + missing >= ack) {
+    if (seq_delta(seq_no + missing, ack) >= 0) {
         return -1; // not here yet, and still asked for
     }
     *consumed = ack - seq_no < count ? ack - seq_no : count;
@@ -12117,7 +12151,7 @@ static void large_sweep_passed(struct tt_Context* node, const struct tt_Subscrib
         struct tt_LargeAssembly* assembly = &node->large.assemblies[i];
         if (assembly->buffer != NULL && assembly->sub == sub && assembly->source == proxy->context_id &&
             assembly->entity_id == proxy->entity_id &&
-            (int32_t)(assembly->seq_no + assembly->frag_count - proxy->reorder_cursor) <= 0) {
+            seq_delta(assembly->seq_no + assembly->frag_count, proxy->reorder_cursor) <= 0) {
             large_assembly_abandon(node, assembly);
         }
     }
@@ -12239,10 +12273,10 @@ static void note_declined(struct tt_Context* node, struct tt_Subscriber* sub, co
         return; // BEST_EFFORT: a decline is a counted drop, nothing will send it again
     }
     struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);
-    if (proxy == NULL || ctx->seq_no < proxy->ack_seq_no) {
+    if (proxy == NULL || seq_delta(ctx->seq_no, proxy->ack_seq_no) < 0) {
         return;
     }
-    if (ctx->seq_no > proxy->heartbeat_last_seq_no) {
+    if (seq_delta(ctx->seq_no, proxy->heartbeat_last_seq_no) > 0) {
         proxy->heartbeat_last_seq_no = ctx->seq_no;
     }
     proxy->sender_ip = ctx->sender_ip;
@@ -12315,12 +12349,17 @@ static void deliver_data_to_subscriber(struct tt_Context* node, struct tt_Endpoi
     // against a high watermark. It is not, because a restarted Publisher carries a new entity_id
     // (Milestone 47) and therefore claims a different proxy.
     if (!sub->reliable && !TT_ORDERING_DISABLED) {
-        struct tt_WriterProxy* proxy = find_or_create_writer_proxy(sub, ctx->header->source, ctx->entity_id, NULL);
+        bool first_contact = false;
+        struct tt_WriterProxy* proxy =
+            find_or_create_writer_proxy(sub, ctx->header->source, ctx->entity_id, &first_contact);
         // No proxy slot free: deliver rather than drop. Losing a sample because a *diagnostic-
         // sized* table is full would be a worse failure than delivering one out of order, and the
         // table is sized for the peers a node can talk to anyway.
+        //
+        // A new proxy's ack_seq_no is a default, not something this writer sent, so its first sample is taken whatever
+        // its seq_no: one seq_delta() places before the default (a writer past 2^31) is not late.
         if (proxy != NULL) {
-            if (ctx->seq_no < proxy->ack_seq_no) {
+            if (!first_contact && seq_delta(ctx->seq_no, proxy->ack_seq_no) < 0) {
                 sub->out_of_order_discarded++;
                 return;
             }
@@ -12360,7 +12399,7 @@ static void deliver_data_to_subscriber(struct tt_Context* node, struct tt_Endpoi
     // one expected, so ack_seq_no > seq_no means in-order and anything else means ahead of a gap.
     if (sub->reliable && !TT_ORDERING_DISABLED) {
         struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);
-        if (proxy != NULL && proxy->ack_seq_no <= ctx->seq_no) {
+        if (proxy != NULL && seq_delta(ctx->seq_no, proxy->ack_seq_no) >= 0) {
             hold_for_reorder(node, sub, proxy, ctx, is_native);
             return;
         }
@@ -13690,7 +13729,7 @@ struct heartbeat_ctx {
 // from the first-contact branch of inform_subscriber_of_heartbeat() below); afterwards anything
 // the Publisher no longer holds is unrecoverable for it too.
 static void advance_past_unavailable(struct tt_WriterProxy* proxy, uint32_t first_available_seq_no) {
-    if (first_available_seq_no <= proxy->ack_seq_no) {
+    if (seq_delta(first_available_seq_no, proxy->ack_seq_no) <= 0) {
         return;
     }
     uint32_t skipped = first_available_seq_no - proxy->ack_seq_no;
@@ -13714,7 +13753,7 @@ static void advance_past_unavailable(struct tt_WriterProxy* proxy, uint32_t firs
     } else {
         proxy_clear_received(proxy);
     }
-    proxy->ack_seq_no = first_available_seq_no;
+    proxy_move_ack(proxy, first_available_seq_no);
     while (bitmap_lowest_bit_set(proxy->received_bitmap)) { // absorb whatever's already confirmed right after it
         proxy_shift_received_one(proxy);
         proxy->ack_seq_no++;
@@ -13772,13 +13811,13 @@ static void inform_subscriber_of_heartbeat(struct tt_Context* node, struct tt_En
         // it at last_seq_no would still treat that one already-published sample as outstanding and
         // ACKNACK-request it (highest_relevant_bit() sees heartbeat_last_seq_no == ack_seq_no as
         // offset 0, "needs attention") - an off-by-one leak of exactly the newest pre-match sample.
-        proxy->ack_seq_no = sub->durable ? ctx->first_available_seq_no : ctx->last_seq_no + 1;
+        proxy_move_ack(proxy, sub->durable ? ctx->first_available_seq_no : ctx->last_seq_no + 1);
         proxy_clear_received(proxy);
     } else {
         advance_past_unavailable(proxy, ctx->first_available_seq_no);
     }
-    if (!first_contact && ctx->last_seq_no >= proxy->ack_seq_no) {
-        uint64_t offset = (uint64_t)ctx->last_seq_no - proxy->ack_seq_no;
+    if (!first_contact && seq_delta(ctx->last_seq_no, proxy->ack_seq_no) >= 0) {
+        uint32_t offset = ctx->last_seq_no - proxy->ack_seq_no;
         if (offset >= proxy_window_bits(proxy)) {
             // Already-tracking Subscriber, but this Heartbeat reveals a gap too wide to ever
             // track - the same "provably unrecoverable, don't get stuck" case update_reliable_
@@ -13811,7 +13850,7 @@ static void inform_subscriber_of_heartbeat(struct tt_Context* node, struct tt_En
     proxy->sender_port = ctx->sender_port;
     // Monotonic guard: a Heartbeat can arrive out of order over UDP the same as any other
     // submessage - never let a late, older one regress what highest_relevant_bit() already knows.
-    if (ctx->last_seq_no > proxy->heartbeat_last_seq_no) {
+    if (seq_delta(ctx->last_seq_no, proxy->heartbeat_last_seq_no) > 0) {
         proxy->heartbeat_last_seq_no = ctx->last_seq_no;
     }
 
@@ -13872,11 +13911,12 @@ static void answer_ack_request(struct tt_Context* node, struct tt_WriterProxy* p
     int skip_count = 0;
     for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
         const struct tt_RepairRequest* request = &proxy->requests[slot];
-        if (request->sent_ns == 0 || now - request->sent_ns >= window || request->last_seq_no < proxy->ack_seq_no) {
+        if (request->sent_ns == 0 || now - request->sent_ns >= window ||
+            seq_delta(request->last_seq_no, proxy->ack_seq_no) < 0) {
             continue;
         }
-        int64_t low = (int64_t)request->first_seq_no - proxy->ack_seq_no;
-        int64_t high = (int64_t)request->last_seq_no - proxy->ack_seq_no;
+        int32_t low = seq_delta(request->first_seq_no, proxy->ack_seq_no);
+        int32_t high = seq_delta(request->last_seq_no, proxy->ack_seq_no);
         skips[skip_count].low_bit = low < 0 ? 0 : (int)low;
         skips[skip_count].high_bit = high > high_bit ? high_bit : (int)high;
         skip_count++;
@@ -14236,9 +14276,9 @@ static void accept_reliable_fragment(struct tt_Context* node, struct tt_Subscrib
     // stays unrecorded and the ordinary ACKNACK asks for it again.
     struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);
     if (proxy != NULL) {
-        uint64_t offset = (uint64_t)ctx->seq_no - proxy->ack_seq_no;
-        if (ctx->seq_no < proxy->ack_seq_no ||
-            (offset < proxy_window_bits(proxy) && bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset))) {
+        uint32_t offset = ctx->seq_no - proxy->ack_seq_no;
+        if (seq_delta(ctx->seq_no, proxy->ack_seq_no) < 0 ||
+            (offset < proxy_window_bits(proxy) && bitmap_test_bit(proxy->received_bitmap, offset))) {
             node->frag_duplicate++; // already here, or already past
             return;
         }
@@ -14372,7 +14412,7 @@ struct large_fragment {
 // is left - the one its writer's stream is waiting on, which must never be evicted.
 static uint32_t large_ahead(const struct tt_LargeAssembly* assembly) {
     struct tt_WriterProxy* proxy = find_writer_proxy(assembly->sub, assembly->source, assembly->entity_id);
-    if (proxy == NULL || (int32_t)(assembly->seq_no - proxy->ack_seq_no) <= 0) {
+    if (proxy == NULL || seq_delta(assembly->seq_no, proxy->ack_seq_no) <= 0) {
         return 0;
     }
     return assembly->seq_no - proxy->ack_seq_no;
@@ -14386,9 +14426,9 @@ static void large_unrecord(const struct tt_LargeAssembly* assembly) {
         return;
     }
     for (uint32_t index = 0; index < assembly->frag_count; index++) {
-        uint64_t offset = (uint64_t)(assembly->seq_no + index) - proxy->ack_seq_no;
+        uint32_t offset = assembly->seq_no + index - proxy->ack_seq_no;
         if (large_has_landed(assembly, index) && offset < proxy_window_bits(proxy)) {
-            bitmap_clear_bit(proxy->received_bitmap, (uint32_t)offset);
+            bitmap_clear_bit(proxy->received_bitmap, offset);
         }
     }
 }
@@ -14438,7 +14478,7 @@ static struct tt_LargeAssembly* large_assembly_claim(struct tt_Context* node, st
         }
     }
     if (assembly == NULL) {
-        uint32_t ahead = proxy != NULL && (int32_t)(seq_no - proxy->ack_seq_no) > 0 ? seq_no - proxy->ack_seq_no : 0;
+        uint32_t ahead = proxy != NULL && seq_delta(seq_no, proxy->ack_seq_no) > 0 ? seq_no - proxy->ack_seq_no : 0;
         assembly = large_victim(node, sub != NULL, ahead);
         if (assembly == NULL) {
             node->large.no_buffer++;
@@ -14519,9 +14559,9 @@ static void large_accept_reliable(struct tt_Context* node, struct tt_Subscriber*
         return; // first contact is a sample's fragment 0, as for a small one: this one is asked for again
     }
     if (proxy != NULL) {
-        uint64_t offset = (uint64_t)fragment->seq_no - proxy->ack_seq_no;
-        if (fragment->seq_no < proxy->ack_seq_no ||
-            (offset < proxy_window_bits(proxy) && bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset))) {
+        uint32_t offset = fragment->seq_no - proxy->ack_seq_no;
+        if (seq_delta(fragment->seq_no, proxy->ack_seq_no) < 0 ||
+            (offset < proxy_window_bits(proxy) && bitmap_test_bit(proxy->received_bitmap, offset))) {
             node->large.duplicate++; // already here, or already past
             return;
         }
@@ -14574,7 +14614,7 @@ static bool large_best_effort_stale(struct tt_Context* node, uint8_t source, uin
             continue;
         }
         struct tt_WriterProxy* proxy = find_writer_proxy(sub, source, entity_id);
-        if (proxy == NULL || seq_no >= proxy->ack_seq_no) {
+        if (proxy == NULL || seq_delta(seq_no, proxy->ack_seq_no) >= 0) {
             return false;
         }
         any = true;
@@ -14642,7 +14682,7 @@ static void large_accept_best_effort(struct tt_Context* node, struct large_fragm
     for (uint32_t i = 0; i < tt_LARGE_ASSEMBLIES; i++) {
         struct tt_LargeAssembly* older = &node->large.assemblies[i];
         if (older->buffer != NULL && older->sub == NULL && older->source == source &&
-            older->entity_id == fragment->entity_id && (int32_t)(older->seq_no - delivered) < 0) {
+            older->entity_id == fragment->entity_id && seq_delta(older->seq_no, delivered) < 0) {
             large_assembly_abandon(node, older);
         }
     }
@@ -15964,10 +16004,6 @@ struct segment_plan_writer {
     bool disordered; // a seq_no that did not fall walking back: nothing earlier of this writer is judged
 };
 
-static bool seq_before(uint32_t a, uint32_t b) {
-    return (int32_t)(a - b) < 0;
-}
-
 static struct segment_plan_writer* plan_writer(struct segment_plan_writer* writers, uint32_t* writer_count,
                                                const struct segment_record* rec) {
     for (uint32_t idx = 0; idx < *writer_count; idx++) {
@@ -16054,7 +16090,7 @@ static bool plan_segment_record(struct tt_Context* node, uint32_t index, struct 
     if (writer == NULL) {
         return false;
     }
-    if (!seq_before(rec->seq_no, writer->lowest_seq_no)) {
+    if (seq_delta(rec->seq_no, writer->lowest_seq_no) >= 0) {
         writer->disordered = true;
     }
     writer->lowest_seq_no = rec->seq_no;
