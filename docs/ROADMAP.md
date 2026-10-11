@@ -277,10 +277,10 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
   the rig) and the ACK bitmap fast path (branch `ab/ack-bitmap-fastpath`). (PLAN #4; LARGE_MESSAGE_PLAN)
 - **Hybrid transport for multi-datagram samples** (the user lifted the IP fragmentation park and generalised it,
   2026-10-11): per peer, the writer packs `n` MTU fragments into one IP-fragmented datagram, choosing `n` to minimise
-  the expected cost per delivered unit from the measured per-datagram and per-frame costs and the loss rate (45 at 0%
-  loss, about 8 at 1%); repairs stay MTU units; BEST_EFFORT is capped by the reader's reassembly-memory budget.
-  `large_fragmentation` AUTO / MTU / IP, run types 13/14, `tt_VERSION` 13. Designed and pre-registered in
-  [DESIGN.md](DESIGN.md) section 8, "Hybrid transport"; six steps, each A/B'd.
+  the wire bytes per delivered unit from the frame loss its reader measures (45 at 0% loss, 4 at 0.1%, 1 at 1%);
+  repairs stay MTU units; the reader caps `n` by a control law on the run survival it measures (collapse detection,
+  a remembered ceiling, timed re-probes). `large_fragmentation` AUTO / MTU / IP, run types 14/15, `tt_VERSION` 13.
+  Designed and pre-registered in [DESIGN.md](DESIGN.md) section 8, "Hybrid transport"; six steps, each A/B'd.
 - **A service server keeps one live answer per source context**: a retry from a second client of the same service
   in that context can re-run the server's callback. Found with S9 window A (below). (RMW_GAPS S9)
 - **rmw same-host peak-RSS rows**: at `a7e02807` all six non-wins of R1-R21 (DRAW 3, LOSE 3) are peak RSS,
@@ -382,7 +382,7 @@ Decided and done 2026-10-08/09:
 - **Time-varying networks**: delay and loss both change over time; today p is treated as fixed and delay and its
   variation are ignored. Add test cases with varying loss and delay (netem schedules), and tune the estimator (e.g. a
   moving average / EWMA, windowed loss and RTT, jitter) so n and the RELIABLE timers track them. (DESIGN.md section 8,
-  "Hybrid transport": its loss and cost windows are a plain halving at 2^17 frames until then)
+  "Hybrid transport": its loss windows are a plain halving at 2^17 frames until then)
 
 ## Parked - only on the user's explicit go
 
