@@ -921,6 +921,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.drain_rearm = 0;
     node->hal.drain_returned = 0;
     node->hal.drain_rearms = 0;
+    node->hal.drain_budget = tt_RX_DRAIN_BYTES;
+    node->hal.drain_overran = false;
+    node->hal.drain_grows = 0;
 #if TT_HAL_UDP_GRO
     node->hal.drain_split_left = 0;
     node->hal.drain_merged = 0;
@@ -1111,14 +1114,14 @@ void tt_close(struct tt_Context* node) {
 #endif
     TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=%d drain_starts=%lu "
                 "drain_datagrams=%lu drain_truncated=%lu drain_overruns=%lu drain_buffers=%u x %u drain_ring=%s "
-                "drain_merged=%lu drain_rearms=%lu",
+                "drain_merged=%lu drain_rearms=%lu drain_grows=%lu",
                 node->id, (unsigned)tt_hal_rx_socket_drops(node), (unsigned)socket_drops(node->hal.sock),
                 (unsigned)socket_drops(node->hal.data_sock), node->hal.drain_fd == -2 ? -1 : 1,
                 (unsigned long)node->hal.drain_starts, (unsigned long)node->hal.drain_datagrams,
                 (unsigned long)node->hal.drain_truncated, (unsigned long)node->hal.drain_overruns,
                 (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_count : 0U),
                 (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_size : 0U), drain_ring_name(node->hal.drain_ring),
-                drain_merged, (unsigned long)node->hal.drain_rearms);
+                drain_merged, (unsigned long)node->hal.drain_rearms, (unsigned long)node->hal.drain_grows);
     drain_release(&node->hal); // before the sockets: its requests go with its ring
 #else
     TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=0", node->id,
@@ -1781,6 +1784,7 @@ static void drain_look(struct tt_hal* hal) {
             hal->drain_armed &= (uint8_t)~(1U << (cqe->user_data & (DRAIN_SOCKETS - 1U)));
             if (cqe->res == -ENOBUFS) {
                 hal->drain_overruns++;
+                hal->drain_overran = true;
                 if (hal->drain_running && hal->drain_ring != tt_RX_DRAIN_RING_CLASSIC) {
                     hal->drain_rearm |= (uint8_t)(1U << (cqe->user_data & (DRAIN_SOCKETS - 1U)));
                     hal->drain_returned = 0;
@@ -2028,9 +2032,20 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
         }
         drain_release(hal);
     }
+    if (hal->drain_fd >= 0 && hal->drain_overran && drain_held(node) == 0 && hal->drain_count < tt_RX_DRAIN_BUFFERS &&
+        hal->drain_budget < tt_RX_DRAIN_BYTES_MAX) {
+        // The last drain overran: twice the buffers (tt_RX_DRAIN_BYTES_MAX, hal_linux.h).
+        hal->drain_budget =
+            hal->drain_budget <= tt_RX_DRAIN_BYTES_MAX / 2U ? hal->drain_budget * 2U : tt_RX_DRAIN_BYTES_MAX;
+        hal->drain_grows++;
+        TT_LOG_INFO("Receive drain: its %u buffers of %u bytes overran - %u KB of them from now on",
+                    (unsigned)hal->drain_count, (unsigned)hal->drain_size, (unsigned)(hal->drain_budget / 1024U));
+        drain_release(hal);
+    }
+    hal->drain_overran = false;
     if (hal->drain_fd < 0) {
         uint32_t count = tt_RX_DRAIN_BUFFERS;
-        while (count > 1U && (uint64_t)count * size > tt_RX_DRAIN_BYTES) {
+        while (count > 1U && (uint64_t)count * size > hal->drain_budget) {
             count /= 2U;
         }
         if (!drain_setup(hal, size, count)) {

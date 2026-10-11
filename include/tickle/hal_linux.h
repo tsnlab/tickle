@@ -197,6 +197,14 @@ static inline void tt_thread_yield(void) {
 #ifndef tt_RX_DRAIN_BUFFERS
 #define tt_RX_DRAIN_BUFFERS 2048 // a power of two, at most 32768 (an io_uring buffer ring's limit)
 #endif
+// A drain whose buffers overran (every one held when a datagram came) has twice the bytes at its next start, while
+// fewer than tt_RX_DRAIN_BUFFERS, up to this. A buffer holds one datagram, and a hybrid run is not always n units: a
+// sender whose send buffer fills cuts the run there, so a saturated 4 MB stream came as ~180 runs a sample of ~15
+// units each (hybrid_drain_pc.sh, 2026-10-12, tbf 1 Gbit), and 64 buffers held a third of a sample, ~12 ms of it. A
+// receiver whose stream overruns the default gets the room; one that never does keeps the default's memory.
+#ifndef tt_RX_DRAIN_BYTES_MAX
+#define tt_RX_DRAIN_BYTES_MAX (4U * tt_RX_DRAIN_BYTES) // 256 x 65,600 at the default
+#endif
 #ifndef tt_RX_DRAIN_HOLDOFF_NS
 #define tt_RX_DRAIN_HOLDOFF_NS 100000000ULL // 100 ms
 #endif
@@ -397,6 +405,11 @@ struct tt_hal {
     uint8_t drain_rearm;
     uint32_t drain_returned;
     uint64_t drain_rearms;
+    // drain_budget: the bytes of buffers the next set-up takes (tt_RX_DRAIN_BYTES, doubled per growth up to
+    // tt_RX_DRAIN_BYTES_MAX); drain_overran: an overrun since the last start; drain_grows: growths.
+    uint32_t drain_budget;
+    bool drain_overran;
+    uint64_t drain_grows;
 #if TT_HAL_UDP_GRO
     // A merged read the drain took (UDP_GRO, hal_linux.c "The drain and receive offload"): buffer drain_split_bid,
     // cut every drain_split_segment bytes from drain_split_next to drain_split_end, drain_split_left segments still to

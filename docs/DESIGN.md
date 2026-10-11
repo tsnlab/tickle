@@ -1040,7 +1040,10 @@ socket's drops as path loss. Three rules join the two:
 - **An overrun does not end the drain.** A recvmsg that found every buffer held ends (ENOBUFS); it was left so until
   the next start, the socket's few runs taking the rest. Now it is submitted again once an eighth of the buffers is
   back (`drain_rearms`; `rx_drain_check` 7). Not at the first: a recvmsg picks its buffer before it looks for data, so
-  one buffer free is one datagram and another ENOBUFS.
+  one buffer free is one datagram and another ENOBUFS. And a drain that overran has twice the buffers at its next
+  start, up to `tt_RX_DRAIN_BYTES_MAX` (4x, 256 run-sized buffers). A buffer holds one datagram, and a run is cut where
+  the sender's send buffer filled: saturated at 4 MB, the PC's stream came as ~180 runs a sample of ~15 units
+  (`hybrid_n_hist` says n = 45; `hybrid_runs` / `hybrid_run_units` say what went), so 64 buffers held ~12 ms of it.
 - **Receiver drops are not path loss.** A datagram dropped by the receiving host - a full socket, or cut by the drain -
   is a receiver that fell behind; a smaller n does not cure it. The HAL's count of them (`tt_rx_receiver_drops()`,
   hal.h) is put against the gaps the reader sees, one drop per lost datagram; those gaps reach neither p, p_mtu, the

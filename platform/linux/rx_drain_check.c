@@ -32,7 +32,8 @@
 //                (the overrun), then a few read, then more sent - those are drained too (the recvmsg submitted again as
 //                soon as a buffer was back), not left to the smallest socket buffer, which would drop them. All
 //                arrive, in order, and the socket's count does not move. Not with classic buffers, which come back
-//                only at the next start (the check says so and passes on the rest).
+//                only at the next start (the check says so and passes on the rest). The next start, the drain holding
+//                nothing, has twice the buffers (tt_RX_DRAIN_BYTES_MAX): it overran.
 //   8. ring    - the buffers reached the kernel the way TT_EXPECT_DRAIN_RING says, when it is set: test_samehost.sh
 //                runs this under refuse_pbuf_ring.so, which holds every IORING_REGISTER_PBUF_RING to Linux 6.8's
 //                rules and can refuse it as the rig's Pi 5s did (6.8.0-1064-raspi, EINVAL), so checks 3-5 also run
@@ -309,6 +310,8 @@ static enum check_exit check_merged(struct tt_Context* node, int sender) {
 }
 #endif
 
+static int read_all(struct tt_Context* node);
+
 // 7. rearm
 static enum check_exit check_rearm(struct tt_Context* node, int sender) {
     if (node->hal.drain_ring == tt_RX_DRAIN_RING_CLASSIC) {
@@ -353,9 +356,21 @@ static enum check_exit check_rearm(struct tt_Context* node, int sender) {
                (unsigned long)node->hal.drain_rearms);
         return CHECK_FAIL;
     }
+    uint32_t buffers = node->hal.drain_count;
+    uint64_t grows = node->hal.drain_grows;
+    bool restarted = tt_rx_drain_start(node, tt_MAX_BUFFER_LENGTH);
+    uint32_t grown = node->hal.drain_count;
+    (void)read_all(node); // stops it again
+    if (!restarted || grown != 2U * buffers || node->hal.drain_grows != grows + 1U) {
+        printf("rx_drain_check: FAIL - rearm: after the overrun the next start %s with %u buffers (must be %u), "
+               "drain_grows %lu -> %lu\n",
+               restarted ? "ran" : "did not run", (unsigned)grown, 2U * (unsigned)buffers, (unsigned long)grows,
+               (unsigned long)node->hal.drain_grows);
+        return CHECK_FAIL;
+    }
     printf("rx_drain_check: PASS - rearm: %d datagrams through %u buffers and an overrun, the drain taking again once "
-           "a buffer was back (%lu re-arms), all in order, no socket drop\n",
-           filled + REARM_MORE, (unsigned)node->hal.drain_count, (unsigned long)(node->hal.drain_rearms - rearms));
+           "buffers were back (%lu re-arms), all in order, no socket drop; the next start had %u buffers\n",
+           filled + REARM_MORE, (unsigned)buffers, (unsigned long)(node->hal.drain_rearms - rearms), (unsigned)grown);
     return CHECK_PASS;
 }
 
