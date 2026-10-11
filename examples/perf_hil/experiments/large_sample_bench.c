@@ -13,7 +13,7 @@
 // them). One binary, two roles:
 //
 //   large_sample_bench pub -s BYTES -r HZ -d SECONDS [-R] [-A] [-M [-G]] [-b BROADCAST] [-F auto|mtu|ip] [-n UNITS]
-//                          [-H S]
+//                          [-H S] [-B CHUNKS]
 //   large_sample_bench sub -s BYTES -d SECONDS [-R] [-b BROADCAST] [-X BYTES] [-C] [-w US] [-W US] [-K STRIDE]
 //
 // Hybrid transport (DESIGN.md section 8), in a tree that has it: -F sets the context's large_fragmentation, -n forces
@@ -30,6 +30,9 @@
 // sending"), so core copies each range just before the datagrams that carry it. Without -M the pattern is generated
 // during the encode and the send time stamped at its start, as before. A tree without tt_DATA_ENCODE_RANGE builds
 // this with -DBENCH_NO_RANGE, and -G is then refused.
+// -B CHUNKS (pub): large-message step B's shared region of that many chunks for the Publisher (large_samehost_pc.sh),
+// so a same-host reader takes each sample through one descriptor; 0, the default, none. Refused in a build without
+// tt_LARGE_SHM.
 // -R RELIABLE (KEEP_LAST 10 unless -A, KEEP_ALL), else BEST_EFFORT. Each sample carries its send time
 // (CLOCK_MONOTONIC - both namespaces share the host's clock), its index and a pattern seeded by its index, so the
 // subscriber checks every byte (torn=) and measures publish-to-callback latency. Built against core with rmw's
@@ -292,6 +295,13 @@ static void print_large(const struct tt_Context* node) {
 #ifdef tt_LARGE_SEND_ON_WRITABLE // a tree with the writability resume (DESIGN.md section 8, "Send cursor")
     printf(" large_send_writable=%lu", (unsigned long)node->large.send_writable);
 #endif
+#if defined(tt_LARGE_SHM) && tt_LARGE_SHM
+    printf(" large_ref_sent=%lu large_ref_received=%lu large_ref_refused=%lu large_ref_dropped=%lu "
+           "large_region_full=%lu shm_full_dropped=%lu",
+           (unsigned long)node->large.ref_sent, (unsigned long)node->large.ref_received,
+           (unsigned long)node->large.ref_refused, (unsigned long)node->large.ref_dropped,
+           (unsigned long)node->large.region_full, (unsigned long)node->segment_full_dropped);
+#endif
 #else
     printf(" tx_datagrams=%lu rx_datagrams=%lu", (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams);
 #endif
@@ -374,12 +384,13 @@ struct options {
     bool ranged;
     double rate_hz;
     double duration_s;
-    char* broadcast;      // as _tt_CONFIG.broadcast takes it
-    int fragmentation;    // -F: tt_LARGE_FRAGMENTATION_*, or -1 for the default
-    uint32_t run_units;   // -n: runs of exactly this many units; 0: as the mode chooses
-    long reassembly_max;  // -X: the advertised ceiling; -1: the default
-    bool cap_off;         // -C: the reader advertises its ceiling uncapped (a forced-n arm's reader)
-    double halve_after_s; // -H: the rate halves after this many seconds; 0: never
+    char* broadcast;        // as _tt_CONFIG.broadcast takes it
+    int fragmentation;      // -F: tt_LARGE_FRAGMENTATION_*, or -1 for the default
+    uint32_t run_units;     // -n: runs of exactly this many units; 0: as the mode chooses
+    long reassembly_max;    // -X: the advertised ceiling; -1: the default
+    bool cap_off;           // -C: the reader advertises its ceiling uncapped (a forced-n arm's reader)
+    double halve_after_s;   // -H: the rate halves after this many seconds; 0: never
+    uint32_t region_chunks; // -B: step B's shared region for the publisher, 0 for none (fragments through the ring)
 };
 
 static bool parse_options(int argc, char** argv, struct options* opts) {
@@ -398,10 +409,11 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
                               0,
                               -1,
                               false,
-                              0.0};
+                              0.0,
+                              0};
     int opt;
     optind = 2; // NOLINT(misc-include-cleaner) - see <unistd.h> above
-    while ((opt = getopt(argc, argv, "s:r:d:RAMGb:F:n:X:CH:w:W:K:")) != -1) { // NOLINT(misc-include-cleaner)
+    while ((opt = getopt(argc, argv, "s:r:d:RAMGb:F:n:X:CH:w:W:K:B:")) != -1) { // NOLINT(misc-include-cleaner)
         switch (opt) {
         case 's':
             sample_size = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
@@ -460,6 +472,9 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
             if (check_stride == 0) {
                 return false;
             }
+            break;
+        case 'B':
+            opts->region_chunks = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
             break;
         default:
             return false;
@@ -530,6 +545,21 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
     if (!setup_publisher(node, &pub, opts)) {
         return 1;
     }
+#if defined(tt_LARGE_SHM) && tt_LARGE_SHM
+    if (opts->region_chunks != 0 &&
+        tt_Publisher_set_large_region(
+            &pub, opts->region_chunks,
+            tt_LARGE_CHUNK_BYTES(sample_size > tt_MAX_SAMPLE_LENGTH ? sample_size : tt_MAX_SAMPLE_LENGTH + 1U)) !=
+            tt_RET_OK) {
+        fprintf(stderr, "cannot set the large region\n");
+        return 1;
+    }
+#else
+    if (opts->region_chunks != 0) {
+        fprintf(stderr, "-B needs a build with large samples and the segment (tt_LARGE_SHM)\n");
+        return 1;
+    }
+#endif
     poll_for(node, DISCOVERY_NS);
     uint64_t period = (uint64_t)((double)NS_PER_S / opts->rate_hz);
     double halve_after_s = opts->halve_after_s;
@@ -662,7 +692,7 @@ int main(int argc, char** argv) {
     if (!parse_options(argc, argv, &opts)) {
         fprintf(stderr,
                 "usage: %s pub|sub -s BYTES [-r HZ] -d SECONDS [-R] [-A] [-M [-G]] [-b BROADCAST] [-F auto|mtu|ip] "
-                "[-n UNITS] [-X BYTES] [-C] [-H S] [-w US] [-W US] [-K STRIDE]\n",
+                "[-n UNITS] [-X BYTES] [-C] [-H S] [-w US] [-W US] [-K STRIDE] [-B CHUNKS]\n",
                 argv[0]);
         return 2;
     }
