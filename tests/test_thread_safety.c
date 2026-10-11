@@ -71,6 +71,8 @@ struct _tt_Config _tt_CONFIG = {
     .port = _tt_CONTEXT_PORT,
     .broadcast = _tt_CONTEXT_BROADCAST,
     .context_id = tt_CONTEXT_ID_INVALID,
+    .large_fragmentation = tt_LARGE_FRAGMENTATION_AUTO,
+    .ip_reassembly_max = _tt_IP_REASSEMBLY_MAX,
 };
 
 // ---- An in-memory, thread-safe HAL: one bounded FIFO of datagrams per node. A full queue makes the

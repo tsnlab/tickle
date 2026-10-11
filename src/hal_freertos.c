@@ -50,6 +50,8 @@ struct _tt_Config _tt_CONFIG = {
     .port = _tt_CONTEXT_PORT,
     .broadcast = _tt_CONTEXT_BROADCAST,
     .context_id = tt_CONTEXT_ID_INVALID, // auto-detect by default; see its own comment in config.h
+    .large_fragmentation = tt_LARGE_FRAGMENTATION_AUTO,
+    .ip_reassembly_max = _tt_IP_REASSEMBLY_MAX,
 };
 
 // QEMU's `-machine virt` CLINT counts at a fixed 10MHz (RISCV_ACLINT_DEFAULT_TIMEBASE_FREQ) -
