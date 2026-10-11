@@ -15,6 +15,12 @@
 //   large_sample_bench pub -s BYTES -r HZ -d SECONDS [-R] [-A] [-b BROADCAST]
 //   large_sample_bench sub -s BYTES -d SECONDS [-R] [-b BROADCAST]
 //
+// -M (pub): the sample is a message already in memory - filled before the publish, its send time stamped just before
+// it - and encoding it is a memcpy, as rmw_tickle's is for a type whose wire bytes are its message (perf_test's
+// Array4m). -G (pub, with -M): the topic offers a ranged encode too (core DESIGN.md section 8, "Encoding while
+// sending"), so core copies each range just before the datagrams that carry it. Without -M the pattern is generated
+// during the encode and the send time stamped at its start, as before. A tree without tt_DATA_ENCODE_RANGE builds
+// this with -DBENCH_NO_RANGE, and -G is then refused.
 // -R RELIABLE (KEEP_LAST 10 unless -A, KEEP_ALL), else BEST_EFFORT. Each sample carries its send time
 // (CLOCK_MONOTONIC - both namespaces share the host's clock), its index and a pattern seeded by its index, so the
 // subscriber checks every byte (torn=) and measures publish-to-callback latency. Built against core with rmw's
@@ -85,6 +91,39 @@ static uint8_t pattern(uint32_t i, uint32_t index) {
 static int32_t bench_encode_size(struct tt_Data* data) {
     (void)data;
     return (int32_t)sample_size;
+}
+
+// -M's message, and how many ranges the ranged encode copied (the -G arm's treatment check).
+static uint8_t* message;
+static uint64_t range_calls;
+
+static int32_t message_encode(struct tt_Data* data, uint8_t* payload, uint32_t len) {
+    (void)data;
+    memcpy(payload, message, len);
+    return (int32_t)len;
+}
+
+#ifndef BENCH_NO_RANGE
+static int32_t message_encode_range(struct tt_Data* data, uint8_t* payload, uint32_t offset, uint32_t len) {
+    (void)data;
+    if ((uint64_t)offset + len > sample_size) {
+        return -1;
+    }
+    memcpy(payload, message + offset, len);
+    range_calls++;
+    return (int32_t)len;
+}
+#endif
+
+// The message for sample `index`: its pattern, then - last, just before the publish - its send time.
+static void message_fill(uint32_t index) {
+    memcpy(message + BENCH_INDEX_OFFSET, &index, BENCH_INDEX_BYTES);
+    memset(message + BENCH_INDEX_OFFSET + BENCH_INDEX_BYTES, 0, BENCH_HEADER - BENCH_INDEX_OFFSET - BENCH_INDEX_BYTES);
+    for (uint32_t i = BENCH_HEADER; i < sample_size; i++) {
+        message[i] = pattern(i, index);
+    }
+    uint64_t sent = now_ns();
+    memcpy(message, &sent, BENCH_SEND_NS_BYTES);
 }
 
 static int32_t bench_encode(struct tt_Data* data, uint8_t* payload, uint32_t len) {
@@ -216,6 +255,10 @@ static void print_large(const struct tt_Context* node) {
            (unsigned long)node->large.dropped, (unsigned long)node->large.duplicate,
            (unsigned long)node->large.tail_abandoned, (unsigned long)node->large.send_waits,
            (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams);
+#ifndef BENCH_NO_RANGE
+    printf(" large_encoded_by_range=%lu large_encode_failed=%lu", (unsigned long)node->large.encoded_by_range,
+           (unsigned long)node->large.encode_failed);
+#endif
 #else
     printf(" tx_datagrams=%lu rx_datagrams=%lu", (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams);
 #endif
@@ -232,6 +275,8 @@ struct options {
     bool publisher;
     bool reliable;
     bool keep_all;
+    bool message;
+    bool ranged;
     double rate_hz;
     double duration_s;
     char* broadcast; // as _tt_CONFIG.broadcast takes it
@@ -241,11 +286,17 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
     if (argc < 2 || (strcmp(argv[1], "pub") != 0 && strcmp(argv[1], "sub") != 0)) {
         return false;
     }
-    *opts = (struct options) {
-        strcmp(argv[1], "pub") == 0, false, false, DEFAULT_RATE_HZ, DEFAULT_DURATION_S, default_broadcast};
+    *opts = (struct options) {strcmp(argv[1], "pub") == 0,
+                              false,
+                              false,
+                              false,
+                              false,
+                              DEFAULT_RATE_HZ,
+                              DEFAULT_DURATION_S,
+                              default_broadcast};
     int opt;
-    optind = 2;                                              // NOLINT(misc-include-cleaner) - see <unistd.h> above
-    while ((opt = getopt(argc, argv, "s:r:d:RAb:")) != -1) { // NOLINT(misc-include-cleaner)
+    optind = 2;                                                // NOLINT(misc-include-cleaner) - see <unistd.h> above
+    while ((opt = getopt(argc, argv, "s:r:d:RAMGb:")) != -1) { // NOLINT(misc-include-cleaner)
         switch (opt) {
         case 's':
             sample_size = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
@@ -262,6 +313,12 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
         case 'A':
             opts->keep_all = true;
             break;
+        case 'M':
+            opts->message = true;
+            break;
+        case 'G':
+            opts->ranged = true;
+            break;
         case 'b':
             opts->broadcast = optarg; // NOLINT(misc-include-cleaner)
             break;
@@ -269,7 +326,12 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
             return false;
         }
     }
-    return true;
+#ifdef BENCH_NO_RANGE
+    if (opts->ranged) {
+        return false; // this tree has no ranged encode
+    }
+#endif
+    return !opts->ranged || opts->message;
 }
 
 static void poll_for(struct tt_Context* node, uint64_t span_ns) {
@@ -281,6 +343,16 @@ static void poll_for(struct tt_Context* node, uint64_t span_ns) {
 
 static int run_publisher(struct tt_Context* node, const struct options* opts) {
     static struct tt_Publisher pub;
+    if (opts->message) {
+        message = (uint8_t*)malloc(sample_size);
+        if (message == NULL) {
+            return 1;
+        }
+        topic.data_encode = message_encode;
+#ifndef BENCH_NO_RANGE
+        topic.data_encode_range = opts->ranged ? message_encode_range : NULL;
+#endif
+    }
     if (tt_Context_create_publisher(node, &pub, &topic, "stream") != tt_RET_OK) {
         fprintf(stderr, "cannot create the publisher\n");
         return 1;
@@ -314,6 +386,9 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
             continue;
         }
         current_index = published;
+        if (opts->message) {
+            message_fill(published);
+        }
         tt_ret_t ret = tt_Publisher_publish(&pub, (struct tt_Data*)&current_index);
         if (ret == tt_RET_WOULD_BLOCK) {
             refused++; // KEEP_ALL waits for acknowledgements, which only a poll can take in
@@ -330,10 +405,11 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
     poll_for(node, DRAIN_NS);
     double cpu = cpu_ms(&peak_rss_kb) - cpu_before;
     double published_mb = (double)published * (double)sample_size / BYTES_PER_MB;
-    printf("RESULT: role=pub size=%u reliable=%d keep_all=%d rate_hz=%.1f published=%u would_block=%u "
-           "retransmitted=%u cpu_ms=%.1f cpu_ms_per_mb=%.3f peak_rss_kb=%ld",
-           sample_size, opts->reliable ? 1 : 0, opts->keep_all ? 1 : 0, opts->rate_hz, published, refused,
-           pub.retransmitted, cpu, published > 0 ? cpu / published_mb : 0.0, peak_rss_kb);
+    printf("RESULT: role=pub size=%u reliable=%d keep_all=%d message=%d ranged=%d range_calls=%lu rate_hz=%.1f "
+           "published=%u would_block=%u retransmitted=%u cpu_ms=%.1f cpu_ms_per_mb=%.3f peak_rss_kb=%ld",
+           sample_size, opts->reliable ? 1 : 0, opts->keep_all ? 1 : 0, opts->message ? 1 : 0, opts->ranged ? 1 : 0,
+           (unsigned long)range_calls, opts->rate_hz, published, refused, pub.retransmitted, cpu,
+           published > 0 ? cpu / published_mb : 0.0, peak_rss_kb);
     print_large(node);
     printf("\n");
     return 0;
@@ -408,7 +484,7 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
 int main(int argc, char** argv) {
     struct options opts;
     if (!parse_options(argc, argv, &opts)) {
-        fprintf(stderr, "usage: %s pub|sub -s BYTES [-r HZ] -d SECONDS [-R] [-A] [-b BROADCAST]\n", argv[0]);
+        fprintf(stderr, "usage: %s pub|sub -s BYTES [-r HZ] -d SECONDS [-R] [-A] [-M [-G]] [-b BROADCAST]\n", argv[0]);
         return 2;
     }
     signal(SIGINT, handle_signal);
