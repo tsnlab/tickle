@@ -1088,6 +1088,12 @@ static void test_the_path_rule_needs_frame_loss_to_be_no_excuse(void) {
     EXPECT_EQ_U64(1, hybrid->path_failures);
     EXPECT_EQ_U32(1, hybrid->cap);
     EXPECT_EQ_U32(2, hybrid->path_cap);
+    // At its time the re-probe restores the cap the path had (say 16 had it grown), not the law's next step from one.
+    hybrid->path_cap = 16;
+    hybrid->tick_ns = hybrid->path_until_ns - tt_SECOND;
+    hybrid_reader_tick(node, hybrid->path_until_ns);
+    EXPECT_EQ_U32(16, hybrid->cap);
+    EXPECT_TRUE(hybrid->path_probe);
 }
 
 // p on the wire (tickle.h's loss_p): rounded up, never below what was measured and within 1/256 of it above; 0 for no
