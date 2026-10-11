@@ -485,6 +485,18 @@ udp offload: FAIL"
     status=1
 fi
 
+# Deferred waits while a large sample arrives (rx_defer_check.sh): the HAL's deferral and what ends it, then end to end.
+make rx_defer_check refuse_epoll.so large_sample_bench
+if ./rx_defer_check.sh; then
+    SUMMARY="$SUMMARY
+rx defer: PASS"
+else
+    echo "rx defer: FAIL"
+    SUMMARY="$SUMMARY
+rx defer: FAIL"
+    status=1
+fi
+
 echo
 echo "=== Summary ==="
 if [ "$status" -eq 0 ]; then

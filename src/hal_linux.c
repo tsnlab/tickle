@@ -563,6 +563,16 @@ static void wait_set_setup(struct tt_Context* node) {
         return;
     }
     node->hal.epoll_fd_plus1 = epoll_fd + 1;
+#if TT_HAL_RX_DEFER
+    // The deferral's set (struct tt_hal.defer_fd_plus1): without it a deferred wait uses ppoll(), so a failure here
+    // costs nothing but that.
+    int defer_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (defer_fd >= 0 && !wait_set_add(defer_fd, node->hal.wake_fd, EPOLLIN, RX_READY_WAKE)) {
+        (void)close(defer_fd);
+        defer_fd = -1;
+    }
+    node->hal.defer_fd_plus1 = defer_fd + 1;
+#endif
 #else
     (void)node;
 #endif
@@ -835,6 +845,74 @@ static int32_t gro_read(struct tt_Context* node, int socket_fd, void* buf, size_
 }
 #endif
 
+#if TT_HAL_RX_DEFER
+// Deferred waits while a large sample arrives (core's large_expect(), struct tt_Context.rx_defer_ns, 2026-10-11). Core
+// asks for one when it knows more of a sample's datagrams are on their way; the wait then first sleeps on everything
+// but the sockets - the wake eventfd and the bell, which end it at once - for that long, and only then waits on the
+// full set as before, which a queue that filled meanwhile answers at once. Nothing is read or consumed during the
+// deferral, so whatever ended it is reported by the wait that follows exactly as it would have been.
+//
+// The budget is what the receive buffer can hold while nobody reads it, from the buffer the kernel actually granted:
+// it charges a datagram its buffer's true size, which for a full-size frame is at most twice its bytes (a 2 KiB
+// buffer plus the socket buffer's own head for a 1500-byte frame - less again for one merged by GRO). A quarter of the
+// buffer in those terms, so that core's cap - twice the budget at the fastest rate it has measured - fills half of it
+// at worst. Both sockets ask for the same buffer (tt_SOCKET_BUFFER_SIZE) and get the same clamp, so the data socket's
+// stands for both. Rig (212,992 B, granted 425,984): 36 datagrams. TT_RX_DEFER=0: no budget, no deferral.
+#define RX_DEFER_SHARE 4U // of the receive buffer, in datagrams, a deferral may let queue
+static void rx_defer_setup(struct tt_Context* node) {
+    node->rx_defer_budget = 0;
+    const char* setting = getenv("TT_RX_DEFER");
+    if (setting != NULL && strcmp(setting, "0") == 0) {
+        return;
+    }
+    int granted = 0;
+    socklen_t length = sizeof(granted);
+    // NOLINTNEXTLINE(misc-include-cleaner) - as report_receive_buffer()
+    if (getsockopt(node->hal.data_sock, SOL_SOCKET, SO_RCVBUF, (void*)&granted, &length) == 0 && granted > 0) {
+        node->rx_defer_budget = (uint32_t)granted / (2U * (uint32_t)tt_CONTROL_MAX_LENGTH) / RX_DEFER_SHARE;
+    }
+}
+
+// The deferral, before tt_receive()'s wait, which `*timeout` then has what is left of (<= 0 stays "no limit"). True
+// when the deferral ran to the caller's deadline: the caller returns a timeout and reads the sockets on its next call.
+static bool rx_defer(struct tt_Context* node, int64_t* timeout_io) {
+    const int64_t timeout = *timeout_io;
+    uint64_t defer = node->rx_defer_ns;
+    node->rx_defer_ns = 0;
+    if (timeout > 0 && defer > (uint64_t)timeout) {
+        defer = (uint64_t)timeout;
+    }
+    struct timespec defer_ts = {.tv_sec = (time_t)(defer / SEC_NS), .tv_nsec = (long)(defer % SEC_NS)};
+    const uint64_t start = timeout > 0 ? tt_get_ns() : 0;
+    // Whatever ends it early - an interrupt, a ring, a signal - the wait that follows reports at once: nothing here is
+    // read or consumed.
+#if TT_HAL_EPOLL
+    if (node->hal.defer_fd_plus1 > 0) {
+        struct epoll_event events[2];
+        (void)epoll_pwait2(node->hal.defer_fd_plus1 - 1, events, 2, &defer_ts, NULL);
+    } else
+#endif
+    {
+        // NOLINTNEXTLINE(misc-include-cleaner) - as rx_wait()
+        struct pollfd pfd[2] = {
+            {.fd = node->hal.wake_fd, .events = POLLIN, .revents = 0},           // NOLINT(misc-include-cleaner)
+            {.fd = node->hal.bell_fd_plus1 - 1, .events = POLLIN, .revents = 0}, // NOLINT(misc-include-cleaner)
+        };
+        (void)ppoll(pfd, 2, &defer_ts, NULL); // NOLINT(misc-include-cleaner)
+    }
+    node->rx_defers++;
+    if (timeout <= 0) {
+        return false; // no limit: none to take the deferral out of
+    }
+    int64_t left = timeout - (int64_t)(tt_get_ns() - start);
+    if (left <= 0) {
+        return true;
+    }
+    *timeout_io = left;
+    return false;
+}
+#endif
+
 tt_ret_t tt_bind(struct tt_Context* node) {
     // Set before anything below can fail into tt_close(): -1 says "nothing to close here yet",
     // the same convention node->hal.sock itself relies on implicitly (every failure that reaches
@@ -842,6 +920,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.wake_fd = -1;
     node->hal.bell_fd_plus1 = 0;  // no segment yet, so no doorbell (tt_segment_bell_create())
     node->hal.epoll_fd_plus1 = 0; // none yet: tt_close() after a failed bind has nothing to close
+    node->hal.defer_fd_plus1 = 0;
 #if tt_SEGMENT_ENABLED
     node->hal.bell_drain_every = 0;
     node->hal.bell_drained_at = 0;
@@ -994,6 +1073,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     gro_setup(node);
 #endif
     gso_setup(node);
+#if TT_HAL_RX_DEFER
+    rx_defer_setup(node);
+#endif
 
 #if tt_HAL_IO_URING
     if (!uring_setup(node) && tt_HAL_RX_HINT == tt_RX_HINT_URING) {
@@ -1033,6 +1115,10 @@ void tt_close(struct tt_Context* node) {
     if (node->hal.epoll_fd_plus1 > 0) {
         (void)close(node->hal.epoll_fd_plus1 - 1);
         node->hal.epoll_fd_plus1 = 0;
+    }
+    if (node->hal.defer_fd_plus1 > 0) {
+        (void)close(node->hal.defer_fd_plus1 - 1);
+        node->hal.defer_fd_plus1 = 0;
     }
     if (node->hal.wake_fd >= 0 && close(node->hal.wake_fd) < 0) {
         TT_LOG_ERROR("Cannot close wake eventfd: %s", strerror(errno));
@@ -1588,6 +1674,11 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     node->hal.rx_idle_since_ns = 0;
 #if TT_HAL_UDP_GRO
     gro_maybe_settle(node); // about to wait: what came before was read
+#endif
+#if TT_HAL_RX_DEFER
+    if (node->rx_defer_ns > 0 && rx_defer(node, &timeout)) {
+        return -1; // the deferral ran to the caller's deadline: a timeout, as the wait's own would have been
+    }
 #endif
     // Wait for readability with ppoll() instead of arming SO_RCVTIMEO via setsockopt() before
     // every recvfrom(): the timeout here changes on nearly every call (it tracks whatever
@@ -2188,8 +2279,22 @@ static void bell_join_wait_set(struct tt_Context* node, int bell) {
         TT_LOG_WARNING("Cannot add the segment doorbell to the wait set (%s) - waiting with ppoll()", strerror(errno));
         (void)close(node->hal.epoll_fd_plus1 - 1);
         node->hal.epoll_fd_plus1 = 0;
+#if TT_HAL_RX_DEFER
+        if (node->hal.defer_fd_plus1 > 0) { // and the deferral's, which would not see the bell either
+            (void)close(node->hal.defer_fd_plus1 - 1);
+            node->hal.defer_fd_plus1 = 0;
+        }
+#endif
         return;
     }
+#if TT_HAL_RX_DEFER
+    // In the deferral's set as in the first, or a ring would wait out a deferral; an edge-triggered bell reports each
+    // ring to every set that watches it, so the first still sees a ring the deferral ended on.
+    if (node->hal.defer_fd_plus1 > 0 && epoll_ctl(node->hal.defer_fd_plus1 - 1, EPOLL_CTL_ADD, bell, &event) != 0) {
+        (void)close(node->hal.defer_fd_plus1 - 1);
+        node->hal.defer_fd_plus1 = 0; // deferred waits use ppoll(), which a bell left unread may cut short
+    }
+#endif
     if (edge) {
         node->hal.bell_drain_every = every;
         node->hal.bell_drained_at = node->segment_sleep_generation;

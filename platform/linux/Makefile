@@ -205,6 +205,19 @@ UDP_OFFLOAD_CHECK_DEFS = -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1
 udp_offload_check: udp_offload_check.c $(HAL_SRC) $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(UDP_OFFLOAD_CHECK_DEFS) $(LDFLAGS) -o $@ udp_offload_check.c $(HAL_SRC) \
 	    $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
+# A deferred wait against the real HAL (rx_defer_check.c), built as rmw_tickle builds core, as above; run by
+# rx_defer_check.sh from test.sh, also under refuse_epoll.so (no wait set: ppoll), and end to end with the large-sample
+# bench between two namespaces. The bench as largemsg_cpu_profile.sh builds it, at -O2 (a 1 MB sample at -O0 is slower
+# than the link it is meant to keep up with).
+rx_defer_check: rx_defer_check.c $(HAL_SRC) $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(UDP_OFFLOAD_CHECK_DEFS) $(LDFLAGS) -o $@ rx_defer_check.c $(HAL_SRC) \
+	    $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
+refuse_epoll.so: ../../tests/support/refuse_epoll.c
+	$(CC) -shared -fPIC -O2 -o $@ $<
+LARGE_BENCH = $(ROOT)/examples/perf_hil/experiments/large_sample_bench.c
+large_sample_bench: $(LARGE_BENCH) $(HAL_SRC) $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c
+	$(CC) $(CPPFLAGS) -O2 -DNDEBUG $(UDP_OFFLOAD_CHECK_DEFS) -Dtt_SEGMENT_ENABLED=0 $(LDFLAGS) -o $@ $(LARGE_BENCH) \
+	    $(HAL_SRC) $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
 # The same, leaving receive offload after 2 quiet reads instead of 128 and reading slower than the sender, so its
 # switch back is crossed on every pass with merged datagrams still queued.
 udp_offload_check_flap: udp_offload_check.c $(HAL_SRC) $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c
@@ -561,5 +574,5 @@ clean:
 	# currently selected, so switching BUILD_TYPE and running `clean` doesn't leave the
 	# other mode's stale cache behind.
 	rm -rf obj/*/
-	rm -f libtickle.a refuse_io_uring.so rx_hint_check rx_idle_check bell_wake_check udp_offload_check udp_offload_check_flap
+	rm -f libtickle.a refuse_io_uring.so rx_hint_check rx_idle_check bell_wake_check udp_offload_check udp_offload_check_flap rx_defer_check refuse_epoll.so large_sample_bench
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))

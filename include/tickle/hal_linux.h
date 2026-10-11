@@ -63,6 +63,14 @@
 #define TT_HAL_UDP_GSO 0
 #endif
 
+// Deferred waits while a large sample arrives (hal_linux.c rx_defer(), struct tt_Context.rx_defer_ns): only core with
+// large samples ever asks for one. TT_RX_DEFER=0 in the environment turns it off at tt_bind() (the A/B control).
+#if tt_LARGE_SAMPLES
+#define TT_HAL_RX_DEFER 1
+#else
+#define TT_HAL_RX_DEFER 0
+#endif
+
 // glibc's struct mmsghdr, which it declares only under _GNU_SOURCE - a define this public header cannot
 // require of everything that includes it. hal_linux.c checks the two layouts are the same.
 struct tt_mmsghdr {
@@ -214,6 +222,10 @@ struct tt_hal {
     // the wait queue of every descriptor in its set on every call - four of them with the segment - which is work per
     // sleep for a set that never changes; epoll registers each once (hal_linux.c, "The wait set").
     int epoll_fd_plus1;
+    // A second kept set, the wait set without the sockets - the wake eventfd and, with the segment, its bell, each as
+    // it is in the first - for a deferred wait (rx_defer(), hal_linux.c), which must end at once for anything but a
+    // datagram. Plus one, as above; 0 without epoll, and the deferral then waits with ppoll().
+    int defer_fd_plus1;
 #if tt_SEGMENT_ENABLED
     // The bell in that set is edge-triggered, so a ring needs no read() to stop it being reported: a pipe reports
     // every write to an epoll that watches it, empty or not, which tt_segment_bell_create() checks on the running

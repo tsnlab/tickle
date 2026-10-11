@@ -3892,6 +3892,9 @@ static void reset_node_state(struct tt_Context* node) {
     node->udp_gro_off8 = 0;
     node->udp_gso_sends = 0;
     node->udp_gso_datagrams = 0;
+    node->rx_defer_budget = 0; // tt_bind() sets it on a HAL that defers
+    node->rx_defer_ns = 0;
+    node->rx_defers = 0;
     node->rx_via_data_datagrams = 0;
     node->rx_via_well_known_datagrams = 0;
 #if tt_FRAG_ENABLED
@@ -14472,6 +14475,7 @@ static struct tt_LargeAssembly* large_assembly_claim(struct tt_Context* node, st
     assembly->last_length = 0;
     assembly->claimed = node->large.clock++;
     assembly->frag_count = (uint16_t)count;
+    assembly->next_index = 0;
     assembly->source = source;
     assembly->is_native = true;
     assembly->via_data_port = false;
@@ -14502,6 +14506,11 @@ static int large_place(struct tt_Context* node, struct tt_LargeAssembly* assembl
     _tt_memcpy(assembly->buffer + tt_LARGE_CDR_OFFSET + offset, fragment->payload, fragment->length);
     assembly->landed[index / LARGE_WORD_BITS] |= 1ULL << (index % LARGE_WORD_BITS);
     assembly->received++;
+    if (index >= assembly->next_index) {
+        assembly->next_index = (uint16_t)(index + 1U);
+    }
+    node->large.placed++;
+    node->large.last = assembly;
     if (index == last) {
         assembly->last_length = fragment->length;
     }
@@ -16731,6 +16740,57 @@ static int64_t poll_wait_length(bool has_next, uint64_t next, uint64_t time, int
 
 // tt_Context_poll()'s I/O step, when nothing is due: wait for a datagram, the next entry or an interrupt.
 // Returns true with *result set when the poll should end.
+#if tt_LARGE_SAMPLES
+// Receive coalescing while a large sample arrives (DESIGN.md section 2, "Receive path"). A receiver faster than its
+// link drains the socket to empty, sleeps, and is woken by the next datagram: on the rig every five datagrams of a 1 MB
+// sample, whatever the receive method (rx_gro_probe_rig.sh, 2026-10-10: ~85,750 wakes for 427,800 datagrams with
+// recvfrom(), recvmmsg() and UDP_GRO alike) - the NIC's interrupt pacing, not the drain, which already reads to empty.
+// While a sample is arriving, this asks the HAL to let k more of its datagrams queue before it looks at the sockets: k
+// the smaller of the fragments the sample still has to send and the HAL's budget (rx_defer_budget, from its receive
+// buffer), for k intervals as this pass measured them. Bounded three ways, none fitted to a testbed:
+//   - only across two waits in a row that each followed fragments of the same sample: the interval is measured
+//     between them, and a sample that stops arriving - a lost tail, a writer gone - stops it at the next wait;
+//   - k counts the fragments beyond the highest index landed, the ones still on their way the first time: a repair
+//     is never waited for. At most half of them: what queued during a deferral is read while the rest arrive, so a
+//     reader that is faster than its link (the only one that ever waits) has caught up before the sample's last
+//     datagram, and the sample is not delivered later than without it - deferring for all of them left that whole
+//     backlog to read after the last one (+1% latency at 1 MB, PC). A single one (k 1) is not worth a timer in place
+//     of the wake it saves;
+//   - at most 2 x budget intervals at the fastest rate this context has measured, so the datagrams that come while it
+//     defers fill at most half the receive buffer even arriving at that rate.
+// A HAL that defers still wakes at once for anything but its sockets (tt_Context_interrupt(), the segment's bell).
+static void large_expect(struct tt_Context* node) {
+    struct tt_LargeState* large = &node->large;
+    const uint64_t placed = large->placed - large->wait_placed;
+    const struct tt_LargeAssembly* last = large->last;
+    node->rx_defer_ns = 0;
+    if (placed == 0 || node->rx_defer_budget == 0) {
+        large->wait_last = NULL; // nothing arrived since the last wait: no interval to measure at the next
+        return;
+    }
+    const uint64_t now = tt_get_ns();
+    if (last != NULL && last == large->wait_last && last->claimed == large->wait_claimed && last->buffer != NULL) {
+        const uint64_t interval = (now - large->wait_ns) / placed;
+        if (interval > 0 && (large->fastest_ns == 0 || interval < large->fastest_ns)) {
+            large->fastest_ns = interval < UINT32_MAX ? (uint32_t)interval : UINT32_MAX;
+        }
+        const uint32_t budget = node->rx_defer_budget;
+        const uint32_t ahead = (uint32_t)last->frag_count - last->next_index;
+        const uint32_t half = ahead / 2U;
+        const uint32_t k = half < budget ? half : budget;
+        if (k >= 2U) {
+            const uint64_t defer = (uint64_t)k * interval;
+            const uint64_t cap = 2ULL * budget * large->fastest_ns;
+            node->rx_defer_ns = defer < cap ? defer : cap;
+        }
+    }
+    large->wait_placed = large->placed;
+    large->wait_ns = now;
+    large->wait_last = last;
+    large->wait_claimed = last != NULL ? last->claimed : 0U;
+}
+#endif
+
 static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, uint64_t time, int64_t timeout,
                          bool until_next_event, bool did_work, tt_ret_t* result) {
     // A negative-timeout poll that has already run what fell due returns here instead of starting
@@ -16810,6 +16870,9 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
         return true;
     }
     node->segment_sleeps++;
+#endif
+#if tt_LARGE_SAMPLES
+    large_expect(node);
 #endif
     int32_t len = tt_receive(node, RX_LANDING(node), tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
 #if tt_SEGMENT_ENABLED
@@ -17462,7 +17525,9 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         "shm_claims_published=%lu shm_claims_copied=%lu shm_claims_abandoned=%lu "
         // UDP offload (struct tt_Context.udp_offload): what the HAL turned on, what receive offload merged, and what
         // send offload carried.
-        "udp_offload=%u gro_reads=%lu gro_merged=%lu gro_copied=%lu gro_off8=%lu gso_sends=%lu gso_datagrams=%lu",
+        "udp_offload=%u gro_reads=%lu gro_merged=%lu gro_copied=%lu gro_off8=%lu gso_sends=%lu gso_datagrams=%lu "
+        // Waits deferred while a large sample arrived (struct tt_Context.rx_defer_ns).
+        "rx_defers=%lu",
         node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
         (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
         (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -17491,7 +17556,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned long)node->segment_claims_published, (unsigned long)node->segment_claims_copied,
         (unsigned long)node->segment_claims_abandoned, (unsigned)node->udp_offload, (unsigned long)node->udp_gro_reads,
         (unsigned long)node->udp_gro_merged, (unsigned long)node->udp_gro_copied, (unsigned long)node->udp_gro_off8,
-        (unsigned long)node->udp_gso_sends, (unsigned long)node->udp_gso_datagrams);
+        (unsigned long)node->udp_gso_sends, (unsigned long)node->udp_gso_datagrams, (unsigned long)node->rx_defers);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads

@@ -13,7 +13,7 @@
 // them). One binary, two roles:
 //
 //   large_sample_bench pub -s BYTES -r HZ -d SECONDS [-R] [-A] [-b BROADCAST]
-//   large_sample_bench sub -s BYTES -d SECONDS [-R] [-b BROADCAST]
+//   large_sample_bench sub -s BYTES -d SECONDS [-R] [-b BROADCAST] [-S SPIN_US]
 //
 // -R RELIABLE (KEEP_LAST 10 unless -A, KEEP_ALL), else BEST_EFFORT. Each sample carries its send time
 // (CLOCK_MONOTONIC - both namespaces share the host's clock), its index and a pattern seeded by its index, so the
@@ -49,6 +49,7 @@
 #define MAX_SAMPLES 200000U
 #define NS_PER_S 1000000000ULL
 #define NS_PER_US 1000.0
+#define NS_PER_US_INT 1000ULL
 #define US_PER_MS 1000.0
 #define BYTES_PER_MB 1e6
 #define DEFAULT_SIZE (1024U * 1024U)
@@ -149,11 +150,18 @@ static void bench_free(struct tt_Data* data) {
     (void)data;
 }
 
+// -S: the subscriber spins this long in its callback after every sample, as an rmw application busy with a decoded
+// message would be - the time its socket fills with nobody reading (rx_defer_pc.sh's stall cells).
+static uint64_t spin_after_ns;
+
 static void on_sample(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
     (void)sub;
     (void)time;
     (void)seq_no;
     (void)data;
+    uint64_t start = now_ns();
+    while (spin_after_ns > 0 && now_ns() - start < spin_after_ns) {
+    }
 }
 
 static struct tt_Topic topic = {
@@ -224,6 +232,10 @@ static void print_large(const struct tt_Context* node) {
            (unsigned)node->udp_offload, (unsigned long)node->udp_gso_sends, (unsigned long)node->udp_gso_datagrams,
            (unsigned long)node->udp_gro_reads, (unsigned long)node->udp_gro_merged, (unsigned long)node->udp_gro_copied,
            (unsigned long)node->udp_gro_off8);
+    // Deferred waits while a large sample arrived (hal_linux.c rx_defer()): rx_defer_pc.sh's treatment check.
+#ifdef TT_HAL_RX_DEFER // a core from before it (an A/B's base arm, built with this bench) has neither field
+    printf(" rx_defer_budget=%u rx_defers=%lu", (unsigned)node->rx_defer_budget, (unsigned long)node->rx_defers);
+#endif
 }
 
 static char default_broadcast[] = "192.168.10.255"; // the rig's link, as every bench uses it
@@ -244,8 +256,8 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
     *opts = (struct options) {
         strcmp(argv[1], "pub") == 0, false, false, DEFAULT_RATE_HZ, DEFAULT_DURATION_S, default_broadcast};
     int opt;
-    optind = 2;                                              // NOLINT(misc-include-cleaner) - see <unistd.h> above
-    while ((opt = getopt(argc, argv, "s:r:d:RAb:")) != -1) { // NOLINT(misc-include-cleaner)
+    optind = 2;                                                // NOLINT(misc-include-cleaner) - see <unistd.h> above
+    while ((opt = getopt(argc, argv, "s:r:d:RAb:S:")) != -1) { // NOLINT(misc-include-cleaner)
         switch (opt) {
         case 's':
             sample_size = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
@@ -264,6 +276,9 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
             break;
         case 'b':
             opts->broadcast = optarg; // NOLINT(misc-include-cleaner)
+            break;
+        case 'S':
+            spin_after_ns = strtoull(optarg, NULL, 10) * NS_PER_US_INT; // microseconds; NOLINT(misc-include-cleaner)
             break;
         default:
             return false;

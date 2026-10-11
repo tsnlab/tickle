@@ -66,6 +66,17 @@ the poll on another.
 - `recvmmsg()` reads up to `tt_RX_BATCH` datagrams per call (32 at the 1472-byte datagram, 1 in builds with a larger
   datagram). The two sockets alternate first refusal so neither starves.
 - "Now" is read once per `tt_RX_CLOCK_REFRESH` (16) datagrams rather than per datagram.
+- **Deferred wait while a large sample arrives** (2026-10-11, builds with `tt_LARGE_SAMPLES`). The drain reads to
+  `EAGAIN`. Even so, a reader faster than its link is woken once per NIC interrupt: on the rig every ~5 datagrams of
+  a 1 MB sample, with `recvfrom()`, `recvmmsg()` and `UDP_GRO` alike. Before a wait, core (`large_expect()`) asks the
+  HAL to let k more datagrams of the arriving sample queue first: k = min(budget, half the fragments beyond the highest
+  landed), for k intervals at the rate measured between the last two waits. The wait is at most 2 x budget
+  intervals at the fastest rate seen. It is only asked across two waits that each followed fragments of the same
+  sample, never for k < 2, and never for repairs. Budget: a quarter of the data socket's granted buffer in datagrams of
+  2 x 1472 B (36 on the rig). The deferral sleeps on a second epoll set without the sockets, so `tt_Context_interrupt()`
+  and the bell end it at once, and it is taken out of the caller's timeout. `TT_RX_DEFER=0` turns it off; traffic line
+  `rx_defers`. PC (`rx_defer_pc.sh`, netem 1 Gbit/s in 49 us slots): context switches -88%, instructions -12% per MB.
+  Open: socket drops with a rig-sized buffer under PC load (Dev review, 2026-10-11). Not landed until the rig A/B.
 - **io_uring receive hint** (`tt_HAL_RX_HINT`): a busy loop asks `tt_rx_maybe_ready()` whether anything arrived. With
   io_uring the answer is a read of a completion queue in shared memory instead of an empty `recvmmsg()`. io_uring is
   used only for one-shot `POLLIN` on the two sockets; datagrams are still read normally, and no thread is added.

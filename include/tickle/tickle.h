@@ -403,6 +403,7 @@ struct tt_LargeAssembly {
     uint32_t last_length; // payload bytes of the last fragment, 0 until it lands
     uint32_t claimed;     // tt_LargeState.clock at the claim: the best-effort reassembly claimed longest ago goes first
     uint16_t frag_count;
+    uint16_t next_index; // one past the highest fragment index landed
     uint8_t source;
     bool is_native;
     bool via_data_port;
@@ -415,6 +416,17 @@ struct tt_LargeState {
     void* user;
     struct tt_LargeAssembly assemblies[tt_LARGE_ASSEMBLIES];
     uint32_t clock;
+    // How large fragments are arriving, for large_expect() (tickle.c): placed, fragments placed so far; last, the
+    // assembly the latest one went into. At the last wait: wait_placed, wait_ns, and wait_last with its claim
+    // (wait_claimed - a reused entry is another sample), or wait_last NULL when that wait followed no progress.
+    // fastest_ns: the shortest interval between fragments any pass has measured.
+    uint64_t placed;
+    uint64_t wait_placed;
+    uint64_t wait_ns;
+    const struct tt_LargeAssembly* last;
+    const struct tt_LargeAssembly* wait_last;
+    uint32_t wait_claimed;
+    uint32_t fastest_ns;
     // Counters, on the traffic line as large_*. reassembled: delivered whole. abandoned: given up whole or in part (a
     // fragment lost for good, a newer sample needing the room, its writer gone). no_buffer: acquire said no - a
     // best-effort sample is then lost, a RELIABLE fragment is left unrecorded and asked for again. dropped: fragments
@@ -1128,6 +1140,14 @@ struct tt_Context {
     uint64_t udp_gro_off8;
     uint64_t udp_gso_sends;
     uint64_t udp_gso_datagrams;
+    // Receive coalescing while a large sample arrives (DESIGN.md section 2, "Receive path"). rx_defer_budget: set by
+    // the HAL at tt_bind(), the most datagrams a deferred wait may let queue - a quarter of what the smaller receive
+    // buffer holds - and 0 on a HAL that does not defer, or with TT_RX_DEFER=0. rx_defer_ns: set by core before each
+    // wait (large_expect(), tickle.c), how long the HAL may wait for anything but its sockets before it looks at them,
+    // 0 for not at all; the HAL clears it. rx_defers: waits the HAL deferred, on the traffic line.
+    uint32_t rx_defer_budget;
+    uint64_t rx_defer_ns;
+    uint64_t rx_defers;
     // Whether the submessage being processed right now was addressed to this node by id, rather than to
     // everyone (tt_SUBMESSAGE_ID_ALL). A retransmission is addressed to the node that asked for it
     // (retransmit_one_sample()), so this is how a reliable Subscriber tells the sample its ACKNACK

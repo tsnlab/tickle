@@ -84,6 +84,9 @@
 /platform/linux/rx_idle_check
 /platform/linux/udp_offload_check
 /platform/linux/udp_offload_check_flap
+/platform/linux/rx_defer_check
+/platform/linux/refuse_epoll.so
+/platform/linux/large_sample_bench
 /platform/linux/bell_wake_check
 
 # clang-tidy's compilation database, when generated locally (e.g. `bear -- make all`, as
