@@ -17,8 +17,8 @@
 //                must be lost (else the scenario was not built: exit 3), and the count must rise by exactly the
 //                number that did not arrive. This is also the drain's control: the same burst, nothing draining.
 //   3. drain   - the same burst through the same buffer with a drain started first: every datagram arrives, in the
-//                order sent, and the count does not move. Then LATE more are sent after the first read (which stops the
-//                drain) and must come after everything the drain took - the ordering a stop promises.
+//                order sent, and the count does not move. LATE more sent after the first read come last: the drain
+//                goes on taking while it holds datagrams, and stops - before any socket read - only once it holds none.
 //   4. cut     - a datagram longer than a drain buffer is dropped and counted (drain_truncated), and no drain starts
 //                until tt_RX_DRAIN_HOLDOFF_NS has passed, so the same datagram sent again is read whole.
 //   5. sized   - asked for 65,507-byte datagrams, the drain rebuilds its buffers for them, and a burst of them through
@@ -131,7 +131,7 @@ static enum check_exit check_drain(struct tt_Context* node, int sender) {
         return CHECK_FAIL;
     }
     printf("rx_drain_check: PASS - drain: %d datagrams through the smallest buffer, %lu of them from the drain, all in "
-           "order, the %d sent after it stopped last, no socket drop\n",
+           "order, the %d sent after the first read last, no socket drop\n",
            BURST + LATE, (unsigned long)node->hal.drain_datagrams, LATE);
 
     // 4. cut
