@@ -8,8 +8,8 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// Hybrid transport, step 2 (DESIGN.md section 8, "Hybrid transport"): receiving runs - type 14 (FRAG_RUN, a sample on
-// 8/9) and type 13 (FRAG_RUN_L, a large sample on 11/12). The sender does not produce runs yet, so every run here is
+// Hybrid transport, step 2 (DESIGN.md section 8, "Hybrid transport"): receiving runs - FRAG_RUN (a sample on 8/9) and
+// FRAG_RUN_L (a large sample on 11/12). The sender does not produce runs yet, so every run here is
 // hand-built from the real MTU fragments a Publisher sent: its payload is those fragments' payloads concatenated, its
 // header the sample's DataHeader with the first unit's seq_no and the run's index, count and run_count. That way a run
 // carries exactly the bytes the units would have, and a delivered sample is checked byte for byte against the pattern
@@ -360,7 +360,7 @@ static void expect_one_intact(bool reliable, uint32_t units) {
     }
 }
 
-// --- type 14 ---------------------------------------------------------------------------------------------------------
+// --- FRAG_RUN --------------------------------------------------------------------------------------------------------
 
 static void test_small_geometry(void) {
     init_pair(SMALL_LEN, true);
@@ -469,7 +469,7 @@ static void test_large_mid_sample_run_is_not_first_contact(void) {
     expect_one_intact(true, LARGE_UNITS);
 }
 
-// --- type 13 ---------------------------------------------------------------------------------------------------------
+// --- FRAG_RUN_L ------------------------------------------------------------------------------------------------------
 
 static void test_large_geometry(void) {
     init_pair(LARGE_LEN, true);

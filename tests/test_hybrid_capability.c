@@ -169,6 +169,9 @@ static void test_settings_and_defaults(void) {
     EXPECT_EQ_U32(24, sizeof(struct tt_FragRunLHeader));
     EXPECT_EQ_U32(20, sizeof(struct tt_FragRunHeader));
     EXPECT_EQ_U32(13, tt_VERSION);
+    // 14 and 15: 13 is large-message step B's LARGE_REF (DESIGN.md section 8).
+    EXPECT_EQ_U32(14, tt_SUBMESSAGE_TYPE_FRAG_RUN_L);
+    EXPECT_EQ_U32(15, tt_SUBMESSAGE_TYPE_FRAG_RUN);
 }
 
 // Linux to Linux, and a FreeRTOS-configured peer beside it: each peer's own figure, recorded per peer.

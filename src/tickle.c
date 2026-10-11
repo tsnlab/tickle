@@ -14755,11 +14755,12 @@ static bool process_frag_large(struct tt_Context* node, struct tt_Header* header
 //
 // A run is run_count consecutive units of one sample in one datagram (tt_SUBMESSAGE_TYPE_FRAG_RUN_L,
 // tt_SUBMESSAGE_TYPE_FRAG_RUN). It is validated whole against its header, then handed on unit by unit to the path an
-// MTU fragment of its type pair takes - the large assembly for 13, frag_scratch / the reorder slots / the BE pool for
-// 14 - each unit under its own seq_no and index, so it is stored, recorded in the ACK bitmap, deduplicated against
-// units already held and repaired exactly as that fragment would be. Nothing is staged: a unit is copied once, from
-// the receive buffer to where the fragment path keeps it (a large sample's lendable assembly buffer). Only the
-// sample's first unit carries the DataHeader onward, as FRAG_FIRST does; every other unit goes as a continuation.
+// MTU fragment of its type pair takes - the large assembly for FRAG_RUN_L, frag_scratch / the reorder slots / the BE
+// pool for FRAG_RUN - each unit under its own seq_no and index, so it is stored, recorded in the ACK bitmap,
+// deduplicated against units already held and repaired exactly as that fragment would be. Nothing is staged: a unit is
+// copied once, from the receive buffer to where the fragment path keeps it (a large sample's lendable assembly buffer).
+// Only the sample's first unit carries the DataHeader onward, as FRAG_FIRST does; every other unit goes as a
+// continuation.
 
 #if tt_FRAG_ENABLED
 // What the two run types share: the counts against each other and the type's ceiling, the reserved field, and the
@@ -14787,7 +14788,7 @@ static void run_refused(uint64_t* counter, const char* what, uint32_t index, uin
     }
 }
 
-// Type 14: a run of a sample on 8/9. The unit size is the sender's continuation payload, as the fragment path learns
+// FRAG_RUN: a run of a sample on 8/9. The unit size is the sender's continuation payload, as the fragment path learns
 // it, and follows from the length: run_count units, the first tt_FRAG_FIRST_SHORTFALL shorter when it is unit 0.
 static bool process_frag_run(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                              uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
@@ -14822,7 +14823,7 @@ static bool process_frag_run(struct tt_Context* node, struct tt_Header* header, 
 }
 #endif
 
-// Type 13: a run of a large sample. Its units have the receiver's own geometry, as a large fragment's do (DESIGN.md
+// FRAG_RUN_L: a run of a large sample. Its units have the receiver's own geometry, as a large fragment's do (DESIGN.md
 // section 8, step A), so the length must be exactly theirs. A build without stage 2 passes it over and counts it, as it
 // does types 11/12.
 // NOLINTNEXTLINE(readability-non-const-parameter)

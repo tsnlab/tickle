@@ -3196,12 +3196,14 @@ struct tt_SingleHeader {
 // sample in one UDP datagram, which IP fragments into about run_count frames. Its payload is exactly those units
 // concatenated, each the size the MTU fragment of its type pair would carry, so a lost run is repaired unit by unit
 // with ordinary fragments and the ACK bitmap, the window and the KEEP_ALL bound stay in units. One type per geometry:
-// FRAG_RUN_L (13) for a sample on 11/12 (struct tt_FragRunLHeader), FRAG_RUN (14) for one on 8/9 (struct
-// tt_FragRunHeader). A sample's last unit always goes alone as an ordinary fragment, so a run never holds it. Only sent
-// to a peer whose announce allows it (tt_AnnounceHeader.ip_reassembly_max). A node without stage 2 skips 13 and counts
-// it (frag_large_skipped); one without fragmentation skips 14 as it skips 8/9.
-#define tt_SUBMESSAGE_TYPE_FRAG_RUN_L 13
-#define tt_SUBMESSAGE_TYPE_FRAG_RUN 14
+// FRAG_RUN_L for a sample on 11/12 (struct tt_FragRunLHeader), FRAG_RUN for one on 8/9 (struct tt_FragRunHeader). A
+// sample's last unit always goes alone as an ordinary fragment, so a run never holds it. Only sent to a peer whose
+// announce allows it (tt_AnnounceHeader.ip_reassembly_max). A node without stage 2 skips FRAG_RUN_L and counts it
+// (frag_large_skipped); one without fragmentation skips FRAG_RUN as it skips 8/9. 14 and 15, not the 13 and 14 the
+// design first gave: large-message step B took 13 (LARGE_REF, segment-only). Every use goes by these names, so this is
+// the one place the numbers live.
+#define tt_SUBMESSAGE_TYPE_FRAG_RUN_L 14
+#define tt_SUBMESSAGE_TYPE_FRAG_RUN 15
 
 struct tt_SubmessageHeader {
     uint8_t type;     // tt_SUBMESSAGE_TYPE_* above
