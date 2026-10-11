@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# hybrid_send_netns.sh - the hybrid transport's sending half over real IP fragmentation (DESIGN.md section 8, "Hybrid
-# transport", steps 3 to 5): runs, MTU repairs, the reader's cap and withdrawal, mixed peers - between private network
-# namespaces on this PC, never the default one.
+# hybrid_send_netns.sh - the hybrid transport over real IP fragmentation (DESIGN.md section 8, "Hybrid transport"): runs,
+# MTU repairs, the reader's control law and the fragment-path rule, mixed peers - between private network namespaces on
+# this PC, never the default one.
 #
 # TOPOLOGY. A writer namespace and three reader namespaces, each with one veth whose other end is on a bridge in a fifth
 # namespace: one link, 192.168.10.0/24, the writer at .1 and the readers at .2-.4, so unicast, broadcast and IP
@@ -17,9 +17,10 @@
 #     asked, none where runs were) is VOID - the arm did not apply what it says.
 #   RELIABLE under loss (1%, 5%; AUTO and forced IP): every repair the readers saw is an MTU unit - repair_runs = 0,
 #     repair_fragmented = 0, repair_max_bytes <= 1472 - and there were repairs (else the loss never bit: VOID).
-#   AUTO at 0%: best effort sends runs from the start; RELIABLE leaves n = 1 as clean frames build, so its n histogram
-#     must show runs (bucket 45) by the end of the run. Forced IP: its readers run with the memory cap off (-C, as a
-#     forced arm's must: _tt_CONFIG.reassembly_cap_off), and every sample must go at n_max (VOID otherwise).
+#   AUTO at 0%: best effort sends runs from the start (the reader's slow-start cap, 2, then doubling); RELIABLE leaves
+#     n = 1 once the reader announces its p and grows with it, so its n histogram must show runs (bucket 45) by the end
+#     of the run. Forced IP: its readers run with the cap off (-C, as a forced arm's must:
+#     _tt_CONFIG.reassembly_cap_off), and every sample must go at n_max (VOID otherwise).
 #   MTU control: no run on the wire at all.
 #   Mixed by unicast (two readers, one advertising 0, -X 0): the 0 reader's capture holds no run and no fragmented
 #     frame; the other's holds runs. Broadcast (three readers, above the unicast threshold of 2) with one advertising 0:
@@ -28,16 +29,21 @@
 #     and the writer judges the path failed on the first sample whose runs are all lost while its tail arrives: at most
 #     two samples go with n >= 2 (n histogram buckets 2..45). REL_1MB_FRAGDROP_MTU (forced MTU, twice: the A/A pair) is
 #     the arm whose rate and CPU it must match.
-#   Withdrawal: non-first fragments dropped at the reader and ipfrag_time 2 s there, so every run's first fragment
-#     times out in the kernel: best effort AUTO must record withdrawals >= 1 at the reader (ReasmFails rose while runs
-#     arrived) and deliveries must resume (delivered > 0) once it advertises one unit.
+#   The same filter under best effort (rule (e) on the reader's side): the reader records path_failures >= 1 and
+#     delivers at least half of what was published (everything after the first samples, as MTU units).
+#   The squeeze (the reader's control law, decision 3, with the kernel's own reassembly at its defaults): best effort
+#     AUTO, 1 MB at 30 Hz through 0.1% netem loss - on the PC q(8) was 0.46 there. hybrid_law_log.py reads the reader's
+#     log: SQUEEZE_WAIT - a collapse, the cap dropped at once to round(0.7 x the ceiling), no probe before 2 tau, one by
+#     2 tau + 5 s; SQUEEZE_HALVE - after the collapse the rate halves (-H) and the ceiling doubles ("R p fell"). Both
+#     with the RESULT line's collapses >= 1 and nothing torn.
 #
 # NOT a performance figure: one PC, veth, a software bridge. hybrid_pc_ab.sh is the cost A/B; the rig is the campaign.
 #
 # Usage: hybrid_send_netns.sh [DURATION_S]      results to $OUT (default ~/hybrid_netns/<stamp>/results.txt)
+# CELLS="NAME ..." runs only those cells; the squeeze cells set their own, longer durations.
 # Needs passwordless `sudo -n ip` (tc, tcpdump and sysctl run inside the namespaces through `ip netns exec`).
 set -u
-DURATION=${1:-8}
+DURATION=${1:-12}
 HERE=$(cd "$(dirname "$0")" && pwd)
 TREE=${TREE:-$(cd "$HERE/../../.." && pwd)}
 STAMP=$(date +%Y%m%d_%H%M%S)
@@ -93,7 +99,7 @@ field() { # LINE KEY
     printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | head -1
 }
 
-# shaping LOSS_PERCENT FILTER(none|frags|later_frags) - netem on the writer's egress, the filter at every reader's ingress
+# shaping LOSS_PERCENT FILTER(none|frags) - netem on the writer's egress, the filter at every reader's ingress
 shaping() {
     sudo -n ip netns exec "$NS_W" tc qdisc del dev hw root 2>/dev/null
     if [ "$1" != 0 ]; then
@@ -111,23 +117,16 @@ shaping() {
             sudo -n ip netns exec "$ns" tc filter add dev "$dev" parent ffff: prio 2 protocol ip u32 \
                 match u32 0 0 action drop
             ;;
-        later_frags) # pass offset 0 (whole datagrams and first fragments): every run's first fragment is held
-            sudo -n ip netns exec "$ns" sysctl -qw net.ipv4.ipfrag_time=2
-            sudo -n ip netns exec "$ns" tc qdisc add dev "$dev" handle ffff: ingress
-            sudo -n ip netns exec "$ns" tc filter add dev "$dev" parent ffff: prio 1 protocol ip u32 \
-                match u16 0 0x1fff at 6 action ok
-            sudo -n ip netns exec "$ns" tc filter add dev "$dev" parent ffff: prio 2 protocol ip u32 \
-                match u32 0 0 action drop
-            ;;
         esac
     done
 }
 
-# cell NAME READERS SIZE RATE LOSS FILTER "PUB_FLAGS" "SUB_FLAGS_1|SUB_FLAGS_2|SUB_FLAGS_3" CHECKS
+# cell NAME READERS SIZE RATE LOSS FILTER "PUB_FLAGS" "SUB_FLAGS_1|SUB_FLAGS_2|SUB_FLAGS_3" CHECKS [DURATION_S]
 # CHECKS (space separated): reliable best_effort runs no_runs repairs_mtu n_reaches_max n_all_max fail_fast mixed0
-#   withdrawal
+#   path_rx squeeze_wait squeeze_halve
 cell() {
     local name=$1 count=$2 size=$3 rate=$4 loss=$5 filter=$6 pub_flags=$7 sub_flags=$8 checks=$9
+    local DURATION=${10:-$DURATION}
     shaping "$loss" "$filter" || { echo "$name VOID: shaping failed" | tee -a "$OUT"; return; }
     local dir=$WORK/$name i
     mkdir -p "$dir"
@@ -161,11 +160,12 @@ cell() {
             why="$why r$((i + 1)):no_result_or_capture"
             continue
         fi
-        local delivered torn ooo runs repairs repair_runs repair_frag repair_max frag_frames withdrawals
+        local delivered torn ooo runs repairs repair_runs repair_frag repair_max frag_frames path_failures collapses
         delivered=$(field "$subline" delivered)
         torn=$(field "$subline" torn)
         ooo=$(field "$subline" out_of_order)
-        withdrawals=$(field "$subline" hybrid_withdrawals)
+        path_failures=$(field "$subline" hybrid_path_failures)
+        collapses=$(field "$subline" hybrid_collapses)
         runs=$(field "$pcap" runs)
         repairs=$(field "$pcap" repairs)
         repair_runs=$(field "$pcap" repair_runs)
@@ -199,10 +199,22 @@ cell() {
                 why="$why r$((i + 1)):repair_runs=$repair_runs,repair_fragmented=$repair_frag,repair_max=$repair_max"
             fi ;;
         esac
-        case " $checks " in *" withdrawal "*)
-            [ "${withdrawals:-0}" = 0 ] && { verdict=FAIL; why="$why r$((i + 1)):withdrawals=0"; }
-            [ "${delivered:-0}" = 0 ] && { verdict=FAIL; why="$why r$((i + 1)):nothing_delivered"; } ;;
+        case " $checks " in *" path_rx "*)
+            [ "${path_failures:-0}" = 0 ] && { verdict=FAIL; why="$why r$((i + 1)):path_failures=0"; }
+            [ $((${delivered:-0} * 2)) -lt "${published:-1}" ] && {
+                verdict=FAIL
+                why="$why r$((i + 1)):delivered=$delivered/$published"
+            } ;;
         esac
+        local mode law
+        for mode in squeeze_wait squeeze_halve; do
+            case " $checks " in *" $mode "*)
+                [ "${collapses:-0}" = 0 ] && { verdict=FAIL; why="$why r$((i + 1)):collapses=0"; }
+                law=$(python3 "$HERE/hybrid_law_log.py" "$mode" "$dir/sub$((i + 1)).log" "$dir/pub.log")
+                echo "$name r$((i + 1)) | $law" >>"$OUT"
+                case "$law" in *"verdict=PASS"*) ;; *) verdict=FAIL; why="$why r$((i + 1)):${law#law: }" ;; esac ;;
+            esac
+        done
     done
     local hist
     hist=$(field "$publine" hybrid_n_hist)
@@ -244,5 +256,7 @@ want REL_1MB_FRAGDROP_MTU2 && cell REL_1MB_FRAGDROP_MTU2 1 $M 30 0 frags "-R -A 
 want MIXED_UNICAST && cell MIXED_UNICAST 2 $M 30 0 none "-R -A -F ip" "-R -C|-R -X 0" "reliable mixed0"
 want MIXED_BROADCAST && cell MIXED_BROADCAST 3 $M 30 0 none "-F auto" "|-X 0|" "best_effort no_runs"
 want BROADCAST_RUNS && cell BROADCAST_RUNS 3 $M 30 0 none "-F auto" "||" "best_effort runs"
-want BE_WITHDRAWAL && cell BE_WITHDRAWAL 1 $M 30 0 later_frags "-F auto" "" "withdrawal"
+want BE_FRAGDROP && cell BE_FRAGDROP 1 $M 30 0 frags "-F auto" "" "path_rx"
+want SQUEEZE_WAIT && cell SQUEEZE_WAIT 1 $M 30 0.1 none "-F auto" "" "squeeze_wait" 110
+want SQUEEZE_HALVE && cell SQUEEZE_HALVE 1 $M 30 0.1 none "-F auto -H 55" "" "squeeze_halve" 70
 echo "=== done $(date -Is) ===" | tee -a "$OUT"
