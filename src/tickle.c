@@ -9013,7 +9013,7 @@ static struct tt_WriterProxy* find_writer_proxy(struct tt_Subscriber* sub, uint8
 
 // Milestone 47 - find_writer_proxy() above, but claims and initializes the first empty slot on a
 // miss instead of returning NULL (every DATA/HEARTBEAT-driven call site below wants this). A new
-// entry starts at ack_seq_no 1 (a Publisher's first sample is always seq_no 1, never 0), matching
+// entry starts at ack_seq_no 1 (a new Publisher's first sample is seq_no 1), matching
 // tt_Context_create_subscriber()'s own former up-front default - now applied lazily, per writer, the
 // first time each one is actually heard from instead of once for the whole Subscriber. *out_
 // created (may be NULL) reports whether this call just claimed a fresh slot, for a caller that
@@ -14045,10 +14045,10 @@ struct heartbeat_ctx {
 // retry budget, the same bookkeeping advance_ack_seq_no() does for a real receipt. Fires on any
 // Heartbeat carrying a newer baseline - most often the eviction Heartbeat process_acknack() sends
 // back when a requested sample is gone, but a periodic one says the same thing. Never moves
-// ack_seq_no backwards (a stale/reordered Heartbeat, or first_available_seq_no 0 for an empty
-// cache, is a no-op). A durable late joiner is unaffected at first contact (its baseline comes
-// from the first-contact branch of inform_subscriber_of_heartbeat() below); afterwards anything
-// the Publisher no longer holds is unrecoverable for it too.
+// ack_seq_no backwards (a stale/reordered Heartbeat is a no-op; a Publisher with nothing retained
+// announces its next seq_no, not 0, which past 2^32 is a seq_no like any other). A durable late joiner is unaffected at
+// first contact (its baseline comes from the first-contact branch of inform_subscriber_of_heartbeat() below);
+// afterwards anything the Publisher no longer holds is unrecoverable for it too.
 static void advance_past_unavailable(struct tt_WriterProxy* proxy, uint32_t first_available_seq_no) {
     if (seq_delta(first_available_seq_no, proxy->ack_seq_no) <= 0) {
         return;

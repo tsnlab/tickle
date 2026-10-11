@@ -538,6 +538,30 @@ static void test_stale_announcement_is_not_read_as_ahead(void) {
     EXPECT_EQ_INT(-1, seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no));
 }
 
+static void test_seq_no_0_delivered_still_orders(void) {
+    // Strict order keeps the highest seq_no delivered (tt_WriterProxy.highest_delivered); past 2^32 that can be 0,
+    // which must not read as "nothing delivered yet": a late sample from before it is still a step backwards. The
+    // control: the same with 1000 for 0.
+    static uint8_t payload[1000];
+    memset(payload, 0, sizeof(payload));
+    const uint32_t latest[] = {0, 1000};
+    for (size_t c = 0; c < sizeof(latest) / sizeof(latest[0]); c++) {
+        (void)sim_run(1, 1000, 0, MODE_KEEP_ALL, tt_SECOND);
+        struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+        EXPECT_TRUE(proxy != NULL);
+        if (proxy == NULL) {
+            return;
+        }
+        proxy->highest_delivered = latest[c] - 1U; // the stream so far reached the one before
+        int before = delivered_count;
+        uint32_t discarded = sub.out_of_order_discarded;
+        deliver_in_order(&receiver, &sub, proxy, latest[c], 0, payload, sizeof(payload), true, false, NULL);
+        deliver_in_order(&receiver, &sub, proxy, latest[c] - 2U, 0, payload, sizeof(payload), true, false, NULL);
+        EXPECT_EQ_INT(before + 1, delivered_count); // the first delivered, the late one not
+        EXPECT_EQ_U32(discarded + 1U, sub.out_of_order_discarded);
+    }
+}
+
 static void test_durable_reader_meets_a_writer_near_2_32(void) {
     // A DURABLE reader's first DATA leaves its watermark at the proxy's default of 1 (update_reliable_ack()). From a
     // writer 100 short of 2^32 - serially before 1 - that sample is far ahead, not late, and the baseline jumps to
@@ -567,6 +591,7 @@ int main(void) {
     test_reorder_ring_slots_stay_distinct_across_its_wrap();
     test_reorder_ring_repivots_before_2_31();
     test_stale_announcement_is_not_read_as_ahead();
+    test_seq_no_0_delivered_still_orders();
     test_durable_reader_meets_a_writer_near_2_32();
     test_best_effort_reader_takes_a_writer_past_2_31();
 
