@@ -28,7 +28,12 @@
 //                takes it with UDP_GRO's size, its buffers sized for a merged read whatever core asked, and hands the
 //                datagrams out one at a time, whole and in order - none cut, none dropped (drain_merged counts the
 //                merged reads: 0 means loopback did not merge, and the check says so rather than pass on nothing).
-//   7. ring    - the buffers reached the kernel the way TT_EXPECT_DRAIN_RING says, when it is set: test_samehost.sh
+//   7. rearm   - an overrun does not end the drain for the rest of its time: every buffer filled and one datagram more
+//                (the overrun), then a few read, then more sent - those are drained too (the recvmsg submitted again as
+//                soon as a buffer was back), not left to the smallest socket buffer, which would drop them. All
+//                arrive, in order, and the socket's count does not move. Not with classic buffers, which come back
+//                only at the next start (the check says so and passes on the rest).
+//   8. ring    - the buffers reached the kernel the way TT_EXPECT_DRAIN_RING says, when it is set: test_samehost.sh
 //                runs this under refuse_pbuf_ring.so, which holds every IORING_REGISTER_PBUF_RING to Linux 6.8's
 //                rules and can refuse it as the rig's Pi 5s did (6.8.0-1064-raspi, EINVAL), so checks 3-5 also run
 //                over the kernel's own ring and over classic provided buffers.
@@ -74,6 +79,8 @@
 #define MERGED_SEGMENTS 30   // datagrams in the one UDP_SEGMENT send of check 6
 #define CHECK_GRO_ON 1U      // hal_linux.c's TT_GRO_ON: the state its reads leave once a large fragment came
 #define MERGED_SEND_EXTRA 64 // room for the send's own UDP_SEGMENT cmsg
+#define REARM_READ 24        // datagrams read after the overrun, each handing a buffer back: more than REARM_MORE
+#define REARM_MORE 16        // sent after them: more than the smallest socket buffer holds
 
 enum check_exit { CHECK_PASS = 0, CHECK_FAIL = 1, CHECK_NO_DRAIN = 2, CHECK_SETUP_FAILED = 3 };
 
@@ -302,6 +309,56 @@ static enum check_exit check_merged(struct tt_Context* node, int sender) {
 }
 #endif
 
+// 7. rearm
+static enum check_exit check_rearm(struct tt_Context* node, int sender) {
+    if (node->hal.drain_ring == tt_RX_DRAIN_RING_CLASSIC) {
+        printf("rx_drain_check: PASS - rearm: not run, classic buffers come back only at the next start\n");
+        return CHECK_PASS;
+    }
+    uint32_t drops = tt_hal_rx_socket_drops(node);
+    uint64_t overruns = node->hal.drain_overruns;
+    uint64_t rearms = node->hal.drain_rearms;
+    if (!tt_rx_drain_start(node, tt_MAX_BUFFER_LENGTH)) {
+        printf("rx_drain_check: FAIL - rearm: no drain\n");
+        return CHECK_FAIL;
+    }
+    int filled = (int)node->hal.drain_count + 1; // every buffer, and one more: the overrun
+    if (!send_numbered(sender, node->hal.data_sock, 0, filled, PAYLOAD_BYTES)) {
+        printf("rx_drain_check: SETUP FAILED - rearm: could not fill the buffers\n");
+        return CHECK_SETUP_FAILED;
+    }
+    usleep(LOOPBACK_SETTLE_US);
+    uint32_t index = 0;
+    bool first_ok = true;
+    for (uint32_t i = 0; i < REARM_READ; i++) {
+        first_ok = first_ok && read_numbered(node, PAYLOAD_BYTES, &index) && index == i;
+    }
+    if (!send_numbered(sender, node->hal.data_sock, (uint32_t)filled, REARM_MORE, PAYLOAD_BYTES)) {
+        printf("rx_drain_check: SETUP FAILED - rearm: could not send after the overrun\n");
+        return CHECK_SETUP_FAILED;
+    }
+    usleep(LOOPBACK_SETTLE_US);
+    int arrived = 0;
+    bool in_order = read_in_order(node, PAYLOAD_BYTES, REARM_READ, filled + REARM_MORE - REARM_READ, &arrived);
+    if (node->hal.drain_overruns == overruns) {
+        printf("rx_drain_check: SETUP FAILED - rearm: %d datagrams into %u buffers made no overrun\n", filled,
+               (unsigned)node->hal.drain_count);
+        return CHECK_SETUP_FAILED;
+    }
+    if (!first_ok || !in_order || tt_hal_rx_socket_drops(node) != drops || node->hal.drain_rearms == rearms) {
+        printf("rx_drain_check: FAIL - rearm: the first %d read %s, then %d of %d in order: %s, socket drops %u -> %u "
+               "(must not move), re-arms %lu -> %lu\n",
+               REARM_READ, first_ok ? "in order" : "not in order", arrived, filled + REARM_MORE - REARM_READ,
+               in_order ? "yes" : "no", (unsigned)drops, (unsigned)tt_hal_rx_socket_drops(node), (unsigned long)rearms,
+               (unsigned long)node->hal.drain_rearms);
+        return CHECK_FAIL;
+    }
+    printf("rx_drain_check: PASS - rearm: %d datagrams through %u buffers and an overrun, the drain taking again once "
+           "a buffer was back (%lu re-arms), all in order, no socket drop\n",
+           filled + REARM_MORE, (unsigned)node->hal.drain_count, (unsigned long)(node->hal.drain_rearms - rearms));
+    return CHECK_PASS;
+}
+
 static bool send_burst(int sender, int socket_fd, int count) {
     struct sockaddr_in dest;
     socklen_t dest_len = sizeof dest;
@@ -336,7 +393,7 @@ static int read_all(struct tt_Context* node) {
     return mine;
 }
 
-// 7. ring - how the buffers reached the kernel. TT_EXPECT_DRAIN_RING (user, kernel or classic) is what
+// 8. ring - how the buffers reached the kernel. TT_EXPECT_DRAIN_RING (user, kernel or classic) is what
 // test_samehost.sh's passes under tests/support/refuse_pbuf_ring.so must have fallen back to; unset, any is fine.
 static enum check_exit check_ring(const struct tt_Context* node) {
     static const char* const names[] = {"none", "user", "kernel", "classic"};
@@ -417,6 +474,9 @@ int main(void) {
         result = check_merged(&node, sender);
     }
 #endif
+    if (result == CHECK_PASS) {
+        result = check_rearm(&node, sender);
+    }
     if (result == CHECK_PASS) {
         result = check_ring(&node);
     }

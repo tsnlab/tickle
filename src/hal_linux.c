@@ -918,6 +918,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.drain_overruns = 0;
     node->hal.drain_ring = tt_RX_DRAIN_RING_NONE;
     node->hal.drain_group = 0;
+    node->hal.drain_rearm = 0;
+    node->hal.drain_returned = 0;
+    node->hal.drain_rearms = 0;
 #if TT_HAL_UDP_GRO
     node->hal.drain_split_left = 0;
     node->hal.drain_merged = 0;
@@ -1108,14 +1111,14 @@ void tt_close(struct tt_Context* node) {
 #endif
     TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=%d drain_starts=%lu "
                 "drain_datagrams=%lu drain_truncated=%lu drain_overruns=%lu drain_buffers=%u x %u drain_ring=%s "
-                "drain_merged=%lu",
+                "drain_merged=%lu drain_rearms=%lu",
                 node->id, (unsigned)tt_hal_rx_socket_drops(node), (unsigned)socket_drops(node->hal.sock),
                 (unsigned)socket_drops(node->hal.data_sock), node->hal.drain_fd == -2 ? -1 : 1,
                 (unsigned long)node->hal.drain_starts, (unsigned long)node->hal.drain_datagrams,
                 (unsigned long)node->hal.drain_truncated, (unsigned long)node->hal.drain_overruns,
                 (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_count : 0U),
                 (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_size : 0U), drain_ring_name(node->hal.drain_ring),
-                drain_merged);
+                drain_merged, (unsigned long)node->hal.drain_rearms);
     drain_release(&node->hal); // before the sockets: its requests go with its ring
 #else
     TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=0", node->id,
@@ -1575,6 +1578,7 @@ static void drain_give_back(struct tt_hal* hal, uint16_t bid) {
     entry->len = hal->drain_size;
     entry->bid = bid;
     hal->drain_buf_tail++;
+    hal->drain_returned++;
     __atomic_store_n(&ring->tail, hal->drain_buf_tail, __ATOMIC_RELEASE);
 }
 
@@ -1777,10 +1781,60 @@ static void drain_look(struct tt_hal* hal) {
             hal->drain_armed &= (uint8_t)~(1U << (cqe->user_data & (DRAIN_SOCKETS - 1U)));
             if (cqe->res == -ENOBUFS) {
                 hal->drain_overruns++;
+                if (hal->drain_running && hal->drain_ring != tt_RX_DRAIN_RING_CLASSIC) {
+                    hal->drain_rearm |= (uint8_t)(1U << (cqe->user_data & (DRAIN_SOCKETS - 1U)));
+                    hal->drain_returned = 0;
+                }
             } else if (cqe->res == -EINVAL || cqe->res == -EOPNOTSUPP) {
                 hal->drain_holdoff_until = UINT64_MAX; // this kernel cannot do it: never again
             }
         }
+    }
+}
+
+// Queues a multishot recvmsg on each socket in `sockets` (bit 0 the well-known one, bit 1 the data one) that is open;
+// returns the bits queued.
+static uint8_t drain_queue_recvmsg(struct tt_hal* hal, uint8_t sockets, uint32_t* added) {
+    const int fds[DRAIN_SOCKETS] = {hal->sock, hal->data_sock};
+    uint8_t armed = 0;
+    for (uint32_t i = 0; i < DRAIN_SOCKETS; i++) {
+        if (fds[i] < 0 || (sockets & (1U << i)) == 0) {
+            continue;
+        }
+        struct io_uring_sqe* sqe = drain_sqe(hal, added);
+        sqe->opcode = IORING_OP_RECVMSG;
+        sqe->fd = fds[i];
+        sqe->addr = (uint64_t)(uintptr_t)&hal->drain_msghdr;
+        sqe->ioprio = IORING_RECV_MULTISHOT;
+        sqe->flags = IOSQE_BUFFER_SELECT;
+        sqe->buf_group = hal->drain_group;
+        sqe->user_data = DRAIN_RECV | i;
+        armed |= (uint8_t)(1U << i);
+    }
+    return armed;
+}
+
+// A running drain whose recvmsg an overrun ended (every buffer held, IORING_CQE_F_MORE off with ENOBUFS) takes again
+// once an eighth of its buffers is back, so it goes on draining for as long as it runs rather than leaving the rest of
+// that time to the socket's own buffer - a few 64 KB runs. Not at the first buffer back: a recvmsg picks its buffer
+// before it looks for a datagram, so one submitted with a single buffer free takes one datagram and ends again, a
+// system call a datagram. The datagram the overrun left is still first in the socket, so order is kept. Called after
+// each buffer goes back, it first looks for an overrun not seen yet. Not with classic buffers, which come back only at
+// the next start.
+static void drain_rearm_now(struct tt_hal* hal) {
+    if (!hal->drain_running) {
+        return;
+    }
+    drain_look(hal);
+    if (hal->drain_rearm == 0 || hal->drain_returned < (hal->drain_count + 7U) / 8U) {
+        return;
+    }
+    uint32_t added = 0;
+    uint8_t armed = drain_queue_recvmsg(hal, hal->drain_rearm, &added);
+    hal->drain_rearm = 0;
+    if (armed != 0 && drain_submit(hal, added)) {
+        hal->drain_armed |= armed;
+        hal->drain_rearms++;
     }
 }
 
@@ -1792,6 +1846,7 @@ static void drain_stop(struct tt_Context* node) {
         return;
     }
     hal->drain_running = false;
+    hal->drain_rearm = 0;
     drain_look(hal);
     uint32_t added = 0;
     for (uint32_t i = 0; i < DRAIN_SOCKETS; i++) {
@@ -1842,6 +1897,7 @@ static int32_t drain_take_split(struct tt_Context* node, void* buf, size_t len, 
     hal->drain_split_left--;
     if (hal->drain_split_left == 0) {
         drain_give_back(hal, hal->drain_split_bid);
+        drain_rearm_now(hal);
     }
     *ip = hal->drain_split_ip;
     *port = hal->drain_split_port;
@@ -1927,6 +1983,7 @@ static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, u
             size_t copy = (size_t)out->payloadlen < len ? (size_t)out->payloadlen : len;
             memcpy(buf, payload, copy);
             drain_give_back(hal, bid);
+            drain_rearm_now(hal);
             hal->drain_datagrams++;
             TT_TRACE(tt_TRACE_RX_DATAGRAM);
             return (int32_t)copy;
@@ -2002,22 +2059,7 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
         sqe->buf_group = hal->drain_group;
         sqe->user_data = DRAIN_PROVIDE;
     }
-    const int fds[DRAIN_SOCKETS] = {hal->sock, hal->data_sock};
-    uint8_t armed = 0;
-    for (uint32_t i = 0; i < DRAIN_SOCKETS; i++) {
-        if (fds[i] < 0) {
-            continue;
-        }
-        struct io_uring_sqe* sqe = drain_sqe(hal, &added);
-        sqe->opcode = IORING_OP_RECVMSG;
-        sqe->fd = fds[i];
-        sqe->addr = (uint64_t)(uintptr_t)&hal->drain_msghdr;
-        sqe->ioprio = IORING_RECV_MULTISHOT;
-        sqe->flags = IOSQE_BUFFER_SELECT;
-        sqe->buf_group = hal->drain_group;
-        sqe->user_data = DRAIN_RECV | i;
-        armed |= (uint8_t)(1U << i);
-    }
+    uint8_t armed = drain_queue_recvmsg(hal, (uint8_t)((1U << DRAIN_SOCKETS) - 1U), &added);
     if (armed == 0 || !drain_submit(hal, added)) {
         return false;
     }
