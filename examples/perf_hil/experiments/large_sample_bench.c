@@ -419,21 +419,22 @@ static void poll_for(struct tt_Context* node, uint64_t span_ns) {
     }
 }
 
-static int run_publisher(struct tt_Context* node, const struct options* opts) {
-    static struct tt_Publisher pub;
+// The Publisher as the options make it: the message's encode (-M, -G), the reliable cache (-R, -A) and a forced run
+// length (-n). False when it cannot be made.
+static bool setup_publisher(struct tt_Context* node, struct tt_Publisher* pub, const struct options* opts) {
     if (opts->message) {
         message = (uint8_t*)malloc(sample_size);
         if (message == NULL) {
-            return 1;
+            return false;
         }
         topic.data_encode = message_encode;
 #ifndef BENCH_NO_RANGE
         topic.data_encode_range = opts->ranged ? message_encode_range : NULL;
 #endif
     }
-    if (tt_Context_create_publisher(node, &pub, &topic, "stream") != tt_RET_OK) {
+    if (tt_Context_create_publisher(node, pub, &topic, "stream") != tt_RET_OK) {
         fprintf(stderr, "cannot create the publisher\n");
-        return 1;
+        return false;
     }
     static struct tt_ReliableCacheIndex index[CACHE_RECORDS];
     static uint8_t arena[tt_RELIABLE_CACHE_ARENA_BYTES(CACHE_RECORDS, tt_RELIABLE_RECORD_BYTES(tt_CONTROL_MAX_LENGTH))];
@@ -445,17 +446,25 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
         cache.arena = arena;
         cache.arena_size = (uint32_t)sizeof(arena);
         cache.sample_depth = opts->keep_all ? 0 : KEEP_LAST_DEPTH;
-        pub.reliable_cache = &cache;
-        pub.reliable = true;
-        pub.keep_all = opts->keep_all;
+        pub->reliable_cache = &cache;
+        pub->reliable = true;
+        pub->keep_all = opts->keep_all;
     }
 #if BENCH_HYBRID
     if (opts->run_units != 0) {
         // Runs of exactly run_units large units (types 11/12's geometry): the run's 28 bytes of framing and the units.
-        pub.large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
-        pub.ip_datagram_max = (uint16_t)(BENCH_RUN_FRAMING + (opts->run_units * BENCH_LARGE_UNIT));
+        pub->large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
+        pub->ip_datagram_max = (uint16_t)(BENCH_RUN_FRAMING + (opts->run_units * BENCH_LARGE_UNIT));
     }
 #endif
+    return true;
+}
+
+static int run_publisher(struct tt_Context* node, const struct options* opts) {
+    static struct tt_Publisher pub;
+    if (!setup_publisher(node, &pub, opts)) {
+        return 1;
+    }
     poll_for(node, DISCOVERY_NS);
     uint64_t period = (uint64_t)((double)NS_PER_S / opts->rate_hz);
     double halve_after_s = opts->halve_after_s;
