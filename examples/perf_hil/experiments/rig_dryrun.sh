@@ -125,7 +125,14 @@ map() { # map <arg>: the local path an scp argument names
 }
 [ \${#args[@]} -ge 2 ] || { echo "rig_dryrun scp: want <src>... <dst>" >&2; exit 255; }
 out=()
-for a in "\${args[@]}"; do m=\$(map "\$a") || exit 255; out+=("\$m"); done
+# A remote source may be a glob (the Pi's shell would expand it): expanded here, unmatched left as is (cp says so).
+for a in "\${args[@]}"; do
+    m=\$(map "\$a") || exit 255
+    case "\$a" in
+    *:*[*?[]*) for f in \$m; do out+=("\$f"); done ;;
+    *) out+=("\$m") ;;
+    esac
+done
 exec cp -- "\${out[@]}"
 EOF
 chmod +x "$D/bin/scp"
