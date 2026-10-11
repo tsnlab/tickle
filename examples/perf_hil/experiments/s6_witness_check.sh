@@ -62,7 +62,13 @@ BUILD_FLAGS=${BUILD_FLAGS:-}
 # lines and in the core prefix it linked - or the arm is FATAL and nothing is measured. The verified line
 #   arm <ARM> TICKLE_EXTRA_CFLAGS='<flags>' reached core and bench (...)
 # is what ab_samehost.sh checks each cell against; with no flags it says '' and has proved the plain prefix.
-TICKLE_EXTRA_CFLAGS="${TICKLE_EXTRA_CFLAGS:-}"
+# Gate v2 A1 (2026-10-11, gate_v2_lib.sh): UNSET means the layout-stable build, TICKLE_LAYOUT_CFLAGS
+# (-falign-functions=64), so a standalone run measures what the rig A/Bs and publishes from; set and empty is the plain
+# build. A caller (s6_transport_cells.sh, ab_samehost.sh) always passes it set, so its choice is kept.
+# shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$REPO/examples/perf_hil/experiments/gate_v2_lib.sh"
+layout_cflags_default
 case "$TICKLE_EXTRA_CFLAGS$BUILD_FLAGS" in
 *[!A-Za-z0-9=_\ .-]*)
     echo "BUILD_FLAGS/TICKLE_EXTRA_CFLAGS may hold only [A-Za-z0-9=_ .-]: '$BUILD_FLAGS' '$TICKLE_EXTRA_CFLAGS'" >&2
