@@ -165,3 +165,39 @@ uint16_t rmw_tickle_tracking_words_for(const rosidl_typesupport_tickle_c_message
     }
     return (uint16_t)RMW_TICKLE_TRACKING_WORDS;
 }
+
+void rmw_tickle_large_region_attach(struct tt_Publisher* pub,
+                                    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks, size_t depth,
+                                    bool keep_all) {
+#if !tt_LARGE_SHM
+    (void)pub;
+    (void)callbacks;
+    (void)depth;
+    (void)keep_all;
+#else
+    if (NULL == callbacks || rmw_tickle_tracking_words_for(callbacks) != (uint16_t)tt_RELIABLE_BITMAP_MAX_WORDS) {
+        return; // its messages always fit a datagram: never large
+    }
+    const char* env = getenv("RMW_TICKLE_LARGE_REGION");
+    if (NULL != env && 0 == strcmp(env, "0")) {
+        return;
+    }
+    uint32_t limit = rmw_tickle_max_sample_bytes();
+    uint32_t largest = limit;
+    if (ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED != callbacks->tickle_max_encoded_size &&
+        callbacks->tickle_max_encoded_size < (size_t)limit) {
+        largest = (uint32_t)callbacks->tickle_max_encoded_size;
+    }
+    // The psn ahead of the message, and the same slack the large buffers allow for framing.
+    uint32_t chunk_bytes = tt_LARGE_CHUNK_BYTES(largest + RMW_TICKLE_LARGE_SLACK);
+    size_t retained = keep_all || 0 == depth || depth > (size_t)tt_LARGE_RETAINED ? (size_t)tt_LARGE_RETAINED : depth;
+    size_t chunks = retained + (size_t)tt_LARGE_REGION_SPARE;
+    if (chunks > (size_t)tt_LARGE_REGION_CHUNKS_MAX) {
+        chunks = (size_t)tt_LARGE_REGION_CHUNKS_MAX;
+    }
+    if (tt_RET_OK != tt_Publisher_set_large_region(pub, (uint32_t)chunks, chunk_bytes)) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle", "could not give a large-message publisher its shared region: its "
+                                             "same-host subscribers get fragments");
+    }
+#endif
+}
