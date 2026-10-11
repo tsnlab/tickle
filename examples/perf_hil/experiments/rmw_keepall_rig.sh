@@ -131,6 +131,10 @@
 #                    PC's: PF_TICKLE_INSTALL / PF_PERF_WS (pc_preflight_build.sh's install and perf/install) and
 #                    PF_VARIANT_<name> (an install dir holding rmw_tickle for arm tickle@<name>). It tests this script,
 #                    the launcher, the probe and the summary on the same code path as the rig, not the rig's build.
+#   KCOUNTERS=1      each Pi's kernel counters before and after every run, into <stem>_{pub,sub}_k{pre,post}.txt:
+#                    /proc/net/snmp (Udp RcvbufErrors, Ip Reasm*), `ethtool -S eth0` (the NIC's own drops),
+#                    `tc -s qdisc show dev eth0` (the egress queue's drops) and /proc/net/softnet_stat - where a datagram
+#                    the sender sent and the receiver never read was lost (i4s_drain_summary.py reads them).
 #   meta.txt         the run's QoS flags, rate, SAMEHOST, CLOCK_PROBE, DUR and DRY, for the summary.
 #
 # Added 2026-10-11 for the lend A/B (~/rig_queue_largemsg_lend.sh; docs/RMW.md "Loaned messages"):
@@ -677,11 +681,20 @@ wait_done() { # $1 host, $2 role, $3 deadline seconds
         case \"\$(readlink /proc/\$p/exe)\" in */perf_test) kill -INT \$p;; esac; sleep 2; echo killed" </dev/null
 }
 
+# KCOUNTERS=1: both Pis' kernel counters, before (pre) or after (post) a run. Read-only; nothing here needs root.
+kcounters() { # stem dir phase
+    [ "${KCOUNTERS:-0}" = 1 ] || return 0
+    local cmd="cat /proc/net/snmp; echo '--- ethtool'; ethtool -S eth0 2>&1; echo '--- tc'; tc -s qdisc show dev eth0; echo '--- softnet'; cat /proc/net/softnet_stat"
+    sh_ "$CLIENT" "$cmd" </dev/null > "$2/${1}_pub_k$3.txt" 2>&1
+    sh_ "$SERVER" "$cmd" </dev/null > "$2/${1}_sub_k$3.txt" 2>&1
+}
+
 run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher seconds, default $DUR]
     local arm=$1 topic=$2 loss=$3 rep=$4 stem="$1_$2_l$3_r$4" dir=${5:-$OUT.runs} dur=${6:-$DUR}
     local common="-c ROS2 -t $topic $QOS_ARGS --dds_domain_id $DOMAIN"
     clock_probe "$dir/${stem}_clock.txt" before
     net_snap "$dir/${stem}_net.txt" before
+    kcounters "$stem" "$dir" pre
     # Every arm, not only rmw_tickle's: rclcpp's type-description service needs a typesupport rmw_tickle does not
     # provide (its first run here died on it), and switching off an introspection service changes no data path.
     local rosargs="--ros-args --param start_type_description_service:=false"
@@ -692,6 +705,7 @@ run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher second
     k1=$(wait_done "$CLIENT" pub $((dur + 40)))
     k2=$(wait_done "$SERVER" sub 20)
     net_snap "$dir/${stem}_net.txt" after
+    kcounters "$stem" "$dir" post
     clock_probe "$dir/${stem}_clock.txt" after
     fetch_ "$CLIENT" /tmp/ka_pub.log "$dir/${stem}_pub.log"
     fetch_ "$SERVER" /tmp/ka_sub.log "$dir/${stem}_sub.log"
