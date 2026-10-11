@@ -272,8 +272,9 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
   all four open questions on 2026-10-09 (the wire change, per-datagram seq_no, 8 MiB default / ~11.3 MiB ceiling,
   4 MB cross-host at 15 Hz). **Step A landed on main 2026-10-10** (the socket path; RESULTS "rmw large messages": every
   cell under loss and subscriber memory won, CPU per MB lost at 0% loss to Fast DDS as shipped and CycloneDDS, which
-  send 64 KB datagrams the kernel fragments). Next: **step B**, the same-host large path (a 4 MB best-effort sample
-  does not fit the 512-slot ring and delivers ~0% same-host); then the CPU candidates - a UDP GSO/GRO probe (pending on
+  send 64 KB datagrams the kernel fragments). **Step B**, the same-host large path (a 4 MB best-effort sample
+  does not fit the 512-slot ring and delivers ~0% same-host), is built and pre-registered (DESIGN.md section 8, "Step
+  B"; B1 tests and mutants pass) and waits for its rig queue (`rig_queue_largemsg_B.sh`, B2); then the CPU candidates - a UDP GSO/GRO probe (pending on
   the rig) and the ACK bitmap fast path (branch `ab/ack-bitmap-fastpath`). (PLAN #4; LARGE_MESSAGE_PLAN)
 - **A service server keeps one live answer per source context**: a retry from a second client of the same service
   in that context can re-run the server's callback. Found with S9 window A (below). (RMW_GAPS S9)

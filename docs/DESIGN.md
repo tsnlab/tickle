@@ -346,7 +346,7 @@ Anything batched ahead is flushed first. Retransmissions send cached fragments u
 B, the same-host region, is not. A fragment-assembled small sample cannot be lent (section 10, receive-buffer lending):
 it is retained by copying. A large one is lent from its own buffer.
 
-### Stage 2: samples above 64 KB (designed 2026-10-09; step A on main 2026-10-10, step B not)
+### Stage 2: samples above 64 KB (designed 2026-10-09; step A on main 2026-10-10; step B built 2026-10-11, rig pending)
 
 **Status (2026-10-10).** Step A landed on main with the zero-copy loans (section 10): a claim never covers a large
 sample (`UNSUPPORTED`), a claimed publish commits a large sample waiting behind a send first, and a large sample is lent
@@ -679,8 +679,8 @@ already places in liveliness. A sample larger than `chunk_bytes` goes as fragmen
 **B2. Rig, same host (the L4 cells; Plan's harness `rmw_keepall_rig.sh` with `samehost 1`).** Cells Array1m and
 Array4m at 30 Hz, RELIABLE KEEP_LAST 10 and BEST_EFFORT KEEP_LAST 5, 60 s, 5 repetitions, interleaved and rotated.
 Arms: `tickle@stepB`, `tickle@main` (step A), rmw_fastrtps_cpp and rmw_cyclonedds_cpp at their defaults, then the
-vendor-favouring labelled arms. **Control the change cannot touch:** Array60k same-host RELIABLE (below 64 KB, no
-step B code on its path): `stepB - main` there must lie within the parent-vs-parent spread (2 x SE), and the vendor
+vendor-favouring labelled arms. **Control the change cannot touch:** Array16k same-host, both QoS (below 64 KB, no
+step B code on its path; corrected from Array60k before any run: perf_test's 64 KB type is itself a large sample): `stepB - main` there must lie within the parent-vs-parent spread (2 x SE), and the vendor
 arms must match their A4 stage 4 values within 2 x SE; otherwise the session is void, not read.
 
 Read per cell: delivered % (5 runs x ~1,742 samples = ~8,700: a loss above 0.035% shows with 95% probability),
@@ -699,6 +699,29 @@ they count in both processes' RSS; reported as measured.
 **What would falsify the design.** B2.3 failing (the copies were not where the same-host cost is); or the subscriber's
 CPU per MB not below Fast DDS's data-sharing in the RELIABLE 4 MB cell, which would mean the remaining cost is rmw's
 decode and the next step is rmw loans of fixed-size types, not core.
+
+#### Step B as built (2026-10-11), and where it departs from the above
+
+Built as designed, in four commits on the step B branch: the path (`tt_Publisher_set_large_region()`, LARGE_REF type
+13, `tt_SEGMENT_FEATURE_LARGE_REF`), the descriptor resend, the liveliness clear, and rmw_tickle's region
+(`rmw_tickle_large_region_attach()`; `RMW_TICKLE_LARGE_REGION=0` turns it off for the L3 A/B). Tests:
+`tests/test_large_region.c` (B1.1-B1.8), `tests/mutants_large_region.py` (15 mutants, all killed). Where it departs:
+
+- **A descriptor being processed counts as a reference.** Found by B1.3: with a RELIABLE and a best-effort Subscriber
+  in one context, the RELIABLE one's assembly is freed inside the record, and its give-back cleared the bit before the
+  best-effort one had been handed the chunk (`tt_LargeState.ref_processing`).
+- **A NACK is answered with one descriptor per ACKNACK** (`acknack_serial`), not per seq_no named.
+- **The region's name must fit `tt_SEGMENT_PATH_LENGTH` (64).** Under `/dev/shm/` the longest is 57 bytes; the test seam
+  `TT_SEGMENT_DIR` leaves 7 bytes for its directory, which is why `large_samehost_pc.sh` uses `/dev/shm/lg<pid>/` (a
+  longer one made every creation fail, and the harness's VOID rule caught it: arm B sent no descriptor).
+- **Not yet:** a durable late joiner's backlog still gets fragments (`large_send_backlog_before()`), and the KEEP_LAST
+  skip planner never passes over a descriptor (it is OTHER), so a slow reader decodes every sample it is handed.
+- **PC indication, not a rig figure** (`large_samehost_pc.sh` at `d783536d`, 5 reps x 20 s at 30 Hz per arm, ABBA,
+  `~/largemsg_pc/samehost_stepB_d783536d.txt`; control CTRL_1KB HELD, session PASS). Step A -> step B, sub + pub CPU
+  per delivered MB and latency median: BE 1 MB delivered 59.2 -> 100%, 2.43 -> 1.48 ms/MB, 1.06 -> 0.73 ms; BE 4 MB
+  delivered 1.1 -> 100%, CPU HELD (step A's figure is per 1% of the samples, not a like-for-like), latency HELD;
+  RELIABLE KEEP_LAST 10 1 MB 2.11 -> 1.52 ms/MB, 1.34 -> 0.74 ms; 4 MB delivered 98.2 -> 100%, 2.29 -> 1.43 ms/MB,
+  6.03 -> 2.98 ms, peak RSS sub 17.4 -> 8.0 MB and pub 27.9 -> 8.1 MB. B2 on the rig decides.
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
