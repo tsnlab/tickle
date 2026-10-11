@@ -33,7 +33,6 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <netinet/in.h>
-#include <netinet/udp.h> // SOL_UDP, UDP_GRO, UDP_SEGMENT
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
@@ -56,6 +55,9 @@
 #include <linux/time_types.h> // __kernel_timespec: the drain's stop wait
 #include <sys/utsname.h>      // uname(): the kernel release a refused buffer ring is reported with
 #endif
+#endif
+#if TT_HAL_UDP_GSO || TT_HAL_UDP_GRO // after hal_linux.h, which derives both: a build with neither uses none of it
+#include <netinet/udp.h>             // SOL_UDP, UDP_GRO, UDP_SEGMENT
 #endif
 #include <tickle/tickle.h>
 #include <tickle/trace.h>
@@ -626,11 +628,18 @@ static void wait_set_setup(struct tt_Context* node) {
 // Rig probe 2026-10-10 (experiments/rx_gro_probe_rig.sh, Pi 5 x2, 1472 B): receiver 3.99 ms/MB with recvfrom(), 3.40
 // with UDP_GRO; sender 4.76 plain, 4.19 with UDP_SEGMENT. TT_UDP_OFFLOAD=0 in the environment turns both off, for the
 // A/B control: the same binary, every datagram sent and read one at a time as before.
+//
+// A build with neither (core's default: 1472-byte datagrams, no large samples) compiles all of it out, the state and
+// the counters' writes included, so its send and receive paths are the ones it had before offload existed - gate v2 on
+// the rig (2026-10-12) read the always-compiled version +65 instructions a round trip at reliable_latency p1.
+#if TT_HAL_UDP_GSO || TT_HAL_UDP_GRO
 static bool udp_offload_allowed(void) {
     const char* setting = getenv("TT_UDP_OFFLOAD");
     return setting == NULL || strcmp(setting, "0") != 0;
 }
+#endif
 
+#if TT_HAL_UDP_GSO
 #define TT_UDP_OFFLOAD_GSO 2U // struct tt_Context.udp_offload
 
 // Send offload is decided per send (send_batch_flags()); here only whether the kernel knows UDP_SEGMENT at all. It
@@ -638,8 +647,8 @@ static bool udp_offload_allowed(void) {
 // which IP would then fragment. getsockopt(UDP_SEGMENT) exists from the same release, so it is the check.
 static void gso_setup(struct tt_Context* node) {
     node->hal.gso_on = false;
-    if (!TT_HAL_UDP_GSO || !udp_offload_allowed()) {
-        return; // a build without large samples never sends a run (hal_linux.h TT_HAL_UDP_GSO)
+    if (!udp_offload_allowed()) {
+        return;
     }
     int size = 0;
     socklen_t size_len = sizeof(size);
@@ -650,6 +659,7 @@ static void gso_setup(struct tt_Context* node) {
     node->hal.gso_on = true;
     node->udp_offload |= TT_UDP_OFFLOAD_GSO;
 }
+#endif
 
 #if TT_HAL_UDP_GRO
 #define TT_UDP_OFFLOAD_GRO 1U // struct tt_Context.udp_offload
@@ -941,7 +951,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.rx_batch_calls = 0;
     node->hal.rx_batch_datagrams = 0;
     node->hal.rx_batch_full = 0;
+#if TT_HAL_UDP_GSO
     node->hal.gso_on = false; // gso_setup(), once the data socket exists
+#endif
 #if TT_HAL_UDP_GRO
     node->hal.gro_allowed = false; // gro_setup(), once both sockets exist
     node->hal.gro_state = TT_GRO_PLAIN;
@@ -1074,7 +1086,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
 #if TT_HAL_UDP_GRO
     gro_setup(node);
 #endif
+#if TT_HAL_UDP_GSO
     gso_setup(node);
+#endif
 
 #if tt_HAL_IO_URING
     if (!uring_setup(node) && tt_HAL_RX_HINT == tt_RX_HINT_URING) {
@@ -1263,6 +1277,7 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
 // A large fragment by its framing (tickle.c large_write_framing()): the single form (addressed to everyone - byte 0
 // the marker, byte 3 the type) or the full one (a retransmission to one node - the magic, then the submessage header's
 // type at byte 4).
+#if TT_HAL_UDP_GSO
 static bool gso_type_large(uint8_t type) {
     return type == tt_SUBMESSAGE_TYPE_FRAG_FIRST_L || type == tt_SUBMESSAGE_TYPE_FRAG_CONT_L;
 }
@@ -1319,6 +1334,7 @@ static bool gso_refused(struct tt_Context* node, int err) {
     node->udp_offload &= (uint8_t)~TT_UDP_OFFLOAD_GSO;
     return true;
 }
+#endif
 
 // The body of tt_send_batch() and tt_send_batch_nonblocking(): `flags` is 0 or MSG_DONTWAIT. Returns how many went;
 // with MSG_DONTWAIT a full send buffer ends the batch early instead of failing it.
@@ -1354,6 +1370,7 @@ int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* data
     return sent == (int32_t)count ? sent : -1;
 }
 
+#if TT_HAL_UDP_GSO
 // One message of a sendmmsg() call: `run` datagrams from `first`, their pieces in `iov` (room for two each), to their
 // destination (`addr`, unless broadcast), with the UDP_SEGMENT cmsg in `control` when run > 1.
 union gso_control {
@@ -1458,6 +1475,55 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
     }
     return (int32_t)count;
 }
+#else
+// Without send offload (a build without large samples, TT_HAL_UDP_GSO): one message a datagram, the loop it always was.
+static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count,
+                                int flags) {
+    uint32_t sent = 0;
+    while (sent < count) {
+        uint32_t chunk = count - sent < TT_SEND_BATCH_CHUNK ? count - sent : TT_SEND_BATCH_CHUNK;
+        struct mmsghdr msgs[TT_SEND_BATCH_CHUNK];
+        // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
+        struct iovec iov[TT_SEND_BATCH_CHUNK][2];
+        struct sockaddr_in addrs[TT_SEND_BATCH_CHUNK];
+        memset(msgs, 0, sizeof(msgs[0]) * chunk);
+        for (uint32_t i = 0; i < chunk; i++) {
+            const struct tt_OutDatagram* datagram = &datagrams[sent + i];
+            iov[i][0].iov_base = (void*)datagram->head;
+            iov[i][0].iov_len = datagram->head_len;
+            iov[i][1].iov_base = (void*)datagram->body;
+            iov[i][1].iov_len = datagram->body_len;
+            msgs[i].msg_hdr.msg_iov = iov[i];
+            msgs[i].msg_hdr.msg_iovlen = datagram->body_len != 0 ? 2 : 1;
+            if (datagram->ip != 0) {
+                memset(&addrs[i], 0, sizeof(addrs[i]));
+                addrs[i].sin_family = AF_INET;
+                addrs[i].sin_addr.s_addr = htonl(datagram->ip);
+                addrs[i].sin_port = htons(datagram->port);
+                msgs[i].msg_hdr.msg_name = &addrs[i];
+                msgs[i].msg_hdr.msg_namelen = sizeof(addrs[i]);
+            } else {
+                msgs[i].msg_hdr.msg_name = &node->hal.broadcast_addr;
+                msgs[i].msg_hdr.msg_namelen = sizeof(node->hal.broadcast_addr);
+            }
+        }
+        TT_TRACE(tt_TRACE_TX_START);
+        int result = sendmmsg(node->hal.data_sock, msgs, chunk, flags);
+        TT_TRACE(tt_TRACE_TX_DONE);
+        if (result <= 0) {
+            // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers
+            if (flags != 0 && result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                return (int32_t)sent; // the send buffer is full: what went, went; the caller sends the rest later
+            }
+            return -1; // errno says why; a 0 would otherwise loop forever
+        }
+        // A short count (sendmmsg() stopped at a datagram that did not go) loops: the next call reports why - the
+        // error, or with MSG_DONTWAIT the EAGAIN of a full buffer, answered above.
+        sent += (uint32_t)result;
+    }
+    return (int32_t)count;
+}
+#endif
 
 // Bits of struct tt_hal.rx_idle (TT_RX_IDLE_WELL_KNOWN, TT_RX_IDLE_DATA, hal_linux.h) - see tt_try_receive().
 // How long tt_try_receive() goes on returning datagrams while a socket is skipped before it asks that socket again
@@ -2332,7 +2398,11 @@ static int rx_wait(struct tt_Context* node, const struct timespec* timeout_ts, u
 
 // rx_wait() for `timeout` ns, 0 meaning no limit: this function's contract (hal.h) is "0 for no timeout", and a NULL
 // timespec is the wait's own way to say it. While receive offload is settling, the wait first runs only to the
-// settle's deadline, where gro_settle_decide() is made, and then for what is left of `timeout`.
+// settle's deadline, where gro_settle_decide() is made, and then for what is left of `timeout`. Only in a build with
+// receive offload: without it tt_receive() builds the timespec in line, as before offload existed - split out,
+// rx_wait() stopped being inlined into tt_receive() and every wait cost ~65 instructions more on aarch64 (gate v2,
+// 2026-10-12).
+#if TT_HAL_UDP_GRO
 static int rx_wait_ns(struct tt_Context* node, int64_t timeout, uint32_t* ready) {
     struct timespec timeout_ts;
     if (timeout <= 0) {
@@ -2344,7 +2414,6 @@ static int rx_wait_ns(struct tt_Context* node, int64_t timeout, uint32_t* ready)
 }
 
 static int rx_wait_for(struct tt_Context* node, int64_t timeout, uint32_t* ready) {
-#if TT_HAL_UDP_GRO
     if (node->hal.gro_state == TT_GRO_SETTLING) {
         const uint64_t start = tt_get_ns();
         const int64_t to_deadline = (int64_t)(node->hal.gro_settle_at_ns - start);
@@ -2365,16 +2434,16 @@ static int rx_wait_for(struct tt_Context* node, int64_t timeout, uint32_t* ready
             gro_settle_decide(node);
         }
     }
-#endif
     return rx_wait_ns(node, timeout, ready);
 }
+#endif
 
 int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
-    node->rx_offset = 0; // at the start of buf unless a merged read hands one out in place
     // What the last batch read comes first, and without a wait: holding it behind ppoll() would delay
     // datagrams that have already arrived. Then what a drain took while core was away, which left the sockets after
     // the batch and before anything still in them; it keeps draining while it holds any (rx_take_drained()).
 #if TT_HAL_UDP_GRO
+    node->rx_offset = 0; // at the start of buf unless a merged read hands one out in place
     int32_t merged = gro_take_pending(node, (uint8_t*)buf, len, ip, port);
     if (merged >= 0) {
         return merged;
@@ -2410,7 +2479,20 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     int read_fd = node->hal.sock;
     {
         uint32_t ready = 0;
+#if TT_HAL_UDP_GRO
         int poll_ret = rx_wait_for(node, timeout, &ready);
+#else
+        struct timespec* timeout_ts_ptr = NULL;
+        struct timespec timeout_ts;
+        if (timeout > 0) {
+            // This function's contract (see hal.h) is "0 for no timeout", i.e. block until data
+            // arrives - timeout_ts_ptr staying NULL is ppoll()'s own way to say exactly that.
+            timeout_ts.tv_sec = (time_t)(timeout / SEC_NS);
+            timeout_ts.tv_nsec = (long)(timeout % SEC_NS);
+            timeout_ts_ptr = &timeout_ts;
+        }
+        int poll_ret = rx_wait(node, timeout_ts_ptr, &ready);
+#endif
         if ((ready & (RX_READY_WELL_KNOWN | RX_READY_DATA)) != 0) {
             TT_TRACE(tt_TRACE_RX_WAKE);
         }
@@ -2541,8 +2623,8 @@ static void rx_idle_count_return(struct tt_Context* node) {
 }
 
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
-    node->rx_offset = 0;
 #if TT_HAL_UDP_GRO
+    node->rx_offset = 0;
     if (!drain_active(node)) {
         gro_settle_decide(node); // a settle past its deadline is decided before anything is read
     }

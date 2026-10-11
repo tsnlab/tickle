@@ -2029,6 +2029,9 @@ static uint8_t count_peers(const struct tt_Peer* peers);
 #define HYBRID_RUN_WIRE_FRAMING ((uint32_t)(sizeof(struct tt_SingleHeader) + sizeof(struct tt_FragRunHeader)))
 #define HYBRID_RUN_L_WIRE_FRAMING ((uint32_t)(sizeof(struct tt_SingleHeader) + sizeof(struct tt_FragRunLHeader)))
 #define HYBRID_UNIT ((uint32_t)FRAG_CONT_PAYLOAD)
+// The fewest units a sample may have to go in runs: a run never holds the last unit, so two units would make a run of
+// one.
+#define HYBRID_MIN_UNITS 3U
 #define HYBRID_UNIT_L ((uint32_t)(tt_CONTROL_MAX_LENGTH - FRAG_FRAMING_LENGTH - sizeof(struct tt_FragContLHeader)))
 // A run's classic framing, built before it is put in the single form: tt_Header, the submessage header, its own.
 #define HYBRID_RUN_FRAMING (FRAG_FRAMING_LENGTH + sizeof(struct tt_FragRunHeader))
@@ -2050,6 +2053,15 @@ static uint32_t hybrid_units_within(uint32_t ceiling, bool large) {
         return 1U;
     }
     return units > (uint32_t)tt_HYBRID_N_MAX ? (uint32_t)tt_HYBRID_N_MAX : units;
+}
+
+// Whether this context keeps the reader's side of the hybrid transport at all (tt_HybridState.rx_capable). Never in a
+// build whose receive buffer cannot hold a run of two units - core's default, 1472 bytes - which then compiles every
+// test of it on the receive path out: a load and a branch a fragment, and the far field cost aarch64 an add besides
+// (gate v2 on the rig, 2026-10-12).
+#define HYBRID_RX_POSSIBLE ((uint32_t)tt_MAX_BUFFER_LENGTH >= HYBRID_RUN_WIRE_FRAMING + (2U * HYBRID_UNIT))
+static inline bool hybrid_rx_capable(const struct tt_Context* node) {
+    return HYBRID_RX_POSSIBLE && node->hybrid.rx_capable;
 }
 
 // The bucket of tt_HybridState.n_hist that n falls in: 1, 2-3, 4-7, 8-15, 16-31, 32 up to n_max - 1, n_max.
@@ -2217,7 +2229,10 @@ static bool hybrid_send_small_runs(struct tt_Context* node, const struct tt_Data
         context_ids[run_count] = dest->context_id;
         run_count++;
     }
-    if (seam_send_batch(node, runs, run_count, context_ids) < 0) {
+    // run_count is never 0 here (three units or more, the last apart), but the compiler cannot see it: without the test
+    // it took seam_send_batch() as callable with an empty batch and compiled every caller's copy of it worse - 9
+    // aarch64 instructions a core p4 sample, which sends no run at all (gate v2 on the rig, 2026-10-12).
+    if (run_count != 0U && seam_send_batch(node, runs, run_count, context_ids) < 0) {
         return false;
     }
     struct tt_OutDatagram last = units[count - 1U];
@@ -2642,13 +2657,13 @@ static uint32_t hybrid_reliable_n(struct tt_Context* node, const struct tt_Publi
     bool reader = false;
     uint64_t now = 0;
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
-        const struct tt_PeerAck* ack = &pub->peer_acks[i];
-        if (ack->context_id != context_id) {
+        if (pub->peer_acks[i].context_id != context_id) {
             continue;
         }
-        if (ack->path_failed_ns != 0) { // its fragment path failed (hybrid_note_nacks()): MTU, or a re-probe
+        const struct tt_PeerWatch* watch = &pub->peer_watch[i];
+        if (watch->path_failed_ns != 0) { // its fragment path failed (hybrid_note_nacks()): MTU, or a re-probe
             now = now != 0 ? now : tt_get_ns();
-            if (now - ack->path_failed_ns < tt_HYBRID_PATH_CLEAN_NS) {
+            if (now - watch->path_failed_ns < tt_HYBRID_PATH_CLEAN_NS) {
                 return 1U;
             }
             *one_run = true;
@@ -2669,7 +2684,7 @@ static uint32_t hybrid_reliable_n(struct tt_Context* node, const struct tt_Publi
 static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t run_n, uint32_t count,
                                  uint32_t base, uint32_t run_units) {
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
-        struct tt_PeerAck* ack = &pub->peer_acks[i];
+        const struct tt_PeerAck* ack = &pub->peer_acks[i];
         if (ack->context_id == tt_CONTEXT_ID_INVALID ||
             (context_id != tt_CONTEXT_ID_INVALID && ack->context_id != context_id)) {
             continue;
@@ -2677,20 +2692,22 @@ static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, u
         if (run_units == 0) {
             continue;
         }
-        if (ack->watch_count != 0 && !ack->watch_all_lost) {
-            ack->all_lost_streak = 0;
-            if (ack->watch_probe) {
-                ack->path_failed_ns = 0; // the re-probe's run arrived: the path takes fragments again
+        struct tt_PeerWatch* watch = &pub->peer_watch[i];
+        pub->watching = true; // process_acknack() reads NACKs for the watch from now on
+        if (watch->watch_count != 0 && !watch->watch_all_lost) {
+            watch->all_lost_streak = 0;
+            if (watch->watch_probe) {
+                watch->path_failed_ns = 0; // the re-probe's run arrived: the path takes fragments again
             }
         }
-        ack->watch_base = base;
-        ack->watch_count = (uint16_t)count;
-        ack->watch_run_units = (uint16_t)run_units;
-        ack->watch_nacked = 0;
-        ack->watch_runs = (uint8_t)(((run_units - 1U) / run_n) + 1U);
-        ack->watch_tail_nacked = false;
-        ack->watch_all_lost = false;
-        ack->watch_probe = ack->path_failed_ns != 0;
+        watch->watch_base = base;
+        watch->watch_count = (uint16_t)count;
+        watch->watch_run_units = (uint16_t)run_units;
+        watch->watch_nacked = 0;
+        watch->watch_runs = (uint8_t)(((run_units - 1U) / run_n) + 1U);
+        watch->watch_tail_nacked = false;
+        watch->watch_all_lost = false;
+        watch->watch_probe = watch->path_failed_ns != 0;
     }
 }
 
@@ -2702,71 +2719,101 @@ static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, u
 // then 1 until tt_HYBRID_PATH_CLEAN_NS have passed, when the next sample re-probes with one run and the rest as MTU
 // units: through, and the path is clear; lost, and it is failed again. Under real frame loss at the n the cost model
 // picks, L(n) is small and every run of a sample lost with its tail through is L(n)^runs - not a frame-loss reading.
-static void hybrid_watch_nack(struct tt_PeerAck* ack, uint32_t seq_no) {
-    if (ack->watch_count == 0 || seq_no - ack->watch_base >= ack->watch_count) {
+static void hybrid_watch_nack(struct tt_PeerWatch* watch, uint32_t seq_no) {
+    if (watch->watch_count == 0 || seq_no - watch->watch_base >= watch->watch_count) {
         return;
     }
-    if (seq_no - ack->watch_base < ack->watch_run_units) {
-        ack->watch_nacked++;
-    } else if (seq_no - ack->watch_base == ack->watch_count - 1U) {
-        ack->watch_tail_nacked = true;
+    if (seq_no - watch->watch_base < watch->watch_run_units) {
+        watch->watch_nacked++;
+    } else if (seq_no - watch->watch_base == watch->watch_count - 1U) {
+        watch->watch_tail_nacked = true;
     }
 }
 
-static void hybrid_watch_judge(struct tt_PeerAck* ack) {
-    if (ack->watch_count == 0 || ack->watch_all_lost || ack->watch_tail_nacked ||
-        ack->watch_nacked != ack->watch_run_units) {
+static void hybrid_watch_judge(struct tt_PeerWatch* watch, uint8_t context_id) {
+    if (watch->watch_count == 0 || watch->watch_all_lost || watch->watch_tail_nacked ||
+        watch->watch_nacked != watch->watch_run_units) {
         return;
     }
-    ack->watch_all_lost = true;
-    ack->all_lost_streak = ack->all_lost_streak < UINT8_MAX ? (uint8_t)(ack->all_lost_streak + 1U) : UINT8_MAX;
-    if (ack->watch_runs >= 2U || ack->all_lost_streak >= 2U || ack->watch_probe) {
-        if (ack->path_failed_ns == 0) {
+    watch->watch_all_lost = true;
+    watch->all_lost_streak = watch->all_lost_streak < UINT8_MAX ? (uint8_t)(watch->all_lost_streak + 1U) : UINT8_MAX;
+    if (watch->watch_runs >= 2U || watch->all_lost_streak >= 2U || watch->watch_probe) {
+        if (watch->path_failed_ns == 0) {
             TT_LOG_WARNING("Hybrid transport: every run to node %u lost whole while its MTU units arrived - its path "
                            "drops IP fragments; MTU units only, re-probed in %u s",
-                           ack->context_id, (unsigned)(tt_HYBRID_PATH_CLEAN_NS / tt_SECOND));
+                           context_id, (unsigned)(tt_HYBRID_PATH_CLEAN_NS / tt_SECOND));
         }
         uint64_t now = tt_get_ns();
-        ack->path_failed_ns = now != 0 ? now : 1U; // 0 means "not failed"
-        ack->path_failures++;
-        ack->all_lost_streak = 0; // spent: a re-probe is judged as one, by watch_probe
+        watch->path_failed_ns = now != 0 ? now : 1U; // 0 means "not failed"
+        watch->path_failures++;
+        watch->all_lost_streak = 0; // spent: a re-probe is judged as one, by watch_probe
     }
 }
 
 // One ACKNACK's NACKs, read for the failed-path watch: above the highest seq_no the reader NACKed before, a NACK is a
 // first one. A re-NACK is not: repairs queued behind a large sample's runs are NACKed again while still in flight. The
-// loss n is chosen by is the reader's own (its announce), not counted here.
-static void hybrid_note_nacks(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id, uint32_t base,
-                              const uint64_t* bitmap, uint16_t words) {
-    struct tt_PeerAck* ack = find_peer_ack(pub, node_id, entity_id);
-    if (ack == NULL || ack->watch_count == 0) {
+// loss n is chosen by is the reader's own (its announce), not counted here. Not inlined into process_acknack(), which
+// calls it only for a Publisher that has sent runs (tt_Publisher.watching).
+__attribute__((noinline)) static void hybrid_note_nacks(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id,
+                                                        uint32_t base, const uint64_t* bitmap, uint16_t words) {
+    const struct tt_PeerAck* found = find_peer_ack(pub, node_id, entity_id);
+    if (found == NULL) {
+        return;
+    }
+    struct tt_PeerWatch* watch = &pub->peer_watch[found - pub->peer_acks];
+    if (watch->watch_count == 0) {
         return; // no sample sent to it in runs is being watched
     }
-    uint32_t high = ack->nack_high;
+    uint32_t high = watch->nack_high;
     for (uint16_t word_idx = 0; word_idx < words; word_idx++) {
         uint64_t word = bitmap[word_idx];
         while (word != 0) {
             uint32_t seq_no =
                 base + ((uint32_t)word_idx * tt_RELIABLE_BITMAP_WORD_BITS) + (uint32_t)__builtin_ctzll(word);
             word &= word - 1;
-            if (seq_no <= ack->nack_high) {
+            if (seq_no <= watch->nack_high) {
                 continue; // a re-NACK
             }
-            hybrid_watch_nack(ack, seq_no);
+            hybrid_watch_nack(watch, seq_no);
             high = seq_no;
         }
     }
-    ack->nack_high = high;
-    hybrid_watch_judge(ack);
-    if (ack->watch_count != 0 && !ack->watch_all_lost && (int32_t)(base - (ack->watch_base + ack->watch_count)) >= 0) {
+    watch->nack_high = high;
+    hybrid_watch_judge(watch, node_id);
+    if (watch->watch_count != 0 && !watch->watch_all_lost &&
+        (int32_t)(base - (watch->watch_base + watch->watch_count)) >= 0) {
         // The reader holds the whole watched sample, and not every run of it was lost: the streak ends, and a
         // re-probe that got through clears the path before the next sample chooses its n.
-        ack->all_lost_streak = 0;
-        if (ack->watch_probe) {
-            ack->path_failed_ns = 0;
+        watch->all_lost_streak = 0;
+        if (watch->watch_probe) {
+            watch->path_failed_ns = 0;
         }
-        ack->watch_count = 0;
+        watch->watch_count = 0;
     }
+}
+#endif
+
+#if tt_HYBRID_TRANSPORT
+// One destination of a first transmission of three units or more (send_fragments()): n chosen and noted, and the sample
+// sent in runs when n is 2 or more - HYBRID_SENT_MTU leaves it to the caller's MTU units. Not inlined: the caller is
+// every fragmented sample's path, and with this inlined its loop compiled worse for the two-unit samples that never
+// reach it (core p4, gate v2 on the rig, 2026-10-12).
+enum hybrid_sent { HYBRID_SENT_MTU, HYBRID_SENT_RUNS, HYBRID_SENT_FAILED };
+__attribute__((noinline)) static enum hybrid_sent
+hybrid_send_destination(struct tt_Context* node, struct tt_Publisher* pub, const struct tt_DataHeader* data_header,
+                        const uint8_t* cdr, uint32_t count, struct tt_OutDatagram* batch,
+                        const struct tx_destination* destination) {
+    bool one_run = false;
+    uint32_t run_n =
+        hybrid_destination_n(node, pub, destination->context_id, destination->ip, destination->port, false, &one_run);
+    uint32_t run_until = hybrid_run_until(run_n, count, one_run);
+    hybrid_note_sent(node, pub, destination->context_id, run_n, count, data_header->seq_no, run_until);
+    if (run_n < 2U) {
+        return HYBRID_SENT_MTU;
+    }
+    return hybrid_send_small_runs(node, data_header, cdr, count, run_n, run_until, batch, destination)
+               ? HYBRID_SENT_RUNS
+               : HYBRID_SENT_FAILED;
 }
 #endif
 
@@ -2781,10 +2828,14 @@ static void hybrid_note_nacks(struct tt_Publisher* pub, uint8_t node_id, uint32_
 // fragments back to back.
 //
 // `pub` is the Publisher whose sample this is when this is its first transmission, which may then go as runs
-// (hybrid transport, DESIGN.md section 8); NULL for a retransmission or a backlog, which are always MTU units.
-static bool send_fragments(struct tt_Context* node, struct tt_Publisher* pub, const struct tt_DataHeader* data_header,
-                           const uint8_t* cdr, uint32_t cdr_len, const struct tt_Peer* peers, uint8_t peer_count,
-                           uint8_t receiver) {
+// (hybrid transport, DESIGN.md section 8); NULL for a retransmission or a backlog, which are always MTU units. Always
+// inlined into its two forms below, send_fragments() (pub NULL: no run, compiled as before runs existed) and
+// send_first_fragments(); send_sample_fragments() picks between them.
+__attribute__((always_inline)) static inline bool send_fragments_from(struct tt_Context* node, struct tt_Publisher* pub,
+                                                                      const struct tt_DataHeader* data_header,
+                                                                      const uint8_t* cdr, uint32_t cdr_len,
+                                                                      const struct tt_Peer* peers, uint8_t peer_count,
+                                                                      uint8_t receiver) {
     if (cdr_len <= FRAG_FIRST_PAYLOAD || cdr_len > FRAG_MAX_CDR) {
         TT_LOG_ERROR("Sample of %u bytes cannot be sent as fragments", cdr_len);
         node->tx_dropped_oversize++;
@@ -2830,17 +2881,13 @@ static bool send_fragments(struct tt_Context* node, struct tt_Publisher* pub, co
     for (uint8_t dest = 0; dest < destination_count; dest++) {
 #if tt_HYBRID_TRANSPORT
         // Runs only in a first transmission (a Publisher's: a repair or a backlog passes none), of three units or more.
-        if (pub != NULL && count >= 3U) {
-            bool one_run = false;
-            uint32_t run_n = hybrid_destination_n(node, pub, destinations[dest].context_id, destinations[dest].ip,
-                                                  destinations[dest].port, false, &one_run);
-            uint32_t run_until = hybrid_run_until(run_n, count, one_run);
-            hybrid_note_sent(node, pub, destinations[dest].context_id, run_n, count, data_header->seq_no, run_until);
-            if (run_n >= 2U) {
-                if (!hybrid_send_small_runs(node, data_header, cdr, count, run_n, run_until, batch,
-                                            &destinations[dest])) {
-                    return false;
-                }
+        if (pub != NULL && count >= HYBRID_MIN_UNITS) {
+            enum hybrid_sent sent =
+                hybrid_send_destination(node, pub, data_header, cdr, count, batch, &destinations[dest]);
+            if (sent == HYBRID_SENT_FAILED) {
+                return false;
+            }
+            if (sent == HYBRID_SENT_RUNS) {
                 continue;
             }
         }
@@ -2858,6 +2905,39 @@ static bool send_fragments(struct tt_Context* node, struct tt_Publisher* pub, co
         }
     }
     return true;
+}
+
+// A sample's fragments with no runs: a retransmission, a backlog, or a first transmission too short for one.
+static bool send_fragments(struct tt_Context* node, const struct tt_DataHeader* data_header, const uint8_t* cdr,
+                           uint32_t cdr_len, const struct tt_Peer* peers, uint8_t peer_count, uint8_t receiver) {
+    return send_fragments_from(node, NULL, data_header, cdr, cdr_len, peers, peer_count, receiver);
+}
+
+#if tt_HYBRID_TRANSPORT
+// A Publisher's first transmission of HYBRID_MIN_UNITS units or more, which may go in runs. Apart from send_fragments()
+// so that the path every shorter sample takes - core's p4, two units - compiles as it did before runs existed: with
+// `pub` threaded into one function it paid 7 aarch64 instructions a sample there (gate v2 on the rig, 2026-10-12).
+__attribute__((noinline)) static bool send_first_fragments(struct tt_Context* node, struct tt_Publisher* pub,
+                                                           const struct tt_DataHeader* data_header, const uint8_t* cdr,
+                                                           uint32_t cdr_len, const struct tt_Peer* peers,
+                                                           uint8_t peer_count, uint8_t receiver) {
+    return send_fragments_from(node, pub, data_header, cdr, cdr_len, peers, peer_count, receiver);
+}
+#endif
+
+// A Publisher's first transmission of a sample as fragments: send_first_fragments() when it has enough units for a run
+// (more CDR than a first and one continuation fragment carry), else send_fragments().
+static inline bool send_sample_fragments(struct tt_Context* node, struct tt_Publisher* pub,
+                                         const struct tt_DataHeader* data_header, const uint8_t* cdr, uint32_t cdr_len,
+                                         const struct tt_Peer* peers, uint8_t peer_count, uint8_t receiver) {
+#if tt_HYBRID_TRANSPORT
+    if (cdr_len > FRAG_FIRST_PAYLOAD + ((HYBRID_MIN_UNITS - 2U) * FRAG_CONT_PAYLOAD)) {
+        return send_first_fragments(node, pub, data_header, cdr, cdr_len, peers, peer_count, receiver);
+    }
+#else
+    UNUSED(pub);
+#endif
+    return send_fragments(node, data_header, cdr, cdr_len, peers, peer_count, receiver);
 }
 
 // Bytes of CDR a DATA submessage at submessage_header, padded as it is sent, carries.
@@ -2892,10 +2972,11 @@ static bool send_tail_as_fragments(struct tt_Context* node, struct tt_Publisher*
         base = sizeof(struct tt_Header);
     }
     const uint8_t* record = node->tx_buffer + base;
-    bool sent = send_fragments(node, pub, (const struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader)),
-                               record + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader),
-                               length - (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)),
-                               peers, peer_count, tt_SUBMESSAGE_ID_ALL);
+    bool sent =
+        send_sample_fragments(node, pub, (const struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader)),
+                              record + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader),
+                              length - (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)),
+                              peers, peer_count, tt_SUBMESSAGE_ID_ALL);
     set_tx_tail(node, base);
     return sent;
 }
@@ -3271,11 +3352,11 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
             pub->peer_acks[i].first_owed_seq_no = 0;
             pub->peer_acks[i].match_heartbeats_left = 0;
 #if tt_HYBRID_TRANSPORT
-            pub->peer_acks[i].nack_high = 0;
-            pub->peer_acks[i].watch_count = 0; // no sample watched: the fragment path presumed fine
-            pub->peer_acks[i].all_lost_streak = 0;
-            pub->peer_acks[i].path_failed_ns = 0;
-            pub->peer_acks[i].path_failures = 0;
+            pub->peer_watch[i].nack_high = 0;
+            pub->peer_watch[i].watch_count = 0; // no sample watched: the fragment path presumed fine
+            pub->peer_watch[i].all_lost_streak = 0;
+            pub->peer_watch[i].path_failed_ns = 0;
+            pub->peer_watch[i].path_failures = 0;
 #endif
             return &pub->peer_acks[i];
         }
@@ -5264,9 +5345,7 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
     pub->node = node;
     pub->topic = topic;
     pub->seq_no = 0;
-    pub->batch = false; // see tickle.h's own doc comment on this field for why this is the default
-    pub->large_fragmentation = tt_LARGE_FRAGMENTATION_INHERIT; // the context's (DESIGN.md section 8)
-    pub->ip_datagram_max = 0;                                  // inherit: each peer's advertisement
+    pub->batch = false;                 // see tickle.h's own doc comment on this field for why this is the default
     pub->reliable_cache = NULL;         // no retained-sample storage by default - see its own doc comment
     pub->reliable = false;              // best-effort by default - see tt_Publisher.reliable's own doc comment
     pub->durable = false;               // volatile by default - see tt_Publisher.durable's own doc comment
@@ -5296,6 +5375,11 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
     pub->writable_pending = false;
     pub->blocked_record_bytes = 0;
     pub->blocked_datagrams = 0;
+    pub->large_fragmentation = tt_LARGE_FRAGMENTATION_INHERIT; // the context's (DESIGN.md section 8)
+    pub->ip_datagram_max = 0;                                  // inherit: each peer's advertisement
+#if tt_HYBRID_TRANSPORT
+    pub->watching = false; // no sample sent in runs yet; each peer_watch[] entry is cleared as its ack slot is claimed
+#endif
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         pub->peers[i].context_id = tt_CONTEXT_ID_INVALID;
     }
@@ -6111,8 +6195,8 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 #if tt_FRAG_ENABLED
     if (sizeof(framing) + body_len > FRAG_WHOLE_DATA_LIMIT) {
         bool unicast = peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD;
-        if (!send_fragments(node, pub, data_header, body, body_len, unicast ? pub->peers : NULL,
-                            unicast ? peer_count : 0, tt_SUBMESSAGE_ID_ALL)) {
+        if (!send_sample_fragments(node, pub, data_header, body, body_len, unicast ? pub->peers : NULL,
+                                   unicast ? peer_count : 0, tt_SUBMESSAGE_ID_ALL)) {
             return tt_RET_IO_ERROR;
         }
         pub->seq_no += frag_count_for(body_len); // one seq_no per datagram
@@ -11536,7 +11620,9 @@ static void hybrid_announce(struct tt_Context* node, uint64_t now) {
 static void node_update(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(param);
 #if tt_HYBRID_TRANSPORT
-    hybrid_reader_tick(node, time);
+    if (hybrid_rx_capable(node)) { // never in a build that cannot receive a run (core's default): compiled out there
+        hybrid_reader_tick(node, time);
+    }
 #endif
 #if tt_SAMPLE_LENDING && tt_SEGMENT_ENABLED
     // A segment release put off while a retained sample held a slot, finished on the polling thread (DESIGN.md 10).
@@ -12130,7 +12216,7 @@ static bool send_cached_record(struct tt_Context* node, const uint8_t* record, u
     if (sizeof(struct tt_Header) + ROUNDUP(len) > record_size_limit(node, tt_MAX_BUFFER_LENGTH, target, 1)) {
         const struct tt_DataHeader* cached = (const struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader));
         uint32_t head_len = (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader));
-        return send_fragments(node, NULL, cached, record + head_len, len - head_len, target, 1,
+        return send_fragments(node, cached, record + head_len, len - head_len, target, 1,
                               addressed ? target->context_id : tt_SUBMESSAGE_ID_ALL);
     }
 #endif
@@ -15147,7 +15233,9 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
     // defensive, spec-honest half of that same contract, on the answering side.
     if (pub->reliable) {
 #if tt_HYBRID_TRANSPORT
-        hybrid_note_nacks(pub, header->source, sender_entity_id, seq_no, bitmap, bitmap_words);
+        if (pub->watching) { // a Publisher that never sent a run has nothing watched: no peer_acks[] search
+            hybrid_note_nacks(pub, header->source, sender_entity_id, seq_no, bitmap, bitmap_words);
+        }
 #endif
         retransmit_reliable_samples(node, pub, cache, depth, seq_no, bitmap, bitmap_words, &target);
     }
@@ -16240,7 +16328,7 @@ static bool process_frag_large(struct tt_Context* node, struct tt_Header* header
     fragment.payload = buffer + head;
     fragment.length = tail - head;
 #if tt_HYBRID_TRANSPORT
-    if (node->hybrid.rx_capable && fragment.index < fragment.count) {
+    if (hybrid_rx_capable(node) && fragment.index < fragment.count) {
         hybrid_rx_note(node, header->source, fragment.entity_id, fragment.seq_no - fragment.index, fragment.index,
                        fragment.count, 1, false);
     }
@@ -16274,6 +16362,11 @@ static bool process_frag_large(struct tt_Context* node, struct tt_Header* header
 // continuation.
 
 #if tt_FRAG_ENABLED
+// Whether a run on 8/9 of two units - the smallest - fits this build's receive buffer at all.
+#define RUN_FITS_RX_BUFFER                                                                                            \
+    ((uint32_t)tt_MAX_BUFFER_LENGTH >= (uint32_t)(sizeof(struct tt_SingleHeader) + sizeof(struct tt_FragRunHeader)) + \
+                                           (2U * (uint32_t)FRAG_CONT_PAYLOAD))
+
 // What the two run types share: the counts against each other and the type's ceiling, the reserved field, and the
 // seq_no range of the sample the units belong to. A run never holds a sample's last unit (it always goes alone, as an
 // MTU fragment), which is also what lets a small run's unit size be derived from its length.
@@ -16303,6 +16396,15 @@ static void run_refused(uint64_t* counter, const char* what, uint32_t index, uin
 // it, and follows from the length: run_count units, the first tt_FRAG_FIRST_SHORTFALL shorter when it is unit 0.
 static bool process_frag_run(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                              uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
+    if (!RUN_FITS_RX_BUFFER) {
+        // A run of two units is larger than this build's receive buffer, so no run can arrive here whole - what does is
+        // a truncated read. This build advertises a ceiling of one unit, so a writer that follows it sends none.
+        // Refused at compile time, which also keeps deliver_user_fragment() to its one caller, process_frag(): with a
+        // second the compiler stopped inlining it, and every fragment of a core p4 sample paid a call (gate v2,
+        // 2026-10-12).
+        run_refused(&node->frag_dropped, "run larger than the receive buffer", 0, 0, 0, tail - head);
+        return false;
+    }
     struct tt_FragRunHeader* run = decode(node, buffer, &head, tail, sizeof(struct tt_FragRunHeader));
     if (run == NULL) {
         run_refused(&node->frag_dropped, "FragRunHeader", 0, 0, 0, tail - head);
@@ -16323,7 +16425,7 @@ static bool process_frag_run(struct tt_Context* node, struct tt_Header* header, 
     uint32_t unit = span / run_count;
     uint32_t unit_head = head;
 #if tt_HYBRID_TRANSPORT
-    if (node->hybrid.rx_capable) {
+    if (hybrid_rx_capable(node)) {
         hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count, true);
     }
 #endif
@@ -16365,7 +16467,7 @@ static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* he
     }
     const uint8_t* payload = buffer + head;
 #if tt_HYBRID_TRANSPORT
-    if (node->hybrid.rx_capable) {
+    if (hybrid_rx_capable(node)) {
         hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count, true);
     }
 #endif
@@ -16447,7 +16549,7 @@ static bool process_frag(struct tt_Context* node, struct tt_Header* header, uint
                                 (uint8_t)count);
     }
 #if tt_HYBRID_TRANSPORT
-    if (node->hybrid.rx_capable && index < count) {
+    if (hybrid_rx_capable(node) && index < count) {
         hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, 1, false);
     }
 #endif
@@ -16461,6 +16563,68 @@ static bool process_frag(struct tt_Context* node, struct tt_Header* header, uint
     TT_LOG_DEBUG("Fragment skipped: built without fragmentation");
     return true;
 #endif
+}
+
+// A run (FRAG_RUN_L or FRAG_RUN), from process_submessage()'s default case. Not inlined there, for the same reason it
+// is not a case of its own: nothing of it may weigh on the switch every other submessage goes through.
+__attribute__((noinline)) static void process_run_submessage(struct tt_Context* node, struct tt_Header* header,
+                                                             uint8_t* buffer, uint32_t head, uint32_t body_tail,
+                                                             uint8_t type, uint32_t sender_ip, uint16_t sender_port,
+                                                             bool self_sent) {
+    if (self_sent) {
+        return;
+    }
+    if (type == tt_SUBMESSAGE_TYPE_FRAG_RUN_L) {
+        process_frag_run_large(node, header, buffer, head, body_tail, sender_ip, sender_port);
+        return;
+    }
+#if tt_FRAG_ENABLED
+    process_frag_run(node, header, buffer, head, body_tail, sender_ip, sender_port);
+#else
+    UNUSED(node);
+    UNUSED(header);
+    UNUSED(buffer);
+    UNUSED(head);
+    UNUSED(body_tail);
+    UNUSED(sender_ip);
+    UNUSED(sender_port);
+    TT_LOG_DEBUG("Run skipped: built without fragmentation"); // as types 8/9 are
+#endif
+}
+
+// Whether this build can take a run at all: a large-sample build (FRAG_RUN_L), or one whose receive buffer holds a run
+// on 8/9 of two units. Core's default build can do neither - its 1472-byte buffer holds one unit - and passes every run
+// to run_not_receivable() below instead.
+#if tt_LARGE_SAMPLES
+#define RUNS_RECEIVABLE true
+#elif tt_FRAG_ENABLED
+#define RUNS_RECEIVABLE RUN_FITS_RX_BUFFER
+#else
+#define RUNS_RECEIVABLE false
+#endif
+
+// A run in a build that cannot take one (RUNS_RECEIVABLE false), from process_submessage()'s default case: whether the
+// type is a run, which is then counted - never dropped silently - but not logged. In line and without a call of its
+// own: every form that called a function from the default case (the run handler, or one that also logged) changed how
+// the compiler allocated registers across the whole switch, and a core p4 sample's fragments, or a p1 round trip,
+// paid +12 to +20 aarch64 instructions for it (gate v2 on the rig, 2026-10-12; counted in aarch64_insn/
+// crosshost_qemu.sh). Nothing in this build can send a run it accepts, so a run here is a misbehaving peer, and the
+// counter is what says so.
+static inline bool run_not_receivable(struct tt_Context* node, uint8_t type, bool self_sent) {
+    if (type != tt_SUBMESSAGE_TYPE_FRAG_RUN_L && type != tt_SUBMESSAGE_TYPE_FRAG_RUN) {
+        return false;
+    }
+    if (self_sent) {
+        return true; // a node's own broadcast run, read back: nothing to count, as before (process_run_submessage())
+    }
+    if (type == tt_SUBMESSAGE_TYPE_FRAG_RUN_L) {
+        node->frag_large_skipped++; // as a large fragment is, in a build without stage 2
+        return true;
+    }
+#if tt_FRAG_ENABLED
+    node->frag_dropped++; // as process_frag_run() refuses one that cannot have arrived whole
+#endif
+    return true;
 }
 
 static bool process_submessage(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
@@ -16521,20 +16685,6 @@ static bool process_submessage(struct tt_Context* node, struct tt_Header* header
             process_frag_large(node, header, buffer, head, body_tail, submessage_header->type, sender_ip, sender_port);
         }
         return true;
-    case tt_SUBMESSAGE_TYPE_FRAG_RUN_L:
-        if (!self_sent) {
-            process_frag_run_large(node, header, buffer, head, body_tail, sender_ip, sender_port);
-        }
-        return true;
-    case tt_SUBMESSAGE_TYPE_FRAG_RUN:
-#if tt_FRAG_ENABLED
-        if (!self_sent) {
-            process_frag_run(node, header, buffer, head, body_tail, sender_ip, sender_port);
-        }
-#else
-        TT_LOG_DEBUG("Run skipped: built without fragmentation"); // as types 8/9 are
-#endif
-        return true;
     case tt_SUBMESSAGE_TYPE_SHM_DATA:
         if (transport != tt_TRANSPORT_SHM) {
             // SHM_PLAN 6e's safety condition, which it names as not skippable. This record declares how
@@ -16564,10 +16714,21 @@ static bool process_submessage(struct tt_Context* node, struct tt_Header* header
         TT_LOG_WARNING("Shared-memory DATA record received, but this build does not read seq spans yet; skipping");
         return true;
     default:
-        // An unknown type is most likely a submessage from a newer protocol revision (see
-        // validate_packet_header()'s own version check, exact since Phase 2). Its length was already validated
-        // by the caller, so skip exactly that far and carry on instead of discarding the packet.
-        TT_LOG_WARNING("Unknown submessage type %d, skipping (len %u)", submessage_header->type, body_tail - head);
+        // The hybrid transport's runs (tt_VERSION 13) are told apart here rather than given cases of their own: two
+        // more cases changed how the compiler laid the switch out, and every DATA, ACKNACK and HEARTBEAT paid for it -
+        // +15 aarch64 instructions a round trip at reliable_latency p1 (gate v2 on the rig, 2026-10-12).
+        if (RUNS_RECEIVABLE && (submessage_header->type == tt_SUBMESSAGE_TYPE_FRAG_RUN_L ||
+                                submessage_header->type == tt_SUBMESSAGE_TYPE_FRAG_RUN)) {
+            process_run_submessage(node, header, buffer, head, body_tail, submessage_header->type, sender_ip,
+                                   sender_port, self_sent);
+            return true;
+        }
+        if (!run_not_receivable(node, submessage_header->type, self_sent)) {
+            // An unknown type is most likely a submessage from a newer protocol revision (see
+            // validate_packet_header()'s own version check, exact since Phase 2). Its length was already validated
+            // by the caller, so skip exactly that far and carry on instead of discarding the packet.
+            TT_LOG_WARNING("Unknown submessage type %d, skipping (len %u)", submessage_header->type, body_tail - head);
+        }
         return true;
     }
 }
@@ -18172,8 +18333,14 @@ static tt_ret_t process_datagram_at(struct tt_Context* node, uint8_t* buffer, in
 static tt_ret_t process_datagram_locked(struct tt_Context* node, int32_t len, uint32_t ip, uint16_t port,
                                         enum tt_Transport transport, uint16_t seq_span) {
     // A socket datagram lies where the HAL says in the buffer it was read into (struct tt_Context.rx_offset: UDP_GRO
-    // hands several out of one read in place); a segment record (no lending) is always at the start.
+    // hands several out of one read in place); a segment record (no lending) is always at the start. Only a HAL with
+    // receive offload (hal_linux.h TT_HAL_UDP_GRO) ever sets it, so a build without reads no offset at all: the load
+    // and the add were 2 instructions a datagram on aarch64 (gate v2, 2026-10-12).
+#if defined(TT_HAL_UDP_GRO) && TT_HAL_UDP_GRO
     const uint32_t offset = transport == tt_TRANSPORT_UDP ? node->rx_offset : 0U;
+#else
+    const uint32_t offset = 0U;
+#endif
 #if tt_SAMPLE_LENDING
     return process_datagram_at(node, RX_LANDING(node) + offset, len, ip, port, transport, seq_span, tt_LEND_BUFFER,
                                node->lend.landing);
