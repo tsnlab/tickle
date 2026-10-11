@@ -794,6 +794,58 @@ static void reliable_under_loss(uint32_t size, int samples) {
            (unsigned long)sim_dropped[SENDER_ID], (unsigned long)sim_sent[SENDER_ID]);
 }
 
+// One run of `samples` 1 MB samples, RELIABLE KEEP_ALL at 5% loss, from a writer whose first seq_no is `first`.
+struct wrap_run {
+    int delivered;
+    bool in_order;
+    uint64_t sent[3];
+    uint32_t sender_live; // large buffers the writer still holds once settled
+};
+
+static struct wrap_run large_run_from(uint32_t first, int samples) {
+    init_pair(ONE_MB, RELIABLE_KEEP_ALL);
+    sim_start(50);
+    pub.seq_no = first - 1U;
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        pub.peer_acks[i].ack_seq_no = first; // matched before the move: where its history now begins
+    }
+    for (int i = 0; i < samples; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 1), 10 * tt_SECOND));
+    }
+    sim_settle(samples, 10 * tt_SECOND);
+    uint64_t quiet_by = test_mock_now + tt_SECOND; // the last acknowledgements, and what they hand back
+    while (test_mock_now < quiet_by && sim_step()) {
+    }
+    struct wrap_run run = {delivered_count, in_order && delivered_torn == 0, {0, 0, 0}, sender_alloc.live};
+    memcpy(run.sent, sim_sent, sizeof(run.sent));
+    for (int i = 0; i < samples && i < 64; i++) {
+        run.in_order = run.in_order && delivered_seeds[i] == i + 1;
+    }
+    return run;
+}
+
+static void test_large_samples_cross_2_32_as_if_they_had_not(void) {
+    // A large sample takes one seq_no a datagram and the writer's records are keyed by their first: starting 2 x 723
+    // datagrams short of 2^32, the third 1 MB sample's first seq_no is 0 - once the "no send in progress" and "no
+    // large record" value - and the fourth straddles nothing but follows it. Against the same run from seq_no 1: every
+    // sample, once, in order, the same datagrams each way, and the acknowledged buffers handed back alike.
+    struct wrap_run control = large_run_from(1, 5);
+    struct wrap_run wrap = large_run_from(0U - (2U * tt_sample_datagrams(ONE_MB)), 5);
+    EXPECT_EQ_INT(5, control.delivered);
+    EXPECT_TRUE(control.in_order);
+    EXPECT_EQ_INT(control.delivered, wrap.delivered);
+    EXPECT_TRUE(wrap.in_order);
+    EXPECT_EQ_U64(control.sent[SENDER_ID], wrap.sent[SENDER_ID]);
+    EXPECT_EQ_U64(control.sent[RECEIVER_ID], wrap.sent[RECEIVER_ID]);
+    EXPECT_EQ_U32(control.sender_live, wrap.sender_live);
+    EXPECT_TRUE(pub.seq_no < 0x80000000U); // treatment: the writer's seq_no passed 2^32
+    printf("test_large_sample: 5 x 1 MB across 2^32 - %d delivered, %lu/%lu datagrams (control %lu/%lu), %u buffers "
+           "held (control %u)\n",
+           wrap.delivered, (unsigned long)wrap.sent[SENDER_ID], (unsigned long)wrap.sent[RECEIVER_ID],
+           (unsigned long)control.sent[SENDER_ID], (unsigned long)control.sent[RECEIVER_ID], wrap.sender_live,
+           control.sender_live);
+}
+
 static void test_reliable_keep_all_at_5_percent_loss(void) {
     reliable_under_loss(ONE_MB, 12);
     reliable_under_loss(FOUR_MB, 4);
@@ -1329,6 +1381,7 @@ static void test_a_sample_that_cannot_be_finished_is_dropped_never_torn(void) {
 // Every test above, with and without the ranged encode on the sender's topic: what each checks of the large path -
 // round trips, loss, the cursor, KEEP_LAST, retention, lending - holds with the sample encoded while it is sent.
 static void run_path_tests(void) {
+    test_large_samples_cross_2_32_as_if_they_had_not();
     test_round_trip_at_every_boundary();
     test_a_fixed_size_type_above_a_sample_is_a_large_topic();
     test_any_arrival_order_reassembles();
