@@ -494,6 +494,20 @@ MUTANTS = [
         SEND,
     ),
     (
+        "cap: the benchmark switch ignored",
+        "src/tickle.c",
+        "    } else if (!hybrid->cap_off) {",
+        "    } else if (true) {",
+        SEND,
+    ),
+    (
+        "cap: the benchmark switch not read at create",
+        "src/tickle.c",
+        "    node->hybrid.cap_off = _tt_CONFIG.reassembly_cap_off != 0;",
+        "    node->hybrid.cap_off = false;",
+        SEND,
+    ),
+    (
         "tick: more often than the announce interval",
         "src/tickle.c",
         "    if (now - hybrid->tick_ns < tt_CONTEXT_UPDATE_INTERVAL) {\n        return;\n    }\n    uint64_t failures",

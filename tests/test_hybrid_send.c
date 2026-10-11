@@ -861,6 +861,31 @@ static void tick_readers(uint64_t now) {
     deliver_reader_sends();
 }
 
+// A reader whose cap is switched off (a benchmark arm, _tt_CONFIG.reassembly_cap_off) advertises its configured ceiling
+// whatever its loss and load - and is still withdrawn by the kernel's failures.
+static void test_a_reader_with_the_cap_off_advertises_its_ceiling(void) {
+    _tt_CONFIG.reassembly_cap_off = 1;
+    init_one(LARGE_LEN, FULL_CEILING, false);
+    _tt_CONFIG.reassembly_cap_off = 0;
+    struct tt_Context* node = &readers[0].ctx;
+    EXPECT_TRUE(node->hybrid.cap_off);
+    sim_start(0);
+    uint64_t t = test_mock_now;
+    tick_readers(t);
+    node->hybrid.tick_runs = true;
+    hybrid_test_forced_p = 0.05;
+    node->hybrid.tick_units = 100000;
+    tick_readers(t += tt_SECOND);
+    EXPECT_EQ_U32(FULL_CEILING, node->hybrid.advertised); // capped, it would be one unit
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+    test_mock_reasm_failures = 3;
+    tick_readers(t += tt_SECOND);
+    EXPECT_EQ_U32(28U + 1454U, node->hybrid.advertised);
+    hybrid_test_forced_p = -1.0;
+    init_one(LARGE_LEN, FULL_CEILING, false);
+    EXPECT_TRUE(!readers[0].ctx.hybrid.cap_off); // the default
+}
+
 // Best effort through a path that drops every IP fragment (the tc filter): the runs are lost, only the tails arrive;
 // the reader's gaps raise its p, its cap falls to one unit at the next tick, the writer learns it from the announce
 // and sends MTU units - and samples arrive again. Then the filter goes and the cap comes back as clean frames build up.
@@ -1370,6 +1395,7 @@ int main(void) {
     test_the_reader_cap_is_the_designs();
     test_the_reader_reads_the_kernels_limits();
     test_the_reader_counts_gaps_over_exposure();
+    test_a_reader_with_the_cap_off_advertises_its_ceiling();
     test_the_loss_bound_is_the_poisson_upper_limit();
     test_a_path_that_drops_fragments_brings_n_to_one();
     test_reassembly_failures_withdraw_the_ceiling();
