@@ -8836,6 +8836,8 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->sender_port = 0;
             proxy->ack_seq_no = 1;
             proxy->reorder_cursor = 1;
+            proxy->reorder_pivot = 0; // set at first contact (update_reliable_ack(), inform_subscriber_of_heartbeat())
+            proxy->reorder_shift = 0;
             proxy->highest_delivered = 0;
             proxy->delivered_any = false;
             proxy->superseded_pending = 0;
@@ -9665,6 +9667,10 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         // exactly what is genuinely gone. tests/test_reliable_pubsub.c pins that termination.
         proxy_move_ack(proxy, seq_no);
         proxy->reorder_cursor = seq_no;
+    }
+    if (first_contact) {
+        proxy->reorder_pivot = seq_no; // the reorder ring's pivot (reorder_writer_slot()), at the first seq_no seen
+        proxy->reorder_shift = 0;
     }
     if (first_contact && (proxy->keep_all == tt_WRITER_KEEP_ALL_YES ||
                           (proxy->keep_all == tt_WRITER_KEEP_ALL_UNKNOWN && node->discovery != NULL))) {
@@ -11686,19 +11692,61 @@ static struct tt_ReorderSlot* reorder_slot_at(struct tt_Subscriber* sub, uint16_
     return (struct tt_ReorderSlot*)(sub->reorder_storage + ((size_t)index * reorder_stride(sub) / sizeof(uint64_t)));
 }
 
+// How far the watermark may move from a writer's reorder pivot before the pivot follows it: 2^30, half of the 2^31 at
+// which serial arithmetic would place a held seq_no on the wrong side of it (reorder_writer_slot()).
+#define REORDER_REPIVOT_DRIFT INT32_C(0x40000000)
+
+// How far a key's slot moves when the key passes 2^32: 2^32 mod slots.
+static uint32_t reorder_wrap_step(uint32_t slots) {
+    return ((UINT32_MAX % slots) + 1U) % slots;
+}
+
+// The ring shift for `key` (a seq_no plus its writer's salt) relative to proxy's pivot: the pivot's own shift, moved
+// by one wrap step when the key lies on the other side of 2^32 from the pivot's key.
+static uint32_t reorder_shift_for(const struct tt_WriterProxy* proxy, uint32_t slots, uint32_t salt, uint32_t seq_no) {
+    uint32_t shift = proxy->reorder_shift < slots ? proxy->reorder_shift : proxy->reorder_shift % slots;
+    uint32_t key = seq_no + salt;
+    uint32_t pivot_key = proxy->reorder_pivot + salt;
+    if ((key < pivot_key) != (seq_delta(seq_no, proxy->reorder_pivot) < 0)) {
+        uint32_t step = reorder_wrap_step(slots);
+        shift += key < pivot_key ? step : slots - step; // past the wrap the pivot has not reached, or before it
+    }
+    return shift;
+}
+
 // The slot a writer's seq_no maps to: its seq_no modulo the slots, offset per writer. Every writer counts
 // from 1, so without the offset two writers at similar seq_no contend for the same slots - which for DATA
 // only costs an out-of-order sample a re-request, but a fragment is held even in order, until its sample
 // is whole (DATAFRAG_PLAN.md section 13), and two writers' in-order fragments would collide constantly.
 // One writer's held datagrams still lie within one window, so a buffer a window wide never collides
 // with itself.
-static struct tt_ReorderSlot* reorder_writer_slot(struct tt_Subscriber* sub, uint8_t node_id, uint32_t entity_id,
-                                                  uint32_t seq_no) {
+//
+// ...as long as the window does not straddle the point where seq_no + salt passes 2^32: there (seq_no + salt) % slots
+// jumps unless slots divides 2^32, and the held run on either side shares slots. So each writer's slots are moved on
+// by 2^32 % slots for every pass (tt_WriterProxy.reorder_shift, kept for the key of reorder_pivot, a seq_no near the
+// watermark; a seq_no either side of the wrap from it takes its own side's shift). Re-pivoted onto the watermark
+// when that has moved 2^30 on, before any held seq_no can lie 2^31 from the pivot. proxy is NULL only before the
+// writer's first contact, and the first contact pivots on that same seq_no with a shift of 0 - the same slot.
+static struct tt_ReorderSlot* reorder_writer_slot(struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
+                                                  uint8_t node_id, uint32_t entity_id, uint32_t seq_no) {
     // Knuth's multiplicative hash constants: they spread consecutive ids across the whole ring.
     const uint32_t entity_spread = 2654435761U;
     const uint32_t node_spread = 40503U;
     uint32_t salt = (entity_id * entity_spread) ^ ((uint32_t)node_id * node_spread);
-    return reorder_slot_at(sub, (uint16_t)((seq_no + salt) % sub->reorder_slots));
+    uint32_t slots = sub->reorder_slots;
+    uint32_t slot = (seq_no + salt) % slots;
+    if (proxy != NULL) {
+        int32_t drift = seq_delta(proxy->ack_seq_no, proxy->reorder_pivot);
+        if (drift > REORDER_REPIVOT_DRIFT || drift < -REORDER_REPIVOT_DRIFT) {
+            proxy->reorder_shift = (uint16_t)(reorder_shift_for(proxy, slots, salt, proxy->ack_seq_no) % slots);
+            proxy->reorder_pivot = proxy->ack_seq_no;
+        }
+        slot += reorder_shift_for(proxy, slots, salt, seq_no);
+        while (slot >= slots) {
+            slot -= slots;
+        }
+    }
+    return reorder_slot_at(sub, (uint16_t)slot);
 }
 
 static uint8_t* reorder_slot_payload(struct tt_ReorderSlot* slot) {
@@ -11731,13 +11779,14 @@ static void frag_fast_spill(struct tt_Context* node) {
         return;
     }
     node->frag_fast_sub = NULL;
+    struct tt_WriterProxy* proxy = find_writer_proxy(sub, node->frag_fast_context_id, node->frag_fast_entity_id);
     const uint8_t* bytes = node->frag_scratch + 4;
     uint32_t offset = 0;
     for (uint32_t index = 0; index < node->frag_fast_placed; index++) {
         uint32_t length = index == 0 ? node->frag_fast_first_length : node->frag_fast_cont_length;
         uint32_t seq_no = node->frag_fast_seq_no + index;
         struct tt_ReorderSlot* slot =
-            reorder_writer_slot(sub, node->frag_fast_context_id, node->frag_fast_entity_id, seq_no);
+            reorder_writer_slot(sub, proxy, node->frag_fast_context_id, node->frag_fast_entity_id, seq_no);
         if (slot->occupied) {
             // Unreachable by the argument above. If it is ever reached the sample is short one fragment
             // below the watermark, which the drain abandons and counts - never delivered torn.
@@ -11763,7 +11812,6 @@ static void frag_fast_spill(struct tt_Context* node) {
             sub->reorder_held_peak = sub->reorder_held;
         }
     }
-    struct tt_WriterProxy* proxy = find_writer_proxy(sub, node->frag_fast_context_id, node->frag_fast_entity_id);
     if (proxy != NULL) {
         proxy->reorder_cursor = node->frag_fast_seq_no;
     }
@@ -11816,7 +11864,7 @@ static void hold_for_reorder(struct tt_Context* node, struct tt_Subscriber* sub,
     // different sample - another writer's, or this writer's when the buffer is narrower than the
     // window - is treated exactly like a full buffer: re-requested, never overwritten.
     if (capacity >= length) {
-        struct tt_ReorderSlot* slot = reorder_writer_slot(sub, ctx->header->source, ctx->entity_id, ctx->seq_no);
+        struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy, ctx->header->source, ctx->entity_id, ctx->seq_no);
         if (slot->occupied) {
             // Already holding this exact sample: a retransmit racing the original. Keep the copy
             // already held - same bytes, and a second copy would be delivered twice.
@@ -11971,7 +12019,7 @@ static void reorder_release(struct tt_Subscriber* sub, struct tt_ReorderSlot* sl
 // mid-sample). Delivering part of a sample is not an option; a torn sample would decode as garbage.
 static bool drain_fragmented_sample(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                                     uint32_t seq_no, uint32_t ack, uint32_t* consumed) {
-    struct tt_ReorderSlot* first = reorder_writer_slot(sub, proxy->context_id, proxy->entity_id, seq_no);
+    struct tt_ReorderSlot* first = reorder_writer_slot(sub, proxy, proxy->context_id, proxy->entity_id, seq_no);
     *consumed = 1;
     if (first->frag_index != 0) {
         reorder_release(sub, first);
@@ -11981,7 +12029,8 @@ static bool drain_fragmented_sample(struct tt_Context* node, struct tt_Subscribe
     uint32_t count = first->frag_count;
     uint32_t total = 0;
     for (uint32_t index = 0; index < count; index++) {
-        struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy->context_id, proxy->entity_id, seq_no + index);
+        struct tt_ReorderSlot* slot =
+            reorder_writer_slot(sub, proxy, proxy->context_id, proxy->entity_id, seq_no + index);
         if (reorder_slot_holds(slot, proxy, seq_no + index) && slot->frag_index == index && slot->frag_count == count) {
             total += slot->length;
             continue;
@@ -11992,7 +12041,8 @@ static bool drain_fragmented_sample(struct tt_Context* node, struct tt_Subscribe
         // Given up on below the watermark: this sample can never be whole.
         uint32_t below = ack - seq_no < count ? ack - seq_no : count;
         for (uint32_t drop = 0; drop < below; drop++) {
-            struct tt_ReorderSlot* held = reorder_writer_slot(sub, proxy->context_id, proxy->entity_id, seq_no + drop);
+            struct tt_ReorderSlot* held =
+                reorder_writer_slot(sub, proxy, proxy->context_id, proxy->entity_id, seq_no + drop);
             if (reorder_slot_holds(held, proxy, seq_no + drop)) {
                 reorder_release(sub, held);
                 sub->reorder_abandoned++;
@@ -12011,7 +12061,8 @@ static bool drain_fragmented_sample(struct tt_Context* node, struct tt_Subscribe
     bool via_data_port = first->via_data_port;
     uint32_t offset = 0;
     for (uint32_t index = 0; index < count; index++) {
-        struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy->context_id, proxy->entity_id, seq_no + index);
+        struct tt_ReorderSlot* slot =
+            reorder_writer_slot(sub, proxy, proxy->context_id, proxy->entity_id, seq_no + index);
         if (fits) {
             _tt_memcpy(out + offset, reorder_slot_payload(slot), slot->length);
             offset += slot->length;
@@ -12227,7 +12278,7 @@ static void large_sweep_passed(struct tt_Context* node, const struct tt_Subscrib
 // drain there, a fragmented sample in order not being whole yet.
 static int drain_ring_at(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy, uint32_t seq,
                          uint32_t ack, uint32_t* consumed) {
-    struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy->context_id, proxy->entity_id, seq);
+    struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy, proxy->context_id, proxy->entity_id, seq);
     if (!reorder_slot_holds(slot, proxy, seq)) {
         return 0;
     }
@@ -13878,6 +13929,8 @@ static void inform_subscriber_of_heartbeat(struct tt_Context* node, struct tt_En
         // offset 0, "needs attention") - an off-by-one leak of exactly the newest pre-match sample.
         proxy_move_ack(proxy, sub->durable ? ctx->first_available_seq_no : ctx->last_seq_no + 1);
         proxy_clear_received(proxy);
+        proxy->reorder_pivot = proxy->ack_seq_no; // reorder_writer_slot()
+        proxy->reorder_shift = 0;
     } else {
         advance_past_unavailable(proxy, ctx->first_available_seq_no);
     }
@@ -14225,7 +14278,7 @@ static bool frag_pool_has(const struct tt_Context* node, uint8_t source, uint32_
 // Stores a fragment for a RELIABLE Subscriber in its reorder slot (seq_no % slots), where it waits until
 // its whole sample is in order. False when there is no room - no buffer, a slot too small, or the slot
 // taken by another writer's datagram; the caller then leaves it unrecorded, so it is asked for again.
-static bool reorder_store_fragment(struct tt_Context* node, struct tt_Subscriber* sub,
+static bool reorder_store_fragment(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                                    const struct data_delivery_ctx* ctx, bool is_native) {
     if (frag_fast_holds(node, sub, NULL)) {
         frag_fast_spill(node); // the fast path's sample needs this buffer empty to be moved into it
@@ -14234,7 +14287,7 @@ static bool reorder_store_fragment(struct tt_Context* node, struct tt_Subscriber
     if (reorder_payload_capacity(sub) < length) {
         return false;
     }
-    struct tt_ReorderSlot* slot = reorder_writer_slot(sub, ctx->header->source, ctx->entity_id, ctx->seq_no);
+    struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy, ctx->header->source, ctx->entity_id, ctx->seq_no);
     if (slot->occupied) {
         return false;
     }
@@ -14351,7 +14404,7 @@ static void accept_reliable_fragment(struct tt_Context* node, struct tt_Subscrib
             return;
         }
     }
-    if (!reorder_store_fragment(node, sub, ctx, is_native)) {
+    if (!reorder_store_fragment(node, sub, proxy, ctx, is_native)) {
         sub->reorder_overflow++;
         if (is_power_of_ten(sub->reorder_overflow)) {
             TT_LOG_WARNING(
@@ -14361,7 +14414,7 @@ static void accept_reliable_fragment(struct tt_Context* node, struct tt_Subscrib
         }
         return;
     }
-    struct tt_ReorderSlot* slot = reorder_writer_slot(sub, ctx->header->source, ctx->entity_id, ctx->seq_no);
+    struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy, ctx->header->source, ctx->entity_id, ctx->seq_no);
     bool recorded = update_reliable_ack(node, sub, ctx->seq_no, ctx->header->source, ctx->entity_id, ctx->sender_ip,
                                         ctx->sender_port);
     proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);

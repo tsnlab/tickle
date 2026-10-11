@@ -1589,7 +1589,8 @@ static void collision_setup(void) {
     init_bare_node(&collide_ctx, 3);
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&collide_ctx, &collide_pub, &sender_topic, ENDPOINT_NAME));
     sample_len = 100;
-    struct tt_ReorderSlot* target = reorder_writer_slot(&sub, SENDER_ID, pub.endpoint.entity_id, 5);
+    struct tt_ReorderSlot* target = reorder_writer_slot(
+        &sub, find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id), SENDER_ID, pub.endpoint.entity_id, 5);
     bool found = false;
     for (uint32_t n = 1; n < 200 && !found; n++) {
         start_capture();
@@ -1604,7 +1605,8 @@ static void collision_setup(void) {
         } else if (seq_no == 2) {
             memcpy(collide_gap, datagrams[0], datagram_len[0]);
             collide_gap_len = datagram_len[0];
-        } else if (reorder_writer_slot(&sub, 3, collide_pub.endpoint.entity_id, seq_no) == target) {
+        } else if (reorder_writer_slot(&sub, find_writer_proxy(&sub, 3, collide_pub.endpoint.entity_id), 3,
+                                       collide_pub.endpoint.entity_id, seq_no) == target) {
             memcpy(collide_hit, datagrams[0], datagram_len[0]);
             collide_hit_len = datagram_len[0];
             found = true;
