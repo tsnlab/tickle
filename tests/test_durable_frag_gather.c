@@ -53,7 +53,7 @@ static uint16_t stage_fragment(struct tt_ReliableCache* cache, uint16_t depth, u
         first->data.timestamp = 1234;
     }
     memset(record + headers, fill, bytes);
-    struct tt_ReliableCacheIndex* slot = &cache->index[(seq_no - 1) % depth];
+    struct tt_ReliableCacheIndex* slot = reliable_cache_slot(cache, depth, seq_no); // where cached_sample() looks
     slot->seq_no = seq_no;
     slot->offset = offset;
     slot->len = head->length;
