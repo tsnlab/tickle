@@ -127,6 +127,13 @@ lent as its last loan left it (clearing it would write as many bytes as the copy
 defaults included. `rmw_publish_loaned_message` then encodes it into the ring slot (encode-in-slot) or `tx_buffer`
 exactly as `rmw_publish` does: **one copy remains on the publish**.
 
+**A large sample's publish copy goes while it is sent** (2026-10-11, `ab/interleave-encode`). For a type whose wire
+bytes are its message, and for `rmw_publish_serialized_message`, the publisher offers core a ranged encode (the psn,
+then a `memcpy` of the message's bytes; `test_encode_range`), so a sample above a datagram is copied a send call at a
+time, just ahead of the datagrams that carry it, instead of all of it before the first leaves (core DESIGN.md 8,
+"Encoding while sending"). The copy count is unchanged; it leaves the latency path. Every other type is encoded whole,
+as before. An in-place message's padding holes go as its memory holds them, as a loaned message's always have.
+
 **Slot loans (`RMW_TICKLE_LOAN_PUBLISH_SLOTS=1`, off by default).** The borrow lends the subscriber's ring slot itself
 (core's `tt_Publisher_claim`, DESIGN.md 10), when the publisher sends to one same-host subscriber whose ring is
 attached, has no other loan out, and the slot holds the message aligned; otherwise a kept buffer, as above. The
