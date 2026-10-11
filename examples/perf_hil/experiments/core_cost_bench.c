@@ -120,12 +120,14 @@ uint64_t tt_process_cpu_ns(void) {
     return 0;
 }
 
+// NOLINTNEXTLINE(readability-non-const-parameter) - hal.h's signature: a HAL that can read them writes through these
 bool tt_ip_reassembly_limits(uint32_t* high_thresh, uint32_t* time_s) {
     (void)high_thresh;
     (void)time_s;
     return false;
 }
 
+// NOLINTNEXTLINE(readability-non-const-parameter) - as above
 bool tt_ip_reassembly_failures(uint64_t* failures) {
     (void)failures;
     return false;
