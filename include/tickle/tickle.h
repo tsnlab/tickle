@@ -941,20 +941,6 @@ struct tt_Context {
     uint32_t segment_slot_ceiling; // the largest slot_bytes of any peer segment attached (record_size_limit()) // of
                                    // segment_doorbells_sent, the ones rung through the FIFO rather than UDP
     uint64_t segment_doorbells_received;
-    // The switch from UDP to a peer's segment (tt_SEGMENT_SPAN_FENCE). Writer side: the generation of the last fence
-    // this context sent, and how many it sent. Owner side: fence datagrams that came out of the socket, as
-    // (id << 8 | generation) + 1 so that 0 is an empty entry, the next entry to overwrite, and while a fence is at the
-    // head of the ring with its datagram not yet seen, when the owner stops waiting for it (0: no fence held). Polling
-    // thread only, except the generation, which is under the state lock with every send.
-    uint8_t segment_fence_generation;
-    uint64_t segment_fences_sent;
-    uint32_t segment_fences_seen[tt_SEGMENT_FENCES_SEEN];
-    uint8_t segment_fences_seen_next;
-    uint64_t segment_fence_deadline_ns;
-    // Fences met at the head of the ring: passed once their datagram had been read, or given up on at the deadline
-    // (tt_SEGMENT_FENCE_HOLD_NS) - a datagram lost, or a writer whose send failed after it wrote the record.
-    uint64_t segment_fences_passed;
-    uint64_t segment_fences_expired;
     // A sleep announced and then called off by the drain that follows the announcement (poll_wait_io()) keeps its
     // generation for the next announcement, unless a doorbell arrived in between (segment_reader_waiting()): set when
     // one is called off, with segment_doorbells_received at that moment. Polling thread only.
@@ -1226,6 +1212,22 @@ struct tt_Context {
     // Large-message stage 2 (DESIGN.md section 8), after everything else for the same reason as lend.
     struct tt_LargeState large;
 #endif
+    // The switch from UDP to a peer's segment (tt_SEGMENT_SPAN_FENCE), last for the same reason as lend: cold, and no
+    // hot field moves for it (gate v2 read +20 instructions a round trip on the rig while these sat mid-struct -
+    // aarch64 reaches far fields with an extra add, 2026-10-11). Writer side: the generation of the last fence this
+    // context sent, and how many it sent. Owner side: fence datagrams that came out of the socket, as (id << 8 |
+    // generation) + 1 so that 0 is an empty entry, the next entry to overwrite, and while a fence is at the head of the
+    // ring with its datagram not yet seen, when the owner stops waiting for it (0: no fence held). Polling thread only,
+    // except the generation, which is under the state lock with every send.
+    uint8_t segment_fence_generation;
+    uint64_t segment_fences_sent;
+    uint32_t segment_fences_seen[tt_SEGMENT_FENCES_SEEN];
+    uint8_t segment_fences_seen_next;
+    uint64_t segment_fence_deadline_ns;
+    // Fences met at the head of the ring: passed once their datagram had been read, or given up on at the deadline
+    // (tt_SEGMENT_FENCE_HOLD_NS) - a datagram lost, or a writer whose send failed after it wrote the record.
+    uint64_t segment_fences_passed;
+    uint64_t segment_fences_expired;
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s

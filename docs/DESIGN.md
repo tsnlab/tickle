@@ -676,10 +676,12 @@ first: it delivered the first ring record and discarded the queued BEST_EFFORT s
   before its first datagram there (`tt_SEGMENT_VERSION` 6). A revalidation, or a first attach, sends none.
 - The reader does not read past a fence until the fence's datagram has come out of its socket; until then the drain
   stops there as on an empty ring, so the socket is read next. A datagram read first is remembered
-  (`tt_SEGMENT_FENCES_SEEN`). One never seen is given up at `tt_SEGMENT_FENCE_HOLD_NS` (1 ms), which also bounds a
-  sleep taken while a fence is held. Counted as `shm_fences_sent`, `shm_fences_passed`, `shm_fences_expired`.
-- The fence is tested inside the span range check's failing branch and on the drain's stall path, so a datagram's
-  record costs nothing for it; only an attach that follows UDP does. `tests/test_segment_switch.c` stages the switch
+  (`tt_SEGMENT_FENCES_SEEN`). One never seen is given up at `tt_SEGMENT_FENCE_HOLD_NS` (1 ms); a scheduler entry at
+  that deadline bounds the sleep taken while a fence is held, so no sleep tests for one. Counted as `shm_fences_sent`,
+  `shm_fences_passed`, `shm_fences_expired`.
+- The fence is tested inside the span range check's failing branch, on the drain's stall path and, for its datagram,
+  where `process_packet()` finds no header, so a datagram or a record costs nothing for it; only an attach that
+  follows UDP does. Its fields sit at the end of `tt_Context`. `tests/test_segment_switch.c` stages the switch
   deterministically (an attach refused until released, a mock clock): the core before the fence delivered 50 of 307,
   discarding the 257 that went over UDP; with it, 307 of 307. In `test_thread_safety`'s stress
   (`fence_stress_ab.sh`, 600 runs an arm, 4 in parallel, on the PC): 24 runs of 600 discarded (2,922 samples) on
@@ -689,7 +691,18 @@ first: it delivered the first ring record and discarded the queued BEST_EFFORT s
   rounds) +0.000 for a ring write and +0.125 of 209 for the drain, control unmoved. `fence_samehost_insn_pc.sh`
   (same-host p1-p4, best-effort throughput and latency, A P B B P A): no metric WORSE, but at a resolution of the
   placement floor, up to 12% per sample on the max-rate cells; its arm B sent 49 fences at start-up, all passed - a
-  publisher whose subscriber's segment is not built yet is a switch from UDP too. The rig decides the rest.
+  publisher whose subscriber's segment is not built yet is a switch from UDP too. The rig decided otherwise: gate v2
+  same-host (`~/rig_results_safe/ab_samehost_segment_fence_20261011-150800.summary.txt`) read `2587915b` against
+  `5dd8b35c` +20..+27 user instructions a round trip on reliable_latency p1-p4, client and server, and +2..+3 a sample
+  on best_effort_throughput. Counted exactly on aarch64 under qemu (`aarch64_insn/samehost_qemu.sh`, lat_p1 client
+  4850 a round trip): the fields inserted mid-`tt_Context` moved every later field, and aarch64 reaches a far one with
+  an extra `add`; `process_datagram_in` +9 (that and its length test), `tt_Context_poll` +6..+14 (the per-sleep
+  deadline test). Fixed by the three points above: lat_p1 client B-A +18.6, fixed-A -0.6 (A/A 1.5); server +9.7 and
+  -1.9 (A/A 0.7); lat_p4 fixed-A -15.8 and -4.3; no function above A
+  (`~/rig_results_safe/aarch64_insn/fence_ABC_final2/summary.txt`). The max-rate cells under qemu are bimodal (the
+  share sent over UDP while the ring is full) and resolve nothing at this size. `qemu_tb_count.c` counted every block
+  as one instruction under a qemu built without a disassembler, which Ubuntu's 10.2 is; the figures before this one
+  from `aarch64_insn/` are block counts.
 
 **Doorbell: a FIFO, rung once per reader sleep.**
 
