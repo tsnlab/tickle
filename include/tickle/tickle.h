@@ -1917,12 +1917,11 @@ struct tt_PeerAck {
     uint8_t match_heartbeats_left;
 #if tt_HYBRID_TRANSPORT
     // Hybrid transport (DESIGN.md section 8): this reader's loss as the writer counts it from its ACKNACKs - the first
-    // NACK of a unit (a lost run one event on its n frames) and each re-NACK of a repair - over the frames sent to it.
-    // nack_high: the highest seq_no it has NACKed, above which a NACK is a first one; nack_ns: when it last NACKed;
-    // run_n: the n of its latest first transmission, which says how many runs a range of first NACKs was.
+    // NACK of a unit, a lost run one event on its n frames - over the frames of the first transmissions sent to it.
+    // nack_high: the highest seq_no it has NACKed, above which a NACK is a first one; run_n: the n of its latest first
+    // transmission, which says how many runs a range of first NACKs was.
     struct tt_LossEstimate loss;
     uint32_t nack_high;
-    uint64_t nack_ns;
     uint8_t run_n;
 #endif
 };

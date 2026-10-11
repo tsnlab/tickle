@@ -2201,25 +2201,20 @@ static uint32_t hybrid_peer_n(struct tt_Context* node, const struct tt_Publisher
 }
 
 // The n a datagram to one destination goes with: that peer's, or by broadcast (no single peer) the minimum over the
-// Publisher's matched peers - 1 with none. *capable: some peer it reaches could take runs (n_max >= 2), so its frames
-// count as exposure for the loss estimate even while n is 1.
+// Publisher's matched peers - 1 with none.
 static uint32_t hybrid_destination_n(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
-                                     uint32_t ip, uint16_t port, bool large, bool* capable) {
+                                     uint32_t ip, uint16_t port, bool large) {
     uint32_t n_max = 1U;
     if (context_id != tt_CONTEXT_ID_INVALID) {
-        uint32_t n = hybrid_peer_n(node, pub, context_id, ip, port, large, &n_max);
-        *capable = n_max >= 2U;
-        return n;
+        return hybrid_peer_n(node, pub, context_id, ip, port, large, &n_max);
     }
     uint32_t smallest = 0;
-    *capable = false;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         const struct tt_Peer* peer = &pub->peers[i];
         if (peer->context_id == tt_CONTEXT_ID_INVALID) {
             continue;
         }
         uint32_t n = hybrid_peer_n(node, pub, peer->context_id, peer->ip, peer->port, large, &n_max);
-        *capable = *capable || n_max >= 2U;
         smallest = smallest == 0 || n < smallest ? n : smallest;
     }
     return smallest == 0 ? 1U : smallest;
@@ -2227,8 +2222,9 @@ static uint32_t hybrid_destination_n(struct tt_Context* node, const struct tt_Pu
 
 static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t n, uint32_t count);
 
-// A sample's first transmission to one destination that could take runs, counted: the histogram of n, what went in runs
-// and alone, and - RELIABLE - its frames as the exposure of each reader it reaches.
+// A sample's first transmission to one destination, counted: the histogram of n, what went in runs and alone, and -
+// RELIABLE - its frames as the exposure of each reader it reaches, whatever its n: a reader whose cap holds it at one
+// unit still NACKs, and its losses must fall on its frames, or its p reads several times too high.
 static void hybrid_note_sent(struct tt_Context* node, struct tt_Publisher* pub, uint8_t context_id, uint32_t n,
                              uint32_t count) {
     struct tt_HybridState* hybrid = &node->hybrid;
@@ -2532,7 +2528,6 @@ static void hybrid_rx_done(struct tt_Context* node, uint64_t start) {
 // ---- RELIABLE: the cost model (DESIGN.md section 8, "Choosing n (RELIABLE)") ---------------------------------------
 
 static struct tt_PeerAck* find_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id);
-static uint64_t reliable_retry_interval_publisher(void);
 //
 // A run of n units costs c_d + n c_f and is lost with probability L(n) = 1 - (1 - p)^n; repairs are always MTU units,
 // each c_d + c_f and 1 / (1 - p) tries. The expected cost per delivered unit is
@@ -2613,20 +2608,19 @@ static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, u
 
 // One ACKNACK's NACKs, as loss events of the reader that sent it (DESIGN.md section 8, "Events over exposure"): above
 // the highest seq_no it NACKed before, a NACK is a first one, and each contiguous range of them is a lost run of the
-// reader's latest n each - ceil(length / n) events; at or below, it is a re-NACK of a repair, one event on that
-// repair's one frame, counted only when a retry interval has passed since that reader's last NACK (an ACKNACK crossing
-// the repairs in flight is not a loss). Every NACKed unit is resent as an MTU unit, one frame of exposure.
+// reader's latest n each - ceil(length / n) events on the frames its first transmission counted. A re-NACK is not
+// counted, and a repair is no exposure: the doc's "each re-NACK of a repair" read p four times too high on a veth at 1%
+// (38 events a 1 MB sample against 9), because repairs queued behind a large sample's runs are NACKed again while still
+// in flight, and no reading of the ACKNACK alone tells that from a lost repair. What is left estimates the loss of
+// first transmissions, which is what n is chosen for.
 static void hybrid_note_nacks(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id, uint32_t base,
                               const uint64_t* bitmap, uint16_t words) {
     struct tt_PeerAck* ack = find_peer_ack(pub, node_id, entity_id);
     if (ack == NULL || ack->loss.frames == 0) {
-        return; // nothing measured of it: it never could take runs
+        return; // nothing sent to it in multi-unit samples yet
     }
-    uint64_t now = tt_get_ns();
-    bool renack_counts = now - ack->nack_ns >= reliable_retry_interval_publisher();
     uint32_t n = ack->run_n != 0 ? ack->run_n : 1U;
     uint32_t events = 0;
-    uint32_t nacked = 0;
     uint32_t range = 0;
     uint32_t previous = 0;
     uint32_t high = ack->nack_high;
@@ -2636,28 +2630,22 @@ static void hybrid_note_nacks(struct tt_Publisher* pub, uint8_t node_id, uint32_
             uint32_t seq_no =
                 base + ((uint32_t)word_idx * tt_RELIABLE_BITMAP_WORD_BITS) + (uint32_t)__builtin_ctzll(word);
             word &= word - 1;
-            nacked++;
-            if (seq_no > ack->nack_high) {
-                if (range != 0 && seq_no == previous + 1U) {
-                    range++;
-                } else {
-                    events += (range + n - 1U) / n;
-                    range = 1;
-                }
-                previous = seq_no;
-                high = seq_no > high ? seq_no : high;
-            } else if (renack_counts) {
-                events++;
+            if (seq_no <= ack->nack_high) {
+                continue; // a re-NACK
             }
+            if (range != 0 && seq_no == previous + 1U) {
+                range++;
+            } else {
+                events += (range + n - 1U) / n;
+                range = 1;
+            }
+            previous = seq_no;
+            high = seq_no;
         }
     }
     events += (range + n - 1U) / n;
-    if (nacked == 0) {
-        return;
-    }
     ack->nack_high = high;
-    ack->nack_ns = now;
-    loss_estimate_observe(&ack->loss, nacked, events);
+    loss_estimate_observe(&ack->loss, 0, events);
 }
 #endif
 
@@ -2722,12 +2710,9 @@ static bool send_fragments(struct tt_Context* node, struct tt_Publisher* pub, co
 #if tt_HYBRID_TRANSPORT
         // Runs only in a first transmission (a Publisher's: a repair or a backlog passes none), of three units or more.
         if (pub != NULL && count >= 3U) {
-            bool capable = false;
             uint32_t n = hybrid_destination_n(node, pub, destinations[dest].context_id, destinations[dest].ip,
-                                              destinations[dest].port, false, &capable);
-            if (capable) {
-                hybrid_note_sent(node, pub, destinations[dest].context_id, n, count);
-            }
+                                              destinations[dest].port, false);
+            hybrid_note_sent(node, pub, destinations[dest].context_id, n, count);
             if (n >= 2U) {
                 if (!hybrid_send_small_runs(node, data_header, cdr, count, n, &batch[count - 1U],
                                             &destinations[dest])) {
@@ -3180,7 +3165,6 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
 #if tt_HYBRID_TRANSPORT
             pub->peer_acks[i].loss = (struct tt_LossEstimate) {0, 0}; // nothing measured: n starts at 1
             pub->peer_acks[i].nack_high = 0;
-            pub->peer_acks[i].nack_ns = 0;
             pub->peer_acks[i].run_n = 1;
 #endif
             return &pub->peer_acks[i];
@@ -7681,13 +7665,10 @@ static void large_cursor_destinations(struct tt_Context* node, struct tt_Publish
         cursor->dests[i].port = destinations[i].port;
         cursor->dests[i].context_id = destinations[i].context_id;
 #if tt_HYBRID_TRANSPORT
-        bool capable = false;
-        uint32_t n = hybrid_destination_n(node, pub, destinations[i].context_id, destinations[i].ip,
-                                          destinations[i].port, true, &capable);
+        uint32_t n =
+            hybrid_destination_n(node, pub, destinations[i].context_id, destinations[i].ip, destinations[i].port, true);
         cursor->run_n[i] = (uint8_t)n;
-        if (capable) {
-            hybrid_note_sent(node, pub, destinations[i].context_id, n, record->count);
-        }
+        hybrid_note_sent(node, pub, destinations[i].context_id, n, record->count);
 #endif
     }
     cursor->dest_count = destination_count < tt_LARGE_DESTINATIONS ? destination_count : (uint8_t)tt_LARGE_DESTINATIONS;
