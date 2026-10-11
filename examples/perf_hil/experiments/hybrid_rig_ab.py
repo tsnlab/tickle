@@ -19,7 +19,8 @@ RULES (enforced below)
              16-31, 32-44, 45). A run is VOID when either is missing ("could not look" is not "off"), and:
                mtu  VOID unless runs = 0 and mtu units > 0 and every n_hist count is in bucket 1;
                ip   VOID unless runs > 0 and every n_hist count is in bucket 45 (a forced arm whose n is not the one
-                    forced);
+                    forced) but at most 2 at n = 1: the first samples, published before the reader's announce gave the
+                    writer its ceiling (amended 2026-10-11 after the PC preflight, before any rig run);
                head, aa at 0% loss  VOID unless runs > 0 and the median n_hist bucket is 45 (AUTO at 0% must reach
                     n_max); under loss AUTO's n is reported, not judged.
              tickle@pre (A, main) must print no "hybrid:" counters with runs > 0, or the whole reading is VOID.
@@ -87,6 +88,9 @@ N_BUCKETS = ("1", "2-3", "4-7", "8-15", "16-31", "32-44", "45")
 VENDORS = ("fastdds", "cyclonedds")
 MODE_OF = {"tickle@head": "auto", "tickle@aa": "auto", "tickle@mtu": "mtu", "tickle@ip": "ip",
            "tickle@nooffload": "auto", "tickle@mtunooff": "mtu"}
+# Samples of a forced-IP arm that may go at n = 1 before the reader's ceiling is known (the PC preflight of 2026-10-11,
+# before any rig run: one, the first sample, published as discovery completed).
+FORCED_IP_EARLY_MTU = 2
 OFFLOAD_OFF = ("tickle@nooffload", "tickle@mtunooff")
 OFFLOAD_PAIRS = (("tickle@head", "tickle@nooffload"), ("tickle@mtu", "tickle@mtunooff"))
 TRAFFIC_RE = re.compile(r"traffic: .*?udp_offload=(\d+) gro_reads=\d+ gro_merged=(\d+) .*?gso_sends=(\d+)")
@@ -191,7 +195,9 @@ def treatment(runs, r):
     if want == "ip":
         if p_rmw[1] != "off" or s_rmw[1] != "off":
             return f"forced IP arm with the reader's cap {s_rmw[1]}", seen
-        if not (p_core["runs"] > 0 and total > 0 and hist[-1] == total):
+        # The first samples, published before the reader's announce gave its ceiling, go as MTU units (n = 1, the
+        # writer knows no ceiling yet): at most FORCED_IP_EARLY_MTU of them. Any n between 1 and 45 voids the run.
+        if not (p_core["runs"] > 0 and total > 0 and hist[0] <= FORCED_IP_EARLY_MTU and hist[0] + hist[-1] == total):
             return "forced IP arm whose n is not 45 throughout", seen
     if want == "auto" and zero and not (p_core["runs"] > 0 and mb == len(hist) - 1):
         return "AUTO at 0% loss whose median n is not n_max", seen
