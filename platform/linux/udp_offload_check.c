@@ -63,7 +63,9 @@
 #endif
 #define RCVBUF (8 << 20)    // root in the namespace: SO_RCVBUFFORCE
 #define CHECK_CONTEXT_ID 61 // any valid id; the two contexts here never discover each other
-#define WIRE_MAX 1472U      // the most any datagram may carry (DESIGN.md section 8: no IP fragmentation)
+#define WIRE_MAX 1472U      // the most an MTU datagram may carry; only pattern 8's runs are larger
+#define RUN_SIZE 65372U // pattern 8's run datagram: 45 large units (24 B of run framing and 45 x 1452), IP-fragmented
+#define RUN_PATTERN 7U
 #define FNV_OFFSET 2166136261U
 #define FNV_PRIME 16777619U
 #define FILL_INDEX_MUL 31U
@@ -77,8 +79,13 @@ static const char k_frag_magic[MAGIC_LEN] = {tt_SINGLE_MARKER_LE, 'U', 'O', tt_S
 // submessage header, whose type is byte 4 - the low byte of the pattern word (HEADER_LEN), FRAG_CONT_L for this
 // pattern and 0 for every other.
 static const char k_full_magic[MAGIC_LEN] = {'K', 'T', 'U', 'O'};
+// Pattern 8's runs begin as a hybrid-transport run does (DESIGN.md section 8): a single-form header naming FRAG_RUN_L.
+static const char k_run_magic[MAGIC_LEN] = {tt_SINGLE_MARKER_LE, 'U', 'O', tt_SUBMESSAGE_TYPE_FRAG_RUN_L};
 #define FULL_PATTERN 6U
-static const char* magic_of(uint32_t number) {
+static const char* magic_of(uint32_t number, uint32_t size) {
+    if (number == RUN_PATTERN) {
+        return size > WIRE_MAX ? k_run_magic : k_frag_magic;
+    }
     if (number == 0 || number == 5) {
         return k_frag_magic;
     }
@@ -102,6 +109,13 @@ static uint32_t pattern_word(uint32_t number) {
 //   6 large fragments of mixed sizes in one call: a run ends at a longer one, takes a shorter one as its last - runs of
 //     5, 2, 3, 7, 2, 3, 2 (the second cycle continues the first one's last run)
 //   7 large fragments in the full form (a retransmission to one node), 20 in one call: one run
+//   8 the hybrid transport's mix, 12 a call: MTU fragments, which keep receive offload on and go as UDP_SEGMENT runs
+//     where two or more stand together, and between them runs, which never join one - 65,372-byte FRAG_RUN_L datagrams
+//     that IP fragments into 45 frames. A run reaches the socket reassembled, never through GRO (the kernel's GRO
+//     flushes IPv4 fragments), so even read with UDP_GRO on it comes as one datagram of its own size; had it been
+//     merged, the cmsg's segment size would cut it and its records would differ from the plain receiver's. The hal
+//     receiver counts the runs it read while receive offload was on (runs_gro_on), which the script requires above 0 on
+//     the offload arm - else the case was not tested.
 struct pattern {
     uint32_t count;
     uint32_t sizes[32]; // repeated cyclically when count is larger
@@ -124,11 +138,18 @@ static const struct pattern k_patterns[] = {
     {40, {1472}, 1, 40, false, true},
     {24, {1468, 1468, 1468, 1468, 1000, 1000, 1000, 1468, 1468, 404, 1468, 1468}, 12, 24, false, false},
     {20, {1468}, 1, 20, false, false},
+    {24,
+     {1468, 1468, 1468, 1468, RUN_SIZE, RUN_SIZE, 1468, RUN_SIZE, 1468, 1468, RUN_SIZE, RUN_SIZE},
+     12,
+     12,
+     false,
+     false},
 };
 // The datagrams a sender with send offload puts in runs, per pass, and the runs: pattern 1's 723 in 11 x 2 + 1, pattern
-// 6's 24 in 7, pattern 7's 20 in 1.
-#define GSO_DATAGRAMS_PER_PASS (723U + 24U + 20U)
-#define GSO_SENDS_PER_PASS (23U + 7U + 1U)
+// 6's 24 in 7, pattern 7's 20 in 1, pattern 8's 12 MTU fragments in 4 (runs of 4 and 2 a call; the lone one goes
+// alone, and no hybrid run joins any).
+#define GSO_DATAGRAMS_PER_PASS (723U + 24U + 20U + 12U)
+#define GSO_SENDS_PER_PASS (23U + 7U + 1U + 4U)
 #define PATTERN_COUNT (sizeof(k_patterns) / sizeof(k_patterns[0]))
 #define LARGE_LAST 404U // pattern 1's last datagram
 
@@ -141,7 +162,7 @@ static uint32_t pattern_size(uint32_t p, uint32_t i) {
 }
 
 static void fill(uint8_t* out, uint32_t p, uint32_t i, uint32_t size) {
-    memcpy(out, magic_of(p), MAGIC_LEN);
+    memcpy(out, magic_of(p, size), MAGIC_LEN);
     const uint32_t word = pattern_word(p);
     memcpy(out + MAGIC_LEN, &word, sizeof(word));
     memcpy(out + MAGIC_LEN + sizeof(p), &i, sizeof(i));
@@ -164,7 +185,7 @@ static void pause_between(void) {
 }
 
 static struct tt_Context g_node;
-static uint8_t g_storage[MAX_RUN][WIRE_MAX];
+static uint8_t g_storage[MAX_RUN][RUN_SIZE];
 static _Alignas(8) uint8_t g_rx[tt_RX_POOL_BUFFER_BYTES];
 
 static bool context_up(const char* broadcast, uint16_t port) {
@@ -237,7 +258,7 @@ static bool record(const uint8_t* data, uint32_t len, uint32_t* records, uint32_
     }
     memcpy(&number, data + MAGIC_LEN, sizeof(number));
     number >>= 8;
-    if (number >= PATTERN_COUNT || memcmp(data, magic_of(number), MAGIC_LEN) != 0) {
+    if (number >= PATTERN_COUNT || memcmp(data, magic_of(number, len), MAGIC_LEN) != 0) {
         return true; // not ours (an announce)
     }
     memcpy(&index, data + MAGIC_LEN + sizeof(number), sizeof(index));
@@ -245,11 +266,11 @@ static bool record(const uint8_t* data, uint32_t len, uint32_t* records, uint32_
     (*records)++;
     printf("%u %u %u %08x\n", number, index, len, fnv(data, len));
     if (number >= PATTERN_COUNT || index >= k_patterns[number].count || len != pattern_size(number, index) ||
-        len > WIRE_MAX) {
+        (len > WIRE_MAX && number != RUN_PATTERN)) {
         fprintf(stderr, "datagram %u/%u: %u bytes, not what was sent\n", number, index, len);
         return false;
     }
-    static uint8_t expect[WIRE_MAX];
+    static uint8_t expect[RUN_SIZE];
     fill(expect, number, index, len);
     if (memcmp(expect, data, len) != 0) {
         fprintf(stderr, "datagram %u/%u: bytes differ from what was sent\n", number, index);
@@ -300,6 +321,7 @@ static int run_hal(uint16_t port, const char* broadcast) {
     uint32_t records = 0;
     uint32_t largest = 0;
     uint32_t misaligned = 0;
+    uint32_t runs_gro_on = 0;
     bool ended = false;
     bool good = true;
     int idle = 0;
@@ -321,18 +343,22 @@ static int run_hal(uint16_t port, const char* broadcast) {
             struct timespec delay = {0, CHECK_READ_DELAY_NS};
             nanosleep(&delay, NULL);
         }
+#if TT_HAL_UDP_GRO
+        runs_gro_on += got > (int32_t)WIRE_MAX && g_node.hal.gro_state != 0U ? 1U : 0U; // 0: TT_GRO_PLAIN
+#endif
         if (g_node.rx_offset % 4U != 0) {
             misaligned++;
             good = false;
         }
         good = record(g_rx + g_node.rx_offset, (uint32_t)got, &records, &largest, &ended) && good;
     }
-    printf("RESULT: role=hal datagrams=%u largest=%u ended=%d misaligned=%u udp_offload=%u gro_reads=%lu "
-           "gro_merged=%lu gro_copied=%lu gro_off8=%lu gro_enables=%lu gro_aborts=%lu gro_commits=%lu\n",
-           records, largest, ended, misaligned, (unsigned)g_node.udp_offload, (unsigned long)g_node.udp_gro_reads,
-           (unsigned long)g_node.udp_gro_merged, (unsigned long)g_node.udp_gro_copied,
-           (unsigned long)g_node.udp_gro_off8, (unsigned long)g_node.hal.gro_enables,
-           (unsigned long)g_node.hal.gro_aborts, (unsigned long)g_node.hal.gro_commits);
+    printf("RESULT: role=hal datagrams=%u largest=%u ended=%d misaligned=%u runs_gro_on=%u udp_offload=%u "
+           "gro_reads=%lu gro_merged=%lu gro_copied=%lu gro_off8=%lu gro_enables=%lu gro_aborts=%lu gro_commits=%lu\n",
+           records, largest, ended, misaligned, runs_gro_on, (unsigned)g_node.udp_offload,
+           (unsigned long)g_node.udp_gro_reads, (unsigned long)g_node.udp_gro_merged,
+           (unsigned long)g_node.udp_gro_copied, (unsigned long)g_node.udp_gro_off8,
+           (unsigned long)g_node.hal.gro_enables, (unsigned long)g_node.hal.gro_aborts,
+           (unsigned long)g_node.hal.gro_commits);
     tt_Context_destroy(&g_node);
     return good ? 0 : 1;
 }
