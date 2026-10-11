@@ -20,10 +20,14 @@
 //   1. encode: when the old path accepts, the new one gives the same bytes and direct_encode_size
 //      says how many. When the old path refuses at to_tickle - a TickLE struct capacity, not a
 //      limit of the ROS type - the new one may accept if the message is within its IDL bounds and
-//      65,535; that is the capacity-only class. Any other disagreement fails.
+//      the wire's limits; that is the capacity-only class. Any other disagreement fails.
 //      1b. whatever the new path accepts decodes back to the original (floats bitwise, strings up
 //      to their first NUL, which is all the wire carries), into a shell holding the last sample.
 //   2. over-bound inputs, built on purpose: both paths refuse.
+//      2e. an unbounded sequence of 65,536 elements, which since large-message step A is not over any
+//      bound: its count goes as the 0xFFFF escape and a uint32. The new path sizes it, refuses it in a
+//      buffer of one small sample (-1, too short), encodes it whole into one of its size and decodes
+//      it back; the old path is not asked, a TickLE struct cannot hold it.
 //   3. differential decode of truncated and bit-flipped bytes, and
 //   4. the same with is_native_endian false: both decoders accept or refuse alike and agree on
 //      what they accept, except the capacity-only class (the new result is one to_tickle refuses,
@@ -76,7 +80,11 @@ namespace {
 
     constexpr uint32_t buffer_length = 65507; // TickLE's per-sample limit at rmw's build
     constexpr size_t unbounded_fill = 300;    // "bound-filling" for a field with no IDL bound
-    constexpr size_t max_count = 65535;       // a uint16 count or string length: the wire's own limit
+    constexpr size_t max_text = 65535;        // a string's length, NUL included, is a uint16: the wire's own limit
+    // A sequence count: a uint16 below 65,535, else the escape 0xFFFF and a uint32 (large-message stage 2, step A -
+    // ros2_direct_codec.py's COUNT_ESCAPE). Until then it was 65,535, and check 2 planted 65,536 expecting a refusal.
+    constexpr size_t max_count = UINT32_MAX;
+    constexpr size_t escaped_count = 65536; // check 2e: a count past the escape, as an unbounded sequence can be
     constexpr int default_samples = 200;
     constexpr size_t small_message = 256; // up to this size, every truncation is tried
     constexpr size_t random_truncations = 32;
@@ -391,7 +399,7 @@ namespace {
         if (member.string_upper_bound_ != 0 && str->size > member.string_upper_bound_) {
             return false;
         }
-        return first_nul_length(str) + 1 <= max_count;
+        return first_nul_length(str) + 1 <= max_text;
     }
 
     // NOLINTNEXTLINE(misc-no-recursion) - a nested field is described by its own type's members
@@ -460,6 +468,7 @@ namespace {
         int regenerated = 0;
         int shrunk = 0;
         int overbound = 0;
+        int escaped = 0;      // check 2e: long sequences encoded through the count escape and decoded back
         int cpp_compared = 0; // samples whose C++ encoding was compared with the C one
         int decode_inputs = 0;
         int decode_capacity_only = 0;
@@ -843,7 +852,7 @@ namespace {
                 return member.resize_function(field, member.array_size_ + 1);
             }
             if (kind == 2 && is_sequence(member) && !member.is_upper_bound_) {
-                return member.resize_function(field, max_count + 1);
+                return member.resize_function(field, escaped_count);
             }
             if (!member.is_array_ && is_text(member)) {
                 auto* str = static_cast<rosidl_runtime_c__String*>(field);
@@ -852,7 +861,7 @@ namespace {
                     return rosidl_runtime_c__String__assign(str, text.c_str());
                 }
                 if (kind == 3 && member.string_upper_bound_ == 0) {
-                    std::string const text(max_count, 'y');
+                    std::string const text(max_text, 'y');
                     return rosidl_runtime_c__String__assign(str, text.c_str());
                 }
             }
@@ -864,12 +873,48 @@ namespace {
         return false;
     }
 
-    // 2: a bounded sequence at bound+1, a bounded string at bound+1, a count of 65,536 and a string
-    // of 65,535 characters, one each where the type has such a field. Both paths must refuse.
+    // 2e: an unbounded sequence of 65,536 elements, planted as check 2 plants (kind 2). Not over any
+    // bound since step A, so not a refusal: the escape's own round trip, through every type that has
+    // such a field - test_direct_codec_cpp covers one C++ type, this the generated C codec of each.
+    auto escaped_sequence(checker& check, const Message& shell) -> void {
+        Message const msg(check.members);
+        check.gen.fits = true;
+        check.gen.cap = 1;
+        fill_message(check.gen, check.members, msg.get(), 1);
+        if (!plant(check.members, msg.get(), 2)) {
+            return;
+        }
+        check.tally.escaped++;
+        int32_t const sized = check.callbacks->direct_encode_size(msg.get());
+        int32_t const small = check.callbacks->direct_encode(msg.get(), bytes_of(check.out_new), buffer_length);
+        if (sized <= static_cast<int32_t>(buffer_length) || small != -1) {
+            report(check, "2e", -1,
+                   "count 65536: size " + std::to_string(sized) + ", encode into " + std::to_string(buffer_length) +
+                       " B " + std::to_string(small) + " (want a size above it and -1, too short)");
+            return;
+        }
+        aligned_buffer whole = make_buffer(static_cast<size_t>(sized));
+        int32_t const size = check.callbacks->direct_encode(msg.get(), bytes_of(whole), static_cast<uint32_t>(sized));
+        int32_t const back = size == sized ? check.callbacks->direct_decode(shell.get(), bytes_of(whole),
+                                                                            static_cast<uint32_t>(sized), true)
+                                           : -1;
+        if (size != sized || back != sized || !equal_message(check.members, msg.get(), shell.get())) {
+            report(check, "2e", -1,
+                   "count 65536: size " + std::to_string(sized) + ", encode " + std::to_string(size) + ", decode " +
+                       std::to_string(back) + (back == sized ? ", message differs" : ""));
+        }
+    }
+
+    // 2: a bounded sequence at bound+1, a bounded string at bound+1 and a string of 65,535 characters,
+    // one each where the type has such a field. Both paths must refuse. (Kind 2, a count of 65,536,
+    // refused too until step A gave counts an escape; it is check 2e's now.)
     auto overbound(checker& check) -> void {
         static const std::array<const char*, 4> names = {"bounded sequence +1", "bounded string +1", "count 65536",
                                                          "string of 65535"};
         for (size_t kind = 0; kind < names.size(); kind++) {
+            if (kind == 2) {
+                continue; // within the wire's limits since step A: escaped_sequence()
+            }
             Message const msg(check.members);
             check.gen.fits = true;
             check.gen.cap = 1;
@@ -917,6 +962,7 @@ namespace {
             one_sample(check, sample, shell);
         }
         overbound(check);
+        escaped_sequence(check, shell);
         if (cpp.message != nullptr) {
             cpp.callbacks->ros_fini(cpp.message);
         }
@@ -1155,13 +1201,14 @@ namespace {
         // relaxation would otherwise have introduced.
         int const divergence_ceiling = tally.decode_inputs / 1000;
         bool const too_divergent = tally.decode_divergent_on_damage > divergence_ceiling;
-        std::printf("%s %s identical=%d capacity_only=%d both_refused=%d regenerated=%d shrunk=%d overbound=%d "
-                    "cpp_compared=%d decode_inputs=%d decode_capacity_only=%d decode_divergent_on_damage=%d "
-                    "failures=%d old_hash=%016" PRIx64 " new_hash=%016" PRIx64 " seed=%" PRIu64 "\n",
-                    (tally.failures > 0 || below_floor || too_divergent) ? "FAIL" : "ok", type.c_str(), tally.identical,
-                    tally.capacity_only, tally.both_refused, tally.regenerated, tally.shrunk, tally.overbound,
-                    tally.cpp_compared, tally.decode_inputs, tally.decode_capacity_only,
-                    tally.decode_divergent_on_damage, tally.failures, tally.old_hash, tally.new_hash, seed);
+        std::printf(
+            "%s %s identical=%d capacity_only=%d both_refused=%d regenerated=%d shrunk=%d overbound=%d escaped=%d "
+            "cpp_compared=%d decode_inputs=%d decode_capacity_only=%d decode_divergent_on_damage=%d "
+            "failures=%d old_hash=%016" PRIx64 " new_hash=%016" PRIx64 " seed=%" PRIu64 "\n",
+            (tally.failures > 0 || below_floor || too_divergent) ? "FAIL" : "ok", type.c_str(), tally.identical,
+            tally.capacity_only, tally.both_refused, tally.regenerated, tally.shrunk, tally.overbound, tally.escaped,
+            tally.cpp_compared, tally.decode_inputs, tally.decode_capacity_only, tally.decode_divergent_on_damage,
+            tally.failures, tally.old_hash, tally.new_hash, seed);
         if (below_floor) {
             std::printf("FAIL %s: %d of %d samples byte-compared, below the floor of %d\n", type.c_str(),
                         tally.identical, opts.samples, opts.samples / 2);
