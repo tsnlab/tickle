@@ -3,8 +3,12 @@
 # while sending"): the publish copies each range of a 4 MB sample just before the send call that carries it, instead of
 # all of it before the first datagram leaves.
 #
-# Two private network namespaces joined by a veth pair, the publisher's egress shaped by netem to 1 Gbit/s (the rig's
-# link; a 4 MB sample is ~35 ms of it), large_sample_bench.c at both ends with rmw's datagram and the shared-memory
+# Two private network namespaces joined by a veth pair, the publisher's egress shaped to 1 Gbit/s (the rig's link; a
+# 4 MB sample is ~35 ms of it) in two ways, a cell each: netem rate (as asked), which takes a whole burst into its queue
+# at once, so the socket's send buffer never fills (send_waits 0); and tbf, which leaves the packets charged to the
+# socket until they go, so the buffer fills and the send waits as on the rig's NIC (send_waits in the thousands). Found
+# by a shaping probe before any A/B was read (2026-10-11); the second cell is the one that exercises the encode of the
+# rest when the buffer fills. large_sample_bench.c at both ends with rmw's datagram and the shared-memory
 # transport compiled out. The sample is a message already in memory, encoded by memcpy (-M: rmw_tickle's encode of a
 # type whose wire bytes are its message, perf_test's Array4m); its send time is stamped just before the publish.
 #
@@ -23,7 +27,7 @@
 #            runs of an arm in a cell.
 #   FLOOR    per metric, floor = max(|mean(H0) - mean(P)|, 2 x SE(H1 - H0)) (Welch).
 #   VERDICT  d = mean(H1) - mean(H0). BETTER iff d < -floor; WORSE iff d > +floor; else HELD.
-#   HYPOTHESIS the latency median comes out BETTER in every 4 MB cell, by at least half the measured time of the
+#   HYPOTHESIS the latency median comes out BETTER in every 4 MB cell (both shapings), by at least half the time of the
 #            encode it moves off the critical path (the bench prints none; it is taken from P: one 4 MiB memcpy, which
 #            the reader measures in-process at the start, `memcpy_us`). FALSIFIED if any 4 MB cell's median is HELD
 #            or WORSE: the first datagram's wait was not on the latency path here (the wire queue hid it).
@@ -41,7 +45,8 @@ WORK=${WORK:-/tmp/interleave_pc}
 OUT=${OUT:-$WORK/results.txt}
 NS1=ilv-pub-$$
 NS2=ilv-sub-$$
-CELLS=${CELLS:-"rel4m:4194304:15:-R be4m:4194304:15: rel1m:1048576:30:-R"}
+CELLS=${CELLS:-"rel4m_netem:4194304:15:-R:netem be4m_netem:4194304:15::netem rel4m_tbf:4194304:15:-R:tbf be4m_tbf:4194304:15::tbf"}
+declare -A SHAPER=([netem]="netem rate 1gbit limit 100000" [tbf]="tbf rate 1gbit burst 64kb latency 500ms")
 
 netns_cleanup() {
     sudo -n ip netns del "$NS1" 2>/dev/null
@@ -93,11 +98,14 @@ for ns in "$NS1" "$NS2"; do
 done
 sudo -n ip -n "$NS1" link set ilv1 up
 sudo -n ip -n "$NS2" link set ilv2 up
-# The rig's link: 1 Gbit/s; a queue long enough that netem never drops (the socket's send buffer bounds what waits).
-sudo -n ip netns exec "$NS1" tc qdisc add dev ilv1 root netem rate 1gbit limit 100000 || exit 1
-qdisc=$(sudo -n ip netns exec "$NS1" tc qdisc show dev ilv1)
+echo "=== interleave_encode_pc $(date -Is) base=$base_sha head=$head_sha dirty=$dirty blocks=$BLOCKS duration=${DURATION}s memcpy_us=$memcpy_us ===" | tee -a "$OUT"
 
-echo "=== interleave_encode_pc $(date -Is) base=$base_sha head=$head_sha dirty=$dirty blocks=$BLOCKS duration=${DURATION}s memcpy_us=$memcpy_us qdisc=[$qdisc] ===" | tee -a "$OUT"
+shape() { # the rig's link, 1 Gbit/s, by netem or tbf (see the header); what the kernel installed is printed
+    sudo -n ip netns exec "$NS1" tc qdisc del dev ilv1 root 2>/dev/null
+    # shellcheck disable=SC2086 # the qdisc's arguments, split on purpose
+    sudo -n ip netns exec "$NS1" tc qdisc add dev ilv1 root ${SHAPER[$1]} || return 1
+    echo "SHAPE $1: $(sudo -n ip netns exec "$NS1" tc qdisc show dev ilv1)" | tee -a "$OUT"
+}
 
 run() { # run CELL ARM BLOCK SIZE RATE FLAGS
     local cell=$1 arm=$2 block=$3 size=$4 rate=$5 flags=$6 bin pub_flags
@@ -121,11 +129,13 @@ run() { # run CELL ARM BLOCK SIZE RATE FLAGS
         echo "RUN cell=$cell arm=$arm block=$block VOID no RESULT line (pub: $(tail -1 "$publog") / sub: $(tail -1 "$sublog"))" | tee -a "$OUT"
         return
     fi
-    echo "RUN cell=$cell arm=$arm block=$block | $p | $s" | tee -a "$OUT"
+    echo "RUN cell=$cell arm=$arm block=$block | $p | $s" >> "$OUT"
+    echo "RUN cell=$cell arm=$arm block=$block $(grep -o 'latency_median_us=[0-9.]*' <<<"$s") $(grep -o 'large_send_waits=[0-9]*' <<<"$p")"
 }
 
 for spec in $CELLS; do
-    IFS=: read -r cell size rate flags <<<"$spec"
+    IFS=: read -r cell size rate flags shaper <<<"$spec"
+    shape "$shaper" || exit 1
     for block in $(seq 1 "$BLOCKS"); do
         for arm in P H0 H1 H1 H0 P; do
             run "$cell" "$arm" "$block" "$size" "$rate" "$flags"
