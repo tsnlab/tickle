@@ -6,7 +6,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { PC_BITS = 64, TABLE_BITS = 20, TABLE_SIZE = 1U << TABLE_BITS, NAME_BYTES = 48, LINE_BYTES = 4096, HEX = 16 };
+enum {
+    PC_BITS = 64,
+    TABLE_BITS = 20,
+    TABLE_SIZE = 1U << TABLE_BITS,
+    NAME_BYTES = 48,
+    LINE_BYTES = 4096,
+    HEX = 16,
+    AARCH64_INSN_HEX = 8
+};
 
 static uint64_t g_pc[TABLE_SIZE];
 static uint64_t g_execs[TABLE_SIZE];
@@ -30,6 +38,32 @@ static void count_execution(const char* line) {
     }
 }
 
+// A qemu built with a disassembler prints one "0x<pc>: <insn>" line per instruction. One built without (Ubuntu's 10.2
+// qemu-user) prints the block's pc once, with nothing after it, and the instructions as hex on OBJD-T lines below -
+// counted there instead (insns_on_objd_line()), or every block would count as one instruction.
+static uint32_t insns_on_pc_line(const char* line) {
+    const char* after = strchr(line, ':');
+    if (after == NULL) {
+        return 0;
+    }
+    after += 1 + strspn(after + 1, " \t");
+    return (*after != '\n' && *after != '\0') ? 1U : 0U;
+}
+
+static uint32_t insns_on_objd_line(const char* line) {
+    const char* hex = line + strlen("OBJD-T:");
+    hex += strspn(hex, " \t");
+    return (uint32_t)(strspn(hex, "0123456789abcdefABCDEF") / AARCH64_INSN_HEX);
+}
+
+// The function an "IN: <function>" line names, into `function` (NAME_BYTES), "?" when it names none.
+static void read_label(char* line, char* function) {
+    char* label = line + strlen("IN:");
+    label += strspn(label, " ");
+    label[strcspn(label, "\n")] = '\0';
+    (void)snprintf(function, NAME_BYTES, "%.40s", *label != '\0' ? label : "?");
+}
+
 int main(void) {
     static char line[LINE_BYTES];
     char function[NAME_BYTES] = "?";
@@ -46,19 +80,16 @@ int main(void) {
             block_pc = 0;
             block_insns = 0;
             at_block_start = 1;
-            char* label = line + strlen("IN:");
-            while (*label == ' ') {
-                label++;
-            }
-            label[strcspn(label, "\n")] = '\0';
-            (void)snprintf(function, sizeof function, "%.40s", *label != '\0' ? label : "?");
+            read_label(line, function);
         } else if (line[0] == '0' && line[1] == 'x') {
             if (at_block_start) {
                 block_pc = strtoull(line, NULL, HEX);
                 (void)snprintf(g_name[slot_of(block_pc)], NAME_BYTES, "%s", function);
                 at_block_start = 0;
             }
-            block_insns++;
+            block_insns += insns_on_pc_line(line);
+        } else if (strncmp(line, "OBJD-T:", strlen("OBJD-T:")) == 0) {
+            block_insns += insns_on_objd_line(line);
         }
     }
     if (block_pc != 0) {

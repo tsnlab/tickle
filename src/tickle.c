@@ -15262,6 +15262,28 @@ static bool sender_in_range(uint32_t ip) {
 }
 #endif
 
+#if tt_SEGMENT_ENABLED
+static void segment_fence_arrived(struct tt_Context* node, const uint8_t* fence);
+#endif
+
+// A datagram of `tail` bytes too short for any header (process_packet()). A fence datagram (tt_SEGMENT_SPAN_FENCE) is
+// one: three bytes, so it is taken here and only a datagram that is no TickLE packet pays for the test. True for a
+// fence; false, logged, for anything else. The one caller passes the whole datagram (head 0).
+static bool headerless_datagram(struct tt_Context* node, const uint8_t* buffer, uint32_t tail) {
+#if tt_SEGMENT_ENABLED
+    if (tail == tt_SEGMENT_FENCE_LENGTH && buffer[0] == (uint8_t)tt_SEGMENT_FENCE_MARKER) {
+        segment_fence_arrived(node, buffer);
+        return true;
+    }
+#else
+    UNUSED(node);
+    UNUSED(buffer);
+    UNUSED(tail);
+#endif
+    TT_LOG_ERROR("RX buffer underflow");
+    return false;
+}
+
 static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t head, uint32_t tail, uint32_t sender_ip,
                            uint16_t sender_port, enum tt_Transport transport) {
     struct tt_Header single_header;
@@ -15280,8 +15302,7 @@ static bool process_packet(struct tt_Context* node, uint8_t* buffer, uint32_t he
         header = decode(node, buffer, &head, tail, sizeof(struct tt_Header));
     }
     if (header == NULL) {
-        TT_LOG_ERROR("RX buffer underflow");
-        return false;
+        return headerless_datagram(node, buffer, tail);
     }
 
     if (!validate_packet_header(node, header)) {
@@ -15862,7 +15883,9 @@ static bool segment_drained_instead_of_sleeping(struct tt_Context* node, bool ha
     bool emptied = true;
     *took = drain_own_segment(node, &emptied) > 0;
     // A fence held at the head waits for the socket, which only the sleep below reads: going round would come back
-    // here and drain the same fence until its deadline, with its datagram unread. poll_wait_io() bounds that sleep.
+    // here and drain the same fence until its deadline, with its datagram unread. The scheduler entry at the fence's
+    // deadline (segment_fence_at_head()) bounds that sleep. Asked only when the drain took nothing, which a ring with
+    // records outstanding almost never does.
     return *took || node->segment_fence_deadline_ns == 0;
 }
 
@@ -15984,6 +16007,14 @@ static void segment_fence_arrived(struct tt_Context* node, const uint8_t* fence)
     node->segment_fences_seen_next = (uint8_t)((node->segment_fences_seen_next + 1U) % tt_SEGMENT_FENCES_SEEN);
 }
 
+// A held fence's deadline (segment_fence_at_head()). Nothing to do: the entry exists so that the sleep ends there and
+// the poll goes round to the drain, which gives the fence up.
+static void segment_fence_due(struct tt_Context* node, uint64_t time, void* param) {
+    UNUSED(node);
+    UNUSED(time);
+    UNUSED(param);
+}
+
 // The fence at the head of the ring, at `index`: passed - released, and true - once its datagram has come out of the
 // socket, or once tt_SEGMENT_FENCE_HOLD_NS has gone by without it; held - false - until then. A record marked as a
 // fence that is not one this build writes has nothing to wait for and is passed at once, so no writer can wedge the
@@ -16005,6 +16036,13 @@ static bool segment_fence_at_head(struct tt_Context* node, struct tt_SegmentHead
         const uint64_t now = tt_get_ns();
         if (node->segment_fence_deadline_ns == 0) {
             node->segment_fence_deadline_ns = now + tt_SEGMENT_FENCE_HOLD_NS;
+            // The sleep that waits for the datagram ends by the deadline because the scheduler has an entry there,
+            // not because the sleep asks: a test on every sleep would be paid by every round trip for a wait that
+            // happens once per switch. Under the state lock (the drain's), so into the heap directly. A full heap
+            // leaves the sleep bounded by the periodic entries alone - later, never lost.
+            if (node->scheduler_tail + 1 < tt_MAX_SCHEDULER_LENGTH) {
+                sched_heap_insert(node, node->segment_fence_deadline_ns, segment_fence_due, NULL);
+            }
             return false;
         }
         if (now < node->segment_fence_deadline_ns) {
@@ -16795,16 +16833,10 @@ static tt_ret_t process_datagram_in(struct tt_Context* node, uint8_t* buffer, in
     // and rang. There is nothing to parse - waking up was the message - and it is dropped here,
     // before the magic check, because a zero-length datagram would otherwise be logged as a malformed
     // one every time the module did its job. A fence (tt_SEGMENT_FENCE_LENGTH) is the other datagram shorter than any
-    // TickLE header, and one comparison asks for both.
-    if (len < (int32_t)sizeof(struct tt_SingleHeader)) {
-        if (len == 0) {
-            node->segment_doorbells_received++;
-            return tt_RET_OK;
-        }
-        if (len == tt_SEGMENT_FENCE_LENGTH && buffer[0] == (uint8_t)tt_SEGMENT_FENCE_MARKER) {
-            segment_fence_arrived(node, buffer);
-            return tt_RET_OK;
-        }
+    // TickLE header; it is taken where process_packet() finds no header, so no datagram pays a test for it here.
+    if (len == 0) {
+        node->segment_doorbells_received++;
+        return tt_RET_OK;
     }
 #endif
     node->rx_tail = (uint32_t)len;
@@ -16992,23 +17024,6 @@ static int64_t poll_wait_length(bool has_next, uint64_t next, uint64_t time, int
     return timeout;
 }
 
-#if tt_SEGMENT_ENABLED
-// A sleep taken while a fence is held at the head (segment_fence_at_head()) is for the fence's datagram, and ends by
-// the fence's deadline if the datagram never comes, so the records behind it are not held past it. Woken "for the
-// scheduler", so the loop goes round to the drain that passes it rather than ending the poll.
-static void segment_fence_bounds_sleep(const struct tt_Context* node, int64_t* rest, bool* woke_for_scheduler) {
-    if (node->segment_fence_deadline_ns == 0) {
-        return;
-    }
-    const uint64_t now = tt_get_ns();
-    const int64_t left = node->segment_fence_deadline_ns > now ? (int64_t)(node->segment_fence_deadline_ns - now) : 1;
-    if (*rest <= 0 || *rest > left) {
-        *rest = left;
-        *woke_for_scheduler = true;
-    }
-}
-#endif
-
 // tt_Context_poll()'s I/O step, when nothing is due: wait for a datagram, the next entry or an interrupt.
 // Returns true with *result set when the poll should end.
 static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, uint64_t time, int64_t timeout,
@@ -17090,7 +17105,6 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
         return true;
     }
     node->segment_sleeps++;
-    segment_fence_bounds_sleep(node, &rest, &woke_for_scheduler);
 #endif
     int32_t len = tt_receive(node, RX_LANDING(node), tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
 #if tt_SEGMENT_ENABLED

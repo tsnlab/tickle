@@ -70,8 +70,8 @@ MUTANTS = [
     (
         "the fence datagram is taken off the socket",
         "src/tickle.c",
-        "        if (len == tt_SEGMENT_FENCE_LENGTH && buffer[0] == (uint8_t)tt_SEGMENT_FENCE_MARKER) {",
-        "        if (false) {",
+        "    if (tail == tt_SEGMENT_FENCE_LENGTH && buffer[0] == (uint8_t)tt_SEGMENT_FENCE_MARKER) {",
+        "    if (false) {",
         "test_the_switch_from_udp_loses_nothing (passed, not expired)",
     ),
     (
@@ -103,10 +103,12 @@ MUTANTS = [
         "test_a_lost_fence_holds_the_ring_until_its_deadline",
     ),
     (
-        "a sleep with a fence held is bounded by its deadline",
+        "a sleep with a fence held is bounded by its deadline (its scheduler entry)",
         "src/tickle.c",
-        "    if (*rest <= 0 || *rest > left) {",
-        "    if (false) {",
+        "            if (node->scheduler_tail + 1 < tt_MAX_SCHEDULER_LENGTH) {\n"
+        "                sched_heap_insert(node, node->segment_fence_deadline_ns, segment_fence_due, NULL);",
+        "            if (false) {\n"
+        "                sched_heap_insert(node, node->segment_fence_deadline_ns, segment_fence_due, NULL);",
         "test_a_lost_fence_holds_the_ring_until_its_deadline",
     ),
     (
