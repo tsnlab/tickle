@@ -304,6 +304,13 @@ static uint8_t sim_acting;
 static uint32_t sim_frame_loss_ppm; // per frame: a datagram of f frames is lost when any of them is
 static uint32_t sim_rng;
 static bool sim_drop_fragmented; // the tc filter: every datagram IP had to fragment is dropped
+// A receiver that falls behind: every sim_receiver_drop_every-th run the sender's link delivers is dropped at the
+// reader's socket, as a full receive buffer drops the largest datagrams first. Counted where the HAL counts it
+// (test_mock_receiver_drops) unless sim_receiver_drops_uncounted: a HAL that cannot say.
+static uint32_t sim_receiver_drop_every;
+static uint32_t sim_receiver_runs;
+static uint32_t sim_receiver_dropped;
+static bool sim_receiver_drops_uncounted;
 // The reader host's IP reassembly, modelled as the kernel's (the PC experiment's reading of it): a fragmented datagram
 // that lost a frame holds its arrived frames' truesize for the queue lifetime; while what is held exceeds the
 // threshold, every fragmented datagram is dropped whole on arrival. 0 bytes: not modelled (no squeeze).
@@ -502,11 +509,26 @@ static bool sim_lost(const struct sim_datagram* d) {
     return arrived < frames;
 }
 
+// Whether the reader's socket drops this datagram of the sender's (sim_receiver_drop_every, above).
+static bool sim_receiver_drops(const struct sim_datagram* d) {
+    if (sim_receiver_drop_every == 0 || d->len <= FRAME_PAYLOAD - 8U) {
+        return false;
+    }
+    if (++sim_receiver_runs % sim_receiver_drop_every != 0) {
+        return false;
+    }
+    sim_receiver_dropped++;
+    if (!sim_receiver_drops_uncounted) {
+        test_mock_receiver_drops++;
+    }
+    return true;
+}
+
 static void sim_deliver(struct sim_datagram* d) {
     if (!sim_lost(d)) {
         if (d->from == SENDER_ID) {
             for (int i = 0; i < READERS; i++) {
-                if (readers[i].present && (d->to_ip == 0 || d->to_ip == readers[i].ip)) {
+                if (readers[i].present && (d->to_ip == 0 || d->to_ip == readers[i].ip) && !sim_receiver_drops(d)) {
                     static uint8_t copy[70000];
                     memcpy(copy, d->bytes, d->len);
                     sim_acting = readers[i].ctx.id;
@@ -580,6 +602,11 @@ static void sim_start(uint32_t frame_loss_ppm) {
     sim_frame_loss_ppm = frame_loss_ppm;
     sim_rng = 11;
     sim_drop_fragmented = false;
+    sim_receiver_drop_every = 0;
+    sim_receiver_runs = 0;
+    sim_receiver_dropped = 0;
+    sim_receiver_drops_uncounted = false;
+    test_mock_receiver_drops = 0;
     sim_reasm_threshold = 0;
     sim_reasm_lifetime = 30U * tt_SECOND;
     sim_reasm_head = sim_reasm_tail = 0;
@@ -662,6 +689,25 @@ static void large_be_round_trip(uint32_t len, uint32_t datagrams) {
     // The reader saw every unit, runs included, and no gap.
     EXPECT_EQ_U32(tt_sample_datagrams(len), readers[0].ctx.hybrid.rx_loss.frames);
     EXPECT_EQ_U32(0, readers[0].ctx.hybrid.rx_loss.events);
+}
+
+// The receive drain core asks for while a large sample is delivered (tt_rx_drain_start(), tickle.c large_rx_drain())
+// is sized for the longest datagram that may come meanwhile: a run up to the ceiling this reader advertises - not a
+// fragment, which would cut every run (drain_truncated) - and a fragment for a reader that takes no run.
+static void test_the_drain_is_sized_for_runs(void) {
+    init_one(ONE_MB, FULL_CEILING, false);
+    sim_start(0);
+    test_mock_drain_bytes = 0;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+    expect_intact(0, 1);
+    EXPECT_EQ_U32(FULL_CEILING, test_mock_drain_bytes);
+    init_one(ONE_MB, 0, false);
+    readers[0].ctx.ip_reassembly_max = 0; // a reader that advertises no ceiling: MTU fragments only
+    sim_start(0);
+    test_mock_drain_bytes = 0;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(2));
+    expect_intact(0, 1);
+    EXPECT_EQ_U32(tt_CONTROL_MAX_LENGTH, test_mock_drain_bytes);
 }
 
 static void test_large_samples_go_in_runs_of_n_max(void) {
@@ -1144,6 +1190,56 @@ static void test_the_reader_rebuilds_what_was_sent(void) {
     EXPECT_EQ_U32(20, loss->events);
 }
 
+// Receiver drops are not path loss (tickle.c, hybrid_rx_receiver_lost()): a gap the HAL's count of receiver drops
+// covers reaches neither p, p_mtu, the run window nor rule (e) - one drop for one lost datagram, a run or an MTU unit -
+// and is counted as receiver_lost. With no drop on hand the same gap is path loss (the control). Drops not matched
+// within two announce intervals are let go.
+static void test_receiver_drops_are_not_path_loss(void) {
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    struct tt_Context* node = &readers[0].ctx;
+    struct tt_HybridState* hybrid = &node->hybrid;
+    test_mock_receiver_drops = 0;
+    hybrid_rx_note(node, SENDER_ID, 7, 100, 0, 100, 45, true); // units 0-44: a full run of 45
+    test_mock_receiver_drops = 1;                              // the next run dropped at the socket
+    hybrid_rx_note(node, SENDER_ID, 7, 100, 90, 100, 9, true); // 45-89 missing: one run, the receiver's
+    EXPECT_EQ_U32(0, hybrid->rx_loss.events);
+    EXPECT_EQ_U32(54, hybrid->rx_loss.frames); // the lost run's frames are not observed at all
+    EXPECT_EQ_U32(0, hybrid->window.lost);
+    EXPECT_EQ_U32(2, hybrid->window.sent);
+    EXPECT_EQ_U32(0, hybrid->rx_writers[0].body_lost);
+    EXPECT_EQ_U64(1, hybrid->receiver_drops);
+    EXPECT_EQ_U64(1, hybrid->receiver_lost);
+    EXPECT_EQ_U32(99, hybrid->tick_units); // R still counts every unit sent to it, arrived or not
+    // The control: the same gap with no drop on hand is path loss.
+    hybrid_rx_note(node, SENDER_ID, 7, 200, 0, 100, 45, true); // the tail of sample 100 missing: path loss
+    EXPECT_EQ_U32(1, hybrid->mtu_loss.events);
+    hybrid_rx_note(node, SENDER_ID, 7, 200, 90, 100, 9, true); // 45-89 missing, no drop counted
+    EXPECT_EQ_U32(2, hybrid->rx_loss.events);
+    EXPECT_EQ_U32(1, hybrid->window.lost);
+    EXPECT_EQ_U64(1, hybrid->receiver_lost);
+    // MTU units: two missing, one drop on hand - one is the receiver's, one is path loss.
+    hybrid_rx_note(node, SENDER_ID, 8, 50, 3, 10, 1, false);
+    test_mock_receiver_drops = 2;
+    hybrid_rx_note(node, SENDER_ID, 8, 50, 6, 10, 1, false); // 4 and 5 missing
+    EXPECT_EQ_U32(2, hybrid->mtu_loss.events);
+    EXPECT_EQ_U64(2, hybrid->receiver_lost);
+    // A missing tail covered by a drop.
+    test_mock_receiver_drops = 3;
+    hybrid_rx_note(node, SENDER_ID, 8, 60, 0, 10, 1, false); // sample 50 ended short: 7-9, its tail among them
+    EXPECT_EQ_U64(3, hybrid->receiver_lost);
+    // Drops age out: seen at one tick, kept through the next interval, gone at the one after.
+    test_mock_receiver_drops = 8;
+    hybrid_rx_receiver_age(node);
+    EXPECT_EQ_U32(5, hybrid->rx_drop_credit[1]);
+    hybrid_rx_receiver_age(node);
+    EXPECT_EQ_U32(0, hybrid->rx_drop_credit[0] + hybrid->rx_drop_credit[1]);
+    uint32_t events = hybrid->mtu_loss.events;
+    hybrid_rx_note(node, SENDER_ID, 8, 60, 2, 10, 1, false); // 1 missing: path loss, the old drops let go
+    EXPECT_EQ_U32(events + 1U, hybrid->mtu_loss.events);
+    EXPECT_EQ_U64(8, hybrid->receiver_drops);
+    test_mock_receiver_drops = 0;
+}
+
 // Rule (e) on the reader's side needs frame loss to be no excuse: a writer none of whose runs ever arrived loses the
 // one run of a 3-unit sample with its tail through - at p_mtu near 50% that is what frame loss does (L0 0.79): nothing;
 // at p_mtu near 0, the same sample twice is (L0 2e-6 a sample): one unit at once.
@@ -1300,6 +1396,50 @@ static void test_frame_loss_never_moves_the_cap(void) {
     EXPECT_TRUE(hybrid->rx_writers[0].runs.lost > 0);
     EXPECT_EQ_INT(0, readers[0].torn);
     EXPECT_TRUE(readers[0].delivered > 2400 && readers[0].delivered < 3000);
+}
+
+// The rig's 4 MB cells (2026-10-12): a receive socket that overflows drops runs, and a reader that took those drops for
+// path loss advertised a p that held RELIABLE AUTO's n at 4-31 on a clean link. End to end, RELIABLE 1 MB at 30 Hz with
+// no frame loss and every tenth run dropped at the reader's socket: counted by the HAL, p stays at no events and n
+// leaves MTU for n_max as on a clean link (test_reliable_auto_leaves_mtu_as_clean_frames_accumulate); every sample
+// arrives whole and in order, the drops repaired. The control - the same drops, uncounted, a HAL that cannot say -
+// reads them as path loss and n stays below n_max.
+static uint32_t receiver_drop_stream(bool counted) {
+    init_one(ONE_MB, FULL_CEILING, true);
+    sim_start(0);
+    sim_receiver_drop_every = 10;
+    sim_receiver_drops_uncounted = !counted;
+    uint64_t t = test_mock_now;
+    tick_readers(t);
+    uint32_t last_n = 0;
+    uint32_t largest = 0;
+    for (uint32_t s = 1; s <= 600; s++) {
+        memset(&sent, 0, sizeof(sent));
+        memset(seen_unit, 0, sizeof(seen_unit));
+        test_mock_now = t + ((uint64_t)s * 34U * tt_MILLISECOND);
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)s));
+        sim_settle((int)s, tt_SECOND);
+        last_n = sent.max_n;
+        largest = last_n > largest ? last_n : largest;
+        if (s % 30U == 0) {
+            tick_readers(test_mock_now);
+        }
+    }
+    struct tt_HybridState* hybrid = &readers[0].ctx.hybrid;
+    EXPECT_TRUE(sim_receiver_dropped > 100U); // the treatment: runs were dropped at the socket
+    EXPECT_EQ_U64(counted ? sim_receiver_dropped : 0U, hybrid->receiver_lost);
+    EXPECT_EQ_U32(counted ? 0U : hybrid->rx_loss.events, hybrid->rx_loss.events);
+    EXPECT_TRUE(counted || hybrid->rx_loss.events > 0U);
+    EXPECT_EQ_U32(0, pub.peer_acks[0].path_failures);
+    expect_intact(0, 600);
+    EXPECT_TRUE(readers[0].in_order);
+    return largest;
+}
+
+static void test_receiver_drops_do_not_lower_n(void) {
+    EXPECT_EQ_U32(45, receiver_drop_stream(true));
+    EXPECT_TRUE(receiver_drop_stream(false) < 45U); // the control: a HAL that cannot say
+    test_mock_receiver_drops = 0;
 }
 
 // Best effort through a path that drops every IP fragment from the start (the tc filter; rule (e) on the reader's
@@ -1902,6 +2042,7 @@ static void test_a_sample_received_in_runs_is_lent_in_place(void) {
 int main(void) {
     test_small_sample_goes_as_one_run_and_its_tail();
     test_large_samples_go_in_runs_of_n_max();
+    test_the_drain_is_sized_for_runs();
     test_runs_start_at_three_units();
     test_the_peers_ceiling_and_the_publishers_bound_n();
     test_mtu_mode_sends_no_run();
@@ -1918,6 +2059,8 @@ int main(void) {
     test_tau_from_the_writers_run_rates();
     test_the_law_runs_once_an_interval();
     test_the_reader_rebuilds_what_was_sent();
+    test_receiver_drops_are_not_path_loss();
+    test_receiver_drops_do_not_lower_n();
     test_the_loss_code_rounds_up();
     test_the_path_rule_needs_frame_loss_to_be_no_excuse();
     test_a_reader_with_the_cap_off_advertises_its_ceiling();

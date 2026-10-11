@@ -23,7 +23,12 @@
 //                until tt_RX_DRAIN_HOLDOFF_NS has passed, so the same datagram sent again is read whole.
 //   5. sized   - asked for 65,507-byte datagrams, the drain rebuilds its buffers for them, and a burst of them
 //                through the smallest socket buffer arrives whole.
-//   6. ring    - the buffers reached the kernel the way TT_EXPECT_DRAIN_RING says, when it is set: test_samehost.sh
+//   6. merged  - receive offload on (UDP_GRO, the state core's reads put it in for MTU-mode fragments), a run of
+//                same-size datagrams sent as one UDP_SEGMENT send, which loopback hands to the socket merged: the drain
+//                takes it with UDP_GRO's size, its buffers sized for a merged read whatever core asked, and hands the
+//                datagrams out one at a time, whole and in order - none cut, none dropped (drain_merged counts the
+//                merged reads: 0 means loopback did not merge, and the check says so rather than pass on nothing).
+//   7. ring    - the buffers reached the kernel the way TT_EXPECT_DRAIN_RING says, when it is set: test_samehost.sh
 //                runs this under refuse_pbuf_ring.so, which holds every IORING_REGISTER_PBUF_RING to Linux 6.8's
 //                rules and can refuse it as the rig's Pi 5s did (6.8.0-1064-raspi, EINVAL), so checks 3-5 also run
 //                over the kernel's own ring and over classic provided buffers.
@@ -47,6 +52,7 @@
 #include <unistd.h>
 
 #include <netinet/in.h>
+#include <netinet/udp.h> // UDP_GRO, UDP_SEGMENT
 #include <sys/socket.h>
 #include <tickle/config.h>
 #include <tickle/hal.h>
@@ -65,6 +71,9 @@
 #define BIG_BYTES 60000         // a datagram the kernel would reassemble on a real link
 #define BIG_BURST 24            // more than the smallest socket buffer holds of them
 #define HOLDOFF_PAST_US ((useconds_t)(tt_RX_DRAIN_HOLDOFF_NS / 1000U) + 10000U)
+#define MERGED_SEGMENTS 30   // datagrams in the one UDP_SEGMENT send of check 6
+#define CHECK_GRO_ON 1U      // hal_linux.c's TT_GRO_ON: the state its reads leave once a large fragment came
+#define MERGED_SEND_EXTRA 64 // room for the send's own UDP_SEGMENT cmsg
 
 enum check_exit { CHECK_PASS = 0, CHECK_FAIL = 1, CHECK_NO_DRAIN = 2, CHECK_SETUP_FAILED = 3 };
 
@@ -208,6 +217,91 @@ static enum check_exit check_sized(struct tt_Context* node, int sender) {
     return CHECK_PASS;
 }
 
+#if TT_HAL_UDP_GRO
+// MERGED_SEGMENTS numbered datagrams of PAYLOAD_BYTES as one UDP_SEGMENT send, from `first`.
+static bool send_segmented(int sender, int socket_fd, uint32_t first) {
+    struct sockaddr_in dest;
+    socklen_t dest_len = sizeof dest;
+    if (getsockname(socket_fd, (struct sockaddr*)&dest, &dest_len) != 0) {
+        return false;
+    }
+    dest.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    static uint8_t payload[MERGED_SEGMENTS * PAYLOAD_BYTES];
+    memset(payload, MARK, sizeof payload);
+    for (uint32_t i = 0; i < MERGED_SEGMENTS; i++) {
+        uint32_t index = first + i;
+        memcpy(payload + ((size_t)i * PAYLOAD_BYTES) + 1, &index, sizeof index);
+    }
+    // NOLINTNEXTLINE(misc-include-cleaner) - struct iovec: <sys/uio.h>, through <sys/socket.h>
+    struct iovec iov = {.iov_base = payload, .iov_len = sizeof payload};
+    union {
+        char bytes[MERGED_SEND_EXTRA];
+        struct cmsghdr align; // NOLINT(misc-include-cleaner) - <sys/socket.h>
+    } control;
+    memset(&control, 0, sizeof control);
+    struct msghdr msg = {0};
+    msg.msg_name = &dest;
+    msg.msg_namelen = sizeof dest;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.bytes;
+    msg.msg_controllen = CMSG_SPACE(sizeof(uint16_t)); // NOLINT(misc-include-cleaner) - CMSG_*: <sys/socket.h>
+    struct cmsghdr* cm = CMSG_FIRSTHDR(&msg);          // NOLINT(misc-include-cleaner)
+    cm->cmsg_level = SOL_UDP;
+    cm->cmsg_type = UDP_SEGMENT;
+    cm->cmsg_len = CMSG_LEN(sizeof(uint16_t)); // NOLINT(misc-include-cleaner)
+    uint16_t segment = PAYLOAD_BYTES;
+    memcpy(CMSG_DATA(cm), &segment, sizeof segment); // NOLINT(misc-include-cleaner)
+    return sendmsg(sender, &msg, 0) == (ssize_t)sizeof payload;
+}
+
+// 6. merged
+static enum check_exit check_merged(struct tt_Context* node, int sender) {
+    usleep(HOLDOFF_PAST_US);
+    int on = 1;
+    if (setsockopt(node->hal.data_sock, SOL_UDP, UDP_GRO, &on, sizeof on) != 0) {
+        printf("rx_drain_check: PASS - merged: not run, this kernel refuses UDP_GRO\n");
+        return CHECK_PASS;
+    }
+    node->hal.gro_state = CHECK_GRO_ON;
+    uint32_t drops = tt_hal_rx_socket_drops(node);
+    uint64_t cut = node->hal.drain_truncated;
+    uint64_t merged = node->hal.drain_merged;
+    if (!tt_rx_drain_start(node, tt_CONTROL_MAX_LENGTH)) {
+        printf("rx_drain_check: FAIL - merged: no drain with receive offload on\n");
+        return CHECK_FAIL;
+    }
+    if (!send_segmented(sender, node->hal.data_sock, 0) ||
+        !send_segmented(sender, node->hal.data_sock, MERGED_SEGMENTS)) {
+        printf("rx_drain_check: SETUP FAILED - merged: the UDP_SEGMENT send was refused\n");
+        return CHECK_SETUP_FAILED;
+    }
+    usleep(LOOPBACK_SETTLE_US);
+    int arrived = 0;
+    bool in_order = read_in_order(node, PAYLOAD_BYTES, 0, 2 * MERGED_SEGMENTS, &arrived);
+    uint64_t merged_reads = node->hal.drain_merged - merged;
+    if (merged_reads == 0) {
+        printf("rx_drain_check: SETUP FAILED - merged: loopback handed the drain no merged read (%d of %d arrived "
+               "alone), so nothing was split\n",
+               arrived, 2 * MERGED_SEGMENTS);
+        return CHECK_SETUP_FAILED;
+    }
+    if (!in_order || tt_hal_rx_socket_drops(node) != drops || node->hal.drain_truncated != cut ||
+        node->hal.drain_size < (uint32_t)tt_MAX_BUFFER_LENGTH) {
+        printf("rx_drain_check: FAIL - merged: %d of %d in order: %s, socket drops %u -> %u, drain_truncated %lu -> "
+               "%lu, buffers of %u bytes (must hold a merged read)\n",
+               arrived, 2 * MERGED_SEGMENTS, in_order ? "yes" : "no", (unsigned)drops,
+               (unsigned)tt_hal_rx_socket_drops(node), (unsigned long)cut, (unsigned long)node->hal.drain_truncated,
+               (unsigned)node->hal.drain_size);
+        return CHECK_FAIL;
+    }
+    printf("rx_drain_check: PASS - merged: %d datagrams in %lu merged reads through the drain, split whole and in "
+           "order, into buffers of %u bytes\n",
+           arrived, (unsigned long)merged_reads, (unsigned)node->hal.drain_size);
+    return CHECK_PASS;
+}
+#endif
+
 static bool send_burst(int sender, int socket_fd, int count) {
     struct sockaddr_in dest;
     socklen_t dest_len = sizeof dest;
@@ -242,7 +336,7 @@ static int read_all(struct tt_Context* node) {
     return mine;
 }
 
-// 6. ring - how the buffers reached the kernel. TT_EXPECT_DRAIN_RING (user, kernel or classic) is what
+// 7. ring - how the buffers reached the kernel. TT_EXPECT_DRAIN_RING (user, kernel or classic) is what
 // test_samehost.sh's passes under tests/support/refuse_pbuf_ring.so must have fallen back to; unset, any is fine.
 static enum check_exit check_ring(const struct tt_Context* node) {
     static const char* const names[] = {"none", "user", "kernel", "classic"};
@@ -318,6 +412,11 @@ int main(void) {
     if (result == CHECK_PASS) {
         result = check_sized(&node, sender);
     }
+#if TT_HAL_UDP_GRO
+    if (result == CHECK_PASS) {
+        result = check_merged(&node, sender);
+    }
+#endif
     if (result == CHECK_PASS) {
         result = check_ring(&node);
     }

@@ -452,6 +452,11 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
     return false; // these queues are the HAL's own memory: nothing to drain
 }
 
+uint32_t tt_rx_receiver_drops(const struct tt_Context* node) {
+    (void)node;
+    return 0; // a queue here never drops for want of room
+}
+
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct queue* q = &queues[node->id];
     pthread_mutex_lock(&q->lock);

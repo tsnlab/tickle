@@ -385,13 +385,27 @@ struct tt_hal {
     uint8_t drain_ring;
     uint16_t drain_group;
     uint8_t* drain_buffers;
-    struct msghdr drain_msghdr; // multishot recvmsg's layout: the sender's address, no control
+    struct msghdr drain_msghdr; // multishot recvmsg's layout: the sender's address, and UDP_GRO's cmsg where GRO is
     // starts: drains begun. datagrams: handed out from one. truncated: longer than a buffer, lost. overruns: a
     // multishot that ended for want of a buffer, after which the socket's own buffer took over.
     uint64_t drain_starts;
     uint64_t drain_datagrams;
     uint64_t drain_truncated;
     uint64_t drain_overruns;
+#if TT_HAL_UDP_GRO
+    // A merged read the drain took (UDP_GRO, hal_linux.c "The drain and receive offload"): buffer drain_split_bid,
+    // cut every drain_split_segment bytes from drain_split_next to drain_split_end, drain_split_left segments still to
+    // hand out, all from one sender on one socket. drain_merged: completions that held more than one datagram.
+    uint16_t drain_split_bid;
+    uint16_t drain_split_left;
+    uint16_t drain_split_port;
+    bool drain_split_from_data;
+    uint32_t drain_split_ip;
+    uint32_t drain_split_segment;
+    uint32_t drain_split_next;
+    uint32_t drain_split_end;
+    uint64_t drain_merged;
+#endif
 #endif
 #if tt_CONTEXT_ID_CLAIM
     // (g8) The data socket's own address, host order, read back after tt_bind() (the link's address when the socket
@@ -403,7 +417,8 @@ struct tt_hal {
 };
 
 // Datagrams the kernel has dropped at this context's two receive sockets because their receive buffers were full
-// (SO_MEMINFO), 0 when it cannot say. Also said at tt_close(), on the "Node N rx:" line.
+// (SO_MEMINFO), 0 when it cannot say. Also said at tt_close(), on the "Node N rx:" line. tt_rx_receiver_drops()
+// (hal.h) is this plus the datagrams the drain cut.
 struct tt_Context;
 uint32_t tt_hal_rx_socket_drops(const struct tt_Context* node);
 

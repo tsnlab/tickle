@@ -605,6 +605,14 @@ struct tt_HybridState {
     uint64_t probe_failures;
     uint64_t rescales;
     uint64_t path_failures; // rule (e): a writer's every run lost with its tail through, on a path that took none
+    // Receiver drops are not path loss (tickle.c, hybrid_rx_receiver_lost()): tt_rx_receiver_drops() at the last look,
+    // and the drops not yet put against a gap - since the last tick [0] and in the tick before it [1]; older ones are
+    // let go. receiver_drops: every drop seen; receiver_lost: datagrams of gaps put down to them, which reach neither
+    // p, p_mtu, the run window nor rule (e).
+    uint32_t rx_drops_seen;
+    uint32_t rx_drop_credit[2];
+    uint64_t receiver_drops;
+    uint64_t receiver_lost;
 };
 #endif
 
