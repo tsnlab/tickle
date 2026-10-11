@@ -216,6 +216,13 @@ static void print_large(const struct tt_Context* node) {
            (unsigned long)node->large.dropped, (unsigned long)node->large.duplicate,
            (unsigned long)node->large.tail_abandoned, (unsigned long)node->large.send_waits,
            (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams);
+#if tt_LARGE_SHM
+    printf(" large_ref_sent=%lu large_ref_received=%lu large_ref_refused=%lu large_ref_dropped=%lu "
+           "large_region_full=%lu shm_full_dropped=%lu",
+           (unsigned long)node->large.ref_sent, (unsigned long)node->large.ref_received,
+           (unsigned long)node->large.ref_refused, (unsigned long)node->large.ref_dropped,
+           (unsigned long)node->large.region_full, (unsigned long)node->segment_full_dropped);
+#endif
 #else
     printf(" tx_datagrams=%lu rx_datagrams=%lu", (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams);
 #endif
@@ -229,18 +236,19 @@ struct options {
     bool keep_all;
     double rate_hz;
     double duration_s;
-    char* broadcast; // as _tt_CONFIG.broadcast takes it
+    char* broadcast;        // as _tt_CONFIG.broadcast takes it
+    uint32_t region_chunks; // -G: step B's shared region for the publisher, 0 for none (fragments through the ring)
 };
 
 static bool parse_options(int argc, char** argv, struct options* opts) {
     if (argc < 2 || (strcmp(argv[1], "pub") != 0 && strcmp(argv[1], "sub") != 0)) {
         return false;
     }
-    *opts = (struct options) {
-        strcmp(argv[1], "pub") == 0, false, false, DEFAULT_RATE_HZ, DEFAULT_DURATION_S, default_broadcast};
+    *opts = (struct options) {strcmp(argv[1], "pub") == 0, false, false, DEFAULT_RATE_HZ, DEFAULT_DURATION_S,
+                              default_broadcast,           0};
     int opt;
-    optind = 2;                                              // NOLINT(misc-include-cleaner) - see <unistd.h> above
-    while ((opt = getopt(argc, argv, "s:r:d:RAb:")) != -1) { // NOLINT(misc-include-cleaner)
+    optind = 2;                                                // NOLINT(misc-include-cleaner) - see <unistd.h> above
+    while ((opt = getopt(argc, argv, "s:r:d:RAb:G:")) != -1) { // NOLINT(misc-include-cleaner)
         switch (opt) {
         case 's':
             sample_size = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
@@ -259,6 +267,9 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
             break;
         case 'b':
             opts->broadcast = optarg; // NOLINT(misc-include-cleaner)
+            break;
+        case 'G':
+            opts->region_chunks = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
             break;
         default:
             return false;
@@ -294,6 +305,21 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
         pub.reliable = true;
         pub.keep_all = opts->keep_all;
     }
+#if defined(tt_LARGE_SHM) && tt_LARGE_SHM
+    if (opts->region_chunks != 0 &&
+        tt_Publisher_set_large_region(
+            &pub, opts->region_chunks,
+            tt_LARGE_CHUNK_BYTES(sample_size > tt_MAX_SAMPLE_LENGTH ? sample_size : tt_MAX_SAMPLE_LENGTH + 1U)) !=
+            tt_RET_OK) {
+        fprintf(stderr, "cannot set the large region\n");
+        return 1;
+    }
+#else
+    if (opts->region_chunks != 0) {
+        fprintf(stderr, "-G needs a build with large samples and the segment (tt_LARGE_SHM)\n");
+        return 1;
+    }
+#endif
     poll_for(node, DISCOVERY_NS);
     uint64_t period = (uint64_t)((double)NS_PER_S / opts->rate_hz);
     uint64_t begin = now_ns();
@@ -403,7 +429,8 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
 int main(int argc, char** argv) {
     struct options opts;
     if (!parse_options(argc, argv, &opts)) {
-        fprintf(stderr, "usage: %s pub|sub -s BYTES [-r HZ] -d SECONDS [-R] [-A] [-b BROADCAST]\n", argv[0]);
+        fprintf(stderr, "usage: %s pub|sub -s BYTES [-r HZ] -d SECONDS [-R] [-A] [-b BROADCAST] [-G CHUNKS]\n",
+                argv[0]);
         return 2;
     }
     signal(SIGINT, handle_signal);
