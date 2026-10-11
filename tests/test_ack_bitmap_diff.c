@@ -53,6 +53,11 @@ static bool trace = false;
 
 // --- the naive model: one bool per seq_no from the watermark up ---
 
+// a after b, serially (RFC 1982): seq_no wrap past 2^32 (tickle.c's seq_delta(), written out here on purpose).
+static int32_t serial_diff(uint32_t a, uint32_t b) {
+    return (int32_t)(a - b);
+}
+
 struct model {
     bool started;
     uint32_t ack;
@@ -87,10 +92,10 @@ static void model_data(struct model* m, uint32_t seq, uint16_t span) {
         m->started = true;
         m->ack = seq;
     }
-    if (seq < m->ack) {
+    if (serial_diff(seq, m->ack) < 0) {
         return;
     }
-    uint64_t offset = (uint64_t)seq - m->ack;
+    uint32_t offset = seq - m->ack;
     if (offset >= m->bits) {
         m->ack = seq;
         memset(m->recv, 0, sizeof(m->recv));
@@ -228,7 +233,8 @@ static void note_lost(uint32_t seq) {
 static struct model model;
 
 struct counts {
-    uint32_t giveups, jumps, dups, max_highest, max_words, wraps, deviations;
+    // straddles: DATA from past 2^32 while the watermark had not wrapped yet - the case seq_delta() exists for
+    uint32_t giveups, jumps, dups, max_highest, max_words, wraps, straddles, deviations;
 };
 
 static void check_step(const struct scenario* sc, int step, const char* op, uint32_t arg, int ret, struct counts* c) {
@@ -281,6 +287,7 @@ struct run {
     enum tt_WriterKeepAll keep_all;
     uint32_t next; // the next seq_no never sent
     struct counts c;
+    bool straddled; // the wrap scenario's seq_no 1 has gone (choose())
 };
 
 // What one step did: a DATA to deliver (is_data), or something done already, named by op and arg.
@@ -293,8 +300,8 @@ struct step {
 };
 
 static void lose_up_to(struct run* r, uint32_t seq) {
-    if (seq >= r->next && seq - r->next < (1U << 20)) {
-        for (uint32_t s = r->next; s < seq && lost_count < LOST_MAX; s++) {
+    if (seq - r->next < (1U << 20)) {
+        for (uint32_t s = r->next; s != seq && lost_count < LOST_MAX; s++) {
             note_lost(s);
         }
         r->next = seq + 1;
@@ -337,13 +344,13 @@ static void heartbeat(struct run* r, struct tt_WriterProxy* proxy, struct step* 
     s->arg = first;
     proxy->heartbeat_last_seq_no = r->next - 1;
     advance_past_unavailable(proxy, first);
-    if (first > model.ack) {
-        model_shift(&model, (uint64_t)first - model.ack);
+    if (serial_diff(first, model.ack) > 0) {
+        model_shift(&model, first - model.ack);
         model.ack = first;
         model_absorb(&model);
     }
     maybe_arm_acknack_retry(&rig.node, proxy);
-    if (first > r->next) {
+    if (serial_diff(first, r->next) > 0) {
         r->next = first;
     }
 }
@@ -377,6 +384,16 @@ static void unreceive(struct tt_WriterProxy* proxy, struct step* s) {
 static struct step choose(struct run* r, enum op_kind kind, struct tt_WriterProxy* proxy) {
     struct step s = {"data", 0, 0, 1, true};
     const struct scenario* sc = r->sc;
+    // The wrap scenario's first in-order step sends seq_no 1 - past 2^32, within the window, while the watermark has
+    // not wrapped yet - so the case its control asks for happens on every run rather than when the draw allows it
+    // (wrap/w16/all once crossed by a Heartbeat and a jump, with no DATA ever meeting an unwrapped watermark).
+    if (sc->start >= (1U << 31) && kind == OP_IN_ORDER && !r->straddled && model.started &&
+        serial_diff(1U, model.ack) > 0 && serial_diff(1U, model.ack) < (int32_t)(model.bits / 2U)) {
+        r->straddled = true;
+        lose_up_to(r, 1U);
+        s.seq = 1U;
+        return s;
+    }
     switch (kind) {
     case OP_IN_ORDER:
         s.span = (uint16_t)(1 + rnd(sc->span_max));
@@ -415,17 +432,11 @@ static struct step choose(struct run* r, enum op_kind kind, struct tt_WriterProx
     case OP_JUMP:
         s.op = "jump";
         s.seq = model.ack + model.bits + rnd(3 * model.bits);
-        if (s.seq >= r->next) {
+        if (serial_diff(s.seq, r->next) >= 0) {
             r->next = s.seq + 1;
         }
-        // A jump abandons the window's holes, so they leave the lost list - but only one that lands: near 2^32 the
-        // target wraps below the watermark, which update_reliable_ack() (and the model) compare unsigned and take as a
-        // late sample. Clearing the list then forgot holes nothing would ever repair, and under KEEP_ALL - no give-up -
-        // the watermark stalled for good: at 4,096 and 8,192 bits the target always wraps, and wrap/w128/all never
-        // wrapped.
-        if (s.seq >= model.ack) {
-            lost_count = 0;
-        }
+        lost_count = 0; // a jump abandons the window's holes - across 2^32 too, now that seq_no compare serially
+
         break;
     case OP_RETRY:
         fire_retry(r, proxy, &s);
@@ -441,10 +452,11 @@ static struct step choose(struct run* r, enum op_kind kind, struct tt_WriterProx
 }
 
 static int deliver(struct run* r, struct tt_WriterProxy* proxy, const struct step* s) {
-    if (proxy != NULL && s->seq >= model.ack) {
-        uint64_t offset = (uint64_t)s->seq - model.ack;
+    if (proxy != NULL && serial_diff(s->seq, model.ack) >= 0) {
+        uint32_t offset = s->seq - model.ack;
         r->c.dups += offset != 0 && offset < model.bits && model.recv[offset] ? 1U : 0U;
         r->c.jumps += offset >= model.bits ? 1U : 0U;
+        r->c.straddles += s->seq < model.ack ? 1U : 0U; // ahead serially, behind unsigned
     }
     rig.node.rx_seq_span = s->span;
     model_data(&model, s->seq, s->span);
@@ -459,20 +471,22 @@ static void check_controls(const struct run* r, const char* name, uint16_t words
     const struct scenario* sc = r->sc;
     const struct counts* c = &r->c;
     bool quiet_ok = sc->in_order ? sends == 0 && c->max_words == 0 : sends > 0;
-    bool wrap_ok = sc->start < (1U << 31) || c->wraps > 0;
+    bool wrap_ok = sc->start < (1U << 31) || (c->wraps > 0 && c->straddles > 0);
     bool giveup_ok = !sc->expect_giveup || r->keep_all != tt_WRITER_KEEP_ALL_NO || c->giveups > 0;
     bool seen_ok = (!sc->expect_jump || c->jumps > 0) && (!sc->expect_dup || c->dups > 0);
     bool wide_ok = !sc->expect_multiword || words == tt_RELIABLE_BITMAP_WORDS || c->max_highest >= 128;
     if (!(quiet_ok && wrap_ok && giveup_ok && seen_ok && wide_ok)) {
         fprintf(stderr,
-                "%s: positive control not met (sends %u giveups %u jumps %u dups %u highest %u words %u wraps %u)\n",
-                name, sends, c->giveups, c->jumps, c->dups, c->max_highest, c->max_words, c->wraps);
+                "%s: positive control not met (sends %u giveups %u jumps %u dups %u highest %u words %u wraps %u "
+                "straddles %u)\n",
+                name, sends, c->giveups, c->jumps, c->dups, c->max_highest, c->max_words, c->wraps, c->straddles);
         test_failures++;
     }
     if (!trace) {
-        printf("  %-24s steps %d sends %u giveups %u jumps %u dups %u highest-bit %u words %u wraps %u deviations %u\n",
+        printf("  %-24s steps %d sends %u giveups %u jumps %u dups %u highest-bit %u words %u wraps %u straddles %u "
+               "deviations %u\n",
                name, sc->steps, sends, c->giveups, c->jumps, c->dups, c->max_highest, c->max_words, c->wraps,
-               c->deviations);
+               c->straddles, c->deviations);
     }
 }
 
@@ -529,10 +543,10 @@ static const struct scenario scenarios[] = {
     {"window_edges", 1, 3000, 30, 2, 20, 4, 25, 0, 6, 0, 0, 1, false, true, false, true, true},
     {"jumps", 1, 2000, 40, 5, 10, 5, 10, 5, 5, 0, 0, 3, false, false, true, true, false},
     {"heartbeat", 1, 3000, 40, 8, 10, 4, 10, 0, 6, 6, 3, 2, false, false, false, true, true},
-    // 12,000 steps: once the sender has wrapped, everything it sends is below the watermark by update_reliable_ack()'s
-    // unsigned compare, and a KEEP_LAST stream at 4,096 or 8,192 bits then crosses 2^32 one give-up at a time. At 3,000
-    // it failed to wrap on 3 (4,096) and 9 (8,192) of 30 other seeds; at 12,000 on none.
-    {"wrap", 0xffffff00U, 12000, 40, 6, 10, 5, 8, 2, 6, 2, 2, 2, false, false, false, false, false},
+    // Starts 64 short of 2^32. Its control asks for the wrap and for DATA past it while the watermark lagged behind -
+    // which update_reliable_ack() took as late until it compared serially (seq_delta()), so a KEEP_LAST stream at
+    // 4,096 or 8,192 bits crossed 2^32 only one give-up at a time and needed 12,000 steps to cross at all; kept.
+    {"wrap", 0xffffffc0U, 12000, 40, 6, 10, 5, 8, 2, 6, 2, 2, 2, false, false, false, false, false},
     {"random", 1, 6000, 20, 10, 15, 10, 15, 2, 10, 5, 5, 4, false, true, true, true, true},
 };
 
