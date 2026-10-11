@@ -248,7 +248,10 @@ def campaign_v2(pa, pb, pp, primary, witness):
                 seen.update(it for it in witems if selects(it, cell, metric))
             hi = DIRECTION.get(name, False)
             rows.append({"cell": cell, "metric": metric, "family": fam, "a": a, "b": b, "p": p, "hi_better": hi})
-    for it in pitems + witems:
+    # Every primary item must select something (the default too: no counts must not pass), and every witness item the
+    # caller named. The default witness list names the campaign's metrics of every cell shape, so a throughput-only
+    # chain has no rtt_avg_ms; a default item that selects nothing is simply absent, not a pre-registration unmet.
+    for it in pitems + (witems if witness is not None else []):
         if it not in seen:
             rows.append({"family": "unmatched", "metric": (f"c{it[0]}:" if it[0] else "") + it[1]})
     return gate_v2.report(rows, title=f"A {pa}  B {pb}  P {pp}")
