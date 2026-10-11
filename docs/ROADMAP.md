@@ -275,11 +275,12 @@ Replaces "RESOURCE_LIMITS shaped like DDS" and "A core QoS API shaped like rmw's
   send 64 KB datagrams the kernel fragments). Next: **step B**, the same-host large path (a 4 MB best-effort sample
   does not fit the 512-slot ring and delivers ~0% same-host); then the CPU candidates - a UDP GSO/GRO probe (pending on
   the rig) and the ACK bitmap fast path (branch `ab/ack-bitmap-fastpath`). (PLAN #4; LARGE_MESSAGE_PLAN)
-- **Hybrid transport for large samples** (the user lifted the IP fragmentation park for them, 2026-10-11): IP-fragmented
-  64 KB datagrams while a peer's path is clean, MTU fragments as soon as loss is seen, repairs always MTU;
-  `tt_InitOptions.large_fragmentation` AUTO (Linux) / MTU (FreeRTOS), an advertised reassembly capability, type 13
-  and `tt_VERSION` 13. Designed and pre-registered in [DESIGN.md](DESIGN.md) section 8, "Hybrid transport"; six
-  steps, each A/B'd. Target: the 0% loss CPU per MB that step A loses to Fast DDS and CycloneDDS.
+- **Hybrid transport for multi-datagram samples** (the user lifted the IP fragmentation park and generalised it,
+  2026-10-11): per peer, the writer packs `n` MTU fragments into one IP-fragmented datagram, choosing `n` to minimise
+  the expected cost per delivered unit from the measured per-datagram and per-frame costs and the loss rate (45 at 0%
+  loss, about 8 at 1%); repairs stay MTU units; BEST_EFFORT is capped by the reader's reassembly-memory budget.
+  `large_fragmentation` AUTO / MTU / IP, run types 13/14, `tt_VERSION` 13. Designed and pre-registered in
+  [DESIGN.md](DESIGN.md) section 8, "Hybrid transport"; six steps, each A/B'd.
 - **A service server keeps one live answer per source context**: a retry from a second client of the same service
   in that context can re-run the server's callback. Found with S9 window A (below). (RMW_GAPS S9)
 - **rmw same-host peak-RSS rows**: at `a7e02807` all six non-wins of R1-R21 (DRAW 3, LOSE 3) are peak RSS,
@@ -376,15 +377,19 @@ Decided and done 2026-10-08/09:
 - **Decide what `rmw-perf.yml` and the two dashboard charts become**: recorded but never decided.
   (PLAN "standing methodology")
 
+## Later - not to be started yet (the user, 2026-10-11)
+
+- **Time-varying networks**: delay and loss both change over time; today p is treated as fixed and delay and its
+  variation are ignored. Add test cases with varying loss and delay (netem schedules), and tune the estimator (e.g. a
+  moving average / EWMA, windowed loss and RTT, jitter) so n and the RELIABLE timers track them. (DESIGN.md section 8,
+  "Hybrid transport": its loss and cost windows are a plain halving at 2^17 frames until then)
+
 ## Parked - only on the user's explicit go
 
 - **SECURITY_PLAN: SROS2-compatible security with MACsec**: five open questions. Nothing is to be designed until
   the user starts it, and it comes before wireless. (SECURITY_PLAN; MODULE_PLAN 0/4; SHM_PLAN 7 q4)
 - **WIRELESS_PLAN** (W1 correlated loss + delay, W2 Wi-Fi, W3 internet, relay, congestion control): queued behind
   Security. (WIRELESS_PLAN; PLAN "Priority")
-- **OS IP fragmentation for samples up to 64 KB**: still deferred by the user (DATA_FRAG is the answer since
-  2026-09-26). For samples above 64 KB the park was lifted on 2026-10-11: Wired work, "Hybrid transport".
-  (COMPARISON to-do 15; DATAFRAG_PLAN header)
 - **zenoh-pico p2-p4 reliable cells stay not measurable**: zenoh-pico does not repair loss. Never quote the
   rate-limited figure. (ZENOH_PICO_PLAN 1; COMPARISON 4.4a)
 - **O(1) `find_resendable_cache_entry()`**: a deep cache makes loss worse. Pending the user's go-ahead.
