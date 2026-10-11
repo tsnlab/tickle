@@ -681,7 +681,15 @@ first: it delivered the first ring record and discarded the queued BEST_EFFORT s
 - The fence is tested inside the span range check's failing branch and on the drain's stall path, so a datagram's
   record costs nothing for it; only an attach that follows UDP does. `tests/test_segment_switch.c` stages the switch
   deterministically (an attach refused until released, a mock clock): the core before the fence delivered 50 of 307,
-  discarding the 257 that went over UDP; with it, 307 of 307.
+  discarding the 257 that went over UDP; with it, 307 of 307. In `test_thread_safety`'s stress
+  (`fence_stress_ab.sh`, 600 runs an arm, 4 in parallel, on the PC): 24 runs of 600 discarded (2,922 samples) on
+  `2c108730`, 0 of 600 with the fence, every one of which passed a fence
+  (`~/rig_results_safe/fence_stress_ab_20261011_run2.txt`).
+- Cost, measured on the PC against `2c108730`: `fence_ring_insn.sh` (instructions per record on the mock HAL, 10
+  rounds) +0.000 for a ring write and +0.125 of 209 for the drain, control unmoved. `fence_samehost_insn_pc.sh`
+  (same-host p1-p4, best-effort throughput and latency, A P B B P A): no metric WORSE, but at a resolution of the
+  placement floor, up to 12% per sample on the max-rate cells; its arm B sent 49 fences at start-up, all passed - a
+  publisher whose subscriber's segment is not built yet is a switch from UDP too. The rig decides the rest.
 
 **Doorbell: a FIFO, rung once per reader sleep.**
 
