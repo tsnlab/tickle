@@ -55,10 +55,12 @@
 #include <time.h>
 #include <unistd.h> // NOLINT(misc-include-cleaner) - getopt()/optarg/optind: glibc-private headers
 
+#include <linux/sock_diag.h> // SK_MEMINFO_*: bench_socket_drops()
 #include <sys/resource.h> // NOLINT(misc-include-cleaner) - getrusage(): struct rusage lives in a glibc-private header
+#include <sys/socket.h>   // getsockopt(), SO_MEMINFO
 #include <tickle/config.h>
 #include <tickle/hal.h>
-#include <tickle/hal_linux.h> // tt_hal_rx_socket_drops()
+#include <tickle/hal_linux.h> // struct tt_hal: the receive sockets, the drain's counters
 #include <tickle/tickle.h>
 
 #define BENCH_HEADER 16U // send_ns (8), index (4), reserved (4)
@@ -294,6 +296,19 @@ static void print_large(const struct tt_Context* node) {
            (unsigned long)node->udp_gro_off8);
 }
 
+// Datagrams the kernel dropped at one socket because its receive buffer was full (SO_MEMINFO), 0 when it cannot say:
+// read here rather than from the HAL so that a tree from before the HAL counted them builds this too.
+static unsigned bench_socket_drops(int sock) {
+    uint32_t info[SK_MEMINFO_VARS];
+    socklen_t length = sizeof(info);
+    memset(info, 0, sizeof(info));
+    if (sock < 0 || getsockopt(sock, SOL_SOCKET, SO_MEMINFO, (void*)info, &length) < 0 ||
+        length < (socklen_t)(sizeof(uint32_t) * (SK_MEMINFO_DROPS + 1))) {
+        return 0;
+    }
+    return (unsigned)info[SK_MEMINFO_DROPS];
+}
+
 // The realized hybrid treatment (DESIGN.md section 8, pre-registration: "each arm prints its realized treatment").
 #if defined(tt_HYBRID_TRANSPORT) && tt_HYBRID_TRANSPORT
 #define BENCH_HYBRID 1
@@ -319,6 +334,10 @@ static void print_hybrid(const struct tt_Context* node, const struct tt_Publishe
            hybrid->window.lost, hybrid->window.sent);
     printf(" hybrid_mtu_loss=%u/%u hybrid_advertised_loss=0x%04x", hybrid->mtu_loss.events, hybrid->mtu_loss.frames,
            (unsigned)hybrid->advertised_loss);
+#ifdef tt_HAL_RECEIVER_DROPS
+    printf(" hybrid_receiver_drops=%lu hybrid_receiver_lost=%lu", (unsigned long)hybrid->receiver_drops,
+           (unsigned long)hybrid->receiver_lost);
+#endif
     if (pub != NULL) {
         for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
             if (pub->peer_acks[i].context_id != tt_CONTEXT_ID_INVALID) {
@@ -591,10 +610,14 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
            delivered > 0 ? cpu / delivered_mb : 0.0, peak_rss_kb);
     print_large(node);
     print_hybrid(node, NULL);
-    printf(" socket_drops=%u", (unsigned)tt_hal_rx_socket_drops(node));
+    printf(" socket_drops=%u", bench_socket_drops(node->hal.sock) + bench_socket_drops(node->hal.data_sock));
 #if defined(tt_RX_DRAIN) && tt_RX_DRAIN
-    printf(" drain_starts=%lu drain_datagrams=%lu drain_overruns=%lu", (unsigned long)node->hal.drain_starts,
-           (unsigned long)node->hal.drain_datagrams, (unsigned long)node->hal.drain_overruns);
+    printf(" drain_starts=%lu drain_datagrams=%lu drain_overruns=%lu drain_truncated=%lu",
+           (unsigned long)node->hal.drain_starts, (unsigned long)node->hal.drain_datagrams,
+           (unsigned long)node->hal.drain_overruns, (unsigned long)node->hal.drain_truncated);
+#if TT_HAL_UDP_GRO
+    printf(" drain_merged=%lu", (unsigned long)node->hal.drain_merged);
+#endif
 #endif
     // The first few samples below the highest that arrived that never did: which sample a loss was, not only how many.
     printf(" last_index=%u missing=", last_index);
