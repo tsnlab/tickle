@@ -294,7 +294,7 @@ MUTANTS = [
     (
         "reader: R counts arrivals, not the units sent",
         "src/tickle.c",
-        "    hybrid->tick_units += to - from;\n",
+        "    hybrid->tick_units += end - from;\n",
         "",
         SEND,
     ),
@@ -518,15 +518,15 @@ MUTANTS = [
     (
         "law: collapse without significance",
         "src/tickle.c",
-        "    return z >= tt_HYBRID_COLLAPSE_Z && lost >= tt_HYBRID_COLLAPSE_RATIO * baseline * runs;",
+        "    return score >= tt_HYBRID_COLLAPSE_Z && lost >= tt_HYBRID_COLLAPSE_RATIO * baseline * runs;",
         "    return lost >= tt_HYBRID_COLLAPSE_RATIO * baseline * runs;",
         SEND,
     ),
     (
         "law: collapse without the size of the excess",
         "src/tickle.c",
-        "    return z >= tt_HYBRID_COLLAPSE_Z && lost >= tt_HYBRID_COLLAPSE_RATIO * baseline * runs;",
-        "    return z >= tt_HYBRID_COLLAPSE_Z;",
+        "    return score >= tt_HYBRID_COLLAPSE_Z && lost >= tt_HYBRID_COLLAPSE_RATIO * baseline * runs;",
+        "    return score >= tt_HYBRID_COLLAPSE_Z;",
         SEND,
     ),
     (
@@ -784,8 +784,8 @@ MUTANTS = [
     (
         "path rx: an unknown layout read as one run of the body",
         "src/tickle.c",
-        "    uint32_t layout = writer->layout_n >= 2U ? writer->layout_n : (hybrid->cap < body ? hybrid->cap : body);",
-        "    uint32_t layout = writer->layout_n >= 2U ? writer->layout_n : body;",
+        "    uint32_t layout = hybrid->cap < body ? hybrid->cap : body;",
+        "    uint32_t layout = body;",
         SEND,
     ),
     (
