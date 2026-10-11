@@ -739,6 +739,23 @@
 #ifndef tt_HYBRID_WINDOW_FRAMES
 #define tt_HYBRID_WINDOW_FRAMES (1UL << 17)
 #endif
+// The platform default of the cost model until a context has measured its own (DESIGN.md section 8, "Measuring c_d and
+// c_f"): nanoseconds per datagram and per frame, the sender's and the receiver's. Derived from the rig, not a profile:
+// Fast DDS's two datagram sizes there (RESULTS "rmw large messages": 64 KB datagrams 2.35 ms/MB subscriber and 4.09
+// publisher, 1472-B datagrams 6.26 and 8.44; 712 frames a MB against 16 and 712 datagrams) give c_d 5.6 us and c_f 3.2
+// us on the subscriber, 6.25 and 5.6 on the publisher - c_d 57% of a 1472-B datagram's cost, both sides summed.
+#ifndef tt_HYBRID_TX_DATAGRAM_NS
+#define tt_HYBRID_TX_DATAGRAM_NS 6250
+#endif
+#ifndef tt_HYBRID_TX_FRAME_NS
+#define tt_HYBRID_TX_FRAME_NS 5600
+#endif
+#ifndef tt_HYBRID_RX_DATAGRAM_NS
+#define tt_HYBRID_RX_DATAGRAM_NS 5600
+#endif
+#ifndef tt_HYBRID_RX_FRAME_NS
+#define tt_HYBRID_RX_FRAME_NS 3200
+#endif
 // The kernel's truesize of one held IP fragment, which user space cannot see (t_u in the reader's cap, DESIGN.md
 // section 8, "BEST_EFFORT").
 #ifndef tt_HYBRID_FRAGMENT_TRUESIZE

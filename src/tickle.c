@@ -2181,9 +2181,11 @@ static uint32_t hybrid_peer_n_max(struct tt_Context* node, const struct tt_Publi
     return n_max;
 }
 
+static uint32_t hybrid_reliable_n(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
+                                  uint32_t n_max);
+
 // The n for one peer: 1 for MTU; n_max for IP and for best effort (AUTO: delivery does not depend on n, so the largest
-// the reader allows, which already holds its reassembly-memory cap). RELIABLE AUTO stays at MTU until the cost model
-// chooses for it (step 4).
+// the reader allows, which already holds its reassembly-memory cap); RELIABLE AUTO's from the cost model.
 static uint32_t hybrid_peer_n(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id, uint32_t ip,
                               uint16_t port, bool large, uint32_t* n_max_out) {
     uint32_t n_max = hybrid_peer_n_max(node, pub, context_id, ip, port, large);
@@ -2195,7 +2197,7 @@ static uint32_t hybrid_peer_n(struct tt_Context* node, const struct tt_Publisher
     if (mode == tt_LARGE_FRAGMENTATION_IP || !pub->reliable) {
         return n_max;
     }
-    return 1U;
+    return hybrid_reliable_n(node, pub, context_id, n_max);
 }
 
 // The n a datagram to one destination goes with: that peer's, or by broadcast (no single peer) the minimum over the
@@ -2223,8 +2225,12 @@ static uint32_t hybrid_destination_n(struct tt_Context* node, const struct tt_Pu
     return smallest == 0 ? 1U : smallest;
 }
 
-// A sample's first transmission to one destination, counted: the histogram of n, and what went in runs and alone.
-static void hybrid_note_sent(struct tt_Context* node, uint32_t n, uint32_t count) {
+static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t n, uint32_t count);
+
+// A sample's first transmission to one destination that could take runs, counted: the histogram of n, what went in runs
+// and alone, and - RELIABLE - its frames as the exposure of each reader it reaches.
+static void hybrid_note_sent(struct tt_Context* node, struct tt_Publisher* pub, uint8_t context_id, uint32_t n,
+                             uint32_t count) {
     struct tt_HybridState* hybrid = &node->hybrid;
     hybrid->n_hist[hybrid_bucket(n)]++;
     if (n < 2U) {
@@ -2234,6 +2240,7 @@ static void hybrid_note_sent(struct tt_Context* node, uint32_t n, uint32_t count
         hybrid->run_units += count - 1U;
         hybrid->mtu_units++; // the tail
     }
+    hybrid_note_exposure(pub, context_id, n, count); // a best-effort Publisher has no reader entries to expose
 }
 
 // One send call of a sample's first transmission, `frames` frames in its datagrams.
@@ -2397,6 +2404,131 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
     hybrid->tick_units += (index + units) - writer->next;
     writer->next = (uint16_t)(index + units);
 }
+
+// ---- RELIABLE: the cost model (DESIGN.md section 8, "Choosing n (RELIABLE)") ---------------------------------------
+
+static struct tt_PeerAck* find_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id);
+static uint64_t reliable_retry_interval_publisher(void);
+//
+// A run of n units costs c_d + n c_f and is lost with probability L(n) = 1 - (1 - p)^n; repairs are always MTU units,
+// each c_d + c_f and 1 / (1 - p) tries. The expected cost per delivered unit is
+//   C(n) = c_d / n + c_f + L(n) (c_d + c_f) / (1 - p),
+// minimised exactly over 1..n_max (n_max already under the reader's cap: the memory is the same). c_d and c_f are the
+// sender's and the receiver's summed; p is that reader's loss as this writer counts it from its ACKNACKs. With no
+// exposure p is 1 and n is 1: n leaves MTU as clean frames accumulate, reaching 45 near 10,000 of them.
+static uint32_t hybrid_n_star(double p, double c_d, double c_f, uint32_t n_max) {
+    if (p <= 0.0) {
+        return n_max;
+    }
+    if (p >= 1.0) {
+        return 1U;
+    }
+    double repair = (c_d + c_f) / (1.0 - p);
+    double clean = 1.0;
+    double best = 0.0;
+    uint32_t best_n = 1;
+    for (uint32_t n = 1; n <= n_max; n++) {
+        clean *= 1.0 - p;
+        double cost = (c_d / (double)n) + c_f + ((1.0 - clean) * repair);
+        if (n == 1U || cost < best) {
+            best = cost;
+            best_n = n;
+        }
+    }
+    return best_n;
+}
+
+// The costs of a datagram and a frame to one peer, sender's and receiver's summed: the platform defaults until the
+// measurement exists (step 5).
+static void hybrid_costs(const struct tt_Context* node, uint8_t context_id, double* c_d, double* c_f) {
+    UNUSED(node);
+    UNUSED(context_id);
+    *c_d = (double)tt_HYBRID_TX_DATAGRAM_NS + (double)tt_HYBRID_RX_DATAGRAM_NS;
+    *c_f = (double)tt_HYBRID_TX_FRAME_NS + (double)tt_HYBRID_RX_FRAME_NS;
+}
+
+// RELIABLE AUTO's n for one peer: the cost model at the most pessimistic p among that node's readers of this Publisher
+// (1 for none), over 1..n_max.
+static uint32_t hybrid_reliable_n(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
+                                  uint32_t n_max) {
+    double p = -1.0;
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        const struct tt_PeerAck* ack = &pub->peer_acks[i];
+        if (ack->context_id == context_id) {
+            double peer_p = loss_estimate_p(&ack->loss);
+            p = peer_p > p ? peer_p : p;
+        }
+    }
+    if (p < 0.0) {
+        return 1U;
+    }
+    double c_d = 0.0;
+    double c_f = 0.0;
+    hybrid_costs(node, context_id, &c_d, &c_f);
+    return hybrid_n_star(p, c_d, c_f, n_max);
+}
+
+// A RELIABLE sample's first transmission went to `context_id` (tt_CONTEXT_ID_INVALID: the broadcast, every reader) in
+// runs of n: its frames are each such reader's exposure, and n is what a range of its first NACKs is divided by.
+static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t n, uint32_t count) {
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        struct tt_PeerAck* ack = &pub->peer_acks[i];
+        if (ack->context_id != tt_CONTEXT_ID_INVALID &&
+            (context_id == tt_CONTEXT_ID_INVALID || ack->context_id == context_id)) {
+            loss_estimate_observe(&ack->loss, count, 0);
+            ack->run_n = (uint8_t)n;
+        }
+    }
+}
+
+// One ACKNACK's NACKs, as loss events of the reader that sent it (DESIGN.md section 8, "Events over exposure"): above
+// the highest seq_no it NACKed before, a NACK is a first one, and each contiguous range of them is a lost run of the
+// reader's latest n each - ceil(length / n) events; at or below, it is a re-NACK of a repair, one event on that
+// repair's one frame, counted only when a retry interval has passed since that reader's last NACK (an ACKNACK crossing
+// the repairs in flight is not a loss). Every NACKed unit is resent as an MTU unit, one frame of exposure.
+static void hybrid_note_nacks(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id, uint32_t base,
+                              const uint64_t* bitmap, uint16_t words) {
+    struct tt_PeerAck* ack = find_peer_ack(pub, node_id, entity_id);
+    if (ack == NULL || ack->loss.frames == 0) {
+        return; // nothing measured of it: it never could take runs
+    }
+    uint64_t now = tt_get_ns();
+    bool renack_counts = now - ack->nack_ns >= reliable_retry_interval_publisher();
+    uint32_t n = ack->run_n != 0 ? ack->run_n : 1U;
+    uint32_t events = 0;
+    uint32_t nacked = 0;
+    uint32_t range = 0;
+    uint32_t previous = 0;
+    uint32_t high = ack->nack_high;
+    for (uint16_t word_idx = 0; word_idx < words; word_idx++) {
+        uint64_t word = bitmap[word_idx];
+        while (word != 0) {
+            uint32_t seq_no =
+                base + ((uint32_t)word_idx * tt_RELIABLE_BITMAP_WORD_BITS) + (uint32_t)__builtin_ctzll(word);
+            word &= word - 1;
+            nacked++;
+            if (seq_no > ack->nack_high) {
+                if (range != 0 && seq_no == previous + 1U) {
+                    range++;
+                } else {
+                    events += (range + n - 1U) / n;
+                    range = 1;
+                }
+                previous = seq_no;
+                high = seq_no > high ? seq_no : high;
+            } else if (renack_counts) {
+                events++;
+            }
+        }
+    }
+    events += (range + n - 1U) / n;
+    if (nacked == 0) {
+        return;
+    }
+    ack->nack_high = high;
+    ack->nack_ns = now;
+    loss_estimate_observe(&ack->loss, nacked, events);
+}
 #endif
 
 // Sends one sample as fragments, each its own datagram, to the destinations a flush would use
@@ -2411,9 +2543,9 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
 //
 // `pub` is the Publisher whose sample this is when this is its first transmission, which may then go as runs
 // (hybrid transport, DESIGN.md section 8); NULL for a retransmission or a backlog, which are always MTU units.
-static bool send_fragments(struct tt_Context* node, const struct tt_Publisher* pub,
-                           const struct tt_DataHeader* data_header, const uint8_t* cdr, uint32_t cdr_len,
-                           const struct tt_Peer* peers, uint8_t peer_count, uint8_t receiver) {
+static bool send_fragments(struct tt_Context* node, struct tt_Publisher* pub, const struct tt_DataHeader* data_header,
+                           const uint8_t* cdr, uint32_t cdr_len, const struct tt_Peer* peers, uint8_t peer_count,
+                           uint8_t receiver) {
     if (cdr_len <= FRAG_FIRST_PAYLOAD || cdr_len > FRAG_MAX_CDR) {
         TT_LOG_ERROR("Sample of %u bytes cannot be sent as fragments", cdr_len);
         node->tx_dropped_oversize++;
@@ -2464,7 +2596,7 @@ static bool send_fragments(struct tt_Context* node, const struct tt_Publisher* p
             uint32_t n = hybrid_destination_n(node, pub, destinations[dest].context_id, destinations[dest].ip,
                                               destinations[dest].port, false, &capable);
             if (capable) {
-                hybrid_note_sent(node, n, count);
+                hybrid_note_sent(node, pub, destinations[dest].context_id, n, count);
             }
             if (n >= 2U) {
                 if (!hybrid_send_small_runs(node, data_header, cdr, count, n, &batch[count - 1U],
@@ -2504,7 +2636,7 @@ static uint32_t sample_cdr_length(const struct tt_Context* node, const struct tt
 // Padded as end_encode() would pad it, so that the fragments of the original and of a retransmission
 // cut from the cached record (which is padded) always agree on the sample's length, and so on how many
 // fragments it has.
-static bool send_tail_as_fragments(struct tt_Context* node, const struct tt_Publisher* pub,
+static bool send_tail_as_fragments(struct tt_Context* node, struct tt_Publisher* pub,
                                    struct tt_SubmessageHeader* submessage_header, const struct tt_Peer* peers,
                                    uint8_t peer_count) {
     uint32_t base = (uint32_t)((uint8_t*)submessage_header - node->tx_buffer);
@@ -2915,6 +3047,12 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
             pub->peer_acks[i].tracking_words = 0; // set by the caller from the announce
             pub->peer_acks[i].first_owed_seq_no = 0;
             pub->peer_acks[i].match_heartbeats_left = 0;
+#if tt_HYBRID_TRANSPORT
+            pub->peer_acks[i].loss = (struct tt_LossEstimate) {0, 0}; // nothing measured: n starts at 1
+            pub->peer_acks[i].nack_high = 0;
+            pub->peer_acks[i].nack_ns = 0;
+            pub->peer_acks[i].run_n = 1;
+#endif
             return &pub->peer_acks[i];
         }
     }
@@ -6987,7 +7125,7 @@ static bool append_piggybacked_heartbeat(struct tt_Context* node, struct tt_Publ
 // end_encode() for the DATA submessage at submessage_header, or - when no datagram can carry it and
 // fragmentation is compiled in - its fragments, sent at once whatever is_flush says, since a fragment
 // never shares a datagram. Rolls back to old_tx_tail on failure where that is still meaningful.
-static bool end_encode_sample(struct tt_Context* node, const struct tt_Publisher* pub,
+static bool end_encode_sample(struct tt_Context* node, struct tt_Publisher* pub,
                               struct tt_SubmessageHeader* submessage_header, bool is_flush, const struct tt_Peer* peers,
                               uint8_t peer_count, uint32_t old_tx_tail, uint32_t record_len) {
 #if tt_FRAG_ENABLED
@@ -7418,7 +7556,7 @@ static void large_cursor_destinations(struct tt_Context* node, struct tt_Publish
                                           destinations[i].port, true, &capable);
         cursor->run_n[i] = (uint8_t)n;
         if (capable) {
-            hybrid_note_sent(node, n, record->count);
+            hybrid_note_sent(node, pub, destinations[i].context_id, n, record->count);
         }
 #endif
     }
@@ -14709,6 +14847,9 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
     // Publisher, so no compatible peer would ever legitimately request one here anyway; this is the
     // defensive, spec-honest half of that same contract, on the answering side.
     if (pub->reliable) {
+#if tt_HYBRID_TRANSPORT
+        hybrid_note_nacks(pub, header->source, sender_entity_id, seq_no, bitmap, bitmap_words);
+#endif
         retransmit_reliable_samples(node, pub, cache, depth, seq_no, bitmap, bitmap_words, &target);
     }
 
