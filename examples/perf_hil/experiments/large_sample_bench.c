@@ -15,10 +15,12 @@
 //   large_sample_bench pub -s BYTES -r HZ -d SECONDS [-R] [-A] [-b BROADCAST]
 //   large_sample_bench sub -s BYTES -d SECONDS [-R] [-b BROADCAST]
 //
-// -R RELIABLE (KEEP_LAST 10 unless -A, KEEP_ALL), else BEST_EFFORT. Each sample carries its send time
-// (CLOCK_MONOTONIC - both namespaces share the host's clock), its index and a pattern seeded by its index, so the
-// subscriber checks every byte (torn=) and measures publish-to-callback latency. Built against core with rmw's
-// datagram (tt_MAX_BUFFER_LENGTH 65507), which is what turns large samples on.
+// -R RELIABLE (KEEP_LAST 10 unless -A, KEEP_ALL), else BEST_EFFORT. Subscriber only: -w US spins that long in each
+// sample's callback, inside the poll, as rmw_tickle's decode of a large message does; -W US spins that long after a
+// poll that delivered a sample, outside it, as an application's handling of it does (large_saturation_pc.sh). Each
+// sample carries its send time (CLOCK_MONOTONIC - both namespaces share the host's clock), its index and a pattern
+// seeded by its index, so the subscriber checks every byte (torn=) and measures publish-to-callback latency. Built
+// against core with rmw's datagram (tt_MAX_BUFFER_LENGTH 65507), which is what turns large samples on.
 //
 // RESULT line fields: role, size, published/delivered, latency median/p99/max in microseconds (sub), torn, cpu_ms (the
 // process's user + system time while it ran), cpu_ms_per_mb (per MB delivered, sub; per MB published, pub),
@@ -49,6 +51,7 @@
 #define MAX_SAMPLES 200000U
 #define NS_PER_S 1000000000ULL
 #define NS_PER_US 1000.0
+#define NS_PER_US_INT 1000ULL
 #define US_PER_MS 1000.0
 #define BYTES_PER_MB 1e6
 #define DEFAULT_SIZE (1024U * 1024U)
@@ -69,6 +72,8 @@
 #define MISSING_NAMED 10U
 
 static uint32_t sample_size = DEFAULT_SIZE;
+static uint64_t decode_spin_ns; // -w: in the callback
+static uint64_t after_spin_ns;  // -W: after a poll that delivered
 static uint32_t current_index;
 static volatile sig_atomic_t stop_requested;
 
@@ -76,6 +81,12 @@ static uint64_t now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts); // NOLINT(misc-include-cleaner) - CLOCK_MONOTONIC: a glibc-private header
     return ((uint64_t)ts.tv_sec * NS_PER_S) + (uint64_t)ts.tv_nsec;
+}
+
+static void spin_ns(uint64_t span) {
+    uint64_t end = now_ns() + span;
+    while (now_ns() < end) {
+    }
 }
 
 static uint8_t pattern(uint32_t i, uint32_t index) {
@@ -135,6 +146,7 @@ static int32_t bench_decode(struct tt_Data* data, const uint8_t* payload, uint32
         out_of_order++;
     }
     last_index = index;
+    spin_ns(decode_spin_ns);
     if (index < MAX_SAMPLES) {
         seen[index] = 1;
     }
@@ -239,8 +251,8 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
     *opts = (struct options) {
         strcmp(argv[1], "pub") == 0, false, false, DEFAULT_RATE_HZ, DEFAULT_DURATION_S, default_broadcast};
     int opt;
-    optind = 2;                                              // NOLINT(misc-include-cleaner) - see <unistd.h> above
-    while ((opt = getopt(argc, argv, "s:r:d:RAb:")) != -1) { // NOLINT(misc-include-cleaner)
+    optind = 2;                                                  // NOLINT(misc-include-cleaner) - see <unistd.h> above
+    while ((opt = getopt(argc, argv, "s:r:d:RAb:w:W:")) != -1) { // NOLINT(misc-include-cleaner)
         switch (opt) {
         case 's':
             sample_size = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
@@ -260,6 +272,12 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
         case 'b':
             opts->broadcast = optarg; // NOLINT(misc-include-cleaner)
             break;
+        case 'w':
+            decode_spin_ns = strtoull(optarg, NULL, 10) * NS_PER_US_INT; // NOLINT(misc-include-cleaner)
+            break;
+        case 'W':
+            after_spin_ns = strtoull(optarg, NULL, 10) * NS_PER_US_INT; // NOLINT(misc-include-cleaner)
+            break;
         default:
             return false;
         }
@@ -270,7 +288,11 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
 static void poll_for(struct tt_Context* node, uint64_t span_ns) {
     uint64_t start = now_ns();
     while (!stop_requested && now_ns() - start < span_ns) {
+        uint32_t before = delivered;
         (void)tt_Context_poll(node, POLL_NS);
+        if (delivered != before) {
+            spin_ns(after_spin_ns);
+        }
     }
 }
 
@@ -379,6 +401,11 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
            latency_us_at(counted, p99_index), latency_us_at(counted, counted > 0 ? counted - 1 : 0), cpu,
            delivered > 0 ? cpu / delivered_mb : 0.0, peak_rss_kb);
     print_large(node);
+    printf(" socket_drops=%u", (unsigned)tt_hal_rx_socket_drops(node));
+#if defined(tt_RX_DRAIN) && tt_RX_DRAIN
+    printf(" drain_starts=%lu drain_datagrams=%lu drain_overruns=%lu", (unsigned long)node->hal.drain_starts,
+           (unsigned long)node->hal.drain_datagrams, (unsigned long)node->hal.drain_overruns);
+#endif
     // The first few samples below the highest that arrived that never did: which sample a loss was, not only how many.
     printf(" last_index=%u missing=", last_index);
     uint32_t named = 0;
@@ -403,7 +430,8 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
 int main(int argc, char** argv) {
     struct options opts;
     if (!parse_options(argc, argv, &opts)) {
-        fprintf(stderr, "usage: %s pub|sub -s BYTES [-r HZ] -d SECONDS [-R] [-A] [-b BROADCAST]\n", argv[0]);
+        fprintf(stderr, "usage: %s pub|sub -s BYTES [-r HZ] -d SECONDS [-R] [-A] [-b BROADCAST] [-w US] [-W US]\n",
+                argv[0]);
         return 2;
     }
     signal(SIGINT, handle_signal);
