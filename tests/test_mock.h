@@ -82,6 +82,8 @@ size_t test_mock_send_last_wire_len = 0;
 // Optional: called with every packet either send function is handed, untruncated - for a test that
 // needs all of several datagrams, not just the last one. NULL (the default) = not called.
 void (*test_mock_send_hook)(const void* buf, size_t len) = NULL;
+// The destination of the datagram test_mock_send_hook is being handed (0: the broadcast address), set before the hook.
+uint32_t test_mock_send_hook_ip = 0;
 int test_mock_wake_signal_call_count = 0;
 // What tt_receive() was last asked to wait, and how often it was asked - for a test about how long
 // tt_Context_poll() decides to wait. And whether a timed-out wait moves the clock by that much: off by
@@ -126,6 +128,7 @@ extern int test_mock_send_to_ip_count;
 extern uint16_t test_mock_send_to_last_port;
 extern uint8_t test_mock_send_last_buf[tt_MAX_BUFFER_LENGTH];
 extern void (*test_mock_send_hook)(const void* buf, size_t len);
+extern uint32_t test_mock_send_hook_ip;
 extern size_t test_mock_send_last_wire_len;
 extern size_t test_mock_send_last_len;
 extern int test_mock_wake_signal_call_count;
@@ -166,6 +169,7 @@ static inline void test_mock_reset(void) {
     test_mock_send_to_last_port = 0;
     test_mock_send_last_len = 0;
     test_mock_send_hook = NULL;
+    test_mock_send_hook_ip = 0;
     test_mock_send_last_wire_len = 0;
     test_mock_wake_signal_call_count = 0;
     test_mock_receive_last_timeout = 0;
@@ -347,6 +351,7 @@ int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
 #endif
 
     test_mock_send_call_count++;
+    test_mock_send_hook_ip = 0;
     test_mock_capture_send(buf, len);
 
     if (test_mock_send_return_override) {
@@ -373,6 +378,7 @@ int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_
 
     test_mock_send_call_count++;
     test_mock_send_to_call_count++;
+    test_mock_send_hook_ip = ip;
     test_mock_capture_send(buf, len);
     test_mock_send_to_last_ip = ip;
     test_mock_send_to_last_port = port;
@@ -427,6 +433,7 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
     // Captured as the one datagram the two pieces make, like the other send functions' buffers. Static:
     // a fragment's pieces are small, but a zero-copy body may be a whole datagram of 64 KB.
     static uint8_t joined[65536];
+    test_mock_send_hook_ip = ip;
     if (hdr_len + body_len <= sizeof(joined)) {
         memcpy(joined, hdr, hdr_len);
         memcpy(joined + hdr_len, body, body_len);
