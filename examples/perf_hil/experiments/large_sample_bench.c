@@ -12,8 +12,15 @@
 // TickLE contexts over sockets, for large_sample_pc.sh (two private network namespaces on this PC, netem loss between
 // them). One binary, two roles:
 //
-//   large_sample_bench pub -s BYTES -r HZ -d SECONDS [-R] [-A] [-b BROADCAST]
-//   large_sample_bench sub -s BYTES -d SECONDS [-R] [-b BROADCAST]
+//   large_sample_bench pub -s BYTES -r HZ -d SECONDS [-R] [-A] [-b BROADCAST] [-F auto|mtu|ip] [-n UNITS]
+//   large_sample_bench sub -s BYTES -d SECONDS [-R] [-b BROADCAST] [-X BYTES] [-C]
+//
+// Hybrid transport (DESIGN.md section 8), in a tree that has it: -F sets the context's large_fragmentation, -n forces
+// runs of exactly UNITS units (IP, with the Publisher's ip_datagram_max at UNITS large units: the model check's fixed
+// n), -X the subscriber's advertised reassembly ceiling (0: a FreeRTOS-like peer that takes no run), -C its reassembly
+// memory cap off (_tt_CONFIG.reassembly_cap_off: a forced arm's reader, so forced IP is n_max). Each RESULT line
+// then carries the realized treatment: runs and units sent in them and alone, the histogram of n, each cost fit
+// (c_d/c_f or 0/0 for the default, with its accepted/rejected checks), the advertised ceiling and the loss counts.
 //
 // -R RELIABLE (KEEP_LAST 10 unless -A, KEEP_ALL), else BEST_EFFORT. Each sample carries its send time
 // (CLOCK_MONOTONIC - both namespaces share the host's clock), its index and a pattern seeded by its index, so the
@@ -67,6 +74,8 @@
 #define SMALL_TRACKING_WORDS 16U
 #define BITS_PER_WORD 64U
 #define MISSING_NAMED 10U
+#define BENCH_RUN_FRAMING 28U  // a large run's framing on the wire: the single header and FRAG_RUN_L's
+#define BENCH_LARGE_UNIT 1452U // one full unit of a large sample
 
 static uint32_t sample_size = DEFAULT_SIZE;
 static uint32_t current_index;
@@ -221,6 +230,41 @@ static void print_large(const struct tt_Context* node) {
 #endif
 }
 
+// The realized hybrid treatment (DESIGN.md section 8, pre-registration: "each arm prints its realized treatment").
+#if defined(tt_HYBRID_TRANSPORT) && tt_HYBRID_TRANSPORT
+#define BENCH_HYBRID 1
+#else
+#define BENCH_HYBRID 0
+#endif
+static void print_hybrid(const struct tt_Context* node, const struct tt_Publisher* pub) {
+#if BENCH_HYBRID
+    const struct tt_HybridState* hybrid = &node->hybrid;
+    printf(" hybrid_runs=%lu hybrid_run_units=%lu hybrid_mtu_units=%lu hybrid_n_hist=", (unsigned long)hybrid->runs,
+           (unsigned long)hybrid->run_units, (unsigned long)hybrid->mtu_units);
+    for (int i = 0; i < tt_HYBRID_N_BUCKETS; i++) {
+        printf("%s%lu", i == 0 ? "" : "/", (unsigned long)hybrid->n_hist[i]);
+    }
+    printf(" hybrid_tx_fit=%u/%u hybrid_tx_checks=%u/%u hybrid_rx_fit=%u/%u hybrid_rx_checks=%u/%u",
+           hybrid->tx_fit.datagram_ns, hybrid->tx_fit.frame_ns, hybrid->tx_fit.accepted, hybrid->tx_fit.rejected,
+           hybrid->rx_fit.datagram_ns, hybrid->rx_fit.frame_ns, hybrid->rx_fit.accepted, hybrid->rx_fit.rejected);
+    printf(" hybrid_advertised=%u hybrid_cap_changes=%lu hybrid_withdrawals=%lu hybrid_rx_loss=%u/%u",
+           (unsigned)hybrid->advertised, (unsigned long)hybrid->cap_changes, (unsigned long)hybrid->withdrawals,
+           hybrid->rx_loss.events, hybrid->rx_loss.frames);
+    if (pub != NULL) {
+        for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+            if (pub->peer_acks[i].context_id != tt_CONTEXT_ID_INVALID) {
+                printf(" hybrid_peer_loss=%u/%u", pub->peer_acks[i].loss.events, pub->peer_acks[i].loss.frames);
+                break;
+            }
+        }
+    }
+#else
+    (void)node;
+    (void)pub;
+    printf(" hybrid=none");
+#endif
+}
+
 static char default_broadcast[] = "192.168.10.255"; // the rig's link, as every bench uses it
 
 struct options {
@@ -229,18 +273,30 @@ struct options {
     bool keep_all;
     double rate_hz;
     double duration_s;
-    char* broadcast; // as _tt_CONFIG.broadcast takes it
+    char* broadcast;     // as _tt_CONFIG.broadcast takes it
+    int fragmentation;   // -F: tt_LARGE_FRAGMENTATION_*, or -1 for the default
+    uint32_t run_units;  // -n: runs of exactly this many units; 0: as the mode chooses
+    long reassembly_max; // -X: the advertised ceiling; -1: the default
+    bool cap_off;        // -C: the reader advertises its ceiling uncapped (a forced-n arm's reader)
 };
 
 static bool parse_options(int argc, char** argv, struct options* opts) {
     if (argc < 2 || (strcmp(argv[1], "pub") != 0 && strcmp(argv[1], "sub") != 0)) {
         return false;
     }
-    *opts = (struct options) {
-        strcmp(argv[1], "pub") == 0, false, false, DEFAULT_RATE_HZ, DEFAULT_DURATION_S, default_broadcast};
+    *opts = (struct options) {strcmp(argv[1], "pub") == 0,
+                              false,
+                              false,
+                              DEFAULT_RATE_HZ,
+                              DEFAULT_DURATION_S,
+                              default_broadcast,
+                              -1,
+                              0,
+                              -1,
+                              false};
     int opt;
-    optind = 2;                                              // NOLINT(misc-include-cleaner) - see <unistd.h> above
-    while ((opt = getopt(argc, argv, "s:r:d:RAb:")) != -1) { // NOLINT(misc-include-cleaner)
+    optind = 2; // NOLINT(misc-include-cleaner) - see <unistd.h> above
+    while ((opt = getopt(argc, argv, "s:r:d:RAb:F:n:X:C")) != -1) { // NOLINT(misc-include-cleaner)
         switch (opt) {
         case 's':
             sample_size = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
@@ -260,6 +316,25 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
         case 'b':
             opts->broadcast = optarg; // NOLINT(misc-include-cleaner)
             break;
+#if BENCH_HYBRID
+        case 'F':
+            opts->fragmentation = tt_LARGE_FRAGMENTATION_AUTO;
+            if (strcmp(optarg, "mtu") == 0) {
+                opts->fragmentation = tt_LARGE_FRAGMENTATION_MTU;
+            } else if (strcmp(optarg, "ip") == 0) {
+                opts->fragmentation = tt_LARGE_FRAGMENTATION_IP;
+            }
+            break;
+        case 'n':
+            opts->run_units = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
+            break;
+        case 'X':
+            opts->reassembly_max = strtol(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
+            break;
+        case 'C':
+            opts->cap_off = true;
+            break;
+#endif
         default:
             return false;
         }
@@ -294,6 +369,13 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
         pub.reliable = true;
         pub.keep_all = opts->keep_all;
     }
+#if BENCH_HYBRID
+    if (opts->run_units != 0) {
+        // Runs of exactly run_units large units (types 11/12's geometry): the run's 28 bytes of framing and the units.
+        pub.large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
+        pub.ip_datagram_max = (uint16_t)(BENCH_RUN_FRAMING + (opts->run_units * BENCH_LARGE_UNIT));
+    }
+#endif
     poll_for(node, DISCOVERY_NS);
     uint64_t period = (uint64_t)((double)NS_PER_S / opts->rate_hz);
     uint64_t begin = now_ns();
@@ -330,6 +412,7 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
            sample_size, opts->reliable ? 1 : 0, opts->keep_all ? 1 : 0, opts->rate_hz, published, refused,
            pub.retransmitted, cpu, published > 0 ? cpu / published_mb : 0.0, peak_rss_kb);
     print_large(node);
+    print_hybrid(node, &pub);
     printf("\n");
     return 0;
 }
@@ -379,6 +462,7 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
            latency_us_at(counted, p99_index), latency_us_at(counted, counted > 0 ? counted - 1 : 0), cpu,
            delivered > 0 ? cpu / delivered_mb : 0.0, peak_rss_kb);
     print_large(node);
+    print_hybrid(node, NULL);
     // The first few samples below the highest that arrived that never did: which sample a loss was, not only how many.
     printf(" last_index=%u missing=", last_index);
     uint32_t named = 0;
@@ -403,12 +487,24 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
 int main(int argc, char** argv) {
     struct options opts;
     if (!parse_options(argc, argv, &opts)) {
-        fprintf(stderr, "usage: %s pub|sub -s BYTES [-r HZ] -d SECONDS [-R] [-A] [-b BROADCAST]\n", argv[0]);
+        fprintf(stderr,
+                "usage: %s pub|sub -s BYTES [-r HZ] -d SECONDS [-R] [-A] [-b BROADCAST] [-F auto|mtu|ip] [-n UNITS] "
+                "[-X BYTES] [-C]\n",
+                argv[0]);
         return 2;
     }
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
     _tt_CONFIG.broadcast = opts.broadcast;
+#if BENCH_HYBRID
+    if (opts.fragmentation >= 0) {
+        _tt_CONFIG.large_fragmentation = (uint8_t)opts.fragmentation;
+    }
+    if (opts.reassembly_max >= 0) {
+        _tt_CONFIG.ip_reassembly_max = (uint16_t)opts.reassembly_max;
+    }
+    _tt_CONFIG.reassembly_cap_off = opts.cap_off ? 1 : 0;
+#endif
 
     static struct tt_Context node;
     bool created = tt_Context_create(&node) == tt_RET_OK;
