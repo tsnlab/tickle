@@ -19,8 +19,9 @@
 //   3. drain   - the same burst through the same buffer with a drain started first: every datagram arrives, in the
 //                order sent, and the count does not move. LATE more sent after the first read come last: the drain
 //                goes on taking while it holds datagrams, and stops - before any socket read - only once it holds none.
-//   4. cut     - a datagram longer than a drain buffer is dropped and counted (drain_truncated), and no drain starts
-//                until tt_RX_DRAIN_HOLDOFF_NS has passed, so the same datagram sent again is read whole.
+//   4. cut     - a datagram longer than a drain buffer is dropped and counted (drain_truncated, and one more receiver
+//                drop in tt_rx_receiver_drops()), and no drain starts until tt_RX_DRAIN_HOLDOFF_NS has passed, so the
+//                same datagram sent again is read whole.
 //   5. sized   - asked for 65,507-byte datagrams, the drain rebuilds its buffers for them, and a burst of them
 //                through the smallest socket buffer arrives whole.
 //   6. merged  - receive offload on (UDP_GRO, the state core's reads put it in for MTU-mode fragments), a run of
@@ -169,6 +170,7 @@ static enum check_exit check_drained_burst(struct tt_Context* node, int sender) 
 static enum check_exit check_cut(struct tt_Context* node, int sender) {
     uint32_t index = 0;
     uint64_t cut_before = node->hal.drain_truncated;
+    uint32_t receiver_before = tt_rx_receiver_drops(node);
     if (!tt_rx_drain_start(node, tt_CONTROL_MAX_LENGTH) ||
         !send_numbered(sender, node->hal.data_sock, 0, 1, CUT_BYTES)) {
         printf("rx_drain_check: SETUP FAILED - could not start the drain or send the long datagram\n");
@@ -181,12 +183,14 @@ static enum check_exit check_cut(struct tt_Context* node, int sender) {
         return CHECK_SETUP_FAILED;
     }
     bool again_read = read_numbered(node, CUT_BYTES, &index) && index == 1;
-    if (cut_read || node->hal.drain_truncated != cut_before + 1 || restarted || !again_read) {
-        printf("rx_drain_check: FAIL - cut: the long datagram %s, drain_truncated %lu -> %lu (must rise by 1), a drain "
-               "%s during the hold-off, the retry %s\n",
-               cut_read ? "was handed out" : "was dropped", (unsigned long)cut_before,
-               (unsigned long)node->hal.drain_truncated, restarted ? "started" : "did not start",
-               again_read ? "was read whole" : "was not read");
+    if (cut_read || node->hal.drain_truncated != cut_before + 1 || restarted || !again_read ||
+        tt_rx_receiver_drops(node) != receiver_before + 1U) {
+        printf(
+            "rx_drain_check: FAIL - cut: the long datagram %s, drain_truncated %lu -> %lu (must rise by 1), receiver "
+            "drops %u -> %u (must rise by 1), a drain %s during the hold-off, the retry %s\n",
+            cut_read ? "was handed out" : "was dropped", (unsigned long)cut_before,
+            (unsigned long)node->hal.drain_truncated, (unsigned)receiver_before, (unsigned)tt_rx_receiver_drops(node),
+            restarted ? "started" : "did not start", again_read ? "was read whole" : "was not read");
         return CHECK_FAIL;
     }
     printf("rx_drain_check: PASS - cut: a %d-byte datagram was dropped and counted while draining, and its retry read "

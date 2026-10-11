@@ -1054,6 +1054,23 @@ socket's drops as path loss. Three rules join the two:
   with every tenth run dropped at the socket - n reaches 45 counted, stays below uncounted), `mutants_hybrid_send.py`;
   the PC A/B is `experiments/hybrid_drain_pc.sh`.
 
+**PC evidence** (`hybrid_drain_pc.sh`, 2026-10-12, 3 reps x 20 s a cell, 4 MB at 30 Hz, AUTO, 0% loss; PARENT is
+`ab/hybrid-land` without the drain, HEAD this branch with the growth; `~/largemsg_pc/hybrid_drain/results_v3_*.txt`):
+
+| cell | PARENT delivered / socket drops | HEAD delivered / socket drops | HEAD n |
+|---|---|---|---|
+| best effort, no stall | 295-297 / 1,408-1,788 | 578-580 / 34-187 | 45 (cap 45) |
+| best effort, 3 ms + 5 ms stall | 290 / 10,243-10,619 | 577-579 / 145-243 | 45 |
+| RELIABLE, no stall | 569-570 / 3,261-4,789, n 1-3 | 580 / 0 | 45 |
+| RELIABLE, stalled | 502-503 / 28,265-33,616, n 1 | 579-580 / 125-140 | 45 |
+
+Every HEAD drop was put down to the receiver (`receiver_lost` equal to `socket_drops`), so n reached 45 in every run;
+PARENT's RELIABLE n stayed at 1-3, the rig's failure. Torn and out-of-order: 0. Subscriber CPU per MB: -54% / -29%
+best effort, -5% / -2% RELIABLE (PARENT's losses cost it reassembly work). Pre-registered D1 (no socket drop at all)
+FAILED. Most of what is left comes before the buffers have grown: one stalled run built with 256 buffers from the
+start dropped 2 (an instrumented scratch build). A forced-MTU arm with receive offload (64 buffers, merged reads) had
+no drop in any cell. The rig run (`~/rig_queue_hybrid_drain.sh`) decides.
+
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
 **RxO matching.** Each endpoint announces its QoS in its `tt_UpdateEntity` (`qos` bits for reliable, durable, manual
