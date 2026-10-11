@@ -54,6 +54,7 @@
 #include <sys/syscall.h>    // NOLINT(misc-include-cleaner)
 #if tt_RX_DRAIN
 #include <linux/time_types.h> // __kernel_timespec: the drain's stop wait
+#include <sys/utsname.h>      // uname(): the kernel release a refused buffer ring is reported with
 #endif
 #endif
 #include <tickle/tickle.h>
@@ -907,6 +908,8 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.drain_datagrams = 0;
     node->hal.drain_truncated = 0;
     node->hal.drain_overruns = 0;
+    node->hal.drain_ring = tt_RX_DRAIN_RING_NONE;
+    node->hal.drain_group = 0;
 #endif
 #if tt_HAL_IO_URING
     node->hal.uring_fd = -1; // tt_close() after a failed bind must not close what was never opened
@@ -1067,6 +1070,19 @@ tt_ret_t tt_bind(struct tt_Context* node) {
 static void drain_stop(struct tt_Context* node);
 #if tt_RX_DRAIN
 static void drain_release(struct tt_hal* hal);
+
+static const char* drain_ring_name(uint8_t ring) {
+    switch (ring) {
+    case tt_RX_DRAIN_RING_USER:
+        return "user";
+    case tt_RX_DRAIN_RING_KERNEL:
+        return "kernel";
+    case tt_RX_DRAIN_RING_CLASSIC:
+        return "classic";
+    default:
+        return "none";
+    }
+}
 #endif
 
 void tt_close(struct tt_Context* node) {
@@ -1074,13 +1090,13 @@ void tt_close(struct tt_Context* node) {
 #if tt_RX_DRAIN
     drain_stop(node);
     TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=%d drain_starts=%lu "
-                "drain_datagrams=%lu drain_truncated=%lu drain_overruns=%lu drain_buffers=%u x %u",
+                "drain_datagrams=%lu drain_truncated=%lu drain_overruns=%lu drain_buffers=%u x %u drain_ring=%s",
                 node->id, (unsigned)tt_hal_rx_socket_drops(node), (unsigned)socket_drops(node->hal.sock),
                 (unsigned)socket_drops(node->hal.data_sock), node->hal.drain_fd == -2 ? -1 : 1,
                 (unsigned long)node->hal.drain_starts, (unsigned long)node->hal.drain_datagrams,
                 (unsigned long)node->hal.drain_truncated, (unsigned long)node->hal.drain_overruns,
                 (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_count : 0U),
-                (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_size : 0U));
+                (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_size : 0U), drain_ring_name(node->hal.drain_ring));
     drain_release(&node->hal); // before the sockets: its requests go with its ring
 #else
     TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=0", node->id,
@@ -1453,14 +1469,18 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
 // Its own ring, apart from tt_rx_maybe_ready()'s: that one is four entries of one-shot polls, and this one needs a
 // completion entry per buffer.
 #define DRAIN_SOCKETS 2U
-#define DRAIN_RECV 0x5243560000000000ULL   // user_data of a recvmsg, | the socket's index (0 well-known, 1 data)
-#define DRAIN_CANCEL 0x43414e0000000000ULL // user_data of a cancellation
-#define DRAIN_GROUP 1U
+#define DRAIN_RECV 0x5243560000000000ULL    // user_data of a recvmsg, | the socket's index (0 well-known, 1 data)
+#define DRAIN_CANCEL 0x43414e0000000000ULL  // user_data of a cancellation
+#define DRAIN_REMOVE 0x524d560000000000ULL  // user_data of a classic buffer removal (tt_RX_DRAIN_RING_CLASSIC)
+#define DRAIN_PROVIDE 0x5056440000000000ULL // user_data of a classic buffer provision (tt_RX_DRAIN_RING_CLASSIC)
+#define DRAIN_GROUP 1U                      // the buffer group of a ring
+#define DRAIN_GROUP_CLASSIC 2U // of classic buffers: never the group a refused or unmappable ring may still hold
 #define DRAIN_ENTRIES 4U
 #define DRAIN_STOP_TRIES 100          // waits of DRAIN_STOP_WAIT_NS for both recvmsgs to end
 #define DRAIN_STOP_WAIT_NS 10000000LL // 10 ms
 #define DRAIN_ALIGN 64U               // a buffer's length is a multiple of this
 #define DRAIN_HEADER ((uint32_t)(sizeof(struct io_uring_recvmsg_out) + sizeof(struct sockaddr_in)))
+#define DRAIN_ASKED_BYTES 256U // drain_describe()'s line
 
 static void drain_release(struct tt_hal* hal) {
     if (hal->drain_buffers != NULL) {
@@ -1486,6 +1506,7 @@ static void drain_release(struct tt_hal* hal) {
     hal->drain_running = false;
     hal->drain_armed = 0;
     hal->drain_pending = 0;
+    hal->drain_ring = tt_RX_DRAIN_RING_NONE;
 }
 
 // Said once per process: why large samples on a saturated link may lose what the socket's buffer cannot hold.
@@ -1504,6 +1525,9 @@ static void drain_refused(struct tt_hal* hal, const char* step, int err) {
 // Puts buffer `bid` back on the ring for the kernel to fill. A ring entry is written field by field, never whole: the
 // ring's tail lives in the first entry's last field.
 static void drain_give_back(struct tt_hal* hal, uint16_t bid) {
+    if (hal->drain_ring == tt_RX_DRAIN_RING_CLASSIC) {
+        return; // all of them are handed over again at the next start, when none is in use (tt_rx_drain_start())
+    }
     struct io_uring_buf_ring* ring = (struct io_uring_buf_ring*)hal->drain_buf_ring;
     struct io_uring_buf* entry = &ring->bufs[hal->drain_buf_tail & (hal->drain_count - 1U)];
     entry->addr = (uint64_t)(uintptr_t)(hal->drain_buffers + ((size_t)bid * hal->drain_size));
@@ -1513,8 +1537,87 @@ static void drain_give_back(struct tt_hal* hal, uint16_t bid) {
     __atomic_store_n(&ring->tail, hal->drain_buf_tail, __ATOMIC_RELEASE);
 }
 
+// One IORING_REGISTER_PBUF_RING of `count` entries in group `group`: 0, or the errno the kernel refused it with.
+static int drain_register_ring(int ring_fd, uint64_t ring_addr, uint32_t count, uint16_t group, uint16_t flags) {
+    struct io_uring_buf_reg reg;
+    memset(&reg, 0, sizeof(reg)); // resv[] zero: every kernel refuses anything else with EINVAL
+    reg.ring_addr = ring_addr;
+    reg.ring_entries = count;
+    reg.bgid = group;
+    reg.flags = flags;
+    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
+    return syscall(__NR_io_uring_register, ring_fd, IORING_REGISTER_PBUF_RING, &reg, 1) < 0 ? errno : 0;
+}
+
+// What a refused registration asked for, beside the kernel that refused it: EINVAL alone names none of the reasons
+// Linux 6.8 has for it (io_uring/kbuf.c: resv[] nonzero, an unknown flag, ring_addr not page-aligned or given with
+// IOU_PBUF_RING_MMAP, entries not a power of two or above 65535, a highmem or miscoloured page of the ring).
+static void drain_describe(char* out, size_t len, uint64_t ring_addr, uint32_t count, uint16_t group) {
+    struct utsname host;
+    if (uname(&host) != 0) {
+        (void)snprintf(host.release, sizeof(host.release), "unknown");
+    }
+    long page = sysconf(_SC_PAGESIZE);
+    (void)snprintf(out, len,
+                   "asked entries=%u (a power of two: %s) ring_addr page offset=%lu of %ld bgid=%u flags=0 resv=0, "
+                   "Linux %s",
+                   (unsigned)count, (count & (count - 1U)) == 0 ? "yes" : "no",
+                   page > 0 ? (unsigned long)(ring_addr % (uint64_t)page) : 0UL, page, (unsigned)group, host.release);
+}
+
+// Hands the kernel drain_count buffers the first way it accepts (tt_RX_DRAIN_RING_*): a ring in this process's
+// memory; else the same ring in the kernel's, mapped here; else classic provided buffers, which tt_rx_drain_start()
+// hands over again at each start, and whose refusal drain_look() reports. What was refused is said once, with why.
+static void drain_register_buffers(struct tt_hal* hal, int ring_fd, uint32_t count) {
+    static bool told = false;
+    void* user =
+        mmap(NULL, hal->drain_buf_ring_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
+    int user_err =
+        user == MAP_FAILED ? ENOMEM : drain_register_ring(ring_fd, (uint64_t)(uintptr_t)user, count, DRAIN_GROUP, 0);
+    if (user_err == 0) {
+        hal->drain_buf_ring = user;
+        hal->drain_ring = tt_RX_DRAIN_RING_USER;
+        hal->drain_group = DRAIN_GROUP;
+        return;
+    }
+    char asked[DRAIN_ASKED_BYTES];
+    drain_describe(asked, sizeof(asked), user == MAP_FAILED ? 0 : (uint64_t)(uintptr_t)user, count, DRAIN_GROUP);
+    if (user != MAP_FAILED) {
+        (void)munmap(user, hal->drain_buf_ring_len);
+    }
+    int kernel_err = drain_register_ring(ring_fd, 0, count, DRAIN_GROUP, IOU_PBUF_RING_MMAP);
+    if (kernel_err == 0) {
+        void* mapped = mmap(NULL, hal->drain_buf_ring_len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring_fd,
+                            (off_t)(IORING_OFF_PBUF_RING | ((uint64_t)DRAIN_GROUP << IORING_OFF_PBUF_SHIFT)));
+        if (mapped != MAP_FAILED) {
+            if (!told) {
+                told = true;
+                TT_LOG_WARNING("Receive drain: IORING_REGISTER_PBUF_RING refused a ring in this process's memory "
+                               "(%s; %s) - the kernel's own ring (IOU_PBUF_RING_MMAP) is used instead",
+                               strerror(user_err), asked);
+            }
+            hal->drain_buf_ring = mapped;
+            hal->drain_ring = tt_RX_DRAIN_RING_KERNEL;
+            hal->drain_group = DRAIN_GROUP;
+            return;
+        }
+        kernel_err = errno; // registered and not mappable: the classic buffers take a group of their own
+    }
+    if (!told) {
+        told = true;
+        TT_LOG_WARNING("Receive drain: IORING_REGISTER_PBUF_RING refused a ring in this process's memory (%s; %s) and "
+                       "the kernel's own (IOU_PBUF_RING_MMAP: %s) - classic provided buffers are used instead, handed "
+                       "over again at each drain start",
+                       strerror(user_err), asked, strerror(kernel_err));
+    }
+    hal->drain_buf_ring = NULL;
+    hal->drain_ring = tt_RX_DRAIN_RING_CLASSIC;
+    hal->drain_group = DRAIN_GROUP_CLASSIC;
+}
+
 // The ring and drain_count buffers of drain_size bytes, registered as one buffer group. False, having said why once
-// and given everything back, when the kernel refuses any of it (no io_uring, Linux < 5.19 for the buffer ring).
+// and given everything back, when the kernel refuses any of it (no io_uring). How the buffers reach the kernel is
+// drain_register_buffers()'s.
 static bool drain_setup(struct tt_hal* hal, uint32_t size, uint32_t count) {
     struct io_uring_params params;
     memset(&params, 0, sizeof(params));
@@ -1562,28 +1665,18 @@ static bool drain_setup(struct tt_hal* hal, uint32_t size, uint32_t count) {
     hal->drain_scan = *hal->drain_cq_head;
 
     hal->drain_buf_ring_len = (size_t)count * sizeof(struct io_uring_buf);
-    void* buf_ring =
-        mmap(NULL, hal->drain_buf_ring_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
     void* buffers = mmap(NULL, (size_t)count * size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    hal->drain_buf_ring = buf_ring == MAP_FAILED ? NULL : buf_ring;
     hal->drain_buffers = buffers == MAP_FAILED ? NULL : (uint8_t*)buffers;
-    if (hal->drain_buf_ring == NULL || hal->drain_buffers == NULL) {
+    if (hal->drain_buffers == NULL) {
         drain_refused(hal, "mmap buffers", ENOMEM);
         return false;
     }
-    struct io_uring_buf_reg reg;
-    memset(&reg, 0, sizeof(reg));
-    reg.ring_addr = (uint64_t)(uintptr_t)buf_ring;
-    reg.ring_entries = count;
-    reg.bgid = DRAIN_GROUP;
-    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
-    if (syscall(__NR_io_uring_register, ring_fd, IORING_REGISTER_PBUF_RING, &reg, 1) < 0) {
-        drain_refused(hal, "IORING_REGISTER_PBUF_RING", errno);
-        return false;
-    }
-    hal->drain_buf_tail = 0;
-    for (uint32_t bid = 0; bid < count; bid++) {
-        drain_give_back(hal, (uint16_t)bid);
+    drain_register_buffers(hal, ring_fd, count);
+    if (hal->drain_ring != tt_RX_DRAIN_RING_CLASSIC) {
+        hal->drain_buf_tail = 0;
+        for (uint32_t bid = 0; bid < count; bid++) {
+            drain_give_back(hal, (uint16_t)bid);
+        }
     }
     memset(&hal->drain_msghdr, 0, sizeof(hal->drain_msghdr));
     hal->drain_msghdr.msg_namelen = sizeof(struct sockaddr_in);
@@ -1621,6 +1714,17 @@ static void drain_look(struct tt_hal* hal) {
     const struct io_uring_cqe* cqes = (const struct io_uring_cqe*)hal->drain_cqes;
     for (; hal->drain_scan != tail; hal->drain_scan++) {
         const struct io_uring_cqe* cqe = &cqes[hal->drain_scan & *hal->drain_cq_mask];
+        if (cqe->user_data == DRAIN_PROVIDE && cqe->res < 0) {
+            static bool told = false;
+            if (!told) {
+                told = true;
+                TT_LOG_WARNING("Receive drain unavailable (IORING_OP_PROVIDE_BUFFERS: %s, after the buffer ring was "
+                               "refused) - while a callback runs, a burst larger than the socket's receive buffer is "
+                               "dropped. See README.md, \"io_uring\".",
+                               strerror(-cqe->res));
+            }
+            hal->drain_holdoff_until = UINT64_MAX; // its recvmsgs end at once for want of a buffer: never again
+        }
         if ((cqe->user_data & ~(uint64_t)(DRAIN_SOCKETS - 1U)) != DRAIN_RECV) {
             continue;
         }
@@ -1761,8 +1865,29 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
             return false;
         }
     }
-    const int fds[DRAIN_SOCKETS] = {hal->sock, hal->data_sock};
     uint32_t added = 0;
+    if (hal->drain_ring == tt_RX_DRAIN_RING_CLASSIC) {
+        // Classic buffers an earlier drain took are not given back one by one (drain_give_back()): all of them are
+        // handed over again here, which is right only while none is held. Issued in order and inline, before the
+        // recvmsgs: what is left of the last provision is removed (ENOENT the first time), then every buffer provided.
+        if (hal->drain_pending != 0) {
+            return false;
+        }
+        struct io_uring_sqe* sqe = drain_sqe(hal, &added);
+        sqe->opcode = IORING_OP_REMOVE_BUFFERS;
+        sqe->fd = (int32_t)hal->drain_count; // how many
+        sqe->buf_group = hal->drain_group;
+        sqe->user_data = DRAIN_REMOVE;
+        sqe = drain_sqe(hal, &added);
+        sqe->opcode = IORING_OP_PROVIDE_BUFFERS;
+        sqe->fd = (int32_t)hal->drain_count; // how many, of len bytes each from addr, the first numbered off
+        sqe->addr = (uint64_t)(uintptr_t)hal->drain_buffers;
+        sqe->len = hal->drain_size;
+        sqe->off = 0;
+        sqe->buf_group = hal->drain_group;
+        sqe->user_data = DRAIN_PROVIDE;
+    }
+    const int fds[DRAIN_SOCKETS] = {hal->sock, hal->data_sock};
     uint8_t armed = 0;
     for (uint32_t i = 0; i < DRAIN_SOCKETS; i++) {
         if (fds[i] < 0) {
@@ -1774,11 +1899,11 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
         sqe->addr = (uint64_t)(uintptr_t)&hal->drain_msghdr;
         sqe->ioprio = IORING_RECV_MULTISHOT;
         sqe->flags = IOSQE_BUFFER_SELECT;
-        sqe->buf_group = DRAIN_GROUP;
+        sqe->buf_group = hal->drain_group;
         sqe->user_data = DRAIN_RECV | i;
         armed |= (uint8_t)(1U << i);
     }
-    if (added == 0 || !drain_submit(hal, added)) {
+    if (armed == 0 || !drain_submit(hal, added)) {
         return false;
     }
     hal->drain_armed = armed;

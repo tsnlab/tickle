@@ -193,6 +193,10 @@ ALL_OBJS = $(OBJS) $(ALL_EXAMPLE_OBJS)
 refuse_io_uring.so: ../../tests/support/refuse_io_uring.c
 	$(CC) -shared -fPIC -O2 -o $@ $< -ldl
 
+# Linux 6.8's rules for an io_uring buffer ring, and the rig Pis' refusal of one, for rx_drain_check's passes.
+refuse_pbuf_ring.so: ../../tests/support/refuse_pbuf_ring.c
+	$(CC) -shared -fPIC -O2 -o $@ $< -ldl
+
 # tt_rx_maybe_ready() against the real HAL - the unit tests link the mock one (rx_hint_check.c says why it matters).
 rx_hint_check: rx_hint_check.c libtickle.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
@@ -227,7 +231,7 @@ udp_offload_check_flap: udp_offload_check.c $(HAL_SRC) $(SRC)/tickle.c $(SRC)/en
 	    -DCHECK_READ_DELAY_NS=1500000L $(LDFLAGS) -o $@ udp_offload_check.c \
 	    $(HAL_SRC) $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
 
-test-samehost: examples refuse_io_uring.so rx_hint_check rx_idle_check rx_drain_check bell_wake_check
+test-samehost: examples refuse_io_uring.so refuse_pbuf_ring.so rx_hint_check rx_idle_check rx_drain_check bell_wake_check
 	./test_samehost.sh
 
 test: config-renames $(TEST_BINS) $(LARGE_TEST_BINS)
@@ -584,6 +588,6 @@ clean:
 	# currently selected, so switching BUILD_TYPE and running `clean` doesn't leave the
 	# other mode's stale cache behind.
 	rm -rf obj/*/
-	rm -f libtickle.a refuse_io_uring.so rx_hint_check rx_idle_check rx_drain_check bell_wake_check udp_offload_check \
+	rm -f libtickle.a refuse_io_uring.so refuse_pbuf_ring.so rx_hint_check rx_idle_check rx_drain_check bell_wake_check udp_offload_check \
 	    udp_offload_check_flap
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))
