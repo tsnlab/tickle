@@ -15,6 +15,10 @@
 // sending every sample as a large one fails here). Only the protocol version byte and the timestamp are masked: the
 // first is the approved version bump itself, the second the clock.
 //
+// Since tt_VERSION 13 (the hybrid transport, DESIGN.md section 8) the capture also holds a discovery announce, the one
+// other datagram that version changed: its three new tt_AnnounceHeader fields are cut out before comparing (a tree
+// without them has nothing to cut), and its trailing padding, which those six bytes move, is masked with them.
+//
 // The same source is the capture tool: built with -DWIRE_CAPTURE_OUT=path (and -DTICKLE_C= the tree's tickle.c) it
 // writes what it captured instead of comparing it, so the parent's capture comes from this exact procedure.
 
@@ -59,15 +63,47 @@ static void mask(uint8_t* bytes, uint32_t len) {
     }
 }
 
+// A discovery announce (a DATA of the built-in endpoint): the fields tt_VERSION 13 added to tt_AnnounceHeader cut out,
+// the submessage length of the classic form zeroed, and the trailing padding dropped - all three move with the six
+// bytes, and nothing else may. Returns the new length.
+static uint32_t mask_announce(uint8_t* bytes, uint32_t len) {
+    bool single = bytes[0] == tt_SINGLE_MARKER_LE || bytes[0] == tt_SINGLE_MARKER_BE;
+    uint32_t body = single ? (uint32_t)sizeof(struct tt_SingleHeader)
+                           : (uint32_t)(sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
+    uint8_t type = single ? bytes[3] : bytes[sizeof(struct tt_Header)];
+    struct tt_DataHeader data;
+    if (type != tt_SUBMESSAGE_TYPE_DATA || body + sizeof(data) + 1U > len) {
+        return len;
+    }
+    memcpy(&data, bytes + body, sizeof(data));
+    if (data.endpoint_id != tt_DISCOVERY_ENDPOINT_ID || data.entity_id != tt_DISCOVERY_ENTITY_ID) {
+        return len;
+    }
+    uint32_t added = (uint32_t)sizeof(struct tt_AnnounceHeader) - 1U; // 0 in a tree before tt_VERSION 13
+    uint32_t cut = body + (uint32_t)sizeof(data) + 1U;
+    if (added != 0 && cut + added <= len) {
+        memmove(bytes + cut, bytes + cut + added, len - cut - added);
+        len -= added;
+    }
+    if (!single) {
+        memset(bytes + sizeof(struct tt_Header) + 2, 0, 2); // tt_SubmessageHeader.length
+    }
+    while (len > cut && bytes[len - 1] == 0) {
+        len--;
+    }
+    return len;
+}
+
 static void capture_hook(const void* buf, size_t len) {
     if (capture_len + 4U + len > CAPTURE_MAX) {
         test_failures++;
         return;
     }
     uint32_t length = (uint32_t)len;
-    memcpy(capture + capture_len, &length, 4);
     memcpy(capture + capture_len + 4, buf, len);
     mask(capture + capture_len + 4, length);
+    length = mask_announce(capture + capture_len + 4, length);
+    memcpy(capture + capture_len, &length, 4);
     capture_len += 4U + length;
     captured_datagrams++;
 }
@@ -143,6 +179,13 @@ static void publish_three(bool reliable) {
         sample_len = sizes[i];
         EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
     }
+    // The announce listing that Publisher, unicast to one peer and so sent at once.
+    struct tt_Peer peer;
+    memset(&peer, 0, sizeof(peer));
+    peer.context_id = 2;
+    peer.ip = 0x0a000002;
+    peer.port = 8282;
+    EXPECT_TRUE(build_and_send_update(&node, &peer, 1));
     test_mock_send_hook = NULL;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_destroy(&pub));
 }
@@ -152,8 +195,8 @@ int main(void) {
     captured_datagrams = 0;
     publish_three(false);
     publish_three(true);
-    // 1 + 2 + 44 datagrams a pass, and the goodbye announce at each destroy.
-    EXPECT_TRUE(captured_datagrams >= 2U * (1U + 2U + 44U));
+    // 1 + 2 + 45 datagrams a pass, and an announce.
+    EXPECT_EQ_U32(2U * (1U + 2U + 45U + 1U), captured_datagrams);
 #ifdef WIRE_CAPTURE_OUT
     FILE* out = fopen(WIRE_CAPTURE_OUT, "wb");
     if (out == NULL || fwrite(capture, 1, capture_len, out) != capture_len) {
@@ -184,7 +227,8 @@ int main(void) {
         return 1;
     }
     printf("test_wire_identity_largemsg: %u datagrams (64 B, 1,472 B and 64,000 B samples, best effort and "
-           "RELIABLE) byte-identical to the parent's, version and timestamp masked\n",
+           "RELIABLE) byte-identical to the parent's, version and timestamp masked; the announce but for its "
+           "tt_VERSION 13 fields\n",
            captured_datagrams);
     return 0;
 #endif

@@ -554,6 +554,15 @@ struct tt_Context {
     // rather than once per packet. At max rate an unfiltered log line per rejected packet would be
     // its own denial of service.
     uint8_t version_mismatch_logged[tt_MAX_CONTEXT_IDS];
+    // Hybrid transport (DESIGN.md section 8): this context's settings as tt_Context_create() read them from _tt_CONFIG,
+    // and what its announce advertises - the reassembly ceiling capped by the receive buffer.
+    uint8_t large_fragmentation; // tt_LARGE_FRAGMENTATION_AUTO, _MTU or _IP
+    uint16_t ip_reassembly_max;  // advertised in tt_AnnounceHeader.ip_reassembly_max
+#if tt_FRAG_ENABLED
+    // Per remote node, the reassembly ceiling its latest announce advertised (0 = none, or not heard: n = 1 either
+    // way). Recorded only; the sender does not read it yet.
+    uint16_t peer_ip_reassembly_max[tt_MAX_CONTEXT_IDS];
+#endif
     // Per remote node (indexed the same way), the wall-clock time (tt_get_ns()) its most recent
     // UPDATE announce was received - unlike update_last_modified[] above, this moves on *every*
     // announce, including one whose content is unchanged from the last one acted on. Liveliness
@@ -1858,6 +1867,12 @@ struct tt_Publisher { // extends endpoint
     // latency. Set directly on the struct any time after tt_Context_create_publisher() returns it -
     // same "caller-owned, plain field access" convention as peers[]/seq_no above.
     bool batch;
+    // Hybrid transport (DESIGN.md section 8): this Publisher's override of the context's large_fragmentation
+    // (tt_LARGE_FRAGMENTATION_INHERIT, the default, takes the context's), and of the largest run datagram, in bytes
+    // (0, the default: inherit, i.e. what each peer advertises). The sender takes the more conservative of its own
+    // setting and each peer's advertisement. Plain fields, set after tt_Context_create_publisher() like `batch`.
+    uint8_t large_fragmentation;
+    uint16_t ip_datagram_max;
 
     // QoS roadmap #5 / Phase 3 (rmw_tickle/PLAN.md) - DDS HISTORY KEEP_ALL: never evict a sample no
     // matched Subscriber has acknowledged yet; refuse the write instead (tt_Publisher_publish()
@@ -3122,7 +3137,10 @@ tt_ret_t tt_Context_destroy(struct tt_Context* node);
 // every entry carries its node's index in spare bits of kind and qos (tt_UPDATE_NODE_INDEX_* below).
 // Bumped 11 -> 12 for large-message stage 2 (DESIGN.md section 8): two new submessage types, FRAG_FIRST_L and
 // FRAG_CONT_L, for samples above tt_MAX_SAMPLE_LENGTH. Every existing submessage is unchanged byte for byte.
-#define tt_VERSION 12
+// Bumped 12 -> 13 for the hybrid transport (DESIGN.md section 8): tt_AnnounceHeader gained the reassembly ceiling and
+// the two cost fields, and two run types, FRAG_RUN_L and FRAG_RUN, carry several fragments in one IP-fragmented
+// datagram. Types 2, 8, 9, 11 and 12 are unchanged byte for byte.
+#define tt_VERSION 13
 
 struct tt_Header {
     union {
@@ -3200,6 +3218,17 @@ struct tt_SingleHeader {
 #define tt_SUBMESSAGE_TYPE_FRAG_FIRST_L 11
 #define tt_SUBMESSAGE_TYPE_FRAG_CONT_L 12
 
+// Hybrid transport (DESIGN.md section 8, tt_VERSION 13): a run - run_count consecutive fragments ("units") of one
+// sample in one UDP datagram, which IP fragments into about run_count frames. Its payload is exactly those units
+// concatenated, each the size the MTU fragment of its type pair would carry, so a lost run is repaired unit by unit
+// with ordinary fragments and the ACK bitmap, the window and the KEEP_ALL bound stay in units. One type per geometry:
+// FRAG_RUN_L (13) for a sample on 11/12 (struct tt_FragRunLHeader), FRAG_RUN (14) for one on 8/9 (struct
+// tt_FragRunHeader). A sample's last unit always goes alone as an ordinary fragment, so a run never holds it. Only sent
+// to a peer whose announce allows it (tt_AnnounceHeader.ip_reassembly_max). A node without stage 2 skips 13 and counts
+// it (frag_large_skipped); one without fragmentation skips 14 as it skips 8/9.
+#define tt_SUBMESSAGE_TYPE_FRAG_RUN_L 13
+#define tt_SUBMESSAGE_TYPE_FRAG_RUN 14
+
 struct tt_SubmessageHeader {
     uint8_t type;     // tt_SUBMESSAGE_TYPE_* above
     uint8_t receiver; // Receiver ID
@@ -3243,6 +3272,14 @@ struct tt_SubmessageHeader {
 
 struct tt_AnnounceHeader {
     uint8_t entity_count;
+    // Since tt_VERSION 13 (hybrid transport, DESIGN.md section 8): the largest datagram this context accepts from IP
+    // reassembly, in bytes, as a ceiling on the runs a writer may send it; 0 = none (n = 1). Its setting
+    // (_tt_CONFIG.ip_reassembly_max) capped by its receive buffer (tt_MAX_BUFFER_LENGTH).
+    uint16_t ip_reassembly_max;
+    // The receiver's measured costs per datagram and per frame, in nanoseconds, which a writer adds to its own when it
+    // chooses n; 0 = not measured (always, until the cost fit exists).
+    uint16_t cost_datagram_ns;
+    uint16_t cost_frame_ns;
     /* Dynamically allocated
     struct tt_UpdateEntity entities[];
     */
@@ -3382,6 +3419,26 @@ struct tt_FragContLHeader {
 
 // How much less CDR a large sample's fragment 0 carries than its continuations: 6 bytes.
 #define tt_FRAG_FIRST_L_SHORTFALL (sizeof(struct tt_FragFirstLHeader) - sizeof(struct tt_FragContLHeader))
+
+// A run of a large sample (tt_SUBMESSAGE_TYPE_FRAG_RUN_L), 24 bytes: units frag_index .. frag_index + run_count - 1.
+// data is the whole tt_DataHeader of the sample, with seq_no the first unit's own (the sample's is seq_no -
+// frag_index), so a run is self-describing wherever it falls and a reader can acquire on it.
+struct tt_FragRunLHeader {
+    struct tt_DataHeader data;
+    uint16_t frag_index; // the first unit's: 0 .. frag_count - 2
+    uint16_t frag_count; // the sample's, as in every fragment of it
+    uint16_t run_count;  // units in this datagram: 1 .. frag_count - 1 - frag_index (never the last unit)
+    uint16_t zero;       // 0
+} __attribute__((packed));
+
+// A run of a sample on 8/9 (tt_SUBMESSAGE_TYPE_FRAG_RUN), 20 bytes: the same with 8-bit fields.
+struct tt_FragRunHeader {
+    struct tt_DataHeader data;
+    uint8_t frag_index;
+    uint8_t frag_count;
+    uint8_t run_count;
+    uint8_t zero;
+} __attribute__((packed));
 
 // How many datagrams - and so seq_no - a sample of cdr_len encoded bytes takes: 1 when a DATA carries it
 // whole, else its fragment count (DATAFRAG_PLAN.md section 13). For sizing what counts seq_no - a reliable

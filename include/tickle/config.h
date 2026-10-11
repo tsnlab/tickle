@@ -491,6 +491,27 @@
 #endif
 #endif
 
+// Hybrid transport (DESIGN.md section 8, "Hybrid transport for multi-datagram samples", tt_VERSION 13): how a writer
+// puts the units of a multi-datagram sample on the wire - several MTU fragments in one IP-fragmented datagram (a run)
+// or one per datagram. _tt_CONFIG.large_fragmentation holds the context's choice until tt_InitOptions exists; a
+// Publisher may override it (tt_Publisher.large_fragmentation, INHERIT = take the context's). Plumbing only so far: the
+// sender sends MTU fragments whatever this says.
+#define tt_LARGE_FRAGMENTATION_INHERIT 0 // a Publisher's: the context's setting. A context's 0 reads as AUTO
+#define tt_LARGE_FRAGMENTATION_AUTO 1    // n from the cost model and the measured loss
+#define tt_LARGE_FRAGMENTATION_MTU 2     // n = 1: one fragment a datagram, as before tt_VERSION 13
+#define tt_LARGE_FRAGMENTATION_IP 3      // n = n_max: as many units a datagram as the peer allows
+// The largest datagram this context accepts from IP reassembly, advertised to its peers in every announce as a
+// ceiling (tt_AnnounceHeader.ip_reassembly_max); 0 = none, which every writer reads as n = 1. Linux reassembles up to
+// the largest UDP payload; FreeRTOS advertises 0 (lwIP reassembly is small and RAM-hungry). What is advertised is also
+// capped by this build's receive buffer, so a core-default build (1472) advertises one unit and never receives a run.
+#ifndef _tt_IP_REASSEMBLY_MAX
+#if defined(TT_PLATFORM_FREERTOS)
+#define _tt_IP_REASSEMBLY_MAX 0
+#else
+#define _tt_IP_REASSEMBLY_MAX tt_IPV4_UDP_MAX_PAYLOAD
+#endif
+#endif
+
 // The largest sample - encoded CDR bytes, framing excluded - a Publisher may send and a Subscriber can
 // receive (DATA_FRAG, rmw_tickle/DATAFRAG_PLAN.md). tt_MAX_BUFFER_LENGTH keeps meaning the largest
 // datagram; a sample that does not fit a control datagram (tt_CONTROL_MAX_LENGTH) goes out as fragments of
@@ -1107,6 +1128,13 @@ struct _tt_Config {
     // topic, because the sample is still delivered over UDP and that is performance. Reporting both the same
     // way would make the alarm unreadable in the case where it matters.
     uint32_t segment_slot_bytes;
+    // Hybrid transport (DESIGN.md section 8; config.h's tt_LARGE_FRAGMENTATION_* above). Context settings, read once
+    // by tt_Context_create(); they move to tt_InitOptions with the rest when it exists.
+    // tt_LARGE_FRAGMENTATION_AUTO (the default; 0 reads as AUTO too), _MTU or _IP.
+    uint8_t large_fragmentation;
+    // The largest datagram accepted from IP reassembly (_tt_IP_REASSEMBLY_MAX: Linux 65507, FreeRTOS 0); 0 = none.
+    // Advertised capped by tt_MAX_BUFFER_LENGTH.
+    uint16_t ip_reassembly_max;
 };
 
 extern struct _tt_Config _tt_CONFIG;

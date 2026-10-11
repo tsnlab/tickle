@@ -631,7 +631,12 @@ datagrams.
 comparisons held, none WORSE (its verdict line reads NO VERDICT only because `rtt_p99_ms` matched no cell). Measured on
 branch ab/interleave-encode at 5130e3ae against its parent ba324d3b, both carrying the UDP offload commits of
 ab/udp-offload-v2 (parent 11cb21e8); landed without UDP offload, not re-measured.
-### Hybrid transport for multi-datagram samples (designed 2026-10-11; not built)
+### Hybrid transport for multi-datagram samples (designed 2026-10-11; step 1 built)
+
+**Status.** Step 1 (below) is built: `tt_VERSION` 13, `_tt_CONFIG.large_fragmentation` and `.ip_reassembly_max`, the
+Publisher's `large_fragmentation` and `ip_datagram_max`, the three announce fields (the cost fields always 0), and the
+per-peer record `tt_Context.peer_ip_reassembly_max[]` (fragmenting builds only). Types 13/14 are defined and passed over
+(`frag_large_skipped`). Not yet built: the cost and loss counters, receiving runs, sending them.
 
 **The decision.** The user lifted the IP fragmentation park on 2026-10-11 and generalised it the same day: each
 writer chooses, per peer, how many MTU fragments go into one IP-fragmented UDP datagram, from a cost model and the

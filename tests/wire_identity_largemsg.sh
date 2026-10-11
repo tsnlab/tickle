@@ -2,7 +2,8 @@
 # Large-message stage 2, pre-registration L1.2 (DESIGN.md section 8): small samples are byte-identical on the wire.
 #
 # Captures the datagrams of 64 B, 1,472 B and 64,000 B samples (tests/test_wire_identity_largemsg.c, the same source
-# `make test` runs) from three builds and compares them, version byte and timestamp masked:
+# `make test` runs) and an announce from three builds and compares them, version byte and timestamp masked, and in the
+# announce the three tt_AnnounceHeader fields tt_VERSION 13 added (with the padding they move):
 #
 #   control  the parent against itself, two separate builds - identical, or the capture is not deterministic and
 #            the comparison below could not decide anything;
@@ -10,10 +11,12 @@
 #            reference is not the parent's (--regenerate rewrites it from the parent);
 #   change   this tree against the parent - identical: what `make test` asserts;
 #   mutant   this tree with every sample sent as a large one (FRAG_FIRST_L/_CONT_L) - must DIFFER, or the comparison
-#            cannot see the change it exists to catch.
+#            cannot see the change it exists to catch;
+#   mutant2  this tree with the announce's entity count off by one - must DIFFER, or the announce mask hides more
+#            than the fields it is meant to.
 #
-# Usage: tests/wire_identity_largemsg.sh [--regenerate] [PARENT]     PARENT defaults to a47b85e1, the commit the change
-# was made on. Prints one line per check and exits non-zero if any check fails.
+# Usage: tests/wire_identity_largemsg.sh [--regenerate] [PARENT]     PARENT defaults to b6d23033, the parent of the
+# hybrid transport's tt_VERSION 13 (a47b85e1, stage 2's parent, captured the same small-sample bytes). Prints one line per check and exits non-zero if any check fails.
 set -euo pipefail
 
 regenerate=0
@@ -22,7 +25,7 @@ if [ "${1:-}" = "--regenerate" ]; then
     shift
 fi
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-PARENT=${1:-a47b85e1}
+PARENT=${1:-b6d23033}
 GOLDEN="$ROOT/tests/wire_identity/largemsg_parent.bin"
 CC=${CC:-gcc}
 
@@ -75,13 +78,14 @@ verdict golden same "$TMP/parent_a.bin" "$GOLDEN"
 capture "$ROOT" "$ROOT/src/tickle.c" "$TMP/change.bin"
 verdict change same "$TMP/parent_a.bin" "$TMP/change.bin"
 
-# The mutant: every sample above 0 bytes takes the large path. Two anchors, each of which must match exactly once.
+# The mutant: every sample above 0 bytes takes the large path. The anchor must match exactly once (it had gone stale
+# by b6d23033, when the large branch moved ahead of the range check, and the script stopped there).
 python3 - "$ROOT/src/tickle.c" "$TMP/mutant_tickle.c" <<'EOF'
 import sys
 text = open(sys.argv[1]).read()
 for old, new in [
-    ("    if (cdr_len < 0 || cdr_len > tt_MAX_SAMPLE_LENGTH) {\n#if tt_LARGE_SAMPLES\n        if (cdr_len > tt_MAX_SAMPLE_LENGTH) {",
-     "    if (cdr_len < 0 || cdr_len > 0) {\n#if tt_LARGE_SAMPLES\n        if (cdr_len > 0) {"),
+    ("#if tt_LARGE_SAMPLES\n    if (cdr_len > tt_MAX_SAMPLE_LENGTH) {\n        return publish_large_instead(",
+     "#if tt_LARGE_SAMPLES\n    if (cdr_len > 0) {\n        return publish_large_instead("),
 ]:
     if text.count(old) != 1:
         sys.exit(f"mutant anchor matched {text.count(old)} times, not 1")
@@ -93,6 +97,24 @@ if [ -s "$TMP/mutant.bin" ]; then
     verdict mutant differ "$TMP/parent_a.bin" "$TMP/mutant.bin"
 else
     echo "FAIL  mutant   produced no capture"
+    failed=1
+fi
+
+# The second mutant: the announce's entity count off by one, which the announce mask must not hide.
+python3 - "$ROOT/src/tickle.c" "$TMP/mutant2_tickle.c" <<'EOF2'
+import sys
+text = open(sys.argv[1]).read()
+old = "    announce->entity_count = (uint8_t)entity_count;\n\n    bool is_flush"
+new = "    announce->entity_count = (uint8_t)(entity_count + 1);\n\n    bool is_flush"
+if text.count(old) != 1:
+    sys.exit(f"mutant2 anchor matched {text.count(old)} times, not 1")
+open(sys.argv[2], "w").write(text.replace(old, new))
+EOF2
+capture "$ROOT" "$TMP/mutant2_tickle.c" "$TMP/mutant2.bin" || true
+if [ -s "$TMP/mutant2.bin" ]; then
+    verdict mutant2 differ "$TMP/parent_a.bin" "$TMP/mutant2.bin"
+else
+    echo "FAIL  mutant2  produced no capture"
     failed=1
 fi
 
