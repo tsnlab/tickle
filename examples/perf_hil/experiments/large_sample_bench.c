@@ -58,6 +58,7 @@
 #include <sys/resource.h> // NOLINT(misc-include-cleaner) - getrusage(): struct rusage lives in a glibc-private header
 #include <tickle/config.h>
 #include <tickle/hal.h>
+#include <tickle/hal_linux.h> // tt_hal_rx_socket_drops()
 #include <tickle/tickle.h>
 
 #define BENCH_HEADER 16U // send_ns (8), index (4), reserved (4)
