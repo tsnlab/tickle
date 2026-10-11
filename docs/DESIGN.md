@@ -298,8 +298,8 @@ KEEP_ALL writer would stop at its bound. So the writer solicits acks itself (a H
 
 **A sample that does not fit one control datagram is split by TickLE, never by IP.** OS IP fragmentation failed
 97.4% of reassemblies at 5% loss; TickLE fragments are repaired one datagram at a time. Since 2026-10-11 a writer may
-put several fragments in one IP-fragmented datagram, as many as loss and cost allow ("Hybrid transport" below, not
-built).
+put several fragments in one IP-fragmented datagram, as many as loss and cost allow ("Hybrid transport" below, steps 1
+to 5 built on `ab/hybrid-step34`, not on main).
 
 **Sizes.**
 
@@ -572,7 +572,7 @@ Where it departs, and why:
   unmapped the ring under the drain. The kind it replaced is kept (`lend.rx_outer_kind`).
 - Not yet: large samples in a local durable backlog (`tt_Subscriber_deliver_local_backlog()`), and step B.
 
-### Hybrid transport for multi-datagram samples (designed 2026-10-11; steps 1 and 2 built)
+### Hybrid transport for multi-datagram samples (designed 2026-10-11; steps 1 to 5 built, the rig campaign not run)
 
 **Status.** Step 1 (below) is built: `tt_VERSION` 13, `_tt_CONFIG.large_fragmentation` and `.ip_reassembly_max`, the
 Publisher's `large_fragmentation` and `ip_datagram_max`, the three announce fields (the cost fields always 0), and the
@@ -582,7 +582,9 @@ then handed to the fragment path unit by unit, each under its own seq_no, so `FR
 assembly and `FRAG_RUN` in `frag_scratch`, a reorder slot or the BE pool, with no staging copy. A run never holds a sample's last unit,
 which is what lets a type-14 receiver derive the sender's unit size from the length. Tests: `tests/test_hybrid_runs.c`,
 `tests/mutants_hybrid_transport.py`, and a real IP-fragmented receive in a netns
-(`examples/perf_hil/experiments/hybrid_run_rx.sh`). Not yet built: the cost and loss counters, sending runs.
+(`examples/perf_hil/experiments/hybrid_run_rx.sh`). Steps 3 to 5 are built (`tt_HYBRID_TRANSPORT`, off on FreeRTOS):
+sending runs, RELIABLE AUTO's `C(n)`, the loss bound, the cost fit, the reader's cap and withdrawal - as below, with
+the departures listed under "Steps 3 to 5 as built". Not run: the rig campaign (step 6).
 
 **The decision.** The user lifted the IP fragmentation park on 2026-10-11 and generalised it the same day: each
 writer chooses, per peer, how many MTU fragments go into one IP-fragmented UDP datagram, from a cost model and the
@@ -767,6 +769,60 @@ differs from the one forced.
    offset (`n` = 1 within one sample), a mocked HAL counter for the `ReasmFails` path, and mixed peers (one advertising
    0) by unicast (each its own `n`) and broadcast (the minimum). A FreeRTOS-configured build skips 14/15.
 6. The rig campaign above, including I1L1's three arms and the model check, then RESULTS.
+
+#### Steps 3 to 5 as built (2026-10-11), and where they depart
+
+Built as designed: runs of `n` units from three units up, the last unit alone in a send call of its own; `n` per sample
+and destination (by unicast each peer's, by broadcast the minimum over the matched peers), 1 for an undiscovered peer,
+one advertising less than two units, a same-host peer reached through its segment, and every repair and backlog; best
+effort `n_max`, RELIABLE AUTO the exact minimum of `C(n)` under the reader's cap; the 95% Poisson bound (exact to 10
+events, Wilson-Hilferty above) behind `loss_estimate_observe()` / `loss_estimate_p()`, the one interface a time-varying
+estimator replaces; sums halved at 2^17 frames; the cost fit judged every 8,192 frames (64 calls, share error under 0.1,
+within 2x of `getrusage()`), the platform default otherwise (`tt_HYBRID_TX/RX_DATAGRAM/FRAME_NS`: 6.25/5.6 and
+5.6/3.2 us, from the rig's Fast DDS pair); the receiver's accepted costs in its announce; the reader's cap quantised
+1/2/4/8/16/32/`n_max`, a change announced at once as a new generation; `ReasmFails + ReasmTimeout` read once per
+announce interval, released after 2T still. Tests: `tests/test_hybrid_send.c` (with `tests/mutants_hybrid_send.py`,
+79 mutants) and `examples/perf_hil/experiments/hybrid_send_netns.sh` (15 real-IP cells, receiver-side captures read by
+`hybrid_pcap.py`). rmw_tickle reads `RMW_TICKLE_LARGE_FRAGMENTATION`, `RMW_TICKLE_REASSEMBLY_CAP_OFF` and
+`RMW_TICKLE_RUN_UNITS` for the rig's forced arms.
+
+Where it departs, and why:
+
+- **Re-NACKs are not events, repairs are not exposure.** Counted as written, a veth at 1% read p near 4% for forced IP
+  (38 events a 1 MB sample against ~9): repairs queued behind a large sample's runs are re-NACKed while still in flight,
+  and the ACKNACK alone cannot tell that from a lost repair. The estimate is the loss of first transmissions, which is
+  what `n` is chosen for. Every first transmission to a RELIABLE reader is exposure whatever its `n` (counted only when
+  runs were possible, a capped reader's NACKs read 3.4% on a 1% link).
+- **U is the units sent to the reader as it sees them** (arrivals and gaps), not arrivals: with arrivals alone a path
+  that loses every run reads as no load and keeps `n_max`.
+- **The withdrawal fires while runs could arrive** (units came, and the advertisement allowed runs), not on whole runs
+  received: a run that lost a fragment never reaches the process, so on the path the withdrawal is for it never fired.
+- **The cost fit weights each call by 1 / f^2** (its relative error). Unweighted, a 45-frame call's noise buried c_d,
+  which only the one-frame tails measure: share error 0.13 at 5% noise against 0.005. The receiver times a datagram
+  from the start of its processing, not the receive call (recvmmsg() has none per datagram), so the kernel's copy is
+  outside it; the CPU check judges that.
+- **A forced arm's reader needs `reassembly_cap_off`** (no cap, no withdrawal): forced IP is `n_max`, the reader's
+  advertisement, which holds the cap. At 1 MB, 30 Hz and 1% that cap is 1 (this section's own figure), and on a veth the
+  incomplete reassemblies passed `ipfrag_high_thresh` within a second, so the withdrawal made a forced arm MTU too.
+- **I1L1 as pre-registered cannot be won at the kernel's defaults.** At 1 MB, 30 Hz, 1% the reader's cap is 1, so AUTO
+  is the MTU arm (on the veth: 211 of 240 samples at `n` = 1) and "AUTO WINs against forced MTU" can only DRAW. The cap
+  allows `n` = 8 (`C(n)`'s choice) at `ipfrag_time` 1 s, or at about 1/30 of the rate. A decision for the campaign.
+- **`n` does not reach 1 within one sample on a path that drops every IP fragment.** A lost run is one event on `n`
+  frames, which reads "every run lost" as frame loss near 1/n: from 45 the unit test goes 45, 17, 11, 8 ... 2 over 25
+  samples, and on the veth (fragments dropped at the reader) RELIABLE delivered every sample, all repairs MTU, at 84 of
+  240 samples' rate and ~20x the CPU. Best effort on such a path is caught only by the reader's cap and the withdrawal.
+  Left to the time-varying estimator (ROADMAP, Later): estimating the run loss rate and inverting it would give
+  `p` = 1 at once.
+- **PC evidence, not rig figures** (`hybrid_pc_ab.sh`, veth, 5 reps, A/A floor 1-3.5%): instructions per MB against
+  the parent at 0% - 1 MB pub -14.1% / sub -11.2% (BE), -14.3% / -9.4% (RELIABLE); 4 MB -12.2% / -16.4% (BE), -12.5% /
+  -8.7% (RELIABLE). Two results against the expectation: 4 MB best effort delivered 88.4% of samples against the
+  parent's 97.8% (66 reassembled datagrams a sample overrun the receive buffer, which neither `p` nor `ReasmFails`
+  sees), and 4 MB RELIABLE at 1% cost +1.6% pub / +1.8% sub (n mostly 1 under the cap, with ramps that lose runs).
+  The sender's fit was accepted on the PC (c_d 3.7-6.0 us, c_f 1.5-1.8 us); the receiver's never (0 of 15-32 checks).
+  Core P1-P3 binaries are bit-identical to the parent's (fragmentation compiles out); P4's instructions held.
+- **GSO is not combined with runs** (`ab/udp-offload-v2` sends FRAG_L batches with `UDP_SEGMENT`): a run is one
+  datagram that IP fragments, the opposite of segmentation; the two meet only in that a sample's MTU units (n = 1, the
+  tail, repairs) can still go by GSO when that branch lands.
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
