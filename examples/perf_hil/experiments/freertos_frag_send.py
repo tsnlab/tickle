@@ -61,6 +61,16 @@ def main() -> int:
     s.setsockopt(socket.IPPROTO_IP, IP_MTU_DISCOVER, IP_PMTUDISC_DONT)
     pad = bytes(size - 16)
     interval = size / rate
+    # Warm-up: the guest's first datagrams after boot lose 1-3 at >= 1.25 MB/s even at p = 0 (probe2, seq 2-4), a
+    # start-up transient unrelated to reassembly. 200 unfragmented datagrams at the cell's frame rate, flagged so the
+    # guest does not count them, then a 0.3 s pause so no warm-up frame is still queued.
+    warm = struct.pack("<IIIHH", MAGIC, cell, 0, 1, 2) + bytes(UNIT - 16)
+    t_w = time.perf_counter()
+    for i in range(200):
+        while time.perf_counter() < t_w + i * UNIT / rate:
+            pass
+        s.sendto(warm, (dst, PORT))
+    time.sleep(0.3)
     print(f"send: start {counters(dev)}", flush=True)
     errors = 0
     t0 = time.perf_counter()

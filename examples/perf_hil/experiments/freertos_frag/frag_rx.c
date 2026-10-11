@@ -39,6 +39,7 @@
 #define FRAG_MAGIC 0x46524147U // "FRAG"
 #define FRAG_UNIT 1446U
 #define FRAG_FLAG_END 1U
+#define FRAG_FLAG_WARMUP 2U // not counted: the first datagrams after boot lose 1-3 at >= 1.25 MB/s (probe2)
 #define FRAG_HDR_BYTES 16U
 #define BITMAP_BITS (1U << 20)
 #define MAX_GAPS_PRINTED 48U
@@ -93,6 +94,7 @@ static void rx_task(void* param) {
     uint32_t dup = 0;
     uint32_t bad_len = 0;
     uint32_t foreign = 0;
+    uint32_t warmup = 0;
     uint32_t max_seq = 0;
     TickType_t first_ms = 0;
     TickType_t last_tick = xTaskGetTickCount();
@@ -123,6 +125,10 @@ static void rx_task(void* param) {
         uint32_t seq = get_u32(hdr + 8);
         uint32_t n = get_u32(hdr + 12) & 0xffffU;
         uint32_t flags = get_u32(hdr + 12) >> 16;
+        if (flags & FRAG_FLAG_WARMUP) {
+            warmup++;
+            continue;
+        }
         if (cell == 0) {
             cell = this_cell;
             n_units = n;
@@ -160,11 +166,12 @@ static void rx_task(void* param) {
                 longest = run > longest ? run : longest;
             }
             printf("\n");
-            printf("frag_rx: final cell=%lu n=%lu sent=%lu got=%lu dup=%lu bad_len=%lu foreign=%lu max_seq=%lu "
-                   "gaps=%lu longest_gap=%lu span_ms=%lu\n",
-                   (unsigned long)cell, (unsigned long)n_units, (unsigned long)sent, (unsigned long)got,
-                   (unsigned long)dup, (unsigned long)bad_len, (unsigned long)foreign, (unsigned long)max_seq,
-                   (unsigned long)gaps, (unsigned long)longest, (unsigned long)(now - first_ms));
+            printf(
+                "frag_rx: final cell=%lu n=%lu sent=%lu got=%lu dup=%lu bad_len=%lu foreign=%lu warmup=%lu max_seq=%lu "
+                "gaps=%lu longest_gap=%lu span_ms=%lu\n",
+                (unsigned long)cell, (unsigned long)n_units, (unsigned long)sent, (unsigned long)got,
+                (unsigned long)dup, (unsigned long)bad_len, (unsigned long)foreign, (unsigned long)warmup,
+                (unsigned long)max_seq, (unsigned long)gaps, (unsigned long)longest, (unsigned long)(now - first_ms));
             print_witnesses("stats");
             printf("frag_rx: END\n");
             vTaskDelay(pdMS_TO_TICKS(50));

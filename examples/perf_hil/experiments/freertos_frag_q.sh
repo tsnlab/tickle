@@ -104,8 +104,8 @@ smoke)
     run_cell smoke "$ELF" $LO 9 0.01 3
     ;;
 probe)
-    for r in 1000000 2000000 4000000 6000000 8000000 12000000 16000000 24000000 32000000; do
-        run_cell probe "$ELF" $r 1 0 8
+    for r in ${PROBE_RATES:-1000000 2000000 4000000 6000000 8000000 12000000 16000000 24000000 32000000}; do
+        run_cell probe "$ELF" "$r" 1 0 "${PROBE_SECS:-8}"
     done
     ;;
 main)
@@ -122,6 +122,11 @@ main)
         done
     done
     run_cell aa2 "$ELF" $LO 4 0.01 30
+    # Supplementary, not judged by F1-F4: 1 MB/s turned out to be about half the guest's n=1 ceiling (the probe), so
+    # the lossy middle of the grid also runs at a quarter of it, to see whether q(n) depends on rate below 1 MB/s.
+    for n in 2 4 8; do
+        run_cell vlow "$ELF" 250000 $n 0.01 30
+    done
     if [ -x "$ELF_POOL16" ]; then
         for n in 8 9 10 11; do
             run_cell pool16 "$ELF_POOL16" $LO $n 0 10

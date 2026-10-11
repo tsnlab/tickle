@@ -31,6 +31,11 @@ Per cell: q_hat = got/sent with a Wilson 95% interval [lo, hi]; pred = (1-p)^f(n
      (b) no p = 0 cell with f(n) <= L has hi < pred. HOLDS iff (a) and (b). Supplementary, not part of the verdict:
      per (n, p) whether the high-rate q is below the low-rate q beyond both CIs (hi_high < lo_low), i.e. whether the
      deficit is attributable to rate.
+  F3 amendment (b'), added after the rate probes and before the main run: at every rate above 1 MB/s the guest drops
+     1-5 datagrams per ~10^4 even at n=1, p=0 (probe3: all frames reached udp_recv; the netconn recvmbox of 8
+     overflowed - an application-side drop, not reassembly). Strict (b) is then falsified by n=1 itself. (b') judges
+     the p=0 cells against the rate's own n=1, p=0 cell instead of 1: a p=0 cell with f(n) <= L fails (b') when its
+     hi < lo of that baseline. Both (b) and (b') are printed; F3' = (a) and (b').
   Control (A/A): the cell (1 MB/s, n=4, p=0.01) runs twice, first and last. Two-proportion z on the two q_hat; |z| >
      1.96 means cell-to-cell variance exceeds binomial and every CI verdict above is overconfident - printed as such.
   Treatment check (every cell): realized fragment loss from the netem counters, dropped / (sent + dropped), during the
@@ -183,6 +188,10 @@ def analyze(out: Path) -> int:
         j = judged(rate)
         a = [r for r in j if 2 <= frags(r["n"]) <= lim and r["p"] > 0 and r["hi"] < r["pred"]]
         b = [r for r in j if frags(r["n"]) <= lim and r["p"] == 0 and r["hi"] < r["pred"]]
+        base = [r for r in j if r["n"] == 1 and r["p"] == 0]
+        b2 = [r for r in j if frags(r["n"]) <= lim and r["p"] == 0 and base and r["hi"] < base[0]["lo"]]
+        print(f"F3' rate={rate:.0f}: {'HOLDS' if a and base and not b2 else 'FALSIFIED'} (b': {len(b2)} p=0 cells below the n=1 p=0 baseline)"
+              + "".join(f"\n   p=0 below baseline: n={r['n']} q={r['q']:.4f} hi={r['hi']:.4f}" for r in b2))
         print(f"F3 rate={rate:.0f}: {'HOLDS' if a and not b else 'FALSIFIED'} (a: {len(a)} lossy cells below model beyond CI; b: {len(b)} p=0 cells below)"
               + "".join(f"\n   below: n={r['n']} p={r['p']} q={r['q']:.4f} hi={r['hi']:.4f} pred={r['pred']:.4f}" for r in a)
               + "".join(f"\n   p=0 below: n={r['n']} q={r['q']:.4f}" for r in b))
