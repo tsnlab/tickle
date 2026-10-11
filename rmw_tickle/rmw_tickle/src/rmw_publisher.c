@@ -690,6 +690,39 @@ static int32_t encode_with_psn(struct tt_Data* data, uint8_t* payload, const uin
     return encoded < 0 ? encoded : encoded + (int32_t)header;
 }
 
+// Core's ranged encode (core DESIGN.md section 8, "Encoding while sending"): a range of what encode_with_psn() writes,
+// for the two kinds of message whose bytes are already in memory - a serialized message, and a type whose wire bytes
+// are its message (callbacks->inplace_bytes, which loans rely on too) - so that a large one is copied a send call at a
+// time, just ahead of the datagrams carrying it, rather than all of it before the first leaves. Every other message
+// declines, and core encodes it whole with encode_with_psn(). An in-place message's padding holes go as its memory
+// holds them, as a loaned message's do; a decoder never reads them.
+static int32_t encode_range_with_psn(struct tt_Data* data, uint8_t* payload, uint32_t offset, uint32_t len) {
+    const rmw_tickle_outgoing_message_t* message = (const rmw_tickle_outgoing_message_t*)data;
+    const uint8_t* body = message->serialized;
+    size_t body_len = message->serialized_len;
+    if (NULL == body) {
+        if (NULL == message->ros_message || 0 == message->callbacks->inplace_bytes) {
+            return -1;
+        }
+        body = (const uint8_t*)message->ros_message;
+        body_len = message->callbacks->inplace_bytes;
+    }
+    uint8_t header[RMW_TICKLE_PSN_BYTES];
+    uint32_t header_len = rmw_tickle_psn_write(message->publication_sequence_number, header);
+    if ((uint64_t)offset + len > (uint64_t)header_len + body_len) {
+        return -1;
+    }
+    uint32_t done = 0;
+    if (offset < header_len) {
+        done = header_len - offset < len ? header_len - offset : len;
+        memcpy(payload, header + offset, done);
+    }
+    if (done < len) {
+        memcpy(payload + done, body + (offset + done - header_len), len - done);
+    }
+    return (int32_t)len;
+}
+
 // Core's cache counts seq_no, and every datagram of a fragmented message takes its own
 // (DATAFRAG_PLAN.md section 13), so a KEEP_LAST ring of `depth` would hold depth / k messages of k
 // fragments. Its ring is sized in datagrams instead - depth times the datagrams one reserved message
@@ -939,6 +972,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     pub_impl->topic.data_size = (uint32_t)callbacks->tickle_struct_size;
     pub_impl->topic.data_encode_size = encode_size_with_psn;
     pub_impl->topic.data_encode = encode_with_psn;
+    pub_impl->topic.data_encode_range = encode_range_with_psn; // used for large samples only
     pub_impl->topic.data_decode = callbacks->tickle_decode;
     pub_impl->topic.data_free = callbacks->tickle_free;
     // data_encode_inplace/data_decode_inplace stay NULL (zero_allocate) - no zero-copy support.
