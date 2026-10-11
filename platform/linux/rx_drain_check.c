@@ -24,9 +24,10 @@
 //                same datagram sent again is read whole.
 //   5. sized   - asked for 65,507-byte datagrams, the drain rebuilds its buffers for them, and a burst of them
 //                through the smallest socket buffer arrives whole.
-//   6. merged  - receive offload on (UDP_GRO, the state core's reads put it in for MTU-mode fragments), a run of
-//                same-size datagrams sent as one UDP_SEGMENT send, which loopback hands to the socket merged: the drain
-//                takes it with UDP_GRO's size, its buffers sized for a merged read whatever core asked, and hands the
+//   6. merged  - (run before 5, while the buffers are a fragment's) receive offload on (UDP_GRO, the state core's
+//                reads put it in for MTU-mode fragments), a run of same-size datagrams sent as one UDP_SEGMENT send,
+//                which loopback hands to the socket merged: the drain takes it with UDP_GRO's size, its buffers
+//                set up again for a merged read though core asked for a fragment's, and hands the
 //                datagrams out one at a time, whole and in order - none cut, none dropped (drain_merged counts the
 //                merged reads: 0 means loopback did not merge, and the check says so rather than pass on nothing).
 //   7. rearm   - an overrun does not end the drain for the rest of its time: every buffer filled and one datagram more
@@ -276,6 +277,7 @@ static enum check_exit check_merged(struct tt_Context* node, int sender) {
         return CHECK_PASS;
     }
     node->hal.gro_state = CHECK_GRO_ON;
+    uint32_t small = node->hal.drain_size;
     uint32_t drops = tt_hal_rx_socket_drops(node);
     uint64_t cut = node->hal.drain_truncated;
     uint64_t merged = node->hal.drain_merged;
@@ -292,6 +294,16 @@ static enum check_exit check_merged(struct tt_Context* node, int sender) {
     int arrived = 0;
     bool in_order = read_in_order(node, PAYLOAD_BYTES, 0, 2 * MERGED_SEGMENTS, &arrived);
     uint64_t merged_reads = node->hal.drain_merged - merged;
+    // Receive offload off again for the checks after this one, as core's reads leave it once small traffic resumes.
+    int disable = 0;
+    (void)setsockopt(node->hal.data_sock, SOL_UDP, UDP_GRO, &disable, sizeof disable);
+    node->hal.gro_state = 0; // hal_linux.c's TT_GRO_PLAIN
+    if (small >= (uint32_t)tt_MAX_BUFFER_LENGTH) {
+        printf("rx_drain_check: SETUP FAILED - merged: the buffers were already %u bytes, so their size decided "
+               "nothing\n",
+               (unsigned)small);
+        return CHECK_SETUP_FAILED;
+    }
     if (merged_reads == 0) {
         printf("rx_drain_check: SETUP FAILED - merged: loopback handed the drain no merged read (%d of %d arrived "
                "alone), so nothing was split\n",
@@ -485,14 +497,14 @@ int main(void) {
     if (result == CHECK_PASS) {
         result = check_cut(&node, sender);
     }
+#if TT_HAL_UDP_GRO
+    if (result == CHECK_PASS) {
+        result = check_merged(&node, sender); // before 5: the buffers are still a fragment's
+    }
+#endif
     if (result == CHECK_PASS) {
         result = check_sized(&node, sender);
     }
-#if TT_HAL_UDP_GRO
-    if (result == CHECK_PASS) {
-        result = check_merged(&node, sender);
-    }
-#endif
     if (result == CHECK_PASS) {
         result = check_rearm(&node, sender);
     }
