@@ -776,6 +776,11 @@
 #ifndef tt_HYBRID_FRAGMENT_TRUESIZE
 #define tt_HYBRID_FRAGMENT_TRUESIZE 2048
 #endif
+// How long a RELIABLE writer sends a reader MTU units only after judging its path to drop IP fragments, before it
+// re-probes with one run: the withdrawal's 2T at the kernel's default ipfrag_time (DESIGN.md section 8).
+#ifndef tt_HYBRID_PATH_CLEAN_NS
+#define tt_HYBRID_PATH_CLEAN_NS (60ULL * tt_SECOND)
+#endif
 // The kernel's reassembly limits where they cannot be read: its own defaults, 4 MB and 30 s.
 #ifndef tt_HYBRID_IPFRAG_HIGH_THRESH
 #define tt_HYBRID_IPFRAG_HIGH_THRESH 4194304

@@ -978,6 +978,12 @@ static void test_reassembly_failures_withdraw_the_ceiling(void) {
 
 // --- step 4: RELIABLE runs with MTU repairs -------------------------------------------------------------------------
 
+// RELIABLE AUTO's n for a node, as a send asks for it.
+static uint32_t reliable_n(uint8_t context_id, uint32_t n_max) {
+    bool one_run = false;
+    return hybrid_reliable_n(&sender, &pub, context_id, n_max, &one_run);
+}
+
 // n follows p (forced through the test seam), by the cost model at the platform default costs - DESIGN.md's table
 // (45, 25, 11, 8, 4 at 0, 0.1, 0.5, 1 and 5% for a share of 0.6; the default share, 0.574, gives 24 at 0.1%) - and is
 // never above what the reader allows.
@@ -987,12 +993,12 @@ static void test_n_follows_p(void) {
     static const uint32_t ns[] = {45, 45, 24, 11, 8, 4, 2, 1, 1};
     for (size_t i = 0; i < sizeof(ps) / sizeof(ps[0]); i++) {
         hybrid_test_forced_p = ps[i];
-        EXPECT_EQ_U32(ns[i], hybrid_reliable_n(&sender, &pub, reader_id(0), 45));
-        EXPECT_EQ_U32(ns[i] < 2U ? ns[i] : 2U, hybrid_reliable_n(&sender, &pub, reader_id(0), 2));
+        EXPECT_EQ_U32(ns[i], reliable_n(reader_id(0), 45));
+        EXPECT_EQ_U32(ns[i] < 2U ? ns[i] : 2U, reliable_n(reader_id(0), 2));
     }
     // A node with no reader of this Publisher: 1.
     hybrid_test_forced_p = 0.0;
-    EXPECT_EQ_U32(1, hybrid_reliable_n(&sender, &pub, 77, 45));
+    EXPECT_EQ_U32(1, reliable_n(77, 45));
     // Two readers on one node: the most pessimistic one's p decides - 10 events in 1,000 frames (bound 1.7%: 6), not
     // none in 100,000 (45).
     hybrid_test_forced_p = -1.0;
@@ -1001,10 +1007,10 @@ static void test_n_follows_p(void) {
     if (second != NULL) {
         pub.peer_acks[0].loss = (struct tt_LossEstimate) {0, 100000};
         second->loss = (struct tt_LossEstimate) {10, 1000};
-        EXPECT_EQ_U32(6, hybrid_reliable_n(&sender, &pub, reader_id(0), 45));
+        EXPECT_EQ_U32(6, reliable_n(reader_id(0), 45));
         second->loss = (struct tt_LossEstimate) {0, 100000};
         pub.peer_acks[0].loss = (struct tt_LossEstimate) {10, 1000};
-        EXPECT_EQ_U32(6, hybrid_reliable_n(&sender, &pub, reader_id(0), 45));
+        EXPECT_EQ_U32(6, reliable_n(reader_id(0), 45));
         forget_peer_ack(&pub, reader_id(0), 0x51515151U, false);
         pub.peer_acks[0].loss = (struct tt_LossEstimate) {0, 0};
     }
@@ -1146,11 +1152,10 @@ static void test_keep_all_bounds_are_unchanged(void) {
     EXPECT_EQ_U32(66, sent.runs + sent.mtu);
 }
 
-// A path that drops every IP fragment, met after n has reached 45: every run is lost and repaired as MTU units, so
-// delivery stays whole and in order, and n falls as the NACKed runs raise p - 45, 17, 11, 8 on the first four samples.
-// It does not reach 1 within one sample, as DESIGN.md expects, nor within 25: a lost run is one event on n frames,
-// which reads a path that loses every run as a frame loss near 1/n, and the clean history holds the bound down. The
-// trajectory is printed; the time-varying estimator (ROADMAP, Later) is where this belongs.
+// A path that drops every IP fragment, met after n has reached 45: the next sample's runs are all lost whole while its
+// tail arrives - the path is judged failed, not lossy - and every sample after it goes as MTU units, needing no repair,
+// as the forced-MTU arm's would. After tt_HYBRID_PATH_CLEAN_NS one sample re-probes with a single run: lost, and the
+// path is failed again; with the filter gone, it gets through and n returns. Every sample whole and in order.
 static void test_reliable_through_a_path_that_drops_fragments(void) {
     init_one(ONE_MB, FULL_CEILING, true);
     sim_start(0);
@@ -1161,23 +1166,107 @@ static void test_reliable_through_a_path_that_drops_fragments(void) {
     }
     EXPECT_EQ_U32(45, sent.max_n);
     sim_drop_fragmented = true;
-    static const uint32_t expected_n[] = {45, 17, 11, 8};
-    printf("test_hybrid_send: fragments dropped after n = 45; n per sample:");
-    for (uint32_t k = 0; k < 25; k++, s++) {
+    memset(&sent, 0, sizeof(sent));
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
+    sim_settle(s, 5 * tt_SECOND);
+    s++;
+    EXPECT_EQ_U32(45, sent.max_n); // the sample that meets the filter
+    EXPECT_TRUE(pub.peer_acks[0].path_failed_ns != 0);
+    EXPECT_EQ_U32(1, pub.peer_acks[0].path_failures);
+    for (int k = 0; k < 5; k++, s++) {
         memset(&sent, 0, sizeof(sent));
         EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
         sim_settle(s, 5 * tt_SECOND);
-        printf(" %u", sent.max_n);
-        if (k < sizeof(expected_n) / sizeof(expected_n[0])) {
-            EXPECT_EQ_U32(expected_n[k], sent.max_n);
-        }
-        EXPECT_EQ_U32(0, sent.repair_runs);
-        EXPECT_TRUE(sent.repair_largest <= tt_CONTROL_MAX_LENGTH);
+        EXPECT_EQ_U32(0, sent.runs); // the second sample on: MTU units, as the forced-MTU arm
+        EXPECT_EQ_U32(0, sent.repairs);
     }
-    printf("\n");
-    EXPECT_TRUE(sent.max_n >= 2U); // still not 1 after 25 samples: the finding, kept visible
+    // The clean period passes: one sample re-probes with one run, the rest MTU; it is lost, so the path fails again.
+    test_mock_now += tt_HYBRID_PATH_CLEAN_NS;
+    memset(&sent, 0, sizeof(sent));
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
+    sim_settle(s, 5 * tt_SECOND);
+    s++;
+    EXPECT_EQ_U32(1, sent.runs);
+    EXPECT_EQ_U32(723 - sent.run_units, sent.mtu); // the run of n units, the rest MTU
+    EXPECT_EQ_U32(2, pub.peer_acks[0].path_failures);
+    memset(&sent, 0, sizeof(sent));
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
+    sim_settle(s, 5 * tt_SECOND);
+    s++;
+    EXPECT_EQ_U32(0, sent.runs);
+    // The filter goes; after the clean period the re-probe gets through and the next sample is in runs again.
+    sim_drop_fragmented = false;
+    test_mock_now += tt_HYBRID_PATH_CLEAN_NS;
+    memset(&sent, 0, sizeof(sent));
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
+    sim_settle(s, 5 * tt_SECOND);
+    s++;
+    EXPECT_EQ_U32(1, sent.runs);
+    memset(&sent, 0, sizeof(sent));
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
+    sim_settle(s, 5 * tt_SECOND);
+    s++;
+    EXPECT_TRUE(sent.runs > 1);
+    EXPECT_EQ_U64(0, pub.peer_acks[0].path_failed_ns);
     expect_intact(0, s - 1);
     EXPECT_TRUE(readers[0].in_order);
+}
+
+// The judgement on its own: a sample of 100 units sent as two runs (0-44, 45-89 ... here 0-98 in runs of 45: three)
+// and its tail. Every run unit NACKed with the tail too is loss, not a failed path; without the tail it is.
+static void test_a_failed_path_needs_the_tail_through(void) {
+    init_one(ONE_MB, FULL_CEILING, true);
+    struct tt_PeerAck* ack = &pub.peer_acks[0];
+    uint32_t entity = readers[0].sub.endpoint.entity_id;
+    hybrid_note_exposure(&pub, reader_id(0), 45, 100, 1000, 99);
+    EXPECT_EQ_U32(3, ack->watch_runs);
+    uint64_t bitmap[2] = {~0ULL, (1ULL << 36U) - 1U}; // 1000..1099: every run unit and the tail
+    hybrid_note_nacks(&pub, reader_id(0), entity, 1000, bitmap, 2);
+    EXPECT_EQ_U32(0, ack->path_failures);
+    hybrid_note_exposure(&pub, reader_id(0), 45, 100, 2000, 99);
+    bitmap[1] = (1ULL << 35U) - 1U; // 2000..2098: the runs, not the tail
+    hybrid_note_nacks(&pub, reader_id(0), entity, 2000, bitmap, 2);
+    EXPECT_EQ_U32(1, ack->path_failures);
+    EXPECT_TRUE(ack->path_failed_ns != 0);
+    // A sample one of whose runs got through: no judgement.
+    ack->path_failed_ns = 0;
+    ack->all_lost_streak = 0;
+    hybrid_note_exposure(&pub, reader_id(0), 45, 100, 3000, 99);
+    bitmap[0] = 0;
+    bitmap[1] = (1ULL << 35U) - 1U; // 3064..3098 only
+    hybrid_note_nacks(&pub, reader_id(0), entity, 3000, bitmap, 2);
+    EXPECT_EQ_U32(1, ack->path_failures);
+}
+
+// Real frame loss is not a failed path: at 5% frame loss AUTO runs n by the cost model, its runs are lost now and then
+// but never every run of a sample with the tail through, and the path is never judged failed (40 samples of 1 MB).
+// A run of one unit lost twice in a row (a 3-unit sample, one run) is enough on its own - two samples, not one.
+static void test_frame_loss_is_not_a_failed_path(void) {
+    init_one(ONE_MB, FULL_CEILING, true);
+    sim_start(50000);
+    for (uint8_t s = 1; s <= 40; s++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
+        sim_settle(s, 5 * tt_SECOND);
+    }
+    EXPECT_EQ_U32(0, pub.peer_acks[0].path_failures);
+    expect_intact(0, 40);
+    init_one(3500, FULL_CEILING, true);
+    pub.large_fragmentation = tt_LARGE_FRAGMENTATION_AUTO;
+    hybrid_test_forced_p = 0.0; // n = n_max: one run of two units and the tail
+    sim_start(0);
+    sim_drop_fragmented = true;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+    sim_settle(1, 5 * tt_SECOND);
+    EXPECT_EQ_U32(0, pub.peer_acks[0].path_failures); // one sample, one run: not yet
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(2));
+    sim_settle(2, 5 * tt_SECOND);
+    EXPECT_EQ_U32(1, pub.peer_acks[0].path_failures); // the second in a row
+    memset(&sent, 0, sizeof(sent));
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(3));
+    sim_settle(3, 5 * tt_SECOND);
+    EXPECT_EQ_U32(0, sent.runs);
+    hybrid_test_forced_p = -1.0;
+    expect_intact(0, 3);
 }
 
 // --- step 5: measuring c_d and c_f
@@ -1330,7 +1419,7 @@ static void test_the_writer_uses_the_measured_costs(void) {
     sender.hybrid.tx_fit.frame_ns = 10000;
     sender.hybrid.peer_cost_datagram_ns[reader_id(0)] = 100;
     sender.hybrid.peer_cost_frame_ns[reader_id(0)] = 10000;
-    EXPECT_EQ_U32(1, hybrid_reliable_n(&sender, &pub, reader_id(0), 45));
+    EXPECT_EQ_U32(1, reliable_n(reader_id(0), 45));
     hybrid_test_forced_p = -1.0;
 }
 
@@ -1414,6 +1503,8 @@ int main(void) {
     test_mixed_reliable_readers_each_get_their_own_n();
     test_keep_all_bounds_are_unchanged();
     test_reliable_through_a_path_that_drops_fragments();
+    test_frame_loss_is_not_a_failed_path();
+    test_a_failed_path_needs_the_tail_through();
     test_the_cost_fit_recovers_the_costs();
     test_the_cost_fit_is_used_only_when_it_holds();
     test_the_writer_uses_the_measured_costs();
