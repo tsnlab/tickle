@@ -89,6 +89,22 @@ if [ -n "$BE_HISTORY" ]; then
     fi
     HISTORY_ARGS="-K $BE_HISTORY"
 fi
+# INSN_COUNT (gate v2 A2, 2026-10-11): 1 runs the tickle cell's client and server, both arms, under perf stat
+# (s6_witness_check.sh), and each of their RESULT lines carries insn_u= insn_k= insn=ok or insn=fail:<why>. As
+# campaign_sweep.sh: default 1 when FRAMEWORKS is tickle alone, 0 otherwise, and refused with a vendor in FRAMEWORKS -
+# no framework runs under an instrument the others do not. Checked here, before the lock.
+if [ -z "${INSN_COUNT:-}" ]; then
+    if [ "${FRAMEWORKS:-tickle fastdds cyclonedds}" = tickle ]; then INSN_COUNT=1; else INSN_COUNT=0; fi
+fi
+case "$INSN_COUNT:${FRAMEWORKS:-tickle fastdds cyclonedds}" in
+1:tickle | 0:*) ;;
+*)
+    echo "INSN_COUNT=$INSN_COUNT with FRAMEWORKS='${FRAMEWORKS:-tickle fastdds cyclonedds}': instruction counting is" \
+        "for FRAMEWORKS=tickle only (and 0 or 1)" >&2
+    exit 2
+    ;;
+esac
+export INSN_COUNT
 # What every BEST_EFFORT RESULT line must echo (BenchHistory.h); empty for the other scenarios, which print none.
 WANT_HISTORY=""
 [ "${SCEN:-reliable_throughput}" = best_effort_throughput ] && WANT_HISTORY="history_arg=${BE_HISTORY:-default}"
@@ -222,6 +238,7 @@ say "=== S6 transport cells $(date -Is) sha=$SHA scen=$SCEN size=$SIZE dur=${DUR
 say "    frameworks: $FRAMEWORKS"
 say "    window (every framework, client and server): $WINDOW_ARGS"
 say "    TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (the tickle cell's core and bench, both arms; empty: the plain build)"
+say "    INSN_COUNT=$INSN_COUNT (perf stat instructions:u/k on the tickle cell's client and server, both arms)"
 [ "$SCEN" = best_effort_throughput ] &&
     say "    BEST_EFFORT history (every framework, client and server): ${HISTORY_ARGS:-none passed, so each product runs its default} (${WANT_HISTORY})"
 fi
@@ -231,7 +248,7 @@ run_tickle_cell() {
     local sub="$OUT.tickle"
     say "### tickle cell: delegating to s6_witness_check.sh (validated 2026-09-30) rather than copying its arms ==="
     if ! OUT="$sub" DUR="$DUR" SCEN="$SCEN" SIZE="$SIZE" CLI_ARGS="$CLI_ARGS" WINDOW_ARGS="$WINDOW_ARGS" BUILD_FLAGS="$BUILD_FLAGS" \
-         HISTORY_ARGS="$HISTORY_ARGS" TICKLE_EXTRA_CFLAGS="$TICKLE_EXTRA_CFLAGS" \
+         HISTORY_ARGS="$HISTORY_ARGS" TICKLE_EXTRA_CFLAGS="$TICKLE_EXTRA_CFLAGS" INSN_COUNT="$INSN_COUNT" \
          TICKLE_DATAGRAM_BYTES="${TICKLE_DATAGRAM_BYTES:-}" TICKLE_RELIABLE_STATS="${TICKLE_RELIABLE_STATS:-}" \
          TICKLE_FRAG_SLOTS="${TICKLE_FRAG_SLOTS:-}" \
          "$REPO/examples/perf_hil/experiments/s6_witness_check.sh" "$SHA" "$REPS" >/dev/null 2>&1; then

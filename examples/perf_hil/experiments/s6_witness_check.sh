@@ -69,6 +69,21 @@ BUILD_FLAGS=${BUILD_FLAGS:-}
 # shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
 . "$REPO/examples/perf_hil/experiments/gate_v2_lib.sh"
 layout_cflags_default
+# INSN_COUNT (gate v2 A2, 2026-10-11; gate_v2_lib.sh insn_prefix / insn_fields / remote_child_of_perf, as
+# tickle/run_scenario.sh): 1 runs the client and the server of BOTH arms under `perf stat -x, -o <file> -e
+# instructions:u,instructions:k --` and appends "insn_u=<n> insn_k=<n> insn=ok" (or insn=fail:<why>) to that process's
+# RESULT line - the primary metric of a TickLE-vs-TickLE A/B. Default 1: this harness runs TickLE alone (as
+# campaign_sweep.sh's FWS=tickle). 0 runs both processes bare, as before. The PID a launch records is then perf's; the
+# server is perf's child (found by /proc exe), and is what is signalled and snapshotted, and perf is waited for so its
+# counts are written.
+INSN_COUNT=${INSN_COUNT:-1}
+case "$INSN_COUNT" in 0 | 1) ;; *) echo "INSN_COUNT must be 0 or 1, not '$INSN_COUNT'" >&2; exit 2 ;; esac
+SRV_INSN=/tmp/s6wit_server.insn CLI_INSN=/tmp/s6wit_client.insn
+SRV_PRE="" CLI_PRE=""
+if [ "$INSN_COUNT" = 1 ]; then
+    SRV_PRE=$(insn_prefix "$SRV_INSN")
+    CLI_PRE=$(insn_prefix "$CLI_INSN")
+fi
 case "$TICKLE_EXTRA_CFLAGS$BUILD_FLAGS" in
 *[!A-Za-z0-9=_\ .-]*)
     echo "BUILD_FLAGS/TICKLE_EXTRA_CFLAGS may hold only [A-Za-z0-9=_ .-]: '$BUILD_FLAGS' '$TICKLE_EXTRA_CFLAGS'" >&2
@@ -85,11 +100,12 @@ say() { echo "$*" | tee -a "$OUT"; }
 note() { echo "$*" >>"$OUT"; echo "$*" >&2; }
 say "  BUILD_FLAGS='$BUILD_FLAGS'"
 say "  TICKLE_EXTRA_CFLAGS='$TICKLE_EXTRA_CFLAGS' (TickLE core and bench, both arms; empty: the plain build)"
+say "  INSN_COUNT=$INSN_COUNT (perf stat instructions:u/k on the client and the server of both arms)"
 say "=== S6 witness check $(date -Is) sha=$SHA scen=$SCEN size=$SIZE dur=$DUR reps=$REPS iface=lo host=$HOST ==="
 say "  WINDOW_ARGS='$WINDOW_ARGS'"
 say "  HISTORY_ARGS='$HISTORY_ARGS'"
 
-srv_pid=""
+srv_pid=""   # the launched process: perf's PID under INSN_COUNT=1, the server's otherwise
 # INT before TERM, because the server only prints its RESULT line if it is allowed to finish. It installs a
 # handler for SIGINT alone (reliable_throughput/server.c), so the TERM this used to send killed it outright and
 # the receiver's counters have never been captured by this harness at all. That mattered on 2026-10-03: the
@@ -98,14 +114,26 @@ srv_pid=""
 # fallback for a server that ignores INT, so a wedged process still cannot outlive the run.
 #
 # The /proc/PID/exe check stays and is the point: the pid came from the launch, and this confirms what it is
-# before signalling it.
+# before signalling it. Under INSN_COUNT=1 the launched PID is perf's, so the server is that PID's child whose exe is a
+# saved server (child_exe, gate_v2_lib.sh); perf is then given 5 s more to exit, so its counts are in its file.
 kill_server() {
     [ -z "${srv_pid:-}" ] && return 0
-    sh_ "$HOST" "case \"\$(readlink /proc/$srv_pid/exe 2>/dev/null)\" in $SAVE/*/server*) kill -INT $srv_pid;; esac
-for i in 1 2 3 4 5; do [ -d /proc/$srv_pid ] || break; sleep 1; done
-case \"\$(readlink /proc/$srv_pid/exe 2>/dev/null)\" in $SAVE/*/server*) kill -TERM $srv_pid;; esac
-for i in 1 2 3; do [ -d /proc/$srv_pid ] || break; sleep 1; done; true" </dev/null >/dev/null
+    sh_ "$HOST" "$(remote_child_of_perf)
+t=\$(child_exe $srv_pid '$SAVE/*/server*') || exit 0
+case \"\$(readlink /proc/\$t/exe 2>/dev/null)\" in $SAVE/*/server*) kill -INT \$t;; esac
+for i in 1 2 3 4 5; do [ -d /proc/\$t ] || break; sleep 1; done
+case \"\$(readlink /proc/\$t/exe 2>/dev/null)\" in $SAVE/*/server*) kill -TERM \$t;; esac
+for i in 1 2 3; do [ -d /proc/\$t ] || break; sleep 1; done
+if [ \$t != $srv_pid ]; then for i in \$(seq 1 50); do [ -d /proc/$srv_pid ] || break; sleep 0.1; done; fi; true" </dev/null >/dev/null
     srv_pid=""
+}
+# insn_of <file on the host>: the counts of the process perf wrote <file> for, as RESULT-line fields (insn_fields), and
+# the file removed so a later repetition cannot read it. Nothing under INSN_COUNT=0.
+insn_of() {
+    [ "$INSN_COUNT" = 1 ] || return 0
+    local counts
+    counts=$(sh_ "$HOST" "cat '$1' 2>/dev/null; rm -f '$1'" </dev/null)
+    printf ' %s' "$(insn_fields "$counts")"
 }
 trap kill_server EXIT
 
@@ -155,8 +183,8 @@ mkdir -p $SAVE/$name && cp ${SCEN}_${SIZE}/client ${SCEN}_${SIZE}/server $SAVE/$
 run_one() { # run_one <arm>
     local name=$1 line
     kill_server
-    srv_pid=$(sh_ "$HOST" "cd $SAVE/$name && rm -f /tmp/s6wit.pid
-(setsid sh -c 'echo \$\$ > /tmp/s6wit.pid; exec env BENCH_IFACE=lo $PIN_SERVER ./server -Q -d $((DUR + 40)) $WINDOW_ARGS $HISTORY_ARGS' > /tmp/s6wit_server.log 2>&1 < /dev/null &); sleep 2; cat /tmp/s6wit.pid" </dev/null)
+    srv_pid=$(sh_ "$HOST" "cd $SAVE/$name && rm -f /tmp/s6wit.pid $SRV_INSN $CLI_INSN
+(setsid sh -c 'echo \$\$ > /tmp/s6wit.pid; exec env BENCH_IFACE=lo $PIN_SERVER $SRV_PRE ./server -Q -d $((DUR + 40)) $WINDOW_ARGS $HISTORY_ARGS' > /tmp/s6wit_server.log 2>&1 < /dev/null &); sleep 2; cat /tmp/s6wit.pid" </dev/null)
     sh_ "$HOST" "grep -q 'Node open' /tmp/s6wit_server.log" </dev/null || { say "    no server opened for arm=$name"; return 0; }
     # Kept in a file rather than piped straight into grep. Everything the client said that was not a RESULT
     # line used to go in the pipe's bin, so a diagnostic the publisher prints - and the publisher is the only
@@ -169,8 +197,13 @@ run_one() { # run_one <arm>
     # that is the state in which the server half was written the same afternoon with the same defect.
     # Two of the three consumers in this file have now been this shape. The output comes back whole.
     local clog
-    clog=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo $PIN_CLIENT ./client -Q -d $DUR $CLI_ARGS $WINDOW_ARGS $HISTORY_ARGS >/tmp/s6wit_client.log 2>&1; cat /tmp/s6wit_client.log" </dev/null)
+    clog=$(sh_ "$HOST" "cd $SAVE/$name && env BENCH_IFACE=lo $PIN_CLIENT $CLI_PRE ./client -Q -d $DUR $CLI_ARGS $WINDOW_ARGS $HISTORY_ARGS >/tmp/s6wit_client.log 2>&1; cat /tmp/s6wit_client.log" </dev/null)
     line=$(printf '%s\n' "$clog" | grep '^RESULT' | head -1)
+    # The client's counts go on its own RESULT line (perf has exited with it, so its file is complete). Read even when
+    # there is no line, so the file never survives into the next repetition.
+    local cinsn
+    cinsn=$(insn_of "$CLI_INSN")
+    [ -n "$line" ] && line="$line$cinsn"
     if [ -z "$line" ]; then
         say "    arm=$name: the client printed no RESULT line. What it did say:"
         printf '%s\n' "$clog" | tail -6 | sed 's/^/       | /' | tee -a "$OUT"
@@ -186,8 +219,12 @@ run_one() { # run_one <arm>
     # The server's CPU and memory read from outside it, just before it is asked to stop (proc_snap.sh), the same
     # instrument s6_transport_cells.sh uses on every framework's server and on iox-roudi. Taken here because not every
     # server prints them itself: no latency server carries BenchStats fields. state=gone says "could not look".
-    local snap
-    snap=$(sh_ "$HOST" "sh -s -- ${srv_pid:-0} '$SAVE/*/server*'" <"$REPO/examples/perf_hil/experiments/proc_snap.sh")
+    # Under INSN_COUNT=1 the launched PID is perf's: the snapshot is of its child, the server (proc_snap.sh checks the
+    # exe itself and says state=gone for anything else).
+    local snap bench
+    bench=$(sh_ "$HOST" "$(remote_child_of_perf)
+child_exe ${srv_pid:-0} '$SAVE/*/server*'" </dev/null)
+    snap=$(sh_ "$HOST" "sh -s -- ${bench:-0} '$SAVE/*/server*'" <"$REPO/examples/perf_hil/experiments/proc_snap.sh")
     kill_server
     # The receiver's own line, collected after the server has been asked to stop and allowed to print it. A
     # client line alone cannot distinguish a publisher that stalls from a subscriber that does: on 2026-10-03 a
@@ -204,6 +241,9 @@ run_one() { # run_one <arm>
     local slog sline dline
     slog=$(sh_ "$HOST" "cat /tmp/s6wit_server.log 2>/dev/null" </dev/null)
     sline=$(printf '%s\n' "$slog" | grep '^RESULT' | head -1)
+    local sinsn
+    sinsn=$(insn_of "$SRV_INSN")   # kill_server waited for perf, so the file is complete
+    [ -n "$sline" ] && sline="$sline$sinsn"
     dline=$(printf '%s\n' "$slog" | grep 'delivery:' | tail -1)
     if [ -n "$sline" ]; then
         say "arm=$name $sline"
