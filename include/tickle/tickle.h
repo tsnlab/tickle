@@ -542,6 +542,8 @@ struct tt_CostFit {
     uint32_t frame_ns;
     uint32_t accepted;
     uint32_t rejected;
+    uint32_t cpu_share_pct; // the last judged fit's prediction as a share of the process's CPU time, in %
+    bool logged;            // its refusal for disagreeing with that CPU time has been logged
 };
 
 // Buckets of the n histogram: 1, 2-3, 4-7, 8-15, 16-31, 32 up to tt_HYBRID_N_MAX - 1, and tt_HYBRID_N_MAX.
@@ -557,6 +559,7 @@ struct tt_HybridState {
     uint16_t peer_cost_frame_ns[tt_MAX_CONTEXT_IDS];
     uint16_t advertised_cost_datagram_ns; // what this context's announce carries now
     uint16_t advertised_cost_frame_ns;
+    uint64_t rx_reassembled; // samples reassembled when the datagram being timed began (hybrid_rx_start())
     // The reader (DESIGN.md section 8, "BEST_EFFORT"): its pooled loss over every writer's units, the units received
     // since the last cap tick (U) and whether a run was among them, the kernel's reassembly limits as read at create
     // (its defaults where unreadable), and the failure counters as last read.

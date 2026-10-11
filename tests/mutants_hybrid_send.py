@@ -339,6 +339,20 @@ MUTANTS = [
         SEND,
     ),
     (
+        "timing: a datagram that completes a sample observed",
+        "src/tickle.c",
+        "    if (start != 0 && hybrid_reassembled(node) == node->hybrid.rx_reassembled) {",
+        "    if (start != 0) {",
+        SEND,
+    ),
+    (
+        "fit: a refusal for the CPU time logged every time",
+        "src/tickle.c",
+        "            fit->logged = true;",
+        "",
+        SEND,
+    ),
+    (
         "timing: received datagrams not observed",
         "src/tickle.c",
         "        cost_fit_observe(&node->hybrid.rx_fit, 1, hybrid_frames(node->rx_tail), tt_get_ns() - start);",
