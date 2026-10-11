@@ -19553,6 +19553,21 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned long)node->large.encode_failed);
     large_release_assemblies(node); // every sample still being put together: its buffer back to the caller
 #endif
+#if tt_HYBRID_TRANSPORT
+    // The realized treatment of a hybrid-transport arm (DESIGN.md section 8): what this context sent in runs and alone,
+    // the n it chose per sample and destination (n_hist: 1, 2-3, 4-7, 8-15, 16-31, 32 to n_max - 1, n_max), and as a
+    // reader the ceiling it advertised last and the control law's decisions. A rig arm reads it; there is no other.
+    TT_LOG_INFO("Node %u hybrid: runs=%lu run_units=%lu mtu_units=%lu n_hist=%lu/%lu/%lu/%lu/%lu/%lu/%lu "
+                "advertised=%u cap=%u cap_off=%u collapses=%lu probes=%lu path_failures=%lu",
+                node->id, (unsigned long)node->hybrid.runs, (unsigned long)node->hybrid.run_units,
+                (unsigned long)node->hybrid.mtu_units, (unsigned long)node->hybrid.n_hist[0],
+                (unsigned long)node->hybrid.n_hist[1], (unsigned long)node->hybrid.n_hist[2],
+                (unsigned long)node->hybrid.n_hist[3], (unsigned long)node->hybrid.n_hist[4],
+                (unsigned long)node->hybrid.n_hist[5], (unsigned long)node->hybrid.n_hist[6],
+                (unsigned)node->hybrid.advertised, (unsigned)node->hybrid.cap, node->hybrid.cap_off ? 1U : 0U,
+                (unsigned long)node->hybrid.collapses, (unsigned long)node->hybrid.probes,
+                (unsigned long)node->hybrid.path_failures);
+#endif
 #if tt_SEGMENT_ENABLED
     // Before the socket goes: the segment is named from this context's address, and the
     // teardown below is the last point at which that name is still this context's.
