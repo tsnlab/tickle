@@ -637,8 +637,8 @@ ab/udp-offload-v2 (parent 11cb21e8); landed without UDP offload, not re-measured
 Publisher's `large_fragmentation` and `ip_datagram_max`, the three announce fields (the cost fields always 0), and the
 per-peer record `tt_Context.peer_ip_reassembly_max[]` (fragmenting builds only). Step 2 is built: a run is validated
 whole (counts, reserved field, seq_no range, length; refused and counted once in `frag_dropped` / `large.dropped`) and
-then handed to the fragment path unit by unit, each under its own seq_no, so 13 lands in the lendable large assembly
-and 14 in `frag_scratch`, a reorder slot or the BE pool, with no staging copy. A run never holds a sample's last unit,
+then handed to the fragment path unit by unit, each under its own seq_no, so `FRAG_RUN_L` lands in the lendable large
+assembly and `FRAG_RUN` in `frag_scratch`, a reorder slot or the BE pool, with no staging copy. A run never holds a sample's last unit,
 which is what lets a type-14 receiver derive the sender's unit size from the length. Tests: `tests/test_hybrid_runs.c`,
 `tests/mutants_hybrid_transport.py`, and a real IP-fragmented receive in a netns
 (`examples/perf_hil/experiments/hybrid_run_rx.sh`). Not yet built: the cost and loss counters, sending runs.
@@ -746,11 +746,12 @@ the current estimate, and fixed within a sample.
   truesize against `SO_RCVBUF`, 212,992 B on the rig).
 
 **Wire (`tt_VERSION` 13).** Types 2, 8, 9, 11 and 12 are unchanged. Two run types, one per geometry, so that a repair
-is byte for byte the MTU fragment of its pair:
+is byte for byte the MTU fragment of its pair (renumbered 13/14 -> 14/15 on 2026-10-11 because large-message step
+B took 13 for `LARGE_REF`):
 
-- **`FRAG_RUN_L` (13)**, for samples on 11/12: 24-B header holding the whole `tt_DataHeader` (`seq_no` = the first
+- **`FRAG_RUN_L` (14)**, for samples on 11/12: 24-B header holding the whole `tt_DataHeader` (`seq_no` = the first
   unit's), then `frag_index`, `frag_count`, `run_count` (16-bit each) and 2 B of zero.
-- **`FRAG_RUN` (14)**, for samples on 8/9: 20-B header holding `tt_DataHeader`, then `frag_index`, `frag_count`,
+- **`FRAG_RUN` (15)**, for samples on 8/9: 20-B header holding `tt_DataHeader`, then `frag_index`, `frag_count`,
   `run_count` (8-bit each) and 1 B of zero. Received into what 8/9 use: `frag_scratch` in order, otherwise one reorder
   slot per unit, or the BE pool.
 - The payload is exactly the units concatenated, so the receiver copies it to the offset `frag_index` gives. A run is
@@ -766,7 +767,7 @@ is byte for byte the MTU fragment of its pair:
 - Several readers: by unicast (up to the link's threshold) each peer gets its own `n` from the one buffer. By
   broadcast, one transmission uses the minimum `n` over the matched peers. Repairs keep the existing addressing.
   Discovery stays broadcast and MTU-sized.
-- A node without stage 2 skips 13 and counts it (`frag_large_skipped`); a node without fragmentation skips 14 as it
+- A node without stage 2 skips 14 and counts it (`frag_large_skipped`); a node without fragmentation skips 15 as it
   skips 8/9.
 
 **Predictions** (rig, cross-host).
@@ -795,7 +796,7 @@ differs from the one forced.
 | I1L1 model check (not scored) | forced `n` in {1, 4, 8, 16, 45}: the measured CPU/MB minimum lies within `[n*/2, 2 n*]` of the `n*` the arm's own fit predicts |
 | F16, `Array16k` (16 KB, 12 units on 8/9) RELIABLE and BEST_EFFORT, 100 Hz, 0% and 1% loss (new) | 0%: CPU/MB WIN against the parent and WIN or DRAW against `min(vendors)`, latency median and p99 not worse than the parent beyond the floor; 1%: RELIABLE delivered 100% and CPU/MB not worse than the parent, BE delivered not fewer than the parent's |
 | core P1-P4, rmw small-message rows 52-75 | no regression by the instruction-count gate with its placement floor; single-datagram samples byte-identical to the parent's but for the version byte and the announce fields |
-| FreeRTOS | `freertos link` passes; it advertises 0, and nothing is sent to it as type 13 or 14 |
+| FreeRTOS | `freertos link` passes; it advertises 0, and nothing is sent to it as type 14 or 15 |
 
 **What would falsify the design.**
 
@@ -811,10 +812,10 @@ differs from the one forced.
 
 **Steps** (each its own `ab/` commit and A/B, with the small-message rows on every one).
 
-1. Option plumbing and the announce fields, `tt_VERSION` 13, types 13/14 defined and skipped, the cost and loss
+1. Option plumbing and the announce fields, `tt_VERSION` 13, types 14/15 defined and skipped, the cost and loss
    counters measured and printed without being used. No behaviour change: wire identity against the parent with the
    version and announce fields masked (parent vs parent as the control).
-2. Receive runs (13 into the large assembly, 14 into scratch, reorder slots or BE pool). Tests: hand-built runs out
+2. Receive runs (14 into the large assembly, 15 into scratch, reorder slots or BE pool). Tests: hand-built runs out
    of order, a run overlapping units already stored; mutant: off-by-one in the run offset.
 3. Send runs with a forced `n` (`MTU`, `IP`, or a fixed `n` for the model check), BE first: full runs plus the MTU
    tail. Rig A/B I1, I4, I4s BE and F16 BE.
@@ -823,7 +824,7 @@ differs from the one forced.
 5. AUTO: `C(n)` with the measured costs, the `p` bound, the reader's `n_cap`, and the `ReasmFails` withdrawal. netns
    tests: loss switched on and off (`n` follows the bound), fragments dropped by a `tc` u32 match on the IP fragment
    offset (`n` = 1 within one sample), a mocked HAL counter for the `ReasmFails` path, and mixed peers (one advertising
-   0) by unicast (each its own `n`) and broadcast (the minimum). A FreeRTOS-configured build skips 13/14.
+   0) by unicast (each its own `n`) and broadcast (the minimum). A FreeRTOS-configured build skips 14/15.
 6. The rig campaign above, including I1L1's three arms and the model check, then RESULTS.
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
