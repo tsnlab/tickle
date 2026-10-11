@@ -11037,10 +11037,14 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
     uint64_t failures = 0;
     if (tt_ip_reassembly_failures(&failures)) {
         if (hybrid->reasm_failures_read && failures > hybrid->reasm_failures) {
-            if (hybrid->tick_runs && !hybrid->withdrawn) {
+            // "While runs are arriving", as this reader can see it: units came, and its advertisement allowed runs.
+            // A run that lost a fragment never reaches the process at all, so the receipt of whole runs cannot be the
+            // test - on a path that drops later fragments none ever arrives (hybrid_send_netns.sh, BE_WITHDRAWAL).
+            bool runs_possible = hybrid->tick_units != 0 && hybrid_units_within(hybrid->advertised, false) >= 2U;
+            if (runs_possible && !hybrid->withdrawn && !hybrid->cap_off) {
                 hybrid->withdrawn = true;
                 hybrid->withdrawals++;
-                TT_LOG_WARNING("IP reassembly failures rose while runs arrived: advertising one unit (#%lu)",
+                TT_LOG_WARNING("IP reassembly failures rose while runs could arrive: advertising one unit (#%lu)",
                                (unsigned long)hybrid->withdrawals);
             }
             hybrid->still_since_ns = now;
@@ -11061,7 +11065,6 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
     uint16_t bytes = hybrid_cap_bytes(node, cap, n_max);
     hybrid->tick_ns = now;
     hybrid->tick_units = 0;
-    hybrid->tick_runs = false;
     bool costs_moved = hybrid_costs_moved(hybrid->rx_fit.datagram_ns, hybrid->advertised_cost_datagram_ns) ||
                        hybrid_costs_moved(hybrid->rx_fit.frame_ns, hybrid->advertised_cost_frame_ns);
     if (bytes == hybrid->advertised && !costs_moved) {
@@ -15865,7 +15868,6 @@ static bool process_frag_run(struct tt_Context* node, struct tt_Header* header, 
     uint64_t rx_start = hybrid_rx_start(node);
     if (node->hybrid.rx_capable) {
         hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);
-        node->hybrid.tick_runs = true;
     }
 #endif
     for (uint32_t i = 0; i < run_count; i++) {
@@ -15912,7 +15914,6 @@ static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* he
     uint64_t rx_start = hybrid_rx_start(node);
     if (node->hybrid.rx_capable) {
         hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count);
-        node->hybrid.tick_runs = true;
     }
 #endif
     for (uint32_t i = 0; i < run_count; i++) {
