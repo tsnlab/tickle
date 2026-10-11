@@ -5618,9 +5618,16 @@ static uint16_t reliable_cache_depth(const struct tt_ReliableCache* cache) {
 // The slot seq_no currently maps to - the direct index every lookup, eviction and backlog walk
 // shares (see struct tt_ReliableCache.depth's own doc comment on why depth may not change once
 // anything is cached).
+//
+// (seq_no - slot_origin) % depth: (seq_no - 1) % depth alone jumps where seq_no - 1 passes 2^32 unless depth divides
+// 2^32, and the retained run straddling it would share slots - seq_no 1 landing on a live sample from before the wrap.
+// reliable_cache_reserve() keeps slot_origin so that seq_no - slot_origin never passes 2^32 within the retained run:
+// 1 whenever the cache is empty - the slots are (seq_no - 1) % depth, as they always were - and moved on by a multiple
+// of depth when seq_no - slot_origin reaches 2^31, which keeps every retained sample in its slot. One subtraction, as
+// before: the cost of a lookup does not change.
 static struct tt_ReliableCacheIndex* reliable_cache_slot(const struct tt_ReliableCache* cache, uint16_t depth,
                                                          uint32_t seq_no) {
-    return &cache->index[(seq_no - 1) % depth];
+    return &cache->index[(seq_no - cache->slot_origin) % depth];
 }
 
 // True when this slot genuinely holds seq_no's bytes right now - not empty, not a tombstone (an
@@ -5845,6 +5852,20 @@ static bool reliable_cache_admits(const struct tt_ReliableCache* cache, uint16_t
     }
 }
 
+// reliable_cache_reserve()'s cold half, for seq_no about to be written (reliable_cache_slot()): with nothing retained,
+// slot_origin goes back to 1 - nothing to keep in place, and the slots are (seq_no - 1) % depth, as always; and when
+// seq_no - slot_origin has reached 2^31, slot_origin moves on by a multiple of depth to 2^30 behind it. Every retained
+// seq_no lies within depth of this one, so stays above the new origin - and keeps its slot.
+static void reliable_cache_place_origin(struct tt_ReliableCache* cache, uint16_t depth, uint32_t seq_no) {
+    if (!cache->any_retained) {
+        cache->slot_origin = 1U;
+    }
+    uint32_t position = seq_no - cache->slot_origin;
+    if (position >= UINT32_C(0x80000000)) {
+        cache->slot_origin += ((position - UINT32_C(0x40000000)) / depth) * depth;
+    }
+}
+
 // "cache first, then flush" order tt_Client_call() already uses for its own single-slot cache.
 // Both QoS policies share this one cache (struct tt_ReliableCache's own doc comment, tickle.h): a
 // later incoming ACKNACK (process_acknack()) resends this exact copy verbatim, and a newly-
@@ -5875,7 +5896,10 @@ static uint8_t* reliable_cache_reserve(struct tt_ReliableCache* cache, uint32_t 
         reliable_cache_evict_oldest(cache, depth);
     }
 
-    struct tt_ReliableCacheIndex* entry = &cache->index[(seq_no - 1) % depth];
+    if (!cache->any_retained || seq_delta(seq_no, cache->slot_origin) < 0) {
+        reliable_cache_place_origin(cache, depth, seq_no);
+    }
+    struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
     entry->seq_no = seq_no;
     entry->retry = 0;
     entry->timestamp = tt_get_ns();

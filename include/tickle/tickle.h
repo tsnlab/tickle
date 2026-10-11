@@ -1640,9 +1640,10 @@ struct tt_ReliableCache {
     // samples x fragments per sample to keep that many samples.
     uint16_t depth; // in-use ring size, 1..capacity - see this struct's own doc comment for why
                     // this stays a separate field from capacity rather than always equaling it.
-                    // Fixed once the first sample has been cached: slot (seq_no - 1) % depth is
-                    // how every lookup finds a sample (find_resendable_cache_entry(), tickle.c),
-                    // so changing depth mid-stream would silently mis-address everything retained.
+                    // Fixed once the first sample has been cached: slot (seq_no - slot_origin) %
+                    // depth - (seq_no - 1) % depth until 2^31 - is how every lookup finds a sample
+                    // (find_resendable_cache_entry(), tickle.c), so changing depth mid-stream would
+                    // silently mis-address everything retained.
     // Caller-owned backing storage, capacity entries long (stack/static/heap - caller's choice,
     // see this struct's own doc comment) - NOT embedded here directly, unlike almost every other
     // fixed-size table in this file. NULL (this struct's own zero-init default) is the "not set up
@@ -1682,6 +1683,10 @@ struct tt_ReliableCache {
     uint32_t oldest_seq_no; // oldest retained sample, while any_retained
     uint32_t newest_seq_no; // newest sample handed to cache_reliable_sample(), cached or not
     uint32_t tail;          // arena offset just past the newest retained record
+    // Core-owned: seq_no lives in slot (seq_no - slot_origin) % depth. 1 whenever the cache is empty, and moved on by a
+    // multiple of depth whenever seq_no - slot_origin reaches 2^31, so the retained run never straddles the point where
+    // that wraps (reliable_cache_slot(), tickle.c). 1 until seq_no - 1 first reaches 2^31.
+    uint32_t slot_origin;
     // Whether anything is retained: oldest_seq_no means something only then. A flag rather than oldest_seq_no 0, which
     // past 2^32 is an ordinary seq_no (zero-initialised: nothing retained).
     bool any_retained;
