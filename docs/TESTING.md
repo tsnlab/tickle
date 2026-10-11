@@ -175,8 +175,8 @@ zenoh-pico is measured to the same standard but kept as reference only; it is ne
 **Controls and reading**
 - **Every campaign has a control:** an arm the change provably cannot touch, such as a vendor arm, the `rmw_cyclonedds_cpp` acceptance run, or the shared-memory-OFF build. Compare our delta with the control's delta.
 - **Compare a figure with its own previous value**, not with a vendor or with a bare historical point.
-- **A-B-B-A blocks:** two TickLE builds are run interleaved as A B B A (3 repetitions per block, 6 per arm), so drift over the session falls on both arms. Tools: `campaign_ab_chain.sh`, read with `ab_compare.py`.
-- **Primary metrics decide an A/B (2026-10-06):** `PRIMARY="metric[,cN:role.metric...]"` is named before the run, from what the change is meant to move. The verdict (`PASS` / `WORSE`) is taken on those alone, each at a Bonferroni threshold for their count (2.0 x SE for one, 2.43 for three, 2.84 for ten). Every other metric is printed as secondary and never decides. Without `PRIMARY`, `ab_compare.py` prints `NO VERDICT`.
+- **Mirrored blocks:** builds are run interleaved (A P B B P A since gate v2, section 6.1; A B B A before), so drift over the session falls on every arm. Tools: `campaign_ab_chain.sh`, read with `ab_compare.py`.
+- **Pre-registered metrics decide an A/B (2026-10-06):** the verdict (`PASS` / `WORSE`) is taken on the metrics named before the run alone, at a Bonferroni threshold for their count. Every other metric is printed as secondary and never decides. Since 2026-10-11 a TickLE-vs-TickLE A/B on the rig decides by gate v2 (section 6.1).
 - **2xSE reading of the secondaries:** a difference counts only if it lies beyond twice the combined standard error.
   - With about 40 comparisons per chain, about 2 WORSE rows are expected by chance.
   - So a secondary WORSE row is only a candidate. It is confirmed if the same metric is WORSE in at least half of its cells, or if a targeted A-B-B-A re-run with it as primary finds it again.
@@ -186,7 +186,7 @@ zenoh-pico is measured to the same standard but kept as reference only; it is ne
 - **Win rule:** TickLE wins a cell only when it beats every scored vendor outside the spread. Inside the spread the cell is a draw.
 - **The layout floor:** between two builds whose code differs in size, a throughput or CPU-per-sample difference below about 1% (p1), or about 10 KB of peak RSS, says nothing.
   - Function placement alone moves results that much.
-  - To settle a smaller difference, run a placement control (`layout_control.sh`, `-falign-functions=32` on both arms, or an A/A pair). Adding repetitions does not help.
+  - Adding repetitions does not help. Gate v2 (section 6.1) builds every arm layout-stable and measures this floor in every run (arm P).
   - The Pi bench's own A/A floor is ±2.5 ns for send and ±1.2 ns for receive (`core_cost_pi_drift.sh`).
 - **Session-bound:** compare only within one session. Day-to-day offsets of about 13 µs in latency affect every implementation.
 
@@ -251,8 +251,11 @@ All are in `examples/perf_hil/experiments/`. Each one's header holds its pre-reg
 |---|---|
 | `campaign_sweep.sh` | The cross-vendor campaign: 12 cells x 3 frameworks x 3 repetitions, interleaved, five metrics |
 | `campaign_summary.py` | Computes the per-cell verdicts (WIN/DRAW/LOSE/VOID) from a sweep's output |
-| `campaign_ab_chain.sh` | Is build B better or worse than build A on the campaign cells? (A-B-B-A) |
-| `ab_compare.py` | Reads A/B arms per cell and metric; the verdict comes from the pre-registered primary metrics only |
+| `campaign_ab_chain.sh` | Is build B better or worse than build A on the campaign cells? (A P B B P A, gate v2) |
+| `ab_compare.py` | Reads A/B arms per cell and metric; with `--placement`, by gate v2 (`gate_v2.py`, section 6.1) |
+| `layout_flags_cost.sh` | What a code-alignment flag changes in each function's instructions, and what it costs in size (static) |
+| `rig_dryrun.sh` | Any rig harness end to end on the PC, against two stand-in Pis in private namespaces (never the rig: `rig_dryrun_test.sh`) |
+| `rmw_gate_v2_chain.sh` | Is rmw_tickle build B better or worse than A? (A P B B P A, gate v2; read by `rmw_gate_v2.py`) |
 | `rig_preflight.sh` | Does every cell shape about to go to the rig run, and print a sound RESULT line? (PC, private netns, ~70 s) |
 | `reps_needed.py` | How many repetitions per arm does a 1% or 3% change need, from earlier campaigns' spread? |
 | `comparison_remeasure_chain.sh` | Re-measures the published comparison on one build, all three frameworks |
@@ -279,6 +282,37 @@ All are in `examples/perf_hil/experiments/`. Each one's header holds its pre-reg
 Also `.github/scripts/compare_rmw_perf.sh`: a hand-run comparison of rmw_tickle against both vendors through
 `buildfarm_perf_tests`, with the vendors forced onto UDPv4. It takes the `box` lock.
 
+### 6.1 Gate v2: how a TickLE-vs-TickLE rig A/B decides (2026-10-11)
+
+Why: the old gate was more sensitive than the build is reproducible. 2e9e861c vs a5747a85 read client CPU +2% WORSE
+three times on the Pi 5 with equal executed instructions (x86 perf, exact aarch64 counts, Pi `instructions:u`), and the
+gap vanished with `-falign-functions=64` on both arms. Definitions: `gate_v2_lib.sh`; the reading: `gate_v2.py`.
+
+- **A1, layout-stable builds.** Every TickLE build the rig A/Bs or publishes from is built with
+  `-falign-functions=64` (the default when `TICKLE_EXTRA_CFLAGS` is unset; set and empty is the plain build). Each
+  build is traced and its log read back (`build_flags_check.sh`); a build that does not show its flags is not measured.
+  - Why this flag alone: on aarch64 it fixes every in-function offset modulo 64, so no function's code changes when
+    code ahead of it moves; `-falign-loops` fixes nothing more and adds executed nops; jump alignment is already the
+    instruction size (`layout_flags_cost.sh`).
+  - Not the product default: it adds 4.6% to the core's .text and 6.7% to the client on aarch64, and the rule was
+    "only if it costs nothing measurable". Published figures carry `TICKLE_EXTRA_CFLAGS` in their provenance.
+- **A2, instructions decide.** Every process runs under `perf stat -e instructions:u,instructions:k`. The primary
+  metric is instructions per sample (per round trip on latency cells), user and kernel, client and server. CPU, rate
+  and latency are witnesses: they still decide, net of the floor below. A row without counts is VOID.
+- **A3, the placement floor.** Arm P is A's commit rebuilt with `-falign-functions=128`: the same instructions, every
+  function moved by a multiple of 64 bytes, as a change moves the code it does not touch. Blocks run A P B B P A.
+  A WORSE must exceed the Bonferroni Student-t threshold (Welch df) and `|P - A|` of the same metric and cell.
+  No counts, no P arm, or a named metric that was not measured gives NO VERDICT.
+- **Tools** (`GATE=v1` repeats an old chain or same-host run, read by the old rule).
+  - Cross-host: `campaign_ab_chain.sh`, read by `ab_compare.py campaign --placement`.
+  - Same-host: `ab_samehost.sh` (`ab_samehost.py`); `WITNESS=` is required and names what `PRIMARY` named before.
+  - rmw: `rmw_gate_v2_chain.sh HARNESS=rtt|keepall` runs `rmw_crosshost_rtt.sh` or `rmw_keepall_rig.sh` per block,
+    builds checked by `rmw_build_flags_check.py`, read by `rmw_gate_v2.py`.
+  - On the PC, `rig_dryrun.sh` runs any of them end to end against two stand-in Pis in private namespaces. ssh and scp
+    are stood in, and a real remote client started by the command fails the dry run (`rig_dryrun_test.sh`).
+  - Validating the gate itself: give B an alignment different from P's. A B with P's flags reads WORSE about half
+    the time, because the floor is a single draw of placement.
+
 ## 7. Measurement checklist
 
 Before the run
@@ -303,7 +337,7 @@ Reading
 - [ ] Check the sample count before the value.
 - [ ] Check delivery (received equals sent) and the transport witness before any rate.
 - [ ] Treat "no answer" (could not look, empty output, a zero instrument) as VOID, never as "no".
-- [ ] Decide from the 2xSE result, the control's delta and the layout floor, never from a range against a single point.
+- [ ] Decide a TickLE-vs-TickLE rig A/B by gate v2: instructions first, every WORSE beyond the threshold and the placement floor measured in the same run (section 6.1). Decide anything else from the 2xSE result and the control's delta, never from a range against a single point.
 - [ ] Decide from measured outcomes, not from configuration or build labels. A compile-time field cannot fail.
 - [ ] Before claiming a behaviour, test it against a control. Reading the code is not enough.
 
