@@ -22,6 +22,9 @@
 #              in the control cell (the drain runs there too, between polls).
 #
 # Usage: large_saturation_pc.sh PARENT_SHA HEAD_SHA [REPS] [DURATION_S]    results to $OUT
+#   EXTRA="label:sha ..." adds arms, each read against PARENT as HEAD is (same S1-S4; the treatment check expects
+#   drain_starts > 0 of every arm but PARENT), all interleaved in an order that rotates per rep, so arms measured on a
+#   loaded PC share its load.
 # Needs passwordless `sudo ip` and `tc`. Run it detached (CLAUDE.md, "Long-running work").
 set -u
 PARENT=${1:?usage: large_saturation_pc.sh PARENT_SHA HEAD_SHA [REPS] [DURATION_S]}
@@ -40,8 +43,8 @@ RATE=30
 cleanup() {
     sudo -n ip netns del "$NS1" 2>/dev/null
     sudo -n ip netns del "$NS2" 2>/dev/null
-    for arm in parent head; do
-        git -C "$REPO" worktree remove --force "$WORK/wt_$arm" 2>/dev/null
+    for wt in "$WORK"/wt_*; do
+        [ -d "$wt" ] && git -C "$REPO" worktree remove --force "$wt" 2>/dev/null
     done
     return 0
 }
@@ -60,6 +63,11 @@ build() { # <arm> <sha>
 }
 build head "$HEAD_SHA" || { echo "build head failed"; exit 1; }
 build parent "$PARENT" || { echo "build parent failed"; exit 1; }
+ARMS="parent head"
+for extra in ${EXTRA:-}; do
+    build "${extra%%:*}" "${extra#*:}" || { echo "build ${extra%%:*} failed"; exit 1; }
+    ARMS="$ARMS ${extra%%:*}"
+done
 
 sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
 sudo -n ip link add lgsat1 netns "$NS1" type veth peer name lgsat2 netns "$NS2" || exit 1
@@ -70,7 +78,7 @@ sudo -n ip -n "$NS1" link set lgsat1 up
 sudo -n ip -n "$NS2" link set lgsat2 up
 sudo -n ip netns exec "$NS1" tc qdisc add dev lgsat1 root tbf rate 1gbit burst 256kb latency 100ms || exit 1
 
-echo "=== large_saturation_pc $(date -Is) parent=$PARENT head=$HEAD_SHA reps=$REPS duration=${DURATION}s size=$SIZE rate=$RATE ===" | tee -a "$OUT"
+echo "=== large_saturation_pc $(date -Is) parent=$PARENT head=$HEAD_SHA extra=${EXTRA:-} reps=$REPS duration=${DURATION}s size=$SIZE rate=$RATE ===" | tee -a "$OUT"
 start_line=$(wc -l <"$OUT")
 
 run() { # <arm> <w_us> <W_us> <rep>
@@ -97,8 +105,9 @@ run() { # <arm> <w_us> <W_us> <rep>
 for cellspec in "0 0" "3000 0" "0 5000" "3000 5000"; do
     read -r w big_w <<<"$cellspec"
     for rep in $(seq 1 "$REPS"); do
-        if [ $((rep % 2)) = 1 ]; then order="parent head"; else order="head parent"; fi
-        for arm in $order; do run "$arm" "$w" "$big_w" "$rep"; done
+        read -r -a order <<<"$ARMS"
+        n=${#order[@]}
+        for i in $(seq 0 $((n - 1))); do run "${order[$(((i + rep) % n))]}" "$w" "$big_w" "$rep"; done
     done
 done
 echo "=== runs done $(date -Is) ===" | tee -a "$OUT"
@@ -117,42 +126,44 @@ for line in sys.stdin:
         "ooo": num(s, "out_of_order"), "abandoned": num(s, "large_abandoned"), "drops": num(s, "socket_drops"),
         "starts": num(s, "drain_starts"), "cpu": num(s, "cpu_ms_per_mb"), "lat": num(s, "latency_median_us")})
 verdict = {}
-bad = [x for x in runs if (x["arm"] == "head") != (x["starts"] > 0)]
+bad = [x for x in runs if (x["arm"] != "parent") != (x["starts"] > 0)]
+arms = ["parent"] + sorted({x["arm"] for x in runs} - {"parent"})
 verdict["TREATMENT"] = "PASS" if runs and not bad else "VOID (%d runs whose drain_starts contradict their arm)" % len(bad)
 def sel(arm, cell): return [x for x in runs if x["arm"] == arm and x["cell"] == cell]
 cells = sorted({x["cell"] for x in runs})
 for c in cells:
-    for arm in ("parent", "head"):
+    for arm in arms:
         xs = sel(arm, c)
         print("SUMMARY w=%-4d W=%-4d %-6s delivered %s abandoned %s socket_drops %s tail_abandoned %s torn %s cpu_ms_per_mb %s lat_med_ms %s" % (
             c[0], c[1], arm, [int(x["delivered"]) for x in xs], [int(x["abandoned"]) for x in xs], [int(x["drops"]) for x in xs],
             [int(x["tail_abandoned"]) for x in xs], [int(x["torn"]) for x in xs], [round(x["cpu"], 3) for x in xs],
             [round(x["lat"] / 1000, 1) for x in xs]))
 ctl = (0, 0)
-verdict["S0"] = "PASS" if sel("parent", ctl) and sel("head", ctl) and all(x["torn"] == 0 for x in sel("parent", ctl) + sel("head", ctl)) else "VOID"
+verdict["S0"] = "PASS" if all(sel(a, ctl) for a in arms) and all(x["torn"] == 0 for a in arms for x in sel(a, ctl)) else "VOID"
 repro = [c for c in cells if c != ctl and sel("parent", c) and all(x["drops"] > 0 and x["abandoned"] > 0 for x in sel("parent", c))]
 verdict["S1"] = "REPRODUCED in %s" % repro if repro else "NOT REPRODUCED"
-s2 = []
-for c in repro:
-    h, p = sel("head", c), sel("parent", c)
-    ok = len([x for x in h if x["drops"] == 0]) >= 2 and sum(x["abandoned"] for x in h) <= 0.10 * sum(x["abandoned"] for x in p)
-    s2.append("%s %s" % (c, "PASS" if ok else "FAIL"))
-verdict["S2"] = "; ".join(s2) if s2 else "NO READING"
-unsafe = [x for x in runs if x["torn"] != 0 or x["ooo"] != 0]
-h, p = [x["delivered"] for x in sel("head", ctl)], [x["delivered"] for x in sel("parent", ctl)]
-reg = ""
-if len(h) > 1 and len(p) > 1:
-    se = (st.variance(h) / len(h) + st.variance(p) / len(p)) ** 0.5
-    if st.mean(h) < st.mean(p) - 2 * se:
-        reg = "REGRESSION: control delivered %.1f vs %.1f (2 SE %.1f)" % (st.mean(h), st.mean(p), 2 * se)
-verdict["S3"] = ("FAIL (%d runs torn or out of order)" % len(unsafe) if unsafe else "PASS") + ("; " + reg if reg else "")
-cost = []
-for c in cells:
-    hc, pc = [x["cpu"] for x in sel("head", c)], [x["cpu"] for x in sel("parent", c)]
-    if hc and pc:
-        ratio = st.median(hc) / st.median(pc)
-        cost.append("%s %+.1f%%%s" % (c, (ratio - 1) * 100, " FLAG" if c == ctl and ratio > 1.10 else ""))
-verdict["S4"] = "; ".join(cost)
+for arm in arms[1:]:
+    s2 = []
+    for c in repro:
+        h, p = sel(arm, c), sel("parent", c)
+        ok = len([x for x in h if x["drops"] == 0]) >= 2 and sum(x["abandoned"] for x in h) <= 0.10 * sum(x["abandoned"] for x in p)
+        s2.append("%s %s (abandoned %d vs %d)" % (c, "PASS" if ok else "FAIL", sum(x["abandoned"] for x in h), sum(x["abandoned"] for x in p)))
+    verdict["S2 " + arm] = "; ".join(s2) if s2 else "NO READING"
+    unsafe = [x for x in sel(arm, ctl) + [y for c in cells for y in sel(arm, c)] if x["torn"] != 0 or x["ooo"] != 0]
+    h, p = [x["delivered"] for x in sel(arm, ctl)], [x["delivered"] for x in sel("parent", ctl)]
+    reg = ""
+    if len(h) > 1 and len(p) > 1:
+        se = (st.variance(h) / len(h) + st.variance(p) / len(p)) ** 0.5
+        if st.mean(h) < st.mean(p) - 2 * se:
+            reg = "REGRESSION: control delivered %.1f vs %.1f (2 SE %.1f)" % (st.mean(h), st.mean(p), 2 * se)
+    verdict["S3 " + arm] = ("FAIL (%d runs torn or out of order)" % len(unsafe) if unsafe else "PASS") + ("; " + reg if reg else "")
+    cost = []
+    for c in cells:
+        hc, pc = [x["cpu"] for x in sel(arm, c)], [x["cpu"] for x in sel("parent", c)]
+        if hc and pc:
+            ratio = st.median(hc) / st.median(pc)
+            cost.append("%s %+.1f%%%s" % (c, (ratio - 1) * 100, " FLAG" if c == ctl and ratio > 1.10 else ""))
+    verdict["S4 " + arm] = "; ".join(cost)
 for k in sorted(verdict):
     print("VERDICT %s %s" % (k, verdict[k]))
 ' | tee -a "$OUT"
