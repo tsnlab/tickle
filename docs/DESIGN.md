@@ -958,6 +958,72 @@ Where it departs, and why:
   Core P1-P3 binaries are bit-identical to the parent's (fragmentation compiles out); P4's instructions held.
 - **GSO is not combined with runs**: a run is one datagram that IP fragments, the opposite of segmentation; the two
   meet only in that a sample's MTU units (n = 1, repairs) go by GSO (section 4, landed with this on `ab/hybrid-land`).
+#### Saturation: where I4s lost its samples, and the receive drain (2026-10-11)
+
+RESULTS L4 cell I4s (4 MB `sensor_data` at 30 Hz, about 1.05 Gb/s offered on the rig's point-to-point 1 GbE) was a
+LOSE: rmw_tickle published 1,802 samples a run and its subscriber completed 1,655-1,679. **Where they went** (A4 s3a's
+own counters, all 5 runs, `~/rig_results_safe/largemsgA4_s3a_20261010-140102.runs`):
+
+- **109 a run at the sender, whole.** The link carries ~28.2 samples/s, so each newer publish replaced the one waiting
+  behind the send in progress (`large_pending`) before any fragment of it went out: `tail_abandoned` 109 in every
+  run, and published - tail_abandoned = the subscriber's reassembled + abandoned (1,693) in every run. Dropping a
+  superseded sample whole rather than a partial one is what the code already does; pacing cannot help a sender that
+  is already link-bound (`send_waits` ~302,000 a run).
+- **14-38 a run at the subscriber**, from 679-1,236 data datagrams sent and never received (publisher
+  `tx_udp_unattached` against subscriber `rx_via_data`), in bursts of ~38: one lost fragment loses its sample.
+  There is no switch. The run recorded no kernel counters, so the location was inferred, then reproduced.
+- **Mechanism.** rmw decodes a 4 MB message inside the poll callback (`subscriber_callback()`), and the application
+  copies it again after the poll: milliseconds away from the socket while the next sample arrives at line rate. The
+  Pis' `net.core.rmem_max` caps the receive buffer at 425,984 bytes, ~2 ms of 1 GbE. `rx_drain_pc.sh` (two netns,
+  tbf 1 Gbit, the same buffer, a receiver that stops after every 2,889 datagrams): a 3 ms stop loses 2-3% of
+  datagrams, 5 ms 7%, 10 ms 18%, and every lost datagram is in the socket's own drop count (SO_MEMINFO). The DDS
+  vendors read the socket from a thread of their own; TickLE has none (the user's rule).
+- **A residual the drain cannot reach:** the wire. Each 1,472-byte fragment carries its own UDP/IP and TickLE
+  headers, so the link carried 1,693 of TickLE's samples a run where CycloneDDS, with kernel-fragmented 64 KB
+  datagrams, delivered 1,699-1,700. That ~0.4% is the hybrid IP mode's question (Dev, 2026-10-11), not this one.
+
+**The receive drain** (`tt_rx_drain_start()`, hal.h; Linux, compiled where io_uring and `tt_LARGE_SAMPLES` are).
+While core is away from the sockets during a large stream - just before a large sample's callback, and when a poll
+that delivered one returns - an io_uring multishot `recvmsg` on each socket copies arriving datagrams into buffers
+the HAL owns. The kernel does it as task work of the polling thread, which runs whenever that thread is interrupted
+or enters the kernel, so a thread busy in user space still has its socket emptied: no thread of ours. The buffers
+are sized from the datagram core expects (2,048 x 1,536 B for fragments, 64 x 65,600 B for kernel-reassembled 64 KB
+datagrams; ~4.25 MB, allocated at the first drain). `tt_receive()`/`tt_try_receive()` hand out what the drain took,
+oldest first, while it keeps taking, and stop it only when it holds nothing, before any socket read: order is kept.
+A datagram longer than a buffer is dropped, counted, stops the drain and holds drains off for 100 ms, so its
+sender's retry is read whole. A kernel that refuses io_uring or multishot `recvmsg` (before 6.0) leaves the context
+as it was, said once. FreeRTOS: no drain. The default core build (p1-p4) is instruction-identical in `tickle.o` and in
+`tt_receive()`/`tt_try_receive()` to its parent: the drain exists only in large-sample builds. Its limit: it drains
+only while the thread runs - a preempted thread overflows as before, as a vendor's descheduled receive thread would.
+
+**PC evidence, end to end** (`large_saturation_pc.sh`: `large_sample_bench` 4 MB best effort at 30 Hz through tbf
+1 Gbit, buffers granted 425,984 B, the subscriber spending 0/3 ms in each callback and 0/5 ms after each delivering
+poll; ABBA, 3 x 20 s; `~/largemsg_pc/saturation{1,2,3}.txt`). First run (load ~7, drain started at every poll exit,
+33fb84bb against d99f9a7e): complete samples 285 -> 560 a run in every cell, subscriber CPU per MB -31..-34%, but the
+pre-registered fix rule (no socket drop in 2 of 3 runs, abandoned at most 10% of the parent's) FAILED in all three
+stalled cells: 0-17,541 drops remained. Two causes were found and fixed: the first read stopped the drain while core
+still had up to 2,048 taken datagrams to work through (now it drains until it holds none), and starting at every
+poll exit cost ~50,000 starts a second (now only after a poll that delivered a large sample). The runs after those
+fixes (615204e9, alone and beside 33fb84bb) ran at load 13-38 from builds in other sessions: the parent's control lost
+up to 86,674 datagrams with no stall at all, so they decide nothing. Torn and out-of-order samples: 0 in every run.
+**The PC cannot settle this; the rig run below does.**
+
+**Instruments.** The HAL's "Node N rx:" line at close: `socket_drops` per socket (SO_MEMINFO) and the drain's
+starts, datagrams, cut datagrams and overruns. `rmw_keepall_rig.sh KCOUNTERS=1` adds each Pi's snmp, NIC, qdisc and
+softnet counters before and after every run.
+
+**Rig pre-registration** (implemented in `experiments/i4s_drain_summary.py`, not prose): arms tickle@pre (the parent,
+with the rx line and no drain) and tickle@head, beside fastdds and cyclonedds; cells I4s and the unsaturated controls
+I4 (Array4m 15 Hz) and I1 (Array1m 30 Hz), best effort, 5 reps of 60 s, KCOUNTERS=1. W0 the treatment shows (drain=1,
+starts > 0 on head only; a Pi kernel that refuses is VOID). W1 tickle@pre's I4s losses are placed - SOCKET when the
+sender is accounted, every abandoned run has socket drops, and NIC and qdisc drops are 0; anything else says the drain
+is not the whole answer. W2 head completes what the wire carried (reassembled >= published - tail_abandoned - 2) with
+no socket drop in at least 4 of 5 runs. W2b the best DDS against head, reported, with the wire count beside it. W3/W4
+latency median and CPU per MB of head within 2 SE of tickle@pre (the drain should move neither; I4s's queueing
+latency against DDS, ~57 ms against 37.5, is the latency session's). W5 the controls complete in every run.
+**Falsified** if W1 places the loss in the NIC or the qdisc, or if W2 fails with the treatment shown: then the
+socket was not where the samples went, or the polling thread is not running when they arrive (a preempted thread),
+and the next candidate is a kernel-side reader (io_uring SQPOLL) - which spends a core.
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
