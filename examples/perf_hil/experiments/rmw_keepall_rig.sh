@@ -205,6 +205,17 @@ if [ "$PC_PREFLIGHT" = 1 ]; then
     : "${PF_TICKLE_INSTALL:?PC_PREFLIGHT needs PF_TICKLE_INSTALL (pc_preflight_build.sh)}"
     : "${PF_PERF_WS:?PC_PREFLIGHT needs PF_PERF_WS (pc_preflight_build.sh)}"
     CLIENT=ka_pfc_$$; SERVER=ka_pfs_$$; SKIP_BUILD=1
+    # One PC preflight at a time (2026-10-12): every preflight's launcher writes the same /tmp/ka_<role>.pid, .maps,
+    # .treat and the RX_PROFILE /tmp/ka_rx.* files on this one host, so two at once read each other's processes (a
+    # stat run's maps showed the other preflight's librmw_tickle.so). A per-user lock, held by this shell for its whole
+    # life (fd 8; sudo closes it for everything launched through sh_), refuses the second one instead of waiting.
+    PF_LOCK=${PF_LOCK:-/tmp/ka_pc_preflight.$USER.lock}
+    exec 8>>"$PF_LOCK" || { echo "REFUSED: cannot open $PF_LOCK" >&2; exit 75; }
+    if ! flock -n 8; then
+        echo "REFUSED: another PC preflight holds $PF_LOCK (its /tmp/ka_* files would mix with this one's)" >&2
+        exit 75
+    fi
+    printf '%s pid=%s %s\n' "$(date -Is)" "$$" "$0" > "$PF_LOCK"
 fi
 [ "$SAMEHOST" = 1 ] && SERVER=$CLIENT
 # Each distinct host once: under SAMEHOST the client is the server, and two builds or copies at once on one Pi would
