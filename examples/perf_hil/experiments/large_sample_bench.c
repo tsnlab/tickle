@@ -14,7 +14,7 @@
 //
 //   large_sample_bench pub -s BYTES -r HZ -d SECONDS [-R] [-A] [-M [-G]] [-b BROADCAST] [-F auto|mtu|ip] [-n UNITS]
 //                          [-H S]
-//   large_sample_bench sub -s BYTES -d SECONDS [-R] [-b BROADCAST] [-X BYTES] [-C] [-w US] [-W US]
+//   large_sample_bench sub -s BYTES -d SECONDS [-R] [-b BROADCAST] [-X BYTES] [-C] [-w US] [-W US] [-K STRIDE]
 //
 // Hybrid transport (DESIGN.md section 8), in a tree that has it: -F sets the context's large_fragmentation, -n forces
 // runs of exactly UNITS units (IP, with the Publisher's ip_datagram_max at UNITS large units: the model check's fixed
@@ -34,9 +34,11 @@
 // (CLOCK_MONOTONIC - both namespaces share the host's clock), its index and a pattern seeded by its index, so the
 // subscriber checks every byte (torn=) and measures publish-to-callback latency. Built against core with rmw's
 // datagram (tt_MAX_BUFFER_LENGTH 65507), which is what turns large samples on.
-// Subscriber only: -w US spins that long in each sample's callback, inside the poll, as rmw_tickle's decode of a large
-// message does; -W US spins that long after a poll that delivered a sample, outside it, as an application's handling
-// of it does (large_saturation_pc.sh).
+// Subscriber only: -K STRIDE checks every STRIDE-th byte of a sample and its last, not every byte - a receive-cost
+// measurement (rx_gap_pc.sh) whose user-space count the check would otherwise swamp; it still reads every cache line
+// at a stride of 64 or less, as an application consuming the sample does. -w US spins that long in each sample's
+// callback, inside the poll, as rmw_tickle's decode of a large message does; -W US spins that long after a poll that
+// delivered a sample, outside it, as an application's handling of it does (large_saturation_pc.sh).
 //
 // RESULT line fields: role, size, published/delivered, latency median/p99/max in microseconds (sub), torn, cpu_ms (the
 // process's user + system time while it ran), cpu_ms_per_mb (per MB delivered, sub; per MB published, pub),
@@ -93,8 +95,9 @@
 #define BENCH_LARGE_UNIT 1452U // one full unit of a large sample
 
 static uint32_t sample_size = DEFAULT_SIZE;
-static uint64_t decode_spin_ns; // -w: in the callback
-static uint64_t after_spin_ns;  // -W: after a poll that delivered
+static uint64_t decode_spin_ns;    // -w: in the callback
+static uint64_t after_spin_ns;     // -W: after a poll that delivered
+static uint32_t check_stride = 1U; // -K: every byte checked by default; every Kth (and the last) with -K
 static uint32_t current_index;
 static volatile sig_atomic_t stop_requested;
 
@@ -174,12 +177,12 @@ static uint8_t seen[MAX_SAMPLES]; // by index: which samples arrived, so a missi
 static uint64_t* latencies_ns;
 
 static bool bytes_intact(const uint8_t* payload, uint32_t index) {
-    for (uint32_t i = BENCH_HEADER; i < sample_size; i++) {
+    for (uint32_t i = BENCH_HEADER; i < sample_size; i += check_stride) {
         if (payload[i] != pattern(i, index)) {
             return false;
         }
     }
-    return true;
+    return sample_size <= BENCH_HEADER || payload[sample_size - 1U] == pattern(sample_size - 1U, index);
 }
 
 static int32_t bench_decode(struct tt_Data* data, const uint8_t* payload, uint32_t len, bool native) {
@@ -394,7 +397,7 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
                               0.0};
     int opt;
     optind = 2; // NOLINT(misc-include-cleaner) - see <unistd.h> above
-    while ((opt = getopt(argc, argv, "s:r:d:RAMGb:F:n:X:CH:w:W:")) != -1) { // NOLINT(misc-include-cleaner)
+    while ((opt = getopt(argc, argv, "s:r:d:RAMGb:F:n:X:CH:w:W:K:")) != -1) { // NOLINT(misc-include-cleaner)
         switch (opt) {
         case 's':
             sample_size = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
@@ -447,6 +450,12 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
             break;
         case 'W':
             after_spin_ns = strtoull(optarg, NULL, 10) * NS_PER_US_INT; // NOLINT(misc-include-cleaner)
+            break;
+        case 'K':
+            check_stride = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
+            if (check_stride == 0) {
+                return false;
+            }
             break;
         default:
             return false;
@@ -649,7 +658,7 @@ int main(int argc, char** argv) {
     if (!parse_options(argc, argv, &opts)) {
         fprintf(stderr,
                 "usage: %s pub|sub -s BYTES [-r HZ] -d SECONDS [-R] [-A] [-M [-G]] [-b BROADCAST] [-F auto|mtu|ip] "
-                "[-n UNITS] [-X BYTES] [-C] [-H S] [-w US] [-W US]\n",
+                "[-n UNITS] [-X BYTES] [-C] [-H S] [-w US] [-W US] [-K STRIDE]\n",
                 argv[0]);
         return 2;
     }
