@@ -631,8 +631,12 @@ also runs in both modes). Small samples never use it.
 
 **Larger datagrams.** The unit is "the bytes the next send call carries", not a fragment. With the hybrid transport
 (below, `ab/hybrid-land`) a send call of runs encodes through the last unit of its last run before its `sendmmsg()`,
-exactly as a batch of MTU fragments does; the tail, alone in its own call, is encoded just before it; MTU repairs read
-the record, whole by the time the publish returns. The wire is byte-identical with and without the ranged encode in
+exactly as a batch of MTU fragments does. A call takes runs until it holds `LARGE_BATCH` (64) units - two runs at
+n = 45, about a batch of MTU fragments - not 64 runs: at 64 runs one call held the whole of a 1 MB sample, so the
+whole sample was encoded before its first byte left and the interleave was undone (PC, 1 Gbit/s tbf, 2026-10-12: one
+or two runs a call cut the latency median 59 us at 1 MB and 288-312 us at 4 MB, one whole-sample copy, CPU held;
+`experiments/hybrid_gaps_pc.sh`). The wire is unchanged (`tests/wire_identity_hybrid.sh`). The tail, alone in its
+own call, is encoded just before it; MTU repairs read the record, whole by the time the publish returns. The wire is byte-identical with and without the ranged encode in
 runs too, and a sample received in runs is lent from the assembly it was put together in (`tests/test_hybrid_send.c`).
 
 **Pre-registration (2026-10-11, before any measurement).**

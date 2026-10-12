@@ -8053,9 +8053,11 @@ static uint32_t large_end_of(const struct tt_LargeRecord* record, uint32_t last)
 }
 #if tt_HYBRID_TRANSPORT
 // The next send call of a large sample to `dest` in runs of n (hybrid transport, DESIGN.md section 8): from the unit
-// the cursor stands at, up to LARGE_BATCH runs of n units, never the last unit - which, reached, goes alone, in a call
-// of its own, as its MTU fragment. units[k] is how many units datagram k carries, so a call cut short by a full send
-// buffer moves the cursor by exactly what went.
+// the cursor stands at, runs of n units until the call carries LARGE_BATCH units or more (two runs at n = 45), never
+// the last unit - which, reached, goes alone, in a call of its own, as its MTU fragment. The call carries about what a
+// batch of MTU fragments does, so a ranged encode stays a call ahead of the wire instead of encoding the whole sample
+// before the first run goes. units[k] is how many units datagram k carries, so a call cut short by a full send buffer
+// moves the cursor by exactly what went.
 static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_LargeRecord* record, uint32_t run_n,
                                  uint32_t run_until, uint32_t next, const struct tt_Peer* dest,
                                  uint8_t (*framings)[HYBRID_RUN_L_FRAMING], struct tt_OutDatagram* batch,
@@ -8074,7 +8076,8 @@ static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_
         return 1;
     }
     uint32_t k = 0;
-    for (; k < LARGE_BATCH && next < last; k++) {
+    uint32_t call_units = 0;
+    for (; k < LARGE_BATCH && call_units < LARGE_BATCH && next < last; k++) {
         if (next >= run_until) { // a re-probe's units after its one run: each its MTU fragment
             uint32_t length = large_length(next, record->cdr_len);
             uint32_t skip = 0;
@@ -8083,6 +8086,7 @@ static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_
             batch[k] = (struct tt_OutDatagram) {
                 framings[k] + skip, framing_length - skip, cdr + large_offset(next), length, dest->ip, dest->port};
             units[k] = 1;
+            call_units++;
             next++;
             continue;
         }
@@ -8109,6 +8113,7 @@ static uint32_t large_build_runs(const struct tt_Context* node, const struct tt_
         batch[k] = (struct tt_OutDatagram) {
             out + skip, (uint32_t)HYBRID_RUN_L_FRAMING - skip, cdr + offset, length, dest->ip, dest->port};
         units[k] = run;
+        call_units += run;
         next += run;
     }
     return k;
