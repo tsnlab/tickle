@@ -1130,7 +1130,44 @@ together in the receive buffer and goes on as before. The kernel's one copy then
   writers only (the framing is compared byte for byte). `TT_RX_DIRECT=0` turns it off (the A/B control). Wire bytes
   are untouched. Counted on the "Node N rx:" line: `direct_reads`, `direct_runs`, `direct_missed`, `direct_cancelled`.
 - Tests: `tests/test_rx_direct.c` (core, over the mock HAL), `platform/linux/rx_direct_check.c` (the HAL, real
-  sockets, in test-linux), `tests/mutants_rx_direct.py` (30 mutants, all caught).
+  sockets, in test-linux), `tests/mutants_rx_direct.py` (all caught; its header lists what is not mutated and why).
+
+Three more cuts of the same gap ride on it, each its own commit:
+
+- **No empty read after a run.** A wake-up made three system calls (the wait, the read, and the drain's read that finds
+  the socket empty) where Fast DDS's receive thread makes one. After a run read in place the HAL marks that socket idle
+  for the drain: the next run is at least its wire time away, and anything that did come is reported by the next
+  wait, which is level-triggered. Not taken: replacing the wait's timeout with a timerfd (its hrtimer, +0.03/+0.05
+  ms/MB on the Pi) - the bench subscriber's wait deadline moved on 4,094 of 4,096 waits, so it would cost a call each.
+- **A run's units at once.** A run's continuation units are routed once a run (writer lookups, the compatibility
+  check's discovery lookup), not once a unit. A RELIABLE Subscriber whose run lies past the watermark inside the window
+  with its assembly held places the units and records them as one span (`update_reliable_ack()` with `rx_seq_span`, as
+  a segment record spanning seq_nos already is) with one drain walk; anything else it takes a unit at a time as
+  before, and the best-effort assembly takes each unit as before. The unit path stamps `large_arrival_ns` from the
+  poll's clock reading instead of a clock read per unit.
+- **The drain kept through the poll.** A drain pass (`tt_try_receive()`) no longer stops a drain whose recvmsgs are
+  armed on every socket: it takes whatever arrives, so the pass has nothing to read. tt_Context_poll()'s restart at
+  its return then finds it running. Only a wait stops it, and a stop submits its cancellations with its first wait (one
+  `io_uring_enter()` instead of two). Starts per sample: 2 -> 1. A kept drain asked for longer datagrams, or one that
+  overran, is set up again at the next start, as a stopped one was.
+
+**PC evidence, not a rig figure** (`rx_gap_pc.sh` / `rx_gap_pc_read.py`, rules in the header written before the first
+run: two private namespaces, tbf 1 Gbit, forced runs of 45, 1 MiB 30 Hz and 4 MiB 15 Hz RELIABLE, the subscriber under
+`perf stat`, each change against its parent with an A/A floor; `~/largemsg_pc/rx_gap/`). Subscriber instructions per MB,
+user + kernel, B against A (BETTER/WORSE beyond the floor, else HELD):
+
+| change | 1 MiB | 4 MiB | note |
+|---|---|---|---|
+| run in place | +2.0% HELD | +1.5% WORSE | kernel +3% (a three-piece iovec); x86 copies with `rep movsb`, one instruction, so the user copy removed does not show; cycles -15% / -8% HELD. The Pi copies in a loop: the rig decides |
+| no empty read | +0.1% HELD | -0.8% BETTER | kernel -1.8% at 4 MiB |
+| a run at once | -25.0% BETTER | -29.9% BETTER | user instructions -53% / -59% |
+| drain kept (PC's buffer ring) | +3.6% WORSE, then -1.8% HELD | -0.4% HELD, then +0.7% WORSE | two sessions, both within ~1 floor of 0 |
+| drain kept (classic buffers, as the Pis) | -4.5% BETTER | -1.5% BETTER | kernel -5.6% / -1.8%: no re-provision of every buffer at a start |
+| the branch against its base (before best-effort routing) | -27.4% BETTER | -29.8% BETTER | cycles -16.9% / -16.4% BETTER; latency median HELD |
+| the branch with it, BEST_EFFORT | -6.0% BETTER | -6.9% BETTER | user -15.5% / -17.0%; RELIABLE 4 MiB -28.8% in the same session (1 MiB not read: A2 runs void) |
+
+The PC's own socket drops (other VMs on the host) bring repairs and move a run's count by several percent; the reader
+prints the runs without drops beside its verdict, as context.
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
