@@ -116,6 +116,16 @@ def read(lines):
     out, verdicts = judge(cells)
     for line in out:
         print(line)
+    # Context, not deciding (added 2026-10-13 after the first sessions, so not part of the rule above): the PC's own
+    # socket drops (other VMs on the host) bring repairs whose units go the slow way and move instructions per MB by
+    # several percent. The same PRIMARY over the runs whose subscriber dropped nothing, with their count.
+    clean = {}
+    for head, pub, sub in runs:
+        if void_reason(head, pub, sub) is None and sub.get("socket_drops") == "0":
+            clean.setdefault(head["cell"], {}).setdefault(head["arm"], []).append(values(head, sub)[PRIMARY])
+    for cell in sorted(clean):
+        parts = [f"{arm} {statistics.mean(xs):,.0f} (n={len(xs)})" for arm, xs in sorted(clean[cell].items())]
+        print(f"CONTEXT {cell} {PRIMARY}, runs without socket drops only: " + ", ".join(parts))
     reliable = [c for c in verdicts if c.startswith("rel")]
     if not reliable or any(verdicts[c] is None for c in reliable):
         print("READING: NOT READ (a RELIABLE cell has no verdict)")
