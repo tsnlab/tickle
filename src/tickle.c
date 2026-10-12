@@ -19119,15 +19119,19 @@ static tt_ret_t process_datagram_in(struct tt_Context* node, uint8_t* buffer, in
     // the port end a node with one UDP datagram: one v10 packet from a leftover process ended a v11 server on the
     // rig, twenty seconds into its run, and voided the measurement. An error return is for this node's own
     // failures - an encode that overflows, a socket that breaks - not for what a peer chose to send.
+#if tt_LARGE_SAMPLES
 #if LARGE_DIRECT
     large_direct_release_parked(node); // the HAL's read is over: a buffer parked during it goes back
+#endif
 #endif
     if (!process_packet(node, buffer, 0, len, ip, port, transport)) {
         TT_LOG_ERROR("Cannot process packet");
         node->rx_malformed_drops++;
     }
+#if tt_LARGE_SAMPLES
 #if LARGE_DIRECT
     node->large.direct_split = NULL; // a run read in place that nothing took (a datagram refused before its run)
+#endif
 #endif
     return tt_RET_OK;
 }
@@ -19461,12 +19465,14 @@ tt_ret_t tt_Context_poll(struct tt_Context* node, int64_t timeout) {
         large_rx_drain(node);
     }
 #endif
+#if tt_LARGE_SAMPLES
 #if LARGE_DIRECT
     if (__atomic_load_n(&node->large.direct_parked, __ATOMIC_RELAXED) != NULL) {
         state_lock(node);
         large_direct_release_parked(node);
         state_unlock(node);
     }
+#endif
 #endif
     node->rx_clock_ns = 0; // outside a poll a receive reads the clock itself
     __atomic_store_n(&node->poller_thread, 0, __ATOMIC_RELAXED);

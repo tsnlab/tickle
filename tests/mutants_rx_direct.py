@@ -343,7 +343,7 @@ MUTANTS = [
     (
         "read: aimed into a buffer too short for the hint",
         "src/hal_linux.c",
-        "    if (bytes == 0 || len < (size_t)framing + bytes) {",
+        "    if (bytes == 0 || len < (size_t)large->direct_framing_len + bytes) {",
         "    if (bytes == 0) {",
         HAL,
     ),
