@@ -16795,25 +16795,17 @@ static void large_accept_best_effort(struct tt_Context* node, struct large_fragm
     }
 }
 
-// A run's continuation units (index > 0) at once, where every Subscriber of the node is RELIABLE and no best-effort
-// assembly holds this sample: each Subscriber tracking the writer and compatible with it takes the run whole
-// (large_accept_run()) or, when that cannot, a unit at a time as deliver_large_fragment() would. The writer lookups,
-// the compatibility check and the routing are made once a run rather than once a unit. False when a best-effort
-// Subscriber is there: the caller takes the run a unit at a time, exactly as before.
+// A run's continuation units (index > 0), routed once a run where deliver_large_fragment() routes each unit. Every
+// Subscriber tracking the writer and compatible with it: a RELIABLE one takes the run whole (large_accept_run()) or,
+// when that cannot, a unit at a time; a best-effort one marks the run for the shared assembly. The best-effort assembly
+// then takes each unit, as before, when a best-effort Subscriber was met, or none tracks the writer and one exists, or
+// the assembly is already held. The writer lookups, the compatibility check (a discovery lookup) and the routing are
+// made once a run rather than once a unit. False only with ordering compiled out: the caller then takes the run a unit
+// at a time.
 static bool large_run_batched(struct tt_Context* node, struct tt_Header* header, uint32_t entity_id, uint32_t seq_no,
                               uint32_t index, uint32_t count, uint32_t run_count, const uint8_t* payload,
                               uint32_t sender_ip, uint16_t sender_port) {
     if (TT_ORDERING_DISABLED) {
-        return false;
-    }
-    for (uint32_t i = 0; i < node->endpoint_count; i++) {
-        const struct tt_Endpoint* endpoint = node->endpoints[i];
-        if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER &&
-            !((const struct tt_Subscriber*)endpoint)->reliable) {
-            return false;
-        }
-    }
-    if (large_assembly_find(node, NULL, header->source, entity_id, seq_no - index) != NULL) {
         return false;
     }
     const struct large_fragment first = {
@@ -16829,14 +16821,26 @@ static bool large_run_batched(struct tt_Context* node, struct tt_Header* header,
         .sender_port = sender_port,
         .best_effort_seen = false,
     };
+    bool tracked = false;
+    bool any_best_effort = false;
+    bool best_effort_seen = false;
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
         if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER) {
             continue;
         }
         struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+        any_best_effort = any_best_effort || !sub->reliable;
         struct tt_WriterProxy* proxy = find_writer_proxy(sub, header->source, entity_id);
-        if (proxy == NULL || subscriber_incompatible_with_writer(node, sub, header->source, endpoint->id, entity_id)) {
+        if (proxy == NULL) {
+            continue;
+        }
+        tracked = true;
+        if (subscriber_incompatible_with_writer(node, sub, header->source, endpoint->id, entity_id)) {
+            continue;
+        }
+        if (!sub->reliable) {
+            best_effort_seen = true;
             continue;
         }
         if (large_accept_run(node, sub, proxy, &first, run_count)) {
@@ -16849,6 +16853,16 @@ static bool large_run_batched(struct tt_Context* node, struct tt_Header* header,
             unit.index++;
             unit.seq_no++;
         }
+    }
+    best_effort_seen = best_effort_seen || (!tracked && any_best_effort);
+    struct large_fragment unit = first;
+    for (uint32_t k = 0; k < run_count; k++) {
+        if (best_effort_seen || large_assembly_find(node, NULL, header->source, entity_id, seq_no - index) != NULL) {
+            large_accept_best_effort(node, &unit);
+        }
+        unit.payload += unit.length;
+        unit.index++;
+        unit.seq_no++;
     }
     return true;
 }

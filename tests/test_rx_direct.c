@@ -624,6 +624,17 @@ static void test_batch_not_with_a_best_effort_subscriber(void) {
     init_pair(false);
     feed(run_bytes, build_run(RUN_N, RUN_N));
     EXPECT_TRUE(the_assembly() != NULL && the_assembly()->received == RUN_N);
+
+    // The same Subscriber already tracking the writer (a whole sample before), the next sample's first run lost: the
+    // run is routed to it, and claims the assembly.
+    init_pair(false);
+    feed(run_bytes, build_run(0, RUN_N));
+    feed_rest_from(RUN_N);
+    EXPECT_EQ_INT(1, delivered);
+    EXPECT_TRUE(find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id) != NULL);
+    sample_header.seq_no += LARGE_UNITS;
+    feed(run_bytes, build_run(RUN_N, RUN_N));
+    EXPECT_TRUE(the_assembly() != NULL && the_assembly()->received == RUN_N);
 }
 
 // A best-effort assembly of the sample still held (its Subscriber went after the sample's first run): the runs after
