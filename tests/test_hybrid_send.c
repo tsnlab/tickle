@@ -485,7 +485,12 @@ static void sim_reasm_expire(void) {
     }
 }
 
+static bool (*sim_drop_hook)(const struct sim_datagram* d); // a datagram a test drops by what it is, or NULL
+
 static bool sim_lost(const struct sim_datagram* d) {
+    if (sim_drop_hook != NULL && sim_drop_hook(d)) {
+        return true;
+    }
     uint32_t frames = (d->len + 8U + FRAME_PAYLOAD - 1U) / FRAME_PAYLOAD;
     if (sim_drop_fragmented && frames > 1U && d->from == SENDER_ID) {
         sent.frames_dropped += frames;
@@ -605,6 +610,7 @@ static void sim_start(uint32_t frame_loss_ppm) {
     sim_frame_loss_ppm = frame_loss_ppm;
     sim_rng = 11;
     sim_drop_fragmented = false;
+    sim_drop_hook = NULL;
     sim_receiver_drop_every = 0;
     sim_receiver_runs = 0;
     sim_receiver_dropped = 0;
@@ -1965,6 +1971,82 @@ static void test_the_objective_reads_the_posterior_mean(void) {
     EXPECT_EQ_U32(45, hybrid_n_star(loss_estimate_mean(&estimate), HYBRID_UNIT, HYBRID_UNIT_HEADER, 45));
 }
 
+// --- the match point under loss (REL_1MB_IP_5's sample 0, 2026-10-11)
+// -------------------------------------------------
+
+// The writer's datagrams a test drops: its first `drop_heartbeats` datagrams that begin with a HEARTBEAT (the match
+// Heartbeat, alone ahead of a large sample; then the end-of-sample one) and, when drop_first_unit is set, the first
+// transmission of the datagram carrying unit 0 of the first sample.
+static uint32_t drop_heartbeats;
+static bool drop_first_unit;
+static uint32_t dropped_heartbeats;
+static bool dropped_unit;
+
+static bool drop_the_match_point(const struct sim_datagram* d) {
+    if (d->from != SENDER_ID) {
+        return false;
+    }
+    const uint8_t* body = NULL;
+    if (datagram_type(d->bytes, &body) == tt_SUBMESSAGE_TYPE_HEARTBEAT) {
+        if (dropped_heartbeats < drop_heartbeats) {
+            dropped_heartbeats++;
+            return true;
+        }
+        return false;
+    }
+    uint32_t seq_no = 0;
+    uint32_t units = 0;
+    bool run = false;
+    if (drop_first_unit && !dropped_unit && datagram_units(d->bytes, &seq_no, &units, &run) && seq_no == first_seq_no) {
+        dropped_unit = true;
+        return true;
+    }
+    return false;
+}
+
+// A RELIABLE KEEP_ALL sample published right after the match is delivered, whatever is lost. Its match Heartbeat goes
+// alone ahead of a large sample, and only the datagram holding unit 0 or a HEARTBEAT can be a reader's first contact
+// (a continuation names no endpoint). With the match Heartbeat and unit 0 both lost, the end-of-sample HEARTBEAT
+// (last = 723) was the first contact and the baseline 724: sample 0 was never asked for, and the reader's ack released
+// it at the writer (the netns suite's REL_1MB_IP_5, 2 runs in 10, and REL_4MB_IP_5's one). Arms: the match Heartbeat
+// lost (0), unit 0 lost (1) - the controls, which held before the fix; both (2); both and the end-of-sample HEARTBEAT,
+// so its chase's resend is the first contact (3). Forced runs (cap off) and forced MTU, 1 MB, three samples, every
+// other datagram delivered.
+static void test_a_sample_published_at_the_match_is_delivered(void) {
+    static const uint8_t modes[] = {tt_LARGE_FRAGMENTATION_IP, tt_LARGE_FRAGMENTATION_MTU};
+    static const uint32_t heartbeats[] = {1, 0, 1, 2};
+    for (size_t m = 0; m < 2; m++) {
+        for (int arm = 0; arm < 4; arm++) {
+            _tt_CONFIG.reassembly_cap_off = 1;
+            init_one(ONE_MB, FULL_CEILING, true);
+            _tt_CONFIG.reassembly_cap_off = 0;
+            pub.large_fragmentation = modes[m];
+            sim_start(0);
+            drop_heartbeats = heartbeats[arm];
+            drop_first_unit = arm != 0;
+            dropped_heartbeats = 0;
+            dropped_unit = false;
+            sim_drop_hook = drop_the_match_point;
+            for (int s = 0; s < 3; s++) {
+                EXPECT_EQ_INT(tt_RET_OK, sim_publish(1)); // one pattern: a torn or misplaced unit shows
+            }
+            sim_settle(3, 5 * tt_SECOND);
+            EXPECT_EQ_U32(drop_heartbeats, dropped_heartbeats); // the treatment was applied
+            EXPECT_TRUE(dropped_unit == drop_first_unit);
+            EXPECT_EQ_INT(3, readers[0].delivered);
+            EXPECT_EQ_INT(0, readers[0].torn);
+            EXPECT_TRUE(readers[0].in_order);
+            uint32_t owed = 0;
+            EXPECT_TRUE(!match_point_owed(&pub, &owed)); // acknowledged: later HEARTBEATs carry no match point
+            if (readers[0].delivered != 3) {
+                printf("test_hybrid_send: match point, mode %u arm %d: %d of 3 delivered\n", modes[m], arm,
+                       readers[0].delivered);
+            }
+            sim_drop_hook = NULL;
+        }
+    }
+}
+
 // --- runs meet encoding while sending and the lent large sample (DESIGN.md section 8) -------------------------------
 
 // One arm of a writer and its readers: `samples` samples of `len`, each run until every reader has it, the send buffer
@@ -2210,6 +2292,7 @@ int main(void) {
     test_a_failed_path_needs_the_tail_through();
     test_the_objective_is_wire_bytes();
     test_the_objective_reads_the_posterior_mean();
+    test_a_sample_published_at_the_match_is_delivered();
     test_runs_with_a_ranged_encode_leave_the_wire_byte_identical();
     test_each_run_call_is_encoded_just_before_it_goes();
     test_a_sample_received_in_runs_is_lent_in_place();

@@ -89,6 +89,27 @@ MUTANTS = [
         SEND,
     ),
     (
+        "match point: the end-of-sample HEARTBEAT carries none",
+        "src/tickle.c",
+        "    if (match_point_owed(pub, &owed)) {\n        encode_heartbeat_range(",
+        "    if (false && match_point_owed(pub, &owed)) {\n        encode_heartbeat_range(",
+        SEND,
+    ),
+    (
+        "match point: carried one seq_no late",
+        "src/tickle.c",
+        "        encode_heartbeat_range(node, pub, first, owed - 1U, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);",
+        "        encode_heartbeat_range(node, pub, first, owed, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);",
+        SEND,
+    ),
+    (
+        "match point: still carried once the reader has it",
+        "src/tickle.c",
+        "        if (ack->context_id == tt_CONTEXT_ID_INVALID || ack->match_heartbeats_left == 0) {\n            continue;\n        }\n        if (!any || seq_delta(ack->first_owed_seq_no, *owed) < 0) {\n            *owed = ack->first_owed_seq_no;\n            any = true;\n        }\n    }\n    return any;",
+        "        if (ack->context_id == tt_CONTEXT_ID_INVALID) {\n            continue;\n        }\n        if (!any || seq_delta(ack->first_owed_seq_no, *owed) < 0) {\n            *owed = ack->first_owed_seq_no;\n            any = true;\n        }\n    }\n    return any;",
+        SEND,
+    ),
+    (
         "large runs: each run named by the sample's seq_no",
         "src/tickle.c",
         "        header_l->data.seq_no = data->seq_no + next; // the first unit's own",
