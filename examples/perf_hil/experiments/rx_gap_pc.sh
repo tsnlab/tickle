@@ -46,6 +46,9 @@ CELLS=${CELLS:-"rel1m:1048576:30:-R rel4m:4194304:15:-R"}
 ARMS=${ARMS:-"A B A2"}
 CFLAGS_BENCH=${CFLAGS_BENCH:-"-O2 -g -DNDEBUG"}
 EXTRA_B=${EXTRA_B:-}
+# The subscriber's environment, every arm (e.g. the rig Pis' classic drain buffers: SUB_PRELOAD=classic runs it under
+# platform/linux/refuse_pbuf_ring.so with TT_REFUSE_PBUF_RING=all, built from TIP).
+SUB_PRELOAD=${SUB_PRELOAD:-}
 CHECK_STRIDE=${CHECK_STRIDE:-64} # the subscriber checks every 64th byte: every cache line, not every byte (-K)
 export TMPDIR=${TMPDIR:-/home/semih/tmp_build}
 rc=1
@@ -77,6 +80,10 @@ export_tree "$parent_sha" "$WORK/src_A" || exit 1
 export_tree "$tip_sha" "$WORK/src_B" || exit 1
 build "$WORK/src_A" "$WORK/bench_A" || exit 1
 build "$WORK/src_B" "$WORK/bench_B" "$EXTRA_B" || exit 1
+if [ "$SUB_PRELOAD" = classic ]; then
+    git -C "$TREE" archive "$tip_sha" tests/support/refuse_pbuf_ring.c | tar -x -C "$WORK/src_B" || exit 1
+    cc -shared -fPIC -O2 -o "$WORK/refuse_pbuf_ring.so" "$WORK/src_B/tests/support/refuse_pbuf_ring.c" -ldl || exit 1
+fi
 
 sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
 sudo -n ip link add rxga netns "$NS1" type veth peer name rxgb netns "$NS2" || exit 1
@@ -86,7 +93,7 @@ for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
 sudo -n ip -n "$NS1" link set rxga up
 sudo -n ip -n "$NS2" link set rxgb up
 sudo -n ip netns exec "$NS1" tc qdisc add dev rxga root tbf rate 1gbit burst 64kb latency 100ms || exit 1
-echo "=== rx_gap_pc $(date -Is) A=$parent_sha B=$tip_sha extra_b='$EXTRA_B' blocks=$BLOCKS duration=${DURATION}s cflags='$CFLAGS_BENCH' load=$(cut -d' ' -f1-3 /proc/loadavg) ===" | tee -a "$OUT"
+echo "=== rx_gap_pc $(date -Is) A=$parent_sha B=$tip_sha extra_b='$EXTRA_B' sub_preload='$SUB_PRELOAD' blocks=$BLOCKS duration=${DURATION}s cflags='$CFLAGS_BENCH' load=$(cut -d' ' -f1-3 /proc/loadavg) ===" | tee -a "$OUT"
 
 run() { # <cell> <arm> <block> <size> <rate> <qflag>
     local cell=$1 arm=$2 block=$3 size=$4 rate=$5 qflag=$6 bin
@@ -95,11 +102,12 @@ run() { # <cell> <arm> <block> <size> <rate> <qflag>
         B) bin=$WORK/bench_B ;;
         *) echo "unknown arm $arm"; return ;;
     esac
-    local sublog=$WORK/sub.log publog=$WORK/pub.log perflog=$WORK/perf.txt
+    local sublog=$WORK/sub.log publog=$WORK/pub.log perflog=$WORK/perf.txt sub_env=""
+    [ "$SUB_PRELOAD" = classic ] && sub_env="env TT_REFUSE_PBUF_RING=all LD_PRELOAD=$WORK/refuse_pbuf_ring.so"
     rm -f "$perflog"
     # shellcheck disable=SC2024,SC2086
     sudo -n ip netns exec "$NS2" bash -c "ulimit -v $VMEM_KB; exec timeout $((DURATION + 40)) perf stat -x, \
-        -e instructions:u,instructions:k,cycles:u,cycles:k -o $perflog $bin sub -s $size -d $((DURATION + 8)) $qflag -C \
+        -e instructions:u,instructions:k,cycles:u,cycles:k -o $perflog $sub_env $bin sub -s $size -d $((DURATION + 8)) $qflag -C \
         -K $CHECK_STRIDE -b 192.168.86.255" >"$sublog" 2>&1 &
     local sub_pid=$!
     sleep 1
