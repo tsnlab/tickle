@@ -16656,9 +16656,53 @@ static void large_accept_reliable(struct tt_Context* node, struct tt_Subscriber*
         return;
     }
     if (recorded) {
-        proxy->large_arrival_ns = tt_get_ns();
+        proxy->large_arrival_ns = rx_now(node); // the poll's reading: no clock read per unit
         drain_reorder(node, sub, proxy);
     }
+}
+
+// A run's units for one RELIABLE Subscriber at once, when the whole run lies at or past the watermark inside the window
+// and its sample's assembly is held. They are placed, then recorded as one span - update_reliable_ack() with
+// rx_seq_span, the bits a unit at a time would set, in one pass (a bit already set stays set) - and the drain runs
+// once. A unit at a time paid the writer lookups, the ACK bookkeeping, a clock read and a drain walk 45 times a run
+// (librmw_tickle +0.07/+0.08 ms/MB over Fast DDS's middleware on the Pi, rx gap analysis). False, with nothing done,
+// otherwise: the caller takes the run a unit at a time, as before - a late run's duplicates, a first unit that claims
+// the assembly, a count that contradicts it.
+static bool large_accept_run(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
+                             const struct large_fragment* first, uint32_t run_count) {
+    uint8_t source = first->header->source;
+    if (seq_delta(first->seq_no, proxy->ack_seq_no) < 0) {
+        return false;
+    }
+    if (first->seq_no - proxy->ack_seq_no + run_count > proxy_window_bits(proxy)) {
+        return false; // past the window a unit at a time jumps the watermark; a span would leave units unrecorded
+    }
+    uint32_t sample_seq_no = first->seq_no - first->index;
+    struct tt_LargeAssembly* assembly = large_assembly_find(node, sub, source, first->entity_id, sample_seq_no);
+    if (assembly == NULL || assembly->frag_count != first->count) {
+        return false;
+    }
+    struct large_fragment unit = *first;
+    for (uint32_t k = 0; k < run_count; k++) {
+        // A full unit (never the last): placed, or already there - landed but not recorded, which only a full writer
+        // table leaves (update_reliable_ack() then records nothing). Recorded with the rest either way: it is here.
+        if (large_place(node, assembly, &unit) == 0) {
+            node->large.duplicate++;
+        }
+        unit.payload += unit.length;
+        unit.index++;
+        unit.seq_no++;
+    }
+    const uint16_t span = node->rx_seq_span;
+    node->rx_seq_span = (uint16_t)run_count;
+    bool recorded =
+        update_reliable_ack(node, sub, first->seq_no, source, first->entity_id, first->sender_ip, first->sender_port);
+    node->rx_seq_span = span;
+    if (recorded) {
+        proxy->large_arrival_ns = rx_now(node);
+        drain_reorder(node, sub, proxy);
+    }
+    return true;
 }
 
 // Whether every best-effort Subscriber tracking this writer has already delivered something at or past this sample:
@@ -16749,6 +16793,64 @@ static void large_accept_best_effort(struct tt_Context* node, struct large_fragm
             large_assembly_abandon(node, older);
         }
     }
+}
+
+// A run's continuation units (index > 0) at once, where every Subscriber of the node is RELIABLE and no best-effort
+// assembly holds this sample: each Subscriber tracking the writer and compatible with it takes the run whole
+// (large_accept_run()) or, when that cannot, a unit at a time as deliver_large_fragment() would. The writer lookups,
+// the compatibility check and the routing are made once a run rather than once a unit. False when a best-effort
+// Subscriber is there: the caller takes the run a unit at a time, exactly as before.
+static bool large_run_batched(struct tt_Context* node, struct tt_Header* header, uint32_t entity_id, uint32_t seq_no,
+                              uint32_t index, uint32_t count, uint32_t run_count, const uint8_t* payload,
+                              uint32_t sender_ip, uint16_t sender_port) {
+    if (TT_ORDERING_DISABLED) {
+        return false;
+    }
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        const struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER &&
+            !((const struct tt_Subscriber*)endpoint)->reliable) {
+            return false;
+        }
+    }
+    if (large_assembly_find(node, NULL, header->source, entity_id, seq_no - index) != NULL) {
+        return false;
+    }
+    const struct large_fragment first = {
+        .header = header,
+        .data_header = NULL,
+        .payload = payload,
+        .length = LARGE_CONT_PAYLOAD,
+        .entity_id = entity_id,
+        .seq_no = seq_no,
+        .index = index,
+        .count = count,
+        .sender_ip = sender_ip,
+        .sender_port = sender_port,
+        .best_effort_seen = false,
+    };
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER) {
+            continue;
+        }
+        struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+        struct tt_WriterProxy* proxy = find_writer_proxy(sub, header->source, entity_id);
+        if (proxy == NULL || subscriber_incompatible_with_writer(node, sub, header->source, endpoint->id, entity_id)) {
+            continue;
+        }
+        if (large_accept_run(node, sub, proxy, &first, run_count)) {
+            continue;
+        }
+        struct large_fragment unit = first;
+        for (uint32_t k = 0; k < run_count; k++) {
+            large_accept_reliable(node, sub, &unit);
+            unit.payload += unit.length;
+            unit.index++;
+            unit.seq_no++;
+        }
+    }
+    return true;
 }
 
 // for_each_endpoint()'s visitor for a large fragment 0: a RELIABLE Subscriber takes it now, a best-effort one from the
@@ -17005,6 +17107,13 @@ static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* he
         hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count, true);
     }
 #endif
+    if (index != 0 &&
+        large_run_batched(node, header, entity_id, seq_no, index, count, run_count, payload, sender_ip, sender_port)) {
+#if LARGE_DIRECT
+        large_direct_aim(node, header, run, index, count, run_count, in_place);
+#endif
+        return true;
+    }
     for (uint32_t i = 0; i < run_count; i++) {
         uint32_t unit_index = index + i;
         struct large_fragment fragment = {
