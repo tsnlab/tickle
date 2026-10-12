@@ -24,6 +24,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PARENT=${1:-c7262c89}
 CC=${CC:-gcc}
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/wire_identity_hybrid.XXXXXX")
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
 cleanup() { # the one EXIT trap
     rm -rf "$TMP"
 }
