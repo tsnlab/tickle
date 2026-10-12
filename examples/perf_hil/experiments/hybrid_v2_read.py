@@ -23,7 +23,9 @@ RULES (enforced below; a cell with fewer than 3 usable runs of head or pre is NO
              median: -d >= 0.1 ms at 1 MB and >= 0.3 ms at 4 MB, with d < -2 SE (the PC's gain was one whole-sample
              copy; the Pi's copy is ~4x the PC's). AND no CPU WORSE: pub and sub ms/MB not WORSE in any s1 cell.
              PASS iff every s1 cell meets it; FAIL if any misses; FALSIFIED (the encode was not on the latency path on
-             the Pi) if both 4 MB cells are HELD on latency.
+             the Pi) if both 4 MB cells are HELD on latency. NO VERDICT unless all four s1 cells were read: a reading
+             with none of them is not a pass (amended 2026-10-12 before any rig run - the queue's PC preflight read
+             its I4s invocation alone as PASS).
   (2) SEND     send_waits per MB down - head's mean below pre's by more than 2 SE - in every cell where pre waited
              (pre send_waits > 0), AND pub ms/MB BETTER in at least 2 of those cells and WORSE in none. FAIL
              otherwise. NOT EXERCISED when pre never waited in any cell.
@@ -112,11 +114,14 @@ def main():
         print("NO VERDICT: no usable 0% cell")
         return 2
     lat_ok, lat_any_missing, cpu_worse, held_4m = True, False, False, 0
+    s1_read = set()
     send_cells, send_down, send_better, send_worse, send_void = 0, True, 0, False, False
     for (topic, reliable, rate), (runs, arms) in sorted(cells.items()):
         name = f"{topic} {rate} Hz {'RELIABLE' if reliable else 'BEST_EFFORT'}"
         head, pre = arms.get("tickle@head", []), arms.get("tickle@pre", [])
         s1 = (topic == "Array1m" and str(rate) == "30") or (topic == "Array4m" and str(rate) == "15")
+        if s1:
+            s1_read.add((topic, reliable))
         print(f"=== {name}: head {len(head)} runs, pre {len(pre)} runs ({runs}) ===")
         for metric in ("lat_med", "p99_lb", "cpu_pub", "cpu_sub", "rss_sub"):
             v, d, se = verdict(fin(r.get(metric) for r in head), fin(r.get(metric) for r in pre),
@@ -178,8 +183,9 @@ def main():
         send_worse = send_worse or v == "WORSE"
         print(f"  (2) send_waits/MB d {d:+.2f} (2SE {2 * se:.2f}) {'DOWN' if down else 'NOT DOWN'}; pub ms/MB {v}")
     print("=== criteria ===")
-    if lat_any_missing:
-        print("(1) LATENCY: NO VERDICT - an s1 cell without 3 usable runs of head and pre")
+    if lat_any_missing or len(s1_read) < 4:
+        print(f"(1) LATENCY: NO VERDICT - {len(s1_read)} of the four s1 cells read, or one without 3 usable runs of "
+              "head and pre")
         status = max(status, 2)
     elif held_4m == 2:
         print("(1) LATENCY: FALSIFIED - both 4 MB cells HELD: the encode was not on the Pi's latency path")
