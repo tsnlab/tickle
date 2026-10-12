@@ -17,7 +17,13 @@
 # The test's own assertions (call counts, range ends) may fail against the parent; only the digests are read. Each run
 # under `ulimit -v` and a timeout.
 #
-# Usage: tests/wire_identity_hybrid.sh [PARENT]    PARENT defaults to c7262c89 (origin/main before ab/hybrid-v2).
+# test_hybrid_send.c is one commit's, built against every core: TESTS=<rev>, by default the working tree's. Its mock HAL
+# (test_mock.h, test_common.h) is each core's own, since a core may call a HAL function its parent's mock lacks. A test
+# written after the parent may name what the parent lacks; then name a commit whose test carries the print and builds
+# against the parent - for c7262c89, TESTS=58364f11 (the call cap, which added it).
+#
+# Usage: [TESTS=<rev>] tests/wire_identity_hybrid.sh [PARENT]    PARENT defaults to c7262c89 (origin/main before
+# ab/hybrid-v2).
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -30,10 +36,21 @@ cleanup() { # the one EXIT trap
 }
 trap cleanup EXIT
 
-mkdir -p "$TMP/parent" "$TMP/change" "$TMP/mutant"
-git -C "$ROOT" archive "$PARENT" src include | tar -x -C "$TMP/parent" || exit 1
-cp -r "$ROOT/src" "$ROOT/include" "$TMP/change/"
-cp -r "$ROOT/src" "$ROOT/include" "$TMP/mutant/"
+mkdir -p "$TMP/parent" "$TMP/change" "$TMP/mutant" "$TMP/tests"
+if [ -n "${TESTS:-}" ]; then
+    git -C "$ROOT" archive "$TESTS" tests/test_hybrid_send.c tests/test_common.h tests/test_mock.h | tar -x -C "$TMP" ||
+        exit 1
+else
+    cp "$ROOT"/tests/test_hybrid_send.c "$ROOT"/tests/test_common.h "$ROOT"/tests/test_mock.h "$TMP/tests/"
+fi
+grep -q HYBRID_SEND_WIRE_PRINT "$TMP/tests/test_hybrid_send.c" ||
+    { echo "FAIL  tests    test_hybrid_send.c from ${TESTS:-the working tree} has no HYBRID_SEND_WIRE_PRINT"; exit 1; }
+git -C "$ROOT" archive "$PARENT" src include tests/test_mock.h tests/test_common.h | tar -x -C "$TMP/parent" || exit 1
+for t in change mutant; do
+    mkdir -p "$TMP/$t/tests"
+    cp -r "$ROOT/src" "$ROOT/include" "$TMP/$t/"
+    cp "$ROOT/tests/test_mock.h" "$ROOT/tests/test_common.h" "$TMP/$t/tests/"
+done
 if [ "$(grep -c 'header_l->zero = 0;' "$TMP/mutant/src/tickle.c")" != 1 ]; then
     echo "FAIL  mutant   the substitution site is not there exactly once"
     exit 1
@@ -44,7 +61,7 @@ sed -i 's/header_l->zero = 0;/header_l->zero = 1;/' "$TMP/mutant/src/tickle.c"
 digest() {
     local name=$1 core=$2
     mkdir -p "$TMP/$name.build/tests"
-    cp "$ROOT"/tests/test_hybrid_send.c "$ROOT"/tests/test_common.h "$ROOT"/tests/test_mock.h "$TMP/$name.build/tests/"
+    cp "$TMP"/tests/test_hybrid_send.c "$core"/tests/test_common.h "$core"/tests/test_mock.h "$TMP/$name.build/tests/"
     ln -sfn "$core/src" "$TMP/$name.build/src"
     "$CC" -O1 -g -w -DHYBRID_SEND_WIRE_PRINT -I"$core/include" -I"$core/src" -o "$TMP/$name.bin" \
         "$TMP/$name.build/tests/test_hybrid_send.c" "$core/src/encoding.c" "$core/src/log.c" -lm \
