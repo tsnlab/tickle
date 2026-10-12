@@ -383,6 +383,10 @@ static void test_in_order(bool reliable) {
     for (uint32_t first = RUN_N; first < 60U; first += RUN_N) {
         in_place += feed_aimed(run_bytes, build_run(first, RUN_N)) ? 1U : 0U;
         expect_hint(first + RUN_N, first + RUN_N == 60U ? 8U : RUN_N);
+        if (reliable) { // every unit of the run recorded: the watermark past it, so the writer is not asked again
+            struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+            EXPECT_TRUE(proxy != NULL && proxy->ack_seq_no == sample_header.seq_no + first + RUN_N);
+        }
     }
     in_place += feed_aimed(run_bytes, build_run(60, 8)) ? 1U : 0U;
     EXPECT_EQ_U32(0, receiver.large.direct_bytes); // the next is the last unit, which goes alone
@@ -562,6 +566,100 @@ static void test_run_for_a_freed_assembly_is_dropped(void) {
     EXPECT_TRUE(the_assembly() == NULL); // nothing claimed for it: the run was not taken from the receive buffer
 }
 
+// --- a run at once (large_run_batched(), large_accept_run())
+// ----------------------------------------------------------
+
+static struct tt_Subscriber sub_be;
+
+static void feed_rest_from(uint32_t first) {
+    while (first < LARGE_UNITS - 1U) {
+        uint32_t n = LARGE_UNITS - 1U - first < 40U ? LARGE_UNITS - 1U - first : 40U;
+        feed(run_bytes, build_run(first, n));
+        first += n;
+    }
+    feed_unit(LARGE_UNITS - 1U);
+}
+
+// A run sent again after part of it was recorded (units 10-14 as MTU units, the watermark at 15): taken a unit at a
+// time - 10-14 duplicates, 15-19 recorded - not as a span from 10, which update_reliable_ack() would call late and
+// record nothing of, leaving 15-19 landed and never acknowledged.
+static void test_batch_run_across_the_watermark(void) {
+    init_pair(true);
+    feed(run_bytes, build_run(0, RUN_N));
+    for (uint32_t i = RUN_N; i < 15U; i++) {
+        feed_unit(i);
+    }
+    struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+    EXPECT_TRUE(proxy != NULL && proxy->ack_seq_no == sample_header.seq_no + 15U);
+    uint64_t duplicates = receiver.large.duplicate;
+    feed(run_bytes, build_run(RUN_N, RUN_N));
+    EXPECT_EQ_U64(duplicates + 5U, receiver.large.duplicate);
+    EXPECT_TRUE(proxy != NULL && proxy->ack_seq_no == sample_header.seq_no + 20U);
+    feed_rest_from(20);
+    expect_one_intact();
+}
+
+// A run reaching past the window (64 bits here): a unit at a time, as before - the units past it jump the watermark
+// and the sample below it is given up - not as a span, which would leave them landed and unrecorded.
+static void test_batch_run_past_the_window(void) {
+    init_pair(true);
+    sub.tracking_words = 1;
+    feed(run_bytes, build_run(0, 2));
+    feed(run_bytes, build_run(58, RUN_N)); // offsets 56-65 from the watermark at 2
+    struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+    EXPECT_TRUE(proxy != NULL && seq_delta(proxy->ack_seq_no, sample_header.seq_no + 58U) > 0);
+    EXPECT_EQ_U64(1, receiver.large.abandoned);
+}
+
+// A best-effort Subscriber beside the RELIABLE one: every run a unit at a time, so both get the sample.
+static void test_batch_not_with_a_best_effort_subscriber(void) {
+    init_pair(true);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub_be, &receiver_topic, ENDPOINT_NAME, on_data));
+    feed(run_bytes, build_run(0, RUN_N));
+    feed_rest_from(RUN_N);
+    EXPECT_EQ_INT(2, delivered);
+    EXPECT_EQ_INT(0, delivered_torn);
+
+    // A best-effort Subscriber alone, the sample's first run lost: a later run claims its assembly, as a unit does.
+    init_pair(false);
+    feed(run_bytes, build_run(RUN_N, RUN_N));
+    EXPECT_TRUE(the_assembly() != NULL && the_assembly()->received == RUN_N);
+}
+
+// A best-effort assembly of the sample still held (its Subscriber went after the sample's first run): the runs after
+// go to it a unit at a time as before, so it completes and is freed with the RELIABLE one.
+static void test_batch_not_with_a_best_effort_assembly(void) {
+    init_pair(true);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&receiver, &sub_be, &receiver_topic, ENDPOINT_NAME, on_data));
+    feed(run_bytes, build_run(0, RUN_N));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Subscriber_destroy(&sub_be));
+    feed_rest_from(RUN_N);
+    expect_one_intact();
+    EXPECT_TRUE(the_assembly() == NULL);
+}
+
+// The first run of a sample after the last one's, not unit 0's: no assembly yet, so a unit at a time, which claims it.
+// And a run whose count contradicts its sample's assembly: a unit at a time, each dropped.
+static void test_batch_needs_the_assembly(void) {
+    init_pair(true);
+    feed(run_bytes, build_run(0, RUN_N));
+    feed_rest_from(RUN_N);
+    EXPECT_EQ_INT(1, delivered);
+    EXPECT_TRUE(the_assembly() == NULL);
+    // the same sample's units again as if a second sample (its seq_nos moved on), a run before its unit 0
+    sample_header.seq_no += LARGE_UNITS;
+    feed(run_bytes, build_run(RUN_N, RUN_N));
+    EXPECT_TRUE(the_assembly() != NULL && the_assembly()->received == RUN_N);
+    uint64_t dropped = receiver.large.dropped;
+    uint32_t len = build_run(20, RUN_N);
+    struct tt_FragRunLHeader header;
+    memcpy(&header, run_bytes + sizeof(struct tt_SingleHeader), sizeof(header));
+    header.frag_count = (uint16_t)(LARGE_UNITS + 1U);
+    memcpy(run_bytes + sizeof(struct tt_SingleHeader), &header, sizeof(header));
+    feed(run_bytes, len);
+    EXPECT_EQ_U64(dropped + RUN_N, receiver.large.dropped);
+}
+
 int main(void) {
     tt_current_log_level = TT_LOG_NONE;
     test_in_order(true);
@@ -576,6 +674,11 @@ int main(void) {
     test_turned_off();
     test_freed_during_a_read_is_parked();
     test_run_for_a_freed_assembly_is_dropped();
+    test_batch_run_across_the_watermark();
+    test_batch_run_past_the_window();
+    test_batch_not_with_a_best_effort_subscriber();
+    test_batch_not_with_a_best_effort_assembly();
+    test_batch_needs_the_assembly();
     if (test_result() != 0) {
         return 1;
     }
