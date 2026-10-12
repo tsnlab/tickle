@@ -208,6 +208,14 @@ static inline void tt_thread_yield(void) {
 #ifndef tt_RX_DRAIN_HOLDOFF_NS
 #define tt_RX_DRAIN_HOLDOFF_NS 100000000ULL // 100 ms
 #endif
+
+// Reading a large sample's run straight into its assembly (hal_linux.c direct_read(), tickle.c large_direct_aim()):
+// wherever large samples are. TT_RX_DIRECT=0 in the environment turns it off at tt_bind() (the A/B control).
+#if tt_LARGE_SAMPLES
+#define TT_HAL_RX_DIRECT 1
+#else
+#define TT_HAL_RX_DIRECT 0
+#endif
 // How a drain's buffers were registered (struct tt_hal's drain_ring, the "Node N rx:" line's drain_ring=). The HAL
 // tries them in this order and keeps the first the kernel accepts: Linux 6.8 kernels have been seen to refuse the
 // first.

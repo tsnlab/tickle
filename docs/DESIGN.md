@@ -1107,6 +1107,31 @@ FAILED. Most of what is left comes before the buffers have grown: one stalled ru
 start dropped 2 (an instrumented scratch build). A forced-MTU arm with receive offload (64 buffers, merged reads) had
 no drop in any cell. The rig run (`~/rig_queue_hybrid_drain.sh`) decides.
 
+#### Receiving runs in place (2026-10-13, `ab/rx-gap`)
+
+The Pi 5 subscriber spent +0.37 ms/MB (1 MB) and +0.28 (4 MB) more CPU than Fast DDS's; part of it is the copy from the
+receive buffer into the assembly (`large_place()`, +0.05/+0.06 against Fast DDS's own copy,
+`~/claude_reports/rx_perf_gap_2026-10-13.md`). A run is one datagram of n units whose payload is one stretch of the
+assembly, and in order the next run is predictable to the byte: the same sample, seq_no and frag_index moved on by n,
+run_count n or what is left before the last unit. So after each run lands core hints that run to the HAL
+(`large_direct_aim()`; `struct tt_LargeState.direct_*`), and the HAL reads the next datagram with one `recvmsg()` of
+three pieces - the 28 framing bytes into the receive buffer, the hinted payload straight into the assembly, anything
+longer after them (`direct_read()`). A datagram that is the hinted run, or a shorter run of the same sample from the
+same place, is handed over with `direct_split` and `large_place()` only marks its units; anything else is put back
+together in the receive buffer and goes on as before. The kernel's one copy then lands where the payload stays.
+
+- **Only over units not landed**, and the hint is withdrawn the moment a unit lands another way in its assembly (a
+  repair, a drained datagram): the next aimed read writes whatever it turns out to be over the hinted stretch. The PC
+  smoke under 0.05% loss caught exactly that before the rule existed (one torn sample a run).
+- **Not across threads**: an assembly freed by another thread while the polling thread may be inside an aimed read
+  (`direct_busy`) keeps its buffer (`direct_parked`) until the read is over, and a run read in place for it is
+  dropped (`direct_cancelled`; a RELIABLE writer sends it again).
+- **A guess that does not fit backs off**: no hint for 2, 4, ... 64 runs after consecutive misses; native-endian
+  writers only (the framing is compared byte for byte). `TT_RX_DIRECT=0` turns it off (the A/B control). Wire bytes
+  are untouched. Counted on the "Node N rx:" line: `direct_reads`, `direct_runs`, `direct_missed`, `direct_cancelled`.
+- Tests: `tests/test_rx_direct.c` (core, over the mock HAL), `platform/linux/rx_direct_check.c` (the HAL, real
+  sockets, in test-linux), `tests/mutants_rx_direct.py` (30 mutants, all caught).
+
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
 **RxO matching.** Each endpoint announces its QoS in its `tt_UpdateEntity` (`qos` bits for reliable, durable, manual
