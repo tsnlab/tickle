@@ -48,7 +48,7 @@ static void cache_write(struct tt_ReliableCache* cache, uint32_t seq_no, uint32_
 static bool cache_holds(const struct tt_ReliableCache* cache, uint32_t seq_no) {
     uint16_t depth = reliable_cache_depth(cache);
     const struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
-    if (!cache->any_retained || entry->seq_no != seq_no || entry->len == 0) {
+    if (cache->slot_origin == 0 || entry->seq_no != seq_no || entry->len == 0) {
         return false;
     }
     for (uint32_t i = sizeof(struct tt_SubmessageHeader); i < entry->len; i++) {
@@ -122,6 +122,22 @@ static void test_cache_ring_rebases_without_moving_a_sample(void) {
         cache_write(&cache, seq_no, 24);
     }
     EXPECT_TRUE(cache.slot_origin != 1 && (cache.slot_origin - 1U) % 13U == 0); // treatment: moved, by whole rings
+}
+
+static void test_cache_ring_origin_is_never_0(void) {
+    // slot_origin 0 means "nothing retained" (reliable_cache_retains()), so a rebase must never land there. With 255
+    // slots (2^32 - 1 = 255 x 16843009) one can: from origin 2^32 - 255q, seq_no 2^30 is 2^31 + 191 on and the move of
+    // 255q whole rings would reach exactly 2^32. The origin must go one ring further instead - still by whole rings,
+    // still within 2^31 of seq_no. The control: from origin 1, where the same move lands nowhere near 0.
+    const uint32_t rings = 4210753U; // 255 x rings = 2^30 + 191
+    const uint32_t from[] = {0U - (255U * rings), 1U};
+    const uint32_t seq_no[] = {0x40000000U, 0x80000000U + 1U};
+    for (int c = 0; c < 2; c++) {
+        uint32_t origin = reliable_cache_place_origin(from[c], 255, seq_no[c]);
+        EXPECT_TRUE(origin != 0);
+        EXPECT_EQ_U32(0, (origin - from[c]) % 255U);             // whole rings
+        EXPECT_TRUE(seq_delta(seq_no[c], origin) >= 0x3FFF0000); // about 2^30 behind seq_no, as any rebase leaves it
+    }
 }
 
 // --- end to end: a writer and readers over a simulated lossy link -----------------------------------
@@ -692,7 +708,7 @@ static void test_cache_walks_cross_the_wrap(void) {
             held += cache_holds(&cache, first + n) ? 1U : 0U;
         }
         EXPECT_EQ_U32(10, held);
-        EXPECT_TRUE(cache.any_retained && cache.oldest_seq_no == first);
+        EXPECT_TRUE(cache.slot_origin != 0 && cache.oldest_seq_no == first);
         // With nothing expired, the oldest resendable is the oldest retained.
         (void)sim_run(1, 1000, 0, MODE_KEEP_ALL, tt_SECOND); // a Publisher to ask on behalf of
         pub.seq_no = first + 9U;
@@ -848,7 +864,7 @@ static void test_heartbeat_jump_across_the_wrap(void) {
         }
         proxy->ack_seq_no = base - 5U;
         proxy->reorder_cursor = base - 5U;
-        proxy->reorder_pivot = base - 5U;
+        reorder_place_pivot(&sub, proxy, base - 5U);
         proxy->heartbeat_last_seq_no = base - 6U;
         proxy_clear_received(proxy);
         uint32_t abandoned = sub.gap_abandoned;
@@ -876,8 +892,9 @@ static void test_reorder_ring_crosses_its_own_wrap(void) {
 static void test_reorder_ring_slots_stay_distinct_across_its_wrap(void) {
     // The slots of the seq_no either side of the point where this writer's key (seq_no + salt) passes 2^32: a window's
     // worth of consecutive seq_no must take as many slots. 257 slots leave 2^32 % 257 = 1, so the two keys either side
-    // of the wrap would share slot 0 if the ring jumped there. The pivot is on either side of the wrap in turn; the
-    // control is the same walk far from it.
+    // of the wrap would share slot 0 if the ring jumped there. The pivot is placed as a first contact places it, at the
+    // walk's first seq_no, and as the store path moves it, from 2^30 behind; the walk starts either side of the wrap in
+    // turn. The control is the same walk far from it.
     (void)sim_run(1, 1000, 0, MODE_KEEP_ALL, tt_SECOND); // a reliable pair, and the writer's proxy
     struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
     EXPECT_TRUE(proxy != NULL);
@@ -887,10 +904,12 @@ static void test_reorder_ring_slots_stay_distinct_across_its_wrap(void) {
     uint32_t wrap_at = 0U - writer_salt(); // the seq_no whose key is 0
     const uint32_t starts[] = {wrap_at - 100U, wrap_at - 300U, wrap_at + 50U, 0U - 100U,
                                1000U}; // 0 - 100: seq_no's own
-    for (size_t s = 0; s < sizeof(starts) / sizeof(starts[0]); s++) {
-        proxy->ack_seq_no = starts[s] + 100U;
-        proxy->reorder_pivot = starts[s] + 100U;
-        proxy->reorder_shift = 0;
+    for (size_t t = 0; t < 2 * (sizeof(starts) / sizeof(starts[0])); t++) {
+        size_t s = t / 2;
+        proxy->ack_seq_no = starts[s];
+        reorder_place_pivot(&sub, proxy, (t % 2) != 0 ? starts[s] - 0x40000000U : starts[s]);
+        reorder_follow_pivot(&sub, proxy, starts[s]); // moves the second kind on, to 2^29 behind the walk
+        EXPECT_EQ_U32((t % 2) != 0 ? starts[s] - 0x20000000U : starts[s], proxy->reorder_pivot);
         static struct tt_ReorderSlot* seen[SIM_REORDER_SLOTS];
         uint32_t shared = 0;
         for (uint32_t i = 0; i < SIM_REORDER_SLOTS; i++) {
@@ -904,9 +923,11 @@ static void test_reorder_ring_slots_stay_distinct_across_its_wrap(void) {
 }
 
 static void test_reorder_ring_repivots_before_2_31(void) {
-    // The ring's pivot (tt_WriterProxy.reorder_pivot) follows the watermark every 2^30, so no held seq_no lies 2^31
-    // from it, where serial arithmetic would place it on the wrong side. Here the watermark is 2^31 - 10 past a pivot
-    // whose key is far from 2^32: the seq_no around pivot + 2^31 must still take consecutive slots.
+    // The ring's pivot (tt_WriterProxy.reorder_pivot) follows what is stored once that lies 2^30 from it, so no held
+    // seq_no lies 2^32 from it, where the distance would wrap. A seq_no is held 2^30 - 10 past a pivot whose key is far
+    // from 2^32 (the control: the pivot stays), then one 20 further on is stored (the treatment: it moves), then one
+    // behind the pivot and the first again: each time the one held keeps its slot, and the seq_no around it still take
+    // distinct slots.
     (void)sim_run(1, 1000, 0, MODE_KEEP_ALL, tt_SECOND); // a reliable pair, and the writer's proxy
     struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
     EXPECT_TRUE(proxy != NULL);
@@ -914,14 +935,22 @@ static void test_reorder_ring_repivots_before_2_31(void) {
         return;
     }
     uint32_t pivot = 0x10000000U - writer_salt(); // its key is 0x10000000: nothing near it wraps
-    proxy->reorder_pivot = pivot;
-    proxy->reorder_shift = 0;
-    proxy->ack_seq_no = pivot + 0x80000000U - 10U;
+    reorder_place_pivot(&sub, proxy, pivot);
+    uint32_t held = pivot + 0x40000000U - 10U;
+    proxy->ack_seq_no = held;
+    reorder_follow_pivot(&sub, proxy, held); // 2^30 - 10 out: stays
+    EXPECT_EQ_U32(pivot, proxy->reorder_pivot);
+    struct tt_ReorderSlot* held_slot = reorder_writer_slot(&sub, proxy, SENDER_ID, pub.endpoint.entity_id, held);
+    reorder_follow_pivot(&sub, proxy, held + 20U); // 2^30 + 10 out: moves to 2^29 behind it
+    EXPECT_EQ_U32(held + 20U - 0x20000000U, proxy->reorder_pivot);
+    EXPECT_TRUE(held_slot == reorder_writer_slot(&sub, proxy, SENDER_ID, pub.endpoint.entity_id, held));
+    reorder_follow_pivot(&sub, proxy, pivot - 7U); // behind the pivot: moves back
+    EXPECT_EQ_U32(pivot - 7U - 0x20000000U, proxy->reorder_pivot);
+    EXPECT_TRUE(held_slot == reorder_writer_slot(&sub, proxy, SENDER_ID, pub.endpoint.entity_id, held));
     struct tt_ReorderSlot* slots[21];
     for (uint32_t i = 0; i < 21; i++) {
-        slots[i] = reorder_writer_slot(&sub, proxy, SENDER_ID, pub.endpoint.entity_id, proxy->ack_seq_no - 5U + i);
+        slots[i] = reorder_writer_slot(&sub, proxy, SENDER_ID, pub.endpoint.entity_id, held - 5U + i);
     }
-    EXPECT_EQ_U32(proxy->ack_seq_no, proxy->reorder_pivot); // re-pivoted onto the watermark
     uint32_t shared = 0;
     for (uint32_t i = 0; i < 21; i++) {
         for (uint32_t j = i + 1; j < 21; j++) {
@@ -932,26 +961,32 @@ static void test_reorder_ring_repivots_before_2_31(void) {
 }
 
 static void test_stale_announcement_is_not_read_as_ahead(void) {
-    // heartbeat_last_seq_no is kept just behind a watermark that has passed it (maybe_arm_acknack_retry()). Left where
-    // it was, on a stream no Heartbeat refreshes, it would fall 2^31 behind - indistinguishable, serially, from 2^31
-    // ahead - and every in-order sample would ask for a window nobody announced. 2^31 samples cannot be sent here, so
-    // this checks the invariant that rules it out: after a sample, it is at most one behind the watermark.
-    (void)sim_run(1, 1000, 0, MODE_KEEP_ALL, tt_SECOND);
-    struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
-    EXPECT_TRUE(proxy != NULL);
-    if (proxy == NULL) {
-        return;
+    // heartbeat_last_seq_no is pinned just behind a watermark that has passed it by HEARTBEAT_STALE_LAG
+    // (maybe_arm_acknack_retry()). Left where it was, on a stream no Heartbeat refreshes, it would fall 2^31 behind -
+    // indistinguishable, serially, from 2^31 ahead - and every in-order sample would ask for a window nobody announced.
+    // 2^31 samples cannot be sent here, so this checks the invariant that rules it out: after a sample it lags the
+    // watermark by at most HEARTBEAT_STALE_LAG. The control: 10 behind, which is left as it is - and asks for nothing
+    // either.
+    const uint32_t lags[] = {10U, (uint32_t)HEARTBEAT_STALE_LAG + 10U};
+    for (size_t l = 0; l < sizeof(lags) / sizeof(lags[0]); l++) {
+        (void)sim_run(1, 1000, 0, MODE_KEEP_ALL, tt_SECOND);
+        struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+        EXPECT_TRUE(proxy != NULL);
+        if (proxy == NULL) {
+            return;
+        }
+        proxy->heartbeat_last_seq_no = proxy->ack_seq_no - lags[l]; // behind: says nothing any more
+        uint64_t acknacks = sim_sent[RECEIVER_ID];
+        test_mock_send_hook = sim_capture;
+        sim_acting = SENDER_ID;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+        sim_drain();
+        test_mock_send_hook = NULL;
+        EXPECT_EQ_INT(SIM_SAMPLES + 1, delivered_count); // the sample arrived, in order
+        EXPECT_EQ_U64(acknacks, sim_sent[RECEIVER_ID]);  // and asked for nothing
+        int32_t lag = seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no);
+        EXPECT_EQ_INT(l == 0 ? -11 : -1, lag); // the control kept, the stale one pinned
     }
-    proxy->heartbeat_last_seq_no = proxy->ack_seq_no - 10U; // behind: says nothing any more
-    uint64_t acknacks = sim_sent[RECEIVER_ID];
-    test_mock_send_hook = sim_capture;
-    sim_acting = SENDER_ID;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
-    sim_drain();
-    test_mock_send_hook = NULL;
-    EXPECT_EQ_INT(SIM_SAMPLES + 1, delivered_count); // control: the sample arrived, in order
-    EXPECT_EQ_U64(acknacks, sim_sent[RECEIVER_ID]);  // and asked for nothing
-    EXPECT_EQ_INT(-1, seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no));
 }
 
 static void test_seq_no_0_delivered_still_orders(void) {
@@ -1002,6 +1037,7 @@ int main(void) {
 
     test_cache_ring_stays_contiguous_across_the_wrap();
     test_cache_ring_rebases_without_moving_a_sample();
+    test_cache_ring_origin_is_never_0();
     test_reliable_stream_crosses_2_32_as_if_it_had_not();
     test_losses_at_the_wrap_itself();
     test_declines_and_a_second_reader_across_the_wrap();

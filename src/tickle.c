@@ -2559,10 +2559,10 @@ static void record_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t 
         return;
     }
     ack->acked = true;
-    if (seq_delta(seq_no, ack->ack_seq_no) > 0) {
+    if (seq_delta(ack->ack_seq_no, seq_no) < 0) {
         ack->ack_seq_no = seq_no;
     }
-    if (ack->match_heartbeats_left != 0 && seq_delta(ack->ack_seq_no, ack->first_owed_seq_no) > 0) {
+    if (ack->match_heartbeats_left != 0 && seq_delta(ack->first_owed_seq_no, ack->ack_seq_no) < 0) {
         ack->match_heartbeats_left = 0; // it has the owed sample: its baseline is at or below it
     }
 }
@@ -3675,6 +3675,7 @@ static void release_reorder_slots_for_writer(struct tt_Context* node, struct tt_
 // Releases held samples the watermark has passed. Declared up here because acknack_retry()'s
 // give-up moves the watermark too, and it is defined long before the delivery code.
 static void drain_reorder(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy);
+static void reorder_place_pivot(const struct tt_Subscriber* sub, struct tt_WriterProxy* proxy, uint32_t seq_no);
 static int highest_relevant_bit(const struct tt_WriterProxy* proxy);
 // Milestone 47 - WriterProxy table lookup/creation - see struct tt_WriterProxy's own doc comment
 // (tickle.h) and each definition. find_endpoint_by_entity() (the entity_id-aware ACKNACK routing
@@ -5357,7 +5358,12 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 // matched peer, i.e. how far *all* of them have got, serially (seq_delta()). A matched peer that has never sent an
 // ACKNACK counts at its tt_PeerAck.ack_seq_no from the match, where the Publisher's history began; with none
 // matched, the Publisher's own history start (publisher_unacked_from()) - nothing acknowledged either way.
-static uint32_t min_peer_ack_seq_no(const struct tt_Publisher* pub) {
+//
+// Split in two so the per-sample callers pay for the scan alone: peer_ack_lowest() is the scan, small enough to inline
+// as the old min_peer_ack_seq_no() was, and the history-start fallback (publisher_unacked_from(), which looks through
+// the cache and the large records) is reached only with nothing matched - never on the KEEP_ALL paths, which ask
+// any_peer_ack_matched() first.
+static bool peer_ack_lowest(const struct tt_Publisher* pub, uint32_t* out_lowest) {
     uint32_t lowest = 0;
     bool first = true;
     // Phase 2 - one entry per matched Subscriber *entity* (claimed at match time, dropped on
@@ -5376,7 +5382,16 @@ static uint32_t min_peer_ack_seq_no(const struct tt_Publisher* pub) {
             first = false;
         }
     }
-    return first ? publisher_unacked_from(pub) : lowest;
+    if (first) {
+        return false; // *out_lowest left as it was
+    }
+    *out_lowest = lowest;
+    return true;
+}
+
+static uint32_t min_peer_ack_seq_no(const struct tt_Publisher* pub) {
+    uint32_t lowest = 0;
+    return peer_ack_lowest(pub, &lowest) ? lowest : publisher_unacked_from(pub);
 }
 
 // Phase 3 (rmw_tickle/PLAN.md) - how many samples this Publisher may hold unacknowledged: its own
@@ -5587,8 +5602,12 @@ static void maybe_solicit_ack_at_watermark(struct tt_Publisher* pub) {
         return;
     }
 
-    uint32_t acked_through = min_peer_ack_seq_no(pub) - 1U; // ack_seq_no means "everything below it"
-    uint32_t unacked = seq_delta(pub->seq_no, acked_through) > 0 ? pub->seq_no - acked_through : 0;
+    uint32_t min_ack = 0;
+    if (!peer_ack_lowest(pub, &min_ack)) {
+        min_ack = publisher_unacked_from(pub); // min_peer_ack_seq_no(), its scan inlined here
+    }
+    uint32_t acked_through = min_ack - 1U; // ack_seq_no means "everything below it"
+    uint32_t unacked = seq_delta(acked_through, pub->seq_no) < 0 ? pub->seq_no - acked_through : 0;
     if (unacked < threshold) {
         return;
     }
@@ -5622,12 +5641,22 @@ static uint16_t reliable_cache_depth(const struct tt_ReliableCache* cache) {
 // (seq_no - slot_origin) % depth: (seq_no - 1) % depth alone jumps where seq_no - 1 passes 2^32 unless depth divides
 // 2^32, and the retained run straddling it would share slots - seq_no 1 landing on a live sample from before the wrap.
 // reliable_cache_reserve() keeps slot_origin so that seq_no - slot_origin never passes 2^32 within the retained run:
-// 1 whenever the cache is empty - the slots are (seq_no - 1) % depth, as they always were - and moved on by a multiple
-// of depth when seq_no - slot_origin reaches 2^31, which keeps every retained sample in its slot. One subtraction, as
-// before: the cost of a lookup does not change.
+// 1 when a sample is retained in an empty cache - the slots are (seq_no - 1) % depth, as they always were - and moved
+// on by a multiple of depth when seq_no - slot_origin reaches 2^31, which keeps every retained sample in its slot. One
+// subtraction, as before, of a word that sits next to oldest_seq_no. What it costs: one load per lookup more than the
+// constant 1 did, where the compiler does not pair it with oldest_seq_no's (0 also marks the cache empty, so the test
+// for empty is that same load - reliable_cache_retains()).
 static struct tt_ReliableCacheIndex* reliable_cache_slot(const struct tt_ReliableCache* cache, uint16_t depth,
                                                          uint32_t seq_no) {
     return &cache->index[(seq_no - cache->slot_origin) % depth];
+}
+
+// Whether anything is retained. slot_origin doubles as the flag - 0 while nothing is, and never 0 while anything is
+// (reliable_cache_place_origin()) - so the test reads the word every lookup of the oldest reads anyway, where the test
+// of oldest_seq_no against 0 did before seq_no 0 became an ordinary seq_no past 2^32. A separate flag was one more load
+// on every such path.
+static bool reliable_cache_retains(const struct tt_ReliableCache* cache) {
+    return cache->slot_origin != 0;
 }
 
 // True when this slot genuinely holds seq_no's bytes right now - not empty, not a tombstone (an
@@ -5643,13 +5672,13 @@ static void reliable_cache_drop_leading_tombstones(struct tt_ReliableCache* cach
 // Drops the oldest retained sample: KEEP_LAST eviction, whether it was the count bound or the byte
 // bound that demanded the room. Leaves the cache with a *live* oldest entry (or empty), so
 // reliable_cache_write_offset() below can read the oldest record's own offset directly.
-static void reliable_cache_evict_one(struct tt_ReliableCache* cache, uint16_t depth);
+static inline void reliable_cache_evict_one(struct tt_ReliableCache* cache, uint16_t depth);
 
 // Whether the retained record under seq_no is a fragment continuing a sample rather than starting one.
 static bool reliable_cache_record_continues(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t seq_no) {
 #if tt_FRAG_ENABLED
-    if (!cache->any_retained || seq_delta(seq_no, cache->oldest_seq_no) < 0 ||
-        seq_delta(seq_no, cache->newest_seq_no) > 0) {
+    if (!reliable_cache_retains(cache) || seq_delta(seq_no, cache->oldest_seq_no) < 0 ||
+        seq_delta(cache->newest_seq_no, seq_no) < 0) {
         return false;
     }
     const struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
@@ -5666,7 +5695,7 @@ static bool reliable_cache_record_continues(const struct tt_ReliableCache* cache
 // Whether the oldest retained record is a fragment continuing a sample rather than starting one.
 static bool reliable_cache_oldest_continues(const struct tt_ReliableCache* cache, uint16_t depth) {
 #if tt_FRAG_ENABLED
-    if (!cache->any_retained) {
+    if (!reliable_cache_retains(cache)) {
         return false;
     }
     const struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, cache->oldest_seq_no);
@@ -5686,8 +5715,13 @@ static bool reliable_cache_oldest_continues(const struct tt_ReliableCache* cache
 // (4 fragments) at 5% loss with the reader matched: gap_evicted 751-1912 per 20 s run, every logged eviction at the
 // reader's ack and the one after it (experiments/rmw_keepall_evict_repro.sh). Every KEEP_ALL check that decides
 // whether something may be evicted asks this instead of min_ack - 1.
+//
+// Every caller has asked any_peer_ack_matched() first, so the scan always finds a Subscriber; were there none, it would
+// read everything published so far as acknowledged - what an empty ack set means to KEEP_ALL (keep_all_writable()).
 static uint32_t keep_all_acked_through(const struct tt_Publisher* pub) {
-    uint32_t acked_through = min_peer_ack_seq_no(pub) - 1U; // ack_seq_no means "everything below it"
+    uint32_t min_ack = pub->seq_no + 1U;
+    (void)peer_ack_lowest(pub, &min_ack);
+    uint32_t acked_through = min_ack - 1U; // ack_seq_no means "everything below it"
 #if tt_FRAG_ENABLED
     const struct tt_ReliableCache* cache = pub->reliable_cache;
     uint16_t depth = reliable_cache_depth(cache);
@@ -5718,8 +5752,8 @@ static bool reliable_cache_record_starts_sample(const struct tt_ReliableCache* c
            ((const struct tt_SubmessageHeader*)(cache->arena + entry->offset))->type != tt_SUBMESSAGE_TYPE_FRAG_CONT;
 }
 
-static void reliable_cache_evict_one(struct tt_ReliableCache* cache, uint16_t depth) {
-    if (!cache->any_retained) {
+static inline void reliable_cache_evict_one(struct tt_ReliableCache* cache, uint16_t depth) {
+    if (!reliable_cache_retains(cache)) {
         return;
     }
     struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, cache->oldest_seq_no);
@@ -5730,8 +5764,8 @@ static void reliable_cache_evict_one(struct tt_ReliableCache* cache, uint16_t de
         entry->len = 0; // tombstone: the bytes are gone, the slot may still be named by an ACKNACK
     }
     if (cache->oldest_seq_no == cache->newest_seq_no) {
-        cache->any_retained = false; // nothing retained any more; newest_seq_no stays (it's "last
-        cache->tail = 0;             // published", what first_resendable falls back to)
+        cache->slot_origin = 0; // nothing retained any more; newest_seq_no stays (it's "last
+        cache->tail = 0;        // published", what first_resendable falls back to)
         cache->retained_samples = 0;
         return;
     }
@@ -5742,9 +5776,9 @@ static void reliable_cache_evict_one(struct tt_ReliableCache* cache, uint16_t de
 // An oversized (never-cached) sample leaves a tombstone that may end up at the oldest end of the
 // range; drop those so "oldest retained" always names real bytes.
 static void reliable_cache_drop_leading_tombstones(struct tt_ReliableCache* cache, uint16_t depth) {
-    while (cache->any_retained && !reliable_cache_slot_live(cache, depth, cache->oldest_seq_no)) {
+    while (reliable_cache_retains(cache) && !reliable_cache_slot_live(cache, depth, cache->oldest_seq_no)) {
         if (cache->oldest_seq_no == cache->newest_seq_no) {
-            cache->any_retained = false;
+            cache->slot_origin = 0;
             cache->tail = 0;
             cache->retained_samples = 0;
             return;
@@ -5800,7 +5834,7 @@ static uint32_t reliable_cache_offset_in(uint32_t arena_size, bool empty, uint32
 }
 
 static uint32_t reliable_cache_write_offset(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t length) {
-    bool empty = !cache->any_retained;
+    bool empty = !reliable_cache_retains(cache);
     uint32_t head = empty ? 0 : reliable_cache_slot(cache, depth, cache->oldest_seq_no)->offset;
     return reliable_cache_offset_in(cache->arena_size, empty, head, cache->tail, length);
 }
@@ -5820,9 +5854,18 @@ static bool reliable_cache_admits(const struct tt_ReliableCache* cache, uint16_t
                      // nothing - a different loss (it can never be retransmitted), reported by
                      // not_cached_oversize, and not one refusing the publish forever would fix
     }
-    bool retained = cache->any_retained;
-    uint32_t oldest = cache->oldest_seq_no;
+    uint32_t oldest = cache->oldest_seq_no; // read with slot_origin as one pair
+    if (!reliable_cache_retains(cache)) {
+        return true; // nothing retained: the whole arena is free
+    }
     uint32_t tail = cache->tail;
+    // The common answer first, before the walk below: the record fits as things stand. Peeled off so the walk's own
+    // set-up (what it keeps in registers from one evicted record to the next) is paid only when it runs.
+    if (reliable_cache_offset_in(cache->arena_size, false, reliable_cache_slot(cache, depth, oldest)->offset, tail,
+                                 length) != UINT32_MAX) {
+        return true;
+    }
+    bool retained = true;
     for (;;) {
         if (!retained) {
             return true; // nothing retained: the whole arena is free
@@ -5831,7 +5874,7 @@ static bool reliable_cache_admits(const struct tt_ReliableCache* cache, uint16_t
         if (reliable_cache_offset_in(cache->arena_size, false, head, tail, length) != UINT32_MAX) {
             return true;
         }
-        if (seq_delta(oldest, acked_through) > 0) {
+        if (seq_delta(acked_through, oldest) < 0) {
             return false; // the next eviction would take a sample nobody has acknowledged
         }
         // What reliable_cache_evict_oldest() would do next, without doing it.
@@ -5852,18 +5895,23 @@ static bool reliable_cache_admits(const struct tt_ReliableCache* cache, uint16_t
     }
 }
 
-// reliable_cache_reserve()'s cold half, for seq_no about to be written (reliable_cache_slot()): with nothing retained,
-// slot_origin goes back to 1 - nothing to keep in place, and the slots are (seq_no - 1) % depth, as always; and when
-// seq_no - slot_origin has reached 2^31, slot_origin moves on by a multiple of depth to 2^30 behind it. Every retained
-// seq_no lies within depth of this one, so stays above the new origin - and keeps its slot.
-static void reliable_cache_place_origin(struct tt_ReliableCache* cache, uint16_t depth, uint32_t seq_no) {
-    if (!cache->any_retained) {
-        cache->slot_origin = 1U;
+// reliable_cache_reserve()'s cold half: the origin for seq_no about to be written (reliable_cache_slot()), from the
+// current one (0: nothing retained). With nothing retained it goes back to 1 - nothing to keep in place, and the slots
+// are (seq_no - 1) % depth, as always; and when seq_no - origin has reached 2^31, it moves on by a multiple of depth to
+// 2^30 behind it. Every retained seq_no lies within depth of this one, so stays above the new origin - and keeps its
+// slot. Never 0, which reads as "nothing retained" (reliable_cache_retains()): one more ring on when it lands there.
+static uint32_t reliable_cache_place_origin(uint32_t origin, uint16_t depth, uint32_t seq_no) {
+    if (origin == 0) {
+        origin = 1U;
     }
-    uint32_t position = seq_no - cache->slot_origin;
+    uint32_t position = seq_no - origin;
     if (position >= UINT32_C(0x80000000)) {
-        cache->slot_origin += ((position - UINT32_C(0x40000000)) / depth) * depth;
+        origin += ((position - UINT32_C(0x40000000)) / depth) * depth;
+        if (origin == 0) {
+            origin = depth;
+        }
     }
+    return origin;
 }
 
 // "cache first, then flush" order tt_Client_call() already uses for its own single-slot cache.
@@ -5891,15 +5939,24 @@ static uint8_t* reliable_cache_reserve(struct tt_ReliableCache* cache, uint32_t 
     // Index room first, regardless of whether the bytes will fit below: this sample's own slot,
     // (seq_no - 1) % depth, is currently held by the sample exactly `depth` back, which KEEP_LAST
     // evicts to make room - the count bound, DDS's own HISTORY.depth.
-    while (cache->any_retained && seq_no - cache->oldest_seq_no + 1 > depth) {
+    while (reliable_cache_retains(cache) && seq_no - cache->oldest_seq_no + 1 > depth) {
         RSTAT_INC(evicted_by_count);
         reliable_cache_evict_oldest(cache, depth);
     }
 
-    if (!cache->any_retained || seq_delta(seq_no, cache->slot_origin) < 0) {
-        reliable_cache_place_origin(cache, depth, seq_no);
+    // reliable_cache_slot() spelled out, so the position it divides is the one tested here: in steady state one
+    // compare against 0 and one sign test, on the origin read once for all three. An empty cache takes the origin only
+    // once this record is retained, below: until then it reads as empty to the byte room's own eviction loop.
+    uint32_t origin = cache->slot_origin;
+    uint32_t position = seq_no - origin;
+    if (origin == 0 || seq_delta(seq_no, origin) < 0) {
+        origin = reliable_cache_place_origin(origin, depth, seq_no);
+        if (reliable_cache_retains(cache)) {
+            cache->slot_origin = origin; // moved on by whole rings: everything retained keeps its slot
+        }
+        position = seq_no - origin;
     }
-    struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
+    struct tt_ReliableCacheIndex* entry = &cache->index[position % depth];
     entry->seq_no = seq_no;
     entry->retry = 0;
     entry->timestamp = tt_get_ns();
@@ -5937,9 +5994,9 @@ static uint8_t* reliable_cache_reserve(struct tt_ReliableCache* cache, uint32_t 
     entry->offset = offset;
     entry->len = (uint16_t)length;
     cache->tail = offset + footprint;
-    if (!cache->any_retained) {
+    if (!reliable_cache_retains(cache)) { // was empty, or the byte room above emptied it
         cache->oldest_seq_no = seq_no;
-        cache->any_retained = true;
+        cache->slot_origin = origin;
     }
     return cache->arena + offset;
 }
@@ -5948,7 +6005,7 @@ static uint8_t* reliable_cache_reserve(struct tt_ReliableCache* cache, uint32_t 
 // oldest first. Called before a sample's first record is reserved; a no-op when sample_depth is 0.
 static void reliable_cache_admit_sample(struct tt_ReliableCache* cache) {
     uint16_t depth = reliable_cache_depth(cache);
-    while (depth != 0 && cache->sample_depth != 0 && cache->any_retained &&
+    while (depth != 0 && cache->sample_depth != 0 && reliable_cache_retains(cache) &&
            cache->retained_samples >= cache->sample_depth) {
         RSTAT_INC(evicted_by_count);
         reliable_cache_evict_oldest(cache, depth);
@@ -6364,7 +6421,7 @@ static bool reliable_cache_keeps_depth(const struct tt_ReliableCache* cache, uin
         return false;
     }
     uint16_t depth = reliable_cache_depth(cache);
-    bool retained = cache->any_retained;
+    bool retained = reliable_cache_retains(cache);
     uint32_t oldest = cache->oldest_seq_no;
     uint32_t tail = cache->tail;
     if (retained && cache->retained_samples >= cache->sample_depth) {
@@ -6892,7 +6949,7 @@ static void large_release_acked(struct tt_Context* node, struct tt_Publisher* pu
     uint32_t acked = min_peer_ack_seq_no(pub); // every seq_no below this, by every matched reader
     while (pub->large_count != 0) {
         const struct tt_LargeRecord* record = large_record_at(pub, 0);
-        if (!record->sent || seq_delta(record->seq_no + record->count, acked) > 0) {
+        if (!record->sent || seq_delta(acked, record->seq_no + record->count) < 0) {
             return;
         }
         large_drop_oldest(node, pub);
@@ -7004,7 +7061,7 @@ static bool large_unacknowledged(const struct tt_Publisher* pub) {
     uint32_t acked = min_peer_ack_seq_no(pub);
     for (uint32_t i = 0; i < pub->large_count; i++) {
         const struct tt_LargeRecord* record = &pub->large[(pub->large_head + i) % tt_LARGE_RETAINED];
-        if (record->retained && record->sent && seq_delta(record->seq_no + record->count, acked) > 0) {
+        if (record->retained && record->sent && seq_delta(acked, record->seq_no + record->count) < 0) {
             return true;
         }
     }
@@ -7279,7 +7336,7 @@ static tt_ret_t large_keep_all_admits(const struct tt_Publisher* pub, uint32_t c
     }
     if (pub->large_count >= tt_LARGE_RETAINED) {
         const struct tt_LargeRecord* oldest = &pub->large[pub->large_head];
-        if (seq_delta(oldest->seq_no + oldest->count - 1U, acked_through) > 0) {
+        if (seq_delta(acked_through, oldest->seq_no + oldest->count - 1U) < 0) {
             return tt_RET_WOULD_BLOCK;
         }
     }
@@ -7960,7 +8017,7 @@ tt_ret_t tt_Publisher_assert_liveliness(struct tt_Publisher* pub) {
 // does occur on the wire, once a writer passes 2^32. Shared by send_heartbeat()'s own periodic announce and send_
 // initial_heartbeat()'s own discovery-triggered one-off, below.
 static bool reliable_cache_oldest_seq_no(const struct tt_ReliableCache* cache, uint32_t* oldest) {
-    if (reliable_cache_depth(cache) == 0 || !cache->any_retained) {
+    if (reliable_cache_depth(cache) == 0 || !reliable_cache_retains(cache)) {
         return false; // not set up, or nothing retained
     }
     // B1 - a plain field read now, where this used to be an O(depth) scan over every slot on every
@@ -8224,7 +8281,7 @@ static bool publisher_is_acked_by_all_peers_locked(const struct tt_Publisher* pu
         if (pub->peer_acks[i].context_id == tt_CONTEXT_ID_INVALID) {
             continue;
         }
-        if (!pub->peer_acks[i].acked || seq_delta(pub->peer_acks[i].ack_seq_no, seq_no) <= 0) {
+        if (!pub->peer_acks[i].acked || seq_delta(seq_no, pub->peer_acks[i].ack_seq_no) >= 0) {
             return false; // never acked anything, or not this far yet
         }
     }
@@ -8285,8 +8342,8 @@ tt_ret_t tt_ReliableCache_grow(struct tt_ReliableCache* cache, uint8_t* new_aren
     // runs with a gap between them, and the wrap fragment at the end is dead space this recovers.
     // Only offsets change - each sample keeps its slot, because depth does not change.
     uint32_t offset = 0;
-    if (cache->any_retained) {
-        for (uint32_t seq_no = cache->oldest_seq_no; seq_delta(seq_no, cache->newest_seq_no) <= 0; seq_no++) {
+    if (reliable_cache_retains(cache)) {
+        for (uint32_t seq_no = cache->oldest_seq_no; seq_delta(cache->newest_seq_no, seq_no) >= 0; seq_no++) {
             struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
             if (entry->len == 0 || entry->seq_no != seq_no) {
                 continue; // a tombstone, or a slot already taken over by a later sample
@@ -8301,7 +8358,7 @@ tt_ret_t tt_ReliableCache_grow(struct tt_ReliableCache* cache, uint8_t* new_aren
     cache->arena_size = new_arena_size;
     cache->tail = offset;
     if (offset == 0) {
-        cache->any_retained = false; // everything retained turned out to be a tombstone
+        cache->slot_origin = 0; // everything retained turned out to be a tombstone
         cache->retained_samples = 0;
     }
     return tt_RET_OK;
@@ -8836,10 +8893,9 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->sender_port = 0;
             proxy->ack_seq_no = 1;
             proxy->reorder_cursor = 1;
-            proxy->reorder_pivot = 0; // set at first contact (update_reliable_ack(), inform_subscriber_of_heartbeat())
-            proxy->reorder_shift = 0;
+            // Placed again at first contact (update_reliable_ack(), inform_subscriber_of_heartbeat()).
+            reorder_place_pivot(sub, proxy, 1);
             proxy->highest_delivered = 0;
-            proxy->delivered_any = false;
             proxy->superseded_pending = 0;
             proxy->sub = sub; // before anything that reads the window width through the proxy
             // Phase 3 - whether this writer promises KEEP_ALL, from whatever its last announce
@@ -8902,10 +8958,13 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
 // in it. Shared by send_acknack() (what to actually request) and maybe_arm_acknack_retry()
 // (whether there's anything to do at all) - both need the same widened answer, not just received_
 // bitmap's own. -1 if neither signal has anything to report.
-static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
+//
+// highest_relevant_bit_from() is the same with heartbeat_last_seq_no's distance past the watermark (seq_delta())
+// already worked out, by maybe_arm_acknack_retry(), which tests it for staleness first.
+static int highest_relevant_bit_from(const struct tt_WriterProxy* proxy, int32_t hb_ahead) {
     int highest = proxy_highest_received(proxy);
-    if (seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no) >= 0) {
-        uint32_t hb_offset = proxy->heartbeat_last_seq_no - proxy->ack_seq_no;
+    if (hb_ahead >= 0) {
+        uint32_t hb_offset = (uint32_t)hb_ahead;
         uint32_t window_bits = proxy_window_bits(proxy);
         int hb_highest = hb_offset < window_bits ? (int)hb_offset : (int)window_bits - 1;
         if (hb_highest > highest) {
@@ -8913,6 +8972,10 @@ static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
         }
     }
     return highest;
+}
+
+static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
+    return highest_relevant_bit_from(proxy, seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no));
 }
 
 // How long a repair this reader asked for is taken to be on its way: the measured repair transit's srtt +
@@ -8957,7 +9020,7 @@ static void note_repair_arrival(struct tt_WriterProxy* proxy, uint32_t seq_no, u
     for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
         const struct tt_RepairRequest* request = &proxy->requests[slot];
         if (request->sent_ns != 0 && seq_delta(seq_no, request->first_seq_no) >= 0 &&
-            seq_delta(seq_no, request->last_seq_no) <= 0 && (oldest == 0 || request->sent_ns < oldest)) {
+            seq_delta(request->last_seq_no, seq_no) >= 0 && (oldest == 0 || request->sent_ns < oldest)) {
             oldest = request->sent_ns;
         }
     }
@@ -8988,7 +9051,7 @@ static void forget_requests_answered_by(struct tt_Subscriber* sub, uint8_t write
     for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
         struct tt_RepairRequest* request = &proxy->requests[slot];
         if (request->sent_ns != 0 && seq_delta(seq_no, request->first_seq_no) >= 0 &&
-            seq_delta(seq_no, request->last_seq_no) <= 0) {
+            seq_delta(request->last_seq_no, seq_no) >= 0) {
             request->sent_ns = 0;
         }
     }
@@ -9340,9 +9403,19 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
 // samples gone. A heartbeat_last_seq_no already behind the old watermark meant nothing there and goes just behind the
 // new one; left where it was, a move of 2^31 or more past it - a writer near 2^32 met by the proxy's default baseline
 // of 1 - would make it read as ahead of the new watermark (seq_delta()) and ask for samples nobody announced.
+//
+// highest_delivered the same way, for strict order (deliver_in_order()): a move that leaves it HIGHEST_DELIVERED_REACH
+// or more behind the new watermark puts it just behind it. Only a first baseline does that - the proxy's default of 0
+// below a writer met far from 1, a DURABLE reader's default baseline jumped to a writer near 2^32 - and there nothing
+// has been delivered, so nothing a step backwards can be told from; a move after deliveries is a window or a cache
+// depth, far inside it. So "nothing delivered yet" needs no flag, and a delivered seq_no 0 orders as any other.
+#define HIGHEST_DELIVERED_REACH UINT32_C(0x40000000)
 static void proxy_move_ack(struct tt_WriterProxy* proxy, uint32_t ack_seq_no) {
     if (seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no) < 0) {
         proxy->heartbeat_last_seq_no = ack_seq_no - 1U;
+    }
+    if (ack_seq_no - 1U - proxy->highest_delivered >= HIGHEST_DELIVERED_REACH) {
+        proxy->highest_delivered = ack_seq_no - 1U;
     }
     proxy->ack_seq_no = ack_seq_no;
 }
@@ -9383,13 +9456,21 @@ static void advance_ack_seq_no(struct tt_WriterProxy* proxy) {
 // left to ask for, or sends an ACKNACK for whatever's still missing and (re-)arms the retry timer
 // if one isn't already running. Splitting this out means a give-up no longer leaves a remaining,
 // different gap waiting on the next DATA arrival before anything asks for it again.
+// How far heartbeat_last_seq_no may lag the watermark before maybe_arm_acknack_retry() pins it: 2^23, far inside the
+// 2^31 at which it would read as ahead, and a constant aarch64 compares against in one instruction.
+#define HEARTBEAT_STALE_LAG INT32_C(0x800000)
+
 static void maybe_arm_acknack_retry(struct tt_Context* node, struct tt_WriterProxy* proxy) {
-    // A heartbeat_last_seq_no the watermark has passed says nothing any more. Kept just behind the watermark, it cannot
-    // fall 2^31 behind on a stream no Heartbeat refreshes and then read as far ahead (seq_delta()).
-    if (seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no) < 0) {
+    // A heartbeat_last_seq_no the watermark has passed says nothing any more. Pinned just behind the watermark once it
+    // lags HEARTBEAT_STALE_LAG, it cannot fall 2^31 behind on a stream no Heartbeat refreshes and then read as far
+    // ahead (seq_delta()). Not at every lag: that stored on every sample of a healthy stream, where the value is
+    // already behind and reads the same either way (highest_relevant_bit()).
+    int32_t hb_ahead = seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no);
+    if (hb_ahead < -HEARTBEAT_STALE_LAG) {
         proxy->heartbeat_last_seq_no = proxy->ack_seq_no - 1U;
+        hb_ahead = -1;
     }
-    if (highest_relevant_bit(proxy) < 0) {
+    if (highest_relevant_bit_from(proxy, hb_ahead) < 0) {
         // No outstanding gap by either signal (received_bitmap or the last Heartbeat) - a healthy
         // stream needs no ACKNACK at all.
         if (proxy->acknack_scheduled) {
@@ -9453,13 +9534,13 @@ static uint32_t received_in_first(const struct tt_WriterProxy* proxy, uint32_t s
 
 static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
 #ifdef tt_RELIABLE_STATS
-    if (seq_delta(seq_no, proxy->ack_seq_no) > 0) {
+    if (seq_delta(proxy->ack_seq_no, seq_no) < 0) {
         uint64_t span = seq_no - proxy->ack_seq_no;
         uint64_t received = rstat_popcount_bitmap(proxy->received_bitmap, proxy_words(proxy));
         g_rstats.jump_abandoned_seq += span > received ? span - received : 0;
     }
 #endif
-    if (seq_delta(seq_no, proxy->ack_seq_no) > 0) {
+    if (seq_delta(proxy->ack_seq_no, seq_no) < 0) {
         uint32_t span = seq_no - proxy->ack_seq_no;
         proxy->sub->gap_abandoned += span - received_in_first(proxy, span);
     }
@@ -9669,8 +9750,7 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         proxy->reorder_cursor = seq_no;
     }
     if (first_contact) {
-        proxy->reorder_pivot = seq_no; // the reorder ring's pivot (reorder_writer_slot()), at the first seq_no seen
-        proxy->reorder_shift = 0;
+        reorder_place_pivot(sub, proxy, seq_no); // the reorder ring's pivot (reorder_writer_slot()), at the first seen
     }
     if (first_contact && (proxy->keep_all == tt_WRITER_KEEP_ALL_YES ||
                           (proxy->keep_all == tt_WRITER_KEEP_ALL_UNKNOWN && node->discovery != NULL))) {
@@ -10295,7 +10375,6 @@ static void forget_writer_proxies_for_endpoint(struct tt_Context* node, uint32_t
             proxy->ack_seq_no = 1;
             proxy->reorder_cursor = 1;
             proxy->highest_delivered = 0;
-            proxy->delivered_any = false;
             proxy->heartbeat_last_seq_no = 0;
             proxy->retry = 0;
             proxy->keep_all = false;
@@ -10804,8 +10883,8 @@ static void deliver_durability_backlog(struct tt_Context* node, struct tt_Publis
 #if tt_LARGE_SAMPLES
     uint32_t large_next = 0; // large records go in seq_no order among the small ones (large-message stage 2)
 #endif
-    for (uint32_t seq_no = cache->oldest_seq_no; cache->any_retained && seq_delta(seq_no, cache->newest_seq_no) <= 0;
-         seq_no++) {
+    for (uint32_t seq_no = cache->oldest_seq_no;
+         reliable_cache_retains(cache) && seq_delta(cache->newest_seq_no, seq_no) >= 0; seq_no++) {
         struct tt_ReliableCacheIndex* cache_entry = reliable_cache_slot(cache, depth, seq_no);
         if (cache_entry->len == 0 || cache_entry->seq_no != seq_no) {
             continue;
@@ -11387,7 +11466,7 @@ static void record_delivery_order(struct tt_Context* node, struct tt_Subscriber*
     bool first = (sub->delivered == 0);
     bool same_writer = !first && sub->last_source == source && sub->last_entity_id == entity_id;
     // seq_no counts per writer, so it means nothing across a switch of speaker.
-    bool seq_back = same_writer && seq_delta(seq_no, sub->last_seq_no) <= 0;
+    bool seq_back = same_writer && seq_delta(sub->last_seq_no, seq_no) >= 0;
     // Strictly older: since tt_VERSION 10 timestamps have microsecond precision, and two samples in one
     // microsecond are not out of order.
     bool time_back = !first && timestamp < sub->last_timestamp;
@@ -11630,7 +11709,8 @@ static void deliver_backlog_from(struct tt_Context* node, struct tt_Endpoint* en
         return;
     }
     uint8_t* whole = node->local_scratch; // a fragmented sample gathered, under the context's lock
-    for (uint32_t seq_no = cache->oldest_seq_no; cache->any_retained && seq_delta(seq_no, cache->newest_seq_no) <= 0;) {
+    for (uint32_t seq_no = cache->oldest_seq_no;
+         reliable_cache_retains(cache) && seq_delta(cache->newest_seq_no, seq_no) >= 0;) {
         const uint8_t* payload = NULL;
         uint32_t length = 0;
         uint64_t sent_us = 0;
@@ -11692,61 +11772,62 @@ static struct tt_ReorderSlot* reorder_slot_at(struct tt_Subscriber* sub, uint16_
     return (struct tt_ReorderSlot*)(sub->reorder_storage + ((size_t)index * reorder_stride(sub) / sizeof(uint64_t)));
 }
 
-// How far the watermark may move from a writer's reorder pivot before the pivot follows it: 2^30, half of the 2^31 at
-// which serial arithmetic would place a held seq_no on the wrong side of it (reorder_writer_slot()).
-#define REORDER_REPIVOT_DRIFT INT32_C(0x40000000)
-
-// How far a key's slot moves when the key passes 2^32: 2^32 mod slots.
-static uint32_t reorder_wrap_step(uint32_t slots) {
-    return ((UINT32_MAX % slots) + 1U) % slots;
-}
-
-// The ring shift for `key` (a seq_no plus its writer's salt) relative to proxy's pivot: the pivot's own shift, moved
-// by one wrap step when the key lies on the other side of 2^32 from the pivot's key.
-static uint32_t reorder_shift_for(const struct tt_WriterProxy* proxy, uint32_t slots, uint32_t salt, uint32_t seq_no) {
-    uint32_t shift = proxy->reorder_shift < slots ? proxy->reorder_shift : proxy->reorder_shift % slots;
-    uint32_t key = seq_no + salt;
-    uint32_t pivot_key = proxy->reorder_pivot + salt;
-    if ((key < pivot_key) != (seq_delta(seq_no, proxy->reorder_pivot) < 0)) {
-        uint32_t step = reorder_wrap_step(slots);
-        shift += key < pivot_key ? step : slots - step; // past the wrap the pivot has not reached, or before it
-    }
-    return shift;
-}
-
-// The slot a writer's seq_no maps to: its seq_no modulo the slots, offset per writer. Every writer counts
-// from 1, so without the offset two writers at similar seq_no contend for the same slots - which for DATA
-// only costs an out-of-order sample a re-request, but a fragment is held even in order, until its sample
-// is whole (DATAFRAG_PLAN.md section 13), and two writers' in-order fragments would collide constantly.
-// One writer's held datagrams still lie within one window, so a buffer a window wide never collides
-// with itself.
-//
-// ...as long as the window does not straddle the point where seq_no + salt passes 2^32: there (seq_no + salt) % slots
-// jumps unless slots divides 2^32, and the held run on either side shares slots. So each writer's slots are moved on
-// by 2^32 % slots for every pass (tt_WriterProxy.reorder_shift, kept for the key of reorder_pivot, a seq_no near the
-// watermark; a seq_no either side of the wrap from it takes its own side's shift). Re-pivoted onto the watermark
-// when that has moved 2^30 on, before any held seq_no can lie 2^31 from the pivot. proxy is NULL only before the
-// writer's first contact, and the first contact pivots on that same seq_no with a shift of 0 - the same slot.
-static struct tt_ReorderSlot* reorder_writer_slot(struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
-                                                  uint8_t node_id, uint32_t entity_id, uint32_t seq_no) {
-    // Knuth's multiplicative hash constants: they spread consecutive ids across the whole ring.
+// A writer's offset in the reorder ring. Every writer counts from 1, so without it two writers at similar seq_no
+// contend for the same slots - which for DATA only costs an out-of-order sample a re-request, but a fragment is held
+// even in order, until its sample is whole (DATAFRAG_PLAN.md section 13), and two writers' in-order fragments would
+// collide constantly. Knuth's multiplicative hash constants: they spread consecutive ids across the whole ring.
+static uint32_t reorder_salt(uint8_t node_id, uint32_t entity_id) {
     const uint32_t entity_spread = 2654435761U;
     const uint32_t node_spread = 40503U;
-    uint32_t salt = (entity_id * entity_spread) ^ ((uint32_t)node_id * node_spread);
+    return (entity_id * entity_spread) ^ ((uint32_t)node_id * node_spread);
+}
+
+// The slot a writer's seq_no maps to. Before the writer's first contact (proxy NULL), its salted key modulo the slots,
+// (seq_no + salt) % slots; from then on (seq_no - reorder_pivot + reorder_base) % slots, where the first contact puts
+// the pivot on that seq_no and the base on that same slot (reorder_place_pivot()). One writer's held datagrams lie
+// within one window, so a buffer a window wide never collides with itself...
+//
+// ...as long as the held run does not straddle a point where the key jumps: (seq_no + salt) % slots jumps where
+// seq_no + salt passes 2^32 unless slots divides 2^32, and the held run on either side would share slots. Measured from
+// the pivot it does not jump: seq_no - reorder_pivot is the distance itself while it stays below 2^32, which
+// reorder_follow_pivot() keeps true for everything held, moving the pivot - and the base with it, so nothing held moves
+// - only when a seq_no about to be held lies 2^30 from it. A lookup is two adjacent loads, a subtraction and an
+// addition; the pivot is moved on the store paths only, never in a drain.
+static struct tt_ReorderSlot* reorder_writer_slot(struct tt_Subscriber* sub, const struct tt_WriterProxy* proxy,
+                                                  uint8_t node_id, uint32_t entity_id, uint32_t seq_no) {
     uint32_t slots = sub->reorder_slots;
-    uint32_t slot = (seq_no + salt) % slots;
-    if (proxy != NULL) {
-        int32_t drift = seq_delta(proxy->ack_seq_no, proxy->reorder_pivot);
-        if (drift > REORDER_REPIVOT_DRIFT || drift < -REORDER_REPIVOT_DRIFT) {
-            proxy->reorder_shift = (uint16_t)(reorder_shift_for(proxy, slots, salt, proxy->ack_seq_no) % slots);
-            proxy->reorder_pivot = proxy->ack_seq_no;
-        }
-        slot += reorder_shift_for(proxy, slots, salt, seq_no);
-        while (slot >= slots) {
-            slot -= slots;
-        }
+    if (proxy == NULL) {
+        return reorder_slot_at(sub, (uint16_t)((seq_no + reorder_salt(node_id, entity_id)) % slots));
     }
-    return reorder_slot_at(sub, (uint16_t)slot);
+    return reorder_slot_at(sub, (uint16_t)((seq_no - proxy->reorder_pivot + proxy->reorder_base) % slots));
+}
+
+// Puts proxy's reorder pivot on seq_no, at the slot its salted key gives it - where a sample stored before the proxy
+// existed already is (reorder_writer_slot()). At first contact, when nothing of the writer's is held.
+static void reorder_place_pivot(const struct tt_Subscriber* sub, struct tt_WriterProxy* proxy, uint32_t seq_no) {
+    proxy->reorder_pivot = seq_no;
+    proxy->reorder_base =
+        sub->reorder_slots != 0 ? (seq_no + reorder_salt(proxy->context_id, proxy->entity_id)) % sub->reorder_slots : 0;
+}
+
+// How far from the pivot a seq_no may be held before the pivot moves (2^30), and how far behind that seq_no it goes
+// (2^29): everything held lies within a window of the seq_no being stored, so after the move it still lies 2^29 -
+// a window or more ahead of the pivot, and 2^30 of further travel are needed before the next move.
+#define REORDER_PIVOT_REACH UINT32_C(0x40000000)
+#define REORDER_PIVOT_LEAD UINT32_C(0x20000000)
+
+// Called before seq_no is stored in the reorder ring (hold_for_reorder(), reorder_store_fragment(), frag_fast_spill()):
+// a seq_no 2^30 or more past the pivot - or behind it - moves the pivot to 2^29 behind seq_no, and the base by the
+// same distance modulo the slots, so every seq_no held keeps its slot.
+static void reorder_follow_pivot(const struct tt_Subscriber* sub, struct tt_WriterProxy* proxy, uint32_t seq_no) {
+    uint32_t slots = sub->reorder_slots;
+    if (proxy == NULL || slots == 0 || seq_no - proxy->reorder_pivot < REORDER_PIVOT_REACH) {
+        return;
+    }
+    uint32_t pivot = seq_no - REORDER_PIVOT_LEAD;
+    int64_t moved = (int64_t)seq_delta(pivot, proxy->reorder_pivot) % (int64_t)slots; // forward, or back
+    proxy->reorder_base = (uint32_t)(((int64_t)proxy->reorder_base + moved + slots) % slots);
+    proxy->reorder_pivot = pivot;
 }
 
 static uint8_t* reorder_slot_payload(struct tt_ReorderSlot* slot) {
@@ -11780,6 +11861,7 @@ static void frag_fast_spill(struct tt_Context* node) {
     }
     node->frag_fast_sub = NULL;
     struct tt_WriterProxy* proxy = find_writer_proxy(sub, node->frag_fast_context_id, node->frag_fast_entity_id);
+    reorder_follow_pivot(sub, proxy, node->frag_fast_seq_no); // the fragments are consecutive: the first places all
     const uint8_t* bytes = node->frag_scratch + 4;
     uint32_t offset = 0;
     for (uint32_t index = 0; index < node->frag_fast_placed; index++) {
@@ -11864,6 +11946,7 @@ static void hold_for_reorder(struct tt_Context* node, struct tt_Subscriber* sub,
     // different sample - another writer's, or this writer's when the buffer is narrower than the
     // window - is treated exactly like a full buffer: re-requested, never overwritten.
     if (capacity >= length) {
+        reorder_follow_pivot(sub, proxy, ctx->seq_no);
         struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy, ctx->header->source, ctx->entity_id, ctx->seq_no);
         if (slot->occupied) {
             // Already holding this exact sample: a retransmit racing the original. Keep the copy
@@ -11967,14 +12050,16 @@ static void release_reorder_slots_for_writer(struct tt_Context* node, struct tt_
 static void deliver_in_order(struct tt_Context* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                              uint32_t seq_no, uint64_t timestamp, const uint8_t* payload, uint32_t length,
                              bool is_native, bool via_data_port, bool* out_decode_failed) {
-    if (proxy->delivered_any && seq_delta(seq_no, proxy->highest_delivered) <= 0) {
+    // seq_no at or before the highest delivered, serially - a compare and a sign. Nothing delivered yet needs no flag:
+    // highest_delivered then lies just behind the watermark (proxy_move_ack()), before anything that can be delivered,
+    // and seq_no 0 is a seq_no like any other.
+    if (seq_delta(proxy->highest_delivered, seq_no) >= 0) {
         // A step backwards: the application already has something later from this writer. Only
         // reachable after a gap was abandoned and a sample from it turned up anyway.
         sub->out_of_order_discarded++;
         return;
     }
     proxy->highest_delivered = seq_no;
-    proxy->delivered_any = true;
     deliver_payload(node, sub, seq_no, timestamp, proxy->context_id, proxy->entity_id, payload, length, is_native,
                     via_data_port, out_decode_failed);
 }
@@ -12266,7 +12351,7 @@ static void large_sweep_passed(struct tt_Context* node, const struct tt_Subscrib
         struct tt_LargeAssembly* assembly = &node->large.assemblies[i];
         if (assembly->buffer != NULL && assembly->sub == sub && assembly->source == proxy->context_id &&
             assembly->entity_id == proxy->entity_id &&
-            seq_delta(assembly->seq_no + assembly->frag_count, proxy->reorder_cursor) <= 0) {
+            seq_delta(proxy->reorder_cursor, assembly->seq_no + assembly->frag_count) >= 0) {
             large_assembly_abandon(node, assembly);
         }
     }
@@ -12391,7 +12476,7 @@ static void note_declined(struct tt_Context* node, struct tt_Subscriber* sub, co
     if (proxy == NULL || seq_delta(ctx->seq_no, proxy->ack_seq_no) < 0) {
         return;
     }
-    if (seq_delta(ctx->seq_no, proxy->heartbeat_last_seq_no) > 0) {
+    if (seq_delta(proxy->heartbeat_last_seq_no, ctx->seq_no) < 0) {
         proxy->heartbeat_last_seq_no = ctx->seq_no;
     }
     proxy->sender_ip = ctx->sender_ip;
@@ -13404,7 +13489,8 @@ static uint32_t reliable_cache_first_resendable_seq_no(const struct tt_Publisher
     uint32_t large = 0;
     bool any_large = pub->large_count != 0 && large_first_resendable(pub, &large);
 #endif
-    for (uint32_t seq_no = cache->oldest_seq_no; cache->any_retained && seq_delta(seq_no, newest) <= 0; seq_no++) {
+    for (uint32_t seq_no = cache->oldest_seq_no; reliable_cache_retains(cache) && seq_delta(newest, seq_no) >= 0;
+         seq_no++) {
         const struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
 #if tt_LARGE_SAMPLES
         if (any_large && seq_delta(large, seq_no) < 0) {
@@ -13420,7 +13506,7 @@ static uint32_t reliable_cache_first_resendable_seq_no(const struct tt_Publisher
     if (any_large) {
         return large;
     }
-    if (seq_delta(pub->seq_no, newest) > 0) {
+    if (seq_delta(newest, pub->seq_no) < 0) {
         return pub->seq_no + 1;
     }
 #endif
@@ -13845,7 +13931,7 @@ struct heartbeat_ctx {
 // first contact (its baseline comes from the first-contact branch of inform_subscriber_of_heartbeat() below);
 // afterwards anything the Publisher no longer holds is unrecoverable for it too.
 static void advance_past_unavailable(struct tt_WriterProxy* proxy, uint32_t first_available_seq_no) {
-    if (seq_delta(first_available_seq_no, proxy->ack_seq_no) <= 0) {
+    if (seq_delta(proxy->ack_seq_no, first_available_seq_no) >= 0) {
         return;
     }
     uint32_t skipped = first_available_seq_no - proxy->ack_seq_no;
@@ -13929,8 +14015,7 @@ static void inform_subscriber_of_heartbeat(struct tt_Context* node, struct tt_En
         // offset 0, "needs attention") - an off-by-one leak of exactly the newest pre-match sample.
         proxy_move_ack(proxy, sub->durable ? ctx->first_available_seq_no : ctx->last_seq_no + 1);
         proxy_clear_received(proxy);
-        proxy->reorder_pivot = proxy->ack_seq_no; // reorder_writer_slot()
-        proxy->reorder_shift = 0;
+        reorder_place_pivot(sub, proxy, proxy->ack_seq_no); // reorder_writer_slot()
     } else {
         advance_past_unavailable(proxy, ctx->first_available_seq_no);
     }
@@ -13968,7 +14053,7 @@ static void inform_subscriber_of_heartbeat(struct tt_Context* node, struct tt_En
     proxy->sender_port = ctx->sender_port;
     // Monotonic guard: a Heartbeat can arrive out of order over UDP the same as any other
     // submessage - never let a late, older one regress what highest_relevant_bit() already knows.
-    if (seq_delta(ctx->last_seq_no, proxy->heartbeat_last_seq_no) > 0) {
+    if (seq_delta(proxy->heartbeat_last_seq_no, ctx->last_seq_no) < 0) {
         proxy->heartbeat_last_seq_no = ctx->last_seq_no;
     }
 
@@ -14287,6 +14372,7 @@ static bool reorder_store_fragment(struct tt_Context* node, struct tt_Subscriber
     if (reorder_payload_capacity(sub) < length) {
         return false;
     }
+    reorder_follow_pivot(sub, proxy, ctx->seq_no);
     struct tt_ReorderSlot* slot = reorder_writer_slot(sub, proxy, ctx->header->source, ctx->entity_id, ctx->seq_no);
     if (slot->occupied) {
         return false;
@@ -14530,7 +14616,7 @@ struct large_fragment {
 // is left - the one its writer's stream is waiting on, which must never be evicted.
 static uint32_t large_ahead(const struct tt_LargeAssembly* assembly) {
     struct tt_WriterProxy* proxy = find_writer_proxy(assembly->sub, assembly->source, assembly->entity_id);
-    if (proxy == NULL || seq_delta(assembly->seq_no, proxy->ack_seq_no) <= 0) {
+    if (proxy == NULL || seq_delta(proxy->ack_seq_no, assembly->seq_no) >= 0) {
         return 0;
     }
     return assembly->seq_no - proxy->ack_seq_no;
@@ -14596,7 +14682,7 @@ static struct tt_LargeAssembly* large_assembly_claim(struct tt_Context* node, st
         }
     }
     if (assembly == NULL) {
-        uint32_t ahead = proxy != NULL && seq_delta(seq_no, proxy->ack_seq_no) > 0 ? seq_no - proxy->ack_seq_no : 0;
+        uint32_t ahead = proxy != NULL && seq_delta(proxy->ack_seq_no, seq_no) < 0 ? seq_no - proxy->ack_seq_no : 0;
         assembly = large_victim(node, sub != NULL, ahead);
         if (assembly == NULL) {
             node->large.no_buffer++;
