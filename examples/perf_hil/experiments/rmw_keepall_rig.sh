@@ -171,6 +171,23 @@
 #   records every tickle run's counters in offload.txt and judges tickle@nooffload and tickle@mtunooff (forced MTU,
 #   TT_UDP_OFFLOAD=0) alone - each VOID unless every end shows udp_offload=0, gso_sends=0, gro_merged=0. Whether the
 #   offload acted in an arm that has it is read by hybrid_rig_ab.py, which knows the arm's mode.
+#
+# Added 2026-10-12 for the receive CPU profile (~/rig_queue_rx_perf.sh; rx_perf_read.py holds the reading). Off unless
+# RX_PROFILE is set; cross-host default mode (and PC_PREFLIGHT) only:
+#   RX_PROFILE=plain|stat|record|strace  the SUBSCRIBER's window: RX_DELAY s (default 8) after the publisher's launch,
+#                    for RX_WIN s (default 25), rx_window.sh on the subscriber's host snapshots the process (schedstat run
+#                    time of every thread, context switches, utime/stime) and the host (/proc/stat, NET_RX softirqs, eth0
+#                    rx bytes) at both ends, and in between runs the mode's instrument attached to perf_test's own PID:
+#                    nothing (plain), perf stat --per-thread (instructions/cycles u and k, task-clock, context switches),
+#                    perf record -g -F RX_FREQ (default 999) -e cycles, or strace -f -c. The window's output is
+#                    <stem>_rxwin.txt; after the run the instrument's output is fetched as <stem>_rx.stat,
+#                    <stem>_rx.report (perf report by dso,sym) and <stem>_rx.script.gz (perf script with call chains,
+#                    rendered on the host that has the binaries), or <stem>_rx.strace.
+#                    strace attaches only where Yama's ptrace_scope is 0 (probed); elsewhere the mode becomes strace_wrap:
+#                    the subscriber is launched under strace -f -c (whole life, start-up included - labelled so).
+#                    The probe (perf_event_paranoid, kptr_restrict, ptrace_scope, perf and strace) goes to rx_probe.txt.
+#                    Every arm runs under the same instrument in one invocation; only counts and shares are read from an
+#                    instrumented run, its CPU figure from plain (rx_perf_read.py, INSTRUMENT).
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
@@ -247,6 +264,13 @@ if [ "$INSN_COUNT" = 1 ] && [ "$ONLY_TICKLE" != 1 ]; then
     exit 64
 fi
 if [ -n "$EQUAL_BOUND" ]; then DRY=${DRY:-1}; else DRY=${DRY:-0}; fi
+RX_PROFILE=${RX_PROFILE:-}; RX_DELAY=${RX_DELAY:-8}; RX_WIN=${RX_WIN:-25}; RX_FREQ=${RX_FREQ:-999}
+case "$RX_PROFILE" in "" | plain | stat | record | strace) ;; *) echo "RX_PROFILE must be plain, stat, record or strace" >&2; exit 64 ;; esac
+if [ -n "$RX_PROFILE" ]; then
+    { [ "$SAMEHOST" != 1 ] && [ -z "$EQUAL_BOUND" ]; } || { echo "RX_PROFILE runs cross-host without EQUAL_BOUND only" >&2; exit 64; }
+    [ "$INSN_COUNT" = 0 ] || { echo "RX_PROFILE with INSN_COUNT=1: one instrument at a time" >&2; exit 64; }
+    [ "$DUR" -ge $((RX_DELAY + RX_WIN + 5)) ] || { echo "RX_PROFILE: DUR $DUR s is shorter than RX_DELAY + RX_WIN + 5" >&2; exit 64; }
+fi
 DRY_DUR=${DRY_DUR:-6}
 mkdir -p "$OUT.runs"
 [ "$DRY" = 1 ] && mkdir -p "$OUT.dry"
@@ -312,6 +336,8 @@ say "qos [$QOS_ARGS] rate $PUB_RATE Hz; samehost $SAMEHOST; clock probe $CLOCK_P
     "(client $CLIENT, server $SERVER)"
 printf 'qos_args=%s\npub_rate=%s\nsamehost=%s\nclock_probe=%s\ndur=%s\ndry=%s\npc_preflight=%s\n' "$QOS_ARGS" \
     "$PUB_RATE" "$SAMEHOST" "$CLOCK_PROBE" "$DUR" "$DRY" "$PC_PREFLIGHT" > "$OUT.runs/meta.txt"
+[ -n "$RX_PROFILE" ] && printf 'rx_profile=%s\nrx_delay=%s\nrx_win=%s\nrx_freq=%s\n' "$RX_PROFILE" "$RX_DELAY" "$RX_WIN" \
+    "$RX_FREQ" >> "$OUT.runs/meta.txt"
 case " $ARMS " in *" tickle@nooffload "*)
     echo "udp_offload_arms=tickle@head:TT_UDP_OFFLOAD-unset tickle@nooffload:TT_UDP_OFFLOAD=0(head's binary)" \
         >> "$OUT.runs/meta.txt"
@@ -614,6 +640,27 @@ if [ -n "$EQUAL_BOUND" ]; then
     [ "$DRY" = 1 ] && cp "$OUT.runs/bounds.txt" "$OUT.dry/bounds.txt"
 fi
 
+# RX_PROFILE (header): what the subscriber's host lets perf and strace see, and the window helper.
+RX_MODE=$RX_PROFILE
+if [ -n "$RX_PROFILE" ]; then
+    # shellcheck disable=SC2016 # expanded on the host
+    probe=$(sh_ "$SERVER" 'echo "host=$(hostname) kernel=$(uname -r) perf_event_paranoid=$(cat /proc/sys/kernel/perf_event_paranoid) kptr_restrict=$(cat /proc/sys/kernel/kptr_restrict) ptrace_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo none) perf=$(perf --version 2>&1 | tr " " _) strace=$(command -v strace || echo none) ncpu=$(nproc)"
+perf stat -x, -e cycles:k true 2>&1 >/dev/null | grep -q "^[0-9][0-9]*,,cycles:k" && echo kcount=ok || echo kcount=FAIL' </dev/null 2>&1 | tr '\n' ' ')
+    echo "PROBE $probe" > "$OUT.runs/rx_probe.txt"
+    say "rx profile $RX_PROFILE: delay ${RX_DELAY}s window ${RX_WIN}s freq $RX_FREQ; subscriber host: $probe"
+    case "$probe" in *kcount=ok*) ;; *) [ "$RX_PROFILE" = plain ] || { say "REFUSED: perf cannot count kernel cycles on $SERVER"; exit 1; } ;; esac
+    if [ "$RX_PROFILE" = strace ]; then
+        case "$probe" in *strace=none*) say "REFUSED: no strace on $SERVER"; exit 1 ;; esac
+        case "$probe" in *ptrace_scope=0* | *ptrace_scope=none*) ;;
+            *) RX_MODE=strace_wrap
+               say "strace cannot attach (Yama ptrace_scope not 0): strace_wrap - the subscriber runs under strace -f -c, whole life, start-up included" ;;
+        esac
+    fi
+    case "$probe" in *kptr_restrict=0*) ;; *) say "kernel symbols: kptr_restrict is not 0 - kernel samples stay addresses; the reader splits them by DSO and syscall entry" ;; esac
+    echo "rx_mode=$RX_MODE" >> "$OUT.runs/meta.txt"
+    sh_ "$SERVER" "cat > /tmp/ka_rxwin.sh && chmod +x /tmp/ka_rxwin.sh" < "$REPO/examples/perf_hil/experiments/rx_window.sh" \
+        || { say "rx window helper copy failed"; exit 1; }
+fi
 for h in "${HOSTS[@]}"; do
     printf '%s' "$LAUNCHER" | sh_ "$h" "cat > /tmp/ka_launch.sh && chmod +x /tmp/ka_launch.sh" || { say "launcher copy failed"; exit 1; }
     printf '%s' "$NETSNAP" | sh_ "$h" "cat > /tmp/ka_net.sh && chmod +x /tmp/ka_net.sh" || { say "net helper copy failed"; exit 1; }
@@ -668,6 +715,7 @@ net_snap() { # $1 file, $2 label: one line per host (header, <stem>_net.txt); "u
 launch() { # host role arm topic args...
     local h=$1 role=$2 arm=$3 topic=$4 pre=""; shift 4
     [ "$INSN_COUNT" = 1 ] && pre=$(insn_prefix "/tmp/ka_$role.insn")
+    [ "$RX_MODE" = strace_wrap ] && [ "$role" = sub ] && pre="strace -f -c -o /tmp/ka_sub.strace"
     sh_ "$h" "KA_PRE='$pre' /tmp/ka_launch.sh $role /tmp/ka_env_${arm/@/_}_$topic.sh $*" </dev/null
 }
 # insn_of <host> <role>: that role's counts as RUN-line fields (gate v2 A2), once perf itself has exited (up to 5 s).
@@ -689,6 +737,25 @@ kcounters() { # stem dir phase
     sh_ "$SERVER" "$cmd" </dev/null > "$2/${1}_sub_k$3.txt" 2>&1
 }
 
+# RX_PROFILE (header): the instrument's output for one run, rendered on the subscriber's host (its binaries and symbols)
+# once the subscriber has ended, then removed there.
+rx_fetch() { # dir stem
+    local dir=$1 stem=$2
+    case "$RX_MODE" in
+        stat) fetch_ "$SERVER" /tmp/ka_rx.stat "$dir/${stem}_rx.stat" ;;
+        strace) fetch_ "$SERVER" /tmp/ka_rx.strace "$dir/${stem}_rx.strace" ;;
+        strace_wrap) # strace writes its table once perf_test has ended and strace exits (up to 10 s)
+            sh_ "$SERVER" "p=\$(cat /tmp/ka_sub.perfpid 2>/dev/null); for i in \$(seq 1 100); do { [ -n \"\$p\" ] && [ -d /proc/\$p ]; } || break; sleep 0.1; done" </dev/null
+            fetch_ "$SERVER" /tmp/ka_sub.strace "$dir/${stem}_rx.strace" ;;
+        record)
+            sh_ "$SERVER" "cd /tmp && timeout 300 perf report -i /tmp/ka_rx.data --no-children -g none -q -t ';' -F period,sample,dso,sym --stdio > /tmp/ka_rx.report 2>/dev/null
+timeout 300 perf script -i /tmp/ka_rx.data -F comm,tid,period,ip,sym,dso 2>/dev/null | gzip -1 > /tmp/ka_rx.script.gz" </dev/null
+            fetch_ "$SERVER" /tmp/ka_rx.report "$dir/${stem}_rx.report"
+            fetch_ "$SERVER" /tmp/ka_rx.script.gz "$dir/${stem}_rx.script.gz" ;;
+    esac
+    sh_ "$SERVER" "rm -f /tmp/ka_rx.stat /tmp/ka_rx.data /tmp/ka_rx.data.old /tmp/ka_rx.strace /tmp/ka_rx.report /tmp/ka_rx.script.gz /tmp/ka_sub.strace /tmp/ka_rx.err" </dev/null
+}
+
 run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher seconds, default $DUR]
     local arm=$1 topic=$2 loss=$3 rep=$4 stem="$1_$2_l$3_r$4" dir=${5:-$OUT.runs} dur=${6:-$DUR}
     local common="-c ROS2 -t $topic $QOS_ARGS --dds_domain_id $DOMAIN"
@@ -701,9 +768,11 @@ run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher second
     launch "$SERVER" sub "$arm" "$topic" "$common -p 0 -s 1 --expected_num_pubs 1 --max_runtime $((dur + 8)) $rosargs"
     sleep 2
     launch "$CLIENT" pub "$arm" "$topic" "$common -r $PUB_RATE -p 1 -s 0 --expected_num_subs 1 --max_runtime $dur $rosargs"
+    [ -n "$RX_PROFILE" ] && sh_ "$SERVER" "/tmp/ka_rxwin.sh $RX_MODE $RX_DELAY $RX_WIN $RX_FREQ" </dev/null > "$dir/${stem}_rxwin.txt" 2>&1
     local k1 k2
     k1=$(wait_done "$CLIENT" pub $((dur + 40)))
     k2=$(wait_done "$SERVER" sub 20)
+    [ -n "$RX_PROFILE" ] && rx_fetch "$dir" "$stem"
     net_snap "$dir/${stem}_net.txt" after
     kcounters "$stem" "$dir" post
     clock_probe "$dir/${stem}_clock.txt" after
