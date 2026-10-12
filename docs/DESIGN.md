@@ -175,8 +175,13 @@ psn, single header; 11 nodes in the announce.
   `gso_*`. With the hybrid transport (section 8) both apply to MTU-mode traffic only: a run (`FRAG_RUN_L`) is one
   IP-fragmented datagram, never a `UDP_SEGMENT` run and never merged by GRO (IPv4 fragments bypass the kernel's GRO;
   the check's pattern 8 reads runs whole with `UDP_GRO` on), and a sample's lone MTU tail after its runs neither turns
-  `UDP_GRO` on nor keeps it on - so an AUTO stream of runs reads plain. Whether offload is kept on by default is
-  decided by the rig A/B (`~/rig_queue_hybrid.sh`, stage 4).
+  `UDP_GRO` on nor keeps it on - so an AUTO stream of runs reads plain. **On by default (the user's decision,
+  2026-10-12).** The rig A/B (ab/hybrid-land d8980f9b on 4fbb8fe1, Array1m RELIABLE 30 Hz, 5 reps, offload on against
+  `TT_UDP_OFFLOAD=0`, same binary; `~/rig_results_safe/hybrid_land/offload_decision.txt`): forced MTU at 1% loss,
+  where every unit is an MTU fragment, publisher -1.08 ms/MB and subscriber -0.68 ms/MB CPU, both beyond the A/A
+  floor; AUTO at 1%, -0.37 / -0.34, within the floor; nothing worse at 0% or 0.01%. The pre-registered rule wanted a
+  gain in both comparisons and printed DEFAULT-OFF; the user kept it on, since nothing got worse and MTU-mode traffic -
+  the hybrid transport's fallback on a lossy path - gains. Not measured on the receive-drain build (f1f2f14d).
 
 ## 5. Discovery
 
@@ -863,7 +868,7 @@ the floor at any loss (the repair tail of lost runs is what the objective has to
 
 #### The revision as built (`ab/hybrid-network-objective`, 2026-10-11)
 
-Built as written above, on `a240fe3c`, one change per commit: the objective (the CPU cost model, its fit and
+Built as written above, on `9bd46571` (a240fe3c before the rebase), one change per commit: the objective (the CPU cost model, its fit and
 `tt_process_cpu_ns()` removed), the reader's measurements and `loss_p`, the control law (the kernel reads
 `tt_ip_reassembly_limits()` / `tt_ip_reassembly_failures()` and the `ReasmFails` withdrawal removed: core reads no
 `/proc` and no sysctl), rule (e) on the reader's side. Where it departs from the first text of this revision, the text

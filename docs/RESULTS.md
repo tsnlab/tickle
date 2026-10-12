@@ -29,9 +29,11 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
 - **rmw layer, same host** (`06dd78d8`, rows R1-R21): rmw_tickle wins all 52 scored rows against both DDS rmws,
   peak RSS included (13.4-16.0 MB against CycloneDDS's 15.2-18.3 MB, since `718220d8`). At BEST_EFFORT KEEP_LAST 1
   max rate it delivers 141k Array1k samples/s against CycloneDDS's 70k and FastDDS's 18k.
-- **rmw large messages** (step A, Array1m and Array4m cross-host, "rmw large messages"): rmw_tickle wins every metric
-  at 5% loss, where Fast DDS as shipped delivers nothing and CycloneDDS ~3%, and has the smallest subscriber in every
-  cell; at 0% loss it loses CPU per MB to the two vendors that send 64 KB datagrams fragmented by the kernel.
+- **rmw large messages** (Array1m and Array4m cross-host, "rmw large messages"): rmw_tickle wins every metric at 5%
+  loss (step A), where Fast DDS as shipped delivers nothing and CycloneDDS ~3%, and has the smallest subscriber in every
+  cell. At 0% loss, with the hybrid transport (IP-fragmented runs while the path is clean), it beats CycloneDDS on CPU
+  per MB everywhere and draws or wins median latency against both vendors at 1 and 4 MB, but Fast DDS as shipped still
+  spends 13.7-18.2% less subscriber CPU per MB.
 - **Not scored:** row 5 (netem dominates), rows 45-47 (all detect correctly), zenoh-pico (reference only).
 
 ## 1. Same host (shared memory)
@@ -651,25 +653,33 @@ counts, since `perf_test`'s rate columns are floor(count / D)) from
 and their `.runs/`. Letters: rmw_tickle against Fast DDS as shipped / Fast DDS with `maxMessageSize` 1472 / CycloneDDS
 (W win, L lose, D draw by the range rule; – not scored).
 
+Rows I1, I4 and I4s at 0% loss are the hybrid transport (section 8 of DESIGN.md; "Hybrid transport (large samples),
+rig" below) as measured on 2026-10-12: branch ab/hybrid-drain-v2 at f1f2f14d (the hybrid transport in AUTO, UDP
+offload, the receive drain) against main 4fbb8fe1; it landed rebased onto main (with the segment fence and the seq_no
+wrap work) and was not re-measured. Fast DDS 1472 was not run there (–). Read by the same `largemsg_rig_summary.py`
+from `~/rig_results_safe/hybridDrain_{s1_1m_rel_20261012-112010,s1_1m_be_20261012-114841,s1_4m_rel_20261012-121540,
+s1_4m_be_20261012-124244,i4s_20261012-130948}.txt` and their `.runs/`. Row I1L is still step A (dc056907).
+
 | cell | QoS, rate | delivered % | latency med / p99 ms | CPU sub / pub ms/MB | RSS kB | delivered | latency | CPU sub | CPU pub | RSS |
 |---|---|---:|---:|---:|---:|:-:|:-:|:-:|:-:|:-:|
-| I1 Array1m | RELIABLE KL10, 30 Hz | 100 | 9.66 / 9.78 | 5.57 / 4.46 | 18,116 | DDD | LWW | LWL | LWD | WWW |
+| I1 Array1m | RELIABLE KL10, 30 Hz | 100 | 9.48 / 9.60 | 2.70 / 4.04 | 18,996 | D–D | D–W | L–W | D–W | W–W |
 | I1L Array1m, 5% loss | RELIABLE KL10, 30 Hz | 100 | 11.68 / 24.21 | 5.84 / 5.17 | 20,264 | –W– | –W– | –W– | –W– | –W– |
-| I1 Array1m | BEST_EFFORT KL5, 30 Hz | 100 | 9.61 / 9.73 | 5.13 / 4.51 | 18,164 | DDD | LWD | LWL | LWL | WWW |
-| I4s Array4m (saturating) | BEST_EFFORT KL5, 30 Hz | 92.3 | 57.1 / 73.6 | 3.91 / 4.04 | 37,612 | LWL | LLL | LWL | LWL | WWW |
-| I4 Array4m | RELIABLE KL10, 15 Hz | 100 | 38.69 / 38.83 | 5.00 / 4.48 | 33,684 | DDD | LWL | LWL | LWL | WWW |
-| I4 Array4m | BEST_EFFORT KL5, 15 Hz | 100 | 38.68 / 38.79 | 4.76 / 4.44 | 37,768 | DDD | LWD | LWL | LWL | WWW |
+| I1 Array1m | BEST_EFFORT KL5, 30 Hz | 100 | 9.41 / 9.54 | 2.49 / 4.01 | 18,928 | D–D | W–W | L–W | L–W | W–W |
+| I4s Array4m (saturating) | BEST_EFFORT KL5, 30 Hz | 95.4 of offered | 55.66 / 72.02 | 1.70 / 3.62 | 36,452 | W–W | L–L | L–W | L–W | W–W |
+| I4 Array4m | RELIABLE KL10, 15 Hz | 100 | 37.48 / 37.58 | 2.51 / 3.89 | 34,620 | D–D | D–W | L–W | D–W | W–W |
+| I4 Array4m | BEST_EFFORT KL5, 15 Hz | 100 | 37.39 / 37.49 | 2.44 / 3.90 | 34,260 | D–D | W–W | L–W | L–W | W–W |
 
 - **Under loss TickLE wins every metric.** At 5% loss Fast DDS as shipped delivered nothing in all 5 runs (it does
   not run the cell) and CycloneDDS about 3% (incomplete, not scored); Fast DDS at 1472 delivered all of it at 57.7 /
   83.0 ms against TickLE's 11.68 / 24.21 ms.
 - **Memory:** the subscriber is the smallest in every cell. The publisher is too in four of six; at 4 MB best effort
   CycloneDDS's publisher is smaller (28,556 and 28,536 kB against 33,280 and 29,184).
-- **CPU per MB is lost at 0% loss to Fast DDS as shipped and to CycloneDDS**, because they send 64 KB datagrams that
-  the kernel splits (OS IP fragmentation, which TickLE does not use: it failed 97.4% of reassemblies at 5% loss,
-  section 8 of DESIGN.md). Against Fast DDS with 1472-byte datagrams, the same datagram size as TickLE's, TickLE wins
-  CPU in every cell. Median latency at 0% loss is behind Fast DDS as shipped by 0.15-0.19 ms at 1 MB and 1.2 ms at
-  4 MB (37.5 ms; CycloneDDS 38.6).
+- **CPU per MB at 0% loss** (f1f2f14d): TickLE now sends a large sample as IP-fragmented runs of up to 45 units
+  while the path is clean (the hybrid transport, below), and beats CycloneDDS on subscriber and publisher CPU in every
+  cell. Fast DDS as shipped, which sends 64 KB datagrams the kernel splits, still spends 13.7-15.6% less on the
+  subscriber (18.2% at I4s; means) and 2.0-8.4% less on the publisher at best effort; RELIABLE publisher CPU is a draw.
+  Against main before the hybrid transport (4fbb8fe1) subscriber CPU fell 2.1-2.5 ms/MB (-46 to -57%). Median latency
+  is a draw or a win against Fast DDS at 1 and 4 MB; step A (dc056907) was 0.15-0.19 ms and 1.2 ms behind it.
 - **Where the 1.2 ms at 4 MB goes** (`experiments/largemsg_wire_budget.py` on the I4 rows, 2026-10-11): 0.52 ms is
   wire - one sample is 4,431,228 B of frames for TickLE (2,889 datagrams; per frame 8 B of UDP header and 16 B of
   framing that IP fragments do not carry) against 4,366,590 B for Fast DDS's 64 KB datagrams, 35.45 against 34.93 ms
@@ -682,17 +692,57 @@ and their `.runs/`. Letters: rmw_tickle against Fast DDS as shipped / Fast DDS w
   no WORSE; against Fast DDS as shipped +0.40/+0.36 ms ordinary, -0.98/-1.00 ms loaned. Measured on branch
   ab/largemsg-latency at ba324d3b against its parent 11cb21e8, both with the UDP offload commits of ab/udp-offload-v2;
   landed without UDP offload and not re-measured.
-- **I4s, Array4m best effort at 30 Hz, saturates the link and TickLE loses it:** it published all 1,802 samples and
-  delivered 1,655-1,679 complete, CycloneDDS 1,699-1,700 of the ~1,700 its publisher sent. DESIGN.md's F3 is
-  falsified.
+- **I4s, Array4m best effort at 30 Hz, saturates the link** (30 Hz against the link's ~28.6 Hz for 4 MB). Its
+  delivered % is scored per offered tick (30 Hz x the publisher's 60 s window = 1,800 samples, the same for every
+  framework), not per published sample. **Corrected 2026-10-12** (the user's decision): this row and step A's read
+  delivered % per published, and a DDS `publish()` of 4 MB blocks until the sample is in the socket, so the DDS
+  publishers published only what the link could carry (Fast DDS 1,698-1,699, CycloneDDS 1,702-1,703) and read ~100% of
+  that, while rmw_tickle's `publish()` does not block, published all 1,802 and drops at the sender the samples that
+  wait behind the one in flight (KEEP_LAST: 84 a run). Per published, the denominators differ; step A's row read 92.3%
+  and LWL for that reason, and the f1f2f14d run read 95.49 against 100 and L–L. Per offered tick: rmw_tickle 95.3-95.4%
+  (1,715-1,717 complete), Fast DDS 94.1-94.2%, CycloneDDS 94.4-94.5% - W–W
+  (`experiments/largemsg_rig_summary.py`, offered_pct, selftest case 5 on these runs). Step A (dc056907) delivered
+  1,655-1,679, below CycloneDDS's 1,699-1,700, and falsified F3; f1f2f14d's 1,715-1,717 holds it. Latency is lost
+  (55.66 / 72.02 ms against Fast DDS 37.52 / 37.76): it includes the wait behind the sample in flight, which a DDS
+  publisher spends blocked in `publish()` before it stamps the next sample. The subscriber's socket still drops 57-382
+  datagrams a run.
 - **Same host is not published.** In step A a 4 MB best-effort sample delivers ~0% same-host: its ~2,900 fragments do
   not fit the receiver's 512 x 1,472 B ring. Step B, a writer-owned same-host area, is to fix it.
 
+### Hybrid transport (large samples), rig
+
+Section 8 of DESIGN.md: a large sample goes as IP-fragmented runs of n units (up to 45) while the path is clean, MTU
+units on loss; n from the reader's measured loss. Array1m RELIABLE KL10 at 30 Hz, netem loss on the link, 5 reps of
+60 s per arm, arms interleaved: AUTO, AUTO again (the A/A floor), forced MTU (n = 1) and forced IP (n = 45, cap off).
+Measured as ab/hybrid-land d8980f9b on 4fbb8fe1, before the receive drain; landed rebased, not re-measured
+(`~/rig_results_safe/hybridLand_s2_loss_20261012-021743.{txt,hybrid.txt}`).
+
+| loss | AUTO wire B/unit vs MTU | AUTO p99 ms vs MTU | forced IP delivered | AUTO CPU sub / pub ms/MB |
+|---|---|---|---|---|
+| 0.01% | 1,475.8 vs 1,494.6 (WIN) | 9.54 vs 9.42 (LOSE) | 63.5% | 3.02 / 4.31 |
+| 0.1% | 1,484.3 vs 1,494.7 (WIN) | 9.45 vs 9.43 (LOSE) | 71.0% | 4.32 / 4.44 |
+| 1% | 1,502.0 vs 1,495.1 (LOSE) | 13.42 vs 10.16 (DRAW) | 100% | 4.93 / 4.58 |
+
+- AUTO delivered 100% at every loss rate; forced IP left RELIABLE samples undelivered at 0.01% and 0.1%, which is why
+  runs are only sent while the reader measures a clean path. At 1% AUTO's cap collapsed in 3 of 5 runs (to 2-9 units).
+- **UDP offload stays on by default (the user's decision).** Same binary, offload on against `TT_UDP_OFFLOAD=0`
+  (`~/rig_results_safe/hybrid_land/offload_decision.txt`): forced MTU at 1% loss, publisher -1.08 and subscriber
+  -0.68 ms/MB (BETTER beyond the A/A floor); AUTO at 1% -0.37 / -0.34, within the floor; nothing WORSE at 0% or 0.01%.
+  The pre-registered rule asked for a gain in both and printed DEFAULT-OFF. Not measured on f1f2f14d.
+- **Receive drain** (f1f2f14d against 4fbb8fe1, I4s): subscriber socket drops 57-382 a run against 649-1,755, complete
+  samples 1,715-1,717 against 1,514-1,644, subscriber CPU 1.70 against 4.00 ms/MB. The pre-registered "no socket drop
+  in 4 of 5 runs" failed: 0 of 5 (`hybridDrain_i4s_20261012-130948.drain.txt`).
+
 ### Where TickLE does not come first
 
-- **rmw large messages at 0% loss** (L4 above): CPU per MB behind Fast DDS as shipped and CycloneDDS in every cell,
-  median latency behind Fast DDS as shipped (0.15-0.19 ms at 1 MB, 1.2 ms at 4 MB), and the saturating 4 MB cell I4s
-  lost.
+- **rmw large messages at 0% loss** (L4 above, f1f2f14d, 5 reps): subscriber CPU per MB behind Fast DDS as shipped
+  by 13.7-15.6% in I1 and I4 and 18.2% at I4s (means), publisher CPU behind it at best effort by 2.0-8.4%. Against main
+  before the hybrid transport (4fbb8fe1), median latency is +0.14-0.15 ms at 1 MB and +0.36-0.44 ms at 4 MB, p99
+  +0.22-0.47 ms, and the subscriber's peak RSS +0.6 MB (+3.2 MB at I4s, the receive drain's buffers). I4s latency is
+  lost to both vendors (55.7 against 37.5 and 39.0 ms; see the I4s note for why).
+- **Hybrid transport under loss** (d8980f9b, before the receive drain, Array1m RELIABLE 30 Hz): AUTO's p99 is above
+  forced MTU's beyond the A/A floor at 0.01% (+0.12 ms) and 0.1% (+0.025 ms), and its wire bytes per unit 0.46% above
+  at 1%; the pre-registered criterion against forced MTU failed at all three rates.
 - **Poll-wait rows 59 and 62-67 are draws with CycloneDDS**, not wins. In row 67 CycloneDDS's median is lower (0.380
   against 0.391 ms), within the spread. At 100 and 200 us half a poll cycle of waiting, the same for every rmw,
   dominates, so the margin is small.
