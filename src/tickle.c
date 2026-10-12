@@ -24,6 +24,13 @@
 
 #define UNUSED(x) (void)(x)
 
+// Large samples' runs read in place (large_direct_aim()), on a HAL that can (hal_linux.h TT_HAL_RX_DIRECT).
+#if defined(TT_HAL_RX_DIRECT) && TT_HAL_RX_DIRECT
+#define LARGE_DIRECT 1
+#else
+#define LARGE_DIRECT 0
+#endif
+
 // A message's CDR payload (see "Interface serialization (TickLE CDR-4)" in DESIGN.md) is written
 // straight after the framing headers and must land at a 4-byte-aligned offset in tx_buffer /
 // rx_buffer so a generated codec can read/write aligned scalars without memcpy. Guard the two
@@ -13927,11 +13934,110 @@ static bool large_lent(const struct tt_Context* node, const uint8_t* buffer) {
     return false;
 }
 
+#if LARGE_DIRECT
+// ---- Receiving runs in place (DESIGN.md section 8, "Receiving runs in place") ------------------------------------
+//
+// A run of a large sample is one datagram of up to n units, its payload one stretch of the assembly. In order - every
+// sample at 0% loss - the datagram after a run is the next run of the same sample: its framing is the last one's with
+// seq_no and frag_index moved on by n and run_count n (or what is left before the last unit, which always goes alone),
+// and its payload belongs right after the last one's. So after each run that lands core hints that run to the HAL
+// (large_direct_aim()), which reads the next datagram with its payload straight into the assembly and says so
+// (direct_split; hal_linux.c direct_read()). large_place() then only marks the units: the copy from the receive
+// buffer is gone, and the kernel's one copy goes where the payload stays. Anything else read with a hint is put back
+// together by the HAL and goes on as before. Wire bytes are not touched; the receiver's own hint is all there is.
+//
+// Hints are made for runs from a native-endian writer (the framing is compared byte for byte), only over units not
+// landed yet, and not for 2, 4, ... 64 runs after consecutive aimed reads that missed (direct_skip) - so a stream the
+// guess does not fit, two writers interleaving say, pays a copy back now and then, not on every run.
+#define LARGE_DIRECT_SKIP_MAX_SHIFT 6U
+
+// Withdraws the hint, from any thread under the state lock. The byte count goes first and sequentially consistent,
+// as direct_busy is set by the HAL: either a read about to start sees no hint, or this sees the read (true) and the
+// buffer must not go back yet.
+static bool large_direct_withdraw(struct tt_Context* node) {
+    __atomic_store_n(&node->large.direct_bytes, 0U, __ATOMIC_SEQ_CST);
+    node->large.direct = NULL;
+    return __atomic_load_n(&node->large.direct_busy, __ATOMIC_SEQ_CST) != 0;
+}
+
+// The polling thread, under the state lock and outside any read: a buffer parked by large_assembly_free() goes back.
+static void large_direct_release_parked(struct tt_Context* node) {
+    uint8_t* parked = __atomic_load_n(&node->large.direct_parked, __ATOMIC_RELAXED);
+    if (parked != NULL) {
+        __atomic_store_n(&node->large.direct_parked, NULL, __ATOMIC_RELAXED);
+        if (!large_lent(node, parked)) {
+            large_give_back(node, parked);
+        }
+    }
+}
+
+// After a run (units index .. index + run_count - 1 of `count`) was handed to the assemblies: the hint for the next
+// read. `in_place`: this run was read in place.
+static void large_direct_aim(struct tt_Context* node, struct tt_Header* header, const struct tt_FragRunLHeader* run,
+                             uint32_t index, uint32_t count, uint32_t run_count, bool in_place) {
+    struct tt_LargeState* large = &node->large;
+    struct tt_LargeAssembly* assembly = large->placed;
+    large->placed = NULL;
+    if (in_place) {
+        large->direct_streak = 0;
+    } else if (large->direct_missed != large->direct_missed_seen) {
+        large->direct_missed_seen = large->direct_missed;
+        if (large->direct_streak < LARGE_DIRECT_SKIP_MAX_SHIFT) {
+            large->direct_streak++;
+        }
+        large->direct_skip = (uint8_t)(1U << large->direct_streak);
+    }
+    const uint32_t next = index + run_count;
+    uint32_t units = 0;
+    if (large->direct_skip != 0) {
+        large->direct_skip--;
+    } else if (assembly != NULL && large->direct_allowed && tt_is_native_endian(header)) {
+        // A run never holds the last unit (run_header_valid()), so next <= count - 1: 0 units when the last is next. An
+        // assembly the run completed was freed with every unit landed: 0 units too.
+        units = count - 1U - next < run_count ? count - 1U - next : run_count;
+        for (uint32_t k = 0; k < units; k++) {
+            if (large_has_landed(assembly, next + k)) {
+                units = 0;
+                break;
+            }
+        }
+    }
+    const uint32_t bytes = units * LARGE_CONT_PAYLOAD;
+    if (units == 0) {
+        (void)large_direct_withdraw(node); // the polling thread: never inside a read here
+        return;
+    }
+    struct tt_SingleHeader single = {native_single_marker(), tt_VERSION, header->source, tt_SUBMESSAGE_TYPE_FRAG_RUN_L};
+    struct tt_FragRunLHeader expected;
+    _tt_memcpy(&expected, run, sizeof(expected));
+    expected.data.seq_no = run->data.seq_no + run_count;
+    expected.frag_index = (uint16_t)next;
+    expected.run_count = (uint16_t)units;
+    _tt_memcpy(large->direct_framing, &single, sizeof(single));
+    _tt_memcpy(large->direct_framing + sizeof(single), &expected, sizeof(expected));
+    large->direct_framing_len = (uint8_t)(sizeof(single) + sizeof(expected));
+    large->direct_count_at = (uint8_t)(sizeof(single) + offsetof(struct tt_FragRunLHeader, run_count));
+    large->direct_unit = (uint16_t)LARGE_CONT_PAYLOAD;
+    large->direct_dest = assembly->buffer + tt_LARGE_CDR_OFFSET + large_offset(next);
+    large->direct = assembly;
+    __atomic_store_n(&large->direct_bytes, bytes, __ATOMIC_SEQ_CST);
+}
+#endif
+
 // Frees an assembly. Its buffer goes back to the caller unless a lent sample still holds it, whose release then does.
 static void large_assembly_free(struct tt_Context* node, struct tt_LargeAssembly* assembly) {
+#if LARGE_DIRECT
+    if (node->large.direct == assembly && large_direct_withdraw(node)) {
+        // The polling thread may be reading into it right now: it gives it back after (large_direct_release_parked()).
+        __atomic_store_n(&node->large.direct_parked, assembly->buffer, __ATOMIC_RELAXED);
+    } else if (!large_lent(node, assembly->buffer)) {
+        large_give_back(node, assembly->buffer);
+    }
+#else
     if (!large_lent(node, assembly->buffer)) {
         large_give_back(node, assembly->buffer);
     }
+#endif
     if (assembly->sub != NULL && assembly->sub->large_held > 0) {
         assembly->sub->large_held--;
     }
@@ -13955,6 +14061,9 @@ static void large_release_assemblies(struct tt_Context* node) {
             large_assembly_free(node, &node->large.assemblies[i]);
         }
     }
+#if LARGE_DIRECT
+    large_direct_release_parked(node); // no read runs at destruction
+#endif
 }
 
 // The assembly collecting (source, entity_id, sample seq_no) - for `sub`, or the best-effort one when sub is NULL.
@@ -16471,9 +16580,22 @@ static int large_place(struct tt_Context* node, struct tt_LargeAssembly* assembl
     if ((uint32_t)tt_LARGE_CDR_OFFSET + offset + fragment->length > assembly->capacity) {
         return -1;
     }
-    _tt_memcpy(assembly->buffer + tt_LARGE_CDR_OFFSET + offset, fragment->payload, fragment->length);
+    uint8_t* place = assembly->buffer + tt_LARGE_CDR_OFFSET + offset;
+    if (fragment->payload != place) { // read there already by the HAL (large_direct_aim()): nothing to copy
+        _tt_memcpy(place, fragment->payload, fragment->length);
+#if LARGE_DIRECT
+        if (assembly == node->large.direct) {
+            // A unit landed here another way - a repair, a drained datagram - may be in the hinted stretch, which the
+            // next aimed read writes whatever it turns out to be. No hint until the next run lands.
+            (void)large_direct_withdraw(node);
+        }
+#endif
+    }
     assembly->landed[index / LARGE_WORD_BITS] |= 1ULL << (index % LARGE_WORD_BITS);
     assembly->received++;
+#if LARGE_DIRECT
+    node->large.placed = assembly;
+#endif
     if (index == last) {
         assembly->last_length = fragment->length;
     }
@@ -16863,6 +16985,21 @@ static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* he
         return false;
     }
     const uint8_t* payload = buffer + head;
+#if LARGE_DIRECT
+    const bool in_place = node->large.direct_split != NULL;
+    if (in_place) {
+        payload = node->large.direct_split;
+        node->large.direct_split = NULL;
+        if (node->large.direct == NULL) {
+            // Read into an assembly freed since (large_assembly_free()): its buffer may be gone, so the run is too. A
+            // RELIABLE writer sends it again; a best-effort sample is lost, as it would be on the wire.
+            node->large.direct_cancelled++;
+            return true;
+        }
+        node->large.direct_runs++;
+    }
+    node->large.placed = NULL;
+#endif
 #if tt_HYBRID_TRANSPORT
     if (hybrid_rx_capable(node)) {
         hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count, true);
@@ -16886,6 +17023,9 @@ static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* he
         (void)deliver_large_fragment(node, &fragment);
         payload += fragment.length;
     }
+#if LARGE_DIRECT
+    large_direct_aim(node, header, run, index, count, run_count, in_place);
+#endif
     return true;
 #else
     UNUSED(buffer);
@@ -18870,12 +19010,16 @@ static tt_ret_t process_datagram_in(struct tt_Context* node, uint8_t* buffer, in
     // the port end a node with one UDP datagram: one v10 packet from a leftover process ended a v11 server on the
     // rig, twenty seconds into its run, and voided the measurement. An error return is for this node's own
     // failures - an encode that overflows, a socket that breaks - not for what a peer chose to send.
+#if LARGE_DIRECT
+    large_direct_release_parked(node); // the HAL's read is over: a buffer parked during it goes back
+#endif
     if (!process_packet(node, buffer, 0, len, ip, port, transport)) {
         TT_LOG_ERROR("Cannot process packet");
         node->rx_malformed_drops++;
-        return tt_RET_OK;
     }
-
+#if LARGE_DIRECT
+    node->large.direct_split = NULL; // a run read in place that nothing took (a datagram refused before its run)
+#endif
     return tt_RET_OK;
 }
 
@@ -19206,6 +19350,13 @@ tt_ret_t tt_Context_poll(struct tt_Context* node, int64_t timeout) {
     // once, and a drain started and stopped on every such return cost ~50,000 starts a second on the PC.
     if (node->large.reassembled != reassembled) {
         large_rx_drain(node);
+    }
+#endif
+#if LARGE_DIRECT
+    if (__atomic_load_n(&node->large.direct_parked, __ATOMIC_RELAXED) != NULL) {
+        state_lock(node);
+        large_direct_release_parked(node);
+        state_unlock(node);
     }
 #endif
     node->rx_clock_ns = 0; // outside a poll a receive reads the clock itself

@@ -457,6 +457,39 @@ struct tt_LargeState {
     // The last tt_Context_poll() had timeout 0: a poll that never waits never sees the socket's room, so a send waiting
     // for it keeps the timer's own schedule (large_wait_for_room()). Written by the poller, read by a publisher.
     bool polls_without_waiting;
+    // Receiving a run in place (DESIGN.md section 8, "Receiving runs in place"; tickle.c large_direct_aim()), on a HAL
+    // that can (hal_linux.h TT_HAL_RX_DIRECT). Core's hint, set by the polling thread under the state lock after a run
+    // lands: the run it expects next, its framing exactly as it will arrive (direct_framing, direct_framing_len bytes),
+    // and direct_bytes of payload whose place is direct_dest in the assembly `direct`; direct_bytes 0 is no hint. The
+    // HAL reads the next datagram with the payload there and sets direct_split to direct_dest when it was that run - or
+    // a shorter run of the same sample from the same place: the framing may differ in the 16-bit unit count at
+    // direct_count_at only, which then says the payload's length, count x direct_unit, at most direct_bytes.
+    // Another thread that frees the hinted assembly sets direct_bytes to 0 and, while the polling thread is inside such
+    // a read (direct_busy), leaves the buffer in direct_parked for the polling thread to give back.
+    // direct_allowed: set by the HAL at bind, unless TT_RX_DIRECT=0 (the A/B control). direct_streak/direct_skip: the
+    // back-off after aimed reads that were something else (direct_missed_seen: direct_missed at the last aim).
+    // Counters, on the rx line: direct_reads, reads aimed; direct_runs, runs taken in place; direct_missed, aimed reads
+    // that were something else (put back together in the receive buffer); direct_cancelled, runs read in place whose
+    // assembly was freed before core took them (dropped: a RELIABLE writer sends them again).
+    uint8_t* direct_dest;
+    const uint8_t* direct_split;
+    uint8_t* direct_parked;
+    const struct tt_LargeAssembly* direct;
+    uint32_t direct_bytes;
+    uint32_t direct_busy;
+    uint8_t direct_framing[32]; // NOLINT(readability-magic-numbers) - the longest run framing (28), rounded up
+    uint8_t direct_framing_len;
+    uint8_t direct_count_at;
+    uint16_t direct_unit;
+    bool direct_allowed;
+    uint8_t direct_streak;
+    uint8_t direct_skip;
+    struct tt_LargeAssembly* placed; // the assembly the last unit landed in (large_place()), for the next aim
+    uint64_t direct_missed_seen;
+    uint64_t direct_reads;
+    uint64_t direct_runs;
+    uint64_t direct_missed;
+    uint64_t direct_cancelled;
 };
 #endif
 

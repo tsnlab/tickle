@@ -473,6 +473,21 @@ else
     status=1
 fi
 
+# A run read in place by the real HAL (rx_direct_check.c): the hinted run in place, everything else read whole.
+make rx_direct_check
+# shellcheck disable=SC2024
+if sudo ip netns exec "$NS1" ./rx_direct_check </dev/null >rx_direct_check.log 2>&1 &&
+    grep -q '^rx_direct_check: PASS - all$' rx_direct_check.log; then
+    SUMMARY="$SUMMARY
+rx direct: PASS"
+else
+    echo "rx direct: FAIL"
+    grep '^rx_direct_check:' rx_direct_check.log
+    SUMMARY="$SUMMARY
+rx direct: FAIL"
+    status=1
+fi
+
 # UDP offload (udp_offload_check.sh): the same datagrams on the wire and in core with it on as off. Its own namespaces.
 make udp_offload_check udp_offload_check_flap
 if ./udp_offload_check.sh; then
