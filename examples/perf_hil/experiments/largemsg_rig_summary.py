@@ -30,7 +30,16 @@ WHAT A RUN GIVES (perf_test's per-second rows):
               to the run: END_ALLOW = 2 samples of it are allowed (every arm in A4's s2/s3 left 0 or 1; tickle's
               counters there: 902 published, 901 reassembled at most one short). lost = max(id_gaps, unaccounted -
               END_ALLOW, 0), end_gap = unaccounted - lost, delivered_pct = received / (received + lost). A run is
-              INCOMPLETE when lost > 0 or it received nothing. The balance sees a hole perf_test's lost column hides
+              INCOMPLETE when lost > 0 or it received nothing.
+              offered = the samples the publisher was offered: pub_rate x its measured window (the last publisher
+              row's T_experiment), rounded down - the same for every framework, whether or not its publish() kept up.
+              offered_pct = received / offered. Added 2026-10-12 (the user's decision) for the saturating cell, I4s:
+              there a DDS publish() of 4 MB blocks until the sample is in the socket, so its loop runs late and
+              publishes only the samples the link can carry (Fast DDS 1,698-1,699 and CycloneDDS 1,702-1,703 of
+              1,800 offered in 60 s), and its delivered_pct (per published) reads ~100% for samples it never sent;
+              rmw_tickle's publish() does not block, publishes all 1,802 and drops the ones the link cannot carry at
+              the sender (KEEP_LAST: the newest replaces one waiting). Per published, the denominators differ;
+              per offered tick they are the same. The balance sees a hole perf_test's lost column hides
               (selftest case 2), but not one of END_ALLOW + 1 samples or fewer: perf_test's output cannot tell that
               from the wire at exit plus the prematch's one-sample width.
   latency     perf_test stamps with the publisher's system_clock and takes the latency on the subscriber's. Two
@@ -64,7 +73,9 @@ L4 READING (per cell; the cell is named from topic, rate, loss, QoS and SAMEHOST
   - A vendor arm with no usable rep that delivered anything: "does not run", with its numbers; not scored.
   - Incomplete delivery (INCOMPLETE in any usable rep) in every cell except I4s: rmw_tickle LOSES the cell (the user's
     rule); a vendor arm is listed as incomplete and not scored on the other metrics. I4s is a saturation cell where
-    nobody is expected to deliver everything: no one is excluded there.
+    nobody is expected to deliver everything: no one is excluded there, and its delivery is scored per offered tick
+    (offered_pct, "delivered % of offered"), with delivered % per published printed beside it, not scored. In every
+    other cell it is the other way round: per published is scored, per offered printed.
   - Each metric, rmw_tickle (tickle@head) against every scored vendor arm (fastdds, fastdds@mms1472, cyclonedds):
     WIN when every rmw_tickle rep is better than every rep of every scored arm, LOSE when every rep of some scored arm
     is better than every rmw_tickle rep, DRAW otherwise (docs/TESTING.md section 4's range rule). Latency metrics use
@@ -219,7 +230,12 @@ def run_record(runs, stem, fields, samehost, rate, wire=True):
     unaccounted = sent - prematch_hi - recv
     lost = max(id_gaps, unaccounted - END_ALLOW, 0)
     end_gap = unaccounted - lost
+    # The ticks the publisher was offered in its measured window: the same rate and window for every framework, so the
+    # same denominator whether its publish() blocked or not (module docstring, offered).
+    window = pub[-1]["T_experiment"] if pub else 0.0
+    offered = int(rate * window) if rate > 0 else 0
     rec.update(recv=recv, sent=sent, lost=lost, prematch=prematch, end_gap=end_gap, id_gaps=id_gaps,
+               offered=offered, window=window, offered_pct=(100.0 * recv / offered if offered > 0 else float("nan")),
                delivered_pct=(100.0 * recv / (recv + lost) if recv + lost > 0 else 0.0),
                incomplete=lost > 0 or recv == 0,
                refused="failed to publish" in ptext,
@@ -332,6 +348,7 @@ def print_runs(recs):
             continue
         print(f"{r['topic']:8} l{r['loss']:<2} {r['arm']:16} r{r['rep']} sent {r['sent']:5} recv {r['recv']:5} "
               f"lost {r['lost']:4} end {r['end_gap']:3} ({fmt(r['delivered_pct'], 6, 2)}%) "
+              f"offered {r['offered']:5} ({fmt(r['offered_pct'], 6, 2)}%) "
               f"{fmt(r['rate_hz'], 5, 1)} Hz  "
               f"lat med {fmt(r['lat_med'])} p99>= {fmt(r['p99_lb'])} max {fmt(r['lat_max'])}  "
               f"excess p99>= {fmt(r['ex_p99_lb'])} mean {fmt(r['ex_mean'])}  cpu sub {fmt(r['cpu_sub'], 6)} "
@@ -340,7 +357,8 @@ def print_runs(recs):
               f"{('  ' + r['witness']) if r['witness'] else ''}")
 
 
-METRICS = (("delivered_pct", "delivered %", "higher", False), ("rate_hz", "rate Hz", "higher", False),
+METRICS = (("delivered_pct", "delivered % of published", "higher", False),
+           ("offered_pct", "delivered % of offered", "higher", False), ("rate_hz", "rate Hz", "higher", False),
            ("lat_med", "latency median ms", "lower", True), ("p99_lb", "latency p99 (lower bound) ms", "lower", True),
            ("cpu_sub", "sub CPU ms/MB", "lower", False), ("cpu_pub", "pub CPU ms/MB", "lower", False),
            ("rss_sub", "sub peak RSS kB", "lower", False), ("rss_pub", "pub peak RSS kB", "lower", False))
@@ -398,7 +416,13 @@ def l4(recs, meta, samehost):
             vals = {a: finite(r[key] for r in v if (not needs_clock or not math.isnan(r[key]))) for a, v in
                     usable.items()}
             cols = " ".join(f"{fmt(med(vals[a]), 10, 2)} [{len(vals[a])}]{'':>7}" for a in sorted(usable))
-            if SUBJECT not in usable or not usable[SUBJECT]:
+            # One delivery denominator is scored per cell: per offered tick in the saturating cell, per published
+            # elsewhere (module docstring, L4 READING); the other is printed beside it.
+            unscored = "offered_pct" if name != "I4s" else "delivered_pct"
+            if key == unscored:
+                verdict = ("printed, not scored (saturating cell: scored per offered tick)" if name == "I4s" else
+                           "printed, not scored")
+            elif SUBJECT not in usable or not usable[SUBJECT]:
                 verdict = "NO rmw_tickle run"
             elif t_status == "does not run":
                 verdict = "LOSE (rmw_tickle delivered nothing)"
@@ -600,6 +624,42 @@ def selftest():
         check("tickle r1, r2 incomplete with lost > 100",
               all(recs[("tickle@head", k)]["incomplete"] and recs[("tickle@head", k)]["lost"] > 100 for k in (1, 2)))
         check("the cell scores LOSE", "LOSE (rmw_tickle delivered incompletely)" in out)
+    # 5. I4s on the receive-drain build (hybridDrain_i4s_20261012-130948, reps 1-2 of three arms): the DDS publishers
+    #    published fewer than the 1,800 ticks offered, so per published they read 100% and rmw_tickle LOSES; per offered
+    #    tick - the same 1,800 for every arm - rmw_tickle delivers the most and the cell scores on that.
+    print("case 5: I4s per offered tick (hybridDrain_i4s, 2026-10-12)")
+    recs, out = read(fx / "i4s_drain.runs")
+    for key in sorted(recs):
+        r = recs[key]
+        check(f"{key[0]} r{key[1]}: offered {r['offered']} (window {r['window']:.2f} s at 30 Hz)", r["offered"] == 1800)
+    t = [recs[("tickle@head", k)] for k in (1, 2)]
+    f = [recs[("fastdds", k)] for k in (1, 2)]
+    c = [recs[("cyclonedds", k)] for k in (1, 2)]
+    check("control: the DDS publishers published fewer than offered, rmw_tickle more",
+          all(r["sent"] < 1710 for r in f + c) and all(r["sent"] >= 1800 for r in t))
+    check(f"rmw_tickle recv {[r['recv'] for r in t]}, offered_pct {[round(r['offered_pct'], 2) for r in t]}",
+          [r["recv"] for r in t] == [1717, 1717] and all(abs(r["offered_pct"] - 95.39) < 0.01 for r in t))
+    check(f"Fast DDS offered_pct {[round(r['offered_pct'], 2) for r in f]}, CycloneDDS "
+          f"{[round(r['offered_pct'], 2) for r in c]}: below rmw_tickle's",
+          max(r["offered_pct"] for r in f + c) < min(r["offered_pct"] for r in t))
+    check("per published still printed: rmw_tickle below 100, the DDS arms at 100",
+          all(r["delivered_pct"] < 96 for r in t) and all(r["delivered_pct"] == 100.0 for r in f + c))
+    check("delivered % of offered scores WIN",
+          re.search(r"^  delivered % of offered .*WIN$", out, re.M) is not None)
+    check("delivered % of published printed, not scored",
+          re.search(r"^  delivered % of published .*printed, not scored \(saturating cell", out, re.M) is not None)
+    # 6. The same runs read as a 15 Hz cell (I4, not saturating): per published is scored again, per offered printed.
+    print("case 6: the same runs relabelled 15 Hz - per published scored, per offered printed")
+    with tempfile.TemporaryDirectory() as tmp:
+        tdir = Path(tmp) / "i4s_drain.runs"
+        shutil.copytree(fx / "i4s_drain.runs", tdir)
+        (tdir / "meta.txt").write_text((tdir / "meta.txt").read_text().replace("pub_rate=30", "pub_rate=15"))
+        recs, out = read(tdir)
+        check("per offered printed, not scored",
+              re.search(r"^  delivered % of offered .*printed, not scored$", out, re.M) is not None)
+        check("rmw_tickle's incomplete delivery LOSES the cell",
+              re.search(r"^  delivered % of published .*LOSE \(rmw_tickle delivered incompletely\)$", out, re.M)
+              is not None)
     print(f"selftest: {'PASS' if not fails else 'FAIL (' + str(len(fails)) + ')'}")
     return 1 if fails else 0
 
