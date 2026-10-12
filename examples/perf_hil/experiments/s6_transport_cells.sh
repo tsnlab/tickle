@@ -154,7 +154,7 @@ BUILD_FLAGS=${BUILD_FLAGS:-}
 # TICKLE_EXTRA_CFLAGS (2026-10-11): tickle/build.sh's knob for the tickle cell's core and bench, both arms (a placement
 # control). Forwarded by name, not folded into BUILD_FLAGS, so s6_witness_check.sh can say it and check it reached the
 # build; the vendor cells are not compiled by us and ignore it. Gate v2 A1 (2026-10-11, gate_v2_lib.sh): UNSET means
-# the layout-stable build TICKLE_LAYOUT_CFLAGS (-falign-functions=64), the build the rig A/Bs and publishes from; set
+# the layout-stable build TICKLE_LAYOUT_CFLAGS (-falign-functions=64 + NOPAD), the build the rig A/Bs and publishes from; set
 # and empty is the plain build. Forwarded set, so s6_witness_check.sh keeps this choice.
 # shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
 # shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above

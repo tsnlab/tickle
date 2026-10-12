@@ -289,17 +289,28 @@ three times on the Pi 5 with equal executed instructions (x86 perf, exact aarch6
 gap vanished with `-falign-functions=64` on both arms. Definitions: `gate_v2_lib.sh`; the reading: `gate_v2.py`.
 
 - **A1, layout-stable builds.** Every TickLE build the rig A/Bs or publishes from is built with
-  `-falign-functions=64` (the default when `TICKLE_EXTRA_CFLAGS` is unset; set and empty is the plain build). Each
-  build is traced and its log read back (`build_flags_check.sh`); a build that does not show its flags is not measured.
-  - Why this flag alone: on aarch64 it fixes every in-function offset modulo 64, so no function's code changes when
-    code ahead of it moves; `-falign-loops` fixes nothing more and adds executed nops; jump alignment is already the
-    instruction size (`layout_flags_cost.sh`).
+  `-falign-functions=64 -falign-loops=1 -falign-jumps=1 -falign-labels=1` (`TICKLE_LAYOUT_CFLAGS`, the default when
+  `TICKLE_EXTRA_CFLAGS` is unset; set and empty is the plain build). Each build is traced and its log read back
+  (`build_flags_check.sh`); a build that does not show every one of its flags is not measured.
+  - Function alignment: on aarch64 it fixes every in-function offset modulo 64, so no function's code changes when
+    code ahead of it moves (`layout_flags_cost.sh`).
+  - No padding inside a function (gate v3, 2026-10-12). Padding before a function entry is never executed; a nop at a
+    loop head is, on every iteration. The Pis' gcc 13 aligns loops to 8, so a change that moves a loop head by 4
+    bytes changed the instruction count by a nop per iteration. Under qemu (`aarch64_insn/layout_qemu.sh`, cells c2
+    c3 c11 and same-host p2-p4) the bench executes no nop with these flags in any run, where the old flags executed
+    3-10 a sample; the positive control (function alignment 4 vs 8, loop alignment 8) moves that by 1-2.
+  - Placement alone (64, 128, 256) never moved the count, with either flag set: every function body is the same
+    instructions, and the executed nops were equal. So X2r's WORSE (2026-10-11) was not padding: it was the CPU
+    witness (client `cpu_s_per_Msample` +1.65% at c2, +1.15% at c3), and the client's -2 instructions a sample at c2
+    is timing (a slower client finds more work per wake). These flags cannot change that; cycles are not counted,
+    CPU time is a witness and still decides net of P's floor.
   - Not the product default: it adds 4.6% to the core's .text and 6.7% to the client on aarch64, and the rule was
     "only if it costs nothing measurable". Published figures carry `TICKLE_EXTRA_CFLAGS` in their provenance.
 - **A2, instructions decide.** Every process runs under `perf stat -e instructions:u,instructions:k`. The primary
   metric is instructions per sample (per round trip on latency cells), user and kernel, client and server. CPU, rate
   and latency are witnesses: they still decide, net of the floor below. A row without counts is VOID.
-- **A3, the placement floor.** Arm P is A's commit rebuilt with `-falign-functions=128`: the same instructions, every
+- **A3, the placement floor.** Arm P is A's commit rebuilt with `-falign-functions=128` (and the same no-padding
+  flags): the same instructions, every
   function moved by a multiple of 64 bytes, as a change moves the code it does not touch. Blocks run A P B B P A.
   A WORSE must exceed the Bonferroni Student-t threshold (Welch df) and `|P - A|` of the same metric and cell.
   No counts, no P arm, or a named metric that was not measured gives NO VERDICT.
@@ -310,8 +321,9 @@ gap vanished with `-falign-functions=64` on both arms. Definitions: `gate_v2_lib
     builds checked by `rmw_build_flags_check.py`, read by `rmw_gate_v2.py`.
   - On the PC, `rig_dryrun.sh` runs any of them end to end against two stand-in Pis in private namespaces. ssh and scp
     are stood in, and a real remote client started by the command fails the dry run (`rig_dryrun_test.sh`).
-  - Validating the gate itself: give B an alignment different from P's. A B with P's flags reads WORSE about half
-    the time, because the floor is a single draw of placement.
+  - Validating the gate itself: give B an alignment different from P's, with the same no-padding flags
+    (A vs A at `-falign-functions=256` and `TICKLE_NOPAD_CFLAGS`). A B with P's flags reads
+    WORSE about half the time, because the floor is a single draw of placement.
 
 ## 7. Measurement checklist
 

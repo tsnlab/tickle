@@ -22,9 +22,9 @@
 # once, for all blocks (a per-cell lock lets a queued campaign cut in between cells).
 #
 # GATE V2 (the default since 2026-10-11; the reading is ab_samehost.py's header and gate_v2.py's): a fourth arm P = A's
-# commit rebuilt with P_EXTRA_CFLAGS (default TICKLE_PLACEMENT_CFLAGS, -falign-functions=128, gate_v2_lib.sh), blocks
+# commit rebuilt with P_EXTRA_CFLAGS (default TICKLE_PLACEMENT_CFLAGS, -falign-functions=128 + NOPAD, gate_v2_lib.sh), blocks
 # A P B B P A (A P B C C B P A); per-arm flags - A and the sentinel TICKLE_EXTRA_CFLAGS (default, when UNSET, the
-# layout-stable TICKLE_LAYOUT_CFLAGS, -falign-functions=64; set and empty: the plain build), B and C B_EXTRA_CFLAGS /
+# layout-stable TICKLE_LAYOUT_CFLAGS, -falign-functions=64 + NOPAD; set and empty: the plain build), B and C B_EXTRA_CFLAGS /
 # C_EXTRA_CFLAGS (default A's: the gate's own validation sets B = A's commit under another alignment), P P_EXTRA_CFLAGS;
 # REFUSED when P's flags equal A's. Every TickLE process is counted (INSN_COUNT=1, s6_witness_check.sh), and a cell
 # whose RESULT lines carry no insn=ok at all stops the run VOID (the counter is broken, not the change). PRIMARY is

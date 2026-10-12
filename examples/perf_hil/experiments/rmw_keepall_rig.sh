@@ -88,7 +88,7 @@
 #   4 cells x 3 reps = 36 runs at ~32 s (measured 2026-10-06) = ~19 min: estimate 30 min, analyse an overrun at 45.
 #
 # GATE V2 (the user's decision of 2026-10-11; gate_v2_lib.sh, gate_v2.py, TESTING.md 6.1):
-#   A1  every build here is layout-stable: TICKLE_EXTRA_CFLAGS (default TICKLE_LAYOUT_CFLAGS, -falign-functions=64, when
+#   A1  every build here is layout-stable: TICKLE_EXTRA_CFLAGS (default TICKLE_LAYOUT_CFLAGS, -falign-functions=64 + NOPAD, when
 #       unset; set and empty = the plain build) is appended to CMAKE_C_FLAGS and CMAKE_CXX_FLAGS of both stages and of
 #       every variant - rmw_tickle with the TickLE core it compiles in (tickle.c, encoding.c, log.c, hal_linux.c), the two
 #       TickLE typesupports, and builtin_interfaces, rcl_interfaces and performance_test, whose TickLE typesupport
