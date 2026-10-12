@@ -28,7 +28,7 @@
 #
 # GATE V2 (the user's decision of 2026-10-11; gate_v2_lib.sh, gate_v2.py, TESTING.md 6.1):
 #   A1  every TickLE unit this script builds is layout-stable: TICKLE_EXTRA_CFLAGS (default TICKLE_LAYOUT_CFLAGS,
-#       -falign-functions=64, when unset; set and empty = the plain build) is appended to CMAKE_C_FLAGS and
+#       -falign-functions=64 + NOPAD, when unset; set and empty = the plain build) is appended to CMAKE_C_FLAGS and
 #       CMAKE_CXX_FLAGS of all three colcon stages - rmw_tickle with the TickLE core it compiles into its .so (tickle.c,
 #       encoding.c, log.c, hal_linux.c) and the two TickLE typesupports; builtin_interfaces and rcl_interfaces, whose
 #       TickLE typesupport libraries compile encoding.c and log.c in; rmw_perf_pingpong, whose own messages do the same.

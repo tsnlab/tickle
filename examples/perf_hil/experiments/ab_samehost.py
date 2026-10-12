@@ -83,9 +83,9 @@ HOW EACH COMPARISON IS READ (implemented in summary(), not only here):
 GATE V2 (the default since 2026-10-11, the user's decision; gate_v2.py's header is the shared reading, TESTING.md 6.1).
 Written before any gate v2 same-host run; every rule here is implemented below, not only stated.
   ARMS        A, B [, C] and P = A' - A's commit rebuilt with P_EXTRA_CFLAGS (default TICKLE_PLACEMENT_CFLAGS,
-              -falign-functions=128, gate_v2_lib.sh): every function moved by a multiple of 64 bytes, the same code.
+              -falign-functions=128 + NOPAD, gate_v2_lib.sh): every function moved by a multiple of 64 bytes, the same code.
               Each arm has its own build flags, recorded in the pre-registration: A (and the sentinel)
-              TICKLE_EXTRA_CFLAGS (default TICKLE_LAYOUT_CFLAGS, -falign-functions=64, A1), B and C
+              TICKLE_EXTRA_CFLAGS (default TICKLE_LAYOUT_CFLAGS, -falign-functions=64 + NOPAD, A1), B and C
               B_/C_EXTRA_CFLAGS (default A's), P P_EXTRA_CFLAGS. REFUSED: P's flags equal to A's (P would not perturb anything), and two of A/B/C with the
               same commit AND the same flags. B may be A's commit with other flags: a placement-only "change", the
               gate's own validation. Blocks mirrored A P B B P A (A P B C C B P A). Files carry the arm letter:

@@ -25,13 +25,13 @@
 # its own log line (TICKLE_EXTRA_CFLAGS=...), which is the record an arm's treatment is checked against.
 #
 # GATE V2 A1 (2026-10-11): both arms are built layout-stable - TICKLE_EXTRA_CFLAGS defaults to TICKLE_LAYOUT_CFLAGS
-# (gate_v2_lib.sh, -falign-functions=64) when unset, and is exported to every block. A block counts only if its log
+# (gate_v2_lib.sh, -falign-functions=64 + NOPAD) when unset, and is exported to every block. A block counts only if its log
 # echoes that value AND carries a "build flags verified" line for every TickLE build (campaign_sweep.sh reads each
 # build's own traced log with build_flags_check.sh); otherwise the chain stops VOID.
 #
 # GATE V2 A2/A3 (2026-10-11; the reading is gate_v2.py's header, applied by ab_compare.py campaign --placement):
 #   - three arms in mirrored blocks A P B B P A: P (A') is A's commit built with P_EXTRA_CFLAGS (default
-#     TICKLE_PLACEMENT_CFLAGS, -falign-functions=128) - every function moved by a multiple of 64 bytes, nothing else -
+#     TICKLE_PLACEMENT_CFLAGS, -falign-functions=128 + NOPAD) - every function moved by a multiple of 64 bytes, nothing else -
 #     and |P - A| is each metric's placement floor; B is built with B_EXTRA_CFLAGS (default: A's flags), which only the
 #     gate's own validation sets (B = A's commit under another alignment: a placement-only "change");
 #   - every TickLE process is counted (campaign_sweep.sh INSN_COUNT=1): PRIMARY defaults to executed instructions per

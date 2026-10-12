@@ -5,8 +5,8 @@
 #
 # ARMS AND BLOCKS. Three arms in mirrored blocks A P B B P A, each block one invocation of the harness at one SHA and one
 # flag set, both Pis rebuilt per block:
-#   A  the parent, built with TICKLE_EXTRA_CFLAGS (default TICKLE_LAYOUT_CFLAGS, -falign-functions=64: layout-stable);
-#   P  A' - A's commit built with P_EXTRA_CFLAGS (default TICKLE_PLACEMENT_CFLAGS, -falign-functions=128): every function
+#   A  the parent, built with TICKLE_EXTRA_CFLAGS (default TICKLE_LAYOUT_CFLAGS, -falign-functions=64 + NOPAD: layout-stable);
+#   P  A' - A's commit built with P_EXTRA_CFLAGS (default TICKLE_PLACEMENT_CFLAGS, -falign-functions=128 + NOPAD): every function
 #      moved by a multiple of 64 bytes and nothing else, so |P - A| is each metric's placement floor;
 #   B  the change, built with B_EXTRA_CFLAGS (default A's flags; only the gate's own validation sets it otherwise).
 # HARNESS=rtt      rmw_crosshost_rtt.sh with RMW_LIST=rmw_tickle and INSN_COUNT=1 (ping/pong round trips; MSGS, WAITS,

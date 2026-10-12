@@ -7,11 +7,19 @@
 #     so a function's code sits at the same offset in the Cortex-A76's 64-byte i-cache lines (and in the smaller
 #     fetch blocks inside them) whatever precedes it, and so does every loop head and branch target inside it
 #     (layout_flags_cost.sh Q2: 0 functions change with a perturbation ahead of them, against 2 under the default
-#     32:16). -falign-loops is not added: it fixes nothing more (Q2) and adds executed nops (133 -> 1,242 in-body nops),
-#     which would put layout into the instruction count gate v2 decides on; -falign-jumps on aarch64 is 4, the
-#     instruction size, already a no-op. Not the product default: it costs core .text +4.6% and the client +6.7% on
-#     aarch64 (Q3), and the rule was "only if it costs nothing measurable". It is the harness default; an explicit
-#     TICKLE_EXTRA_CFLAGS (even empty, for the plain build) overrides it.
+#     32:16). Not the product default: it costs core .text +4.6% and the client +6.7% on aarch64 (Q3), and the rule
+#     was "only if it costs nothing measurable". It is the harness default; an explicit TICKLE_EXTRA_CFLAGS (even
+#     empty, for the plain build) overrides it.
+# A1' TICKLE_NOPAD_CFLAGS (gate v3, 2026-10-12): no padding INSIDE a function. Padding before a function entry is
+#     never executed; padding at a loop head, jump target or label is, on every pass. The Pis' gcc 13 aligns loops to
+#     8 by default (gcc 15: 32:16), so a change that moves a loop head by 4 bytes adds or removes an executed nop per
+#     iteration - an instruction count that moved with layout, not with what the code computes. -falign-loops=1
+#     removes every in-body nop of the core (tickle.c 75 -> 0, hal_linux.c 7 -> 0, encoding.c 1 -> 0 under gcc 15
+#     with the Pis' defaults); -falign-jumps=1 and -falign-labels=1 are no-ops on aarch64 today and keep it so under
+#     another tuning. Placement alone (64/128/256) already left every function body identical, the nops included
+#     (aarch64_insn/layout_qemu.sh, executed under qemu: 0 nops a sample with these flags, 3-10 without, equal at
+#     64/128/256 either way). Added to the layout and the placement flags.
+TICKLE_NOPAD_CFLAGS="-falign-loops=1 -falign-jumps=1 -falign-labels=1"
 # A2  insn_prefix / insn_fields: executed instructions per process, counted by perf stat as the parent of the bench
 #     (perf 6.8 on the Pis, paranoid 1: instructions:u and instructions:k of one's own processes work; tracepoints do
 #     not). Appended to the process's RESULT line as insn_u=<n> insn_k=<n> insn=ok, or insn=fail:<why>; the readers
@@ -21,9 +29,9 @@
 #     nothing else changed (layout_flags_cost.sh: F128 vs F64 - the same instruction sequences, 0 in-function changes
 #     under perturbation). It perturbs exactly what A1 cannot fix and what a real change moves under A1: the address bits
 #     above 6 (i-cache set, i-TLB page, branch predictor index). |P - A| is each metric's placement floor (gate_v2.py).
-TICKLE_LAYOUT_CFLAGS="-falign-functions=64"
+TICKLE_LAYOUT_CFLAGS="-falign-functions=64 $TICKLE_NOPAD_CFLAGS"
 # shellcheck disable=SC2034 # read by the scripts that source this file
-TICKLE_PLACEMENT_CFLAGS="-falign-functions=128"
+TICKLE_PLACEMENT_CFLAGS="-falign-functions=128 $TICKLE_NOPAD_CFLAGS"
 INSN_EVENTS="instructions:u,instructions:k"
 
 # layout_cflags_default: sets TICKLE_EXTRA_CFLAGS to TICKLE_LAYOUT_CFLAGS when it is UNSET; a set value (also empty)
