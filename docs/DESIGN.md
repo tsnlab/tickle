@@ -894,7 +894,15 @@ told from a squeeze by whether that writer's runs got through within `tau`.
   `2 tau` = 60 s and held, then 5; with the rate halved at 55 s the ceiling went 6 -> 12 (R p fell 2.0x). A filter
   dropping every IP fragment was judged after 4 samples, 356 of 360 delivered as MTU units. 0%: best effort doubled
   2 -> 45 in 5 s, RELIABLE reached 45 in 6 s. The whole suite, 19 cells: 18 PASS; REL_4MB_IP_5 (forced IP, cap off -
-  not the law) lost sample 0 once (179 of 180) and passed in two reruns.
+  not the law) lost sample 0 once (179 of 180) and passed in two reruns. *Cause (2026-10-12, REL_1MB_IP_5 lost sample
+  0 in 2 runs of 10 the same way): a product race, not the harness.* A large sample's match Heartbeat
+  (`first_owed_seq_no`) goes alone ahead of it, and only it or the datagram holding unit 0 can be a reader's first
+  contact (a continuation names no endpoint). At 5% frame loss the match Heartbeat is lost 5% of the time and a run of
+  45 units 90%; with both lost, the end-of-sample HEARTBEAT (last = 723) became the first contact, a VOLATILE reader's
+  baseline went to 724, and its ack released sample 0 at the writer. The end-of-sample HEARTBEAT, and each of its
+  chase's resends, now carries the match Heartbeat ahead of it in the same datagram while a reader is owed one
+  (`tests/test_hybrid_send.c`, the match point under loss: arms that lose the match Heartbeat, unit 0, both, and both
+  with the end-of-sample HEARTBEAT, in runs and in MTU units).
 - *What it does not settle.* The transient ceiling reads low (2 where the PC's steady state says 4 to 6) and the
   probes climb back at `2 tau` steps; RELIABLE at the pre-registered losses chooses `n*` (13, 4, 1) at or below the
   PC's collapse points, so the law guards best effort and forced arms more than it moves RELIABLE AUTO. Per-writer

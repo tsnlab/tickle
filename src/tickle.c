@@ -3549,6 +3549,25 @@ static bool take_match_heartbeat(struct tt_Publisher* pub, uint32_t* owed) {
     return any;
 }
 
+#if tt_LARGE_SAMPLES
+// take_match_heartbeat()'s lowest owed match point, without counting anything down: what a large sample's
+// end-of-sample HEARTBEAT carries ahead of itself (large_send_end_heartbeat()). False when no Subscriber is owed one.
+static bool match_point_owed(const struct tt_Publisher* pub, uint32_t* owed) {
+    bool any = false;
+    for (int i = 0; pub->match_heartbeat_pending && i < tt_MAX_ACK_ENTRIES; i++) {
+        const struct tt_PeerAck* ack = &pub->peer_acks[i];
+        if (ack->context_id == tt_CONTEXT_ID_INVALID || ack->match_heartbeats_left == 0) {
+            continue;
+        }
+        if (!any || seq_delta(ack->first_owed_seq_no, *owed) < 0) {
+            *owed = ack->first_owed_seq_no;
+            any = true;
+        }
+    }
+    return any;
+}
+#endif
+
 // forget_peer()'s own Publisher-specific counterpart - a separate function rather than teaching
 // forget_peer() itself about peer_acks[], since that table only exists on struct tt_Publisher
 // (tt_Client's own identically-shaped peers[] has no ack-aggregation concept to reset).
@@ -8279,6 +8298,14 @@ static bool large_unacknowledged(const struct tt_Publisher* pub) {
 
 // A non-FINAL HEARTBEAT over everything retained, to the matched peers while there are few enough (else broadcast):
 // every reader answers with an ACKNACK, naming what it lacks.
+//
+// While a Subscriber is still owed its match point (tt_PeerAck.first_owed_seq_no), the match Heartbeat goes first in
+// the same datagram. A large sample's match Heartbeat goes alone ahead of it, and with that and the datagram holding
+// unit 0 both lost, the reader's first contact was this HEARTBEAT, which gave a VOLATILE reader a baseline past the
+// whole sample: it never asked for it, and its ack then released it at the writer (the netns suite's REL_1MB_IP_5,
+// 2026-10-11; test_hybrid_send.c, the match point under loss). A continuation names no endpoint, so it cannot be
+// first contact; this datagram can, and now always carries the match point while one is owed - the chase's resends
+// too.
 static void large_send_end_heartbeat(struct tt_Context* node, struct tt_Publisher* pub) {
     uint32_t first = 0;
     if (!publisher_oldest_seq_no(pub, &first)) {
@@ -8286,6 +8313,10 @@ static void large_send_end_heartbeat(struct tt_Context* node, struct tt_Publishe
     }
     uint8_t count = count_peers(pub->peers);
     bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && node->tx_tail == sizeof(struct tt_Header);
+    uint32_t owed = 0;
+    if (match_point_owed(pub, &owed)) {
+        encode_heartbeat_range(node, pub, first, owed - 1U, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);
+    }
     encode_heartbeat_range(node, pub, first, publisher_announced_last_seq_no(pub), true, unicast ? pub->peers : NULL,
                            unicast ? count : 0, 0);
 }
