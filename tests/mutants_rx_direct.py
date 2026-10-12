@@ -14,6 +14,9 @@ Not mutated, and why - each decides no outcome a test can observe:
   - direct_read()'s `got > framing` before the copy back: without it the bytes copied lie past the datagram's end,
     where nothing reads.
   - tt_receive()'s clear of direct_split on TT_RX_DROP_PERCENT's drop: compiled only into that experiment's builds.
+  - tt_try_receive()'s -1 while a kept drain runs: without it the pass reads a socket the drain is also reading, an
+    order a datagram's arrival time decides - the drain's task work takes it on arrival in every run a check can make.
+  - large_run_batched()'s compatibility check: no test reaches an RxO-incompatible large writer, in either path.
 
 Run from the repository root. Needs passwordless `sudo ip` (the namespace). Restores every file it touches, whatever
 happens. MUTANTS=<substring> runs only the mutants whose name contains it (the controls always run).
@@ -30,6 +33,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 TESTS = ROOT / "platform/linux/obj/debug/tests"
 CORE = "test_rx_direct"
 HAL = "rx_direct_check"
+DRAIN = "rx_drain_check"  # run twice: the buffer ring this kernel gives, and classic buffers (refuse_pbuf_ring.so)
 
 # (name, file, old, new, binary that must fail)
 MUTANTS = [
@@ -246,6 +250,41 @@ MUTANTS = [
         CORE,
     ),
     (
+        "drain: an empty pass stops it (not kept)",
+        "src/hal_linux.c",
+        "            if (keep && hal->drain_armed == drain_sockets_open(hal)) {",
+        "            if (false) {",
+        DRAIN,
+    ),
+    (
+        "drain: kept though an overrun ended a socket's recvmsg",
+        "src/hal_linux.c",
+        "            if (keep && hal->drain_armed == drain_sockets_open(hal)) {",
+        "            if (keep) {",
+        DRAIN,
+    ),
+    (
+        "drain: a kept drain whose buffers are now too short not set up again",
+        "src/hal_linux.c",
+        "        if (datagram_bytes == 0 || (drain_size_for(hal, datagram_bytes) <= hal->drain_size && !grows)) {",
+        "        if (datagram_bytes == 0 || !grows) {",
+        DRAIN,
+    ),
+    (
+        "drain: a kept drain that overran not given more buffers",
+        "src/hal_linux.c",
+        "        if (datagram_bytes == 0 || (drain_size_for(hal, datagram_bytes) <= hal->drain_size && !grows)) {",
+        "        if (datagram_bytes == 0 || drain_size_for(hal, datagram_bytes) <= hal->drain_size) {",
+        DRAIN,
+    ),
+    (
+        "drain: the cancellations never submitted with the stop's wait",
+        "src/hal_linux.c",
+        "        long entered = syscall(__NR_io_uring_enter, hal->drain_fd, to_submit, 1U,",
+        "        long entered = syscall(__NR_io_uring_enter, hal->drain_fd, 0U, 1U,",
+        DRAIN,
+    ),
+    (
         "read: the framing before the unit count not compared",
         "src/hal_linux.c",
         "           memcmp(buf, large->direct_framing, at) == 0 &&",
@@ -318,7 +357,7 @@ MUTANTS = [
 ]
 
 
-def run_hal(binary):
+def run_hal(binary, env=""):
     namespace = f"rxd-mut-{os.getpid()}"
     subprocess.run(["sudo", "-n", "ip", "netns", "add", namespace], check=True)
     try:
@@ -326,7 +365,7 @@ def run_hal(binary):
         subprocess.run(["sudo", "-n", "ip", "-n", namespace, "route", "add", "default", "dev", "lo"], check=True)
         return subprocess.run(
             ["sudo", "-n", "ip", "netns", "exec", namespace, "runuser", "-u", os.environ.get("USER", "semih"), "--",
-             "bash", "-c", f"ulimit -v 2097152; exec timeout 120 {ROOT / 'platform/linux' / binary}"],
+             "bash", "-c", f"ulimit -v 2097152; cd {ROOT / 'platform/linux'}; exec env {env} timeout 120 ./{binary}"],
             capture_output=True, text=True, timeout=180,
         )
     finally:
@@ -334,12 +373,19 @@ def run_hal(binary):
 
 
 def build_and_run(binary):
-    target = binary if binary == HAL else f"obj/debug/tests/{binary}"
-    build = subprocess.run(["make", "-s", "-C", str(ROOT / "platform/linux"), target], capture_output=True, text=True)
+    targets = [binary] if binary in (HAL, DRAIN) else [f"obj/debug/tests/{binary}"]
+    if binary == DRAIN:
+        targets.append("refuse_pbuf_ring.so")
+    build = subprocess.run(["make", "-s", "-C", str(ROOT / "platform/linux"), *targets], capture_output=True, text=True)
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-2000:]
     try:
-        if binary == HAL:
+        if binary == DRAIN:
+            run = run_hal(binary)
+            if run.returncode == 0:
+                run = run_hal(binary, "TT_REFUSE_PBUF_RING=all TT_EXPECT_DRAIN_RING=classic "
+                                      "LD_PRELOAD=./refuse_pbuf_ring.so")
+        elif binary == HAL:
             run = run_hal(binary)
         else:
             run = subprocess.run(["bash", "-c", f"ulimit -v 2097152; exec {TESTS / binary}"], capture_output=True,
