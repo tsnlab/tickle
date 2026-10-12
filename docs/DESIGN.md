@@ -570,7 +570,16 @@ Where it departs, and why:
   425,984 B the rig's 212,992 B `SO_SNDBUF` gives - at 1 ms it fired first on every wait on the PC. A context polled
   with `timeout == 0`, which never waits and so never sees the report, keeps the old schedule. No thread; a HAL that cannot report it (FreeRTOS) answers
   false and keeps the timer; `-Dtt_LARGE_SEND_ON_WRITABLE=0` is the A/B arm. `large.send_writable` counts the waits
-  that ended on writability (`tests/test_hybrid_send.c`, a full send buffer).
+  that ended on writability (`tests/test_hybrid_send.c`, a full send buffer). *PC A/B, not a rig figure*
+  (`experiments/hybrid_v2_pc.sh` + `hybrid_v2_pc_read.py`, 2026-10-12, A = c7262c89, B = `ab/hybrid-v2` with both this
+  and the call cap above, Bt = B with `-Dtt_LARGE_SEND_ON_WRITABLE=0`; forced IP runs of 45, 1 Gbit/s tbf veth,
+  `SO_SNDBUF` 212,992 B, 3 runs an arm, perf=0 session): `send_waits` per MB 29-40 (A, Bt) -> 3.8-4.8 (B) in all four
+  cells; publisher CPU per MB 1.95/1.98/1.90/2.05 -> 1.81/1.64/1.65/1.63 ms (be1m/be4m/rel1m/rel4m; BETTER than A in
+  three cells, HELD in be1m; BETTER than Bt in three); latency median -38/-266/-54/-273 us against A (the call cap; Bt
+  has the same), p99 BETTER in all four, subscriber CPU HELD. Instructions (a separate perf=1 session, since counting
+  perturbs the timing): publisher instructions per MB BETTER than A and Bt in every cell read (-0.4 to -1.3 Minsn/MB).
+  Under perf stat B's 4 MB p99 read 39-48 ms: its waits lasted 9-24 ms while the send queue drained at a fifth of the
+  link (SIOCOUTQ at the wait's end); none did without perf, so latency is never read from a counted session.
 - **The end-of-sample HEARTBEAT is chased**: it is one datagram and can be lost with the tail it reveals, so while a
   large sample stays unacknowledged it is resent, one retry interval on and doubling to 100 ms, restarted per sample.
 - **A sample that takes longer to go out than a reader waits is repaired while it goes**: a HEARTBEAT announces only
