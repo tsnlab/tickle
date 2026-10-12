@@ -40,6 +40,11 @@
 //                runs this under refuse_pbuf_ring.so, which holds every IORING_REGISTER_PBUF_RING to Linux 6.8's
 //                rules and can refuse it as the rig's Pi 5s did (6.8.0-1064-raspi, EINVAL), so checks 3-5 also run
 //                over the kernel's own ring and over classic provided buffers.
+//   9. kept   - a drain pass leaves a drain running on every socket: tt_try_receive() with nothing held answers -1 and
+//                the drain runs on, takes what is sent next and hands it out; a wait (tt_receive()) stops it. With
+//                classic buffers an overrun ends the data socket's recvmsg for good, so the pass after the drain's last
+//                datagram stops it and reads the socket: the datagram the overrun left there arrives, last and in
+//                order.
 // The drain's task work runs here on this thread's own sendto() returns; rx_drain_pc.sh is the check that it runs
 // while a thread is busy in user space. Exit 0 pass, 1 fail, 2 no drain (io_uring refused, or a kernel before 6.0),
 // 3 setup failed.
@@ -271,6 +276,16 @@ static bool send_segmented(int sender, int socket_fd, uint32_t first) {
 // 6. merged
 static enum check_exit check_merged(struct tt_Context* node, int sender) {
     usleep(HOLDOFF_PAST_US);
+    // A drain a pass left running with a fragment's buffers (check 9's kept drain): the start below, asked for what a
+    // merged read needs, must set it up again rather than keep it.
+    static uint8_t pass_buf[READ_BUFFER_BYTES];
+    uint32_t pass_ip = 0;
+    uint16_t pass_port = 0;
+    if (!tt_rx_drain_start(node, tt_CONTROL_MAX_LENGTH) ||
+        tt_try_receive(node, pass_buf, sizeof pass_buf, &pass_ip, &pass_port) >= 0 || !node->hal.drain_running) {
+        printf("rx_drain_check: FAIL - merged: no drain kept running with a fragment's buffers to start from\n");
+        return CHECK_FAIL;
+    }
     int enable = 1;
     if (setsockopt(node->hal.data_sock, SOL_UDP, UDP_GRO, &enable, sizeof enable) != 0) {
         printf("rx_drain_check: PASS - merged: not run, this kernel refuses UDP_GRO\n");
@@ -387,6 +402,65 @@ static enum check_exit check_rearm(struct tt_Context* node, int sender) {
     printf("rx_drain_check: PASS - rearm: %d datagrams through %u buffers and an overrun, the drain taking again once "
            "buffers were back (%lu re-arms), all in order, no socket drop; the next start had %u buffers\n",
            filled + REARM_MORE, (unsigned)buffers, (unsigned long)(node->hal.drain_rearms - rearms), (unsigned)grown);
+    return CHECK_PASS;
+}
+
+// 9. kept
+static enum check_exit check_kept(struct tt_Context* node, int sender) {
+    (void)read_all(node);
+    static uint8_t buf[READ_BUFFER_BYTES];
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    if (!tt_rx_drain_start(node, tt_CONTROL_MAX_LENGTH)) {
+        printf("rx_drain_check: FAIL - kept: no drain\n");
+        return CHECK_FAIL;
+    }
+    bool none = tt_try_receive(node, buf, sizeof buf, &ip, &port) < 0;
+    bool kept = node->hal.drain_running;
+    uint64_t taken = node->hal.drain_datagrams;
+    if (!send_numbered(sender, node->hal.data_sock, 0, 1, PAYLOAD_BYTES)) {
+        printf("rx_drain_check: SETUP FAILED - kept: could not send\n");
+        return CHECK_SETUP_FAILED;
+    }
+    usleep(LOOPBACK_SETTLE_US);
+    uint32_t index = 1;
+    bool handed = read_numbered(node, PAYLOAD_BYTES, &index) && index == 0 && node->hal.drain_datagrams == taken + 1U;
+    bool waited = tt_receive(node, buf, sizeof buf, &ip, &port, (int64_t)tt_MILLISECOND) < 0;
+    bool stopped = !node->hal.drain_running;
+    if (!none || !kept || !handed || !waited || !stopped) {
+        printf("rx_drain_check: FAIL - kept: an empty pass %s, the drain %s, the next datagram %s, a wait %s and the "
+               "drain %s\n",
+               none ? "answered -1" : "READ something", kept ? "kept running" : "STOPPED",
+               handed ? "taken by it and handed out" : "NOT taken by it", waited ? "timed out" : "READ something",
+               stopped ? "stopped" : "STILL RUNNING");
+        return CHECK_FAIL;
+    }
+    if (node->hal.drain_ring != tt_RX_DRAIN_RING_CLASSIC) {
+        printf("rx_drain_check: PASS - kept: an empty pass left the drain running, it took the next datagram, a wait "
+               "stopped it (the overrun half runs with classic buffers only)\n");
+        return CHECK_PASS;
+    }
+    if (!tt_rx_drain_start(node, tt_CONTROL_MAX_LENGTH)) {
+        printf("rx_drain_check: FAIL - kept: no drain for the overrun\n");
+        return CHECK_FAIL;
+    }
+    int filled = (int)node->hal.drain_count + 1; // every buffer, and one more: the overrun, left in the socket
+    if (!send_numbered(sender, node->hal.data_sock, 1, filled, PAYLOAD_BYTES)) {
+        printf("rx_drain_check: SETUP FAILED - kept: could not fill the buffers\n");
+        return CHECK_SETUP_FAILED;
+    }
+    usleep(LOOPBACK_SETTLE_US);
+    int arrived = 0;
+    bool in_order = read_in_order(node, PAYLOAD_BYTES, 1, filled, &arrived);
+    if (!in_order) {
+        printf("rx_drain_check: FAIL - kept: after an overrun with classic buffers %d of %d arrived in order (the one "
+               "the overrun left in the socket must be read)\n",
+               arrived, filled);
+        return CHECK_FAIL;
+    }
+    printf("rx_drain_check: PASS - kept: an empty pass left the drain running, it took the next datagram, a wait "
+           "stopped it; after an overrun (classic buffers) all %d arrived in order\n",
+           filled);
     return CHECK_PASS;
 }
 
@@ -507,6 +581,9 @@ int main(void) {
     }
     if (result == CHECK_PASS) {
         result = check_rearm(&node, sender);
+    }
+    if (result == CHECK_PASS) {
+        result = check_kept(&node, sender);
     }
     if (result == CHECK_PASS) {
         result = check_ring(&node);

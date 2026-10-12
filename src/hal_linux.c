@@ -1995,22 +1995,28 @@ static void drain_stop(struct tt_Context* node) {
             sqe->user_data = DRAIN_CANCEL;
         }
     }
-    if (added != 0 && !drain_submit(hal, added)) {
-        TT_LOG_ERROR("Cannot cancel the receive drain: %s - turned off", strerror(errno));
-        drain_refused(hal, "cancel", errno);
-        return;
-    }
-    // Until both recvmsgs have ended, by the clock: a wait returns at once while a datagram's completion is still held
-    // (drain_look() lets the others go), so a count of waits would not be a time.
+    // The cancellations go in with the first wait - one system call where a submit and then a wait were two, and a
+    // multishot recvmsg's cancellation usually completes as it is submitted. Then until both recvmsgs have ended, by
+    // the clock: a wait returns at once while a datagram's completion is still held (drain_look() lets the others go),
+    // so a count of waits would not be a time.
+    __atomic_store_n(hal->drain_sq_tail, *hal->drain_sq_tail + added, __ATOMIC_RELEASE);
+    uint32_t to_submit = added;
     const uint64_t deadline = tt_get_ns() + ((uint64_t)DRAIN_STOP_TRIES * (uint64_t)DRAIN_STOP_WAIT_NS);
-    while (hal->drain_armed != 0 && tt_get_ns() < deadline) {
+    while ((hal->drain_armed != 0 || to_submit != 0) && tt_get_ns() < deadline) {
         struct __kernel_timespec wait = {0, DRAIN_STOP_WAIT_NS};
         struct io_uring_getevents_arg arg;
         memset(&arg, 0, sizeof(arg));
         arg.ts = (uint64_t)(uintptr_t)&wait;
         // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
-        (void)syscall(__NR_io_uring_enter, hal->drain_fd, 0U, 1U, IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG, &arg,
-                      sizeof(arg));
+        long entered = syscall(__NR_io_uring_enter, hal->drain_fd, to_submit, 1U,
+                               IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG, &arg, sizeof(arg));
+        if (entered > 0) {
+            to_submit -= (uint32_t)entered < to_submit ? (uint32_t)entered : to_submit; // what it took of them
+        } else if (entered < 0 && to_submit != 0 && errno != ETIME && errno != EINTR) {
+            TT_LOG_ERROR("Cannot cancel the receive drain: %s - turned off", strerror(errno));
+            drain_refused(hal, "cancel", errno);
+            return;
+        }
         drain_look(hal);
     }
     if (hal->drain_armed != 0) {
@@ -2090,7 +2096,17 @@ static bool drain_split_begin(struct tt_Context* node, uint16_t bid, const uint8
 }
 #endif
 
-static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+// keep: the caller is a drain pass (tt_try_receive()), not a wait. A drain whose recvmsgs are still in flight on every
+// open socket takes whatever arrives there, so such a caller has nothing to read meanwhile and the drain is left
+// running - through the rest of the poll and past its return, where tt_Context_poll() would start it again
+// (large_rx_drain()). Only a wait (tt_receive()) stops it. A drain an overrun cut short on a socket stops as before,
+// so that socket is read.
+static uint8_t drain_sockets_open(const struct tt_hal* hal) {
+    return (uint8_t)((hal->sock >= 0 ? 1U : 0U) | (hal->data_sock >= 0 ? 2U : 0U));
+}
+
+static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port,
+                               bool keep) {
     struct tt_hal* hal = &node->hal;
     const struct io_uring_cqe* cqes = (const struct io_uring_cqe*)hal->drain_cqes;
 #if TT_HAL_UDP_GRO
@@ -2148,6 +2164,9 @@ static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, u
         }
         drain_look(hal);
         if (hal->drain_pending == 0) {
+            if (keep && hal->drain_armed == drain_sockets_open(hal)) {
+                return -1;
+            }
             drain_stop(node);
             if (hal->drain_pending == 0) {
                 return -1;
@@ -2158,23 +2177,37 @@ static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, u
 
 static uint32_t drain_held(const struct tt_Context* node);
 
+// A buffer's length for datagrams of up to datagram_bytes: unless the sockets read plain, a read may be a merged one,
+// up to the receive buffer core reads merged reads into (TT_GRO_SETTLING too: what was queued before the option went
+// off may be merged). Plain, nothing queued is.
+static uint32_t drain_size_for(const struct tt_hal* hal, uint32_t datagram_bytes) {
+#if TT_HAL_UDP_GRO
+    if (hal->gro_state != TT_GRO_PLAIN && datagram_bytes < (uint32_t)tt_MAX_BUFFER_LENGTH) {
+        datagram_bytes = (uint32_t)tt_MAX_BUFFER_LENGTH;
+    }
+#else
+    (void)hal;
+#endif
+    return ((datagram_bytes + DRAIN_HEADER + DRAIN_ALIGN - 1U) / DRAIN_ALIGN) * DRAIN_ALIGN;
+}
+
 bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
     struct tt_hal* hal = &node->hal;
     if (hal->drain_running) {
-        return true;
+        const bool grows = hal->drain_overran && drain_held(node) == 0 && hal->drain_count < tt_RX_DRAIN_BUFFERS &&
+                           hal->drain_budget < tt_RX_DRAIN_BYTES_MAX;
+        if (datagram_bytes == 0 || (drain_size_for(hal, datagram_bytes) <= hal->drain_size && !grows)) {
+            return true;
+        }
+        // Left running by a drain pass (rx_take_drained()'s keep) with buffers shorter than now asked for, or after an
+        // overrun that earns it more: stopped, and set up again below once what it took is handed out.
+        drain_stop(node);
     }
     if (hal->drain_fd == -2 || datagram_bytes == 0 ||
         (hal->drain_holdoff_until != 0 && tt_get_ns() < hal->drain_holdoff_until)) {
         return false;
     }
-#if TT_HAL_UDP_GRO
-    // Unless the sockets read plain, a read may be a merged one, up to the receive buffer core reads merged reads into
-    // (TT_GRO_SETTLING too: what was queued before the option went off may be merged). Plain, nothing queued is.
-    if (hal->gro_state != TT_GRO_PLAIN && datagram_bytes < (uint32_t)tt_MAX_BUFFER_LENGTH) {
-        datagram_bytes = (uint32_t)tt_MAX_BUFFER_LENGTH;
-    }
-#endif
-    uint32_t size = ((datagram_bytes + DRAIN_HEADER + DRAIN_ALIGN - 1U) / DRAIN_ALIGN) * DRAIN_ALIGN;
+    uint32_t size = drain_size_for(hal, datagram_bytes);
     if (hal->drain_fd >= 0 && size > hal->drain_size) {
         if (drain_held(node) != 0) {
             return false; // longer datagrams than the buffers hold: rebuilt once what they took is handed out
@@ -2255,12 +2288,14 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
 }
 
 // NOLINTNEXTLINE(readability-non-const-parameter) - the drain's own version writes them
-static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+static int32_t rx_take_drained(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port,
+                               bool keep) {
     (void)node;
     (void)buf;
     (void)len;
     (void)ip;
     (void)port;
+    (void)keep;
     return -1;
 }
 
@@ -2605,7 +2640,7 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
 #endif
     int32_t pending = rx_take_pending(node, buf, len, ip, port);
     if (pending < 0) {
-        pending = rx_take_drained(node, buf, len, ip, port);
+        pending = rx_take_drained(node, buf, len, ip, port, false);
     }
     if (pending >= 0) {
         return pending;
@@ -2802,12 +2837,17 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
 #endif
     int32_t pending = rx_take_pending(node, buf, len, ip, port);
     if (pending < 0) {
-        pending = rx_take_drained(node, buf, len, ip, port);
+        pending = rx_take_drained(node, buf, len, ip, port, true);
     }
     if (pending >= 0) {
         rx_idle_count_return(node);
         return pending;
     }
+#if tt_RX_DRAIN
+    if (node->hal.drain_running) {
+        return -1; // the drain is taking what comes on every socket, and has taken nothing since (rx_take_drained())
+    }
+#endif
     // MSG_DONTWAIT makes just this call non-blocking regardless of the socket's own mode - no
     // poll() first, no socket-option re-arm. Both sockets are candidates, because broadcasts land on
     // the well-known one and unicast on this node's own data socket, and the same alternation
