@@ -19,11 +19,12 @@ either equivalent within what the oracles can reach - listed with the reason in 
 
 Before the mutants: the unmutated tree must pass every oracle (the controls), or nothing is decided.
 
-Result on 2026-10-11 (branch claude/interesting-diffie-4cf8e1): 55 of 67 killed. The 12 survivors, by why:
+Result on 2026-10-12, after the steady-state cost was taken out of the wrap work (fix/seq-wrap-zero-cost): 54 of 67
+killed, every named mutant among them; the 13 survivors are the same serial sites the sweep left on 9f41aa38. By why:
   compiled out of every oracle's build: jump_ack_baseline()'s tt_RELIABLE_STATS count; the local-delivery backlog
     (tt_LOCAL_DELIVERY).
-  equivalent: proxy_move_ack()'s pin of a stale heartbeat_last_seq_no - maybe_arm_acknack_retry(), which every caller
-    of it runs next, pins it the same way.
+  equivalent within the oracles: proxy_move_ack()'s pin of a stale heartbeat_last_seq_no - nothing behind the
+    watermark reads as ahead before maybe_arm_acknack_retry() pins it once it lags HEARTBEAT_STALE_LAG.
   not reached at 2^32 by any oracle - large samples: the oldest retained of small and large together
     (publisher_oldest_seq_no(), reliable_cache_first_resendable_seq_no()), the end-of-sample HEARTBEAT chase
     (large_unacknowledged()), large records among small ones in a durable backlog (large_send_backlog_before()), a
@@ -56,15 +57,25 @@ ORACLES = [  # name, test source, extra defines
 
 NAMED = [
     ("cache ring: no rebase", "    if (position >= UINT32_C(0x80000000)) {", "    if (false) {"),
-    ("cache ring: origin placed only when empty",
-     "    if (!cache->any_retained || seq_delta(seq_no, cache->slot_origin) < 0) {", "    if (!cache->any_retained) {"),
-    ("cache ring: origin not reset when empty", "        cache->slot_origin = 1U;", "        (void)0;"),
+    ("cache ring: origin placed only when empty", "    if (origin == 0 || seq_delta(seq_no, origin) < 0) {",
+     "    if (origin == 0) {"),
+    ("cache ring: origin not reset when empty", "        origin = 1U;", "        (void)0;"),
     ("cache ring: rebase not by whole rings",
-     "        cache->slot_origin += ((position - UINT32_C(0x40000000)) / depth) * depth;",
-     "        cache->slot_origin += position - UINT32_C(0x40000000);"),
-    ("reorder ring: no wrap shift", "        slot += reorder_shift_for(proxy, slots, salt, seq_no);",
-     "        slot += 0 * reorder_shift_for(proxy, slots, salt, seq_no);"),
-    ("reorder ring: no re-pivot", "        if (drift > REORDER_REPIVOT_DRIFT || drift < -REORDER_REPIVOT_DRIFT) {", "        if (false) {"),
+     "        origin += ((position - UINT32_C(0x40000000)) / depth) * depth;",
+     "        origin += position - UINT32_C(0x40000000);"),
+    ("cache ring: a rebase may land the origin on 0 (empty)", "            origin = depth;", "            (void)0;"),
+    ("cache ring: an empty cache's origin taken before the byte room",
+     "        if (reliable_cache_retains(cache)) {\n            cache->slot_origin = origin;",
+     "        if (true) {\n            cache->slot_origin = origin;"),
+    ("reorder ring: lookup ignores the pivot",
+     "    return reorder_slot_at(sub, (uint16_t)((seq_no - proxy->reorder_pivot + proxy->reorder_base) % slots));",
+     "    return reorder_slot_at(sub, (uint16_t)((seq_no + reorder_salt(node_id, entity_id)) % slots));"),
+    ("reorder ring: pivot never follows",
+     "    if (proxy == NULL || slots == 0 || seq_no - proxy->reorder_pivot < REORDER_PIVOT_REACH) {",
+     "    if (true) {"),
+    ("reorder ring: base not moved with the pivot",
+     "    proxy->reorder_base = (uint32_t)(((int64_t)proxy->reorder_base + moved + slots) % slots);",
+     "    (void)moved;"),
     ("BEST_EFFORT: a new proxy's first sample checked against the default",
      "            if (!first_contact && seq_delta(ctx->seq_no, proxy->ack_seq_no) < 0) {",
      "            if (seq_delta(ctx->seq_no, proxy->ack_seq_no) < 0) {"),
@@ -73,11 +84,9 @@ NAMED = [
     ("heartbeat_last_seq_no not pinned on a watermark move",
      "    if (seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no) < 0) {\n        proxy->heartbeat_last_seq_no = ack_seq_no - 1U;",
      "    if (false) {\n        proxy->heartbeat_last_seq_no = ack_seq_no - 1U;"),
-    ("heartbeat_last_seq_no not pinned per sample",
-     "    if (seq_delta(proxy->heartbeat_last_seq_no, proxy->ack_seq_no) < 0) {\n        proxy->heartbeat_last_seq_no = proxy->ack_seq_no - 1U;",
-     "    if (false) {\n        proxy->heartbeat_last_seq_no = proxy->ack_seq_no - 1U;"),
-    ("delivered_any ignored (0 means none)", "    if (proxy->delivered_any && seq_delta(seq_no, proxy->highest_delivered) <= 0) {",
-     "    if (proxy->highest_delivered != 0 && seq_delta(seq_no, proxy->highest_delivered) <= 0) {"),
+    ("heartbeat_last_seq_no not pinned once stale", "    if (hb_ahead < -HEARTBEAT_STALE_LAG) {", "    if (false) {"),
+    ("highest_delivered not moved with a far first baseline (0 means none)",
+     "    if (ack_seq_no - 1U - proxy->highest_delivered >= HIGHEST_DELIVERED_REACH) {", "    if (false) {"),
     ("silent Subscriber acknowledged at 0", "            pub->peer_acks[i].ack_seq_no = publisher_unacked_from(pub);",
      "            pub->peer_acks[i].ack_seq_no = 0;"),
     ("large send idle at seq_no 0", "    while (cursor->active || large_cursor_next(node, pub)) {",
@@ -85,8 +94,8 @@ NAMED = [
     ("durable backlog: every large record stops at UINT32_MAX",
      "    large_send_backlog_before(node, pub, 0, true, &large_next, target);",
      "    large_send_backlog_before(node, pub, UINT32_MAX, false, &large_next, target);"),
-    ("cache empty when oldest is 0", "    while (cache->any_retained && seq_no - cache->oldest_seq_no + 1 > depth) {",
-     "    while (cache->any_retained && cache->oldest_seq_no != 0 && seq_no - cache->oldest_seq_no + 1 > depth) {"),
+    ("cache empty when oldest is 0", "    while (reliable_cache_retains(cache) && seq_no - cache->oldest_seq_no + 1 > depth) {",
+     "    while (reliable_cache_retains(cache) && cache->oldest_seq_no != 0 && seq_no - cache->oldest_seq_no + 1 > depth) {"),
 ]
 
 

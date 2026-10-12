@@ -291,7 +291,7 @@ static void cache_write_record(struct tt_Context* node, struct tt_ReliableCache*
 
 // True when seq_no is retained right now *and* its arena bytes still read back as written.
 static bool cache_record_intact(const struct tt_ReliableCache* cache, uint32_t seq_no) {
-    if (!cache->any_retained || seq_no < cache->oldest_seq_no || seq_no > cache->newest_seq_no) {
+    if (cache->slot_origin == 0 || seq_no < cache->oldest_seq_no || seq_no > cache->newest_seq_no) {
         return false;
     }
     const struct tt_ReliableCacheIndex* entry = &cache->index[(seq_no - 1) % cache->depth];
@@ -311,7 +311,7 @@ static bool cache_record_intact(const struct tt_ReliableCache* cache, uint32_t s
 
 static int cache_retained_count(const struct tt_ReliableCache* cache) {
     int count = 0;
-    if (!cache->any_retained) {
+    if (cache->slot_origin == 0) {
         return 0;
     }
     for (uint32_t seq_no = cache->oldest_seq_no; seq_no <= cache->newest_seq_no; seq_no++) {
@@ -437,7 +437,7 @@ static void test_reliable_cache_oversize_record_on_empty_cache(void) {
     cache.arena_size = 64;
 
     cache_write_record(&node, &cache, 1, 128);
-    EXPECT_TRUE(!cache.any_retained);      // nothing retained
+    EXPECT_TRUE(cache.slot_origin == 0);   // nothing retained
     EXPECT_EQ_U32(1, cache.newest_seq_no); // but it was published
     EXPECT_EQ_INT(0, cache_retained_count(&cache));
 
@@ -470,13 +470,13 @@ static void test_reliable_cache_randomized_invariants(void) {
         EXPECT_TRUE(cache.newest_seq_no == seq_no);
         int retained = cache_retained_count(&cache);
         EXPECT_TRUE(retained <= (int)depth);
-        if (cache.any_retained) {
+        if (cache.slot_origin != 0) {
             EXPECT_TRUE(cache.newest_seq_no - cache.oldest_seq_no + 1 <= (uint32_t)depth);
         }
 
         // Contiguous newest-first suffix: once a sample is retained, every newer one is too.
         bool seen_retained = false;
-        for (uint32_t s = cache.oldest_seq_no; cache.any_retained && s <= cache.newest_seq_no; s++) {
+        for (uint32_t s = cache.oldest_seq_no; cache.slot_origin != 0 && s <= cache.newest_seq_no; s++) {
             bool intact = cache_record_intact(&cache, s);
             if (seen_retained && !intact) {
                 EXPECT_TRUE(s == cache.newest_seq_no); // only the newest may be an uncached oversize
@@ -486,7 +486,7 @@ static void test_reliable_cache_randomized_invariants(void) {
         }
 
         // No two retained records overlap in the arena.
-        for (uint32_t a = cache.oldest_seq_no; cache.any_retained && a < cache.newest_seq_no; a++) {
+        for (uint32_t a = cache.oldest_seq_no; cache.slot_origin != 0 && a < cache.newest_seq_no; a++) {
             if (!cache_record_intact(&cache, a)) {
                 continue;
             }

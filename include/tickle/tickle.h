@@ -1713,16 +1713,15 @@ struct tt_ReliableCache {
     // sample_depth of them - an eviction for bytes inside the depth, because the Publisher's cache_grow could not
     // make room (or it has none). A caller reports it; core only counts.
     uint32_t depth_shortfalls;
-    uint32_t oldest_seq_no; // oldest retained sample, while any_retained
+    uint32_t oldest_seq_no; // oldest retained sample, while anything is (slot_origin != 0)
+    // Core-owned: seq_no lives in slot (seq_no - slot_origin) % depth. 0 while nothing is retained (zero-init: empty) -
+    // the flag seq_no 0 used to be, before it became an ordinary seq_no past 2^32 - and never 0 while anything is. 1
+    // when the first sample is retained, and moved on by a multiple of depth whenever seq_no - slot_origin reaches
+    // 2^31, so the retained run never straddles the point where that wraps (reliable_cache_slot(), tickle.c). Right
+    // after oldest_seq_no on purpose: most lookups are of the oldest, and a compiler may load the two as one pair.
+    uint32_t slot_origin;
     uint32_t newest_seq_no; // newest sample handed to cache_reliable_sample(), cached or not
     uint32_t tail;          // arena offset just past the newest retained record
-    // Core-owned: seq_no lives in slot (seq_no - slot_origin) % depth. 1 whenever the cache is empty, and moved on by a
-    // multiple of depth whenever seq_no - slot_origin reaches 2^31, so the retained run never straddles the point where
-    // that wraps (reliable_cache_slot(), tickle.c). 1 until seq_no - 1 first reaches 2^31.
-    uint32_t slot_origin;
-    // Whether anything is retained: oldest_seq_no means something only then. A flag rather than oldest_seq_no 0, which
-    // past 2^32 is an ordinary seq_no (zero-initialised: nothing retained).
-    bool any_retained;
     // Only ever consulted when tt_Publisher.durable is set (register_subscriber_peer_on_
     // publisher(), tickle.c) - costs a best-effort or reliable-only Publisher nothing beyond the
     // unused array slots themselves, no extra allocation or opt-in flag needed. Same capacity as
@@ -2395,19 +2394,21 @@ struct tt_WriterProxy {
     // buffer per sample. Kept equal to ack_seq_no at every point a sample can be held, so a held
     // sample always lies in [reorder_cursor, reorder_cursor + window) - the range drain walks.
     uint32_t reorder_cursor;
-    // Where this writer's held seq_no sit in the reorder ring past 2^32 (reorder_writer_slot(), tickle.c): the ring
-    // shift, in slots, for seq_no reorder_pivot - a seq_no near the watermark, taken at first contact and moved onto
-    // the watermark every 2^30 - so the slots stay contiguous where seq_no + the writer's salt passes 2^32.
+    // Where this writer's held seq_no sit in the reorder ring (reorder_writer_slot(), tickle.c): seq_no sits in slot
+    // (seq_no - reorder_pivot + reorder_base) % slots. reorder_pivot is at or behind every seq_no held - taken at first
+    // contact, where reorder_base is the slot the writer's salted key gives it, and moved (with reorder_base, so
+    // nothing held changes slot) only when a seq_no about to be held lies 2^30 or more from it - so the slots stay
+    // contiguous wherever seq_no or seq_no + the writer's salt passes 2^32, and a lookup reads two adjacent words.
     uint32_t reorder_pivot;
-    uint16_t reorder_shift;
+    uint32_t reorder_base;
     // RELIABLE strict order - the highest sequence number from this writer handed to the
-    // application, meaningful once delivered_any is set (0 is an ordinary seq_no past 2^32). Distinct from ack_seq_no
+    // application - or, before the first, just behind the watermark (proxy_move_ack(), tickle.c), so that nothing
+    // deliverable reads as at or below it and 0, an ordinary seq_no past 2^32, needs no flag. Distinct from ack_seq_no
     // on purpose: the watermark moves past an abandoned range WITHOUT delivering it (jump_ack_baseline()), so after a
     // jump the two diverge by exactly the samples that must not be delivered late. Anything at or below this is
     // discarded rather than handed up - the user's ruling (2026-09-24) that RELIABLE is strictly
     // ordered, matching DDS once a gap has been declared lost.
     uint32_t highest_delivered;
-    bool delivered_any; // highest_delivered holds a delivered seq_no
     // Phase 3 - tt_get_ns() of the last "still waiting" warning for this writer, so a stuck
     // KEEP_ALL gap is visible in a log at a fixed cadence rather than per retry or never.
     uint64_t stuck_warned_ns;
