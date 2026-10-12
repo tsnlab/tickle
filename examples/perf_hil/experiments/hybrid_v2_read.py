@@ -9,8 +9,8 @@
   and a fix that changes no 0% cell: the end-of-sample HEARTBEAT carries the match point while one is owed.
 
 Input: rmw_keepall_rig.sh invocations at 0% loss (OUT.runs/), arms tickle@head (B), tickle@pre (A), fastdds,
-cyclonedds, read through hybrid_rig_ab.py's read_invocation() (its VOID rules, treatment included: head at 0% must
-reach n = 45) and largemsg_rig_summary.py's run records (clock-corrected latency median, CPU ms per MB each side).
+cyclonedds, read through hybrid_rig_ab.py's read_invocation() with HYBRID_PRE=1 (its VOID rules, treatment included:
+head and pre at 0% must reach n = 45 - A has the hybrid transport too) and largemsg_rig_summary.py's run records (clock-corrected latency median, CPU ms per MB each side).
 
 RULES (enforced below; a cell with fewer than 3 usable runs of head or pre is NO VERDICT, and so is the criterion)
   FLOOR      per cell and metric, the larger of the two vendors' spread (max - min over their runs): drift the change
@@ -35,11 +35,13 @@ Exit 0 when every criterion has a verdict (PASS or FAIL alike), 2 when any is NO
 Usage: hybrid_v2_read.py OUT [OUT ...]   (each OUT.runs/ an invocation; the cell is read from its runs)
 """
 import math
+import os
 import re
 import statistics
 import sys
 from pathlib import Path
 
+os.environ["HYBRID_PRE"] = "1"  # A (c7262c89) has the hybrid transport: pre is read by head's AUTO rule
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hybrid_rig_ab import read_invocation, stem_of, welch  # noqa: E402
 

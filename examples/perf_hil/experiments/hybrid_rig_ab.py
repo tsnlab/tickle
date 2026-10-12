@@ -23,7 +23,9 @@ RULES (enforced below)
                     writer its ceiling (amended 2026-10-11 after the PC preflight, before any rig run);
                head, aa at 0% loss  VOID unless runs > 0 and the median n_hist bucket is 45 (AUTO at 0% must reach
                     n_max); under loss AUTO's n is reported, not judged.
-             tickle@pre (A, main) must print no "hybrid:" counters with runs > 0, or the whole reading is VOID.
+             tickle@pre (A, main) must print no "hybrid:" counters with runs > 0, or the whole reading is VOID -
+             unless HYBRID_PRE=1 (ab/hybrid-v2's queue, 2026-10-12: A is a main that has the hybrid transport), when
+             tickle@pre is read by head's AUTO rule instead.
              The realized treatment of every run is printed beside it: runs, run units, MTU units, n_hist, and the
              reader's advertised ceiling, cap and collapses.
   NET        each run's <stem>_net.txt: the server's (reader's) eth0 rx bytes are the wire bytes, every frame of every
@@ -75,6 +77,7 @@ Usage: hybrid_rig_ab.py --zero|--loss OUT   (OUT.runs/ must exist)
        hybrid_rig_ab.py --offload OUT [OUT ...]   (every 0% and loss invocation of the queue)
 """
 import math
+import os
 import re
 import statistics
 import sys
@@ -91,6 +94,10 @@ MODE_OF = {"tickle@head": "auto", "tickle@aa": "auto", "tickle@mtu": "mtu", "tic
 # Samples of a forced-IP arm that may go at n = 1 before the reader's ceiling is known (the PC preflight of 2026-10-11,
 # before any rig run: one, the first sample, published as discovery completed).
 FORCED_IP_EARLY_MTU = 2
+# A pre arm that is itself a hybrid build (see the TREATMENT rule): read by head's AUTO rule.
+PRE_IS_HYBRID = os.environ.get("HYBRID_PRE", "") == "1"
+if PRE_IS_HYBRID:
+    MODE_OF["tickle@pre"] = "auto"
 OFFLOAD_OFF = ("tickle@nooffload", "tickle@mtunooff")
 OFFLOAD_PAIRS = (("tickle@head", "tickle@nooffload"), ("tickle@mtu", "tickle@mtunooff"))
 TRAFFIC_RE = re.compile(r"traffic: .*?udp_offload=(\d+) gro_reads=\d+ gro_merged=(\d+) .*?gso_sends=(\d+)")
@@ -171,7 +178,7 @@ def treatment(runs, r):
     zero = r["loss"] == 0
     p_rmw, p_core = hybrid_of(runs / f"{stem_of(r)}_pub.log")
     s_rmw, s_core = hybrid_of(runs / f"{stem_of(r)}_sub.log")
-    if arm == "tickle@pre":
+    if arm == "tickle@pre" and not PRE_IS_HYBRID:
         bad = p_core is not None and p_core["runs"] > 0
         return ("tickle@pre sent runs: A is not main" if bad else ""), "pre (no hybrid transport)"
     want = MODE_OF.get(arm)
@@ -254,7 +261,7 @@ def read_invocation(out, quiet=False):
         if r["void"] or why:
             if not quiet:
                 print(f"VOID {stem_of(r)}: {r['void'] or why} {seen}")
-            if r["arm"] == "tickle@pre" and why:
+            if r["arm"] == "tickle@pre" and why and not PRE_IS_HYBRID:
                 print("VOID overall: tickle@pre is not main")
                 return 2
             continue
