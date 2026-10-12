@@ -560,7 +560,17 @@ Where it departs, and why:
   one keeps it until KEEP_LAST evicts it (for late joiners).
 - **The send cursor resumes on a timer, not on socket writability**: 50 us after a full send buffer, doubling to 1 ms
   while nothing goes (`tt_LARGE_SEND_RETRY_NS`, `_MAX_NS`). No HAL wait on POLLOUT was needed; one new HAL call,
-  `tt_send_batch_nonblocking()` (MSG_DONTWAIT), returns how many datagrams went.
+  `tt_send_batch_nonblocking()` (MSG_DONTWAIT), returns how many datagrams went. *Superseded 2026-10-12
+  (`ab/hybrid-v2`):* the rig showed 20-30 timer retries per MB (`send_waits`), each a `sendmmsg()` that mostly found
+  the buffer still full. The cursor now resumes when the socket reports room - `tt_tx_await_writable()`, on Linux a
+  duplicate of the data socket armed one-shot for EPOLLOUT in the wait set (POLLOUT in the `ppoll()` fallback), which
+  a UDP socket reports once half its buffer is free, as a blocking writer is woken - and `tt_Context_poll()` resumes
+  every send waiting for room (`large_tx_writable()`). The timer stays as a fallback, at
+  `tt_LARGE_SEND_WRITABLE_FALLBACK_NS` (20 ms): longer than half the buffer takes to drain, 1.7 ms at 1 GbE for the
+  425,984 B the rig's 212,992 B `SO_SNDBUF` gives - at 1 ms it fired first on every wait on the PC. A context polled
+  with `timeout == 0`, which never waits and so never sees the report, keeps the old schedule. No thread; a HAL that cannot report it (FreeRTOS) answers
+  false and keeps the timer; `-Dtt_LARGE_SEND_ON_WRITABLE=0` is the A/B arm. `large.send_writable` counts the waits
+  that ended on writability (`tests/test_hybrid_send.c`, a full send buffer).
 - **The end-of-sample HEARTBEAT is chased**: it is one datagram and can be lost with the tail it reveals, so while a
   large sample stays unacknowledged it is resent, one retry interval on and doubling to 100 ms, restarted per sample.
 - **A sample that takes longer to go out than a reader waits is repaired while it goes**: a HEARTBEAT announces only

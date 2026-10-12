@@ -258,6 +258,13 @@ struct tt_hal {
     // the wait queue of every descriptor in its set on every call - four of them with the segment - which is work per
     // sleep for a set that never changes; epoll registers each once (hal_linux.c, "The wait set").
     int epoll_fd_plus1;
+    // tt_tx_await_writable()'s watch: a duplicate of data_sock, in that set for EPOLLOUT | EPOLLONESHOT - one report,
+    // re-armed by the next call - so a large send waiting for room resumes when the socket has half its buffer free,
+    // as a blocking writer is woken, rather than on a timer. A duplicate because the set holds data_sock itself for
+    // EPOLLIN alone. Stored PLUS ONE, 0 for none yet. Without the set, tx_watch_armed adds POLLOUT on data_sock to the
+    // next ppoll(); written by the publishing thread and read by the polling one, so atomic.
+    int tx_watch_fd_plus1;
+    bool tx_watch_armed;
 #if tt_SEGMENT_ENABLED
     // The bell in that set is edge-triggered, so a ring needs no read() to stop it being reported: a pipe reports
     // every write to an epoll that watches it, empty or not, which tt_segment_bell_create() checks on the running

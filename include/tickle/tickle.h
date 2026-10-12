@@ -435,7 +435,8 @@ struct tt_LargeState {
     // samples published. tail_abandoned: KEEP_LAST samples a newer publish replaced before all of them had gone - one
     // still waiting behind a send in progress, or (the ring full) one being sent.
     // window_too_small: KEEP_ALL publishes refused because a matched reader's window is narrower than the sample.
-    // send_waits: large sends that found the socket's send buffer full and continued later.
+    // send_waits: large sends that found the socket's send buffer full and continued later. send_writable: those of
+    // them resumed by the socket reporting room (tt_tx_await_writable()) rather than by the fallback timer.
     uint64_t reassembled;
     uint64_t abandoned;
     uint64_t no_buffer;
@@ -445,10 +446,17 @@ struct tt_LargeState {
     uint64_t tail_abandoned;
     uint64_t window_too_small;
     uint64_t send_waits;
+    uint64_t send_writable;
     // encoded_by_range: samples encoded a send call at a time (tt_DATA_ENCODE_RANGE) - an A/B arm's treatment check.
     // encode_failed: samples whose ranged encode and data_encode both failed after some of it had gone - dropped.
     uint64_t encoded_by_range;
     uint64_t encode_failed;
+    // Set by the HAL's wait when the socket a large send waits on has room again (tt_tx_await_writable()); core clears
+    // it and resumes the send (large_tx_writable()).
+    bool tx_writable;
+    // The last tt_Context_poll() had timeout 0: a poll that never waits never sees the socket's room, so a send waiting
+    // for it keeps the timer's own schedule (large_wait_for_room()). Written by the poller, read by a publisher.
+    bool polls_without_waiting;
 };
 #endif
 
@@ -1899,7 +1907,8 @@ struct tt_LargeCursor {
     uint8_t next_dest;
     uint8_t dest_count;
     bool scheduled;
-    bool active; // a record is being sent (seq_no names it); 0 is an ordinary seq_no past 2^32
+    bool on_writable; // the wait is for the socket's room (tt_tx_await_writable()), the timer only its fallback
+    bool active;      // a record is being sent (seq_no names it); 0 is an ordinary seq_no past 2^32
 #if tt_HYBRID_TRANSPORT
     uint8_t run_n[tt_LARGE_DESTINATIONS];      // units per datagram to each destination, fixed for the sample (1: MTU)
     uint16_t run_until[tt_LARGE_DESTINATIONS]; // units [0, run_until) go in runs; a re-probe sends only its first

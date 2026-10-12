@@ -76,6 +76,10 @@
 #include <sys/stat.h> // fchmod(), fstat()
 #endif
 
+#if tt_LARGE_SAMPLES && !(tt_CONTEXT_ID_CLAIM || tt_SEGMENT_ENABLED)
+#include <fcntl.h> // fcntl(F_DUPFD_CLOEXEC): tt_tx_await_writable()'s watch
+#endif
+
 #if tt_CONTEXT_ID_CLAIM
 #include <signal.h> // kill()
 
@@ -576,6 +580,7 @@ static void uring_close(struct tt_Context* node);
 #define RX_READY_WAKE 2U
 #define RX_READY_DATA 4U
 #define RX_READY_BELL 8U
+#define RX_READY_WRITABLE 16U // data_sock has room again (tt_tx_await_writable())
 
 #if TT_HAL_EPOLL
 static bool wait_set_add(int epoll_fd, int member, uint32_t events, uint32_t tag) {
@@ -910,6 +915,8 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.wake_fd = -1;
     node->hal.bell_fd_plus1 = 0;  // no segment yet, so no doorbell (tt_segment_bell_create())
     node->hal.epoll_fd_plus1 = 0; // none yet: tt_close() after a failed bind has nothing to close
+    node->hal.tx_watch_fd_plus1 = 0;
+    node->hal.tx_watch_armed = false;
 #if tt_SEGMENT_ENABLED
     node->hal.bell_drain_every = 0;
     node->hal.bell_drained_at = 0;
@@ -1167,6 +1174,10 @@ void tt_close(struct tt_Context* node) {
         node->hal.bell_fd_plus1 = 0;
     }
 #endif
+    if (node->hal.tx_watch_fd_plus1 > 0) {
+        (void)close(node->hal.tx_watch_fd_plus1 - 1);
+        node->hal.tx_watch_fd_plus1 = 0;
+    }
     if (node->hal.epoll_fd_plus1 > 0) {
         (void)close(node->hal.epoll_fd_plus1 - 1);
         node->hal.epoll_fd_plus1 = 0;
@@ -1369,6 +1380,37 @@ int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* data
     int32_t sent = send_batch_flags(node, datagrams, count, 0);
     return sent == (int32_t)count ? sent : -1;
 }
+
+#if tt_LARGE_SAMPLES
+// The next wait ends, once, when data_sock - every large send's socket (send_batch_flags()) - has room again: a UDP
+// socket reports EPOLLOUT/POLLOUT once half its send buffer is free, which is when a blocking sendmsg() is woken. With
+// the wait set, its duplicate (struct tt_hal.tx_watch_fd_plus1) is armed one-shot; without it, the next ppoll() asks
+// for POLLOUT. Safe from the publishing thread while another waits: epoll_ctl() wakes a waiter on a socket already
+// writable, and a ppoll() already asleep is woken by the fallback timer core schedules beside it.
+bool tt_tx_await_writable(struct tt_Context* node) {
+    struct tt_hal* hal = &node->hal;
+#if TT_HAL_EPOLL
+    if (hal->epoll_fd_plus1 > 0) {
+        struct epoll_event event = {.events = EPOLLOUT | EPOLLONESHOT, .data = {.u32 = RX_READY_WRITABLE}};
+        if (hal->tx_watch_fd_plus1 > 0) {
+            return epoll_ctl(hal->epoll_fd_plus1 - 1, EPOLL_CTL_MOD, hal->tx_watch_fd_plus1 - 1, &event) == 0;
+        }
+        int watch = fcntl(hal->data_sock, F_DUPFD_CLOEXEC, 0);
+        if (watch < 0) {
+            return false;
+        }
+        if (epoll_ctl(hal->epoll_fd_plus1 - 1, EPOLL_CTL_ADD, watch, &event) != 0) {
+            (void)close(watch);
+            return false;
+        }
+        hal->tx_watch_fd_plus1 = watch + 1;
+        return true;
+    }
+#endif
+    __atomic_store_n(&hal->tx_watch_armed, true, __ATOMIC_RELEASE);
+    return true;
+}
+#endif
 
 #if TT_HAL_UDP_GSO
 // One message of a sendmmsg() call: `run` datagrams from `first`, their pieces in `iov` (room for two each), to their
@@ -2358,7 +2400,8 @@ static int rx_wait(struct tt_Context* node, const struct timespec* timeout_ts, u
         for (int i = 0; i < count; i++) {
             // A descriptor reported only for an error or a hangup counts towards the return value, as it did with
             // ppoll(), and is read like one: the read says what the error was.
-            if ((events[i].events & EPOLLIN) != 0) {
+            if ((events[i].events & EPOLLIN) != 0 ||
+                (events[i].data.u32 == RX_READY_WRITABLE && (events[i].events & (EPOLLOUT | EPOLLERR)) != 0)) {
                 *ready |= events[i].data.u32;
             }
         }
@@ -2369,9 +2412,12 @@ static int rx_wait(struct tt_Context* node, const struct timespec* timeout_ts, u
     // is the correct public header.
     // NOLINTNEXTLINE(misc-include-cleaner)
     struct pollfd pfd[RX_WAIT_FDS] = {
-        {.fd = node->hal.sock, .events = POLLIN, .revents = 0},      // NOLINT(misc-include-cleaner)
-        {.fd = node->hal.wake_fd, .events = POLLIN, .revents = 0},   // NOLINT(misc-include-cleaner)
-        {.fd = node->hal.data_sock, .events = POLLIN, .revents = 0}, // NOLINT(misc-include-cleaner)
+        {.fd = node->hal.sock, .events = POLLIN, .revents = 0},    // NOLINT(misc-include-cleaner)
+        {.fd = node->hal.wake_fd, .events = POLLIN, .revents = 0}, // NOLINT(misc-include-cleaner)
+        {.fd = node->hal.data_sock,
+         // NOLINTNEXTLINE(misc-include-cleaner) - POLLOUT: the same private header as POLLIN
+         .events = (short)(POLLIN | (__atomic_load_n(&node->hal.tx_watch_armed, __ATOMIC_ACQUIRE) ? POLLOUT : 0)),
+         .revents = 0}, // NOLINT(misc-include-cleaner)
 #if tt_SEGMENT_ENABLED
         {.fd = node->hal.bell_fd_plus1 - 1, .events = POLLIN, .revents = 0}, // NOLINT(misc-include-cleaner) -1: ignored
 #endif
@@ -2392,6 +2438,10 @@ static int rx_wait(struct tt_Context* node, const struct timespec* timeout_ts, u
         if ((pfd[i].revents & POLLIN) != 0) { // NOLINT(misc-include-cleaner)
             *ready |= tags[i];
         }
+    }
+    if (count > 0 && (pfd[2].revents & POLLOUT) != 0) { // NOLINT(misc-include-cleaner) - data_sock: room again
+        __atomic_store_n(&node->hal.tx_watch_armed, false, __ATOMIC_RELAXED);
+        *ready |= RX_READY_WRITABLE;
     }
     return count;
 }
@@ -2506,6 +2556,15 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
             }
             return -2; // I/O error
         }
+#if tt_LARGE_SAMPLES
+        if ((ready & RX_READY_WRITABLE) != 0) {
+            node->large.tx_writable = true; // core resumes the large send waiting for room (tt_tx_await_writable())
+            ready &= ~RX_READY_WRITABLE;
+            if (ready == 0) {
+                return -1; // nothing to read: a timeout to the caller, which looks at tx_writable
+            }
+        }
+#endif
 #if tt_SEGMENT_ENABLED
         // Before the interrupt below, which returns: an edge-triggered bell is reported once, and a ring it reports
         // must be counted towards the bell's next read (bell_rung()) whichever way this wait ends. What the ring

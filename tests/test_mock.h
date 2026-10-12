@@ -108,6 +108,11 @@ void (*test_mock_try_receive_hook)(void) = NULL; // called for each backlog data
 // is cut short there, as a full socket buffer cuts MSG_DONTWAIT short. -1 (the default): unlimited. And its calls.
 int32_t test_mock_nonblocking_room = -1;
 int test_mock_nonblocking_calls = 0;
+// tt_tx_await_writable(): whether this "HAL" can report a writable socket (false, the default: core's timer alone), and
+// how often core asked it to.
+bool test_mock_tx_writable_supported = false;
+int test_mock_tx_writable_arms = 0;
+bool test_mock_receive_reports_writable = false; // the next tt_receive() reports the socket writable, as a wait would
 uint32_t test_mock_receiver_drops = 0; // tt_rx_receiver_drops(): datagrams the "receiver" lost, a count that grows
 uint32_t test_mock_drain_bytes = 0;    // the datagram length core last asked tt_rx_drain_start() to drain
 #else
@@ -149,6 +154,9 @@ extern uint32_t test_mock_receiver_drops;
 extern uint32_t test_mock_drain_bytes;
 extern int32_t test_mock_nonblocking_room;
 extern int test_mock_nonblocking_calls;
+extern bool test_mock_tx_writable_supported;
+extern int test_mock_tx_writable_arms;
+extern bool test_mock_receive_reports_writable;
 #endif
 
 // Call at the start of each test case so one test's overrides can't leak into the next.
@@ -188,6 +196,9 @@ static inline void test_mock_reset(void) {
     test_mock_try_receive_hook = NULL;
     test_mock_socket_reads_under_lock = 0;
     test_mock_nonblocking_room = -1;
+    test_mock_tx_writable_supported = false;
+    test_mock_tx_writable_arms = 0;
+    test_mock_receive_reports_writable = false;
     test_mock_nonblocking_calls = 0;
     test_mock_receiver_drops = 0;
     test_mock_drain_bytes = 0;
@@ -418,6 +429,12 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     if (test_mock_receive_return >= 0) {
         test_mock_now += test_mock_receive_data_advance_ns;
     }
+#if tt_LARGE_SAMPLES
+    if (test_mock_receive_reports_writable) {
+        test_mock_receive_reports_writable = false;
+        node->large.tx_writable = true;
+    }
+#endif
     return test_mock_receive_return;
 }
 
@@ -502,6 +519,16 @@ int32_t tt_send_batch_nonblocking(struct tt_Context* node, const struct tt_OutDa
         test_mock_nonblocking_room -= (int32_t)fits;
     }
     return (int32_t)fits;
+}
+
+// Armed only when the test says this "HAL" can report room; the test then sets node->large.tx_writable itself.
+bool tt_tx_await_writable(struct tt_Context* node) {
+    (void)node;
+    if (!test_mock_tx_writable_supported) {
+        return false;
+    }
+    test_mock_tx_writable_arms++;
+    return true;
 }
 
 // The mock's backlog counts as held: tt_try_receive() hands it out with nothing to wait for.

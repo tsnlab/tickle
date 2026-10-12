@@ -167,6 +167,11 @@ int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* data
 // returns how many of the `count` datagrams went, in order - fewer, possibly 0, when the buffer filled - or a negative
 // value on any other error. Core sends the rest later. Only a build with tt_LARGE_SAMPLES calls it.
 int32_t tt_send_batch_nonblocking(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count);
+// After tt_send_batch_nonblocking() found the send buffer full: asks tt_receive()'s next wait to end, once, when the
+// socket has room again, and to say so by setting node->large.tx_writable (tt_receive() then returns -1 unless a
+// datagram came too). False when this HAL cannot: core then retries on a timer. Only a build with tt_LARGE_SAMPLES
+// and tt_LARGE_SEND_ON_WRITABLE calls it.
+bool tt_tx_await_writable(struct tt_Context* node);
 /**
  * @timeout I/O timeout in nanoseconds, -1 for use default timeout value, 0 for no timeout
  * @return received bytes, -1 for timeout, -3 if woken by tt_wake_signal() rather than data,
