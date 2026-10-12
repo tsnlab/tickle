@@ -56,8 +56,36 @@ MUTANTS = [
     (
         "large runs: the last unit inside a run",
         "src/tickle.c",
-        "    for (; k < LARGE_BATCH && next < last; k++) {\n        if (next >= run_until) {",
-        "    for (; k < LARGE_BATCH && next <= last; k++) {\n        if (next >= run_until) {",
+        "    for (; k < LARGE_BATCH && call_units < LARGE_BATCH && next < last; k++) {\n        if (next >= run_until) {",
+        "    for (; k < LARGE_BATCH && call_units < LARGE_BATCH && next <= last; k++) {\n        if (next >= run_until) {",
+        SEND,
+    ),
+    (
+        "large runs: a send call packs runs up to LARGE_BATCH datagrams, not units (the encode ahead of the wire)",
+        "src/tickle.c",
+        "    for (; k < LARGE_BATCH && call_units < LARGE_BATCH && next < last; k++) {",
+        "    for (; k < LARGE_BATCH && next < last; k++) {",
+        SEND,
+    ),
+    (
+        "large runs: a run's units not counted toward its call",
+        "src/tickle.c",
+        "        units[k] = run;\n        call_units += run;",
+        "        units[k] = run;",
+        SEND,
+    ),
+    (
+        "large runs: a re-probe's MTU units not counted toward its call",
+        "src/tickle.c",
+        "            units[k] = 1;\n            call_units++;",
+        "            units[k] = 1;",
+        SEND,
+    ),
+    (
+        "large runs: a call stops after one run",
+        "src/tickle.c",
+        "        units[k] = run;\n        call_units += run;",
+        "        units[k] = run;\n        call_units += LARGE_BATCH;",
         SEND,
     ),
     (

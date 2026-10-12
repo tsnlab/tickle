@@ -717,13 +717,59 @@ static void test_large_samples_go_in_runs_of_n_max(void) {
     large_be_round_trip(LARGE_LEN, 3);
     large_be_round_trip(ONE_MB, 18);
     large_be_round_trip(FOUR_MB, 66);
-    // The tail in a send call of its own: 1 MB's 17 runs in one call (up to 64 a call), its tail in a second.
+    // A send call carries runs until it holds LARGE_BATCH (64) units, two runs of 45, and the tail goes in a call of
+    // its own: 1 MB's 17 runs (16 of 45 and one of 2) in 9 calls, its tail in a tenth.
     init_one(ONE_MB, FULL_CEILING, false);
     sim_start(0);
     int calls = test_mock_send_batch_call_count;
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(4));
-    EXPECT_EQ_INT(2, test_mock_send_batch_call_count - calls);
+    EXPECT_EQ_INT(10, test_mock_send_batch_call_count - calls);
     expect_intact(0, 1);
+    // Runs of 8 (the Publisher's own bound): eight a call, 64 units, as a batch of MTU fragments.
+    init_one(LARGE_LEN, FULL_CEILING, false);
+    pub.ip_datagram_max = (uint16_t)(28U + (8U * 1452U)); // exactly eight large units
+    sim_start(0);
+    calls = test_mock_send_batch_call_count;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(5));
+    EXPECT_EQ_U32(8, sent.max_n);
+    EXPECT_EQ_U32(9, sent.runs);                               // 68 units before the tail: eight runs of 8 and one of 4
+    EXPECT_EQ_INT(3, test_mock_send_batch_call_count - calls); // 8 runs, the run of 4, the tail
+    expect_intact(0, 1);
+}
+
+// What one send call of runs carries (large_build_runs()): runs until the call holds LARGE_BATCH (64) units, so a
+// ranged encode runs a call - about a batch of MTU fragments - ahead of the wire. Of 1 MB (723 units): two runs of 45
+// at n = 45, eight of 8 at n = 8; a re-probe's one run of 45 and then 19 MTU units, 64 in all; the last run, of 2,
+// stops short of the tail, and the tail goes alone.
+static void expect_call(uint32_t run_n, uint32_t run_until, uint32_t next, uint32_t want_datagrams,
+                        uint32_t want_units) {
+    static uint8_t framings[LARGE_BATCH][HYBRID_RUN_L_FRAMING];
+    struct tt_OutDatagram batch[LARGE_BATCH];
+    uint32_t units[LARGE_BATCH];
+    const struct tt_LargeRecord* record = large_record_at(&pub, 0);
+    struct tt_Peer dest = {0};
+    uint32_t k = large_build_runs(&sender, record, run_n, run_until, next, &dest, framings, batch, units);
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < k; i++) {
+        total += units[i];
+    }
+    EXPECT_EQ_U32(want_datagrams, k);
+    EXPECT_EQ_U32(want_units, total);
+}
+
+static void test_a_send_call_carries_about_large_batch_units(void) {
+    init_one(ONE_MB, FULL_CEILING, false);
+    sim_start(0);
+    test_mock_nonblocking_room = 0; // the record stays at the cursor's first unit, unsent
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+    test_mock_nonblocking_room = -1;
+    EXPECT_EQ_U32(723, large_record_at(&pub, 0)->count);
+    expect_call(45, 722, 0, 2, 90);
+    expect_call(8, 722, 0, 8, 64);
+    expect_call(45, 45, 0, 20, 64); // a re-probe: one run, then MTU units, each counted
+    expect_call(45, 722, 630, 2, 90);
+    expect_call(45, 722, 720, 1, 2); // the last run, of 2: never the tail
+    expect_call(45, 722, 722, 1, 1); // the tail, alone
 }
 
 // Runs only from three units: a two-unit sample is its two MTU fragments, as before; three are a run of two and the
@@ -1982,6 +2028,11 @@ static void test_runs_with_a_ranged_encode_leave_the_wire_byte_identical(void) {
         struct wire_digest whole = run_arm(&arms[i], false);
         EXPECT_EQ_U64(0, sender.large.encoded_by_range); // the control has no ranged encode
         struct wire_digest by_range = run_arm(&arms[i], true);
+#ifdef HYBRID_SEND_WIRE_PRINT // tests/wire_identity_hybrid.sh: the digests, to compare across builds
+        printf("WIRE arm=%zu whole=%016llx/%u/%llu by_range=%016llx/%u/%llu\n", i, (unsigned long long)whole.hash,
+               whole.datagrams, (unsigned long long)whole.bytes, (unsigned long long)by_range.hash, by_range.datagrams,
+               (unsigned long long)by_range.bytes);
+#endif
         EXPECT_EQ_U64(arms[i].samples, sender.large.encoded_by_range);
         EXPECT_TRUE(range_call_count >= 2U * arms[i].samples);
         EXPECT_TRUE(sent.runs + sent.repair_runs > 0); // to a second reader, a run of units already sent counts so
@@ -2001,9 +2052,10 @@ static void test_runs_with_a_ranged_encode_leave_the_wire_byte_identical(void) {
 
 // The point of encoding while sending, with runs: each send call's bytes are encoded just before that call - through
 // the last unit of its last run, no further - and the tail, alone in a call of its own, just before it. 4 MB to one
-// reader is fragment 0 at the publish, then 64 runs of 45 (one call), a run of 8 (a second) and the tail (a third).
-// Mutants: runs sent without encoding (torn delivery), or the whole sample encoded at the first call (the second range
-// ends at 4 MB).
+// reader is fragment 0 at the publish, then 64 runs of 45 two a call (32 calls of 90 units, the call stops once it
+// holds LARGE_BATCH units), a run of 8 (a 33rd) and the tail (a 34th). Mutants: runs sent without encoding (torn
+// delivery), the whole sample encoded at the first call (the second range ends at 4 MB), or a call that packs runs
+// past LARGE_BATCH units (the second range ends past unit 90).
 static void test_each_run_call_is_encoded_just_before_it_goes(void) {
     ranged = true;
     init_one(FOUR_MB, FULL_CEILING, false);
@@ -2014,26 +2066,32 @@ static void test_each_run_call_is_encoded_just_before_it_goes(void) {
     expect_intact(0, 1);
     EXPECT_EQ_U32(66, sent.runs + sent.mtu);
     EXPECT_EQ_U64(1, sender.large.encoded_by_range);
-    EXPECT_EQ_U32(4, range_call_count);
-    if (range_call_count != 4) {
+    EXPECT_EQ_U32(35, range_call_count);
+    if (range_call_count != 35) {
         return;
     }
-    static const uint32_t units_before[] = {0, 0, 64U * 45U, (64U * 45U) + 8U};
     uint32_t end = 0;
-    for (uint32_t i = 0; i < 4; i++) {
+    for (uint32_t i = 0; i < 35; i++) {
+        uint32_t before = 0; // units on the wire when range i was asked for
+        if (i >= 2U) {
+            before = i <= 33U ? (i - 1U) * 90U : (32U * 90U) + 8U;
+        }
         EXPECT_EQ_U32(end, range_calls[i].offset); // contiguous, once each
-        EXPECT_EQ_U32(units_before[i], range_calls[i].units_before);
+        EXPECT_EQ_U32(before, range_calls[i].units_before);
         end = range_calls[i].offset + range_calls[i].length;
         uint32_t want = FOUR_MB;
         if (i == 0) {
             want = LARGE_FIRST_PAYLOAD;
-        } else if (i < 3) {
-            want = large_offset(units_before[i + 1]);
+        } else if (i < 33U) {
+            want = large_offset(i * 90U);
+        } else if (i == 33U) {
+            want = large_offset((32U * 90U) + 8U);
         }
         EXPECT_EQ_U32(want, end); // through the last unit the call carries
     }
-    // A send buffer of three datagrams: the first call takes three runs, and the rest is encoded at once, while the
-    // buffer drains - so when the publish returns its record is the whole sample, and nothing is encoded after it.
+    // A send buffer of three datagrams: the first call sends its two runs, the second one of its two, and the rest is
+    // encoded at once, while the buffer drains - so when the publish returns its record is the whole sample, and
+    // nothing is encoded after it.
     ranged = true;
     init_one(FOUR_MB, FULL_CEILING, false);
     ranged = false;
@@ -2042,9 +2100,11 @@ static void test_each_run_call_is_encoded_just_before_it_goes(void) {
     sim_acting = SENDER_ID;
     sample_seed = 2;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
-    EXPECT_EQ_U32(3, range_call_count);
-    EXPECT_TRUE(range_calls[2].buffer_full);
-    EXPECT_EQ_U32(FOUR_MB, range_calls[2].offset + range_calls[2].length);
+    EXPECT_EQ_U32(4, range_call_count);
+    EXPECT_TRUE(!range_calls[2].buffer_full);
+    EXPECT_EQ_U32(large_offset(180), range_calls[2].offset + range_calls[2].length);
+    EXPECT_TRUE(range_calls[3].buffer_full);
+    EXPECT_EQ_U32(FOUR_MB, range_calls[3].offset + range_calls[3].length);
     const struct tt_LargeRecord* record = large_record_at(&pub, 0);
     EXPECT_TRUE(!record->sent);
     EXPECT_EQ_U32(record->cdr_len, record->encoded);
@@ -2057,7 +2117,7 @@ static void test_each_run_call_is_encoded_just_before_it_goes(void) {
     }
     test_mock_nonblocking_room = -1;
     expect_intact(0, 1);
-    EXPECT_EQ_U32(3, range_call_count);
+    EXPECT_EQ_U32(4, range_call_count);
 }
 
 // A sample that came in runs is lent where it was put together (the rmw subscription's 4 MB lend): the callback runs
@@ -2111,6 +2171,7 @@ static void test_a_sample_received_in_runs_is_lent_in_place(void) {
 int main(void) {
     test_small_sample_goes_as_one_run_and_its_tail();
     test_large_samples_go_in_runs_of_n_max();
+    test_a_send_call_carries_about_large_batch_units();
     test_the_drain_is_sized_for_runs();
     test_runs_start_at_three_units();
     test_the_peers_ceiling_and_the_publishers_bound_n();
