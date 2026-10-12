@@ -2640,7 +2640,7 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
     struct tt_HybridRxWriter* writer = NULL;
     for (uint32_t i = 0; i < tt_HYBRID_RX_WRITERS && writer == NULL; i++) {
         struct tt_HybridRxWriter* entry = &hybrid->rx_writers[i];
-        if (entry->sample != 0 && entry->source == source && entry->entity_id == entity_id) {
+        if (entry->source != tt_CONTEXT_ID_INVALID && entry->source == source && entry->entity_id == entity_id) {
             writer = entry;
         }
     }
@@ -2656,7 +2656,7 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
         writer->source = source;
         writer->path_odds = 1.0;
     }
-    if ((int32_t)(sample - writer->sample) > 0) {
+    if (seq_delta(sample, writer->sample) > 0) {
         if (writer->next < writer->count) {
             hybrid_rx_gap(node, writer, writer->next, writer->count); // the writer's last sample ended short
         }
@@ -2784,6 +2784,7 @@ static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, u
             }
         }
         watch->watch_base = base;
+        watch->nack_high = base - 1U; // none of a sample just sent was NACKed before: every NACK of it is a first one
         watch->watch_count = (uint16_t)count;
         watch->watch_run_units = (uint16_t)run_units;
         watch->watch_nacked = 0;
@@ -2854,7 +2855,7 @@ __attribute__((noinline)) static void hybrid_note_nacks(struct tt_Publisher* pub
             uint32_t seq_no =
                 base + ((uint32_t)word_idx * tt_RELIABLE_BITMAP_WORD_BITS) + (uint32_t)__builtin_ctzll(word);
             word &= word - 1;
-            if (seq_no <= watch->nack_high) {
+            if (seq_delta(seq_no, watch->nack_high) <= 0) {
                 continue; // a re-NACK
             }
             hybrid_watch_nack(watch, seq_no);
@@ -2864,7 +2865,7 @@ __attribute__((noinline)) static void hybrid_note_nacks(struct tt_Publisher* pub
     watch->nack_high = high;
     hybrid_watch_judge(watch, node_id);
     if (watch->watch_count != 0 && !watch->watch_all_lost &&
-        (int32_t)(base - (watch->watch_base + watch->watch_count)) >= 0) {
+        seq_delta(base, watch->watch_base + watch->watch_count) >= 0) {
         // The reader holds the whole watched sample, and not every run of it was lost: the streak ends, and a
         // re-probe that got through clears the path before the next sample chooses its n.
         watch->all_lost_streak = 0;
@@ -11637,7 +11638,8 @@ static void hybrid_measure_lifetime(struct tt_HybridState* hybrid, uint64_t elap
         }
         uint32_t runs = 0; // every entry of this writer's source: the IP ID is the host's, not the topic's
         for (uint32_t j = 0; j < tt_HYBRID_RX_WRITERS; j++) {
-            if (hybrid->rx_writers[j].sample != 0 && hybrid->rx_writers[j].source == writer->source) {
+            if (hybrid->rx_writers[j].source != tt_CONTEXT_ID_INVALID &&
+                hybrid->rx_writers[j].source == writer->source) {
                 runs += hybrid->rx_writers[j].tick_runs;
             }
         }
@@ -16691,19 +16693,19 @@ static bool process_frag_large(struct tt_Context* node, struct tt_Header* header
     ((uint32_t)tt_MAX_BUFFER_LENGTH >= (uint32_t)(sizeof(struct tt_SingleHeader) + sizeof(struct tt_FragRunHeader)) + \
                                            (2U * (uint32_t)FRAG_CONT_PAYLOAD))
 
-// What the two run types share: the counts against each other and the type's ceiling, the reserved field, and the
-// seq_no range of the sample the units belong to. A run never holds a sample's last unit (it always goes alone, as an
-// MTU fragment), which is also what lets a small run's unit size be derived from its length.
-static bool run_header_valid(uint32_t entity_id, uint32_t seq_no, uint32_t index, uint32_t count, uint32_t run_count,
-                             uint32_t zero, uint32_t max_count) {
+// What the two run types share: the counts against each other and the type's ceiling, and the reserved field. A run
+// never holds a sample's last unit (it always goes alone, as an MTU fragment), which is also what lets a small run's
+// unit size be derived from its length. Its seq_no is not range-checked: a sample's units may cross 2^32 and its first
+// may be 0 (seq_delta()), as an MTU fragment's may.
+static bool run_header_valid(uint32_t entity_id, uint32_t index, uint32_t count, uint32_t run_count, uint32_t zero,
+                             uint32_t max_count) {
     if (zero != 0 || entity_id == tt_DISCOVERY_ENTITY_ID || count > max_count || run_count == 0) {
         return false;
     }
     if (index + run_count >= count) {
         return false; // the last unit, or past it
     }
-    // The sample is named by seq_no - index, a seq_no from 1, and its count units must not wrap.
-    return seq_no > index && seq_no - index <= UINT32_MAX - (count - 1U);
+    return true;
 }
 
 // A run refused whole: counted once, in the counter of its type pair, and logged at the 1st, 10th, 100th ...
@@ -16741,8 +16743,8 @@ static bool process_frag_run(struct tt_Context* node, struct tt_Header* header, 
     uint32_t run_count = run->run_count;
     uint32_t length = tail - head;
     uint32_t span = index == 0 ? length + (uint32_t)tt_FRAG_FIRST_SHORTFALL : length;
-    if (!run_header_valid(entity_id, seq_no, index, count, run_count, run->zero, tt_FRAG_MAX_COUNT) ||
-        span % run_count != 0 || span / run_count <= tt_FRAG_FIRST_SHORTFALL) {
+    if (!run_header_valid(entity_id, index, count, run_count, run->zero, tt_FRAG_MAX_COUNT) || span % run_count != 0 ||
+        span / run_count <= tt_FRAG_FIRST_SHORTFALL) {
         run_refused(&node->frag_dropped, "run", index, count, run_count, length);
         return false;
     }
@@ -16783,8 +16785,7 @@ static bool process_frag_run_large(struct tt_Context* node, struct tt_Header* he
     uint32_t count = rd16(header, run->frag_count);
     uint32_t run_count = rd16(header, run->run_count);
     uint32_t length = tail - head;
-    if (!run_header_valid(entity_id, seq_no, index, count, run_count, rd16(header, run->zero),
-                          tt_LARGE_MAX_FRAGMENTS) ||
+    if (!run_header_valid(entity_id, index, count, run_count, rd16(header, run->zero), tt_LARGE_MAX_FRAGMENTS) ||
         length != (run_count * LARGE_CONT_PAYLOAD) - (index == 0 ? (uint32_t)tt_FRAG_FIRST_L_SHORTFALL : 0U)) {
         run_refused(&node->large.dropped, "large run", index, count, run_count, length);
         return false;

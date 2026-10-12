@@ -78,6 +78,8 @@ static void free_nothing(struct tt_Data* data) {
 // units the writer had put on the wire by then and whether its send buffer was full.
 
 static bool ranged;
+// The seq_no the next set's writer gives its first unit (init_set()): 1 as a writer's own, or one near 2^32.
+static uint32_t first_seq_no = 1;
 struct range_call {
     uint32_t offset;
     uint32_t length;
@@ -227,6 +229,7 @@ static void init_set(uint32_t len, int count, const uint32_t* ceilings, bool rel
     range_call_count = 0;
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&sender, test_acquire, test_release, NULL));
+    pub.seq_no = first_seq_no - 1U; // before any reader is matched: each one's baseline is where the writer is
     if (reliable) {
         memset(cache_index, 0, sizeof(cache_index));
         memset(&cache, 0, sizeof(cache));
@@ -1661,6 +1664,69 @@ static void test_nacks_are_read_for_the_watch(void) {
     EXPECT_EQ_U32(144, watch->nack_high);
 }
 
+// seq_no wrap safety (seq_delta()): a writer whose units pass 2^32 sends and delivers in runs as one that starts at 1.
+// The first sample starts short of 2^32, so its runs cross it, and two sets start at seq_no 0 itself; 1 MB samples go
+// in large runs (14), 23-unit ones in small runs (15). Mutants: a run's seq_no range-checked as if it could not wrap
+// (such runs refused, the sample torn or repaired as MTU units), the reader's writer slot taken as empty at sample 0 (a
+// gap in that sample not seen), the reader's newer-sample test or the watch's first-NACK mark compared unsigned.
+static void runs_across_the_wrap(uint32_t len, uint32_t first, bool reliable, uint8_t mode, uint32_t loss_ppm) {
+    first_seq_no = first;
+    _tt_CONFIG.reassembly_cap_off = mode == tt_LARGE_FRAGMENTATION_IP ? 1 : 0;
+    init_one(len, FULL_CEILING, reliable);
+    _tt_CONFIG.reassembly_cap_off = 0;
+    first_seq_no = 1;
+    readers[0].last_seq = (uint16_t)(first - 1U); // on_data's order check: the sample before the first
+    pub.large_fragmentation = mode;
+    hybrid_test_forced_p = 0.0; // n = n_max from the first sample: what crosses 2^32 is runs
+    sim_start(loss_ppm);
+    memset(&sent, 0, sizeof(sent));
+    for (uint8_t s = 1; s <= 4; s++) {
+        memset(seen_unit, 0, sizeof(seen_unit));
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
+        sim_settle(s, 5 * tt_SECOND);
+    }
+    hybrid_test_forced_p = -1.0;
+    EXPECT_TRUE(sent.runs > 0);
+    EXPECT_EQ_U32(0, sent.repair_runs);
+    expect_intact(0, 4);
+    EXPECT_TRUE(readers[0].in_order);
+    EXPECT_EQ_U64(0, readers[0].ctx.frag_dropped); // no run refused
+    EXPECT_EQ_U64(0, readers[0].ctx.large.dropped);
+    if (loss_ppm == 0) {
+        EXPECT_EQ_U32(0, sent.repairs);
+        EXPECT_EQ_U32(4U * tt_sample_datagrams(len), readers[0].ctx.hybrid.rx_loss.frames); // every unit once
+        EXPECT_EQ_U32(0, readers[0].ctx.hybrid.rx_loss.events);
+    }
+}
+
+static void test_runs_cross_2_32_as_if_they_had_not(void) {
+    runs_across_the_wrap(ONE_MB, 0U - 300U, false, tt_LARGE_FRAGMENTATION_AUTO, 0);
+    runs_across_the_wrap(ONE_MB, 0U - 300U, true, tt_LARGE_FRAGMENTATION_AUTO, 0);
+    runs_across_the_wrap(ONE_MB, 0U, false, tt_LARGE_FRAGMENTATION_AUTO, 0); // the first sample's own seq_no is 0
+    runs_across_the_wrap(ONE_MB, 0U - 300U, true, tt_LARGE_FRAGMENTATION_IP, 10000);
+    runs_across_the_wrap(SMALL_LEN * 4U, 0U - 10U, false, tt_LARGE_FRAGMENTATION_AUTO, 0);
+    runs_across_the_wrap(SMALL_LEN * 4U, 0U, true, tt_LARGE_FRAGMENTATION_AUTO, 0);
+    runs_across_the_wrap(SMALL_LEN * 4U, 0U - 10U, true, tt_LARGE_FRAGMENTATION_IP, 50000);
+    // The failed-path watch, with a sample sent in runs from 2^32 - 16: its first NACKs past 2^32 are first ones.
+    init_one(ONE_MB, FULL_CEILING, true);
+    struct tt_PeerWatch* watch = &pub.peer_watch[0];
+    uint32_t entity = readers[0].sub.endpoint.entity_id;
+    uint32_t base = 0U - 16U;
+    hybrid_note_exposure(&pub, reader_id(0), 45, 300, base, 299);
+    uint64_t bitmap[2] = {(1ULL << 45U) - 1U, 0}; // base .. base + 44: one run of 45, 29 of them past 2^32
+    hybrid_note_nacks(&pub, reader_id(0), entity, base, bitmap, 2);
+    EXPECT_EQ_U32(base + 44U, watch->nack_high);
+    EXPECT_EQ_U32(45, watch->watch_nacked);
+    hybrid_note_nacks(&pub, reader_id(0), entity, base, bitmap, 2); // again: re-NACKs
+    EXPECT_EQ_U32(45, watch->watch_nacked);
+    // The reader's side of a sample whose first seq_no is 0: a run of it missing is a run lost.
+    struct tt_Context* rx = &readers[0].ctx;
+    uint32_t events = rx->hybrid.rx_loss.events;
+    hybrid_rx_note(rx, SENDER_ID, pub.endpoint.entity_id, 0U, 0, 100, 45, true);
+    hybrid_rx_note(rx, SENDER_ID, pub.endpoint.entity_id, 0U, 90, 100, 9, true); // units 45..89 never came
+    EXPECT_EQ_U32(events + 1U, rx->hybrid.rx_loss.events);
+}
+
 // Readers of one RELIABLE writer by unicast, one advertising 0: it gets MTU units, the other the cost model's n.
 static void test_mixed_reliable_readers_each_get_their_own_n(void) {
     static const uint32_t ceilings[] = {FULL_CEILING, 0};
@@ -2078,6 +2144,7 @@ int main(void) {
     test_mixed_reliable_readers_each_get_their_own_n();
     test_keep_all_bounds_are_unchanged();
     test_reliable_through_a_path_that_drops_fragments();
+    test_runs_cross_2_32_as_if_they_had_not();
     test_frame_loss_is_not_a_failed_path();
     test_a_failed_path_needs_the_tail_through();
     test_the_objective_is_wire_bytes();

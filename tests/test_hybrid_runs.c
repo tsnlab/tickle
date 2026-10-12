@@ -581,8 +581,6 @@ static void test_malformed_runs(bool large) {
         {"run_count 0", 1, 0, {0}},
         {"holds the last unit", units - 3U, 3, {0}},
         {"runs past the count", units - 3U, 3, {.set_count = true, .count = units - 1U}},
-        {"sample seq_no 0 (seq_no == index)", 2, 2, {.set_seq = true, .seq_no = 2}},
-        {"sample's units wrap", 1, 2, {.set_seq = true, .seq_no = UINT32_MAX - 2U}},
         {"length one byte long", 1, 3, {.length_delta = 1}},
         {"length one byte short", 1, 3, {.length_delta = -1}},
         {"length one unit short of run_count", 1, 3, {.set_run_count = true, .run_count = 4}},

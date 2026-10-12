@@ -189,7 +189,7 @@ MUTANTS = [
     (
         "nacks: a re-NACK counted",
         "src/tickle.c",
-        "            if (seq_no <= watch->nack_high) {\n                continue; // a re-NACK\n            }",
+        "            if (seq_delta(seq_no, watch->nack_high) <= 0) {\n                continue; // a re-NACK\n            }",
         "",
         SEND,
     ),
@@ -294,7 +294,7 @@ MUTANTS = [
     (
         "reader: an older sample's unit taken as a new sample",
         "src/tickle.c",
-        "    if ((int32_t)(sample - writer->sample) > 0) {",
+        "    if (seq_delta(sample, writer->sample) > 0) {",
         "    if (sample != writer->sample) {",
         SEND,
     ),
@@ -700,7 +700,8 @@ MUTANTS = [
     (
         "tau: counted per writer, not per source",
         "src/tickle.c",
-        "            if (hybrid->rx_writers[j].sample != 0 && hybrid->rx_writers[j].source == writer->source) {",
+        "            if (hybrid->rx_writers[j].source != tt_CONTEXT_ID_INVALID &&\n"
+        "                hybrid->rx_writers[j].source == writer->source) {",
         "            if (j == i) {",
         SEND,
     ),

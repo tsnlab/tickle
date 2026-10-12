@@ -536,7 +536,7 @@ struct tt_RunWindow {
 #define tt_HYBRID_RX_WRITERS 8
 struct tt_HybridRxWriter {
     uint32_t entity_id;
-    uint32_t sample;          // the sample's first seq_no; 0: unused
+    uint32_t sample;          // the sample's first seq_no (any value: 0 is one past 2^32; source 0 is unused)
     struct tt_RunWindow runs; // this writer's q
     uint32_t tick_runs;       // its runs since the last tick, arrived or lost
     uint16_t count;
@@ -1960,7 +1960,8 @@ struct tt_PeerAck {
 // The hybrid transport's watch of one reader (DESIGN.md section 8), the tt_PeerAck at the same index in the
 // Publisher's peer_acks[] (tt_Publisher.peer_watch[]).
 struct tt_PeerWatch {
-    // nack_high, the highest seq_no this reader has NACKed, above which a NACK is a first one.
+    // nack_high, the highest seq_no this reader has NACKed, serially above which a NACK is a first one (set below the
+    // watched sample when it is sent, so no 0 stands for "none").
     uint32_t nack_high;
     // Its fragment path (hybrid_watch_judge(), tickle.c): the latest sample sent to it in runs, watched - units
     // [watch_base, watch_base + watch_run_units) in watch_runs runs, of watch_count; how many of those units it
