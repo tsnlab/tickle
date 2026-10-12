@@ -1971,6 +1971,70 @@ static void test_the_objective_reads_the_posterior_mean(void) {
     EXPECT_EQ_U32(45, hybrid_n_star(loss_estimate_mean(&estimate), HYBRID_UNIT, HYBRID_UNIT_HEADER, 45));
 }
 
+// --- a full send buffer: resumed when the socket has room (DESIGN.md section 8, "Send cursor") ---------------------
+
+// When the next resume of the sender's large send is due, or 0 for none.
+static uint64_t resume_due(void) {
+    for (int32_t i = 0; i < sender.scheduler_tail; i++) {
+        if (sender.scheduler[i].function == large_send_resume) {
+            return sender.scheduler[i].time;
+        }
+    }
+    return 0;
+}
+
+// A HAL that reports room (tt_tx_await_writable() true) has a send that filled the buffer resume the moment the wait
+// says so - through tt_Context_poll()'s wait, at the same instant - with the timer only as a fallback at
+// tt_LARGE_SEND_WRITABLE_FALLBACK_NS; each wait re-arms the report. One that cannot (the control, and FreeRTOS) retries
+// on the timer from tt_LARGE_SEND_RETRY_NS as before, and so does a context last polled with timeout 0, which never
+// waits and so never sees the report. 1 MB in runs, a send buffer of three datagrams a turn.
+static void test_a_full_send_buffer_resumes_when_the_socket_has_room(void) {
+    for (int arm = 0; arm < 3; arm++) { // 0: no report, 1: the report, 2: the report but a poll that never waits
+        int reports = arm == 1 ? 1 : 0;
+        init_one(ONE_MB, FULL_CEILING, false);
+        sim_start(0);
+        test_mock_tx_writable_supported = arm != 0;
+        if (arm == 2) {
+            sim_acting = SENDER_ID;
+            (void)tt_Context_poll(&sender, 0);
+        }
+        test_mock_nonblocking_room = 3;
+        uint64_t published_at = test_mock_now;
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+        EXPECT_EQ_U64(1, sender.large.send_waits);
+        EXPECT_EQ_INT(arm != 0 ? 1 : 0, test_mock_tx_writable_arms);
+        EXPECT_EQ_U64(published_at + (reports != 0 ? tt_LARGE_SEND_WRITABLE_FALLBACK_NS : tt_LARGE_SEND_RETRY_NS),
+                      resume_due());
+        if (reports == 0) {
+            test_mock_nonblocking_room = -1;
+            sim_settle(1, tt_SECOND); // the timer alone takes it the rest of the way
+            expect_intact(0, 1);
+            EXPECT_EQ_U64(0, sender.large.send_writable);
+            test_mock_tx_writable_supported = false;
+            continue;
+        }
+        // Each wait reports room: the send goes on at once, three datagrams a turn, and arms the report again.
+        int turns = 0;
+        while (readers[0].delivered == 0 && turns < 20) {
+            test_mock_nonblocking_room = 3;
+            test_mock_receive_reports_writable = true;
+            sim_acting = SENDER_ID;
+            (void)tt_Context_poll(&sender, (int64_t)tt_MILLISECOND);
+            sim_drain();
+            turns++;
+        }
+        test_mock_nonblocking_room = -1;
+        expect_intact(0, 1);
+        EXPECT_EQ_INT(5, turns);                    // 18 datagrams, 3 a turn: the first 3 went at the publish
+        EXPECT_EQ_U64(published_at, test_mock_now); // no timer was waited for
+        EXPECT_EQ_U64((uint64_t)turns, sender.large.send_writable);
+        EXPECT_EQ_U64((uint64_t)turns, sender.large.send_waits); // one wait per full buffer, the last one ending it
+        EXPECT_EQ_INT(turns, test_mock_tx_writable_arms);
+        EXPECT_EQ_U64(0, resume_due()); // and no fallback timer left behind
+        test_mock_tx_writable_supported = false;
+    }
+}
+
 // --- the match point under loss (REL_1MB_IP_5's sample 0, 2026-10-11)
 // -------------------------------------------------
 
@@ -2293,6 +2357,7 @@ int main(void) {
     test_the_objective_is_wire_bytes();
     test_the_objective_reads_the_posterior_mean();
     test_a_sample_published_at_the_match_is_delivered();
+    test_a_full_send_buffer_resumes_when_the_socket_has_room();
     test_runs_with_a_ranged_encode_leave_the_wire_byte_identical();
     test_each_run_call_is_encoded_just_before_it_goes();
     test_a_sample_received_in_runs_is_lent_in_place();

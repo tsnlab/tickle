@@ -286,6 +286,9 @@ static void print_large(const struct tt_Context* node) {
     printf(" large_encoded_by_range=%lu large_encode_failed=%lu", (unsigned long)node->large.encoded_by_range,
            (unsigned long)node->large.encode_failed);
 #endif
+#ifdef tt_LARGE_SEND_ON_WRITABLE // a tree with the writability resume (DESIGN.md section 8, "Send cursor")
+    printf(" large_send_writable=%lu", (unsigned long)node->large.send_writable);
+#endif
 #else
     printf(" tx_datagrams=%lu rx_datagrams=%lu", (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams);
 #endif

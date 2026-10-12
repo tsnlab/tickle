@@ -843,6 +843,19 @@
 #ifndef tt_LARGE_SEND_RETRY_MAX_NS
 #define tt_LARGE_SEND_RETRY_MAX_NS 1000000ULL
 #endif
+// A large send blocked by a full socket send buffer resumes when the socket reports room (tt_tx_await_writable(): on
+// Linux the wait set's EPOLLOUT, which a UDP socket reports once half its buffer is free - when a blocking writer is
+// woken), with a timer of tt_LARGE_SEND_WRITABLE_FALLBACK_NS only as a fallback. 0, or a HAL that cannot report it,
+// or a context polled without waiting (tt_Context_poll() with timeout 0): the timer alone, from tt_LARGE_SEND_RETRY_NS
+// doubling up to tt_LARGE_SEND_RETRY_MAX_NS (DESIGN.md section 8, "Send cursor"). The fallback must be longer than
+// half the send buffer takes to drain - 1.7 ms at 1 Gbit/s for the 425,984 B a 212,992 B SO_SNDBUF gives - or it
+// fires first every time (it did, at 1 ms, on the PC: 2026-10-12).
+#ifndef tt_LARGE_SEND_ON_WRITABLE
+#define tt_LARGE_SEND_ON_WRITABLE 1
+#endif
+#ifndef tt_LARGE_SEND_WRITABLE_FALLBACK_NS
+#define tt_LARGE_SEND_WRITABLE_FALLBACK_NS 20000000ULL
+#endif
 // tx_buffer: room for a full batch plus one submessage overshooting it, which is what end_encode()'s
 // deferral needs - and, with fragmentation, room for a whole sample behind a batch that is still pending,
 // because the sample is encoded in one piece and only split as it is sent.

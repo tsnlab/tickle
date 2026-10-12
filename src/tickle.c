@@ -7863,6 +7863,7 @@ static void large_cursor_stop(struct tt_Context* node, struct tt_Publisher* pub)
         tt_Context_unschedule(node, large_send_resume, pub);
         cursor->scheduled = false;
     }
+    cursor->on_writable = false;
     cursor->active = false;
 }
 
@@ -8415,8 +8416,13 @@ static bool large_cursor_next(struct tt_Context* node, struct tt_Publisher* pub)
     return true;
 }
 
-// The socket's send buffer is full: try again from tt_Context_poll() after the cursor's wait - reset while sends make
-// progress, doubled up to tt_LARGE_SEND_RETRY_MAX_NS while they do not.
+// The socket's send buffer is full: try again from tt_Context_poll() when the socket reports room - the wait set's
+// EPOLLOUT on Linux, once half the buffer is free, as a blocking writer is woken (tt_tx_await_writable(),
+// large_tx_writable()) - with a timer of tt_LARGE_SEND_WRITABLE_FALLBACK_NS only as a fallback. Without that report
+// (another HAL, tt_LARGE_SEND_ON_WRITABLE 0) or a poll that never waits (timeout 0, which never sees it): after the
+// cursor's wait - reset while sends make progress, doubled up to tt_LARGE_SEND_RETRY_MAX_NS while they do not. The
+// timer alone retried 20-30 times per MB on the rig (send_waits; 2026-10-12), each a sendmmsg() that mostly found the
+// buffer still full.
 static void large_wait_for_room(struct tt_Context* node, struct tt_Publisher* pub, bool progress) {
     struct tt_LargeCursor* cursor = &pub->large_cursor;
     if (cursor->retry_ns == 0 || progress) {
@@ -8424,10 +8430,15 @@ static void large_wait_for_room(struct tt_Context* node, struct tt_Publisher* pu
     } else if (cursor->retry_ns < tt_LARGE_SEND_RETRY_MAX_NS) {
         cursor->retry_ns *= 2;
     }
+#if tt_LARGE_SEND_ON_WRITABLE
+    cursor->on_writable = cursor->on_writable || tt_tx_await_writable(node);
+#endif
     if (cursor->scheduled) {
         return;
     }
-    if (tt_Context_schedule(node, tt_get_ns() + cursor->retry_ns, large_send_resume, pub)) {
+    bool reported = cursor->on_writable && !__atomic_load_n(&node->large.polls_without_waiting, __ATOMIC_RELAXED);
+    uint64_t wait = reported ? (uint64_t)tt_LARGE_SEND_WRITABLE_FALLBACK_NS : cursor->retry_ns;
+    if (tt_Context_schedule(node, tt_get_ns() + wait, large_send_resume, pub)) {
         cursor->scheduled = true;
         node->large.send_waits++;
     } else {
@@ -8494,8 +8505,33 @@ static void large_send_resume(struct tt_Context* node, uint64_t time, void* para
     UNUSED(time);
     struct tt_Publisher* pub = (struct tt_Publisher*)param;
     pub->large_cursor.scheduled = false;
+    pub->large_cursor.on_writable = false;
     large_pump(node, pub);
 }
+
+#if tt_LARGE_SEND_ON_WRITABLE
+// The HAL's wait found the socket writable again (node->large.tx_writable, tt_tx_await_writable()): every large send
+// waiting for room goes on now, instead of at its fallback timer. Called from tt_Context_poll() after its wait, without
+// the state lock, which it takes as a scheduler entry runs under it.
+static void large_tx_writable(struct tt_Context* node) {
+    state_lock(node);
+    node->large.tx_writable = false;
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_PUBLISHER) {
+            continue;
+        }
+        struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
+        if (!pub->large_cursor.scheduled) {
+            continue; // not waiting for room
+        }
+        (void)tt_Context_unschedule(node, large_send_resume, pub);
+        node->large.send_writable++;
+        large_send_resume(node, 0, pub);
+    }
+    state_unlock(node);
+}
+#endif
 
 // What a retransmission of seq_no found: not a large sample's, resent, or gone (evicted, expired - the caller sends
 // the eviction HEARTBEAT).
@@ -19007,6 +19043,22 @@ static int64_t poll_wait_length(bool has_next, uint64_t next, uint64_t time, int
     return timeout;
 }
 
+#if tt_LARGE_SAMPLES
+// After the wait in poll_wait_io(): one that reported the socket writable (node->large.tx_writable, set by the HAL)
+// resumes every large send waiting for room (large_tx_writable()). True when that was all it brought (len -1).
+static bool large_after_wait(struct tt_Context* node, int32_t len) {
+#if tt_LARGE_SEND_ON_WRITABLE
+    if (node->large.tx_writable) {
+        large_tx_writable(node);
+        return len == -1;
+    }
+#endif
+    UNUSED(node);
+    UNUSED(len);
+    return false;
+}
+#endif
+
 // tt_Context_poll()'s I/O step, when nothing is due: wait for a datagram, the next entry or an interrupt.
 // Returns true with *result set when the poll should end.
 static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, uint64_t time, int64_t timeout,
@@ -19111,6 +19163,11 @@ static bool poll_wait_io(struct tt_Context* node, bool has_next, uint64_t next, 
 #if tt_SEGMENT_ENABLED
     segment_resumed(node, len, time);
 #endif
+#if tt_LARGE_SAMPLES
+    if (large_after_wait(node, len)) {
+        return false; // the wait brought only the socket's room: go round, and wait again
+    }
+#endif
 
     // A wait that ended with nothing received BEFORE the entry it was waiting for fell due was cut short
     // by a signal (the HALs report EINTR as a timeout). Hand control back rather than wait again: under
@@ -19182,6 +19239,9 @@ static tt_ret_t node_poll(struct tt_Context* node, int64_t timeout) {
     // nothing. Now the scheduler sets the wait, and returning once the due work has run keeps the
     // caller's loop exactly as responsive: it regains control after every event, and only then.
     const bool until_next_event = timeout < 0;
+#if tt_LARGE_SAMPLES
+    __atomic_store_n(&node->large.polls_without_waiting, timeout == 0, __ATOMIC_RELAXED); // large_wait_for_room()
+#endif
 
     uint64_t time = tt_get_ns();
     const uint64_t poll_start = time;
@@ -19869,13 +19929,14 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
 #endif
 #if tt_LARGE_SAMPLES
     TT_LOG_INFO("Node %u large: published=%lu reassembled=%lu abandoned=%lu no_buffer=%lu dropped=%lu duplicate=%lu "
-                "tail_abandoned=%lu window_too_small=%lu send_waits=%lu encoded_by_range=%lu encode_failed=%lu",
+                "tail_abandoned=%lu window_too_small=%lu send_waits=%lu encoded_by_range=%lu encode_failed=%lu "
+                "send_writable=%lu",
                 node->id, (unsigned long)node->large.published, (unsigned long)node->large.reassembled,
                 (unsigned long)node->large.abandoned, (unsigned long)node->large.no_buffer,
                 (unsigned long)node->large.dropped, (unsigned long)node->large.duplicate,
                 (unsigned long)node->large.tail_abandoned, (unsigned long)node->large.window_too_small,
                 (unsigned long)node->large.send_waits, (unsigned long)node->large.encoded_by_range,
-                (unsigned long)node->large.encode_failed);
+                (unsigned long)node->large.encode_failed, (unsigned long)node->large.send_writable);
     large_release_assemblies(node); // every sample still being put together: its buffer back to the caller
 #endif
 #if tt_HYBRID_TRANSPORT
