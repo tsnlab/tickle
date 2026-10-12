@@ -224,6 +224,13 @@ MUTANTS = [
         HAL,
     ),
     (
+        "read: the socket read again by the drain after a run in place (the empty read per wake-up)",
+        "src/hal_linux.c",
+        "                node->hal.rx_idle |= socket_fd == node->hal.data_sock ? TT_RX_IDLE_DATA : TT_RX_IDLE_WELL_KNOWN;",
+        "",
+        HAL,
+    ),
+    (
         "read: a miss not put back together",
         "src/hal_linux.c",
         "                    memcpy((uint8_t*)buf + framing, dest, back);",

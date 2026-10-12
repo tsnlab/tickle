@@ -2375,6 +2375,11 @@ static int32_t direct_read(struct tt_Context* node, int socket_fd, void* buf, si
             if (direct_is_hinted_run(large, (const uint8_t*)buf, (size_t)got, bytes) &&
                 __atomic_load_n(&large->direct_bytes, __ATOMIC_SEQ_CST) == bytes) {
                 large->direct_split = dest;
+                // A run is up to ~64 KB: the next one is at least its wire time away (0.5 ms at 1 GbE), far more than
+                // core takes over this one. So the drain after it does not ask this socket again - the read that
+                // would find it empty, a system call a wake-up - and anything that did come is reported by the next
+                // wait, which is level-triggered (tt_try_receive()'s rx_idle).
+                node->hal.rx_idle |= socket_fd == node->hal.data_sock ? TT_RX_IDLE_DATA : TT_RX_IDLE_WELL_KNOWN;
             } else {
                 large->direct_missed++;
                 if ((size_t)got > framing) {
