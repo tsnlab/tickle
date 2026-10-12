@@ -12,6 +12,8 @@
 // check's own, datagrams are sent to the context's data socket on loopback, and each is read with tt_try_receive():
 //   1. control  - no hint: the datagram is read whole into the buffer, and no read is counted as aimed.
 //   2. in place - the hinted run: the framing in the buffer, the payload in the hinted place, direct_split set to it.
+//   2b. after  - a datagram queued behind a run read in place is not read by the drain (tt_try_receive() answers
+//                 -1, no read of the socket) but by the next wait (tt_receive()), whole.
 //   3. shorter  - a run of the same sample from the same place, fewer units: in place too; the hinted bytes past it
 //                 untouched.
 //   4-8. misses - the framing differs before the unit count, after it, a count of 0, more units than hinted (the
@@ -120,7 +122,7 @@ static int32_t read_it(struct tt_Context* node, uint32_t len) {
         memset(buf, 0, sizeof(buf)); // nothing of an earlier datagram can pass for this one
         int32_t got = tt_try_receive(node, buf, sizeof(buf), &ip, &port);
         if (got < 0) {
-            return got;
+            continue; // sockets skipped after a run read in place (2b) answer -1 once, then are asked again
         }
         if ((uint32_t)got == len && buf[2] == framing[2]) {
             return got;
@@ -220,6 +222,40 @@ int main(void) {
            memcmp(place, datagram + FRAMING, HINT_UNITS * UNIT) == 0 ? "in" : "NOT in",
            node.large.direct_split == place ? "set" : "NOT set");
     failures += in_place ? 0 : 1;
+
+    // 2b. after
+    hint(&node);
+    len = build(framing, FRAMING + (HINT_UNITS * UNIT));
+    uint32_t behind = FRAMING + UNIT + 7U;
+    static uint8_t behind_bytes[FRAMING + UNIT + 7U];
+    if (!send_to(sender, node.hal.data_sock, len)) {
+        printf("rx_direct_check: SETUP FAILED - send (after)\n");
+        return CHECK_SETUP_FAILED;
+    }
+    uint8_t other_head[FRAMING];
+    memcpy(other_head, framing, FRAMING);
+    other_head[FRAMING - 1U] ^= 0x5AU;
+    build(other_head, behind);
+    memcpy(behind_bytes, datagram, behind);
+    if (!send_to(sender, node.hal.data_sock, behind)) {
+        printf("rx_direct_check: SETUP FAILED - send (behind)\n");
+        return CHECK_SETUP_FAILED;
+    }
+    got = read_it(&node, len);
+    bool first_in_place = got == (int32_t)len && node.large.direct_split == place;
+    uint64_t reads_before = node.large.direct_reads;
+    int32_t drained = tt_try_receive(&node, buf, sizeof(buf), &ip, &port);
+    bool not_read = drained < 0 && node.large.direct_reads == reads_before;
+    memset(buf, 0, sizeof(buf));
+    int32_t waited = tt_receive(&node, buf, sizeof(buf), &ip, &port, (int64_t)tt_SECOND / 10);
+    bool by_the_wait = waited == (int32_t)behind && memcmp(buf, behind_bytes, behind) == 0;
+    bool after_ok = first_in_place && not_read && by_the_wait;
+    printf("rx_direct_check: %s - after a run in place (read %d, in place %d; the drain answered %d): the drain %s, "
+           "the next wait read %d of %u bytes %s\n",
+           after_ok ? "PASS" : "FAIL", (int)got, first_in_place ? 1 : 0, (int)drained,
+           not_read ? "did not read the socket" : "READ the socket", (int)waited, (unsigned)behind,
+           by_the_wait ? "whole" : "NOT whole");
+    failures += after_ok ? 0 : 1;
 
     // 3. shorter
     hint(&node);
