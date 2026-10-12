@@ -56,6 +56,9 @@ enum check_exit { CHECK_PASS = 0, CHECK_FAIL = 1, CHECK_SETUP_FAILED = 3 };
 #define CHECK_CONTEXT_ID 61 // any valid id; this context never meets another
 #define UNIT 100U           // the hint's unit: small, so a datagram is easy to build
 #define HINT_UNITS 3U
+#define HINT_BYTES ((size_t)HINT_UNITS * UNIT)
+#define BEHIND_EXTRA 7U    // a datagram queued behind the run (2b): a length no run has
+#define FRAMING_FLIP 0x5AU // what turns 2b's datagram's last framing byte into another
 #define PLACE_BYTES 1024U
 #define SENTINEL 0xA5
 #define FRAMING ((uint32_t)(sizeof(struct tt_SingleHeader) + sizeof(struct tt_FragRunLHeader)))
@@ -137,6 +140,7 @@ static int failures;
 // as another thread's large_direct_withdraw() does it, after the bytes went where the hint said.
 static struct tt_Context* withdraw_after_read;
 
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - libc's prototype names them __fd and so on
 ssize_t recvmsg(int socket_fd, struct msghdr* msg, int flags) {
     ssize_t got = syscall(SYS_recvmsg, socket_fd, msg, flags);
     if (withdraw_after_read != NULL && got > 0) { // a read that took a datagram, not an empty socket
@@ -215,26 +219,25 @@ int main(void) {
     }
     got = read_it(&node, len);
     bool in_place = got == (int32_t)len && memcmp(buf, framing, FRAMING) == 0 &&
-                    memcmp(place, datagram + FRAMING, HINT_UNITS * UNIT) == 0 && node.large.direct_split == place &&
+                    memcmp(place, datagram + FRAMING, HINT_BYTES) == 0 && node.large.direct_split == place &&
                     node.large.direct_reads == reads + 1U;
     printf("rx_direct_check: %s - in place: %d bytes, payload %s the hinted place, split %s\n",
-           in_place ? "PASS" : "FAIL", (int)got,
-           memcmp(place, datagram + FRAMING, HINT_UNITS * UNIT) == 0 ? "in" : "NOT in",
+           in_place ? "PASS" : "FAIL", (int)got, memcmp(place, datagram + FRAMING, HINT_BYTES) == 0 ? "in" : "NOT in",
            node.large.direct_split == place ? "set" : "NOT set");
     failures += in_place ? 0 : 1;
 
     // 2b. after
     hint(&node);
     len = build(framing, FRAMING + (HINT_UNITS * UNIT));
-    uint32_t behind = FRAMING + UNIT + 7U;
-    static uint8_t behind_bytes[FRAMING + UNIT + 7U];
+    uint32_t behind = FRAMING + UNIT + BEHIND_EXTRA;
+    static uint8_t behind_bytes[FRAMING + UNIT + BEHIND_EXTRA];
     if (!send_to(sender, node.hal.data_sock, len)) {
         printf("rx_direct_check: SETUP FAILED - send (after)\n");
         return CHECK_SETUP_FAILED;
     }
     uint8_t other_head[FRAMING];
     memcpy(other_head, framing, FRAMING);
-    other_head[FRAMING - 1U] ^= 0x5AU;
+    other_head[FRAMING - 1U] ^= FRAMING_FLIP;
     build(other_head, behind);
     memcpy(behind_bytes, datagram, behind);
     if (!send_to(sender, node.hal.data_sock, behind)) {
@@ -273,8 +276,8 @@ int main(void) {
     for (uint32_t i = 2U * UNIT; i < HINT_UNITS * UNIT; i++) {
         rest_untouched = rest_untouched && place[i] == SENTINEL;
     }
-    bool shorter_ok = got == (int32_t)len && memcmp(place, datagram + FRAMING, 2U * UNIT) == 0 && rest_untouched &&
-                      node.large.direct_split == place;
+    bool shorter_ok = got == (int32_t)len && memcmp(place, datagram + FRAMING, (size_t)2U * UNIT) == 0 &&
+                      rest_untouched && node.large.direct_split == place;
     printf("rx_direct_check: %s - shorter run in place, the hinted bytes past it %s\n", shorter_ok ? "PASS" : "FAIL",
            rest_untouched ? "untouched" : "WRITTEN");
     failures += shorter_ok ? 0 : 1;
