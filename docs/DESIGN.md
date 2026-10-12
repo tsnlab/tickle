@@ -753,8 +753,8 @@ first: it delivered the first ring record and discarded the queued BEST_EFFORT s
   (same-host p1-p4, best-effort throughput and latency, A P B B P A): no metric WORSE, but at a resolution of the
   placement floor, up to 12% per sample on the max-rate cells; its arm B sent 49 fences at start-up, all passed - a
   publisher whose subscriber's segment is not built yet is a switch from UDP too. The rig decided otherwise: gate v2
-  same-host (`~/rig_results_safe/ab_samehost_segment_fence_20261011-150800.summary.txt`) read `2587915b` against
-  `5dd8b35c` +20..+27 user instructions a round trip on reliable_latency p1-p4, client and server, and +2..+3 a sample
+  same-host (`~/rig_results_safe/ab_samehost_segment_fence_20261011-150800.summary.txt`) read the first fence commit
+  (measured as ab/segment-fence 2587915b; landed as `e518b00e`) against `5dd8b35c` +20..+27 user instructions a round trip on reliable_latency p1-p4, client and server, and +2..+3 a sample
   on best_effort_throughput. Counted exactly on aarch64 under qemu (`aarch64_insn/samehost_qemu.sh`, lat_p1 client
   4850 a round trip): the fields inserted mid-`tt_Context` moved every later field, and aarch64 reaches a far one with
   an extra `add`; `process_datagram_in` +9 (that and its length test), `tt_Context_poll` +6..+14 (the per-sleep
@@ -763,7 +763,11 @@ first: it delivered the first ring record and discarded the queued BEST_EFFORT s
   (`~/rig_results_safe/aarch64_insn/fence_ABC_final2/summary.txt`). The max-rate cells under qemu are bimodal (the
   share sent over UDP while the ring is full) and resolve nothing at this size. `qemu_tb_count.c` counted every block
   as one instruction under a qemu built without a disassembler, which Ubuntu's 10.2 is; the figures before this one
-  from `aarch64_insn/` are block counts.
+  from `aarch64_insn/` are block counts. The fixed fence on the rig (gate v2 same-host, 2026-10-12,
+  `~/rig_results_safe/ab_samehost_segment_fence2_20261012-072644.summary.txt`, measured as ab/segment-fence-v2
+  8de4100d against `5dd8b35c`): still WORSE by the gate's rule, but at +0.03..+0.13% user instructions (a few a sample
+  or round trip) instead of +0.2..+0.5%; landed on the user's decision as a correctness fix (start-up BEST_EFFORT loss
+  1-224 samples -> 0).
 
 **Doorbell: a FIFO, rung once per reader sleep.**
 
