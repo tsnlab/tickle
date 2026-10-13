@@ -274,6 +274,13 @@ struct tt_hal {
     uint64_t timer_waits;
     uint64_t timer_sets;
     uint64_t timer_fires;
+    // The timer only after TT_RX_LAZY_STREAK waits in a row ended for data (hal_linux.c rx_timer_next(), 2026-10-13):
+    // timer_data_streak counts them, and a wait in which the timer fired (a read) starts it again; the
+    // others take their timeout as before, counted in timer_plain_waits (the rx line's timer_plain=). timer_adapt:
+    // TT_RX_LAZY_ADAPT=0 turns the rule off (every wait in a poll uses the timer, as ab/rx-gap2 did: the A/B control).
+    uint8_t timer_data_streak;
+    bool timer_adapt;
+    uint64_t timer_plain_waits;
     // tt_tx_await_writable()'s watch: a duplicate of data_sock, in that set for EPOLLOUT | EPOLLONESHOT - one report,
     // re-armed by the next call - so a large send waiting for room resumes when the socket has half its buffer free,
     // as a blocking writer is woken, rather than on a timer. A duplicate because the set holds data_sock itself for

@@ -622,6 +622,9 @@ static void wait_set_setup(struct tt_Context* node) {
         return;
     }
     node->hal.timer_fd_plus1 = timer + 1;
+    // The timer only after a wait that ended for a datagram (rx_timer_next()); TT_RX_LAZY_ADAPT=0: after every wait.
+    const char* adapt = getenv("TT_RX_LAZY_ADAPT");
+    node->hal.timer_adapt = adapt == NULL || strcmp(adapt, "0") != 0;
 #else
     (void)node;
 #endif
@@ -998,6 +1001,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.timer_waits = 0;
     node->hal.timer_sets = 0;
     node->hal.timer_fires = 0;
+    node->hal.timer_data_streak = 0;
+    node->hal.timer_adapt = false; // set with the timer (wait_set_setup())
+    node->hal.timer_plain_waits = 0;
     node->hal.tx_watch_fd_plus1 = 0;
     node->hal.tx_watch_armed = false;
 #if tt_SEGMENT_ENABLED
@@ -1217,7 +1223,7 @@ static const char* drain_ring_name(uint8_t ring) {
 #endif
 
 #define DIRECT_LINE_BYTES 160U // tt_close()'s direct_* fields on the rx line
-#define GRO_LINE_BYTES 224U    // and its empty_reads=, idle_skips=, gro_* and timer_* fields
+#define GRO_LINE_BYTES 256U    // and its empty_reads=, idle_skips=, gro_* and timer_* fields
 
 void tt_close(struct tt_Context* node) {
     // Read while both sockets are still open: what the kernel dropped at each, beside core's traffic line.
@@ -1236,18 +1242,21 @@ void tt_close(struct tt_Context* node) {
 #if TT_HAL_UDP_GRO
     (void)snprintf(gro, sizeof(gro),
                    " nonblock=%d empty_reads=%lu idle_skips=%lu gro_on=%d gro_enables=%lu gro_aborts=%lu "
-                   "gro_commits=%lu timer_waits=%lu timer_sets=%lu timer_fires=%lu",
+                   "gro_commits=%lu timer_waits=%lu timer_sets=%lu timer_fires=%lu timer_plain=%lu",
                    node->hal.nonblocking ? 1 : 0, (unsigned long)node->hal.rx_empty_reads,
                    (unsigned long)node->hal.rx_idle_skips, node->hal.gro_state != TT_GRO_PLAIN ? 1 : 0,
                    (unsigned long)node->hal.gro_enables, (unsigned long)node->hal.gro_aborts,
                    (unsigned long)node->hal.gro_commits, (unsigned long)node->hal.timer_waits,
-                   (unsigned long)node->hal.timer_sets, (unsigned long)node->hal.timer_fires);
+                   (unsigned long)node->hal.timer_sets, (unsigned long)node->hal.timer_fires,
+                   (unsigned long)node->hal.timer_plain_waits);
 #else
     (void)snprintf(gro, sizeof(gro),
-                   " nonblock=%d empty_reads=%lu idle_skips=%lu timer_waits=%lu timer_sets=%lu timer_fires=%lu",
+                   " nonblock=%d empty_reads=%lu idle_skips=%lu timer_waits=%lu timer_sets=%lu timer_fires=%lu "
+                   "timer_plain=%lu",
                    node->hal.nonblocking ? 1 : 0, (unsigned long)node->hal.rx_empty_reads,
                    (unsigned long)node->hal.rx_idle_skips, (unsigned long)node->hal.timer_waits,
-                   (unsigned long)node->hal.timer_sets, (unsigned long)node->hal.timer_fires);
+                   (unsigned long)node->hal.timer_sets, (unsigned long)node->hal.timer_fires,
+                   (unsigned long)node->hal.timer_plain_waits);
 #endif
 #if tt_RX_DRAIN
     drain_stop(node);
@@ -2813,6 +2822,14 @@ static void rx_timer_arm(struct tt_hal* hal, uint64_t until) {
     }
 }
 
+// The timer fired (or the clock stepped): read, so the level-triggered set stops reporting it, and disarmed.
+static void rx_timer_take(struct tt_hal* hal) {
+    uint64_t expirations = 0;
+    (void)read(hal->timer_fd_plus1 - 1, &expirations, sizeof(expirations)); // ECANCELED on a clock step: a fire
+    hal->timer_armed_ns = 0;
+    hal->timer_fires++;
+}
+
 // rx_wait() until `until` (absolute, UINT64_MAX: none) with the deadline timer: the same return convention.
 static int rx_wait_lazy(struct tt_Context* node, uint64_t until, uint32_t* ready) {
     struct tt_hal* hal = &node->hal;
@@ -2825,10 +2842,7 @@ static int rx_wait_lazy(struct tt_Context* node, uint64_t until, uint32_t* ready
         if (count <= 0 || (*ready & RX_READY_TIMER) == 0) {
             return count;
         }
-        uint64_t expirations = 0;
-        (void)read(hal->timer_fd_plus1 - 1, &expirations, sizeof(expirations)); // ECANCELED on a clock step: a fire
-        hal->timer_armed_ns = 0;
-        hal->timer_fires++;
+        rx_timer_take(hal);
         *ready &= ~RX_READY_TIMER;
         if (*ready != 0) {
             return count - 1;
@@ -2839,6 +2853,7 @@ static int rx_wait_lazy(struct tt_Context* node, uint64_t until, uint32_t* ready
         // An earlier deadline's timer, or a clock step: wait on, for this one.
     }
 }
+
 #endif
 
 // rx_wait() for `timeout` ns, 0 meaning no limit: this function's contract (hal.h) is "0 for no timeout", and a NULL
@@ -2880,6 +2895,96 @@ static int rx_wait_for(struct tt_Context* node, int64_t timeout, uint32_t* ready
         }
     }
     return rx_wait_ns(node, timeout, ready);
+}
+#endif
+
+#if TT_HAL_EPOLL
+// The deadline timer only where it pays (2026-10-13). It saves the hrtimer epoll_pwait2() starts inside its own call,
+// and costs a system call each time it is set (a deadline earlier than the armed one, or none armed) and each time it
+// fires (read()): it pays only on a run of waits that end for data before a deadline that rarely moves earlier - a
+// stream subscriber's. Elsewhere it cost what it saved several times over. The core ping-pong client (lat_gap_pc.sh,
+// reliable_latency p1, 1 kHz): ae5defc8 added 2.0 timerfd_settime() and 1.0 read() a round trip, client instructions
+// +4.4% user, +5% kernel (on the rig's Pi: kernel +22..+24% a sample, gate v2 WORSE in every latency cell); the PC
+// bench publisher (tx_gap_pc.sh, 1 MB BEST_EFFORT): ~2.8 sets, ~2.8 reads and ~1 more wake-up a sample. So a wait uses
+// the timer only after TT_RX_LAZY_STREAK waits in a row ended for data (a datagram, or a rung segment bell); a wait in
+// which the timer fired (a read) starts the count again, and the waits in between take their timeout as before
+// (rx_wait_plain(), counted timer_plain=). TT_RX_LAZY_ADAPT=0: every wait in a poll uses the timer, as ab/rx-gap2 did
+// (the A/B control).
+#define TT_RX_LAZY_STREAK 8U
+static void rx_timer_next(struct tt_hal* hal, int count, uint32_t ready, bool cost) {
+    if (count < 0) {
+        return;
+    }
+    if (cost || (ready & (RX_READY_WELL_KNOWN | RX_READY_DATA | RX_READY_BELL)) == 0) {
+        hal->timer_data_streak = 0;
+    } else if (hal->timer_data_streak < UINT8_MAX) {
+        hal->timer_data_streak++;
+    }
+}
+
+static bool rx_timer_lazy_next(const struct tt_hal* hal) {
+    return !hal->timer_adapt || hal->timer_data_streak >= TT_RX_LAZY_STREAK;
+}
+
+// A wait in a poll that takes its timeout (the deadline `until`): the timer may still be armed by an earlier wait, and
+// it is in the set either way. A fire of it is read - level-triggered, it would end every wait after it at once - and
+// the wait goes on to its own deadline: an early return would read to the poll loop as a wait cut short by a signal.
+static int rx_wait_plain(struct tt_Context* node, int64_t timeout, uint64_t until, uint32_t* ready) {
+    node->hal.timer_plain_waits++;
+    for (;;) {
+#if TT_HAL_UDP_GRO
+        int count = rx_wait_for(node, timeout, ready);
+#else
+        struct timespec timeout_ts;
+        timeout_ts.tv_sec = (time_t)(timeout / SEC_NS);
+        timeout_ts.tv_nsec = (long)(timeout % SEC_NS);
+        int count = rx_wait(node, timeout > 0 ? &timeout_ts : NULL, ready);
+#endif
+        if (count <= 0 || (*ready & RX_READY_TIMER) == 0) {
+            return count;
+        }
+        rx_timer_take(&node->hal);
+        *ready &= ~RX_READY_TIMER;
+        if (*ready != 0) {
+            return count - 1;
+        }
+        if (until != UINT64_MAX) {
+            const uint64_t now = tt_get_ns();
+            if (now >= until) {
+                return 0;
+            }
+            timeout = (int64_t)(until - now);
+        }
+    }
+}
+
+// tt_receive()'s wait with the wait set: in a poll (a deadline set), with the timer or with the timeout by
+// rx_timer_next()'s rule; outside one, with the timeout.
+static int rx_wait_epoll(struct tt_Context* node, int64_t timeout, uint32_t* ready) {
+    const uint64_t until = node->hal.timer_fd_plus1 > 0 ? rx_wait_until(node) : 0;
+    if (until != 0) {
+#if TT_HAL_UDP_GRO
+        const bool lazy = node->hal.gro_state != TT_GRO_SETTLING && rx_timer_lazy_next(&node->hal);
+#else
+        const bool lazy = rx_timer_lazy_next(&node->hal);
+#endif
+        const uint64_t fires = node->hal.timer_fires;
+        int count = lazy ? rx_wait_lazy(node, until, ready) : rx_wait_plain(node, timeout, until, ready);
+        rx_timer_next(&node->hal, count, *ready, node->hal.timer_fires != fires);
+        return count;
+    }
+#if TT_HAL_UDP_GRO
+    return rx_wait_for(node, timeout, ready);
+#else
+    struct timespec* timeout_ts_ptr = NULL;
+    struct timespec timeout_ts;
+    if (timeout > 0) {
+        timeout_ts.tv_sec = (time_t)(timeout / SEC_NS);
+        timeout_ts.tv_nsec = (long)(timeout % SEC_NS);
+        timeout_ts_ptr = &timeout_ts;
+    }
+    return rx_wait(node, timeout_ts_ptr, ready);
+#endif
 }
 #endif
 
@@ -2925,25 +3030,7 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     {
         uint32_t ready = 0;
 #if TT_HAL_EPOLL
-        const uint64_t until = node->hal.timer_fd_plus1 > 0 ? rx_wait_until(node) : 0;
-#if TT_HAL_UDP_GRO
-        int poll_ret = until != 0 && node->hal.gro_state != TT_GRO_SETTLING ? rx_wait_lazy(node, until, &ready)
-                                                                            : rx_wait_for(node, timeout, &ready);
-#else
-        int poll_ret = 0;
-        if (until != 0) {
-            poll_ret = rx_wait_lazy(node, until, &ready);
-        } else {
-            struct timespec* timeout_ts_ptr = NULL;
-            struct timespec timeout_ts;
-            if (timeout > 0) {
-                timeout_ts.tv_sec = (time_t)(timeout / SEC_NS);
-                timeout_ts.tv_nsec = (long)(timeout % SEC_NS);
-                timeout_ts_ptr = &timeout_ts;
-            }
-            poll_ret = rx_wait(node, timeout_ts_ptr, &ready);
-        }
-#endif
+        int poll_ret = rx_wait_epoll(node, timeout, &ready);
 #elif TT_HAL_UDP_GRO
         int poll_ret = rx_wait_for(node, timeout, &ready);
 #else

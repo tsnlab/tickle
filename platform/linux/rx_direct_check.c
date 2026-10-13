@@ -41,6 +41,9 @@
 //                 that ends for data leaves the timer armed; the next, with a LATER deadline, sets nothing - the timer
 //                 fires at the old time, is re-armed, and the wait times out at its own deadline, not before; a wait
 //                 with an EARLIER deadline re-arms at once. Outside a poll (wait_until 0) the timer is not used.
+//  12b. deadline after no data - the timer only after 8 waits in a row ended for data: after a fire the next wait
+//                 takes its timeout (no set); a ping-pong never uses it; 8 datagrams put it back; a stale fire seen by
+//                 a plain wait is read once and the wait goes on; TT_RX_LAZY_ADAPT=0 (the flag) turns the rule off.
 // Exit 0 pass, 1 fail, 3 setup failed. Run by test.sh (test-linux) in a private namespace.
 
 // Built as rmw_tickle is (platform/linux/Makefile passes the same), so a lint of this file alone sees the same build.
@@ -624,6 +627,8 @@ static int32_t receive_until(uint32_t len, uint64_t until) {
     return -2;
 }
 
+static void check_deadline_after_no_data(void);
+
 static void check_deadline(void) {
     if (node.hal.timer_fd_plus1 == 0) {
         printf("rx_direct_check: SKIP - deadline: no timer in the wait set on this kernel\n");
@@ -632,6 +637,8 @@ static void check_deadline(void) {
     while (tt_try_receive(&node, buf, sizeof(buf), &any_ip, &any_port) >= 0) {
     }
     __atomic_store_n(&node.large.direct_bytes, 0U, __ATOMIC_SEQ_CST);
+    // The timer as a stream subscriber has it, after a run of waits that ended for data (12b tests that rule).
+    node.hal.timer_data_streak = UINT8_MAX;
     // A: deadline in 200 ms, data at once: the wait ends for the data, the timer stays armed (one set).
     uint64_t sets = node.hal.timer_sets;
     uint64_t start = tt_get_ns();
@@ -649,6 +656,7 @@ static void check_deadline(void) {
     int b_fires = (int)(node.hal.timer_fires - fires);
     bool later_waits = timed_out == -1 && ended >= until && b_sets == 1 && b_fires == 2 && node.hal.timer_armed_ns == 0;
     // C: data under a 300 ms deadline (armed for it), then an EARLIER deadline, 20 ms: re-armed at once (one set).
+    node.hal.timer_data_streak = UINT8_MAX; // B ended in a fire, which starts the run again
     (void)send_built(len, "deadline C");
     (void)receive_until(len, tt_get_ns() + DEADLINE_SECOND_NS);
     sets = node.hal.timer_sets;
@@ -669,6 +677,79 @@ static void check_deadline(void) {
                    data_arms ? 1 : 0, b_sets, b_fires, (long long)((int64_t)(ended - until) / NS_PER_US),
                    later_waits ? 1 : 0, earlier_rearms ? 1 : 0, outside_none ? 1 : 0);
     verdict(data_arms && later_waits && earlier_rearms && outside_none, line);
+    check_deadline_after_no_data();
+}
+
+// 12b. The timer only after TT_RX_LAZY_STREAK (8) waits in a row ended for data (rx_timer_next()). E: C's last wait
+// ended in a fire, so the next takes its timeout: no set, no timer wait, one plain wait, ended at its deadline. P: a
+// ping-pong - a wait ending for a datagram, then one ending at its deadline, three times - never uses the timer (no
+// set, no timer wait: ae5defc8 cost the latency client 2 sets and a read a round trip). F: eight datagrams in a row put
+// it back; a wait woken by tt_wake_signal() leaves it armed (50 ms) and the next is plain; that one (150 ms) sees the
+// stale fire at 50 ms, reads it - no set - and goes on to its own deadline. G: with the rule off (TT_RX_LAZY_ADAPT=0,
+// here the flag) a wait after a timeout uses the timer again.
+#define DEADLINE_STALE_NS 50000000ULL  // F: the deadline the woken wait leaves armed
+#define DEADLINE_PLAIN_NS 150000000ULL // F: the plain wait's own, later
+#define DEADLINE_E_NS 30000000ULL      // E: a plain wait's deadline
+#define LAZY_STREAK 8U                 // hal_linux.c TT_RX_LAZY_STREAK
+#define PING_PONGS 3
+static void check_deadline_after_no_data(void) {
+    uint64_t sets = node.hal.timer_sets;
+    uint64_t waits = node.hal.timer_waits;
+    uint64_t plain = node.hal.timer_plain_waits;
+    uint64_t e_until = tt_get_ns() + DEADLINE_E_NS;
+    int32_t e_out = receive_until(0, e_until);
+    bool e_plain = e_out == -1 && tt_get_ns() >= e_until && node.hal.timer_sets == sets &&
+                   node.hal.timer_waits == waits && node.hal.timer_plain_waits == plain + 1U;
+    // P
+    uint32_t len = build(framing, FRAMING + UNIT);
+    sets = node.hal.timer_sets;
+    waits = node.hal.timer_waits;
+    bool p_data = true;
+    for (int i = 0; i < PING_PONGS; i++) {
+        (void)send_built(len, "deadline P");
+        p_data = p_data && receive_until(len, tt_get_ns() + DEADLINE_FIRST_NS) == (int32_t)len;
+        (void)receive_until(0, tt_get_ns() + DEADLINE_SHORT_NS);
+    }
+    bool p_plain = p_data && node.hal.timer_sets == sets && node.hal.timer_waits == waits;
+    // F
+    bool f_data = true;
+    for (uint32_t i = 0; i < LAZY_STREAK; i++) {
+        (void)send_built(len, "deadline F");
+        f_data = f_data && receive_until(len, tt_get_ns() + DEADLINE_FIRST_NS) == (int32_t)len;
+    }
+    f_data = f_data && node.hal.timer_data_streak >= LAZY_STREAK;
+    (void)tt_wake_signal(&node);
+    uint64_t stale = tt_get_ns() + DEADLINE_STALE_NS;
+    set_wait_until(stale);
+    sets = node.hal.timer_sets;
+    int32_t woken = tt_receive(&node, buf, sizeof(buf), &any_ip, &any_port, (int64_t)DEADLINE_STALE_NS);
+    bool f_armed = woken == -3 && node.hal.timer_sets == sets + 1U && node.hal.timer_armed_ns == stale &&
+                   node.hal.timer_data_streak == 0;
+    uint64_t fires = node.hal.timer_fires;
+    sets = node.hal.timer_sets;
+    plain = node.hal.timer_plain_waits;
+    uint64_t f_until = tt_get_ns() + DEADLINE_PLAIN_NS;
+    int32_t f_out = receive_until(0, f_until);
+    uint64_t f_ended = tt_get_ns();
+    bool f_stale = f_out == -1 && f_ended >= f_until && node.hal.timer_fires == fires + 1U &&
+                   node.hal.timer_sets == sets && node.hal.timer_plain_waits == plain + 1U &&
+                   node.hal.timer_armed_ns == 0;
+    // G
+    node.hal.timer_adapt = false;
+    waits = node.hal.timer_waits;
+    plain = node.hal.timer_plain_waits;
+    (void)receive_until(0, tt_get_ns() + DEADLINE_SHORT_NS);
+    bool g_off = node.hal.timer_waits == waits + 1U && node.hal.timer_plain_waits == plain;
+    node.hal.timer_adapt = true;
+    set_wait_until(0);
+    char line[LINE_BYTES];
+    (void)snprintf(line, sizeof(line),
+                   "deadline after no data: plain after a fire %d; a ping-pong never uses it %d; 8 datagrams put it "
+                   "back %d; a wake leaves it armed %d; the stale fire read once, ended %+lld us from its own %d; the "
+                   "rule off %d",
+                   e_plain ? 1 : 0, p_plain ? 1 : 0, f_data ? 1 : 0, f_armed ? 1 : 0,
+                   (long long)((int64_t)(f_ended - f_until) / NS_PER_US), f_stale ? 1 : 0, g_off ? 1 : 0);
+    verdict(e_plain && p_plain && f_data && f_armed && f_stale && g_off, line);
 }
 
 int main(void) {

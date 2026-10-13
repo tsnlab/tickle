@@ -1196,7 +1196,14 @@ ms/MB (1 / 4 MB): the checksum pass, the wait, and a copy target that is cold (c
 - **The wait's deadline, moved only earlier.** A timerfd in the wait set holds the poll loop's absolute deadline and
   is re-armed only when a wait's deadline is earlier than the armed one; the wait itself has no timeout, so a wait that
   ends for data starts no hrtimer. An armed time that comes first is read, re-armed, and the wait goes on.
-  `TT_RX_LAZY_TIMER=0` is the control. Counted on the rx line: `timer_waits`, `timer_sets`, `timer_fires`.
+  `TT_RX_LAZY_TIMER=0` is the control. Counted on the rx line: `timer_waits`, `timer_sets`, `timer_fires`. Round 3
+  (2026-10-13): only after 8 waits in a row ended for data, and a fire starts the count again. The timer saves the
+  hrtimer inside `epoll_pwait2()` and costs a system call per set and per fire, so it pays only on a stream
+  subscriber's run of data wake-ups. In the core ping-pong it cost the client 2 `timerfd_settime()` and 1 `read()` a
+  round trip (PC: user instructions +4.4%, kernel +5%; the rig's gate v2: client kernel instructions +22..+24% a
+  sample, WORSE in every latency cell), and the bench publisher ~2.8 sets, ~2.8 reads and ~1 wake-up a 1 MB sample.
+  The other waits take their timeout (`timer_plain=`); a stale fire such a wait sees is read and the wait goes on.
+  `TT_RX_LAZY_ADAPT=0` is the control.
 - **`n_max` from the first clean sample** (section 8 above: no slow start, "none seen").
 - **The copy target.** Page faults per MB: 2-3 on the PC bench in every arm, none on the Pi; the cold destination is
   a 1-4 MB buffer that no cache holds across samples, and the rmw pool already hands back the most recent buffer. No
