@@ -137,6 +137,11 @@
 #                    the sender sent and the receiver never read was lost (i4s_drain_summary.py reads them).
 #   meta.txt         the run's QoS flags, rate, SAMEHOST, CLOCK_PROBE, DUR and DRY, for the summary.
 #
+# Added 2026-10-13 for the rx gap 2 A/B (~/rig_queue_rx_gap2.sh), off unless set:
+#   PGFAULTS=1   every perf_test's page faults with no instrument on it, every arm: the launcher samples its own
+#                perf_test's /proc/PID/stat (minflt, majflt) every 0.5 s while it lives, into <stem>_<role>.pgf
+#                ("<wall ns> <minflt> <majflt>" a line). rx_gap2_read.py takes faults per MB over the steady window.
+#
 # Added 2026-10-11 for the lend A/B (~/rig_queue_largemsg_lend.sh; docs/RMW.md "Loaned messages"):
 #   tickle@loans  tickle@head's own librmw_tickle.so with ROS_DISABLE_LOANED_MESSAGES=0, so rclcpp takes loans where
 #                 the rmw offers them (a labelled second arm: tickle@head runs rcl's default). Cross-host default mode
@@ -512,7 +517,7 @@ role=$1; envfile=$2; shift 2
 source "$envfile"
 '"$(remote_child_of_perf)"'
 PT=${KA_PERF_TEST:-$HOME/rmw_perf_ws/install/performance_test/lib/performance_test/perf_test}
-rm -f /tmp/ka_$role.log /tmp/ka_$role.maps /tmp/ka_$role.pid /tmp/ka_$role.treat /tmp/ka_$role.lpid /tmp/ka_$role.perfpid /tmp/ka_$role.insn /tmp/ka_$role.start
+rm -f /tmp/ka_$role.log /tmp/ka_$role.maps /tmp/ka_$role.pid /tmp/ka_$role.treat /tmp/ka_$role.lpid /tmp/ka_$role.perfpid /tmp/ka_$role.insn /tmp/ka_$role.start /tmp/ka_$role.pgf
 date +%s%N > /tmp/ka_$role.start
 setsid nohup bash -c "echo \$\$ > /tmp/ka_$role.lpid; exec ${KA_PRE:-} \"\$0\" \"\$@\"" "$PT" "$@" > /tmp/ka_$role.log 2>&1 < /dev/null &
 for i in 1 2 3 4 5 6 7 8 9 10; do [ -s /tmp/ka_$role.lpid ] && break; sleep 0.2; done
@@ -522,6 +527,11 @@ if [ -n "${KA_PRE:-}" ]; then
   for i in $(seq 1 30); do q=$(child_exe "$p" "*/perf_test") && { p=$q; break; }; sleep 0.1; done
 fi
 echo "$p" > /tmp/ka_$role.pid
+# PGFAULTS=1 (header): perf_test'"'"'s own page faults while it lives, from its /proc/PID/stat (fields 10 and 12).
+if [ "${KA_PGF:-0}" = 1 ]; then
+  ( while [ -r /proc/$p/stat ]; do read -r -a st < /proc/$p/stat 2>/dev/null || break
+      echo "$(date +%s%N) ${st[9]} ${st[11]}"; sleep 0.5; done > /tmp/ka_$role.pgf ) > /dev/null 2>&1 < /dev/null &
+fi
 # The treatment as perf_test received it: the exported middleware variables (what exec hands on), and the profile
 # file they name with its hash, read now and again from the process itself at 2 s if it is still alive.
 treat() { grep -E "^(RMW_|FASTRTPS_|FASTDDS_|CYCLONEDDS_URI|ROS_DOMAIN_ID|SKIP_DEFAULT_XML_FILE|TT_UDP_OFFLOAD)" | sort
@@ -668,7 +678,7 @@ net_snap() { # $1 file, $2 label: one line per host (header, <stem>_net.txt); "u
 launch() { # host role arm topic args...
     local h=$1 role=$2 arm=$3 topic=$4 pre=""; shift 4
     [ "$INSN_COUNT" = 1 ] && pre=$(insn_prefix "/tmp/ka_$role.insn")
-    sh_ "$h" "KA_PRE='$pre' /tmp/ka_launch.sh $role /tmp/ka_env_${arm/@/_}_$topic.sh $*" </dev/null
+    sh_ "$h" "KA_PRE='$pre' KA_PGF='${PGFAULTS:-0}' /tmp/ka_launch.sh $role /tmp/ka_env_${arm/@/_}_$topic.sh $*" </dev/null
 }
 # insn_of <host> <role>: that role's counts as RUN-line fields (gate v2 A2), once perf itself has exited (up to 5 s).
 insn_of() {
@@ -711,6 +721,10 @@ run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher second
     fetch_ "$SERVER" /tmp/ka_sub.log "$dir/${stem}_sub.log"
     fetch_ "$CLIENT" /tmp/ka_pub.start "$dir/${stem}_pub.start"
     fetch_ "$SERVER" /tmp/ka_sub.start "$dir/${stem}_sub.start"
+    if [ "${PGFAULTS:-0}" = 1 ]; then
+        fetch_ "$CLIENT" /tmp/ka_pub.pgf "$dir/${stem}_pub.pgf"
+        fetch_ "$SERVER" /tmp/ka_sub.pgf "$dir/${stem}_sub.pgf"
+    fi
     sh_ "$CLIENT" "cat /tmp/ka_pub.treat 2>/dev/null" </dev/null > "$dir/${stem}_pub.treat"
     sh_ "$SERVER" "cat /tmp/ka_sub.treat 2>/dev/null" </dev/null > "$dir/${stem}_sub.treat"
     local mp ms
