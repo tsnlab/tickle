@@ -2600,13 +2600,16 @@ static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* wri
 
 static void hybrid_announce(struct tt_Context* node, uint64_t now);
 
-// At a sample's tail: a reader that has announced no p yet and has seen enough frames without a loss event announces
-// "none seen" at once, rather than at the next announce interval. A RELIABLE AUTO writer sends MTU units until it hears
-// a p (hybrid_peer_p()): until 2026-10-13 that was up to a whole interval of samples at 0% loss (the rig's 4 MB cell: 1
-// to 11 samples, by the interval's phase), then n crept up with 1 / N. A reader that has seen loss announces at the
-// interval, as before: what it measured is a p, and a writer at n 1 meanwhile is what that p would choose anyway.
+// At a sample's tail: a reader whose frames have just come to "none seen" (enough of them, no loss event) announces it
+// at once, rather than at the next announce interval. A RELIABLE AUTO writer sends MTU units until it hears a p
+// (hybrid_peer_p()), and n follows what it hears: until 2026-10-13 that was up to a whole interval of samples at 0%
+// loss (the rig's 4 MB cell: 1 to 11 MTU samples, by the interval's phase), then n crept up with 1 / N - and an
+// interval that fell inside the first sample announced 1 / N of a few hundred frames, holding n at 2-3 for the next
+// interval (the PC, 1 MB: 30 samples). Once "none seen" is announced this does nothing more; a reader that has seen
+// loss announces at the interval, as before.
 static void hybrid_rx_first_estimate(struct tt_Context* node) {
-    if (node->hybrid.advertised_loss == 0 && hybrid_rx_loss_code(&node->hybrid.rx_loss) == HYBRID_LOSS_NONE_SEEN) {
+    if (node->hybrid.advertised_loss != HYBRID_LOSS_NONE_SEEN &&
+        hybrid_rx_loss_code(&node->hybrid.rx_loss) == HYBRID_LOSS_NONE_SEEN) {
         hybrid_announce(node, tt_get_ns());
     }
 }

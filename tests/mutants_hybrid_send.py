@@ -754,6 +754,13 @@ MUTANTS = [
         SEND,
     ),
     (
+        "p: 'none seen' at the tail only before any announce",
+        "src/tickle.c",
+        "    if (node->hybrid.advertised_loss != HYBRID_LOSS_NONE_SEEN &&",
+        "    if (node->hybrid.advertised_loss == 0 &&",
+        SEND,
+    ),
+    (
         "p: the first 'none seen' waits for the interval",
         "src/tickle.c",
         "        hybrid_rx_first_estimate(node);",

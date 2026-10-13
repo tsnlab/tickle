@@ -1648,6 +1648,23 @@ static void test_n_follows_p(void) {
 // once; from the second sample on every sample goes at n_max, the reader's cap starting there (no slow start). Until
 // 2026-10-13 the samples went as MTU units until the reader's first tick (sample 30) and n reached 45 only after about
 // 115,000 clean frames, ~6 s at 30 Hz.
+// The reader's announce interval falling inside the first sample, after `MID_SAMPLE_FRAMES` of its frames: the reader
+// then announces 1 / N of those frames, before "none seen" can be (at the tail).
+#define MID_SAMPLE_FRAMES 100U
+static bool mid_first_sample_ticked;
+static bool tick_mid_first_sample(const struct sim_datagram* d) {
+    (void)d;
+    struct tt_Context* reader = &readers[0].ctx;
+    if (!mid_first_sample_ticked && reader->hybrid.rx_loss.frames >= MID_SAMPLE_FRAMES) {
+        mid_first_sample_ticked = true;
+        uint8_t acting = sim_acting;
+        sim_acting = reader->id;
+        hybrid_reader_tick(reader, test_mock_now);
+        sim_acting = acting;
+    }
+    return false;
+}
+
 static void test_reliable_auto_leaves_mtu_after_one_clean_sample(void) {
     init_one(ONE_MB, FULL_CEILING, true);
     sim_start(0);
@@ -1656,12 +1673,16 @@ static void test_reliable_auto_leaves_mtu_after_one_clean_sample(void) {
     uint32_t first_runs_at = 0;
     uint32_t last_n = 0;
     uint32_t below_n_max = 0;
+    mid_first_sample_ticked = false;
     for (uint32_t s = 1; s <= 300; s++) {
         memset(&sent, 0, sizeof(sent));
         memset(seen_unit, 0, sizeof(seen_unit)); // seq_nos pass SEEN_MAX here: a unit is new to its own sample
-        test_mock_now = t + ((uint64_t)s * 34U * tt_MILLISECOND); // 30 a tick, just over a second
+        // A second on from the first tick: the interval falls due inside the first sample. 30 a tick after that.
+        test_mock_now = t + tt_SECOND + ((uint64_t)s * 34U * tt_MILLISECOND);
+        sim_drop_hook = s == 1 ? tick_mid_first_sample : NULL;
         EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)s));
         sim_settle((int)s, tt_SECOND);
+        sim_drop_hook = NULL;
         first_runs_at = first_runs_at == 0 && sent.runs != 0 ? s : first_runs_at;
         EXPECT_TRUE(sent.max_n >= last_n || sent.max_n == 0); // n never falls with nothing lost
         last_n = sent.max_n;
@@ -1670,6 +1691,7 @@ static void test_reliable_auto_leaves_mtu_after_one_clean_sample(void) {
             tick_readers(test_mock_now);
         }
     }
+    EXPECT_TRUE(mid_first_sample_ticked);
     EXPECT_EQ_U32(2, first_runs_at); // after the first sample's "none seen"
     EXPECT_EQ_U32(1, below_n_max);   // that first sample alone
     EXPECT_EQ_U32(45, last_n);
