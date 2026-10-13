@@ -758,8 +758,10 @@ leaves a gap, which is loss; a unit below it is a repair and counts for nothing.
 - `p_mtu`: lost over sent MTU units (tails, `n = 1` samples) - the frame-loss baseline, which reassembly cannot touch.
 - `p` (advertised): every frame is exposure; a lost MTU unit is one event on one frame, a lost run one event on its
   `n` frames. Read as its posterior mean, `(events + 1) / frames` (a flat prior): `Cost(n)` is close to linear in `p`
-  where `n` is chosen (`1 - q(n) ~ n p`), so that is the `n` of least expected wire bytes, and `n` leaves 1 as clean
-  frames accumulate (`n_max` at about 115,000). A 95% bound (3 / N at no events) would hold `n` below `n_max` at 0%
+  where `n` is chosen (`1 - q(n) ~ n p`), so that is the `n` of least expected wire bytes. With no event in at least
+  500 frames (`tt_HYBRID_NONE_SEEN_FRAMES`) the reader announces "none seen" instead - `n_max` - and that first
+  announce goes at the sample's tail, not at the next interval (2026-10-13: until then `n` crept up as `1 / N`, `n_max`
+  at about 115,000 clean frames, ~5 s of every 4 MB stream; a 1% path shows no event in 500 frames 0.7% of the time). A 95% bound (3 / N at no events) would hold `n` below `n_max` at 0%
   loss for as long as the window lasts. The window halves at 2^20 frames, not 2^17, for the same reason. Under a
   collapse `p` reads high, which only shortens a RELIABLE writer's `n`.
 - `q(n)`: runs arrived over runs sent, with their sizes, in the window since the last decision; per writer as well
@@ -781,8 +783,9 @@ cap grown in a few ticks can be far past the collapse point when it shows. The k
 datagrams that keeps it at its threshold, and the memory offered grows as `n` (at fixed `R` and `p`), so the measured
 survival says where the collapse began: `n_c ~= n q / q0`. On the PC (below): 30 MB/s, 0.1%: `n` = 8, 16, 45 give 3.7,
 2.7, 3.6 and `n = 4` held; 30 MB/s, 1%: 0.3 to 0.4 and `n = 2` held; 3 MB/s, 1%: 3.0 to 3.2 and `n = 4` held;
-30 MB/s, 0.01%: 28 and `n = 16` held. So `n_fail = max(2, min(n, ceil(n q / q0)))`, and the cap starts small (2) and
-doubles per clean window until the first collapse (slow start). Right after the memory fills, before the kernel admits
+30 MB/s, 0.01%: 28 and `n = 16` held. So `n_fail = max(2, min(n, ceil(n q / q0)))`. The cap starts at `n_max`
+(`tt_HYBRID_SLOW_START` 0, 2026-10-13; it started at 2 and doubled per clean window until the first collapse, which held
+every reader below `n_max` for its first ~5 s, and on the rig's 4 MB cell one run in three for the whole minute). Right after the memory fills, before the kernel admits
 anything again, `q` reads near 0 and the ceiling 2: the estimate errs low, and the probes climb back (on the PC at
 30 MB/s and 0.1%: ceiling 2, probe 3 at `2 tau`, ceiling 4, probe 5).
 
@@ -1137,8 +1140,7 @@ Three more cuts of the same gap ride on it, each its own commit:
 - **No empty read after a run.** A wake-up made three system calls (the wait, the read, and the drain's read that finds
   the socket empty) where Fast DDS's receive thread makes one. After a run read in place the HAL marks that socket idle
   for the drain: the next run is at least its wire time away, and anything that did come is reported by the next
-  wait, which is level-triggered. Not taken: replacing the wait's timeout with a timerfd (its hrtimer, +0.03/+0.05
-  ms/MB on the Pi) - the bench subscriber's wait deadline moved on 4,094 of 4,096 waits, so it would cost a call each.
+  wait, which is level-triggered. (Round 2 below: after any run read, and the wait's timeout as a lazy timerfd.)
 - **A run's units at once.** A run's continuation units are routed once a run (writer lookups, the compatibility
   check's discovery lookup), not once a unit. A RELIABLE Subscriber whose run lies past the watermark inside the window
   with its assembly held places the units and records them as one span (`update_reliable_ack()` with `rx_seq_span`, as
@@ -1168,6 +1170,40 @@ user + kernel, B against A (BETTER/WORSE beyond the floor, else HELD):
 
 The PC's own socket drops (other VMs on the host) bring repairs and move a run's count by several percent; the reader
 prints the runs without drops beside its verdict, as context.
+
+#### Receiving, round 2 (2026-10-13, `ab/rx-gap2`)
+
+With the Pi's kernel samples named (`~/claude_reports/rx_perf_gap2_2026-10-13.md`), the gap left was +0.26 / +0.28
+ms/MB (1 / 4 MB): the checksum pass, the wait, and a copy target that is cold (cache and TLB misses: no page faults).
+
+- **Both sockets `O_NONBLOCK`.** Linux's `udp_poll()` checks the first queued datagram's checksum before it reports a
+  blocking socket readable (`first_packet_length()`): a separate, cold pass, then the read copies the datagram again.
+  Non-blocking, the poll does not look and the checksum is made during the copy, as Fast DDS's `recvfrom()` makes it.
+  Every read was `MSG_DONTWAIT` already; blocking sends keep blocking (EAGAIN waits for `POLLOUT`). The checksum
+  stays. `TT_RX_NONBLOCK=0` is the control.
+- **A run read in place with receive offload on.** At 1 MB GRO stayed on for whole runs (MTU-mode samples turn it on)
+  and every read went to the GRO path first, so no run was read in place. `gro_read()` now takes the aimed read too; a
+  merged read is never taken in place. The empty-read cut now follows any read of a run, in place or not.
+- **The wait's deadline, moved only earlier.** A timerfd in the wait set holds the poll loop's absolute deadline and
+  is re-armed only when a wait's deadline is earlier than the armed one; the wait itself has no timeout, so a wait that
+  ends for data starts no hrtimer. An armed time that comes first is read, re-armed, and the wait goes on.
+  `TT_RX_LAZY_TIMER=0` is the control. Counted on the rx line: `timer_waits`, `timer_sets`, `timer_fires`.
+- **`n_max` from the first clean sample** (section 8 above: no slow start, "none seen").
+- **The copy target.** Page faults per MB: 2-3 on the PC bench in every arm, none on the Pi; the cold destination is
+  a 1-4 MB buffer that no cache holds across samples, and the rmw pool already hands back the most recent buffer. No
+  change; the rig A/B reports each arm's faults per MB (`PGFAULTS=1`).
+
+**PC evidence, not a rig figure** (`rx_gap_pc.sh`, each change against its parent, A/A floor; `rx_nonblock_pc.sh`
+for where the checksum is made; `~/largemsg_pc/rx_gap2/`). On x86 the copy is `rep movsb`, one instruction, so
+instructions per MB mislead wherever work moves into or out of a copy; cycles are given beside them.
+
+| change | 1 MiB | 4 MiB | note |
+|---|---|---|---|
+| run in place with GRO on, cut after any run (forced IP) | +0.9% HELD | -0.3% HELD | forced runs kept GRO off already; cycles +1.9% HELD / +4.6% WORSE (A/A spread ~3%) |
+| the same, AUTO with the cap on | not read (A's and B's runs incomplete: the PC's socket drops) | -2.5% HELD | aimed reads 64 a MB against A's 41: runs now read in place with GRO on |
+| both sockets O_NONBLOCK | +10.1% WORSE | +5.8% WORSE | kernel +13% / +9%: the checksum moved into the copy, which x86 makes with `rep movsb`; cycles -10.7% HELD / -22.5% BETTER; perf: checksum under `udp_poll()` 37-39% of samples -> 0%, in the copy 0 -> 26-29% (`rx_nonblock_pc.sh`) |
+| the deadline timer | +0.5% HELD | -0.9% HELD | kernel -1.4% BETTER at 4 MiB; cycles not resolved (A/A 14-16% that session); ~2,300 timer sets a run against 15,000-50,000 waits (the bench polls with a 10 ms budget) |
+| n_max from the first clean sample (AUTO, cap on) | -22.0% BETTER | -25.3% BETTER | cycles -12.7% / -27.6% BETTER; A sent 211 of 360 / 76 of 180 samples below n_max, B 1-31 / 1-16 (before the tail announce's fix: 1); latency median +0.22% WORSE at 1 MiB, -0.04% at 4 MiB |
 
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
