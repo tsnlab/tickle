@@ -561,6 +561,10 @@ struct tt_Lending {
 struct tt_LossEstimate {
     uint32_t events;
     uint32_t frames;
+    // `frames` when the last event was observed (0: none since the estimate began): how many clean frames have come
+    // since - the reader's p forgets a few events the frames after them have outlived (tickle.c,
+    // loss_estimate_forget_stale()).
+    uint32_t frames_at_event;
 };
 
 // Runs sent to a reader, arrived or lost, and their frames (units): q(n) as the reader measures it (DESIGN.md section
@@ -654,6 +658,10 @@ struct tt_HybridState {
     uint32_t rx_drop_credit[2];
     uint64_t receiver_drops;
     uint64_t receiver_lost;
+    // The reader's p forgot its events this many times (loss_estimate_forget_stale(): a few events the clean frames
+    // after them have outlived), and how many events it forgot in all.
+    uint64_t stale_forgets;
+    uint64_t stale_events;
 };
 #endif
 

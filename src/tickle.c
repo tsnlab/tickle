@@ -2346,10 +2346,49 @@ static double hybrid_test_forced_p = -1.0;
 static void loss_estimate_observe(struct tt_LossEstimate* estimate, uint32_t frames, uint32_t events) {
     estimate->frames += frames;
     estimate->events += events;
+    if (events != 0) {
+        estimate->frames_at_event = estimate->frames;
+    }
     if (estimate->frames >= (uint32_t)tt_HYBRID_WINDOW_FRAMES) {
         estimate->frames /= 2U;
         estimate->events /= 2U;
+        estimate->frames_at_event /= 2U;
     }
+}
+
+#ifdef TT_HYBRID_TEST_SEAM
+// The control arm of the stale-events tests: loss_estimate_forget_stale() never forgets.
+static bool hybrid_test_stale_off = false;
+#endif
+
+// A few events the frames after them have outlived (2026-10-13). The reader's p is its posterior mean over the whole
+// window, (events + 1) / frames: a few events early in a stream - the rig's 1 MB RELIABLE cell, 0% loss, socket drops
+// 0: two in its first two samples, by the n they gave - read as p ~ 2e-3 over those 1,446 frames and then fall only as
+// 1 / frames, so n reached n_max ~13 s and 393 samples later. Read at the last event, p said a clean stretch of F
+// frames has probability exp(-p F); once that is below 1e-4 (p F >= tt_HYBRID_STALE_EXPOSURE) the events were a burst
+// that has ended, not the path's rate, and the estimate starts again from the clean stretch: no events, its frames -
+// "none seen" when they are 500 or more. Only while the events are few (at most tt_HYBRID_STALE_EVENTS): a path that
+// loses frames all along has more, and a gap between them that long comes 1e-4 of the time, while the first few are
+// noisy enough to judge either way. Returns whether it forgot.
+static bool loss_estimate_forget_stale(struct tt_LossEstimate* estimate) {
+#ifdef TT_HYBRID_TEST_SEAM
+    if (hybrid_test_stale_off) {
+        return false;
+    }
+#endif
+    if (estimate->events == 0 || estimate->events > (uint32_t)tt_HYBRID_STALE_EVENTS ||
+        estimate->frames_at_event == 0) {
+        return false;
+    }
+    uint32_t clean = estimate->frames - estimate->frames_at_event;
+    double p_then = ((double)estimate->events + 1.0) / (double)estimate->frames_at_event;
+    if (p_then * (double)clean < tt_HYBRID_STALE_EXPOSURE) {
+        return false;
+    }
+    estimate->events = 0;
+    estimate->frames = clean;
+    estimate->frames_at_event = 0;
+    return true;
 }
 
 // The one-sided 95% upper limit of a Poisson mean given k events: exact for k < 11 (half the chi-square quantile with
@@ -2600,6 +2639,17 @@ static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* wri
 
 static void hybrid_announce(struct tt_Context* node, uint64_t now);
 
+// The reader's p forgets a few events its clean frames have outlived (loss_estimate_forget_stale()), counted on the
+// hybrid line (stale_forgets=, stale_events=). At each tail and each announce: a stretch long enough shows at a tail,
+// so "none seen" goes at once (below), not at the next interval.
+static void hybrid_rx_forget_stale(struct tt_HybridState* hybrid) {
+    uint32_t events = hybrid->rx_loss.events;
+    if (loss_estimate_forget_stale(&hybrid->rx_loss)) {
+        hybrid->stale_forgets++;
+        hybrid->stale_events += events;
+    }
+}
+
 // At a sample's tail: a reader whose frames have just come to "none seen" (enough of them, no loss event) announces it
 // at once, rather than at the next announce interval. A RELIABLE AUTO writer sends MTU units until it hears a p
 // (hybrid_peer_p()), and n follows what it hears: until 2026-10-13 that was up to a whole interval of samples at 0%
@@ -2608,6 +2658,7 @@ static void hybrid_announce(struct tt_Context* node, uint64_t now);
 // interval (the PC, 1 MB: 30 samples). Once "none seen" is announced this does nothing more; a reader that has seen
 // loss announces at the interval, as before.
 static void hybrid_rx_first_estimate(struct tt_Context* node) {
+    hybrid_rx_forget_stale(&node->hybrid);
     if (node->hybrid.advertised_loss != HYBRID_LOSS_NONE_SEEN &&
         hybrid_rx_loss_code(&node->hybrid.rx_loss) == HYBRID_LOSS_NONE_SEEN) {
         hybrid_announce(node, tt_get_ns());
@@ -12000,6 +12051,7 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
 static void hybrid_announce(struct tt_Context* node, uint64_t now) {
     struct tt_HybridState* hybrid = &node->hybrid;
     uint16_t bytes = hybrid_cap_bytes(node, hybrid->cap, hybrid_units_within(node->ip_reassembly_max, false));
+    hybrid_rx_forget_stale(hybrid);
     uint16_t loss = hybrid_rx_loss_code(&hybrid->rx_loss);
     bool loss_moved = hybrid_loss_moved(loss, hybrid->advertised_loss);
     if (bytes == hybrid->advertised && !loss_moved) {
@@ -20283,10 +20335,11 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
 #if tt_HYBRID_TRANSPORT
     // The realized treatment of a hybrid-transport arm (DESIGN.md section 8): what this context sent in runs and alone,
     // the n it chose per sample and destination (n_hist: 1, 2-3, 4-7, 8-15, 16-31, 32 to n_max - 1, n_max), and as a
-    // reader the ceiling it advertised last and the control law's decisions. A rig arm reads it; there is no other.
+    // reader the ceiling it advertised last, the control law's decisions, its p's events/frames at the end and the
+    // events it forgot (loss_estimate_forget_stale()). A rig arm reads it; there is no other.
     TT_LOG_INFO("Node %u hybrid: runs=%lu run_units=%lu mtu_units=%lu n_hist=%lu/%lu/%lu/%lu/%lu/%lu/%lu "
                 "advertised=%u cap=%u cap_off=%u collapses=%lu probes=%lu path_failures=%lu receiver_drops=%lu "
-                "receiver_lost=%lu",
+                "receiver_lost=%lu rx_loss=%u/%u stale_forgets=%lu stale_events=%lu",
                 node->id, (unsigned long)node->hybrid.runs, (unsigned long)node->hybrid.run_units,
                 (unsigned long)node->hybrid.mtu_units, (unsigned long)node->hybrid.n_hist[0],
                 (unsigned long)node->hybrid.n_hist[1], (unsigned long)node->hybrid.n_hist[2],
@@ -20295,7 +20348,9 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned)node->hybrid.advertised, (unsigned)node->hybrid.cap, node->hybrid.cap_off ? 1U : 0U,
                 (unsigned long)node->hybrid.collapses, (unsigned long)node->hybrid.probes,
                 (unsigned long)node->hybrid.path_failures, (unsigned long)node->hybrid.receiver_drops,
-                (unsigned long)node->hybrid.receiver_lost);
+                (unsigned long)node->hybrid.receiver_lost, (unsigned)node->hybrid.rx_loss.events,
+                (unsigned)node->hybrid.rx_loss.frames, (unsigned long)node->hybrid.stale_forgets,
+                (unsigned long)node->hybrid.stale_events);
 #endif
 #if tt_SEGMENT_ENABLED
     // Before the socket goes: the segment is named from this context's address, and the

@@ -341,6 +341,10 @@ static void print_hybrid(const struct tt_Context* node, const struct tt_Publishe
            hybrid->window.lost, hybrid->window.sent);
     printf(" hybrid_mtu_loss=%u/%u hybrid_advertised_loss=0x%04x", hybrid->mtu_loss.events, hybrid->mtu_loss.frames,
            (unsigned)hybrid->advertised_loss);
+#ifdef tt_HYBRID_STALE_EVENTS // a tree whose reader forgets a few events its clean frames outlived
+    printf(" hybrid_stale_forgets=%lu hybrid_stale_events=%lu", (unsigned long)hybrid->stale_forgets,
+           (unsigned long)hybrid->stale_events);
+#endif
 #ifdef tt_HAL_RECEIVER_DROPS
     printf(" hybrid_receiver_drops=%lu hybrid_receiver_lost=%lu", (unsigned long)hybrid->receiver_drops,
            (unsigned long)hybrid->receiver_lost);

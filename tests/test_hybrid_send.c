@@ -962,7 +962,7 @@ static void test_reliable_auto_starts_at_mtu(void) {
 static struct tt_HybridState* law_reader(uint32_t events, uint32_t frames) {
     init_one(SMALL_LEN, FULL_CEILING, false);
     struct tt_HybridState* hybrid = &readers[0].ctx.hybrid;
-    hybrid->mtu_loss = (struct tt_LossEstimate) {events, frames};
+    hybrid->mtu_loss = (struct tt_LossEstimate) {events, frames, 0};
     return hybrid;
 }
 
@@ -979,7 +979,7 @@ static void law_window(struct tt_HybridState* hybrid, uint64_t now, uint32_t run
 // significant and 20 is not; a significant excess under 2 L0 is not a collapse; and nothing is decided without enough
 // runs, losses, or an MTU baseline. A clean window loses no more than R L0.
 static void test_the_collapse_test_is_the_designs(void) {
-    struct tt_LossEstimate mtu = {30, 30000}; // p_mtu 0.1%
+    struct tt_LossEstimate mtu = {30, 30000, 0}; // p_mtu 0.1%
     struct tt_RunWindow consistent = {1000, 8, 8000};
     EXPECT_TRUE(!hybrid_collapsed(&consistent, &mtu));
     EXPECT_TRUE(hybrid_clean(&consistent, &mtu));
@@ -993,20 +993,20 @@ static void test_the_collapse_test_is_the_designs(void) {
     EXPECT_TRUE(!hybrid_collapsed(&within, &mtu));
     EXPECT_TRUE(!hybrid_clean(&within, &mtu)); // neither: the window gathers more
     // Significant (z near 6) but only 1.2x L0 on a vast exposure: not far below (1 - p)^n.
-    struct tt_LossEstimate vast = {10000, 10000000};
+    struct tt_LossEstimate vast = {10000, 10000000, 0};
     struct tt_RunWindow slight = {125000, 1200, 1000000};
     EXPECT_TRUE(!hybrid_collapsed(&slight, &vast));
     struct tt_RunWindow few_runs = {15, 15, 120};
     EXPECT_TRUE(!hybrid_collapsed(&few_runs, &mtu));
     EXPECT_TRUE(!hybrid_clean(&few_runs, &mtu));
     struct tt_RunWindow few_lost = {100, 3, 800};
-    struct tt_LossEstimate none_lost = {0, 30000};
+    struct tt_LossEstimate none_lost = {0, 30000, 0};
     EXPECT_TRUE(!hybrid_collapsed(&few_lost, &none_lost));
-    struct tt_LossEstimate no_baseline = {0, 0};
+    struct tt_LossEstimate no_baseline = {0, 0, 0};
     EXPECT_TRUE(!hybrid_collapsed(&pc, &no_baseline));
     // A fragment path refusing every run on a young baseline (200 tails, none lost: p_hi 1.5%, L0 49% at n = 45) is a
     // collapse all the same - the run-level test does not need the many MTU units a per-frame comparison would.
-    struct tt_LossEstimate young = {0, 200};
+    struct tt_LossEstimate young = {0, 200, 0};
     struct tt_RunWindow refused = {510, 510, 510U * 45U};
     EXPECT_TRUE(hybrid_collapsed(&refused, &young));
     // Twice L0 on that baseline (L0 11.4% at n = 8) but on 20 runs: not significant (z 1.6).
@@ -1362,13 +1362,13 @@ static void test_the_path_rule_needs_frame_loss_to_be_no_excuse(void) {
     init_one(SMALL_LEN, FULL_CEILING, false);
     struct tt_Context* node = &readers[0].ctx;
     struct tt_HybridState* hybrid = &node->hybrid;
-    hybrid->mtu_loss = (struct tt_LossEstimate) {500, 1000};
+    hybrid->mtu_loss = (struct tt_LossEstimate) {500, 1000, 0};
     for (uint32_t s = 0; s < 8; s++) {
         hybrid_rx_note(node, SENDER_ID, 7, 100U + (3U * s), 2, 3, 1, false); // the tail of a sample whose run was lost
     }
     EXPECT_EQ_U64(0, hybrid->path_failures);
     EXPECT_EQ_U32(45, hybrid->cap);
-    hybrid->mtu_loss = (struct tt_LossEstimate) {0, 3000000};
+    hybrid->mtu_loss = (struct tt_LossEstimate) {0, 3000000, 0};
     hybrid_rx_note(node, SENDER_ID, 8, 200, 2, 3, 1, false); // another writer, met at a tail: no gap yet
     hybrid_rx_note(node, SENDER_ID, 8, 203, 2, 3, 1, false);
     EXPECT_EQ_U64(0, hybrid->path_failures); // once is still 2e-6
@@ -1410,7 +1410,7 @@ static void test_the_loss_code_rounds_up(void) {
 // The bound: 3 / N at no events (the rule of three), the exact Poisson limits up to 10, Wilson-Hilferty above; 1 with
 // no exposure.
 static void test_the_loss_bound_is_the_poisson_upper_limit(void) {
-    struct tt_LossEstimate estimate = {0, 0};
+    struct tt_LossEstimate estimate = {0, 0, 0};
     EXPECT_TRUE(loss_estimate_p(&estimate) == 1.0);
     estimate.frames = 10000;
     EXPECT_TRUE(loss_estimate_p(&estimate) > 0.000299 && loss_estimate_p(&estimate) < 0.000300);
@@ -1460,7 +1460,7 @@ static void test_a_reader_with_the_cap_off_advertises_its_ceiling(void) {
     sim_start(0);
     uint64_t t = test_mock_now;
     tick_readers(t);
-    node->hybrid.mtu_loss = (struct tt_LossEstimate) {0, 30000};
+    node->hybrid.mtu_loss = (struct tt_LossEstimate) {0, 30000, 0};
     node->hybrid.window = (struct tt_RunWindow) {1000, 1000, 45000}; // a collapse, were it judged
     node->hybrid.window_n = 45;
     tick_readers(t += tt_SECOND);
@@ -1755,6 +1755,134 @@ static void test_reliable_auto_leaves_mtu_after_one_clean_sample(void) {
     EXPECT_TRUE(readers[0].in_order);
 }
 
+// A few events early in a stream, then none (the rig's 1 MB RELIABLE cell, 2026-10-13, 0% loss and no socket drop: one
+// run in five spent ~393 samples below n_max). Here two runs of the second sample are lost on the path and the stream
+// is clean after. The reader reads p ~ 3 / 800 then; with the events kept, p falls only as 1 / frames and n reaches
+// n_max only after ~300,000 frames (~400 samples). Forgotten once the clean frames since have outlived them
+// (loss_estimate_forget_stale(): ~2,500 frames here), n is at n_max within a few samples, announced at a tail. The
+// control is the same stream with the rule off (hybrid_test_stale_off); the loss draws are identical in both.
+#define EARLY_EVENT_SAMPLE 2U
+#define EARLY_EVENT_RUNS 2U
+#define EARLY_STREAM_SAMPLES 450U
+#define EARLY_FORGOTTEN_WITHIN 10U // samples below n_max after the events, the rule on
+#define EARLY_HELD_AT_LEAST 200U   // and at least this many with the events kept (the control)
+static uint32_t early_sample;
+static uint32_t early_dropped;
+static bool drop_early_runs(const struct sim_datagram* d) {
+    if (d->from != SENDER_ID || d->len <= FRAME_PAYLOAD || early_sample != EARLY_EVENT_SAMPLE ||
+        early_dropped >= EARLY_EVENT_RUNS) {
+        return false;
+    }
+    early_dropped++;
+    return true;
+}
+
+static uint32_t early_events_stream(bool stale_off, uint64_t* forgets) {
+    hybrid_test_stale_off = stale_off;
+    init_one(ONE_MB, FULL_CEILING, true);
+    sim_start(0);
+    uint64_t t = test_mock_now;
+    tick_readers(t);
+    uint32_t below_n_max = 0;
+    early_dropped = 0;
+    for (uint32_t s = 1; s <= EARLY_STREAM_SAMPLES; s++) {
+        memset(&sent, 0, sizeof(sent));
+        memset(seen_unit, 0, sizeof(seen_unit));
+        test_mock_now = t + tt_SECOND + ((uint64_t)s * 34U * tt_MILLISECOND);
+        early_sample = s;
+        sim_drop_hook = drop_early_runs;
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)s));
+        sim_settle((int)s, tt_SECOND);
+        sim_drop_hook = NULL;
+        below_n_max += s > EARLY_EVENT_SAMPLE && sent.max_n < 45U ? 1U : 0U;
+        if (s % 30U == 0 || s == EARLY_EVENT_SAMPLE) { // the interval falls just after the events: n drops
+            tick_readers(test_mock_now);
+        }
+    }
+    EXPECT_EQ_U32(EARLY_EVENT_RUNS, early_dropped);
+    expect_intact(0, (int)EARLY_STREAM_SAMPLES);
+    *forgets = readers[0].ctx.hybrid.stale_forgets;
+    hybrid_test_stale_off = false;
+    return below_n_max;
+}
+
+// The rule itself: a few events (at most tt_HYBRID_STALE_EVENTS) are forgotten once the clean frames since the last
+// reach tt_HYBRID_STALE_EXPOSURE / p at that event, not one frame before; more events never are, however long the
+// stretch; none, nothing to forget. Forgetting keeps the clean stretch as the estimate's frames.
+static void test_the_stale_rule_is_the_designs(void) {
+    struct tt_LossEstimate estimate = {0, 0, 0};
+    loss_estimate_observe(&estimate, 1000, 0);
+    loss_estimate_observe(&estimate, 45, 2); // two events at 1,045 frames: p then 3 / 1045
+    uint32_t needed = (uint32_t)((tt_HYBRID_STALE_EXPOSURE * 1045.0 / 3.0) + 1.0);
+    loss_estimate_observe(&estimate, needed - 1U, 0);
+    EXPECT_TRUE(!loss_estimate_forget_stale(&estimate)); // one frame short
+    loss_estimate_observe(&estimate, 1, 0);
+    EXPECT_TRUE(loss_estimate_forget_stale(&estimate));
+    EXPECT_EQ_U32(0, estimate.events);
+    EXPECT_EQ_U32(needed, estimate.frames);
+    EXPECT_TRUE(!loss_estimate_forget_stale(&estimate)); // no events: nothing to forget
+    // tt_HYBRID_STALE_EVENTS events and one more, over a long clean stretch.
+    for (uint32_t events = tt_HYBRID_STALE_EVENTS; events <= tt_HYBRID_STALE_EVENTS + 1U; events++) {
+        estimate = (struct tt_LossEstimate) {0, 0, 0};
+        loss_estimate_observe(&estimate, 20000, events);
+        loss_estimate_observe(&estimate, 400000, 0);
+        EXPECT_TRUE(loss_estimate_forget_stale(&estimate) == (events <= tt_HYBRID_STALE_EVENTS));
+    }
+}
+
+static void test_a_few_early_events_are_forgotten(void) {
+    uint64_t forgets = 0;
+    uint32_t below = early_events_stream(false, &forgets);
+    EXPECT_TRUE(below <= EARLY_FORGOTTEN_WITHIN);
+    EXPECT_EQ_U64(1, forgets);
+    EXPECT_EQ_U64(EARLY_EVENT_RUNS, readers[0].ctx.hybrid.stale_events);
+    EXPECT_EQ_U32(0, readers[0].ctx.hybrid.rx_loss.events);
+    uint64_t control_forgets = 0;
+    uint32_t control = early_events_stream(true, &control_forgets);
+    EXPECT_TRUE(control >= EARLY_HELD_AT_LEAST);
+    EXPECT_EQ_U64(0, control_forgets);
+    printf("test_hybrid_send: early events: %u samples below n_max forgotten, %u kept (the control)\n", below, control);
+}
+
+// Loss all along is not a burst: at 1% and 0.1% frame loss a RELIABLE AUTO stream's events are never forgotten - they
+// come too often and soon too many - and the stream sends exactly what it sends with the rule off. The draws depend
+// only on the frames, so the two arms see the same loss.
+#define STEADY_SAMPLES 120U
+static void steady_loss_stream(uint32_t loss_ppm, bool stale_off, uint64_t* forgets, uint64_t* digest) {
+    hybrid_test_stale_off = stale_off;
+    init_one(ONE_MB, FULL_CEILING, true);
+    sim_start(loss_ppm);
+    uint64_t t = test_mock_now;
+    tick_readers(t);
+    for (uint32_t s = 1; s <= STEADY_SAMPLES; s++) {
+        test_mock_now = t + tt_SECOND + ((uint64_t)s * 34U * tt_MILLISECOND);
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)s));
+        sim_settle((int)s, 5 * tt_SECOND);
+        if (s % 30U == 0) {
+            tick_readers(test_mock_now);
+        }
+    }
+    expect_intact(0, (int)STEADY_SAMPLES);
+    *forgets = readers[0].ctx.hybrid.stale_forgets;
+    *digest = wire.hash;
+    hybrid_test_stale_off = false;
+}
+
+static void test_steady_loss_is_never_forgotten(void) {
+    static const uint32_t losses[] = {10000U, 1000U};
+    for (size_t i = 0; i < sizeof(losses) / sizeof(losses[0]); i++) {
+        uint64_t forgets = 0;
+        uint64_t digest = 0;
+        uint64_t control_forgets = 0;
+        uint64_t control_digest = 0;
+        steady_loss_stream(losses[i], false, &forgets, &digest);
+        steady_loss_stream(losses[i], true, &control_forgets, &control_digest);
+        EXPECT_EQ_U64(0, forgets);
+        EXPECT_EQ_U64(0, control_forgets);
+        EXPECT_TRUE(digest == control_digest); // the same wire, byte for byte
+    }
+}
+
 // Under frame loss, RELIABLE delivers every sample whole and in order, and every repair is an MTU unit - no run is ever
 // resent, no repair datagram is above one frame. Forced IP (n = 45 throughout) and AUTO, 1% and 5% frame loss, small
 // and large samples.
@@ -2047,14 +2175,14 @@ static void test_the_objective_is_wire_bytes(void) {
 
 // p for the objective is the posterior mean (events + 1) / frames, 1 with no exposure; the bound stays 3 / N.
 static void test_the_objective_reads_the_posterior_mean(void) {
-    struct tt_LossEstimate estimate = {0, 0};
+    struct tt_LossEstimate estimate = {0, 0, 0};
     EXPECT_TRUE(loss_estimate_mean(&estimate) == 1.0);
     estimate.frames = 100000;
     EXPECT_TRUE(loss_estimate_mean(&estimate) > 0.0000099 && loss_estimate_mean(&estimate) < 0.0000101);
     estimate.events = 99;
     EXPECT_TRUE(loss_estimate_mean(&estimate) > 0.00099 && loss_estimate_mean(&estimate) < 0.00101);
     // n_max at 0% from about 115,000 clean frames, and kept there: the window halves at 2^20, not below it.
-    estimate = (struct tt_LossEstimate) {0, 115000};
+    estimate = (struct tt_LossEstimate) {0, 115000, 0};
     EXPECT_EQ_U32(45, hybrid_n_star(loss_estimate_mean(&estimate), HYBRID_UNIT, HYBRID_UNIT_HEADER, 45));
     estimate.frames = (uint32_t)tt_HYBRID_WINDOW_FRAMES / 2U;
     EXPECT_EQ_U32(45, hybrid_n_star(loss_estimate_mean(&estimate), HYBRID_UNIT, HYBRID_UNIT_HEADER, 45));
@@ -2436,6 +2564,9 @@ int main(void) {
     test_a_reassembly_squeeze_end_to_end();
     test_n_follows_p();
     test_reliable_auto_leaves_mtu_after_one_clean_sample();
+    test_the_stale_rule_is_the_designs();
+    test_a_few_early_events_are_forgotten();
+    test_steady_loss_is_never_forgotten();
     test_reliable_repairs_are_mtu_units_only();
     test_nacks_are_read_for_the_watch();
     test_mixed_reliable_readers_each_get_their_own_n();
