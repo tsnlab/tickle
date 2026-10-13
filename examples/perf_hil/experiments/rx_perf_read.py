@@ -231,12 +231,18 @@ def stat_event_name(event):
 
 def parse_stat_pmu(path):
     """pmu mode: {event: summed count} over threads, {event: lowest running share %}, {events perf could not count},
-    {event: {thread: count}}; (None, ...) when the file is missing or holds no count at all."""
+    {event: {thread: count}}; (None, ...) when the file is missing or holds no count at all.
+
+    --per-thread prints "<not counted>" for a thread that did not run in the window (seen on the PC preflight: perf_test's
+    idle threads, every event). That thread adds nothing and hides nothing. An event is COULD NOT LOOK (in the returned
+    set) when perf said "<not supported>" for it, when no thread has a count for it, or when it is "<not counted>" on a
+    thread that another event shows running (a count > 0) - that thread's share of it is unknown, not zero."""
     ev, pct, uncounted, per_thread = {}, {}, set(), {}
     try:
         lines = Path(path).read_text(errors="replace").splitlines()
     except OSError:
         return None, {}, set(), {}
+    status = {}  # (thread, event) -> count or the "<...>" text
     for line in lines:
         if not line or line.startswith("#"):
             continue
@@ -246,9 +252,10 @@ def parse_stat_pmu(path):
         thread, val, name = f[0], f[1], stat_event_name(f[3])
         try:
             v = float(val)
-        except ValueError:  # <not counted> / <not supported>: this thread's count is unknown, not zero
-            uncounted.add(name)
+        except ValueError:
+            status[(thread, name)] = val.strip()
             continue
+        status[(thread, name)] = v
         ev[name] = ev.get(name, 0.0) + v
         per_thread.setdefault(name, {})[thread] = per_thread.get(name, {}).get(thread, 0.0) + v
         try:
@@ -256,6 +263,11 @@ def parse_stat_pmu(path):
         except ValueError:
             share = 100.0
         pct[name] = min(pct.get(name, 100.0), share)
+    running = {t for (t, _e), v in status.items() if isinstance(v, float) and v > 0}
+    for (t, e), v in status.items():
+        if isinstance(v, str) and ("supported" in v or t in running):
+            uncounted.add(e)
+    uncounted |= {e for _t, e in status if e not in ev}
     return (ev or None), pct, uncounted, per_thread
 
 
@@ -960,6 +972,16 @@ perf_test 1 3
     check(f"pmu stat parse {ev} {pct} {unc}",
           ev == {"l2d_cache_refill": 400.0, "instructions": 9.0} and pct["l2d_cache_refill"] == 62.5 and
           unc == {"dtlb_walk"} and per_thread["l2d_cache_refill"]["dds.udp-2"] == 100.0)
+    # an idle thread's <not counted> hides nothing; <not counted> on a thread another event shows running does
+    idle_text = "perf_test-1,500,,cycles,5,100.00,,\nperf_test-1,400,,instructions,5,100.00,,\n" \
+                "perf_test-ust-2,<not counted>,,cycles,0,100.00,,\nperf_test-ust-2,<not counted>,,instructions,0,100.00,,\n" \
+                "perf_test-1,<not counted>,,l2d_cache_refill,0,0.00,,\nperf_test-3,20,,l2d_cache_refill,5,100.00,,\n"
+    p = Path("/tmp") / f"rx_perf_selftest_{__import__('os').getpid()}.idle"
+    p.write_text(idle_text)
+    ev, _pct, unc, _pt = parse_stat_pmu(p)
+    p.unlink()
+    check(f"idle thread is not blindness, a blind counter on a running thread is {ev} {unc}",
+          ev == {"cycles": 500.0, "instructions": 400.0, "l2d_cache_refill": 20.0} and unc == {"l2d_cache_refill"})
 
     def runs_(vals):  # {event: [per-MB per run]} -> run dicts
         n = len(next(iter(vals.values())))
