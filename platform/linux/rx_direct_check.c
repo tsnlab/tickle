@@ -35,6 +35,10 @@
 //                 TT_RX_NONBLOCK=0 leaves both blocking. And a blocking send still blocks rather than failing: with
 //                 the data socket's send buffer filled to refusal (MSG_DONTWAIT), tt_send_to() waits for room and
 //                 sends - it returns the length, not -1 with EAGAIN (SKIP where loopback never lets the buffer fill).
+//  12. deadline - the wait's deadline timer, with the poll loop's absolute deadline set by hand (wait_until): a wait
+//                 that ends for data leaves the timer armed; the next, with a LATER deadline, sets nothing - the timer
+//                 fires at the old time, is re-armed, and the wait times out at its own deadline, not before; a wait
+//                 with an EARLIER deadline re-arms at once. Outside a poll (wait_until 0) the timer is not used.
 // Exit 0 pass, 1 fail, 3 setup failed. Run by test.sh (test-linux) in a private namespace.
 
 // Built as rmw_tickle is (platform/linux/Makefile passes the same), so a lint of this file alone sees the same build.
@@ -87,6 +91,9 @@ enum check_exit { CHECK_PASS = 0, CHECK_FAIL = 1, CHECK_SETUP_FAILED = 3 };
 #define LINE_BYTES 256U
 #define NONBLOCK_SEND_BYTES 60000U // a datagram that takes most of a small send buffer
 #define NONBLOCK_FILL_TRIES 64
+#define DEADLINE_FIRST_NS 200000000ULL  // 12: the first wait's deadline, 200 ms
+#define DEADLINE_SECOND_NS 300000000ULL // the second's, later
+#define DEADLINE_SHORT_NS 20000000ULL   // an earlier one, 20 ms
 static uint8_t place[PLACE_BYTES];
 static uint8_t framing[FRAMING];
 static uint8_t datagram[FRAMING + (8U * UNIT)];
@@ -547,6 +554,75 @@ static void check_nonblocking(void) {
     unsetenv("TT_RX_NONBLOCK");
 }
 
+// 12. deadline
+static void set_wait_until(uint64_t until) {
+    node.wait_until_hi = (uint32_t)(until >> 32U);
+    node.wait_until_lo = (uint32_t)until;
+}
+
+// As a poll waits: tt_receive() until it returns `len` bytes or `until` has passed - -1 then. A wait that comes back
+// early with nothing (an interrupt: io_uring task work reads as one) is made again, as the poll loop makes it.
+static int32_t receive_until(uint32_t len, uint64_t until) {
+    set_wait_until(until);
+    for (int i = 0; i < MAX_READS; i++) {
+        uint64_t now = tt_get_ns();
+        if (now >= until) {
+            return -1;
+        }
+        int32_t got = tt_receive(&node, buf, sizeof(buf), &any_ip, &any_port, (int64_t)(until - now));
+        if (len != 0 && got == (int32_t)len) {
+            return got;
+        }
+    }
+    return -2;
+}
+
+static void check_deadline(void) {
+    if (node.hal.timer_fd_plus1 == 0) {
+        printf("rx_direct_check: SKIP - deadline: no timer in the wait set on this kernel\n");
+        return;
+    }
+    while (tt_try_receive(&node, buf, sizeof(buf), &any_ip, &any_port) >= 0) {
+    }
+    __atomic_store_n(&node.large.direct_bytes, 0U, __ATOMIC_SEQ_CST);
+    // A: deadline in 200 ms, data at once: the wait ends for the data, the timer stays armed (one set).
+    uint64_t sets = node.hal.timer_sets;
+    uint64_t start = tt_get_ns();
+    uint32_t len = build(framing, FRAMING + UNIT);
+    bool sent = send_built(len, "deadline");
+    int32_t got = receive_until(len, start + DEADLINE_FIRST_NS);
+    bool a = sent && got == (int32_t)len && node.hal.timer_sets == sets + 1U && node.hal.timer_armed_ns != 0;
+    // B: a later deadline (300 ms): nothing set until the old timer fires at 200 ms; re-armed once; ends at 300.
+    const uint64_t until = start + DEADLINE_SECOND_NS;
+    sets = node.hal.timer_sets;
+    uint64_t fires = node.hal.timer_fires;
+    int32_t timed_out = receive_until(0, until);
+    uint64_t ended = tt_get_ns();
+    int b_sets = (int)(node.hal.timer_sets - sets);
+    int b_fires = (int)(node.hal.timer_fires - fires);
+    bool b = timed_out == -1 && ended >= until && b_sets == 1 && b_fires == 2 && node.hal.timer_armed_ns == 0;
+    // C: data under a 300 ms deadline (armed for it), then an EARLIER deadline, 20 ms: re-armed at once (one set).
+    (void)send_built(len, "deadline C");
+    (void)receive_until(len, tt_get_ns() + DEADLINE_SECOND_NS);
+    sets = node.hal.timer_sets;
+    uint64_t short_until = tt_get_ns() + DEADLINE_SHORT_NS;
+    int32_t short_out = receive_until(0, short_until);
+    uint64_t short_ended = tt_get_ns();
+    bool c = short_out == -1 && short_ended < short_until + DEADLINE_SHORT_NS && node.hal.timer_sets == sets + 1U;
+    // D: outside a poll (wait_until 0) the timer is not used.
+    set_wait_until(0);
+    uint64_t waits = node.hal.timer_waits;
+    (void)tt_receive(&node, buf, sizeof(buf), &any_ip, &any_port, (int64_t)DEADLINE_SHORT_NS);
+    bool d = node.hal.timer_waits == waits;
+    char line[LINE_BYTES];
+    (void)snprintf(line, sizeof(line),
+                   "deadline: data leaves it armed %d; a later deadline: %d set, %d fires, ended %+lld us from it %d; "
+                   "an earlier one re-arms at once %d; none outside a poll %d",
+                   a ? 1 : 0, b_sets, b_fires, (long long)((int64_t)(ended - until) / 1000), b ? 1 : 0, c ? 1 : 0,
+                   d ? 1 : 0);
+    verdict(a && b && c && d, line);
+}
+
 int main(void) {
     _tt_CONFIG.broadcast = "127.255.255.255";
     _tt_CONFIG.context_id = CHECK_CONTEXT_ID;
@@ -575,6 +651,7 @@ int main(void) {
     check_short_buffer();
     check_withdrawn();
     check_nonblocking();
+    check_deadline();
     tt_Context_destroy(&node);
     check_switch();
     (void)close(sender);

@@ -38,6 +38,7 @@
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h> // the wait's deadline (rx_wait_lazy())
 // struct iovec (tt_send_iov, below) - clang-tidy's IWYU mapping doesn't know this glibc symbol's
 // real (portable, POSIX-specified) home, so it flags both this include and the struct itself as
 // if neither provided/needed the other; this is the correct, portable header regardless (see
@@ -582,6 +583,7 @@ static void uring_close(struct tt_Context* node);
 #define RX_READY_DATA 4U
 #define RX_READY_BELL 8U
 #define RX_READY_WRITABLE 16U // data_sock has room again (tt_tx_await_writable())
+#define RX_READY_TIMER 32U    // the wait's deadline timer fired (rx_wait_lazy())
 
 #if TT_HAL_EPOLL
 static bool wait_set_add(int epoll_fd, int member, uint32_t events, uint32_t tag) {
@@ -609,6 +611,21 @@ static void wait_set_setup(struct tt_Context* node) {
         return;
     }
     node->hal.epoll_fd_plus1 = epoll_fd + 1;
+    // The wait's deadline timer (rx_wait_lazy()). Without it, or with TT_RX_LAZY_TIMER=0 (the A/B control), each wait
+    // takes its timeout as before.
+    const char* lazy = getenv("TT_RX_LAZY_TIMER");
+    if (lazy != NULL && strcmp(lazy, "0") == 0) {
+        return;
+    }
+    int timer = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (timer < 0 || !wait_set_add(epoll_fd, timer, EPOLLIN, RX_READY_TIMER)) {
+        TT_LOG_DEBUG("No deadline timer in the wait set (%s) - each wait takes its timeout", strerror(errno));
+        if (timer >= 0) {
+            (void)close(timer);
+        }
+        return;
+    }
+    node->hal.timer_fd_plus1 = timer + 1;
 #else
     (void)node;
 #endif
@@ -980,6 +997,11 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.wake_fd = -1;
     node->hal.bell_fd_plus1 = 0;  // no segment yet, so no doorbell (tt_segment_bell_create())
     node->hal.epoll_fd_plus1 = 0; // none yet: tt_close() after a failed bind has nothing to close
+    node->hal.timer_fd_plus1 = 0;
+    node->hal.timer_armed_ns = 0;
+    node->hal.timer_waits = 0;
+    node->hal.timer_sets = 0;
+    node->hal.timer_fires = 0;
     node->hal.tx_watch_fd_plus1 = 0;
     node->hal.tx_watch_armed = false;
 #if tt_SEGMENT_ENABLED
@@ -1198,7 +1220,7 @@ static const char* drain_ring_name(uint8_t ring) {
 #endif
 
 #define DIRECT_LINE_BYTES 160U // tt_close()'s direct_* fields on the rx line
-#define GRO_LINE_BYTES 96U     // and its empty_reads= and gro_* fields
+#define GRO_LINE_BYTES 192U    // and its empty_reads=, gro_* and timer_* fields
 
 void tt_close(struct tt_Context* node) {
     // Read while both sockets are still open: what the kernel dropped at each, beside core's traffic line.
@@ -1215,12 +1237,17 @@ void tt_close(struct tt_Context* node) {
     // with GRO on, and whether the cut of the empty read ran.
     char gro[GRO_LINE_BYTES] = "";
 #if TT_HAL_UDP_GRO
-    (void)snprintf(gro, sizeof(gro), " empty_reads=%lu gro_on=%d gro_enables=%lu gro_aborts=%lu gro_commits=%lu",
+    (void)snprintf(gro, sizeof(gro),
+                   " empty_reads=%lu gro_on=%d gro_enables=%lu gro_aborts=%lu gro_commits=%lu timer_waits=%lu "
+                   "timer_sets=%lu timer_fires=%lu",
                    (unsigned long)node->hal.rx_empty_reads, node->hal.gro_state != TT_GRO_PLAIN ? 1 : 0,
                    (unsigned long)node->hal.gro_enables, (unsigned long)node->hal.gro_aborts,
-                   (unsigned long)node->hal.gro_commits);
+                   (unsigned long)node->hal.gro_commits, (unsigned long)node->hal.timer_waits,
+                   (unsigned long)node->hal.timer_sets, (unsigned long)node->hal.timer_fires);
 #else
-    (void)snprintf(gro, sizeof(gro), " empty_reads=%lu", (unsigned long)node->hal.rx_empty_reads);
+    (void)snprintf(gro, sizeof(gro), " empty_reads=%lu timer_waits=%lu timer_sets=%lu timer_fires=%lu",
+                   (unsigned long)node->hal.rx_empty_reads, (unsigned long)node->hal.timer_waits,
+                   (unsigned long)node->hal.timer_sets, (unsigned long)node->hal.timer_fires);
 #endif
 #if tt_RX_DRAIN
     drain_stop(node);
@@ -1277,6 +1304,10 @@ void tt_close(struct tt_Context* node) {
     if (node->hal.epoll_fd_plus1 > 0) {
         (void)close(node->hal.epoll_fd_plus1 - 1);
         node->hal.epoll_fd_plus1 = 0;
+    }
+    if (node->hal.timer_fd_plus1 > 0) {
+        (void)close(node->hal.timer_fd_plus1 - 1);
+        node->hal.timer_fd_plus1 = 0;
     }
     if (node->hal.wake_fd >= 0 && close(node->hal.wake_fd) < 0) {
         TT_LOG_ERROR("Cannot close wake eventfd: %s", strerror(errno));
@@ -2750,6 +2781,65 @@ static int rx_wait(struct tt_Context* node, const struct timespec* timeout_ts, u
     return count;
 }
 
+#if TT_HAL_EPOLL
+// ---- The wait's deadline (2026-10-13)
+// --------------------------------------------------------------------------------
+//
+// epoll_pwait2() with a timeout starts and cancels an hrtimer on every wait - on the Pi the timed wait's share of the
+// receive gap to Fast DDS, which blocks in recvfrom() with no timeout. The deadline itself moves on nearly every wait
+// (4,094 of 4,096 on the bench subscriber, whose polls each have their own budget), so re-arming a timer per wait would
+// cost a system call each. Instead the deadline is a timerfd in the wait set, armed for an absolute time and moved only
+// EARLIER: a wait whose deadline is later than the armed one leaves it (no call), and the wait itself has no timeout
+// (no hrtimer). When the armed time comes first - a deadline that has since moved later - the timer is read, re-armed
+// for this wait's deadline and the wait goes on; only a deadline that really came ends the wait. A wait that ends for
+// data, the usual case on a stream, costs nothing for its deadline. The deadline is the poll loop's own absolute one
+// (struct tt_Context.wait_until, which the polling thread alone writes); a tt_receive() outside a poll (none set) waits
+// as before. On the realtime clock, as tt_get_ns() and every deadline core sets; a clock step reads as a fire
+// (TFD_TIMER_CANCEL_ON_SET), after which the deadline is checked against the clock again.
+
+// The poll loop's deadline for this wait (poll_wait_io()): 0 when tt_receive() runs outside a poll, UINT64_MAX for
+// none.
+static uint64_t rx_wait_until(const struct tt_Context* node) {
+    return ((uint64_t)__atomic_load_n(&node->wait_until_hi, __ATOMIC_RELAXED) << 32U) |
+           __atomic_load_n(&node->wait_until_lo, __ATOMIC_RELAXED);
+}
+
+static void rx_timer_arm(struct tt_hal* hal, uint64_t until) {
+    struct itimerspec at = {{0, 0}, {(time_t)(until / SEC_NS), (long)(until % SEC_NS)}};
+    if (timerfd_settime(hal->timer_fd_plus1 - 1, TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET, &at, NULL) == 0) {
+        hal->timer_armed_ns = until;
+        hal->timer_sets++;
+    }
+}
+
+// rx_wait() until `until` (absolute, UINT64_MAX: none) with the deadline timer: the same return convention.
+static int rx_wait_lazy(struct tt_Context* node, uint64_t until, uint32_t* ready) {
+    struct tt_hal* hal = &node->hal;
+    hal->timer_waits++;
+    for (;;) {
+        if (until != UINT64_MAX && (hal->timer_armed_ns == 0 || hal->timer_armed_ns > until)) {
+            rx_timer_arm(hal, until);
+        }
+        int count = rx_wait(node, NULL, ready);
+        if (count <= 0 || (*ready & RX_READY_TIMER) == 0) {
+            return count;
+        }
+        uint64_t expirations = 0;
+        (void)read(hal->timer_fd_plus1 - 1, &expirations, sizeof(expirations)); // ECANCELED on a clock step: a fire
+        hal->timer_armed_ns = 0;
+        hal->timer_fires++;
+        *ready &= ~RX_READY_TIMER;
+        if (*ready != 0) {
+            return count - 1;
+        }
+        if (until != UINT64_MAX && tt_get_ns() >= until) {
+            return 0; // this wait's deadline: a timeout
+        }
+        // An earlier deadline's timer, or a clock step: wait on, for this one.
+    }
+}
+#endif
+
 // rx_wait() for `timeout` ns, 0 meaning no limit: this function's contract (hal.h) is "0 for no timeout", and a NULL
 // timespec is the wait's own way to say it. While receive offload is settling, the wait first runs only to the
 // settle's deadline, where gro_settle_decide() is made, and then for what is left of `timeout`. Only in a build with
@@ -2833,7 +2923,27 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     int read_fd = node->hal.sock;
     {
         uint32_t ready = 0;
+#if TT_HAL_EPOLL
+        const uint64_t until = node->hal.timer_fd_plus1 > 0 ? rx_wait_until(node) : 0;
 #if TT_HAL_UDP_GRO
+        int poll_ret = until != 0 && node->hal.gro_state != TT_GRO_SETTLING ? rx_wait_lazy(node, until, &ready)
+                                                                            : rx_wait_for(node, timeout, &ready);
+#else
+        int poll_ret = 0;
+        if (until != 0) {
+            poll_ret = rx_wait_lazy(node, until, &ready);
+        } else {
+            struct timespec* timeout_ts_ptr = NULL;
+            struct timespec timeout_ts;
+            if (timeout > 0) {
+                timeout_ts.tv_sec = (time_t)(timeout / SEC_NS);
+                timeout_ts.tv_nsec = (long)(timeout % SEC_NS);
+                timeout_ts_ptr = &timeout_ts;
+            }
+            poll_ret = rx_wait(node, timeout_ts_ptr, &ready);
+        }
+#endif
+#elif TT_HAL_UDP_GRO
         int poll_ret = rx_wait_for(node, timeout, &ready);
 #else
         struct timespec* timeout_ts_ptr = NULL;

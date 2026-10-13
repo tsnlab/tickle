@@ -266,6 +266,14 @@ struct tt_hal {
     // the wait queue of every descriptor in its set on every call - four of them with the segment - which is work per
     // sleep for a set that never changes; epoll registers each once (hal_linux.c, "The wait set").
     int epoll_fd_plus1;
+    // The wait's deadline as a timer in that set (hal_linux.c "The wait's deadline"): a timerfd on the realtime clock,
+    // PLUS ONE, 0 for none; the absolute deadline it is armed for (0: disarmed); and the counts the rx line prints -
+    // waits it served, timerfd_settime() calls, and fires (each one read()).
+    int timer_fd_plus1;
+    uint64_t timer_armed_ns;
+    uint64_t timer_waits;
+    uint64_t timer_sets;
+    uint64_t timer_fires;
     // tt_tx_await_writable()'s watch: a duplicate of data_sock, in that set for EPOLLOUT | EPOLLONESHOT - one report,
     // re-armed by the next call - so a large send waiting for room resumes when the socket has half its buffer free,
     // as a blocking writer is woken, rather than on a timer. A duplicate because the set holds data_sock itself for
