@@ -121,6 +121,11 @@ run() { # <cell> <arm> <block> <size> <rate> <qflag>
     sudo -n ip netns exec "$NS1" bash -c "ulimit -v $VMEM_KB; exec timeout $((DURATION + 30)) $bin pub -s $size -r $rate \
         -d $DURATION $qflag $PUB_FLAGS -b 192.168.86.255" >"$publog" 2>&1
     wait "$sub_pid"
+    if [ "${KEEP_LOGS:-0}" = 1 ]; then # every run's two logs, for a run that has to be read whole
+        mkdir -p "$WORK/logs"
+        cp "$sublog" "$WORK/logs/${cell}_${arm}_${block}.sub.log"
+        cp "$publog" "$WORK/logs/${cell}_${arm}_${block}.pub.log"
+    fi
     local p s iu ik cu ck pf rx hy
     p=$(grep -m1 '^RESULT:' "$publog" | sed 's/^RESULT: //')
     s=$(grep -m1 '^RESULT:' "$sublog" | sed 's/^RESULT: //')
