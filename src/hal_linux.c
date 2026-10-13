@@ -1233,21 +1233,23 @@ void tt_close(struct tt_Context* node) {
                    (unsigned long)node->large.direct_runs, (unsigned long)node->large.direct_missed,
                    (unsigned long)node->large.direct_cancelled);
 #endif
-    // Empty reads, and receive offload's switches (gro_on: its state at the end), on the same line: whether a cell read
-    // with GRO on, and whether the cut of the empty read ran.
+    // The sockets' mode, empty reads, receive offload's switches (gro_on: its state at the end) and the wait's deadline
+    // timer, on the same line: a rig arm's treatment check.
     char gro[GRO_LINE_BYTES] = "";
 #if TT_HAL_UDP_GRO
     (void)snprintf(gro, sizeof(gro),
-                   " empty_reads=%lu gro_on=%d gro_enables=%lu gro_aborts=%lu gro_commits=%lu timer_waits=%lu "
-                   "timer_sets=%lu timer_fires=%lu",
-                   (unsigned long)node->hal.rx_empty_reads, node->hal.gro_state != TT_GRO_PLAIN ? 1 : 0,
-                   (unsigned long)node->hal.gro_enables, (unsigned long)node->hal.gro_aborts,
-                   (unsigned long)node->hal.gro_commits, (unsigned long)node->hal.timer_waits,
-                   (unsigned long)node->hal.timer_sets, (unsigned long)node->hal.timer_fires);
+                   " nonblock=%d empty_reads=%lu gro_on=%d gro_enables=%lu gro_aborts=%lu gro_commits=%lu "
+                   "timer_waits=%lu timer_sets=%lu timer_fires=%lu",
+                   node->hal.nonblocking ? 1 : 0, (unsigned long)node->hal.rx_empty_reads,
+                   node->hal.gro_state != TT_GRO_PLAIN ? 1 : 0, (unsigned long)node->hal.gro_enables,
+                   (unsigned long)node->hal.gro_aborts, (unsigned long)node->hal.gro_commits,
+                   (unsigned long)node->hal.timer_waits, (unsigned long)node->hal.timer_sets,
+                   (unsigned long)node->hal.timer_fires);
 #else
-    (void)snprintf(gro, sizeof(gro), " empty_reads=%lu timer_waits=%lu timer_sets=%lu timer_fires=%lu",
-                   (unsigned long)node->hal.rx_empty_reads, (unsigned long)node->hal.timer_waits,
-                   (unsigned long)node->hal.timer_sets, (unsigned long)node->hal.timer_fires);
+    (void)snprintf(gro, sizeof(gro), " nonblock=%d empty_reads=%lu timer_waits=%lu timer_sets=%lu timer_fires=%lu",
+                   node->hal.nonblocking ? 1 : 0, (unsigned long)node->hal.rx_empty_reads,
+                   (unsigned long)node->hal.timer_waits, (unsigned long)node->hal.timer_sets,
+                   (unsigned long)node->hal.timer_fires);
 #endif
 #if tt_RX_DRAIN
     drain_stop(node);
