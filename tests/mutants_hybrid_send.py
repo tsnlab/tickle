@@ -768,6 +768,22 @@ MUTANTS = [
         SEND,
     ),
     (
+        "reader: a gap judged by the layout of the sample before",
+        "src/tickle.c",
+        "    hybrid_rx_layout(writer, index, units, tail, run);\n    if (index > writer->next) {\n"
+        "        hybrid_rx_gap(node, writer, writer->next, index);\n    }\n",
+        "    if (index > writer->next) {\n        hybrid_rx_gap(node, writer, writer->next, index);\n    }\n"
+        "    hybrid_rx_layout(writer, index, units, tail, run);\n",
+        SEND,
+    ),
+    (
+        "reader: a short last run keeps an MTU layout",
+        "src/tickle.c",
+        "        } else if (writer->layout_n < 2U) {",
+        "        } else if (false) {",
+        SEND,
+    ),
+    (
         "scale: on a single tick",
         "src/tickle.c",
         "    if (hybrid->scale_streak < tt_HYBRID_SCALE_TICKS && hybrid->scale_streak > -tt_HYBRID_SCALE_TICKS) {",

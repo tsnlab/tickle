@@ -753,7 +753,10 @@ which is 45 IP fragments.
 **What the reader measures.** From each fragment-path datagram - writer, sample, first unit, unit count, and whether
 it is a run - the reader rebuilds what was sent: units `[0, k - 1)` in runs of the writer's `n` (learned from a full
 run; an MTU unit at or past the next expected position says MTU), unit `k - 1` alone. A unit past the next expected
-leaves a gap, which is loss; a unit below it is a repair and counts for nothing.
+leaves a gap, which is loss; a unit below it is a repair and counts for nothing. What a datagram says of its sample's
+layout is learned before the gap in front of it is judged: that gap is the same sample's (2026-10-13; it went by the
+sample before, so after an MTU sample - a RELIABLE AUTO stream's first - one lost or socket-dropped first run read as 45
+MTU units lost, 45 events in `p` and `p_mtu`, and held `n` low until they diluted).
 
 - `p_mtu`: lost over sent MTU units (tails, `n = 1` samples) - the frame-loss baseline, which reassembly cannot touch.
 - `p` (advertised): every frame is exposure; a lost MTU unit is one event on one frame, a lost run one event on its

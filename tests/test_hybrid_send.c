@@ -1248,6 +1248,60 @@ static void test_the_reader_rebuilds_what_was_sent(void) {
     EXPECT_EQ_U32(20, loss->events);
 }
 
+// A sample's gap goes by that sample's layout, not the one before (hybrid_rx_layout()). After an MTU sample (a
+// RELIABLE AUTO stream's first), the next sample's first run is lost and its second is the first datagram seen of it:
+// one run lost - one event on 45 frames, in p only, one lost run in the window - not 45 MTU units. A receiver drop on
+// hand covers it whole. The control: the same gap in front of an MTU unit, which says the sample is MTU, is 45 MTU
+// units lost.
+static void test_a_gap_goes_by_its_own_samples_layout(void) {
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    struct tt_Context* node = &readers[0].ctx;
+    struct tt_HybridState* hybrid = &node->hybrid;
+    test_mock_receiver_drops = 0;
+    for (uint32_t i = 0; i < 100; i++) {
+        hybrid_rx_note(node, SENDER_ID, 7, 100, i, 100, 1, false); // sample 100 whole, as MTU units
+    }
+    EXPECT_EQ_U32(1, hybrid->rx_writers[0].layout_n);
+    hybrid_rx_note(node, SENDER_ID, 7, 200, 45, 100, 45, true); // sample 200: run 0-44 lost, 45-89 the first seen
+    EXPECT_EQ_U32(45, hybrid->rx_writers[0].layout_n);
+    EXPECT_EQ_U32(1, hybrid->rx_loss.events);
+    EXPECT_EQ_U32(0, hybrid->mtu_loss.events);
+    EXPECT_EQ_U32(1, hybrid->window.lost);
+    EXPECT_EQ_U32(45, hybrid->rx_writers[0].body_lost);
+    hybrid_rx_note(node, SENDER_ID, 7, 200, 90, 100, 9, true); // the rest of sample 200 arrives
+    hybrid_rx_note(node, SENDER_ID, 7, 200, 99, 100, 1, false);
+    // Its last run alone after lost ones, the layout before it MTU: runs, of an n not seen - one event, in p only.
+    for (uint32_t i = 0; i < 100; i++) {
+        hybrid_rx_note(node, SENDER_ID, 7, 300, i, 100, 1, false); // sample 300 whole, as MTU units
+    }
+    hybrid_rx_note(node, SENDER_ID, 7, 400, 90, 100, 9, true); // sample 400's 0-89 lost, its short last run seen
+    EXPECT_EQ_U32(0, hybrid->rx_writers[0].layout_n);
+    EXPECT_EQ_U32(0, hybrid->mtu_loss.events);
+    EXPECT_EQ_U32(2, hybrid->rx_loss.events);
+    hybrid_rx_note(node, SENDER_ID, 7, 400, 99, 100, 1, false);
+    // A receiver drop on hand covers the lost first run whole: one datagram.
+    for (uint32_t i = 0; i < 100; i++) {
+        hybrid_rx_note(node, SENDER_ID, 7, 500, i, 100, 1, false);
+    }
+    uint32_t events = hybrid->rx_loss.events;
+    test_mock_receiver_drops = 1;
+    hybrid_rx_note(node, SENDER_ID, 7, 600, 45, 100, 45, true);
+    EXPECT_EQ_U32(events, hybrid->rx_loss.events);
+    EXPECT_EQ_U64(1, hybrid->receiver_lost);
+    test_mock_receiver_drops = 0;
+    // The control: the same gap in front of an MTU unit - the sample is MTU, and 45 MTU units were lost.
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    node = &readers[0].ctx;
+    hybrid = &node->hybrid;
+    for (uint32_t i = 0; i < 100; i++) {
+        hybrid_rx_note(node, SENDER_ID, 7, 100, i, 100, 1, false);
+    }
+    hybrid_rx_note(node, SENDER_ID, 7, 200, 45, 100, 1, false);
+    EXPECT_EQ_U32(45, hybrid->rx_loss.events);
+    EXPECT_EQ_U32(45, hybrid->mtu_loss.events);
+    EXPECT_EQ_U32(0, hybrid->window.lost);
+}
+
 // Receiver drops are not path loss (tickle.c, hybrid_rx_receiver_lost()): a gap the HAL's count of receiver drops
 // covers reaches neither p, p_mtu, the run window nor rule (e) - one drop for one lost datagram, a run or an MTU unit -
 // and is counted as receiver_lost. With no drop on hand the same gap is path loss (the control). Drops not matched
@@ -2370,6 +2424,7 @@ int main(void) {
     test_tau_from_the_writers_run_rates();
     test_the_law_runs_once_an_interval();
     test_the_reader_rebuilds_what_was_sent();
+    test_a_gap_goes_by_its_own_samples_layout();
     test_receiver_drops_are_not_path_loss();
     test_receiver_drops_do_not_lower_n();
     test_the_loss_code_rounds_up();

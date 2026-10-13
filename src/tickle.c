@@ -2673,6 +2673,27 @@ static void hybrid_rx_judge_path(struct tt_Context* node, struct tt_HybridRxWrit
     hybrid_announce(node, now);
 }
 
+// What one datagram of the writer's current sample says of how the sample is laid out (writer->layout_n): a full run
+// says n, and so does a sample's first run (its only one is n); an MTU unit where a run could have gone says MTU; the
+// last run, shorter than n, says "runs" only - n not known, unless a run of an earlier sample said it. Learned BEFORE
+// the gap in front of the datagram is judged (hybrid_rx_note()), because that gap is this sample's, sent at this
+// sample's n. Until 2026-10-13 it was learned after, so the gap went by the layout of the sample before: after an MTU
+// sample - a RELIABLE AUTO stream's first, sent before the reader's p was heard - a lost or socket-dropped first run of
+// the next was counted as n MTU units lost, 45 events in p and p_mtu for one lost datagram (one receiver drop covered
+// one of them), and n then stayed below n_max for as long as p took to dilute them.
+static void hybrid_rx_layout(struct tt_HybridRxWriter* writer, uint32_t index, uint32_t units, uint32_t tail,
+                             bool run) {
+    if (run) {
+        if (index + units < tail || index == 0) {
+            writer->layout_n = (uint8_t)units;
+        } else if (writer->layout_n < 2U) {
+            writer->layout_n = 0; // in runs, of an n not seen yet: a gap is one event on its units, in p only
+        }
+    } else if (index < tail) {
+        writer->layout_n = 1;
+    }
+}
+
 // One datagram's units of a sample (source, entity_id, first seq_no `sample`, `count` units) arrived: units
 // [index, index + units), as a run or as one MTU unit.
 static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t entity_id, uint32_t sample, uint32_t index,
@@ -2710,20 +2731,15 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
         return; // an older sample's unit, or a repair
     }
     uint32_t tail = count - 1U;
+    hybrid_rx_layout(writer, index, units, tail, run);
     if (index > writer->next) {
         hybrid_rx_gap(node, writer, writer->next, index);
     }
     hybrid->tick_units += (index + units) - (index > writer->next ? index : writer->next);
     if (run) {
-        if (index + units < tail || index == 0) {
-            writer->layout_n = (uint8_t)units; // a full run says n, and so does a sample's first: its only one is n
-        }
         hybrid_rx_run(hybrid, writer, units, false);
         writer->run_tick = hybrid->ticks + 1U; // a run of this writer's got through (0: none yet)
     } else {
-        if (index < tail) {
-            writer->layout_n = 1; // an MTU unit where a run could have gone: the writer sends MTU units here
-        }
         hybrid_rx_mtu(hybrid, 1, 0);
     }
     writer->next = (uint16_t)(index + units);
