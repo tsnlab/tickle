@@ -15,7 +15,9 @@
 //   2b. after  - a datagram queued behind a run read in place is not read by the drain (tt_try_receive() answers
 //                 -1, no read of the socket) but by the next wait (tt_receive()), whole.
 //   2c. no hint - a run read without a hint (not in place): the drain after it does not read the socket either; the
-//                 next wait reads what came behind it, whole.
+//                 next wait reads what came behind it, whole. In 2b-2d the skipped read is counted (idle_skips=).
+//   2f. not a run - the control of that skip: after a datagram that is not a run the drain reads the socket and
+//                 returns what came behind it.
 //   2d. GRO on  - receive offload on (as MTU-mode traffic leaves it): the hinted run is still read in place, and the
 //                 drain after it does not read the socket.
 //   2e. merged  - GRO on and a hint, and a merged read (a UDP_SEGMENT send over loopback, which a UDP_GRO socket takes
@@ -283,8 +285,10 @@ static bool behind_waits(int32_t* drained, int32_t* waited) {
         return false;
     }
     uint64_t reads_before = node.large.direct_reads;
+    uint64_t skips_before = node.hal.rx_idle_skips;
     *drained = tt_try_receive(&node, buf, sizeof(buf), &any_ip, &any_port);
-    bool not_read = *drained < 0 && node.large.direct_reads == reads_before;
+    // Skipped, and counted as skipped (the rx line's idle_skips=, what a rig run reads to see the cut engage).
+    bool not_read = *drained < 0 && node.large.direct_reads == reads_before && node.hal.rx_idle_skips > skips_before;
     memset(buf, 0, sizeof(buf));
     *waited = tt_receive(&node, buf, sizeof(buf), &any_ip, &any_port, (int64_t)tt_SECOND / WAIT_DIVISOR);
     return not_read && *waited == (int32_t)behind && memcmp(buf, behind_bytes, behind) == 0;
@@ -307,6 +311,46 @@ static void check_after_unaimed(void) {
                    "%d: %s",
                    (int)got, (int)drained, (int)waited, behind ? "as it should" : "NOT as it should");
     verdict(behind && node.large.direct_split == NULL, line);
+}
+
+// 2f. not a run (the control of 2b-2d's skip): a datagram that is not a run leaves its socket asked - the drain after
+// it returns what came behind it, with no empty answer between.
+static void check_not_a_run(void) {
+    __atomic_store_n(&node.large.direct_bytes, 0U, __ATOMIC_SEQ_CST);
+    uint8_t head[FRAMING];
+    memcpy(head, framing, FRAMING);
+    // Not the single form: neither a run nor a large fragment (which would turn receive offload on for the cases after)
+    head[0] ^= BYTE_FLIP;
+    uint32_t len = build(head, FRAMING + HINT_BYTES);
+    if (!send_built(len, "not a run")) {
+        return;
+    }
+    int32_t got = read_it(&node, len);
+    uint32_t behind = FRAMING + UNIT + BEHIND_EXTRA;
+    head[FRAMING - 1U] ^= FRAMING_FLIP;
+    build(head, behind);
+    if (!send_built(behind, "behind not a run")) {
+        return;
+    }
+    uint64_t skips_before = node.hal.rx_idle_skips;
+    bool drained_it = false;
+    bool empty_between = false;
+    for (int i = 0; i < MAX_READS && !drained_it && !empty_between; i++) {
+        int32_t drained = tt_try_receive(&node, buf, sizeof(buf), &any_ip, &any_port);
+        empty_between = drained < 0;
+        drained_it = drained == (int32_t)behind && buf[2] == framing[2];
+    }
+    // Drained to its end, as a poll would: that resets rx_idle and its recheck clock, which the cases after start from.
+    while (tt_try_receive(&node, buf, sizeof(buf), &any_ip, &any_port) >= 0) {
+    }
+    char line[LINE_BYTES];
+    (void)snprintf(line, sizeof(line),
+                   "not a run (read %d): the drain after it %s what came behind, %s, skips counted %lu", (int)got,
+                   drained_it ? "returned" : "did NOT return", empty_between ? "an empty answer first" : "at once",
+                   (unsigned long)(node.hal.rx_idle_skips - skips_before));
+    // The skip count is printed, not judged: a socket found empty in the same drain is skipped too (rx_idle), and which
+    // socket the drain asks first alternates. What is judged is that the data socket was read.
+    verdict(got == (int32_t)len && drained_it, line);
 }
 
 // Receive offload on, as gro_turn_on() leaves it; false when the kernel refuses (the case is then not run).
@@ -648,6 +692,7 @@ int main(void) {
     check_in_place();
     check_after();
     check_after_unaimed();
+    check_not_a_run();
     check_gro_in_place();
     check_gro_merged();
     check_shorter();

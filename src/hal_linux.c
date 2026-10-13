@@ -1036,6 +1036,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.rx_idle = 0;
     node->hal.rx_idle_since_ns = 0;
     node->hal.rx_empty_reads = 0;
+    node->hal.rx_idle_skips = 0;
     node->hal.rx_count = 0;
     node->hal.rx_next = 0;
     node->hal.rx_headers_for = NULL;
@@ -1216,7 +1217,7 @@ static const char* drain_ring_name(uint8_t ring) {
 #endif
 
 #define DIRECT_LINE_BYTES 160U // tt_close()'s direct_* fields on the rx line
-#define GRO_LINE_BYTES 192U    // and its empty_reads=, gro_* and timer_* fields
+#define GRO_LINE_BYTES 224U    // and its empty_reads=, idle_skips=, gro_* and timer_* fields
 
 void tt_close(struct tt_Context* node) {
     // Read while both sockets are still open: what the kernel dropped at each, beside core's traffic line.
@@ -1234,18 +1235,19 @@ void tt_close(struct tt_Context* node) {
     char gro[GRO_LINE_BYTES] = "";
 #if TT_HAL_UDP_GRO
     (void)snprintf(gro, sizeof(gro),
-                   " nonblock=%d empty_reads=%lu gro_on=%d gro_enables=%lu gro_aborts=%lu gro_commits=%lu "
-                   "timer_waits=%lu timer_sets=%lu timer_fires=%lu",
+                   " nonblock=%d empty_reads=%lu idle_skips=%lu gro_on=%d gro_enables=%lu gro_aborts=%lu "
+                   "gro_commits=%lu timer_waits=%lu timer_sets=%lu timer_fires=%lu",
                    node->hal.nonblocking ? 1 : 0, (unsigned long)node->hal.rx_empty_reads,
-                   node->hal.gro_state != TT_GRO_PLAIN ? 1 : 0, (unsigned long)node->hal.gro_enables,
-                   (unsigned long)node->hal.gro_aborts, (unsigned long)node->hal.gro_commits,
-                   (unsigned long)node->hal.timer_waits, (unsigned long)node->hal.timer_sets,
-                   (unsigned long)node->hal.timer_fires);
+                   (unsigned long)node->hal.rx_idle_skips, node->hal.gro_state != TT_GRO_PLAIN ? 1 : 0,
+                   (unsigned long)node->hal.gro_enables, (unsigned long)node->hal.gro_aborts,
+                   (unsigned long)node->hal.gro_commits, (unsigned long)node->hal.timer_waits,
+                   (unsigned long)node->hal.timer_sets, (unsigned long)node->hal.timer_fires);
 #else
-    (void)snprintf(gro, sizeof(gro), " nonblock=%d empty_reads=%lu timer_waits=%lu timer_sets=%lu timer_fires=%lu",
+    (void)snprintf(gro, sizeof(gro),
+                   " nonblock=%d empty_reads=%lu idle_skips=%lu timer_waits=%lu timer_sets=%lu timer_fires=%lu",
                    node->hal.nonblocking ? 1 : 0, (unsigned long)node->hal.rx_empty_reads,
-                   (unsigned long)node->hal.timer_waits, (unsigned long)node->hal.timer_sets,
-                   (unsigned long)node->hal.timer_fires);
+                   (unsigned long)node->hal.rx_idle_skips, (unsigned long)node->hal.timer_waits,
+                   (unsigned long)node->hal.timer_sets, (unsigned long)node->hal.timer_fires);
 #endif
 #if tt_RX_DRAIN
     drain_stop(node);
@@ -3138,6 +3140,7 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
     for (int i = 0; i < 2 && ret < 0; i++) {
         uint8_t bit = order[i] == node->hal.data_sock ? TT_RX_IDLE_DATA : TT_RX_IDLE_WELL_KNOWN;
         if ((node->hal.rx_idle & bit) != 0) {
+            node->hal.rx_idle_skips++; // a read not made: the rx line's idle_skips=
             continue;
         }
         ret = rx_fill(node, order[i], buf, len, ip, port);

@@ -135,7 +135,7 @@ run() { # <cell> <arm> <block> <size> <rate> <qflag>
     ck=$(grep -m1 'cycles:k' "$perflog" 2>/dev/null | cut -d, -f1)
     pf=$(grep -m1 'page-faults' "$perflog" 2>/dev/null | cut -d, -f1)
     rx=$(grep -m1 -o 'rx: .*' "$sublog" | tr ' ' '\n' |
-        grep -E '^(drain_starts|drain_datagrams|direct_[a-z]+|empty_reads|gro_[a-z]+)=' | tr '\n' ' ')
+        grep -E '^(drain_starts|drain_datagrams|direct_[a-z]+|empty_reads|idle_skips|gro_[a-z]+)=' | tr '\n' ' ')
     hy=$(grep -m1 -o 'hybrid: .*' "$publog" | tr ' ' '\n' | grep -E '^(runs|n_hist|mtu_units)=' | sed 's/^/pub_/' |
         tr '\n' ' ')
     if [ -z "$p" ] || [ -z "$s" ]; then

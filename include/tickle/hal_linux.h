@@ -315,6 +315,9 @@ struct tt_hal {
     // Reads of a socket that found nothing (EAGAIN): the "Node N rx:" line's empty_reads=, a rig arm's treatment check
     // for the reads rx_idle exists to skip.
     uint64_t rx_empty_reads;
+    // Reads rx_idle skipped (tt_try_receive()): the "Node N rx:" line's idle_skips=, the empty reads that were not
+    // made - beside empty_reads=, what shows the cut engaged rather than only that few reads came back empty.
+    uint64_t rx_idle_skips;
     // Both sockets O_NONBLOCK (hal_linux.c "Non-blocking sockets"); TT_RX_NONBLOCK=0 leaves them blocking.
     bool nonblocking;
     // Datagrams the last recvmmsg() read beyond the one it returned, handed out before any further wait
