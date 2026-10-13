@@ -98,6 +98,10 @@ FORCED_IP_EARLY_MTU = 2
 PRE_IS_HYBRID = os.environ.get("HYBRID_PRE", "") == "1"
 if PRE_IS_HYBRID:
     MODE_OF["tickle@pre"] = "auto"
+# The harness's second variant slot as a third hybrid build (ab/rx-gap3's queue, 2026-10-13: tickle@ack is origin/main
+# 0c9f9a3b, the publisher's reference): read by head's AUTO rule too.
+if os.environ.get("HYBRID_ACK", "") == "1":
+    MODE_OF["tickle@ack"] = "auto"
 OFFLOAD_OFF = ("tickle@nooffload", "tickle@mtunooff")
 OFFLOAD_PAIRS = (("tickle@head", "tickle@nooffload"), ("tickle@mtu", "tickle@mtunooff"))
 TRAFFIC_RE = re.compile(r"traffic: .*?udp_offload=(\d+) gro_reads=\d+ gro_merged=(\d+) .*?gso_sends=(\d+)")
