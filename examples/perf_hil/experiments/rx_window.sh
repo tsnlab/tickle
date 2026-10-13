@@ -1,5 +1,5 @@
 #!/bin/bash
-# rx_window.sh MODE DELAY WIN FREQ - the subscriber's measurement window for rmw_keepall_rig.sh RX_PROFILE (rx_perf_read.py
+# rx_window.sh MODE DELAY WIN FREQ [PMU_EVENTS] - the subscriber's measurement window for rmw_keepall_rig.sh RX_PROFILE (rx_perf_read.py
 # reads its output). Runs ON the subscriber's host (a Pi, or the PC preflight's namespace), copied there as
 # /tmp/ka_rxwin.sh. The subscriber is perf_test's own PID from /tmp/ka_sub.pid (written by the launcher, never searched for
 # by a pattern), accepted only while /proc/<pid>/exe is a perf_test.
@@ -8,12 +8,14 @@
 # block, then for WIN s:
 #   plain   nothing (sleep)                               stat    perf stat --per-thread -x, -p <pid> -o /tmp/ka_rx.stat
 #   record  perf record -g -F FREQ -e cycles -p <pid>     strace  strace -f -c -p <pid> (attach; needs ptrace_scope 0)
+#   pmu     perf stat --per-thread -x, -e PMU_EVENTS -p <pid> -o /tmp/ka_rx.stat: the comma list the launcher's probe
+#           found this host's perf to accept (rmw_keepall_rig.sh RX_PROFILE=pmu) - never a list assumed here
 #   strace_wrap  nothing here: the subscriber was launched under strace -f -c (whole life; ptrace_scope != 0)
 # then SNAP t1, so the instrument and the window's counters cover the same wall interval. A SNAP block is one SNAP line
 # (wall clock, the process's summed task run time from schedstat in ns, voluntary/involuntary context switches, utime/stime,
 # the host's /proc/stat cpu line, NET_RX softirqs, eth0 rx bytes, boot id) and one TASK line per thread.
 # The last line is always "RXWIN mode=... rc=... alive=..." or "RXWIN_VOID ...".
-mode=$1 delay=$2 win=$3 freq=$4
+mode=$1 delay=$2 win=$3 freq=$4 pmu_events=${5:-}
 EVENTS=instructions:u,instructions:k,cycles:u,cycles:k,task-clock,context-switches,cpu-migrations,page-faults
 sleep "$delay"
 p=$(cat /tmp/ka_sub.pid 2>/dev/null)
@@ -52,6 +54,13 @@ rc=0
 case "$mode" in
 plain | strace_wrap) sleep "$win" ;;
 stat) perf stat --per-thread -x, -o /tmp/ka_rx.stat -e "$EVENTS" -p "$p" -- sleep "$win" 2>/tmp/ka_rx.err || rc=$? ;;
+pmu)
+    if [ -z "$pmu_events" ]; then
+        echo "RXWIN_VOID pmu mode without an event list"
+        exit 0
+    fi
+    perf stat --per-thread -x, -o /tmp/ka_rx.stat -e "$pmu_events" -p "$p" -- sleep "$win" 2>/tmp/ka_rx.err || rc=$?
+    ;;
 record) perf record -q -g -F "$freq" -e cycles -o /tmp/ka_rx.data -p "$p" -- sleep "$win" 2>/tmp/ka_rx.err || rc=$? ;;
 strace)
     timeout -s INT "$win" strace -f -c -o /tmp/ka_rx.strace -p "$p" 2>/tmp/ka_rx.err
@@ -66,4 +75,4 @@ esac
 snap t1
 alive=0
 case "$(readlink "/proc/$p/exe" 2>/dev/null)" in */perf_test) alive=1 ;; esac
-echo "RXWIN mode=$mode rc=$rc alive=$alive pid=$p delay=$delay win=$win freq=$freq err=[$(head -c 300 /tmp/ka_rx.err 2>/dev/null | tr '\n' ' ')]"
+echo "RXWIN mode=$mode rc=$rc alive=$alive pid=$p delay=$delay win=$win freq=$freq pmu_events=${pmu_events:-none} err=[$(head -c 300 /tmp/ka_rx.err 2>/dev/null | tr '\n' ' ')]"

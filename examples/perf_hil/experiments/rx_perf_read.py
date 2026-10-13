@@ -82,6 +82,36 @@ HOW TO READ IT (pre-registered 2026-10-12, before the first rig run; applied bel
   R5             none of the above: the instruments do not localise the gap (could not look - not "no difference").
   Every reading that holds is printed; PRIMARY is the first in the order R0..R5.
   FALSIFIED "the separate checksum pass is the rig gap": REPRODUCED and D(K_POLL) < 0.05 ms/MB.
+
+PMU MODE (added 2026-10-13, before any rig run of it; ~/rig_jobs/rig_queue_rx_pmu.sh). The question: why does our copy
+  into the sample cost more than Fast DDS's for the same bytes (~/claude_reports/rx_perf_gap2_2026-10-13.md sections 5, 7
+  item 2 and 9: +0.10/+0.11 ms/MB, no page faults in either arm, so cache or TLB misses on the destination)?
+  pmu         perf stat --per-thread on the subscriber with cycles, instructions and the memory events the subscriber's
+              host accepted (rmw_keepall_rig.sh RX_PROFILE=pmu probes each; meta.txt pmu_events / pmu_missing). Every
+              count is per window MB (payload MB of 1e6 B, as everywhere here), summed over the process's threads.
+              Cortex-A76 cache lines are 64 B, so l2d_cache_refill x 64 / 1e6 per MB = bytes refilled into L2 per payload
+              byte ("refill bytes/B"): 1.0 is one whole cold pass over the payload.
+  An event the host did not accept, or that perf printed as <not counted>/<not supported> in a run, is COULD NOT LOOK
+  for every rule that needs it - never a zero. A count perf multiplexed (running < 100% of the window) is scaled by perf;
+  the lowest running share is printed beside it and a share < 50% is flagged MULTIPLEXED.
+  The rules, per cell, over the pmu runs of each arm (>= 2 usable runs per arm, else PMU NOT READ: could not look). A
+  ratio is median(tickle) / median(fastdds) of the per-MB value; "separate" means min(tickle) > max(fastdds):
+  P1 DEST COLD   l2d_cache_refill/MB ratio >= 1.3, separate, AND instructions/MB ratio within 1/1.2..1.2: the same work
+                 meets colder memory - the copy's destination (or source) is not in L2 for us and is for Fast DDS.
+                 With the LL event (ll_cache_miss_rd or l3d_cache_refill) ratio >= 1.3 too it is not in L3 either
+                 (buffer rotation, or a footprint over the Pi 5's 2 MB L3); below 1.3 the lines come from L3 (the
+                 footprint of several copies of a sample on one core, over its 512 KB L2).
+  P2 TLB         dtlb_walk/MB ratio >= 2.0 and separate: page walks on the copy (a 4 KB-paged multi-MB destination).
+  P3 MORE WORK   l2d ratio >= 1.3 and separate but instructions ratio > 1.2: refills follow more instructions - more
+                 work, not a colder destination.
+  P4             none of P1-P3, with l2d, instructions and dtlb_walk all looked at: the PMU does not localise the copy
+                 gap to L2 refills or TLB walks (looked - not "could not look"). If any of the three could not be
+                 looked at, the reading says COULD NOT LOOK and names it.
+  Every one that holds is printed; PMU PRIMARY is the first in the order P1, P2, P3, P4.
+  FALSIFIED "our copy destination is colder" (the rank-2 hypothesis): l2d_cache_refill/MB ratio < 1.1 with both arms
+  measured. Descriptive only (no rule): l1d refills, mem_access, stall_backend per cycle, the LL ratio, the refill
+  bytes/B excess (tickle - fastdds), and per tickle run the subscriber's rx counters (direct_reads: reads in place;
+  drain_datagrams) beside its l2d refills, so in-place and not-in-place runs can be told apart.
 """
 import gzip
 import math
@@ -191,6 +221,54 @@ def parse_stat(path):
         if event.startswith("cycles"):
             per_thread[thread] = per_thread.get(thread, 0.0) + v
     return (ev or None), per_thread
+
+
+def stat_event_name(event):
+    """'armv8_pmuv3_0/l2d_cache_refill/' and 'l2d_cache_refill' are the same event; a :u/:k modifier is kept."""
+    m = re.match(r"^[\w.-]+/([^/,]+)/(:\w+)?$", event)
+    return (m.group(1) + (m.group(2) or "")).lower() if m else event.lower()
+
+
+def parse_stat_pmu(path):
+    """pmu mode: {event: summed count} over threads, {event: lowest running share %}, {events perf could not count},
+    {event: {thread: count}}; (None, ...) when the file is missing or holds no count at all."""
+    ev, pct, uncounted, per_thread = {}, {}, set(), {}
+    try:
+        lines = Path(path).read_text(errors="replace").splitlines()
+    except OSError:
+        return None, {}, set(), {}
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        f = line.split(",")
+        if len(f) < 4:
+            continue
+        thread, val, name = f[0], f[1], stat_event_name(f[3])
+        try:
+            v = float(val)
+        except ValueError:  # <not counted> / <not supported>: this thread's count is unknown, not zero
+            uncounted.add(name)
+            continue
+        ev[name] = ev.get(name, 0.0) + v
+        per_thread.setdefault(name, {})[thread] = per_thread.get(name, {}).get(thread, 0.0) + v
+        try:
+            share = float(f[5]) if len(f) > 5 and f[5] else 100.0
+        except ValueError:
+            share = 100.0
+        pct[name] = min(pct.get(name, 100.0), share)
+    return (ev or None), pct, uncounted, per_thread
+
+
+def sub_rx_counters(path):
+    """The subscriber's last 'Node N rx:' line (rmw_tickle only): direct_reads, drain_datagrams, ... as strings."""
+    out = {}
+    try:
+        for line in Path(path).read_text(errors="replace").splitlines():
+            if re.search(r"Node \d+ rx:", line):
+                out = dict(re.findall(r"(\w+)=(\S+)", line.split(" rx:", 1)[1]))
+    except OSError:
+        pass
+    return out
 
 
 def parse_strace(path):
@@ -388,6 +466,21 @@ def run_metrics(runs, base, stem, meta):
                                 ("faults", "page-faults"), ("task_clock", "task-clock")):
                 m[k_out + "_per_mb"] = ev.get(k_in, float("nan")) / mb if ok else float("nan")
             m["stat_threads"] = sorted(((v, t) for t, v in per_thread.items()), reverse=True)[:4]
+    elif mode == "pmu":
+        ev, pct, uncounted, per_thread = parse_stat_pmu(runs / f"{stem}_rx.stat")
+        asked = [stat_event_name(e) for e in meta.get("pmu_events", "").split(",") if e]
+        m["pmu_host_missing"] = [e for e in meta.get("pmu_missing", "").split(",") if e]
+        if not ev:
+            why.append("no perf stat output")
+        else:
+            # per MB, or None = could not look (not accepted by the host, or not counted in this run)
+            m["pmu"] = {e: (ev[e] / mb if ok and e in ev and e not in uncounted else None) for e in asked}
+            m["pmu_pct"] = {e: pct.get(e, float("nan")) for e in asked}
+            m["pmu_uncounted"] = sorted(uncounted)
+            l2 = per_thread.get("l2d_cache_refill", {})
+            m["pmu_l2_threads"] = sorted(((v / mb, t) for t, v in l2.items()), reverse=True)[:3] if ok else []
+        if base["arm"] == TICKLE:
+            m["rx_counters"] = sub_rx_counters(runs / f"{stem}_sub.log")
     elif mode == "record":
         cats, n, kaddr, resolved, comms = parse_script(runs / f"{stem}_rx.script.gz")
         if not cats or n < MIN_SAMPLES:
@@ -414,6 +507,98 @@ def run_metrics(runs, base, stem, meta):
                 why.append("strace: no MB to divide by")
     m["void"] = "; ".join(x for x in why if x)
     return m
+
+
+# ---------------------------------------------------------------------------------------------------------- pmu rules
+PMU_MIN_RUNS = 2
+PMU_COLD = 1.3  # P1/P3: l2d refills per MB, tickle / fastdds
+PMU_INSN_WITHIN = 1.2  # P1: instructions per MB within this factor either way
+PMU_TLB = 2.0  # P2: dtlb walks per MB
+PMU_FALSIFY = 1.1  # the cold-destination hypothesis is falsified below this l2d ratio
+PMU_MUX_WARN = 50.0  # running share (%) below which a count is flagged MULTIPLEXED
+LINE_BYTES = 64  # Cortex-A76 cache line
+LL_EVENTS = ("ll_cache_miss_rd", "l3d_cache_refill")
+
+
+def pmu_values(runs, event):
+    """Per-MB values of `event` over usable runs; None when any run could not look at it (or there are no runs)."""
+    vals = [r.get("pmu", {}).get(event) for r in runs]
+    if not vals or any(v is None for v in vals):
+        return None
+    return vals
+
+
+def pmu_reading(t_runs, f_runs):
+    """The pre-registered PMU rules (module docstring, PMU MODE). Returns (held lines, falsification line or '',
+    descriptive lines). Pure: the selftest drives it with made-up runs."""
+    if len(t_runs) < PMU_MIN_RUNS or len(f_runs) < PMU_MIN_RUNS:
+        return ([f"PMU NOT READ: {len(t_runs)} tickle and {len(f_runs)} fastdds usable pmu runs (< {PMU_MIN_RUNS} each) "
+                 "- could not look"], "", [])
+
+    def both(event):
+        tv, fv = pmu_values(t_runs, event), pmu_values(f_runs, event)
+        return (tv, fv) if tv is not None and fv is not None else None
+
+    def ratio(pair):
+        tm, fm = med(pair[0]), med(pair[1])
+        return tm / fm if fm == fm and fm > 0 else float("nan")
+
+    def separate(pair):
+        return min(pair[0]) > max(pair[1])
+
+    l2, insn, tlb = both("l2d_cache_refill"), both("instructions"), both("dtlb_walk")
+    ll_name = next((e for e in LL_EVENTS if both(e) is not None), None)
+    ll = both(ll_name) if ll_name else None
+    held, cannot = [], []
+    fals = ""
+    if l2 is None or insn is None:
+        cannot.append("P1/P3 need " + " and ".join(n for n, p in (("l2d_cache_refill", l2), ("instructions", insn))
+                                                    if p is None))
+    else:
+        r2, ri = ratio(l2), ratio(insn)
+        where = ""
+        if ll is not None:
+            rl = ratio(ll)
+            where = (f"; {ll_name} ratio {rl:.2f}: " +
+                     ("not in L3 either (rotation, or a footprint over L3)" if rl >= PMU_COLD
+                      else "the lines come from L3 (footprint over L2)"))
+        else:
+            where = "; LL event: could not look"
+        if r2 >= PMU_COLD and separate(l2) and 1 / PMU_INSN_WITHIN <= ri <= PMU_INSN_WITHIN:
+            held.append(f"P1 DEST COLD: l2d refills/MB ratio {r2:.2f} (separate), instructions/MB ratio {ri:.2f}{where}")
+        elif r2 >= PMU_COLD and separate(l2) and ri > PMU_INSN_WITHIN:
+            held.append(f"P3 MORE WORK: l2d refills/MB ratio {r2:.2f} with instructions/MB ratio {ri:.2f} - refills "
+                        "follow more instructions, not a colder destination")
+        fals = (f"DEST COLD HYPOTHESIS {'FALSIFIED' if r2 < PMU_FALSIFY else 'NOT FALSIFIED'}: l2d refills/MB ratio "
+                f"{r2:.2f} (falsified below {PMU_FALSIFY})")
+    if tlb is None:
+        cannot.append("P2 needs dtlb_walk")
+    else:
+        rt = ratio(tlb)
+        if rt >= PMU_TLB and separate(tlb):
+            held.append(f"P2 TLB: dtlb walks/MB ratio {rt:.2f} (separate)")
+    held.sort(key=lambda h: h[:2])  # P1, P2, P3 in that order
+    if not held:
+        if cannot:
+            held.append("P4 COULD NOT LOOK: " + "; ".join(cannot) + " (not accepted on the host or not counted)")
+        else:
+            held.append("P4 NOT LOCALISED: l2d refills, instructions and dtlb walks were looked at and none of P1-P3 "
+                        "holds")
+    elif cannot:
+        held.append("note - could not look: " + "; ".join(cannot))
+    desc = []
+    if l2 is not None:
+        ex = (med(l2[0]) - med(l2[1])) * LINE_BYTES / 1e6
+        desc.append(f"refill bytes/B (l2d x {LINE_BYTES} per payload byte): tickle {med(l2[0]) * LINE_BYTES / 1e6:.3f}, "
+                    f"fastdds {med(l2[1]) * LINE_BYTES / 1e6:.3f}, excess {ex:+.3f}")
+    for e in ("l1d_cache_refill", "mem_access"):
+        p = both(e)
+        if p is not None:
+            desc.append(f"{e}/MB ratio {ratio(p):.2f}")
+    sb, cy = both("stall_backend"), both("cycles")
+    if sb is not None and cy is not None:
+        desc.append(f"stall_backend per cycle: tickle {med(sb[0]) / med(cy[0]):.3f}, fastdds {med(sb[1]) / med(cy[1]):.3f}")
+    return held, fals, desc
 
 
 # ---------------------------------------------------------------------------------------------------------- reading
@@ -492,7 +677,7 @@ def read_cell(name, by_mode, preflight):
               f"({100 * G / med(fc):+.1f}% of Fast DDS), Gw (window proc) = {f2(Gw)}")
 
     pms = {a: med([r["proc_ms_mb"] for r in plain[a]]) for a in (TICKLE, VENDOR)}
-    for mode in ("stat", "record"):
+    for mode in ("stat", "record", "pmu"):
         for a in (TICKLE, VENDOR):
             x = med([r["proc_ms_mb"] for r in arm(mode, a)])
             if x == x and pms[a] == pms[a] and pms[a] > 0:
@@ -511,6 +696,48 @@ def read_cell(name, by_mode, preflight):
         for a in (TICKLE, VENDOR):
             for r in st_[a][:1]:
                 print(f"  cycles by thread {a}: " + ", ".join(f"{t} {v / 1e6:.0f}M" for v, t in r.get("stat_threads", [])))
+
+    pm = {a: arm("pmu", a) for a in (TICKLE, VENDOR)}
+    if by_mode.get("pmu"):
+        label_p = " (preflight: not judged)" if preflight else ("" if repro else " (descriptive: gap not reproduced)")
+        print("--- PMU (perf stat, window): counts per MB, median [min..max]; lowest running share; ratio tickle/fastdds ---")
+        host_missing = sorted({e for rs in by_mode["pmu"] for e in rs.get("pmu_host_missing", [])})
+        print(f"  not accepted on the subscriber's host (could not look): {', '.join(host_missing) or 'none'}")
+        events = []
+        for a in (TICKLE, VENDOR):
+            for r in pm[a]:
+                events += [e for e in r.get("pmu", {}) if e not in events]
+        for e in events:
+            cols = []
+            for a in (TICKLE, VENDOR):
+                vals = pmu_values(pm[a], e)
+                share = min((r.get("pmu_pct", {}).get(e, float("nan")) for r in pm[a]), default=float("nan"))
+                mux = " MULTIPLEXED" if share == share and share < PMU_MUX_WARN else ""
+                if vals is None:
+                    cols.append(f"{'could not look':>34}")
+                else:
+                    lo, hi = rng(vals)
+                    cols.append(f"{f2(med(vals) / 1e6, 8)}M [{f2(lo / 1e6, 6, 2)}..{f2(hi / 1e6, 6, 2)}] {share:3.0f}%{mux}")
+            tv, fv = pmu_values(pm[TICKLE], e), pmu_values(pm[VENDOR], e)
+            rt = med(tv) / med(fv) if tv is not None and fv is not None and med(fv) > 0 else float("nan")
+            print(f"  {e:22} {cols[0]:>34} {cols[1]:>34} {f2(rt, 6, 2)}")
+        for r in pm[TICKLE]:
+            c = r.get("rx_counters", {})
+            l2 = r.get("pmu", {}).get("l2d_cache_refill")
+            print(f"  tickle r{r['rep']}: l2d {f2((l2 or float('nan')) / 1e6, 7)}M/MB  rx: " +
+                  " ".join(f"{k}={c.get(k, '-')}" for k in ("direct_reads", "direct_runs", "drain_datagrams", "drain_ring")))
+        for a in (TICKLE, VENDOR):
+            for r in pm[a][:1]:
+                print(f"  l2d refills by thread {a} r{r['rep']}: " +
+                      ", ".join(f"{t} {v / 1e6:.3f}M/MB" for v, t in r.get("pmu_l2_threads", [])))
+        held_p, fals_p, desc_p = pmu_reading(pm[TICKLE], pm[VENDOR])
+        for d in desc_p:
+            print(f"  {d}")
+        if fals_p:
+            print(f"{fals_p}{label_p}")
+        for h in held_p:
+            print(f"PMU READING{label_p} {h}")
+        print(f"PMU PRIMARY{label_p} {held_p[0].split(':')[0]}")
 
     rec = {a: arm("record", a) for a in (TICKLE, VENDOR)}
     D = {}
@@ -721,6 +948,46 @@ perf_test 1 3
     check(f"delta counts when ranges separate ({d:.2f})", counts)
     d, counts = delta([2.6, 2.2], [2.3, 2.25], COUNT_MS)
     check("delta does not count when ranges overlap", not counts)
+
+    # pmu: a sysfs-named event, a multiplexed share, and a count perf could not make (unknown, never 0)
+    pmu_text = "# started\n\nperf_test-1,300,,armv8_pmuv3_0/l2d_cache_refill/,5,62.50,,\n" \
+               "dds.udp-2,100,,l2d_cache_refill,5,100.00,,\nperf_test-1,<not supported>,,dtlb_walk,0,0.00,,\n" \
+               "perf_test-1,9,,instructions,5,100.00,,\n"
+    p = Path("/tmp") / f"rx_perf_selftest_{__import__('os').getpid()}.pmu"
+    p.write_text(pmu_text)
+    ev, pct, unc, per_thread = parse_stat_pmu(p)
+    p.unlink()
+    check(f"pmu stat parse {ev} {pct} {unc}",
+          ev == {"l2d_cache_refill": 400.0, "instructions": 9.0} and pct["l2d_cache_refill"] == 62.5 and
+          unc == {"dtlb_walk"} and per_thread["l2d_cache_refill"]["dds.udp-2"] == 100.0)
+
+    def runs_(vals):  # {event: [per-MB per run]} -> run dicts
+        n = len(next(iter(vals.values())))
+        return [{"pmu": {e: v[i] for e, v in vals.items()}} for i in range(n)]
+
+    base = {"instructions": [4.3e6, 4.4e6, 4.2e6], "cycles": [4.5e6] * 3, "dtlb_walk": [1e3, 1.1e3, 1.05e3]}
+    f_ = runs_({**base, "l2d_cache_refill": [20e3, 21e3, 19e3], "ll_cache_miss_rd": [5e3] * 3})
+    t_cold = runs_({**base, "l2d_cache_refill": [30e3, 31e3, 29e3], "ll_cache_miss_rd": [5.2e3] * 3})
+    held, fals, _d = pmu_reading(t_cold, f_)
+    check(f"P1 DEST COLD from L3 {held}", held[0].startswith("P1 DEST COLD") and "from L3" in held[0] and
+          "NOT FALSIFIED" in fals)
+    t_more = runs_({**base, "instructions": [6e6] * 3, "l2d_cache_refill": [30e3, 31e3, 29e3],
+                    "ll_cache_miss_rd": [5e3] * 3})
+    held, _f, _d = pmu_reading(t_more, f_)
+    check(f"P3 MORE WORK {held}", held[0].startswith("P3 MORE WORK"))
+    t_tlb = runs_({**base, "dtlb_walk": [3e3] * 3, "l2d_cache_refill": [20.5e3] * 3, "ll_cache_miss_rd": [5e3] * 3})
+    held, fals, _d = pmu_reading(t_tlb, f_)
+    check(f"P2 TLB, cold falsified {held} {fals}", held[0].startswith("P2 TLB") and "HYPOTHESIS FALSIFIED" in fals)
+    t_same = runs_({**base, "l2d_cache_refill": [20.5e3] * 3, "ll_cache_miss_rd": [5e3] * 3})
+    held, _f, _d = pmu_reading(t_same, f_)
+    check(f"P4 NOT LOCALISED {held}", held == ["P4 NOT LOCALISED: l2d refills, instructions and dtlb walks were "
+                                              "looked at and none of P1-P3 holds"])
+    t_blind = [{"pmu": {**r["pmu"], "dtlb_walk": None}} for r in t_same]
+    held, _f, _d = pmu_reading(t_blind, f_)
+    check(f"missing event is COULD NOT LOOK, not zero {held}", held[0].startswith("P4 COULD NOT LOOK") and
+          "dtlb_walk" in held[0])
+    held, fals, _d = pmu_reading(t_cold[:1], f_)
+    check(f"one run is not enough {held}", held[0].startswith("PMU NOT READ") and fals == "")
     print("SELFTEST " + ("OK" if ok else "FAILED"))
     return 0 if ok else 1
 

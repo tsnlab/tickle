@@ -188,6 +188,16 @@
 #                    The probe (perf_event_paranoid, kptr_restrict, ptrace_scope, perf and strace) goes to rx_probe.txt.
 #                    Every arm runs under the same instrument in one invocation; only counts and shares are read from an
 #                    instrumented run, its CPU figure from plain (rx_perf_read.py, INSTRUMENT).
+#   RX_PROFILE=pmu   (added 2026-10-13, ~/rig_jobs/rig_queue_rx_pmu.sh: why the copy destination is cold) perf stat
+#                    --per-thread with the arm64 PMU's memory events: cycles and instructions, then each of RX_PMU_WANT
+#                    (default l1d_cache_refill l2d_cache_refill ll_cache_miss_rd|l3d_cache_refill dtlb_walk mem_access
+#                    stall_backend; "a|b" = the first of them the host accepts). The probe asks the SUBSCRIBER's own perf
+#                    for each event, one per call (perf stat -x, -e <event> true: a count is accepted; "<not
+#                    supported>", "<not counted>" or an error is not) and records "PMU base=... ok=... missing=..." in
+#                    rx_probe.txt and pmu_events=, pmu_missing=, pmu_asked= in meta.txt; only accepted events are
+#                    counted. A missing event is "could not look" to the reader, never a zero. More events than the
+#                    core has counters are multiplexed by perf (Cortex-A76: 6 + the cycle counter): each count's running
+#                    share is in the .stat file, and the reader prints it. Output as stat: <stem>_rx.stat.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
@@ -276,7 +286,10 @@ if [ "$INSN_COUNT" = 1 ] && [ "$ONLY_TICKLE" != 1 ]; then
 fi
 if [ -n "$EQUAL_BOUND" ]; then DRY=${DRY:-1}; else DRY=${DRY:-0}; fi
 RX_PROFILE=${RX_PROFILE:-}; RX_DELAY=${RX_DELAY:-8}; RX_WIN=${RX_WIN:-25}; RX_FREQ=${RX_FREQ:-999}
-case "$RX_PROFILE" in "" | plain | stat | record | strace) ;; *) echo "RX_PROFILE must be plain, stat, record or strace" >&2; exit 64 ;; esac
+case "$RX_PROFILE" in "" | plain | stat | record | strace | pmu) ;; *) echo "RX_PROFILE must be plain, stat, record, strace or pmu" >&2; exit 64 ;; esac
+RX_PMU_WANT=${RX_PMU_WANT:-"l1d_cache_refill l2d_cache_refill ll_cache_miss_rd|l3d_cache_refill dtlb_walk mem_access stall_backend"}
+case "$RX_PMU_WANT" in *[!a-z0-9_\|\ ]*) echo "RX_PMU_WANT may hold only [a-z0-9_| ]: '$RX_PMU_WANT'" >&2; exit 64 ;; esac
+RX_PMU_EVENTS="" # what the probe found the subscriber's host accepts (RX_PROFILE=pmu only)
 if [ -n "$RX_PROFILE" ]; then
     { [ "$SAMEHOST" != 1 ] && [ -z "$EQUAL_BOUND" ]; } || { echo "RX_PROFILE runs cross-host without EQUAL_BOUND only" >&2; exit 64; }
     [ "$INSN_COUNT" = 0 ] || { echo "RX_PROFILE with INSN_COUNT=1: one instrument at a time" >&2; exit 64; }
@@ -669,6 +682,31 @@ perf stat -x, -e cycles:k true 2>&1 >/dev/null | grep -q "^[0-9][0-9]*,,cycles:k
     fi
     case "$probe" in *kptr_restrict=0*) ;; *) say "kernel symbols: kptr_restrict is not 0 - kernel samples stay addresses; the reader splits them by DSO and syscall entry" ;; esac
     echo "rx_mode=$RX_MODE" >> "$OUT.runs/meta.txt"
+    if [ "$RX_PROFILE" = pmu ]; then
+        # Each wanted event asked of the subscriber's own perf, one per call (header, RX_PROFILE=pmu): accepted only
+        # when perf prints a count; of "a|b" the first accepted alternative is taken.
+        # shellcheck disable=SC2016 # expanded on the host
+        PMU_PROBE='ok=""; miss=""; base=""
+counts() { perf stat -x, -e "$1" true 2>&1 >/dev/null | grep -qE "^[0-9]+(\.[0-9]+)?,"; }
+for ev in cycles instructions; do if counts "$ev"; then base="$base,$ev"; else miss="$miss,$ev"; fi; done
+for want in $WANT; do
+    got=""
+    for ev in $(echo "$want" | tr "|" " "); do if counts "$ev"; then got=$ev; break; fi; done
+    if [ -n "$got" ]; then ok="$ok,$got"; else miss="$miss,$want"; fi
+done
+echo "PMU base=${base#,} ok=${ok#,} missing=${miss#,}"'
+        pmu=$(printf '%s\n' "$PMU_PROBE" | sh_ "$SERVER" "WANT='$RX_PMU_WANT' bash -s" 2>&1 | grep -m1 '^PMU ')
+        [ -n "$pmu" ] || { say "REFUSED: the PMU probe on $SERVER said nothing"; exit 1; }
+        echo "$pmu asked=${RX_PMU_WANT// /,}" >> "$OUT.runs/rx_probe.txt"
+        pmu_base=$(sed -n 's/.* base=\([^ ]*\).*/\1/p' <<<"$pmu")
+        pmu_ok=$(sed -n 's/.* ok=\([^ ]*\).*/\1/p' <<<"$pmu")
+        pmu_missing=$(sed -n 's/.* missing=\([^ ]*\).*/\1/p' <<<"$pmu")
+        RX_PMU_EVENTS=$(echo "$pmu_base,$pmu_ok" | sed 's/,,*/,/g; s/^,//; s/,$//')
+        [ -n "$RX_PMU_EVENTS" ] || { say "REFUSED: $SERVER's perf accepts none of cycles, instructions, $RX_PMU_WANT"; exit 1; }
+        printf 'pmu_events=%s\npmu_missing=%s\npmu_asked=%s\n' "$RX_PMU_EVENTS" "$pmu_missing" "${RX_PMU_WANT// /,}" \
+            >> "$OUT.runs/meta.txt"
+        say "rx pmu: counting [$RX_PMU_EVENTS] on $SERVER; not accepted there (could not look): [${pmu_missing:-none}]"
+    fi
     sh_ "$SERVER" "cat > /tmp/ka_rxwin.sh && chmod +x /tmp/ka_rxwin.sh" < "$REPO/examples/perf_hil/experiments/rx_window.sh" \
         || { say "rx window helper copy failed"; exit 1; }
 fi
@@ -753,7 +791,7 @@ kcounters() { # stem dir phase
 rx_fetch() { # dir stem
     local dir=$1 stem=$2
     case "$RX_MODE" in
-        stat) fetch_ "$SERVER" /tmp/ka_rx.stat "$dir/${stem}_rx.stat" ;;
+        stat | pmu) fetch_ "$SERVER" /tmp/ka_rx.stat "$dir/${stem}_rx.stat" ;;
         strace) fetch_ "$SERVER" /tmp/ka_rx.strace "$dir/${stem}_rx.strace" ;;
         strace_wrap) # strace writes its table once perf_test has ended and strace exits (up to 10 s)
             sh_ "$SERVER" "p=\$(cat /tmp/ka_sub.perfpid 2>/dev/null); for i in \$(seq 1 100); do { [ -n \"\$p\" ] && [ -d /proc/\$p ]; } || break; sleep 0.1; done" </dev/null
@@ -779,7 +817,7 @@ run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher second
     launch "$SERVER" sub "$arm" "$topic" "$common -p 0 -s 1 --expected_num_pubs 1 --max_runtime $((dur + 8)) $rosargs"
     sleep 2
     launch "$CLIENT" pub "$arm" "$topic" "$common -r $PUB_RATE -p 1 -s 0 --expected_num_subs 1 --max_runtime $dur $rosargs"
-    [ -n "$RX_PROFILE" ] && sh_ "$SERVER" "/tmp/ka_rxwin.sh $RX_MODE $RX_DELAY $RX_WIN $RX_FREQ" </dev/null > "$dir/${stem}_rxwin.txt" 2>&1
+    [ -n "$RX_PROFILE" ] && sh_ "$SERVER" "/tmp/ka_rxwin.sh $RX_MODE $RX_DELAY $RX_WIN $RX_FREQ $RX_PMU_EVENTS" </dev/null > "$dir/${stem}_rxwin.txt" 2>&1
     local k1 k2
     k1=$(wait_done "$CLIENT" pub $((dur + 40)))
     k2=$(wait_done "$SERVER" sub 20)
