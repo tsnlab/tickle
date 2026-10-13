@@ -2422,6 +2422,10 @@ static uint16_t hybrid_loss_code(double p) {
     return (uint16_t)((exponent << 8U) | rounded);
 }
 
+// The code a reader announces when it has seen frames and no loss event among them: the smallest p the code holds
+// (about 1e-77), which a writer's Cost(n) reads as no loss - n_max.
+#define HYBRID_LOSS_NONE_SEEN ((uint16_t)(HYBRID_LOSS_EXPONENT_MAX << 8U))
+
 static double hybrid_loss_decode(uint16_t code) {
     if (code == 0) {
         return 1.0;
@@ -2448,6 +2452,22 @@ static double loss_estimate_mean(const struct tt_LossEstimate* estimate) {
     }
     double p = ((double)estimate->events + 1.0) / (double)estimate->frames;
     return p < 1.0 ? p : 1.0;
+}
+
+// What a reader announces of its p: no estimate (0) before any frame, HYBRID_LOSS_NONE_SEEN once at least
+// tt_HYBRID_NONE_SEEN_FRAMES frames came with no event among them, else the posterior mean above. At no events the mean
+// is 1 / N, which held a writer below n_max for the first ~100,000 frames of every reader at 0% loss - a 4 MB sample's
+// ~2,900 frames a time, ~5 s at 15 Hz (2026-10-13: "at 0% loss start at the learned n immediately").
+static uint16_t hybrid_rx_loss_code(const struct tt_LossEstimate* estimate) {
+#ifdef TT_HYBRID_TEST_SEAM
+    if (hybrid_test_forced_p >= 0.0) {
+        return hybrid_loss_code(hybrid_test_forced_p);
+    }
+#endif
+    if (estimate->events == 0 && estimate->frames >= (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES) {
+        return HYBRID_LOSS_NONE_SEEN;
+    }
+    return hybrid_loss_code(loss_estimate_mean(estimate));
 }
 
 // ---- The reader's side: what it measures of its own reception (DESIGN.md section 8, "What the reader measures")
@@ -2580,6 +2600,17 @@ static void hybrid_rx_gap(struct tt_Context* node, struct tt_HybridRxWriter* wri
 
 static void hybrid_announce(struct tt_Context* node, uint64_t now);
 
+// At a sample's tail: a reader that has announced no p yet and has seen enough frames without a loss event announces
+// "none seen" at once, rather than at the next announce interval. A RELIABLE AUTO writer sends MTU units until it hears
+// a p (hybrid_peer_p()): until 2026-10-13 that was up to a whole interval of samples at 0% loss (the rig's 4 MB cell: 1
+// to 11 samples, by the interval's phase), then n crept up with 1 / N. A reader that has seen loss announces at the
+// interval, as before: what it measured is a p, and a writer at n 1 meanwhile is what that p would choose anyway.
+static void hybrid_rx_first_estimate(struct tt_Context* node) {
+    if (node->hybrid.advertised_loss == 0 && hybrid_rx_loss_code(&node->hybrid.rx_loss) == HYBRID_LOSS_NONE_SEEN) {
+        hybrid_announce(node, tt_get_ns());
+    }
+}
+
 // Rule (e) on the reader's side (DESIGN.md section 8): a writer's sample has arrived to its tail and every run of its
 // body was lost. A path that drops IP fragments (a firewall, a tc filter) when frame loss alone would do that with less
 // than tt_HYBRID_PATH_ALPHA - L0^runs over this sample and the writer's all-lost samples just before it, L0 at p_mtu's
@@ -2695,6 +2726,7 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
     writer->next = (uint16_t)(index + units);
     if (!run && index == tail) {
         hybrid_rx_judge_path(node, writer);
+        hybrid_rx_first_estimate(node);
     }
 }
 
@@ -2730,7 +2762,8 @@ static uint32_t hybrid_n_star(double p, double unit, double header, uint32_t n_m
 }
 
 // The frame loss a reader node reported in its latest announce (DESIGN.md section 8, "What the reader measures"): 1
-// when it reported none.
+// when it reported none. The reader announces its first estimate at the tail of the first sample it measured
+// (hybrid_rx_first_estimate()), so only that one sample goes as MTU units - the frames its p rests on.
 static double hybrid_peer_p(const struct tt_Context* node, uint8_t context_id) {
 #ifdef TT_HYBRID_TEST_SEAM
     if (hybrid_test_forced_p >= 0.0) {
@@ -11877,14 +11910,23 @@ static void hybrid_control(struct tt_HybridState* hybrid, uint64_t now, double u
     }
 }
 
-// The reader's starting point: the slow-start cap (or no cap at all for a benchmark arm's reader), tau at its 30 s
+// The cap a reader starts at: n_max, or the slow start's (tt_HYBRID_SLOW_START, config.h) where a build sets one.
+static uint32_t hybrid_start_cap(uint32_t n_max) {
+#if tt_HYBRID_SLOW_START > 0
+    return n_max < tt_HYBRID_SLOW_START ? n_max : tt_HYBRID_SLOW_START;
+#else
+    return n_max;
+#endif
+}
+
+// The reader's starting point: the cap above (or no cap at all for a benchmark arm's reader), tau at its 30 s
 // default until runs say otherwise.
 static void hybrid_reader_start(struct tt_Context* node) {
     struct tt_HybridState* hybrid = &node->hybrid;
     uint32_t n_max = hybrid_units_within(node->ip_reassembly_max, false);
     hybrid->rx_capable = n_max >= 2U;
     hybrid->cap_off = _tt_CONFIG.reassembly_cap_off != 0;
-    hybrid->cap = hybrid->cap_off || n_max < tt_HYBRID_SLOW_START ? n_max : tt_HYBRID_SLOW_START;
+    hybrid->cap = hybrid->cap_off ? n_max : hybrid_start_cap(n_max);
     hybrid->lifetime_ns = tt_HYBRID_QUEUE_LIFETIME_NS;
     hybrid->advertised = hybrid->rx_capable ? hybrid_cap_bytes(node, hybrid->cap, n_max) : node->ip_reassembly_max;
 }
@@ -11939,7 +11981,7 @@ static void hybrid_reader_tick(struct tt_Context* node, uint64_t now) {
 static void hybrid_announce(struct tt_Context* node, uint64_t now) {
     struct tt_HybridState* hybrid = &node->hybrid;
     uint16_t bytes = hybrid_cap_bytes(node, hybrid->cap, hybrid_units_within(node->ip_reassembly_max, false));
-    uint16_t loss = hybrid_loss_code(loss_estimate_mean(&hybrid->rx_loss));
+    uint16_t loss = hybrid_rx_loss_code(&hybrid->rx_loss);
     bool loss_moved = hybrid_loss_moved(loss, hybrid->advertised_loss);
     if (bytes == hybrid->advertised && !loss_moved) {
         return;

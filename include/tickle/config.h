@@ -774,9 +774,19 @@
 #ifndef tt_HYBRID_DROP
 #define tt_HYBRID_DROP 0.7
 #endif
-// The cap a reader starts at, doubled per clean window until the first collapse (slow start).
+// The cap a reader starts at, doubled per clean window until the first collapse (slow start); 0, the default since
+// 2026-10-13: no slow start, the cap starts at n_max and only a collapse moves it. At 0% loss the slow start held every
+// writer below n_max for its first ~5 s (the rig's 4 MB cell: ~77 samples a run, and in one run in three a stall below
+// 32 units for the whole minute), for a memory collapse the control law detects anyway.
 #ifndef tt_HYBRID_SLOW_START
-#define tt_HYBRID_SLOW_START 2U
+#define tt_HYBRID_SLOW_START 0U
+#endif
+// The clean frames after which a reader that has seen no loss event announces "none seen" - p as no loss, a writer's
+// n at the cap - instead of the posterior mean 1 / N. 500: a 1% path shows no event in 500 frames 0.7% of the time
+// (0.99^500), so it is announced as clean less than once in a hundred; a 0.1% path, where it is announced so 61% of
+// the time, has Cost(45) within 4.5% of Cost(n*). The first 1 MB or 4 MB sample (723 or ~2,900 frames) passes it.
+#ifndef tt_HYBRID_NONE_SEEN_FRAMES
+#define tt_HYBRID_NONE_SEEN_FRAMES 500U
 #endif
 // A probe goes this far above the ceiling; the probe wait, 2 tau, doubles per failed probe up to 2^this.
 #ifndef tt_HYBRID_PROBE_STEP
