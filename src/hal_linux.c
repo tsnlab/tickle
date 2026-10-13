@@ -20,7 +20,9 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
-#include <fcntl.h> // fcntl(O_NONBLOCK): the sockets' mode (sockets_nonblocking())
+// fcntl(O_NONBLOCK): the sockets' mode (sockets_nonblocking()), in every build; and open() for the context-id registry
+// and the segment, fcntl(F_DUPFD_CLOEXEC) for tt_tx_await_writable()'s watch.
+#include <fcntl.h>
 #include <ifaddrs.h>
 #include <poll.h>
 #include <stddef.h> // offsetof
@@ -72,14 +74,8 @@
 // the duplicate: the segment's own include of <sys/stat.h> beside the registry's was not only
 // redundant, it hid that a build with the registry off and the segment on would have lost them.
 #if tt_CONTEXT_ID_CLAIM || tt_SEGMENT_ENABLED
-#include <fcntl.h> // open()
-
 #include <sys/file.h> // flock(): the registry's lock, and the segment owner's
 #include <sys/stat.h> // fchmod(), fstat()
-#endif
-
-#if tt_LARGE_SAMPLES && !(tt_CONTEXT_ID_CLAIM || tt_SEGMENT_ENABLED)
-#include <fcntl.h> // fcntl(F_DUPFD_CLOEXEC): tt_tx_await_writable()'s watch
 #endif
 
 #if tt_CONTEXT_ID_CLAIM
@@ -2807,8 +2803,9 @@ static uint64_t rx_wait_until(const struct tt_Context* node) {
 }
 
 static void rx_timer_arm(struct tt_hal* hal, uint64_t until) {
-    struct itimerspec at = {{0, 0}, {(time_t)(until / SEC_NS), (long)(until % SEC_NS)}};
-    if (timerfd_settime(hal->timer_fd_plus1 - 1, TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET, &at, NULL) == 0) {
+    // NOLINTNEXTLINE(misc-include-cleaner) - struct itimerspec: <sys/timerfd.h> (via <time.h>), a glibc-private header
+    struct itimerspec deadline = {{0, 0}, {(time_t)(until / SEC_NS), (long)(until % SEC_NS)}};
+    if (timerfd_settime(hal->timer_fd_plus1 - 1, TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET, &deadline, NULL) == 0) {
         hal->timer_armed_ns = until;
         hal->timer_sets++;
     }

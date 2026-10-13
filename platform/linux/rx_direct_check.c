@@ -91,6 +91,8 @@ enum check_exit { CHECK_PASS = 0, CHECK_FAIL = 1, CHECK_SETUP_FAILED = 3 };
 #define LINE_BYTES 256U
 #define NONBLOCK_SEND_BYTES 60000U // a datagram that takes most of a small send buffer
 #define NONBLOCK_FILL_TRIES 64
+#define NONBLOCK_SNDBUF 4096 // a send buffer small enough to fill
+#define NS_PER_US 1000
 #define DEADLINE_FIRST_NS 200000000ULL  // 12: the first wait's deadline, 200 ms
 #define DEADLINE_SECOND_NS 300000000ULL // the second's, later
 #define DEADLINE_SHORT_NS 20000000ULL   // an earlier one, 20 ms
@@ -308,11 +310,11 @@ static void check_after_unaimed(void) {
 }
 
 // Receive offload on, as gro_turn_on() leaves it; false when the kernel refuses (the case is then not run).
-static bool gro_on(bool on) {
-    int value = on ? 1 : 0;
+static bool gro_on(bool enable) {
+    int value = enable ? 1 : 0;
     bool set = setsockopt(node.hal.sock, SOL_UDP, UDP_GRO, &value, sizeof(value)) == 0 &&
                setsockopt(node.hal.data_sock, SOL_UDP, UDP_GRO, &value, sizeof(value)) == 0;
-    node.hal.gro_state = (uint8_t)(on && set ? TT_GRO_ON : TT_GRO_PLAIN);
+    node.hal.gro_state = (uint8_t)(enable && set ? TT_GRO_ON : TT_GRO_PLAIN);
     node.hal.gro_quiet = 0;
     return set;
 }
@@ -508,8 +510,8 @@ static void check_switch(void) {
 }
 
 // 11. nonblock
-static bool socket_nonblocking(int fd) {
-    int flags = fcntl(fd, F_GETFL);
+static bool socket_nonblocking(int socket_fd) {
+    int flags = fcntl(socket_fd, F_GETFL);
     return flags >= 0 && (flags & O_NONBLOCK) != 0;
 }
 
@@ -517,7 +519,8 @@ static void check_nonblocking(void) {
     verdict(socket_nonblocking(node.hal.sock) && socket_nonblocking(node.hal.data_sock),
             "nonblock: unset, both sockets are O_NONBLOCK");
     // A small send buffer, sent into with MSG_DONTWAIT until it refuses, then one blocking send.
-    int small = 4096;
+    int small = NONBLOCK_SNDBUF;
+    // NOLINTNEXTLINE(misc-include-cleaner) - SOL_SOCKET/SO_SNDBUF: <sys/socket.h>, via glibc-private headers
     (void)setsockopt(node.hal.data_sock, SOL_SOCKET, SO_SNDBUF, &small, sizeof(small));
     struct sockaddr_in sink;
     socklen_t sink_len = sizeof(sink);
@@ -591,7 +594,7 @@ static void check_deadline(void) {
     uint32_t len = build(framing, FRAMING + UNIT);
     bool sent = send_built(len, "deadline");
     int32_t got = receive_until(len, start + DEADLINE_FIRST_NS);
-    bool a = sent && got == (int32_t)len && node.hal.timer_sets == sets + 1U && node.hal.timer_armed_ns != 0;
+    bool data_arms = sent && got == (int32_t)len && node.hal.timer_sets == sets + 1U && node.hal.timer_armed_ns != 0;
     // B: a later deadline (300 ms): nothing set until the old timer fires at 200 ms; re-armed once; ends at 300.
     const uint64_t until = start + DEADLINE_SECOND_NS;
     sets = node.hal.timer_sets;
@@ -600,7 +603,7 @@ static void check_deadline(void) {
     uint64_t ended = tt_get_ns();
     int b_sets = (int)(node.hal.timer_sets - sets);
     int b_fires = (int)(node.hal.timer_fires - fires);
-    bool b = timed_out == -1 && ended >= until && b_sets == 1 && b_fires == 2 && node.hal.timer_armed_ns == 0;
+    bool later_waits = timed_out == -1 && ended >= until && b_sets == 1 && b_fires == 2 && node.hal.timer_armed_ns == 0;
     // C: data under a 300 ms deadline (armed for it), then an EARLIER deadline, 20 ms: re-armed at once (one set).
     (void)send_built(len, "deadline C");
     (void)receive_until(len, tt_get_ns() + DEADLINE_SECOND_NS);
@@ -608,19 +611,20 @@ static void check_deadline(void) {
     uint64_t short_until = tt_get_ns() + DEADLINE_SHORT_NS;
     int32_t short_out = receive_until(0, short_until);
     uint64_t short_ended = tt_get_ns();
-    bool c = short_out == -1 && short_ended < short_until + DEADLINE_SHORT_NS && node.hal.timer_sets == sets + 1U;
+    bool earlier_rearms =
+        short_out == -1 && short_ended < short_until + DEADLINE_SHORT_NS && node.hal.timer_sets == sets + 1U;
     // D: outside a poll (wait_until 0) the timer is not used.
     set_wait_until(0);
     uint64_t waits = node.hal.timer_waits;
     (void)tt_receive(&node, buf, sizeof(buf), &any_ip, &any_port, (int64_t)DEADLINE_SHORT_NS);
-    bool d = node.hal.timer_waits == waits;
+    bool outside_none = node.hal.timer_waits == waits;
     char line[LINE_BYTES];
     (void)snprintf(line, sizeof(line),
                    "deadline: data leaves it armed %d; a later deadline: %d set, %d fires, ended %+lld us from it %d; "
                    "an earlier one re-arms at once %d; none outside a poll %d",
-                   a ? 1 : 0, b_sets, b_fires, (long long)((int64_t)(ended - until) / 1000), b ? 1 : 0, c ? 1 : 0,
-                   d ? 1 : 0);
-    verdict(a && b && c && d, line);
+                   data_arms ? 1 : 0, b_sets, b_fires, (long long)((int64_t)(ended - until) / NS_PER_US),
+                   later_waits ? 1 : 0, earlier_rearms ? 1 : 0, outside_none ? 1 : 0);
+    verdict(data_arms && later_waits && earlier_rearms && outside_none, line);
 }
 
 int main(void) {
