@@ -50,6 +50,11 @@ EXTRA_B=${EXTRA_B:-}
 # platform/linux/refuse_pbuf_ring.so with TT_REFUSE_PBUF_RING=all, built from TIP).
 SUB_PRELOAD=${SUB_PRELOAD:-}
 CHECK_STRIDE=${CHECK_STRIDE:-64} # the subscriber checks every 64th byte: every cache line, not every byte (-K)
+# Added 2026-10-13 (ab/rx-gap2): the publisher's and subscriber's mode flags (default: forced IP, the reader's cap off,
+# so every arm receives the same datagrams), e.g. PUB_FLAGS="-F auto -M -G" SUB_FLAGS="" for the rig's AUTO with the
+# cap on - the regime where MTU-mode samples turn receive offload on. page-faults is counted beside the cycles.
+PUB_FLAGS=${PUB_FLAGS:-"-F ip -M -G"}
+SUB_FLAGS=${SUB_FLAGS--C}
 export TMPDIR=${TMPDIR:-/home/semih/tmp_build}
 rc=1
 
@@ -93,7 +98,7 @@ for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
 sudo -n ip -n "$NS1" link set rxga up
 sudo -n ip -n "$NS2" link set rxgb up
 sudo -n ip netns exec "$NS1" tc qdisc add dev rxga root tbf rate 1gbit burst 64kb latency 100ms || exit 1
-echo "=== rx_gap_pc $(date -Is) A=$parent_sha B=$tip_sha extra_b='$EXTRA_B' sub_preload='$SUB_PRELOAD' blocks=$BLOCKS duration=${DURATION}s cflags='$CFLAGS_BENCH' load=$(cut -d' ' -f1-3 /proc/loadavg) ===" | tee -a "$OUT"
+echo "=== rx_gap_pc $(date -Is) A=$parent_sha B=$tip_sha extra_b='$EXTRA_B' sub_preload='$SUB_PRELOAD' pub_flags='$PUB_FLAGS' sub_flags='$SUB_FLAGS' blocks=$BLOCKS duration=${DURATION}s cflags='$CFLAGS_BENCH' load=$(cut -d' ' -f1-3 /proc/loadavg) ===" | tee -a "$OUT"
 
 run() { # <cell> <arm> <block> <size> <rate> <qflag>
     local cell=$1 arm=$2 block=$3 size=$4 rate=$5 qflag=$6 bin
@@ -107,27 +112,32 @@ run() { # <cell> <arm> <block> <size> <rate> <qflag>
     rm -f "$perflog"
     # shellcheck disable=SC2024,SC2086
     sudo -n ip netns exec "$NS2" bash -c "ulimit -v $VMEM_KB; exec timeout $((DURATION + 40)) perf stat -x, \
-        -e instructions:u,instructions:k,cycles:u,cycles:k -o $perflog $sub_env $bin sub -s $size -d $((DURATION + 8)) $qflag -C \
+        -e instructions:u,instructions:k,cycles:u,cycles:k,page-faults -o $perflog $sub_env $bin sub -s $size \
+        -d $((DURATION + 8)) $qflag $SUB_FLAGS \
         -K $CHECK_STRIDE -b 192.168.86.255" >"$sublog" 2>&1 &
     local sub_pid=$!
     sleep 1
     # shellcheck disable=SC2024,SC2086
     sudo -n ip netns exec "$NS1" bash -c "ulimit -v $VMEM_KB; exec timeout $((DURATION + 30)) $bin pub -s $size -r $rate \
-        -d $DURATION $qflag -F ip -M -G -b 192.168.86.255" >"$publog" 2>&1
+        -d $DURATION $qflag $PUB_FLAGS -b 192.168.86.255" >"$publog" 2>&1
     wait "$sub_pid"
-    local p s iu ik cu ck rx
+    local p s iu ik cu ck pf rx hy
     p=$(grep -m1 '^RESULT:' "$publog" | sed 's/^RESULT: //')
     s=$(grep -m1 '^RESULT:' "$sublog" | sed 's/^RESULT: //')
     iu=$(grep -m1 'instructions:u' "$perflog" 2>/dev/null | cut -d, -f1)
     ik=$(grep -m1 'instructions:k' "$perflog" 2>/dev/null | cut -d, -f1)
     cu=$(grep -m1 'cycles:u' "$perflog" 2>/dev/null | cut -d, -f1)
     ck=$(grep -m1 'cycles:k' "$perflog" 2>/dev/null | cut -d, -f1)
-    rx=$(grep -m1 -o 'rx: .*' "$sublog" | tr ' ' '\n' | grep -E '^(drain_starts|drain_datagrams|direct_[a-z]+)=' | tr '\n' ' ')
+    pf=$(grep -m1 'page-faults' "$perflog" 2>/dev/null | cut -d, -f1)
+    rx=$(grep -m1 -o 'rx: .*' "$sublog" | tr ' ' '\n' |
+        grep -E '^(drain_starts|drain_datagrams|direct_[a-z]+|empty_reads|gro_[a-z]+)=' | tr '\n' ' ')
+    hy=$(grep -m1 -o 'hybrid: .*' "$publog" | tr ' ' '\n' | grep -E '^(runs|n_hist|mtu_units)=' | sed 's/^/pub_/' |
+        tr '\n' ' ')
     if [ -z "$p" ] || [ -z "$s" ]; then
         echo "RUN cell=$cell arm=$arm block=$block VOID no RESULT (pub: $(tail -1 "$publog") / sub: $(tail -1 "$sublog"))" | tee -a "$OUT"
         return
     fi
-    echo "RUN cell=$cell arm=$arm block=$block insn_u=${iu:-none} insn_k=${ik:-none} cyc_u=${cu:-none} cyc_k=${ck:-none} $rx| $p | $s" >>"$OUT"
+    echo "RUN cell=$cell arm=$arm block=$block insn_u=${iu:-none} insn_k=${ik:-none} cyc_u=${cu:-none} cyc_k=${ck:-none} pgf=${pf:-none} $rx$hy| $p | $s" >>"$OUT"
     echo "RUN cell=$cell arm=$arm block=$block insn_u=${iu:-none} insn_k=${ik:-none} $(grep -o 'delivered=[0-9]*' <<<"$s") $(grep -o 'latency_median_us=[0-9.]*' <<<"$s") $rx"
 }
 

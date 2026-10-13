@@ -10,7 +10,8 @@ import statistics
 import sys
 
 PRIMARY = "insn_per_mb"
-METRICS = (PRIMARY, "insn_u_per_mb", "insn_k_per_mb", "cyc_per_mb", "latency_median_us")
+METRICS = (PRIMARY, "insn_u_per_mb", "insn_k_per_mb", "cyc_per_mb", "latency_median_us", "pgfault_per_mb",
+           "empty_reads_per_mb", "direct_reads_per_mb")
 MIN_RUNS = 2
 
 
@@ -59,6 +60,10 @@ def values(head, sub):
         "insn_k_per_mb": ik / mb,
         "cyc_per_mb": (int(head["cyc_u"]) + int(head["cyc_k"])) / mb,
         "latency_median_us": float(sub["latency_median_us"]),
+        # Beside the metrics (2026-10-13), each only when the run printed it: page faults, and the treatment counters.
+        **{name: int(head[key]) / mb for name, key in (("pgfault_per_mb", "pgf"), ("empty_reads_per_mb", "empty_reads"),
+                                                       ("direct_reads_per_mb", "direct_reads"))
+           if head.get(key, "none").isdigit()},
     }
 
 
@@ -80,6 +85,10 @@ def judge(cells):
             verdicts[cell] = None
             continue
         for metric in METRICS:
+            if any(metric not in v for arm in ("A", "B", "A2") for v in arms[arm]):
+                if metric == PRIMARY:
+                    raise KeyError(metric)
+                continue  # a counter an arm does not print (an older parent): not compared
             a = [v[metric] for v in arms["A"]]
             b = [v[metric] for v in arms["B"]]
             a2 = [v[metric] for v in arms["A2"]]
