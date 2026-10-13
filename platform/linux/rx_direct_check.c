@@ -31,6 +31,10 @@
 //                 check's own recvmsg() does it once the real one returns): the run is not handed over in place but
 //                 read whole into the buffer, from the parked place.
 //  10. switch   - TT_RX_DIRECT=0 in the environment: tt_bind() leaves direct_allowed off; unset, on.
+//  11. nonblock - both sockets O_NONBLOCK (so a wait does not check a datagram's checksum before the read does);
+//                 TT_RX_NONBLOCK=0 leaves both blocking. And a blocking send still blocks rather than failing: with
+//                 the data socket's send buffer filled to refusal (MSG_DONTWAIT), tt_send_to() waits for room and
+//                 sends - it returns the length, not -1 with EAGAIN (SKIP where loopback never lets the buffer fill).
 // Exit 0 pass, 1 fail, 3 setup failed. Run by test.sh (test-linux) in a private namespace.
 
 // Built as rmw_tickle is (platform/linux/Makefile passes the same), so a lint of this file alone sees the same build.
@@ -41,6 +45,8 @@
 #define tt_LARGE_SAMPLES 1
 #endif
 
+#include <errno.h>
+#include <fcntl.h> // fcntl(F_GETFL): case 11
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -79,6 +85,8 @@ enum check_exit { CHECK_PASS = 0, CHECK_FAIL = 1, CHECK_SETUP_FAILED = 3 };
 #define SHORT_BY 8U        // a datagram this much shorter than the framing
 #define WAIT_DIVISOR 10    // 2b's wait: a tenth of a second
 #define LINE_BYTES 256U
+#define NONBLOCK_SEND_BYTES 60000U // a datagram that takes most of a small send buffer
+#define NONBLOCK_FILL_TRIES 64
 static uint8_t place[PLACE_BYTES];
 static uint8_t framing[FRAMING];
 static uint8_t datagram[FRAMING + (8U * UNIT)];
@@ -492,6 +500,53 @@ static void check_switch(void) {
     tt_Context_destroy(&off);
 }
 
+// 11. nonblock
+static bool socket_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL);
+    return flags >= 0 && (flags & O_NONBLOCK) != 0;
+}
+
+static void check_nonblocking(void) {
+    verdict(socket_nonblocking(node.hal.sock) && socket_nonblocking(node.hal.data_sock),
+            "nonblock: unset, both sockets are O_NONBLOCK");
+    // A small send buffer, sent into with MSG_DONTWAIT until it refuses, then one blocking send.
+    int small = 4096;
+    (void)setsockopt(node.hal.data_sock, SOL_SOCKET, SO_SNDBUF, &small, sizeof(small));
+    struct sockaddr_in sink;
+    socklen_t sink_len = sizeof(sink);
+    (void)getsockname(sender, (struct sockaddr*)&sink, &sink_len);
+    sink.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    static uint8_t big[NONBLOCK_SEND_BYTES];
+    memset(big, 1, sizeof(big));
+    int refused = 0;
+    for (int i = 0; i < NONBLOCK_FILL_TRIES && refused == 0; i++) {
+        if (sendto(node.hal.data_sock, big, sizeof(big), MSG_DONTWAIT, (struct sockaddr*)&sink, sizeof(sink)) < 0) {
+            refused = errno;
+        }
+    }
+    int32_t sent = tt_send_to(&node, big, sizeof(big), INADDR_LOOPBACK, ntohs(sink.sin_port));
+    char line[LINE_BYTES];
+    (void)snprintf(line, sizeof(line), "nonblock: a blocking send after the buffer refused (%s) returned %d of %u",
+                   refused == EAGAIN ? "EAGAIN" : "never refused", (int)sent, (unsigned)sizeof(big));
+    if (refused == EAGAIN) {
+        verdict(sent == (int32_t)sizeof(big), line);
+    } else {
+        // Loopback frees a datagram's send-buffer charge as it is sent, so the buffer may never fill here: no verdict.
+        printf("rx_direct_check: SKIP - %s\n", line);
+    }
+    setenv("TT_RX_NONBLOCK", "0", 1);
+    static struct tt_Context blocking;
+    if (tt_Context_create(&blocking) != tt_RET_OK) {
+        printf("rx_direct_check: SETUP FAILED - cannot create the blocking context\n");
+        setup_failed = true;
+        return;
+    }
+    verdict(!socket_nonblocking(blocking.hal.sock) && !socket_nonblocking(blocking.hal.data_sock),
+            "nonblock: TT_RX_NONBLOCK=0 leaves both sockets blocking");
+    tt_Context_destroy(&blocking);
+    unsetenv("TT_RX_NONBLOCK");
+}
+
 int main(void) {
     _tt_CONFIG.broadcast = "127.255.255.255";
     _tt_CONFIG.context_id = CHECK_CONTEXT_ID;
@@ -519,6 +574,7 @@ int main(void) {
     check_misses();
     check_short_buffer();
     check_withdrawn();
+    check_nonblocking();
     tt_Context_destroy(&node);
     check_switch();
     (void)close(sender);

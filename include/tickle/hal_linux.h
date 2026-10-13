@@ -307,6 +307,8 @@ struct tt_hal {
     // Reads of a socket that found nothing (EAGAIN): the "Node N rx:" line's empty_reads=, a rig arm's treatment check
     // for the reads rx_idle exists to skip.
     uint64_t rx_empty_reads;
+    // Both sockets O_NONBLOCK (hal_linux.c "Non-blocking sockets"); TT_RX_NONBLOCK=0 leaves them blocking.
+    bool nonblocking;
     // Datagrams the last recvmmsg() read beyond the one it returned, handed out before any further wait
     // or read (rx_next of rx_count), all from one socket (rx_from_data). A pending datagram is always
     // returned before ppoll() is entered, so batching never holds one back behind a wait.

@@ -20,6 +20,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <fcntl.h> // fcntl(O_NONBLOCK): the sockets' mode (sockets_nonblocking())
 #include <ifaddrs.h>
 #include <poll.h>
 #include <stddef.h> // offsetof
@@ -925,6 +926,53 @@ static int32_t gro_read(struct tt_Context* node, int socket_fd, void* buf, size_
 }
 #endif
 
+// ---- Non-blocking sockets (2026-10-13)
+// ---------------------------------------------------------------------------------
+//
+// Both sockets are O_NONBLOCK. Every read was non-blocking already (MSG_DONTWAIT, after a wait), so reads do not
+// change; what changes is the wait. Linux's udp_poll() checks, for a socket NOT in non-blocking mode, that the first
+// queued datagram's checksum is good before it reports the socket readable (first_packet_length(): a blocking read must
+// not wake for a datagram it would then drop) - a separate pass over every datagram, cold, before the read copies it.
+// On the Pi 5 that pass was the checksum row of the receive gap to Fast DDS (+0.068 / +0.082 ms/MB at 1 / 4 MB,
+// kallsyms-named,
+// ~/claude_reports/rx_perf_gap2_2026-10-13.md section 9). Non-blocking, the poll does not look, and the checksum is
+// made once, during the copy to user (skb_copy_and_csum_datagram_msg()) - as Fast DDS's blocking recvfrom() makes it. A
+// datagram with a bad checksum then wakes the wait and the read finds nothing (-1, as an empty read).
+//
+// Sends were blocking (flags 0) where the caller wants that: tt_send(), tt_send_to(), tt_send_iov() and
+// tt_send_batch(). They keep it: a send the full buffer refuses waits for room (POLLOUT, the same threshold the
+// writable watch uses) and is made again, as the kernel would have waited inside the call. TT_RX_NONBLOCK=0 in the
+// environment leaves both sockets blocking (the A/B control).
+static void sockets_nonblocking(struct tt_Context* node) {
+    const char* nonblock = getenv("TT_RX_NONBLOCK");
+    node->hal.nonblocking = nonblock == NULL || strcmp(nonblock, "0") != 0;
+    if (!node->hal.nonblocking) {
+        return;
+    }
+    int fds[2] = {node->hal.sock, node->hal.data_sock};
+    for (int i = 0; i < 2; i++) {
+        int flags = fcntl(fds[i], F_GETFL);
+        if (flags < 0 || fcntl(fds[i], F_SETFL, flags | O_NONBLOCK) < 0) {
+            TT_LOG_WARNING("O_NONBLOCK refused on a socket (%s) - its wait checks checksums twice", strerror(errno));
+        }
+    }
+}
+
+// A send that may block found the buffer full (EAGAIN on a non-blocking socket): wait for room, then the caller sends
+// again. False for any other failure, which the caller reports as before.
+static bool send_wait_for_room(int socket_fd) {
+    // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK/EINTR: glibc-private headers
+    if (errno != EAGAIN && errno != EWOULDBLOCK) {
+        return false;
+    }
+    // NOLINTNEXTLINE(misc-include-cleaner) - struct pollfd/POLLOUT: <poll.h>
+    struct pollfd room = {.fd = socket_fd, .events = POLLOUT, .revents = 0};
+    // NOLINTNEXTLINE(misc-include-cleaner) - EINTR: glibc-private header
+    while (poll(&room, 1, -1) < 0 && errno == EINTR) {
+    }
+    return true;
+}
+
 tt_ret_t tt_bind(struct tt_Context* node) {
     // Set before anything below can fail into tt_close(): -1 says "nothing to close here yet",
     // the same convention node->hal.sock itself relies on implicitly (every failure that reaches
@@ -1106,6 +1154,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
+    sockets_nonblocking(node);
     wait_set_setup(node); // without it tt_receive() builds a ppoll() set per call, as it always did
 #if TT_HAL_RX_DIRECT
     {
@@ -1246,8 +1295,11 @@ int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     }
 #endif
     TT_TRACE(tt_TRACE_TX_START);
-    int32_t sent = (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
-                                   sizeof(struct sockaddr_in));
+    int32_t sent = -1;
+    do {
+        sent = (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
+                               sizeof(struct sockaddr_in));
+    } while (sent < 0 && send_wait_for_room(node->hal.data_sock));
     TT_TRACE(tt_TRACE_TX_DONE);
     return sent;
 }
@@ -1269,8 +1321,10 @@ int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_
     addr.sin_port = htons(port);
 
     TT_TRACE(tt_TRACE_TX_START);
-    int32_t sent =
-        (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
+    int32_t sent = -1;
+    do {
+        sent = (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
+    } while (sent < 0 && send_wait_for_room(node->hal.data_sock));
     TT_TRACE(tt_TRACE_TX_DONE);
     return sent;
 }
@@ -1309,7 +1363,11 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
     }
 
     TT_TRACE(tt_TRACE_TX_START);
-    return (int32_t)sendmsg(node->hal.data_sock, &msg, 0);
+    int32_t sent = -1;
+    do {
+        sent = (int32_t)sendmsg(node->hal.data_sock, &msg, 0);
+    } while (sent < 0 && send_wait_for_room(node->hal.data_sock));
+    return sent;
 }
 
 // Messages per sendmmsg() call, and datagrams: a message is one datagram, or with UDP_SEGMENT a run of them
@@ -1553,6 +1611,10 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
             if (flags != 0 && result < 0 && (err == EAGAIN || err == EWOULDBLOCK)) {
                 return (int32_t)sent; // the send buffer is full: what went, went; the caller sends the rest later
             }
+            errno = err;
+            if (flags == 0 && result < 0 && send_wait_for_room(node->hal.data_sock)) {
+                continue; // a blocking batch on the non-blocking socket: room, then the rest
+            }
             if (result < 0 && carried[0] > 1 && gso_refused(node, err)) {
                 continue; // nothing of this call went: again from the same datagram, one at a time
             }
@@ -1603,6 +1665,9 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
             // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers
             if (flags != 0 && result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 return (int32_t)sent; // the send buffer is full: what went, went; the caller sends the rest later
+            }
+            if (flags == 0 && result < 0 && send_wait_for_room(node->hal.data_sock)) {
+                continue; // a blocking batch on the non-blocking socket: room, then the rest
             }
             return -1; // errno says why; a 0 would otherwise loop forever
         }
