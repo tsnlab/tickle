@@ -304,6 +304,9 @@ struct tt_hal {
     // run, and the data socket carrying every discovery reply and ACKNACK was never read again (2026-10-05, rmw
     // KEEP_ALL on the rig). A time, not a count of datagrams, so the bound does not stretch with the hardware.
     uint64_t rx_idle_since_ns;
+    // Reads of a socket that found nothing (EAGAIN): the "Node N rx:" line's empty_reads=, a rig arm's treatment check
+    // for the reads rx_idle exists to skip.
+    uint64_t rx_empty_reads;
     // Datagrams the last recvmmsg() read beyond the one it returned, handed out before any further wait
     // or read (rx_next of rx_count), all from one socket (rx_from_data). A pending datagram is always
     // returned before ppoll() is entered, so batching never holds one back behind a wait.
@@ -340,6 +343,9 @@ struct tt_hal {
     // switches to on from plain, settles aborted, settles committed back to plain.
     bool gro_allowed;
     uint8_t gro_state;
+#define TT_GRO_PLAIN 0U
+#define TT_GRO_ON 1U
+#define TT_GRO_SETTLING 2U
     bool gro_from_data;
     uint32_t gro_quiet;
     uint64_t gro_settle_at_ns;

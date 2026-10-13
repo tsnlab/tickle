@@ -14,6 +14,13 @@
 //   2. in place - the hinted run: the framing in the buffer, the payload in the hinted place, direct_split set to it.
 //   2b. after  - a datagram queued behind a run read in place is not read by the drain (tt_try_receive() answers
 //                 -1, no read of the socket) but by the next wait (tt_receive()), whole.
+//   2c. no hint - a run read without a hint (not in place): the drain after it does not read the socket either; the
+//                 next wait reads what came behind it, whole.
+//   2d. GRO on  - receive offload on (as MTU-mode traffic leaves it): the hinted run is still read in place, and the
+//                 drain after it does not read the socket.
+//   2e. merged  - GRO on and a hint, and a merged read (a UDP_SEGMENT send over loopback, which a UDP_GRO socket takes
+//                 whole) whose length and first framing are the hinted run's: not taken in place, handed out as its
+//                 two datagrams, each whole, counted missed.
 //   3. shorter  - a run of the same sample from the same place, fewer units: in place too; the hinted bytes past it
 //                 untouched.
 //   4-8. misses - the framing differs before the unit count, after it, a count of 0, more units than hinted (the
@@ -43,6 +50,7 @@
 #include <unistd.h>
 
 #include <netinet/in.h>
+#include <netinet/udp.h> // UDP_GRO, UDP_SEGMENT
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <tickle/config.h>
@@ -244,6 +252,132 @@ static void check_after(void) {
     verdict(first_in_place && not_read && by_the_wait, line);
 }
 
+// What came behind a run: sent, then neither read by the drain (tt_try_receive() answers -1: the socket is skipped)
+// nor lost - the next wait reads it whole. Returns whether all three held; *drained and *waited for the line.
+static bool behind_waits(int32_t* drained, int32_t* waited) {
+    uint32_t behind = FRAMING + UNIT + BEHIND_EXTRA;
+    static uint8_t behind_bytes[FRAMING + UNIT + BEHIND_EXTRA];
+    uint8_t other_head[FRAMING];
+    memcpy(other_head, framing, FRAMING);
+    other_head[FRAMING - 1U] ^= FRAMING_FLIP;
+    build(other_head, behind);
+    memcpy(behind_bytes, datagram, behind);
+    if (!send_built(behind, "behind")) {
+        return false;
+    }
+    uint64_t reads_before = node.large.direct_reads;
+    *drained = tt_try_receive(&node, buf, sizeof(buf), &any_ip, &any_port);
+    bool not_read = *drained < 0 && node.large.direct_reads == reads_before;
+    memset(buf, 0, sizeof(buf));
+    *waited = tt_receive(&node, buf, sizeof(buf), &any_ip, &any_port, (int64_t)tt_SECOND / WAIT_DIVISOR);
+    return not_read && *waited == (int32_t)behind && memcmp(buf, behind_bytes, behind) == 0;
+}
+
+// 2c. no hint
+static void check_after_unaimed(void) {
+    __atomic_store_n(&node.large.direct_bytes, 0U, __ATOMIC_SEQ_CST);
+    uint32_t len = build(framing, FRAMING + HINT_BYTES);
+    if (!send_built(len, "unaimed")) {
+        return;
+    }
+    int32_t got = read_it(&node, len);
+    int32_t drained = 0;
+    int32_t waited = 0;
+    bool behind = read_whole(got, len) && behind_waits(&drained, &waited);
+    char line[LINE_BYTES];
+    (void)snprintf(line, sizeof(line),
+                   "after a run read without a hint (read %d): the drain answered %d without reading, the wait read "
+                   "%d: %s",
+                   (int)got, (int)drained, (int)waited, behind ? "as it should" : "NOT as it should");
+    verdict(behind && node.large.direct_split == NULL, line);
+}
+
+// Receive offload on, as gro_turn_on() leaves it; false when the kernel refuses (the case is then not run).
+static bool gro_on(bool on) {
+    int value = on ? 1 : 0;
+    bool set = setsockopt(node.hal.sock, SOL_UDP, UDP_GRO, &value, sizeof(value)) == 0 &&
+               setsockopt(node.hal.data_sock, SOL_UDP, UDP_GRO, &value, sizeof(value)) == 0;
+    node.hal.gro_state = (uint8_t)(on && set ? TT_GRO_ON : TT_GRO_PLAIN);
+    node.hal.gro_quiet = 0;
+    return set;
+}
+
+// 2d. GRO on
+static void check_gro_in_place(void) {
+    if (!gro_on(true)) {
+        printf("rx_direct_check: SKIP - GRO on: the kernel refuses UDP_GRO\n");
+        (void)gro_on(false);
+        return;
+    }
+    hint(&node);
+    uint64_t runs = node.large.direct_reads;
+    uint32_t len = build(framing, FRAMING + HINT_BYTES);
+    if (!send_built(len, "GRO in place")) {
+        (void)gro_on(false);
+        return;
+    }
+    int32_t got = read_it(&node, len);
+    bool placed = got == (int32_t)len && memcmp(buf, framing, FRAMING) == 0 &&
+                  memcmp(place, datagram + FRAMING, HINT_BYTES) == 0 && node.large.direct_split == place &&
+                  node.large.direct_reads == runs + 1U;
+    __atomic_store_n(&node.large.direct_bytes, 0U, __ATOMIC_SEQ_CST);
+    int32_t drained = 0;
+    int32_t waited = 0;
+    bool behind = placed && behind_waits(&drained, &waited);
+    char line[LINE_BYTES];
+    (void)snprintf(line, sizeof(line),
+                   "GRO on: the hinted run read %d, %s; the drain after it answered %d, the wait %d", (int)got,
+                   placed ? "in place" : "NOT in place", (int)drained, (int)waited);
+    verdict(placed && behind, line);
+    (void)gro_on(false);
+}
+
+// 2e. merged
+static void check_gro_merged(void) {
+    if (!gro_on(true)) {
+        printf("rx_direct_check: SKIP - merged: the kernel refuses UDP_GRO\n");
+        (void)gro_on(false);
+        return;
+    }
+    hint(&node);
+    uint64_t missed = node.large.direct_missed;
+    uint32_t len = build(framing, FRAMING + HINT_BYTES); // the hinted run's length and framing, sent as two datagrams
+    uint16_t segment = (uint16_t)((len + 1U) / 2U);
+    struct sockaddr_in dest;
+    socklen_t dest_len = sizeof(dest);
+    bool sent = getsockname(node.hal.data_sock, (struct sockaddr*)&dest, &dest_len) == 0;
+    dest.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int gso = socket(AF_INET, SOCK_DGRAM, 0);
+    int size = segment;
+    sent = sent && gso >= 0 && setsockopt(gso, SOL_UDP, UDP_SEGMENT, &size, sizeof(size)) == 0 &&
+           sendto(gso, datagram, len, 0, (struct sockaddr*)&dest, sizeof(dest)) == (ssize_t)len;
+    if (gso >= 0) {
+        (void)close(gso);
+    }
+    usleep(SETTLE_US);
+    if (!sent) {
+        printf("rx_direct_check: SKIP - merged: no UDP_SEGMENT send on this kernel\n");
+        (void)gro_on(false);
+        return;
+    }
+    int32_t first = read_it(&node, segment);
+    bool first_whole = first == (int32_t)segment && memcmp(buf, datagram, segment) == 0;
+    bool not_split = node.large.direct_split == NULL;
+    __atomic_store_n(&node.large.direct_bytes, 0U, __ATOMIC_SEQ_CST);
+    // Not cleared first: the second datagram is handed out where the merged read left it, in this buffer.
+    int32_t second = tt_try_receive(&node, buf, sizeof(buf), &any_ip, &any_port);
+    const uint8_t* second_at = buf + node.rx_offset;
+    bool second_whole = second == (int32_t)(len - segment) && memcmp(second_at, datagram + segment, len - segment) == 0;
+    char line[LINE_BYTES];
+    (void)snprintf(line, sizeof(line),
+                   "merged read the hinted run's length: first %d of %u bytes %s, split %s, second %d %s, missed +%lu",
+                   (int)first, (unsigned)segment, first_whole ? "whole" : "NOT whole", not_split ? "not set" : "SET",
+                   (int)second, second_whole ? "whole" : "NOT whole",
+                   (unsigned long)(node.large.direct_missed - missed));
+    verdict(first_whole && not_split && second_whole && node.large.direct_missed == missed + 1U, line);
+    (void)gro_on(false);
+}
+
 // 3. shorter
 static void check_shorter(void) {
     hint(&node);
@@ -378,6 +512,9 @@ int main(void) {
     check_control();
     check_in_place();
     check_after();
+    check_after_unaimed();
+    check_gro_in_place();
+    check_gro_merged();
     check_shorter();
     check_misses();
     check_short_buffer();

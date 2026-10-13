@@ -697,9 +697,7 @@ static void gso_setup(struct tt_Context* node) {
 // under 10%). It counts reads of small datagrams
 // only - every datagram of a large sample is a fragment, and resets it - so it is derived from the switch's cost, not
 // from any testbed. Both overridable for udp_offload_check's flapping arm.
-#define TT_GRO_PLAIN 0U
-#define TT_GRO_ON 1U
-#define TT_GRO_SETTLING 2U
+// TT_GRO_PLAIN, TT_GRO_ON, TT_GRO_SETTLING: hal_linux.h, beside struct tt_hal's gro_state.
 #ifndef TT_GRO_QUIET_READS
 #define TT_GRO_QUIET_READS 128U
 #endif
@@ -852,8 +850,26 @@ static int32_t gro_take_pending(struct tt_Context* node, uint8_t* buf, size_t le
     return (int32_t)size;
 }
 
+#if TT_HAL_RX_DIRECT
+static ssize_t direct_recvmsg(struct tt_Context* node, int socket_fd, struct msghdr* msg);
+#endif
+
+// UDP_GRO's segment size from a read's control messages: 0 when the kernel attached none (the read is one datagram).
+static int gro_segment_of(struct msghdr* msg) {
+    int segment = 0;
+    // NOLINTNEXTLINE(misc-include-cleaner) - CMSG_*: <sys/socket.h>
+    for (struct cmsghdr* cm = CMSG_FIRSTHDR(msg); cm != NULL; cm = CMSG_NXTHDR(msg, cm)) {
+        if (cm->cmsg_level == SOL_UDP && cm->cmsg_type == UDP_GRO) {
+            memcpy(&segment, CMSG_DATA(cm), sizeof(segment));
+        }
+    }
+    return segment;
+}
+
 // rx_read_one() with UDP_GRO: recvmsg() with room for the segment size. A merged read returns its first datagram and
-// keeps the rest for gro_take_pending().
+// keeps the rest for gro_take_pending(). A run core hints is read in place here too (direct_recvmsg()): a run is one
+// IP-reassembled datagram, which GRO never merges, so receive offload left on by MTU-mode traffic does not take the
+// read in place away from the runs (on the rig's 1 MB cell it stayed on all run, and no run was read in place).
 static int32_t gro_read(struct tt_Context* node, int socket_fd, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct tt_hal* hal = &node->hal;
     struct sockaddr_in addr;
@@ -870,20 +886,21 @@ static int32_t gro_read(struct tt_Context* node, int socket_fd, void* buf, size_
     msg.msg_iovlen = 1;
     msg.msg_control = control.bytes;
     msg.msg_controllen = sizeof(control.bytes);
+#if TT_HAL_RX_DIRECT
+    // Only the polling thread makes a hint, so a 0 seen here is current (rx_read_one()).
+    ssize_t got = __atomic_load_n(&node->large.direct_bytes, __ATOMIC_RELAXED) != 0
+                      ? direct_recvmsg(node, socket_fd, &msg)
+                      : recvmsg(socket_fd, &msg, MSG_DONTWAIT);
+#else
     ssize_t got = recvmsg(socket_fd, &msg, MSG_DONTWAIT);
+#endif
     if (got < 0) {
         // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers
         return (errno == EAGAIN || errno == EWOULDBLOCK) ? -1 : -2;
     }
     *ip = ntohl(addr.sin_addr.s_addr);
     *port = ntohs(addr.sin_port);
-    int segment = 0;
-    // NOLINTNEXTLINE(misc-include-cleaner) - CMSG_*: <sys/socket.h>
-    for (struct cmsghdr* cm = CMSG_FIRSTHDR(&msg); cm != NULL; cm = CMSG_NXTHDR(&msg, cm)) {
-        if (cm->cmsg_level == SOL_UDP && cm->cmsg_type == UDP_GRO) {
-            memcpy(&segment, CMSG_DATA(cm), sizeof(segment));
-        }
-    }
+    int segment = gro_segment_of(&msg);
     if (segment <= 0 || got <= segment) {
         return (int32_t)got; // one datagram
     }
@@ -952,6 +969,7 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.rx_prefer_data = false;
     node->hal.rx_idle = 0;
     node->hal.rx_idle_since_ns = 0;
+    node->hal.rx_empty_reads = 0;
     node->hal.rx_count = 0;
     node->hal.rx_next = 0;
     node->hal.rx_headers_for = NULL;
@@ -1131,6 +1149,7 @@ static const char* drain_ring_name(uint8_t ring) {
 #endif
 
 #define DIRECT_LINE_BYTES 160U // tt_close()'s direct_* fields on the rx line
+#define GRO_LINE_BYTES 96U     // and its empty_reads= and gro_* fields
 
 void tt_close(struct tt_Context* node) {
     // Read while both sockets are still open: what the kernel dropped at each, beside core's traffic line.
@@ -1143,6 +1162,17 @@ void tt_close(struct tt_Context* node) {
                    (unsigned long)node->large.direct_runs, (unsigned long)node->large.direct_missed,
                    (unsigned long)node->large.direct_cancelled);
 #endif
+    // Empty reads, and receive offload's switches (gro_on: its state at the end), on the same line: whether a cell read
+    // with GRO on, and whether the cut of the empty read ran.
+    char gro[GRO_LINE_BYTES] = "";
+#if TT_HAL_UDP_GRO
+    (void)snprintf(gro, sizeof(gro), " empty_reads=%lu gro_on=%d gro_enables=%lu gro_aborts=%lu gro_commits=%lu",
+                   (unsigned long)node->hal.rx_empty_reads, node->hal.gro_state != TT_GRO_PLAIN ? 1 : 0,
+                   (unsigned long)node->hal.gro_enables, (unsigned long)node->hal.gro_aborts,
+                   (unsigned long)node->hal.gro_commits);
+#else
+    (void)snprintf(gro, sizeof(gro), " empty_reads=%lu", (unsigned long)node->hal.rx_empty_reads);
+#endif
 #if tt_RX_DRAIN
     drain_stop(node);
 #if TT_HAL_UDP_GRO
@@ -1152,19 +1182,19 @@ void tt_close(struct tt_Context* node) {
 #endif
     TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=%d drain_starts=%lu "
                 "drain_datagrams=%lu drain_truncated=%lu drain_overruns=%lu drain_buffers=%u x %u drain_ring=%s "
-                "drain_merged=%lu drain_rearms=%lu drain_grows=%lu%s",
+                "drain_merged=%lu drain_rearms=%lu drain_grows=%lu%s%s",
                 node->id, (unsigned)tt_hal_rx_socket_drops(node), (unsigned)socket_drops(node->hal.sock),
                 (unsigned)socket_drops(node->hal.data_sock), node->hal.drain_fd == -2 ? -1 : 1,
                 (unsigned long)node->hal.drain_starts, (unsigned long)node->hal.drain_datagrams,
                 (unsigned long)node->hal.drain_truncated, (unsigned long)node->hal.drain_overruns,
                 (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_count : 0U),
                 (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_size : 0U), drain_ring_name(node->hal.drain_ring),
-                drain_merged, (unsigned long)node->hal.drain_rearms, (unsigned long)node->hal.drain_grows, direct);
+                drain_merged, (unsigned long)node->hal.drain_rearms, (unsigned long)node->hal.drain_grows, direct, gro);
     drain_release(&node->hal); // before the sockets: its requests go with its ring
 #else
-    TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=0%s", node->id,
+    TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=0%s%s", node->id,
                 (unsigned)tt_hal_rx_socket_drops(node), (unsigned)socket_drops(node->hal.sock),
-                (unsigned)socket_drops(node->hal.data_sock), direct);
+                (unsigned)socket_drops(node->hal.data_sock), direct, gro);
 #endif
 #if tt_CONTEXT_ID_CLAIM
     release_claimed_id(node);
@@ -2396,60 +2426,75 @@ static bool direct_is_hinted_run(const struct tt_LargeState* large, const uint8_
            memcmp(buf + after, large->direct_framing + after, framing - after) == 0;
 }
 
-// The aimed read itself: the hinted run handed over in place (direct_split), anything else put back together in `buf`.
-static ssize_t direct_recvmsg(struct tt_Context* node, int socket_fd, void* buf, size_t len, uint32_t bytes,
-                              struct sockaddr_in* addr) {
+// The aimed read itself, for a `msg` whose one piece is the caller's buffer (and, with receive offload, whose control
+// buffer takes UDP_GRO's segment size): the hinted run handed over in place (direct_split), anything else put back
+// together in that buffer. A merged read (UDP_GRO) is never the run - a run is one IP-reassembled datagram, which GRO
+// never merges - and is put back together too, for gro_read() to hand out. Returns recvmsg()'s result; msg's piece,
+// address, flags and control are as a plain recvmsg() would have left them.
+static ssize_t direct_recvmsg(struct tt_Context* node, int socket_fd, struct msghdr* msg) {
     struct tt_LargeState* large = &node->large;
+    __atomic_store_n(&large->direct_busy, 1U, __ATOMIC_SEQ_CST);
+    const uint32_t bytes = __atomic_load_n(&large->direct_bytes, __ATOMIC_SEQ_CST);
+    // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
+    struct iovec* whole = msg->msg_iov;
+    uint8_t* buf = (uint8_t*)whole->iov_base;
+    const size_t len = whole->iov_len;
     const uint32_t framing = large->direct_framing_len;
+    if (bytes == 0 || len < (size_t)framing + bytes) {
+        ssize_t plain = recvmsg(socket_fd, msg, MSG_DONTWAIT);
+        __atomic_store_n(&large->direct_busy, 0U, __ATOMIC_SEQ_CST);
+        return plain;
+    }
     uint8_t* dest = large->direct_dest;
     // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
     struct iovec iov[3] = {{.iov_base = buf, .iov_len = framing},
                            {.iov_base = dest, .iov_len = bytes},
-                           {.iov_base = (uint8_t*)buf + framing + bytes, .iov_len = len - framing - bytes}};
-    struct msghdr msg = {0};
-    msg.msg_name = addr;
-    msg.msg_namelen = sizeof(*addr);
-    msg.msg_iov = iov;
-    msg.msg_iovlen = 3;
-    ssize_t got = recvmsg(socket_fd, &msg, MSG_DONTWAIT);
+                           {.iov_base = buf + framing + bytes, .iov_len = len - framing - bytes}};
+    msg->msg_iov = iov;
+    msg->msg_iovlen = 3;
+    ssize_t got = recvmsg(socket_fd, msg, MSG_DONTWAIT);
+    msg->msg_iov = whole;
+    msg->msg_iovlen = 1;
     if (got < 0) {
+        __atomic_store_n(&large->direct_busy, 0U, __ATOMIC_SEQ_CST);
         return got;
     }
     large->direct_reads++;
+#if TT_HAL_UDP_GRO
+    const int segment = msg->msg_control != NULL ? gro_segment_of(msg) : 0;
+    const bool merged = segment > 0 && got > segment;
+#else
+    const bool merged = false;
+#endif
     // Still hinted after the read: a hint withdrawn during it leaves the payload in a parked buffer that goes back once
     // this read is over, so it is copied out like any other.
-    if (direct_is_hinted_run(large, (const uint8_t*)buf, (size_t)got, bytes) &&
+    if (!merged && direct_is_hinted_run(large, buf, (size_t)got, bytes) &&
         __atomic_load_n(&large->direct_bytes, __ATOMIC_SEQ_CST) == bytes) {
         large->direct_split = dest;
-        // A run is up to ~64 KB: the next one is at least its wire time away (0.5 ms at 1 GbE), far more than core
-        // takes over this one. So the drain after it does not ask this socket again - the read that would find it
-        // empty, a system call a wake-up - and anything that did come is reported by the next wait, which is
-        // level-triggered (tt_try_receive()'s rx_idle).
-        node->hal.rx_idle |= socket_fd == node->hal.data_sock ? TT_RX_IDLE_DATA : TT_RX_IDLE_WELL_KNOWN;
+        __atomic_store_n(&large->direct_busy, 0U, __ATOMIC_SEQ_CST);
         return got;
     }
     large->direct_missed++;
     if ((size_t)got > framing) {
         size_t back = (size_t)got - framing < bytes ? (size_t)got - framing : bytes;
-        memcpy((uint8_t*)buf + framing, dest, back);
+        memcpy(buf + framing, dest, back);
     }
+    __atomic_store_n(&large->direct_busy, 0U, __ATOMIC_SEQ_CST);
     return got;
 }
 
+// rx_read_one() with a hint and receive offload off: one datagram, its run payload in place when it is the hinted run.
 static int32_t direct_read(struct tt_Context* node, int socket_fd, void* buf, size_t len, uint32_t* ip,
                            uint16_t* port) {
-    struct tt_LargeState* large = &node->large;
-    __atomic_store_n(&large->direct_busy, 1U, __ATOMIC_SEQ_CST);
-    const uint32_t bytes = __atomic_load_n(&large->direct_bytes, __ATOMIC_SEQ_CST);
     struct sockaddr_in addr;
-    ssize_t got = -1;
-    if (bytes == 0 || len < (size_t)large->direct_framing_len + bytes) {
-        socklen_t addr_len = sizeof(addr);
-        got = recvfrom(socket_fd, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
-    } else {
-        got = direct_recvmsg(node, socket_fd, buf, len, bytes, &addr);
-    }
-    __atomic_store_n(&large->direct_busy, 0U, __ATOMIC_SEQ_CST);
+    // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
+    struct iovec iov = {.iov_base = buf, .iov_len = len};
+    struct msghdr msg = {0};
+    msg.msg_name = &addr;
+    msg.msg_namelen = sizeof(addr);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    ssize_t got = direct_recvmsg(node, socket_fd, &msg);
     if (got < 0) {
         // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers
         return (errno == EAGAIN || errno == EWOULDBLOCK) ? -1 : -2;
@@ -2460,36 +2505,65 @@ static int32_t direct_read(struct tt_Context* node, int socket_fd, void* buf, si
 }
 #endif
 
-// One datagram with recvfrom(), without waiting: its length, -1 when nothing is waiting, -2 on an I/O error.
+// After a read that took a hybrid run (FRAG_RUN_L, one IP-reassembled datagram of a large sample, read in place or
+// not, with receive offload on or off): the drain after it does not ask that socket again. A run is up to ~64 KB, so
+// the next one is at least its wire time away (0.5 ms at 1 GbE), far more than core takes over this one, and the read
+// that would find the socket empty - a system call a wake-up - is skipped; anything that did come is reported by the
+// next wait, which is level-triggered (tt_try_receive()'s rx_idle). Until 2026-10-13 only a run read in place was
+// marked, and on the rig's 1 MB cell, where receive offload stayed on, no run was: every wake-up kept its empty read.
+static void rx_note_run(struct tt_Context* node, int socket_fd, const uint8_t* buf, int32_t got) {
+    if (got > (int32_t)sizeof(struct tt_SingleHeader) && buf[3] == tt_SUBMESSAGE_TYPE_FRAG_RUN_L &&
+        (buf[0] == tt_SINGLE_MARKER_LE || buf[0] == tt_SINGLE_MARKER_BE)) {
+        node->hal.rx_idle |= socket_fd == node->hal.data_sock ? TT_RX_IDLE_DATA : TT_RX_IDLE_WELL_KNOWN;
+    }
+}
+
+// One datagram, without waiting: its length, -1 when nothing is waiting (counted, rx_empty_reads), -2 on an I/O error.
 static int32_t rx_read_one(struct tt_Context* node, int socket_fd, void* buf, size_t len, uint32_t* ip,
                            uint16_t* port) {
     node->rx_via_data_port = (socket_fd == node->hal.data_sock);
+    int32_t ret = -1;
 #if TT_HAL_UDP_GRO
     if (node->hal.gro_state != TT_GRO_PLAIN) {
         if (node->hal.gro_state == TT_GRO_SETTLING) {
             gro_turn_on(node); // step 2: never read what may be merged without the option on
         }
-        int32_t got = gro_read(node, socket_fd, buf, len, ip, port);
-        if (got >= 0) {
-            bool busy = node->hal.gro_left > 0 || gro_large_fragment((const uint8_t*)buf, got);
+        ret = gro_read(node, socket_fd, buf, len, ip, port);
+        if (ret >= 0) {
+            bool busy = node->hal.gro_left > 0 || gro_large_fragment((const uint8_t*)buf, ret);
             node->hal.gro_quiet = busy ? 0 : node->hal.gro_quiet + 1;
+            if (node->hal.gro_left == 0) {
+                rx_note_run(node, socket_fd, (const uint8_t*)buf, ret);
+            }
+        } else if (ret == -1) {
+            node->hal.rx_empty_reads++;
         }
-        return got;
+        return ret;
     }
 #endif
 #if TT_HAL_RX_DIRECT
     // Only the polling thread makes a hint (direct_bytes != 0), so a 0 seen here is current: no fence for the reads
     // that have none.
     if (__atomic_load_n(&node->large.direct_bytes, __ATOMIC_RELAXED) != 0) {
-        return direct_read(node, socket_fd, buf, len, ip, port);
+        ret = direct_read(node, socket_fd, buf, len, ip, port);
+        if (ret >= 0) {
+            rx_note_run(node, socket_fd, (const uint8_t*)buf, ret);
+        } else if (ret == -1) {
+            node->hal.rx_empty_reads++;
+        }
+        return ret;
     }
 #endif
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
-    int32_t ret = (int32_t)recvfrom(socket_fd, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
+    ret = (int32_t)recvfrom(socket_fd, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
     if (ret < 0) {
         // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers
-        return (errno == EAGAIN || errno == EWOULDBLOCK) ? -1 : -2;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            node->hal.rx_empty_reads++;
+            return -1;
+        }
+        return -2;
     }
     *ip = ntohl(addr.sin_addr.s_addr);
     *port = ntohs(addr.sin_port);
@@ -2498,6 +2572,7 @@ static int32_t rx_read_one(struct tt_Context* node, int socket_fd, void* buf, si
         gro_turn_on(node); // the rest of this sample may come merged
     }
 #endif
+    rx_note_run(node, socket_fd, (const uint8_t*)buf, ret);
     return ret;
 }
 
