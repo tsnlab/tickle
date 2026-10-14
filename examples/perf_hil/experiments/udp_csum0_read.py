@@ -13,8 +13,11 @@ section 9; ethtool -k on both Pis, 2026-10-14): the macb NIC checks the checksum
 IP fragment, so every run's checksum is made in software at the receiver - 0.31 / 0.30 ms/MB of the subscriber's kernel
 time (1 / 4 MB), Fast DDS 0.24 / 0.22. With checksum 0 that pass goes, but the copy that follows it then reads the
 data cold (the pass had brought it into the cache): the subscriber should save 0.05-0.15 ms/MB, not the whole pass.
-The publisher makes the checksum of an IP-fragmented datagram as it copies from user with or without SO_NO_CHECK and
-pays two setsockopt() calls per sendmmsg() call: no saving expected there.
+The publisher makes the checksum of an IP-fragmented datagram as it copies from user with or without SO_NO_CHECK, and
+pays a setsockopt() only where a call's kind changes (SO_NO_CHECK stays on between calls): no saving expected there.
+The PC (udp_csum0_pc.sh, dbd74e7a): subscriber kernel instructions -0.355 M per MB in every cell, cycles HELD (x86
+copies with one rep movsb, so instructions overstate); publisher instructions +0.07..+0.15% / -0.11% (one cell's
++0.15% at its floor).
 
 INPUT. The four invocations of rmw_keepall_rig.sh (OUT.runs/ each), cross-host at 0% loss, arms tickle@csum0,
 tickle@head, fastdds, cyclonedds:

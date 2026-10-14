@@ -1236,6 +1236,34 @@ instructions per MB mislead wherever work moves into or out of a copy; cycles ar
 | the deadline timer | +0.5% HELD | -0.9% HELD | kernel -1.4% BETTER at 4 MiB; cycles not resolved (A/A 14-16% that session); ~2,300 timer sets a run against 15,000-50,000 waits (the bench polls with a 10 ms budget) |
 | n_max from the first clean sample (AUTO, cap on) | -22.0% BETTER | -25.3% BETTER | cycles -12.7% / -27.6% BETTER; A sent 211 of 360 / 76 of 180 samples below n_max, B 1-31 / 1-16 (before the tail announce's fix: 1); latency median +0.22% WORSE at 1 MiB, -0.04% at 4 MiB |
 
+#### UDP checksum 0, an option (2026-10-14, `ab/udp-csum0`)
+
+`TT_UDP_CSUM0=1` (off by default; the default is to be decided from the rig A/B). Where the checksum is made on the
+rig (Pi 5, macb, Linux 6.8; `ethtool -k`: rx-checksumming on, tx-checksum-ip-generic on, tx-udp-segmentation off): a
+datagram of one frame is checksummed by the NIC both ways, but no NIC checks an IP fragment, so a hybrid run's
+checksum is made in software at the receiver, during the copy to user (`csum_partial()` then the copy, on arm64). The
+rpi-0 profile put it at 0.31 / 0.30 ms/MB of TickLE's subscriber kernel time (Fast DDS 0.24 / 0.22). The sender
+makes it while copying from user with or without `SO_NO_CHECK`, so only the receiver can gain; expected 0.05-0.15
+ms/MB, not the whole pass, because the copy then reads the data cold.
+
+With the option, a `sendmmsg()` call carrying a datagram above 1472 bytes goes with `SO_NO_CHECK` on the data
+socket, and it stays on until a call carries a `UDP_SEGMENT` run, which the kernel refuses with it (EINVAL): a batch
+is cut where the kind changes. Set and cleared around every call it cost two `setsockopt()` a call, ~9 calls a 1 MB
+sample. While it is on, the socket's other one-frame datagrams may go with checksum 0 too. Rx line: `csum0`,
+`csum0_switches`, `csum0_calls`, `csum0_datagrams`, `csum0_retries`. FreeRTOS does not offer it.
+
+**PC evidence, not a rig figure** (`udp_csum0_pc.sh`, the option against the same binary without it, A/A floor;
+`~/largemsg_pc/udp_csum0_s2/`, at the version that keeps it on). The subscriber's kernel instructions fall by ~0.355
+M per MB in every cell, but x86 copies with `rep movsb` (one instruction), so the cycles are the measure, and they
+did not move beyond this PC's floor:
+
+| cell | subscriber instructions / MB | subscriber cycles / MB | publisher instructions / MB |
+|---|---|---|---|
+| 1 MiB BEST_EFFORT | -27.8% LOWER | -2.0% HELD | +0.07% HELD |
+| 1 MiB RELIABLE | -26.4% LOWER | -5.4% HELD | +0.15% HIGHER (floor +0.15%) |
+| 4 MiB BEST_EFFORT | -28.9% LOWER | +1.1% HELD | -0.11% HELD |
+| 4 MiB RELIABLE | -27.7% LOWER | -7.1% HELD | +0.09% HELD |
+
 ## 9. QoS: liveliness, deadline, lifespan, durability
 
 **RxO matching.** Each endpoint announces its QoS in its `tt_UpdateEntity` (`qos` bits for reliable, durable, manual

@@ -17,6 +17,9 @@
 # SO_NO_CHECK is set or not (the option only leaves it out of the header), and pays two setsockopt() calls per
 # sendmmsg() call: expected HELD. The rig (arm64: the checksum is a separate csum_partial() pass over cold data before
 # the copy) is where the saving is priced; the PC only shows the mechanism, and a HELD here is not read as "nothing".
+# Added after the first session (7bbd9342, ~/largemsg_pc/udp_csum0): SO_NO_CHECK now stays on between calls
+# (dbd74e7a), so the publisher pays a setsockopt() only where a call's kind changes - once a run of an AUTO stream.
+# Second session ~/largemsg_pc/udp_csum0_s2. The reading rules are unchanged.
 #
 # HOW TO READ IT - written before the first run (2026-10-14), enforced by udp_csum0_pc_read.py:
 #   VOID       a run with torn > 0 or out_of_order > 0, a RELIABLE run with delivered < published, a BEST_EFFORT run

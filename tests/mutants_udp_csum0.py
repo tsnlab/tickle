@@ -11,8 +11,10 @@ Not mutated, and why - each decides no outcome the check can observe:
     after another thread turned it on, a race a single-threaded check cannot open. The check requires csum0_retries=0,
     so a retry taken where none is due is caught (the "clear" mutant reaches it, and is caught by that count).
   - csum0_setup()'s -1 when the kernel refuses SO_NO_CHECK: every kernel since 2.6 takes it.
-  - `if (result > 0)` around the counters: every call of the check succeeds.
-  - `+= carried[i]` (not `+= 1`): a checksum-0 call never carries a UDP_SEGMENT run, so carried[i] is 1 in each.
+  - csum0_sent()'s `result <= 0`: every call of the check succeeds.
+  - `+= call->carried[i]` (not `+= 1`): a checksum-0 call never carries a UDP_SEGMENT run, so carried[i] is 1 in each.
+  - csum0_retry()'s `node->hal.csum0 <= 0`: with the option off it sends a refused UDP_SEGMENT call to gso_refused()
+    as before; no arm of the check has a UDP_SEGMENT call refused with the option off.
 
 Run from the repository root. Needs passwordless `sudo ip` (the namespaces). Restores every file it touches, whatever
 happens. MUTANTS=<substring> runs only the mutants whose name contains it (the control always runs).
@@ -33,44 +35,44 @@ MUTANTS = [
     (
         "set: SO_NO_CHECK never turned on for a call",
         HAL,
-        "            csum0_set(node, zero);",
-        "            csum0_set(node, false);",
+        "        csum0_set(node, call->zero);",
+        "        csum0_set(node, false);",
     ),
     (
         "clear: SO_NO_CHECK left on for a UDP_SEGMENT call",
         HAL,
-        "            csum0_set(node, zero);",
-        "            csum0_set(node, zero || node->hal.csum0_on);",
+        "        csum0_set(node, call->zero);",
+        "        csum0_set(node, call->zero || node->hal.csum0_on);",
     ),
     (
         "switch: setsockopt() whatever the socket's state",
         HAL,
-        "    if (node->hal.csum0_on == on) {\n        return;\n    }\n",
+        "    if (node->hal.csum0_on == enable) {\n        return;\n    }\n",
         "",
     ),
     (
         "state: a switch not remembered",
         HAL,
-        "        node->hal.csum0_on = on;\n        node->hal.csum0_switches++;",
+        "        node->hal.csum0_on = enable;\n        node->hal.csum0_switches++;",
         "        node->hal.csum0_switches++;",
     ),
     (
         "count: datagrams counted with the option off",
         HAL,
-        "        if (node->hal.csum0_on && result > 0) {",
-        "        if (node->hal.csum0 > 0 && result > 0) {",
+        "    if (!node->hal.csum0_on || result <= 0) {",
+        "    if (node->hal.csum0 <= 0 || result <= 0) {",
     ),
     (
         "split: a UDP_SEGMENT run joins a checksum-0 call",
         HAL,
-        "if ((fragmented && segmented) || (run > 1 && zero)) {",
+        "if ((fragmented && call->segmented) || (run > 1 && call->zero)) {",
         "if (false) {",
     ),
     (
         "split: an IP-fragmented datagram joins a UDP_SEGMENT call",
         HAL,
-        "if ((fragmented && segmented) || (run > 1 && zero)) {",
-        "if (run > 1 && zero) {",
+        "if ((fragmented && call->segmented) || (run > 1 && call->zero)) {",
+        "if (run > 1 && call->zero) {",
     ),
     (
         "scope: every datagram counts as IP-fragmented",
@@ -87,26 +89,26 @@ MUTANTS = [
     (
         "count: datagrams with checksum 0 not counted",
         HAL,
-        "                node->hal.csum0_datagrams += carried[i];\n",
-        "                (void)carried[i];\n",
+        "        node->hal.csum0_datagrams += call->carried[i];\n",
+        "        (void)call->carried[i];\n",
     ),
     (
         "env: TT_UDP_CSUM0 ignored, always on",
         HAL,
-        '    if (setting == NULL || strcmp(setting, "1") != 0) {\n        return;\n    }\n    int on = 1;',
-        "    if (false) {\n        return;\n    }\n    int on = 1;",
+        '    if (setting == NULL || strcmp(setting, "1") != 0) {\n        return;\n    }\n    int enable = 1;',
+        "    if (false) {\n        return;\n    }\n    int enable = 1;",
     ),
     (
         "env: TT_UDP_CSUM0=1 ignored, never on",
         HAL,
-        '    if (setting == NULL || strcmp(setting, "1") != 0) {\n        return;\n    }\n    int on = 1;',
-        "    if (true) {\n        return;\n    }\n    int on = 1;",
+        '    if (setting == NULL || strcmp(setting, "1") != 0) {\n        return;\n    }\n    int enable = 1;',
+        "    if (true) {\n        return;\n    }\n    int enable = 1;",
     ),
     (
         "treatment: csum0= reported 1 whatever the setting",
         "platform/linux/udp_offload_check.c",
-        "(int)g_node.hal.csum0, (unsigned long)g_node.hal.csum0_datagrams",
-        "1, (unsigned long)g_node.hal.csum0_datagrams",
+        "#define CSUM0_STATE ((int)g_node.hal.csum0)",
+        "#define CSUM0_STATE 1",
     ),
 ]
 
