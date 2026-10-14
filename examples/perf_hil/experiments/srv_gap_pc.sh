@@ -37,12 +37,16 @@
 #     and differ by less than half of B - A; "LAYOUT" when PB - PA did not move; anything else "MIXED".
 #   - VOID: a run without both RESULT lines, without both counts, or with 0 samples; an arm with fewer than 2 valid
 #     blocks in a cell is not read there.
-# Usage: srv_gap_pc.sh [BLOCKS]   ARMS="label:commit[:P] ...", CELLS (default "L:p1 T:p2:Q0 T:p3:Q0 T:p2:Q1 L:p4"),
+# Usage: srv_gap_pc.sh [BLOCKS]   ARMS="label:commit[:P|L[:VAR=v,VAR2=v]] ..." (VAR=v: environment to both roles),
+# CELLS (default "L:p1 T:p2:Q0 T:p3:Q0 T:p2:Q1 L:p4"),
 # STRACE=1 (one extra pass per arm and cell under strace -f -c: of the server, or with STRACE_ROLE=client the client),
 # PROFILE=1 (one extra pass per arm and cell, both roles under perf record -e instructions:u, the data kept as
-# $WORK/prof_<arm>_<cell>_{cli,srv}.data with the run's samples in prof_<arm>_<cell>.txt: where the user instructions go),
+# $WORK/prof_<arm>_<cell>_{cli,srv}.data, reported per symbol (instructions) in .report beside them, the run's samples
+# in prof_<arm>_<cell>.txt: where the user instructions go),
 # WORK= (default ~/largemsg_pc/rx_gap3_server),
-# OUT= (default $WORK/results.txt), TREE=. Run it detached. Every bench process runs under ulimit -v and a timeout.
+# CLI_EVENTS= (more perf events for the client, e.g. syscalls:sys_enter_poll, counted per run on its RUN line),
+# RATE= (e.g. 1gbit: tbf on both veth ends, the rig's line rate and its full send buffer), OUT= (default
+# $WORK/results.txt), TREE=. Run it detached. Every bench process runs under ulimit -v and a timeout.
 # The last line is always "srv_gap_pc done rc=<n>".
 set -u
 BLOCKS=${1:-3}
@@ -54,6 +58,7 @@ ARMS=${ARMS:?ARMS=\"label:commit[:P] ...\"}
 CELLS=${CELLS:-L:p1 T:p2:Q0 T:p3:Q0 T:p2:Q1 L:p4}
 VMEM_KB=${VMEM_KB:-2097152}
 PRE_CLIENT_SLEEP=${PRE_CLIENT_SLEEP:-3}
+RATE=${RATE:-}
 BUILD_JOBS=${BUILD_JOBS:-4}
 NS1=sg-cli-$$
 NS2=sg-srv-$$
@@ -86,17 +91,18 @@ cell_args() { # <cell>: campaign_sweep.sh's arguments for it (TickLE), to both r
     else echo "-Q -N $keep -B 100 -d 5 --warmup-s 2 --cooldown-s 2"; fi
 }
 
-declare -A arm_dir arm_sha arm_flavor
+declare -A arm_dir arm_sha arm_flavor arm_env
 labels=()
 builds=()
 for spec in $ARMS; do
-    IFS=: read -r label commit flavor <<<"$spec"
+    IFS=: read -r label commit flavor envs <<<"$spec"
     sha=$(git -C "$TREE" rev-parse --short=8 "$commit") || exit 1
     flavor=${flavor:-L}
     d=$WORK/src_${sha}_$flavor
     arm_dir[$label]=$d/examples/perf_hil/tickle
     arm_sha[$label]=$sha
     arm_flavor[$label]=$flavor
+    arm_env[$label]=${envs//,/ }
     labels+=("$label")
     case " ${builds[*]} " in *" $sha:$flavor "*) ;; *) builds+=("$sha:$flavor") ;; esac
 done
@@ -130,6 +136,7 @@ echo "built ($(date -Is))"
 arm_dir[BASE2]=${arm_dir[${labels[0]}]}
 arm_sha[BASE2]=${arm_sha[${labels[0]}]}
 arm_flavor[BASE2]=${arm_flavor[${labels[0]}]}
+arm_env[BASE2]=${arm_env[${labels[0]}]}
 labels+=(BASE2)
 
 sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
@@ -139,9 +146,15 @@ sudo -n ip -n "$NS2" addr add 192.168.10.2/24 dev sgb
 for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
 sudo -n ip -n "$NS1" link set sga up
 sudo -n ip -n "$NS2" link set sgb up
+if [ -n "$RATE" ]; then
+    # The rig's NIC, in both directions: tbf (not netem) holds what the wire has not taken, so the sender's socket buffer
+    # fills and a blocking send waits, as on the rig (netem takes the whole burst into its queue and never does).
+    sudo -n ip netns exec "$NS1" tc qdisc add dev sga root tbf rate "$RATE" burst 64kb latency 500ms || exit 1
+    sudo -n ip netns exec "$NS2" tc qdisc add dev sgb root tbf rate "$RATE" burst 64kb latency 500ms || exit 1
+fi
 line="=== srv_gap_pc $(date -Is) arms:"
-for l in "${labels[@]}"; do line+=" $l=${arm_sha[$l]}:${arm_flavor[$l]}"; done
-echo "$line cells=[$CELLS] blocks=$BLOCKS load=$(cut -d' ' -f1-3 /proc/loadavg) ===" | tee -a "$OUT"
+for l in "${labels[@]}"; do line+=" $l=${arm_sha[$l]}:${arm_flavor[$l]}${arm_env[$l]:+[${arm_env[$l]}]}"; done
+echo "$line cells=[$CELLS] blocks=$BLOCKS rate=${RATE:-none} load=$(cut -d' ' -f1-3 /proc/loadavg) ===" | tee -a "$OUT"
 
 count() { # <perf -x, file> <event>
     awk -F, -v e="$2" '$3 ~ "^"e && $1 ~ /^[0-9]+$/ { print $1; exit }' "$1" 2>/dev/null
@@ -154,7 +167,7 @@ run() { # <arm> <cell> <block> <mode: perf|strace>
     dir=${arm_dir[$arm]}/$scen
     local slog=$WORK/srv.log clog=$WORK/cli.log smeas=$WORK/srv_meas.txt cmeas=$WORK/cli_meas.txt flag=$WORK/client_done
     rm -f "$smeas" "$cmeas" "$flag" "$slog" "$clog"
-    local swrap
+    local swrap aenv=${arm_env[$arm]}
     local role=${STRACE_ROLE:-server}
     local pfx=$WORK/prof_${arm}_${cell//:/_}
     if [ "$mode" = profile ]; then swrap="perf record -q -e instructions:u -c 1009 -o ${pfx}_srv.data --"
@@ -166,7 +179,7 @@ run() { # <arm> <cell> <block> <mode: perf|strace>
     # checked by exe before the signal (or the launch itself, when nothing counts the server: it is timeout then).
     # shellcheck disable=SC2024,SC2086
     sudo -n ip netns exec "$NS2" bash -c "ulimit -v $VMEM_KB; cd $dir || exit 1
-        $swrap timeout -s INT 90 ./server $args >$slog 2>&1 &
+        $swrap env $aenv timeout -s INT 90 ./server $args >$slog 2>&1 &
         p=\$!
         until [ -e $flag ] || ! kill -0 \$p 2>/dev/null; do sleep 0.05; done
         for c in \$p \$(cat /proc/\$p/task/*/children 2>/dev/null); do
@@ -175,12 +188,12 @@ run() { # <arm> <cell> <block> <mode: perf|strace>
         wait \$p" &
     local spid=$!
     sleep "$PRE_CLIENT_SLEEP"
-    local cwrap="perf stat -x, -o $cmeas -e $INSN_EVENTS --"
+    local cwrap="perf stat -x, -o $cmeas -e $INSN_EVENTS${CLI_EVENTS:+,$CLI_EVENTS} --"
     [ "$mode" = strace ] && cwrap=""
     [ "$mode" = strace ] && [ "$role" = client ] && cwrap="strace -f -c -o $cmeas"
     [ "$mode" = profile ] && cwrap="perf record -q -e instructions:u -c 1009 -o ${pfx}_cli.data --"
     # shellcheck disable=SC2024,SC2086
-    sudo -n ip netns exec "$NS1" bash -c "ulimit -v $VMEM_KB; cd $dir && exec $cwrap timeout -s INT 80 ./client $args" \
+    sudo -n ip netns exec "$NS1" bash -c "ulimit -v $VMEM_KB; cd $dir && exec $cwrap env $aenv timeout -s INT 80 ./client $args" \
         >"$clog" 2>&1
     touch "$flag"
     wait "$spid"
@@ -196,6 +209,13 @@ run() { # <arm> <cell> <block> <mode: perf|strace>
     fi
     if [ "$mode" = profile ]; then
         echo "client_sent=$sent server_samples=$div" >"$pfx.txt"
+        # perf leaves its data root's, mode 600: the reports are made here, by the same root shell that recorded them.
+        local r
+        for r in cli srv; do
+            # shellcheck disable=SC2024
+            sudo -n ip netns exec "$NS1" bash -c "perf report -i ${pfx}_$r.data --stdio -q --sort sym -F period,sym \
+                --percent-limit 0.05" >"${pfx}_$r.report" 2>&1
+        done
         echo "RUN arm=$arm cell=$cell block=$block mode=profile client_sent=$sent server_samples=$div" | tee -a "$OUT"
         return
     fi
@@ -215,7 +235,9 @@ run() { # <arm> <cell> <block> <mode: perf|strace>
         echo "RUN arm=$arm cell=$cell block=$block mode=perf VOID (counts: srv '$siu' '$sik' cli '$ciu' '$cik')" | tee -a "$OUT"
         return
     fi
-    echo "RUN arm=$arm sha=${arm_sha[$arm]} flavor=${arm_flavor[$arm]} cell=$cell block=$block mode=perf client_sent=$sent server_samples=$div srv_insn_u=$siu srv_insn_k=$sik cli_insn_u=$ciu cli_insn_k=$cik | C $cres | S $sres | SRX $(grep -m1 ' rx: ' "$slog" | sed 's/.* rx: //')" >>"$OUT"
+    local extra="" ev
+    for ev in ${CLI_EVENTS//,/ }; do extra+=" cli_${ev##*:}=$(count "$cmeas" "$ev")"; done
+    echo "RUN arm=$arm sha=${arm_sha[$arm]} flavor=${arm_flavor[$arm]} cell=$cell block=$block mode=perf client_sent=$sent server_samples=$div srv_insn_u=$siu srv_insn_k=$sik cli_insn_u=$ciu cli_insn_k=$cik$extra | C $cres | S $sres | SRX $(grep -m1 ' rx: ' "$slog" | sed 's/.* rx: //')" >>"$OUT"
     echo "RUN arm=$arm cell=$cell block=$block srv_u/s=$((siu / div)) srv_k/s=$((sik / div)) cli_u/s=$((ciu / sent)) cli_k/s=$((cik / sent))"
 }
 
