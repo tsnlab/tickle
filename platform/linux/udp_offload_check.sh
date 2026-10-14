@@ -24,6 +24,9 @@
 #      reads in the pauses, so every switch - and its race with merged datagrams still queued - is crossed many times.
 #      A merged datagram read with the option off would come back as one block of several datagrams: a size no
 #      pattern has, which the receiver fails on.
+#   F  as A with TT_UDP_CSUM0=1 at the sender (hal_linux.c "UDP checksum 0", 2026-10-14): IP-fragmented datagrams go
+#      with UDP checksum 0, everything else with its checksum, and send offload's runs as before.
+#   G  as C with TT_UDP_CSUM0=1 at the sender: the HAL receiver, receive offload on, takes the zero-checksum runs.
 #
 # The rules, enforced below (written before the first run):
 #   - every arm's list of datagrams (pattern, index, size, hash, in order) is B's, line for line;
@@ -38,6 +41,12 @@
 #     patterns (gso_sends/gso_datagrams = *_expected) - every large-fragment run, and nothing of the small patterns.
 #   - E: its list is the control's REPEAT times over; it merged, and went back to plain (gro_commits) and on again
 #     (gro_enables) at least REPEAT - 1 times each.
+#   - checksum 0 (F, G; B, A and C the controls): the receiver's ingress counts the datagrams to the test port that carry
+#     UDP checksum 0 (tc u32 on the UDP header of a whole datagram, or of a run's first fragment). F and G: exactly the
+#     runs' first fragments carry it (RUNS) and, whole, exactly the datagrams the sender reports beyond the runs
+#     (csum0_datagrams - RUNS, its own count matching csum0_datagrams_expected) - so nothing else lost its checksum,
+#     and the option was cleared after each call; csum0=1 and csum0_singles=0 (no UDP_SEGMENT call refused). B, A and
+#     C: none at all, and csum0=0. Every arm's list is still B's, so the receivers took every zero-checksum datagram.
 # Exit 0 pass, 1 fail, 2 could not run.
 set -u
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -75,11 +84,17 @@ sudo -n ip -n "$NS2" addr add "$NET.2/24" dev uoc2
 for ns in "$NS1" "$NS2"; do sudo -n ip -n "$ns" link set lo up; done
 sudo -n ip -n "$NS1" link set uoc1 up
 sudo -n ip -n "$NS2" link set uoc2 up
-# The receiver's ingress counters: IP fragments first (prio 1), then whatever reaches the test port.
+# The receiver's ingress counters: datagrams to the test port with UDP checksum 0 - a run's first fragment (prio 1) and
+# a whole datagram (prio 2), each passing the packet on to the next filter - then IP fragments (prio 3), then whatever
+# reaches the test port (prio 4). The UDP checksum is at byte 26: the namespaces' IP headers have no options.
 sudo -n ip netns exec "$NS2" tc qdisc add dev uoc2 ingress || exit 2
-sudo -n ip netns exec "$NS2" tc filter add dev uoc2 parent ffff: protocol ip prio 1 u32 match u16 0x2000 0x2000 at 6 \
-    action ok || exit 2
+sudo -n ip netns exec "$NS2" tc filter add dev uoc2 parent ffff: protocol ip prio 1 u32 match ip protocol 17 0xff \
+    match u16 0x2000 0x3fff at 6 match u16 0 0xffff at 26 match ip dport "$PORT" 0xffff action continue || exit 2
 sudo -n ip netns exec "$NS2" tc filter add dev uoc2 parent ffff: protocol ip prio 2 u32 match ip protocol 17 0xff \
+    match u16 0 0x3fff at 6 match u16 0 0xffff at 26 match ip dport "$PORT" 0xffff action continue || exit 2
+sudo -n ip netns exec "$NS2" tc filter add dev uoc2 parent ffff: protocol ip prio 3 u32 match u16 0x2000 0x2000 at 6 \
+    action ok || exit 2
+sudo -n ip netns exec "$NS2" tc filter add dev uoc2 parent ffff: protocol ip prio 4 u32 match ip protocol 17 0xff \
     match u16 0 0x1fff at 6 match ip dport "$PORT" 0xffff action ok || exit 2
 
 # "packets bytes" counted by the filter at PRIO since the last call (tc -s keeps totals; the caller subtracts).
@@ -103,8 +118,10 @@ arm() {
         echo "udp_offload_check: cannot set tx-udp-segmentation $5 on the veth" >&2
         exit 2
     }
-    frag0=$(counted 1)
-    port0=$(counted 2)
+    zfrag0=$(counted 1)
+    zwhole0=$(counted 2)
+    frag0=$(counted 3)
+    port0=$(counted 4)
     # The logs are written by this shell, as the invoking user: intended.
     # shellcheck disable=SC2024
     if [ "$3" = plain ]; then
@@ -116,18 +133,22 @@ arm() {
     rx=$!
     sleep 0.5
     # shellcheck disable=SC2024
-    sudo -n ip netns exec "$NS1" env TT_UDP_OFFLOAD="$2" "$BIN" send "$NET.2" "$PORT" "$BCAST" "$repeat" >"$WORK/$name.tx" \
+    sudo -n ip netns exec "$NS1" env TT_UDP_OFFLOAD="$2" TT_UDP_CSUM0="$CSUM0" "$BIN" send "$NET.2" "$PORT" "$BCAST" "$repeat" >"$WORK/$name.tx" \
         2>"$WORK/$name.tx.err"
     tx_rc=$?
     wait "$rx"
     rx_rc=$?
-    frag1=$(counted 1)
-    port1=$(counted 2)
+    zfrag1=$(counted 1)
+    zwhole1=$(counted 2)
+    frag1=$(counted 3)
+    port1=$(counted 4)
+    eval "${name}_zfrags=$(($(echo "$zfrag1" | cut -d' ' -f1) - $(echo "$zfrag0" | cut -d' ' -f1)))"
+    eval "${name}_zwhole=$(($(echo "$zwhole1" | cut -d' ' -f1) - $(echo "$zwhole0" | cut -d' ' -f1)))"
     eval "${name}_frags=$(($(echo "$frag1" | cut -d' ' -f1) - $(echo "$frag0" | cut -d' ' -f1)))"
     eval "${name}_packets=$(($(echo "$port1" | cut -d' ' -f1) - $(echo "$port0" | cut -d' ' -f1)))"
     eval "${name}_bytes=$(($(echo "$port1" | cut -d' ' -f2) - $(echo "$port0" | cut -d' ' -f2)))"
     grep -v '^RESULT:' "$WORK/$name.rx" >"$WORK/$name.list"
-    eval "echo \"$name: \$(grep -h '^RESULT:' '$WORK/$name.tx' '$WORK/$name.rx' | tr '\n' ' ')wire_packets=\$${name}_packets wire_bytes=\$${name}_bytes ip_fragments=\$${name}_frags\""
+    eval "echo \"$name: \$(grep -h '^RESULT:' '$WORK/$name.tx' '$WORK/$name.rx' | tr '\n' ' ')wire_packets=\$${name}_packets wire_bytes=\$${name}_bytes ip_fragments=\$${name}_frags csum0_first_fragments=\$${name}_zfrags csum0_whole=\$${name}_zwhole\""
     [ "$tx_rc" -eq 0 ] || die "$name: sender exited $tx_rc ($(tail -1 "$WORK/$name.tx.err"))"
     [ "$rx_rc" -eq 0 ] || die "$name: receiver exited $rx_rc ($(tail -1 "$WORK/$name.rx.err"))"
     grep -q '^RESULT:.*ended=1' "$WORK/$name.rx" || die "$name: the receiver never saw the end marker"
@@ -138,17 +159,22 @@ field() { # FIELD FILE: the value of FIELD= on the file's RESULT line, or "missi
     echo "${v:-missing}"
 }
 
+CSUM0=0
 arm B 0 plain 0 off
 arm A 1 plain 0 off
 arm C 1 hal 1 on
 arm D 1 hal 0 on
 arm E 1 hal 1 on "$FLAP" "$REPEAT"
+CSUM0=1
+arm F 1 plain 0 off
+arm G 1 hal 1 on
+CSUM0=0
 
 n=$(wc -l <"$WORK/B.list")
 [ "$n" -eq "$EXPECTED" ] || die "control B received $n of $EXPECTED test datagrams - the setup is broken, nothing else holds"
 [ "$(field largest "$WORK/B.rx")" = "$RUN_SIZE" ] ||
     die "control B: largest datagram $(field largest "$WORK/B.rx"), not a run's $RUN_SIZE"
-for a in A C D; do
+for a in A C D F G; do
     cmp -s "$WORK/B.list" "$WORK/$a.list" || die "$a's datagrams differ from the control's: $(diff "$WORK/B.list" "$WORK/$a.list" | head -3 | tr '\n' ' ')"
 done
 # shellcheck disable=SC2154 # set by eval in arm()
@@ -163,7 +189,7 @@ done
 [ "$(field gso_sends "$WORK/B.tx")" = 0 ] || die "control B sent with UDP_SEGMENT"
 [ "$(field gso_sends "$WORK/A.tx")" -gt 0 ] 2>/dev/null || die "A: no UDP_SEGMENT send - the treatment was not applied"
 [ "$(field gso_sends "$WORK/C.tx")" -gt 0 ] 2>/dev/null || die "C: no UDP_SEGMENT send"
-for a in A C E; do
+for a in A C E F G; do
     for f in gso_sends gso_datagrams; do
         [ "$(field $f "$WORK/$a.tx")" = "$(field ${f}_expected "$WORK/$a.tx")" ] ||
             die "$a: $f=$(field $f "$WORK/$a.tx"), expected $(field ${f}_expected "$WORK/$a.tx") - runs other than large fragments"
@@ -182,8 +208,27 @@ cmp -s "$WORK/B.repeat" "$WORK/E.list" ||
 [ "$(field gro_enables "$WORK/E.rx")" -ge $((REPEAT - 1)) ] 2>/dev/null ||
     die "E: turned receive offload on $(field gro_enables "$WORK/E.rx") times, not $((REPEAT - 1))"
 
+# Checksum 0 (header): the treatment exactly where it belongs on F and G, nowhere on the controls.
+# shellcheck disable=SC2154 # set by eval in arm()
+for a in B A C; do
+    eval "zf=\$${a}_zfrags zw=\$${a}_zwhole"
+    [ "$zf" -eq 0 ] && [ "$zw" -eq 0 ] || die "control $a: $zf first fragments and $zw whole datagrams with checksum 0"
+    [ "$(field csum0 "$WORK/$a.tx")" = 0 ] || die "control $a: csum0=$(field csum0 "$WORK/$a.tx"), not 0"
+done
+for a in F G; do
+    eval "zf=\$${a}_zfrags zw=\$${a}_zwhole"
+    sent0=$(field csum0_datagrams "$WORK/$a.tx")
+    [ "$(field csum0 "$WORK/$a.tx")" = 1 ] || die "$a: csum0=$(field csum0 "$WORK/$a.tx") - the option was not applied"
+    [ "$sent0" = "$(field csum0_datagrams_expected "$WORK/$a.tx")" ] ||
+        die "$a: csum0_datagrams=$sent0, expected $(field csum0_datagrams_expected "$WORK/$a.tx")"
+    [ "$(field csum0_singles "$WORK/$a.tx")" = 0 ] || die "$a: csum0_singles=$(field csum0_singles "$WORK/$a.tx")"
+    [ "$zf" -eq "$RUNS" ] || die "$a: $zf runs' first fragments with checksum 0 on the wire, not $RUNS"
+    [ "$zw" -eq $((sent0 - RUNS)) ] 2>/dev/null ||
+        die "$a: $zw whole datagrams with checksum 0 on the wire, not the sender's $sent0 - $RUNS runs"
+done
+
 if [ "$fail" -ne 0 ]; then
     exit 1
 fi
-echo "udp_offload_check: PASS - $EXPECTED datagrams identical in all arms (E: $REPEAT passes, $(field gro_commits "$WORK/E.rx") switches back), wire identical with send offload, IP fragments only the runs', runs whole under GRO"
+echo "udp_offload_check: PASS - $EXPECTED datagrams identical in all arms (E: $REPEAT passes, $(field gro_commits "$WORK/E.rx") switches back), wire identical with send offload, IP fragments only the runs', runs whole under GRO, checksum 0 on exactly the runs' calls (F, G)"
 exit 0

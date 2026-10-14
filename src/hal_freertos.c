@@ -761,6 +761,8 @@ tt_ret_t tt_wake_signal(struct tt_Context* node) {
 #endif
 
 // lwIP has no sendmmsg(), so a batch is one send each - the same number of calls core made before batching.
+// UDP checksum 0 (hal_linux.c "UDP checksum 0", Linux's TT_UDP_CSUM0=1) is not offered here: every datagram keeps its
+// checksum, whatever a Linux peer was told.
 int32_t tt_send_batch(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
     for (uint32_t i = 0; i < count; i++) {
         const struct tt_OutDatagram* datagram = &datagrams[i];
