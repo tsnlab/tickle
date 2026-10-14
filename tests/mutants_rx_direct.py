@@ -390,6 +390,56 @@ MUTANTS = [
         "",
         HAL,
     ),
+    (
+        "again: tt_send() does not send again after EAGAIN",
+        "src/hal_linux.c",
+        "    again.to = node->hal.broadcast_addr;\n"
+        "    int32_t sent = (int32_t)sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));\n"
+        "    if (__builtin_expect(sent < 0, 0)) {",
+        "    again.to = node->hal.broadcast_addr;\n"
+        "    int32_t sent = (int32_t)sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));\n"
+        "    if (false) {",
+        HAL,
+    ),
+    (
+        "again: tt_send_to() does not send again after EAGAIN",
+        "src/hal_linux.c",
+        "    again.fd = node->hal.data_sock;\n"
+        "    int32_t sent = (int32_t)sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));\n"
+        "    if (__builtin_expect(sent < 0, 0)) {",
+        "    again.fd = node->hal.data_sock;\n"
+        "    int32_t sent = (int32_t)sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));\n"
+        "    if (false) {",
+        HAL,
+    ),
+    (
+        "again: tt_send_iov() does not send again after EAGAIN",
+        "src/hal_linux.c",
+        "    if (__builtin_expect(sent < 0, 0)) {\n        sent = sendmsg_again(&again);",
+        "    if (false) {\n        sent = sendmsg_again(&again);",
+        HAL,
+    ),
+    (
+        "again: sendto_again() waits and sends again after any refusal, not only a full buffer",
+        "src/hal_linux.c",
+        "    while (send_wait_for_room(again->fd)) {\n        sent = (int32_t)sendto(",
+        "    while (errno = EAGAIN, send_wait_for_room(again->fd)) {\n        sent = (int32_t)sendto(",
+        HAL,
+    ),
+    (
+        "again: sendmsg_again() waits and sends again after any refusal, not only a full buffer",
+        "src/hal_linux.c",
+        "    while (send_wait_for_room(again->fd)) {\n        sent = (int32_t)sendmsg(",
+        "    while (errno = EAGAIN, send_wait_for_room(again->fd)) {\n        sent = (int32_t)sendmsg(",
+        HAL,
+    ),
+    (
+        "again: sendto_again() sends other bytes than the refused send's",
+        "src/hal_linux.c",
+        "again->len, 0, (const struct sockaddr*)&again->to,",
+        "again->len - 1U, 0, (const struct sockaddr*)&again->to,",
+        HAL,
+    ),
 ]
 
 
