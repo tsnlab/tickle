@@ -46,6 +46,11 @@
 //                 a plain wait is read once and the wait goes on; TT_RX_LAZY_ADAPT=0 (the flag) turns the rule off.
 //  12c. fire and data - a fire in a wait that ends for a datagram starts the run again, with the timer in use and
 //                 without; the control, a plain wait for a datagram with no fire, counts one.
+//  13. again  - a blocking send the buffer refused is made again, from what the sender kept for it: this check's own
+//                 sendto() and sendmsg() refuse the next call (EAGAIN) and tt_send(), tt_send_to() and tt_send_iov()
+//                 each return the length after exactly two calls, the datagram arriving whole at its address; the
+//                 control, refused with EPERM instead, returns -1 with EPERM after one call (nothing waits for room);
+//                 and a send nothing refuses makes one call.
 // Exit 0 pass, 1 fail, 3 setup failed. Run by test.sh (test-linux) in a private namespace.
 
 // Built as rmw_tickle is (platform/linux/Makefile passes the same), so a lint of this file alone sees the same build.
@@ -191,6 +196,34 @@ ssize_t recvmsg(int socket_fd, struct msghdr* msg, int flags) {
         withdraw_after_read = NULL;
     }
     return got;
+}
+
+// The HAL's sendto() and sendmsg(), linked here ahead of the C library's (13): the system call, unless the next calls
+// are to be refused - then -1 with refuse_errno, as a full send buffer (EAGAIN) or a refusal of another kind. Counted.
+static int refuse_sends;
+static int refuse_errno;
+static int send_calls;
+
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - libc's prototype names them __fd and so on
+ssize_t sendto(int socket_fd, const void* data, size_t len, int flags, const struct sockaddr* to, socklen_t to_len) {
+    send_calls++;
+    if (refuse_sends > 0) {
+        refuse_sends--;
+        errno = refuse_errno;
+        return -1;
+    }
+    return syscall(SYS_sendto, socket_fd, data, len, flags, to, to_len);
+}
+
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - as above
+ssize_t sendmsg(int socket_fd, const struct msghdr* msg, int flags) {
+    send_calls++;
+    if (refuse_sends > 0) {
+        refuse_sends--;
+        errno = refuse_errno;
+        return -1;
+    }
+    return syscall(SYS_sendmsg, socket_fd, msg, flags);
 }
 
 static void verdict(bool passed, const char* line) {
@@ -843,6 +876,93 @@ static void check_deadline_fire_and_data(void) {
     verdict(l_ok && p_ok && c_ok, line);
 }
 
+// 13. again
+enum again_shape { AGAIN_SEND, AGAIN_SEND_TO, AGAIN_SEND_IOV };
+#define AGAIN_HEAD 5U   // tt_send_iov()'s header part
+#define AGAIN_BYTES 40U // the datagram
+#define AGAIN_FILL 0x41U
+
+static const char* again_name(enum again_shape shape) {
+    return shape == AGAIN_SEND ? "tt_send()" : shape == AGAIN_SEND_TO ? "tt_send_to()" : "tt_send_iov()";
+}
+
+struct again_result {
+    int32_t sent;
+    int send_errno;
+    int calls;
+    bool arrived;
+};
+
+// One send of `shape` with the next `refused` calls refused with `err`: its result, its errno, the calls it made, and
+// whether the datagram came whole to `sink` (tt_send() goes to the broadcast address, the context's own well-known
+// socket: read with tt_try_receive()).
+static struct again_result again_send(enum again_shape shape, int refused, int err, int sink, uint16_t sink_port) {
+    static uint8_t out[AGAIN_BYTES];
+    memset(out, AGAIN_FILL, sizeof(out));
+    out[0] = (uint8_t)shape;
+    struct again_result result = {.sent = -1, .send_errno = 0, .calls = 0, .arrived = false};
+    refuse_sends = refused;
+    refuse_errno = err;
+    send_calls = 0;
+    errno = 0;
+    if (shape == AGAIN_SEND) {
+        result.sent = tt_send(&node, out, sizeof(out));
+    } else if (shape == AGAIN_SEND_TO) {
+        result.sent = tt_send_to(&node, out, sizeof(out), INADDR_LOOPBACK, sink_port);
+    } else {
+        result.sent =
+            tt_send_iov(&node, out, AGAIN_HEAD, out + AGAIN_HEAD, sizeof(out) - AGAIN_HEAD, INADDR_LOOPBACK, sink_port);
+    }
+    result.send_errno = errno;
+    result.calls = send_calls;
+    refuse_sends = 0;
+    usleep(SETTLE_US);
+    uint8_t in[2U * AGAIN_BYTES];
+    int32_t got = -1;
+    if (shape == AGAIN_SEND) {
+        uint32_t ip = 0;
+        uint16_t port = 0;
+        while ((got = tt_try_receive(&node, in, sizeof(in), &ip, &port)) >= 0 && got != (int32_t)sizeof(out)) {
+        }
+    } else {
+        got = (int32_t)recv(sink, in, sizeof(in), MSG_DONTWAIT);
+    }
+    result.arrived = got == (int32_t)sizeof(out) && memcmp(in, out, sizeof(out)) == 0;
+    return result;
+}
+
+static void check_again(void) {
+    int sink = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in at = {.sin_family = AF_INET, .sin_port = 0, .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
+    socklen_t at_len = sizeof(at);
+    if (sink < 0 || bind(sink, (struct sockaddr*)&at, sizeof(at)) != 0 ||
+        getsockname(sink, (struct sockaddr*)&at, &at_len) != 0) {
+        printf("rx_direct_check: SETUP FAILED - again: no sink socket\n");
+        setup_failed = true;
+        return;
+    }
+    const uint16_t port = ntohs(at.sin_port);
+    while (tt_try_receive(&node, buf, sizeof(buf), &any_ip, &any_port) >= 0) {
+    }
+    for (int shape = AGAIN_SEND; shape <= AGAIN_SEND_IOV; shape++) {
+        struct again_result again = again_send((enum again_shape)shape, 1, EAGAIN, sink, port);
+        struct again_result other = again_send((enum again_shape)shape, 1, EPERM, sink, port);
+        struct again_result plain = again_send((enum again_shape)shape, 0, 0, sink, port);
+        char line[LINE_BYTES];
+        (void)snprintf(line, sizeof(line),
+                       "again: %s refused once (EAGAIN) returned %d after %d calls, arrived %d; refused (EPERM) %d "
+                       "errno %d after %d calls, arrived %d; not refused %d after %d calls, arrived %d",
+                       again_name((enum again_shape)shape), (int)again.sent, again.calls, again.arrived ? 1 : 0,
+                       (int)other.sent, other.send_errno, other.calls, other.arrived ? 1 : 0, (int)plain.sent,
+                       plain.calls, plain.arrived ? 1 : 0);
+        verdict(again.sent == (int32_t)AGAIN_BYTES && again.calls == 2 && again.arrived && other.sent == -1 &&
+                    other.send_errno == EPERM && other.calls == 1 && !other.arrived &&
+                    plain.sent == (int32_t)AGAIN_BYTES && plain.calls == 1 && plain.arrived,
+                line);
+    }
+    (void)close(sink);
+}
+
 int main(void) {
     _tt_CONFIG.broadcast = "127.255.255.255";
     _tt_CONFIG.context_id = CHECK_CONTEXT_ID;
@@ -873,6 +993,7 @@ int main(void) {
     check_withdrawn();
     check_nonblocking();
     check_deadline();
+    check_again();
     tt_Context_destroy(&node);
     check_switch();
     (void)close(sender);

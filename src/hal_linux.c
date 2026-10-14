@@ -989,6 +989,49 @@ static bool send_wait_for_room(int socket_fd) {
     return true;
 }
 
+// A blocking send the buffer refused, made again (sendto_again(), sendmsg_again()) from what the sender wrote into its
+// own frame before the call. So the call's usual return - it went - has only the result to test, and keeps nothing live
+// across the call: until 2026-10-14 the wait was a loop around the call, which kept the node, the buffer, its length
+// and the address in saved registers on every send, +15 instructions a tt_send_to() on x86-64 whether or not the
+// buffer ever filled - the whole of the publisher's +19 user instructions a sample on the PC (srv_gap_pc.sh, step
+// 1d10c89e, every TickLE throughput cell sending one datagram a sample, and both roles of the latency cells) and its
+// share of the rig's (gate v2, ab/rx-gap3b against main: client insn_u +0.5..+1.8%).
+struct tt_SendAgain {
+    const void* buf;
+    size_t len;
+    int fd;
+    struct sockaddr_in to;
+};
+
+static __attribute__((cold, noinline)) int32_t sendto_again(const struct tt_SendAgain* again) {
+    int32_t sent = -1;
+    while (send_wait_for_room(again->fd)) {
+        sent = (int32_t)sendto(again->fd, again->buf, again->len, 0, (const struct sockaddr*)&again->to,
+                               sizeof(again->to));
+        if (sent >= 0) {
+            break;
+        }
+    }
+    return sent;
+}
+
+// tt_send_iov()'s message, beside the socket it goes to: the same as above for a sendmsg().
+struct tt_SendMsgAgain {
+    int fd;
+    struct msghdr msg;
+};
+
+static __attribute__((cold, noinline)) int32_t sendmsg_again(const struct tt_SendMsgAgain* again) {
+    int32_t sent = -1;
+    while (send_wait_for_room(again->fd)) {
+        sent = (int32_t)sendmsg(again->fd, &again->msg, 0);
+        if (sent >= 0) {
+            break;
+        }
+    }
+    return sent;
+}
+
 tt_ret_t tt_bind(struct tt_Context* node) {
     // Set before anything below can fail into tt_close(): -1 says "nothing to close here yet",
     // the same convention node->hal.sock itself relies on implicitly (every failure that reaches
@@ -1335,11 +1378,16 @@ int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     }
 #endif
     TT_TRACE(tt_TRACE_TX_START);
-    int32_t sent = -1;
-    do {
-        sent = (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
-                               sizeof(struct sockaddr_in));
-    } while (sent < 0 && send_wait_for_room(node->hal.data_sock));
+    // Field by field, not an initializer: one zeroes the padding too (-fzero-init-padding-bits=all), a store a send.
+    struct tt_SendAgain again;
+    again.buf = buf;
+    again.len = len;
+    again.fd = node->hal.data_sock;
+    again.to = node->hal.broadcast_addr;
+    int32_t sent = (int32_t)sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));
+    if (__builtin_expect(sent < 0, 0)) {
+        sent = sendto_again(&again); // a blocking send: room, then again (struct tt_SendAgain)
+    }
     TT_TRACE(tt_TRACE_TX_DONE);
     return sent;
 }
@@ -1355,16 +1403,19 @@ int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_
         return refuse_muted_send(node); // (g8) see refuse_muted_send()
     }
 #endif
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(ip);
-    addr.sin_port = htons(port);
+    struct tt_SendAgain again; // field by field (tt_send())
+    again.to.sin_family = AF_INET;
+    again.to.sin_addr.s_addr = htonl(ip);
+    again.to.sin_port = htons(port);
 
     TT_TRACE(tt_TRACE_TX_START);
-    int32_t sent = -1;
-    do {
-        sent = (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
-    } while (sent < 0 && send_wait_for_room(node->hal.data_sock));
+    again.buf = buf;
+    again.len = len;
+    again.fd = node->hal.data_sock;
+    int32_t sent = (int32_t)sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));
+    if (__builtin_expect(sent < 0, 0)) {
+        sent = sendto_again(&again); // a blocking send: room, then again (struct tt_SendAgain)
+    }
     TT_TRACE(tt_TRACE_TX_DONE);
     return sent;
 }
@@ -1388,25 +1439,28 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
     };
 
     struct sockaddr_in unicast_addr;
-    struct msghdr msg = {0};
-    msg.msg_iov = iov;
-    msg.msg_iovlen = 2;
+    struct tt_SendMsgAgain again; // the message zeroed as before, the socket beside it (tt_send())
+    again.msg = (struct msghdr) {0};
+    again.fd = node->hal.data_sock;
+    struct msghdr* msg = &again.msg;
+    msg->msg_iov = iov;
+    msg->msg_iovlen = 2;
     if (ip != 0) {
         unicast_addr.sin_family = AF_INET;
         unicast_addr.sin_addr.s_addr = htonl(ip);
         unicast_addr.sin_port = htons(port);
-        msg.msg_name = &unicast_addr;
-        msg.msg_namelen = sizeof(unicast_addr);
+        msg->msg_name = &unicast_addr;
+        msg->msg_namelen = sizeof(unicast_addr);
     } else {
-        msg.msg_name = &node->hal.broadcast_addr;
-        msg.msg_namelen = sizeof(node->hal.broadcast_addr);
+        msg->msg_name = &node->hal.broadcast_addr;
+        msg->msg_namelen = sizeof(node->hal.broadcast_addr);
     }
 
     TT_TRACE(tt_TRACE_TX_START);
-    int32_t sent = -1;
-    do {
-        sent = (int32_t)sendmsg(node->hal.data_sock, &msg, 0);
-    } while (sent < 0 && send_wait_for_room(node->hal.data_sock));
+    int32_t sent = (int32_t)sendmsg(again.fd, msg, 0);
+    if (__builtin_expect(sent < 0, 0)) {
+        sent = sendmsg_again(&again); // a blocking send: room, then again (struct tt_SendMsgAgain)
+    }
     return sent;
 }
 
