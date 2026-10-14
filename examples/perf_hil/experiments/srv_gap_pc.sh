@@ -8,6 +8,16 @@
 # insn_u_per_sample +0.16..+0.74% in every throughput cell (+6..+15 a sample) and every latency cell (+25..+29 a round
 # trip), t 7..98, while the client fell (kernel -20%, CPU -13%: the intended fix). NOT a rig figure (x86, veth).
 #
+# Why, second use (2026-10-14 night): the ab/rx-gap3b rig gate v2 (A = main 0c9f9a3b, B = 723ec1f0) read the CLIENT's
+# insn_u_per_sample WORSE in the throughput cells (c1-c3, c8, c13, c14: +0.5..+1.8%; c3's client CPU witness +2.25%,
+# which blocks the landing) and client and server insn_u WORSE in every latency cell (+100..+175 a round trip). The
+# arms are every production commit from main to 723ec1f0 in order, M = 0c9f9a3b first, plus the placement pair PM, PF;
+# T:p3:Q0 (c3, the witness cell) is added to the cells. Reading, pre-registered (srv_gap_pc_read.py --steps over the
+# chain, --total M>F, --layout M>F,PM>PF): a commit is NAMED for a cell and role when its step's insn_u MOVED up;
+# the named steps must cover the M->F total ("additive"); a delta only the L arms show and PM->PF does not is
+# LAYOUT and names nothing. A fix is then judged on the same harness: it must leave F->fix MOVED down in every cell
+# whose M->F MOVED up, and fix->M not MOVED up (else it is not enough).
+#
 # The cells are the rig's, with the rig's arguments (campaign_sweep.sh: cell_args below), the server started 3 s
 # before the client and SIGINTed when the client returns (tickle/run_scenario.sh), so a whole-life count covers what
 # the rig's does: L = reliable_latency (c10 p1, c17 p4), T = reliable_throughput -Q KEEP_ALL (Q0, c2 p2) and
@@ -27,7 +37,7 @@
 #     and differ by less than half of B - A; "LAYOUT" when PB - PA did not move; anything else "MIXED".
 #   - VOID: a run without both RESULT lines, without both counts, or with 0 samples; an arm with fewer than 2 valid
 #     blocks in a cell is not read there.
-# Usage: srv_gap_pc.sh [BLOCKS]   ARMS="label:commit[:P] ...", CELLS (default "L:p1 T:p2:Q0 T:p2:Q1 L:p4"),
+# Usage: srv_gap_pc.sh [BLOCKS]   ARMS="label:commit[:P] ...", CELLS (default "L:p1 T:p2:Q0 T:p3:Q0 T:p2:Q1 L:p4"),
 # STRACE=1 (one extra server pass per arm and cell under strace -f -c), WORK= (default ~/largemsg_pc/rx_gap3_server),
 # OUT= (default $WORK/results.txt), TREE=. Run it detached. Every bench process runs under ulimit -v and a timeout.
 # The last line is always "srv_gap_pc done rc=<n>".
@@ -38,7 +48,7 @@ TREE=${TREE:-$(cd "$HERE/../../.." && pwd)}
 WORK=${WORK:-$HOME/largemsg_pc/rx_gap3_server}
 OUT=${OUT:-$WORK/results.txt}
 ARMS=${ARMS:?ARMS=\"label:commit[:P] ...\"}
-CELLS=${CELLS:-L:p1 T:p2:Q0 T:p2:Q1 L:p4}
+CELLS=${CELLS:-L:p1 T:p2:Q0 T:p3:Q0 T:p2:Q1 L:p4}
 VMEM_KB=${VMEM_KB:-2097152}
 PRE_CLIENT_SLEEP=${PRE_CLIENT_SLEEP:-3}
 BUILD_JOBS=${BUILD_JOBS:-4}
