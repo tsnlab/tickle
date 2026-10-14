@@ -603,6 +603,7 @@ static void wait_prepare(struct tt_Context* node, void* buf, size_t len);
 static void wait_look(struct tt_hal* hal);
 static void wait_note(struct tt_Context* node, const uint8_t* datagram, int32_t len);
 static void wait_ring_off(struct tt_Context* node);
+static void wait_timer_arm(struct tt_hal* hal, uint64_t until);
 // Datagrams in a row with none of a large sample after which the wait leaves the ring (wait_note()). Leaving costs a
 // cancellation, two epoll_ctl() calls and an epoll_pwait2() less than nothing - and coming back two more epoll_ctl()
 // calls: under 5% of the datagrams' own system calls at 128. Not a measured interval: a stream of large samples resets
@@ -1081,6 +1082,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.wait_held = 0;
     node->hal.wait_epoll_armed = false;
     node->hal.wait_epoll_seen = false;
+    node->hal.wait_timer_ring = false;
+    node->hal.wait_timer_armed = false;
+    node->hal.wait_timer_fired = false;
     node->hal.wait_aimed = false;
     node->hal.wait_aimed_in_place = false;
     node->hal.wait_aimed_bytes = 0;
@@ -2915,6 +2919,12 @@ static uint64_t rx_wait_until(const struct tt_Context* node) {
 }
 
 static void rx_timer_arm(struct tt_hal* hal, uint64_t until) {
+#if TT_HAL_RING_WAIT
+    if (hal->wait_on && hal->wait_timer_ring) {
+        wait_timer_arm(hal, until); // on the ring, submitted with the wait it is armed for (C4)
+        return;
+    }
+#endif
     // NOLINTNEXTLINE(misc-include-cleaner) - struct itimerspec: <sys/timerfd.h> (via <time.h>), a glibc-private header
     struct itimerspec deadline = {{0, 0}, {(time_t)(until / SEC_NS), (long)(until % SEC_NS)}};
     if (timerfd_settime(hal->timer_fd_plus1 - 1, TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET, &deadline, NULL) == 0) {
@@ -2925,6 +2935,13 @@ static void rx_timer_arm(struct tt_hal* hal, uint64_t until) {
 
 // The timer fired (or the clock stepped): read, so the level-triggered set stops reporting it, and disarmed.
 static void rx_timer_take(struct tt_hal* hal) {
+#if TT_HAL_RING_WAIT
+    if (hal->wait_on && hal->wait_timer_ring) {
+        hal->timer_armed_ns = 0; // its completion was the fire: nothing to read
+        hal->timer_fires++;
+        return;
+    }
+#endif
     uint64_t expirations = 0;
     (void)read(hal->timer_fd_plus1 - 1, &expirations, sizeof(expirations)); // ECANCELED on a clock step: a fire
     hal->timer_armed_ns = 0;
@@ -3406,9 +3423,11 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
 #define URING_SOCKETS 2U
 // user_data on this ring: 0 and 1 a one-shot poll on that socket (tt_rx_maybe_ready(), or a wait that reads that
 // socket by readiness); the rest are the wait's own.
-#define WAIT_RECV 0x10U   // | the socket's index: its one-shot recvmsg
-#define WAIT_EPOLL 0x20U  // the multishot poll on the epoll fd
-#define WAIT_CANCEL 0x21U // a cancellation of a recvmsg
+#define WAIT_RECV 0x10U         // | the socket's index: its one-shot recvmsg
+#define WAIT_EPOLL 0x20U        // the multishot poll on the epoll fd
+#define WAIT_CANCEL 0x21U       // a cancellation of a recvmsg
+#define WAIT_TIMER 0x30U        // the wait's deadline (C4)
+#define WAIT_TIMER_UPDATE 0x31U // its move to an earlier deadline
 
 static void uring_unmap(struct tt_hal* hal) {
     if (hal->uring_sqes != NULL) {
@@ -3594,6 +3613,12 @@ static uint8_t ring_look(struct tt_hal* hal) {
                 hal->wait_held |= (uint8_t)(1U << socket);
                 hal->wait_res[socket] = cqe->res;
             }
+        } else if (which == WAIT_TIMER) {
+            hal->wait_timer_armed = false;
+            // NOLINTNEXTLINE(misc-include-cleaner) - ETIME: glibc-private header
+            if (cqe->res == -ETIME) {
+                hal->wait_timer_fired = true; // fired; -ECANCELED: removed (wait_ring_off())
+            }
         } else if (which == WAIT_EPOLL) {
             hal->wait_epoll_seen = true;
             if ((cqe->flags & IORING_CQE_F_MORE) == 0) {
@@ -3707,6 +3732,7 @@ struct wait_io {
         struct cmsghdr align;                // NOLINT(misc-include-cleaner) - <sys/socket.h>
     } control[URING_SOCKETS];
 #endif
+    struct __kernel_timespec timer_at; // the deadline's IORING_OP_TIMEOUT, absolute on CLOCK_MONOTONIC (C4)
     uint8_t landing[URING_SOCKETS][tt_MAX_BUFFER_LENGTH]; // the data socket's only when not WAIT_IN_PLACE
 };
 
@@ -3742,6 +3768,26 @@ static void wait_sockets_to_epoll(struct tt_Context* node) {
     (void)epoll_ctl(node->hal.epoll_fd_plus1 - 1, EPOLL_CTL_ADD, node->hal.sock, &event);
     event.data.u32 = RX_READY_DATA;
     (void)epoll_ctl(node->hal.epoll_fd_plus1 - 1, EPOLL_CTL_ADD, node->hal.data_sock, &event);
+}
+
+// The ring's deadline timeout removed, and its completion taken, as the wait leaves the ring: the timerfd takes the
+// deadline again from the next timed wait (armed_ns 0: nothing armed).
+static void wait_timer_cancel(struct tt_hal* hal) {
+    if (hal->wait_timer_armed) {
+        struct io_uring_sqe* sqe = ring_sqe(hal);
+        sqe->opcode = IORING_OP_TIMEOUT_REMOVE;
+        sqe->addr = WAIT_TIMER;
+        sqe->user_data = WAIT_CANCEL;
+        const struct timespec wait = {0, WAIT_CANCEL_WAIT_NS};
+        (void)ring_enter(hal, 0U, NULL);
+        (void)ring_look(hal);
+        for (int tries = 0; hal->wait_timer_armed && tries < WAIT_CANCEL_TRIES; tries++) {
+            (void)ring_enter(hal, 1U, &wait);
+            (void)ring_look(hal);
+        }
+    }
+    hal->wait_timer_fired = false;
+    hal->timer_armed_ns = 0;
 }
 
 // The epoll fd's multishot poll cancelled, and its last completion taken: while the sockets are in the epoll set, it
@@ -3811,6 +3857,8 @@ static void wait_ring_setup(struct tt_Context* node, uint32_t features) {
     }
     hal->wait_epoll_armed = true;
     wait_epoll_cancel(hal); // armed when the wait goes on the ring (wait_ring_on()), not before
+    static const uint8_t timer_ops[] = {IORING_OP_TIMEOUT, IORING_OP_TIMEOUT_REMOVE};
+    hal->wait_timer_ring = wait_ring_supports(hal->uring_fd, timer_ops, sizeof(timer_ops)); // else the timerfd (C1-C3)
     hal->wait_ring = true;
     hal->wait_state = 1;
 }
@@ -3827,6 +3875,14 @@ static void wait_ring_on(struct tt_Context* node) {
     hal->wait_on = true;
     hal->wait_quiet = 0;
     hal->wait_switches++;
+    if (hal->wait_timer_ring && hal->timer_fd_plus1 > 0 && hal->timer_armed_ns != 0) {
+        // The deadline moves to the ring (C4): the timerfd disarmed - which also clears a fire not read yet - and the
+        // next timed wait arms the ring's own.
+        struct itimerspec none; // NOLINT(misc-include-cleaner) - <sys/timerfd.h>, a glibc-private header
+        memset(&none, 0, sizeof(none));
+        (void)timerfd_settime(hal->timer_fd_plus1 - 1, 0, &none, NULL);
+        hal->timer_armed_ns = 0;
+    }
 }
 
 // And off, after WAIT_QUIET_DATAGRAMS datagrams with none of a large sample: the recvmsgs cancelled (one that raced it
@@ -3839,6 +3895,7 @@ static void wait_ring_off(struct tt_Context* node) {
         return;
     }
     wait_epoll_cancel(hal);
+    wait_timer_cancel(hal);
     wait_sockets_to_epoll(node);
     hal->wait_on = false;
     hal->wait_switches++;
@@ -3872,6 +3929,45 @@ static void wait_note(struct tt_Context* node, const uint8_t* datagram, int32_t 
 // What the wait's recvmsgs took since the last look, without a system call.
 static void wait_look(struct tt_hal* hal) {
     (void)ring_look(hal);
+}
+
+// The wait's deadline (rx_wait_lazy()'s rule: armed once, moved only earlier) on the ring while the wait is on it (C4):
+// one IORING_OP_TIMEOUT, absolute, moved earlier with IORING_TIMEOUT_UPDATE - each a submission that goes in with the
+// wait it is armed for, where the timerfd took a timerfd_settime() and, at each fire, a read() and the epoll fd's hop
+// (epoll_pwait2()). Its fire is a completion (-ETIME), reported as the timerfd's (RX_READY_TIMER). The deadline is on
+// the realtime clock, as tt_get_ns(); the timeout runs on the monotonic one, at the same distance from now, so a step
+// of the realtime clock does not move it - rx_wait_lazy() checks every fire against tt_get_ns() and re-arms, as for an
+// earlier deadline's fire. An update that finds it fired already (-ENOENT) changes nothing: the fire is reported.
+static void wait_timer_arm(struct tt_hal* hal, uint64_t until) {
+    struct timespec realtime;
+    struct timespec monotonic;
+    // NOLINTNEXTLINE(misc-include-cleaner) - CLOCK_REALTIME/CLOCK_MONOTONIC: <time.h>
+    (void)clock_gettime(CLOCK_REALTIME, &realtime);
+    (void)clock_gettime(CLOCK_MONOTONIC, &monotonic); // NOLINT(misc-include-cleaner) - <time.h>
+    const uint64_t now = ((uint64_t)realtime.tv_sec * SEC_NS) + (uint64_t)realtime.tv_nsec;
+    const uint64_t fire_at =
+        ((uint64_t)monotonic.tv_sec * SEC_NS) + (uint64_t)monotonic.tv_nsec + (until > now ? until - now : 0U);
+    struct wait_io* area = (struct wait_io*)hal->wait_io;
+    area->timer_at.tv_sec = (int64_t)(fire_at / SEC_NS);
+    area->timer_at.tv_nsec = (long long)(fire_at % SEC_NS);
+    struct io_uring_sqe* sqe = ring_sqe(hal);
+    if (hal->wait_timer_armed) {
+        sqe->opcode = IORING_OP_TIMEOUT_REMOVE;
+        sqe->addr = WAIT_TIMER; // the timeout to move
+        sqe->addr2 = (uint64_t)(uintptr_t)&area->timer_at;
+        sqe->timeout_flags = IORING_TIMEOUT_UPDATE | IORING_TIMEOUT_ABS;
+        sqe->user_data = WAIT_TIMER_UPDATE;
+    } else {
+        sqe->opcode = IORING_OP_TIMEOUT;
+        sqe->addr = (uint64_t)(uintptr_t)&area->timer_at;
+        sqe->len = 1;
+        sqe->off = 0; // a pure timer: no completion count
+        sqe->timeout_flags = IORING_TIMEOUT_ABS;
+        sqe->user_data = WAIT_TIMER;
+        hal->wait_timer_armed = true;
+    }
+    hal->timer_armed_ns = until;
+    hal->timer_sets++;
 }
 
 #if TT_HAL_RX_DIRECT && WAIT_IN_PLACE
@@ -4022,13 +4118,18 @@ static uint32_t wait_ready(struct tt_hal* hal, uint8_t polled) {
     if (hal->wait_epoll_seen) {
         ready |= wait_epoll_members(hal);
     }
+    if (hal->wait_timer_fired) {
+        hal->wait_timer_fired = false;
+        ready |= RX_READY_TIMER; // the ring's deadline: rx_wait_lazy() reads it as it reads the timerfd's
+    }
     return ready;
 }
 
 // Whether the ring has anything to report, without a system call: a datagram held, a poll fired on a socket read by
 // readiness, or the epoll fd's poll.
 static bool wait_something(const struct tt_hal* hal, uint8_t polled) {
-    return hal->wait_held != 0 || (polled & (uint8_t)~hal->wait_recv_armed) != 0 || hal->wait_epoll_seen;
+    return hal->wait_held != 0 || (polled & (uint8_t)~hal->wait_recv_armed) != 0 || hal->wait_epoll_seen ||
+           hal->wait_timer_fired;
 }
 
 #if TT_HAL_RX_DIRECT && WAIT_IN_PLACE

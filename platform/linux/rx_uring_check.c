@@ -51,8 +51,15 @@
 //                 read whole into the buffer, not split - in both arms.
 //  11e. offload - receive offload on (RELIABLE repairs come as MTU fragments and turn it on): the hinted run still in
 //                 place, and the datagram after it read whole, not taken for the run.
+//  12. deadline - the poll loop's deadline (wait_until, set by hand) as a stream subscriber's waits use it, the timer:
+//                 a wait with nothing sent ends at its deadline, not before and not 30 ms after; a wait that ended for
+//                 data leaves the timer armed for a later deadline, and a wait with an EARLIER one moves it there and
+//                 ends then. On the ring (C4) the timer is the ring's: each fire is a completion - no epoll_pwait2()
+//                 for it, the timerfd never armed.
 //   9. quiet    - 128 small datagrams in a row put the wait back on epoll (the next wait is not on the ring, and
-//                 receives), and the next large-sample datagram puts it on the ring again.
+//                 receives), and the next large-sample datagram puts it on the ring again. The deadline moves with it:
+//                 a ring timeout armed when it leaves is removed (the next deadline is the timerfd's, and ends in
+//                 time), and a timerfd armed when it comes back is disarmed (the ring's takes over, and ends in time).
 // With the argument "refused" (run under tests/support/refuse_io_uring.so): no ring, uring_wait=-1, and case 1 still
 // receives its datagram, by epoll.
 // Exit 0 pass, 1 fail, 3 setup failed. Run by test.sh (test-linux) in a private namespace.
@@ -79,6 +86,7 @@
 #include <netinet/in.h>
 #include <netinet/udp.h> // UDP_GRO, UDP_SEGMENT: case 10
 #include <sys/socket.h>
+#include <sys/timerfd.h> // timerfd_gettime(): case 12
 #include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/hal_linux.h>
@@ -111,13 +119,16 @@ enum check_exit { CHECK_PASS = 0, CHECK_FAIL = 1, CHECK_SETUP_FAILED = 3 };
 #define AIM_BYTES ((size_t)AIM_UNIT * AIM_UNITS)
 #define AIM_FRAMING ((uint32_t)(sizeof(struct tt_SingleHeader) + sizeof(struct tt_FragRunLHeader)))
 #define AIM_COUNT_AT ((uint32_t)(sizeof(struct tt_SingleHeader) + offsetof(struct tt_FragRunLHeader, run_count)))
-#define AIM_SOURCE 9U     // the framing's source byte
-#define AIM_FILL 0x40U    // the rest of the framing: any bytes, compared as bytes
-#define AIM_SENTINEL 0xA5 // the hinted place before a read
-#define AIM_FLIP 0x55U    // a framing byte made into another (11b)
-#define DRAINED_COUNT 3U  // case 7's datagrams
-#define HEADER_BYTES 3U   // "UR" and the number
-#define DATAGRAM_ROOM 64U // the largest number a datagram is given, and then some
+#define AIM_SOURCE 9U                  // the framing's source byte
+#define AIM_FILL 0x40U                 // the rest of the framing: any bytes, compared as bytes
+#define AIM_SENTINEL 0xA5              // the hinted place before a read
+#define AIM_FLIP 0x55U                 // a framing byte made into another (11b)
+#define DEADLINE_NS 40000000ULL        // 12: a wait's deadline, 40 ms
+#define DEADLINE_LATER_NS 300000000ULL // a deadline the data ends the wait well before
+#define DEADLINE_LATE_NS 30000000ULL   // how late a wait may end after its deadline
+#define DRAINED_COUNT 3U               // case 7's datagrams
+#define HEADER_BYTES 3U                // "UR" and the number
+#define DATAGRAM_ROOM 64U              // the largest number a datagram is given, and then some
 
 // Each case's datagrams, by number.
 enum datagram_number {
@@ -136,6 +147,7 @@ enum datagram_number {
     DG_QUIET = 14,
     DG_AFTER_QUIET = 15,
     DG_MERGED = 16, // and 17, the second datagram of the merged read
+    DG_DEADLINE = 18,
 };
 
 struct arm {
@@ -797,8 +809,101 @@ static void check_aimed(struct arm* arm) {
     verdict(arm, offloaded && strcmp(with_offload, "in place") == 0 && after_run == DG_AIM_AFTER && not_taken, line);
 }
 
+// ---- 12: the deadline timer
+static void set_wait_until(uint64_t until) {
+    node.wait_until_hi = (uint32_t)(until >> 32U);
+    node.wait_until_lo = (uint32_t)until;
+}
+
+// As a poll waits until `until`: tt_receive() with the rest of it, again after an early return with nothing. The
+// datagram's number, -1 at the deadline; *ended: when it returned.
+static int receive_until(uint64_t until, uint64_t* ended) {
+    set_wait_until(until);
+    int got = -1;
+    for (int i = 0; i < MAX_TRIES; i++) {
+        uint64_t now = tt_get_ns();
+        if (now >= until) {
+            break;
+        }
+        uint32_t ip = 0;
+        uint16_t port = 0;
+        int32_t len = tt_receive(&node, buf, sizeof(buf), &ip, &port, (int64_t)(until - now));
+        if (len >= 0) {
+            got = which(buf, len);
+            if (got >= 0) {
+                break;
+            }
+        }
+    }
+    *ended = tt_get_ns();
+    set_wait_until(0);
+    return got;
+}
+
+// Whether the timerfd is armed now.
+static bool timerfd_armed(void) {
+    struct itimerspec left; // NOLINT(misc-include-cleaner) - <sys/timerfd.h>
+    return node.hal.timer_fd_plus1 > 0 && timerfd_gettime(node.hal.timer_fd_plus1 - 1, &left) == 0 &&
+           (left.it_value.tv_sec != 0 || left.it_value.tv_nsec != 0);
+}
+
+static void check_deadline(struct arm* arm) {
+    if (node.hal.timer_fd_plus1 == 0) {
+        printf("rx_uring_check: SKIP - deadline: no timer on this kernel\n");
+        return;
+    }
+    drain_all();
+    node.hal.timer_data_streak = UINT8_MAX; // a stream subscriber's: its waits use the timer (rx_timer_next())
+    const uint64_t epolls = node.hal.wait_epolls;
+    const uint64_t fires = node.hal.timer_fires;
+    // A: nothing sent - the wait ends at its deadline.
+    uint64_t ended = 0;
+    uint64_t until = tt_get_ns() + DEADLINE_NS;
+    const int wait_a = receive_until(until, &ended);
+    const bool a_in_time = ended >= until && ended < until + DEADLINE_LATE_NS;
+    const bool fd_after_a = timerfd_armed();
+    // B: data under a later deadline (the timer stays armed for it), then an earlier deadline: moved, and ends then.
+    // The data comes late, so B's wait sleeps with its timer in the kernel: C's must move one in flight (on the ring an
+    // IORING_TIMEOUT_UPDATE) - a datagram already there would end B before its timer was even submitted.
+    node.hal.timer_data_streak = UINT8_MAX;
+    static uint8_t late = DG_DEADLINE;
+    pthread_t thread; // NOLINT(misc-include-cleaner) - <pthread.h> is included; the tool maps pthread_t elsewhere
+    if (pthread_create(&thread, NULL, send_late, &late) != 0) {
+        setup_failed = true;
+        return;
+    }
+    const int wait_b = receive_until(tt_get_ns() + DEADLINE_LATER_NS, &ended);
+    (void)pthread_join(thread, NULL);
+    const bool b_left_armed = node.hal.timer_armed_ns != 0;
+    until = tt_get_ns() + DEADLINE_NS;
+    const int wait_c = receive_until(until, &ended);
+    const bool c_in_time = ended >= until && ended < until + DEADLINE_LATE_NS;
+    char line[LINE_BYTES];
+    (void)snprintf(line, sizeof(line),
+                   "deadline: %d at its deadline %d; data %d under a later one left it armed %d; an earlier one %d "
+                   "ended then %d",
+                   wait_a, a_in_time ? 1 : 0, wait_b, b_left_armed ? 1 : 0, wait_c, c_in_time ? 1 : 0);
+    record(arm, line);
+    verdict(arm, wait_a == -1 && a_in_time && wait_b == DG_DEADLINE && b_left_armed && wait_c == -1 && c_in_time, line);
+    if (arm->ring) {
+        (void)snprintf(line, sizeof(line),
+                       "deadline: on the ring - fires +%llu, epoll_pwait2 +%llu, the timerfd armed %d (want >=2, 0, 0)",
+                       (unsigned long long)(node.hal.timer_fires - fires),
+                       (unsigned long long)(node.hal.wait_epolls - epolls), fd_after_a || timerfd_armed() ? 1 : 0);
+        verdict(arm,
+                node.hal.timer_fires >= fires + 2U && node.hal.wait_epolls == epolls && !fd_after_a && !timerfd_armed(),
+                line);
+    }
+}
+
 static void check_quiet(struct arm* arm) {
     drain_all();
+    // The deadline armed for a later time by a wait that ended for data: on the ring, the ring's timeout (C4).
+    node.hal.timer_data_streak = UINT8_MAX;
+    uint64_t ended = 0;
+    const uint64_t armed_until = tt_get_ns() + DEADLINE_LATER_NS;
+    send_or_fail(DG_QUIET, false);
+    const int armed = receive_until(armed_until, &ended);
     int last = -1;
     for (uint32_t i = 0; i < QUIET_DATAGRAMS; i++) {
         send_or_fail(DG_QUIET, false);
@@ -811,15 +916,38 @@ static void check_quiet(struct arm* arm) {
     send_or_fail(DG_AFTER_QUIET, false);
     int after = receive_k(buf, WAIT_LONG_NS);
     const bool off = !node.hal.wait_on && node.hal.wait_enters == enters;
+    // Off the ring, a deadline later than the one the ring's timeout was armed for: the timerfd's, at its time - the
+    // ring's timeout went with the ring (a wait that took it as still armed would never end).
+    node.hal.timer_data_streak = UINT8_MAX;
+    uint64_t until = armed_until + DEADLINE_NS;
+    const int off_wait = receive_until(until, &ended);
+    const bool off_in_time = ended >= until && ended < until + DEADLINE_LATE_NS;
+    // The timerfd armed for a later time again, then back on the ring: on the ring it is disarmed.
+    node.hal.timer_data_streak = UINT8_MAX;
+    send_or_fail(DG_AFTER_QUIET, false);
+    (void)receive_until(tt_get_ns() + DEADLINE_LATER_NS, &ended);
     const bool large = send_large_shaped() && receive_large_shaped();
+    const bool fd_on = timerfd_armed();
+    node.hal.timer_data_streak = UINT8_MAX;
+    until = tt_get_ns() + DEADLINE_NS;
+    const int on_wait = receive_until(until, &ended);
+    const bool on_in_time = ended >= until && ended < until + DEADLINE_LATE_NS;
     char line[LINE_BYTES];
-    (void)snprintf(line, sizeof(line), "quiet: %u small ones %d, the next %d, then a large one %d", QUIET_DATAGRAMS,
-                   last, after, large ? 1 : 0);
+    (void)snprintf(
+        line, sizeof(line),
+        "quiet: %d, %u small ones %d, the next %d; a deadline then %d in time %d; a large one %d; a deadline "
+        "then %d in time %d",
+        armed, QUIET_DATAGRAMS, last, after, off_wait, off_in_time ? 1 : 0, large ? 1 : 0, on_wait, on_in_time ? 1 : 0);
     record(arm, line);
-    verdict(arm, last == DG_QUIET && after == DG_AFTER_QUIET && large, line);
-    (void)snprintf(line, sizeof(line), "quiet: off the ring after them %d; on again after the large one %d (want %d)",
-                   off ? 1 : 0, node.hal.wait_on ? 1 : 0, arm->ring ? 1 : 0);
-    verdict(arm, off && node.hal.wait_on == arm->ring, line);
+    verdict(arm,
+            armed == DG_QUIET && last == DG_QUIET && after == DG_AFTER_QUIET && off_wait == -1 && off_in_time &&
+                large && on_wait == -1 && on_in_time,
+            line);
+    (void)snprintf(line, sizeof(line),
+                   "quiet: off the ring after them %d; on again after the large one %d (want %d), the timerfd then "
+                   "armed %d",
+                   off ? 1 : 0, node.hal.wait_on ? 1 : 0, arm->ring ? 1 : 0, fd_on ? 1 : 0);
+    verdict(arm, off && node.hal.wait_on == arm->ring && (!arm->ring || !fd_on), line);
 }
 
 static bool run_arm(struct arm* arm) {
@@ -848,6 +976,7 @@ static bool run_arm(struct arm* arm) {
     check_hint(arm);
     check_merged(arm);
     check_aimed(arm);
+    check_deadline(arm);
     check_quiet(arm);
     printf("rx_uring_check: [%s] uring_wait=%d uring_switches=%llu uring_waits=%llu uring_recvs=%llu uring_copies=%llu "
            "uring_fallbacks=%llu uring_cancels=%llu uring_epoll=%llu\n",

@@ -427,6 +427,12 @@ struct tt_hal {
     // The data socket's recvmsg aimed as direct_recvmsg() aims a read (hal_linux.c wait_aim(), C3): armed so
     // (wait_aimed), with the hint's byte count and destination it was armed for; wait_aimed_in_place: its completion
     // was the hinted run, handed to core as direct_split when the datagram is handed out.
+    // The wait's deadline as an IORING_OP_TIMEOUT on the ring while the wait is on it (hal_linux.c wait_timer_arm(),
+    // C4): wait_timer_ring, the kernel has the opcodes; wait_timer_armed, one is in flight; wait_timer_fired, it fired
+    // and no wait has reported it yet.
+    bool wait_timer_ring;
+    bool wait_timer_armed;
+    bool wait_timer_fired;
     bool wait_aimed;
     bool wait_aimed_in_place;
     uint32_t wait_aimed_bytes;
