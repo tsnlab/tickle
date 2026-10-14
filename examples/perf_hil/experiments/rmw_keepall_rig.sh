@@ -392,6 +392,37 @@ fi
 done
 [ "$HAS_TICKLE" = 1 ] && say "identity: $N_TICKLE_LIBS distinct librmw_tickle.so on both Pis"
 
+# What each tickle arm's library is, recorded by every invocation (also SKIP_BUILD=1, whose summary has no "built on"
+# line), to $OUT.runs/libs.txt: the commit it was built from (on the Pis the source tree's HEAD, in the PC preflight the
+# build's BUILD_OK sha=), its sha256, and which of the C library's socket and wait calls it imports (nm -D). The last is
+# a treatment a reader can check: since 64cb16f1 the HAL makes sendto/sendmsg/recvfrom with the instruction itself, so a
+# build from it imports none of them while it still imports recvmsg and sendmmsg (unchanged; the positive control
+# that nm read the table). libc_net=NOT_READ when nm could not read the library.
+lib_record() { # host arm lib source-dir
+    local src_cmd="git -C $4 rev-parse HEAD"
+    [ "$PC_PREFLIGHT" = 1 ] && src_cmd="sed -n 's/^sha=//p' $4/BUILD_OK"
+    # shellcheck disable=SC2016 # expanded where the library is
+    sh_ "$1" 'c=$('"$src_cmd"' 2>/dev/null); s=$(sha256sum < '"$3"' | cut -c1-64)
+if t=$(nm -D --undefined-only '"$3"' 2>/dev/null) && [ -n "$t" ]; then
+  u=$(printf "%s\n" "$t" | awk "{print \$2}" | sed "s/@.*//" | grep -xE "sendto|sendmsg|recvfrom|recvmmsg|sendmmsg|recvmsg|epoll_pwait2|epoll_wait" | sort -u | paste -sd, -)
+else u=NOT_READ; fi
+echo "LIB host='"$1"' arm='"$2"' commit=${c:--} sha256=$s libc_net=${u:--}"' </dev/null 2>/dev/null
+}
+if [ "$HAS_TICKLE" = 1 ]; then
+    : > "$OUT.runs/libs.txt"
+    echo "requested head=$HEAD_SHA pre=$PRE_SHA ack=$ACK_SHA" >> "$OUT.runs/libs.txt"
+    for h in "${HOSTS[@]}"; do
+        if [ "$PC_PREFLIGHT" = 1 ]; then hsrc=$(dirname "$PF_TICKLE_INSTALL"); else hsrc=$PI_HOME/tickle; fi
+        lib_record "$h" tickle@head "$HEAD_LIB" "$hsrc" >> "$OUT.runs/libs.txt"
+        for v in $VARIANT_SPECS; do
+            vi=$(variant_install "${v%%:*}")
+            if [ "$PC_PREFLIGHT" = 1 ]; then vsrc=$(dirname "$vi"); else vsrc=$PI_HOME/rmw_variants/${v%%:*}/src; fi
+            lib_record "$h" "tickle@${v%%:*}" "$vi/rmw_tickle/lib/librmw_tickle.so" "$vsrc" >> "$OUT.runs/libs.txt"
+        done
+    done
+    sed 's/^/libs: /' "$OUT.runs/libs.txt" | while IFS= read -r l; do say "$l"; done
+fi
+
 # Gate v2 A1 (header): each build's own record of what its compiler was given, from its compile_commands.json. A build
 # that does not show TICKLE_EXTRA_CFLAGS on every unit, or lacks a unit it must have compiled, stops the run here.
 # PC_PREFLIGHT builds nothing and runs the PC's stack (header), so there is no rig build to verify.
