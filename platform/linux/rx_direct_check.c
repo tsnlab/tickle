@@ -44,6 +44,8 @@
 //  12b. deadline after no data - the timer only after 8 waits in a row ended for data: after a fire the next wait
 //                 takes its timeout (no set); a ping-pong never uses it; 8 datagrams put it back; a stale fire seen by
 //                 a plain wait is read once and the wait goes on; TT_RX_LAZY_ADAPT=0 (the flag) turns the rule off.
+//  12c. fire and data - a fire in a wait that ends for a datagram starts the run again, with the timer in use and
+//                 without; the control, a plain wait for a datagram with no fire, counts one.
 // Exit 0 pass, 1 fail, 3 setup failed. Run by test.sh (test-linux) in a private namespace.
 
 // Built as rmw_tickle is (platform/linux/Makefile passes the same), so a lint of this file alone sees the same build.
@@ -55,7 +57,8 @@
 #endif
 
 #include <errno.h>
-#include <fcntl.h> // fcntl(F_GETFL): case 11
+#include <fcntl.h>   // fcntl(F_GETFL): case 11
+#include <pthread.h> // 12c: a datagram sent while the wait runs
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -628,6 +631,7 @@ static int32_t receive_until(uint32_t len, uint64_t until) {
 }
 
 static void check_deadline_after_no_data(void);
+static void check_deadline_fire_and_data(void);
 
 static void check_deadline(void) {
     if (node.hal.timer_fd_plus1 == 0) {
@@ -680,13 +684,13 @@ static void check_deadline(void) {
     check_deadline_after_no_data();
 }
 
-// 12b. The timer only after TT_RX_LAZY_STREAK (8) waits in a row ended for data (rx_timer_next()). E: C's last wait
-// ended in a fire, so the next takes its timeout: no set, no timer wait, one plain wait, ended at its deadline. P: a
-// ping-pong - a wait ending for a datagram, then one ending at its deadline, three times - never uses the timer (no
-// set, no timer wait: ae5defc8 cost the latency client 2 sets and a read a round trip). F: eight datagrams in a row put
-// it back; a wait woken by tt_wake_signal() leaves it armed (50 ms) and the next is plain; that one (150 ms) sees the
-// stale fire at 50 ms, reads it - no set - and goes on to its own deadline. G: with the rule off (TT_RX_LAZY_ADAPT=0,
-// here the flag) a wait after a timeout uses the timer again.
+// 12b. The timer only after TT_RX_LAZY_STREAK (8) waits in a row ended for data (hal_linux.c rx_wait_epoll()). E: C's
+// last wait ended in a fire, so the next takes its timeout: no set, no timer wait, one plain wait, ended at its
+// deadline. P: a ping-pong - a wait ending for a datagram, then one ending at its deadline, three times - never uses
+// the timer (no set, no timer wait: ae5defc8 cost the latency client 2 sets and a read a round trip). F: eight
+// datagrams in a row put it back; a wait woken by tt_wake_signal() leaves it armed (50 ms) and the next is plain; that
+// one (150 ms) sees the stale fire at 50 ms, reads it - no set - and goes on to its own deadline. G: with the rule off
+// (TT_RX_LAZY_ADAPT=0, here the flag) a wait after a timeout uses the timer again.
 #define DEADLINE_STALE_NS 50000000ULL  // F: the deadline the woken wait leaves armed
 #define DEADLINE_PLAIN_NS 150000000ULL // F: the plain wait's own, later
 #define DEADLINE_E_NS 30000000ULL      // E: a plain wait's deadline
@@ -750,6 +754,93 @@ static void check_deadline_after_no_data(void) {
                    e_plain ? 1 : 0, p_plain ? 1 : 0, f_data ? 1 : 0, f_armed ? 1 : 0,
                    (long long)((int64_t)(f_ended - f_until) / NS_PER_US), f_stale ? 1 : 0, g_off ? 1 : 0);
     verdict(e_plain && p_plain && f_data && f_armed && f_stale && g_off, line);
+    check_deadline_fire_and_data();
+}
+
+// 12c. A fire in a wait that ends for data (hal_linux.c rx_timer_take(), rx_wait_plain()): the timer cost that wait a
+// read, so the run of waits that ended for data starts again and the next wait takes its timeout. Each case first arms
+// the timer for 20 ms with a wait that ends for a datagram (the timer in use). L: 30 ms later a datagram, and a wait
+// with a later deadline sees the stale fire and the datagram at once: it returns the datagram, the fire read, the run
+// 0, and the next wait is plain. P: the timer not in use (a run of 0), a plain wait with a later deadline reads the
+// fire at 20 ms and goes on, and a datagram sent at 50 ms (another thread) ends it: the run stays 0. Its control, the
+// same plain wait with no fire: the run is 1 - the count does count, so P's 0 is the fire's doing.
+#define FIRE_ARMED_NS 20000000ULL // the deadline the first wait leaves armed
+#define FIRE_PAST_US 30000U       // L: then this long, so it has passed before the next wait
+#define FIRE_LATER_US 50000U      // P: the datagram this long after the wait began, after the fire
+
+static uint32_t later_len;
+static void* send_later(void* arg) {
+    (void)arg;
+    usleep(FIRE_LATER_US);
+    (void)send_built(later_len, "fire, then data");
+    return NULL;
+}
+
+// The timer armed by a wait that ends for a datagram, then the run set to `streak`; then (later: from another thread
+// once the wait has read the fire) a datagram, and one wait for it. Returns whether the first wait armed the timer.
+static bool fire_and_data(uint32_t len, uint8_t streak, bool later, bool* fired, int32_t* got) {
+    node.hal.timer_data_streak = UINT8_MAX;
+    (void)send_built(len, "fire and data, first");
+    bool armed = receive_until(len, tt_get_ns() + FIRE_ARMED_NS) == (int32_t)len && node.hal.timer_armed_ns != 0;
+    node.hal.timer_data_streak = streak;
+    pthread_t thread; // NOLINT(misc-include-cleaner) - <pthread.h> is included; the tool maps pthread_t elsewhere
+    bool threaded = false;
+    if (later) {
+        later_len = len;
+        threaded = pthread_create(&thread, NULL, send_later, NULL) == 0;
+        armed = armed && threaded;
+    } else {
+        usleep(FIRE_PAST_US);
+        (void)send_built(len, "fire and data, second");
+    }
+    uint64_t fires = node.hal.timer_fires;
+    *got = receive_until(len, tt_get_ns() + DEADLINE_FIRST_NS);
+    *fired = node.hal.timer_fires == fires + 1U;
+    if (threaded) {
+        (void)pthread_join(thread, NULL);
+    }
+    return armed;
+}
+
+static void check_deadline_fire_and_data(void) {
+    uint32_t len = build(framing, FRAMING + UNIT);
+    // L
+    bool l_fired = false;
+    int32_t l_got = 0;
+    bool l_armed = fire_and_data(len, UINT8_MAX, false, &l_fired, &l_got);
+    uint8_t l_streak = node.hal.timer_data_streak;
+    uint64_t waits = node.hal.timer_waits;
+    uint64_t plain = node.hal.timer_plain_waits;
+    (void)receive_until(0, tt_get_ns() + DEADLINE_SHORT_NS);
+    bool l_next_plain = node.hal.timer_plain_waits == plain + 1U && node.hal.timer_waits == waits;
+    bool l_ok = l_armed && l_got == (int32_t)len && l_fired && l_streak == 0 && l_next_plain;
+    // P
+    bool p_fired = false;
+    int32_t p_got = 0;
+    plain = node.hal.timer_plain_waits;
+    bool p_armed = fire_and_data(len, 0, true, &p_fired, &p_got);
+    uint8_t p_streak = node.hal.timer_data_streak;
+    bool p_ok =
+        p_armed && p_got == (int32_t)len && p_fired && p_streak == 0 && node.hal.timer_plain_waits == plain + 1U;
+    // The control: the same plain wait for a datagram sent from another thread, no timer armed.
+    node.hal.timer_data_streak = 0;
+    later_len = len;
+    pthread_t thread; // NOLINT(misc-include-cleaner) - <pthread.h> is included; the tool maps pthread_t elsewhere
+    bool c_threaded = pthread_create(&thread, NULL, send_later, NULL) == 0;
+    uint64_t fires = node.hal.timer_fires;
+    bool c_data = receive_until(len, tt_get_ns() + DEADLINE_FIRST_NS) == (int32_t)len;
+    if (c_threaded) {
+        (void)pthread_join(thread, NULL);
+    }
+    bool c_ok = c_threaded && c_data && node.hal.timer_fires == fires && node.hal.timer_data_streak == 1U;
+    set_wait_until(0);
+    char line[LINE_BYTES];
+    (void)snprintf(line, sizeof(line),
+                   "fire and data: at once, timer in use - read %d, fired %d, run %u, next plain %d; fire then data, "
+                   "plain - read %d, fired %d, run %u; control (no fire) - run %u",
+                   (int)l_got, l_fired ? 1 : 0, (unsigned)l_streak, l_next_plain ? 1 : 0, (int)p_got, p_fired ? 1 : 0,
+                   (unsigned)p_streak, (unsigned)node.hal.timer_data_streak);
+    verdict(l_ok && p_ok && c_ok, line);
 }
 
 int main(void) {

@@ -622,7 +622,7 @@ static void wait_set_setup(struct tt_Context* node) {
         return;
     }
     node->hal.timer_fd_plus1 = timer + 1;
-    // The timer only after a wait that ended for a datagram (rx_timer_next()); TT_RX_LAZY_ADAPT=0: after every wait.
+    // The timer only after a wait that ended for a datagram (rx_wait_epoll()); TT_RX_LAZY_ADAPT=0: after every wait.
     const char* adapt = getenv("TT_RX_LAZY_ADAPT");
     node->hal.timer_adapt = adapt == NULL || strcmp(adapt, "0") != 0;
 #else
@@ -2822,12 +2822,14 @@ static void rx_timer_arm(struct tt_hal* hal, uint64_t until) {
     }
 }
 
-// The timer fired (or the clock stepped): read, so the level-triggered set stops reporting it, and disarmed.
+// The timer fired (or the clock stepped): read, so the level-triggered set stops reporting it, and disarmed. A fire
+// also starts the run of waits that ended for data again (rx_wait_epoll()): the timer cost a read in this wait.
 static void rx_timer_take(struct tt_hal* hal) {
     uint64_t expirations = 0;
     (void)read(hal->timer_fd_plus1 - 1, &expirations, sizeof(expirations)); // ECANCELED on a clock step: a fire
     hal->timer_armed_ns = 0;
     hal->timer_fires++;
+    hal->timer_data_streak = 0;
 }
 
 // rx_wait() until `until` (absolute, UINT64_MAX: none) with the deadline timer: the same return convention.
@@ -2911,16 +2913,7 @@ static int rx_wait_for(struct tt_Context* node, int64_t timeout, uint32_t* ready
 // (rx_wait_plain(), counted timer_plain=). TT_RX_LAZY_ADAPT=0: every wait in a poll uses the timer, as ab/rx-gap2 did
 // (the A/B control).
 #define TT_RX_LAZY_STREAK 8U
-static void rx_timer_next(struct tt_hal* hal, int count, uint32_t ready, bool cost) {
-    if (count < 0) {
-        return;
-    }
-    if (cost || (ready & (RX_READY_WELL_KNOWN | RX_READY_DATA | RX_READY_BELL)) == 0) {
-        hal->timer_data_streak = 0;
-    } else if (hal->timer_data_streak < UINT8_MAX) {
-        hal->timer_data_streak++;
-    }
-}
+#define RX_READY_FOR_DATA (RX_READY_WELL_KNOWN | RX_READY_DATA | RX_READY_BELL) // a wait that ended for data
 
 static bool rx_timer_lazy_next(const struct tt_hal* hal) {
     return !hal->timer_adapt || hal->timer_data_streak >= TT_RX_LAZY_STREAK;
@@ -2929,8 +2922,15 @@ static bool rx_timer_lazy_next(const struct tt_hal* hal) {
 // A wait in a poll that takes its timeout (the deadline `until`): the timer may still be armed by an earlier wait, and
 // it is in the set either way. A fire of it is read - level-triggered, it would end every wait after it at once - and
 // the wait goes on to its own deadline: an early return would read to the poll loop as a wait cut short by a signal.
+//
+// The run of waits that ended for data grows here and only here: a wait that uses the timer comes once the run is long
+// enough, and needs nothing more (2026-10-14: counted after every wait, the rule cost the latency server, whose every
+// wait uses the timer, +17..+19 user instructions a round trip on the PC and +25..+29 on the rig's Pi; srv_gap_pc.sh).
+// The run ends at a fire (rx_timer_take(), here too: a stale fire read costs this wait a read) and at a wait that ended
+// without data (rx_wait_epoll()).
 static int rx_wait_plain(struct tt_Context* node, int64_t timeout, uint64_t until, uint32_t* ready) {
     node->hal.timer_plain_waits++;
+    bool fired = false;
     for (;;) {
 #if TT_HAL_UDP_GRO
         int count = rx_wait_for(node, timeout, ready);
@@ -2941,9 +2941,13 @@ static int rx_wait_plain(struct tt_Context* node, int64_t timeout, uint64_t unti
         int count = rx_wait(node, timeout > 0 ? &timeout_ts : NULL, ready);
 #endif
         if (count <= 0 || (*ready & RX_READY_TIMER) == 0) {
+            if (count > 0 && !fired && (*ready & RX_READY_FOR_DATA) != 0 && node->hal.timer_data_streak < UINT8_MAX) {
+                node->hal.timer_data_streak++;
+            }
             return count;
         }
         rx_timer_take(&node->hal);
+        fired = true;
         *ready &= ~RX_READY_TIMER;
         if (*ready != 0) {
             return count - 1;
@@ -2958,8 +2962,10 @@ static int rx_wait_plain(struct tt_Context* node, int64_t timeout, uint64_t unti
     }
 }
 
-// tt_receive()'s wait with the wait set: in a poll (a deadline set), with the timer or with the timeout by
-// rx_timer_next()'s rule; outside one, with the timeout.
+// tt_receive()'s wait with the wait set: in a poll (a deadline set), with the timer after TT_RX_LAZY_STREAK waits in a
+// row ended for data (counted by rx_wait_plain(); a fire, or a wait that ended without data, starts the count again)
+// and with the timeout before; outside a poll, with the timeout. A wait that ends for data with the timer in use - a
+// stream subscriber's or a latency server's usual wait - does no bookkeeping beyond the one test below.
 static int rx_wait_epoll(struct tt_Context* node, int64_t timeout, uint32_t* ready) {
     const uint64_t until = node->hal.timer_fd_plus1 > 0 ? rx_wait_until(node) : 0;
     if (until != 0) {
@@ -2968,9 +2974,10 @@ static int rx_wait_epoll(struct tt_Context* node, int64_t timeout, uint32_t* rea
 #else
         const bool lazy = rx_timer_lazy_next(&node->hal);
 #endif
-        const uint64_t fires = node->hal.timer_fires;
         int count = lazy ? rx_wait_lazy(node, until, ready) : rx_wait_plain(node, timeout, until, ready);
-        rx_timer_next(&node->hal, count, *ready, node->hal.timer_fires != fires);
+        if ((*ready & RX_READY_FOR_DATA) == 0 && count >= 0) {
+            node->hal.timer_data_streak = 0; // a timeout, a wake, only room to send: not a wait that ended for data
+        }
         return count;
     }
 #if TT_HAL_UDP_GRO

@@ -361,6 +361,35 @@ MUTANTS = [
         "        node->large.direct_allowed = true;",
         HAL,
     ),
+    # The deadline timer's rule (hal_linux.c rx_wait_epoll(), counted by plain waits since 2026-10-14): 12b and 12c.
+    (
+        "lazy timer: a fire does not start the run again",
+        "src/hal_linux.c",
+        "    hal->timer_fires++;\n    hal->timer_data_streak = 0;\n",
+        "    hal->timer_fires++;\n",
+        HAL,
+    ),
+    (
+        "lazy timer: a plain wait counts a datagram that came after a fire",
+        "src/hal_linux.c",
+        "            if (count > 0 && !fired && (*ready & RX_READY_FOR_DATA) != 0 &&",
+        "            if (count > 0 && (*ready & RX_READY_FOR_DATA) != 0 &&",
+        HAL,
+    ),
+    (
+        "lazy timer: a wait that ended without data does not start the run again",
+        "src/hal_linux.c",
+        "            node->hal.timer_data_streak = 0; // a timeout, a wake, only room to send",
+        "            (void)0; // a timeout, a wake, only room to send",
+        HAL,
+    ),
+    (
+        "lazy timer: plain waits do not count",
+        "src/hal_linux.c",
+        "                node->hal.timer_data_streak++;\n",
+        "",
+        HAL,
+    ),
 ]
 
 

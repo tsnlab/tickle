@@ -274,8 +274,9 @@ struct tt_hal {
     uint64_t timer_waits;
     uint64_t timer_sets;
     uint64_t timer_fires;
-    // The timer only after TT_RX_LAZY_STREAK waits in a row ended for data (hal_linux.c rx_timer_next(), 2026-10-13):
-    // timer_data_streak counts them, and a wait in which the timer fired (a read) starts it again; the
+    // The timer only after TT_RX_LAZY_STREAK waits in a row ended for data (hal_linux.c rx_wait_epoll(), 2026-10-13):
+    // timer_data_streak counts them (the waits without the timer; once it is in use the count stays), and a wait in
+    // which the timer fired (a read), or one that ended without data, starts it again; the
     // others take their timeout as before, counted in timer_plain_waits (the rx line's timer_plain=). timer_adapt:
     // TT_RX_LAZY_ADAPT=0 turns the rule off (every wait in a poll uses the timer, as ab/rx-gap2 did: the A/B control).
     uint8_t timer_data_streak;
