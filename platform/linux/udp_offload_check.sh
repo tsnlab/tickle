@@ -44,8 +44,10 @@
 #   - checksum 0 (F, G; B, A and C the controls): the receiver's ingress counts the datagrams to the test port that carry
 #     UDP checksum 0 (tc u32 on the UDP header of a whole datagram, or of a run's first fragment). F and G: exactly the
 #     runs' first fragments carry it (RUNS) and, whole, exactly the datagrams the sender reports beyond the runs
-#     (csum0_datagrams - RUNS, its own count matching csum0_datagrams_expected) - so nothing else lost its checksum,
-#     and the option was cleared after each call; csum0=1 and csum0_singles=0 (no UDP_SEGMENT call refused). B, A and
+#     (csum0_datagrams - RUNS, its own count matching csum0_datagrams_expected) - so nothing else of the patterns lost
+#     its checksum, and the option was off for every UDP_SEGMENT call; csum0=1 and csum0_retries=0 (no UDP_SEGMENT call
+#     refused), and SO_NO_CHECK switched exactly csum0_switches_expected times (only where the kind of call changes).
+#     B, A and
 #     C: none at all, and csum0=0. Every arm's list is still B's, so the receivers took every zero-checksum datagram.
 # Exit 0 pass, 1 fail, 2 could not run.
 set -u
@@ -221,7 +223,9 @@ for a in F G; do
     [ "$(field csum0 "$WORK/$a.tx")" = 1 ] || die "$a: csum0=$(field csum0 "$WORK/$a.tx") - the option was not applied"
     [ "$sent0" = "$(field csum0_datagrams_expected "$WORK/$a.tx")" ] ||
         die "$a: csum0_datagrams=$sent0, expected $(field csum0_datagrams_expected "$WORK/$a.tx")"
-    [ "$(field csum0_singles "$WORK/$a.tx")" = 0 ] || die "$a: csum0_singles=$(field csum0_singles "$WORK/$a.tx")"
+    [ "$(field csum0_retries "$WORK/$a.tx")" = 0 ] || die "$a: csum0_retries=$(field csum0_retries "$WORK/$a.tx")"
+    [ "$(field csum0_switches "$WORK/$a.tx")" = "$(field csum0_switches_expected "$WORK/$a.tx")" ] ||
+        die "$a: csum0_switches=$(field csum0_switches "$WORK/$a.tx"), expected $(field csum0_switches_expected "$WORK/$a.tx")"
     [ "$zf" -eq "$RUNS" ] || die "$a: $zf runs' first fragments with checksum 0 on the wire, not $RUNS"
     [ "$zw" -eq $((sent0 - RUNS)) ] 2>/dev/null ||
         die "$a: $zw whole datagrams with checksum 0 on the wire, not the sender's $sent0 - $RUNS runs"
@@ -230,5 +234,5 @@ done
 if [ "$fail" -ne 0 ]; then
     exit 1
 fi
-echo "udp_offload_check: PASS - $EXPECTED datagrams identical in all arms (E: $REPEAT passes, $(field gro_commits "$WORK/E.rx") switches back), wire identical with send offload, IP fragments only the runs', runs whole under GRO, checksum 0 on exactly the runs' calls (F, G)"
+echo "udp_offload_check: PASS - $EXPECTED datagrams identical in all arms (E: $REPEAT passes, $(field gro_commits "$WORK/E.rx") switches back), wire identical with send offload, IP fragments only the runs', runs whole under GRO, checksum 0 on the runs and exactly where the sender counted it (F, G)"
 exit 0
