@@ -12,8 +12,9 @@ Not mutated, and why - each decides no outcome a single-threaded check on loopba
     keeps one reader per socket if one ever did.
   - tt_close()'s cancellation before the ring is closed: what it prevents is the kernel's exit work completing a
     recvmsg into a context already freed - after the check has gone.
-  - gro_turn_on()'s cancellation before the option goes on: the window is a datagram merged between the setsockopt()
-    and a recvmsg already armed without the segment size's room, which no check can time.
+  - gro_maybe_settle()'s cancellation before the option goes off (C2): the window is a datagram merged before the
+    setsockopt() and taken after it by a recvmsg already armed - the recvmsg's task work runs at the exit of the very
+    system call that queued the datagram on loopback, so a single thread cannot open it.
   - wait_ready()'s rule that a poll on a socket the ring reads says nothing: such a poll is armed only by
     tt_rx_maybe_ready() on a socket with no recvmsg, and its completion arrives with the recvmsg's, never alone, in
     every run a check can make.
@@ -141,6 +142,27 @@ MUTANTS = [
         "src/hal_linux.c",
         "    wait_cancel(node, hal->wait_recv_armed);\n    if (hal->wait_held != 0) {\n        return false;",
         "    if (hal->wait_held != 0) {\n        return false;",
+        CHECK,
+    ),
+    (
+        "C2: the recvmsg without room for UDP_GRO's segment size",
+        "src/hal_linux.c",
+        "    msg->msg_control = area->control[socket].bytes;\n    msg->msg_controllen = sizeof(area->control[socket].bytes);",
+        "",
+        CHECK,
+    ),
+    (
+        "C2: receive offload on read by readiness, as in C1",
+        "src/hal_linux.c",
+        "    if (node->hal.gro_state == TT_GRO_SETTLING) {\n        return false;",
+        "    if (node->hal.gro_state != TT_GRO_PLAIN) {\n        return false;",
+        CHECK,
+    ),
+    (
+        "C2: a merged read the ring took handed out as one datagram",
+        "src/hal_linux.c",
+        "    if (segment > 0 && res > segment) {",
+        "    if (false) {",
         CHECK,
     ),
     (

@@ -36,6 +36,9 @@
 //   8. hint     - tt_rx_maybe_ready() after a wait left both recvmsgs armed: on the ring "nothing arrived" at
 //                 once, with no poll armed (a recvmsg covers its socket as a poll does); "may be" once a datagram
 //                 came, which the drain then returns.
+//  10. merged   - receive offload on (as a large sample's MTU fragment turns it on) and two datagrams sent as one
+//                 UDP_SEGMENT send, which the UDP_GRO socket takes as one merged read: both handed out whole, in order;
+//                 on the ring, by the wait's recvmsg (its segment-size cmsg), with no readiness fallback.
 //   9. quiet    - 128 small datagrams in a row put the wait back on epoll (the next wait is not on the ring, and
 //                 receives), and the next large-sample datagram puts it on the ring again.
 // With the argument "refused" (run under tests/support/refuse_io_uring.so): no ring, uring_wait=-1, and case 1 still
@@ -62,6 +65,7 @@
 #include <unistd.h>
 
 #include <netinet/in.h>
+#include <netinet/udp.h> // UDP_GRO, UDP_SEGMENT: case 10
 #include <sys/socket.h>
 #include <tickle/config.h>
 #include <tickle/hal.h>
@@ -109,6 +113,7 @@ enum datagram_number {
     DG_ON = 13,
     DG_QUIET = 14,
     DG_AFTER_QUIET = 15,
+    DG_MERGED = 16, // and 17, the second datagram of the merged read
 };
 
 struct arm {
@@ -522,6 +527,88 @@ static void check_on(struct arm* arm) {
     verdict(arm, epoll_first && node.hal.wait_on == arm->ring, line);
 }
 
+// Receive offload on, as the HAL turns it on for a large sample's MTU fragment (gro_turn_on()), or off.
+static bool offload(bool enable) {
+    int value = enable ? 1 : 0;
+    bool set = setsockopt(node.hal.sock, SOL_UDP, UDP_GRO, &value, sizeof(value)) == 0 &&
+               setsockopt(node.hal.data_sock, SOL_UDP, UDP_GRO, &value, sizeof(value)) == 0;
+    node.hal.gro_state = (uint8_t)(enable && set ? TT_GRO_ON : TT_GRO_PLAIN);
+    node.hal.gro_quiet = 0;
+    return set;
+}
+
+// The two datagrams of case 10, one length (a merged read's segments are), side by side: DG_MERGED, then the same bytes
+// numbered DG_MERGED + 1.
+static uint8_t merged_pair[2U * (LEN_BASE + DATAGRAM_ROOM)];
+
+static uint32_t build_merged_pair(void) {
+    const uint32_t len = build(DG_MERGED);
+    memcpy(merged_pair, datagram, len);
+    memcpy(merged_pair + len, datagram, len);
+    merged_pair[len + 2U] = DG_MERGED + 1U;
+    return len;
+}
+
+// Sent as one UDP_SEGMENT send to the data socket, which a UDP_GRO socket takes as one merged read.
+static bool send_merged(uint32_t len) {
+    struct sockaddr_in dest;
+    socklen_t dest_len = sizeof(dest);
+    if (getsockname(node.hal.data_sock, (struct sockaddr*)&dest, &dest_len) != 0) {
+        return false;
+    }
+    dest.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int gso = socket(AF_INET, SOCK_DGRAM, 0);
+    int size = (int)len;
+    const size_t both = (size_t)2U * len;
+    bool sent = gso >= 0 && setsockopt(gso, SOL_UDP, UDP_SEGMENT, &size, sizeof(size)) == 0 &&
+                sendto(gso, merged_pair, both, 0, (struct sockaddr*)&dest, sizeof(dest)) == (ssize_t)both;
+    if (gso >= 0) {
+        (void)close(gso);
+    }
+    return sent;
+}
+
+// Whether a receive handed out datagram `index` (0 or 1) of the pair whole: `got` bytes at buf + rx_offset.
+static bool merged_whole(int32_t got, uint32_t len, uint32_t index) {
+    return got == (int32_t)len && memcmp(buf + node.rx_offset, merged_pair + ((size_t)index * len), len) == 0;
+}
+
+static void check_merged(struct arm* arm) {
+    drain_all();
+    if (!offload(true)) {
+        printf("rx_uring_check: SKIP - merged: the kernel refuses UDP_GRO\n");
+        (void)offload(false);
+        return;
+    }
+    int k = receive_k(buf, WAIT_BRIEF_NS); // times out: the recvmsgs armed with receive offload on
+    const uint64_t fallbacks = node.hal.wait_fallbacks;
+    const uint64_t recvs = node.hal.wait_recvs;
+    const uint64_t merged = node.udp_gro_reads;
+    const uint32_t len = build_merged_pair();
+    if (!send_merged(len)) {
+        printf("rx_uring_check: SKIP - merged: no UDP_SEGMENT send on this kernel\n");
+        (void)offload(false);
+        return;
+    }
+    usleep(SETTLE_US);
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    const bool first = merged_whole(tt_receive(&node, buf, sizeof(buf), &ip, &port, WAIT_LONG_NS), len, 0);
+    const bool second = merged_whole(tt_try_receive(&node, buf, sizeof(buf), &ip, &port), len, 1);
+    char line[LINE_BYTES];
+    (void)snprintf(line, sizeof(line), "merged: %d, then the first whole %d, the second whole %d, one merged read %d",
+                   k, first ? 1 : 0, second ? 1 : 0, node.udp_gro_reads == merged + 1U ? 1 : 0);
+    record(arm, line);
+    verdict(arm, k == -1 && first && second && node.udp_gro_reads == merged + 1U, line);
+    if (arm->ring) {
+        (void)snprintf(line, sizeof(line), "merged: by the ring's recvmsg, recvs +%llu, fallbacks +%llu (want 1, 0)",
+                       (unsigned long long)(node.hal.wait_recvs - recvs),
+                       (unsigned long long)(node.hal.wait_fallbacks - fallbacks));
+        verdict(arm, node.hal.wait_recvs == recvs + 1U && node.hal.wait_fallbacks == fallbacks, line);
+    }
+    (void)offload(false);
+}
+
 static void check_quiet(struct arm* arm) {
     drain_all();
     int last = -1;
@@ -571,6 +658,7 @@ static bool run_arm(struct arm* arm) {
     check_both(arm);
     check_drain(arm);
     check_hint(arm);
+    check_merged(arm);
     check_quiet(arm);
     printf("rx_uring_check: [%s] uring_wait=%d uring_switches=%llu uring_waits=%llu uring_recvs=%llu uring_copies=%llu "
            "uring_fallbacks=%llu uring_cancels=%llu uring_epoll=%llu\n",

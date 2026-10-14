@@ -811,11 +811,6 @@ static bool gro_large_fragment(const uint8_t* datagram, int32_t len) {
 // The option back on, from TT_GRO_PLAIN (a large fragment came) or TT_GRO_SETTLING (aborted). A refusal now - which
 // the check at bind did not see - leaves the sockets as they are and receive offload off for good.
 static void gro_turn_on(struct tt_Context* node) {
-#if TT_HAL_RING_WAIT
-    // A recvmsg the wait armed without room for the segment size would take a merged read as one datagram: it goes
-    // first, before the option, so whatever it raced to take was read plain.
-    wait_cancel(node, node->hal.wait_recv_armed);
-#endif
     if (!gro_option(node, 1)) {
         (void)gro_option(node, 0);
         node->hal.gro_allowed = false;
@@ -840,6 +835,11 @@ static void gro_maybe_settle(struct tt_Context* node) {
     if (node->hal.gro_state != TT_GRO_ON || node->hal.gro_quiet < TT_GRO_QUIET_READS) {
         return;
     }
+#if TT_HAL_RING_WAIT
+    // A recvmsg the wait left armed would read with the option off, and a datagram merged before it went off would come
+    // without its segment size: it goes first. What it raced to take was read with the option on.
+    wait_cancel(node, node->hal.wait_recv_armed);
+#endif
     (void)gro_option(node, 0);
     node->hal.gro_state = TT_GRO_SETTLING;
     node->hal.gro_settle_at_ns = tt_get_ns() + TT_GRO_SETTLE_NS;
@@ -3690,6 +3690,14 @@ struct wait_io {
     struct msghdr msg[URING_SOCKETS];
     struct iovec iov[URING_SOCKETS]; // NOLINT(misc-include-cleaner) - see <sys/uio.h>'s own include comment
     struct sockaddr_in addr[URING_SOCKETS];
+#if TT_HAL_UDP_GRO
+    // UDP_GRO's segment size, on every recvmsg whatever the option's state: one armed before receive offload went on
+    // can complete after, with a merged read (gro_read()'s msghdr, C2).
+    union {
+        char bytes[CMSG_SPACE(sizeof(int))]; // NOLINT(misc-include-cleaner) - CMSG_SPACE: <sys/socket.h>
+        struct cmsghdr align;                // NOLINT(misc-include-cleaner) - <sys/socket.h>
+    } control[URING_SOCKETS];
+#endif
     uint8_t landing[URING_SOCKETS][tt_MAX_BUFFER_LENGTH]; // the data socket's only when not WAIT_IN_PLACE
 };
 
@@ -3877,6 +3885,11 @@ static void wait_queue_recv(struct tt_Context* node, uint32_t socket, int socket
     msg->msg_namelen = sizeof(area->addr[socket]);
     msg->msg_iov = &area->iov[socket];
     msg->msg_iovlen = 1;
+#if TT_HAL_UDP_GRO
+    memset(&area->control[socket], 0, sizeof(area->control[socket])); // no cmsg of an earlier read can be read again
+    msg->msg_control = area->control[socket].bytes;
+    msg->msg_controllen = sizeof(area->control[socket].bytes);
+#endif
     struct io_uring_sqe* sqe = ring_sqe(hal);
     sqe->opcode = IORING_OP_RECVMSG;
     sqe->fd = socket_fd;
@@ -3888,11 +3901,13 @@ static void wait_queue_recv(struct tt_Context* node, uint32_t socket, int socket
     hal->wait_recv_armed |= (uint8_t)(1U << socket);
 }
 
-// Whether the ring can read socket `socket` now: not while receive offload is on (a merged read needs the segment size)
-// nor, for the data socket, while core hints a run to be read in place (three pieces). Those wait by readiness.
+// Whether the ring can read socket `socket` now: not while receive offload settles, nor, for the data socket, while
+// core hints a run to be read in place (three pieces). Those wait by readiness.
 static bool wait_reads(const struct tt_Context* node, uint32_t socket) {
 #if TT_HAL_UDP_GRO
-    if (node->hal.gro_state != TT_GRO_PLAIN) {
+    // Receive offload on is read by the ring as gro_read() reads it (the segment size's cmsg: C2). Settling is not: its
+    // read must turn the option back on first (rx_read_one()), and the settle itself waits for empty queues.
+    if (node->hal.gro_state == TT_GRO_SETTLING) {
         return false;
     }
 #endif
@@ -4129,15 +4144,49 @@ static int32_t wait_read(struct tt_Context* node, int socket_fd, void* buf, size
         return -2;
     }
     size_t got = (size_t)res < len ? (size_t)res : len;
-    if (hal->wait_target[socket] != buf) {
-        memcpy(buf, hal->wait_target[socket], got);
-        hal->wait_copies++;
-    }
     *ip = ntohl(area->addr[socket].sin_addr.s_addr);
     *port = ntohs(area->addr[socket].sin_port);
     hal->wait_recvs++;
 #if TT_HAL_UDP_GRO
-    if (hal->gro_state == TT_GRO_PLAIN && hal->gro_allowed && gro_large_fragment((const uint8_t*)buf, (int32_t)got)) {
+    // A merged read (UDP_GRO): its first datagram now, the rest for gro_take_pending() from where the read left them -
+    // as gro_read() does it. Nothing is armed into that buffer while they are handed out: a wait arms only with
+    // nothing left to hand out.
+    const int segment = gro_segment_of(&((struct wait_io*)hal->wait_io)->msg[socket]);
+    if (segment > 0 && res > segment) {
+        uint32_t end = (uint32_t)res;
+        // NOLINTNEXTLINE(misc-include-cleaner) - MSG_TRUNC: <sys/socket.h>
+        if ((area->msg[socket].msg_flags & MSG_TRUNC) != 0) {
+            end -= end % (uint32_t)segment; // cut: dropped, as loss (gro_read())
+        }
+        const uint32_t count = (end + (uint32_t)segment - 1U) / (uint32_t)segment;
+        node->udp_gro_reads++;
+        node->udp_gro_merged += count;
+        hal->gro_base = hal->wait_target[socket];
+        hal->gro_segment = (uint32_t)segment;
+        hal->gro_next = (uint32_t)segment;
+        hal->gro_end = end;
+        hal->gro_left = (uint16_t)(count - 1U);
+        hal->gro_ip = *ip;
+        hal->gro_port = *port;
+        hal->gro_from_data = socket == 1U;
+        got = (size_t)segment;
+    }
+#endif
+    if (hal->wait_target[socket] != buf) {
+        memcpy(buf, hal->wait_target[socket], got);
+        hal->wait_copies++;
+    }
+#if TT_HAL_UDP_GRO
+    if (hal->gro_state != TT_GRO_PLAIN) {
+        // rx_read_one()'s receive-offload count: reads with neither a merged read nor a large fragment
+        const bool busy = hal->gro_left > 0 || gro_large_fragment((const uint8_t*)buf, (int32_t)got);
+        hal->gro_quiet = busy ? 0 : hal->gro_quiet + 1;
+        if (hal->gro_left == 0) {
+            rx_note_run(node, socket_fd, (const uint8_t*)buf, (int32_t)got);
+        }
+        return (int32_t)got;
+    }
+    if (hal->gro_allowed && gro_large_fragment((const uint8_t*)buf, (int32_t)got)) {
         gro_turn_on(node); // the rest of this sample may come merged
     }
 #endif
