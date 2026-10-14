@@ -393,6 +393,7 @@ struct tt_hal {
     size_t uring_cq_map_len;
     void* uring_sqes;
     size_t uring_sqes_len;
+    uint32_t* uring_sq_head;
     uint32_t* uring_sq_tail;
     uint32_t* uring_sq_mask;
     uint32_t* uring_sq_array;
@@ -402,6 +403,45 @@ struct tt_hal {
     void* uring_cqes;
     uint64_t uring_arms;    // poll submissions, each one io_uring_enter() - the cost side of the trade
     uint64_t uring_skipped; // tt_rx_maybe_ready() answers of "no", each one a read that was not made
+    uint32_t uring_queued;  // submissions written and not yet handed to the kernel (hal_linux.c ring_sqe())
+    // tt_receive()'s wait on this ring (hal_linux.c "One wait that returns data", 2026-10-14). wait_ring: decided at
+    // bind - TT_RX_URING_WAIT unset or not 0, and the kernel has everything it needs; wait_state the rx line's
+    // uring_wait= (1 on, 0 off by the environment, -1 unavailable). wait_recv_armed: a one-shot recvmsg in flight per
+    // socket (bit 0 the well-known one, bit 1 the data one); wait_held: its completion taken off the ring, the
+    // datagram not handed out yet, wait_res[] long (or a negative errno). wait_target/wait_target_len: where each
+    // armed recvmsg reads to, wait_buf/wait_len the caller's buffer of the wait being made. wait_epoll_armed: the
+    // multishot poll on the epoll fd is in flight; wait_epoll_seen: it reported a member ready that no epoll_pwait2()
+    // has named yet. wait_io: the msghdrs, addresses and landings the kernel writes (mapped, outside the context, so a
+    // recvmsg never holds a pointer into a struct that may move).
+    // wait_on: the wait is on the ring now - only while large samples arrive (hal_linux.c wait_note()): after a
+    // datagram of one, until WAIT_QUIET_DATAGRAMS others in a row (wait_quiet); wait_switches counts the moves.
+    bool wait_ring;
+    bool wait_on;
+    uint16_t wait_quiet;
+    uint64_t wait_switches;
+    int8_t wait_state;
+    uint8_t wait_recv_armed;
+    uint8_t wait_held;
+    bool wait_epoll_armed;
+    bool wait_epoll_seen;
+    int32_t wait_res[2];
+    uint8_t* wait_target[2];
+    size_t wait_target_len[2];
+    uint8_t* wait_buf;
+    size_t wait_len;
+    void* wait_io;
+    size_t wait_io_len;
+    // The rx line's treatment check (with uring_switches=, wait_switches): waits that entered the kernel on the ring
+    // (uring_waits=), datagrams handed out
+    // from a recvmsg's completion (uring_recvs=) and of those copied out of the HAL's own landing (uring_copies=),
+    // readiness waits for a socket the recvmsg could not be armed on (uring_fallbacks=), cancellations waited for
+    // (uring_cancels=), and epoll_pwait2() calls to name what the epoll fd's poll reported (uring_epoll=).
+    uint64_t wait_enters;
+    uint64_t wait_recvs;
+    uint64_t wait_copies;
+    uint64_t wait_fallbacks;
+    uint64_t wait_cancels;
+    uint64_t wait_epolls;
 #endif
 #if tt_RX_DRAIN
     // The drain (tt_rx_drain_start(), hal_linux.c): its own io_uring, set up at the first start (drain_fd -1 before,

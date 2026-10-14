@@ -214,6 +214,11 @@ rx_drain_check: rx_drain_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle/*.h)
 rx_direct_check: rx_direct_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle/*.h)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -o $@ rx_direct_check.c $(SRC_FILES) -lm -lpthread
 
+# tt_receive()'s wait on io_uring against its control, TT_RX_URING_WAIT=0 (rx_uring_check.c): built as rmw_tickle builds
+# core, since only a build with large samples has the wait (hal_linux.c TT_HAL_RING_WAIT).
+rx_uring_check: rx_uring_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle/*.h)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -o $@ rx_uring_check.c $(SRC_FILES) -lm -lpthread
+
 # No lost wake-up between a same-host writer and a sleeping reader (bell_wake_check.c says how it forces the race).
 bell_wake_check: bell_wake_check.c $(ROOT)/examples/uint64/UInt64.c libtickle.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ bell_wake_check.c $(ROOT)/examples/uint64/UInt64.c $(LDLIBS)
@@ -593,5 +598,6 @@ clean:
 	# other mode's stale cache behind.
 	rm -rf obj/*/
 	rm -f libtickle.a refuse_io_uring.so refuse_pbuf_ring.so rx_hint_check rx_idle_check rx_drain_check bell_wake_check udp_offload_check \
+	    rx_uring_check \
 	    udp_offload_check_flap
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))

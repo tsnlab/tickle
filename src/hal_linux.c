@@ -53,11 +53,11 @@
 #if tt_HAL_IO_URING           // after hal_linux.h, which derives it from tt_HAL_RX_HINT
 // __NR_io_uring_*: <sys/syscall.h> is the portable spelling; the number itself lives in an architecture's own header
 // (asm/unistd_64.h on x86-64, asm-generic/unistd.h on arm64), which include-cleaner would have us name instead.
-#include <linux/io_uring.h> // tt_rx_maybe_ready()
-#include <sys/syscall.h>    // NOLINT(misc-include-cleaner)
+#include <linux/io_uring.h>   // tt_rx_maybe_ready()
+#include <linux/time_types.h> // __kernel_timespec: a timed io_uring_enter() (the drain's stop, the receive wait)
+#include <sys/syscall.h>      // NOLINT(misc-include-cleaner)
 #if tt_RX_DRAIN
-#include <linux/time_types.h> // __kernel_timespec: the drain's stop wait
-#include <sys/utsname.h>      // uname(): the kernel release a refused buffer ring is reported with
+#include <sys/utsname.h> // uname(): the kernel release a refused buffer ring is reported with
 #endif
 #endif
 #if TT_HAL_UDP_GSO || TT_HAL_UDP_GRO // after hal_linux.h, which derives both: a build with neither uses none of it
@@ -581,6 +581,35 @@ static void uring_close(struct tt_Context* node);
 #define RX_READY_WRITABLE 16U // data_sock has room again (tt_tx_await_writable())
 #define RX_READY_TIMER 32U    // the wait's deadline timer fired (rx_wait_lazy())
 
+// tt_receive()'s wait on io_uring ("One wait that returns data", below): it needs the ring and, for everything but the
+// two sockets, the epoll set; and it is on only while large samples arrive, so it is compiled only where they can.
+#if tt_HAL_IO_URING && TT_HAL_EPOLL && tt_LARGE_SAMPLES
+#define TT_HAL_RING_WAIT 1
+#else
+#define TT_HAL_RING_WAIT 0
+#endif
+#if TT_HAL_RING_WAIT
+#define WAIT_BIT_WELL_KNOWN 1U // bit 0 of struct tt_hal's wait_* socket masks: the well-known socket
+#define WAIT_BIT_DATA 2U       // bit 1: the data socket
+// The data socket's recvmsg reads into the caller's buffer itself, unless something else may write that buffer while
+// it is armed: without lending, the segment drain copies its records into rx_buffer (hal_linux.h, TT_HAL_UDP_GRO's
+// third rule) - then it reads into a landing of the HAL's own and is copied out, as the well-known socket always is.
+#define WAIT_IN_PLACE (tt_SAMPLE_LENDING || !tt_SEGMENT_ENABLED)
+static int rx_wait_ring(struct tt_Context* node, const struct timespec* timeout_ts, uint32_t* ready);
+static void wait_cancel(struct tt_Context* node, uint8_t sockets);
+static int32_t wait_read(struct tt_Context* node, int socket_fd, void* buf, size_t len, uint32_t* ip, uint16_t* port);
+static bool wait_before_read(struct tt_Context* node, int socket_fd, const void* buf);
+static void wait_prepare(struct tt_Context* node, void* buf, size_t len);
+static void wait_look(struct tt_hal* hal);
+static void wait_note(struct tt_Context* node, const uint8_t* datagram, int32_t len);
+static void wait_ring_off(struct tt_Context* node);
+// Datagrams in a row with none of a large sample after which the wait leaves the ring (wait_note()). Leaving costs a
+// cancellation, two epoll_ctl() calls and an epoll_pwait2() less than nothing - and coming back two more epoll_ctl()
+// calls: under 5% of the datagrams' own system calls at 128. Not a measured interval: a stream of large samples resets
+// it with every datagram of every sample, and the small traffic between two samples (ACKNACKs, heartbeats) is a few.
+#define WAIT_QUIET_DATAGRAMS 128U
+#endif
+
 #if TT_HAL_EPOLL
 static bool wait_set_add(int epoll_fd, int member, uint32_t events, uint32_t tag) {
     struct epoll_event event = {.events = events, .data = {.u32 = tag}};
@@ -782,6 +811,11 @@ static bool gro_large_fragment(const uint8_t* datagram, int32_t len) {
 // The option back on, from TT_GRO_PLAIN (a large fragment came) or TT_GRO_SETTLING (aborted). A refusal now - which
 // the check at bind did not see - leaves the sockets as they are and receive offload off for good.
 static void gro_turn_on(struct tt_Context* node) {
+#if TT_HAL_RING_WAIT
+    // A recvmsg the wait armed without room for the segment size would take a merged read as one datagram: it goes
+    // first, before the option, so whatever it raced to take was read plain.
+    wait_cancel(node, node->hal.wait_recv_armed);
+#endif
     if (!gro_option(node, 1)) {
         (void)gro_option(node, 0);
         node->hal.gro_allowed = false;
@@ -1037,6 +1071,26 @@ tt_ret_t tt_bind(struct tt_Context* node) {
 #endif
 #if tt_HAL_IO_URING
     node->hal.uring_fd = -1; // tt_close() after a failed bind must not close what was never opened
+    node->hal.uring_queued = 0;
+    node->hal.wait_ring = false; // decided by uring_setup() (wait_ring_setup())
+    node->hal.wait_on = false;
+    node->hal.wait_quiet = 0;
+    node->hal.wait_switches = 0;
+    node->hal.wait_state = -1;
+    node->hal.wait_recv_armed = 0;
+    node->hal.wait_held = 0;
+    node->hal.wait_epoll_armed = false;
+    node->hal.wait_epoll_seen = false;
+    node->hal.wait_buf = NULL;
+    node->hal.wait_len = 0;
+    node->hal.wait_io = NULL;
+    node->hal.wait_io_len = 0;
+    node->hal.wait_enters = 0;
+    node->hal.wait_recvs = 0;
+    node->hal.wait_copies = 0;
+    node->hal.wait_fallbacks = 0;
+    node->hal.wait_cancels = 0;
+    node->hal.wait_epolls = 0;
 #endif
     node->hal.rx_prefer_data = false;
     node->hal.rx_idle = 0;
@@ -1224,6 +1278,7 @@ static const char* drain_ring_name(uint8_t ring) {
 
 #define DIRECT_LINE_BYTES 160U // tt_close()'s direct_* fields on the rx line
 #define GRO_LINE_BYTES 256U    // and its empty_reads=, idle_skips=, gro_* and timer_* fields
+#define RING_LINE_BYTES 192U   // and its uring_* fields (the wait on io_uring)
 
 void tt_close(struct tt_Context* node) {
     // Read while both sockets are still open: what the kernel dropped at each, beside core's traffic line.
@@ -1258,6 +1313,19 @@ void tt_close(struct tt_Context* node) {
                    (unsigned long)node->hal.timer_sets, (unsigned long)node->hal.timer_fires,
                    (unsigned long)node->hal.timer_plain_waits);
 #endif
+    // The wait on io_uring (uring_wait=: 1 on, 0 off by TT_RX_URING_WAIT=0, -1 unavailable), on the same line: a rig
+    // arm's treatment check - waits made on the ring, datagrams its recvmsgs took, and the waits that fell back to
+    // readiness for a socket.
+    char ring[RING_LINE_BYTES] = "";
+#if tt_HAL_IO_URING
+    (void)snprintf(ring, sizeof(ring),
+                   " uring_wait=%d uring_switches=%lu uring_waits=%lu uring_recvs=%lu uring_copies=%lu "
+                   "uring_fallbacks=%lu uring_cancels=%lu uring_epoll=%lu",
+                   (int)node->hal.wait_state, (unsigned long)node->hal.wait_switches,
+                   (unsigned long)node->hal.wait_enters, (unsigned long)node->hal.wait_recvs,
+                   (unsigned long)node->hal.wait_copies, (unsigned long)node->hal.wait_fallbacks,
+                   (unsigned long)node->hal.wait_cancels, (unsigned long)node->hal.wait_epolls);
+#endif
 #if tt_RX_DRAIN
     drain_stop(node);
 #if TT_HAL_UDP_GRO
@@ -1267,22 +1335,28 @@ void tt_close(struct tt_Context* node) {
 #endif
     TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=%d drain_starts=%lu "
                 "drain_datagrams=%lu drain_truncated=%lu drain_overruns=%lu drain_buffers=%u x %u drain_ring=%s "
-                "drain_merged=%lu drain_rearms=%lu drain_grows=%lu%s%s",
+                "drain_merged=%lu drain_rearms=%lu drain_grows=%lu%s%s%s",
                 node->id, (unsigned)tt_hal_rx_socket_drops(node), (unsigned)socket_drops(node->hal.sock),
                 (unsigned)socket_drops(node->hal.data_sock), node->hal.drain_fd == -2 ? -1 : 1,
                 (unsigned long)node->hal.drain_starts, (unsigned long)node->hal.drain_datagrams,
                 (unsigned long)node->hal.drain_truncated, (unsigned long)node->hal.drain_overruns,
                 (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_count : 0U),
                 (unsigned)(node->hal.drain_fd >= 0 ? node->hal.drain_size : 0U), drain_ring_name(node->hal.drain_ring),
-                drain_merged, (unsigned long)node->hal.drain_rearms, (unsigned long)node->hal.drain_grows, direct, gro);
+                drain_merged, (unsigned long)node->hal.drain_rearms, (unsigned long)node->hal.drain_grows, direct, gro,
+                ring);
     drain_release(&node->hal); // before the sockets: its requests go with its ring
 #else
-    TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=0%s%s", node->id,
+    TT_LOG_INFO("Node %u rx: socket_drops=%u well_known_drops=%u data_drops=%u drain=0%s%s%s", node->id,
                 (unsigned)tt_hal_rx_socket_drops(node), (unsigned)socket_drops(node->hal.sock),
-                (unsigned)socket_drops(node->hal.data_sock), direct, gro);
+                (unsigned)socket_drops(node->hal.data_sock), direct, gro, ring);
 #endif
 #if tt_CONTEXT_ID_CLAIM
     release_claimed_id(node);
+#endif
+#if TT_HAL_RING_WAIT
+    // A recvmsg the wait left armed reads into the context's own buffer: it is cancelled, and seen to end, before the
+    // context can go - closing the ring would cancel it only later, from the kernel's own work queue.
+    wait_cancel(node, node->hal.wait_recv_armed);
 #endif
 #if tt_HAL_IO_URING
     uring_close(node); // before the sockets: a poll in flight on a socket being closed is cancelled with the ring
@@ -2358,6 +2432,14 @@ bool tt_rx_drain_start(struct tt_Context* node, uint32_t datagram_bytes) {
         (hal->drain_holdoff_until != 0 && tt_get_ns() < hal->drain_holdoff_until)) {
         return false;
     }
+#if TT_HAL_RING_WAIT
+    // The drain takes the sockets over: the wait's own recvmsgs go first. One that raced the cancellation holds a
+    // datagram that came before anything the drain would take - handed out first, it must be, so no drain this time.
+    wait_cancel(node, hal->wait_recv_armed);
+    if (hal->wait_held != 0) {
+        return false;
+    }
+#endif
     uint32_t size = drain_size_for(hal, datagram_bytes);
     if (hal->drain_fd >= 0 && size > hal->drain_size) {
         if (drain_held(node) != 0) {
@@ -2626,6 +2708,11 @@ static void rx_note_run(struct tt_Context* node, int socket_fd, const uint8_t* b
 // One datagram, without waiting: its length, -1 when nothing is waiting (counted, rx_empty_reads), -2 on an I/O error.
 static int32_t rx_read_one(struct tt_Context* node, int socket_fd, void* buf, size_t len, uint32_t* ip,
                            uint16_t* port) {
+#if TT_HAL_RING_WAIT
+    if (node->hal.wait_on && wait_before_read(node, socket_fd, buf)) {
+        return wait_read(node, socket_fd, buf, len, ip, port); // the ring took this socket's next datagram already
+    }
+#endif
     node->rx_via_data_port = (socket_fd == node->hal.data_sock);
     int32_t ret = -1;
 #if TT_HAL_UDP_GRO
@@ -2687,6 +2774,11 @@ static int32_t rx_fill(struct tt_Context* node, int socket_fd, void* buf, size_t
     // No batching: recvfrom(), which the control arm measured slightly cheaper than a one-slot recvmmsg().
     return rx_read_one(node, socket_fd, buf, len, ip, port);
 #else
+#if TT_HAL_RING_WAIT
+    if (hal->wait_on && wait_before_read(node, socket_fd, buf)) {
+        return wait_read(node, socket_fd, buf, len, ip, port); // the ring took this socket's next datagram already
+    }
+#endif
     node->rx_via_data_port = (socket_fd == hal->data_sock);
     if (hal->rx_headers_for != hal) {
         rx_headers_setup(hal);
@@ -2737,6 +2829,11 @@ static void bell_rung(struct tt_Context* node);
 // from a ppoll() set built for this call, as every wait was until 2026-10-06.
 static int rx_wait(struct tt_Context* node, const struct timespec* timeout_ts, uint32_t* ready) {
     *ready = 0;
+#if TT_HAL_RING_WAIT
+    if (node->hal.wait_on) {
+        return rx_wait_ring(node, timeout_ts, ready);
+    }
+#endif
 #if TT_HAL_EPOLL
     if (node->hal.epoll_fd_plus1 > 0) {
         struct epoll_event events[RX_WAIT_FDS];
@@ -2989,6 +3086,11 @@ static int rx_wait_epoll(struct tt_Context* node, int64_t timeout, uint32_t* rea
 #endif
 
 int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
+#if TT_HAL_RING_WAIT
+    if (node->hal.wait_on) {
+        wait_prepare(node, buf, len); // where the wait's recvmsg reads, and nothing else written there meanwhile
+    }
+#endif
     // What the last batch read comes first, and without a wait: holding it behind ppoll() would delay
     // datagrams that have already arrived. Then what a drain took while core was away, which left the sockets after
     // the batch and before anything still in them; it keeps draining while it holds any (rx_take_drained()).
@@ -3010,6 +3112,11 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     node->hal.rx_idle_since_ns = 0;
 #if TT_HAL_UDP_GRO
     gro_maybe_settle(node); // about to wait: what came before was read
+#endif
+#if TT_HAL_RING_WAIT
+    if (node->hal.wait_on && node->hal.wait_quiet >= WAIT_QUIET_DATAGRAMS) {
+        wait_ring_off(node); // no large sample for a while: back to the epoll path
+    }
 #endif
     // Wait for readability with ppoll() instead of arming SO_RCVTIMEO via setsockopt() before
     // every recvfrom(): the timeout here changes on nearly every call (it tracks whatever
@@ -3143,6 +3250,9 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     }
 #endif
 
+#if TT_HAL_RING_WAIT
+    wait_note(node, (const uint8_t*)buf, ret);
+#endif
     TT_TRACE(tt_TRACE_RX_DATAGRAM);
     return ret;
 }
@@ -3164,6 +3274,11 @@ uint32_t tt_rx_buffered(const struct tt_Context* node) {
     uint32_t held = node->hal.rx_next < node->hal.rx_count ? (uint32_t)(node->hal.rx_count - node->hal.rx_next) : 0U;
 #if TT_HAL_UDP_GRO
     held += node->hal.gro_left; // a merged read's datagrams, handed out without a system call too
+#endif
+#if TT_HAL_RING_WAIT
+    // and what the wait's recvmsgs took and nothing has handed out yet (only where the wait can be on the ring: core's
+    // default build counts as it did - the PC ping-pong read +7 user instructions a round trip for it)
+    held += (node->hal.wait_held & 1U) + ((node->hal.wait_held >> 1U) & 1U);
 #endif
     return held + drain_held(node);
 }
@@ -3187,6 +3302,11 @@ static void rx_idle_count_return(struct tt_Context* node) {
 }
 
 int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+#if TT_HAL_RING_WAIT
+    if (node->hal.wait_on) {
+        wait_prepare(node, buf, len);
+    }
+#endif
 #if TT_HAL_UDP_GRO
     node->rx_offset = 0;
     if (!drain_active(node)) {
@@ -3224,12 +3344,25 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
 #endif
 
     int32_t ret = -1;
+#if TT_HAL_RING_WAIT
+    if (node->hal.wait_on) {
+        wait_look(&node->hal); // what the wait's recvmsgs took since: no system call
+    }
+#endif
     for (int i = 0; i < 2 && ret < 0; i++) {
         uint8_t bit = order[i] == node->hal.data_sock ? TT_RX_IDLE_DATA : TT_RX_IDLE_WELL_KNOWN;
         if ((node->hal.rx_idle & bit) != 0) {
             node->hal.rx_idle_skips++; // a read not made: the rx line's idle_skips=
             continue;
         }
+#if TT_HAL_RING_WAIT
+        // A socket the wait's recvmsg is armed on and that has not completed: nothing has come - the ring reads it.
+        const uint8_t ring_bit = order[i] == node->hal.data_sock ? WAIT_BIT_DATA : WAIT_BIT_WELL_KNOWN;
+        if ((node->hal.wait_recv_armed & ring_bit) != 0 && (node->hal.wait_held & ring_bit) == 0) {
+            node->hal.rx_idle |= bit;
+            continue;
+        }
+#endif
         ret = rx_fill(node, order[i], buf, len, ip, port);
         if (ret == -2) {
             return -2; // I/O error
@@ -3244,6 +3377,9 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
         return -1; // Nothing waiting
     }
     rx_idle_count_return(node);
+#if TT_HAL_RING_WAIT
+    wait_note(node, (const uint8_t*)buf, ret);
+#endif
     TT_TRACE(tt_TRACE_RX_DATAGRAM);
     return ret;
 }
@@ -3258,8 +3394,17 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
 // is one per datagram - work added to the kernel path, where the cross-host figures are made. One-shot posts once
 // per arm, and arming happens only from the busy-loop check, so a context that never runs that check pays nothing.
 // It also needs Linux 5.1 rather than 5.13.
-#define URING_ENTRIES 4U
+//
+// The same ring carries tt_receive()'s wait (below, "One wait that returns data"): its recvmsgs, the poll on the epoll
+// fd and the cancellations. At most two recvmsgs, two polls, the epoll fd's poll and two cancellations are queued at
+// once, so 16 entries never fill, and the kernel's completion ring (twice that) never overflows.
+#define URING_ENTRIES 16U
 #define URING_SOCKETS 2U
+// user_data on this ring: 0 and 1 a one-shot poll on that socket (tt_rx_maybe_ready(), or a wait that reads that
+// socket by readiness); the rest are the wait's own.
+#define WAIT_RECV 0x10U   // | the socket's index: its one-shot recvmsg
+#define WAIT_EPOLL 0x20U  // the multishot poll on the epoll fd
+#define WAIT_CANCEL 0x21U // a cancellation of a recvmsg
 
 static void uring_unmap(struct tt_hal* hal) {
     if (hal->uring_sqes != NULL) {
@@ -3285,6 +3430,15 @@ static void uring_close(struct tt_Context* node) {
     (void)close(hal->uring_fd);
     hal->uring_fd = -1;
     hal->uring_armed = 0;
+#if TT_HAL_RING_WAIT
+    // Only once nothing is armed into them: a recvmsg that would not end (wait_cancel()) leaves them mapped for good.
+    if (hal->wait_io != NULL && hal->wait_recv_armed == 0) {
+        (void)munmap(hal->wait_io, hal->wait_io_len);
+    }
+    hal->wait_io = NULL;
+    hal->wait_ring = false;
+    hal->wait_on = false;
+#endif
 }
 
 // Refused is not an error: Docker's default seccomp profile, Kubernetes' RuntimeDefault and
@@ -3306,10 +3460,15 @@ static void uring_refused(const char* step, int err) {
 #endif
 }
 
+#if TT_HAL_RING_WAIT
+static void wait_ring_setup(struct tt_Context* node, uint32_t features);
+#endif
+
 static bool uring_setup(struct tt_Context* node) {
     struct tt_hal* hal = &node->hal;
     hal->uring_fd = -1;
     hal->uring_armed = 0;
+    hal->uring_queued = 0;
     hal->uring_sq_map = NULL;
     hal->uring_cq_map = NULL;
     hal->uring_sqes = NULL;
@@ -3359,6 +3518,7 @@ static bool uring_setup(struct tt_Context* node) {
     hal->uring_sqes = sqes;
     uint8_t* sq_base = (uint8_t*)sq_map;
     uint8_t* cq_base = (uint8_t*)cq_map;
+    hal->uring_sq_head = (uint32_t*)(sq_base + params.sq_off.head);
     hal->uring_sq_tail = (uint32_t*)(sq_base + params.sq_off.tail);
     hal->uring_sq_mask = (uint32_t*)(sq_base + params.sq_off.ring_mask);
     hal->uring_sq_array = (uint32_t*)(sq_base + params.sq_off.array);
@@ -3366,65 +3526,625 @@ static bool uring_setup(struct tt_Context* node) {
     hal->uring_cq_tail = (uint32_t*)(cq_base + params.cq_off.tail);
     hal->uring_cq_mask = (uint32_t*)(cq_base + params.cq_off.ring_mask);
     hal->uring_cqes = cq_base + params.cq_off.cqes;
+#if TT_HAL_RING_WAIT
+    wait_ring_setup(node, params.features);
+#endif
     return true;
 }
 
-// Completions in, armed bits out. A completion means its socket became readable (or the poll ended for another
-// reason - an error, a cancellation), and either way that socket is no longer armed, which is what makes the next
-// check read it.
-static void uring_harvest(struct tt_hal* hal) {
+// Queues one submission; ring_enter() hands every queued one to the kernel. Only the polling thread submits on this
+// ring (tt_receive(), tt_try_receive(), tt_rx_maybe_ready(), and tt_close() once polling is over), so the tail is ours.
+static struct io_uring_sqe* ring_sqe(struct tt_hal* hal) {
+    uint32_t index = (*hal->uring_sq_tail + hal->uring_queued) & *hal->uring_sq_mask;
+    struct io_uring_sqe* sqe = &((struct io_uring_sqe*)hal->uring_sqes)[index];
+    memset(sqe, 0, sizeof(*sqe));
+    hal->uring_sq_array[index] = index;
+    hal->uring_queued++;
+    return sqe;
+}
+
+// One io_uring_enter(): every submission queued and not yet taken, and with min_complete > 0 a wait for that many
+// completions, `timeout` (relative) at most - NULL for none. The kernel's answer: how many submissions it took when it
+// took any, else the wait's own (0, or -1 with errno: ETIME, EINTR).
+static int ring_enter(struct tt_hal* hal, uint32_t min_complete, const struct timespec* timeout) {
+    const uint32_t tail = *hal->uring_sq_tail + hal->uring_queued;
+    __atomic_store_n(hal->uring_sq_tail, tail, __ATOMIC_RELEASE);
+    hal->uring_queued = 0;
+    const uint32_t to_submit = tail - __atomic_load_n(hal->uring_sq_head, __ATOMIC_ACQUIRE);
+    const uint32_t flags = min_complete > 0 ? IORING_ENTER_GETEVENTS : 0U;
+    if (timeout == NULL) {
+        // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
+        return (int)syscall(__NR_io_uring_enter, hal->uring_fd, to_submit, min_complete, flags, NULL, 0);
+    }
+    struct __kernel_timespec limit = {.tv_sec = timeout->tv_sec, .tv_nsec = timeout->tv_nsec};
+    struct io_uring_getevents_arg arg;
+    memset(&arg, 0, sizeof(arg));
+    arg.ts = (uint64_t)(uintptr_t)&limit;
+    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
+    return (int)syscall(__NR_io_uring_enter, hal->uring_fd, to_submit, min_complete, flags | IORING_ENTER_EXT_ARG, &arg,
+                        sizeof(arg));
+}
+
+// Completions in. A poll's (user_data 0, 1): its socket became readable (or the poll ended for another reason - an
+// error, a cancellation), and either way that socket is no longer armed, which is what makes the next check read it;
+// its bit is returned. A recvmsg's: its datagram is held for wait_read() - unless it was cancelled. The epoll fd's: a
+// member is ready (wait_epoll_seen, kept until a wait names it), and its poll goes on while IORING_CQE_F_MORE says so.
+static uint8_t ring_look(struct tt_hal* hal) {
     uint32_t head = *hal->uring_cq_head; // ours to move
     uint32_t tail = __atomic_load_n(hal->uring_cq_tail, __ATOMIC_ACQUIRE);
     if (head == tail) {
-        return;
+        return 0;
     }
+    uint8_t polled = 0;
     const struct io_uring_cqe* cqes = (const struct io_uring_cqe*)hal->uring_cqes;
     for (; head != tail; head++) {
-        uint64_t which = cqes[head & *hal->uring_cq_mask].user_data;
+        const struct io_uring_cqe* cqe = &cqes[head & *hal->uring_cq_mask];
+        uint64_t which = cqe->user_data;
         if (which < URING_SOCKETS) {
             hal->uring_armed &= (uint8_t)~(1U << which);
+            polled |= (uint8_t)(1U << which);
+        } else if ((which & ~(uint64_t)(URING_SOCKETS - 1U)) == WAIT_RECV) {
+            const uint32_t socket = (uint32_t)(which & (URING_SOCKETS - 1U));
+            hal->wait_recv_armed &= (uint8_t)~(1U << socket);
+            if (cqe->res != -ECANCELED) {
+                hal->wait_held |= (uint8_t)(1U << socket);
+                hal->wait_res[socket] = cqe->res;
+            }
+        } else if (which == WAIT_EPOLL) {
+            hal->wait_epoll_seen = true;
+            if ((cqe->flags & IORING_CQE_F_MORE) == 0) {
+                hal->wait_epoll_armed = false; // ended (an overflow, an error): armed again by the next wait
+            }
         }
     }
     __atomic_store_n(hal->uring_cq_head, head, __ATOMIC_RELEASE);
+    return polled;
+}
+
+// One-shot POLLIN on a socket, queued (user_data: its index).
+static void ring_queue_poll(struct tt_hal* hal, int polled_fd, uint64_t user_data, uint32_t multishot) {
+    struct io_uring_sqe* sqe = ring_sqe(hal);
+    sqe->opcode = IORING_OP_POLL_ADD;
+    sqe->fd = polled_fd;
+    uint32_t mask = POLLIN; // NOLINT(misc-include-cleaner) - <poll.h>
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    mask = (mask << 16) | (mask >> 16); // the kernel reads poll32_events half-word swapped on big-endian
+#endif
+    sqe->poll32_events = mask;
+    sqe->len = multishot; // IORING_POLL_ADD_MULTI, or 0 for one-shot
+    sqe->user_data = user_data;
 }
 
 // One submission for every socket in `bits`, in one io_uring_enter(). A poll on a socket that is already readable
 // completes at once, so arming before the read that will empty it loses nothing.
 static void uring_arm(struct tt_hal* hal, uint8_t bits) {
     const int fds[URING_SOCKETS] = {hal->sock, hal->data_sock};
-    uint32_t tail = *hal->uring_sq_tail; // ours to move
-    uint32_t added = 0;
-    struct io_uring_sqe* sqes = (struct io_uring_sqe*)hal->uring_sqes;
+    uint8_t queued = 0;
     for (uint32_t i = 0; i < URING_SOCKETS; i++) {
         if ((bits & (1U << i)) == 0 || fds[i] < 0) {
             continue;
         }
-        uint32_t index = (tail + added) & *hal->uring_sq_mask;
-        struct io_uring_sqe* sqe = &sqes[index];
-        memset(sqe, 0, sizeof(*sqe));
-        sqe->opcode = IORING_OP_POLL_ADD;
-        sqe->fd = fds[i];
-        uint32_t mask = POLLIN; // NOLINT(misc-include-cleaner) - <poll.h>
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-        mask = (mask << 16) | (mask >> 16); // the kernel reads poll32_events half-word swapped on big-endian
-#endif
-        sqe->poll32_events = mask;
-        sqe->user_data = i;
-        hal->uring_sq_array[index] = index;
-        added++;
+        ring_queue_poll(hal, fds[i], i, 0U);
+        queued |= (uint8_t)(1U << i);
     }
-    if (added == 0) {
+    if (queued == 0) {
         return;
     }
-    __atomic_store_n(hal->uring_sq_tail, tail + added, __ATOMIC_RELEASE);
-    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
-    int submitted = (int)syscall(__NR_io_uring_enter, hal->uring_fd, added, 0U, 0U, NULL, 0);
-    if (submitted < 0) {
+    if (ring_enter(hal, 0U, NULL) < 0) {
         return; // nothing armed: the next check reads the socket, as without the ring
     }
     hal->uring_arms++;
-    hal->uring_armed |= bits;
+    hal->uring_armed |= queued;
 }
+
+#if TT_HAL_RING_WAIT
+// ---- One wait that returns data (2026-10-14, ~/claude_reports/RX_URING_WAIT_DESIGN_2026-10-13.md)
+// ----------------------------------------------------------------------------------------------------
+//
+// A wait with epoll is two system calls for every datagram that ends it: epoll_pwait2() to sleep, recvfrom() for what
+// woke it - and on a large-sample stream the reader sleeps between nearly every pair of runs. Fast DDS blocks in
+// recvfrom() on a thread of its own: one call that both waits and returns the data. This wait is that shape without a
+// thread: before it sleeps, a ONE-SHOT IORING_OP_RECVMSG is armed on each socket that has none, with the msghdr the
+// read would have used anyway, and one io_uring_enter(GETEVENTS) both submits it and sleeps. A socket that already
+// holds a datagram completes the recvmsg inline, during the submit; otherwise io_uring arms its own poll and the
+// datagram is copied as task work of this thread when it comes. When the thread wakes, the datagram is in the buffer.
+//
+// One-shot, not multishot on provided buffers (the drain's way): the kernel would then pick the next buffer of a ring
+// in order, cold, where this reads into the one landing buffer core reads every datagram from (hot); handing core a
+// buffer outside its landing would move ownership; and an aimed read could not be split. The submit it would save is
+// not a system call the stream pays: the thread sleeps between runs, so each run costs one io_uring_enter() either way.
+//
+// Where each recvmsg reads: the data socket's straight into the caller's buffer (WAIT_IN_PLACE), so the stream path
+// has no copy; the well-known socket's into a landing of the HAL's own (struct wait_io), copied out when handed over -
+// broadcasts are discovery, rare beside a stream. While the data socket's is armed, its buffer is the kernel's: nothing
+// else is put there until it completes or is cancelled (wait_yield()), and a call with another buffer cancels it first
+// (wait_prepare()). No buffer leaves the HAL: lending sees the datagram where recvfrom() would have put it.
+//
+// The rest of the wait set - the wake eventfd, the segment's bell, the deadline timer and the writable watch, which
+// tt_tx_await_writable() arms from the publishing thread with epoll_ctl() - stays in epoll, and the ring holds one
+// multishot poll on the epoll fd. When it reports, one epoll_pwait2() with no timeout names the member, and the bits
+// are the ones rx_wait() reports: a system call on a rare path, none on the stream's. The two sockets leave the epoll
+// set.
+//
+// What the ring cannot read for a socket yet - receive offload on (a merged read needs UDP_GRO's segment-size cmsg),
+// or a run hinted to be read in place (three pieces) - it waits for by readiness instead: a one-shot poll, then the
+// read the epoll path makes (uring_fallbacks=). A socket the ring's recvmsg is armed on is never read by a system call
+// (wait_before_read()): order is the socket's.
+//
+// The checksum: the sockets are O_NONBLOCK, so the poll io_uring arms does not check one before the read (as for epoll,
+// "Non-blocking sockets"), and the recvmsg checks it while it copies, as Fast DDS's recvfrom() does - as task work of
+// the thread rather than in its system call: in a profile it moves under io_uring_enter().
+//
+// Decided once, at bind (wait_ring_setup()): io_uring refused, a kernel without IORING_FEAT_EXT_ARG (5.11) or a
+// multishot poll (5.13), no epoll set - the epoll path, as before. TT_RX_URING_WAIT=0 in the environment keeps the
+// epoll path in the same binary: the A/B control. No thread: no SQPOLL, never IOSQE_ASYNC - a socket read waits on
+// poll, not on an io-wq worker.
+#define WAIT_EPOLL_EVENTS 8
+#define WAIT_CANCEL_TRIES 100         // waits of WAIT_CANCEL_WAIT_NS for a cancelled recvmsg to end
+#define WAIT_CANCEL_WAIT_NS 10000000L // 10 ms
+#define WAIT_PROBE_OPS 64U            // IORING_REGISTER_PROBE's answer: room for every opcode up to this
+#define WAIT_PROBE_ALIGN 8U
+
+// What the kernel writes for the wait, outside the context (struct tt_hal.wait_io).
+struct wait_io {
+    struct msghdr msg[URING_SOCKETS];
+    struct iovec iov[URING_SOCKETS]; // NOLINT(misc-include-cleaner) - see <sys/uio.h>'s own include comment
+    struct sockaddr_in addr[URING_SOCKETS];
+    uint8_t landing[URING_SOCKETS][tt_MAX_BUFFER_LENGTH]; // the data socket's only when not WAIT_IN_PLACE
+};
+
+// Every opcode in `ops` supported by this kernel (IORING_REGISTER_PROBE, Linux 5.6).
+static bool wait_ring_supports(int ring_fd, const uint8_t* ops, size_t count) {
+    _Alignas(WAIT_PROBE_ALIGN)
+        uint8_t storage[sizeof(struct io_uring_probe) + (WAIT_PROBE_OPS * sizeof(struct io_uring_probe_op))];
+    memset(storage, 0, sizeof(storage));
+    struct io_uring_probe* probe = (struct io_uring_probe*)storage;
+    // NOLINTNEXTLINE(misc-include-cleaner) - see the <sys/syscall.h> include
+    if (syscall(__NR_io_uring_register, ring_fd, IORING_REGISTER_PROBE, probe, WAIT_PROBE_OPS) < 0) {
+        return false;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (ops[i] > probe->last_op || (probe->ops[ops[i]].flags & IO_URING_OP_SUPPORTED) == 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void wait_ring_refused(const char* why) {
+    static bool told = false;
+    if (!told) {
+        told = true;
+        TT_LOG_INFO("Receive wait on io_uring unavailable (%s) - waiting with epoll", why);
+    }
+}
+
+// The epoll set back to holding both sockets (wait_ring_setup() took them out), for the epoll path.
+static void wait_sockets_to_epoll(struct tt_Context* node) {
+    struct epoll_event event = {.events = EPOLLIN, .data = {.u32 = RX_READY_WELL_KNOWN}};
+    (void)epoll_ctl(node->hal.epoll_fd_plus1 - 1, EPOLL_CTL_ADD, node->hal.sock, &event);
+    event.data.u32 = RX_READY_DATA;
+    (void)epoll_ctl(node->hal.epoll_fd_plus1 - 1, EPOLL_CTL_ADD, node->hal.data_sock, &event);
+}
+
+// The epoll fd's multishot poll cancelled, and its last completion taken: while the sockets are in the epoll set, it
+// would post one for every datagram, into a ring nobody waits on.
+static void wait_epoll_cancel(struct tt_hal* hal) {
+    if (!hal->wait_epoll_armed) {
+        return;
+    }
+    struct io_uring_sqe* sqe = ring_sqe(hal);
+    sqe->opcode = IORING_OP_ASYNC_CANCEL;
+    sqe->addr = WAIT_EPOLL;
+    sqe->user_data = WAIT_CANCEL;
+    const struct timespec wait = {0, WAIT_CANCEL_WAIT_NS};
+    (void)ring_enter(hal, 0U, NULL);
+    (void)ring_look(hal);
+    for (int tries = 0; hal->wait_epoll_armed && tries < WAIT_CANCEL_TRIES; tries++) {
+        (void)ring_enter(hal, 1U, &wait);
+        (void)ring_look(hal);
+    }
+    hal->wait_epoll_seen = false; // the epoll path's own wait reports what was ready
+}
+
+static void wait_ring_setup(struct tt_Context* node, uint32_t features) {
+    struct tt_hal* hal = &node->hal;
+    hal->wait_ring = false;
+    hal->wait_state = -1;
+    const char* setting = getenv("TT_RX_URING_WAIT");
+    if (setting != NULL && strcmp(setting, "0") == 0) {
+        hal->wait_state = 0; // the A/B control: the epoll path, in the same binary
+        return;
+    }
+    static const uint8_t needed[] = {IORING_OP_RECVMSG, IORING_OP_POLL_ADD, IORING_OP_ASYNC_CANCEL};
+    if (hal->epoll_fd_plus1 == 0) {
+        wait_ring_refused("no epoll set");
+        return;
+    }
+    if ((features & IORING_FEAT_EXT_ARG) == 0) {
+        wait_ring_refused("no IORING_FEAT_EXT_ARG: Linux < 5.11");
+        return;
+    }
+    if (!wait_ring_supports(hal->uring_fd, needed, sizeof(needed))) {
+        wait_ring_refused("IORING_REGISTER_PROBE: a needed opcode is missing");
+        return;
+    }
+    void* area = mmap(NULL, sizeof(struct wait_io), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (area == MAP_FAILED) {
+        wait_ring_refused("mmap");
+        return;
+    }
+    hal->wait_io = area;
+    hal->wait_io_len = sizeof(struct wait_io);
+    // The epoll fd's multishot poll: a kernel without IORING_POLL_ADD_MULTI (Linux < 5.13) refuses it at once.
+    ring_queue_poll(hal, hal->epoll_fd_plus1 - 1, WAIT_EPOLL, IORING_POLL_ADD_MULTI);
+    const struct io_uring_cqe* cqes = (const struct io_uring_cqe*)hal->uring_cqes;
+    bool refused = ring_enter(hal, 0U, NULL) < 0;
+    for (uint32_t head = *hal->uring_cq_head; !refused && head != __atomic_load_n(hal->uring_cq_tail, __ATOMIC_ACQUIRE);
+         head++) {
+        const struct io_uring_cqe* cqe = &cqes[head & *hal->uring_cq_mask];
+        refused = cqe->user_data == WAIT_EPOLL && cqe->res < 0 && (cqe->flags & IORING_CQE_F_MORE) == 0;
+    }
+    if (refused) {
+        (void)ring_look(hal);
+        (void)munmap(area, sizeof(struct wait_io));
+        hal->wait_io = NULL;
+        wait_ring_refused("no multishot poll: Linux < 5.13");
+        return;
+    }
+    hal->wait_epoll_armed = true;
+    wait_epoll_cancel(hal); // armed when the wait goes on the ring (wait_ring_on()), not before
+    hal->wait_ring = true;
+    hal->wait_state = 1;
+}
+
+// The ring's wait on: the sockets leave the epoll set, so the epoll fd reports only the rest (the epoll fd's own poll
+// is armed by the first wait). On the first datagram of a large sample read with the epoll path.
+static void wait_ring_on(struct tt_Context* node) {
+    struct tt_hal* hal = &node->hal;
+    if (epoll_ctl(hal->epoll_fd_plus1 - 1, EPOLL_CTL_DEL, hal->sock, NULL) != 0 ||
+        epoll_ctl(hal->epoll_fd_plus1 - 1, EPOLL_CTL_DEL, hal->data_sock, NULL) != 0) {
+        wait_sockets_to_epoll(node); // either one that left goes back: the epoll path, as before
+        return;
+    }
+    hal->wait_on = true;
+    hal->wait_quiet = 0;
+    hal->wait_switches++;
+}
+
+// And off, after WAIT_QUIET_DATAGRAMS datagrams with none of a large sample: the recvmsgs cancelled (one that raced it
+// holds a datagram, and the wait stays on the ring until it is handed out), the epoll fd's poll too, the sockets back
+// in the epoll set.
+static void wait_ring_off(struct tt_Context* node) {
+    struct tt_hal* hal = &node->hal;
+    wait_cancel(node, hal->wait_recv_armed);
+    if (hal->wait_held != 0 || hal->wait_recv_armed != 0) {
+        return;
+    }
+    wait_epoll_cancel(hal);
+    wait_sockets_to_epoll(node);
+    hal->wait_on = false;
+    hal->wait_switches++;
+}
+
+// After a datagram is handed out (by a read, or from the ring): one of a large sample - a single-form FRAG_FIRST_L,
+// FRAG_CONT_L or FRAG_RUN_L - puts the wait on the ring, and keeps it there; WAIT_QUIET_DATAGRAMS of anything else in a
+// row put it back on epoll at the next wait (tt_receive()). Only while large samples arrive, because that is where it
+// pays: on the PC's core ping-pong (rx_uring_pc.sh, 2026-10-14) the ring took two system calls a round trip off the
+// client (6.05 -> 4.05) and still cost more instructions than it saved - user +5.6%, kernel +3.2% a round trip.
+static void wait_note(struct tt_Context* node, const uint8_t* datagram, int32_t len) {
+    struct tt_hal* hal = &node->hal;
+    if (!hal->wait_ring) {
+        return;
+    }
+    const bool large =
+        len > (int32_t)sizeof(struct tt_SingleHeader) &&
+        (datagram[0] == tt_SINGLE_MARKER_LE || datagram[0] == tt_SINGLE_MARKER_BE) &&
+        (datagram[3] == tt_SUBMESSAGE_TYPE_FRAG_RUN_L || datagram[3] == tt_SUBMESSAGE_TYPE_FRAG_FIRST_L ||
+         datagram[3] == tt_SUBMESSAGE_TYPE_FRAG_CONT_L);
+    if (large) {
+        hal->wait_quiet = 0;
+        if (!hal->wait_on) {
+            wait_ring_on(node);
+        }
+    } else if (hal->wait_on && hal->wait_quiet < UINT16_MAX) {
+        hal->wait_quiet++;
+    }
+}
+
+// What the wait's recvmsgs took since the last look, without a system call.
+static void wait_look(struct tt_hal* hal) {
+    (void)ring_look(hal);
+}
+
+// A recvmsg on socket `socket` (0 the well-known one, 1 the data one), queued.
+static void wait_queue_recv(struct tt_Context* node, uint32_t socket, int socket_fd) {
+    struct tt_hal* hal = &node->hal;
+    struct wait_io* area = (struct wait_io*)hal->wait_io;
+    uint8_t* target = area->landing[socket];
+    size_t len = sizeof(area->landing[socket]);
+#if WAIT_IN_PLACE
+    if (socket == 1U && hal->wait_buf != NULL) {
+        target = hal->wait_buf;
+        len = hal->wait_len;
+    }
+#endif
+    struct msghdr* msg = &area->msg[socket];
+    memset(msg, 0, sizeof(*msg));
+    area->iov[socket].iov_base = target;
+    area->iov[socket].iov_len = len;
+    msg->msg_name = &area->addr[socket];
+    msg->msg_namelen = sizeof(area->addr[socket]);
+    msg->msg_iov = &area->iov[socket];
+    msg->msg_iovlen = 1;
+    struct io_uring_sqe* sqe = ring_sqe(hal);
+    sqe->opcode = IORING_OP_RECVMSG;
+    sqe->fd = socket_fd;
+    sqe->addr = (uint64_t)(uintptr_t)msg;
+    sqe->len = 1; // one msghdr
+    sqe->user_data = WAIT_RECV | socket;
+    hal->wait_target[socket] = target;
+    hal->wait_target_len[socket] = len;
+    hal->wait_recv_armed |= (uint8_t)(1U << socket);
+}
+
+// Whether the ring can read socket `socket` now: not while receive offload is on (a merged read needs the segment size)
+// nor, for the data socket, while core hints a run to be read in place (three pieces). Those wait by readiness.
+static bool wait_reads(const struct tt_Context* node, uint32_t socket) {
+#if TT_HAL_UDP_GRO
+    if (node->hal.gro_state != TT_GRO_PLAIN) {
+        return false;
+    }
+#endif
+#if TT_HAL_RX_DIRECT
+    // Only the polling thread makes a hint, so a 0 seen here is current (rx_read_one()).
+    if (socket == 1U && __atomic_load_n(&node->large.direct_bytes, __ATOMIC_RELAXED) != 0) {
+        return false;
+    }
+#else
+    (void)node;
+    (void)socket;
+#endif
+    return true;
+}
+
+// Before a wait sleeps: a recvmsg on each socket that has none in flight and nothing held, or a readiness poll where
+// the ring cannot read it; and the epoll fd's poll, when its last one ended.
+static void wait_arm(struct tt_Context* node) {
+    struct tt_hal* hal = &node->hal;
+    const int fds[URING_SOCKETS] = {hal->sock, hal->data_sock};
+    for (uint32_t i = 0; i < URING_SOCKETS; i++) {
+        const uint8_t bit = (uint8_t)(1U << i);
+        if (fds[i] < 0 || ((hal->wait_recv_armed | hal->wait_held) & bit) != 0) {
+            continue;
+        }
+        if (wait_reads(node, i)) {
+            wait_queue_recv(node, i, fds[i]);
+            continue;
+        }
+        hal->wait_fallbacks++;
+        if ((hal->uring_armed & bit) == 0) {
+            ring_queue_poll(hal, fds[i], i, 0U);
+            hal->uring_armed |= bit;
+        }
+    }
+    if (!hal->wait_epoll_armed) {
+        ring_queue_poll(hal, hal->epoll_fd_plus1 - 1, WAIT_EPOLL, IORING_POLL_ADD_MULTI);
+        hal->wait_epoll_armed = true;
+    }
+}
+
+// The members of the epoll set the epoll fd's poll reported, as rx_wait()'s bits: one epoll_pwait2() with no timeout.
+static uint32_t wait_epoll_members(struct tt_hal* hal) {
+    hal->wait_epoll_seen = false;
+    hal->wait_epolls++;
+    struct epoll_event events[WAIT_EPOLL_EVENTS];
+    const struct timespec now = {0, 0};
+    int count = epoll_pwait2(hal->epoll_fd_plus1 - 1, events, WAIT_EPOLL_EVENTS, &now, NULL);
+    uint32_t ready = 0;
+    for (int i = 0; i < count; i++) {
+        if ((events[i].events & EPOLLIN) != 0 ||
+            (events[i].data.u32 == RX_READY_WRITABLE && (events[i].events & (EPOLLOUT | EPOLLERR)) != 0)) {
+            ready |= events[i].data.u32;
+        }
+    }
+    return ready;
+}
+
+// What the ring says is ready, as rx_wait()'s bits: a datagram a recvmsg took; a socket read by readiness whose poll
+// fired (`polled`; a poll that fired on a socket the ring reads says nothing - its recvmsg's completion will); the
+// epoll set's members.
+static uint32_t wait_ready(struct tt_hal* hal, uint8_t polled) {
+    const uint8_t sockets = (uint8_t)(hal->wait_held | (polled & (uint8_t)~hal->wait_recv_armed));
+    uint32_t ready = ((sockets & WAIT_BIT_WELL_KNOWN) != 0 ? RX_READY_WELL_KNOWN : 0U) |
+                     ((sockets & WAIT_BIT_DATA) != 0 ? RX_READY_DATA : 0U);
+    if (hal->wait_epoll_seen) {
+        ready |= wait_epoll_members(hal);
+    }
+    return ready;
+}
+
+// rx_wait() on the ring: the same return convention - how many things are ready, 0 on timeout, -1 with errno - and in
+// *ready the same bits. What the ring already holds answers without a system call. A wait that ends with nothing to
+// report (a completion that names nothing ready: a cancellation, a poll on a socket the ring reads) goes on waiting
+// when it has no timeout, and reports a timeout when it has one - the caller decides against its own deadline, as
+// after a signal.
+static int rx_wait_ring(struct tt_Context* node, const struct timespec* timeout_ts, uint32_t* ready) {
+    struct tt_hal* hal = &node->hal;
+    uint32_t got = wait_ready(hal, ring_look(hal));
+    while (got == 0) {
+        wait_arm(node);
+        const int entered = ring_enter(hal, 1U, timeout_ts);
+        const int err = errno;
+        hal->wait_enters++;
+        got = wait_ready(hal, ring_look(hal));
+        if (got != 0) {
+            break;
+        }
+        // NOLINTNEXTLINE(misc-include-cleaner) - ETIME/EINTR: glibc-private headers
+        if (entered < 0 && err != ETIME && err != EINTR) {
+            errno = err;
+            return -1;
+        }
+        if (timeout_ts != NULL) {
+            return 0;
+        }
+        if (entered < 0 && err == EINTR) {
+            errno = EINTR;
+            return -1; // a signal: the caller polls again
+        }
+    }
+    *ready = got;
+    return __builtin_popcount(got);
+}
+
+// A recvmsg cancelled, and waited for until it has ended - completed with its datagram held, if it raced the
+// cancellation. One that will not end within WAIT_CANCEL_TRIES waits turns the wait on the ring off for good, its
+// buffers left mapped: it may still write there.
+static void wait_cancel(struct tt_Context* node, uint8_t sockets) {
+    struct tt_hal* hal = &node->hal;
+    sockets &= hal->wait_recv_armed;
+    if (sockets == 0) {
+        return;
+    }
+    for (uint32_t i = 0; i < URING_SOCKETS; i++) {
+        if ((sockets & (1U << i)) != 0) {
+            struct io_uring_sqe* sqe = ring_sqe(hal);
+            sqe->opcode = IORING_OP_ASYNC_CANCEL;
+            sqe->addr = WAIT_RECV | i;
+            sqe->user_data = WAIT_CANCEL;
+        }
+    }
+    hal->wait_cancels++;
+    (void)ring_enter(hal, 0U, NULL);
+    (void)ring_look(hal);
+    const struct timespec wait = {0, WAIT_CANCEL_WAIT_NS};
+    for (int tries = 0; (hal->wait_recv_armed & sockets) != 0 && tries < WAIT_CANCEL_TRIES; tries++) {
+        (void)ring_enter(hal, 1U, &wait);
+        (void)ring_look(hal);
+    }
+    if ((hal->wait_recv_armed & sockets) != 0) {
+        TT_LOG_ERROR("A receive wait's recvmsg did not end within %d ms of its cancellation - waiting with epoll from "
+                     "now on",
+                     (int)(WAIT_CANCEL_TRIES * (WAIT_CANCEL_WAIT_NS / 1000000L)));
+        hal->wait_ring = false;
+        hal->wait_on = false;
+        hal->wait_state = -1;
+        wait_sockets_to_epoll(node);
+    }
+}
+
+// The data socket's recvmsg reads straight into the caller's buffer: while it is armed there, or its datagram lies
+// there not handed out yet, nothing else may be put there. Before anything else is written to `buf`, an armed one is
+// cancelled (one that raced it is then held), and a held one is moved to the HAL's own landing, to be copied back when
+// its turn comes - another socket's datagram, or what a batch or a merged read held, has no order with it. Without
+// the move, a datagram on the well-known socket handed out first overwrote it (the PC ping-pong lost 4 of 2,869
+// replies, 2026-10-14).
+static void wait_yield(struct tt_Context* node, const void* buf) {
+#if WAIT_IN_PLACE
+    struct tt_hal* hal = &node->hal;
+    if (hal->wait_target[1] != buf) {
+        return;
+    }
+    if ((hal->wait_recv_armed & WAIT_BIT_DATA) != 0) {
+        wait_cancel(node, WAIT_BIT_DATA);
+    }
+    if ((hal->wait_held & WAIT_BIT_DATA) != 0 && hal->wait_target[1] == buf) {
+        struct wait_io* area = (struct wait_io*)hal->wait_io;
+        const int32_t res = hal->wait_res[1];
+        if (res > 0) {
+            memcpy(area->landing[1], buf,
+                   (size_t)res < sizeof(area->landing[1]) ? (size_t)res : sizeof(area->landing[1]));
+        }
+        hal->wait_target[1] = area->landing[1];
+    }
+#else
+    (void)node;
+    (void)buf;
+#endif
+}
+
+// At the start of a receive: the buffer the wait's recvmsg reads into. A recvmsg armed into another buffer (core's
+// landing moved: a sample retained from it - it cannot move while a recvmsg is armed and unconsumed, but this does not
+// rely on it) is cancelled, and anything it raced to take is copied out of where it went. And with anything else to
+// hand out into this buffer first - a batch, a merged read, what a drain took - it is made free (wait_yield()).
+static void wait_prepare(struct tt_Context* node, void* buf, size_t len) {
+    struct tt_hal* hal = &node->hal;
+    hal->wait_buf = (uint8_t*)buf;
+    hal->wait_len = len;
+#if WAIT_IN_PLACE
+    if (((hal->wait_recv_armed | hal->wait_held) & WAIT_BIT_DATA) == 0) {
+        return;
+    }
+    if (hal->wait_target[1] != buf || hal->wait_target_len[1] != len) {
+        wait_cancel(node, WAIT_BIT_DATA); // a held one is copied out of where it went when handed out
+        return;
+    }
+    uint32_t other = (uint32_t)(hal->rx_count - hal->rx_next) + drain_held(node);
+#if TT_HAL_UDP_GRO
+    other += hal->gro_left;
+#endif
+    if (other != 0) {
+        wait_yield(node, buf);
+    }
+#endif
+}
+
+// A read of socket_fd into buf by a system call is about to be made. A recvmsg of the ring's own on that socket goes
+// first (cancelled, so the socket has one reader), and true when the ring holds that socket's next datagram - which
+// the caller then hands out (wait_read()) instead, or order would be lost. Otherwise buf is made free (wait_yield()).
+static bool wait_before_read(struct tt_Context* node, int socket_fd, const void* buf) {
+    struct tt_hal* hal = &node->hal;
+    const uint8_t bit = socket_fd == hal->data_sock ? WAIT_BIT_DATA : WAIT_BIT_WELL_KNOWN;
+    if ((hal->wait_recv_armed & bit) != 0 && (hal->wait_held & bit) == 0) {
+        wait_cancel(node, bit);
+    }
+    if ((hal->wait_held & bit) != 0) {
+        return true;
+    }
+    wait_yield(node, buf);
+    return false;
+}
+
+// Hands out the datagram the ring holds for socket_fd, as rx_read_one() would have read it: its length, -1 for nothing
+// (an EAGAIN completion, counted with the empty reads), -2 for an error. The data socket's lies in buf already when it
+// was read there; anything else is copied.
+static int32_t wait_read(struct tt_Context* node, int socket_fd, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    struct tt_hal* hal = &node->hal;
+    const uint32_t socket = socket_fd == hal->data_sock ? 1U : 0U;
+    const struct wait_io* area = (const struct wait_io*)hal->wait_io;
+    if (hal->wait_target[socket] != buf) {
+        wait_yield(node, buf); // copied into buf: not while the data socket's recvmsg reads there
+    }
+    hal->wait_held &= (uint8_t)~(1U << socket);
+    node->rx_via_data_port = socket == 1U;
+    const int32_t res = hal->wait_res[socket];
+    if (res < 0) {
+        // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN: glibc-private header
+        if (res == -EAGAIN) {
+            hal->rx_empty_reads++;
+            return -1;
+        }
+        errno = -res;
+        return -2;
+    }
+    size_t got = (size_t)res < len ? (size_t)res : len;
+    if (hal->wait_target[socket] != buf) {
+        memcpy(buf, hal->wait_target[socket], got);
+        hal->wait_copies++;
+    }
+    *ip = ntohl(area->addr[socket].sin_addr.s_addr);
+    *port = ntohs(area->addr[socket].sin_port);
+    hal->wait_recvs++;
+#if TT_HAL_UDP_GRO
+    if (hal->gro_state == TT_GRO_PLAIN && hal->gro_allowed && gro_large_fragment((const uint8_t*)buf, (int32_t)got)) {
+        gro_turn_on(node); // the rest of this sample may come merged
+    }
+#endif
+    rx_note_run(node, socket_fd, (const uint8_t*)buf, (int32_t)got);
+    return (int32_t)got;
+}
+#endif
 
 bool tt_rx_maybe_ready(struct tt_Context* node) {
     struct tt_hal* hal = &node->hal;
@@ -3436,13 +4156,18 @@ bool tt_rx_maybe_ready(struct tt_Context* node) {
     if (hal->uring_fd < 0 || tt_rx_buffered(node) != 0) {
         return true;
     }
-    uring_harvest(hal);
-    const uint8_t all = (uint8_t)((1U << URING_SOCKETS) - 1U);
-    if (hal->uring_armed == all) {
-        hal->uring_skipped++;
-        return false; // both polls still waiting: nothing has arrived on either socket since they were armed
+    (void)ring_look(hal);
+    if (hal->wait_held != 0) {
+        return true; // a datagram the wait's recvmsg took since
     }
-    uring_arm(hal, (uint8_t)(all & ~hal->uring_armed));
+    const uint8_t all = (uint8_t)((1U << URING_SOCKETS) - 1U);
+    // A socket the wait's recvmsg is armed on is covered as a poll is: its completion is the arrival.
+    const uint8_t covered = (uint8_t)(hal->uring_armed | hal->wait_recv_armed);
+    if (covered == all) {
+        hal->uring_skipped++;
+        return false; // both still waiting: nothing has arrived on either socket since they were armed
+    }
+    uring_arm(hal, (uint8_t)(all & ~covered));
     return true; // unarmed means unknown: let the caller read, the poll now in flight covers what comes after
 }
 #else

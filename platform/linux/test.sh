@@ -488,6 +488,33 @@ rx direct: FAIL"
     status=1
 fi
 
+# tt_receive()'s wait on io_uring against its control, TT_RX_URING_WAIT=0 (rx_uring_check.c): the same outcomes in both
+# arms, each arm's own treatment; and with io_uring refused, the epoll path.
+make rx_uring_check refuse_io_uring.so
+uring_ok=1
+# shellcheck disable=SC2024
+if ! sudo ip netns exec "$NS1" ./rx_uring_check </dev/null >rx_uring_check.log 2>&1 ||
+    ! grep -q '^rx_uring_check: PASS - all$' rx_uring_check.log; then
+    echo "rx uring wait: FAIL"
+    grep '^rx_uring_check:' rx_uring_check.log
+    uring_ok=0
+fi
+# shellcheck disable=SC2024
+if ! sudo ip netns exec "$NS1" env LD_PRELOAD=./refuse_io_uring.so ./rx_uring_check refused </dev/null \
+    >rx_uring_check_refused.log 2>&1 || ! grep -q '^rx_uring_check: PASS - refused$' rx_uring_check_refused.log; then
+    echo "rx uring wait (refused): FAIL"
+    grep '^rx_uring_check:' rx_uring_check_refused.log
+    uring_ok=0
+fi
+if [ "$uring_ok" = 1 ]; then
+    SUMMARY="$SUMMARY
+rx uring wait: PASS"
+else
+    SUMMARY="$SUMMARY
+rx uring wait: FAIL"
+    status=1
+fi
+
 # UDP offload (udp_offload_check.sh): the same datagrams on the wire and in core with it on as off. Its own namespaces.
 make udp_offload_check udp_offload_check_flap
 if ./udp_offload_check.sh; then

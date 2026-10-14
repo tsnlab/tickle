@@ -86,6 +86,7 @@
 /platform/linux/udp_offload_check_flap
 /platform/linux/rx_drain_check
 /platform/linux/rx_direct_check
+/platform/linux/rx_uring_check
 /platform/linux/bell_wake_check
 
 # clang-tidy's compilation database, when generated locally (e.g. `bear -- make all`, as
