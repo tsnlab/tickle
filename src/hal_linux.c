@@ -1549,12 +1549,12 @@ static void csum0_setup(struct tt_Context* node) {
     if (setting == NULL || strcmp(setting, "1") != 0) {
         return;
     }
-    int on = 1;
-    int off = 0;
+    int enable = 1;
+    int disable = 0;
     // NOLINTNEXTLINE(misc-include-cleaner) - SO_NO_CHECK: glibc-private header behind <sys/socket.h>
-    if (setsockopt(node->hal.data_sock, SOL_SOCKET, SO_NO_CHECK, &on, sizeof(on)) != 0 ||
+    if (setsockopt(node->hal.data_sock, SOL_SOCKET, SO_NO_CHECK, &enable, sizeof(enable)) != 0 ||
         // NOLINTNEXTLINE(misc-include-cleaner) - SO_NO_CHECK: as above
-        setsockopt(node->hal.data_sock, SOL_SOCKET, SO_NO_CHECK, &off, sizeof(off)) != 0) {
+        setsockopt(node->hal.data_sock, SOL_SOCKET, SO_NO_CHECK, &disable, sizeof(disable)) != 0) {
         TT_LOG_WARNING("SO_NO_CHECK refused (%s) - TT_UDP_CSUM0=1 ignored, every datagram keeps its checksum",
                        strerror(errno));
         node->hal.csum0 = -1;
@@ -1563,15 +1563,15 @@ static void csum0_setup(struct tt_Context* node) {
     node->hal.csum0 = 1;
 }
 
-// The data socket's SO_NO_CHECK to `on`, unless it is already (csum0_on); a refusal leaves it as it was.
-static void csum0_set(struct tt_Context* node, bool on) {
-    if (node->hal.csum0_on == on) {
+// The data socket's SO_NO_CHECK to `enable`, unless it is already (csum0_on); a refusal leaves it as it was.
+static void csum0_set(struct tt_Context* node, bool enable) {
+    if (node->hal.csum0_on == enable) {
         return;
     }
-    int value = on ? 1 : 0;
+    int value = enable ? 1 : 0;
     // NOLINTNEXTLINE(misc-include-cleaner) - SO_NO_CHECK: glibc-private header behind <sys/socket.h>
     if (setsockopt(node->hal.data_sock, SOL_SOCKET, SO_NO_CHECK, &value, sizeof(value)) == 0) {
-        node->hal.csum0_on = on;
+        node->hal.csum0_on = enable;
         node->hal.csum0_switches++;
     }
 }
@@ -1702,64 +1702,110 @@ static uint32_t gso_count_sent(struct tt_Context* node, const uint8_t* carried, 
     return datagrams;
 }
 
+#if !TT_HAL_UDP_CSUM0
+#error "the UDP_SEGMENT send path carries UDP checksum 0: TT_HAL_UDP_CSUM0 is TT_HAL_UDP_GSO (hal_linux.h)"
+#endif
+// One sendmmsg() call of send_batch_flags(): its messages, their pieces and destinations, and what the call carries.
+struct send_call {
+    struct mmsghdr msgs[TT_SEND_BATCH_CHUNK];
+    // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
+    struct iovec iov[2 * TT_SEND_CALL_DATAGRAMS];
+    struct sockaddr_in addrs[TT_SEND_BATCH_CHUNK];
+    union gso_control control[TT_SEND_BATCH_CHUNK];
+    uint8_t carried[TT_SEND_BATCH_CHUNK]; // datagrams in each message
+    uint32_t messages;
+    uint32_t placed; // datagrams in the call
+    bool zero;       // it carries an IP-fragmented datagram: with UDP checksum 0 on, it goes with checksum 0
+    bool segmented;  // it carries a UDP_SEGMENT run, which the kernel refuses with checksum 0 on
+};
+
+// UDP checksum 0 ("UDP checksum 0", above): whether the next message, `run` datagrams from `first`, may join the call.
+// It may not when the call's kind and its differ - an IP-fragmented datagram after a UDP_SEGMENT run, or a run after an
+// IP-fragmented datagram - and then starts the next call. Always with the option off.
+static bool csum0_joins(const struct tt_Context* node, struct send_call* call, const struct tt_OutDatagram* first,
+                        uint32_t run) {
+    if (node->hal.csum0 <= 0) {
+        return true;
+    }
+    const bool fragmented = first->head_len + first->body_len > tt_ETHERNET_UDP_PAYLOAD;
+    if ((fragmented && call->segmented) || (run > 1 && call->zero)) {
+        return false;
+    }
+    call->zero = call->zero || fragmented;
+    call->segmented = call->segmented || run > 1;
+    return true;
+}
+
+// The next call of a batch: as many of `available` datagrams from `first` as one call takes.
+static void send_call_build(struct tt_Context* node, struct send_call* call, const struct tt_OutDatagram* first,
+                            uint32_t available) {
+    call->messages = 0;
+    call->placed = 0;
+    call->zero = false;
+    call->segmented = false;
+    while (call->messages < TT_SEND_BATCH_CHUNK && call->placed < available && call->placed < TT_SEND_CALL_DATAGRAMS) {
+        const struct tt_OutDatagram* next = &first[call->placed];
+        uint32_t room = available - call->placed;
+        room = room < TT_SEND_CALL_DATAGRAMS - call->placed ? room : TT_SEND_CALL_DATAGRAMS - call->placed;
+        uint32_t run = node->hal.gso_on ? gso_run(next, room) : 1U;
+        if (!csum0_joins(node, call, next, run)) {
+            break; // the other kind: the next call
+        }
+        send_message_setup(node, &call->msgs[call->messages], &call->iov[(size_t)2U * call->placed],
+                           &call->addrs[call->messages], &call->control[call->messages], next, run);
+        call->carried[call->messages++] = (uint8_t)run;
+        call->placed += run;
+    }
+}
+
+// Before the call: SO_NO_CHECK on for a call of IP-fragmented datagrams, off for one with a UDP_SEGMENT run, and as it
+// was for any other. A refusal to turn it on: the call goes with checksums (and is counted as such, csum0_sent()).
+static void csum0_before(struct tt_Context* node, const struct send_call* call) {
+    if (call->segmented || call->zero) { // both false with the option off (csum0_joins())
+        csum0_set(node, call->zero);
+    }
+}
+
+// After the call: the datagrams of its first `result` messages went with checksum 0 if SO_NO_CHECK was on.
+static void csum0_sent(struct tt_Context* node, const struct send_call* call, int result) {
+    if (!node->hal.csum0_on || result <= 0) {
+        return;
+    }
+    node->hal.csum0_calls++;
+    for (int i = 0; i < result; i++) {
+        node->hal.csum0_datagrams += call->carried[i];
+    }
+}
+
+// A UDP_SEGMENT call refused with `err`: true when SO_NO_CHECK may have been the cause (EINVAL with the option on,
+// another thread having turned it on) and the call should go again - once (`retried`) - with it now off.
+static bool csum0_retry(struct tt_Context* node, int err, bool* retried) {
+    // NOLINTNEXTLINE(misc-include-cleaner) - EINVAL: glibc-private header
+    if (err != EINVAL || node->hal.csum0 <= 0 || *retried) {
+        return false;
+    }
+    *retried = true;
+    node->hal.csum0_on = true; // what the kernel said, whatever this thread last set
+    csum0_set(node, false);
+    node->hal.csum0_retries++;
+    return true;
+}
+
 // Send offload (UDP offload, above tt_bind()): a run of datagrams gso_run() accepts goes as one message, which the
 // kernel cuts up below the socket layer - on the PC in software just before the device, on a NIC with UDP segmentation
 // in hardware. One sendmmsg() carries runs and single datagrams alike, so a batch costs the calls it did before.
 static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutDatagram* datagrams, uint32_t count,
                                 int flags) {
     uint32_t sent = 0;
-#if TT_HAL_UDP_CSUM0
-    bool retried = false; // this call's UDP_SEGMENT send met SO_NO_CHECK on, which was then turned off (above)
-#endif
+    bool retried = false; // this call's UDP_SEGMENT send met SO_NO_CHECK on, which was then turned off (csum0_retry())
     while (sent < count) {
-        struct mmsghdr msgs[TT_SEND_BATCH_CHUNK];
-        // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
-        struct iovec iov[2 * TT_SEND_CALL_DATAGRAMS];
-        struct sockaddr_in addrs[TT_SEND_BATCH_CHUNK];
-        union gso_control control[TT_SEND_BATCH_CHUNK];
-        uint8_t carried[TT_SEND_BATCH_CHUNK]; // datagrams in each message
-        uint32_t messages = 0;
-        uint32_t placed = 0; // datagrams in this call
-#if TT_HAL_UDP_CSUM0
-        bool zero = false;      // the call carries an IP-fragmented datagram: it goes with checksum 0
-        bool segmented = false; // the call carries a UDP_SEGMENT run: it cannot
-#endif
-        while (messages < TT_SEND_BATCH_CHUNK && sent + placed < count && placed < TT_SEND_CALL_DATAGRAMS) {
-            const struct tt_OutDatagram* first = &datagrams[sent + placed];
-            uint32_t room = count - sent - placed;
-            room = room < TT_SEND_CALL_DATAGRAMS - placed ? room : TT_SEND_CALL_DATAGRAMS - placed;
-            uint32_t run = TT_HAL_UDP_GSO && node->hal.gso_on ? gso_run(first, room) : 1U;
-#if TT_HAL_UDP_CSUM0
-            if (node->hal.csum0 > 0) {
-                const bool fragmented = first->head_len + first->body_len > tt_ETHERNET_UDP_PAYLOAD;
-                if ((fragmented && segmented) || (run > 1 && zero)) {
-                    break; // the other kind: the next call
-                }
-                zero = zero || fragmented;
-                segmented = segmented || run > 1;
-            }
-#endif
-            send_message_setup(node, &msgs[messages], &iov[(size_t)2U * placed], &addrs[messages], &control[messages],
-                               first, run);
-            carried[messages++] = (uint8_t)run;
-            placed += run;
-        }
-#if TT_HAL_UDP_CSUM0
-        if (segmented || zero) {
-            csum0_set(node, zero); // a refusal to turn it on: the call goes with checksums (counted below as such)
-        }
-#endif
+        struct send_call call;
+        send_call_build(node, &call, &datagrams[sent], count - sent);
+        csum0_before(node, &call);
         TT_TRACE(tt_TRACE_TX_START);
-        int result = sendmmsg(node->hal.data_sock, msgs, messages, flags);
+        int result = sendmmsg(node->hal.data_sock, call.msgs, call.messages, flags);
         TT_TRACE(tt_TRACE_TX_DONE);
-#if TT_HAL_UDP_CSUM0
-        if (node->hal.csum0_on && result > 0) {
-            node->hal.csum0_calls++;
-            for (int i = 0; i < result; i++) {
-                node->hal.csum0_datagrams += carried[i];
-            }
-        }
-#endif
+        csum0_sent(node, &call, result);
         if (result <= 0) {
             int err = errno;
             // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers
@@ -1770,27 +1816,15 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
             if (flags == 0 && result < 0 && send_wait_for_room(node->hal.data_sock)) {
                 continue; // a blocking batch on the non-blocking socket: room, then the rest
             }
-#if TT_HAL_UDP_CSUM0
-            // NOLINTNEXTLINE(misc-include-cleaner) - EINVAL: glibc-private header
-            if (result < 0 && carried[0] > 1 && err == EINVAL && node->hal.csum0 > 0 && !retried) {
-                retried = true; // SO_NO_CHECK met a UDP_SEGMENT run: off, whoever turned it on, and the call again
-                node->hal.csum0_on = true; // what the kernel said, whatever this thread last set
-                csum0_set(node, false);
-                node->hal.csum0_retries++;
-                continue;
-            }
-#endif
-            if (result < 0 && carried[0] > 1 && gso_refused(node, err)) {
-                continue; // nothing of this call went: again from the same datagram, one at a time
+            if (result < 0 && call.carried[0] > 1 && (csum0_retry(node, err, &retried) || gso_refused(node, err))) {
+                continue; // nothing of this call went: again from the same datagram (checksums on, or one at a time)
             }
             return -1; // errno says why; a 0 would otherwise loop forever
         }
-#if TT_HAL_UDP_CSUM0
         retried = false;
-#endif
         // A short count (sendmmsg() stopped at a message that did not go) loops: the next call reports why - the
         // error, or with MSG_DONTWAIT the EAGAIN of a full buffer, answered above.
-        sent += gso_count_sent(node, carried, result);
+        sent += gso_count_sent(node, call.carried, result);
     }
     return (int32_t)count;
 }

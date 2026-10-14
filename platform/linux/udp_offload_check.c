@@ -224,6 +224,16 @@ static void build_call(struct tt_OutDatagram* out, uint32_t number, uint32_t fir
     }
 }
 
+// UDP checksum 0's counters (struct tt_hal), in a build that has the option (large samples, as this check's Makefile
+// target builds it); a build without - clang-tidy's - reports csum0=-2.
+#if TT_HAL_UDP_CSUM0
+#define CSUM0_STATE ((int)g_node.hal.csum0)
+#define CSUM0_COUNT(name) ((unsigned long)g_node.hal.name)
+#else
+#define CSUM0_STATE (-2)
+#define CSUM0_COUNT(name) 0UL
+#endif
+
 static int run_send(uint32_t ip, uint16_t port, const char* broadcast, uint32_t repeat) {
     // The sender's well-known port is not the receivers': its own announces must not reach the hal receiver.
     if (!context_up(broadcast, (uint16_t)(port + 2))) {
@@ -254,8 +264,8 @@ static int run_send(uint32_t ip, uint16_t port, const char* broadcast, uint32_t 
            "csum0_switches_expected=%u\n",
            sent, (unsigned)g_node.udp_offload, (unsigned long)g_node.udp_gso_sends,
            (unsigned long)g_node.udp_gso_datagrams, GSO_SENDS_PER_PASS * repeat, GSO_DATAGRAMS_PER_PASS * repeat,
-           (int)g_node.hal.csum0, (unsigned long)g_node.hal.csum0_datagrams, (unsigned long)g_node.hal.csum0_retries,
-           (CSUM0_DATAGRAMS_PER_PASS * repeat) + CSUM0_END, (unsigned long)g_node.hal.csum0_switches,
+           CSUM0_STATE, CSUM0_COUNT(csum0_datagrams), CSUM0_COUNT(csum0_retries),
+           (CSUM0_DATAGRAMS_PER_PASS * repeat) + CSUM0_END, CSUM0_COUNT(csum0_switches),
            CSUM0_SWITCHES_PER_PASS * repeat);
     tt_Context_destroy(&g_node);
     return 0;
