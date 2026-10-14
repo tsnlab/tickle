@@ -90,7 +90,8 @@ UNITS = {"Array1m": 723, "Array4m": 2889}  # tt_sample_datagrams() of the sample
 N_BUCKETS = ("1", "2-3", "4-7", "8-15", "16-31", "32-44", "45")
 VENDORS = ("fastdds", "cyclonedds")
 MODE_OF = {"tickle@head": "auto", "tickle@aa": "auto", "tickle@mtu": "mtu", "tickle@ip": "ip",
-           "tickle@nooffload": "auto", "tickle@mtunooff": "mtu"}
+           "tickle@nooffload": "auto", "tickle@mtunooff": "mtu",
+           "tickle@csum0": "auto"}  # head's binary with TT_UDP_CSUM0=1 (2026-10-14, ~/rig_jobs/rig_queue_udp_csum0.sh)
 # Samples of a forced-IP arm that may go at n = 1 before the reader's ceiling is known (the PC preflight of 2026-10-11,
 # before any rig run: one, the first sample, published as discovery completed).
 FORCED_IP_EARLY_MTU = 2
