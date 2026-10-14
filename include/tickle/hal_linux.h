@@ -63,6 +63,11 @@
 #define TT_HAL_UDP_GSO 0
 #endif
 
+// UDP checksum 0 on IP-fragmented datagrams (hal_linux.c "UDP checksum 0"): an option, off unless TT_UDP_CSUM0=1 is in
+// the environment at tt_bind(). Only where a datagram can be larger than one frame - a build with large samples, whose
+// hybrid runs are IP-fragmented - since a datagram of one frame has its checksum made and checked by the NIC.
+#define TT_HAL_UDP_CSUM0 TT_HAL_UDP_GSO
+
 // glibc's struct mmsghdr, which it declares only under _GNU_SOURCE - a define this public header cannot
 // require of everything that includes it. hal_linux.c checks the two layouts are the same.
 struct tt_mmsghdr {
@@ -354,6 +359,16 @@ struct tt_hal {
     // Send offload (hal_linux.c "UDP offload"): runs of same-size datagrams to one destination go as one UDP_SEGMENT
     // send. Off with TT_UDP_OFFLOAD=0, on a kernel without it, and after the first refusal (no checksum offload).
     bool gso_on;
+#endif
+#if TT_HAL_UDP_CSUM0
+    // UDP checksum 0 (hal_linux.c "UDP checksum 0"): csum0 is 1 with TT_UDP_CSUM0=1, 0 without, -1 when the kernel
+    // refused SO_NO_CHECK. csum0_calls: sendmmsg() calls made with it on; csum0_datagrams: the datagrams they carried,
+    // each with checksum 0 on the wire; csum0_singles: UDP_SEGMENT calls refused (EINVAL) while it was on and sent
+    // again datagram by datagram. All on the "Node N rx:" line, the arm's treatment check.
+    int8_t csum0;
+    uint64_t csum0_calls;
+    uint64_t csum0_datagrams;
+    uint64_t csum0_singles;
 #endif
 #if TT_HAL_UDP_GRO
     // The last merged read (UDP_GRO): gro_end bytes in gro_base, cut every gro_segment bytes (the last cut may be
