@@ -39,6 +39,8 @@
 #     blocks in a cell is not read there.
 # Usage: srv_gap_pc.sh [BLOCKS]   ARMS="label:commit[:P] ...", CELLS (default "L:p1 T:p2:Q0 T:p3:Q0 T:p2:Q1 L:p4"),
 # STRACE=1 (one extra pass per arm and cell under strace -f -c: of the server, or with STRACE_ROLE=client the client),
+# PROFILE=1 (one extra pass per arm and cell, both roles under perf record -e instructions:u, the data kept as
+# $WORK/prof_<arm>_<cell>_{cli,srv}.data with the run's samples in prof_<arm>_<cell>.txt: where the user instructions go),
 # WORK= (default ~/largemsg_pc/rx_gap3_server),
 # OUT= (default $WORK/results.txt), TREE=. Run it detached. Every bench process runs under ulimit -v and a timeout.
 # The last line is always "srv_gap_pc done rc=<n>".
@@ -154,7 +156,9 @@ run() { # <arm> <cell> <block> <mode: perf|strace>
     rm -f "$smeas" "$cmeas" "$flag" "$slog" "$clog"
     local swrap
     local role=${STRACE_ROLE:-server}
-    if [ "$mode" = strace ] && [ "$role" = server ]; then swrap="strace -f -c -o $smeas"
+    local pfx=$WORK/prof_${arm}_${cell//:/_}
+    if [ "$mode" = profile ]; then swrap="perf record -q -e instructions:u -c 1009 -o ${pfx}_srv.data --"
+    elif [ "$mode" = strace ] && [ "$role" = server ]; then swrap="strace -f -c -o $smeas"
     elif [ "$mode" = strace ]; then swrap=""
     else swrap="perf stat -x, -o $smeas -e $INSN_EVENTS --"; fi
     # The server: its counter is perf's (or strace's) child, timeout, which forwards the SIGINT sent when the client is
@@ -174,6 +178,7 @@ run() { # <arm> <cell> <block> <mode: perf|strace>
     local cwrap="perf stat -x, -o $cmeas -e $INSN_EVENTS --"
     [ "$mode" = strace ] && cwrap=""
     [ "$mode" = strace ] && [ "$role" = client ] && cwrap="strace -f -c -o $cmeas"
+    [ "$mode" = profile ] && cwrap="perf record -q -e instructions:u -c 1009 -o ${pfx}_cli.data --"
     # shellcheck disable=SC2024,SC2086
     sudo -n ip netns exec "$NS1" bash -c "ulimit -v $VMEM_KB; cd $dir && exec $cwrap timeout -s INT 80 ./client $args" \
         >"$clog" 2>&1
@@ -187,6 +192,11 @@ run() { # <arm> <cell> <block> <mode: perf|strace>
     if [ "${cell%%:*}" = L ]; then div=$sent; else div=$recv; fi
     if [ -z "$cres" ] || [ -z "$sres" ] || [ -z "$sent" ] || [ "$sent" = 0 ] || [ -z "$div" ] || [ "$div" = 0 ]; then
         echo "RUN arm=$arm cell=$cell block=$block mode=$mode VOID (client: $(tail -1 "$clog" | cut -c1-200)) (server: $(tail -1 "$slog" | cut -c1-200))" | tee -a "$OUT"
+        return
+    fi
+    if [ "$mode" = profile ]; then
+        echo "client_sent=$sent server_samples=$div" >"$pfx.txt"
+        echo "RUN arm=$arm cell=$cell block=$block mode=profile client_sent=$sent server_samples=$div" | tee -a "$OUT"
         return
     fi
     if [ "$mode" = strace ]; then
@@ -217,6 +227,11 @@ for block in $(seq 1 "$BLOCKS"); do
         done
     done
 done
+if [ "${PROFILE:-0}" = 1 ]; then
+    for cell in $CELLS; do
+        for l in "${labels[@]}"; do [ "$l" = BASE2 ] || run "$l" "$cell" p profile; done
+    done
+fi
 if [ "${STRACE:-0}" = 1 ]; then
     for cell in $CELLS; do
         for l in "${labels[@]}"; do [ "$l" = BASE2 ] || run "$l" "$cell" s strace; done
