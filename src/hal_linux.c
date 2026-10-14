@@ -50,11 +50,12 @@
 #include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/hal_linux.h> // tt_RX_BATCH, struct tt_mmsghdr
-#if tt_HAL_IO_URING           // after hal_linux.h, which derives it from tt_HAL_RX_HINT
+// SYS_*: the hot path's system calls (tt_sys6()) and io_uring's; the numbers live in an architecture's own header.
+#include <sys/syscall.h> // NOLINT(misc-include-cleaner)
+#if tt_HAL_IO_URING      // after hal_linux.h, which derives it from tt_HAL_RX_HINT
 // __NR_io_uring_*: <sys/syscall.h> is the portable spelling; the number itself lives in an architecture's own header
 // (asm/unistd_64.h on x86-64, asm-generic/unistd.h on arm64), which include-cleaner would have us name instead.
 #include <linux/io_uring.h> // tt_rx_maybe_ready()
-#include <sys/syscall.h>    // NOLINT(misc-include-cleaner)
 #if tt_RX_DRAIN
 #include <linux/time_types.h> // __kernel_timespec: the drain's stop wait
 #include <sys/utsname.h>      // uname(): the kernel release a refused buffer ring is reported with
@@ -146,6 +147,106 @@ static bool tt_rx_should_drop(void) {
 #ifndef TT_RX_FIXED_PREFERENCE
 #define TT_RX_FIXED_PREFERENCE 0
 #endif
+
+// ---- The hot path's system calls without the C library's wrapper (2026-10-15)
+// ------------------------------------------------------------------------------------
+//
+// glibc's sendto(), sendmsg(), recvfrom(), recvmmsg() and epoll_pwait2() are cancellation points: in a process with a
+// second thread (a context with a receive drain, an rmw node) each goes through __syscall_cancel(), some 45 user
+// instructions on x86-64 around the system call itself, for a pthread_cancel() no TickLE thread is ever sent. A small
+// sample's round trip makes four or five of them on each side. Here they are made with the instruction itself
+// (tt_sys6()) on x86-64 and aarch64: the same system call with the same arguments, its result returned and a failure's
+// errno set as the library sets them. Elsewhere, under a sanitizer (its interceptors see the library's calls only),
+// and in a build with TT_HAL_LIBC_CALLS (rx_direct_check, which puts its own sendto() and sendmsg() in front of the
+// library's to refuse a send), the library's own.
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || __has_feature(memory_sanitizer)
+#define TT_HAL_SANITIZED 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define TT_HAL_SANITIZED 1
+#endif
+#if (defined(__x86_64__) || defined(__aarch64__)) && !defined(TT_HAL_SANITIZED) && !defined(TT_HAL_LIBC_CALLS)
+#define TT_HAL_RAW_CALLS 1
+#else
+#define TT_HAL_RAW_CALLS 0
+#endif
+
+#if TT_HAL_RAW_CALLS
+// The system call `number` with six arguments: its result, or -errno. The kernel's entry keeps every register but the
+// result's (and on x86-64 rcx and r11, which the instruction itself overwrites).
+static inline long tt_sys6(long number, long arg1, long arg2, long arg3, long arg4, long arg5, long arg6) {
+#if defined(__x86_64__)
+    long ret = 0;
+    register long reg_r10 __asm__("r10") = arg4;
+    register long reg_r8 __asm__("r8") = arg5;
+    register long reg_r9 __asm__("r9") = arg6;
+    __asm__ volatile("syscall"
+                     : "=a"(ret)
+                     : "0"(number), "D"(arg1), "S"(arg2), "d"(arg3), "r"(reg_r10), "r"(reg_r8), "r"(reg_r9)
+                     : "rcx", "r11", "memory");
+    return ret;
+#else
+    register long reg_x8 __asm__("x8") = number;
+    register long reg_x0 __asm__("x0") = arg1;
+    register long reg_x1 __asm__("x1") = arg2;
+    register long reg_x2 __asm__("x2") = arg3;
+    register long reg_x3 __asm__("x3") = arg4;
+    register long reg_x4 __asm__("x4") = arg5;
+    register long reg_x5 __asm__("x5") = arg6;
+    __asm__ volatile("svc 0"
+                     : "+r"(reg_x0)
+                     : "r"(reg_x8), "r"(reg_x1), "r"(reg_x2), "r"(reg_x3), "r"(reg_x4), "r"(reg_x5)
+                     : "memory");
+    return reg_x0;
+#endif
+}
+
+// A result as the library returns it: -1 with errno for a failure (-4095..-1), the value otherwise.
+#define TT_SYS_ERRNO_MAX 4095L // the kernel's MAX_ERRNO: a result from -4095 to -1 is a failure
+static inline long tt_sys_result(long ret) {
+    if (__builtin_expect(ret < 0 && ret >= -TT_SYS_ERRNO_MAX, 0)) {
+        errno = (int)-ret;
+        return -1;
+    }
+    return ret;
+}
+#endif
+
+static inline ssize_t hal_sendto(int socket_fd, const void* buf, size_t len, int flags, const struct sockaddr* dest,
+                                 socklen_t dest_len) {
+#if TT_HAL_RAW_CALLS
+    return tt_sys_result(tt_sys6(SYS_sendto, socket_fd, (long)buf, (long)len, flags, (long)dest, (long)dest_len));
+#else
+    return sendto(socket_fd, buf, len, flags, dest, dest_len);
+#endif
+}
+
+static inline ssize_t hal_sendmsg(int socket_fd, const struct msghdr* msg, int flags) {
+#if TT_HAL_RAW_CALLS
+    return tt_sys_result(tt_sys6(SYS_sendmsg, socket_fd, (long)msg, flags, 0, 0, 0));
+#else
+    return sendmsg(socket_fd, msg, flags);
+#endif
+}
+
+static inline ssize_t hal_recvfrom(int socket_fd, void* buf, size_t len, int flags, struct sockaddr* from,
+                                   socklen_t* from_len) {
+#if TT_HAL_RAW_CALLS
+    return tt_sys_result(tt_sys6(SYS_recvfrom, socket_fd, (long)buf, (long)len, flags, (long)from, (long)from_len));
+#else
+    return recvfrom(socket_fd, buf, len, flags, from, from_len);
+#endif
+}
+
+static inline int hal_recvmmsg(int socket_fd, struct mmsghdr* msgs, unsigned int count, int flags) {
+#if TT_HAL_RAW_CALLS
+    return (int)tt_sys_result(tt_sys6(SYS_recvmmsg, socket_fd, (long)msgs, (long)count, flags, 0, 0));
+#else
+    return recvmmsg(socket_fd, msgs, count, flags, NULL);
+#endif
+}
 
 #define SEC_NS 1000000000LL
 
@@ -1006,8 +1107,8 @@ struct tt_SendAgain {
 static __attribute__((cold, noinline)) int32_t sendto_again(const struct tt_SendAgain* again) {
     int32_t sent = -1;
     while (send_wait_for_room(again->fd)) {
-        sent = (int32_t)sendto(again->fd, again->buf, again->len, 0, (const struct sockaddr*)&again->to,
-                               sizeof(again->to));
+        sent = (int32_t)hal_sendto(again->fd, again->buf, again->len, 0, (const struct sockaddr*)&again->to,
+                                   sizeof(again->to));
         if (sent >= 0) {
             break;
         }
@@ -1024,7 +1125,7 @@ struct tt_SendMsgAgain {
 static __attribute__((cold, noinline)) int32_t sendmsg_again(const struct tt_SendMsgAgain* again) {
     int32_t sent = -1;
     while (send_wait_for_room(again->fd)) {
-        sent = (int32_t)sendmsg(again->fd, &again->msg, 0);
+        sent = (int32_t)hal_sendmsg(again->fd, &again->msg, 0);
         if (sent >= 0) {
             break;
         }
@@ -1384,7 +1485,7 @@ int32_t tt_send(struct tt_Context* node, const void* buf, size_t len) {
     again.len = len;
     again.fd = node->hal.data_sock;
     again.to = node->hal.broadcast_addr;
-    int32_t sent = (int32_t)sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));
+    int32_t sent = (int32_t)hal_sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));
     if (__builtin_expect(sent < 0, 0)) {
         sent = sendto_again(&again); // a blocking send: room, then again (struct tt_SendAgain)
     }
@@ -1412,7 +1513,7 @@ int32_t tt_send_to(struct tt_Context* node, const void* buf, size_t len, uint32_
     again.buf = buf;
     again.len = len;
     again.fd = node->hal.data_sock;
-    int32_t sent = (int32_t)sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));
+    int32_t sent = (int32_t)hal_sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));
     if (__builtin_expect(sent < 0, 0)) {
         sent = sendto_again(&again); // a blocking send: room, then again (struct tt_SendAgain)
     }
@@ -1457,7 +1558,7 @@ int32_t tt_send_iov(struct tt_Context* node, const void* hdr, size_t hdr_len, co
     }
 
     TT_TRACE(tt_TRACE_TX_START);
-    int32_t sent = (int32_t)sendmsg(again.fd, msg, 0);
+    int32_t sent = (int32_t)hal_sendmsg(again.fd, msg, 0);
     if (__builtin_expect(sent < 0, 0)) {
         sent = sendmsg_again(&again); // a blocking send: room, then again (struct tt_SendMsgAgain)
     }
@@ -2715,7 +2816,7 @@ static int32_t rx_read_one(struct tt_Context* node, int socket_fd, void* buf, si
 #endif
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
-    ret = (int32_t)recvfrom(socket_fd, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
+    ret = (int32_t)hal_recvfrom(socket_fd, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
     if (ret < 0) {
         // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -2748,7 +2849,7 @@ static int32_t rx_fill(struct tt_Context* node, int socket_fd, void* buf, size_t
     hal->rx_iov[0].iov_base = buf; // the caller's buffer takes the first datagram, saving it a copy
     hal->rx_iov[0].iov_len = len;
     struct sockaddr_in* addrs = hal->rx_addr;
-    int got = recvmmsg(socket_fd, (struct mmsghdr*)hal->rx_msgs, tt_RX_BATCH, MSG_DONTWAIT, NULL);
+    int got = hal_recvmmsg(socket_fd, (struct mmsghdr*)hal->rx_msgs, tt_RX_BATCH, MSG_DONTWAIT);
     if (got < 0) {
         // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers, see below
         return (errno == EAGAIN || errno == EWOULDBLOCK) ? -1 : -2;
@@ -2795,7 +2896,12 @@ static inline __attribute__((always_inline)) int rx_wait(struct tt_Context* node
 #if TT_HAL_EPOLL
     if (node->hal.epoll_fd_plus1 > 0) {
         struct epoll_event events[RX_WAIT_FDS];
+#if TT_HAL_RAW_CALLS
+        int count = (int)tt_sys_result(
+            tt_sys6(SYS_epoll_pwait2, node->hal.epoll_fd_plus1 - 1, (long)events, RX_WAIT_FDS, (long)timeout_ts, 0, 0));
+#else
         int count = epoll_pwait2(node->hal.epoll_fd_plus1 - 1, events, RX_WAIT_FDS, timeout_ts, NULL);
+#endif
         for (int i = 0; i < count; i++) {
             // A descriptor reported only for an error or a hangup counts towards the return value, as it did with
             // ppoll(), and is read like one: the read says what the error was.
