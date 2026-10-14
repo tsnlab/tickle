@@ -343,14 +343,14 @@ MUTANTS = [
     (
         "read: a miss not put back together",
         "src/hal_linux.c",
-        "        memcpy((uint8_t*)buf + framing, dest, back);",
+        "        memcpy(buf + framing, dest, back);",
         "        (void)back;",
         HAL,
     ),
     (
         "read: aimed into a buffer too short for the hint",
         "src/hal_linux.c",
-        "    if (bytes == 0 || len < (size_t)large->direct_framing_len + bytes) {",
+        "    if (bytes == 0 || len < (size_t)framing + bytes) {",
         "    if (bytes == 0) {",
         HAL,
     ),
@@ -372,21 +372,39 @@ MUTANTS = [
     (
         "lazy timer: a plain wait counts a datagram that came after a fire",
         "src/hal_linux.c",
-        "            if (count > 0 && !fired && (*ready & RX_READY_FOR_DATA) != 0 &&",
-        "            if (count > 0 && (*ready & RX_READY_FOR_DATA) != 0 &&",
+        "            return count; // the run of waits that ended for data is not grown: this wait cost a read",
+        "            node->hal.timer_data_streak += (count > 0 && (*ready & RX_READY_FOR_DATA) != 0) ? 1U : 0U;\n"
+        "            return count;",
         HAL,
     ),
     (
-        "lazy timer: a wait that ended without data does not start the run again",
+        "lazy timer: a plain wait counts a datagram that came with a fire",
         "src/hal_linux.c",
-        "            node->hal.timer_data_streak = 0; // a timeout, a wake, only room to send",
-        "            (void)0; // a timeout, a wake, only room to send",
+        "        *ready &= ~RX_READY_TIMER;\n        if (*ready != 0) {\n            return count - 1;\n        }\n"
+        "        if (until != UINT64_MAX) {\n            const uint64_t now = tt_get_ns();",
+        "        *ready &= ~RX_READY_TIMER;\n        if (*ready != 0) {\n            node->hal.timer_data_streak++;\n"
+        "            return count - 1;\n        }\n"
+        "        if (until != UINT64_MAX) {\n            const uint64_t now = tt_get_ns();",
+        HAL,
+    ),
+    (
+        "lazy timer: a plain wait that ended without data does not start the run again",
+        "src/hal_linux.c",
+        "        hal->timer_data_streak = 0; // a timeout, a wake, only room to send",
+        "        (void)0; // a timeout, a wake, only room to send",
+        HAL,
+    ),
+    (
+        "lazy timer: a timed wait that ended without data does not start the run again",
+        "src/hal_linux.c",
+        "        node->hal.timer_data_streak = 0; // a timeout, a wake, only room to send",
+        "        (void)0; // a timeout, a wake, only room to send",
         HAL,
     ),
     (
         "lazy timer: plain waits do not count",
         "src/hal_linux.c",
-        "                node->hal.timer_data_streak++;\n",
+        "            hal->timer_data_streak++;\n",
         "",
         HAL,
     ),

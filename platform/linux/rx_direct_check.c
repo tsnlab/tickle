@@ -720,7 +720,8 @@ static void check_deadline(void) {
 // 12b. The timer only after TT_RX_LAZY_STREAK (8) waits in a row ended for data (hal_linux.c rx_wait_epoll()). E: C's
 // last wait ended in a fire, so the next takes its timeout: no set, no timer wait, one plain wait, ended at its
 // deadline. P: a ping-pong - a wait ending for a datagram, then one ending at its deadline, three times - never uses
-// the timer (no set, no timer wait: ae5defc8 cost the latency client 2 sets and a read a round trip). F: eight
+// the timer (no set, no timer wait: ae5defc8 cost the latency client 2 sets and a read a round trip), and its run is 1
+// after each datagram and 0 after each deadline: a plain wait that ended without data starts it again. F: eight
 // datagrams in a row put it back; a wait woken by tt_wake_signal() leaves it armed (50 ms) and the next is plain; that
 // one (150 ms) sees the stale fire at 50 ms, reads it - no set - and goes on to its own deadline. G: with the rule off
 // (TT_RX_LAZY_ADAPT=0, here the flag) a wait after a timeout uses the timer again.
@@ -742,12 +743,15 @@ static void check_deadline_after_no_data(void) {
     sets = node.hal.timer_sets;
     waits = node.hal.timer_waits;
     bool p_data = true;
+    bool p_runs = true;
     for (int i = 0; i < PING_PONGS; i++) {
         (void)send_built(len, "deadline P");
         p_data = p_data && receive_until(len, tt_get_ns() + DEADLINE_FIRST_NS) == (int32_t)len;
+        p_runs = p_runs && node.hal.timer_data_streak == 1U;
         (void)receive_until(0, tt_get_ns() + DEADLINE_SHORT_NS);
+        p_runs = p_runs && node.hal.timer_data_streak == 0U;
     }
-    bool p_plain = p_data && node.hal.timer_sets == sets && node.hal.timer_waits == waits;
+    bool p_plain = p_data && p_runs && node.hal.timer_sets == sets && node.hal.timer_waits == waits;
     // F
     bool f_data = true;
     for (uint32_t i = 0; i < LAZY_STREAK; i++) {
@@ -794,7 +798,9 @@ static void check_deadline_after_no_data(void) {
 // read, so the run of waits that ended for data starts again and the next wait takes its timeout. Each case first arms
 // the timer for 20 ms with a wait that ends for a datagram (the timer in use). L: 30 ms later a datagram, and a wait
 // with a later deadline sees the stale fire and the datagram at once: it returns the datagram, the fire read, the run
-// 0, and the next wait is plain. P: the timer not in use (a run of 0), a plain wait with a later deadline reads the
+// 0, and the next wait is plain. PL: the same with the timer not in use (a run of 0): the plain wait sees the stale
+// fire and the datagram at once, returns the datagram, reads the fire, and the run stays 0. P: the timer not in use (a
+// run of 0), a plain wait with a later deadline reads the
 // fire at 20 ms and goes on, and a datagram sent at 50 ms (another thread) ends it: the run stays 0. Its control, the
 // same plain wait with no fire: the run is 1 - the count does count, so P's 0 is the fire's doing.
 #define FIRE_ARMED_NS 20000000ULL // the deadline the first wait leaves armed
@@ -847,6 +853,14 @@ static void check_deadline_fire_and_data(void) {
     (void)receive_until(0, tt_get_ns() + DEADLINE_SHORT_NS);
     bool l_next_plain = node.hal.timer_plain_waits == plain + 1U && node.hal.timer_waits == waits;
     bool l_ok = l_armed && l_got == (int32_t)len && l_fired && l_streak == 0 && l_next_plain;
+    // PL
+    bool pl_fired = false;
+    int32_t pl_got = 0;
+    plain = node.hal.timer_plain_waits;
+    bool pl_armed = fire_and_data(len, 0, false, &pl_fired, &pl_got);
+    uint8_t pl_streak = node.hal.timer_data_streak;
+    bool pl_ok =
+        pl_armed && pl_got == (int32_t)len && pl_fired && pl_streak == 0 && node.hal.timer_plain_waits == plain + 1U;
     // P
     bool p_fired = false;
     int32_t p_got = 0;
@@ -869,11 +883,13 @@ static void check_deadline_fire_and_data(void) {
     set_wait_until(0);
     char line[LINE_BYTES];
     (void)snprintf(line, sizeof(line),
-                   "fire and data: at once, timer in use - read %d, fired %d, run %u, next plain %d; fire then data, "
-                   "plain - read %d, fired %d, run %u; control (no fire) - run %u",
-                   (int)l_got, l_fired ? 1 : 0, (unsigned)l_streak, l_next_plain ? 1 : 0, (int)p_got, p_fired ? 1 : 0,
-                   (unsigned)p_streak, (unsigned)node.hal.timer_data_streak);
-    verdict(l_ok && p_ok && c_ok, line);
+                   "fire and data: at once, timer in use - read %d, fired %d, run %u, next plain %d; at once, plain - "
+                   "read %d, fired %d, run %u; fire then data, plain - read %d, fired %d, run %u; control (no fire) - "
+                   "run %u",
+                   (int)l_got, l_fired ? 1 : 0, (unsigned)l_streak, l_next_plain ? 1 : 0, (int)pl_got, pl_fired ? 1 : 0,
+                   (unsigned)pl_streak, (int)p_got, p_fired ? 1 : 0, (unsigned)p_streak,
+                   (unsigned)node.hal.timer_data_streak);
+    verdict(l_ok && pl_ok && p_ok && c_ok, line);
 }
 
 // 13. again
