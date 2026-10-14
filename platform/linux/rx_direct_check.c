@@ -205,14 +205,15 @@ static int refuse_errno;
 static int send_calls;
 
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - libc's prototype names them __fd and so on
-ssize_t sendto(int socket_fd, const void* data, size_t len, int flags, const struct sockaddr* to, socklen_t to_len) {
+ssize_t sendto(int socket_fd, const void* data, size_t len, int flags, const struct sockaddr* dest,
+               socklen_t dest_len) {
     send_calls++;
     if (refuse_sends > 0) {
         refuse_sends--;
         errno = refuse_errno;
         return -1;
     }
-    return syscall(SYS_sendto, socket_fd, data, len, flags, to, to_len);
+    return syscall(SYS_sendto, socket_fd, data, len, flags, dest, dest_len);
 }
 
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - as above
@@ -899,7 +900,8 @@ enum again_shape { AGAIN_SEND, AGAIN_SEND_TO, AGAIN_SEND_IOV };
 #define AGAIN_FILL 0x41U
 
 static const char* again_name(enum again_shape shape) {
-    return shape == AGAIN_SEND ? "tt_send()" : shape == AGAIN_SEND_TO ? "tt_send_to()" : "tt_send_iov()";
+    static const char* const names[] = {"tt_send()", "tt_send_to()", "tt_send_iov()"};
+    return names[shape];
 }
 
 struct again_result {
@@ -933,31 +935,31 @@ static struct again_result again_send(enum again_shape shape, int refused, int e
     result.calls = send_calls;
     refuse_sends = 0;
     usleep(SETTLE_US);
-    uint8_t in[2U * AGAIN_BYTES];
+    uint8_t back[2U * AGAIN_BYTES];
     int32_t got = -1;
     if (shape == AGAIN_SEND) {
         uint32_t ip = 0;
         uint16_t port = 0;
-        while ((got = tt_try_receive(&node, in, sizeof(in), &ip, &port)) >= 0 && got != (int32_t)sizeof(out)) {
+        while ((got = tt_try_receive(&node, back, sizeof(back), &ip, &port)) >= 0 && got != (int32_t)sizeof(out)) {
         }
     } else {
-        got = (int32_t)recv(sink, in, sizeof(in), MSG_DONTWAIT);
+        got = (int32_t)recv(sink, back, sizeof(back), MSG_DONTWAIT);
     }
-    result.arrived = got == (int32_t)sizeof(out) && memcmp(in, out, sizeof(out)) == 0;
+    result.arrived = got == (int32_t)sizeof(out) && memcmp(back, out, sizeof(out)) == 0;
     return result;
 }
 
 static void check_again(void) {
     int sink = socket(AF_INET, SOCK_DGRAM, 0);
-    struct sockaddr_in at = {.sin_family = AF_INET, .sin_port = 0, .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
-    socklen_t at_len = sizeof(at);
-    if (sink < 0 || bind(sink, (struct sockaddr*)&at, sizeof(at)) != 0 ||
-        getsockname(sink, (struct sockaddr*)&at, &at_len) != 0) {
+    struct sockaddr_in where = {.sin_family = AF_INET, .sin_port = 0, .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
+    socklen_t where_len = sizeof(where);
+    if (sink < 0 || bind(sink, (struct sockaddr*)&where, sizeof(where)) != 0 ||
+        getsockname(sink, (struct sockaddr*)&where, &where_len) != 0) {
         printf("rx_direct_check: SETUP FAILED - again: no sink socket\n");
         setup_failed = true;
         return;
     }
-    const uint16_t port = ntohs(at.sin_port);
+    const uint16_t port = ntohs(where.sin_port);
     while (tt_try_receive(&node, buf, sizeof(buf), &any_ip, &any_port) >= 0) {
     }
     for (int shape = AGAIN_SEND; shape <= AGAIN_SEND_IOV; shape++) {
