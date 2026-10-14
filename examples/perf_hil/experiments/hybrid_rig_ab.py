@@ -89,8 +89,9 @@ from largemsg_rig_summary import load  # noqa: E402
 UNITS = {"Array1m": 723, "Array4m": 2889}  # tt_sample_datagrams() of the sample's CDR (tests/test_hybrid_send.c)
 N_BUCKETS = ("1", "2-3", "4-7", "8-15", "16-31", "32-44", "45")
 VENDORS = ("fastdds", "cyclonedds")
+# tickle@nouring (2026-10-14, ab/rx-uring-wait's queue): head's binary with TT_RX_URING_WAIT=0, AUTO as head.
 MODE_OF = {"tickle@head": "auto", "tickle@aa": "auto", "tickle@mtu": "mtu", "tickle@ip": "ip",
-           "tickle@nooffload": "auto", "tickle@mtunooff": "mtu"}
+           "tickle@nooffload": "auto", "tickle@mtunooff": "mtu", "tickle@nouring": "auto"}
 # Samples of a forced-IP arm that may go at n = 1 before the reader's ceiling is known (the PC preflight of 2026-10-11,
 # before any rig run: one, the first sample, published as discovery completed).
 FORCED_IP_EARLY_MTU = 2

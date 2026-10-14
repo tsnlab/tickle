@@ -176,6 +176,15 @@
 #   records every tickle run's counters in offload.txt and judges tickle@nooffload and tickle@mtunooff (forced MTU,
 #   TT_UDP_OFFLOAD=0) alone - each VOID unless every end shows udp_offload=0, gso_sends=0, gro_merged=0. Whether the
 #   offload acted in an arm that has it is read by hybrid_rig_ab.py, which knows the arm's mode.
+#
+# Added 2026-10-14 for the receive wait on io_uring (ab/rx-uring-wait, ~/rig_jobs/rig_queue_rx_uring.sh):
+#   tickle@nouring  tickle@head's own librmw_tickle.so with TT_RX_URING_WAIT=0 in its environment (both ends): the
+#                   epoll wait as before - the control, the same binary. tickle@head runs with TT_RX_URING_WAIT unset.
+#   The treatment, checked after every tickle run from the "Node <n> rx:" lines the HAL prints at context destroy (both
+#   Pis) into <runs>/uring.txt. HOW TO READ IT, enforced here (written before the first run): tickle@nouring is VOID
+#   unless both ends printed an rx line and every one shows uring_wait=0 and uring_waits=0 ("could not look" is not
+#   "off"). tickle@head's counters (uring_wait, uring_switches, uring_waits, uring_recvs, uring_fallbacks) are recorded,
+#   not judged here: rx_uring_read.py judges whether the wait engaged.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
@@ -322,6 +331,11 @@ case " $ARMS " in *" tickle@nooffload "*)
         >> "$OUT.runs/meta.txt"
     say "udp offload A/B: tickle@nooffload = tickle@head's librmw_tickle.so with TT_UDP_OFFLOAD=0" ;;
 esac
+case " $ARMS " in *" tickle@nouring "*)
+    echo "uring_arms=tickle@head:TT_RX_URING_WAIT-unset tickle@nouring:TT_RX_URING_WAIT=0(head's binary)" \
+        >> "$OUT.runs/meta.txt"
+    say "receive wait A/B: tickle@nouring = tickle@head's librmw_tickle.so with TT_RX_URING_WAIT=0" ;;
+esac
 [ "$HAS_TICKLE" = 1 ] || SKIP_BUILD=1
 # The pre/ack variants to build: only those ARMS names (the default ARMS names both, as before).
 # Where each tickle build is installed: on the Pis ~/tickle/install and ~/rmw_variants/<name>/install; in the PC
@@ -444,8 +458,9 @@ env_for() {
         echo "unset FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE RMW_FASTRTPS_USE_QOS_FROM_XML"
         echo "unset RMW_FASTRTPS_PUBLICATION_MODE CYCLONEDDS_URI"
         case "$1" in
-            tickle@head) echo "unset TT_UDP_OFFLOAD; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+            tickle@head) echo "unset TT_UDP_OFFLOAD TT_RX_URING_WAIT; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
             tickle@nooffload) echo "export TT_UDP_OFFLOAD=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+            tickle@nouring) echo "unset TT_UDP_OFFLOAD; export TT_RX_URING_WAIT=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
             tickle@*) echo "source $(variant_install "${1#tickle@}")/local_setup.bash"
                 echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
             fastdds) echo "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp" ;;
@@ -468,8 +483,9 @@ env_for() {
         return 0
     fi
     case "$1" in
-        tickle@head) echo "unset TT_UDP_OFFLOAD; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@head) echo "unset TT_UDP_OFFLOAD TT_RX_URING_WAIT; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@nooffload) echo "export TT_UDP_OFFLOAD=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@nouring) echo "unset TT_UDP_OFFLOAD; export TT_RX_URING_WAIT=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@loans) echo "export ROS_DISABLE_LOANED_MESSAGES=0 RMW_IMPLEMENTATION=rmw_tickle"
             echo "export TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@aa) echo "unset TT_UDP_OFFLOAD; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
@@ -491,7 +507,7 @@ env_for() {
 }
 lib_for() {
     case "$1" in
-        tickle@head | tickle@loans | tickle@aa | tickle@mtu | tickle@ip | tickle@nooffload | tickle@mtunooff)
+        tickle@head | tickle@loans | tickle@aa | tickle@mtu | tickle@ip | tickle@nooffload | tickle@mtunooff | tickle@nouring)
             echo "$HEAD_LIB" ;;
         tickle@*) echo "$(variant_install "${1#tickle@}")/rmw_tickle/lib/librmw_tickle.so" ;;
         fastdds | fastdds@*) echo "librmw_fastrtps_cpp.so" ;;
@@ -534,7 +550,7 @@ if [ "${KA_PGF:-0}" = 1 ]; then
 fi
 # The treatment as perf_test received it: the exported middleware variables (what exec hands on), and the profile
 # file they name with its hash, read now and again from the process itself at 2 s if it is still alive.
-treat() { grep -E "^(RMW_|FASTRTPS_|FASTDDS_|CYCLONEDDS_URI|ROS_DOMAIN_ID|SKIP_DEFAULT_XML_FILE|TT_UDP_OFFLOAD)" | sort
+treat() { grep -E "^(RMW_|FASTRTPS_|FASTDDS_|CYCLONEDDS_URI|ROS_DOMAIN_ID|SKIP_DEFAULT_XML_FILE|TT_UDP_OFFLOAD|TT_RX_URING_WAIT)" | sort
     f=$(sed -n "s/^FASTRTPS_DEFAULT_PROFILES_FILE=//p" "$1"); [ -n "$f" ] && echo "profile_sha256=$(sha256sum < "$f" | cut -c1-64) $f"; }
 env > /tmp/ka_$role.envall; { echo "[launcher env]"; treat /tmp/ka_$role.envall < /tmp/ka_$role.envall; } > /tmp/ka_$role.treat
 ( sleep 2; grep -o "/[^ ]*librmw_[a-z_]*\.so" /proc/$p/maps 2>/dev/null | sort -u > /tmp/ka_$role.maps
@@ -735,6 +751,7 @@ run_one() { # arm topic loss rep [runs dir, default $OUT.runs] [publisher second
     echo "RUN $stem pub_maps=[$mp] sub_maps=[$ms] pub_killed=${k1:-no} sub_killed=${k2:-no} want=$(lib_for "$arm")$insn" \
         >> "$dir/index.txt"
     offload_check "$arm" "$topic" "$stem" "$dir"
+    uring_check "$arm" "$stem" "$dir"
 }
 
 # The UDP offload treatment of one run (header, tickle@nooffload): the sum of a counter over a log's traffic lines, or
@@ -765,6 +782,36 @@ offload_check() { # arm topic stem dir
     say "  $line"
 }
 
+# The receive wait's treatment of one run (header, tickle@nouring): every "Node <n> rx:" line's uring_* fields, both
+# ends. tickle@nouring is VOID unless both logs carry rx lines and every one shows uring_wait=0 and uring_waits=0.
+rx_sum() { # $1 log, $2 field: the sum over its rx lines, "absent" when none carries the field
+    grep -o "Node [0-9]* rx: .*" "$1" 2>/dev/null | grep -o " $2=-\{0,1\}[0-9]*" | cut -d= -f2 |
+        awk 'BEGIN { n = 0; s = 0 } { n++; s += $1 } END { if (n == 0) print "absent"; else print s }'
+}
+uring_check() { # arm stem dir
+    local arm=$1 stem=$2 dir=$3 why="" f
+    case "$arm" in tickle@*) ;; *) return 0 ;; esac
+    local line="URING $stem"
+    for end in pub sub; do
+        for f in uring_wait uring_switches uring_waits uring_recvs uring_fallbacks; do
+            line="$line ${end}_$f=$(rx_sum "$dir/${stem}_$end.log" "$f")"
+        done
+    done
+    if [ "$arm" = tickle@nouring ]; then
+        for end in pub sub; do
+            [ "$(rx_sum "$dir/${stem}_$end.log" uring_wait)" = 0 ] || why="the wait not off (or not reported) at the $end"
+            [ "$(rx_sum "$dir/${stem}_$end.log" uring_waits)" = 0 ] || why="the $end waited on the ring (or did not report)"
+        done
+    fi
+    if [ -n "$why" ]; then
+        line="$line VOID: $why"
+        grep "^RUN $stem " "$dir/index.txt" >> "$dir/index_uring_void.txt"
+        grep -v "^RUN $stem " "$dir/index.txt" > "$dir/index.txt.tmp" && mv "$dir/index.txt.tmp" "$dir/index.txt"
+    fi
+    echo "$line" >> "$dir/uring.txt"
+    say "  $line"
+}
+
 # ---- dry run, same lock (DRY=1; the default under EQUAL_BOUND): every arm once per topic, DRY_DUR s at 0% loss, read
 # by the summary in --dry mode; any VOID - a treatment the publisher did not receive, a profile Fast DDS rejected, a
 # writer that never delivered - stops the job before the real runs.
@@ -778,6 +825,9 @@ if [ "$DRY" = 1 ]; then
     if [ "${PIPESTATUS[0]}" != 0 ]; then say "DRY RUN FAILED - not running (runs in $OUT.dry)"; exit 1; fi
     if [ -s "$OUT.dry/index_offload_void.txt" ]; then
         say "DRY RUN FAILED - UDP offload treatment VOID (offload.txt in $OUT.dry)"; exit 1
+    fi
+    if [ -s "$OUT.dry/index_uring_void.txt" ]; then
+        say "DRY RUN FAILED - receive wait treatment VOID (uring.txt in $OUT.dry)"; exit 1
     fi
     say "--- dry run clean ---"
 fi
