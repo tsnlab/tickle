@@ -44,6 +44,7 @@
 # $WORK/prof_<arm>_<cell>_{cli,srv}.data, reported per symbol (instructions) in .report beside them, the run's samples
 # in prof_<arm>_<cell>.txt: where the user instructions go),
 # WORK= (default ~/largemsg_pc/rx_gap3_server),
+# BUILD_CFLAGS= (to every arm's build, e.g. -Dtt_SOCKET_BUFFER_SIZE=212992: the rig Pis' send buffer; its own WORK),
 # CLI_EVENTS= (more perf events for the client, e.g. syscalls:sys_enter_poll, counted per run on its RUN line),
 # RATE= (e.g. 1gbit: tbf on both veth ends, the rig's line rate and its full send buffer), OUT= (default
 # $WORK/results.txt), TREE=. Run it detached. Every bench process runs under ulimit -v and a timeout.
@@ -110,6 +111,7 @@ done
 build_one() { # <sha> <flavor>: every cell's scenario, into its own source copy (own HOME: own install prefixes)
     local sha=$1 flavor=$2 d=$WORK/src_${1}_$2 cell flags
     if [ "$flavor" = P ]; then flags=$TICKLE_PLACEMENT_CFLAGS; else flags=$TICKLE_LAYOUT_CFLAGS; fi
+    flags="$flags ${BUILD_CFLAGS:-}" # every arm alike: give the run its own WORK, the builds are kept by commit
     if [ ! -f "$d/.built" ]; then
         rm -rf "$d" && mkdir -p "$d/home"
         git -C "$TREE" archive "$sha" | tar -x -C "$d" || return 1
@@ -154,7 +156,7 @@ if [ -n "$RATE" ]; then
 fi
 line="=== srv_gap_pc $(date -Is) arms:"
 for l in "${labels[@]}"; do line+=" $l=${arm_sha[$l]}:${arm_flavor[$l]}${arm_env[$l]:+[${arm_env[$l]}]}"; done
-echo "$line cells=[$CELLS] blocks=$BLOCKS rate=${RATE:-none} load=$(cut -d' ' -f1-3 /proc/loadavg) ===" | tee -a "$OUT"
+echo "$line cells=[$CELLS] blocks=$BLOCKS rate=${RATE:-none} cflags=[${BUILD_CFLAGS:-}] load=$(cut -d' ' -f1-3 /proc/loadavg) ===" | tee -a "$OUT"
 
 count() { # <perf -x, file> <event>
     awk -F, -v e="$2" '$3 ~ "^"e && $1 ~ /^[0-9]+$/ { print $1; exit }' "$1" 2>/dev/null
@@ -236,7 +238,7 @@ run() { # <arm> <cell> <block> <mode: perf|strace>
         return
     fi
     local extra="" ev
-    for ev in ${CLI_EVENTS//,/ }; do extra+=" cli_${ev##*:}=$(count "$cmeas" "$ev")"; done
+    for ev in ${CLI_EVENTS:+${CLI_EVENTS//,/ }}; do extra+=" cli_${ev##*:}=$(count "$cmeas" "$ev")"; done
     echo "RUN arm=$arm sha=${arm_sha[$arm]} flavor=${arm_flavor[$arm]} cell=$cell block=$block mode=perf client_sent=$sent server_samples=$div srv_insn_u=$siu srv_insn_k=$sik cli_insn_u=$ciu cli_insn_k=$cik$extra | C $cres | S $sres | SRX $(grep -m1 ' rx: ' "$slog" | sed 's/.* rx: //')" >>"$OUT"
     echo "RUN arm=$arm cell=$cell block=$block srv_u/s=$((siu / div)) srv_k/s=$((sik / div)) cli_u/s=$((ciu / sent)) cli_k/s=$((cik / sent))"
 }
