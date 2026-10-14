@@ -1081,6 +1081,10 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.wait_held = 0;
     node->hal.wait_epoll_armed = false;
     node->hal.wait_epoll_seen = false;
+    node->hal.wait_aimed = false;
+    node->hal.wait_aimed_in_place = false;
+    node->hal.wait_aimed_bytes = 0;
+    node->hal.wait_aimed_dest = NULL;
     node->hal.wait_buf = NULL;
     node->hal.wait_len = 0;
     node->hal.wait_io = NULL;
@@ -3684,11 +3688,16 @@ static void uring_arm(struct tt_hal* hal, uint8_t bits) {
 #define WAIT_CANCEL_WAIT_NS 10000000L // 10 ms
 #define WAIT_PROBE_OPS 64U            // IORING_REGISTER_PROBE's answer: room for every opcode up to this
 #define WAIT_PROBE_ALIGN 8U
+#define WAIT_AIMED_PIECES 3U // an aimed read: the framing, the run's payload in its assembly, anything longer
+#define WAIT_MODE_POLL 0U    // wait_reads(): the socket waits by readiness, read after as the epoll path reads it
+#define WAIT_MODE_RECV 1U    // a recvmsg into one buffer
+#define WAIT_MODE_AIMED 2U   // the data socket's recvmsg aimed at the hinted run (C3)
 
 // What the kernel writes for the wait, outside the context (struct tt_hal.wait_io).
 struct wait_io {
     struct msghdr msg[URING_SOCKETS];
-    struct iovec iov[URING_SOCKETS]; // NOLINT(misc-include-cleaner) - see <sys/uio.h>'s own include comment
+    // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
+    struct iovec iov[URING_SOCKETS][WAIT_AIMED_PIECES]; // one piece, or an aimed read's three (wait_aim())
     struct sockaddr_in addr[URING_SOCKETS];
 #if TT_HAL_UDP_GRO
     // UDP_GRO's segment size, on every recvmsg whatever the option's state: one armed before receive offload went on
@@ -3865,8 +3874,36 @@ static void wait_look(struct tt_hal* hal) {
     (void)ring_look(hal);
 }
 
-// A recvmsg on socket `socket` (0 the well-known one, 1 the data one), queued.
-static void wait_queue_recv(struct tt_Context* node, uint32_t socket, int socket_fd) {
+#if TT_HAL_RX_DIRECT && WAIT_IN_PLACE
+// The data socket's recvmsg aimed as direct_recvmsg() aims a read (C3): the framing's bytes into the caller's buffer,
+// the hinted run's payload straight into its assembly, anything longer after the framing. From the arm until the wait
+// ends (wait_aimed_end()) the read is in progress: direct_busy is set, so a thread freeing the assembly meanwhile parks
+// it rather than giving it back. Nothing is aimed - one piece, as before - when the hint went meanwhile or does not
+// fit.
+static void wait_aim(struct tt_Context* node, struct wait_io* area, uint8_t* buf, size_t len) {
+    struct tt_LargeState* large = &node->large;
+    __atomic_store_n(&large->direct_busy, 1U, __ATOMIC_SEQ_CST);
+    const uint32_t bytes = __atomic_load_n(&large->direct_bytes, __ATOMIC_SEQ_CST);
+    const uint32_t framing = large->direct_framing_len;
+    if (bytes == 0 || len < (size_t)framing + bytes) {
+        __atomic_store_n(&large->direct_busy, 0U, __ATOMIC_SEQ_CST);
+        return;
+    }
+    area->iov[1][0].iov_base = buf;
+    area->iov[1][0].iov_len = framing;
+    area->iov[1][1].iov_base = large->direct_dest;
+    area->iov[1][1].iov_len = bytes;
+    area->iov[1][2].iov_base = buf + framing + bytes;
+    area->iov[1][2].iov_len = len - framing - bytes;
+    area->msg[1].msg_iovlen = WAIT_AIMED_PIECES;
+    node->hal.wait_aimed = true;
+    node->hal.wait_aimed_bytes = bytes;
+    node->hal.wait_aimed_dest = large->direct_dest;
+}
+#endif
+
+// A recvmsg on socket `socket` (0 the well-known one, 1 the data one), queued; aimed at the hinted run when `aimed`.
+static void wait_queue_recv(struct tt_Context* node, uint32_t socket, int socket_fd, bool aimed) {
     struct tt_hal* hal = &node->hal;
     struct wait_io* area = (struct wait_io*)hal->wait_io;
     uint8_t* target = area->landing[socket];
@@ -3879,12 +3916,19 @@ static void wait_queue_recv(struct tt_Context* node, uint32_t socket, int socket
 #endif
     struct msghdr* msg = &area->msg[socket];
     memset(msg, 0, sizeof(*msg));
-    area->iov[socket].iov_base = target;
-    area->iov[socket].iov_len = len;
+    area->iov[socket][0].iov_base = target;
+    area->iov[socket][0].iov_len = len;
     msg->msg_name = &area->addr[socket];
     msg->msg_namelen = sizeof(area->addr[socket]);
-    msg->msg_iov = &area->iov[socket];
+    msg->msg_iov = area->iov[socket];
     msg->msg_iovlen = 1;
+#if TT_HAL_RX_DIRECT && WAIT_IN_PLACE
+    if (aimed && target == hal->wait_buf) {
+        wait_aim(node, area, target, len);
+    }
+#else
+    (void)aimed;
+#endif
 #if TT_HAL_UDP_GRO
     memset(&area->control[socket], 0, sizeof(area->control[socket])); // no cmsg of an earlier read can be read again
     msg->msg_control = area->control[socket].bytes;
@@ -3901,26 +3945,27 @@ static void wait_queue_recv(struct tt_Context* node, uint32_t socket, int socket
     hal->wait_recv_armed |= (uint8_t)(1U << socket);
 }
 
-// Whether the ring can read socket `socket` now: not while receive offload settles, nor, for the data socket, while
-// core hints a run to be read in place (three pieces). Those wait by readiness.
-static bool wait_reads(const struct tt_Context* node, uint32_t socket) {
+// How the ring reads socket `socket` now (WAIT_MODE_*): a recvmsg, aimed at the hinted run for the data socket while
+// core hints one (C3) and the recvmsg reads into the caller's buffer; by readiness while receive offload settles, or
+// for a hint where the recvmsg reads into the HAL's own landing (an aimed read needs the caller's buffer).
+static uint32_t wait_reads(const struct tt_Context* node, uint32_t socket) {
 #if TT_HAL_UDP_GRO
     // Receive offload on is read by the ring as gro_read() reads it (the segment size's cmsg: C2). Settling is not: its
     // read must turn the option back on first (rx_read_one()), and the settle itself waits for empty queues.
     if (node->hal.gro_state == TT_GRO_SETTLING) {
-        return false;
+        return WAIT_MODE_POLL;
     }
 #endif
 #if TT_HAL_RX_DIRECT
     // Only the polling thread makes a hint, so a 0 seen here is current (rx_read_one()).
     if (socket == 1U && __atomic_load_n(&node->large.direct_bytes, __ATOMIC_RELAXED) != 0) {
-        return false;
+        return WAIT_IN_PLACE && node->hal.wait_buf != NULL ? WAIT_MODE_AIMED : WAIT_MODE_POLL;
     }
 #else
     (void)node;
     (void)socket;
 #endif
-    return true;
+    return WAIT_MODE_RECV;
 }
 
 // Before a wait sleeps: a recvmsg on each socket that has none in flight and nothing held, or a readiness poll where
@@ -3933,8 +3978,9 @@ static void wait_arm(struct tt_Context* node) {
         if (fds[i] < 0 || ((hal->wait_recv_armed | hal->wait_held) & bit) != 0) {
             continue;
         }
-        if (wait_reads(node, i)) {
-            wait_queue_recv(node, i, fds[i]);
+        const uint32_t mode = wait_reads(node, i);
+        if (mode != WAIT_MODE_POLL) {
+            wait_queue_recv(node, i, fds[i], mode == WAIT_MODE_AIMED);
             continue;
         }
         hal->wait_fallbacks++;
@@ -3979,6 +4025,84 @@ static uint32_t wait_ready(struct tt_hal* hal, uint8_t polled) {
     return ready;
 }
 
+// Whether the ring has anything to report, without a system call: a datagram held, a poll fired on a socket read by
+// readiness, or the epoll fd's poll.
+static bool wait_something(const struct tt_hal* hal, uint8_t polled) {
+    return hal->wait_held != 0 || (polled & (uint8_t)~hal->wait_recv_armed) != 0 || hal->wait_epoll_seen;
+}
+
+#if TT_HAL_RX_DIRECT && WAIT_IN_PLACE
+// At the end of a wait that armed an aimed recvmsg (wait_aim()): it is never left armed across the return - a thread
+// freeing the assembly parks it only for as long as the read is in progress, and core gives a parked buffer back once
+// it has the datagram (large_direct_release_parked()) - so one that has not completed is cancelled. A completion is
+// checked as direct_recvmsg() checks its read: the hinted run stays where it went (direct_split, set by wait_read()),
+// anything else is put back together in the buffer. True when the data socket's datagram is held: the wait reports it
+// alone, before anything else, so nothing core does in between can move the hint it was read against.
+static bool wait_aimed_end(struct tt_Context* node) {
+    struct tt_hal* hal = &node->hal;
+    struct tt_LargeState* large = &node->large;
+    if ((hal->wait_recv_armed & WAIT_BIT_DATA) != 0) {
+        wait_cancel(node, WAIT_BIT_DATA);
+    }
+    if ((hal->wait_recv_armed & WAIT_BIT_DATA) != 0) {
+        return false; // it would not end: the kernel may still write the assembly, which stays parked (direct_busy)
+    }
+    hal->wait_aimed = false;
+    const int32_t got = hal->wait_res[1];
+    if ((hal->wait_held & WAIT_BIT_DATA) != 0 && got >= 0) {
+        uint8_t* buf = hal->wait_target[1];
+        const uint32_t bytes = hal->wait_aimed_bytes;
+        const uint32_t framing = large->direct_framing_len;
+        large->direct_reads++;
+#if TT_HAL_UDP_GRO
+        const int segment = gro_segment_of(&((struct wait_io*)hal->wait_io)->msg[1]);
+        const bool merged = segment > 0 && got > segment;
+#else
+        const bool merged = false;
+#endif
+        if (!merged && direct_is_hinted_run(large, buf, (size_t)got, bytes) &&
+            __atomic_load_n(&large->direct_bytes, __ATOMIC_SEQ_CST) == bytes) {
+            hal->wait_aimed_in_place = true;
+        } else {
+            large->direct_missed++;
+            if ((size_t)got > framing) {
+                const size_t back = (size_t)got - framing < bytes ? (size_t)got - framing : bytes;
+                memcpy(buf + framing, hal->wait_aimed_dest, back);
+            }
+        }
+    }
+    __atomic_store_n(&large->direct_busy, 0U, __ATOMIC_SEQ_CST);
+    return (hal->wait_held & WAIT_BIT_DATA) != 0;
+}
+#endif
+
+#define WAIT_REPORT 1    // wait_sleep(): something to report
+#define WAIT_TIMED_OUT 0 // the timeout
+#define WAIT_FAILED (-1) // an error, or a signal with no timeout to report it as (errno in *err)
+#define WAIT_AGAIN 2     // nothing yet and no timeout: wait on
+
+// One sleep on the ring, unless it has something to report already: what the wait does next (WAIT_*). *polled gathers
+// the polls that fired; *err is the io_uring_enter()'s errno.
+static int wait_sleep(struct tt_Context* node, const struct timespec* timeout_ts, uint8_t* polled, int* err) {
+    struct tt_hal* hal = &node->hal;
+    if (wait_something(hal, *polled)) {
+        return WAIT_REPORT;
+    }
+    wait_arm(node);
+    const int entered = ring_enter(hal, 1U, timeout_ts);
+    *err = errno;
+    hal->wait_enters++;
+    *polled |= ring_look(hal);
+    if (wait_something(hal, *polled)) {
+        return WAIT_REPORT;
+    }
+    // NOLINTNEXTLINE(misc-include-cleaner) - ETIME/EINTR: glibc-private headers
+    if (entered < 0 && (timeout_ts == NULL || (*err != ETIME && *err != EINTR))) {
+        return WAIT_FAILED; // EINTR with no timeout: a signal, and the caller polls again
+    }
+    return timeout_ts != NULL ? WAIT_TIMED_OUT : WAIT_AGAIN;
+}
+
 // rx_wait() on the ring: the same return convention - how many things are ready, 0 on timeout, -1 with errno - and in
 // *ready the same bits. What the ring already holds answers without a system call. A wait that ends with nothing to
 // report (a completion that names nothing ready: a cancellation, a poll on a socket the ring reads) goes on waiting
@@ -3986,31 +4110,34 @@ static uint32_t wait_ready(struct tt_hal* hal, uint8_t polled) {
 // after a signal.
 static int rx_wait_ring(struct tt_Context* node, const struct timespec* timeout_ts, uint32_t* ready) {
     struct tt_hal* hal = &node->hal;
-    uint32_t got = wait_ready(hal, ring_look(hal));
-    while (got == 0) {
-        wait_arm(node);
-        const int entered = ring_enter(hal, 1U, timeout_ts);
-        const int err = errno;
-        hal->wait_enters++;
-        got = wait_ready(hal, ring_look(hal));
-        if (got != 0) {
-            break;
+    for (;;) {
+        uint8_t polled = ring_look(hal);
+        int err = 0;
+        const int ended = wait_sleep(node, timeout_ts, &polled, &err);
+#if TT_HAL_RX_DIRECT && WAIT_IN_PLACE
+        if (hal->wait_aimed && wait_aimed_end(node)) {
+            *ready = RX_READY_DATA; // the aimed datagram, alone: the rest is still there for the next wait
+            return 1;
         }
-        // NOLINTNEXTLINE(misc-include-cleaner) - ETIME/EINTR: glibc-private headers
-        if (entered < 0 && err != ETIME && err != EINTR) {
+#endif
+        if (ended == WAIT_TIMED_OUT) {
+            return 0;
+        }
+        if (ended == WAIT_FAILED) {
             errno = err;
             return -1;
         }
-        if (timeout_ts != NULL) {
-            return 0;
-        }
-        if (entered < 0 && err == EINTR) {
-            errno = EINTR;
-            return -1; // a signal: the caller polls again
+        if (ended == WAIT_REPORT) {
+            const uint32_t got = wait_ready(hal, polled);
+            if (got != 0) {
+                *ready = got;
+                return __builtin_popcount(got);
+            }
+            if (timeout_ts != NULL) {
+                return 0; // a completion that named nothing: as after a signal
+            }
         }
     }
-    *ready = got;
-    return __builtin_popcount(got);
 }
 
 // A recvmsg cancelled, and waited for until it has ended - completed with its datagram held, if it raced the
@@ -4134,6 +4261,11 @@ static int32_t wait_read(struct tt_Context* node, int socket_fd, void* buf, size
     hal->wait_held &= (uint8_t)~(1U << socket);
     node->rx_via_data_port = socket == 1U;
     const int32_t res = hal->wait_res[socket];
+#if TT_HAL_RX_DIRECT && WAIT_IN_PLACE
+    if (res < 0 && socket == 1U) {
+        hal->wait_aimed_in_place = false; // nothing read in place: nothing for the next datagram to take for it
+    }
+#endif
     if (res < 0) {
         // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN: glibc-private header
         if (res == -EAGAIN) {
@@ -4176,6 +4308,15 @@ static int32_t wait_read(struct tt_Context* node, int socket_fd, void* buf, size
         memcpy(buf, hal->wait_target[socket], got);
         hal->wait_copies++;
     }
+#if TT_HAL_RX_DIRECT && WAIT_IN_PLACE
+    // The hinted run, its payload where it belongs (C3): handed to core with this datagram, whatever follows - set
+    // after receive offload's count returned early, it was never handed over while offload was on, and the next
+    // datagram took it instead: torn samples in every RELIABLE run on the PC (2026-10-14), where repairs turn it on.
+    if (hal->wait_aimed_in_place && socket == 1U) {
+        node->large.direct_split = hal->wait_aimed_dest;
+        hal->wait_aimed_in_place = false;
+    }
+#endif
 #if TT_HAL_UDP_GRO
     if (hal->gro_state != TT_GRO_PLAIN) {
         // rx_read_one()'s receive-offload count: reads with neither a merged read nor a large fragment

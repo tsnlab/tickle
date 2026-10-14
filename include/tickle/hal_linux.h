@@ -424,6 +424,13 @@ struct tt_hal {
     uint8_t wait_held;
     bool wait_epoll_armed;
     bool wait_epoll_seen;
+    // The data socket's recvmsg aimed as direct_recvmsg() aims a read (hal_linux.c wait_aim(), C3): armed so
+    // (wait_aimed), with the hint's byte count and destination it was armed for; wait_aimed_in_place: its completion
+    // was the hinted run, handed to core as direct_split when the datagram is handed out.
+    bool wait_aimed;
+    bool wait_aimed_in_place;
+    uint32_t wait_aimed_bytes;
+    uint8_t* wait_aimed_dest;
     int32_t wait_res[2];
     uint8_t* wait_target[2];
     size_t wait_target_len[2];

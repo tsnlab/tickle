@@ -18,6 +18,9 @@ Not mutated, and why - each decides no outcome a single-threaded check on loopba
   - wait_ready()'s rule that a poll on a socket the ring reads says nothing: such a poll is armed only by
     tt_rx_maybe_ready() on a socket with no recvmsg, and its completion arrives with the recvmsg's, never alone, in
     every run a check can make.
+  - rx_wait_ring()'s rule that an aimed datagram is reported alone (C3): what it guards against is core moving the hint
+    between the aimed read and its hand-out while handling something reported with it, which needs a second event in
+    the same wait and a hint that core changes for it - not something this check's single reader produces.
   - wait_ring_setup()'s refusals (no epoll set, no EXT_ARG, the probe, no multishot poll): this kernel has all of them;
     the refused case (refuse_io_uring.so) checks the path they lead to.
 
@@ -154,8 +157,8 @@ MUTANTS = [
     (
         "C2: receive offload on read by readiness, as in C1",
         "src/hal_linux.c",
-        "    if (node->hal.gro_state == TT_GRO_SETTLING) {\n        return false;",
-        "    if (node->hal.gro_state != TT_GRO_PLAIN) {\n        return false;",
+        "    if (node->hal.gro_state == TT_GRO_SETTLING) {\n        return WAIT_MODE_POLL;",
+        "    if (node->hal.gro_state != TT_GRO_PLAIN) {\n        return WAIT_MODE_POLL;",
         CHECK,
     ),
     (
@@ -163,6 +166,55 @@ MUTANTS = [
         "src/hal_linux.c",
         "    if (segment > 0 && res > segment) {",
         "    if (false) {",
+        CHECK,
+    ),
+    (
+        "C3: hinted runs read by readiness, as in C1",
+        "src/hal_linux.c",
+        "        return WAIT_IN_PLACE && node->hal.wait_buf != NULL ? WAIT_MODE_AIMED : WAIT_MODE_POLL;",
+        "        return WAIT_MODE_POLL;",
+        CHECK,
+    ),
+    (
+        "C3: the aimed read not marked in progress (direct_busy)",
+        "src/hal_linux.c",
+        "    __atomic_store_n(&large->direct_busy, 1U, __ATOMIC_SEQ_CST);\n    const uint32_t bytes = __atomic_load_n(&large->direct_bytes, __ATOMIC_SEQ_CST);\n    const uint32_t framing = large->direct_framing_len;\n    if (bytes == 0 || len < (size_t)framing + bytes) {\n        __atomic_store_n(&large->direct_busy, 0U, __ATOMIC_SEQ_CST);\n        return;",
+        "    const uint32_t bytes = __atomic_load_n(&large->direct_bytes, __ATOMIC_SEQ_CST);\n    const uint32_t framing = large->direct_framing_len;\n    if (bytes == 0 || len < (size_t)framing + bytes) {\n        __atomic_store_n(&large->direct_busy, 0U, __ATOMIC_SEQ_CST);\n        return;",
+        CHECK,
+    ),
+    (
+        "C3: the aimed recvmsg left armed across the wait's return",
+        "src/hal_linux.c",
+        "    if ((hal->wait_recv_armed & WAIT_BIT_DATA) != 0) {\n        wait_cancel(node, WAIT_BIT_DATA);\n    }\n    if ((hal->wait_recv_armed & WAIT_BIT_DATA) != 0) {\n        return false; // it would not end",
+        "    if ((hal->wait_recv_armed & WAIT_BIT_DATA) != 0) {\n        return false; // it would not end",
+        CHECK,
+    ),
+    (
+        "C3: a hint withdrawn during the wait not looked at again",
+        "src/hal_linux.c",
+        "        if (!merged && direct_is_hinted_run(large, buf, (size_t)got, bytes) &&\n            __atomic_load_n(&large->direct_bytes, __ATOMIC_SEQ_CST) == bytes) {",
+        "        if (!merged && direct_is_hinted_run(large, buf, (size_t)got, bytes)) {",
+        CHECK,
+    ),
+    (
+        "C3: an aimed miss not put back together",
+        "src/hal_linux.c",
+        "                memcpy(buf + framing, hal->wait_aimed_dest, back);",
+        "                (void)back;",
+        CHECK,
+    ),
+    (
+        "C3: the run read in place not handed to core while receive offload is on (the torn RELIABLE samples)",
+        "src/hal_linux.c",
+        "    if (hal->wait_aimed_in_place && socket == 1U) {",
+        "    if (hal->wait_aimed_in_place && socket == 1U && hal->gro_state == TT_GRO_PLAIN) {",
+        CHECK,
+    ),
+    (
+        "C3: the run read in place not handed to core (direct_split)",
+        "src/hal_linux.c",
+        "        node->large.direct_split = hal->wait_aimed_dest;\n        hal->wait_aimed_in_place = false;\n    }",
+        "        hal->wait_aimed_in_place = false;\n    }",
         CHECK,
     ),
     (

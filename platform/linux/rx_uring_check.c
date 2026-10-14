@@ -39,6 +39,18 @@
 //  10. merged   - receive offload on (as a large sample's MTU fragment turns it on) and two datagrams sent as one
 //                 UDP_SEGMENT send, which the UDP_GRO socket takes as one merged read: both handed out whole, in order;
 //                 on the ring, by the wait's recvmsg (its segment-size cmsg), with no readiness fallback.
+//  11. aimed    - a run hinted to be read in place (struct tt_LargeState.direct_*, set by hand as large_direct_aim()
+//                 sets it) arriving while the context sleeps: its framing in the buffer, its payload in the hinted
+//                 place, direct_split set - on the ring by the wait's aimed recvmsg (C3), with no readiness fallback.
+//  11b. miss    - a datagram that is not the hinted run, under the same hint: read whole into the buffer, not split.
+//  11c. ended   - a wait with the aimed recvmsg armed that ends for its timeout: no read is left in progress after it
+//                 (direct_busy 0 - a thread freeing the assembly gives it back at once), and the run sent next is still
+//                 read in place.
+//  11d. withdrawn - the hint withdrawn by another thread while the context sleeps (as large_assembly_free() does): on
+//                 the ring the read is in progress then (the buffer would be parked), and the run that comes after is
+//                 read whole into the buffer, not split - in both arms.
+//  11e. offload - receive offload on (RELIABLE repairs come as MTU fragments and turn it on): the hinted run still in
+//                 place, and the datagram after it read whole, not taken for the run.
 //   9. quiet    - 128 small datagrams in a row put the wait back on epoll (the next wait is not on the ring, and
 //                 receives), and the next large-sample datagram puts it on the ring again.
 // With the argument "refused" (run under tests/support/refuse_io_uring.so): no ring, uring_wait=-1, and case 1 still
@@ -94,9 +106,18 @@ enum check_exit { CHECK_PASS = 0, CHECK_FAIL = 1, CHECK_SETUP_FAILED = 3 };
 #define DRAIN_DATAGRAM_BYTES 65507U
 #define LARGE_SHAPED_BYTES 200U // a datagram that reads as a large sample's run to the HAL (bytes 0 and 3)
 #define QUIET_DATAGRAMS 128U    // hal_linux.c WAIT_QUIET_DATAGRAMS
-#define DRAINED_COUNT 3U        // case 7's datagrams
-#define HEADER_BYTES 3U         // "UR" and the number
-#define DATAGRAM_ROOM 64U       // the largest number a datagram is given, and then some
+#define AIM_UNIT 100U           // the hint's unit: small, so a run is easy to build
+#define AIM_UNITS 3U
+#define AIM_BYTES ((size_t)AIM_UNIT * AIM_UNITS)
+#define AIM_FRAMING ((uint32_t)(sizeof(struct tt_SingleHeader) + sizeof(struct tt_FragRunLHeader)))
+#define AIM_COUNT_AT ((uint32_t)(sizeof(struct tt_SingleHeader) + offsetof(struct tt_FragRunLHeader, run_count)))
+#define AIM_SOURCE 9U     // the framing's source byte
+#define AIM_FILL 0x40U    // the rest of the framing: any bytes, compared as bytes
+#define AIM_SENTINEL 0xA5 // the hinted place before a read
+#define AIM_FLIP 0x55U    // a framing byte made into another (11b)
+#define DRAINED_COUNT 3U  // case 7's datagrams
+#define HEADER_BYTES 3U   // "UR" and the number
+#define DATAGRAM_ROOM 64U // the largest number a datagram is given, and then some
 
 // Each case's datagrams, by number.
 enum datagram_number {
@@ -110,6 +131,7 @@ enum datagram_number {
     DG_BOTH_DATA = 11,
     DG_BOTH_WELL_KNOWN = 12,
     DG_HINT = 10,
+    DG_AIM_AFTER = 19, // 11e: the datagram after the run
     DG_ON = 13,
     DG_QUIET = 14,
     DG_AFTER_QUIET = 15,
@@ -609,6 +631,172 @@ static void check_merged(struct arm* arm) {
     (void)offload(false);
 }
 
+// ---- 11: the aimed read
+static uint8_t aim_place[AIM_BYTES + AIM_UNIT];
+static uint8_t aim_run[AIM_FRAMING + AIM_BYTES];
+
+// The run the hint names: single-form FRAG_RUN_L framing (bytes, as the HAL compares them) and AIM_UNITS units.
+static void build_run(void) {
+    memset(aim_run, 0, sizeof(aim_run));
+    aim_run[0] = (uint8_t)tt_SINGLE_MARKER_LE;
+    aim_run[1] = tt_VERSION;
+    aim_run[2] = AIM_SOURCE;
+    aim_run[3] = tt_SUBMESSAGE_TYPE_FRAG_RUN_L;
+    for (uint32_t i = 4; i < AIM_FRAMING; i++) {
+        aim_run[i] = (uint8_t)(AIM_FILL + i);
+    }
+    const uint16_t count = AIM_UNITS;
+    memcpy(aim_run + AIM_COUNT_AT, &count, sizeof(count));
+    for (uint32_t i = AIM_FRAMING; i < sizeof(aim_run); i++) {
+        aim_run[i] = (uint8_t)((i * PATTERN_STEP) + 1U);
+    }
+}
+
+static void aim(void) {
+    memset(aim_place, AIM_SENTINEL, sizeof(aim_place));
+    memcpy(node.large.direct_framing, aim_run, AIM_FRAMING);
+    node.large.direct_framing_len = (uint8_t)AIM_FRAMING;
+    node.large.direct_count_at = (uint8_t)AIM_COUNT_AT;
+    node.large.direct_unit = (uint16_t)AIM_UNIT;
+    node.large.direct_dest = aim_place;
+    node.large.direct_split = NULL;
+    __atomic_store_n(&node.large.direct_bytes, (uint32_t)AIM_BYTES, __ATOMIC_SEQ_CST);
+}
+
+static void unaim(void) {
+    __atomic_store_n(&node.large.direct_bytes, 0U, __ATOMIC_SEQ_CST);
+    node.large.direct_split = NULL;
+}
+
+static bool send_run(const uint8_t* bytes, size_t len) {
+    struct sockaddr_in dest;
+    socklen_t dest_len = sizeof(dest);
+    if (getsockname(node.hal.data_sock, (struct sockaddr*)&dest, &dest_len) != 0) {
+        return false;
+    }
+    dest.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    return sendto(sender, bytes, len, 0, (struct sockaddr*)&dest, sizeof(dest)) == (ssize_t)len;
+}
+
+static void* send_run_late(void* arg) {
+    (void)arg;
+    usleep(LATE_SEND_US);
+    (void)send_run(aim_run, sizeof(aim_run));
+    return NULL;
+}
+
+// The hint withdrawn while the context sleeps, then the run sent: whether the read was in progress when it went.
+static bool withdrawn_busy;
+
+static void* withdraw_then_send(void* arg) {
+    (void)arg;
+    usleep(LATE_SEND_US);
+    __atomic_store_n(&node.large.direct_bytes, 0U, __ATOMIC_SEQ_CST); // large_direct_withdraw()
+    withdrawn_busy = __atomic_load_n(&node.large.direct_busy, __ATOMIC_SEQ_CST) != 0;
+    usleep(LATE_SEND_US);
+    (void)send_run(aim_run, sizeof(aim_run));
+    return NULL;
+}
+
+// One wait for the run, from a thread that sends it late: "in place", "whole" (read whole into buf, not split) or what
+// came instead.
+static const char* wait_for_run(void* (*sender_thread)(void*)) {
+    pthread_t thread; // NOLINT(misc-include-cleaner) - <pthread.h> is included; the tool maps pthread_t elsewhere
+    if (pthread_create(&thread, NULL, sender_thread, NULL) != 0) {
+        setup_failed = true;
+        return "no thread";
+    }
+    memset(buf, 0, sizeof(buf));
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    int32_t got = tt_receive(&node, buf, sizeof(buf), &ip, &port, WAIT_LONG_NS);
+    (void)pthread_join(thread, NULL);
+    if (got != (int32_t)sizeof(aim_run) || memcmp(buf, aim_run, AIM_FRAMING) != 0) {
+        return "other";
+    }
+    if (node.large.direct_split == aim_place && memcmp(aim_place, aim_run + AIM_FRAMING, AIM_BYTES) == 0) {
+        return "in place";
+    }
+    if (node.large.direct_split == NULL && memcmp(buf, aim_run, sizeof(aim_run)) == 0) {
+        return "whole";
+    }
+    return "torn";
+}
+
+static void check_aimed(struct arm* arm) {
+    drain_all();
+    build_run();
+    // 11. in place
+    const uint64_t fallbacks = node.hal.wait_fallbacks;
+    const uint64_t reads = node.large.direct_reads;
+    aim();
+    const char* placed = wait_for_run(send_run_late);
+    const bool aimed_reads = node.large.direct_reads == reads + 1U;
+    unaim();
+    char line[LINE_BYTES];
+    (void)snprintf(line, sizeof(line), "aimed: the hinted run %s, one aimed read %d", placed, aimed_reads ? 1 : 0);
+    record(arm, line);
+    verdict(arm, strcmp(placed, "in place") == 0 && aimed_reads, line);
+    if (arm->ring) {
+        (void)snprintf(line, sizeof(line), "aimed: by the ring's aimed recvmsg - fallbacks +%llu (want 0)",
+                       (unsigned long long)(node.hal.wait_fallbacks - fallbacks));
+        verdict(arm, node.hal.wait_fallbacks == fallbacks, line);
+    }
+    // 11b. miss
+    drain_all();
+    aim();
+    const uint64_t missed = node.large.direct_missed;
+    aim_run[AIM_COUNT_AT + 2U] ^= AIM_FLIP; // a framing byte after the unit count: not the hinted run
+    const char* miss = wait_for_run(send_run_late);
+    aim_run[AIM_COUNT_AT + 2U] ^= AIM_FLIP;
+    unaim();
+    (void)snprintf(line, sizeof(line), "aimed miss: %s, missed +%llu", miss,
+                   (unsigned long long)(node.large.direct_missed - missed));
+    record(arm, line);
+    verdict(arm, strcmp(miss, "whole") == 0 && node.large.direct_missed == missed + 1U, line);
+    // 11c. a wait that ends with the aimed recvmsg armed
+    drain_all();
+    aim();
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    const int32_t timed_out = tt_receive(&node, buf, sizeof(buf), &ip, &port, WAIT_BRIEF_NS);
+    const bool idle = __atomic_load_n(&node.large.direct_busy, __ATOMIC_SEQ_CST) == 0;
+    const char* after = wait_for_run(send_run_late);
+    unaim();
+    (void)snprintf(line, sizeof(line), "aimed ended: %d, no read in progress after it %d, then the run %s",
+                   (int)timed_out, idle ? 1 : 0, after);
+    record(arm, line);
+    verdict(arm, timed_out == -1 && idle && strcmp(after, "in place") == 0, line);
+    // 11d. withdrawn while the context sleeps
+    drain_all();
+    aim();
+    withdrawn_busy = false;
+    const char* withdrawn = wait_for_run(withdraw_then_send);
+    unaim();
+    (void)snprintf(line, sizeof(line), "aimed withdrawn: the run %s", withdrawn);
+    record(arm, line);
+    verdict(arm, strcmp(withdrawn, "whole") == 0, line);
+    if (arm->ring) {
+        (void)snprintf(line, sizeof(line), "aimed withdrawn: the read was in progress when the hint went %d (want 1)",
+                       withdrawn_busy ? 1 : 0);
+        verdict(arm, withdrawn_busy, line);
+    }
+    // 11e. receive offload on
+    drain_all();
+    const bool offloaded = offload(true);
+    aim();
+    const char* with_offload = wait_for_run(send_run_late);
+    unaim();
+    send_or_fail(DG_AIM_AFTER, false);
+    const int after_run = receive_k(buf, WAIT_LONG_NS);
+    const bool not_taken = node.large.direct_split == NULL;
+    (void)offload(false);
+    (void)snprintf(line, sizeof(line), "aimed, offload on %d: the run %s; the next %d, not taken for it %d",
+                   offloaded ? 1 : 0, with_offload, after_run, not_taken ? 1 : 0);
+    record(arm, line);
+    verdict(arm, offloaded && strcmp(with_offload, "in place") == 0 && after_run == DG_AIM_AFTER && not_taken, line);
+}
+
 static void check_quiet(struct arm* arm) {
     drain_all();
     int last = -1;
@@ -659,6 +847,7 @@ static bool run_arm(struct arm* arm) {
     check_drain(arm);
     check_hint(arm);
     check_merged(arm);
+    check_aimed(arm);
     check_quiet(arm);
     printf("rx_uring_check: [%s] uring_wait=%d uring_switches=%llu uring_waits=%llu uring_recvs=%llu uring_copies=%llu "
            "uring_fallbacks=%llu uring_cancels=%llu uring_epoll=%llu\n",
