@@ -150,11 +150,17 @@ static const struct pattern k_patterns[] = {
 // alone, and no hybrid run joins any).
 #define GSO_DATAGRAMS_PER_PASS (723U + 24U + 20U + 12U)
 #define GSO_SENDS_PER_PASS (23U + 7U + 1U + 4U)
-// With TT_UDP_CSUM0=1 (hal_linux.c "UDP checksum 0"), the datagrams that go with checksum 0, per pass: pattern 8's
-// calls of 12 each split into a UDP_SEGMENT run of 4, then [run, run, 1468, run] with checksum 0 (the lone MTU fragment
-// joins the runs' call), a UDP_SEGMENT run of 2, then [run, run] with checksum 0 - 6 a call, 5 of them runs, and 2
-// calls. No other pattern has a datagram above 1472 bytes, so none of theirs goes without its checksum.
+// With TT_UDP_CSUM0=1 (hal_linux.c "UDP checksum 0"), the datagrams tt_send_batch() sends with checksum 0, per pass:
+// pattern 8's calls of 12 each split into a UDP_SEGMENT run of 4, then [run, run, 1468, run] with checksum 0 (the lone
+// MTU fragment joins the runs' call), a UDP_SEGMENT run of 2, then [run, run] with checksum 0 - 6 a call, 5 of them
+// runs, and 2 calls. No other pattern has a datagram above 1472 bytes, and each of theirs is a UDP_SEGMENT run or
+// follows one, so none of theirs goes without its checksum. The option stays on after pattern 8, so the end marker
+// ("UEND") goes with checksum 0 too: CSUM0_END.
 #define CSUM0_DATAGRAMS_PER_PASS 12U
+#define CSUM0_END 1U
+// And the times it is switched, per pass: pattern 8's two calls of 12 turn it on, off, on in the first and off, on,
+// off, on in the second (off before each UDP_SEGMENT run, on before each call of runs); nothing else changes it.
+#define CSUM0_SWITCHES_PER_PASS 7U
 #define PATTERN_COUNT (sizeof(k_patterns) / sizeof(k_patterns[0]))
 #define LARGE_LAST 404U // pattern 1's last datagram
 
@@ -243,11 +249,14 @@ static int run_send(uint32_t ip, uint16_t port, const char* broadcast, uint32_t 
     struct tt_OutDatagram end = {.head = "UEND", .head_len = END_LEN, .ip = ip, .port = port};
     (void)tt_send_batch(&g_node, &end, 1);
     printf("RESULT: role=send datagrams=%u udp_offload=%u gso_sends=%lu gso_datagrams=%lu gso_sends_expected=%u "
-           "gso_datagrams_expected=%u csum0=%d csum0_datagrams=%lu csum0_singles=%lu csum0_datagrams_expected=%u\n",
+           "gso_datagrams_expected=%u csum0=%d csum0_datagrams=%lu csum0_retries=%lu csum0_datagrams_expected=%u "
+           "csum0_switches=%lu "
+           "csum0_switches_expected=%u\n",
            sent, (unsigned)g_node.udp_offload, (unsigned long)g_node.udp_gso_sends,
            (unsigned long)g_node.udp_gso_datagrams, GSO_SENDS_PER_PASS * repeat, GSO_DATAGRAMS_PER_PASS * repeat,
-           (int)g_node.hal.csum0, (unsigned long)g_node.hal.csum0_datagrams, (unsigned long)g_node.hal.csum0_singles,
-           CSUM0_DATAGRAMS_PER_PASS * repeat);
+           (int)g_node.hal.csum0, (unsigned long)g_node.hal.csum0_datagrams, (unsigned long)g_node.hal.csum0_retries,
+           (CSUM0_DATAGRAMS_PER_PASS * repeat) + CSUM0_END, (unsigned long)g_node.hal.csum0_switches,
+           CSUM0_SWITCHES_PER_PASS * repeat);
     tt_Context_destroy(&g_node);
     return 0;
 }

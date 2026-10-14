@@ -362,13 +362,16 @@ struct tt_hal {
 #endif
 #if TT_HAL_UDP_CSUM0
     // UDP checksum 0 (hal_linux.c "UDP checksum 0"): csum0 is 1 with TT_UDP_CSUM0=1, 0 without, -1 when the kernel
-    // refused SO_NO_CHECK. csum0_calls: sendmmsg() calls made with it on; csum0_datagrams: the datagrams they carried,
-    // each with checksum 0 on the wire; csum0_singles: UDP_SEGMENT calls refused (EINVAL) while it was on and sent
-    // again datagram by datagram. All on the "Node N rx:" line, the arm's treatment check.
+    // refused SO_NO_CHECK; csum0_on, the data socket's SO_NO_CHECK now. csum0_switches: setsockopt() calls that changed
+    // it; csum0_calls: tt_send_batch() sendmmsg() calls made with it on; csum0_datagrams: the datagrams they carried,
+    // each with checksum 0 on the wire; csum0_retries: UDP_SEGMENT calls refused (EINVAL) with it on, made again with
+    // it off. All on the "Node N rx:" line, the arm's treatment check.
     int8_t csum0;
+    bool csum0_on;
+    uint64_t csum0_switches;
     uint64_t csum0_calls;
     uint64_t csum0_datagrams;
-    uint64_t csum0_singles;
+    uint64_t csum0_retries;
 #endif
 #if TT_HAL_UDP_GRO
     // The last merged read (UDP_GRO): gro_end bytes in gro_base, cut every gro_segment bytes (the last cut may be

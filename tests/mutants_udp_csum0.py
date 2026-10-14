@@ -7,11 +7,9 @@ controls without it. A mutant that still passes means the check does not test wh
 nothing and should not be in the code.
 
 Not mutated, and why - each decides no outcome the check can observe:
-  - send_batch_flags()'s EINVAL retry datagram by datagram (csum0_singles): it answers a UDP_SEGMENT call made while
-    another thread's call has SO_NO_CHECK on, a race a single-threaded check cannot open. The check requires
-    csum0_singles=0, so a retry taken where none is due is caught.
-  - errno kept across clearing SO_NO_CHECK after the call: it matters only when the call itself failed (a full buffer
-    under MSG_DONTWAIT), which the check's blocking sends never meet.
+  - send_batch_flags()'s EINVAL retry with SO_NO_CHECK turned off (csum0_retries): it answers a UDP_SEGMENT call made
+    after another thread turned it on, a race a single-threaded check cannot open. The check requires csum0_retries=0,
+    so a retry taken where none is due is caught (the "clear" mutant reaches it, and is caught by that count).
   - csum0_setup()'s -1 when the kernel refuses SO_NO_CHECK: every kernel since 2.6 takes it.
   - `if (result > 0)` around the counters: every call of the check succeeds.
   - `+= carried[i]` (not `+= 1`): a checksum-0 call never carries a UDP_SEGMENT run, so carried[i] is 1 in each.
@@ -35,14 +33,32 @@ MUTANTS = [
     (
         "set: SO_NO_CHECK never turned on for a call",
         HAL,
-        "zero = zero && csum0_set(node, 1);",
-        "zero = zero && csum0_set(node, 0);",
+        "            csum0_set(node, zero);",
+        "            csum0_set(node, false);",
     ),
     (
-        "clear: SO_NO_CHECK left on after the call",
+        "clear: SO_NO_CHECK left on for a UDP_SEGMENT call",
         HAL,
-        "            (void)csum0_set(node, 0);\n",
-        "            (void)0;\n",
+        "            csum0_set(node, zero);",
+        "            csum0_set(node, zero || node->hal.csum0_on);",
+    ),
+    (
+        "switch: setsockopt() whatever the socket's state",
+        HAL,
+        "    if (node->hal.csum0_on == on) {\n        return;\n    }\n",
+        "",
+    ),
+    (
+        "state: a switch not remembered",
+        HAL,
+        "        node->hal.csum0_on = on;\n        node->hal.csum0_switches++;",
+        "        node->hal.csum0_switches++;",
+    ),
+    (
+        "count: datagrams counted with the option off",
+        HAL,
+        "        if (node->hal.csum0_on && result > 0) {",
+        "        if (node->hal.csum0 > 0 && result > 0) {",
     ),
     (
         "split: a UDP_SEGMENT run joins a checksum-0 call",
@@ -71,8 +87,8 @@ MUTANTS = [
     (
         "count: datagrams with checksum 0 not counted",
         HAL,
-        "                    node->hal.csum0_datagrams += carried[i];\n",
-        "                    (void)carried[i];\n",
+        "                node->hal.csum0_datagrams += carried[i];\n",
+        "                (void)carried[i];\n",
     ),
     (
         "env: TT_UDP_CSUM0 ignored, always on",
