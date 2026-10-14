@@ -131,6 +131,20 @@ MUTANTS = [
         SEND,
     ),
     (
+        "match point: the periodic Heartbeat carries none",
+        "src/tickle.c",
+        "        if (match_point_owed(pub, &owed)) {\n            encode_heartbeat_range(node, pub, first_seq_no,",
+        "        if (false && match_point_owed(pub, &owed)) {\n            encode_heartbeat_range(node, pub, first_seq_no,",
+        SEND,
+    ),
+    (
+        "match point: the periodic Heartbeat's carried one seq_no late",
+        "src/tickle.c",
+        "            encode_heartbeat_range(node, pub, first_seq_no, owed - 1U, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);",
+        "            encode_heartbeat_range(node, pub, first_seq_no, owed, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);",
+        SEND,
+    ),
+    (
         "match point: carried one seq_no late",
         "src/tickle.c",
         "        encode_heartbeat_range(node, pub, first, owed - 1U, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);",

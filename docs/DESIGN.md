@@ -933,7 +933,10 @@ told from a squeeze by whether that writer's runs got through within `tau`.
   baseline went to 724, and its ack released sample 0 at the writer. The end-of-sample HEARTBEAT, and each of its
   chase's resends, now carries the match Heartbeat ahead of it in the same datagram while a reader is owed one
   (`tests/test_hybrid_send.c`, the match point under loss: arms that lose the match Heartbeat, unit 0, both, and both
-  with the end-of-sample HEARTBEAT, in runs and in MTU units).
+  with the end-of-sample HEARTBEAT, in runs and in MTU units). The periodic Heartbeat, off by default
+  (`tt_Publisher_set_heartbeat_period()`), can be the first contact the same way, for a sample on 8/9 whose run and
+  match Heartbeat are lost, and carries the match point too since 2026-10-14 (`test_hybrid_send.c`, the periodic
+  Heartbeat; found by the test's seed sweep, where the first sample of an arm went undelivered).
 - *What it does not settle.* The transient ceiling reads low (2 where the PC's steady state says 4 to 6) and the
   probes climb back at `2 tau` steps; RELIABLE at the pre-registered losses chooses `n*` (13, 4, 1) at or below the
   PC's collapse points, so the law guards best effort and forced arms more than it moves RELIABLE AUTO. Per-writer

@@ -3659,9 +3659,9 @@ static bool take_match_heartbeat(struct tt_Publisher* pub, uint32_t* owed) {
     return any;
 }
 
-#if tt_LARGE_SAMPLES
 // take_match_heartbeat()'s lowest owed match point, without counting anything down: what a large sample's
-// end-of-sample HEARTBEAT carries ahead of itself (large_send_end_heartbeat()). False when no Subscriber is owed one.
+// end-of-sample HEARTBEAT and the periodic one carry ahead of themselves (large_send_end_heartbeat(),
+// send_heartbeat()). False when no Subscriber is owed one.
 static bool match_point_owed(const struct tt_Publisher* pub, uint32_t* owed) {
     bool any = false;
     for (int i = 0; pub->match_heartbeat_pending && i < tt_MAX_ACK_ENTRIES; i++) {
@@ -3676,7 +3676,6 @@ static bool match_point_owed(const struct tt_Publisher* pub, uint32_t* owed) {
     }
     return any;
 }
-#endif
 
 // forget_peer()'s own Publisher-specific counterpart - a separate function rather than teaching
 // forget_peer() itself about peer_acks[], since that table only exists on struct tt_Publisher
@@ -9568,17 +9567,28 @@ static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pu
 // purely-reactive gap detection RELIABILITY already had on its own. Skips sending (but still
 // reschedules) when nothing has been published yet - entries[] is still entirely empty, nothing
 // to announce, same "nothing retained yet" short-circuit deliver_durability_backlog() already has.
+//
+// While a Subscriber is still owed its match point (tt_PeerAck.first_owed_seq_no), the match Heartbeat goes first in
+// the same datagram, as with the end-of-sample HEARTBEAT (large_send_end_heartbeat()): this one can be a reader's first
+// contact too. With the match Heartbeat and the first sample's datagrams that name the endpoint all lost, it gave a
+// VOLATILE reader a baseline past that sample, which was then never asked for (test_hybrid_send.c, a 23-unit sample
+// whose run and match Heartbeat were lost, 2026-10-14).
 static void send_heartbeat(struct tt_Context* node, uint64_t time, void* param) {
     struct tt_Publisher* pub = param;
     uint32_t first_seq_no = 0;
     if (publisher_oldest_seq_no(pub, &first_seq_no)) {
-        // Same peer/broadcast decision tt_Publisher_publish() already makes for DATA.
+        // Same peer/broadcast decision tt_Publisher_publish() already makes for DATA - made before the match
+        // Heartbeat goes into tx_buffer, as large_send_end_heartbeat() makes it.
         const struct tt_Peer* peers = NULL;
         uint8_t peer_count = 0;
         uint8_t count = count_peers(pub->peers);
         if (count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && node->tx_tail == sizeof(struct tt_Header)) {
             peers = pub->peers;
             peer_count = count;
+        }
+        uint32_t owed = 0;
+        if (match_point_owed(pub, &owed)) {
+            encode_heartbeat_range(node, pub, first_seq_no, owed - 1U, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);
         }
         encode_and_send_heartbeat(node, pub, first_seq_no, peers, peer_count, tt_HEARTBEAT_FLAG_FINAL);
     }

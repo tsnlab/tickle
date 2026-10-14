@@ -602,6 +602,10 @@ static bool sim_step(void) {
     return true;
 }
 
+#define SIM_PAUSE_HEARTBEAT_NS (100U * tt_MILLISECOND)
+static uint64_t sim_pause_heartbeat_ns; // sim_settle(): 0, or the periodic Heartbeat it arms while a sample is owed
+static uint32_t sim_pause_heartbeats;   // settles that armed it, every arm: the treatment, printed at the end
+
 static void sim_start(uint32_t frame_loss_ppm) {
     if (sim_queue == NULL) {
         sim_queue = (struct sim_datagram*)calloc(SIM_QUEUE, sizeof(struct sim_datagram));
@@ -611,6 +615,7 @@ static void sim_start(uint32_t frame_loss_ppm) {
     sim_rng = 11;
     sim_drop_fragmented = false;
     sim_drop_hook = NULL;
+    sim_pause_heartbeat_ns = 0;
     sim_receiver_drop_every = 0;
     sim_receiver_runs = 0;
     sim_receiver_dropped = 0;
@@ -645,18 +650,111 @@ static tt_ret_t sim_publish(uint8_t seed) {
     return result;
 }
 
+// A RELIABLE sample on 8/9 can still be owed when the link goes quiet: its tail was lost (with the run before it, or
+// alone), and nothing the writer has sent shows the reader a gap. Core chases the end-of-sample HEARTBEAT for large
+// samples (11/12) only; a sample on 8/9 is asked for when the next sample's traffic shows the gap, or at the periodic
+// Heartbeat (tt_Publisher_set_heartbeat_period()), what production offers a publisher that has stopped. An arm that
+// settles each sample before the next sets sim_pause_heartbeat_ns, and the settle arms that Heartbeat while a sample is
+// owed and nothing is due. Without it the owed sample arrived during the next publish and was checked against that
+// sample's pattern (torn), and the arm's last one never arrived: 9 of 12 seeds failed so (2026-10-14).
 static void sim_settle(int want, uint64_t budget) {
     uint64_t since = test_mock_now;
+    bool armed = false;
     while (total_delivered() < want && test_mock_now - since < budget) {
-        if (!sim_step()) {
+        if (sim_step()) {
+            continue;
+        }
+        if (armed || sim_pause_heartbeat_ns == 0) {
             break;
         }
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_set_heartbeat_period(&pub, sim_pause_heartbeat_ns));
+        armed = true;
+        sim_pause_heartbeats++;
     }
+    if (armed) {
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_set_heartbeat_period(&pub, 0));
+    }
+}
+
+// init_set() matches each reader on the writer as its announce would, but the announce itself still arrives at the
+// first step, and the writer takes it as a new peer: it re-registers the reader and sends the initial HEARTBEAT, which
+// names what is already published. Production matches a reader at that announce, before any sample owed to it; an arm
+// that publishes first has sent the reader its first sample by then, and when the match Heartbeat and that sample's
+// datagrams naming the endpoint are all lost, the initial HEARTBEAT is the reader's first contact and puts a VOLATILE
+// reader's baseline past the sample - never asked for (seeds 33 and 98 of 100, 2026-10-14). So an arm that settles a
+// RELIABLE stream under loss lets the announces go first, both ways. These bare contexts announce once, at their
+// endpoint's creation, and run no node_update(): one lost under the arm's loss is sent again a
+// tt_CONTEXT_UPDATE_INTERVAL on, as the next summary would have it pulled.
+static bool sim_announced(void) {
+    for (int i = 0; i < READERS; i++) {
+        if (readers[i].present &&
+            (sender.update_last_seen[reader_id(i)] == 0 || readers[i].ctx.update_last_seen[SENDER_ID] == 0)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+#define SIM_ANNOUNCE_TRIES 16U
+static struct tt_Discovery sim_discovery[READERS];
+
+// What a lost announce gets a tt_CONTEXT_UPDATE_INTERVAL on: each side that was not heard announces again.
+static void sim_announce_again(void) {
+    test_mock_now += tt_CONTEXT_UPDATE_INTERVAL;
+    bool writer_unheard = false;
+    for (int i = 0; i < READERS; i++) {
+        writer_unheard = writer_unheard || (readers[i].present && readers[i].ctx.update_last_seen[SENDER_ID] == 0);
+    }
+    if (writer_unheard) {
+        sim_acting = SENDER_ID;
+        (void)build_and_send_update(&sender, NULL, 0);
+    }
+    for (int i = 0; i < READERS; i++) {
+        if (readers[i].present && sender.update_last_seen[reader_id(i)] == 0) {
+            sim_acting = readers[i].ctx.id;
+            (void)build_and_send_update(&readers[i].ctx, NULL, 0);
+        }
+    }
+    sim_drain();
+}
+
+static void sim_announce(void) {
+    // A writer proxy made after the writer's announce takes its KEEP_ALL policy from the reader's discovery table
+    // (writer_announced_keep_all()), as an rmw_tickle reader has one; without a table it stays unknown, and a reader
+    // that does not know the writer is KEEP_LAST never gives a unit up (seeds 34 and 54 of 100 waited on one past the
+    // arm's end).
+    for (int i = 0; i < READERS; i++) {
+        if (readers[i].present) {
+            memset(&sim_discovery[i], 0, sizeof(sim_discovery[i]));
+            EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&readers[i].ctx, &sim_discovery[i], NULL, NULL));
+        }
+    }
+    for (uint32_t tries = 0; !sim_announced() && tries <= SIM_ANNOUNCE_TRIES; tries++) {
+        if (tries > 0) {
+            sim_announce_again();
+        }
+        uint64_t since = test_mock_now;
+        while (!sim_announced() && test_mock_now - since < tt_SECOND && sim_step()) {
+        }
+    }
+    EXPECT_TRUE(sim_announced());
 }
 
 static void expect_intact(int reader, int want) {
     EXPECT_EQ_INT(want, readers[reader].delivered);
     EXPECT_EQ_INT(0, readers[reader].torn);
+}
+
+// A KEEP_LAST RELIABLE reader gives a unit up after tt_RELIABLE_RETRY requests for it in a row went unanswered
+// (gap_abandoned), and the sample it belongs to with it: at 5% frame loss each request and each repair is lost one
+// time in twenty, so over 40 samples of 1 MB that happens to some unit in about one stream in seven (14 seeds of 100,
+// 2026-10-14). Every sample is delivered whole unless a unit was given up, and only as many fewer as were.
+static void expect_intact_or_given_up(int reader, int want) {
+    int abandoned = (int)readers[reader].sub.gap_abandoned;
+    int delivered = readers[reader].delivered;
+    EXPECT_EQ_INT(0, readers[reader].torn);
+    EXPECT_TRUE(delivered <= want && delivered + abandoned >= want);
+    EXPECT_TRUE((delivered == want) == (abandoned == 0));
 }
 
 // --- step 3: best-effort runs ----------------------------------------------------------------------------------------
@@ -1407,6 +1505,21 @@ static void test_the_loss_code_rounds_up(void) {
     EXPECT_TRUE(hybrid_loss_moved(0, hybrid_loss_code(0.001)));
 }
 
+// "None seen" (hybrid_rx_loss_code()) takes tt_HYBRID_NONE_SEEN_FRAMES clean frames, not one frame fewer; before them,
+// and after any event, a reader announces its posterior mean. Its mutant ("none seen" after any frame) used to be
+// caught only by a late sample the old fixture counted as torn (2026-10-14).
+static void test_none_seen_takes_its_frames(void) {
+    struct tt_LossEstimate estimate = {0, 0, 0};
+    loss_estimate_observe(&estimate, (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES - 1U, 0);
+    EXPECT_EQ_U32(hybrid_loss_code(loss_estimate_mean(&estimate)), hybrid_rx_loss_code(&estimate));
+    EXPECT_TRUE(hybrid_rx_loss_code(&estimate) != HYBRID_LOSS_NONE_SEEN);
+    loss_estimate_observe(&estimate, 1, 0);
+    EXPECT_EQ_U32(HYBRID_LOSS_NONE_SEEN, hybrid_rx_loss_code(&estimate));
+    loss_estimate_observe(&estimate, 1000, 1); // an event: the mean again, whatever the frames
+    EXPECT_EQ_U32(hybrid_loss_code(loss_estimate_mean(&estimate)), hybrid_rx_loss_code(&estimate));
+    EXPECT_TRUE(hybrid_rx_loss_code(&estimate) != HYBRID_LOSS_NONE_SEEN);
+}
+
 // The bound: 3 / N at no events (the rule of three), the exact Poisson limits up to 10, Wilson-Hilferty above; 1 with
 // no exposure.
 static void test_the_loss_bound_is_the_poisson_upper_limit(void) {
@@ -1883,9 +1996,9 @@ static void test_steady_loss_is_never_forgotten(void) {
     }
 }
 
-// Under frame loss, RELIABLE delivers every sample whole and in order, and every repair is an MTU unit - no run is ever
-// resent, no repair datagram is above one frame. Forced IP (n = 45 throughout) and AUTO, 1% and 5% frame loss, small
-// and large samples.
+// Under frame loss, RELIABLE delivers every sample whole and in order, or as KEEP_LAST gives it up (expect_intact_or_
+// given_up()), and every repair is an MTU unit - no run is ever resent, no repair datagram is above one frame. Forced
+// IP (n = 45 throughout) and AUTO, 1% and 5% frame loss, small and large samples.
 static void reliable_under_loss(uint32_t len, uint8_t mode, uint32_t loss_ppm, uint8_t samples) {
     _tt_CONFIG.reassembly_cap_off = mode == tt_LARGE_FRAGMENTATION_IP ? 1 : 0; // a forced arm's reader, as on the rig
     init_one(len, FULL_CEILING, true);
@@ -1893,11 +2006,13 @@ static void reliable_under_loss(uint32_t len, uint8_t mode, uint32_t loss_ppm, u
 
     pub.large_fragmentation = mode;
     sim_start(loss_ppm);
+    sim_pause_heartbeat_ns = SIM_PAUSE_HEARTBEAT_NS; // a sample still owed when the link is quiet (sim_settle())
+    sim_announce();
     for (uint8_t s = 1; s <= samples; s++) {
         EXPECT_EQ_INT(tt_RET_OK, sim_publish(s));
         sim_settle(s, 5 * tt_SECOND);
     }
-    expect_intact(0, samples);
+    expect_intact_or_given_up(0, samples);
     EXPECT_TRUE(readers[0].in_order);
     EXPECT_EQ_U32(0, sent.repair_runs);
     EXPECT_TRUE(sent.repairs > 0);
@@ -1948,6 +2063,10 @@ static void runs_across_the_wrap(uint32_t len, uint32_t first, bool reliable, ui
     pub.large_fragmentation = mode;
     hybrid_test_forced_p = 0.0; // n = n_max from the first sample: what crosses 2^32 is runs
     sim_start(loss_ppm);
+    sim_pause_heartbeat_ns = reliable ? SIM_PAUSE_HEARTBEAT_NS : 0U;
+    if (reliable) {
+        sim_announce();
+    }
     memset(&sent, 0, sizeof(sent));
     for (uint8_t s = 1; s <= 4; s++) {
         memset(seen_unit, 0, sizeof(seen_unit));
@@ -1957,7 +2076,11 @@ static void runs_across_the_wrap(uint32_t len, uint32_t first, bool reliable, ui
     hybrid_test_forced_p = -1.0;
     EXPECT_TRUE(sent.runs > 0);
     EXPECT_EQ_U32(0, sent.repair_runs);
-    expect_intact(0, 4);
+    if (loss_ppm == 0) {
+        expect_intact(0, 4);
+    } else {
+        expect_intact_or_given_up(0, 4); // at 5% a unit given up now and then (seeds 47 and 50 of 100)
+    }
     EXPECT_TRUE(readers[0].in_order);
     EXPECT_EQ_U64(0, readers[0].ctx.frag_dropped); // no run refused
     EXPECT_EQ_U64(0, readers[0].ctx.large.dropped);
@@ -2133,7 +2256,7 @@ static void test_frame_loss_is_not_a_failed_path(void) {
         sim_settle(s, 5 * tt_SECOND);
     }
     EXPECT_EQ_U32(0, pub.peer_watch[0].path_failures);
-    expect_intact(0, 40);
+    expect_intact_or_given_up(0, 40);
     init_one(3500, FULL_CEILING, true);
     pub.large_fragmentation = tt_LARGE_FRAGMENTATION_AUTO;
     hybrid_test_forced_p = 0.0; // n = n_max: one run of two units and the tail
@@ -2324,6 +2447,60 @@ static void test_a_sample_published_at_the_match_is_delivered(void) {
                        readers[0].delivered);
             }
             sim_drop_hook = NULL;
+        }
+    }
+}
+
+// The periodic Heartbeat (tt_Publisher_set_heartbeat_period()) carries the match point too. A 23-unit sample goes as a
+// run of 22 and its tail; with its match Heartbeat and the run lost, the tail names no endpoint, and the reader's
+// first contact is the periodic Heartbeat (last = 23). Without the match point ahead of it the VOLATILE reader's
+// baseline was 24 and the sample was never asked for (sim_settle()'s pause Heartbeat, 2026-10-14). The control arm
+// loses the run alone: the match Heartbeat is the first contact, which held before the fix.
+static bool first_contact_dropping;
+static bool first_contact_match_too;
+static uint32_t first_contact_dropped;
+
+static bool drop_the_run_and_the_match_point(const struct sim_datagram* d) {
+    if (!first_contact_dropping || d->from != SENDER_ID) {
+        return false;
+    }
+    const uint8_t* body = NULL;
+    uint32_t seq_no = 0;
+    uint32_t units = 0;
+    bool run = false;
+    bool drop = datagram_type(d->bytes, &body) == tt_SUBMESSAGE_TYPE_HEARTBEAT
+                    ? first_contact_match_too
+                    : datagram_units(d->bytes, &seq_no, &units, &run) && run;
+    first_contact_dropped += drop ? 1U : 0U;
+    return drop;
+}
+
+static void test_a_periodic_heartbeat_carries_the_match_point(void) {
+    for (int arm = 0; arm < 2; arm++) {
+        init_one(SMALL_LEN * 4U, FULL_CEILING, true);
+        hybrid_test_forced_p = 0.0; // n = n_max: one run of 22 and the tail
+        sim_start(0);
+        sim_announce();
+        first_contact_dropping = true;
+        first_contact_match_too = arm == 0;
+        first_contact_dropped = 0;
+        sim_drop_hook = drop_the_run_and_the_match_point;
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+        first_contact_dropping = false;
+        EXPECT_EQ_U32(1, sent.runs); // the treatment: the run lost, and the match Heartbeat with it in arm 0
+        EXPECT_EQ_U32(arm == 0 ? 2U : 1U, first_contact_dropped);
+        if (arm == 0) {
+            EXPECT_EQ_U32(tt_CONTEXT_ID_INVALID, readers[0].sub.writers[0].context_id); // no first contact yet
+        }
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_set_heartbeat_period(&pub, SIM_PAUSE_HEARTBEAT_NS));
+        sim_settle(1, 5 * tt_SECOND);
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_set_heartbeat_period(&pub, 0));
+        hybrid_test_forced_p = -1.0;
+        sim_drop_hook = NULL;
+        expect_intact(0, 1);
+        EXPECT_TRUE(sent.repairs > 0); // asked for and repaired: the run never arrived
+        if (readers[0].delivered != 1) {
+            printf("test_hybrid_send: periodic Heartbeat, arm %d: sample not delivered\n", arm);
         }
     }
 }
@@ -2556,6 +2733,7 @@ int main(void) {
     test_receiver_drops_are_not_path_loss();
     test_receiver_drops_do_not_lower_n();
     test_the_loss_code_rounds_up();
+    test_none_seen_takes_its_frames();
     test_the_path_rule_needs_frame_loss_to_be_no_excuse();
     test_a_reader_with_the_cap_off_advertises_its_ceiling();
     test_the_loss_bound_is_the_poisson_upper_limit();
@@ -2578,11 +2756,14 @@ int main(void) {
     test_the_objective_is_wire_bytes();
     test_the_objective_reads_the_posterior_mean();
     test_a_sample_published_at_the_match_is_delivered();
+    test_a_periodic_heartbeat_carries_the_match_point();
     test_a_full_send_buffer_resumes_when_the_socket_has_room();
     test_runs_with_a_ranged_encode_leave_the_wire_byte_identical();
     test_each_run_call_is_encoded_just_before_it_goes();
     test_a_sample_received_in_runs_is_lent_in_place();
     free(sim_queue);
+    printf("test_hybrid_send: %u samples owed when the link went quiet, asked for at the periodic Heartbeat\n",
+           sim_pause_heartbeats);
     if (test_result() != 0) {
         return 1;
     }
