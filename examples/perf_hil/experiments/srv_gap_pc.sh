@@ -38,7 +38,8 @@
 #   - VOID: a run without both RESULT lines, without both counts, or with 0 samples; an arm with fewer than 2 valid
 #     blocks in a cell is not read there.
 # Usage: srv_gap_pc.sh [BLOCKS]   ARMS="label:commit[:P] ...", CELLS (default "L:p1 T:p2:Q0 T:p3:Q0 T:p2:Q1 L:p4"),
-# STRACE=1 (one extra server pass per arm and cell under strace -f -c), WORK= (default ~/largemsg_pc/rx_gap3_server),
+# STRACE=1 (one extra pass per arm and cell under strace -f -c: of the server, or with STRACE_ROLE=client the client),
+# WORK= (default ~/largemsg_pc/rx_gap3_server),
 # OUT= (default $WORK/results.txt), TREE=. Run it detached. Every bench process runs under ulimit -v and a timeout.
 # The last line is always "srv_gap_pc done rc=<n>".
 set -u
@@ -152,17 +153,19 @@ run() { # <arm> <cell> <block> <mode: perf|strace>
     local slog=$WORK/srv.log clog=$WORK/cli.log smeas=$WORK/srv_meas.txt cmeas=$WORK/cli_meas.txt flag=$WORK/client_done
     rm -f "$smeas" "$cmeas" "$flag" "$slog" "$clog"
     local swrap
-    if [ "$mode" = strace ]; then swrap="strace -f -c -o $smeas"
+    local role=${STRACE_ROLE:-server}
+    if [ "$mode" = strace ] && [ "$role" = server ]; then swrap="strace -f -c -o $smeas"
+    elif [ "$mode" = strace ]; then swrap=""
     else swrap="perf stat -x, -o $smeas -e $INSN_EVENTS --"; fi
     # The server: its counter is perf's (or strace's) child, timeout, which forwards the SIGINT sent when the client is
     # done (run_scenario.sh's stop) to the server. The PID is the launch's own ($!), its child read from /proc and
-    # checked by exe before the signal.
+    # checked by exe before the signal (or the launch itself, when nothing counts the server: it is timeout then).
     # shellcheck disable=SC2024,SC2086
     sudo -n ip netns exec "$NS2" bash -c "ulimit -v $VMEM_KB; cd $dir || exit 1
         $swrap timeout -s INT 90 ./server $args >$slog 2>&1 &
         p=\$!
         until [ -e $flag ] || ! kill -0 \$p 2>/dev/null; do sleep 0.05; done
-        for c in \$(cat /proc/\$p/task/*/children 2>/dev/null); do
+        for c in \$p \$(cat /proc/\$p/task/*/children 2>/dev/null); do
             case \$(readlink /proc/\$c/exe) in */timeout) kill -INT \$c ;; esac
         done
         wait \$p" &
@@ -170,6 +173,7 @@ run() { # <arm> <cell> <block> <mode: perf|strace>
     sleep "$PRE_CLIENT_SLEEP"
     local cwrap="perf stat -x, -o $cmeas -e $INSN_EVENTS --"
     [ "$mode" = strace ] && cwrap=""
+    [ "$mode" = strace ] && [ "$role" = client ] && cwrap="strace -f -c -o $cmeas"
     # shellcheck disable=SC2024,SC2086
     sudo -n ip netns exec "$NS1" bash -c "ulimit -v $VMEM_KB; cd $dir && exec $cwrap timeout -s INT 80 ./client $args" \
         >"$clog" 2>&1
@@ -186,10 +190,11 @@ run() { # <arm> <cell> <block> <mode: perf|strace>
         return
     fi
     if [ "$mode" = strace ]; then
-        local sc
+        local sc sfile=$smeas
+        if [ "$role" = client ]; then sfile=$cmeas; div=$sent; fi
         sc=$(awk -v n="$div" '$NF != "total" && $NF ~ /^[a-z_0-9]+$/ && NF >= 5 {
-                calls = $4; err = (NF == 6) ? $5 : 0; if (calls + 0 > 0) printf "%s=%.3f/%.3f ", $NF, calls / n, err / n }' "$smeas")
-        echo "RUN arm=$arm cell=$cell block=$block mode=strace role=server samples=$div per_sample: $sc" >>"$OUT"
+                calls = $4; err = (NF == 6) ? $5 : 0; if (calls + 0 > 0) printf "%s=%.3f/%.3f ", $NF, calls / n, err / n }' "$sfile")
+        echo "RUN arm=$arm cell=$cell block=$block mode=strace role=$role samples=$div per_sample: $sc" >>"$OUT"
         echo "RUN arm=$arm cell=$cell block=$block mode=strace samples=$div"
         return
     fi
