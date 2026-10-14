@@ -77,6 +77,11 @@ The defaults were checked on the test rig (two Raspberry Pi 5s, 1 GbE). The valu
 derive them for yours rather than copying ours. Constants are `-D` overrides at build time (every one in
 `include/tickle/config.h` is `#ifndef`-guarded); rmw_tickle's two byte budgets are environment variables.
 
+**UDP checksum.** On Linux, a large sample's IP-fragmented datagrams go with UDP checksum 0 by default: no NIC checks
+an IP fragment, so the receiver would otherwise checksum every byte in software (about 0.1 ms per MB on the rig's
+subscriber). Each frame is still covered by the link's CRC. Set `TT_UDP_CSUM0=0` in the environment to keep every
+checksum, e.g. on a path through a router or a link without a frame CRC (DESIGN.md, "UDP checksum 0").
+
 | constant | default | derive it as |
 |---|---|---|
 | `tt_SEGMENT_BYTES` | 768 KiB | slots = peak datagram rate x longest reader stall; bytes = slots x (16 + `tt_SEGMENT_SLOT_BYTES`). Slots round **down** to a power of two, so size for a power of two: 768 KiB is 512 slots of 1472 B. |

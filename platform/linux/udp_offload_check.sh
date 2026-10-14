@@ -24,9 +24,10 @@
 #      reads in the pauses, so every switch - and its race with merged datagrams still queued - is crossed many times.
 #      A merged datagram read with the option off would come back as one block of several datagrams: a size no
 #      pattern has, which the receiver fails on.
-#   F  as A with TT_UDP_CSUM0=1 at the sender (hal_linux.c "UDP checksum 0", 2026-10-14): IP-fragmented datagrams go
-#      with UDP checksum 0, everything else with its checksum, and send offload's runs as before.
+#   F  as A with TT_UDP_CSUM0 unset at the sender - the default since 2026-10-15 (hal_linux.c "UDP checksum 0"):
+#      IP-fragmented datagrams go with UDP checksum 0, everything else with its checksum, send offload's runs as before.
 #   G  as C with TT_UDP_CSUM0=1 at the sender: the HAL receiver, receive offload on, takes the zero-checksum runs.
+#   B, A, C, D and E send with TT_UDP_CSUM0=0, which keeps every checksum.
 #
 # The rules, enforced below (written before the first run):
 #   - every arm's list of datagrams (pattern, index, size, hash, in order) is B's, line for line;
@@ -134,8 +135,11 @@ arm() {
     fi
     rx=$!
     sleep 0.5
-    # shellcheck disable=SC2024
-    sudo -n ip netns exec "$NS1" env TT_UDP_OFFLOAD="$2" TT_UDP_CSUM0="$CSUM0" "$BIN" send "$NET.2" "$PORT" "$BCAST" "$repeat" >"$WORK/$name.tx" \
+    # CSUM0=default: the variable unset, the sender's default. Word-split on purpose: one or two env arguments, first
+    # (env takes -u only before the first assignment).
+    if [ "$CSUM0" = default ]; then csum0_env="-u TT_UDP_CSUM0"; else csum0_env="TT_UDP_CSUM0=$CSUM0"; fi
+    # shellcheck disable=SC2024,SC2086
+    sudo -n ip netns exec "$NS1" env $csum0_env TT_UDP_OFFLOAD="$2" "$BIN" send "$NET.2" "$PORT" "$BCAST" "$repeat" >"$WORK/$name.tx" \
         2>"$WORK/$name.tx.err"
     tx_rc=$?
     wait "$rx"
@@ -167,8 +171,9 @@ arm A 1 plain 0 off
 arm C 1 hal 1 on
 arm D 1 hal 0 on
 arm E 1 hal 1 on "$FLAP" "$REPEAT"
-CSUM0=1
+CSUM0=default
 arm F 1 plain 0 off
+CSUM0=1
 arm G 1 hal 1 on
 CSUM0=0
 
