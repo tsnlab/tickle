@@ -766,13 +766,18 @@ MTU units lost, 45 events in `p` and `p_mtu`, and held `n` low until they dilute
   announce goes at the sample's tail, not at the next interval (2026-10-13: until then `n` crept up as `1 / N`, `n_max`
   at about 115,000 clean frames, ~5 s of every 4 MB stream; a 1% path shows no event in 500 frames 0.7% of the time). A 95% bound (3 / N at no events) would hold `n` below `n_max` at 0%
   loss for as long as the window lasts. The window halves at 2^20 frames, not 2^17, for the same reason. Under a
-  collapse `p` reads high, which only shortens a RELIABLE writer's `n`. A few events (at most 8,
-  `tt_HYBRID_STALE_EVENTS`) are forgotten once the clean frames since the last reach `9.21 / p`, `p` read at that event
-  (`tt_HYBRID_STALE_EXPOSURE`: frame loss at that `p` leaves such a stretch clean 1e-4 of the time); the estimate
-  starts again from the stretch - "none seen" - checked at each tail and announce (2026-10-13: the rig's 1 MB RELIABLE
-  cell at 0% loss, one run in five: two events in its first two samples held `n` below `n_max` for ~13 s, 393
-  samples, `p` falling only as `1 / N`). A path that loses frames all along has more events, and a gap that long 1e-4
-  of the time (`test_steady_loss_is_never_forgotten`: 1% and 0.1%, the same wire byte for byte).
+  collapse `p` reads high, which only shortens a RELIABLE writer's `n`. A few events (`k`, at most 8,
+  `tt_HYBRID_STALE_EVENTS`) are forgotten once the clean frames `C` since the last, against the frames `F` up to it,
+  have `(1 + C / F)^k >= 1e4` (`tt_HYBRID_STALE_FALSE_FORGET`); the estimate starts again from the stretch - "none
+  seen" - checked at each tail and announce (2026-10-13: the rig's 1 MB RELIABLE cell at 0% loss, one run in five: two
+  events in its first two samples held `n` below `n_max` for ~13 s, 393 samples, `p` falling only as `1 / N`). On a
+  path losing frames at any steady rate `F` is a sum of `k` gaps and `C` one more, so `P(C >= c F) = (1 + c)^-k`
+  whatever the rate: the rule forgets a steady path's events wrongly at most 1e-4 of the time at each `k`. The first
+  rule (2026-10-13, `C >= 9.21 / p`, `p = (k + 1) / F` read at the event) did so 18% of the time at `k = 1` and 6% at
+  `k = 2`: a 0.1% path forgot in 22 seeds of 100 of `test_steady_loss_is_never_forgotten`. The price is the stretch a
+  real burst needs - `99 F` after two events, `2.2 F` after eight; one event is left to the window's halving: the
+  test's two events at `F = 813` frames are forgotten at 80,886 clean frames (sample 113 of 1 MB), where the first rule
+  took 2,802 and the events kept take the whole stream.
 - `q(n)`: runs arrived over runs sent, with their sizes, in the window since the last decision; per writer as well
   (printed, and read by rule (e)).
 - `R`: units a second in multi-unit samples, arrived or inferred lost; `D_s`: run datagrams a second from each source.

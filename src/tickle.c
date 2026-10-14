@@ -2364,12 +2364,21 @@ static bool hybrid_test_stale_off = false;
 // A few events the frames after them have outlived (2026-10-13). The reader's p is its posterior mean over the whole
 // window, (events + 1) / frames: a few events early in a stream - the rig's 1 MB RELIABLE cell, 0% loss, socket drops
 // 0: two in its first two samples, by the n they gave - read as p ~ 2e-3 over those 1,446 frames and then fall only as
-// 1 / frames, so n reached n_max ~13 s and 393 samples later. Read at the last event, p said a clean stretch of F
-// frames has probability exp(-p F); once that is below 1e-4 (p F >= tt_HYBRID_STALE_EXPOSURE) the events were a burst
-// that has ended, not the path's rate, and the estimate starts again from the clean stretch: no events, its frames -
-// "none seen" when they are 500 or more. Only while the events are few (at most tt_HYBRID_STALE_EVENTS): a path that
-// loses frames all along has more, and a gap between them that long comes 1e-4 of the time, while the first few are
-// noisy enough to judge either way. Returns whether it forgot.
+// 1 / frames, so n reached n_max ~13 s and 393 samples later. Once the clean frames C since the k-th event are long
+// enough against the frames F up to it, the events were a burst that has ended, not the path's rate, and the estimate
+// starts again from the clean stretch: no events, its frames - "none seen" when they are 500 or more. Only while the
+// events are few (at most tt_HYBRID_STALE_EVENTS): a path that loses frames all along soon has more.
+//
+// How long is long enough (2026-10-15). On a path losing frames at a steady rate p, the frames up to the k-th event are
+// a sum of k gaps, Gamma(k, p), and the stretch after it one more, independent: P(C >= c F) = E[exp(-p c F)] =
+// (1 + c)^-k, the same for every p. So "(1 + C / F)^k >= 1 / tt_HYBRID_STALE_FALSE_FORGET" forgets wrongly at most that
+// often (1e-4) at each k, and a stream at most tt_HYBRID_STALE_EVENTS times that. Frames come whole and a lost run is
+// one event on its n frames: both only make the long stretch rarer. The rule until then, C >= 9.21 / p with p read at
+// the event as (k + 1) / F, is c = 9.21 / (k + 1): (1 + 9.21 / (k + 1))^-k, 18% at k = 1, 6% at k = 2 - a 0.1% path
+// forgot in 22 seeds of 100 (test_steady_loss_is_never_forgotten). The price is the clean stretch a real burst needs:
+// 99 F after two events, 2.2 F after eight; 9,999 F after one, so one event at F >= 105 is dropped first by the
+// window's halving (2^20 frames). At most tt_HYBRID_STALE_EVENTS divisions, at each tail and announce. Returns whether
+// it forgot.
 static bool loss_estimate_forget_stale(struct tt_LossEstimate* estimate) {
 #ifdef TT_HYBRID_TEST_SEAM
     if (hybrid_test_stale_off) {
@@ -2381,8 +2390,12 @@ static bool loss_estimate_forget_stale(struct tt_LossEstimate* estimate) {
         return false;
     }
     uint32_t clean = estimate->frames - estimate->frames_at_event;
-    double p_then = ((double)estimate->events + 1.0) / (double)estimate->frames_at_event;
-    if (p_then * (double)clean < tt_HYBRID_STALE_EXPOSURE) {
+    double stretch = 1.0 + ((double)clean / (double)estimate->frames_at_event);
+    double chance = 1.0; // of a stretch this long after this many events, on a steady path
+    for (uint32_t i = 0; i < estimate->events; i++) {
+        chance /= stretch;
+    }
+    if (chance > tt_HYBRID_STALE_FALSE_FORGET) {
         return false;
     }
     estimate->events = 0;

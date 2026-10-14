@@ -800,15 +800,29 @@ MUTANTS = [
     (
         "p: stale events never forgotten",
         "src/tickle.c",
-        "    if (p_then * (double)clean < tt_HYBRID_STALE_EXPOSURE) {",
+        "    if (chance > tt_HYBRID_STALE_FALSE_FORGET) {",
         "    if (true) {",
         SEND,
     ),
     (
-        "p: stale events forgotten one clean stretch early",
+        "p: stale events forgotten one clean frame early",
         "src/tickle.c",
-        "    if (p_then * (double)clean < tt_HYBRID_STALE_EXPOSURE) {",
-        "    if (p_then * (double)(clean + 1U) < tt_HYBRID_STALE_EXPOSURE) {",
+        "    double stretch = 1.0 + ((double)clean / (double)estimate->frames_at_event);",
+        "    double stretch = 1.0 + ((double)(clean + 1U) / (double)estimate->frames_at_event);",
+        SEND,
+    ),
+    (
+        "p: stale events weighed as one fewer",
+        "src/tickle.c",
+        "    for (uint32_t i = 0; i < estimate->events; i++) {",
+        "    for (uint32_t i = 1; i < estimate->events; i++) {",
+        SEND,
+    ),
+    (
+        "p: stale events forgotten by the rule before 2026-10-15 (9.21 / p, p read at the event)",
+        "src/tickle.c",
+        "    if (chance > tt_HYBRID_STALE_FALSE_FORGET) {",
+        "    if (((double)estimate->events + 1.0) * (double)clean < 9.21 * (double)estimate->frames_at_event) {",
         SEND,
     ),
     (

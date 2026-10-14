@@ -1872,13 +1872,15 @@ static void test_reliable_auto_leaves_mtu_after_one_clean_sample(void) {
 // run in five spent ~393 samples below n_max). Here two runs of the second sample are lost on the path and the stream
 // is clean after. The reader reads p ~ 3 / 800 then; with the events kept, p falls only as 1 / frames and n reaches
 // n_max only after ~300,000 frames (~400 samples). Forgotten once the clean frames since have outlived them
-// (loss_estimate_forget_stale(): ~2,500 frames here), n is at n_max within a few samples, announced at a tail. The
-// control is the same stream with the rule off (hybrid_test_stale_off); the loss draws are identical in both.
+// (loss_estimate_forget_stale(): two events at F = 813 frames, forgotten at 99 F - 80,886 clean frames, sample 113 -
+// where the rule before 2026-10-15 took 2,802 and sample 5, 3 samples below n_max, at a false-forget rate of 6% at two
+// events), n is at n_max at once, announced at a tail. The control is the same stream with the rule off
+// (hybrid_test_stale_off); the loss draws are identical in both.
 #define EARLY_EVENT_SAMPLE 2U
 #define EARLY_EVENT_RUNS 2U
 #define EARLY_STREAM_SAMPLES 450U
-#define EARLY_FORGOTTEN_WITHIN 10U // samples below n_max after the events, the rule on
-#define EARLY_HELD_AT_LEAST 200U   // and at least this many with the events kept (the control)
+#define EARLY_FORGOTTEN_WITHIN 114U // samples below n_max after the events, the rule on (111; 118 at the next interval)
+#define EARLY_HELD_AT_LEAST 200U    // and at least this many with the events kept (the control)
 static uint32_t early_sample;
 static uint32_t early_dropped;
 static bool drop_early_runs(const struct sim_datagram* d) {
@@ -1919,21 +1921,35 @@ static uint32_t early_events_stream(bool stale_off, uint64_t* forgets) {
     return below_n_max;
 }
 
-// The rule itself: a few events (at most tt_HYBRID_STALE_EVENTS) are forgotten once the clean frames since the last
-// reach tt_HYBRID_STALE_EXPOSURE / p at that event, not one frame before; more events never are, however long the
-// stretch; none, nothing to forget. Forgetting keeps the clean stretch as the estimate's frames.
+// The rule itself: k events, at most tt_HYBRID_STALE_EVENTS, are forgotten once the clean frames C since the last,
+// against the frames F up to it, have (1 + C / F)^k at least 1 / tt_HYBRID_STALE_FALSE_FORGET (1e4), not one frame
+// before; more events never are, however long the stretch; none, nothing to forget. Forgetting keeps the clean stretch
+// as the estimate's frames. The rule before 2026-10-15 (C >= 9.21 F / (k + 1)) forgot one event at F = 50 after 231
+// clean frames, which a steady path gives 18% of the time: now it takes 499,950.
+#define STALE_THREE_NEEDED 20545U // F = 1000, k = 3: C >= 1000 (10^(4/3) - 1) = 20,544.3
+#define STALE_ONE_AT 50U
+#define STALE_ONE_NEEDED 499950U // F = 50, k = 1: C >= 50 (10^4 - 1), within one window (2^20 frames)
+#define STALE_OLD_ONE 231U       // F = 50, k = 1: 9.21 * 50 / 2, rounded up
 static void test_the_stale_rule_is_the_designs(void) {
     struct tt_LossEstimate estimate = {0, 0, 0};
-    loss_estimate_observe(&estimate, 1000, 0);
-    loss_estimate_observe(&estimate, 45, 2); // two events at 1,045 frames: p then 3 / 1045
-    uint32_t needed = (uint32_t)((tt_HYBRID_STALE_EXPOSURE * 1045.0 / 3.0) + 1.0);
-    loss_estimate_observe(&estimate, needed - 1U, 0);
+    loss_estimate_observe(&estimate, 997, 0);
+    loss_estimate_observe(&estimate, 3, 3); // three events at 1,000 frames
+    loss_estimate_observe(&estimate, STALE_THREE_NEEDED - 1U, 0);
     EXPECT_TRUE(!loss_estimate_forget_stale(&estimate)); // one frame short
     loss_estimate_observe(&estimate, 1, 0);
     EXPECT_TRUE(loss_estimate_forget_stale(&estimate));
     EXPECT_EQ_U32(0, estimate.events);
-    EXPECT_EQ_U32(needed, estimate.frames);
+    EXPECT_EQ_U32(STALE_THREE_NEEDED, estimate.frames);
     EXPECT_TRUE(!loss_estimate_forget_stale(&estimate)); // no events: nothing to forget
+    // One event at 50 frames: the old rule's stretch is not enough, nor one frame short of the new one's.
+    estimate = (struct tt_LossEstimate) {0, 0, 0};
+    loss_estimate_observe(&estimate, STALE_ONE_AT, 1);
+    loss_estimate_observe(&estimate, STALE_OLD_ONE, 0);
+    EXPECT_TRUE(!loss_estimate_forget_stale(&estimate));
+    loss_estimate_observe(&estimate, STALE_ONE_NEEDED - STALE_OLD_ONE - 1U, 0);
+    EXPECT_TRUE(!loss_estimate_forget_stale(&estimate));
+    loss_estimate_observe(&estimate, 1, 0);
+    EXPECT_TRUE(loss_estimate_forget_stale(&estimate));
     // tt_HYBRID_STALE_EVENTS events and one more, over a long clean stretch.
     for (uint32_t events = tt_HYBRID_STALE_EVENTS; events <= tt_HYBRID_STALE_EVENTS + 1U; events++) {
         estimate = (struct tt_LossEstimate) {0, 0, 0};

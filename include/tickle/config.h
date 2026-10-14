@@ -788,16 +788,17 @@
 #ifndef tt_HYBRID_NONE_SEEN_FRAMES
 #define tt_HYBRID_NONE_SEEN_FRAMES 500U
 #endif
-// A reader's p forgets its events (tickle.c, loss_estimate_forget_stale()) when they are at most this many and the
-// clean frames since the last of them are at least tt_HYBRID_STALE_EXPOSURE / p, p read at that event: frame loss at
-// that p leaves such a stretch clean with probability exp(-9.21) = 1e-4. A few events early in a stream (2026-10-13,
-// the rig's 1 MB RELIABLE cell at 0% loss: two, read as p ~ 2e-3) otherwise held n below n_max for ~13 s, p falling as
-// 1 / frames.
+// A reader's p forgets its events (tickle.c, loss_estimate_forget_stale()) when they are k, at most this many, and
+// the clean frames C since the last of them, against the frames F up to it, have (1 + C / F)^k at least
+// 1 / tt_HYBRID_STALE_FALSE_FORGET: on a path that loses frames at any steady rate a stretch that long comes after the
+// k-th event with probability (1 + C / F)^-k, so forgetting there is wrong at most that often per k. A few events early
+// in a stream (2026-10-13, the rig's 1 MB RELIABLE cell at 0% loss: two, read as p ~ 2e-3) otherwise held n below
+// n_max for ~13 s, p falling as 1 / frames.
 #ifndef tt_HYBRID_STALE_EVENTS
 #define tt_HYBRID_STALE_EVENTS 8U
 #endif
-#ifndef tt_HYBRID_STALE_EXPOSURE
-#define tt_HYBRID_STALE_EXPOSURE 9.21 // -ln(1e-4)
+#ifndef tt_HYBRID_STALE_FALSE_FORGET
+#define tt_HYBRID_STALE_FALSE_FORGET 1e-4
 #endif
 // A probe goes this far above the ceiling; the probe wait, 2 tau, doubles per failed probe up to 2^this.
 #ifndef tt_HYBRID_PROBE_STEP
