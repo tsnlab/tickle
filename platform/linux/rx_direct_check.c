@@ -50,7 +50,13 @@
 //                 sendto() and sendmsg() refuse the next call (EAGAIN) and tt_send(), tt_send_to() and tt_send_iov()
 //                 each return the length after exactly two calls, the datagram arriving whole at its address; the
 //                 control, refused with EPERM instead, returns -1 with EPERM after one call (nothing waits for room);
-//                 and a send nothing refuses makes one call.
+//                 and a send nothing refuses makes one call. Built with TT_HAL_LIBC_CALLS (the HAL's sends through the
+//                 library, where this check's own calls stand in front of them); rx_direct_check_raw, built without it,
+//                 runs 13r instead.
+//  13r. raw   - the HAL's own system calls (tt_sys6(), x86-64 and aarch64): each send arrives whole with the library's
+//                 sendto() and sendmsg() never called (this check counts its own); a send to a descriptor that is
+//                 not one returns -1 with errno EBADF, after one attempt; and cases 1-12 read, drain and wait through
+//                 the same calls in this build.
 // Exit 0 pass, 1 fail, 3 setup failed. Run by test.sh (test-linux) in a private namespace.
 
 // Built as rmw_tickle is (platform/linux/Makefile passes the same), so a lint of this file alone sees the same build.
@@ -949,7 +955,7 @@ static struct again_result again_send(enum again_shape shape, int refused, int e
     return result;
 }
 
-static void check_again(void) {
+static int again_sink(uint16_t* port) {
     int sink = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in where = {.sin_family = AF_INET, .sin_port = 0, .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
     socklen_t where_len = sizeof(where);
@@ -957,10 +963,23 @@ static void check_again(void) {
         getsockname(sink, (struct sockaddr*)&where, &where_len) != 0) {
         printf("rx_direct_check: SETUP FAILED - again: no sink socket\n");
         setup_failed = true;
-        return;
+        if (sink >= 0) {
+            (void)close(sink);
+        }
+        return -1;
     }
-    const uint16_t port = ntohs(where.sin_port);
+    *port = ntohs(where.sin_port);
     while (tt_try_receive(&node, buf, sizeof(buf), &any_ip, &any_port) >= 0) {
+    }
+    return sink;
+}
+
+#ifdef TT_HAL_LIBC_CALLS
+static void check_again(void) {
+    uint16_t port = 0;
+    int sink = again_sink(&port);
+    if (sink < 0) {
+        return;
     }
     for (int shape = AGAIN_SEND; shape <= AGAIN_SEND_IOV; shape++) {
         struct again_result again = again_send((enum again_shape)shape, 1, EAGAIN, sink, port);
@@ -980,6 +999,35 @@ static void check_again(void) {
     }
     (void)close(sink);
 }
+#else
+// 13r. raw
+static void check_again(void) {
+    uint16_t port = 0;
+    int sink = again_sink(&port);
+    if (sink < 0) {
+        return;
+    }
+    for (int shape = AGAIN_SEND; shape <= AGAIN_SEND_IOV; shape++) {
+        struct again_result plain = again_send((enum again_shape)shape, 0, 0, sink, port);
+        const int data_sock = node.hal.data_sock;
+        int closed = dup(sink); // a descriptor number that is no descriptor: opened, then closed
+        (void)close(closed);
+        node.hal.data_sock = closed;
+        struct again_result bad = again_send((enum again_shape)shape, 0, 0, sink, port);
+        node.hal.data_sock = data_sock;
+        char line[LINE_BYTES];
+        (void)snprintf(line, sizeof(line),
+                       "raw: %s returned %d, library calls %d, arrived %d; to no descriptor %d errno %d (EBADF %d), "
+                       "library calls %d",
+                       again_name((enum again_shape)shape), (int)plain.sent, plain.calls, plain.arrived ? 1 : 0,
+                       (int)bad.sent, bad.send_errno, EBADF, bad.calls);
+        verdict(plain.sent == (int32_t)AGAIN_BYTES && plain.calls == 0 && plain.arrived && bad.sent == -1 &&
+                    bad.send_errno == EBADF && bad.calls == 0,
+                line);
+    }
+    (void)close(sink);
+}
+#endif
 
 int main(void) {
     _tt_CONFIG.broadcast = "127.255.255.255";

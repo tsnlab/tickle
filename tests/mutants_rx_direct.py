@@ -17,6 +17,11 @@ Not mutated, and why - each decides no outcome a test can observe:
   - tt_try_receive()'s -1 while a kept drain runs: without it the pass reads a socket the drain is also reading, an
     order a datagram's arrival time decides - the drain's task work takes it on arrival in every run a check can make.
   - large_run_batched()'s compatibility check: no test reaches an RxO-incompatible large writer, in either path.
+  - tt_sys_result()'s -1 for a failure (rather than -errno): every caller of the raw calls tests `< 0` and reads errno,
+    so the two cannot be told apart; -1 is the library's contract, kept for the next caller.
+  - hal_recvmmsg(): reached only where tt_RX_BATCH > 1, which rx_direct_check's 64 KB buffers are not (one read a
+    datagram); test-linux's two-node runs read through it - run by hand on 2026-10-15, a recvmmsg that says nothing
+    came failed test-linux's perf tier (52.3% of the stream lost, limit 2%).
 
 Run from the repository root. Needs passwordless `sudo ip` (the namespace). Restores every file it touches, whatever
 happens. MUTANTS=<substring> runs only the mutants whose name contains it (the controls always run).
@@ -33,6 +38,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 TESTS = ROOT / "platform/linux/obj/debug/tests"
 CORE = "test_rx_direct"
 HAL = "rx_direct_check"
+HAL_RAW = "rx_direct_check_raw"  # the same check over the HAL's own system calls (13r for 13)
 DRAIN = "rx_drain_check"  # run twice: the buffer ring this kernel gives, and classic buffers (refuse_pbuf_ring.so)
 
 # (name, file, old, new, binary that must fail)
@@ -412,10 +418,12 @@ MUTANTS = [
         "again: tt_send() does not send again after EAGAIN",
         "src/hal_linux.c",
         "    again.to = node->hal.broadcast_addr;\n"
-        "    int32_t sent = (int32_t)sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));\n"
+        "    int32_t sent = (int32_t)hal_sendto(again.fd, buf, len, 0, "
+        "(const struct sockaddr*)&again.to, sizeof(again.to));\n"
         "    if (__builtin_expect(sent < 0, 0)) {",
         "    again.to = node->hal.broadcast_addr;\n"
-        "    int32_t sent = (int32_t)sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));\n"
+        "    int32_t sent = (int32_t)hal_sendto(again.fd, buf, len, 0, "
+        "(const struct sockaddr*)&again.to, sizeof(again.to));\n"
         "    if (false) {",
         HAL,
     ),
@@ -423,10 +431,12 @@ MUTANTS = [
         "again: tt_send_to() does not send again after EAGAIN",
         "src/hal_linux.c",
         "    again.fd = node->hal.data_sock;\n"
-        "    int32_t sent = (int32_t)sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));\n"
+        "    int32_t sent = (int32_t)hal_sendto(again.fd, buf, len, 0, "
+        "(const struct sockaddr*)&again.to, sizeof(again.to));\n"
         "    if (__builtin_expect(sent < 0, 0)) {",
         "    again.fd = node->hal.data_sock;\n"
-        "    int32_t sent = (int32_t)sendto(again.fd, buf, len, 0, (const struct sockaddr*)&again.to, sizeof(again.to));\n"
+        "    int32_t sent = (int32_t)hal_sendto(again.fd, buf, len, 0, "
+        "(const struct sockaddr*)&again.to, sizeof(again.to));\n"
         "    if (false) {",
         HAL,
     ),
@@ -440,15 +450,15 @@ MUTANTS = [
     (
         "again: sendto_again() waits and sends again after any refusal, not only a full buffer",
         "src/hal_linux.c",
-        "    while (send_wait_for_room(again->fd)) {\n        sent = (int32_t)sendto(",
-        "    while (errno = EAGAIN, send_wait_for_room(again->fd)) {\n        sent = (int32_t)sendto(",
+        "    while (send_wait_for_room(again->fd)) {\n        sent = (int32_t)hal_sendto(",
+        "    while (errno = EAGAIN, send_wait_for_room(again->fd)) {\n        sent = (int32_t)hal_sendto(",
         HAL,
     ),
     (
         "again: sendmsg_again() waits and sends again after any refusal, not only a full buffer",
         "src/hal_linux.c",
-        "    while (send_wait_for_room(again->fd)) {\n        sent = (int32_t)sendmsg(",
-        "    while (errno = EAGAIN, send_wait_for_room(again->fd)) {\n        sent = (int32_t)sendmsg(",
+        "    while (send_wait_for_room(again->fd)) {\n        sent = (int32_t)hal_sendmsg(",
+        "    while (errno = EAGAIN, send_wait_for_room(again->fd)) {\n        sent = (int32_t)hal_sendmsg(",
         HAL,
     ),
     (
@@ -457,6 +467,41 @@ MUTANTS = [
         "again->len, 0, (const struct sockaddr*)&again->to,",
         "again->len - 1U, 0, (const struct sockaddr*)&again->to,",
         HAL,
+    ),
+    (
+        "raw: a failure's errno not the system call's",
+        "src/hal_linux.c",
+        "        errno = (int)-ret;\n        return -1;",
+        "        errno = EIO;\n        return -1;",
+        HAL_RAW,
+    ),
+    (
+        "raw: sendto() with a length one short",
+        "src/hal_linux.c",
+        "(long)len, flags, (long)dest, (long)dest_len",
+        "(long)len - 1, flags, (long)dest, (long)dest_len",
+        HAL_RAW,
+    ),
+    (
+        "raw: sendmsg() of another message",
+        "src/hal_linux.c",
+        "tt_sys6(SYS_sendmsg, socket_fd, (long)msg, flags, 0, 0, 0)",
+        "tt_sys6(SYS_sendmsg, socket_fd, (long)msg, flags, 0, 0, 0) - 1",
+        HAL_RAW,
+    ),
+    (
+        "raw: recvfrom() of one byte",
+        "src/hal_linux.c",
+        "(long)len, flags, (long)from, (long)from_len",
+        "1L, flags, (long)from, (long)from_len",
+        HAL_RAW,
+    ),
+    (
+        "raw: the wait without its timeout",
+        "src/hal_linux.c",
+        "RX_WAIT_FDS, (long)timeout_ts, 0, 0)",
+        "RX_WAIT_FDS, 0L, 0, 0)",
+        HAL_RAW,
     ),
 ]
 
@@ -477,7 +522,7 @@ def run_hal(binary, env=""):
 
 
 def build_and_run(binary):
-    targets = [binary] if binary in (HAL, DRAIN) else [f"obj/debug/tests/{binary}"]
+    targets = [binary] if binary in (HAL, HAL_RAW, DRAIN) else [f"obj/debug/tests/{binary}"]
     if binary == DRAIN:
         targets.append("refuse_pbuf_ring.so")
     build = subprocess.run(["make", "-s", "-C", str(ROOT / "platform/linux"), *targets], capture_output=True, text=True)
@@ -489,7 +534,7 @@ def build_and_run(binary):
             if run.returncode == 0:
                 run = run_hal(binary, "TT_REFUSE_PBUF_RING=all TT_EXPECT_DRAIN_RING=classic "
                                       "LD_PRELOAD=./refuse_pbuf_ring.so")
-        elif binary == HAL:
+        elif binary in (HAL, HAL_RAW):
             run = run_hal(binary)
         else:
             run = subprocess.run(["bash", "-c", f"ulimit -v 2097152; exec {TESTS / binary}"], capture_output=True,
