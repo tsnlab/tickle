@@ -150,11 +150,12 @@ static const struct pattern k_patterns[] = {
 // alone, and no hybrid run joins any).
 #define GSO_DATAGRAMS_PER_PASS (723U + 24U + 20U + 12U)
 #define GSO_SENDS_PER_PASS (23U + 7U + 1U + 4U)
-// With TT_UDP_CSUM0=1 (hal_linux.c "UDP checksum 0"), the datagrams tt_send_batch() sends with checksum 0, per pass:
-// pattern 8's calls of 12 each split into a UDP_SEGMENT run of 4, then [run, run, 1468, run] with checksum 0 (the lone
-// MTU fragment joins the runs' call), a UDP_SEGMENT run of 2, then [run, run] with checksum 0 - 6 a call, 5 of them
-// runs, and 2 calls. No other pattern has a datagram above 1472 bytes, and each of theirs is a UDP_SEGMENT run or
-// follows one, so none of theirs goes without its checksum. The option stays on after pattern 8, so the end marker
+// With UDP checksum 0 on (hal_linux.c "UDP checksum 0"; the default, and TT_UDP_CSUM0=1), the datagrams tt_send_batch()
+// sends with checksum 0, per pass: pattern 8's calls of 12 each split into a UDP_SEGMENT run of 4, then [run, run,
+// 1468, run] with checksum 0 (the lone MTU fragment joins the runs' call), a UDP_SEGMENT run of 2, then [run, run] with
+// checksum 0 - 6 a call, 5 of them runs, and 2 calls. No other pattern has a datagram above 1472 bytes, and each of
+// theirs is a UDP_SEGMENT run or follows one, so none of theirs goes without its checksum. The option stays on after
+// pattern 8, so the end marker
 // ("UEND") goes with checksum 0 too: CSUM0_END.
 #define CSUM0_DATAGRAMS_PER_PASS 12U
 #define CSUM0_END 1U

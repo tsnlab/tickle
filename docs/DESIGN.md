@@ -1236,9 +1236,11 @@ instructions per MB mislead wherever work moves into or out of a copy; cycles ar
 | the deadline timer | +0.5% HELD | -0.9% HELD | kernel -1.4% BETTER at 4 MiB; cycles not resolved (A/A 14-16% that session); ~2,300 timer sets a run against 15,000-50,000 waits (the bench polls with a 10 ms budget) |
 | n_max from the first clean sample (AUTO, cap on) | -22.0% BETTER | -25.3% BETTER | cycles -12.7% / -27.6% BETTER; A sent 211 of 360 / 76 of 180 samples below n_max, B 1-31 / 1-16 (before the tail announce's fix: 1); latency median +0.22% WORSE at 1 MiB, -0.04% at 4 MiB |
 
-#### UDP checksum 0, an option (2026-10-14, `ab/udp-csum0`)
+#### UDP checksum 0, on by default (2026-10-14, `ab/udp-csum0`; the default since 2026-10-15)
 
-`TT_UDP_CSUM0=1` (off by default; the default is to be decided from the rig A/B). Where the checksum is made on the
+On by default; `TT_UDP_CSUM0=0` keeps every datagram's checksum. The rig A/B (2026-10-15, `udp_csum0_read.py`): the
+subscriber's CPU -0.117 / -0.117 / -0.098 / -0.124 ms/MB in the 1 MB RELIABLE / 1 MB BEST_EFFORT / 4 MB RELIABLE /
+4 MB BEST_EFFORT cells, nothing else worse; the user chose it as the default on those numbers. Where the checksum is made on the
 rig (Pi 5, macb, Linux 6.8; `ethtool -k`: rx-checksumming on, tx-checksum-ip-generic on, tx-udp-segmentation off): a
 datagram of one frame is checksummed by the NIC both ways, but no NIC checks an IP fragment, so a hybrid run's
 checksum is made in software at the receiver, during the copy to user (`csum_partial()` then the copy, on arm64). The

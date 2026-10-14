@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Mutant sweep for UDP checksum 0 (hal_linux.c "UDP checksum 0", the TT_UDP_CSUM0=1 option).
+"""Mutant sweep for UDP checksum 0 (hal_linux.c "UDP checksum 0", on by default, off with TT_UDP_CSUM0=0).
 
 Each entry breaks one condition of the option and must turn platform/linux/udp_offload_check.sh red: its arms F and G
-send with TT_UDP_CSUM0=1 and the receiver's ingress counts the datagrams that carry UDP checksum 0; B, A and C are the
-controls without it. A mutant that still passes means the check does not test what it says, or the condition decides
+send with it on (F by default, G with TT_UDP_CSUM0=1) and the receiver's ingress counts the datagrams that carry UDP checksum 0; B, A and C are the
+controls with TT_UDP_CSUM0=0. A mutant that still passes means the check does not test what it says, or the condition decides
 nothing and should not be in the code.
 
 Not mutated, and why - each decides no outcome the check can observe:
@@ -93,16 +93,16 @@ MUTANTS = [
         "        (void)call->carried[i];\n",
     ),
     (
-        "env: TT_UDP_CSUM0 ignored, always on",
+        "env: TT_UDP_CSUM0=0 ignored, always on",
         HAL,
-        '    if (setting == NULL || strcmp(setting, "1") != 0) {\n        return;\n    }\n    int enable = 1;',
-        "    if (false) {\n        return;\n    }\n    int enable = 1;",
+        '    if (setting != NULL && strcmp(setting, "0") == 0) {\n        return; // every datagram keeps its checksum\n    }\n    int enable = 1;',
+        "    if (false) {\n        return; // every datagram keeps its checksum\n    }\n    int enable = 1;",
     ),
     (
-        "env: TT_UDP_CSUM0=1 ignored, never on",
+        "env: the default ignored, never on",
         HAL,
-        '    if (setting == NULL || strcmp(setting, "1") != 0) {\n        return;\n    }\n    int enable = 1;',
-        "    if (true) {\n        return;\n    }\n    int enable = 1;",
+        '    if (setting != NULL && strcmp(setting, "0") == 0) {\n        return; // every datagram keeps its checksum\n    }\n    int enable = 1;',
+        "    if (true) {\n        return; // every datagram keeps its checksum\n    }\n    int enable = 1;",
     ),
     (
         "treatment: csum0= reported 1 whatever the setting",

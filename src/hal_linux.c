@@ -1673,7 +1673,7 @@ static bool gso_refused(struct tt_Context* node, int err) {
 }
 #endif
 
-// ---- UDP checksum 0 (2026-10-14, an option: TT_UDP_CSUM0=1)
+// ---- UDP checksum 0 (2026-10-14; the default since 2026-10-15, TT_UDP_CSUM0=0 keeps every checksum)
 // --------------------------------------------------------------------------------
 //
 // Where the checksum is made (the rig: Pi 5, macb, Linux 6.8). A datagram of one frame has it made by the NIC on send
@@ -1693,16 +1693,17 @@ static bool gso_refused(struct tt_Context* node, int err) {
 // kernel refuses with it on (EINVAL; measured on the PC, Linux 7.0), so it goes off before such a call. A batch is cut
 // where the kind changes (a short datagram between them joins either). Turning it on and off around every call cost
 // two setsockopt() calls a call, ~9 calls a 1 MB sample under the send buffer's back-pressure (udp_csum0_pc.sh, first
-// session); left on, an AUTO stream of runs switches it once. So while the option is on, the data socket's other
-// datagrams (tt_send*(), and a batch's short datagrams) may go with checksum 0 too: datagrams of one frame, which the
-// link's FCS covers as it covers every frame. A UDP_SEGMENT call that meets it on anyway (another thread switched it)
-// turns it off and goes again (csum0_retries); a second refusal is send offload's own (gso_refused()).
+// session); left on, an AUTO stream of runs switches it once. So while the option is on (the default), the data
+// socket's other datagrams (tt_send*(), and a batch's short datagrams) may go with checksum 0 too: datagrams of one
+// frame, which the link's FCS covers as it covers every frame. A UDP_SEGMENT call that meets it on anyway (another
+// thread switched it) turns it off and goes again (csum0_retries); a second refusal is send offload's own
+// (gso_refused()).
 #if TT_HAL_UDP_CSUM0
 static void csum0_setup(struct tt_Context* node) {
     node->hal.csum0 = 0;
     const char* setting = getenv("TT_UDP_CSUM0");
-    if (setting == NULL || strcmp(setting, "1") != 0) {
-        return;
+    if (setting != NULL && strcmp(setting, "0") == 0) {
+        return; // every datagram keeps its checksum
     }
     int enable = 1;
     int disable = 0;
@@ -1710,7 +1711,7 @@ static void csum0_setup(struct tt_Context* node) {
     if (setsockopt(node->hal.data_sock, SOL_SOCKET, SO_NO_CHECK, &enable, sizeof(enable)) != 0 ||
         // NOLINTNEXTLINE(misc-include-cleaner) - SO_NO_CHECK: as above
         setsockopt(node->hal.data_sock, SOL_SOCKET, SO_NO_CHECK, &disable, sizeof(disable)) != 0) {
-        TT_LOG_WARNING("SO_NO_CHECK refused (%s) - TT_UDP_CSUM0=1 ignored, every datagram keeps its checksum",
+        TT_LOG_WARNING("SO_NO_CHECK refused (%s) - no UDP checksum 0, every datagram keeps its checksum",
                        strerror(errno));
         node->hal.csum0 = -1;
         return;

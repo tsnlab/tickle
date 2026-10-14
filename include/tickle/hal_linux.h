@@ -63,9 +63,10 @@
 #define TT_HAL_UDP_GSO 0
 #endif
 
-// UDP checksum 0 on IP-fragmented datagrams (hal_linux.c "UDP checksum 0"): an option, off unless TT_UDP_CSUM0=1 is in
-// the environment at tt_bind(). Only where a datagram can be larger than one frame - a build with large samples, whose
-// hybrid runs are IP-fragmented - since a datagram of one frame has its checksum made and checked by the NIC.
+// UDP checksum 0 on IP-fragmented datagrams (hal_linux.c "UDP checksum 0"): on by default since 2026-10-15;
+// TT_UDP_CSUM0=0 in the environment at tt_bind() keeps every datagram's checksum. Only where a datagram can be larger
+// than one frame - a build with large samples, whose hybrid runs are IP-fragmented - since a datagram of one frame has
+// its checksum made and checked by the NIC.
 #define TT_HAL_UDP_CSUM0 TT_HAL_UDP_GSO
 
 // glibc's struct mmsghdr, which it declares only under _GNU_SOURCE - a define this public header cannot
@@ -361,7 +362,7 @@ struct tt_hal {
     bool gso_on;
 #endif
 #if TT_HAL_UDP_CSUM0
-    // UDP checksum 0 (hal_linux.c "UDP checksum 0"): csum0 is 1 with TT_UDP_CSUM0=1, 0 without, -1 when the kernel
+    // UDP checksum 0 (hal_linux.c "UDP checksum 0"): csum0 is 1 by default, 0 with TT_UDP_CSUM0=0, -1 when the kernel
     // refused SO_NO_CHECK; csum0_on, the data socket's SO_NO_CHECK now. csum0_switches: setsockopt() calls that changed
     // it; csum0_calls: tt_send_batch() sendmmsg() calls made with it on; csum0_datagrams: the datagrams they carried,
     // each with checksum 0 on the wire; csum0_retries: UDP_SEGMENT calls refused (EINVAL) with it on, made again with
