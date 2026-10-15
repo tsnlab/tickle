@@ -792,6 +792,37 @@ asked of it:
   IMPROVED" line for the cell reads that absence, not step B); RELIABLE KEEP_LAST 10 1 MB 2.24 -> 1.77 ms/MB, 1.08 ->
   0.75 ms; 4 MB 2.41 -> 1.64 ms/MB, 5.17 -> 2.89 ms. Same direction as before the rebase in every cell.
 
+#### The rig session's VOID control (2026-10-15, `ab/largemsg-stepB-ctl`)
+
+The rig A/B (`rig_queue_largemsg_B.sh`, `~/rig_results_safe/largemsgB_compare.txt`) passed every large cell and went
+VOID on its control: Array16k BEST_EFFORT, subscriber CPU/MB +5% on step B, 5 of 5 reps. Step B adds nothing to that
+subscriber's work; the control measured perf_test's own wait.
+
+- **What a 30 Hz subscriber's CPU is.** perf_test's main thread (AnalyzeRunner) sleeps 1 s and then takes the
+  DataRunner's SpinLock, a pause-free `test_and_set` loop, which `ROS2CallbackCommunicator::update_subscription()`
+  holds across `spin_once(100 ms)`. So every second the main thread busy-waits until the next sample has been
+  delivered: about one period (33 ms) of CPU per second, against ~1.4 ms/s for the rmw and the callback on the Pi.
+  When it loses the race for the lock at that release it spins one more period; that second's `T_loop` is 1.067 s.
+- **On the rig the +5% is those seconds.** Step B lost the race in 18 seconds over 5 reps, main in 1, every one with
+  its samples on time (latency_max below 0.1 ms). Without them the arms differ by +0.19% (2 x SE 0.25%, HELD;
+  `largemsg_control_spin.py`, which also reads the RELIABLE control HELD at +0.05%). Why step B's subscriber lost
+  more races on the Pi is not known: the window is perf_test's code between `unlock()` and `lock()`, which no rmw
+  change touches, and on the PC the two arms lose as often (60 and 65 seconds over 8 reps).
+- **PC, the same cell in one private namespace** (`stepb_ctl_pc.sh`, main `f5fcda06` against `003f71f8`, 8 reps
+  interleaved; `~/stepb_ctl/`): perf_test's main thread is 87% of the subscriber's CPU and carries its whole spread
+  (1.05 to 6.96 s a run); the other threads 215 -> 210 ms, kernel instructions -0.01%, every per-wake syscall count
+  equal (`strace -c`), and under `perf record` the user instructions outside `sync_reset()` +0.2% (librmw_tickle.so
+  alone 361 -> 363 samples of 50,000). No step B commit to bisect and nothing to fix in core.
+- **The reading for the re-run**: the control's subscriber CPU excludes perf_test's lost-race seconds
+  (`largemsg_control_spin.py`, rules in its docstring), or counts only the subscriber's threads other than perf_test's
+  main one. The same spin is in every cell's subscriber CPU/MB, for every arm, vendors included: about 1.1 ms/MB at
+  1 MB and 30 Hz.
+- **B2.6, subscriber RSS +1-2 MB at 1 MB**: the region's pages. A reader maps the writer's region and touches the
+  chunks it reads, two in these cells, which `ru_maxrss` counts in both processes although they are one set of
+  pages. On the PC the step B reader's RssShmem is +2 MB (2,124 against 68 kB) and its RssAnon -4 MB (5,356 against
+  9,476 kB: no reassembly buffers), peak RSS 20.5-21.8 MB against 22.8 MB. A cost of taking the sample in place, not
+  avoidable without copying it.
+
 ### Encoding while sending (2026-10-11, `ab/interleave-encode`)
 
 **Why.** A large publish encoded the whole sample into its buffer and only then sent the first fragment: about 0.7 ms
