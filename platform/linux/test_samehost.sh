@@ -148,6 +148,8 @@ fi
 # this pass would be the first one again and could not fail for the reason it exists.
 # A busy socket must not starve an idle-marked one (rx_idle_check.c): exit 0 only, a setup failure is a failure here.
 "$HERE/rx_idle_check" || { echo "same-host test: FAIL - rx_idle_check" >&2; exit 1; }
+# The read after a lone wake-up's datagram is skipped and loses nothing (rx_lone_check.c): exit 0 only.
+"$HERE/rx_lone_check" || { echo "same-host test: FAIL - rx_lone_check" >&2; exit 1; }
 # A receive socket's drops are the kernel's count (rx_drain_check.c): exit 0 only, a setup failure is a failure here.
 "$HERE/rx_drain_check" >"$SUB_LOG" 2>&1 || { cat "$SUB_LOG" >&2; echo "same-host test: FAIL - rx_drain_check" >&2; exit 1; }
 cat "$SUB_LOG"

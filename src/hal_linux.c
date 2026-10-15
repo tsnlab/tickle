@@ -1191,6 +1191,9 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     node->hal.rx_idle_since_ns = 0;
     node->hal.rx_empty_reads = 0;
     node->hal.rx_idle_skips = 0;
+    node->hal.rx_lone_streak = 0;
+    node->hal.rx_lone_skips = 0;
+    node->hal.rx_probe_bit = 0;
     node->hal.rx_count = 0;
     node->hal.rx_next = 0;
     node->hal.rx_headers_for = NULL;
@@ -2048,6 +2051,43 @@ static int32_t send_batch_flags(struct tt_Context* node, const struct tt_OutData
 // refreshed every tt_RX_CLOCK_REFRESH datagrams of a drain), so the bound is tt_RECEIVE_TIMEOUT or tt_RX_CLOCK_REFRESH
 // datagrams, whichever ends later, and the check reads no clock of its own inside a poll.
 #define TT_RX_IDLE_RECHECK_NS ((uint64_t)tt_RECEIVE_TIMEOUT)
+
+// The read after a wake-up's datagram (struct tt_hal.rx_lone_streak). The wake-up read is one recvfrom(), kept
+// single because it is on the latency path (tt_receive()), so whether more waited is learnt only by reading again, in
+// the drain: on the core p1 ping-pong that read found nothing on every round trip, at both ends (lat_gap_pc.sh,
+// affea967: recvmmsg() 1.004 calls and 1.002 EAGAIN a round trip on the client). Skipping it loses nothing - every
+// wait is level-triggered for the sockets, so a datagram left in one ends the next wait at once - but costs, when one
+// did wait, a wait and a single read where a batch would have taken it. So it is skipped only after
+// TT_RX_LONE_STREAK of these reads in a row found the socket empty, and one wake-up in TT_RX_LONE_RECHECK still reads:
+// a node whose traffic turns into a backlog reads one datagram per wait for at most TT_RX_LONE_RECHECK - 1 wake-ups,
+// and one whose traffic stays lone pays 1/TT_RX_LONE_RECHECK of the reads it paid. Counts of wake-ups, not a time:
+// what a wrong guess costs is one wait per wake-up on any hardware. TT_RX_LONE_STREAK 0 turns the skip off.
+#ifndef TT_RX_LONE_STREAK
+#define TT_RX_LONE_STREAK 8U
+#endif
+#define TT_RX_LONE_RECHECK 16U
+
+static inline void rx_lone_after_wake(struct tt_hal* hal, int socket_fd) {
+    const uint8_t bit = socket_fd == hal->data_sock ? TT_RX_IDLE_DATA : TT_RX_IDLE_WELL_KNOWN;
+    if (TT_RX_LONE_STREAK != 0 && hal->rx_lone_streak >= TT_RX_LONE_STREAK &&
+        ++hal->rx_lone_skips < TT_RX_LONE_RECHECK) {
+        hal->rx_idle |= bit; // the drain does not ask this socket: the next wait reports what came
+        hal->rx_probe_bit = 0;
+        return;
+    }
+    hal->rx_lone_skips = 0;
+    hal->rx_probe_bit = bit;
+}
+
+// The drain's read of the socket the wake-up read (rx_probe_bit): `found` when it returned a datagram.
+static inline void rx_lone_probed(struct tt_hal* hal, bool found) {
+    hal->rx_probe_bit = 0;
+    if (found) {
+        hal->rx_lone_streak = 0;
+    } else if (hal->rx_lone_streak < TT_RX_LONE_STREAK) {
+        hal->rx_lone_streak++;
+    }
+}
 
 // tt_receive()'s wait set: the two sockets, the wake eventfd, and - with the segment - its doorbell FIFO.
 #if tt_SEGMENT_ENABLED
@@ -3490,6 +3530,7 @@ int32_t tt_receive(struct tt_Context* node, void* buf, size_t len, uint32_t* ip,
     }
 #endif
 
+    rx_lone_after_wake(&node->hal, read_fd);
     TT_TRACE(tt_TRACE_RX_DATAGRAM);
     return ret;
 }
@@ -3578,6 +3619,9 @@ int32_t tt_try_receive(struct tt_Context* node, void* buf, size_t len, uint32_t*
             continue;
         }
         ret = rx_fill(node, order[i], buf, len, ip, port);
+        if (bit == node->hal.rx_probe_bit) {
+            rx_lone_probed(&node->hal, ret >= 0);
+        }
         if (ret == -2) {
             return -2; // I/O error
         }
