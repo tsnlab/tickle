@@ -659,14 +659,13 @@ static void test_declines_and_a_second_reader_across_the_wrap(void) {
 static void test_durable_backlog_across_the_wrap(void) {
     // The first 120 samples reach nobody; then the writer hands its DURABLE reader everything it retains (the backlog,
     // as on a match) and goes on. Starting 100 short of 2^32, the retained run straddles 2^32 - the backlog walk from
-    // its oldest to its newest has to go through it.
-    //
-    // One datagram a sample only. With ten, a DURABLE reader whose first contact is a fragmented backlog from a writer
-    // more than a window past seq_no 1 stalls whether or not seq_no wraps: from 100000 on origin/main (244bd2ad) as
-    // here, 56 of 200 delivered and the writer blocked, against 200 from 1 - its default baseline jumps to the first
-    // fragment and the rest cannot be held. Not this change's; reported apart.
+    // its oldest to its newest has to go through it. One datagram a sample, and ten: a fragmented backlog from a writer
+    // more than a window past seq_no 1 stalled, wrap or not, until 2026-10-15 (tests/test_durable_late_joiner.c).
     const struct wrap_case c = {"DURABLE backlog across 2^32", 1000, 0, MODE_DURABLE, 0, 0, 0, 120, false, false};
     expect_case(&c, 0U - 100U, 0, true);
+    const struct wrap_case fragmented = {
+        "DURABLE 10-fragment backlog, 2^32", 14000, 0, MODE_DURABLE, 0, 0, 0, 120, false, false};
+    expect_case(&fragmented, 0U - 1000U, 0, true);
 }
 
 // --- the writer's bookkeeping across the wrap, piece by piece ----------------------------------------
