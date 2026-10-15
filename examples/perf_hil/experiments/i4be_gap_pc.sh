@@ -15,7 +15,8 @@
 #
 # Arms: ARMS="<name>:<qos> ..." with qos be (BEST_EFFORT KEEP_LAST 5) or rel (RELIABLE KEEP_LAST 10); name is fdds
 # (rmw_fastrtps_cpp with fastdds/fastdds_eth0_only.xml) or a rmw_tickle build named by TICKLE_<name>=<install dir>
-# (default: TICKLE_A = $PF/install). Arms rotate per rep. Every rmw_tickle subscriber runs with the rig Pis' classic
+# (default: TICKLE_A = $PF/install), with TENV_<name>="VAR=value ..." exported at both ends (a runtime switch: two arms
+# of one build). Arms rotate per rep. Every rmw_tickle subscriber runs with the rig Pis' classic
 # drain buffers (tests/support/refuse_pbuf_ring.so, TT_REFUSE_PBUF_RING=all: the Pis' kernel refuses the pbuf ring).
 # Every perf_test of every arm runs under sockbuf_clamp.so: socket buffers as the rig's 212992 rmem_max/wmem_max grant
 # them (the PC's limits are 4 MB and global). Fast DDS runs with FASTDDS_BUILTIN_TRANSPORTS=UDPv4 (no shared memory
@@ -83,7 +84,8 @@ for a in $ARMS; do
     [ "$n" = fdds ] && continue
     v=TICKLE_$n
     [ -n "${!v:-}" ] || { echo "arm $a: TICKLE_$n unset"; exit 1; }
-    echo "ARM $n install=${!v} lib_sha256=$(sha256sum "${!v}/rmw_tickle/lib/librmw_tickle.so" | cut -c1-16)" | tee -a "$OUT"
+    e=TENV_$n
+    echo "ARM $n install=${!v} env='${!e:-}' lib_sha256=$(sha256sum "${!v}/rmw_tickle/lib/librmw_tickle.so" | cut -c1-16)" | tee -a "$OUT"
 done
 
 envfile() { # <name> <role>: the environment a perf_test of this arm starts with
@@ -96,6 +98,8 @@ envfile() { # <name> <role>: the environment a perf_test of this arm starts with
         local v=TICKLE_$n
         echo "source ${!v}/local_setup.bash"
         echo "export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255"
+        local e=TENV_$n
+        [ -n "${!e:-}" ] && echo "export ${!e}"
         if [ "$2" = sub ]; then echo "export TT_REFUSE_PBUF_RING=all LD_PRELOAD=$WORK/refuse_pbuf_ring.so:$WORK/sockbuf_clamp.so"
         else echo "export LD_PRELOAD=$WORK/sockbuf_clamp.so"; fi
     fi
@@ -180,7 +184,7 @@ run() { # <arm> <rep>
     vals="$vals $(awk '/^pid / { pid = $2; next } { t[$1] = $2 + $3 } END { for (k in t) { if (k == pid) m += t[k]; else w += t[k] } if (pid == "") print "sub_threads=none"; else print "sub_main_ticks=" m + 0 " sub_work_ticks=" w + 0 }' "$stem.sub.threads" 2>/dev/null || echo sub_threads=none)"
     local cnt
     cnt=$(grep -h -o -E 'Node [0-9]+ (rx|large|hybrid): .*' "$stem.sub.log" "$stem.pub.log" | tr ' ' '\n' |
-        grep -E '^(direct_reads|empty_reads|timer_sets|timer_waits|send_waits|runs|drain_datagrams|shm_sleeps|socket_drops)=' | tr '\n' ' ')
+        grep -E '^(direct_reads|direct_runs|prefetch|direct_prefetches|empty_reads|timer_sets|timer_waits|send_waits|runs|drain_datagrams|socket_drops)=' | tr '\n' ' ')
     echo "RUN arm=$arm rep=$rep ok=$ok$why sent=$sent recv=$recv$vals | $cnt" | tee -a "$OUT"
 }
 
