@@ -26,8 +26,13 @@ TEST = "obj/debug/tests/test_no_send_unmatched"
 MUTANTS = [
     (
         "rule: publisher_unmatched() never true",
-        "    return count_peers(pub->peers) == 0;\n}\n\nstatic void count_unmatched_sample(",
+        "    return pub->peers[0].context_id == tt_CONTEXT_ID_INVALID;\n}\n\nstatic void count_unmatched_sample(",
         "    return false;\n}\n\nstatic void count_unmatched_sample(",
+    ),
+    (
+        "rule: the second slot read as the answer (one matched reader reads as none)",
+        "    return pub->peers[0].context_id == tt_CONTEXT_ID_INVALID;\n}\n\nstatic void count_unmatched_sample(",
+        "    return pub->peers[1].context_id == tt_CONTEXT_ID_INVALID;\n}\n\nstatic void count_unmatched_sample(",
     ),
     (
         "staging: the unmatched return removed",
