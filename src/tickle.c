@@ -2240,6 +2240,44 @@ static uint32_t hybrid_destination_n(struct tt_Context* node, const struct tt_Pu
     return smallest == 0 ? 1U : smallest;
 }
 
+// Whether a RELIABLE AUTO sample to one peer is what that reader's p will rest on: a reader of this Publisher there
+// that takes runs and has announced no p yet, so the sample goes as MTU units (hybrid_peer_p()) and the reader's first
+// estimate - "none seen" after tt_HYBRID_NONE_SEEN_FRAMES clean frames among them - reads each as one chance to lose.
+// Sent as UDP_SEGMENT trains they are not: a loss that takes a whole send (netem, which sits above the segmentation; a
+// queue that drops a packet of 44 datagrams) leaves a 1 MB sample ~22 chances, and on the rig's 5% path the first
+// sample came through clean in 2 runs of 5 (2026-10-15, I1L: "none seen", n = 45, runs lost nine in ten, two samples
+// never delivered). So these go one datagram a send call (large_send_mtu()).
+static bool hybrid_peer_unmeasured(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
+                                   uint32_t ip, uint16_t port, bool large) {
+    if (context_id == tt_CONTEXT_ID_INVALID || !pub->reliable ||
+        hybrid_mode(node, pub) != tt_LARGE_FRAGMENTATION_AUTO || node->hybrid.peer_loss_p[context_id] != 0 ||
+        hybrid_peer_n_max(node, pub, context_id, ip, port, large) < 2U) {
+        return false;
+    }
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        if (pub->peer_acks[i].context_id == context_id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The same for one destination: its peer, or by broadcast any of the Publisher's matched peers.
+static bool hybrid_destination_unmeasured(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
+                                          uint32_t ip, uint16_t port, bool large) {
+    if (context_id != tt_CONTEXT_ID_INVALID) {
+        return hybrid_peer_unmeasured(node, pub, context_id, ip, port, large);
+    }
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        const struct tt_Peer* peer = &pub->peers[i];
+        if (peer->context_id != tt_CONTEXT_ID_INVALID &&
+            hybrid_peer_unmeasured(node, pub, peer->context_id, peer->ip, peer->port, large)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t run_n, uint32_t count,
                                  uint32_t base, uint32_t run_units);
 
@@ -2680,11 +2718,14 @@ static void hybrid_rx_forget_stale(struct tt_HybridState* hybrid) {
 // loss (the rig's 4 MB cell: 1 to 11 MTU samples, by the interval's phase), then n crept up with 1 / N - and an
 // interval that fell inside the first sample announced 1 / N of a few hundred frames, holding n at 2-3 for the next
 // interval (the PC, 1 MB: 30 samples). Once "none seen" is announced this does nothing more; a reader that has seen
-// loss announces at the interval, as before.
+// loss announces at the interval, as before - but its first estimate, whatever it reads, goes at the first tail too
+// (2026-10-15): until a writer hears one it sends this reader its MTU units one a send call (hybrid_peer_unmeasured()),
+// and on a lossy path that was up to a whole interval of samples (the rig's 1 MB cell at 5%: ~30).
 static void hybrid_rx_first_estimate(struct tt_Context* node) {
     hybrid_rx_forget_stale(&node->hybrid);
-    if (node->hybrid.advertised_loss != HYBRID_LOSS_NONE_SEEN &&
-        hybrid_rx_loss_code(&node->hybrid.rx_loss) == HYBRID_LOSS_NONE_SEEN) {
+    uint16_t measured = hybrid_rx_loss_code(&node->hybrid.rx_loss);
+    if ((node->hybrid.advertised_loss != HYBRID_LOSS_NONE_SEEN && measured == HYBRID_LOSS_NONE_SEEN) ||
+        (node->hybrid.advertised_loss == 0 && measured != 0)) {
         hybrid_announce(node, tt_get_ns());
     }
 }
@@ -8121,6 +8162,8 @@ static void large_cursor_destinations(struct tt_Context* node, struct tt_Publish
                                               destinations[i].port, true, &one_run);
         cursor->run_n[i] = (uint8_t)run_n;
         cursor->run_until[i] = (uint16_t)hybrid_run_until(run_n, record->count, one_run);
+        cursor->alone[i] = run_n < 2U && hybrid_destination_unmeasured(node, pub, destinations[i].context_id,
+                                                                       destinations[i].ip, destinations[i].port, true);
         hybrid_note_sent(node, pub, destinations[i].context_id, run_n, record->count, record->seq_no,
                          cursor->run_until[i]);
 #endif
@@ -8331,9 +8374,15 @@ static bool large_send_mtu(struct tt_Context* node, struct tt_Publisher* pub, st
     const struct tt_Peer* dest = &cursor->dests[cursor->next_dest];
     const struct tt_DataHeader* data = (const struct tt_DataHeader*)(record->buffer + tt_LARGE_HEADER_OFFSET);
     const uint8_t* cdr = record->buffer + tt_LARGE_CDR_OFFSET;
+#if tt_HYBRID_TRANSPORT
+    // The frames a reader's first p rests on go one a call, never as a train (hybrid_peer_unmeasured()).
+    const uint32_t batch_max = cursor->alone[cursor->next_dest] ? 1U : LARGE_BATCH;
+#else
+    const uint32_t batch_max = LARGE_BATCH;
+#endif
     while (cursor->next_index < record->count) {
         uint32_t batch_count = record->count - cursor->next_index;
-        batch_count = batch_count < LARGE_BATCH ? batch_count : LARGE_BATCH;
+        batch_count = batch_count < batch_max ? batch_count : batch_max;
         if (!large_encode_through(pub, record, large_end_of(record, cursor->next_index + batch_count - 1))) {
             *failed = true;
             return true;
