@@ -2353,6 +2353,11 @@ struct tt_Publisher { // extends endpoint
     // Some peer_watch[] entry has watched a sample sent in runs: only then does an ACKNACK look its NACKs over for the
     // watch, so a Publisher that never sends a run pays one test an ACKNACK, not a peer_acks[] search.
     bool watching;
+    // Until when a RELIABLE AUTO Publisher that knows no reader yet sends its broadcast MTU units one a send call
+    // (0: not started) - set at its first large send with no reader matched, to two tt_CONTEXT_UPDATE_INTERVALs later
+    // (tickle.c, hybrid_destination_unmeasured()). A reader that heard this Publisher's announce first measures p on
+    // them.
+    uint64_t hybrid_unmatched_until_ns;
 #endif
 };
 

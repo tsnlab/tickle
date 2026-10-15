@@ -2247,11 +2247,15 @@ static uint32_t hybrid_destination_n(struct tt_Context* node, const struct tt_Pu
 // queue that drops a packet of 44 datagrams) leaves a 1 MB sample ~22 chances, and on the rig's 5% path the first
 // sample came through clean in 2 runs of 5 (2026-10-15, I1L: "none seen", n = 45, runs lost nine in ten, two samples
 // never delivered). So these go one datagram a send call (large_send_mtu()).
+//
+// A reader whose announce has not arrived counts too (2026-10-15, the rig's I1L at 5%, head r1 of 8): a writer that
+// learns it from its ACKNACK (claim_from_acknack()) knows no ceiling for it yet - n_max 1 - so its samples went as
+// trains while that reader measured them, and its first p rested on them all the same.
 static bool hybrid_peer_unmeasured(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
                                    uint32_t ip, uint16_t port, bool large) {
     if (context_id == tt_CONTEXT_ID_INVALID || !pub->reliable ||
         hybrid_mode(node, pub) != tt_LARGE_FRAGMENTATION_AUTO || node->hybrid.peer_loss_p[context_id] != 0 ||
-        hybrid_peer_n_max(node, pub, context_id, ip, port, large) < 2U) {
+        (hybrid_peer_n_max(node, pub, context_id, ip, port, large) < 2U && node->update_seen[context_id])) {
         return false;
     }
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
@@ -2262,20 +2266,38 @@ static bool hybrid_peer_unmeasured(struct tt_Context* node, const struct tt_Publ
     return false;
 }
 
-// The same for one destination: its peer, or by broadcast any of the Publisher's matched peers.
-static bool hybrid_destination_unmeasured(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
+// The same for one destination: its peer, or by broadcast any of the Publisher's matched peers - or, by broadcast with
+// none matched, a reader this Publisher has not heard of yet. A writer publishing as it starts (performance_test under
+// rmw_tickle) sends its first sample before any reader's announce is in, by broadcast; a reader that heard the writer's
+// announce first takes it, and its first p - announced at that sample's tail - rested on the sample's trains: on the
+// rig's 5% path "none seen" in 1 run of 8 and n = 45 for 4 samples, every run of them lost (I1L head r1, 2026-10-15;
+// every run broadcast exactly one sample, tx_udp_broadcast 788 = 723 + discovery). Bounded to two announce intervals
+// from its first large send with no reader matched: a reader there by then has been heard (its first-contact reply, or
+// its periodic announce), and a Publisher nobody reads goes back to trains.
+static bool hybrid_destination_unmeasured(struct tt_Context* node, struct tt_Publisher* pub, uint8_t context_id,
                                           uint32_t ip, uint16_t port, bool large) {
     if (context_id != tt_CONTEXT_ID_INVALID) {
         return hybrid_peer_unmeasured(node, pub, context_id, ip, port, large);
     }
+    bool matched = false;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         const struct tt_Peer* peer = &pub->peers[i];
-        if (peer->context_id != tt_CONTEXT_ID_INVALID &&
-            hybrid_peer_unmeasured(node, pub, peer->context_id, peer->ip, peer->port, large)) {
+        if (peer->context_id == tt_CONTEXT_ID_INVALID) {
+            continue;
+        }
+        matched = true;
+        if (hybrid_peer_unmeasured(node, pub, peer->context_id, peer->ip, peer->port, large)) {
             return true;
         }
     }
-    return false;
+    if (matched || !pub->reliable || hybrid_mode(node, pub) != tt_LARGE_FRAGMENTATION_AUTO) {
+        return false;
+    }
+    uint64_t now = tt_get_ns();
+    if (pub->hybrid_unmatched_until_ns == 0) {
+        pub->hybrid_unmatched_until_ns = now + (2U * tt_CONTEXT_UPDATE_INTERVAL);
+    }
+    return now < pub->hybrid_unmatched_until_ns;
 }
 
 static void hybrid_note_exposure(struct tt_Publisher* pub, uint8_t context_id, uint32_t run_n, uint32_t count,
@@ -5683,6 +5705,7 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
     pub->ip_datagram_max = 0;                                  // inherit: each peer's advertisement
 #if tt_HYBRID_TRANSPORT
     pub->watching = false; // no sample sent in runs yet; each peer_watch[] entry is cleared as its ack slot is claimed
+    pub->hybrid_unmatched_until_ns = 0; // the window opens at the first large send
 #endif
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         pub->peers[i].context_id = tt_CONTEXT_ID_INVALID;
