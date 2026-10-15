@@ -751,6 +751,15 @@ Measured as ab/hybrid-land d8980f9b on 4fbb8fe1, before the receive drain; lande
   behind Fast DDS as shipped by 4% (2.19 against 2.10) and publisher CPU by 3% (3.72 against 3.61); the other 0%-loss
   cells are draws on CPU. I1L (5% loss) is lost on incomplete delivery (2 samples in 1 of 5 runs; cause above, being
   fixed). I4s latency is lost to all three vendor arms (55.0 against 37.6-41.6 ms; see the I4s note for why).
+  **Why best effort and not RELIABLE** (read 2026-10-15 from the same runs' rusage columns, whole counts, means of 5;
+  ms a sample): rmw_tickle costs the same in both QoS (subscriber 9.29 / 9.39, publisher 15.63 / 15.54) and its
+  receive and send counters are identical a sample (`direct_reads`, `runs`, `n_hist`, `send_waits`; RELIABLE adds 2
+  ACKs). Fast DDS's best effort is cheaper than its RELIABLE (subscriber -0.38, publisher -0.42): its reader sends 7
+  ACKNACKs a sample (kpre/kpost `Udp OutDatagrams` 6,369 against 69). The loss is rmw_tickle's common path, and it is
+  kernel time: subscriber stime 3.26 against 2.59 (utime 6.03 against 6.33), publisher stime 14.50 against 13.43
+  (utime 1.13 against 1.82). The subscriber's kernel excess is the same at I4 RELIABLE (+0.58) and I4s (+0.71); the
+  publisher's is +0.65 at RELIABLE and +0.14 at I4s, where the link never idles. Both arms put the same frames on the
+  wire (2.60 M, 58.5 k reassembled datagrams). Investigation: `ab/i4be-gap` (`experiments/i4be_gap_pc.sh`).
 - **Hybrid transport under loss** (d8980f9b, before the receive drain, Array1m RELIABLE 30 Hz): AUTO's p99 is above
   forced MTU's beyond the A/A floor at 0.01% (+0.12 ms) and 0.1% (+0.025 ms), and its wire bytes per unit 0.46% above
   at 1%; the pre-registered criterion against forced MTU failed at all three rates.
