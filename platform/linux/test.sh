@@ -247,6 +247,12 @@ status=0
 
 run_pair publisher "-c 20 -i 0.2" subscriber "-d 15" || status=1
 check_pass subscriber.log || status=1
+# Every sample, not "some in order": the publisher waits for its reader to match before the first publish, and a
+# Publisher with no matched reader sends nothing (DESIGN.md section 4). RESULT: PASS alone read 19 of 20 as a pass
+# when the example published before the match (2026-10-16).
+uint64_seen=$(grep -c '^seq=' subscriber.log)
+echo "uint64: subscriber received $uint64_seen of 20"
+[ "$uint64_seen" -eq 20 ] || status=1
 add_summary uint64 subscriber.log
 
 run_pair client "-c 20 -i 0.2" server "-d 15" || status=1

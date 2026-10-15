@@ -51,6 +51,24 @@ static void publish_value(struct tt_Context* node, uint64_t time, void* param) {
     tt_Context_schedule(node, time + PUBLISH_INTERVAL_NS, publish_value, pub);
 }
 
+// A Publisher with no matched reader sends nothing (DESIGN.md section 4), so the first publish waits - bounded - for
+// the subscriber's announce, as examples/linux/uint64/publisher.c does. Past the deadline it publishes regardless.
+#define MATCH_WAIT_NS (5ULL * tt_SECOND)
+#define MATCH_POLL_NS (10ULL * tt_MILLISECOND)
+
+static uint64_t match_deadline_ns = 0;
+
+static void wait_for_match(struct tt_Context* node, uint64_t time, void* param) {
+    struct tt_Publisher* pub = param;
+    uint8_t matched = tt_Publisher_matched_count(pub);
+    if (matched == 0 && time < match_deadline_ns) {
+        tt_Context_schedule(node, time + MATCH_POLL_NS, wait_for_match, pub);
+        return;
+    }
+    printf("publisher: %s\n", matched == 0 ? "no matched subscriber, publishing anyway" : "subscriber matched");
+    publish_value(node, time, pub);
+}
+
 static void publisher_task(void* param) {
     (void)param;
 
@@ -73,7 +91,9 @@ static void publisher_task(void* param) {
         }
     }
 
-    tt_Context_schedule(&node, tt_get_ns(), publish_value, &pub);
+    uint64_t now = tt_get_ns();
+    match_deadline_ns = now + MATCH_WAIT_NS;
+    tt_Context_schedule(&node, now, wait_for_match, &pub);
 
     for (;;) {
         tt_Context_poll(&node, -1);

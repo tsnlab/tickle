@@ -10258,6 +10258,21 @@ bool tt_Publisher_writable(const struct tt_Publisher* pub) {
     return result;
 }
 
+uint8_t tt_Publisher_matched_count(const struct tt_Publisher* pub) {
+    if (pub == NULL) {
+        return 0;
+    }
+    struct tt_Context* locked_node = pub->node;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    uint8_t count = count_peers(pub->peers);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return count;
+}
+
 static bool publisher_is_acked_by_all_peers_locked(const struct tt_Publisher* pub, uint32_t seq_no) {
     // Phase 2 - every matched Subscriber entity must have got this far, not merely every matched
     // node: two Subscriptions of one topic in one remote process each have their own entry.

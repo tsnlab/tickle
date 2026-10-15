@@ -52,6 +52,31 @@ static void publish(struct tt_Context* node, uint64_t time, void* param) {
     }
 }
 
+// Like a DDS example's wait for a matched subscription: a Publisher with no matched reader sends nothing (DESIGN.md
+// section 4), so a program that publishes the moment it starts loses its first samples to a Subscriber whose
+// announce is still on its way. Bounded, so a publisher with nobody to talk to still runs; after the wait it
+// publishes regardless, and nothing is sent until a reader matches.
+#define MATCH_WAIT_NS (5ULL * tt_SECOND)
+#define MATCH_POLL_NS (10ULL * tt_MILLISECOND)
+
+static uint64_t match_deadline_ns = 0;
+
+static void wait_for_match(struct tt_Context* node, uint64_t time, void* param) {
+    struct tt_Publisher* pub = param;
+    uint8_t matched = tt_Publisher_matched_count(pub);
+    if (matched == 0 && time < match_deadline_ns) {
+        tt_Context_schedule(node, time + MATCH_POLL_NS, wait_for_match, pub);
+        return;
+    }
+    if (matched == 0) {
+        printf("No matched subscriber after %llu s - publishing anyway (nothing is sent until one matches)\n",
+               MATCH_WAIT_NS / tt_SECOND);
+    } else {
+        printf("Matched %u subscriber node(s) - publishing\n", (unsigned)matched);
+    }
+    publish(node, time, pub);
+}
+
 static void print_usage(const char* prog) {
     fprintf(stderr,
             "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-I node_id] [-c count]\n"
@@ -65,6 +90,7 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  -i  seconds between publishes (default 1)\n");
     fprintf(stderr, "  -n  topic name to publish on (default uint64_topic)\n");
     fprintf(stderr, "  -l  log level: debug|info|warning|error|none (default info)\n");
+    fprintf(stderr, "The first publish waits up to 5 s for a matched subscriber; with none, nothing is sent.\n");
 }
 
 static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts) {
@@ -128,7 +154,10 @@ int main(int argc, char** argv) {
         return ret;
     }
 
-    tt_Context_schedule(&node, tt_get_ns(), publish, &pub);
+    printf("Waiting up to %llu s for a matched subscriber\n", MATCH_WAIT_NS / tt_SECOND);
+    uint64_t now = tt_get_ns();
+    match_deadline_ns = now + MATCH_WAIT_NS;
+    tt_Context_schedule(&node, now, wait_for_match, &pub);
 
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {

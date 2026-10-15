@@ -2574,6 +2574,14 @@ bool tt_Publisher_writable(const struct tt_Publisher* pub);
 // with peers[], so a caller must not pair the two arrays by index.
 uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub);
 
+// How many remote nodes this Publisher has matched a reader on (its peers[]): 0 means a publish sends nothing on
+// the wire (DESIGN.md section 4, "a Publisher with no matched reader sends nothing"). Read-only, a snapshot like
+// tt_Publisher_writable(). A node counts once however many matched Subscribers it hosts, and a reader in this same
+// context (tt_LOCAL_DELIVERY) is not counted. The usual use is the DDS one: wait until it is non-zero before the first
+// publish, so the samples a program publishes the moment it starts are not ones nobody was matched to receive
+// (examples/linux/uint64/publisher.c). 0 for a NULL Publisher.
+uint8_t tt_Publisher_matched_count(const struct tt_Publisher* pub);
+
 // The ACKNACK retry interval this library was built with (2026-09-25): tt_RELIABLE_DEADLINE when set,
 // else tt_RELIABLE_RETRY_INTERVAL - 0 meaning dynamic. A function rather than the macro because it
 // answers for how libtickle itself was compiled, which a caller's own view of config.h cannot: an

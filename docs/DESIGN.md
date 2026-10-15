@@ -169,7 +169,9 @@ psn, single header; 11 nodes in the announce.
   `tt_CONTEXT_UPDATE_INTERVAL` (the next summary and its request); 3 ms and 903 ms in `test_no_send_unmatched.c`.
   A live reader the writer has presumed gone (its traffic lost past the liveliness limit) gets nothing until its next
   summary arrives, where the broadcast used to reach it; a reader that never announces (a context muted by an id
-  collision, `tt_CONTEXT_ID_CLAIM`) gets nothing at all.
+  collision, `tt_CONTEXT_ID_CLAIM`) gets nothing at all. A program that must not lose its first samples waits, as a
+  DDS one waits for a matched subscription, until `tt_Publisher_matched_count()` is non-zero; the uint64 examples
+  wait up to 5 s.
 - Several datagrams ready at once (a sample's fragments, one datagram to several peers) go in one
   `tt_send_batch()` = one `sendmmsg()`.
 - **UDP offload (Linux HAL).** In that call a run of a large sample's fragments (`FRAG_FIRST_L`/`FRAG_CONT_L`, same

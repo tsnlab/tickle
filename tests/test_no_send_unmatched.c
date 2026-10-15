@@ -489,9 +489,12 @@ static void test_a_volatile_reader_gets_samples_from_its_match_on(void) {
     }
     EXPECT_EQ_INT(0, sent);                // nobody to send to yet
     EXPECT_EQ_U32(1, cache.oldest_seq_no); // control: they are retained, so they could have been resent
+    EXPECT_EQ_INT(0, (int)tt_Publisher_matched_count(&pub)); // the public accessor says what peers[] says
+    EXPECT_EQ_INT(0, (int)tt_Publisher_matched_count(NULL));
     create_reader(RELIABLE);
     run_until(test_mock_now + (100 * tt_MILLISECOND));
     EXPECT_EQ_INT(1, (int)count_peers(pub.peers));
+    EXPECT_EQ_INT(1, (int)tt_Publisher_matched_count(&pub));
     for (uint32_t id = 4; id <= 6; id++) {
         (void)publish_one(id, SMALL);
         run_until(test_mock_now + tt_MILLISECOND);
@@ -651,6 +654,7 @@ static void test_a_reader_presumed_gone_gets_data_again_after_its_next_summary(v
         run_until(test_mock_now + tt_MILLISECOND);
     }
     EXPECT_EQ_INT(0, (int)count_peers(pub.peers)); // presumed gone
+    EXPECT_EQ_INT(0, (int)tt_Publisher_matched_count(&pub));
     int before_gap = delivered_count;
     for (int i = 0; i < 100; i++) {
         (void)publish_one(id++, SMALL);

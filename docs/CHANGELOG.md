@@ -13,6 +13,11 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Added
 
+- **`tt_Publisher_matched_count()`**: how many remote nodes a Publisher has matched a reader on; 0 means a publish
+  sends nothing. The uint64 publisher examples (Linux and FreeRTOS) use it to wait up to 5 s for their subscriber
+  before the first publish, so they no longer lose the samples published before the match, and `make test-linux`
+  now requires all 20 of its uint64 samples.
+
 - **The retry timers' G is measured** (docs/ROADMAP.md "Now" 5a, docs/DESIGN.md section 6). G in
   `srtt + max(G, 4 x rttvar)` was a fixed 100 us (`tt_RELIABLE_RETRY_GRANULARITY`; twice it for calls). It is now the
   context's own timer lateness: mean + 4 x deviation of how late its waits for a retry timer return, floored at the new HAL call
