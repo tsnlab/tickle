@@ -98,9 +98,10 @@
 #define BENCH_LARGE_UNIT 1452U // one full unit of a large sample
 
 static uint32_t sample_size = DEFAULT_SIZE;
-static uint64_t decode_spin_ns;    // -w: in the callback
-static uint64_t after_spin_ns;     // -W: after a poll that delivered
-static uint32_t check_stride = 1U; // -K: every byte checked by default; every Kth (and the last) with -K
+static uint64_t decode_spin_ns;              // -w: in the callback
+static uint64_t after_spin_ns;               // -W: after a poll that delivered
+static uint32_t check_stride = 1U;           // -K: every byte checked by default; every Kth (and the last) with -K
+static uint64_t discovery_ns = DISCOVERY_NS; // -D: how long a publisher polls before its first sample (rmw: 0)
 static uint32_t current_index;
 static volatile sig_atomic_t stop_requested;
 
@@ -413,7 +414,7 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
                               0};
     int opt;
     optind = 2; // NOLINT(misc-include-cleaner) - see <unistd.h> above
-    while ((opt = getopt(argc, argv, "s:r:d:RAMGb:F:n:X:CH:w:W:K:B:")) != -1) { // NOLINT(misc-include-cleaner)
+    while ((opt = getopt(argc, argv, "s:r:d:RAMGb:F:n:X:CH:w:W:K:B:D:")) != -1) { // NOLINT(misc-include-cleaner)
         switch (opt) {
         case 's':
             sample_size = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
@@ -466,6 +467,9 @@ static bool parse_options(int argc, char** argv, struct options* opts) {
             break;
         case 'W':
             after_spin_ns = strtoull(optarg, NULL, 10) * NS_PER_US_INT; // NOLINT(misc-include-cleaner)
+            break;
+        case 'D':
+            discovery_ns = strtoull(optarg, NULL, 10) * NS_PER_US_INT * NS_PER_US_INT; // NOLINT(misc-include-cleaner)
             break;
         case 'K':
             check_stride = (uint32_t)strtoul(optarg, NULL, 10); // NOLINT(misc-include-cleaner)
@@ -588,7 +592,7 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
         return 1;
     }
 #endif
-    poll_for(node, DISCOVERY_NS);
+    poll_for(node, discovery_ns);
     uint64_t period = (uint64_t)((double)NS_PER_S / opts->rate_hz);
     double halve_after_s = opts->halve_after_s;
     uint64_t begin = now_ns();
@@ -721,7 +725,7 @@ int main(int argc, char** argv) {
     if (!parse_options(argc, argv, &opts)) {
         fprintf(stderr,
                 "usage: %s pub|sub -s BYTES [-r HZ] -d SECONDS [-R] [-A] [-M [-G]] [-b BROADCAST] [-F auto|mtu|ip] "
-                "[-n UNITS] [-X BYTES] [-C] [-H S] [-w US] [-W US] [-K STRIDE] [-B CHUNKS]\n",
+                "[-n UNITS] [-X BYTES] [-C] [-H S] [-w US] [-W US] [-K STRIDE] [-B CHUNKS] [-D MS]\n",
                 argv[0]);
         return 2;
     }

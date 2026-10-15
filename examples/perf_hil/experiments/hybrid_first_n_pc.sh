@@ -32,6 +32,15 @@
 #   Sample size: at ~32% a run (the rig's 2 of 5), 30 A runs show none 1e-5 of the time; 0 of 30 B runs bounds B's rate
 #   below 10% at 95%.
 #
+# SECOND CAMPAIGN (2026-10-15, written before its run): PARENT=29223ef8 (the one-a-call fix), TIP=WORKTREE, PUB_WAIT_MS=0.
+# On the rig 1 run of 8 at 5% still sent 4 samples at n = 45 (I1L head r1); every rig run broadcast exactly one sample
+# before the writer knew its reader (tx_udp_broadcast 788 = 723 + discovery), as performance_test publishes at once.
+# Hypothesis: that sample - or one to a reader claimed from its ACKNACK - went as trains (hybrid_peer_unmeasured() did
+# not see the reader), the reader measured it and announced "none seen" at its tail. With PUB_WAIT_MS=0 the PC writer
+# also publishes before the reader's announce is in. The same rules above, read the same way: REPRO needs A's n > 1 runs
+# and their first p 0xff00; FIXED needs B's 0. Sample size: at the rig's 1/8, 40 B runs miss it (7/8)^40 = 0.5% of the
+# time; 0 of 40 bounds B's rate below 7.2% at 95%.
+#
 # Usage: hybrid_first_n_pc.sh [REPS_L5] [REPS_L0] [DURATION_S]   results to $WORK (default ~/hybrid_first_n/<stamp>)
 # Needs passwordless `sudo -n ip` and `tc`. Run it detached (CLAUDE.md, "Long-running work"); every bench process runs
 # under `ulimit -v` and a timeout. No rig: PC only, in private namespaces.
@@ -51,6 +60,10 @@ OUT=$WORK/results.txt
 NS1=hfn-pub-$$
 NS2=hfn-sub-$$
 VMEM_KB=${VMEM_KB:-2097152}
+# How long the publisher polls before its first sample (large_sample_bench.c -D). 2000: the reader's announce is in
+# before the first sample. 0: as performance_test under rmw_tickle on the rig, which publishes at once - the writer
+# learns its reader from an ACKNACK or a late announce while samples are already going (2026-10-15, I1L head r1).
+PUB_WAIT_MS=${PUB_WAIT_MS:-2000}
 export TMPDIR=${TMPDIR:-/home/semih/tmp_build}
 
 cleanup() { # the one EXIT trap
@@ -66,6 +79,8 @@ export_tree() { # <commit|WORKTREE> <dir>
     mkdir -p "$2"
     if [ "$1" = WORKTREE ]; then
         cp -r "$TREE/src" "$TREE/include" "$2/" || return 1
+    elif [ "${1#DIR:}" != "$1" ]; then # DIR:<path>: a tree's src/ and include/ copied as they are (an instrumented copy)
+        cp -r "${1#DIR:}/src" "${1#DIR:}/include" "$2/" || return 1
     else
         git -C "$TREE" archive "$1" src include | tar -x -C "$2" || return 1
     fi
@@ -79,7 +94,10 @@ build() { # <root> <out>
         "$1/src/tickle.c" "$1/src/encoding.c" "$1/src/log.c" "$1/src/hal_linux.c" -lpthread -lm
 }
 parent_sha=$(git -C "$TREE" rev-parse --short=8 "$PARENT") || exit 1
-if [ "$TIP" = WORKTREE ]; then
+if [ "${TIP#DIR:}" != "$TIP" ]; then
+    tip_sha="dir(${TIP#DIR:})"
+    tip_ref=$TIP
+elif [ "$TIP" = WORKTREE ]; then
     tip_sha="worktree($(git -C "$TREE" rev-parse --short=8 HEAD)+$(git -C "$TREE" status --porcelain -- src include | wc -l)dirty)"
     tip_ref=WORKTREE
 else
@@ -115,7 +133,7 @@ shape() { # <loss percent, 0 = none>
     echo "SHAPE loss=$1 $(sudo -n ip netns exec "$NS1" tc qdisc show dev hfna | tr '\n' ' ')" | tee -a "$OUT"
 }
 
-echo "=== hybrid_first_n_pc $(date -Is) A=$parent_sha B=$tip_sha reps_l5=$REPS_L5 reps_l0=$REPS_L0 duration=${DURATION}s load=$(cut -d' ' -f1-3 /proc/loadavg) ===" | tee -a "$OUT"
+echo "=== hybrid_first_n_pc $(date -Is) A=$parent_sha B=$tip_sha reps_l5=$REPS_L5 reps_l0=$REPS_L0 duration=${DURATION}s pub_wait_ms=$PUB_WAIT_MS load=$(cut -d' ' -f1-3 /proc/loadavg) ===" | tee -a "$OUT"
 
 run() { # <cell> <arm> <rep>
     local cell=$1 arm=$2 rep=$3 bin env=""
@@ -133,7 +151,7 @@ run() { # <cell> <arm> <rep>
     sleep 1
     # shellcheck disable=SC2024
     sudo -n ip netns exec "$NS1" env $env bash -c "ulimit -v $VMEM_KB; exec timeout $((DURATION + 30)) $bin pub \
-        -s 1048576 -r 30 -d $DURATION -R -M -b 192.168.86.255" >"$tag.pub" 2>&1
+        -s 1048576 -r 30 -d $DURATION -R -M -D $PUB_WAIT_MS -b 192.168.86.255" >"$tag.pub" 2>&1
     wait "$sub_pid"
     local p s peer
     p=$(grep -m1 '^RESULT:' "$tag.pub" | sed 's/^RESULT: //')
