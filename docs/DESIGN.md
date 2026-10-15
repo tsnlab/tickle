@@ -987,7 +987,14 @@ MTU units lost, 45 events in `p` and `p_mtu`, and held `n` low until they dilute
   where `n` is chosen (`1 - q(n) ~ n p`), so that is the `n` of least expected wire bytes. With no event in at least
   500 frames (`tt_HYBRID_NONE_SEEN_FRAMES`) the reader announces "none seen" instead - `n_max` - and that first
   announce goes at the sample's tail, not at the next interval (2026-10-13: until then `n` crept up as `1 / N`, `n_max`
-  at about 115,000 clean frames, ~5 s of every 4 MB stream; a 1% path shows no event in 500 frames 0.7% of the time). A 95% bound (3 / N at no events) would hold `n` below `n_max` at 0%
+  at about 115,000 clean frames, ~5 s of every 4 MB stream; a 1% path shows no event in 500 frames 0.7% of the time).
+  That reading needs 500 frames to be 500 chances to lose, so the frames a reader's first `p` rests on - a RELIABLE AUTO
+  writer's MTU units to a reader that takes runs and has announced no `p` - go one datagram a send call, never as a
+  UDP_SEGMENT train, and the reader announces its first estimate at the first tail whatever it reads (2026-10-15,
+  `hybrid_peer_unmeasured()`). netem decides loss per queued packet, above the segmentation, so a train of up to 44
+  datagrams is lost or kept whole: on the rig's I1L cell (1 MB RELIABLE at 5%) the first sample was ~22 chances, came
+  through clean in 2 runs of 5, read "none seen", and the writer sent 4-5 samples at `n = 45`, where a run of 45 IP
+  fragments - each its own packet - arrives one time in ten; one run left 2 samples undelivered. A 95% bound (3 / N at no events) would hold `n` below `n_max` at 0%
   loss for as long as the window lasts. The window halves at 2^20 frames, not 2^17, for the same reason. Under a
   collapse `p` reads high, which only shortens a RELIABLE writer's `n`. A few events (`k`, at most 8,
   `tt_HYBRID_STALE_EVENTS`) are forgotten once the clean frames `C` since the last, against the frames `F` up to it,
