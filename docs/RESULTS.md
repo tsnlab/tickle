@@ -653,33 +653,45 @@ counts, since `perf_test`'s rate columns are floor(count / D)) from
 and their `.runs/`. Letters: rmw_tickle against Fast DDS as shipped / Fast DDS with `maxMessageSize` 1472 / CycloneDDS
 (W win, L lose, D draw by the range rule; – not scored).
 
-Rows I1, I4 and I4s at 0% loss are the hybrid transport (section 8 of DESIGN.md; "Hybrid transport (large samples),
-rig" below) as measured on 2026-10-12: branch ab/hybrid-drain-v2 at f1f2f14d (the hybrid transport in AUTO, UDP
-offload, the receive drain) against main 4fbb8fe1; it landed rebased onto main (with the segment fence and the seq_no
-wrap work) and was not re-measured. Fast DDS 1472 was not run there (–). Read by the same `largemsg_rig_summary.py`
-from `~/rig_results_safe/hybridDrain_{s1_1m_rel_20261012-112010,s1_1m_be_20261012-114841,s1_4m_rel_20261012-121540,
-s1_4m_be_20261012-124244,i4s_20261012-130948}.txt` and their `.runs/`. Row I1L is still step A (dc056907).
+Every row was re-measured on 2026-10-15 on main f5fcda06: the hybrid transport (section 8 of DESIGN.md; "Hybrid
+transport (large samples), rig" below) with the receive work of rx-gap3/3b/3c, the hot socket calls made without
+glibc, and **UDP checksum 0 on IP-fragmented datagrams, the default since that day** (`TT_UDP_CSUM0=0` restores the
+checksum; DESIGN.md section 8, "UDP checksum 0"). All four arms in every cell, Fast DDS at 1472 included. Read by the
+same `largemsg_rig_summary.py` from `~/rig_results_safe/l4main2_{i1rel,i1be,i4rel,i4be,i4s}_20261015-094605.txt` and
+their `.runs/`; letters per vendor by the same range rule. The previous rows (f1f2f14d, 2026-10-12, and I1L at step A
+dc056907) are in git history; the same cells on main 0c9f9a3b (2026-10-13, `l4main_*_20261013-125140`) are the
+before-figures quoted below.
 
 | cell | QoS, rate | delivered % | latency med / p99 ms | CPU sub / pub ms/MB | RSS kB | delivered | latency | CPU sub | CPU pub | RSS |
 |---|---|---:|---:|---:|---:|:-:|:-:|:-:|:-:|:-:|
-| I1 Array1m | RELIABLE KL10, 30 Hz | 100 | 9.48 / 9.60 | 2.70 / 4.04 | 18,996 | D–D | D–W | L–W | D–W | W–W |
-| I1L Array1m, 5% loss | RELIABLE KL10, 30 Hz | 100 | 11.68 / 24.21 | 5.84 / 5.17 | 20,264 | –W– | –W– | –W– | –W– | –W– |
-| I1 Array1m | BEST_EFFORT KL5, 30 Hz | 100 | 9.41 / 9.54 | 2.49 / 4.01 | 18,928 | D–D | W–W | L–W | L–W | W–W |
-| I4s Array4m (saturating) | BEST_EFFORT KL5, 30 Hz | 95.4 of offered | 55.66 / 72.02 | 1.70 / 3.62 | 36,452 | W–W | L–L | L–W | L–W | W–W |
-| I4 Array4m | RELIABLE KL10, 15 Hz | 100 | 37.48 / 37.58 | 2.51 / 3.89 | 34,620 | D–D | D–W | L–W | D–W | W–W |
-| I4 Array4m | BEST_EFFORT KL5, 15 Hz | 100 | 37.39 / 37.49 | 2.44 / 3.90 | 34,260 | D–D | W–W | L–W | L–W | W–W |
+| I1 Array1m | RELIABLE KL10, 30 Hz | 100 | 9.29 / 9.36 | 2.28 / 3.88 | 17,624 | D–D–D | W–W–W | D–W–W | W–W–W | W–W–W |
+| I1L Array1m, 5% loss | RELIABLE KL10, 30 Hz | 99.89-100 (2 lost in 1 of 5 runs) | 10.05 / 16.09 | 4.18 / 3.66 | 19,132 | –L– | –L– | –L– | –L– | –L– |
+| I1 Array1m | BEST_EFFORT KL5, 30 Hz | 100 | 9.24 / 9.31 | 2.20 / 3.89 | 17,724 | D–D–D | D–W–W | D–W–W | D–W–W | W–W–W |
+| I4s Array4m (saturating) | BEST_EFFORT KL5, 30 Hz | 95.5 of offered | 54.98 / 71.23 | 1.40 / 3.43 | 30,952 | W–W–W | L–L–L | D–W–W | W–W–W | W–W–W |
+| I4 Array4m | RELIABLE KL10, 15 Hz | 100 | 36.57 / 36.64 | 2.21 / 3.68 | 30,656 | D–D–D | W–W–W | D–W–W | D–W–W | W–W–W |
+| I4 Array4m | BEST_EFFORT KL5, 15 Hz | 100 | 36.52 / 36.60 | 2.19 / 3.72 | 30,580 | D–D–D | W–W–W | L–W–W | L–W–W | W–W–W |
 
-- **Under loss TickLE wins every metric.** At 5% loss Fast DDS as shipped delivered nothing in all 5 runs (it does
-  not run the cell) and CycloneDDS about 3% (incomplete, not scored); Fast DDS at 1472 delivered all of it at 57.7 /
-  83.0 ms against TickLE's 11.68 / 24.21 ms.
+- **Re-measured 2026-10-15 (main f5fcda06 against main 0c9f9a3b, same harness):** subscriber CPU fell 0.19-0.28
+  ms/MB in every 0%-loss cell (I1 RELIABLE 2.56 -> 2.28, I1 best effort 2.38 -> 2.20, I4 RELIABLE 2.45 -> 2.21, I4
+  best effort 2.40 -> 2.19, I4s 1.61 -> 1.40), most of it UDP checksum 0 (its rig A/B: -0.10 to -0.12 ms/MB). Against
+  Fast DDS as shipped it went from LOSE to DRAW in I1 RELIABLE, I1 best effort, I4 RELIABLE and I4s; it still loses at
+  I4 best effort (2.19 against 2.10, +4%), as does the publisher there (3.72 against 3.61, +3%). Latency and
+  subscriber RSS are unchanged or lower.
+- **I1L is a LOSE: TickLE delivered incompletely** (the scoring rule: an incomplete TickLE loses the cell, whatever
+  its other figures). In 1 of 5 runs the subscriber abandoned 2 samples (`large: abandoned=2`); old main delivered all
+  in 5 of 5. Cause, from the runs' own counters: since 2026-10-13 the hybrid writer has no slow start
+  (`tt_HYBRID_SLOW_START` 0), so before the reader's first loss announce it sent the first 4-5 samples as runs of 45
+  units onto the 5% path (`n_hist` .../5, against old main's n <= 2); a lost 45-frame run is repaired as MTU units, and
+  KEEP_LAST 10 moved past 2 of those samples first. Being fixed (the writer's n before a reader's first announce).
+  Otherwise TickLE leads the cell: Fast DDS as shipped delivered nothing in all 5 runs (it does not run the cell),
+  CycloneDDS about 2% (incomplete, not scored), Fast DDS at 1472 delivered at 58.5 / 83.0 ms against TickLE's 10.05 /
+  16.09 ms.
 - **Memory:** the subscriber is the smallest in every cell. The publisher is too in four of six; at 4 MB best effort
-  CycloneDDS's publisher is smaller (28,556 and 28,536 kB against 33,280 and 29,184).
-- **CPU per MB at 0% loss** (f1f2f14d): TickLE now sends a large sample as IP-fragmented runs of up to 45 units
-  while the path is clean (the hybrid transport, below), and beats CycloneDDS on subscriber and publisher CPU in every
-  cell. Fast DDS as shipped, which sends 64 KB datagrams the kernel splits, still spends 13.7-15.6% less on the
-  subscriber (18.2% at I4s; means) and 2.0-8.4% less on the publisher at best effort; RELIABLE publisher CPU is a draw.
-  Against main before the hybrid transport (4fbb8fe1) subscriber CPU fell 2.1-2.5 ms/MB (-46 to -57%). Median latency
-  is a draw or a win against Fast DDS at 1 and 4 MB; step A (dc056907) was 0.15-0.19 ms and 1.2 ms behind it.
+  CycloneDDS's publisher is smaller (28,628 and 28,668 kB against 29,312 and 33,408).
+- **CPU per MB at 0% loss before the re-measure** (f1f2f14d, 2026-10-12): Fast DDS as shipped spent 13.7-15.6% less
+  on the subscriber (18.2% at I4s; means) and 2.0-8.4% less on the publisher at best effort. Against main before the
+  hybrid transport (4fbb8fe1) subscriber CPU fell 2.1-2.5 ms/MB (-46 to -57%). Step A (dc056907) was 0.15-0.19 ms and
+  1.2 ms behind Fast DDS in median latency; TickLE is now ahead at 1 and 4 MB.
 - **Where the 1.2 ms at 4 MB goes** (`experiments/largemsg_wire_budget.py` on the I4 rows, 2026-10-11): 0.52 ms is
   wire - one sample is 4,431,228 B of frames for TickLE (2,889 datagrams; per frame 8 B of UDP header and 16 B of
   framing that IP fragments do not carry) against 4,366,590 B for Fast DDS's 64 KB datagrams, 35.45 against 34.93 ms
@@ -735,11 +747,10 @@ Measured as ab/hybrid-land d8980f9b on 4fbb8fe1, before the receive drain; lande
 
 ### Where TickLE does not come first
 
-- **rmw large messages at 0% loss** (L4 above, f1f2f14d, 5 reps): subscriber CPU per MB behind Fast DDS as shipped
-  by 13.7-15.6% in I1 and I4 and 18.2% at I4s (means), publisher CPU behind it at best effort by 2.0-8.4%. Against main
-  before the hybrid transport (4fbb8fe1), median latency is +0.14-0.15 ms at 1 MB and +0.36-0.44 ms at 4 MB, p99
-  +0.22-0.47 ms, and the subscriber's peak RSS +0.6 MB (+3.2 MB at I4s, the receive drain's buffers). I4s latency is
-  lost to both vendors (55.7 against 37.5 and 39.0 ms; see the I4s note for why).
+- **rmw large messages** (L4 above, main f5fcda06, 2026-10-15, 5 reps): at I4 best effort subscriber CPU per MB is
+  behind Fast DDS as shipped by 4% (2.19 against 2.10) and publisher CPU by 3% (3.72 against 3.61); the other 0%-loss
+  cells are draws on CPU. I1L (5% loss) is lost on incomplete delivery (2 samples in 1 of 5 runs; cause above, being
+  fixed). I4s latency is lost to all three vendor arms (55.0 against 37.6-41.6 ms; see the I4s note for why).
 - **Hybrid transport under loss** (d8980f9b, before the receive drain, Array1m RELIABLE 30 Hz): AUTO's p99 is above
   forced MTU's beyond the A/A floor at 0.01% (+0.12 ms) and 0.1% (+0.025 ms), and its wire bytes per unit 0.46% above
   at 1%; the pre-registered criterion against forced MTU failed at all three rates.
