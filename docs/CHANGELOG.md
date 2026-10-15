@@ -368,7 +368,11 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   at 1% delivered +0.24 points (BETTER). The p4 cell's occasional receiver collapses, in every arm, ran deepest in the
   change (97.4% delivered against the parent's worst 98.3%). Two designs were refuted on
   the way: without the nack suppression p4 at 1% resent 412,632 datagrams against 19-31 thousand and delivered half;
-  with a back-off on the retry count alone one p4 run in ten collapsed to 35% delivered.
+  with a back-off on the retry count alone one p4 run in ten collapsed to 35% delivered. Rebased onto no-send
+  (46554d68) and measured again against it, p4 alone (10 reps at 5%, 20 at 1%): every metric HELD; at 5% the change
+  delivered 99.1-99.9% (parent 95.6-99.9%) with `gap_abandoned` 0 in 7 of 10 runs, at most 11 (window jumps; parent up
+  to 411). At 1% receiver collapses hit every arm on a shared PC: runs below 90% delivered, parent 4 of 20 (worst
+  10.6%), parent again 1, the change 2 (worst 60.3%).
 - **RPC retry bounds are relative to the link** (docs/ROADMAP.md 5a, the constants audit). The auto retry interval
   (`call_retry_interval` 0) is RFC 6298's `srtt + max(tt_CALL_RETRY_GRANULARITY, 4 x rttvar)`, doubled at each
   retry of a call and at most `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` x srtt, in place of 1.5 x an EMA held between a fixed
