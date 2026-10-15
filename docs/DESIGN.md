@@ -771,7 +771,12 @@ MTU units lost, 45 events in `p` and `p_mtu`, and held `n` low until they dilute
   `hybrid_peer_unmeasured()`). netem decides loss per queued packet, above the segmentation, so a train of up to 44
   datagrams is lost or kept whole: on the rig's I1L cell (1 MB RELIABLE at 5%) the first sample was ~22 chances, came
   through clean in 2 runs of 5, read "none seen", and the writer sent 4-5 samples at `n = 45`, where a run of 45 IP
-  fragments - each its own packet - arrives one time in ten; one run left 2 samples undelivered. A 95% bound (3 / N at no events) would hold `n` below `n_max` at 0%
+  fragments - each its own packet - arrives one time in ten; one run left 2 samples undelivered. A reader the writer
+  does not know yet counts too: one whose announce has not arrived (claimed from its ACKNACK, no ceiling known), and,
+  for two announce intervals from a Publisher's first large send with no reader matched, the broadcast. A writer that
+  publishes as it starts (performance_test) sends its first sample before any reader's announce is in; the reader,
+  which heard the writer's announce, measured that sample's trains, and 1 rig run of 8 still sent 4 samples at
+  `n = 45` until this (2026-10-15, I1L head r1). A 95% bound (3 / N at no events) would hold `n` below `n_max` at 0%
   loss for as long as the window lasts. The window halves at 2^20 frames, not 2^17, for the same reason. Under a
   collapse `p` reads high, which only shortens a RELIABLE writer's `n`. A few events (`k`, at most 8,
   `tt_HYBRID_STALE_EVENTS`) are forgotten once the clean frames `C` since the last, against the frames `F` up to it,
