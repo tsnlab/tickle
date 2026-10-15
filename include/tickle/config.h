@@ -1047,6 +1047,17 @@
 #ifndef tt_MAX_PEER_COUNT
 #define tt_MAX_PEER_COUNT 8
 #endif
+// Debug self-check of every peers[] table (tickle.c, check_peer_table()): after each change, and wherever "has a
+// matched reader" is read from the first slot, the table must be dense - its live entries exactly the first
+// count_peers() slots. On by default in a Linux build without NDEBUG (the unit tests), where a violation logs and
+// aborts; off in a release build and on FreeRTOS, so the publish path pays nothing for it.
+#ifndef tt_PEER_TABLE_CHECK
+#if !defined(NDEBUG) && !defined(TT_PLATFORM_FREERTOS)
+#define tt_PEER_TABLE_CHECK 1
+#else
+#define tt_PEER_TABLE_CHECK 0
+#endif
+#endif
 // Phase 2 (rmw_tickle/PLAN.md) - how many remote Subscriber *entities* one Publisher tracks ack
 // state for (struct tt_PeerAck, tickle.h). Deliberately its own constant rather than reusing
 // tt_MAX_PEER_COUNT above, which counts remote *nodes*: one node can host several Subscriptions of

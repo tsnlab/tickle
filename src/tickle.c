@@ -17,6 +17,9 @@
 #include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
+#if tt_PEER_TABLE_CHECK
+#include <stdlib.h> // abort(), check_peer_table()
+#endif
 
 #include "consts.h"
 #include "encoding.h"
@@ -3537,6 +3540,30 @@ static void for_each_endpoint(struct tt_Context* node, uint8_t kind, uint32_t en
     }
 }
 
+#if tt_PEER_TABLE_CHECK
+// tt_PEER_TABLE_CHECK (config.h): peers[] must be dense - no live entry after an empty slot - so that its first slot
+// alone says whether there is any peer (publisher_unmatched()) and the walks over peers[0 .. count_peers()) see every
+// peer. upsert_peer() claims the first empty slot and forget_peer() compacts, and nothing else writes a live entry;
+// this checks that after each of them, and wherever the first slot is read as the answer.
+static void check_peer_table(const struct tt_Peer* peers, const char* where) {
+    bool seen_empty = false;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (peers[i].context_id == tt_CONTEXT_ID_INVALID) {
+            seen_empty = true;
+        } else if (seen_empty) {
+            TT_LOG_ERROR("peers[] not dense after %s: slot %d (node %u) follows an empty slot", where, i,
+                         peers[i].context_id);
+            abort();
+        }
+    }
+}
+#else
+static inline void check_peer_table(const struct tt_Peer* peers, const char* where) {
+    (void)peers;
+    (void)where;
+}
+#endif
+
 // Refreshes node_id's existing slot in peers[] (its address may have changed), or claims the
 // first empty one. Fixed-capacity, no malloc - see tt_MAX_PEER_COUNT. Silently drops the peer if
 // the table is already full: a full table already means more peers than tt_UNICAST_PEER_THRESHOLD
@@ -3553,6 +3580,7 @@ static bool upsert_peer(struct tt_Peer* peers, uint8_t node_id, uint32_t ip, uin
         if (peers[i].context_id == node_id) {
             peers[i].ip = ip;
             peers[i].port = port;
+            check_peer_table(peers, "upsert_peer (refresh)");
             return false;
         }
     }
@@ -3562,6 +3590,7 @@ static bool upsert_peer(struct tt_Peer* peers, uint8_t node_id, uint32_t ip, uin
             peers[i].context_id = node_id;
             peers[i].ip = ip;
             peers[i].port = port;
+            check_peer_table(peers, "upsert_peer (new)");
             return true;
         }
     }
@@ -3599,6 +3628,7 @@ static void forget_peer(struct tt_Peer* peers, uint8_t node_id) {
     for (int i = kept; i < tt_MAX_PEER_COUNT; i++) {
         peers[i] = (struct tt_Peer) {.context_id = tt_CONTEXT_ID_INVALID, .ip = 0, .port = 0};
     }
+    check_peer_table(peers, "forget_peer");
 }
 
 // The oldest seq_no pub retains, in its cache or (large-message stage 2) as a large record, in *oldest: what a
@@ -7396,8 +7426,14 @@ static void note_whole_refusal(struct tt_Context* node, enum tt_WholeRefusal why
 // publish still does: a BEST_EFFORT sample is dropped and counted (tx_unmatched_dropped); a RELIABLE or durable one
 // takes its seq_nos and goes into the history as before (tx_unmatched_kept), so a VOLATILE reader's match point and a
 // TRANSIENT_LOCAL reader's backlog are what they would have been. Local delivery (tt_LOCAL_DELIVERY) is unaffected.
-static bool publisher_unmatched(const struct tt_Publisher* pub) {
-    return count_peers(pub->peers) == 0;
+//
+// O(1), because it is asked on every publish: peers[] is dense (forget_peer()), so it has a peer exactly when its first
+// slot holds one. Until 2026-10-16 this was count_peers() == 0, an 8-entry walk that put ~+23 user instructions on
+// every round trip of the rig's latency cells (core A/B b265e86f vs a33c9e20). tt_PEER_TABLE_CHECK checks the density
+// here and after every change to the table.
+static inline bool publisher_unmatched(const struct tt_Publisher* pub) {
+    check_peer_table(pub->peers, "publisher_unmatched");
+    return pub->peers[0].context_id == tt_CONTEXT_ID_INVALID;
 }
 
 static void count_unmatched_sample(struct tt_Context* node, const struct tt_Publisher* pub) {
