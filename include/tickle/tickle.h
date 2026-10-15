@@ -1367,6 +1367,11 @@ struct tt_Context {
     // drop for the same reason. Nonzero means something was not sent: most likely this node's own
     // discovery UPDATE, whose endpoint list outgrew one datagram, so peers cannot see it.
     uint64_t tx_dropped_oversize;
+    // Samples published while their Publisher had no matched reader (no peer in peers[]), which therefore sent
+    // nothing on the wire (2026-10-15, DESIGN.md section 4). A BEST_EFFORT one is dropped; a RELIABLE or durable
+    // one is kept in the Publisher's history, its seq_nos taken, for a TRANSIENT_LOCAL reader's backlog.
+    uint64_t tx_unmatched_dropped;
+    uint64_t tx_unmatched_kept;
     // Set by the HAL on each receive: true when the datagram came in on this node's own data
     // port, false when it came in on the shared well-known port (where broadcasts land). Lives
     // here rather than in a tt_receive() out-parameter so the HAL contract in hal.h stays as it
@@ -1382,11 +1387,11 @@ struct tt_Context {
     uint64_t rx_self_sent_data;
     // Of those, the ones that arrived as unicast - addressed to this node's own data port rather
     // than to the broadcast address. This is the counter with no legitimate non-zero case. A data
-    // sample published before any peer is known goes out as a broadcast and comes back to its own
-    // sender, which is correct and does happen (observed on the very first sample of a run), so
-    // rx_self_sent_data alone still needs a margin. A node's own *unicast* data is addressed to
-    // somebody else by construction, so receiving it back means the kernel handed a sender its own
-    // stream - the same-host failure 82a6a02d fixed - and nothing else.
+    // sample broadcast to more peers than the unicast threshold comes back to its own sender, which
+    // is correct, so rx_self_sent_data alone still needs a margin. (Until 2026-10-15 a sample
+    // published before any peer was known was broadcast too; it is not sent at all now.) A node's own *unicast* data is
+    // addressed to somebody else by construction, so receiving it back means the kernel handed a sender its own stream
+    // - the same-host failure 82a6a02d fixed - and nothing else.
     uint64_t rx_self_sent_data_unicast;
     // Of rx_datagrams, how many arrived on each of this node's two sockets. Not a refinement of
     // the counters above - a precondition for reading them, and for reading the delivery-order

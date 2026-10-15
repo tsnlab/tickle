@@ -153,9 +153,23 @@ psn, single header; 11 nodes in the announce.
 - A shared datagram (a batch, an announce) never exceeds `tt_CONTROL_MAX_LENGTH` (1472), so a node on core defaults
   can always receive it even when the sender's `tt_MAX_BUFFER_LENGTH` is larger.
 - **Unicast to a few, broadcast to the rest.** Each Publisher and Client keeps a fixed `peers[]` table
-  (`tt_MAX_PEER_COUNT` 8) of remote contexts hosting a matching endpoint, learned from discovery. 0 known peers or
-  more than the link's threshold (`tt_UNICAST_PEER_THRESHOLD` 2) means broadcast; otherwise one unicast per peer.
-  A server answers unicast to the request's source.
+  (`tt_MAX_PEER_COUNT` 8) of remote contexts hosting a matching endpoint, learned from discovery. More than the
+  link's threshold (`tt_UNICAST_PEER_THRESHOLD` 2) means broadcast; otherwise one unicast per peer. A full table is
+  more than the threshold, so a reader that finds no slot still gets the broadcast. A server answers unicast to the
+  request's source; a Client with no known Server still broadcasts its call, which has to find one.
+- **A Publisher with no matched reader sends nothing** (the user's decision, 2026-10-15; until then 0 known peers
+  meant broadcast), as a DDS writer does. A reader is matched from its announce, or for a RELIABLE writer from its
+  ACKNACK, and gets what is published from then on. A BEST_EFFORT sample is dropped (`tx_unmatched_dropped` on the
+  traffic line); a RELIABLE or durable one takes its seq_nos and goes into the history as before
+  (`tx_unmatched_kept`), so a VOLATILE reader starts at its match point and a TRANSIENT_LOCAL one gets the history.
+  Every path: small, fragmented, large (encoded whole, as no send would encode it), zero-copy, batched, the
+  piggybacked, periodic, match and end-of-sample HEARTBEATs. Local delivery (`tt_LOCAL_DELIVERY`) and discovery
+  (still broadcast) are unchanged. The cost is the first sample after a reader starts: it comes once the writer has its
+  announce - one `tt_CONTEXT_TX_INTERVAL` after the Subscriber is created, or with that announce lost, within one
+  `tt_CONTEXT_UPDATE_INTERVAL` (the next summary and its request); 3 ms and 903 ms in `test_no_send_unmatched.c`.
+  A live reader the writer has presumed gone (its traffic lost past the liveliness limit) gets nothing until its next
+  summary arrives, where the broadcast used to reach it; a reader that never announces (a context muted by an id
+  collision, `tt_CONTEXT_ID_CLAIM`) gets nothing at all.
 - Several datagrams ready at once (a sample's fragments, one datagram to several peers) go in one
   `tt_send_batch()` = one `sendmmsg()`.
 - **UDP offload (Linux HAL).** In that call a run of a large sample's fragments (`FRAG_FIRST_L`/`FRAG_CONT_L`, same
@@ -1567,8 +1581,8 @@ Compiled in by default on Linux (`tt_SEGMENT_ENABLED`), out on FreeRTOS.
   ring and the reader discards everything older (once 97.6% of same-host delivery).
 - So, under load, the segment's failure mode is sample loss where UDP's is a slower sender. A subscriber's loss
   figure cannot see these drops; `shm_full_dropped` can. A larger ring moves the threshold, it does not remove it.
-- UDP still carries broadcasts, datagrams larger than a slot (service messages in rmw builds), and traffic before the
-  attach succeeds. Every UDP send is counted by reason: `tx_udp = broadcast + oversize + unattached`.
+- UDP still carries broadcasts (to more readers than the threshold; with none matched nothing is sent, section 4),
+  datagrams larger than a slot (service messages in rmw builds), and traffic before the attach succeeds. Every UDP send is counted by reason: `tx_udp = broadcast + oversize + unattached`.
 - The reader drains at most `tt_SEGMENT_DRAIN_PER_POLL` records per poll so the sockets are not starved.
 
 **The switch from UDP is fenced.** A writer that reached a peer over UDP (its segment absent or still being built,
