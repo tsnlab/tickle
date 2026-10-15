@@ -891,13 +891,13 @@ static void test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery(
     EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
 }
 
-// Phase 1-c (rmw_tickle/PLAN.md, B2) - acknack_retry()'s give-up no longer bulk-skips everything
-// more than tt_MAX_RELIABLE_HISTORY behind the highest received sample (skip_unrecoverable_backlog(),
-// removed): that was a compile-time guess at the remote Publisher's depth, and threw away samples a
-// deeper cache still held. What's genuinely gone is now signalled by the Publisher's own eviction
-// Heartbeat instead (see test_heartbeat.c). Giving up on ack_seq_no advances past it alone, and a
-// sample received far ahead - past the old 64-deep guess - stays tracked, its gap still requested.
-static void test_acknack_retry_give_up_does_not_bulk_skip(void) {
+// 2026-10-15 (DDS/RTPS shape) - a KEEP_LAST writer's gap is never given up on a retry count: the
+// writer resends whatever its history holds, so the reader asks until the sample comes or the writer
+// says it is gone. Until then acknack_retry() abandoned ack_seq_no after tt_RELIABLE_RETRY retries
+// (gap_abandoned), throwing away samples the writer still held. Past tt_RELIABLE_RETRY the retries
+// back off - 2, 4, 8, 16 times the interval, then no further - so a reader whose requests or repairs
+// are all lost does not ask a thousand times a second. A sample received far ahead stays tracked.
+static void test_a_keep_last_gap_is_asked_for_with_back_off_not_given_up(void) {
     test_mock_reset();
 
     struct tt_Context node;
@@ -911,8 +911,7 @@ static void test_acknack_retry_give_up_does_not_bulk_skip(void) {
     proxy->keep_all = tt_WRITER_KEEP_ALL_NO; // an ordinary writer whose announce has been seen
     EXPECT_EQ_U32(1, proxy->ack_seq_no);
 
-    // seq_no 1 (ack_seq_no itself) never arrives; seq_no far_seq already did, out of order - past
-    // the old tt_MAX_RELIABLE_HISTORY-deep guess, still inside the tracking window.
+    // seq_no 1 (ack_seq_no itself) never arrives; seq_no far_seq already did, out of order.
     const uint32_t far_seq = tt_MAX_RELIABLE_HISTORY + 6;
     _Static_assert(tt_MAX_RELIABLE_HISTORY + 6 < tt_RELIABLE_BITMAP_BITS, "far_seq must fit the tracking window");
     proxy_mark_received(proxy, far_seq - 1);
@@ -920,23 +919,133 @@ static void test_acknack_retry_give_up_does_not_bulk_skip(void) {
     proxy->sender_port = TEST_SENDER_PORT;
     proxy->acknack_scheduled = true;
 
-    for (int i = 0; i < tt_RELIABLE_RETRY; i++) {
-        acknack_retry(&node, tt_get_ns(), proxy);
-        EXPECT_EQ_U32(1, proxy->ack_seq_no);
+    // What each retry waits before the next: the plain interval for the first tt_RELIABLE_RETRY, then doubling up to
+    // 2^tt_RELIABLE_RETRY_BACKOFF_SHIFT times it, and there it stays.
+    _Static_assert(tt_RELIABLE_RETRY == 3 && tt_RELIABLE_RETRY_BACKOFF_SHIFT == 4, "the expected waits below");
+    static const uint64_t multiple[] = {1, 1, 1, 2, 4, 8, 16, 16, 16, 16};
+    for (size_t i = 0; i < sizeof(multiple) / sizeof(multiple[0]); i++) {
+        tt_Context_unschedule(&node, acknack_retry, proxy); // as the timer firing pops it
+        int sends_before = test_mock_send_to_call_count;
+        acknack_retry(&node, test_mock_now, proxy);
+        EXPECT_EQ_U32((uint32_t)sends_before + 1, (uint32_t)test_mock_send_to_call_count); // asked again
+        EXPECT_EQ_U32(1, proxy->ack_seq_no);                                               // never given up
+        EXPECT_TRUE(proxy->acknack_scheduled);
+        EXPECT_EQ_U64(test_mock_now + (multiple[i] * TEST_RETRY_INTERVAL), scheduled_acknack_retry_time(&node, proxy));
+        test_mock_now += multiple[i] * TEST_RETRY_INTERVAL;
     }
+    EXPECT_EQ_U32(0, sub.gap_abandoned);
+    EXPECT_EQ_U32(0, sub.gap_evicted);
+    EXPECT_TRUE(bitmap_test_bit(proxy->received_bitmap, far_seq - 1)); // far_seq still tracked
 
-    acknack_retry(&node, tt_get_ns(), proxy); // exceeds the cap -> give up on seq_no 1 only
-
-    EXPECT_EQ_U32(2, proxy->ack_seq_no);                               // past seq_no 1 alone, no bulk skip
-    EXPECT_EQ_U32(1, sub.gap_abandoned);                               // seq_no 1, and only seq_no 1
-    EXPECT_TRUE(bitmap_test_bit(proxy->received_bitmap, far_seq - 2)); // far_seq still tracked
-    EXPECT_TRUE(proxy->acknack_scheduled); // the rest of the gap (2..far_seq-1) gets its own retries
+    // The repair comes: the watermark moves, and the next gap starts at the plain interval again.
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+    EXPECT_EQ_U32(0, (uint32_t)proxy->retry);
+    tt_Context_unschedule(&node, acknack_retry, proxy);
+    acknack_retry(&node, test_mock_now, proxy);
+    EXPECT_EQ_U64(test_mock_now + TEST_RETRY_INTERVAL, scheduled_acknack_retry_time(&node, proxy));
+    tt_Context_unschedule(&node, acknack_retry, proxy);
+    proxy->acknack_scheduled = false;
 }
 
-// acknack_retry() must keep re-sending up to tt_RELIABLE_RETRY times, then give up: skip past
-// the unrecoverable hole (so an unrelated future gap can still be tracked) and stop rescheduling
-// itself - mirrors test_client_call.c's own test_call_retry_exhausted_reports_timeout.
-static void test_acknack_retry_exhausted_gives_up(void) {
+// The back-off is for a writer gone quiet. While its DATA still arrives the writer is answering and its history moves
+// on, so a gap past its tt_RELIABLE_RETRY retries is still asked for at the plain interval: held longer, past its
+// eviction, it fills the reorder buffer (the PC's p4 collapse, 35% delivered, acknack_retry_note_frontier()). Once the
+// arrivals stop, the waits double as before.
+static void test_the_back_off_waits_for_the_writer_to_go_quiet(void) {
+    test_mock_reset();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+    uint32_t next = 3; // 2 is lost and never comes
+    tail = write_data(&node, next, next * 100ULL, next);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    next++;
+
+    // The writer keeps sending: each retry finds more of its stream, and every wait is the plain interval.
+    for (int i = 0; i < 3 * tt_RELIABLE_RETRY; i++) {
+        tail = write_data(&node, next, next * 100ULL, next);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        next++;
+        tt_Context_unschedule(&node, acknack_retry, proxy);
+        acknack_retry(&node, test_mock_now, proxy);
+        EXPECT_EQ_U64(test_mock_now + TEST_RETRY_INTERVAL, scheduled_acknack_retry_time(&node, proxy));
+        test_mock_now += TEST_RETRY_INTERVAL;
+    }
+    EXPECT_TRUE(proxy->retry > tt_RELIABLE_RETRY);
+    EXPECT_EQ_U32(2, proxy->ack_seq_no); // still asking for 2
+
+    // It goes quiet: the first retry still finds the stream where the last one left it plus nothing, so 2x, then 4x.
+    static const uint64_t multiple[] = {2, 4, 8, 16, 16};
+    for (size_t i = 0; i < sizeof(multiple) / sizeof(multiple[0]); i++) {
+        tt_Context_unschedule(&node, acknack_retry, proxy);
+        acknack_retry(&node, test_mock_now, proxy);
+        EXPECT_EQ_U64(test_mock_now + (multiple[i] * TEST_RETRY_INTERVAL), scheduled_acknack_retry_time(&node, proxy));
+        test_mock_now += multiple[i] * TEST_RETRY_INTERVAL;
+    }
+
+    // It sends again: back to the plain interval at once.
+    tail = write_data(&node, next, next * 100ULL, next);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tt_Context_unschedule(&node, acknack_retry, proxy);
+    acknack_retry(&node, test_mock_now, proxy);
+    EXPECT_EQ_U64(test_mock_now + TEST_RETRY_INTERVAL, scheduled_acknack_retry_time(&node, proxy));
+    tt_Context_unschedule(&node, acknack_retry, proxy);
+    proxy->acknack_scheduled = false;
+}
+
+// The retry count saturates rather than wrapping: a gap asked for 300 times is still in its back-off
+// at the ceiling, not back at the plain interval (a uint8_t that wrapped to 0 would be).
+static void test_the_retry_count_saturates(void) {
+    test_mock_reset();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
+    EXPECT_TRUE(proxy != NULL);
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+    proxy_mark_received(proxy, 1); // seq_no 2 arrived, 1 missing
+    proxy->sender_ip = TEST_SENDER_IP;
+    proxy->sender_port = TEST_SENDER_PORT;
+    proxy->acknack_scheduled = true;
+    for (int i = 0; i < 300; i++) {
+        tt_Context_unschedule(&node, acknack_retry, proxy);
+        acknack_retry(&node, test_mock_now, proxy);
+    }
+    EXPECT_EQ_U32(UINT8_MAX, (uint32_t)proxy->retry);
+    EXPECT_EQ_U64(test_mock_now + ((uint64_t)TEST_RETRY_INTERVAL << tt_RELIABLE_RETRY_BACKOFF_SHIFT),
+                  scheduled_acknack_retry_time(&node, proxy));
+    EXPECT_EQ_U32(1, proxy->ack_seq_no);
+    tt_Context_unschedule(&node, acknack_retry, proxy);
+    proxy->acknack_scheduled = false;
+}
+
+static uint32_t write_heartbeat(struct tt_Context* node, uint32_t endpoint_id, uint32_t first_available_seq_no,
+                                uint32_t last_seq_no, uint8_t flags);
+
+// What ends a KEEP_LAST gap the writer cannot repair: its eviction Heartbeat, answering a request
+// for a sample it no longer holds. The reader skips exactly what is gone (gap_evicted, not
+// gap_abandoned - the writer's doing, not the reader's), absorbs what had already arrived behind it,
+// and stops asking.
+static void test_a_keep_last_gap_ends_on_the_eviction_heartbeat(void) {
     test_mock_reset();
 
     struct tt_Context node;
@@ -954,16 +1063,22 @@ static void test_acknack_retry_exhausted_gives_up(void) {
     proxy->sender_port = TEST_SENDER_PORT;
     proxy->acknack_scheduled = true;
 
-    for (int i = 0; i < tt_RELIABLE_RETRY; i++) {
+    for (int i = 0; i < tt_RELIABLE_RETRY * 3; i++) {
+        tt_Context_unschedule(&node, acknack_retry, proxy);
         acknack_retry(&node, tt_get_ns(), proxy);
         EXPECT_TRUE(proxy->acknack_scheduled);
     }
-    EXPECT_EQ_U32((uint32_t)tt_RELIABLE_RETRY, (uint32_t)proxy->retry);
+    EXPECT_EQ_U32(5, proxy->ack_seq_no);
+    EXPECT_EQ_U32(0, sub.gap_abandoned);
 
-    acknack_retry(&node, tt_get_ns(), proxy); // exceeds the cap -> give up
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 6, 6, tt_HEARTBEAT_FLAG_FINAL); // 5 is gone
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_TRUE(!proxy->acknack_scheduled);
-    EXPECT_EQ_U32(1, sub.gap_abandoned); // seq_no 5; 6 had already arrived and is not a loss
+    EXPECT_EQ_U32(0, sub.gap_abandoned);
+    EXPECT_EQ_U32(1, sub.gap_evicted); // seq_no 5; 6 had already arrived and is not a loss
     EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
     EXPECT_EQ_U32(7, proxy->ack_seq_no); // skipped past seq_no 5, absorbed the already-known 6 too
 }
@@ -972,12 +1087,10 @@ static void test_acknack_retry_exhausted_gives_up(void) {
 // scenarios: reliable_retry used to be one counter shared across a whole "gap episode" (from the
 // first out-of-order arrival until received_bitmap fully clears), so a *different*, still-
 // outstanding gap inherited however many attempts an earlier one in the same episode had already
-// used, instead of its own full tt_RELIABLE_RETRY budget. Two losses close enough together that a
-// second gap was still open when the first resolved would then get written off far sooner than
-// intended - measurably raising real-world loss_pct above what p^(tt_RELIABLE_RETRY + 1) predicts
-// for isolated losses. Reproduces the exact shape: burn part of the budget on the *older* gap,
-// let it resolve while a *different* one remains, and check the survivor still gets a full,
-// independent budget.
+// used, instead of its own full tt_RELIABLE_RETRY budget - then a give-up budget, now the retries
+// at the plain interval before the back-off. Reproduces the exact shape: burn part of the count on
+// the *older* gap, let it resolve while a *different* one remains, and check the survivor starts
+// from 0 and backs off only after its own tt_RELIABLE_RETRY.
 static void test_acknack_retry_budget_resets_for_next_gap(void) {
     test_mock_reset();
 
@@ -995,30 +1108,36 @@ static void test_acknack_retry_budget_resets_for_next_gap(void) {
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);
     EXPECT_EQ_U32(2, proxy->ack_seq_no);
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
 
     tail = write_data(&node, 4, 400, 4); // seq_no 2, 3 missing - opens the first gap
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_TRUE(proxy->acknack_scheduled);
 
-    acknack_retry(&node, tt_get_ns(), proxy); // burn 2 of the 3 retries on seq_no 2's own gap
-    acknack_retry(&node, tt_get_ns(), proxy);
-    EXPECT_EQ_U32(2, (uint32_t)proxy->retry);
+    for (int i = 0; i < tt_RELIABLE_RETRY + 2; i++) { // seq_no 2's own gap, into its back-off
+        tt_Context_unschedule(&node, acknack_retry, proxy);
+        acknack_retry(&node, test_mock_now, proxy);
+    }
+    EXPECT_EQ_U32((uint32_t)tt_RELIABLE_RETRY + 2, (uint32_t)proxy->retry);
 
     tail = write_data(&node, 2, 200, 2); // seq_no 2 recovers - a *different* gap (seq_no 3) remains
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(3, proxy->ack_seq_no);                                      // now waiting on 3, not 2
     EXPECT_TRUE(!bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy))); // still a gap (3 missing, 4 already in)
-    // Without the fix, this would read 2 (inherited from seq_no 2's own already-used attempts)
-    // instead of a fresh budget for the new watermark.
-    EXPECT_EQ_U32(0, (uint32_t)proxy->retry);
+    EXPECT_EQ_U32(0, (uint32_t)proxy->retry);                                 // not inherited from seq_no 2's attempts
 
-    // seq_no 3's own gap must get a full, independent tt_RELIABLE_RETRY budget.
+    // seq_no 3's own gap gets its own tt_RELIABLE_RETRY retries at the plain interval, then backs off.
     for (int i = 0; i < tt_RELIABLE_RETRY; i++) {
-        acknack_retry(&node, tt_get_ns(), proxy);
-        EXPECT_TRUE(proxy->acknack_scheduled); // not given up yet
+        tt_Context_unschedule(&node, acknack_retry, proxy);
+        acknack_retry(&node, test_mock_now, proxy);
+        EXPECT_EQ_U64(test_mock_now + TEST_RETRY_INTERVAL, scheduled_acknack_retry_time(&node, proxy));
     }
-    acknack_retry(&node, tt_get_ns(), proxy); // exceeds the cap now
-    EXPECT_TRUE(!proxy->acknack_scheduled);
+    tt_Context_unschedule(&node, acknack_retry, proxy);
+    acknack_retry(&node, test_mock_now, proxy);
+    EXPECT_EQ_U64(test_mock_now + (2 * TEST_RETRY_INTERVAL), scheduled_acknack_retry_time(&node, proxy));
+    EXPECT_TRUE(proxy->acknack_scheduled); // and still asking
+    tt_Context_unschedule(&node, acknack_retry, proxy);
+    proxy->acknack_scheduled = false;
 }
 
 // Regression test for PLAN.md's Milestone 20: a gap so wide it can't even be represented in
@@ -1154,6 +1273,114 @@ static void test_process_acknack_retransmits_cached_sample(void) {
     EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_DATA, resent->type);
     EXPECT_EQ_INT(header.source, resent->receiver);
     EXPECT_TRUE(resent->receiver != tt_SUBMESSAGE_ID_ALL);
+}
+
+// 2026-10-15 (DDS/RTPS shape) - a KEEP_LAST Publisher resends a sample it still holds for as long
+// as it is asked. Until then it stopped after tt_RELIABLE_RETRY resends without saying the sample was
+// gone, and a reader that could not give up (its writer's policy unknown) asked for good
+// (test_hybrid_send.c, seed 34). The first tt_RELIABLE_RETRY resends answer every request at once, as
+// before; past them one datagram goes at most once per retry interval (resend_suppressed()): a
+// request inside it draws nothing - no resend, and no eviction Heartbeat, for the sample is not gone -
+// and the first request after it is answered. A KEEP_ALL publisher is never suppressed.
+static void test_a_keep_last_publisher_resends_while_it_holds_the_sample(void) {
+    test_mock_reset();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    TEST_RELIABLE_CACHE(cache, 4);
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+    EXPECT_TRUE(!pub.keep_all); // KEEP_LAST, the default
+
+    uint32_t value = 42;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
+
+    struct tt_Header header;
+    init_header(&header);
+    const uint64_t interval = reliable_retry_interval_publisher();
+    uint32_t resent = 0;
+    for (int i = 1; i <= (3 * tt_RELIABLE_RETRY) + 1; i++) {
+        // Past the first tt_RELIABLE_RETRY: one request half an interval after the last resend (suppressed), then one
+        // a whole interval after it (answered).
+        bool suppressed = i > tt_RELIABLE_RETRY && (i - tt_RELIABLE_RETRY) % 2 == 1;
+        if (i > tt_RELIABLE_RETRY) {
+            test_mock_now += interval / 2;
+        }
+        int sends_before = test_mock_send_to_call_count;
+        uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL); // requesting seq_no 1 again
+        EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        if (suppressed) {
+            EXPECT_EQ_U32((uint32_t)sends_before, (uint32_t)test_mock_send_to_call_count); // nothing at all
+            continue;
+        }
+        resent++;
+        EXPECT_EQ_U32((uint32_t)sends_before + 1, (uint32_t)test_mock_send_to_call_count);
+        const struct tt_SubmessageHeader* sent =
+            (const struct tt_SubmessageHeader*)(test_mock_send_last_buf + sizeof(struct tt_Header));
+        EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_DATA, sent->type); // the sample, not an eviction Heartbeat
+        EXPECT_EQ_U32(resent, pub.retransmitted);
+    }
+    EXPECT_TRUE(resent > (uint32_t)tt_RELIABLE_RETRY + 2U); // well past the old cap
+
+    // KEEP_ALL never had a cap and gets no suppression either: every request answered, however close together.
+    pub.keep_all = true;
+    for (int i = 0; i < 2 * tt_RELIABLE_RETRY; i++) {
+        int sends_before = test_mock_send_to_call_count;
+        uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL);
+        EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        EXPECT_EQ_U32((uint32_t)sends_before + 1, (uint32_t)test_mock_send_to_call_count);
+    }
+}
+
+// A RELIABLE Publisher that keeps no history (no reliable_cache) holds nothing a request names, and
+// says so: an eviction Heartbeat whose first_available_seq_no is past everything it published. With
+// no give-up on a retry count left on the reader's side, this answer is what ends such a gap. A pure
+// acknowledgement (no seq_no named) draws nothing, and neither does a BEST_EFFORT Publisher.
+static void test_a_reliable_publisher_without_history_says_everything_is_gone(void) {
+    test_mock_reset();
+
+    struct tt_Context node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+    pub.reliable = true; // and no reliable_cache
+
+    uint32_t value = 42;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 2
+
+    struct tt_Header header;
+    init_header(&header);
+    int sends_before = test_mock_send_to_call_count;
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL); // requesting seq_no 1
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32((uint32_t)sends_before + 1, (uint32_t)test_mock_send_to_call_count);
+    const struct tt_HeartbeatHeader* heartbeat = last_sent_heartbeat();
+    EXPECT_TRUE(heartbeat != NULL);
+    if (heartbeat != NULL) {
+        EXPECT_EQ_U32(3, heartbeat->first_available_seq_no); // 1 and 2 are gone
+        EXPECT_EQ_U32(2, heartbeat->last_seq_no);
+        EXPECT_TRUE((heartbeat->flags & tt_HEARTBEAT_FLAG_FINAL) != 0);
+    }
+    EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip);
+
+    // The controls: a pure acknowledgement, and a BEST_EFFORT Publisher, draw nothing.
+    sends_before = test_mock_send_to_call_count;
+    tail = write_acknack(&node, ENDPOINT_ID, 3, 0ULL);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    pub.reliable = false;
+    tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32((uint32_t)sends_before, (uint32_t)test_mock_send_to_call_count);
 }
 
 // Milestone 62 (rmw_tickle/PLAN.md) - find_resendable_cache_entry()'s own direct-index math
@@ -1599,6 +1826,47 @@ static void test_recovery_probe_times_from_the_first_request(void) {
     EXPECT_EQ_U32(1500000, proxy->recovery_rttvar_ns);
     EXPECT_EQ_U64(0, proxy->probe_ns);                                            // done, not re-timed
     EXPECT_EQ_U64(3000000ULL + 6000000ULL, retry_interval_for(0, COLD_G, proxy)); // srtt + 4 * rttvar
+}
+
+// A recovery the back-off reached is not timed (2026-10-15): from the first request it spans the doubled waits, and
+// folded in it would lengthen the interval the back-off doubles. Arms: the repair after tt_RELIABLE_RETRY retries (the
+// last at the plain interval) is timed, as it always was; the repair after one more (the first backed-off one) is not,
+// and only ends the probe.
+static void test_a_backed_off_recovery_is_not_timed(void) {
+    for (int arm = 0; arm < 2; arm++) {
+        test_mock_reset();
+
+        struct tt_Context node;
+        struct tt_Topic topic;
+        struct tt_Subscriber sub;
+        init_node_and_topic(&node, &topic);
+        init_subscriber_registered_on_node(&sub, &node, &topic);
+        struct tt_Header header;
+        init_header(&header);
+
+        uint32_t tail = write_data(&node, 1, 100, 1);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+        EXPECT_TRUE(proxy != NULL);
+        proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+        test_mock_now = 1 * tt_MILLISECOND;
+        tail = write_data(&node, 3, 300, 3); // 2 is missing: an immediate ACKNACK names it
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        int retries = tt_RELIABLE_RETRY + arm;
+        for (int i = 0; i < retries; i++) {
+            test_mock_now += tt_MILLISECOND;
+            tt_Context_unschedule(&node, acknack_retry, proxy);
+            acknack_retry(&node, tt_get_ns(), proxy);
+        }
+        test_mock_now += tt_MILLISECOND;
+        tail = write_data(&node, 2, 200, 2);
+        node.rx_targeted = true;
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        node.rx_targeted = false;
+        EXPECT_EQ_U32(arm == 0 ? (uint32_t)(retries + 1) * 1000000U : 0U, proxy->recovery_srtt_ns);
+        EXPECT_EQ_U64(0, proxy->probe_ns); // the probe ends either way
+        tt_Context_unschedule(&node, acknack_retry, proxy);
+    }
 }
 
 // Karn's ambiguity. The requested sample can come back as the retransmission its ACKNACK caused, or as
@@ -3709,18 +3977,28 @@ static void test_keep_all_subscriber_never_gives_up(void) {
     proxy_mark_received(proxy, 4); // seq_no 5 arrived; 1..4 are missing
     proxy->acknack_scheduled = true;
 
-    for (int i = 0; i < tt_RELIABLE_RETRY * 5; i++) { // far past the give-up budget
+    for (int i = 0; i < tt_RELIABLE_RETRY * 5; i++) { // far past the old give-up budget
+        tt_Context_unschedule(&node, acknack_retry, proxy);
         acknack_retry(&node, tt_get_ns(), proxy);
     }
     EXPECT_EQ_U32(1, proxy->ack_seq_no);   // still waiting on seq_no 1, never abandoned it
     EXPECT_TRUE(proxy->acknack_scheduled); // ...and still asking
 
-    // The same proxy with keep_all off gives up as before.
+    // KEEP_ALL's requests never back off: each retry waits the plain interval, however many came before.
+    EXPECT_EQ_U64(tt_get_ns() + TEST_RETRY_INTERVAL, scheduled_acknack_retry_time(&node, proxy));
+
+    // The same proxy with keep_all off no longer gives up either (2026-10-15): it backs off and keeps asking.
     proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
     for (int i = 0; i <= tt_RELIABLE_RETRY; i++) {
+        tt_Context_unschedule(&node, acknack_retry, proxy);
         acknack_retry(&node, tt_get_ns(), proxy);
     }
-    EXPECT_TRUE(proxy->ack_seq_no > 1);
+    EXPECT_EQ_U32(1, proxy->ack_seq_no);
+    EXPECT_TRUE(proxy->acknack_scheduled);
+    EXPECT_EQ_U64(tt_get_ns() + (TEST_RETRY_INTERVAL << tt_RELIABLE_RETRY_BACKOFF_SHIFT),
+                  scheduled_acknack_retry_time(&node, proxy));
+    tt_Context_unschedule(&node, acknack_retry, proxy);
+    proxy->acknack_scheduled = false;
 }
 
 // RELIABLE delivers in order, and does so whether or not it has somewhere to hold what it is
@@ -3896,11 +4174,12 @@ static void test_reorder_stays_inside_an_odd_sized_buffer(void) {
 // Every path that moves a writer's watermark must release what the watermark passed. These two
 // did not, and neither had a test - which is the only reason they survived.
 //
-// The retry give-up calls advance_ack_seq_no(), which steps past the abandoned sample AND absorbs
-// every received sample contiguous behind it. With ordered delivery those are samples still held.
-// The watermark was past them, nothing released them, and on a stream that then stopped they were
-// never delivered at all.
-static void test_retry_giveup_releases_the_samples_it_absorbs(void) {
+// The retry give-up (removed 2026-10-15) called advance_ack_seq_no(), which steps past the abandoned
+// sample AND absorbs every received sample contiguous behind it. With ordered delivery those are
+// samples still held. The watermark was past them, nothing released them, and on a stream that then
+// stopped they were never delivered at all. What ends such a gap now is the writer's eviction
+// Heartbeat (advance_past_unavailable() absorbs the same way), and it must release them too.
+static void test_eviction_heartbeat_releases_the_samples_it_absorbs(void) {
     test_mock_reset();
     subscriber_callback_count = 0;
 
@@ -3922,14 +4201,20 @@ static void test_retry_giveup_releases_the_samples_it_absorbs(void) {
     }
     EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
 
-    // The writer does not promise KEEP_ALL and 2 has used its whole retry budget: give up on it.
+    // The writer does not promise KEEP_ALL, and 2 is asked for well past tt_RELIABLE_RETRY: nothing is given up.
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);
     proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
     proxy->retry = tt_RELIABLE_RETRY + 1;
     acknack_retry(&node, tt_get_ns(), proxy);
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
 
-    // No further DATA arrives. 3, 4, 5 must be delivered anyway, in order, by the give-up itself.
+    // The writer answers that 2 is gone (first_available 3).
+    tail = write_heartbeat(&node, ENDPOINT_ID, 3, 5, tt_HEARTBEAT_FLAG_FINAL);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    // No further DATA arrives. 3, 4, 5 must be delivered anyway, in order, by the Heartbeat itself.
     EXPECT_EQ_U32(6, proxy->ack_seq_no);
     EXPECT_EQ_U32(4, (uint32_t)subscriber_callback_count);
     EXPECT_EQ_U32(5, sub.last_seq_no);
@@ -4855,7 +5140,7 @@ int main(void) {
     test_reliable_delivers_in_order_without_buffer();
     test_reliable_releases_held_samples_when_gap_is_abandoned();
     test_reorder_stays_inside_an_odd_sized_buffer();
-    test_retry_giveup_releases_the_samples_it_absorbs();
+    test_eviction_heartbeat_releases_the_samples_it_absorbs();
     test_heartbeat_jump_releases_what_it_passes();
     test_released_sample_keeps_its_arrival_socket();
     test_piggybacked_heartbeat_rides_every_nth_datagram_unicast();
@@ -4863,12 +5148,16 @@ int main(void) {
     test_reliable_late_arrivals_after_baseline_jump_are_discarded_not_silently();
     test_reliable_held_samples_precede_the_jump_that_releases_them();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
-    test_acknack_retry_exhausted_gives_up();
-    test_acknack_retry_give_up_does_not_bulk_skip();
+    test_a_keep_last_gap_ends_on_the_eviction_heartbeat();
+    test_a_keep_last_gap_is_asked_for_with_back_off_not_given_up();
+    test_the_retry_count_saturates();
+    test_the_back_off_waits_for_the_writer_to_go_quiet();
     test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_of_freezing();
     test_reliable_first_contact_via_data_does_not_request_pre_match_history();
     test_acknack_retry_budget_resets_for_next_gap();
     test_process_acknack_retransmits_cached_sample();
+    test_a_keep_last_publisher_resends_while_it_holds_the_sample();
+    test_a_reliable_publisher_without_history_says_everything_is_gone();
     test_process_acknack_direct_index_correct_after_wraparound();
     test_retransmit_is_exactly_the_named_set_across_a_wide_window();
     test_acknack_names_every_gap_across_a_wide_window();
@@ -4876,6 +5165,7 @@ int main(void) {
     test_retry_interval_explicit_value_wins();
     test_retry_interval_estimate_converges_and_is_bounded();
     test_recovery_probe_times_from_the_first_request();
+    test_a_backed_off_recovery_is_not_timed();
     test_recovery_probe_ignores_a_late_original();
     test_recovery_probe_only_times_the_watermark();
     test_recovery_estimate_resets_when_a_slot_is_reused();
