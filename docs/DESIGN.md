@@ -652,13 +652,13 @@ a descriptor numbers it identically.
 - A chunk is free when the writer holds no record in it and its `readers` mask reads 0 (acquire). The lowest free
   chunk is taken, so the resident set stays at the chunks in use at once; its `generation` is bumped before the
   encode. None free: KEEP_LAST evicts its oldest sent record (which frees the chunk only if no reader holds it) and
-  looks again; still none, the sample takes a caller buffer and goes as fragments (`large.region_full`).
+  looks again; still none, the sample takes a caller buffer and goes as fragments (`large_ref.region_full`).
 - The chunk is the record's buffer, so everything step A does with a buffer - retention by reference, resends,
   release on acknowledgement or KEEP_LAST eviction, remote destinations sent as fragments from it - is unchanged.
 - Per destination, in the send: a peer whose segment is attached and advertises descriptors gets one
   `LARGE_REF` record instead of the fragments - its bit set first, then the record published (the slot's release
   store orders the two). A full ring drops the record as it drops any (`segment_full_dropped`), and the writer
-  clears the bit it set (`large.ref_dropped`). Any other destination gets step A's fragments.
+  clears the bit it set (`large_ref.ref_dropped`). Any other destination gets step A's fragments.
 - A NACK into a sample held in a chunk, from a peer that takes descriptors, resends the descriptor once per
   ACKNACK instead of the datagrams named: the descriptor covers them all.
 - **Dead reader.** When liveliness removes a peer (or a different peer appears behind its context id), the writer
@@ -674,7 +674,7 @@ a descriptor numbers it identically.
   checks header, owner and incarnation, keeps the mapping in a table of `tt_LARGE_PEER_REGIONS` (8) entries, and
   evicts the least recently used one that nothing references. Each descriptor is then checked against the chunk:
   index in range, length within the chunk, `generation` equal, and its own bit set. A descriptor that fails is
-  dropped and counted by reason (`large.ref_refused`); a RELIABLE reader asks for it again.
+  dropped and counted by reason (`large_ref.ref_refused`); a RELIABLE reader asks for it again.
 - RELIABLE Subscribers: an assembly whose buffer is the chunk, already whole, is recorded under the record's span and
   delivered by the ordinary drain when in order - so a descriptor behind a gap waits for the gap, as a step A sample
   does, without a copy. Best-effort Subscribers: delivered at once, as a whole large sample is today. Either way the
@@ -694,7 +694,7 @@ release does.
 **Accepted limits.** A reader that cannot map the region at all leaves its bit set in that chunk until liveliness
 removes it; the writer then runs on fewer chunks and, with none, falls back to fragments. A peer removed by liveliness
 while still alive can have a chunk reused under a sample it is reading - the same trust the segment's dead-reader rule
-already places in liveliness. A sample larger than `chunk_bytes` goes as fragments (`large.region_full`).
+already places in liveliness. A sample larger than `chunk_bytes` goes as fragments (`large_ref.region_full`).
 
 #### Step B pre-registration (2026-10-11, before any code)
 
@@ -753,7 +753,7 @@ Built as designed, in four commits on the step B branch: the path (`tt_Publisher
 
 - **A descriptor being processed counts as a reference.** Found by B1.3: with a RELIABLE and a best-effort Subscriber
   in one context, the RELIABLE one's assembly is freed inside the record, and its give-back cleared the bit before the
-  best-effort one had been handed the chunk (`tt_LargeState.ref_processing`).
+  best-effort one had been handed the chunk (`tt_LargeRefState.ref_processing`).
 - **A NACK is answered with one descriptor per ACKNACK** (`acknack_serial`), not per seq_no named.
 - **The region's name must fit `tt_SEGMENT_PATH_LENGTH` (64).** Under `/dev/shm/` the longest is 57 bytes; the test seam
   `TT_SEGMENT_DIR` leaves 7 bytes for its directory, which is why `large_samehost_pc.sh` uses `/dev/shm/lg<pid>/` (a

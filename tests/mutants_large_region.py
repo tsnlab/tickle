@@ -50,7 +50,7 @@ MUTANTS = [
     ),
     (
         "B1.3 the bit cleared on the first Subscriber's delivery",
-        "    node->large.ref_processing = ref.chunk;\n",
+        "    node->large_ref.ref_processing = ref.chunk;\n",
         "",
         "test_the_bit_waits_for_every_subscriber",
     ),

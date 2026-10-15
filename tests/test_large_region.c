@@ -426,9 +426,9 @@ static void round_trip(enum rig_subs subs, uint32_t size) {
     EXPECT_EQ_U32(size, decoded_length);
     EXPECT_EQ_U32(1, seen->ids[0]);
     EXPECT_EQ_U32(3, seen->ids[2]);
-    EXPECT_EQ_U64(3, sender.large.ref_sent);
-    EXPECT_EQ_U64(3, owner.large.ref_received);
-    EXPECT_EQ_U64(0, owner.large.ref_refused);
+    EXPECT_EQ_U64(3, sender.large_ref.ref_sent);
+    EXPECT_EQ_U64(3, owner.large_ref.ref_received);
+    EXPECT_EQ_U64(0, owner.large_ref.ref_refused);
     EXPECT_EQ_U32(0, owner_alloc.acquires); // the reader acquired nothing: it read the chunks
     EXPECT_EQ_U32(0, sender_alloc.acquires);
     EXPECT_EQ_U32(3U * count, pub.seq_no); // the socket path's numbering
@@ -526,21 +526,21 @@ static void test_a_dropped_descriptor_frees_its_bit_and_is_resent_whole(void) {
     fill_ring(0);
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(2, FOUR_MB));
     uint8_t chunk = newest_chunk();
-    EXPECT_EQ_U64(1, sender.large.ref_dropped);
+    EXPECT_EQ_U64(1, sender.large_ref.ref_dropped);
     EXPECT_TRUE(chunk != 0 && !owner_bit_set(chunk - 1U)); // nobody will read it for that descriptor
     drain();                                               // the empty records go; nothing of the sample was there
     EXPECT_EQ_U32(1, seen_reliable.count);
-    uint64_t sent = sender.large.ref_sent;
+    uint64_t sent = sender.large_ref.ref_sent;
     uint32_t before = ring()->write_index;
     pump(400); // the end-of-sample HEARTBEAT is chased, the reader asks, the writer answers
     EXPECT_EQ_U32(2, seen_reliable.count);
     EXPECT_EQ_U32(2, seen_reliable.ids[1]);
-    EXPECT_TRUE(sender.large.ref_sent > sent);
+    EXPECT_TRUE(sender.large_ref.ref_sent > sent);
     EXPECT_EQ_U32(0, seen_reliable.torn);
     EXPECT_EQ_U32(0, fragment_records(before, ring()->write_index)); // the answer was a descriptor, not 2,889 records
-    EXPECT_TRUE(sender.large.ref_sent >= 1);
+    EXPECT_TRUE(sender.large_ref.ref_sent >= 1);
     printf("test_large_region: a dropped 4 MB descriptor recovered by %lu resent descriptor(s), %u ring records\n",
-           (unsigned long)(sender.large.ref_sent - sent), (unsigned)(ring()->write_index - before));
+           (unsigned long)(sender.large_ref.ref_sent - sent), (unsigned)(ring()->write_index - before));
     rig_down();
 }
 
@@ -554,7 +554,7 @@ static void test_a_stale_descriptor_is_refused(void) {
     entry->generation++;
     drain();
     EXPECT_EQ_U32(0, seen_best_effort.count);
-    EXPECT_EQ_U64(1, owner.large.ref_refused);
+    EXPECT_EQ_U64(1, owner.large_ref.ref_refused);
     entry->generation--;
     __atomic_fetch_and(&entry->readers[OWNER_ID / 64], ~large_reader_bit(OWNER_ID), __ATOMIC_RELEASE);
 
@@ -564,7 +564,7 @@ static void test_a_stale_descriptor_is_refused(void) {
     __atomic_fetch_and(&entry->readers[OWNER_ID / 64], ~large_reader_bit(OWNER_ID), __ATOMIC_RELEASE);
     drain();
     EXPECT_EQ_U32(0, seen_best_effort.count);
-    EXPECT_EQ_U64(2, owner.large.ref_refused);
+    EXPECT_EQ_U64(2, owner.large_ref.ref_refused);
 
     // A region recreated under the same name: its incarnation is not the descriptor's.
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(3, ONE_MB));
@@ -572,7 +572,7 @@ static void test_a_stale_descriptor_is_refused(void) {
     large_peer_regions_release(&owner); // not mapped yet with the old incarnation
     drain();
     EXPECT_EQ_U32(0, seen_best_effort.count);
-    EXPECT_EQ_U64(3, owner.large.ref_refused);
+    EXPECT_EQ_U64(3, owner.large_ref.ref_refused);
     ((struct tt_LargeRegionHeader*)pub.large_region.mapping)->incarnation ^= 0x100U;
 
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(4, ONE_MB)); // the control: an ordinary one is taken
@@ -595,8 +595,8 @@ static void test_a_dead_readers_chunk_is_freed_by_liveliness_not_before(void) {
         drain();
     }
     EXPECT_EQ_U32(4, seen_best_effort.count);
-    EXPECT_EQ_U64(3, sender.large.ref_sent - 1U); // chunk 1 every time
-    EXPECT_TRUE(owner_bit_set(0));                // not before: only slow, as far as the writer can tell
+    EXPECT_EQ_U64(3, sender.large_ref.ref_sent - 1U); // chunk 1 every time
+    EXPECT_TRUE(owner_bit_set(0));                    // not before: only slow, as far as the writer can tell
     EXPECT_TRUE(intact(seen_best_effort.held.payload, 1, ONE_MB));
     presume_node_dead(&sender, OWNER_ID, 5ULL * tt_SECOND);
     EXPECT_TRUE(!(owner_bit_set(0))); // after: free again
@@ -615,7 +615,7 @@ static void test_a_reader_without_the_feature_gets_fragments(void) {
     uint32_t count = large_count_for(FRAGMENTED);
     EXPECT_EQ_U32(count, ring()->write_index - before);
     EXPECT_EQ_U32(count, fragment_records(before, ring()->write_index));
-    EXPECT_EQ_U64(0, sender.large.ref_sent);
+    EXPECT_EQ_U64(0, sender.large_ref.ref_sent);
     drain();
     EXPECT_EQ_U32(1, seen_best_effort.count);
     EXPECT_EQ_U32(0, seen_best_effort.torn);
@@ -635,7 +635,7 @@ static void test_a_descriptor_from_a_socket_is_refused(void) {
     process_packet(&owner, copy, 0, len, SENDER_IP, SENDER_PORT, tt_TRANSPORT_UDP);
     EXPECT_EQ_U64(refused + 1U, owner.rx_shm_only_on_socket);
     EXPECT_EQ_U32(0, seen_best_effort.count);
-    EXPECT_EQ_U64(0, owner.large.ref_received);
+    EXPECT_EQ_U64(0, owner.large_ref.ref_received);
     drain(); // and the same record from the ring is taken
     EXPECT_EQ_U32(1, seen_best_effort.count);
     rig_down();
@@ -650,7 +650,7 @@ static void test_an_exhausted_region_falls_back_to_fragments(void) {
     drain();
     uint32_t before = ring()->write_index;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(2, FRAGMENTED));
-    EXPECT_EQ_U64(1, sender.large.region_full);
+    EXPECT_EQ_U64(1, sender.large_ref.region_full);
     EXPECT_EQ_U32(large_count_for(FRAGMENTED), fragment_records(before, ring()->write_index));
     drain();
     EXPECT_EQ_U32(2, seen_best_effort.count);
@@ -658,7 +658,7 @@ static void test_an_exhausted_region_falls_back_to_fragments(void) {
     EXPECT_TRUE(intact(seen_best_effort.held.payload, 1, ONE_MB));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Sample_release(&owner, &seen_best_effort.held));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(3, ONE_MB)); // the chunk again once given back
-    EXPECT_EQ_U64(2, sender.large.ref_sent);
+    EXPECT_EQ_U64(2, sender.large_ref.ref_sent);
     drain();
     EXPECT_EQ_U32(3, seen_best_effort.count);
     rig_down();
@@ -669,7 +669,7 @@ static void test_a_sample_above_the_chunk_goes_as_fragments(void) {
     rig_up(RIG_BEST_EFFORT, 2, SMALLEST_LARGE);
     uint32_t before = ring()->write_index;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish(1, FRAGMENTED));
-    EXPECT_EQ_U64(1, sender.large.region_full);
+    EXPECT_EQ_U64(1, sender.large_ref.region_full);
     EXPECT_EQ_U32(large_count_for(FRAGMENTED), fragment_records(before, ring()->write_index));
     drain();
     EXPECT_EQ_U32(1, seen_best_effort.count);

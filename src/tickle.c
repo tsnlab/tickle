@@ -5129,6 +5129,10 @@ static void reset_node_state(struct tt_Context* node) {
     memset(&node->hybrid, 0, sizeof(node->hybrid));
     hybrid_reader_start(node);
 #endif
+#if tt_LARGE_SHM
+    // No writer's region mapped, nothing being processed, every counter zero.
+    memset(&node->large_ref, 0, sizeof(node->large_ref));
+#endif
 
     memset(node->scheduler, 0, sizeof(struct tt_TCB) * tt_MAX_SCHEDULER_LENGTH);
     node->scheduler_tail = 0;
@@ -8213,11 +8217,11 @@ static bool large_ref_send(struct tt_Context* node, struct tt_Publisher* pub, co
             __atomic_fetch_and(word, ~bit, __ATOMIC_RELEASE); // nobody will read it for this descriptor
         }
         if (handled) {
-            node->large.ref_dropped++;
+            node->large_ref.ref_dropped++;
         }
         return handled;
     }
-    node->large.ref_sent++;
+    node->large_ref.ref_sent++;
     return true;
 }
 
@@ -8240,7 +8244,7 @@ static void large_region_forget_reader(struct tt_Context* node, uint8_t context_
 
 // An ACKNACK is being answered: a descriptor is resent once in it, however many of its sample's seq_nos it names.
 static void large_note_acknack(struct tt_Context* node) {
-    node->large.acknack_serial++;
+    node->large_ref.acknack_serial++;
 }
 
 tt_ret_t tt_Publisher_set_large_region(struct tt_Publisher* pub, uint32_t chunks, uint32_t chunk_bytes) {
@@ -9014,16 +9018,16 @@ static enum large_resend_result large_resend(struct tt_Context* node, struct tt_
     // A reader that took the sample's descriptor asks for all of its seq_nos at once: one descriptor answers them all,
     // once per ACKNACK (step B). Fragments through its ring would be what step B exists to avoid.
     if (record->chunk != 0 && large_ref_segment(node, target) != NULL) {
-        if (record->ref_resent == node->large.acknack_serial || record->encoded != record->cdr_len) {
+        if (record->ref_resent == node->large_ref.acknack_serial || record->encoded != record->cdr_len) {
             return LARGE_RESEND_SENT; // answered this ACKNACK already, or the send in progress brings it its descriptor
         }
-        record->ref_resent = node->large.acknack_serial;
+        record->ref_resent = node->large_ref.acknack_serial;
         if (large_ref_send(node, pub, record, target, target->context_id)) {
             RSTAT_INC(retransmitted);
             pub->retransmitted++;
             return LARGE_RESEND_SENT;
         }
-        record->ref_resent = node->large.acknack_serial - 1U; // not taken after all: its datagrams go below
+        record->ref_resent = node->large_ref.acknack_serial - 1U; // not taken after all: its datagrams go below
     }
 #endif
     uint32_t length = large_length(index, record->cdr_len);
@@ -9189,7 +9193,7 @@ static uint8_t* large_take_buffer(struct tt_Context* node, struct tt_Publisher* 
         if (buffer != NULL) {
             return buffer;
         }
-        node->large.region_full++; // no chunk: this sample goes to its same-host readers as fragments
+        node->large_ref.region_full++; // no chunk: this sample goes to its same-host readers as fragments
     }
 #endif
     return (uint8_t*)node->large.acquire(node->large.user, bytes);
@@ -17471,7 +17475,7 @@ static bool large_in(const uint8_t* p, const uint8_t* base, size_t bytes) {
 // Whether anything of this context still references [buffer, buffer + bytes) - an assembly, a lent sample, or the
 // delivery going on. bytes 1 asks about one buffer, a mapping's size about a whole region.
 static bool large_referenced(const struct tt_Context* node, const uint8_t* buffer, size_t bytes) {
-    if (large_in(node->large.ref_processing, buffer, bytes)) {
+    if (large_in(node->large_ref.ref_processing, buffer, bytes)) {
         return true; // a descriptor still being handed to this context's Subscribers
     }
     for (uint32_t i = 0; i < tt_LARGE_ASSEMBLIES; i++) {
@@ -17496,7 +17500,7 @@ static bool large_referenced(const struct tt_Context* node, const uint8_t* buffe
 // The mapped region `p` lies in, or NULL.
 static struct tt_LargePeerRegion* large_peer_region_of(struct tt_Context* node, const uint8_t* p) {
     for (uint32_t i = 0; i < tt_LARGE_PEER_REGIONS; i++) {
-        struct tt_LargePeerRegion* region = &node->large.peer_regions[i];
+        struct tt_LargePeerRegion* region = &node->large_ref.peer_regions[i];
         if (large_in(p, region->mapping, region->bytes)) {
             return region;
         }
@@ -17512,8 +17516,8 @@ static void large_peer_region_unmap(struct tt_LargePeerRegion* region) {
 // Every mapped region, at the context's destruction - after every assembly and lent sample has gone.
 static void large_peer_regions_release(struct tt_Context* node) {
     for (uint32_t i = 0; i < tt_LARGE_PEER_REGIONS; i++) {
-        if (node->large.peer_regions[i].mapping != NULL) {
-            large_peer_region_unmap(&node->large.peer_regions[i]);
+        if (node->large_ref.peer_regions[i].mapping != NULL) {
+            large_peer_region_unmap(&node->large_ref.peer_regions[i]);
         }
     }
 }
@@ -17523,7 +17527,7 @@ static void large_peer_regions_release(struct tt_Context* node) {
 static void large_peer_regions_forget(struct tt_Context* node, uint8_t source, uint32_t entity_id,
                                       bool match_any_entity) {
     for (uint32_t i = 0; i < tt_LARGE_PEER_REGIONS; i++) {
-        struct tt_LargePeerRegion* region = &node->large.peer_regions[i];
+        struct tt_LargePeerRegion* region = &node->large_ref.peer_regions[i];
         if (region->mapping != NULL && region->source == source &&
             (match_any_entity || region->entity_id == entity_id) &&
             !large_referenced(node, region->mapping, region->bytes)) {
@@ -17549,7 +17553,7 @@ static struct tt_LargePeerRegion* large_peer_region_map(struct tt_Context* node,
     struct tt_LargePeerRegion* free_entry = NULL;
     struct tt_LargePeerRegion* oldest = NULL;
     for (uint32_t i = 0; i < tt_LARGE_PEER_REGIONS; i++) {
-        struct tt_LargePeerRegion* region = &node->large.peer_regions[i];
+        struct tt_LargePeerRegion* region = &node->large_ref.peer_regions[i];
         if (region->mapping == NULL) {
             free_entry = free_entry != NULL ? free_entry : region;
             continue;
@@ -17767,7 +17771,7 @@ static bool process_large_ref(struct tt_Context* node, struct tt_Header* header,
         node->large.dropped++;
         return false;
     }
-    node->large.ref_received++;
+    node->large_ref.ref_received++;
     struct large_ref ref = {
         .header = header,
         .chunk = NULL,
@@ -17782,7 +17786,7 @@ static bool process_large_ref(struct tt_Context* node, struct tt_Header* header,
         .best_effort_seen = false,
     };
     if (ref.entity_id == tt_DISCOVERY_ENTITY_ID) {
-        node->large.ref_refused++;
+        node->large_ref.ref_refused++;
         return false;
     }
     struct tt_LargePeerRegion* region = large_peer_region_map(node, header->source, ref.entity_id, sender_ip,
@@ -17791,23 +17795,23 @@ static bool process_large_ref(struct tt_Context* node, struct tt_Header* header,
                                                  rd32(header, wire->generation), ref.cdr_len, ref.count)
                                : NULL;
     if (ref.chunk == NULL) {
-        node->large.ref_refused++; // stale or unmappable: a RELIABLE reader asks for it again
-        if (frag_log_due(node->large.ref_refused)) {
+        node->large_ref.ref_refused++; // stale or unmappable: a RELIABLE reader asks for it again
+        if (frag_log_due(node->large_ref.ref_refused)) {
             TT_LOG_WARNING("Large-sample descriptor %u from node %u refused: %s (#%lu)", ref.seq_no, header->source,
                            region == NULL ? "its region cannot be mapped" : "its chunk no longer holds it for us",
-                           (unsigned long)node->large.ref_refused);
+                           (unsigned long)node->large_ref.ref_refused);
         }
         return true;
     }
     // Referenced while it is handed out: a RELIABLE Subscriber's assembly freed on the way must not clear the bit under
     // a best-effort Subscriber of this context still to be handed the same chunk.
-    const uint8_t* outer = node->large.ref_processing;
-    node->large.ref_processing = ref.chunk;
+    const uint8_t* outer = node->large_ref.ref_processing;
+    node->large_ref.ref_processing = ref.chunk;
     for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, ref.endpoint_id, route_large_ref, &ref);
     if (ref.best_effort_seen) {
         large_ref_deliver_best_effort(node, &ref);
     }
-    node->large.ref_processing = outer;
+    node->large_ref.ref_processing = outer;
     (void)large_ref_give_back(node, ref.chunk); // done with it, unless an assembly or a lent sample keeps it
     return true;
 }
@@ -21146,9 +21150,9 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
     large_release_assemblies(node); // every sample still being put together: its buffer back to the caller
 #if tt_LARGE_SHM
     TT_LOG_INFO("Node %u large_ref: sent=%lu received=%lu refused=%lu dropped=%lu region_full=%lu", node->id,
-                (unsigned long)node->large.ref_sent, (unsigned long)node->large.ref_received,
-                (unsigned long)node->large.ref_refused, (unsigned long)node->large.ref_dropped,
-                (unsigned long)node->large.region_full);
+                (unsigned long)node->large_ref.ref_sent, (unsigned long)node->large_ref.ref_received,
+                (unsigned long)node->large_ref.ref_refused, (unsigned long)node->large_ref.ref_dropped,
+                (unsigned long)node->large_ref.region_full);
     large_peer_regions_release(node); // last: nothing references a chunk now
 #endif
 #endif

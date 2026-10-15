@@ -298,9 +298,9 @@ static void print_large(const struct tt_Context* node) {
 #if defined(tt_LARGE_SHM) && tt_LARGE_SHM
     printf(" large_ref_sent=%lu large_ref_received=%lu large_ref_refused=%lu large_ref_dropped=%lu "
            "large_region_full=%lu shm_full_dropped=%lu",
-           (unsigned long)node->large.ref_sent, (unsigned long)node->large.ref_received,
-           (unsigned long)node->large.ref_refused, (unsigned long)node->large.ref_dropped,
-           (unsigned long)node->large.region_full, (unsigned long)node->segment_full_dropped);
+           (unsigned long)node->large_ref.ref_sent, (unsigned long)node->large_ref.ref_received,
+           (unsigned long)node->large_ref.ref_refused, (unsigned long)node->large_ref.ref_dropped,
+           (unsigned long)node->large_ref.region_full, (unsigned long)node->segment_full_dropped);
 #endif
 #else
     printf(" tx_datagrams=%lu rx_datagrams=%lu", (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams);
