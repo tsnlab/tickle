@@ -7,8 +7,10 @@ is missing or the piece is doing nothing, and both are findings. The verdict als
 the failures, so a mutant killed by an assertion elsewhere does not count for the piece it names; a crash (the binary
 killed by a signal) counts, and is printed as CRASH.
 
-Run from the repository root. Restores every file it touches, whatever happens.
+Run from the repository root. Restores every file it touches, whatever happens. MUTANTS=<substring> runs only the
+mutants whose name contains it (the control always runs).
 """
+import os
 import pathlib
 import shutil
 import subprocess
@@ -130,7 +132,7 @@ MUTANTS = [
     (
         "the segment release waits for a held slot",
         "src/tickle.c",
-        "        if (node->lend.held_slots != 0 || node->lend.rx_kind == tt_LEND_SLOT) {\n"
+        "        if (node->lend.held_slots != 0 || lend_reading_slot(node)) {\n"
         "            node->lend.segment_release_deferred = true;",
         "        if (false) {\n            node->lend.segment_release_deferred = true;",
         "test_the_segment_outlives_a_held_slot",
@@ -138,7 +140,7 @@ MUTANTS = [
     (
         "the segment release waits for the record read in place",
         "src/tickle.c",
-        "        if (node->lend.held_slots != 0 || node->lend.rx_kind == tt_LEND_SLOT) {\n"
+        "        if (node->lend.held_slots != 0 || lend_reading_slot(node)) {\n"
         "            node->lend.segment_release_deferred = true;",
         "        if (node->lend.held_slots != 0) {\n            node->lend.segment_release_deferred = true;",
         "test_a_farewell_read_in_place_releases_the_ring_after",
@@ -154,15 +156,15 @@ MUTANTS = [
         "the deferred release waits for the last release",
         "src/tickle.c",
         "    if (!node->lend.segment_release_deferred || node->lend.held_slots != 0 || "
-        "node->lend.rx_kind == tt_LEND_SLOT) {",
+        "lend_reading_slot(node)) {",
         "    if (!node->lend.segment_release_deferred) {",
         "test_the_segment_outlives_a_held_slot",
     ),
     (
         "destroy forgets held samples",
         "src/tickle.c",
-        "    for (uint32_t k = 0; k < tt_SAMPLE_RETAIN_MAX; k++) {\n        node->lend.entries[k].kind = tt_LEND_FREE;",
-        "    for (uint32_t k = 0; k < 0; k++) {\n        node->lend.entries[k].kind = tt_LEND_FREE;",
+        "    for (uint32_t k = 0; k < tt_SAMPLE_RETAIN_MAX; k++) {\n#if tt_LARGE_SAMPLES\n        // A retained large sample's",
+        "    for (uint32_t k = 0; k < 0; k++) {\n#if tt_LARGE_SAMPLES\n        // A retained large sample's",
         "test_destroy_forgets_held_samples",
     ),
 ]
@@ -229,7 +231,10 @@ def main():
             print("control did not pass; the sweep cannot decide anything")
             return 1
 
+        only = os.environ.get("MUTANTS", "")
         for name, rel, old, new, test in MUTANTS:
+            if only and only not in name:
+                continue
             path = ROOT / rel
             text = path.read_text()
             count = text.count(old)

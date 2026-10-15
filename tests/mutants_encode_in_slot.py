@@ -5,8 +5,10 @@ Each entry removes or bends exactly one condition or step of the one-copy publis
 go red for it. A mutant that survives is a condition no test decides - either the test is missing or the condition
 is not doing anything, and both are findings.
 
-Run from the repository root. Restores every file it touches, whatever happens.
+Run from the repository root. Restores every file it touches, whatever happens. MUTANTS=<substring> runs only the
+mutants whose name contains it (the control always runs).
 """
+import os
 import pathlib
 import shutil
 import subprocess
@@ -77,29 +79,29 @@ MUTANTS = [
     (
         "the one-datagram bound, removed",
         "src/tickle.c",
-        "    if (sizeof(struct tt_Header) + record_len > FRAG_WHOLE_DATA_LIMIT) {",
-        "    if (false) {",
+        "    if (sizeof(struct tt_Header) + record_len > FRAG_WHOLE_DATA_LIMIT) {\n        return false;",
+        "    if (false) {\n        return false;",
         "test_what_stays_on_the_staging_path",
     ),
     (
         "the one-datagram bound, one byte short",
         "src/tickle.c",
-        "    if (sizeof(struct tt_Header) + record_len > FRAG_WHOLE_DATA_LIMIT) {",
-        "    if (sizeof(struct tt_Header) + record_len >= FRAG_WHOLE_DATA_LIMIT) {",
+        "    if (sizeof(struct tt_Header) + record_len > FRAG_WHOLE_DATA_LIMIT) {\n        return false;",
+        "    if (sizeof(struct tt_Header) + record_len >= FRAG_WHOLE_DATA_LIMIT) {\n        return false;",
         "test_what_stays_on_the_staging_path",
     ),
     (
         "KEEP_ALL's arena bound asked before the claim",
         "src/tickle.c",
-        "    if (keep_all_refused_record_bytes(pub, node, &probe, raw_len, FRAG_WHOLE_DATA_LIMIT) != 0) {",
-        "    if (false) {",
+        "    if (keep_all_refused_record_bytes(pub, node, &probe, raw_len, FRAG_WHOLE_DATA_LIMIT) != 0) {\n        return false;",
+        "    if (false) {\n        return false;",
         "test_keep_all_refusal_is_unchanged",
     ),
     (
         "declining a record the slot cannot hold",
         "src/tickle.c",
-        "    if (segment == NULL || record_len > segment->slot_bytes) {",
-        "    if (segment == NULL) {",
+        "    if (segment == NULL || record_len > segment->slot_bytes) {\n        return false;",
+        "    if (segment == NULL) {\n        return false;",
         "test_what_stays_on_the_staging_path",
     ),
     (
@@ -126,8 +128,8 @@ MUTANTS = [
     (
         "the padding zeroed",
         "src/tickle.c",
-        "    memset(record + raw_len, 0, record_len - raw_len);",
-        "    // mutant: padding left as the slot had it",
+        "    memset(record + raw_len, 0, record_len - raw_len);\n    if (encoded_len < 0",
+        "    // mutant: padding left as the slot had it\n    if (encoded_len < 0",
         "test_best_effort_slots_match_the_two_copy_path",
     ),
     (
@@ -147,36 +149,41 @@ MUTANTS = [
     (
         "the single header written over the submessage header",
         "src/tickle.c",
-        "    _tt_memcpy(record, &single, sizeof(single));\n    segment_publish(",
-        "    (void)single;\n    segment_publish(",
+        "    _tt_memcpy(record, &single, sizeof(single));\n    segment_publish(slot,",
+        "    (void)single;\n    segment_publish(slot,",
         "test_best_effort_slots_match_the_two_copy_path",
     ),
     (
         "flush_tx()'s datagram statistics",
         "src/tickle.c",
+        "    segment_publish(slot, claimed, record_len, own_ip, own_port, 1);\n#ifdef tt_RELIABLE_STATS\n"
         "    g_rstats.datagrams++; // flush_tx()'s accounting",
+        "    segment_publish(slot, claimed, record_len, own_ip, own_port, 1);\n#ifdef tt_RELIABLE_STATS\n"
         "    // mutant: not counted",
         "test_best_effort_slots_match_the_two_copy_path",
     ),
     (
         "the counted and rung record",
         "src/tickle.c",
+        "    node->segment_encoded_in_slot++;\n"
         "    segment_note_written(node, dest.context_id, segment, dest.ip, dest.port, true);",
-        "    // mutant: neither counted nor rung",
+        "    node->segment_encoded_in_slot++;\n    // mutant: neither counted nor rung",
         "test_best_effort_slots_match_the_two_copy_path",
     ),
     (
         "the doorbell rung for a record written in place",
         "src/tickle.c",
+        "    node->segment_encoded_in_slot++;\n"
         "    segment_note_written(node, dest.context_id, segment, dest.ip, dest.port, true);",
+        "    node->segment_encoded_in_slot++;\n"
         "    segment_note_written(node, dest.context_id, segment, dest.ip, dest.port, false);",
         "test_best_effort_slots_match_the_two_copy_path",
     ),
     (
         "the watermark solicitation after a one-copy publish",
         "src/tickle.c",
-        "    pub->seq_no += 1;\n    maybe_solicit_ack_at_watermark(pub);",
-        "    pub->seq_no += 1;",
+        "    pub->seq_no += 1;\n    maybe_solicit_ack_at_watermark(pub);\n    *result = tt_RET_OK;",
+        "    pub->seq_no += 1;\n    *result = tt_RET_OK;",
         "test_reliable_records_and_cache_match",
     ),
     (
@@ -221,7 +228,10 @@ def main():
             print("control did not pass; the sweep cannot decide anything")
             return 1
 
+        only = os.environ.get("MUTANTS", "")
         for name, rel, old, new, test in MUTANTS:
+            if only and only not in name:
+                continue
             path = ROOT / rel
             text = path.read_text()
             count = text.count(old)

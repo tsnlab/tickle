@@ -490,8 +490,8 @@ MUTANTS = [
     (
         "reader: a large run's units not noted",
         "src/tickle.c",
-        "    if (hybrid_rx_capable(node)) {\n        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count, true);\n    }\n#endif\n    for (uint32_t i = 0; i < run_count; i++) {\n        uint32_t unit_index = index + i;\n        struct large_fragment",
-        "    if (false) {\n    }\n#endif\n    for (uint32_t i = 0; i < run_count; i++) {\n        uint32_t unit_index = index + i;\n        struct large_fragment",
+        "    if (hybrid_rx_capable(node)) {\n        hybrid_rx_note(node, header->source, entity_id, seq_no - index, index, count, run_count, true);\n    }\n#endif\n    if (index != 0 &&\n        large_run_batched(",
+        "    if (false) {\n    }\n#endif\n    if (index != 0 &&\n        large_run_batched(",
         SEND,
     ),
     (
@@ -560,8 +560,8 @@ MUTANTS = [
     (
         "tick: p announced as the upper bound, not the posterior mean",
         "src/tickle.c",
-        "    uint16_t loss = hybrid_loss_code(loss_estimate_mean(&hybrid->rx_loss));",
-        "    uint16_t loss = hybrid_loss_code(loss_estimate_p(&hybrid->rx_loss));",
+        "    return hybrid_loss_code(loss_estimate_mean(estimate));",
+        "    return hybrid_loss_code(loss_estimate_p(estimate));",
         SEND,
     ),
     (
@@ -581,15 +581,15 @@ MUTANTS = [
     (
         "reader: n not learnt from a full run",
         "src/tickle.c",
-        "            writer->layout_n = (uint8_t)units; // a full run says n, and so does a sample's first: its only one is n\n",
+        "            writer->layout_n = (uint8_t)units;\n",
         "",
         SEND,
     ),
     (
         "reader: an MTU unit in the body does not say MTU",
         "src/tickle.c",
-        "            writer->layout_n = 1; // an MTU unit where a run could have gone: the writer sends MTU units here",
-        "",
+        "    } else if (index < tail) {\n        writer->layout_n = 1;\n",
+        "    } else if (index < tail) {\n",
         SEND,
     ),
     (

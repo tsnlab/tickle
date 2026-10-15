@@ -6,8 +6,10 @@ still passes means the test is not testing what its name says - which is the fai
 exists to catch, and which has happened twice already in this file's history (a contention test that
 passed against the pre-fix writer, and an address test that compared zero with zero).
 
-Run from the repository root. Restores every file it touches, whatever happens.
+Run from the repository root. Restores every file it touches, whatever happens. MUTANTS=<substring> runs only the
+mutants whose name contains it (the control always runs).
 """
+import os
 import pathlib
 import shutil
 import subprocess
@@ -77,8 +79,8 @@ MUTANTS = [
     (
         "stalled-head detection",
         "src/tickle.c",
-        "            note_head_stall(node); // empty, or a head nobody is coming back for - the two look alike",
-        "            // note_head_stall(node); -- mutant",
+        "                ran_dry = !note_head_stall(node);",
+        "                ran_dry = true; // note_head_stall(node) not asked -- mutant",
         "test_a_stalled_head_is_noticed_rather_than_read_as_a_sizing_problem",
     ),
     (
@@ -267,7 +269,10 @@ def main():
             print("control did not pass; the sweep cannot decide anything")
             return 1
 
+        only = os.environ.get("MUTANTS", "")
         for name, rel, old, new, test in MUTANTS:
+            if only and only not in name:
+                continue
             path = ROOT / rel
             text = path.read_text()
             count = text.count(old)
