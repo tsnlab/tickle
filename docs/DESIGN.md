@@ -998,7 +998,16 @@ MTU units lost, 45 events in `p` and `p_mtu`, and held `n` low until they dilute
   announce has not arrived counts too: one claimed from its ACKNACK has no ceiling known (`n_max` 1), and the samples a
   writer publishing as it starts (performance_test) sent it went as trains while it measured them (2026-10-15, I1L
   head r1). A first sample broadcast before any reader is matched no longer exists: a Publisher with no matched reader
-  sends nothing (section 4). A 95% bound (3 / N at no events) would hold `n` below `n_max` at 0%
+  sends nothing (section 4). PC, `hybrid_first_n_pc.sh` third campaign (2026-10-16, veth, netem 5% over tbf 1 Gbit/s,
+  1 MB RELIABLE KEEP_LAST 10 at 30 Hz, 60 runs an arm; control = main + no-send-unmatched, tip =
+  ab/hybrid-first-n3 with the harness's MATCHED reading): with the writer publishing at once (`PUB_WAIT_MS=0`) the control
+  sent samples at `n > 1` in 23 of 60 runs (first p `0xff00` in each) and lost samples after the match point in 6; the
+  tip 0 and 0. With the reader known first (2 s), 24 and 7 against 0 and 0. Open: the first-n2 rig run's one
+  remaining `n = 45` run (I1L head r11 of 12, 2026-10-15) took its first sample one a call as designed, but its reader's
+  well-known socket dropped 158 datagrams of that sample's broadcast at start; the 158 receiver-drop credits most likely excused
+  path losses and the 4 events left were forgotten (`stale_forgets=1 stale_events=4`, every other run 0), so "none
+  seen". No-send removes that broadcast; a reader dropping at its socket during its first sample would still reach it.
+  A 95% bound (3 / N at no events) would hold `n` below `n_max` at 0%
   loss for as long as the window lasts. The window halves at 2^20 frames, not 2^17, for the same reason. Under a
   collapse `p` reads high, which only shortens a RELIABLE writer's `n`. A few events (`k`, at most 8,
   `tt_HYBRID_STALE_EVENTS`) are forgotten once the clean frames `C` since the last, against the frames `F` up to it,
