@@ -98,8 +98,8 @@ MUTANTS = [
     ),
     (
         "B1.7 a descriptor from a socket taken",
-        "        if (transport != tt_TRANSPORT_SHM) {\n            // It names memory",
-        "        if (false) {\n            // It names memory",
+        "    if (transport != tt_TRANSPORT_SHM) {\n        node->rx_shm_only_on_socket++;",
+        "    if (false) {\n        node->rx_shm_only_on_socket++;",
         "test_a_descriptor_from_a_socket_is_refused",
     ),
     (
