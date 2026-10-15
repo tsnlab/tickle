@@ -4747,6 +4747,13 @@ static void broadcast_goodbye(struct tt_Context* node);
 #if tt_LOCAL_DELIVERY
 static void deliver_locally(struct tt_Context* node, struct tt_Publisher* pub, const uint8_t* payload, uint32_t length,
                             uint32_t seq_no, uint64_t timestamp);
+// deliver_locally() when this context has a Subscriber of the sample (`local`): the end of a publish, sent or not.
+static void deliver_locally_if(bool local, struct tt_Context* node, struct tt_Publisher* pub, const uint8_t* payload,
+                               uint32_t length, uint32_t seq_no, uint64_t timestamp) {
+    if (local) {
+        deliver_locally(node, pub, payload, length, seq_no, timestamp);
+    }
+}
 #endif
 static void check_liveliness(struct tt_Context* node, uint64_t time, void* param);
 static void server_cache_clean(struct tt_Context* node, uint64_t time, void* param);
@@ -5028,6 +5035,8 @@ static void reset_node_state(struct tt_Context* node) {
     node->summaries_skipped = 0;
     node->summaries_ridden = 0;
     node->tx_dropped_oversize = 0;
+    node->tx_unmatched_dropped = 0;
+    node->tx_unmatched_kept = 0;
     node->rx_datagrams = 0;
     node->rx_self_sent = 0;
     node->rx_self_sent_data = 0;
@@ -6455,6 +6464,17 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
     data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
 
     uint8_t peer_count = count_peers(pub->peers);
+    if (peer_count == 0) {
+        // No matched reader: nothing is sent (publisher_unmatched()). Only a BEST_EFFORT, non-durable Publisher comes
+        // this way, so the sample is dropped; its seq_nos are taken as a sent one's would be.
+        node->tx_unmatched_dropped++;
+#if tt_FRAG_ENABLED
+        pub->seq_no += sizeof(framing) + body_len > FRAG_WHOLE_DATA_LIMIT ? frag_count_for(body_len) : 1U;
+#else
+        pub->seq_no++;
+#endif
+        return tt_RET_OK;
+    }
 #if tt_FRAG_ENABLED
     if (sizeof(framing) + body_len > FRAG_WHOLE_DATA_LIMIT) {
         bool unicast = peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD;
@@ -7268,7 +7288,7 @@ static bool try_publish_zerocopy(struct tt_Publisher* pub, struct tt_Data* data,
 // publisher that batches, would have been "batched" forever and never the segment answer being looked for.
 enum tt_WholeRefusal {
     tt_WHOLE_REFUSE_BATCHED = 0,   // the publisher batches; this publish is not a flush
-    tt_WHOLE_REFUSE_NO_PEERS,      // no known unicast peer - a broadcast
+    tt_WHOLE_REFUSE_NO_PEERS,      // no matched reader - nothing is sent
     tt_WHOLE_REFUSE_PEER_SPREAD,   // more destinations than tt_UNICAST_PEER_THRESHOLD
     tt_WHOLE_REFUSE_BUFFER_IN_USE, // something else is already unflushed ahead of this DATA
     tt_WHOLE_REFUSE_UNATTACHED,    // a destination has no segment of ours attached
@@ -7299,6 +7319,26 @@ static void note_whole_refusal(struct tt_Context* node, enum tt_WholeRefusal why
 }
 #endif
 
+// A Publisher with no matched reader - nobody in peers[] - sends nothing on the wire (the user's decision, 2026-10-15;
+// DESIGN.md section 4), as a DDS writer does. Until then "no known peer" meant a broadcast to the whole segment: every
+// sample of a writer nobody read, and every sample published before a reader's announce was in, went to every node and
+// back to the writer's own socket. A reader is matched from its announce (register_subscriber_peer_on_publisher()) or,
+// for a RELIABLE writer, its ACKNACK (claim_from_acknack()), and gets what the writer sends from then on. What the
+// publish still does: a BEST_EFFORT sample is dropped and counted (tx_unmatched_dropped); a RELIABLE or durable one
+// takes its seq_nos and goes into the history as before (tx_unmatched_kept), so a VOLATILE reader's match point and a
+// TRANSIENT_LOCAL reader's backlog are what they would have been. Local delivery (tt_LOCAL_DELIVERY) is unaffected.
+static bool publisher_unmatched(const struct tt_Publisher* pub) {
+    return count_peers(pub->peers) == 0;
+}
+
+static void count_unmatched_sample(struct tt_Context* node, const struct tt_Publisher* pub) {
+    if (pub->reliable_cache != NULL) {
+        node->tx_unmatched_kept++;
+    } else {
+        node->tx_unmatched_dropped++;
+    }
+}
+
 static uint8_t unicast_destinations_for(struct tt_Context* node, const struct tt_Publisher* pub, uint32_t old_tx_tail,
                                         bool is_flush, const struct tt_Peer** out_peers) {
     *out_peers = NULL;
@@ -7308,7 +7348,7 @@ static uint8_t unicast_destinations_for(struct tt_Context* node, const struct tt
     }
     uint8_t count = count_peers(pub->peers);
     if (count < 1) {
-        note_whole_refusal(node, tt_WHOLE_REFUSE_NO_PEERS, "no known unicast peer, so this publish broadcasts");
+        note_whole_refusal(node, tt_WHOLE_REFUSE_NO_PEERS, "no matched reader, so this publish sends nothing");
         return 0;
     }
     if (count > tt_UNICAST_PEER_THRESHOLD) {
@@ -8104,7 +8144,16 @@ static void large_cursor_destinations(struct tt_Context* node, struct tt_Publish
                                       const struct tt_LargeRecord* record) {
     struct tt_LargeCursor* cursor = &pub->large_cursor;
     uint8_t count = count_peers(pub->peers);
-    bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD;
+    if (count == 0) {
+        // No matched reader: no destination, so the send that follows sends nothing and the record counts as gone - a
+        // RELIABLE one stays retained, for a TRANSIENT_LOCAL reader's backlog (publisher_unmatched()).
+        count_unmatched_sample(node, pub);
+        cursor->dest_count = 0;
+        cursor->next_dest = 0;
+        cursor->next_index = 0;
+        return;
+    }
+    bool unicast = count <= tt_UNICAST_PEER_THRESHOLD;
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
     uint8_t destination_count = tx_destinations(unicast ? pub->peers : NULL, unicast ? count : 0, destinations);
     note_reached(node, unicast ? pub->peers : NULL, unicast ? count : 0);
@@ -8487,8 +8536,8 @@ static void large_ack_chase(struct tt_Context* node, uint64_t time, void* param)
 
 static void large_end_heartbeat(struct tt_Context* node, struct tt_Publisher* pub) {
 #if tt_LARGE_END_HEARTBEAT
-    if (!pub->reliable) {
-        return;
+    if (!pub->reliable || publisher_unmatched(pub)) {
+        return; // a sample that went to nobody has nobody to ask
     }
     large_send_end_heartbeat(node, pub);
     if (pub->large_ack_armed) {
@@ -8818,7 +8867,8 @@ static void large_commit_pending(struct tt_Context* node, struct tt_Publisher* p
 // topic has a ranged encode, the sample goes out now - one waiting behind a send is encoded whole, as it is not sent
 // within this call - and no Subscriber of this context takes it in-process, which needs it whole at once.
 static bool large_interleaves(const struct tt_Publisher* pub, bool sending_now) {
-    if (pub->topic->data_encode_range == NULL || !sending_now) {
+    // With no matched reader nothing is sent (large_cursor_destinations()), so no send would encode the rest.
+    if (pub->topic->data_encode_range == NULL || !sending_now || publisher_unmatched(pub)) {
         return false;
     }
 #if tt_LOCAL_DELIVERY
@@ -9140,6 +9190,18 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     pub->blocked_record_bytes = 0; // this one was admitted; nothing outstanding to re-ask about
     pub->blocked_datagrams = 0;
 
+    if (publisher_unmatched(pub)) {
+        // No matched reader: encoded, and retained above when it is kept at all - but taken back out of tx_buffer
+        // here, with nothing sent (publisher_unmatched()).
+        rollback(node, old_tx_tail);
+        count_unmatched_sample(node, pub);
+        pub->seq_no += seq_span;
+#if tt_LOCAL_DELIVERY
+        deliver_locally_if(local, node, pub, local_copy, (uint32_t)encoded_len, local_seq_no, local_timestamp);
+#endif
+        return tt_RET_OK;
+    }
+
     // pub->batch (default false, tt_Context_create_publisher() - see tickle.h's own doc comment on
     // it for why immediate is the default now): mirrors tt_Client_call()'s own peer decision and
     // shared-tx_buffer guard exactly - unicast to pub->peers when there's a small enough known
@@ -9178,9 +9240,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     maybe_solicit_ack_at_watermark(pub);
 
 #if tt_LOCAL_DELIVERY
-    if (local) {
-        deliver_locally(node, pub, local_copy, (uint32_t)encoded_len, local_seq_no, local_timestamp);
-    }
+    deliver_locally_if(local, node, pub, local_copy, (uint32_t)encoded_len, local_seq_no, local_timestamp);
 #endif
     return tt_RET_OK;
 }
@@ -9568,6 +9628,9 @@ static bool any_peer_on_segment(const struct tt_Context* node, const struct tt_P
 // go to; otherwise it goes now as its own datagram, as the periodic Heartbeat does (send_heartbeat()). A fragmented
 // sample flushes it ahead of its fragments (send_tail_as_fragments()).
 static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pub) {
+    if (publisher_unmatched(pub)) {
+        return; // with no matched reader nothing is sent (publisher_unmatched()); it stays owed
+    }
     uint32_t owed = 0;
     if (!take_match_heartbeat(pub, &owed)) {
         return;
@@ -9600,7 +9663,9 @@ static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pu
 static void send_heartbeat(struct tt_Context* node, uint64_t time, void* param) {
     struct tt_Publisher* pub = param;
     uint32_t first_seq_no = 0;
-    if (publisher_oldest_seq_no(pub, &first_seq_no)) {
+    // Not with no matched reader: nothing is sent to nobody (publisher_unmatched()), as tt_Publisher_request_ack() and
+    // the watermark solicitation already held.
+    if (!publisher_unmatched(pub) && publisher_oldest_seq_no(pub, &first_seq_no)) {
         // Same peer/broadcast decision tt_Publisher_publish() already makes for DATA - made before the match
         // Heartbeat goes into tx_buffer, as large_send_end_heartbeat() makes it.
         const struct tt_Peer* peers = NULL;
@@ -12892,10 +12957,11 @@ static void register_subscriber_peer_on_publisher(struct tt_Context* node, struc
     // peer at all: no unicast optimization, no durability backlog, no discovery-triggered
     // Heartbeat - matching real DDS's own "an incompatible pair simply never connects" semantics.
     // See process_data()'s own subscriber_incompatible_with_writer() for this check's own
-    // mirror image on the Subscriber side (the more consequential half, since it's what actually
-    // stops broadcast DATA delivery too - this Publisher-side half alone only gates the unicast-
-    // only enhancements, tickle.c's own doc comment on tt_UPDATE_QOS_RELIABLE/_DURABLE explains
-    // why both halves are needed).
+    // mirror image on the Subscriber side. Since 2026-10-15 this half decides delivery too: a Publisher
+    // with no matched reader sends nothing (publisher_unmatched()), so an incompatible Subscriber gets
+    // nothing from it unless the Publisher broadcasts to more compatible readers than the unicast
+    // threshold - which is what the Subscriber-side half still stops (tickle.c's own doc comment on
+    // tt_UPDATE_QOS_RELIABLE/_DURABLE explains why both halves are needed).
     bool requested_reliable = (ctx->qos & tt_UPDATE_QOS_RELIABLE) != 0;
     bool requested_durable = (ctx->qos & tt_UPDATE_QOS_DURABLE) != 0;
     bool requested_manual = (ctx->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;
@@ -13216,7 +13282,7 @@ static bool process_announce(struct tt_Context* node, struct tt_Header* header, 
     node->update_reprocess[source] = false;
     // A changed announce that came by broadcast is answered too (2026-09-26): the node that changed may
     // have just created an endpoint that matches one of ours, and until it hears our announce it cannot
-    // match it - a Publisher of its would broadcast every sample for up to tt_CONTEXT_UPDATE_INTERVAL. Only a
+    // match it - a Publisher of its would send our Subscriber nothing for up to tt_CONTEXT_UPDATE_INTERVAL. Only a
     // broadcast is answered: a reply arrives unicast, on the data socket, so replies are never answered
     // and two nodes cannot trade announces back and forth. At most one reply per peer per change.
     if (is_first_contact_from_sender || !node->rx_via_data_port) {
@@ -13246,12 +13312,11 @@ static bool is_power_of_ten(uint32_t count) {
 // that just sent it DATA, per that Publisher's own last-announced tt_UpdateEntity.qos (mirrored
 // into the discovery table by upsert_discovered_entity() - see struct tt_DiscoveredEntity.qos's
 // own doc comment for why this reuses that table rather than a second cache). This is the
-// consequential half of RxO matching: unlike decode_update_entities()'s own Publisher-side gate
-// (which only withholds peer-list/backlog/Heartbeat, enhancements a broadcast-by-default Publisher
-// doesn't need to reach anyone), this is what actually stops an incompatible Publisher's plain
-// broadcast DATA from being delivered at all, matching real DDS's "an incompatible pair simply
-// never connects" semantics instead of TickLE's previous "everything matches, degraded QoS is
-// silently accepted" behavior.
+// half of RxO matching that stops an incompatible Publisher's broadcast DATA - to more readers than the unicast
+// threshold - from being delivered (decode_update_entities()'s Publisher-side gate keeps an incompatible reader out of
+// peers[], and a Publisher with no matched reader sends nothing at all), matching real DDS's "an incompatible pair
+// simply never connects" semantics instead of TickLE's previous "everything matches, degraded QoS is silently accepted"
+// behavior.
 //
 // Fails OPEN (returns false, "compatible enough to deliver") whenever there's nothing to check
 // against yet: no discovery cache attached at all (a raw TickLE-core caller that never called
@@ -20281,7 +20346,10 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         "shm_fences_sent=%lu shm_fences_passed=%lu shm_fences_expired=%lu "
         // UDP offload (struct tt_Context.udp_offload): what the HAL turned on, what receive offload merged, and what
         // send offload carried.
-        "udp_offload=%u gro_reads=%lu gro_merged=%lu gro_copied=%lu gro_off8=%lu gso_sends=%lu gso_datagrams=%lu",
+        "udp_offload=%u gro_reads=%lu gro_merged=%lu gro_copied=%lu gro_off8=%lu gso_sends=%lu gso_datagrams=%lu "
+        // Samples published with no matched reader, which sent nothing (DESIGN.md section 4): dropped (BEST_EFFORT) or
+        // kept in the writer's history (RELIABLE, durable).
+        "tx_unmatched_dropped=%lu tx_unmatched_kept=%lu",
         node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
         (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
         (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -20312,7 +20380,8 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned long)node->segment_fences_passed, (unsigned long)node->segment_fences_expired,
         (unsigned)node->udp_offload, (unsigned long)node->udp_gro_reads, (unsigned long)node->udp_gro_merged,
         (unsigned long)node->udp_gro_copied, (unsigned long)node->udp_gro_off8, (unsigned long)node->udp_gso_sends,
-        (unsigned long)node->udp_gso_datagrams);
+        (unsigned long)node->udp_gso_datagrams, (unsigned long)node->tx_unmatched_dropped,
+        (unsigned long)node->tx_unmatched_kept);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads

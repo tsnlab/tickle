@@ -1005,8 +1005,8 @@
 // Threshold for how many known recipient nodes a Publisher/Client sends to individually before
 // switching to one broadcast instead. <= this many known peers -> unicast (tt_send_to() once per
 // peer); more than this many -> broadcast (tt_send() once). Zero known peers (nobody has
-// announced a matching endpoint yet) always broadcasts too, regardless of this threshold -
-// there's nothing to unicast to yet, so it falls back to today's discovery-by-broadcast behavior.
+// announced a matching endpoint yet): a Publisher sends nothing at all (2026-10-15, DESIGN.md
+// section 4); a Client's call still broadcasts, since a request has to find its Server.
 // How many links (interfaces) one node can be configured to talk on. Fixed, because TickLE is
 // malloc-free: a node's links are part of its static configuration, not something it discovers.
 // Four is a guess sized for the cases in front of us - a wired test link plus a management

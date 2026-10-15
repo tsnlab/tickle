@@ -340,6 +340,16 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Changed
 
+- **A Publisher with no matched reader sends nothing** (docs/DESIGN.md section 4; the user's decision,
+  2026-10-15), as a DDS writer does. With no known peer it used to broadcast every sample to the whole segment.
+  - BEST_EFFORT samples published before any reader is matched are dropped and counted (`tx_unmatched_dropped`).
+  - RELIABLE and durable ones are kept in the history as before (`tx_unmatched_kept`). A VOLATILE reader that matches
+    later gets the samples from its match point on, and a TRANSIENT_LOCAL one gets the history.
+  - Every sample size and path is covered, and so are the periodic, piggybacked, match and end-of-sample
+    HEARTBEATs.
+  - Discovery stays broadcast, and so does a send to more readers than `tt_UNICAST_PEER_THRESHOLD`.
+  - A reader's first sample now waits for its announce to reach the writer: one `tt_CONTEXT_TX_INTERVAL` after the
+    Subscriber is created, or within one `tt_CONTEXT_UPDATE_INTERVAL` if that announce is lost.
 - **RPC retry bounds are relative to the link** (docs/ROADMAP.md 5a, the constants audit). The auto retry interval
   (`call_retry_interval` 0) is RFC 6298's `srtt + max(tt_CALL_RETRY_GRANULARITY, 4 x rttvar)`, doubled at each
   retry of a call and at most `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` x srtt, in place of 1.5 x an EMA held between a fixed
