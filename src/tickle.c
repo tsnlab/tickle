@@ -9654,6 +9654,14 @@ static void send_ack_solicit(struct tt_Context* node, uint64_t time, void* param
 // to gate, so a durable-only Publisher doesn't also start emitting Heartbeats nobody asked for)
 // and pub->reliable_cache is non-NULL and non-empty (nothing published yet) - fires regardless of
 // whether periodic Heartbeat (tt_Publisher_set_heartbeat_period()) was ever separately enabled.
+//
+// A re-registration sends it too: every new generation of a reader's announce re-adds the peer slot
+// (process_announce()'s forget-then-re-add), and a hybrid reader announces again whenever its advertised ceiling or
+// loss moves. While that reader is still owed its match point (tt_PeerAck.first_owed_seq_no), this Heartbeat can be
+// its first contact, as the periodic one can (send_heartbeat()), so the match Heartbeat goes first in the same
+// datagram. Without it, a reader whose first sample's endpoint-naming datagrams and match Heartbeat were all lost took
+// its VOLATILE baseline past that sample from this one and never asked for it (test_hybrid_send.c,
+// test_a_re_registration_carries_the_match_point(), 2026-10-15).
 static void send_initial_heartbeat(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Peer* target) {
     if (!pub->reliable || pub->reliable_cache == NULL) {
         return;
@@ -9661,6 +9669,10 @@ static void send_initial_heartbeat(struct tt_Context* node, struct tt_Publisher*
     uint32_t first_seq_no = 0;
     if (!publisher_oldest_seq_no(pub, &first_seq_no)) {
         return;
+    }
+    uint32_t owed = 0;
+    if (match_point_owed(pub, &owed)) {
+        encode_heartbeat_range(node, pub, first_seq_no, owed - 1U, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);
     }
     encode_and_send_heartbeat(node, pub, first_seq_no, target, 1, tt_HEARTBEAT_FLAG_FINAL);
 }
@@ -10390,6 +10402,18 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             // sample. Anything the writer published earlier is invisible from here - see struct
             // tt_WriterProxy's own doc comment (tickle.h) for the limitation that implies.
             proxy->keep_all = writer_announced_keep_all(sub->node, node_id, ((struct tt_Endpoint*)sub)->id, entity_id);
+            // Without a discovery table the writer's announce, which came first, was read before this proxy existed
+            // (update_writer_proxies_keep_all() found nothing to tell), and the generation it carried counts as
+            // applied: the policy stayed UNKNOWN for good. UNKNOWN never gives a gap up, and a KEEP_LAST writer stops
+            // resending a sample after tt_RELIABLE_RETRY resends without saying it is gone
+            // (find_resendable_cache_entry()), so a unit whose resends were all lost held the stream behind it for
+            // ever (test_hybrid_send.c, test_a_reader_without_a_discovery_table_learns_keep_last(), 2026-10-15). So
+            // while the policy is not known the writer's announce is marked not applied, as
+            // reprocess_known_announces() does: its next summary has it pulled again, and it tells this proxy. An
+            // announce not yet heard is applied when it comes, mark or none.
+            if (proxy->keep_all == tt_WRITER_KEEP_ALL_UNKNOWN && sub->node != NULL) {
+                sub->node->update_reprocess[node_id] = true;
+            }
             proxy->presence_acked = false;
             // Phase 2 - this slot's own window inside the Subscriber's tracking storage: the
             // caller-provided buffer when it gave one, otherwise the builtin default.

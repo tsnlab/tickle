@@ -718,13 +718,15 @@ static void sim_announce_again(void) {
     sim_drain();
 }
 
+static bool sim_no_discovery_table; // sim_announce(): the readers get no discovery table (a core-only reader)
+
 static void sim_announce(void) {
     // A writer proxy made after the writer's announce takes its KEEP_ALL policy from the reader's discovery table
-    // (writer_announced_keep_all()), as an rmw_tickle reader has one; without a table it stays unknown, and a reader
-    // that does not know the writer is KEEP_LAST never gives a unit up (seeds 34 and 54 of 100 waited on one past the
-    // arm's end).
+    // (writer_announced_keep_all()), as an rmw_tickle reader has one. A reader without one learns it only when the
+    // writer's next summary has the announce pulled again, which these bare contexts never send on their own
+    // (test_a_reader_without_a_discovery_table_learns_keep_last()).
     for (int i = 0; i < READERS; i++) {
-        if (readers[i].present) {
+        if (readers[i].present && !sim_no_discovery_table) {
             memset(&sim_discovery[i], 0, sizeof(sim_discovery[i]));
             EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&readers[i].ctx, &sim_discovery[i], NULL, NULL));
         }
@@ -2525,6 +2527,127 @@ static void test_a_periodic_heartbeat_carries_the_match_point(void) {
     }
 }
 
+// The initial HEARTBEAT a re-registration draws carries the match point too. Every new generation of a reader's
+// announce re-adds its peer slot on the writer (process_announce()'s forget-then-re-add), which sends that HEARTBEAT
+// (send_initial_heartbeat()); a hybrid reader announces again whenever its advertised ceiling or loss moves
+// (hybrid_reader_tick()). The same 23-unit sample, its run and match Heartbeat lost, and then the reader announces
+// a new generation: the HEARTBEAT it draws (last = 23) is the reader's first contact. Without the match point ahead of
+// it the VOLATILE baseline was 24 and the sample was never asked for; nothing else is sent here (no periodic
+// Heartbeat). The control arm loses the run alone, as above.
+static uint32_t reannounce_heartbeats;
+
+static bool count_writer_heartbeats(const struct sim_datagram* d) {
+    const uint8_t* body = NULL;
+    if (d->from == SENDER_ID && datagram_type(d->bytes, &body) == tt_SUBMESSAGE_TYPE_HEARTBEAT) {
+        reannounce_heartbeats++;
+    }
+    return false;
+}
+
+// A new generation of reader `i`'s announce, as hybrid_reader_tick() makes one when what it advertises moves.
+static void sim_reannounce(int i) {
+    struct tt_Context* node = &readers[i].ctx;
+    node->last_modified = test_mock_now > node->last_modified ? test_mock_now : node->last_modified + 1U;
+    sim_acting = node->id;
+    (void)build_and_send_update(node, NULL, 0);
+    sim_drain();
+}
+
+static void test_a_re_registration_carries_the_match_point(void) {
+    for (int arm = 0; arm < 2; arm++) {
+        init_one(SMALL_LEN * 4U, FULL_CEILING, true);
+        hybrid_test_forced_p = 0.0; // n = n_max: one run of 22 and the tail
+        sim_start(0);
+        sim_announce();
+        first_contact_dropping = true;
+        first_contact_match_too = arm == 0;
+        first_contact_dropped = 0;
+        sim_drop_hook = drop_the_run_and_the_match_point;
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+        first_contact_dropping = false;
+        EXPECT_EQ_U32(1, sent.runs); // the treatment: the run lost, and the match Heartbeat with it in arm 0
+        EXPECT_EQ_U32(arm == 0 ? 2U : 1U, first_contact_dropped);
+        if (arm == 0) {
+            EXPECT_EQ_U32(tt_CONTEXT_ID_INVALID, readers[0].sub.writers[0].context_id); // no first contact yet
+        }
+        reannounce_heartbeats = 0;
+        sim_drop_hook = count_writer_heartbeats;
+        sim_reannounce(0);
+        sim_settle(1, 5 * tt_SECOND);
+        // The treatment: in arm 0 the re-registration drew its HEARTBEAT, the only one this writer sends here (no
+        // periodic Heartbeat, no end-of-sample one on 8/9, nothing evicted). In the control arm the sample was repaired
+        // and acknowledged before the re-announce, and a writer that retains nothing sends no initial HEARTBEAT.
+        EXPECT_TRUE((reannounce_heartbeats > 0) == (arm == 0));
+        hybrid_test_forced_p = -1.0;
+        sim_drop_hook = NULL;
+        expect_intact(0, 1);
+        EXPECT_TRUE(sent.repairs > 0); // asked for and repaired: the run never arrived
+        if (readers[0].delivered != 1) {
+            printf("test_hybrid_send: re-registration, arm %d: sample not delivered\n", arm);
+        }
+    }
+}
+
+// A reader with no discovery table - a core-only one: tt_Context_set_discovery() is opt-in - learns that its writer
+// is KEEP_LAST from the writer's next summary. Its writer proxy is made at the first DATA, after the writer's announce
+// was read, so nothing it holds says KEEP_LAST and the policy was UNKNOWN for good; UNKNOWN never gives a gap up, and a
+// KEEP_LAST writer stops resending a sample after tt_RELIABLE_RETRY resends without saying it is gone. A unit whose
+// every resend was lost then held the stream behind it for ever (seed 34: unit 355 of a 23-unit sample, its run and
+// its three resends lost, then refused ~50 times a second for the rest of the run). Two 8,000 B samples (a run of 5
+// and the tail), the first one's tail lost every time it is sent, the writer's summary between them: the first sample
+// is given up after the retries, the second delivered. The control arm gives the reader a table, as rmw_tickle does.
+static uint32_t lost_unit;
+static uint32_t lost_unit_sends;
+
+static bool lose_one_unit_every_time(const struct sim_datagram* d) {
+    uint32_t seq_no = 0;
+    uint32_t units = 0;
+    bool run = false;
+    if (d->from == SENDER_ID && datagram_units(d->bytes, &seq_no, &units, &run) && lost_unit - seq_no < units) {
+        lost_unit_sends++;
+        return true;
+    }
+    return false;
+}
+
+static void test_a_reader_without_a_discovery_table_learns_keep_last(void) {
+    for (int arm = 0; arm < 2; arm++) {
+        init_one(SMALL_LEN, FULL_CEILING, true);
+        hybrid_test_forced_p = 0.0; // n = n_max: one run of 5 and the tail
+        sim_start(0);
+        sim_no_discovery_table = arm == 0;
+        sim_announce();
+        sim_no_discovery_table = false;
+        lost_unit = first_seq_no + 5U; // the first sample's tail
+        lost_unit_sends = 0;
+        sim_drop_hook = lose_one_unit_every_time;
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+        struct tt_WriterProxy* proxy = &readers[0].sub.writers[0];
+        EXPECT_EQ_U32(SENDER_ID, proxy->context_id); // first contact made, by the run
+        // The treatment: a proxy without a table does not know the policy; one with a table does, and has nothing
+        // pulled again.
+        EXPECT_EQ_INT(arm == 0 ? tt_WRITER_KEEP_ALL_UNKNOWN : tt_WRITER_KEEP_ALL_NO, (int)proxy->keep_all);
+        EXPECT_TRUE(readers[0].ctx.update_reprocess[SENDER_ID] == (arm == 0));
+        sim_acting = SENDER_ID;
+        send_discovery_summary(&sender); // node_update()'s, every tt_CONTEXT_UPDATE_INTERVAL
+        uint64_t since = test_mock_now;
+        while (test_mock_now - since < tt_SECOND && sim_step()) {
+        }
+        EXPECT_EQ_INT(tt_WRITER_KEEP_ALL_NO, (int)proxy->keep_all);
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish(2));
+        sim_settle(1, 5 * tt_SECOND);
+        hybrid_test_forced_p = -1.0;
+        sim_drop_hook = NULL;
+        expect_intact(0, 1); // the second sample
+        EXPECT_EQ_U32(1, readers[0].sub.gap_abandoned);
+        EXPECT_TRUE(lost_unit_sends >= 1U + tt_RELIABLE_RETRY); // sent, then resent until the writer stopped
+        if (readers[0].delivered != 1) {
+            printf("test_hybrid_send: no discovery table, arm %d: %d delivered, policy %d\n", arm, readers[0].delivered,
+                   (int)proxy->keep_all);
+        }
+    }
+}
+
 // --- runs meet encoding while sending and the lent large sample (DESIGN.md section 8) -------------------------------
 
 // One arm of a writer and its readers: `samples` samples of `len`, each run until every reader has it, the send buffer
@@ -2777,6 +2900,8 @@ int main(void) {
     test_the_objective_reads_the_posterior_mean();
     test_a_sample_published_at_the_match_is_delivered();
     test_a_periodic_heartbeat_carries_the_match_point();
+    test_a_re_registration_carries_the_match_point();
+    test_a_reader_without_a_discovery_table_learns_keep_last();
     test_a_full_send_buffer_resumes_when_the_socket_has_room();
     test_runs_with_a_ranged_encode_leave_the_wire_byte_identical();
     test_each_run_call_is_encoded_just_before_it_goes();

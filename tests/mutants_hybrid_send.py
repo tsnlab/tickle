@@ -126,8 +126,31 @@ MUTANTS = [
     (
         "match point: the end-of-sample HEARTBEAT carries none",
         "src/tickle.c",
-        "    if (match_point_owed(pub, &owed)) {\n        encode_heartbeat_range(",
-        "    if (false && match_point_owed(pub, &owed)) {\n        encode_heartbeat_range(",
+        "    if (match_point_owed(pub, &owed)) {\n        encode_heartbeat_range(node, pub, first, ",
+        "    if (false && match_point_owed(pub, &owed)) {\n        encode_heartbeat_range(node, pub, first, ",
+        SEND,
+    ),
+    (
+        "match point: a re-registration's initial HEARTBEAT carries none",
+        "src/tickle.c",
+        "    if (match_point_owed(pub, &owed)) {\n        encode_heartbeat_range(node, pub, first_seq_no, owed - 1U, false, "
+        "NULL, 0, tt_HEARTBEAT_FLAG_FINAL);\n    }\n    encode_and_send_heartbeat(node, pub, first_seq_no, target, 1,",
+        "    if (false && match_point_owed(pub, &owed)) {\n        encode_heartbeat_range(node, pub, first_seq_no, owed - 1U, "
+        "false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);\n    }\n    encode_and_send_heartbeat(node, pub, first_seq_no, target, 1,",
+        SEND,
+    ),
+    (
+        "keep_all: a reader without a discovery table never has the writer's announce pulled again",
+        "src/tickle.c",
+        "                sub->node->update_reprocess[node_id] = true;",
+        "                (void)0;",
+        SEND,
+    ),
+    (
+        "keep_all: the writer's announce pulled again whatever the policy",
+        "src/tickle.c",
+        "            if (proxy->keep_all == tt_WRITER_KEEP_ALL_UNKNOWN && sub->node != NULL) {",
+        "            if (sub->node != NULL) {",
         SEND,
     ),
     (
