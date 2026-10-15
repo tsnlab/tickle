@@ -245,8 +245,16 @@ endpoint count.
   `reliable` enables RELIABLE traffic; `durable` (TRANSIENT_LOCAL) uses the same cache. One cache backs both.
 - `capacity`/`arena_size` are the Publisher's RESOURCE_LIMITS, chosen by the caller. `sample_depth` makes KEEP_LAST
   count whole samples. `tt_RELIABLE_CACHE_ARENA_BYTES(depth, max_record)` sizes the arena with one record of slack.
+- **Repair is as DDS/RTPS has it (since 2026-10-15).** A datagram still in the history is resent for as long as a
+  reader asks for it: no per-sample resend cap (it was `tt_RELIABLE_RETRY`, 3, and the writer then went silent without
+  saying the datagram was gone). The first `tt_RELIABLE_RETRY` resends answer every request at once, as before; past
+  them a datagram goes at most once per retry interval (1 ms unless configured; an RTPS writer's nack suppression; not
+  under KEEP_ALL, which never had a cap). A
+  reader asks for every missing datagram at each retry, a repair in flight included, so without that bound the PC's
+  p4 cell at 1% loss resent 412,632 datagrams against the parent's 19-31 thousand and delivered half the samples.
 - An ACKNACK naming an evicted seq_no is answered with a HEARTBEAT carrying the real `first_available_seq_no`, so the
-  reader skips exactly what is gone.
+  reader skips exactly what is gone. A RELIABLE Publisher with no history at all answers the same way, with everything
+  it published gone.
 - Ack state is tracked per remote Subscriber entity (`tt_MAX_ACK_ENTRIES` 16), not per node.
 
 **Reader side.**
@@ -276,8 +284,21 @@ endpoint count.
   core busy (its lateness p90 60-83 / 55-58 us); inside the c5/c6 shapes G ends anywhere from ~1 us (a busy loop's
   retry waits of a few microseconds are on time) to ~180 us. The old 100 us also acted as a floor under 4 x rttvar:
   without it c5 cost +0.04% wire bytes a sample (t 2.4, the fixed-G control -0.01%); c5 throughput and c6 held.
-- KEEP_LAST gives up a gap after `tt_RELIABLE_RETRY` (3) retries; KEEP_ALL never gives up and logs a stuck gap every
-  `tt_RELIABLE_STUCK_WARN_INTERVAL` (5 s).
+- **No give-up on a count.** A gap ends when its datagram arrives, when the writer's HEARTBEAT says it is gone
+  (`gap_evicted`), or with the writer itself (departure or lapsed lease drop the writer proxy). A window overflow still
+  jumps (`gap_abandoned`). Until 2026-10-15 a KEEP_LAST reader gave a gap up after `tt_RELIABLE_RETRY` (3) retries,
+  including units the writer still held (14 in 100 seeds of the 1%-loss hybrid sweep), and a reader that did not know
+  its writer's policy waited for good on a writer that had stopped resending ("cap refuses seq_no 355", seed 34).
+- **Back-off, from a writer gone quiet only.** The first `tt_RELIABLE_RETRY` retries of a gap wait the plain interval;
+  past them each retry that finds the writer's stream no further than the last one did doubles the wait, up to
+  2^`tt_RELIABLE_RETRY_BACKOFF_SHIFT` (16) times, so a reader whose requests or repairs are all lost asks ~60 times a
+  second, not 1000. While the writer's DATA still arrives the wait stays plain: its history moves on, and a gap held
+  past its eviction fills the reorder buffer, whose overflow is dropped and asked for again. A back-off on the retry
+  count alone collapsed one PC p4 run in ten at 1% loss that way (35% delivered, 747,004 resends). A recovery past the
+  plain retries is not folded into srtt (it would time the waits). A KEEP_ALL writer's gaps keep the plain interval,
+  as before.
+- A gap still open past its plain retries logs a warning every `tt_RELIABLE_STUCK_WARN_INTERVAL` (5 s); KEEP_ALL
+  logs from the first retry, as before.
 - Early re-requests produce some duplicate repairs (about 0.2 per loss on veth). Suppressing them was measured to cut
   throughput 15-35% and was dropped: the duplicates hedge against lost repairs. Revisit on bandwidth-bound links.
 
@@ -1883,7 +1904,8 @@ All are compile-time `-D` overrides unless noted. Times in nanoseconds.
 | `tt_RELIABLE_RETRY_GRANULARITY` | 0 (measured) | | G, timer lateness term; non-zero = fixed |
 | `tt_TIMER_LATENESS_INITIAL` | 100 us | | measured G before its first sample |
 | `tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE` | 64 | | ceiling in srtt |
-| `tt_RELIABLE_RETRY` | 3 | | KEEP_LAST give-up |
+| `tt_RELIABLE_RETRY` | 3 | | retries at the plain interval before the back-off |
+| `tt_RELIABLE_RETRY_BACKOFF_SHIFT` | 4 | | back-off ceiling, 2^n x the interval |
 | `tt_RELIABLE_BITMAP_BITS` / `_MAX_BITS` | 256 / 4096 | | reader window default / ceiling |
 | `tt_MAX_RELIABLE_HISTORY` | 64 | | reference cache depth for examples |
 | `tt_CALL_RETRY_INTERVAL` | 5 ms | | RPC auto retry seed, until a first answer |
