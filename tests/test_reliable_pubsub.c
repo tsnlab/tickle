@@ -1357,6 +1357,10 @@ static void test_a_reliable_publisher_without_history_says_everything_is_gone(vo
     uint32_t value = 42;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 2
+    // No matched reader (peers[] empty): the publishes sent nothing (DESIGN.md section 4). The answer below still goes,
+    // to the requester alone: it answers a request, which only a reader that exists sends.
+    EXPECT_EQ_INT(0, test_mock_send_to_call_count);
+    EXPECT_EQ_U32(2, (uint32_t)node.tx_unmatched_dropped);
 
     struct tt_Header header;
     init_header(&header);
