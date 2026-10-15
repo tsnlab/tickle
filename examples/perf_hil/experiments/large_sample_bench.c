@@ -540,6 +540,34 @@ static bool setup_publisher(struct tt_Context* node, struct tt_Publisher* pub, c
     return true;
 }
 
+// The publisher's view of its first reader's p, one stderr line each time it changes: the sample about to be
+// published, the code (0: none heard, read as p = 1; 0xff00: "none seen") and the n histogram so far - which samples
+// went at n > 1 and on what p (hybrid_first_n_pc.sh).
+static void trace_peer_p(const struct tt_Context* node, const struct tt_Publisher* pub, uint32_t published) {
+#if BENCH_HYBRID
+    static int last = -1;
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        if (pub->peer_acks[i].context_id == tt_CONTEXT_ID_INVALID) {
+            continue;
+        }
+        int code = (int)node->hybrid.peer_loss_p[pub->peer_acks[i].context_id];
+        if (code != last) {
+            last = code;
+            fprintf(stderr, "PEER_P before_sample=%u code=0x%04x n_hist=", published, (unsigned)code);
+            for (int b = 0; b < tt_HYBRID_N_BUCKETS; b++) {
+                fprintf(stderr, "%s%lu", b == 0 ? "" : "/", (unsigned long)node->hybrid.n_hist[b]);
+            }
+            fprintf(stderr, "\n");
+        }
+        return;
+    }
+#else
+    (void)node;
+    (void)pub;
+    (void)published;
+#endif
+}
+
 static int run_publisher(struct tt_Context* node, const struct options* opts) {
     static struct tt_Publisher pub;
     if (!setup_publisher(node, &pub, opts)) {
@@ -576,6 +604,7 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
             continue;
         }
         current_index = published;
+        trace_peer_p(node, &pub, published);
         if (opts->message) {
             message_fill(published);
         }
