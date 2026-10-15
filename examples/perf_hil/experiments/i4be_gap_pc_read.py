@@ -28,6 +28,10 @@ def parse(lines):
     if not starts:
         return None, []
     runs = []
+    # The treatment each rmw_tickle arm must report (an arm that silently applies nothing looks like a result): an arm
+    # whose ARM line exports TT_RX_PREFETCH=0 needs the subscriber's prefetch=0, every other arm whose build prints the
+    # field needs prefetch=1. The subscriber's rx line comes first on the RUN line's counters.
+    no_prefetch = {l.split()[1] for l in lines[starts[-1]:] if l.startswith("ARM ") and "TT_RX_PREFETCH=0" in l}
     for line in lines[starts[-1]:]:
         if not line.startswith("RUN "):
             continue
@@ -36,6 +40,12 @@ def parse(lines):
         sent, recv = num(kv.get("sent")), num(kv.get("recv"))
         if kv.get("ok") != "1":
             print(f"VOID {kv.get('arm')} rep {kv.get('rep')}: maps did not show the arm's library")
+            continue
+        counters = line.split(" | ")[1].split() if " | " in line else []
+        realized = next((c.split("=", 1)[1] for c in counters if c.startswith("prefetch=")), None)
+        name = kv["arm"].split(":")[0]
+        if name != "fdds" and realized is not None and realized != ("0" if name in no_prefetch else "1"):
+            print(f"VOID {kv.get('arm')} rep {kv.get('rep')}: prefetch={realized}, not the arm's treatment")
             continue
         if not sent or not recv or recv < 0.98 * (sent - 15):
             print(f"VOID {kv.get('arm')} rep {kv.get('rep')}: sent={sent} recv={recv}")
@@ -137,14 +147,16 @@ def selftest():
         return (f"RUN arm={arm} rep={rep} ok={ok} sent=300 recv={recv} sub_task-clock={sub} sub_cycles_u=1e9 "
                 f"sub_cycles_k=1e9 pub_task-clock=3000 pub_cycles_u=1e9 pub_cycles_k=1e9 sub_utime=1 sub_stime=1 "
                 f"pub_utime=1 pub_stime=1 sub_main_ticks=100 sub_work_ticks={sub // 20} | x")
-    lines = [hdr, run("A:be", 1, 3000), run("A:be", 2, 3010), run("B:be", 1, 2700), run("B:be", 2, 2710),
-             run("fdds:be", 1, 2800), run("fdds:be", 2, 2830), run("B:be", 3, 1, ok=0), run("A:be", 3, 1, recv=10)]
+    lines = [hdr, "ARM B install=x env='TT_RX_PREFETCH=0' lib_sha256=y", run("A:be", 1, 3000), run("A:be", 2, 3010),
+             run("B:be", 1, 2700), run("B:be", 2, 2710), run("fdds:be", 1, 2800), run("fdds:be", 2, 2830),
+             run("B:be", 3, 1, ok=0), run("A:be", 3, 1, recv=10),
+             run("B:be", 4, 1).replace("| x", "| prefetch=1 direct_prefetches=9")]
     got = []
     assert read(lines, got.append) == 0, got
     assert any("be B vs A sub_ms" in l and "BETTER" in l for l in got), got
     assert sum(1 for l in got if l.startswith("VOID")) == 0  # VOIDs print through print(), not out
     _, runs = parse(lines)
-    assert len(runs) == 6, runs  # the not-ok run and the 10-of-300 run are void
+    assert len(runs) == 6, runs  # the not-ok run, the 10-of-300 run and B's run that prefetched are void
     lines2 = [hdr, run("A:be", 1, 3000), run("A:be", 2, 3010), run("B:be", 1, 3005), run("B:be", 2, 3001),
               run("fdds:be", 1, 2800), run("fdds:be", 2, 2830)]
     got = []
