@@ -10,7 +10,9 @@ the code. L1.2's own mutant (small samples sent as large) is in tests/wire_ident
 against the parent's bytes.
 
 Run from the repository root. Restores every file it touches, whatever happens. MUTANTS=<substring> runs only the
-mutants whose name contains it (the control always runs).
+mutants whose name contains it (the control always runs). A mutant whose binary, debug sections aside, is the control's
+is reported DEAD (NOT_COMPILED) and counted as a problem: it edited code this build leaves out, so it can neither die nor
+survive - "a lent buffer handed back" sat in the #else of LARGE_DIRECT that way and read as a survivor (2026-10-15).
 """
 import pathlib
 import shutil
@@ -19,6 +21,7 @@ import subprocess
 import sys
 import os
 import tempfile
+import hashlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TESTS = ROOT / "platform/linux/obj/debug/tests"
@@ -76,7 +79,8 @@ MUTANTS = [
     ),
     (
         "a datagram lost during its sample's send waits for the send to end",
-        "    if (!record->sent && !(cursor->seq_no == record->seq_no && (cursor->next_dest > 0 || index < cursor->next_index))) {",
+        "    if (!record->sent && !(cursor->active && cursor->seq_no == record->seq_no &&\n"
+        "                           (cursor->next_dest > 0 || index < cursor->next_index))) {",
         "    if (!record->sent) {",
         "test_a_lost_datagram_is_resent_while_its_sample_is_still_going_out",
     ),
@@ -106,7 +110,7 @@ MUTANTS = [
     ),
     (
         "the send cursor dropped",
-        "    if (tt_Context_schedule(node, tt_get_ns() + cursor->retry_ns, large_send_resume, pub)) {",
+        "    if (tt_Context_schedule(node, tt_get_ns() + wait, large_send_resume, pub)) {",
         "    if (false) {",
         "test_a_full_send_buffer_delays_the_sample_never_loses_it",
     ),
@@ -122,10 +126,12 @@ MUTANTS = [
         "    if (assembly->received + 1 >= count) {\n        *consumed = count;",
         "test_reliable_keep_all_at_5_percent_loss",
     ),
+    # Aimed at the LARGE_DIRECT branch: on Linux (TT_HAL_RX_DIRECT wherever large samples are) the #else twin is
+    # compiled out, and a mutant there changed no byte of the test binary - it "survived" by not existing (2026-10-15).
     (
         "a lent buffer handed back when the callback returns",
-        "    if (!large_lent(node, buffer)) {\n        large_give_back(node, buffer);",
-        "    if (true) {\n        large_give_back(node, buffer);",
+        "    } else if (!large_lent(node, buffer)) {\n        large_give_back(node, buffer);",
+        "    } else if (true) {\n        large_give_back(node, buffer);",
         "test_a_retained_large_sample_outlives_the_next_one",
     ),
     (
@@ -158,7 +164,7 @@ MUTANTS = [
     ),
     (
         "a durable late joiner gets no large samples",
-        "    large_send_backlog_before(node, pub, UINT32_MAX, &large_next, target);\n",
+        "    large_send_backlog_before(node, pub, 0, true, &large_next, target);\n",
         "",
         "test_a_durable_writer_backs_a_late_joiner_with_its_large_samples",
     ),
@@ -177,15 +183,16 @@ MUTANTS = [
     ),
     (
         "a send call goes before its range is encoded",
-        "            if (!large_encode_through(pub, record, large_end_of(record, cursor->next_index + batch_count - 1))) {",
-        "            if (false) {",
+        "        if (!large_encode_through(pub, record, large_end_of(record, cursor->next_index + batch_count - 1))) {",
+        "        if (false) {",
         "test_encoding_while_sending_leaves_the_wire_byte_identical",
     ),
     (
         "the rest left unencoded when the send buffer fills",
-        "                if (!large_encode_through(pub, record, record->cdr_len)) {\n                    *failed = true;\n"
-        "                    return true;\n                }\n                return false;",
-        "                return false;",
+        "while it drains, rather than a send call at a time with a retry after each.\n"
+        "            if (!large_encode_through(pub, record, record->cdr_len)) {\n                *failed = true;\n"
+        "                return true;\n            }\n            return false;",
+        "while it drains, rather than a send call at a time with a retry after each.\n            return false;",
         "test_a_full_send_buffer_retains_the_whole_encoded_sample",
     ),
     (
@@ -202,8 +209,8 @@ MUTANTS = [
     ),
     (
         "a failed range ignored: the send goes on",
-        "                *failed = true;\n                return true;\n            }\n            uint8_t framings",
-        "            }\n            uint8_t framings",
+        "            *failed = true;\n            return true;\n        }\n        uint8_t framings",
+        "        }\n        uint8_t framings",
         "test_a_sample_that_cannot_be_finished_is_dropped_never_torn",
     ),
     (
@@ -221,7 +228,19 @@ MUTANTS = [
 ]
 
 
-def build_and_run(binary):
+def code_digest(path):
+    # The binary's code and data without its debug sections: a mutant whose digest equals the control's changed nothing
+    # the compiler kept - code under a preprocessor branch this build leaves out - and can neither die nor survive.
+    stripped = tempfile.NamedTemporaryFile(prefix="mutant_strip_", delete=False)
+    stripped.close()
+    try:
+        subprocess.run(["objcopy", "--strip-debug", str(path), stripped.name], check=True, capture_output=True)
+        return hashlib.sha256(pathlib.Path(stripped.name).read_bytes()).hexdigest()
+    finally:
+        os.unlink(stripped.name)
+
+
+def build_and_run(binary, control_digest=None):
     path = TESTS / binary
     build = subprocess.run(
         ["make", "-s", "-C", str(ROOT / "platform/linux"), str(path.relative_to(ROOT / "platform/linux"))],
@@ -229,6 +248,8 @@ def build_and_run(binary):
     )
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-2000:]
+    if control_digest is not None and code_digest(path) == control_digest:
+        return "NOT_COMPILED", ""
     try:
         # The binary takes about a second; a mutant that makes a simulation spin is cut off at a minute.
         run = subprocess.run([str(path)], capture_output=True, text=True, timeout=60)
@@ -258,10 +279,12 @@ def main():
 
     signal.signal(signal.SIGTERM, lambda _s, _f: sys.exit(1))
     failures = 0
+    digests = {}
     try:
         # Every binary a mutant is judged by must pass unmutated, or its mutants cannot be told from its own failures.
         for binary in sorted({entry[4] if len(entry) > 4 else DEFAULT_BINARY for entry in MUTANTS}):
             verdict, output = build_and_run(binary)
+            digests[binary] = code_digest(TESTS / binary)
             print(f"[control]  unmutated {binary:44s} -> {verdict}")
             if verdict != "PASS":
                 print(output[-2000:])
@@ -281,11 +304,12 @@ def main():
                 failures += 1
                 continue
             path.write_text(text.replace(old, new))
-            verdict, output = build_and_run(binary)
+            verdict, output = build_and_run(binary, digests[binary])
             restore()
             ok = verdict in ("FAIL", "CRASH", "HANG")
             failures += 0 if ok else 1
-            print(f"[{'ok' if ok else 'SURVIVED':8s}] {name:55s} -> {verdict} (guard: {binary}: {test})", flush=True)
+            label = "ok" if ok else ("DEAD" if verdict == "NOT_COMPILED" else "SURVIVED")
+            print(f"[{label:8s}] {name:55s} -> {verdict} (guard: {binary}: {test})", flush=True)
             for line in failing_lines(output, binary) if ok else []:
                 print(f"           {line}")
             if not ok:
