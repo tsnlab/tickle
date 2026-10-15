@@ -285,16 +285,23 @@ static void test_heartbeat_send_derives_range_correctly(void) {
     }
 
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_set_heartbeat_period(&pub, 1000000));
-    test_mock_send_call_count = 0; // only count the actual Heartbeat send below
-
+    // No matched reader yet: the six publishes were kept, and neither they nor the Heartbeat went anywhere (since
+    // 2026-10-15 a Publisher with no matched reader sends nothing).
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_call_count);
+    EXPECT_EQ_U32(6, (uint32_t)node.tx_unmatched_kept);
     send_heartbeat(&node, tt_get_ns(), &pub);
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_call_count);
 
-    // No known peers (pub.peers[] never populated in this test) - broadcasts via tt_send()
-    // rather than unicasting via tt_send_to(), same peer/broadcast decision tt_Publisher_
+    // More matched readers than tt_UNICAST_PEER_THRESHOLD - broadcasts via tt_send() rather than
+    // unicasting via tt_send_to(), same peer/broadcast decision tt_Publisher_
     // publish() itself makes - see test_mock_send_call_count's own doc comment (test_mock.h) for
     // why this counts both paths and test_heartbeat_first_contact_sets_baseline_with_no_data_
     // ever_received() below (a real known sender, so a real unicast) checks test_mock_send_to_
     // call_count instead.
+    for (uint8_t peer = 0; peer <= tt_UNICAST_PEER_THRESHOLD; peer++) {
+        (void)upsert_peer(pub.peers, (uint8_t)(10U + peer), 0x0a000010U + peer, 8282);
+    }
+    send_heartbeat(&node, tt_get_ns(), &pub);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
     struct tt_HeartbeatHeader* sent =
         (struct tt_HeartbeatHeader*)(node.tx_buffer + sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));

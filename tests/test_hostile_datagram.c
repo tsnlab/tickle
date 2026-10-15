@@ -317,6 +317,9 @@ static void setup_pair(void) {
     topic.data_free = value_free;
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&remote, &remote_pub, &topic, "pub"));
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&local, &local_sub, &topic, "pub", on_sample));
+    // A Publisher with no matched reader sends nothing (2026-10-15): the remote one knows the local Subscriber, as
+    // its announce would have told it.
+    (void)upsert_peer(remote_pub.peers, LOCAL_NODE_ID, 0x0a000002U, 8282);
 
     remote_wire_len = 0;
     test_mock_send_hook = capture_data;

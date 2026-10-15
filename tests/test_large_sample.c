@@ -376,6 +376,12 @@ static void init_pair(uint32_t len, enum pair_mode mode) {
             ack->tracking_words = WIDE_WORDS;
         }
     }
+    // A Publisher with no matched reader sends nothing (2026-10-15): the reader is matched as its announce would match
+    // it, and two more known peers keep the broadcast these cases were written against.
+    (void)upsert_peer(pub.peers, RECEIVER_ID, RECEIVER_IP, PORT);
+    for (uint8_t i = 1; i <= tt_UNICAST_PEER_THRESHOLD; i++) {
+        (void)upsert_peer(pub.peers, (uint8_t)(100U + i), 0x0a000100U + i, PORT);
+    }
     pair_up = true;
 }
 

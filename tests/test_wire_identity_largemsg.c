@@ -173,6 +173,11 @@ static void publish_three(bool reliable) {
         pub.reliable_cache = &cache;
         pub.reliable = true;
     }
+    // A Publisher with no matched reader sends nothing (2026-10-15): known peers past the unicast threshold keep the
+    // broadcast the golden capture holds - the same datagrams from a parent that broadcast with none.
+    for (uint8_t i = 0; i <= tt_UNICAST_PEER_THRESHOLD; i++) {
+        (void)upsert_peer(pub.peers, (uint8_t)(100U + i), 0x0a000100U + i, 8282);
+    }
     test_mock_send_hook = capture_hook;
     static const uint32_t sizes[] = {64, 1472, 64000};
     for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {

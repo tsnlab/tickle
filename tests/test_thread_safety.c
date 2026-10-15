@@ -1113,17 +1113,22 @@ int main(void) {
         reorder_discards += subscribers[t].out_of_order_discarded;
     }
     const uint64_t segment_drops = node_a.segment_full_dropped + node_b.segment_full_dropped;
+    // The fourth: a sample published before B's Subscriber was matched is not sent at all (2026-10-15, a Publisher with
+    // no matched reader sends nothing) and is counted at A as tx_unmatched_dropped. These publishers start at once,
+    // before the two nodes have heard each other's announce.
+    const uint64_t unmatched = node_a.tx_unmatched_dropped;
+    const uint64_t discarded = reorder_discards + unmatched;
     printf("harness: %u of %u samples delivered, harness dropped %lu datagram(s), segment dropped %lu, "
-           "discarded as out of order %lu\n",
+           "discarded as out of order %lu, not sent before the match %lu\n",
            delivered_total, produced, (unsigned long)harness_drops, (unsigned long)segment_drops,
-           (unsigned long)reorder_discards);
+           (unsigned long)reorder_discards, (unsigned long)unmatched);
     EXPECT_TRUE(delivered_total <= produced);
     if (harness_drops == 0 && segment_drops == 0) {
-        // No datagram was dropped, so every sample was either handed up or discarded as out of order - an
-        // equality, whatever the packing of samples into datagrams.
-        EXPECT_TRUE((uint64_t)delivered_total + reorder_discards == produced);
+        // No datagram was dropped, so every sample was either handed up, discarded as out of order, or not sent
+        // before the match - an equality, whatever the packing of samples into datagrams.
+        EXPECT_TRUE((uint64_t)delivered_total + discarded == produced);
     } else if (delivered_total < produced) {
-        EXPECT_TRUE(harness_drops > 0 || segment_drops > 0 || reorder_discards > 0);
+        EXPECT_TRUE(harness_drops > 0 || segment_drops > 0 || discarded > 0);
     }
 
     uint32_t wrong_runs = 0;

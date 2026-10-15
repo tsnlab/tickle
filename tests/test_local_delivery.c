@@ -211,6 +211,9 @@ static void test_a_local_pair(void) {
     }
     EXPECT_EQ_U32(LARGE, local_record.lengths[SAMPLES / 2]);
     EXPECT_EQ_INT(0, local_record.corrupt);
+    // No remote reader is matched: the local Subscriber has every sample and nothing went on the wire (2026-10-15).
+    EXPECT_EQ_INT(0, test_mock_send_call_count);
+    EXPECT_EQ_U32(SAMPLES, (uint32_t)local.tx_unmatched_dropped);
 }
 
 static void test_local_and_remote_each_once(void) {
@@ -220,6 +223,13 @@ static void test_local_and_remote_each_once(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&remote, &remote_sub, &topic, "rt/g9", on_remote));
     captured_count = 0;
     test_mock_send_hook = capture;
+    // The remote Subscriber's announce reaches the Publisher first: a Publisher with no matched reader sends nothing
+    // (2026-10-15), so the remote one must be matched for the link to carry anything.
+    build_and_send_update(&remote, NULL, 0);
+    EXPECT_TRUE(flush_tx(&remote, remote.tx_tail, NULL, 0));
+    carry_captured(&local, LOCAL_IP + 1);
+    EXPECT_EQ_INT(1, (int)count_peers(pub.peers));
+    captured_count = 0;
     for (uint32_t i = 0; i < SAMPLES; i++) {
         publish(i, i == 2 ? LARGE : SMALL);
     }

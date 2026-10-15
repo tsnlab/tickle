@@ -221,6 +221,10 @@ static uint32_t reader_joins(void) {
     struct tt_Peer reader = {RECEIVER_ID, RECEIVER_IP, PORT};
     sim_acting = SENDER_ID;
     uint32_t oldest = cache.oldest_seq_no;
+    // Matched as register_subscriber_peer_on_publisher() matches it: its ack entry, then its peer slot. Without the
+    // peer the writer sends nothing after the join - a Publisher with no matched reader sends nothing (2026-10-15).
+    EXPECT_TRUE(claim_peer_ack(&pub, RECEIVER_ID, sub.endpoint.entity_id) != NULL);
+    EXPECT_TRUE(upsert_peer(pub.peers, RECEIVER_ID, RECEIVER_IP, PORT));
     if (heartbeat_first) {
         send_initial_heartbeat(&sender, &pub, &reader);
         sim_drain();

@@ -102,6 +102,14 @@ static void init_publisher(struct tt_Publisher* pub, struct tt_Context* node, st
     pub->topic = topic;
 }
 
+// A Publisher with no matched reader sends nothing (2026-10-15): more known readers than the unicast threshold, so a
+// publish goes by broadcast, the shape the tests that call this are about.
+static void match_by_broadcast(struct tt_Publisher* pub) {
+    for (uint8_t peer = 0; peer <= tt_UNICAST_PEER_THRESHOLD; peer++) {
+        (void)upsert_peer(pub->peers, (uint8_t)(10 + peer), 0xc0a80a10U + peer, 8282);
+    }
+}
+
 static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Context* node,
                                                struct tt_Topic* topic) {
     memset(sub, 0, sizeof(*sub));
@@ -119,9 +127,11 @@ static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct
 // memset() to 0 has the same effect), the same default RPC (tt_Client_call(), see
 // test_client_call.c) already had: tt_Publisher_publish() must flush immediately, not just
 // append to node->tx_buffer and wait for node_flush()'s next tick (DESIGN.md's "RPC and Publish
-// flush immediately by default; batching is opt-in"). No known peers here, so that flush must be
-// a broadcast - see test_publish_unicasts_to_known_peers_at_or_under_threshold below for the
-// peer-list case, which mirrors tt_Client_call()'s own equivalent decision exactly.
+// flush immediately by default; batching is opt-in"). More known peers here than the unicast
+// threshold, so that flush must be a broadcast - see
+// test_publish_unicasts_to_known_peers_at_or_under_threshold below for the peer-list case, which
+// mirrors tt_Client_call()'s own equivalent decision exactly. With no known peer at all, nothing is
+// sent (2026-10-15): until then that was a broadcast too.
 static void test_publish_flushes_immediately_by_default(void) {
     test_mock_reset();
 
@@ -131,14 +141,24 @@ static void test_publish_flushes_immediately_by_default(void) {
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
 
+    // No matched reader: the BEST_EFFORT sample is dropped, counted, and takes its seq_no.
     uint32_t value = 0x1234abcd;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_call_count);
+    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail); // nothing left behind to be sent later either
+    EXPECT_EQ_U64(1, node.tx_unmatched_dropped);
+    EXPECT_EQ_U64(0, node.tx_unmatched_kept);
+    EXPECT_EQ_U32(1, (uint32_t)pub.seq_no);
+
+    match_by_broadcast(&pub);
     tt_ret_t ret = tt_Publisher_publish(&pub, (struct tt_Data*)&value);
 
     EXPECT_EQ_INT(tt_RET_OK, ret);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);    // flushed immediately, as a broadcast
-    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // not a unicast - no known peers
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // not a unicast - more peers than the threshold
     EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);    // and the buffer was reset by the flush
-    EXPECT_EQ_U32(1, (uint32_t)pub.seq_no);
+    EXPECT_EQ_U32(2, (uint32_t)pub.seq_no);
+    EXPECT_EQ_U64(1, node.tx_unmatched_dropped); // control: a matched publish is not counted
 }
 
 // pub->batch == true opts a specific Publisher back into the pre-existing behavior: append to
@@ -156,6 +176,7 @@ static void test_publish_batches_when_opted_in(void) {
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
     pub.batch = true;
+    match_by_broadcast(&pub);
 
     uint32_t value = 0x1234abcd;
     tt_ret_t ret = tt_Publisher_publish(&pub, (struct tt_Data*)&value);
@@ -264,12 +285,13 @@ static void test_publish_rolls_back_on_out_of_buffer(void) {
     EXPECT_EQ_U32(0, (uint32_t)pub.seq_no);
 }
 
-// node_flush() must broadcast (not unicast) when the Publisher has no known peers yet - the
-// pre-existing, unchanged default behavior discovery falls back to before it's learned anyone.
+// A batching Publisher with no known peer yet leaves nothing for node_flush() to send: since 2026-10-15 a Publisher
+// with no matched reader sends nothing, where until then node_flush() broadcast its batch. The sample is not even
+// left in tx_buffer. With more peers than the threshold the same batch is broadcast (the control).
 // pub.batch = true opts this Publisher into the pre-1(publish-flushes-immediately) behavior so
 // there's actually something left for node_flush() itself to decide - see tickle.h's own doc
 // comment on tt_Publisher.batch.
-static void test_node_flush_broadcasts_with_no_known_peers(void) {
+static void test_node_flush_sends_nothing_with_no_known_peers(void) {
     test_mock_reset();
 
     struct tt_Context node;
@@ -283,12 +305,22 @@ static void test_node_flush_broadcasts_with_no_known_peers(void) {
 
     uint32_t value = 0x1234abcd;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail); // not batched: there is nobody to send it to
+    EXPECT_EQ_U64(1, node.tx_unmatched_dropped);
 
+    node_flush(&node, 0, NULL);
+
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_call_count);
+    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
+
+    match_by_broadcast(&pub);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
     node_flush(&node, 0, NULL);
 
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
     EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
+    EXPECT_EQ_U64(1, node.tx_unmatched_dropped);
 }
 
 // At or under tt_UNICAST_PEER_THRESHOLD known peers on the node's one Publisher, node_flush()
@@ -890,6 +922,7 @@ static void init_single_form_sender(struct tt_Context* sender, struct tt_Topic* 
     init_node_and_topic(sender, topic);
     sender->id = REMOTE_NODE_ID;
     init_publisher(pub, sender, topic);
+    match_by_broadcast(pub);
 }
 
 // What a receiver (node 1) with a matching Subscriber makes of the captured datagram.
@@ -1030,7 +1063,7 @@ int main(void) {
     test_publish_unicasts_to_known_peers_at_or_under_threshold();
     test_publish_broadcasts_when_peer_count_exceeds_threshold();
     test_publish_flushes_a_pending_broadcast_then_unicasts();
-    test_node_flush_broadcasts_with_no_known_peers();
+    test_node_flush_sends_nothing_with_no_known_peers();
     test_node_flush_unicasts_to_known_publisher_peers_at_or_under_threshold();
     test_node_flush_broadcasts_when_peer_count_exceeds_threshold();
     test_node_flush_broadcasts_when_update_is_pending();

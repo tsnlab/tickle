@@ -130,6 +130,11 @@ static void test_ordinary_publish_is_counted_as_udp(void) {
     struct tt_Topic topic;
     struct tt_Publisher pub;
     init_node_topic_pub(&node, &topic, &pub);
+    // A Publisher with no matched reader sends nothing (2026-10-15): more known readers than the unicast threshold,
+    // so the publish broadcasts as this arm always did.
+    for (uint8_t peer = 0; peer <= tt_UNICAST_PEER_THRESHOLD; peer++) {
+        (void)upsert_peer(pub.peers, (uint8_t)(PEER_CONTEXT_ID + peer), PEER_IP + peer, PEER_PORT);
+    }
 
     for (uint32_t i = 0; i < SAMPLES; i++) {
         EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));
@@ -513,7 +518,11 @@ static void test_every_udp_datagram_has_a_named_reason(void) {
     }
     uint8_t body[ZEROCOPY_BODY] = {0};
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish_zerocopy(&pub, body, (uint32_t)sizeof(body)));
-    pub.peers[0].context_id = tt_CONTEXT_ID_INVALID; // now every destination is a broadcast
+    // Now every destination is a broadcast: more known readers than the unicast threshold. Not none - a Publisher
+    // with no matched reader sends nothing since 2026-10-15.
+    for (uint8_t peer = 1; peer <= tt_UNICAST_PEER_THRESHOLD; peer++) {
+        (void)upsert_peer(pub.peers, (uint8_t)(PEER_CONTEXT_ID + peer), PEER_IP + peer, PEER_PORT);
+    }
     EXPECT_EQ_INT((int)tt_RET_OK, (int)publish_zerocopy(&pub, body, (uint32_t)sizeof(body)));
 
     // Three reasons, not four: since 2026-09-29 a full ring drops the datagram rather than sending

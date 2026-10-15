@@ -228,6 +228,11 @@ static void init_pair(bool reliable) {
         sub.tracking_words = WIDE_WORDS;
     }
 
+    // A Publisher with no matched reader sends nothing (2026-10-15): known peers past the unicast threshold keep the
+    // broadcast this capture is about.
+    for (uint8_t i = 0; i <= tt_UNICAST_PEER_THRESHOLD; i++) {
+        (void)upsert_peer(pub.peers, (uint8_t)(100U + i), 0x0a000100U + i, 8282);
+    }
     datagram_count = 0;
     test_mock_send_hook = capture_hook;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
