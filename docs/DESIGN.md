@@ -255,6 +255,12 @@ endpoint count.
 - An ACKNACK naming an evicted seq_no is answered with a HEARTBEAT carrying the real `first_available_seq_no`, so the
   reader skips exactly what is gone. A RELIABLE Publisher with no history at all answers the same way, with everything
   it published gone.
+- Repairs and these HEARTBEATs answer an ACKNACK, so they go to its sender alone, matched reader or not: the no-send
+  rule (section 4) stops what a writer sends unprompted, and a request comes from a reader that exists. A Publisher
+  with no history is still not matched by the ACKNACK (`claim_from_acknack()` needs a history, as before).
+- A large sample's datagrams (section 8) never had a per-sample cap and get no nack suppression: a retained record is
+  resent at each request, and a sample held in a step B chunk answers with one descriptor per ACKNACK. Bounded by
+  the request rate, which the reader's back-off below lowers for a writer gone quiet; unchanged on 2026-10-15.
 - Ack state is tracked per remote Subscriber entity (`tt_MAX_ACK_ENTRIES` 16), not per node.
 
 **Reader side.**
@@ -697,7 +703,8 @@ a descriptor numbers it identically.
   store orders the two). A full ring drops the record as it drops any (`segment_full_dropped`), and the writer
   clears the bit it set (`large_ref.ref_dropped`). Any other destination gets step A's fragments.
 - A NACK into a sample held in a chunk, from a peer that takes descriptors, resends the descriptor once per
-  ACKNACK instead of the datagrams named: the descriptor covers them all.
+  ACKNACK instead of the datagrams named: the descriptor covers them all. No count limits it, as no count limits any
+  repair (section 6): a reader asks while the record is retained, and an evicted one draws the eviction HEARTBEAT.
 - **Dead reader.** When liveliness removes a peer (or a different peer appears behind its context id), the writer
   clears that context id's bit in every chunk it owns. Not before: a reader that is only slow keeps its chunks.
 
