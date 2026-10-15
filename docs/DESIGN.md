@@ -1158,6 +1158,12 @@ together in the receive buffer and goes on as before. The kernel's one copy then
   are untouched. Counted on the "Node N rx:" line: `direct_reads`, `direct_runs`, `direct_missed`, `direct_cancelled`.
 - Tests: `tests/test_rx_direct.c` (core, over the mock HAL), `platform/linux/rx_direct_check.c` (the HAL, real
   sockets, in test-linux), `tests/mutants_rx_direct.py` (all caught; its header lists what is not mutated and why).
+- **The hinted stretch prefetched** (2026-10-15, `ab/i4be-gap`, for the rig A/B): the copy in place writes into the 4 MB
+  assembly, which is cold (on the Pi ~3.8 GB/s against ~13 GB/s into the warm receive buffer), and since UDP checksum 0
+  its source is cold too. The hint is made right before the thread sleeps for the next run's wire time (0.5 ms per
+  64 KB at 1 GbE), so it also prefetches the stretch for writing, one 64-byte line at a time, to the second-level cache
+  (`large_direct_prefetch()`). `TT_RX_PREFETCH=0` turns it off (rig arm `tickle@noprefetch`); counted on the rx line as
+  `prefetch=` and `direct_prefetches=`. Not a PC question: x86 over veth writes the source into the cache itself.
 
 Three more cuts of the same gap ride on it, each its own commit:
 

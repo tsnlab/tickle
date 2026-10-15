@@ -137,6 +137,11 @@
 #                    the sender sent and the receiver never read was lost (i4s_drain_summary.py reads them).
 #   meta.txt         the run's QoS flags, rate, SAMEHOST, CLOCK_PROBE, DUR and DRY, for the summary.
 #
+# Added 2026-10-15 for the receive prefetch A/B (ab/i4be-gap; tickle.c large_direct_prefetch()):
+#   tickle@noprefetch  tickle@head's own librmw_tickle.so with TT_RX_PREFETCH=0 at both ends: a run read in place is
+#                 not prefetched into the cache before the wait (the control: the same binary; tickle@head runs with
+#                 TT_RX_PREFETCH unset). Cross-host default mode only. The treatment is on the subscriber's "Node <n>
+#                 rx:" line (prefetch=, direct_prefetches=); recorded in meta.txt (rx_prefetch_arms=).
 # Added 2026-10-14 for the UDP checksum 0 A/B (~/rig_jobs/rig_queue_udp_csum0.sh; hal_linux.c "UDP checksum 0"):
 #   tickle@csum0  tickle@head's own librmw_tickle.so with TT_UDP_CSUM0=1 at both ends: every sendmmsg() call carrying an
 #                 IP-fragmented datagram goes with UDP checksum 0. tickle@head runs with TT_UDP_CSUM0 unset (the
@@ -340,6 +345,10 @@ say "qos [$QOS_ARGS] rate $PUB_RATE Hz; samehost $SAMEHOST; clock probe $CLOCK_P
     "(client $CLIENT, server $SERVER)"
 printf 'qos_args=%s\npub_rate=%s\nsamehost=%s\nclock_probe=%s\ndur=%s\ndry=%s\npc_preflight=%s\n' "$QOS_ARGS" \
     "$PUB_RATE" "$SAMEHOST" "$CLOCK_PROBE" "$DUR" "$DRY" "$PC_PREFLIGHT" > "$OUT.runs/meta.txt"
+case " $ARMS " in *" tickle@noprefetch "*)
+    echo "rx_prefetch_arms=tickle@head:TT_RX_PREFETCH-unset tickle@noprefetch:TT_RX_PREFETCH=0(head's binary)" >> "$OUT.runs/meta.txt"
+    say "receive prefetch A/B: tickle@noprefetch = tickle@head's librmw_tickle.so with TT_RX_PREFETCH=0" ;;
+esac
 case " $ARMS " in *" tickle@csum0 "*)
     echo "udp_csum0_arms=tickle@head:TT_UDP_CSUM0-unset tickle@csum0:TT_UDP_CSUM0=1(head's binary)" >> "$OUT.runs/meta.txt"
     say "UDP checksum 0 A/B: tickle@csum0 = tickle@head's librmw_tickle.so with TT_UDP_CSUM0=1" ;;
@@ -529,6 +538,7 @@ env_for() {
         tickle@head) echo "unset TT_UDP_OFFLOAD TT_UDP_CSUM0; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@nooffload) echo "export TT_UDP_OFFLOAD=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@csum0) echo "unset TT_UDP_OFFLOAD; export TT_UDP_CSUM0=1 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@noprefetch) echo "unset TT_UDP_OFFLOAD TT_UDP_CSUM0; export TT_RX_PREFETCH=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@loans) echo "export ROS_DISABLE_LOANED_MESSAGES=0 RMW_IMPLEMENTATION=rmw_tickle"
             echo "export TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@aa) echo "unset TT_UDP_OFFLOAD; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
@@ -550,7 +560,8 @@ env_for() {
 }
 lib_for() {
     case "$1" in
-        tickle@head | tickle@loans | tickle@aa | tickle@mtu | tickle@ip | tickle@nooffload | tickle@mtunooff | tickle@csum0)
+        tickle@head | tickle@loans | tickle@aa | tickle@mtu | tickle@ip | tickle@nooffload | tickle@mtunooff | tickle@csum0 | \
+            tickle@noprefetch)
             echo "$HEAD_LIB" ;;
         tickle@*) echo "$(variant_install "${1#tickle@}")/rmw_tickle/lib/librmw_tickle.so" ;;
         fastdds | fastdds@*) echo "librmw_fastrtps_cpp.so" ;;
