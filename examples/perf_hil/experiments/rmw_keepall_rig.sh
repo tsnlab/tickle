@@ -199,6 +199,23 @@ if [ "$PC_PREFLIGHT" = 1 ]; then
     : "${PF_TICKLE_INSTALL:?PC_PREFLIGHT needs PF_TICKLE_INSTALL (pc_preflight_build.sh)}"
     : "${PF_PERF_WS:?PC_PREFLIGHT needs PF_PERF_WS (pc_preflight_build.sh)}"
     CLIENT=ka_pfc_$$; SERVER=ka_pfs_$$; SKIP_BUILD=1
+    # One PC preflight at a time. The rig run is serialised by rig_lock.sh; a preflight skips that lock, and its two
+    # "hosts" are namespaces of this one PC sharing one /tmp: the launcher writes /tmp/ka_<role>.{pid,maps,treat,...},
+    # so a second preflight overwrites the first one's files, reads the other's processes (2026-10-12 on
+    # exp/rx-perf-rig, 3e4f3a9c: a run's maps showed the other preflight's librmw_tickle.so), and its cleanup() kills
+    # every perf_test named in /tmp/ka_*.pid, the other's included. So a per-user lock is held on fd 8 for this
+    # shell's whole life, and a second preflight is refused (75, EX_TEMPFAIL, as rig_lock.sh) rather than queued -
+    # before the EXIT trap below exists, so the refused one cleans up nothing. Opened for append, so a refused one
+    # leaves the holder's record intact; only the holder rewrites it. Everything the preflight runs on the "hosts"
+    # goes through sudo, which closes fd 8, so no perf_test outlives the script holding the lock.
+    PF_LOCK=${PF_LOCK:-/tmp/ka_pc_preflight.$USER.lock}
+    exec 8>>"$PF_LOCK" || { echo "REFUSED: cannot open the PC preflight lock $PF_LOCK" >&2; exit 75; }
+    if ! flock -n 8; then
+        echo "REFUSED: another PC preflight holds $PF_LOCK ($(cat "$PF_LOCK" 2>/dev/null || echo unknown));" \
+            "its /tmp/ka_* files and perf_test processes would mix with this one's" >&2
+        exit 75
+    fi
+    printf 'pid=%s %s %s\n' "$$" "$(date -Is)" "$0" > "$PF_LOCK"
 fi
 [ "$SAMEHOST" = 1 ] && SERVER=$CLIENT
 # Each distinct host once: under SAMEHOST the client is the server, and two builds or copies at once on one Pi would
