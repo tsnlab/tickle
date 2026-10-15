@@ -33,8 +33,12 @@
 
 #pragma once
 
+#include <fcntl.h>
 #include <stdint.h>
-#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+#include <sys/types.h> // ssize_t
 
 // Overridable so the parsing and min/max/mean bookkeeping can be exercised against a fixture file
 // on a host that has no cpufreq sysfs at all - which is the case on the development machine, where
@@ -53,7 +57,15 @@ struct BenchCpuFreq {
     // of a particular event, not only over the run (2026-09-25: a latency tail that one explanation
     // attributes to a P-state change landing on the round trip).
     uint32_t last_khz;
+    // The sysfs file, opened once and re-read in place: BENCH_CPUFREQ_FD_UNTRIED before the first sample,
+    // BENCH_CPUFREQ_FD_ABSENT once opening it failed (2026-10-15). It used to be fopen()ed, read and closed on every
+    // sample, and the latency clients sample once a round trip: on a host without cpufreq (the PC) that was a failing
+    // openat() a round trip, and on the rig's Pi an openat(), a read() and a close(), in the measured client of all
+    // three frameworks. Now a host without it costs no system call after the first, and one with it one pread().
+    int fd;
 };
+#define BENCH_CPUFREQ_FD_UNTRIED (-2)
+#define BENCH_CPUFREQ_FD_ABSENT (-1)
 
 static inline void BenchCpuFreq_init(struct BenchCpuFreq* freq) {
     freq->min_khz = UINT32_MAX;
@@ -62,11 +74,12 @@ static inline void BenchCpuFreq_init(struct BenchCpuFreq* freq) {
     freq->samples = 0;
     freq->next_sample_ns = 0;
     freq->last_khz = 0;
+    freq->fd = BENCH_CPUFREQ_FD_UNTRIED;
 }
 
 // Call from the send or receive path; it reads sysfs at most once per period_ns and returns
 // immediately otherwise, so putting it in a hot loop costs a comparison. At the default 100ms
-// against a ten-second run that is a hundred opens, against nearly two million publishes - far
+// against a ten-second run that is a hundred reads, against nearly two million publishes - far
 // below the effect being measured, but not free, which is why it is rate-limited rather than
 // sampled per iteration.
 static inline void BenchCpuFreq_sample(struct BenchCpuFreq* freq, uint64_t now_ns, uint64_t period_ns) {
@@ -75,12 +88,24 @@ static inline void BenchCpuFreq_sample(struct BenchCpuFreq* freq, uint64_t now_n
     }
     freq->next_sample_ns = now_ns + period_ns;
 
-    FILE* stream = fopen(BENCH_CPUFREQ_PATH, "re");
-    if (stream == NULL) {
-        return; // not a cpufreq-capable host; samples stays 0 and the report says so
+    if (freq->fd == BENCH_CPUFREQ_FD_UNTRIED) {
+        freq->fd = open(BENCH_CPUFREQ_PATH, O_RDONLY | O_CLOEXEC);
+        if (freq->fd < 0) {
+            freq->fd = BENCH_CPUFREQ_FD_ABSENT; // not a cpufreq-capable host; samples stays 0 and the report says so
+        }
     }
-    unsigned long khz = 0;
-    if (fscanf(stream, "%lu", &khz) == 1 && khz > 0) {
+    if (freq->fd < 0) {
+        return;
+    }
+    // A sysfs attribute is generated afresh by a read at offset 0, so the file stays open between samples.
+    char text[32];
+    ssize_t got = pread(freq->fd, text, sizeof(text) - 1, 0);
+    if (got <= 0) {
+        return;
+    }
+    text[got] = '\0';
+    unsigned long khz = strtoul(text, NULL, 10);
+    if (khz > 0) {
         if ((uint32_t)khz < freq->min_khz) {
             freq->min_khz = (uint32_t)khz;
         }
@@ -91,7 +116,6 @@ static inline void BenchCpuFreq_sample(struct BenchCpuFreq* freq, uint64_t now_n
         freq->samples++;
         freq->last_khz = (uint32_t)khz;
     }
-    fclose(stream);
 }
 
 // The most recent reading in MHz, or -1 before the first.
