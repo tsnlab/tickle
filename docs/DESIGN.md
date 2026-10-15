@@ -612,9 +612,9 @@ Where it departs, and why:
 
 #### Step B: the same-host large path (designed 2026-10-11, before any code)
 
-**The problem, measured.** Rig A4 stage 4 (`~/rig_results_safe/largemsgA4_s4a_samehost_*`, `_s4b_*`, the
-step A build as rigged on 2026-10-10): same-host Array4m BEST_EFFORT KEEP_LAST 5 delivered 0.06% (`shm_full_dropped` ~1.79 M, 1,796 samples
-abandoned), and Array1m best effort lost 4 samples in one run. RELIABLE KEEP_LAST 10 delivered 100% of both, but its
+**The problem, measured.** Rig A4 stage 4 (`~/rig_results_safe/largemsgA4_s4a_samehost_*`, `_s4b_*`, the step A
+build as rigged on 2026-10-10): same-host Array4m BEST_EFFORT KEEP_LAST 5 delivered 0.06% (`shm_full_dropped` ~1.79 M,
+1,796 samples abandoned), and Array1m best effort lost 4 samples in one run. RELIABLE KEEP_LAST 10 delivered 100% of both, but its
 subscriber CPU per MB (1.95-2.06 ms at 1 MB, 1.75-1.79 ms at 4 MB) and its median latency (1.66 / 7.7 ms) lose to Fast
 DDS as shipped (1.72-1.82 ms/MB, 1.03 ms; 0.85-0.88 ms/MB, 4.0 ms), whose data-sharing hands the sample over in shared
 memory. Every one of TickLE's 723 or 2,889 records a sample is a claim, a copy into the slot, a drain step and a copy
@@ -760,12 +760,37 @@ Built as designed, in four commits on the step B branch: the path (`tt_Publisher
   longer one made every creation fail, and the harness's VOID rule caught it: arm B sent no descriptor).
 - **Not yet:** a durable late joiner's backlog still gets fragments (`large_send_backlog_before()`), and the KEEP_LAST
   skip planner never passes over a descriptor (it is OTHER), so a slow reader decodes every sample it is handed.
-- **PC indication, not a rig figure** (`large_samehost_pc.sh` at `d783536d`, 5 reps x 20 s at 30 Hz per arm, ABBA,
-  `~/largemsg_pc/samehost_stepB_d783536d.txt`; control CTRL_1KB HELD, session PASS). Step A -> step B, sub + pub CPU
-  per delivered MB and latency median: BE 1 MB delivered 59.2 -> 100%, 2.43 -> 1.48 ms/MB, 1.06 -> 0.73 ms; BE 4 MB
-  delivered 1.1 -> 100%, CPU HELD (step A's figure is per 1% of the samples, not a like-for-like), latency HELD;
-  RELIABLE KEEP_LAST 10 1 MB 2.11 -> 1.52 ms/MB, 1.34 -> 0.74 ms; 4 MB delivered 98.2 -> 100%, 2.29 -> 1.43 ms/MB,
-  6.03 -> 2.98 ms, peak RSS sub 17.4 -> 8.0 MB and pub 27.9 -> 8.1 MB. B2 on the rig decides.
+- **PC indication, not a rig figure** (`large_samehost_pc.sh` on the step B branch before its rebase, 2026-10-11, 5
+  reps x 20 s at 30 Hz per arm, ABBA, `~/largemsg_pc/samehost_stepB_<sha>.txt`; control CTRL_1KB HELD, session PASS).
+  Step A -> step B, sub + pub CPU per delivered MB and latency median: BE 1 MB delivered 59.2 -> 100%, 2.43 -> 1.48
+  ms/MB, 1.06 -> 0.73 ms; BE 4 MB delivered 1.1 -> 100%, CPU HELD (step A's figure is per 1% of the samples, not a
+  like-for-like), latency HELD; RELIABLE KEEP_LAST 10 1 MB 2.11 -> 1.52 ms/MB, 1.34 -> 0.74 ms; 4 MB delivered 98.2 ->
+  100%, 2.29 -> 1.43 ms/MB, 6.03 -> 2.98 ms, peak RSS sub 17.4 -> 8.0 MB and pub 27.9 -> 8.1 MB. B2 on the rig decides.
+
+#### Step B rebased onto main (2026-10-15, `ab/largemsg-stepB-rebased`)
+
+Step B was built on the step A main of 2026-10-11 and replayed onto main `f5fcda06` (the hybrid transport, receiving
+in place, the segment fence, seq_no wrap, raw hot syscalls, UDP checksum 0). Its design is unchanged; what main's code
+asked of it:
+
+- **LARGE_REF is taken in `process_submessage()`'s default case**, through its own noinline handler, as the hybrid
+  runs are, and the SHM_DATA case is main's unchanged: a case of its own re-lays out the switch every DATA goes
+  through. Core's default build differs from main only in `create_own_segment()` writing the features field.
+- **Step B's state sits last**: `tt_Publisher.large_region` after the hybrid fields, and the context's mapped regions
+  and counters in `tt_Context.large_ref` (`struct tt_LargeRefState`), not at the end of `tt_LargeState`, mid-struct,
+  where they moved the fence, hybrid and offload fields of every rmw build by 376 bytes.
+- **A descriptor goes once the sample is encoded through.** Main encodes a large sample while it is sent (a send call
+  at a time); a descriptor hands the reader all of it, so the send encodes the rest first, and a NACK into a sample
+  still being encoded is left to the send in progress.
+- The span bound keeps clear of `tt_SEGMENT_SPAN_FENCE` (a static assertion), the reader's seq_no arithmetic is modulo
+  2^32 (`seq_delta()`), a sample dropped unfinished gives its chunk back, and the bench's region flag is `-B` (main's
+  `-G` is the ranged encode).
+- **PC indication on the rebased tree** (`large_samehost_pc.sh` at the rebase, same shape,
+  `~/largemsg_pc/samehost_stepB_rebased_61e5018c.txt`; control CTRL_1KB HELD, session PASS, every arm B run whole and
+  in order). Main -> step B: BE 1 MB delivered 30.1 -> 100%, 3.56 -> 1.74 ms/MB, 1.07 -> 0.74 ms; BE 4 MB delivered 0
+  -> 100% (main delivered none, so its CPU per MB and latency are no comparison, and the harness's "CPU not
+  IMPROVED" line for the cell reads that absence, not step B); RELIABLE KEEP_LAST 10 1 MB 2.24 -> 1.77 ms/MB, 1.08 ->
+  0.75 ms; 4 MB 2.41 -> 1.64 ms/MB, 5.17 -> 2.89 ms. Same direction as before the rebase in every cell.
 
 ### Encoding while sending (2026-10-11, `ab/interleave-encode`)
 
