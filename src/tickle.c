@@ -2377,8 +2377,17 @@ static bool hybrid_test_stale_off = false;
 // the event as (k + 1) / F, is c = 9.21 / (k + 1): (1 + 9.21 / (k + 1))^-k, 18% at k = 1, 6% at k = 2 - a 0.1% path
 // forgot in 22 seeds of 100 (test_steady_loss_is_never_forgotten). The price is the clean stretch a real burst needs:
 // 99 F after two events, 2.2 F after eight; 9,999 F after one, so one event at F >= 105 is dropped first by the
-// window's halving (2^20 frames). At most tt_HYBRID_STALE_EVENTS divisions, at each tail and announce. Returns whether
-// it forgot.
+// window's halving (2^20 frames). At most tt_HYBRID_STALE_EVENTS divisions, at each tail and announce.
+//
+// And a floor (2026-10-15): the events are forgotten too once C reaches tt_HYBRID_STALE_EXPOSURE /
+// tt_HYBRID_STALE_P_MIN, 9.21 / 1e-3 = 9,210 frames (~13 samples of 1 MB), whatever F. The ratio alone made a real
+// burst wait 99 F after two events: 80,886 clean frames, 111 samples of 1 MB below n_max. On a path losing frames at a
+// steady p >= p_min a clean stretch that long comes with probability (1 - p)^C <= exp(-9.21) = 1e-4 after each event,
+// so the floor is wrong at most that often per k there - at p = p_min itself next to the ratio's 1e-4 (the two fire on
+// different F: a short F the ratio, a long one the floor), so up to 2e-4 per k; at 1.3 p_min the floor adds 6e-6. Below
+// p_min it forgets a steady path's few events often (40% per k at 1e-4), and n goes to n_max until they come back: at
+// such p n_max is close to the best n (DESIGN 8, Cost(n): at 0.01% Cost(45) 1.0050 u against Cost(n*) 1.0027 u, at
+// 0.1% 1.0452 u against 1.0085 u), so a wrong forget costs little where it is likely. Returns whether it forgot.
 static bool loss_estimate_forget_stale(struct tt_LossEstimate* estimate) {
 #ifdef TT_HYBRID_TEST_SEAM
     if (hybrid_test_stale_off) {
@@ -2390,13 +2399,15 @@ static bool loss_estimate_forget_stale(struct tt_LossEstimate* estimate) {
         return false;
     }
     uint32_t clean = estimate->frames - estimate->frames_at_event;
-    double stretch = 1.0 + ((double)clean / (double)estimate->frames_at_event);
-    double chance = 1.0; // of a stretch this long after this many events, on a steady path
-    for (uint32_t i = 0; i < estimate->events; i++) {
-        chance /= stretch;
-    }
-    if (chance > tt_HYBRID_STALE_FALSE_FORGET) {
-        return false;
+    if ((double)clean < tt_HYBRID_STALE_EXPOSURE / tt_HYBRID_STALE_P_MIN) { // the floor: 9,210 frames
+        double stretch = 1.0 + ((double)clean / (double)estimate->frames_at_event);
+        double chance = 1.0; // of a stretch this long after this many events, on a steady path
+        for (uint32_t i = 0; i < estimate->events; i++) {
+            chance /= stretch;
+        }
+        if (chance > tt_HYBRID_STALE_FALSE_FORGET) {
+            return false;
+        }
     }
     estimate->events = 0;
     estimate->frames = clean;

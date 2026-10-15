@@ -774,10 +774,17 @@ MTU units lost, 45 events in `p` and `p_mtu`, and held `n` low until they dilute
   path losing frames at any steady rate `F` is a sum of `k` gaps and `C` one more, so `P(C >= c F) = (1 + c)^-k`
   whatever the rate: the rule forgets a steady path's events wrongly at most 1e-4 of the time at each `k`. The first
   rule (2026-10-13, `C >= 9.21 / p`, `p = (k + 1) / F` read at the event) did so 18% of the time at `k = 1` and 6% at
-  `k = 2`: a 0.1% path forgot in 22 seeds of 100 of `test_steady_loss_is_never_forgotten`. The price is the stretch a
-  real burst needs - `99 F` after two events, `2.2 F` after eight; one event is left to the window's halving: the
-  test's two events at `F = 813` frames are forgotten at 80,886 clean frames (sample 113 of 1 MB), where the first rule
-  took 2,802 and the events kept take the whole stream.
+  `k = 2`: a 0.1% path forgot in 22 seeds of 100 of `test_steady_loss_is_never_forgotten`. The ratio alone made a real
+  burst wait `99 F` after two events (`2.2 F` after eight, `9,999 F` after one): the test's two events at `F = 813`
+  frames held `n` below `n_max` for 111 samples of 1 MB. So the events are forgotten too, whatever `F`, once `C`
+  reaches `9.21 / p_min` (2026-10-15; `tt_HYBRID_STALE_EXPOSURE / tt_HYBRID_STALE_P_MIN`, `p_min = 1e-3`: 9,210
+  frames): a path losing frames at `p >= p_min` leaves that stretch clean at most `exp(-9.21) = 1e-4` of the time. Now
+  the test's events go at sample 14, 12 samples below `n_max`. At `p = p_min` itself the floor and the ratio fire on
+  different `F` and add: up to 2e-4 at each `k` (PC Monte Carlo, the real function, 1e6 streams a cell: 1.7-2.1e-4 a
+  `k` checked every frame, 0.6-1.1e-4 in 45-frame runs checked a sample; 0.75-1.4e-3 a stream, 0.2-0.7e-3 before); at
+  `p >= 2e-3` it never fired, every cell identical to the ratio alone. Below `p_min` it forgets a steady path's events
+  often - 40% at each `k` at 1e-4, 6% at 3e-4 - and `n` goes to `n_max` until they come back, which costs little there:
+  `Cost(45)` is 1.0050 `u` against `Cost(n*)` 1.0027 at 0.01%, 1.0452 against 1.0085 at 0.1%.
 - `q(n)`: runs arrived over runs sent, with their sizes, in the window since the last decision; per writer as well
   (printed, and read by rule (e)).
 - `R`: units a second in multi-unit samples, arrived or inferred lost; `D_s`: run datagrams a second from each source.

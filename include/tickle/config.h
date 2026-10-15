@@ -800,6 +800,15 @@
 #ifndef tt_HYBRID_STALE_FALSE_FORGET
 #define tt_HYBRID_STALE_FALSE_FORGET 1e-4
 #endif
+// And whatever F, once C reaches tt_HYBRID_STALE_EXPOSURE / tt_HYBRID_STALE_P_MIN (9,210 frames): frame loss at any
+// p >= p_min leaves such a stretch clean with probability at most exp(-9.21) = 1e-4; below p_min a wrong forget sends n
+// to n_max, near the best n at such p.
+#ifndef tt_HYBRID_STALE_EXPOSURE
+#define tt_HYBRID_STALE_EXPOSURE 9.21 // -ln(tt_HYBRID_STALE_FALSE_FORGET)
+#endif
+#ifndef tt_HYBRID_STALE_P_MIN
+#define tt_HYBRID_STALE_P_MIN 1e-3
+#endif
 // A probe goes this far above the ceiling; the probe wait, 2 tau, doubles per failed probe up to 2^this.
 #ifndef tt_HYBRID_PROBE_STEP
 #define tt_HYBRID_PROBE_STEP 1.25
