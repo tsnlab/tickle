@@ -108,9 +108,16 @@ envfile() { # <name> <role>: the environment a perf_test of this arm starts with
 inns() { # <ns> <cmd>: as this user, in the namespace
     sudo -n ip netns exec "$1" sudo -n -u "$USER" bash -c "$2"
 }
-sum_col() { # <log> <column name>: the column summed over perf_test's data rows
-    awk -v want="$2" -F',' '/^T_experiment/ { for (i = 1; i <= NF; i++) { g = $i; gsub(/[ \t]/, "", g); if (g == want) c = i } next }
-        c && /^[0-9]+\.[0-9]+,/ { v = $c; gsub(/[ \t]/, "", v); s += v } END { print s + 0 }' "$1"
+sum_col() { # <log> <column name> [bytes a sample]: the whole count over perf_test's data rows. A row's sent, received
+    # and data_received are RATES, the row's count over its span D (DataRunner::sync_reset()), and D runs ~1.07 s while
+    # the main thread waits for the executor's lock: summed as they stand they undercount by ~6% (the first run here
+    # voided 10 of 30 runs on it). D as rmw_keepall_rig_summary.py's span(): D_i = (T_experiment_i - T_experiment_i-1)
+    # - T_loop_i + T_loop_i-1, row 0 its T_loop. With a size: round(data_received x D / size), the delivered samples.
+    awk -v want="$2" -v size="${3:-0}" -F',' '/^T_experiment/ { for (i = 1; i <= NF; i++) { g = $i; gsub(/[ \t]/, "", g); if (g == want) c = i } next }
+        c && /^[0-9]+\.[0-9]+,/ { v = $c; te = $1; tl = $2; gsub(/[ \t]/, "", v); gsub(/[ \t]/, "", te); gsub(/[ \t]/, "", tl)
+            d = n ? (te - pte) - tl + ptl : tl; pte = te; ptl = tl; n++
+            if (size > 0) s += int(v * d / size + 0.5); else if (v > 0) s += int(v * d + 1 - 1e-9) }
+        END { printf "%d\n", s }' "$1"
 }
 last_row() { grep -E '^[0-9]+\.[0-9]+,' "$1" | tail -1 | tr -d '\t ' | awk -F, '{print "utime="$20" stime="$21" nvcsw="$34" nivcsw="$35}'; }
 pstat() { # <perf stat file> <event>
@@ -150,20 +157,20 @@ run() { # <arm> <rep>
             # The subscriber's threads: perf_test's main thread (tid = pid) spins on its stats lock once a second for as
             # long as the executor thread holds it (performance_test SpinLock, DataRunner::sync_reset()), a cost of
             # perf_test that depends on when the rmw's wait returns; every other thread is the rmw's and the
-            # executor's work. Each thread's utime and stime (clock ticks) every 0.5 s while it lives; the last
-            # snapshot is read.
+            # executor's work. Each thread's utime and stime (clock ticks) every 0.5 s while it lives, appended; each
+            # thread's largest is read (a last snapshot taken during teardown, after the receive thread had gone,
+            # once read 5 ticks of work for ~200).
             ( while [ -d "/proc/$p/task" ]; do
-                  snap=$(for t in /proc/"$p"/task/*; do read -r -a st < "$t/stat" 2>/dev/null && echo "${t##*/} ${st[13]} ${st[14]}"; done)
-                  [ -n "$snap" ] && echo "$snap" > "$stem.sub.threads.tmp" && mv "$stem.sub.threads.tmp" "$stem.sub.threads"
+                  for t in /proc/"$p"/task/*; do read -r -a st < "$t/stat" 2>/dev/null && echo "${t##*/} ${st[13]} ${st[14]}"; done
                   sleep 0.5
-              done; echo "pid $p" >> "$stem.sub.threads" ) &
+              done >> "$stem.sub.threads"; echo "pid $p" >> "$stem.sub.threads" ) &
         else echo "$c" > "$stem.pub.maps"; fi
     done
     wait "$pp"
     wait "$sp"
     sleep 1
     local recv sent want ok=1 why=""
-    recv=$(sum_col "$stem.sub.log" received)
+    recv=$(sum_col "$stem.sub.log" data_received 4194304)
     sent=$(sum_col "$stem.pub.log" sent)
     if [ "$n" = fdds ]; then want=librmw_fastrtps_cpp.so; else v=TICKLE_$n; want="${!v}/rmw_tickle/lib/librmw_tickle.so"; fi
     for r in sub pub; do grep -q -- "$want" "$stem.$r.maps" 2>/dev/null || { ok=0; why="$why $r-maps($(cat "$stem.$r.maps" 2>/dev/null))"; }; done
@@ -181,7 +188,7 @@ run() { # <arm> <rep>
         vals="$vals ${r}_$(last_row "$stem.$r.log" | sed "s/ / ${r}_/g")"
     done
     # sub_main_ticks: perf_test's main thread (its spin); sub_work_ticks: every other thread (clock ticks, 100 a second)
-    vals="$vals $(awk '/^pid / { pid = $2; next } { t[$1] = $2 + $3 } END { for (k in t) { if (k == pid) m += t[k]; else w += t[k] } if (pid == "") print "sub_threads=none"; else print "sub_main_ticks=" m + 0 " sub_work_ticks=" w + 0 }' "$stem.sub.threads" 2>/dev/null || echo sub_threads=none)"
+    vals="$vals $(awk '/^pid / { pid = $2; next } { if ($2 + $3 > t[$1]) t[$1] = $2 + $3 } END { for (k in t) { if (k == pid) m += t[k]; else w += t[k] } if (pid == "") print "sub_threads=none"; else print "sub_main_ticks=" m + 0 " sub_work_ticks=" w + 0 }' "$stem.sub.threads" 2>/dev/null || echo sub_threads=none)"
     local cnt
     cnt=$(grep -h -o -E 'Node [0-9]+ (rx|large|hybrid): .*' "$stem.sub.log" "$stem.pub.log" | tr ' ' '\n' |
         grep -E '^(direct_reads|direct_runs|prefetch|direct_prefetches|empty_reads|timer_sets|timer_waits|send_waits|runs|drain_datagrams|socket_drops)=' | tr '\n' ' ')
