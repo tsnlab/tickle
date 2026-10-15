@@ -648,6 +648,16 @@ static int run_publisher(struct tt_Context* node, const struct options* opts) {
     return 0;
 }
 
+// From the match point on: a writer with no matched reader sends nothing, so a VOLATILE reader starts where the writer
+// learnt it; what is missing between its first and its last sample is a loss, before it is not.
+static uint32_t missing_after_first(void) {
+    uint32_t missing = 0;
+    for (uint32_t i = first_index; delivered > 0 && i < last_index && i < MAX_SAMPLES; i++) {
+        missing += seen[i] == 0 ? 1U : 0U;
+    }
+    return missing;
+}
+
 static double latency_us_at(uint32_t counted, uint32_t index) {
     return counted > 0 ? (double)latencies_ns[index] / NS_PER_US : 0.0;
 }
@@ -713,13 +723,7 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
         }
     }
     printf("%s", named == 0 ? "none" : "");
-    // From the match point on: a writer with no matched reader sends nothing, so a VOLATILE reader starts where the
-    // writer learnt it; what is missing between its first and its last sample is a loss, before it is not.
-    uint32_t missing_after_first = 0;
-    for (uint32_t i = first_index; delivered > 0 && i < last_index && i < MAX_SAMPLES; i++) {
-        missing_after_first += seen[i] == 0 ? 1U : 0U;
-    }
-    printf(" first_index=%u missing_after_first=%u", first_index, missing_after_first);
+    printf(" first_index=%u missing_after_first=%u", first_index, missing_after_first());
 #if BENCH_LARGE
     uint32_t held = 0;
     for (uint32_t i = 0; i < tt_LARGE_ASSEMBLIES; i++) {
