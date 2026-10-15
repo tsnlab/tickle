@@ -3,7 +3,10 @@
 # before any of its runs; the readings are enforced by largemsg_stepb_compare.py (its docstring is the rule). Not run
 # by the session that wrote it: it needs pushed SHAs, which it refuses to start without.
 #
-#   MAIN_SHA  = origin/main with step A and without step B (the control arm, tickle@pre)
+#   MAIN_SHA  = origin/main with step A and without step B (the control arm, tickle@pre). Since the rebase onto main
+#               (2026-10-15, ab/largemsg-stepB-rebased) that is f5fcda06, the commit step B sits on: the hybrid
+#               transport, receive-in-place, raw hot syscalls and UDP checksum 0 by default are in both arms, so the
+#               A/B is step B's own commits alone. An older main is refused (it is not an ancestor of STEPB_SHA).
 #   STEPB_SHA = the step B branch head, pushed (tickle@head); MAIN_SHA must be its ancestor
 #   HARNESS_REF: a checkout that differs from STEPB_SHA only under examples/perf_hil/experiments/ (checked)
 #
@@ -23,7 +26,7 @@
 # = ~2 h 40 min; analyse an overrun at 4 h. PC preflight (PC_PREFLIGHT=1, REPS=1 DUR=6, both QoS) ~10 min first.
 #
 # Usage (when the rig is free; the lock is taken once, inside, for both stages):
-#   MAIN_SHA=<sha> STEPB_SHA=<sha> HARNESS_REF=<ref> \
+#   MAIN_SHA=f5fcda06 STEPB_SHA=<sha> HARNESS_REF=<ref> \
 #     setsid nohup examples/perf_hil/experiments/rig_queue_largemsg_B.sh > ~/rig_results_safe/queue_largemsgB.log 2>&1 \
 #     < /dev/null &
 #   PREFLIGHT_ONLY=1 runs the checks and the PC preflight and stops before the lock.
