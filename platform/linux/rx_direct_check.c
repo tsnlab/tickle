@@ -32,7 +32,8 @@
 //   9. withdrawn - the hint withdrawn while the read is in the kernel (another thread freeing the assembly; here this
 //                 check's own recvmsg() does it once the real one returns): the run is not handed over in place but
 //                 read whole into the buffer, from the parked place.
-//  10. switch   - TT_RX_DIRECT=0 in the environment: tt_bind() leaves direct_allowed off; unset, on.
+//  10. switch   - TT_RX_DIRECT=0 in the environment: tt_bind() leaves direct_allowed off; unset, on. TT_RX_PREFETCH=0
+//                 leaves direct_prefetch off and direct_allowed on; unset, on.
 //  11. nonblock - both sockets O_NONBLOCK (so a wait does not check a datagram's checksum before the read does);
 //                 TT_RX_NONBLOCK=0 leaves both blocking. And a blocking send still blocks rather than failing: with
 //                 the data socket's send buffer filled to refusal (MSG_DONTWAIT), tt_send_to() waits for room and
@@ -597,6 +598,20 @@ static void check_switch(void) {
     }
     verdict(!off.large.direct_allowed, "switch: TT_RX_DIRECT=0 turns it off");
     tt_Context_destroy(&off);
+    verdict(node.large.direct_prefetch, "switch: unset, the hinted stretch is prefetched");
+    unsetenv("TT_RX_DIRECT"); // the prefetch's own switch alone (set again below, as the checks after this expect)
+    setenv("TT_RX_PREFETCH", "0", 1);
+    static struct tt_Context no_prefetch;
+    if (tt_Context_create(&no_prefetch) != tt_RET_OK) {
+        printf("rx_direct_check: SETUP FAILED - cannot create the third context\n");
+        setup_failed = true;
+        return;
+    }
+    verdict(!no_prefetch.large.direct_prefetch && no_prefetch.large.direct_allowed,
+            "switch: TT_RX_PREFETCH=0 turns the prefetch off, not the read in place");
+    tt_Context_destroy(&no_prefetch);
+    unsetenv("TT_RX_PREFETCH");
+    setenv("TT_RX_DIRECT", "0", 1);
 }
 
 // 11. nonblock

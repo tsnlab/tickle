@@ -466,6 +466,9 @@ struct tt_LargeState {
     // direct_count_at only, which then says the payload's length, count x direct_unit, at most direct_bytes.
     // Another thread that frees the hinted assembly sets direct_bytes to 0 and, while the polling thread is inside such
     // a read (direct_busy), leaves the buffer in direct_parked for the polling thread to give back.
+    // direct_prefetch: set by the HAL at bind, unless TT_RX_PREFETCH=0 (the A/B control): each hint also asks its
+    // stretch of the assembly into the cache for writing (tickle.c large_direct_prefetch(); direct_prefetches counts
+    // the hints that did, on the rx line).
     // direct_allowed: set by the HAL at bind, unless TT_RX_DIRECT=0 (the A/B control). direct_streak/direct_skip: the
     // back-off after aimed reads that were something else (direct_missed_seen: direct_missed at the last aim).
     // Counters, on the rx line: direct_reads, reads aimed; direct_runs, runs taken in place; direct_missed, aimed reads
@@ -482,12 +485,14 @@ struct tt_LargeState {
     uint8_t direct_count_at;
     uint16_t direct_unit;
     bool direct_allowed;
+    bool direct_prefetch;
     uint8_t direct_streak;
     uint8_t direct_skip;
     struct tt_LargeAssembly* placed; // the assembly the last unit landed in (large_place()), for the next aim
     uint64_t direct_missed_seen;
     uint64_t direct_reads;
     uint64_t direct_runs;
+    uint64_t direct_prefetches;
     uint64_t direct_missed;
     uint64_t direct_cancelled;
 };

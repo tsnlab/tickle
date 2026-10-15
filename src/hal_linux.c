@@ -1341,6 +1341,8 @@ tt_ret_t tt_bind(struct tt_Context* node) {
     {
         const char* direct = getenv("TT_RX_DIRECT");
         node->large.direct_allowed = direct == NULL || strcmp(direct, "0") != 0;
+        const char* prefetch = getenv("TT_RX_PREFETCH");
+        node->large.direct_prefetch = prefetch == NULL || strcmp(prefetch, "0") != 0;
     }
 #endif
 
@@ -1381,7 +1383,7 @@ static const char* drain_ring_name(uint8_t ring) {
 }
 #endif
 
-#define DIRECT_LINE_BYTES 160U // tt_close()'s direct_* fields on the rx line
+#define DIRECT_LINE_BYTES 200U // tt_close()'s direct_* fields on the rx line
 #define GRO_LINE_BYTES 256U    // and its empty_reads=, idle_skips=, gro_* and timer_* fields
 #define CSUM0_LINE_BYTES 160U  // and its csum0_* fields
 
@@ -1391,10 +1393,12 @@ void tt_close(struct tt_Context* node) {
     char direct[DIRECT_LINE_BYTES] = "";
 #if TT_HAL_RX_DIRECT
     (void)snprintf(direct, sizeof(direct),
-                   " direct=%d direct_reads=%lu direct_runs=%lu direct_missed=%lu direct_cancelled=%lu",
+                   " direct=%d direct_reads=%lu direct_runs=%lu direct_missed=%lu direct_cancelled=%lu prefetch=%d"
+                   " direct_prefetches=%lu",
                    node->large.direct_allowed ? 1 : 0, (unsigned long)node->large.direct_reads,
                    (unsigned long)node->large.direct_runs, (unsigned long)node->large.direct_missed,
-                   (unsigned long)node->large.direct_cancelled);
+                   (unsigned long)node->large.direct_cancelled, node->large.direct_prefetch ? 1 : 0,
+                   (unsigned long)node->large.direct_prefetches);
 #endif
     // The sockets' mode, empty reads, receive offload's switches (gro_on: its state at the end) and the wait's deadline
     // timer, on the same line: a rig arm's treatment check.

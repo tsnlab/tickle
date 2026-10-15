@@ -191,6 +191,10 @@ static void capture_hook(const void* buf, size_t len) {
     datagram_len[datagram_count++] = (uint32_t)len;
 }
 
+// Whether the receiver prefetches each hinted stretch (tt_LargeState.direct_prefetch); test_in_order_no_prefetch()
+// turns it off.
+static bool prefetch_on = true;
+
 static void init_pair(bool reliable) {
     test_mock_reset();
     for (int i = 0; i < LIVE_MAX; i++) {
@@ -213,7 +217,8 @@ static void init_pair(bool reliable) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_large_buffers(&sender, tx_acquire, tx_release, NULL));
 
     init_bare_node(&receiver, RECEIVER_ID);
-    receiver.large.direct_allowed = true; // what tt_bind() sets unless TT_RX_DIRECT=0
+    receiver.large.direct_allowed = true;         // what tt_bind() sets unless TT_RX_DIRECT=0
+    receiver.large.direct_prefetch = prefetch_on; // what tt_bind() sets unless TT_RX_PREFETCH=0
     memset(&receiver_topic, 0, sizeof(receiver_topic));
     receiver_topic.name = TOPIC_NAME;
     receiver_topic.data_size = 8;
@@ -393,8 +398,17 @@ static void test_in_order(bool reliable) {
     EXPECT_EQ_U32(6, in_place);
     EXPECT_EQ_U64(6, receiver.large.direct_runs);
     EXPECT_EQ_U64(0, receiver.large.direct_missed);
+    // Every hint made (after units 0-9, 10-19, ..., 50-59: six) prefetched its stretch; none after the last run.
+    EXPECT_EQ_U64(prefetch_on ? 6U : 0U, receiver.large.direct_prefetches);
     feed_unit(LARGE_UNITS - 1U);
     expect_one_intact();
+}
+
+// The same with the prefetch off (TT_RX_PREFETCH=0): the same hints, runs taken in place and sample, and no prefetch.
+static void test_in_order_no_prefetch(void) {
+    prefetch_on = false;
+    test_in_order(false);
+    prefetch_on = true;
 }
 
 // A run shorter than hinted, from the same place, is still the one: taken in place, and the next hint is its length.
@@ -675,6 +689,7 @@ int main(void) {
     tt_current_log_level = TT_LOG_NONE;
     test_in_order(true);
     test_in_order(false);
+    test_in_order_no_prefetch();
     test_shorter_run();
     test_miss_and_back_off();
     test_repair_withdraws_the_hint();

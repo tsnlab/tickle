@@ -14142,6 +14142,22 @@ static void large_direct_release_parked(struct tt_Context* node) {
     }
 }
 
+// The hinted stretch asked into the cache for writing, before the polling thread waits for the run (2026-10-15,
+// ab/i4be-gap). The kernel's copy of a run read in place writes into the assembly, which a 4 MB sample has left cold:
+// on the rig's Pi that copy ran at ~3.8 GB/s against ~13 GB/s into the warm receive buffer (0.26 against 0.08 ms/MB,
+// rx-gap2 record runs; the destination's misses, not page faults), and since UDP checksum 0 its source is cold too
+// (the checksum pass no longer reads it first). The next run is at least its wire time away (0.5 ms for 64 KB at
+// 1 GbE) and the thread sleeps through it, so the lines are fetched while nothing waits for them; the copy then
+// writes into lines already held. One prefetch per 64-byte line, for writing, kept to the second level: a run's
+// 64 KB is the whole first-level cache of the Pi's core. A prefetch is a hint: a buffer freed meanwhile costs nothing.
+#define LARGE_PREFETCH_LINE 64U
+
+static void large_direct_prefetch(const uint8_t* dest, uint32_t bytes) {
+    for (uint32_t at = 0; at < bytes; at += LARGE_PREFETCH_LINE) {
+        __builtin_prefetch(dest + at, 1, 2);
+    }
+}
+
 // After a run (units index .. index + run_count - 1 of `count`) was handed to the assemblies: the hint for the next
 // read. `in_place`: this run was read in place.
 static void large_direct_aim(struct tt_Context* node, struct tt_Header* header, const struct tt_FragRunLHeader* run,
@@ -14192,6 +14208,10 @@ static void large_direct_aim(struct tt_Context* node, struct tt_Header* header, 
     large->direct_dest = assembly->buffer + tt_LARGE_CDR_OFFSET + large_offset(next);
     large->direct = assembly;
     __atomic_store_n(&large->direct_bytes, bytes, __ATOMIC_SEQ_CST);
+    if (large->direct_prefetch) {
+        large_direct_prefetch(large->direct_dest, bytes);
+        large->direct_prefetches++;
+    }
 }
 #endif
 
