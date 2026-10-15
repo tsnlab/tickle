@@ -571,6 +571,25 @@ Rows 42-47. Count-based scenarios: late-joiner durability, a burst within and be
 within 1 ms, hence no winner), 100 ms LIFESPAN. Row 44 is the one scored row: TickLE delivers 147.7 of 160 beyond
 depth, both DDS 109 (deterministic, 3/3).
 
+### No matched reader sends nothing (rig)
+
+Since no-send-unmatched (DESIGN.md section 4) a Publisher with no matched reader puts no data on the wire. What that
+buys and costs, on the rig 2026-10-16 with the native core bench of branch exp/nosend-benefit (`nosend_benefit_rig.sh`;
+U cells 3 reps of 60 s, F cells 20 reps a loss rate): A = main b265e86f (before no-send) against B = branch
+ab/no-send-unmatched; the writer on one Pi, on the other an observer context with no endpoint
+(`~/rig_results_safe/nosend_benefit/20261016-020518/reading.txt`; U PASS, F NO REGRESSION, both pre-registered).
+
+| cell, no subscriber | data packets on the wire, A -> B | writer CPU per sample | observer CPU |
+|---|---:|---:|---:|
+| p1 BEST_EFFORT 1 kHz | 59,961 -> 0 | 27.8 -> 8.5 us (-69%) | 873 -> 491 ms (-44%) |
+| p1 RELIABLE 1 kHz | 59,963 -> 0 | 28.0 -> 8.6 us (-69%) | 885 -> 491 ms (-45%) |
+| 1 MiB RELIABLE 30 Hz | 1,303,207 -> 0 | 4.12 -> 0.26 ms (-94%) | 5,680 -> 500 ms (-91%) |
+
+- **The cost:** a new reader's time from its Subscriber to its first sample rose by a median +1.95 to +2.05 ms at p1
+  (best effort and RELIABLE, 0% and 5% loss; 95% CIs +1.68 to +2.56), the writer now waiting for the match instead of
+  broadcasting; the control, context start to first announce, moved -0.11 to +0.08 ms. At 1 MiB no change was resolved
+  (CIs span 0). B's p90 of 266 ms at p1 RELIABLE 5% travels with its control's p90 (267 ms): a lost discovery announce.
+
 ### rmw layer
 
 Rows 48-71 (72-75 below). `rmw_tickle`, `rmw_fastrtps_cpp`, `rmw_cyclonedds_cpp` and `rmw_zenoh_cpp` driven through `rclcpp` by one
@@ -660,12 +679,15 @@ checksum; DESIGN.md section 8, "UDP checksum 0"). All four arms in every cell, F
 same `largemsg_rig_summary.py` from `~/rig_results_safe/l4main2_{i1rel,i1be,i4rel,i4be,i4s}_20261015-094605.txt` and
 their `.runs/`; letters per vendor by the same range rule. The previous rows (f1f2f14d, 2026-10-12, and I1L at step A
 dc056907) are in git history; the same cells on main 0c9f9a3b (2026-10-13, `l4main_*_20261013-125140`) are the
-before-figures quoted below.
+before-figures quoted below. The two I1 RELIABLE rows (I1, I1L) were measured again on 2026-10-16 (06:55-07:50) on main
+dde87857: first-n3 (68b637f2), no-send-unmatched (a Publisher with no matched reader sends nothing, DESIGN.md section 4)
+with its O(1) matched check, and UDP checksum 0 as above; same four arms, 5 reps, same reader
+(`~/rig_results_safe/l4main3_i1rel_20261016-065517.{txt,runs}`).
 
 | cell | QoS, rate | delivered % | latency med / p99 ms | CPU sub / pub ms/MB | RSS kB | delivered | latency | CPU sub | CPU pub | RSS |
 |---|---|---:|---:|---:|---:|:-:|:-:|:-:|:-:|:-:|
-| I1 Array1m | RELIABLE KL10, 30 Hz | 100 | 9.29 / 9.36 | 2.28 / 3.88 | 17,624 | D–D–D | W–W–W | D–W–W | W–W–W | W–W–W |
-| I1L Array1m, 5% loss | RELIABLE KL10, 30 Hz | 99.89-100 (2 lost in 1 of 5 runs) | 10.05 / 16.09 | 4.18 / 3.66 | 19,132 | –L– | –L– | –L– | –L– | –L– |
+| I1 Array1m | RELIABLE KL10, 30 Hz | 100 | 9.41 / 9.48 | 2.29 / 3.94 | 18,684 | D–D–D | D–W–W | D–W–W | D–W–W | W–W–W |
+| I1L Array1m, 5% loss | RELIABLE KL10, 30 Hz | 100 | 10.04 / 15.75 | 4.17 / 3.65 | 18,792 | –D– | –W– | –W– | –W– | –W– |
 | I1 Array1m | BEST_EFFORT KL5, 30 Hz | 100 | 9.24 / 9.31 | 2.20 / 3.89 | 17,724 | D–D–D | D–W–W | D–W–W | D–W–W | W–W–W |
 | I4s Array4m (saturating) | BEST_EFFORT KL5, 30 Hz | 95.5 of offered | 54.98 / 71.23 | 1.40 / 3.43 | 30,952 | W–W–W | L–L–L | D–W–W | W–W–W | W–W–W |
 | I4 Array4m | RELIABLE KL10, 15 Hz | 100 | 36.57 / 36.64 | 2.21 / 3.68 | 30,656 | D–D–D | W–W–W | D–W–W | D–W–W | W–W–W |
@@ -677,15 +699,24 @@ before-figures quoted below.
   Fast DDS as shipped it went from LOSE to DRAW in I1 RELIABLE, I1 best effort, I4 RELIABLE and I4s; it still loses at
   I4 best effort (2.19 against 2.10, +4%), as does the publisher there (3.72 against 3.61, +3%). Latency and
   subscriber RSS are unchanged or lower.
-- **I1L is a LOSE: TickLE delivered incompletely** (the scoring rule: an incomplete TickLE loses the cell, whatever
-  its other figures). In 1 of 5 runs the subscriber abandoned 2 samples (`large: abandoned=2`); old main delivered all
-  in 5 of 5. Cause, from the runs' own counters: since 2026-10-13 the hybrid writer has no slow start
-  (`tt_HYBRID_SLOW_START` 0), so before the reader's first loss announce it sent the first 4-5 samples as runs of 45
-  units onto the 5% path (`n_hist` .../5, against old main's n <= 2); a lost 45-frame run is repaired as MTU units, and
-  KEEP_LAST 10 moved past 2 of those samples first. Being fixed (the writer's n before a reader's first announce).
-  Otherwise TickLE leads the cell: Fast DDS as shipped delivered nothing in all 5 runs (it does not run the cell),
-  CycloneDDS about 2% (incomplete, not scored), Fast DDS at 1472 delivered at 58.5 / 83.0 ms against TickLE's 10.05 /
-  16.09 ms.
+- **I1L (main dde87857, 2026-10-16): TickLE delivered every sample in 5 of 5 runs** and wins every other metric
+  against the one vendor arm that runs the cell completely, Fast DDS at 1472 (latency 58.30 / 83.48 ms against 10.04 /
+  15.75, subscriber CPU 7.48 against 4.17 ms/MB). Fast DDS as shipped delivered nothing in all 5 runs (does not run),
+  CycloneDDS 2.4-4.0% (incomplete); neither is scored. **Corrected in place:** on f5fcda06 (2026-10-15) this cell was a
+  LOSE on incomplete delivery - 2 samples abandoned in 1 of 5 runs, because the writer, with no loss estimate from the
+  reader yet, sent its first 4-5 samples as runs of n = 45 onto the 5% path. first-n3 (68b637f2; DESIGN.md section 8)
+  fixed it: rig A/B `~/rig_results_safe/firstn3_20261016-005411` (12 reps at 5%; `n_hist` in the publisher logs), 0
+  runs with any sample at n > 1 against 6 of 12 for the control, main + no-send (46554d68).
+- **Delivered % under no-send.** `perf_test` counts every sample it published, including the one published before the
+  reader matched; TickLE now keeps that sample unsent (`tx_unmatched_kept=1`, `tx_unmatched_dropped=0` in all 10
+  publisher logs; 1,802 published, 1,801 reassembled). The reader (`largemsg_rig_summary.py`) takes the id gap before
+  the first delivered sample as published before the match, not lost (Fast DDS's arms show 5 such samples a run), so
+  TickLE reads 100.00% per published. The incomplete-delivery rule counts what the reader was owed after the match:
+  lost 0 in every TickLE run of both cells.
+- **I1 against its own 2026-10-15 figures:** latency 9.29 -> 9.41 ms, subscriber CPU 2.28 -> 2.29, publisher CPU 3.88
+  -> 3.94 ms/MB, subscriber RSS 17,624 -> 18,684 kB. Latency and publisher CPU against Fast DDS as shipped went from
+  WIN to DRAW: one TickLE rep (r2, 9.77 ms) lies inside Fast DDS's 9.51-9.97 ms, and publisher CPU's 3.85-4.08 overlaps
+  its 3.99-4.16. Not attributed; the other usable reps read 9.34-9.43 ms.
 - **Memory:** the subscriber is the smallest in every cell. The publisher is too in four of six; at 4 MB best effort
   CycloneDDS's publisher is smaller (28,628 and 28,668 kB against 29,312 and 33,408).
 - **CPU per MB at 0% loss before the re-measure** (f1f2f14d, 2026-10-12): Fast DDS as shipped spent 13.7-15.6% less
@@ -749,8 +780,8 @@ Measured as ab/hybrid-land d8980f9b on 4fbb8fe1, before the receive drain; lande
 
 - **rmw large messages** (L4 above, main f5fcda06, 2026-10-15, 5 reps): at I4 best effort subscriber CPU per MB is
   behind Fast DDS as shipped by 4% (2.19 against 2.10) and publisher CPU by 3% (3.72 against 3.61); the other 0%-loss
-  cells are draws on CPU. I1L (5% loss) is lost on incomplete delivery (2 samples in 1 of 5 runs; cause above, being
-  fixed). I4s latency is lost to all three vendor arms (55.0 against 37.6-41.6 ms; see the I4s note for why).
+  cells are draws on CPU. I1L (5% loss), lost on incomplete delivery on f5fcda06, is complete and won on main dde87857
+  (2026-10-16). I4s latency is lost to all three vendor arms (55.0 against 37.6-41.6 ms; see the I4s note for why).
 - **Hybrid transport under loss** (d8980f9b, before the receive drain, Array1m RELIABLE 30 Hz): AUTO's p99 is above
   forced MTU's beyond the A/A floor at 0.01% (+0.12 ms) and 0.1% (+0.025 ms), and its wire bytes per unit 0.46% above
   at 1%; the pre-registered criterion against forced MTU failed at all three rates.
