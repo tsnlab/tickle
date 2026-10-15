@@ -12,14 +12,16 @@
 
 #include <sys/socket.h>
 
-static int real(int fd, int level, int name, const void* val, socklen_t len) {
+#define RIG_SOCKBUF_MAX 212992 // net.core.rmem_max and wmem_max on the rig's Pis
+#define NR_SETSOCKOPT 54L      // __NR_setsockopt on x86-64
+
+static int real(int sock, int level, int name, const void* val, socklen_t len) {
     long ret;
-    register long r10 __asm__("r10") = (long)val;
-    register long r8 __asm__("r8") = (long)len;
+    register long arg4 __asm__("r10") = (long)val;
+    register long arg5 __asm__("r8") = (long)len;
     __asm__ volatile("syscall"
                      : "=a"(ret)
-                     : "a"(54L /* __NR_setsockopt */), "D"((long)fd), "S"((long)level), "d"((long)name), "r"(r10),
-                       "r"(r8)
+                     : "a"(NR_SETSOCKOPT), "D"((long)sock), "S"((long)level), "d"((long)name), "r"(arg4), "r"(arg5)
                      : "rcx", "r11", "memory");
     if (ret < 0) {
         errno = (int)-ret;
@@ -28,13 +30,15 @@ static int real(int fd, int level, int name, const void* val, socklen_t len) {
     return (int)ret;
 }
 
-int setsockopt(int fd, int level, int name, const void* val, socklen_t len) {
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name) - glibc's own names are reserved (__fd, ...)
+int setsockopt(int sock, int level, int name, const void* val, socklen_t len) {
+    // NOLINTNEXTLINE(misc-include-cleaner) - SOL_SOCKET, SO_SNDBUF, SO_RCVBUF: <sys/socket.h> via private headers
     if (level == SOL_SOCKET && (name == SO_SNDBUF || name == SO_RCVBUF) && val && len >= sizeof(int)) {
-        int cap = 212992;
+        int cap = RIG_SOCKBUF_MAX;
         int asked = *(const int*)val;
         if (asked > cap) {
-            return real(fd, level, name, &cap, sizeof cap);
+            return real(sock, level, name, &cap, sizeof cap);
         }
     }
-    return real(fd, level, name, val, len);
+    return real(sock, level, name, val, len);
 }
