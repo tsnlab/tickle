@@ -539,8 +539,8 @@ static void trace_peer_p(const struct tt_Context* node, const struct tt_Publishe
         if (code != last) {
             last = code;
             fprintf(stderr, "PEER_P before_sample=%u code=0x%04x n_hist=", published, (unsigned)code);
-            for (int b = 0; b < tt_HYBRID_N_BUCKETS; b++) {
-                fprintf(stderr, "%s%lu", b == 0 ? "" : "/", (unsigned long)node->hybrid.n_hist[b]);
+            for (int bucket = 0; bucket < tt_HYBRID_N_BUCKETS; bucket++) {
+                fprintf(stderr, "%s%lu", bucket == 0 ? "" : "/", (unsigned long)node->hybrid.n_hist[bucket]);
             }
             fprintf(stderr, "\n");
         }
