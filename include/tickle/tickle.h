@@ -2463,6 +2463,11 @@ struct tt_Publisher { // extends endpoint
     // fields' reason.
     struct tt_LargeRegion large_region;
 #endif
+#if tt_LARGE_SAMPLES
+    // tt_Publisher_large_in_flight() answered true: writable_callback fires once, from the poll, when this Publisher's
+    // large sends have all gone (large_pump(), tickle.c). Core-private; last for the hybrid fields' reason.
+    bool large_idle_notify;
+#endif
 };
 
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic Heartbeat announce - see
@@ -2581,6 +2586,15 @@ uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub);
 // publish, so the samples a program publishes the moment it starts are not ones nobody was matched to receive
 // (examples/linux/uint64/publisher.c). 0 for a NULL Publisher.
 uint8_t tt_Publisher_matched_count(const struct tt_Publisher* pub);
+
+// Whether a large sample of this Publisher (above tt_MAX_SAMPLE_LENGTH, DESIGN.md section 8) is still being sent, or
+// waits behind one that is: a sample published now would wait too, and - KEEP_LAST - replace the one waiting. False
+// for a NULL Publisher, and in a build without tt_LARGE_SAMPLES. When it answers true it also arms one
+// writable_callback for the moment the last of them has gone, fired from tt_Context_poll() like every other, so a
+// caller that wants a DDS-like blocking publish can sleep until then instead of polling (rmw_tickle's
+// RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS). A send that ends without going - its record evicted, the Publisher destroyed -
+// fires nothing; such a caller bounds its wait.
+bool tt_Publisher_large_in_flight(struct tt_Publisher* pub);
 
 // The ACKNACK retry interval this library was built with (2026-09-25): tt_RELIABLE_DEADLINE when set,
 // else tt_RELIABLE_RETRY_INTERVAL - 0 meaning dynamic. A function rather than the macro because it

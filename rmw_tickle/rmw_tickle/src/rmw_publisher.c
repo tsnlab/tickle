@@ -201,6 +201,27 @@ static uint64_t resolve_max_blocking_ns(void) {
     return (uint64_t)blocking_ms * (uint64_t)tt_MILLISECOND;
 }
 
+// RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS (docs/RMW.md, "Runtime environment"), in nanoseconds: how long a KEEP_LAST publish
+// waits for the same publisher's previous large sample to go before it hands its own to core. 0 - unset, empty,
+// malformed or past RMW_TICKLE_MAX_BLOCKING_MS_LIMIT - is off, today's behaviour: the publish never waits, and core
+// replaces a sample waiting behind the send with the newer one (KEEP_LAST at the sender).
+static uint64_t resolve_large_block_ns(void) {
+    const char* env = getenv("RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS");
+    if (NULL == env || '\0' == env[0]) {
+        return 0;
+    }
+    char* end = NULL;
+    unsigned long long block_ms = strtoull(env, &end, 10);
+    if (end == env || (end != NULL && '\0' != *end) || block_ms > RMW_TICKLE_MAX_BLOCKING_MS_LIMIT) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                               "RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS='%s' is not a count of milliseconds up "
+                               "to %llu - large-sample publishes do not wait",
+                               env, (unsigned long long)RMW_TICKLE_MAX_BLOCKING_MS_LIMIT);
+        return 0;
+    }
+    return (uint64_t)block_ms * (uint64_t)tt_MILLISECOND;
+}
+
 // Bytes to reserve per retained sample in a KEEP_ALL publisher's arena.
 //
 // Why this is a knob rather than a computed number: rmw cannot derive a type's maximum encoded
@@ -927,6 +948,23 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
     return true;
 }
 
+// RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS applies to a publisher core keeps KEEP_LAST (a BEST_EFFORT KEEP_ALL one included:
+// core's keep_all needs RELIABLE) whose type can be larger than a datagram; a KEEP_ALL one already waits, refused by
+// core while a large send is in progress. Such a publisher is woken by the writable callback, which core fires for it
+// when its large sends have gone (tt_Publisher_large_in_flight()). Node lock held.
+static void arm_large_block(rmw_tickle_publisher_t* pub_impl) {
+    // rmw_large.c's own test of "can be large", which sizes the reader window and the shared region alike.
+    bool can_be_large = NULL == pub_impl->callbacks ||
+                        (uint16_t)tt_RELIABLE_BITMAP_MAX_WORDS == rmw_tickle_tracking_words_for(pub_impl->callbacks);
+    if (pub_impl->tickle_publisher.keep_all || !can_be_large) {
+        pub_impl->large_block_ns = 0;
+    }
+    if (0 != pub_impl->large_block_ns) {
+        pub_impl->tickle_publisher.writable_callback = publisher_writable_callback;
+        pub_impl->tickle_publisher.writable_callback_param = pub_impl;
+    }
+}
+
 rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_message_type_support_t* type_support,
                                       const char* topic_name, const rmw_qos_profile_t* qos_profile,
                                       const rmw_publisher_options_t* publisher_options) {
@@ -1023,6 +1061,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // Publisher, not just KEEP_ALL ones, so publish_blocking()'s own diagnostics can quote it
     // without first having to ask which kind it is.
     pub_impl->max_blocking_ns = resolve_max_blocking_ns();
+    pub_impl->large_block_ns = resolve_large_block_ns(); // narrowed to KEEP_LAST large-capable types below
     if (NULL == pub_impl->rmw_publisher.topic_name) {
         RMW_SET_ERROR_MSG("failed to allocate topic_name");
         allocator->deallocate(pub_impl, allocator->state);
@@ -1112,6 +1151,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // same-host subscribers take each message in place instead of as fragments through their rings.
     rmw_tickle_large_region_attach(&pub_impl->tickle_publisher, pub_impl->callbacks, qos_profile->depth,
                                    RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history);
+    arm_large_block(pub_impl); // under the create's lock, before the poll thread can see the callback
 
     // QoS roadmap #2 (DEADLINE) - see rmw_tickle_publisher_t.deadline_period_ns's own doc comment.
     // rmw_qos.c already accepted any finite qos.deadline; RMW_QOS_DEADLINE_DEFAULT ({0,0}) leaves
@@ -1373,6 +1413,54 @@ static void writable_deadline(uint64_t max_blocking_ns, struct timespec* deadlin
     deadline->tv_nsec %= (long)tt_SECOND;
 }
 
+// RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS (docs/RMW.md, "Large samples: blocking publish"): while this publisher's previous
+// large sample is still being sent, waits - up to large_block_ns - for it to go, before the caller hands its own
+// sample to core. A DDS publish() of a large sample blocks in the send until the socket has room, and stamps the next
+// sample only after; core cannot (it has no threads: the send goes on from tt_Context_poll()), so without this a
+// sample published meanwhile waits behind the send inside core and is replaced by a newer one, KEEP_LAST at the
+// sender. On expiry the sample goes to core all the same, which then applies KEEP_LAST as it always did: the publish
+// still returns OK - a KEEP_LAST writer never fails a write for want of room in DDS either (max_blocking_time bounds
+// KEEP_ALL/RESOURCE_LIMITS waits, which KEEP_ALL here keeps, RMW_TICKLE_MAX_BLOCKING_MS).
+//
+// The same locking as publish_attempt(): the check is made under the node lock, and wait_mutex is taken before that
+// is released, so the wake core sends when the send ends (publisher_writable_callback(), from the poll, under the node
+// lock) is either already counted in `generation` or waits for the sleep. Called with publish_mutex held only.
+static void wait_for_large_send(rmw_tickle_publisher_t* pub_impl) {
+    if (0 == pub_impl->large_block_ns) {
+        return;
+    }
+    rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
+    struct timespec deadline;
+    bool waiting = false;
+    bool expired = false;
+    while (true) {
+        uint64_t generation = 0;
+        tt_Context_lock(&context_impl->tickle_context);
+        bool in_flight = tt_Publisher_large_in_flight(&pub_impl->tickle_publisher);
+        if (in_flight && !expired) {
+            pthread_mutex_lock(&context_impl->wait_mutex);
+            generation = pub_impl->writable_generation;
+        }
+        tt_Context_unlock(&context_impl->tickle_context);
+        if (!in_flight) {
+            return;
+        }
+        if (expired) {
+            atomic_fetch_add(&context_impl->large_block_timeouts, 1);
+            return;
+        }
+        if (!waiting) {
+            waiting = true;
+            atomic_fetch_add(&context_impl->large_block_waits, 1);
+            writable_deadline(pub_impl->large_block_ns, &deadline);
+            // The send goes on only from a poll: with executor-driven receive, a parked poll thread waits out the
+            // lease of the executor this thread may just have left, so it is woken now.
+            rmw_tickle_wake_parked_poll_thread(context_impl);
+        }
+        expired = !wait_for_writable(pub_impl, generation, &deadline); // releases wait_mutex
+    }
+}
+
 // Phase 3 step 3 - the publish attempt plus the bounded retry HISTORY.KEEP_ALL needs, split out of
 // rmw_publish() below so that function keeps to argument checking and message conversion. Called
 // with pub_impl->publish_mutex held (it reads the shared scratch buffer) and neither the node lock nor
@@ -1383,6 +1471,7 @@ static rmw_ret_t publish_blocking(rmw_tickle_publisher_t* pub_impl, void* tickle
     bool expired = false;
     struct timespec deadline;
 
+    wait_for_large_send(pub_impl); // RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS; a no-op when off
     while (true) {
         uint64_t generation = 0;
         tt_ret_t ret = publish_attempt(pub_impl, tickle_buf, &generation); // holds wait_mutex iff WOULD_BLOCK

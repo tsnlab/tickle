@@ -137,6 +137,18 @@
 #                    the sender sent and the receiver never read was lost (i4s_drain_summary.py reads them).
 #   meta.txt         the run's QoS flags, rate, SAMEHOST, CLOCK_PROBE, DUR and DRY, for the summary.
 #
+# Added 2026-10-16 for the large-sample blocking publish (docs/RMW.md "Large samples: blocking publish"; RESULTS.md
+# L4 row I4s, whose latency rmw_tickle loses because its publish never blocks):
+#   tickle@block  tickle@head's own librmw_tickle.so with RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS=$BLOCK_MS (default 1000) on
+#                 the publisher (and the subscriber, where it does nothing): a publish waits while the previous large
+#                 sample is still being sent, as a DDS publish blocks in its send. tickle@head runs with it unset, the
+#                 control: the same binary. Cross-host default mode only; named in meta.txt (large_block_arms=). Its
+#                 treatment is the publisher's shutdown line, "large_block_waits=<n> large_block_timeouts=<n>": a
+#                 tickle@block run whose publisher shows large_block_waits=0 on a saturating cell did not receive it.
+#   PF_SHAPE      (PC_PREFLIGHT only) a qdisc for the publisher's eth0 in place of the lossless cell's none, e.g.
+#                 "tbf rate 1gbit burst 64kb latency 100ms" - the rig's link, which a veth does not have: without it
+#                 the I4s cell does not saturate on the PC. Lossless cells only; restored to none at the end.
+#
 # Added 2026-10-14 for the UDP checksum 0 A/B (~/rig_jobs/rig_queue_udp_csum0.sh; hal_linux.c "UDP checksum 0"):
 #   tickle@csum0  tickle@head's own librmw_tickle.so with TT_UDP_CSUM0=1 at both ends: every sendmmsg() call carrying an
 #                 IP-fragmented datagram goes with UDP checksum 0. tickle@head runs with TT_UDP_CSUM0 unset (the
@@ -309,9 +321,21 @@ pc_netns_down() {
     return 0
 }
 
-set_loss() {
+PF_SHAPE=${PF_SHAPE:-}
+if [ -n "$PF_SHAPE" ]; then
+    [ "$PC_PREFLIGHT" = 1 ] || { echo "PF_SHAPE is for PC_PREFLIGHT=1 only" >&2; exit 64; }
+    case "$PF_SHAPE" in *[!A-Za-z0-9.\ ]*) echo "PF_SHAPE may hold only [A-Za-z0-9. ]: '$PF_SHAPE'" >&2; exit 64 ;; esac
+    for c in ${CELLS:-}; do [ "${c#*:}" = 0 ] || { echo "PF_SHAPE cells are lossless, not $c" >&2; exit 64; }; done
+    for l in ${LOSSES:-0}; do [ "$l" = 0 ] || { echo "PF_SHAPE cells are lossless, not loss $l" >&2; exit 64; }; done
+fi
+set_loss() { # <loss %> [restore]: "restore" leaves no qdisc at all, PF_SHAPE included
     if [ "$PC_PREFLIGHT" = 1 ]; then # tc as root through ip netns exec (sudo -n permits ip; a nested sudo tc does not)
-        if [ "$1" = 0 ]; then sudo -n ip netns exec "$CLIENT" tc qdisc del dev eth0 root >/dev/null 2>&1 || true
+        if [ "$1" = 0 ]; then
+            sudo -n ip netns exec "$CLIENT" tc qdisc del dev eth0 root >/dev/null 2>&1 || true
+            if [ -n "$PF_SHAPE" ] && [ "${2:-}" != restore ]; then
+                # shellcheck disable=SC2086 # PF_SHAPE is the qdisc's words, checked above
+                sudo -n ip netns exec "$CLIENT" tc qdisc replace dev eth0 root $PF_SHAPE
+            fi
         else sudo -n ip netns exec "$CLIENT" tc qdisc replace dev eth0 root netem loss "$1%"; fi
         return
     fi
@@ -319,7 +343,7 @@ set_loss() {
     else sh_ "$CLIENT" "sudo -n tc qdisc replace dev eth0 root netem loss $1%" </dev/null; fi
 }
 cleanup() {
-    set_loss 0
+    set_loss 0 restore
     for h in "${HOSTS[@]}"; do
         # shellcheck disable=SC2016 # expanded on the Pi, not here
         sh_ "$h" 'for f in /tmp/ka_*.pid; do [ -f "$f" ] || continue; p=$(cat "$f");
@@ -343,6 +367,13 @@ printf 'qos_args=%s\npub_rate=%s\nsamehost=%s\nclock_probe=%s\ndur=%s\ndry=%s\np
 case " $ARMS " in *" tickle@csum0 "*)
     echo "udp_csum0_arms=tickle@head:TT_UDP_CSUM0-unset tickle@csum0:TT_UDP_CSUM0=1(head's binary)" >> "$OUT.runs/meta.txt"
     say "UDP checksum 0 A/B: tickle@csum0 = tickle@head's librmw_tickle.so with TT_UDP_CSUM0=1" ;;
+esac
+BLOCK_MS=${BLOCK_MS:-1000}
+case "$BLOCK_MS" in '' | *[!0-9]*) echo "BLOCK_MS must be a count of milliseconds, not '$BLOCK_MS'" >&2; exit 64 ;; esac
+case " $ARMS " in *" tickle@block "*)
+    echo "large_block_arms=tickle@head:RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS-unset tickle@block:RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS=$BLOCK_MS(head's binary)" \
+        >> "$OUT.runs/meta.txt"
+    say "large-sample blocking publish: tickle@block = tickle@head's librmw_tickle.so with RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS=$BLOCK_MS" ;;
 esac
 case " $ARMS " in *" tickle@nooffload "*)
     echo "udp_offload_arms=tickle@head:TT_UDP_OFFLOAD-unset tickle@nooffload:TT_UDP_OFFLOAD=0(head's binary)" \
@@ -498,6 +529,7 @@ source $PF_PERF_WS/local_setup.bash; export KA_PERF_TEST=$PF_PERF_WS/performance
 fi
 env_for() {
     echo "$BASE"
+    echo "unset RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS" # tickle@block's treatment, set by that arm alone
     if [ "$SAMEHOST" = 1 ]; then # every vendor at its shipped same-host default (header, SAMEHOST)
         echo "unset FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE RMW_FASTRTPS_USE_QOS_FROM_XML"
         echo "unset RMW_FASTRTPS_PUBLICATION_MODE CYCLONEDDS_URI"
@@ -529,6 +561,8 @@ env_for() {
         tickle@head) echo "unset TT_UDP_OFFLOAD TT_UDP_CSUM0; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@nooffload) echo "export TT_UDP_OFFLOAD=0 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@csum0) echo "unset TT_UDP_OFFLOAD; export TT_UDP_CSUM0=1 RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
+        tickle@block) echo "unset TT_UDP_OFFLOAD TT_UDP_CSUM0; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255"
+            echo "export RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS=$BLOCK_MS" ;;
         tickle@loans) echo "export ROS_DISABLE_LOANED_MESSAGES=0 RMW_IMPLEMENTATION=rmw_tickle"
             echo "export TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         tickle@aa) echo "unset TT_UDP_OFFLOAD; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
@@ -550,7 +584,7 @@ env_for() {
 }
 lib_for() {
     case "$1" in
-        tickle@head | tickle@loans | tickle@aa | tickle@mtu | tickle@ip | tickle@nooffload | tickle@mtunooff | tickle@csum0)
+        tickle@head | tickle@loans | tickle@aa | tickle@mtu | tickle@ip | tickle@nooffload | tickle@mtunooff | tickle@csum0 | tickle@block)
             echo "$HEAD_LIB" ;;
         tickle@*) echo "$(variant_install "${1#tickle@}")/rmw_tickle/lib/librmw_tickle.so" ;;
         fastdds | fastdds@*) echo "librmw_fastrtps_cpp.so" ;;
@@ -857,7 +891,7 @@ for loss in $cell_losses; do
         done
     done
 done
-set_loss 0
+set_loss 0 restore
 say "=== runs done $(date -Is); tc restored ==="
 if [ -s "$OUT.runs/index_offload_void.txt" ]; then
     say "UDP offload treatment: $(grep -c '' "$OUT.runs/index_offload_void.txt") run(s) VOID, left out of the summary" \

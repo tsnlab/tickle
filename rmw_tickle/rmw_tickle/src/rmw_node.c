@@ -291,6 +291,19 @@ void rmw_tickle_poke_polling_executor(rmw_tickle_context_impl_t* context_impl) {
     }
 }
 
+void rmw_tickle_wake_parked_poll_thread(rmw_tickle_context_impl_t* context_impl) {
+    if (!context_impl->executor_poll_enabled || atomic_load(&context_impl->executor_polling)) {
+        return;
+    }
+    atomic_store(&context_impl->executor_left_ns, 0); // the lease is over: park_for_polling_executor() leaves
+    if (context_impl->park_wake_fd >= 0) {
+        uint64_t one = 1;
+        if (write(context_impl->park_wake_fd, &one, sizeof(one)) < 0) {
+            return; // the counter is saturated: a wake is already pending
+        }
+    }
+}
+
 // Executor-driven receive: whether an rmw_wait() holds the poll role, or released it less than a lease ago.
 static bool executor_holds_poll(rmw_tickle_context_impl_t* context_impl) {
     if (atomic_load(&context_impl->executor_polling)) {
@@ -454,7 +467,8 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
     (void)fprintf(stderr,
                   "rmw_tickle: executor_poll=%d executor_poll_waits=%llu executor_handovers=%llu park_wakes=%llu "
                   "discovery_dropped=%u nodes_kept_at_destroy=%llu id_muted_drops=%llu cache_depth_shortfalls=%llu "
-                  "rx_malformed_drops=%llu version_mismatch_drops=%llu\n",
+                  "rx_malformed_drops=%llu version_mismatch_drops=%llu large_block_waits=%llu "
+                  "large_block_timeouts=%llu\n",
                   context_impl->executor_poll_enabled ? 1 : 0,
                   (unsigned long long)atomic_load(&context_impl->executor_poll_waits),
                   (unsigned long long)atomic_load(&context_impl->executor_handovers),
@@ -467,7 +481,9 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
                   // poll loop - but a node that saw any is worth knowing about: a rolling upgrade in progress, a
                   // corrupt link, or somebody sending it rubbish.
                   (unsigned long long)context_impl->tickle_context.rx_malformed_drops,
-                  (unsigned long long)context_impl->tickle_context.version_mismatch_drops);
+                  (unsigned long long)context_impl->tickle_context.version_mismatch_drops,
+                  (unsigned long long)atomic_load(&context_impl->large_block_waits),
+                  (unsigned long long)atomic_load(&context_impl->large_block_timeouts));
 
     // watchdog_thread_running is only ever true here if start_shared_tickle_node() actually
     // managed to start it (see its own doc comment there) - nothing to join otherwise. No tt_Context_

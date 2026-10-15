@@ -330,6 +330,11 @@ struct rmw_tickle_context_impl_t {
     // (g10) KEEP_LAST samples its publishers cached while their cache could not keep `depth` of them (the budget,
     // RMW_TICKLE_CACHE_BYTES, reached), summed from tt_ReliableCache.depth_shortfalls; on the shutdown line.
     _Atomic uint64_t cache_depth_shortfalls;
+    // RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS (wait_for_large_send(), rmw_publisher.c): publishes that waited for this
+    // context's earlier large sample to go, and those whose wait ran out (the sample then went to core, KEEP_LAST).
+    // On the shutdown line, so a measurement arm can show its treatment acted.
+    _Atomic uint64_t large_block_waits;
+    _Atomic uint64_t large_block_timeouts;
     // (g6) rmw_init was given RMW_AUTOMATIC_DISCOVERY_RANGE_NOT_SET: rmw_create_node() refuses, as the vendors do.
     bool discovery_range_unset;
     atomic_bool poll_thread_parked; // the poll thread is parked (announced on handover_cond)
@@ -799,6 +804,13 @@ typedef struct rmw_tickle_publisher_t {
     // rather drop than stall should set. Only consulted for a KEEP_ALL Publisher - no other kind
     // can be refused in the first place.
     uint64_t max_blocking_ns;
+
+    // RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS (resolve_large_block_ns(), rmw_publisher.c), 0 = off, the default: how long
+    // rmw_publish() may wait, before it hands a sample to core, while this KEEP_LAST Publisher's previous large sample
+    // is still being sent (tt_Publisher_large_in_flight()). Woken through writable_generation above. Always 0 for a
+    // KEEP_ALL Publisher, which core already refuses while a large send is in progress, and for a type that can never
+    // be large.
+    uint64_t large_block_ns;
 } rmw_tickle_publisher_t;
 
 // rmw_tickle/PLAN.md's Milestone 3: rmw_take()'s own bounded queue, holding already-from_tickle()-
@@ -1112,6 +1124,12 @@ typedef struct rmw_tickle_subscriber_t {
 // guard condition, an event, a queue fed outside the poll), wakes an rmw_wait() that is polling the node
 // itself. A no-op unless one is, and on the thread that is doing the polling (rmw_node.c).
 void rmw_tickle_poke_polling_executor(rmw_tickle_context_impl_t* context_impl);
+
+// Executor-driven receive: a thread is about to sleep until the node has made progress it cannot make itself (a
+// large send's room, RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS). Ends a released executor's lease at once, so the parked poll
+// thread polls now rather than at the lease's end (up to RMW_TICKLE_EXECUTOR_POLL_LEASE_NS later). A no-op while an
+// rmw_wait() holds the poll role - it is polling - or without executor-driven receive (rmw_node.c).
+void rmw_tickle_wake_parked_poll_thread(rmw_tickle_context_impl_t* context_impl);
 
 // Recomputes a Subscription's RMW_EVENT_LIVELINESS_CHANGED counts, and wakes rmw_wait() if they changed.
 // Node lock held (rmw_subscription.c).
