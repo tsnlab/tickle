@@ -326,6 +326,16 @@ struct tt_hal {
     // run, and the data socket carrying every discovery reply and ACKNACK was never read again (2026-10-05, rmw
     // KEEP_ALL on the rig). A time, not a count of datagrams, so the bound does not stretch with the hardware.
     uint64_t rx_idle_since_ns;
+    // The read that follows a wake-up's datagram (2026-10-15, tt_receive()'s rx_lone_after_wake()). On a node whose
+    // datagrams come one per wake-up - a ping-pong, a subscriber at a modest rate - the drain after the wake-up read
+    // asked the same socket once more and found it empty: one recvmmsg() returning EAGAIN per round trip at each end.
+    // After TT_RX_LONE_STREAK such reads in a row the read is skipped (the socket is marked in rx_idle, so what did
+    // come is reported by the next wait, which is level-triggered) on all but one wake-up in TT_RX_LONE_RECHECK; that
+    // one reads, and a datagram found there ends the run. rx_probe_bit names the socket whose next read is such a read
+    // (TT_RX_IDLE_* bit, 0: none).
+    uint8_t rx_lone_streak;
+    uint8_t rx_lone_skips;
+    uint8_t rx_probe_bit;
     // Reads of a socket that found nothing (EAGAIN): the "Node N rx:" line's empty_reads=, a rig arm's treatment check
     // for the reads rx_idle exists to skip.
     uint64_t rx_empty_reads;

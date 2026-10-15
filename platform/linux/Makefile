@@ -205,6 +205,10 @@ rx_hint_check: rx_hint_check.c libtickle.a
 rx_idle_check: rx_idle_check.c libtickle.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
+# The read after a wake-up's datagram is skipped once datagrams come one per wake-up, and loses nothing (rx_lone_check.c).
+rx_lone_check: rx_lone_check.c libtickle.a
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
+
 # A receive socket's drops, as the kernel counts them, and the drain that keeps them at 0 (rx_drain_check.c). Built
 # from the sources with rmw's datagram and large samples on, as rmw_tickle is, since the drain exists only there.
 rx_drain_check: rx_drain_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle/*.h)
@@ -241,7 +245,8 @@ udp_offload_check_flap: udp_offload_check.c $(HAL_SRC) $(SRC)/tickle.c $(SRC)/en
 	    -DCHECK_READ_DELAY_NS=1500000L $(LDFLAGS) -o $@ udp_offload_check.c \
 	    $(HAL_SRC) $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
 
-test-samehost: examples refuse_io_uring.so refuse_pbuf_ring.so rx_hint_check rx_idle_check rx_drain_check bell_wake_check
+test-samehost: examples refuse_io_uring.so refuse_pbuf_ring.so rx_hint_check rx_idle_check rx_lone_check rx_drain_check \
+    bell_wake_check
 	./test_samehost.sh
 
 test: config-renames $(TEST_BINS) $(LARGE_TEST_BINS)
@@ -598,6 +603,6 @@ clean:
 	# currently selected, so switching BUILD_TYPE and running `clean` doesn't leave the
 	# other mode's stale cache behind.
 	rm -rf obj/*/
-	rm -f libtickle.a refuse_io_uring.so refuse_pbuf_ring.so rx_hint_check rx_idle_check rx_drain_check bell_wake_check udp_offload_check \
+	rm -f libtickle.a refuse_io_uring.so refuse_pbuf_ring.so rx_hint_check rx_idle_check rx_lone_check rx_drain_check bell_wake_check udp_offload_check \
 	    udp_offload_check_flap
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))
