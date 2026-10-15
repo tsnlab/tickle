@@ -2057,6 +2057,7 @@ struct tt_LargeCursor {
 #if tt_HYBRID_TRANSPORT
     uint8_t run_n[tt_LARGE_DESTINATIONS];      // units per datagram to each destination, fixed for the sample (1: MTU)
     uint16_t run_until[tt_LARGE_DESTINATIONS]; // units [0, run_until) go in runs; a re-probe sends only its first
+    bool alone[tt_LARGE_DESTINATIONS];         // MTU units one a send call: a reader's p is measured on them (no train)
 #endif
 };
 #endif

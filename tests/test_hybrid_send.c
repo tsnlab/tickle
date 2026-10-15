@@ -2851,6 +2851,114 @@ static void test_a_sample_received_in_runs_is_lent_in_place(void) {
 #endif
 }
 
+// --- the first p on a path that loses whole send calls (2026-10-15)
+// ---------------------------------------------------
+//
+// The rig's I1L cell (1 MB RELIABLE KEEP_LAST 10 at 30 Hz, netem 5% on the writer's egress): netem decides its loss
+// per packet as the packet is queued, above the segmentation, so a UDP_SEGMENT send of up to 44 MTU datagrams is lost
+// or kept whole. The first sample's 723 MTU units - what the reader's first p rests on - were ~22 chances to lose, not
+// 723, came through clean in 2 runs of 5, and the reader announced "none seen": n = 45 on a path where a run of 45
+// IP fragments, each its own packet, arrives one time in ten. The link here: the writer's MTU datagrams are lost by the
+// send call that carried them (a train), every TRAIN_LOSS_EVERY-th train - 5%, deterministically, and none of the
+// first sample's trains of 64 - and a fragmented datagram frame by frame at 5%. A datagram sent alone is a train of
+// its own.
+#define TRAIN_LOSS_EVERY 20U
+#define TRAIN_LOST_AT (TRAIN_LOSS_EVERY - 1U)
+#define TRAIN_FRAME_LOSS_PPM 50000U
+#define TRAIN_SAMPLES 30U
+static uint32_t train_call[SIM_QUEUE]; // by queue slot: the send call that carried the datagram
+static uint32_t train_last_call;
+static uint32_t train_count;
+static bool train_lost_now;
+static uint32_t train_rng;
+static uint32_t train_call_now;
+static uint32_t train_call_firsts; // first transmissions of MTU units in the current send call
+static uint32_t train_max_firsts;  // the most in one call since the last reset
+
+static void train_capture(const void* buf, size_t len) {
+    uint32_t call = (uint32_t)test_mock_send_batch_call_count;
+    train_call[sim_tail % SIM_QUEUE] = call;
+    uint32_t seq_no = 0;
+    uint32_t units = 0;
+    bool run = false;
+    if (sim_acting == SENDER_ID && datagram_units((const uint8_t*)buf, &seq_no, &units, &run) && !run &&
+        seen_unit[seq_no % SEEN_MAX] == 0) {
+        if (call != train_call_now) {
+            train_call_now = call;
+            train_call_firsts = 0;
+        }
+        train_call_firsts++;
+        train_max_firsts = train_call_firsts > train_max_firsts ? train_call_firsts : train_max_firsts;
+    }
+    sim_capture(buf, len);
+}
+
+static bool train_drop(const struct sim_datagram* d) {
+    if (d->from != SENDER_ID) {
+        return false;
+    }
+    uint32_t frames = (d->len + 8U + FRAME_PAYLOAD - 1U) / FRAME_PAYLOAD;
+    if (frames > 1U) {
+        bool lost = false;
+        for (uint32_t i = 0; i < frames; i++) {
+            train_rng = (train_rng * 1103515245U) + 12345U;
+            lost = lost || ((train_rng >> 8) & 0xFFFFFFU) % 1000000U < TRAIN_FRAME_LOSS_PPM;
+        }
+        return lost;
+    }
+    uint32_t call = train_call[(uint32_t)(d - sim_queue) % SIM_QUEUE];
+    if (call != train_last_call) {
+        train_last_call = call;
+        train_count++;
+        train_lost_now = train_count % TRAIN_LOSS_EVERY == TRAIN_LOST_AT;
+    }
+    return train_lost_now;
+}
+
+// Until a reader's first p is heard, the frames it will rest on go one a send call, never as a train; the reader
+// announces that first p at the first sample's tail, whatever it reads, and the writer goes back to trains. On the
+// train-losing link above, before 2026-10-15: the first sample's 12 trains all arrived, "none seen", and samples 2 to
+// 30 went at n = 45. Now its 723 datagrams are 723 trains, ~36 lost, p ~ 5%, and no sample goes at n > 1.
+static void test_the_first_p_rests_on_frames_not_trains(void) {
+    init_one(ONE_MB, FULL_CEILING, true);
+    sim_start(0);
+    test_mock_send_hook = train_capture;
+    sim_drop_hook = train_drop;
+    train_last_call = UINT32_MAX;
+    train_count = 0;
+    train_lost_now = false;
+    train_rng = 7;
+    train_call_now = UINT32_MAX;
+    sim_announce();
+    uint64_t t = test_mock_now;
+    tick_readers(t);
+    uint32_t at_runs = 0;
+    uint32_t first_alone = 0;
+    uint32_t second_alone = 0;
+    uint16_t heard_before_second = 0;
+    for (uint32_t s = 1; s <= TRAIN_SAMPLES; s++) {
+        memset(&sent, 0, sizeof(sent));
+        train_max_firsts = 0;
+        train_call_now = UINT32_MAX;
+        test_mock_now = t + (tt_SECOND / 2U) + ((uint64_t)s * 34U * tt_MILLISECOND); // no reader tick in between
+        heard_before_second = s == 2 ? sender.hybrid.peer_loss_p[reader_id(0)] : heard_before_second;
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)s));
+        first_alone = s == 1 ? train_max_firsts : first_alone;
+        second_alone = s == 2 ? train_max_firsts : second_alone;
+        sim_settle((int)s, tt_SECOND);
+        at_runs += sent.max_n >= 2U ? 1U : 0U;
+    }
+    EXPECT_EQ_U32(1, first_alone);               // the first sample: one MTU unit a send call
+    EXPECT_TRUE(heard_before_second != 0);       // its tail announced the reader's first p
+    EXPECT_TRUE(second_alone > 1U);              // and the second went in trains again
+    EXPECT_TRUE(train_count > TRAIN_LOSS_EVERY); // the treatment: trains were lost
+    EXPECT_EQ_U32(0, at_runs);                   // no sample at n > 1 on a 5% path
+    EXPECT_TRUE(readers[0].ctx.hybrid.rx_loss.events > 0);
+    expect_intact_or_given_up(0, (int)TRAIN_SAMPLES);
+    sim_drop_hook = NULL;
+    test_mock_send_hook = sim_capture;
+}
+
 int main(void) {
     test_small_sample_goes_as_one_run_and_its_tail();
     test_large_samples_go_in_runs_of_n_max();
@@ -2906,6 +3014,7 @@ int main(void) {
     test_runs_with_a_ranged_encode_leave_the_wire_byte_identical();
     test_each_run_call_is_encoded_just_before_it_goes();
     test_a_sample_received_in_runs_is_lent_in_place();
+    test_the_first_p_rests_on_frames_not_trains();
     free(sim_queue);
     printf("test_hybrid_send: %u samples owed when the link went quiet, asked for at the periodic Heartbeat\n",
            sim_pause_heartbeats);
