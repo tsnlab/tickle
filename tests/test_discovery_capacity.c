@@ -156,6 +156,12 @@ static void test_the_last_of_many_publishers_is_known_and_refused(void) {
     // Its DATA is refused as RxO-incompatible, not delivered.
     uint32_t value = 42;
     delivered = 0;
+    // The Subscriber's announce, which requests RELIABLE, would not match this BEST_EFFORT Publisher, and one with no
+    // matched reader sends nothing (2026-10-15): it broadcasts here to more readers than the unicast threshold, so its
+    // DATA reaches the Subscriber and the Subscriber's own RxO check is what is tested.
+    for (uint8_t peer = 0; peer <= tt_UNICAST_PEER_THRESHOLD; peer++) {
+        (void)upsert_peer(pubs[last].peers, (uint8_t)(10U + peer), 0x0a000010U + peer, 7400);
+    }
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pubs[last], (struct tt_Data*)&value));
     carry();
     EXPECT_EQ_INT(0, delivered);

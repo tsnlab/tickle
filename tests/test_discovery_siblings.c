@@ -216,6 +216,14 @@ static void test_each_writer_is_matched_by_its_own_qos(void) {
     announce();
     delivered_kept = 0;
     delivered_missed = 0;
+    // A Publisher with no matched reader sends nothing (2026-10-15), and the local Subscriber's announce never reaches
+    // the remote context here: `kept` is matched to it as its announce would match it, and `missed` - which that
+    // announce would not match, its deadline being refused - broadcasts to more readers than the unicast threshold,
+    // so its DATA still reaches the Subscriber and the Subscriber's own judgement is what is tested.
+    (void)upsert_peer(kept.peers, LOCAL_ID, 0x0a000001U, 7400);
+    for (uint8_t peer = 0; peer <= tt_UNICAST_PEER_THRESHOLD; peer++) {
+        (void)upsert_peer(missed.peers, (uint8_t)(10U + peer), 0x0a000010U + peer, 7400);
+    }
     publish(&kept, VALUE_KEPT);
     publish(&missed, VALUE_MISSED);
     EXPECT_EQ_INT(1, delivered_kept);

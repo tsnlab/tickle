@@ -166,6 +166,14 @@ static void init_bare_node(struct tt_Context* node, uint8_t id) {
     node->tx_size = sizeof(node->tx_buffer);
 }
 
+// A Publisher with no matched reader sends nothing (2026-10-15): more known readers than the unicast threshold, none
+// of them the receiver, so a publish broadcasts as these tests expect and the receiver takes it from the broadcast.
+static void match_by_broadcast(struct tt_Publisher* publisher) {
+    for (uint8_t peer = 0; peer <= tt_UNICAST_PEER_THRESHOLD; peer++) {
+        (void)upsert_peer(publisher->peers, (uint8_t)(100 + peer), 0x0a000100U + peer, PORT);
+    }
+}
+
 static void init_pair(uint32_t len) {
     test_mock_reset();
     sample_len = len;
@@ -182,6 +190,7 @@ static void init_pair(uint32_t len) {
     sender_topic.data_encode_size = sized_encode_size;
     sender_topic.data_encode = sized_encode;
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
+    match_by_broadcast(&pub);
 
     init_bare_node(&receiver, RECEIVER_ID);
     memset(&receiver_topic, 0, sizeof(receiver_topic));
@@ -496,6 +505,9 @@ static void test_zero_copy_publish_fragments_too(void) {
 // --- system calls: the batching that makes a fragmented sample cost one send again -------------------
 
 static void set_peers(uint8_t n) {
+    while (pub.peers[0].context_id != tt_CONTEXT_ID_INVALID) {
+        forget_peer(pub.peers, pub.peers[0].context_id); // init_pair()'s broadcast readers, replaced by these
+    }
     for (uint8_t i = 0; i < n; i++) {
         pub.peers[i] = (struct tt_Peer) {.ip = RECEIVER_IP + i, .port = PORT, .context_id = (uint8_t)(RECEIVER_ID + i)};
     }
@@ -1109,6 +1121,7 @@ static void test_reliable_two_writers_interleaved(void) {
     static struct tt_Publisher second_pub;
     init_bare_node(&second, 3);
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&second, &second_pub, &sender_topic, ENDPOINT_NAME));
+    match_by_broadcast(&second_pub);
     publish_captured();
     uint8_t first_writer[2][tt_MAX_BUFFER_LENGTH];
     uint32_t first_len[2];
@@ -1301,6 +1314,7 @@ static void test_reliable_two_writers_interleaved_after_first_contact(void) {
     static struct tt_Publisher second_pub;
     init_bare_node(&second, 3);
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&second, &second_pub, &sender_topic, ENDPOINT_NAME));
+    match_by_broadcast(&second_pub);
     static struct captured_sample one;
     static struct captured_sample two;
     int expected = 0;
@@ -1588,6 +1602,7 @@ static void collision_setup(void) {
     first_contact_sample(5000); // seq_no 1..4
     init_bare_node(&collide_ctx, 3);
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&collide_ctx, &collide_pub, &sender_topic, ENDPOINT_NAME));
+    match_by_broadcast(&collide_pub);
     sample_len = 100;
     struct tt_ReorderSlot* target = reorder_writer_slot(
         &sub, find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id), SENDER_ID, pub.endpoint.entity_id, 5);
@@ -1712,6 +1727,7 @@ static void test_reliable_fast_path_ignores_another_subscribers_hold(void) {
     init_bare_node(&collide_ctx, 3);
     EXPECT_EQ_INT(tt_RET_OK,
                   tt_Context_create_publisher(&collide_ctx, &collide_pub, &other_sender_topic, ENDPOINT_NAME));
+    match_by_broadcast(&collide_pub);
     sample_len = 100;
     static struct captured_sample data;
     for (int n = 0; n < 3; n++) { // seq_no 1 delivered, 2 lost, 3 held behind it
@@ -1775,10 +1791,12 @@ static void test_reliable_fast_path_follows_its_writer_and_subscriber_out(void) 
             init_bare_node(&collide_ctx, 3);
             EXPECT_EQ_INT(tt_RET_OK,
                           tt_Context_create_publisher(&collide_ctx, &collide_pub, &sender_topic, ENDPOINT_NAME));
+            match_by_broadcast(&collide_pub);
             other = &collide_pub;
             other_ip = SENDER_IP + 2;
         } else if (arm == 1) {
             EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &sibling_pub, &sender_topic, ENDPOINT_NAME));
+            match_by_broadcast(&sibling_pub);
             EXPECT_TRUE(sibling_pub.endpoint.entity_id != entity);
             other = &sibling_pub;
         }

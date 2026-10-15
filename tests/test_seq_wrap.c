@@ -406,6 +406,19 @@ static void reader_outcome(struct wrap_outcome* out, int r, const struct tt_Subs
     out->declines[r] = s->accept_declines;
 }
 
+// The writer matches the reader(s) as their announce would (register_subscriber_peer_on_publisher()): its peer, and an
+// ack entry per RELIABLE reader. A Publisher with no matched reader sends nothing (2026-10-15), and these two nodes
+// exchange no announces.
+static void match_readers(bool second_reader) {
+    (void)upsert_peer(pub.peers, RECEIVER_ID, RECEIVER_IP, PORT);
+    if (pub.reliable) {
+        EXPECT_TRUE(claim_peer_ack(&pub, RECEIVER_ID, sub.endpoint.entity_id) != NULL);
+        if (second_reader) {
+            EXPECT_TRUE(claim_peer_ack(&pub, RECEIVER_ID, sub2.endpoint.entity_id) != NULL);
+        }
+    }
+}
+
 // SIM_SAMPLES samples from a writer whose first seq_no is `first`, as `c` says; runs until every reader has them all
 // or `budget` has passed.
 static struct wrap_outcome sim_run_case(uint32_t first, const struct wrap_case* c, uint64_t budget) {
@@ -469,14 +482,18 @@ static struct wrap_outcome sim_run_case(uint32_t first, const struct wrap_case* 
         }
     }
     pub.seq_no = first - 1U; // the next sample takes seq_no `first`
+    if (c->silent == 0) {
+        match_readers(c->second_reader);
+    }
 
     test_mock_send_hook = sim_capture;
     test_mock_now = tt_SECOND;
     for (int i = 0; i < SIM_SAMPLES; i++) {
         sim_mute = (uint32_t)i < c->silent;
         if ((uint32_t)i == c->silent && c->silent != 0) {
-            // The reader arrives: what the writer retains goes to it, then the initial Heartbeat - a match's order
-            // (register_subscriber_peer_on_publisher()).
+            // The reader arrives: it is matched, what the writer retains goes to it, then the initial Heartbeat - a
+            // match's order (register_subscriber_peer_on_publisher()).
+            match_readers(c->second_reader);
             struct tt_Peer reader = {RECEIVER_ID, RECEIVER_IP, PORT};
             sim_acting = SENDER_ID;
             deliver_durability_backlog(&sender, &pub, &reader);

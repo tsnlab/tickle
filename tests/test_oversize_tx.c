@@ -73,6 +73,11 @@ static void init_node_with_endpoints(int count) {
         topics[i].data_encode_size = sized_encode_size;
         topics[i].data_encode = sized_encode;
         EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&node, &pubs[i], &topics[i], "my_robot_node_endpoint"));
+        // A Publisher with no matched reader sends nothing (2026-10-15): more known readers than the unicast
+        // threshold, so expect_node_still_publishes()'s publish still goes out, by broadcast.
+        for (uint8_t peer = 0; peer <= tt_UNICAST_PEER_THRESHOLD; peer++) {
+            (void)upsert_peer(pubs[i].peers, (uint8_t)(10 + peer), 0x0a000010U + peer, 8282);
+        }
     }
 }
 

@@ -842,6 +842,10 @@ static bool drop_summaries(const struct duo_datagram* datagram) {
     return datagram->summaries > 0;
 }
 
+static bool drop_node_one_summaries(const struct duo_datagram* datagram) {
+    return datagram->from == 1 && datagram->summaries > 0;
+}
+
 static bool drop_node_one_lists(const struct duo_datagram* datagram) {
     return datagram->from == 1 && datagram->lists > 0;
 }
@@ -1290,6 +1294,19 @@ static void liveliness_duo_start(struct tt_Context* one, struct tt_Context* two,
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(two, &duo_discovery, liveliness_observer, NULL));
     watched_ids[0] = first->endpoint.id;
     watched_ids[1] = second != NULL ? second->endpoint.id : 0;
+    // Node 2 also reads what it watches: a Publisher with no matched reader sends nothing (2026-10-15), so the DATA
+    // these tests keep a lease alive with would not leave node 1 otherwise.
+    static struct tt_Topic live_sub_topics[2];
+    static struct tt_Subscriber live_subs[2];
+    const struct tt_Publisher* watched[2] = {first, second};
+    for (int k = 0; k < 2 && watched[k] != NULL; k++) {
+        live_sub_topics[k] = (struct tt_Topic) {.name = watched[k]->topic->name,
+                                                .data_size = 4,
+                                                .data_decode = duo_decode,
+                                                .data_free = duo_free};
+        EXPECT_EQ_INT(tt_RET_OK,
+                      tt_Context_create_subscriber(two, &live_subs[k], &live_sub_topics[k], "live_ep", duo_on_data));
+    }
     duo_run_until(one, two, test_mock_now + (50 * tt_MILLISECOND));
     EXPECT_EQ_INT(1, watched_arrivals[0]);
 }
@@ -1337,7 +1354,9 @@ static void test_an_automatic_lease_runs_from_the_data_and_lapses_on_time(void) 
     pub.liveliness_lease_duration_ns = tt_SECOND + (tt_SECOND / 2);
     liveliness_duo_start(&one, &two, &pub, NULL);
 
-    duo_drop = drop_summaries;
+    // Node 1's summaries: the reader's must get through, or node 1 presumes node 2 gone, its Publisher has no matched
+    // reader left, and it sends nothing (2026-10-15) - which was a broadcast, still keeping the lease, before.
+    duo_drop = drop_node_one_summaries;
     (void)duo_run_publishing(&one, &two, test_mock_now + (5 * tt_SECOND), &pub, 100 * tt_MILLISECOND);
     EXPECT_EQ_INT(0, watched_departures[0]);
     EXPECT_TRUE(two.update_seen[1]);
