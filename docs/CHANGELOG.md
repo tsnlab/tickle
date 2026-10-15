@@ -350,6 +350,25 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   - Discovery stays broadcast, and so does a send to more readers than `tt_UNICAST_PEER_THRESHOLD`.
   - A reader's first sample now waits for its announce to reach the writer: one `tt_CONTEXT_TX_INTERVAL` after the
     Subscriber is created, or within one `tt_CONTEXT_UPDATE_INTERVAL` if that announce is lost.
+- **RELIABLE repair is as DDS/RTPS has it: no give-up on a count** (2026-10-15, the user's decision; docs/DESIGN.md
+  section 6). A writer resends a datagram for as long as its history holds it (the per-sample cap of
+  `tt_RELIABLE_RETRY`, after which a KEEP_LAST writer went silent without saying the datagram was gone, is removed)
+  and answers a request for one it no longer holds with the eviction HEARTBEAT, as before; a RELIABLE writer with no
+  history now answers the same way. Past its third resend a datagram goes at most once per retry interval (nack
+  suppression, not under KEEP_ALL). A reader gives a gap up only on that HEARTBEAT (`gap_evicted`) or with the writer
+  (departure, lapsed lease), never after `tt_RELIABLE_RETRY` retries. Past those retries its requests back off,
+  doubling up to 16 times the interval (`tt_RELIABLE_RETRY_BACKOFF_SHIFT`, new), but only while the writer is quiet:
+  a writer whose DATA still arrives is asked at the plain interval. KEEP_ALL gaps keep the plain interval. A
+  backed-off recovery is not timed, and the retry count saturates. Before: a reader that did not know its writer's
+  policy waited for good on a writer that had stopped (seed 34: 28 of 40 samples), and a KEEP_LAST reader gave up
+  units the writer still held. `tests/test_hybrid_send.c` seeds 1-100, shared tests: 17 samples given up before, 0
+  after (98 of 100 seeds pass in both). PC A/B (`keep_last_repair_pc_ab.sh`, veth, netem 1% and 5%, 5 reps; p4 10
+  more): delivered %, wire bytes per sample, throughput and p99 HELD in every cell (core p1-p4 KEEP_LAST at max rate,
+  latency p1/p4, 1 MB KEEP_LAST 10 at 30 Hz; the quiet-writer rule re-measured on p4 alone, the cell it decides); L4
+  at 1% delivered +0.24 points (BETTER). The p4 cell's occasional receiver collapses, in every arm, ran deepest in the
+  change (97.4% delivered against the parent's worst 98.3%). Two designs were refuted on
+  the way: without the nack suppression p4 at 1% resent 412,632 datagrams against 19-31 thousand and delivered half;
+  with a back-off on the retry count alone one p4 run in ten collapsed to 35% delivered.
 - **RPC retry bounds are relative to the link** (docs/ROADMAP.md 5a, the constants audit). The auto retry interval
   (`call_retry_interval` 0) is RFC 6298's `srtt + max(tt_CALL_RETRY_GRANULARITY, 4 x rttvar)`, doubled at each
   retry of a call and at most `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` x srtt, in place of 1.5 x an EMA held between a fixed
