@@ -41,6 +41,15 @@
 # and their first p 0xff00; FIXED needs B's 0. Sample size: at the rig's 1/8, 40 B runs miss it (7/8)^40 = 0.5% of the
 # time; 0 of 40 bounds B's rate below 7.2% at 95%.
 #
+# THIRD CAMPAIGN (2026-10-16, written before its run): both arms carry no-send-unmatched (a Publisher with no matched
+# reader sends nothing). PARENT = main + no-send (ab/hybrid-first-n3's control), TIP = ab/hybrid-first-n3 (first-n's
+# one-a-call + the !update_seen half of first-n2), at PUB_WAIT_MS=0 and the default 2000, ARMS_L5="A B". A VOLATILE
+# reader now starts at its match point, so FIXED's delivered = published cannot hold for a reader matched after the
+# first sample; MATCHED (hybrid_first_n_read.py) reads delivery from the reader's first sample instead: nothing missing
+# between its first and last, the last the last published, nothing abandoned, and no sample at n > 1. B passes on 0 of
+# >= 60 runs with n > 1 or a gap (rate < 5% at 95%); A's rate is the control's - if A also has 0 runs with n > 1, the
+# trigger is gone under no-send and B's 0 shows nothing of the fix (say so; the unit tests carry it).
+#
 # Usage: hybrid_first_n_pc.sh [REPS_L5] [REPS_L0] [DURATION_S]   results to $WORK (default ~/hybrid_first_n/<stamp>)
 # Needs passwordless `sudo -n ip` and `tc`. Run it detached (CLAUDE.md, "Long-running work"); every bench process runs
 # under `ulimit -v` and a timeout. No rig: PC only, in private namespaces.

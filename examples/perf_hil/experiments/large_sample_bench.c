@@ -177,6 +177,7 @@ static uint32_t delivered;
 static uint32_t torn;
 static uint32_t out_of_order;
 static uint32_t last_index;
+static uint32_t first_index;      // the first sample delivered: a VOLATILE reader's match point
 static uint8_t seen[MAX_SAMPLES]; // by index: which samples arrived, so a missing one can be named
 static uint64_t* latencies_ns;
 
@@ -205,6 +206,9 @@ static int32_t bench_decode(struct tt_Data* data, const uint8_t* payload, uint32
     }
     if (delivered > 0 && index <= last_index) {
         out_of_order++;
+    }
+    if (delivered == 0) {
+        first_index = index;
     }
     last_index = index;
     spin_ns(decode_spin_ns);
@@ -709,6 +713,13 @@ static int run_subscriber(struct tt_Context* node, const struct options* opts) {
         }
     }
     printf("%s", named == 0 ? "none" : "");
+    // From the match point on: a writer with no matched reader sends nothing, so a VOLATILE reader starts where the
+    // writer learnt it; what is missing between its first and its last sample is a loss, before it is not.
+    uint32_t missing_after_first = 0;
+    for (uint32_t i = first_index; delivered > 0 && i < last_index && i < MAX_SAMPLES; i++) {
+        missing_after_first += seen[i] == 0 ? 1U : 0U;
+    }
+    printf(" first_index=%u missing_after_first=%u", first_index, missing_after_first);
 #if BENCH_LARGE
     uint32_t held = 0;
     for (uint32_t i = 0; i < tt_LARGE_ASSEMBLIES; i++) {

@@ -61,6 +61,10 @@ def realized(run):
         "published": int(run["pub"]["published"]),
         "delivered": int(run["sub"]["delivered"]),
         "abandoned": int(run["sub"]["large_abandoned"]),
+        # From the match point (third campaign): absent in a bench before first_index existed.
+        "first_index": int(run["sub"].get("first_index", "0")),
+        "missing_after_first": int(run["sub"].get("missing_after_first", "-1")),
+        "last_index": int(run["sub"].get("last_index", "-1")),
     }
 
 
@@ -126,6 +130,24 @@ def main():
                 f"FIXED {'PASS' if ok else 'FAIL'}: B at l5 - runs with n > 1: {len(bad)} of {len(b5)}, "
                 f"incomplete deliveries: {len(lost)}"
             )
+    # MATCHED (third campaign, no-send-unmatched under both arms): a VOLATILE reader starts where the writer learnt it,
+    # so what counts is delivery from its first sample on - nothing missing between its first and last sample, the last
+    # the last published, nothing abandoned - and no sample at n > 1. Read for B, and for A as the control's rate.
+    for arm in ("A", "B"):
+        rs = get("l5", arm)
+        if not rs or rs[0]["missing_after_first"] < 0:
+            continue
+        bad = [r for r in rs if r["at_runs"] > 0]
+        gaps = [r for r in rs if r["missing_after_first"] != 0 or r["abandoned"] > 0
+                or r["last_index"] != r["published"] - 1]
+        late = [r["first_index"] for r in rs if r["first_index"] > 0]
+        verdict = "PASS" if not bad and not gaps else "FAIL"
+        print(
+            f"MATCHED {arm} {verdict}: l5 runs with n > 1: {len(bad)} of {len(rs)} "
+            f"(samples {[r['at_runs'] for r in bad]}), incomplete from the match point: {len(gaps)} "
+            f"{[(r['rep'], r['first_index'], r['missing_after_first'], r['last_index'], r['published']) for r in gaps]}, "
+            f"runs whose first delivered sample was not 0: {len(late)} (first_index {sorted(late)})"
+        )
     a0, b0 = get("l0", "A"), get("l0", "B")
     if a0 and b0:
         a_med = statistics.median(r["below_nmax"] for r in a0)
