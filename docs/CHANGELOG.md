@@ -563,6 +563,16 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A late DURABLE reader gets the whole backlog of a writer that had sent more than its window** (2026-10-15). The
+  reader's first contact is the backlog's oldest DATA, which lay a window or more past its default baseline of 1; the
+  baseline jumped there but the reorder cursor stayed at 1, so the drain walked past the oldest sample. Its first
+  sample was lost, and with samples of more than one datagram its stranded fragments filled the reorder ring until
+  the stream stalled: 127 of 200 two-datagram samples and 24 of 200 ten-datagram ones from a writer at seq_no 1000,
+  the first of three 1 MB samples from one at 100000. The reader now takes that sample as its baseline with the cursor,
+  as a VOLATILE reader does (`tests/test_durable_late_joiner.c`). Still open: a backlog datagram lost before the first
+  that arrives (the oldest sample is then lost), and a loss early in a backlog wider than the reader's window (the
+  burst jumps past the hole).
+
 - **A server runs its callback once per call when one context has two Clients of the service** (2026-10-09). The
   server kept one cached answer per source context, so a retry from one Client that arrived after the other Client
   was answered ran the callback again. A CallRequest's pad byte now carries `client_tag` (which Client of its

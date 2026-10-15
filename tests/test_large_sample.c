@@ -903,8 +903,8 @@ static void test_a_durable_backlog_of_large_samples_across_2_32(void) {
         sub.durable = true;
         struct tt_Peer late = {RECEIVER_ID, RECEIVER_IP, PORT};
         // The initial Heartbeat first, so the reader's baseline is the writer's oldest before any backlog arrives. A
-        // match sends it after the backlog; a DURABLE reader whose first contact is the backlog of a writer far past
-        // seq_no 1 then loses the first sample - from 100000 as from here, wrap or not (reported apart).
+        // match sends it after the backlog, which test_a_late_joiner_gets_a_large_backlog_from_a_writer_far_past_1()
+        // covers.
         send_initial_heartbeat(&sender, &pub, &late);
         sim_drain();
         sim_head = sim_tail;
@@ -1211,6 +1211,53 @@ static void test_a_durable_writer_backs_a_late_joiner_with_its_large_samples(voi
     EXPECT_EQ_INT(0, delivered_torn);
 }
 
+static void test_a_late_joiner_gets_a_large_backlog_from_a_writer_far_past_1(void) {
+    // Three samples nobody heard from a writer that had sent more than the reader's window (8,192 datagrams) before,
+    // then a DURABLE reader joins in a match's order: the backlog first, so its first contact is the oldest sample's
+    // FRAG_FIRST_L, far past the default baseline of 1 - then the initial Heartbeat. All three, in order, whole, none
+    // given up (tests/test_durable_late_joiner.c's reading). Until 2026-10-15 the first was lost: the baseline jumped
+    // to it without the reorder cursor, the drain walked past it, and its assembly was abandoned. The control is the
+    // same with the Heartbeat first, whose baseline is the writer's oldest before any DATA arrives.
+    static const uint32_t sizes[] = {65508, ONE_MB};
+    for (size_t s = 0; s < sizeof(sizes) / sizeof(sizes[0]); s++) {
+        for (int control = 1; control >= 0; control--) {
+            init_pair(sizes[s], RELIABLE_KEEP_LAST);
+            pub.durable = true;
+            sim_start(0);
+            pub.seq_no = 100000U - 1U;
+            sim_acting = SENDER_ID;
+            for (int i = 0; i < 3; i++) {
+                sample_seed = (uint8_t)(i + 1);
+                EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+                sim_head = sim_tail; // nobody heard it
+            }
+            sub.durable = true;
+            struct tt_Peer late = {RECEIVER_ID, RECEIVER_IP, PORT};
+            if (control != 0) {
+                send_initial_heartbeat(&sender, &pub, &late);
+                sim_drain();
+            }
+            deliver_durability_backlog(&sender, &pub, &late);
+            if (control == 0) {
+                send_initial_heartbeat(&sender, &pub, &late);
+            }
+            sim_drain();
+            sim_settle(3, tt_SECOND);
+            uint32_t abandoned = sub.gap_abandoned + sub.gap_evicted + (uint32_t)receiver.large.abandoned;
+            printf("test_large_sample: %s durable backlog of 3 x %u B from 100000: %d delivered (seeds %u %u %u), %d "
+                   "torn, %u given up\n",
+                   control != 0 ? "Heartbeat-first" : "match-order", sizes[s], delivered_count, delivered_seeds[0],
+                   delivered_seeds[1], delivered_seeds[2], delivered_torn, abandoned);
+            EXPECT_EQ_INT(3, delivered_count);
+            EXPECT_EQ_INT(1, delivered_seeds[0]);
+            EXPECT_EQ_INT(2, delivered_seeds[1]);
+            EXPECT_EQ_INT(3, delivered_seeds[2]);
+            EXPECT_EQ_INT(0, delivered_torn);
+            EXPECT_EQ_U32(0, abandoned);
+        }
+    }
+}
+
 // --- Encoding while sending (DESIGN.md section 8): the wire, the order, the retained copy, a range that fails -------
 
 // Every datagram the sender sent in a run, in order: the queue keeps them after delivery.
@@ -1475,6 +1522,7 @@ static void run_path_tests(void) {
     test_a_retained_large_sample_outlives_the_next_one();
     test_a_volatile_writer_hands_acknowledged_buffers_back();
     test_a_durable_writer_backs_a_late_joiner_with_its_large_samples();
+    test_a_late_joiner_gets_a_large_backlog_from_a_writer_far_past_1();
 }
 
 int main(void) {
