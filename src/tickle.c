@@ -820,7 +820,9 @@ static bool segment_write(struct tt_SegmentHeader* header, const void* hdr, uint
         return false;
     }
     uint8_t* payload = segment_slot_payload(slot_header);
-    memcpy(payload, hdr, hdr_len);
+    if (hdr_len != 0) { // a record may come whole in body, hdr NULL: memcpy(dst, NULL, 0) is undefined
+        memcpy(payload, hdr, hdr_len);
+    }
     if (body_len != 0) {
         memcpy(payload + hdr_len, body, body_len);
     }
