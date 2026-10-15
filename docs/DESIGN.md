@@ -808,7 +808,7 @@ subscriber's work; the control measured perf_test's own wait.
   `largemsg_control_spin.py`, which also reads the RELIABLE control HELD at +0.05%). Why step B's subscriber lost
   more races on the Pi is not known: the window is perf_test's code between `unlock()` and `lock()`, which no rmw
   change touches, and on the PC the two arms lose as often (60 and 65 seconds over 8 reps).
-- **PC, the same cell in one private namespace** (`stepb_ctl_pc.sh`, main `f5fcda06` against `003f71f8`, 8 reps
+- **PC, the same cell in one private namespace** (`stepb_ctl_pc.sh`, main `f5fcda06` against the step B branch `ab/largemsg-stepB-rebased`, 8 reps
   interleaved; `~/stepb_ctl/`): perf_test's main thread is 87% of the subscriber's CPU and carries its whole spread
   (1.05 to 6.96 s a run); the other threads 215 -> 210 ms, kernel instructions -0.01%, every per-wake syscall count
   equal (`strace -c`), and under `perf record` the user instructions outside `sync_reset()` +0.2% (librmw_tickle.so
