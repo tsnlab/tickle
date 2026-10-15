@@ -36,7 +36,7 @@ struct tt_ReliableStats {
     uint64_t jump_data;          // H1: jump_ack_baseline() from the DATA path (offset >= tt_RELIABLE_BITMAP_BITS)
     uint64_t jump_heartbeat;     // jump_ack_baseline() from the Heartbeat path
     uint64_t jump_abandoned_seq; // still-missing seq_nos abandoned by those jumps
-    uint64_t retry_giveups;      // acknack_retry() give-ups (retry > tt_RELIABLE_RETRY)
+    uint64_t retry_giveups;      // acknack_retry() give-ups; 0 since 2026-10-15 (no give-up on a count)
     uint64_t giveups_suppressed_unknown; // Phase 3 step 4: ...and ones not taken because the writer's
                                          // HISTORY policy wasn't known yet (once per gap)
     uint64_t heartbeat_advances;         // Phase 1-c: Heartbeats that moved ack_seq_no up to first_available_seq_no
@@ -61,7 +61,7 @@ struct tt_ReliableStats {
     uint64_t bits_requested;             // total set bits across them
     uint64_t retransmitted;              // samples actually re-encoded and flushed
     uint64_t null_evicted;               // not resent: slot empty or overwritten by a newer seq_no
-    uint64_t null_retry_cap;             // not resent: cache_entry->retry >= tt_RELIABLE_RETRY
+    uint64_t null_retry_cap;             // not resent: resent < a retry interval ago, past tt_RELIABLE_RETRY
     uint64_t null_lifespan;              // not resent: aged out of lifespan
     uint64_t retransmit_tx_fail;         // not resent: tx buffer full or end_encode() failed
     uint64_t eviction_heartbeats;        // Phase 1-c: FINAL Heartbeats sent back for an ACKNACK naming a gone sample

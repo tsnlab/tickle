@@ -747,12 +747,13 @@ static void expect_intact(int reader, int want) {
     EXPECT_EQ_INT(0, readers[reader].torn);
 }
 
-// A KEEP_LAST RELIABLE reader gives a unit up after tt_RELIABLE_RETRY requests for it in a row went unanswered
-// (gap_abandoned), and the sample it belongs to with it: at 5% frame loss each request and each repair is lost one
-// time in twenty, so over 40 samples of 1 MB that happens to some unit in about one stream in seven (14 seeds of 100,
-// 2026-10-14). Every sample is delivered whole unless a unit was given up, and only as many fewer as were.
+// Until 2026-10-15 a KEEP_LAST RELIABLE reader gave a unit up after tt_RELIABLE_RETRY requests for it in a row went
+// unanswered (gap_abandoned), and the sample it belonged to with it: at 5% frame loss each request and each repair is
+// lost one time in twenty, so over 40 samples of 1 MB that happened to some unit in about one stream in seven (14 seeds
+// of 100, 2026-10-14). It no longer gives up on a count; a unit can still be given up by a window jump, or skipped on
+// the writer's eviction HEARTBEAT. Every sample is delivered whole unless a unit was, and only as many fewer as were.
 static void expect_intact_or_given_up(int reader, int want) {
-    int abandoned = (int)readers[reader].sub.gap_abandoned;
+    int abandoned = (int)(readers[reader].sub.gap_abandoned + readers[reader].sub.gap_evicted);
     int delivered = readers[reader].delivered;
     EXPECT_EQ_INT(0, readers[reader].torn);
     EXPECT_TRUE(delivered <= want && delivered + abandoned >= want);
@@ -2590,29 +2591,47 @@ static void test_a_re_registration_carries_the_match_point(void) {
 
 // A reader with no discovery table - a core-only one: tt_Context_set_discovery() is opt-in - learns that its writer
 // is KEEP_LAST from the writer's next summary. Its writer proxy is made at the first DATA, after the writer's announce
-// was read, so nothing it holds says KEEP_LAST and the policy was UNKNOWN for good; UNKNOWN never gives a gap up, and a
-// KEEP_LAST writer stops resending a sample after tt_RELIABLE_RETRY resends without saying it is gone. A unit whose
-// every resend was lost then held the stream behind it for ever (seed 34: unit 355 of a 23-unit sample, its run and
-// its three resends lost, then refused ~50 times a second for the rest of the run). Two 8,000 B samples (a run of 5
-// and the tail), the first one's tail lost every time it is sent, the writer's summary between them: the first sample
-// is given up after the retries, the second delivered. The control arm gives the reader a table, as rmw_tickle does.
+// was read, so nothing it holds says KEEP_LAST and the policy was UNKNOWN for good. That once mattered for delivery:
+// UNKNOWN never gave a gap up, and a KEEP_LAST writer stopped resending a sample after tt_RELIABLE_RETRY resends
+// without saying it was gone, so a unit whose every resend was lost held the stream behind it for ever (seed 34: unit
+// 355 of a 23-unit sample, its run and its three resends lost, then refused ~50 times a second for the rest of the
+// run). Since 2026-10-15 neither side gives up on a count; the policy still decides the back-off and the warnings.
+// Two 8,000 B samples (a run of 5 and the tail) from a writer that keeps one sample (KEEP_LAST 1), the first one's tail
+// lost every time it is sent, the writer's summary between them: the second publish evicts the first, whose tail the
+// reader then skips on the writer's eviction HEARTBEAT (gap_evicted, never gap_abandoned), and the second is
+// delivered. The control arm gives the reader a table, as rmw_tickle does.
 static uint32_t lost_unit;
 static uint32_t lost_unit_sends;
+static uint32_t lost_unit_drops; // how many of its sends lose_one_unit() drops; UINT32_MAX: every one
 
-static bool lose_one_unit_every_time(const struct sim_datagram* d) {
+static bool lose_one_unit(const struct sim_datagram* d) {
     uint32_t seq_no = 0;
     uint32_t units = 0;
     bool run = false;
     if (d->from == SENDER_ID && datagram_units(d->bytes, &seq_no, &units, &run) && lost_unit - seq_no < units) {
         lost_unit_sends++;
-        return true;
+        return lost_unit_sends <= lost_unit_drops;
     }
     return false;
+}
+
+// The tail of a sample on 8/9 lost alone leaves the reader nothing showing the gap until the writer says more; the
+// periodic Heartbeat says it (sim_settle()'s reasoning). Armed until the reader has asked for the tail again on its
+// timer, or has it, then off, so what follows is the reader's own requests and the writer's answers to them.
+static void reveal_lost_tail(struct tt_WriterProxy* proxy) {
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_set_heartbeat_period(&pub, 10U * tt_MILLISECOND));
+    uint64_t since = test_mock_now;
+    while (proxy->retry == 0 && seq_delta(proxy->ack_seq_no, lost_unit) <= 0 && test_mock_now - since < tt_SECOND &&
+           sim_step()) {
+    }
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_set_heartbeat_period(&pub, 0));
+    EXPECT_TRUE(proxy->retry != 0 || seq_delta(proxy->ack_seq_no, lost_unit) > 0);
 }
 
 static void test_a_reader_without_a_discovery_table_learns_keep_last(void) {
     for (int arm = 0; arm < 2; arm++) {
         init_one(SMALL_LEN, FULL_CEILING, true);
+        cache.sample_depth = 1;     // KEEP_LAST 1: the second sample evicts the first
         hybrid_test_forced_p = 0.0; // n = n_max: one run of 5 and the tail
         sim_start(0);
         sim_no_discovery_table = arm == 0;
@@ -2620,7 +2639,8 @@ static void test_a_reader_without_a_discovery_table_learns_keep_last(void) {
         sim_no_discovery_table = false;
         lost_unit = first_seq_no + 5U; // the first sample's tail
         lost_unit_sends = 0;
-        sim_drop_hook = lose_one_unit_every_time;
+        lost_unit_drops = UINT32_MAX;
+        sim_drop_hook = lose_one_unit;
         EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
         struct tt_WriterProxy* proxy = &readers[0].sub.writers[0];
         EXPECT_EQ_U32(SENDER_ID, proxy->context_id); // first contact made, by the run
@@ -2628,24 +2648,120 @@ static void test_a_reader_without_a_discovery_table_learns_keep_last(void) {
         // pulled again.
         EXPECT_EQ_INT(arm == 0 ? tt_WRITER_KEEP_ALL_UNKNOWN : tt_WRITER_KEEP_ALL_NO, (int)proxy->keep_all);
         EXPECT_TRUE(readers[0].ctx.update_reprocess[SENDER_ID] == (arm == 0));
+        reveal_lost_tail(proxy);
         sim_acting = SENDER_ID;
         send_discovery_summary(&sender); // node_update()'s, every tt_CONTEXT_UPDATE_INTERVAL
         uint64_t since = test_mock_now;
         while (test_mock_now - since < tt_SECOND && sim_step()) {
         }
         EXPECT_EQ_INT(tt_WRITER_KEEP_ALL_NO, (int)proxy->keep_all);
+        EXPECT_EQ_U32(0, readers[0].sub.gap_abandoned); // a second of asking, nothing given up
+        EXPECT_EQ_INT(0, readers[0].delivered);
         EXPECT_EQ_INT(tt_RET_OK, sim_publish(2));
         sim_settle(1, 5 * tt_SECOND);
         hybrid_test_forced_p = -1.0;
         sim_drop_hook = NULL;
         expect_intact(0, 1); // the second sample
-        EXPECT_EQ_U32(1, readers[0].sub.gap_abandoned);
-        EXPECT_TRUE(lost_unit_sends >= 1U + tt_RELIABLE_RETRY); // sent, then resent until the writer stopped
+        EXPECT_EQ_U32(0, readers[0].sub.gap_abandoned);
+        EXPECT_EQ_U32(1, readers[0].sub.gap_evicted); // the first sample's tail, on the writer's word
+        // Resent well past the old cap of tt_RELIABLE_RETRY while the writer held it.
+        EXPECT_TRUE(lost_unit_sends > 2U + tt_RELIABLE_RETRY);
         if (readers[0].delivered != 1) {
             printf("test_hybrid_send: no discovery table, arm %d: %d delivered, policy %d\n", arm, readers[0].delivered,
                    (int)proxy->keep_all);
         }
     }
+}
+
+// The seed-34 shape, and the user's 2026-10-15 decision: a KEEP_LAST writer repairs a unit for as long as its history
+// holds it. The 8,000 B sample's tail is lost on its first `drops` sends - the original and drops - 1 resends - and
+// gets through on the next. Arms: the reader knows the writer is KEEP_LAST (a table) or does not (none, and no summary:
+// the policy stays UNKNOWN). Treatment: drops 1 + tt_RELIABLE_RETRY + 1, past what the writer used to resend; control:
+// drops 2, inside it. Before 2026-10-15 the treatment delivered nothing in either arm: the writer stopped after
+// tt_RELIABLE_RETRY resends, the KEEP_LAST reader gave the tail up, the UNKNOWN reader asked for good.
+static void test_a_keep_last_writer_repairs_a_unit_while_it_holds_it(void) {
+    for (int arm = 0; arm < 4; arm++) {
+        bool no_table = (arm & 1) != 0;
+        uint32_t drops = (arm & 2) != 0 ? 2U : 2U + (uint32_t)tt_RELIABLE_RETRY;
+        init_one(SMALL_LEN, FULL_CEILING, true);
+        hybrid_test_forced_p = 0.0; // one run of 5 and the tail
+        sim_start(0);
+        sim_no_discovery_table = no_table;
+        sim_announce();
+        sim_no_discovery_table = false;
+        lost_unit = first_seq_no + 5U; // the tail
+        lost_unit_sends = 0;
+        lost_unit_drops = drops;
+        sim_drop_hook = lose_one_unit;
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+        EXPECT_EQ_INT(no_table ? tt_WRITER_KEEP_ALL_UNKNOWN : tt_WRITER_KEEP_ALL_NO,
+                      (int)readers[0].sub.writers[0].keep_all);
+        reveal_lost_tail(&readers[0].sub.writers[0]);
+        sim_settle(1, 5 * tt_SECOND);
+        hybrid_test_forced_p = -1.0;
+        sim_drop_hook = NULL;
+        expect_intact(0, 1);
+        EXPECT_EQ_U32(drops + 1U, lost_unit_sends); // sent until it got through, and not again
+        EXPECT_EQ_U32(0, readers[0].sub.gap_abandoned);
+        EXPECT_EQ_U32(0, readers[0].sub.gap_evicted);
+        if (readers[0].delivered != 1) {
+            printf("test_hybrid_send: repaired while held, %s, %u drops: %d delivered, %u sends\n",
+                   no_table ? "no table" : "table", drops, readers[0].delivered, lost_unit_sends);
+        }
+    }
+}
+
+// Once the writer no longer holds a unit, the reader hears so at its next request and skips exactly that: KEEP_LAST 1,
+// the first sample's tail lost every time, the second sample published (evicting the first) after the reader's
+// requests have backed off. The first is skipped on the eviction HEARTBEAT (gap_evicted 1, gap_abandoned 0) within
+// one backed-off retry interval of the eviction - not after a count of timeouts - and the second is delivered.
+static void test_an_evicted_unit_is_skipped_on_the_heartbeat(void) {
+    init_one(SMALL_LEN, FULL_CEILING, true);
+    cache.sample_depth = 1;
+    hybrid_test_forced_p = 0.0;
+    sim_start(0);
+    sim_announce();
+    lost_unit = first_seq_no + 5U;
+    lost_unit_sends = 0;
+    lost_unit_drops = UINT32_MAX;
+    sim_drop_hook = lose_one_unit;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+    struct tt_WriterProxy* proxy = &readers[0].sub.writers[0];
+    EXPECT_EQ_INT(tt_WRITER_KEEP_ALL_NO, (int)proxy->keep_all);
+    reveal_lost_tail(proxy);
+    uint64_t since = test_mock_now;
+    while (test_mock_now - since < 200U * tt_MILLISECOND && sim_step()) {
+    }
+    EXPECT_TRUE(proxy->retry > tt_RELIABLE_RETRY + tt_RELIABLE_RETRY_BACKOFF_SHIFT); // backed off to the ceiling
+    EXPECT_EQ_U32(lost_unit, proxy->ack_seq_no);                                     // still asking for the tail
+    EXPECT_EQ_U32(0, readers[0].sub.gap_abandoned);
+    // Requests at the ceiling: about one per 2^shift intervals, not one per interval.
+    uint32_t sends_before = lost_unit_sends;
+    since = test_mock_now;
+    while (test_mock_now - since < 100U * tt_MILLISECOND && sim_step()) {
+    }
+    uint64_t ceiling = reliable_retry_interval(&readers[0].ctx, proxy) << tt_RELIABLE_RETRY_BACKOFF_SHIFT;
+    EXPECT_TRUE(lost_unit_sends - sends_before <= (uint32_t)((100U * tt_MILLISECOND) / ceiling) + 1U);
+
+    uint64_t evicted_at = test_mock_now;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(2)); // evicts the first sample
+    // Its DATA can show the reader a gap and draw a request at once, answered in the same exchange.
+    uint64_t skipped_at = readers[0].sub.gap_evicted != 0 ? test_mock_now : 0;
+    since = test_mock_now;
+    while (test_mock_now - since < tt_SECOND && sim_step()) {
+        if (skipped_at == 0 && readers[0].sub.gap_evicted != 0) {
+            skipped_at = test_mock_now;
+        }
+    }
+    hybrid_test_forced_p = -1.0;
+    sim_drop_hook = NULL;
+    expect_intact(0, 1);
+    EXPECT_EQ_U32(1, readers[0].sub.gap_evicted);
+    EXPECT_EQ_U32(0, readers[0].sub.gap_abandoned);
+    EXPECT_TRUE(skipped_at != 0 && skipped_at - evicted_at <= ceiling);
+    printf("test_hybrid_send: evicted unit skipped %llu ns after the eviction (%s; back-off ceiling %llu ns)\n",
+           (unsigned long long)(skipped_at - evicted_at), skipped_at != 0 ? "skipped" : "never",
+           (unsigned long long)ceiling);
 }
 
 // --- runs meet encoding while sending and the lent large sample (DESIGN.md section 8) -------------------------------
@@ -3087,6 +3203,8 @@ int main(void) {
     test_a_periodic_heartbeat_carries_the_match_point();
     test_a_re_registration_carries_the_match_point();
     test_a_reader_without_a_discovery_table_learns_keep_last();
+    test_a_keep_last_writer_repairs_a_unit_while_it_holds_it();
+    test_an_evicted_unit_is_skipped_on_the_heartbeat();
     test_a_full_send_buffer_resumes_when_the_socket_has_room();
     test_runs_with_a_ranged_encode_leave_the_wire_byte_identical();
     test_each_run_call_is_encoded_just_before_it_goes();

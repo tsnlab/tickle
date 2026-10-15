@@ -88,14 +88,28 @@
 #endif
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - a reliable Subscriber's ACKNACK
 // re-send interval override (0 = auto, i.e. tt_RELIABLE_RETRY_INTERVAL below; same convention as
-// struct tt_Service.call_retry_interval) and the max retransmit attempts a reliable Publisher
-// makes for one cached sample before giving up on it (mirrors tt_CALL_RETRY_COUNT). A Topic's
-// deadline_duration/lifespan_duration (tickle.h) are still reserved for #2/#6, not this.
+// struct tt_Service.call_retry_interval). A Topic's deadline_duration/lifespan_duration (tickle.h)
+// are still reserved for #2/#6, not this.
 #ifndef tt_RELIABLE_DEADLINE
 #define tt_RELIABLE_DEADLINE 0 // nanosecond, 0 is auto
 #endif
+// How many times a reliable Subscriber re-requests a gap at the plain retry interval before its
+// requests back off (doubling, up to 2^tt_RELIABLE_RETRY_BACKOFF_SHIFT times the interval), and how
+// many times a Publisher resends a datagram on request before it resends it at most once per retry
+// interval (the nack suppression that bounds repeated requests for a repair in flight). Neither
+// side gives a sample up on a count any more (2026-10-15, as DDS/RTPS): the Publisher resends
+// whatever its history still holds and answers a request for anything else with an eviction
+// Heartbeat, and the Subscriber skips a gap only on that Heartbeat or the writer's departure. Until
+// then this was the Publisher's resend cap per sample and the KEEP_LAST Subscriber's give-up count.
 #ifndef tt_RELIABLE_RETRY
 #define tt_RELIABLE_RETRY 3 // count
+#endif
+// The back-off's ceiling as a power of two: a gap's requests past tt_RELIABLE_RETRY go at 2, 4, 8 and
+// then 16 times the retry interval, and stay there. The ceiling bounds how late a Subscriber hears
+// that a sample it waits for was evicted (it learns that by asking) - at the 1 ms starting interval,
+// 16 ms - and how much one stuck reader asks for: 60 requests a second instead of 1000.
+#ifndef tt_RELIABLE_RETRY_BACKOFF_SHIFT
+#define tt_RELIABLE_RETRY_BACKOFF_SHIFT 4 // power of two
 #endif
 // Phase 1-b (rmw_tickle/PLAN.md, H3) - the reliable Subscriber's own default ACKNACK retry
 // interval, separate from RPC's tt_CALL_RETRY_INTERVAL (5ms, which it used to share). Real HIL
