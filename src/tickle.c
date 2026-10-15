@@ -5835,6 +5835,7 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
     pub->large_blocked = 0;
     pub->large_ack_armed = false;
     pub->large_ack_wait_ns = 0;
+    pub->large_idle_notify = false;
 #endif
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint, owner);
@@ -9191,6 +9192,12 @@ static void large_pump(struct tt_Context* node, struct tt_Publisher* pub) {
     }
     large_release_acked(node, pub);
     notify_writable_if_pending(pub); // a KEEP_ALL publish refused while a send was in progress may go now
+    if (pub->large_idle_notify) {    // nothing is left in flight: a caller waiting on tt_Publisher_large_in_flight()
+        pub->large_idle_notify = false;
+        if (pub->writable_callback != NULL) {
+            pub->writable_callback(pub, pub->writable_callback_param);
+        }
+    }
 }
 
 static void large_send_resume(struct tt_Context* node, uint64_t time, void* param) {
@@ -10389,6 +10396,22 @@ bool tt_Publisher_writable(const struct tt_Publisher* pub) {
         state_unlock(locked_node);
     }
     return result;
+}
+
+bool tt_Publisher_large_in_flight(struct tt_Publisher* pub) {
+#if tt_LARGE_SAMPLES
+    if (pub == NULL || pub->node == NULL) {
+        return false;
+    }
+    state_lock(pub->node);
+    bool in_flight = pub->large_cursor.active || pub->large_pending.buffer != NULL || large_next_unsent(pub) != NULL;
+    pub->large_idle_notify = pub->large_idle_notify || in_flight;
+    state_unlock(pub->node);
+    return in_flight;
+#else
+    UNUSED(pub);
+    return false;
+#endif
 }
 
 uint8_t tt_Publisher_matched_count(const struct tt_Publisher* pub) {

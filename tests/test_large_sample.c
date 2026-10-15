@@ -1167,6 +1167,60 @@ static void test_a_small_sample_never_overtakes_a_waiting_large_one(void) {
     EXPECT_TRUE(in_order);
 }
 
+static int idle_callbacks;
+
+static void count_idle_callback(struct tt_Publisher* p, void* param) {
+    (void)p;
+    (void)param;
+    idle_callbacks++;
+}
+
+static void test_large_in_flight_answers_and_wakes_once(void) {
+    // tt_Publisher_large_in_flight() (rmw_tickle's RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS sleeps on it): true while a large
+    // sample is still going out or waits behind one, false once all have gone; and having answered true, the writable
+    // callback fires exactly once, from the send's own resumption, when the last of them has gone - KEEP_LAST, which
+    // never fired it before. A Publisher that did not ask is not called (the control): the callback is the answer to
+    // the question, not a new event every large send raises. Mutants: the notify removed (0 calls), or not cleared (2).
+    init_pair(ONE_MB, RELIABLE_KEEP_LAST);
+    sim_start(0);
+    idle_callbacks = 0;
+    pub.writable_callback = count_idle_callback;
+    sim_room_per_step = 64;
+    sim_acting = SENDER_ID;
+    test_mock_nonblocking_room = 64;
+    EXPECT_TRUE(!tt_Publisher_large_in_flight(&pub)); // nothing published yet
+    EXPECT_TRUE(!tt_Publisher_large_in_flight(NULL));
+    sample_seed = 1;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    sample_seed = 2;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len)); // waits behind the first
+    EXPECT_TRUE(tt_Publisher_large_in_flight(&pub));
+    EXPECT_TRUE(tt_Publisher_large_in_flight(&pub)); // asked twice, still one wake
+    EXPECT_EQ_INT(0, idle_callbacks);
+    int steps = 0;
+    while (tt_Publisher_large_in_flight(&pub) && steps < 100000 && sim_step()) {
+        steps++;
+        if (tt_Publisher_large_in_flight(&pub)) {
+            EXPECT_EQ_INT(0, idle_callbacks); // not before the last datagram of the waiting sample has gone
+        }
+    }
+    EXPECT_TRUE(!tt_Publisher_large_in_flight(&pub));
+    EXPECT_EQ_INT(1, idle_callbacks);
+    sim_settle(2, tt_SECOND);
+    EXPECT_EQ_INT(2, delivered_count);
+    EXPECT_EQ_U64(0, sender.large.tail_abandoned);
+
+    // The control: the same send, nobody asking - no call.
+    sample_seed = 3;
+    test_mock_nonblocking_room = 64;
+    sim_acting = SENDER_ID;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    sim_settle(3, tt_SECOND);
+    EXPECT_EQ_INT(3, delivered_count);
+    EXPECT_EQ_INT(1, idle_callbacks);
+    pub.writable_callback = NULL;
+}
+
 // --- L1.7: lending -------------------------------------------------------------------------------------------------
 
 static void* release_on_another_thread(void* arg) {
@@ -1555,6 +1609,7 @@ static void run_path_tests(void) {
     test_a_busy_writer_is_waited_for_not_given_up();
     test_keep_last_replaces_a_sample_waiting_behind_a_send();
     test_a_small_sample_never_overtakes_a_waiting_large_one();
+    test_large_in_flight_answers_and_wakes_once();
     test_a_retained_large_sample_outlives_the_next_one();
     test_a_volatile_writer_hands_acknowledged_buffers_back();
     test_a_durable_writer_backs_a_late_joiner_with_its_large_samples();
