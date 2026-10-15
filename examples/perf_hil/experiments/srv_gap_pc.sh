@@ -37,7 +37,9 @@
 #     and differ by less than half of B - A; "LAYOUT" when PB - PA did not move; anything else "MIXED".
 #   - VOID: a run without both RESULT lines, without both counts, or with 0 samples; an arm with fewer than 2 valid
 #     blocks in a cell is not read there.
-# Usage: srv_gap_pc.sh [BLOCKS]   ARMS="label:commit[:P|L[:VAR=v,VAR2=v]] ..." (VAR=v: environment to both roles),
+# Usage: srv_gap_pc.sh [BLOCKS]   ARMS="label:commit[:FLAVOR[:VAR=v,VAR2=v[:PERT]]] ..." (VAR=v: environment to both
+# roles; FLAVOR L (default) the gate's layout flags, P its placement flags, D the plain build, X the flags in FLAGS_X;
+# PERT a layout_perturb.sh perturbation of the arm's source copy, e.g. "T1:main:L::T1"),
 # CELLS (default "L:p1 T:p2:Q0 T:p3:Q0 T:p2:Q1 L:p4"),
 # STRACE=1 (one extra pass per arm and cell under strace -f -c: of the server, or with STRACE_ROLE=client the client),
 # PROFILE=1 (one extra pass per arm and cell, both roles under perf record -e instructions:u, the data kept as
@@ -64,6 +66,8 @@ BUILD_JOBS=${BUILD_JOBS:-4}
 NS1=sg-cli-$$
 NS2=sg-srv-$$
 export TMPDIR=${TMPDIR:-/home/semih/tmp_build}
+# shellcheck disable=SC2034 # read by gate_v2_lib.sh
+GATE_BUILD_ARCH=$(uname -m) # the arms build here, not on a Pi: the gate's flags as composed for this compiler
 # shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
 # shellcheck disable=SC1091
 . "$HERE/gate_v2_lib.sh"
@@ -96,32 +100,48 @@ declare -A arm_dir arm_sha arm_flavor arm_env
 labels=()
 builds=()
 for spec in $ARMS; do
-    IFS=: read -r label commit flavor envs <<<"$spec"
+    IFS=: read -r label commit flavor envs pert <<<"$spec"
     sha=$(git -C "$TREE" rev-parse --short=8 "$commit") || exit 1
     flavor=${flavor:-L}
-    d=$WORK/src_${sha}_$flavor
+    d=$WORK/src_${sha}_$flavor${pert:+_$pert}
     arm_dir[$label]=$d/examples/perf_hil/tickle
     arm_sha[$label]=$sha
-    arm_flavor[$label]=$flavor
+    arm_flavor[$label]=$flavor${pert:+/$pert}
     arm_env[$label]=${envs//,/ }
     labels+=("$label")
-    case " ${builds[*]} " in *" $sha:$flavor "*) ;; *) builds+=("$sha:$flavor") ;; esac
+    case " ${builds[*]} " in *" $sha:$flavor:$pert "*) ;; *) builds+=("$sha:$flavor:$pert") ;; esac
 done
 
-build_one() { # <sha> <flavor>: every cell's scenario, into its own source copy (own HOME: own install prefixes)
-    local sha=$1 flavor=$2 d=$WORK/src_${1}_$2 cell flags
-    if [ "$flavor" = P ]; then flags=$TICKLE_PLACEMENT_CFLAGS; else flags=$TICKLE_LAYOUT_CFLAGS; fi
+flavor_flags() { # <flavor>: L the gate's layout flags, P its placement flags, D none (the product's build), any other
+    # name X the flags in FLAGS_X (set, possibly empty; unset is an error, not the plain build)
+    case $1 in
+        L) echo "$TICKLE_LAYOUT_CFLAGS" ;;
+        P) echo "$TICKLE_PLACEMENT_CFLAGS" ;;
+        D) echo "" ;;
+        *)
+            local v="FLAGS_$1"
+            [ -n "${!v+set}" ] || { echo "flavor $1: FLAGS_$1 is not set" >&2; return 1; }
+            echo "${!v}"
+            ;;
+    esac
+}
+
+build_one() { # <sha> <flavor> [<pert>]: every cell's scenario, into its own source copy (own HOME: own install
+    # prefixes); <pert> is a layout_perturb.sh name applied to the copy: a layout-only change, for layout A/A arms
+    local sha=$1 flavor=$2 pert=${3:-} d=$WORK/src_${1}_$2${3:+_$3} cell flags
+    flags=$(flavor_flags "$flavor") || return 1
     flags="$flags ${BUILD_CFLAGS:-}" # every arm alike: give the run its own WORK, the builds are kept by commit
     if [ ! -f "$d/.built" ]; then
         rm -rf "$d" && mkdir -p "$d/home"
         git -C "$TREE" archive "$sha" | tar -x -C "$d" || return 1
+        if [ -n "$pert" ]; then "$HERE/layout_perturb.sh" "$d" "$pert" || return 1; fi
     fi
     for cell in $CELLS; do
         local scen
         scen=$(scenario_of "$cell")
         [ -x "$d/examples/perf_hil/tickle/$scen/server" ] && continue
         (cd "$d/examples/perf_hil/tickle" && HOME=$d/home TICKLE_EXTRA_CFLAGS="$flags" \
-            ./build.sh "${scen%_p?}" "${scen##*_}") >>"$WORK/build_${sha}_$flavor.log" 2>&1 || return 1
+            ./build.sh "${scen%_p?}" "${scen##*_}") >>"$WORK/build_${sha}_$flavor${pert:+_$pert}.log" 2>&1 || return 1
     done
     touch "$d/.built"
 }
@@ -129,7 +149,8 @@ echo "building ${builds[*]} ($(date -Is))"
 pids=()
 for b in "${builds[@]}"; do
     while [ "$(jobs -rp | wc -l)" -ge "$BUILD_JOBS" ]; do sleep 2; done
-    build_one "${b%%:*}" "${b##*:}" &
+    IFS=: read -r b_sha b_flavor b_pert <<<"$b"
+    build_one "$b_sha" "$b_flavor" "$b_pert" &
     pids+=($!)
 done
 for p in "${pids[@]}"; do wait "$p" || { echo "BUILD FAILED (see $WORK/build_*.log)"; exit 1; }; done

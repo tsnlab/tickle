@@ -254,6 +254,7 @@ All are in `examples/perf_hil/experiments/`. Each one's header holds its pre-reg
 | `campaign_ab_chain.sh` | Is build B better or worse than build A on the campaign cells? (A P B B P A, gate v2) |
 | `ab_compare.py` | Reads A/B arms per cell and metric; with `--placement`, by gate v2 (`gate_v2.py`, section 6.1) |
 | `layout_flags_cost.sh` | What a code-alignment flag changes in each function's instructions, and what it costs in size (static) |
+| `layout_identity.sh` | Does a layout-only change (`layout_perturb.sh`) or a relink at 63 placements change any function's instructions? (static, aarch64 and x86) |
 | `rig_dryrun.sh` | Any rig harness end to end on the PC, against two stand-in Pis in private namespaces (never the rig: `rig_dryrun_test.sh`) |
 | `rmw_gate_v2_chain.sh` | Is rmw_tickle build B better or worse than A? (A P B B P A, gate v2; read by `rmw_gate_v2.py`) |
 | `rig_preflight.sh` | Does every cell shape about to go to the rig run, and print a sound RESULT line? (PC, private netns, ~70 s) |
@@ -289,7 +290,8 @@ three times on the Pi 5 with equal executed instructions (x86 perf, exact aarch6
 gap vanished with `-falign-functions=64` on both arms. Definitions: `gate_v2_lib.sh`; the reading: `gate_v2.py`.
 
 - **A1, layout-stable builds.** Every TickLE build the rig A/Bs or publishes from is built with
-  `-falign-functions=64 -falign-loops=1 -falign-jumps=1 -falign-labels=1` (`TICKLE_LAYOUT_CFLAGS`, the default when
+  `-falign-functions=64 -falign-loops=1 -falign-jumps=1 -falign-labels=1`, and on aarch64
+  `-mno-fix-cortex-a53-843419` (`TICKLE_LAYOUT_CFLAGS`, the default when
   `TICKLE_EXTRA_CFLAGS` is unset; set and empty is the plain build). Each build is traced and its log read back
   (`build_flags_check.sh`); a build that does not show every one of its flags is not measured.
   - Function alignment: on aarch64 it fixes every in-function offset modulo 64, so no function's code changes when
@@ -304,6 +306,24 @@ gap vanished with `-falign-functions=64` on both arms. Definitions: `gate_v2_lib
     witness (client `cpu_s_per_Msample` +1.65% at c2, +1.15% at c3), and the client's -2 instructions a sample at c2
     is timing (a slower client finds more work per wake). These flags cannot change that; cycles are not counted,
     CPU time is a witness and still decides net of P's floor.
+  - No linker rewrite by page offset (2026-10-15), aarch64 builds only: `-mno-fix-cortex-a53-843419`
+    (`TICKLE_A53FIX_OFF_CFLAGS`; `GATE_BUILD_ARCH`, default aarch64, the Pis; PC builders set `$(uname -m)`). The Pis'
+    toolchain has GNU ld patch an adrp at page offset 0xff8/0xffc: into an adr (one instruction for one) or, for a
+    target beyond 1 MiB, by moving the following load into a stub (+2 executed instructions a pass). That depends on
+    address bits 6-11, which function alignment does not fix and P moves. The Pi 5's Cortex-A76 does not have the
+    erratum.
+  - Checked against layout-only changes P does not make (`layout_identity.sh`, `layout_perturb.sh`: text ahead of
+    tickle.c, of hal_linux.c, of the bench; static data moved; an uncalled function added mid tickle.c), every linked
+    function of the rig's bench (latency p1, throughput p2, client and server), commit ab722f4e. With these flags every
+    function's instructions are unchanged, aarch64 and x86, and in 63 relinked placements of each binary. With gate
+    v3's flags (no A53 option), 1 placement in 63 put a stub in `tt_log_internal` in 3 of the 4 aarch64 binaries (cold
+    here; nothing keeps a hot path out). Controls: loop alignment 8 (the Pis' gcc 13 default) moves nops under T1-T3
+    on both ISAs, and the plain build moves them on x86.
+  - Executed, on the PC (`srv_gap_pc.sh` arms `label:commit:L::<pert>`, 3 blocks, cells L p1/p4, T p2 Q0/Q1): no
+    perturbation moved user instructions in a latency cell (|d| <= 0.84 a round trip, SE 0.2-0.8, against 4,105
+    server and 6,007 client at p1). In throughput cells the server's count moves by up to 25 a sample (SE 5-13) under
+    P as under every perturbation: batching follows timing, not code. P's floor is what absorbs that, so a
+    throughput-cell server WORSE needs the floor; a latency-cell WORSE of a few instructions is work.
   - Not the product default: it adds 4.6% to the core's .text and 6.7% to the client on aarch64, and the rule was
     "only if it costs nothing measurable". Published figures carry `TICKLE_EXTRA_CFLAGS` in their provenance.
 - **A2, instructions decide.** Every process runs under `perf stat -e instructions:u,instructions:k`. The primary
@@ -324,6 +344,10 @@ gap vanished with `-falign-functions=64` on both arms. Definitions: `gate_v2_lib
   - Validating the gate itself: give B an alignment different from P's, with the same no-padding flags
     (A vs A at `-falign-functions=256` and `TICKLE_NOPAD_CFLAGS`). A B with P's flags reads
     WORSE about half the time, because the floor is a single draw of placement.
+  - Expected on the rig after A1'' (not yet run): X1 (A vs P) and X2 (A vs A at 256) PASS with no PRIMARY WORSE, every
+    latency cell's `insn_u_per_sample` within its threshold, and no NOTE of a PRIMARY moving between A and P beyond
+    it. A throughput-cell instruction or CPU move may still exceed the threshold and must sit inside P's floor
+    (timing). An instruction WORSE in a latency cell would mean a layout path this check did not cover.
 
 ## 7. Measurement checklist
 

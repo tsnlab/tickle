@@ -192,7 +192,8 @@ for t in ssh scp sftp rsync; do
     [ "$got" = "$D/bin/$t" ] || { echo "rig_dryrun: '$t' resolves to '$got', not the stand-in; refusing" >&2; exit 2; }
 done
 echo "rig_dryrun: hosts 10.1.1.214 -> $NSC, 10.1.1.213 -> $NSS; stand-in homes under $D" >&2
-PATH="$D/bin:$PATH" RIG_LOCK_HELD_HIL=1 RIG_LOCK_HELD=1 "$@" &
+# The stand-in Pis build with this PC's compiler: gate_v2_lib.sh adds its aarch64-only flags only for an aarch64 host.
+PATH="$D/bin:$PATH" RIG_LOCK_HELD_HIL=1 RIG_LOCK_HELD=1 GATE_BUILD_ARCH=$(uname -m) "$@" &
 cmd_pid=$!
 # THE WATCHDOG. A stand-in on PATH does not stop a tool that execs the real client by path (scp runs /usr/bin/ssh
 # itself, which is how a dry run once read the real Pis). So while the command runs, every 0.1 s: any process whose

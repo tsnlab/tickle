@@ -20,6 +20,24 @@
 #     (aarch64_insn/layout_qemu.sh, executed under qemu: 0 nops a sample with these flags, 3-10 without, equal at
 #     64/128/256 either way). Added to the layout and the placement flags.
 TICKLE_NOPAD_CFLAGS="-falign-loops=1 -falign-jumps=1 -falign-labels=1"
+# A1'' TICKLE_A53FIX_OFF_CFLAGS (2026-10-15): no linker rewrite by page offset, on aarch64 builds. The Pis' toolchain
+#     (Debian/Ubuntu aarch64 gcc, --enable-fix-cortex-a53-843419) has GNU ld patch every adrp that lands at page offset
+#     0xff8/0xffc ahead of a load or store: to an adr when the target is within 1 MiB (one instruction for one), else by
+#     moving the load into a stub and branching there and back (+2 executed instructions per pass). That depends on
+#     address bits 6-11, which -falign-functions=64 does not fix and P moves. Measured (layout_identity.sh and a
+#     64-placement relink sweep, aarch64 gcc 15, L flags): every perturbation left every function's instructions equal
+#     except by that rewrite; 1 placement in 63 of each of three bench binaries put a stub in tt_log_internal (cold
+#     here, but nothing keeps a hot path out of it), 0 in 63 with this flag. The Pi 5's Cortex-A76 does not have the
+#     erratum. Only where the build host is aarch64: GATE_BUILD_ARCH (default aarch64, the rig: every harness that
+#     takes the layout flags from layout_cflags_default builds on the Pis) - a harness that builds on this PC sets it
+#     to $(uname -m) before sourcing this file (srv_gap_pc.sh, rig_dryrun.sh), where x86 gcc rejects the option.
+# shellcheck disable=SC2034 # read by the scripts that source this file
+TICKLE_A53FIX_OFF_CFLAGS="-mno-fix-cortex-a53-843419"
+GATE_BUILD_ARCH=${GATE_BUILD_ARCH:-aarch64}
+case $GATE_BUILD_ARCH in
+    aarch64 | arm64) gate_arch_cflags=" $TICKLE_A53FIX_OFF_CFLAGS" ;;
+    *) gate_arch_cflags="" ;;
+esac
 # A2  insn_prefix / insn_fields: executed instructions per process, counted by perf stat as the parent of the bench
 #     (perf 6.8 on the Pis, paranoid 1: instructions:u and instructions:k of one's own processes work; tracepoints do
 #     not). Appended to the process's RESULT line as insn_u=<n> insn_k=<n> insn=ok, or insn=fail:<why>; the readers
@@ -29,9 +47,9 @@ TICKLE_NOPAD_CFLAGS="-falign-loops=1 -falign-jumps=1 -falign-labels=1"
 #     nothing else changed (layout_flags_cost.sh: F128 vs F64 - the same instruction sequences, 0 in-function changes
 #     under perturbation). It perturbs exactly what A1 cannot fix and what a real change moves under A1: the address bits
 #     above 6 (i-cache set, i-TLB page, branch predictor index). |P - A| is each metric's placement floor (gate_v2.py).
-TICKLE_LAYOUT_CFLAGS="-falign-functions=64 $TICKLE_NOPAD_CFLAGS"
+TICKLE_LAYOUT_CFLAGS="-falign-functions=64 $TICKLE_NOPAD_CFLAGS$gate_arch_cflags"
 # shellcheck disable=SC2034 # read by the scripts that source this file
-TICKLE_PLACEMENT_CFLAGS="-falign-functions=128 $TICKLE_NOPAD_CFLAGS"
+TICKLE_PLACEMENT_CFLAGS="-falign-functions=128 $TICKLE_NOPAD_CFLAGS$gate_arch_cflags"
 INSN_EVENTS="instructions:u,instructions:k"
 
 # layout_cflags_default: sets TICKLE_EXTRA_CFLAGS to TICKLE_LAYOUT_CFLAGS when it is UNSET; a set value (also empty)
