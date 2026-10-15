@@ -2263,11 +2263,15 @@ static uint32_t hybrid_destination_n(struct tt_Context* node, const struct tt_Pu
 // queue that drops a packet of 44 datagrams) leaves a 1 MB sample ~22 chances, and on the rig's 5% path the first
 // sample came through clean in 2 runs of 5 (2026-10-15, I1L: "none seen", n = 45, runs lost nine in ten, two samples
 // never delivered). So these go one datagram a send call (large_send_mtu()).
+//
+// A reader whose announce has not arrived counts too (2026-10-15, the rig's I1L at 5%, head r1 of 8): a writer that
+// learns it from its ACKNACK (claim_from_acknack()) knows no ceiling for it yet - n_max 1 - so its samples went as
+// trains while that reader measured them, and its first p rested on them all the same.
 static bool hybrid_peer_unmeasured(struct tt_Context* node, const struct tt_Publisher* pub, uint8_t context_id,
                                    uint32_t ip, uint16_t port, bool large) {
     if (context_id == tt_CONTEXT_ID_INVALID || !pub->reliable ||
         hybrid_mode(node, pub) != tt_LARGE_FRAGMENTATION_AUTO || node->hybrid.peer_loss_p[context_id] != 0 ||
-        hybrid_peer_n_max(node, pub, context_id, ip, port, large) < 2U) {
+        (hybrid_peer_n_max(node, pub, context_id, ip, port, large) < 2U && node->update_seen[context_id])) {
         return false;
     }
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {

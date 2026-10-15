@@ -2959,6 +2959,83 @@ static void test_the_first_p_rests_on_frames_not_trains(void) {
     test_mock_send_hook = sim_capture;
 }
 
+// --- the first p, measured to a reader the writer has not heard announce (2026-10-15) ------------------------------
+//
+// The rig's I1L cell again, after the one-a-call fix: 1 run of 8 still sent 4 samples at n = 45 (head r1). The writer,
+// performance_test under rmw_tickle, publishes as it starts, and may learn its reader from the reader's ACKNACK
+// (claim_from_acknack()) before the reader's announce is in: it then knows no ceiling for it (n_max 1), so
+// hybrid_peer_unmeasured() did not count it, the sample went as trains, the reader - which had heard the writer's
+// announce - measured it, and "none seen" at its tail was the writer's first p. The link: the reader's every datagram
+// to the writer is lost until the first sample is out (on the rig its announces were lost in the writer's flooded
+// well-known socket), then its announce goes; the writer's MTU datagrams are lost by train as above. Before the fix:
+// the first sample's 12 trains all arrive, "none seen", and samples 2 to 30 go at n = 45. (The broadcast case first-n2
+// also covered - a first sample sent before any reader is matched - is gone: a Publisher with no matched reader sends
+// nothing, test_no_send_unmatched.c.)
+static bool readers_muted;
+
+static bool mute_readers_or_drop_trains(const struct sim_datagram* d) {
+    if (readers_muted && d->from != SENDER_ID) {
+        return true;
+    }
+    return train_drop(d);
+}
+
+static void test_the_first_p_rests_on_frames_not_trains_to_a_reader_claimed_from_its_acknack(void) {
+    init_one(ONE_MB, FULL_CEILING, true);
+    sim_start(0);
+    uint8_t rid = reader_id(0);
+    sender.peer_ip_reassembly_max[rid] = 0; // no announce of the reader's has arrived; it is matched as if claimed
+    memset(&sim_discovery[0], 0, sizeof(sim_discovery[0]));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_set_discovery(&readers[0].ctx, &sim_discovery[0], NULL, NULL));
+    test_mock_send_hook = train_capture;
+    sim_drop_hook = mute_readers_or_drop_trains;
+    train_last_call = UINT32_MAX;
+    train_count = 0;
+    train_lost_now = false;
+    train_rng = 7;
+    readers_muted = true;
+    uint64_t since = test_mock_now; // the writer's announce reaches the reader; its reply is lost
+    while (readers[0].ctx.update_last_seen[SENDER_ID] == 0 && test_mock_now - since < tt_SECOND && sim_step()) {
+    }
+    EXPECT_TRUE(readers[0].ctx.update_last_seen[SENDER_ID] != 0);
+    EXPECT_EQ_U64(0, sender.update_last_seen[rid]);
+    uint64_t t = test_mock_now;
+    tick_readers(t);
+    memset(&sent, 0, sizeof(sent));
+    train_max_firsts = 0;
+    train_call_now = UINT32_MAX;
+    test_mock_now = t + (tt_SECOND / 2U);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1));
+    uint32_t first_alone = train_max_firsts;
+    // The treatment: the first sample went by unicast to the claimed reader.
+    EXPECT_TRUE(sent.broadcast == 0 && sent.to_reader[0] > 0);
+    EXPECT_EQ_U32(0, sender.hybrid.peer_loss_p[rid]);
+    readers_muted = false;
+    test_mock_now += tt_CONTEXT_UPDATE_INTERVAL;
+    sim_acting = rid;
+    (void)build_and_send_update(&readers[0].ctx, NULL, 0); // its announce gets through at last
+    since = test_mock_now;
+    while (sender.update_last_seen[rid] == 0 && test_mock_now - since < tt_SECOND && sim_step()) {
+    }
+    EXPECT_TRUE(sender.update_last_seen[rid] != 0);
+    sim_settle(1, tt_SECOND);
+    uint32_t at_runs = 0;
+    for (uint32_t s = 2; s <= TRAIN_SAMPLES; s++) {
+        memset(&sent, 0, sizeof(sent));
+        test_mock_now = t + (tt_SECOND / 2U) + ((uint64_t)s * 34U * tt_MILLISECOND); // no reader tick in between
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)s));
+        sim_settle((int)s, tt_SECOND);
+        at_runs += sent.max_n >= 2U ? 1U : 0U;
+    }
+    EXPECT_EQ_U32(1, first_alone);               // the first sample: one MTU unit a send call
+    EXPECT_TRUE(train_count > TRAIN_LOSS_EVERY); // the treatment: trains were lost
+    EXPECT_EQ_U32(0, at_runs);                   // no sample at n > 1 on a 5% path
+    EXPECT_TRUE(readers[0].ctx.hybrid.rx_loss.events > 0);
+    expect_intact_or_given_up(0, (int)TRAIN_SAMPLES);
+    sim_drop_hook = NULL;
+    test_mock_send_hook = sim_capture;
+}
+
 int main(void) {
     test_small_sample_goes_as_one_run_and_its_tail();
     test_large_samples_go_in_runs_of_n_max();
@@ -3015,6 +3092,7 @@ int main(void) {
     test_each_run_call_is_encoded_just_before_it_goes();
     test_a_sample_received_in_runs_is_lent_in_place();
     test_the_first_p_rests_on_frames_not_trains();
+    test_the_first_p_rests_on_frames_not_trains_to_a_reader_claimed_from_its_acknack();
     free(sim_queue);
     printf("test_hybrid_send: %u samples owed when the link went quiet, asked for at the periodic Heartbeat\n",
            sim_pause_heartbeats);
