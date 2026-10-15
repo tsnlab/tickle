@@ -545,8 +545,8 @@ static uint32_t resolve_keep_all_arena_bytes(const rmw_tickle_publisher_t* pub_i
 // An EXPERIMENT switch, not yet a tuned default, and it exists to answer one question. A reader
 // learns that a sample is gone - evicted from a KEEP_LAST cache - from the eviction Heartbeat the
 // publisher sends back in answer to an ACKNACK. That is a single lossy exchange: if the ACKNACK or
-// its reply is dropped, the reader falls back to acknack_retry (tt_RELIABLE_RETRY_INTERVAL x
-// tt_RELIABLE_RETRY), and at a high rate a tracking window can fill before that retry wins -
+// its reply is dropped, the reader falls back to acknack_retry's next request (backed off past
+// tt_RELIABLE_RETRY retries), and at a high rate a tracking window can fill before that retry wins -
 // forcing a window-sized jump rather than a clean skip. RTPS backs the exchange up with Heartbeats
 // the writer sends on its own, carrying firstSN; TickLE has the same thing in send_heartbeat(),
 // carrying first_available_seq_no, and rmw_tickle has never switched it on.

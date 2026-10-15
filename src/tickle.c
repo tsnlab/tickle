@@ -7098,6 +7098,7 @@ static uint8_t* reliable_cache_reserve(struct tt_ReliableCache* cache, uint32_t 
     struct tt_ReliableCacheIndex* entry = &cache->index[position % depth];
     entry->seq_no = seq_no;
     entry->retry = 0;
+    entry->resent_at = 0;
     entry->timestamp = tt_get_ns();
     entry->offset = 0;
     entry->len = 0; // a tombstone until the bytes below actually land
@@ -8685,7 +8686,8 @@ static enum large_resend_result large_resend(struct tt_Context* node, struct tt_
     uint32_t index = seq_no - record->seq_no;
     // A datagram the send in progress has not reached yet arrives without being resent. One it has already sent - to
     // the first destination, at least - was lost and is resent now: a sample can take longer to go out than a reader
-    // waits before it gives a KEEP_LAST writer up (seen on the PC: the first 4 MB sample under 5% loss, every time).
+    // waits before it asks again (seen on the PC: the first 4 MB sample under 5% loss, given up every time while a
+    // reader still gave KEEP_LAST gaps up on a retry count).
     const struct tt_LargeCursor* cursor = &pub->large_cursor;
     if (!record->sent && !(cursor->active && cursor->seq_no == record->seq_no &&
                            (cursor->next_dest > 0 || index < cursor->next_index))) {
@@ -10404,10 +10406,11 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->keep_all = writer_announced_keep_all(sub->node, node_id, ((struct tt_Endpoint*)sub)->id, entity_id);
             // Without a discovery table the writer's announce, which came first, was read before this proxy existed
             // (update_writer_proxies_keep_all() found nothing to tell), and the generation it carried counts as
-            // applied: the policy stayed UNKNOWN for good. UNKNOWN never gives a gap up, and a KEEP_LAST writer stops
-            // resending a sample after tt_RELIABLE_RETRY resends without saying it is gone
-            // (find_resendable_cache_entry()), so a unit whose resends were all lost held the stream behind it for
-            // ever (test_hybrid_send.c, test_a_reader_without_a_discovery_table_learns_keep_last(), 2026-10-15). So
+            // applied: the policy stayed UNKNOWN for good. UNKNOWN never gave a gap up, and a KEEP_LAST writer then
+            // stopped resending a sample after tt_RELIABLE_RETRY resends without saying it was gone, so a unit whose
+            // resends were all lost held the stream behind it for ever (test_hybrid_send.c, 2026-10-15). Neither
+            // holds since (acknack_retry(), find_resendable_cache_entry()), but the policy still decides the request
+            // back-off, the stuck-gap warning and the first-contact ACK solicitation. So
             // while the policy is not known the writer's announce is marked not applied, as
             // reprocess_known_announces() does: its next summary has it pulled again, and it tells this proxy. An
             // announce not yet heard is applied when it comes, mark or none.
@@ -10806,6 +10809,38 @@ static void note_watermark_requested(struct tt_WriterProxy* proxy, uint64_t now)
     proxy->probe_ns = now != 0 ? now : 1U;
 }
 
+// How long acknack_retry() waits before asking again: the retry interval, shifted left by the proxy's back-off
+// (RFC 6298 section 5.5's doubling, capped at 2^tt_RELIABLE_RETRY_BACKOFF_SHIFT). Requests now go on until the writer
+// repairs the gap or says it is gone, so a reader whose requests or repairs are all lost - a path down, a writer that
+// stopped answering - must not keep asking at the pace of a healthy recovery, each request a resend of everything it
+// names. A KEEP_ALL writer's gaps keep the plain interval, as they always had: they never gave up, and its flow control
+// waits on exactly that repair.
+static uint64_t acknack_retry_delay(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
+    uint64_t interval = reliable_retry_interval(node, proxy);
+    if (proxy->keep_all == tt_WRITER_KEEP_ALL_YES) {
+        return interval;
+    }
+    return interval << proxy->backoff;
+}
+
+// The back-off moves at each retry (tt_WriterProxy.backoff): back to 0 when the writer's stream has been seen further
+// than at the last retry, else one step up once the gap has had its tt_RELIABLE_RETRY retries at the plain interval -
+// which under plain loss nearly every gap closes within (a request and its repair both get through 90% of the time at
+// 5% loss). Only a writer gone quiet is backed off from. One whose DATA still arrives is answering, and its history
+// moves on: a gap held past its eviction fills the reorder buffer, whose overflow is dropped and asked for again. On
+// the PC's p4 cell at 1% loss (max rate, KEEP_LAST 64, keep_last_repair_pc_ab.sh) a back-off on the retry count alone
+// held gaps up to 16 intervals past their eviction, and one run in ten collapsed that way: 35% delivered, 747,004
+// resends, over a million "cannot hold fragment" (the parent's worst run of ten: 95.4%).
+static void acknack_retry_note_frontier(struct tt_WriterProxy* proxy, int highest) {
+    uint32_t frontier = proxy->ack_seq_no + (uint32_t)highest;
+    if (frontier != proxy->retry_frontier || proxy->retry <= tt_RELIABLE_RETRY) {
+        proxy->retry_frontier = frontier;
+        proxy->backoff = 0; // a new gap's retries start plain too, whatever the last one reached
+    } else if (proxy->backoff < (uint8_t)tt_RELIABLE_RETRY_BACKOFF_SHIFT) {
+        proxy->backoff++;
+    }
+}
+
 // Scheduled (tt_Context_schedule()) while proxy has an outstanding gap (proxy->received_bitmap !=
 // 0), re-sending the ACKNACK on a timer for the case where no further DATA ever arrives to
 // re-trigger update_reliable_ack() itself. Mirrors call_retry()'s own schedule/reschedule/give-up
@@ -10817,7 +10852,8 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
 
     struct tt_WriterProxy* proxy = param;
 
-    if (highest_relevant_bit(proxy) < 0) {
+    int highest = highest_relevant_bit(proxy);
+    if (highest < 0) {
         // A DATA arrival already closed the gap since this timer was armed. By either signal, as
         // maybe_arm_acknack_retry() reads it: an empty received_bitmap is not enough, because a gap only a Heartbeat
         // reveals - a lost or declined tail, with nothing out of order recorded - has one. Testing the bitmap alone
@@ -10828,78 +10864,53 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
         return;
     }
 
-    // Phase 3 - a KEEP_ALL writer never gives up, and neither may this Subscriber: abandoning the
-    // gap here would advance ack_seq_no past a sample that was never received, unblocking that
-    // writer as if it had been delivered. retry keeps counting for the stuck-gap warning below.
-    //
-    // Phase 3 step 4 - and a writer whose policy isn't known yet is treated the same way, because
-    // abandoning data is not a decision to take on an assumption. This cannot retry forever: if the
-    // writer genuinely no longer has the sample, its answer to the next ACKNACK is Phase 1-c's
-    // eviction Heartbeat, whose first_available_seq_no makes advance_past_unavailable() skip
-    // exactly the range that is really gone - so the worst case here is recovery delayed until the
-    // writer's announce arrives, not an endless retry. That safety net is what makes refusing to
-    // guess safe; without it this would need a grace period instead.
-    proxy->retry++; // unconditionally now, so the stuck-gap warning below can report a real count
-                    // in the two cases that never give up (it used to be short-circuited away)
+    // No give-up on a retry count, whatever the writer's policy (2026-10-15, the DDS/RTPS shape): a writer resends a
+    // datagram for as long as its history holds it, and answers a request for one it no longer holds with an eviction
+    // HEARTBEAT, whose first_available_seq_no makes advance_past_unavailable() skip exactly what is gone. So the gap
+    // ends on the writer's word - a repair, or that HEARTBEAT - or with the writer itself (its departure or lapsed
+    // lease: forget_writer_proxies_for_endpoint()). Giving a KEEP_LAST gap up after tt_RELIABLE_RETRY retries, as this
+    // did until then, threw away units the writer still held (14 in 100 of the 1%-loss hybrid sweep), and the writer's
+    // matching cap - it stopped resending after tt_RELIABLE_RETRY without saying the datagram was gone - held a reader
+    // that could not give up (its policy unknown) for good: "cap refuses seq_no 355" 50 times a second, 28 of 40
+    // samples delivered (seed 34). retry counts on, saturating, for the back-off and the stuck-gap warning below.
+    bool counted = proxy->retry < UINT8_MAX;
+    if (counted) {
+        proxy->retry++;
+    }
 #if tt_LARGE_SAMPLES
     // A large sample's fragments arrived within the last interval: the writer is still sending it and answers when the
     // send ends, which for a 4 MB sample can be several of the reader's first, 1 ms, intervals - this retry is not one
-    // the writer has failed to answer. Seen on the PC: the first 4 MB sample under 5% loss, given up on every run.
-    // A writer that cannot resend answers with an eviction HEARTBEAT, so a stream of large samples cannot hold a gap
-    // open for ever this way.
-    if (proxy->large_arrival_ns != 0 && tt_get_ns() - proxy->large_arrival_ns < reliable_retry_interval(node, proxy)) {
+    // the writer has failed to answer, and does not start the back-off. Seen on the PC: the first 4 MB sample under 5%
+    // loss, given up on every run while retries were counted against a budget.
+    if (counted && proxy->large_arrival_ns != 0 &&
+        tt_get_ns() - proxy->large_arrival_ns < reliable_retry_interval(node, proxy)) {
         proxy->retry--;
     }
 #endif
+    acknack_retry_note_frontier(proxy, highest);
     if (proxy->keep_all == tt_WRITER_KEEP_ALL_UNKNOWN && proxy->retry == tt_RELIABLE_RETRY + 1) {
-        // Counted once per gap, at the point the bounded policy would have abandoned it, so this
-        // reads directly against retry_giveups rather than tallying every later retry too.
+        // Counted once per gap, at the point the back-off may start, as it was where a bounded policy used to give up.
         RSTAT_INC(giveups_suppressed_unknown);
-    }
-    if (proxy->keep_all == tt_WRITER_KEEP_ALL_NO && proxy->retry > tt_RELIABLE_RETRY) {
-        TT_LOG_WARNING("Giving up on a reliable sample after %d ACKNACK retries", tt_RELIABLE_RETRY);
-        RSTAT_INC(retry_giveups);
-        proxy->sub->gap_abandoned++; // ack_seq_no itself, which is missing by definition
-        proxy->acknack_scheduled = false;
-        // Give up on ack_seq_no itself - the same "advance past it" advance_ack_seq_no() already
-        // does for a real receipt, since from here on it makes no difference *why* nothing more
-        // is waiting on it. A different, still-outstanding gap further ahead in the window (if
-        // any) is untouched - it gets its own full tt_RELIABLE_RETRY budget against whatever
-        // ack_seq_no ends up being next (advance_ack_seq_no()'s own reset of retry is what
-        // actually grants that fresh budget) - and, unlike leaving it to the next DATA arrival to
-        // notice, maybe_arm_acknack_retry() below starts requesting it immediately.
-        advance_ack_seq_no(proxy);
-        // advance_ack_seq_no() does not only step past the abandoned sample - it absorbs every
-        // received sample contiguous behind it, which with ordered delivery are samples still
-        // HELD in the reorder buffer. The watermark is now past them and they have not been
-        // handed up. This path never drained, so they waited for the next in-order arrival, and
-        // on a stream that had stopped they waited forever - while their slots stayed occupied
-        // and a sample arriving a window later collided with one and was re-requested.
-        drain_reorder(node, proxy->sub, proxy);
-        // No bulk skip of the rest here any more (Phase 1-c removed skip_unrecoverable_backlog()
-        // and its compile-time tt_MAX_RELIABLE_HISTORY guess at the Publisher's depth, which threw
-        // away samples a deeper cache still held). What's genuinely gone is now signalled
-        // explicitly: every ACKNACK that names an evicted sample gets an eviction Heartbeat back,
-        // and advance_past_unavailable() skips exactly that range.
-        maybe_arm_acknack_retry(node, proxy);
-        return;
     }
 
     RSTAT_INC(acknack_timer);
     send_acknack(node, proxy);
 
-    // Phase 3 - with a KEEP_ALL writer there is no give-up, so a genuinely stuck gap would
-    // otherwise be silent. Rate-limited by time rather than retry count, so the cadence doesn't
-    // change with the retry interval.
+    // A gap still open past its retries at the plain interval is worth a line: the writer neither repairs it nor says
+    // it is gone. KEEP_ALL warns from the first retry, as it always has. Rate-limited by time rather than retry count,
+    // so the cadence doesn't change with the retry interval.
     uint64_t now = tt_get_ns();
-    if (proxy->keep_all != tt_WRITER_KEEP_ALL_NO && now - proxy->stuck_warned_ns >= tt_RELIABLE_STUCK_WARN_INTERVAL) {
+    if ((proxy->keep_all == tt_WRITER_KEEP_ALL_YES || proxy->retry > tt_RELIABLE_RETRY) &&
+        now - proxy->stuck_warned_ns >= tt_RELIABLE_STUCK_WARN_INTERVAL) {
         proxy->stuck_warned_ns = now;
         TT_LOG_WARNING("Still waiting on reliable seq_no %u from node %d after %u retries (%s: no give-up)",
                        proxy->ack_seq_no, proxy->context_id, proxy->retry,
-                       proxy->keep_all == tt_WRITER_KEEP_ALL_YES ? "KEEP_ALL" : "policy not yet known");
+                       proxy->keep_all == tt_WRITER_KEEP_ALL_YES  ? "KEEP_ALL"
+                       : proxy->keep_all == tt_WRITER_KEEP_ALL_NO ? "KEEP_LAST"
+                                                                  : "policy not yet known");
     }
 
-    if (!tt_Context_schedule(node, tt_get_ns() + reliable_retry_interval(node, proxy), acknack_retry, proxy)) {
+    if (!tt_Context_schedule(node, now + acknack_retry_delay(node, proxy), acknack_retry, proxy)) {
         TT_LOG_ERROR("Cannot schedule acknack_retry");
         proxy->acknack_scheduled = false;
     }
@@ -10940,12 +10951,12 @@ static void proxy_move_ack(struct tt_WriterProxy* proxy, uint32_t ack_seq_no) {
 //
 // Also resets retry to 0 unconditionally - whatever is now the oldest outstanding gap (if any
 // remain - received_bitmap may still be nonzero here) is a *different* sample than the one retry
-// was counting attempts against, and deserves its own full tt_RELIABLE_RETRY budget, not whatever
-// was left over. Before this reset lived here, two losses close enough together that a second gap
-// was still open when the first resolved would make the second one inherit however many attempts
-// the first had already used - found the same way as the bitmap bug above: real tc/netem
-// loss-injection runs recovering measurably worse than p^(tt_RELIABLE_RETRY + 1) predicts for a
-// single isolated loss.
+// was counting attempts against, and deserves its own tt_RELIABLE_RETRY retries at the plain interval
+// before the back-off (until 2026-10-15, its own give-up budget), not whatever was left over. Before this reset lived
+// here, two losses close enough together that a second gap was still open when the first resolved would make the second
+// one inherit however many attempts the first had already used - found the same way as the bitmap bug above: real
+// tc/netem loss-injection runs recovering measurably worse than p^(tt_RELIABLE_RETRY + 1) predicts for a single
+// isolated loss.
 static void advance_ack_seq_no(struct tt_WriterProxy* proxy) {
     proxy->ack_seq_no++;
     proxy_shift_received_one(proxy);
@@ -11307,8 +11318,12 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         // addressed to this node is a retransmission, so only that one is timed; the original just ends
         // the probe. (The sequence number does say which REQUEST a copy answers - it cannot say which copy
         // arrived. The first version of this estimator assumed the one covered the other.)
+        //
+        // Nor is a recovery the back-off reached (acknack_retry_delay()): timed from the first request, it measures
+        // the doubled waits, and folded in it would lengthen the interval the back-off doubles - a loop with nothing
+        // of the path in it. Before 2026-10-15 such a gap was given up instead, and never timed either.
         if (proxy->probe_ns != 0 && proxy->probe_seq_no == seq_no) {
-            if (node->rx_targeted) {
+            if (node->rx_targeted && proxy->retry <= tt_RELIABLE_RETRY) {
                 note_recovery_sample(proxy, tt_get_ns() - proxy->probe_ns);
             }
             proxy->probe_ns = 0;
@@ -11327,8 +11342,7 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         // tt_MAX_RELIABLE_HISTORY - 1 behind the latest arrival forever - which preempts the very
         // retry cycle (acknack_retry()) that might have recovered ack_seq_no itself, over and
         // over, instead of ever letting it actually resolve. Skipping only belongs where it's
-        // known to be right: the Publisher's own eviction Heartbeat (advance_past_unavailable()),
-        // or acknack_retry()'s give-up after ack_seq_no's fair tt_RELIABLE_RETRY attempts.
+        // known to be right: the Publisher's own eviction Heartbeat (advance_past_unavailable()).
         uint32_t offset = seq_no - proxy->ack_seq_no;
         if (offset < proxy_window_bits(proxy)) {
             is_new = record_out_of_order_arrival(proxy, offset, &new_gap);
@@ -11369,8 +11383,8 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
     // ~1.35ms, so those gaps were always abandoned by jump_ack_baseline() before the timer fired
     // (HIL 0-c: ~48% of gaps at 1% tc loss, ~91% at 5%, all lost). NACK the new gap immediately -
     // and *only* its own positions: re-requesting every still-open gap here would re-send samples
-    // whose retransmit is already in flight and burn the Publisher's per-sample retry budget
-    // (find_resendable_cache_entry()'s tt_RELIABLE_RETRY cap) on duplicates. Bounded by one
+    // whose retransmit is already in flight, duplicates on the wire (until 2026-10-15 they also
+    // burned the Publisher's per-sample resend cap, since removed). Bounded by one
     // ACKNACK per loss event (a new gap needs at least one genuinely missing position), not one per
     // DATA arrival - unlike the ACKNACK flood maybe_arm_acknack_retry()'s own comment describes.
     bool retry_already_armed = proxy->acknack_scheduled;
@@ -12236,11 +12250,10 @@ static void update_writer_proxies_keep_all(struct tt_Context* node, uint32_t end
 // writer that died. entity_id 0 with match_any_entity drops every writer that node hosts for this
 // topic (the node itself departed); otherwise just the one entity.
 //
-// Without this, a KEEP_ALL writer (tt_UPDATE_QOS_KEEP_ALL, which switches off acknack_retry()'s own
-// tt_RELIABLE_RETRY give-up) that vanished mid-gap would leave its Subscriber re-requesting the
-// same samples every retry interval forever, unicast at an address nobody answers - and the slot
-// would never free for a restarted Publisher. A KEEP_LAST writer only leaked a bounded number of
-// retries, which is why this was survivable before.
+// Without this, a writer that vanished mid-gap would leave its Subscriber re-requesting the same
+// samples forever, unicast at an address nobody answers - and the slot would never free for a
+// restarted Publisher. No policy gives a gap up on a retry count since 2026-10-15 (acknack_retry()),
+// so this ends every gap whose writer is gone; before, only a KEEP_ALL writer's needed it.
 static void forget_writer_proxies_for_endpoint(struct tt_Context* node, uint32_t endpoint_id, uint8_t node_id,
                                                uint32_t entity_id, bool match_any_entity) {
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
@@ -15447,11 +15460,16 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - a reliable Subscriber's ACKNACK
 // arrives here at whichever local Publisher it targets. Retransmits, straight back to the
 // sender, whichever requested (bitmap bit set) samples are still in that Publisher's own
-// reliable_cache; a sample already evicted (KEEP_LAST) or already retried past tt_RELIABLE_RETRY
-// is silently skipped - the Subscriber's own acknack_retry() gives up on its side independently.
+// reliable_cache; a sample no longer there (evicted under KEEP_LAST, or aged out of LIFESPAN) is
+// answered with an eviction Heartbeat instead.
 // Finds the still-resendable cache entry for missing_seq_no, or NULL if there isn't one - either
-// nothing in cache matches it, the retry cap (tt_RELIABLE_RETRY) is already exhausted, or (QoS
-// roadmap #6, LIFESPAN) it's aged out of pub->lifespan_duration_ns. Split out of process_acknack()
+// nothing in cache matches it, or (QoS roadmap #6, LIFESPAN) it's aged out of
+// pub->lifespan_duration_ns. Both mean gone. There is no per-sample resend cap (2026-10-15, as DDS
+// has none): a sample in the history is resent for as long as readers ask for it. Until then a
+// KEEP_LAST Publisher stopped after tt_RELIABLE_RETRY resends without saying so, which a reader that
+// could not give up waited on for good. NULL with *gone false is the one limit left: past
+// tt_RELIABLE_RETRY resends, an entry resent less than a retry interval ago is not resent again yet
+// (resend_suppressed()). Split out of process_acknack()
 // below purely to keep that function's own cognitive complexity under clang-tidy's threshold, same
 // reasoning cache_reliable_sample()/reliable_cache_oldest_seq_no() were split out for.
 //
@@ -15468,8 +15486,27 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
 // way.
 //
 // Phase 1-c (rmw_tickle/PLAN.md, B2) - *gone is set when the NULL means the sample no longer exists
-// for this Publisher at all (evicted, or aged out of LIFESPAN), as opposed to merely out of retry
-// budget - retransmit_reliable_samples() answers that with an eviction Heartbeat.
+// for this Publisher at all (evicted, or aged out of LIFESPAN) - retransmit_reliable_samples()
+// answers that with an eviction Heartbeat. A NULL that is not gone is a suppressed resend (resend_suppressed()).
+// The cap removed on 2026-10-15 was also the only thing that bounded how often one datagram went again: a reader asks
+// for every datagram still missing at each retry, a repair in flight included, and at a high rate the history outlives
+// many retries. Without a bound the PC's p4 cell at 1% loss resent 412,632 datagrams where the parent resent 19-31
+// thousand, and delivered half as many samples (keep_last_repair_pc_ab.sh, first run). So past tt_RELIABLE_RETRY
+// resends - as fast as before up to there - an entry goes again at most once per retry interval (the Publisher's,
+// reliable_retry_interval_publisher(): the configured one, else tt_RELIABLE_RETRY_INITIAL), the nack suppression an
+// RTPS writer applies. A request it suppresses is neither answered nor told the datagram is gone; the reader's next
+// one, backed off, finds it due. Per entry, not per reader: a second reader asking within the interval waits too.
+// Not under KEEP_ALL, which never had a cap: its unacknowledged run is bounded by its own flow control, and a reader
+// stuck on a datagram blocks the writer on exactly that one (as acknack_retry_delay() leaves its requests unbacked).
+#define RESENT_AT_SHIFT 10U // tt_ReliableCacheIndex.resent_at: tt_get_ns() >> 10, about microseconds
+static bool resend_suppressed(const struct tt_ReliableCacheIndex* entry, bool pub_keep_all) {
+    if (pub_keep_all || entry->retry < tt_RELIABLE_RETRY) {
+        return false;
+    }
+    uint32_t now = (uint32_t)(tt_get_ns() >> RESENT_AT_SHIFT);
+    return now - entry->resent_at < (uint32_t)(reliable_retry_interval_publisher() >> RESENT_AT_SHIFT);
+}
+
 static struct tt_ReliableCacheIndex* find_resendable_cache_entry(struct tt_ReliableCache* cache, uint16_t depth,
                                                                  uint32_t missing_seq_no, uint64_t lifespan_duration_ns,
                                                                  bool pub_keep_all, bool* gone) {
@@ -15480,13 +15517,9 @@ static struct tt_ReliableCacheIndex* find_resendable_cache_entry(struct tt_Relia
         return NULL; // empty slot, a tombstone (evicted, or never cached because the sample was
                      // larger than the whole arena), or taken over by a different seq_no since
     }
-    // Phase 3 - under KEEP_ALL this Publisher blocks rather than moving on, so it must keep
-    // answering: the per-sample cap that normally stops a broken peer making us resend forever is
-    // deliberately off here, bounded instead by the Publisher being unable to outrun the stuck
-    // Subscriber (it is blocked on exactly that sample).
-    if (!pub_keep_all && cache_entry->retry >= tt_RELIABLE_RETRY) {
+    if (resend_suppressed(cache_entry, pub_keep_all)) {
         RSTAT_INC(null_retry_cap);
-        return NULL; // give up on this one sample - the Subscriber's own retry cap will too
+        return NULL; // held, and resent less than a retry interval ago: not gone, not yet again
     }
     // Same "as if it had never been sent" rule deliver_durability_backlog() applies, here for a
     // live NACK'd retransmit instead of a discovery-triggered backlog push. Matches real DDS:
@@ -15572,7 +15605,10 @@ static bool retransmit_one_sample(struct tt_Context* node, struct tt_Publisher* 
     } else {
         RSTAT_INC(retransmitted);
         pub->retransmitted++;
-        cache_entry->retry++;
+        if (cache_entry->retry < UINT8_MAX) {
+            cache_entry->retry++; // how often this one was resent, for resend_suppressed()
+        }
+        cache_entry->resent_at = (uint32_t)(tt_get_ns() >> RESENT_AT_SHIFT);
     }
     return false;
 }
@@ -15870,17 +15906,21 @@ static bool process_acknack(struct tt_Context* node, struct tt_Header* header, u
     }
 
     struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
-    if (pub->reliable_cache == NULL) {
-        return true; // not a reliable/durable Publisher (or a stale ack) - nothing cached to
-                     // resend or to update peer_acks against
-    }
-
-    struct tt_ReliableCache* cache = pub->reliable_cache;
-    uint16_t depth = reliable_cache_depth(cache);
-    if (depth == 0) {
-        return true; // index[]/capacity/arena never set up - nothing cached to resend
-    }
     struct tt_Peer target = {header->source, sender_ip, sender_port};
+    struct tt_ReliableCache* cache = pub->reliable_cache;
+    uint16_t depth = cache != NULL ? reliable_cache_depth(cache) : 0;
+    if (depth == 0) {
+        // Nothing cached to resend or to update peer_acks against: not a reliable/durable Publisher, a stale ack, or
+        // index[]/capacity/arena never set up. A RELIABLE one that keeps no history holds nothing a request names, and
+        // says so - a Subscriber no longer gives a gap up on a retry count (acknack_retry()), so without this answer
+        // it would ask for good.
+        if (pub->reliable && !bitmap_is_zero(bitmap, bitmap_words)) {
+            RSTAT_INC(eviction_heartbeats);
+            encode_and_send_heartbeat(node, pub, publisher_announced_last_seq_no(pub) + 1U, &target, 1,
+                                      tt_HEARTBEAT_FLAG_FINAL);
+        }
+        return true;
+    }
 
     // QoS roadmap #5 (RELIABILITY) follow-up - tt_Publisher_wait_for_all_acked(). record_peer_ack()
     // keeps peer_acks[] (keyed by node_id since Phase 3 prerequisite (c), see its own doc comment,

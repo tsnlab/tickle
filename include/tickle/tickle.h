@@ -1821,8 +1821,12 @@ struct tt_ReliableCacheIndex {
                      // (a "tombstone": the slot still names seq_no, but its bytes are gone - the
                      // only thing that distinguishes it from a live entry, see find_resendable_
                      // cache_entry(), tickle.c)
-    uint8_t retry;   // ACKNACK retransmit count - not consulted by DURABILITY's own one-shot push
+    uint8_t retry;   // ACKNACK retransmit count, saturating - not consulted by DURABILITY's own one-shot push
     uint8_t reserved;
+    // tt_get_ns() >> 10 (about microseconds, wrapping every ~73 minutes) at the last retransmit. Past
+    // tt_RELIABLE_RETRY retransmits an entry is resent at most once per retry interval
+    // (find_resendable_cache_entry(), tickle.c). In what was the struct's tail padding: its size is unchanged.
+    uint32_t resent_at;
 };
 
 // Milestone 58 (rmw_tickle/PLAN.md) - remembers which remote node_ids have already received this
@@ -2581,10 +2585,17 @@ struct tt_WriterProxy {
     // helpers, the only code that sets a bit or moves the bitmap.
     uint16_t received_words;
     // How many ACKNACK retries have been sent for the *current* outstanding gap against this
-    // writer - reset to 0 when a new gap first opens, capped at tt_RELIABLE_RETRY (mirrors
-    // call_retry()'s own client->service->call_retry_count check) before this Subscriber gives up
-    // on that sample.
+    // writer - reset to 0 when a new gap first opens, saturating at 255. Past tt_RELIABLE_RETRY the
+    // retries may back off (backoff below); nothing gives a gap up on this count any more
+    // (2026-10-15) - only the writer's eviction Heartbeat or its departure ends one.
     uint8_t retry;
+    // acknack_retry_delay()'s back-off (tickle.c): the retry interval is shifted left by this, 0 to
+    // tt_RELIABLE_RETRY_BACKOFF_SHIFT. It grows by one at each retry past tt_RELIABLE_RETRY that finds
+    // retry_frontier where the last one left it - nothing new from the writer since - and is 0 again
+    // as soon as the frontier moves: a writer whose DATA still arrives is not one to back off from.
+    uint8_t backoff;
+    // ack_seq_no + highest_relevant_bit() at the last retry: how far this writer's stream had been seen.
+    uint32_t retry_frontier;
     // Whether acknack_retry() (tickle.c) currently has a tt_Context_schedule() entry pending for
     // this specific writer proxy (scheduled with `this` entry's own address as its param, so
     // several writers' independent retry timers never collide - see acknack_retry()'s own doc
@@ -2603,8 +2614,10 @@ struct tt_WriterProxy {
     // even with zero out-of-order DATA arrivals yet (received_bitmap is blind to that on its own).
     uint32_t heartbeat_last_seq_no;
     // Phase 3 (rmw_tickle/PLAN.md) - this writer announced tt_UPDATE_QOS_KEEP_ALL, i.e. it will
-    // block rather than evict an unacknowledged sample, so this Subscriber must not give up on a
-    // gap either: acknack_retry()'s own tt_RELIABLE_RETRY budget is disabled for this writer alone.
+    // block rather than evict an unacknowledged sample. Until 2026-10-15 this switched off
+    // acknack_retry()'s tt_RELIABLE_RETRY give-up for this writer alone; no policy gives up on a
+    // count now, and what it still decides is the request back-off (KEEP_ALL keeps the plain
+    // interval), the stuck-gap warning and the first-contact ACK solicitation.
     // Per writer, not per Subscriber - one Subscriber can be matched to a KEEP_ALL writer and a
     // KEEP_LAST one at the same time. Cached here from the writer's own announce rather than looked
     // up in the discovery table per DATA, which is the hot path.

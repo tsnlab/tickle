@@ -28,7 +28,8 @@
 // two traces, which is what shows that the ACKNACKs did not change.
 //
 // Positive controls: each scenario must have exercised what it is named for (ACKNACKs sent,
-// give-ups, jumps, duplicates, multi-word bitmaps), or the check above decides nothing about it.
+// retries into the back-off and no give-up, jumps, duplicates, multi-word bitmaps), or the check
+// above decides nothing about it.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -192,7 +193,7 @@ struct scenario {
     int w_inorder, w_lose, w_repair, w_dup, w_window, w_jump, w_retry, w_heartbeat, w_unreceive;
     uint16_t span_max;
     bool in_order; // nothing lost: no ACKNACK may go out, and (new build) no bit is ever set
-    bool expect_giveup, expect_jump, expect_dup, expect_multiword;
+    bool expect_backoff, expect_jump, expect_dup, expect_multiword;
 };
 
 enum op_kind { OP_IN_ORDER, OP_LOSE, OP_REPAIR, OP_DUP, OP_WINDOW, OP_JUMP, OP_RETRY, OP_HEARTBEAT, OP_UNRECEIVE };
@@ -234,7 +235,9 @@ static struct model model;
 
 struct counts {
     // straddles: DATA from past 2^32 while the watermark had not wrapped yet - the case seq_delta() exists for
-    uint32_t giveups, jumps, dups, max_highest, max_words, wraps, straddles, deviations;
+    // giveups: a retry that moved the watermark, which none may since 2026-10-15; backoffs: retries past
+    // tt_RELIABLE_RETRY
+    uint32_t giveups, backoffs, jumps, dups, max_highest, max_words, wraps, straddles, deviations;
 };
 
 static void check_step(const struct scenario* sc, int step, const char* op, uint32_t arg, int ret, struct counts* c) {
@@ -331,6 +334,7 @@ static void fire_retry(struct run* r, struct tt_WriterProxy* proxy, struct step*
         r->c.giveups++;
         model_advance(&model);
     }
+    r->c.backoffs += proxy->retry > tt_RELIABLE_RETRY ? 1U : 0U;
     s->arg = 1;
 }
 
@@ -413,7 +417,8 @@ static struct step choose(struct run* r, enum op_kind kind, struct tt_WriterProx
         // such a writer still holds. A pick from the lost list alone lands on it once in a window's worth of holes, and
         // with no give-up to move past it, at 4,096 and 8,192 bits the stream stalled below the wrap it was named for
         // (wrap/w64/all on most seeds, wrap/w128/all on the fixed one). Not under KEEP_LAST: its writer may no longer
-        // hold the sample, and repairing the watermark there starved the give-ups that path's control asks for.
+        // hold the sample, and repairing the watermark there starved the give-ups that path's control asked for until
+        // 2026-10-15, and the back-offs it asks for since.
         if (r->keep_all == tt_WRITER_KEEP_ALL_YES && lost_count > 0 && model.ack != r->next && rnd(2) == 0) {
             s.seq = model.ack;
         }
@@ -472,21 +477,25 @@ static void check_controls(const struct run* r, const char* name, uint16_t words
     const struct counts* c = &r->c;
     bool quiet_ok = sc->in_order ? sends == 0 && c->max_words == 0 : sends > 0;
     bool wrap_ok = sc->start < (1U << 31) || (c->wraps > 0 && c->straddles > 0);
-    bool giveup_ok = !sc->expect_giveup || r->keep_all != tt_WRITER_KEEP_ALL_NO || c->giveups > 0;
+    // No policy gives a gap up on a retry count (acknack_retry(), 2026-10-15): a retry never moves the watermark, and
+    // under KEEP_LAST the scenarios named for it retried a gap into the back-off, where they used to give it up.
+    bool giveup_ok =
+        c->giveups == 0 && (!sc->expect_backoff || r->keep_all != tt_WRITER_KEEP_ALL_NO || c->backoffs > 0);
     bool seen_ok = (!sc->expect_jump || c->jumps > 0) && (!sc->expect_dup || c->dups > 0);
     bool wide_ok = !sc->expect_multiword || words == tt_RELIABLE_BITMAP_WORDS || c->max_highest >= 128;
     if (!(quiet_ok && wrap_ok && giveup_ok && seen_ok && wide_ok)) {
         fprintf(stderr,
-                "%s: positive control not met (sends %u giveups %u jumps %u dups %u highest %u words %u wraps %u "
-                "straddles %u)\n",
-                name, sends, c->giveups, c->jumps, c->dups, c->max_highest, c->max_words, c->wraps, c->straddles);
+                "%s: positive control not met (sends %u giveups %u backoffs %u jumps %u dups %u highest %u words %u "
+                "wraps %u straddles %u)\n",
+                name, sends, c->giveups, c->backoffs, c->jumps, c->dups, c->max_highest, c->max_words, c->wraps,
+                c->straddles);
         test_failures++;
     }
     if (!trace) {
-        printf("  %-24s steps %d sends %u giveups %u jumps %u dups %u highest-bit %u words %u wraps %u straddles %u "
-               "deviations %u\n",
-               name, sc->steps, sends, c->giveups, c->jumps, c->dups, c->max_highest, c->max_words, c->wraps,
-               c->straddles, c->deviations);
+        printf("  %-24s steps %d sends %u giveups %u backoffs %u jumps %u dups %u highest-bit %u words %u wraps %u "
+               "straddles %u deviations %u\n",
+               name, sc->steps, sends, c->giveups, c->backoffs, c->jumps, c->dups, c->max_highest, c->max_words,
+               c->wraps, c->straddles, c->deviations);
     }
 }
 
@@ -534,7 +543,7 @@ static void run_scenario(const struct scenario* sc, uint16_t words, enum tt_Writ
 }
 
 static const struct scenario scenarios[] = {
-    // name           start         steps inord lose rep dup win jump retry hb unrecv span in_order giveup jump dup
+    // name           start         steps inord lose rep dup win jump retry hb unrecv span in_order backoff jump dup
     // multiword
     {"in_order", 1, 3000, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, true, false, false, false, false},
     {"in_order_span", 1, 2000, 1, 0, 0, 0, 0, 0, 0, 0, 0, 6, true, false, false, false, false},
