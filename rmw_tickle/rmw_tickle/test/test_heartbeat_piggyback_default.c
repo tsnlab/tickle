@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h> // setenv()/unsetenv()
 
+#include <tickle/config.h> // tt_IDLE_HEARTBEAT_PERIOD
 #include <tickle/tickle.h> // tt_DATA_ENCODE/_ENCODE_SIZE/_DECODE/_FREE
 
 #include "rcutils/allocator.h"
@@ -146,6 +147,7 @@ static uint32_t armed_every(rmw_node_t* node, const char* env, enum rmw_qos_reli
 
 // The idle HEARTBEAT's period (RMW_TICKLE_IDLE_HEARTBEAT_NS, rmw_publisher.c; core's tt_IDLE_HEARTBEAT_PERIOD): what
 // the core publisher was given with the variable set to env (NULL = unset).
+_Static_assert(250000000ULL == tt_IDLE_HEARTBEAT_PERIOD, "the default the README and RMW.md state");
 #define IDLE_ENV_NAME "RMW_TICKLE_IDLE_HEARTBEAT_NS"
 static uint64_t armed_idle(rmw_node_t* node, const char* env) {
     if (NULL == env) {
@@ -204,7 +206,6 @@ int main(void) {
     assert(0 == armed_every(node, "16", RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT));
 
     // The idle HEARTBEAT: on at core's 250 ms unless set; 0 turns it off; a number replaces it; garbage keeps it.
-    assert(250000000ULL == tt_IDLE_HEARTBEAT_PERIOD);
     assert(tt_IDLE_HEARTBEAT_PERIOD == armed_idle(node, NULL));
     assert(tt_IDLE_HEARTBEAT_PERIOD == armed_idle(node, ""));
     assert(0 == armed_idle(node, "0"));
