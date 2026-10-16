@@ -11553,6 +11553,38 @@ static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_n
     rtt_estimate_fold(&proxy->recovery_srtt_ns, &proxy->recovery_rttvar_ns, sample_ns);
 }
 
+// The watermark's sample seq_no arrived: ends a probe on it, timing the recovery if it is one.
+//
+// Karn's ambiguity, and the reason for rx_targeted: the requested sample can arrive as the
+// retransmission the ACKNACK caused, or as its original, which was only late - overtaken by a
+// later sample on the other socket, say - and then arrives microseconds after the request. Timing
+// the second as a recovery put 12.6 us into the estimate under 20 ms of injected delay on the rig,
+// and with the ceiling at 64 x srtt that would have clamped real recoveries hard. Only a copy
+// addressed to this node is a retransmission, so only that one is timed; the original just ends
+// the probe. (The sequence number does say which REQUEST a copy answers - it cannot say which copy
+// arrived. The first version of this estimator assumed the one covered the other.)
+//
+// Nor is a recovery the back-off reached (acknack_retry_delay()): timed from the first request, it measures
+// the doubled waits, and folded in it would lengthen the interval the back-off doubles - a loop with nothing
+// of the path in it. Before 2026-10-15 such a gap was given up instead, and never timed either. One whose wait saw
+// the writer's large sample still arriving (tt_WriterProxy.probe_busy) measures the writer's send: it goes into the
+// sending estimate only, not the path's (2026-10-16).
+static void end_watermark_probe(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint32_t seq_no) {
+    if (proxy->probe_ns == 0 || proxy->probe_seq_no != seq_no) {
+        return;
+    }
+    if (node->rx_targeted && proxy->retry <= tt_RELIABLE_RETRY) {
+        uint64_t took = tt_get_ns() - proxy->probe_ns;
+        if (!proxy->probe_busy) {
+            note_recovery_sample(proxy, took);
+        }
+#if tt_LARGE_SAMPLES
+        rtt_estimate_fold(&proxy->sending_srtt_ns, &proxy->sending_rttvar_ns, took);
+#endif
+    }
+    proxy->probe_ns = 0;
+}
+
 // An ACKNACK naming the watermark just went out. Starts a probe on it unless one is already running
 // for this same watermark - a retry keeps the first request's timestamp, which is the whole point
 // (see tt_WriterProxy.probe_ns). A probe left behind by a watermark that moved on without its sample
@@ -12129,32 +12161,7 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
     struct new_gap_range new_gap = {-1, -1};
     bool is_new = true;
     if (seq_no == proxy->ack_seq_no) {
-        // Karn's ambiguity, and the reason for rx_targeted: the requested sample can arrive as the
-        // retransmission the ACKNACK caused, or as its original, which was only late - overtaken by a
-        // later sample on the other socket, say - and then arrives microseconds after the request. Timing
-        // the second as a recovery put 12.6 us into the estimate under 20 ms of injected delay on the rig,
-        // and with the ceiling at 64 x srtt that would have clamped real recoveries hard. Only a copy
-        // addressed to this node is a retransmission, so only that one is timed; the original just ends
-        // the probe. (The sequence number does say which REQUEST a copy answers - it cannot say which copy
-        // arrived. The first version of this estimator assumed the one covered the other.)
-        //
-        // Nor is a recovery the back-off reached (acknack_retry_delay()): timed from the first request, it measures
-        // the doubled waits, and folded in it would lengthen the interval the back-off doubles - a loop with nothing
-        // of the path in it. Before 2026-10-15 such a gap was given up instead, and never timed either. Nor is one
-        // whose wait saw the writer's large sample still arriving (tt_WriterProxy.probe_busy): it measures the writer's
-        // send.
-        if (proxy->probe_ns != 0 && proxy->probe_seq_no == seq_no) {
-            if (node->rx_targeted && proxy->retry <= tt_RELIABLE_RETRY) {
-                uint64_t took = tt_get_ns() - proxy->probe_ns;
-                if (!proxy->probe_busy) {
-                    note_recovery_sample(proxy, took);
-                }
-#if tt_LARGE_SAMPLES
-                rtt_estimate_fold(&proxy->sending_srtt_ns, &proxy->sending_rttvar_ns, took);
-#endif
-            }
-            proxy->probe_ns = 0;
-        }
+        end_watermark_probe(node, proxy, seq_no);
         // Before the advance, not after: bit j is "received(ack_seq_no + j)" and ack_seq_no is
         // still this sample's own number here, so the span's positions are bits 1..span-1.
         // advance_ack_seq_no() steps one and then absorbs the contiguous run that follows, which

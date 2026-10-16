@@ -90,34 +90,34 @@ MUTANTS = [
     (
         "reader: the KEEP_LAST give-up after tt_RELIABLE_RETRY put back",
         "src/tickle.c",
-        "    RSTAT_INC(acknack_timer);\n    send_acknack(node, proxy);\n",
+        "    RSTAT_INC(acknack_timer);\n#if tt_LARGE_SAMPLES\n",
         "    if (proxy->keep_all == tt_WRITER_KEEP_ALL_NO && proxy->retry > tt_RELIABLE_RETRY) {\n"
         "        proxy->sub->gap_abandoned++;\n        proxy->acknack_scheduled = false;\n"
         "        advance_ack_seq_no(proxy);\n        drain_reorder(node, proxy->sub, proxy);\n"
         "        maybe_arm_acknack_retry(node, proxy);\n        return;\n    }\n"
-        "    RSTAT_INC(acknack_timer);\n    send_acknack(node, proxy);\n",
+        "    RSTAT_INC(acknack_timer);\n#if tt_LARGE_SAMPLES\n",
         PUBSUB,
     ),
     (
         "reader: the KEEP_LAST give-up put back (end to end)",
         "src/tickle.c",
-        "    RSTAT_INC(acknack_timer);\n    send_acknack(node, proxy);\n",
+        "    RSTAT_INC(acknack_timer);\n#if tt_LARGE_SAMPLES\n",
         "    if (proxy->keep_all == tt_WRITER_KEEP_ALL_NO && proxy->retry > tt_RELIABLE_RETRY) {\n"
         "        proxy->sub->gap_abandoned++;\n        proxy->acknack_scheduled = false;\n"
         "        advance_ack_seq_no(proxy);\n        drain_reorder(node, proxy->sub, proxy);\n"
         "        maybe_arm_acknack_retry(node, proxy);\n        return;\n    }\n"
-        "    RSTAT_INC(acknack_timer);\n    send_acknack(node, proxy);\n",
+        "    RSTAT_INC(acknack_timer);\n#if tt_LARGE_SAMPLES\n",
         SEND,
     ),
     (
         "reader: the KEEP_LAST give-up put back (bitmap differential's control)",
         "src/tickle.c",
-        "    RSTAT_INC(acknack_timer);\n    send_acknack(node, proxy);\n",
+        "    RSTAT_INC(acknack_timer);\n#if tt_LARGE_SAMPLES\n",
         "    if (proxy->keep_all == tt_WRITER_KEEP_ALL_NO && proxy->retry > tt_RELIABLE_RETRY) {\n"
         "        proxy->sub->gap_abandoned++;\n        proxy->acknack_scheduled = false;\n"
         "        advance_ack_seq_no(proxy);\n        drain_reorder(node, proxy->sub, proxy);\n"
         "        maybe_arm_acknack_retry(node, proxy);\n        return;\n    }\n"
-        "    RSTAT_INC(acknack_timer);\n    send_acknack(node, proxy);\n",
+        "    RSTAT_INC(acknack_timer);\n#if tt_LARGE_SAMPLES\n",
         DIFF,
     ),
     (
@@ -179,8 +179,8 @@ MUTANTS = [
     (
         "estimate: a backed-off recovery timed",
         "src/tickle.c",
-        "            if (node->rx_targeted && proxy->retry <= tt_RELIABLE_RETRY) {",
-        "            if (node->rx_targeted) {",
+        "    if (node->rx_targeted && proxy->retry <= tt_RELIABLE_RETRY) {",
+        "    if (node->rx_targeted) {",
         PUBSUB,
     ),
     (
