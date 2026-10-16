@@ -156,7 +156,7 @@ static void gap_shift_right_1(void) {
     }
     pending_bitmap[GAP_WINDOW_WORDS - 1] >>= 1;
 }
-static uint64_t first_recv_time = 0; // ns timestamp of the first real message - anchors warm-up,
+static uint64_t first_recv_time = 0; // tt_get_ns() at the first real message - anchors warm-up,
                                      // not this process's own start_time (see this file's own
                                      // comment: perf_server's -d intentionally runs longer than
                                      // perf_client's, so "since I started" would count idle time
@@ -184,7 +184,7 @@ static uint64_t interval_received_msgs = 0;
 static uint64_t interval_received_bytes = 0;
 
 // One-way delivery latency: `time` (bulk_callback's own parameter) is the *sender's* clock at
-// publish (tt_Publisher_publish()'s data_header->timestamp = tt_get_ns() - tickle.c), so this is
+// publish (tt_Publisher_publish()'s data_header->timestamp, tt_get_wall_ns() - tickle.c), so this is
 // only meaningful when both Pis' clocks are reasonably synchronized (NTP) - see README.md's own
 // caveat on this. Even without that, it's still a fair *relative* comparison across loss levels
 // and BEST_EFFORT vs RELIABLE on this same pair of machines, which is what run_perf.sh's own
@@ -305,8 +305,11 @@ static uint32_t finalize_gap_tracking(void) {
 static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, struct BulkData* data) {
     (void)seq_no; // truncated to 16 bits by the framework; data->seq is the real 32-bit one
 
+    // `time` is the sender's date (the DATA timestamp, tt_get_wall_ns()): only the one-way latency below reads it. The
+    // windows and the stop run on this host's own clock, tt_get_ns(), the one tt_Context_schedule() takes.
+    uint64_t arrived = tt_get_ns();
     if (!have_first) {
-        first_recv_time = time;
+        first_recv_time = arrived;
         if (duration_s > 0.0) {
             // Scheduled here (once, off the first real message), not up front in main(): -d
             // measures the real data window, not time since this process's own start_time - a
@@ -335,14 +338,14 @@ static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq
     interval_received_msgs++;
     interval_received_bytes += data->payload_count;
 
-    bool in_warmup = (double)(time - first_recv_time) / (double)tt_SECOND < warmup_s;
-    bool in_cooldown = stopping && time >= cooldown_start;
+    bool in_warmup = (double)(arrived - first_recv_time) / (double)tt_SECOND < warmup_s;
+    bool in_cooldown = stopping && arrived >= cooldown_start;
     if (!in_warmup && !in_cooldown) {
         total_received_msgs++;
         total_received_bytes += data->payload_count;
         total_dropped += gap_count;
 
-        uint64_t now = tt_get_ns();
+        uint64_t now = tt_get_wall_ns();
         if (now > time) { // guards a clock skew that would otherwise underflow this subtraction
             uint64_t latency_ns = now - time;
             latency_sum_ns += latency_ns;

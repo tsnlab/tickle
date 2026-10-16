@@ -88,6 +88,13 @@ static _Thread_local bool discard_sends;   // -p's publisher: its datagrams are 
 uint64_t tt_get_ns(void) {
     clock_calls++;
     struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts); // NOLINT(misc-include-cleaner) - <time.h>; as hal_linux.c
+    return ((uint64_t)ts.tv_sec * NS_PER_S) + (uint64_t)ts.tv_nsec;
+}
+
+uint64_t tt_get_wall_ns(void) { // a clock read like any other: counted
+    clock_calls++;
+    struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts); // NOLINT(misc-include-cleaner) - <time.h>; as hal_linux.c
     return ((uint64_t)ts.tv_sec * NS_PER_S) + (uint64_t)ts.tv_nsec;
 }

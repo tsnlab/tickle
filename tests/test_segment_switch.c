@@ -82,6 +82,10 @@ uint64_t tt_get_ns(void) {
     return now_ns;
 }
 
+uint64_t tt_get_wall_ns(void) {
+    return now_ns;
+}
+
 uint64_t tt_timer_resolution_ns(void) {
     return 1;
 }

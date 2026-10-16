@@ -41,7 +41,7 @@ static struct tt_Subscriber sub;
 
 static bool have_first = false;
 static uint32_t expected_seq = 0;
-static uint64_t first_recv_time = 0; // ns timestamp of the first real message - anchors warm-up,
+static uint64_t first_recv_time = 0; // tt_get_ns() at the first real message - anchors warm-up,
                                      // not this task's own start_time, the same reasoning
                                      // examples/linux/perf/perf_server.c's own first_recv_time has
                                      // (this role's QEMU instance also starts before perf_client's
@@ -57,8 +57,11 @@ static void bulk_callback(struct tt_Subscriber* subscriber, uint64_t time, uint1
     (void)subscriber;
     (void)seq_no; // truncated to 16 bits by the framework; data->seq is the real 32-bit one
 
+    // `time` is the sender's DATA timestamp - another machine's clock. The windows run on this one's (tt_get_ns()).
+    (void)time;
+    uint64_t arrived = tt_get_ns();
     if (!have_first) {
-        first_recv_time = time;
+        first_recv_time = arrived;
     }
 
     // Same drop-detection approach as examples/linux/perf/perf_server.c's own bulk_callback().
@@ -70,8 +73,8 @@ static void bulk_callback(struct tt_Subscriber* subscriber, uint64_t time, uint1
     interval_received_msgs++;
     interval_received_bytes += data->payload_count;
 
-    double elapsed_since_first_s = (double)(time - first_recv_time) / (double)tt_SECOND;
-    double elapsed_since_start_s = (double)(time - g_start_time) / (double)tt_SECOND;
+    double elapsed_since_first_s = (double)(arrived - first_recv_time) / (double)tt_SECOND;
+    double elapsed_since_start_s = (double)(arrived - g_start_time) / (double)tt_SECOND;
     bool in_warmup = elapsed_since_first_s < WARMUP_S;
     bool in_cooldown = elapsed_since_start_s >= TOTAL_DURATION_S - COOLDOWN_S;
     if (!in_warmup && !in_cooldown) {

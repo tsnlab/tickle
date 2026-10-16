@@ -276,7 +276,7 @@ static rmw_ret_t check_once(rmw_tickle_context_impl_t* context_impl, rmw_subscri
 }
 
 // Executor-driven receive: arms the parked poll thread's lease timer to fire `in_ns` from now, or disarms it
-// with 0. Relative: tt_get_ns() is not the timerfd's clock.
+// with 0. Relative, so it needs no clock read; the timerfd is on CLOCK_MONOTONIC, as tt_get_ns().
 static void set_park_timer(rmw_tickle_context_impl_t* context_impl, uint64_t in_ns) {
     // NOLINTNEXTLINE(misc-include-cleaner) - struct itimerspec: <sys/timerfd.h> above, via a glibc-private header
     struct itimerspec timer = {{0, 0}, {(time_t)(in_ns / tt_SECOND), (long)(in_ns % tt_SECOND)}};
@@ -289,7 +289,7 @@ static void wait_for_poll_thread_to_park(rmw_tickle_context_impl_t* context_impl
     pthread_mutex_lock(&context_impl->wait_mutex);
     if (!atomic_load(&context_impl->poll_thread_parked)) {
         struct timespec deadline;
-        clock_gettime(CLOCK_REALTIME, &deadline); // NOLINT(misc-include-cleaner) - <time.h>
+        clock_gettime(CLOCK_MONOTONIC, &deadline); // NOLINT(misc-include-cleaner) - <time.h>
         deadline.tv_nsec += (long)tt_MILLISECOND;
         deadline.tv_sec += deadline.tv_nsec / (long)tt_SECOND;
         deadline.tv_nsec %= (long)tt_SECOND;
@@ -364,7 +364,7 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
     bool poll_only = NULL != wait_timeout && 0 == wait_timeout->sec && 0 == wait_timeout->nsec;
     struct timespec deadline;
     if (NULL != wait_timeout && !poll_only) {
-        clock_gettime(CLOCK_REALTIME, &deadline); // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own comment
+        clock_gettime(CLOCK_MONOTONIC, &deadline); // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own comment
         deadline.tv_sec += (time_t)wait_timeout->sec;
         deadline.tv_nsec += (long)wait_timeout->nsec;
         deadline.tv_sec += deadline.tv_nsec / (long)tt_SECOND;

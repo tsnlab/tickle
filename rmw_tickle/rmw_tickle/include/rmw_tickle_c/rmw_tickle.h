@@ -927,9 +927,10 @@ typedef struct rmw_tickle_publisher_t {
 #define RMW_TICKLE_REORDER_SLOTS ((uint16_t)(RMW_TICKLE_TRACKING_WORDS * 64))
 
 typedef struct rmw_tickle_queued_message_t {
-    void* ros_message; // callbacks->ros_struct_size bytes, allocator-owned
-    uint64_t source_timestamp;
-    uint64_t received_timestamp;
+    void* ros_message;           // callbacks->ros_struct_size bytes, allocator-owned
+    uint64_t source_timestamp;   // the writer's date (tt_get_wall_ns()), rebuilt from the wire's 32 bits
+    uint64_t received_timestamp; // this host's date at the enqueue
+    uint64_t expires_ns;         // LIFESPAN: tt_get_ns() from which it is dropped; set only when lifespan_ns is
     uint64_t publication_sequence_number;
     uint64_t reception_sequence_number;
     // Which writer sent this one, read from the core at delivery and carried here because
@@ -1092,7 +1093,8 @@ typedef struct rmw_tickle_subscriber_t {
 
     // QoS roadmap #6 (LIFESPAN) - 0 (zero_allocate() default): disabled, today's only behavior for
     // a Subscription that didn't request one. Non-zero: rmw_take_with_info() (rmw_subscription.c)
-    // discards any queue[] entry whose source_timestamp is already this old before returning it -
+    // discards any queue[] entry whose source_timestamp is already this old before returning it (the age taken
+    // against the date on arrival, then counted on the monotonic clock: queued_message_t.expires_ns) -
     // "as if it had never been sent" (RMW_RET_OK, *taken = false, same as an empty queue), matching
     // tt_Publisher.lifespan_duration_ns's own reliable_cache-side wording exactly. Deliberately
     // independent of the Publisher's own lifespan_duration_ns (tickle.h) rather than negotiated

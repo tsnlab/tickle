@@ -178,6 +178,10 @@ else
     exit 1
 fi
 
+# The HAL's two clocks: deadlines on CLOCK_MONOTONIC, the wire's timestamps on CLOCK_REALTIME (clock_check.c). Exit 2 is
+# "this host cannot tell the two apart", which is not a pass.
+"$HERE/clock_check" || { echo "same-host test: FAIL - clock_check" >&2; exit 1; }
+
 # The hint itself, against the real HAL, both with the ring and refused (rx_hint_check.c). Exit 2 is "compiled out".
 hint_rc=0
 "$HERE/rx_hint_check" || hint_rc=$?

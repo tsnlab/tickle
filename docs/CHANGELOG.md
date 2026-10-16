@@ -637,6 +637,19 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A step of the date no longer disturbs timers, liveliness or lifespan** (2026-10-16, `ab/monotonic`; DESIGN.md
+  section 2, "Time"). The Linux HAL read `CLOCK_REALTIME` for everything, so an NTP or manual step moved every
+  deadline: three hours forward, a leased writer was declared gone and a lost sample's repair was refused as past the
+  publisher's lifespan; three hours back, the scheduler stalled - no heartbeat, retry or application timer ran
+  (`tests/test_clock_step.c` against the single-clock core). `tt_get_ns()` is now `CLOCK_MONOTONIC` (as are the
+  epoll deadline `timerfd`, `tt_Context_lock_timed()` and rmw_tickle's condition-variable waits), and a new HAL call,
+  `tt_get_wall_ns()`, gives `CLOCK_REALTIME` to what leaves the process as a point in time: the DATA timestamp, the
+  source timestamp handed to a subscriber, the per-launch identity draws. A HAL port adds `tt_get_wall_ns()`
+  (FreeRTOS: the same counter, no RTC). rmw_tickle: `received_timestamp` is the date, and a subscription's lifespan
+  takes the age on arrival and counts the rest on the monotonic clock, so a source stamp ahead of the reader's date is
+  no longer dropped at once as an unsigned wrap. `examples/linux/perf/perf_server.c` times its windows on the receiver's
+  own clock and only the one-way latency on the date.
+
 - **A late DURABLE reader gets the whole backlog of a writer that had sent more than its window** (2026-10-15). The
   reader's first contact is the backlog's oldest DATA, which lay a window or more past its default baseline of 1; the
   baseline jumped there but the reorder cursor stayed at 1, so the drain walked past the oldest sample. Its first

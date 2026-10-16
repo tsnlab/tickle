@@ -59,14 +59,20 @@ struct _tt_Config _tt_CONFIG = {
 // sets from the same constant (kept separate, rather than including FreeRTOS.h here, so this
 // HAL file's only real dependency stays lwIP + raw CLINT registers). There's no RTC on this
 // target, so this reads the same free-running hardware counter FreeRTOS's own tick interrupt is
-// derived from, rather than tracking wall-clock time the way hal_linux.c's
-// clock_gettime(CLOCK_REALTIME) does.
+// derived from - monotonic, as hal_linux.c's clock_gettime(CLOCK_MONOTONIC).
 #define CLINT_MTIME ((volatile uint64_t*)0x0200BFF8UL)
 #define CLINT_TIMEBASE_HZ 10000000ULL
 #define CLINT_NS_PER_TICK (tt_SECOND / CLINT_TIMEBASE_HZ)
 
 uint64_t tt_get_ns(void) {
     return *CLINT_MTIME * CLINT_NS_PER_TICK;
+}
+
+// No RTC and no SNTP client on this target, so the wire's timestamps are the same counter: time since boot. A board
+// that keeps the date (an RTC, lwIP's SNTP app) returns it here, in ns since the Unix epoch, to stamp samples that a
+// host with a real date can place - only this function changes; every deadline stays on tt_get_ns().
+uint64_t tt_get_wall_ns(void) {
+    return tt_get_ns();
 }
 
 // A timed wait here ends on an RTOS tick (wait_ticks(), below) - or, in the socket build, on lwIP's select(), which

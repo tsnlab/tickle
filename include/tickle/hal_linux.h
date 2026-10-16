@@ -100,14 +100,32 @@ static inline void tt_lock_acquire(tt_lock_t* lock) {
 #define TT_LOCK_NS_PER_S 1000000000ULL
 
 // Waits at most timeout_ns for the lock; true if it was taken.
+// On the monotonic clock where glibc has pthread_mutex_clocklock() (2.30), so a step of the date neither ends the wait
+// early nor stretches it; otherwise pthread_mutex_timedlock(), which measures CLOCK_REALTIME. <pthread.h> declares
+// the former only under _GNU_SOURCE, which core is not built with, so it is declared here - not where 32-bit time64
+// redirects would bind that name to another symbol.
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 30)) && \
+    !defined(__USE_TIME64_REDIRECTS)
+#define TT_LOCK_CLOCK CLOCK_MONOTONIC
+#ifndef __USE_GNU
+extern int pthread_mutex_clocklock(pthread_mutex_t* mutex, clockid_t clock, const struct timespec* abstime);
+#endif
+#else
+#define TT_LOCK_CLOCK CLOCK_REALTIME
+#endif
 static inline bool tt_lock_acquire_timed(tt_lock_t* lock, uint64_t timeout_ns) {
     struct timespec deadline;
-    // pthread_mutex_timedlock() measures CLOCK_REALTIME; glibc defines it in bits/time.h, behind <time.h>
-    clock_gettime(CLOCK_REALTIME, &deadline); // NOLINT(misc-include-cleaner)
+    // The clocks are defined in bits/time.h, behind <time.h>
+    clock_gettime(TT_LOCK_CLOCK, &deadline); // NOLINT(misc-include-cleaner)
     uint64_t nsec = (uint64_t)deadline.tv_nsec + (timeout_ns % TT_LOCK_NS_PER_S);
     deadline.tv_sec += (time_t)(timeout_ns / TT_LOCK_NS_PER_S) + (time_t)(nsec / TT_LOCK_NS_PER_S);
     deadline.tv_nsec = (long)(nsec % TT_LOCK_NS_PER_S);
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 30)) && \
+    !defined(__USE_TIME64_REDIRECTS)
+    return pthread_mutex_clocklock(lock, TT_LOCK_CLOCK, &deadline) == 0;
+#else
     return pthread_mutex_timedlock(lock, &deadline) == 0;
+#endif
 }
 static inline void tt_lock_release(tt_lock_t* lock) {
     pthread_mutex_unlock(lock);
@@ -272,7 +290,7 @@ struct tt_hal {
     // the wait queue of every descriptor in its set on every call - four of them with the segment - which is work per
     // sleep for a set that never changes; epoll registers each once (hal_linux.c, "The wait set").
     int epoll_fd_plus1;
-    // The wait's deadline as a timer in that set (hal_linux.c "The wait's deadline"): a timerfd on the realtime clock,
+    // The wait's deadline as a timer in that set (hal_linux.c "The wait's deadline"): a timerfd on the monotonic clock,
     // PLUS ONE, 0 for none; the absolute deadline it is armed for (0: disarmed); and the counts the rx line prints -
     // waits it served, timerfd_settime() calls, and fires (each one read()).
     int timer_fd_plus1;

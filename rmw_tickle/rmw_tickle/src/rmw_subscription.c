@@ -23,7 +23,7 @@
 #include <string.h>
 
 #include <tickle/config.h> // tt_CONTEXT_UPDATE_INTERVAL
-#include <tickle/hal.h>    // tt_ret_t/tt_RET_OK/tt_get_ns
+#include <tickle/hal.h>    // tt_ret_t/tt_RET_OK/tt_get_ns/tt_get_wall_ns
 #include <tickle/tickle.h>
 #include <tickle/trace.h>
 
@@ -478,7 +478,17 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     }
     sub_impl->queue[tail_index].source_timestamp =
         time; // publisher's own wire timestamp - see tickle.c's process_data()
-    sub_impl->queue[tail_index].received_timestamp = tt_get_ns();
+    // The date, as source_timestamp: both are points in time the application compares (DDS's reception timestamp).
+    uint64_t received = tt_get_wall_ns();
+    sub_impl->queue[tail_index].received_timestamp = received;
+    if (sub_impl->lifespan_ns != 0) {
+        // LIFESPAN: the age is judged once, here, as the date's distance from the writer's (the hosts' clocks must
+        // agree, as in DDS); from here it runs on the monotonic clock, so a later step of the date neither expires the
+        // queue nor keeps it. A source stamp ahead of this date is age 0, not an unsigned wrap to "expired".
+        uint64_t age = received > time ? received - time : 0;
+        uint64_t left = age < sub_impl->lifespan_ns ? sub_impl->lifespan_ns - age : 0;
+        sub_impl->queue[tail_index].expires_ns = sub_impl->last_activity_time + left; // tt_get_ns() at this arrival
+    }
     sub_impl->queue[tail_index].publication_sequence_number = publication_sequence_number;
     sub_impl->queue[tail_index].reception_sequence_number = sub_impl->reception_sequence_number++;
     // Valid only inside this callback, so it is read here and not at take time.
@@ -1112,7 +1122,7 @@ static bool dequeue_locked(rmw_tickle_subscriber_t* sub_impl, rmw_tickle_queued_
     // if it had never been sent", same wording tickle.c's own reliable_cache-side skip uses. A
     // no-op loop when lifespan_ns == 0 (not requested).
     while (sub_impl->queue_count > 0 && sub_impl->lifespan_ns != 0 &&
-           tt_get_ns() - sub_impl->queue[sub_impl->queue_head].source_timestamp >= sub_impl->lifespan_ns) {
+           tt_get_ns() >= sub_impl->queue[sub_impl->queue_head].expires_ns) {
         rmw_tickle_queued_message_t* head = &sub_impl->queue[sub_impl->queue_head];
         if (NULL != head->in_place) {
             expired[(*expired_count)++] = head->sample;

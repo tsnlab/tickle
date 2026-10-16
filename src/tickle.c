@@ -1294,7 +1294,7 @@ static void create_own_segment(struct tt_Context* node) {
     header->owner_ip = own_ip;
     header->owner_port = own_port;
     header->owner_context_id = node->id;
-    header->incarnation = node->entity_id_base != 0 ? node->entity_id_base : (uint32_t)tt_get_ns();
+    header->incarnation = node->entity_id_base != 0 ? node->entity_id_base : (uint32_t)tt_get_wall_ns();
     header->slots = tt_SEGMENT_SLOTS;
     header->slot_bytes = own_slot_bytes();
     header->write_index = 0;
@@ -4953,6 +4953,12 @@ static bool process_heartbeat(struct tt_Context* node, struct tt_Header* header,
 // QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md) - see its own definition's comment.
 static void deliver_durability_backlog(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Peer* target);
 
+// The date's distance from the monotonic clock (struct tt_Context.wall_offset_ns): two clock reads, once a second.
+static void wall_offset_refresh(struct tt_Context* node) {
+    uint64_t wall = tt_get_wall_ns();
+    node->wall_offset_ns = wall - tt_get_ns();
+}
+
 // The node's lock and scheduler inbox, ready and empty. tt_Context_create() calls it; so does every unit test
 // that builds a node by hand on the mock HAL instead - a zeroed node is not ready for FreeRTOS, and a
 // zeroed inbox state array only happens to mean "empty".
@@ -4970,6 +4976,7 @@ static void node_init_locks(struct tt_Context* node) {
     __atomic_store_n(&node->poller_active, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_seq, 0, __ATOMIC_RELAXED);
     node->rx_clock_ns = 0;
+    wall_offset_refresh(node);
     __atomic_store_n(&node->wait_until_hi, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_until_lo, 0, __ATOMIC_RELAXED);
     // G (timer_lateness_fold()) starts cold, at tt_TIMER_LATENESS_INITIAL, and never falls below what this
@@ -5463,7 +5470,7 @@ tt_ret_t tt_Context_create(struct tt_Context* node) {
     node_init_locks(node);
 
     // Milestone 47 - this launch's own random entity_id base (struct tt_Context.entity_id_base's own
-    // doc comment, tickle.h): tt_get_ns()'s low 32 bits, no separate RNG primitive needed - this
+    // doc comment, tickle.h): tt_get_wall_ns()'s low 32 bits, no separate RNG primitive needed - this
     // node's own launch instant already is one, and this is exactly the kind of "coarse, no
     // cryptographic requirement" randomness every other sentinel/hash choice in this file already
     // accepts (e.g. tt_hash_id() itself).
@@ -5474,7 +5481,7 @@ tt_ret_t tt_Context_create(struct tt_Context* node) {
         return link_ret;
     }
 
-    node->entity_id_base = (uint32_t)tt_get_ns();
+    node->entity_id_base = (uint32_t)tt_get_wall_ns();
 
 #if tt_CONTEXT_ID_CLAIM
     if (!claim_initial_id(node)) {
@@ -6640,24 +6647,30 @@ tt_ret_t tt_Server_destroy(struct tt_Server* server) {
     return result;
 }
 
-// A DATA's timestamp on the wire (tt_VERSION 10, WIRE_PLAN.md W2): the low 32 bits of the clock in
-// microseconds - see struct tt_DataHeader.timestamp.
-static uint32_t timestamp_to_wire(uint64_t time_ns) {
-    return (uint32_t)(time_ns / tt_MICROSECOND);
+// A DATA's timestamp on the wire (tt_VERSION 10, WIRE_PLAN.md W2): the low 32 bits of the date
+// (tt_get_wall_ns(), not the monotonic clock every deadline runs on) in microseconds - see struct
+// tt_DataHeader.timestamp.
+static uint32_t timestamp_to_wire(uint64_t wall_ns) {
+    return (uint32_t)(wall_ns / tt_MICROSECOND);
 }
 
-// ... and back, in nanoseconds: the sender's microseconds taken as the ones nearest the receiver's clock,
-// within half the 32-bit range (+-35.8 min) of it either way. 0 if that would fall before the clock's epoch.
-// The receiver's clock is the one the running poll already read (tt_Context.rx_clock_ns): a clock read per
-// received sample cost the v10 campaign 19-70 ns of user time per sample on the Pi (WIRE_PLAN.md 8).
+// ... and back, in nanoseconds of the date: the sender's microseconds taken as the ones nearest the receiver's
+// date, within half the 32-bit range (+-35.8 min) of it either way. 0 if that would fall before the epoch.
+// The receiver's date is the running poll's reading (tt_Context.rx_clock_ns) moved by wall_offset_ns: a clock
+// read per received sample cost the v10 campaign 19-70 ns of user time per sample on the Pi (WIRE_PLAN.md 8).
 // The receive path's "now": the running poll's reading (tt_Context.rx_clock_ns), which the poll refreshes when
 // a wait returns and every tt_RX_CLOCK_REFRESH datagrams of a drain, or the clock itself outside a poll.
 static uint64_t rx_now(const struct tt_Context* node) {
     return node->rx_clock_ns != 0 ? node->rx_clock_ns : tt_get_ns();
 }
 
+// The same "now" as a date.
+static uint64_t rx_wall_now(const struct tt_Context* node) {
+    return node->rx_clock_ns != 0 ? node->rx_clock_ns + node->wall_offset_ns : tt_get_wall_ns();
+}
+
 static uint64_t timestamp_from_wire(const struct tt_Context* node, uint32_t sent_us) {
-    int64_t now_us = (int64_t)(rx_now(node) / tt_MICROSECOND);
+    int64_t now_us = (int64_t)(rx_wall_now(node) / tt_MICROSECOND);
     int64_t rebuilt_us = now_us + (int32_t)(sent_us - (uint32_t)now_us);
     return rebuilt_us < 0 ? 0 : (uint64_t)rebuilt_us * tt_MICROSECOND;
 }
@@ -6687,7 +6700,7 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
         (struct tt_DataHeader*)(framing + sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
     data_header->endpoint_id = endpoint->id;
     data_header->seq_no = pub->seq_no + 1;
-    data_header->timestamp = timestamp_to_wire(tt_get_ns());
+    data_header->timestamp = timestamp_to_wire(tt_get_wall_ns());
     data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
 
     uint8_t peer_count = count_peers(pub->peers);
@@ -7489,7 +7502,7 @@ static bool try_publish_zerocopy(struct tt_Publisher* pub, struct tt_Data* data,
         (!tt_FRAG_ENABLED || body_len <= tt_MAX_SAMPLE_LENGTH)) {
 #if tt_LOCAL_DELIVERY
         uint32_t local_seq_no = pub->seq_no + 1;
-        uint64_t local_timestamp = tt_get_ns();
+        uint64_t local_timestamp = tt_get_wall_ns();
 #endif
         *result = publish_zerocopy(pub, body, (uint32_t)body_len);
 #if tt_LOCAL_DELIVERY
@@ -8097,7 +8110,7 @@ static bool try_publish_into_slot(struct tt_Publisher* pub, struct tt_Data* data
     uint32_t own_ip = 0;
     uint16_t own_port = 0;
     tt_own_address(node, &own_ip, &own_port);
-    const uint32_t timestamp = timestamp_to_wire(tt_get_ns());
+    const uint32_t timestamp = timestamp_to_wire(tt_get_wall_ns());
     uint32_t claimed = 0;
     struct tt_SegmentSlot* slot = segment_claim(segment, &claimed);
     if (slot == NULL) {
@@ -8377,7 +8390,7 @@ static bool large_region_create(struct tt_Context* node, struct tt_Publisher* pu
     header->owner_ip = own_ip;
     header->owner_port = own_port;
     header->entity_id = pub->endpoint.entity_id;
-    header->incarnation = ((uint32_t)tt_get_ns() ^ pub->endpoint.entity_id) | 1U; // never 0
+    header->incarnation = ((uint32_t)tt_get_wall_ns() ^ pub->endpoint.entity_id) | 1U; // never 0
     header->chunks = region->chunks;
     header->chunk_bytes = region->chunk_bytes;
     __atomic_store_n(&header->magic, tt_LARGE_REGION_MAGIC, __ATOMIC_RELEASE); // last: what a reader checks first
@@ -9416,7 +9429,9 @@ static void large_commit(struct tt_Context* node, struct tt_Publisher* pub, stru
     if (pub->local_subscriber_count != 0) {
         // The record is in the ring and unsent, so a callback that publishes again waits behind it or commits after it:
         // nothing it does evicts the bytes being delivered here.
-        deliver_locally(node, pub, sample.buffer + tt_LARGE_CDR_OFFSET, sample.cdr_len, sample.seq_no, sample.sent_ns);
+        // Stamped with the date on the wire, placed as a remote receiver places it (sent_ns is the deadline clock).
+        deliver_locally(node, pub, sample.buffer + tt_LARGE_CDR_OFFSET, sample.cdr_len, sample.seq_no,
+                        timestamp_from_wire(node, header->timestamp));
     }
 #endif
 }
@@ -9543,8 +9558,8 @@ static tt_ret_t publish_large(struct tt_Publisher* pub, struct tt_Data* data, ui
     uint64_t now = tt_get_ns();
     struct tt_DataHeader* header = (struct tt_DataHeader*)(buffer + tt_LARGE_HEADER_OFFSET);
     header->endpoint_id = pub->endpoint.id;
-    header->seq_no = 0; // given at large_commit()
-    header->timestamp = timestamp_to_wire(now);
+    header->seq_no = 0;                                      // given at large_commit()
+    header->timestamp = timestamp_to_wire(tt_get_wall_ns()); // the date; sent_ns stays on the deadline clock
     header->entity_id = pub->endpoint.entity_id;
     struct tt_LargeRecord sample = {.buffer = buffer,
                                     .sent_ns = now,
@@ -9696,7 +9711,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 
     data_header->endpoint_id = endpoint->id;
     data_header->seq_no = pub->seq_no + 1;
-    data_header->timestamp = timestamp_to_wire(tt_get_ns());
+    data_header->timestamp = timestamp_to_wire(tt_get_wall_ns());
     data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
 
     // DataBody
@@ -9732,7 +9747,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     uint8_t nested_copy[nested ? (uint32_t)encoded_len : 1U];
     uint8_t* local_copy = nested ? nested_copy : node->local_scratch;
     uint32_t local_seq_no = pub->seq_no + 1;
-    uint64_t local_timestamp = tt_get_ns();
+    uint64_t local_timestamp = tt_get_wall_ns();
     if (local) {
         _tt_memcpy(local_copy, cdr, (size_t)encoded_len);
     }
@@ -10016,7 +10031,7 @@ static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint3
     struct tt_DataHeader* data_header = (struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader));
     data_header->endpoint_id = pub->endpoint.id;
     data_header->seq_no = pub->seq_no + 1;
-    data_header->timestamp = timestamp_to_wire(tt_get_ns());
+    data_header->timestamp = timestamp_to_wire(tt_get_wall_ns());
     data_header->entity_id = pub->endpoint.entity_id;
     memset(record + raw_len, 0, record_len - raw_len);
     if (!check_and_cache_sample(node, pub, submessage_header, raw_len, FRAG_WHOLE_DATA_LIMIT)) {
@@ -13341,6 +13356,7 @@ static void check_liveliness(struct tt_Context* node, uint64_t time, void* param
         (void)tt_Context_unschedule(node, check_liveliness, NULL);
         node->liveliness_check_scheduled = false;
     }
+    wall_offset_refresh(node); // once a tt_CONTEXT_UPDATE_INTERVAL: a step of the date is followed within it
     uint64_t next = time + tt_CONTEXT_UPDATE_INTERVAL;
     check_node_silence(node, time, unobserved_ns, &next);
     check_entity_leases(node, time, &next);
@@ -14335,7 +14351,7 @@ static void deliver_backlog_from(struct tt_Context* node, struct tt_Endpoint* en
             cached_sample(cache, depth, seq_no, pub->lifespan_duration_ns, whole, &payload, &length, &sent_us);
         if (payload != NULL) {
             // The wire's 32-bit microseconds, placed as a receiver places them (timestamp_from_wire()), against now.
-            int64_t now_us = (int64_t)(tt_get_ns() / tt_MICROSECOND);
+            int64_t now_us = (int64_t)(tt_get_wall_ns() / tt_MICROSECOND);
             int64_t sent_at_us = now_us + (int32_t)((uint32_t)sent_us - (uint32_t)now_us);
             uint64_t sent_ns = sent_at_us < 0 ? 0 : (uint64_t)sent_at_us * tt_MICROSECOND;
             struct local_delivery delivery = {pub, payload, length, seq_no, sent_ns, sub};

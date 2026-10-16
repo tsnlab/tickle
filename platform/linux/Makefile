@@ -203,6 +203,10 @@ refuse_io_uring.so: ../../tests/support/refuse_io_uring.c
 refuse_pbuf_ring.so: ../../tests/support/refuse_pbuf_ring.c
 	$(CC) -shared -fPIC -O2 -o $@ $< -ldl
 
+# Which clock each HAL clock function reads - the unit tests link a mock HAL with clocks of its own (clock_check.c).
+clock_check: clock_check.c libtickle.a
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
+
 # tt_rx_maybe_ready() against the real HAL - the unit tests link the mock one (rx_hint_check.c says why it matters).
 rx_hint_check: rx_hint_check.c libtickle.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
@@ -251,7 +255,7 @@ udp_offload_check_flap: udp_offload_check.c $(HAL_SRC) $(SRC)/tickle.c $(SRC)/en
 	    -DCHECK_READ_DELAY_NS=1500000L $(LDFLAGS) -o $@ udp_offload_check.c \
 	    $(HAL_SRC) $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
 
-test-samehost: examples refuse_io_uring.so refuse_pbuf_ring.so rx_hint_check rx_idle_check rx_lone_check rx_drain_check \
+test-samehost: examples refuse_io_uring.so refuse_pbuf_ring.so clock_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check \
     bell_wake_check
 	./test_samehost.sh
 
@@ -619,6 +623,6 @@ clean:
 	# currently selected, so switching BUILD_TYPE and running `clean` doesn't leave the
 	# other mode's stale cache behind.
 	rm -rf obj/*/
-	rm -f libtickle.a refuse_io_uring.so refuse_pbuf_ring.so rx_hint_check rx_idle_check rx_lone_check rx_drain_check bell_wake_check udp_offload_check \
+	rm -f libtickle.a refuse_io_uring.so refuse_pbuf_ring.so clock_check rx_hint_check rx_idle_check rx_lone_check rx_drain_check bell_wake_check udp_offload_check \
 	    udp_offload_check_flap
 	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))

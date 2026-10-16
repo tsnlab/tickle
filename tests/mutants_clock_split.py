@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Mutant sweep for the two clocks (2026-10-16, DESIGN.md section 2 "Time"): every deadline on tt_get_ns(), the
+monotonic clock, and only what leaves the process as a point in time on tt_get_wall_ns(), the date.
+
+Each entry puts one site on the wrong clock and names the check that must go red for it:
+  core        tests/test_clock_step.c, the default build
+  core_local  tests/test_clock_step.c with -Dtt_LOCAL_DELIVERY=1 (rmw_tickle's build), for the local-delivery stamp
+  hal         platform/linux/clock_check.c against the real Linux HAL
+A mutant the check passes means it cannot see the clock it is named for.
+
+Not here, because no check reaches them in the default build: the stamp of publish_zerocopy() (a sample that fills a
+datagram, with data_encode_inplace), of a same-host ring record (encode_in_slot and the segment publish, tt_SEGMENT
+attached), and of a large sample (tt_LARGE_SAMPLES). Each is the same one-line `timestamp_to_wire(tt_get_wall_ns())`
+as the batched publish that is mutated below. The unmutated tree runs first and every
+check must pass: a check that fails on correct code would "catch" every mutant for the wrong reason.
+
+Run from the repository root (TMPDIR outside /tmp if it is small). Each file is restored by rewriting it and moving
+its mtime, so make rebuilds from the restored source rather than reusing the mutant's objects; the core checks are
+compiled directly, without make, into a temporary directory.
+"""
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+LINUX = ROOT / "platform/linux"
+
+MUTANTS = [
+    (
+        "the batched publish stamps the deadline clock",
+        "src/tickle.c",
+        "    data_header->timestamp = timestamp_to_wire(tt_get_wall_ns());\n"
+        "    data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity\n\n"
+        "    // DataBody",
+        "    data_header->timestamp = timestamp_to_wire(tt_get_ns());\n"
+        "    data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity\n\n"
+        "    // DataBody",
+        "core",
+    ),
+    (
+        "the receiver rebuilds against the deadline clock",
+        "src/tickle.c",
+        "    int64_t now_us = (int64_t)(rx_wall_now(node) / tt_MICROSECOND);",
+        "    int64_t now_us = (int64_t)(rx_now(node) / tt_MICROSECOND);",
+        "core",
+    ),
+    (
+        "the poll's reading taken as the date without the offset",
+        "src/tickle.c",
+        "    return node->rx_clock_ns != 0 ? node->rx_clock_ns + node->wall_offset_ns : tt_get_wall_ns();",
+        "    return node->rx_clock_ns != 0 ? node->rx_clock_ns : tt_get_wall_ns();",
+        "core",
+    ),
+    (
+        "the offset never read again after creation",
+        "src/tickle.c",
+        "    wall_offset_refresh(node); // once a tt_CONTEXT_UPDATE_INTERVAL: a step of the date is followed within it\n",
+        "",
+        "core",
+    ),
+    (
+        "the writer's lifespan on the date",
+        "src/tickle.c",
+        "    return lifespan_duration_ns != 0 && (tt_get_ns() - entry->timestamp) >= lifespan_duration_ns;",
+        "    return lifespan_duration_ns != 0 && (tt_get_wall_ns() - entry->timestamp) >= lifespan_duration_ns;",
+        "core",
+    ),
+    (
+        "the poll loop (scheduler, liveliness, retries) on the date",
+        "src/tickle.c",
+        "    uint64_t time = tt_get_ns();\n    const uint64_t poll_start = time;",
+        "    uint64_t time = tt_get_wall_ns();\n    const uint64_t poll_start = time;",
+        "core",
+    ),
+    (
+        "local delivery stamps the deadline clock",
+        "src/tickle.c",
+        "    uint32_t local_seq_no = pub->seq_no + 1;\n    uint64_t local_timestamp = tt_get_wall_ns();\n    if (local) {",
+        "    uint32_t local_seq_no = pub->seq_no + 1;\n    uint64_t local_timestamp = tt_get_ns();\n    if (local) {",
+        "core_local",
+    ),
+    (
+        "the HAL's deadline clock is the date",
+        "src/hal_linux.c",
+        "    // NOLINTNEXTLINE(misc-include-cleaner)\n    clock_gettime(CLOCK_MONOTONIC, &ts);",
+        "    // NOLINTNEXTLINE(misc-include-cleaner)\n    clock_gettime(CLOCK_REALTIME, &ts);",
+        "hal",
+    ),
+    (
+        "the HAL's date is the deadline clock",
+        "src/hal_linux.c",
+        "    // NOLINTNEXTLINE(misc-include-cleaner) - CLOCK_REALTIME, as CLOCK_MONOTONIC above\n"
+        "    clock_gettime(CLOCK_REALTIME, &ts);",
+        "    // NOLINTNEXTLINE(misc-include-cleaner) - CLOCK_REALTIME, as CLOCK_MONOTONIC above\n"
+        "    clock_gettime(CLOCK_MONOTONIC, &ts);",
+        "hal",
+    ),
+]
+
+
+def run_core(work, defines):
+    binary = pathlib.Path(work) / "test_clock_step"
+    build = subprocess.run(
+        ["cc", f"-I{ROOT}/include", f"-I{ROOT}/src", "-O0", "-g", *defines, "-o", str(binary),
+         str(ROOT / "tests/test_clock_step.c"), str(ROOT / "src/encoding.c"), str(ROOT / "src/log.c"), "-lm"],
+        capture_output=True, text=True, check=False,
+    )
+    if build.returncode != 0:
+        return "BUILD_FAILED", build.stderr[-2000:]
+    run = subprocess.run([str(binary)], capture_output=True, text=True, check=False, timeout=600)
+    return ("PASS" if run.returncode == 0 else "FAIL"), run.stdout + run.stderr
+
+
+def run_hal(_work, _defines):
+    build = subprocess.run(["make", "-s", "-C", str(LINUX), "clock_check"], capture_output=True, text=True,
+                           check=False)
+    if build.returncode != 0:
+        return "BUILD_FAILED", build.stderr[-2000:]
+    run = subprocess.run([str(LINUX / "clock_check")], capture_output=True, text=True, check=False, timeout=60)
+    verdict = {0: "PASS", 1: "FAIL"}.get(run.returncode, "VOID")
+    return verdict, run.stdout + run.stderr
+
+
+CHECKS = {
+    "core": (run_core, []),
+    "core_local": (run_core, ["-Dtt_LOCAL_DELIVERY=1"]),
+    "hal": (run_hal, []),
+}
+
+
+def summary(output):
+    return " | ".join(line for line in output.splitlines()
+                      if line.startswith(("forward:", "back:", "clock_check:")) or "test_clock_step.c:" in line)[:600]
+
+
+def main():
+    work = tempfile.mkdtemp(prefix="clock_split_mutants_", dir=os.environ.get("TMPDIR"))
+    touched = sorted({m[1] for m in MUTANTS})
+    for rel in touched:
+        shutil.copy2(ROOT / rel, pathlib.Path(work) / rel.replace("/", "_"))
+
+    def restore():
+        for rel in touched:
+            shutil.copy(pathlib.Path(work) / rel.replace("/", "_"), ROOT / rel)
+            (ROOT / rel).touch()
+
+    survivors = 0
+    try:
+        for check, (runner, defines) in CHECKS.items():
+            verdict, output = runner(work, defines)
+            print(f"[control]  {check}: unmutated -> {verdict}")
+            if verdict != "PASS":
+                print(output[-3000:])
+                print("control did not pass; the sweep cannot decide anything")
+                return 1
+        for name, rel, old, new, check in MUTANTS:
+            path = ROOT / rel
+            text = path.read_text()
+            if text.count(old) != 1:
+                print(f"[STALE]    {name}: the text to mutate occurs {text.count(old)} times in {rel}")
+                survivors += 1
+                continue
+            path.write_text(text.replace(old, new))
+            try:
+                runner, defines = CHECKS[check]
+                verdict, output = runner(work, defines)
+            finally:
+                restore()
+            killed = verdict == "FAIL"
+            survivors += 0 if killed else 1
+            print(f"[{'killed' if killed else 'SURVIVED'}] {name} ({check}) -> {verdict}: {summary(output)}")
+    finally:
+        restore()
+        run_hal(work, [])  # rebuild clock_check from the restored source
+        shutil.rmtree(work, ignore_errors=True)
+    print(f"{len(MUTANTS) - survivors} of {len(MUTANTS)} killed")
+    return 0 if survivors == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
