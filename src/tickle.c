@@ -8020,6 +8020,10 @@ static void make_depth_room(struct tt_Context* node, struct tt_Publisher* pub,
     }
 }
 
+#if tt_LARGE_SAMPLES
+static void keep_last_bound_across_kinds(struct tt_Context* node, struct tt_Publisher* pub, uint32_t room);
+#endif
+
 static bool check_and_cache_sample(struct tt_Context* node, struct tt_Publisher* pub,
                                    struct tt_SubmessageHeader* submessage_header, uint32_t encoded_len,
                                    uint32_t whole_limit) {
@@ -8031,6 +8035,11 @@ static bool check_and_cache_sample(struct tt_Context* node, struct tt_Publisher*
     // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see cache_reliable_sample()'s own doc
     // comment above; one shared write serves both, whichever (or both) this Publisher opted into.
     if (pub->reliable_cache != NULL) {
+#if tt_LARGE_SAMPLES
+        if (pub->large_count != 0) { // else the cache's own bound is the whole of it
+            keep_last_bound_across_kinds(node, pub, 1);
+        }
+#endif
         make_depth_room(node, pub, submessage_header, encoded_len, whole_limit); // (g10)
 #if tt_FRAG_ENABLED
         uint32_t datagrams = sample_datagram_count(node, submessage_header, encoded_len, whole_limit);
@@ -9223,6 +9232,35 @@ static uint32_t large_ring_limit(const struct tt_Publisher* pub) {
     return limit;
 }
 
+// KEEP_LAST's depth counts a Publisher's samples, small and large alike (tt_ReliableCache.sample_depth). The cache
+// bounds its small ones and large_ring_limit() the large ones, each by the whole depth, so a Publisher of both kept up
+// to twice it, and a durable late joiner was handed samples older than its history holds (test_large_sample.c's mixed
+// durable backlog, 2026-10-16). While the two kinds together hold more than sample_depth - `room` (1: a sample is
+// about to join them), the older of the two oldest goes - a large record only once it has gone out, as large_commit()
+// has it, so the one being sent may pass the bound until large_record_sent() brings it back.
+static void keep_last_bound_across_kinds(struct tt_Context* node, struct tt_Publisher* pub, uint32_t room) {
+    struct tt_ReliableCache* cache = pub->reliable_cache;
+    if (pub->keep_all || cache == NULL || cache->sample_depth == 0) {
+        return;
+    }
+    uint16_t depth = reliable_cache_depth(cache);
+    for (;;) {
+        uint32_t small = depth != 0 && reliable_cache_retains(cache) ? cache->retained_samples : 0;
+        if (small + pub->large_count + room <= cache->sample_depth) {
+            return;
+        }
+        const struct tt_LargeRecord* large = pub->large_count != 0 ? large_record_at(pub, 0) : NULL;
+        if (small != 0 && (large == NULL || seq_delta(cache->oldest_seq_no, large->seq_no) < 0)) {
+            RSTAT_INC(evicted_by_count);
+            reliable_cache_evict_oldest(cache, depth);
+        } else if (large != NULL && large->sent) {
+            large_drop_oldest(node, pub);
+        } else {
+            return;
+        }
+    }
+}
+
 // The oldest record not yet sent, or NULL.
 static struct tt_LargeRecord* large_next_unsent(struct tt_Publisher* pub) {
     for (uint32_t i = 0; i < pub->large_count; i++) {
@@ -9301,6 +9339,7 @@ static void large_record_sent(struct tt_Context* node, struct tt_Publisher* pub,
     while (pub->large_count > limit && large_record_at(pub, 0)->sent) {
         large_drop_oldest(node, pub);
     }
+    keep_last_bound_across_kinds(node, pub, 0);
 }
 
 // A sample its publish could not finish encoding after some of it had gone (large_encode_through()): it is the newest
@@ -9516,6 +9555,7 @@ static void large_commit(struct tt_Context* node, struct tt_Publisher* pub, stru
     while (pub->large_count != 0 && pub->large_count >= limit && large_record_at(pub, 0)->sent) {
         large_drop_oldest(node, pub);
     }
+    keep_last_bound_across_kinds(node, pub, 1);
     if (pub->large_count >= tt_LARGE_RETAINED) {
         large_drop_oldest(node, pub); // the ring itself is full: the oldest goes even unsent, its tail abandoned
     }

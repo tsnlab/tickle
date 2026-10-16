@@ -675,7 +675,9 @@ Where it departs, and why:
   4 MB sample takes longer than the 33 ms to the next - where this delivers at the link's rate; and a waiting sample
   that holds no seq_nos leaves no gap for readers to give up on. The falsification test for I4s still reads it.
 - **The writer releases a VOLATILE Publisher's large buffer once every matched reader has acknowledged it**; a DURABLE
-  one keeps it until KEEP_LAST evicts it (for late joiners).
+  one keeps it until KEEP_LAST evicts it (for late joiners). KEEP_LAST's depth counts small and large samples together,
+  oldest first (`keep_last_bound_across_kinds()`); until 2026-10-16 each kind was bounded by the whole depth, so a
+  writer of both kept up to twice it and a durable late joiner was handed samples older than its history.
 - **The send cursor resumes on a timer, not on socket writability**: 50 us after a full send buffer, doubling to 1 ms
   while nothing goes (`tt_LARGE_SEND_RETRY_NS`, `_MAX_NS`). No HAL wait on POLLOUT was needed; one new HAL call,
   `tt_send_batch_nonblocking()` (MSG_DONTWAIT), returns how many datagrams went. *Superseded 2026-10-12
