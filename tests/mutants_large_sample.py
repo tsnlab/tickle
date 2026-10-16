@@ -76,7 +76,7 @@ MUTANTS = [
         "a HEARTBEAT announces a large sample still going out",
         "            return record->seq_no - 1;",
         "            return pub->seq_no;",
-        "test_a_lost_datagram_is_resent_while_its_sample_is_still_going_out",
+        "test_a_heartbeat_announces_no_sample_still_going_out",
     ),
     (
         "a datagram lost during its sample's send waits for the send to end",
@@ -89,7 +89,7 @@ MUTANTS = [
         "a retry while a large sample still arrives counts against the writer",
         "        proxy->retry--;",
         "        (void)0;",
-        "test_a_busy_writer_is_waited_for_not_given_up",
+        "test_a_busy_writer_is_not_warned_about",
     ),
     (
         "a fixed-size type above a sample refused as a topic",

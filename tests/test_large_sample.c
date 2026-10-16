@@ -1117,6 +1117,149 @@ static void test_a_busy_writer_is_waited_for_not_given_up(void) {
     EXPECT_EQ_U32(0, sub.gap_abandoned);
 }
 
+// What the writer's HEARTBEATs announced while a large sample of it was still going out
+// (test_a_heartbeat_announces_no_sample_still_going_out).
+static uint32_t hb_during;      // HEARTBEATs sent while a large record was unsent
+static uint32_t hb_announcing;  // ... of them, those whose last_seq_no reached that record
+static uint32_t hb_after;       // HEARTBEATs sent with nothing left to send
+static uint32_t hb_after_whole; // ... of them, those that announced everything given out
+
+static void heartbeat_watch(const void* buf, size_t len) {
+    const uint8_t* body = NULL;
+    if (sim_acting == SENDER_ID && len >= sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) &&
+        datagram_type((const uint8_t*)buf, &body) == tt_SUBMESSAGE_TYPE_HEARTBEAT) {
+        struct tt_HeartbeatHeader heartbeat;
+        memcpy(&heartbeat, body, sizeof(heartbeat));
+        const struct tt_LargeRecord* unsent = NULL;
+        for (uint32_t i = 0; i < pub.large_count && unsent == NULL; i++) {
+            const struct tt_LargeRecord* record = &pub.large[(pub.large_head + i) % tt_LARGE_RETAINED];
+            unsent = record->sent ? NULL : record;
+        }
+        if (unsent != NULL) {
+            hb_during++;
+            hb_announcing += seq_delta(heartbeat.last_seq_no, unsent->seq_no) >= 0 ? 1U : 0U;
+        } else {
+            hb_after++;
+            hb_after_whole += heartbeat.last_seq_no == pub.seq_no ? 1U : 0U;
+        }
+    }
+    sim_capture(buf, len);
+}
+
+static void test_a_heartbeat_announces_no_sample_still_going_out(void) {
+    // A HEARTBEAT sent while a large sample is still going out announces up to the seq_no before it
+    // (publisher_announced_last_seq_no()): announced, the unsent rest would read as a gap and be asked for, over and
+    // over until the send ended - at 0% loss, requests for datagrams nobody lost. The delivery tests cannot see this:
+    // the requests are ignored (a datagram not yet sent is not resent) and the sample arrives as before
+    // (mutants_large_sample.py, "a HEARTBEAT announces a large sample still going out", 2026-10-16). Controls: some
+    // HEARTBEATs did go out during the send, and those after it announce everything given out - what is read here is
+    // the field the mutant would change.
+    init_pair(1000, RELIABLE_KEEP_LAST);
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    sample_len = FOUR_MB;
+    sim_room_per_step = 8; // hundreds of retry intervals to go out
+    hb_during = hb_announcing = hb_after = hb_after_whole = 0;
+    test_mock_send_hook = heartbeat_watch;
+    const int samples = 3; // the small one and two large ones
+    for (int i = 1; i < samples; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 1), tt_SECOND));
+        sim_settle(i + 1, 2 * tt_SECOND);
+    }
+    test_mock_send_hook = sim_capture;
+    EXPECT_EQ_INT(samples, delivered_count);
+    EXPECT_EQ_INT(0, delivered_torn);
+    EXPECT_TRUE(hb_during > 0);
+    EXPECT_EQ_U32(0, hb_announcing);
+    EXPECT_TRUE(hb_after > 0);
+    EXPECT_EQ_U32(hb_after, hb_after_whole);
+    printf("test_large_sample: HEARTBEATs during a 4 MB send %u (announcing it: %u), after %u\n", hb_during,
+           hb_announcing, hb_after);
+}
+
+static int log_occurrences(const char* text, const char* needle) {
+    int count = 0;
+    for (const char* at = strstr(text, needle); at != NULL; at = strstr(at + 1, needle)) {
+        count++;
+    }
+    return count;
+}
+
+// Runs `scenario` with the log captured, and answers how many "still waiting" warnings the reader logged.
+static int stuck_warnings_in(void (*scenario)(void)) {
+    char* text = NULL;
+    size_t size = 0;
+    FILE* log = open_memstream(&text, &size);
+    tt_LogLevel level = tt_current_log_level;
+    tt_current_log_level = TT_LOG_WARNING;
+    tt_log_set_output(log);
+    scenario();
+    (void)fclose(log);
+    tt_log_set_output(stderr);
+    tt_current_log_level = level;
+    int count = log_occurrences(text != NULL ? text : "", "Still waiting on reliable seq_no");
+    free(text);
+    return count;
+}
+
+// The busy writer of test_a_busy_writer_is_waited_for_not_given_up, its clock past the warning's first rate limit.
+static void busy_writer_scenario(void) {
+    init_pair(1000, RELIABLE_KEEP_LAST);
+    sim_start(0);
+    test_mock_now = 10 * tt_SECOND; // tt_WriterProxy.stuck_warned_ns starts at 0: a warning may go at once
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+    EXPECT_TRUE(proxy != NULL);
+    if (proxy != NULL) {
+        proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+    }
+    sample_len = FOUR_MB;
+    sim_loss_per_mille = 50;
+    sim_room_per_step = 8;
+    sim_busy_writer = true;
+    const int samples = 3;
+    for (int i = 1; i < samples; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 1), tt_SECOND));
+        sim_settle(i + 1, 2 * tt_SECOND);
+    }
+    EXPECT_EQ_INT(samples, delivered_count);
+}
+
+// A writer gone silent with a gap open: sample 2 lost, sample 3 through, then nothing either way.
+static void silent_writer_scenario(void) {
+    init_pair(1000, RELIABLE_KEEP_LAST);
+    sim_start(0);
+    test_mock_now = 10 * tt_SECOND;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    sim_loss_per_mille = 1000;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(2, tt_SECOND));
+    sim_loss_per_mille = 0;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(3, tt_SECOND));
+    sim_loss_per_mille = 1000;
+    uint64_t since = test_mock_now;
+    while (test_mock_now - since < 100 * TEST_RETRY_INTERVAL && sim_step()) {
+    }
+    EXPECT_TRUE(delivered_count < 3); // sample 2 never came
+}
+
+static void test_a_busy_writer_is_not_warned_about(void) {
+    // While a large sample's fragments keep arriving, a retry is not counted against the writer: it is still sending
+    // and answers when the send ends. Counted, the busy writer's 4 MB send ran the reader's retry count to 18, past
+    // tt_RELIABLE_RETRY, and a reader then warns that the writer "neither repairs it nor says it is gone" - about a
+    // writer doing neither only because it is busy. Delivery cannot show this: since 2026-10-15 no gap is given up on a
+    // retry count (mutants_large_sample.py, "a retry while a large sample still arrives counts against the writer",
+    // 2026-10-16). The control: a writer that has really gone silent with a gap open is warned about, on the same
+    // clock.
+    int busy = stuck_warnings_in(busy_writer_scenario);
+    int silent = stuck_warnings_in(silent_writer_scenario);
+    printf("test_large_sample: \"still waiting\" warnings - busy writer %d, silent writer %d\n", busy, silent);
+    EXPECT_EQ_INT(0, busy);
+    EXPECT_TRUE(silent >= 1);
+}
+
 static void test_keep_last_replaces_a_sample_waiting_behind_a_send(void) {
     // Three samples published back to back while the first is still going out: the second waits behind it and the
     // third replaces it before any of it has gone. The reader sees samples 1 and 3, in order, with no gap in between -
@@ -1627,6 +1770,8 @@ int main(void) {
     test_a_full_send_buffer_retains_the_whole_encoded_sample();
     test_a_sample_waiting_behind_a_send_is_encoded_whole();
     test_a_sample_that_cannot_be_finished_is_dropped_never_torn();
+    test_a_heartbeat_announces_no_sample_still_going_out();
+    test_a_busy_writer_is_not_warned_about();
     teardown_pair();
 
     allocator_reset(&sender_alloc);
