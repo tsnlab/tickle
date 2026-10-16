@@ -2422,7 +2422,18 @@ static void loss_estimate_observe(struct tt_LossEstimate* estimate, uint32_t fra
         estimate->frames /= 2U;
         estimate->events /= 2U;
         estimate->frames_at_event /= 2U;
+        estimate->frames_at_doubt /= 2U;
     }
+}
+
+// A gap put down to a receiver drop (hybrid_rx_receiver_lost()): its frames are not seen, neither as loss nor as clean.
+// The HAL's count cannot say whose datagrams it dropped - another writer's, a discovery flood's (2026-10-15, the rig's
+// first-n2 r11: 158 drops of a flooded socket, put against the 5% path's own losses one by one) - so the gap may hold
+// path events. p's mean leaves it out, as before; what reads a stretch as clean starts after it: "none seen"
+// (hybrid_rx_loss_code()) and the stale rule (loss_estimate_forget_stale()), which takes this point as the k-th
+// event's.
+static void loss_estimate_doubt(struct tt_LossEstimate* estimate) {
+    estimate->frames_at_doubt = estimate->frames;
 }
 
 #ifdef TT_HYBRID_TEST_SEAM
@@ -2467,9 +2478,12 @@ static bool loss_estimate_forget_stale(struct tt_LossEstimate* estimate) {
         estimate->frames_at_event == 0) {
         return false;
     }
-    uint32_t clean = estimate->frames - estimate->frames_at_event;
+    // The stretch starts at the last event or the last doubtful gap, whichever is later, and F ends there too.
+    uint32_t anchor =
+        estimate->frames_at_doubt > estimate->frames_at_event ? estimate->frames_at_doubt : estimate->frames_at_event;
+    uint32_t clean = estimate->frames - anchor;
     if ((double)clean < tt_HYBRID_STALE_EXPOSURE / tt_HYBRID_STALE_P_MIN) { // the floor: 9,210 frames
-        double stretch = 1.0 + ((double)clean / (double)estimate->frames_at_event);
+        double stretch = 1.0 + ((double)clean / (double)anchor);
         double chance = 1.0; // of a stretch this long after this many events, on a steady path
         for (uint32_t i = 0; i < estimate->events; i++) {
             chance /= stretch;
@@ -2481,6 +2495,7 @@ static bool loss_estimate_forget_stale(struct tt_LossEstimate* estimate) {
     estimate->events = 0;
     estimate->frames = clean;
     estimate->frames_at_event = 0;
+    estimate->frames_at_doubt = 0;
     return true;
 }
 
@@ -2596,10 +2611,23 @@ static uint16_t hybrid_rx_loss_code(const struct tt_LossEstimate* estimate) {
         return hybrid_loss_code(hybrid_test_forced_p);
     }
 #endif
-    if (estimate->events == 0 && estimate->frames >= (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES) {
+    if (estimate->events == 0 &&
+        estimate->frames - estimate->frames_at_doubt >= (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES) { // seen, since a doubt
         return HYBRID_LOSS_NONE_SEEN;
     }
     return hybrid_loss_code(loss_estimate_mean(estimate));
+}
+
+// What the reader's announce carries of p (hybrid_announce(), at the interval and at a tail). Its first estimate, once
+// a gap has been put down to a receiver drop, waits for tt_HYBRID_NONE_SEEN_FRAMES frames after the last such gap: each
+// one restarts the estimate until then (hybrid_rx_receiver_lost()), so the first p rests on frames the reader saw, and
+// the writer, hearing nothing, sends this reader MTU units meanwhile (hybrid_peer_unmeasured()) - right at any p.
+static uint16_t hybrid_rx_announce_code(const struct tt_HybridState* hybrid) {
+    if (hybrid->advertised_loss == 0 && hybrid->receiver_lost != 0 &&
+        hybrid->rx_loss.frames < (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES) {
+        return 0;
+    }
+    return hybrid_rx_loss_code(&hybrid->rx_loss);
 }
 
 // ---- The reader's side: what it measures of its own reception (DESIGN.md section 8, "What the reader measures")
@@ -2652,7 +2680,10 @@ static void hybrid_rx_mtu(struct tt_HybridState* hybrid, uint32_t units, uint32_
 // socket_drops on the "Node N rx:" line. A drop is always counted before its gap is seen - the datagram that shows the
 // gap arrived after the dropped one - so none is missed; one not matched within two announce intervals (a small
 // datagram's, or a gap not seen yet) is let go, so a burst of drops cannot hide a later path loss for long. The count
-// is read only when no drop is on hand, so a lossy path costs one read per gap and a clean one none.
+// is read only when no drop is on hand, so a lossy path costs one read per gap and a clean one none. A gap so excused
+// is not read as clean either: the count cannot say whose datagrams were dropped, so it may hide path losses. Before
+// the reader has announced a p it restarts the estimate (hybrid_rx_announce_code()); after, "none seen" and the stale
+// rule start after it (loss_estimate_doubt()).
 // Returns how many of `datagrams` lost datagrams are put down to receiver drops (each takes one drop).
 static uint32_t hybrid_rx_receiver_lost(struct tt_Context* node, uint32_t datagrams) {
     struct tt_HybridState* hybrid = &node->hybrid;
@@ -2671,6 +2702,11 @@ static uint32_t hybrid_rx_receiver_lost(struct tt_Context* node, uint32_t datagr
         taken += take;
     }
     hybrid->receiver_lost += taken;
+    if (taken != 0 && hybrid->advertised_loss == 0) {
+        hybrid->rx_loss = (struct tt_LossEstimate) {0, 0, 0, 0}; // no p announced yet: the first starts after it
+    } else if (taken != 0) {
+        loss_estimate_doubt(&hybrid->rx_loss);
+    }
     return taken;
 }
 
@@ -2754,7 +2790,7 @@ static void hybrid_rx_forget_stale(struct tt_HybridState* hybrid) {
 // and on a lossy path that was up to a whole interval of samples (the rig's 1 MB cell at 5%: ~30).
 static void hybrid_rx_first_estimate(struct tt_Context* node) {
     hybrid_rx_forget_stale(&node->hybrid);
-    uint16_t measured = hybrid_rx_loss_code(&node->hybrid.rx_loss);
+    uint16_t measured = hybrid_rx_loss_code(&node->hybrid.rx_loss); // hybrid_announce() holds a first p
     if ((node->hybrid.advertised_loss != HYBRID_LOSS_NONE_SEEN && measured == HYBRID_LOSS_NONE_SEEN) ||
         (node->hybrid.advertised_loss == 0 && measured != 0)) {
         hybrid_announce(node, tt_get_ns());
@@ -12846,7 +12882,7 @@ static void hybrid_announce(struct tt_Context* node, uint64_t now) {
     struct tt_HybridState* hybrid = &node->hybrid;
     uint16_t bytes = hybrid_cap_bytes(node, hybrid->cap, hybrid_units_within(node->ip_reassembly_max, false));
     hybrid_rx_forget_stale(hybrid);
-    uint16_t loss = hybrid_rx_loss_code(&hybrid->rx_loss);
+    uint16_t loss = hybrid_rx_announce_code(hybrid);
     bool loss_moved = hybrid_loss_moved(loss, hybrid->advertised_loss);
     if (bytes == hybrid->advertised && !loss_moved) {
         return;
