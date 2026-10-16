@@ -4640,6 +4640,27 @@ static void sched_note_full(struct tt_Context* node) {
                    node->id, (int)node->scheduler_tail, tt_MAX_SCHEDULER_LENGTH, (unsigned long)node->sched_full);
 }
 
+// Moves `function`'s entry for `param` to `time` where it stands in the heap, under the state lock: what a later
+// unschedule and schedule would do, without the inbox walk and the wake tt_Context_schedule() pays (a poll waiting for
+// the old time wakes then, finds nothing due and waits again). False when there is no such entry in the heap.
+static bool sched_postpone_locked(struct tt_Context* node,
+                                  void (*function)(struct tt_Context* node, uint64_t time, void* param), void* param,
+                                  uint64_t time) {
+    for (int32_t i = 0; i < node->scheduler_tail; i++) {
+        if (node->scheduler[i].function == function && node->scheduler[i].param == param) {
+            uint64_t was = node->scheduler[i].time;
+            node->scheduler[i].time = time;
+            if (time >= was) {
+                sched_sift_down(node, i);
+            } else {
+                sched_sift_up(node, i);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 // struct tt_Context.wait_until, as a seqlock over two 32-bit halves. A 64-bit atomic would be simpler, but a
 // 32-bit target has none in hardware - rv32 builds of this file failed to link on __atomic_store_8, and
 // picolibc brings no libatomic - so the value is written under a sequence counter instead. Only the poller
@@ -4948,12 +4969,14 @@ static void send_heartbeat(struct tt_Context* node, uint64_t time, void* param);
 static void send_initial_heartbeat(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Peer* target);
 // The idle HEARTBEAT (tt_Publisher.idle_heartbeat_ns, config.h's tt_IDLE_HEARTBEAT_PERIOD) - see idle_heartbeat_fire().
 static void idle_heartbeat_fire(struct tt_Context* node, uint64_t time, void* param);
-static void idle_heartbeat_arm(struct tt_Publisher* pub);
-// After a publish that went to a matched reader: arms the idle HEARTBEAT's one scheduler entry when it is not already
-// in. While it is - all through a steady stream - a publish pays this test and nothing else.
-static inline void idle_heartbeat_note_publish(struct tt_Publisher* pub) {
-    if (pub->reliable && !pub->idle_heartbeat_armed && pub->idle_heartbeat_ns != 0) {
-        idle_heartbeat_arm(pub);
+static void idle_heartbeat_on_publish(struct tt_Publisher* pub, uint64_t now);
+// After a publish that went to a matched reader, at `now` - the clock the publish already read for its DATA's
+// timestamp. A published sample reveals every loss before it, as a HEARTBEAT would, so it pushes the idle HEARTBEAT
+// back to one period after itself; but only once half the period has gone (idle_check_ns), so a steady stream moves
+// the one scheduler entry about once per half period - no wakeup, no send - and pays this one test per sample.
+static inline void idle_heartbeat_note_publish(struct tt_Publisher* pub, uint64_t now) {
+    if (now >= pub->idle_check_ns) {
+        idle_heartbeat_on_publish(pub, now);
     }
 }
 // QoS roadmap #5 (RELIABILITY) follow-up - periodic ACK solicitation, see struct tt_Publisher.
@@ -5833,10 +5856,9 @@ static tt_ret_t node_create_publisher_locked(struct tt_Context* node, struct tt_
     pub->resolicit_armed = false;
     pub->idle_heartbeat_ns = tt_IDLE_HEARTBEAT_PERIOD; // on for a RELIABLE writer - config.h says why and how often
     pub->last_heartbeat_ns = 0;
-    pub->idle_heartbeat_seq_no = 0;
+    pub->idle_check_ns = 0; // the first publish arms it
     pub->idle_heartbeats = 0;
     pub->idle_heartbeat_armed = false;
-    pub->idle_heartbeat_piggyback = false;
     // Every field an announce or the reliability path reads, not only the ones above: these
     // used to be left as found, and a caller whose struct was not already zero (a stack or reused
     // allocation) announced whatever QoS bits the garbage made, and could start with ack slots that
@@ -7963,17 +7985,12 @@ static bool check_and_cache_sample(struct tt_Context* node, struct tt_Publisher*
     return true;
 }
 
-// Also when the idle HEARTBEAT's period ran out while samples were still flowing (idle_heartbeat_fire()): it rides
-// this sample rather than going on a datagram of its own.
 static bool piggyback_due(struct tt_Publisher* pub, bool is_flush) {
-    if (!is_flush || pub->reliable_cache == NULL) {
+    if (!is_flush || pub->reliable_cache == NULL || pub->heartbeat_piggyback_every == 0) {
         return false;
     }
-    if (pub->heartbeat_piggyback_every == 0) {
-        return pub->idle_heartbeat_piggyback;
-    }
     pub->heartbeat_piggyback_count++;
-    return pub->heartbeat_piggyback_count >= pub->heartbeat_piggyback_every || pub->idle_heartbeat_piggyback;
+    return pub->heartbeat_piggyback_count >= pub->heartbeat_piggyback_every;
 }
 
 // Append a Heartbeat behind the DATA the caller left pending, and send both in one datagram to the
@@ -8043,7 +8060,7 @@ static void put_match_heartbeat(struct tt_Context* node, struct tt_Publisher* pu
 static bool encode_in_slot_destination(struct tt_Publisher* pub, uint32_t old_tx_tail, struct tx_destination* out) {
     struct tt_Context* node = pub->node;
     // An unempty tx_buffer is refused by unicast_destinations_for() below, as it refuses a whole record for it.
-    if (pub->batch || node->summary_skip_armed || pub->match_heartbeat_pending || pub->idle_heartbeat_piggyback) {
+    if (pub->batch || node->summary_skip_armed || pub->match_heartbeat_pending) {
         return false;
     }
     if (pub->reliable_cache != NULL && pub->heartbeat_piggyback_every != 0 &&
@@ -8132,6 +8149,7 @@ static bool try_publish_into_slot(struct tt_Publisher* pub, struct tt_Data* data
     uint32_t own_ip = 0;
     uint16_t own_port = 0;
     tt_own_address(node, &own_ip, &own_port);
+    const uint64_t now_ns = tt_get_ns();
     const uint32_t timestamp = timestamp_to_wire(tt_get_wall_ns());
     uint32_t claimed = 0;
     struct tt_SegmentSlot* slot = segment_claim(segment, &claimed);
@@ -8176,7 +8194,7 @@ static bool try_publish_into_slot(struct tt_Publisher* pub, struct tt_Data* data
     segment_note_written(node, dest.context_id, segment, dest.ip, dest.port, true);
 
     pub->seq_no += 1;
-    idle_heartbeat_note_publish(pub);
+    idle_heartbeat_note_publish(pub, now_ns);
     maybe_solicit_ack_at_watermark(pub);
     *result = tt_RET_OK;
     return true;
@@ -9449,7 +9467,7 @@ static void large_commit(struct tt_Context* node, struct tt_Publisher* pub, stru
     pub->large_count++;
     pub->seq_no += sample.count;
     if (!publisher_unmatched(pub)) {
-        idle_heartbeat_note_publish(pub);
+        idle_heartbeat_note_publish(pub, tt_get_ns());
     }
 #if tt_LOCAL_DELIVERY
     if (pub->local_subscriber_count != 0) {
@@ -9737,6 +9755,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 
     data_header->endpoint_id = endpoint->id;
     data_header->seq_no = pub->seq_no + 1;
+    const uint64_t now_ns = tt_get_ns(); // the DATA's timestamp, and the idle HEARTBEAT's clock
     data_header->timestamp = timestamp_to_wire(tt_get_wall_ns());
     data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
 
@@ -9872,7 +9891,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     if (piggyback && !append_piggybacked_heartbeat(node, pub, peers, peer_count)) {
         return tt_RET_IO_ERROR;
     }
-    idle_heartbeat_note_publish(pub);
+    idle_heartbeat_note_publish(pub, now_ns);
 
     // Phase 3 prerequisite (d) - after the sample is out and counted, ask for an ACK if the cache
     // is now watermark-full of unacknowledged samples. No-op unless a caller opted in.
@@ -10058,6 +10077,7 @@ static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint3
     struct tt_DataHeader* data_header = (struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader));
     data_header->endpoint_id = pub->endpoint.id;
     data_header->seq_no = pub->seq_no + 1;
+    const uint64_t now_ns = tt_get_ns();
     data_header->timestamp = timestamp_to_wire(tt_get_wall_ns());
     data_header->entity_id = pub->endpoint.entity_id;
     memset(record + raw_len, 0, record_len - raw_len);
@@ -10086,7 +10106,7 @@ static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint3
     node->segment_claims_published++;
     segment_note_written(node, dest.context_id, segment, dest.ip, dest.port, true);
     pub->seq_no += 1;
-    idle_heartbeat_note_publish(pub);
+    idle_heartbeat_note_publish(pub, now_ns);
     maybe_solicit_ack_at_watermark(pub);
     return tt_RET_OK;
 }
@@ -10216,8 +10236,6 @@ static void idle_heartbeat_note_sent(struct tt_Publisher* pub, uint32_t last_seq
         return;
     }
     pub->last_heartbeat_ns = tt_get_ns();
-    pub->idle_heartbeat_seq_no = pub->seq_no;
-    pub->idle_heartbeat_piggyback = false;
 }
 
 static void encode_heartbeat_range(struct tt_Context* node, struct tt_Publisher* pub, uint32_t first_seq_no,
@@ -10423,17 +10441,25 @@ static bool idle_heartbeat_owed(const struct tt_Publisher* pub) {
     return false;
 }
 
-static void idle_heartbeat_schedule(struct tt_Publisher* pub, uint64_t due) {
-    if (tt_Context_schedule(pub->node, due, idle_heartbeat_fire, pub)) {
-        pub->idle_heartbeat_armed = true;
+// The entry is put in at `due`, or - already in - moved there in place (sched_postpone_locked()), and the next publish
+// that moves it again is the first one past half way there.
+static void idle_heartbeat_schedule(struct tt_Publisher* pub, uint64_t due, uint64_t period) {
+    if (pub->idle_heartbeat_armed && sched_postpone_locked(pub->node, idle_heartbeat_fire, pub, due)) {
+        pub->idle_check_ns = due - (period / 2U);
+        return;
     }
+    pub->idle_heartbeat_armed = tt_Context_schedule(pub->node, due, idle_heartbeat_fire, pub);
+    pub->idle_check_ns = pub->idle_heartbeat_armed ? due - (period / 2U) : 0; // not armed: the next publish tries
 }
 
-// Armed by a publish (idle_heartbeat_note_publish()) one period on. What it has seen published so far is the arming
-// sample itself: a lone sample, the next fire finding nothing newer, gets its HEARTBEAT one period after it.
-static void idle_heartbeat_arm(struct tt_Publisher* pub) {
-    pub->idle_heartbeat_seq_no = pub->seq_no;
-    idle_heartbeat_schedule(pub, tt_get_ns() + idle_heartbeat_period(pub));
+// idle_heartbeat_note_publish()'s slow half: arms the entry one period after this publish, or moves it there.
+static void idle_heartbeat_on_publish(struct tt_Publisher* pub, uint64_t now) {
+    if (!pub->reliable || pub->idle_heartbeat_ns == 0) {
+        pub->idle_check_ns = now + tt_SECOND; // asked again in a second, in case either is set later
+        return;
+    }
+    uint64_t period = idle_heartbeat_period(pub);
+    idle_heartbeat_schedule(pub, now + period, period);
 }
 
 // A non-FINAL HEARTBEAT over everything retained, to the matched peers while there are few enough (else broadcast), the
@@ -10453,43 +10479,36 @@ static void send_idle_heartbeat(struct tt_Context* node, struct tt_Publisher* pu
     pub->idle_heartbeats++;
 }
 
-// The idle HEARTBEAT's one scheduler entry (DESIGN.md section 6). It does not tick at a fixed rate: each run asks
-// whether the period has passed since the LAST HEARTBEAT that told every matched reader everything sent - of any kind,
-// so every one of those pushes this one back - and re-arms itself for when it next could, while something stays
-// unacknowledged:
+// The idle HEARTBEAT's one scheduler entry (DESIGN.md section 6). Not a fixed-rate timer: it runs one period P after
+// the last thing that told the readers everything sent - the last published sample (idle_heartbeat_note_publish()), or
+// the last HEARTBEAT of any kind that announced everything to every matched reader (idle_heartbeat_note_sent()) - and
+// then:
 //
 //   all acknowledged, or nobody matched   nothing, and the entry leaves the scheduler; the next publish brings it back.
 //   a HEARTBEAT went less than P ago      re-armed for P after that one.
-//   samples still flowing                 the next one carries the HEARTBEAT in its own datagram (piggyback_due());
-//                                         re-armed for P/2, and if no sample took it by then it goes on its own.
-//   nothing published since               a non-FINAL HEARTBEAT on its own datagram; re-armed for P after it.
+//   otherwise                             a non-FINAL HEARTBEAT, and re-armed for P after it while something stays
+//                                         unacknowledged.
 //
-// A burst's last sample, lost, is then asked for within ~1.5 P of being sent (P when it was the only one), where before
-// it waited for the next sample. A batching Publisher's HEARTBEAT never rides a sample (piggyback_due() is for a
-// publish that flushes), so it goes on its own.
+// A stream with samples at most P/2 apart never lets it run: a publish past the half-way mark moves it on, so a steady
+// stream costs no wakeup and no datagram. The last sample of a burst gets its HEARTBEAT P/2 to P after it was
+// published, where before it waited for the next sample. A stream slower than P pays one per sample, and one between
+// P/2 and P sometimes - the cost the period is chosen against (config.h).
 static void idle_heartbeat_fire(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(time);
     struct tt_Publisher* pub = param;
     pub->idle_heartbeat_armed = false;
     if (!idle_heartbeat_owed(pub)) {
-        pub->idle_heartbeat_piggyback = false;
+        pub->idle_check_ns = 0; // the next publish arms it
         return;
     }
     uint64_t now = tt_get_ns();
     uint64_t period = idle_heartbeat_period(pub);
     if (pub->last_heartbeat_ns != 0 && now - pub->last_heartbeat_ns < period) {
-        idle_heartbeat_schedule(pub, pub->last_heartbeat_ns + period);
-        return;
-    }
-    if (!pub->idle_heartbeat_piggyback && !pub->batch && pub->seq_no != pub->idle_heartbeat_seq_no) {
-        pub->idle_heartbeat_piggyback = true;
-        pub->idle_heartbeat_seq_no = pub->seq_no;
-        idle_heartbeat_schedule(pub, now + period / 2U);
+        idle_heartbeat_schedule(pub, pub->last_heartbeat_ns + period, period);
         return;
     }
     send_idle_heartbeat(node, pub);
-    pub->idle_heartbeat_piggyback = false; // whether or not the send counted itself, the fallback has run
-    idle_heartbeat_schedule(pub, now + period);
+    idle_heartbeat_schedule(pub, now + period, period);
 }
 
 // See struct tt_Publisher.heartbeat_period_ns's own doc comment (tickle.h) for why this needs an
