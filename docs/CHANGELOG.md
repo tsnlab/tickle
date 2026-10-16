@@ -637,6 +637,25 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Fixed
 
+- **A busy writer's send no longer sets the reader's retry interval** (2026-10-16; DESIGN.md section 6). A writer
+  sending a large sample answers a request only behind the rest of its send, and those recoveries fed srtt: the
+  interval came to measure the send, not the path. In `tests/test_large_sample.c`'s sim of 8 x 4 MB at 5% loss with a
+  writer that reads nothing while it sends, it climbed to 43-61 ms and every sample after the first was whole 7-15 ms
+  after its send ended, against 0.95 ms for the first. The reader now keeps the path's estimate without the
+  recoveries whose wait saw the writer's original fragments arrive (`probe_busy`), and one over every recovery
+  (`sending_srtt_ns`) that sets how often a retry may ask while the sample still arrives; then a retry also leaves out
+  repairs younger than the transit time and asks nothing of a writer that has answered nothing within the interval.
+  Sim: whole 0.05-1.95 ms after each send, writer datagrams 25,503 against 26,226; a writer answering while it sends
+  over a 2 ms path: 6 duplicate copies against 245; a quiet path's srtt follows its round trip, 2 -> 8 ms. The
+  reliable retry's ceiling is now 64 x max(srtt, G), as the call retry's is: of srtt alone, a recovery timed at ~0 cut
+  every wait to 64 ns. PC (`srtt_busy_writer_pc_ab.sh`, veth, 10 reps, 4 MB RELIABLE KEEP_LAST at 15 Hz): at 5% netem
+  p99 latency -25% (BETTER, base 13.7 ms), median HELD, delivered 100% in every arm; the writer's resends +7.7% and the
+  reader's datagrams +11.6% (WORSE), wire bytes +0.3% (HELD); at 0% every metric HELD. Core p4 at 1%/5% (5 reps, the
+  previous step of the change, whose non-large code is this one's): delivered, wire bytes and p99 HELD. Two earlier
+  steps were refuted on the way: retries at the path's interval while the writer sends (+37% writer datagrams at 0%
+  netem on a loaded PC), and the transit rule without the sending cadence (the reader's occasional collapses ran
+  deeper than the parent's: 1.23 million resends and 234 of 300 delivered against 0.35 million and 300).
+
 - **A step of the date no longer disturbs timers, liveliness or lifespan** (2026-10-16, `ab/monotonic`; DESIGN.md
   section 2, "Time"). The Linux HAL read `CLOCK_REALTIME` for everything, so an NTP or manual step moved every
   deadline: three hours forward, a leased writer was declared gone and a lost sample's repair was refused as past the

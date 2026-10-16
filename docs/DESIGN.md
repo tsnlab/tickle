@@ -292,8 +292,22 @@ endpoint count.
 - A gap is NACKed at once; unanswered requests are repeated by a per-proxy retry timer.
 - **Retry interval** (`tt_RELIABLE_RETRY_INTERVAL` 0 = dynamic, default): RFC 6298 form,
   `srtt + max(G, 4 x rttvar)` over request-to-recovery times, starting at `tt_RELIABLE_RETRY_INITIAL` (1 ms),
-  G the host's timer lateness (below), capped at `tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE` (64) x srtt. Any non-zero
-  value is used as given.
+  G the host's timer lateness (below), capped at `tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE` (64) x max(srtt, G) (of srtt
+  alone until 2026-10-16: an srtt below G / 64 cut every wait to 64 x srtt). Any non-zero value is used as given.
+- **A busy writer's send is not the path** (2026-10-16). A writer sending a large sample answers a request only
+  behind the rest of its send, or, blocked in it, only when it ends. Folded into srtt, those recoveries made the
+  interval measure the send: a sim of 8 x 4 MB at 5% loss climbed to 43-61 ms, and each sample's tail waited it out,
+  whole up to 15 ms after its send instead of ~1 ms. So the reader keeps two estimates. `recovery_srtt_ns`, the path's,
+  leaves out a recovery whose wait saw the writer's original fragments (not repairs addressed to this reader) arrive
+  after the request (`tt_WriterProxy.probe_busy`; Karn's rule in spirit). `sending_srtt_ns` takes every recovery, as
+  the one estimate did. While an original fragment arrived within the path's interval, the timer ticks at that
+  interval but asks no oftener than the sending estimate's (`retry_sent_ns`), names only what was asked for longer ago
+  than the repair transit time (`repair_in_flight_ns()`, as a HEARTBEAT's answer does), and asks nothing when no repair
+  has come within the interval (`repair_arrival_ns`: a blocked writer reads every queued request at once and resends
+  each named datagram for each). The first tick after the send asks for every gap at the path's interval. Each step
+  was forced by a measurement: retries at the path's interval while the writer sends resent 3.5x the datagrams in the
+  sim of a blocked writer and +37% at 0% netem on the PC (a writer that answers while it sends); without the sending
+  cadence the PC reader's occasional collapses ran deeper than the parent's (1.23 million resends against 0.35).
 - **G, measured** (since 2026-10-08; it was a fixed 100 us fitted to nothing): every wait in `tt_Context_poll()` for
   a retry timer (`acknack_retry`, `call_retry`) that runs to its deadline is a sample of how late it returned (clock on
   waking minus the deadline). A wait ended early by a datagram, a wake or a signal is not, and neither is a wait for
@@ -1956,7 +1970,7 @@ All are compile-time `-D` overrides unless noted. Times in nanoseconds.
 | `tt_RELIABLE_RETRY_INITIAL` | 1 ms | | dynamic start value |
 | `tt_RELIABLE_RETRY_GRANULARITY` | 0 (measured) | | G, timer lateness term; non-zero = fixed |
 | `tt_TIMER_LATENESS_INITIAL` | 100 us | | measured G before its first sample |
-| `tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE` | 64 | | ceiling in srtt |
+| `tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE` | 64 | | ceiling in max(srtt, G) |
 | `tt_RELIABLE_RETRY` | 3 | | retries at the plain interval before the back-off |
 | `tt_RELIABLE_RETRY_BACKOFF_SHIFT` | 4 | | back-off ceiling, 2^n x the interval |
 | `tt_RELIABLE_BITMAP_BITS` / `_MAX_BITS` | 256 / 4096 | | reader window default / ceiling |

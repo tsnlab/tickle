@@ -1350,7 +1350,7 @@ static void test_a_busy_writers_send_is_not_timed_as_the_path(void) {
     EXPECT_TRUE(interval[SAMPLES - 1] <= 2 * TEST_RETRY_INTERVAL);
     // Nor is the busy writer asked again while it sends: at the path's interval its queued requests named each lost
     // datagram over and over, and it resent each for each - 91,786 datagrams against 26,226 with the inflated
-    // interval and 25,537 now.
+    // interval and 25,503 now.
     EXPECT_TRUE(sim_sent[SENDER_ID] * 100 <= (uint64_t)SAMPLES * tt_sample_datagrams(FOUR_MB) * 120);
 }
 
@@ -1408,7 +1408,7 @@ static void test_a_quiet_paths_round_trip_is_still_timed(void) {
            (double)short_path / 1e6, (double)long_path / 1e6);
     // Within a quarter of the path below (a probe started when the watermark reaches a gap asked for earlier times a
     // repair already on its way) and half above it. The parent: 4.97 ms over the 2 ms path - the busy send's 18 ms
-    // recoveries still in it - and 7.39 ms over the 8 ms one; this change 2.85 and 7.49 (2026-10-16).
+    // recoveries still in it - and 7.39 ms over the 8 ms one; this change 1.80 and 6.37 (2026-10-16).
     EXPECT_TRUE(short_path >= 1500 * tt_MICROSECOND && short_path < 3 * tt_MILLISECOND);
     EXPECT_TRUE(long_path >= 6 * tt_MILLISECOND && long_path < 12 * tt_MILLISECOND);
 }
@@ -1443,14 +1443,15 @@ static void test_a_sending_writer_is_not_asked_for_repairs_on_their_way(void) {
     // and the reader's retry interval, its busy recoveries left out, is far shorter than that queue. Asked again at
     // that interval it resent repairs already on their way: on the PC (srtt_busy_writer_pc_ab.sh, 2026-10-16) +37%
     // writer datagrams at 0% netem; here 3,907 copies the reader got twice. While the sample still arrives a retry
-    // names only what was asked for longer ago than the repair transit time: 1. The parent, its interval inflated by
-    // the queue: 245. Mutant: the retry names repairs in flight.
+    // names only what was asked for longer ago than the repair transit time, and asks no oftener than the interval
+    // over every recovery (sending_srtt_ns): 6. The parent, its one interval inflated by the queue: 245. Mutants: the
+    // retry names repairs in flight; it asks at the path's interval.
     enum { SAMPLES = 4 };
     uint64_t duplicates = answering_writer_duplicates(SAMPLES, 2 * tt_MILLISECOND);
     printf("test_large_sample: answering writer, %d x 4 MB at 5%% over a 2 ms path - writer datagrams %llu, "
            "duplicates at the reader %llu\n",
            SAMPLES, (unsigned long long)sim_sent[SENDER_ID], (unsigned long long)duplicates);
-    EXPECT_TRUE(duplicates * 100 <= (uint64_t)SAMPLES * tt_sample_datagrams(FOUR_MB));
+    EXPECT_TRUE(duplicates * 400 <= (uint64_t)SAMPLES * tt_sample_datagrams(FOUR_MB)); // 0.25%: 28; no transit rule: 80
 }
 
 static void test_keep_last_replaces_a_sample_waiting_behind_a_send(void) {
