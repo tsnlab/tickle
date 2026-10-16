@@ -155,7 +155,7 @@ fi
 
 # The reader's selftest and the cell list, from the harness commit's own files (a private export, removed on exit).
 TMPX=$(mktemp -d "$TMPDIR/core_ab_XXXXXX") || refuse "mktemp in $TMPDIR"
-G archive "$HARNESS" "$XREL/core_ab_read.py" "$XREL/gate_v2.py" "$XREL/campaign_sweep.sh" "$XREL/gate_v2_lib.sh" |
+G archive "$HARNESS" "$XREL/core_ab_read.py" "$XREL/gate_v2.py" "$XREL/campaign_sweep.sh" "$XREL/gate_v2_lib.sh" "$XREL/pi_checkout.sh" |
     tar -x -C "$TMPX" || refuse "git archive of the harness files"
 st=$(lim timeout 300 python3 "$TMPX/$XREL/core_ab_read.py" --selftest 2>&1)
 str=$?
