@@ -571,12 +571,13 @@ static uint64_t resolve_heartbeat_period_ns(void) {
     return (uint64_t)period;
 }
 
-// The idle HEARTBEAT's period (core's tt_Publisher.idle_heartbeat_ns, config.h's tt_IDLE_HEARTBEAT_PERIOD, 100 ms;
+// The idle HEARTBEAT's period (core's tt_Publisher.idle_heartbeat_ns, config.h's tt_IDLE_HEARTBEAT_PERIOD, 250 ms;
 // DESIGN.md section 6): while a matched RELIABLE reader has not acknowledged everything and no HEARTBEAT of any kind
-// has gone for this long, the publisher sends one asking for an answer - so the lost last sample of a burst is repaired
-// within ~1.5 periods instead of at the next sample. RMW_TICKLE_IDLE_HEARTBEAT_NS: unset or empty keeps core's default,
-// 0 turns it off, any other number of nanoseconds replaces it (core keeps a floor of 4 retry intervals). A value that
-// does not parse keeps the default, with a warning: as the piggyback below, a typo must not remove loss recovery.
+// and no sample has gone for this long, the publisher sends one asking for an answer - so the lost last sample of a
+// burst is repaired within a period instead of at the next sample. RMW_TICKLE_IDLE_HEARTBEAT_NS: unset or empty keeps
+// core's default, 0 turns it off, any other number of nanoseconds replaces it (core keeps a floor of 4 retry
+// intervals). A value that does not parse keeps the default, with a warning: as the piggyback below, a typo must not
+// remove loss recovery.
 //
 // RMW_TICKLE_HEARTBEAT_PERIOD_NS above is kept as it was, and is a different thing: a FINAL HEARTBEAT at a fixed rate
 // whether or not anything is unacknowledged. The two compose - each periodic HEARTBEAT pushes the idle one back, so

@@ -203,12 +203,12 @@ int main(void) {
     assert(0 == armed_every(node, NULL, RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT));
     assert(0 == armed_every(node, "16", RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT));
 
-    // The idle HEARTBEAT: on at core's 100 ms unless set; 0 turns it off; a number replaces it; garbage keeps it.
-    assert(100000000ULL == tt_IDLE_HEARTBEAT_PERIOD);
+    // The idle HEARTBEAT: on at core's 250 ms unless set; 0 turns it off; a number replaces it; garbage keeps it.
+    assert(250000000ULL == tt_IDLE_HEARTBEAT_PERIOD);
     assert(tt_IDLE_HEARTBEAT_PERIOD == armed_idle(node, NULL));
     assert(tt_IDLE_HEARTBEAT_PERIOD == armed_idle(node, ""));
     assert(0 == armed_idle(node, "0"));
-    assert(250000000ULL == armed_idle(node, "250000000"));
+    assert(400000000ULL == armed_idle(node, "400000000"));
     assert(tt_IDLE_HEARTBEAT_PERIOD == armed_idle(node, "100ms"));
 
     assert(RMW_RET_OK == rmw_destroy_node(node));

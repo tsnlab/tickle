@@ -200,26 +200,28 @@
 // The idle HEARTBEAT (DESIGN.md section 6, the user's decision 2026-10-16). A reader learns that the LAST sample of a
 // burst was lost only from something sent after it - a later sample or a HEARTBEAT - and a RELIABLE writer that has
 // stopped sends neither, so before this a lost tail waited for the next sample, however long that was. Now, while a
-// matched RELIABLE reader has not acknowledged everything sent and no HEARTBEAT has gone for this long, the writer
-// sends one that asks for an answer (non-FINAL). Timed from the last HEARTBEAT of ANY kind the writer sent to every
-// matched reader - piggybacked, match, end-of-sample, solicitation, periodic - so each one pushes the next back, and a
-// steady stream sends none of its own: when the period runs out while samples are still flowing, the HEARTBEAT rides
-// the next sample's datagram instead (tt_Publisher.idle_heartbeat_piggyback). Nothing while everything is acknowledged
-// or no reader is matched. One lazily re-armed scheduler entry per writer, never one per sample.
+// matched RELIABLE reader has not acknowledged everything sent and nothing has told the readers everything for this
+// long, the writer sends a HEARTBEAT that asks for an answer (non-FINAL), and again this long after it while something
+// stays unacknowledged. "Told the readers everything": a HEARTBEAT of any kind announcing everything sent to every
+// matched reader (piggybacked, match, end-of-sample, solicitation, periodic), or a published sample, which reveals
+// every loss before it. So each pushes the next idle HEARTBEAT back, a stream with samples at most half a period apart
+// never sends one, and nothing goes while everything is acknowledged or no reader is matched. One scheduler entry per
+// writer, moved in place by at most one publish per half period (idle_heartbeat_note_publish(), tickle.c).
 //
-// Why 100 ms. The cost is per BURST, not per sample: after a burst, one HEARTBEAT and one ACKNACK per reader, and then
-// silence. A stream faster than one sample per period pays no datagram (its HEARTBEAT rides a sample); a slower one
-// pays a HEARTBEAT and its answers per sample, so the period should sit above the interval of common periodic streams -
-// ROS 2 sensor and control topics run at 10 Hz and up. Against that, the period is how long a lost tail can wait to be
-// noticed. The DDS vendors' documented defaults bracket it: Cyclone DDS's heartbeat interval 100 ms, OpenDDS's 1 s,
-// Fast DDS's and RTI Connext's heartbeat period 3 s (their documentation; no code of theirs is used). 100 ms takes the
-// low end (a tail noticed within ~1.5 periods, see idle_heartbeat_fire(), tickle.c) at the cost above. 0 turns it off.
+// Why 250 ms. The cost is per BURST: after one, a HEARTBEAT and one ACKNACK per reader, then silence. A stream slower
+// than the period pays that per sample, and one between half the period and the period sometimes, so the period must
+// sit well above the interval of the periodic topics it would otherwise tax. Measured on the PC (srv_gap_pc.sh, core
+// L:p1, the rig's 10 Hz request/reply latency cell, 2026-10-16): at 100 ms every round trip paid it, +83 user and ~+800
+// kernel instructions on each side; at 250, 500 and 1000 ms none did (+3..+6 user, within 3 SE of the build with it
+// off). 250 ms is the shortest of those: a stream of 8 Hz and up is free, and a lost tail is asked for 125-250 ms after
+// it was sent. The DDS vendors' documented defaults bracket it: Cyclone DDS's heartbeat interval 100 ms, OpenDDS's 1 s,
+// Fast DDS's and RTI Connext's heartbeat period 3 s (their documentation; no code of theirs is used). 0 turns it off.
 //
 // The floor: never below tt_IDLE_HEARTBEAT_RETRY_MULTIPLE retry intervals (tt_RELIABLE_RETRY_INITIAL, or a configured
 // fixed interval). A reader that already knows of a gap asks for it itself every retry interval; a writer heartbeating
 // faster than a few of those would only duplicate that work. No ceiling: a configured period is the caller's choice.
 #ifndef tt_IDLE_HEARTBEAT_PERIOD
-#define tt_IDLE_HEARTBEAT_PERIOD (100 * tt_MILLISECOND) // nanosecond, 0 = off
+#define tt_IDLE_HEARTBEAT_PERIOD (250 * tt_MILLISECOND) // nanosecond, 0 = off
 #endif
 #ifndef tt_IDLE_HEARTBEAT_RETRY_MULTIPLE
 #define tt_IDLE_HEARTBEAT_RETRY_MULTIPLE 4 // the floor, in retry intervals
