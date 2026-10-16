@@ -43,7 +43,8 @@ UNIT = "test_reliable_pubsub"
 RMW = "rmw"
 RMW_TRIES = 3
 
-EMPTY_BITMAP_STOP = ("    if (highest_relevant_bit(proxy) < 0) {\n        // A DATA arrival already closed the gap",
+# acknack_retry() reads highest_relevant_bit() once into `highest` since the give-up on a retry count went (2026-10-15).
+EMPTY_BITMAP_STOP = ("    if (highest < 0) {\n        // A DATA arrival already closed the gap",
                      "    if (bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy))) {\n"
                      "        // A DATA arrival already closed the gap")
 NO_NOTE_DECLINED = ("        note_declined(node, sub, ctx);\n        return;\n", "        return;\n")

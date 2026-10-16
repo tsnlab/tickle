@@ -795,8 +795,8 @@ MUTANTS = [
     (
         "p: 'none seen' at the tail only before any announce",
         "src/tickle.c",
-        "    if (node->hybrid.advertised_loss != HYBRID_LOSS_NONE_SEEN &&",
-        "    if (node->hybrid.advertised_loss == 0 &&",
+        "    if ((node->hybrid.advertised_loss != HYBRID_LOSS_NONE_SEEN && measured == HYBRID_LOSS_NONE_SEEN) ||",
+        "    if ((node->hybrid.advertised_loss == 0 && measured == HYBRID_LOSS_NONE_SEEN) ||",
         SEND,
     ),
     (

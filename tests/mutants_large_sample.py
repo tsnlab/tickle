@@ -222,8 +222,8 @@ MUTANTS = [
     ),
     (
         "a sample waiting behind a send encoded by range",
-        "    if (pub->topic->data_encode_range == NULL || !sending_now) {",
-        "    if (pub->topic->data_encode_range == NULL) {",
+        "    if (pub->topic->data_encode_range == NULL || !sending_now || publisher_unmatched(pub)) {",
+        "    if (pub->topic->data_encode_range == NULL || publisher_unmatched(pub)) {",
         "test_a_sample_waiting_behind_a_send_is_encoded_whole",
     ),
 ]
