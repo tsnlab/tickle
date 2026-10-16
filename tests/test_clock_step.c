@@ -26,6 +26,12 @@
 // core before it, and both cases must fail there - forward, the lifespan expires the lost sample's repair; back,
 // every scheduled entry (heartbeat, retry, the application's tick) waits three hours. Every case prints what it did
 // beside its verdict: a step that did not happen or a sample that was never lost would pass for the wrong reason.
+//
+// A publish reads one clock (2026-10-16, publish_clock() in tickle.c): the monotonic one, with the date it stamps
+// derived from it by the offset the context reads again every tt_CONTEXT_UPDATE_INTERVAL. So the writer's stamp - on
+// the wire and to its own local subscriber - may also be the date before a step until that read, the same grace the
+// receiver has. This HAL counts its clock reads, and every publish of the stream, and of a zero-copy publisher that
+// fills a datagram, must take exactly one: the core before the change took two (three for a leased writer).
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -81,10 +87,15 @@ static struct queue queues[NODES + 1];
 static uint64_t now_ns;         // monotonic: moves only forward, only when the test moves it
 static uint64_t date_offset_ns; // the date is now_ns + this; a step of the date changes only this
 static int next_node_id = 1;
-static bool drop_next_from_writer; // the next datagram node 1 sends is lost
+static bool drop_next_from_writer;   // the next datagram node 1 sends is lost
+static const uint8_t* zerocopy_body; // a body sent from here was sent from the caller's own bytes
+static uint32_t zerocopy_sends;
 static uint32_t dropped;
 
+static uint64_t clock_reads; // every tt_get_ns() and tt_get_wall_ns()
+
 uint64_t tt_get_ns(void) {
+    clock_reads++;
 #ifdef TEST_CLOCK_STEP_ONE_CLOCK
     return now_ns + date_offset_ns; // the control: every deadline on the date, as before the split
 #else
@@ -93,6 +104,7 @@ uint64_t tt_get_ns(void) {
 }
 
 uint64_t tt_get_wall_ns(void) {
+    clock_reads++;
     return now_ns + date_offset_ns;
 }
 
@@ -154,6 +166,9 @@ static int32_t send_one(struct tt_Context* node, const void* hdr, size_t hdr_len
                         uint32_t ip, uint16_t port) {
     if (hdr_len + body_len > DATAGRAM_MAX) {
         return -1;
+    }
+    if (body != NULL && body == zerocopy_body) {
+        zerocopy_sends++;
     }
     if (node->id == 1 && drop_next_from_writer) {
         drop_next_from_writer = false;
@@ -351,6 +366,11 @@ static struct tt_Subscriber local_sub;
 static uint64_t published_date_exact_ns[MAX_SAMPLES];
 static uint32_t local_delivered;
 static uint32_t local_stamps_wrong;
+static uint64_t local_wrong_mono_ns[MAX_SAMPLES]; // when each sample handed a wrong stamp was published
+static uint32_t local_wrong_count;
+#endif
+static uint64_t published_mono_ns[MAX_SAMPLES];
+#if tt_LOCAL_DELIVERY
 
 static void on_local_sample(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
     (void)s;
@@ -359,6 +379,9 @@ static void on_local_sample(struct tt_Subscriber* s, uint64_t time, uint16_t seq
     local_delivered++;
     if (sample->seq < MAX_SAMPLES && time != published_date_exact_ns[sample->seq]) {
         local_stamps_wrong++;
+        local_wrong_mono_ns[local_wrong_count < MAX_SAMPLES ? local_wrong_count : MAX_SAMPLES - 1] =
+            published_mono_ns[sample->seq];
+        local_wrong_count++;
     }
 }
 #endif
@@ -367,7 +390,10 @@ static uint32_t published;
 static uint32_t delivered;
 static uint32_t out_of_order;                   // a delivered seq that is not the one after the last
 static uint64_t published_date_ns[MAX_SAMPLES]; // the date at each publish, to the microsecond the wire carries
-static uint64_t published_mono_ns[MAX_SAMPLES];
+static uint32_t publish_reads_min = UINT32_MAX; // clock reads one tt_Publisher_publish() took, fewest and most
+static uint32_t publish_reads_max;
+static uint32_t publishes_counted;
+static uint32_t publishes_with_match_heartbeat;
 static uint64_t delivered_stamp_ns[MAX_SAMPLES]; // the source timestamp the subscriber was handed
 static uint32_t ticks;                           // the application's scheduled work, run
 static struct tt_Discovery reader_discovery;     // what the reader knows of remote entities, with their leases
@@ -411,7 +437,19 @@ static void publish_one(void) {
 #endif
         published_mono_ns[published] = now_ns;
     }
+    // A publish that carries the match Heartbeat a new reader is owed (put_match_heartbeat()) also schedules a flush
+    // and arms the idle HEARTBEAT, a few times per match: counted apart, as what it is.
+    const bool match_heartbeat = pub.match_heartbeat_pending;
+    const uint64_t reads_before = clock_reads;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&s));
+    const uint32_t reads = (uint32_t)(clock_reads - reads_before);
+    if (match_heartbeat) {
+        publishes_with_match_heartbeat++;
+        return;
+    }
+    publishes_counted++;
+    publish_reads_min = reads < publish_reads_min ? reads : publish_reads_min;
+    publish_reads_max = reads > publish_reads_max ? reads : publish_reads_max;
 }
 
 static void run_round(bool with_sample) {
@@ -434,6 +472,10 @@ static void setup(struct tt_ReliableCache* cache) {
     out_of_order = 0;
     ticks = 0;
     departures = 0;
+    publish_reads_min = UINT32_MAX;
+    publish_reads_max = 0;
+    publishes_counted = 0;
+    publishes_with_match_heartbeat = 0;
     memset(&reader_discovery, 0, sizeof(reader_discovery));
     dropped = 0;
     drop_next_from_writer = false;
@@ -448,6 +490,7 @@ static void setup(struct tt_ReliableCache* cache) {
 #if tt_LOCAL_DELIVERY
     local_delivered = 0;
     local_stamps_wrong = 0;
+    local_wrong_count = 0;
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&writer, &local_sub, &topic, "clock_step", on_local_sample));
 #endif
     pub.reliable = true;
@@ -559,11 +602,29 @@ static void stream_across_a_step(const char* name, int64_t step) {
     // The stamps are the date: before the step, and after it once the receiver has read the date again.
     EXPECT_TRUE(stamps_checked > (uint32_t)(AFTER_STEP_ROUNDS / 2));
     EXPECT_EQ_U32(0, stamps_wrong);
+    // One clock read per publish, every publish of the stream above but the few that carried the match Heartbeat.
+    printf("%s: %u to %u clock reads per publish (leased, RELIABLE, staged) over %u publishes, %u more carried the "
+           "match Heartbeat\n",
+           name, publish_reads_min, publish_reads_max, publishes_counted, publishes_with_match_heartbeat);
+    EXPECT_TRUE(publishes_counted + publishes_with_match_heartbeat == published);
+    EXPECT_TRUE(publishes_with_match_heartbeat * 10 < published); // a few, at the match
+    EXPECT_EQ_U32(1, publish_reads_min);
+    EXPECT_EQ_U32(1, publish_reads_max);
 #if tt_LOCAL_DELIVERY
-    printf("%s: %u delivered in the writer's own context, %u with a stamp other than the date of the publish\n", name,
-           local_delivered, local_stamps_wrong);
+    // The date of the publish, to the nanosecond - except for a sample published before the writer read the date
+    // again after the step, which may carry the date from before it (publish_clock()).
+    uint32_t local_wrong_outside_grace = 0;
+    for (uint32_t i = 0; i < local_wrong_count && i < MAX_SAMPLES; i++) {
+        bool in_grace =
+            local_wrong_mono_ns[i] >= step_at_mono && local_wrong_mono_ns[i] < step_at_mono + STAMP_GRACE_NS;
+        local_wrong_outside_grace += in_grace ? 0U : 1U;
+    }
+    printf("%s: %u delivered in the writer's own context, %u with a stamp other than the date of the publish, %u of "
+           "them outside %.1f s of the step\n",
+           name, local_delivered, local_stamps_wrong, local_wrong_outside_grace, (double)(STAMP_GRACE_NS) / 1e9);
     EXPECT_EQ_U32(published, local_delivered); // the lost datagram is no loss here: local delivery sends nothing
-    EXPECT_EQ_U32(0, local_stamps_wrong);
+    EXPECT_EQ_U32(local_stamps_wrong, local_wrong_count);
+    EXPECT_EQ_U32(0, local_wrong_outside_grace);
 #endif
     teardown();
 }
@@ -576,9 +637,141 @@ static void test_a_date_step_back_changes_only_the_stamps(void) {
     stream_across_a_step("back", -(int64_t)DATE_STEP_NS);
 }
 
+// ---- A zero-copy publish (data_encode_inplace, a sample that fills a datagram) reads one clock too.
+
+#define BIG_BODY                                                                                       \
+    ((uint32_t)(tt_MAX_BUFFER_LENGTH - sizeof(struct tt_Header) - sizeof(struct tt_SubmessageHeader) - \
+                sizeof(struct tt_DataHeader)) &                                                        \
+     ~3U)
+static uint8_t big_body[BIG_BODY];
+static uint32_t big_delivered;
+static uint32_t big_local_delivered;
+static uint32_t big_local_stamps_wrong;
+
+static int32_t big_encode_size(struct tt_Data* data) {
+    (void)data;
+    return (int32_t)BIG_BODY;
+}
+
+static int32_t big_encode(struct tt_Data* data, uint8_t* payload, const uint32_t len) {
+    (void)data;
+    if (len < BIG_BODY) {
+        return -1;
+    }
+    memcpy(payload, big_body, BIG_BODY);
+    return (int32_t)BIG_BODY;
+}
+
+static int32_t big_encode_inplace(struct tt_Data* data, const uint8_t** payload_out) {
+    (void)data;
+    *payload_out = big_body;
+    return (int32_t)BIG_BODY;
+}
+
+static int32_t big_decode(struct tt_Data* data, const uint8_t* payload, const uint32_t len, bool native) {
+    (void)data;
+    (void)payload;
+    (void)native;
+    return (int32_t)len;
+}
+
+static void on_big(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
+    (void)s;
+    (void)time;
+    (void)seq_no;
+    (void)data;
+    big_delivered++;
+}
+
+#if tt_LOCAL_DELIVERY
+static void on_big_local(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
+    (void)s;
+    (void)seq_no;
+    (void)data;
+    big_local_delivered++;
+    // The date of the publish: nothing moved either clock since. Read here, so the read is not the publish's.
+    const uint64_t reads = clock_reads;
+    big_local_stamps_wrong += time == tt_get_wall_ns() ? 0U : 1U;
+    clock_reads = reads;
+}
+#endif
+
+static void test_a_zero_copy_publish_reads_one_clock(void) {
+    struct tt_ReliableCacheIndex index[64];
+    uint8_t arena[tt_RELIABLE_CACHE_ARENA_BYTES(64, tt_RELIABLE_RECORD_BYTES(64))];
+    struct tt_ReliableCache cache;
+    memset(index, 0, sizeof(index));
+    memset(arena, 0, sizeof(arena));
+    memset(&cache, 0, sizeof(cache));
+    cache.index = index;
+    cache.capacity = 64;
+    cache.depth = 64;
+    cache.arena = arena;
+    cache.arena_size = (uint32_t)sizeof(arena);
+    setup(&cache);
+
+    static struct tt_Topic big_topic = {
+        .name = "clock_step_big",
+        .data_size = sizeof(struct sample),
+        .data_encode_size = big_encode_size,
+        .data_encode = big_encode,
+        .data_encode_inplace = big_encode_inplace,
+        .data_decode = big_decode,
+        .data_free = sample_free,
+    };
+    static struct tt_Publisher big_pub;
+    static struct tt_Subscriber big_sub;
+    big_delivered = 0;
+    big_local_delivered = 0;
+    big_local_stamps_wrong = 0;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&writer, &big_pub, &big_topic, "clock_step_big"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&reader, &big_sub, &big_topic, "clock_step_big", on_big));
+#if tt_LOCAL_DELIVERY
+    static struct tt_Subscriber big_local_sub;
+    EXPECT_EQ_INT(tt_RET_OK,
+                  tt_Context_create_subscriber(&writer, &big_local_sub, &big_topic, "clock_step_big", on_big_local));
+#endif
+    big_pub.liveliness_lease_duration_ns = LEASE_NS;
+    for (int round = 0; round < 200; round++) {
+        run_round(false);
+    }
+    EXPECT_TRUE(count_peers(big_pub.peers) == 1);
+
+    zerocopy_body = big_body;
+    zerocopy_sends = 0;
+    uint32_t reads_min = UINT32_MAX;
+    uint32_t reads_max = 0;
+    const uint32_t rounds = 50;
+    for (uint32_t i = 0; i < rounds; i++) {
+        now_ns += STEP_NS;
+        struct sample s = {i};
+        const uint64_t reads_before = clock_reads;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&big_pub, (struct tt_Data*)&s));
+        const uint32_t reads = (uint32_t)(clock_reads - reads_before);
+        reads_min = reads < reads_min ? reads : reads_min;
+        reads_max = reads > reads_max ? reads : reads_max;
+        (void)tt_Context_poll(&writer, 0);
+        (void)tt_Context_poll(&reader, 0);
+    }
+    zerocopy_body = NULL;
+    printf("zero-copy: %u of %u publishes sent from the caller's bytes, %u delivered, %u in the writer's own context "
+           "(%u stamped other than the date); %u to %u clock reads per publish (leased)\n",
+           zerocopy_sends, rounds, big_delivered, big_local_delivered, big_local_stamps_wrong, reads_min, reads_max);
+    EXPECT_EQ_U32(rounds, zerocopy_sends); // the treatment: every one took the zero-copy path
+    EXPECT_EQ_U32(rounds, big_delivered);
+#if tt_LOCAL_DELIVERY
+    EXPECT_EQ_U32(rounds, big_local_delivered);
+    EXPECT_EQ_U32(0, big_local_stamps_wrong);
+#endif
+    EXPECT_EQ_U32(1, reads_min);
+    EXPECT_EQ_U32(1, reads_max);
+    teardown();
+}
+
 int main(void) {
     test_a_date_step_forward_changes_only_the_stamps();
     test_a_date_step_back_changes_only_the_stamps();
+    test_a_zero_copy_publish_reads_one_clock();
     if (test_result() != 0) {
         return 1;
     }

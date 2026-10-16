@@ -93,6 +93,11 @@ application's own timers stalled.
   poll's monotonic reading plus `tt_Context.wall_offset_ns` (date minus monotonic), read again on every liveliness
   run (`tt_CONTEXT_UPDATE_INTERVAL`, 1 s). The rebuild only chooses the 71.6-minute span, so a slew changes nothing;
   after a step beyond +-35.8 min stamps can be misplaced for up to that second.
+- A publish reads one clock (`publish_clock()`): the monotonic one, for its deadlines (idle HEARTBEAT, the retained
+  sample's lifespan, a leased writer's liveliness), with the date it stamps derived by the same offset. Linux slews
+  both clocks alike, so the stamp is the date to the nanosecond except within that second after a step, when it is the
+  date before the step - the receiver's window again. Two reads cost ~+90 user instructions a latency round trip
+  (rig core A/B, 2026-10-16).
 - rmw_tickle: `received_timestamp` is the date. A subscription's lifespan takes a sample's age once, on arrival, as
   the date minus its source timestamp (a stamp ahead of the date is age 0), and counts the rest on the monotonic clock.
   Its condition variables wait on `CLOCK_MONOTONIC`.

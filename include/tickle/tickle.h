@@ -1069,8 +1069,12 @@ struct tt_Context {
     // a received DATA's 32-bit timestamp is rebuilt against (timestamp_from_wire()), without a second clock read per
     // wait. Read at creation and on every check_liveliness() run (tt_CONTEXT_UPDATE_INTERVAL). The rebuild only picks
     // which 71.6-minute span the sender's microseconds lie in, so a slew (microseconds a second) changes nothing, and
-    // a step of the date beyond +-35.8 min misplaces stamps until the next run. Only the poller touches it.
+    // a step of the date beyond +-35.8 min misplaces stamps until the next run. A publish derives its DATA's date
+    // from it too (publish_clock(), tickle.c), so a publish reads one clock. Read and written under the state lock.
     uint64_t wall_offset_ns;
+    // The tt_get_ns() reading the running publish took (publish_clock()), 0 until it takes one: what a leased writer's
+    // liveliness is asserted at, without a second read. Under the state lock.
+    uint64_t publish_clock_ns;
     uint32_t state_depth; // how many times the owner has taken it; only the owner reads or writes it
     struct tt_LockStats state_lock_stats;
     // The scheduler inbox: tt_Context_schedule() from a thread that does not hold the state lock puts its entry
