@@ -1106,11 +1106,12 @@ MTU units lost, 45 events in `p` and `p_mtu`, and held `n` low until they dilute
   1 MB RELIABLE KEEP_LAST 10 at 30 Hz, 60 runs an arm; control = main + no-send-unmatched, tip =
   ab/hybrid-first-n3 with the harness's MATCHED reading): with the writer publishing at once (`PUB_WAIT_MS=0`) the control
   sent samples at `n > 1` in 23 of 60 runs (first p `0xff00` in each) and lost samples after the match point in 6; the
-  tip 0 and 0. With the reader known first (2 s), 24 and 7 against 0 and 0. Open: the first-n2 rig run's one
-  remaining `n = 45` run (I1L head r11 of 12, 2026-10-15) took its first sample one a call as designed, but its reader's
-  well-known socket dropped 158 datagrams of that sample's broadcast at start; the 158 receiver-drop credits most likely excused
-  path losses and the 4 events left were forgotten (`stale_forgets=1 stale_events=4`, every other run 0), so "none
-  seen". No-send removes that broadcast; a reader dropping at its socket during its first sample would still reach it.
+  tip 0 and 0. With the reader known first (2 s), 24 and 7 against 0 and 0. The first-n2 rig run's one remaining
+  `n = 45` run (I1L head r11 of 12, 2026-10-15) took its first sample one a call as designed, but its reader's
+  well-known socket dropped 158 datagrams at start; the reader put its own path losses down to those drops
+  (`receiver_lost=158`), read the excused gaps as clean, forgot the 4 events left (`stale_forgets=1 stale_events=4`,
+  every other run 0) and announced "none seen". Fixed 2026-10-16 (below, "Receiver drops are not path loss": an
+  excused gap is not clean).
   A 95% bound (3 / N at no events) would hold `n` below `n_max` at 0%
   loss for as long as the window lasts. The window halves at 2^20 frames, not 2^17, for the same reason. Under a
   collapse `p` reads high, which only shortens a RELIABLE writer's `n`. A few events (`k`, at most 8,
@@ -1463,6 +1464,21 @@ socket's drops as path loss. Three rules join the two:
   tail through, which a drained socket does not produce. Tests: `test_hybrid_send` (the attribution, and RELIABLE 1 MB
   with every tenth run dropped at the socket - n reaches 45 counted, stays below uncounted), `mutants_hybrid_send.py`;
   the PC A/B is `experiments/hybrid_drain_pc.sh`.
+- **An excused gap is not clean** (2026-10-16). The count cannot say whose datagrams were dropped - another writer's, a
+  flood on the well-known socket - so an excused gap may hide path losses: on the rig's first-n2 r11 (5%) 158 foreign
+  drops excused the first sample's own losses, the stale rule forgot the rest and the reader announced "none seen",
+  `n = 45`. So before the reader has announced a p, an excused gap restarts the estimate and the first p (tail or
+  interval) waits for 500 frames after the last one (`hybrid_rx_announce_code()`; the writer sends MTU units
+  meanwhile); after, it is a doubt (`tt_LossEstimate.frames_at_doubt`): "none seen" counts frames from it, and the
+  stale rule takes it as the `k`-th event's point, `C` and `F` both from it. `F` there is at least the `k`-th path
+  event's position whatever the gap hid, so `P(C >= c F) <= (1 + c)^-k` and the floor's 1e-4 still hold. p's mean still
+  leaves excused gaps out. `test_hybrid_send` (158 foreign drops in the first sample of a 5% stream; on main "none
+  seen" with 3 samples at `n = 45`, or a forget with 26; now the first p 5.1-5.2% before sample 7, no sample at
+  `n > 1`); PC: `experiments/hybrid_rx_drop_pc.sh` (2026-10-16, veth, netem 5% over tbf 1 Gbit/s, 1 MB RELIABLE KEEP_LAST
+  10 at 30 Hz, 2,000 foreign 8 KB datagrams to the reader's well-known socket 0.5 s before the first sample, ~590
+  drops a run; A = main 23c56714, B = this change; `~/hybrid_rx_drop/run1/`): A heard "none seen" and sent 1-5
+  samples at `n = 45` in 40 of 40 runs, B in 0 of 40 (no sample at `n > 1` at all); no flood, 5%: 0 of 20 either;
+  0% with the flood: 119 of 119 samples at `n_max` in every run of both.
 
 **PC evidence** (`hybrid_drain_pc.sh`, 2026-10-12, 3 reps x 20 s a cell, 4 MB at 30 Hz, AUTO, 0% loss; PARENT is
 `ab/hybrid-land` without the drain, HEAD this branch with the growth; `~/largemsg_pc/hybrid_drain/results_v3_*.txt`):
