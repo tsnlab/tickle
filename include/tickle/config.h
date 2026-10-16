@@ -158,7 +158,8 @@
 // 100us constant G used to be, so a context that has not slept yet behaves exactly as before. GRANULARITY 0 (the
 // default) is the measured G; any other value is a fixed G, used as given, for a build that wants one.
 //
-// The ceiling is MAX_SRTT_MULTIPLE * srtt. With the interval at srtt + 4 * rttvar, it binds only when
+// The ceiling is MAX_SRTT_MULTIPLE * max(srtt, G) - of srtt alone (until 2026-10-16) an srtt below G / MULTIPLE put
+// it under G and cut every wait to it. With the interval at srtt + 4 * rttvar, it binds only when
 // rttvar reaches ~16x srtt - the pathological estimate the clamp exists for, not a healthy link. On the
 // rig it lands at ~12.8ms, next to the ~12ms a KEEP_LAST Publisher there retains a sample for, which is
 // what the old fixed 10ms was chosen against.
