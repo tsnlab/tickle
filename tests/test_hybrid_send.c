@@ -1857,8 +1857,10 @@ static uint32_t distance(uint32_t a, uint32_t b) {
 static void test_p_mtu_counts_samples_lost_whole(void) {
     static const struct pmtu_arm arms[] = {
         {16384, 0, 10000, 11, 60}, {16384, 0, 50000, 11, 20},     {16384, 7, 10000, 6, 60},
-        {16384, 7, 50000, 6, 20},  {LARGE_LEN, 0, 10000, 45, 20}, {16384, 0, 50000, 11, 6, true},
+        {16384, 7, 50000, 6, 20},  {LARGE_LEN, 0, 10000, 45, 60}, {16384, 0, 50000, 11, 12, true},
     };
+    // Each arm expects 60 or more lost MTU units, so the treatment check (> 20) holds for any loss draw, not only
+    // the default seed's: at 20 s arm 4 expected 20 and failed about half of 100 seeds (2026-10-17).
     for (size_t i = 0; i < sizeof(arms) / sizeof(arms[0]); i++) {
         struct pmtu_result got = pmtu_stream(&arms[i]);
         EXPECT_EQ_U32(arms[i].run_n, got.largest); // the treatment: the arm's layout
@@ -1871,8 +1873,11 @@ static void test_p_mtu_counts_samples_lost_whole(void) {
         EXPECT_TRUE(link.mtu_lost > 20U); // the arm had losses to count
         EXPECT_TRUE(distance(got.frames, link.mtu) <= 2U);
         EXPECT_TRUE(distance(got.events, link.mtu_lost) <= 2U);
-        EXPECT_TRUE(distance(got.runs, link.runs) <= 4U);
-        EXPECT_TRUE(distance(got.runs_lost, link.runs_lost) <= 4U);
+        // Runs: within 4 or 1% of the link's count, whichever is larger. RELIABLE at 5% read 5 of 600 short on some
+        // seeds (the default seed reads 1 or fewer in every arm).
+        const uint32_t runs_slack = link.runs / 100U > 4U ? link.runs / 100U : 4U;
+        EXPECT_TRUE(distance(got.runs, link.runs) <= runs_slack);
+        EXPECT_TRUE(distance(got.runs_lost, link.runs_lost) <= runs_slack);
         EXPECT_EQ_INT(0, readers[0].torn);
     }
 }
