@@ -2718,6 +2718,9 @@ static void test_a_keep_last_writer_repairs_a_unit_while_it_holds_it(void) {
 static void test_an_evicted_unit_is_skipped_on_the_heartbeat(void) {
     init_one(SMALL_LEN, FULL_CEILING, true);
     cache.sample_depth = 1;
+    // The reader's own back-off is what is counted below; the writer's idle HEARTBEAT (tt_IDLE_HEARTBEAT_PERIOD)
+    // prompts one more request per period on top of it, and is tested on its own (test_idle_heartbeat.c).
+    pub.idle_heartbeat_ns = 0;
     hybrid_test_forced_p = 0.0;
     sim_start(0);
     sim_announce();

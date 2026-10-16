@@ -2136,6 +2136,10 @@ struct tt_PeerAck {
     // 2^32), never against 0 as "none".
     uint32_t ack_seq_no;
     bool acked; // an ACKNACK from this Subscriber has been recorded
+    // It asked for RELIABLE (its announce's tt_UPDATE_QOS_RELIABLE), or matched by its own ACKNACK; true for an entry
+    // claimed any other way. A BEST_EFFORT reader of a RELIABLE writer never acknowledges, so the idle HEARTBEAT
+    // (tt_Publisher.idle_heartbeat_ns) does not wait on it; it fits in padding, so the entry keeps its size.
+    bool reliable_reader;
     // Phase 2 - the RELIABLE tracking window this Subscriber announced
     // (tt_UpdateEntity.tracking_words), in 64-bit words; 0 = the protocol default.
     // tt_Publisher_unacked_bound() takes the minimum across matched Subscribers.
@@ -2507,6 +2511,22 @@ struct tt_Publisher { // extends endpoint
     // large sends have all gone (large_pump(), tickle.c). Core-private; last for the hybrid fields' reason.
     bool large_idle_notify;
 #endif
+    // The idle HEARTBEAT (config.h's tt_IDLE_HEARTBEAT_PERIOD, DESIGN.md section 6), after every older field for the
+    // hybrid fields' reason. idle_heartbeat_ns is the period: while a matched RELIABLE reader has not acknowledged
+    // everything sent and no HEARTBEAT has gone to every matched reader for this long, the writer sends one asking for
+    // an answer. tt_IDLE_HEARTBEAT_PERIOD by default, 0 off, never below tt_IDLE_HEARTBEAT_RETRY_MULTIPLE retry
+    // intervals. A plain field, set after tt_Context_create_publisher() like `batch`: the timer is armed by the next
+    // publish and reads the field each time it runs, so a change applies from its next run.
+    uint64_t idle_heartbeat_ns;
+    // Core-owned. When the last HEARTBEAT that announced everything sent went to every matched reader (0: none yet),
+    // and pub->seq_no then - "has anything been published since?"; how many idle HEARTBEATs went on their own datagram
+    // (diagnostic); whether the timer is in the scheduler; and whether the next publish carries a HEARTBEAT because the
+    // period ran out while samples were still flowing, so a steady stream sends no datagram of its own for it.
+    uint64_t last_heartbeat_ns;
+    uint32_t idle_heartbeat_seq_no;
+    uint32_t idle_heartbeats;
+    bool idle_heartbeat_armed;
+    bool idle_heartbeat_piggyback;
 };
 
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic Heartbeat announce - see
