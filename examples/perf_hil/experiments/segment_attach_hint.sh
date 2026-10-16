@@ -35,6 +35,9 @@
 # build and "no difference" would mean nothing.
 # Usage: BEFORE=<sha> AFTER=<sha> segment_attach_hint.sh     Output: $OUT
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -65,7 +68,7 @@ trap kill_server EXIT
 
 build_arm() { # build_arm <name> <sha>
     local name=$1 sha=$2 out
-    out=$(sh_ "$HOST" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $sha && git clean -fdqx -e install -e build -e log
+    out=$(sh_ "$HOST" "set -e; cd ~/tickle && $(pi_checkout "$sha") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle && ./build.sh $SCEN $SIZE > /tmp/attachhint_build.log 2>&1 || { echo BUILD_FAILED; tail -5 /tmp/attachhint_build.log; exit 0; }
 mkdir -p $SAVE/$name && cp ${SCEN}_${SIZE}/client ${SCEN}_${SIZE}/server $SAVE/$name/ && sha256sum $SAVE/$name/client | cut -c1-16" </dev/null 2>&1)
     case "$out" in *BUILD_FAILED*|*error:*|*"No such file"*) say "FATAL build failed for $name:"; say "$out"; return 1;; esac

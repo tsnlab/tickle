@@ -37,6 +37,9 @@
 #   - The DDS columns are the control: DDS code did not change, so if the DDS columns move as much
 #     as TickLE's, the movement is the rig, not TickLE.
 set -euo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PH="$(cd "$HERE/.." && pwd)"
@@ -72,7 +75,7 @@ SCENS="best_effort_latency reliable_latency best_effort_throughput reliable_thro
 build_pids=()
 for host in "$RPI_CLIENT" "$RPI_SERVER"; do
     ssh_h "$host" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil
 for fw in tickle cyclonedds fastdds; do for s in $SCENS; do
   (cd \$fw && ./build.sh \$s >/tmp/resweep_build_\${fw}_\$s.log 2>&1) || { echo \"BUILD FAILED: \$fw \$s\"; tail -5 /tmp/resweep_build_\${fw}_\$s.log; exit 1; }

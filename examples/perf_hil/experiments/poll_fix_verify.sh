@@ -17,6 +17,9 @@
 #       which only touches the busy path.
 #   IDENTITY: each arm asserts the rig's checked-out HEAD.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 PIN="taskset -c 1-3"
 OUT=${OUT:-/tmp/poll_fix.txt}
@@ -41,7 +44,7 @@ build() {
     say ""; say "--- building $sha ---"
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $sha && git clean -fdqx -e install -e build -e log
+cd ~/tickle && $(pi_checkout "$sha") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle
 for s in reliable_latency reliable_throughput; do
   ./build.sh \$s p1 > /tmp/pfv_build.log 2>&1 || { echo \"BUILD FAILED \$s on \$(hostname)\"; tail -8 /tmp/pfv_build.log; exit 1; }

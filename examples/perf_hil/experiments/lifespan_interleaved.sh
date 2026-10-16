@@ -19,6 +19,9 @@
 #   pairing anything - the two runs in a pair are far enough apart in time to drift between them -
 #   and then neither reading is safe.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 PRE=4baa3b76; POST=44a4f59c; REPS=${REPS:-15}; SCEN=lifespan_expiry
 OUT=${OUT:-/tmp/lifespan_inter.txt}
@@ -40,7 +43,7 @@ stage() {   # $1 sha  $2 dest
     say "--- staging $sha -> $dest ---"
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -u
-cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main && git clean -fdqx -e install -e build -e log && git checkout -q $sha
+cd ~/tickle && $(pi_checkout "$sha") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/fastdds && rm -f $SCEN/client $SCEN/server
 ./build.sh $SCEN > /tmp/ls_build.log 2>&1
 { [ -x $SCEN/client ] && [ -x $SCEN/server ]; } || { echo MISSING; tail -5 /tmp/ls_build.log; exit 1; }

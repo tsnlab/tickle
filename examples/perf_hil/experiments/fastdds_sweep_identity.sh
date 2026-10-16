@@ -26,6 +26,9 @@
 #   liveliness client installs no SIGINT handler, and the liveliness server's listener globals are
 #   non-atomic - a latent race inherited from the original.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 PRE=4baa3b76; POST=44a4f59c
 EXACT="deadline_miss_detection durability_late_join history_depth_burst_loss lifespan_expiry liveliness_loss_detection"
@@ -52,7 +55,7 @@ build() {
     say ""; say "--- building $sha on both rpis ---"
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -u
-cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main && git clean -fdqx -e install -e build -e log && git checkout -q $sha
+cd ~/tickle && $(pi_checkout "$sha") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/fastdds
 for s in $ALL; do rm -f \"\$s/client\" \"\$s/server\"; done
 miss=

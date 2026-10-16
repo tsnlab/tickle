@@ -49,6 +49,9 @@
 # Usage: SHA=<pushed sha> [REPS=3] [HOST=10.1.1.214] p4_reorder_firsttouch.sh
 # Launch detached; results in ~/rig_results_safe/.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -78,7 +81,7 @@ trap stop_server EXIT
 
 say "=== p4 reorder first-touch, sha=$SHA host=$HOST reps=$REPS $(date -Is) ==="
 # Build both sizes at SHA on the Pi, plus the preload and the rusage wrapper (uncommitted harness files, copied).
-out=$(sh_ "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+out=$(sh_ "set -e; cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 mkdir -p $D/p3 $D/p4
 cd examples/perf_hil/tickle
 for sz in p3 p4; do ./build.sh reliable_latency \$sz > $D/build_\$sz.log 2>&1 || { echo BUILD_FAILED \$sz; tail -5 $D/build_\$sz.log; exit 0; }

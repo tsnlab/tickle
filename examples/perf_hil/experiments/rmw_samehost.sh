@@ -76,6 +76,9 @@
 #   QOSES="best_effort reliable" WAITS="block poll" RTT_DUR=20 TPUT_DUR=20 HOST=10.1.1.213 PREFLIGHT=1 DRY=1
 #   PREFLIGHT_ONLY=1 runs the PC preflight alone (no SHA, no lock, no rig).
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 CELL="$HERE/rmw_samehost_cell.sh"
@@ -253,7 +256,7 @@ if [ "${SKIP_BUILD:-0}" = 1 ]; then
 else
     say "--- building at $SHA on $HOST ---"
     sh_ "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 export PYTHONPATH=\$HOME/tickle/tools/typesupport\${PYTHONPATH:+:\$PYTHONPATH}
 set +u; source /opt/ros/jazzy/setup.bash; set -u
 colcon build --packages-select rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_tickle \

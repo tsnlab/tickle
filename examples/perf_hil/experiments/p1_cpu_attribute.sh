@@ -28,6 +28,9 @@
 # saved binaries and never builds, because a build inside an A/B loop is how the underlay gets rewritten mid-run.
 # Usage: p1_cpu_attribute.sh [SHA_A] [SHA_B] [BLOCKS]   Output: $OUT (default /tmp/p1_cpu_attribute.txt)
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -47,7 +50,7 @@ say "=== p1 cpu attribution $(date -Is) A=$A B=$B blocks=$BLOCKS dur=${DUR}s ===
 for arm in A B; do
     sha=$A; [ "$arm" = B ] && sha=$B
     for h in "$CLIENT" "$SERVER"; do
-        sh_ "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $sha && git clean -fdqx -e install -e build -e log" </dev/null \
+        sh_ "$h" "set -e; cd ~/tickle && $(pi_checkout "$sha") && git clean -fdqx -e install -e build -e log" </dev/null \
             || { say "FATAL checkout $sha failed on $h"; exit 1; }
         # The instrument, from this checkout, into both arms.
         sh_ "$h" "cat > ~/tickle/examples/perf_hil/tickle/common/BenchStats.h" <"$REPO/examples/perf_hil/tickle/common/BenchStats.h" \

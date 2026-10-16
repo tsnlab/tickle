@@ -28,6 +28,9 @@
 #   IDENTITY  arena_bytes must match the arm: the default computed bound with no flag, 524288 with
 #            -M 524288. A run reporting the other arm's arena is VOID, not a data point.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 PIN="taskset -c 1-3"; REPS=${REPS:-3}; BUDGET=524288
 OUT=${OUT:-/tmp/keepall_bytes.txt}
@@ -49,7 +52,7 @@ pids=(); bad=0
 say "--- building p1 and p4 on both rpis ---"
 for h in "$CLIENT" "$SERVER"; do
     sh_ "$h" "set -u
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle
 for s in p1 p4; do
   ./build.sh reliable_throughput \$s > /tmp/kb_build_\$s.log 2>&1

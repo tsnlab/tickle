@@ -12,6 +12,9 @@
 # oldest commit already reads 0, the published figures were taken some other way, and the harness
 # is what to look at.
 set -euo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PH="$(cd "$HERE/.." && pwd)"
 REPO="$(cd "$PH/../.." && pwd)"
@@ -28,7 +31,7 @@ ssh_h() { local h=$1; shift; ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeou
 deploy() {
     local h
     for h in "${HOSTS[@]}"; do
-        ssh_h "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $1 && git clean -fdqx -e install -e build -e log
+        ssh_h "$h" "set -e; cd ~/tickle && $(pi_checkout "$1") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle && ./build.sh lifespan_expiry >/tmp/lsbisect_build.log 2>&1 || { echo BUILD FAILED; tail -5 /tmp/lsbisect_build.log; exit 1; }" &
     done
     wait

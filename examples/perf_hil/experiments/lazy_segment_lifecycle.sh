@@ -54,6 +54,9 @@
 # with one counter changed, they must disagree - because criteria that have only ever seen one outcome are not
 # criteria. It is the same code path, not a copy of it: a copy drifts from the original and then tests itself.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 SELFTEST=${LSL_SELFTEST:-0}
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 if [ "$SELFTEST" != 1 ]; then
@@ -124,7 +127,7 @@ say "    writer host $HOST_A, other host $HOST_B, release at ${RELEASE_AT}s, re-
 # Both hosts build from origin/main and the SHA is printed, because the counters being read here arrived in
 # ff57253a and a host sitting on an older main would report their absence as a finding about the feature.
 for h in $([ "$SELFTEST" = 1 ] || echo "$HOST_A" "$HOST_B"); do
-    b=$(sh_ "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main
+    b=$(sh_ "$h" "set -e; cd ~/tickle && $(pi_checkout origin/main)
 cd examples/perf_hil/tickle && ./build.sh $SCEN $PAYLOAD >/tmp/lsl_build.log 2>&1 || { echo BUILD_FAILED; cat /tmp/lsl_build.log; exit 0; }
 echo \"sha=\$(git -C ~/tickle rev-parse --short HEAD) bin=\$(sha256sum ${SCEN}_${PAYLOAD}/client | cut -c1-16)\"" </dev/null 2>&1)
     case "$b" in

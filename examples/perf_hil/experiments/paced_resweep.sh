@@ -14,6 +14,9 @@
 #   - Net loss = lost - write_fail. DDS refusals are counted separately, as in the max-rate table.
 #   - A cell that did not end drained=acked is marked, and its Mbps counts acceptance.
 set -euo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PH="$(cd "$HERE/.." && pwd)"
 REPO="$(cd "$PH/../.." && pwd)"
@@ -36,7 +39,7 @@ git -C "$REPO" fetch -q origin
 SHA="$(git -C "$REPO" rev-parse origin/main)"
 say "=== paced re-sweep, $(date -Is), main $SHA, -i $IV, ${REPS} reps ==="
 for h in "${HOSTS[@]}"; do
-    ssh_h "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+    ssh_h "$h" "set -e; cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil && for fw in tickle cyclonedds fastdds; do (cd \$fw && ./build.sh reliable_throughput >/tmp/paced_build.log 2>&1) || { echo BUILD FAILED \$fw; exit 1; }; done" &
 done
 wait

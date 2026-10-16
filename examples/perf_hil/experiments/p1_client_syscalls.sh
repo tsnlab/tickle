@@ -15,6 +15,9 @@
 #   - any run whose sample count is below 100000, or which reports loss, is VOID.
 # Usage: p1_client_syscalls.sh [SHA_A] [SHA_B]   Output: $OUT (default /tmp/p1_client_syscalls.txt)
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -28,7 +31,7 @@ sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=10 "ci@$1" "${@:2}"; }
 say "=== p1 client syscalls per sample, $(date -Is), A $A, B $B ==="
 for sha in "$A" "$B"; do
     for h in "$CLIENT" "$SERVER"; do
-        sh_ "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $sha && git clean -fdqx -e install -e build -e log
+        sh_ "$h" "set -e; cd ~/tickle && $(pi_checkout "$sha") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle && ./build.sh $SCEN $SIZE > /tmp/p1sc_build.log 2>&1 || { echo BUILD_FAILED; tail -5 /tmp/p1sc_build.log; exit 1; }
 test -x ~/tickle/examples/perf_hil/tickle/${SCEN}_${SIZE}/client" || { say "BUILD FAILED for $sha on $h"; exit 1; }
     done

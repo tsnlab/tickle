@@ -23,6 +23,9 @@
 #   VOID, not negative: if arm C's cpu_mhz_mean does not rise off the ~1500 MHz floor, the spinner
 #        failed to lift the clock and the arm did not test what it was for.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 PIN="taskset -c 1-3"; RUNS=${RUNS:-15}; ARGS="-i 0.1 -d 10"
 OUT=${OUT:-/tmp/rtt_spin.txt}
@@ -54,12 +57,12 @@ trap 'spin_stop; kill_servers' EXIT
 say "=== spinner arm: clock or per-core idle, $(date -Is) ==="
 build() {
     local which="$1" pids=() bad=0 recipe
-    [ "$which" = old ] && recipe="git checkout -q $HARNESS && git checkout -q $OLDCORE -- $CORE_FILES" \
-                       || recipe="git checkout -q $HARNESS"
+    [ "$which" = old ] && recipe="$(pi_checkout "$HARNESS" "$OLDCORE") && git clean -fdqx -e install -e build -e log && { git checkout -q $OLDCORE -- $CORE_FILES || exit 1; }" \
+                       || recipe="$(pi_checkout "$HARNESS") && git clean -fdqx -e install -e build -e log"
     say ""; say "--- building $which ---"
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main && git clean -fdqx -e install -e build -e log && $recipe
+cd ~/tickle && $recipe
 cd examples/perf_hil/tickle && ./build.sh reliable_latency p1 > /tmp/spin_build.log 2>&1 \
   || { echo FAIL; tail -8 /tmp/spin_build.log; exit 1; }" &
         pids+=($!)

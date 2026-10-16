@@ -19,6 +19,9 @@
 #   against CycloneDDS's 230 - a win that did not exist this morning. If locking pushes it past 230,
 #   thread safety was bought with the newest result, and that is the headline rather than a footnote.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 PIN="taskset -c 1-3"; REPS=${REPS:-3}
 BASE=${BASE:-97e1a278}; LOCKED=${LOCKED:-db0f8be3}
@@ -43,7 +46,7 @@ build() {
     say ""; say "--- building $sha ---"
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -u
-cd ~/tickle && git fetch -q origin && git reset -q --hard $sha && git clean -fdqx -e install -e build -e log
+cd ~/tickle && $(pi_checkout "$sha") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle
 for v in 'reliable_throughput p1' 'reliable_throughput p2' 'reliable_latency p1'; do
   # shellcheck disable=SC2086

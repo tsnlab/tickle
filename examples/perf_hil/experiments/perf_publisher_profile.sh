@@ -18,6 +18,9 @@
 #   The breakdown is published only as "what the user time is spent in"; it decides nothing by itself. A follow-up
 #     change is chosen from it and measured on its own, against its own control.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -46,7 +49,7 @@ trap stop_server EXIT
 
 say "=== publisher perf profile, $(date -Is), sha $SHA, $SCEN $SIZE, ${DUR}s x $REPS reps, perf -F $FREQ, host $HOST ==="
 sh_ "perf --version; cat /proc/sys/kernel/perf_event_paranoid" </dev/null | sed 's/^/  /' | tee -a "$SUM"
-out=$(sh_ "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+out=$(sh_ "set -e; cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle && ./build.sh $SCEN $SIZE > /tmp/perfpub_build.log 2>&1 || { echo BUILD_FAILED; tail -5 /tmp/perfpub_build.log; exit 0; }
 rm -rf $SAVE && mkdir -p $SAVE && cp ${SCEN}_${SIZE}/client ${SCEN}_${SIZE}/server $SAVE/ && sha256sum $SAVE/client | cut -c1-16" </dev/null 2>&1)
 case "$out" in *BUILD_FAILED*) say "BUILD FAILED: $out"; exit 1 ;; esac

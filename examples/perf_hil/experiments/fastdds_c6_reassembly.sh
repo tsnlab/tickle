@@ -30,6 +30,9 @@
 # the IP-fragmentation mechanism stands; still ~0 means no fragment was lost at the IP layer and the
 # shortfall is in FastDDS's own recovery (the heartbeat-paced suspect), not the kernel.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -64,7 +67,7 @@ say "--- building fastdds reliable_throughput p1/p4 on both rpis ---"
 pids=()
 for h in "$CLIENT" "$SERVER"; do
     sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/fastdds
 for s in p1 p4; do ./build.sh reliable_throughput \$s >/tmp/fdc6_build_\$s.log 2>&1 || { echo BUILD-FAIL \$s; tail -6 /tmp/fdc6_build_\$s.log; exit 1; }; done" &
     pids+=($!)

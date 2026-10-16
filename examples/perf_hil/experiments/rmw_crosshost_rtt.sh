@@ -54,6 +54,9 @@
 # ROS_SETUP (default /opt/ros/jazzy/setup.bash) and PI_HOME (default /home/ci, the Pis' home as an absolute path, which the
 # identity checks compare /proc/PID/maps against): only for rig_dryrun.sh on a PC with another distro and other homes.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
 # shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
@@ -230,7 +233,7 @@ for h in "$CLIENT" "$SERVER"; do
     # with the current generator rather than trusting ones generated days ago - a stale generated
     # binding has measured the wrong thing in this repository before.
     sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 # The TickLE typesupport generator's Python package, straight from this checkout rather than pip-installed:
 # the rig's system Python refuses pip (PEP 668), and an installed copy goes stale while the source moves
 # on - which has already made a regression check here test the wrong code.

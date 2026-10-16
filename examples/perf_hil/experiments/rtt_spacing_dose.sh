@@ -29,6 +29,9 @@
 #   IDENTITY: one straced run per (build, spacing). The builds differ by three orders of magnitude
 #     in ppoll count, so a count in the wrong decade means the wrong tree was built.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 PIN="taskset -c 1-3"; RUNS=${RUNS:-20}
 OUT=${OUT:-/tmp/rtt_dose.txt}
@@ -54,14 +57,14 @@ say "harness=$HARNESS  oldcore=$OLDCORE  new=$NEWSHA  runs=$RUNS per combination
 build() {   # $1 = old | new
     local which="$1" pids=() bad=0 recipe
     if [ "$which" = old ]; then
-        recipe="git checkout -q $HARNESS && git checkout -q $OLDCORE -- $CORE_FILES"
+        recipe="$(pi_checkout "$HARNESS" "$OLDCORE") && git clean -fdqx -e install -e build -e log && { git checkout -q $OLDCORE -- $CORE_FILES || exit 1; }"
     else
-        recipe="git checkout -q $NEWSHA"
+        recipe="$(pi_checkout "$NEWSHA") && git clean -fdqx -e install -e build -e log"
     fi
     say ""; say "--- building $which ---"
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main && git clean -fdqx -e install -e build -e log && $recipe
+cd ~/tickle && $recipe
 cd examples/perf_hil/tickle && ./build.sh reliable_latency p1 > /tmp/dose_build.log 2>&1 \
   || { echo \"BUILD FAILED on \$(hostname)\"; tail -8 /tmp/dose_build.log; exit 1; }" &
         pids+=($!)

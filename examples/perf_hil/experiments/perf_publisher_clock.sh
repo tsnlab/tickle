@@ -9,6 +9,9 @@
 # the per-site counts do not add up to at least 99% of all counted calls (the shim's table overflowed). Otherwise the
 # result is calls per sent sample, by function; any function above 0.05 calls per sample is a candidate to remove.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -30,7 +33,7 @@ trap stop_server EXIT
 
 say "=== publisher clock count, $(date -Is), sha $SHA, $SCEN $SIZE, ${DUR}s, host $HOST ==="
 sh_ "rm -rf $SAVE && mkdir -p $SAVE && cat > $SAVE/clock_count_shim.c" <"$REPO/examples/perf_hil/experiments/clock_count_shim.c"
-out=$(sh_ "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+out=$(sh_ "set -e; cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle && TICKLE_EXTRA_CFLAGS='-fno-omit-frame-pointer' ./build.sh $SCEN $SIZE > /tmp/perfclk_build.log 2>&1 || { echo BUILD_FAILED; tail -5 /tmp/perfclk_build.log; exit 0; }
 cp ${SCEN}_${SIZE}/client ${SCEN}_${SIZE}/server $SAVE/
 cc -O2 -fno-omit-frame-pointer -shared -fPIC -o $SAVE/clock_count_shim.so $SAVE/clock_count_shim.c -ldl && echo built" </dev/null 2>&1)

@@ -34,6 +34,9 @@
 #   every production counter reads zero through an abandonment, TickLE Dev) says how much of any
 #   recv < sent is core giving up on a gap rather than the sample never arriving.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 PIN="taskset -c 1-3"
 OUT=${OUT:-/tmp/a4_reassembly.txt}
@@ -71,7 +74,7 @@ say "--- building the stats variants on both rpis ---"
 pids=()
 for h in "$CLIENT" "$SERVER"; do
     sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle
 for s in p1 p4; do TICKLE_RELIABLE_STATS=1 ./build.sh reliable_throughput \$s > /tmp/a4_build_\$s.log 2>&1 \
   || { echo \"BUILD FAILED \$s on \$(hostname)\"; tail -8 /tmp/a4_build_\$s.log; exit 1; }

@@ -20,6 +20,9 @@
 # Usage: A=<sha> B=<sha> SCEN=best_effort_throughput SIZES="p1 p2 p4" METRIC=cpu_s_per_Msample ROLE=server \
 #        BLOCKS=3 layout_control.sh        Output: $OUT
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -56,7 +59,7 @@ say "=== layout control $(date -Is) A=$A B=$B scen=$SCEN sizes='$SIZES' metric=$
 build_arm() { # build_arm <sha> <arm> <size> <extra-cflags>; prints the client sha256
     local sha=$1 name=$2 size=$3 extra=$4 h out
     for h in "$CLIENT" "$SERVER"; do
-        sh_ "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $sha && git clean -fdqx -e install -e build -e log
+        sh_ "$h" "set -e; cd ~/tickle && $(pi_checkout "$sha") && git clean -fdqx -e install -e build -e log
 cat > examples/perf_hil/tickle/common/BenchStats.h" <"$REPO/examples/perf_hil/tickle/common/BenchStats.h" >/dev/null \
             || { note "FATAL checkout failed for $sha on $h"; return 1; }
         sh_ "$h" "cat > ~/tickle/examples/perf_hil/tickle/build.sh && chmod +x ~/tickle/examples/perf_hil/tickle/build.sh" \

@@ -195,6 +195,9 @@
 #   TT_UDP_OFFLOAD=0) alone - each VOID unless every end shows udp_offload=0, gso_sends=0, gro_merged=0. Whether the
 #   offload acted in an arm that has it is read by hybrid_rig_ab.py, which knows the arm's mode.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=examples/perf_hil/experiments/gate_v2_lib.sh
 # shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
@@ -406,11 +409,25 @@ done
 RMW_TICKLE_BUILD="-DCMAKE_BUILD_TYPE=None '-DCMAKE_C_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS' '-DCMAKE_CXX_FLAGS=-g -O2 $TICKLE_EXTRA_CFLAGS' -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
 LAYOUT_BUILD="'-DCMAKE_C_FLAGS=$TICKLE_EXTRA_CFLAGS' '-DCMAKE_CXX_FLAGS=$TICKLE_EXTRA_CFLAGS' -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
 if [ "${SKIP_BUILD:-0}" != 1 ]; then
-say "--- building on both Pis ---"
+# Every commit the Pis build, as a full sha resolved in this checkout (pi_checkout.sh): each Pi fetches exactly these,
+# and after the build each tree's HEAD is compared with its sha and the run refused on a mismatch. Until 2026-10-16 the
+# checkout was `git fetch -q origin && git reset -q --hard $HEAD_SHA && ...` under the remote set -e: a fetch that
+# failed on a ref conflict (origin's new `rmw/...` against the Pi's stale `origin/rmw`) skipped the reset without
+# failing anything - an && list does not trigger set -e - and two rig runs measured the previous checkout.
+HEAD_FULL=$(pi_full_sha "$HEAD_SHA") || { say "REFUSED: HEAD_SHA=$HEAD_SHA is not a commit in $REPO"; exit 1; }
+FETCH_FULL=("$HEAD_FULL"); VARIANT_FULL=""; VERIFY_TREES=$(pi_verify_head "\$HOME/tickle" "$HEAD_FULL")
+for v in $VARIANT_SPECS; do
+    f=$(pi_full_sha "${v#*:}") || { say "REFUSED: variant ${v%%:*}=${v#*:} is not a commit in $REPO"; exit 1; }
+    FETCH_FULL+=("$f"); VARIANT_FULL="$VARIANT_FULL ${v%%:*}:$f"
+    VERIFY_TREES="$VERIFY_TREES; $(pi_verify_head "\$HOME/rmw_variants/${v%%:*}/src" "$f")"
+done
+say "--- building on both Pis: head $HEAD_FULL${VARIANT_FULL:+, variants$VARIANT_FULL} ---"
 pids=()
 for h in "${HOSTS[@]}"; do
     sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $HEAD_SHA && git clean -fdqx -e install -e build -e log
+cd ~/tickle
+$(pi_checkout "${FETCH_FULL[@]}")
+git clean -fdqx -e install -e build -e log
 export PYTHONPATH=\$HOME/tickle/tools/typesupport\${PYTHONPATH:+:\$PYTHONPATH}
 set +u; source $ROS_SETUP; set -u
 colcon build --packages-select rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_tickle \
@@ -423,7 +440,7 @@ colcon build --base-paths \$HOME/rmw_perf_ws --build-base \$HOME/rmw_perf_ws/bui
   --cmake-force-configure > /tmp/ka_build2.log 2>&1 \
   || { echo \"STAGE 2 FAILED on \$(hostname)\"; tail -25 /tmp/ka_build2.log; exit 1; }
 rm -rf \$HOME/rmw_variants; git worktree prune
-for v in $VARIANT_SPECS; do
+for v in $VARIANT_FULL; do
   name=\${v%%:*}; sha=\${v#*:}
   git worktree add -q --detach \$HOME/rmw_variants/\$name/src \$sha
   colcon build --base-paths \$HOME/rmw_variants/\$name/src --build-base \$HOME/rmw_variants/\$name/build \
@@ -431,7 +448,8 @@ for v in $VARIANT_SPECS; do
     --cmake-args -DBUILD_SHARED_LIBS=ON $RMW_TICKLE_BUILD > /tmp/ka_build_\$name.log 2>&1 \
     || { echo \"VARIANT \$name FAILED on \$(hostname)\"; tail -25 /tmp/ka_build_\$name.log; exit 1; }
 done
-echo \"built on \$(hostname): head \$(git rev-parse --short HEAD)\"
+$VERIFY_TREES
+echo \"built on \$(hostname): head \$(git rev-parse --short HEAD) (checkout verified: every tree at its full sha)\"
 for v in $VARIANT_SPECS; do echo \"  variant \${v%%:*} \$(git -C \$HOME/rmw_variants/\${v%%:*}/src rev-parse --short HEAD)\"; done
 sha256sum \$HOME/tickle/install/rmw_tickle/lib/librmw_tickle.so $VARIANT_LIBS" \
         </dev/null 2>&1 | tee -a "$SUM" &

@@ -12,6 +12,9 @@
 # explained before it is published. The DDS twins run alongside as the control, with the same
 # interleaving as the re-sweep.
 set -euo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PH="$(cd "$HERE/.." && pwd)"
 REPO="$(cd "$PH/../.." && pwd)"
@@ -29,7 +32,7 @@ git -C "$REPO" fetch -q origin
 SHA="$(git -C "$REPO" rev-parse origin/main)"
 say "=== lifespan recheck, $(date -Is), main $SHA, ${REPS} reps ==="
 for h in "${HOSTS[@]}"; do
-    ssh_h "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+    ssh_h "$h" "set -e; cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil && for fw in tickle cyclonedds fastdds; do (cd \$fw && ./build.sh lifespan_expiry >/tmp/lsrecheck_build.log 2>&1) || { echo BUILD FAILED \$fw; exit 1; }; done" &
 done
 wait

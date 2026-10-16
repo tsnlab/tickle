@@ -29,6 +29,9 @@
 #
 # Usage: SHA=<sha> FRAMEWORK=tickle|fastdds SCEN=best_effort_throughput SIZE=p2 CLI_ARGS="" REPS=3 DUR=5 mixed_delivery.sh
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -61,7 +64,7 @@ trap stop_servers EXIT
 
 say "=== mixed delivery $(date -Is) sha=$SHA framework=$FRAMEWORK scen=$SCEN size=$SIZE cli_args='$CLI_ARGS' reps=$REPS dur=${DUR}s ==="
 for h in "$PUB_HOST" "$REMOTE_HOST"; do
-    out=$(sh_ "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+    out=$(sh_ "$h" "set -e; cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/$FRAMEWORK && ./build.sh $SCEN $SIZE > /tmp/mixdel_build.log 2>&1 || { echo BUILD_FAILED; tail -3 /tmp/mixdel_build.log; exit 0; }
 mkdir -p $SAVE && cp ${SCEN}_${SIZE}/client ${SCEN}_${SIZE}/server $SAVE/ && sha256sum $SAVE/client | cut -c1-16" </dev/null 2>&1 | tail -1)
     case "$out" in *BUILD_FAILED*) say "FATAL build on $h: $out"; exit 1;; esac

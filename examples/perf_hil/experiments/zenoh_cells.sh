@@ -38,6 +38,9 @@
 #     attach regression - a number taken now would understate it by half and would be worse than no number.
 # Usage: zenoh_reliable_cell.sh [REPS] [DUR]      Output: $OUT (default /tmp/zenoh_reliable_cell.txt)
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -126,7 +129,7 @@ say "=== zenoh-pico cells $(date -Is) reps=$REPS dur=$DUR scens='$SCENS' sizes='
 for SCEN in $SCENS; do
   for SIZE in $SIZES; do
     for h in "$CLIENT" "$SERVER"; do
-        out=$(sh_ "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main
+        out=$(sh_ "$h" "set -e; cd ~/tickle && $(pi_checkout origin/main)
 cd examples/perf_hil/zenohpico && env $ZBUILD_ENV ./build.sh $SCEN $SIZE > /tmp/zp_build.log 2>&1 || { echo BUILD_FAILED; tail -5 /tmp/zp_build.log; exit 0; }
 sha256sum ${SCEN}_${SIZE}/client | cut -c1-16" </dev/null 2>&1)
         # The whole output, not tail -1. build.sh's failure path echoes BUILD_FAILED and THEN five lines of the

@@ -15,6 +15,9 @@
 # Processes are identified by the PID their own launch printed ($!), checked through /proc/PID/exe before any
 # signal - never by name (CLAUDE.md rule 2).
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -34,12 +37,14 @@ say "=== liveliness L2, $(date -Is), before ${BEFORE:0:8}, after ${AFTER:0:8}, $
 pids=()
 for h in "$CLIENT" "$SERVER"; do
     sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin
+cd ~/tickle
 build() { (cd ~/tickle/examples/perf_hil/\$1 && ./build.sh liveliness_loss_detection p1 > /tmp/l2_build_\$1.log 2>&1) || { echo \"BUILD FAILED: \$1 at \$(git -C ~/tickle rev-parse --short HEAD)\"; tail -5 /tmp/l2_build_\$1.log; exit 1; }; }
-git reset -q --hard $BEFORE && git clean -fdqx -e install -e build -e log
+$(pi_checkout "$BEFORE" "$AFTER")
+git clean -fdqx -e install -e build -e log
 build tickle
 rm -rf ~/l2_tickle_before && cp -r examples/perf_hil/tickle/liveliness_loss_detection_p1 ~/l2_tickle_before
-git reset -q --hard $AFTER && git clean -fdqx -e install -e build -e log
+$(pi_checkout "$AFTER")
+git clean -fdqx -e install -e build -e log
 build tickle; build cyclonedds; build fastdds
 rm -rf ~/l2_tickle_after ~/l2_cyclonedds ~/l2_fastdds
 cp -r examples/perf_hil/tickle/liveliness_loss_detection_p1 ~/l2_tickle_after

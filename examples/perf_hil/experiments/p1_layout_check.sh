@@ -33,6 +33,9 @@
 # first run (WIRE_PLAN 10.3).
 # Usage: p1_layout_check.sh [SHA_A] [SHA_B] [BLOCKS]   Output: $OUT (default /tmp/p1_layout_check.txt)
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -59,7 +62,7 @@ say "=== p1 layout check $(date -Is) A=$A B=$B align='$ALIGN' blocks=$BLOCKS ===
 build_arm() { # build_arm <sha> <arm-name> <extra-cflags>
     local sha=$1 name=$2 extra=$3 h out
     for h in "$CLIENT" "$SERVER"; do
-        sh_ "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $sha && git clean -fdqx -e install -e build -e log
+        sh_ "$h" "set -e; cd ~/tickle && $(pi_checkout "$sha") && git clean -fdqx -e install -e build -e log
 cat > examples/perf_hil/tickle/common/BenchStats.h" <"$REPO/examples/perf_hil/tickle/common/BenchStats.h" >/dev/null \
             || { note "FATAL checkout/instrument copy failed for $sha on $h"; return 1; }
         # build.sh is taken from THIS checkout too, because TICKLE_EXTRA_CFLAGS is newer than the A commit and an old

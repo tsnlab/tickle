@@ -28,6 +28,9 @@
 # wrong reason.
 # Usage: s6_witness_check.sh [SHA] [REPS]     Output: $OUT (default /tmp/s6_witness.txt)
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 # Not pinned by default (2026-10-05, the user's rule): the old taskset -c 1 / -c 2 put each process on ONE core, which
 # squeezes the multi-threaded DDS processes and suits single-threaded TickLE. PIN_SERVER="taskset -c 1"
 # PIN_CLIENT="taskset -c 2" reproduce those runs for the labelled note beside the unpinned headline.
@@ -149,10 +152,10 @@ build_arm() { # build_arm <arm> <extra-cflags>; prints the client's sha256 and n
     read -ra words <<<"$2 $TICKLE_EXTRA_CFLAGS"
     extra="${words[*]}"
     if [ "${INSTRUMENT%% *}" = driver ]; then
-        sh_ "$HOST" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+        sh_ "$HOST" "set -e; cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cat > examples/perf_hil/tickle/common/BenchStats.h" <"$REPO/examples/perf_hil/tickle/common/BenchStats.h" >/dev/null 2>&1 || { note "FATAL checkout/instrument copy failed"; return 1; }
     else
-        sh_ "$HOST" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log" \
+        sh_ "$HOST" "set -e; cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log" \
             </dev/null >/dev/null 2>&1 || { note "FATAL checkout failed"; return 1; }
     fi
     # TICKLE_DATAGRAM_BYTES crosses the ssh explicitly. Only TICKLE_EXTRA_CFLAGS used to, so setting the

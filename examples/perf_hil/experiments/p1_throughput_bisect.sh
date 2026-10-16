@@ -30,6 +30,9 @@
 # accumulation says so at once instead of arriving as a void.
 # Usage: p1_throughput_bisect.sh [GOOD_SHA] [BAD_SHA]   Output: $OUT (default /tmp/p1_throughput_bisect.txt)
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -50,7 +53,7 @@ say "=== p1 throughput bisect $(date -Is) good=$GOOD bad=$BAD candidates=${#CAND
 build_into() { # build_into <sha> <dir-name>; echoes the client's sha256 or BUILD_FAILED
     local sha=$1 name=$2 h out
     for h in "$CLIENT" "$SERVER"; do
-        out=$(sh_ "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $sha && git clean -fdqx -e install -e build -e log
+        out=$(sh_ "$h" "set -e; cd ~/tickle && $(pi_checkout "$sha") && git clean -fdqx -e install -e build -e log
 cat > examples/perf_hil/tickle/common/BenchStats.h" <"$REPO/examples/perf_hil/tickle/common/BenchStats.h" 2>&1)
         out=$(sh_ "$h" "set -e; cd ~/tickle/examples/perf_hil/tickle && ./build.sh $SCEN $SIZE > /tmp/p1bis_build.log 2>&1 || { echo BUILD_FAILED; exit 0; }
 mkdir -p $SAVE/$name && cp ${SCEN}_${SIZE}/client ${SCEN}_${SIZE}/server $SAVE/$name/ && sha256sum $SAVE/$name/client | cut -c1-16" </dev/null 2>&1 | tail -1)

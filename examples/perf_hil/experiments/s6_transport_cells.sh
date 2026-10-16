@@ -69,6 +69,9 @@
 # here so the verdicts can be shown to DECIDE - fed an arm pair that must pass and pairs that must each be refused,
 # they have to disagree. The same code path, not a copy of it: a copy drifts and then tests itself.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 # Not pinned by default (2026-10-05, the user's rule): the old taskset -c 1 / -c 2 put each process on ONE core, which
 # squeezes the multi-threaded DDS processes and suits single-threaded TickLE. PIN_SERVER="taskset -c 1"
 # PIN_CLIENT="taskset -c 2" reproduce those runs for the labelled note beside the unpinned headline.
@@ -276,7 +279,7 @@ FDDS_LIB_PATH=${FDDS_LIB_PATH:-/opt/ros/jazzy/lib}
 
 fdds_build() {
     local out
-    out=$(sh_ "$HOST" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA
+    out=$(sh_ "$HOST" "set -e; cd ~/tickle && $(pi_checkout "$SHA")
 cd examples/perf_hil/fastdds && ./build.sh $SCEN $SIZE >/tmp/s6_fdds_build.log 2>&1 || { echo BUILD_FAILED; cat /tmp/s6_fdds_build.log; exit 0; }
 sha256sum ${SCEN}_${SIZE}/client | cut -c1-16" </dev/null 2>&1)
     case "$out" in *BUILD_FAILED*|*error:*) say "FATAL fastdds build failed:"; say "$out"; return 1;; esac
@@ -457,7 +460,7 @@ PYEOF
 run_cyclonedds_cell() {
     say "### cyclonedds cell: ON=SharedMemory+RouDi  OFF=the campaign's own URI (same binary, URI is the arm) ==="
     local out
-    out=$(sh_ "$HOST" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA
+    out=$(sh_ "$HOST" "set -e; cd ~/tickle && $(pi_checkout "$SHA")
 cd examples/perf_hil/cyclonedds && ./build.sh $SCEN $SIZE >/tmp/s6_cdds_build.log 2>&1 || { echo BUILD_FAILED; cat /tmp/s6_cdds_build.log; exit 0; }
 sha256sum ${SCEN}_${SIZE}/client | cut -c1-16" </dev/null 2>&1)
     # "No such file" from sha256sum means the build wrote nothing where this cell will look, which is a failure

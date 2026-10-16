@@ -25,6 +25,9 @@
 #     doorbell must have rung it through the FIFO (bells_rung > 0).; otherwise the arm is VOID - an arm
 #     that silently ran without its treatment looks exactly like a null result.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -58,7 +61,7 @@ names=()
 for spec in $ARMS; do
     name=${spec%%:*}; flags=${spec#*:}; flags=${flags//,/ }
     names+=("$name")
-    out=$(sh_ "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+    out=$(sh_ "set -e; cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cat > /tmp/segarms.patch
 if [ -s /tmp/segarms.patch ]; then git apply /tmp/segarms.patch; fi
 cd examples/perf_hil/tickle && TICKLE_EXTRA_CFLAGS='$flags' ./build.sh $SCEN $SIZE >/tmp/segarms_build.log 2>&1 || { echo BUILD_FAILED; tail -8 /tmp/segarms_build.log; exit 0; }

@@ -17,6 +17,9 @@
 #   WORSE   symmetric;  otherwise HELD. The user-time verdict is computed the same way and reported beside it.
 #   Falsification: a HELD or WORSE seg rate means the false sharing was not what limited the rate, whatever perf said.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -42,7 +45,7 @@ for b in A B; do
     sha=$SHA_A; [ "$b" = B ] && sha=$SHA_B
     for arm in seg udp; do
         flags=""; [ "$arm" = udp ] && flags="-Dtt_SEGMENT_ENABLED=0"
-        out=$(sh_ "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $sha && git clean -fdqx -e install -e build -e log
+        out=$(sh_ "set -e; cd ~/tickle && $(pi_checkout "$sha") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle && TICKLE_EXTRA_CFLAGS='$flags' ./build.sh $SCEN $SIZE > /tmp/seglay_build.log 2>&1 || { echo BUILD_FAILED; tail -5 /tmp/seglay_build.log; exit 0; }
 mkdir -p $SAVE/${b}_$arm && cp ${SCEN}_${SIZE}/client ${SCEN}_${SIZE}/server $SAVE/${b}_$arm/ && sha256sum $SAVE/${b}_$arm/client | cut -c1-16" </dev/null 2>&1)
         case "$out" in *BUILD_FAILED*) say "BUILD FAILED ${b}_$arm: $out"; exit 1 ;; esac

@@ -19,6 +19,9 @@
 #   If any framework's duty cycle is indistinguishable from the others', idle cost is not a
 #   differentiator and this arm says so rather than being quietly dropped.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 K=$HOME/.ssh/tickle_ci_ed25519; SRV=10.1.1.213
 WINDOW=${WINDOW:-20}
 OUT=${OUT:-/tmp/idle_cpu.txt}
@@ -34,11 +37,11 @@ trap kill_all EXIT
 say "=== idle CPU, $(date -Is), window ${WINDOW}s ==="
 build() {
     local sha="$1" recipe
-    [ "$sha" = "$OLD" ] && recipe="git reset -q --hard origin/main && git clean -fdqx -e install -e build -e log && git checkout -q $NEW && git checkout -q $OLD -- src/tickle.c src/hal_linux.c include/tickle/config.h include/tickle/tickle.h" \
-                        || recipe="git reset -q --hard $sha && git clean -fdqx -e install -e build -e log"
+    [ "$sha" = "$OLD" ] && recipe="$(pi_checkout "$NEW" "$OLD") && git clean -fdqx -e install -e build -e log && { git checkout -q $OLD -- src/tickle.c src/hal_linux.c include/tickle/config.h include/tickle/tickle.h || exit 1; }" \
+                        || recipe="$(pi_checkout "$sha") && git clean -fdqx -e install -e build -e log"
     say ""; say "--- building for arm $sha ---"
     sh_ "set -e
-cd ~/tickle && git fetch -q origin && $recipe
+cd ~/tickle && $recipe
 cd examples/perf_hil
 for fw in tickle cyclonedds fastdds; do (cd \$fw && ./build.sh reliable_latency p1 > /tmp/idle_\$fw.log 2>&1) || { echo \"BUILD FAILED \$fw\"; tail -5 /tmp/idle_\$fw.log; exit 1; }; done
 echo \"built; until_next_event in core: \$(grep -c until_next_event src/tickle.c || true)\"" | tee -a "$OUT"

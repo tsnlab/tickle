@@ -18,6 +18,9 @@
 #     claim; at 2 fragments the difference (5%) is close to run-to-run spread and is not relied on.
 #   drained=acked is required in every row; a timeout makes the row a delivery failure, not a figure.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export RIG_LOCK_SCOPE=hil
 if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then exec "$REPO/examples/perf_hil/rig_lock.sh" "$0" "$@"; fi
@@ -46,7 +49,7 @@ build() { # $1 = datagram bytes, or "" for the default
     local dg="$1" pids=() bad=0 h
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle
 TICKLE_P4_PATH=frag TICKLE_DATAGRAM_BYTES=$dg ./build.sh reliable_throughput p4 >/tmp/fcs_build.log 2>&1 || { echo BUILD-FAIL; tail -6 /tmp/fcs_build.log; exit 1; }" &
         pids+=($!)

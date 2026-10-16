@@ -58,6 +58,9 @@
 # Positive control, no rig: seam_attach_cost.sh --self-test   (fixtures that must VOID, and clean ones that must parse)
 # Usage: seam_attach_cost.sh [SHA] [BLOCKS]    Output: $OUT (default /tmp/seam_attach_cost.txt)
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 # classify_build <remote output>: prints exactly one line, "OK <hash16>" or "VOID <reason>: <detail>", and then any
@@ -227,10 +230,10 @@ build_arm() { # build_arm <scen> <arm-name> <extra-cflags>; sets ARM_HASH (clien
         # The commit's own BenchStats.h unless asked: overlaying the launching checkout's copy onto another commit is
         # what broke the a1e6bd94 build (its server.c calls a function that copy declares with one argument fewer).
         if [ "${BENCH_STATS_OVERLAY:-0}" = 1 ]; then
-            sh_ "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+            sh_ "$h" "set -e; cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cat > examples/perf_hil/tickle/common/BenchStats.h" <"$REPO/examples/perf_hil/tickle/common/BenchStats.h" >/dev/null
         else
-            sh_ "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log" </dev/null >/dev/null
+            sh_ "$h" "set -e; cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log" </dev/null >/dev/null
         fi || {
             ARM_VOID="checkout_failed: on $h"
             return 1

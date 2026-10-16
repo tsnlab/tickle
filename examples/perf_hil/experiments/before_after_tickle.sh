@@ -12,8 +12,12 @@
 # across the range. b9fad3c1's P2 is 1388 B against today's 1292 B, which is a different message.
 # Interleaved, 3 reps, identity asserted where the field exists.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 K=$HOME/.ssh/tickle_ci_ed25519; C=10.1.1.214; S=10.1.1.213
 OLD=b9fad3c1; NEW=$(git -C /home/semih/tickle rev-parse --short origin/main)
+OLD=$(pi_full_sha "$OLD") && NEW=$(pi_full_sha "$NEW") || exit 1
 OUT=${OUT:-/tmp/before_after.txt}
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
 pids_() {
@@ -26,10 +30,11 @@ trap kill_ EXIT
 say "=== before/after TickLE, $(date -Is)  OLD=$OLD  NEW=$NEW ==="
 for h in "$C" "$S"; do
   sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin
+cd ~/tickle && $(pi_fetch "$OLD" "$NEW")
 for spec in 'A $OLD debug' 'B $OLD release' 'C $NEW release'; do
   set -- \$spec; arm=\$1; sha=\$2; opt=\$3
-  git reset -q --hard \$sha && git clean -fdqx -e install -e build -e log && rm -rf \$HOME/tickle_local_install*
+  git reset -q --hard \$sha || { echo \"CHECKOUT FAILED on \$(hostname): \$sha\" >&2; exit 1; }
+  git clean -fdqx -e install -e build -e log; rm -rf \$HOME/tickle_local_install*
   cd examples/perf_hil/tickle
   if [ \$opt = release ]; then BUILD_TYPE=release ./build.sh reliable_throughput p1 > /tmp/ba_\$arm.log 2>&1; else BUILD_TYPE=debug ./build.sh reliable_throughput p1 > /tmp/ba_\$arm.log 2>&1; fi
   [ -x reliable_throughput_p1/client ] || { echo \"BUILD FAILED \$arm\"; tail -5 /tmp/ba_\$arm.log; exit 1; }

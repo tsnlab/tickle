@@ -36,6 +36,9 @@
 #     retry would show "no difference" for the wrong reason - which is exactly how an earlier -O2
 #     arm in this directory came back VOID.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 OUT=${OUT:-/tmp/retry_bounds_ab_$(date +%Y-%m-%d).txt}
 BEFORE=${BEFORE:-ba76dfbf}; AFTER=${AFTER:-$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)" rev-parse --short origin/main)}
@@ -86,7 +89,7 @@ build() {
     say ""; say "--- building $sha ---"
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $sha && git clean -fdqx -e install -e build -e log
+cd ~/tickle && $(pi_checkout "$sha") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle
 for s in reliable_latency reliable_throughput; do
   TICKLE_CORE_BUILD=release TICKLE_RELIABLE_STATS=1 ./build.sh \$s p1 > /tmp/rba_build.log 2>&1 \

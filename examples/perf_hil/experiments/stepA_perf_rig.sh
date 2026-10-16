@@ -55,6 +55,9 @@
 #   Takes the hil rig lock itself, once, for the whole run (rig_lock.sh). Launch detached; the deliverables are
 #   $OUT.txt (log + reading) and $OUT.d/ (every run's raw files). The log always ends "=== stepA_perf ended rc=".
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 X="$REPO/examples/perf_hil/experiments"
 export RIG_LOCK_SCOPE=hil
@@ -128,7 +131,7 @@ EVENTS="instructions:u,instructions:k,cycles:u,cycles:k,context-switches,cpu-mig
 # flags (TICKLE_EXTRA_CFLAGS empty), then the binaries copied to $SAVE/<arm>/<variant>/.
 build_arm() { # $1 arm label, $2 sha, $3 host, $4 variants
     sh_ "$3" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $2 && git clean -fdqx -e install -e build -e log
+cd ~/tickle && $(pi_checkout "$2") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle
 for v in $4; do
   scen=\${v%_p[0-9]}; size=\${v##*_}

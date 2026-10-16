@@ -36,6 +36,9 @@
 #   recovery_srtt_ns / recovery_rttvar_ns say what the estimator actually learned, so the interval
 #   it implies can be checked rather than trusted.
 set -uo pipefail
+# shellcheck source=examples/perf_hil/experiments/pi_checkout.sh
+# shellcheck disable=SC1091 # found from the script's own path at runtime; shellcheck -x follows the source= above
+. "$(dirname "${BASH_SOURCE[0]}")/pi_checkout.sh"
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 PIN="taskset -c 1-3"; REPS=${REPS:-3}
 OUT=${OUT:-/tmp/retry_ab_benefit.txt}
@@ -63,7 +66,7 @@ build() {   # $1 = 0 (fixed) | 1 (dynamic)
     say "--- building with TICKLE_DYNAMIC_RETRY=$dyn on both rpis ---"
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+cd ~/tickle && $(pi_checkout "$SHA") && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle
 TICKLE_DYNAMIC_RETRY=$dyn ./build.sh reliable_throughput p1 > /tmp/retryab_build.log 2>&1 \
   || { echo \"BUILD FAILED on \$(hostname)\"; tail -8 /tmp/retryab_build.log; exit 1; }
