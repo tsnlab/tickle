@@ -160,7 +160,7 @@ static void test_zerocopy_publish_is_counted_as_udp(void) {
 
     uint8_t body[ZEROCOPY_BODY] = {0};
     for (int i = 0; i < SAMPLES; i++) {
-        EXPECT_EQ_INT((int)tt_RET_OK, (int)publish_zerocopy(&pub, body, (uint32_t)sizeof(body)));
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)publish_zerocopy(&pub, body, (uint32_t)sizeof(body), tt_get_wall_ns()));
     }
 
     EXPECT_EQ_INT(SAMPLES, test_mock_send_call_count);
@@ -517,13 +517,13 @@ static void test_every_udp_datagram_has_a_named_reason(void) {
         EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));
     }
     uint8_t body[ZEROCOPY_BODY] = {0};
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)publish_zerocopy(&pub, body, (uint32_t)sizeof(body)));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)publish_zerocopy(&pub, body, (uint32_t)sizeof(body), tt_get_wall_ns()));
     // Now every destination is a broadcast: more known readers than the unicast threshold. Not none - a Publisher
     // with no matched reader sends nothing since 2026-10-15.
     for (uint8_t peer = 1; peer <= tt_UNICAST_PEER_THRESHOLD; peer++) {
         (void)upsert_peer(pub.peers, (uint8_t)(PEER_CONTEXT_ID + peer), PEER_IP + peer, PEER_PORT);
     }
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)publish_zerocopy(&pub, body, (uint32_t)sizeof(body)));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)publish_zerocopy(&pub, body, (uint32_t)sizeof(body), tt_get_wall_ns()));
 
     // Three reasons, not four: since 2026-09-29 a full ring drops the datagram rather than sending
     // it by UDP, so segment_full_dropped is not a fallback and adding it here would make the

@@ -8,11 +8,11 @@ Each entry puts one site on the wrong clock and names the check that must go red
   hal         platform/linux/clock_check.c against the real Linux HAL
 A mutant the check passes means it cannot see the clock it is named for.
 
-Not here, because no check reaches them in the default build: the stamp of publish_zerocopy() (a sample that fills a
-datagram, with data_encode_inplace), of a same-host ring record (encode_in_slot and the segment publish, tt_SEGMENT
-attached), and of a large sample (tt_LARGE_SAMPLES). Each is the same one-line `timestamp_to_wire(tt_get_wall_ns())`
-as the batched publish that is mutated below. The unmutated tree runs first and every
-check must pass: a check that fails on correct code would "catch" every mutant for the wrong reason.
+Every publish path (batched, zero-copy, same-host ring record, claimed slot, large sample) takes its date from
+publish_clock() since 2026-10-16, one monotonic read plus wall_offset_ns, so the publish mutants below are on that one
+function; test_clock_step.c also counts the clock reads a publish takes, which is what sees the mutant that reads the
+date a second time - correct stamps, the old cost. The unmutated tree runs first and every check must pass: a check
+that fails on correct code would "catch" every mutant for the wrong reason.
 
 Run from the repository root (TMPDIR outside /tmp if it is small). Each file is restored by rewriting it and moving
 its mtime, so make rebuilds from the restored source rather than reusing the mutant's objects; the core checks are
@@ -27,17 +27,28 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 LINUX = ROOT / "platform/linux"
+RUN_TIMEOUT_S = 120  # an unmutated run takes ~2 s at -O0
 
 MUTANTS = [
     (
-        "the batched publish stamps the deadline clock",
+        "a publish stamps the deadline clock",
         "src/tickle.c",
-        "    data_header->timestamp = timestamp_to_wire(tt_get_wall_ns());\n"
-        "    data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity\n\n"
-        "    // DataBody",
-        "    data_header->timestamp = timestamp_to_wire(tt_get_ns());\n"
-        "    data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity\n\n"
-        "    // DataBody",
+        "    *wall_ns = now + node->wall_offset_ns;",
+        "    *wall_ns = now;",
+        "core",
+    ),
+    (
+        "a publish reads the date a second time",
+        "src/tickle.c",
+        "    *wall_ns = now + node->wall_offset_ns;",
+        "    *wall_ns = tt_get_wall_ns();",
+        "core",
+    ),
+    (
+        "a publish reads the clock again for what it retains",
+        "src/tickle.c",
+        "    return node->publish_clock_ns != 0 ? node->publish_clock_ns : tt_get_ns();",
+        "    return tt_get_ns();",
         "core",
     ),
     (
@@ -78,8 +89,8 @@ MUTANTS = [
     (
         "local delivery stamps the deadline clock",
         "src/tickle.c",
-        "    uint32_t local_seq_no = pub->seq_no + 1;\n    uint64_t local_timestamp = tt_get_wall_ns();\n    if (local) {",
-        "    uint32_t local_seq_no = pub->seq_no + 1;\n    uint64_t local_timestamp = tt_get_ns();\n    if (local) {",
+        "    uint64_t local_timestamp = wall_ns; // the date on the wire, to the nanosecond",
+        "    uint64_t local_timestamp = now_ns;",
         "core_local",
     ),
     (
@@ -110,7 +121,13 @@ def run_core(work, defines):
     )
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-2000:]
-    run = subprocess.run([str(binary)], capture_output=True, text=True, check=False, timeout=600)
+    try:
+        run = subprocess.run([str(binary)], capture_output=True, text=True, check=False, timeout=RUN_TIMEOUT_S)
+    except subprocess.TimeoutExpired as expired:
+        # The poll loop on the date never returns from the step back (seen 2026-10-16): the stream cannot pass, so the
+        # mutant is caught, but by the timeout and not by a check - said apart from FAIL.
+        out = (expired.stdout or b"").decode(errors="replace") + (expired.stderr or b"").decode(errors="replace")
+        return "TIMEOUT", out
     return ("PASS" if run.returncode == 0 else "FAIL"), run.stdout + run.stderr
 
 
@@ -169,7 +186,7 @@ def main():
                 verdict, output = runner(work, defines)
             finally:
                 restore()
-            killed = verdict == "FAIL"
+            killed = verdict in ("FAIL", "TIMEOUT")  # a run that never ends cannot pass either
             survivors += 0 if killed else 1
             print(f"[{'killed' if killed else 'SURVIVED'}] {name} ({check}) -> {verdict}: {summary(output)}")
     finally:

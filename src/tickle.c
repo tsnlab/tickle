@@ -5080,6 +5080,7 @@ static uint16_t advertised_ip_reassembly_max(uint32_t setting) {
 
 static void reset_node_state(struct tt_Context* node) {
     node->id = tt_CONTEXT_ID_INVALID;
+    node->publish_clock_ns = 0; // outside a publish (publish_clock_or_now())
 #if tt_LOCAL_DELIVERY
     node->local_delivery_depth = 0;
 #endif
@@ -6744,6 +6745,27 @@ static uint64_t rx_wall_now(const struct tt_Context* node) {
     return node->rx_clock_ns != 0 ? node->rx_clock_ns + node->wall_offset_ns : tt_get_wall_ns();
 }
 
+// A publish's one clock read (2026-10-16): the monotonic clock, for the idle HEARTBEAT, the lifespan and the liveliness
+// the publish asserts, and the date it stamps derived from it as the receiver derives its own (rx_wall_now()). A
+// second read of the date cost every publish ~45 user instructions (rig core A/B, 2026-10-16). On Linux the two clocks
+// are the same timekeeper with an offset that only a step of the date (or a leap second) changes - a slew moves both -
+// so the derived date is the date to the nanosecond, except after a step, until wall_offset_refresh() reads it again
+// within tt_CONTEXT_UPDATE_INTERVAL: the window a receiver already has (DESIGN.md section 2, "Time"). The reading is
+// kept in publish_clock_ns for the rest of the publish - the reliable cache's lifespan stamp, and the liveliness the
+// caller asserts after it returns - which the entry points set back to 0 when it ends.
+static inline uint64_t publish_clock(struct tt_Context* node, uint64_t* wall_ns) {
+    const uint64_t now = tt_get_ns();
+    *wall_ns = now + node->wall_offset_ns;
+    node->publish_clock_ns = now;
+    return now;
+}
+
+// The running publish's reading when it took one, so retaining the sample and asserting a leased writer's liveliness
+// cost no second read; the clock otherwise (outside a publish, or before its read).
+static inline uint64_t publish_clock_or_now(const struct tt_Context* node) {
+    return node->publish_clock_ns != 0 ? node->publish_clock_ns : tt_get_ns();
+}
+
 static uint64_t timestamp_from_wire(const struct tt_Context* node, uint32_t sent_us) {
     int64_t now_us = (int64_t)(rx_wall_now(node) / tt_MICROSECOND);
     int64_t rebuilt_us = now_us + (int32_t)(sent_us - (uint32_t)now_us);
@@ -6755,7 +6777,7 @@ static uint64_t timestamp_from_wire(const struct tt_Context* node, uint32_t sent
 // staging copy into tx_buffer. Only reachable when tx_buffer is empty (nothing to coalesce with),
 // so it makes the same broadcast-vs-unicast destination choice node_flush() would for a batched
 // flush. body_len must be 4-aligned (the caller checks) so the single submessage needs no pad.
-static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, uint32_t body_len) {
+static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, uint32_t body_len, uint64_t wall_ns) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     struct tt_Context* node = pub->node;
 
@@ -6775,7 +6797,7 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
         (struct tt_DataHeader*)(framing + sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
     data_header->endpoint_id = endpoint->id;
     data_header->seq_no = pub->seq_no + 1;
-    data_header->timestamp = timestamp_to_wire(tt_get_wall_ns());
+    data_header->timestamp = timestamp_to_wire(wall_ns);
     data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
 
     uint8_t peer_count = count_peers(pub->peers);
@@ -7400,7 +7422,7 @@ static uint32_t reliable_cache_place_origin(uint32_t origin, uint16_t depth, uin
 // reliable_cache_reserve() is the cache half: room for one record of `length` bytes under seq_no, or
 // NULL when there is none to be had, the slot then left a tombstone. length 0 asks for the tombstone
 // outright, for a record the caller has decided not to keep. The caller writes the bytes.
-static uint8_t* reliable_cache_reserve(struct tt_ReliableCache* cache, uint32_t seq_no, uint32_t length) {
+static uint8_t* reliable_cache_reserve(struct tt_ReliableCache* cache, uint32_t seq_no, uint32_t length, uint64_t now) {
     uint16_t depth = reliable_cache_depth(cache);
     if (depth == 0) {
         return NULL; // index[]/capacity/arena never set up (struct tt_ReliableCache's own doc comment) -
@@ -7434,7 +7456,7 @@ static uint8_t* reliable_cache_reserve(struct tt_ReliableCache* cache, uint32_t 
     entry->seq_no = seq_no;
     entry->retry = 0;
     entry->resent_at = 0;
-    entry->timestamp = tt_get_ns();
+    entry->timestamp = now; // the publish's own reading (publish_clock_or_now()): the lifespan runs from it
     entry->offset = 0;
     entry->len = 0; // a tombstone until the bytes below actually land
     cache->newest_seq_no = seq_no;
@@ -7498,7 +7520,7 @@ static void cache_reliable_sample(struct tt_Context* node, struct tt_SubmessageH
                                   struct tt_ReliableCache* cache, uint32_t seq_no, uint32_t encoded_len) {
     uint32_t length = record_length_checked(node, submessage_header, encoded_len);
     reliable_cache_admit_sample(cache);
-    uint8_t* record = reliable_cache_reserve(cache, seq_no, length);
+    uint8_t* record = reliable_cache_reserve(cache, seq_no, length, publish_clock_or_now(node));
     if (record != NULL) {
         _tt_memcpy(record, submessage_header, length);
     }
@@ -7575,15 +7597,16 @@ static bool try_publish_zerocopy(struct tt_Publisher* pub, struct tt_Data* data,
         standalone_len + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) > tt_MAX_BUFFER_LENGTH;
     if (body_len >= 0 && (body_len % 4) == 0 && fills_packet &&
         (!tt_FRAG_ENABLED || body_len <= tt_MAX_SAMPLE_LENGTH)) {
+        uint64_t wall_ns = 0;
+        (void)publish_clock(pub->node, &wall_ns); // the wire's date and the local subscriber's, one read
 #if tt_LOCAL_DELIVERY
         uint32_t local_seq_no = pub->seq_no + 1;
-        uint64_t local_timestamp = tt_get_wall_ns();
 #endif
-        *result = publish_zerocopy(pub, body, (uint32_t)body_len);
+        *result = publish_zerocopy(pub, body, (uint32_t)body_len, wall_ns);
 #if tt_LOCAL_DELIVERY
         // (g9) The caller's own bytes, still valid: the zero-copy path sends from them.
         if (*result == tt_RET_OK && pub->local_subscriber_count != 0) {
-            deliver_locally(pub->node, pub, body, (uint32_t)body_len, local_seq_no, local_timestamp);
+            deliver_locally(pub->node, pub, body, (uint32_t)body_len, local_seq_no, wall_ns);
         }
 #endif
         return true;
@@ -7888,11 +7911,12 @@ static void cache_sample_fragments(struct tt_Context* node, struct tt_ReliableCa
         RSTAT_INC(not_cached_oversize);
     }
     reliable_cache_admit_sample(cache);
+    const uint64_t now = publish_clock_or_now(node); // every fragment's lifespan from the publish's one reading
     for (uint32_t index = 0; index < count; index++) {
         uint32_t payload_length = frag_payload_length(index, cdr_len);
         uint32_t header_length = frag_header_length(index);
         uint8_t* record =
-            reliable_cache_reserve(cache, first_seq_no + index, keep ? header_length + payload_length : 0);
+            reliable_cache_reserve(cache, first_seq_no + index, keep ? header_length + payload_length : 0, now);
         if (record != NULL) {
             frag_write_header(record, data_header, index, count, payload_length, tt_SUBMESSAGE_ID_ALL);
             _tt_memcpy(record + header_length, cdr + frag_payload_offset(index), payload_length);
@@ -8185,8 +8209,9 @@ static bool try_publish_into_slot(struct tt_Publisher* pub, struct tt_Data* data
     uint32_t own_ip = 0;
     uint16_t own_port = 0;
     tt_own_address(node, &own_ip, &own_port);
-    const uint64_t now_ns = tt_get_ns();
-    const uint32_t timestamp = timestamp_to_wire(tt_get_wall_ns());
+    uint64_t wall_ns = 0;
+    const uint64_t now_ns = publish_clock(node, &wall_ns);
+    const uint32_t timestamp = timestamp_to_wire(wall_ns);
     uint32_t claimed = 0;
     struct tt_SegmentSlot* slot = segment_claim(segment, &claimed);
     if (slot == NULL) {
@@ -9635,11 +9660,12 @@ static tt_ret_t publish_large(struct tt_Publisher* pub, struct tt_Data* data, ui
     pub->large_blocked = 0;
     large->published++;
 
-    uint64_t now = tt_get_ns();
+    uint64_t wall_ns = 0;
+    uint64_t now = publish_clock(node, &wall_ns);
     struct tt_DataHeader* header = (struct tt_DataHeader*)(buffer + tt_LARGE_HEADER_OFFSET);
     header->endpoint_id = pub->endpoint.id;
-    header->seq_no = 0;                                      // given at large_commit()
-    header->timestamp = timestamp_to_wire(tt_get_wall_ns()); // the date; sent_ns stays on the deadline clock
+    header->seq_no = 0;                             // given at large_commit()
+    header->timestamp = timestamp_to_wire(wall_ns); // the date; sent_ns stays on the deadline clock
     header->entity_id = pub->endpoint.entity_id;
     struct tt_LargeRecord sample = {.buffer = buffer,
                                     .sent_ns = now,
@@ -9791,8 +9817,9 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 
     data_header->endpoint_id = endpoint->id;
     data_header->seq_no = pub->seq_no + 1;
-    const uint64_t now_ns = tt_get_ns(); // the DATA's timestamp, and the idle HEARTBEAT's clock
-    data_header->timestamp = timestamp_to_wire(tt_get_wall_ns());
+    uint64_t wall_ns = 0;
+    const uint64_t now_ns = publish_clock(node, &wall_ns); // the idle HEARTBEAT's clock, and the DATA's date
+    data_header->timestamp = timestamp_to_wire(wall_ns);
     data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
 
     // DataBody
@@ -9828,7 +9855,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     uint8_t nested_copy[nested ? (uint32_t)encoded_len : 1U];
     uint8_t* local_copy = nested ? nested_copy : node->local_scratch;
     uint32_t local_seq_no = pub->seq_no + 1;
-    uint64_t local_timestamp = tt_get_wall_ns();
+    uint64_t local_timestamp = wall_ns; // the date on the wire, to the nanosecond
     if (local) {
         _tt_memcpy(local_copy, cdr, (size_t)encoded_len);
     }
@@ -9954,11 +9981,12 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
 #endif
     tt_ret_t result = publisher_publish_locked(pub, data);
     if (result == tt_RET_OK && pub->liveliness_lease_duration_ns != 0) {
-        // The DATA asserts the writer's liveliness (tt_Publisher_assert_liveliness() rate-limits on this).
-        // Only for a leased Publisher: the clock read is not free on the publish path (veth A/B, 2026-09-26).
-        pub->liveliness_asserted_ns = tt_get_ns();
+        // The DATA asserts the writer's liveliness (tt_Publisher_assert_liveliness() rate-limits on this), at the
+        // publish's own reading: a second clock read is not free on the publish path (veth A/B, 2026-09-26).
+        pub->liveliness_asserted_ns = publish_clock_or_now(locked_node);
     }
     if (locked_node != NULL) {
+        locked_node->publish_clock_ns = 0; // the publish is over: its reading is not the next one's "now"
         state_unlock(locked_node);
     }
     return result;
@@ -10113,8 +10141,9 @@ static tt_ret_t publisher_publish_claimed_locked(struct tt_Publisher* pub, uint3
     struct tt_DataHeader* data_header = (struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader));
     data_header->endpoint_id = pub->endpoint.id;
     data_header->seq_no = pub->seq_no + 1;
-    const uint64_t now_ns = tt_get_ns();
-    data_header->timestamp = timestamp_to_wire(tt_get_wall_ns());
+    uint64_t wall_ns = 0;
+    const uint64_t now_ns = publish_clock(node, &wall_ns);
+    data_header->timestamp = timestamp_to_wire(wall_ns);
     data_header->entity_id = pub->endpoint.entity_id;
     memset(record + raw_len, 0, record_len - raw_len);
     if (!check_and_cache_sample(node, pub, submessage_header, raw_len, FRAG_WHOLE_DATA_LIMIT)) {
@@ -10207,8 +10236,9 @@ tt_ret_t tt_Publisher_publish_claimed(struct tt_Publisher* pub, uint32_t length)
 #endif
     tt_ret_t result = publisher_publish_claimed_locked(pub, length);
     if (result == tt_RET_OK && pub->liveliness_lease_duration_ns != 0) {
-        pub->liveliness_asserted_ns = tt_get_ns(); // as tt_Publisher_publish(): the DATA asserts liveliness
+        pub->liveliness_asserted_ns = publish_clock_or_now(node); // as tt_Publisher_publish(): the DATA asserts it
     }
+    node->publish_clock_ns = 0; // as tt_Publisher_publish()
     state_unlock(node);
     return result;
 }
