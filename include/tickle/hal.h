@@ -120,7 +120,13 @@ struct tt_Header;
 
 // Network functions - every one of these is implemented per platform (src/hal_linux.c,
 // src/hal_freertos.c, .../tests/test_mock.h's mock) against this same contract.
+// The two clocks (DESIGN.md section 2, "Time"). tt_get_ns() is monotonic - it never steps, whatever NTP or an
+// operator does to the date - and every duration and deadline is on it: the scheduler, retry and lease timers,
+// liveliness, waits. tt_get_wall_ns() is the realtime clock, in ns since the Unix epoch where the platform has one,
+// and is read only for what leaves the process as a point in time: the DATA timestamp a sender stamps and a receiver
+// rebuilds (the source timestamp handed to the application), and the per-launch identity draws.
 uint64_t tt_get_ns(void);
+uint64_t tt_get_wall_ns(void);
 // The finest step a timed wait in tt_receive() can end on, in ns, as tt_get_ns() can see it: the coarser of the
 // clock's resolution and the wait's own (one RTOS tick on FreeRTOS). The floor of the measured timer lateness that
 // the retry timers use as G (struct tt_Context.timer_lateness_ns). Never 0.

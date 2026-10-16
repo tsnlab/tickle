@@ -770,7 +770,7 @@ struct tt_Context {
 
     // Milestone 47 - together, this node's own launch-scoped identity source for every locally-
     // created entity's own struct tt_Endpoint.entity_id (see its own doc comment for the full
-    // rationale): entity_id_base is drawn once, at tt_Context_create() time, from tt_get_ns()'s own
+    // rationale): entity_id_base is drawn once, at tt_Context_create() time, from tt_get_wall_ns()'s own
     // low 32 bits (no separate RNG primitive needed - this node's own launch instant already is
     // one); next_entity_id starts at 0 and increments once per add_endpoint_to_node() call, one
     // shared counter across every entity kind (Publisher/Subscriber/Client/Server) on this node -
@@ -1059,6 +1059,12 @@ struct tt_Context {
     // (OPTIMIZATION_PLAN.md 11, D1). Raw nanoseconds, beside poller_thread: the poll writes that line anyway, and a
     // division per poll cost a sender polling once a sample ~3 ns (WIRE_PLAN.md 8). Only the poller touches it.
     uint64_t rx_clock_ns;
+    // tt_get_wall_ns() - tt_get_ns(), modulo 2^64: what turns rx_clock_ns (monotonic, as every deadline) into the date
+    // a received DATA's 32-bit timestamp is rebuilt against (timestamp_from_wire()), without a second clock read per
+    // wait. Read at creation and on every check_liveliness() run (tt_CONTEXT_UPDATE_INTERVAL). The rebuild only picks
+    // which 71.6-minute span the sender's microseconds lie in, so a slew (microseconds a second) changes nothing, and
+    // a step of the date beyond +-35.8 min misplaces stamps until the next run. Only the poller touches it.
+    uint64_t wall_offset_ns;
     uint32_t state_depth; // how many times the owner has taken it; only the owner reads or writes it
     struct tt_LockStats state_lock_stats;
     // The scheduler inbox: tt_Context_schedule() from a thread that does not hold the state lock puts its entry

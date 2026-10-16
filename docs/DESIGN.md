@@ -79,6 +79,27 @@ the poll on another.
   Measured on the rig (2026-10-04, same-host p3 BEST_EFFORT): 1.31x subscriber rate and 29% less publisher CPU per
   sample. README.md has the seccomp recipe.
 
+**Time (2026-10-16, `ab/monotonic`).** Two clocks, as in DDS. Before this every use read the realtime clock, so a step
+of the date (NTP, `date -s`) moved every deadline with it: forward, a leased writer was declared gone and a retained
+sample's lifespan ran out before its repair; back, the scheduler waited out the step with heartbeats, retries and the
+application's own timers stalled.
+
+| HAL call | Linux | FreeRTOS | used for |
+|---|---|---|---|
+| `tt_get_ns()` | `CLOCK_MONOTONIC` | the CLINT counter | every deadline and duration: the scheduler and `tt_Context_schedule()`, retries, heartbeats, liveliness and leases, the writer's lifespan, waits (the epoll deadline `timerfd`, `tt_Context_lock_timed()`), G |
+| `tt_get_wall_ns()` | `CLOCK_REALTIME` | the same counter (no RTC); a board with SNTP returns the date here | the DATA timestamp, the source timestamp a subscriber is handed (local delivery too), the per-launch `entity_id`/incarnation draws |
+
+- A receiver rebuilds the 32-bit microsecond stamp against its own date, without a second clock read per wait: the
+  poll's monotonic reading plus `tt_Context.wall_offset_ns` (date minus monotonic), read again on every liveliness
+  run (`tt_CONTEXT_UPDATE_INTERVAL`, 1 s). The rebuild only chooses the 71.6-minute span, so a slew changes nothing;
+  after a step beyond +-35.8 min stamps can be misplaced for up to that second.
+- rmw_tickle: `received_timestamp` is the date. A subscription's lifespan takes a sample's age once, on arrival, as
+  the date minus its source timestamp (a stamp ahead of the date is age 0), and counts the rest on the monotonic clock.
+  Its condition variables wait on `CLOCK_MONOTONIC`.
+- `tests/test_clock_step.c` steps the date +-3 h in a RELIABLE stream with a lost sample, a lifespan, a lease and an
+  application timer; it fails against the single-clock core (`-DTEST_CLOCK_STEP_ONE_CLOCK`). `platform/linux/clock_check.c`
+  checks which clock each Linux HAL call reads; `tests/mutants_clock_split.py` puts each site on the wrong clock.
+
 ## 3. Wire format (`tt_VERSION` 11)
 
 **Transport.**
@@ -1564,8 +1585,9 @@ liveliness; deadline and lease durations). A Subscriber silently drops DATA from
 
 **Deadline.** `deadline_duration_ns` is announced and used for RxO; core does not enforce it (rmw_tickle does).
 
-**Lifespan.** `lifespan_duration_ns` on a Publisher: a cached sample older than this is neither retransmitted nor
-replayed to a late joiner. No wire change; readers can enforce their own expiry from the DATA timestamp.
+**Lifespan.** `lifespan_duration_ns` on a Publisher: a cached sample older than this, by the monotonic clock, is
+neither retransmitted nor replayed to a late joiner. No wire change; readers can enforce their own expiry from the
+DATA timestamp, which is the writer's date (section 2, "Time").
 
 **Durability (TRANSIENT_LOCAL).** A `durable` Publisher unicasts its retained cache, oldest first, to a newly
 discovered Subscriber. Delivery is recorded per (context id, announce generation) so a restarted peer gets the

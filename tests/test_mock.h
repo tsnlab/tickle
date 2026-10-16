@@ -49,6 +49,9 @@ struct _tt_Config _tt_CONFIG = {
 uint64_t test_mock_now = 0;
 uint64_t test_mock_cpu_ns = 0;        // the polling thread's CPU clock (tt_thread_cpu_ns()), set as test_mock_now is
 uint64_t test_mock_clock_step_ns = 0; // every clock read lets this much time pass: a spin on the clock ends
+// tt_get_wall_ns() reads test_mock_now plus this: the date's distance from the monotonic clock. Changing it mid-run is
+// a step of the date (NTP, settimeofday()), which tt_get_ns() does not see. 0 by default: the two clocks agree.
+uint64_t test_mock_wall_offset_ns = 0;
 uint64_t test_mock_timer_resolution_ns = 1; // what tt_timer_resolution_ns() reports: the floor of measured lateness
 int32_t test_mock_node_id = 1;
 tt_ret_t test_mock_bind_return = tt_RET_OK;
@@ -119,6 +122,7 @@ uint32_t test_mock_drain_bytes = 0;    // the datagram length core last asked tt
 extern uint64_t test_mock_now;
 extern uint64_t test_mock_cpu_ns;
 extern uint64_t test_mock_clock_step_ns;
+extern uint64_t test_mock_wall_offset_ns;
 extern uint64_t test_mock_timer_resolution_ns;
 extern int32_t test_mock_node_id;
 extern tt_ret_t test_mock_bind_return;
@@ -164,6 +168,7 @@ static inline void test_mock_reset(void) {
     test_mock_now = 0;
     test_mock_cpu_ns = 0;
     test_mock_clock_step_ns = 0;
+    test_mock_wall_offset_ns = 0;
     test_mock_timer_resolution_ns = 1;
     test_mock_node_id = 1;
     test_mock_bind_return = tt_RET_OK;
@@ -259,6 +264,12 @@ static void test_mock_capture_send(const void* buf, size_t len) {
 uint64_t tt_get_ns(void) {
     test_mock_now += test_mock_clock_step_ns;
     return test_mock_now;
+}
+
+// The date, which may step against tt_get_ns() (test_mock_wall_offset_ns). It does not advance the clock: a read of
+// one clock is not two.
+uint64_t tt_get_wall_ns(void) {
+    return test_mock_now + test_mock_wall_offset_ns;
 }
 
 uint64_t tt_timer_resolution_ns(void) {

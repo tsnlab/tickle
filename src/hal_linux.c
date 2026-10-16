@@ -259,10 +259,21 @@ struct _tt_Config _tt_CONFIG = {
     .ip_reassembly_max = _tt_IP_REASSEMBLY_MAX,
 };
 
+// Every deadline and duration: CLOCK_MONOTONIC, which a step of the date (NTP, settimeofday()) does not move. Like
+// CLOCK_REALTIME it is read in the vDSO, without a system call.
 uint64_t tt_get_ns(void) {
     struct timespec ts;
-    // CLOCK_REALTIME lives in a glibc-private header; <time.h> (included above) is the correct public header.
+    // CLOCK_MONOTONIC lives in a glibc-private header; <time.h> (included above) is the correct public header.
     // NOLINTNEXTLINE(misc-include-cleaner)
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    return ((uint64_t)ts.tv_sec * SEC_NS) + ts.tv_nsec;
+}
+
+// The wire's timestamps and the per-launch identity draws: the date, which hosts agree on (NTP/PTP).
+uint64_t tt_get_wall_ns(void) {
+    struct timespec ts;
+    // NOLINTNEXTLINE(misc-include-cleaner) - CLOCK_REALTIME, as CLOCK_MONOTONIC above
     clock_gettime(CLOCK_REALTIME, &ts);
 
     return ((uint64_t)ts.tv_sec * SEC_NS) + ts.tv_nsec;
@@ -273,8 +284,8 @@ uint64_t tt_get_ns(void) {
 // context measures on top of this floor.
 uint64_t tt_timer_resolution_ns(void) {
     struct timespec res;
-    // NOLINTNEXTLINE(misc-include-cleaner) - CLOCK_REALTIME, as tt_get_ns()
-    if (clock_getres(CLOCK_REALTIME, &res) != 0) {
+    // NOLINTNEXTLINE(misc-include-cleaner) - CLOCK_MONOTONIC, as tt_get_ns()
+    if (clock_getres(CLOCK_MONOTONIC, &res) != 0) {
         return 1;
     }
     uint64_t resolution_ns = ((uint64_t)res.tv_sec * SEC_NS) + (uint64_t)res.tv_nsec;
@@ -714,7 +725,7 @@ static void wait_set_setup(struct tt_Context* node) {
     if (lazy != NULL && strcmp(lazy, "0") == 0) {
         return;
     }
-    int timer = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK | TFD_CLOEXEC);
+    int timer = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC); // tt_get_ns()'s clock
     if (timer < 0 || !wait_set_add(epoll_fd, timer, EPOLLIN, RX_READY_TIMER)) {
         TT_LOG_DEBUG("No deadline timer in the wait set (%s) - each wait takes its timeout", strerror(errno));
         if (timer >= 0) {
@@ -3167,8 +3178,8 @@ static inline __attribute__((always_inline)) int rx_wait(struct tt_Context* node
 // for this wait's deadline and the wait goes on; only a deadline that really came ends the wait. A wait that ends for
 // data, the usual case on a stream, costs nothing for its deadline. The deadline is the poll loop's own absolute one
 // (struct tt_Context.wait_until, which the polling thread alone writes); a tt_receive() outside a poll (none set) waits
-// as before. On the realtime clock, as tt_get_ns() and every deadline core sets; a clock step reads as a fire
-// (TFD_TIMER_CANCEL_ON_SET), after which the deadline is checked against the clock again.
+// as before. On the monotonic clock, as tt_get_ns() and every deadline core sets, so a step of the date neither fires
+// it nor delays it.
 
 // The poll loop's deadline for this wait (poll_wait_io()): 0 when tt_receive() runs outside a poll, UINT64_MAX for
 // none.
@@ -3180,17 +3191,17 @@ static uint64_t rx_wait_until(const struct tt_Context* node) {
 static void rx_timer_arm(struct tt_hal* hal, uint64_t until) {
     // NOLINTNEXTLINE(misc-include-cleaner) - struct itimerspec: <sys/timerfd.h> (via <time.h>), a glibc-private header
     struct itimerspec deadline = {{0, 0}, {(time_t)(until / SEC_NS), (long)(until % SEC_NS)}};
-    if (timerfd_settime(hal->timer_fd_plus1 - 1, TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET, &deadline, NULL) == 0) {
+    if (timerfd_settime(hal->timer_fd_plus1 - 1, TFD_TIMER_ABSTIME, &deadline, NULL) == 0) {
         hal->timer_armed_ns = until;
         hal->timer_sets++;
     }
 }
 
-// The timer fired (or the clock stepped): read, so the level-triggered set stops reporting it, and disarmed. A fire
+// The timer fired: read, so the level-triggered set stops reporting it, and disarmed. A fire
 // also starts the run of waits that ended for data again (rx_wait_epoll()): the timer cost a read in this wait.
 static void rx_timer_take(struct tt_hal* hal) {
     uint64_t expirations = 0;
-    (void)read(hal->timer_fd_plus1 - 1, &expirations, sizeof(expirations)); // ECANCELED on a clock step: a fire
+    (void)read(hal->timer_fd_plus1 - 1, &expirations, sizeof(expirations));
     hal->timer_armed_ns = 0;
     hal->timer_fires++;
     hal->timer_data_streak = 0;
@@ -3216,7 +3227,7 @@ static int rx_wait_lazy(struct tt_Context* node, uint64_t until, uint32_t* ready
         if (until != UINT64_MAX && tt_get_ns() >= until) {
             return 0; // this wait's deadline: a timeout
         }
-        // An earlier deadline's timer, or a clock step: wait on, for this one.
+        // An earlier deadline's timer: wait on, for this one.
     }
 }
 

@@ -1360,13 +1360,11 @@ static bool wait_for_writable(rmw_tickle_publisher_t* pub_impl, uint64_t generat
     return 0 == wait_ret;
 }
 
-// Fills in `deadline` - CLOCK_REALTIME, not CLOCK_MONOTONIC. wait_cond is initialised with a NULL
-// attr (rmw_init.c), so pthread_cond_timedwait() measures against CLOCK_REALTIME, and every other
-// timed waiter in this package computes its deadline the same way. A monotonic clock would be the
-// better default, but switching it has to change the condvar and all of those waiters at once to
-// stay coherent - it is not something this path can do unilaterally.
+// Fills in `deadline` on CLOCK_MONOTONIC: wait_cond measures that clock (cond_init_monotonic(),
+// rmw_init.c), as every other timed waiter in this package does, so a step of the date neither
+// ends the wait early nor stretches it.
 static void writable_deadline(uint64_t max_blocking_ns, struct timespec* deadline) {
-    clock_gettime(CLOCK_REALTIME, deadline); // NOLINT(misc-include-cleaner) - see rmw_wait_set.c's own comment
+    clock_gettime(CLOCK_MONOTONIC, deadline); // NOLINT(misc-include-cleaner) - see rmw_wait_set.c's own comment
     deadline->tv_sec += (time_t)(max_blocking_ns / (uint64_t)tt_SECOND);
     deadline->tv_nsec += (long)(max_blocking_ns % (uint64_t)tt_SECOND);
     deadline->tv_sec += deadline->tv_nsec / (long)tt_SECOND;
@@ -1965,7 +1963,7 @@ rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher, rmw
     bool poll_only = 0 == wait_timeout.sec && 0 == wait_timeout.nsec;
     struct timespec deadline;
     if (!poll_only) {
-        clock_gettime(CLOCK_REALTIME, &deadline); // NOLINT(misc-include-cleaner) - see rmw_wait_set.c's own comment
+        clock_gettime(CLOCK_MONOTONIC, &deadline); // NOLINT(misc-include-cleaner) - see rmw_wait_set.c's own comment
         deadline.tv_sec += (time_t)wait_timeout.sec;
         deadline.tv_nsec += (long)wait_timeout.nsec;
         deadline.tv_sec += deadline.tv_nsec / (long)tt_SECOND;
@@ -1993,7 +1991,7 @@ rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher, rmw
         }
 
         struct timespec now;
-        clock_gettime(CLOCK_REALTIME, &now); // NOLINT(misc-include-cleaner)
+        clock_gettime(CLOCK_MONOTONIC, &now); // NOLINT(misc-include-cleaner)
         if (now.tv_sec > deadline.tv_sec || (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
             return RMW_RET_TIMEOUT;
         }

@@ -195,7 +195,7 @@ static int send_out(uint32_t len) {
 
 static struct tt_DataHeader data_header(uint32_t seq_no) {
     struct timespec ts;
-    // NOLINTNEXTLINE(misc-include-cleaner) - CLOCK_REALTIME, as hal_linux.c's tt_get_ns()
+    // NOLINTNEXTLINE(misc-include-cleaner) - CLOCK_REALTIME, as hal_linux.c's tt_get_wall_ns()
     (void)clock_gettime(CLOCK_REALTIME, &ts);
     struct tt_DataHeader data = {tt_hash_id(TOPIC, ENDPOINT), seq_no,
                                  (uint32_t)(((uint64_t)ts.tv_sec * US_PER_S) + ((uint64_t)ts.tv_nsec / NS_PER_US)),

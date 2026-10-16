@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h> // CLOCK_MONOTONIC - cond_init_monotonic()
 
 #include <arpa/inet.h>  // inet_ntop()
 #include <netinet/in.h> // struct sockaddr_in
@@ -221,6 +222,22 @@ static void configure_hybrid_transport(void) {
 #endif
 }
 
+// A condition variable whose timed waits measure CLOCK_MONOTONIC, the clock of every deadline in this package
+// (tt_get_ns()): a step of the date then neither ends a wait early nor stretches it by the step.
+static int cond_init_monotonic(pthread_cond_t* cond) {
+    pthread_condattr_t attr; // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own <pthread.h> comment
+    int ret = pthread_condattr_init(&attr);
+    if (ret != 0) {
+        return ret;
+    }
+    ret = pthread_condattr_setclock(&attr, CLOCK_MONOTONIC); // NOLINT(misc-include-cleaner) - <time.h>
+    if (ret == 0) {
+        ret = pthread_cond_init(cond, &attr);
+    }
+    (void)pthread_condattr_destroy(&attr);
+    return ret;
+}
+
 rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const context) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(options, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(context, RMW_RET_INVALID_ARGUMENT);
@@ -301,7 +318,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
         options->allocator.deallocate(impl, options->allocator.state);
         return RMW_RET_ERROR;
     }
-    if (pthread_cond_init(&impl->wait_cond, NULL) != 0) {
+    if (cond_init_monotonic(&impl->wait_cond) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize context wait_cond");
         pthread_mutex_destroy(&impl->wait_mutex);
         options->allocator.deallocate(impl, options->allocator.state);
@@ -311,7 +328,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
     // rmw_tickle.h) - a separate, dedicated mutex from wait_mutex above (a different lock-nesting
     // contract, guarding a different concern, not worth conflating just because both happen to be
     // context-level).
-    if (pthread_cond_init(&impl->handover_cond, NULL) != 0) {
+    if (cond_init_monotonic(&impl->handover_cond) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize context handover_cond");
         pthread_cond_destroy(&impl->wait_cond);
         pthread_mutex_destroy(&impl->wait_mutex);
