@@ -147,7 +147,8 @@ static uint32_t armed_every(rmw_node_t* node, const char* env, enum rmw_qos_reli
 
 // The idle HEARTBEAT's period (RMW_TICKLE_IDLE_HEARTBEAT_NS, rmw_publisher.c; core's tt_IDLE_HEARTBEAT_PERIOD): what
 // the core publisher was given with the variable set to env (NULL = unset).
-_Static_assert(250000000ULL == tt_IDLE_HEARTBEAT_PERIOD, "the default the README and RMW.md state");
+#define DOCUMENTED_IDLE_HEARTBEAT_NS 250000000ULL // README.md and docs/RMW.md state it
+_Static_assert(DOCUMENTED_IDLE_HEARTBEAT_NS == tt_IDLE_HEARTBEAT_PERIOD, "the documented default");
 #define IDLE_ENV_NAME "RMW_TICKLE_IDLE_HEARTBEAT_NS"
 static uint64_t armed_idle(rmw_node_t* node, const char* env) {
     if (NULL == env) {

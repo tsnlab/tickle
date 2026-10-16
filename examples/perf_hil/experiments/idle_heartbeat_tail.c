@@ -94,8 +94,8 @@ static void on_sample(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no,
     }
 }
 
-static void poll_for(struct tt_Context* node, uint64_t ns) {
-    uint64_t until = tt_get_ns() + ns;
+static void poll_for(struct tt_Context* node, uint64_t span_ns) {
+    uint64_t until = tt_get_ns() + span_ns;
     for (uint64_t now = tt_get_ns(); now < until; now = tt_get_ns()) {
         (void)tt_Context_poll(node, (int64_t)(until - now));
     }
