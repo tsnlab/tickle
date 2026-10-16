@@ -2478,15 +2478,14 @@ struct tt_Publisher { // extends endpoint
     // intervals. A plain field, set after tt_Context_create_publisher() like `batch`: the timer is armed by the next
     // publish and reads the field each time it runs, so a change applies from its next run.
     uint64_t idle_heartbeat_ns;
-    // Core-owned. When the last HEARTBEAT that announced everything sent went to every matched reader (0: none yet),
-    // and pub->seq_no then - "has anything been published since?"; how many idle HEARTBEATs went on their own datagram
-    // (diagnostic); whether the timer is in the scheduler; and whether the next publish carries a HEARTBEAT because the
-    // period ran out while samples were still flowing, so a steady stream sends no datagram of its own for it.
+    // Core-owned. When the last HEARTBEAT that announced everything sent went to every matched reader (0: none yet);
+    // the time from which a publish moves the idle HEARTBEAT on (idle_heartbeat_note_publish(), tickle.c: half a period
+    // before it is due, 0 while it is not armed); how many idle HEARTBEATs were sent (diagnostic); whether its one
+    // scheduler entry is in.
     uint64_t last_heartbeat_ns;
-    uint32_t idle_heartbeat_seq_no;
+    uint64_t idle_check_ns;
     uint32_t idle_heartbeats;
     bool idle_heartbeat_armed;
-    bool idle_heartbeat_piggyback;
 };
 
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic Heartbeat announce - see

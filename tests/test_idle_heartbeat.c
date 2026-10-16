@@ -38,7 +38,7 @@
 #define PORT 8282
 #define TOPIC_NAME "idle_topic"
 #define ENDPOINT_NAME "idle_endpoint"
-#define PERIOD (100U * tt_MILLISECOND) // tt_IDLE_HEARTBEAT_PERIOD, which these cases are written against
+#define PERIOD (100U * tt_MILLISECOND) // the period these cases are written against (set on the Publisher)
 #define SLACK (20U * tt_MILLISECOND)   // a round trip and the reader's own retry interval, with room
 
 // --- the topic: a uint32_t per sample
@@ -138,6 +138,8 @@ static void init_pair(bool reliable_reader) {
     sender_topic.data_encode = u32_encode;
     EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&sender, &pub, &sender_topic, ENDPOINT_NAME));
     EXPECT_EQ_U64(tt_IDLE_HEARTBEAT_PERIOD, pub.idle_heartbeat_ns); // on by default
+    EXPECT_TRUE(tt_IDLE_HEARTBEAT_PERIOD != 0);
+    pub.idle_heartbeat_ns = PERIOD; // the cases' own period, whatever the default
 
     init_bare_node(&receiver, RECEIVER_ID);
     memset(&receiver_topic, 0, sizeof(receiver_topic));
@@ -427,7 +429,7 @@ static int scheduled_for(const struct tt_Context* node, const void* param) {
 
 // --- the tail -------------------------------------------------------------------------------------------------------
 
-// A burst of 10 whose last sample is lost: delivered within ~1.5 P of it (idle_heartbeat_fire()'s bound), by one lone
+// A burst of 10 whose last sample is lost: delivered within P of it (idle_heartbeat_fire()'s bound), by one lone
 // non-FINAL HEARTBEAT. The control, the idle HEARTBEAT off, is the behaviour before it: nothing reveals the tail, and a
 // second later it is still missing.
 static uint64_t burst_with_lost_tail(uint64_t period, uint32_t piggyback_every) {
@@ -446,7 +448,7 @@ static void test_a_lost_tail_is_delivered_within_the_period(void) {
     uint32_t piggyback[] = {0, 64};
     for (size_t i = 0; i < sizeof(piggyback) / sizeof(piggyback[0]); i++) {
         uint64_t after = burst_with_lost_tail(PERIOD, piggyback[i]);
-        EXPECT_TRUE(after <= PERIOD + (PERIOD / 2U) + SLACK);
+        EXPECT_TRUE(after <= PERIOD + SLACK);
         EXPECT_EQ_INT(10, delivered_count);
         EXPECT_TRUE(lone_nonfinal >= 1);
         printf("test_idle_heartbeat: piggyback %u: lost tail delivered %llu us after it was sent, %u lone HEARTBEATs\n",
@@ -459,7 +461,7 @@ static void test_a_lost_tail_is_delivered_within_the_period(void) {
     }
 }
 
-// A burst of one: the lone sample's HEARTBEAT comes one period after it (idle_heartbeat_arm()), not one and a half.
+// A burst of one: the lone sample's HEARTBEAT comes one period after it (idle_heartbeat_on_publish()).
 static void test_a_lone_lost_sample_waits_one_period(void) {
     init_pair(true);
     sim_start();
@@ -489,14 +491,14 @@ static void test_a_lost_idle_heartbeat_is_sent_again(void) {
     if (lone_heartbeats >= 2) {
         EXPECT_EQ_U64(PERIOD, lone_at[1] - lone_at[0]); // P after the lost one
     }
-    EXPECT_TRUE(delivered_at[5] - last_sent <= 2U * PERIOD + (PERIOD / 2U) + SLACK);
+    EXPECT_TRUE(delivered_at[5] - last_sent <= 2U * PERIOD + SLACK);
 }
 
 // --- the cost
 // ---------------------------------------------------------------------------------------------------------
 
 // A steady stream - 1000 samples/s for 3 s, 30 periods - sends no HEARTBEAT datagram of its own, with or without the
-// rmw default piggyback: the idle one rides a sample. When it stops, exactly one lone HEARTBEAT, answered, and then
+// rmw default piggyback: each sample pushes it back, and it never runs. When it stops, exactly one lone HEARTBEAT, then
 // nothing for as long as everything stays acknowledged. One scheduler entry for it throughout.
 static void test_a_steady_stream_sends_no_heartbeat_datagram(void) {
     uint32_t piggyback[] = {0, 64};
@@ -517,10 +519,7 @@ static void test_a_steady_stream_sends_no_heartbeat_datagram(void) {
         EXPECT_EQ_U32(3000, data_datagrams);
         EXPECT_EQ_INT(1, most); // one entry, re-armed - never one per sample
         uint32_t riding = riding_heartbeats;
-        if (piggyback[i] == 0) {
-            // One per period, riding a sample: ~30 in 3 s.
-            EXPECT_TRUE(riding >= 25U && riding <= 35U);
-        }
+        EXPECT_EQ_U32(piggyback[i] == 0 ? 0U : 3000U / piggyback[i], riding); // the piggyback's own, and no other
         sim_run_until(test_mock_now + tt_SECOND);
         EXPECT_EQ_U32(1, lone_heartbeats);
         EXPECT_EQ_U32(1, lone_nonfinal);
@@ -544,6 +543,25 @@ static void test_a_slow_stream_pays_one_heartbeat_per_sample(void) {
     }
     EXPECT_EQ_U32(10, lone_heartbeats);
     EXPECT_EQ_INT(10, delivered_count);
+}
+
+// The push-back's threshold: a stream with samples 0.45 P apart moves the entry on before it is due every time (a
+// publish lands in each half period), so it never runs; at 1.2 P apart every sample is a burst of one and gets its own.
+static void test_a_stream_within_half_a_period_never_wakes_it(void) {
+    init_pair(true);
+    sim_start();
+    for (uint32_t v = 1; v <= 40U; v++) {
+        sim_publish(v);
+        sim_run_until(test_mock_now + (PERIOD * 45U / 100U));
+    }
+    EXPECT_EQ_U32(0, lone_heartbeats);
+    init_pair(true);
+    sim_start();
+    for (uint32_t v = 1; v <= 10U; v++) {
+        sim_publish(v);
+        sim_run_until(test_mock_now + (PERIOD * 12U / 10U));
+    }
+    EXPECT_EQ_U32(10, lone_heartbeats);
 }
 
 // --- when it says nothing
@@ -655,6 +673,7 @@ int main(void) {
     test_a_lost_idle_heartbeat_is_sent_again();
     test_a_steady_stream_sends_no_heartbeat_datagram();
     test_a_slow_stream_pays_one_heartbeat_per_sample();
+    test_a_stream_within_half_a_period_never_wakes_it();
     test_an_acknowledged_writer_sends_none();
     test_nobody_to_ask_sends_none();
     test_any_heartbeat_pushes_the_next_back();
