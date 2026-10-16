@@ -252,15 +252,27 @@ MUTANTS = [
         "test_a_quiet_paths_round_trip_is_still_timed",
     ),
     (
-        "(srtt) a busy writer asked again at the plain interval",
-        "        if (proxy->large_arrival_ns != 0 && now - proxy->large_arrival_ns < interval &&",
-        "        if (false && proxy->large_arrival_ns != 0 && now - proxy->large_arrival_ns < interval &&",
+        "(srtt) a retry while the writer sends goes as any other",
+        "        if (sending) {\n            bool answering",
+        "        if (false) {\n            bool answering",
         "test_a_busy_writers_send_is_not_timed_as_the_path (writer datagrams)",
     ),
     (
+        "(srtt) a writer answering nothing while it sends asked again",
+        "            if (!answering || !names_any_open(proxy, highest, skips, skip_count)) {",
+        "            if (!names_any_open(proxy, highest, skips, skip_count)) {",
+        "test_a_busy_writers_send_is_not_timed_as_the_path (writer datagrams)",
+    ),
+    (
+        "(srtt) a retry while the writer sends names repairs in flight",
+        "            skip_count = repairs_in_flight(node, proxy, highest, checked_ns, skips);",
+        "            skip_count = 0;",
+        "test_a_sending_writer_is_not_asked_for_repairs_on_their_way",
+    ),
+    (
         "(srtt) a writer answering while it sends is not asked again",
-        "            (proxy->repair_arrival_ns == 0 || now - proxy->repair_arrival_ns >= interval)) {",
-        "            true) {",
+        "            bool answering = proxy->repair_arrival_ns != 0 && checked_ns - proxy->repair_arrival_ns < interval;",
+        "            bool answering = false;",
         "test_a_quiet_paths_round_trip_is_still_timed (a writer answering while it sends)",
     ),
     (
