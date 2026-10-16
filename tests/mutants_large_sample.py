@@ -273,8 +273,8 @@ MUTANTS = [
     # The busy writer and the recovery estimate (2026-10-16): tt_WriterProxy.probe_busy and repair_arrival_ns.
     (
         "(srtt) a busy writer's recovery timed as the path",
-        "                if (!proxy->probe_busy) {",
-        "                if (true) {",
+        "        if (!proxy->probe_busy) {",
+        "        if (true) {",
         "test_a_busy_writers_send_is_not_timed_as_the_path",
     ),
     (
@@ -338,7 +338,7 @@ UNGUARDED = [
     ),
     (
         "(srtt) the sending estimate never fed",
-        "                rtt_estimate_fold(&proxy->sending_srtt_ns, &proxy->sending_rttvar_ns, took);\n",
+        "        rtt_estimate_fold(&proxy->sending_srtt_ns, &proxy->sending_rttvar_ns, took);\n",
         "",
         "test_a_sending_writer_is_not_asked_for_repairs_on_their_way",
     ),
