@@ -11646,16 +11646,19 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
     // matching cap - it stopped resending after tt_RELIABLE_RETRY without saying the datagram was gone - held a reader
     // that could not give up (its policy unknown) for good: "cap refuses seq_no 355" 50 times a second, 28 of 40
     // samples delivered (seed 34). retry counts on, saturating, for the back-off and the stuck-gap warning below.
-    bool sending = false;
 #if tt_LARGE_SAMPLES
-    // While the writer's large sample still arrives (a fragment of it within the last interval), the retry interval -
-    // the path's, its busy recoveries left out (tt_WriterProxy.probe_busy) - says nothing about when a repair is due:
-    // a repair queues behind the rest of the send, or, from a writer blocked in a long send, comes only when the send
-    // ends. Asked again at the path's interval, the writer finds the requests queued and resends each named datagram
-    // for each: 3.5x the writer's datagrams in test_large_sample's busy-writer sim, +60% resends at 0% netem on the PC
-    // (2026-10-16). So while it sends, a retry names only what was asked for longer ago than the repair transit time -
-    // which counts the writer's queue - as a HEARTBEAT's answer does (answer_ack_request()); and sends nothing at all,
-    // uncounted, when nothing is that overdue or the writer has answered nothing within the interval.
+    // While the writer's large sample still arrives (an original fragment within the path's interval), the path's
+    // interval - its busy recoveries left out (tt_WriterProxy.probe_busy) - says nothing about when a repair is due: it
+    // queues behind the rest of the send, or, from a writer blocked in a long send, comes only when the send ends.
+    // Asked again at that interval, the writer finds the requests queued and resends each named datagram for each
+    // (3.5x the writer's datagrams in test_large_sample's busy-writer sim, 2026-10-16). So the timer ticks at the
+    // path's interval - the first tick after the send asks at once - but while the writer sends a tick asks only when
+    // the interval over every recovery (sending_srtt_ns, the one estimate as it was) has passed since the last retry
+    // went; names only what was asked for longer ago than the repair transit time, which counts the writer's queue, as
+    // a HEARTBEAT's answer does (answer_ack_request()); and asks nothing, uncounted, of a writer that has answered
+    // nothing within the interval. Without the cadence the PC reader's occasional collapses ran deeper than the
+    // parent's.
+    bool sending = false;
     uint64_t checked_ns = tt_get_ns();
     struct acknack_skip skips[tt_RELIABLE_REQUEST_HISTORY];
     int skip_count = 0;
