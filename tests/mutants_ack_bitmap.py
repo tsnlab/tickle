@@ -23,14 +23,21 @@ Four kills are of the count's exactness alone, which only the unit oracle checks
 trims. Without them the count stays too high, which costs work but changes no output, so the trace diff passes them.
 
 Run from anywhere: python3 tests/mutants_ack_bitmap.py [BASE]. Restores src/tickle.c whatever happens. ~2 min per
-size for the controls plus 25-60 s per mutant and size.
+size for the controls plus 25-60 s per mutant and size. MUTANTS=<substring> runs only the mutants whose name contains it.
+
+A mutant whose unit binary at a size is the control's, debug sections aside (tests/mutant_digest.py), is DEAD
+(NOT_COMPILED) at that size: it edited code that size's build leaves out, and the differential, which compiles the same
+tickle.c with the same defines (at -O1), is not run for it. Like any size it does not die at, that counts as a problem.
 """
+import os
 import pathlib
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+
+from mutant_digest import NOT_COMPILED, code_digest, unchanged
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 LINUX = ROOT / "platform/linux"
@@ -113,12 +120,14 @@ MUTANTS = [
 ]
 
 
-def run_unit(size):
+def run_unit(size, control=None):
     binary = SIZES[size][0]
     build = subprocess.run(["make", "-s", "-C", str(LINUX), str(binary.relative_to(LINUX))], capture_output=True,
                            text=True)
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-1500:]
+    if unchanged(control, binary):
+        return NOT_COMPILED, ""
     try:
         run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)  # 3-5 s unmutated
     except subprocess.TimeoutExpired:
@@ -154,6 +163,8 @@ def main():
     signal.signal(signal.SIGTERM, lambda _s, _f: sys.exit(1))
     problems = 0
     killed = 0
+    digests = {}
+    only = os.environ.get("MUTANTS", "")
     try:
         for size in SIZES:
             unit, unit_out = run_unit(size)
@@ -163,7 +174,10 @@ def main():
                 print(unit_out, diff_out)
                 print(f"control did not pass at the {size} size; the sweep cannot decide anything")
                 return 1
+            digests[size] = code_digest(SIZES[size][0])
         for name, old, new in MUTANTS:
+            if only and only not in name:
+                continue
             path = ROOT / SRC
             text = path.read_text()
             count = text.count(old)
@@ -175,14 +189,15 @@ def main():
             path.touch()
             dead_at = []
             for size in SIZES:
-                unit, unit_out = run_unit(size)
+                unit, unit_out = run_unit(size, digests[size])
                 # A mutant that hangs or crashes the unit test does the same to the traced build, and the differential
-                # would only wait out its own 120 s timeout to say so: ~6 min per such mutant on 2026-10-11.
-                diff, diff_out = ("SKIPPED", "") if unit in ("HANG", "CRASH") else run_diff(size)
+                # would only wait out its own 120 s timeout to say so: ~6 min per such mutant on 2026-10-11. One whose
+                # unit binary is the control's changed nothing this size compiles, so the trace cannot differ either.
+                diff, diff_out = ("SKIPPED", "") if unit in ("HANG", "CRASH", NOT_COMPILED) else run_diff(size)
                 dead = unit in ("FAIL", "CRASH", "HANG") or diff == "FAIL"
                 undecided = unit == "BUILD_FAILED" or diff in ("UNDECIDED", "NO_VERDICT", "HANG")
                 dead_at.append(dead)
-                tag = "killed" if dead else ("UNDECID" if undecided else "SURVIVED")
+                tag = "killed" if dead else ("DEAD" if unit == NOT_COMPILED else "UNDECID" if undecided else "SURVIVED")
                 print(f"[{tag:8s}] {name:46s} {size:7s} unit {unit:6s} diff {diff}", flush=True)
                 if not dead:
                     print(unit_out[-800:], diff_out[-800:])

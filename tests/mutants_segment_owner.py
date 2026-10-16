@@ -5,11 +5,14 @@ Each entry removes exactly one mechanism; tests/test_segment_owner.c must go red
 still passes means the test is not testing what it says. Run from the repository root; it restores every file it
 touches, whatever happens, and touches them after so make rebuilds from the restored source.
 """
+import os
 import pathlib
 import shutil
 import subprocess
 import sys
 import tempfile
+
+from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = ROOT / "platform/linux/obj/debug/tests/test_segment_owner"
@@ -42,13 +45,15 @@ MUTANTS = [
 ]
 
 
-def build_and_run():
+def build_and_run(control=None):
     build = subprocess.run(
         ["make", "-s", "-C", str(ROOT / "platform/linux"), str(BIN.relative_to(ROOT / "platform/linux"))],
         capture_output=True, text=True,
     )
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-2000:]
+    if unchanged(control, BIN):
+        return NOT_COMPILED, ""
     run = subprocess.run([str(BIN)], capture_output=True, text=True, timeout=120)
     return ("PASS" if run.returncode == 0 else "FAIL"), run.stdout + run.stderr
 
@@ -72,7 +77,11 @@ def main():
             print(output[-2000:])
             print("control did not pass; the sweep cannot decide anything")
             return 1
+        control = code_digest(BIN)
+        only = os.environ.get("MUTANTS", "")
         for name, rel, old, new in MUTANTS:
+            if only and only not in name:
+                continue
             path = ROOT / rel
             text = path.read_text()
             count = text.count(old)
@@ -81,11 +90,11 @@ def main():
                 failures += 1
                 continue
             path.write_text(text.replace(old, new))
-            verdict, output = build_and_run()
+            verdict, output = build_and_run(control)
             restore()
             ok = verdict == "FAIL"
             failures += 0 if ok else 1
-            print(f"[{'ok' if ok else 'SURVIVED':8s}] {name:46s} -> {verdict} (wanted FAIL)")
+            print(f"[{label(verdict, ok):8s}] {name:46s} -> {verdict} (wanted FAIL)")
             if not ok:
                 print(output[-1500:])
     finally:

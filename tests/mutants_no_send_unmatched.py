@@ -11,12 +11,15 @@ Not mutated, and why:
     the ACK chase it arms runs only while a matched reader has not acknowledged (large_unacknowledged()).
 
 Run from the repository root. Restores the file it touches, whatever happens. MUTANTS=<substring> runs only the mutants
-whose name contains it (the control always runs).
+whose name contains it (the control always runs). A mutant whose binary, debug sections aside, is the control's
+(tests/mutant_digest.py) is reported DEAD (NOT_COMPILED) and counted as a survivor: it edited code this build leaves out.
 """
 import os
 import pathlib
 import subprocess
 import sys
+
+from mutant_digest import NOT_COMPILED, code_digest, unchanged
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC = "src/tickle.c"
@@ -87,12 +90,14 @@ MUTANTS = [
 ]
 
 
-def build_and_run():
+def build_and_run(control=None):
     env = dict(os.environ, TMPDIR=os.environ.get("TMPDIR", "/home/semih/tmp_build"))
     build = subprocess.run(["make", "-s", "-C", str(ROOT / "platform/linux"), TEST], capture_output=True, text=True,
                            env=env)
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-2000:]
+    if unchanged(control, ROOT / "platform/linux" / TEST):
+        return NOT_COMPILED, ""
     try:
         run = subprocess.run(["bash", "-c", f"ulimit -v 2097152; exec ./{TEST}"], cwd=ROOT / "platform/linux",
                              capture_output=True, text=True, timeout=600)
@@ -112,6 +117,7 @@ def main():
         if verdict != "PASSED":
             print(out)
             return 2
+        control = code_digest(ROOT / "platform/linux" / TEST)
         for name, old, new in MUTANTS:
             if only and only not in name:
                 continue
@@ -119,9 +125,9 @@ def main():
                 print(f"{name}: the text to mutate occurs {original.count(old)} times - the sweep is stale")
                 return 2
             path.write_text(original.replace(old, new))  # a new mtime: make rebuilds the test
-            verdict, out = build_and_run()
+            verdict, out = build_and_run(control)
             killed = verdict == "FAILED"
-            print(f"{name}: {'killed' if killed else verdict}")
+            print(f"{name}: {'killed' if killed else ('DEAD (NOT_COMPILED)' if verdict == NOT_COMPILED else verdict)}")
             if not killed:
                 survivors.append(name)
     finally:

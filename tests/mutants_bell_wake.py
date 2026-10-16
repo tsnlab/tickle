@@ -9,11 +9,16 @@ named for. The unmutated tree runs first and must pass: a check that fails on co
 Runs each build in a private network namespace (examples/perf_hil/experiments/bell_wake_netns.sh).
 Run from the repository root. Restores every file it touches, whatever happens, by rewriting it -
 which moves its mtime, so make rebuilds from the restored source rather than reusing the mutant's
-objects.
+objects. MUTANTS=<substring> runs only the mutants whose name contains it. A mutant whose binary, debug sections aside,
+is the control's (tests/mutant_digest.py) is reported DEAD (NOT_COMPILED) and counted as a survivor: it edited code
+this build leaves out.
 """
+import os
 import pathlib
 import subprocess
 import sys
+
+from mutant_digest import code_digest, unchanged
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "examples/perf_hil/experiments/bell_wake_netns.sh"
@@ -98,9 +103,13 @@ def main() -> int:
     if code != 0:
         print("FATAL: bell_wake_check fails on the unmutated tree; a mutant failing proves nothing")
         return 1
+    control = code_digest(BIN)
+    only = os.environ.get("MUTANTS", "")
     survivors = 0
     for entry in MUTANTS:
         name, path, old, new = entry[:4]
+        if only and only not in name:
+            continue
         round_trips = entry[4] if len(entry) > 4 else 0
         runs = entry[5] if len(entry) > 5 else 1
         target = ROOT / path
@@ -113,6 +122,10 @@ def main() -> int:
             if not build():
                 print(f"FATAL: mutant '{name}' does not build")
                 return 1
+            if unchanged(control, BIN):
+                survivors += 1
+                print(f"DEAD     {name}: NOT_COMPILED - its binary is the control's")
+                continue
             for attempt in range(1, runs + 1):
                 code, said = run(round_trips)
                 if code != 0:
@@ -126,7 +139,8 @@ def main() -> int:
     if not build():
         print("FATAL: the restored tree does not build")
         return 1
-    print(f"{len(MUTANTS) - survivors} of {len(MUTANTS)} mutants caught")
+    ran = sum(1 for entry in MUTANTS if not only or only in entry[0])
+    print(f"{ran - survivors} of {ran} mutants caught")
     return 0 if survivors == 0 else 1
 
 

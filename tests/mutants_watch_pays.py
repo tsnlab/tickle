@@ -10,11 +10,14 @@ must pass: a test that fails on correct code would "catch" every mutant for the 
 Run from the repository root. Restores every file it touches, whatever happens, by rewriting it and moving its mtime,
 so make rebuilds from the restored source rather than reusing the mutant's objects.
 """
+import os
 import pathlib
 import shutil
 import subprocess
 import sys
 import tempfile
+
+from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = ROOT / "platform/linux/obj/debug/tests/test_transport_seam"
@@ -116,13 +119,15 @@ MUTANTS = [
 ]
 
 
-def build_and_run():
+def build_and_run(control=None):
     build = subprocess.run(
         ["make", "-s", "-C", str(ROOT / "platform/linux"), str(BIN.relative_to(ROOT / "platform/linux"))],
         capture_output=True, text=True, cwd=ROOT / "platform/linux", check=False,
     )
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-2000:]
+    if unchanged(control, BIN):
+        return NOT_COMPILED, ""
     run = subprocess.run([str(BIN)], capture_output=True, text=True, check=False, timeout=600)
     return ("PASS" if run.returncode == 0 else "FAIL"), run.stdout + run.stderr
 
@@ -168,7 +173,11 @@ def main():
             print(output[-2000:])
             print("control did not pass; the sweep cannot decide anything")
             return 1
+        control = code_digest(BIN)
+        only = os.environ.get("MUTANTS", "")
         for name, rel, old, new, test in MUTANTS:
+            if only and only not in name:
+                continue
             path = ROOT / rel
             text = path.read_text()
             count = text.count(old)
@@ -177,12 +186,12 @@ def main():
                 failures += 1
                 continue
             path.write_text(text.replace(old, new))
-            verdict, output = build_and_run()
+            verdict, output = build_and_run(control)
             restore()
             # Caught means the tests failed, and among the failures is the guard named for this mutant.
             ok = verdict == "FAIL" and failed_in(output, test)
             failures += 0 if ok else 1
-            print(f"[{'ok' if ok else 'SURVIVED':8s}] {name} -> {verdict} (guard {test}"
+            print(f"[{label(verdict, ok):8s}] {name} -> {verdict} (guard {test}"
                   f"{'' if failed_in(output, test) else ': did not fail'})")
             if not ok:
                 print(output[-1500:])

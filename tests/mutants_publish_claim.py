@@ -7,11 +7,14 @@ is not doing anything, and both are findings.
 
 Run from the repository root. Restores every file it touches, whatever happens.
 """
+import os
 import pathlib
 import shutil
 import subprocess
 import sys
 import tempfile
+
+from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = ROOT / "platform/linux/obj/debug/tests/test_publish_claim"
@@ -163,13 +166,15 @@ MUTANTS = [
     ),
 ]
 
-def build_and_run():
+def build_and_run(control=None):
     build = subprocess.run(
         ["make", "-s", "-C", str(ROOT / "platform/linux"), str(BIN.relative_to(ROOT / "platform/linux"))],
         capture_output=True, text=True, cwd=ROOT / "platform/linux",
     )
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-2000:]
+    if unchanged(control, BIN):
+        return NOT_COMPILED, ""
     run = subprocess.run([str(BIN)], capture_output=True, text=True)
     return ("PASS" if run.returncode == 0 else "FAIL"), run.stdout + run.stderr
 
@@ -194,8 +199,12 @@ def main():
             print(output[-2000:])
             print("control did not pass; the sweep cannot decide anything")
             return 1
+        control = code_digest(BIN)
 
+        only = os.environ.get("MUTANTS", "")
         for name, rel, old, new, test in MUTANTS:
+            if only and only not in name:
+                continue
             path = ROOT / rel
             text = path.read_text()
             count = text.count(old)
@@ -205,11 +214,11 @@ def main():
                 continue
             path.write_text(text.replace(old, new))
             assert path.read_text().count(old) == 0, "substitution did not apply"
-            verdict, output = build_and_run()
+            verdict, output = build_and_run(control)
             restore()
             ok = verdict == "FAIL"
             failures += 0 if ok else 1
-            print(f"[{'ok' if ok else 'SURVIVED':8s}] {name:40s} -> {verdict} (wanted FAIL, guard: {test})")
+            print(f"[{label(verdict, ok):8s}] {name:40s} -> {verdict} (wanted FAIL, guard: {test})")
             if not ok:
                 print(output[-1500:])
     finally:

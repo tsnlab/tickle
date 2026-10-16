@@ -34,6 +34,8 @@ import subprocess
 import sys
 import tempfile
 
+from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TESTS = ROOT / "platform/linux/obj/debug/tests"
 CORE = "test_rx_direct"
@@ -521,13 +523,26 @@ def run_hal(binary, env=""):
         subprocess.run(["sudo", "-n", "ip", "netns", "del", namespace], check=False)
 
 
-def build_and_run(binary):
+def targets_of(binary):
+    """The make targets, relative to platform/linux, that a run of `binary` uses."""
     targets = [binary] if binary in (HAL, HAL_RAW, DRAIN) else [f"obj/debug/tests/{binary}"]
     if binary == DRAIN:
         targets.append("refuse_pbuf_ring.so")
+    return targets
+
+
+def built(binary):
+    """Every file the build of `binary` made: a mutant is NOT_COMPILED only if all of them are the control's."""
+    return [ROOT / "platform/linux" / target for target in targets_of(binary)]
+
+
+def build_and_run(binary, control=None):
+    targets = targets_of(binary)
     build = subprocess.run(["make", "-s", "-C", str(ROOT / "platform/linux"), *targets], capture_output=True, text=True)
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-2000:]
+    if unchanged(control, *built(binary)):
+        return NOT_COMPILED, ""
     try:
         if binary == DRAIN:
             run = run_hal(binary)
@@ -563,6 +578,7 @@ def main():
     signal.signal(signal.SIGTERM, lambda _s, _f: sys.exit(1))
     only = os.environ.get("MUTANTS", "")
     failures = 0
+    digests = {}
     try:
         for binary in sorted({m[4] for m in MUTANTS}):
             verdict, output = build_and_run(binary)
@@ -571,6 +587,7 @@ def main():
                 print(output[-2000:])
                 print("control did not pass; the sweep cannot decide anything")
                 return 1
+            digests[binary] = code_digest(*built(binary))
         for name, path, old, new, binary in MUTANTS:
             if only and only not in name:
                 continue
@@ -581,11 +598,11 @@ def main():
                 continue
             (ROOT / path).write_text(text.replace(old, new))
             try:
-                verdict, _ = build_and_run(binary)
+                verdict, _ = build_and_run(binary, digests[binary])
             finally:
                 restore()
             caught = verdict in ("FAIL", "CRASH", "HANG")  # BUILD_FAILED: the mutant itself is wrong
-            print(f"[{'caught' if caught else 'MISSED'}]   {name:<84} {binary} -> {verdict}")
+            print(f"[{label(verdict, caught, 'caught', 'MISSED')}]   {name:<84} {binary} -> {verdict}")
             failures += 0 if caught else 1
     finally:
         restore()

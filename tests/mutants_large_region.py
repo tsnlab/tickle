@@ -19,6 +19,8 @@ import sys
 import os
 import tempfile
 
+from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = ROOT / "platform/linux/obj/debug/tests/test_large_region"
 SRC = "src/tickle.c"
@@ -117,13 +119,15 @@ MUTANTS = [
 ]
 
 
-def build_and_run():
+def build_and_run(control=None):
     build = subprocess.run(
         ["make", "-s", "-C", str(ROOT / "platform/linux"), str(BIN.relative_to(ROOT / "platform/linux"))],
         capture_output=True, text=True, cwd=ROOT / "platform/linux",
     )
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-2000:]
+    if unchanged(control, BIN):
+        return NOT_COMPILED, ""
     try:
         # The binary takes about a second; a mutant that makes a simulation spin is cut off at a minute.
         run = subprocess.run([str(BIN)], capture_output=True, text=True, timeout=60)
@@ -160,6 +164,7 @@ def main():
             print(output[-2000:])
             print("control did not pass; the sweep cannot decide anything")
             return 1
+        control = code_digest(BIN)
 
         only = os.environ.get("MUTANTS", "")
         for name, old, new, test in MUTANTS:
@@ -173,11 +178,11 @@ def main():
                 failures += 1
                 continue
             path.write_text(text.replace(old, new))
-            verdict, output = build_and_run()
+            verdict, output = build_and_run(control)
             restore()
             ok = verdict in ("FAIL", "CRASH", "HANG")
             failures += 0 if ok else 1
-            print(f"[{'ok' if ok else 'SURVIVED':8s}] {name:55s} -> {verdict} (guard: {test})", flush=True)
+            print(f"[{label(verdict, ok):8s}] {name:55s} -> {verdict} (guard: {test})", flush=True)
             for line in failing_lines(output) if ok else []:
                 print(f"           {line}")
             if not ok:

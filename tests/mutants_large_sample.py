@@ -21,7 +21,8 @@ import subprocess
 import sys
 import os
 import tempfile
-import hashlib
+
+from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TESTS = ROOT / "platform/linux/obj/debug/tests"
@@ -228,18 +229,6 @@ MUTANTS = [
 ]
 
 
-def code_digest(path):
-    # The binary's code and data without its debug sections: a mutant whose digest equals the control's changed nothing
-    # the compiler kept - code under a preprocessor branch this build leaves out - and can neither die nor survive.
-    stripped = tempfile.NamedTemporaryFile(prefix="mutant_strip_", delete=False)
-    stripped.close()
-    try:
-        subprocess.run(["objcopy", "--strip-debug", str(path), stripped.name], check=True, capture_output=True)
-        return hashlib.sha256(pathlib.Path(stripped.name).read_bytes()).hexdigest()
-    finally:
-        os.unlink(stripped.name)
-
-
 def build_and_run(binary, control_digest=None):
     path = TESTS / binary
     build = subprocess.run(
@@ -248,8 +237,8 @@ def build_and_run(binary, control_digest=None):
     )
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-2000:]
-    if control_digest is not None and code_digest(path) == control_digest:
-        return "NOT_COMPILED", ""
+    if unchanged(control_digest, path):
+        return NOT_COMPILED, ""
     try:
         # The binary takes about a second; a mutant that makes a simulation spin is cut off at a minute.
         run = subprocess.run([str(path)], capture_output=True, text=True, timeout=60)
@@ -284,12 +273,12 @@ def main():
         # Every binary a mutant is judged by must pass unmutated, or its mutants cannot be told from its own failures.
         for binary in sorted({entry[4] if len(entry) > 4 else DEFAULT_BINARY for entry in MUTANTS}):
             verdict, output = build_and_run(binary)
-            digests[binary] = code_digest(TESTS / binary)
             print(f"[control]  unmutated {binary:44s} -> {verdict}")
             if verdict != "PASS":
                 print(output[-2000:])
                 print("control did not pass; the sweep cannot decide anything")
                 return 1
+            digests[binary] = code_digest(TESTS / binary)
 
         only = os.environ.get("MUTANTS", "")
         for name, old, new, test, *rest in MUTANTS:
@@ -308,8 +297,7 @@ def main():
             restore()
             ok = verdict in ("FAIL", "CRASH", "HANG")
             failures += 0 if ok else 1
-            label = "ok" if ok else ("DEAD" if verdict == "NOT_COMPILED" else "SURVIVED")
-            print(f"[{label:8s}] {name:55s} -> {verdict} (guard: {binary}: {test})", flush=True)
+            print(f"[{label(verdict, ok):8s}] {name:55s} -> {verdict} (guard: {binary}: {test})", flush=True)
             for line in failing_lines(output, binary) if ok else []:
                 print(f"           {line}")
             if not ok:

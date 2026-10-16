@@ -33,7 +33,11 @@ killed, every named mutant among them; the 13 survivors are the same serial site
     shared memory: the segment drain's planner (plan_writer()'s lowest_seq_no).
 
 Run from anywhere, with TMPDIR set to a roomy directory: python3 tests/mutants_seq_wrap.py [--only SUBSTRING]. Prints one line per mutant and a final
-"MUTANTS killed K/N survived S invalid I". ~10 s a mutant, up to 4 min for one that hangs an oracle.
+"MUTANTS killed K/N survived S invalid I dead D". ~10 s a mutant, up to 4 min for one that hangs an oracle.
+
+A mutant every oracle passes whose oracle binaries, debug sections aside, are all the control's (tests/mutant_digest.py)
+is reported DEAD (NOT_COMPILED) and counted apart from the survivors: it edited code no oracle's build compiles, such as
+the tt_RELIABLE_STATS and tt_LOCAL_DELIVERY sites above.
 """
 import os
 import pathlib
@@ -43,6 +47,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+from mutant_digest import code_digest, unchanged
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC = ROOT / "src/tickle.c"
@@ -144,10 +150,15 @@ def limit_oracle():
     resource.setrlimit(resource.RLIMIT_AS, (ORACLE_MEMORY_BYTES, ORACLE_MEMORY_BYTES))
 
 
+def oracle_binaries(work):
+    """Every binary build_and_run() builds, in ORACLES' order: the control's digest and a mutant's cover them all."""
+    return [work / f"{name}.bin" for name, _test, _defines in ORACLES]
+
+
 def build_and_run(tree, work):
     """None when every oracle passes; else the name of the first that failed, or 'compile:<oracle>'."""
     for name, test, defines in ORACLES:
-        binary = work / f"{name}.bin"
+        binary = work / f"{name}.bin"  # oracle_binaries()
         build = subprocess.run(["cc", *CFLAGS, *defines, f"-I{tree}/include", f"-I{tree}/src", "-o", str(binary),
                                 str(tree / test), str(tree / "src/encoding.c"), str(tree / "src/log.c"), "-lm"],
                                capture_output=True, text=True)
@@ -179,10 +190,11 @@ def main():
         if control is not None:
             print("MUTANTS undecided: the controls fail")
             return 2
+        digest = code_digest(*oracle_binaries(tmp))
         mutants = [(name, original.replace(old, new, 1) if original.count(old) == 1 else None)
                    for name, old, new in NAMED]
         mutants += [(name, original[:s] + new + original[e:]) for name, s, e, new in serial_mutants(original)]
-        killed = survived = invalid = 0
+        killed = survived = invalid = dead = 0
         for name, text in mutants:
             if only is not None and only not in name:
                 continue
@@ -192,7 +204,11 @@ def main():
                 continue
             target.write_text(text)
             verdict = build_and_run(tree, tmp)
-            if verdict is None:
+            # Only a mutant every oracle passed has built them all, so only then is the comparison complete.
+            if verdict is None and unchanged(digest, *oracle_binaries(tmp)):
+                dead += 1
+                print(f"DEAD      {name} (NOT_COMPILED: every oracle binary is the control's)", flush=True)
+            elif verdict is None:
                 survived += 1
                 print(f"SURVIVED  {name}", flush=True)
             elif verdict.startswith("compile:"):
@@ -202,7 +218,7 @@ def main():
                 killed += 1
                 print(f"killed    {name} by {verdict}", flush=True)
         target.write_text(original)
-        print(f"MUTANTS killed {killed}/{killed + survived} survived {survived} invalid {invalid}")
+        print(f"MUTANTS killed {killed}/{killed + survived} survived {survived} invalid {invalid} dead {dead}")
     return 0
 
 

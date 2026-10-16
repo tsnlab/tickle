@@ -22,12 +22,19 @@ Each mutant reverts one part of the fix in src/tickle.c and must make its test f
 A control run of the unmutated source must pass every test first, so a test that fails for another reason cannot
 kill a mutant. src/tickle.c is restored, with a fresh mtime so make rebuilds, whatever happens.
 
+A mutant whose unit test binary, debug sections aside, is the control's (tests/mutant_digest.py) is reported DEAD
+(NOT_COMPILED) and counted as a failure: it edited code that build leaves out. The rmw mutant is not checked that way:
+make test-rmw builds and installs a ROS workspace, not one binary this script could compare. MUTANTS=<substring> runs
+only the mutants whose label contains it.
+
 Usage: tests/mutants_declined_tail.py [--rmw]   (from the repository root)
 """
 
 import os
 import subprocess
 import sys
+
+from mutant_digest import NOT_COMPILED, code_digest, unchanged
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCE = os.path.join(REPO, "src", "tickle.c")
@@ -55,33 +62,43 @@ MUTANTS = [
 ]
 
 
-def run_test(name):
-    """Builds and runs one test - a unit test binary, or the rmw suite; True if it passed."""
+def binary_of(name):
+    return os.path.join(LINUX, "obj", "debug", "tests", name)
+
+
+def run_test(name, control=None):
+    """Builds and runs one test - a unit test binary, or the rmw suite: PASS, FAIL (a failed build too), or
+    NOT_COMPILED if a unit test binary is the control's."""
     if name == RMW:
         run = subprocess.run(["make", "test-rmw"], cwd=REPO, capture_output=True, text=True, check=False)
         lines = [line for line in run.stdout.splitlines() if "held-small" in line or "run_rmw_suite:" in line]
         print("\n".join(f"  {line[:160]}" for line in lines))  # the witness's own words, kept whole enough to read
-        return run.returncode == 0 and "run_rmw_suite: all tests passed" in run.stdout
-    target = os.path.join("obj", "debug", "tests", name)
+        return "PASS" if run.returncode == 0 and "run_rmw_suite: all tests passed" in run.stdout else "FAIL"
+    target = os.path.relpath(binary_of(name), LINUX)
     build = subprocess.run(["make", "-s", target], cwd=LINUX, capture_output=True, text=True, check=False)
     if build.returncode != 0:
         print(f"  build of {name} failed:\n{build.stdout[-2000:]}{build.stderr[-2000:]}")
-        return False
-    run = subprocess.run([os.path.join(LINUX, target)], cwd=LINUX, capture_output=True, text=True, check=False)
-    return run.returncode == 0
+        return "FAIL"
+    if unchanged(control, binary_of(name)):
+        return NOT_COMPILED
+    run = subprocess.run([binary_of(name)], cwd=LINUX, capture_output=True, text=True, check=False)
+    return "PASS" if run.returncode == 0 else "FAIL"
 
 
 def main():
     with_rmw = "--rmw" in sys.argv[1:]
-    mutants = [m for m in MUTANTS if with_rmw or m[1] != RMW]
+    only = os.environ.get("MUTANTS", "")
+    mutants = [m for m in MUTANTS if (with_rmw or m[1] != RMW) and (not only or only in m[0])]
     tests = sorted({m[1] for m in mutants})
     original = open(SOURCE, encoding="utf-8").read()
     failures = 0
+    digests = {}
     try:
         for name in tests:
-            if not run_test(name):
+            if run_test(name) != "PASS":
                 print(f"CONTROL FAILED: {name} fails on the unmutated source - no mutant can be judged")
                 return 2
+            digests[name] = None if name == RMW else code_digest(binary_of(name))
         print(f"control: {', '.join(tests)} pass on the unmutated source")
         for label, test, edits in mutants:
             mutated = original
@@ -98,8 +115,14 @@ def main():
             with open(SOURCE, "w", encoding="utf-8") as out:
                 out.write(mutated)
             tries = RMW_TRIES if test == RMW else 1
-            killed = any(not run_test(test) for _ in range(tries))
-            print(f"mutant {label}: {'killed' if killed else 'SURVIVED'} by {test}")
+            verdict = "PASS"
+            for _ in range(tries):
+                verdict = run_test(test, digests[test])
+                if verdict != "PASS":
+                    break
+            killed = verdict == "FAIL"
+            outcome = "killed" if killed else ("DEAD (NOT_COMPILED)" if verdict == NOT_COMPILED else "SURVIVED")
+            print(f"mutant {label}: {outcome} by {test}")
             failures += 0 if killed else 1
     finally:
         with open(SOURCE, "w", encoding="utf-8") as out:

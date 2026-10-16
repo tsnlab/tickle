@@ -17,6 +17,8 @@ import subprocess
 import sys
 import tempfile
 
+from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TESTS = ROOT / "platform/linux/obj/debug/tests"
 SEND = "test_hybrid_send"
@@ -1097,13 +1099,15 @@ MUTANTS = [
 ]
 
 
-def build_and_run(binary):
+def build_and_run(binary, control=None):
     build = subprocess.run(
         ["make", "-s", "-C", str(ROOT / "platform/linux"), f"obj/debug/tests/{binary}"],
         capture_output=True, text=True,
     )
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-2000:]
+    if unchanged(control, TESTS / binary):
+        return NOT_COMPILED, ""
     try:
         run = subprocess.run([str(TESTS / binary)], capture_output=True, text=True, timeout=300)
     except subprocess.TimeoutExpired as hung:
@@ -1130,6 +1134,7 @@ def main():
     signal.signal(signal.SIGTERM, lambda _s, _f: sys.exit(1))
     only = os.environ.get("MUTANTS", "")
     failures = 0
+    digests = {}
     try:
         for binary in sorted({m[4] for m in MUTANTS}):
             verdict, output = build_and_run(binary)
@@ -1138,6 +1143,7 @@ def main():
                 print(output[-2000:])
                 print("control did not pass; the sweep cannot decide anything")
                 return 1
+            digests[binary] = code_digest(TESTS / binary)
         for name, path, old, new, binary in MUTANTS:
             if only and only not in name:
                 continue
@@ -1148,11 +1154,11 @@ def main():
                 continue
             (ROOT / path).write_text(text.replace(old, new))
             try:
-                verdict, _ = build_and_run(binary)
+                verdict, _ = build_and_run(binary, digests[binary])
             finally:
                 restore()
             caught = verdict in ("FAIL", "CRASH", "HANG")
-            print(f"[{'caught' if caught else 'MISSED'}]   {name:<72} {binary} -> {verdict}")
+            print(f"[{label(verdict, caught, 'caught', 'MISSED')}]   {name:<72} {binary} -> {verdict}")
             failures += 0 if caught else 1
     finally:
         restore()

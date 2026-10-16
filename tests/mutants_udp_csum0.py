@@ -17,7 +17,9 @@ Not mutated, and why - each decides no outcome the check can observe:
     as before; no arm of the check has a UDP_SEGMENT call refused with the option off.
 
 Run from the repository root. Needs passwordless `sudo ip` (the namespaces). Restores every file it touches, whatever
-happens. MUTANTS=<substring> runs only the mutants whose name contains it (the control always runs).
+happens. MUTANTS=<substring> runs only the mutants whose name contains it (the control always runs). A mutant whose two
+binaries, debug sections aside, are both the control's (tests/mutant_digest.py) is reported DEAD (NOT_COMPILED) and
+counted as not caught: it edited code these builds leave out.
 """
 import os
 import pathlib
@@ -27,8 +29,12 @@ import subprocess
 import sys
 import tempfile
 
+from mutant_digest import NOT_COMPILED, code_digest, label, unchanged
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HAL = "src/hal_linux.c"
+# Both binaries udp_offload_check.sh runs; a mutant is NOT_COMPILED only if neither changed.
+BINARIES = [ROOT / "platform/linux/udp_offload_check", ROOT / "platform/linux/udp_offload_check_flap"]
 
 # (name, file, old, new)
 MUTANTS = [
@@ -113,11 +119,13 @@ MUTANTS = [
 ]
 
 
-def build_and_run():
-    build = subprocess.run(["make", "-s", "-C", str(ROOT / "platform/linux"), "udp_offload_check",
-                            "udp_offload_check_flap"], capture_output=True, text=True)
+def build_and_run(control=None):
+    build = subprocess.run(["make", "-s", "-C", str(ROOT / "platform/linux"), *(path.name for path in BINARIES)],
+                           capture_output=True, text=True)
     if build.returncode != 0:
         return "BUILD_FAILED", build.stderr[-2000:]
+    if unchanged(control, *BINARIES):
+        return NOT_COMPILED, ""
     try:
         run = subprocess.run(["bash", "-c", "ulimit -v 2097152; exec timeout 600 ./udp_offload_check.sh"],
                              cwd=ROOT / "platform/linux", capture_output=True, text=True, timeout=700)
@@ -154,6 +162,7 @@ def main():
             print(output[-2000:])
             print("control did not pass; the sweep cannot decide anything")
             return 1
+        control = code_digest(*BINARIES)
         for name, path, old, new in MUTANTS:
             if only and only not in name:
                 continue
@@ -164,12 +173,12 @@ def main():
                 continue
             (ROOT / path).write_text(text.replace(old, new))
             try:
-                verdict, output = build_and_run()
+                verdict, output = build_and_run(control)
             finally:
                 restore()
             caught = verdict in ("FAIL", "CRASH", "HANG")  # BUILD_FAILED / COULD_NOT_RUN: the mutant itself is wrong
             why = next((line for line in output.splitlines() if "FAIL -" in line), "")[:150]
-            print(f"[{'caught' if caught else 'MISSED'}]   {name:<62} -> {verdict} {why}")
+            print(f"[{label(verdict, caught, 'caught', 'MISSED')}]   {name:<62} -> {verdict} {why}")
             failures += 0 if caught else 1
     finally:
         restore()

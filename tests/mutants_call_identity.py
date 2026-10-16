@@ -21,12 +21,18 @@ Each mutant reverts one part of the fix in src/tickle.c and must make its test f
 A control run of the unmutated source must pass both tests first, so a test that fails for another reason cannot
 kill a mutant. src/tickle.c is restored, with a fresh mtime so make rebuilds, whatever happens.
 
+A mutant whose test binary, debug sections aside, is the control's (tests/mutant_digest.py) is reported DEAD
+(NOT_COMPILED) and counted as a failure: it edited code that binary's build leaves out. MUTANTS=<substring> runs only
+the mutants whose label contains it.
+
 Usage: tests/mutants_call_identity.py   (from the repository root)
 """
 
 import os
 import subprocess
 import sys
+
+from mutant_digest import NOT_COMPILED, code_digest, unchanged
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCE = os.path.join(REPO, "src", "tickle.c")
@@ -65,35 +71,49 @@ MUTANTS = [
 ]
 
 
-def run_test(name):
-    """Builds and runs one test binary; True if it passed."""
-    target = os.path.join("obj", "debug", name if "/" in name else os.path.join("tests", name))
+def binary_of(name):
+    return os.path.join(LINUX, "obj", "debug", name if "/" in name else os.path.join("tests", name))
+
+
+def run_test(name, control=None):
+    """Builds and runs one test binary: PASS, FAIL (a failed build too), or NOT_COMPILED if it is the control's."""
+    target = os.path.relpath(binary_of(name), LINUX)
     build = subprocess.run(["make", "-s", target], cwd=LINUX, capture_output=True, text=True, check=False)
     if build.returncode != 0:
         print(f"  build of {name} failed:\n{build.stdout[-2000:]}{build.stderr[-2000:]}")
-        return False
-    run = subprocess.run([os.path.join(LINUX, target)], cwd=LINUX, capture_output=True, text=True, check=False)
-    return run.returncode == 0
+        return "FAIL"
+    if unchanged(control, binary_of(name)):
+        return NOT_COMPILED
+    run = subprocess.run([binary_of(name)], cwd=LINUX, capture_output=True, text=True, check=False)
+    return "PASS" if run.returncode == 0 else "FAIL"
 
 
 def main():
     original = open(SOURCE, encoding="utf-8").read()
+    only = os.environ.get("MUTANTS", "")
     failures = 0
+    digests = {}
     try:
         for name in TESTS:
-            if not run_test(name):
+            if run_test(name) != "PASS":
                 print(f"CONTROL FAILED: {name} fails on the unmutated source - no mutant can be judged")
                 return 2
+            # Each binary keeps its own control: tests-one-call/ is built with other defines than tests/.
+            digests[name] = code_digest(binary_of(name))
         print("control: every test passes on the unmutated source")
         for label, test, before, after in MUTANTS:
+            if only and only not in label:
+                continue
             if original.count(before) != 1:
                 print(f"MUTANT {label}: its text occurs {original.count(before)} times, not once - not applied")
                 failures += 1
                 continue
             with open(SOURCE, "w", encoding="utf-8") as out:
                 out.write(original.replace(before, after, 1))
-            killed = not run_test(test)
-            print(f"mutant {label}: {'killed' if killed else 'SURVIVED'} by {test}")
+            verdict = run_test(test, digests[test])
+            killed = verdict == "FAIL"
+            outcome = "killed" if killed else ("DEAD (NOT_COMPILED)" if verdict == NOT_COMPILED else "SURVIVED")
+            print(f"mutant {label}: {outcome} by {test}")
             failures += 0 if killed else 1
     finally:
         with open(SOURCE, "w", encoding="utf-8") as out:
