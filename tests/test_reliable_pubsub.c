@@ -1788,6 +1788,13 @@ static void test_retry_interval_estimate_converges_and_is_bounded(void) {
     proxy.recovery_srtt_ns = 100000;             // 100us
     proxy.recovery_rttvar_ns = 10 * 1000 * 1000; // 10ms of "variance"
     EXPECT_EQ_U64(100000ULL * tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE, retry_interval_for(0, COLD_G, &proxy));
+
+    // A recovery timed at 1 ns - a repair answered in the instant it was asked for - leaves the interval at srtt + G,
+    // not under G: the ceiling is a multiple of max(srtt, G). Of srtt alone it was 64 ns, and every wait was cut to
+    // it (2026-10-16).
+    memset(&proxy, 0, sizeof(proxy));
+    note_recovery_sample(&proxy, 1);
+    EXPECT_EQ_U64(1 + COLD_G, retry_interval_for(0, COLD_G, &proxy));
 }
 
 // End to end: the recovery is timed from the FIRST ACKNACK that named the watermark, a timer retry of

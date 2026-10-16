@@ -11725,7 +11725,12 @@ static uint64_t retry_interval_for(uint64_t configured, uint64_t granularity, co
         spread = granularity;
     }
     uint64_t interval = srtt + spread;
-    uint64_t ceiling = srtt * (uint64_t)tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE;
+    // A multiple of srtt or of G, whichever is larger, as the call retry's ceiling has been since 2026-10-09. Of srtt
+    // alone, a recovery timed at a few nanoseconds - a repair answered in the same instant it was asked for, as a
+    // zero-delay test link does - put the ceiling below G and every wait was cut to it: an srtt of 1 ns retried every
+    // 64 ns, a storm (2026-10-16, test_a_busy_writers_send_is_not_timed_as_the_path once its busy samples were gone).
+    uint64_t unit = srtt > granularity ? srtt : granularity;
+    uint64_t ceiling = unit * (uint64_t)tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE;
     return interval > ceiling ? ceiling : interval;
 }
 
