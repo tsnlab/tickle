@@ -14,7 +14,7 @@
 // waits behind it and is replaced by a newer one (KEEP_LAST at the sender, core's large.tail_abandoned). A DDS publish
 // blocks in the send instead. The option makes rmw_publish() wait, after handing its sample to core, until that
 // sample has been sent. Two processes, 4 MB samples (perf_test's Array4m) published back to back, so the link is
-// saturated; BEST_EFFORT KEEP_LAST depth 5, as the rig's I4s cell:
+// saturated; BEST_EFFORT KEEP_LAST depth 5, as the rig's I4s cell (its rate is not: TBF_ARGS says why):
 //
 // off: the option unset, the control. No publish waits, and core replaces samples at the sender (abandoned >= 1).
 //
@@ -33,11 +33,10 @@
 //
 // The link: a full send buffer is what makes a large send wait (tickle.c large_wait_for_room()). Loopback never fills
 // one, and two processes on one address are same-host peers, whose large fragments go another way. So the talker runs
-// in a network namespace of its own, joined to the listener's by a veth pair whose talker end tbf shapes to the rig's
-// 1 Gbit/s - the PC experiments' set-up (experiments/large_saturation_pc.sh) - and the two find each other by broadcast
-// on 10.77.0.0/24. That needs `sudo -n ip` and a named private namespace to start in (run_rmw_suite.sh's): in the
-// default one it would add an interface to the machine. Anywhere else the test says why and exits 77, which CMake
-// reports as skipped, not passed.
+// in a network namespace of its own, joined to the listener's by a veth pair whose talker end tbf shapes (TBF_ARGS),
+// and the two find each other by broadcast on 10.77.0.0/24. That needs `sudo -n ip` and a named private namespace to
+// start in (run_rmw_suite.sh's): in the default one it would add an interface to the machine. Anywhere else the test
+// says why and exits 77, which CMake reports as skipped, not passed.
 
 #include <assert.h>
 #include <fcntl.h>
@@ -86,10 +85,19 @@
 #define SKIP_CODE 77
 #define SMALL_BYTES 64U
 #define SETTLE_POLLS 15000 // 3 s at POLL_US: the last samples after the talker said it was done
-// The shaped link, on the talker's veth end: the rig's 1 Gbit/s, a 4 MB sample ~34 ms. Its queue is shorter than the
-// send buffer (rmw asks for 4 MiB, 8 MiB once the kernel doubles it), so the sender's buffer fills within a sample or
-// two; twelve keep it full.
-#define TBF_ARGS "rate 1gbit burst 64kb latency 100ms"
+// The shaped link, on the talker's veth end: 100 Mbit/s, a 4 MB sample ~340 ms. Its queue (rate x latency, 12.5 MB)
+// holds more than the send buffer (rmw asks for 4 MiB, 8 MiB once the kernel doubles it), so the sender's buffer is
+// what fills, within a sample or two, and the queue drops nothing (at latency 100 ms it held 1.25 MB and dropped every
+// sample); twelve keep it full.
+//
+// Why not the rig's 1 Gbit/s: every treatment check below needs the publisher to outrun the link - off's abandoned >=
+// 1, send_waits >= 1, and the small publish meeting a large sample still in flight, which holds only if less than a
+// sample's worth drained between the last two publishes. At 1 Gbit/s a sample takes ~34 ms, and on a loaded PC one
+// 4 MB publish took 22-35 ms itself (2026-10-16): in a check-gates run on's last publish was never seen waiting
+// (small_in_flight 0, waits 8 of 11), and beside 16 dd processes copying memory 12 runs of 12 failed, 11 of them on
+// one of these three checks. At ten times the link time the same load failed 0 of 50: the test proves behaviour, not
+// a rate.
+#define TBF_ARGS "rate 100mbit burst 64kb latency 1s"
 #define LINK_PREFIX "10.77.0."
 #define LINK_BROADCAST LINK_PREFIX "255"
 

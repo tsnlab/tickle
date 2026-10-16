@@ -220,8 +220,8 @@ if(BUILD_TESTING)
     )
   endforeach()
 
-  # RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS needs a saturated link, which it makes by shaping lo with tbf - possible only in
-  # a named private netns with `sudo -n ip` (run_rmw_suite.sh's). Anywhere else it exits 77: skipped, not passed.
+  # RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS needs a saturated link, which it makes with a tbf-shaped veth pair - possible only
+  # in a named private netns with `sudo -n ip` (run_rmw_suite.sh's). Anywhere else it exits 77: skipped, not passed.
   add_executable(test_large_publish_block test/test_large_publish_block.c)
   target_link_libraries(test_large_publish_block rmw_tickle Threads::Threads)
   target_compile_options(test_large_publish_block PRIVATE -UNDEBUG)
