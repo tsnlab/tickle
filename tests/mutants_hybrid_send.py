@@ -128,8 +128,13 @@ MUTANTS = [
     (
         "match point: the end-of-sample HEARTBEAT carries none",
         "src/tickle.c",
-        "    if (match_point_owed(pub, &owed)) {\n        encode_heartbeat_range(node, pub, first, ",
-        "    if (false && match_point_owed(pub, &owed)) {\n        encode_heartbeat_range(node, pub, first, ",
+        # large_send_end_heartbeat() only: send_idle_heartbeat() has the same two lines, reached by no early return
+        "    if (!publisher_oldest_seq_no(pub, &first)) {\n        return;\n    }\n    uint8_t count = count_peers(pub->peers);\n"
+        "    bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && node->tx_tail == sizeof(struct tt_Header);\n"
+        "    uint32_t owed = 0;\n    if (match_point_owed(pub, &owed)) {",
+        "    if (!publisher_oldest_seq_no(pub, &first)) {\n        return;\n    }\n    uint8_t count = count_peers(pub->peers);\n"
+        "    bool unicast = count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && node->tx_tail == sizeof(struct tt_Header);\n"
+        "    uint32_t owed = 0;\n    if (false && match_point_owed(pub, &owed)) {",
         SEND,
     ),
     (
@@ -172,8 +177,13 @@ MUTANTS = [
     (
         "match point: carried one seq_no late",
         "src/tickle.c",
-        "        encode_heartbeat_range(node, pub, first, owed - 1U, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);",
-        "        encode_heartbeat_range(node, pub, first, owed, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);",
+        # large_send_end_heartbeat() only, by the line after: send_idle_heartbeat() has the same encode
+        "        encode_heartbeat_range(node, pub, first, owed - 1U, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);\n    }\n"
+        "    encode_heartbeat_range(node, pub, first, publisher_announced_last_seq_no(pub), true, unicast ? pub->peers : NULL,\n"
+        "                           unicast ? count : 0, 0);\n}",
+        "        encode_heartbeat_range(node, pub, first, owed, false, NULL, 0, tt_HEARTBEAT_FLAG_FINAL);\n    }\n"
+        "    encode_heartbeat_range(node, pub, first, publisher_announced_last_seq_no(pub), true, unicast ? pub->peers : NULL,\n"
+        "                           unicast ? count : 0, 0);\n}",
         SEND,
     ),
     (
