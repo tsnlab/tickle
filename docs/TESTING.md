@@ -344,11 +344,15 @@ gap vanished with `-falign-functions=64` on both arms. Definitions: `gate_v2_lib
   - Validating the gate itself: give B an alignment different from P's, with the same no-padding flags
     (A vs A at `-falign-functions=256` and `TICKLE_NOPAD_CFLAGS`). A B with P's flags reads
     WORSE about half the time, because the floor is a single draw of placement.
-  - Expected on the rig after A1'' (not yet run): X1 (A vs P) and X2 (A vs A at 256) PASS with no PRIMARY WORSE, every
+  - Expected on the rig after A1'': X1 (A vs P) and X2 (A vs A at 256) PASS with no PRIMARY WORSE, every
     latency cell's `insn_u_per_sample` within its threshold, and no NOTE of a PRIMARY moving between A and P beyond
     it. A throughput-cell instruction or CPU move may still exceed the threshold and must sit inside P's floor
     (timing). An instruction WORSE in a latency cell would mean a layout path this check did not cover.
     `rig_queue_gate_xval.sh` runs both under one lock on the core cells, read by `gate_xval_read.py`.
+  - Result (2026-10-17, build 5263213e, gate v2 A P B B P A, 3 reps, 12 core cells): X1 PASS and X2 PASS, 0 of 88
+    deciding rows WORSE in each, every latency cell's `insn_u_per_sample` within its threshold. X1 had no A-vs-P NOTE;
+    X2 had three, all in throughput cells (c1 and c3 `insn_u_per_sample`, c13 `insn_k_per_sample`), so the
+    instruction floor of a throughput cell is that wide run to run. The gate is validated on the rig.
 
 ## 7. Measurement checklist
 
