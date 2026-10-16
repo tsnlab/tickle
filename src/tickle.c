@@ -10498,8 +10498,8 @@ static void idle_heartbeat_fire(struct tt_Context* node, uint64_t time, void* pa
     struct tt_Publisher* pub = param;
     pub->idle_heartbeat_armed = false;
     if (!idle_heartbeat_owed(pub)) {
-        pub->idle_check_ns = 0; // the next publish arms it
-        return;
+        return; // idle_check_ns is behind the clock already (half a period before this run), so the next publish arms
+                // it
     }
     uint64_t now = tt_get_ns();
     uint64_t period = idle_heartbeat_period(pub);

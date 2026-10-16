@@ -427,6 +427,17 @@ static int scheduled_for(const struct tt_Context* node, const void* param) {
     return count;
 }
 
+// Whether the sender's scheduler is still a heap (each entry no earlier than its parent): the idle HEARTBEAT's entry is
+// moved in place (sched_postpone_locked()), and one left out of order would delay every timer behind it.
+static bool heap_ordered(const struct tt_Context* node) {
+    for (int32_t i = 1; i < node->scheduler_tail; i++) {
+        if (node->scheduler[(i - 1) / 2].time > node->scheduler[i].time) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // --- the tail -------------------------------------------------------------------------------------------------------
 
 // A burst of 10 whose last sample is lost: delivered within P of it (idle_heartbeat_fire()'s bound), by one lone
@@ -507,6 +518,7 @@ static void test_a_steady_stream_sends_no_heartbeat_datagram(void) {
         pub.heartbeat_piggyback_every = piggyback[i];
         sim_start();
         int most = 0;
+        bool ordered = true;
         for (uint32_t v = 1; v <= 3000U; v++) {
             if (v != 1) {
                 sim_run_until(test_mock_now + tt_MILLISECOND);
@@ -514,10 +526,12 @@ static void test_a_steady_stream_sends_no_heartbeat_datagram(void) {
             sim_publish(v);
             int entries = scheduled_for(&sender, &pub);
             most = entries > most ? entries : most;
+            ordered = ordered && heap_ordered(&sender);
         }
         EXPECT_EQ_U32(0, lone_heartbeats);
         EXPECT_EQ_U32(3000, data_datagrams);
-        EXPECT_EQ_INT(1, most); // one entry, re-armed - never one per sample
+        EXPECT_EQ_INT(1, most); // one entry, moved in place - never one per sample
+        EXPECT_TRUE(ordered);
         uint32_t riding = riding_heartbeats;
         EXPECT_EQ_U32(piggyback[i] == 0 ? 0U : 3000U / piggyback[i], riding); // the piggyback's own, and no other
         sim_run_until(test_mock_now + tt_SECOND);
@@ -657,6 +671,35 @@ static void test_the_period_has_a_floor(void) {
     }
 }
 
+// sched_postpone_locked() on its own: the earliest of four entries moved past two of the others, then back before
+// them, the heap still a heap and the entries due in time order.
+static void dummy_timer(struct tt_Context* node, uint64_t time, void* param) {
+    (void)node;
+    (void)time;
+    (void)param;
+}
+
+static void test_postpone_keeps_the_heap(void) {
+    static struct tt_Context ctx;
+    init_bare_node(&ctx, 9);
+    int params[4];
+    EXPECT_TRUE(tt_Context_schedule(&ctx, 50, dummy_timer, &params[0]));
+    EXPECT_TRUE(tt_Context_schedule(&ctx, 10, dummy_timer, &params[1]));
+    EXPECT_TRUE(tt_Context_schedule(&ctx, 20, dummy_timer, &params[2]));
+    EXPECT_TRUE(tt_Context_schedule(&ctx, 30, dummy_timer, &params[3]));
+    EXPECT_TRUE(heap_ordered(&ctx));
+    EXPECT_TRUE(sched_postpone_locked(&ctx, dummy_timer, &params[1], 40)); // the root, moved down
+    EXPECT_TRUE(heap_ordered(&ctx));
+    uint64_t next = 0;
+    EXPECT_TRUE(sched_next_time(&ctx, &next));
+    EXPECT_EQ_U64(20, next);
+    EXPECT_TRUE(sched_postpone_locked(&ctx, dummy_timer, &params[0], 5)); // and one moved up
+    EXPECT_TRUE(heap_ordered(&ctx));
+    EXPECT_TRUE(sched_next_time(&ctx, &next));
+    EXPECT_EQ_U64(5, next);
+    EXPECT_TRUE(!sched_postpone_locked(&ctx, idle_heartbeat_fire, &params[0], 60)); // no such entry
+}
+
 static void test_destroy_unschedules_it(void) {
     init_pair(true);
     sim_start();
@@ -678,6 +721,7 @@ int main(void) {
     test_nobody_to_ask_sends_none();
     test_any_heartbeat_pushes_the_next_back();
     test_the_period_has_a_floor();
+    test_postpone_keeps_the_heap();
     test_destroy_unschedules_it();
     teardown_pair();
     free(sim_queue);
