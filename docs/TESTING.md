@@ -348,6 +348,7 @@ gap vanished with `-falign-functions=64` on both arms. Definitions: `gate_v2_lib
     latency cell's `insn_u_per_sample` within its threshold, and no NOTE of a PRIMARY moving between A and P beyond
     it. A throughput-cell instruction or CPU move may still exceed the threshold and must sit inside P's floor
     (timing). An instruction WORSE in a latency cell would mean a layout path this check did not cover.
+    `rig_queue_gate_xval.sh` runs both under one lock on the core cells, read by `gate_xval_read.py`.
 
 ## 7. Measurement checklist
 
