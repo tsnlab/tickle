@@ -11414,6 +11414,10 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->probe_seq_no = 0;
             proxy->probe_ns = 0;
             proxy->probe_busy = false;
+#if tt_LARGE_SAMPLES
+            proxy->sending_srtt_ns = 0;
+            proxy->sending_rttvar_ns = 0;
+#endif
             for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
                 proxy->requests[slot].sent_ns = 0;
             }
@@ -11720,15 +11724,25 @@ static uint64_t reliable_retry_configured(void) {
 // The configured value is a parameter rather than read here so the dynamic path can be exercised
 // by tests in a build whose default is fixed - otherwise the branch this whole feature is would be
 // untestable in the default build.
+static uint64_t retry_interval_of(uint64_t granularity, uint32_t srtt_ns, uint32_t rttvar_ns);
+
 static uint64_t retry_interval_for(uint64_t configured, uint64_t granularity, const struct tt_WriterProxy* proxy) {
     if (configured != 0) {
         return configured;
     }
-    if (proxy == NULL || proxy->recovery_srtt_ns == 0) {
+    if (proxy == NULL) {
         return (uint64_t)tt_RELIABLE_RETRY_INITIAL;
     }
-    uint64_t srtt = proxy->recovery_srtt_ns;
-    uint64_t spread = 4ULL * proxy->recovery_rttvar_ns;
+    return retry_interval_of(granularity, proxy->recovery_srtt_ns, proxy->recovery_rttvar_ns);
+}
+
+// srtt + max(G, 4 * rttvar), at most MAX_SRTT_MULTIPLE * max(srtt, G); INITIAL with no sample (srtt 0).
+static uint64_t retry_interval_of(uint64_t granularity, uint32_t srtt_ns, uint32_t rttvar_ns) {
+    if (srtt_ns == 0) {
+        return (uint64_t)tt_RELIABLE_RETRY_INITIAL;
+    }
+    uint64_t srtt = srtt_ns;
+    uint64_t spread = 4ULL * rttvar_ns;
     if (spread < granularity) {
         spread = granularity;
     }
@@ -11742,9 +11756,32 @@ static uint64_t retry_interval_for(uint64_t configured, uint64_t granularity, co
     return interval > ceiling ? ceiling : interval;
 }
 
+#if tt_LARGE_SAMPLES
+// Whether this writer's large sample was still arriving within `window` before `now`: an original fragment of it, not a
+// repair addressed to this reader (tt_WriterProxy.original_arrival_ns).
+static bool writer_still_sending(const struct tt_WriterProxy* proxy, uint64_t now, uint64_t window) {
+    return proxy->original_arrival_ns != 0 && now - proxy->original_arrival_ns < window;
+}
+#endif
+
 static uint64_t reliable_retry_interval(const struct tt_Context* node, const struct tt_WriterProxy* proxy) {
     return retry_interval_for(reliable_retry_configured(), reliable_retry_granularity(node), proxy);
 }
+
+#if tt_LARGE_SAMPLES
+// How often a retry may ask while the writer's large sample still arrives: the interval over every recovery, those
+// spanning a send included (tt_WriterProxy.sending_srtt_ns) - what the one estimate gave before 2026-10-16 - when that
+// is longer than the path's `interval`. A configured interval is used as given.
+static uint64_t retry_cadence_while_sending(const struct tt_Context* node, const struct tt_WriterProxy* proxy,
+                                            uint64_t interval) {
+    if (reliable_retry_configured() != 0 || proxy->sending_srtt_ns == 0) {
+        return interval;
+    }
+    uint64_t sending =
+        retry_interval_of(reliable_retry_granularity(node), proxy->sending_srtt_ns, proxy->sending_rttvar_ns);
+    return sending > interval ? sending : interval;
+}
+#endif
 
 // A Publisher has no recovery estimate of its own - it is the Subscriber that times recoveries - so
 // in dynamic mode its ACK-solicitation throttle keeps the fixed starting value it always had.
@@ -11804,8 +11841,11 @@ static void note_watermark_requested(struct tt_WriterProxy* proxy, uint64_t now)
 // what came in with the datagram that revealed the gap - the same poll's reading - was sent before the request.
 static void note_large_arrival(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint64_t now) {
     proxy->large_arrival_ns = now;
-    if (proxy->probe_ns != 0 && now > proxy->probe_ns && !node->rx_targeted) {
-        proxy->probe_busy = true;
+    if (!node->rx_targeted) {
+        proxy->original_arrival_ns = now;
+        if (proxy->probe_ns != 0 && now > proxy->probe_ns) {
+            proxy->probe_busy = true;
+        }
     }
 }
 #endif
@@ -11889,11 +11929,12 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
     int skip_count = 0;
     {
         uint64_t interval = reliable_retry_interval(node, proxy);
-        sending = proxy->large_arrival_ns != 0 && checked_ns - proxy->large_arrival_ns < interval;
+        sending = writer_still_sending(proxy, checked_ns, interval);
         if (sending) {
+            bool due = checked_ns - proxy->retry_sent_ns >= retry_cadence_while_sending(node, proxy, interval);
             bool answering = proxy->repair_arrival_ns != 0 && checked_ns - proxy->repair_arrival_ns < interval;
             skip_count = repairs_in_flight(node, proxy, highest, checked_ns, skips);
-            if (!answering || !names_any_open(proxy, highest, skips, skip_count)) {
+            if (!due || !answering || !names_any_open(proxy, highest, skips, skip_count)) {
                 if (!tt_Context_schedule(node, checked_ns + interval, acknack_retry, proxy)) {
                     TT_LOG_ERROR("Cannot schedule acknack_retry");
                     proxy->acknack_scheduled = false;
@@ -11907,13 +11948,16 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
     if (counted) {
         proxy->retry++;
     }
+#if tt_LARGE_SAMPLES
     // A large sample's fragments arrived within the last interval: the writer is still sending it and answers when the
     // send ends, which for a 4 MB sample can be several of the reader's first, 1 ms, intervals - this retry is not one
     // the writer has failed to answer, and does not start the back-off. Seen on the PC: the first 4 MB sample under 5%
     // loss, given up on every run while retries were counted against a budget.
-    if (counted && sending) {
+    if (counted && proxy->large_arrival_ns != 0 &&
+        checked_ns - proxy->large_arrival_ns < reliable_retry_interval(node, proxy)) {
         proxy->retry--;
     }
+#endif
     acknack_retry_note_frontier(proxy, highest);
     if (proxy->keep_all == tt_WRITER_KEEP_ALL_UNKNOWN && proxy->retry == tt_RELIABLE_RETRY + 1) {
         // Counted once per gap, at the point the back-off may start, as it was where a bounded policy used to give up.
@@ -11922,6 +11966,7 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
 
     RSTAT_INC(acknack_timer);
 #if tt_LARGE_SAMPLES
+    proxy->retry_sent_ns = checked_ns;
     if (sending) {
         send_acknack_skipping(node, proxy, 0, highest, skips, skip_count);
     } else {
@@ -12364,8 +12409,14 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         // whose wait saw the writer's large sample still arriving (tt_WriterProxy.probe_busy): it measures the writer's
         // send.
         if (proxy->probe_ns != 0 && proxy->probe_seq_no == seq_no) {
-            if (node->rx_targeted && proxy->retry <= tt_RELIABLE_RETRY && !proxy->probe_busy) {
-                note_recovery_sample(proxy, tt_get_ns() - proxy->probe_ns);
+            if (node->rx_targeted && proxy->retry <= tt_RELIABLE_RETRY) {
+                uint64_t took = tt_get_ns() - proxy->probe_ns;
+                if (!proxy->probe_busy) {
+                    note_recovery_sample(proxy, took);
+                }
+#if tt_LARGE_SAMPLES
+                rtt_estimate_fold(&proxy->sending_srtt_ns, &proxy->sending_rttvar_ns, took);
+#endif
             }
             proxy->probe_ns = 0;
         }
