@@ -18,6 +18,7 @@ METRICS = {
     "writer_dgrams_per_sample": (False, True),
     "reader_dgrams_per_sample": (False, True),
     "socket_drops_per_sample": (False, True),
+    "writer_resends_per_sample": (False, True),
     "median_ms": (False, True),
     "p99_ms": (False, True),
     "send_mbps": (True, True),
@@ -50,6 +51,8 @@ def metrics(cell, wire, pub, sub):
         out["writer_dgrams_per_sample"] = float(pub["tx_datagrams"]) / sent if sent else None
         out["reader_dgrams_per_sample"] = float(sub["tx_datagrams"]) / sent if sent else None
         out["socket_drops_per_sample"] = float(sub["socket_drops"]) / sent if sent else None
+        out["writer_resends_per_sample"] = float(pub["retransmitted"]) / sent if sent else None
+        out["socket_drops"] = float(sub["socket_drops"])
         out["median_ms"] = float(sub["latency_median_us"]) / 1000.0
         out["p99_ms"] = float(sub["latency_p99_us"]) / 1000.0
         out["torn"] = float(sub["torn"])
@@ -101,6 +104,47 @@ def verdicts(by):
     return rows
 
 
+# The second reading (srtt_busy_writer_pc_ab.sh header, written before the third run): a run whose reader dropped more
+# than COLLAPSE_DROPS datagrams at its socket is a collapse, counted per arm; the rest compared by their median.
+COLLAPSE_DROPS = 1000
+ROBUST = ("median_ms", "p99_ms", "writer_resends_per_sample", "wire_b_per_sample")
+ROBUST_REL = 0.05
+
+
+def median(xs):
+    xs = sorted(xs)
+    n = len(xs)
+    if n == 0:
+        return float("nan")
+    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2.0
+
+
+def robust(cell, loss, by):
+    collapses = {a: sum(1 for (arm, _r), m in by.items() if arm == a and m["socket_drops"] > COLLAPSE_DROPS)
+                 for a in ARMS}
+    runs = {a: sum(1 for (arm, _r) in by if arm == a) for a in ARMS}
+    worst = max(collapses["base"], collapses["base_aa"])
+    verdict = "WORSE" if collapses["new"] >= worst + 3 else ("BETTER" if collapses["new"] + 3 <= min(
+        collapses["base"], collapses["base_aa"]) else "HELD")
+    print(f"{cell:5} {loss:>3}%  [second reading] collapses (socket drops > {COLLAPSE_DROPS}) of runs: "
+          + ", ".join(f"{a} {collapses[a]}/{runs[a]}" for a in ARMS) + f"  {verdict}")
+    for metric in ROBUST:
+        med = {}
+        for a in ARMS:
+            med[a] = median([m[metric] for (arm, _r), m in by.items()
+                             if arm == a and m["socket_drops"] <= COLLAPSE_DROPS and m.get(metric) is not None])
+        base = med["base"]
+        if not base or math.isnan(base):
+            continue
+        aa_d, new_d = med["base_aa"] / base - 1.0, med["new"] / base - 1.0
+        floor = max(ROBUST_REL, 2 * abs(aa_d))
+        v = "HELD"
+        if abs(new_d) > floor:
+            v = "BETTER" if new_d < 0 else "WORSE"
+        print(f"{cell:5} {loss:>3}%  [second reading] {metric:24} median of non-collapsed runs: base {base:.3f}, "
+              f"base_aa {aa_d * 100:+.1f}%, new {new_d * 100:+.1f}%, floor {floor * 100:.1f}%  {v}")
+
+
 def main():
     runs = defaultdict(dict)  # (cell, loss) -> {(arm, rep): metrics}
     voids = defaultdict(int)
@@ -150,6 +194,7 @@ def main():
         if cell == "I4":
             torn = sum(m.get("torn", 0) for m in by.values())
             print(f"{cell:5} {loss:>3}%  torn over all runs: {torn:.0f}")
+            robust(cell, loss, by)
     if control_ok is None:
         print("CONTROL MISSING: no T4 at 1% - the session cannot be read")
     elif not control_ok:

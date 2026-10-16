@@ -39,8 +39,16 @@
 #     carries - the retry ceiling at 64 x max(srtt, G) - binds only for an srtt below G / 64. A WORSE wire bytes,
 #     delivered % or latency anywhere refutes "no cost".
 #
+# SECOND READING, written after the second run and before the third (2026-10-16, 19:15): I4 runs fall in two regimes.
+#   In most the reader drops a handful of datagrams at its socket; in about one in five, in every arm, it drops tens
+#   of thousands, resends run to 100-350 thousand and latency triples - a collapse, which sets the floor of every I4
+#   metric above. So for I4 also: a run whose reader dropped more than 1,000 datagrams at its socket is a COLLAPSE,
+#   counted per arm (WORSE if new has at least 3 more than the worse of base and base_aa, BETTER if 3 fewer than the
+#   better); the other runs are compared by their per-arm median of median_ms, p99_ms, writer resends and wire bytes
+#   per sample, new and base_aa relative to base, floor max(5%, 2 x |base_aa|). Run with SPECS="I4:0 I4:5" REPS=10.
+#
 # Usage: srtt_busy_writer_pc_ab.sh <repo> <base_sha> <new_sha>
-#        env: REPS (5) DUR (5) LATDUR (10) LDUR (20) OUT (dir)
+#        env: REPS (5) DUR (5) LATDUR (10) LDUR (20) OUT (dir) SPECS ("I4:0 I4:5 T4:1 L4:1 T4:5 L4:5")
 # Needs passwordless `sudo -n ip`; tc runs inside the private namespace through `ip netns exec`.
 # Long: launch detached, read $OUT/summary.txt.
 set -uo pipefail
@@ -51,6 +59,7 @@ REPS=${REPS:-5}
 DUR=${DUR:-5}
 LDUR=${LDUR:-20}
 LATDUR=${LATDUR:-10}
+SPECS=${SPECS:-I4:0 I4:5 T4:1 L4:1 T4:5 L4:5} # cell:loss, in run order
 OUTD=${OUT:-$HOME/srtt_busy_writer_pc_ab/$(date +%Y%m%d-%H%M%S)}
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$OUTD/runs" "$OUTD/trees" || exit 1
@@ -177,7 +186,7 @@ one() {
 ARMS=(base base_aa new)
 for rep in $(seq 1 "$REPS"); do
     k=0
-    for spec in I4:0 I4:5 T4:1 L4:1 T4:5 L4:5; do
+    for spec in $SPECS; do
         cell=${spec%:*}
         loss=${spec#*:}
         set_loss "$loss" || exit 1
