@@ -25,11 +25,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <tickle/config.h>
+#include <tickle/hal.h>
 #include <tickle/tickle.h>
 
 #define BURST 10U
 #define DEPTH 64
 #define WINDOW_WORDS 1
+#define REORDER_SLOTS 64U
+#define SETTLE_MS 500U
+#define MATCH_WAIT_MS 10U
 
 struct sample {
     uint32_t burst;
@@ -79,11 +84,12 @@ static void on_sample(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no,
     (void)sub;
     (void)time;
     (void)seq_no;
-    const struct sample* s = (const struct sample*)data;
+    const struct sample* got = (const struct sample*)data;
     delivered++;
-    if (s->index == BURST - 1U) {
+    if (got->index == BURST - 1U) {
         tails++;
-        printf("TAIL burst=%u delay_us=%llu\n", s->burst, (unsigned long long)((tt_get_ns() - s->sent_ns) / 1000U));
+        printf("TAIL burst=%u delay_us=%llu\n", got->burst,
+               (unsigned long long)((tt_get_ns() - got->sent_ns) / tt_MICROSECOND));
         fflush(stdout);
     }
 }
@@ -99,7 +105,7 @@ static int run_sub(uint32_t seconds) {
     static struct tt_Context node;
     static struct tt_Subscriber sub;
     static uint64_t tracking[tt_MAX_PEER_COUNT * WINDOW_WORDS];
-    static uint64_t reorder[64 * tt_REORDER_SLOT_SIZE(sizeof(struct sample)) / sizeof(uint64_t)];
+    static uint64_t reorder[REORDER_SLOTS * tt_REORDER_SLOT_SIZE(sizeof(struct sample)) / sizeof(uint64_t)];
     if (tt_Context_create(&node) != tt_RET_OK ||
         tt_Context_create_subscriber(&node, &sub, &topic, "tail", on_sample) != tt_RET_OK) {
         fprintf(stderr, "cannot create the subscriber\n");
@@ -109,7 +115,7 @@ static int run_sub(uint32_t seconds) {
     sub.tracking_bitmaps = tracking;
     sub.tracking_words = WINDOW_WORDS;
     sub.reorder_storage = reorder;
-    sub.reorder_slots = 64;
+    sub.reorder_slots = REORDER_SLOTS;
     sub.reorder_slot_bytes = (uint32_t)tt_REORDER_SLOT_SIZE(sizeof(struct sample));
     poll_for(&node, (uint64_t)seconds * tt_SECOND);
     printf("SUB: delivered=%u tails=%u\n", delivered, tails);
@@ -140,20 +146,20 @@ static int run_pub(uint32_t bursts, uint32_t gap_ms, const char* idle) {
     }
     uint64_t waited = 0;
     while (tt_Publisher_matched_count(&pub) == 0 && waited < 10U * tt_SECOND) {
-        poll_for(&node, 10U * tt_MILLISECOND);
-        waited += 10U * tt_MILLISECOND;
+        poll_for(&node, (uint64_t)MATCH_WAIT_MS * tt_MILLISECOND);
+        waited += (uint64_t)MATCH_WAIT_MS * tt_MILLISECOND;
     }
     if (tt_Publisher_matched_count(&pub) == 0) {
         printf("PUB: VOID no reader matched in 10 s\n");
         tt_Context_destroy(&node);
         return 1;
     }
-    poll_for(&node, 500U * tt_MILLISECOND);
+    poll_for(&node, (uint64_t)SETTLE_MS * tt_MILLISECOND);
     uint32_t refused = 0;
-    for (uint32_t b = 0; b < bursts; b++) {
+    for (uint32_t burst = 0; burst < bursts; burst++) {
         for (uint32_t i = 0; i < BURST; i++) {
-            struct sample s = {b, i, tt_get_ns()};
-            if (tt_Publisher_publish(&pub, (struct tt_Data*)&s) != tt_RET_OK) {
+            struct sample one = {burst, i, tt_get_ns()};
+            if (tt_Publisher_publish(&pub, (struct tt_Data*)&one) != tt_RET_OK) {
                 refused++;
             }
             poll_for(&node, tt_MILLISECOND);

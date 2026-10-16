@@ -538,7 +538,7 @@ static void test_a_steady_stream_sends_no_heartbeat_datagram(void) {
         EXPECT_EQ_U32(1, lone_heartbeats);
         EXPECT_EQ_U32(1, lone_nonfinal);
         EXPECT_EQ_INT(3000, delivered_count);
-        sim_run_until(test_mock_now + 2U * tt_SECOND);
+        sim_run_until(test_mock_now + (2U * tt_SECOND));
         EXPECT_EQ_U32(1, lone_heartbeats); // everything acknowledged: silence
         EXPECT_TRUE(!pub.idle_heartbeat_armed);
         printf("test_idle_heartbeat: steady stream, piggyback %u: %u lone HEARTBEATs, %u riding\n", piggyback[i],
@@ -553,7 +553,7 @@ static void test_a_slow_stream_pays_one_heartbeat_per_sample(void) {
     sim_start();
     for (uint32_t v = 1; v <= 10U; v++) {
         sim_publish(v);
-        sim_run_until(test_mock_now + 2U * PERIOD);
+        sim_run_until(test_mock_now + (2U * PERIOD));
     }
     EXPECT_EQ_U32(10, lone_heartbeats);
     EXPECT_EQ_INT(10, delivered_count);
@@ -590,7 +590,7 @@ static void test_an_acknowledged_writer_sends_none(void) {
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_request_ack(&pub)); // acknowledged now, before the idle HEARTBEAT is due
     sim_drain();
     sim_count_reset();
-    sim_run_until(test_mock_now + 5U * tt_SECOND);
+    sim_run_until(test_mock_now + (5U * tt_SECOND));
     EXPECT_EQ_U32(0, lone_heartbeats);
     EXPECT_EQ_INT(5, delivered_count);
 }
@@ -645,7 +645,7 @@ static void test_any_heartbeat_pushes_the_next_back(void) {
             EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_request_ack(&pub));
             sim_drain();
         }
-        sim_run_until(sent + 4U * PERIOD);
+        sim_run_until(sent + (4U * PERIOD));
         uint64_t first_idle = solicit ? sent + (PERIOD * 6U / 10U) + PERIOD : sent + PERIOD;
         uint32_t index = solicit ? 1U : 0U; // the solicitation is lone_at[0]
         EXPECT_TRUE(lone_heartbeats > index + 1U);
@@ -663,7 +663,7 @@ static void test_the_period_has_a_floor(void) {
     sim_start();
     drop_reader = true;
     sim_publish(1);
-    sim_run_until(test_mock_now + 50U * tt_MILLISECOND);
+    sim_run_until(test_mock_now + (50U * tt_MILLISECOND));
     uint64_t floor = (uint64_t)tt_IDLE_HEARTBEAT_RETRY_MULTIPLE * tt_RELIABLE_RETRY_INITIAL;
     EXPECT_TRUE(lone_heartbeats >= 3U);
     if (lone_heartbeats >= 3U) {
