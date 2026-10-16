@@ -675,6 +675,15 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   netem on a loaded PC), and the transit rule without the sending cadence (the reader's occasional collapses ran
   deeper than the parent's: 1.23 million resends and 234 of 300 delivered against 0.35 million and 300).
 
+- **The hybrid reader's collapse test no longer fires on plain frame loss read off a young baseline, and calls a
+  squeeze sooner** (2026-10-17; DESIGN.md section 8, "The collapse test", amended). Its significance now reads `L0` at
+  `p_mtu`'s 99.9% bound - the test's own level - instead of the 95% one, which a baseline of a few hundred tails
+  undershot one time in twenty: `test_frame_loss_never_moves_the_cap` (1% loss) called a false collapse (cap 45 -> 7)
+  in 7 seeds of 1,000, in none of them now; the squeeze arm passes seeds 1-132 and 601-654 (seed 37, a false collapse, among them). The size rule `X >= 2 R L0` (still at 95%) is read on the survival side
+  where `2 L0 > 1`, where it could never be met: a squeeze that refused every run on a young baseline waited for more
+  tails. Detection after the first refused run (sim, 1 MB at 30 Hz, 4 MB reassembly memory): 4.52 -> 1.17 s at 0.1%,
+  6.22 -> 2.08 s at 1%, 0.33 -> 0.38 s at 0.01%; runs refused by then 2,571 -> 863 at 0.1%.
+
 - **A step of the date no longer disturbs timers, liveliness or lifespan** (2026-10-16, `ab/monotonic`; DESIGN.md
   section 2, "Time"). The Linux HAL read `CLOCK_REALTIME` for everything, so an NTP or manual step moved every
   deadline: three hours forward, a leased writer was declared gone and a lost sample's repair was refused as past the

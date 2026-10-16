@@ -7,7 +7,7 @@ that still passes means either the test does not test what it says, or the condi
 in the code.
 
 Run from the repository root. Restores every file it touches, whatever happens. MUTANTS=<substring> runs only the
-mutants whose name contains it (the controls always run).
+mutants whose name contains it, or any of several separated by "|" (the controls always run).
 """
 import os
 import pathlib
@@ -438,15 +438,15 @@ MUTANTS = [
     (
         "bound: the point estimate, not the upper limit",
         "src/tickle.c",
-        "    double p = loss_poisson_upper(estimate->events) / (double)estimate->frames;",
+        "    double p = loss_poisson_upper(estimate->events, strict) / (double)estimate->frames;",
         "    double p = (double)estimate->events / (double)estimate->frames;",
         SEND,
     ),
     (
         "bound: Wilson-Hilferty without its skew term",
         "src/tickle.c",
-        "    double cube = 1.0 - (1.0 / (LOSS_WH_SKEW * shifted)) + (LOSS_BOUND_Z / (LOSS_WH_SPREAD * hybrid_sqrt(shifted)));",
-        "    double cube = 1.0 + (LOSS_BOUND_Z / (LOSS_WH_SPREAD * hybrid_sqrt(shifted)));",
+        "    double cube = 1.0 - (1.0 / (LOSS_WH_SKEW * shifted)) + (quantile / (LOSS_WH_SPREAD * hybrid_sqrt(shifted)));",
+        "    double cube = 1.0 + (quantile / (LOSS_WH_SPREAD * hybrid_sqrt(shifted)));",
         SEND,
     ),
     (
@@ -648,14 +648,14 @@ MUTANTS = [
     (
         "law: collapse without significance",
         "src/tickle.c",
-        "    return score >= tt_HYBRID_COLLAPSE_Z && lost >= tt_HYBRID_COLLAPSE_RATIO * baseline * runs;",
-        "    return lost >= tt_HYBRID_COLLAPSE_RATIO * baseline * runs;",
+        "    return score >= tt_HYBRID_COLLAPSE_Z && lost >= far * runs;",
+        "    return lost >= far * runs;",
         SEND,
     ),
     (
         "law: collapse without the size of the excess",
         "src/tickle.c",
-        "    return score >= tt_HYBRID_COLLAPSE_Z && lost >= tt_HYBRID_COLLAPSE_RATIO * baseline * runs;",
+        "    return score >= tt_HYBRID_COLLAPSE_Z && lost >= far * runs;",
         "    return score >= tt_HYBRID_COLLAPSE_Z;",
         SEND,
     ),
@@ -676,8 +676,57 @@ MUTANTS = [
     (
         "law: the baseline at p's mean, not its upper bound",
         "src/tickle.c",
-        "    double p_hi = loss_estimate_p(mtu);",
-        "    double p_hi = loss_estimate_mean(mtu);",
+        "    double baseline = hybrid_baseline_run_loss(window, loss_estimate_bound(mtu, true));",
+        "    double baseline = hybrid_baseline_run_loss(window, loss_estimate_mean(mtu));",
+        SEND,
+    ),
+    (
+        "law: significance at the 95% bound, not the test's own 99.9%",
+        "src/tickle.c",
+        "    double baseline = hybrid_baseline_run_loss(window, loss_estimate_bound(mtu, true));",
+        "    double baseline = hybrid_baseline_run_loss(window, loss_estimate_bound(mtu, false));",
+        SEND,
+    ),
+    (
+        "law: the size of the excess at the 99.9% bound, not the 95% one",
+        "src/tickle.c",
+        "    double allowed = hybrid_baseline_run_loss(window, loss_estimate_p(mtu));",
+        "    double allowed = baseline;",
+        SEND,
+    ),
+    (
+        "law: the clean test at the 99.9% bound",
+        "src/tickle.c",
+        "hybrid_baseline_run_loss(window, loss_estimate_p(mtu)) * (double)window->sent;",
+        "hybrid_baseline_run_loss(window, loss_estimate_bound(mtu, true)) * (double)window->sent;",
+        SEND,
+    ),
+    (
+        "law: far read on the loss side only (2 L0 past 1 never met)",
+        "src/tickle.c",
+        "    far = far < far_survival ? far : far_survival;\n",
+        "    far = far_survival > 1.0 ? far_survival : far;\n",
+        SEND,
+    ),
+    (
+        "law: far read on the survival side only",
+        "src/tickle.c",
+        "    far = far < far_survival ? far : far_survival;\n",
+        "    far = far_survival;\n",
+        SEND,
+    ),
+    (
+        "bound: the strict table is the 95% one",
+        "src/tickle.c",
+        "        return strict ? exact_strict[events] : exact[events];",
+        "        return exact[events];",
+        SEND,
+    ),
+    (
+        "bound: the strict Wilson-Hilferty at the 95% quantile",
+        "src/tickle.c",
+        "    double quantile = strict ? LOSS_BOUND_Z_STRICT : LOSS_BOUND_Z;",
+        "    double quantile = LOSS_BOUND_Z;",
         SEND,
     ),
     (
@@ -1229,7 +1278,7 @@ def main():
                 return 1
             digests[binary] = code_digest(TESTS / binary)
         for name, path, old, new, binary in MUTANTS:
-            if only and only not in name:
+            if only and not any(part in name for part in only.split("|")):
                 continue
             text = (backup / path).read_text()
             if text.count(old) != 1:

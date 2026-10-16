@@ -797,8 +797,10 @@
 #define tt_HYBRID_PATH_CLEAN_NS (2ULL * tt_HYBRID_QUEUE_LIFETIME_NS)
 #endif
 // The collapse test: at least this many runs in the window, this many of them lost, z at least this (one-sided 0.1%)
-// against the run loss frame loss alone allows (L0), and at least this many times L0 lost. A window with neither a
-// collapse nor a clean verdict gathers more, up to tt_HYBRID_WINDOW_MAX_RUNS.
+// against the run loss frame loss alone allows (L0, at p_mtu's 99.9% bound: the 3.09's own level - tickle.c's
+// LOSS_BOUND_Z_STRICT and its table assume it), and at least this many times L0 lost (L0 at the 95% bound; read on the
+// survival side where that is past 1). A window with neither a collapse nor a clean verdict gathers more, up to
+// tt_HYBRID_WINDOW_MAX_RUNS.
 #ifndef tt_HYBRID_COLLAPSE_MIN_RUNS
 #define tt_HYBRID_COLLAPSE_MIN_RUNS 16U
 #endif
