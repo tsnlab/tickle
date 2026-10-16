@@ -1158,15 +1158,42 @@ MTU units lost, 45 events in `p` and `p_mtu`, and held `n` low until they dilute
   (printed, and read by rule (e)).
 - `R`: units a second in multi-unit samples, arrived or inferred lost; `D_s`: run datagrams a second from each source.
 
-**The collapse test (pre-defined).** Over a window of `R` runs (at least 16) with `X` lost: `L0 = 1 - (1 - p_hi)^s`,
-`s` the window's mean run size and `p_hi` the one-sided 95% upper bound of `p_mtu` - the most run loss frame loss
-alone allows. A collapse is `z = (X - R L0 - 0.5) / sqrt(R L0 (1 - L0)) >= 3.09` (one-sided 0.1%; binomial runs at
-the baseline's upper side, so an underestimated `p` errs towards "no collapse") with `X >= 4` and `X >= 2 R L0` - far
-below `(1 - p)^n`, not merely below it. Without an MTU baseline `L0` is 1 and nothing is decided. A window is *clean*
-when it has 16 runs and `X <= R L0`; only a clean window grows the cap, and a window that is neither gathers more (up
-to 1,024 runs). The test is at the run level, not per frame, because a 1 MB sample has one MTU unit (its tail) for 17
-runs: a per-frame comparison of the two loss rates could not tell a fragment path refusing every run from 2% frame
-loss until hundreds of tails had come, where the run-level test calls it within seconds.
+**The collapse test (pre-defined).** Over a window of `R` runs (at least 16) with `X` lost: `L0 = 1 - (1 - p_hi)^s`, `s`
+the window's mean run size and `p_hi` a one-sided upper bound of `p_mtu` - the most run loss frame loss alone allows. A
+collapse is `z = (X - R L0 - 0.5) / sqrt(R L0 (1 - L0)) >= 3.09` (one-sided 0.1%), `L0` at `p_mtu`'s **99.9%** bound,
+with `X >= 4` and `X >= 2 R L0`, `L0` at the **95%** bound - far below `(1 - p)^n`, not merely below it; where `2 L0 >
+1` the same "far" is read on the survival side, `1 - X / R <= (1 - L0) / 2`. Without an MTU baseline `L0` is 1 and
+nothing is decided. A window is *clean* when it has 16 runs and `X <= R L0` (95%); only a clean window grows the cap,
+and a window that is neither gathers more (up to 1,024 runs). The test is at the run level, not per frame, because a 1
+MB sample has one MTU unit (its tail) for 17 runs: a per-frame comparison of the two loss rates could not tell a
+fragment path refusing every run from 2% frame loss until hundreds of tails had come, where the run-level test calls it
+within seconds.
+
+*Amended 2026-10-17* (`analysis/collapse-false-positives`; `examples/perf_hil/experiments/collapse_fp_*`). Until then
+both parts read `L0` at the 95% bound and "far" only as `X >= 2 R L0`. Seeds 1-1,000 of `tests/test_hybrid_send.c`'s
+seed-dependent arms failed 11 times, 7 of them false collapses in `test_frame_loss_never_moves_the_cap` (1% loss, 16 KB
+at 100 Hz) on a baseline that read low - e.g. 3 events in 1,599 tails, `p_hi` 0.485% for a 1% path, `L0` 5.2% for runs
+of 11 that lose 10.5%. A 95% bound is below `p` one time in twenty, so the test's 0.1% was nearer 5% on a young
+baseline; a significance bound at the test's own level makes the baseline no likelier to read low than the window to
+read high. The size of the excess stays at 95%: a stricter bound there only delays (below). And the 2 L0 rule could not
+be met once `L0` passed 1/2 - a young baseline (0 events in 90-180 tails puts `L0` for runs of 45 at 51-76%) - so a
+squeeze that refused every run waited for more tails. The sim (`cfp_squeeze`: 1 MB best effort at 30 Hz, 4 MB reassembly
+memory), delay from the first refused run to the collapse, before against after: 0.33 / 4.52 / 6.22 s against 0.38 /
+1.17 / 2.08 s at 0.01% / 0.1% / 1% (40 / 100 / 40 runs; medians 0 / 4 / 6 against 0 / 1 / 2; runs refused by then at
+0.1% 2,571 against 863), every squeeze detected in both and none called before a run was refused. Plain loss:
+`test_frame_loss_never_moves_the_cap` seeds 1-1,000, 7 false collapses against 0; `cfp_plain` (16 KB at 100 Hz, 300 s,
+50 streams a cell) at 0.01 / 0.1 / 1 / 5%, 0 / 10 / 4 / 2 against 0 / 0 / 2 / 2. The ones left at 1% and 5% rest on a
+baseline that is biased, not only noisy: a sample lost whole (its run and its tail) never reaches the reader, so `p_mtu`
+misses a tail lost with its run and reads about `p (1 - L(n))` for one-run samples - 0.904 p at 1% (1,000 streams of the
+test) and 0.595 p at 5% (0.999 p at 0.1%). Not fixed here. The alternatives, measured the same way: the 99.9% bound in
+both parts delayed the 0.01% squeeze (median 1 s, mean 0.80 s); that bound alone, without the survival side, the 0.1%
+one to 12.7 s; a second confirming window costs a window on every collapse (5.5 s at 0.1%) and still failed 2 seeds of
+1,000; z 4 alone failed 3. With the rule as built, the seed-dependent arms of `tests/test_hybrid_send.c` pass seeds
+1-1,000, the squeeze arm run on seeds 1-132 and 601-654 only (the PC was loaded): all pass, seed 37 among them. Of
+main's other failures there, 325 and 428 lost the reader's announce of the new cap (one 144 B datagram at 0.1%; the
+writer pulls it within a second, after the test looked) and 781 counted 28 of the collapse second's 30 samples into `R`,
+so its anchor read 7% low and halving the rate scaled by 1.87, under `tt_HYBRID_SCALE_AT` (1.9): the test's margins, not
+the collapse test.
 
 **The remembered ceiling is the collapse point, not the overshoot.** Reassembly memory fills over up to `tau`, so a
 cap grown in a few ticks can be far past the collapse point when it shows. The kernel then admits about the share of

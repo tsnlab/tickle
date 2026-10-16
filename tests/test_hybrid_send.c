@@ -1076,9 +1076,11 @@ static void law_window(struct tt_HybridState* hybrid, uint64_t now, uint32_t run
 }
 
 // The test as pre-defined: frame loss as (1 - p)^n predicts is no collapse; the PC's collapse (30 MB/s, 0.1%, n = 8:
-// q 0.46) is one; against L0 at p_mtu's upper bound (0.136%: L0 1.08% at n = 8, 10.8 runs of 1,000) 25 lost is
-// significant and 20 is not; a significant excess under 2 L0 is not a collapse; and nothing is decided without enough
-// runs, losses, or an MTU baseline. A clean window loses no more than R L0.
+// q 0.46) is one. Significance is judged against L0 at p_mtu's 99.9% bound (0.170%: L0 1.35% at n = 8, 13.5 runs of
+// 1,000), the size of the excess against L0 at the 95% bound (0.136%: 1.08%, 10.8 runs): 26 lost is both (z 3.27), 25
+// is twice L0 but not significant (z 3.00 - it was, z 4.19, at the 95% bound), 20 is neither and not clean either; a
+// significant excess under 2 L0 is not a collapse; and nothing is decided without enough runs, losses, or an MTU
+// baseline. A clean window loses no more than R L0 at the 95% bound.
 static void test_the_collapse_test_is_the_designs(void) {
     struct tt_LossEstimate mtu = {30, 30000, 0, 0}; // p_mtu 0.1%
     struct tt_RunWindow consistent = {1000, 8, 8000};
@@ -1087,12 +1089,30 @@ static void test_the_collapse_test_is_the_designs(void) {
     struct tt_RunWindow pc = {1000, 540, 8000};
     EXPECT_TRUE(hybrid_collapsed(&pc, &mtu));
     EXPECT_TRUE(!hybrid_clean(&pc, &mtu));
-    struct tt_RunWindow excess = {1000, 25, 8000};
+    struct tt_RunWindow excess = {1000, 26, 8000};
     EXPECT_TRUE(hybrid_collapsed(&excess, &mtu));
     EXPECT_TRUE(!hybrid_clean(&excess, &mtu));
+    struct tt_RunWindow not_significant = {1000, 25, 8000};
+    EXPECT_TRUE(!hybrid_collapsed(&not_significant, &mtu));
     struct tt_RunWindow within = {1000, 20, 8000};
     EXPECT_TRUE(!hybrid_collapsed(&within, &mtu));
-    EXPECT_TRUE(!hybrid_clean(&within, &mtu)); // neither: the window gathers more
+    EXPECT_TRUE(!hybrid_clean(&within, &mtu));       // neither: the window gathers more
+    struct tt_RunWindow above_l0 = {1000, 12, 8000}; // above R L0 at the 95% bound (10.8), under it at 99.9% (13.5)
+    EXPECT_TRUE(!hybrid_clean(&above_l0, &mtu));
+    // Seed 68 of test_frame_loss_never_moves_the_cap (2026-10-17): a 1% path whose first 1,599 tails lost 3. At the 95%
+    // bound (0.485%) runs of 11 had L0 5.2% and 22 of 200 lost read as a collapse (z 3.53); at the 99.9% bound (0.817%,
+    // L0 8.6%) they are z 1.07 - what a 1% path does (10.5%).
+    struct tt_LossEstimate few_tails = {3, 1599, 0, 0};
+    struct tt_RunWindow plain_loss = {200, 22, 2200};
+    EXPECT_TRUE(!hybrid_collapsed(&plain_loss, &few_tails));
+    // Every run of 45 refused on a baseline of 90 tails, none lost: significant at the 99.9% bound (L0 97%, z 3.66),
+    // and at the 95% one L0 is 78%, so twice L0 is past 1 and the survival side decides - none survived, against at
+    // most 10.9% allowed: a collapse. Read as twice L0 alone it never was, and a squeeze waited for more tails.
+    struct tt_LossEstimate ninety_tails = {0, 90, 0, 0};
+    struct tt_RunWindow all_refused = {510, 510, 510U * 45U};
+    EXPECT_TRUE(hybrid_collapsed(&all_refused, &ninety_tails));
+    struct tt_RunWindow most_refused = {510, 500, 510U * 45U}; // 2% survived: z 0.95 at the 99.9% bound
+    EXPECT_TRUE(!hybrid_collapsed(&most_refused, &ninety_tails));
     // Significant (z near 6) but only 1.2x L0 on a vast exposure: not far below (1 - p)^n.
     struct tt_LossEstimate vast = {10000, 10000000, 0, 0};
     struct tt_RunWindow slight = {125000, 1200, 1000000};
@@ -1540,6 +1560,17 @@ static void test_the_loss_bound_is_the_poisson_upper_limit(void) {
     EXPECT_TRUE(loss_estimate_p(&estimate) > 0.10530 && loss_estimate_p(&estimate) < 0.10542);
     estimate.frames = 10;
     EXPECT_TRUE(loss_estimate_p(&estimate) == 1.0);
+    // The collapse test's, at 99.9%: 6.908 / N at no events, the exact limits up to 10, Wilson-Hilferty above.
+    estimate = (struct tt_LossEstimate) {0, 10000, 0, 0};
+    EXPECT_TRUE(loss_estimate_bound(&estimate, true) > 0.00069075 && loss_estimate_bound(&estimate, true) < 0.00069085);
+    estimate.events = 10;
+    EXPECT_TRUE(loss_estimate_bound(&estimate, true) > 0.002413 && loss_estimate_bound(&estimate, true) < 0.002414);
+    estimate.events = 100; // exactly 134.92
+    EXPECT_TRUE(loss_estimate_bound(&estimate, true) > 0.01348 && loss_estimate_bound(&estimate, true) < 0.01351);
+    estimate.events = 1000; // exactly 1101.63
+    EXPECT_TRUE(loss_estimate_bound(&estimate, true) > 0.11010 && loss_estimate_bound(&estimate, true) < 0.11022);
+    estimate.frames = 0;
+    EXPECT_TRUE(loss_estimate_bound(&estimate, true) == 1.0);
 }
 
 // Routes everything a reader sent (its announces) to the writer.
@@ -1734,10 +1765,8 @@ static void test_a_reassembly_squeeze_end_to_end(void) {
     uint8_t seed = 1;
     uint32_t seconds = 0;
     uint32_t largest = 0;
-    uint32_t refused_before = 0;
     uint64_t generation = 0;
     while (hybrid->collapses == 0 && seconds < 40) {
-        refused_before = sim_reasm_refused;
         generation = readers[0].ctx.last_modified;
         uint32_t n = sim_stream(1, 30, &seed);
         largest = n > largest ? n : largest;
@@ -1745,7 +1774,9 @@ static void test_a_reassembly_squeeze_end_to_end(void) {
     }
     EXPECT_EQ_U64(1, hybrid->collapses);
     EXPECT_TRUE(seconds < 30);
-    EXPECT_TRUE(refused_before > 0);         // the memory was full before the collapse was called: not frame loss
+    // The memory was full when the collapse was called: the refusals began in the second its tick closed, or before -
+    // not frame loss. Since the size rule reads the survival side (2026-10-17) it is often that same second.
+    EXPECT_TRUE(sim_reasm_refused > 0);
     EXPECT_EQ_U64(0, hybrid->path_failures); // runs had got through: the memory's, not the path's
     EXPECT_EQ_U32(45, largest);              // slow start reached n_max first
     uint64_t collapsed_at = test_mock_now;

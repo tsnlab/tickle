@@ -2499,13 +2499,15 @@ static bool loss_estimate_forget_stale(struct tt_LossEstimate* estimate) {
     return true;
 }
 
-// The one-sided 95% upper limit of a Poisson mean given k events: exact for k < 11 (half the chi-square quantile with
-// 2k + 2 degrees of freedom), the Wilson-Hilferty approximation above, which is within 0.3% there.
+// The one-sided 95% upper limit of a Poisson mean given k events - or, `strict`, the 99.9% one: exact for k < 11 (half
+// the chi-square quantile with 2k + 2 degrees of freedom), the Wilson-Hilferty approximation above, which is within
+// 0.3% there.
 #define LOSS_BOUND_EXACT 11U
-#define LOSS_BOUND_Z 1.6449 // the one-sided 95% normal quantile
-#define LOSS_SQRT_STEPS 24  // from the value itself to double precision for any value below 2^32
-#define HYBRID_HALF 0.5     // Newton's step for a square root, rounding, and halving a window's sums
-#define LOSS_WH_SKEW 9.0    // Wilson-Hilferty: (k + 1)(1 - 1 / (9 (k + 1)) + z / (3 sqrt(k + 1)))^3
+#define LOSS_BOUND_Z 1.6449        // the one-sided 95% normal quantile
+#define LOSS_BOUND_Z_STRICT 3.0902 // the one-sided 99.9% one: the collapse test's level (tt_HYBRID_COLLAPSE_Z)
+#define LOSS_SQRT_STEPS 24         // from the value itself to double precision for any value below 2^32
+#define HYBRID_HALF 0.5            // Newton's step for a square root, rounding, and halving a window's sums
+#define LOSS_WH_SKEW 9.0           // Wilson-Hilferty: (k + 1)(1 - 1 / (9 (k + 1)) + z / (3 sqrt(k + 1)))^3
 #define LOSS_WH_SPREAD 3.0
 
 // The square root of a positive value by Newton's method: core links no libm.
@@ -2516,19 +2518,22 @@ static double hybrid_sqrt(double value) {
     }
     return root;
 }
-static double loss_poisson_upper(uint32_t events) {
+static double loss_poisson_upper(uint32_t events, bool strict) {
     static const double exact[LOSS_BOUND_EXACT] = {2.996,  4.744,  6.296,  7.754,  9.154, 10.513,
                                                    11.842, 13.148, 14.435, 15.705, 16.962};
+    static const double exact_strict[LOSS_BOUND_EXACT] = {6.908,  9.233,  11.229, 13.062, 14.794, 16.455,
+                                                          18.062, 19.626, 21.156, 22.657, 24.134};
     if (events < LOSS_BOUND_EXACT) {
-        return exact[events];
+        return strict ? exact_strict[events] : exact[events];
     }
+    double quantile = strict ? LOSS_BOUND_Z_STRICT : LOSS_BOUND_Z;
     double shifted = (double)events + 1.0;
-    double cube = 1.0 - (1.0 / (LOSS_WH_SKEW * shifted)) + (LOSS_BOUND_Z / (LOSS_WH_SPREAD * hybrid_sqrt(shifted)));
+    double cube = 1.0 - (1.0 / (LOSS_WH_SKEW * shifted)) + (quantile / (LOSS_WH_SPREAD * hybrid_sqrt(shifted)));
     return shifted * cube * cube * cube;
 }
 
-// p: the upper bound of the loss rate per frame, in [0, 1].
-static double loss_estimate_p(const struct tt_LossEstimate* estimate) {
+// An upper bound of the loss rate per frame, in [0, 1]: the 95% one, or `strict` the 99.9% one.
+static double loss_estimate_bound(const struct tt_LossEstimate* estimate, bool strict) {
 #ifdef TT_HYBRID_TEST_SEAM
     if (hybrid_test_forced_p >= 0.0) {
         return hybrid_test_forced_p;
@@ -2537,8 +2542,13 @@ static double loss_estimate_p(const struct tt_LossEstimate* estimate) {
     if (estimate->frames == 0) {
         return 1.0;
     }
-    double p = loss_poisson_upper(estimate->events) / (double)estimate->frames;
+    double p = loss_poisson_upper(estimate->events, strict) / (double)estimate->frames;
     return p < 1.0 ? p : 1.0;
+}
+
+// p: the upper bound of the loss rate per frame, in [0, 1].
+static double loss_estimate_p(const struct tt_LossEstimate* estimate) {
+    return loss_estimate_bound(estimate, false);
 }
 
 // p in the announce's loss_p (tickle.h): 0 is no estimate, read as 1; else exponent e (high byte) and mantissa m (low
@@ -12949,12 +12959,10 @@ static uint32_t hybrid_drop(uint32_t n_fail) {
     return dropped > 1U ? dropped : 1U;
 }
 
-// The run loss frame loss alone allows a window, L0 = 1 - (1 - p_hi)^s, s the window's mean run size and p_hi p_mtu's
-// one-sided 95% upper bound: what "q(n) = (1 - p)^n" predicts at the most loss the MTU units allow. 1 with no MTU
-// baseline at all.
-static double hybrid_baseline_run_loss(const struct tt_RunWindow* window, const struct tt_LossEstimate* mtu) {
+// The run loss frame loss alone allows a window, L0 = 1 - (1 - p_hi)^s, s the window's mean run size and p_hi an upper
+// bound of p_mtu: what "q(n) = (1 - p)^n" predicts at the most loss the MTU units allow. 1 with no MTU baseline at all.
+static double hybrid_baseline_run_loss(const struct tt_RunWindow* window, double p_hi) {
     double size = window->sent != 0 ? (double)window->frames / (double)window->sent : 1.0;
-    double p_hi = loss_estimate_p(mtu);
     double clean = 1.0;
     for (uint32_t i = 0; i < (uint32_t)size; i++) {
         clean *= 1.0 - p_hi;
@@ -12964,30 +12972,40 @@ static double hybrid_baseline_run_loss(const struct tt_RunWindow* window, const 
     return 1.0 - clean;
 }
 
-// The collapse test, pre-defined (DESIGN.md section 8, "The collapse test"): of R runs in the window X were lost,
-// against L0 above. A collapse is X far beyond R L0 - z = (X - R L0 - 0.5) / sqrt(R L0 (1 - L0)) of at least
-// tt_HYBRID_COLLAPSE_Z (one-sided; binomial runs at the baseline's upper side, so an underestimated p errs towards "no
-// collapse") - and far in size too: X / R at least tt_HYBRID_COLLAPSE_RATIO x L0, with at least
-// tt_HYBRID_COLLAPSE_MIN_LOST runs lost of tt_HYBRID_COLLAPSE_MIN_RUNS. Without an MTU baseline L0 is 1: no decision.
+// The collapse test, pre-defined (DESIGN.md section 8, "The collapse test"): of R runs in the window X were lost. A
+// collapse is X far beyond what frame loss allows, in significance and in size, at least tt_HYBRID_COLLAPSE_MIN_LOST
+// runs lost of tt_HYBRID_COLLAPSE_MIN_RUNS:
+// - significant: z = (X - R L0 - 0.5) / sqrt(R L0 (1 - L0)) of at least tt_HYBRID_COLLAPSE_Z (one-sided 0.1%), L0 at
+//   p_mtu's one-sided 99.9% bound - the test's own level, so a baseline resting on few MTU frames reads low no oftener
+//   than the window reads high. At the 95% bound a 1% path whose first 1,599 tails lost 3 put L0 at 5.2% for runs of 11
+//   that lose 10.5%, and called a collapse: 7 seeds of 1,000 of test_frame_loss_never_moves_the_cap (2026-10-17).
+// - far: X / R at least tt_HYBRID_COLLAPSE_RATIO x L0, L0 at the 95% bound - or, where that passes the midpoint to 1, a
+//   survival 1 - X / R at most (1 - L0) / tt_HYBRID_COLLAPSE_RATIO: "q(n) far below (1 - p)^n" read on the side where
+//   it can still be met. Twice an L0 past 1/2 is never met, and a squeeze waited for more tails to shrink L0.
+// Without an MTU baseline L0 is 1: no decision.
 static bool hybrid_collapsed(const struct tt_RunWindow* window, const struct tt_LossEstimate* mtu) {
     if (window->sent < tt_HYBRID_COLLAPSE_MIN_RUNS || window->lost < tt_HYBRID_COLLAPSE_MIN_LOST) {
         return false;
     }
     double runs = (double)window->sent;
     double lost = (double)window->lost;
-    double baseline = hybrid_baseline_run_loss(window, mtu);
+    double baseline = hybrid_baseline_run_loss(window, loss_estimate_bound(mtu, true));
     double variance = runs * baseline * (1.0 - baseline);
     if (variance <= 0.0) {
         return false;
     }
     double score = (lost - (runs * baseline) - HYBRID_HALF) / hybrid_sqrt(variance);
-    return score >= tt_HYBRID_COLLAPSE_Z && lost >= tt_HYBRID_COLLAPSE_RATIO * baseline * runs;
+    double allowed = hybrid_baseline_run_loss(window, loss_estimate_p(mtu));
+    double far = tt_HYBRID_COLLAPSE_RATIO * allowed;
+    double far_survival = 1.0 - ((1.0 - allowed) / tt_HYBRID_COLLAPSE_RATIO);
+    far = far < far_survival ? far : far_survival;
+    return score >= tt_HYBRID_COLLAPSE_Z && lost >= far * runs;
 }
 
-// A clean window: enough runs, and no more of them lost than frame loss alone allows (R L0).
+// A clean window: enough runs, and no more of them lost than frame loss alone allows (R L0, at p_mtu's 95% bound).
 static bool hybrid_clean(const struct tt_RunWindow* window, const struct tt_LossEstimate* mtu) {
     return window->sent >= tt_HYBRID_COLLAPSE_MIN_RUNS &&
-           (double)window->lost <= hybrid_baseline_run_loss(window, mtu) * (double)window->sent;
+           (double)window->lost <= hybrid_baseline_run_loss(window, loss_estimate_p(mtu)) * (double)window->sent;
 }
 
 // p as the ceiling's scaling reads it: p_mtu's point estimate once it rests on tt_HYBRID_SCALE_MIN_EVENTS events, 0
