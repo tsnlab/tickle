@@ -13,6 +13,13 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Added
 
+- **rmw_tickle: an optional blocking publish for large samples, `RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS`** (default 0, off:
+  unchanged). With it set, a KEEP_LAST publish of a large sample returns once that sample has been sent, as a DDS
+  publish blocks in its send, or after that many ms; it returns OK either way, and the next publish then meets core's
+  KEEP_LAST as before. KEEP_ALL publishers (which already wait) and types that cannot be large never wait.
+  Core gains `tt_Publisher_large_in_flight()`, which also arms one writable callback for when the send has gone. See
+  docs/RMW.md, "Large samples: blocking publish"; the rig arm is `tickle@block` in `rmw_keepall_rig.sh`.
+
 - **`tt_Publisher_matched_count()`**: how many remote nodes a Publisher has matched a reader on; 0 means a publish
   sends nothing. The uint64 publisher examples (Linux and FreeRTOS) use it to wait up to 5 s for their subscriber
   before the first publish, so they no longer lose the samples published before the match, and `make test-linux`

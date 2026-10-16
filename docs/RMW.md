@@ -154,6 +154,63 @@ running) is wider than any effect. Medians: BEST_EFFORT with ring slots lent +8%
 message, RELIABLE -5% and +6%; the default loan arm (decoded shells) within a few percent of plain take, its
 publisher's median CPU +10% (RELIABLE) and +33% (BEST_EFFORT). A rig A/B is what would decide it.
 
+### Large samples: blocking publish
+
+**Off by default.** Core's publish of a large sample (above one datagram, DESIGN.md section 8) never blocks: it sends
+until the socket's buffer is full and returns, and the send goes on from the poll. A KEEP_LAST sample published while
+one is still going waits behind it inside core, and a newer one replaces it there (core's `tail_abandoned`). A DDS
+`publish()` instead blocks in its own send, and the application stamps its next sample only after it returns. At a
+rate that saturates the link (RESULTS.md L4, I4s: 4 MB at 30 Hz on 1 Gbit/s) the difference is the latency rmw_tickle
+loses there: every sample waits behind the one before it, after it was stamped.
+
+`RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS=<ms>` makes rmw_tickle behave like the vendors: after `rmw_publish()` has handed a
+large sample to core, it waits until that sample has gone into the socket, up to that long.
+
+- **Semantics.** It applies to RELIABLE and BEST_EFFORT alike: the vendors' wait is their transport's (a synchronous
+  send into a small socket buffer; RESULTS.md's I4s note counts their publishers publishing only what the link
+  carried), not a QoS. When the time runs out the publish still returns `RMW_RET_OK`, and the next publish meets
+  core's KEEP_LAST as before. It never returns `RMW_RET_TIMEOUT`: DDS's `max_blocking_time` bounds a writer blocked on
+  a full KEEP_ALL history or its resource limits, never a KEEP_LAST write, and rclcpp turns a failed publish into an
+  exception.
+- **Who never waits.** A KEEP_ALL publisher (core already refuses its large publish while a send is in progress, and
+  it waits up to `RMW_TICKLE_MAX_BLOCKING_MS`), a type that can never be larger than a datagram, and any other
+  publisher, small or large, while this one waits. The serialized and buffer-loan publish paths wait like
+  `rmw_publish()`.
+- **How.** Core's `tt_Publisher_large_in_flight()` says whether a large sample is still being sent or waits behind
+  one; answering true, it arms one writable callback, fired from the poll when the last of them has gone. The publish
+  sleeps on the context's condvar with the KEEP_ALL wait's locking, so no wake is lost and nothing polls. With
+  executor-driven receive, it ends the lease of an executor that has just left `rmw_wait()`, so the parked poll
+  thread carries the send on at once.
+- **After the hand-off, not before.** The first version waited before handing the sample to core, for the previous
+  one to go; the sample was already stamped, so it waited for the whole of the previous one's send, and the PC's I4s
+  median latency rose to 69.7 ms against 53.8 ms without the option.
+- **"Gone" means in the socket.** A send buffer that holds more than a sample keeps the sample waiting there instead:
+  rmw_tickle asks for 4 MiB, and the Pis grant 425,984 bytes, this PC 8 MiB.
+- **Seen it act**: the publisher's shutdown line, `large_block_waits=<n> large_block_timeouts=<n>`.
+
+**Measured on the PC only** (`experiments/large_block_pc.sh` on the build that added the option, 2026-10-16: the I4s
+cell over a veth shaped by tbf to 1 Gbit/s, 3 reps x 30 s, medians; not a rig figure; Fast DDS does not run on this
+PC's veth):
+
+| socket buffers | arm | published of 900 | abandoned at the sender | delivered of offered | latency median / p99 ms |
+|---|---|---:|---:|---:|---:|
+| rig's (425,984 B) | option off | 902 | 28-29 | 96.9% | 53.5 / 70.0 |
+| rig's (425,984 B) | `=1000` | 871-874 | 0 | 96.7% | 36.5 / 37.4 |
+| rig's (425,984 B) | CycloneDDS | 857-864 | - | 95.9% | 36.9 / 40.9 |
+| this PC's (8 MiB) | option off | 902 | 27-28 | 97.0% | 79.9 / 96.6 |
+| this PC's (8 MiB) | `=1000` | 873-875 | 0 | 97.1% | 68.9 / 79.0 |
+| this PC's (8 MiB) | CycloneDDS | 859-868 | - | 96.0% | 36.9 / 40.0 |
+
+With the Pis' buffers the option takes the median from 53.5 to 36.5 ms, CycloneDDS's 36.9, at the same delivered
+share of the offered ticks; it publishes fewer samples, as the vendors do. With this PC's 8 MiB a sample still queues
+behind about two others in the socket. One rep of each rmw_tickle arm with the Pis' buffers lost ~8% at the reader
+(PC load; the same rep in both). CycloneDDS, which neither socket buffer touches, read the same in both runs.
+Raw files (PC, outside the repository): `~/largemsg_pc/large_block/v2_rig_r3d30.txt` and `v2_pc_r3d30.txt`, with
+their `.runs/` directories.
+
+The rig decides it: `rmw_keepall_rig.sh` arm `tickle@block` (tickle@head's binary with the option at `BLOCK_MS`,
+default 1000) against `tickle@head` in the I4s cell.
+
 ## QoS
 
 All six policies are supported for topics. `rmw_tickle_validate_qos_profile()` (`src/rmw_qos.c`) enforces the rules
@@ -163,7 +220,7 @@ below.
 |---|---|---|
 | RELIABILITY | BEST_EFFORT, RELIABLE, BEST_AVAILABLE (topics) | RELIABLE uses core ACKNACK, retransmission and Heartbeats. Services retry in core |
 | DURABILITY | VOLATILE; TRANSIENT_LOCAL and BEST_AVAILABLE for topics | Late joiners get the backlog from the publisher's retained-sample cache |
-| HISTORY / DEPTH | KEEP_LAST and KEEP_ALL, for both publishers and subscriptions | KEEP_ALL is bounded by a byte budget: a publisher blocks (`RMW_TICKLE_MAX_BLOCKING_MS`); a full subscription refuses new samples, so a RELIABLE writer resends them |
+| HISTORY / DEPTH | KEEP_LAST and KEEP_ALL, for both publishers and subscriptions | KEEP_ALL is bounded by a byte budget: a publisher blocks (`RMW_TICKLE_MAX_BLOCKING_MS`); a full subscription refuses new samples, so a RELIABLE writer resends them. A KEEP_LAST publish of a large sample never blocks unless `RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS` is set |
 | DEADLINE | any finite value | Checked locally by timers |
 | LIVELINESS | AUTOMATIC, MANUAL_BY_TOPIC, BEST_AVAILABLE (topics) | The lease counts from the last sign of life. Leases under 6 ms are refused |
 | LIFESPAN | any finite value | Expires samples in both the publisher cache and the subscriber queue |
@@ -234,6 +291,7 @@ says so when it does.
 | `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` | add a Heartbeat to every Nth RELIABLE sample; `0` turns it off | tracking window / 16 (64) |
 | `RMW_TICKLE_HEARTBEAT_PERIOD_NS` | also send a periodic Heartbeat | off |
 | `RMW_TICKLE_MAX_BLOCKING_MS` | longest a KEEP_ALL publish may block | 100 |
+| `RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS` | longest a KEEP_LAST publish of a large sample waits for it to be sent ("Large samples: blocking publish") | 0 (off) |
 | `RMW_TICKLE_CACHE_BYTES` | KEEP_LAST publisher cache budget | 1 MiB |
 | `RMW_TICKLE_KEEP_ALL_BYTES` / `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` | KEEP_ALL publisher budget, and the space reserved per sample | 512 KiB / 1472 B |
 | `RMW_TICKLE_REORDER_SLOTS` | out-of-order RELIABLE samples a subscription may hold | the tracking window |

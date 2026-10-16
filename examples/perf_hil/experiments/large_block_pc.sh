@@ -5,8 +5,14 @@
 # 4 MB stream saturates the link as on the rig. Arms: tickle@head (option unset, the control), tickle@block (the same
 # binary with the option), fastdds, cyclonedds.
 #
-# NOT a rig figure: the PC's socket buffers (net.core.wmem_max here, 4 MiB asked) are not the Pi's, so a sample can
-# queue in the sender's socket longer here. It answers whether the option moves the cell the way the design predicts.
+# NOT a rig figure. It answers whether the option moves the cell the way the design predicts.
+#
+# The socket buffers (BUFFERS): rmw_tickle asks for 4 MiB; the Pis grant 425,984 bytes (their net.core.[rw]mem_max is
+# the default 212,992), this PC 8 MiB, which holds two 4 MB samples in the sender's socket and adds their wire time to
+# every latency. BUFFERS=rig (the default) runs a copy of the PC build whose rmw_tickle asks for 212,992 - granted
+# 425,984 here as on the Pis - built next to it as <build>-sb212992; BUFFERS=pc runs the build as it is. Measured
+# 2026-10-16 (the first version of the option, waiting before the hand-off): tickle@head's median latency 53.8 ms
+# with rig buffers - the rig's I4s row reads 55.0 - and 81.0 with the PC's.
 #
 # HOW TO READ IT, written before the first measured run (2026-10-16; amended after the 6 s harness dry run, which
 # showed the publisher's teardown abandoning the one sample in flight when perf_test stops, in either arm):
@@ -20,8 +26,8 @@
 #              the vendors', else FALSIFIED (the option does not do what it is for).
 # The summary is largemsg_rig_summary.py's (offered_pct, latency per arm), with this script's checks after it.
 #
-# Usage: large_block_pc.sh [REPS] [DUR]   (defaults 3, 30)   env: OUT, BLOCK_MS (1000), PF_SHAPE, PF_TICKLE_INSTALL,
-#   PF_PERF_WS (pc_preflight_build.sh's; found for HEAD when unset). Detached, as CLAUDE.md says:
+# Usage: large_block_pc.sh [REPS] [DUR]   (defaults 3, 30)   env: OUT, BLOCK_MS (1000), BUFFERS (rig), PF_SHAPE,
+#   PF_BUILD (pc_preflight_build.sh's build directory; found for HEAD when unset). Detached, as CLAUDE.md says:
 #   setsid nohup examples/perf_hil/experiments/large_block_pc.sh > /path/large_block_pc.log 2>&1 < /dev/null &
 # The last line is always "LARGE_BLOCK_PC rc=<n> ...".
 set -uo pipefail
@@ -33,11 +39,36 @@ OUT=${OUT:-$HOME/largemsg_pc/large_block/large_block_pc_$(date +%Y%m%d-%H%M%S)}
 rc=1
 trap 'echo "LARGE_BLOCK_PC rc=$rc out=$OUT $(date -Is)"' EXIT
 mkdir -p "$(dirname "$OUT")" || exit
-if [ -z "${PF_TICKLE_INSTALL:-}" ]; then
+d=${PF_BUILD:-}
+if [ -z "$d" ]; then
     d=$("$HERE/pc_preflight_build.sh" --find) || { echo "no PC preflight build for HEAD: run pc_preflight_build.sh"; exit; }
-    PF_TICKLE_INSTALL=$d/install
-    PF_PERF_WS=$d/perf/install
 fi
+PF_PERF_WS=$d/perf/install
+case "${BUFFERS:-rig}" in
+    pc) PF_TICKLE_INSTALL=$d/install ;;
+    rig) # the build's own sources, rmw_tickle alone rebuilt into a copy of its install
+        sb=$d-sb212992
+        if [ ! -f "$sb/SB_OK" ]; then
+            rm -rf "$sb" && mkdir -p "$sb" && cp -a "$d/src" "$d/install" "$sb/" || exit
+            sed -i 's/tt_SOCKET_BUFFER_SIZE=4194304/tt_SOCKET_BUFFER_SIZE=212992/' "$sb/src/rmw_tickle/rmw_tickle/CMakeLists.txt"
+            grep -q 'tt_SOCKET_BUFFER_SIZE=212992' "$sb/src/rmw_tickle/rmw_tickle/CMakeLists.txt" ||
+                { echo "cannot set the socket buffer in $sb"; exit; }
+            (
+                set +u
+                # shellcheck disable=SC1091
+                source /opt/ros/lyrical/setup.bash && source "$sb/install/local_setup.bash"
+                set -u
+                export PYTHONPATH=$sb/src/tools/typesupport${PYTHONPATH:+:$PYTHONPATH}
+                cd "$sb" && colcon build --base-paths src/rmw_tickle --build-base build --install-base install \
+                    --packages-select rmw_tickle --cmake-args -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=None \
+                    '-DCMAKE_C_FLAGS=-g -O2' '-DCMAKE_CXX_FLAGS=-g -O2' -DBUILD_TESTING=OFF
+            ) > "$sb.build.log" 2>&1 || { echo "the rig-buffer build failed: $sb.build.log"; exit; }
+            touch "$sb/SB_OK"
+        fi
+        PF_TICKLE_INSTALL=$sb/install ;;
+    *) echo "BUFFERS is rig or pc, not '$BUFFERS'"; exit ;;
+esac
+echo "buffers ${BUFFERS:-rig}: $PF_TICKLE_INSTALL"
 export PF_TICKLE_INSTALL PF_PERF_WS
 export PF_SHAPE=${PF_SHAPE:-tbf rate 1gbit burst 64kb latency 100ms}
 export BLOCK_MS=${BLOCK_MS:-1000}
