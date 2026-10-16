@@ -377,6 +377,20 @@ static void release_sample(rmw_tickle_subscriber_t* sub_impl, struct tt_Sample* 
     }
 }
 
+// LIFESPAN (rmw_tickle_subscriber_t.lifespan_ns): the tt_get_ns() from which a sample that arrived at the date
+// `received`, stamped `source` by its writer, is dropped; 0 without a lifespan. The age is judged once, on arrival, as
+// the date's distance from the writer's (the hosts' clocks must agree, as in DDS); from there it runs on the monotonic
+// clock - last_activity_time, read at this arrival - so a later step of the date neither expires the queue nor keeps
+// it. A source stamp ahead of this date is age 0, not an unsigned wrap to "expired".
+static uint64_t lifespan_expiry(const rmw_tickle_subscriber_t* sub_impl, uint64_t received, uint64_t source) {
+    if (sub_impl->lifespan_ns == 0) {
+        return 0;
+    }
+    uint64_t age = received > source ? received - source : 0;
+    uint64_t left = age < sub_impl->lifespan_ns ? sub_impl->lifespan_ns - age : 0;
+    return sub_impl->last_activity_time + left;
+}
+
 static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
     (void)seq_no; // core's: counts datagrams once messages fragment - the psn comes from rmw_tickle's own header
     TT_TRACE(tt_TRACE_DELIVER);
@@ -481,14 +495,7 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     // The date, as source_timestamp: both are points in time the application compares (DDS's reception timestamp).
     uint64_t received = tt_get_wall_ns();
     sub_impl->queue[tail_index].received_timestamp = received;
-    if (sub_impl->lifespan_ns != 0) {
-        // LIFESPAN: the age is judged once, here, as the date's distance from the writer's (the hosts' clocks must
-        // agree, as in DDS); from here it runs on the monotonic clock, so a later step of the date neither expires the
-        // queue nor keeps it. A source stamp ahead of this date is age 0, not an unsigned wrap to "expired".
-        uint64_t age = received > time ? received - time : 0;
-        uint64_t left = age < sub_impl->lifespan_ns ? sub_impl->lifespan_ns - age : 0;
-        sub_impl->queue[tail_index].expires_ns = sub_impl->last_activity_time + left; // tt_get_ns() at this arrival
-    }
+    sub_impl->queue[tail_index].expires_ns = lifespan_expiry(sub_impl, received, time);
     sub_impl->queue[tail_index].publication_sequence_number = publication_sequence_number;
     sub_impl->queue[tail_index].reception_sequence_number = sub_impl->reception_sequence_number++;
     // Valid only inside this callback, so it is read here and not at take time.

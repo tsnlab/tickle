@@ -34,13 +34,13 @@
 
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"
-#include "rmw/error_handling.h"
 #include "rmw/init.h"
 #include "rmw/init_options.h"
 #include "rmw/qos_profiles.h"
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/subscription_options.h"
+#include "rmw/time.h"
 #include "rmw/types.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 #include "rosidl_runtime_c/message_type_support_struct.h"
@@ -97,6 +97,10 @@ static rosidl_message_type_support_t pair_handle = {.data = &pair_callbacks,
 #define LIFESPAN_MS 500
 #define MS_NS 1000000ULL
 #define CAPACITY 8
+#define OLD_MS 10000ULL     // "old": stamped this long ago, far past the lifespan
+#define AHEAD_MS 3600000ULL // "ahead": the writer's date an hour ahead of ours
+#define LEFT_MS 100ULL      // "ages": this much of its life left on arrival
+#define LATER_MS 200L       // ... and taken this much later
 
 // Message `id`, stamped `source_ns` (the writer's date), as core delivers it.
 static void deliver(rmw_subscription_t* sub, uint32_t id, uint64_t source_ns) {
@@ -119,8 +123,8 @@ static bool take(rmw_subscription_t* sub, uint32_t* id, rmw_message_info_t* info
     return taken;
 }
 
-static void sleep_ms(long ms) {
-    struct timespec delay = {.tv_sec = 0, .tv_nsec = ms * (long)MS_NS};
+static void sleep_ms(long millis) {
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = millis * (long)MS_NS};
     nanosleep(&delay, NULL);
 }
 
@@ -155,22 +159,22 @@ int main(void) {
     assert(received >= now && received <= date);
 
     // old: past its lifespan on arrival.
-    deliver(sub, 2, tt_get_wall_ns() - (10000ULL * MS_NS));
+    deliver(sub, 2, tt_get_wall_ns() - (OLD_MS * MS_NS));
     bool old_taken = take(sub, &id, &info);
     printf("old: %s\n", old_taken ? "TAKEN" : "dropped");
     assert(!old_taken);
 
     // ahead: the writer's date an hour ahead of ours is age 0, not an expired wrap.
-    deliver(sub, 3, tt_get_wall_ns() + (3600000ULL * MS_NS));
+    deliver(sub, 3, tt_get_wall_ns() + (AHEAD_MS * MS_NS));
     bool ahead_taken = take(sub, &id, &info);
     printf("ahead: %s\n", ahead_taken ? "taken" : "DROPPED");
     assert(ahead_taken && 3 == id);
 
     // ages: 100 ms of its life left on arrival - taken at once, gone 200 ms later.
-    deliver(sub, 4, tt_get_wall_ns() - ((LIFESPAN_MS - 100ULL) * MS_NS));
+    deliver(sub, 4, tt_get_wall_ns() - ((LIFESPAN_MS - LEFT_MS) * MS_NS));
     bool at_once = take(sub, &id, &info) && 4 == id;
-    deliver(sub, 5, tt_get_wall_ns() - ((LIFESPAN_MS - 100ULL) * MS_NS));
-    sleep_ms(200);
+    deliver(sub, 5, tt_get_wall_ns() - ((LIFESPAN_MS - LEFT_MS) * MS_NS));
+    sleep_ms(LATER_MS);
     bool later = take(sub, &id, &info);
     printf("ages: taken at once %s, taken 200 ms later %s\n", at_once ? "yes" : "NO", later ? "YES" : "no");
     assert(at_once && !later);

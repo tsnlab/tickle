@@ -30,7 +30,7 @@
 #define NS_PER_S 1000000000ULL
 #define DISTINCT_NS (60ULL * NS_PER_S)
 
-static uint64_t read_clock(clockid_t clock) {
+static uint64_t read_clock(clockid_t clock) { // NOLINT(misc-include-cleaner) - clockid_t: <time.h>
     struct timespec ts;
     clock_gettime(clock, &ts); // NOLINT(misc-include-cleaner) - <time.h>
     return ((uint64_t)ts.tv_sec * NS_PER_S) + (uint64_t)ts.tv_nsec;
@@ -59,7 +59,7 @@ int main(void) {
     if (apart < DISTINCT_NS) {
         printf(
             "clock_check: VOID - the two clocks are within %llu s of each other, so neither reading tells them apart\n",
-            (unsigned long long)(DISTINCT_NS / NS_PER_S));
+            DISTINCT_NS / NS_PER_S);
         return 2;
     }
     int failures = 0;
