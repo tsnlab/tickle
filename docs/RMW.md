@@ -281,6 +281,15 @@ Compile-time sizing `rmw_tickle` sets for core: up to 256 nodes per context, 204
 entities, and 4 MiB socket receive buffers. The kernel caps the buffer request at `net.core.rmem_max`, and the log
 says so when it does.
 
+- `-DRMW_TICKLE_MAX_RELIABLE_READERS=<N>` (1-1024, default 16, core's `tt_MAX_ACK_ENTRIES`): how many readers one
+  RELIABLE publisher can have. The next one is not matched, and the log says `Ack table full`; a BEST_EFFORT reader of
+  a RELIABLE publisher counts too. Each entry is 64 bytes in every publisher (24 for its acknowledgement, 40 for the
+  hybrid transport's watch), so 64 readers add 3 KiB per publisher, and the acknowledgement scans (per publish for
+  KEEP_ALL) walk them all. A build option and not an environment variable: the entries are fixed arrays inside core's
+  `struct tt_Publisher`, and core allocates nothing. rmw_tickle could allocate them per publisher, but every reader of
+  the table would then follow a pointer and a run-time bound on the publish path; that waits for a deployment that
+  needs the limit to vary at run time.
+
 ### Runtime environment
 
 | Variable | Effect | Default |
@@ -289,7 +298,8 @@ says so when it does.
 | `TICKLE_NODE_ID` | fixed context id | claimed automatically |
 | `RMW_TICKLE_EXECUTOR_POLL` | `0` turns executor-driven receive off | on |
 | `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` | add a Heartbeat to every Nth RELIABLE sample; `0` turns it off | tracking window / 16 (64) |
-| `RMW_TICKLE_HEARTBEAT_PERIOD_NS` | also send a periodic Heartbeat | off |
+| `RMW_TICKLE_IDLE_HEARTBEAT_NS` | while a RELIABLE publisher has something unacknowledged and has sent neither a sample nor a Heartbeat for this long, send a Heartbeat asking for an answer: a lost last sample of a burst is repaired within this, not at the next sample. `0` turns it off ([DESIGN 6](DESIGN.md#6-reliability)) | 250 ms |
+| `RMW_TICKLE_HEARTBEAT_PERIOD_NS` | also send a FINAL Heartbeat at this fixed rate, acknowledged or not; each one pushes the idle Heartbeat back | off |
 | `RMW_TICKLE_MAX_BLOCKING_MS` | longest a KEEP_ALL publish may block | 100 |
 | `RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS` | longest a KEEP_LAST publish of a large sample waits for it to be sent ("Large samples: blocking publish") | 0 (off) |
 | `RMW_TICKLE_CACHE_BYTES` | KEEP_LAST publisher cache budget | 1 MiB |

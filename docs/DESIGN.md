@@ -282,7 +282,9 @@ endpoint count.
 - A large sample's datagrams (section 8) never had a per-sample cap and get no nack suppression: a retained record is
   resent at each request, and a sample held in a step B chunk answers with one descriptor per ACKNACK. Bounded by
   the request rate, which the reader's back-off below lowers for a writer gone quiet; unchanged on 2026-10-15.
-- Ack state is tracked per remote Subscriber entity (`tt_MAX_ACK_ENTRIES` 16), not per node.
+- Ack state is tracked per remote Subscriber entity, not per node: `tt_MAX_ACK_ENTRIES` (16) entries, fixed arrays in
+  the Publisher (24 bytes each, 40 more with the hybrid transport), so it is also how many readers a RELIABLE writer
+  can have; the next is not matched and logged. A build setting (rmw_tickle: `RMW_TICKLE_MAX_RELIABLE_READERS`).
 
 **Reader side.**
 
@@ -348,6 +350,35 @@ KEEP_ALL writer would stop at its bound. So the writer solicits acks itself (a H
   `keep_all_resolicit()` one retry interval after the last solicitation, repeating until writable. Without it a lost
   request or answer left a blocked publisher waiting with nothing to advance it (-87% throughput at p4, 5% loss).
 - `ack_solicit_period_ns` adds an optional periodic solicitation.
+
+**Idle HEARTBEAT** (2026-10-16, the user's decision; `tt_IDLE_HEARTBEAT_PERIOD`, `tt_Publisher.idle_heartbeat_ns`). A
+reader learns its writer's last sample was lost only from something sent after it, and a writer that stopped sent
+nothing: the tail of a burst waited for the next sample. Now, while a matched RELIABLE reader has not acknowledged
+everything announced and nothing has told the readers everything for a period P, the writer sends a non-FINAL
+HEARTBEAT (the match point ahead of it while one is owed), and again P after it while something stays unacknowledged.
+
+- **Timed from the last thing that told the readers everything, not a fixed rate:** a HEARTBEAT of any kind that
+  announced everything sent to every matched reader (piggybacked, match, end-of-sample, solicitation, periodic), or a
+  published sample, which reveals every loss before it. A HEARTBEAT naming less (a match HEARTBEAT behind newer data,
+  an eviction HEARTBEAT to one of several readers) does not count.
+- **One scheduler entry per writer, moved, never re-made per sample.** A publish compares the clock it already read for
+  its DATA's timestamp with one field; past half the period it moves the entry to P after itself, in place in the heap
+  (`sched_postpone_locked()`: no inbox walk, no wake). So a stream with samples at most P/2 apart never lets it run -
+  no wakeup, no datagram - and the last sample of a burst gets its HEARTBEAT P/2 to P after it.
+- **Silent otherwise:** nothing while every reliable reader has acknowledged, with no matched reader (section 4's
+  no-send rule), or for a BEST_EFFORT reader of a RELIABLE writer (`tt_PeerAck.reliable_reader`), which never answers.
+- **P = 250 ms**, floored at 4 retry intervals. The cost is per burst - one HEARTBEAT and one ACKNACK per reader - and per
+  sample for a stream slower than P. Measured on the PC (`srv_gap_pc.sh`, 2026-10-16): at 100 ms the 10 Hz
+  request/reply latency cell paid it every round trip (+81 user instructions a sample each side), at 250 ms and up it
+  did not (+3..+6, within 3 SE of the build with it off). The DDS vendors' documented defaults: Cyclone DDS 100 ms,
+  OpenDDS 1 s, Fast DDS and RTI Connext 3 s.
+- **What it costs a fast stream:** its entry is one more in the context's scheduler heap while data is unacknowledged.
+  A context that schedules a timer per sample - the core throughput bench does - pays that heap's extra level on each:
+  +39..+43 user instructions a sample on the PC (T:p1, T:p4 client), and a never-due dummy entry with the idle
+  HEARTBEAT off costs the same (+45..+54), so it is the entry, not the mechanism. rmw_tickle schedules no core timer
+  per sample.
+- `tests/test_idle_heartbeat.c` (16 mutants, `tests/mutants_idle_heartbeat.py`); on the real HAL,
+  `examples/perf_hil/experiments/idle_heartbeat_tail.sh`.
 
 ## 7. Services (RPC)
 
