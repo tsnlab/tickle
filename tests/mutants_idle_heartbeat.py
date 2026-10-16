@@ -40,23 +40,34 @@ MUTANTS = [
         "    if (!pub->reliable || pub->idle_heartbeat_ns == 0) {\n        return false;\n    }\n    uint32_t next",
     ),
     (
-        "arm: a publish never arms it",
-        "    if (pub->reliable && !pub->idle_heartbeat_armed && pub->idle_heartbeat_ns != 0) {\n"
-        "        idle_heartbeat_arm(pub);",
-        "    if (false) {\n        idle_heartbeat_arm(pub);",
+        "publish: never arms or moves it",
+        "    if (now >= pub->idle_check_ns) {\n        idle_heartbeat_on_publish(pub, now);",
+        "    if (false) {\n        idle_heartbeat_on_publish(pub, now);",
     ),
     (
-        "arm: the arming sample counted as published since",
-        "    pub->idle_heartbeat_seq_no = pub->seq_no;\n"
-        "    idle_heartbeat_schedule(pub, tt_get_ns() + idle_heartbeat_period(pub));",
-        "    idle_heartbeat_schedule(pub, tt_get_ns() + idle_heartbeat_period(pub));",
+        "publish: arms it but never pushes it back",
+        "    if (now >= pub->idle_check_ns) {\n        idle_heartbeat_on_publish(pub, now);",
+        "    if (!pub->idle_heartbeat_armed && now >= pub->idle_check_ns) {\n        idle_heartbeat_on_publish(pub, now);",
     ),
     (
-        "arm: never recorded as armed (one entry per publish)",
-        "    if (tt_Context_schedule(pub->node, due, idle_heartbeat_fire, pub)) {\n"
-        "        pub->idle_heartbeat_armed = true;",
-        "    if (tt_Context_schedule(pub->node, due, idle_heartbeat_fire, pub)) {\n"
-        "        pub->idle_heartbeat_armed = false;",
+        "publish: pushed back only at the deadline (threshold at due)",
+        "        pub->idle_check_ns = due - (period / 2U);\n        return;",
+        "        pub->idle_check_ns = due;\n        return;",
+    ),
+    (
+        "schedule: a second entry instead of moving the first",
+        "    if (pub->idle_heartbeat_armed && sched_postpone_locked(pub->node, idle_heartbeat_fire, pub, due)) {",
+        "    if (false) {",
+    ),
+    (
+        "postpone: the moved entry not re-sifted",
+        "            if (time >= was) {\n                sched_sift_down(node, i);",
+        "            if (time >= was) {\n                (void)node;",
+    ),
+    (
+        "postpone: an earlier time not sifted up",
+        "            } else {\n                sched_sift_up(node, i);\n            }\n            return true;",
+        "            }\n            return true;",
     ),
     (
         "fire: a later HEARTBEAT does not push it back",
@@ -64,15 +75,9 @@ MUTANTS = [
         "    if (false) {",
     ),
     (
-        "fire: a flowing stream gets a datagram of its own",
-        "    if (!pub->idle_heartbeat_piggyback && !pub->batch && pub->seq_no != pub->idle_heartbeat_seq_no) {",
-        "    if (false) {",
-    ),
-    (
         "fire: not re-armed after a send",
-        "    pub->idle_heartbeat_piggyback = false; // whether or not the send counted itself, the fallback has run\n"
-        "    idle_heartbeat_schedule(pub, now + period);",
-        "    pub->idle_heartbeat_piggyback = false; // whether or not the send counted itself, the fallback has run",
+        "    send_idle_heartbeat(node, pub);\n    idle_heartbeat_schedule(pub, now + period, period);",
+        "    send_idle_heartbeat(node, pub);",
     ),
     (
         "send: FINAL (asks for no answer)",
@@ -80,14 +85,9 @@ MUTANTS = [
         "                           unicast ? count : 0, tt_HEARTBEAT_FLAG_FINAL);\n    pub->idle_heartbeats++;",
     ),
     (
-        "piggyback: the flag never rides a sample",
-        "    if (pub->heartbeat_piggyback_every == 0) {\n        return pub->idle_heartbeat_piggyback;\n    }",
-        "    if (pub->heartbeat_piggyback_every == 0) {\n        return false;\n    }",
-    ),
-    (
         "note: a HEARTBEAT sent never restarts the clock",
-        "    pub->last_heartbeat_ns = tt_get_ns();\n    pub->idle_heartbeat_seq_no = pub->seq_no;",
-        "    pub->idle_heartbeat_seq_no = pub->seq_no;",
+        "    pub->last_heartbeat_ns = tt_get_ns();\n}",
+        "}",
     ),
     (
         "period: no floor",
