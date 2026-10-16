@@ -11406,6 +11406,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->recovery_rttvar_ns = 0;
             proxy->probe_seq_no = 0;
             proxy->probe_ns = 0;
+            proxy->probe_busy = false;
             for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
                 proxy->requests[slot].sent_ns = 0;
             }
@@ -11786,7 +11787,21 @@ static void note_watermark_requested(struct tt_WriterProxy* proxy, uint64_t now)
     }
     proxy->probe_seq_no = proxy->ack_seq_no;
     proxy->probe_ns = now != 0 ? now : 1U;
+    proxy->probe_busy = false;
 }
+
+#if tt_LARGE_SAMPLES
+// A large sample's fragments were just recorded from this writer, at `now`: if they are its originals - not a repair,
+// which is addressed to this node (tt_Context.rx_targeted) - and arrived after the probe's request went, the writer
+// was still sending while the probe waited, and its recovery is not timed (tt_WriterProxy.probe_busy). After, not at:
+// what came in with the datagram that revealed the gap - the same poll's reading - was sent before the request.
+static void note_large_arrival(const struct tt_Context* node, struct tt_WriterProxy* proxy, uint64_t now) {
+    proxy->large_arrival_ns = now;
+    if (proxy->probe_ns != 0 && now > proxy->probe_ns && !node->rx_targeted) {
+        proxy->probe_busy = true;
+    }
+}
+#endif
 
 // How long acknack_retry() waits before asking again: the retry interval, shifted left by the proxy's back-off
 // (RFC 6298 section 5.5's doubling, capped at 2^tt_RELIABLE_RETRY_BACKOFF_SHIFT). Requests now go on until the writer
@@ -11852,6 +11867,25 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
     // matching cap - it stopped resending after tt_RELIABLE_RETRY without saying the datagram was gone - held a reader
     // that could not give up (its policy unknown) for good: "cap refuses seq_no 355" 50 times a second, 28 of 40
     // samples delivered (seed 34). retry counts on, saturating, for the back-off and the stuck-gap warning below.
+#if tt_LARGE_SAMPLES
+    // A large sample of this writer arrived within the last interval and no repair from it did: it is busy in its send,
+    // and one blocked in a long send reads requests only when the send ends. Asked again meanwhile, it finds every
+    // request queued at once and resends each named datagram for each (2026-10-16: 8 x 4 MB at 5% loss in a sim, 3.5x
+    // the writer's datagrams once the busy sends no longer inflated the interval - tt_WriterProxy.probe_busy). So the
+    // retry waits, uncounted, for an answer or the send's end; a writer that answers while it sends is asked as before.
+    {
+        uint64_t now = tt_get_ns();
+        uint64_t interval = reliable_retry_interval(node, proxy);
+        if (proxy->large_arrival_ns != 0 && now - proxy->large_arrival_ns < interval &&
+            (proxy->repair_arrival_ns == 0 || now - proxy->repair_arrival_ns >= interval)) {
+            if (!tt_Context_schedule(node, now + interval, acknack_retry, proxy)) {
+                TT_LOG_ERROR("Cannot schedule acknack_retry");
+                proxy->acknack_scheduled = false;
+            }
+            return;
+        }
+    }
+#endif
     bool counted = proxy->retry < UINT8_MAX;
     if (counted) {
         proxy->retry++;
@@ -12284,7 +12318,11 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
 
     RSTAT_ON_ARRIVAL(proxy, seq_no);
     if (node->rx_targeted) {
-        note_repair_arrival(proxy, seq_no, tt_get_ns());
+        uint64_t now = tt_get_ns();
+        note_repair_arrival(proxy, seq_no, now);
+#if tt_LARGE_SAMPLES
+        proxy->repair_arrival_ns = now;
+#endif
     }
     struct new_gap_range new_gap = {-1, -1};
     bool is_new = true;
@@ -12300,9 +12338,11 @@ static bool update_reliable_ack(struct tt_Context* node, struct tt_Subscriber* s
         //
         // Nor is a recovery the back-off reached (acknack_retry_delay()): timed from the first request, it measures
         // the doubled waits, and folded in it would lengthen the interval the back-off doubles - a loop with nothing
-        // of the path in it. Before 2026-10-15 such a gap was given up instead, and never timed either.
+        // of the path in it. Before 2026-10-15 such a gap was given up instead, and never timed either. Nor is one
+        // whose wait saw the writer's large sample still arriving (tt_WriterProxy.probe_busy): it measures the writer's
+        // send.
         if (proxy->probe_ns != 0 && proxy->probe_seq_no == seq_no) {
-            if (node->rx_targeted && proxy->retry <= tt_RELIABLE_RETRY) {
+            if (node->rx_targeted && proxy->retry <= tt_RELIABLE_RETRY && !proxy->probe_busy) {
                 note_recovery_sample(proxy, tt_get_ns() - proxy->probe_ns);
             }
             proxy->probe_ns = 0;
@@ -18003,7 +18043,7 @@ static void large_accept_reliable(struct tt_Context* node, struct tt_Subscriber*
         return;
     }
     if (recorded) {
-        proxy->large_arrival_ns = rx_now(node); // the poll's reading: no clock read per unit
+        note_large_arrival(node, proxy, rx_now(node)); // the poll's reading: no clock read per unit
         drain_reorder(node, sub, proxy);
     }
 }
@@ -18046,7 +18086,7 @@ static bool large_accept_run(struct tt_Context* node, struct tt_Subscriber* sub,
         update_reliable_ack(node, sub, first->seq_no, source, first->entity_id, first->sender_ip, first->sender_port);
     node->rx_seq_span = span;
     if (recorded) {
-        proxy->large_arrival_ns = rx_now(node);
+        note_large_arrival(node, proxy, rx_now(node));
         drain_reorder(node, sub, proxy);
     }
     return true;
@@ -18524,7 +18564,7 @@ static void large_ref_accept_reliable(struct tt_Context* node, struct tt_Subscri
         large_assembly_free(node, assembly); // no tracking to order it by, or not taken: asked for again
         return;
     }
-    proxy->large_arrival_ns = tt_get_ns();
+    note_large_arrival(node, proxy, tt_get_ns());
     drain_reorder(node, sub, proxy);
 }
 
