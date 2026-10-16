@@ -420,6 +420,13 @@ static bool sim_busy_writer;
 static struct sim_datagram* sim_held;
 static uint32_t sim_held_count;
 #define SIM_HELD 4096U
+// The reader's datagrams take this long to reach the writer (0: none), so a repair comes back that long after it was
+// asked for - a path whose round trip the reader's retry interval can be seen to track.
+static uint64_t sim_reverse_delay;
+static struct sim_datagram* sim_late;
+static uint64_t sim_late_due[SIM_HELD];
+static uint32_t sim_late_head;
+static uint32_t sim_late_tail;
 
 // The fragment header of a captured datagram, whichever form it went in: its type, and for FRAG_CONT_L its index,
 // count and seq_no.
@@ -487,7 +494,22 @@ static bool sim_writer_sending(void) {
     return false;
 }
 
+static void sim_deliver_now(struct sim_datagram* d);
+
 static void sim_deliver(struct sim_datagram* d) {
+    if (sim_reverse_delay != 0 && d->from == RECEIVER_ID) {
+        EXPECT_TRUE(sim_late_tail - sim_late_head < SIM_HELD);
+        if (sim_late_tail - sim_late_head < SIM_HELD) {
+            sim_late[sim_late_tail % SIM_HELD] = *d;
+            sim_late_due[sim_late_tail % SIM_HELD] = test_mock_now + sim_reverse_delay;
+            sim_late_tail++;
+        }
+        return;
+    }
+    sim_deliver_now(d);
+}
+
+static void sim_deliver_now(struct sim_datagram* d) {
     const uint8_t* body = NULL;
     if (sim_busy_writer && d->from == RECEIVER_ID && sim_writer_sending()) {
         EXPECT_TRUE(sim_held_count < SIM_HELD);
@@ -545,7 +567,11 @@ static uint64_t sim_next_due(void) {
     if (!sched_next_time(&receiver, &b)) {
         b = UINT64_MAX;
     }
-    return a < b ? a : b;
+    uint64_t next = a < b ? a : b;
+    if (sim_late_head != sim_late_tail && sim_late_due[sim_late_head % SIM_HELD] < next) {
+        next = sim_late_due[sim_late_head % SIM_HELD];
+    }
+    return next;
 }
 
 static bool sim_step(void) {
@@ -565,6 +591,11 @@ static bool sim_step(void) {
         for (uint32_t i = 0; i < held; i++) {
             sim_deliver(&sim_held[i]);
         }
+        sim_drain();
+    }
+    while (sim_late_head != sim_late_tail && sim_late_due[sim_late_head % SIM_HELD] <= test_mock_now) {
+        sim_deliver_now(&sim_late[sim_late_head % SIM_HELD]);
+        sim_late_head++;
         sim_drain();
     }
     sim_run_due(&sender);
@@ -593,6 +624,11 @@ static void sim_start(uint32_t loss_per_mille) {
     }
     sim_busy_writer = false;
     sim_held_count = 0;
+    if (sim_late == NULL) {
+        sim_late = (struct sim_datagram*)calloc(SIM_HELD, sizeof(struct sim_datagram));
+    }
+    sim_reverse_delay = 0;
+    sim_late_head = sim_late_tail = 0;
     test_mock_send_hook = sim_capture;
     test_mock_now = tt_SECOND;
 }
@@ -1260,6 +1296,105 @@ static void test_a_busy_writer_is_not_warned_about(void) {
     EXPECT_TRUE(silent >= 1);
 }
 
+// The busy writer of test_a_busy_writer_is_waited_for_not_given_up, sending `samples` 4 MB samples one after another:
+// fills `after` with how long after each send ended its sample was whole, and `interval` with the reader's retry
+// interval once it was.
+static void busy_writer_run(int samples, uint64_t* after, uint64_t* interval) {
+    init_pair(1000, RELIABLE_KEEP_LAST);
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+    EXPECT_TRUE(proxy != NULL);
+    if (proxy == NULL) {
+        return;
+    }
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+    sample_len = FOUR_MB;
+    sim_loss_per_mille = 50;
+    sim_room_per_step = 8;
+    sim_busy_writer = true;
+    for (int i = 0; i < samples; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 2), tt_SECOND));
+        after[i] = sim_settle_after_send(i + 2, 2 * tt_SECOND);
+        interval[i] = reliable_retry_interval(&receiver, proxy);
+    }
+    EXPECT_EQ_INT(samples + 1, delivered_count);
+    EXPECT_EQ_INT(0, delivered_torn);
+}
+
+static void test_a_busy_writers_send_is_not_timed_as_the_path(void) {
+    // A writer busy sending a large sample reads nothing until the send ends, so a gap the reader asks for during it is
+    // answered only then: request to repair spans the rest of the send. Such a recovery says how long the writer was
+    // busy, not how long the path takes, and folded into the estimate it lengthened the retry interval with each
+    // sample - 8 x 4 MB at 5% loss: from 43 to 61 ms, and every sample after the first whole ~15 ms after its send
+    // ended against 0.95 ms for the first (2026-10-16). Karn's rule in spirit: a recovery whose wait saw the writer's
+    // large sample still arriving is not timed. Mutants: the busy recovery timed (the interval climbs and the samples
+    // are late again); the busy writer asked again at the plain interval (the wire bound below).
+    enum { SAMPLES = 8 };
+    uint64_t after[SAMPLES] = {0};
+    uint64_t interval[SAMPLES] = {0};
+    busy_writer_run(SAMPLES, after, interval);
+    uint64_t slowest = 0;
+    for (int i = 0; i < SAMPLES; i++) {
+        printf("test_large_sample: busy writer, 4 MB sample %d whole %.2f ms after its send ended, retry interval "
+               "%.2f ms\n",
+               i + 1, (double)after[i] / 1e6, (double)interval[i] / 1e6);
+        slowest = after[i] > slowest ? after[i] : slowest;
+    }
+    printf("test_large_sample: busy writer, %d x 4 MB - datagrams sent by the writer %llu (%llu lost), by the reader "
+           "%llu\n",
+           SAMPLES, (unsigned long long)sim_sent[SENDER_ID], (unsigned long long)sim_dropped[SENDER_ID],
+           (unsigned long long)sim_sent[RECEIVER_ID]);
+    EXPECT_TRUE(slowest <= 2 * TEST_RETRY_INTERVAL);
+    EXPECT_TRUE(interval[SAMPLES - 1] <= 2 * TEST_RETRY_INTERVAL);
+    // Nor is the busy writer asked again while it sends: at the path's interval its queued requests named each lost
+    // datagram over and over, and it resent each for each - 91,786 datagrams against 26,226 with the inflated
+    // interval and 25,444 now.
+    EXPECT_TRUE(sim_sent[SENDER_ID] * 100 <= (uint64_t)SAMPLES * tt_sample_datagrams(FOUR_MB) * 120);
+}
+
+// The reader's recovery estimate after `samples` 1 MB samples at 5% loss over a path whose reader-to-writer leg takes
+// `delay`, each sent whole at once - no sample still arriving while a repair is awaited - continuing the pair as it is.
+static uint32_t quiet_path_srtt(int first, int samples, uint64_t delay) {
+    sim_reverse_delay = delay;
+    for (int i = first; i < first + samples; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 1), tt_SECOND));
+        sim_settle(i + 1, 2 * tt_SECOND);
+    }
+    EXPECT_EQ_INT(first + samples, delivered_count);
+    struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+    EXPECT_TRUE(proxy != NULL);
+    return proxy != NULL ? proxy->recovery_srtt_ns : 0;
+}
+
+static void test_a_quiet_paths_round_trip_is_still_timed(void) {
+    // The control of test_a_busy_writers_send_is_not_timed_as_the_path: the same large samples and loss, the writer
+    // never busy while a repair is awaited, and a path whose round trip changes from 2 to 8 ms part-way. The estimate
+    // learns the first and then follows the change - what leaving the busy writer's recoveries out must not stop.
+    // Mutant: no recovery timed at all - srtt stays 0.
+    init_pair(1000, RELIABLE_KEEP_LAST);
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+    EXPECT_TRUE(proxy != NULL);
+    if (proxy == NULL) {
+        return;
+    }
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+    sample_len = ONE_MB;
+    sim_loss_per_mille = 50;
+    const int samples = 6;
+    uint32_t short_path = quiet_path_srtt(1, samples, 2 * tt_MILLISECOND);
+    uint32_t long_path = quiet_path_srtt(1 + samples, samples, 8 * tt_MILLISECOND);
+    printf("test_large_sample: quiet path at 5%% loss - recovery srtt %.2f ms over a 2 ms path, %.2f ms after it "
+           "became 8 ms\n",
+           (double)short_path / 1e6, (double)long_path / 1e6);
+    EXPECT_TRUE(short_path >= 2 * tt_MILLISECOND && short_path < 4 * tt_MILLISECOND);
+    EXPECT_TRUE(long_path >= 6 * tt_MILLISECOND && long_path < 16 * tt_MILLISECOND);
+}
+
 static void test_keep_last_replaces_a_sample_waiting_behind_a_send(void) {
     // Three samples published back to back while the first is still going out: the second waits behind it and the
     // third replaces it before any of it has gone. The reader sees samples 1 and 3, in order, with no gap in between -
@@ -1772,6 +1907,8 @@ int main(void) {
     test_a_sample_that_cannot_be_finished_is_dropped_never_torn();
     test_a_heartbeat_announces_no_sample_still_going_out();
     test_a_busy_writer_is_not_warned_about();
+    test_a_busy_writers_send_is_not_timed_as_the_path();
+    test_a_quiet_paths_round_trip_is_still_timed();
     teardown_pair();
 
     allocator_reset(&sender_alloc);

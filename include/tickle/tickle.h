@@ -2830,6 +2830,10 @@ struct tt_WriterProxy {
     // keep arriving the writer is still sending, and may not answer an ACKNACK before the send ends: a retry then
     // does not count against a KEEP_LAST writer's give-up budget (acknack_retry()).
     uint64_t large_arrival_ns;
+    // tt_get_ns() of the last copy from this writer addressed to this node - a repair - at or past the watermark
+    // (2026-10-16). A writer whose large sample still arrives and which has answered nothing within a retry interval
+    // is taken to be busy in its send, and acknack_retry() does not ask it again until it answers or the send ends.
+    uint64_t repair_arrival_ns;
 #endif
     // Request-to-recovery estimate for the dynamic ACKNACK retry interval (tt_RELIABLE_RETRY_INTERVAL
     // 0, config.h), RFC 6298-style, in nanoseconds. Maintained in every build - so the estimate can
@@ -2855,6 +2859,13 @@ struct tt_WriterProxy {
     uint32_t recovery_rttvar_ns;
     uint32_t probe_seq_no;
     uint64_t probe_ns;
+    // A large sample's original fragments arrived from this writer while the probe was out (2026-10-16): the writer
+    // was still sending, and one blocked in a long send reads the request only when the send ends - so the repair's
+    // time spans the rest of the send and says how busy the writer was, not how long the path takes. Such a recovery
+    // ends the probe without a sample (Karn's rule in spirit: only an unambiguous wait is timed). Timed, a busy 4 MB
+    // writer's sends climbed the interval from 43 to 61 ms in a sim at 5% loss, and every sample after the first was
+    // whole ~15 ms after its send ended rather than ~1 ms (test_a_busy_writers_send_is_not_timed_as_the_path).
+    bool probe_busy;
     // This reader's latest ACKNACK requests to this writer (2026-10-07): when each went out and the first and last
     // seq_no it named, a ring of tt_RELIABLE_REQUEST_HISTORY (config.h), request_next the slot the next one takes,
     // sent_ns 0 an empty slot. answer_ack_request() (tickle.c) leaves out what a request younger than the repair
