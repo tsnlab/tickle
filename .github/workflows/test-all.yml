@@ -125,7 +125,8 @@ jobs:
       # Line and branch coverage of core by the unit tests (QUALITY_DECLARATION.md 4.iii): tracked, not enforced.
       # It builds into its own obj/coverage/ tree, so no other tier's objects change, and it is deliberately absent
       # from the Gate list below - no figure fails the job, and a failing unit test is already "Unit tests" above.
-      # Upload comes straight after because `make sanitize` below starts with `make clean`, which removes the report.
+      # Uploaded straight after it. (`make sanitize` used to start with `make clean`, which removed the report; since
+      # 2026-10-16 it builds into obj/sanitize/ and leaves every other tree alone.)
       - name: Coverage (tracked, not enforced)
         id: coverage
         continue-on-error: true

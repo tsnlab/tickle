@@ -64,9 +64,9 @@ results=()
 #
 # They can run together because no two write the same tree. lint-rmw builds in $REPO/build; the rmw suite in a base of
 # its own under its workspace, with a netns named after its own PID; test-typesupport under build/pytest_basetemp;
-# `make test` in platform/linux/obj/debug and `make tsan` in obj/tsan (until 2026-10-06 tsan began with a `make clean`
-# of every tree, which would have deleted the unit tests' binaries while they ran); the FreeRTOS build in a mktemp
-# directory; the sweep writes nothing. A new row that writes a tree another row also uses must not simply be launched:
+# `make test` in platform/linux/obj/debug, `make tsan` in obj/tsan and `make sanitize` in obj/sanitize (until
+# 2026-10-06 tsan, and until 2026-10-16 sanitize, began with a `make clean` of every tree, which would have deleted the
+# unit tests' binaries while they ran); the FreeRTOS build in a mktemp directory; the sweep writes nothing. A new row that writes a tree another row also uses must not simply be launched:
 # give it a directory of its own, or make the two one command that runs them in order.
 #
 # Docs-only, opt in: `make check-gates DOCS_ONLY=1` (or --docs-only). When every changed path - staged, modified and
@@ -187,6 +187,13 @@ launch ctxreset gate "check-context-reset" make check-context-reset
 launch prov gate "check-results-provenance" make check-results-provenance
 launch unit gate "test (unit)" make test
 launch tsan gate "tsan (thread safety)" make tsan
+# CI's "Unit tests under ASan + UBSan" tier, the same `make sanitize`. On 2026-10-15 main 83469f20 went red in CI on a
+# UBSan report (memcpy(dst, NULL, 0) in segment_write) that every row here had passed: none of them built with a
+# sanitizer that sees it. It builds into obj/sanitize/, so it runs beside `make test` and `make tsan` and leaves no
+# instrumented binary in obj/debug. -j8: built one file at a time the 84 instrumented binaries took 575 s of its 696 s
+# (2026-10-16); in parallel the row takes about 190 s, 100 of them test_hybrid_send under ASan. No `ulimit -v`: ASan
+# reserves terabytes of address space.
+launch sanitize gate "sanitize (ASan + UBSan, as CI)" make -j8 sanitize
 launch pytest gate "test-typesupport (pytest)" make test-typesupport
 # CI lints the FreeRTOS HAL files on their own with include-cleaner on; `make -C platform/freertos lint`
 # does not (see lint-headers-ci there). Needs the FreeRTOS/lwIP submodules.
