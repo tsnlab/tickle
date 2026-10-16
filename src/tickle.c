@@ -256,9 +256,17 @@ static void rollback(struct tt_Context* node, uint32_t old_tx_tail) {
 // tt_Client_set_storage()/tt_Server_set_storage(), or the inline default when that pointer is NULL -
 // which is also what a zeroed struct holds, so an endpoint never set up through create or attach
 // still gets working storage rather than a zero-length one.
-static uint8_t* client_cache_area(struct tt_Client* client, uint32_t* length) {
-    *length = client->cache_storage != NULL ? client->cache_length : (uint32_t)tt_CLIENT_CACHE_LENGTH;
-    return client->cache_storage != NULL ? client->cache_storage : client->cache_buf;
+// A client's area is shared evenly by its tt_CLIENT_MAX_OUTSTANDING call slots: call `slot` keeps its request in the
+// slot-th share, each share a whole number of 8-byte units, so every request starts aligned.
+static uint8_t* client_cache_area(struct tt_Client* client, int slot, uint32_t* length) {
+    if (client->cache_storage == NULL) {
+        *length = (uint32_t)tt_CLIENT_CACHE_LENGTH;
+        return client->cache_buf + ((size_t)slot * (size_t)tt_CLIENT_CACHE_LENGTH);
+    }
+    uint32_t share = client->cache_length / (uint32_t)tt_CLIENT_MAX_OUTSTANDING;
+    share -= share % 8U;
+    *length = share;
+    return client->cache_storage + ((size_t)slot * share);
 }
 
 static uint32_t server_cache_entry_length(const struct tt_Server* server) {
@@ -4852,6 +4860,24 @@ static void deliver_locally_if(bool local, struct tt_Context* node, struct tt_Pu
 #endif
 static void check_liveliness(struct tt_Context* node, uint64_t time, void* param);
 static void server_cache_clean(struct tt_Context* node, uint64_t time, void* param);
+
+// A Client's calls and a Server's cached responses, cleared as their context goes (node_destroy_locked()). Fixed
+// buffers (no malloc/free), so this just forgets them; the scheduler entries naming them are wiped wholesale after.
+static void clear_service_endpoint(struct tt_Endpoint* endpoint) {
+    if (endpoint->kind == tt_KIND_SERVICE_CLIENT) {
+        struct tt_Client* client = (struct tt_Client*)endpoint;
+        for (int j = 0; j < tt_CLIENT_MAX_OUTSTANDING; j++) {
+            client->calls[j].cache = NULL;
+        }
+    } else if (endpoint->kind == tt_KIND_SERVICE_SERVER) {
+        struct tt_Server* server = (struct tt_Server*)endpoint;
+        for (int j = 0; j < tt_MAX_SERVER_CACHE_COUNT; j++) {
+            server->cache[j] = NULL;
+            server->clean_scheduled[j] = false;
+            server->cache_sent_at[j] = 0;
+        }
+    }
+}
 static void clear_server_cache_slot(struct tt_Server* server, int slot);
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - see each definition's own comment.
 static void acknack_retry(struct tt_Context* node, uint64_t time, void* param);
@@ -5543,13 +5569,19 @@ static tt_ret_t node_create_client_locked(struct tt_Context* node, struct tt_Cli
     client->node = node;
     client->service = service;
     client->callback = callback;
-    client->cache = NULL;
+    for (int i = 0; i < tt_CLIENT_MAX_OUTSTANDING; i++) {
+        client->calls[i].client = client;
+        client->calls[i].cache = NULL;
+        client->calls[i].cache_time = 0;
+    }
+    client->callback_seq_no = 0;
+    client->calls_made = 0;
     client->cache_storage = NULL; // inline - see client_cache_area()
     client->cache_length = 0;
-    client->cache_time = 0;
     client->latency = 0;
     client->latency_var = 0;
     client->latency_backed_off = false;
+    client->latency_backed_off_at = 0;
     client->client_tag = free_client_tag(node, endpoint->id);
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         client->peers[i].context_id = tt_CONTEXT_ID_INVALID;
@@ -5674,6 +5706,24 @@ tt_ret_t tt_Server_set_storage(struct tt_Server* server, uint8_t* cache_storage,
     return result;
 }
 
+static uint32_t client_outstanding_locked(const struct tt_Client* client) {
+    uint32_t count = 0;
+    for (int i = 0; i < tt_CLIENT_MAX_OUTSTANDING; i++) {
+        count += client->calls[i].cache != NULL ? 1U : 0U;
+    }
+    return count;
+}
+
+uint32_t tt_Client_outstanding(struct tt_Client* client) {
+    if (client == NULL || client->node == NULL) {
+        return 0;
+    }
+    state_lock(client->node);
+    uint32_t count = client_outstanding_locked(client);
+    state_unlock(client->node);
+    return count;
+}
+
 static tt_ret_t client_set_storage_locked(struct tt_Client* client, uint8_t* cache_storage, uint32_t cache_length) {
     if (client == NULL) {
         return tt_RET_INVALID_ARGUMENT;
@@ -5681,7 +5731,7 @@ static tt_ret_t client_set_storage_locked(struct tt_Client* client, uint8_t* cac
     if (cache_storage != NULL && !storage_aligned(cache_storage, cache_length)) {
         return tt_RET_INVALID_ARGUMENT;
     }
-    if (client->cache != NULL) {
+    if (client_outstanding_locked(client) != 0) {
         return tt_RET_ILLEGAL_STATUS; // a call is outstanding in the storage being replaced
     }
     client->cache_storage = cache_storage; // NULL = inline, see client_cache_area()
@@ -6125,7 +6175,7 @@ static void resend_call_request(struct tt_Context* node, struct tt_Client* clien
 // (tt_timer_resolution_ns()), so a mock clock or an exact timer cannot drive it to 0. A wait cut short by a signal
 // after its deadline is a genuine late wake and counts.
 static void call_retry(struct tt_Context* node, uint64_t time, void* param);
-static struct tt_Client* find_calling_client(struct tt_Context* node, uint32_t endpoint_id, uint16_t seq_no);
+static struct tt_ClientCall* find_calling_call(struct tt_Context* node, uint32_t endpoint_id, uint16_t seq_no);
 
 // The timers G is the granularity of: the reliable reader's ACKNACK retry and the client's call retry.
 static bool is_retry_timer(void (*function)(struct tt_Context* node, uint64_t time, void* param)) {
@@ -6249,17 +6299,18 @@ static uint64_t call_deadline(const struct tt_Client* client) {
 
 // When the wait after the call's `retry`-th send, starting at `now`, ends: the retry interval, cut short at the
 // call's deadline.
-static uint64_t call_next_wake(const struct tt_Client* client, uint32_t retry, uint64_t now) {
+static uint64_t call_next_wake(const struct tt_ClientCall* call, uint32_t retry, uint64_t now) {
+    const struct tt_Client* client = call->client;
     uint64_t deadline = call_deadline(client);
-    uint64_t deadline_at = deadline > UINT64_MAX - client->cache_time ? UINT64_MAX : client->cache_time + deadline;
+    uint64_t deadline_at = deadline > UINT64_MAX - call->cache_time ? UINT64_MAX : call->cache_time + deadline;
     uint64_t wait = compute_retry_interval(client, retry);
     uint64_t wake = wait > UINT64_MAX - now ? UINT64_MAX : now + wait;
     return wake < deadline_at ? wake : deadline_at;
 }
 
-static bool call_past_deadline(const struct tt_Client* client, uint64_t now) {
-    uint64_t deadline = call_deadline(client);
-    return deadline != UINT64_MAX && now >= client->cache_time && now - client->cache_time >= deadline;
+static bool call_past_deadline(const struct tt_ClientCall* call, uint64_t now) {
+    uint64_t deadline = call_deadline(call->client);
+    return deadline != UINT64_MAX && now >= call->cache_time && now - call->cache_time >= deadline;
 }
 
 // A call on the auto path timed out: double the latency estimate (from the seed if there is none yet), so the next
@@ -6268,8 +6319,14 @@ static bool call_past_deadline(const struct tt_Client* client, uint64_t now) {
 // already above it, measured, is kept. The estimate is otherwise learnt only from accepted answers, so without this a
 // server that became slower than the budget timed out every call from then on. The next accepted answer replaces the
 // estimate outright (latency_backed_off), so a server that is fast again gets its budget back at once.
-static void back_off_retry_interval(struct tt_Client* client) {
+static void back_off_retry_interval(struct tt_ClientCall* call, uint64_t now) {
+    struct tt_Client* client = call->client;
     if (client->service->call_retry_interval != 0) {
+        return;
+    }
+    // A call sent before the last backoff ran on the estimate that backoff already doubled (struct
+    // tt_Client.latency_backed_off_at). With one call outstanding no call is ever older than the backoff before it.
+    if (call->cache_time < client->latency_backed_off_at) {
         return;
     }
     uint64_t limit = call_deadline(client);
@@ -6281,14 +6338,25 @@ static void back_off_retry_interval(struct tt_Client* client) {
     }
     client->latency = (uint32_t)latency;
     client->latency_backed_off = true;
+    client->latency_backed_off_at = now;
+}
+
+// The call in `call` ended without an answer: its slot is freed first, so the callback may make the next call, and
+// the callback is told which call it was.
+static void end_call_unanswered(struct tt_ClientCall* call, uint16_t seq_no) {
+    struct tt_Client* client = call->client;
+    call->cache = NULL;
+    client->callback_seq_no = seq_no;
+    client->callback(client, tt_CALL_TIMEOUT, NULL);
 }
 
 static void call_retry(struct tt_Context* node, uint64_t time, void* param) {
     UNUSED(time);
 
-    struct tt_Client* client = param;
+    struct tt_ClientCall* call = param;
+    struct tt_Client* client = call->client;
 
-    struct tt_SubmessageHeader* submessage_header = client->cache;
+    struct tt_SubmessageHeader* submessage_header = call->cache;
     if (submessage_header == NULL) {
         // Already respond.
         return;
@@ -6298,33 +6366,50 @@ static void call_retry(struct tt_Context* node, uint64_t time, void* param) {
         (struct tt_CallRequestHeader*)((void*)submessage_header + sizeof(struct tt_SubmessageHeader));
 
     uint64_t now = tt_get_ns();
-    if (++callrequest_header->retry > call_retry_count(client) || call_past_deadline(client, now)) {
-        back_off_retry_interval(client);
-        client->callback(client, tt_CALL_TIMEOUT, NULL); // every retry went unanswered, or the deadline passed
-
-        client->cache = NULL;
+    if (++callrequest_header->retry > call_retry_count(client) || call_past_deadline(call, now)) {
+        back_off_retry_interval(call, now);
+        end_call_unanswered(call, callrequest_header->seq_no); // every retry went unanswered, or the deadline passed
         return;
     }
 
     resend_call_request(node, client, submessage_header);
 
-    if (!tt_Context_schedule(node, call_next_wake(client, callrequest_header->retry, now), call_retry, client)) {
+    if (!tt_Context_schedule(node, call_next_wake(call, callrequest_header->retry, now), call_retry, call)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
-        client->callback(client, tt_CALL_TIMEOUT, NULL); // can't arm another retry - treat as no answer
-
-        client->cache = NULL;
+        end_call_unanswered(call, callrequest_header->seq_no); // can't arm another retry - treat as no answer
     }
 }
 
-static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* request) {
+// Whether one of the Client's outstanding calls is tt_CLIENT_CALL_WINDOW calls old, so it may not call again until
+// that one ends: the server keeps that many of its answers (set_server_cache()), and a call made now could push out the
+// answer that call is still retrying for. Never with one call slot - a second call is refused anyway.
+static bool client_window_closed(const struct tt_Client* client) {
+    for (int i = 0; i < tt_CLIENT_MAX_OUTSTANDING; i++) {
+        if (client->calls[i].cache != NULL && client->calls_made - client->calls[i].index >= tt_CLIENT_CALL_WINDOW) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* request, uint16_t* seq_no_out) {
     if (client == NULL || request == NULL || client->node == NULL || client->service == NULL ||
         client->service->request_encode_size == NULL || client->service->request_encode == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
 
-    if (client->cache != NULL) {
-        return tt_RET_ILLEGAL_STATUS; // waiting response
+    int slot = -1;
+    for (int i = 0; i < tt_CLIENT_MAX_OUTSTANDING; i++) {
+        if (client->calls[i].cache == NULL) {
+            slot = i;
+            break;
+        }
     }
+    if (slot < 0 || client_window_closed(client)) {
+        return tt_RET_ILLEGAL_STATUS; // every call slot is waiting for its response, or the oldest is too old
+    }
+    struct tt_ClientCall* call = &client->calls[slot];
+    call->client = client; // a zeroed struct, never created, has no back-pointer yet
 
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
     struct tt_Context* node = client->node;
@@ -6346,12 +6431,12 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
         return tt_RET_OUT_OF_BUFFER;
     }
 
-    // The context's counter, not the client's (struct tt_Context.call_seq_no), past any value another Client of this
-    // service here still has outstanding: the counter comes round after 65,536 calls, and an answer reaches its Client
-    // by seq_no alone (find_calling_client() - a CallResponse has no room for the client_tag), so two outstanding
-    // calls of one service in one context must never share one. At most one step per such Client.
+    // The context's counter, not the client's (struct tt_Context.call_seq_no), past any value a call of this service
+    // here - this Client's or another's - still has outstanding: the counter comes round after 65,536 calls, and an
+    // answer reaches its call by seq_no alone (find_calling_call() - a CallResponse has no room for the client_tag), so
+    // two outstanding calls of one service in one context must never share one. At most one step per such call.
     uint16_t seq_no = node->call_seq_no;
-    while (find_calling_client(node, endpoint->id, seq_no) != NULL) {
+    while (find_calling_call(node, endpoint->id, seq_no) != NULL) {
         seq_no++;
     }
     callrequest_header->endpoint_id = endpoint->id;
@@ -6383,7 +6468,7 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
     // limit before being deferred, so cache_buf is sized to match that same worst case.
     size_t length = ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
     uint32_t cache_length = 0;
-    uint8_t* cache_area = client_cache_area(client, &cache_length);
+    uint8_t* cache_area = client_cache_area(client, slot, &cache_length);
     if (length > cache_length) {
         // No room to keep it for a retry (tt_Client_set_storage() sized for smaller requests). Not
         // sent either: a call that cannot be retried would fail silently on the first lost packet.
@@ -6416,29 +6501,37 @@ static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* 
         return tt_RET_IO_ERROR;
     }
 
-    client->cache = cache;
-    client->cache_time = sent_at;
+    call->cache = cache;
+    call->cache_time = sent_at;
+    call->index = client->calls_made++;
     node->call_seq_no = (uint16_t)(seq_no + 1U);
 
-    if (!tt_Context_schedule(node, call_next_wake(client, 0, client->cache_time), call_retry, client)) {
+    if (!tt_Context_schedule(node, call_next_wake(call, 0, call->cache_time), call_retry, call)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
-        client->cache = NULL;
+        call->cache = NULL;
         return tt_RET_OUT_OF_SCHEDULE;
     }
 
+    if (seq_no_out != NULL) {
+        *seq_no_out = seq_no;
+    }
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
+tt_ret_t tt_Client_call_id(struct tt_Client* client, struct tt_Request* request, uint16_t* seq_no) {
     struct tt_Context* locked_node = client != NULL ? client->node : NULL;
     if (locked_node != NULL) {
         state_lock(locked_node);
     }
-    tt_ret_t result = client_call_locked(client, request);
+    tt_ret_t result = client_call_locked(client, request, seq_no);
     if (locked_node != NULL) {
         state_unlock(locked_node);
     }
     return result;
+}
+
+tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
+    return tt_Client_call_id(client, request, NULL);
 }
 
 static tt_ret_t client_destroy_locked(struct tt_Client* client) {
@@ -6451,11 +6544,13 @@ static tt_ret_t client_destroy_locked(struct tt_Client* client) {
         return tt_RET_IILEGAL_ENDPOINT_ID;
     }
 
-    if (client->cache != NULL) {
-        // Cancel the pending call_retry before clearing the cache it references, otherwise
-        // that retry later fires on this (possibly freed/reused) client.
-        tt_Context_unschedule(client->node, call_retry, client);
-        client->cache = NULL;
+    for (int i = 0; i < tt_CLIENT_MAX_OUTSTANDING; i++) {
+        if (client->calls[i].cache != NULL) {
+            // Cancel the pending call_retry before clearing the cache it references, otherwise
+            // that retry later fires on this (possibly freed/reused) client.
+            tt_Context_unschedule(client->node, call_retry, &client->calls[i]);
+            client->calls[i].cache = NULL;
+        }
     }
 
     client->node->last_modified = tt_get_ns();
@@ -7172,7 +7267,7 @@ static uint32_t reliable_cache_place_origin(uint32_t origin, uint16_t depth, uin
     return origin;
 }
 
-// "cache first, then flush" order tt_Client_call() already uses for its own single-slot cache.
+// "cache first, then flush" order tt_Client_call() already uses for each call slot's cache.
 // Both QoS policies share this one cache (struct tt_ReliableCache's own doc comment, tickle.h): a
 // later incoming ACKNACK (process_acknack()) resends this exact copy verbatim, and a newly-
 // discovered Subscriber (deliver_durability_backlog()) gets every currently-retained entry pushed
@@ -15457,36 +15552,125 @@ static void learn_from_expired_response(struct tt_Server* server, uint8_t receiv
     }
 }
 
-// Caches the response just encoded at `submessage_header` for the Client `client_tag` of context `receiver`. That
-// Client's previous answer goes: it calls again only once it has it (one outstanding call per Client). Another
-// Client's answer, from the same context or not, stays until it expires or is evicted - one live answer per calling
-// Client, the memory bound tt_MAX_SERVER_CACHE_COUNT (>= # of clients) was always sized by.
+// The seq_no of the call slot `slot`'s answer is to.
+static uint16_t server_cache_entry_seq_no(struct tt_Server* server, int slot) {
+    const uint8_t* entry = server_cache_entry(server, slot);
+    return ((const struct tt_CallResponseHeader*)(entry + sizeof(struct tt_SubmessageHeader)))->seq_no;
+}
+
+// How far behind `seq_no` slot `slot`'s answer is, in calls of its context.
+static uint16_t server_cache_seq_age(struct tt_Server* server, int slot, uint16_t seq_no) {
+    return (uint16_t)(seq_no - server_cache_entry_seq_no(server, slot));
+}
+
+// What set_server_cache() chooses from: a slot that never held anything, the expired entry sent longest ago, the live
+// entry sent longest ago, and the calling Client's own live entries - how many, the one to the oldest call, and how
+// far behind that Client's newest call the new answer's own call is (0: it is the newest).
+struct server_cache_pick {
+    int empty_slot;
+    int expired_slot;
+    int oldest_live;
+    int own_oldest;
+    int own_live;
+    uint16_t own_oldest_age;
+    uint16_t new_age;
+};
+
+// How far `seq_no`'s call is ahead of the new answer's (`newest`), as one Client's calls are ordered: a Client's
+// seq_nos come from its context's one counter, so they increase with its calls, modulo 2^16 - and its outstanding calls
+// are never half that apart (tt_CLIENT_CALL_WINDOW of its own calls, each taking one step of the counter or a few).
+static uint16_t seq_no_ahead(uint16_t seq_no, uint16_t newest) {
+    uint16_t ahead = (uint16_t)(seq_no - newest);
+    return ahead <= INT16_MAX ? ahead : 0U;
+}
+
+static bool server_cache_slot_is_own(const struct tt_Server* server, int slot, uint8_t receiver, uint8_t client_tag) {
+    return server->cache[slot] != NULL && server->cache[slot]->receiver == receiver &&
+           server->cache_client_tag[slot] == client_tag;
+}
+
+// The calling Client's live answers: how many, and the one to its oldest call, by seq_no - counted back from that
+// Client's newest call among them and the new answer's (`seq_no`).
+static void pick_own_oldest(struct tt_Server* server, uint8_t receiver, uint8_t client_tag, uint16_t seq_no,
+                            struct server_cache_pick* pick) {
+    uint16_t newest_ahead = 0;
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (server_cache_slot_is_own(server, i, receiver, client_tag)) {
+            uint16_t ahead = seq_no_ahead(server_cache_entry_seq_no(server, i), seq_no);
+            newest_ahead = ahead > newest_ahead ? ahead : newest_ahead;
+        }
+    }
+    uint16_t newest = (uint16_t)(seq_no + newest_ahead);
+    pick->new_age = newest_ahead;
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (!server_cache_slot_is_own(server, i, receiver, client_tag)) {
+            continue;
+        }
+        pick->own_live++;
+        uint16_t age = server_cache_seq_age(server, i, newest);
+        if (pick->own_oldest < 0 || age > pick->own_oldest_age) {
+            pick->own_oldest = i;
+            pick->own_oldest_age = age;
+        }
+    }
+}
+
+static void pick_server_cache_slots(struct tt_Server* server, uint8_t receiver, uint8_t client_tag, uint16_t seq_no,
+                                    struct server_cache_pick* pick) {
+    *pick = (struct server_cache_pick) {-1, -1, -1, -1, 0, 0, 0};
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (server->cache[i] == NULL) {
+            if (server->cache_sent_at[i] == 0) {
+                pick->empty_slot = pick->empty_slot < 0 ? i : pick->empty_slot;
+            } else if (pick->expired_slot < 0 || server->cache_sent_at[i] < server->cache_sent_at[pick->expired_slot]) {
+                pick->expired_slot = i;
+            }
+            continue;
+        }
+        if (pick->oldest_live < 0 || server->cache_sent_at[i] < server->cache_sent_at[pick->oldest_live]) {
+            pick->oldest_live = i;
+        }
+    }
+    if (tt_CLIENT_MAX_OUTSTANDING > 1) {
+        pick_own_oldest(server, receiver, client_tag, seq_no, pick);
+    }
+}
+
+// Caches the response just encoded at `submessage_header` for the Client `client_tag` of context `receiver`.
+//
+// Built with tt_CLIENT_MAX_OUTSTANDING 1, that Client's previous answer goes: it calls again only once it has it, so
+// one live answer per calling Client. With more, a new call proves nothing about which earlier answer arrived - the
+// one lost may be the oldest - so a Client keeps tt_CLIENT_CALL_WINDOW answers, and past that the answer to its oldest
+// call goes. That one cannot be waited on: tt_CLIENT_CALL_WINDOW newer calls of the Client have been answered, and the
+// Client makes no call while an outstanding one is that old (client_call_locked()). The bound replaces the one-call
+// build's proof; without one a Client calling 65,536 times within an answer's lifetime came round to its own first
+// seq_no and was answered from that entry (test_two_clients_one_service.c, 2026-10-16). If the new answer is itself to
+// the oldest call - a duplicate of a request long finished - it is sent and not kept. (A server built with 1 assumes
+// its clients are: answering a deeper client, it may re-run a lost call's callback.)
+//
+// Where it goes: a slot that never held anything first, then the expired entry sent longest ago (it can still teach a
+// gap, so it goes last among the free), and with every slot live, a live entry is evicted rather than the new response
+// not being sent at all, which is what a full cache used to mean: the one sent longest ago, unless this Client already
+// holds a full depth (tt_CLIENT_MAX_OUTSTANDING) of answers - then its own, so a Client calling at full depth does not
+// push out the answer a slower one is still retrying. With one call per Client it holds none here, so the rule is the
+// old one.
 static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeader* submessage_header, uint8_t receiver,
                              uint8_t client_tag) {
     size_t length = ROUNDUP((uintptr_t)server->node->tx_buffer + server->node->tx_tail - (uintptr_t)submessage_header);
+    uint16_t seq_no =
+        ((const struct tt_CallResponseHeader*)((const uint8_t*)submessage_header + sizeof(struct tt_SubmessageHeader)))
+            ->seq_no;
 
-    // A slot that never held anything first, then the expired entry sent longest ago (it can still teach a gap, so
-    // it goes last among the free), and with every slot live, the live entry sent longest ago - evicted rather than
-    // the new response not being sent at all, which is what a full cache used to mean.
-    int empty_slot = -1;
-    int expired_slot = -1;
-    int oldest_live = -1;
-    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-        if (server->cache[i] != NULL && server->cache[i]->receiver == receiver &&
-            server->cache_client_tag[i] == client_tag) {
-            clear_server_cache_slot(server, i);
-        }
-
-        if (server->cache[i] == NULL) {
-            if (server->cache_sent_at[i] == 0) {
-                empty_slot = empty_slot < 0 ? i : empty_slot;
-            } else if (expired_slot < 0 || server->cache_sent_at[i] < server->cache_sent_at[expired_slot]) {
-                expired_slot = i;
+    if (tt_CLIENT_MAX_OUTSTANDING == 1) {
+        for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+            if (server->cache[i] != NULL && server->cache[i]->receiver == receiver &&
+                server->cache_client_tag[i] == client_tag) {
+                clear_server_cache_slot(server, i);
             }
-        } else if (oldest_live < 0 || server->cache_sent_at[i] < server->cache_sent_at[oldest_live]) {
-            oldest_live = i;
         }
     }
+    struct server_cache_pick pick;
+    pick_server_cache_slots(server, receiver, client_tag, seq_no, &pick);
 
     if (length > server_cache_entry_length(server)) {
         // Larger than this server's cache entries (tt_Server_set_storage() sized them for this
@@ -15498,10 +15682,20 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
         return true;
     }
 
-    int free_slot = empty_slot >= 0 ? empty_slot : expired_slot;
+    int free_slot = -1;
+    if (pick.own_live >= tt_CLIENT_CALL_WINDOW) { // this Client's bound
+        if (pick.new_age >= pick.own_oldest_age) {
+            return true; // the answer to its oldest call: sent, not kept
+        }
+        free_slot = pick.own_oldest;
+    } else {
+        free_slot = pick.empty_slot >= 0 ? pick.empty_slot : pick.expired_slot;
+    }
     if (free_slot < 0) {
-        TT_LOG_DEBUG("Server cache full - evicting the response sent longest ago");
-        free_slot = oldest_live;
+        TT_LOG_DEBUG("Server cache full - evicting a response sent long ago");
+        free_slot = pick.own_live >= tt_CLIENT_MAX_OUTSTANDING ? pick.own_oldest : pick.oldest_live;
+    }
+    if (server->cache[free_slot] != NULL) {
         clear_server_cache_slot(server, free_slot);
     }
 
@@ -15865,6 +16059,9 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
             // tt_SERVER_DEFERRED_RESPONSE_TIMEOUT from now) encodes and sends it.
             return defer_call_response(server, request_id, client_tag, sender_ip, sender_port);
         }
+        if (return_code == tt_CALL_IGNORED) {
+            return true; // turned away unanswered: the client's retry asks again
+        }
 
         submessage_header = encode_call_response(node, header->source, client_tag, server, seq_no, return_code,
                                                  (struct tt_Response*)response, old_tx_tail);
@@ -15899,12 +16096,13 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
     return true;
 }
 
-// The Client of this service whose outstanding call is `seq_no`, or NULL when none is: nothing outstanding (a
-// duplicate answer, or a late one after call_retry() gave up), or an answer to some earlier call. Several Clients of
-// one service in one context share the endpoint_id; the seq_no tells them apart, because it is drawn from the
-// context's one counter (struct tt_Context.call_seq_no). This took the first of them, find_endpoint()'s single match,
-// until 2026-10-09, and the answers to every other one were dropped as answers to someone else's call.
-static struct tt_Client* find_calling_client(struct tt_Context* node, uint32_t endpoint_id, uint16_t seq_no) {
+// The outstanding call `seq_no` of a Client of this service, or NULL when none is: nothing outstanding (a duplicate
+// answer, or a late one after call_retry() gave up), or an answer to some earlier call. Several Clients of one service
+// in one context share the endpoint_id, and each may have several calls outstanding; the seq_no tells them all apart,
+// because it is drawn from the context's one counter (struct tt_Context.call_seq_no). This took the first Client,
+// find_endpoint()'s single match, until 2026-10-09, and the answers to every other one were dropped as answers to
+// someone else's call.
+static struct tt_ClientCall* find_calling_call(struct tt_Context* node, uint32_t endpoint_id, uint16_t seq_no) {
     if (!node->endpoint_index_valid) {
         rebuild_endpoint_index(node);
     }
@@ -15916,12 +16114,13 @@ static struct tt_Client* find_calling_client(struct tt_Context* node, uint32_t e
         }
         if (endpoint->kind == tt_KIND_SERVICE_CLIENT && endpoint->id == endpoint_id) {
             struct tt_Client* client = (struct tt_Client*)endpoint;
-            const struct tt_CallRequestHeader* outstanding =
-                client->cache != NULL ? (const struct tt_CallRequestHeader*)((const uint8_t*)client->cache +
-                                                                             sizeof(struct tt_SubmessageHeader))
-                                      : NULL;
-            if (outstanding != NULL && outstanding->seq_no == seq_no) {
-                return client;
+            for (int i = 0; i < tt_CLIENT_MAX_OUTSTANDING; i++) {
+                const struct tt_SubmessageHeader* cache = client->calls[i].cache;
+                if (cache != NULL &&
+                    ((const struct tt_CallRequestHeader*)((const uint8_t*)cache + sizeof(struct tt_SubmessageHeader)))
+                            ->seq_no == seq_no) {
+                    return &client->calls[i];
+                }
             }
         }
         slot = (slot + 1) & (tt_ENDPOINT_INDEX_SIZE - 1);
@@ -15952,14 +16151,15 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
     // (arriving after call_retry() already gave up, see its own client->callback(0, NULL)) would
     // otherwise invoke client->callback a second time and pollute the latency EMA with a stale
     // cache_time.
-    struct tt_Client* client = find_calling_client(node, endpoint_id, seq_no);
-    if (client == NULL) {
+    struct tt_ClientCall* call = find_calling_call(node, endpoint_id, seq_no);
+    if (call == NULL) {
         TT_LOG_DEBUG("CallResponse seq_no %u answers no outstanding call, ignoring", seq_no);
         return true;
     }
+    struct tt_Client* client = call->client;
 
     struct tt_Service* service = client->service;
-    uint32_t latency = calculate_latency(client->cache_time, tt_get_ns());
+    uint32_t latency = calculate_latency(call->cache_time, tt_get_ns());
 
     struct tt_Response* response = NULL;
     uint8_t response_buffer[service->response_size];
@@ -15976,10 +16176,10 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
         response = (struct tt_Response*)response_buffer;
     }
 
-    client->cache = NULL;
+    call->cache = NULL;
     // The call is done; drop its still-pending retry timer so it doesn't occupy a scheduler slot
     // until it fires and no-ops (call_retry() already guards on cache == NULL).
-    tt_Context_unschedule(node, call_retry, client);
+    tt_Context_unschedule(node, call_retry, call);
 
     // RFC 6298's estimator, with the reliable retry's gains (note_recovery_sample()): the first answer - or the first
     // since a backoff, see back_off_retry_interval() - sets srtt = R and rttvar = R / 2; each later one moves rttvar a
@@ -15997,6 +16197,7 @@ static bool process_callresponse(struct tt_Context* node, struct tt_Header* head
         client->latency = (uint32_t)((((uint64_t)RECOVERY_SRTT_KEEP * client->latency) + latency) / RECOVERY_SRTT_DIV);
     }
 
+    client->callback_seq_no = seq_no;
     client->callback(client, callresponse_header->return_code, response);
 
     if (response != NULL) {
@@ -21357,17 +21558,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         // malloc/free), so this just needs clearing. The scheduler entries referencing them are
         // about to be wiped wholesale below anyway, so there's no need to unschedule them
         // individually here.
-        if (endpoint->kind == tt_KIND_SERVICE_CLIENT) {
-            struct tt_Client* client = (struct tt_Client*)endpoint;
-            client->cache = NULL;
-        } else if (endpoint->kind == tt_KIND_SERVICE_SERVER) {
-            struct tt_Server* server = (struct tt_Server*)endpoint;
-            for (int j = 0; j < tt_MAX_SERVER_CACHE_COUNT; j++) {
-                server->cache[j] = NULL;
-                server->clean_scheduled[j] = false;
-                server->cache_sent_at[j] = 0;
-            }
-        }
+        clear_service_endpoint(endpoint);
     }
     node->endpoint_count = 0;
 

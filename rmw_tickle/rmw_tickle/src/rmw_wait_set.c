@@ -11,7 +11,7 @@
 // rmw_tickle/PLAN.md's Milestone 5: rmw_create_wait_set()/rmw_destroy_wait_set()/rmw_wait(). rmw_
 // wait() waits directly on the one shared condition variable every waitable entity in this rmw
 // broadcasts to when it produces new data (subscriber_callback()'s queue push, client_callback()'s
-// response_ready, server_callback()'s request_available, rmw_trigger_guard_condition()) - see rmw_
+// response_count, server_callback()'s request_count, rmw_trigger_guard_condition()) - see rmw_
 // tickle_context_impl_t's own doc comment (rmw_tickle.h) for the multi-lock design that avoids a
 // lost-wakeup race between an entity's own fine-grained lock and this shared condvar's lock.
 //
@@ -135,7 +135,7 @@ static bool check_services(rmw_services_t* services, bool finalize) {
     for (size_t i = 0; i < services->service_count; ++i) {
         rmw_tickle_service_t* svc = (rmw_tickle_service_t*)services->services[i];
         pthread_mutex_lock(&svc->request_mutex);
-        bool ready = svc->request_available;
+        bool ready = 0 != svc->request_count;
         pthread_mutex_unlock(&svc->request_mutex);
         if (ready) {
             any_ready = true;
@@ -154,7 +154,7 @@ static bool check_clients(rmw_clients_t* clients, bool finalize) {
     for (size_t i = 0; i < clients->client_count; ++i) {
         rmw_tickle_client_t* client = (rmw_tickle_client_t*)clients->clients[i];
         pthread_mutex_lock(&client->response_mutex);
-        bool ready = client->response_ready;
+        bool ready = 0 != client->response_count;
         pthread_mutex_unlock(&client->response_mutex);
         if (ready) {
             any_ready = true;

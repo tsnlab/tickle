@@ -13,6 +13,24 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Added
 
+- **Several calls outstanding per Client** (the user's decision of 2026-10-16; docs/DESIGN.md section 7). A Client has
+  `tt_CLIENT_MAX_OUTSTANDING` call slots (config.h, default 4, compile time only), each with its own seq_no, retry
+  timer and cached request; answers are matched in any order, and the callback names the call it reports
+  (`tt_Client.callback_seq_no`; `tt_Client_call_id()` returns the seq_no, `tt_Client_outstanding()` counts the
+  calls). Call N + 1 is refused with `tt_RET_ILLEGAL_STATUS`, and so is a call while one outstanding is 2N calls
+  old (`tt_CLIENT_CALL_WINDOW`): a Server keeps 2N answers per calling Client and lets the one to its oldest call go,
+  so a lost answer is still there when its retry comes. A full cache takes a Client's own answer when it holds a full
+  depth. 1 builds the old behaviour, and the services unit tests run in that build too. The wire is unchanged. Memory: N x `tt_CLIENT_CACHE_LENGTH` inline
+  per Client (11.8 KB at core's defaults, was 2.9 KB); `tt_Client_set_storage()` now splits the area evenly across
+  the slots. rmw_tickle: `rmw_send_request()` keeps up to N requests in flight and, with all in flight (or the
+  window closed), waits up to 100 ms for one to end and then returns `RMW_RET_ERROR`; responses are queued (QoS depth, KEEP_LAST) and taken under
+  their own sequence ids; a service queues up to 64 untaken requests from any clients, each answerable until it times
+  out in core. rclcpp's `async_send_request()` in a row and an action client's `get_result` for several goals failed
+  before. `-DRMW_TICKLE_CLIENT_MAX_OUTSTANDING=` changes N for the rmw build.
+- **`tt_CALL_IGNORED`**: a server callback may turn a request away unanswered - nothing sent or cached - and the
+  client's retry asks again. rmw_tickle's service uses it when its queue is full, where it used to answer with an
+  error that ended the client's call.
+
 - **`tt_Publisher_matched_count()`**: how many remote nodes a Publisher has matched a reader on; 0 means a publish
   sends nothing. The uint64 publisher examples (Linux and FreeRTOS) use it to wait up to 5 s for their subscriber
   before the first publish, so they no longer lose the samples published before the match, and `make test-linux`

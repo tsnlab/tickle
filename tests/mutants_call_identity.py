@@ -31,7 +31,9 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCE = os.path.join(REPO, "src", "tickle.c")
 LINUX = os.path.join(REPO, "platform", "linux")
-TESTS = ["test_two_clients_one_service", "test_call_retry_adaptive"]
+# A name with a directory is that build's binary: tests-one-call/ is built with tt_CLIENT_MAX_OUTSTANDING 1, where the
+# server still replaces a Client's previous answer (since 2026-10-16 only there).
+TESTS = ["test_two_clients_one_service", "test_call_retry_adaptive", "tests-one-call/test_two_clients_one_service"]
 
 MUTANTS = [
     ("per_client_seq", "test_two_clients_one_service",
@@ -40,23 +42,23 @@ MUTANTS = [
     ("tag_not_sent", "test_two_clients_one_service",
      "    callrequest_header->client_tag = client->client_tag;",
      "    callrequest_header->client_tag = 0;"),
-    ("answer_per_source", "test_two_clients_one_service",
-     "        if (server->cache[i] != NULL && server->cache[i]->receiver == receiver &&\n"
-     "            server->cache_client_tag[i] == client_tag) {\n",
-     "        if (server->cache[i] != NULL && server->cache[i]->receiver == receiver) {\n"),
+    ("answer_per_source", "tests-one-call/test_two_clients_one_service",
+     "            if (server->cache[i] != NULL && server->cache[i]->receiver == receiver &&\n"
+     "                server->cache_client_tag[i] == client_tag) {\n",
+     "            if (server->cache[i] != NULL && server->cache[i]->receiver == receiver) {\n"),
     ("lookup_without_tag", "test_two_clients_one_service",
      "    return submessage_header->receiver == receiver && server->cache_client_tag[slot] == client_tag &&\n",
      "    return submessage_header->receiver == receiver &&\n"),
     ("seq_no_shared_while_outstanding", "test_two_clients_one_service",
-     "    while (find_calling_client(node, endpoint->id, seq_no) != NULL) {\n",
-     "    while (find_calling_client(node, endpoint->id, seq_no) == client) {\n"),
+     "    while (find_calling_call(node, endpoint->id, seq_no) != NULL) {\n",
+     "    while (find_calling_call(node, endpoint->id, seq_no) != NULL &&\n"
+     "           find_calling_call(node, endpoint->id, seq_no)->client == client) {\n"),
     ("first_match", "test_two_clients_one_service",
-     "            if (outstanding != NULL && outstanding->seq_no == seq_no) {\n                return client;\n"
-     "            }\n",
-     "            return (outstanding != NULL && outstanding->seq_no == seq_no) ? client : NULL;\n"),
+     "                    return &client->calls[i];\n                }\n            }\n",
+     "                    return &client->calls[i];\n                }\n            }\n            return NULL;\n"),
     ("stamp_after_send", "test_call_retry_adaptive",
-     "    client->cache_time = sent_at;\n",
-     "    client->cache_time = tt_get_ns();\n"),
+     "    call->cache_time = sent_at;\n",
+     "    call->cache_time = tt_get_ns();\n"),
     ("ceiling_of_srtt", "test_call_retry_adaptive",
      "    uint64_t unit = srtt > granularity ? srtt : granularity;\n",
      "    uint64_t unit = srtt;\n"),
@@ -65,7 +67,7 @@ MUTANTS = [
 
 def run_test(name):
     """Builds and runs one test binary; True if it passed."""
-    target = os.path.join("obj", "debug", "tests", name)
+    target = os.path.join("obj", "debug", name if "/" in name else os.path.join("tests", name))
     build = subprocess.run(["make", "-s", target], cwd=LINUX, capture_output=True, text=True, check=False)
     if build.returncode != 0:
         print(f"  build of {name} failed:\n{build.stdout[-2000:]}{build.stderr[-2000:]}")
@@ -82,7 +84,7 @@ def main():
             if not run_test(name):
                 print(f"CONTROL FAILED: {name} fails on the unmutated source - no mutant can be judged")
                 return 2
-        print("control: both tests pass on the unmutated source")
+        print("control: every test passes on the unmutated source")
         for label, test, before, after in MUTANTS:
             if original.count(before) != 1:
                 print(f"MUTANT {label}: its text occurs {original.count(before)} times, not once - not applied")

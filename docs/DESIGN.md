@@ -330,12 +330,22 @@ KEEP_ALL writer would stop at its bound. So the writer solicits acks itself (a H
 
 ## 7. Services (RPC)
 
-- A Client has one outstanding call, cached for retry in `cache_buf` (or caller-attached storage). A call's seq_no
-  comes from the context's one counter, so several Clients of one service in one context (same endpoint_id) send
-  distinct requests and each answer goes to the Client whose call it names (2026-10-09; before, they were answered as
-  one). When the counter comes round, a seq_no another Client of the service still waits on is skipped. Each Client
-  of a service in a context has its own `client_tag` (1..255), carried in the CallRequest's former pad byte. The
-  round trip is timed from before the send, not after it returns.
+- **A Client has up to `tt_CLIENT_MAX_OUTSTANDING` (4) calls outstanding** (the user's decision of 2026-10-16; one
+  before). Each call has a slot of its own - its seq_no, its retry timer and its encoded request, cached for the retry
+  in an even share of `cache_buf` (or caller-attached storage) - so calls are made in a row and answered in any order.
+  The callback names the call it reports (`tt_Client.callback_seq_no`, as `tt_Client_call_id()` gave it); call N + 1
+  is refused with `tt_RET_ILLEGAL_STATUS` and nothing is sent. Compile-time only (core has no malloc); 1 is the old
+  behaviour exactly, and the services unit tests run in that build too (`tests-one-call`). The wire is unchanged: a
+  CallRequest already carried its seq_no and `client_tag`, and a CallResponse its seq_no.
+- Memory per call slot: `tt_CLIENT_CACHE_LENGTH` of inline request storage - 2,944 B at core's 1472-byte datagram, so
+  11.8 KB a Client at 4 (2.9 KB before) - plus 24 B of state. rmw_tickle builds the inline area 8 B and attaches one
+  slot per call sized for the request type's largest encoding: a bounded type's own size, 65,512 B for an unbounded
+  one (262 KB a client at 4).
+- A call's seq_no comes from the context's one counter, so several Clients of one service in one context (same
+  endpoint_id), and several calls of one Client, send distinct requests, and each answer goes to the call it names
+  (2026-10-09; before, two Clients were answered as one). When the counter comes round, a seq_no any call of the
+  service still waits on is skipped. Each Client of a service in a context has its own `client_tag` (1..255), carried
+  in the CallRequest's former pad byte. The round trip is timed from before the send, not after it returns.
 - Retries: `call_retry_interval` if set, every time. Otherwise (auto) RFC 6298 over call-to-answer times, with bounds
   relative to srtt since 2026-10-05: the first wait is `srtt + max(G, 4 x rttvar)`, each
   retry of the call waits twice the one before, each at most `tt_CALL_RETRY_MAX_SRTT_MULTIPLE` (64) x max(srtt, G). The seed
@@ -344,21 +354,33 @@ KEEP_ALL writer would stop at its bound. So the writer solicits acks itself (a H
   worst case): a wait past that is cut there. A timeout doubles srtt, up to that deadline; the next answer replaces
   the estimate. A call's G is twice the reliable retry's (this host's measured lateness, section 6), standing in for
   two late-running events - this host's timer and the server's dispatch - since the server's cannot be measured from
-  here; `tt_CALL_RETRY_GRANULARITY` non-zero fixes it.
+  here; `tt_CALL_RETRY_GRANULARITY` non-zero fixes it. The estimate is the Client's, shared by its calls; calls lost
+  together back it off once - a call sent before the last backoff does not double it again.
 - A Server caches each answered response in one of `tt_MAX_SERVER_CACHE_COUNT` (64) slots, so a retried request gets
-  the same answer without re-running the callback: one live answer per calling Client - (source context,
-  `client_tag`), looked up with the seq_no - replaced when that Client calls again (one per source context until
-  2026-10-09, so a retry after another Client of that context was answered re-ran the callback; a sender older than
-  the tag sends 0 and still gets that). It keeps it for the longer of the client's seed schedule (or the
+  the same answer without re-running the callback, looked up by (source context, `client_tag`, seq_no) (per source
+  context until 2026-10-09; a sender older than the tag sends 0 and still gets that). Built with one call per Client,
+  a Client's previous answer is replaced when it calls again. With several, a new call proves nothing about which
+  earlier answer arrived, so a **call window** takes the proof's place: a Server keeps `tt_CLIENT_CALL_WINDOW`
+  (2 x `tt_CLIENT_MAX_OUTSTANDING`, 8) answers per calling Client, the one to its oldest call (by seq_no) going first,
+  and a Client makes no call while one of its outstanding calls is that many of its calls old. So the answer let go is
+  always to a call already finished: with one answer lost, the Client goes on through its other slots for up to 7
+  calls, then waits for the lost call's retry, which the cache answers. Without the bound a Client calling 65,536 times
+  within an answer's lifetime came round to its own first seq_no and was answered from that entry. A late duplicate of
+  a call older than every answer kept is answered and not kept. A server built with 1 assumes its clients are, and may
+  re-run a lost call's callback for a deeper one; the two ends must agree on the constant (the server's no smaller). It keeps it for the longer of the client's seed schedule (or the
   service's explicit `call_retry_interval x (count + 1)`) and `tt_SERVER_CACHE_GAP_MULTIPLE` (4) x the longest
   recent gap between a response and the same client's retry; each retry served re-arms it, and a retry after expiry
   teaches the server that client's gap. A response is dropped when its client turns out to be a new incarnation
-  (discovery lists it under another entity_id, or a farewell). A full cache
-  evicts the response sent longest ago.
+  (discovery lists it under another entity_id, or a farewell). A full cache evicts the response sent longest ago -
+  or, when the calling Client already holds a full depth of answers, its own, so a Client calling at full depth does
+  not push out an answer a slower one is still retrying. 64 slots hold 16 Clients calling at full depth at once.
 - **Deferred responses:** a callback may return `tt_CALL_DEFERRED` and answer later from any thread with
   `tt_Server_send_response()`, which encodes and sends before it returns (the caller's data need only live for the
-  call). An unanswered slot is reclaimed after `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT` (5 s); a retry of a pending
-  request does not re-invoke the callback.
+  call). Up to `tt_MAX_SERVER_CACHE_COUNT` requests are held deferred at once, from any Clients, several from one;
+  a request that finds the table full is dropped and its retry brings it back. An unanswered slot is reclaimed after
+  `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT` (5 s); a retry of a pending request does not re-invoke the callback.
+- **Turned away:** a callback may return `tt_CALL_IGNORED` (2026-10-16): nothing is sent, cached or kept, and the
+  client's next retry asks again. rmw_tickle's service returns it when its queue of untaken requests is full.
 - Requests and responses never fragment: they are bounded by `tt_MAX_BUFFER_LENGTH`.
 
 ## 8. Fragmentation and large samples

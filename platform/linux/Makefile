@@ -130,6 +130,12 @@ TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/tests/%,$(TEST_SRCS))
 # on other seeds too, which only this build showed. Their own tree, so the default binaries beside them stay as they are.
 LARGE_DEFINES = -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1
 LARGE_TEST_BINS = $(OBJ)/tests-large/test_ack_bitmap_diff
+# The services tests again with one call per Client (tt_CLIENT_MAX_OUTSTANDING 1): the behaviour before 2026-10-16,
+# which a build may still choose, must stay what it was.
+ONE_CALL_DEFINES = -Dtt_CLIENT_MAX_OUTSTANDING=1
+ONE_CALL_TEST_BINS = $(addprefix $(OBJ)/tests-one-call/,test_client_call test_callresponse test_client_multi_call \
+                     test_two_clients_one_service test_server_cache test_call_retry_adaptive test_process_callrequest \
+                     test_endpoint_storage)
 
 .PHONY: all library examples set_bool uint64 ping_pong perf test config-renames print-large-defines test-samehost headers-cpp lint lint-shell clean fuzz fuzz-corpus sanitize tsan coverage
 
@@ -249,8 +255,8 @@ test-samehost: examples refuse_io_uring.so refuse_pbuf_ring.so rx_hint_check rx_
     bell_wake_check
 	./test_samehost.sh
 
-test: config-renames $(TEST_BINS) $(LARGE_TEST_BINS)
-	@for bin in $(TEST_BINS) $(LARGE_TEST_BINS); do \
+test: config-renames $(TEST_BINS) $(LARGE_TEST_BINS) $(ONE_CALL_TEST_BINS)
+	@for bin in $(TEST_BINS) $(LARGE_TEST_BINS) $(ONE_CALL_TEST_BINS); do \
 	    echo "-- $$bin --"; \
 	    ./$$bin || exit 1; \
 	done
@@ -300,6 +306,12 @@ $(OBJ)/tests-large/%: $(TEST_DIR)/%.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/l
 	$(CC) $(CPPFLAGS) $(LARGE_DEFINES) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lm
 
 -include $(LARGE_TEST_BINS:=.d)
+
+$(OBJ)/tests-one-call/%: $(TEST_DIR)/%.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c | $(OBJ)/tests-one-call
+	$(CC) $(CPPFLAGS) $(ONE_CALL_DEFINES) $(CFLAGS) -MM -MP -MT $@ -MF $@.d $<
+	$(CC) $(CPPFLAGS) $(ONE_CALL_DEFINES) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lm
+
+-include $(ONE_CALL_TEST_BINS:=.d)
 
 # The one unit test that links tickle.c as its own translation unit instead of #including it: it drives
 # core through the public API from several threads at once and brings its own thread-safe HAL (see the
@@ -365,7 +377,7 @@ coverage:
 	    s["line_percent"], s["line_covered"], s["line_total"], \
 	    s["branch_percent"], s["branch_covered"], s["branch_total"], len(s["files"])))' $(COV_REPORT)/summary.json
 
-$(OBJ)/tests $(OBJ)/tests-large:
+$(OBJ)/tests $(OBJ)/tests-large $(OBJ)/tests-one-call:
 	mkdir -p $@
 
 # Coverage-guided fuzzing of the packet parser - the untrusted-input boundary. Needs clang.

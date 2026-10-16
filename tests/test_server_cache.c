@@ -83,10 +83,11 @@ static void test_cache_round_trip(void) {
     }
 }
 
-// Caching a new response for a receiver that already has one cached must evict the old entry
-// (a client only ever needs a retry-dedup answer for its current outstanding call), not leak
-// it into an unrelated slot or leave it retrievable by its old seq_no.
-static void test_cache_evicts_old_entry_for_same_receiver(void) {
+// Built with one call per Client (tt_CLIENT_MAX_OUTSTANDING 1), caching a new response for a receiver that already
+// has one cached must evict the old entry (that client only ever needs a retry-dedup answer for its current
+// outstanding call), not leak it into an unrelated slot or leave it retrievable by its old seq_no. Built with more,
+// the old answer must stay: the client may still be retrying it while it waits on the new one (2026-10-16).
+static void test_cache_for_same_receiver(void) {
     test_mock_reset();
 
     struct tt_Context node;
@@ -96,8 +97,12 @@ static void test_cache_evicts_old_entry_for_same_receiver(void) {
     EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 42), 5, 0));
     EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x2222, 99), 5, 0));
 
-    EXPECT_TRUE(get_server_cache(&server, 5, 0, 42) == NULL); // evicted
-    EXPECT_TRUE(get_server_cache(&server, 5, 0, 99) != NULL); // the new one is there instead
+    if (tt_CLIENT_MAX_OUTSTANDING == 1) {
+        EXPECT_TRUE(get_server_cache(&server, 5, 0, 42) == NULL); // evicted
+    } else {
+        EXPECT_TRUE(get_server_cache(&server, 5, 0, 42) != NULL); // kept for that call's retry
+    }
+    EXPECT_TRUE(get_server_cache(&server, 5, 0, 99) != NULL); // the new one is there in any build
 }
 
 // A different receiver's cache entry must be unaffected by another receiver's traffic.
@@ -115,9 +120,79 @@ static void test_cache_keeps_entries_for_different_receivers_independent(void) {
     EXPECT_TRUE(get_server_cache(&server, 6, 0, 1) != NULL);
 }
 
+// Built with several calls per Client (2026-10-16): one Client keeps at most tt_CLIENT_CALL_WINDOW answers, the one to
+// its oldest call going first - by call, not by when it was last sent: an answer re-sent to a retry a moment ago still
+// goes if its call is the oldest, since the Client cannot be waiting on a call that old (client_window_closed()). The
+// answers come out of call order, as several calls are answered. A late duplicate of a call older than all of them is
+// answered and not kept. Other Clients' answers are not touched.
+static void test_cache_bounds_one_clients_answers(void) {
+    if (tt_CLIENT_MAX_OUTSTANDING == 1) {
+        return; // one answer per Client, test_cache_for_same_receiver()
+    }
+    test_mock_reset();
+    struct tt_Context node;
+    struct tt_Server server;
+    init_node_and_server(&node, &server);
+
+    test_mock_now = 1000;
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 6, 0x2222, 1), 6, 0));
+    for (int k = tt_CLIENT_CALL_WINDOW - 1; k >= 0; k--) { // calls 100.. answered newest first
+        test_mock_now += 10;
+        EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, (uint16_t)(100 + k)), 5, 0));
+    }
+    test_mock_now += 10;
+    note_server_cache_hit(&server, find_server_cache_slot(&server, 5, 0, 100)); // call 100's answer re-sent: newest
+    test_mock_now += 10;
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 100 + tt_CLIENT_CALL_WINDOW), 5, 0));
+    EXPECT_TRUE(get_server_cache(&server, 5, 0, 100) == NULL); // the oldest call's went, though sent last
+    for (int k = 1; k <= tt_CLIENT_CALL_WINDOW; k++) {
+        EXPECT_TRUE(get_server_cache(&server, 5, 0, (uint16_t)(100 + k)) != NULL);
+    }
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 99), 5, 0)); // a late duplicate
+    EXPECT_TRUE(get_server_cache(&server, 5, 0, 99) == NULL);
+    EXPECT_TRUE(get_server_cache(&server, 5, 0, 101) != NULL);
+    EXPECT_TRUE(get_server_cache(&server, 6, 0, 1) != NULL); // another Client's, older than all of them, stays
+}
+
+// A full cache, built with several calls per Client: a Client holding a full depth of answers gives up its own oldest,
+// not the oldest overall - which here is a slow Client's one answer, still being retried.
+static void test_full_cache_takes_a_deep_clients_own_answer(void) {
+    if (tt_CLIENT_MAX_OUTSTANDING == 1) {
+        return;
+    }
+    test_mock_reset();
+    struct tt_Context node;
+    struct tt_Server server;
+    init_node_and_server(&node, &server);
+
+    test_mock_now = 1000;
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 9, 0x1111, 1), 9, 0)); // the slow Client's
+    for (int i = 1; i < tt_MAX_SERVER_CACHE_COUNT - tt_CLIENT_MAX_OUTSTANDING; i++) {
+        test_mock_now += 10;
+        EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, (uint8_t)(100 + i), 0x1111, 1),
+                                     (uint8_t)(100 + i), 0));
+    }
+    for (int k = 0; k < tt_CLIENT_MAX_OUTSTANDING; k++) {
+        test_mock_now += 10;
+        EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, (uint16_t)(200 + k)), 5, 0));
+    }
+    test_mock_now += 10;
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 5, 0x1111, 300), 5, 0)); // full: one must go
+    EXPECT_TRUE(get_server_cache(&server, 9, 0, 1) != NULL);   // the oldest overall stays
+    EXPECT_TRUE(get_server_cache(&server, 5, 0, 200) == NULL); // the deep Client's own oldest went
+    EXPECT_TRUE(get_server_cache(&server, 5, 0, 300) != NULL);
+    // A Client with fewer than a full depth takes the oldest overall, as before.
+    test_mock_now += 10;
+    EXPECT_TRUE(set_server_cache(&server, write_fake_response(&node, 7, 0x1111, 1), 7, 0));
+    EXPECT_TRUE(get_server_cache(&server, 9, 0, 1) == NULL);
+    EXPECT_TRUE(get_server_cache(&server, 7, 0, 1) != NULL);
+}
+
 int main(void) {
+    test_cache_bounds_one_clients_answers();
+    test_full_cache_takes_a_deep_clients_own_answer();
     test_cache_round_trip();
-    test_cache_evicts_old_entry_for_same_receiver();
+    test_cache_for_same_receiver();
     test_cache_keeps_entries_for_different_receivers_independent();
 
     if (test_result() != 0) {

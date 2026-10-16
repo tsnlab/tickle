@@ -34,6 +34,7 @@ CONFIGS=(
     "-Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1" # rmw_tickle (large samples); test_large_sample.c
     "-Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_SEGMENT_ENABLED=0" # large_sample_pc.sh: socket only
     "-Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -Dtt_HYBRID_TRANSPORT=0" # hybrid A/B: the MTU-only sender
+    "-Dtt_CLIENT_MAX_OUTSTANDING=1"                 # one call per Client, as before 2026-10-16; tests-one-call
 )
 
 rc=0

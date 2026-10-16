@@ -1636,7 +1636,18 @@ struct tt_SubmessageHeader;
 // `response` is NULL in that case. A tt_SERVER_CALLBACK must not return this value itself.
 #define tt_CALL_TIMEOUT ((int8_t)-128)
 
+// Called once per call: with the server's return code and its response, or with tt_CALL_TIMEOUT and NULL. A Client may
+// have several calls outstanding (tt_CLIENT_MAX_OUTSTANDING), answered in any order: client->callback_seq_no names
+// the call being reported, as tt_Client_call_id() gave it.
 typedef void (*tt_CLIENT_CALLBACK)(struct tt_Client* client, int8_t return_code, struct tt_Response* response);
+
+// One outstanding call of a Client (struct tt_Client.calls), the param of its retry timer.
+struct tt_ClientCall {
+    struct tt_Client* client;
+    struct tt_SubmessageHeader* cache; // NULL when the slot is free, else the encoded request, kept for its retries
+    uint64_t cache_time;               // When the call was sent: read before the send (client_call_locked())
+    uint32_t index;                    // Which call of its Client this is: tt_Client.calls_made when it was made
+};
 
 struct tt_Client { // extends endpoint
     struct tt_Endpoint endpoint;
@@ -1644,18 +1655,25 @@ struct tt_Client { // extends endpoint
     struct tt_Service* service;
     tt_CLIENT_CALLBACK callback;
 
-    // Cache: fixed-size backing storage for the one outstanding call (tt_Client_call refuses a
-    // second call while one is already pending), so a call/retry cycle never has to malloc/free.
-    tt_ALIGNAS(8) uint8_t cache_buf[tt_CLIENT_CACHE_LENGTH];
-    // Where the outstanding request is kept, and its size, when tt_Client_set_storage() attached the
-    // caller's own; NULL (create's default, and a zeroed struct's) means cache_buf above.
+    // Cache: fixed backing storage for the outstanding calls - tt_CLIENT_MAX_OUTSTANDING requests of
+    // tt_CLIENT_CACHE_LENGTH each - so a call/retry cycle never has to malloc/free.
+    tt_ALIGNAS(8) uint8_t cache_buf[tt_CLIENT_MAX_OUTSTANDING * tt_CLIENT_CACHE_LENGTH];
+    // Where the outstanding requests are kept, and the size of that area, when tt_Client_set_storage() attached the
+    // caller's own; NULL (create's default, and a zeroed struct's) means cache_buf above. Each call slot gets an even
+    // share of it (client_cache_area(), tickle.c).
     uint8_t* cache_storage;
     uint32_t cache_length;
-    struct tt_SubmessageHeader* cache; // NULL when idle, else points into cache_buf
-    uint64_t cache_time;               // When the call was sent: read before the send (client_call_locked())
-    uint32_t latency;        // Call latency estimate (srtt), ns: an EMA of accepted answers, doubled on a timeout
-    uint32_t latency_var;    // Its mean deviation (rttvar), ns - RFC 6298's, as for the reliable retry
-    bool latency_backed_off; // The last call timed out; the next accepted answer replaces the estimate
+    struct tt_ClientCall calls[tt_CLIENT_MAX_OUTSTANDING]; // the outstanding calls, in no order
+    // Calls this Client has made. A new call is refused while one still outstanding is tt_CLIENT_CALL_WINDOW calls old
+    // (client_call_locked()): the server keeps that many answers per Client, so no answer can go while its call waits.
+    uint32_t calls_made;
+    uint16_t callback_seq_no; // While the callback runs: the seq_no of the call it reports (tt_Client_call_id())
+    uint32_t latency;         // Call latency estimate (srtt), ns: an EMA of accepted answers, doubled on a timeout
+    uint32_t latency_var;     // Its mean deviation (rttvar), ns - RFC 6298's, as for the reliable retry
+    bool latency_backed_off;  // The last call timed out; the next accepted answer replaces the estimate
+    // When the estimate was last doubled for a timeout. A call sent before then timed out on the schedule of the
+    // estimate before it, so it does not double it again: several calls lost together back off once, as one call did.
+    uint64_t latency_backed_off_at;
     // Tells this Client from the context's other Clients of the same service, which share its endpoint_id: the
     // smallest of 1..255 none of them holds, given at create, 0 when all are taken. Carried in every CallRequest
     // (tt_CallRequestHeader.client_tag) so the server keeps an answer per Client, not per context.
@@ -1685,6 +1703,11 @@ typedef struct tt_RequestId {
 // Reserved the same way tt_CALL_TIMEOUT is (see its own comment) - not a real application return
 // code.
 #define tt_CALL_DEFERRED ((int8_t)-127)
+// Passed as `return_code` from a tt_SERVER_CALLBACK to mean "not now": nothing is sent, cached or kept for this
+// request, so the client's next retry of it asks again - a server whose own queue is full (rmw_tickle's service
+// queue) turns the request away without answering it with an error the client would take as the answer. Reserved
+// like tt_CALL_TIMEOUT and tt_CALL_DEFERRED.
+#define tt_CALL_IGNORED ((int8_t)-126)
 
 typedef int8_t (*tt_SERVER_CALLBACK)(struct tt_Server* server, struct tt_Request* request, struct tt_Response* response,
                                      tt_RequestId request_id);
@@ -3231,10 +3254,11 @@ tt_ret_t tt_Context_create_server(struct tt_Context* node, struct tt_Server* ser
 // tt_RET_INVALID_ARGUMENT for a misfit, tt_RET_ILLEGAL_STATUS if an entry is already cached.
 // (It also took a deferred-response area until 2026-09-27; deferred responses are no longer copied.)
 tt_ret_t tt_Server_set_storage(struct tt_Server* server, uint8_t* cache_storage, uint32_t cache_entry_length);
-// The client's counterpart: where its one outstanding request is kept for retries, at least as
-// large as the largest request it will send (a larger one is refused by tt_Client_call() with
-// tt_RET_OUT_OF_BUFFER). Same rules: after creation, not during a call, 8-byte aligned, NULL for
-// the inline default.
+// The client's counterpart: where its outstanding requests are kept for retries. The area is shared evenly by the
+// tt_CLIENT_MAX_OUTSTANDING call slots, each share rounded down to 8 bytes, and each share must hold the largest
+// request the client will send (a larger one is refused by tt_Client_call() with tt_RET_OUT_OF_BUFFER) - so
+// cache_length is tt_CLIENT_MAX_OUTSTANDING times that. Same rules: after creation, not during a call, 8-byte aligned,
+// NULL for the inline default.
 tt_ret_t tt_Client_set_storage(struct tt_Client* client, uint8_t* cache_storage, uint32_t cache_length);
 tt_ret_t tt_Context_create_publisher(struct tt_Context* node, struct tt_Publisher* pub, struct tt_Topic* topic,
                                      const char* endpoint_name);
@@ -3278,7 +3302,14 @@ bool tt_Context_schedule(struct tt_Context* node, uint64_t time,
 bool tt_Context_unschedule(struct tt_Context* node,
                            void (*function)(struct tt_Context* node, uint64_t time, void* param), void* param);
 
+// Sends a request; the answer, or tt_CALL_TIMEOUT, comes to the client's callback. Up to tt_CLIENT_MAX_OUTSTANDING
+// calls may be outstanding at once; one more is refused with tt_RET_ILLEGAL_STATUS, with nothing sent.
+// tt_Client_call_id() also gives the call's seq_no (NULL: not wanted), which client->callback_seq_no names again when
+// the callback reports that call - how a caller with several calls outstanding tells their answers apart.
 tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request);
+tt_ret_t tt_Client_call_id(struct tt_Client* client, struct tt_Request* request, uint16_t* seq_no);
+// How many calls the client has outstanding: 0..tt_CLIENT_MAX_OUTSTANDING.
+uint32_t tt_Client_outstanding(struct tt_Client* client);
 tt_ret_t tt_Client_destroy(struct tt_Client* client);
 
 tt_ret_t tt_Server_destroy(struct tt_Server* server);

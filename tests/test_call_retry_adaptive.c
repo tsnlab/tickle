@@ -105,7 +105,7 @@ static bool run_call(uint64_t answer_after, uint64_t* took) {
         return false;
     }
     uint16_t seq_no =
-        ((struct tt_CallRequestHeader*)((uint8_t*)client.cache + sizeof(struct tt_SubmessageHeader)))->seq_no;
+        ((struct tt_CallRequestHeader*)((uint8_t*)client.calls[0].cache + sizeof(struct tt_SubmessageHeader)))->seq_no;
     while (callbacks == before) {
         struct tt_TCB* due = peek_scheduler(&node);
         uint64_t next = due != NULL ? due->time : NEVER;

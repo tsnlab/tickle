@@ -27,14 +27,12 @@
 // DEFERRED_RESPONSE_TIMEOUT, tickle/config.h) that used to live here as RMW_TICKLE_SERVICE_
 // RESPONSE_TIMEOUT_NS.
 //
-// One thing the old blocking design got "for free" that this one has to do explicitly: the whole
-// poll thread being stuck inside one server_callback() call meant a second CallRequest for the
-// same service simply couldn't arrive while the first was still outstanding. A deferred callback
-// returns immediately, so the poll thread is free to receive more datagrams meanwhile -
-// server_callback() below rejects a second request outright while the first one is still
-// un-answered, preserving the exact same single-outstanding-request-at-a-time limit
-// rmw_tickle_client_t's own tt_Client_call() already has (a deliberate, documented, unchanged
-// scope boundary - queueing several in-flight requests is not what this milestone set out to fix).
+// Several requests at once (2026-10-16): a deferred callback returns immediately, so more requests arrive while
+// earlier ones wait to be taken or answered - from several clients, and several from one (tt_CLIENT_MAX_OUTSTANDING
+// each). server_callback() queues each, rmw_take_request() hands them out oldest first, and each stays answerable
+// until core's tt_SERVER_DEFERRED_RESPONSE_TIMEOUT whatever arrives after it: its request_id.sequence_number carries
+// the core request id (pack_sequence_id()). Until then one request waited at a time, a second was answered with an
+// error the client took as its answer, and a request already taken could not be answered once the next arrived.
 
 #include <pthread.h>
 #include <stdbool.h>
@@ -42,7 +40,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include <tickle/config.h> // tt_MAX_SERVER_CACHE_COUNT
+#include <tickle/config.h> // tt_MAX_SERVER_CACHE_COUNT, tt_MAX_CONTEXT_IDS
 #include <tickle/hal.h>    // tt_ret_t/tt_RET_OK
 #include <tickle/tickle.h>
 
@@ -60,11 +58,10 @@
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
 #include "rosidl_typesupport_tickle_c/service_type_support.h"
 
-// A tt_SERVER_CALLBACK must not return tt_CALL_TIMEOUT (-128) or tt_CALL_DEFERRED (-127) itself
-// (both reserved - see tickle.h's own doc comments); this is rmw_tickle's own sentinel for
-// "conversion of the incoming request failed" / "a request is already outstanding, rejecting this
-// second one outright" - either way TickLE gets no usable response from this call, only that
-// something went wrong server-side.
+// A tt_SERVER_CALLBACK must not return tt_CALL_TIMEOUT (-128), tt_CALL_DEFERRED (-127) or tt_CALL_IGNORED (-126)
+// itself unless it means them (all reserved - see tickle.h's own doc comments); this is rmw_tickle's own sentinel for
+// "conversion of the incoming request failed" - TickLE gets no usable response from this call, only that something
+// went wrong server-side.
 #define RMW_TICKLE_SERVER_CALLBACK_ERROR ((int8_t)-1)
 
 // The gid of the client a request came from, in rmw_get_gid_for_client()'s layout, so that a server's
@@ -108,6 +105,20 @@ static void requester_gid_locked(const rmw_tickle_service_t* svc, uint8_t source
     }
 }
 
+// A request's sequence id: the core request id - the client's context and its seq_no, unique among the calls in flight
+// - in the low 24 bits, under a per-service count of requests, so it still grows with every request as a sequence
+// number does, and rmw_send_response() finds the request from it alone (unpack_request_id()). Positive for the first
+// 2^39 requests of a service.
+static int64_t pack_sequence_id(int64_t count, tt_RequestId request_id) {
+    return (int64_t)(((uint64_t)count << 24U) | ((uint64_t)request_id.receiver << 16U) | request_id.seq_no);
+}
+
+static tt_RequestId unpack_request_id(int64_t sequence_id) {
+    tt_RequestId request_id = {(uint8_t)(((uint64_t)sequence_id >> 16U) & UINT8_MAX),
+                               (uint16_t)((uint64_t)sequence_id & UINT16_MAX)};
+    return request_id;
+}
+
 // Runs on the poll thread, the node lock already held (rmw_tickle.h's own threading
 // model). See this file's own module doc comment for the full deferred-response design.
 static int8_t server_callback(struct tt_Server* tt_server, struct tt_Request* request, struct tt_Response* response,
@@ -117,26 +128,27 @@ static int8_t server_callback(struct tt_Server* tt_server, struct tt_Request* re
         (rmw_tickle_service_t*)((char*)tt_server - offsetof(rmw_tickle_service_t, tickle_server));
 
     pthread_mutex_lock(&svc->request_mutex);
-
-    if (svc->request_available) {
-        // See this file's own module doc comment on why this guard exists now, and why rejecting
-        // outright (not queueing) matches an already-documented, deliberately unchanged limit.
+    if (svc->request_count == tt_MAX_SERVER_CACHE_COUNT) {
+        // Full - as many waiting as core can hold deferred. Turned away unanswered: the client's retry brings it
+        // back once the executor has taken some (an error answer would end the client's call).
         pthread_mutex_unlock(&svc->request_mutex);
-        return RMW_TICKLE_SERVER_CALLBACK_ERROR;
+        return tt_CALL_IGNORED;
     }
-
+    rmw_tickle_service_request_t* entry =
+        &svc->requests[(svc->request_head + svc->request_count) % tt_MAX_SERVER_CACHE_COUNT];
+    if (NULL == entry->ros_request) {
+        entry->ros_request = rmw_tickle_ros_message_create(svc->request_callbacks, &svc->allocator);
+    }
     // `request` aliases node->rx_buffer (DESIGN.md's "Strings" rule) - must convert to an
     // independently-owned ROS-shaped copy now, synchronously, before this callback returns - the
     // same reasoning as rmw_subscription.c's own subscriber_callback().
-    if (!svc->request_callbacks->from_tickle(request, svc->request_storage)) {
+    if (NULL == entry->ros_request || !svc->request_callbacks->from_tickle(request, entry->ros_request)) {
         pthread_mutex_unlock(&svc->request_mutex);
         return RMW_TICKLE_SERVER_CALLBACK_ERROR;
     }
-
-    svc->current_sequence_id = ++svc->next_sequence_id;
-    svc->pending_request_id = request_id;
-    requester_gid_locked(svc, request_id.receiver, svc->pending_writer_guid);
-    svc->request_available = true;
+    entry->sequence_id = pack_sequence_id(++svc->next_sequence_id, request_id);
+    requester_gid_locked(svc, request_id.receiver, entry->writer_guid);
+    svc->request_count++;
     pthread_mutex_unlock(&svc->request_mutex);
 
     // Wake anyone blocked in rmw_wait() on this service's request - deliberately *not* held while
@@ -153,6 +165,16 @@ static int8_t server_callback(struct tt_Server* tt_server, struct tt_Request* re
     rmw_tickle_callback_slot_notify(&svc->on_new_request, 1);
 
     return tt_CALL_DEFERRED;
+}
+
+// Every ROS request the queue created (each on its entry's first use).
+static void destroy_requests(rmw_tickle_service_t* svc) {
+    for (size_t i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (NULL != svc->requests[i].ros_request) {
+            rmw_tickle_ros_message_destroy(svc->request_callbacks, svc->requests[i].ros_request, &svc->allocator);
+            svc->requests[i].ros_request = NULL;
+        }
+    }
 }
 
 rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_type_support_t* type_support,
@@ -227,12 +249,9 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
     svc->service.response_decode = (tt_RESPONSE_DECODE)callbacks.response->tickle_decode;
     svc->service.response_free = (tt_RESPONSE_FREE)callbacks.response->tickle_free;
 
-    svc->request_storage = rmw_tickle_ros_message_create(callbacks.request, allocator);
     svc->response_storage = allocator->zero_allocate(1, callbacks.response->tickle_struct_size, allocator->state);
-    if (NULL == svc->request_storage || NULL == svc->response_storage) {
-        RMW_SET_ERROR_MSG("failed to allocate request/response storage");
-        rmw_tickle_ros_message_destroy(callbacks.request, svc->request_storage, allocator);
-        allocator->deallocate(svc->response_storage, allocator->state);
+    if (NULL == svc->response_storage) {
+        RMW_SET_ERROR_MSG("failed to allocate response storage");
         allocator->deallocate(svc, allocator->state);
         return NULL;
     }
@@ -240,7 +259,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
     rmw_tickle_callback_slot_init(&svc->on_new_request); // (g2), before a request can arrive
     if (pthread_mutex_init(&svc->request_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize service request mutex");
-        rmw_tickle_ros_message_destroy(callbacks.request, svc->request_storage, allocator);
+        destroy_requests(svc);
         allocator->deallocate(svc->response_storage, allocator->state);
         allocator->deallocate(svc, allocator->state);
         return NULL;
@@ -252,7 +271,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
     if (NULL == svc->rmw_service.service_name) {
         RMW_SET_ERROR_MSG("failed to allocate service_name");
         pthread_mutex_destroy(&svc->request_mutex);
-        rmw_tickle_ros_message_destroy(callbacks.request, svc->request_storage, allocator);
+        destroy_requests(svc);
         allocator->deallocate(svc->response_storage, allocator->state);
         allocator->deallocate(svc, allocator->state);
         return NULL;
@@ -285,7 +304,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
         allocator->deallocate(svc->response_cache, allocator->state);
         allocator->deallocate((char*)svc->rmw_service.service_name, allocator->state);
         pthread_mutex_destroy(&svc->request_mutex);
-        rmw_tickle_ros_message_destroy(callbacks.request, svc->request_storage, allocator);
+        destroy_requests(svc);
         allocator->deallocate(svc->response_storage, allocator->state);
         allocator->deallocate(svc, allocator->state);
         return NULL;
@@ -308,7 +327,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
         allocator->deallocate(svc->response_cache, allocator->state);
         allocator->deallocate((char*)svc->rmw_service.service_name, allocator->state);
         pthread_mutex_destroy(&svc->request_mutex);
-        rmw_tickle_ros_message_destroy(callbacks.request, svc->request_storage, allocator);
+        destroy_requests(svc);
         allocator->deallocate(svc->response_storage, allocator->state);
         allocator->deallocate(svc, allocator->state);
         return NULL;
@@ -337,7 +356,7 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
 
     rcutils_allocator_t allocator = svc->allocator;
     allocator.deallocate((char*)svc->rmw_service.service_name, allocator.state);
-    rmw_tickle_ros_message_destroy(svc->request_callbacks, svc->request_storage, &allocator);
+    destroy_requests(svc);
     allocator.deallocate(svc->response_storage, allocator.state);
     allocator.deallocate(svc->response_cache, allocator.state); // after tt_Server_destroy() above
     allocator.deallocate(svc->owning_node_name, allocator.state);
@@ -360,23 +379,22 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
     rmw_tickle_service_t* svc = (rmw_tickle_service_t*)service->data;
 
     pthread_mutex_lock(&svc->request_mutex);
-    if (!svc->request_available) {
+    if (0 == svc->request_count) {
         pthread_mutex_unlock(&svc->request_mutex);
         *taken = false;
         return RMW_RET_OK;
     }
+    rmw_tickle_service_request_t* entry = &svc->requests[svc->request_head];
     // Same "ros_request assumed fresh/blank" caveat as rmw_subscription.c's own rmw_take_with_
     // info() - see its doc comment there.
-    rmw_tickle_ros_message_move(svc->request_callbacks, ros_request, svc->request_storage);
-    int64_t seq = svc->current_sequence_id;
+    rmw_tickle_ros_message_move(svc->request_callbacks, ros_request, entry->ros_request);
+    int64_t seq = entry->sequence_id;
     uint8_t writer_guid[RMW_GID_STORAGE_SIZE];
-    memcpy(writer_guid, svc->pending_writer_guid, sizeof(writer_guid));
-    // Consumed - frees server_callback() to accept a new request (see its own module-doc-comment
-    // note on why it now rejects a second one outright rather than the old blocking design's
-    // "the poll thread physically can't receive one" side effect). rmw_send_response() still
-    // matches by sequence_number below, not this flag, so a response for *this* request remains
-    // deliverable even after it flips false.
-    svc->request_available = false;
+    memcpy(writer_guid, entry->writer_guid, sizeof(writer_guid));
+    // Taken: the entry is free for the next request. Its answer needs nothing of it - rmw_send_response() finds the
+    // request in core from the sequence id alone.
+    svc->request_head = (svc->request_head + 1) % tt_MAX_SERVER_CACHE_COUNT;
+    svc->request_count--;
     pthread_mutex_unlock(&svc->request_mutex);
 
     *taken = true;
@@ -400,21 +418,14 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
 
     rmw_tickle_service_t* svc = (rmw_tickle_service_t*)service->data;
 
-    pthread_mutex_lock(&svc->request_mutex);
-    if (request_header->sequence_number != svc->current_sequence_id) {
-        // Stale/unknown header - this request most likely already timed out at the TickLE level
-        // (tt_SERVER_DEFERRED_RESPONSE_TIMEOUT, tickle/config.h) and had its slot reclaimed, or
-        // (a real, documented, unchanged race - see this file's own module doc comment and rmw_
-        // take_request()'s own note on why request_available alone can't guard this) a *new*
-        // request already arrived and moved current_sequence_id on before this call got here.
-        // Either way, tt_Server_send_response() below would also just report tt_RET_NOT_FOUND -
-        // caught here first so the error message can be specific about *why*.
-        pthread_mutex_unlock(&svc->request_mutex);
-        RMW_SET_ERROR_MSG("no matching in-flight request for this response - it may have timed out");
+    // The request this answers, from its sequence id alone (pack_sequence_id()). One that core no longer holds -
+    // answered already, timed out at tt_SERVER_DEFERRED_RESPONSE_TIMEOUT, or never this service's - is not found by
+    // tt_Server_send_response() below.
+    if (request_header->sequence_number <= 0) {
+        RMW_SET_ERROR_MSG("no matching in-flight request for this response");
         return RMW_RET_ERROR;
     }
-    tt_RequestId request_id = svc->pending_request_id;
-    pthread_mutex_unlock(&svc->request_mutex);
+    tt_RequestId request_id = unpack_request_id(request_header->sequence_number);
 
     // response_storage is a scratch conversion buffer, not synchronized by request_mutex - see
     // rmw_tickle.h's own rmw_tickle_service_t doc comment on why that's fine (only this function
@@ -425,10 +436,8 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
         return RMW_RET_ERROR;
     }
 
-    // Queues the real answer for TickLE core's own poll thread to encode and send - see tt_Server_
-    // send_response()'s own doc comment (tickle.h) for the full handoff. Not a failure of this
-    // call if it comes back tt_RET_NOT_FOUND (the same stale/raced request this function's own
-    // sequence_number check above is meant to catch first) - reported as RMW_RET_ERROR either way.
+    // Encodes and sends the answer before it returns - see tt_Server_send_response()'s own doc comment (tickle.h).
+    // tt_RET_NOT_FOUND: the request is no longer held (see above), reported as RMW_RET_ERROR.
     tt_ret_t ret =
         tt_Server_send_response(&svc->tickle_server, request_id, 0, (struct tt_Response*)svc->response_storage);
     if (ret != tt_RET_OK) {
@@ -464,13 +473,13 @@ rmw_ret_t rmw_service_response_publisher_get_actual_qos(const rmw_service_t* ser
 static size_t request_waiting(const void* entity) {
     rmw_tickle_service_t* svc = (rmw_tickle_service_t*)entity;
     pthread_mutex_lock(&svc->request_mutex);
-    size_t waiting = svc->request_available ? 1U : 0U;
+    size_t waiting = svc->request_count;
     pthread_mutex_unlock(&svc->request_mutex);
     return waiting;
 }
 
-// (g2, RMW_GAPS_PLAN.md) rclcpp's and rclpy's EventsExecutor: called with 1 per request; set while one is waiting (at
-// most one - rmw_tickle keeps one pending request), called once with 1.
+// (g2, RMW_GAPS_PLAN.md) rclcpp's and rclpy's EventsExecutor: called with 1 per request; set while some are waiting,
+// called once with how many.
 rmw_ret_t rmw_service_set_on_new_request_callback(rmw_service_t* service, rmw_event_callback_t callback,
                                                   const void* user_data) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(service, RMW_RET_INVALID_ARGUMENT);

@@ -45,7 +45,7 @@ struct fake_response {
 };
 
 static tt_ALIGNAS(8) uint8_t cache_area[tt_MAX_SERVER_CACHE_COUNT * ENTRY];
-static tt_ALIGNAS(8) uint8_t client_area[ENTRY];
+static tt_ALIGNAS(8) uint8_t client_area[ENTRY * tt_CLIENT_MAX_OUTSTANDING]; // ENTRY a call slot
 
 static struct tt_Context node;
 static struct tt_Service service;
@@ -235,8 +235,8 @@ static void test_client_storage(void) {
     client.node = &node;
     client.service = &service;
     client.callback = on_response;
-    EXPECT_EQ_INT(tt_RET_OK, tt_Client_set_storage(&client, client_area, ENTRY));
-    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Client_set_storage(&client, client_area + 4, ENTRY));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Client_set_storage(&client, client_area, sizeof(client_area)));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Client_set_storage(&client, client_area + 4, sizeof(client_area) - 8));
 
     // Too large for the attached storage: refused, nothing sent - a call that could not be retried
     // would fail silently on the first lost packet.
@@ -244,13 +244,13 @@ static void test_client_storage(void) {
     sized_request_bytes = 200;
     EXPECT_EQ_INT(tt_RET_OUT_OF_BUFFER, tt_Client_call(&client, request));
     EXPECT_EQ_INT(0, test_mock_send_call_count);
-    EXPECT_TRUE(client.cache == NULL);
+    EXPECT_TRUE(client.calls[0].cache == NULL);
 
     // Fits: sent, and kept in the caller's storage for a retry.
     sized_request_bytes = 8;
     EXPECT_EQ_INT(tt_RET_OK, tt_Client_call(&client, request));
     EXPECT_EQ_INT(1, test_mock_send_call_count);
-    EXPECT_TRUE(client.cache != NULL && inside(client.cache, client_area, sizeof(client_area)));
+    EXPECT_TRUE(client.calls[0].cache != NULL && inside(client.calls[0].cache, client_area, sizeof(client_area)));
     // And the storage cannot be swapped while that call is outstanding.
     EXPECT_EQ_INT(tt_RET_ILLEGAL_STATUS, tt_Client_set_storage(&client, NULL, 0));
 }

@@ -65,9 +65,9 @@ static void init_node_and_client(struct tt_Context* node, struct tt_Service* ser
     client->callback = test_callback;
 }
 
-// A second call while one is still outstanding must be rejected without touching any state -
-// the caller is expected to wait for the first call's response/timeout before trying again.
-static void test_call_rejected_while_one_outstanding(void) {
+// A call while every slot (tt_CLIENT_MAX_OUTSTANDING) is still outstanding must be rejected without touching any
+// state - the caller is expected to wait for a response/timeout before trying again.
+static void test_call_rejected_while_all_outstanding(void) {
     test_mock_reset();
 
     struct tt_Context node;
@@ -75,7 +75,10 @@ static void test_call_rejected_while_one_outstanding(void) {
     struct tt_Client client;
     init_node_and_client(&node, &service, &client);
 
-    client.cache = (struct tt_SubmessageHeader*)client.cache_buf; // pretend a call is already in flight
+    for (int i = 0; i < tt_CLIENT_MAX_OUTSTANDING; i++) { // pretend every call slot is already in flight
+        client.calls[i].cache =
+            (struct tt_SubmessageHeader*)(client.cache_buf + ((size_t)i * (size_t)tt_CLIENT_CACHE_LENGTH));
+    }
 
     struct tt_Request request;
     tt_ret_t ret = tt_Client_call(&client, &request);
@@ -103,8 +106,8 @@ static void test_call_flushes_immediately_and_fills_cache(void) {
     tt_ret_t ret = tt_Client_call(&client, &request);
 
     EXPECT_EQ_INT(tt_RET_OK, ret);
-    EXPECT_TRUE(client.cache == (struct tt_SubmessageHeader*)client.cache_buf);
-    EXPECT_EQ_U32(500, (uint32_t)client.cache_time);
+    EXPECT_TRUE(client.calls[0].cache == (struct tt_SubmessageHeader*)client.cache_buf);
+    EXPECT_EQ_U32(500, (uint32_t)client.calls[0].cache_time);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
     EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail); // drained back down by the flush
 }
@@ -176,7 +179,7 @@ static void test_call_retry_uses_same_peer_decision_as_initial_call(void) {
 
     test_mock_send_call_count = 0;
     test_mock_send_to_call_count = 0;
-    call_retry(&node, tt_get_ns(), &client);
+    call_retry(&node, tt_get_ns(), &client.calls[0]);
 
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // the retry goes out unicast
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
@@ -224,7 +227,7 @@ static void test_call_retry_flushes_a_pending_broadcast_then_unicasts(void) {
     node_update(&node, 0, NULL);
     test_mock_send_call_count = 0;
     test_mock_send_to_call_count = 0;
-    call_retry(&node, tt_get_ns(), &client);
+    call_retry(&node, tt_get_ns(), &client.calls[0]);
 
     EXPECT_EQ_U32(2, (uint32_t)test_mock_send_call_count);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
@@ -290,12 +293,12 @@ static void test_call_retry_exhausted_reports_timeout(void) {
     callback_calls = 0;
     last_return_code = 12345;
     for (int i = 0; i < 5; i++) {
-        call_retry(&node, tt_get_ns(), &client); // retry 1, retry 2, then give up; then no-ops
+        call_retry(&node, tt_get_ns(), &client.calls[0]); // retry 1, retry 2, then give up; then no-ops
     }
 
     EXPECT_EQ_INT((int)tt_CALL_TIMEOUT, last_return_code);
     EXPECT_EQ_U32(1, (uint32_t)callback_calls); // fired once, not on every subsequent no-op
-    EXPECT_TRUE(client.cache == NULL);
+    EXPECT_TRUE(client.calls[0].cache == NULL);
 }
 
 // call_retry_count 0 means tt_CALL_RETRY_COUNT (struct tt_Service's own doc comment), not "none":
@@ -315,21 +318,21 @@ static void test_call_retry_count_zero_means_the_default(void) {
     callback_calls = 0;
     int sends_before = test_mock_send_call_count;
     for (int i = 0; i < tt_CALL_RETRY_COUNT; i++) {
-        call_retry(&node, tt_get_ns(), &client);
+        call_retry(&node, tt_get_ns(), &client.calls[0]);
     }
     EXPECT_EQ_U32(0, (uint32_t)callback_calls);                                   // still outstanding
     EXPECT_EQ_INT(sends_before + tt_CALL_RETRY_COUNT, test_mock_send_call_count); // each retry was sent
-    EXPECT_TRUE(client.cache != NULL);
+    EXPECT_TRUE(client.calls[0].cache != NULL);
 
-    call_retry(&node, tt_get_ns(), &client); // one more than the default: now it gives up
+    call_retry(&node, tt_get_ns(), &client.calls[0]); // one more than the default: now it gives up
     EXPECT_EQ_U32(1, (uint32_t)callback_calls);
     EXPECT_EQ_INT((int)tt_CALL_TIMEOUT, last_return_code);
-    EXPECT_TRUE(client.cache == NULL);
+    EXPECT_TRUE(client.calls[0].cache == NULL);
 }
 
 int main(void) {
     test_call_retry_count_zero_means_the_default();
-    test_call_rejected_while_one_outstanding();
+    test_call_rejected_while_all_outstanding();
     test_call_flushes_immediately_and_fills_cache();
     test_call_unicasts_to_known_servers_at_or_under_threshold();
     test_call_broadcasts_when_server_count_exceeds_threshold();

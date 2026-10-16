@@ -200,7 +200,8 @@ static void setup(void) {
 }
 
 static uint16_t outstanding_seq_no(const struct tt_Client* client) {
-    return ((const struct tt_CallRequestHeader*)((const uint8_t*)client->cache + sizeof(struct tt_SubmessageHeader)))
+    return ((const struct tt_CallRequestHeader*)((const uint8_t*)client->calls[0].cache +
+                                                 sizeof(struct tt_SubmessageHeader)))
         ->seq_no;
 }
 
@@ -238,7 +239,7 @@ static void test_each_client_gets_its_own_answers(bool reverse) {
         for (int i = 0; i < CLIENTS; i++) {
             EXPECT_EQ_INT((int)round + 1, answers[i]);
             EXPECT_EQ_U32(expected_tag[i] + ANSWER_OFFSET, last_answer[i]);
-            EXPECT_TRUE(clients[i].cache == NULL); // nothing left outstanding
+            EXPECT_TRUE(clients[i].calls[0].cache == NULL); // nothing left outstanding
         }
     }
     EXPECT_EQ_INT(ROUNDS * CLIENTS, served);
@@ -387,7 +388,9 @@ static void test_a_retry_after_the_other_client_moved_on(int lost) {
     }
     EXPECT_EQ_INT(3, answers[other]);
     EXPECT_EQ_INT(4, served);
-    EXPECT_EQ_INT(CLIENTS, live_answers()); // one per Client: the other's two earlier answers went
+    // One per Client built with one call per Client: the other's two earlier answers went. Built with more, every
+    // answer stays (set_server_cache()): 4.
+    EXPECT_EQ_INT(tt_CLIENT_MAX_OUTSTANDING == 1 ? CLIENTS : 4, live_answers());
 
     requests.count = 0;
     capturing = &requests;
@@ -402,7 +405,7 @@ static void test_a_retry_after_the_other_client_moved_on(int lost) {
     carry_all(&responses, &client_context, SERVER_IP);
     EXPECT_EQ_INT(1, answers[lost]);
     EXPECT_EQ_U32(0 + ANSWER_OFFSET, last_answer[lost]);
-    EXPECT_TRUE(clients[lost].cache == NULL);
+    EXPECT_TRUE(clients[lost].calls[0].cache == NULL);
     EXPECT_EQ_INT(0, wrong_answers);
     test_mock_send_hook = NULL;
 }
@@ -423,7 +426,7 @@ static uint32_t rng(void) {
 // Each idle Client with calls left starts one, at random.
 static void soak_start_calls(uint32_t issued[CLIENTS]) {
     for (int i = 0; i < CLIENTS; i++) {
-        if (clients[i].cache == NULL && issued[i] < SOAK_CALLS_PER_CLIENT && (rng() % 2) == 0) {
+        if (clients[i].calls[0].cache == NULL && issued[i] < SOAK_CALLS_PER_CLIENT && (rng() % 2) == 0) {
             call(i, (issued[i]++ * CLIENTS) + (uint32_t)i);
         }
     }
@@ -455,7 +458,7 @@ static void soak_deliver_responses(void) {
 // Every call made and none outstanding.
 static bool soak_done(const uint32_t issued[CLIENTS]) {
     for (int i = 0; i < CLIENTS; i++) {
-        if (clients[i].cache != NULL || issued[i] < SOAK_CALLS_PER_CLIENT) {
+        if (clients[i].calls[0].cache != NULL || issued[i] < SOAK_CALLS_PER_CLIENT) {
             return false;
         }
     }
@@ -464,7 +467,8 @@ static bool soak_done(const uint32_t issued[CLIENTS]) {
 
 // Both Clients call, interleaved; every datagram is dropped with SOAK_DROP_PERCENT and a request delivered twice with
 // SOAK_DUPLICATE_PERCENT; lost calls are retried by the Clients' own timers. Every call's callback runs exactly once,
-// each Client gets each of its own answers once, and the server never holds more than one live answer per Client.
+// each Client gets each of its own answers once, and the server never holds more than one live answer per Client
+// (tt_CLIENT_CALL_WINDOW, built with several calls per Client).
 static void test_interleaved_calls_with_drops_run_each_callback_once(void) {
     setup();
     // A fixed retry interval, and enough sends that no call gives up at this loss (4 sends all fail 3.7% of the time
@@ -481,7 +485,7 @@ static void test_interleaved_calls_with_drops_run_each_callback_once(void) {
         requests.count = 0;
         capturing = &requests;
         soak_start_calls(issued);
-        bool idle = clients[0].cache == NULL && clients[1].cache == NULL;
+        bool idle = clients[0].calls[0].cache == NULL && clients[1].calls[0].cache == NULL;
         if (requests.count == 0 && !idle) {
             EXPECT_TRUE(run_next_client_timer()); // nothing new: let an outstanding call retry
             retries++;
@@ -497,7 +501,7 @@ static void test_interleaved_calls_with_drops_run_each_callback_once(void) {
     for (int i = 0; i < CLIENTS; i++) {
         EXPECT_EQ_U32(SOAK_CALLS_PER_CLIENT, issued[i]);
         EXPECT_EQ_INT(SOAK_CALLS_PER_CLIENT, answers[i]);
-        EXPECT_TRUE(clients[i].cache == NULL);
+        EXPECT_TRUE(clients[i].calls[0].cache == NULL);
     }
     int twice = 0;
     for (uint32_t tag = 0; tag < SOAK_CALLS_PER_CLIENT * CLIENTS; tag++) {
@@ -507,7 +511,7 @@ static void test_interleaved_calls_with_drops_run_each_callback_once(void) {
     EXPECT_EQ_INT(0, twice);
     EXPECT_EQ_INT(SOAK_CALLS_PER_CLIENT * CLIENTS, served);
     EXPECT_EQ_INT(0, wrong_answers); // a timeout counts here too
-    EXPECT_TRUE(max_live <= CLIENTS);
+    EXPECT_TRUE(max_live <= (tt_CLIENT_MAX_OUTSTANDING == 1 ? CLIENTS : CLIENTS * tt_CLIENT_CALL_WINDOW));
     EXPECT_TRUE(retries > 100); // the shape under test: many retries, interleaved with the other Client's calls
     printf("soak: %d calls, %d retries, at most %d live answers\n", SOAK_CALLS_PER_CLIENT * CLIENTS, retries, max_live);
     service.call_retry_count = 0;

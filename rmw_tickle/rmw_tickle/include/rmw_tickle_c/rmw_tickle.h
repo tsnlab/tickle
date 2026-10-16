@@ -1126,6 +1126,28 @@ void rmw_tickle_update_matches_locked(rmw_tickle_context_impl_t* context_impl, c
 size_t rmw_tickle_count_matched_subscriptions_locked(rmw_tickle_publisher_t* pub_impl);
 size_t rmw_tickle_count_matched_publishers_locked(rmw_tickle_subscriber_t* sub_impl);
 
+// One call of an rmw_tickle client in flight (rmw_tickle_client_t.calls).
+typedef struct rmw_tickle_client_call_t {
+    bool used;            // recorded: core has the call
+    uint16_t core_seq_no; // tt_Client_call_id()'s seq_no
+    int64_t sequence_id;  // what rmw_send_request() returned for it
+} rmw_tickle_client_call_t;
+
+// A response waiting for rmw_take_response() (rmw_tickle_client_t.responses). The ROS message is created on the
+// entry's first use and kept for the next.
+typedef struct rmw_tickle_client_response_t {
+    int64_t sequence_id;
+    void* ros_response;
+} rmw_tickle_client_response_t;
+
+// How long rmw_send_request() waits for a call slot when all tt_CLIENT_MAX_OUTSTANDING are in flight, before it
+// returns RMW_RET_ERROR: DDS's own answer to a full writer (RELIABILITY max_blocking_time, 100 ms by default), and long
+// enough for a call answered meanwhile to free its slot. A slot frees when the response arrives, not when it is
+// taken, so the wait never depends on the caller's own executor.
+#define RMW_TICKLE_CLIENT_SEND_BLOCK_NS (100ULL * 1000ULL * 1000ULL) // 100 ms
+// Responses an rmw_tickle client keeps untaken when its QoS gives no depth (KEEP_ALL, or depth 0).
+#define RMW_TICKLE_CLIENT_RESPONSE_DEFAULT_DEPTH 64U
+
 // TickLE specific client data
 typedef struct rmw_tickle_client_t {
     rmw_client_t rmw_client; // RMW client structure (must be first)
@@ -1147,28 +1169,49 @@ typedef struct rmw_tickle_client_t {
     const rosidl_typesupport_tickle_c_message_callbacks_t* response_callbacks;
     rcutils_allocator_t allocator;
 
-    // rmw_send_request()/rmw_take_response() bridge (rmw_client.c) - TickLE's own tt_Client
-    // supports exactly *one* outstanding call at a time (tt_Client_call() refuses a second call
-    // while one is already pending - see tickle.h's own tt_Client doc comment); rmw_tickle
-    // mirrors that limit directly (a real, documented gap versus full ROS 2 rmw semantics, which
-    // allow several in-flight requests per client - see rmw_tickle/PLAN.md) rather than queueing.
+    // rmw_send_request()/rmw_take_response() bridge (rmw_client.c). Core's tt_Client has tt_CLIENT_MAX_OUTSTANDING
+    // call slots (2026-10-16; one before): rmw_send_request() takes one for each request and client_callback()
+    // gives it back when the call is answered or times out, filing the response for rmw_take_response().
     // Guards everything below - separate from `node`'s own mutex for the same reason rmw_tickle_
     // subscriber_t.queue_mutex is (the client_callback() below runs on the poll thread, already
     // holding node->mutex; rmw_take_response() - whichever thread the application calls it from -
-    // has no reason to wait on that just to poll this one response slot).
+    // has no reason to wait on that just to poll this one response slot). Order: the context lock, then this.
     pthread_mutex_t response_mutex;
-    bool response_ready;                        // client_callback() has filled response_storage (or gave up)
+    pthread_cond_t slot_cond;                   // a call slot came free (client_callback()), CLOCK_MONOTONIC
     rmw_tickle_callback_slot_t on_new_response; // (g2) rmw_client_set_on_new_response_callback()
-    bool response_success;                      // false if the call timed out (tt_CALL_TIMEOUT) - response_storage
-                                                // wasn't touched in that case
-    int64_t response_sequence_id;
-    void* response_storage; // response_callbacks->ros_struct_size bytes, reused across calls
-                            // (only one outstanding at a time - see above)
+    // The calls in flight: core's seq_no for each and the rmw sequence id it answers to. rmw_send_request()
+    // reserves a slot (calls_in_flight) before calling core and records the call under the context lock, so
+    // client_callback(), which runs under that lock too, always finds it.
+    rmw_tickle_client_call_t calls[tt_CLIENT_MAX_OUTSTANDING];
+    uint32_t calls_in_flight; // slots reserved or recorded, 0..tt_CLIENT_MAX_OUTSTANDING
+    // Responses received and not yet taken, oldest first: a ring of response_capacity (rmw_create_client()), KEEP_LAST
+    // like a DDS response reader - when it is full the oldest goes, and responses_dropped counts it.
+    rmw_tickle_client_response_t* responses;
+    size_t response_capacity;
+    size_t response_head;
+    size_t response_count;
+    uint64_t responses_dropped;
     int64_t next_sequence_id;
-    // Where core keeps the outstanding request for a retry, sized for this service's requests and
-    // attached with tt_Client_set_storage() (rmw_tickle defines core's inline one tiny - CMakeLists).
+    // Where core keeps the outstanding requests for a retry: tt_CLIENT_MAX_OUTSTANDING slots, each sized for this
+    // service's largest request, attached with tt_Client_set_storage() (rmw_tickle defines core's inline one tiny -
+    // CMakeLists).
     uint8_t* request_cache;
 } rmw_tickle_client_t;
+
+// A request waiting for rmw_take_request() (rmw_tickle_service_t.requests).
+typedef struct rmw_tickle_service_request_t {
+    // What rmw_take_request() reports as request_id.sequence_number, and rmw_send_response() is given back: the
+    // core request id packed under a per-service counter (rmw_service.c's pack_sequence_id()), so a response finds
+    // its request with no table to keep - and a request answered, timed out or never seen is simply not found.
+    int64_t sequence_id;
+    // The gid of the client that sent it, in rmw_get_gid_for_client()'s layout, or all zeros when it cannot be told
+    // (rmw_service.c's requester_gid_locked()).
+    uint8_t writer_guid[RMW_GID_STORAGE_SIZE];
+    // ROS-shaped (request_callbacks->ros_struct_size bytes), created on the entry's first use and kept:
+    // server_callback() converts TickLE's own request (aliasing node->rx_buffer, same DESIGN.md "Strings" concern as
+    // rmw_subscription.c's subscriber_callback()) into it before rmw_take_request() can see it.
+    void* ros_request;
+} rmw_tickle_service_request_t;
 
 // TickLE specific service data
 typedef struct rmw_tickle_service_t {
@@ -1188,34 +1231,22 @@ typedef struct rmw_tickle_service_t {
 
     // rmw_take_request()/rmw_send_response() bridge (rmw_service.c) - see server_callback()'s own
     // doc comment there for the full handoff. Since TickLE core's own tt_CALL_DEFERRED/tt_Server_
-    // send_response() (Milestone 17) now separates "a request arrived" from "here's the answer"
-    // for real, this only ever guards a plain producer/consumer handoff between server_callback()
-    // (the poll thread) and rmw_take_request()/rmw_send_response() (whatever thread the ROS
-    // executor uses) - no condition variable needed anymore, nothing here ever waits on the other
-    // side. Still only one outstanding request at a time (mirroring rmw_tickle_client_t's own
-    // same limit) - a deliberate, documented, unchanged scope boundary (Milestone 17), not
-    // something this milestone tries to fix: server_callback() now rejects a second request
-    // outright while one is still un-answered, rather than the old design's "the whole poll
-    // thread is blocked so a second one can't even arrive" side effect.
+    // send_response() (Milestone 17) separates "a request arrived" from "here's the answer", this
+    // only guards a plain producer/consumer handoff between server_callback() (the poll thread) and
+    // rmw_take_request() (whatever thread the ROS executor uses) - nothing here ever waits on the other side.
+    // Since 2026-10-16 it is a queue: requests from several clients, and several from one, wait together, and each
+    // stays answerable until core's tt_SERVER_DEFERRED_RESPONSE_TIMEOUT; until then one request waited, a second
+    // was answered with an error, and a request taken lost its answer when the next one arrived.
     pthread_mutex_t request_mutex;
-    bool request_available;                    // server_callback() has a request waiting for rmw_take_request()
     rmw_tickle_callback_slot_t on_new_request; // (g2) rmw_service_set_on_new_request_callback()
-    int64_t current_sequence_id;
-    // The TickLE-level identity of the currently-available/in-flight request - server_callback()
-    // sets it, rmw_send_response() reads it back to call tt_Server_send_response() with the right
-    // one. Meaningless (and never read) once request_available goes false without a response
-    // ever having been sent for it.
-    tt_RequestId pending_request_id;
-    // The gid of the client that sent the pending request, in rmw_get_gid_for_client()'s layout, or all zeros
-    // when it cannot be told (rmw_service.c's requester_gid_locked()). server_callback() fills it under
-    // request_mutex, rmw_take_request() hands it out as request_id.writer_guid.
-    uint8_t pending_writer_guid[RMW_GID_STORAGE_SIZE];
-    // ROS-shaped (request_callbacks->ros_struct_size bytes) - server_callback() converts TickLE's
-    // own request (aliasing node->rx_buffer, same DESIGN.md "Strings" concern as rmw_subscription.
-    // c's subscriber_callback()) into this *before* rmw_take_request() can see it.
-    void* request_storage;
+    // Requests received and not yet taken, oldest first: a ring of tt_MAX_SERVER_CACHE_COUNT - as many as core holds
+    // deferred, so core runs out first. A request that finds it full anyway is turned away unanswered
+    // (tt_CALL_IGNORED) and the client's retry brings it back.
+    rmw_tickle_service_request_t requests[tt_MAX_SERVER_CACHE_COUNT];
+    size_t request_head;
+    size_t request_count;
     // TickLE-shaped (response_callbacks->tickle_struct_size bytes, not ros_struct_size - the
-    // opposite direction from request_storage above) - rmw_send_response() converts the
+    // opposite direction from ros_request above) - rmw_send_response() converts the
     // application's ROS response into this scratch buffer, then hands it straight to tt_Server_
     // send_response(), which encodes and sends it before returning (see that function's own doc comment) -
     // so this doesn't need to outlive that one call.

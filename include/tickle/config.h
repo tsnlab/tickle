@@ -1009,8 +1009,13 @@
 #ifndef tt_MAX_NODES
 #define tt_MAX_NODES 16
 #endif
+// A Server's answered responses kept for retries, and the requests it holds deferred: tt_MAX_SERVER_CACHE_COUNT slots
+// of each. Every calling Client can have tt_CLIENT_MAX_OUTSTANDING calls in flight, so the slots cover
+// tt_MAX_SERVER_CACHE_COUNT / tt_CLIENT_MAX_OUTSTANDING Clients calling at full depth at once (16 at the defaults);
+// past that a full cache evicts the response sent longest ago, and a full deferred table drops the request, which the
+// client's retry brings back.
 #ifndef tt_MAX_SERVER_CACHE_COUNT
-#define tt_MAX_SERVER_CACHE_COUNT 64 // >= # of client
+#define tt_MAX_SERVER_CACHE_COUNT 64
 #endif
 
 // The storage a server and a client carry inline, per slot. Sized for any message by default, which
@@ -1028,8 +1033,30 @@
 #error "tt_SERVER_PENDING_ENTRY_LENGTH was removed: deferred responses are no longer copied (CONTEXT_NODE_PLAN.md)"
 #endif
 #ifndef tt_CLIENT_CACHE_LENGTH
-#define tt_CLIENT_CACHE_LENGTH (tt_MAX_BUFFER_LENGTH * 2) // the outstanding request, encoded
+#define tt_CLIENT_CACHE_LENGTH (tt_MAX_BUFFER_LENGTH * 2) // one outstanding request, encoded: per call, see below
 #endif
+// How many calls one Client may have outstanding at once (DESIGN.md section 7; the user's decision of 2026-10-16). Each
+// call has a slot of its own - its seq_no, its retry timer and its encoded request, kept for the retry - so the
+// application can make the next call before the last is answered, and answers that come back in any order each reach
+// their own call. tt_Client_call() refuses one more with tt_RET_ILLEGAL_STATUS. Compile-time only: core has no malloc,
+// so the slots are part of struct tt_Client. 1 is the behaviour before 2026-10-16, exactly (the unit tests run in that
+// build too). Memory per slot: tt_CLIENT_CACHE_LENGTH of inline request storage - 2,944 bytes at core's 1472-byte
+// datagram, so 11.8 KB a Client at 4 - plus 32 bytes of state; a caller that attaches its own storage
+// (tt_Client_set_storage()) sizes the inline area down, as rmw_tickle does (8 bytes), and splits its own area evenly
+// across the slots (rmw_tickle: the request type's largest encoding, at most 65,512 bytes a slot). A Server needs no
+// setting of its own: its slots (tt_MAX_SERVER_CACHE_COUNT above) are shared by every caller.
+#ifndef tt_CLIENT_MAX_OUTSTANDING
+#define tt_CLIENT_MAX_OUTSTANDING 4
+#endif
+#if tt_CLIENT_MAX_OUTSTANDING < 1 || tt_CLIENT_MAX_OUTSTANDING > 64
+#error "tt_CLIENT_MAX_OUTSTANDING must be 1..64"
+#endif
+// Not a setting: how far apart in a Client's own sequence of calls its outstanding calls may be. A Server keeps this
+// many answers per calling Client and lets the oldest call's go; a Client makes no call while one of its outstanding
+// calls is this many calls old. Together they keep every answer a Client may still retry: with one call's answer lost
+// and its retry on the way, the Client goes on through its other slots for up to this many calls, then waits for it.
+// The client's and the server's builds must agree on tt_CLIENT_MAX_OUTSTANDING, or at least the server's be no smaller.
+#define tt_CLIENT_CALL_WINDOW (2 * tt_CLIENT_MAX_OUTSTANDING)
 
 // Threshold for how many known recipient nodes a Publisher/Client sends to individually before
 // switching to one broadcast instead. <= this many known peers -> unicast (tt_send_to() once per

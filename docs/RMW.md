@@ -38,7 +38,7 @@ implementation's source on 2026-09-27, and updated as gaps closed.
 | Feature | Status | Note |
 |---|---|---|
 | Publish / subscribe, `rmw_take`, `rmw_take_with_info`, `rmw_take_sequence` | ✅ | `publisher_gid` in message info equals the writer's own `rmw_get_gid_for_publisher` and its graph gid (`test_gid_two_process`) |
-| Services and clients | ✅ | **One outstanding request at a time** per client and per service. A second request is refused. `request_id.writer_guid` is the client's gid on both sides; zero on the server for a request that beats the client's announce, or when one context has two clients of the service |
+| Services and clients | ✅ | **Up to `tt_CLIENT_MAX_OUTSTANDING` (4) requests in flight per client** (compile time; `-DRMW_TICKLE_CLIENT_MAX_OUTSTANDING=`), answered in any order, each response under its own request's sequence id. With all in flight - or one of them 8 calls old while its lost answer waits for a retry - `rmw_send_request` waits up to 100 ms for one to end, then fails, as a DDS writer with full resources does (`max_blocking_time`). A service queues up to 64 untaken requests from any clients. `request_id.writer_guid` is the client's gid on both sides; zero on the server for a request that beats the client's announce, or when one context has two clients of the service |
 | Actions (`rclcpp_action`) | ✅ | Built from the implicit messages and services. CI runs Fibonacci across two processes |
 | Serialized messages (`rmw_publish/take_serialized_message*`, `rmw_serialize`) | ✅ | Served by the direct codec. `ros2 topic echo --raw` works. Format string is `"tickle"` |
 | `ros2 bag record` / `ros2 bag play` | ✅ | The acceptance test replayed 77 samples, the same as CycloneDDS |
@@ -279,7 +279,6 @@ The full tables are in [RESULTS.md](RESULTS.md).
 - Loaned messages: core changes that would make more of them zero-copy - `tt_Context.rx_buffer` aligned to 8 (an
   8-aligned type landing there is copied today), a ring that skips a held slot (so ring slots could be lent safely),
   and a claimed-slot API for the publisher.
-- More than one outstanding request per client and per service.
 - Round-trip checks for the introspection values: QoS profiles (`test_reported_qos`), and names, type names, counts,
   `*_info_by_topic` rows, GIDs and the serialization format across two processes (`test_introspection_two_process`,
   `test_gid_two_process`; no mismatch found) are done. Open: event counts across processes.

@@ -109,6 +109,12 @@ option(RMW_TICKLE_TRACE "Build with core and rmw latency trace stamps" OFF)
 if(RMW_TICKLE_TRACE)
   target_compile_definitions(rmw_tickle PRIVATE tt_TRACE)
 endif()
+# Requests one client may have in flight (tt_CLIENT_MAX_OUTSTANDING, config.h; the user's decision of 2026-10-16:
+# compile time only, 4 by default). Empty keeps core's default, so the rmw build uses the same constant as core's own.
+set(RMW_TICKLE_CLIENT_MAX_OUTSTANDING "" CACHE STRING "tt_CLIENT_MAX_OUTSTANDING for this build; empty keeps config.h's default (4)")
+if(NOT RMW_TICKLE_CLIENT_MAX_OUTSTANDING STREQUAL "")
+  target_compile_definitions(rmw_tickle PUBLIC "tt_CLIENT_MAX_OUTSTANDING=${RMW_TICKLE_CLIENT_MAX_OUTSTANDING}")
+endif()
 set(RMW_TICKLE_RX_BATCH "" CACHE STRING "tt_RX_BATCH for this build; empty keeps hal_linux.h's default")
 if(NOT RMW_TICKLE_RX_BATCH STREQUAL "")
   target_compile_definitions(rmw_tickle PUBLIC "tt_RX_BATCH=${RMW_TICKLE_RX_BATCH}")
@@ -173,7 +179,7 @@ install(
 if(BUILD_TESTING)
   find_package(ament_cmake_test REQUIRED)
 
-  foreach(_test_name test_qos test_node_lifecycle test_guard_condition_wait test_graph test_events test_liveliness_lost_watchdog test_rmw_api_surface test_multi_node test_names_and_types test_publish_take_reuse test_history_keep_all test_keep_all_blocking test_best_available test_heartbeat_piggyback_default test_type_checks test_storage_budget test_service_roundtrip test_context_fini_leaked_node test_unsupported_entry_points test_executor_poll test_domain_id test_psn_codec test_event_teardown test_security_options test_event_callbacks test_g3_events test_take_sequence test_context_id_registry test_inprocess test_discovery_options test_shell_pool test_serialized test_keep_all_reader test_reported_qos test_gid_two_process test_introspection_two_process test_loaned_messages test_large_loans test_encode_range test_context_resident)
+  foreach(_test_name test_qos test_node_lifecycle test_guard_condition_wait test_graph test_events test_liveliness_lost_watchdog test_rmw_api_surface test_multi_node test_names_and_types test_publish_take_reuse test_history_keep_all test_keep_all_blocking test_best_available test_heartbeat_piggyback_default test_type_checks test_storage_budget test_service_roundtrip test_service_multi_call test_context_fini_leaked_node test_unsupported_entry_points test_executor_poll test_domain_id test_psn_codec test_event_teardown test_security_options test_event_callbacks test_g3_events test_take_sequence test_context_id_registry test_inprocess test_discovery_options test_shell_pool test_serialized test_keep_all_reader test_reported_qos test_gid_two_process test_introspection_two_process test_loaned_messages test_large_loans test_encode_range test_context_resident)
     add_executable(${_test_name} test/${_test_name}.c)
     target_link_libraries(${_test_name} rmw_tickle Threads::Threads)
     # Every check in these tests is an assert(), so NDEBUG - which Release, now the default build type

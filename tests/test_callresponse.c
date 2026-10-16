@@ -40,7 +40,8 @@ static void test_client_callback(struct tt_Client* client, int8_t return_code, s
 // checks that request's seq_no against the response's before accepting it.
 static void set_outstanding_call(struct tt_Client* client, uint16_t seq_no) {
     memset(client->cache_buf, 0, sizeof(client->cache_buf));
-    client->cache = (struct tt_SubmessageHeader*)client->cache_buf;
+    client->calls[0].client = client;
+    client->calls[0].cache = (struct tt_SubmessageHeader*)client->cache_buf;
     struct tt_CallRequestHeader* req =
         (struct tt_CallRequestHeader*)(client->cache_buf + sizeof(struct tt_SubmessageHeader));
     req->seq_no = seq_no;
@@ -48,7 +49,7 @@ static void set_outstanding_call(struct tt_Client* client, uint16_t seq_no) {
 
 // Regression test for the latency EWMA and cache-clearing on a successful (well, "answered")
 // call response: cache_time -> now must measure forward, not backward (see calculate_latency()),
-// and clearing client->cache must not try to free it (it's a fixed buffer, see cache_buf).
+// and clearing client->calls[0].cache must not try to free it (it's a fixed buffer, see cache_buf).
 static void test_callresponse_updates_latency_and_clears_cache(void) {
     test_mock_reset();
     test_mock_now = 1250;
@@ -70,7 +71,7 @@ static void test_callresponse_updates_latency_and_clears_cache(void) {
     client.service = &service;
     client.callback = test_client_callback;
     set_outstanding_call(&client, 7); // a call with seq_no 7 is outstanding
-    client.cache_time = 1000;
+    client.calls[0].cache_time = 1000;
     client.latency = 0;
 
     node.endpoint_count = 1;
@@ -95,7 +96,7 @@ static void test_callresponse_updates_latency_and_clears_cache(void) {
 
     EXPECT_TRUE(process_callresponse(&node, &header, (uint8_t*)&response_header, 0, sizeof(response_header)));
     EXPECT_EQ_U32(250, client.latency); // now(1250) - cache_time(1000)
-    EXPECT_TRUE(client.cache == NULL);
+    EXPECT_TRUE(client.calls[0].cache == NULL);
     EXPECT_EQ_U32(1, callback_count);
     EXPECT_EQ_INT(1, callback_return_code);
     EXPECT_TRUE(callback_response == NULL);
@@ -115,7 +116,7 @@ static void setup_client(struct tt_Context* node, struct tt_Service* service, st
     client->node = node;
     client->service = service;
     client->callback = test_client_callback;
-    client->cache_time = 1000;
+    client->calls[0].cache_time = 1000;
     node->endpoint_count = 1;
     node->endpoints[0] = (struct tt_Endpoint*)client;
 }
@@ -129,7 +130,7 @@ static struct tt_CallResponseHeader make_response(uint32_t endpoint_id, uint16_t
     return h;
 }
 
-// A CallResponse arriving when client->cache is NULL (no call outstanding - e.g. one already
+// A CallResponse arriving when client->calls[0].cache is NULL (no call outstanding - e.g. one already
 // answered, or an unsolicited/stray response) must be dropped without invoking the callback.
 static void test_callresponse_ignored_when_no_call_outstanding(void) {
     test_mock_reset();
@@ -137,7 +138,7 @@ static void test_callresponse_ignored_when_no_call_outstanding(void) {
     struct tt_Service service;
     struct tt_Client client;
     setup_client(&node, &service, &client);
-    client.cache = NULL; // nothing outstanding
+    client.calls[0].cache = NULL; // nothing outstanding
 
     struct tt_Header header = {.magic_value = NATIVE_MAGIC_VALUE, .version = tt_VERSION, .source = 2};
     struct tt_CallResponseHeader resp = make_response(client.endpoint.id, 7);
@@ -163,7 +164,7 @@ static void test_callresponse_ignored_on_seq_no_mismatch(void) {
     callback_count = 0;
     EXPECT_TRUE(process_callresponse(&node, &header, (uint8_t*)&resp, 0, sizeof(resp)));
     EXPECT_EQ_U32(0, callback_count);
-    EXPECT_TRUE(client.cache != NULL); // still waiting
+    EXPECT_TRUE(client.calls[0].cache != NULL); // still waiting
 }
 
 // The classic retry race: the server answered both the original request and a retry that crossed
@@ -183,7 +184,7 @@ static void test_duplicate_callresponse_does_not_double_invoke_callback(void) {
     callback_count = 0;
     EXPECT_TRUE(process_callresponse(&node, &header, (uint8_t*)&resp, 0, sizeof(resp)));
     EXPECT_EQ_U32(1, callback_count);
-    EXPECT_TRUE(client.cache == NULL);
+    EXPECT_TRUE(client.calls[0].cache == NULL);
 
     // Duplicate arrives after the call already completed.
     EXPECT_TRUE(process_callresponse(&node, &header, (uint8_t*)&resp, 0, sizeof(resp)));

@@ -53,7 +53,7 @@ static void setup(struct tt_Context* node) {
 // One timed wait to a retry timer `ahead` from now, which the mock's timer ends `late` after its deadline.
 static void sleep_once(struct tt_Context* node, uint64_t ahead, uint64_t late) {
     test_mock_receive_late_ns = late;
-    EXPECT_TRUE(tt_Context_schedule(node, test_mock_now + ahead, call_retry, &idle_client));
+    EXPECT_TRUE(tt_Context_schedule(node, test_mock_now + ahead, call_retry, &idle_client.calls[0]));
     EXPECT_EQ_INT(tt_RET_TIMEOUT, tt_Context_poll(node, -1));
 }
 
@@ -138,14 +138,14 @@ static void test_a_wait_cut_short_is_not_a_sample(void) {
     struct tt_Context node;
     setup(&node);
     test_mock_receive_advances_clock = false; // the wait returns at once: interrupted, nothing elapsed
-    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (1 * MS), call_retry, &idle_client));
+    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (1 * MS), call_retry, &idle_client.calls[0]));
     (void)tt_Context_poll(&node, -1);
     EXPECT_EQ_U32(0, node.timer_lateness_mean_ns);
     EXPECT_EQ_U64(100 * US, timer_lateness_ns(&node));
 
     setup(&node);
     test_mock_receive_return = 0; // a datagram (a rung bell) ends the wait
-    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (1 * MS), call_retry, &idle_client));
+    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (1 * MS), call_retry, &idle_client.calls[0]));
     (void)tt_Context_poll(&node, 2 * (int64_t)MS);
     EXPECT_EQ_U32(0, node.timer_lateness_mean_ns);
 
@@ -172,7 +172,7 @@ static void test_only_a_retry_timers_deadline_is_a_sample(void) {
     test_mock_receive_late_ns = 60 * US;
     (void)tt_Context_poll(&node, 1 * (int64_t)MS); // nothing scheduled: the wait ends at the budget
     EXPECT_EQ_U32(0, node.timer_lateness_mean_ns);
-    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (5 * MS), call_retry, &idle_client));
+    EXPECT_TRUE(tt_Context_schedule(&node, test_mock_now + (5 * MS), call_retry, &idle_client.calls[0]));
     (void)tt_Context_poll(&node, 1 * (int64_t)MS); // the budget ends first
     EXPECT_EQ_U32(0, node.timer_lateness_mean_ns);
     EXPECT_EQ_U64(100 * US, timer_lateness_ns(&node));
