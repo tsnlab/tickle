@@ -1199,15 +1199,15 @@ memory), delay from the first refused run to the collapse, before against after:
 50 streams a cell) at 0.01 / 0.1 / 1 / 5%, 0 / 10 / 4 / 2 against 0 / 0 / 2 / 2. The ones left at 1% and 5% rest on a
 baseline that is biased, not only noisy: a sample lost whole (its run and its tail) never reaches the reader, so `p_mtu`
 misses a tail lost with its run and reads about `p (1 - L(n))` for one-run samples - 0.904 p at 1% (1,000 streams of the
-test) and 0.595 p at 5% (0.999 p at 0.1%). Not fixed here. The alternatives, measured the same way: the 99.9% bound in
-both parts delayed the 0.01% squeeze (median 1 s, mean 0.80 s); that bound alone, without the survival side, the 0.1%
-one to 12.7 s; a second confirming window costs a window on every collapse (5.5 s at 0.1%) and still failed 2 seeds of
-1,000; z 4 alone failed 3. With the rule as built, the seed-dependent arms of `tests/test_hybrid_send.c` pass seeds
-1-1,000, the squeeze arm run on seeds 1-132 and 601-654 only (the PC was loaded): all pass, seed 37 among them. Of
-main's other failures there, 325 and 428 lost the reader's announce of the new cap (one 144 B datagram at 0.1%; the
-writer pulls it within a second, after the test looked) and 781 counted 28 of the collapse second's 30 samples into `R`,
-so its anchor read 7% low and halving the rate scaled by 1.87, under `tt_HYBRID_SCALE_AT` (1.9): the test's margins, not
-the collapse test.
+test) and 0.595 p at 5% (0.999 p at 0.1%). Fixed separately: samples lost whole are counted from the seq_no ("What the
+reader measures", above). The alternatives, measured the same way: the 99.9% bound in both parts delayed the 0.01%
+squeeze (median 1 s, mean 0.80 s); that bound alone, without the survival side, the 0.1% one to 12.7 s; a second
+confirming window costs a window on every collapse (5.5 s at 0.1%) and still failed 2 seeds of 1,000; z 4 alone failed
+three. With the rule as built, the seed-dependent arms of `tests/test_hybrid_send.c` pass seeds 1-1,000, the squeeze arm
+run on seeds 1-132 and 601-654 only (the PC was loaded): all pass, seed 37 among them. Of main's other failures there,
+325 and 428 lost the reader's announce of the new cap (one 144 B datagram at 0.1%; the writer pulls it within a second,
+after the test looked) and 781 counted 28 of the collapse second's 30 samples into `R`, so its anchor read 7% low and
+halving the rate scaled by 1.87, under `tt_HYBRID_SCALE_AT` (1.9): the test's margins, not the collapse test.
 
 **The remembered ceiling is the collapse point, not the overshoot.** Reassembly memory fills over up to `tau`, so a
 cap grown in a few ticks can be far past the collapse point when it shows. The kernel then admits about the share of
