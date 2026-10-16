@@ -1357,7 +1357,7 @@ static void test_a_busy_writers_send_is_not_timed_as_the_path(void) {
     EXPECT_TRUE(interval[SAMPLES - 1] <= 2 * TEST_RETRY_INTERVAL);
     // Nor is the busy writer asked again while it sends: at the path's interval its queued requests named each lost
     // datagram over and over, and it resent each for each - 91,786 datagrams against 26,226 with the inflated
-    // interval and 25,444 now.
+    // interval and 25,537 now.
     EXPECT_TRUE(sim_sent[SENDER_ID] * 100 <= (uint64_t)SAMPLES * tt_sample_datagrams(FOUR_MB) * 120);
 }
 
@@ -1415,9 +1415,49 @@ static void test_a_quiet_paths_round_trip_is_still_timed(void) {
            (double)short_path / 1e6, (double)long_path / 1e6);
     // Within a quarter of the path below (a probe started when the watermark reaches a gap asked for earlier times a
     // repair already on its way) and half above it. The parent: 4.97 ms over the 2 ms path - the busy send's 18 ms
-    // recoveries still in it - and 7.39 ms over the 8 ms one; this change 1.88 and 6.53 (2026-10-16).
+    // recoveries still in it - and 7.39 ms over the 8 ms one; this change 2.85 and 7.49 (2026-10-16).
     EXPECT_TRUE(short_path >= 1500 * tt_MICROSECOND && short_path < 3 * tt_MILLISECOND);
     EXPECT_TRUE(long_path >= 6 * tt_MILLISECOND && long_path < 12 * tt_MILLISECOND);
+}
+
+// A writer that reads requests while it sends - repairs queued behind the rest of its sample - on a path of `delay`:
+// `samples` 4 MB samples at 5% loss through 8 datagrams of send buffer. Answers the copies the reader got twice.
+static uint64_t answering_writer_duplicates(int samples, uint64_t delay) {
+    init_pair(1000, RELIABLE_KEEP_LAST);
+    sim_start(0);
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
+    sim_settle(1, tt_SECOND);
+    struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+    EXPECT_TRUE(proxy != NULL);
+    if (proxy == NULL) {
+        return 0;
+    }
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+    sim_reverse_delay = delay;
+    sample_len = FOUR_MB;
+    sim_loss_per_mille = 50;
+    sim_room_per_step = 8;
+    for (int i = 0; i < samples; i++) {
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 2), tt_SECOND));
+        sim_settle(i + 2, 2 * tt_SECOND);
+    }
+    EXPECT_EQ_INT(samples + 1, delivered_count);
+    return receiver.large.duplicate;
+}
+
+static void test_a_sending_writer_is_not_asked_for_repairs_on_their_way(void) {
+    // The other writer: it reads requests while it sends, so its repairs come - queued behind the rest of the sample -
+    // and the reader's retry interval, its busy recoveries left out, is far shorter than that queue. Asked again at
+    // that interval it resent repairs already on their way: on the PC (srtt_busy_writer_pc_ab.sh, 2026-10-16) +37%
+    // writer datagrams at 0% netem; here 3,907 copies the reader got twice. While the sample still arrives a retry
+    // names only what was asked for longer ago than the repair transit time: 1. The parent, its interval inflated by
+    // the queue: 245. Mutant: the retry names repairs in flight.
+    enum { SAMPLES = 4 };
+    uint64_t duplicates = answering_writer_duplicates(SAMPLES, 2 * tt_MILLISECOND);
+    printf("test_large_sample: answering writer, %d x 4 MB at 5%% over a 2 ms path - writer datagrams %llu, "
+           "duplicates at the reader %llu\n",
+           SAMPLES, (unsigned long long)sim_sent[SENDER_ID], (unsigned long long)duplicates);
+    EXPECT_TRUE(duplicates * 100 <= (uint64_t)SAMPLES * tt_sample_datagrams(FOUR_MB));
 }
 
 static void test_keep_last_replaces_a_sample_waiting_behind_a_send(void) {
@@ -2194,6 +2234,7 @@ int main(void) {
     test_a_busy_writer_is_not_warned_about();
     test_a_busy_writers_send_is_not_timed_as_the_path();
     test_a_quiet_paths_round_trip_is_still_timed();
+    test_a_sending_writer_is_not_asked_for_repairs_on_their_way();
     teardown_pair();
 
     allocator_reset(&sender_alloc);
