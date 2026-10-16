@@ -81,6 +81,13 @@ target_compile_definitions(rmw_tickle PUBLIC tt_LARGE_SAMPLES=1)
 # composed ROS 2 bringup (Nav2's, one container) holds 15-20 of them - core's default, 16, would refuse the rest.
 # 256 is the most a node's uint8_t index allows; the table costs 8 bytes per entry.
 target_compile_definitions(rmw_tickle PUBLIC tt_MAX_NODES=256)
+# Scheduler entries per context (tt_MAX_SCHEDULER_LENGTH, config.h; 2026-10-16). Every rmw node shares the one context,
+# and a service holds an entry per request it keeps deferred and per answer it keeps for retries - up to 3 x
+# tt_CLIENT_MAX_OUTSTANDING per calling Client, 2 x tt_MAX_SERVER_CACHE_COUNT (128) for one saturated service - beside
+# every client's call retries, every reliable writer's and reader's timers and the DEADLINE timers. Core's 128 is sized
+# for a microcontroller. 512 costs 12 KB per context (24 bytes an entry) and no time per operation: insert is
+# O(log entries in use), unschedule scans the entries in use. A full scheduler is counted (sched_full, traffic line).
+target_compile_definitions(rmw_tickle PUBLIC tt_MAX_SCHEDULER_LENGTH=512)
 # (g8, RMW_GAPS_PLAN.md) Several rmw_tickle processes on one host each claim a context id of their own (config.h).
 target_compile_definitions(rmw_tickle PUBLIC tt_CONTEXT_ID_CLAIM=1)
 # (g9, RMW_GAPS_PLAN.md) Nodes of one process share a context: samples between them are delivered in-process.

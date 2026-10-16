@@ -955,6 +955,12 @@ struct tt_Context {
 
     struct tt_TCB scheduler[tt_MAX_SCHEDULER_LENGTH];
     int32_t scheduler_tail;
+    // The most entries the scheduler has held at once, and the entries it refused because it was full - a timer not
+    // armed, a request turned away before its Server's callback ran (process_callrequest()), a call not made. Both on
+    // the traffic line; sched_full also warned about, at most once per tt_SCHED_FULL_WARN_INTERVAL (config.h).
+    int32_t sched_peak;
+    uint64_t sched_full;
+    uint64_t sched_full_warned_ns; // when that warning was last given; 0: never
 
     // tt_hal is defined indirectly via <tickle/hal.h>, which includes the
     // platform-specific HAL header (<tickle/hal_linux.h> or <tickle/hal_freertos.h>).

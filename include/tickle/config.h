@@ -1000,8 +1000,22 @@
 // by a remote context's id. Not a setting. They were sized by tt_MAX_ENDPOINT_COUNT, which was 256 only by
 // coincidence and so could not grow (CONTEXT_NODE_PLAN.md 4a, 2026-09-27).
 #define tt_MAX_CONTEXT_IDS (UINT8_MAX + 1)
+// Entries in a context's scheduler (struct tt_Context.scheduler), one less of them usable. Each is a struct tt_TCB: 24
+// bytes on a 64-bit target, 16 on a 32-bit one, so 128 costs 3 KB per context on Linux and 2 KB on the FreeRTOS
+// (rv32) build. An entry is held by every timer a context has armed: its periodic tasks, a call retry per outstanding
+// call, a reliable writer's resolicit and large-send timers, an acknack retry per writer with a gap, rmw_tickle's
+// DEADLINE timers - and, at a Server, one per request held deferred and one per answer kept for retries, so a Client
+// calling at full depth (tt_CLIENT_MAX_OUTSTANDING) can hold up to 3 x that at a deferred service. A full scheduler
+// refuses the entry: counted (sched_full on the context's traffic line) and warned about at most once per
+// tt_SCHED_FULL_WARN_INTERVAL, and a request to a Server is then turned away before its callback runs, the client's
+// retry asking again. Inserting is O(log entries in use) and unscheduling scans the entries in use, so the capacity
+// costs memory and nothing per operation. rmw_tickle builds 512 (its CMakeLists.txt).
 #ifndef tt_MAX_SCHEDULER_LENGTH
 #define tt_MAX_SCHEDULER_LENGTH 128 // Scheduling queue
+#endif
+// How often a full scheduler is warned about at most (the refusals are counted every time, sched_full).
+#ifndef tt_SCHED_FULL_WARN_INTERVAL
+#define tt_SCHED_FULL_WARN_INTERVAL (5 * tt_SECOND) // nanosecond
 #endif
 // Nodes one context can host (CONTEXT_NODE_PLAN.md stage 2), its default node included when in use. At most 256: a
 // node's index is a uint8_t, and stage 3 carries it in 8 spare bits of an announce entry. rmw_tickle builds set 256

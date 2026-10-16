@@ -13,6 +13,18 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Added
 
+- **A full scheduler is safe and visible** (2026-10-16). With several calls per Client, each request a Server holds
+  deferred and each answer it keeps takes a scheduler entry. A request that found the scheduler full ran its callback
+  and was then dropped: a deferred one after the application had it (`tt_Server_send_response()` then found nothing),
+  a synchronous answer computed and never sent, and the retry ran the callback again - 17 of 20 deferred requests
+  and 20 of 20 synchronous ones in `tests/test_scheduler_headroom.c` on 1014a7ed, each a separate ERROR line. Now a
+  request is turned away before its callback when there is no entry for it, and the client's retry asks again; every
+  refused entry is counted (`sched_full`, with `sched_peak` and `sched_capacity` on the traffic line) and warned
+  about at most once per `tt_SCHED_FULL_WARN_INTERVAL` (5 s). rmw_tickle builds `tt_MAX_SCHEDULER_LENGTH` 512
+  (12 KB per context); core keeps 128 (2 KB on the rv32 FreeRTOS build). Insert is O(log entries in use) and
+  unschedule scans the entries in use, so the larger capacity costs no time (measured: 45 ns at 10 in use, 142 ns at
+  120, the same at 128 and 512).
+
 - **Several calls outstanding per Client** (the user's decision of 2026-10-16; docs/DESIGN.md section 7). A Client has
   `tt_CLIENT_MAX_OUTSTANDING` call slots (config.h, default 4, compile time only), each with its own seq_no, retry
   timer and cached request; answers are matched in any order, and the callback names the call it reports

@@ -4562,9 +4562,10 @@ void tt_Context_unlock(struct tt_Context* node) {
 }
 
 // scheduler[] is a binary min-heap keyed on TCB.time (heap[0] = earliest), sized by
-// scheduler_tail. schedule/pop/unschedule are all O(log N) sift operations with no array
-// memmove. Equal-time entries no longer keep strict FIFO order (heaps don't) - nothing in this
-// codebase's scheduling depends on that.
+// scheduler_tail. schedule and pop are O(log N) sift operations with no array memmove; unschedule
+// scans the N entries in use for its (function, param) and sifts each one it removes. N is the
+// entries in use, never tt_MAX_SCHEDULER_LENGTH: the capacity costs memory and no time. Equal-time entries no longer
+// keep strict FIFO order (heaps don't) - nothing in this codebase's scheduling depends on that.
 static void sched_sift_up(struct tt_Context* node, int32_t index) {
     struct tt_TCB moving = node->scheduler[index];
     while (index > 0) {
@@ -4609,7 +4610,33 @@ static void sched_heap_insert(struct tt_Context* node, uint64_t time,
     node->scheduler[index].function = function;
     node->scheduler[index].param = param;
     node->scheduler_tail++;
+    if (node->scheduler_tail > node->sched_peak) {
+        node->sched_peak = node->scheduler_tail;
+    }
     sched_sift_up(node, index);
+}
+
+// Whether the heap has room for one more entry, counting those still waiting in the inbox, which the next drain
+// moves in. Under the state lock.
+static bool sched_has_room(struct tt_Context* node) {
+    uint32_t queued = __atomic_load_n(&node->sched_inbox_pending, __ATOMIC_ACQUIRE);
+    return (uint32_t)node->scheduler_tail + queued + 1U < (uint32_t)tt_MAX_SCHEDULER_LENGTH;
+}
+
+// An entry the full heap refused: counted every time, warned about at most once per tt_SCHED_FULL_WARN_INTERVAL.
+// Before 2026-10-16 the only sign was each caller's own message, if it had one, one line per refusal. Under the
+// state lock.
+static void sched_note_full(struct tt_Context* node) {
+    node->sched_full++;
+    uint64_t now = tt_get_ns();
+    if (node->sched_full_warned_ns != 0 && now - node->sched_full_warned_ns < tt_SCHED_FULL_WARN_INTERVAL) {
+        return;
+    }
+    node->sched_full_warned_ns = now != 0 ? now : 1;
+    TT_LOG_WARNING("Context %u scheduler full (%d entries, tt_MAX_SCHEDULER_LENGTH %d): %lu entries refused so far - "
+                   "timers not armed, service requests turned away until a retry finds room; raise "
+                   "tt_MAX_SCHEDULER_LENGTH",
+                   node->id, (int)node->scheduler_tail, tt_MAX_SCHEDULER_LENGTH, (unsigned long)node->sched_full);
 }
 
 // struct tt_Context.wait_until, as a seqlock over two 32-bit halves. A 64-bit atomic would be simpler, but a
@@ -4711,6 +4738,8 @@ bool tt_Context_schedule(struct tt_Context* node, uint64_t time,
     bool room = node->scheduler_tail + 1 < tt_MAX_SCHEDULER_LENGTH;
     if (room) {
         sched_heap_insert(node, time, function, param);
+    } else {
+        sched_note_full(node);
     }
     state_unlock(node);
     if (room) {
@@ -5248,6 +5277,9 @@ static void reset_node_state(struct tt_Context* node) {
 
     memset(node->scheduler, 0, sizeof(struct tt_TCB) * tt_MAX_SCHEDULER_LENGTH);
     node->scheduler_tail = 0;
+    node->sched_peak = 0;
+    node->sched_full = 0;
+    node->sched_full_warned_ns = 0;
 }
 
 // Arms node_update()'s and check_liveliness()'s first run, aligned to the next tt_CONTEXT_CYCLE boundary.
@@ -16059,6 +16091,15 @@ static bool process_callrequest(struct tt_Context* node, struct tt_Header* heade
             return false;
         }
     } else {
+        // Room in the scheduler first: holding the request deferred, or keeping its answer for the client's retries,
+        // takes an entry, and with none the request was dropped after its callback ran - a deferred one after the
+        // application had been handed it, a synchronous answer computed and never sent, and the retry ran the callback
+        // again (2026-10-16, tests/test_scheduler_headroom.c). Turned away before the callback instead, as
+        // tt_CALL_IGNORED is: the client's retry asks again.
+        if (!sched_has_room(node)) {
+            sched_note_full(node);
+            return true;
+        }
         struct tt_Service* service = server->service;
 
         uint8_t request[service->request_size];
@@ -21502,7 +21543,10 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         "udp_offload=%u gro_reads=%lu gro_merged=%lu gro_copied=%lu gro_off8=%lu gso_sends=%lu gso_datagrams=%lu "
         // Samples published with no matched reader, which sent nothing (DESIGN.md section 4): dropped (BEST_EFFORT) or
         // kept in the writer's history (RELIABLE, durable).
-        "tx_unmatched_dropped=%lu tx_unmatched_kept=%lu",
+        "tx_unmatched_dropped=%lu tx_unmatched_kept=%lu "
+        // The scheduler (tt_MAX_SCHEDULER_LENGTH): the most entries it held, and the entries refused because it was
+        // full.
+        "sched_peak=%d sched_capacity=%d sched_full=%lu",
         node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
         (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
         (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
@@ -21534,7 +21578,8 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
         (unsigned)node->udp_offload, (unsigned long)node->udp_gro_reads, (unsigned long)node->udp_gro_merged,
         (unsigned long)node->udp_gro_copied, (unsigned long)node->udp_gro_off8, (unsigned long)node->udp_gso_sends,
         (unsigned long)node->udp_gso_datagrams, (unsigned long)node->tx_unmatched_dropped,
-        (unsigned long)node->tx_unmatched_kept);
+        (unsigned long)node->tx_unmatched_kept, (int)node->sched_peak, tt_MAX_SCHEDULER_LENGTH - 1,
+        (unsigned long)node->sched_full);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads

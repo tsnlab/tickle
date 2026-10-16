@@ -1851,8 +1851,10 @@ instructions per sample (perf, user + kernel) and memory as resident pages split
 ## 11. Memory model
 
 - **Embedded storage** sized by macros: server response cache (`tt_SERVER_CACHE_ENTRY_LENGTH` x 64), client call
-  cache, scheduler (`tt_MAX_SCHEDULER_LENGTH` 128), peer and ack tables, per-peer tables indexed by context id
-  (`tt_MAX_CONTEXT_IDS` 256).
+  cache, scheduler (`tt_MAX_SCHEDULER_LENGTH` 128, 512 in rmw_tickle; 24 bytes an entry on 64-bit, 16 on rv32),
+  peer and ack tables, per-peer tables indexed by context id (`tt_MAX_CONTEXT_IDS` 256). A full scheduler refuses the
+  entry, counts it (`sched_full` on the traffic line, beside `sched_peak`) and warns at most every 5 s; a Server
+  turns a request away before its callback when holding it or its answer would find no entry.
 - **Caller-attached storage** where the size depends on the use: a Publisher's `reliable_cache` (index + arena), a
   Subscriber's tracking window and reorder buffer, `tt_Server_set_storage()` / `tt_Client_set_storage()`, the
   receive-buffer lending pool (`tt_Context_set_rx_pool()`).
