@@ -750,8 +750,14 @@ with its O(1) matched check, and UDP checksum 0 as above; same four arms, 5 reps
   (55.66 / 72.02 ms against Fast DDS 37.52 / 37.76): it includes the wait behind the sample in flight, which a DDS
   publisher spends blocked in `publish()` before it stamps the next sample. The subscriber's socket still drops 57-382
   datagrams a run. Since 2026-10-16 rmw_tickle can block the same way, off by default
-  (`RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS`, RMW.md "Large samples: blocking publish"); the rig has not measured it yet
-  (arm `tickle@block` of `rmw_keepall_rig.sh`).
+  (`RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS`, RMW.md "Large samples: blocking publish"). Rig, 2026-10-16, branch
+  ab/large-publish-block on main dde87857, I4s, 5 reps, arms interleaved (`~/rig_results_safe/block_i4s_20261016-102913.txt`
+  and `.runs/`; each `tickle@block` run 1,718-1,719 waits, 0 timeouts, 0 samples dropped at the sender): with the
+  option at 1000 ms, latency median / p99 38.48 / 39.50 ms against 54.92 / 71.23 off, Fast DDS 37.60 / 37.81 and
+  CycloneDDS 39.00 / 39.67 - a WIN against CycloneDDS, still a LOSE against Fast DDS by 0.3-0.9 ms (ranges
+  38.45-38.55 against 37.56-38.17); delivered 95.44% of offered in both modes; publisher CPU 3.61 ms/MB (off 3.44,
+  Fast DDS 3.58); publisher peak RSS 25.5 MB, the smallest of the four. The default stays off, so the row above is
+  the non-blocking mode.
 - **Same host is not published.** In step A a 4 MB best-effort sample delivers ~0% same-host: its ~2,900 fragments do
   not fit the receiver's 512 x 1,472 B ring. Step B, a writer-owned same-host area, is to fix it.
 
