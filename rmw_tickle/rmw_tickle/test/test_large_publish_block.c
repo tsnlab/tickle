@@ -12,9 +12,9 @@
 //
 // Core's publish of a large sample never blocks: the send goes on from the poll, and a sample published meanwhile
 // waits behind it and is replaced by a newer one (KEEP_LAST at the sender, core's large.tail_abandoned). A DDS publish
-// blocks in the send instead. The option makes rmw_publish() wait, before core sees the sample, while the same
-// publisher's previous large sample is still going. Two processes, 4 MB samples (perf_test's Array4m) published back
-// to back, so the link is saturated; BEST_EFFORT KEEP_LAST depth 5, as the rig's I4s cell:
+// blocks in the send instead. The option makes rmw_publish() wait, after handing its sample to core, until that
+// sample has been sent. Two processes, 4 MB samples (perf_test's Array4m) published back to back, so the link is
+// saturated; BEST_EFFORT KEEP_LAST depth 5, as the rig's I4s cell:
 //
 // off: the option unset, the control. No publish waits, and core replaces samples at the sender (abandoned >= 1).
 //
@@ -235,7 +235,7 @@ static const char* const scenario_env[] = {"", "5000", "1", "5000"};
 // What the talker reports to the listener when it has published everything.
 struct report {
     uint64_t abandoned;      // core: large samples replaced or cut short at the sender (large.tail_abandoned)
-    uint64_t waits;          // rmw: publishes that waited for the previous large sample
+    uint64_t waits;          // rmw: publishes that waited for their large sample to be sent
     uint64_t timeouts;       // rmw: waits that ran out
     uint64_t small_waits;    // waits counted across the small publisher's publish
     uint64_t published_ok;   // large publishes that returned RMW_RET_OK
@@ -297,7 +297,53 @@ static bool file_exists(const char* path) {
     return 0 == access(path, F_OK);
 }
 
-// Publishes SAMPLES large samples back to back (an executor turn before each in EXECUTOR), then one small one.
+// One large publish on a thread of its own: the last one, during which the small publisher publishes.
+struct large_publish {
+    rmw_publisher_t* pub;
+    struct array4m* message;
+    rmw_ret_t ret;
+    uint64_t took_ns;
+};
+
+static void* publish_on_thread(void* arg) {
+    struct large_publish* job = arg;
+    uint64_t before = now_ns();
+    job->ret = rmw_publish(job->pub, job->message, NULL);
+    job->took_ns = now_ns() - before;
+    return NULL;
+}
+
+// The small publisher publishes while the last large sample is being sent - with the option on, while that sample's
+// own publish waits on another thread - and must not wait itself: the wait count does not move across its publish.
+static void publish_small_meanwhile(rmw_tickle_context_impl_t* context_impl, rmw_publisher_t* pub,
+                                    rmw_publisher_t* small_pub, struct array4m* message, struct report* report) {
+    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
+    uint64_t waits_at_start = atomic_load(&context_impl->large_block_waits);
+    struct large_publish job = {.pub = pub, .message = message, .ret = RMW_RET_ERROR, .took_ns = 0};
+    pthread_t thread;
+    assert(0 == pthread_create(&thread, NULL, publish_on_thread, &job));
+    bool ready = false;
+    for (int i = 0; i < WAIT_POLLS && !ready; i++) {
+        bool in_flight = tt_Publisher_large_in_flight(&pub_impl->tickle_publisher);
+        // With the option on, the large publish has also begun its wait (counted once, when it begins).
+        ready = in_flight &&
+                (0 == pub_impl->large_block_ns || atomic_load(&context_impl->large_block_waits) > waits_at_start);
+        if (!ready) {
+            sleep_us(POLL_US / 4);
+        }
+    }
+    report->small_in_flight = ready;
+    uint64_t waits_before = atomic_load(&context_impl->large_block_waits);
+    struct small small_message = {.bytes = {0}, .id = 1};
+    assert(RMW_RET_OK == rmw_publish(small_pub, &small_message, NULL));
+    report->small_waits = atomic_load(&context_impl->large_block_waits) - waits_before;
+    assert(0 == pthread_join(thread, NULL));
+    report->longest_ns = job.took_ns > report->longest_ns ? job.took_ns : report->longest_ns;
+    report->published_ok += RMW_RET_OK == job.ret ? 1U : 0U;
+}
+
+// Publishes SAMPLES large samples back to back (an executor turn before each in EXECUTOR), the small one during the
+// last.
 static void publish_all(enum scenario which, rmw_context_t* context, rmw_tickle_context_impl_t* context_impl,
                         rmw_publisher_t* pub, rmw_publisher_t* small_pub, struct report* report) {
     struct spinner spinner = {.context = context, .stop = false, .waits = 0};
@@ -319,6 +365,10 @@ static void publish_all(enum scenario which, rmw_context_t* context, rmw_tickle_
         }
         message->id = id;
         message->time = (int64_t)id;
+        if (SAMPLES == id) {
+            publish_small_meanwhile(context_impl, pub, small_pub, message, report);
+            break;
+        }
         uint64_t before = now_ns();
         rmw_ret_t ret = rmw_publish(pub, message, NULL);
         uint64_t took = now_ns() - before;
@@ -327,12 +377,6 @@ static void publish_all(enum scenario which, rmw_context_t* context, rmw_tickle_
     }
     report->total_ns = now_ns() - start;
     free(message);
-    // The small publisher, while the last large sample is still going: it must not wait.
-    report->small_in_flight = tt_Publisher_large_in_flight(&((rmw_tickle_publisher_t*)pub->data)->tickle_publisher);
-    uint64_t waits_before = atomic_load(&context_impl->large_block_waits);
-    struct small small_message = {.bytes = {0}, .id = 1};
-    assert(RMW_RET_OK == rmw_publish(small_pub, &small_message, NULL));
-    report->small_waits = atomic_load(&context_impl->large_block_waits) - waits_before;
     if (EXECUTOR == which) {
         atomic_store(&spinner.stop, true);
         assert(0 == pthread_join(spinner_thread, NULL));
