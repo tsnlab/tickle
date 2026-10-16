@@ -169,6 +169,50 @@ MUTANTS = [
         "",
         "test_a_durable_writer_backs_a_late_joiner_with_its_large_samples",
     ),
+    # A durable backlog that interleaves large and small samples (2026-10-16): each large record goes before the first
+    # small sample above it, so the backlog leaves in publish order, and KEEP_LAST's depth counts both kinds together.
+    (
+        "a mixed backlog's large records all sent after its small ones",
+        "        large_send_backlog_before(node, pub, seq_no, false, &large_next, target);\n",
+        "",
+        "test_a_durable_backlog_interleaving_large_and_small_samples",
+    ),
+    (
+        "a mixed backlog's large record sent after the small one above it",
+        "        large_send_backlog_before(node, pub, seq_no, false, &large_next, target);\n#endif\n"
+        "        if (!send_cached_record(node, cache->arena + cache_entry->offset, cache_entry->len, false, target)) {\n"
+        "            TT_LOG_WARNING(\"Cannot deliver durability backlog seq_no %u\", cache_entry->seq_no);\n        }\n",
+        "#endif\n"
+        "        if (!send_cached_record(node, cache->arena + cache_entry->offset, cache_entry->len, false, target)) {\n"
+        "            TT_LOG_WARNING(\"Cannot deliver durability backlog seq_no %u\", cache_entry->seq_no);\n        }\n"
+        "#if tt_LARGE_SAMPLES\n        large_send_backlog_before(node, pub, seq_no, false, &large_next, target);\n#endif\n",
+        "test_a_durable_backlog_interleaving_large_and_small_samples",
+    ),
+    (
+        "KEEP_LAST depth: a small sample does not count the large ones",
+        "        if (pub->large_count != 0) { // else the cache's own bound is the whole of it\n"
+        "            keep_last_bound_across_kinds(node, pub, 1);\n        }\n",
+        "",
+        "test_a_durable_backlog_interleaving_large_and_small_samples",
+    ),
+    (
+        "KEEP_LAST depth: a large sample does not count the small ones",
+        "    keep_last_bound_across_kinds(node, pub, 1);\n    if (pub->large_count >= tt_LARGE_RETAINED)",
+        "    if (pub->large_count >= tt_LARGE_RETAINED)",
+        "test_a_durable_backlog_interleaving_large_and_small_samples",
+    ),
+    (
+        "KEEP_LAST depth: not brought back once a large send ends",
+        "    keep_last_bound_across_kinds(node, pub, 0);\n",
+        "",
+        "test_a_durable_backlog_interleaving_large_and_small_samples",
+    ),
+    (
+        "KEEP_LAST depth: the newer of the two kinds evicted",
+        "        if (small != 0 && (large == NULL || seq_delta(cache->oldest_seq_no, large->seq_no) < 0)) {",
+        "        if (small != 0 && (large == NULL || seq_delta(cache->oldest_seq_no, large->seq_no) > 0)) {",
+        "test_a_durable_backlog_interleaving_large_and_small_samples",
+    ),
     # Encoding while sending (DESIGN.md section 8): a topic's ranged encode, a send call at a time.
     (
         "the sample encoded whole after its first range",

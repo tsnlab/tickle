@@ -21,6 +21,7 @@
 #define tt_LARGE_SAMPLES 1 // as rmw_tickle builds core
 
 #include <pthread.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -227,11 +228,16 @@ static bool payload_intact(const uint8_t* payload, uint32_t len, uint32_t expect
     return true;
 }
 
+// A sample's length by its seed, for a run whose samples differ in size (the mixed durable backlog): 0 means
+// sample_len, as every other test has it.
+static uint32_t len_of_seed[256];
+
 static int32_t checking_decode(struct tt_Data* data, const uint8_t* payload, uint32_t len, bool native) {
     (void)data;
     (void)native;
     delivered_len = len;
-    if (!payload_intact(payload, len, sample_len)) {
+    uint32_t expected_len = len_of_seed[payload[0]] != 0 ? len_of_seed[payload[0]] : sample_len;
+    if (!payload_intact(payload, len, expected_len)) {
         delivered_torn++;
     }
     if (delivered_count < 64) {
@@ -329,6 +335,7 @@ static void init_pair(uint32_t len, enum pair_mode mode) {
     retain_next = false;
     retain_result = tt_RET_OK;
     memset(&held, 0, sizeof(held));
+    memset(len_of_seed, 0, sizeof(len_of_seed));
     allocator_reset(&sender_alloc);
     allocator_reset(&receiver_alloc);
 
@@ -1491,6 +1498,265 @@ static void test_a_late_joiner_gets_a_large_backlog_from_a_writer_far_past_1(voi
     }
 }
 
+// --- A durable backlog that interleaves large and small samples --------------------------------------------------
+// A TRANSIENT_LOCAL writer publishes small and large samples, mixed, before any reader is matched - and so sends
+// nothing - then a durable reader joins in a match's order (register_subscriber_peer_on_publisher(): the backlog, then
+// the initial Heartbeat). deliver_durability_backlog() walks the small cache in seq_no order and sends each large
+// record before the first small sample above it (large_send_backlog_before()), so the backlog leaves in publish order.
+// The reader must get the writer's history - KEEP_LAST: its newest `depth` samples - in order, each whole, at 5% loss
+// too, and give nothing up on its own: a RELIABLE reader drops a gap only on the writer's word (DESIGN.md section 6).
+
+#define MIXED_RING 2048 // datagram slots: the whole of either mix, as rmw_tickle sizes a large type's ring
+static struct tt_ReliableCacheIndex mixed_index[MIXED_RING];
+static uint8_t mixed_arena[tt_RELIABLE_CACHE_ARENA_BYTES(32, tt_RELIABLE_RECORD_BYTES(1472))];
+static struct tt_ReliableCache mixed_cache;
+// The reader's reorder buffer, which a RELIABLE Subscriber of a topic whose small samples fragment must have (tickle.h,
+// reorder_storage): each fragment of SMALL_FRAG is held in a slot until its sample is in order.
+#define MIXED_REORDER_SLOTS 256
+#define MIXED_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(tt_CONTROL_MAX_LENGTH)
+static uint64_t mixed_reorder[MIXED_REORDER_SLOTS * MIXED_REORDER_SLOT_BYTES / sizeof(uint64_t)];
+
+#define SMALL_ONE 1000U    // one datagram, one seq_no
+#define SMALL_FRAG 5000U   // a fragmented small sample: a seq_no per datagram
+#define LARGE_100K 102400U // 71 datagrams
+
+// The seq_no a captured datagram of the Publisher's samples carries - DATA, FRAG_FIRST(_L) and FRAG_CONT(_L) all have
+// it 4 bytes into the first submessage's body. False for any other datagram: a HEARTBEAT, or an announce (DATA too,
+// of another entity).
+static bool datagram_seq_no(const uint8_t* bytes, uint32_t* seq_no) {
+    const uint8_t* body = NULL;
+    uint8_t type = datagram_type(bytes, &body);
+    uint32_t entity_id = 0;
+    if (type == tt_SUBMESSAGE_TYPE_DATA || type == tt_SUBMESSAGE_TYPE_FRAG_FIRST ||
+        type == tt_SUBMESSAGE_TYPE_FRAG_FIRST_L) {
+        memcpy(&entity_id, body + offsetof(struct tt_DataHeader, entity_id), sizeof(entity_id));
+    } else if (type == tt_SUBMESSAGE_TYPE_FRAG_CONT || type == tt_SUBMESSAGE_TYPE_FRAG_CONT_L) {
+        memcpy(&entity_id, body, sizeof(entity_id)); // entity_id leads both continuation headers
+    } else {
+        return false;
+    }
+    memcpy(seq_no, body + sizeof(uint32_t), sizeof(*seq_no));
+    return entity_id == pub.endpoint.entity_id;
+}
+
+// The writer's sample datagrams queued in [from, to) up to its first HEARTBEAT after them - for a backlog, the initial
+// Heartbeat that follows it - and, in *ascending, whether each seq_no was above the one before.
+static uint32_t sample_datagrams_sent(uint32_t from, uint32_t to, bool* ascending) {
+    uint32_t sent = 0;
+    uint32_t previous = 0;
+    for (uint32_t i = from; i < to; i++) {
+        const struct sim_datagram* d = &sim_queue[i % SIM_QUEUE];
+        const uint8_t* body = NULL;
+        uint32_t seq_no = 0;
+        if (d->from != SENDER_ID) {
+            continue;
+        }
+        if (datagram_seq_no(d->bytes, &seq_no)) {
+            if (ascending != NULL && sent != 0 && seq_delta(seq_no, previous) <= 0) {
+                *ascending = false;
+            }
+            previous = seq_no;
+            sent++;
+        } else if (sent != 0 && datagram_type(d->bytes, &body) == tt_SUBMESSAGE_TYPE_HEARTBEAT) {
+            break;
+        }
+    }
+    return sent;
+}
+
+// Takes the reader off the writer init_pair() matched it to, as if it had never been there.
+static void unmatch_reader(void) {
+    forget_peer(pub.peers, RECEIVER_ID);
+    for (uint8_t i = 1; i <= tt_UNICAST_PEER_THRESHOLD; i++) {
+        forget_peer(pub.peers, (uint8_t)(100U + i));
+    }
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        pub.peer_acks[i].context_id = tt_CONTEXT_ID_INVALID;
+        pub.peer_acks[i].entity_id = 0;
+    }
+}
+
+// One run: `count` samples of `sizes` (seeds 1..count) published unmatched by a durable writer of `mode` (KEEP_LAST
+// `depth`), then a durable reader matched over a link losing `loss` per mille.
+// A durable writer of `mode` (KEEP_LAST `depth`) with a cache the whole of either mix fits, and a reader with a reorder
+// buffer, matched as init_pair() matches it.
+static void mixed_pair(uint32_t first_size, enum pair_mode mode, uint16_t depth) {
+    init_pair(first_size, mode);
+    pub.durable = true;
+    memset(mixed_index, 0, sizeof(mixed_index));
+    memset(&mixed_cache, 0, sizeof(mixed_cache));
+    mixed_cache.index = mixed_index;
+    mixed_cache.capacity = MIXED_RING;
+    mixed_cache.depth = MIXED_RING;
+    mixed_cache.arena = mixed_arena;
+    mixed_cache.arena_size = (uint32_t)sizeof(mixed_arena);
+    mixed_cache.sample_depth = mode == RELIABLE_KEEP_LAST ? depth : 0;
+    pub.reliable_cache = &mixed_cache;
+    memset(mixed_reorder, 0, sizeof(mixed_reorder));
+    sub.reorder_storage = mixed_reorder;
+    sub.reorder_slots = MIXED_REORDER_SLOTS;
+    sub.reorder_slot_bytes = (uint16_t)MIXED_REORDER_SLOT_BYTES;
+    sub.durable = true; // what its announce will say
+}
+
+static void mixed_backlog(const char* mix, const uint32_t* sizes, int count, enum pair_mode mode, uint16_t depth,
+                          uint32_t loss) {
+    mixed_pair(sizes[0], mode, depth);
+    unmatch_reader();
+    sim_start(loss);
+
+    // Unmatched: every sample is kept and none is sent - at the publish, nor while the writer's clock runs a second
+    // (the no-send rule). Only the writer runs, and what it sends reaches nobody: the reader is not there yet.
+    sim_acting = SENDER_ID;
+    for (int i = 0; i < count; i++) {
+        sample_len = sizes[i];
+        sample_seed = (uint8_t)(i + 1);
+        len_of_seed[i + 1] = sizes[i];
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    }
+    uint64_t until = test_mock_now + tt_SECOND;
+    uint64_t next = 0;
+    while (sched_next_time(&sender, &next) && next < until) {
+        test_mock_now = next > test_mock_now ? next : test_mock_now;
+        bool has_next = false;
+        while (run_due_entry(&sender, test_mock_now, &has_next, &next)) {
+        }
+    }
+    test_mock_now = until;
+    EXPECT_TRUE(publisher_unmatched(&pub));
+    EXPECT_EQ_U32(0, sample_datagrams_sent(0, sim_tail, NULL));
+    sim_head = sim_tail;
+
+    // What the history holds: KEEP_LAST the newest `depth`, KEEP_ALL every one.
+    int first = mode == RELIABLE_KEEP_LAST && depth < count ? count - depth : 0;
+    int expected = count - first;
+    uint32_t expected_datagrams = 0;
+    uint32_t evicted_datagrams = 0;
+    for (int i = 0; i < count; i++) {
+        *(i < first ? &evicted_datagrams : &expected_datagrams) += tt_sample_datagrams(sizes[i]);
+    }
+
+    // The match: the reader's announce, as discovery delivers it. The writer sends the backlog, then its initial
+    // Heartbeat, all from the announce's processing - before the reader has said anything more.
+    uint32_t backlog_from = sim_tail;
+    uint64_t match_by = test_mock_now + tt_SECOND;
+    while (publisher_unmatched(&pub) && test_mock_now < match_by && sim_step()) {
+    }
+    EXPECT_TRUE(!publisher_unmatched(&pub));
+
+    // The backlog left in publish order: every sample datagram's seq_no above the one before, all of the history's.
+    bool ascending = true;
+    uint32_t backlog_datagrams = sample_datagrams_sent(backlog_from, sim_tail, &ascending);
+    EXPECT_TRUE(ascending);
+    EXPECT_EQ_U32(expected_datagrams, backlog_datagrams);
+
+    sim_drain();
+    sim_settle(expected, 10 * tt_SECOND);
+    uint64_t quiet_by = test_mock_now + tt_SECOND; // the last acknowledgements, and anything a mutant still sends
+    while (test_mock_now < quiet_by && sim_step()) {
+    }
+    printf("test_large_sample: mixed durable backlog %s, %s depth %u, %u/1000 loss - %d of %d delivered (seeds", mix,
+           mode == RELIABLE_KEEP_ALL ? "KEEP_ALL" : "KEEP_LAST", depth, loss, delivered_count, expected);
+    for (int i = 0; i < delivered_count && i < 64; i++) {
+        printf(" %u", delivered_seeds[i]);
+    }
+    printf("), backlog %u datagrams %s, %d torn, gaps abandoned %u evicted %u, large abandoned %lu\n",
+           backlog_datagrams, ascending ? "in order" : "OUT OF ORDER", delivered_torn, sub.gap_abandoned,
+           sub.gap_evicted, (unsigned long)receiver.large.abandoned);
+    EXPECT_EQ_INT(expected, delivered_count);
+    for (int i = 0; i < expected && i < delivered_count && i < 64; i++) {
+        EXPECT_EQ_INT(first + i + 1, delivered_seeds[i]); // the history, once each, in publish order
+    }
+    EXPECT_EQ_INT(0, delivered_torn);
+    EXPECT_TRUE(in_order);
+    // Nothing given up on the reader's own account (KEEP_LAST repair, DESIGN.md section 6): a seq_no is dropped only on
+    // the writer's word that it is gone, and that is said only of the samples the depth evicted - none at all when the
+    // whole mix is held.
+    EXPECT_EQ_U32(0, sub.gap_abandoned);
+    EXPECT_TRUE(sub.gap_evicted <= evicted_datagrams);
+    EXPECT_EQ_U64(0, receiver.large.abandoned);
+    if (loss != 0) {
+        EXPECT_TRUE(sim_dropped[SENDER_ID] > 0); // treatment: the link lost some of it
+    }
+}
+
+// KEEP_LAST holds its depth across both kinds from the moment a sample is published, not from when its send ends: with
+// depth 2, L1 S2 and then L3 still going out, the history - what a HEARTBEAT announces, and what a reader joining now
+// would be handed - begins at S2. Until 2026-10-16 L1 stayed beside them until L3 had gone.
+static void keep_last_depth_holds_while_a_large_sample_goes_out(void) {
+    mixed_pair(ONE_MB, RELIABLE_KEEP_LAST, 2);
+    sim_start(0);
+    static const uint32_t sizes[] = {ONE_MB, SMALL_ONE, ONE_MB};
+    for (int i = 0; i < 2; i++) {
+        sample_len = sizes[i];
+        len_of_seed[i + 1] = sizes[i];
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)(i + 1), tt_SECOND));
+    }
+    sim_room_per_step = 64;
+    test_mock_nonblocking_room = 64;
+    sample_len = sizes[2];
+    len_of_seed[3] = sizes[2];
+    sample_seed = 3;
+    sim_acting = SENDER_ID;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    EXPECT_TRUE(pub.large_cursor.active); // treatment: L3 is still going out
+    uint32_t oldest = 0;
+    EXPECT_TRUE(publisher_oldest_seq_no(&pub, &oldest));
+    EXPECT_EQ_U32(tt_sample_datagrams(ONE_MB) + 1U, oldest); // S2's seq_no
+    EXPECT_EQ_U32(2, mixed_cache.retained_samples + pub.large_count);
+    // Control: the matched reader still gets every sample, in order.
+    sim_drain();
+    sim_settle(3, 10 * tt_SECOND);
+    EXPECT_EQ_INT(3, delivered_count);
+    EXPECT_TRUE(in_order);
+    EXPECT_EQ_INT(0, delivered_torn);
+}
+
+// And the other way round: a sample published while the oldest is a large one still going out cannot evict it, so the
+// history passes its depth by one until that send ends - and then comes back to it. Depth 2: L1 going out, S2 and S3
+// published meanwhile; once L1 has gone the history is S2 S3.
+static void keep_last_depth_comes_back_when_a_large_send_ends(void) {
+    mixed_pair(ONE_MB, RELIABLE_KEEP_LAST, 2);
+    sim_start(0);
+    sim_room_per_step = 64;
+    test_mock_nonblocking_room = 64;
+    sim_acting = SENDER_ID;
+    static const uint32_t sizes[] = {ONE_MB, SMALL_ONE, SMALL_ONE};
+    for (int i = 0; i < 3; i++) {
+        sample_len = sizes[i];
+        len_of_seed[i + 1] = sizes[i];
+        sample_seed = (uint8_t)(i + 1);
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    }
+    EXPECT_TRUE(pub.large_cursor.active);                             // treatment: L1 still going out
+    EXPECT_EQ_U32(3, mixed_cache.retained_samples + pub.large_count); // past the depth by the one being sent
+    sim_drain();
+    sim_settle(3, 10 * tt_SECOND);
+    EXPECT_EQ_INT(3, delivered_count);
+    EXPECT_TRUE(!pub.large_cursor.active);
+    uint32_t oldest = 0;
+    EXPECT_TRUE(publisher_oldest_seq_no(&pub, &oldest));
+    EXPECT_EQ_U32(tt_sample_datagrams(ONE_MB) + 1U, oldest); // S2's seq_no
+    EXPECT_EQ_U32(2, mixed_cache.retained_samples + pub.large_count);
+}
+
+static void test_a_durable_backlog_interleaving_large_and_small_samples(void) {
+    keep_last_depth_holds_while_a_large_sample_goes_out();
+    keep_last_depth_comes_back_when_a_large_send_ends();
+    static const uint32_t small_first[] = {SMALL_ONE, LARGE_100K, SMALL_FRAG, SMALL_ONE, ONE_MB, SMALL_ONE};
+    static const uint32_t large_first[] = {ONE_MB, SMALL_ONE, SMALL_FRAG, LARGE_100K};
+    static const uint32_t losses[] = {0, 50};
+    for (size_t l = 0; l < sizeof(losses) / sizeof(losses[0]); l++) {
+        mixed_backlog("S L S S L S", small_first, 6, RELIABLE_KEEP_LAST, 16, losses[l]); // depth above the mix
+        mixed_backlog("S L S S L S", small_first, 6, RELIABLE_KEEP_LAST, 3, losses[l]);  // and below it
+        mixed_backlog("S L S S L S", small_first, 6, RELIABLE_KEEP_ALL, 0, losses[l]);
+        mixed_backlog("L S S L", large_first, 4, RELIABLE_KEEP_LAST, 16, losses[l]);
+        mixed_backlog("L S S L", large_first, 4, RELIABLE_KEEP_LAST, 2, losses[l]);
+        mixed_backlog("L S S L", large_first, 4, RELIABLE_KEEP_ALL, 0, losses[l]);
+    }
+    len_of_seed[0] = 0;
+}
+
 // --- Encoding while sending (DESIGN.md section 8): the wire, the order, the retained copy, a range that fails -------
 
 // Every datagram the sender sent in a run, in order: the queue keeps them after delivery.
@@ -1757,6 +2023,7 @@ static void run_path_tests(void) {
     test_a_volatile_writer_hands_acknowledged_buffers_back();
     test_a_durable_writer_backs_a_late_joiner_with_its_large_samples();
     test_a_late_joiner_gets_a_large_backlog_from_a_writer_far_past_1();
+    test_a_durable_backlog_interleaving_large_and_small_samples();
 }
 
 int main(void) {
