@@ -86,6 +86,8 @@ implementation's source on 2026-09-27, and updated as gaps closed.
   polls the socket itself, so a message is received and handed back on the executor's own thread. The poll thread
   takes over only when no executor has waited for more than 10 ms.
 - A separate watchdog thread checks that the poll thread is still returning, and raises LIVELINESS_LOST if it stops.
+  Besides its 1 s tick it wakes at the moment a silence (3 s) or a MANUAL_BY_TOPIC lease would run out, so a stall
+  just past the threshold is seen; ticking alone missed stalls that ended before the next tick (2026-10-17).
 
 ### Loaned messages
 

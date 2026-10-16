@@ -357,6 +357,13 @@ struct rmw_tickle_context_impl_t {
     atomic_uint_least64_t poll_thread_last_return_ns;
     pthread_t watchdog_thread; // NOLINT(misc-include-cleaner)
     volatile bool watchdog_thread_running;
+    // Checks watchdog_thread_main() made because a deadline came due rather than its tick: the poll thread's silence
+    // reaching the stale threshold, and a MANUAL_BY_TOPIC lease running out. Each is counted when the check starts,
+    // before it can block on the lock. Written by the watchdog only; test_liveliness_lost_watchdog reads them to
+    // prove the watchdog woke for the deadline - a check that does not depend on how promptly a loaded machine woke
+    // it, unlike timing the event.
+    _Atomic uint64_t watchdog_silence_wakes;
+    _Atomic uint64_t watchdog_lease_wakes;
 
     // rmw_tickle/PLAN.md's Milestone 6: opts this context into TickLE's own opt-in graph
     // introspection (tt_Context_set_discovery(), Milestone 0(c)) - every remote Publisher/Subscriber/

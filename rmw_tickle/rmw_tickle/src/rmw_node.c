@@ -112,11 +112,11 @@ static void discovery_callback(struct tt_Context* node, uint8_t node_id, uint32_
 // coarser, rarer event than a single missed discovery interval, so this floor is already loose
 // enough to never false-positive on ordinary scheduling jitter.
 #define RMW_TICKLE_WATCHDOG_STALE_THRESHOLD_NS ((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL)
-// How often watchdog_thread_main() wakes up to check - well under the threshold above (so a hang
-// is still caught within roughly one threshold's worth of wall time, not several), but coarse
-// enough that this thread costs nothing noticeable running alongside poll_thread. Reuses tt_CONTEXT_
-// UPDATE_INTERVAL itself - the same cadence this node's own self-announce already runs at - rather
-// than a third arbitrary number.
+// How often watchdog_thread_main() checks when no lease is about to run out - coarse enough that
+// this thread costs nothing noticeable running alongside poll_thread. Reuses tt_CONTEXT_UPDATE_INTERVAL
+// itself - the same cadence this node's own self-announce already runs at - rather than a third
+// arbitrary number. It is not what bounds detection: each check also schedules one at the moment the
+// poll thread's silence, or a manual Publisher's lease, would cross its threshold.
 #define RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS tt_CONTEXT_UPDATE_INTERVAL
 // How finely watchdog_thread_main() slices its own sleep, purely so rmw_destroy_node() doesn't
 // have to wait out a full RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS for pthread_join() - re-checking
@@ -129,6 +129,14 @@ static void discovery_callback(struct tt_Context* node, uint8_t node_id, uint32_
 // an untimed lock(). Generous next to poll_thread's own microsecond-scale hold per tt_Context_poll()
 // call, tiny next to RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS itself.
 #define RMW_TICKLE_WATCHDOG_MANUAL_CHECK_TIMEOUT_NS (10 * tt_MILLISECOND)
+
+// Whether `lease_ns` has run out since `since_ns`. A since_ns later than now is a fresh one, not an expired one: the
+// other thread (the poll thread's return, rmw_publisher_assert_liveliness()) stores it without the lock, so it can
+// land between this thread's clock read and its load, and the unsigned difference would wrap to "stale for ever"
+// and raise LIVELINESS_LOST on a Publisher that had just asserted.
+static bool lease_expired(uint64_t now_ns, uint64_t since_ns, uint64_t lease_ns) {
+    return now_ns > since_ns && now_ns - since_ns >= lease_ns;
+}
 
 static void bump_liveliness_lost(rmw_tickle_publisher_t* pub_impl) {
     atomic_fetch_add(&pub_impl->liveliness_lost.total_count, 1);
@@ -205,11 +213,18 @@ static void mark_automatic_publishers_lost(rmw_tickle_context_impl_t* context_im
 // indefinitely during a genuine long hang the way an untimed lock() would - RMW_TICKLE_WATCHDOG_
 // MANUAL_CHECK_TIMEOUT_NS is generous next to poll_thread's own ~microsecond-scale hold, but tiny
 // next to RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS, so a miss here just tries again next cycle.
-static void check_manual_publishers_lost(rmw_tickle_context_impl_t* context_impl) {
+//
+// Returns when the earliest lease still running ends (UINT64_MAX: none), so the watchdog can look again at that moment
+// rather than at its next tick - see watchdog_thread_main(). `known_end_ns` is the value the last scan returned: when
+// the lock is not had this cycle, a lease already known to be due is looked at again one shutdown slice later instead
+// of a tick later, and an idle context (no lease due) is not woken for nothing.
+static uint64_t check_manual_publishers_lost(rmw_tickle_context_impl_t* context_impl, uint64_t known_end_ns) {
     if (!tt_Context_lock_timed(&context_impl->tickle_context, RMW_TICKLE_WATCHDOG_MANUAL_CHECK_TIMEOUT_NS)) {
-        return;
+        uint64_t retry_ns = tt_get_ns() + RMW_TICKLE_WATCHDOG_SHUTDOWN_POLL_NS;
+        return known_end_ns < retry_ns ? retry_ns : known_end_ns;
     }
     uint64_t now = tt_get_ns();
+    uint64_t earliest_end_ns = UINT64_MAX;
     bool marked_any = false;
     for (uint32_t i = 0; i < context_impl->tickle_context.endpoint_count; i++) {
         struct tt_Endpoint* endpoint = context_impl->tickle_context.endpoints[i];
@@ -222,17 +237,22 @@ static void check_manual_publishers_lost(rmw_tickle_context_impl_t* context_impl
         if (pub_impl->liveliness_lease_ns == 0) {
             continue; // AUTOMATIC - mark_automatic_publishers_lost()'s own concern, not this one
         }
-        bool manual_stale = (now - atomic_load(&pub_impl->last_asserted_ns)) >= pub_impl->liveliness_lease_ns;
+        uint64_t asserted_ns = atomic_load(&pub_impl->last_asserted_ns);
+        bool manual_stale = lease_expired(now, asserted_ns, pub_impl->liveliness_lease_ns);
         if (manual_stale && !pub_impl->liveliness_lost_latched) {
             bump_liveliness_lost(pub_impl);
             marked_any = true;
         }
         pub_impl->liveliness_lost_latched = manual_stale;
+        if (!manual_stale && asserted_ns + pub_impl->liveliness_lease_ns < earliest_end_ns) {
+            earliest_end_ns = asserted_ns + pub_impl->liveliness_lease_ns;
+        }
     }
     tt_Context_unlock(&context_impl->tickle_context);
     if (marked_any) {
         broadcast_wait_cond(context_impl);
     }
+    return earliest_end_ns;
 }
 
 // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST, Milestone 28(b)'s own design
@@ -249,26 +269,60 @@ static void check_manual_publishers_lost(rmw_tickle_context_impl_t* context_impl
 static void* watchdog_thread_main(void* arg) {
     rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)arg;
     bool node_wide_already_lost = false;
+    uint64_t manual_end_ns = UINT64_MAX; // check_manual_publishers_lost()'s last answer
     uint64_t next_check_ns = tt_get_ns() + RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS;
+    enum { WAKE_TICK, WAKE_SILENCE, WAKE_LEASE } next_wake = WAKE_TICK; // what next_check_ns was set for
     while (context_impl->watchdog_thread_running) {
-        if (tt_get_ns() < next_check_ns) {
-            struct timespec shutdown_poll_duration = {
-                .tv_sec = 0,
-                .tv_nsec = RMW_TICKLE_WATCHDOG_SHUTDOWN_POLL_NS,
-            };
+        uint64_t now = tt_get_ns();
+        if (now < next_check_ns) {
+            uint64_t sleep_ns = next_check_ns - now;
+            if (sleep_ns > RMW_TICKLE_WATCHDOG_SHUTDOWN_POLL_NS) {
+                sleep_ns = RMW_TICKLE_WATCHDOG_SHUTDOWN_POLL_NS;
+            }
+            struct timespec shutdown_poll_duration = {.tv_sec = 0, .tv_nsec = (long)sleep_ns};
             nanosleep(&shutdown_poll_duration, NULL);
             continue;
         }
-        next_check_ns = tt_get_ns() + RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS;
+        if (WAKE_SILENCE == next_wake) {
+            atomic_fetch_add(&context_impl->watchdog_silence_wakes, 1);
+        } else if (WAKE_LEASE == next_wake) {
+            atomic_fetch_add(&context_impl->watchdog_lease_wakes, 1);
+        }
+        // The poll thread's return is read before the clock (and lease_expired() refuses a later one anyway), so a
+        // return stored between the two can never read as a stall.
+        uint64_t last_return_ns = atomic_load(&context_impl->poll_thread_last_return_ns);
+        now = tt_get_ns();
+        next_check_ns = now + RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS;
+        next_wake = WAKE_TICK;
 
-        bool node_stale = (tt_get_ns() - atomic_load(&context_impl->poll_thread_last_return_ns)) >=
-                          RMW_TICKLE_WATCHDOG_STALE_THRESHOLD_NS;
+        bool node_stale = lease_expired(now, last_return_ns, RMW_TICKLE_WATCHDOG_STALE_THRESHOLD_NS);
         if (node_stale && !node_wide_already_lost) {
             mark_automatic_publishers_lost(context_impl);
         }
         node_wide_already_lost = node_stale;
 
-        check_manual_publishers_lost(context_impl);
+        manual_end_ns = check_manual_publishers_lost(context_impl, manual_end_ns);
+
+        // Look again when a lease runs out, not only at the next tick. A tick alone samples: a stall that crosses
+        // the threshold and ends before the next sample is never seen. It went unseen for a stall of the threshold
+        // plus 0.99 s, because the sampling period is a tick plus the overshoot of its sleeps (1.012 s measured on
+        // the PC, longer under load) - test_liveliness_lost_watchdog failed on it under check-gates (2026-10-16).
+        // Waking at the crossing instead bounds detection by this thread's wake latency.
+        //
+        // A deadline up to one shutdown slice past the tick replaces the tick (which it delays by at most that):
+        // a Publisher created just after a check - as one created on the event that check raised is - has its lease
+        // end microseconds after a tick, and the wake that then marked it would read as the tick's.
+        uint64_t deadline_horizon_ns = next_check_ns + RMW_TICKLE_WATCHDOG_SHUTDOWN_POLL_NS;
+        uint64_t silence_end_ns = last_return_ns + RMW_TICKLE_WATCHDOG_STALE_THRESHOLD_NS;
+        if (!node_stale && silence_end_ns <= deadline_horizon_ns) {
+            next_check_ns = silence_end_ns;
+            next_wake = WAKE_SILENCE;
+            deadline_horizon_ns = silence_end_ns;
+        }
+        if (manual_end_ns <= deadline_horizon_ns) {
+            next_check_ns = manual_end_ns;
+            next_wake = WAKE_LEASE;
+        }
     }
     return NULL;
 }
