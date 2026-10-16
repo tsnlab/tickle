@@ -4910,6 +4910,13 @@ static void clear_service_endpoint(struct tt_Endpoint* endpoint) {
 static void clear_server_cache_slot(struct tt_Server* server, int slot);
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - see each definition's own comment.
 static void acknack_retry(struct tt_Context* node, uint64_t time, void* param);
+#if tt_LARGE_SAMPLES
+struct acknack_skip;
+static int repairs_in_flight(const struct tt_Context* node, const struct tt_WriterProxy* proxy, int high_bit,
+                             uint64_t now, struct acknack_skip* skips);
+static bool names_any_open(const struct tt_WriterProxy* proxy, int high_bit, const struct acknack_skip* skips,
+                           int skip_count);
+#endif
 static uint16_t reliable_cache_depth(const struct tt_ReliableCache* cache);
 static uint64_t reliable_retry_interval(const struct tt_Context* node, const struct tt_WriterProxy* proxy);
 static uint64_t reliable_retry_configured(void);
@@ -11599,22 +11606,32 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
     // matching cap - it stopped resending after tt_RELIABLE_RETRY without saying the datagram was gone - held a reader
     // that could not give up (its policy unknown) for good: "cap refuses seq_no 355" 50 times a second, 28 of 40
     // samples delivered (seed 34). retry counts on, saturating, for the back-off and the stuck-gap warning below.
+    bool sending = false;
 #if tt_LARGE_SAMPLES
-    // A large sample of this writer arrived within the last interval and no repair from it did: it is busy in its send,
-    // and one blocked in a long send reads requests only when the send ends. Asked again meanwhile, it finds every
-    // request queued at once and resends each named datagram for each (2026-10-16: 8 x 4 MB at 5% loss in a sim, 3.5x
-    // the writer's datagrams once the busy sends no longer inflated the interval - tt_WriterProxy.probe_busy). So the
-    // retry waits, uncounted, for an answer or the send's end; a writer that answers while it sends is asked as before.
+    // While the writer's large sample still arrives (a fragment of it within the last interval), the retry interval -
+    // the path's, its busy recoveries left out (tt_WriterProxy.probe_busy) - says nothing about when a repair is due:
+    // a repair queues behind the rest of the send, or, from a writer blocked in a long send, comes only when the send
+    // ends. Asked again at the path's interval, the writer finds the requests queued and resends each named datagram
+    // for each: 3.5x the writer's datagrams in test_large_sample's busy-writer sim, +60% resends at 0% netem on the PC
+    // (2026-10-16). So while it sends, a retry names only what was asked for longer ago than the repair transit time -
+    // which counts the writer's queue - as a HEARTBEAT's answer does (answer_ack_request()); and sends nothing at all,
+    // uncounted, when nothing is that overdue or the writer has answered nothing within the interval.
+    uint64_t checked_ns = tt_get_ns();
+    struct acknack_skip skips[tt_RELIABLE_REQUEST_HISTORY];
+    int skip_count = 0;
     {
-        uint64_t now = tt_get_ns();
         uint64_t interval = reliable_retry_interval(node, proxy);
-        if (proxy->large_arrival_ns != 0 && now - proxy->large_arrival_ns < interval &&
-            (proxy->repair_arrival_ns == 0 || now - proxy->repair_arrival_ns >= interval)) {
-            if (!tt_Context_schedule(node, now + interval, acknack_retry, proxy)) {
-                TT_LOG_ERROR("Cannot schedule acknack_retry");
-                proxy->acknack_scheduled = false;
+        sending = proxy->large_arrival_ns != 0 && checked_ns - proxy->large_arrival_ns < interval;
+        if (sending) {
+            bool answering = proxy->repair_arrival_ns != 0 && checked_ns - proxy->repair_arrival_ns < interval;
+            skip_count = repairs_in_flight(node, proxy, highest, checked_ns, skips);
+            if (!answering || !names_any_open(proxy, highest, skips, skip_count)) {
+                if (!tt_Context_schedule(node, checked_ns + interval, acknack_retry, proxy)) {
+                    TT_LOG_ERROR("Cannot schedule acknack_retry");
+                    proxy->acknack_scheduled = false;
+                }
+                return;
             }
-            return;
         }
     }
 #endif
@@ -11622,16 +11639,13 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
     if (counted) {
         proxy->retry++;
     }
-#if tt_LARGE_SAMPLES
     // A large sample's fragments arrived within the last interval: the writer is still sending it and answers when the
     // send ends, which for a 4 MB sample can be several of the reader's first, 1 ms, intervals - this retry is not one
     // the writer has failed to answer, and does not start the back-off. Seen on the PC: the first 4 MB sample under 5%
     // loss, given up on every run while retries were counted against a budget.
-    if (counted && proxy->large_arrival_ns != 0 &&
-        tt_get_ns() - proxy->large_arrival_ns < reliable_retry_interval(node, proxy)) {
+    if (counted && sending) {
         proxy->retry--;
     }
-#endif
     acknack_retry_note_frontier(proxy, highest);
     if (proxy->keep_all == tt_WRITER_KEEP_ALL_UNKNOWN && proxy->retry == tt_RELIABLE_RETRY + 1) {
         // Counted once per gap, at the point the back-off may start, as it was where a bounded policy used to give up.
@@ -11639,7 +11653,15 @@ static void acknack_retry(struct tt_Context* node, uint64_t time, void* param) {
     }
 
     RSTAT_INC(acknack_timer);
+#if tt_LARGE_SAMPLES
+    if (sending) {
+        send_acknack_skipping(node, proxy, 0, highest, skips, skip_count);
+    } else {
+        send_acknack(node, proxy);
+    }
+#else
     send_acknack(node, proxy);
+#endif
 
     // A gap still open past its retries at the plain interval is worth a line: the writer neither repairs it nor says
     // it is gone. KEEP_ALL warns from the first retry, as it always has. Rate-limited by time rather than retry count,
@@ -17027,6 +17049,27 @@ static void inform_subscriber_of_heartbeat(struct tt_Context* node, struct tt_En
     }
 }
 
+// The runs of positions 0..high_bit a remembered request named within the repair transit time (repair_in_flight_ns()):
+// those repairs are on their way. Fills skips (tt_RELIABLE_REQUEST_HISTORY of them at most) and answers how many.
+static int repairs_in_flight(const struct tt_Context* node, const struct tt_WriterProxy* proxy, int high_bit,
+                             uint64_t now, struct acknack_skip* skips) {
+    uint64_t window = repair_in_flight_ns(node, proxy);
+    int skip_count = 0;
+    for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
+        const struct tt_RepairRequest* request = &proxy->requests[slot];
+        if (request->sent_ns == 0 || now - request->sent_ns >= window ||
+            seq_delta(request->last_seq_no, proxy->ack_seq_no) < 0) {
+            continue;
+        }
+        int32_t low = seq_delta(request->first_seq_no, proxy->ack_seq_no);
+        int32_t high = seq_delta(request->last_seq_no, proxy->ack_seq_no);
+        skips[skip_count].low_bit = low < 0 ? 0 : (int)low;
+        skips[skip_count].high_bit = high > high_bit ? high_bit : (int)high;
+        skip_count++;
+    }
+    return skip_count;
+}
+
 // Whether positions 0..high_bit hold any still missing outside the skip_count runs in skips.
 static bool names_any_open(const struct tt_WriterProxy* proxy, int high_bit, const struct acknack_skip* skips,
                            int skip_count) {
@@ -17058,22 +17101,8 @@ static void answer_ack_request(struct tt_Context* node, struct tt_WriterProxy* p
     if (high_bit < 0) {
         return; // no gap after all - the caller's had_gap says otherwise only if this were called without one
     }
-    uint64_t now = tt_get_ns();
-    uint64_t window = repair_in_flight_ns(node, proxy);
     struct acknack_skip skips[tt_RELIABLE_REQUEST_HISTORY];
-    int skip_count = 0;
-    for (int slot = 0; slot < tt_RELIABLE_REQUEST_HISTORY; slot++) {
-        const struct tt_RepairRequest* request = &proxy->requests[slot];
-        if (request->sent_ns == 0 || now - request->sent_ns >= window ||
-            seq_delta(request->last_seq_no, proxy->ack_seq_no) < 0) {
-            continue;
-        }
-        int32_t low = seq_delta(request->first_seq_no, proxy->ack_seq_no);
-        int32_t high = seq_delta(request->last_seq_no, proxy->ack_seq_no);
-        skips[skip_count].low_bit = low < 0 ? 0 : (int)low;
-        skips[skip_count].high_bit = high > high_bit ? high_bit : (int)high;
-        skip_count++;
-    }
+    int skip_count = repairs_in_flight(node, proxy, high_bit, tt_get_ns(), skips);
     if (!names_any_open(proxy, high_bit, skips, skip_count)) {
         RSTAT_INC(ack_request_in_flight);
         send_acknack_range(node, proxy, 0, -1);
