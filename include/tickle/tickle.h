@@ -2834,6 +2834,18 @@ struct tt_WriterProxy {
     // (2026-10-16). A writer whose large sample still arrives and which has answered nothing within a retry interval
     // is taken to be busy in its send, and acknack_retry() does not ask it again until it answers or the send ends.
     uint64_t repair_arrival_ns;
+    // When the last original fragment of a large sample (not a repair addressed to this node) was recorded from this
+    // writer (2026-10-16): while they arrive, the writer is still sending (writer_still_sending()).
+    uint64_t original_arrival_ns;
+    // The recovery estimate over every timed recovery, those spanning the writer's send included - recovery_srtt_ns
+    // as it was before 2026-10-16 - for the retries while the writer still sends (retry_cadence_while_sending()): a
+    // repair is then due only behind the rest of the send. 0/0 = no sample.
+    uint32_t sending_srtt_ns;
+    uint32_t sending_rttvar_ns;
+    // When acknack_retry() last asked this writer (2026-10-16): while its large sample still arrives, the timer runs
+    // at the path's interval - so that the first tick after the send asks at once - but asks no oftener than the
+    // interval over every recovery.
+    uint64_t retry_sent_ns;
 #endif
     // Request-to-recovery estimate for the dynamic ACKNACK retry interval (tt_RELIABLE_RETRY_INTERVAL
     // 0, config.h), RFC 6298-style, in nanoseconds. Maintained in every build - so the estimate can
@@ -2862,7 +2874,8 @@ struct tt_WriterProxy {
     // A large sample's original fragments arrived from this writer while the probe was out (2026-10-16): the writer
     // was still sending, and one blocked in a long send reads the request only when the send ends - so the repair's
     // time spans the rest of the send and says how busy the writer was, not how long the path takes. Such a recovery
-    // ends the probe without a sample (Karn's rule in spirit: only an unambiguous wait is timed). Timed, a busy 4 MB
+    // is left out of recovery_srtt_ns (Karn's rule in spirit: only an unambiguous wait is timed as the path) and folded
+    // only into sending_srtt_ns, which governs the retries while the writer still sends. Timed, a busy 4 MB
     // writer's sends climbed the interval from 43 to 61 ms in a sim at 5% loss, and every sample after the first was
     // whole ~15 ms after its send ended rather than ~1 ms (test_a_busy_writers_send_is_not_timed_as_the_path).
     bool probe_busy;
