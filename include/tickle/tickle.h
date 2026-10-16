@@ -757,6 +757,9 @@ struct tt_HybridState {
     // after them have outlived), and how many events it forgot in all.
     uint64_t stale_forgets;
     uint64_t stale_events;
+    // Samples of a writer's the reader never saw and counted lost whole from the jump in its seq_no
+    // (hybrid_rx_missed()).
+    uint64_t missed_samples;
 };
 #endif
 

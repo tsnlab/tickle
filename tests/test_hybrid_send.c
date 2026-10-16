@@ -327,6 +327,15 @@ static uint32_t sim_reasm_head;
 static uint32_t sim_reasm_tail;
 static uint64_t sim_reasm_held;
 static uint32_t sim_reasm_refused; // fragmented datagrams dropped for want of memory
+// What the link did to the sender's first transmissions on the fragment path, by kind: the count a reader's p_mtu and
+// q(n) estimate. A repair - addressed to one reader, a first transmission to everyone - is not in it.
+struct link_count {
+    uint32_t mtu;      // MTU units put on the link
+    uint32_t mtu_lost; // and lost there
+    uint32_t runs;
+    uint32_t runs_lost;
+};
+static struct link_count link;
 
 // What the writer sent, by kind: first transmissions and repairs, and the largest repair.
 struct sent_stats {
@@ -532,8 +541,30 @@ static bool sim_receiver_drops(const struct sim_datagram* d) {
     return true;
 }
 
+// One of the sender's datagrams the link carried, `lost` or not, in its count (link, above).
+static void link_note(const struct sim_datagram* d, bool lost) {
+    uint32_t first = 0;
+    uint32_t units = 0;
+    bool run = false;
+    bool addressed =
+        d->bytes[0] != tt_SINGLE_MARKER_LE && d->bytes[0] != tt_SINGLE_MARKER_BE &&
+        ((const struct tt_SubmessageHeader*)(d->bytes + sizeof(struct tt_Header)))->receiver != tt_SUBMESSAGE_ID_ALL;
+    if (d->from != SENDER_ID || addressed || !datagram_units(d->bytes, &first, &units, &run)) {
+        return;
+    }
+    if (run) {
+        link.runs++;
+        link.runs_lost += lost ? 1U : 0U;
+    } else {
+        link.mtu++;
+        link.mtu_lost += lost ? 1U : 0U;
+    }
+}
+
 static void sim_deliver(struct sim_datagram* d) {
-    if (!sim_lost(d)) {
+    bool lost = sim_lost(d);
+    link_note(d, lost);
+    if (!lost) {
         if (d->from == SENDER_ID) {
             for (int i = 0; i < READERS; i++) {
                 if (readers[i].present && (d->to_ip == 0 || d->to_ip == readers[i].ip) && !sim_receiver_drops(d)) {
@@ -626,6 +657,7 @@ static void sim_start(uint32_t frame_loss_ppm) {
     sim_reasm_head = sim_reasm_tail = 0;
     sim_reasm_held = 0;
     sim_reasm_refused = 0;
+    memset(&link, 0, sizeof(link));
     memset(&sent, 0, sizeof(sent));
     wire = (struct wire_digest) {0xcbf29ce484222325ULL, 0, 0};
     memset(seen_unit, 0, sizeof(seen_unit));
@@ -1403,6 +1435,94 @@ static void test_a_gap_goes_by_its_own_samples_layout(void) {
     EXPECT_EQ_U32(0, hybrid->window.lost);
 }
 
+// One 12-unit sample of writer 7's, sent as one run of 11 and the tail, arrived whole (first seq_no `first`).
+static void whole_sample(struct tt_Context* node, uint32_t first) {
+    hybrid_rx_note(node, SENDER_ID, 7, first, 0, 12, 11, true);
+    hybrid_rx_note(node, SENDER_ID, 7, first, 11, 12, 1, false);
+}
+
+// A sample the reader never saw - its run and its tail both lost - is counted from the jump in the writer's seq_no
+// (hybrid_rx_missed()): a jump of whole samples of the size on both sides is that many samples lost, each laid out as
+// the last one was - one lost run and one lost tail each, in p, p_mtu and the run window, or MTU units for a writer
+// sending MTU, receiver drops on hand put against its datagrams as against any gap. Anything else is left alone: a
+// jump that is not whole samples (small samples between), a size that changed, more than eight samples, a seq_no that
+// went back, and a repair (addressed to this reader: rx_targeted), which is never a first transmission. Across 2^32
+// as anywhere.
+static void test_a_sample_lost_whole_is_counted(void) {
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    struct tt_Context* node = &readers[0].ctx;
+    struct tt_HybridState* hybrid = &node->hybrid;
+    test_mock_receiver_drops = 0;
+    whole_sample(node, 100);
+    hybrid_rx_note(node, SENDER_ID, 7, 124, 0, 12, 11, true); // 112-123 never came
+    EXPECT_EQ_U64(1, hybrid->missed_samples);
+    EXPECT_EQ_U32(1, hybrid->mtu_loss.events); // its tail
+    EXPECT_EQ_U32(2, hybrid->mtu_loss.frames);
+    EXPECT_EQ_U32(1, hybrid->window.lost); // its run
+    EXPECT_EQ_U32(3, hybrid->window.sent);
+    EXPECT_EQ_U32(2, hybrid->rx_loss.events);
+    EXPECT_EQ_U32(12 + 12 + 11, hybrid->rx_loss.frames);
+    EXPECT_EQ_U32(12 + 12 + 11, hybrid->tick_units); // R: every unit sent to it, arrived or not
+    hybrid_rx_note(node, SENDER_ID, 7, 124, 11, 12, 1, false);
+    hybrid_rx_note(node, SENDER_ID, 7, 160, 0, 12, 11, true); // 136-159: two samples
+    EXPECT_EQ_U64(3, hybrid->missed_samples);
+    EXPECT_EQ_U32(3, hybrid->mtu_loss.events);
+    EXPECT_EQ_U32(3, hybrid->window.lost);
+    EXPECT_EQ_U32(0, hybrid->rx_writers[0].body_lost); // the sample now is 160's, nothing of it lost yet
+    hybrid_rx_note(node, SENDER_ID, 7, 160, 11, 12, 1, false);
+    // Not whole samples of its size: a small sample between (one seq_no), a sample and a small one (13), or a size
+    // that changed (13 seq_nos before a sample of 13 units, after one of 12).
+    whole_sample(node, 173);
+    whole_sample(node, 198);                                  // 185-197
+    hybrid_rx_note(node, SENDER_ID, 7, 223, 0, 13, 12, true); // 210-222
+    hybrid_rx_note(node, SENDER_ID, 7, 223, 12, 13, 1, false);
+    EXPECT_EQ_U64(3, hybrid->missed_samples);
+    EXPECT_EQ_U32(3, hybrid->mtu_loss.events);
+    // More than eight samples: a reader cut off a while, or a writer that restarted. Eight are counted.
+    whole_sample(node, 236);
+    whole_sample(node, 248 + (9 * 12)); // 248-355: nine
+    EXPECT_EQ_U64(3, hybrid->missed_samples);
+    whole_sample(node, 368 + (8 * 12)); // 368-463: eight
+    EXPECT_EQ_U64(11, hybrid->missed_samples);
+    EXPECT_EQ_U32(11, hybrid->mtu_loss.events);
+    // A seq_no that went back: nothing (an older sample's unit).
+    whole_sample(node, 100);
+    EXPECT_EQ_U64(11, hybrid->missed_samples);
+    // A repair, addressed to this reader: never a first transmission, whatever its seq_no.
+    node->rx_targeted = true;
+    hybrid_rx_note(node, SENDER_ID, 7, 500, 0, 12, 1, false);
+    node->rx_targeted = false;
+    EXPECT_EQ_U32(464, hybrid->rx_writers[0].sample);
+    EXPECT_EQ_U64(11, hybrid->missed_samples);
+    // A sample lost whole whose datagrams the HAL saw dropped at the socket: put down to them, one a datagram.
+    uint32_t events = hybrid->mtu_loss.events;
+    uint32_t rx_events = hybrid->rx_loss.events;
+    test_mock_receiver_drops = 2;
+    whole_sample(node, 488); // 476-487 never came, both its datagrams dropped at the socket
+    EXPECT_EQ_U64(12, hybrid->missed_samples);
+    EXPECT_EQ_U64(2, hybrid->receiver_lost);
+    EXPECT_EQ_U32(events, hybrid->mtu_loss.events);
+    EXPECT_EQ_U32(rx_events, hybrid->rx_loss.events);
+    // A writer sending MTU units: a sample lost whole is 12 MTU units lost.
+    for (uint32_t i = 0; i < 12; i++) {
+        hybrid_rx_note(node, SENDER_ID, 7, 500, i, 12, 1, false);
+    }
+    EXPECT_EQ_U32(1, hybrid->rx_writers[0].layout_n);
+    events = hybrid->mtu_loss.events;
+    hybrid_rx_note(node, SENDER_ID, 7, 524, 0, 12, 1, false); // 512-523 never came
+    EXPECT_EQ_U32(events + 12U, hybrid->mtu_loss.events);
+    EXPECT_EQ_U64(13, hybrid->missed_samples);
+    // Across 2^32: 0xFFFFFFF0 whole, 0xFFFFFFFC-7 never came, 8 the next.
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    node = &readers[0].ctx;
+    hybrid = &node->hybrid;
+    whole_sample(node, 0xFFFFFFF0U);
+    whole_sample(node, 8);
+    EXPECT_EQ_U64(1, hybrid->missed_samples);
+    EXPECT_EQ_U32(1, hybrid->mtu_loss.events);
+    EXPECT_EQ_U32(1, hybrid->window.lost);
+}
+
 // Receiver drops are not path loss (tickle.c, hybrid_rx_receiver_lost()): a gap the HAL's count of receiver drops
 // covers reaches neither p, p_mtu, the run window nor rule (e) - one drop for one lost datagram, a run or an MTU unit -
 // and is counted as receiver_lost. With no drop on hand the same gap is path loss (the control). Drops not matched
@@ -1629,6 +1749,101 @@ static void test_frame_loss_never_moves_the_cap(void) {
     EXPECT_TRUE(hybrid->rx_writers[0].runs.lost > 0);
     EXPECT_EQ_INT(0, readers[0].torn);
     EXPECT_TRUE(readers[0].delivered > 2400 && readers[0].delivered < 3000);
+}
+
+// p_mtu is p (DESIGN.md section 8, "What the reader measures"): over a stream, the MTU units the reader counts sent and
+// lost are the ones the link carried and lost, and so are its runs - a sample that lost every datagram, its runs and
+// its tail, included. The reader never sees such a sample; until 2026-10-17 it counted none of it, so p_mtu read
+// p (1 - L(n)) for a sample of one run (0.88 p at 1%, 0.56 p at 5%: the remaining false collapses) and the run loss
+// a little low. The writer in forced IP and the reader's cap off, so the layout is fixed at the arm's n: best effort,
+// one run of 11 and the tail (16 KB), two runs and the tail (16 KB at n = 6), two runs of 45 and 23 and the tail
+// (100 KB), at 1% and 5% frame loss; and RELIABLE, one run of 11 and the tail at 5%, where a repair - addressed to the
+// reader - is no first transmission (it passed for one: a repaired tail as a tail through, a sample lost whole and
+// repaired as a sample sent in MTU units, 721 MTU units counted of 600 sent). Exact up to the stream's first sample and
+// its last (its losses not seen yet).
+struct pmtu_arm {
+    uint32_t len;
+    uint32_t bound; // the Publisher's n at most (its ip_datagram_max), 0: the ceiling's
+    uint32_t ppm;
+    uint32_t run_n;   // the n the arm is meant to send at
+    uint32_t seconds; // at 100 Hz
+    bool reliable;    // each sample settled (its repairs in) before the next
+};
+
+struct pmtu_result {
+    uint32_t frames; // the reader's p_mtu: MTU units
+    uint32_t events; // and lost ones
+    uint32_t runs;   // its q(n): runs of the writer's
+    uint32_t runs_lost;
+    uint32_t largest; // the largest n the writer sent
+};
+
+static struct pmtu_result pmtu_stream(const struct pmtu_arm* arm) {
+    _tt_CONFIG.reassembly_cap_off = 1;
+    init_one(arm->len, FULL_CEILING, arm->reliable);
+    _tt_CONFIG.reassembly_cap_off = 0;
+    pub.large_fragmentation = tt_LARGE_FRAGMENTATION_IP;
+    if (arm->bound != 0) {
+        pub.ip_datagram_max = (uint16_t)(28U + (arm->bound * 1452U));
+    }
+    sim_start(arm->ppm);
+    if (arm->reliable) {
+        sim_announce();
+    }
+    tick_readers(test_mock_now);
+    uint8_t seed = 1;
+    uint32_t largest = 0;
+    if (!arm->reliable) {
+        largest = sim_stream(arm->seconds, 100, &seed);
+    } else {
+        sim_pause_heartbeat_ns = SIM_PAUSE_HEARTBEAT_NS;
+        uint64_t t = test_mock_now;
+        for (uint32_t s = 1; s <= arm->seconds * 100U; s++) {
+            memset(seen_unit, 0, sizeof(seen_unit));
+            uint64_t at = t + ((uint64_t)s * 10U * tt_MILLISECOND);
+            test_mock_now = at > test_mock_now ? at : test_mock_now; // a settle that took longer delays the next
+            sent.max_n = 0;
+            EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)s));
+            sim_settle((int)s, 10U * tt_SECOND); // whole before the next: a late one is checked against its pattern
+            largest = sent.max_n > largest ? sent.max_n : largest;
+            if (s % 100U == 0) {
+                tick_readers(test_mock_now);
+            }
+        }
+        expect_intact_or_given_up(0, (int)(arm->seconds * 100U));
+    }
+    const struct tt_HybridState* hybrid = &readers[0].ctx.hybrid;
+    struct pmtu_result result = {hybrid->mtu_loss.frames, hybrid->mtu_loss.events, hybrid->rx_writers[0].runs.sent,
+                                 hybrid->rx_writers[0].runs.lost, largest};
+    large_release_assemblies(&readers[0].ctx); // the last sample, if it lost a datagram: its buffer back (sanitize)
+    return result;
+}
+
+static uint32_t distance(uint32_t a, uint32_t b) {
+    return a > b ? a - b : b - a;
+}
+
+static void test_p_mtu_counts_samples_lost_whole(void) {
+    static const struct pmtu_arm arms[] = {
+        {16384, 0, 10000, 11, 60}, {16384, 0, 50000, 11, 20},     {16384, 7, 10000, 6, 60},
+        {16384, 7, 50000, 6, 20},  {LARGE_LEN, 0, 10000, 45, 20}, {16384, 0, 50000, 11, 6, true},
+    };
+    for (size_t i = 0; i < sizeof(arms) / sizeof(arms[0]); i++) {
+        struct pmtu_result got = pmtu_stream(&arms[i]);
+        EXPECT_EQ_U32(arms[i].run_n, got.largest); // the treatment: the arm's layout
+        printf(
+            "test_hybrid_send: p_mtu arm %zu (%u B, n %u, %.1f%%): reader %u of %u MTU units lost (%.4f), link %u of "
+            "%u (%.4f); runs %u of %u, link %u of %u\n",
+            i, arms[i].len, arms[i].run_n, arms[i].ppm / 1e4, got.events, got.frames,
+            got.frames != 0 ? (double)got.events / got.frames : 0.0, link.mtu_lost, link.mtu,
+            link.mtu != 0 ? (double)link.mtu_lost / link.mtu : 0.0, got.runs_lost, got.runs, link.runs_lost, link.runs);
+        EXPECT_TRUE(link.mtu_lost > 20U); // the arm had losses to count
+        EXPECT_TRUE(distance(got.frames, link.mtu) <= 2U);
+        EXPECT_TRUE(distance(got.events, link.mtu_lost) <= 2U);
+        EXPECT_TRUE(distance(got.runs, link.runs) <= 4U);
+        EXPECT_TRUE(distance(got.runs_lost, link.runs_lost) <= 4U);
+        EXPECT_EQ_INT(0, readers[0].torn);
+    }
 }
 
 // The rig's 4 MB cells (2026-10-12): a receive socket that overflows drops runs, and a reader that took those drops for
@@ -3358,6 +3573,7 @@ int main(void) {
     test_the_law_runs_once_an_interval();
     test_the_reader_rebuilds_what_was_sent();
     test_a_gap_goes_by_its_own_samples_layout();
+    test_a_sample_lost_whole_is_counted();
     test_receiver_drops_are_not_path_loss();
     test_receiver_drops_do_not_lower_n();
     test_the_loss_code_rounds_up();
@@ -3366,6 +3582,7 @@ int main(void) {
     test_a_reader_with_the_cap_off_advertises_its_ceiling();
     test_the_loss_bound_is_the_poisson_upper_limit();
     test_frame_loss_never_moves_the_cap();
+    test_p_mtu_counts_samples_lost_whole();
     test_a_path_that_drops_fragments_brings_n_to_one();
     test_a_reassembly_squeeze_end_to_end();
     test_n_follows_p();
