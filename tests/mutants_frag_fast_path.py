@@ -90,7 +90,9 @@ MUTANTS = [
         "the sample fits the scratch",
         "    if (node->frag_fast_length + length > sizeof(node->frag_scratch) - 8) {",
         "    if (false) {",
-        "test_reliable_fast_path_refuses_what_does_not_belong_to_its_sample",
+        # Not the refusal test: there the overflowing copy wrote garbage over frag_fast_count and frag_fast_placed,
+        # and the next checks refused the sample for it - nothing delivered, as expected, so the mutant survived.
+        "test_reliable_fast_path_writes_nothing_past_its_scratch",
     ),
     (
         "move out before a DATA is held",

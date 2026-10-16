@@ -1588,6 +1588,46 @@ static void test_reliable_fast_path_refuses_what_does_not_belong_to_its_sample(v
     EXPECT_EQ_INT(0, delivered_count);
 }
 
+static void test_reliable_fast_path_writes_nothing_past_its_scratch(void) {
+    // The last case above, looked at where the damage would be: a sender claiming 64 fragments of a sample larger than
+    // tt_MAX_SAMPLE_LENGTH sends continuations in order until frag_scratch is full. The fragment that does not fit is
+    // refused before it is copied, so the fields after frag_scratch in the context - the fast path's own bookkeeping
+    // first - are as the last fragment that fitted left them. Delivering nothing is not enough to show that: copied
+    // past the scratch, the fragment overwrote frag_fast_count and frag_fast_placed with its own bytes, and the next
+    // checks refused the sample for the garbage (mutants_frag_fast_path.py, "the sample fits the scratch", 2026-10-16).
+    first_contact_sample(4000);
+    publish_captured(); // seq_no 4..6
+    uint32_t first = 4;
+    datagrams[0][frag_header_offset() + offsetof(struct tt_FragFirstHeader, frag_count)] = 64;
+    deliver(0);
+    const size_t from = offsetof(struct tt_Context, frag_fast_timestamp);
+    const size_t to = offsetof(struct tt_Context, frag_duplicate) + sizeof(receiver.frag_duplicate);
+    static uint8_t before[sizeof(struct tt_Context)];
+    uint32_t index = 1;
+    // In order until the scratch is full: each one fits and is taken.
+    for (;
+         index == 1 || receiver.frag_fast_length + receiver.frag_fast_cont_length <= sizeof(receiver.frag_scratch) - 8;
+         index++) {
+        set_cont_field(1, offsetof(struct tt_FragContHeader, frag_count), 64);
+        set_cont_field(1, offsetof(struct tt_FragContHeader, frag_index), (uint8_t)index);
+        set_cont_seq_no(1, first + index);
+        deliver(1);
+        EXPECT_TRUE(receiver.frag_fast_sub != NULL); // the control: the fast path holds the sample this far
+    }
+    EXPECT_EQ_U32(index, receiver.frag_fast_placed);
+    memcpy(before + from, (const uint8_t*)&receiver + from, to - from);
+    // The next one does not fit.
+    set_cont_field(1, offsetof(struct tt_FragContHeader, frag_count), 64);
+    set_cont_field(1, offsetof(struct tt_FragContHeader, frag_index), (uint8_t)index);
+    set_cont_seq_no(1, first + index);
+    deliver(1);
+    EXPECT_TRUE(receiver.frag_fast_sub == NULL); // refused, and what the scratch held moved out
+    EXPECT_EQ_INT(0, memcmp(before + from, (const uint8_t*)&receiver + from, to - from));
+    EXPECT_EQ_U32(64, receiver.frag_fast_count);
+    EXPECT_EQ_U32(index, receiver.frag_fast_placed);
+    EXPECT_EQ_INT(0, delivered_count);
+}
+
 // The second writer of the collision tests: another node, the same topic, DATA-sized samples.
 static struct tt_Context collide_ctx;
 static struct tt_Publisher collide_pub;
@@ -1983,6 +2023,7 @@ int main(void) {
     test_reliable_fast_path_does_not_overtake_a_lost_sample();
     test_reliable_fast_path_needs_room_in_the_buffer();
     test_reliable_fast_path_refuses_what_does_not_belong_to_its_sample();
+    test_reliable_fast_path_writes_nothing_past_its_scratch();
     test_reliable_fast_path_moves_out_before_another_writer_is_held();
     test_reliable_fast_path_waits_while_anything_is_held();
     test_reliable_fast_path_survives_another_writers_drain();
