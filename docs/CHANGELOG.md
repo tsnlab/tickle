@@ -13,6 +13,26 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
 
 ### Added
 
+- **Idle HEARTBEAT: a lost last sample of a RELIABLE burst is repaired without waiting for the next sample**
+  (docs/DESIGN.md section 6; the user's decision 2026-10-16). While a matched RELIABLE reader has not acknowledged
+  everything and neither a sample nor a HEARTBEAT announcing everything has gone for a period (`tt_IDLE_HEARTBEAT_PERIOD`,
+  250 ms; `tt_Publisher.idle_heartbeat_ns`; rmw_tickle `RMW_TICKLE_IDLE_HEARTBEAT_NS`, 0 off), the writer sends a
+  non-FINAL HEARTBEAT, and again a period later while unanswered. Nothing in a stream with samples at most half a
+  period apart, once everything is acknowledged, with no matched reader, or for a BEST_EFFORT reader. One scheduler
+  entry per writer, moved in place by at most one publish per half period. On the PC's real HAL
+  (`idle_heartbeat_tail.sh`, 10% loss, 80 bursts of 10): every lost tail repaired, 7 at 240 ms and 2 at 492 ms (a second
+  round after a lost HEARTBEAT or repair); without it they waited for the next burst (1,001-1,007 ms). Cost on the PC
+  (`srv_gap_pc.sh` core cells, x86, not a rig figure): the 10 Hz latency cell +3..+6 user instructions a round trip
+  (within 3 SE of the build with it off); the throughput cells' client +39..+43, which a never-due dummy scheduler
+  entry reproduces (+45..+54): the bench schedules a timer per sample, and the entry deepens its heap. At 100 ms, the
+  first choice, the latency cell paid a HEARTBEAT every round trip (+81 user), which is why the period is 250 ms.
+  `RMW_TICKLE_HEARTBEAT_PERIOD_NS` is unchanged (a fixed-rate FINAL HEARTBEAT); each one pushes the idle one back.
+- **RELIABLE readers per publisher is a documented build setting**: core's `tt_MAX_ACK_ENTRIES` (16), and rmw_tickle's
+  `-DRMW_TICKLE_MAX_RELIABLE_READERS=N` (1-1024). 64 bytes per reader in every publisher with the hybrid transport.
+  The behaviour at the limit is kept (the next reader is not matched); its warning now names the setting.
+  `tests/test_reliable_readers.c`: 20 RELIABLE Subscribers matched, delivered and acknowledged at 24; the 17th refused at
+  16.
+
 - **`tt_Publisher_matched_count()`**: how many remote nodes a Publisher has matched a reader on; 0 means a publish
   sends nothing. The uint64 publisher examples (Linux and FreeRTOS) use it to wait up to 5 s for their subscriber
   before the first publish, so they no longer lose the samples published before the match, and `make test-linux`
