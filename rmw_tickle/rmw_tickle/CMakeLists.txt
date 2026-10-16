@@ -108,6 +108,22 @@ target_compile_definitions(rmw_tickle PUBLIC tt_MAX_ENDPOINT_COUNT=2048 tt_ENDPO
 # fewer than 16 of this build's datagrams.
 target_compile_definitions(rmw_tickle PUBLIC tt_SOCKET_BUFFER_SIZE=4194304)
 
+# RMW_TICKLE_MAX_RELIABLE_READERS (2026-10-16): how many readers one RELIABLE publisher tracks acknowledgements for -
+# core's tt_MAX_ACK_ENTRIES, 16 by default. Past it a reader is not matched (logged "Ack table full"). Fixed arrays in
+# every publisher (tt_Publisher.peer_acks[] and, with the hybrid transport, peer_watch[]): 64 bytes per entry here, so
+# 64 readers add 3 KiB to each publisher. PUBLIC, because it changes struct tt_Publisher's layout and everything
+# compiled against these headers has to agree on it. docs/RMW.md explains why it is a build option and not an
+# environment variable.
+set(RMW_TICKLE_MAX_RELIABLE_READERS "" CACHE STRING
+    "RELIABLE readers per publisher (core's tt_MAX_ACK_ENTRIES); empty keeps core's 16")
+if(NOT RMW_TICKLE_MAX_RELIABLE_READERS STREQUAL "")
+  if(NOT RMW_TICKLE_MAX_RELIABLE_READERS MATCHES "^[1-9][0-9]*$" OR RMW_TICKLE_MAX_RELIABLE_READERS GREATER 1024)
+    message(FATAL_ERROR "RMW_TICKLE_MAX_RELIABLE_READERS must be a number from 1 to 1024, not "
+                        "'${RMW_TICKLE_MAX_RELIABLE_READERS}'")
+  endif()
+  target_compile_definitions(rmw_tickle PUBLIC "tt_MAX_ACK_ENTRIES=${RMW_TICKLE_MAX_RELIABLE_READERS}")
+endif()
+
 # RMW_TICKLE_TRACE (2026-09-26, rmw_tickle/RMW_PERF_PLAN.md H2): latency stamps along the receive-to-reply
 # path, core's and this package's, dumped by RMW_TICKLE_TRACE_FILE at shutdown (rmw_init.c). Measurement
 # only; off, every stamp compiles to nothing. RMW_TICKLE_RX_BATCH passes tt_RX_BATCH through for the
