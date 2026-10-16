@@ -144,6 +144,26 @@ static uint32_t armed_every(rmw_node_t* node, const char* env, enum rmw_qos_reli
     return every;
 }
 
+// The idle HEARTBEAT's period (RMW_TICKLE_IDLE_HEARTBEAT_NS, rmw_publisher.c; core's tt_IDLE_HEARTBEAT_PERIOD): what
+// the core publisher was given with the variable set to env (NULL = unset).
+#define IDLE_ENV_NAME "RMW_TICKLE_IDLE_HEARTBEAT_NS"
+static uint64_t armed_idle(rmw_node_t* node, const char* env) {
+    if (NULL == env) {
+        unsetenv(IDLE_ENV_NAME);
+    } else {
+        setenv(IDLE_ENV_NAME, env, 1);
+    }
+    rmw_qos_profile_t qos = qos_with(RMW_QOS_POLICY_RELIABILITY_RELIABLE);
+    rmw_publisher_options_t pub_opts = rmw_get_default_publisher_options();
+    rmw_publisher_t* pub = rmw_create_publisher(node, fake_type_support(), "idle_heartbeat", &qos, &pub_opts);
+    assert(NULL != pub);
+    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
+    uint64_t period = pub_impl->tickle_publisher.idle_heartbeat_ns;
+    assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
+    unsetenv(IDLE_ENV_NAME);
+    return period;
+}
+
 int main(void) {
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
 
@@ -182,6 +202,14 @@ int main(void) {
     // must not reach it, and neither must an explicit request.
     assert(0 == armed_every(node, NULL, RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT));
     assert(0 == armed_every(node, "16", RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT));
+
+    // The idle HEARTBEAT: on at core's 100 ms unless set; 0 turns it off; a number replaces it; garbage keeps it.
+    assert(100000000ULL == tt_IDLE_HEARTBEAT_PERIOD);
+    assert(tt_IDLE_HEARTBEAT_PERIOD == armed_idle(node, NULL));
+    assert(tt_IDLE_HEARTBEAT_PERIOD == armed_idle(node, ""));
+    assert(0 == armed_idle(node, "0"));
+    assert(250000000ULL == armed_idle(node, "250000000"));
+    assert(tt_IDLE_HEARTBEAT_PERIOD == armed_idle(node, "100ms"));
 
     assert(RMW_RET_OK == rmw_destroy_node(node));
     assert(RMW_RET_OK == rmw_shutdown(&context));

@@ -571,6 +571,33 @@ static uint64_t resolve_heartbeat_period_ns(void) {
     return (uint64_t)period;
 }
 
+// The idle HEARTBEAT's period (core's tt_Publisher.idle_heartbeat_ns, config.h's tt_IDLE_HEARTBEAT_PERIOD, 100 ms;
+// DESIGN.md section 6): while a matched RELIABLE reader has not acknowledged everything and no HEARTBEAT of any kind
+// has gone for this long, the publisher sends one asking for an answer - so the lost last sample of a burst is repaired
+// within ~1.5 periods instead of at the next sample. RMW_TICKLE_IDLE_HEARTBEAT_NS: unset or empty keeps core's default,
+// 0 turns it off, any other number of nanoseconds replaces it (core keeps a floor of 4 retry intervals). A value that
+// does not parse keeps the default, with a warning: as the piggyback below, a typo must not remove loss recovery.
+//
+// RMW_TICKLE_HEARTBEAT_PERIOD_NS above is kept as it was, and is a different thing: a FINAL HEARTBEAT at a fixed rate
+// whether or not anything is unacknowledged. The two compose - each periodic HEARTBEAT pushes the idle one back, so
+// with a period shorter than this one the idle HEARTBEAT never fires - and the idle one is what covers the
+// stopped-publisher case that switch was kept for, without its datagram per period on a quiet publisher.
+static uint64_t resolve_idle_heartbeat_ns(uint64_t core_default) {
+    const char* env = getenv("RMW_TICKLE_IDLE_HEARTBEAT_NS");
+    if (NULL == env || '\0' == env[0]) {
+        return core_default;
+    }
+    char* end = NULL;
+    unsigned long long period = strtoull(env, &end, 10);
+    if (end == env || (end != NULL && '\0' != *end)) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                               "RMW_TICKLE_IDLE_HEARTBEAT_NS='%s' is not a number of nanoseconds; using %llu", env,
+                               (unsigned long long)core_default);
+        return core_default;
+    }
+    return (uint64_t)period;
+}
+
 // Heartbeat piggybacked on every Nth sample of a RELIABLE publisher. On by default at
 // N = RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY_DEFAULT (rmw_tickle.h): the tracking window divided by
 // RMW_TICKLE_HEARTBEATS_PER_WINDOW, 64 at today's 1024-sample window. RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY=0
@@ -1177,6 +1204,9 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // configures is fully built is exactly how the reorder buffer shipped disconnected (9747c1ea).
     arm_heartbeat_piggyback(pub_impl);
     arm_run_units(pub_impl);
+    // A plain field: core arms the timer at the next publish and reads the field each time it runs.
+    pub_impl->tickle_publisher.idle_heartbeat_ns =
+        resolve_idle_heartbeat_ns(pub_impl->tickle_publisher.idle_heartbeat_ns);
 
     uint64_t heartbeat_ns = resolve_heartbeat_period_ns();
     if (heartbeat_ns != 0 && pub_impl->tickle_publisher.reliable_cache != NULL) {
