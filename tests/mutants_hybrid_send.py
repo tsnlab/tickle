@@ -1229,6 +1229,77 @@ MUTANTS = [
         "    uint32_t longest = true ? (uint32_t)tt_MAX_BUFFER_LENGTH",
         SEND,
     ),
+    (
+        "p_mtu: a sample lost whole never counted",
+        "src/tickle.c",
+        "        hybrid_rx_missed(node, writer, sample, count);\n",
+        "",
+        SEND,
+    ),
+    (
+        "p_mtu: a jump counted across a size that changed",
+        "src/tickle.c",
+        "    if (count != writer->count || jump % count != 0 || jump / count > HYBRID_MISSED_MAX) {",
+        "    if (jump % count != 0 || jump / count > HYBRID_MISSED_MAX) {",
+        SEND,
+    ),
+    (
+        "p_mtu: a jump of not whole samples counted",
+        "src/tickle.c",
+        "    if (count != writer->count || jump % count != 0 || jump / count > HYBRID_MISSED_MAX) {",
+        "    if (count != writer->count || jump / count > HYBRID_MISSED_MAX) {",
+        SEND,
+    ),
+    (
+        "p_mtu: a jump counted however long",
+        "src/tickle.c",
+        "    if (count != writer->count || jump % count != 0 || jump / count > HYBRID_MISSED_MAX) {",
+        "    if (count != writer->count || jump % count != 0) {",
+        SEND,
+    ),
+    (
+        "p_mtu: the bound one sample short",
+        "src/tickle.c",
+        "    if (count != writer->count || jump % count != 0 || jump / count > HYBRID_MISSED_MAX) {",
+        "    if (count != writer->count || jump % count != 0 || jump / count >= HYBRID_MISSED_MAX) {",
+        SEND,
+    ),
+    (
+        "p_mtu: a jump counted as one sample, however many",
+        "src/tickle.c",
+        "    for (uint32_t missed = jump / count; missed != 0; missed--) {",
+        "    for (uint32_t missed = jump != 0 ? 1U : 0U; missed != 0; missed--) {",
+        SEND,
+    ),
+    (
+        "p_mtu: a sample lost whole without its tail",
+        "src/tickle.c",
+        "        hybrid_rx_gap(node, writer, 0, count); // all of it: its runs, and its tail",
+        "        hybrid_rx_gap(node, writer, 0, count - 1U); // all of it: its runs, and its tail",
+        SEND,
+    ),
+    (
+        "p_mtu: a sample lost whole without its runs",
+        "src/tickle.c",
+        "        hybrid_rx_gap(node, writer, 0, count); // all of it: its runs, and its tail",
+        "        hybrid_rx_gap(node, writer, count - 1U, count); // all of it: its runs, and its tail",
+        SEND,
+    ),
+    (
+        "p_mtu: the jump not across 2^32",
+        "src/tickle.c",
+        "    uint32_t jump = sample - (writer->sample + writer->count); // modulo 2^32: right across the wrap",
+        "    uint32_t jump = sample > writer->sample ? sample - (writer->sample + writer->count) : UINT32_MAX;",
+        SEND,
+    ),
+    (
+        "p_mtu: a repair counted as a first transmission",
+        "src/tickle.c",
+        "    if (node->rx_targeted) {\n        return;\n    }\n    struct tt_HybridState* hybrid = &node->hybrid;\n"
+        "    struct tt_HybridRxWriter* writer = NULL;",
+        "    struct tt_HybridState* hybrid = &node->hybrid;\n    struct tt_HybridRxWriter* writer = NULL;",
+        SEND,
+    ),
 ]
 
 

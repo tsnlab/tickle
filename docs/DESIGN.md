@@ -1106,6 +1106,20 @@ layout is learned before the gap in front of it is judged: that gap is the same 
 sample before, so after an MTU sample - a RELIABLE AUTO stream's first - one lost or socket-dropped first run read as 45
 MTU units lost, 45 events in `p` and `p_mtu`, and held `n` low until they diluted).
 
+A sample that lost every datagram - its runs and its tail - shows no gap of its own; it is counted from the writer's
+seq_no (one a unit, so a sample starts where the last one ended): a jump of whole samples of the size on both sides,
+at most 8 (`HYBRID_MISSED_MAX`), is that many samples lost whole, laid out as the last one and counted as any gap (runs
+lost, the tail a lost MTU unit, receiver drops on hand put against them). A jump that is not whole samples of that size
+(small samples between, a size that changed), longer, or backwards is left alone. A repair is addressed to its reader
+(`rx_targeted`) and is never taken for a first transmission. Until 2026-10-17 neither held: a one-run sample is lost
+whole when its run and its tail both are, so `p_mtu` read `p (1 - L(n))` - 16 KB best effort at `n = 11`, 10 seeds a
+cell against the link's own count of the same draws: 0.990 p at 0.1%, 0.883 p at 1%, 0.562 p at 5%, and 0.940 p at 5%
+for two runs - which lowered the collapse test's baseline; and RELIABLE counted a repaired tail as a tail through (600
+MTU units sent, 721 counted). Now 1.000 in every cell (`pmtu_bias_sweep.sh`, `test_p_mtu_counts_samples_lost_whole`).
+False collapses it caused: 3 of the 7 seeds of 1-1000 that failed `test_frame_loss_never_moves_the_cap` (68, 545,
+791; the other four rest on 0-1 events in the first 500-700 MTU units, or 19 in 3,000) and both of 50 plain 16 KB
+streams at 5% (300 s each).
+
 - `p_mtu`: lost over sent MTU units (tails, `n = 1` samples) - the frame-loss baseline, which reassembly cannot touch.
 - `p` (advertised): every frame is exposure; a lost MTU unit is one event on one frame, a lost run one event on its
   `n` frames. Read as its posterior mean, `(events + 1) / frames` (a flat prior): `Cost(n)` is close to linear in `p`

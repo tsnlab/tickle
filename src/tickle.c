@@ -2887,10 +2887,42 @@ static void hybrid_rx_layout(struct tt_HybridRxWriter* writer, uint32_t index, u
     }
 }
 
+// Samples of a writer's the reader never saw - every datagram lost, its runs and its tail - counted from the writer's
+// seq_no (DESIGN.md section 8, "What the reader measures"). Each unit takes one seq_no, so a sample starts where the
+// last one ended, and a jump past that is what was sent between. Called as `sample` replaces the writer's last sample,
+// before anything of it is counted: a jump of whole samples of the size on both sides - `count` units, as the last one
+// - is that many samples lost whole, each laid out as the last one was (runs of the writer's n, or MTU units) and
+// counted as any gap: its runs lost, its tail lost as an MTU unit, each datagram put down to a receiver drop while one
+// is on hand. Until 2026-10-17 such a sample was not counted at all: one of a single run is lost whole when its run
+// and its tail both are, so p_mtu read p (1 - L(n)) (0.56 p at 5% frame loss, n = 11) and the collapse test's
+// baseline with it, and the run window missed the same samples' runs. Anything else is left alone: a jump that is not
+// whole samples of that size (small samples between, a size that changed), more than HYBRID_MISSED_MAX of them (a
+// reader cut off a while, a writer that restarted), or a seq_no that went back (a jump of nearly 2^32). Small samples
+// adding up to whole samples of that size read as lost ones; so does a sample reordered past the next (as a gap inside
+// one does), and one the writer committed and evicted unsent (tail_abandoned), as an abandoned tail does.
+#define HYBRID_MISSED_MAX 8U
+static void hybrid_rx_missed(struct tt_Context* node, struct tt_HybridRxWriter* writer, uint32_t sample,
+                             uint32_t count) {
+    uint32_t jump = sample - (writer->sample + writer->count); // modulo 2^32: right across the wrap
+    if (count != writer->count || jump % count != 0 || jump / count > HYBRID_MISSED_MAX) {
+        return;
+    }
+    for (uint32_t missed = jump / count; missed != 0; missed--) {
+        hybrid_rx_gap(node, writer, 0, count); // all of it: its runs, and its tail
+        node->hybrid.missed_samples++;
+    }
+}
+
 // One datagram's units of a sample (source, entity_id, first seq_no `sample`, `count` units) arrived: units
-// [index, index + units), as a run or as one MTU unit.
+// [index, index + units), as a run or as one MTU unit. A repair - addressed to this reader alone, where every first
+// transmission goes to everyone (tt_Context.rx_targeted) - counts for nothing: what was lost of its sample was counted
+// when the loss showed. Until 2026-10-17 one could pass for the sample's first transmission: a repaired tail as a tail
+// through, a sample lost whole and repaired before the next as a sample sent in MTU units.
 static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t entity_id, uint32_t sample, uint32_t index,
                            uint32_t count, uint32_t units, bool run) {
+    if (node->rx_targeted) {
+        return;
+    }
     struct tt_HybridState* hybrid = &node->hybrid;
     struct tt_HybridRxWriter* writer = NULL;
     for (uint32_t i = 0; i < tt_HYBRID_RX_WRITERS && writer == NULL; i++) {
@@ -2915,6 +2947,7 @@ static void hybrid_rx_note(struct tt_Context* node, uint8_t source, uint32_t ent
         if (writer->next < writer->count) {
             hybrid_rx_gap(node, writer, writer->next, writer->count); // the writer's last sample ended short
         }
+        hybrid_rx_missed(node, writer, sample, count);
         writer->sample = sample;
         writer->count = (uint16_t)count;
         writer->next = 0;
@@ -22121,7 +22154,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
     // events it forgot (loss_estimate_forget_stale()). A rig arm reads it; there is no other.
     TT_LOG_INFO("Node %u hybrid: runs=%lu run_units=%lu mtu_units=%lu n_hist=%lu/%lu/%lu/%lu/%lu/%lu/%lu "
                 "advertised=%u cap=%u cap_off=%u collapses=%lu probes=%lu path_failures=%lu receiver_drops=%lu "
-                "receiver_lost=%lu rx_loss=%u/%u stale_forgets=%lu stale_events=%lu",
+                "receiver_lost=%lu rx_loss=%u/%u stale_forgets=%lu stale_events=%lu missed_samples=%lu",
                 node->id, (unsigned long)node->hybrid.runs, (unsigned long)node->hybrid.run_units,
                 (unsigned long)node->hybrid.mtu_units, (unsigned long)node->hybrid.n_hist[0],
                 (unsigned long)node->hybrid.n_hist[1], (unsigned long)node->hybrid.n_hist[2],
@@ -22132,7 +22165,7 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
                 (unsigned long)node->hybrid.path_failures, (unsigned long)node->hybrid.receiver_drops,
                 (unsigned long)node->hybrid.receiver_lost, (unsigned)node->hybrid.rx_loss.events,
                 (unsigned)node->hybrid.rx_loss.frames, (unsigned long)node->hybrid.stale_forgets,
-                (unsigned long)node->hybrid.stale_events);
+                (unsigned long)node->hybrid.stale_events, (unsigned long)node->hybrid.missed_samples);
 #endif
 #if tt_SEGMENT_ENABLED
     // Before the socket goes: the segment is named from this context's address, and the

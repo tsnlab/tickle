@@ -684,6 +684,15 @@ read them with `git show 3c0c505b:<path>` ([DESIGN.md](DESIGN.md), section 16).
   tails. Detection after the first refused run (sim, 1 MB at 30 Hz, 4 MB reassembly memory): 4.52 -> 1.17 s at 0.1%,
   6.22 -> 2.08 s at 1%, 0.33 -> 0.38 s at 0.01%; runs refused by then 2,571 -> 863 at 0.1%.
 
+- **p_mtu counts samples lost whole** (2026-10-17). A hybrid reader never saw a sample whose runs and tail were all
+  lost, so it counted none of it: `p_mtu` read `p (1 - L(n))` for one-run samples (0.88 p at 1%, 0.56 p at 5%, 16 KB at
+  `n = 11`), the collapse test's baseline with it - 3 of the 7 false collapses in seeds 1-1000 of
+  `test_frame_loss_never_moves_the_cap`, and both in 50 plain streams at 5% - and the run window missed the same runs. The reader now counts them from the writer's seq_no: a jump of up to 8 whole samples of the
+  size on both sides is that many samples lost, laid out as the last one (DESIGN.md section 8, "What the reader
+  measures"; `missed_samples=` on the hybrid line). A repair, addressed to its reader, no longer passes for a first
+  transmission (a repaired tail read as a tail through). `p_mtu` and the run loss now match the link's own count
+  exactly in every measured cell (0.1%, 1%, 5%; one run, two runs, AUTO).
+
 - **A step of the date no longer disturbs timers, liveliness or lifespan** (2026-10-16, `ab/monotonic`; DESIGN.md
   section 2, "Time"). The Linux HAL read `CLOCK_REALTIME` for everything, so an NTP or manual step moved every
   deadline: three hours forward, a leased writer was declared gone and a lost sample's repair was refused as past the
