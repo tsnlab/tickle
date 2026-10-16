@@ -226,6 +226,50 @@ MUTANTS = [
         "    if (pub->topic->data_encode_range == NULL || publisher_unmatched(pub)) {",
         "test_a_sample_waiting_behind_a_send_is_encoded_whole",
     ),
+    # The busy writer and the recovery estimate (2026-10-16): tt_WriterProxy.probe_busy and repair_arrival_ns.
+    (
+        "(srtt) a busy writer's recovery timed as the path",
+        "proxy->retry <= tt_RELIABLE_RETRY && !proxy->probe_busy) {",
+        "proxy->retry <= tt_RELIABLE_RETRY) {",
+        "test_a_busy_writers_send_is_not_timed_as_the_path",
+    ),
+    (
+        "(srtt) originals that came with the gap taken for a send going on",
+        "    if (proxy->probe_ns != 0 && now > proxy->probe_ns && !node->rx_targeted) {",
+        "    if (proxy->probe_ns != 0 && now >= proxy->probe_ns && !node->rx_targeted) {",
+        "test_a_quiet_paths_round_trip_is_still_timed",
+    ),
+    (
+        "(srtt) the busy mark kept past its probe",
+        "    proxy->probe_ns = now != 0 ? now : 1U;\n    proxy->probe_busy = false;\n",
+        "    proxy->probe_ns = now != 0 ? now : 1U;\n",
+        "test_a_quiet_paths_round_trip_is_still_timed",
+    ),
+    (
+        "(srtt) a repair marks the probe busy",
+        "    if (proxy->probe_ns != 0 && now > proxy->probe_ns && !node->rx_targeted) {",
+        "    if (proxy->probe_ns != 0 && now > proxy->probe_ns) {",
+        "test_a_quiet_paths_round_trip_is_still_timed",
+    ),
+    (
+        "(srtt) a busy writer asked again at the plain interval",
+        "        if (proxy->large_arrival_ns != 0 && now - proxy->large_arrival_ns < interval &&",
+        "        if (false && proxy->large_arrival_ns != 0 && now - proxy->large_arrival_ns < interval &&",
+        "test_a_busy_writers_send_is_not_timed_as_the_path (writer datagrams)",
+    ),
+    (
+        "(srtt) a writer answering while it sends is not asked again",
+        "            (proxy->repair_arrival_ns == 0 || now - proxy->repair_arrival_ns >= interval)) {",
+        "            true) {",
+        "test_a_quiet_paths_round_trip_is_still_timed (a writer answering while it sends)",
+    ),
+    (
+        "(srtt) the reliable retry's ceiling a multiple of srtt alone",
+        "    uint64_t unit = srtt > granularity ? srtt : granularity;\n    uint64_t ceiling = unit * (uint64_t)tt_RELIABLE_RETRY_MAX",
+        "    uint64_t unit = srtt;\n    uint64_t ceiling = unit * (uint64_t)tt_RELIABLE_RETRY_MAX",
+        "test_retry_interval_estimate_converges_and_is_bounded",
+        "test_reliable_pubsub",
+    ),
 ]
 
 

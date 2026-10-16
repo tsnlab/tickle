@@ -1371,8 +1371,10 @@ static uint32_t quiet_path_srtt(int first, int samples, uint64_t delay) {
 static void test_a_quiet_paths_round_trip_is_still_timed(void) {
     // The control of test_a_busy_writers_send_is_not_timed_as_the_path: the same large samples and loss, the writer
     // never busy while a repair is awaited, and a path whose round trip changes from 2 to 8 ms part-way. The estimate
-    // learns the first and then follows the change - what leaving the busy writer's recoveries out must not stop.
-    // Mutant: no recovery timed at all - srtt stays 0.
+    // learns the first and then follows the change - what leaving the busy writer's recoveries out must not stop. It
+    // starts after one busy 4 MB send, so a recovery left out then does not leave the next ones out too. Mutants: no
+    // recovery timed at all (srtt stays 0); the busy mark kept past its probe; originals that came with the datagram
+    // revealing the gap taken for a send still going on.
     init_pair(1000, RELIABLE_KEEP_LAST);
     sim_start(0);
     EXPECT_EQ_INT(tt_RET_OK, sim_publish(1, tt_SECOND));
@@ -1383,16 +1385,32 @@ static void test_a_quiet_paths_round_trip_is_still_timed(void) {
         return;
     }
     proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
-    sample_len = ONE_MB;
+    sample_len = FOUR_MB;
     sim_loss_per_mille = 50;
+    sim_room_per_step = 8;
+    sim_busy_writer = true;
+    // On the 2 ms path already: on the zero-delay link a repair comes back in the instant it is asked for, srtt falls
+    // to ~0, and a path then 2 ms long is never learned - each recovery takes more than the plain retries, and a
+    // backed-off one is not timed (a limit of the estimator itself, on the parent as well).
+    sim_reverse_delay = 2 * tt_MILLISECOND;
+    EXPECT_EQ_INT(tt_RET_OK, sim_publish(2, tt_SECOND));
+    sim_settle(2, 2 * tt_SECOND);
+    EXPECT_EQ_INT(2, delivered_count);
+    sim_busy_writer = false;
+    sim_room_per_step = 0;
+    test_mock_nonblocking_room = -1; // each sample goes out whole at once
+    sample_len = ONE_MB;
     const int samples = 6;
-    uint32_t short_path = quiet_path_srtt(1, samples, 2 * tt_MILLISECOND);
-    uint32_t long_path = quiet_path_srtt(1 + samples, samples, 8 * tt_MILLISECOND);
+    uint32_t short_path = quiet_path_srtt(2, samples, 2 * tt_MILLISECOND);
+    uint32_t long_path = quiet_path_srtt(2 + samples, samples, 8 * tt_MILLISECOND);
     printf("test_large_sample: quiet path at 5%% loss - recovery srtt %.2f ms over a 2 ms path, %.2f ms after it "
            "became 8 ms\n",
            (double)short_path / 1e6, (double)long_path / 1e6);
-    EXPECT_TRUE(short_path >= 2 * tt_MILLISECOND && short_path < 4 * tt_MILLISECOND);
-    EXPECT_TRUE(long_path >= 6 * tt_MILLISECOND && long_path < 16 * tt_MILLISECOND);
+    // Within a quarter of the path below (a probe started when the watermark reaches a gap asked for earlier times a
+    // repair already on its way) and half above it. The parent: 4.97 ms over the 2 ms path - the busy send's 18 ms
+    // recoveries still in it - and 7.39 ms over the 8 ms one; this change 1.88 and 6.53 (2026-10-16).
+    EXPECT_TRUE(short_path >= 1500 * tt_MICROSECOND && short_path < 3 * tt_MILLISECOND);
+    EXPECT_TRUE(long_path >= 6 * tt_MILLISECOND && long_path < 12 * tt_MILLISECOND);
 }
 
 static void test_keep_last_replaces_a_sample_waiting_behind_a_send(void) {
