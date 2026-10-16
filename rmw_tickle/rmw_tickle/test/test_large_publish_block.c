@@ -51,12 +51,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <sys/wait.h>
-#include <tickle/config.h>
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"
+#include "rmw/discovery_options.h"
 #include "rmw/init.h"
 #include "rmw/init_options.h"
 #include "rmw/publisher_options.h"
@@ -64,6 +63,7 @@
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/subscription_options.h"
+#include "rmw/time.h"
 #include "rmw/types.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 #include "rosidl_runtime_c/message_type_support_struct.h"
@@ -77,6 +77,12 @@
 #define WAIT_POLLS 50000 // 10 s at POLL_US
 #define NS_PER_US 1000L
 #define NS_PER_MS 1000000ULL
+#define NS_PER_S 1000000000ULL
+#define LINE_BYTES 512      // a line of the talker's stdout
+#define PATH_BYTES 256      // a flag file's path
+#define NAME_BYTES 128      // a network namespace's name
+#define COMMAND_BYTES 32768 // the talker's command line, library paths and all
+#define VETH_IDS 100000     // a veth name holds "lpb" + this many ids + one letter, within 15 characters
 #define SKIP_CODE 77
 #define SMALL_BYTES 64U
 #define SETTLE_POLLS 15000 // 3 s at POLL_US: the last samples after the talker said it was done
@@ -182,8 +188,8 @@ static rosidl_message_type_support_t small_handle = {.data = &small_callbacks,
 
 static uint64_t now_ns(void) {
     struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return ((uint64_t)now.tv_sec * 1000000000ULL) + (uint64_t)now.tv_nsec;
+    clock_gettime(CLOCK_MONOTONIC, &now); // NOLINT(misc-include-cleaner) - <time.h> above, via a glibc-private header
+    return ((uint64_t)now.tv_sec * NS_PER_S) + (uint64_t)now.tv_nsec;
 }
 
 static void sleep_us(long micros) {
@@ -320,7 +326,7 @@ static void publish_small_meanwhile(rmw_tickle_context_impl_t* context_impl, rmw
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
     uint64_t waits_at_start = atomic_load(&context_impl->large_block_waits);
     struct large_publish job = {.pub = pub, .message = message, .ret = RMW_RET_ERROR, .took_ns = 0};
-    pthread_t thread;
+    pthread_t thread; // NOLINT(misc-include-cleaner) - as above
     assert(0 == pthread_create(&thread, NULL, publish_on_thread, &job));
     bool ready = false;
     for (int i = 0; i < WAIT_POLLS && !ready; i++) {
@@ -347,7 +353,7 @@ static void publish_small_meanwhile(rmw_tickle_context_impl_t* context_impl, rmw
 static void publish_all(enum scenario which, rmw_context_t* context, rmw_tickle_context_impl_t* context_impl,
                         rmw_publisher_t* pub, rmw_publisher_t* small_pub, struct report* report) {
     struct spinner spinner = {.context = context, .stop = false, .waits = 0};
-    pthread_t spinner_thread;
+    pthread_t spinner_thread; // NOLINT(misc-include-cleaner) - <pthread.h> above; glibc declares it privately
     rmw_guard_condition_t* guard = NULL;
     rmw_wait_set_t* wait_set = NULL;
     if (EXECUTOR == which) {
@@ -397,11 +403,11 @@ static int talker(enum scenario which, const char* go_path, const char* done_pat
     rmw_publisher_t* pub = rmw_create_publisher(set.node, &array4m_handle, TOPIC, &q, &options);
     rmw_publisher_t* small_pub = rmw_create_publisher(set.node, &small_handle, SMALL_TOPIC, &q, &options);
     assert(NULL != pub && NULL != small_pub);
-    bool go = wait_matched(pub);
-    for (int i = 0; i < WAIT_POLLS && go && !file_exists(go_path); i++) {
+    bool matched = wait_matched(pub);
+    for (int i = 0; i < WAIT_POLLS && matched && !file_exists(go_path); i++) {
         sleep_us(POLL_US); // the listener has matched it too: a best-effort reader drops what comes before
     }
-    if (!go || !file_exists(go_path)) {
+    if (!matched || !file_exists(go_path)) {
         return 2;
     }
     struct report report = {0};
@@ -431,22 +437,33 @@ static int talker(enum scenario which, const char* go_path, const char* done_pat
 }
 
 static bool parse_report(const char* line, struct report* report) {
-    unsigned long long v[10] = {0};
+    unsigned long long abandoned = 0;
+    unsigned long long waits = 0;
+    unsigned long long timeouts = 0;
+    unsigned long long small_waits = 0;
+    unsigned long long published_ok = 0;
+    unsigned long long longest_ns = 0;
+    unsigned long long total_ns = 0;
+    unsigned long long small_block_ns = 0;
+    unsigned long long large_block_ns = 0;
+    unsigned long long send_waits = 0;
     int in_flight = 0;
-    if (11 != sscanf(line, "REPORT %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %d", &v[0], &v[1], &v[2], &v[3],
-                     &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &in_flight)) {
+    const int fields = 11;
+    if (fields != sscanf(line, "REPORT %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %d", &abandoned, &waits,
+                         &timeouts, &small_waits, &published_ok, &longest_ns, &total_ns, &small_block_ns,
+                         &large_block_ns, &send_waits, &in_flight)) {
         return false;
     }
-    *report = (struct report) {.abandoned = v[0],
-                               .waits = v[1],
-                               .timeouts = v[2],
-                               .small_waits = v[3],
-                               .published_ok = v[4],
-                               .longest_ns = v[5],
-                               .total_ns = v[6],
-                               .small_block_ns = v[7],
-                               .large_block_ns = v[8],
-                               .send_waits = v[9],
+    *report = (struct report) {.abandoned = abandoned,
+                               .waits = waits,
+                               .timeouts = timeouts,
+                               .small_waits = small_waits,
+                               .published_ok = published_ok,
+                               .longest_ns = longest_ns,
+                               .total_ns = total_ns,
+                               .small_block_ns = small_block_ns,
+                               .large_block_ns = large_block_ns,
+                               .send_waits = send_waits,
                                .small_in_flight = 0 != in_flight};
     return true;
 }
@@ -466,8 +483,8 @@ static bool take_one(rmw_subscription_t* sub, struct array4m* into, uint64_t* re
 
 // A value put on the talker's command line: refused unless plain, so nothing in it can quote its way out.
 static bool plain_value(const char* value) {
-    for (const char* c = value; *c != '\0'; c++) {
-        if (*c == '\'' || *c == '\\' || *c == '\n') {
+    for (const char* chr = value; *chr != '\0'; chr++) {
+        if (*chr == '\'' || *chr == '\\' || *chr == '\n') {
             return false;
         }
     }
@@ -475,14 +492,14 @@ static bool plain_value(const char* value) {
 }
 
 static char talker_ns[32];
-static char exe_path[512];
+static char exe_path[PATH_BYTES];
 
 // The talker: this binary, as the invoking user, in the talker's namespace, with the library paths it needs (sudo
 // resets the environment) and the scenario's setting. Its stdout is the returned stream.
 static FILE* start_talker(enum scenario which, const char* go_path, const char* done_path) {
     static const char* const kept[] = {"LD_LIBRARY_PATH", "AMENT_PREFIX_PATH", "PATH", "TICKLE_ID_REGISTRY",
                                        "ROS_DOMAIN_ID"};
-    char command[32768];
+    char command[COMMAND_BYTES];
     const char* user = getenv("USER");
     if (NULL == user || !plain_value(user)) {
         return NULL;
@@ -511,7 +528,7 @@ static FILE* start_talker(enum scenario which, const char* go_path, const char* 
 }
 
 static bool read_report(FILE* from_talker, struct report* report) {
-    char line[512];
+    char line[LINE_BYTES];
     while (NULL != fgets(line, (int)sizeof(line), from_talker)) {
         if (parse_report(line, report)) {
             return true;
@@ -525,8 +542,9 @@ static void check(enum scenario which, const struct report* report, uint64_t rec
     printf("%s: published %llu of %u OK in %.1f ms (longest %.1f ms); waits %llu, timeouts %llu, abandoned at the "
            "sender %llu, send_waits %llu; received %llu; small publisher: block_ns %llu, waits %llu, large in "
            "flight %d\n",
-           scenario_names[which], (unsigned long long)report->published_ok, SAMPLES, (double)report->total_ns / 1e6,
-           (double)report->longest_ns / 1e6, (unsigned long long)report->waits, (unsigned long long)report->timeouts,
+           scenario_names[which], (unsigned long long)report->published_ok, SAMPLES,
+           (double)report->total_ns / (double)NS_PER_MS, (double)report->longest_ns / (double)NS_PER_MS,
+           (unsigned long long)report->waits, (unsigned long long)report->timeouts,
            (unsigned long long)report->abandoned, (unsigned long long)report->send_waits, (unsigned long long)received,
            (unsigned long long)report->small_block_ns, (unsigned long long)report->small_waits,
            report->small_in_flight ? 1 : 0);
@@ -560,8 +578,8 @@ static void check(enum scenario which, const struct report* report, uint64_t rec
 }
 
 static void run(enum scenario which) {
-    char go_path[256];
-    char done_path[256];
+    char go_path[PATH_BYTES];
+    char done_path[PATH_BYTES];
     const char* tmp = NULL != getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp";
     (void)snprintf(go_path, sizeof(go_path), "%s/lpb_go_%d_%d", tmp, (int)getpid(), (int)which);
     (void)snprintf(done_path, sizeof(done_path), "%s/lpb_done_%d_%d", tmp, (int)getpid(), (int)which);
@@ -591,8 +609,8 @@ static void run(enum scenario which) {
         }
     }
     assert(matched);
-    FILE* go = fopen(go_path, "w");
-    assert(NULL != go && 0 == fclose(go));
+    FILE* go_file = fopen(go_path, "w");
+    assert(NULL != go_file && 0 == fclose(go_file));
 
     struct array4m* into = malloc(sizeof(*into));
     assert(NULL != into);
@@ -616,7 +634,7 @@ static void run(enum scenario which) {
     FILE* done = fopen(done_path, "w");
     assert(NULL != done && 0 == fclose(done));
     assert(0 == fcntl(fileno(from_talker), F_SETFL, 0));
-    char line[512];
+    char line[LINE_BYTES];
     while (NULL != fgets(line, (int)sizeof(line), from_talker)) {
     }
     int status = pclose(from_talker);
@@ -637,14 +655,14 @@ static bool in_named_netns(void) {
     if (NULL == identify) {
         return false;
     }
-    char name[128];
+    char name[NAME_BYTES];
     bool found = NULL != fgets(name, (int)sizeof(name), identify);
     (void)pclose(identify);
     return found && name[0] != '\n' && name[0] != '\0';
 }
 
 static int ip_command(const char* format, const char* first, const char* second) {
-    char command[512];
+    char command[LINE_BYTES];
     (void)snprintf(command, sizeof(command), format, first, second);
     return system(command); // NOLINT(cert-env33-c) - fixed commands; the names are this test's own
 }
@@ -658,8 +676,8 @@ static bool build_talker_ns(void) {
     char ours[16];
     char theirs[16];
     (void)snprintf(talker_ns, sizeof(talker_ns), "lpbtalk%d", (int)getpid());
-    (void)snprintf(ours, sizeof(ours), "lpb%da", (int)(getpid() % 100000));
-    (void)snprintf(theirs, sizeof(theirs), "lpb%db", (int)(getpid() % 100000));
+    (void)snprintf(ours, sizeof(ours), "lpb%da", (int)(getpid() % VETH_IDS));
+    (void)snprintf(theirs, sizeof(theirs), "lpb%db", (int)(getpid() % VETH_IDS));
     return 0 == ip_command("sudo -n ip netns add %s%s", talker_ns, "") &&
            0 == ip_command("sudo -n ip link add %s type veth peer name %s", ours, theirs) &&
            0 == ip_command("sudo -n ip link set %s netns %s", theirs, talker_ns) &&
@@ -678,7 +696,7 @@ int main(int argc, char** argv) {
     small_handle.typesupport_identifier = rosidl_typesupport_tickle_c__identifier;
     if (argc == 5 && 0 == strcmp(argv[1], "--talker")) {
         int which = atoi(argv[2]);
-        assert(which >= 0 && which < (int)SCENARIOS);
+        assert(which >= 0 && which < SCENARIOS);
         return talker((enum scenario)which, argv[3], argv[4]);
     }
     if (!in_named_netns()) {
@@ -687,7 +705,7 @@ int main(int argc, char** argv) {
         return SKIP_CODE;
     }
     ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    assert(len > 0);
+    assert(len > 0 && (size_t)len < sizeof(exe_path) - 1); // not cut short
     exe_path[len] = '\0';
     assert(plain_value(exe_path));
     assert(0 == atexit(delete_talker_ns)); // an assert's abort() skips it: the namespace is named for this pid
@@ -696,7 +714,7 @@ int main(int argc, char** argv) {
         return SKIP_CODE;
     }
     assert(0 == setenv("TICKLE_BROADCAST_ADDR", LINK_BROADCAST, 1)); // the listener's link: the veth, not lo
-    for (int which = 0; which < (int)SCENARIOS; which++) {
+    for (int which = 0; which < SCENARIOS; which++) {
         run((enum scenario)which);
     }
     printf("test_large_publish_block: PASS\n");
