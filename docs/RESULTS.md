@@ -29,11 +29,12 @@ the ROS 2 layer in [RMW.md](RMW.md), how the numbers are taken in [TESTING.md](T
 - **rmw layer, same host** (`06dd78d8`, rows R1-R21): rmw_tickle wins all 52 scored rows against both DDS rmws,
   peak RSS included (13.4-16.0 MB against CycloneDDS's 15.2-18.3 MB, since `718220d8`). At BEST_EFFORT KEEP_LAST 1
   max rate it delivers 141k Array1k samples/s against CycloneDDS's 70k and FastDDS's 18k.
-- **rmw large messages** (Array1m and Array4m cross-host, "rmw large messages"): rmw_tickle wins every metric at 5%
-  loss (step A), where Fast DDS as shipped delivers nothing and CycloneDDS ~3%, and has the smallest subscriber in every
-  cell. At 0% loss, with the hybrid transport (IP-fragmented runs while the path is clean), it beats CycloneDDS on CPU
-  per MB everywhere and draws or wins median latency against both vendors at 1 and 4 MB, but Fast DDS as shipped still
-  spends 13.7-18.2% less subscriber CPU per MB.
+- **rmw large messages** (Array1m and Array4m cross-host, "rmw large messages"; re-measured on main f5fcda06 and, for
+  I1/I1L, dde87857): rmw_tickle wins every scored metric at 5% loss (I1L), where Fast DDS as shipped delivers nothing
+  and CycloneDDS ~3%, and has the smallest subscriber in every cell. At 0% loss it wins or draws every metric against
+  every vendor except I4 best effort, where Fast DDS as shipped spends 4% less subscriber and 3% less publisher CPU per
+  MB, and I4s (a link-saturating cell), where its median latency is behind all three because a DDS `publish()` blocks
+  before it stamps the sample (L4 table: WIN 53, DRAW 22, LOSE 5 of 80).
 - **Not scored:** row 5 (netem dominates), rows 45-47 (all detect correctly), zenoh-pico (reference only).
 
 ## 1. Same host (shared memory)
