@@ -21,6 +21,7 @@
 // progress, not a forged timestamp standing in for one.
 
 #include <assert.h>
+#include <stdatomic.h> // atomic_load - poll_thread_last_return_ns, the stall's own premise below
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -170,46 +171,87 @@ int main(void) {
     // so this recomputes it from the same two public tickle/config.h constants that back it,
     // rather than hardcoding "3 seconds" and silently drifting from it if either ever changes).
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
+    rmw_tickle_context_impl_t* context_impl = node_impl->context_impl;
     uint64_t stale_threshold_ns = (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_CONTEXT_UPDATE_INTERVAL;
-    uint64_t hang_duration_ns = stale_threshold_ns + tt_SECOND; // +1s margin over the bare floor
 
-    tt_Context_lock(&node_impl->context_impl->tickle_context);
-    struct timespec hang_duration = {
-        .tv_sec = (time_t)(hang_duration_ns / tt_SECOND),
-        .tv_nsec = (long)(hang_duration_ns % tt_SECOND),
-    };
-    nanosleep(&hang_duration, NULL);
-    tt_Context_unlock(&node_impl->context_impl->tickle_context);
-
-    // The watchdog may have been blocked on this same mutex (inside mark_automatic_publishers_
-    // lost(), rmw_node.c) waiting for the unlock() just above - rmw_wait() with a real timeout (rather
-    // than immediately calling rmw_take_event()) gives it room to finish that call and broadcast
-    // its own wait_cond, without this test racing a fixed short sleep against it.
+    // Two things are asserted about each stall, and they are kept apart on purpose.
     //
-    // Derived from the tick rather than written as a number, because the number was wrong about
-    // what it had to cover. It used to be a bare `{2, 0}` with the comment "generous: only needs
-    // to cover scheduling latency" - but the watchdog does not run on scheduling latency, it runs
-    // on the scheduler tick, and tt_CONTEXT_UPDATE_INTERVAL is a whole second. Two seconds is two
-    // ticks, so a single late tick spent most of the budget, and the test failed once in a
-    // check-gates run on 2026-10-04 while passing 28 times in a row when re-run on a quieter
-    // machine - the shape of a margin that depends on load rather than on the thing under test.
+    // 1. The watchdog wakes for the moment the stall crosses the threshold: watchdog_silence_wakes rises during
+    //    the stall (counted when that check starts, before it blocks on the lock held here). Until 2026-10-17
+    //    the watchdog only looked once a tick, and a stall that crossed the threshold and ended before the next tick
+    //    was never reported: this test's old stall, the threshold plus one second from the lock, was 0.99 s past the
+    //    threshold from the poll thread's last return (which comes 10 ms after the lock, when the executor lease of
+    //    the rmw_wait() above runs out), and the tick ran 1.012 s quiet and longer under load. It failed in a
+    //    check-gates run on 2026-10-16, and in 71 of 200 runs beside 16 CPU hogs on main 9d051337. This half asks
+    //    why the watchdog woke, not how promptly: a wake up to a tick late still passes it, and a watchdog that only
+    //    ticks fails it every time. (Reading the planned wake time instead failed when a tick fell 0.1 ms before the
+    //    crossing: the plan equalled the crossing for only that long.)
     //
-    // This does not weaken the assertion. The property is "the lost event arrives", not "it
-    // arrives within two seconds": the timeout is a bound on the test's patience, and a watchdog
-    // that is actually broken never fires at all and still fails here. hang_duration_ns above is
-    // derived from the same constants; this was the one number in the test that was not.
+    // 2. The event arrives. Each stall runs a whole tick past the threshold, so this half leaves the watchdog's wake
+    //    a tick of latency: a stall a quarter or half tick past the threshold asked that the wake come within that
+    //    margin, and beside 32 CPU hogs it once came 604 ms late and failed. A watchdog that never fires fails here.
+    //
+    // Each stall is measured from the poll thread's own last return, which is where the watchdog's clock starts.
+    const uint64_t stall_past_threshold_ns = (uint64_t)tt_CONTEXT_UPDATE_INTERVAL;
+    // Patience for the event after the stall ends: the watchdog may have been blocked on this same mutex (inside
+    // mark_automatic_publishers_lost(), rmw_node.c) waiting for the unlock, and rmw_wait() with a real timeout gives
+    // it room to finish and broadcast wait_cond without racing a fixed short sleep. A bound on the test's patience,
+    // not on the watchdog: a watchdog that never fires still fails here.
     const uint64_t recovery_ns = 4U * (uint64_t)tt_CONTEXT_UPDATE_INTERVAL;
     rmw_time_t recovery_timeout = {recovery_ns / tt_SECOND, recovery_ns % tt_SECOND};
-    events.events[0] = &liveliness_lost_event;
-    assert(RMW_RET_OK == rmw_wait(NULL, NULL, NULL, NULL, &events, wait_set, &recovery_timeout));
-    assert(NULL != events.events[0]);
+    // How long the poll thread's last return must hold still before a stall counts from it (see the loop below), and
+    // how often a stall looks at the clock.
+    const struct timespec settle = {.tv_sec = 0, .tv_nsec = (long)(2U * RMW_TICKLE_EXECUTOR_POLL_LEASE_NS)};
 
-    rmw_liveliness_lost_status_t lost_status;
-    bool taken = false;
-    assert(RMW_RET_OK == rmw_take_event(&liveliness_lost_event, &lost_status, &taken));
-    assert(taken);
-    assert(lost_status.total_count >= 1);
-    assert(lost_status.total_count_change >= 1);
+    uint64_t previous_unlock_ns = 0;
+    for (int32_t stall = 1; stall <= 2; stall++) {
+        // Each stall starts from a return of its own. The event can be ready before the poll thread has returned
+        // from the previous stall - the watchdog was queued on the lock ahead of it - and a stall locked then would
+        // inherit the first one's start and be over before it began (seen once in 64 runs). The poll thread returns
+        // at least once a tick; two ticks bound the wait.
+        const uint64_t fresh_return_deadline_ns = tt_get_ns() + (2U * (uint64_t)tt_CONTEXT_UPDATE_INTERVAL);
+        while (atomic_load(&context_impl->poll_thread_last_return_ns) <= previous_unlock_ns) {
+            assert(tt_get_ns() < fresh_return_deadline_ns);
+            nanosleep(&settle, NULL);
+        }
+        tt_Context_lock(&context_impl->tickle_context);
+        // The stall starts at the poll thread's last return, and that is final once the thread has left its park
+        // (poll_thread_parked false; leaving stores the return just after) and the return has held still for a
+        // settle. A single fixed settle was not enough under load: the park was left up to 78 ms after the lock,
+        // and the test then saw the return move mid-stall (6 of 200 runs beside 16 CPU hogs).
+        uint64_t stalled_since_ns = atomic_load(&context_impl->poll_thread_last_return_ns);
+        for (;;) {
+            nanosleep(&settle, NULL);
+            uint64_t settled_ns = atomic_load(&context_impl->poll_thread_last_return_ns);
+            if (!atomic_load(&context_impl->poll_thread_parked) && settled_ns == stalled_since_ns) {
+                break;
+            }
+            stalled_since_ns = settled_ns;
+            assert(tt_get_ns() < fresh_return_deadline_ns);
+        }
+        const uint64_t silence_wakes_before = atomic_load(&context_impl->watchdog_silence_wakes);
+        const uint64_t stall_end_ns = stalled_since_ns + stale_threshold_ns + stall_past_threshold_ns;
+        while (tt_get_ns() < stall_end_ns) {
+            nanosleep(&settle, NULL);
+        }
+        // The premise: the poll thread made no progress for the whole stall. If it returned meanwhile, the lock
+        // did not stall it and nothing below would be about the watchdog.
+        assert(atomic_load(&context_impl->poll_thread_last_return_ns) == stalled_since_ns);
+        previous_unlock_ns = tt_get_ns();
+        tt_Context_unlock(&context_impl->tickle_context);
+        assert(atomic_load(&context_impl->watchdog_silence_wakes) > silence_wakes_before); // 1. above
+
+        events.events[0] = &liveliness_lost_event; // 2. above
+        assert(RMW_RET_OK == rmw_wait(NULL, NULL, NULL, NULL, &events, wait_set, &recovery_timeout));
+        assert(NULL != events.events[0]);
+
+        rmw_liveliness_lost_status_t lost_status;
+        bool taken = false;
+        assert(RMW_RET_OK == rmw_take_event(&liveliness_lost_event, &lost_status, &taken));
+        assert(taken);
+        assert(lost_status.total_count == stall); // once per stall: the second is a new loss, not a repeat
+        assert(lost_status.total_count_change == 1);
+    }
 
     assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
 
@@ -232,27 +274,20 @@ int main(void) {
     rmw_event_t neglected_lost_event = rmw_get_zero_initialized_event();
     assert(RMW_RET_OK == rmw_publisher_event_init(&neglected_lost_event, neglected_pub, RMW_EVENT_LIVELINESS_LOST));
 
-    // Never asserted at all - must go LIVELINESS_LOST once its own lease elapses, entirely on its
-    // own schedule (no external stall needed, unlike AUTOMATIC's own node-wide check above).
-    //
-    // The patience is the lease plus four ticks, as for recovery_timeout above and for the same reason. It used to
-    // be the lease plus ONE second, and that left 43 ms, every run: the watchdog checks once a tick
-    // (RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS), and its cadence is set by the unlock above - it was blocked on that
-    // lock and runs its check the moment it gets it, which is the moment this thread goes on to create the Publisher.
-    // So the checks land just after creation, at +0.95, +1.95, +2.96 s (45 ms short of the 3 s lease, not stale yet)
-    // and +3.96 s, which marks it - 43 ms inside a 4.0 s wait (measured 2026-10-08, 20 runs, the same to the
-    // millisecond on main and before the reader-wake round 4). A check 43 ms late under a loaded machine was the
-    // whole of the failure: 2 of 3 check-gates runs on 2026-10-08, never on a quiet one. A watchdog that is actually
-    // broken never fires and still fails here.
+    // Never asserted at all - must go LIVELINESS_LOST once its own lease elapses, entirely on its own schedule (no
+    // external stall needed, unlike AUTOMATIC's own node-wide check above). The same two halves as the stalls above:
+    // the watchdog wakes for the lease's end (watchdog_lease_wakes rises), and the event arrives within the lease
+    // plus four ticks - patience, not a bound on the watchdog. The patience was
+    // once the lease plus one second, which left 43 ms after the check the tick-only watchdog made at +3.96 s
+    // (measured 2026-10-08), and 2 of 3 check-gates runs failed on it that day. A watchdog that never fires fails.
+    const uint64_t lease_wakes_before = atomic_load(&context_impl->watchdog_lease_wakes);
     const uint64_t neglected_ns = manual_lease_ns + (4U * (uint64_t)tt_CONTEXT_UPDATE_INTERVAL);
-    rmw_time_t neglected_timeout = {
-        .sec = neglected_ns / tt_SECOND,
-        .nsec = neglected_ns % tt_SECOND,
-    };
+    rmw_time_t neglected_timeout = {.sec = neglected_ns / tt_SECOND, .nsec = neglected_ns % tt_SECOND};
     void* neglected_events_storage[1] = {&neglected_lost_event};
     rmw_events_t neglected_events = {.event_count = 1, .events = neglected_events_storage};
     assert(RMW_RET_OK == rmw_wait(NULL, NULL, NULL, NULL, &neglected_events, wait_set, &neglected_timeout));
     assert(NULL != neglected_events.events[0]);
+    assert(atomic_load(&context_impl->watchdog_lease_wakes) > lease_wakes_before);
 
     rmw_liveliness_lost_status_t neglected_status;
     bool neglected_taken = false;
