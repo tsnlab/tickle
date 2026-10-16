@@ -197,6 +197,33 @@
 #ifndef tt_RELIABLE_STUCK_WARN_INTERVAL
 #define tt_RELIABLE_STUCK_WARN_INTERVAL (5 * tt_SECOND) // nanosecond
 #endif
+// The idle HEARTBEAT (DESIGN.md section 6, the user's decision 2026-10-16). A reader learns that the LAST sample of a
+// burst was lost only from something sent after it - a later sample or a HEARTBEAT - and a RELIABLE writer that has
+// stopped sends neither, so before this a lost tail waited for the next sample, however long that was. Now, while a
+// matched RELIABLE reader has not acknowledged everything sent and no HEARTBEAT has gone for this long, the writer
+// sends one that asks for an answer (non-FINAL). Timed from the last HEARTBEAT of ANY kind the writer sent to every
+// matched reader - piggybacked, match, end-of-sample, solicitation, periodic - so each one pushes the next back, and a
+// steady stream sends none of its own: when the period runs out while samples are still flowing, the HEARTBEAT rides
+// the next sample's datagram instead (tt_Publisher.idle_heartbeat_piggyback). Nothing while everything is acknowledged
+// or no reader is matched. One lazily re-armed scheduler entry per writer, never one per sample.
+//
+// Why 100 ms. The cost is per BURST, not per sample: after a burst, one HEARTBEAT and one ACKNACK per reader, and then
+// silence. A stream faster than one sample per period pays no datagram (its HEARTBEAT rides a sample); a slower one
+// pays a HEARTBEAT and its answers per sample, so the period should sit above the interval of common periodic streams -
+// ROS 2 sensor and control topics run at 10 Hz and up. Against that, the period is how long a lost tail can wait to be
+// noticed. The DDS vendors' documented defaults bracket it: Cyclone DDS's heartbeat interval 100 ms, OpenDDS's 1 s,
+// Fast DDS's and RTI Connext's heartbeat period 3 s (their documentation; no code of theirs is used). 100 ms takes the
+// low end (a tail noticed within ~1.5 periods, see idle_heartbeat_fire(), tickle.c) at the cost above. 0 turns it off.
+//
+// The floor: never below tt_IDLE_HEARTBEAT_RETRY_MULTIPLE retry intervals (tt_RELIABLE_RETRY_INITIAL, or a configured
+// fixed interval). A reader that already knows of a gap asks for it itself every retry interval; a writer heartbeating
+// faster than a few of those would only duplicate that work. No ceiling: a configured period is the caller's choice.
+#ifndef tt_IDLE_HEARTBEAT_PERIOD
+#define tt_IDLE_HEARTBEAT_PERIOD (100 * tt_MILLISECOND) // nanosecond, 0 = off
+#endif
+#ifndef tt_IDLE_HEARTBEAT_RETRY_MULTIPLE
+#define tt_IDLE_HEARTBEAT_RETRY_MULTIPLE 4 // the floor, in retry intervals
+#endif
 // rmw_tickle/PLAN.md's "DDS semantic-parity backlog" row 2 - struct tt_ReliableCache (tickle.h)
 // no longer embeds a fixed-size array sized by this constant: entries[]/capacity are now caller-
 // owned (any size the caller's own backing array happens to be - stack, static, or, for a caller
