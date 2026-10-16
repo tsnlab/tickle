@@ -749,7 +749,9 @@ with its O(1) matched check, and UDP checksum 0 as above; same four arms, 5 reps
   1,655-1,679, below CycloneDDS's 1,699-1,700, and falsified F3; f1f2f14d's 1,715-1,717 holds it. Latency is lost
   (55.66 / 72.02 ms against Fast DDS 37.52 / 37.76): it includes the wait behind the sample in flight, which a DDS
   publisher spends blocked in `publish()` before it stamps the next sample. The subscriber's socket still drops 57-382
-  datagrams a run.
+  datagrams a run. Since 2026-10-16 rmw_tickle can block the same way, off by default
+  (`RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS`, RMW.md "Large samples: blocking publish"); the rig has not measured it yet
+  (arm `tickle@block` of `rmw_keepall_rig.sh`).
 - **Same host is not published.** In step A a 4 MB best-effort sample delivers ~0% same-host: its ~2,900 fragments do
   not fit the receiver's 512 x 1,472 B ring. Step B, a writer-owned same-host area, is to fix it.
 
