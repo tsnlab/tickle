@@ -224,7 +224,7 @@ static void configure_hybrid_transport(void) {
 
 // A condition variable whose timed waits measure CLOCK_MONOTONIC, the clock of every deadline in this package
 // (tt_get_ns()): a step of the date then neither ends a wait early nor stretches it by the step.
-static int cond_init_monotonic(pthread_cond_t* cond) {
+static int cond_init_monotonic(pthread_cond_t* cond) { // NOLINT(misc-include-cleaner) - <pthread.h> above
     pthread_condattr_t attr; // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own <pthread.h> comment
     int ret = pthread_condattr_init(&attr);
     if (ret != 0) {

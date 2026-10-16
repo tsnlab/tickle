@@ -52,7 +52,8 @@
 #define LEASE_NS (3ULL * tt_SECOND)                  // the writer's liveliness lease, asserted by each publish
 #define AFTER_STEP_ROUNDS 400                        // 4 s of stream after the step
 #define SETTLE_ROUNDS 100                            // and 1 s with no new sample
-#define STAMP_GRACE_NS (tt_CONTEXT_UPDATE_INTERVAL + tt_SECOND / 10) // stamps may be misplaced until the date is read
+#define STAMP_GRACE_NS \
+    (tt_CONTEXT_UPDATE_INTERVAL + (100ULL * tt_MILLISECOND)) // stamps misplaced until the date is read
 #define MAX_SAMPLES 1024
 
 struct _tt_Config _tt_CONFIG = {
@@ -541,7 +542,7 @@ static void stream_across_a_step(const char* name, int64_t step) {
            "reader %s; %u stamps checked, %u wrong, %u wrong within %.1f s of the step\n",
            name, (double)stepped / 3600e9, lost_seq, dropped, published, delivered, out_of_order, ticks_after,
            (double)elapsed / 1e9, reader_knows_writer ? "yes" : "NO", departures, writer_knows_reader ? "yes" : "NO",
-           stamps_checked, stamps_wrong, stamps_in_grace_wrong, (double)STAMP_GRACE_NS / 1e9);
+           stamps_checked, stamps_wrong, stamps_in_grace_wrong, (double)(STAMP_GRACE_NS) / 1e9);
 
     // Treatment: the date really stepped, the sample really was lost, and the stream ran on long enough to be read.
     EXPECT_TRUE(stepped == step);

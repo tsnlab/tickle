@@ -61,6 +61,7 @@ SURVIVES_RESET = {
     "wait_until_hi": "node_init_locks(), at create, before anything can reach the node",
     "wait_until_lo": "node_init_locks(), at create, before anything can reach the node",
     "rx_clock_ns": "node_init_locks(), at create, before anything can reach the node",
+    "wall_offset_ns": "node_init_locks(), at create, before anything can reach the node; then every check_liveliness()",
     "timer_lateness_mean_ns": "node_init_locks(), at create: the host's timer lateness, kept across a reset",
     "timer_lateness_var_ns": "node_init_locks(), at create: the host's timer lateness, kept across a reset",
     "timer_lateness_ns": "node_init_locks(), at create: the host's timer lateness, kept across a reset",
