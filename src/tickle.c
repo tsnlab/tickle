@@ -13619,8 +13619,13 @@ static void register_subscriber_peer_on_publisher(struct tt_Context* node, struc
         bool newly_matched = find_peer_ack(pub, ctx->header->source, ctx->entity_id) == NULL;
         struct tt_PeerAck* ack = claim_peer_ack(pub, ctx->header->source, ctx->entity_id);
         if (ack == NULL) {
-            TT_LOG_WARNING("Ack table full (%d entries) - not matching Subscriber %08x on node %d", tt_MAX_ACK_ENTRIES,
-                           ctx->entity_id, ctx->header->source);
+            // The limit is a build setting (config.h's tt_MAX_ACK_ENTRIES; rmw_tickle's
+            // RMW_TICKLE_MAX_RELIABLE_READERS), so the line names it: a reader that never connects is otherwise silent
+            // about why.
+            TT_LOG_WARNING(
+                "Ack table full (%d readers per publisher, tt_MAX_ACK_ENTRIES / RMW_TICKLE_MAX_RELIABLE_READERS "
+                "at build) - not matching Subscriber %08x on node %d",
+                tt_MAX_ACK_ENTRIES, ctx->entity_id, ctx->header->source);
             return;
         }
         if (newly_matched && requested_reliable && !requested_durable) {

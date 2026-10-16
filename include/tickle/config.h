@@ -1103,7 +1103,15 @@
 // state for (struct tt_PeerAck, tickle.h). Deliberately its own constant rather than reusing
 // tt_MAX_PEER_COUNT above, which counts remote *nodes*: one node can host several Subscriptions of
 // the same topic, and each needs its own ack watermark for Phase 3's KEEP_ALL blocking to be
-// correct. 12 bytes per entry.
+// correct.
+//
+// So it is the number of readers one RELIABLE Publisher can have: the next one is not matched, and says so in the log
+// ("Ack table full", register_subscriber_peer_on_publisher()). A BEST_EFFORT reader of a RELIABLE writer takes an entry
+// too. A compile-time setting - define it for the whole build (rmw_tickle: -DRMW_TICKLE_MAX_RELIABLE_READERS=N) -
+// because the entries are fixed arrays inside struct tt_Publisher and core allocates nothing: 24 bytes each
+// (tt_PeerAck), and with the hybrid transport 40 more (tt_PeerWatch), in every Publisher. The ack scans (the lowest
+// acknowledgement a KEEP_ALL writer reads per publish, the idle HEARTBEAT's per run) walk the whole array, so a larger
+// value costs a few instructions an entry there as well.
 #ifndef tt_MAX_ACK_ENTRIES
 #define tt_MAX_ACK_ENTRIES 16
 #endif
