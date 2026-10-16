@@ -13,7 +13,9 @@ Oracles, each built against the mutant exactly as platform/linux/Makefile builds
            their control from seq_no 1;
   bitmap   tests/test_ack_bitmap_diff.c at both window sizes - the receive bitmap against a serial model,
            with a wrap scenario that sends past 2^32 while the watermark has not wrapped;
-  large    tests/test_large_sample.c - 1 MB samples across 2^32, one of them starting at seq_no 0.
+  large    tests/test_large_sample.c - 1 MB samples across 2^32, one of them starting at seq_no 0;
+  local    tests/test_local_delivery.c (tt_LOCAL_DELIVERY) - a durable in-process backlog across 2^32.
+test_seq_wrap.c defines tt_RELIABLE_STATS, so the counters' own comparisons are compiled into the wrap oracle.
 A mutant is killed when any oracle fails (or the mutant does not compile, reported apart). A survivor is
 either equivalent within what the oracles can reach - listed with the reason in the report - or a test gap.
 
@@ -36,8 +38,9 @@ Run from anywhere, with TMPDIR set to a roomy directory: python3 tests/mutants_s
 "MUTANTS killed K/N survived S invalid I dead D". ~10 s a mutant, up to 4 min for one that hangs an oracle.
 
 A mutant every oracle passes whose oracle binaries, debug sections aside, are all the control's (tests/mutant_digest.py)
-is reported DEAD (NOT_COMPILED) and counted apart from the survivors: it edited code no oracle's build compiles, such as
-the tt_RELIABLE_STATS and tt_LOCAL_DELIVERY sites above.
+is reported DEAD (NOT_COMPILED) and counted apart from the survivors: it edited code no oracle's build compiles. The
+tt_RELIABLE_STATS and tt_LOCAL_DELIVERY sites above were that until 2026-10-16, when the stats define and the local
+oracle compiled them, each with a test across 2^32 that kills its mutant.
 """
 import os
 import pathlib
@@ -59,6 +62,7 @@ ORACLES = [  # name, test source, extra defines
     ("bitmap", "tests/test_ack_bitmap_diff.c", []),
     ("bitmap-large", "tests/test_ack_bitmap_diff.c", LARGE_DEFINES),
     ("large", "tests/test_large_sample.c", []),
+    ("local", "tests/test_local_delivery.c", []),  # defines tt_LOCAL_DELIVERY: the in-process backlog
 ]
 
 NAMED = [

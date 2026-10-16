@@ -17,6 +17,10 @@
 
 // Room for 10 fragments, so the end-to-end runs cover fragmented samples too (as test_data_frag.c builds).
 #define tt_MAX_SAMPLE_LENGTH 16000
+// The reliability counters compiled in, so their own seq_no comparisons run across 2^32 too
+// (test_heartbeat_jump_across_the_wrap_is_counted): without it no oracle of tests/mutants_seq_wrap.py compiled
+// jump_ack_baseline()'s count, and its mutant could neither die nor survive.
+#define tt_RELIABLE_STATS 1
 
 #include <stdint.h>
 #include <stdio.h>
@@ -895,6 +899,36 @@ static void test_heartbeat_jump_across_the_wrap(void) {
     }
 }
 
+static void test_heartbeat_jump_across_the_wrap_is_counted(void) {
+    // The jump of test_heartbeat_jump_across_the_wrap, read from the reliability counters: what it gave up is counted
+    // there as in gap_abandoned, across 2^32 as 2^31 away (the control).
+    for (int control = 0; control < 2; control++) {
+        uint32_t base = control != 0 ? SHIFTED(0) : 0;
+        (void)sim_run(1, 1000, 0, MODE_KEEP_ALL, tt_SECOND);
+        struct tt_WriterProxy* proxy = find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+        EXPECT_TRUE(proxy != NULL);
+        if (proxy == NULL) {
+            return;
+        }
+        proxy->ack_seq_no = base - 5U;
+        proxy->reorder_cursor = base - 5U;
+        reorder_place_pivot(&sub, proxy, base - 5U);
+        proxy->heartbeat_last_seq_no = base - 6U;
+        proxy_clear_received(proxy);
+        uint64_t jumped = g_rstats.jump_abandoned_seq;
+        uint32_t abandoned = sub.gap_abandoned;
+        struct tt_Header header;
+        memset(&header, 0, sizeof(header));
+        header.source = SENDER_ID;
+        struct heartbeat_ctx ctx = {
+            &header, SENDER_IP, PORT, pub.endpoint.entity_id, base - 5U, base + 300U, tt_HEARTBEAT_FLAG_FINAL};
+        inform_subscriber_of_heartbeat(&receiver, &sub.endpoint, &ctx);
+        EXPECT_EQ_U32(base + 301U, proxy->ack_seq_no);
+        EXPECT_EQ_U32(abandoned + 305U, sub.gap_abandoned);
+        EXPECT_EQ_U64(jumped + 305U, g_rstats.jump_abandoned_seq);
+    }
+}
+
 static void test_reorder_ring_crosses_its_own_wrap(void) {
     // The reorder ring's key is seq_no plus the writer's salt, which passes 2^32 where seq_no passes -salt - nowhere
     // near seq_no's own wrap. Start 100 datagrams before that point, with loss so samples are held across it.
@@ -1064,6 +1098,7 @@ int main(void) {
     test_fragmented_acknowledgement_rounds_down_across_the_wrap();
     test_repair_requests_name_seq_no_across_the_wrap();
     test_heartbeat_jump_across_the_wrap();
+    test_heartbeat_jump_across_the_wrap_is_counted();
     test_reorder_ring_crosses_its_own_wrap();
     test_reorder_ring_slots_stay_distinct_across_its_wrap();
     test_reorder_ring_repivots_before_2_31();

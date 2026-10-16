@@ -277,6 +277,31 @@ static void test_a_late_durable_subscriber(void) {
     EXPECT_EQ_INT(4, local_record.count);
 }
 
+static void test_a_late_durable_subscriber_across_2_32(void) {
+    // test_a_late_durable_subscriber with the writer short of 2^32: the backlog's seq_no 2^32 - 2 .. 3 (the fragmented
+    // sample takes four of them, two either side) is walked oldest to newest as if it had not wrapped. Compared as
+    // plain unsigned numbers, the newest (3) is behind the oldest and the walk delivers nothing
+    // (tests/mutants_seq_wrap.py: deliver_backlog_from() is compiled only where tt_LOCAL_DELIVERY is).
+    setup();
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_publisher(&local, &pub, &topic, "rt/g9"));
+    make_durable(&pub);
+    pub.seq_no = UINT32_MAX - 2U; // the next sample takes seq_no 2^32 - 2
+    publish(0, SMALL);
+    publish(1, LARGE);
+    publish(2, SMALL);
+    EXPECT_EQ_U32(3, pub.seq_no); // the run did cross 2^32
+    EXPECT_EQ_INT(tt_RET_OK, tt_Context_create_subscriber(&local, &sub, &topic, "rt/g9", on_local));
+    sub.reliable = true;
+    sub.durable = true;
+    tt_Subscriber_deliver_local_backlog(&sub);
+    EXPECT_EQ_INT(3, local_record.count);
+    for (uint32_t i = 0; i < 3; i++) {
+        EXPECT_EQ_U32(i, local_record.ids[i]);
+    }
+    EXPECT_EQ_U32(LARGE, local_record.lengths[1]);
+    EXPECT_EQ_INT(0, local_record.corrupt);
+}
+
 // The same publish from two contexts alike but for a local Subscriber: the same datagrams.
 static void test_a_local_subscriber_changes_nothing_sent(void) {
     setup();
@@ -316,6 +341,7 @@ int main(void) {
     test_local_and_remote_each_once();
     test_an_incompatible_local_pair();
     test_a_late_durable_subscriber();
+    test_a_late_durable_subscriber_across_2_32();
     test_a_local_subscriber_changes_nothing_sent();
 
     if (test_result() != 0) {
