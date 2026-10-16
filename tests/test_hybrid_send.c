@@ -1063,7 +1063,7 @@ static void test_reliable_auto_starts_at_mtu(void) {
 static struct tt_HybridState* law_reader(uint32_t events, uint32_t frames) {
     init_one(SMALL_LEN, FULL_CEILING, false);
     struct tt_HybridState* hybrid = &readers[0].ctx.hybrid;
-    hybrid->mtu_loss = (struct tt_LossEstimate) {events, frames, 0};
+    hybrid->mtu_loss = (struct tt_LossEstimate) {events, frames, 0, 0};
     return hybrid;
 }
 
@@ -1080,7 +1080,7 @@ static void law_window(struct tt_HybridState* hybrid, uint64_t now, uint32_t run
 // significant and 20 is not; a significant excess under 2 L0 is not a collapse; and nothing is decided without enough
 // runs, losses, or an MTU baseline. A clean window loses no more than R L0.
 static void test_the_collapse_test_is_the_designs(void) {
-    struct tt_LossEstimate mtu = {30, 30000, 0}; // p_mtu 0.1%
+    struct tt_LossEstimate mtu = {30, 30000, 0, 0}; // p_mtu 0.1%
     struct tt_RunWindow consistent = {1000, 8, 8000};
     EXPECT_TRUE(!hybrid_collapsed(&consistent, &mtu));
     EXPECT_TRUE(hybrid_clean(&consistent, &mtu));
@@ -1094,20 +1094,20 @@ static void test_the_collapse_test_is_the_designs(void) {
     EXPECT_TRUE(!hybrid_collapsed(&within, &mtu));
     EXPECT_TRUE(!hybrid_clean(&within, &mtu)); // neither: the window gathers more
     // Significant (z near 6) but only 1.2x L0 on a vast exposure: not far below (1 - p)^n.
-    struct tt_LossEstimate vast = {10000, 10000000, 0};
+    struct tt_LossEstimate vast = {10000, 10000000, 0, 0};
     struct tt_RunWindow slight = {125000, 1200, 1000000};
     EXPECT_TRUE(!hybrid_collapsed(&slight, &vast));
     struct tt_RunWindow few_runs = {15, 15, 120};
     EXPECT_TRUE(!hybrid_collapsed(&few_runs, &mtu));
     EXPECT_TRUE(!hybrid_clean(&few_runs, &mtu));
     struct tt_RunWindow few_lost = {100, 3, 800};
-    struct tt_LossEstimate none_lost = {0, 30000, 0};
+    struct tt_LossEstimate none_lost = {0, 30000, 0, 0};
     EXPECT_TRUE(!hybrid_collapsed(&few_lost, &none_lost));
-    struct tt_LossEstimate no_baseline = {0, 0, 0};
+    struct tt_LossEstimate no_baseline = {0, 0, 0, 0};
     EXPECT_TRUE(!hybrid_collapsed(&pc, &no_baseline));
     // A fragment path refusing every run on a young baseline (200 tails, none lost: p_hi 1.5%, L0 49% at n = 45) is a
     // collapse all the same - the run-level test does not need the many MTU units a per-frame comparison would.
-    struct tt_LossEstimate young = {0, 200, 0};
+    struct tt_LossEstimate young = {0, 200, 0, 0};
     struct tt_RunWindow refused = {510, 510, 510U * 45U};
     EXPECT_TRUE(hybrid_collapsed(&refused, &young));
     // Twice L0 on that baseline (L0 11.4% at n = 8) but on 20 runs: not significant (z 1.6).
@@ -1406,11 +1406,13 @@ static void test_a_gap_goes_by_its_own_samples_layout(void) {
 // Receiver drops are not path loss (tickle.c, hybrid_rx_receiver_lost()): a gap the HAL's count of receiver drops
 // covers reaches neither p, p_mtu, the run window nor rule (e) - one drop for one lost datagram, a run or an MTU unit -
 // and is counted as receiver_lost. With no drop on hand the same gap is path loss (the control). Drops not matched
-// within two announce intervals are let go.
+// within two announce intervals are let go. A reader that has announced a p (before it, an excused gap restarts the
+// estimate: test_a_doubtful_gap_is_not_clean()).
 static void test_receiver_drops_are_not_path_loss(void) {
     init_one(SMALL_LEN, FULL_CEILING, false);
     struct tt_Context* node = &readers[0].ctx;
     struct tt_HybridState* hybrid = &node->hybrid;
+    hybrid->advertised_loss = hybrid_loss_code(0.01);
     test_mock_receiver_drops = 0;
     hybrid_rx_note(node, SENDER_ID, 7, 100, 0, 100, 45, true); // units 0-44: a full run of 45
     test_mock_receiver_drops = 1;                              // the next run dropped at the socket
@@ -1512,7 +1514,7 @@ static void test_the_loss_code_rounds_up(void) {
 // and after any event, a reader announces its posterior mean. Its mutant ("none seen" after any frame) used to be
 // caught only by a late sample the old fixture counted as torn (2026-10-14).
 static void test_none_seen_takes_its_frames(void) {
-    struct tt_LossEstimate estimate = {0, 0, 0};
+    struct tt_LossEstimate estimate = {0, 0, 0, 0};
     loss_estimate_observe(&estimate, (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES - 1U, 0);
     EXPECT_EQ_U32(hybrid_loss_code(loss_estimate_mean(&estimate)), hybrid_rx_loss_code(&estimate));
     EXPECT_TRUE(hybrid_rx_loss_code(&estimate) != HYBRID_LOSS_NONE_SEEN);
@@ -1526,7 +1528,7 @@ static void test_none_seen_takes_its_frames(void) {
 // The bound: 3 / N at no events (the rule of three), the exact Poisson limits up to 10, Wilson-Hilferty above; 1 with
 // no exposure.
 static void test_the_loss_bound_is_the_poisson_upper_limit(void) {
-    struct tt_LossEstimate estimate = {0, 0, 0};
+    struct tt_LossEstimate estimate = {0, 0, 0, 0};
     EXPECT_TRUE(loss_estimate_p(&estimate) == 1.0);
     estimate.frames = 10000;
     EXPECT_TRUE(loss_estimate_p(&estimate) > 0.000299 && loss_estimate_p(&estimate) < 0.000300);
@@ -1937,7 +1939,7 @@ static uint32_t early_events_stream(bool stale_off, uint64_t* forgets) {
 #define STALE_FLOOR 9210U  // 9.21 / 1e-3; F = 50, k = 1: the ratio wants C >= 50 (10^4 - 1) = 499,950
 #define STALE_OLD_ONE 231U // F = 50, k = 1: 9.21 * 50 / 2, rounded up
 static void test_the_stale_rule_is_the_designs(void) {
-    struct tt_LossEstimate estimate = {0, 0, 0};
+    struct tt_LossEstimate estimate = {0, 0, 0, 0};
     loss_estimate_observe(&estimate, 197, 0);
     loss_estimate_observe(&estimate, 3, 3); // three events at 200 frames
     loss_estimate_observe(&estimate, STALE_THREE_NEEDED - 1U, 0);
@@ -1948,7 +1950,7 @@ static void test_the_stale_rule_is_the_designs(void) {
     EXPECT_EQ_U32(STALE_THREE_NEEDED, estimate.frames);
     EXPECT_TRUE(!loss_estimate_forget_stale(&estimate)); // no events: nothing to forget
     // One event at 50 frames: the old rule's stretch is not enough, nor one frame short of the floor; the floor is.
-    estimate = (struct tt_LossEstimate) {0, 0, 0};
+    estimate = (struct tt_LossEstimate) {0, 0, 0, 0};
     loss_estimate_observe(&estimate, STALE_ONE_AT, 1);
     loss_estimate_observe(&estimate, STALE_OLD_ONE, 0);
     EXPECT_TRUE(!loss_estimate_forget_stale(&estimate));
@@ -1959,11 +1961,94 @@ static void test_the_stale_rule_is_the_designs(void) {
     EXPECT_EQ_U32(STALE_FLOOR, estimate.frames);
     // tt_HYBRID_STALE_EVENTS events and one more, over a long clean stretch.
     for (uint32_t events = tt_HYBRID_STALE_EVENTS; events <= tt_HYBRID_STALE_EVENTS + 1U; events++) {
-        estimate = (struct tt_LossEstimate) {0, 0, 0};
+        estimate = (struct tt_LossEstimate) {0, 0, 0, 0};
         loss_estimate_observe(&estimate, 20000, events);
         loss_estimate_observe(&estimate, 400000, 0);
         EXPECT_TRUE(loss_estimate_forget_stale(&estimate) == (events <= tt_HYBRID_STALE_EVENTS));
     }
+}
+
+// A gap put down to a receiver drop is not clean (loss_estimate_doubt()): "none seen" takes its
+// tt_HYBRID_NONE_SEEN_FRAMES after it, and the stale rule measures both its stretch and F from it - three events at
+// 200 frames, a doubt at 400: (1 + C / 400)^3 >= 1e4 at C = 8,218, not (1 + C / 200)^3 at 4,109. The doubt halves with
+// the window, and a forget clears it: left at 20,000 after a forget at the floor, it would put the stretch's start past
+// the estimate's frames and forget the next events at once.
+#define DOUBT_AT 400U
+#define DOUBT_THREE_NEEDED 8218U // 400 (10^(4/3) - 1) = 8,217.7
+static void test_a_doubtful_gap_is_not_clean(void) {
+    struct tt_LossEstimate estimate = {0, 0, 0, 0};
+    loss_estimate_observe(&estimate, 300, 0);
+    loss_estimate_doubt(&estimate);
+    loss_estimate_observe(&estimate, (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES - 1U, 0);
+    EXPECT_TRUE(hybrid_rx_loss_code(&estimate) != HYBRID_LOSS_NONE_SEEN);
+    loss_estimate_observe(&estimate, 1, 0);
+    EXPECT_EQ_U32(HYBRID_LOSS_NONE_SEEN, hybrid_rx_loss_code(&estimate));
+    // The stale rule from the doubt.
+    estimate = (struct tt_LossEstimate) {0, 0, 0, 0};
+    loss_estimate_observe(&estimate, 197, 0);
+    loss_estimate_observe(&estimate, 3, 3); // three events at 200 frames
+    loss_estimate_observe(&estimate, DOUBT_AT - 200U, 0);
+    loss_estimate_doubt(&estimate);
+    loss_estimate_observe(&estimate, DOUBT_THREE_NEEDED - 1U, 0);
+    EXPECT_TRUE(!loss_estimate_forget_stale(&estimate)); // one frame short
+    loss_estimate_observe(&estimate, 1, 0);
+    EXPECT_TRUE(loss_estimate_forget_stale(&estimate));
+    EXPECT_EQ_U32(DOUBT_THREE_NEEDED, estimate.frames);
+    EXPECT_EQ_U32(0, estimate.frames_at_doubt);
+    // Halved with the window: ten frames seen since the doubt, before and after.
+    estimate = (struct tt_LossEstimate) {0, 0, 0, 0};
+    loss_estimate_observe(&estimate, (uint32_t)tt_HYBRID_WINDOW_FRAMES - 10U, 0);
+    loss_estimate_doubt(&estimate);
+    loss_estimate_observe(&estimate, 20, 0);
+    EXPECT_TRUE(estimate.frames - estimate.frames_at_doubt == 10U);
+    EXPECT_TRUE(hybrid_rx_loss_code(&estimate) != HYBRID_LOSS_NONE_SEEN);
+    // Cleared by a forget.
+    estimate = (struct tt_LossEstimate) {0, 0, 0, 0};
+    loss_estimate_observe(&estimate, 9999, 0);
+    loss_estimate_observe(&estimate, 1, 1); // one event at 10,000 frames
+    loss_estimate_observe(&estimate, 10000, 0);
+    loss_estimate_doubt(&estimate);                      // a doubt at 20,000
+    loss_estimate_observe(&estimate, STALE_FLOOR, 0);    // the floor's stretch after it
+    EXPECT_TRUE(loss_estimate_forget_stale(&estimate));  // forgotten, the estimate now the 9,210 frames
+    loss_estimate_observe(&estimate, 1, 2);              // two events
+    loss_estimate_observe(&estimate, 10, 0);             // and ten clean frames
+    EXPECT_TRUE(!loss_estimate_forget_stale(&estimate)); // are not forgotten
+    // A reader that has excused no gap announces its first p at the first tail, however few its frames (a small
+    // sample's: 2 events in 100).
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    struct tt_Context* node = &readers[0].ctx;
+    struct tt_HybridState* hybrid = &node->hybrid;
+    test_mock_receiver_drops = 0;
+    loss_estimate_observe(&hybrid->rx_loss, 100, 2);
+    hybrid_rx_first_estimate(node);
+    EXPECT_EQ_U32(hybrid_loss_code(3.0 / 100.0), hybrid->advertised_loss);
+    // One that has announced no p yet: an excused gap restarts its estimate, and its first p waits for
+    // tt_HYBRID_NONE_SEEN_FRAMES frames after it - at the tail and at the interval alike.
+    init_one(SMALL_LEN, FULL_CEILING, false);
+    test_mock_receiver_drops = 0;
+    loss_estimate_observe(&hybrid->rx_loss, 300, 2);
+    test_mock_receiver_drops = 1;
+    EXPECT_EQ_U32(1, hybrid_rx_receiver_lost(node, 1));
+    EXPECT_EQ_U32(0, hybrid->rx_loss.events);
+    EXPECT_EQ_U32(0, hybrid->rx_loss.frames);
+    loss_estimate_observe(&hybrid->rx_loss, (uint32_t)tt_HYBRID_NONE_SEEN_FRAMES - 1U, 1);
+    EXPECT_EQ_U32(0, hybrid_rx_announce_code(hybrid));
+    hybrid_rx_first_estimate(node);
+    EXPECT_EQ_U32(0, hybrid->advertised_loss);
+    hybrid_announce(node, test_mock_now); // the interval
+    EXPECT_EQ_U32(0, hybrid->advertised_loss);
+    loss_estimate_observe(&hybrid->rx_loss, 1, 0);
+    EXPECT_TRUE(hybrid_rx_announce_code(hybrid) != 0);
+    hybrid_rx_first_estimate(node);
+    EXPECT_TRUE(hybrid->advertised_loss != 0 && hybrid->advertised_loss != HYBRID_LOSS_NONE_SEEN);
+    // Once announced, an excused gap is a doubt: the estimate stays.
+    uint32_t frames = hybrid->rx_loss.frames;
+    test_mock_receiver_drops = 2;
+    EXPECT_EQ_U32(1, hybrid_rx_receiver_lost(node, 1));
+    EXPECT_EQ_U32(frames, hybrid->rx_loss.frames);
+    EXPECT_EQ_U32(frames, hybrid->rx_loss.frames_at_doubt);
+    EXPECT_EQ_U32(1, hybrid->rx_loss.events);
+    test_mock_receiver_drops = 0;
 }
 
 static void test_a_few_early_events_are_forgotten(void) {
@@ -2321,7 +2406,7 @@ static void test_the_objective_is_wire_bytes(void) {
 
 // p for the objective is the posterior mean (events + 1) / frames, 1 with no exposure; the bound stays 3 / N.
 static void test_the_objective_reads_the_posterior_mean(void) {
-    struct tt_LossEstimate estimate = {0, 0, 0};
+    struct tt_LossEstimate estimate = {0, 0, 0, 0};
     EXPECT_TRUE(loss_estimate_mean(&estimate) == 1.0);
     estimate.frames = 100000;
     EXPECT_TRUE(loss_estimate_mean(&estimate) > 0.0000099 && loss_estimate_mean(&estimate) < 0.0000101);
@@ -3155,6 +3240,102 @@ static void test_the_first_p_rests_on_frames_not_trains_to_a_reader_claimed_from
     test_mock_send_hook = sim_capture;
 }
 
+// --- a socket that overflows during the reader's first sample (2026-10-16, rig first-n2 r11) -----------------------
+//
+// The reader's socket dropped 158 datagrams during its first sample (its well-known socket flooded; "receiver_drops=158
+// receiver_lost=158 ... stale_forgets=1 stale_events=4"), on a 5% path. The drops were not this sample's datagrams, but
+// tt_rx_receiver_drops() cannot say whose they were, so hybrid_rx_receiver_lost() put the sample's own path losses down
+// to them, one each, until the 158 were used up: the reader saw a few events early in the sample and then a "clean"
+// stretch made of gaps it had excused. Before 2026-10-16 that stretch was read as clean: the stale rule forgot the few
+// events (flood at 150 frames: 26 samples at n = 45), or, a flood before the first event, no event was seen at all (3
+// samples at n = 45) - "none seen" either way, on a 5% path. A gap put down to a receiver drop is a stretch the reader
+// did not see, not a clean one: before its first p it restarts the estimate, and that p waits for 500 frames after
+// it (hybrid_rx_announce_code()); after, neither "none seen" nor the stale rule may rest on frames before it
+// (loss_estimate_doubt()). The drops are counted as the hook sees flood_at_frames of the reader's frames; the control
+// is the same link with no flood, whose draws are identical. A writer that heard no p at all (the reader's announce
+// lost on the 5% link: 7 of 100 seeds of hybrid_seed_sweep.sh, the control too) sends MTU units: that passes.
+#define FLOOD_DROPS 158U
+#define FLOOD_SAMPLES 60U
+static uint32_t flood_at_frames;
+static bool flood_counted;
+static bool flood_the_socket(const struct sim_datagram* d) {
+    (void)d;
+    if (!flood_counted && readers[0].ctx.hybrid.rx_loss.frames >= flood_at_frames) {
+        flood_counted = true;
+        test_mock_receiver_drops += FLOOD_DROPS; // datagrams of someone else's, dropped at this reader's socket
+    }
+    return false;
+}
+
+struct flood_result {
+    uint16_t first_p;       // the first p the writer heard
+    uint32_t first_p_at;    // before this sample
+    uint32_t second_n;      // the second sample's n
+    uint32_t at_n_max;      // samples at n = 45
+    uint32_t at_runs;       // samples at n > 1
+    uint64_t stale_forgets; // the reader's
+    uint64_t receiver_lost; // gaps put down to receiver drops: the treatment
+};
+
+static struct flood_result flood_stream(bool flood, uint32_t at_frames) {
+    init_one(ONE_MB, FULL_CEILING, true);
+    sim_start(50000);
+    sim_pause_heartbeat_ns = SIM_PAUSE_HEARTBEAT_NS;
+    sim_announce();
+    flood_at_frames = at_frames;
+    flood_counted = !flood;
+    sim_drop_hook = flood_the_socket;
+    struct flood_result result = {0, 0, 0, 0, 0, 0, 0};
+    uint64_t t = test_mock_now;
+    tick_readers(t);
+    for (uint32_t s = 1; s <= FLOOD_SAMPLES; s++) {
+        memset(&sent, 0, sizeof(sent));
+        memset(seen_unit, 0, sizeof(seen_unit));
+        test_mock_now = t + (tt_SECOND / 2U) + ((uint64_t)s * 34U * tt_MILLISECOND);
+        if (result.first_p == 0 && sender.hybrid.peer_loss_p[reader_id(0)] != 0) {
+            result.first_p = sender.hybrid.peer_loss_p[reader_id(0)];
+            result.first_p_at = s;
+        }
+        EXPECT_EQ_INT(tt_RET_OK, sim_publish((uint8_t)s));
+        sim_settle((int)s, 5 * tt_SECOND);
+        result.second_n = s == 2 ? sent.max_n : result.second_n;
+        result.at_n_max += sent.max_n >= 45U ? 1U : 0U;
+        result.at_runs += sent.max_n >= 2U ? 1U : 0U;
+        if (s % 30U == 0) {
+            tick_readers(test_mock_now);
+        }
+    }
+    EXPECT_TRUE(flood_counted);
+    expect_intact_or_given_up(0, (int)FLOOD_SAMPLES);
+    result.stale_forgets = readers[0].ctx.hybrid.stale_forgets;
+    result.receiver_lost = readers[0].ctx.hybrid.receiver_lost;
+    sim_drop_hook = NULL;
+    printf("test_hybrid_send: flood=%d at %u frames: first p %.4g (code 0x%04x) before sample %u, second n %u, %u "
+           "samples at n > 1, "
+           "%u at n_max, stale_forgets %lu, receiver_lost %lu\n",
+           flood ? 1 : 0, at_frames, hybrid_loss_decode(result.first_p), result.first_p, result.first_p_at,
+           result.second_n, result.at_runs, result.at_n_max, (unsigned long)result.stale_forgets,
+           (unsigned long)result.receiver_lost);
+    return result;
+}
+
+static void test_receiver_drops_never_make_a_lossy_path_look_clean(void) {
+    struct flood_result control = flood_stream(false, 0);
+    EXPECT_EQ_U64(0, control.receiver_lost);
+    EXPECT_TRUE(control.first_p != HYBRID_LOSS_NONE_SEEN && hybrid_loss_decode(control.first_p) > 0.02);
+    EXPECT_EQ_U32(0, control.at_runs);
+    static const uint32_t ats[] = {0U, 150U}; // before the first event: "none seen"; after a few: forgotten (r11)
+    for (size_t i = 0; i < sizeof(ats) / sizeof(ats[0]); i++) {
+        struct flood_result flooded = flood_stream(true, ats[i]);
+        EXPECT_TRUE(flooded.receiver_lost > 0); // the treatment: path losses were put down to the drops
+        EXPECT_TRUE(flooded.first_p != HYBRID_LOSS_NONE_SEEN && hybrid_loss_decode(flooded.first_p) > 0.02);
+        EXPECT_EQ_U64(0, flooded.stale_forgets);
+        EXPECT_TRUE(flooded.second_n < 2U); // MTU units until the reader's first p rests on frames it saw
+        EXPECT_EQ_U32(0, flooded.at_n_max);
+        EXPECT_EQ_U32(0, flooded.at_runs); // and no sample at n > 1 on a 5% path, as the control
+    }
+}
+
 int main(void) {
     test_small_sample_goes_as_one_run_and_its_tail();
     test_large_samples_go_in_runs_of_n_max();
@@ -3190,6 +3371,7 @@ int main(void) {
     test_n_follows_p();
     test_reliable_auto_leaves_mtu_after_one_clean_sample();
     test_the_stale_rule_is_the_designs();
+    test_a_doubtful_gap_is_not_clean();
     test_a_few_early_events_are_forgotten();
     test_steady_loss_is_never_forgotten();
     test_reliable_repairs_are_mtu_units_only();
@@ -3214,6 +3396,7 @@ int main(void) {
     test_a_sample_received_in_runs_is_lent_in_place();
     test_the_first_p_rests_on_frames_not_trains();
     test_the_first_p_rests_on_frames_not_trains_to_a_reader_claimed_from_its_acknack();
+    test_receiver_drops_never_make_a_lossy_path_look_clean();
     free(sim_queue);
     printf("test_hybrid_send: %u samples owed when the link went quiet, asked for at the periodic Heartbeat\n",
            sim_pause_heartbeats);

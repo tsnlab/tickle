@@ -656,6 +656,10 @@ struct tt_LossEstimate {
     // since - the reader's p forgets a few events the frames after them have outlived (tickle.c,
     // loss_estimate_forget_stale()).
     uint32_t frames_at_event;
+    // `frames` when a gap was last put down to a receiver drop (0: none since the estimate began): frames the reader
+    // did not see, which may have held events. "None seen" and the stale rule count clean frames from here at the
+    // earliest (tickle.c, loss_estimate_doubt()).
+    uint32_t frames_at_doubt;
 };
 
 // Runs sent to a reader, arrived or lost, and their frames (units): q(n) as the reader measures it (DESIGN.md section
