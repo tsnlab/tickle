@@ -806,8 +806,8 @@ typedef struct rmw_tickle_publisher_t {
     uint64_t max_blocking_ns;
 
     // RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS (resolve_large_block_ns(), rmw_publisher.c), 0 = off, the default: how long
-    // rmw_publish() may wait, before it hands a sample to core, while this KEEP_LAST Publisher's previous large sample
-    // is still being sent (tt_Publisher_large_in_flight()). Woken through writable_generation above. Always 0 for a
+    // rmw_publish() may wait, after handing a sample to core, while a large sample of this KEEP_LAST Publisher is still
+    // being sent (tt_Publisher_large_in_flight()). Woken through writable_generation above. Always 0 for a
     // KEEP_ALL Publisher, which core already refuses while a large send is in progress, and for a type that can never
     // be large.
     uint64_t large_block_ns;

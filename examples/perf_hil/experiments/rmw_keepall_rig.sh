@@ -140,8 +140,8 @@
 # Added 2026-10-16 for the large-sample blocking publish (docs/RMW.md "Large samples: blocking publish"; RESULTS.md
 # L4 row I4s, whose latency rmw_tickle loses because its publish never blocks):
 #   tickle@block  tickle@head's own librmw_tickle.so with RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS=$BLOCK_MS (default 1000) on
-#                 the publisher (and the subscriber, where it does nothing): a publish waits while the previous large
-#                 sample is still being sent, as a DDS publish blocks in its send. tickle@head runs with it unset, the
+#                 the publisher (and the subscriber, where it does nothing): a publish of a large sample returns once
+#                 it has been sent, as a DDS publish blocks in its send. tickle@head runs with it unset, the
 #                 control: the same binary. Cross-host default mode only; named in meta.txt (large_block_arms=). Its
 #                 treatment is the publisher's shutdown line, "large_block_waits=<n> large_block_timeouts=<n>": a
 #                 tickle@block run whose publisher shows large_block_waits=0 on a saturating cell did not receive it.
@@ -326,7 +326,6 @@ if [ -n "$PF_SHAPE" ]; then
     [ "$PC_PREFLIGHT" = 1 ] || { echo "PF_SHAPE is for PC_PREFLIGHT=1 only" >&2; exit 64; }
     case "$PF_SHAPE" in *[!A-Za-z0-9.\ ]*) echo "PF_SHAPE may hold only [A-Za-z0-9. ]: '$PF_SHAPE'" >&2; exit 64 ;; esac
     for c in ${CELLS:-}; do [ "${c#*:}" = 0 ] || { echo "PF_SHAPE cells are lossless, not $c" >&2; exit 64; }; done
-    for l in ${LOSSES:-0}; do [ "$l" = 0 ] || { echo "PF_SHAPE cells are lossless, not loss $l" >&2; exit 64; }; done
 fi
 set_loss() { # <loss %> [restore]: "restore" leaves no qdisc at all, PF_SHAPE included
     if [ "$PC_PREFLIGHT" = 1 ]; then # tc as root through ip netns exec (sudo -n permits ip; a nested sudo tc does not)

@@ -202,9 +202,9 @@ static uint64_t resolve_max_blocking_ns(void) {
 }
 
 // RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS (docs/RMW.md, "Runtime environment"), in nanoseconds: how long a KEEP_LAST publish
-// waits for the same publisher's previous large sample to go before it hands its own to core. 0 - unset, empty,
-// malformed or past RMW_TICKLE_MAX_BLOCKING_MS_LIMIT - is off, today's behaviour: the publish never waits, and core
-// replaces a sample waiting behind the send with the newer one (KEEP_LAST at the sender).
+// of a large sample may wait, after handing it to core, for it to be sent. 0 - unset, empty, malformed or past
+// RMW_TICKLE_MAX_BLOCKING_MS_LIMIT - is off, today's behaviour: the publish never waits, and core replaces a sample
+// waiting behind the send with the newer one (KEEP_LAST at the sender).
 static uint64_t resolve_large_block_ns(void) {
     const char* env = getenv("RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS");
     if (NULL == env || '\0' == env[0]) {
@@ -1413,14 +1413,17 @@ static void writable_deadline(uint64_t max_blocking_ns, struct timespec* deadlin
     deadline->tv_nsec %= (long)tt_SECOND;
 }
 
-// RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS (docs/RMW.md, "Large samples: blocking publish"): while this publisher's previous
-// large sample is still being sent, waits - up to large_block_ns - for it to go, before the caller hands its own
-// sample to core. A DDS publish() of a large sample blocks in the send until the socket has room, and stamps the next
-// sample only after; core cannot (it has no threads: the send goes on from tt_Context_poll()), so without this a
-// sample published meanwhile waits behind the send inside core and is replaced by a newer one, KEEP_LAST at the
-// sender. On expiry the sample goes to core all the same, which then applies KEEP_LAST as it always did: the publish
-// still returns OK - a KEEP_LAST writer never fails a write for want of room in DDS either (max_blocking_time bounds
-// KEEP_ALL/RESOURCE_LIMITS waits, which KEEP_ALL here keeps, RMW_TICKLE_MAX_BLOCKING_MS).
+// RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS (docs/RMW.md, "Large samples: blocking publish"): after a publish has handed its
+// sample to core, waits - up to large_block_ns - while a large sample of this publisher is still being sent, so the
+// publish returns once its own sample has gone into the socket. A DDS publish() of a large sample blocks in that send,
+// and the application stamps its next sample only after; core cannot (it has no threads: the send goes on from
+// tt_Context_poll()), so without this the next sample, stamped while this one is still going, waits behind it inside
+// core and is replaced by a newer one, KEEP_LAST at the sender. The wait is after the hand-off, not before: waiting
+// before it holds a sample already stamped for the whole of the previous one's send, which doubled the latency on the
+// PC's I4s cell (70 ms against 54 without the option, 37 for CycloneDDS; experiments/large_block_pc.sh). On expiry the
+// publish returns OK all the same and the next one meets core's KEEP_LAST as before - a KEEP_LAST writer never fails
+// a write for want of room in DDS either (max_blocking_time bounds KEEP_ALL/RESOURCE_LIMITS waits, which KEEP_ALL
+// here keeps, RMW_TICKLE_MAX_BLOCKING_MS).
 //
 // The same locking as publish_attempt(): the check is made under the node lock, and wait_mutex is taken before that
 // is released, so the wake core sends when the send ends (publisher_writable_callback(), from the poll, under the node
@@ -1471,11 +1474,11 @@ static rmw_ret_t publish_blocking(rmw_tickle_publisher_t* pub_impl, void* tickle
     bool expired = false;
     struct timespec deadline;
 
-    wait_for_large_send(pub_impl); // RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS; a no-op when off
     while (true) {
         uint64_t generation = 0;
         tt_ret_t ret = publish_attempt(pub_impl, tickle_buf, &generation); // holds wait_mutex iff WOULD_BLOCK
         if (tt_RET_OK == ret) {
+            wait_for_large_send(pub_impl); // RMW_TICKLE_LARGE_PUBLISH_BLOCK_MS; a no-op when off
             return RMW_RET_OK;
         }
         if (tt_RET_WOULD_BLOCK != ret) {
