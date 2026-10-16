@@ -71,6 +71,40 @@ docker run --security-opt seccomp=seccomp-tickle.json ...
 On Kubernetes use the same profile as `seccompProfile: {type: Localhost, localhostProfile: <path>}`. Avoid
 `seccomp=unconfined`.
 
+## How TickLE differs from DDS
+
+TickLE borrows DDS/RTPS concepts (writers retain, readers NACK gaps, QoS matched request-versus-offer) but is its own
+protocol. It does not interoperate with any DDS vendor, and some behaviour differs from what a Fast DDS or CycloneDDS
+user expects. The DDS column is the default behaviour of those two.
+
+| Behaviour | TickLE | DDS (Fast DDS / CycloneDDS default) | Why / what to expect |
+|---|---|---|---|
+| Wire protocol | Own UDP framing; payload in TickLE CDR-4 (4-byte max alignment) | RTPS; CDR / XCDR | No mixing with DDS nodes; 20 B framing per sample. [DESIGN 3](docs/DESIGN.md#3-wire-format-tt_version-11) |
+| Discovery | Broadcast on the configured link, 1 s summaries, endpoint lists pulled on change; UDP even on one host | Multicast SPDP/SEDP | Set `TICKLE_BROADCAST_ADDR` to the link's directed broadcast. [DESIGN 5](docs/DESIGN.md#5-discovery) |
+| Peer departure | Detected after 3.5 s of silence (up to 10 s with long leases) | ~10 s (Cyclone) / ~20 s (Fast DDS) lease | Faster failover; a host stalled for seconds is presumed gone and re-learned. [DESIGN 9](docs/DESIGN.md#9-qos-liveliness-deadline-lifespan-durability) |
+| Contexts per link | One 8-bit context id per process, at most 254 on a link | 12-byte GUID prefix | Plan larger systems with this limit. [DESIGN 12](docs/DESIGN.md#12-context-ids-and-same-host-peers) |
+| Several readers | Unicast to up to 2 readers, link broadcast to more | Unicast per reader, or multicast | One send reaches many readers; readers not subscribed still receive and discard the broadcast. [DESIGN 4](docs/DESIGN.md#4-sending-flush-batching-and-unicast-peers) |
+| RELIABLE readers per publisher | At most 16 (`tt_MAX_ACK_ENTRIES`); a 17th is not matched (logged) | Unlimited | Matters for topics every node subscribes to (e.g. `/clock`). |
+| RELIABLE heartbeats | No periodic heartbeat by default; one rides on every 64th sample, plus at match and at the end of each large sample | Periodic while data is unacknowledged | A lost **last** sample of a burst is repaired only when the next sample arrives. For one-shot messages set `RMW_TICKLE_HEARTBEAT_PERIOD_NS`. [DESIGN 6](docs/DESIGN.md#6-reliability), [RMW QoS](docs/RMW.md#qos) |
+| Repair timing | Immediate NACK and resend, retry timer from the measured round trip | Fixed response delays (ms range) | Much better throughput under loss; a few duplicate repairs. [DESIGN 6](docs/DESIGN.md#6-reliability) |
+| Large samples | MTU-sized units, each with its own sequence number; while the path is clean up to 45 go in one IP-fragmented datagram, on loss they go one per datagram and only a lost unit is resent; up to 8 MiB in rmw (`RMW_TICKLE_MAX_SAMPLE_BYTES`) | IP-fragmented 64 KB datagrams plus DATA_FRAG | Robust under loss without paying per-datagram cost on a clean link. [DESIGN 8](docs/DESIGN.md#8-fragmentation-and-large-samples) |
+| UDP checksum | 0 (none) on a large sample's IP-fragmented datagrams by default (Linux) | Kernel default (on) | No NIC checks an IP fragment, so this saves the receiver a software checksum; each frame keeps the link's CRC. `TT_UDP_CSUM0=0` keeps every checksum (see Tuning). |
+| KEEP_ALL bound | Bytes: 512 KiB per publisher and per subscription (`RMW_TICKLE_KEEP_ALL_BYTES`, `RMW_TICKLE_READER_KEEP_ALL_BYTES`) | Samples (`max_samples`; Fast DDS 5,000, CycloneDDS unlimited) | A KEEP_ALL publish blocks up to `RMW_TICKLE_MAX_BLOCKING_MS` (100) when the bound is reached. [RMW QoS](docs/RMW.md#qos) |
+| KEEP_LAST publisher history | Capped at 1 MiB (`RMW_TICKLE_CACHE_BYTES`) | `depth` samples | With large samples fewer than `depth` are kept for repair and late joiners (a warning says so). Raise the budget for latched maps or images. |
+| TRANSIENT_LOCAL | The publisher pushes its history to a new subscriber at discovery | Reader pulls it through HEARTBEAT/ACKNACK | Late joiners get the backlog sooner. TRANSIENT and PERSISTENT are not supported. |
+| LIFESPAN | A publisher's lifespan stops resends and replay; a subscription expires queued samples by **its own** lifespan | The writer's lifespan expires samples at the reader | Set lifespan on the subscription too if readers must drop stale samples. |
+| Source timestamp | 32-bit microseconds; hosts' clocks must agree within ±35 minutes | 64-bit, sub-ns | Keep clocks synchronised (NTP/PTP) if you use source timestamps or lifespan. |
+| Same-host transport | Automatic shared-memory ring per peer, no daemon; a full ring drops the arriving datagram (RELIABLE repairs it) | Fast DDS SHM / data-sharing; CycloneDDS via iceoryx (opt-in, RouDi daemon) | Nothing to configure. [DESIGN 10](docs/DESIGN.md#10-shared-memory-transport) |
+| Loaned messages | Plain fixed-size types; also lent from socket receive buffers | Plain types, shared memory only | [RMW loaned messages](docs/RMW.md#loaned-messages) |
+| Services | One outstanding request per client and per service; requests and responses are not split by TickLE (IP-fragmented above 1472 B, at most 64 KB); an unanswered request is dropped after 5 s | Many outstanding requests, fragmented like topics, no timeout | Issue one call at a time per client; keep service messages small on lossy links. A client with no known server still finds one. [DESIGN 7](docs/DESIGN.md#7-services-rpc) |
+| Unbounded sequences | Fixed capacity per field (e.g. `Image` 64,000 B, `LaserScan` 4,096) unless overridden with a `.capacities` file | Unbounded | A longer sequence fails to publish. [RMW what works](docs/RMW.md#what-works-and-what-does-not) |
+| QoS policies | RELIABILITY, DURABILITY, HISTORY, DEADLINE, LIFESPAN, LIVELINESS (AUTOMATIC, MANUAL_BY_TOPIC; lease ≥ 6 ms) | All DDS policies | Ownership, partitions, content filters, keyed instances, `wstring` and security are not supported (`RMW_RET_UNSUPPORTED`). |
+
+- Everything TickLE cannot honour is refused with an error, never silently downgraded.
+- QoS compatibility (reliability, durability, deadline, liveliness) is checked as in DDS, and both sides get the
+  incompatible-QoS event.
+- No authentication or encryption: use TickLE only on a controlled link ([DESIGN 13](docs/DESIGN.md#13-security-model)).
+
 ## Tuning for your platform
 
 The defaults were checked on the test rig (two Raspberry Pi 5s, 1 GbE). The values below depend on the hardware, so

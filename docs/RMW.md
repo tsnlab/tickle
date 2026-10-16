@@ -51,7 +51,7 @@ implementation's source on 2026-09-27, and updated as gaps closed.
 | `ROS_DOMAIN_ID` | ✅ | Port 8282 + domain id, maximum 232 |
 | `ROS_AUTOMATIC_DISCOVERY_RANGE`, `ROS_STATIC_PEERS` | ✅ | Matches rmw_cyclonedds. `NOT_SET` refuses to create a node |
 | Messages up to 64 KB | ✅ | Samples go out in 1472-byte DATA_FRAG fragments. Service requests and responses are not fragmented; the OS fragments them at the IP layer |
-| Messages above 64 KB | ❌ | Planned (large-message stage 2) |
+| Messages above 64 KB | ✅ | Up to `RMW_TICKLE_MAX_SAMPLE_BYTES` (8 MiB): the hybrid transport (DESIGN.md section 8), and a writer-owned shared region on one host |
 | Loaned messages (`rmw_borrow_loaned_message` + 5) | ✅ | For types whose wire bytes are their message in memory (Array1k, `geometry_msgs/Pose`, `std_msgs/Float64`: 67 generated types of the shipped set); `can_loan_messages` is false for the rest. Where copies remain: [Loaned messages](#loaned-messages) |
 | SROS2 security | ❌ | `ROS_SECURITY_ENFORCEMENT=Enforce` makes `rmw_init` fail. In permissive mode it warns once that security is not applied. Parked until the user starts it |
 | Pre-allocation, content filters, network flow endpoints, dynamic messages | ➖ | Not supported, by design. `RMW_RET_UNSUPPORTED`, as CycloneDDS does |
@@ -74,7 +74,7 @@ implementation's source on 2026-09-27, and updated as gaps closed.
 | Graph | `struct tt_Discovery` (remote) + the context's endpoint table (local) | `rmw_graph.c` scans both. Any discovery change triggers the graph guard condition |
 | Events | core timers (`tt_Context_schedule`) and discovery data | `rmw_event.c`. LIVELINESS_LOST comes from a separate watchdog thread, so a hung poll thread is still detected |
 | Guard condition, wait set | none (rmw only) | An atomic flag plus the context's condvar. `rmw_wait` holds `wait_mutex` across check and wait, so no wakeup is lost |
-| GID | context id + per-instance `entity_id` | Unique per endpoint, for local and remote endpoints alike. Known core gap: two writers of one topic in one remote context share an `endpoint_id`, and discovery keys on `(context_id, endpoint_id)`, so the graph lists one of them |
+| GID | context id + per-instance `entity_id` | Unique per endpoint, for local and remote endpoints alike. Discovery keys an entity on its `entity_id`, so two writers of one topic in one remote context are listed as two |
 | Typesupport | `tools/typesupport` CDR-4 codec | `rosidl_typesupport_tickle_c`/`_cpp`, registered as rosidl extensions and package-qualified so same-named types never collide |
 
 ### Threading
@@ -279,12 +279,10 @@ The full tables are in [RESULTS.md](RESULTS.md).
 - Loaned messages: core changes that would make more of them zero-copy - `tt_Context.rx_buffer` aligned to 8 (an
   8-aligned type landing there is copied today), a ring that skips a held slot (so ring slots could be lent safely),
   and a claimed-slot API for the publisher.
-- Messages above 64 KB (large-message stage 2: wider fragment index, 32-bit record length).
 - More than one outstanding request per client and per service.
 - Round-trip checks for the introspection values: QoS profiles (`test_reported_qos`), and names, type names, counts,
   `*_info_by_topic` rows, GIDs and the serialization format across two processes (`test_introspection_two_process`,
-  `test_gid_two_process`; no mismatch found) are done. Open: event counts across processes, and two writers of one
-  topic in one remote context, which the graph lists as one (core discovery keys on `endpoint_id`).
+  `test_gid_two_process`; no mismatch found) are done. Open: event counts across processes.
 - `*_info_by_service`: report two endpoints per entry, a real type hash, and remote QoS.
 - Shared-memory tests: the kill test (S5), the fair same-host comparison against both vendors (S6), a CI arm with the
   module on (S8), and both mixed-stream windows (S9).
