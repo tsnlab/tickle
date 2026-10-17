@@ -269,6 +269,10 @@ table for it.
    4), with the client's `win_send_mbps` and the whole-run `send_mbps`/`recv_mbps` beside it as diagnostics. `window=fail:...` is VOID, never a figure. Defaults and reasons:
    `examples/perf_hil/tickle/common/BenchWindow.h`. Found when TickLE's same-host p4 latency turned out to be a
    first-lap figure (ROADMAP 0a).
+   rmw round trips (`rmw_perf_pingpong` `ping_node`, since 2026-10-18): seq 1 waits for one answered warm-up ping
+   (seq 0, every 20 ms, never counted; `WARMUP:` line). A match seen from the ping's side does not mean the pong's
+   publisher has matched the ping's subscriber, and a reply published before that sends nothing, as in DDS: the
+   cause of every rmw_tickle VOID(loss) in the `J` run at `18f16b85` (`experiments/rmw_loss_attribution.py`).
 
 Still to audit against these (ROADMAP "A fair testbed"): socket buffer sizes, the CPU governor, IRQ affinity, the
 vendor profiles (FastDDS XML, CycloneDDS URI, iceoryx), build flags, and whether any rate or duration was picked

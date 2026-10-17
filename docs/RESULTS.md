@@ -888,7 +888,13 @@ VOID (`W` 1 of 48, `J` 16 of 448). **VOID(loss) in 14**, each 94 of 95 round tri
 wait (52c, 53c, 55c, 56c, 57c twice, 58c, 60c, 62c, 65c; five of them RELIABLE: 53c, 55c, 57c twice, 65c), and
 CycloneDDS 4, all BEST_EFFORT (50c, 54c, 60c, 64c). A jitter phase that was not uniform in 3 (rmw_tickle 62c,
 CycloneDDS 56c, rmw_zenoh 67c). Fast DDS: none. At `934f90de` no `J` rep was VOID(loss) (`W`: CycloneDDS 1, the same
-94 of 95). rmw_tickle's unanswered round trips are not attributed. Readable reps, rmw_tickle / FastDDS / CycloneDDS /
+94 of 95). ~~rmw_tickle's unanswered round trips are not attributed.~~ Attributed 2026-10-18
+(`experiments/rmw_loss_attribution.py` on this run's logs): all 10 are a start-up artefact of the harness, not a lost
+sample. In each, the pong received all 95 pings, but heard the first before its publisher had matched the ping's
+subscriber, so its reply to seq 1 sent nothing (`4fbfe459`: dropped if BEST_EFFORT, kept if RELIABLE, owed to no
+VOLATILE reader). Its `tx_unmatched` counter is 1 in those 10 reps and 0 in the other 102. At `934f90de` that reply
+went out by broadcast. Since then `ping_node` sends seq 1 only after a warm-up round trip (TESTING.md section 5, item
+9). Readable reps, rmw_tickle / FastDDS / CycloneDDS /
 rmw_zenoh, are in the table; no cell falls below 2.
 
 | row | cell | rmw_tickle creation mean | FastDDS | CycloneDDS | rmw_zenoh (ref) | stamp mean T / F / C | g us, T / F / C | reps read T / F / C / Z | vs FastDDS | vs CycloneDDS | stamp verdict F / C (diag.) |

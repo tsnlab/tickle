@@ -189,6 +189,7 @@ namespace {
         bool random_phase = false;
         bool jitter_phase = false;
         bool rtt_at_callback = false;
+        bool warmup = true; // --no-warmup: start seq 1 at the match, as before 2026-10-18 (the control arm only)
     };
 
     struct loop_stats {
@@ -325,6 +326,82 @@ namespace {
         return true;
     }
 
+    // One answered round trip before the measured window. wait_for_match() sees only this side: the ping's publisher
+    // has matched the pong's subscriber and its subscriber the pong's publisher. The pong's PUBLISHER can still be
+    // without the ping's subscriber when the first ping reaches it, and a writer with no matched reader sends nothing
+    // (rmw_tickle since 4fbfe459, as DDS does): that reply is dropped (BEST_EFFORT) or kept in a history the VOLATILE
+    // reader is not owed (RELIABLE). The rig's J run at 18f16b85 lost exactly that reply in 10 rmw_tickle reps of 112
+    // (sent=95 recv=94: the 500 ms wait for seq 1 cost five slots), each with the pong's tx_unmatched counter at 1 and
+    // every other rep at 0; CycloneDDS lost one in 3 BEST_EFFORT reps, with no counter to say where. So the ping sends
+    // warm-up pings (seq 0, never counted) every warmup_period_ms until one comes back, and only then starts seq 1.
+    constexpr uint64_t warmup_seq = 0;
+    constexpr uint64_t warmup_period_ms = 20;
+    constexpr uint64_t warmup_limit_s = 10;
+
+    struct warmup_stats {
+        uint64_t sent = 0;
+        uint64_t wait_ns = 0;
+        uint64_t late = 0; // warm-up replies after the first answered one (ignored, wherever they fall)
+    };
+
+    template <typename T>
+    auto warm_up(rclcpp::executors::SingleThreadedExecutor& executor,
+                 const typename rclcpp::Publisher<T>::SharedPtr& pub, bool loaned, const wait_mode& wait,
+                 const std::atomic<bool>& answered, warmup_stats& warmup) -> bool {
+        if (!wait.warmup) {
+            return true;
+        }
+        const uint64_t start = now_ns();
+        const uint64_t limit = start + (warmup_limit_s * ns_per_s);
+        uint64_t next_send = start;
+        while (rclcpp::ok() && !answered && now_ns() < limit) {
+            if (now_ns() >= next_send) {
+                T req;
+                BenchTraits<T>::set_seq(req, warmup_seq);
+                BenchTraits<T>::set_send_ns(req, now_ns());
+                pingpong::publish<T>(pub, req, loaned);
+                warmup.sent++;
+                next_send = now_ns() + (warmup_period_ms * ns_per_ms);
+            }
+            executor.spin_some();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        warmup.wait_ns = now_ns() - start;
+        if (!answered) {
+            std::fprintf(stderr, "no warm-up round trip answered in %lu s (%lu warm-up pings)\n",
+                         static_cast<unsigned long>(warmup_limit_s), static_cast<unsigned long>(warmup.sent));
+            return false;
+        }
+        return true;
+    }
+
+    // wait_for_match(), then warm_up(): false when either gave up.
+    template <typename T, typename Sub>
+    auto match_and_warm_up(rclcpp::executors::SingleThreadedExecutor& executor,
+                           const typename rclcpp::Publisher<T>::SharedPtr& pub, const Sub& sub, bool loaned,
+                           const wait_mode& wait, const std::atomic<bool>& warmed, warmup_stats& warmup) -> bool {
+        return wait_for_match(executor, pub, sub) && warm_up<T>(executor, pub, loaned, wait, warmed, warmup);
+    }
+
+    // A reply to a warm-up ping (seq 0): marks the warm-up answered and is never a round trip. True when it was one.
+    auto take_warmup_reply(uint64_t seq, std::atomic<bool>& warmed, warmup_stats& warmup) -> bool {
+        if (seq != warmup_seq) {
+            return false;
+        }
+        if (warmed) {
+            warmup.late++;
+        }
+        warmed = true;
+        return true;
+    }
+
+    auto print_warmup(const warmup_stats& warmup, const wait_mode& wait) -> void {
+        constexpr double ns_per_ms_d = 1e6;
+        std::printf("WARMUP: warmup=%s warmup_sent=%lu warmup_ms=%.1f warmup_late=%lu\n", wait.warmup ? "on" : "off",
+                    static_cast<unsigned long>(warmup.sent), static_cast<double>(warmup.wait_ns) / ns_per_ms_d,
+                    static_cast<unsigned long>(warmup.late));
+    }
+
     // --phase random: the reply as the sender thread sees it. The callback fills it on the poll thread; the poll
     // thread stamps seen_ns when the cycle that took it has ended, and wakes the sender.
     struct reply_slot {
@@ -354,7 +431,12 @@ namespace {
         const bool loaned = pingpong::loaned_publish_wanted();
         reply_slot slot;
         bool took_reply = false; // the poll thread's own: a reply came in this cycle's spin_some()
+        std::atomic<bool> warmed {false};
+        warmup_stats warmup;
         auto sub = node->create_subscription<T>("pong", qos, [&](const typename T::ConstSharedPtr& msg) -> void {
+            if (take_warmup_reply(Traits::seq(*msg), warmed, warmup)) {
+                return;
+            }
             const uint64_t callback_ns = now_ns();
             const std::lock_guard<std::mutex> lock(slot.mutex);
             slot.seq = Traits::seq(*msg);
@@ -363,7 +445,7 @@ namespace {
             slot.seen_ns = 0;
             took_reply = true;
         });
-        if (!wait_for_match(executor, pub, sub)) {
+        if (!match_and_warm_up<T>(executor, pub, sub, loaned, wait, warmed, warmup)) {
             return 1;
         }
 
@@ -436,6 +518,7 @@ namespace {
         print_summary(rtt, transmitted, reliable, wait, creation);
         print_loop_stats(loop, transmitted, wait);
         print_phase(probe, callback_after_send, wait);
+        print_warmup(warmup, wait);
         return 0;
     }
 
@@ -460,6 +543,18 @@ namespace {
         reply_msg = msg;
         got_reply = true;
         return 0;
+    }
+
+    // take_reply(), except that a warm-up reply (seq 0) only marks the warm-up answered: never a round trip, never
+    // stale.
+    template <typename T>
+    auto take_reply_after_warmup(const T& msg, uint64_t awaited_seq, T& reply_msg, uint64_t& reply_ns,
+                                 std::atomic<bool>& got_reply, std::atomic<bool>& warmed, warmup_stats& warmup)
+        -> uint64_t {
+        if (take_warmup_reply(BenchTraits<T>::seq(msg), warmed, warmup)) {
+            return 0;
+        }
+        return take_reply<T>(msg, awaited_seq, reply_msg, reply_ns, got_reply);
     }
 
     template <typename T>
@@ -493,11 +588,14 @@ namespace {
         // 2.98 s). A late reply is counted and dropped, and the wait goes on for its own.
         uint64_t awaited_seq = 0;
         uint64_t stale_replies = 0;
+        std::atomic<bool> warmed {false};
+        warmup_stats warmup;
         auto sub = node->create_subscription<T>("pong", qos, [&](const typename T::ConstSharedPtr& msg) -> void {
-            stale_replies += take_reply<T>(*msg, awaited_seq, reply_msg, reply_ns, got_reply);
+            stale_replies +=
+                take_reply_after_warmup<T>(*msg, awaited_seq, reply_msg, reply_ns, got_reply, warmed, warmup);
         });
 
-        if (!wait_for_match(executor, pub, sub)) {
+        if (!match_and_warm_up<T>(executor, pub, sub, loaned, wait, warmed, warmup)) {
             return 1;
         }
 
@@ -563,6 +661,7 @@ namespace {
             }
             print_phase(probe, callback_after_send, wait);
         }
+        print_warmup(warmup, wait);
 
         return 0;
     }
@@ -625,6 +724,8 @@ auto main(int argc, char** argv) -> int {
             interval_s = std::atof(argv[++i]);
         } else if (std::strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = std::atof(argv[++i]);
+        } else if (std::strcmp(argv[i], "--no-warmup") == 0) {
+            wait.warmup = false;
         } else if (std::strcmp(argv[i], "--reliable") == 0) {
             reliable = true;
         } else if (std::strcmp(argv[i], "-m") == 0 && i + 1 < argc) {

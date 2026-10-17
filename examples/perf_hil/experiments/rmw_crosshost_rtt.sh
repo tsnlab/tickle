@@ -528,7 +528,7 @@ for i in \$(seq 1 30); do child_exe $pongperf '$BIN/pong_node' && exit 0; sleep 
     # a reader pinned to core 0 (the ping runs on 1-3). Its PID is found by parentage from the launch's own $! (timeout
     # -> time -> ping_node, taskset having exec'd) and verified by /proc/PID/exe - never by name.
     # Under perf stat (INSN_COUNT=1) the chain is timeout -> time -> perf (taskset exec'd) -> ping_node: one level deeper.
-    res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm $pingrm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $pingpre $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log >/tmp/rmwx_ping.out & tp=\$!; pp=; for i in \$(seq 1 50); do for c in \$(cat /proc/\$tp/task/\$tp/children 2>/dev/null); do for g in \$c \$(cat /proc/\$c/task/\$c/children 2>/dev/null); do for q in \$g \$(cat /proc/\$g/task/\$g/children 2>/dev/null); do [ \"\$(readlink /proc/\$q/exe 2>/dev/null)\" = $BIN/ping_node ] && pp=\$q; done; done; done; [ -n \"\$pp\" ] && break; sleep 0.1; done; sleep 2; echo PINGMAPS: \$(taskset -c 0 grep -o '/[^ ]*librmw_[a-z_]*\\.so' /proc/\$pp/maps 2>/dev/null | sort -u | tr '\\n' ' ') >/tmp/rmwx_ping_maps.txt; wait \$tp; cat /tmp/rmwx_ping.out /tmp/rmwx_ping_time.txt /tmp/rmwx_ping_maps.txt" | grep -E '^RESULT:|^LOOP:|^PHASE:|^ping_utime_s|^PINGMAPS:' | tr '\n' ' ' || true)
+    res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm $pingrm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $pingpre $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log >/tmp/rmwx_ping.out & tp=\$!; pp=; for i in \$(seq 1 50); do for c in \$(cat /proc/\$tp/task/\$tp/children 2>/dev/null); do for g in \$c \$(cat /proc/\$c/task/\$c/children 2>/dev/null); do for q in \$g \$(cat /proc/\$g/task/\$g/children 2>/dev/null); do [ \"\$(readlink /proc/\$q/exe 2>/dev/null)\" = $BIN/ping_node ] && pp=\$q; done; done; done; [ -n \"\$pp\" ] && break; sleep 0.1; done; sleep 2; echo PINGMAPS: \$(taskset -c 0 grep -o '/[^ ]*librmw_[a-z_]*\\.so' /proc/\$pp/maps 2>/dev/null | sort -u | tr '\\n' ' ') >/tmp/rmwx_ping_maps.txt; wait \$tp; cat /tmp/rmwx_ping.out /tmp/rmwx_ping_time.txt /tmp/rmwx_ping_maps.txt" | grep -E '^RESULT:|^LOOP:|^PHASE:|^WARMUP:|^ping_utime_s|^PINGMAPS:' | tr '\n' ' ' || true)
     res="$res $procs${idle:+ $idle}"
     if [ "$BPF" = on ]; then
         sh_ "$SERVER" "[ \"\$(readlink /proc/$bpfpid/exe)\" = /usr/bin/timeout ] && kill -TERM $bpfpid; for i in \$(seq 1 20); do [ -d /proc/$bpfpid ] || break; sleep 0.5; done" || true
@@ -579,6 +579,17 @@ for i in \$(seq 1 30); do child_exe $pongperf '$BIN/pong_node' && exit 0; sleep 
     mkdir -p "$OUT.logs"
     scp -q -i "$K" -o BatchMode=yes "ci@$CLIENT:/tmp/rmwx_ping.log" "$OUT.logs/${stem}_ping.log" 2>/dev/null || say "  (no ping log)"
     scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_pong.log" "$OUT.logs/${stem}_pong.log" 2>/dev/null || say "  (no pong log)"
+    # 2026-10-18: which side lost a round trip. rmw_tickle's pong counts each reply it published with no matched reader
+    # (tx_unmatched_dropped, BEST_EFFORT; tx_unmatched_kept, RELIABLE, owed to no VOLATILE reader). Until the ping's
+    # warm-up (WARMUP:) that was the reply to seq 1 whenever the pong heard the first ping before the ping's
+    # subscriber: 10 of 112 J reps at 18f16b85, all VOID(loss) with exactly 1 here, every other rep 0
+    # (experiments/rmw_loss_attribution.py). Printed only when the pong log holds the counters, never as a guessed 0.
+    case "$rmw" in rmw_tickle*)
+        local unm
+        unm=$(grep -oE 'tx_unmatched_dropped=[0-9]+ tx_unmatched_kept=[0-9]+' "$OUT.logs/${stem}_pong.log" 2>/dev/null \
+            | head -1 | awk -F'[= ]' '{print $2 + $4}')
+        [ -n "$unm" ] && res="$res pong_unmatched=$unm" ;;
+    esac
     if [ "$CAPTURE" = 1 ]; then
         local off1; off1=$(clock_offset)
         say "  clock_offset_ns stem=$stem before: ${off0}after: ${off1}"
@@ -598,6 +609,8 @@ for i in \$(seq 1 30); do child_exe $pongperf '$BIN/pong_node' && exit 0; sleep 
     [ "$impls" = 1 ] || { [ "$verdict" = ok ] && verdict="VOID($impls rmw implementations loaded across ping and pong)"; }
     case "$res" in *"framework=${rmw%@*} "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(no RESULT for $rmw)" ;; esac
     case "$res" in *"loss_pct=0 "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(loss)" ;; esac
+    # Every ping_node since 2026-10-18 warms up before seq 1; a row without the line ran a binary that does not.
+    case "$res" in *"WARMUP: warmup=on "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(no WARMUP: warmup=on; ping_node without the warm-up)" ;; esac
     if [ -n "$IDLE_S" ] && [ "$TRACE" != 1 ]; then
         case "$res" in *"pong_idle_cpu_ns="*) ;; *) [ "$verdict" = ok ] && verdict="VOID(no idle CPU reading)" ;; esac
     fi
