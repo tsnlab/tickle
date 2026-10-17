@@ -52,6 +52,13 @@ Index 0 is the default node, created on first use of a `tt_Context_create_*()` s
   nothing scheduled it waits indefinitely: an idle node does not wake up.
 - The wait is `epoll_pwait2()` (never `SO_RCVTIMEO`) over a set registered once: both sockets, an `eventfd` for
   wake-ups, the segment doorbell FIFO, and a deadline `timerfd`. `ppoll()` is the fallback without epoll or Linux 5.11.
+- **A wait for a scheduler entry ends at its deadline.** Linux gives a relative `epoll_pwait2`/`ppoll` timeout a slack
+  of 0.1% of its length (0.5% at nice > 0), so a 100 ms wait ended ~100-500 us late and a ping went out ~111 us after
+  its due time on the rig. A wait longer than 10 ms for a scheduler entry instead arms the set's `timerfd` at the
+  entry's absolute deadline (`CLOCK_MONOTONIC`, `TFD_TIMER_ABSTIME`, edge-triggered so a fire needs no `read()`),
+  which has only the thread's own 50 us slack: one wake, at the deadline (rig: 13 us late; `sched_wake_check`). The
+  timer is re-armed whenever the deadline moves (about two `timerfd_settime` calls per round trip on a ping client).
+  The `ppoll()` fallback still uses a relative timeout.
 - At most `tt_SCHEDULER_IO_INTERLEAVE` (8) due scheduler entries run back to back before a receive check, so a
   max-rate publisher cannot starve ACKNACK processing.
 
