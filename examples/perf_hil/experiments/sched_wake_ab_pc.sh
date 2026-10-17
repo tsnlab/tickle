@@ -121,8 +121,8 @@ run() { # <arm> <nice> <block> [strace]
         swrap="strace -f -c -o $sst"
         cwrap="strace -f -c -o $cst"
     else
-        swrap="perf stat -x, -e task-clock,instructions:u,instructions:k -o $spf"
-        cwrap="perf stat -x, -e instructions:u,instructions:k -o $cpf"
+        swrap="perf stat -x, -e task-clock,instructions:u,instructions:k,cycles:u,cycles:k -o $spf"
+        cwrap="perf stat -x, -e task-clock,instructions:u,instructions:k,cycles:u,cycles:k -o $cpf"
     fi
     # Root inside the namespace, so renice can lower the inherited nice 5 to 0; both processes at the arm's nice.
     # shellcheck disable=SC2024
@@ -163,19 +163,26 @@ run() { # <arm> <nice> <block> [strace]
     ciu=$(counter instructions:u "$cpf"); cik=$(counter instructions:k "$cpf")
     siu=$(counter instructions:u "$spf"); sik=$(counter instructions:k "$spf")
     if [ -z "$sc" ] || [ -z "$srv" ] || [ -z "$ciu" ] || [ -z "$siu" ]; then verdict=VOID_CPU; fi
+    # Diagnostic, printed and not judged (added 2026-10-17 after task-clock read the server +50-120% with flat
+    # instructions): cycles, and the client's task-clock beside its sched_cpu_s.
+    local ctc ccu cck scu sck
+    ctc=$(counter task-clock "$cpf"); ccu=$(counter cycles:u "$cpf"); cck=$(counter cycles:k "$cpf")
+    scu=$(counter cycles:u "$spf"); sck=$(counter cycles:k "$spf")
     per() { awk -v c="${1:-0}" -v k="$2" -v n="${sent:-1}" 'BEGIN { printf "%.1f", c * k / n }'; }
     echo "RUN arm=$arm sha=${arm_sha[$arm]} nice=$nice block=$block verdict=$verdict load=$load sent=$sent" \
         "measured=$measured gap_p50_us=$(field gap_p50_us "$res") gap_p99_us=$(field gap_p99_us "$res")" \
         "crt_p50_ms=$(field crt_p50_ms "$res") crt_p99_ms=$(field crt_p99_ms "$res") rtt_p50_ms=$(field rtt_p50_ms "$res")" \
         "rtt_p99_ms=$(field rtt_p99_ms "$res") cli_cpu_us_per_rtt=$(per "$sc" 1e6) srv_cpu_us_per_rtt=$(per "$srv" 1e3)" \
         "cli_insn_u_per_rtt=$(per "$ciu" 1) cli_insn_k_per_rtt=$(per "$cik" 1) srv_insn_u_per_rtt=$(per "$siu" 1)" \
-        "srv_insn_k_per_rtt=$(per "$sik" 1)" | tee -a "$OUT"
+        "srv_insn_k_per_rtt=$(per "$sik" 1) cli_task_us_per_rtt=$(per "$ctc" 1e3) cli_cyc_u_per_rtt=$(per "$ccu" 1)" \
+        "cli_cyc_k_per_rtt=$(per "$cck" 1) srv_cyc_u_per_rtt=$(per "$scu" 1) srv_cyc_k_per_rtt=$(per "$sck" 1)" |
+        tee -a "$OUT"
     [ -n "$res" ] || { echo "  client tail: $(tail -2 "$clog" | tr '\n' ' ')" | tee -a "$OUT"; }
 }
 
 n=${#arms[@]}
 for block in $(seq 1 "$BLOCKS"); do
-    for nice in 5 0; do
+    for nice in ${NICES:-5 0}; do
         for i in $(seq 0 $((n - 1))); do
             run "${arms[$(((i + block - 1) % n))]}" "$nice" "$block"
         done
@@ -193,7 +200,10 @@ function val(k,   i, kv) { for (i = 1; i <= NF; i++) { split($i, kv, "="); if (k
     crt[key] += val("crt_p50_ms") * 1000; cpu[key] += val("cli_cpu_us_per_rtt"); srv[key] += val("srv_cpu_us_per_rtt")
     ciu[key] += val("cli_insn_u_per_rtt"); cik[key] += val("cli_insn_k_per_rtt")
     siu[key] += val("srv_insn_u_per_rtt"); sik[key] += val("srv_insn_k_per_rtt")
+    ccy[key] += val("cli_cyc_u_per_rtt") + val("cli_cyc_k_per_rtt"); scy[key] += val("srv_cyc_u_per_rtt") + val("srv_cyc_k_per_rtt")
+    ctk[key] += val("cli_task_us_per_rtt")
 }
+function diag(lbl, x) { printf " | %s cli_cyc/rtt=%.0f srv_cyc/rtt=%.0f cli_task_us/rtt=%.1f srv_task_us/rtt=%.1f", lbl, m(ccy, x), m(scy, x), m(ctk, x), m(srv, x) }
 function m(a, k) { return n[k] ? a[k] / n[k] : -1 }
 function abs(x) { return x < 0 ? -x : x }
 function pct(arr, x, a) { return m(arr, a) > 0 ? 100 * (m(arr, x) - m(arr, a)) / m(arr, a) : 0 }
@@ -213,6 +223,8 @@ END {
         printf " | srv_cpu_us/rtt A=%.1f B=%.1f d=%+.1f (%+.1f%%) bound=%.1f -> %s", m(srv, a), m(srv, b), ds, pct(srv, b, a), bs, (ds <= bs ? "CPU_OK" : "CPU_RISE")
         insn("cli_insn_u/rtt", ciu, b, a, a2); insn("cli_insn_k/rtt", cik, b, a, a2)
         insn("srv_insn_u/rtt", siu, b, a, a2); insn("srv_insn_k/rtt", sik, b, a, a2)
+        printf "\n"
+        printf "DIAG nice=%d (not judged)", ni; diag("A", a); diag("B", b); diag("A2", a2); if (n[s]) diag("S", s)
         printf "\n"
         if (n[s]) {
             printf "ARM_S nice=%d runs S=%d (not judged) | gap_p50_us S=%.1f d=%+.1f | cli_cpu_us/rtt S=%.1f d=%+.1f (%+.1f%%) | srv_cpu_us/rtt S=%.1f d=%+.1f", ni, n[s], m(gap, s), m(gap, s) - m(gap, a), m(cpu, s), m(cpu, s) - m(cpu, a), pct(cpu, s, a), m(srv, s), m(srv, s) - m(srv, a)
