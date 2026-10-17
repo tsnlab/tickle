@@ -19,7 +19,7 @@ goodput since 2026-10-17. P1 to P4 are payload sizes: 76, 1292, 1424 and 2800 by
 
 | | TickLE | FastDDS | CycloneDDS | source |
 |---|---:|---:|---:|---|
-| Cross host, round trip, P2 (ms, lower is better) | **0.231** | 0.315 | 0.275 | row 3, `09a0437d` |
+| Cross host, round trip from creation time, P2 (ms, lower is better) | 0.338 | 0.366 | **0.326** | row 3c, `4fca013b` |
 | Cross host, RELIABLE goodput, P2 (Mbps) | **937** | 591 | 864 | row 8, `09a0437d` |
 | Cross host, RELIABLE throughput kept at 5% loss, P1 | **86.9%** | 43.1% | 4.8% | row 16, `09a0437d` |
 | Cross host, throughput client peak memory, P1 (KB) | **2,087** | 15,947 | 5,407 | row 28, `09a0437d` |
@@ -27,13 +27,16 @@ goodput since 2026-10-17. P1 to P4 are payload sizes: 76, 1292, 1424 and 2800 by
 | Same host, RELIABLE goodput, P4 (delivered Mbps) | **14,917** | 1,924 | delivery failed | S6, `e521bbba` |
 | Same host, round trip, P2 (ms) | **0.023** | 0.107 | 0.074 | S7, `e521bbba` |
 
-- **Across the network** TickLE is best in every scored row of latency, throughput, CPU, memory and bandwidth: 151
-  wins, 11 draws or ties, **0 losses** in 162 metric cells (`09a0437d`; the goodput re-score changed no verdict).
+- **Across the network** TickLE leads on throughput, CPU, memory and bandwidth in every scored cell. With latency
+  measured from the data's creation time (since 2026-10-17) campaign `A` scores 135 wins, 12 draws or ties and **3
+  losses** of 150: the round trip at P1, P2 and P4, where CycloneDDS is 4-14 us faster because TickLE's client sends
+  each ping ~50 us later than the DDS clients do (a fix is in test). From the send stamp TickLE won all three.
 - **On one host,** at the DDS default (BEST_EFFORT, KEEP_LAST 1), TickLE delivers every sample at the maximum rate,
   CycloneDDS about a fifth and FastDDS almost none. "Delivery failed": in every same-host RELIABLE run CycloneDDS
   delivered 0.02-0.07% fewer samples than it sent, so it is not scored.
 - **Through ROS 2,** rmw_tickle wins all 52 scored same-host rows (`06dd78d8`). For large messages (1 MB and 4 MB
-  arrays across the network) it scores WIN 52 / DRAW 23 / LOSE 5 of 80.
+  arrays across the network) it scores WIN 55 / DRAW 23 / LOSE 2 of 80; the two losses are publisher and subscriber
+  CPU per MB against FastDDS in one cell.
 
 Every figure, its build and raw data, and where TickLE does not come first, are in [docs/RESULTS.md](docs/RESULTS.md).
 
