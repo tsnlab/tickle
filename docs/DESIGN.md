@@ -62,7 +62,8 @@ Index 0 is the default node, created on first use of a `tt_Context_create_*()` s
   shorter waits the polling thread's timer slack is lowered to 1 ns at its first wait (`prctl(PR_SET_TIMERSLACK)`,
   never raised; `TT_RX_TIMER_SLACK_NS`), so their relative timeout ends within 0.1% of the wait (5 ms: ~15 us late on
   the PC, against ~60) without a system call per wait - arming the `timerfd` for them cost one or two
-  `timerfd_settime` a round trip. It applies to every timer of that thread.
+  `timerfd_settime` a round trip. It applies to every timer of that thread. At a positive nice value the kernel's
+  share is 0.5%, so a 5 ms wait still ends ~25 us late there (against ~50 us without it).
   The `ppoll()` fallback still uses a relative timeout.
 - At most `tt_SCHEDULER_IO_INTERLEAVE` (8) due scheduler entries run back to back before a receive check, so a
   max-rate publisher cannot starve ACKNACK processing.

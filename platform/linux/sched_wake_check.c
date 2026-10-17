@@ -410,6 +410,17 @@ static int judge_short(struct tt_Context* node, const struct raw_fds* fds) {
         return CHECK_SETUP_FAILED;
     }
     const double interval_ms = (double)SHORT_INTERVAL_NS / (double)MS_NS;
+    // Defined at nice 0. At a positive nice value Linux gives a relative timeout 0.5% of its length as slack instead
+    // of 0.1%, so the HAL's 1 ns thread slack leaves a 5 ms wait ~25 us late (test-linux under the session's nice 5,
+    // 2026-10-18: 62.8 us against the timerfd's 35.7) - a known limit of that design (DESIGN.md 2), not this check's
+    // subject. test.sh runs it at nice 0.
+    errno = 0;
+    const int nice_value = getpriority(PRIO_PROCESS, 0); // NOLINT(misc-include-cleaner) - <sys/resource.h>
+    if (errno == 0 && nice_value > 0) {
+        printf("sched_wake_check: VOID at %.0f ms (short) - run at nice %d; the short case is defined at nice 0\n",
+               interval_ms, nice_value);
+        return CHECK_VOID;
+    }
     int result = CHECK_PASS;
     if (tickle_med > timerfd_med + SHORT_MARGIN_NS) {
         printf(

@@ -503,7 +503,8 @@ done
 # and is not a pass.
 make sched_wake_check
 # shellcheck disable=SC2024
-sudo ip netns exec "$NS1" ./sched_wake_check </dev/null >sched_wake_check.log 2>&1
+# At nice 0, whatever this shell runs at: the short case is defined there (sched_wake_check.c judge_short()).
+sudo ip netns exec "$NS1" bash -c 'renice -n 0 -p $$ >/dev/null && exec ./sched_wake_check' </dev/null >sched_wake_check.log 2>&1
 sched_wake_rc=$?
 grep '^sched_wake_check:' sched_wake_check.log
 case "$sched_wake_rc" in
