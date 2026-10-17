@@ -26,6 +26,9 @@
 
 #include "RttQuantiles.h"
 
+// The RESULT-line fields BenchCreation_fields() writes fit this many bytes.
+#define BENCH_CREATION_FIELDS_MAX 256
+
 struct BenchCreation {
     struct BenchRtt crt; // arrival - due, ms
     struct BenchRtt gap; // send stamp - due, ms

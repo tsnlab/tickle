@@ -76,7 +76,7 @@ namespace {
     // ping's creation time.
     uint64_t g_next_due_ns = 0;
     struct BenchCreation g_creation;
-    char g_creation_fields[256];
+    char g_creation_fields[BENCH_CREATION_FIELDS_MAX];
 
     void sleep_to_next_ping(double seconds) {
         g_next_due_ns = harness::now_ns() + harness::seconds_to_ns(seconds);

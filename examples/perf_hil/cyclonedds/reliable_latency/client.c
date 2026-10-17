@@ -79,7 +79,7 @@ static const dds_duration_t response_wait = DDS_MSECS(500);
 // ping's creation time.
 static uint64_t g_next_due_ns = 0;
 static struct BenchCreation g_creation;
-static char g_creation_fields[256];
+static char g_creation_fields[BENCH_CREATION_FIELDS_MAX];
 
 static void sleep_s(double seconds) {
     uint64_t sleep_ns = (uint64_t)(seconds * ns_per_s_real);

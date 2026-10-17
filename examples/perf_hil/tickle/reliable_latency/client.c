@@ -86,7 +86,7 @@ static void ping(struct tt_Context* node, uint64_t time, void* param);
 static uint64_t g_next_due_ns = 0;
 static uint64_t g_awaiting_due_ns = 0;
 static struct BenchCreation g_creation;
-static char g_creation_fields[256];
+static char g_creation_fields[BENCH_CREATION_FIELDS_MAX];
 
 static void schedule_ping(struct tt_Context* node, uint64_t due_ns) {
     g_next_due_ns = due_ns;
