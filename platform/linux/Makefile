@@ -225,13 +225,16 @@ rx_drain_check: rx_drain_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle/*.h)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -o $@ rx_drain_check.c $(SRC_FILES) -lm -lpthread
 
 # A run read in place by the real HAL (rx_direct_check.c): built as rx_drain_check is, since only that build reads one.
+# Its deadline-timer cases (12, 12b) judge the streak rule with waits of 20-300 ms, so it is built without the
+# long-wait rule (TT_RX_TIMER_LONG_NS=0, hal_linux.c), which sched_wake_check.c judges instead.
+RX_DIRECT_DEFS = -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -DTT_RX_TIMER_LONG_NS=0
 rx_direct_check: rx_direct_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle/*.h)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -DTT_HAL_LIBC_CALLS=1 -o $@ rx_direct_check.c \
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(RX_DIRECT_DEFS) -DTT_HAL_LIBC_CALLS=1 -o $@ rx_direct_check.c \
 	    $(SRC_FILES) -lm -lpthread
 
 # The same check over the HAL's own system calls (hal_linux.c tt_sys6()), as every other build makes them: 13r for 13.
 rx_direct_check_raw: rx_direct_check.c $(SRC_FILES) $(wildcard $(INCLUDE)/tickle/*.h)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -Dtt_MAX_BUFFER_LENGTH=65507 -Dtt_LARGE_SAMPLES=1 -o $@ rx_direct_check.c $(SRC_FILES) \
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(RX_DIRECT_DEFS) -o $@ rx_direct_check.c $(SRC_FILES) \
 	    -lm -lpthread
 
 # A scheduled entry runs at its deadline, not 0.1% of its wait late (sched_wake_check.c). Run by test.sh (test-linux).
