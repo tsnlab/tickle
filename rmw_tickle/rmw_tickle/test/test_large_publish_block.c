@@ -37,10 +37,15 @@
 // and the two find each other by broadcast on 10.77.0.0/24. That needs `sudo -n ip` and a named private namespace to
 // start in (run_rmw_suite.sh's): in the default one it would add an interface to the machine. Anywhere else the test
 // says why and exits 77, which CMake reports as skipped, not passed.
+//
+// A named namespace is a mount under /run/netns and stays until it is deleted, and an atexit handler does not run on
+// an assert's abort(), on ctest's timeout kill or on SIGKILL: six were once found left behind. So before it builds the
+// namespace the test forks a guard (start_ns_guard()) that deletes it when the test's process is gone, however it went.
 
 #include <assert.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -675,17 +680,59 @@ static int ip_command(const char* format, const char* first, const char* second)
     return system(command); // NOLINT(cert-env33-c) - fixed commands; the names are this test's own
 }
 
+static char veth_ours[16];
+static char veth_theirs[16];
+
+// Deleting our veth end takes the pair with it at once; deleting the namespace's name frees the namespace once no
+// process is left in it (a talker still running gives up within its own bounded waits). Either may already be gone.
 static void delete_talker_ns(void) {
-    (void)ip_command("sudo -n ip netns del %s 2>/dev/null%s", talker_ns, ""); // its veth end goes, and the pair
+    (void)ip_command("sudo -n ip link del %s 2>/dev/null%s", veth_ours, "");
+    (void)ip_command("sudo -n ip netns del %s 2>/dev/null%s", talker_ns, "");
+}
+
+// The guard: a child in a session of its own (a signal to the test's process group does not reach it), deaf to the
+// terminal and termination signals, its standard streams on /dev/null (ctest is not left waiting on its output), and
+// blocked in read() on a pipe whose write end is the test's alone (close-on-exec keeps it out of the talkers and the
+// ip commands). The read returns 0 when the test is gone, however it went, and the guard cleans up. Started before
+// the namespace exists, so there is no moment when the namespace exists unguarded.
+static bool start_ns_guard(void) {
+    int fds[2];
+    if (0 != pipe(fds) || 0 != fcntl(fds[1], F_SETFD, FD_CLOEXEC)) {
+        return false;
+    }
+    (void)fflush(NULL); // the child must not write the parent's buffered output a second time
+    pid_t pid = fork();
+    if (pid < 0) {
+        return false;
+    }
+    if (0 == pid) {
+        (void)close(fds[1]);
+        (void)setsid();
+        (void)signal(SIGINT, SIG_IGN);
+        (void)signal(SIGTERM, SIG_IGN);
+        (void)signal(SIGHUP, SIG_IGN);
+        (void)signal(SIGPIPE, SIG_IGN);
+        int null_fd = open("/dev/null", O_RDWR);
+        if (null_fd >= 0) {
+            (void)dup2(null_fd, STDIN_FILENO);
+            (void)dup2(null_fd, STDOUT_FILENO);
+            (void)dup2(null_fd, STDERR_FILENO);
+            (void)close(null_fd);
+        }
+        char byte = 0;
+        while (0 != read(fds[0], &byte, 1)) { // 0: the last write end closed; -1 (EINTR) or a byte: read again
+        }
+        delete_talker_ns();
+        _exit(0);
+    }
+    (void)close(fds[0]); // fds[1] stays open, unwritten, for the rest of this process's life
+    return true;
 }
 
 // The talker's namespace and the veth pair to it, its end shaped. False when any step is refused.
 static bool build_talker_ns(void) {
-    char ours[16];
-    char theirs[16];
-    (void)snprintf(talker_ns, sizeof(talker_ns), "lpbtalk%d", (int)getpid());
-    (void)snprintf(ours, sizeof(ours), "lpb%da", (int)(getpid() % VETH_IDS));
-    (void)snprintf(theirs, sizeof(theirs), "lpb%db", (int)(getpid() % VETH_IDS));
+    const char* const ours = veth_ours;
+    const char* const theirs = veth_theirs;
     return 0 == ip_command("sudo -n ip netns add %s%s", talker_ns, "") &&
            0 == ip_command("sudo -n ip link add %s type veth peer name %s", ours, theirs) &&
            0 == ip_command("sudo -n ip link set %s netns %s", theirs, talker_ns) &&
@@ -716,7 +763,11 @@ int main(int argc, char** argv) {
     assert(len > 0 && (size_t)len < sizeof(exe_path) - 1); // not cut short
     exe_path[len] = '\0';
     assert(plain_value(exe_path));
-    assert(0 == atexit(delete_talker_ns)); // an assert's abort() skips it: the namespace is named for this pid
+    (void)snprintf(talker_ns, sizeof(talker_ns), "lpbtalk%d", (int)getpid());
+    (void)snprintf(veth_ours, sizeof(veth_ours), "lpb%da", (int)(getpid() % VETH_IDS));
+    (void)snprintf(veth_theirs, sizeof(veth_theirs), "lpb%db", (int)(getpid() % VETH_IDS));
+    assert(start_ns_guard());              // removes the namespace however this process ends, abort() and SIGKILL too
+    assert(0 == atexit(delete_talker_ns)); // a normal exit cleans up before it returns; the guard then finds nothing
     if (!build_talker_ns()) {
         printf("test_large_publish_block: SKIP - cannot build the talker's namespace and link (needs sudo -n ip)\n");
         return SKIP_CODE;
