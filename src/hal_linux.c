@@ -702,6 +702,11 @@ static void uring_close(struct tt_Context* node);
 // (rx_wait_epoll()): past it the kernel's slack on a poll()-family timeout - 0.1% of the wait, 0.5% for a thread with a
 // positive nice value, against the thread's 50 us timer slack for a timerfd - makes the wait end measurably late.
 // 0: never (the rule before 2026-10-17, the A/B control).
+// A long wait for an entry sets the timer to its own deadline, later as well as earlier (rx_wait_lazy()). 0: only
+// earlier, as the streak rule's waits do (the A/B control).
+#ifndef TT_RX_TIMER_LONG_EXACT
+#define TT_RX_TIMER_LONG_EXACT 1
+#endif
 #ifndef TT_RX_TIMER_LONG_NS
 #define TT_RX_TIMER_LONG_NS (10LL * 1000000LL)
 #endif
@@ -3224,12 +3229,15 @@ static void rx_timer_take(struct tt_hal* hal) {
     hal->timer_data_streak = 0;
 }
 
-// rx_wait() until `until` (absolute, UINT64_MAX: none) with the deadline timer: the same return convention.
-static int rx_wait_lazy(struct tt_Context* node, uint64_t until, uint32_t* ready) {
+// rx_wait() until `until` (absolute, UINT64_MAX: none) with the deadline timer: the same return convention. `exact`
+// (a long wait for a scheduler entry, TT_RX_TIMER_LONG_EXACT) also moves an armed deadline LATER, at the cost of a
+// timerfd_settime(), rather than waking early at it and setting the timer then: a wake-up costs more than the call.
+static int rx_wait_lazy(struct tt_Context* node, uint64_t until, bool exact, uint32_t* ready) {
     struct tt_hal* hal = &node->hal;
     hal->timer_waits++;
     for (;;) {
-        if (until != UINT64_MAX && (hal->timer_armed_ns == 0 || hal->timer_armed_ns > until)) {
+        if (until != UINT64_MAX &&
+            (hal->timer_armed_ns == 0 || hal->timer_armed_ns > until || (exact && hal->timer_armed_ns != until))) {
             rx_timer_arm(hal, until);
         }
         int count = rx_wait(node, NULL, ready);
@@ -3348,8 +3356,9 @@ static __attribute__((noinline)) int rx_wait_plain_fired(struct tt_Context* node
 }
 
 // A wait in a poll with the timer (rx_wait_lazy()), and the run of waits that ended for data ended by one that did not.
-static __attribute__((noinline)) int rx_wait_lazy_run(struct tt_Context* node, uint64_t until, uint32_t* ready) {
-    int count = rx_wait_lazy(node, until, ready);
+static __attribute__((noinline)) int rx_wait_lazy_run(struct tt_Context* node, uint64_t until, bool exact,
+                                                      uint32_t* ready) {
+    int count = rx_wait_lazy(node, until, exact, ready);
     if ((*ready & RX_READY_FOR_DATA) == 0 && count >= 0) {
         node->hal.timer_data_streak = 0; // a timeout, a wake, only room to send: not a wait that ended for data
     }
@@ -3377,7 +3386,7 @@ static int rx_wait_epoll(struct tt_Context* node, int64_t timeout, uint32_t* rea
 #else
     if (until != 0 && (rx_timer_lazy_next(hal) || long_wait)) {
 #endif
-        return rx_wait_lazy_run(node, until, ready);
+        return rx_wait_lazy_run(node, until, TT_RX_TIMER_LONG_EXACT && long_wait, ready);
     }
 #if TT_HAL_UDP_GRO
     int count = rx_wait_for(node, timeout, ready);
