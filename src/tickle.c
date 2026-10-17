@@ -1934,11 +1934,46 @@ static uint8_t tx_destinations(const struct tt_Peer* peers, uint8_t peer_count, 
     return written;
 }
 
+#if tt_LARGE_SAMPLES
+static int32_t large_send_batch(struct tt_Context* node, const struct tt_OutDatagram* batch, uint32_t count,
+                                const struct tt_Peer* dest);
+
+// A discovery reply's datagram (struct tt_LargeState.reply_unless_full): to each destination without waiting for room
+// in the socket's send buffer, and left unsent where there is none. A blocking send here waited, on the polling thread
+// and under the state lock, until a large sample's fragments ahead of it had drained to half the buffer - ~220 ms
+// behind a 100 Mbit/s link (2026-10-17), with receive, timers and every publish on the context stopped for as long.
+// The peer loses nothing it cannot get again: it pulls the list when this node's next summary reaches it, and a
+// request it made is asked again on its own timer (discovery_request_retry()). True unless a send failed otherwise.
+static bool send_datagram_unless_full(struct tt_Context* node, const struct tx_datagram* dgram,
+                                      const struct tt_Peer* peers, uint8_t peer_count) {
+    struct tx_destination destinations[TX_MAX_DESTINATIONS];
+    uint8_t count = tx_destinations(peers, peer_count, destinations);
+    for (uint8_t i = 0; i < count; i++) {
+        struct tt_OutDatagram datagram = {dgram->head,     dgram->head_len,    dgram->body,
+                                          dgram->body_len, destinations[i].ip, destinations[i].port};
+        struct tt_Peer dest = {destinations[i].context_id, destinations[i].ip, destinations[i].port};
+        int32_t sent = large_send_batch(node, &datagram, 1, &dest);
+        if (sent < 0) {
+            return false;
+        }
+        if (sent == 0) {
+            node->large.discovery_replies_skipped++;
+        }
+    }
+    return true;
+}
+#endif
+
 // One datagram to the destinations a flush would send it to. To one destination it goes exactly as it always
 // has, through send_datagram_to(); to several - peers on one link, or one broadcast per link - it goes as one
 // seam_send_batch(), so that sending the same bytes to more peers stops costing a system call per peer.
 static bool send_datagram(struct tt_Context* node, const struct tx_datagram* dgram, const struct tt_Peer* peers,
                           uint8_t peer_count) {
+#if tt_LARGE_SAMPLES
+    if (__builtin_expect(node->large.reply_unless_full, 0)) {
+        return send_datagram_unless_full(node, dgram, peers, peer_count);
+    }
+#endif
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
     uint8_t count = tx_destinations(peers, peer_count, destinations);
     if (count == 0) {
@@ -12859,6 +12894,22 @@ static bool build_and_send_update(struct tt_Context* node, const struct tt_Peer*
     return true;
 }
 
+// A discovery reply - our announce unicast to one peer that just announced (reply_with_own_announce()) or asked for it
+// (answer_discovery_request()) - from an empty tx_buffer, sent without waiting for room in the socket's send buffer
+// (send_datagram_unless_full()): these run on the polling thread under the state lock, and a large sample's fragments
+// can hold the buffer full for as long as the link takes to drain half of it. Only a build with large samples has the
+// send this needs (tt_send_batch_nonblocking(), hal.h), and only there does a send leave the buffer full and return -
+// its large fragments go on from the poll as the buffer drains. Any other build sends the reply as it always has.
+static void send_unicast_update_unless_full(struct tt_Context* node, const struct tt_Peer* peer) {
+#if tt_LARGE_SAMPLES
+    node->large.reply_unless_full = true;
+#endif
+    (void)build_and_send_update(node, peer, 1);
+#if tt_LARGE_SAMPLES
+    node->large.reply_unless_full = false;
+#endif
+}
+
 // The periodic discovery summary (tt_VERSION 8, rmw_tickle/DISCOVERY_PLAN.md): a HEARTBEAT of the built-in
 // discovery endpoint whose first and last seq_no are this node's announce generation - ~28 bytes whatever the
 // endpoint count, where the periodic announce it replaces carried the whole endpoint list every interval. A
@@ -14248,6 +14299,9 @@ static bool decode_update_entities(struct tt_Context* node, struct tt_Header* he
 // this one time - the peer pulls our list when our next summary reaches it) whenever tx_buffer
 // already has something else pending: redirecting that to a single peer here could be wrong for
 // whatever else it's for (same shared-tx_buffer reasoning as process_callrequest()'s own unicast).
+//
+// Nor does it wait for room in the send buffer (send_unicast_update_unless_full()): left unsent when the buffer is
+// full, for the same reason and with the same recovery.
 static void reply_with_own_announce(struct tt_Context* node, uint8_t sender_node_id, uint32_t sender_ip,
                                     uint16_t sender_port) {
     if (node->tx_tail != sizeof(struct tt_Header)) {
@@ -14255,7 +14309,7 @@ static void reply_with_own_announce(struct tt_Context* node, uint8_t sender_node
     }
 
     struct tt_Peer reply_to = {sender_node_id, sender_ip, sender_port};
-    build_and_send_update(node, &reply_to, 1);
+    send_unicast_update_unless_full(node, &reply_to);
 }
 
 // More fragments than this build tracks. A function, not an inline comparison: at tt_UPDATE_MAX_PARTS 255 a uint8_t
@@ -17141,7 +17195,11 @@ static void answer_discovery_request(struct tt_Context* node, uint8_t source, ui
     }
     flush_pending_broadcast(node);
     struct tt_Peer requester = {source, sender_ip, sender_port};
-    build_and_send_update(node, &requester, 1);
+    if (node->tx_tail != sizeof(struct tt_Header)) {
+        build_and_send_update(node, &requester, 1); // the broadcast before it did not go: not this reply's to drop
+        return;
+    }
+    send_unicast_update_unless_full(node, &requester); // left unsent, it is asked for again (discovery_request_retry())
 }
 
 static bool process_acknack(struct tt_Context* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
@@ -22131,13 +22189,14 @@ static tt_ret_t node_destroy_locked(struct tt_Context* node) {
 #if tt_LARGE_SAMPLES
     TT_LOG_INFO("Node %u large: published=%lu reassembled=%lu abandoned=%lu no_buffer=%lu dropped=%lu duplicate=%lu "
                 "tail_abandoned=%lu window_too_small=%lu send_waits=%lu encoded_by_range=%lu encode_failed=%lu "
-                "send_writable=%lu",
+                "send_writable=%lu discovery_replies_skipped=%lu",
                 node->id, (unsigned long)node->large.published, (unsigned long)node->large.reassembled,
                 (unsigned long)node->large.abandoned, (unsigned long)node->large.no_buffer,
                 (unsigned long)node->large.dropped, (unsigned long)node->large.duplicate,
                 (unsigned long)node->large.tail_abandoned, (unsigned long)node->large.window_too_small,
                 (unsigned long)node->large.send_waits, (unsigned long)node->large.encoded_by_range,
-                (unsigned long)node->large.encode_failed, (unsigned long)node->large.send_writable);
+                (unsigned long)node->large.encode_failed, (unsigned long)node->large.send_writable,
+                (unsigned long)node->large.discovery_replies_skipped);
     large_release_assemblies(node); // every sample still being put together: its buffer back to the caller
 #if tt_LARGE_SHM
     TT_LOG_INFO("Node %u large_ref: sent=%lu received=%lu refused=%lu dropped=%lu region_full=%lu", node->id,
