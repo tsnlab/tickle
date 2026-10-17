@@ -8,7 +8,9 @@
 # Two kinds of cell:
 #   rtt   pong_node, then ping_node (rmw_tickle/rmw_perf_pingpong) with --stamps, so every round trip's send and
 #         reply times (CLOCK_MONOTONIC) are on file and the summary can drop the warm-up and cool-down round trips
-#         by sequence number. A sampler reads every process's CPU (/proc/PID/task/*/schedstat), its VmHWM and the
+#         by sequence number; and with --dues (2026-10-17), each answered ping's due time, from which the summary
+#         reads the round trip from creation time (an older ping_node ignores the flag and writes no file, which the
+#         summary reads as "no dues": creation NOT READ, never a gap of 0). A sampler reads every process's CPU (/proc/PID/task/*/schedstat), its VmHWM and the
 #         host's interface counters (/proc/net/dev) every SAMPLE_S on the same clock, so CPU and the transport
 #         witness are taken over exactly the measured round trips.
 #   tput  apex perf_test: subscriber (-p 0 -s 1), then publisher (-p 1 -s 0) at -r 0. CPU is perf_test's own
@@ -239,7 +241,7 @@ if [ "$KIND" = rtt ]; then
     alive pong pong_node && identity pong
     # shellcheck disable=SC2086 # flag and waitargs are deliberately word-split
     launch ping timeout -s INT -k 5 $((${DUR%.*} + 40)) "$PINGPONG/ping_node" -i "$RTT_I" -d "$DUR" $flag $waitargs \
-        --stamps "$CELL_DIR/stamps.txt" -m "$MSG"
+        --stamps "$CELL_DIR/stamps.txt" --dues "$CELL_DIR/dues.txt" -m "$MSG"
     # timeout execs nothing: the ping is its child. Found by parentage from timeout's own PID, checked by exe.
     tpid=$(cat "$CELL_DIR/ping.lpid")
     for _ in $(seq 1 50); do

@@ -42,6 +42,17 @@ scatter: tput Array1k best_effort CPU per sample at 03585237, rmw_tickle 13.14 /
 CycloneDDS 32.81-34.45 and FastDDS 171 / 1006 / 323, read DRAW because FastDDS's SE (about 256 us) put its 2 x SE
 bound above the 487 us gap, although rmw_tickle was below every rep of both vendors. Range non-overlap does not
 reward a vendor's scatter; a rmw_tickle range that touches a vendor's still reads DRAW.
+Latency from creation time (the user's decision of 2026-10-17; TESTING.md section 4), written 2026-10-17 before its
+first run and enforced in creation() and control_line():
+  C1 Per rtt run, over the same window as the stamp figures: crt = reply - due and gap = send - due per round trip,
+     from the ping's --dues file (seq due_ns send_ns). No dues file, a window round trip with no due time, or a --dues
+     send that differs from the --stamps send (INSTRUMENT FAULT) leaves the run's creation figures unread (crt_why);
+     the stamp figures stand. p99 only over >= 500 round trips.
+  C2 Control per cell: creation_latency_summary.py's R4 (rtt_r4) per arm over its reps with creation figures: g <=
+     0.2 ms, no gap below -0.02 ms, |d - g| <= the reps' stamp-p50 range + 1 us. It needs rmw_tickle and one scored
+     vendor read; a failed control makes the cell's creation verdicts NOT READ. zenoh is printed, never decides it.
+  C3 Scoring: the creation mean (R1-R8 are means), p50 and p99 by the same range rule as every other metric; the
+     send-stamp p50/p99/mean are printed beside, as diagnostics.
 Counts (corrected 2026-10-10): perf_test's received/sent/lost columns are per-second rates, floor(count / D)
 (rmw_keepall_rig_summary.py, COUNTS). Until then tput summed them and divided by the summed T_loop, which is not the
 time they were counted over (T_loop includes the wait for the subscriber's lock; D does not): delivered msg/s read low
@@ -56,6 +67,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rmw_keepall_rig_summary import sample_bytes, whole_counts  # noqa: E402
+from creation_latency_summary import rtt_r4  # noqa: E402
 
 SCORED = ("fastdds", "cyclonedds")
 # tickle_loans (ab_loans.sh): arm tickle with ROS_DISABLE_LOANED_MESSAGES=0 - printed per run, never in the table.
@@ -70,6 +82,8 @@ RMW = {"tickle": "rmw_tickle", "tickle_loans": "rmw_tickle", "tickle_shipped": "
 # RadarDetection is ab_loans.sh's control cell (not loanable): uint16 + Point + Vector3 + float64 + int64 + uint64.
 PAYLOAD = {"bench": 80, "array1k": 1036, "Array1k": 1040, "Array4k": 4112, "RadarDetection": 76}
 WITNESS_MIN_PAYLOAD = 512   # below this, headers dominate and bytes cannot tell the transports apart
+N_P99 = 500                 # creation p99 read only over this many round trips (creation_latency_summary.py R1)
+CRT_METRICS = ("crt_mean", "crt_p50", "crt_p99")
 SHM_MAX, KERNEL_MIN = 0.25, 0.75
 TRAFFIC_RE = re.compile(r"traffic: .*?\btx_udp=(\d+) tx_shm=(\d+) rx_udp=(\d+) rx_shm=(\d+)")
 
@@ -255,7 +269,37 @@ def check_rtt(d, m, p, arm, msg):
                cpu=cpu / n / 1e3, rss=max(hwm["ping"], hwm["pong"]), rss_ping=hwm["ping"], rss_pong=hwm["pong"],
                rss_router=hwm.get("router"), bps=bytes_per_sample, pps=pkts_per_sample, ratio=ratio,
                transport=transport(ratio) if PAYLOAD[msg] >= WITNESS_MIN_PAYLOAD else "n/a(64B)", share=share)
+    rec.update(creation(d, window, stamps))
     return why, rec
+
+
+def creation(d, window, stamps):
+    """The round trip from creation time over the same window (C1 in the docstring): crt = reply - due and gap = send -
+    due, per round trip, from the ping's --dues file. Never VOIDs the run (the stamp figures stand); crt_why says why
+    the creation figures are missing."""
+    out = dict(crt_p50=None, crt_p99=None, crt_mean=None, gap_p50=None, gap_min=None, crt_n=0, crt_why="")
+    dues = {}
+    try:
+        for line in (d / "dues.txt").read_text().splitlines():
+            if not line.startswith("#"):
+                s, due, send = (int(x) for x in line.split())
+                dues[s] = (due, send)
+    except OSError:
+        out["crt_why"] = "no dues file (a ping_node without --dues?)"
+        return out
+    missing = [s for s in window if s not in dues]
+    if missing:
+        out["crt_why"] = f"{len(missing)} round trips in the window have no due time"
+        return out
+    mismatch = [s for s in window if dues[s][1] != stamps[s][0]]
+    if mismatch:
+        out["crt_why"] = f"INSTRUMENT FAULT: {len(mismatch)} round trips whose --dues send differs from --stamps"
+        return out
+    crt = [(stamps[s][1] - dues[s][0]) / 1e3 for s in window]
+    gap = [(dues[s][1] - dues[s][0]) / 1e3 for s in window]
+    out.update(crt_p50=pct(crt, 0.50), crt_p99=pct(crt, 0.99) if len(crt) >= N_P99 else None,
+               crt_mean=statistics.mean(crt), gap_p50=pct(gap, 0.50), gap_min=min(gap), crt_n=len(crt))
+    return out
 
 
 def perf_rows(path):
@@ -404,12 +448,40 @@ def verdict(cell, metric, lower_better, tickle_lose_all):
     return "LOSE" if worse_any else "WIN" if better_all else "DRAW"
 
 
+def label_of(key):
+    return " ".join(k for k in key if k != "-")
+
+
+def control_line(label, arms):
+    """C2: creation_latency_summary.py's R4 per arm of one rtt cell, printed as table rows; True when it passes (it
+    needs rmw_tickle and at least one scored vendor read, with 2 reps each that carry creation figures)."""
+    ok_all, read = True, []
+    for arm in ARMS:
+        rs = [r for r in arms.get(arm, []) if r.get("crt_p50") is not None]
+        whys = sorted({r["crt_why"] for r in arms.get(arm, []) if r.get("crt_why")})
+        if len(rs) < 2:
+            if arm in ("tickle",) + SCORED:
+                print(f"|  | control (R4) {arm}: NOT READ, {len(rs)} reps with creation figures "
+                      f"({'; '.join(whys) or 'no reps'}) | | | | | | |")
+            continue
+        ok, text = rtt_r4([r["p50"] / 1e3 for r in rs], [r["crt_p50"] / 1e3 for r in rs],
+                          [r["gap_p50"] / 1e3 for r in rs], min(r["gap_min"] for r in rs) / 1e3)
+        print(f"|  | control (R4) {arm}: n {[r['crt_n'] for r in rs]}, {text} | | | | | | |")
+        if arm != "zenoh":
+            ok_all = ok_all and ok
+            read.append(arm)
+    if "tickle" not in read or not any(v in read for v in SCORED):
+        ok_all = False
+    print(f"|  | control (R4) {label}: {'PASS' if ok_all else 'FAIL'} | | | | | | |")
+    return ok_all
+
+
 def fmt(v, metric):
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return "-"
     if metric in ("rate", "rss"):
         return f"{v:,.0f}"
-    return f"{v:.1f}" if metric in ("p50", "p99", "mean") else f"{v:.2f}"
+    return f"{v:.1f}" if metric in ("p50", "p99", "mean") + CRT_METRICS else f"{v:.2f}"
 
 
 def main():
@@ -454,9 +526,13 @@ def main():
                        f"ratio {r['ratio']:.2f}) tx_shm share {share} roudi {r['roudi']}"
                        if r["bps"] is not None else "witness: no counters")
                 if key[0] == "rtt":
-                    print(f"{'/'.join(key)} {arm:10} r{r['rep']} n={r['n']} p50 {r['p50']:.1f} p99 {r['p99']:.1f} "
-                          f"mean {r['mean']:.1f} us  cpu {r['cpu']:.2f} us/rt  rss ping/pong {r['rss_ping']}/"
-                          f"{r['rss_pong']}{'/router ' + str(r['rss_router']) if r['rss_router'] else ''} kB  {wit}")
+                    crt = (f"creation n={r['crt_n']} p50 {r['crt_p50']:.1f} mean {r['crt_mean']:.1f} gap p50 "
+                           f"{r['gap_p50']:.1f} min {r['gap_min']:.1f} us | stamp "
+                           if r.get("crt_p50") is not None else f"creation NOT READ ({r.get('crt_why')}) | stamp ")
+                    print(f"{'/'.join(key)} {arm:10} r{r['rep']} n={r['n']} {crt}p50 {r['p50']:.1f} p99 "
+                          f"{r['p99']:.1f} mean {r['mean']:.1f} us  cpu {r['cpu']:.2f} us/rt  rss ping/pong "
+                          f"{r['rss_ping']}/{r['rss_pong']}"
+                          f"{'/router ' + str(r['rss_router']) if r['rss_router'] else ''} kB  {wit}")
                 else:
                     print(f"{'/'.join(key[:3])} {arm:10} r{r['rep']} delivered {r['rate']:,.0f}/s (sent "
                           f"{r['sent_rate']:,.0f}/s) over {r['seconds']} s  lost {r['lost']}  cpu {r['cpu']:.2f} us/"
@@ -496,7 +572,14 @@ def main():
                     if refused:
                         excluded.append(f"{arm} REFUSED in {len(refused)} rep(s)")
                         arms[arm] = [r for r in arms[arm] if not r["refused"]]
-        metrics = ([("p50", True, "RTT p50 us"), ("p99", True, "RTT p99 us"), ("mean", True, "RTT mean us"),
+        ctl_ok = True
+        if key[0] == "rtt":
+            ctl_ok = control_line(label_of(key), arms)
+        metrics = ([("crt_mean", True, "RTT mean from creation us"), ("crt_p50", True, "RTT p50 from creation us"),
+                    ("crt_p99", True, "RTT p99 from creation us"),
+                    ("p50", True, "RTT p50 us (send stamp, diagnostic)"),
+                    ("p99", True, "RTT p99 us (send stamp, diagnostic)"),
+                    ("mean", True, "RTT mean us (send stamp, diagnostic)"),
                     ("cpu", True, "CPU us per round trip"), ("rss", True, "peak RSS kB (larger of ping, pong)")]
                    if key[0] == "rtt" else
                    [("rate", False, "delivered msg/s"), ("cpu", True, "CPU us per delivered sample (pub+sub)"),
@@ -509,7 +592,10 @@ def main():
                 med = statistics.median(xs) if xs else None
                 tag = f" (n={len(xs)}, {arms[arm][0]['transport']})" if xs else ""
                 vals.append(fmt(med, metric) + tag)
-            print(f"| {label} | {name} | " + " | ".join(vals) + f" | {verdict(arms, metric, lower, tickle_lose)} |")
+            v = verdict(arms, metric, lower, tickle_lose)
+            if metric in CRT_METRICS and not ctl_ok:
+                v = "NOT READ (control failed)"
+            print(f"| {label} | {name} | " + " | ".join(vals) + f" | {v} |")
         for e in excluded:
             print(f"|  | {e} | | | | | | |")
 

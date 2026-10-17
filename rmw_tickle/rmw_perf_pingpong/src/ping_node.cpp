@@ -92,6 +92,76 @@ namespace {
         stats.sum_ms += rtt_ms;
     }
 
+    // Creation-time round trip (the user's decision of 2026-10-17, docs/TESTING.md section 4): latency is measured from
+    // the time each ping was DUE, not from the stamp read just before its publish. Block, locked and jitter waits:
+    // a ping is due when the sleep before it was asked to end (the reply's handling + -i; the first ping at the start).
+    // --phase random: at its own grid point start + k * -i + offset, which the sender sleeps to. For each answered
+    // ping, crt = end - due and gap = send - due (how late the publish came against its schedule: a timer wake when
+    // nothing else waits); the stamp RTT (end - send) is kept beside them. The same definitions as the native clients'
+    // examples/perf_hil/tickle/common/CreationTime.h, so creation_latency_summary.py's control R4 reads both.
+    struct creation_stats {
+        std::vector<int64_t> crt_ns;
+        std::vector<int64_t> gap_ns;
+        std::vector<int64_t> rtt_ns;
+        uint64_t no_due = 0; // answered pings with no due time recorded (must stay 0)
+    };
+
+    auto add_creation(creation_stats& creation, pingpong::stamp_log& dues, uint64_t seq, uint64_t due_ns,
+                      uint64_t send_ns, uint64_t end_ns) -> void {
+        if (due_ns == 0) {
+            creation.no_due++;
+            return;
+        }
+        creation.crt_ns.push_back(static_cast<int64_t>(end_ns - due_ns));
+        creation.gap_ns.push_back(static_cast<int64_t>(send_ns - due_ns));
+        creation.rtt_ns.push_back(static_cast<int64_t>(end_ns - send_ns));
+        pingpong::stamp_log_add(dues, seq, due_ns, send_ns); // --dues
+    }
+
+    // Nearest-rank percentile (q in percent) of a copy; 0 when empty.
+    auto percentile_ns(std::vector<int64_t> values, size_t q_pct) -> int64_t {
+        if (values.empty()) {
+            return 0;
+        }
+        constexpr size_t hundred = 100;
+        // NOLINTNEXTLINE(modernize-use-ranges) - std::ranges is C++20; the package builds as C++17 on jazzy (CI)
+        std::sort(values.begin(), values.end());
+        const size_t rank = ((q_pct * values.size()) + hundred - 1) / hundred;
+        return values[rank > 0 ? rank - 1 : 0];
+    }
+
+    // The creation fields, appended to the RESULT line after every field it had, so every older parser reads it as
+    // before. Printed to 0.1 us (ms to 4 decimals).
+    auto print_creation_fields(const creation_stats& creation) -> void {
+        constexpr double ns_per_ms_d = 1e6;
+        constexpr double ns_per_us_d = 1e3;
+        constexpr size_t p50 = 50;
+        constexpr size_t p99 = 99;
+        double crt_sum = 0.0;
+        for (const int64_t value: creation.crt_ns) {
+            crt_sum += static_cast<double>(value);
+        }
+        const size_t kept = creation.crt_ns.size();
+        const double crt_avg = kept > 0 ? crt_sum / static_cast<double>(kept) / ns_per_ms_d : -1.0;
+        int64_t gap_min = 0;
+        int64_t gap_max = 0;
+        if (!creation.gap_ns.empty()) {
+            // NOLINTNEXTLINE(modernize-use-ranges) - std::ranges is C++20; the package builds as C++17 on jazzy (CI)
+            const auto extremes = std::minmax_element(creation.gap_ns.begin(), creation.gap_ns.end());
+            gap_min = *extremes.first;
+            gap_max = *extremes.second;
+        }
+        std::printf(" rtt_p50_ms=%.4f crt_p50_ms=%.4f crt_p99_ms=%.4f crt_avg_ms=%.4f crt_kept=%lu gap_p50_us=%.1f"
+                    " gap_min_us=%.1f gap_max_us=%.1f crt_no_due=%lu",
+                    static_cast<double>(percentile_ns(creation.rtt_ns, p50)) / ns_per_ms_d,
+                    static_cast<double>(percentile_ns(creation.crt_ns, p50)) / ns_per_ms_d,
+                    static_cast<double>(percentile_ns(creation.crt_ns, p99)) / ns_per_ms_d, crt_avg,
+                    static_cast<unsigned long>(kept),
+                    static_cast<double>(percentile_ns(creation.gap_ns, p50)) / ns_per_us_d,
+                    static_cast<double>(gap_min) / ns_per_us_d, static_cast<double>(gap_max) / ns_per_us_d,
+                    static_cast<unsigned long>(creation.no_due));
+    }
+
     // What poll mode spends (2026-09-26, RMW_PERF_PLAN §7): the wait loop's iterations, and how long its
     // spin_some() calls and its sleeps really took - the sleep asks for 100 us and the kernel's timer slack
     // decides the rest. Printed per round trip on a LOOP: line after RESULT.
@@ -209,7 +279,8 @@ namespace {
         std::printf("\n");
     }
 
-    auto print_summary(const rtt_stats& rtt, uint64_t transmitted, bool reliable, const wait_mode& wait) -> void {
+    auto print_summary(const rtt_stats& rtt, uint64_t transmitted, bool reliable, const wait_mode& wait,
+                       const creation_stats& creation) -> void {
         const uint64_t received = rtt.received;
         const uint64_t lost = transmitted - received;
         const double loss_pct =
@@ -228,10 +299,12 @@ namespace {
             std::printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", rtt.min_ms, avg, rtt.max_ms);
         }
         std::printf("RESULT: framework=%s scenario=pingpong qos=%s wait=%s sent=%lu recv=%lu loss_pct=%.0f "
-                    "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f\n",
+                    "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f",
                     rmw_impl, reliable ? "reliable" : "best_effort", wait.blocking ? "block" : "poll",
                     static_cast<unsigned long>(transmitted), static_cast<unsigned long>(received), loss_pct, rtt.min_ms,
                     avg, rtt.max_ms);
+        print_creation_fields(creation);
+        std::printf("\n");
     }
 
     // Waits until both sides have matched. Give discovery a moment - a send before both sides have matched would
@@ -275,7 +348,7 @@ namespace {
     template <typename T>
     auto run_ping_random(const rclcpp::Node::SharedPtr& node, rclcpp::executors::SingleThreadedExecutor& executor,
                          const rclcpp::QoS& qos, double interval_s, double duration_s, bool reliable,
-                         const wait_mode& wait, pingpong::stamp_log& stamps) -> int {
+                         const wait_mode& wait, pingpong::stamp_log& stamps, pingpong::stamp_log& dues) -> int {
         using Traits = BenchTraits<T>;
         auto pub = node->create_publisher<T>("ping", qos);
         const bool loaned = pingpong::loaned_publish_wanted();
@@ -296,6 +369,7 @@ namespace {
 
         uint64_t transmitted = 0;
         rtt_stats rtt;
+        creation_stats creation;
         loop_stats loop;
         phase_probe probe;
         std::vector<uint64_t> callback_after_send;
@@ -334,6 +408,7 @@ namespace {
                         callback_after_send.push_back(slot.reply_ns - sent_at);
                         const uint64_t end_ns = wait.rtt_at_callback ? slot.reply_ns : slot.seen_ns;
                         add_rtt(rtt, static_cast<double>(end_ns - slot.send_ns) / static_cast<double>(ns_per_ms));
+                        add_creation(creation, dues, seq, due, slot.send_ns, end_ns);
                     }
                 }
             }
@@ -358,7 +433,7 @@ namespace {
         }
         sender.join();
 
-        print_summary(rtt, transmitted, reliable, wait);
+        print_summary(rtt, transmitted, reliable, wait, creation);
         print_loop_stats(loop, transmitted, wait);
         print_phase(probe, callback_after_send, wait);
         return 0;
@@ -389,7 +464,7 @@ namespace {
 
     template <typename T>
     auto run_ping(const rclcpp::Node::SharedPtr& node, double interval_s, double duration_s, bool reliable,
-                  const wait_mode& wait, pingpong::stamp_log& stamps) -> int {
+                  const wait_mode& wait, pingpong::stamp_log& stamps, pingpong::stamp_log& dues) -> int {
         using Traits = BenchTraits<T>;
 
         rclcpp::executors::SingleThreadedExecutor executor;
@@ -402,7 +477,7 @@ namespace {
             qos.best_effort();
         }
         if (wait.random_phase && !wait.blocking) {
-            return run_ping_random<T>(node, executor, qos, interval_s, duration_s, reliable, wait, stamps);
+            return run_ping_random<T>(node, executor, qos, interval_s, duration_s, reliable, wait, stamps, dues);
         }
 
         auto pub = node->create_publisher<T>("ping", qos);
@@ -428,6 +503,7 @@ namespace {
 
         uint64_t transmitted = 0;
         rtt_stats rtt;
+        creation_stats creation;
         loop_stats loop;
         phase_probe probe;
         std::vector<uint64_t> callback_after_send;
@@ -438,6 +514,7 @@ namespace {
         const uint64_t start = now_ns();
         const uint64_t deadline = start + static_cast<uint64_t>(duration_s * static_cast<double>(ns_per_s));
         const auto interval_ns = static_cast<uint64_t>(interval_s * static_cast<double>(ns_per_s));
+        uint64_t due = start; // the first ping is due at once; each later one when the sleep before it should end
 
         while (rclcpp::ok() && now_ns() < deadline) {
             T req;
@@ -467,14 +544,16 @@ namespace {
                 callback_after_send.push_back(reply_ns - sent_at);
                 const uint64_t end_ns = wait.blocking || wait.rtt_at_callback ? reply_ns : now_ns();
                 add_rtt(rtt, static_cast<double>(end_ns - Traits::send_ns(reply_msg)) / static_cast<double>(ns_per_ms));
+                add_creation(creation, dues, seq, due, Traits::send_ns(reply_msg), end_ns);
             }
 
             const struct timespec sleep_ts = {.tv_sec = static_cast<time_t>(interval_ns / ns_per_s),
                                               .tv_nsec = static_cast<long>(interval_ns % ns_per_s)};
+            due = now_ns() + interval_ns;  // the next ping's creation time: when this sleep is asked to end
             nanosleep(&sleep_ts, nullptr); // NOLINT(misc-include-cleaner) - see now_ns()'s own <ctime> comment
         }
 
-        print_summary(rtt, transmitted, reliable, wait);
+        print_summary(rtt, transmitted, reliable, wait, creation);
         // Every reply that arrived after its ping's deadline: zero on a sound run, and the count of stalls when not.
         std::printf("STALE: replies_after_deadline=%lu\n", static_cast<unsigned long>(stale_replies));
         print_loop_stats(loop, transmitted, wait);
@@ -488,6 +567,35 @@ namespace {
         return 0;
     }
 
+    // Writes one per-sample log (--stamps, --dues) at the end of the run; false, with a message, when it could not.
+    auto write_log(const pingpong::stamp_log& log, const char* option) -> bool {
+        if (pingpong::stamp_log_write(log)) {
+            return true;
+        }
+        std::fprintf(stderr, "cannot write %s file %s\n", option, log.path);
+        return false;
+    }
+
+    // -m: the message type the run is templated on. Split out of main() to keep it under clang-tidy's
+    // cognitive-complexity threshold.
+    auto run_message(const char* message, const rclcpp::Node::SharedPtr& node, double interval_s, double duration_s,
+                     bool reliable, const wait_mode& wait, pingpong::stamp_log& stamps, pingpong::stamp_log& dues)
+        -> int {
+        if (std::strcmp(message, "bench") == 0) {
+            return run_ping<rmw_perf_pingpong::msg::Bench>(node, interval_s, duration_s, reliable, wait, stamps, dues);
+        }
+        if (std::strcmp(message, "array1k") == 0) {
+            return run_ping<rmw_perf_pingpong::msg::Array1k>(node, interval_s, duration_s, reliable, wait, stamps,
+                                                             dues);
+        }
+        if (std::strcmp(message, "struct16") == 0) {
+            return run_ping<rmw_perf_pingpong::msg::Struct16>(node, interval_s, duration_s, reliable, wait, stamps,
+                                                              dues);
+        }
+        std::fprintf(stderr, "unknown -m '%s' (expected bench|array1k|struct16)\n", message);
+        return 1;
+    }
+
 } // namespace
 
 auto main(int argc, char** argv) -> int {
@@ -496,6 +604,7 @@ auto main(int argc, char** argv) -> int {
     bool reliable = false;
     wait_mode wait;                    // --wait block|poll, --poll-sleep-us N
     const char* stamps_path = nullptr; // --stamps <file>, see pingpong::stamp_log
+    const char* dues_path = nullptr;   // --dues <file>: seq due_ns send_ns per answered ping (creation time)
     const char* message = "bench";
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--wait") == 0 && i + 1 < argc) {
@@ -510,6 +619,8 @@ auto main(int argc, char** argv) -> int {
             wait.poll_sleep_us = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--stamps") == 0 && i + 1 < argc) {
             stamps_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--dues") == 0 && i + 1 < argc) {
+            dues_path = argv[++i];
         } else if (std::strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = std::atof(argv[++i]);
         } else if (std::strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -534,20 +645,14 @@ auto main(int argc, char** argv) -> int {
         pingpong::stamp_log stamps;
         pingpong::stamp_log_open(stamps, stamps_path,
                                  "ping: seq send_ns reply_ns (CLOCK_MONOTONIC ns; replied samples only)");
-        int ret;
-        if (std::strcmp(message, "bench") == 0) {
-            ret = run_ping<rmw_perf_pingpong::msg::Bench>(node, interval_s, duration_s, reliable, wait, stamps);
-        } else if (std::strcmp(message, "array1k") == 0) {
-            ret = run_ping<rmw_perf_pingpong::msg::Array1k>(node, interval_s, duration_s, reliable, wait, stamps);
-        } else if (std::strcmp(message, "struct16") == 0) {
-            ret = run_ping<rmw_perf_pingpong::msg::Struct16>(node, interval_s, duration_s, reliable, wait, stamps);
-        } else {
-            std::fprintf(stderr, "unknown -m '%s' (expected bench|array1k|struct16)\n", message);
-            ret = 1;
-        }
+        pingpong::stamp_log dues;
+        pingpong::stamp_log_open(dues, dues_path,
+                                 "ping: seq due_ns send_ns (CLOCK_MONOTONIC ns; answered pings only; creation time)");
+        int ret = run_message(message, node, interval_s, duration_s, reliable, wait, stamps, dues);
 
-        if (!pingpong::stamp_log_write(stamps)) {
-            std::fprintf(stderr, "cannot write --stamps file %s\n", stamps_path);
+        const bool stamps_written = write_log(stamps, "--stamps");
+        const bool dues_written = write_log(dues, "--dues"); // written even when the stamps could not be
+        if (!stamps_written || !dues_written) {
             ret = 1;
         }
         rclcpp::shutdown();

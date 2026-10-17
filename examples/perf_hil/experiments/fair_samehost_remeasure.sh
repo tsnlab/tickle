@@ -19,6 +19,11 @@
 # headline. BE_HISTORY=<depth> is handed to the BEST_EFFORT cells only (-K on every framework's client and server;
 # tickle/common/BenchHistory.h). Unset, nothing is passed - each product's default, as the published S1-S3 - and the
 # driver log's header says which it was.
+#
+# A latency cell may name its own ping interval and duration (2026-10-17): reliable_latency:<size>:<interval s>:<dur s>,
+# e.g. reliable_latency:p2:0.05:60 for S8/S12 (20 pings/s for 60 s); its files are <scen>_<size>_i<interval>_<arm>.
+# A plain reliable_latency:<size> keeps 200 pings/s for 10 s and its file names. The clients print the round trip from
+# each ping's due time (crt_*) beside the send-stamp figures since 4fca013b; fair_samehost_summary.py reads both.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # The rig lock is taken once, here, for the whole run (2026-10-05): each s6_transport_cells.sh call used to take and
@@ -28,6 +33,8 @@ export RIG_LOCK_SCOPE=hil
 SHA=${SHA:?set SHA to a pushed commit}
 FRAMEWORKS=${FRAMEWORKS:-"tickle fastdds cyclonedds"}
 REPS=${REPS:-3}
+# ARMS (2026-10-17): which of the two arms run; default both. ARMS=free runs the headline arm alone.
+ARMS=${ARMS:-free pinned}
 BE_HISTORY=${BE_HISTORY:-1} # the user, 2026-10-06: KEEP_LAST 1, the DDS default, explicitly on every framework
 case "$BE_HISTORY" in *[!0-9]* | 0*) echo "BE_HISTORY='$BE_HISTORY' is not a positive integer" >&2; exit 2 ;; esac
 CELLS=${CELLS:-"best_effort_throughput:p2 best_effort_throughput:p3 best_effort_throughput:p4 reliable_throughput:p2 reliable_throughput:p3 reliable_throughput:p4 reliable_latency:p2 reliable_latency:p3 reliable_latency:p4"}
@@ -38,9 +45,10 @@ if [ "${RIG_LOCK_HELD_HIL:-0}" != "1" ]; then
         pf_specs=()
         for cell in $CELLS; do
             cli=""
-            [ "${cell%%:*}" = reliable_latency ] && cli="-i 0.005"
+            pf_cell=$(echo "$cell" | cut -d: -f1-2) # scen:size, without a latency cell's interval and duration
+            [ "${cell%%:*}" = reliable_latency ] && cli="-i $(echo "$cell:0.005" | cut -d: -f3)"
             [ "${cell%%:*}" = best_effort_throughput ] && [ -n "$BE_HISTORY" ] && cli="-K $BE_HISTORY"
-            pf_specs+=("$cell:N0:$cli:-Q")
+            pf_specs+=("$pf_cell:N0:$cli:-Q")
         done
         if ! SHA=$SHA PREFLIGHT_TOPO=samens FWS="$FRAMEWORKS" \
             "$REPO/examples/perf_hil/experiments/rig_preflight.sh" "${pf_specs[@]}"; then
@@ -55,18 +63,22 @@ OUTB=${OUTB:-$HOME/rig_results_safe/fair_samehost_${SHA}_$(date +%Y%m%d-%H%M%S)}
 LOG="$OUTB.driver.log"
 : >"$LOG"
 say() { echo "$*" | tee -a "$LOG"; }
-say "=== fair same-host re-measure, $(date -Is), sha $SHA, frameworks $FRAMEWORKS, $REPS reps, cells: $CELLS ==="
+say "=== fair same-host re-measure, $(date -Is), sha $SHA, frameworks $FRAMEWORKS, $REPS reps, arms: $ARMS, cells: $CELLS ==="
 say "    BEST_EFFORT history: ${BE_HISTORY:+-K $BE_HISTORY on every framework}${BE_HISTORY:-not passed, so each product runs its default (KEEP_LAST 1 on both DDS vendors)}"
 n=0
 for cell in $CELLS; do
-    scen=${cell%%:*}; size=${cell#*:}
-    dur=5; cli=""
+    IFS=: read -r scen size lat_i lat_dur <<<"$cell"
+    dur=5; cli=""; label=$size
     if [ "$scen" = reliable_latency ]; then dur=10; cli="-i 0.005"; fi # 200 pings/s, as S7/S9/S10
+    if [ "$scen" = reliable_latency ] && [ -n "$lat_i" ]; then
+        cli="-i $lat_i"; dur=${lat_dur:-$dur}; label=${size}_i$lat_i # e.g. reliable_latency:p2:0.05:60, S8/S12
+    fi
     order="free pinned"; [ $((n % 2)) = 1 ] && order="pinned free"
     for arm in $order; do
+        case " $ARMS " in *" $arm "*) ;; *) continue ;; esac
         ps_=""; pc_=""
         if [ "$arm" = pinned ]; then ps_="taskset -c 1"; pc_="taskset -c 2"; fi
-        out="$OUTB.${scen}_${size}_${arm}.txt"
+        out="$OUTB.${scen}_${label}_${arm}.txt"
         say "--- $scen $size $arm -> $out ($(date +%T))"
         bh=""
         [ "$scen" = best_effort_throughput ] && bh=$BE_HISTORY

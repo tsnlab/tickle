@@ -447,6 +447,29 @@ def cells(recs, meta, rate, mbps, control_ok):
     return out
 
 
+def rtt_r4(stamp, crt, gap, gap_min, res_ms=RTT_PRINT_RES_MS):
+    """R4 on one framework's reps of one round-trip cell, from per-rep medians (all in ms): stamp RTT p50s, creation
+    RTT p50s, realized-gap p50s, and the smallest gap of any rep. (ok, text). Shared by --rtt and the same-host and rmw
+    round-trip readers (fair_samehost_summary.py, rmw_samehost_summary.py, rmw_crosshost_creation.py), so the control
+    is one rule wherever a round trip is read from creation time."""
+    d = st.median(c - s for c, s in zip(crt, stamp))
+    g = st.median(gap)
+    noise = max(stamp) - min(stamp)
+    why = []
+    if g * 1e6 > CTL_WAKE_NS:
+        why.append(f"median gap {g * 1e3:.1f} us")
+    if gap_min * 1e6 < CTL_NEG_NS:
+        why.append(f"gap {gap_min * 1e3:.1f} us < 0")
+    # The clients print rtt_p50_ms and crt_p50_ms to 1 us (%.3f ms), so d carries up to 1 us of rounding on top of the
+    # reps' noise (RTT_PRINT_RES_MS; added 2026-10-17 after the first rig run, see R4).
+    if abs(d - g) > noise + res_ms:
+        why.append(f"|d - g| {abs(d - g) * 1e3:.1f} us > noise {noise * 1e3:.1f} us + print resolution "
+                   f"{res_ms * 1e3:.0f} us")
+    same = "same within noise" if abs(d) <= noise else f"differs by the timer wake g = {g * 1e3:.1f} us"
+    return not why, (f"d {d * 1e3:+.1f} us g {g * 1e3:.1f} us noise {noise * 1e3:.1f} us: {same}; "
+                     f"{'PASS' if not why else 'FAIL ' + str(why)}")
+
+
 def rtt_campaign(path):
     """--rtt: the core reliable_latency cells of a campaign_sweep.sh output (R4 per framework and cell, R5)."""
     pat = re.compile(r"^(c\d+) L (\S+) (\S+) (.*?)\s+(tickle|cyclonedds|fastdds)\s+rep(\d+) \| (\S+) \| (.*)$")
@@ -473,23 +496,9 @@ def rtt_campaign(path):
             crt = [float(f["crt_p50_ms"]) for f in good]
             gap = [float(f["gap_p50_us"]) / 1e3 for f in good]
             gmin = min(float(f["gap_min_us"]) for f in good) / 1e3
-            d = st.median(c - s for c, s in zip(crt, stamp))
-            g = st.median(gap)
-            noise = max(stamp) - min(stamp)
-            why = []
-            if g * 1e6 > CTL_WAKE_NS:
-                why.append(f"median gap {g * 1e3:.1f} us")
-            if gmin * 1e6 < CTL_NEG_NS:
-                why.append(f"gap {gmin * 1e3:.1f} us < 0")
-            # The clients print rtt_p50_ms and crt_p50_ms to 1 us (%.3f ms), so d carries up to 1 us of rounding on
-            # top of the reps' noise (RTT_PRINT_RES_MS; added 2026-10-17 after the first rig run, see R4).
-            if abs(d - g) > noise + RTT_PRINT_RES_MS:
-                why.append(f"|d - g| {abs(d - g) * 1e3:.1f} us > noise {noise * 1e3:.1f} us + print resolution "
-                           f"{RTT_PRINT_RES_MS * 1e3:.0f} us")
-            same = "same within noise" if abs(d) <= noise else f"differs by the timer wake g = {g * 1e3:.1f} us"
-            print(f"  {fw:<10} n {n}  RTT stamp p50 {stamp} creation p50 {crt} ms  d {d * 1e3:+.1f} us g "
-                  f"{g * 1e3:.1f} us noise {noise * 1e3:.1f} us: {same}; {'PASS' if not why else 'FAIL ' + str(why)}")
-            ok_all = ok_all and not why
+            ok, text = rtt_r4(stamp, crt, gap, gmin)
+            print(f"  {fw:<10} n {n}  RTT stamp p50 {stamp} creation p50 {crt} ms  {text}")
+            ok_all = ok_all and ok
             meds[fw] = (crt, stamp)
         if "tickle" in meds:
             for v in ("fastdds", "cyclonedds"):
