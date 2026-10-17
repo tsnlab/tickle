@@ -69,10 +69,14 @@ int main(int argc, char** argv) {
     bench_stats_begin(&g_bench_stats);
     double duration_s = 10.0;
     double interval_s = 0.0; // 0 = as fast as possible, matching perf_client.c's own default
+    // --readers <n>: start writing once n readers are matched (common.h, wait_for_writer_matches); 1 by default.
+    int readers = 1;
     BenchWindow_init(&g_window);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--readers") == 0 && i + 1 < argc) {
+            readers = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
         } else if (!BenchWindow_parse_arg(&g_window, argc, argv, &i)) {
@@ -103,10 +107,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!wait_for_writer_match(participant, writer, 15.0)) {
-        fprintf(stderr, "timed out waiting for a matched reader\n");
+    if (!wait_for_writer_matches(participant, writer, readers, 15.0)) {
+        fprintf(stderr, "timed out waiting for %d matched reader(s)\n", readers);
         return 1;
     }
+    // What the writer was matched with when it started, read back rather than taken from --readers.
+    int matched_at_start = cdds_matched_readers(writer);
 
     uint32_t seq = 0;
     uint64_t sent = 0;
@@ -130,8 +136,8 @@ int main(int argc, char** argv) {
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(struct Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.6f %s %s %s %s\n",
-           (unsigned long)sent, elapsed_s, mbps,
+           "send_mbps=%.6f readers_wanted=%d readers_at_start=%d %s %s %s %s\n",
+           (unsigned long)sent, elapsed_s, mbps, readers, matched_at_start,
            BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            BenchHistory_arg_field(g_history, g_history_arg, sizeof g_history_arg),
            cdds_history_field(writer, g_history_field, sizeof g_history_field),

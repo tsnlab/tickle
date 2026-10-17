@@ -38,6 +38,7 @@
 #include <stdio.h>
 
 #include <dds/dds.h>
+#include <dds/ddsrt/time.h>
 
 // Matches eclipse-cyclonedds/cyclonedds's own examples/throughput/publisher.c wait_for_reader()
 // exactly: enable the matched-status, attach it to a fresh waitset, block once on that waitset
@@ -72,6 +73,45 @@ static inline bool wait_for_writer_match(dds_entity_t participant, dds_entity_t 
     dds_publication_matched_status_t status;
     dds_get_publication_matched_status(writer, &status);
     return status.current_count > 0;
+}
+
+// The writer's matched-reader count now, or -1 if it cannot be read ("could not look" is not zero readers).
+static inline int cdds_matched_readers(dds_entity_t writer) {
+    dds_publication_matched_status_t status;
+    if (dds_get_publication_matched_status(writer, &status) != DDS_RETCODE_OK) {
+        return -1;
+    }
+    return (int)status.current_count;
+}
+
+// --readers <n> (2026-10-17, the mixed-delivery test): wait until n readers are matched, not just the first. With one
+// local and one remote reader, wait_for_writer_match() returns on whichever matches first, and the other then misses
+// the samples written before its own match - a VOLATILE reader is never owed those, so the run would read as a loss
+// that is the harness's. The same waitset pattern as above, repeated until the count is reached or timeout_s has
+// passed; each wake re-reads current_count, so a wake for an unrelated status change only costs a loop.
+// n <= 1 is wait_for_writer_match() itself, so every existing caller's behaviour is unchanged.
+static inline bool wait_for_writer_matches(dds_entity_t participant, dds_entity_t writer, int readers,
+                                           double timeout_s) {
+    if (readers <= 1) {
+        return wait_for_writer_match(participant, writer, timeout_s);
+    }
+    uint32_t original_mask = 0;
+    if (dds_get_status_mask(writer, &original_mask) != DDS_RETCODE_OK ||
+        dds_set_status_mask(writer, original_mask | DDS_PUBLICATION_MATCHED_STATUS) != DDS_RETCODE_OK) {
+        fprintf(stderr, "dds_get/set_status_mask (writer) failed\n");
+        return false;
+    }
+    dds_entity_t waitset = dds_create_waitset(participant);
+    dds_waitset_attach(waitset, writer, 0);
+    dds_time_t deadline = dds_time() + (dds_duration_t)(timeout_s * (double)DDS_NSECS_IN_SEC);
+    int matched = cdds_matched_readers(writer);
+    while (matched >= 0 && matched < readers && dds_time() < deadline) {
+        (void)dds_waitset_wait_until(waitset, NULL, 0, deadline);
+        matched = cdds_matched_readers(writer);
+    }
+    dds_delete(waitset);
+    dds_set_status_mask(writer, original_mask);
+    return matched >= readers;
 }
 
 // dds_set_status_mask() REPLACES the entire mask, it doesn't OR a bit in (2026-09-20, real bug

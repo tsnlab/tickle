@@ -115,6 +115,9 @@ int main(int argc, char** argv) {
 
     uint64_t received = 0, lost = 0;
     uint32_t last_seq = 0;
+    // The first sample's seq: the samples before it were written before this reader matched, which the gap count
+    // cannot see. first_seq - 1 of them, reported apart (2026-10-17, the mixed-delivery test).
+    uint32_t first_seq = 0;
     bool first = true;
     uint64_t first_recv_ns = 0, last_recv_ns = 0;
 
@@ -157,6 +160,7 @@ int main(int argc, char** argv) {
                 if (first) {
                     first = false;
                     first_recv_ns = now_ns();
+                    first_seq = seq;
                     last_seq = seq;
                 } else if (seq > last_seq + 1) {
                     lost += (seq - last_seq - 1);
@@ -179,9 +183,10 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
 
     printf("RESULT: framework=cyclonedds scenario=reliable_throughput role=server recv=%lu lost=%lu "
-           "loss_pct=%.6f elapsed_s=%.3f recv_mbps=%.6f keep_all=%d keep_last_depth=%d keepall_samples=%d %s %s\n",
+           "loss_pct=%.6f elapsed_s=%.3f recv_mbps=%.6f keep_all=%d keep_last_depth=%d keepall_samples=%d "
+           "first_seq=%u %s %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, elapsed_s, mbps, keep_last_depth > 0 ? 0 : 1,
-           keep_last_depth, keepall_samples,
+           keep_last_depth, keepall_samples, (unsigned)first_seq,
            BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));

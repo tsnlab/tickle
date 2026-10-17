@@ -298,7 +298,7 @@ All are in `examples/perf_hil/experiments/`. Each one's header holds its pre-reg
 | `s6_transport_cells.sh` | Same-host shared-memory cells for all three frameworks, each with a witness |
 | `shm_transport_identity.sh` | Which transport carried each payload shape (asserted, not assumed) |
 | `local_segment_cell.sh` | Quick same-host segment check on the PC in a netns before going to the rig (not a published figure) |
-| `mixed_delivery.sh` | One publisher with a local and a remote subscriber: correct, and at what cost? |
+| `mixed_delivery.sh` | One publisher with a local and a remote subscriber: correct, and at what cost? (TickLE, FastDDS, CycloneDDS with iox-roudi; `mixed_delivery_campaign.sh` runs all three at one commit) |
 | `veth_c6_check.sh` | c6 (P4, RELIABLE, 5% loss) reproduced off-rig on a veth pair |
 | `wire_inventory.sh` | What TickLE puts on the wire, by submessage kind |
 | `netem_counter_check.sh` | Does the tx counter include packets netem dropped? |

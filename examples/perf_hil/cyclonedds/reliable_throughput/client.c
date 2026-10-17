@@ -69,10 +69,14 @@ int main(int argc, char** argv) {
     // the three frameworks by default; the campaign now passes all three the same number of samples,
     // and every RESULT line's keepall_samples= says which it was. The same letter in all three.
     int keepall_samples = 4000;
+    // --readers <n>: start writing once n readers are matched (common.h, wait_for_writer_matches); 1 by default.
+    int readers = 1;
     BenchWindow_init(&g_window);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-K") == 0 && i + 1 < argc) {
             keep_last_depth = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--readers") == 0 && i + 1 < argc) {
+            readers = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
@@ -119,10 +123,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!wait_for_writer_match(participant, writer, 10.0)) {
-        fprintf(stderr, "timed out waiting for a matched reader\n");
+    if (!wait_for_writer_matches(participant, writer, readers, 10.0)) {
+        fprintf(stderr, "timed out waiting for %d matched reader(s)\n", readers);
         return 1;
     }
+    // What the writer was matched with when it started, read back rather than taken from --readers.
+    int matched_at_start = cdds_matched_readers(writer);
 
     uint32_t seq = 0;
     uint64_t sent = 0;
@@ -168,10 +174,11 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
            "elapsed_s=%.3f send_mbps=%.6f max_blocking_ms=%.3f drained=%s drain_cap_s=%.1f cpu_main=%d "
-           "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d keepall_samples=%d %s %s\n",
+           "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d keepall_samples=%d readers_wanted=%d "
+           "readers_at_start=%d %s %s\n",
            (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms, drained, drain_s,
            BenchCpuPlace_main_cpu(&cpu_place), BenchCpuPlace_main_share(&cpu_place), cpu_place.migrations,
-           keep_last_depth > 0 ? 0 : 1, keep_last_depth, keepall_samples,
+           keep_last_depth > 0 ? 0 : 1, keep_last_depth, keepall_samples, readers, matched_at_start,
            BenchWindow_fields(&g_window, "sent", "send", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));

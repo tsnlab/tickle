@@ -115,6 +115,9 @@ int main(int argc, char** argv) {
 
     uint64_t received = 0, lost = 0;
     uint32_t last_seq = 0;
+    // The first sample's seq: the samples before it were written before this reader matched (or lost ahead of the
+    // first one taken), which the gap count cannot see. first_seq - 1 of them, reported apart (2026-10-17).
+    uint32_t first_seq = 0;
     bool first = true;
     uint64_t first_recv_ns = 0, last_recv_ns = 0;
 
@@ -140,6 +143,7 @@ int main(int argc, char** argv) {
             if (first) {
                 first = false;
                 first_recv_ns = now_ns();
+                first_seq = sample.seq;
                 last_seq = sample.seq;
             } else if (sample.seq > last_seq + 1) {
                 lost += (sample.seq - last_seq - 1);
@@ -161,8 +165,8 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
 
     printf("RESULT: framework=cyclonedds scenario=best_effort_throughput role=server recv=%lu lost=%lu "
-           "loss_pct=%.6f elapsed_s=%.3f recv_mbps=%.6f %s %s %s %s\n",
-           (unsigned long)received, (unsigned long)lost, loss_pct, elapsed_s, mbps,
+           "loss_pct=%.6f elapsed_s=%.3f recv_mbps=%.6f first_seq=%u %s %s %s %s\n",
+           (unsigned long)received, (unsigned long)lost, loss_pct, elapsed_s, mbps, (unsigned)first_seq,
            BenchWindow_fields(&g_window, "recv", "recv", BENCH_SAMPLE_BYTES, g_window_fields, sizeof g_window_fields),
            BenchHistory_arg_field(g_history, g_history_arg, sizeof g_history_arg),
            cdds_history_field(reader, g_history_field, sizeof g_history_field),
