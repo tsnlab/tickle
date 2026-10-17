@@ -91,8 +91,16 @@ from creation time say so.
   cut the gap to about 59 us and creation RTT by about 50 us in a rig A/B. It is not landed: its CPU cost is under
   review. Against FastDDS TickLE wins four of the five cells and draws at +10 ms netem; on the send stamp it wins.
 - **rmw large messages, I4 best effort (Array4m, 15 Hz), CPU per MB against Fast DDS as shipped.** Subscriber 2.19
-  against 2.10 ms/MB (+4%), publisher 3.72 against 3.62 (+3%). Not yet attributed. TickLE wins both against Fast DDS at
-  1472 and against CycloneDDS.
+  against 2.10 ms/MB (+4%), publisher 3.72 against 3.62 (+3%). TickLE wins both against Fast DDS at 1472 and against
+  CycloneDDS. Attributed 2026-10-17 (`experiments/i4be_cpu_gap.sh`, `i4be_cpu_gap2.sh`, perf stat per thread over 600
+  samples; `~/rig_results_safe/i4be_cpu_20261017-145938.read.txt`, `i4be_cpu_nodirect_20261017-161251.read.txt`):
+  the subscriber's gap is kernel time in the copy into the 4 MB sample buffer, which arrives cold (kernel cycles +23%
+  on 19% fewer instructions, IPC 1.02 against 1.55; user cycles equal). Reading in place (`TT_RX_DIRECT`) is still
+  the cheaper path: turned off, the kernel cost matches Fast DDS but the copy moves to user space and the total is
+  0.29 ms per sample worse. The publisher's gap is interrupt billing, not work: these Pi kernels have no
+  `IRQ_TIME_ACCOUNTING` and eth0's interrupt is on CPU 0, so network softirq time is charged to whatever thread runs
+  there; with every process pinned to CPUs 1-3 the gap falls from 0.196 to 0.004 ms per sample (kernel instructions
+  equal). The headline stays unpinned, so both rows stay LOSE as measured.
 
 ### Every DRAW
 
